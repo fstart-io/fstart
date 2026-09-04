@@ -47,7 +47,6 @@ i2c-ck505 = []
 acpi = [
   "fstart-stage?/acpi",
   "fstart-platform-intel/acpi",
-  "fstart-arch/acpi",
   "fstart-driver-intel/acpi",
   "fstart-driver-intel/ffs-vbt",
   "fstart-driver-superio/acpi",

@@ -9,9 +9,6 @@
 //!
 //! This matches coreboot's `cpu/intel/model_106cx/model_106cx_init.c`.
 
-#[cfg(feature = "acpi")]
-pub mod acpi;
-
 use crate::mp::{CpuDriver, CpuIdMatch, CpuVendor};
 use crate::x86::msr::{rdmsr, wrmsr};
 use crate::x86::mtrr;

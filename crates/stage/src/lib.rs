@@ -122,12 +122,12 @@ pub fn sig_verify(anchor_data: &[u8], media: &(impl BootMedia + ?Sized)) {
     // Log anchor info at a moderate verbosity level
     fstart_log::info!(
         "sig verify: image_size={} key_count={}",
-        Hex(anchor.total_image_size as u64),
-        anchor.key_count
+        Hex(anchor.total_image_size() as u64),
+        anchor.key_count()
     );
 
     // Read and verify the manifest
-    let manifest = match read_manifest_from_media(media, &anchor) {
+    let manifest = match read_manifest_from_media(media, anchor) {
         Ok(m) => m,
         Err(e) => {
             fstart_log::error!(
@@ -451,7 +451,7 @@ pub fn payload_load(anchor_data: &[u8], media: &(impl BootMedia + ?Sized), jump_
         }
     };
 
-    let manifest = match read_manifest_from_media(media, &anchor) {
+    let manifest = match read_manifest_from_media(media, anchor) {
         Ok(m) => m,
         Err(e) => {
             fstart_log::error!("payload load: manifest error: {}", reader_error_str(e));
@@ -475,7 +475,7 @@ pub fn payload_load(anchor_data: &[u8], media: &(impl BootMedia + ?Sized), jump_
     fstart_log::info!("payload load: loading '{}'", name);
 
     // Load segments
-    let image_size = effective_image_size(media.size(), &anchor);
+    let image_size = effective_image_size(media.size(), anchor);
     let entry_addr = match load_file_segments_from_media(media, &file, image_size) {
         Some(addr) => addr,
         None => return,
@@ -548,7 +548,7 @@ pub fn stage_load(
     };
 
     fstart_log::info!("stage load: reading manifest");
-    let manifest = match read_manifest_from_media(media, &anchor) {
+    let manifest = match read_manifest_from_media(media, anchor) {
         Ok(m) => {
             let summary = m.summary();
             fstart_log::info!("stage load: manifest ok, regions={}", summary.regions);
@@ -579,7 +579,7 @@ pub fn stage_load(
     );
 
     // Load all segments to their load addresses
-    let image_size = effective_image_size(media.size(), &anchor);
+    let image_size = effective_image_size(media.size(), anchor);
     fstart_log::info!("stage load: loading segments, image_size={:#x}", image_size);
     let entry_addr = match load_file_segments_from_media(media, &file, image_size) {
         Some(addr) => addr,
@@ -622,10 +622,10 @@ pub fn stage_load_stub(next_stage: &str) {
 #[cfg(feature = "ffs")]
 fn read_manifest_from_media<'a>(
     media: &'a (impl BootMedia + ?Sized),
-    anchor: &fstart_core::ffs::AnchorBlock,
+    anchor: fstart_core::ffs::AnchorRef<'_>,
 ) -> Result<fstart_ffs::ManifestView<'a>, fstart_ffs::ReaderError> {
-    let manifest_offset = anchor.manifest_offset as usize;
-    let manifest_size = anchor.manifest_size as usize;
+    let manifest_offset = anchor.manifest_offset() as usize;
+    let manifest_size = anchor.manifest_size() as usize;
     if manifest_size == 0 {
         return Err(fstart_ffs::ReaderError::OutOfBounds);
     }
@@ -670,7 +670,7 @@ pub fn load_ffs_file_by_type(
         }
     };
 
-    let manifest = match read_manifest_from_media(media, &anchor) {
+    let manifest = match read_manifest_from_media(media, anchor) {
         Ok(m) => m,
         Err(e) => {
             fstart_log::error!("load file: manifest error: {}", reader_error_str(e));
@@ -701,7 +701,7 @@ pub fn load_ffs_file_by_type(
         );
     }
 
-    let image_size = effective_image_size(media.size(), &anchor);
+    let image_size = effective_image_size(media.size(), anchor);
     let loaded = load_file_segments_from_media(media, &file, image_size).is_some();
     if !loaded {
         return false;
@@ -741,7 +741,7 @@ pub fn load_ffs_file_by_name(
         }
     };
 
-    let manifest = match read_manifest_from_media(media, &anchor) {
+    let manifest = match read_manifest_from_media(media, anchor) {
         Ok(m) => m,
         Err(e) => {
             fstart_log::error!(
@@ -779,7 +779,7 @@ pub fn load_ffs_file_by_name(
         );
     }
 
-    let image_size = effective_image_size(media.size(), &anchor);
+    let image_size = effective_image_size(media.size(), anchor);
     let loaded = load_file_segments_from_media(media, &file, image_size).is_some();
     if !loaded {
         return false;
@@ -851,7 +851,7 @@ pub fn ffs_file_extent(
 
     // SAFETY: FSTART_ANCHOR is properly aligned and sized.
     let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_data) }.ok()?;
-    let manifest = read_manifest_from_media(media, &anchor).ok()?;
+    let manifest = read_manifest_from_media(media, anchor).ok()?;
     let file = manifest.find_file_by_name(name).ok()?;
 
     let segments = file.segments();
@@ -869,7 +869,7 @@ pub fn ffs_file_extent(
         return None;
     }
 
-    let image_size = effective_image_size(media.size(), &anchor);
+    let image_size = effective_image_size(media.size(), anchor);
     let file_offset =
         u64::from(file.region_offset()) + u64::from(file.entry_offset()) + u64::from(seg.offset());
     let stored_size = u64::from(seg.stored_size());
@@ -984,7 +984,7 @@ pub fn verify_file_digests_by_name(
         Ok(a) => a,
         Err(_) => return false,
     };
-    let manifest = match read_manifest_from_media(media, &anchor) {
+    let manifest = match read_manifest_from_media(media, anchor) {
         Ok(m) => m,
         Err(_) => return false,
     };
@@ -1026,9 +1026,9 @@ pub fn find_ffs_file_data<'a>(
         }
     };
 
-    let image_size = effective_image_size(media.size(), &anchor);
-    let manifest_offset = anchor.manifest_offset as usize;
-    let manifest_size = anchor.manifest_size as usize;
+    let image_size = effective_image_size(media.size(), anchor);
+    let manifest_offset = anchor.manifest_offset() as usize;
+    let manifest_size = anchor.manifest_size() as usize;
     let manifest_end = manifest_offset.checked_add(manifest_size)?;
     if manifest_end > image_size {
         return None;
@@ -1082,7 +1082,7 @@ pub fn find_ffs_file_data_with_scratch<'a>(
         }
     };
 
-    let manifest = match read_manifest_from_media(media, &anchor) {
+    let manifest = match read_manifest_from_media(media, anchor) {
         Ok(m) => m,
         Err(e) => {
             fstart_log::error!("find file data: manifest error: {}", reader_error_str(e));
@@ -1091,7 +1091,7 @@ pub fn find_ffs_file_data_with_scratch<'a>(
     };
 
     let file = manifest.find_file_by_type(file_type).ok()?;
-    let image_size = effective_image_size(media.size(), &anchor) as u64;
+    let image_size = effective_image_size(media.size(), anchor) as u64;
     let seg = file.segments().first()?;
     let offset =
         u64::from(file.region_offset()) + u64::from(file.entry_offset()) + u64::from(seg.offset());
@@ -1308,13 +1308,34 @@ fn reader_error_str(err: fstart_ffs::ReaderError) -> &'static str {
 /// while the FFS image is much smaller. Using the anchor's total_image_size
 /// ensures the reader only accesses data that was actually written by the builder.
 #[cfg(feature = "ffs")]
-fn effective_image_size(media_size: usize, anchor: &fstart_core::ffs::AnchorBlock) -> usize {
-    if anchor.total_image_size > 0 && (anchor.total_image_size as usize) < media_size {
-        anchor.total_image_size as usize
+fn effective_image_size(media_size: usize, anchor: fstart_core::ffs::AnchorRef<'_>) -> usize {
+    let total_image_size = anchor.total_image_size() as usize;
+    if total_image_size > 0 && total_image_size < media_size {
+        total_image_size
     } else {
         media_size
     }
 }
+
+/// Storage for an FFS anchor patched after the stage has been linked.
+///
+/// Interior mutability prevents LLVM from treating the placeholder bytes as a
+/// constant while preserving the exact `AnchorBlock` representation expected
+/// by the post-build patcher.
+#[repr(transparent)]
+pub struct PatchableAnchor(core::cell::UnsafeCell<fstart_core::ffs::AnchorBlock>);
+
+impl PatchableAnchor {
+    const fn placeholder() -> Self {
+        Self(core::cell::UnsafeCell::new(
+            fstart_core::ffs::AnchorBlock::placeholder(),
+        ))
+    }
+}
+
+// SAFETY: firmware only reads this storage at runtime. `fbuild assemble`
+// modifies the flat binary before execution, not through a Rust reference.
+unsafe impl Sync for PatchableAnchor {}
 
 /// Fixed FFS anchor placeholder for handwritten stage flow.
 ///
@@ -1322,16 +1343,16 @@ fn effective_image_size(media_size: usize, anchor: &fstart_core::ffs::AnchorBloc
 /// the complete firmware image.
 #[used]
 #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.anchor"))]
-pub static FSTART_ANCHOR: fstart_core::ffs::AnchorBlock =
-    fstart_core::ffs::AnchorBlock::placeholder();
+pub static FSTART_ANCHOR: PatchableAnchor = PatchableAnchor::placeholder();
 
 #[must_use]
 pub fn fstart_anchor_bytes() -> &'static [u8] {
-    // SAFETY: FSTART_ANCHOR is a repr(C) static placed in `.fstart.anchor` and
-    // has exactly ANCHOR_SIZE initialized bytes.
+    // SAFETY: FSTART_ANCHOR is transparent over a repr(C) AnchorBlock, is
+    // placed in `.fstart.anchor`, and has exactly ANCHOR_SIZE initialized bytes.
+    // Runtime code only reads it after the image patcher has finished.
     unsafe {
         core::slice::from_raw_parts(
-            (&FSTART_ANCHOR as *const fstart_core::ffs::AnchorBlock).cast::<u8>(),
+            FSTART_ANCHOR.0.get().cast::<u8>(),
             fstart_core::ffs::ANCHOR_SIZE,
         )
     }

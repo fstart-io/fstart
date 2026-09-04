@@ -11,8 +11,6 @@ default = []
 acpi = [
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
-  "dep:acpi_tables",
-  "fstart-arch/acpi",
 ]
 ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs"]
 gm965 = []
@@ -24,7 +22,6 @@ ich7 = []
 bitflags = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }
-acpi_tables = { version = "0.2", optional = true }
 fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-crypto = { workspace = true, optional = true }
 

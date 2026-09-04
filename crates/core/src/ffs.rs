@@ -188,32 +188,6 @@ impl AnchorBlock {
         Some(anchor)
     }
 
-    /// Volatile-read an `AnchorBlock` from a byte slice into an owned copy.
-    ///
-    /// Uses `read_volatile` to defeat compiler assumptions about the
-    /// static's contents (it gets patched post-build by `fbuild assemble`).
-    ///
-    /// # Safety
-    ///
-    /// The slice must be at least `ANCHOR_SIZE` bytes and aligned to
-    /// `align_of::<AnchorBlock>()`.
-    pub unsafe fn read_volatile(data: &[u8]) -> Option<Self> {
-        if data.len() < ANCHOR_SIZE {
-            return None;
-        }
-        let ptr = data.as_ptr() as *const Self;
-        // SAFETY: caller guarantees alignment and size. Volatile read
-        // ensures we see the patched bytes, not the build-time placeholder.
-        let anchor = unsafe { core::ptr::read_volatile(ptr) };
-        if anchor.magic != FFS_MAGIC {
-            return None;
-        }
-        if anchor.version != FFS_VERSION {
-            return None;
-        }
-        Some(anchor)
-    }
-
     /// Write this anchor block as raw bytes into a mutable slice.
     ///
     /// Used by the builder to patch the anchor into the image.
@@ -224,6 +198,95 @@ impl AnchorBlock {
         // all fields are simple integers and arrays.
         let src = unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size) };
         dest[..size].copy_from_slice(src);
+    }
+}
+
+/// Borrowed view of a post-build-patched [`AnchorBlock`].
+///
+/// Scalar accessors use volatile reads so the compiler cannot substitute the
+/// placeholder values compiled into a stage. The substantially larger key
+/// array remains borrowed in place instead of being copied onto the stack.
+#[derive(Clone, Copy)]
+pub struct AnchorRef<'a> {
+    anchor: &'a AnchorBlock,
+}
+
+impl<'a> AnchorRef<'a> {
+    /// Borrow an aligned anchor and validate its volatile magic and version.
+    ///
+    /// # Safety
+    ///
+    /// `data` must contain at least [`ANCHOR_SIZE`] initialized bytes and be
+    /// aligned to `align_of::<AnchorBlock>()`. The bytes must remain readable
+    /// for the returned view's lifetime.
+    pub unsafe fn read_volatile(data: &'a [u8]) -> Option<Self> {
+        if data.len() < ANCHOR_SIZE {
+            return None;
+        }
+        let ptr = data.as_ptr().cast::<AnchorBlock>();
+        // SAFETY: the caller guarantees that a complete, aligned anchor is
+        // readable. Read each header byte independently to avoid copying the
+        // complete anchor merely to validate it.
+        let magic_ptr = unsafe { core::ptr::addr_of!((*ptr).magic).cast::<u8>() };
+        for (index, expected) in FFS_MAGIC.iter().enumerate() {
+            // SAFETY: `magic` contains eight initialized bytes.
+            if unsafe { core::ptr::read_volatile(magic_ptr.add(index)) } != *expected {
+                return None;
+            }
+        }
+        // SAFETY: `version` is an initialized, aligned scalar field.
+        if unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*ptr).version)) } != FFS_VERSION {
+            return None;
+        }
+        // SAFETY: the caller guarantees the anchor remains valid for `'a`.
+        Some(Self {
+            anchor: unsafe { &*ptr },
+        })
+    }
+
+    fn read_u32(self, field: *const u32) -> u32 {
+        // SAFETY: callers pass aligned scalar fields within `self.anchor`.
+        unsafe { core::ptr::read_volatile(field) }
+    }
+
+    /// Offset of the signed manifest from the image base.
+    pub fn manifest_offset(self) -> u32 {
+        self.read_u32(core::ptr::addr_of!(self.anchor.manifest_offset))
+    }
+
+    /// Size of the signed manifest envelope.
+    pub fn manifest_size(self) -> u32 {
+        self.read_u32(core::ptr::addr_of!(self.anchor.manifest_size))
+    }
+
+    /// Total size of the assembled firmware image.
+    pub fn total_image_size(self) -> u32 {
+        self.read_u32(core::ptr::addr_of!(self.anchor.total_image_size))
+    }
+
+    /// Offset of the concatenated CPU microcode blob.
+    pub fn microcode_offset(self) -> u32 {
+        self.read_u32(core::ptr::addr_of!(self.anchor.microcode_offset))
+    }
+
+    /// Size of the concatenated CPU microcode blob.
+    pub fn microcode_size(self) -> u32 {
+        self.read_u32(core::ptr::addr_of!(self.anchor.microcode_size))
+    }
+
+    /// Number of valid verification keys.
+    pub fn key_count(self) -> u32 {
+        self.read_u32(core::ptr::addr_of!(self.anchor.key_count))
+    }
+
+    /// Borrow the valid verification keys directly from the patched anchor.
+    ///
+    /// These loads need not be volatile: stage anchor storage has interior
+    /// mutability, so LLVM cannot treat its post-build-patched bytes as a
+    /// compile-time constant.
+    pub fn valid_keys(self) -> &'a [VerificationKey] {
+        let count = (self.key_count() as usize).min(ANCHOR_MAX_KEYS);
+        &self.anchor.keys[..count]
     }
 }
 

@@ -2207,7 +2207,7 @@ mod acpi_impl {
     use super::*;
 
     fn pci0_scope_aml(children: &[u8]) -> Vec<u8> {
-        fstart_acpi::scope_aml("\\_SB_.PCI0", children)
+        fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", children)
     }
 
     /// ICH7 PCI device IDs (LPC bridge variants).
@@ -2291,10 +2291,7 @@ mod acpi_impl {
         /// `SATA` 0:1F.2, `PATA` 0:1F.1, `SBUS` 0:1F.3.
         ///
         /// Ported from coreboot `src/southbridge/intel/i82801gx/acpi/`.
-        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
-            let name = config.acpi_name.as_deref().unwrap_or("LPCB");
-            let _adr: u32 = 0x001F_0000; // B0:D31:F0
-
+        fn dsdt_aml(&self, _config: &Self::Config) -> Vec<u8> {
             // ---------------------------------------------------------------
             // 1. LPCB device with all ISA legacy children.
             //
@@ -2305,7 +2302,7 @@ mod acpi_impl {
             // DMA() channel descriptor is also unsupported by the macro and
             // is omitted — Linux does not require it for boot enumeration.
             // ---------------------------------------------------------------
-            let mut aml = acpi_dsl! {
+            let mut aml: Vec<u8> = acpi_dsl! {
                 Scope("\\") {
                     // Coreboot ich7.asl: PMBASE/GPIOBASE/RCBA operation regions.
                     // These expose southbridge PM/GPIO/RCBA state to AML users
@@ -2345,7 +2342,8 @@ mod acpi_impl {
                         GP36, 1, GP37, 1, GP38, 1, GP39, 1,
                     }
                 }
-            };
+            }
+            .into();
 
             aml.extend_from_slice(&acpi_dsl! {
                 Scope("\\_SB_.PCI0") {
@@ -2383,8 +2381,8 @@ mod acpi_impl {
 
             let mut pci0_aml = Vec::new();
             pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device(#{name}) {
-                    Name("_ADR", #{_adr});
+                Device("LPCB") {
+                    Name("_ADR", 0x001F0000u32);
                     Name("_HID", EisaId("PNP0A05"));
 
                     // LPC PCI config OpRegion for PIRQ routing registers.
@@ -2734,9 +2732,14 @@ mod acpi_impl {
                 //  - _PRT: APIC-mode interrupt routing table
                 //
                 // Coreboot: pcie.asl + pcie_port.asl
-                acpi_dsl! {
-                    Device(#{name}) {
-                        Name("_ADR", #{adr});
+                let adr = u64::from(adr);
+                let a = u64::from(a);
+                let b = u64::from(b);
+                let c = u64::from(c);
+                let d = u64::from(d);
+                let fragment = acpi_dsl! {
+                    Device("____") {
+                        Name("_ADR", #{dword adr});
 
                         OperationRegion("RPCS", PciConfig, 0x00u32, 0xFFu32);
                         Field("RPCS", AnyAcc, NoLock, Preserve) {
@@ -2752,13 +2755,17 @@ mod acpi_impl {
                         }
 
                         Name("_PRT", Package(
-                            Package(0x0000FFFFu32, 0u32, 0u32, #{a}),
-                            Package(0x0000FFFFu32, 1u32, 0u32, #{b}),
-                            Package(0x0000FFFFu32, 2u32, 0u32, #{c}),
-                            Package(0x0000FFFFu32, 3u32, 0u32, #{d})
+                            Package(0x0000FFFFu32, 0u32, 0u32, #{dword a}),
+                            Package(0x0000FFFFu32, 1u32, 0u32, #{dword b}),
+                            Package(0x0000FFFFu32, 2u32, 0u32, #{dword c}),
+                            Package(0x0000FFFFu32, 3u32, 0u32, #{dword d})
                         ));
                     }
-                }
+                };
+                let mut bytes = Vec::from(fragment);
+                let offset = 3 + usize::from(bytes[2] >> 6);
+                bytes[offset..offset + 4].copy_from_slice(name.as_bytes());
+                bytes
             };
 
             pci0_aml.extend_from_slice(&emit_rp("RP01", 0x001C0000, 1));
@@ -2888,7 +2895,7 @@ mod acpi_impl {
                 Scope("\\") {
                     Name("PICM", 0u32);
                     Method("_PIC", 1, NotSerialized) {
-                        Store(#{fstart_acpi::aml::Arg(0)}, #{fstart_acpi::aml::Path::new("PICM")});
+                        Store(Arg0, PICM);
                     }
                 }
             });

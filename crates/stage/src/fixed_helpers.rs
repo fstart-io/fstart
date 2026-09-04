@@ -10,10 +10,13 @@ use fstart_core::services::{BlockDevice, ServiceError};
 /// Firmware filesystem stored behind a block device such as MMC or SPI flash.
 const BLOCK_FFS_MANIFEST_MAX_SIZE: usize = 16 * 1024;
 
+#[repr(align(8))]
+struct AlignedAnchorBytes([u8; ANCHOR_SIZE]);
+
 #[cfg_attr(not(feature = "ffs"), allow(dead_code))]
 pub struct BlockDeviceFfs {
     media_offset: u64,
-    anchor: Option<[u8; ANCHOR_SIZE]>,
+    anchor: Option<AlignedAnchorBytes>,
     ffs_size: usize,
     // ponytail: bounded mainstage-owned manifest buffer; grow only if an image exceeds 16 KiB.
     manifest: [u8; BLOCK_FFS_MANIFEST_MAX_SIZE],
@@ -66,16 +69,16 @@ impl BlockDeviceFfs {
                 fstart_log::error!("invalid block FFS size: {:#x}", ffs_size);
                 return Err(ServiceError::InvalidParam);
             }
-            let magic = &fstart_core::ffs::FFS_MAGIC;
-            if anchor_bytes.len() < ANCHOR_SIZE || anchor_bytes[..magic.len()] != *magic {
+            // SAFETY: stage anchor statics are aligned and contain ANCHOR_SIZE bytes.
+            if unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }.is_err() {
                 fstart_log::error!("embedded FFS anchor invalid");
                 return Err(ServiceError::NotInitialized);
             }
 
             self.ffs_size = ffs_size;
             let _ = self.media(block)?;
-            let mut anchor = [0u8; ANCHOR_SIZE];
-            anchor.copy_from_slice(&anchor_bytes[..ANCHOR_SIZE]);
+            let mut anchor = AlignedAnchorBytes([0u8; ANCHOR_SIZE]);
+            anchor.0.copy_from_slice(&anchor_bytes[..ANCHOR_SIZE]);
             fstart_log::info!(
                 "mounted block FFS: media_offset={:#x}, size={:#x}",
                 self.media_offset,
@@ -144,28 +147,21 @@ impl BlockDeviceFfs {
     where
         B: BlockDevice,
     {
-        let anchor_bytes = self.anchor.as_ref().ok_or(ServiceError::NotInitialized)?;
-        // SAFETY: mount() filled all ANCHOR_SIZE bytes. `read_unaligned` is
-        // required because the block-read buffer has byte alignment.
-        let anchor = unsafe {
-            core::ptr::read_unaligned(
-                anchor_bytes
-                    .as_ptr()
-                    .cast::<fstart_core::ffs::AnchorBlock>(),
-            )
-        };
-        if anchor.magic != fstart_core::ffs::FFS_MAGIC
-            || anchor.version != fstart_core::ffs::FFS_VERSION
-        {
-            return Err(ServiceError::NotInitialized);
-        }
-        let size = anchor.manifest_size as usize;
+        let anchor_bytes = &self.anchor.as_ref().ok_or(ServiceError::NotInitialized)?.0;
+        // SAFETY: AlignedAnchorBytes provides AnchorBlock alignment and mount()
+        // filled all ANCHOR_SIZE bytes from a validated anchor.
+        let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }
+            .map_err(|_| ServiceError::NotInitialized)?;
+        let size = anchor.manifest_size() as usize;
         if size == 0 || size > self.manifest.len() {
             return Err(ServiceError::InvalidParam);
         }
         let media = self.media(block)?;
         let read = media
-            .read_at(anchor.manifest_offset as usize, &mut self.manifest[..size])
+            .read_at(
+                anchor.manifest_offset() as usize,
+                &mut self.manifest[..size],
+            )
             .map_err(|_| ServiceError::IoError)?;
         if read != size {
             return Err(ServiceError::IoError);

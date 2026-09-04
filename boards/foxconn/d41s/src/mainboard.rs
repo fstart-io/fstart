@@ -76,7 +76,7 @@ mod acpi_impl {
     pub fn d41s_mainboard_dsdt_aml(context: PineviewIch7AcpiContext) -> Vec<u8> {
         let config = crate::d41s_superio_config();
         let sio = fstart_driver_superio::superio_dsdt_aml(&config);
-        fstart_acpi::scope_aml(context.lpc_scope(), &sio)
+        fstart_acpi::aml_linker::scope_vec(context.lpc_scope(), &sio)
     }
 }
 

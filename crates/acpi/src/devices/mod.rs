@@ -20,7 +20,30 @@ use acpi_tables::aml::{
 };
 use acpi_tables::mcfg::MCFG;
 
-use crate::serialize;
+use crate::{BoundAmlFragment, serialize};
+
+fn emit_named<const N: usize, const K: usize>(
+    fragment: &BoundAmlFragment<N, K>,
+    name: &str,
+) -> Vec<u8> {
+    assert!(
+        !name.is_empty()
+            && name.len() <= 4
+            && name
+                .bytes()
+                .all(|byte| byte == b'_' || byte.is_ascii_uppercase() || byte.is_ascii_digit()),
+        "invalid ACPI device NameSeg"
+    );
+    let mut bytes = Vec::new();
+    fragment.emit(&mut bytes);
+    // DeviceOp is two bytes. The NameSeg starts immediately after its
+    // PkgLength, whose lead byte records the number of following length bytes.
+    let offset = 3 + usize::from(bytes[2] >> 6);
+    assert_eq!(&bytes[offset..offset + 4], b"____");
+    bytes[offset..offset + 4].fill(b'_');
+    bytes[offset..offset + name.len()].copy_from_slice(name.as_bytes());
+    bytes
+}
 
 // ---------------------------------------------------------------------------
 // Auto-width MMIO descriptor — picks 32-bit vs 64-bit based on address range
@@ -160,41 +183,42 @@ pub struct AhciAcpi<'a> {
 impl AhciAcpi<'_> {
     /// Produce AML bytes for this device's DSDT entry.
     ///
-    /// Selects `memory_32_fixed` or `qword_memory` depending on whether
-    /// the MMIO base address fits within 32 bits.
+    /// Selects `Memory32Fixed` or `QWordMemory` depending on whether the
+    /// complete MMIO range fits below 4 GiB.
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        let name = self.name;
-        let gsiv = self.gsiv;
-        if self.base + self.size as u64 <= u32::MAX as u64 {
-            let base = self.base as u32;
-            let size = self.size;
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
+        let gsiv = self.gsiv as u64;
+        if self.base.saturating_add(self.size.into()) <= 1u64 << 32 {
+            let base = self.base;
+            let size = self.size as u64;
+            let fragment = fstart_acpi_macros::acpi_dsl! {
+                Device("____") {
                     Name("_HID", "LNRO0015");
                     Name("_UID", 0u32);
                     Name("_CCA", 1u32);
                     Name("_CLS", Package(0x01u8, 0x06u8, 0x01u8));
                     Name("_CRS", ResourceTemplate {
-                        Memory32Fixed(ReadWrite, #{base}, #{size});
-                        Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+                        Memory32Fixed(ReadWrite, #{dword base}, #{dword size});
+                        Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword gsiv});
                     });
                 }
-            }
+            };
+            emit_named(&fragment, self.name)
         } else {
             let base = self.base;
             let end = self.base + self.size as u64 - 1;
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
+            let fragment = fstart_acpi_macros::acpi_dsl! {
+                Device("____") {
                     Name("_HID", "LNRO0015");
                     Name("_UID", 0u32);
                     Name("_CCA", 1u32);
                     Name("_CLS", Package(0x01u8, 0x06u8, 0x01u8));
                     Name("_CRS", ResourceTemplate {
-                        QWordMemory(NotCacheable, ReadWrite, #{base}, #{end});
-                        Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+                        QWordMemory(NotCacheable, ReadWrite, #{qword base}, #{qword end});
+                        Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword gsiv});
                     });
                 }
-            }
+            };
+            emit_named(&fragment, self.name)
         }
     }
 }
@@ -221,21 +245,21 @@ pub struct XhciAcpi<'a> {
 impl XhciAcpi<'_> {
     /// Produce AML bytes for this device's DSDT entry.
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        let name = self.name;
         let base = self.base;
-        let size = self.size;
-        let gsiv = self.gsiv;
-        fstart_acpi_macros::acpi_dsl! {
-            Device(#{name}) {
+        let size = self.size as u64;
+        let gsiv = self.gsiv as u64;
+        let fragment = fstart_acpi_macros::acpi_dsl! {
+            Device("____") {
                 Name("_HID", "PNP0D10");
                 Name("_UID", 0u32);
                 Name("_CCA", 1u32);
                 Name("_CRS", ResourceTemplate {
-                    Memory32Fixed(ReadWrite, #{base}, #{size});
-                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{gsiv});
+                    Memory32Fixed(ReadWrite, #{dword base}, #{dword size});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword gsiv});
                 });
             }
-        }
+        };
+        emit_named(&fragment, self.name)
     }
 }
 
@@ -283,41 +307,38 @@ impl PcieRootAcpi<'_> {
     ///   QWordMemory (64-bit MMIO), and optionally INTA-INTD interrupts
     /// - `_OSC` method (accepts all OS-requested capabilities)
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        let name = self.name;
-        let seg = self.segment as u32;
-        let bbn = self.bus_start as u32;
-        let bus_start = self.bus_start;
-        let bus_end = self.bus_end;
-        let mmio32_base = self.mmio32_base;
-        let mmio32_end = self.mmio32_end;
+        let seg = self.segment as u64;
+        let bbn = self.bus_start as u64;
+        let bus_start = self.bus_start as u64;
+        let bus_end = self.bus_end as u64;
+        let mmio32_base = self.mmio32_base as u64;
+        let mmio32_end = self.mmio32_end as u64;
         let mmio64_base = self.mmio64_base;
         let mmio64_end = self.mmio64_end;
-        let irq_a = self.irqs[0];
-        let irq_b = self.irqs[1];
-        let irq_c = self.irqs[2];
-        let irq_d = self.irqs[3];
-        fstart_acpi_macros::acpi_dsl! {
-            Device(#{name}) {
+        let irqs = self.irqs.map(u64::from);
+        let fragment = fstart_acpi_macros::acpi_dsl! {
+            Device("____") {
                 Name("_HID", EisaId("PNP0A08"));
                 Name("_CID", EisaId("PNP0A03"));
-                Name("_SEG", #{seg});
-                Name("_BBN", #{bbn});
+                Name("_SEG", #{dword seg});
+                Name("_BBN", #{dword bbn});
                 Name("_CCA", 1u32);
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
-                    WordBusNumber(#{bus_start}, #{bus_end});
-                    DWordMemory(NotCacheable, ReadWrite, #{mmio32_base}, #{mmio32_end});
-                    QWordMemory(NotCacheable, ReadWrite, #{mmio64_base}, #{mmio64_end});
-                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_a});
-                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_b});
-                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_c});
-                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{irq_d});
+                    WordBusNumber(#{word bus_start}, #{word bus_end});
+                    DWordMemory(NotCacheable, ReadWrite,
+                        #{dword mmio32_base}, #{dword mmio32_end});
+                    QWordMemory(NotCacheable, ReadWrite,
+                        #{qword mmio64_base}, #{qword mmio64_end});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword irqs[0]});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword irqs[1]});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword irqs[2]});
+                    Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword irqs[3]});
                 });
-                Method("_OSC", 4, NotSerialized) {
-                    Return(#{acpi_tables::aml::Arg(3)});
-                }
+                Method("_OSC", 4, NotSerialized) { Return(Arg3); }
             }
-        }
+        };
+        emit_named(&fragment, self.name)
     }
 
     /// Produce standalone MCFG table for this PCIe root complex.

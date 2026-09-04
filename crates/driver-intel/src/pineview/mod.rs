@@ -883,14 +883,15 @@ impl IntelPineview {
         let anchor_bytes = unsafe { ctx.anchor_bytes() };
         let image = unsafe { ctx.image_bytes() };
         let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes).ok()? };
-        let image_size = if anchor.total_image_size > 0 {
-            (anchor.total_image_size as usize).min(image.len())
+        let total_image_size = anchor.total_image_size() as usize;
+        let image_size = if total_image_size > 0 {
+            total_image_size.min(image.len())
         } else {
             image.len()
         };
         let image = &image[..image_size];
         let manifest = fstart_ffs::FfsReader::new(image)
-            .read_manifest(&anchor)
+            .read_manifest_volatile(anchor)
             .ok()?;
 
         for region in &manifest.regions {
@@ -946,10 +947,9 @@ impl IntelPineview {
         while off + 4 < rom.len() {
             if u32::from_le_bytes([rom[off], rom[off + 1], rom[off + 2], rom[off + 3]])
                 == VBT_SIGNATURE
+                && let Some(size) = Self::vbt_size(&rom[off..])
             {
-                if let Some(size) = Self::vbt_size(&rom[off..]) {
-                    return Some(&rom[off..off + size]);
-                }
+                return Some(&rom[off..off + size]);
             }
             off += 16;
         }
@@ -1383,8 +1383,6 @@ mod acpi_impl {
         ///
         /// Ported from coreboot `northbridge/intel/pineview/acpi/`.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
-            let name = config.acpi_name.as_deref().unwrap_or("MCHC");
-            let _adr: u32 = 0x0000_0000;
             let mchbar = config.mchbar as u32;
             let dmibar = config.dmibar as u32;
             let epbar = config.epbar as u32;
@@ -1395,9 +1393,9 @@ mod acpi_impl {
             // with fields for EPBAR, MCHBAR, PCIEXBAR, DMIBAR, PAM
             // registers, TOM, and TOLUD.  These are read by the OS
             // to discover memory topology.
-            let mut aml = fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_ADR", #{_adr});
+            let mut aml: Vec<u8> = fstart_acpi_macros::acpi_dsl! {
+                Device("MCHC") {
+                    Name("_ADR", 0u32);
 
                     OperationRegion("MCHP", PciConfig, 0x00u32, 0x100u32);
                     Field("MCHP", DWordAcc, NoLock, Preserve) {
@@ -1467,7 +1465,8 @@ mod acpi_impl {
                         TLUD, 12,
                     }
                 }
-            };
+            }
+            .into();
 
             // 2. PDRC — Platform Device Resource Consumption.
             //
@@ -1478,26 +1477,26 @@ mod acpi_impl {
             let rcba: u32 = 0xFED1_C000; // ICH7 default RCBA
             let ecam_base = config.ecam_base as u32;
             let ecam_size: u32 = 0x1000_0000; // 256 MiB, buses 0..255
-            aml.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
+            aml.extend(Vec::from(fstart_acpi_macros::acpi_dsl! {
                 Device("PDRC") {
                     Name("_HID", EisaId("PNP0C02"));
                     Name("_UID", 1u32);
                     Name("_CRS", ResourceTemplate {
-                        Memory32Fixed(ReadWrite, #{rcba}, 0x4000u32);
-                        Memory32Fixed(ReadWrite, #{mchbar}, 0x4000u32);
-                        Memory32Fixed(ReadWrite, #{dmibar}, 0x1000u32);
-                        Memory32Fixed(ReadWrite, #{epbar}, 0x1000u32);
+                        Memory32Fixed(ReadWrite, #{dword rcba}, 0x4000u32);
+                        Memory32Fixed(ReadWrite, #{dword mchbar}, 0x4000u32);
+                        Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
+                        Memory32Fixed(ReadWrite, #{dword epbar}, 0x1000u32);
                         // PCI Express ECAM/MMCONFIG window. Linux requires
                         // every MCFG range to be reserved by motherboard
                         // resources (PNP0C02), otherwise it refuses ECAM.
-                        Memory32Fixed(ReadWrite, #{ecam_base}, #{ecam_size});
+                        Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
                         // Misc ICH MMIO (HPET area, TPM, etc.)
                         Memory32Fixed(ReadWrite, 0xFED20000u32, 0x00020000u32);
                         Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
                         Memory32Fixed(ReadWrite, 0xFED45000u32, 0x0004B000u32);
                     });
                 }
-            });
+            }));
 
             // 3. PCI0 host bridge identity + _CRS.
             //
@@ -1507,9 +1506,6 @@ mod acpi_impl {
             // at runtime from the MCHC TOLUD register.
             //
             // Coreboot: hostbridge.asl Names + MCRS + _CRS Method.
-            use fstart_acpi::aml::Path;
-            let p = |s: &str| Path::new(s);
-
             // The PCI host-bridge MMIO aperture begins at the live chipset
             // TOLUD value programmed by raminit. This is evaluated while ACPI
             // tables are generated in ramstage, not baked into the board metadata.
@@ -1519,7 +1515,7 @@ mod acpi_impl {
             let pci_mmio_base = 0x8000_0000u32;
             let pci_mmio_limit = 0xFEBF_FFFFu32;
 
-            aml.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
+            aml.extend(Vec::from(fstart_acpi_macros::acpi_dsl! {
                 Device("PCI0") {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
@@ -1543,7 +1539,7 @@ mod acpi_impl {
                     // PCI MMIO window: TOLUD..0xFEBFFFFF. Anything below
                     // TOLUD is low DRAM; anything at/above TOLUD and below
                     // the fixed chipset MMIO blocks is available for PCI.
-                    DWordMemory(NotCacheable, ReadWrite, #{pci_mmio_base}, #{pci_mmio_limit});
+                    DWordMemory(NotCacheable, ReadWrite, #{dword pci_mmio_base}, #{dword pci_mmio_limit});
                 });
 
                 // _CRS method: patch PCI MMIO base from TOLUD register.
@@ -1600,10 +1596,10 @@ mod acpi_impl {
                     // Simplified: return the static template.
                     // The TOLUD value is baked in at firmware build time
                     // if needed, or Linux uses e820 + PCI BAR probing.
-                    Return(#{p("MCRS")});
+                    Return(MCRS);
                 }
                 }
-            });
+            }));
 
             // ---------------------------------------------------------------
             // 4. Processor power-management devices (\._SB.CP00, CP01).
@@ -1613,7 +1609,7 @@ mod acpi_impl {
             // Pineview board `get_cst_entries()` implementations return 0,
             // so no `_CST` is emitted for this chipset.
             // ---------------------------------------------------------------
-            aml.extend_from_slice(&fstart_arch::cpu_intel::pineview::acpi::cpu_devices_aml(2));
+            aml.extend_from_slice(&crate::cpu::core2_aml::pineview_cpu_devices_aml(2));
 
             aml
         }

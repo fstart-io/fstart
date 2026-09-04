@@ -8,13 +8,8 @@
 
 extern crate alloc;
 
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
-
-use acpi_tables::Aml;
-use acpi_tables::aml::{Name, PackageBuilder, Path, Register, ResourceTemplate};
-use acpi_tables::gas::{AccessSize, AddressSpace, GAS};
 
 const MSR_THERM2_CTL: u32 = 0x19d;
 const MSR_FSB_FREQ: u32 = 0xcd;
@@ -80,10 +75,10 @@ struct CState {
     ctype: u8,
     latency: u16,
     power: u32,
-    space_id: AddressSpace,
+    space_id: u8,
     bit_width: u8,
     bit_offset: u8,
-    access_size: AccessSize,
+    access_size: u8,
     address: u64,
 }
 
@@ -98,44 +93,53 @@ pub fn cpu_devices_aml(logical_cpus: usize) -> Vec<u8> {
             ctype: 1,
             latency: 1,
             power: 1000,
-            space_id: AddressSpace::FunctionalFixedHardware,
+            space_id: 0x7f,
             bit_width: 1,
             bit_offset: 2,
-            access_size: AccessSize::ByteAccess,
+            access_size: 1,
             address: 0x00,
         },
         CState {
             ctype: 2,
             latency: 1,
             power: 500,
-            space_id: AddressSpace::FunctionalFixedHardware,
+            space_id: 0x7f,
             bit_width: 1,
             bit_offset: 2,
-            access_size: AccessSize::ByteAccess,
+            access_size: 1,
             address: 0x10,
         },
         CState {
             ctype: 3,
             latency: 17,
             power: 250,
-            space_id: AddressSpace::FunctionalFixedHardware,
+            space_id: 0x7f,
             bit_width: 1,
             bit_offset: 2,
-            access_size: AccessSize::ByteAccess,
+            access_size: 1,
             address: 0x20,
         },
     ];
 
-    build_cpu_devices_aml(logical_cpus, Some(CSTATES))
-}
-
-fn build_cpu_devices_aml(logical_cpus: usize, cstates: Option<&[CState]>) -> Vec<u8> {
-    let states = speedstep_pstates();
     let coordination = if cpu_model_id() == 0x1067 {
         HW_ALL
     } else {
         SW_ANY
     };
+    build_cpu_devices_aml(logical_cpus, Some(CSTATES), coordination)
+}
+
+/// Generate the Pineview CPU namespace (SpeedStep without board C-states).
+pub(crate) fn pineview_cpu_devices_aml(logical_cpus: usize) -> Vec<u8> {
+    build_cpu_devices_aml(logical_cpus, None, SW_ANY)
+}
+
+fn build_cpu_devices_aml(
+    logical_cpus: usize,
+    cstates: Option<&[CState]>,
+    coordination: u32,
+) -> Vec<u8> {
+    let states = speedstep_pstates();
     let mut out = Vec::new();
 
     for cpu in 0..logical_cpus {
@@ -171,17 +175,19 @@ fn append_device(out: &mut Vec<u8>, name: [u8; 4], body: &[u8]) {
     payload.extend_from_slice(&name);
     payload.extend_from_slice(body);
     out.extend_from_slice(&[0x5b, 0x82]);
-    out.extend_from_slice(&pkg_length(payload.len(), true));
+    let (length, width) = fstart_acpi::aml_linker::package_length(payload.len());
+    out.extend_from_slice(&length[..width]);
     out.extend_from_slice(&payload);
 }
 
 fn append_processor_package(out: &mut Vec<u8>, logical_cpus: usize) {
-    let mut pkg = PackageBuilder::new();
+    let mut elements = Vec::with_capacity(logical_cpus * 4);
     for cpu in 0..logical_cpus {
-        let path = Path::new(core::str::from_utf8(&cpu_name(cpu)).unwrap());
-        pkg.add_element(&path);
+        elements.extend_from_slice(&cpu_name(cpu));
     }
-    Name::new(Path::new("PPKG"), &pkg).to_aml_bytes(out);
+    append_name(out, b"PPKG", |out| {
+        append_package(out, logical_cpus as u8, &elements)
+    });
 }
 
 fn append_cnot_method(out: &mut Vec<u8>, logical_cpus: usize) {
@@ -197,7 +203,8 @@ fn append_cnot_method(out: &mut Vec<u8>, logical_cpus: usize) {
     payload.extend_from_slice(b"CNOT");
     payload.push(0x01); // one argument, NotSerialized
     payload.extend_from_slice(&body);
-    out.extend_from_slice(&pkg_length(payload.len(), true));
+    let (length, width) = fstart_acpi::aml_linker::package_length(payload.len());
+    out.extend_from_slice(&length[..width]);
     out.extend_from_slice(&payload);
 }
 
@@ -212,22 +219,18 @@ fn append_empty_pct(out: &mut Vec<u8>) {
 }
 
 fn append_psd(out: &mut Vec<u8>, domain: u32, numprocs: u32, coordination: u32) {
-    let mut inner = PackageBuilder::new();
-    inner.add_element(&5u8);
-    inner.add_element(&0u8);
-    inner.add_element(&domain);
-    inner.add_element(&coordination);
-    inner.add_element(&numprocs);
-
-    let mut outer = PackageBuilder::new();
-    outer.add_element(&inner);
-    Name::new(Path::new("_PSD"), &outer).to_aml_bytes(out);
+    let mut inner = Vec::new();
+    [5, 0, domain, coordination, numprocs]
+        .into_iter()
+        .for_each(|value| append_integer(&mut inner, value));
+    let mut inner_package = Vec::new();
+    append_package(&mut inner_package, 5, &inner);
+    append_name(out, b"_PSD", |out| append_package(out, 1, &inner_package));
 }
 
 fn append_pss(out: &mut Vec<u8>, states: &[SpeedstepState]) {
     let fsb3 = ia32_fsb_x3().unwrap_or(600);
-    let mut outer = PackageBuilder::new();
-
+    let mut entries = Vec::new();
     for (i, state) in states.iter().enumerate() {
         let freq = if state.is_turbo && i + 1 < states.len() {
             states[i + 1].double_ratio() * fsb3 / 6 + 1
@@ -236,54 +239,105 @@ fn append_pss(out: &mut Vec<u8>, states: &[SpeedstepState]) {
         } else {
             state.double_ratio() * fsb3 / 6
         };
-
         let encoded = state.encoded();
-        let mut entry = PackageBuilder::new();
-        entry.add_element(&freq);
-        entry.add_element(&state.power);
-        entry.add_element(&0u32);
-        entry.add_element(&0u32);
-        entry.add_element(&encoded);
-        entry.add_element(&encoded);
-        outer.add_element(&entry);
+        let mut values = Vec::new();
+        [freq, state.power, 0, 0, encoded, encoded]
+            .into_iter()
+            .for_each(|value| append_integer(&mut values, value));
+        append_package(&mut entries, 6, &values);
     }
-
-    Name::new(Path::new("_PSS"), &outer).to_aml_bytes(out);
+    append_name(out, b"_PSS", |out| {
+        append_package(out, states.len() as u8, &entries)
+    });
     name_integer(out, "_PPC", 0);
 }
 
 fn append_cst(out: &mut Vec<u8>, entries: &[CState]) {
-    let mut outer = PackageBuilder::new();
-    outer.add_element(&(entries.len() as u32));
-
+    let mut elements = Vec::new();
+    append_integer(&mut elements, entries.len() as u32);
     for entry in entries {
-        let gas = GAS::new(
+        let mut descriptor = vec![
+            0x82,
+            0x0c,
+            0x00,
             entry.space_id,
             entry.bit_width,
             entry.bit_offset,
             entry.access_size,
-            entry.address,
-        );
-        let reg = Register::new(gas);
-        let rt = ResourceTemplate::new(vec![&reg]);
-        let mut pkg = PackageBuilder::new();
-        pkg.add_element(&rt);
-        pkg.add_element(&entry.ctype);
-        pkg.add_element(&entry.latency);
-        pkg.add_element(&entry.power);
-        outer.add_element(&pkg);
+        ];
+        descriptor.extend_from_slice(&entry.address.to_le_bytes());
+        descriptor.extend_from_slice(&[0x79, 0x00]);
+        let mut values = Vec::new();
+        append_buffer(&mut values, &descriptor);
+        append_integer(&mut values, u32::from(entry.ctype));
+        append_integer(&mut values, u32::from(entry.latency));
+        append_integer(&mut values, entry.power);
+        append_package(&mut elements, 4, &values);
     }
+    append_name(out, b"_CST", |out| {
+        append_package(out, (entries.len() + 1) as u8, &elements)
+    });
+}
 
-    Name::new(Path::new("_CST"), &outer).to_aml_bytes(out);
+fn append_name(out: &mut Vec<u8>, name: &[u8; 4], value: impl FnOnce(&mut Vec<u8>)) {
+    out.push(0x08);
+    out.extend_from_slice(name);
+    value(out);
+}
+
+fn append_integer(out: &mut Vec<u8>, value: u32) {
+    match value {
+        0 => out.push(0x00),
+        1 => out.push(0x01),
+        u32::MAX => out.push(0xff),
+        2..=0xff => out.extend_from_slice(&[0x0a, value as u8]),
+        0x100..=0xffff => {
+            out.push(0x0b);
+            out.extend_from_slice(&(value as u16).to_le_bytes());
+        }
+        _ => {
+            out.push(0x0c);
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+}
+
+fn append_package(out: &mut Vec<u8>, count: u8, elements: &[u8]) {
+    out.push(0x12);
+    let (length, width) = fstart_acpi::aml_linker::package_length(elements.len() + 1);
+    out.extend_from_slice(&length[..width]);
+    out.push(count);
+    out.extend_from_slice(elements);
+}
+
+fn append_buffer(out: &mut Vec<u8>, bytes: &[u8]) {
+    let mut body = Vec::new();
+    append_integer(&mut body, bytes.len() as u32);
+    body.extend_from_slice(bytes);
+    out.push(0x11);
+    let (length, width) = fstart_acpi::aml_linker::package_length(body.len());
+    out.extend_from_slice(&length[..width]);
+    out.extend_from_slice(&body);
 }
 
 fn name_integer(out: &mut Vec<u8>, name: &str, value: u32) {
-    Name::new(Path::new(name), &value).to_aml_bytes(out);
+    append_name(
+        out,
+        name.as_bytes().try_into().expect("ACPI NameSeg"),
+        |out| append_integer(out, value),
+    );
 }
 
 fn name_string(out: &mut Vec<u8>, name: &str, value: &str) {
-    let value = value.to_string();
-    Name::new(Path::new(name), &value).to_aml_bytes(out);
+    append_name(
+        out,
+        name.as_bytes().try_into().expect("ACPI NameSeg"),
+        |out| {
+            out.push(0x0d);
+            out.extend_from_slice(value.as_bytes());
+            out.push(0);
+        },
+    );
 }
 
 fn speedstep_pstates() -> Vec<SpeedstepState> {
@@ -481,33 +535,5 @@ fn cpu_model_id() -> u32 {
     #[cfg(not(target_arch = "x86_64"))]
     {
         0x006f
-    }
-}
-
-fn pkg_length(len: usize, include_self: bool) -> Vec<u8> {
-    let length_length = if len < (2usize.pow(6) - 1) {
-        1
-    } else if len < (2usize.pow(12) - 2) {
-        2
-    } else if len < (2usize.pow(20) - 3) {
-        3
-    } else {
-        4
-    };
-    let length = len + if include_self { length_length } else { 0 };
-    match length_length {
-        1 => vec![length as u8],
-        2 => vec![(1u8 << 6) | (length & 0xf) as u8, (length >> 4) as u8],
-        3 => vec![
-            (2u8 << 6) | (length & 0xf) as u8,
-            (length >> 4) as u8,
-            (length >> 12) as u8,
-        ],
-        _ => vec![
-            (3u8 << 6) | (length & 0xf) as u8,
-            (length >> 4) as u8,
-            (length >> 12) as u8,
-            (length >> 20) as u8,
-        ],
     }
 }

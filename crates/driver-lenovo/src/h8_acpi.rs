@@ -29,17 +29,18 @@ use super::h8::H8Config;
 /// the canonical ThinkPad paths (`...\LPCB.EC__`, `...\LPCB.EC__.HKEY`).
 #[must_use]
 pub fn dsdt_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend(root_helpers_aml(cfg));
-    out.extend(ec_device_aml(cfg, lpc_scope));
-    out.extend(thermal_zone_aml(cfg));
-    out.extend(si_status_aml(cfg));
+    let mut lpc = ec_device_aml(cfg);
     if cfg.bat_charge_behaviour {
-        out.extend(hkey_charge_behaviour_aml(lpc_scope));
+        lpc.extend(hkey_charge_behaviour_aml());
     }
     if cfg.bat_thresholds {
-        out.extend(hkey_thresholds_aml(lpc_scope));
+        lpc.extend(hkey_thresholds_aml());
     }
+
+    let mut out = root_helpers_aml(cfg);
+    out.extend(fstart_acpi::aml_linker::scope_vec(lpc_scope, &lpc));
+    out.extend(thermal_zone_aml(cfg));
+    out.extend(si_status_aml(cfg));
     out
 }
 
@@ -52,8 +53,8 @@ fn root_helpers_aml(cfg: &H8Config) -> Vec<u8> {
             // Critical/passive trip temperatures in degrees Celsius; zero
             // lets the thermal-zone methods fall back to safe defaults
             // (coreboot reads these from the mainboard devicetree).
-            Name("TCRT", #{tcrt});
-            Name("TPSV", #{tpsv});
+            Name("TCRT", #{byte tcrt});
+            Name("TPSV", #{byte tpsv});
 
             // Fan level: 1 = disengaged (full speed), 0 = automatic.
             Name("FLVL", 0u32);
@@ -64,36 +65,29 @@ fn root_helpers_aml(cfg: &H8Config) -> Vec<u8> {
             // Processor notification; we have no \_PR processor objects yet.
             Method("PNOT", 0, Serialized) { }
 
-            // Passive-cooling processor package. Empty until MP processor
-            // objects are declared in the DSDT.
-            Method("PPKG", 0, Serialized) {
-                Return(Package());
-            }
-
             // Brightness hooks: wired to the display pipeline once native
             // graphics bring-up lands. The EC _Q14/_Q15 events call these.
             Method("BRTU", 0, NotSerialized) { }
             Method("BRTD", 0, NotSerialized) { }
         }
     }
+    .into()
 }
 
-/// The `EC__` device plus its sibling raw-resource devices.
-fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
-    let ec_gpe = cfg.ec_gpe as u32;
-    let hkey_eisaid = cfg.hkey_eisaid;
+/// The relative `EC__` device plus its sibling raw-resource devices.
+fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
+    let ec_gpe = cfg.ec_gpe as u64;
+    let hkey_eisaid = u64::from(fstart_acpi::eisa_id(cfg.hkey_eisaid));
     let hbdc: u8 = cfg.has_bluetooth as u8;
     let hwan: u8 = cfg.has_wwan as u8;
     let hklt: u8 = cfg.has_thinklight as u8;
     let hkbl: u8 = cfg.has_keyboard_backlight as u8;
     let huwb: u8 = cfg.has_uwb as u8;
-    let hp = |s: &str| fstart_acpi::aml::Path::new(s);
     acpi_dsl! {
-        Scope(#{lpc_scope}) {
             Device("EC__") {
                 Name("_HID", EisaId("PNP0C09"));
                 Name("_UID", 0u32);
-                Name("_GPE", #{ec_gpe});
+                Name("_GPE", #{byte ec_gpe});
                 Mutex("ECLK", 0u8);
 
                 OperationRegion("ERAM", EmbeddedControl, 0x00u32, 0x100u32);
@@ -158,6 +152,9 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                     Offset(0x46),
                     , 2,
                     LIDS, 1,
+                }
+
+                Field("ERAM", ByteAcc, NoLock, Preserve) {
                     Offset(0x46),
                     , 4,
                     HPAC, 1,
@@ -178,6 +175,18 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                     DKR3, 1,
                 }
 
+                // Initialize the HKEY radio resume state when the EC
+                // operation-region handler first becomes available.
+                Method("_REG", 2, NotSerialized) {
+                    If (Arg1 == 1u32) {
+                        If (#{const "^HKEY.INIT"} == 0u32) {
+                            Store(BTEB, #{const "^HKEY.WBDC"});
+                            Store(WWEB, #{const "^HKEY.WWAN"});
+                            Store(1u32, #{const "^HKEY.INIT"});
+                        }
+                    }
+                }
+
                 // Battery state bits (coreboot battery.asl).
                 Field("ERAM", ByteAcc, NoLock, Preserve) {
                     Offset(0xA0),
@@ -186,6 +195,11 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                     Offset(0xA8),
                     BAPR, 16,
                     BAVO, 16,
+                }
+
+                Field("ERAM", ByteAcc, NoLock, Preserve) {
+                    Offset(0xA0),
+                    BAMA, 16,
                 }
 
                 Field("ERAM", ByteAcc, NoLock, Preserve) {
@@ -214,16 +228,6 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                 }
 
                 // Called on OperationRegion driver changes.
-                Method("_REG", 2, NotSerialized) {
-                    If (Arg1 == 1u32) {
-                        If (#{hp("HKEY.INIT")} == 0u32) {
-                            Store(#{hp("BTEB")}, #{hp("HKEY.WBDC")});
-                            Store(#{hp("WWEB")}, #{hp("HKEY.WWAN")});
-                            Store(1u32, #{hp("HKEY.INIT")});
-                        }
-                    }
-                }
-
                 Method("_CRS", 0, Serialized) {
                     Name("ECMD", ResourceTemplate {
                         IO(0x0062u16, 0x0062u16, 0x01u8, 0x01u8);
@@ -255,7 +259,7 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                 Method("_Q13", 0, NotSerialized) { Notify(SLPB, 0x80u32); }
                 Method("_Q14", 0, NotSerialized) { BRTU(); }
                 Method("_Q15", 0, NotSerialized) { BRTD(); }
-                Method("_Q16", 0, NotSerialized) { Notify(#{fstart_acpi::aml::Path::new("\\_SB_.PCI0.GFX0")}, 0x82u32); }
+                Method("_Q16", 0, NotSerialized) { Notify(#{const "\\_SB_.PCI0.GFX0"}, 0x82u32); }
 
                 Method("_Q26", 0, NotSerialized) {
                     Notify(AC__, 0x80u32);
@@ -270,33 +274,10 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                 Method("_Q2A", 0, NotSerialized) { Notify(LID_, 0x80u32); }
                 Method("_Q2B", 0, NotSerialized) { Notify(LID_, 0x80u32); }
 
-                // IBM proprietary hotkeys, routed through the HKEY hub.
-                Method("_Q10", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x01u32); }
-                Method("_Q64", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x05u32); }
-                Method("_Q65", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x06u32); }
-                Method("_Q17", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x08u32); }
-                Method("_Q66", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x0Au32); }
-                Method("_Q6A", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x1Bu32); }
-                Method("_Q1A", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x0Bu32); }
-                Method("_Q1B", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x0Cu32); }
-                Method("_Q62", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x0Du32); }
-                Method("_Q60", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x0Eu32); }
-                Method("_Q61", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x0Fu32); }
-                Method("_Q1F", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x12u32); }
-                Method("_Q67", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x13u32); }
-                Method("_Q63", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x14u32); }
-                Method("_Q19", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x18u32); }
-                Method("_Q1C", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x19u32); }
-                Method("_Q1D", 0, NotSerialized) { #{hp("HKEY.RHK_")}(0x1Au32); }
-                Method("_Q5C", 0, NotSerialized) { #{hp("HKEY.RTAB")}(0x0Bu32); }
-                Method("_Q5D", 0, NotSerialized) { #{hp("HKEY.RTAB")}(0x0Cu32); }
-                Method("_Q5E", 0, NotSerialized) { #{hp("HKEY.RTAB")}(0x09u32); }
-                Method("_Q5F", 0, NotSerialized) { #{hp("HKEY.RTAB")}(0x0Au32); }
-
                 Device("BAT0") {
                     Name("_HID", EisaId("PNP0C0A"));
                     Name("_UID", 0u32);
-                    Name("_PCL", Package(#{fstart_acpi::aml::Path::new("\\_SB_")}));
+                    Name("_PCL", Package(#{const "\\_SB_"}));
                     Name("BATS", Package(
                         0u32,
                         0xFFFFFFFFu32,
@@ -354,7 +335,7 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                 Device("BAT1") {
                     Name("_HID", EisaId("PNP0C0A"));
                     Name("_UID", 1u32);
-                    Name("_PCL", Package(#{fstart_acpi::aml::Path::new("\\_SB_")}));
+                    Name("_PCL", Package(#{const "\\_SB_"}));
                     Name("BATS", Package(
                         0u32,
                         0xFFFFFFFFu32,
@@ -429,7 +410,7 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                 Device("AC__") {
                     Name("_HID", "ACPI0003");
                     Name("_UID", 0u32);
-                    Name("_PCL", Package(#{fstart_acpi::aml::Path::new("\\_SB_")}));
+                    Name("_PCL", Package(#{const "\\_SB_"}));
                     Method("_PSR", 0, NotSerialized) {
                         Local0 = HPAC;
                         PWRS = Local0;
@@ -454,7 +435,7 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                 }
 
                 Device("HKEY") {
-                    Name("_HID", #{fstart_acpi::aml::EISAName::new(hkey_eisaid)});
+                    Name("_HID", #{dword hkey_eisaid});
                     Name("BTN_", 0u32);
                     Name("BTAB", 0u32);
                     Name("DHKN", 0x080Cu32);
@@ -624,6 +605,28 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                     }
                 }
 
+                Method("_Q10", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x01u32); }
+                Method("_Q64", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x05u32); }
+                Method("_Q65", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x06u32); }
+                Method("_Q17", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x08u32); }
+                Method("_Q66", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Au32); }
+                Method("_Q6A", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x1Bu32); }
+                Method("_Q1A", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Bu32); }
+                Method("_Q1B", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Cu32); }
+                Method("_Q62", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Du32); }
+                Method("_Q60", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Eu32); }
+                Method("_Q61", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Fu32); }
+                Method("_Q1F", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x12u32); }
+                Method("_Q67", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x13u32); }
+                Method("_Q63", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x14u32); }
+                Method("_Q19", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x18u32); }
+                Method("_Q1C", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x19u32); }
+                Method("_Q1D", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x1Au32); }
+                Method("_Q5C", 0, NotSerialized) { #{const "^HKEY.RTAB"}(0x0Bu32); }
+                Method("_Q5D", 0, NotSerialized) { #{const "^HKEY.RTAB"}(0x0Cu32); }
+                Method("_Q5E", 0, NotSerialized) { #{const "^HKEY.RTAB"}(0x09u32); }
+                Method("_Q5F", 0, NotSerialized) { #{const "^HKEY.RTAB"}(0x0Au32); }
+
                 // Battery information helpers shared by BAT0/BAT1.
                 Method("BPAG", 1, NotSerialized) { PAGE = Arg0; }
                 Method("BSTA", 4, NotSerialized) {
@@ -717,9 +720,9 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                     Arg0[6] = Local5;
                     Arg0[7] = Local4;
                     Local0 = BASN;
-                    Name("SERN", Buffer(#{fstart_acpi::aml::BufferData::new(alloc::vec![
-                        0x20u8, 0x20u8, 0x20u8, 0x20u8, 0x20u8, 0x00u8,
-                    ])}));
+                    Name("SERN", Buffer(
+                        0x20u8, 0x20u8, 0x20u8, 0x20u8, 0x20u8, 0x00u8
+                    ));
                     Local1 = 4u32;
                     While (Local0 != 0u32) {
                         Local2 = Local0 % 10u32;
@@ -729,9 +732,7 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                     }
                     Arg0[17] = SERN;
                     BPAG(Arg1 | 4u32);
-                    Name("TYPE", Buffer(#{fstart_acpi::aml::BufferData::new(alloc::vec![
-                        0u8, 0u8, 0u8, 0u8, 0u8,
-                    ])}));
+                    Name("TYPE", Buffer(0u8, 0u8, 0u8, 0u8, 0u8));
                     TYPE = BATY;
                     Arg0[18] = TYPE;
                     BPAG(Arg1 | 5u32);
@@ -743,11 +744,11 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                 }
 
                 // Radio presence flags consumed by HKEY (coreboot ssdt.c).
-                Name("HBDC", #{hbdc});
-                Name("HWAN", #{hwan});
-                Name("HKLT", #{hklt});
-                Name("HKBL", #{hkbl});
-                Name("HUWB", #{huwb});
+                Name("HBDC", #{byte hbdc});
+                Name("HWAN", #{byte hwan});
+                Name("HKLT", #{byte hklt});
+                Name("HKBL", #{byte hkbl});
+                Name("HUWB", #{byte huwb});
             }
 
             // EC SMM interface.
@@ -787,18 +788,13 @@ fn ec_device_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
                     IO(0x15E0u16, 0x15E0u16, 0x10u8, 0x10u8);
                 });
             }
-        }
     }
+    .into()
 }
 
 /// The `\_TZ` thermal zones (coreboot `thermal.asl`). `X61` selects both
 /// zones via `H8_HAS_2ND_THERMAL_ZONE`.
-fn thermal_zone_aml(cfg: &H8Config) -> Vec<u8> {
-    let hp = |s: &str| fstart_acpi::aml::Path::new(s);
-    let tzp = 100u32;
-    let tc1 = 0x02u32;
-    let tc2 = 0x05u32;
-
+fn thermal_zone_aml(_cfg: &H8Config) -> Vec<u8> {
     acpi_dsl! {
         Scope("\\_TZ_") {
             Method("CTOK", 1, NotSerialized) {
@@ -809,11 +805,11 @@ fn thermal_zone_aml(cfg: &H8Config) -> Vec<u8> {
                 Return(Local0);
             }
             ThermalZone("THM0") {
-                Name("_TZP", #{tzp});
-                Name("_TSP", #{tzp});
-                Name("_TC1", #{tc1});
-                Name("_TC2", #{tc2});
-                Method("_PSL", 0, Serialized) { Return(PPKG()); }
+                Name("_TZP", 100u32);
+                Name("_TSP", 100u32);
+                Name("_TC1", 0x02u32);
+                Name("_TC2", 0x05u32);
+                Method("_PSL", 0, Serialized) { Return(#{const "PPKG"}); }
                 Method("GCRT", 0, NotSerialized) {
                     Local0 = TCRT;
                     If (Local0 > 0u32) { Return(Local0); }
@@ -827,7 +823,7 @@ fn thermal_zone_aml(cfg: &H8Config) -> Vec<u8> {
                 Method("_CRT", 0, NotSerialized) { Return(CTOK(GCRT())); }
                 Method("_PSV", 0, NotSerialized) { Return(CTOK(GPSV())); }
                 Method("_TMP", 0, NotSerialized) {
-                    Local0 = TMP0;
+                    Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.TMP0"};
                     If (Local0 == 128u32) { Return(CTOK(40u32)); }
                     Return(CTOK(Local0));
                 }
@@ -837,78 +833,77 @@ fn thermal_zone_aml(cfg: &H8Config) -> Vec<u8> {
                     If (FLVL != 0u32) { Local0 = Local0 - 5u32; }
                     Return(CTOK(Local0));
                 }
-                Name("_AL0", Package(#{hp("FAN_")}));
+                Name("_AL0", Package(FAN_));
                 PowerResource("FPWR", 0u8, 0u16) {
                     Method("_STA", 0, NotSerialized) { Return(FLVL); }
                     Method("_ON", 0, NotSerialized) {
-                        FANE(1u32);
+                        #{const "\\_SB_.PCI0.LPCB.EC__.FANE"}(1u32);
                         FLVL = 1u32;
-                        Notify(#{hp("\\_TZ_.THM0")}, 0x82u32);
+                        Notify(#{const "\\_TZ_.THM0"}, 0x82u32);
                     }
                     Method("_OFF", 0, NotSerialized) {
-                        FANE(0u32);
+                        #{const "\\_SB_.PCI0.LPCB.EC__.FANE"}(0u32);
                         FLVL = 0u32;
-                        Notify(#{hp("\\_TZ_.THM0")}, 0x82u32);
+                        Notify(#{const "\\_TZ_.THM0"}, 0x82u32);
                     }
                 }
                 Device("FAN_") {
                     Name("_HID", EisaId("PNP0C0B"));
-                    Name("_PR0", Package(#{hp("FPWR")}));
+                    Name("_PR0", Package(FPWR));
                 }
             }
 
             ThermalZone("THM1") {
-                Name("_TZP", #{tzp});
-                Name("_TSP", #{tzp});
-                Name("_TC1", #{tc1});
-                Name("_TC2", #{tc2});
-                Method("_PSL", 0, Serialized) { Return(PPKG()); }
+                Name("_TZP", 100u32);
+                Name("_TSP", 100u32);
+                Name("_TC1", 0x02u32);
+                Name("_TC2", 0x05u32);
+                Method("_PSL", 0, Serialized) { Return(#{const "PPKG"}); }
                 Method("_CRT", 0, NotSerialized) { Return(CTOK(99u32)); }
                 Method("_PSV", 0, NotSerialized) { Return(CTOK(94u32)); }
                 Method("_TMP", 0, NotSerialized) {
-                    Local0 = TMP1;
+                    Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.TMP1"};
                     If (Local0 == 128u32) { Return(CTOK(40u32)); }
                     Return(CTOK(Local0));
                 }
             }
         }
     }
+    .into()
 }
 
 /// `\_SI._SST` system status indicator (coreboot `systemstatus.asl`).
 fn si_status_aml(_cfg: &H8Config) -> Vec<u8> {
-    let tled = |v: u32| fstart_acpi::aml::Path::new("\\_SB_.PCI0.LPCB.EC__.TLED");
-    let _ = tled;
     acpi_dsl! {
         Scope("\\_SI") {
             Method("_SST", 1, NotSerialized) {
                 If (Arg0 == 0u32) {
-                    #{tled(0x00u32)}(0x00u32);
-                    #{tled(0x07u32)}(0x07u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x00u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x07u32);
                 }
                 If (Arg0 == 1u32) {
-                    #{tled(0x80u32)}(0x80u32);
-                    #{tled(0x07u32)}(0x07u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x80u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x07u32);
                 }
                 If (Arg0 == 2u32) {
-                    #{tled(0x80u32)}(0x80u32);
-                    #{tled(0xC7u32)}(0xC7u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x80u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0xC7u32);
                 }
                 If (Arg0 == 3u32) {
-                    #{tled(0xA0u32)}(0xA0u32);
-                    #{tled(0x87u32)}(0x87u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0xA0u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x87u32);
                 }
             }
         }
     }
+    .into()
 }
 
 /// HKEY charge-behaviour extension (coreboot
 /// `thinkpad_bat_charge_behaviour.asl`), re-opening the HKEY scope.
-fn hkey_charge_behaviour_aml(lpc_scope: &str) -> Vec<u8> {
-    let ec = alloc::format!("{lpc_scope}.EC__");
+fn hkey_charge_behaviour_aml() -> Vec<u8> {
     acpi_dsl! {
-        Scope(#{ec.as_str()}) {
+        Scope("EC__") {
             Field("ERAM", ByteAcc, NoLock, Preserve) {
                 Offset(0x0F),
                 B0IC, 1,
@@ -1033,16 +1028,14 @@ fn hkey_charge_behaviour_aml(lpc_scope: &str) -> Vec<u8> {
             }
         }
     }
+    .into()
 }
 
 /// HKEY battery-threshold extension (coreboot
 /// `thinkpad_bat_thresholds_b0.asl`), re-opening EC and battery scopes.
-fn hkey_thresholds_aml(lpc_scope: &str) -> Vec<u8> {
-    let ec = alloc::format!("{lpc_scope}.EC__");
-    let bat0 = alloc::format!("{lpc_scope}.EC__.BAT0");
-    let bat1 = alloc::format!("{lpc_scope}.EC__.BAT1");
+fn hkey_thresholds_aml() -> Vec<u8> {
     acpi_dsl! {
-        Scope(#{ec.as_str()}) {
+        Scope("EC__") {
             Field("ERAM", ByteAcc, NoLock, Preserve) {
                 Offset(0xB0),
                 TSL0, 8,
@@ -1054,7 +1047,7 @@ fn hkey_thresholds_aml(lpc_scope: &str) -> Vec<u8> {
                 TSH1, 8,
             }
         }
-        Scope(#{bat0.as_str()}) {
+        Scope("EC__.BAT0") {
             Method("SETT", 2, NotSerialized) {
                 If (Arg1 <= 100u32) {
                     If (Arg0 == 0u32) {
@@ -1071,7 +1064,7 @@ fn hkey_thresholds_aml(lpc_scope: &str) -> Vec<u8> {
                 Return(0u32);
             }
         }
-        Scope(#{bat1.as_str()}) {
+        Scope("EC__.BAT1") {
             Method("SETT", 2, NotSerialized) {
                 If (Arg1 <= 100u32) {
                     If (Arg0 == 0u32) {
@@ -1089,6 +1082,7 @@ fn hkey_thresholds_aml(lpc_scope: &str) -> Vec<u8> {
             }
         }
     }
+    .into()
 }
 
 #[cfg(test)]

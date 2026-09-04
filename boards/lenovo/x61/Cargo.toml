@@ -38,7 +38,6 @@ acpi = [
   "dep:fstart-acpi-macros",
   "fstart-stage?/acpi",
   "fstart-platform-intel/acpi",
-  "fstart-arch/acpi",
   "fstart-driver-intel/acpi",
   "fstart-driver-intel/ffs-vbt",
   "dep:fstart-driver-lenovo",

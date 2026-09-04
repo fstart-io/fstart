@@ -528,19 +528,18 @@ mod tests {
     }
 
     #[test]
-    fn test_tock_field_in_acpi_dsl() {
-        // Demonstrates using TockAcpiField inside acpi_dsl! via #{} interpolation.
+    fn test_tock_field_in_device() {
         let fr_field =
             TockAcpiField::new::<u32, TEST_FR::Register>("FREG", OpRegionSpace::SystemMemory, 0x18);
-
-        let aml: Vec<u8> = fstart_acpi_macros::acpi_dsl! {
-            Device("UAR0") {
-                Name("_HID", "ARMH0011");
-                Name("_UID", 0u32);
-                // OpRegion + Field derived from tock-registers definitions
-                #{fr_field}
-            }
-        };
+        let mut field_bytes = Vec::new();
+        fr_field.to_aml_bytes(&mut field_bytes);
+        let raw = crate::RawAml(&field_bytes);
+        let hid: &str = "ARMH0011";
+        let hid_name = acpi_tables::aml::Name::new("_HID".into(), &hid);
+        let uid_name = acpi_tables::aml::Name::new("_UID".into(), &0u32);
+        let device = acpi_tables::aml::Device::new("UAR0".into(), vec![&hid_name, &uid_name, &raw]);
+        let mut aml = Vec::new();
+        device.to_aml_bytes(&mut aml);
 
         // Device opcode
         assert_eq!(aml[0], 0x5B);
@@ -653,13 +652,14 @@ mod tests {
             ],
         );
 
-        // Step 3: Produce the MCHC device using acpi_dsl! with tock-derived fields.
-        let aml: Vec<u8> = fstart_acpi_macros::acpi_dsl! {
-            Device("MCHC") {
-                Name("_ADR", 0x0000_0000u32);
-                #{mchp}
-            }
-        };
+        // Step 3: Embed the already encoded Tock field in the MCHC device.
+        let mut field_bytes = Vec::new();
+        mchp.to_aml_bytes(&mut field_bytes);
+        let raw = crate::RawAml(&field_bytes);
+        let adr = acpi_tables::aml::Name::new("_ADR".into(), &0u32);
+        let device = acpi_tables::aml::Device::new("MCHC".into(), vec![&adr, &raw]);
+        let mut aml = Vec::new();
+        device.to_aml_bytes(&mut aml);
 
         // Verify structure.
         assert_eq!(aml[0], 0x5B); // ExtOpPrefix

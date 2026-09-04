@@ -19,10 +19,8 @@ x86-1g-pages = []
 x86-writable-page-tables = []
 x86-static-page-tables = []
 early-ffs-anchor = []
-acpi = ["dep:acpi_tables"]
 
 [dependencies]
-acpi_tables = { version = "0.2", optional = true }
 fstart-log = { workspace = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-core = { workspace = true }

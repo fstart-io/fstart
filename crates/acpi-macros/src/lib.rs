@@ -1,23 +1,19 @@
-//! Proc-macro crate for the `acpi_dsl!` macro.
+//! Proc-macro crate for the `acpi_dsl!` AML inline-assembly macro.
 //!
-//! Provides a Rust-flavored ASL DSL that compiles to `fstart_acpi`
-//! builder calls.  The macro validates ACPI names and argument counts
-//! at compile time and emits `let`-binding chains in leaf-to-root
-//! order (required because `acpi_tables` uses `&dyn Aml` references
-//! that must outlive their parents).
+//! The parser and validator run in the compiler process. The backend encodes
+//! every opcode, integer, `NameString`, resource descriptor, and `PkgLength`
+//! there as well, so the expanded program contains a const
+//! [`fstart_acpi::AmlFragment`] value. Runtime expressions are paired with that
+//! static fragment in a [`fstart_acpi::BoundAmlFragment`].
 //!
-//! # Supported constructs (Phase 2 core subset)
-//!
-//! - `Scope("path") { ... }` -- ACPI Scope
-//! - `Device("NAME") { ... }` -- ACPI Device
-//! - `Name("_HID", value)` -- ACPI Name object
-//! - `Method("NAME", argc, Serialized|NotSerialized) { ... }` -- Method
-//! - `Return(value)` -- Return statement
-//! - `EisaId("PNP0501")` -- EISA ID encoding
-//! - `ResourceTemplate { ... }` -- ResourceTemplate
-//! - `Memory32Fixed(ReadWrite|ReadOnly, base, size)` -- Memory32Fixed
-//! - `Interrupt(consumer, level, polarity, sharing, irq)` -- Interrupt
-//! - `#{rust_expr}` -- Interpolation of Rust expressions
+//! Runtime operands must declare their fixed AML width: `#{byte EXPR}`,
+//! `#{word EXPR}`, `#{dword EXPR}`, or `#{qword EXPR}`. The macro evaluates each
+//! expression once and binds it to the corresponding fixup in source order.
+//! Plain `#{EXPR}` is deliberately rejected. `#{const EXPR}` accepts integer
+//! literals with their shortest encoding and string literals where a path is
+//! expected. Named const integer expressions use an explicit fixed width, for
+//! example `#{const dword MMIO_BASE + 4}`. Const string variables are not
+//! supported because their length would change the surrounding AML layout.
 
 extern crate proc_macro;
 
@@ -27,28 +23,24 @@ mod validate;
 
 use proc_macro::TokenStream;
 
-/// ACPI DSL macro -- transforms Rust-flavored ASL into `fstart_acpi` builder calls.
+/// Compile Rust-flavored ASL directly into an AML fragment.
 ///
-/// Returns a `Vec<u8>` containing the serialized AML bytes.
-///
-/// # Example
+/// Literal-only and const-only fragments are const-evaluable and can be placed
+/// in a `static`. Literal-only fragments implement `Aml`; fragments with runtime
+/// operands return a bound fragment whose `emit` method needs no operand array.
 ///
 /// ```ignore
 /// use fstart_acpi_macros::acpi_dsl;
 ///
-/// let uart_base: u64 = 0x6000_0000;
-/// let uart_irq: u32 = 33;
-///
-/// let aml_bytes: Vec<u8> = acpi_dsl! {
-///     Device("COM0") {
-///         Name("_HID", "ARMH0011");
-///         Name("_UID", 0u32);
-///         Name("_CRS", ResourceTemplate {
-///             Memory32Fixed(ReadWrite, #{uart_base}, 0x1000u32);
-///             Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{uart_irq});
-///         });
-///     }
+/// const UART_BASE: u32 = 0x6000_0000;
+/// static UART: fstart_acpi::AmlFragment<10, 0> = acpi_dsl! {
+///     Name("UBAS", #{const dword UART_BASE});
 /// };
+///
+/// let irq = 33u32;
+/// let runtime = acpi_dsl! { Name("UIRQ", #{dword irq}); };
+/// let mut bytes = Vec::new();
+/// runtime.emit(&mut bytes);
 /// ```
 #[proc_macro]
 pub fn acpi_dsl(input: TokenStream) -> TokenStream {

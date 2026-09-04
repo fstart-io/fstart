@@ -10,8 +10,8 @@
 //!   (GpioIo, GpioInt), I2C and SPI Serial Bus Connection.
 //! - **Platform assemblers** ([`platform`]): architecture-specific ACPI
 //!   table sets with a generic RSDP/XSDT/DSDT/FADT assembler.
-//! - **Fixed-buffer sink** ([`sink::FixedBufSink`]): `AmlSink` backed
-//!   by `&mut [u8]` for no-alloc output path.
+//! - **AML linker** ([`aml_linker::AmlWriter`]): fragment composition and
+//!   SDT finalization directly into caller-provided storage.
 //!
 //! ## Architecture support
 //!
@@ -39,6 +39,7 @@ extern crate self as fstart_acpi;
 use alloc::vec;
 use alloc::vec::Vec;
 
+pub mod aml_linker;
 pub mod dbg2;
 pub mod descriptors;
 pub mod device;
@@ -48,7 +49,6 @@ pub mod gtdt;
 pub mod iort;
 pub mod platform;
 pub mod sbsa;
-pub mod sink;
 pub mod smbios;
 pub mod spcr;
 pub mod tock_bridge;
@@ -63,57 +63,262 @@ pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
 
+/// An AML output sink that exposes the newly appended range for fixups.
+///
+/// This lets [`AmlFragment::emit`] perform one bulk copy followed by direct
+/// fixed-width stores in the destination, without a fragment-sized stack copy.
+pub trait AmlFragmentSink {
+    fn append_fragment<'a>(&'a mut self, bytes: &[u8]) -> &'a mut [u8];
+}
+
+impl AmlFragmentSink for Vec<u8> {
+    fn append_fragment<'a>(&'a mut self, bytes: &[u8]) -> &'a mut [u8] {
+        let start = self.len();
+        self.extend_from_slice(bytes);
+        &mut self[start..]
+    }
+}
+
+/// Encode a seven-character ACPI EISA identifier.
+#[must_use]
+pub const fn eisa_id(name: &str) -> u32 {
+    let data = name.as_bytes();
+    assert!(data.len() == 7, "EISA ID must contain seven characters");
+    const fn hex(byte: u8) -> u32 {
+        if byte <= b'9' {
+            (byte - b'0') as u32
+        } else {
+            (byte - b'A' + 10) as u32
+        }
+    }
+    (((data[0] - b'@') as u32) << 26
+        | ((data[1] - b'@') as u32) << 21
+        | ((data[2] - b'@') as u32) << 16
+        | hex(data[3]) << 12
+        | hex(data[4]) << 8
+        | hex(data[5]) << 4
+        | hex(data[6]))
+    .swap_bytes()
+}
+
+/// Width of a runtime operand embedded in an [`AmlFragment`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FixupKind {
+    Byte,
+    Word,
+    DWord,
+    QWord,
+}
+
+/// A bound used to derive a resource range length.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FixupValue {
+    Literal(u64),
+    Operand(usize),
+}
+
+/// Additional work associated with a runtime operand.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FixupAction {
+    None,
+    /// Store `max - min + 1` at the descriptor's length field.
+    RangeLength {
+        offset: usize,
+        min: FixupValue,
+        max: FixupValue,
+    },
+}
+
+/// Location, width, and optional derived write for a runtime operand.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Fixup {
+    pub offset: usize,
+    pub kind: FixupKind,
+    pub action: FixupAction,
+}
+
+impl Fixup {
+    pub const fn new(offset: usize, kind: FixupKind) -> Self {
+        Self {
+            offset,
+            kind,
+            action: FixupAction::None,
+        }
+    }
+
+    pub const fn with_range_length(
+        offset: usize,
+        kind: FixupKind,
+        length_offset: usize,
+        min: FixupValue,
+        max: FixupValue,
+    ) -> Self {
+        Self {
+            offset,
+            kind,
+            action: FixupAction::RangeLength {
+                offset: length_offset,
+                min,
+                max,
+            },
+        }
+    }
+}
+
+/// AML compiled by `acpi_dsl!`.
+///
+/// `bytes` contains the complete AML with zero-filled operand slots. Emission
+/// is one bulk copy followed by fixed-width little-endian fixup stores (plus
+/// derived resource-length stores); package lengths and literal encodings are
+/// already final.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AmlFragment<const N: usize, const K: usize> {
+    pub bytes: [u8; N],
+    pub fixups: [Fixup; K],
+}
+
+impl<const N: usize, const K: usize> AmlFragment<N, K> {
+    pub const fn new(bytes: [u8; N], fixups: [Fixup; K]) -> Self {
+        Self { bytes, fixups }
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; N] {
+        &self.bytes
+    }
+
+    /// Apply a const-evaluable, explicitly-sized operand during initialization.
+    #[must_use]
+    pub const fn with_const(mut self, offset: usize, kind: FixupKind, value: u64) -> Self {
+        let width = fixup_width(kind);
+        assert!(
+            value_fits(value, width),
+            "const AML operand exceeds its declared width"
+        );
+        let bytes = value.to_le_bytes();
+        let mut index = 0;
+        while index < width {
+            self.bytes[offset + index] = bytes[index];
+            index += 1;
+        }
+        self
+    }
+
+    pub fn emit(&self, out: &mut impl AmlFragmentSink, operands: &[u64; K]) {
+        for (fixup, value) in self.fixups.iter().zip(operands) {
+            assert!(
+                value_fits(*value, fixup_width(fixup.kind)),
+                "runtime AML operand exceeds its declared width"
+            );
+        }
+        let bytes = out.append_fragment(&self.bytes);
+        for (fixup, value) in self.fixups.iter().zip(operands) {
+            let width = fixup_width(fixup.kind);
+            bytes[fixup.offset..fixup.offset + width]
+                .copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        for fixup in &self.fixups {
+            let FixupAction::RangeLength { offset, min, max } = fixup.action else {
+                continue;
+            };
+            let min = fixup_value(min, operands);
+            let max = fixup_value(max, operands);
+            let length = max
+                .checked_sub(min)
+                .and_then(|value| value.checked_add(1))
+                .expect("invalid AML address resource range");
+            let width = fixup_width(fixup.kind);
+            assert!(
+                value_fits(length, width),
+                "derived AML resource length exceeds its operand width"
+            );
+            bytes[offset..offset + width].copy_from_slice(&length.to_le_bytes()[..width]);
+        }
+    }
+}
+
+/// An AML fragment paired with the runtime expressions written into its fixups.
+///
+/// `acpi_dsl!` produces this type when the DSL contains typed runtime operands,
+/// preserving the source-order relationship between each expression and fixup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoundAmlFragment<const N: usize, const K: usize> {
+    fragment: &'static AmlFragment<N, K>,
+    operands: [u64; K],
+}
+
+impl<const N: usize> core::ops::Deref for AmlFragment<N, 0> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
+    }
+}
+
+impl<const N: usize> From<AmlFragment<N, 0>> for Vec<u8> {
+    fn from(fragment: AmlFragment<N, 0>) -> Self {
+        fragment.bytes.to_vec()
+    }
+}
+
+impl<const N: usize, const K: usize> BoundAmlFragment<N, K> {
+    pub const fn new(fragment: &'static AmlFragment<N, K>, operands: [u64; K]) -> Self {
+        Self { fragment, operands }
+    }
+
+    /// Copy the precompiled bytes and apply the bound operands.
+    pub fn emit(&self, out: &mut impl AmlFragmentSink) {
+        self.fragment.emit(out, &self.operands);
+    }
+
+    pub const fn fragment(&self) -> &'static AmlFragment<N, K> {
+        self.fragment
+    }
+
+    pub const fn operands(&self) -> &[u64; K] {
+        &self.operands
+    }
+}
+
+impl<const N: usize, const K: usize> From<BoundAmlFragment<N, K>> for Vec<u8> {
+    fn from(fragment: BoundAmlFragment<N, K>) -> Self {
+        let mut bytes = Vec::new();
+        fragment.emit(&mut bytes);
+        bytes
+    }
+}
+
+const fn fixup_width(kind: FixupKind) -> usize {
+    match kind {
+        FixupKind::Byte => 1,
+        FixupKind::Word => 2,
+        FixupKind::DWord => 4,
+        FixupKind::QWord => 8,
+    }
+}
+
+const fn value_fits(value: u64, width: usize) -> bool {
+    width == 8 || value < (1u64 << (width * 8))
+}
+
+fn fixup_value<const K: usize>(value: FixupValue, operands: &[u64; K]) -> u64 {
+    match value {
+        FixupValue::Literal(value) => value,
+        FixupValue::Operand(index) => operands[index],
+    }
+}
+
+impl<const N: usize> Aml for AmlFragment<N, 0> {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        sink.vec(&self.bytes);
+    }
+}
+
 /// Already-encoded AML that can be embedded in another AML object.
 pub struct RawAml<'a>(pub &'a [u8]);
 
 impl Aml for RawAml<'_> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         sink.vec(self.0);
-    }
-}
-
-/// Wrap already-encoded AML children in an AML scope.
-#[must_use]
-pub fn scope_aml(path: &str, children: &[u8]) -> Vec<u8> {
-    let raw = RawAml(children);
-    let scope = aml::Scope::new(aml::Path::new(path), vec![&raw as &dyn Aml]);
-    let mut bytes = Vec::new();
-    scope.to_aml_bytes(&mut bytes);
-    bytes
-}
-
-/// Internal marker emitted by [`RootScope`] and consumed by the platform DSDT
-/// assembler before final AML is written.
-pub(crate) const ROOT_SCOPE_MARKER: &[u8; 8] = b"FSTROOT\0";
-
-/// AML root-scope container.
-///
-/// AML `ScopeOp` requires a non-empty name path after a root prefix; emitting
-/// `Scope (\\)` produces corrupt AML that ACPICA repairs as bogus names. For
-/// DSL `Scope("\\")`, this container emits an internal marker plus its child
-/// byte length. The platform DSDT assembler strips that marker and places the
-/// children at the real DSDT root, outside the generic `\\_SB` wrapper.
-pub struct RootScope<'a> {
-    children: Vec<&'a dyn Aml>,
-}
-
-impl<'a> RootScope<'a> {
-    /// Create a root scope containing `children`.
-    pub fn new(children: Vec<&'a dyn Aml>) -> Self {
-        Self { children }
-    }
-}
-
-impl Aml for RootScope<'_> {
-    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        let mut bytes = Vec::new();
-        for child in &self.children {
-            child.to_aml_bytes(&mut bytes);
-        }
-
-        sink.vec(ROOT_SCOPE_MARKER);
-        sink.vec(&(bytes.len() as u32).to_le_bytes());
-        sink.vec(&bytes);
     }
 }
 

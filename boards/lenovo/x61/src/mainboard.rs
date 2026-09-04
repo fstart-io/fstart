@@ -17,7 +17,7 @@ use fstart_platform_intel::gm965::Gm965Ich8;
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 
 /// Board-specific X61 hooks for the GM965/ICH8 flow.
-#[cfg(feature = "stage")]
+#[cfg(any(feature = "stage", feature = "acpi"))]
 pub struct X61Mainboard;
 
 /// The mainboard contributes ACPI fragments through the same `AcpiDevice`
@@ -409,7 +409,6 @@ pub static X61_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> =
 mod acpi_impl {
     extern crate alloc;
 
-    use alloc::string::String;
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
     use fstart_driver_lenovo::h8::{H8, H8_CONFIG0_EVENTS_ENABLE, H8Config};
@@ -421,61 +420,14 @@ mod acpi_impl {
         0x00,
     ];
 
-    struct X61AcpiPaths {
-        sb_scope: &'static str,
-        gpe_scope: &'static str,
-        dock: String,
-        ec_mute: String,
-        ec_usbp: String,
-        ec_radi: String,
-        ec_hkey_mhkc: String,
-        ec_hkey_wake: String,
-        ec_wake: String,
-        ec_lid: String,
-        ec_slpb: String,
-    }
-
-    impl X61AcpiPaths {
-        fn new(context: Gm965Ich8AcpiContext) -> Self {
-            let ec = child_path(context.lpc_scope(), "EC__");
-            let hkey = child_path(&ec, "HKEY");
-
-            Self {
-                sb_scope: context.sb_scope(),
-                gpe_scope: context.gpe_scope(),
-                dock: child_path(context.sb_scope(), "DOCK"),
-                ec_mute: child_path(&ec, "MUTE"),
-                ec_usbp: child_path(&ec, "USBP"),
-                ec_radi: child_path(&ec, "RADI"),
-                ec_hkey_mhkc: child_path(&hkey, "MHKC"),
-                ec_hkey_wake: child_path(&hkey, "WAKE"),
-                ec_wake: child_path(&ec, "WAKE"),
-                ec_lid: child_path(&ec, "LID_"),
-                ec_slpb: child_path(&ec, "SLPB"),
-            }
-        }
-    }
-
-    fn child_path(scope: &str, name: &str) -> String {
-        let mut path = String::new();
-        path.push_str(scope);
-        if scope != "\\" && !scope.ends_with('.') {
-            path.push('.');
-        }
-        path.push_str(name);
-        path
-    }
-
     /// Assemble the X61 DSDT: board glue (TRAP mechanism, sleep/wake hooks,
     /// dock, GPE routing) plus the complete H8 EC surface from the Lenovo
     /// driver.
     pub fn x61_mainboard_dsdt_aml(context: Gm965Ich8AcpiContext) -> Vec<u8> {
-        let paths = X61AcpiPaths::new(context);
-        let p = |s: &str| fstart_acpi::aml::Path::new(s);
         let mut out = Vec::new();
 
         // Root scope: ICH8 SMI trap + sleep/wake glue into the EC.
-        out.extend(acpi_dsl! {
+        out.extend_from_slice(&acpi_dsl! {
             Scope("\\") {
                 Name("SMIF", 0u32);
                 OperationRegion("IOT_", SystemIO, 0x0800u32, 0x10u32);
@@ -490,22 +442,22 @@ mod acpi_impl {
                 }
 
                 Method("_PTS", 1, NotSerialized) {
-                    #{p(&paths.ec_mute)}(1u32);
-                    #{p(&paths.ec_usbp)}(0u32);
-                    #{p(&paths.ec_radi)}(0u32);
-                    #{p(&paths.ec_hkey_mhkc)}(0u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.MUTE"}(1u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.USBP"}(0u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.RADI"}(0u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC"}(0u32);
                 }
                 Method("_WAK", 1, NotSerialized) {
-                    #{p(&paths.ec_hkey_mhkc)}(1u32);
-                    #{p(&paths.ec_hkey_wake)}(Arg0);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC"}(1u32);
+                    #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.WAKE"}(Arg0);
                     Return(Package(0u32, 0u32));
                 }
             }
         });
 
         // Dock: DLPC presence + Toshiba dock registers under \_SB.
-        out.extend(acpi_dsl! {
-            Scope(#{&paths.sb_scope}) {
+        out.extend_from_slice(&acpi_dsl! {
+            Scope(#{const "\\_SB_"}) {
                 OperationRegion("DLPC", SystemIO, 0x164Cu32, 0x01u32);
                 Field("DLPC", ByteAcc, NoLock, Preserve) {
                     , 3,
@@ -520,7 +472,7 @@ mod acpi_impl {
                 Device("DOCK") {
                     Name("_HID", "ACPI0003");
                     Name("_UID", 0u32);
-                    Name("_PCL", Package(#{p(&paths.sb_scope)}));
+                    Name("_PCL", Package(#{const "\\_SB_"}));
                     Method("_DCK", 1, Serialized) {
                         If (Arg0) {
                             TDIN = 1u32;
@@ -540,22 +492,22 @@ mod acpi_impl {
         });
 
         // GPE routing: EC wake events (level-triggered GPIO8 wake path).
-        out.extend(acpi_dsl! {
-            Scope(#{&paths.gpe_scope}) {
+        out.extend_from_slice(&acpi_dsl! {
+            Scope(#{const "\\_GPE"}) {
                 Method("_L18", 0, NotSerialized) {
-                    Local0 = #{p(&paths.ec_wake)};
+                    Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.WAKE"};
                     If (Local0 & 0x04u32) {
-                        Notify(#{p(&paths.ec_lid)}, 0x02u32);
+                        Notify(#{const "\\_SB_.PCI0.LPCB.EC__.LID_"}, 0x02u32);
                     }
                     If (Local0 & 0x08u32) {
-                        Notify(#{p(&paths.dock)}, 0x03u32);
-                        Notify(#{p(&paths.ec_slpb)}, 0x02u32);
+                        Notify(#{const "\\_SB_.DOCK"}, 0x03u32);
+                        Notify(#{const "\\_SB_.PCI0.LPCB.EC__.SLPB"}, 0x02u32);
                     }
                     If (Local0 & 0x10u32) {
-                        Notify(#{p(&paths.ec_slpb)}, 0x02u32);
+                        Notify(#{const "\\_SB_.PCI0.LPCB.EC__.SLPB"}, 0x02u32);
                     }
                     If (Local0 & 0x80u32) {
-                        Notify(#{p(&paths.ec_slpb)}, 0x02u32);
+                        Notify(#{const "\\_SB_.PCI0.LPCB.EC__.SLPB"}, 0x02u32);
                     }
                 }
             }
@@ -605,6 +557,71 @@ mod acpi_impl {
         .all(core::convert::identity)
         {
             fstart_log::error!("lenovo-x61: H8 EC initialization incomplete");
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use fstart_acpi::device::AcpiDevice;
+        use fstart_driver_intel::gm965::IntelGm965;
+        use fstart_driver_intel::ich8::IntelIch8;
+        use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
+        use std::boxed::Box;
+        use std::fs;
+        use std::process::Command;
+
+        #[test]
+        fn complete_dsdt_iasl_round_trip() {
+            let north_config = Box::leak(Box::new(crate::X61_PLATFORM.northbridge_config()));
+            let south_config = Box::leak(Box::new(crate::X61_PLATFORM.southbridge_config()));
+            let north = IntelGm965::new_from_config(north_config).unwrap();
+            let south = IntelIch8::new_from_config(south_config).unwrap();
+
+            let mut aml = north.dsdt_aml(north_config);
+            aml.extend(south.dsdt_aml(south_config));
+            aml.extend(x61_mainboard_dsdt_aml(Gm965Ich8AcpiContext));
+            let dsdt = fstart_acpi::platform::build_dsdt(&aml);
+
+            let dir = std::env::temp_dir().join(std::format!(
+                "fstart-x61-dsdt-{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("dsdt.aml"), &dsdt).unwrap();
+
+            let disassemble = Command::new("iasl")
+                .current_dir(&dir)
+                .args(["-d", "dsdt.aml"])
+                .output()
+                .unwrap();
+            assert!(
+                disassemble.status.success(),
+                "iasl -d failed: {}{}",
+                std::string::String::from_utf8_lossy(&disassemble.stdout),
+                std::string::String::from_utf8_lossy(&disassemble.stderr)
+            );
+            fs::rename(dir.join("dsdt.aml"), dir.join("original.aml")).unwrap();
+            let compile = Command::new("iasl")
+                .current_dir(&dir)
+                .args(["-oa", "-tc", "dsdt.dsl"])
+                .output()
+                .unwrap();
+            assert!(
+                compile.status.success(),
+                "iasl -tc failed: {}{}",
+                std::string::String::from_utf8_lossy(&compile.stdout),
+                std::string::String::from_utf8_lossy(&compile.stderr)
+            );
+
+            // With fixed board constants encoded canonically, a single
+            // disassemble/recompile must reproduce the linked table exactly.
+            let recompiled = fs::read(dir.join("dsdt.aml")).unwrap();
+            // ACPICA rewrites compiler-identification header fields; the AML
+            // payload itself must be byte-for-byte identical.
+            assert_eq!(&recompiled[36..], &dsdt[36..]);
+            fs::remove_dir_all(dir).unwrap();
         }
     }
 }

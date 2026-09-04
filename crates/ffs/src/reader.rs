@@ -14,8 +14,8 @@
 //! finds the anchor by searching for `FFS_MAGIC` in an arbitrary binary.
 
 use fstart_core::ffs::{
-    ANCHOR_MAX_KEYS, ANCHOR_SIZE, AnchorBlock, EntryContent, FFS_MAGIC, FFS_VERSION, ImageManifest,
-    Region, RegionContent, RegionEntry, Segment, Signature,
+    ANCHOR_MAX_KEYS, ANCHOR_SIZE, AnchorBlock, AnchorRef, EntryContent, FFS_MAGIC, FFS_VERSION,
+    ImageManifest, Region, RegionContent, RegionEntry, Segment, Signature,
 };
 
 use fstart_crypto::digest;
@@ -81,16 +81,17 @@ impl<'a> FfsReader<'a> {
             .cloned()
     }
 
-    /// Deserialize an anchor from raw bytes (e.g., the `FSTART_ANCHOR` static).
+    /// Borrow an anchor from raw bytes (e.g., the `FSTART_ANCHOR` static).
     ///
-    /// Uses volatile read to see post-build patched values.
+    /// Scalar fields are read through volatile accessors to see post-build
+    /// patched values; the key array is borrowed in place.
     ///
     /// # Safety
     ///
     /// The data must be at least `ANCHOR_SIZE` bytes and properly aligned.
-    pub unsafe fn read_anchor_volatile(data: &[u8]) -> Result<AnchorBlock, ReaderError> {
-        // SAFETY: caller guarantees alignment and size of `data`.
-        unsafe { AnchorBlock::read_volatile(data) }.ok_or(ReaderError::BadMagic)
+    pub unsafe fn read_anchor_volatile(data: &'a [u8]) -> Result<AnchorRef<'a>, ReaderError> {
+        // SAFETY: caller guarantees alignment, size, and lifetime of `data`.
+        unsafe { AnchorRef::read_volatile(data) }.ok_or(ReaderError::BadMagic)
     }
 
     /// Scan the image for `FFS_MAGIC` at 8-byte-aligned offsets.
@@ -117,12 +118,13 @@ impl<'a> FfsReader<'a> {
     /// entry code can apply it without an FFS parser; the anchor duplicates
     /// its offset and size for later consumers (e.g. per-AP microcode update
     /// during MP init).
-    pub fn intel_microcode(&self, anchor: &AnchorBlock) -> Option<&'a [u8]> {
-        let start = anchor.microcode_offset as usize;
-        if start == 0 || anchor.microcode_size == 0 {
+    pub fn intel_microcode(&self, anchor: AnchorRef<'_>) -> Option<&'a [u8]> {
+        let start = anchor.microcode_offset() as usize;
+        let size = anchor.microcode_size() as usize;
+        if start == 0 || size == 0 {
             return None;
         }
-        let end = start.checked_add(anchor.microcode_size as usize)?;
+        let end = start.checked_add(size)?;
         self.image.get(start..end)
     }
 
@@ -157,6 +159,18 @@ impl<'a> FfsReader<'a> {
         self.read_verified_manifest(
             anchor.manifest_offset as usize,
             anchor.manifest_size as usize,
+            anchor.valid_keys(),
+        )
+    }
+
+    /// Read and verify the manifest referenced by a post-build-patched anchor.
+    pub fn read_manifest_volatile(
+        &self,
+        anchor: AnchorRef<'_>,
+    ) -> Result<ImageManifest, ReaderError> {
+        self.read_verified_manifest(
+            anchor.manifest_offset() as usize,
+            anchor.manifest_size() as usize,
             anchor.valid_keys(),
         )
     }

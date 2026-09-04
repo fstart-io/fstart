@@ -322,54 +322,62 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
     // --- COM0: PL011 UART ---
     let uart_base = config.uart_base;
     let uart_gsiv = config.uart_gsiv;
-    let uart_aml = fstart_acpi_macros::acpi_dsl! {
+    let uart_fragment = fstart_acpi_macros::acpi_dsl! {
         Device("COM0") {
             Name("_HID", "ARMH0011");
             Name("_UID", 0u32);
             Name("_CRS", ResourceTemplate {
-                Memory32Fixed(ReadWrite, #{uart_base}, 0x1000u32);
-                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{uart_gsiv});
+                Memory32Fixed(ReadWrite, #{dword uart_base}, 0x1000u32);
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword uart_gsiv});
             });
         }
     };
+    let mut uart_aml = Vec::new();
+    uart_fragment.emit(&mut uart_aml);
 
     // --- AHC0: AHCI ---
     let ahci_base = config.ahci_base as u32;
     let ahci_gsiv = config.ahci_gsiv;
-    let ahci_aml = fstart_acpi_macros::acpi_dsl! {
+    let ahci_fragment = fstart_acpi_macros::acpi_dsl! {
         Device("AHC0") {
             Name("_HID", "LNRO0015");
             Name("_UID", 0u32);
             Name("_CCA", 1u32);
             Name("_CLS", Package(0x01u8, 0x06u8, 0x01u8));
             Name("_CRS", ResourceTemplate {
-                Memory32Fixed(ReadWrite, #{ahci_base}, 0x10000u32);
-                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{ahci_gsiv});
+                Memory32Fixed(ReadWrite, #{dword ahci_base}, 0x10000u32);
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword ahci_gsiv});
             });
         }
     };
+    let mut ahci_aml = Vec::new();
+    ahci_fragment.emit(&mut ahci_aml);
 
     // --- USB0: xHCI ---
     let xhci_base = config.xhci_base;
     let xhci_gsiv = config.xhci_gsiv;
-    let xhci_aml = fstart_acpi_macros::acpi_dsl! {
+    let xhci_fragment = fstart_acpi_macros::acpi_dsl! {
         Device("USB0") {
             Name("_HID", "PNP0D10");
             Name("_UID", 0u32);
             Name("_CCA", 1u32);
             Name("_CRS", ResourceTemplate {
-                Memory32Fixed(ReadWrite, #{xhci_base}, 0x10000u32);
-                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{xhci_gsiv});
+                Memory32Fixed(ReadWrite, #{dword xhci_base}, 0x10000u32);
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive, #{dword xhci_gsiv});
             });
         }
     };
+    let mut xhci_aml = Vec::new();
+    xhci_fragment.emit(&mut xhci_aml);
 
     // --- PCI0: PCIe Root Complex ---
+    // Keep the SBSA host-bridge contract distinct from the generic PCIe root:
+    // its string _UID and descriptor set are part of the existing table ABI.
     let mmio32_base = config.pcie_mmio32_base;
     let mmio32_end = config.pcie_mmio32_end;
     let mmio64_base = config.pcie_mmio64_base;
     let mmio64_end = config.pcie_mmio64_end;
-    let pci_aml = fstart_acpi_macros::acpi_dsl! {
+    let pci_fragment = fstart_acpi_macros::acpi_dsl! {
         Device("PCI0") {
             Name("_HID", EisaId("PNP0A08"));
             Name("_CID", EisaId("PNP0A03"));
@@ -379,14 +387,16 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
             Name("_CCA", 1u32);
             Name("_CRS", ResourceTemplate {
                 WordBusNumber(0u16, 0xFFu16);
-                DWordMemory(NotCacheable, ReadWrite, #{mmio32_base}, #{mmio32_end});
-                QWordMemory(NotCacheable, ReadWrite, #{mmio64_base}, #{mmio64_end});
+                DWordMemory(NotCacheable, ReadWrite,
+                    #{dword mmio32_base}, #{dword mmio32_end});
+                QWordMemory(NotCacheable, ReadWrite,
+                    #{qword mmio64_base}, #{qword mmio64_end});
             });
-            Method("_OSC", 4, NotSerialized) {
-                Return(#{acpi_tables::aml::Arg(3)});
-            }
+            Method("_OSC", 4, NotSerialized) { Return(Arg3); }
         }
     };
+    let mut pci_aml = Vec::new();
+    pci_fragment.emit(&mut pci_aml);
 
     // Combine all device AML bytes and wrap in \_SB scope.
     let mut all_device_aml = Vec::new();

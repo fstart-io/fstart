@@ -1318,7 +1318,7 @@ mod acpi_impl {
             let rcba = config.rcba as u32;
             let mobile = config.variant == I945Variant::Mobile;
 
-            let mut aml = acpi_dsl! {
+            let mut aml: Vec<u8> = acpi_dsl! {
                 Device("PCI0") {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
@@ -1387,32 +1387,32 @@ mod acpi_impl {
                         DWordIO(0x0D00u32, 0xFFFFu32);
                         DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
                         DWordMemory(Cacheable, ReadWrite, 0x000C0000u32, 0x000FFFFFu32);
-                        DWordMemory(NotCacheable, ReadWrite, #{pci_mmio_base}, #{pci_mmio_limit});
+                        DWordMemory(NotCacheable, ReadWrite, #{dword pci_mmio_base}, #{dword pci_mmio_limit});
                         Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
                     });
                     Method("_CRS", 0, Serialized) {
-                        Return(#{fstart_acpi::aml::Path::new("MCRS")});
+                        Return(MCRS);
                     }
                     Method("_OSC", 4, NotSerialized) {
-                        Return(#{fstart_acpi::aml::Arg(3)});
+                        Return(Arg3);
                     }
 
                     Device("PDRC") {
                         Name("_HID", EisaId("PNP0C02"));
                         Name("_UID", 1u32);
                         Name("_CRS", ResourceTemplate {
-                            Memory32Fixed(ReadWrite, #{rcba}, 0x4000u32);
-                            Memory32Fixed(ReadWrite, #{mchbar}, 0x4000u32);
-                            Memory32Fixed(ReadWrite, #{dmibar}, 0x1000u32);
-                            Memory32Fixed(ReadWrite, #{epbar}, 0x1000u32);
-                            Memory32Fixed(ReadWrite, #{ecam_base}, #{ecam_size});
+                            Memory32Fixed(ReadWrite, #{dword rcba}, 0x4000u32);
+                            Memory32Fixed(ReadWrite, #{dword mchbar}, 0x4000u32);
+                            Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
+                            Memory32Fixed(ReadWrite, #{dword epbar}, 0x1000u32);
+                            Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
                         });
                     }
                 }
-            };
+            }.into();
 
             if mobile {
-                aml.extend(acpi_dsl! {
+                aml.extend_from_slice(&acpi_dsl! {
                     Scope("\\_SB_.PCI0") {
                         Device("PEGP") {
                             Name("_ADR", 0x00010000u32);

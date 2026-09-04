@@ -191,16 +191,16 @@ where
                     let entry = lay_out_file(&mut image, file, region_base)?;
 
                     // Record file data location for the assembler.
-                    if let EntryContent::File { segments, .. } = &entry.content {
-                        if let Some(first_seg) = segments.first() {
-                            let abs_offset = region_base + entry.offset + first_seg.offset;
-                            let total_stored: u32 = segments.iter().map(|s| s.stored_size).sum();
-                            file_data.push(FileDataLocation {
-                                name: file.name.clone(),
-                                data_offset: abs_offset,
-                                data_size: total_stored,
-                            });
-                        }
+                    if let EntryContent::File { segments, .. } = &entry.content
+                        && let Some(first_seg) = segments.first()
+                    {
+                        let abs_offset = region_base + entry.offset + first_seg.offset;
+                        let total_stored: u32 = segments.iter().map(|s| s.stored_size).sum();
+                        file_data.push(FileDataLocation {
+                            name: file.name.clone(),
+                            data_offset: abs_offset,
+                            data_size: total_stored,
+                        });
                     }
 
                     children
@@ -233,16 +233,16 @@ where
                 for file in files {
                     let entry = lay_out_file(&mut image, file, region_base)?;
 
-                    if let EntryContent::File { segments, .. } = &entry.content {
-                        if let Some(first_seg) = segments.first() {
-                            let abs_offset = region_base + entry.offset + first_seg.offset;
-                            let total_stored: u32 = segments.iter().map(|s| s.stored_size).sum();
-                            file_data.push(FileDataLocation {
-                                name: file.name.clone(),
-                                data_offset: abs_offset,
-                                data_size: total_stored,
-                            });
-                        }
+                    if let EntryContent::File { segments, .. } = &entry.content
+                        && let Some(first_seg) = segments.first()
+                    {
+                        let abs_offset = region_base + entry.offset + first_seg.offset;
+                        let total_stored: u32 = segments.iter().map(|s| s.stored_size).sum();
+                        file_data.push(FileDataLocation {
+                            name: file.name.clone(),
+                            data_offset: abs_offset,
+                            data_size: total_stored,
+                        });
                     }
 
                     children

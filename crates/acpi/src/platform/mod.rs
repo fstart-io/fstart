@@ -23,11 +23,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use acpi_tables::Aml;
-use acpi_tables::aml::{Path, Scope};
 use acpi_tables::facs::FACS;
 use acpi_tables::fadt::{FADT, FADTBuilder, Flags, PmProfile};
 use acpi_tables::rsdp::Rsdp;
-use acpi_tables::sdt::Sdt;
 use acpi_tables::xsdt::XSDT;
 
 use crate::{copy_at, serialize};
@@ -181,7 +179,7 @@ pub fn assemble(
     device_extra_tables: &[Vec<u8>],
 ) -> Vec<u8> {
     // Build DSDT: header + device AML inside \_SB scope.
-    let dsdt_bytes = serialize(&build_dsdt(device_dsdt_aml));
+    let dsdt_bytes = build_dsdt(device_dsdt_aml);
 
     // Phase 1: Calculate layout with 16-byte alignment.
     // XSDT entries: FADT + each platform table + each extra table
@@ -412,83 +410,27 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     bytes
 }
 
-/// Build the DSDT from collected device AML bytes.
-///
-/// Wraps the device AML in a `\_SB` scope and appends to the DSDT header.
-fn build_dsdt(device_aml: &[u8]) -> Sdt {
-    let mut dsdt = Sdt::new(
-        *b"DSDT",
-        36,
-        2,
-        crate::OEM_ID,
-        crate::OEM_TABLE_ID,
-        crate::OEM_REVISION,
-    );
-
-    if !device_aml.is_empty() {
-        let (root_aml, sb_aml) = split_root_scope_aml(device_aml);
-        dsdt.append_slice(&root_aml);
-
-        if !sb_aml.is_empty() {
-            // Build \_SB scope wrapping normal device AML. Root-scope fragments
-            // have already been stripped and emitted above.
-            // We construct it manually because the pre-serialized device
-            // AML bytes can't be passed as `&dyn Aml` references.
-            let scope_name = Path::new("\\_SB_");
-            let empty_scope = Scope::new(scope_name, vec![]);
-            let mut _scope_bytes = Vec::new();
-            empty_scope.to_aml_bytes(&mut _scope_bytes);
-
-            // Build scope manually: ScopeOp + PkgLength + "\\_SB_" + sb_aml
-            let name_aml = encode_name_path(b"\\_SB_");
-            let content_len = name_aml.len() + sb_aml.len();
-            let pkg_len = crate::encode_pkg_length(content_len);
-
-            dsdt.append_slice(&[0x10]); // ScopeOp
-            dsdt.append_slice(&pkg_len);
-            dsdt.append_slice(&name_aml);
-            dsdt.append_slice(&sb_aml);
-        }
-    }
-
-    dsdt.update_checksum();
-    dsdt
-}
-
-/// Split marked root-scope AML from normal device AML.
-fn split_root_scope_aml(device_aml: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    let marker = crate::ROOT_SCOPE_MARKER;
-    let mut root = Vec::new();
-    let mut sb = Vec::new();
-    let mut i = 0usize;
-
-    while i < device_aml.len() {
-        if device_aml[i..].starts_with(marker) && i + marker.len() + 4 <= device_aml.len() {
-            let len_off = i + marker.len();
-            let len = u32::from_le_bytes([
-                device_aml[len_off],
-                device_aml[len_off + 1],
-                device_aml[len_off + 2],
-                device_aml[len_off + 3],
-            ]) as usize;
-            let data_off = len_off + 4;
-            if data_off + len <= device_aml.len() {
-                root.extend_from_slice(&device_aml[data_off..data_off + len]);
-                i = data_off + len;
-                continue;
-            }
-        }
-
-        sb.push(device_aml[i]);
-        i += 1;
-    }
-
-    (root, sb)
-}
-
-/// Encode an AML name path.
-fn encode_name_path(name: &[u8]) -> Vec<u8> {
-    name.to_vec()
+/// Build the DSDT from collected device AML bytes with the AML linker.
+pub fn build_dsdt(device_aml: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![0; 48 + device_aml.len()];
+    let len = {
+        let writer = crate::aml_linker::AmlWriter::table(
+            &mut bytes,
+            *b"DSDT",
+            2,
+            crate::OEM_ID,
+            crate::OEM_TABLE_ID,
+            crate::OEM_REVISION,
+            |writer| {
+                if !device_aml.is_empty() {
+                    writer.scope("\\_SB_", |writer| writer.raw(device_aml));
+                }
+            },
+        );
+        writer.position()
+    };
+    bytes.truncate(len);
+    bytes
 }
 
 #[cfg(test)]

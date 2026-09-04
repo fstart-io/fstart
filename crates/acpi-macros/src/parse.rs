@@ -23,13 +23,37 @@ use syn::{Error, Result};
 // AST types
 // -----------------------------------------------------------------------
 
-/// A name that is either a literal string or an interpolated expression.
+/// A literal name or a const string literal.
 #[derive(Debug)]
 pub enum NameOrInterp {
     /// Literal ACPI name string (e.g., `"COM0"`).
     Literal(String),
-    /// Interpolated Rust expression (e.g., `#{name}`).
-    Interpolation(TokenStream),
+    /// Const path operand. Currently restricted to string literals.
+    Const(TokenStream),
+}
+
+/// Width of a runtime operand.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum OperandKind {
+    Byte,
+    Word,
+    DWord,
+    QWord,
+}
+
+/// An explicitly typed interpolation.
+#[derive(Debug, Clone)]
+pub enum Operand {
+    Runtime {
+        kind: OperandKind,
+        expr: TokenStream,
+    },
+    /// Const literals use their shortest AML encoding. Named const expressions
+    /// carry an explicit width so package lengths remain known to the macro.
+    Const {
+        kind: Option<OperandKind>,
+        expr: TokenStream,
+    },
 }
 
 /// Binary operator in an expression.
@@ -74,8 +98,8 @@ pub enum DslExpr {
     One,
     /// AML Ones constant (0xFFFF_FFFF_FFFF_FFFF)
     Ones,
-    /// Rust interpolation: `#{expr}`
-    Interpolation(TokenStream),
+    /// Explicitly-sized runtime or const integer operand.
+    Operand(Operand),
     /// `ToUUID("...")`
     ToUUID(String),
     /// `SizeOf(expr)`
@@ -181,8 +205,7 @@ pub enum DslItem {
         #[allow(dead_code)]
         span: Span,
     },
-    /// `#{expr}` -- bare interpolation at statement level.
-    RawExpr { expr: TokenStream },
+
     /// `If (condition) { body } [Else { body }]`
     If {
         condition: DslExpr,
@@ -357,12 +380,12 @@ pub enum DslValue {
     Package(Vec<DslValue>),
     /// Resource template: `ResourceTemplate { ... }`
     ResourceTemplate(Vec<ResourceDesc>),
-    /// Rust expression interpolation: `#{expr}`
-    Interpolation(TokenStream),
-    /// `Buffer(#{expr})` -- buffer term whose data expression must evaluate
-    /// to something implementing `Aml` (typically
-    /// `fstart_acpi::aml::BufferData`).
-    Buffer(TokenStream),
+    /// Explicitly-sized runtime or const integer operand.
+    Operand(Operand),
+    /// An AML expression or name reference used by legacy statement forms.
+    Expr(DslExpr),
+    /// Literal AML buffer payload.
+    Buffer(Vec<DslValue>),
 }
 
 /// A resource descriptor within a resource_template.
@@ -701,9 +724,10 @@ impl Parser {
                 if self.is_method_call() {
                     self.parse_method_call()
                 } else {
-                    self.advance(); // consume '#'
-                    let (expr, _) = self.expect_group(Delimiter::Brace)?;
-                    Ok(DslItem::RawExpr { expr })
+                    Err(Error::new(
+                        p.span(),
+                        "bare AML interpolation is not supported; use a literal DSL construct",
+                    ))
                 }
             }
             other => Err(Error::new(other.span(), "expected DSL keyword or #{expr}")),
@@ -854,8 +878,16 @@ impl Parser {
         match self.peek() {
             Some(TokenTree::Ident(ident)) => {
                 let name = ident.to_string();
-                !is_statement_keyword(&name)
-                    && matches!(self.peek_at(1), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis)
+                if is_statement_keyword(&name) {
+                    return false;
+                }
+                let mut offset = 1;
+                while matches!(self.peek_at(offset), Some(TokenTree::Punct(p)) if p.as_char() == '.')
+                    && matches!(self.peek_at(offset + 1), Some(TokenTree::Ident(_)))
+                {
+                    offset += 2;
+                }
+                matches!(self.peek_at(offset), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis)
             }
             Some(TokenTree::Punct(p)) if p.as_char() == '#' => {
                 matches!(self.peek_at(1), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace)
@@ -869,10 +901,24 @@ impl Parser {
     fn parse_method_call(&mut self) -> Result<DslItem> {
         let span = self.span();
         let name = match self.advance() {
-            Some(TokenTree::Ident(ident)) => NameOrInterp::Literal(ident.to_string()),
+            Some(TokenTree::Ident(ident)) => {
+                let mut path = ident.to_string();
+                while matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '.') {
+                    self.advance();
+                    path.push('.');
+                    match self.advance() {
+                        Some(TokenTree::Ident(segment)) => path.push_str(&segment.to_string()),
+                        Some(other) => {
+                            return Err(Error::new(other.span(), "expected ACPI path segment"));
+                        }
+                        None => return Err(Error::new(span, "expected ACPI path segment")),
+                    }
+                }
+                NameOrInterp::Literal(path)
+            }
             Some(TokenTree::Punct(p)) if p.as_char() == '#' => {
                 let (expr, _) = self.expect_group(Delimiter::Brace)?;
-                NameOrInterp::Interpolation(expr)
+                NameOrInterp::Const(expr)
             }
             Some(other) => return Err(Error::new(other.span(), "expected method name")),
             None => return Err(Error::new(span, "expected method name")),
@@ -922,7 +968,7 @@ impl Parser {
         if matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '#') {
             self.expect_punct('#')?;
             let (expr, _) = self.expect_group(Delimiter::Brace)?;
-            Ok(NameOrInterp::Interpolation(expr))
+            Ok(NameOrInterp::Const(expr))
         } else {
             let s = self.expect_string_lit()?;
             Ok(NameOrInterp::Literal(s))
@@ -1026,6 +1072,9 @@ impl Parser {
     /// True if it contains Local/Arg references or is a bare identifier
     /// that isn't a known value-form keyword (EisaId, Package, etc.).
     fn looks_like_expr(&self) -> bool {
+        if matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '^') {
+            return true;
+        }
         if let Some(TokenTree::Ident(ident)) = self.peek() {
             let name = ident.to_string();
             if parse_local(&name).is_some() || parse_arg(&name).is_some() {
@@ -1220,10 +1269,10 @@ impl Parser {
         let mut args_parser = Parser::new(args);
         let name = match args_parser.parse_name_or_interp()? {
             NameOrInterp::Literal(s) => s,
-            NameOrInterp::Interpolation(_) => {
+            NameOrInterp::Const(_) => {
                 return Err(Error::new(
                     span,
-                    "interpolated ThermalZone names are not supported",
+                    "const ThermalZone names are not supported; use a string literal",
                 ));
             }
         };
@@ -1245,10 +1294,10 @@ impl Parser {
         let mut args_parser = Parser::new(args);
         let name = match args_parser.parse_name_or_interp()? {
             NameOrInterp::Literal(s) => s,
-            NameOrInterp::Interpolation(_) => {
+            NameOrInterp::Const(_) => {
                 return Err(Error::new(
                     span,
-                    "interpolated PowerResource names are not supported",
+                    "const PowerResource names are not supported; use a string literal",
                 ));
             }
         };
@@ -1519,7 +1568,7 @@ impl Parser {
     fn parse_interpolation(&mut self) -> Result<DslValue> {
         self.expect_punct('#')?;
         let (expr, _) = self.expect_group(Delimiter::Brace)?;
-        Ok(DslValue::Interpolation(expr))
+        Ok(DslValue::Operand(parse_operand_tokens(expr)?))
     }
 
     // -------------------------------------------------------------------
@@ -1528,29 +1577,44 @@ impl Parser {
 
     fn parse_value(&mut self) -> DslValue {
         if self.peek_ident_eq("EisaId") {
-            return self
-                .parse_eisa_id()
-                .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
+            return self.parse_eisa_id().unwrap_or_else(|e| {
+                DslValue::Operand(Operand::Const {
+                    kind: None,
+                    expr: e.to_compile_error(),
+                })
+            });
         }
         if self.peek_ident_eq("Package") {
-            return self
-                .parse_package()
-                .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
+            return self.parse_package().unwrap_or_else(|e| {
+                DslValue::Operand(Operand::Const {
+                    kind: None,
+                    expr: e.to_compile_error(),
+                })
+            });
         }
         if self.peek_ident_eq("ResourceTemplate") {
-            return self
-                .parse_resource_template()
-                .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
+            return self.parse_resource_template().unwrap_or_else(|e| {
+                DslValue::Operand(Operand::Const {
+                    kind: None,
+                    expr: e.to_compile_error(),
+                })
+            });
         }
         if self.peek_ident_eq("Buffer") {
-            return self
-                .parse_buffer_value()
-                .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
+            return self.parse_buffer_value().unwrap_or_else(|e| {
+                DslValue::Operand(Operand::Const {
+                    kind: None,
+                    expr: e.to_compile_error(),
+                })
+            });
         }
         if matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '#') {
-            return self
-                .parse_interpolation()
-                .unwrap_or_else(|e| DslValue::Interpolation(e.to_compile_error()));
+            return self.parse_interpolation().unwrap_or_else(|e| {
+                DslValue::Operand(Operand::Const {
+                    kind: None,
+                    expr: e.to_compile_error(),
+                })
+            });
         }
 
         match self.peek() {
@@ -1566,17 +1630,13 @@ impl Parser {
                     DslValue::IntLit(TokenTree::Literal(lit_clone).into())
                 }
             }
-            _ => {
-                let mut expr = TokenStream::new();
-                while !self.at_end() {
-                    if matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == ',' || p.as_char() == ')')
-                    {
-                        break;
-                    }
-                    expr.extend(self.advance());
-                }
-                DslValue::Interpolation(expr)
-            }
+            _ => match self.parse_expr(0) {
+                Ok(expr) => DslValue::Expr(expr),
+                Err(error) => DslValue::Operand(Operand::Const {
+                    kind: None,
+                    expr: error.to_compile_error(),
+                }),
+            },
         }
     }
 
@@ -1602,15 +1662,19 @@ impl Parser {
         Ok(DslValue::EisaId(id))
     }
 
-    /// `Buffer(#{expr})` -- data expression must implement `Aml`
-    /// (typically `fstart_acpi::aml::BufferData`).
+    /// `Buffer(v0, v1, ...)` -- literal bytes and explicitly-sized operands.
     fn parse_buffer_value(&mut self) -> Result<DslValue> {
         self.expect_ident("Buffer")?;
         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
         let mut p = Parser::new(args);
-        p.expect_punct('#')?;
-        let (expr, _) = p.expect_group(Delimiter::Brace)?;
-        Ok(DslValue::Buffer(expr))
+        let mut values = Vec::new();
+        while !p.at_end() {
+            values.push(p.parse_value());
+            if !p.at_end() {
+                p.expect_punct(',')?;
+            }
+        }
+        Ok(DslValue::Buffer(values))
     }
 
     fn parse_resource_template(&mut self) -> Result<DslValue> {
@@ -1983,7 +2047,7 @@ impl Parser {
             TokenTree::Punct(p) if p.as_char() == '#' => {
                 self.advance();
                 let (expr, _) = self.expect_group(Delimiter::Brace)?;
-                Ok(DslExpr::Interpolation(expr))
+                Ok(DslExpr::Operand(parse_operand_tokens(expr)?))
             }
 
             // Integer literal
@@ -1996,6 +2060,28 @@ impl Parser {
                 } else {
                     Ok(DslExpr::IntLit(lit.into()))
                 }
+            }
+
+            // Parent-prefixed ACPI path.
+            TokenTree::Punct(p) if p.as_char() == '^' => {
+                let mut path = String::new();
+                while matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '^') {
+                    self.advance();
+                    path.push('^');
+                }
+                let Some(TokenTree::Ident(segment)) = self.advance() else {
+                    return Err(Error::new(self.span(), "expected ACPI name after `^`"));
+                };
+                path.push_str(&segment.to_string());
+                while matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '.') {
+                    self.advance();
+                    path.push('.');
+                    let Some(TokenTree::Ident(segment)) = self.advance() else {
+                        return Err(Error::new(self.span(), "expected ACPI path segment"));
+                    };
+                    path.push_str(&segment.to_string());
+                }
+                Ok(DslExpr::Path(path))
             }
 
             // Identifier: Local, Arg, Zero/One/Ones, function, or ACPI path
@@ -2073,17 +2159,24 @@ impl Parser {
                         Ok(self.parse_call_tail(&name)?)
                     }
                     _ => {
-                        // A method invocation `IDENT(...)` or a plain ACPI
-                        // path name (e.g., CDW1, TLUD).
-                        if let Some(TokenTree::Group(g)) = self.peek_at(1)
-                            && g.delimiter() == Delimiter::Parenthesis
+                        // A method invocation or ACPI path, including relative
+                        // multi-segment names such as HKEY.RHK_.
+                        self.advance();
+                        let mut path = name;
+                        while matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '.')
                         {
                             self.advance();
-                            let call = self.parse_call_tail(&name)?;
-                            return Ok(call);
+                            path.push('.');
+                            let Some(TokenTree::Ident(segment)) = self.advance() else {
+                                return Err(Error::new(self.span(), "expected ACPI path segment"));
+                            };
+                            path.push_str(&segment.to_string());
                         }
-                        self.advance();
-                        Ok(DslExpr::Path(name))
+                        if matches!(self.peek(), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis)
+                        {
+                            return self.parse_call_tail(&path);
+                        }
+                        Ok(DslExpr::Path(path))
                     }
                 }
             }
@@ -2160,6 +2253,64 @@ impl Parser {
     }
 }
 
+pub(crate) fn parse_operand_tokens(tokens: TokenStream) -> Result<Operand> {
+    let mut it = tokens.into_iter();
+    let first = it.next().ok_or_else(|| Error::new(Span::call_site(),
+        "empty interpolation; use #{byte EXPR}, #{word EXPR}, #{dword EXPR}, #{qword EXPR}, or #{const [byte|word|dword|qword] EXPR}"))?;
+    let TokenTree::Ident(kind_ident) = first else {
+        return Err(Error::new(
+            first.span(),
+            "runtime AML operands require a kind: byte, word, dword, qword, or const",
+        ));
+    };
+    let mut rest: Vec<TokenTree> = it.collect();
+    let runtime_kind = match kind_ident.to_string().as_str() {
+        "byte" => Some(OperandKind::Byte),
+        "word" => Some(OperandKind::Word),
+        "dword" => Some(OperandKind::DWord),
+        "qword" => Some(OperandKind::QWord),
+        "const" => None,
+        _ => {
+            return Err(Error::new(
+                kind_ident.span(),
+                "runtime AML operands require a kind: byte, word, dword, qword, or const",
+            ));
+        }
+    };
+    if rest.is_empty() {
+        return Err(Error::new(kind_ident.span(), "missing operand expression"));
+    }
+    if let Some(kind) = runtime_kind {
+        let expr: TokenStream = rest.into_iter().collect();
+        syn::parse2::<syn::Expr>(expr.clone())?;
+        return Ok(Operand::Runtime { kind, expr });
+    }
+
+    let const_kind = match rest.first() {
+        Some(TokenTree::Ident(ident)) => match ident.to_string().as_str() {
+            "byte" => Some(OperandKind::Byte),
+            "word" => Some(OperandKind::Word),
+            "dword" => Some(OperandKind::DWord),
+            "qword" => Some(OperandKind::QWord),
+            _ => None,
+        },
+        _ => None,
+    };
+    if const_kind.is_some() {
+        rest.remove(0);
+    }
+    if rest.is_empty() {
+        return Err(Error::new(
+            kind_ident.span(),
+            "missing const operand expression",
+        ));
+    }
+    Ok(Operand::Const {
+        kind: const_kind,
+        expr: rest.into_iter().collect(),
+    })
+}
+
 /// Parse a usize from a literal string, handling decimal, hex (0x..),
 /// octal (0o..), and binary (0b..) prefixes.
 fn parse_usize_literal(s: &str) -> core::result::Result<usize, core::num::ParseIntError> {
@@ -2171,5 +2322,30 @@ fn parse_usize_literal(s: &str) -> core::result::Result<usize, core::num::ParseI
         usize::from_str_radix(bin, 2)
     } else {
         s.parse()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_interpolation_names_the_required_kinds() {
+        let error = parse_operand_tokens("value".parse().unwrap()).unwrap_err();
+        let message = error.to_string();
+        for kind in ["byte", "word", "dword", "qword", "const"] {
+            assert!(message.contains(kind), "missing `{kind}` in `{message}`");
+        }
+    }
+
+    #[test]
+    fn runtime_operand_retains_its_expression() {
+        let Operand::Runtime { kind, expr } =
+            parse_operand_tokens("dword values[2]".parse().unwrap()).unwrap()
+        else {
+            panic!("expected runtime operand");
+        };
+        assert_eq!(kind, OperandKind::DWord);
+        assert_eq!(expr.to_string(), "values [2]");
     }
 }

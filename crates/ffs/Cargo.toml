@@ -24,3 +24,7 @@ lz4_flex = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, features = ["std", "rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 lz4_flex = { workspace = true }
+
+[[test]]
+name = "round_trip"
+required-features = ["std"]

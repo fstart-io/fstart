@@ -5,7 +5,7 @@
 
 #![no_std]
 
-#[cfg(feature = "stage")]
+#[cfg(any(feature = "stage", feature = "acpi", feature = "smbios"))]
 extern crate ufmt;
 
 #[cfg(any(feature = "acpi", feature = "smbios"))]
@@ -57,7 +57,7 @@ pub fn intel_microcode_blob() -> Option<&'static [u8]> {
     let (image, anchor_bytes) = unsafe { (ctx.image_bytes(), ctx.anchor_bytes()) };
     // SAFETY: the anchor bytes are the stage's aligned `.fstart.anchor` static.
     let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }.ok()?;
-    FfsReader::new(image).intel_microcode(&anchor)
+    FfsReader::new(image).intel_microcode(anchor)
 }
 
 #[cfg(feature = "stage")]

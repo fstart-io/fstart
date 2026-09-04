@@ -1205,14 +1205,15 @@ impl IntelGm965 {
         let anchor_bytes = unsafe { ctx.anchor_bytes() };
         let image = unsafe { ctx.image_bytes() };
         let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes).ok()? };
-        let image_size = if anchor.total_image_size > 0 {
-            (anchor.total_image_size as usize).min(image.len())
+        let total_image_size = anchor.total_image_size() as usize;
+        let image_size = if total_image_size > 0 {
+            total_image_size.min(image.len())
         } else {
             image.len()
         };
         let image = &image[..image_size];
         let manifest = fstart_ffs::FfsReader::new(image)
-            .read_manifest(&anchor)
+            .read_manifest_volatile(anchor)
             .ok()?;
 
         for region in &manifest.regions {
@@ -2024,14 +2025,16 @@ mod acpi_impl {
         /// objects. Southbridge devices attach later through an absolute
         /// `\\_SB.PCI0` scope emitted by the ICH8 driver.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
-            let name = config.acpi_name.as_deref().unwrap_or("PCI0");
             let mchbar = config.mchbar as u32;
             let dmibar = config.dmibar as u32;
             let epbar = config.epbar as u32;
             let ecam_base = config.ecam_base as u32;
             let ecam_size =
                 (u64::from(config.ecam_buses) * 1024 * 1024).min(u64::from(u32::MAX)) as u32;
+            #[cfg(target_os = "none")]
             let pci_mmio_base = self.tolud().max(0x8000_0000);
+            #[cfg(not(target_os = "none"))]
+            let pci_mmio_base = 0x8000_0000u32;
             // Match coreboot GM45/GM965 hostbridge.asl: the PCI MMIO
             // producer window runs from TOLUD through 0xfebf_ffff.  ECAM,
             // MCHBAR/DMIBAR/EPBAR/RCBA, HPET, and TPM are also described as
@@ -2041,10 +2044,9 @@ mod acpi_impl {
             let pci_mmio_limit = 0xfebf_ffffu32;
             let gttmmio = config.igd.gtt_mmio_base as u32;
             let rcba: u32 = 0xfed1_c000;
-            let p = |s: &str| fstart_acpi::aml::Path::new(s);
 
-            let mut aml = acpi_dsl! {
-                Device(#{name}) {
+            let mut aml: Vec<u8> = acpi_dsl! {
+                Device("PCI0") {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
                     Name("_SEG", 0u32);
@@ -2121,25 +2123,25 @@ mod acpi_impl {
                         DWordIO(0x0D00u32, 0xFFFFu32);
                         DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
                         DWordMemory(Cacheable, ReadWrite, 0x000C0000u32, 0x000FFFFFu32);
-                        DWordMemory(NotCacheable, ReadWrite, #{pci_mmio_base}, #{pci_mmio_limit});
+                        DWordMemory(NotCacheable, ReadWrite, #{dword pci_mmio_base}, #{dword pci_mmio_limit});
                         Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
                     });
                     Method("_CRS", 0, Serialized) {
-                        Return(#{p("MCRS")});
+                        Return(MCRS);
                     }
                     Method("_OSC", 4, NotSerialized) {
-                        Return(#{fstart_acpi::aml::Arg(3)});
+                        Return(Arg3);
                     }
 
                     Device("PDRC") {
                         Name("_HID", EisaId("PNP0C02"));
                         Name("_UID", 1u32);
                         Name("_CRS", ResourceTemplate {
-                            Memory32Fixed(ReadWrite, #{rcba}, 0x4000u32);
-                            Memory32Fixed(ReadWrite, #{mchbar}, 0x4000u32);
-                            Memory32Fixed(ReadWrite, #{dmibar}, 0x1000u32);
-                            Memory32Fixed(ReadWrite, #{epbar}, 0x1000u32);
-                            Memory32Fixed(ReadWrite, #{ecam_base}, #{ecam_size});
+                            Memory32Fixed(ReadWrite, #{dword rcba}, 0x4000u32);
+                            Memory32Fixed(ReadWrite, #{dword mchbar}, 0x4000u32);
+                            Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
+                            Memory32Fixed(ReadWrite, #{dword epbar}, 0x1000u32);
+                            Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
                             Memory32Fixed(ReadWrite, 0xFED20000u32, 0x00020000u32);
                             Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
                             Memory32Fixed(ReadWrite, 0xFED45000u32, 0x0004B000u32);
@@ -2166,7 +2168,7 @@ mod acpi_impl {
                             Offset(0xFC),
                             ASLS, 32,
                         }
-                        OperationRegion("OPRG", SystemMemory, #{p("ASLS")}, 0x400u32);
+                        OperationRegion("OPRG", SystemMemory, ASLS, 0x400u32);
                         Field("OPRG", DWordAcc, NoLock, Preserve) {
                             Offset(0x58),
                             MBOX, 32,
@@ -2180,7 +2182,7 @@ mod acpi_impl {
                             PFIT, 32,
                             CBLV, 32,
                         }
-                        OperationRegion("GFRG", SystemMemory, #{gttmmio}, 0x80000u32);
+                        OperationRegion("GFRG", SystemMemory, #{dword gttmmio}, 0x80000u32);
                         Field("GFRG", DWordAcc, NoLock, Preserve) {
                             Offset(0x61254),
                             BCLV, 16,
@@ -2218,19 +2220,19 @@ mod acpi_impl {
                         }
                         Device("LCD0") {
                             Name("_ADR", 0x0400u32);
-                            Method("_BCL", 0, NotSerialized) { Return(#{p("BRIG")}); }
+                            Method("_BCL", 0, NotSerialized) { Return(BRIG); }
                             Method("_BCM", 1, NotSerialized) { XBCM(Arg0); }
-                            Method("_BQC", 0, NotSerialized) { Return(#{fstart_acpi::aml::MethodCall::new(p("XBQC"), alloc::vec![])}); }
+                            Method("_BQC", 0, NotSerialized) { Return(XBQC()); }
                         }
                         Method("_DOS", 1, NotSerialized) { }
                         Method("DECB", 0, NotSerialized) {
-                            Local0 = #{fstart_acpi::aml::MethodCall::new(p("XBQC"), alloc::vec![])};
+                            Local0 = XBQC();
                             If (Local0 > 0u32) { Local0 = Local0 - 10u32; }
                             XBCM(Local0);
                             Notify(LCD0, 0x87u32);
                         }
                         Method("INCB", 0, NotSerialized) {
-                            Local0 = #{fstart_acpi::aml::MethodCall::new(p("XBQC"), alloc::vec![])};
+                            Local0 = XBQC();
                             If (Local0 < 100u32) { Local0 = Local0 + 10u32; }
                             XBCM(Local0);
                             Notify(LCD0, 0x86u32);
@@ -2241,22 +2243,27 @@ mod acpi_impl {
                         Method("_S3D", 0, NotSerialized) { Return(3u32); }
                     }
                 }
-            };
+            }.into();
 
             aml.extend_from_slice(&acpi_dsl! {
-                Name("PICM", 0u32);
-                Method("_PIC", 1, NotSerialized) {
-                    PICM = Arg0;
+                Scope("\\") {
+                    Name("PICM", 0u32);
+                    Method("_PIC", 1, NotSerialized) {
+                        PICM = Arg0;
+                    }
+                    Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
+                    Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
+                    Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
+                    Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
+                    // CPU power-management objects are appended below using the
+                    // coreboot-derived SpeedStep/C-state generator.
                 }
-                Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
-                Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
-                Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
-                Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
-                // CPU power-management objects are appended below using the
-                // coreboot-derived SpeedStep/C-state generator.
             });
 
-            aml.extend_from_slice(&crate::cpu::core2_aml::cpu_devices_aml(2));
+            aml.extend_from_slice(&fstart_acpi::aml_linker::scope_vec(
+                "\\",
+                &crate::cpu::core2_aml::cpu_devices_aml(2),
+            ));
 
             aml
         }

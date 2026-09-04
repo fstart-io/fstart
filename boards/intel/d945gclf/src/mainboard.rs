@@ -159,7 +159,7 @@ mod acpi_impl {
     pub fn d945gclf_mainboard_dsdt_aml(context: I945Ich7AcpiContext) -> Vec<u8> {
         let mut out = Vec::new();
 
-        out.extend(acpi_dsl! {
+        out.extend_from_slice(&acpi_dsl! {
             Scope("\\_SB_") {
                 Device("SLPB") {
                     Name("_HID", "PNP0C0E");
@@ -174,7 +174,7 @@ mod acpi_impl {
 
         let config = crate::d945gclf_superio_config();
         let sio = fstart_driver_superio::superio_dsdt_aml(&config);
-        out.extend(fstart_acpi::scope_aml(context.lpc_scope(), &sio));
+        out.extend(fstart_acpi::aml_linker::scope_vec(context.lpc_scope(), &sio));
         out
     }
 }

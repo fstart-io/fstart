@@ -920,6 +920,27 @@ mod acpi_impl {
     const HID_LPT: &str = "PNP0400"; // Standard LPT parallel port
     const HID_EC: &str = "PNP0C02"; // SuperIO environment-controller resources
 
+    fn emit_named<const N: usize, const K: usize>(
+        fragment: &fstart_acpi::BoundAmlFragment<N, K>,
+        name: &str,
+        irq: Option<u8>,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        fragment.emit(&mut bytes);
+        let name_offset = 3 + usize::from(bytes[2] >> 6);
+        assert_eq!(&bytes[name_offset..name_offset + 4], b"____");
+        bytes[name_offset..name_offset + 4].fill(b'_');
+        bytes[name_offset..name_offset + name.len()].copy_from_slice(name.as_bytes());
+        if let Some(irq) = irq {
+            let descriptor = bytes
+                .windows(3)
+                .position(|window| window == [0x22, 0x01, 0x00])
+                .expect("Super I/O IRQ descriptor missing");
+            bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
+        }
+        bytes
+    }
+
     /// Emit an IO resource descriptor for the given port/size, plus an
     /// optional IRQ descriptor.
     fn ldn_device(
@@ -930,225 +951,106 @@ mod acpi_impl {
         io_size: u16,
         irq: Option<u8>,
     ) -> Vec<u8> {
-        match hid {
-            HID_COM => ldn_device_pnp0501(name, uid, io_base, io_size, irq),
-            HID_KBC => ldn_device_pnp0303(name, uid, io_base, io_size, irq),
-            HID_MOUSE => ldn_device_pnp0f13(name, uid, io_base, io_size, irq),
-            HID_LPT => ldn_device_pnp0400(name, uid, io_base, io_size, irq),
-            HID_EC => ldn_device_pnp0c02(name, uid, io_base, io_size, irq),
-            _ => Vec::new(),
+        let uid = u64::from(uid);
+        let io_base = u64::from(io_base);
+        let io_size = u64::from(io_size);
+        let hid = u64::from(fstart_acpi::eisa_id(hid));
+        if irq.is_some() {
+            let fragment = fstart_acpi_macros::acpi_dsl! {
+                Device("____") {
+                    Name("_HID", #{dword hid});
+                    Name("_UID", #{dword uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{word io_base}, #{word io_base}, 0x01u8, #{byte io_size});
+                        IRQNoFlags(0u8);
+                    });
+                }
+            };
+            emit_named(&fragment, name, irq)
+        } else {
+            let fragment = fstart_acpi_macros::acpi_dsl! {
+                Device("____") {
+                    Name("_HID", #{dword hid});
+                    Name("_UID", #{dword uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{word io_base}, #{word io_base}, 0x01u8, #{byte io_size});
+                    });
+                }
+            };
+            emit_named(&fragment, name, None)
         }
     }
 
-    fn ldn_device_pnp0501(
-        name: &str,
-        uid: u32,
-        io_base: u16,
-        io_size: u16,
-        irq: Option<u8>,
+    fn emit<const N: usize, const K: usize>(
+        fragment: &fstart_acpi::BoundAmlFragment<N, K>,
     ) -> Vec<u8> {
-        if let Some(irq) = irq {
-            let irq = irq;
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0501"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        IRQNoFlags(#{irq});
-                    });
-                }
-            }
-        } else {
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0501"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                    });
-                }
-            }
-        }
-    }
-
-    fn ldn_device_pnp0303(
-        name: &str,
-        uid: u32,
-        io_base: u16,
-        io_size: u16,
-        irq: Option<u8>,
-    ) -> Vec<u8> {
-        if let Some(irq) = irq {
-            let irq = irq;
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0303"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        IRQNoFlags(#{irq});
-                    });
-                }
-            }
-        } else {
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0303"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                    });
-                }
-            }
-        }
-    }
-
-    fn ldn_device_pnp0f13(
-        name: &str,
-        uid: u32,
-        io_base: u16,
-        io_size: u16,
-        irq: Option<u8>,
-    ) -> Vec<u8> {
-        if let Some(irq) = irq {
-            let irq = irq;
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0F13"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        IRQNoFlags(#{irq});
-                    });
-                }
-            }
-        } else {
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0F13"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                    });
-                }
-            }
-        }
-    }
-
-    fn ldn_device_pnp0400(
-        name: &str,
-        uid: u32,
-        io_base: u16,
-        io_size: u16,
-        irq: Option<u8>,
-    ) -> Vec<u8> {
-        if let Some(irq) = irq {
-            let irq = irq;
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0400"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        IRQNoFlags(#{irq});
-                    });
-                }
-            }
-        } else {
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0400"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                    });
-                }
-            }
-        }
-    }
-
-    fn ldn_device_pnp0c02(
-        name: &str,
-        uid: u32,
-        io_base: u16,
-        io_size: u16,
-        irq: Option<u8>,
-    ) -> Vec<u8> {
-        if let Some(irq) = irq {
-            let irq = irq;
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0C02"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                        IRQNoFlags(#{irq});
-                    });
-                }
-            }
-        } else {
-            fstart_acpi_macros::acpi_dsl! {
-                Device(#{name}) {
-                    Name("_HID", EisaId("PNP0C02"));
-                    Name("_UID", #{uid});
-                    Name("_CRS", ResourceTemplate {
-                        IO(#{io_base}, #{io_base}, 0x01u8, #{io_size});
-                    });
-                }
-            }
-        }
+        let mut bytes = Vec::new();
+        fragment.emit(&mut bytes);
+        bytes
     }
 
     /// KBC needs two I/O ranges (0x60 and 0x64).
     fn kbc_device(cfg: &KbcConfig) -> Vec<u8> {
-        let base1 = cfg.io_base;
-        let base2 = cfg.io_ext;
-        let irq = cfg.irq;
-        fstart_acpi_macros::acpi_dsl! {
+        let base1 = u64::from(cfg.io_base);
+        let base2 = u64::from(cfg.io_ext);
+        let irq = u64::from(cfg.irq);
+        let mut bytes = emit(&fstart_acpi_macros::acpi_dsl! {
             Device("PS2K") {
                 Name("_HID", EisaId("PNP0303"));
                 Name("_CID", EisaId("PNP030B"));
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(#{base1}, #{base1}, 0x01u8, 0x01u8);
-                    IO(#{base2}, #{base2}, 0x01u8, 0x01u8);
-                    IRQ(Edge, ActiveHigh, Exclusive, #{irq});
+                    IO(#{word base1}, #{word base1}, 0x01u8, 0x01u8);
+                    IO(#{word base2}, #{word base2}, 0x01u8, 0x01u8);
+                    IRQ(Edge, ActiveHigh, Exclusive, 0u8);
                 });
                 Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
             }
-        }
+        });
+        let descriptor = bytes
+            .windows(4)
+            .position(|w| w[0..3] == [0x23, 1, 0])
+            .unwrap();
+        bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
+        bytes
     }
 
     /// Mouse shares KBC ports but has its own IRQ.
     fn mouse_device(_kbc: &KbcConfig, mouse: &MouseConfig) -> Vec<u8> {
-        let irq = mouse.irq;
-        fstart_acpi_macros::acpi_dsl! {
+        let irq = u64::from(mouse.irq);
+        let fragment = fstart_acpi_macros::acpi_dsl! {
             Device("PS2M") {
                 Name("_HID", EisaId("PNP0F13"));
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
-                    IRQ(Edge, ActiveHigh, Exclusive, #{irq});
+                    IRQ(Edge, ActiveHigh, Exclusive, 0u8);
                 });
                 Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
             }
-        }
+        };
+        let mut bytes = fragment.as_bytes().to_vec();
+        let descriptor = bytes
+            .windows(4)
+            .position(|w| w[0..3] == [0x23, 1, 0])
+            .unwrap();
+        bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
+        bytes
     }
 
     /// Environment controller resources.
     fn ec_device(cfg: &EcConfig) -> Vec<u8> {
-        let base1 = cfg.io_base;
-        let base2 = cfg.io_ext;
-        fstart_acpi_macros::acpi_dsl! {
+        let base1 = u64::from(cfg.io_base);
+        let base2 = u64::from(cfg.io_ext);
+        emit(&fstart_acpi_macros::acpi_dsl! {
             Device("EC00") {
                 Name("_HID", EisaId("PNP0C02"));
                 Name("_UID", 0u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(#{base1}, #{base1}, 0x01u8, 0x08u8);
-                    IO(#{base2}, #{base2}, 0x01u8, 0x04u8);
+                    IO(#{word base1}, #{word base1}, 0x01u8, 0x08u8);
+                    IO(#{word base2}, #{word base2}, 0x01u8, 0x04u8);
                 });
             }
-        }
+        })
     }
 
     /// Produce unscoped DSDT AML for all enabled SuperIO logical devices.

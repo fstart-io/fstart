@@ -568,7 +568,7 @@ mod rcba_pirq {
     };
 
     impl RouteSet {
-        #[cfg_attr(not(feature = "acpi"), allow(dead_code))]
+        #[cfg_attr(not(all(feature = "acpi", target_os = "none")), allow(dead_code))]
         pub const fn dxxir_for_slot(self, slot: u8) -> Option<u16> {
             match slot {
                 25 => Some(self.d25ir),
@@ -2350,8 +2350,6 @@ mod acpi_impl {
     extern crate alloc;
 
     use alloc::vec::Vec;
-    use fstart_acpi::Aml;
-    use fstart_acpi::aml::{Name, PackageBuilder, Path};
     use fstart_acpi::device::AcpiDevice;
     use fstart_acpi::platform::{IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
 
@@ -2361,39 +2359,33 @@ mod acpi_impl {
 
     fn root_prt_scope_aml() -> Vec<u8> {
         let prt = root_prt_aml();
-        fstart_acpi::scope_aml("\\_SB_.PCI0", &prt)
+        fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &prt)
     }
 
     fn root_prt_aml() -> Vec<u8> {
-        let mut package = PackageBuilder::new();
-        let mut assigned = [[false; 4]; 32];
-
+        // The ICH8 DxxIR swizzles are platform constants, not discovered
+        // hardware. Describe every routed slot/pin so host and firmware link
+        // exactly the same namespace.
+        let mut entries = Vec::new();
+        let mut count = 0u8;
         for dev in 0u8..32 {
-            for func in 0u8..8 {
-                let pci = ecam::EcamDevice::new(0, dev, func);
-                if pci.read16(0x00) == 0xffff {
-                    continue;
-                }
-
-                let pin = pci.read8(0x3d);
-                if !(1..=4).contains(&pin) {
-                    continue;
-                }
-
-                let pin_idx = usize::from(pin - 1);
-                if assigned[usize::from(dev)][pin_idx] {
-                    continue;
-                }
-                assigned[usize::from(dev)][pin_idx] = true;
-
-                let gsi = root_bus_gsi(dev, pin);
-                add_prt_entry(&mut package, dev, pin - 1, gsi);
+            if rcba_pirq::DEFAULT_ROUTE.dxxir_for_slot(dev).is_none() {
+                continue;
+            }
+            for pin in 1u8..=4 {
+                add_prt_entry(&mut entries, dev, pin - 1, root_bus_gsi(dev, pin));
+                count += 1;
             }
         }
 
-        let name = Name::new(Path::new("_PRT"), &package);
-        let mut bytes = Vec::new();
-        name.to_aml_bytes(&mut bytes);
+        let mut package_body = Vec::with_capacity(entries.len() + 1);
+        package_body.push(count);
+        package_body.extend(entries);
+        let mut bytes = Vec::with_capacity(package_body.len() + 8);
+        bytes.extend_from_slice(&[0x08, b'_', b'P', b'R', b'T', 0x12]);
+        let (length, width) = fstart_acpi::aml_linker::package_length(package_body.len());
+        bytes.extend_from_slice(&length[..width]);
+        bytes.extend(package_body);
         bytes
     }
 
@@ -2405,17 +2397,28 @@ mod acpi_impl {
         16 + pirq
     }
 
-    fn add_prt_entry(package: &mut PackageBuilder, slot: u8, pin: u8, gsi: u32) {
-        let address = (u32::from(slot) << 16) | 0xffff;
-        let pin = u32::from(pin);
-        let source = 0u32;
-
-        let mut entry = PackageBuilder::new();
-        entry.add_element(&address);
-        entry.add_element(&pin);
-        entry.add_element(&source);
-        entry.add_element(&gsi);
-        package.add_element(&entry);
+    fn add_prt_entry(entries: &mut Vec<u8>, slot: u8, pin: u8, gsi: u32) {
+        let mut body = Vec::with_capacity(21);
+        body.push(4);
+        for value in [(u32::from(slot) << 16) | 0xffff, u32::from(pin), 0, gsi] {
+            match value {
+                0 => body.push(0x00),
+                1 => body.push(0x01),
+                2..=0xff => body.extend_from_slice(&[0x0a, value as u8]),
+                0x100..=0xffff => {
+                    body.push(0x0b);
+                    body.extend_from_slice(&(value as u16).to_le_bytes());
+                }
+                _ => {
+                    body.push(0x0c);
+                    body.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        entries.push(0x12); // PackageOp
+        let (length, width) = fstart_acpi::aml_linker::package_length(body.len());
+        entries.extend_from_slice(&length[..width]);
+        entries.extend(body);
     }
 
     const LAPIC_BASE: u64 = 0xFEE0_0000;
@@ -2486,7 +2489,7 @@ mod acpi_impl {
             let pirq_g = pirq_irq(6);
             let pirq_h = pirq_irq(7);
 
-            let mut aml = acpi_dsl! {
+            let mut aml: Vec<u8> = acpi_dsl! {
                 Scope("\\") {
                     OperationRegion("PMIO", SystemIO, 0x0500u32, 0x80u32);
                     Field("PMIO", ByteAcc, NoLock, Preserve) {
@@ -2515,11 +2518,12 @@ mod acpi_impl {
                         GP36, 1, GP37, 1, GP38, 1, GP39, 1,
                     }
                 }
-            };
+            }
+            .into();
 
             aml.extend_from_slice(&root_prt_scope_aml());
 
-            aml.extend_from_slice(&acpi_dsl! {
+            aml.extend(Vec::from(acpi_dsl! {
                 Scope("\\_SB_.PCI0") {
                     OperationRegion("RCRB", SystemMemory, 0xFED1C000u32, 0x4000u32);
                     Field("RCRB", DWordAcc, Lock, Preserve) {
@@ -2705,7 +2709,7 @@ mod acpi_impl {
                                     10u32, 11u32, 12u32, 14u32, 15u32);
                             });
                             Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{pirq_a});
+                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_a});
                             });
                             Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                         }
@@ -2719,7 +2723,7 @@ mod acpi_impl {
                                     10u32, 11u32, 12u32, 14u32, 15u32);
                             });
                             Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{pirq_b});
+                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_b});
                             });
                             Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                         }
@@ -2733,7 +2737,7 @@ mod acpi_impl {
                                     10u32, 11u32, 12u32, 14u32, 15u32);
                             });
                             Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{pirq_c});
+                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_c});
                             });
                             Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                         }
@@ -2747,7 +2751,7 @@ mod acpi_impl {
                                     10u32, 11u32, 12u32, 14u32, 15u32);
                             });
                             Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{pirq_d});
+                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_d});
                             });
                             Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                         }
@@ -2761,7 +2765,7 @@ mod acpi_impl {
                                     10u32, 11u32, 12u32, 14u32, 15u32);
                             });
                             Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{pirq_e});
+                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_e});
                             });
                             Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                         }
@@ -2775,7 +2779,7 @@ mod acpi_impl {
                                     10u32, 11u32, 12u32, 14u32, 15u32);
                             });
                             Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{pirq_f});
+                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_f});
                             });
                             Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                         }
@@ -2789,7 +2793,7 @@ mod acpi_impl {
                                     10u32, 11u32, 12u32, 14u32, 15u32);
                             });
                             Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{pirq_g});
+                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_g});
                             });
                             Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                         }
@@ -2803,7 +2807,7 @@ mod acpi_impl {
                                     10u32, 11u32, 12u32, 14u32, 15u32);
                             });
                             Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{pirq_h});
+                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_h});
                             });
                             Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
                         }
@@ -2900,7 +2904,7 @@ mod acpi_impl {
                         }
                     }
                 }
-            });
+            }));
 
             aml
         }

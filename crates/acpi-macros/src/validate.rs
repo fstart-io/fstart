@@ -58,7 +58,7 @@ fn validate_item(item: &DslItem) -> Result<()> {
             span,
         } => {
             if let NameOrInterp::Literal(n) = name {
-                validate_acpi_name(n, *span)?;
+                validate_acpi_path(n, *span)?;
             }
             validate_items(children)?;
         }
@@ -108,7 +108,6 @@ fn validate_item(item: &DslItem) -> Result<()> {
         | DslItem::ShiftLeft { .. }
         | DslItem::Subtract { .. }
         | DslItem::Add { .. }
-        | DslItem::RawExpr { .. }
         | DslItem::Assign { .. }
         | DslItem::Notify { .. }
         | DslItem::Sleep { .. }
@@ -127,14 +126,12 @@ fn validate_acpi_path(path: &str, span: Span) -> Result<()> {
         return Err(Error::new(span, "ACPI path cannot be empty"));
     }
 
-    let segments: Vec<&str> = if let Some(rest) = path.strip_prefix('\\') {
-        if rest.is_empty() {
-            return Ok(());
-        }
-        rest.split('.').collect()
-    } else {
-        path.split('.').collect()
-    };
+    let path = path.strip_prefix('\\').unwrap_or(path);
+    let path = path.trim_start_matches('^');
+    if path.is_empty() {
+        return Ok(());
+    }
+    let segments: Vec<&str> = path.split('.').collect();
 
     for seg in &segments {
         let clean = seg.trim_start_matches('_');
@@ -147,7 +144,10 @@ fn validate_acpi_path(path: &str, span: Span) -> Result<()> {
                 format!("ACPI name segment `{seg}` exceeds 4 characters"),
             ));
         }
-        if !seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        if !seg
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        {
             return Err(Error::new(
                 span,
                 format!("ACPI name `{seg}` contains invalid characters (allowed: A-Z, 0-9, _)"),
@@ -166,7 +166,10 @@ fn validate_acpi_name(name: &str, span: Span) -> Result<()> {
             format!("ACPI name `{name}` must be 1-4 characters"),
         ));
     }
-    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
         return Err(Error::new(
             span,
             format!("ACPI name `{name}` contains invalid characters (allowed: A-Z, 0-9, _)"),

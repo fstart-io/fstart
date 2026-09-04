@@ -1,7 +1,8 @@
 //! Digest (hash) computation for file integrity verification.
 //!
 //! Provides SHA-256 and SHA3-256 implementations via the RustCrypto crates.
-//! Each is behind a feature flag (`sha2-digest`, `sha3-digest`).
+//! SHA-256 uses RustCrypto's compact rolled software backend. Each algorithm
+//! is behind a feature flag (`sha2-digest`, `sha3-digest`).
 
 use fstart_core::ffs::DigestSet;
 
@@ -19,7 +20,7 @@ pub enum DigestError {
 /// Compute a SHA-256 digest of `data`.
 ///
 /// Returns a 32-byte digest.
-#[cfg(feature = "sha2-digest")]
+#[cfg(any(feature = "sha2-digest", test))]
 pub fn hash_sha256(data: &[u8]) -> [u8; 32] {
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
@@ -114,4 +115,52 @@ pub fn verify_digest_set(data: &[u8], expected: &DigestSet) -> Result<(), Digest
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hash_sha256;
+
+    #[test]
+    fn compact_sha256_matches_known_answers() {
+        let cases: &[(&[u8], [u8; 32])] = &[
+            (
+                b"",
+                [
+                    0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99,
+                    0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95,
+                    0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+                ],
+            ),
+            (
+                b"abc",
+                [
+                    0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d,
+                    0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10,
+                    0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+                ],
+            ),
+            (
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+                [
+                    0x24, 0x8d, 0x6a, 0x61, 0xd2, 0x06, 0x38, 0xb8, 0xe5, 0xc0, 0x26, 0x93, 0x0c,
+                    0x3e, 0x60, 0x39, 0xa3, 0x3c, 0xe4, 0x59, 0x64, 0xff, 0x21, 0x67, 0xf6, 0xec,
+                    0xed, 0xd4, 0x19, 0xdb, 0x06, 0xc1,
+                ],
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(hash_sha256(input), *expected);
+        }
+
+        assert_eq!(
+            hash_sha256(&[0xa5; 4097]),
+            [
+                0xce, 0x38, 0x85, 0x9d, 0x38, 0x7e, 0x37, 0xa0, 0x65, 0x97, 0xde, 0xb8, 0x07, 0x2e,
+                0x12, 0x4e, 0xfe, 0xa0, 0x55, 0x53, 0xa6, 0x84, 0x2c, 0xa0, 0x31, 0x26, 0xf6, 0x22,
+                0x25, 0xe5, 0x88, 0x19,
+            ]
+        );
+    }
 }
