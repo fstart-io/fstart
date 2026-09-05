@@ -18,6 +18,8 @@ x86_64 = ["dep:fstart-smm"]
 x86-1g-pages = []
 x86-writable-page-tables = []
 x86-static-page-tables = []
+# Raw COM1 transition checkpoints for physical postcar bring-up only.
+x86-postcar-uart-debug = []
 early-ffs-anchor = []
 
 [dependencies]

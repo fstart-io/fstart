@@ -871,8 +871,8 @@ core::arch::global_asm!(
 // stack. Cut-B shape (coreboot `exit_car.S` + change 95145):
 //
 //  1. `call _car_teardown` — CR0.CD=1, MTRRs off, Atom NEM cleared.
-//     Only registers/MSRs/CR0 are touched; the pushed return address sits
-//     in still-live CAR. Noreturn past this point for any CAR-backed state.
+//     The return address is popped into a register before CAR is disabled;
+//     no CAR-backed stack access occurs after that point.
 //  2. Program variable MTRRs from the UC-DRAM stash at `POSTCAR_STASH_ADDR`
 //     (written pre-transition by the bootblock, `INVD`-proof), enable MTRRs.
 //  3. Clear CR0.CD/NW, `INVD`, switch to the fresh DRAM stack (`_stack_top`
@@ -889,6 +889,32 @@ core::arch::global_asm!(
 // stage named "postcar"; it also lands first via `.text.entry`. The
 // `postcar` stage_env gate keeps `_start_ram` out of the postcar binary so
 // the flat image starts here, at the address the bootblock jumps to.
+//
+// These are compile-time strings rather than a callable helper: the first
+// checkpoint runs on the inherited CAR stack, so a call would violate the
+// transition's no-CAR-stack rule.
+#[cfg(feature = "x86-postcar-uart-debug")]
+#[allow(unused_macros)]
+macro_rules! postcar_uart_checkpoint {
+    ($code:literal) => {
+        concat!(
+            "movw $0x3f8, %dx\n",
+            "movb $",
+            $code,
+            ", %al\n",
+            "outb %al, %dx\n",
+        )
+    };
+}
+
+#[cfg(not(feature = "x86-postcar-uart-debug"))]
+#[allow(unused_macros)]
+macro_rules! postcar_uart_checkpoint {
+    ($code:literal) => {
+        ""
+    };
+}
+
 #[cfg(all(target_os = "none", fstart_stage_env = "postcar"))]
 core::arch::global_asm!(
     ".section .text.entry, \"ax\"",
@@ -898,8 +924,13 @@ core::arch::global_asm!(
     // POST 0x70: postcar entry reached (CAR still live, inherited stack).
     "movb $0x70, %al",
     "outb %al, $0x80",
+    // Optional raw COM1 checkpoints: p=entry, t=teardown returned,
+    // m=MTRRs enabled, c=INVD complete, r=Rust entry, !=invalid stash.
+    // They use no stack or logger, but are omitted from production images.
+    postcar_uart_checkpoint!("0x70"), // p
     // Step 1: tear down CAR (CD=1, MTRRs off, NEM cleared on Atom).
     "call _car_teardown",
+    postcar_uart_checkpoint!("0x74"), // t
     // Step 2: program variable MTRRs from the UC stash.
     // Stash layout (car_teardown::PostcarMtrrStash): u32 magic, u32 count,
     // then count x (u64 base_msr, u64 mask_msr) programmed as MTRR 0..n.
@@ -938,6 +969,7 @@ core::arch::global_asm!(
     "rdmsr",
     "orl $0x800, %eax", // MTRR_DEF_TYPE_EN
     "wrmsr",
+    postcar_uart_checkpoint!("0x6d"), // m
     // Step 3: re-enable caching, flush stale CAR lines, take fresh stack.
     "movq %cr0, %rax",
     // Clear CD|NW. The mask is written as a sign-extended imm32
@@ -945,7 +977,8 @@ core::arch::global_asm!(
     "andq $0xFFFFFFFF9FFFFFFF, %rax",
     "movq %rax, %cr0",
     "invd",
-    // POST 0x71: transition done; CAR stack abandoned, DRAM stack live.
+    postcar_uart_checkpoint!("0x63"), // c
+    // POST 0x71: transition done; CAR stack abandoned, DRAM stack next.
     "movb $0x71, %al",
     "outb %al, $0x80",
     "movabs $_stack_top, %rsp",
@@ -969,6 +1002,7 @@ core::arch::global_asm!(
     // POST 0x72: postcar runtime setup complete; entering Rust.
     "movb $0x72, %al",
     "outb %al, $0x80",
+    postcar_uart_checkpoint!("0x72"), // r
     "xorl %edi, %edi",
     "call fstart_main",
     "4:",
@@ -976,6 +1010,7 @@ core::arch::global_asm!(
     "jmp 4b",
     // Stash validation failed: POST 0xee and halt (no stack to trust).
     "_postcar_stash_fail:",
+    postcar_uart_checkpoint!("0x21"), // !
     "movb $0xee, %al",
     "outb %al, $0x80",
     "5:",

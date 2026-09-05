@@ -168,7 +168,11 @@ fn load(
         .acpi_only_devices
         .map_or_else(Vec::new, |load| load());
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let manifest = crate::board_manifest::find(&workspace_root, config.name.as_str())?;
+    // The outer fbuild process selects a Cargo-feature variant before this
+    // board-owned host tool starts. Preserve that selection instead of
+    // rediscovering only the base board name from BoardConfig.
+    let board = std::env::var("FSTART_BOARD_VARIANT").unwrap_or_else(|_| config.name.to_string());
+    let manifest = crate::board_manifest::find(&workspace_root, &board)?;
     validate(&manifest, &config)?;
     Ok((
         manifest,
@@ -415,7 +419,11 @@ fn validate(
     manifest: &crate::board_manifest::BoardManifest,
     config: &BoardConfig,
 ) -> Result<(), String> {
-    if config.name.as_str() != manifest.board {
+    let is_selected_variant = manifest
+        .variants
+        .iter()
+        .any(|(name, _)| name == &manifest.board);
+    if config.name.as_str() != manifest.board && !is_selected_variant {
         return Err(format!(
             "board config name mismatch for {}: manifest board is '{}', board returned '{}'",
             manifest.package, manifest.board, config.name

@@ -32,10 +32,13 @@ global_asm!(
     // Atom/NEM systems clear MSR 0x2e0 below after CPUID model gating.
     //
     // Callable from the postcar entry while still on the inherited CAR
-    // stack: it only touches registers, MSRs, and CR0 (plus one pushed
-    // return address in still-live CAR).
+    // stack: capture the return address before disabling CAR, then touch
+    // only registers, MSRs, and CR0. Never read the old stack afterward.
     // ------------------------------------------------------------------
     "_car_teardown:",
+    // Like coreboot non-evict/exit_car.S: consume the return address while
+    // CAR is live. R11 is caller-saved and untouched by CPUID/RDMSR/WRMSR.
+    "popq %r11",
     // Preserve RBX for the x86_64 C ABI. CPUID below clobbers EBX, and this
     // routine returns to code that may keep live state in RBX.
     "movq %rbx, %r8",
@@ -77,7 +80,7 @@ global_asm!(
     "wrmsr",
     "2:",
     "movq %r8, %rbx",
-    "ret",
+    "jmp *%r11",
     options(att_syntax),
 );
 

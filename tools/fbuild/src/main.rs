@@ -106,6 +106,7 @@ fn dispatch_board_host(board: &str, args: &[String]) -> Result<(), String> {
         .arg("--")
         .args(args)
         .env("FSTART_WORKSPACE_ROOT", &workspace_root)
+        .env("FSTART_BOARD_VARIANT", &manifest.board)
         .status()
         .map_err(|e| format!("failed to run host tool for {}: {e}", manifest.board))?;
 

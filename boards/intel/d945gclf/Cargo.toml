@@ -16,6 +16,9 @@ features = [
   "smsc-lpc47m15x",
 ]
 
+[package.metadata.fstart.variants.intel-d945gclf-postcar-debug]
+features = ["x86-postcar-uart-debug"]
+
 [features]
 default = []
 host = ["dep:fbuild", "fstart-platform-intel/host"]
@@ -31,6 +34,7 @@ x86_64 = ["fstart-stage?/x86_64"]
 x86-static-page-tables = ["fstart-stage?/x86-static-page-tables"]
 x86-writable-page-tables = ["fstart-stage?/x86-writable-page-tables"]
 x86-1g-pages = ["fstart-stage?/x86-1g-pages"]
+x86-postcar-uart-debug = ["fstart-arch/x86-postcar-uart-debug"]
 ffs = ["fstart-stage?/ffs"]
 bootstrap = ["fstart-stage?/bootstrap"]
 ffs-signature = ["fstart-stage?/ffs-signature"]

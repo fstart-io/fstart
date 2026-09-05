@@ -521,7 +521,7 @@ impl IntelI945 {
 
         ep.clrsetbits32(
             epbar::EPVC0RCTL,
-            0xffff_ff00,
+            EPVC1RCTL_REG::TC_VC_MAP::SET.value,
             EPVC1RCTL_REG::TC_VC_MAP.val(0).value,
         );
         ep.clrsetbits32(epbar::EPPVCCAP1, 7, EPPVCCAP1_REG::VC_COUNT.val(1).value);
@@ -569,7 +569,7 @@ impl IntelI945 {
         ep.clrsetbits32(epbar::EPVC1RCTL, 7 << 24, EPVC1RCTL_REG::VC_ID.val(1).value);
         ep.clrsetbits32(
             epbar::EPVC1RCTL,
-            0xffff_ff00,
+            EPVC1RCTL_REG::TC_VC_MAP::SET.value,
             (EPVC1RCTL_REG::TC_VC_MAP.val(0) + EPVC1RCTL_REG::VC_ARB::SET).value,
         );
 
@@ -641,7 +641,7 @@ impl IntelI945 {
         // VC0 accepts TC0 only; VC ID 1 must match the ICH7 side.
         dmi.clrsetbits32(
             dmibar::DMIVC0RCTL0,
-            0xffff_ff00,
+            DMIVC1RCTL_REG::TC_VC_MAP::SET.value,
             DMIVC1RCTL_REG::TC_VC_MAP.val(0).value,
         );
         dmi.clrsetbits32(dmibar::DMIPVCCAP1, 7, DMIPVCCAP1_REG::VC_COUNT.val(1).value);
@@ -653,7 +653,7 @@ impl IntelI945 {
         );
         dmi.clrsetbits32(
             dmibar::DMIVC1RCTL,
-            0xffff_ff00,
+            DMIVC1RCTL_REG::TC_VC_MAP::SET.value,
             (DMIVC1RCTL_REG::TC_VC_MAP.val(0) + DMIVC1RCTL_REG::VC_ARB::SET).value,
         );
         dmi.write32(

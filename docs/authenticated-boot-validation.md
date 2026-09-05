@@ -88,10 +88,46 @@ cargo test -p fstart-stage --features ffs,ffs-signature,lz4,fit
 cargo test -p fstart-acpi -p fstart-acpi-macros --all-features
 ```
 
+## D945GCLF physical boot (2026-09-05)
+
+A release image assembled with `cargo fbuild assemble --board intel-d945gclf
+--release` was flashed to the board's 512 KiB Winbond W25X40 using Dedipico /
+`rflasher`. The original chip contents were backed up and verified before
+writing; the new image also passed flash verification. UART capture was drained
+before the power-on pulse and recorded for 60 seconds at 115200 baud.
+
+The first boot stopped after `jumping to postcar at 0x1000000`. Comparison with
+coreboot identified two pre-existing defects:
+
+- i945 egress/DMI VC configuration passed a keep-mask as a clear-mask, erasing
+  the VC1 ID and leaving a mismatch with ICH7. Clearing only the TC1–TC7 field
+  preserves the ID, enable bits, and TC0 mapping.
+- CAR teardown returned through the inherited CAR stack after disabling CAR.
+  It now captures the return address in R11 before teardown and jumps through
+  that register, following coreboot's non-evict teardown approach.
+
+With both corrections, the DMI negotiation timeout disappeared. The opt-in
+`intel-d945gclf-postcar-debug` fbuild variant emits raw COM1 checkpoints;
+`ptmcr` confirmed postcar entry, return from teardown, MTRR enable, completion
+of INVD, and entry into Rust. Default production images omit those writes. Postcar verified and entered ramstage;
+mainstage authenticated boot media, emitted ACPI/SMBIOS tables, and reached
+`intel-ich7: finalize complete`. This was a no-payload boot, not an OS boot.
+Because both corrections were tested together, this does not isolate the
+stall's cause to one instruction. The log still reports absent-slot SMBus
+transaction errors and `microcode: no matching Intel patch found` warnings.
+
+Local evidence is under `/tmp/d945gclf-car-vc-fix-20260905/` (`firmware.pflash`,
+`boot.log`, `image-inspect.txt`). The flashed image SHA-256 is
+`25b22b5130add6ea8f9ca86ca6f7081b60a3a6b53b66c85dcaff47af54c30f4d`.
+The original backup is `/tmp/d945gclf-authboot-20260905/before.bin`.
+Power-off was commanded after capture. Formatting and the Intel driver release
+tests passed (23 unit tests and 3 doctests; 4 doctests ignored).
+
 ## Remaining hardware validation
 
-No physical Intel CAR-transition boot, Sunxi boot, suspend/resume, power-fail
-update, DMA-isolation, or persistent rollback test was performed. Link-time
-SRAM fit is not a measured peak call-stack bound. Hardware validation remains
-required before claiming supported real-board behavior or authenticated-update
-protection. Existing products remain labeled development-integrity.
+The D945GCLF test above covers one physical Intel CAR-transition boot through
+mainstage finalization. Other Intel boards, Sunxi boot, suspend/resume,
+power-fail update, DMA isolation, and persistent rollback remain untested.
+Link-time SRAM fit is not a measured peak call-stack bound. Further hardware
+validation remains required before broader support or authenticated-update
+protection claims. Existing products remain labeled development-integrity.

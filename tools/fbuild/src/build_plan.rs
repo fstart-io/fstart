@@ -155,7 +155,11 @@ fn validate_manifest(
     manifest: &crate::board_manifest::BoardManifest,
     target: TargetSpec,
 ) -> Result<(), String> {
-    if manifest.board != config.name.as_str() {
+    let is_selected_variant = manifest
+        .variants
+        .iter()
+        .any(|(name, _)| name == &manifest.board);
+    if manifest.board != config.name.as_str() && !is_selected_variant {
         return Err(format!(
             "manifest board '{}' does not match board config name '{}'",
             manifest.board, config.name
