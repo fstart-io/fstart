@@ -1,9 +1,9 @@
 //! Foxconn D41S mainboard hooks.
 
 #[cfg(feature = "stage")]
-use fstart_core::services::device::BusDevice;
-#[cfg(feature = "stage")]
 use fstart_core::services::ServiceError;
+#[cfg(feature = "stage")]
+use fstart_core::services::device::BusDevice;
 #[cfg(feature = "stage")]
 use fstart_driver_intel::generic::ck505::I2cCk505;
 #[cfg(feature = "stage")]
@@ -23,7 +23,7 @@ pub struct D41SMainboard {
 mod mainboard_acpi_device {
     extern crate alloc;
 
-    use super::{d41s_mainboard_dsdt_aml, D41SMainboard};
+    use super::{D41SMainboard, d41s_mainboard_dsdt_aml};
 
     impl fstart_acpi::device::AcpiDevice for D41SMainboard {
         type Config = fstart_platform_intel::pineview::PineviewIch7AcpiContext;
@@ -60,9 +60,7 @@ impl IntelEarlyBoardHooks<PineviewIch7> for D41SMainboard {
         let southbridge = ctx.southbridge();
         let mut ck505 = I2cCk505::new_at_address(crate::d41s_ck505_config(), crate::CK505_ADDR)
             .map_err(ServiceError::from)?;
-        ck505
-            .init_on_smbus(southbridge)
-            .map_err(ServiceError::from)
+        ck505.init_on_smbus(southbridge).map_err(ServiceError::from)
     }
 }
 
@@ -77,6 +75,7 @@ mod acpi_impl {
         let config = crate::d41s_superio_config();
         let sio = fstart_driver_superio::superio_dsdt_aml(&config);
         fstart_acpi::aml_linker::scope_vec(context.lpc_scope(), &sio)
+            .expect("D41S required Super I/O scope emission failed")
     }
 }
 

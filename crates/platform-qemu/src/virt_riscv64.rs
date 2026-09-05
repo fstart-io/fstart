@@ -141,7 +141,10 @@ impl QemuRiscv64Virt {
     where
         B: QemuRiscv64VirtBoard,
     {
-        let _ = (env, handoff);
+        let _ = handoff;
+        if !matches!(env, StageEnvironment::Monolithic) {
+            fstart_arch::halt();
+        }
         let Ok(mut mainstage) = QemuRiscv64VirtMainstage::new::<B>() else {
             fstart_arch::riscv64::halt();
         };
@@ -149,6 +152,23 @@ impl QemuRiscv64Virt {
         if !phase("qemu-riscv64", "before_console", hooks.before_console())
             || !phase("qemu-riscv64", "console", mainstage.init_console())
             || !phase("qemu-riscv64", "after_console", hooks.after_console())
+            || !phase(
+                "qemu-riscv64",
+                "boot_integrity",
+                crate::boot::from_dtb(
+                    fstart_arch::riscv64::boot_dtb_addr(),
+                    if cfg!(feature = "linux") {
+                        Some(B::CONFIG.common.dtb_addr)
+                    } else if cfg!(feature = "crabefi") {
+                        Some(crate::virt::QEMU_RISCV64_UEFI_DTB_ADDR)
+                    } else {
+                        None
+                    },
+                    B::CONFIG.common.ram_base,
+                    B::CONFIG.common.firmware_base,
+                    B::CONFIG.common.firmware_size,
+                ),
+            )
             || !phase("qemu-riscv64", "bus_scan", mainstage.init_pci())
             || !phase("qemu-riscv64", "before_payload", hooks.before_payload())
         {

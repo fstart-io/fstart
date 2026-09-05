@@ -10,6 +10,10 @@ host = []
 stage = [
   "dep:fstart-stage",
   "dep:fstart-driver-uart",
+  "dep:dtoolkit",
+  "dep:heapless",
+  "fstart-stage/ffs",
+  "fstart-stage/ffs-signature",
 ]
 x86_64 = ["fstart-arch/x86_64", "fstart-stage?/x86_64"]
 riscv64 = ["fstart-arch/riscv64", "fstart-stage?/riscv64"]
@@ -27,4 +31,6 @@ fstart-pci = { workspace = true }
 fstart-stage = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }
 serde = { workspace = true }
+dtoolkit = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }
 ufmt = { workspace = true }

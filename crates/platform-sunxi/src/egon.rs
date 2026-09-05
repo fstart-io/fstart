@@ -87,20 +87,6 @@ pub fn boot_device_at(sram_base: usize) -> BootDevice {
     }
 }
 
-/// Read the eGON next-stage offset from the in-SRAM header.
-#[inline]
-pub fn next_stage_offset_at(sram_base: usize) -> u32 {
-    // SAFETY: BROM-loaded eGON header is readable at this fixed offset.
-    unsafe { core::ptr::read_volatile((sram_base + 0x2c) as *const u32) }
-}
-
-/// Read the eGON next-stage size from the in-SRAM header.
-#[inline]
-pub fn next_stage_size_at(sram_base: usize) -> u32 {
-    // SAFETY: BROM-loaded eGON header is readable at this fixed offset.
-    unsafe { core::ptr::read_volatile((sram_base + 0x30) as *const u32) }
-}
-
 /// Read the total FFS image size from the in-SRAM eGON header.
 #[inline]
 pub fn ffs_total_size_at(sram_base: usize) -> u32 {

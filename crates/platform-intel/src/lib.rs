@@ -16,6 +16,11 @@ pub mod i945;
 pub mod pineview;
 
 #[cfg(feature = "stage")]
+mod boot;
+#[cfg(feature = "stage")]
+use boot::{import_intel_directory, install_intel_load_policy};
+
+#[cfg(feature = "stage")]
 use core::marker::PhantomData;
 #[cfg(feature = "stage")]
 use fstart_core::services::memory_detect::E820Entry;
@@ -100,12 +105,13 @@ pub(crate) fn run_mainstage_phase(
 pub(crate) trait IntelMainstageFlow: MainstagePhases {
     fn firmware_region(&self) -> (u64, usize);
     fn stage_local_init(&mut self) -> Result<(), ServiceError>;
+    fn refresh_load_policy(&self) -> Result<(), ServiceError>;
 }
 
 #[cfg(feature = "stage")]
 pub(crate) fn run_intel_mainstage<M, Payload>(
     platform: &str,
-    own_stage_name: &'static str,
+    _own_stage_name: &'static str,
     halt: fn() -> !,
     mut mainstage: M,
 ) -> !
@@ -116,27 +122,17 @@ where
     let (firmware_base, firmware_size) = mainstage.firmware_region();
     let boot_media =
         fstart_stage::fixed_helpers::MemoryMappedFfs::new(firmware_base, firmware_size);
-    // Postcar raw-copies this stage without hashing it (no crypto in
-    // postcar by design), so re-verify our own loaded bytes against the
-    // manifest before trusting them. Read-only: hashes the live image in
-    // place, touching nothing. Catches a DRAM bitflip from the raw copy.
-    // Publish the window before device init: drivers brought up during
-    // init_devices (per-AP microcode, SMM install) read board assets through
-    // the FFS services rather than open-coded flash mappings.
+    // Postcar authenticated our initialized image before entry. Import only
+    // the bounded directory reference, then retain its verified bytes in RAM.
+    // Drivers use the published verified asset service, not a new signature.
     run_mainstage_phase(platform, "publish_boot_media", halt, || boot_media.mount());
-    run_mainstage_phase(platform, "verify_own_stage", halt, || {
-        if fstart_stage::verify_file_digests_mmio(
-            fstart_stage::fstart_anchor_bytes(),
-            firmware_base,
-            firmware_size,
-            own_stage_name,
-        ) {
-            Ok(())
-        } else {
-            Err(ServiceError::HardwareError)
-        }
+    run_mainstage_phase(platform, "import_boot_context", halt, || {
+        import_intel_directory(firmware_base, firmware_size)
     });
     run_mainstage_phase(platform, "pre_bus_scan", halt, || mainstage.pre_bus_scan());
+    run_mainstage_phase(platform, "load_memory_policy", halt, || {
+        mainstage.refresh_load_policy()
+    });
     run_mainstage_phase(platform, "bus_scan", halt, || mainstage.bus_scan());
     run_mainstage_phase(platform, "init_devices", halt, || mainstage.init_devices());
     run_mainstage_phase(platform, "mount_boot_media", halt, || {
@@ -145,6 +141,10 @@ where
     });
     run_mainstage_phase(platform, "verify_boot_media", halt, || boot_media.verify());
     run_mainstage_phase(platform, "emit_tables", halt, || mainstage.emit_tables());
+    // Table allocation changes the memory map; payload loads must respect it.
+    run_mainstage_phase(platform, "load_memory_policy", halt, || {
+        mainstage.refresh_load_policy()
+    });
     run_mainstage_phase(platform, "finalize", halt, || mainstage.finalize());
 
     // Leave the legacy keyboard controller quiet before the payload/OS probes it.
@@ -177,6 +177,8 @@ pub(crate) struct FfsLoadSpec<C: ConsoleDevice> {
     /// from the verified manifest into the stash; postcar loads it without
     /// parsing FFS. Unused by the postcar spec itself.
     pub ramstage_name: &'static str,
+    /// Trusted preferred address, independent of the signed image's request.
+    pub ramstage_load_addr: u64,
     pub console_config: C::Config,
     pub console_node: &'static str,
 }
@@ -276,7 +278,7 @@ where
             self.southbridge.config(),
             &self.hooks,
             &acpi_ctx,
-        );
+        )?;
         self.ctx.set_acpi_rsdp(Some(rsdp));
         Ok(())
     }
@@ -311,6 +313,10 @@ where
 
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.northbridge.stage_local_init()
+    }
+
+    fn refresh_load_policy(&self) -> Result<(), ServiceError> {
+        install_intel_load_policy(self.ctx.e820())
     }
 }
 
@@ -458,25 +464,6 @@ where
     }
 }
 
-/// Shared Intel bootblock tail: load the next FFS stage and jump to it.
-///
-/// Mounts and verifies the memory-mapped firmware image, raw-copies (or
-/// decompresses, per the stage's packaged compression) the named file to its
-/// load address, verifies its digests, and jumps to `next_load_addr`.
-#[cfg(feature = "stage")]
-fn ffs_load_next(
-    platform: &'static str,
-    next_stage: &str,
-    ffs: fstart_stage::fixed_helpers::MemoryMappedFfs,
-) -> Result<(), ServiceError> {
-    fstart_arch::x86_64::enable_boot_media_rom_cache();
-    if ffs.mount().is_err() || ffs.verify().is_err() || ffs.load_file_by_name(next_stage).is_err() {
-        fstart_log::error!("{}: failed to load '{}'", platform, next_stage);
-        return Err(ServiceError::HardwareError);
-    }
-    Ok(())
-}
-
 #[cfg(feature = "stage")]
 pub(crate) fn run_intel_bootblock<P, NB, SB, Hooks, C>(
     spec: FfsLoadSpec<C>,
@@ -498,11 +485,11 @@ where
         flash_layout,
         dram_end,
         ramstage_name,
+        ramstage_load_addr,
         console_config,
         console_node,
     } = spec;
     let (firmware_base, firmware_size) = firmware_window(flash_layout)?;
-    let ffs = fstart_stage::fixed_helpers::MemoryMappedFfs::new(firmware_base, firmware_size);
 
     northbridge.pre_console_init()?;
     southbridge.pre_console_init()?;
@@ -537,68 +524,82 @@ where
     hooks.after_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
     fstart_log::info!("{}: DRAM ready", platform);
 
-    // The bulk ramstage copy stays cached: the bootblock only raw-copies the
-    // tiny postcar binary (few KB, uncached stores) and stashes the precomputed
-    // post-CAR MTRR table plus the ramstage's raw file extent in UC-DRAM
-    // scratch. All stash stores are `INVD`-proof by construction; postcar
-    // performs the noreturn CAR teardown, then raw-loads the ramstage with
-    // caching on — no FFS parser or crypto in postcar.
-    ffs_load_next(platform, next_stage, ffs)?;
-
-    // Resolve the ramstage extent from the signature-verified manifest.
-    // The manifest was just verified by `ffs_load_next`; ROM is immutable,
-    // so postcar can trust this extent without re-verifying.
-    let extent = fstart_stage::ffs_file_extent_mmio(
-        fstart_stage::fstart_anchor_bytes(),
-        firmware_base,
-        firmware_size,
-        ramstage_name,
+    fstart_log::info!(
+        "boot trust: development-integrity; RO root and rollback enforcement not established"
     );
-    let Some(extent) = extent else {
-        fstart_log::error!("{}: failed to resolve '{}' extent", platform, ramstage_name);
-        return Err(ServiceError::HardwareError);
+    fstart_arch::x86_64::enable_boot_media_rom_cache();
+    // SAFETY: firmware_window comes from the trusted platform flash layout.
+    let media = unsafe {
+        fstart_core::services::boot_media::MemoryMapped::from_raw_addr(firmware_base, firmware_size)
     };
+    let root =
+        fstart_stage::root::authenticate_boot_root(fstart_stage::fstart_anchor_bytes(), &media)
+            .map_err(|_| ServiceError::HardwareError)?;
+    let [Some(postcar), Some(ramstage)] = root.descriptors() else {
+        return Err(ServiceError::InvalidParam);
+    };
+    // Only trained low memory may be used, regardless of the signed request.
+    let ram_end = dram_end.min(northbridge.total_ram_bytes()?);
+    let postcar_window = boot::bootstrap_window(
+        postcar,
+        fstart_ffs::root::BootstrapRole::Postcar,
+        next_load_addr,
+        ram_end,
+    )?;
+    let _ = boot::bootstrap_window(
+        ramstage,
+        fstart_ffs::root::BootstrapRole::Mainstage,
+        ramstage_load_addr,
+        ram_end,
+    )?;
+    let reserved =
+        fstart_stage::boot::running_stage_windows().map_err(|_| ServiceError::InvalidParam)?;
+    // SAFETY: trained DRAM, bounded family-owned postcar window, and all live
+    // bootblock code/data/stack excluded. The loader verifies final bytes.
+    let verified = unsafe {
+        fstart_stage::boot::load_bootstrap(
+            &media,
+            postcar,
+            &fstart_stage::boot::MemoryPolicy {
+                writable: &[postcar_window],
+                reserved: &reserved,
+                entry_alignment: 1,
+            },
+        )
+    }
+    .map_err(|_| ServiceError::HardwareError)?;
 
-    // Publish the MTRR program postcar's entry consumes pre-transition.
-    // The stash writer rounds `dram_end` up to a single WB MTRR, then
-    // WP-chunks the firmware window.
-    // SAFETY: trained DRAM and the memory-mapped firmware window are live;
-    // low DRAM below the stash is writable conventional memory.
-    unsafe {
+    // Explicit wire bytes avoid coupling the assembly MTRR ABI to Rust types.
+    // The low handoff page is disjoint from both family bootstrap windows.
+    let published = unsafe {
         fstart_arch::x86_64::car_teardown::write_postcar_stash(
-            dram_end,
+            ram_end,
             firmware_base,
             firmware_size as u64,
-            fstart_arch::x86_64::car_teardown::PostcarFile {
-                file_offset: extent.file_offset,
-                stored_size: extent.stored_size,
-                loaded_size: extent.loaded_size,
-                in_place_size: extent.in_place_size,
-                load_addr: extent.load_addr,
-                compressed: extent.compression == fstart_core::ffs::Compression::Lz4,
+            fstart_arch::x86_64::car_teardown::PostcarBootContext {
+                descriptor: ramstage.encode(),
+                directory: root.directory().encode(),
+                image_family: root.root().image_family,
+                security_version: root.root().security_version,
             },
-        );
+        )
+    };
+    if !published {
+        return Err(ServiceError::HardwareError);
     }
+    let _ = ramstage_name; // Names are diagnostic; the authenticated role selects the image.
 
     hooks.before_handoff(&mut IntelEarlyCtx::new(&mut southbridge))?;
-    fstart_log::info!("jumping to {} at {:#x}", next_stage, next_load_addr);
-    fstart_arch::x86_64::jump_to(next_load_addr)
+    fstart_log::info!("jumping to {} at {:#x}", next_stage, verified.entry());
+    fstart_arch::x86_64::jump_to(verified.entry())
 }
 
-/// Post-CAR loader: runs as a fresh program on a fresh DRAM stack with
-/// caching already enabled by the postcar entry.
-///
-/// Re-initializes the console from ROM constants (the bootblock's console
-/// object lived in CAR and is unreachable by design), then raw-loads the
-/// ramstage from the stash extent (plain copy or in-place LZ4) and jumps to
-/// it. No chipset drivers, no PCI, no tables, no FFS parser, no crypto —
-/// like coreboot's 95145 loader. Integrity: the extent comes from the
-/// bootblock-verified manifest via ROM-immutable stash, and the ramstage
-/// re-verifies its own bytes before trusting them.
+/// Post-CAR loader on a fresh DRAM stack. The bootblock-authenticated descriptor
+/// crosses the transition in reserved RAM. Postcar verifies stored compressed
+/// input and final initialized output before entering ramstage; it needs SHA-256
+/// but no directory parser or public-key verifier in the linked execution path.
 #[cfg(all(feature = "stage", fstart_stage_env = "postcar"))]
 pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
-    use fstart_arch::x86_64::car_teardown as postcar_abi;
-
     let FfsLoadSpec {
         platform,
         next_stage: _,
@@ -606,6 +607,7 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
         flash_layout,
         dram_end: _,
         ramstage_name,
+        ramstage_load_addr,
         console_config,
         console_node,
     } = spec;
@@ -625,34 +627,46 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
         Ok(window) => window,
         Err(_) => fstart_arch::x86_64::halt(),
     };
-    // Read the stash the bootblock wrote pre-transition. Plain (cached)
-    // reads: caching is already on, and the stash is ordinary DRAM.
-    // SAFETY: the bootblock wrote a valid stash before jumping here; the
-    // entry validated its magic pre-transition.
-    let stash =
-        unsafe { &*(postcar_abi::POSTCAR_STASH_ADDR as *const postcar_abi::PostcarMtrrStash) };
-    if stash.magic != postcar_abi::POSTCAR_STASH_MAGIC || stash.compression > 1 {
-        fstart_log::error!("{} postcar: bad stash", platform);
-        fstart_arch::x86_64::halt();
-    }
-    let extent = fstart_stage::RawFileExtent {
-        file_offset: stash.file_offset,
-        stored_size: stash.stored_size,
-        loaded_size: stash.loaded_size,
-        in_place_size: stash.in_place_size,
-        load_addr: stash.load_addr,
-        compression: if stash.compression == 1 {
-            fstart_core::ffs::Compression::Lz4
-        } else {
-            fstart_core::ffs::Compression::None
-        },
-    };
-    // SAFETY: stash fields describe the board's firmware window and the
-    // ramstage's DRAM target (both validated pre-transition/in ROM).
-    let entry =
-        unsafe { fstart_stage::load_raw_extent(firmware_base, firmware_size as u64, &extent) };
-    let Some(entry) = entry else {
-        fstart_log::error!("{} postcar: failed to load '{}'", platform, ramstage_name);
+    let entry = (|| -> Result<u64, ServiceError> {
+        let stash = boot::handoff(firmware_base, firmware_size)?;
+        let descriptor = fstart_ffs::root::BootstrapDescriptor::parse(&stash.descriptor)
+            .map_err(|_| ServiceError::InvalidParam)?;
+        let window = boot::bootstrap_window(
+            &descriptor,
+            fstart_ffs::root::BootstrapRole::Mainstage,
+            ramstage_load_addr,
+            stash.ram_end,
+        )?;
+        let reserved =
+            fstart_stage::boot::running_stage_windows().map_err(|_| ServiceError::InvalidParam)?;
+        // SAFETY: family-owned trained DRAM range, live postcar excluded, and
+        // the media mapping is trusted configuration, not descriptor data.
+        let media = unsafe {
+            fstart_core::services::boot_media::MemoryMapped::from_raw_addr(
+                firmware_base,
+                firmware_size,
+            )
+        };
+        let verified = unsafe {
+            fstart_stage::boot::load_bootstrap(
+                &media,
+                &descriptor,
+                &fstart_stage::boot::MemoryPolicy {
+                    writable: &[window],
+                    reserved: &reserved,
+                    entry_alignment: 1,
+                },
+            )
+        }
+        .map_err(|_| ServiceError::HardwareError)?;
+        Ok(verified.entry())
+    })();
+    let Ok(entry) = entry else {
+        fstart_log::error!(
+            "{} postcar: authentication/load failed for '{}'",
+            platform,
+            ramstage_name
+        );
         fstart_arch::x86_64::halt();
     };
 
@@ -763,7 +777,7 @@ pub(crate) fn emit_acpi_tables<Northbridge, Southbridge, Hooks>(
     southbridge_config: &Southbridge::Config,
     hooks: &Hooks,
     hooks_config: &Hooks::Config,
-) -> u64
+) -> Result<u64, ServiceError>
 where
     Northbridge: fstart_acpi::device::AcpiDevice,
     Southbridge: fstart_acpi::device::AcpiDevice,
@@ -777,6 +791,7 @@ where
         extra.extend(southbridge.extra_tables(southbridge_config));
         extra.extend(hooks.extra_tables(hooks_config));
     })
+    .map_err(|_| ServiceError::HardwareError)
 }
 
 #[cfg(all(feature = "stage", feature = "acpi"))]
@@ -788,7 +803,7 @@ pub(crate) fn emit_x86_acpi_tables<Northbridge, Southbridge, Hooks>(
     southbridge_config: &Southbridge::Config,
     hooks: &Hooks,
     hooks_config: &Hooks::Config,
-) -> u64
+) -> Result<u64, ServiceError>
 where
     Northbridge: fstart_acpi::device::AcpiDevice,
     Southbridge: fstart_acpi::device::AcpiDevice + fstart_acpi::platform::X86PlatformProvider,

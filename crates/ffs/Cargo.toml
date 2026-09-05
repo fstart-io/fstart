@@ -6,7 +6,9 @@ license.workspace = true
 
 [features]
 default = []
-std = ["fstart-crypto/all", "dep:lz4_flex"]
+std = ["directory", "fstart-crypto/all", "dep:lz4_flex"]
+# Mainstage's expressive directory is excluded from bounded bootstrap readers.
+directory = ["dep:heapless", "dep:zerocopy"]
 alloc = ["fstart-core/alloc"]
 # Forward crypto features for firmware (no_std) builds that need verification
 ed25519 = ["fstart-crypto/ed25519"]
@@ -16,8 +18,8 @@ sha3-digest = ["fstart-crypto/sha3-digest"]
 [dependencies]
 fstart-core = { workspace = true }
 fstart-crypto = { workspace = true }
-heapless = { workspace = true }
-zerocopy = { workspace = true }
+heapless = { workspace = true, optional = true }
+zerocopy = { workspace = true, optional = true }
 lz4_flex = { workspace = true, optional = true }
 
 [dev-dependencies]

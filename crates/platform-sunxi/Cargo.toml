@@ -12,7 +12,7 @@ a20 = []
 d1 = []
 h3 = []
 host = []
-linux = ["fstart-stage?/linux"]
+linux = ["fstart-stage?/linux", "fstart-stage?/ffs", "fstart-stage?/ffs-signature"]
 stage = [
   "dep:fstart-arch",
   "dep:fstart-driver-uart",
@@ -20,6 +20,7 @@ stage = [
   "dep:fstart-stage",
   "dep:ufmt",
   "fstart-stage/handoff",
+  "fstart-stage/bootstrap",
 ]
 armv7 = [
   "fstart-arch?/armv7",

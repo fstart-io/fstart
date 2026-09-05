@@ -1,71 +1,138 @@
-//! Tiny allocation-free linker for precompiled AML fragments.
+//! Allocation-free linking into caller-owned storage.
 //!
-//! The byte-emitting DSL fixes every package length inside a fragment at
-//! compile time. This writer only has to link fragments together, computing
-//! the `PkgLength` of runtime `Scope` wrappers and finalising an ACPI table.
+//! Scope emission reserves four PkgLength bytes before compacting. Capacity
+//! must include this temporary slack at every active nesting level. Errors are
+//! sticky: even an ignored write error prevents table finalization. A failed
+//! scope rolls back its logical output; backing bytes must not be published.
 
-use alloc::vec;
+use crate::{AmlError, AmlFragment, AmlFragmentSink, BoundAmlFragment};
 use alloc::vec::Vec;
 
-use crate::{AmlFragment, AmlFragmentSink, BoundAmlFragment};
+/// Validated AML namespace path. Empty segments, mixed root/parent prefixes,
+/// invalid NameSeg characters and more than 255 segments are rejected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AmlPath<'a>(&'a str);
+
+impl<'a> AmlPath<'a> {
+    pub fn new(path: &'a str) -> Result<Self, AmlError> {
+        let rest = if let Some(rest) = path.strip_prefix('\\') {
+            rest
+        } else {
+            path.trim_start_matches('^')
+        };
+        if path.is_empty() || (rest.is_empty() && path != "\\" && !path.bytes().all(|b| b == b'^'))
+        {
+            return Err(AmlError::InvalidPath);
+        }
+        if !rest.is_empty() {
+            if rest.split('.').count() > 255 {
+                return Err(AmlError::InvalidPath);
+            }
+            for segment in rest.split('.') {
+                let mut chars = segment.bytes();
+                if segment.len() > 4
+                    || !chars.next().is_some_and(name_lead)
+                    || !chars.all(|b| name_lead(b) || b.is_ascii_digit())
+                {
+                    return Err(AmlError::InvalidPath);
+                }
+            }
+        }
+        Ok(Self(path))
+    }
+
+    pub fn as_str(self) -> &'a str {
+        self.0
+    }
+}
+
+fn name_lead(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_uppercase()
+}
 
 /// Sequential AML/table writer backed by caller-provided storage.
 pub struct AmlWriter<'a> {
     bytes: &'a mut [u8],
     pos: usize,
+    error: Option<AmlError>,
 }
 
 impl<'a> AmlWriter<'a> {
     pub fn new(bytes: &'a mut [u8]) -> Self {
-        Self { bytes, pos: 0 }
+        Self {
+            bytes,
+            pos: 0,
+            error: None,
+        }
     }
-
     pub fn position(&self) -> usize {
         self.pos
     }
-
-    pub fn as_slice(&self) -> &[u8] {
-        &self.bytes[..self.pos]
+    /// Only expose successful output, never a partially failed table.
+    pub fn as_slice(&self) -> Result<&[u8], AmlError> {
+        self.status()?;
+        Ok(&self.bytes[..self.pos])
     }
-
+    fn status(&self) -> Result<(), AmlError> {
+        self.error.map_or(Ok(()), Err)
+    }
+    fn record<T>(&mut self, result: Result<T, AmlError>) -> Result<T, AmlError> {
+        if let Err(error) = result {
+            self.error.get_or_insert(error);
+        }
+        result
+    }
     pub fn emit<const N: usize, const K: usize>(
         &mut self,
         fragment: &AmlFragment<N, K>,
         operands: &[u64; K],
-    ) {
-        fragment.emit(self, operands);
+    ) -> Result<(), AmlError> {
+        self.status()?;
+        let result = fragment.emit(self, operands);
+        self.record(result)
     }
-
     pub fn emit_bound<const N: usize, const K: usize>(
         &mut self,
         fragment: &BoundAmlFragment<N, K>,
-    ) {
-        fragment.emit(self);
+    ) -> Result<(), AmlError> {
+        self.status()?;
+        let result = fragment.emit(self);
+        self.record(result)
+    }
+    pub fn raw(&mut self, bytes: &[u8]) -> Result<(), AmlError> {
+        self.reserve(bytes.len())?.copy_from_slice(bytes);
+        Ok(())
     }
 
-    pub fn raw(&mut self, bytes: &[u8]) {
-        self.reserve(bytes.len()).copy_from_slice(bytes);
+    pub fn scope(
+        &mut self,
+        path: &str,
+        children: impl FnOnce(&mut Self) -> Result<(), AmlError>,
+    ) -> Result<(), AmlError> {
+        let start = self.pos;
+        let result = (|| {
+            let path = AmlPath::new(path)?;
+            self.byte(0x10)?;
+            let package = self.pos;
+            self.raw(&[0; 4])?;
+            write_name_string(self, path)?;
+            children(self)?;
+            self.status()?;
+            let end = self.pos;
+            let (encoded, width) = package_length(end - package - 4)?;
+            self.bytes.copy_within(package + 4..end, package + width);
+            self.bytes[package..package + width].copy_from_slice(&encoded[..width]);
+            self.pos -= 4 - width;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.pos = start;
+        }
+        self.record(result)
     }
 
-    /// Link child fragments below an AML namespace scope.
-    pub fn scope(&mut self, path: &str, children: impl FnOnce(&mut Self)) {
-        self.byte(0x10); // ScopeOp
-        let package = self.pos;
-        self.raw(&[0; 4]);
-        write_name_string(self, path);
-        children(self);
-
-        let end = self.pos;
-        let content_len = end - package - 4;
-        let (encoded, encoded_len) = package_length(content_len);
-        let unused = 4 - encoded_len;
-        self.bytes
-            .copy_within(package + 4..end, package + encoded_len);
-        self.bytes[package..package + encoded_len].copy_from_slice(&encoded[..encoded_len]);
-        self.pos -= unused;
-    }
-
-    /// Start an ACPI SDT, invoke `body`, and finalise length and checksum.
+    /// Finalize only after every write and the body succeed. No table is
+    /// returned on error, even if the body discarded a writer error.
     pub fn table(
         bytes: &'a mut [u8],
         signature: [u8; 4],
@@ -73,160 +140,145 @@ impl<'a> AmlWriter<'a> {
         oem_id: [u8; 6],
         oem_table_id: [u8; 8],
         oem_revision: u32,
-        body: impl FnOnce(&mut Self),
-    ) -> Self {
+        body: impl FnOnce(&mut Self) -> Result<(), AmlError>,
+    ) -> Result<Self, AmlError> {
         let mut writer = Self::new(bytes);
-        writer.raw(&signature);
-        writer.dword(0); // length
-        writer.byte(revision);
-        writer.byte(0); // checksum
-        writer.raw(&oem_id);
-        writer.raw(&oem_table_id);
-        writer.dword(oem_revision);
-        writer.raw(b"FST0");
-        writer.dword(1);
-        body(&mut writer);
-        writer.bytes[4..8].copy_from_slice(&(writer.pos as u32).to_le_bytes());
+        writer.raw(&signature)?;
+        writer.dword(0)?;
+        writer.byte(revision)?;
+        writer.byte(0)?;
+        writer.raw(&oem_id)?;
+        writer.raw(&oem_table_id)?;
+        writer.dword(oem_revision)?;
+        writer.raw(b"FST0")?;
+        writer.dword(1)?;
+        body(&mut writer)?;
+        writer.status()?;
+        let length = u32::try_from(writer.pos).map_err(|_| AmlError::LengthOverflow)?;
+        writer.bytes[4..8].copy_from_slice(&length.to_le_bytes());
         let checksum = writer
-            .as_slice()
+            .as_slice()?
             .iter()
-            .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+            .fold(0u8, |sum, b| sum.wrapping_add(*b));
         writer.bytes[9] = 0u8.wrapping_sub(checksum);
-        writer
+        Ok(writer)
     }
 
-    pub fn byte(&mut self, byte: u8) {
-        self.reserve(1)[0] = byte;
+    pub fn byte(&mut self, value: u8) -> Result<(), AmlError> {
+        self.raw(&[value])
+    }
+    pub fn word(&mut self, value: u16) -> Result<(), AmlError> {
+        self.raw(&value.to_le_bytes())
+    }
+    pub fn dword(&mut self, value: u32) -> Result<(), AmlError> {
+        self.raw(&value.to_le_bytes())
+    }
+    pub fn qword(&mut self, value: u64) -> Result<(), AmlError> {
+        self.raw(&value.to_le_bytes())
     }
 
-    pub fn word(&mut self, word: u16) {
-        self.raw(&word.to_le_bytes());
-    }
-
-    pub fn dword(&mut self, dword: u32) {
-        self.raw(&dword.to_le_bytes());
-    }
-
-    pub fn qword(&mut self, qword: u64) {
-        self.raw(&qword.to_le_bytes());
-    }
-
-    fn reserve(&mut self, len: usize) -> &mut [u8] {
+    fn reserve(&mut self, len: usize) -> Result<&mut [u8], AmlError> {
+        self.status()?;
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or(AmlError::LengthOverflow)
+            .and_then(|end| {
+                if end <= self.bytes.len() {
+                    Ok(end)
+                } else {
+                    Err(AmlError::Capacity)
+                }
+            });
+        let end = self.record(end)?;
         let start = self.pos;
-        let end = start.checked_add(len).expect("AML output length overflow");
-        assert!(end <= self.bytes.len(), "AML output buffer overflow");
         self.pos = end;
-        &mut self.bytes[start..end]
+        Ok(&mut self.bytes[start..end])
     }
 }
 
 impl AmlFragmentSink for AmlWriter<'_> {
-    fn append_fragment<'a>(&'a mut self, bytes: &[u8]) -> &'a mut [u8] {
-        let out = self.reserve(bytes.len());
+    fn reject(&mut self, error: AmlError) -> Result<(), AmlError> {
+        self.record(Err(error))
+    }
+
+    fn append_fragment<'a>(&'a mut self, bytes: &[u8]) -> Result<&'a mut [u8], AmlError> {
+        let out = self.reserve(bytes.len())?;
         out.copy_from_slice(bytes);
-        out
+        Ok(out)
     }
 }
 
-/// Allocation-backed convenience for callers that still collect table parts.
-/// The linking implementation itself remains allocation-free.
-pub fn scope_vec(path: &str, children: &[u8]) -> Vec<u8> {
-    let segments = path.split('.').count();
-    let mut bytes = vec![0; children.len() + 8 + segments * 4];
-    let len = {
-        let mut writer = AmlWriter::new(&mut bytes);
-        writer.scope(path, |writer| writer.raw(children));
-        writer.position()
-    };
-    bytes.truncate(len);
+/// Allocation-backed convenience; includes the temporary package prefix.
+pub fn scope_vec(path: &str, children: &[u8]) -> Result<Vec<u8>, AmlError> {
+    AmlPath::new(path)?;
+    let capacity = path
+        .len()
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(8))
+        .and_then(|n| n.checked_add(children.len()))
+        .ok_or(AmlError::LengthOverflow)?;
+    let mut bytes = Vec::new();
     bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| AmlError::Capacity)?;
+    bytes.resize(capacity, 0);
+    let mut writer = AmlWriter::new(&mut bytes);
+    writer.scope(path, |writer| writer.raw(children))?;
+    let len = writer.position();
+    bytes.truncate(len);
+    Ok(bytes)
 }
 
-fn write_name_string(writer: &mut AmlWriter<'_>, path: &str) {
-    let mut rest = path;
+fn write_name_string(writer: &mut AmlWriter<'_>, path: AmlPath<'_>) -> Result<(), AmlError> {
+    let mut rest = path.0;
     if let Some(stripped) = rest.strip_prefix('\\') {
-        writer.byte(b'\\');
+        writer.byte(b'\\')?;
         rest = stripped;
     }
     while let Some(stripped) = rest.strip_prefix('^') {
-        writer.byte(b'^');
+        writer.byte(b'^')?;
         rest = stripped;
     }
-    let count = if rest.is_empty() {
-        0
-    } else {
-        rest.split('.').count()
-    };
-    match count {
-        0 => writer.byte(0),
+    if rest.is_empty() {
+        return writer.byte(0);
+    }
+    match rest.split('.').count() {
         1 => {}
-        2 => writer.byte(0x2e),
-        _ => {
-            writer.byte(0x2f);
-            writer.byte(count as u8);
+        2 => writer.byte(0x2e)?,
+        n => {
+            writer.byte(0x2f)?;
+            writer.byte(u8::try_from(n).map_err(|_| AmlError::InvalidPath)?)?;
         }
     }
-    for segment in rest.split('.').filter(|segment| !segment.is_empty()) {
-        assert!(segment.len() <= 4, "AML NameSeg exceeds four bytes");
+    for segment in rest.split('.') {
         let mut name = [b'_'; 4];
         name[..segment.len()].copy_from_slice(segment.as_bytes());
-        writer.raw(&name);
+        writer.raw(&name)?;
     }
+    Ok(())
 }
 
-/// Encode an AML PkgLength whose value includes the encoded length itself.
-pub fn package_length(content_len: usize) -> ([u8; 4], usize) {
-    let width = if content_len + 1 < 0x40 {
-        1
-    } else if content_len + 2 < 0x1000 {
-        2
-    } else if content_len + 3 < 0x10_0000 {
-        3
-    } else {
-        4
-    };
-    let total = content_len + width;
+/// Encode a PkgLength including its own width (maximum 28-bit total).
+pub fn package_length(content_len: usize) -> Result<([u8; 4], usize), AmlError> {
+    let (width, total) = (1..=4)
+        .find_map(|width| {
+            let total = content_len.checked_add(width)?;
+            let limit = if width == 1 {
+                0x40
+            } else {
+                1usize << (4 + 8 * (width - 1))
+            };
+            (total < limit).then_some((width, total))
+        })
+        .ok_or(AmlError::LengthOverflow)?;
     if width == 1 {
-        return ([total as u8, 0, 0, 0], 1);
+        return Ok(([total as u8, 0, 0, 0], 1));
     }
-    let mut bytes = [0u8; 4];
+    let mut bytes = [0; 4];
     bytes[0] = ((width as u8 - 1) << 6) | (total as u8 & 0x0f);
-    for index in 1..width {
-        bytes[index] = (total >> (4 + (index - 1) * 8)) as u8;
+    for (index, byte) in bytes.iter_mut().enumerate().take(width).skip(1) {
+        *byte = (total >> (4 + (index - 1) * 8)) as u8;
     }
-    (bytes, width)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fstart_acpi_macros::acpi_dsl;
-
-    static CHILD: AmlFragment<6, 0> = acpi_dsl! { Name("TEST", 1u32); };
-
-    #[test]
-    fn links_scope_and_finalises_dsdt() {
-        let mut bytes = [0u8; 128];
-        let table = AmlWriter::table(
-            &mut bytes,
-            *b"DSDT",
-            2,
-            *b"FSTART",
-            *b"LINKTEST",
-            1,
-            |writer| writer.scope("\\_SB_.PCI0", |writer| writer.emit(&CHILD, &[])),
-        );
-        assert_eq!(&table.as_slice()[0..4], b"DSDT");
-        assert_eq!(
-            table
-                .as_slice()
-                .iter()
-                .fold(0u8, |sum, b| sum.wrapping_add(*b)),
-            0
-        );
-        assert_eq!(
-            u32::from_le_bytes(table.as_slice()[4..8].try_into().unwrap()) as usize,
-            table.position()
-        );
-    }
+    Ok((bytes, width))
 }

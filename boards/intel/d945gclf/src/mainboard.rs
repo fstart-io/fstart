@@ -6,9 +6,9 @@
 //! COM1/COM2/KBC setup handled by the generic SuperIO driver.
 
 #[cfg(feature = "stage")]
-use fstart_core::services::device::BusDevice;
-#[cfg(feature = "stage")]
 use fstart_core::services::ServiceError;
+#[cfg(feature = "stage")]
+use fstart_core::services::device::BusDevice;
 #[cfg(feature = "stage")]
 use fstart_driver_superio::smsc_lpc47m15x::SmscLpc47m15x;
 #[cfg(feature = "stage")]
@@ -26,7 +26,7 @@ pub struct D945GclfMainboard {
 mod mainboard_acpi_device {
     extern crate alloc;
 
-    use super::{d945gclf_mainboard_dsdt_aml, D945GclfMainboard};
+    use super::{D945GclfMainboard, d945gclf_mainboard_dsdt_aml};
 
     impl fstart_acpi::device::AcpiDevice for D945GclfMainboard {
         type Config = fstart_platform_intel::i945::I945Ich7AcpiContext;
@@ -47,10 +47,7 @@ impl D945GclfMainboard {
 
 #[cfg(feature = "stage")]
 impl IntelEarlyBoardHooks<I945Ich7> for D945GclfMainboard {
-    fn before_console(
-        &mut self,
-        _ctx: &mut IntelEarlyCtx<I945Ich7>,
-    ) -> Result<(), ServiceError> {
+    fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<I945Ich7>) -> Result<(), ServiceError> {
         // Match coreboot's bootblock_mainboard_early_init(): PME first so
         // the 0x680 generic decode window has a live target, then COM/KBC.
         // Verbose logging while first bring-up is still in flight.
@@ -174,7 +171,10 @@ mod acpi_impl {
 
         let config = crate::d945gclf_superio_config();
         let sio = fstart_driver_superio::superio_dsdt_aml(&config);
-        out.extend(fstart_acpi::aml_linker::scope_vec(context.lpc_scope(), &sio));
+        out.extend(
+            fstart_acpi::aml_linker::scope_vec(context.lpc_scope(), &sio)
+                .expect("D945GCLF required Super I/O scope emission failed"),
+        );
         out
     }
 }

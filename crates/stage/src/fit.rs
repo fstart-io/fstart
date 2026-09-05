@@ -1,66 +1,37 @@
-//! FIT (Flattened Image Tree) runtime boot helpers.
-//!
-//! Extracts the FIT runtime parsing and component loading logic into
-//! testable, debuggable library functions.  Codegen generates calls to
-//! these functions rather than inlining the entire FIT parsing sequence.
-//!
-//! The FIT blob is located in FFS as [`FileType::FitImage`], parsed
-//! in-place (zero-copy for memory-mapped flash), and each component
-//! (kernel, ramdisk) is copied to its load address from FIT metadata.
-
+//! FIT containers are authenticated in stable RAM before parsing. Every output
+//! range is checked against trusted platform policy before any component write.
+use crate::boot::{MemoryPolicy, MemoryWindow};
 use fstart_core::services::BootMedia;
+use fstart_crypto::digest::hash_sha256;
 
-/// Result of loading FIT image components from FFS.
 pub struct FitBootInfo {
-    /// Load address of the kernel (where it was copied to).
+    /// Verified kernel entry address (defaults to its load address).
     pub kernel_addr: u64,
 }
 
-/// Errors from FIT runtime boot operations.
 #[derive(Debug)]
 pub enum FitBootError {
-    /// FIT image not found in FFS.
     NotFound,
-    /// Failed to parse FIT image.
     ParseFailed,
-    /// Failed to resolve FIT configuration.
     ConfigFailed,
-    /// Failed to read kernel data from FIT.
     KernelDataFailed,
-    /// Kernel has no load address in FIT metadata.
     NoKernelLoadAddr,
+    InvalidLoadPlan,
+    DigestMismatch,
 }
 
-/// Return a static string description for a [`FitBootError`].
-///
-/// Used by fixed-flow payload setup for error logging without requiring
-/// `Display` or `Debug` formatting, which pull in format machinery.
 pub fn error_str(err: &FitBootError) -> &'static str {
     match err {
         FitBootError::NotFound => "FIT image not found in FFS",
         FitBootError::ParseFailed => "failed to parse FIT image",
         FitBootError::ConfigFailed => "failed to resolve FIT configuration",
-        FitBootError::KernelDataFailed => "failed to read kernel data from FIT",
-        FitBootError::NoKernelLoadAddr => "kernel has no load address in FIT",
+        FitBootError::KernelDataFailed => "failed to read FIT component",
+        FitBootError::NoKernelLoadAddr => "FIT component has no load address",
+        FitBootError::InvalidLoadPlan => "FIT destinations or compression rejected",
+        FitBootError::DigestMismatch => "FIT destination digest mismatch",
     }
 }
 
-/// Load FIT components from FFS: parse FIT image, copy kernel and
-/// ramdisk to their load addresses.
-///
-/// This is the core of the FIT runtime boot path.  The FIT blob is
-/// located in FFS as `FileType::FitImage`, parsed in-place (zero-copy
-/// for memory-mapped flash), and each component is copied to its load
-/// address from FIT metadata.
-///
-/// Returns the kernel's load address for the platform-specific boot
-/// jump, or an error describing the failure.
-///
-/// # Safety contract
-///
-/// The caller must ensure that the load addresses in the FIT metadata
-/// point to writable RAM with sufficient space for the component data.
-/// This is guaranteed by the board config and linker script.
 pub fn load_fit_components(
     anchor_data: &[u8],
     media: &(impl BootMedia + ?Sized),
@@ -69,17 +40,62 @@ pub fn load_fit_components(
     load_fit_components_with_scratch(anchor_data, media, fit_config, None)
 }
 
-/// Load FIT components, using temporary RAM if the boot medium is not
-/// memory-mapped and the FIT blob must be copied before parsing.
+struct Component<'a> {
+    source: &'a [u8],
+    destination: MemoryWindow,
+    digest: [u8; 32],
+}
+
+impl<'a> Component<'a> {
+    fn plan(
+        node: &fstart_boot::fit::FitImageNode<'a>,
+        policy: &MemoryPolicy<'_>,
+        source: MemoryWindow,
+    ) -> Result<Self, FitBootError> {
+        // FFS-level compression is already handled before parsing. Inner FIT
+        // compression is not implemented by this consumer; never copy it as code.
+        if node.compression() != fstart_boot::fit::FitCompression::None {
+            return Err(FitBootError::InvalidLoadPlan);
+        }
+        let bytes = node.data().map_err(|_| FitBootError::KernelDataFailed)?;
+        let start = node.load_addr().ok_or(FitBootError::NoKernelLoadAddr)?;
+        let destination = MemoryWindow {
+            start,
+            size: bytes.len() as u64,
+        };
+        if !policy.permits(start, destination.size) || destination.overlaps(source) {
+            return Err(FitBootError::InvalidLoadPlan);
+        }
+        Ok(Self {
+            source: bytes,
+            destination,
+            digest: hash_sha256(bytes),
+        })
+    }
+
+    /// Requires the installed policy's exclusive physical mapping contract.
+    unsafe fn copy_verified(&self) -> Result<(), FitBootError> {
+        // SAFETY: the whole plan was preflighted, including disjoint source,
+        // other outputs and platform reservations, before constructing this slice.
+        let output = unsafe {
+            core::slice::from_raw_parts_mut(self.destination.start as *mut u8, self.source.len())
+        };
+        output.copy_from_slice(self.source);
+        if hash_sha256(output) != self.digest {
+            return Err(FitBootError::DigestMismatch);
+        }
+        Ok(())
+    }
+}
+
+/// Load a supported FIT plan using authenticated stable container bytes. Missing
+/// ramdisk addresses/data, inner compression, and overlap are hard failures.
 pub fn load_fit_components_with_scratch(
     anchor_data: &[u8],
     media: &(impl BootMedia + ?Sized),
     fit_config: Option<&str>,
     scratch: Option<&mut fstart_core::services::TempRamArena>,
 ) -> Result<FitBootInfo, FitBootError> {
-    // Step 1: Load FIT blob from FFS (zero-copy for memory-mapped flash,
-    // scratch copy for block media when a temp arena is available).
-    fstart_log::info!("loading FIT image from FFS...");
     let fit_slice = crate::find_ffs_file_data_with_scratch(
         anchor_data,
         media,
@@ -87,73 +103,69 @@ pub fn load_fit_components_with_scratch(
         scratch,
     )
     .ok_or(FitBootError::NotFound)?;
-
-    // Step 2: Parse FIT image.
-    fstart_log::info!("parsing FIT image ({} bytes)...", fit_slice.len());
     let fit =
         fstart_boot::fit::FitImage::parse(fit_slice).map_err(|_| FitBootError::ParseFailed)?;
-
-    // Step 3: Resolve boot configuration (default or named).
     let boot = fit
         .resolve_boot_images(fit_config)
         .map_err(|_| FitBootError::ConfigFailed)?;
-
-    // Step 4: Extract kernel data and copy to load address.
-    let kernel_data = boot
-        .kernel
-        .data()
-        .map_err(|_| FitBootError::KernelDataFailed)?;
-    let kernel_load = boot
-        .kernel
-        .load_addr()
-        .ok_or(FitBootError::NoKernelLoadAddr)?;
-
-    fstart_log::info!(
-        "FIT: loading kernel ({} bytes) to {}",
-        kernel_data.len(),
-        fstart_log::Hex(kernel_load)
-    );
-    // SAFETY: load address points to writable RAM per board config.
-    // The FIT metadata specifies load addresses that the board config
-    // guarantees are in DRAM with sufficient space.
+    let policy = crate::directory::load_policy().ok_or(FitBootError::InvalidLoadPlan)?;
+    let source = MemoryWindow {
+        start: fit_slice.as_ptr() as u64,
+        size: fit_slice.len() as u64,
+    };
+    let kernel = Component::plan(&boot.kernel, &policy, source)?;
+    let ramdisk = boot
+        .ramdisk
+        .as_ref()
+        .map(|node| Component::plan(node, &policy, source))
+        .transpose()?;
+    if ramdisk
+        .as_ref()
+        .is_some_and(|rd| kernel.destination.overlaps(rd.destination))
+    {
+        return Err(FitBootError::InvalidLoadPlan);
+    }
+    let entry = boot.kernel.entry_addr().unwrap_or(kernel.destination.start);
+    if !policy.entry_alignment.is_power_of_two()
+        || entry % policy.entry_alignment != 0
+        || entry < kernel.destination.start
+        || entry
+            >= kernel
+                .destination
+                .start
+                .checked_add(kernel.destination.size)
+                .ok_or(FitBootError::InvalidLoadPlan)?
+    {
+        return Err(FitBootError::InvalidLoadPlan);
+    }
+    // Also reject any output alias with the original media window, even though
+    // the container itself has already been copied into independent stable RAM.
+    for component in core::iter::once(&kernel).chain(ramdisk.iter()) {
+        crate::boot::validate_destination(
+            media,
+            &policy,
+            component.destination.start,
+            component.destination.size,
+        )
+        .map_err(|_| FitBootError::InvalidLoadPlan)?;
+    }
+    let ranges = [
+        kernel.destination,
+        ramdisk
+            .as_ref()
+            .map_or(kernel.destination, |rd| rd.destination),
+    ];
+    let ranges = &ranges[..1 + usize::from(ramdisk.is_some())];
+    let pending =
+        crate::loaded::begin(ranges, ranges).map_err(|_| FitBootError::InvalidLoadPlan)?;
+    // SAFETY: set_load_policy establishes the mapping contract; all outputs and
+    // sources were checked together before the first copy. No entry on failure.
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            kernel_data.as_ptr(),
-            kernel_load as *mut u8,
-            kernel_data.len(),
-        );
-    }
-
-    // Step 5: Extract ramdisk if present and copy to its load address.
-    if let Some(ref rd) = boot.ramdisk {
-        match rd.data() {
-            Ok(rd_data) => match rd.load_addr() {
-                Some(rd_load) => {
-                    fstart_log::info!(
-                        "FIT: loading ramdisk ({} bytes) to {}",
-                        rd_data.len(),
-                        fstart_log::Hex(rd_load)
-                    );
-                    // SAFETY: load address points to writable RAM per board config.
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            rd_data.as_ptr(),
-                            rd_load as *mut u8,
-                            rd_data.len(),
-                        );
-                    }
-                }
-                None => {
-                    fstart_log::warn!("FIT: ramdisk has no load address, skipping");
-                }
-            },
-            Err(_) => {
-                fstart_log::warn!("FIT: failed to read ramdisk data, skipping");
-            }
+        if let Some(ramdisk) = ramdisk {
+            ramdisk.copy_verified()?;
         }
+        kernel.copy_verified()?;
     }
-
-    Ok(FitBootInfo {
-        kernel_addr: kernel_load,
-    })
+    pending.commit();
+    Ok(FitBootInfo { kernel_addr: entry })
 }

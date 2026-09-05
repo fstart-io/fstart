@@ -2,7 +2,7 @@
 //!
 //! The PLL programming sequence follows the proven HiFive Unmatched setup.
 
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{Ordering, compiler_fence};
 
 use fstart_core::services::DeviceError;
 

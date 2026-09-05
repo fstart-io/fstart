@@ -12,7 +12,7 @@ acpi = [
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
 ]
-ffs-vbt = ["dep:fstart-crypto", "dep:fstart-ffs"]
+ffs-vbt = []
 gm965 = []
 ich8 = []
 pineview = []
@@ -23,11 +23,9 @@ bitflags = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }
 fstart-arch = { workspace = true, features = ["x86_64"] }
-fstart-crypto = { workspace = true, optional = true }
 
 fstart-driver-superio = { workspace = true }
 
-fstart-ffs = { workspace = true, optional = true }
 fstart-log = { workspace = true }
 
 fstart-core = { workspace = true, features = ["pci"] }

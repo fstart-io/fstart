@@ -1,25 +1,18 @@
 //! FFS reader — no_std, no alloc, operates on a `&[u8]` flash image.
 //!
-//! The reader is designed for use in the bootblock and later stages.
-//! Because the bootblock has the anchor block embedded in its own binary,
-//! the typical flow is:
-//!
-//! 1. The bootblock references the anchor as a static (known at link time).
-//! 2. It reads `manifest_offset` / `manifest_size` from the anchor.
-//! 3. It slices the image at those offsets and parses the signed manifest envelope.
-//! 4. It verifies the manifest signature using keys from the anchor.
-//! 5. It looks up regions by name, then entries by name, then loads segments.
-//!
-//! For tools (running on a host with `std`), the `scan_for_anchor` function
-//! finds the anchor by searching for `FFS_MAGIC` in an arbitrary binary.
+//! This convenience reader is intended for host inspection or a stable image
+//! snapshot. It authenticates the root and directory relative to the supplied
+//! anchor; scanning an untrusted image does not establish a protected trust root.
+//! Firmware boot boundaries use `root::authenticate_root` with protected policy,
+//! then retain one verified directory buffer rather than borrowing mutable media.
+//! The anchor's historical `manifest_offset`/`manifest_size` now point to the root.
 
 use fstart_core::ffs::{
     ANCHOR_MAX_KEYS, ANCHOR_SIZE, AnchorBlock, AnchorRef, EntryContent, FFS_MAGIC, FFS_VERSION,
-    ImageManifest, Region, RegionContent, RegionEntry, Segment, Signature,
+    ImageManifest, Region, RegionContent, RegionEntry, Segment,
 };
 
 use fstart_crypto::digest;
-use fstart_crypto::verify;
 
 /// Errors returned by the FFS reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,16 +143,15 @@ impl<'a> FfsReader<'a> {
             && (total_image_size == 0 || total_image_size as usize <= self.image.len())
     }
 
-    /// Read and verify the signed image manifest referenced by the anchor.
-    ///
-    /// 1. Reads the signed manifest envelope from the offset/size in the anchor.
-    /// 2. Verifies the signature using the keys embedded in the anchor.
-    /// 3. Deserializes and returns the `ImageManifest`.
+    /// Authenticate the root and directory against the supplied anchor.
+    /// This inspection helper imposes no persistent rollback minimum. Firmware
+    /// must supply its own protected RootPolicy and stable-directory lifetime.
     pub fn read_manifest(&self, anchor: &AnchorBlock) -> Result<ImageManifest, ReaderError> {
         self.read_verified_manifest(
             anchor.manifest_offset as usize,
             anchor.manifest_size as usize,
             anchor.valid_keys(),
+            anchor.image_family,
         )
     }
 
@@ -172,6 +164,7 @@ impl<'a> FfsReader<'a> {
             anchor.manifest_offset() as usize,
             anchor.manifest_size() as usize,
             anchor.valid_keys(),
+            anchor.image_family(),
         )
     }
 
@@ -215,8 +208,14 @@ impl<'a> FfsReader<'a> {
         region: &Region,
         entry: &RegionEntry,
     ) -> Result<&'a [u8], ReaderError> {
-        let start = (region.offset + entry.offset + segment.offset) as usize;
-        let end = start + segment.stored_size as usize;
+        let start = region
+            .offset
+            .checked_add(entry.offset)
+            .and_then(|n| n.checked_add(segment.offset))
+            .ok_or(ReaderError::OutOfBounds)? as usize;
+        let end = start
+            .checked_add(segment.stored_size as usize)
+            .ok_or(ReaderError::OutOfBounds)?;
         self.image.get(start..end).ok_or(ReaderError::OutOfBounds)
     }
 
@@ -233,7 +232,7 @@ impl<'a> FfsReader<'a> {
             EntryContent::File {
                 segments, digests, ..
             } => (segments, digests),
-            EntryContent::Raw { .. } => return Ok(()), // nothing to verify
+            EntryContent::Raw { .. } => return Err(ReaderError::CannotVerifyInPlace),
         };
 
         if segments.len() == 1 {
@@ -252,72 +251,37 @@ impl<'a> FfsReader<'a> {
 
     // ---- Internal helpers ----
 
-    /// Read a signed manifest envelope, verify its signature, and parse the ImageManifest.
+    /// Authenticate a bounded root, then hash and parse its exact directory.
     fn read_verified_manifest(
         &self,
         offset: usize,
         size: usize,
         keys: &[fstart_core::ffs::VerificationKey],
+        image_family: [u8; 16],
     ) -> Result<ImageManifest, ReaderError> {
-        let end = offset + size;
+        let end = offset.checked_add(size).ok_or(ReaderError::OutOfBounds)?;
         let data = self
             .image
             .get(offset..end)
             .ok_or(ReaderError::OutOfBounds)?;
 
-        verify_and_parse_manifest(data, keys)
+        let policy = crate::root::RootPolicy {
+            image_family,
+            minimum_security_version: 0,
+            image_size: self.image.len() as u64,
+            max_directory_size: self.image.len() as u64,
+            keys,
+        };
+        let root = crate::root::authenticate_root(&policy, data)
+            .map_err(|_| ReaderError::SignatureInvalid)?;
+        let reference = root.directory();
+        let start = usize::try_from(reference.offset).map_err(|_| ReaderError::OutOfBounds)?;
+        let size = usize::try_from(reference.size).map_err(|_| ReaderError::OutOfBounds)?;
+        let end = start.checked_add(size).ok_or(ReaderError::OutOfBounds)?;
+        let directory = self.image.get(start..end).ok_or(ReaderError::OutOfBounds)?;
+        reference
+            .verify_bytes(directory)
+            .map_err(|_| ReaderError::DigestMismatch)?;
+        crate::manifest::ManifestView::parse(directory)?.to_owned_manifest()
     }
-}
-
-/// Verify a signed manifest envelope and parse the inner [`ImageManifest`].
-///
-/// This is the core manifest verification logic, factored out of
-/// [`FfsReader`] so it can be reused by boot-media-aware code paths
-/// that read the manifest into a stack buffer (e.g., when the boot
-/// medium is a block device rather than memory-mapped flash).
-///
-/// # Arguments
-///
-/// - `data`: The raw bytes of the fixed-format signed manifest envelope.
-/// - `keys`: Verification keys from the anchor block.
-///
-/// # Errors
-///
-/// Returns [`ReaderError::DeserializeError`] if envelope/manifest parsing fails,
-/// [`ReaderError::SignatureInvalid`] if the signature doesn't verify, or
-/// [`ReaderError::KeyNotFound`] if no matching key is found.
-pub fn verify_and_parse_manifest(
-    data: &[u8],
-    keys: &[fstart_core::ffs::VerificationKey],
-) -> Result<ImageManifest, ReaderError> {
-    let manifest_bytes = verify_and_borrow_manifest(data, keys)?;
-    crate::manifest::ManifestView::parse(manifest_bytes)?.to_owned_manifest()
-}
-
-pub fn verify_and_borrow_manifest<'a>(
-    data: &'a [u8],
-    keys: &[fstart_core::ffs::VerificationKey],
-) -> Result<&'a [u8], ReaderError> {
-    let (manifest_bytes, signature) = crate::manifest::parse_signed_manifest(data)?;
-    verify_manifest_signature(manifest_bytes, &signature, keys)?;
-    Ok(manifest_bytes)
-}
-
-pub fn verify_and_manifest_view<'a>(
-    data: &'a [u8],
-    keys: &[fstart_core::ffs::VerificationKey],
-) -> Result<crate::manifest::ManifestView<'a>, ReaderError> {
-    crate::manifest::ManifestView::parse(verify_and_borrow_manifest(data, keys)?)
-}
-
-fn verify_manifest_signature(
-    manifest_bytes: &[u8],
-    signature: &Signature,
-    keys: &[fstart_core::ffs::VerificationKey],
-) -> Result<(), ReaderError> {
-    verify::verify_with_key_lookup(manifest_bytes, signature, keys).map_err(|e| match e {
-        verify::VerifyError::KeyNotFound => ReaderError::KeyNotFound,
-        verify::VerifyError::UnsupportedAlgorithm => ReaderError::UnsupportedAlgorithm,
-        _ => ReaderError::SignatureInvalid,
-    })
 }

@@ -52,10 +52,11 @@ pub fn inspect(path: &str) -> Result<(), String> {
         );
     }
     println!(
-        "  manifest offset:  {:#x} ({})",
+        "  boot root offset: {:#x} ({})",
         anchor.manifest_offset, anchor.manifest_offset
     );
-    println!("  manifest size:    {} bytes", anchor.manifest_size);
+    println!("  boot root size:   {} bytes", anchor.manifest_size);
+    println!("  image family:     {}", hex_full(&anchor.image_family));
     if anchor.anchor_offset >= anchor.total_image_size {
         println!("  note:             XIP anchor outside FFS blob (top-aligned XIP bootblock)");
     }
@@ -86,7 +87,7 @@ pub fn inspect(path: &str) -> Result<(), String> {
         );
     }
     println!(
-        "Manifest (verified, {} region{})",
+        "Directory (root-authenticated, {} region{})",
         manifest.regions.len(),
         if manifest.regions.len() == 1 { "" } else { "s" }
     );
@@ -379,6 +380,6 @@ fn hex_short(bytes: &[u8; 32]) -> String {
     format!("{prefix}...")
 }
 
-fn hex_full(bytes: &[u8; 32]) -> String {
+fn hex_full(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

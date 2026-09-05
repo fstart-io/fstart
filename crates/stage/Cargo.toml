@@ -22,14 +22,12 @@ x86-writable-page-tables = ["fstart-arch/x86-writable-page-tables"]
 # x86_64: emit static ROM page tables for first-stage real XIP boards.
 x86-static-page-tables = ["fstart-arch/x86-static-page-tables"]
 # FFS / crypto features
-ffs = [
-  "dep:fstart-crypto",
-  "dep:fstart-ffs",
-  "fstart-arch/early-ffs-anchor",
-]
-ed25519 = ["ffs", "fstart-ffs/ed25519"]
+bootstrap = ["dep:fstart-crypto", "dep:fstart-ffs", "fstart-crypto/sha2-digest", "fstart-ffs/sha2-digest"]
+ffs = ["bootstrap", "fstart-ffs/directory", "fstart-arch/early-ffs-anchor"]
+ffs-signature = ["bootstrap", "fstart-ffs/ed25519", "fstart-arch/early-ffs-anchor"]
+ed25519 = ["ffs-signature"]
 sha2-digest = [
-  "ffs",
+  "bootstrap",
   "fstart-crypto/sha2-digest",
   "fstart-ffs/sha2-digest",
 ]
@@ -39,9 +37,9 @@ sha3-digest = [
   "fstart-ffs/sha3-digest",
 ]
 # LZ4 decompression for compressed stage/payload segments
-lz4 = ["ffs"]
+lz4 = ["bootstrap"]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
-fdt = []
+fdt = ["bootstrap"]
 # ARM Linux payload selected by fbuild's payload choice.
 linux = []
 # FIT image parsing at runtime
@@ -55,7 +53,7 @@ acpi = []
 smbios = []
 # CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
 # Requires the local stage allocator.
-crabefi = ["dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi"]
+crabefi = ["bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi"]
 
 [dependencies]
 # Core firmware infrastructure

@@ -5,7 +5,45 @@
 //! RAM-backed initialization can query this scalar context without stage code
 //! knowing about those assets.
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+
+type VerifiedAssetReader = fn(&str) -> Option<&'static [u8]>;
+
+struct AssetReaderSlot(UnsafeCell<Option<VerifiedAssetReader>>);
+// SAFETY: the slot is written once by the successful UNSET -> WRITING owner,
+// then read only after publication with release/acquire ordering.
+unsafe impl Sync for AssetReaderSlot {}
+
+static ASSET_READER: AssetReaderSlot = AssetReaderSlot(UnsafeCell::new(None));
+static ASSET_READER_STATE: AtomicU8 = AtomicU8::new(0);
+
+/// Publish the stage-owned verified asset service once. Drivers depend on this
+/// interface rather than reopening the root with their own signature verifier.
+/// The provider must return authenticated, stable bytes before any parser runs.
+pub fn install_verified_asset_reader(reader: VerifiedAssetReader) -> bool {
+    if ASSET_READER_STATE
+        .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return false;
+    }
+    // SAFETY: this caller exclusively owns the unpublished slot.
+    unsafe { *ASSET_READER.0.get() = Some(reader) };
+    ASSET_READER_STATE.store(2, Ordering::Release);
+    true
+}
+
+/// Read a named data asset from the current authenticated directory context.
+/// No fallback to unverified media is provided when the service is unavailable.
+pub fn read_verified_asset(name: &str) -> Option<&'static [u8]> {
+    if ASSET_READER_STATE.load(Ordering::Acquire) != 2 {
+        return None;
+    }
+    // SAFETY: release publication completed and the slot is immutable.
+    let reader = unsafe { *ASSET_READER.0.get() }?;
+    reader(name)
+}
 
 /// Memory-mapped FFS context published by the active stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

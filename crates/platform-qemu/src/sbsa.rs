@@ -14,7 +14,10 @@ pub const QEMU_SBSA_RAM_BASE: u64 = 0x100_0000_0000;
 pub const QEMU_SBSA_RAM_SIZE: u64 = 0x4000_0000;
 pub const QEMU_SBSA_STAGE_LOAD_ADDR: u64 = 0x100_0010_0000;
 pub const QEMU_SBSA_UART_BASE: u64 = 0x6000_0000;
-#[cfg(feature = "host")]
+#[cfg(any(
+    feature = "host",
+    all(feature = "stage", feature = "aarch64", target_arch = "aarch64")
+))]
 const QEMU_SBSA_FFS_OFFSET: u64 = 0x10_0000;
 
 /// Closed SBSA-ref facts consumed by the fixed flow.
@@ -170,7 +173,10 @@ mod stage {
 
     impl QemuSbsa {
         pub fn run_stage<B: QemuSbsaBoard>(env: StageEnvironment, handoff: usize) -> ! {
-            let _ = (env, handoff);
+            let _ = handoff;
+            if !matches!(env, StageEnvironment::Monolithic) {
+                fstart_arch::halt();
+            }
             let Ok(mut mainstage) = QemuSbsaMainstage::new::<B>() else {
                 fstart_arch::aarch64::halt()
             };
@@ -179,6 +185,20 @@ mod stage {
             }
             unsafe { fstart_log::init(&mainstage.console) };
             fstart_log::info!("qemu-sbsa: pl011 console ready");
+            if crate::boot::from_dtb(
+                fstart_arch::aarch64::boot_dtb_addr(),
+                None,
+                B::CONFIG.ram_base,
+                super::QEMU_SBSA_FLASH_BASE + super::QEMU_SBSA_FFS_OFFSET,
+                super::QEMU_SBSA_FLASH_SIZE - super::QEMU_SBSA_FFS_OFFSET,
+            )
+            .is_err()
+            {
+                fstart_log::error!(
+                    "qemu-sbsa: boot integrity requires a supported RAM discovery DTB"
+                );
+                fstart_arch::halt();
+            }
             if mainstage.init_pci().is_err() {
                 fstart_log::error!("qemu-sbsa ramstage: bus_scan failed");
                 fstart_arch::aarch64::halt()

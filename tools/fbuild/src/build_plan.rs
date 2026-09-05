@@ -270,7 +270,12 @@ fn stage_plan(
     soc_format: SocImageFormat,
 ) -> StageBuildPlan {
     let mut features = plan_context.base_features.clone();
-    features.extend(stage_features(stage.build, &config.security, config));
+    features.extend(stage_features(
+        stage.build,
+        &config.security,
+        config,
+        stage.stage_idx,
+    ));
 
     if stage.page_size == PageSize::Size1GiB {
         features.insert("x86-1g-pages");
@@ -284,16 +289,16 @@ fn stage_plan(
     }
 
     let stage_has_crabefi = stage.build.payload && stage_uses_crabefi(config);
-    // Note: the lz4 raw-loader case is included: fstart-stage's allocator
-    // module rides on the ffs feature, which lz4 implies, so a stage with
-    // the decoder linked needs build-std alloc even without other alloc uses.
+    // Platform/driver crates may compile alloc-using code even when the live
+    // bootstrap path allocates nothing. Build the library without requiring
+    // an allocator or general directory in that execution path.
     let needs_alloc = stage_uses_ffs(stage.build)
         || stage.build.fdt
         || stage.build.acpi
         || stage_has_crabefi
         || stage.heap_size.is_some()
         || stage.build.pci
-        || stage_loads_compressed_next_stage(stage.build, config);
+        || stage.build.load_next_stage.is_some();
     let build_std = if needs_alloc { "core,alloc" } else { "core" };
 
     StageBuildPlan {
@@ -312,16 +317,20 @@ fn stage_features(
     build: &StageBuildConfig,
     security: &SecurityConfig,
     config: &BoardConfig,
+    stage_idx: usize,
 ) -> Vec<&'static str> {
     let mut features = Vec::new();
+    let inherits_intel_root = stage_idx > 0
+        && matches!(&config.stages,
+        StageLayout::MultiStage(stages) if stages.iter().any(|stage| stage.name.as_str() == fstart_core::stage::POSTCAR_STAGE_NAME));
+    if build.load_next_stage.is_some() {
+        // SHA-256-only loaders authenticate before entry, including pinned
+        // SRAM bootstraps. Public-key and directory code are separate.
+        features.push("bootstrap");
+    }
 
-    // Stages that read FFS (firmware-image stages, verification, payloads)
-    // pull in manifest parsing plus the signature/digest stacks.
-    // Raw next-stage loading (e.g. sunxi SRAM bootblocks reading eGON images
-    // from MMC with read_stage_to_addr) needs none of that; dragging it into
-    // BROM-loaded SRAM windows tens of KiB in size overflows .text.
-    // Cut-B postcar is the same kind of raw loader (stash extent + LZ4),
-    // with its own feature rules below.
+    // General directory consumers keep the reader and mandatory SHA-256.
+    // Only root-verifying stages select the public-key implementation.
     if stage_uses_ffs(build) {
         features.push("ffs");
         if build.payload
@@ -335,17 +344,16 @@ fn stage_features(
         {
             features.push("fit");
         }
-        // Signature/digest stacks ride only where verification happens:
-        // manifest-signature verification (bootblock, ramstage) or payload
-        // digest checks. Cut-B postcar verifies nothing — the bootblock
-        // authenticated the manifest before postcar ran (ROM-immutable), and
-        // the ramstage re-verifies its own bytes — so postcar skips ed25519
-        // (~8 KB with curve25519), sha512 (~15 KB, via dalek), the manifest
-        // verifier (~15 KB), and the anchor reader (~8 KB): ~46 KB total.
+        features.push("sha2-digest");
         if stage_verifies(build) {
-            match security.signing_algorithm {
-                fstart_core::SignatureAlgorithm::Ed25519 => features.push("ed25519"),
-                fstart_core::SignatureAlgorithm::EcdsaP256 => {}
+            if !inherits_intel_root {
+                match security.signing_algorithm {
+                    fstart_core::SignatureAlgorithm::Ed25519 => {
+                        features.push("ed25519");
+                        features.push("ffs-signature");
+                    }
+                    fstart_core::SignatureAlgorithm::EcdsaP256 => {}
+                }
             }
             for digest in &security.required_digests {
                 match digest {
@@ -356,15 +364,8 @@ fn stage_features(
         }
     }
 
-    // LZ4 rides only where decompression happens, independent of the FFS
-    // gate above: payload stages keep it (conservative — kernels arrive
-    // uncompressed today), and a stage whose named next stage is packaged
-    // compressed (postcar loading an Lz4 ramstage). The CAR bootblock
-    // raw-copies the uncompressed postcar, so it drops the decoder and
-    // shrinks out of CAR pressure. "ffs" rides along: the decoder lives
-    // in fstart-ffs, and the board maps both strings into fstart-stage.
+    // The decoder is independent of the general directory/signature reader.
     if build.payload || stage_loads_compressed_next_stage(build, config) {
-        features.push("ffs");
         features.push("lz4");
     }
 
@@ -399,13 +400,8 @@ fn stage_uses_ffs(build: &StageBuildConfig) -> bool {
     build.firmware_image.is_some() || build.verify_firmware || build.payload
 }
 
-/// Whether this stage links the signature/digest stacks.
-///
-/// True for stages that verify the manifest signature or file digests
-/// (firmware-image readers, explicit verifiers, payload loaders). False for
-/// raw loaders that move bytes without authenticating them — Cut-B postcar
-/// (trusts the bootblock-verified manifest via the stash) and raw eGON/MMC
-/// loaders (no manifest at all).
+/// Whether this stage consumes the general authenticated directory. Bootstrap
+/// loaders instead use bounded descriptors and SHA-256 before executable entry.
 fn stage_verifies(build: &StageBuildConfig) -> bool {
     build.firmware_image.is_some() || build.verify_firmware || build.payload
 }
@@ -723,14 +719,16 @@ mod tests {
         // Bootblock: FFS yes, LZ4 no (raw-copies uncompressed postcar).
         assert!(plan.stages[0].features.contains("ffs"));
         assert!(!plan.stages[0].features.contains("lz4"));
-        // Postcar: decompresses the Lz4 ramstage, so it keeps the decoder
-        // (ffs rides along via lz4), but carries no signature/digest stack:
-        // the bootblock authenticated the manifest and the ramstage
-        // re-verifies its own bytes.
-        assert!(plan.stages[1].features.contains("ffs"));
+        // Postcar verifies and decompresses through the bounded bootstrap
+        // loader; it does not select the general reader or root signature.
+        assert!(plan.stages[1].features.contains("bootstrap"));
+        assert!(!plan.stages[1].features.contains("ffs"));
         assert!(plan.stages[1].features.contains("lz4"));
         assert!(!plan.stages[1].features.contains("ed25519"));
-        assert!(!plan.stages[1].features.contains("sha2-digest"));
+        assert!(!plan.stages[1].features.contains("sha2-digest")); // bootstrap already selects SHA-256
+        assert!(plan.stages[2].features.contains("sha2-digest"));
+        assert!(!plan.stages[2].features.contains("ed25519"));
+        assert!(!plan.stages[2].features.contains("ffs-signature"));
     }
 
     #[test]

@@ -9,6 +9,9 @@
 //! Runtime operands must declare their fixed AML width: `#{byte EXPR}`,
 //! `#{word EXPR}`, `#{dword EXPR}`, or `#{qword EXPR}`. The macro evaluates each
 //! expression once and binds it to the corresponding fixup in source order.
+//! Checked conversions preserve sign and high bits; `emit` returns an
+//! `AmlError` before writing if an operand is invalid. Const operands are
+//! evaluated and range-checked at compile time, including local fragments.
 //! Plain `#{EXPR}` is deliberately rejected. `#{const EXPR}` accepts integer
 //! literals with their shortest encoding and string literals where a path is
 //! expected. Named const integer expressions use an explicit fixed width, for
@@ -40,7 +43,7 @@ use proc_macro::TokenStream;
 /// let irq = 33u32;
 /// let runtime = acpi_dsl! { Name("UIRQ", #{dword irq}); };
 /// let mut bytes = Vec::new();
-/// runtime.emit(&mut bytes);
+/// runtime.emit(&mut bytes).unwrap();
 /// ```
 #[proc_macro]
 pub fn acpi_dsl(input: TokenStream) -> TokenStream {

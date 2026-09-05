@@ -221,14 +221,15 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
 /// Carves a dedicated allocation out of e820 RAM (marked ACPI reclaim) —
 /// falling back to a leaked heap buffer — collects per-device DSDT AML and
 /// extra tables via `collect_devices`, assembles the final table set via
-/// [`fstart_acpi::platform::assemble_and_write`], installs a legacy RSDP
-/// copy in the EBDA, and hex-dumps the tables. Returns the RSDP address.
+/// [`fstart_acpi::platform::assemble_into`], installs a legacy RSDP
+/// copy in the EBDA, and hex-dumps the tables. Returns the RSDP address only
+/// after bounded assembly succeeds. Errors must abort required-table handoff.
 #[cfg(feature = "acpi")]
 pub fn prepare_acpi(
     e820: &mut fstart_core::services::memory_detect::E820State,
     platform: &fstart_acpi::platform::PlatformConfig,
     collect_devices: impl FnOnce(&mut Vec<u8>, &mut Vec<Vec<u8>>),
-) -> u64 {
+) -> Result<u64, fstart_acpi::AmlError> {
     let mut dsdt_aml: Vec<u8> = Vec::new();
     let mut extra_tables: Vec<Vec<u8>> = Vec::new();
 
@@ -260,15 +261,20 @@ pub fn prepare_acpi(
             acpi_ptr as u64
         });
 
-    let acpi_len =
-        fstart_acpi::platform::assemble_and_write(acpi_addr, platform, &dsdt_aml, &extra_tables);
-
-    assert!(
-        acpi_len <= BUF_SIZE,
-        "ACPI tables ({} bytes) exceed buffer size ({} bytes)",
-        acpi_len,
-        BUF_SIZE,
-    );
+    let address = usize::try_from(acpi_addr).map_err(|_| fstart_acpi::AmlError::LengthOverflow)?;
+    address
+        .checked_add(BUF_SIZE)
+        .ok_or(fstart_acpi::AmlError::LengthOverflow)?;
+    // SAFETY: this complete BUF_SIZE range was just reserved or allocated.
+    // The bounded assembler validates capacity before copying any table bytes.
+    let storage = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, BUF_SIZE) };
+    let acpi_len = fstart_acpi::platform::assemble_into(
+        storage,
+        acpi_addr,
+        platform,
+        &dsdt_aml,
+        &extra_tables,
+    )?;
 
     fstart_log::info!(
         "ACPI: {} bytes written to {}",
@@ -283,7 +289,7 @@ pub fn prepare_acpi(
     install_rsdp_in_ebda(acpi_data);
     print_acpi_tables_acpixtract(acpi_data);
 
-    acpi_addr
+    Ok(acpi_addr)
 }
 
 #[cfg(feature = "smbios")]

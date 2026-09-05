@@ -104,7 +104,7 @@ mod stage {
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_stage::{StageBoard, StageEnvironment};
 
-    use crate::egon::{BootDevice, boot_device_at, next_stage_offset_at, next_stage_size_at};
+    use crate::egon::{BootDevice, boot_device_at};
 
     /// Board contract for the fixed D1 flow.
     ///
@@ -192,42 +192,18 @@ mod stage {
             return Err(ServiceError::NotSupported);
         }
 
-        let next_stage_offset = u64::from(next_stage_offset_at(sram_base));
-        let next_stage_size = next_stage_size_at(sram_base) as usize;
-        if next_stage_size == 0 || !in_d1_dram(config.mainstage_load_addr) {
-            return Err(ServiceError::InvalidParam);
-        }
-        let dram_end = D1_DRAM_BASE
-            .checked_add(dram_size)
-            .ok_or(ServiceError::InvalidParam)?;
-        let end = config
-            .mainstage_load_addr
-            .checked_add(next_stage_size as u64)
-            .ok_or(ServiceError::InvalidParam)?;
-        if end > dram_end {
-            return Err(ServiceError::InvalidParam);
-        }
-        let offset = D1_EGON_MMC_OFFSET
-            .checked_add(next_stage_offset)
-            .ok_or(ServiceError::InvalidParam)?;
-
-        let read = fstart_stage::next_stage::read_stage_to_addr(
+        let entry = crate::boot::load_mainstage(
             &mmc0,
-            "mmc0",
-            "main",
-            offset,
+            D1_EGON_MMC_OFFSET,
+            crate::egon::ffs_total_size_at(sram_base) as usize,
+            D1_DRAM_BASE,
+            dram_size,
             config.mainstage_load_addr,
-            next_stage_size,
+            config.handoff_addr,
         )?;
-        if read != next_stage_size {
-            return Err(ServiceError::IoError);
-        }
         fstart_stage::next_stage::serialize_handoff(dram_size, config.handoff_addr)
             .map_err(|_| ServiceError::HardwareError)?;
-        fstart_arch::riscv64::jump_to_with_handoff(
-            config.mainstage_load_addr,
-            config.handoff_addr as usize,
-        )
+        fstart_arch::riscv64::jump_to_with_handoff(entry, config.handoff_addr as usize)
     }
 
     /// Handwritten D1 DRAM mainstage setup.

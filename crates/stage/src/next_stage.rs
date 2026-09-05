@@ -1,42 +1,66 @@
-//! LoadNextStage runtime helpers.
-//!
-//! Shared helpers used by the runtime executor for next-stage handoff.
-//!
-//! Runtime owns eGON offset/size validation, block-device selection,
-//! stage reads, handoff serialization, and jump sequencing. Codegen emits
-//! only primitive descriptors and service dispatch for the executor.
+//! Pinned bootstrap metadata and fixed-family handoff serialization.
+//! Executable media reads go through `boot::load_bootstrap`; there is no
+//! unchecked direct-to-address stage copy helper.
 
-use fstart_core::services::{BlockDevice, ServiceError};
+/// Build-patched bootstrap descriptor in the initial stage. Updating a pin
+/// requires replacing that initial image; without protection of that image this
+/// is development integrity, not authenticated updates.
+#[cfg(feature = "bootstrap")]
+#[repr(C, align(8))]
+pub struct BootstrapPin(core::cell::UnsafeCell<[u8; 160]>);
 
-/// Read a firmware stage from a block device directly to its load address.
-///
-/// Performs a single block device read of `size` bytes from `offset`
-/// into `load_addr`. Returns the number of bytes read on success.
-///
-/// # Safety
-///
-/// Caller must ensure `load_addr` points to writable RAM with at least
-/// `size` bytes available. This is guaranteed by the board config and
-/// linker script.
-pub fn read_stage_to_addr(
-    dev: &(impl BlockDevice + ?Sized),
-    dev_name: &str,
-    next_stage: &str,
-    offset: u64,
-    load_addr: u64,
-    size: usize,
-) -> Result<usize, ServiceError> {
-    fstart_log::info!(
-        "loading stage '{}' from {}: offset={:#x}, size={:#x}, dest={:#x}",
-        next_stage,
-        dev_name,
-        offset,
-        size as u64,
-        load_addr
-    );
-    // SAFETY: load_addr points to writable RAM per board config.
-    let dest_buf = unsafe { core::slice::from_raw_parts_mut(load_addr as *mut u8, size) };
-    dev.read(offset, dest_buf)
+#[cfg(feature = "bootstrap")]
+unsafe impl Sync for BootstrapPin {}
+
+#[cfg(all(
+    feature = "bootstrap",
+    fstart_stage_env = "car",
+    not(target_arch = "x86_64")
+))]
+const fn bootstrap_pin_placeholder() -> [u8; 160] {
+    let mut bytes = [0; 160];
+    let magic = *b"FSTPIN01";
+    let mut index = 0;
+    while index < magic.len() {
+        bytes[index] = magic[index];
+        index += 1;
+    }
+    bytes
+}
+
+#[cfg(all(
+    feature = "bootstrap",
+    fstart_stage_env = "car",
+    not(target_arch = "x86_64")
+))]
+#[used]
+#[unsafe(no_mangle)]
+#[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.bootstrap_pin"))]
+pub static FSTART_BOOTSTRAP_PIN: BootstrapPin =
+    BootstrapPin(core::cell::UnsafeCell::new(bootstrap_pin_placeholder()));
+
+/// Read the descriptor pinned by image construction into this initial stage.
+/// A still-unpatched marker fails descriptor parsing. The copy is bounded and
+/// remains stable even when the initial image is executing from mapped flash.
+#[cfg(feature = "bootstrap")]
+pub fn pinned_bootstrap_descriptor()
+-> Result<fstart_ffs::root::BootstrapDescriptor, fstart_ffs::root::RootError> {
+    #[cfg(all(fstart_stage_env = "car", not(target_arch = "x86_64")))]
+    {
+        let mut bytes = [0; 160];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            // SAFETY: the static contains 160 initialized bytes, patched offline;
+            // volatile prevents constant folding of the link-time placeholder.
+            *byte = unsafe {
+                core::ptr::read_volatile(FSTART_BOOTSTRAP_PIN.0.get().cast::<u8>().add(index))
+            };
+        }
+        fstart_ffs::root::BootstrapDescriptor::parse(&bytes)
+    }
+    #[cfg(not(all(fstart_stage_env = "car", not(target_arch = "x86_64"))))]
+    {
+        Err(fstart_ffs::root::RootError::UnsupportedVersion)
+    }
 }
 
 /// Serialize handoff data to a DRAM buffer for the next stage.

@@ -537,15 +537,8 @@ fn test_wrong_key_fails_verification() {
         }],
     };
 
-    // Sign with the correct key but embed the wrong key in anchor
-    let ffs = build_image(&config, &make_signer(&signing_key)).expect("build should succeed");
-
-    let reader = FfsReader::new(&ffs.image);
-    let anchor = reader
-        .read_anchor(ffs.anchor_offset)
-        .expect("anchor should parse");
-    let result = reader.read_manifest(&anchor);
-    assert!(result.is_err(), "wrong key should fail verification");
+    // The packager refuses a signer inconsistent with the protected key.
+    assert!(build_image(&config, &make_signer(&signing_key)).is_err());
 }
 
 #[test]
@@ -899,7 +892,7 @@ fn test_lz4_compressed_segment_round_trip() {
 }
 
 #[test]
-fn test_lz4_in_place_decompression() {
+fn test_lz4_disjoint_workspace_decompression() {
     let (signing_key, vk) = dev_keypair();
 
     // Use data with mixed compressibility to exercise the in-place margin
@@ -969,7 +962,7 @@ fn test_lz4_in_place_decompression() {
         .read_segment_data(seg, region, entry)
         .expect("read compressed data");
 
-    // Simulate in-place decompression exactly as the runtime would:
+    // Simulate disjoint workspace decompression:
     // 1. Allocate in_place_size buffer (simulating the load_addr region)
     // 2. Copy compressed data to the END
     // 3. Decompress from tail to head
@@ -978,12 +971,13 @@ fn test_lz4_in_place_decompression() {
     let src_offset = buf_size - compressed.len();
     buf[src_offset..].copy_from_slice(compressed);
 
-    // Decompress in-place using raw pointers (same as the runtime)
-    let n = unsafe {
-        let src = core::slice::from_raw_parts(buf.as_ptr().add(src_offset), compressed.len());
-        let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), seg.loaded_size as usize);
-        fstart_ffs::lz4::decompress_block(src, dst).expect("in-place decompress should succeed")
-    };
+    // Split the allocation into disjoint input and output regions.
+    let (destination, source) = buf.split_at_mut(src_offset);
+    let n = fstart_ffs::lz4::decompress_block(
+        source,
+        &mut destination[..seg.initialized_size as usize],
+    )
+    .expect("disjoint decompress should succeed");
 
     assert_eq!(n, mixed_data.len());
     assert_eq!(&buf[..n], &mixed_data);
@@ -1169,11 +1163,12 @@ fn test_lz4_incompressible_data() {
     let src_offset = buf_size - compressed.len();
     buf[src_offset..].copy_from_slice(compressed);
 
-    let n = unsafe {
-        let src = core::slice::from_raw_parts(buf.as_ptr().add(src_offset), compressed.len());
-        let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), seg.loaded_size as usize);
-        fstart_ffs::lz4::decompress_block(src, dst).expect("in-place decompress")
-    };
+    let (destination, source) = buf.split_at_mut(src_offset);
+    let n = fstart_ffs::lz4::decompress_block(
+        source,
+        &mut destination[..seg.initialized_size as usize],
+    )
+    .expect("disjoint decompress");
 
     assert_eq!(n, data.len());
     assert_eq!(&buf[..n], &data);

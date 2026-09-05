@@ -29,13 +29,16 @@ fn emit_named<const N: usize, const K: usize>(
     assert!(
         !name.is_empty()
             && name.len() <= 4
+            && !name.as_bytes()[0].is_ascii_digit()
             && name
                 .bytes()
                 .all(|byte| byte == b'_' || byte.is_ascii_uppercase() || byte.is_ascii_digit()),
         "invalid ACPI device NameSeg"
     );
     let mut bytes = Vec::new();
-    fragment.emit(&mut bytes);
+    fragment
+        .emit(&mut bytes)
+        .expect("invalid ACPI device operands");
     // DeviceOp is two bytes. The NameSeg starts immediately after its
     // PkgLength, whose lead byte records the number of following length bytes.
     let offset = 3 + usize::from(bytes[2] >> 6);
@@ -61,14 +64,20 @@ enum MmioDescriptor {
     QWord(AddressSpace<u64>),
 }
 
+fn resource_end(base: u64, size: u64) -> u64 {
+    size.checked_sub(1)
+        .and_then(|span| base.checked_add(span))
+        .expect("empty or overflowing MMIO resource range")
+}
+
 impl MmioDescriptor {
     /// Create an MMIO descriptor for the given base address and size.
     ///
     /// Uses `Memory32Fixed` when the region fits entirely below 4 GiB,
     /// `QWordMemory` otherwise.
     fn new(base: u64, size: u64) -> Self {
-        let end = base.saturating_add(size).saturating_sub(1);
-        if end < (1u64 << 32) {
+        let end = resource_end(base, size);
+        if end < (1u64 << 32) && size <= u64::from(u32::MAX) {
             MmioDescriptor::Fixed32(Memory32Fixed::new(true, base as u32, size as u32))
         } else {
             MmioDescriptor::QWord(AddressSpace::<u64>::new_memory(
@@ -131,7 +140,12 @@ impl GenericAcpi<'_> {
                     mmio_descs.push(MmioDescriptor::new(base, size));
                 }
                 fstart_core::acpi::AcpiResource::Pio { base, size } => {
-                    pio_descs.push(IO::new(base, base, 0, size as u8));
+                    pio_descs.push(IO::new(
+                        base,
+                        base,
+                        0,
+                        u8::try_from(size).expect("PIO resource length exceeds Byte field"),
+                    ));
                 }
             }
         }
@@ -187,7 +201,8 @@ impl AhciAcpi<'_> {
     /// complete MMIO range fits below 4 GiB.
     pub fn dsdt_aml(&self) -> Vec<u8> {
         let gsiv = self.gsiv as u64;
-        if self.base.saturating_add(self.size.into()) <= 1u64 << 32 {
+        let end = resource_end(self.base, u64::from(self.size));
+        if end < 1u64 << 32 {
             let base = self.base;
             let size = self.size as u64;
             let fragment = fstart_acpi_macros::acpi_dsl! {
@@ -205,7 +220,6 @@ impl AhciAcpi<'_> {
             emit_named(&fragment, self.name)
         } else {
             let base = self.base;
-            let end = self.base + self.size as u64 - 1;
             let fragment = fstart_acpi_macros::acpi_dsl! {
                 Device("____") {
                     Name("_HID", "LNRO0015");
@@ -247,6 +261,10 @@ impl XhciAcpi<'_> {
     pub fn dsdt_aml(&self) -> Vec<u8> {
         let base = self.base;
         let size = self.size as u64;
+        assert!(
+            resource_end(base, size) < 1u64 << 32,
+            "XHCI Memory32Fixed resource exceeds 4 GiB"
+        );
         let gsiv = self.gsiv as u64;
         let fragment = fstart_acpi_macros::acpi_dsl! {
             Device("____") {
@@ -421,6 +439,21 @@ mod tests {
         assert!(aml.len() > 10);
         assert_eq!(aml[0], 0x5B);
         assert_eq!(aml[1], 0x82);
+    }
+
+    #[test]
+    fn mmio_limits_do_not_wrap_or_truncate() {
+        assert!(matches!(
+            MmioDescriptor::new(0, 1u64 << 32),
+            MmioDescriptor::QWord(_)
+        ));
+        assert!(matches!(
+            MmioDescriptor::new(u64::MAX, 1),
+            MmioDescriptor::QWord(_)
+        ));
+        for (base, size) in [(1, 0), (u64::MAX, 2)] {
+            assert!(std::panic::catch_unwind(|| MmioDescriptor::new(base, size)).is_err());
+        }
     }
 
     #[test]

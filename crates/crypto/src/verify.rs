@@ -75,7 +75,7 @@ fn verify_ed25519(
     signature: &Signature,
     key: &VerificationKey,
 ) -> Result<(), VerifyError> {
-    use ed25519_dalek::{Signature as Ed25519Sig, Verifier, VerifyingKey};
+    use ed25519_dalek::{Signature as Ed25519Sig, VerifyingKey};
 
     let pubkey_bytes = key.key_lo; // Ed25519 uses only the lower 32 bytes
     let verifying_key =
@@ -85,7 +85,7 @@ fn verify_ed25519(
     let sig = Ed25519Sig::from_bytes(&sig_bytes);
 
     verifying_key
-        .verify(message, &sig)
+        .verify_strict(message, &sig)
         .map_err(|_| VerifyError::InvalidSignature)
 }
 

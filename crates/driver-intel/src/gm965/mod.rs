@@ -1199,66 +1199,9 @@ impl IntelGm965 {
     #[cfg(feature = "ffs-vbt")]
     fn ffs_vbt(&self) -> Option<Vec<u8>> {
         let file_name = self.config.igd.vbt_file?;
-        let ctx = fstart_core::services::ffs_context::memory_mapped()?;
-        // SAFETY: the selected stage publishes a static anchor and a valid
-        // memory-mapped boot-media window when BootMedia runs.
-        let anchor_bytes = unsafe { ctx.anchor_bytes() };
-        let image = unsafe { ctx.image_bytes() };
-        let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes).ok()? };
-        let total_image_size = anchor.total_image_size() as usize;
-        let image_size = if total_image_size > 0 {
-            total_image_size.min(image.len())
-        } else {
-            image.len()
-        };
-        let image = &image[..image_size];
-        let manifest = fstart_ffs::FfsReader::new(image)
-            .read_manifest_volatile(anchor)
-            .ok()?;
-
-        for region in &manifest.regions {
-            let fstart_core::ffs::RegionContent::Container { children } = &region.content else {
-                continue;
-            };
-            for entry in children {
-                if entry.name.as_str() != file_name {
-                    continue;
-                }
-                let fstart_core::ffs::EntryContent::File {
-                    file_type,
-                    segments,
-                    digests,
-                } = &entry.content
-                else {
-                    return None;
-                };
-                if *file_type != fstart_core::ffs::FileType::Data || segments.len() != 1 {
-                    return None;
-                }
-                let seg = segments.first()?;
-                let offset = (region.offset + entry.offset + seg.offset) as usize;
-                let stored_size = seg.stored_size as usize;
-                let end = offset.checked_add(stored_size)?;
-                let stored = image.get(offset..end)?;
-                let mut out = Vec::new();
-                match seg.compression {
-                    fstart_core::ffs::Compression::None => {
-                        out.extend_from_slice(stored);
-                    }
-                    fstart_core::ffs::Compression::Lz4 => {
-                        out.resize(seg.loaded_size as usize, 0);
-                        let len =
-                            fstart_ffs::lz4::decompress_block(stored, out.as_mut_slice()).ok()?;
-                        out.truncate(len);
-                    }
-                }
-                fstart_crypto::digest::verify_digest_set(out.as_slice(), digests).ok()?;
-                let vbt_size = Self::vbt_size(out.as_slice())?;
-                out.truncate(vbt_size);
-                return Some(out);
-            }
-        }
-        None
+        let bytes = fstart_core::services::ffs_context::read_verified_asset(file_name)?;
+        let size = Self::vbt_size(bytes)?;
+        Some(bytes[..size].to_vec())
     }
 
     fn configured_vbt(&self) -> Option<&'static [u8]> {
@@ -1291,8 +1234,10 @@ impl IntelGm965 {
 
     fn locate_vbt(&self) -> Option<VbtBytes<'static>> {
         #[cfg(feature = "ffs-vbt")]
-        if let Some(vbt) = self.ffs_vbt() {
-            return Some(VbtBytes::Owned(vbt));
+        if self.config.igd.vbt_file.is_some() {
+            // A configured authenticated asset must not fall back to legacy
+            // memory after a verification failure.
+            return self.ffs_vbt().map(VbtBytes::Owned);
         }
         self.configured_vbt()
             .or_else(|| self.legacy_vbt())
@@ -2025,12 +1970,11 @@ mod acpi_impl {
         /// objects. Southbridge devices attach later through an absolute
         /// `\\_SB.PCI0` scope emitted by the ICH8 driver.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
-            let mchbar = config.mchbar as u32;
-            let dmibar = config.dmibar as u32;
-            let epbar = config.epbar as u32;
-            let ecam_base = config.ecam_base as u32;
-            let ecam_size =
-                (u64::from(config.ecam_buses) * 1024 * 1024).min(u64::from(u32::MAX)) as u32;
+            let mchbar = config.mchbar;
+            let dmibar = config.dmibar;
+            let epbar = config.epbar;
+            let ecam_base = config.ecam_base;
+            let ecam_size = u64::from(config.ecam_buses) * 1024 * 1024;
             #[cfg(target_os = "none")]
             let pci_mmio_base = self.tolud().max(0x8000_0000);
             #[cfg(not(target_os = "none"))]
@@ -2042,7 +1986,7 @@ mod acpi_impl {
             // fixed chipset BARs such as IGD GTTMMADR at 0xfeb0_0000 and AHCI
             // ABAR at 0xfea0_0000 still need a compatible host bridge window.
             let pci_mmio_limit = 0xfebf_ffffu32;
-            let gttmmio = config.igd.gtt_mmio_base as u32;
+            let gttmmio = config.igd.gtt_mmio_base;
             let rcba: u32 = 0xfed1_c000;
 
             let mut aml: Vec<u8> = acpi_dsl! {
@@ -2260,10 +2204,13 @@ mod acpi_impl {
                 }
             });
 
-            aml.extend_from_slice(&fstart_acpi::aml_linker::scope_vec(
-                "\\",
-                &crate::cpu::core2_aml::cpu_devices_aml(2),
-            ));
+            aml.extend_from_slice(
+                &fstart_acpi::aml_linker::scope_vec(
+                    "\\",
+                    &crate::cpu::core2_aml::cpu_devices_aml(2),
+                )
+                .expect("GM965 required CPU scope emission failed"),
+            );
 
             aml
         }

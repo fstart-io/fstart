@@ -198,7 +198,10 @@ mod stage {
         where
             B: QemuSifiveUBoard,
         {
-            let _ = (env, handoff);
+            let _ = handoff;
+            if !matches!(env, StageEnvironment::Monolithic) {
+                fstart_arch::halt();
+            }
             let mut hooks = B::Hooks::default();
             if !phase("before_console", hooks.before_console()) {
                 fstart_arch::riscv64::halt();
@@ -214,6 +217,17 @@ mod stage {
             unsafe { fstart_log::init(&console) };
             fstart_log::info!("sifive-u: SiFive UART console ready");
             if !phase("after_console", hooks.after_console())
+                || !phase(
+                    "boot_integrity",
+                    crate::boot::from_dtb(
+                        fstart_arch::riscv64::boot_dtb_addr(),
+                        cfg!(any(feature = "linux", feature = "crabefi"))
+                            .then_some(B::CONFIG.dtb_addr),
+                        B::CONFIG.ram_base,
+                        B::CONFIG.firmware_base,
+                        B::CONFIG.firmware_size,
+                    ),
+                )
                 || !phase("before_payload", hooks.before_payload())
             {
                 fstart_arch::riscv64::halt();

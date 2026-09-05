@@ -926,12 +926,21 @@ mod acpi_impl {
         irq: Option<u8>,
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
-        fragment.emit(&mut bytes);
+        fragment
+            .emit(&mut bytes)
+            .expect("required Super I/O AML operands are invalid");
+        assert!(
+            name.len() <= 4
+                && fstart_acpi::aml_linker::AmlPath::new(name).is_ok()
+                && !name.contains(['\\', '^', '.']),
+            "invalid Super I/O device NameSeg"
+        );
         let name_offset = 3 + usize::from(bytes[2] >> 6);
         assert_eq!(&bytes[name_offset..name_offset + 4], b"____");
         bytes[name_offset..name_offset + 4].fill(b'_');
         bytes[name_offset..name_offset + name.len()].copy_from_slice(name.as_bytes());
         if let Some(irq) = irq {
+            assert!(irq < 16, "Super I/O ISA IRQ exceeds 15");
             let descriptor = bytes
                 .windows(3)
                 .position(|window| window == [0x22, 0x01, 0x00])
@@ -985,7 +994,9 @@ mod acpi_impl {
         fragment: &fstart_acpi::BoundAmlFragment<N, K>,
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
-        fragment.emit(&mut bytes);
+        fragment
+            .emit(&mut bytes)
+            .expect("required Super I/O AML operands are invalid");
         bytes
     }
 

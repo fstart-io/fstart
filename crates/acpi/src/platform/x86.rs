@@ -298,6 +298,31 @@ mod tests {
     }
 
     #[test]
+    fn bounded_assembly_never_copies_an_oversized_table_set() {
+        use crate::platform::{PlatformConfig, assemble_into};
+        let config = PlatformConfig::X86(test_config());
+        let mut short = [0xa5; 36];
+        assert_eq!(
+            assemble_into(&mut short, 0x100000, &config, &[], &[]),
+            Err(crate::AmlError::Capacity)
+        );
+        assert_eq!(short, [0xa5; 36]);
+        let mut storage = [0; 4096];
+        let len = assemble_into(&mut storage, 0x100000, &config, &[], &[]).unwrap();
+        let mut exact = alloc::vec![0; len];
+        assert_eq!(
+            assemble_into(&mut exact, 0x100000, &config, &[], &[]),
+            Ok(len)
+        );
+        assert_eq!(exact, storage[..len]);
+        assert_eq!(
+            assemble_into(&mut short, u64::MAX, &config, &[], &[]),
+            Err(crate::AmlError::LengthOverflow)
+        );
+        assert_eq!(short, [0xa5; 36]);
+    }
+
+    #[test]
     fn test_x86_madt() {
         let config = test_config();
         let madt_bytes = build_madt(&config);

@@ -13,6 +13,8 @@ stage = [
   "dep:fstart-driver-uart",
   "dep:fstart-log",
   "dep:fstart-stage",
+  "dep:fstart-ffs",
+  "fstart-stage/ffs",
   "dep:fstart-arch",
   "dep:ufmt",
   "fstart-core/pci",

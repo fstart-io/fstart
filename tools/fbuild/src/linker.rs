@@ -540,6 +540,7 @@ fn write_heap(out: &mut String, heap_size: u64, region: &str) {
 fn write_rodata_section(out: &mut String, region: &str) {
     writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
     writeln!(out, "        _rodata_start = .;").unwrap();
+    writeln!(out, "        KEEP(*(.fstart.bootstrap_pin))").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }

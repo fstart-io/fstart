@@ -24,6 +24,8 @@ stage = [
 ]
 armv7 = ["fstart-stage?/armv7", "fstart-platform-qemu/armv7"]
 ffs = ["fstart-stage?/ffs"]
+bootstrap = ["fstart-stage?/bootstrap"]
+ffs-signature = ["fstart-stage?/ffs-signature"]
 ed25519 = ["fstart-stage?/ed25519"]
 sha2-digest = ["fstart-stage?/sha2-digest"]
 sha3-digest = ["fstart-stage?/sha3-digest"]

@@ -139,6 +139,10 @@ fn build_cpu_devices_aml(
     cstates: Option<&[CState]>,
     coordination: u32,
 ) -> Vec<u8> {
+    assert!(
+        logical_cpus <= 255,
+        "CPU AML package exceeds 255 processors"
+    );
     let states = speedstep_pstates();
     let mut out = Vec::new();
 
@@ -175,7 +179,8 @@ fn append_device(out: &mut Vec<u8>, name: [u8; 4], body: &[u8]) {
     payload.extend_from_slice(&name);
     payload.extend_from_slice(body);
     out.extend_from_slice(&[0x5b, 0x82]);
-    let (length, width) = fstart_acpi::aml_linker::package_length(payload.len());
+    let (length, width) = fstart_acpi::aml_linker::package_length(payload.len())
+        .expect("required CPU AML package exceeds length limit");
     out.extend_from_slice(&length[..width]);
     out.extend_from_slice(&payload);
 }
@@ -203,7 +208,8 @@ fn append_cnot_method(out: &mut Vec<u8>, logical_cpus: usize) {
     payload.extend_from_slice(b"CNOT");
     payload.push(0x01); // one argument, NotSerialized
     payload.extend_from_slice(&body);
-    let (length, width) = fstart_acpi::aml_linker::package_length(payload.len());
+    let (length, width) = fstart_acpi::aml_linker::package_length(payload.len())
+        .expect("required CPU AML package exceeds length limit");
     out.extend_from_slice(&length[..width]);
     out.extend_from_slice(&payload);
 }
@@ -247,7 +253,11 @@ fn append_pss(out: &mut Vec<u8>, states: &[SpeedstepState]) {
         append_package(&mut entries, 6, &values);
     }
     append_name(out, b"_PSS", |out| {
-        append_package(out, states.len() as u8, &entries)
+        append_package(
+            out,
+            u8::try_from(states.len()).expect("too many CPU P-states"),
+            &entries,
+        )
     });
     name_integer(out, "_PPC", 0);
 }
@@ -275,7 +285,11 @@ fn append_cst(out: &mut Vec<u8>, entries: &[CState]) {
         append_package(&mut elements, 4, &values);
     }
     append_name(out, b"_CST", |out| {
-        append_package(out, (entries.len() + 1) as u8, &elements)
+        append_package(
+            out,
+            u8::try_from(entries.len() + 1).expect("too many CPU C-states"),
+            &elements,
+        )
     });
 }
 
@@ -304,7 +318,8 @@ fn append_integer(out: &mut Vec<u8>, value: u32) {
 
 fn append_package(out: &mut Vec<u8>, count: u8, elements: &[u8]) {
     out.push(0x12);
-    let (length, width) = fstart_acpi::aml_linker::package_length(elements.len() + 1);
+    let (length, width) = fstart_acpi::aml_linker::package_length(elements.len() + 1)
+        .expect("required CPU AML package exceeds length limit");
     out.extend_from_slice(&length[..width]);
     out.push(count);
     out.extend_from_slice(elements);
@@ -315,7 +330,8 @@ fn append_buffer(out: &mut Vec<u8>, bytes: &[u8]) {
     append_integer(&mut body, bytes.len() as u32);
     body.extend_from_slice(bytes);
     out.push(0x11);
-    let (length, width) = fstart_acpi::aml_linker::package_length(body.len());
+    let (length, width) = fstart_acpi::aml_linker::package_length(body.len())
+        .expect("required CPU AML package exceeds length limit");
     out.extend_from_slice(&length[..width]);
     out.extend_from_slice(&body);
 }

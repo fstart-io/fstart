@@ -14,12 +14,12 @@ pub const FU740_ECAM_BASE: u64 = 0x3000_0000;
 
 mod stage {
     use super::*;
+    use super::{ddr::Fu740Ddr, prci::Fu740Prci};
     #[cfg(feature = "crabefi")]
     use fstart_core::services::Console;
     use fstart_core::services::ServiceError;
-    use super::{ddr::Fu740Ddr, prci::Fu740Prci};
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
-    use fstart_stage::{payload::MainstagePayload, StageBoard, StageEnvironment};
+    use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
 
     /// Board seams in the fixed FU740 flow. Defaults compile away.
     pub trait Fu740Hooks {
@@ -84,7 +84,9 @@ mod stage {
         where
             B: Fu740Board,
         {
-            let _ = (env, handoff);
+            if !matches!(env, StageEnvironment::Monolithic) {
+                fstart_arch::riscv64::halt();
+            }
             let mut hooks = B::Hooks::default();
             if !phase("before_prci", hooks.before_prci()) {
                 fstart_arch::riscv64::halt();
@@ -122,6 +124,10 @@ mod stage {
             };
             if !phase("ddr", ddr.init())
                 || !phase("after_memory", hooks.after_memory())
+                || !phase(
+                    "boot_integrity",
+                    install_boot_context(B::CONFIG, ddr.detected_size_bytes(), handoff),
+                )
                 || !phase("before_payload", hooks.before_payload())
             {
                 fstart_arch::riscv64::halt();
@@ -165,6 +171,143 @@ mod stage {
                 dtb_addr,
             )
         }
+    }
+
+    /// This monolithic flow authenticates its own root, not an inherited one.
+    /// The board has no established protected initial verifier or rollback store.
+    fn install_boot_context(
+        config: &Fu740Config,
+        detected_size: u64,
+        handoff: usize,
+    ) -> Result<(), ServiceError> {
+        #[cfg(feature = "ffs")]
+        {
+            use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
+            use fstart_stage::fixed_helpers::MemoryMappedFfs;
+
+            // Never grant more RAM than the trusted DDR profile initialized,
+            // even if the controller filter reports a larger address window.
+            let size = detected_size.min(config.ddr.dram_size);
+            if size == 0 || FU740_DRAM_BASE.checked_add(size).is_none() {
+                return Err(ServiceError::InvalidParam);
+            }
+            let writable = [MemoryWindow {
+                start: FU740_DRAM_BASE,
+                size,
+            }];
+            let stage = fstart_stage::boot::running_stage_windows()
+                .map_err(|_| ServiceError::InvalidParam)?;
+            let workspace = MemoryWindow {
+                start: config.dtb_addr,
+                size: 64 * 1024,
+            };
+            let source = {
+                #[cfg(all(feature = "crabefi", not(feature = "linux")))]
+                {
+                    let readable = [writable[0]];
+                    boot_dtb_window(workspace, &readable)?
+                }
+                #[cfg(not(all(feature = "crabefi", not(feature = "linux"))))]
+                {
+                    workspace
+                }
+            };
+            let reserved = [
+                stage[0],
+                stage[1],
+                MemoryWindow {
+                    start: config.firmware_base,
+                    size: config.firmware_size,
+                },
+                if source == workspace {
+                    MemoryWindow { start: 0, size: 0 }
+                } else {
+                    source
+                },
+                // No inherited directory is imported. Still keep any supplied
+                // handoff bytes out of all loader destinations for this boot.
+                MemoryWindow {
+                    start: handoff as u64,
+                    size: if handoff == 0 {
+                        0
+                    } else {
+                        fstart_core::handoff::HANDOFF_MAX_SIZE as u64
+                    },
+                },
+            ];
+            if source != workspace {
+                let source_reserved = [reserved[0], reserved[1], reserved[2], reserved[4]];
+                let source_policy = MemoryPolicy {
+                    writable: &writable,
+                    reserved: &source_reserved,
+                    entry_alignment: 4,
+                };
+                if !source_policy.permits(source.start, source.size) {
+                    return Err(ServiceError::InvalidParam);
+                }
+            }
+            let policy = MemoryPolicy {
+                writable: &writable,
+                reserved: &reserved,
+                entry_alignment: 4,
+            };
+            // SAFETY: only initialized DRAM is writable. Linker ranges cover
+            // the full live image, heap and stack in LIM; SPI and handoff are
+            // excluded. This fixed flow starts no DMA devices or secondary
+            // harts and configures no external temporary allocation arena.
+            unsafe { fstart_stage::directory::set_load_policy(&policy) }
+                .map_err(|_| ServiceError::InvalidParam)?;
+            #[cfg(any(feature = "linux", feature = "crabefi"))]
+            // SAFETY: source is either a bounded boot DTB in trusted readable
+            // memory, or the dedicated destination for an authenticated FFS DTB.
+            // Registration checks destination RAM and all live reservations.
+            unsafe { fstart_stage::configure_fdt_workspace(source, workspace) }?;
+            fstart_log::info!(
+                "fu740: development integrity; no hardware secure boot or rollback enforcement"
+            );
+            let firmware = MemoryMappedFfs::new(
+                config.firmware_base,
+                usize::try_from(config.firmware_size).map_err(|_| ServiceError::InvalidParam)?,
+            );
+            firmware.mount()?;
+            firmware.verify()
+        }
+        #[cfg(not(feature = "ffs"))]
+        {
+            let _ = (config, detected_size, handoff);
+            Err(ServiceError::NotSupported)
+        }
+    }
+
+    #[cfg(all(feature = "ffs", feature = "crabefi", not(feature = "linux")))]
+    fn boot_dtb_window(
+        destination: fstart_stage::boot::MemoryWindow,
+        readable: &[fstart_stage::boot::MemoryWindow],
+    ) -> Result<fstart_stage::boot::MemoryWindow, ServiceError> {
+        use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
+        let address = fstart_arch::riscv64::boot_dtb_addr();
+        if address == 0 {
+            return Ok(destination);
+        }
+        let bounds = MemoryPolicy {
+            writable: readable,
+            reserved: &[],
+            entry_alignment: 4,
+        };
+        if address & 3 != 0 || !bounds.permits(address, 8) {
+            return Err(ServiceError::InvalidParam);
+        }
+        // SAFETY: header lies in the controller/profile-bounded DRAM window.
+        let size = u64::from(u32::from_be(unsafe {
+            core::ptr::read_unaligned((address + 4) as *const u32)
+        }));
+        if !(40..=destination.size).contains(&size) || !bounds.permits(address, size) {
+            return Err(ServiceError::InvalidParam);
+        }
+        Ok(MemoryWindow {
+            start: address,
+            size,
+        })
     }
 
     fn phase(name: &str, result: Result<(), impl core::fmt::Debug>) -> bool {
@@ -264,4 +407,3 @@ mod stage {
 
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 pub use stage::{Fu740, Fu740Board, Fu740BuildSelectedPayload, Fu740Hooks};
-

@@ -75,8 +75,8 @@ pub fn hash_digest_set(data: &[u8]) -> Result<DigestSet, DigestError> {
 
 /// Verify that `data` matches the digests in `expected`.
 ///
-/// Checks all digests that are present in `expected` AND supported by the
-/// enabled feature flags. Returns an error if any enabled digest mismatches.
+/// Checks every digest present in `expected`. Empty sets and unsupported
+/// advertised algorithms fail closed, as does any digest mismatch.
 ///
 /// Returns `NoAlgorithmAvailable` if digests are present in `expected` but
 /// no digest feature flag is enabled — this prevents silent verification
@@ -87,6 +87,16 @@ pub fn verify_digest_set(data: &[u8], expected: &DigestSet) -> Result<(), Digest
 
     #[allow(unused_mut)]
     let mut verified_count: u32 = 0;
+
+    // Every advertised algorithm is mandatory. Unsupported is never success.
+    #[cfg(not(feature = "sha2-digest"))]
+    if expected.sha256.is_some() {
+        return Err(DigestError::NoAlgorithmAvailable);
+    }
+    #[cfg(not(feature = "sha3-digest"))]
+    if expected.sha3_256.is_some() {
+        return Err(DigestError::NoAlgorithmAvailable);
+    }
 
     #[cfg(feature = "sha2-digest")]
     if let Some(ref expected_sha256) = expected.sha256 {
@@ -110,7 +120,7 @@ pub fn verify_digest_set(data: &[u8], expected: &DigestSet) -> Result<(), Digest
     // for the algorithms present in the digest set), fail rather than silently
     // passing — this catches feature flag misconfiguration.
     let has_expected = expected.sha256.is_some() || expected.sha3_256.is_some();
-    if has_expected && verified_count == 0 {
+    if !has_expected || verified_count == 0 {
         return Err(DigestError::NoAlgorithmAvailable);
     }
 
@@ -120,6 +130,33 @@ pub fn verify_digest_set(data: &[u8], expected: &DigestSet) -> Result<(), Digest
 #[cfg(test)]
 mod tests {
     use super::hash_sha256;
+
+    #[test]
+    fn empty_and_unsupported_digest_sets_fail_closed() {
+        use super::{DigestError, verify_digest_set};
+        use fstart_core::ffs::DigestSet;
+        assert_eq!(
+            verify_digest_set(
+                b"",
+                &DigestSet {
+                    sha256: None,
+                    sha3_256: None
+                }
+            ),
+            Err(DigestError::NoAlgorithmAvailable)
+        );
+        #[cfg(not(feature = "sha3-digest"))]
+        assert_eq!(
+            verify_digest_set(
+                b"abc",
+                &DigestSet {
+                    sha256: Some(hash_sha256(b"abc")),
+                    sha3_256: Some([0; 32])
+                }
+            ),
+            Err(DigestError::NoAlgorithmAvailable)
+        );
+    }
 
     #[test]
     fn compact_sha256_matches_known_answers() {

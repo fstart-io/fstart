@@ -17,6 +17,7 @@ use crate::parse::{
 struct FixupSpec {
     offset: usize,
     kind: OperandKind,
+    integer: bool,
     expr: TokenStream,
     action: Option<RangeAction>,
 }
@@ -38,6 +39,7 @@ struct RangeAction {
 struct ConstPatch {
     offset: usize,
     kind: OperandKind,
+    integer: bool,
     expr: TokenStream,
 }
 
@@ -116,7 +118,8 @@ fn fragment_tokens(encoded: Encoded) -> TokenStream {
         let offset = fixup.offset;
         let kind = kind_tokens(fixup.kind);
         match &fixup.action {
-            None => quote!(fstart_acpi::Fixup::new(#offset, #kind)),
+            None if fixup.integer => quote!(fstart_acpi::Fixup::new(#offset, #kind)),
+            None => quote!(fstart_acpi::Fixup::raw(#offset, #kind)),
             Some(action) => {
                 let length_offset = action.offset;
                 let min = range_value_tokens(&action.min);
@@ -131,18 +134,29 @@ fn fragment_tokens(encoded: Encoded) -> TokenStream {
         let offset = patch.offset;
         let kind = kind_tokens(patch.kind);
         let expr = &patch.expr;
-        quote!(.with_const(#offset, #kind, (#expr) as u64))
+        let method = if patch.integer {
+            quote!(with_const_integer)
+        } else {
+            quote!(with_const)
+        };
+        quote!(.#method(#offset, #kind, {
+            // Widen first: signed negatives become > u64::MAX rather than
+            // silently wrapping to a valid QWord. u128 inputs retain high bits.
+            let value = ((#expr) | 0) as u128;
+            assert!(value <= u64::MAX as u128, "const AML operand is not a u64");
+            value as u64
+        }))
     });
     let fragment = quote! {
         fstart_acpi::AmlFragment::new([#(#bytes),*], [#(#fixups),*])#(#patches)*
     };
     if encoded.fixups.is_empty() {
-        fragment
+        quote!(const { #fragment })
     } else {
         let operands = encoded.fixups.iter().map(|fixup| &fixup.expr);
         quote! {{
             static FRAGMENT: fstart_acpi::AmlFragment<#byte_len, #fixup_len> = #fragment;
-            fstart_acpi::BoundAmlFragment::new(&FRAGMENT, [#((#operands) as u64),*])
+            fstart_acpi::BoundAmlFragment::new(&FRAGMENT, [#(fstart_acpi::checked_operand(#operands)),*])
         }}
     }
 }
@@ -263,9 +277,9 @@ fn encode_item(item: &DslItem) -> Result<Encoded> {
         } => {
             let mut content = encode_expr(condition)?;
             content.append(encode_items(body)?);
-            let mut out = aml_package(&[0xa0], content);
+            let mut out = aml_package(&[0xa0], content)?;
             if let Some(body) = else_body {
-                out.append(aml_package(&[0xa1], encode_items(body)?));
+                out.append(aml_package(&[0xa1], encode_items(body)?)?);
             }
             Ok(out)
         }
@@ -274,7 +288,7 @@ fn encode_item(item: &DslItem) -> Result<Encoded> {
         } => {
             let mut content = encode_expr(condition)?;
             content.append(encode_items(body)?);
-            Ok(aml_package(&[0xa2], content))
+            aml_package(&[0xa2], content)
         }
         DslItem::Assign { target, value, .. } => encode_assignment(target, value),
         DslItem::Notify { object, value, .. } => {
@@ -370,17 +384,17 @@ fn encode_item(item: &DslItem) -> Result<Encoded> {
 
 fn named_package(op: &[u8], mut name: Encoded, body: Encoded) -> Result<Encoded> {
     name.append(body);
-    Ok(aml_package(op, name))
+    aml_package(op, name)
 }
 
-fn aml_package(op: &[u8], content: Encoded) -> Encoded {
+fn aml_package(op: &[u8], content: Encoded) -> Result<Encoded> {
     let mut out = Encoded {
         bytes: op.to_vec(),
         ..Encoded::default()
     };
-    out.raw(pkg_length(content.bytes.len(), true));
+    out.raw(pkg_length(content.bytes.len(), true)?);
     out.append(content);
-    out
+    Ok(out)
 }
 
 fn op_args<const N: usize>(op: &[u8], args: [Encoded; N]) -> Result<Encoded> {
@@ -403,6 +417,9 @@ fn encode_name_operand(name: &NameOrInterp) -> Result<Encoded> {
 }
 
 fn encode_name_string(name: &str) -> Result<Encoded> {
+    if name.is_empty() || name.starts_with("\\^") {
+        return Err(Error::new(Span::call_site(), "invalid AML path"));
+    }
     let mut bytes = Vec::new();
     let mut rest = name;
     if let Some(stripped) = rest.strip_prefix('\\') {
@@ -421,6 +438,12 @@ fn encode_name_string(name: &str) -> Result<Encoded> {
         });
     }
     let segments: Vec<_> = rest.split('.').collect();
+    if segments.len() > 255 {
+        return Err(Error::new(
+            Span::call_site(),
+            "AML path exceeds 255 segments",
+        ));
+    }
     match segments.len() {
         1 => {}
         2 => bytes.push(0x2e),
@@ -431,6 +454,7 @@ fn encode_name_string(name: &str) -> Result<Encoded> {
     }
     for segment in segments {
         if segment.is_empty()
+            || segment.as_bytes()[0].is_ascii_digit()
             || segment.len() > 4
             || !segment
                 .bytes()
@@ -482,6 +506,7 @@ fn encode_operand(operand: &Operand) -> Result<Encoded> {
                 fixups: vec![FixupSpec {
                     offset: 1,
                     kind: *kind,
+                    integer: true,
                     expr: expr.clone(),
                     action: None,
                 }],
@@ -501,6 +526,7 @@ fn encode_operand(operand: &Operand) -> Result<Encoded> {
                 const_patches: vec![ConstPatch {
                     offset: 1,
                     kind: *kind,
+                    integer: true,
                     expr: expr.clone(),
                 }],
             })
@@ -527,6 +553,12 @@ fn kind_info(kind: OperandKind) -> (u8, usize) {
 fn encode_value(value: &DslValue) -> Result<Encoded> {
     match value {
         DslValue::StringLit(value) => {
+            if !value.is_ascii() || value.as_bytes().contains(&0) {
+                return Err(Error::new(
+                    Span::call_site(),
+                    "AML strings must be ASCII without NUL",
+                ));
+            }
             let mut bytes = vec![0x0d];
             bytes.extend_from_slice(value.as_bytes());
             bytes.push(0);
@@ -548,7 +580,7 @@ fn encode_value(value: &DslValue) -> Result<Encoded> {
             for element in elements {
                 content.append(encode_value(element)?);
             }
-            Ok(aml_package(&[0x12], content))
+            aml_package(&[0x12], content)
         }
         DslValue::ResourceTemplate(descs) => encode_resource_template(descs),
         DslValue::Operand(operand) => encode_operand(operand),
@@ -578,6 +610,7 @@ fn encode_buffer(values: &[DslValue]) -> Result<Encoded> {
                 data.fixups.push(FixupSpec {
                     offset,
                     kind: *kind,
+                    integer: false,
                     expr: expr.clone(),
                     action: None,
                 });
@@ -592,6 +625,7 @@ fn encode_buffer(values: &[DslValue]) -> Result<Encoded> {
                 data.const_patches.push(ConstPatch {
                     offset,
                     kind: *kind,
+                    integer: false,
                     expr: expr.clone(),
                 });
             }
@@ -615,7 +649,7 @@ fn encode_buffer(values: &[DslValue]) -> Result<Encoded> {
     }
     let mut content = encode_integer(data.bytes.len() as u64);
     content.append(data);
-    Ok(aml_package(&[0x11], content))
+    aml_package(&[0x11], content)
 }
 
 fn encode_expr(expr: &DslExpr) -> Result<Encoded> {
@@ -726,13 +760,17 @@ fn encode_field(
         match entry {
             FieldEntryDsl::Named(name, bits) => {
                 content.append(encode_name_string(name)?);
-                content.raw(pkg_length(*bits, false));
-                bit_offset += bits;
+                content.raw(pkg_length(*bits, false)?);
+                bit_offset = bit_offset
+                    .checked_add(*bits)
+                    .ok_or_else(|| Error::new(Span::call_site(), "Field length overflow"))?;
             }
             FieldEntryDsl::Reserved(bits) => {
                 content.raw([0]);
-                content.raw(pkg_length(*bits, false));
-                bit_offset += bits;
+                content.raw(pkg_length(*bits, false)?);
+                bit_offset = bit_offset
+                    .checked_add(*bits)
+                    .ok_or_else(|| Error::new(Span::call_site(), "Field length overflow"))?;
             }
             FieldEntryDsl::Offset(byte) => {
                 let target = byte
@@ -747,13 +785,13 @@ fn encode_field(
                 let gap = target - bit_offset;
                 if gap != 0 {
                     content.raw([0]);
-                    content.raw(pkg_length(gap, false));
+                    content.raw(pkg_length(gap, false)?);
                 }
                 bit_offset = target;
             }
         }
     }
-    Ok(aml_package(&[0x5b, 0x81], content))
+    aml_package(&[0x5b, 0x81], content)
 }
 
 fn encode_resource_template(descs: &[ResourceDesc]) -> Result<Encoded> {
@@ -761,10 +799,12 @@ fn encode_resource_template(descs: &[ResourceDesc]) -> Result<Encoded> {
     for desc in descs {
         data.append(encode_resource(desc)?);
     }
+    // EndTag checksum zero explicitly disables resource checksum validation
+    // (ACPI 6.5 section 6.4.2.9), including after runtime field patches.
     data.raw([0x79, 0]);
     let mut content = encode_integer(data.bytes.len() as u64);
     content.append(data);
-    Ok(aml_package(&[0x11], content))
+    aml_package(&[0x11], content)
 }
 
 fn encode_resource(desc: &ResourceDesc) -> Result<Encoded> {
@@ -913,6 +953,7 @@ fn address_space(
                 .ok_or_else(|| {
                     Error::new(Span::call_site(), "address resource range is invalid")
                 })?;
+            check_width(length, width)?;
             out.raw(length.to_le_bytes()[..width].iter().copied());
         }
         _ => {
@@ -950,11 +991,22 @@ fn range_value(value: &DslValue, fixup_index: usize) -> Result<RangeValue> {
     }
 }
 
+fn check_width(value: u64, width: usize) -> Result<()> {
+    if width < 8 && value >= 1u64 << (8 * width) {
+        return Err(Error::new(
+            Span::call_site(),
+            "resource value exceeds descriptor width",
+        ));
+    }
+    Ok(())
+}
+
 fn raw_value(value: &DslValue, expected: OperandKind) -> Result<Encoded> {
     let (_, width) = kind_info(expected);
     match value {
         DslValue::IntLit(tokens) => {
             let value = literal_u64(tokens)?;
+            check_width(value, width)?;
             Ok(Encoded {
                 bytes: value.to_le_bytes()[..width].to_vec(),
                 ..Encoded::default()
@@ -962,6 +1014,7 @@ fn raw_value(value: &DslValue, expected: OperandKind) -> Result<Encoded> {
         }
         DslValue::Operand(Operand::Const { kind: None, expr }) => {
             let value = literal_u64(expr)?;
+            check_width(value, width)?;
             Ok(Encoded {
                 bytes: value.to_le_bytes()[..width].to_vec(),
                 ..Encoded::default()
@@ -976,6 +1029,7 @@ fn raw_value(value: &DslValue, expected: OperandKind) -> Result<Encoded> {
             const_patches: vec![ConstPatch {
                 offset: 0,
                 kind: *kind,
+                integer: false,
                 expr: expr.clone(),
             }],
         }),
@@ -988,6 +1042,7 @@ fn raw_value(value: &DslValue, expected: OperandKind) -> Result<Encoded> {
             fixups: vec![FixupSpec {
                 offset: 0,
                 kind: *kind,
+                integer: false,
                 expr: expr.clone(),
                 action: None,
             }],
@@ -1064,7 +1119,7 @@ fn encode_eisa_id(id: &str) -> Result<u32> {
 
 fn encode_uuid(uuid: &str) -> Result<Encoded> {
     let compact: String = uuid.chars().filter(|c| *c != '-').collect();
-    if compact.len() != 32 {
+    if compact.len() != 32 || !compact.is_ascii() {
         return Err(Error::new(
             Span::call_site(),
             "UUID must contain 32 hexadecimal digits",
@@ -1085,45 +1140,26 @@ fn encode_uuid(uuid: &str) -> Result<Encoded> {
     )
 }
 
-fn pkg_length(content_len: usize, include_self: bool) -> Vec<u8> {
-    let mut count = 1usize;
-    if include_self {
-        loop {
-            let total = content_len + count;
-            let needed = if total <= 0x3f {
-                1
-            } else if total <= 0xfff {
-                2
-            } else if total <= 0xfffff {
-                3
+fn pkg_length(content_len: usize, include_self: bool) -> Result<Vec<u8>> {
+    let (count, value) = (1..=4)
+        .find_map(|count| {
+            let value = content_len.checked_add(if include_self { count } else { 0 })?;
+            let limit = if count == 1 {
+                0x40
             } else {
-                4
+                1usize << (4 + 8 * (count - 1))
             };
-            if needed == count {
-                break;
-            }
-            count = needed;
-        }
-    } else {
-        count = if content_len <= 0x3f {
-            1
-        } else if content_len <= 0xfff {
-            2
-        } else if content_len <= 0xfffff {
-            3
-        } else {
-            4
-        };
-    }
-    let value = content_len + usize::from(include_self) * count;
+            (value < limit).then_some((count, value))
+        })
+        .ok_or_else(|| Error::new(Span::call_site(), "AML PkgLength exceeds 28 bits"))?;
     if count == 1 {
-        return vec![value as u8];
+        return Ok(vec![value as u8]);
     }
     let mut out = vec![((count as u8 - 1) << 6) | (value as u8 & 0x0f)];
     for shift in (4..4 + 8 * (count - 1)).step_by(8) {
         out.push((value >> shift) as u8);
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1141,12 +1177,36 @@ mod tests {
     }
     #[test]
     fn package_lengths_cover_boundaries() {
-        assert_eq!(pkg_length(62, true), [63]);
-        assert_eq!(pkg_length(63, true), [0x41, 4]);
-        assert_eq!(pkg_length(4093, true).len(), 2);
-        assert_eq!(pkg_length(4094, true).len(), 3);
-        assert_eq!(pkg_length(64, false), [0x40, 4]);
+        assert_eq!(pkg_length(62, true).unwrap(), [63]);
+        assert_eq!(pkg_length(63, true).unwrap(), [0x41, 4]);
+        assert_eq!(pkg_length(4093, true).unwrap().len(), 2);
+        assert_eq!(pkg_length(4094, true).unwrap().len(), 3);
+        assert_eq!(pkg_length(64, false).unwrap(), [0x40, 4]);
     }
+    #[test]
+    fn oversized_lengths_paths_and_resource_literals_are_rejected() {
+        assert!(pkg_length(0x1000_0000, false).is_err());
+        assert!(pkg_length(usize::MAX, true).is_err());
+        assert_eq!(
+            pkg_length(0x0fff_ffff, false).unwrap(),
+            [0xcf, 0xff, 0xff, 0xff]
+        );
+        for path in ["", "1ABC", "A..B", "\\^A", "A.", "a"] {
+            assert!(encode_name_string(path).is_err(), "{path}");
+        }
+        assert!(encode_name_string(&vec!["A"; 256].join(".")).is_err());
+        for source in [
+            quote!(Name("RSC0", ResourceTemplate { WordBusNumber(0u16, 65535u16); });),
+            quote!(Name("RSC0", ResourceTemplate { DWordIO(0u32, 0xffff_ffffu32); });),
+            quote!(Name("RSC0", ResourceTemplate { IO(65536u32, 65536u32, 1u8, 8u8); });),
+            quote!(Name("RSC0", ResourceTemplate { Memory32Fixed(ReadWrite, 0x100000000u64, 1u32); });),
+            quote!(Field("REGN", ByteAcc, NoLock, Preserve) { HUGE, 268435456, }),
+        ] {
+            let items = crate::parse::parse_dsl(source).unwrap();
+            assert!(encode_items(&items).is_err());
+        }
+    }
+
     #[test]
     fn name_strings_encode_prefixes_and_padding() {
         assert_eq!(encode_name_string("\\").unwrap().bytes, [b'\\', 0x00]);

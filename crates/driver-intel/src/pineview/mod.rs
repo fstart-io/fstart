@@ -874,69 +874,11 @@ impl IntelPineview {
     }
 
     #[cfg(feature = "ffs-vbt")]
-    #[cfg(feature = "ffs-vbt")]
     fn ffs_vbt(&self) -> Option<Vec<u8>> {
         let file_name = self.config.igd.vbt_file?;
-        let ctx = fstart_core::services::ffs_context::memory_mapped()?;
-        // SAFETY: BootMedia publishes a static anchor and a valid memory-mapped
-        // boot-media window before ramstage StageLocalInit calls this path.
-        let anchor_bytes = unsafe { ctx.anchor_bytes() };
-        let image = unsafe { ctx.image_bytes() };
-        let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes).ok()? };
-        let total_image_size = anchor.total_image_size() as usize;
-        let image_size = if total_image_size > 0 {
-            total_image_size.min(image.len())
-        } else {
-            image.len()
-        };
-        let image = &image[..image_size];
-        let manifest = fstart_ffs::FfsReader::new(image)
-            .read_manifest_volatile(anchor)
-            .ok()?;
-
-        for region in &manifest.regions {
-            let fstart_core::ffs::RegionContent::Container { children } = &region.content else {
-                continue;
-            };
-            for entry in children {
-                if entry.name.as_str() != file_name {
-                    continue;
-                }
-                let fstart_core::ffs::EntryContent::File {
-                    file_type,
-                    segments,
-                    digests,
-                } = &entry.content
-                else {
-                    return None;
-                };
-                if *file_type != fstart_core::ffs::FileType::Data || segments.len() != 1 {
-                    return None;
-                }
-                let seg = segments.first()?;
-                let offset = (region.offset + entry.offset + seg.offset) as usize;
-                let stored_size = seg.stored_size as usize;
-                let end = offset.checked_add(stored_size)?;
-                let stored = image.get(offset..end)?;
-                let mut out = Vec::new();
-                match seg.compression {
-                    fstart_core::ffs::Compression::None => {
-                        out.extend_from_slice(stored);
-                    }
-                    fstart_core::ffs::Compression::Lz4 => {
-                        out.resize(seg.loaded_size as usize, 0);
-                        let len =
-                            fstart_ffs::lz4::decompress_block(stored, out.as_mut_slice()).ok()?;
-                        out.truncate(len);
-                    }
-                }
-                fstart_crypto::digest::verify_digest_set(out.as_slice(), digests).ok()?;
-                let vbt_size = Self::vbt_size(out.as_slice())?;
-                out.truncate(vbt_size);
-                return Some(out);
-            }
-        }
-        None
+        let bytes = fstart_core::services::ffs_context::read_verified_asset(file_name)?;
+        let size = Self::vbt_size(bytes)?;
+        Some(bytes[..size].to_vec())
     }
 
     #[cfg(feature = "ffs-vbt")]
@@ -959,8 +901,10 @@ impl IntelPineview {
     #[cfg(feature = "ffs-vbt")]
     fn locate_vbt(&self) -> Option<VbtBytes<'static>> {
         #[cfg(feature = "ffs-vbt")]
-        if let Some(vbt) = self.ffs_vbt() {
-            return Some(VbtBytes::Owned(vbt));
+        if self.config.igd.vbt_file.is_some() {
+            // A configured authenticated asset must not fall back to legacy
+            // memory after a verification failure.
+            return self.ffs_vbt().map(VbtBytes::Owned);
         }
         self.legacy_vbt().map(VbtBytes::Borrowed)
     }

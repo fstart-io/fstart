@@ -106,12 +106,15 @@ impl<D: LinuxPayloadContext> MainstagePayload<D> for LinuxPayload {
             halt_linux();
         }
 
-        let params = boot.boot_params(
+        let Ok(params) = boot.checked_boot_params(
             config.kernel_addr,
             config.firmware_addr,
             config.hart_id,
             config.bootargs,
-        );
+        ) else {
+            fstart_log::error!("Linux payload: configured entry was not verified");
+            halt_linux();
+        };
         launch_linux(&params)
     }
 }
@@ -220,7 +223,11 @@ impl<D: Aarch64UefiPayloadContext> MainstagePayload<D> for Aarch64UefiPayload {
         let fdt = unsafe { boot.fdt_bytes() };
         // SAFETY: QEMU supplied the FDT header at the same stable address.
         let fdt_reservation = unsafe { boot.fdt_reservation() };
-        fstart_arch::aarch64::boot_bl31_and_resume(config.firmware_addr, boot.fdt_addr());
+        let Ok(entry) = boot.checked_firmware_entry(config.firmware_addr) else {
+            fstart_log::error!("AArch64 UEFI payload: configured BL31 entry was not verified");
+            fstart_arch::aarch64::halt();
+        };
+        fstart_arch::aarch64::boot_bl31_and_resume(entry, boot.fdt_addr());
         fstart_log::info!("aarch64 uefi: BL31 returned, launching CrabEFI");
 
         let runtime_region = crate::crabefi::compute_runtime_region();
@@ -328,8 +335,12 @@ impl Riscv64UefiPayload {
             fstart_arch::riscv64::sbi_resume_trampoline(),
             fstart_arch::riscv64::boot_hart_id(),
         );
+        let Ok(entry) = boot.checked_firmware_entry(config.firmware_addr) else {
+            fstart_log::error!("RISC-V UEFI payload: configured OpenSBI entry was not verified");
+            fstart_arch::riscv64::halt();
+        };
         fstart_arch::riscv64::boot_sbi(
-            config.firmware_addr,
+            entry,
             fstart_arch::riscv64::boot_hart_id(),
             boot.fdt_addr(),
             &info,
@@ -341,21 +352,14 @@ impl Riscv64UefiPayload {
         use crate::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
 
         let config = devices.riscv64_uefi_payload_context();
-        // SAFETY: OpenSBI passes the QEMU-provided FDT in a1 and it remains
-        // readable for the lifetime of CrabEFI.
-        let fdt = unsafe { crate::fdt_blob_from_addr(dtb_addr) };
-        let fdt = fdt.map(|bytes| {
-            // SAFETY: the board reserves `config.dtb_addr` as writable DRAM
-            // below the firmware data region; `bytes` is the valid OpenSBI FDT.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    bytes.as_ptr(),
-                    config.dtb_addr as *mut u8,
-                    bytes.len(),
-                );
-                core::slice::from_raw_parts(config.dtb_addr as *const u8, bytes.len())
-            }
-        });
+        let Ok(fdt_size) = crate::copy_fdt_to_workspace(dtb_addr, config.dtb_addr) else {
+            fstart_log::error!("RISC-V UEFI payload: bounded FDT copy failed");
+            fstart_arch::riscv64::halt();
+        };
+        // SAFETY: bounded copy validated and initialized the dedicated workspace;
+        // this flow makes no further mutations before passing it to CrabEFI.
+        let fdt =
+            Some(unsafe { core::slice::from_raw_parts(config.dtb_addr as *const u8, fdt_size) });
         let fdt_reservation =
             fdt.map(|bytes| (config.dtb_addr, (bytes.len() as u64 + 0xfff) & !0xfff));
         crate::crabefi::set_riscv_boot_hartid(hart_id);

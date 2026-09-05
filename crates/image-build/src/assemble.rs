@@ -7,7 +7,8 @@ use fstart_core::{
     BoardConfig, FdtSource, FirmwareImagePolicy, Platform, RunsFrom, SocImageFormat, StageLayout,
 };
 use fstart_ffs::builder::{
-    ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment, build_image,
+    BootRootConfig, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
+    build_image_with_root, finalize_initial_stage,
 };
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
@@ -182,50 +183,87 @@ pub fn assemble(
         regions: ffs_input_regions(config, ro_files)?,
     };
 
+    let family_digest = fstart_crypto::digest::hash_sha256(config.name.as_bytes());
+    let root_config = BootRootConfig {
+        image_family: family_digest[..16].try_into().unwrap(),
+        security_version: 0,
+        bootstrap: stage_binaries
+            .iter()
+            .skip(1)
+            .map(|stage| {
+                let role = if stage.name == "postcar" {
+                    fstart_ffs::root::BootstrapRole::Postcar
+                } else {
+                    fstart_ffs::root::BootstrapRole::Mainstage
+                };
+                (stage.name.clone(), role)
+            })
+            .collect(),
+    };
+    eprintln!(
+        "[fstart] development-integrity image: generated local key, security version 0; no rollback protection"
+    );
     let compressed_anchor_slots = compressed_anchor_slots(&image_config.regions)?;
     let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
-    let ffs_image = build_image_with_static_compressed_anchors(
+    let mut ffs_image = build_image_with_static_compressed_anchors(
         &mut image_config,
+        &root_config,
         &compressed_anchor_slots,
         &sign,
     )?;
 
-    let mut image_bytes = ffs_image.image;
-
     if config.soc_image_format == SocImageFormat::AllwinnerEgon {
-        let bb_bin_path = &stage_binaries[0].run_path;
-        let bb_bin =
-            fs::read(bb_bin_path).map_err(|e| format!("failed to read bootblock .bin: {e}"))?;
-        if bb_bin.len() < 0x14 {
-            return Err("bootblock .bin too small to read eGON header".to_string());
-        }
-        let bootblock_size =
-            u32::from_le_bytes([bb_bin[0x10], bb_bin[0x11], bb_bin[0x12], bb_bin[0x13]]);
-        if bootblock_size == 0 {
-            return Err("bootblock .bin has zero eGON length — was it patched?".to_string());
-        }
-
-        if stage_binaries.len() > 1 {
-            let next_name = &stage_binaries[1].name;
-            let loc = ffs_image
-                .file_data
-                .iter()
-                .find(|f| f.name == *next_name)
-                .ok_or_else(|| format!("next stage '{next_name}' not found in FFS file_data"))?;
-
-            image_bytes[0x2C..0x30].copy_from_slice(&loc.data_offset.to_le_bytes());
-            image_bytes[0x30..0x34].copy_from_slice(&loc.data_size.to_le_bytes());
-            let ffs_total = image_bytes.len() as u32;
-            image_bytes[0x34..0x38].copy_from_slice(&ffs_total.to_le_bytes());
-
-            eprintln!(
-                "[fstart] next stage '{}': offset={:#x}, size={:#x} ({} bytes)",
-                next_name, loc.data_offset, loc.data_size, loc.data_size,
-            );
-        }
-
-        crate::image::egon::patch_ffs(&mut image_bytes, bootblock_size)?;
+        let total_size = u32::try_from(ffs_image.image.len()).map_err(|_| "image exceeds u32")?;
+        let initial_name = stage_binaries
+            .first()
+            .ok_or("missing initial stage")?
+            .name
+            .as_str();
+        let next_location = stage_binaries
+            .get(1)
+            .and_then(|next| ffs_image.file_data.iter().find(|f| f.name == next.name))
+            .cloned();
+        finalize_initial_stage(
+            &mut ffs_image,
+            initial_name,
+            |initial, root| {
+                if initial.len() < 0x38 {
+                    return Err("initial stage too small for eGON header".into());
+                }
+                let placeholders: Vec<usize> = initial
+                    .windows(160)
+                    .enumerate()
+                    .filter_map(|(i, b)| {
+                        (b[..8] == *b"FSTPIN01" && b[8..] == [0; 152]).then_some(i)
+                    })
+                    .collect();
+                if stage_binaries.len() > 1 {
+                    if placeholders.len() != 1 {
+                        return Err(format!(
+                            "initial stage requires exactly one bootstrap pin (found {})",
+                            placeholders.len()
+                        ));
+                    }
+                    let descriptor = root
+                        .descriptors
+                        .iter()
+                        .flatten()
+                        .find(|d| d.role == fstart_ffs::root::BootstrapRole::Mainstage)
+                        .ok_or("root missing mainstage descriptor")?;
+                    let offset = placeholders[0];
+                    initial[offset..offset + 160].copy_from_slice(&descriptor.encode());
+                    let next = next_location.as_ref().ok_or("next stage data missing")?;
+                    initial[0x2c..0x30].copy_from_slice(&next.data_offset.to_le_bytes());
+                    initial[0x30..0x34].copy_from_slice(&next.data_size.to_le_bytes());
+                }
+                initial[0x34..0x38].copy_from_slice(&total_size.to_le_bytes());
+                let bootblock_size = u32::from_le_bytes(initial[0x10..0x14].try_into().unwrap());
+                crate::image::egon::patch_ffs(initial, bootblock_size)
+            },
+            &sign,
+        )?;
     }
+    let image_bytes = ffs_image.image;
 
     let output_dir = workspace_root.join("target").join("ffs");
     fs::create_dir_all(&output_dir).map_err(|e| format!("failed to create output dir: {e}"))?;
@@ -277,6 +315,7 @@ struct CompressedAnchorSlot {
 
 fn build_image_with_static_compressed_anchors<F>(
     config: &mut FfsImageConfig,
+    root_config: &BootRootConfig,
     slots: &[CompressedAnchorSlot],
     sign: &F,
 ) -> Result<fstart_ffs::builder::FfsImage, String>
@@ -284,12 +323,12 @@ where
     F: Fn(&[u8]) -> Result<Signature, String>,
 {
     if slots.is_empty() {
-        return build_image(config, sign);
+        return build_image_with_root(config, root_config, sign);
     }
 
     let mut patched_anchor: Option<Vec<u8>> = None;
     for _ in 0..8 {
-        let image = build_image(config, sign)?;
+        let image = build_image_with_root(config, root_config, sign)?;
         if patched_anchor.as_deref() == Some(image.anchor_bytes.as_slice()) {
             return Ok(image);
         }

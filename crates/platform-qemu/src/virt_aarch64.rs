@@ -73,7 +73,6 @@ impl QemuAarch64VirtMainstage {
 /// QEMU only passes the DTB pointer in `x0` for direct `-kernel` boots; for
 /// firmware boots it copies the DTB to the base of RAM instead. Fall back to
 /// the configured RAM-base source when `x0` carried nothing.
-#[cfg(any(feature = "linux", feature = "crabefi"))]
 fn source_dtb_addr(config: &super::virt::QemuAarch64VirtConfig) -> u64 {
     let boot = fstart_arch::aarch64::boot_dtb_addr();
     if boot != 0 {
@@ -129,7 +128,10 @@ impl QemuAarch64Virt {
     where
         B: QemuAarch64VirtBoard,
     {
-        let _ = (env, handoff);
+        let _ = handoff;
+        if !matches!(env, StageEnvironment::Monolithic) {
+            fstart_arch::halt();
+        }
         let Ok(mut mainstage) = QemuAarch64VirtMainstage::new::<B>() else {
             fstart_arch::aarch64::halt();
         };
@@ -137,6 +139,17 @@ impl QemuAarch64Virt {
         if !phase("qemu-aarch64", "before_console", hooks.before_console())
             || !phase("qemu-aarch64", "console", mainstage.init_console())
             || !phase("qemu-aarch64", "after_console", hooks.after_console())
+            || !phase(
+                "qemu-aarch64",
+                "boot_integrity",
+                crate::boot::from_dtb(
+                    source_dtb_addr(B::CONFIG),
+                    cfg!(feature = "linux").then_some(B::CONFIG.common.dtb_addr),
+                    B::CONFIG.common.ram_base,
+                    B::CONFIG.common.firmware_base,
+                    B::CONFIG.common.firmware_size,
+                ),
+            )
             || !phase("qemu-aarch64", "bus_scan", mainstage.init_pci())
             || !phase("qemu-aarch64", "before_payload", hooks.before_payload())
         {

@@ -1,8 +1,7 @@
 //! Minimal LZ4 block decompressor — no_std, no alloc.
 //!
 //! This is a safe, minimal implementation of the LZ4 block format decompressor,
-//! designed for firmware use. It supports in-place decompression (where the
-//! compressed source overlaps the tail of the output buffer).
+//! designed for firmware use. Source and destination slices must be disjoint.
 //!
 //! The algorithm follows the LZ4 block specification:
 //! <https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md>
@@ -41,29 +40,14 @@ pub enum Lz4Error {
 /// The caller should verify the returned count matches the expected
 /// decompressed size — the function does not enforce an exact fill.
 ///
-/// ## In-place decompression
-///
-/// This function supports in-place decompression where `src` points into
-/// the tail of a larger buffer that starts at `dst`. The caller must ensure
-/// `src` starts at `dst_base + in_place_size - src.len()`. The decompressor
-/// detects the overlap and guards against the output pointer overtaking the
-/// input pointer.
-///
-/// # Safety
-///
-/// `src` and `dst` may overlap **only** if `src` is entirely within or
-/// past the end of `dst` (i.e., in-place layout). Any other overlap is
-/// undefined behavior.
+/// Source and destination must not overlap, as required by Rust reference
+/// aliasing rules. A shared allocation may be split with `split_at_mut`.
+/// The complete input must be consumed; unexplained trailing bytes are rejected.
 pub fn decompress_block(src: &[u8], dst: &mut [u8]) -> Result<usize, Lz4Error> {
     let mut ip = 0usize; // index into src
     let mut op = 0usize; // index into dst
     let iend = src.len();
     let oend = dst.len();
-
-    // Detect in-place decompression: src pointer is at or after dst start.
-    // When in-place, the output write pointer must not overtake the input
-    // read pointer (with a WILD_COPY_LEN margin for the fast copy path).
-    let in_place = src.as_ptr() as usize >= dst.as_ptr() as usize;
 
     loop {
         // Read token
@@ -99,25 +83,13 @@ pub fn decompress_block(src: &[u8], dst: &mut [u8]) -> Result<usize, Lz4Error> {
             if cpy > oend {
                 return Err(Lz4Error::Overrun);
             }
-            if ip + lit_len > iend {
+            if ip + lit_len != iend {
                 return Err(Lz4Error::Overrun);
             }
-            // Use byte-by-byte copy for the final block (safe for overlap)
+            // Copy final literals after exact input-length validation
             copy_within(src, ip, dst, op, lit_len);
             op += lit_len;
             break; // End of block
-        }
-
-        // In-place guard: before the wild copy fast path, ensure the
-        // output write position (with WILD_COPY_LEN margin) hasn't
-        // caught up to the current input read position. Same check as
-        // coreboot's lz4.c.inc line 146.
-        if in_place {
-            let src_abs = src.as_ptr() as usize + ip;
-            let dst_abs = dst.as_ptr() as usize + op;
-            if dst_abs + WILD_COPY_LEN > src_abs {
-                return Err(Lz4Error::Overrun);
-            }
         }
 
         // Fast path: copy literals (may overshoot by up to WILD_COPY_LEN-1)
@@ -159,17 +131,6 @@ pub fn decompress_block(src: &[u8], dst: &mut [u8]) -> Result<usize, Lz4Error> {
             return Err(Lz4Error::Overrun);
         }
 
-        // In-place guard: the match copy writes to dst[op..copy_end].
-        // Ensure this doesn't overwrite unread compressed data in the
-        // overlapping region.
-        if in_place {
-            let src_abs = src.as_ptr() as usize + ip;
-            let dst_end_abs = dst.as_ptr() as usize + copy_end;
-            if dst_end_abs > src_abs {
-                return Err(Lz4Error::Overrun);
-            }
-        }
-
         // --- Copy match (from earlier in the output buffer) ---
         // Match copies can overlap (e.g., offset=1 means repeat last byte).
         if offset < 8 {
@@ -190,14 +151,11 @@ pub fn decompress_block(src: &[u8], dst: &mut [u8]) -> Result<usize, Lz4Error> {
 
 /// Copy `len` bytes from `src[si..]` to `dst[di..]`, byte-by-byte.
 ///
-/// Uses byte-by-byte copy (not `copy_from_slice`) because `src` and `dst`
-/// may alias overlapping memory in the in-place decompression case.
+/// Source and destination are disjoint; matches within output use other helpers.
 #[inline(always)]
 #[allow(clippy::manual_memcpy)]
 fn copy_within(src: &[u8], si: usize, dst: &mut [u8], di: usize, len: usize) {
-    for i in 0..len {
-        dst[di + i] = src[si + i];
-    }
+    dst[di..di + len].copy_from_slice(&src[si..si + len]);
 }
 
 /// Wild copy: 8-byte chunks from src to dst until `dst_end`.

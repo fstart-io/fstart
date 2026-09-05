@@ -2208,6 +2208,7 @@ mod acpi_impl {
 
     fn pci0_scope_aml(children: &[u8]) -> Vec<u8> {
         fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", children)
+            .expect("ICH7 required PCI scope emission failed")
     }
 
     /// ICH7 PCI device IDs (LPC bridge variants).

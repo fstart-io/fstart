@@ -8,6 +8,9 @@
 #[cfg(feature = "stage")]
 extern crate ufmt;
 
+#[cfg(feature = "stage")]
+mod boot;
+
 pub mod a20;
 pub mod d1;
 pub mod egon;

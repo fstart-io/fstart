@@ -1,23 +1,43 @@
-//! Zero-copy firmware manifest table format.
+//! Authenticated directory revision 2, retained in an immutable RAM buffer.
 //!
-//! The builder owns ergonomic [`ImageManifest`](fstart_core::ffs::ImageManifest)
-//! values, but the bytes written into firmware are flat tables. Runtime code can
-//! verify the signed byte range and borrow typed record slices directly from RO
-//! flash/pflash without deserializing a heapless object graph.
+//! Wire definition: every integer is LE, every record is packed without padding.
+//! The 28-byte header is `FSMZ`, u32 revision=2, then u32 region/entry/segment
+//! counts, string-table offset and string-table byte length. Tables follow in
+//! that order, then NUL-terminated UTF-8 strings; trailing bytes are rejected.
+//! String offsets are relative to the string table, not the directory.
+//!
+//! Region (24 bytes): five u32 (name, media offset, size, first entry, count),
+//! u8 kind (container=1/raw=2), fill, two reserved zero bytes.
+//! Entry (88 bytes): five u32 (name, region-relative offset, size, first segment,
+//! count), u8 file type, kind (file=1/raw=2), fill, digest flags, SHA256[32],
+//! legacy SHA3[32]. File digest flags must be exactly 1; SHA3 storage is zero.
+//! File-type IDs: stage=1, board-config=2, payload=3, FDT=4, data=5, raw=6,
+//! firmware=7, FIT=8, microcode=9, initramfs=10.
+//! Segment (100 bytes): five u32 (name, entry-relative offset, stored length,
+//! memory length, disjoint workspace size), u64 load address; u8 kind
+//! (code=1/ro=2/rw=3/BSS=4), compression (none=0/LZ4-block=1), flags
+//! (execute=1/write=2/read=4), reserved zero; u32 initialized length;
+//! stored SHA256[32], initialized SHA256[32]. Digests are mandatory fixed fields
+//! for stored segments. Pure BSS has zero stored/initialized lengths and hashes.
+//! Initialized length excludes the zero-filled tail of memory length.
+//!
+//! Names are identities within a named region; unqualified lookup rejects
+//! ambiguity. Regions only describe media layout, never write authority.
+//! Parsing validates structure, not provenance: verify the exact stable buffer
+//! using the authenticated root's DirectoryRef before exposing file views.
+//! Golden revision fixture: `tests/fixtures/directory-v2.bin`.
 
 use crate::reader::ReaderError;
 use fstart_core::ffs::{
     Compression, DigestSet, EntryContent, FileType, ImageManifest, Region, RegionContent,
-    RegionEntry, Segment, SegmentFlags, SegmentKind, Signature, SignatureKind,
+    RegionEntry, Segment, SegmentFlags, SegmentKind,
 };
 use heapless::String as HString;
 use zerocopy::byteorder::{LE, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"FSMZ");
-const VERSION: u32 = 1;
-const SIGNED_MAGIC: u32 = u32::from_le_bytes(*b"FSSZ");
-const SIGNED_VERSION: u32 = 1;
+const VERSION: u32 = crate::root::DIRECTORY_REVISION;
 
 #[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
 #[repr(C)]
@@ -29,24 +49,6 @@ struct Header {
     segment_count: U32<LE>,
     string_table_offset: U32<LE>,
     string_table_size: U32<LE>,
-}
-
-#[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
-#[repr(C)]
-struct SignedHeader {
-    magic: U32<LE>,
-    version: U32<LE>,
-    manifest_size: U32<LE>,
-}
-
-#[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
-#[repr(C)]
-struct SignatureRecord {
-    key_id: u8,
-    kind: u8,
-    _reserved: [u8; 2],
-    sig_lo: [u8; 32],
-    sig_hi: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
@@ -91,6 +93,9 @@ pub struct SegmentRecord {
     compression: u8,
     flags: u8,
     _reserved: u8,
+    initialized_size: U32<LE>,
+    stored_digest: [u8; 32],
+    loaded_digest: [u8; 32],
 }
 
 const REGION_KIND_CONTAINER: u8 = 1;
@@ -162,7 +167,7 @@ impl<'a> ManifestView<'a> {
         let strings_end = strings_offset
             .checked_add(strings_size)
             .ok_or(ReaderError::OutOfBounds)?;
-        if strings_end > bytes.len() {
+        if strings_end != bytes.len() {
             return Err(ReaderError::OutOfBounds);
         }
 
@@ -227,10 +232,134 @@ impl<'a> ManifestView<'a> {
                 _ => return Err(ReaderError::DeserializeError),
             }
         }
+        for (i, region) in self.regions.iter().enumerate() {
+            if region._reserved != [0; 2]
+                || region.offset.get().checked_add(region.size.get()).is_none()
+            {
+                return Err(ReaderError::OutOfBounds);
+            }
+            for prev in &self.regions[..i] {
+                if self.string(prev.name_offset.get())? == self.string(region.name_offset.get())? {
+                    return Err(ReaderError::DeserializeError);
+                }
+            }
+            if region.kind == REGION_KIND_CONTAINER {
+                let first = region.first_entry.get() as usize;
+                let entries = &self.entries[first..first + region.entry_count.get() as usize];
+                for (i, entry) in entries.iter().enumerate() {
+                    for prev in &entries[..i] {
+                        if self.string(prev.name_offset.get())?
+                            == self.string(entry.name_offset.get())?
+                        {
+                            return Err(ReaderError::DeserializeError);
+                        }
+                    }
+                    checked_range(
+                        region.size.get() as usize,
+                        entry.offset.get() as usize,
+                        entry.size.get() as usize,
+                    )?;
+                }
+            }
+        }
+        for entry in self.entries {
+            if entry.kind != ENTRY_KIND_FILE {
+                continue;
+            }
+            if entry.segment_count.get() == 0
+                || entry.digest_flags != DIGEST_SHA256
+                || entry.sha3_256 != [0; 32]
+                || entry.fill != 0
+            {
+                return Err(ReaderError::DeserializeError);
+            }
+            let first = entry.first_segment.get() as usize;
+            for s in &self.segments[first..first + entry.segment_count.get() as usize] {
+                checked_range(
+                    entry.size.get() as usize,
+                    s.offset() as usize,
+                    s.stored_size() as usize,
+                )?;
+            }
+        }
+        // Tables partition their children exactly; aliasing records or orphan
+        // records would make lookup identity and authenticated ranges ambiguous.
+        for i in 0..self.entries.len() {
+            if self
+                .regions
+                .iter()
+                .filter(|r| {
+                    r.kind == REGION_KIND_CONTAINER
+                        && i >= r.first_entry.get() as usize
+                        && i < r.first_entry.get() as usize + r.entry_count.get() as usize
+                })
+                .count()
+                != 1
+            {
+                return Err(ReaderError::DeserializeError);
+            }
+        }
+        for i in 0..self.segments.len() {
+            if self
+                .entries
+                .iter()
+                .filter(|e| {
+                    e.kind == ENTRY_KIND_FILE
+                        && i >= e.first_segment.get() as usize
+                        && i < e.first_segment.get() as usize + e.segment_count.get() as usize
+                })
+                .count()
+                != 1
+            {
+                return Err(ReaderError::DeserializeError);
+            }
+        }
         for segment in self.segments {
             self.string(segment.name_offset.get())?;
-            decode_segment_kind(segment.kind)?;
-            decode_compression(segment.compression)?;
+            let kind = segment.kind()?;
+            let compression = segment.compression()?;
+            if segment._reserved != 0
+                || segment.flags & !7 != 0
+                || segment.initialized_size() > segment.loaded_size()
+                || segment
+                    .load_addr()
+                    .checked_add(u64::from(segment.loaded_size()))
+                    .is_none()
+            {
+                return Err(ReaderError::DeserializeError);
+            }
+            if compression == Compression::None && segment.in_place_size() != 0 {
+                return Err(ReaderError::DeserializeError);
+            }
+            if compression == Compression::Lz4
+                && segment.in_place_size()
+                    < segment
+                        .initialized_size()
+                        .checked_add(segment.stored_size())
+                        .ok_or(ReaderError::OutOfBounds)?
+            {
+                return Err(ReaderError::DeserializeError);
+            }
+            if segment.stored_size() == 0 {
+                if kind != SegmentKind::Bss
+                    || segment.initialized_size() != 0
+                    || compression != Compression::None
+                    || segment.stored_digest != [0; 32]
+                    || segment.loaded_digest != [0; 32]
+                {
+                    return Err(ReaderError::DeserializeError);
+                }
+            } else {
+                if kind == SegmentKind::Bss || segment.initialized_size() == 0 {
+                    return Err(ReaderError::DeserializeError);
+                }
+                if compression == Compression::None
+                    && (segment.stored_size() != segment.initialized_size()
+                        || segment.stored_digest != segment.loaded_digest)
+                {
+                    return Err(ReaderError::DeserializeError);
+                }
+            }
         }
         Ok(())
     }
@@ -243,6 +372,7 @@ impl<'a> ManifestView<'a> {
     }
 
     pub fn find_file_by_type(&self, file_type: FileType) -> Result<FileView<'a>, ReaderError> {
+        let mut found = None;
         for region in self.regions {
             if region.kind != REGION_KIND_CONTAINER {
                 continue;
@@ -251,14 +381,18 @@ impl<'a> ManifestView<'a> {
             let count = region.entry_count.get() as usize;
             for entry in &self.entries[first..first + count] {
                 if entry.kind == ENTRY_KIND_FILE && entry.file_type == encode_file_type(file_type) {
-                    return self.file_view(region, entry);
+                    if found.is_some() {
+                        return Err(ReaderError::DeserializeError);
+                    }
+                    found = Some(self.file_view(region, entry)?);
                 }
             }
         }
-        Err(ReaderError::FileNotFound)
+        found.ok_or(ReaderError::FileNotFound)
     }
 
     pub fn find_file_by_name(&self, name: &str) -> Result<FileView<'a>, ReaderError> {
+        let mut found = None;
         for region in self.regions {
             if region.kind != REGION_KIND_CONTAINER {
                 continue;
@@ -267,11 +401,14 @@ impl<'a> ManifestView<'a> {
             let count = region.entry_count.get() as usize;
             for entry in &self.entries[first..first + count] {
                 if entry.kind == ENTRY_KIND_FILE && self.string(entry.name_offset.get())? == name {
-                    return self.file_view(region, entry);
+                    if found.is_some() {
+                        return Err(ReaderError::DeserializeError);
+                    }
+                    found = Some(self.file_view(region, entry)?);
                 }
             }
         }
-        Err(ReaderError::FileNotFound)
+        found.ok_or(ReaderError::FileNotFound)
     }
 
     fn file_view(
@@ -356,6 +493,10 @@ impl<'a> ManifestView<'a> {
 }
 
 impl<'a> FileView<'a> {
+    pub fn file_type(&self) -> Result<FileType, ReaderError> {
+        decode_file_type(self.entry.file_type)
+    }
+
     pub fn name(&self) -> Result<&'a str, ReaderError> {
         string_at(self.strings, self.entry.name_offset.get())
     }
@@ -384,6 +525,22 @@ impl SegmentRecord {
 
     pub fn offset(&self) -> u32 {
         self.offset.get()
+    }
+
+    pub fn initialized_size(&self) -> u32 {
+        self.initialized_size.get()
+    }
+
+    pub fn stored_digest(&self) -> [u8; 32] {
+        self.stored_digest
+    }
+
+    pub fn loaded_digest(&self) -> [u8; 32] {
+        self.loaded_digest
+    }
+
+    pub fn flags(&self) -> SegmentFlags {
+        decode_segment_flags(self.flags)
     }
 
     pub fn stored_size(&self) -> u32 {
@@ -492,68 +649,8 @@ pub fn encode_manifest(
     out.extend_from_slice(entries.as_bytes());
     out.extend_from_slice(segments.as_bytes());
     out.extend_from_slice(&strings);
+    ManifestView::parse(&out).map_err(|e| alloc::format!("invalid directory: {e:?}"))?;
     Ok(out)
-}
-
-#[cfg(feature = "std")]
-pub fn encode_signed_manifest(
-    manifest_bytes: &[u8],
-    signature: &Signature,
-) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
-    use alloc::string::ToString;
-    use alloc::vec::Vec;
-
-    let manifest_size = manifest_bytes
-        .len()
-        .try_into()
-        .map_err(|_| "manifest too large".to_string())?;
-    let header = SignedHeader {
-        magic: U32::new(SIGNED_MAGIC),
-        version: U32::new(SIGNED_VERSION),
-        manifest_size: U32::new(manifest_size),
-    };
-    let signature = SignatureRecord::from_signature(signature);
-
-    let mut out = Vec::with_capacity(
-        core::mem::size_of::<SignedHeader>()
-            + manifest_bytes.len()
-            + core::mem::size_of::<SignatureRecord>(),
-    );
-    out.extend_from_slice(header.as_bytes());
-    out.extend_from_slice(manifest_bytes);
-    out.extend_from_slice(signature.as_bytes());
-    Ok(out)
-}
-
-pub fn parse_signed_manifest(data: &[u8]) -> Result<(&[u8], Signature), ReaderError> {
-    let header_size = core::mem::size_of::<SignedHeader>();
-    let signature_size = core::mem::size_of::<SignatureRecord>();
-    let (header_ref, _) =
-        Ref::<_, SignedHeader>::from_prefix(data).map_err(|_| ReaderError::DeserializeError)?;
-    let header = *header_ref;
-    if header.magic.get() != SIGNED_MAGIC || header.version.get() != SIGNED_VERSION {
-        return Err(ReaderError::UnsupportedVersion);
-    }
-
-    let manifest_start = header_size;
-    let manifest_end = manifest_start
-        .checked_add(header.manifest_size.get() as usize)
-        .ok_or(ReaderError::OutOfBounds)?;
-    let signature_end = manifest_end
-        .checked_add(signature_size)
-        .ok_or(ReaderError::OutOfBounds)?;
-    if signature_end != data.len() {
-        return Err(ReaderError::DeserializeError);
-    }
-    let manifest = data
-        .get(manifest_start..manifest_end)
-        .ok_or(ReaderError::OutOfBounds)?;
-    let signature_bytes = data
-        .get(manifest_end..signature_end)
-        .ok_or(ReaderError::OutOfBounds)?;
-    let signature_ref = Ref::<_, SignatureRecord>::from_bytes(signature_bytes)
-        .map_err(|_| ReaderError::DeserializeError)?;
-    Ok((manifest, Ref::into_ref(signature_ref).to_signature()?))
 }
 
 #[cfg(feature = "std")]
@@ -632,6 +729,9 @@ fn encode_segment(
         compression: encode_compression(segment.compression),
         flags: encode_segment_flags(segment.flags),
         _reserved: 0,
+        initialized_size: U32::new(segment.initialized_size),
+        stored_digest: segment.stored_digest,
+        loaded_digest: segment.loaded_digest,
     });
     Ok(())
 }
@@ -639,6 +739,9 @@ fn encode_segment(
 #[cfg(feature = "std")]
 fn push_string(strings: &mut alloc::vec::Vec<u8>, s: &str) -> Result<u32, alloc::string::String> {
     use alloc::string::ToString;
+    if s.is_empty() || s.as_bytes().contains(&0) {
+        return Err("directory names must be nonempty and contain no NUL".into());
+    }
     let offset = strings.len();
     strings.extend_from_slice(s.as_bytes());
     strings.push(0);
@@ -653,44 +756,6 @@ fn checked_range(len: usize, start: usize, count: usize) -> Result<(), ReaderErr
         Ok(())
     } else {
         Err(ReaderError::OutOfBounds)
-    }
-}
-
-impl SignatureRecord {
-    #[cfg(feature = "std")]
-    fn from_signature(signature: &Signature) -> Self {
-        Self {
-            key_id: signature.key_id,
-            kind: encode_signature_kind(signature.kind),
-            _reserved: [0; 2],
-            sig_lo: signature.sig_lo,
-            sig_hi: signature.sig_hi,
-        }
-    }
-
-    fn to_signature(self) -> Result<Signature, ReaderError> {
-        Ok(Signature {
-            key_id: self.key_id,
-            kind: decode_signature_kind(self.kind)?,
-            sig_lo: self.sig_lo,
-            sig_hi: self.sig_hi,
-        })
-    }
-}
-
-#[cfg(feature = "std")]
-fn encode_signature_kind(kind: SignatureKind) -> u8 {
-    match kind {
-        SignatureKind::Ed25519 => 1,
-        SignatureKind::EcdsaP256 => 2,
-    }
-}
-
-fn decode_signature_kind(value: u8) -> Result<SignatureKind, ReaderError> {
-    match value {
-        1 => Ok(SignatureKind::Ed25519),
-        2 => Ok(SignatureKind::EcdsaP256),
-        _ => Err(ReaderError::DeserializeError),
     }
 }
 
@@ -725,6 +790,9 @@ fn segment_to_owned(strings: &[u8], segment: &SegmentRecord) -> Result<Segment, 
         kind: segment.kind()?,
         offset: segment.offset(),
         stored_size: segment.stored_size(),
+        initialized_size: segment.initialized_size(),
+        stored_digest: segment.stored_digest(),
+        loaded_digest: segment.loaded_digest(),
         loaded_size: segment.loaded_size(),
         in_place_size: segment.in_place_size(),
         load_addr: segment.load_addr(),

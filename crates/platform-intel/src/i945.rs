@@ -373,11 +373,9 @@ pub fn i945_ich7_stages(config: &I945Ich7Config) -> StageLayout {
             page_table_addr: None,
             page_size: Default::default(),
         },
-        // Cut-B postcar: teardown + cached raw ramstage load, nothing else.
-        // Stored uncompressed; the bootblock raw-copies it with uncached
-        // stores. Postcar carries no FFS parser or crypto: the ramstage
-        // extent arrives via the UC stash, and `load_next_stage` keeps the
-        // lz4 feature (ramstage is Lz4) plus the assemble-time load chain.
+        // Postcar is uncompressed and verified by bootblock before entry.
+        // After teardown it authenticates and decompresses ramstage using the
+        // inherited descriptor. SHA-256 is required; signatures are not.
         StageConfig {
             name: hstr(I945_POSTCAR_STAGE_NAME),
             build: StageBuildConfig {
@@ -385,8 +383,8 @@ pub fn i945_ich7_stages(config: &I945Ich7Config) -> StageLayout {
                 ..StageBuildConfig::default()
             },
             load_addr: I945_POSTCAR_LOAD_ADDR,
-            // No manifest parsing here anymore; 8 KiB covers the raw loader,
-            // LZ4 window (stack-resident), and console frames.
+            // Bounded descriptor loader, compact SHA-256, LZ4 and console.
+            // Full compressed input lives in the reserved DRAM load window.
             stack_size: 0x2000,
             heap_size: None,
             runs_from: RunsFrom::Ram,
@@ -562,7 +560,7 @@ mod stage {
     }
 
     /// Handwritten fixed i945/ICH7 bootblock flow. Ordering is this function.
-    /// Ends by raw-copying postcar and publishing the MTRR stash (shared
+    /// Ends by authenticating and loading postcar and publishing the MTRR stash (shared
     /// `run_intel_bootblock` tail); the bulk ramstage copy stays cached in
     /// postcar.
     fn run_i945_ich7_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
@@ -579,6 +577,7 @@ mod stage {
                 flash_layout: B::flash_layout(),
                 dram_end: I945_DRAM_END,
                 ramstage_name: I945_NEXT_STAGE_NAME,
+                ramstage_load_addr: I945_RAMSTAGE_LOAD_ADDR,
                 console_config: B::console_config(),
                 console_node: B::console_node(),
             },
@@ -603,6 +602,7 @@ mod stage {
             flash_layout: B::flash_layout(),
             dram_end: I945_DRAM_END,
             ramstage_name: I945_NEXT_STAGE_NAME,
+            ramstage_load_addr: I945_RAMSTAGE_LOAD_ADDR,
             console_config: B::console_config(),
             console_node: B::console_node(),
         })

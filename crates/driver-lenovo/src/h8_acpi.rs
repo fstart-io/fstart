@@ -38,7 +38,10 @@ pub fn dsdt_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
     }
 
     let mut out = root_helpers_aml(cfg);
-    out.extend(fstart_acpi::aml_linker::scope_vec(lpc_scope, &lpc));
+    out.extend(
+        fstart_acpi::aml_linker::scope_vec(lpc_scope, &lpc)
+            .expect("H8 required LPC scope emission failed"),
+    );
     out.extend(thermal_zone_aml(cfg));
     out.extend(si_status_aml(cfg));
     out
@@ -1094,18 +1097,6 @@ mod tests {
     fn dsdt_assembles_and_contains_key_objects() {
         let cfg = H8Config::x61();
         let lpc = "\\_SB_.PCI0.LPCB";
-        macro_rules! tryfrag {
-            ($name:literal, $expr:expr) => {{
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $expr));
-                std::eprintln!("frag {}: {}", $name, if r.is_ok() { "ok" } else { "PANIC" });
-            }};
-        }
-        tryfrag!("root", root_helpers_aml(&cfg));
-        tryfrag!("ec", ec_device_aml(&cfg, lpc));
-        tryfrag!("tz", thermal_zone_aml(&cfg));
-        tryfrag!("si", si_status_aml(&cfg));
-        tryfrag!("charge", hkey_charge_behaviour_aml(lpc));
-        tryfrag!("thresholds", hkey_thresholds_aml(lpc));
         let aml = dsdt_aml(&cfg, lpc);
         assert!(aml.len() > 2000);
         for name in [

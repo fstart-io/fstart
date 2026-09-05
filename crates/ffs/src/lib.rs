@@ -23,11 +23,16 @@
 extern crate alloc;
 
 pub mod lz4;
+#[cfg(feature = "directory")]
 pub mod manifest;
+#[cfg(feature = "directory")]
 pub mod reader;
+pub mod root;
 
 #[cfg(feature = "std")]
 pub mod builder;
 
+#[cfg(feature = "directory")]
 pub use manifest::{FileView, ManifestSummary, ManifestView};
-pub use reader::{FfsReader, ReaderError, verify_and_parse_manifest};
+#[cfg(feature = "directory")]
+pub use reader::{FfsReader, ReaderError};

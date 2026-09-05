@@ -15,7 +15,7 @@
 //! │  ┌────────────────────────────────────────────────────┐  │
 //! │  │ Anchor Block (embedded in bootblock binary)        │  │
 //! │  │  • MAGIC: "FSTART01"                               │  │
-//! │  │  • pointer → signed ImageManifest                  │  │
+//! │  │  • pointer → signed 512-byte boot root              │  │
 //! │  │  • embedded verification keys                      │  │
 //! │  └────────────────────────────────────────────────────┘  │
 //! │  … bootblock code …                                     │
@@ -28,7 +28,7 @@
 //! ├─────────────────────────────────────────────────────────┤
 //! │ NVS region (optional, raw 0xFF-filled)                  │
 //! ├─────────────────────────────────────────────────────────┤
-//! │ Signed ImageManifest (fixed flat tables)                 │
+//! │ Directory (flat tables), then signed boot root          │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -40,10 +40,9 @@
 //! - `Container { children }` — a signed collection of file entries
 //! - `Raw { fill }` — reserved space filled with a constant byte
 //!
-//! See [docs/unified-region-model.md](../../../docs/unified-region-model.md).
-//!
-//! The build-time ergonomic manifest types are encoded into fixed flat tables
-//! before being signed and written into firmware.
+//! The ergonomic manifest is encoded into revision-2 directory tables and
+//! authenticated by the root's SHA-256 reference, not a second signature.
+//! Exact root and directory wire definitions live in fstart-ffs.
 
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
@@ -61,8 +60,8 @@ pub const FFS_MAGIC: [u8; 8] = *b"FSTART01";
 
 /// Current FFS format version.
 ///
-/// Bumped to 5 to add anchor-patched early CPU microcode location fields.
-pub const FFS_VERSION: u32 = 5;
+/// Revision 6 anchors reference a 512-byte boot root and pin its image family.
+pub const FFS_VERSION: u32 = 6;
 
 // ============================================================================
 // Anchor block — embedded in the bootblock binary
@@ -95,8 +94,8 @@ pub const ANCHOR_SIZE: usize = core::mem::size_of::<AnchorBlock>();
 ///
 /// **How the bootblock uses it**: the bootblock code references the static
 /// directly via volatile read — no scanning needed at runtime. It reads the
-/// manifest pointer, walks to the manifest in flash, and verifies it
-/// using the embedded keys.
+/// root pointer, authenticates that bounded root using the protected keys and
+/// image-family policy, then authenticates the directory in stable RAM.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct AnchorBlock {
@@ -104,11 +103,11 @@ pub struct AnchorBlock {
     pub magic: [u8; 8],
     /// Format version — must equal `FFS_VERSION`.
     pub version: u32,
-    /// Offset of the signed `ImageManifest` from the image base (bytes).
+    /// Offset of the signed boot root from the image base (bytes).
     ///
     /// The bootblock adds this to the flash base address to get a pointer.
     pub manifest_offset: u32,
-    /// Size of the fixed-format signed manifest envelope in bytes.
+    /// Size of the boot root (512 bytes).
     pub manifest_size: u32,
     /// Total firmware image size in bytes (all regions combined).
     pub total_image_size: u32,
@@ -133,6 +132,8 @@ pub struct AnchorBlock {
     ///
     /// Up to 4 keys for key rotation / algorithm agility.
     pub keys: [VerificationKey; ANCHOR_MAX_KEYS],
+    /// Protected expected image-family ID. Appended to preserve assembly offsets.
+    pub image_family: [u8; 16],
 }
 
 impl AnchorBlock {
@@ -152,6 +153,7 @@ impl AnchorBlock {
             microcode_size: 0,
             key_count: 0,
             keys: [VerificationKey::ZERO; ANCHOR_MAX_KEYS],
+            image_family: [0; 16],
         }
     }
 
@@ -277,6 +279,12 @@ impl<'a> AnchorRef<'a> {
     /// Number of valid verification keys.
     pub fn key_count(self) -> u32 {
         self.read_u32(core::ptr::addr_of!(self.anchor.key_count))
+    }
+
+    /// Expected family from the protected, post-build patched anchor.
+    pub fn image_family(&self) -> [u8; 16] {
+        // SAFETY: this field is contained in the live anchor.
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!(self.anchor.image_family)) }
     }
 
     /// Borrow the valid verification keys directly from the patched anchor.
@@ -577,16 +585,18 @@ pub struct Segment {
     pub offset: u32,
     /// Size of segment data as stored in flash (after compression).
     pub stored_size: u32,
+    /// Exact initialized bytes after decompression; excludes a BSS tail.
+    pub initialized_size: u32,
+    /// SHA-256 of exact stored bytes (zero for pure zero-fill).
+    pub stored_digest: [u8; 32],
+    /// SHA-256 of exact initialized bytes (zero for pure zero-fill).
+    pub loaded_digest: [u8; 32],
     /// Size of segment data after decompression (original size).
     /// For BSS segments this is the zero-fill size; `stored_size` is 0.
     pub loaded_size: u32,
-    /// Minimum contiguous buffer size at `load_addr` required for safe
-    /// in-place decompression (compressed segments only).
-    ///
-    /// The runtime copies compressed data to `load_addr + in_place_size -
-    /// stored_size`, then decompresses into `load_addr`. The builder
-    /// verifies this is safe by simulating in-place decompression.
-    ///
+    /// Disjoint workspace bytes: initialized output plus stored input for LZ4.
+    /// The historical field name is retained in the ergonomic schema only;
+    /// overlapping shared/mutable Rust slices are never permitted.
     /// `0` for uncompressed or BSS segments.
     pub in_place_size: u32,
     /// Load address — where this segment should be placed in memory.

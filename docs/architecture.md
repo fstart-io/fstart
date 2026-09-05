@@ -198,18 +198,24 @@ board code and use typed references, not string paths.
 
 Per family, decided by the family, stated explicitly:
 
-- Intel: three stages — CAR bootblock (raminit, then raw-copies postcar and
-  publishes the MTRR stash), postcar (noreturn CAR teardown from the UC
-  stash, then cached ramstage load/decompress), then DRAM-backed mainstage.
-  Postcar carries no FFS parser or crypto (~12 KB): the bootblock resolves
-  the ramstage's raw extent from the signature-verified manifest into the
-  stash (ROM-immutable, so trust carries over), and the ramstage re-verifies
-  its own bytes on entry before running tables or payloads.
-- Sunxi: SRAM early stage, DRAM mainstage.
+- Intel: three stages: CAR bootblock initializes RAM, authenticates the bounded
+  boot root and verifies postcar before entry. Postcar tears down CAR, loads
+  ramstage using the inherited descriptor, and verifies stored compressed
+  input and initialized output before jumping. Postcar needs compact SHA-256,
+  not a public-key verifier or general-directory parsing in its execution path.
+  Mainstage imports the directory digest through the reserved, versioned stash
+  and retains the verified directory in RAM. A stage cannot authenticate itself.
+- Sunxi: SRAM early stage, DRAM mainstage. The early image pins its next-stage
+  descriptor at assembly time and verifies the loaded bytes before entry.
+  Pin updates require rebuilding/updating the initial image. Merely loading
+  SPL through BROM does not establish a hardware trust anchor.
 - QEMU virt: monolithic is fine.
 
 No generic multi-stage framework beyond what `fstart-stage` needs to enter a
-stage and hand off.
+stage and hand off. [Authenticated boot](authenticated-boot.md) defines digest,
+media-lifetime and memory-policy contracts. Existing boards remain explicitly
+**development-integrity** until protected initial code/key storage and any
+required rollback mechanism are established; signatures alone do not prove them.
 
 ## Boards
 

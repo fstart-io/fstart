@@ -562,9 +562,7 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
- "fstart-crypto",
  "fstart-driver-superio",
- "fstart-ffs",
  "fstart-log",
  "fstart-pci",
  "fstart-smm",
@@ -690,12 +688,14 @@ dependencies = [
 name = "fstart-platform-qemu"
 version = "0.1.0"
 dependencies = [
+ "dtoolkit",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-uart",
  "fstart-log",
  "fstart-pci",
  "fstart-stage",
+ "heapless",
  "serde",
  "ufmt",
 ]

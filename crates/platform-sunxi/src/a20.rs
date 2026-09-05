@@ -136,7 +136,7 @@ mod stage {
 
     #[cfg(feature = "linux")]
     use crate::egon::ffs_total_size_at;
-    use crate::egon::{BootDevice, boot_device_at, next_stage_offset_at, next_stage_size_at};
+    use crate::egon::{BootDevice, boot_device_at};
 
     /// BROM state retained so a Sunxi stage can return to FEL.
     #[repr(C)]
@@ -324,6 +324,17 @@ fstart_sunxi_fel_stash:
     #[cfg(feature = "linux")]
     impl fstart_stage::payload::MainstagePayload<A20Mainstage> for A20LinuxPayload {
         fn boot(devices: A20Mainstage) -> ! {
+            if crate::boot::install_mainstage_policy(
+                A20_DRAM_BASE,
+                devices.dram_size,
+                devices.config.handoff_addr,
+                devices.config.fdt_dst_addr,
+            )
+            .is_err()
+            {
+                fstart_log::error!("a20: invalid mainstage memory policy");
+                fstart_arch::halt();
+            }
             let ffs_size = ffs_total_size_at(A20_SRAM_BASE as usize) as usize;
             let mut boot =
                 fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(A20_EGON_MMC_OFFSET, 0);
@@ -449,55 +460,23 @@ fstart_sunxi_fel_stash:
             return Err(ServiceError::NotSupported);
         }
 
-        let next_stage_offset = u64::from(next_stage_offset_at(A20_SRAM_BASE as usize));
-        let next_stage_size = next_stage_size_at(A20_SRAM_BASE as usize) as usize;
-        validate_next_stage(config.mainstage_load_addr, next_stage_size, dram_size)?;
-        let offset = A20_EGON_MMC_OFFSET
-            .checked_add(next_stage_offset)
-            .ok_or(ServiceError::InvalidParam)?;
-
         {
             let mut ctx = SunxiEarlyCtx::<A20>::new(&ccu, Some(dram_size));
             hooks.before_handoff(&mut ctx)?;
         }
 
-        let read = fstart_stage::next_stage::read_stage_to_addr(
+        let entry = crate::boot::load_mainstage(
             &mmc0,
-            "mmc0",
-            "main",
-            offset,
+            A20_EGON_MMC_OFFSET,
+            crate::egon::ffs_total_size_at(A20_SRAM_BASE as usize) as usize,
+            A20_DRAM_BASE,
+            dram_size,
             config.mainstage_load_addr,
-            next_stage_size,
+            config.handoff_addr,
         )?;
-        if read != next_stage_size {
-            return Err(ServiceError::IoError);
-        }
         fstart_stage::next_stage::serialize_handoff(dram_size, config.handoff_addr)
             .map_err(|_| ServiceError::HardwareError)?;
-        fstart_arch::armv7::jump_to_with_handoff(
-            config.mainstage_load_addr,
-            config.handoff_addr as usize,
-        )
-    }
-
-    fn validate_next_stage(
-        load_addr: u64,
-        size: usize,
-        dram_size: u64,
-    ) -> Result<(), ServiceError> {
-        if size == 0 || !in_a20_dram(load_addr) {
-            return Err(ServiceError::InvalidParam);
-        }
-        let dram_end = A20_DRAM_BASE
-            .checked_add(dram_size)
-            .ok_or(ServiceError::InvalidParam)?;
-        let end = load_addr
-            .checked_add(size as u64)
-            .ok_or(ServiceError::InvalidParam)?;
-        if end > dram_end {
-            return Err(ServiceError::InvalidParam);
-        }
-        Ok(())
+        fstart_arch::armv7::jump_to_with_handoff(entry, config.handoff_addr as usize)
     }
 
     /// Handwritten A20 DRAM mainstage setup.

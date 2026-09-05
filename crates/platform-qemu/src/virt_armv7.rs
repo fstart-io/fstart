@@ -90,7 +90,10 @@ impl QemuArmv7Virt {
     where
         B: QemuArmv7VirtBoard,
     {
-        let _ = (env, handoff);
+        let _ = handoff;
+        if !matches!(env, StageEnvironment::Monolithic) {
+            fstart_arch::halt();
+        }
         let Ok(mut mainstage) = QemuArmv7VirtMainstage::new::<B>() else {
             fstart_arch::halt();
         };
@@ -98,6 +101,17 @@ impl QemuArmv7Virt {
         if !phase("qemu-armv7", "before_console", hooks.before_console())
             || !phase("qemu-armv7", "console", mainstage.init_console())
             || !phase("qemu-armv7", "after_console", hooks.after_console())
+            || !phase(
+                "qemu-armv7",
+                "boot_integrity",
+                crate::boot::from_dtb(
+                    B::CONFIG.source_dtb_addr,
+                    cfg!(feature = "linux").then_some(B::CONFIG.common.dtb_addr),
+                    B::CONFIG.common.ram_base,
+                    B::CONFIG.common.firmware_base,
+                    B::CONFIG.common.firmware_size,
+                ),
+            )
             || !phase("qemu-armv7", "bus_scan", mainstage.init_pci())
             || !phase("qemu-armv7", "before_payload", hooks.before_payload())
         {

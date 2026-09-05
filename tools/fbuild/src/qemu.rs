@@ -571,7 +571,7 @@ fn create_x86_pflash(
                 )
             })?;
 
-    let anchor_size = 300;
+    let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
     let ffs_src = ffs_anchor_off;
     let stage_dst = stage_anchor_off;
     if ffs_src + anchor_size > ffs_data.len() || stage_dst + anchor_size > pflash.len() {

@@ -63,19 +63,47 @@ pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
 
+/// Failure while binding or emitting AML. Failed fragments append no bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AmlError {
+    Capacity,
+    LengthOverflow,
+    InvalidOperand,
+    InvalidRange,
+    InvalidPath,
+}
+
+/// Convert a runtime scalar without discarding sign or high bits.
+#[doc(hidden)]
+pub fn checked_operand(value: impl TryInto<u64>) -> Result<u64, AmlError> {
+    value.try_into().map_err(|_| AmlError::InvalidOperand)
+}
+
 /// An AML output sink that exposes the newly appended range for fixups.
 ///
 /// This lets [`AmlFragment::emit`] perform one bulk copy followed by direct
 /// fixed-width stores in the destination, without a fragment-sized stack copy.
 pub trait AmlFragmentSink {
-    fn append_fragment<'a>(&'a mut self, bytes: &[u8]) -> &'a mut [u8];
+    /// Record a failed fragment so a table writer cannot finalize partial output.
+    fn reject(&mut self, error: AmlError) -> Result<(), AmlError> {
+        Err(error)
+    }
+
+    /// Append the entire fragment or leave the sink unchanged on error.
+    /// On success the returned slice must be exactly the appended range.
+    fn append_fragment<'a>(&'a mut self, bytes: &[u8]) -> Result<&'a mut [u8], AmlError>;
 }
 
 impl AmlFragmentSink for Vec<u8> {
-    fn append_fragment<'a>(&'a mut self, bytes: &[u8]) -> &'a mut [u8] {
+    fn append_fragment<'a>(&'a mut self, bytes: &[u8]) -> Result<&'a mut [u8], AmlError> {
         let start = self.len();
+        start
+            .checked_add(bytes.len())
+            .ok_or(AmlError::LengthOverflow)?;
+        self.try_reserve(bytes.len())
+            .map_err(|_| AmlError::Capacity)?;
         self.extend_from_slice(bytes);
-        &mut self[start..]
+        Ok(&mut self[start..])
     }
 }
 
@@ -129,12 +157,15 @@ pub enum FixupAction {
     },
 }
 
-/// Location, width, and optional derived write for a runtime operand.
+/// Macro-generated location, encoding, and optional derived resource write.
+/// Fields are private; the fragment constructor validates the metadata in const
+/// evaluation. Low-level constructor misuse is a programmer error (panic).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Fixup {
-    pub offset: usize,
-    pub kind: FixupKind,
-    pub action: FixupAction,
+    offset: usize,
+    kind: FixupKind,
+    action: FixupAction,
+    integer: bool,
 }
 
 impl Fixup {
@@ -143,7 +174,24 @@ impl Fixup {
             offset,
             kind,
             action: FixupAction::None,
+            integer: true,
         }
+    }
+
+    /// Raw little-endian field, without an AML integer opcode.
+    #[doc(hidden)]
+    pub const fn raw(offset: usize, kind: FixupKind) -> Self {
+        Self {
+            integer: false,
+            ..Self::new(offset, kind)
+        }
+    }
+
+    pub const fn offset(self) -> usize {
+        self.offset
+    }
+    pub const fn kind(self) -> FixupKind {
+        self.kind
     }
 
     pub const fn with_range_length(
@@ -156,6 +204,7 @@ impl Fixup {
         Self {
             offset,
             kind,
+            integer: false,
             action: FixupAction::RangeLength {
                 offset: length_offset,
                 min,
@@ -167,18 +216,82 @@ impl Fixup {
 
 /// AML compiled by `acpi_dsl!`.
 ///
+/// Const operands are checked during compilation even in a local binding:
+///
+/// ```compile_fail
+/// use fstart_acpi_macros::acpi_dsl;
+/// let _ = acpi_dsl! { Name("TEST", #{const byte 256u16}); };
+/// ```
+/// ```compile_fail
+/// use fstart_acpi_macros::acpi_dsl;
+/// let _ = acpi_dsl! { Name("TEST", #{const qword -1i64}); };
+/// ```
+/// ```compile_fail
+/// use fstart_acpi_macros::acpi_dsl;
+/// let _ = acpi_dsl! { Name("TEST", #{const qword 0x1_0000_0000_0000_0000u128}); };
+/// ```
+/// ```compile_fail
+/// use fstart_acpi_macros::acpi_dsl;
+/// let _ = acpi_dsl! { Name("TEST", #{const qword 1.5f64}); };
+/// ```
+/// ```compile_fail
+/// use fstart_acpi_macros::acpi_dsl;
+/// let _ = acpi_dsl! { Name("TEST", #{qword 1.5f64}); };
+/// ```
+/// ```compile_fail
+/// use fstart_acpi_macros::acpi_dsl;
+/// let _ = acpi_dsl! {
+///     Name("RSC0", ResourceTemplate { IO(0x10000u32, 0x10000u32, 1u8, 8u8); });
+/// };
+/// ```
+///
 /// `bytes` contains the complete AML with zero-filled operand slots. Emission
 /// is one bulk copy followed by fixed-width little-endian fixup stores (plus
 /// derived resource-length stores); package lengths and literal encodings are
 /// already final.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AmlFragment<const N: usize, const K: usize> {
-    pub bytes: [u8; N],
-    pub fixups: [Fixup; K],
+    bytes: [u8; N],
+    fixups: [Fixup; K],
 }
 
 impl<const N: usize, const K: usize> AmlFragment<N, K> {
+    /// Low-level macro constructor. Panics for malformed relocation metadata;
+    /// macro-generated static fragments check this during compilation.
+    #[doc(hidden)]
     pub const fn new(bytes: [u8; N], fixups: [Fixup; K]) -> Self {
+        let mut index = 0;
+        while index < K {
+            let fixup = fixups[index];
+            let width = fixup_width(fixup.kind);
+            if fixup.integer {
+                assert!(
+                    fixup.offset > 0 && fixup.offset <= N,
+                    "invalid AML integer patch"
+                );
+                assert!(
+                    bytes[fixup.offset - 1] == fixup_prefix(fixup.kind),
+                    "wrong AML integer encoding"
+                );
+            }
+            assert!(
+                fixup.offset <= N && width <= N - fixup.offset,
+                "invalid AML fixup"
+            );
+            if let FixupAction::RangeLength { offset, min, max } = fixup.action {
+                assert!(
+                    offset <= N && width <= N - offset,
+                    "invalid AML range fixup"
+                );
+                if let FixupValue::Operand(i) = min {
+                    assert!(i < K, "invalid AML operand index");
+                }
+                if let FixupValue::Operand(i) = max {
+                    assert!(i < K, "invalid AML operand index");
+                }
+            }
+            index += 1;
+        }
         Self { bytes, fixups }
     }
 
@@ -186,10 +299,28 @@ impl<const N: usize, const K: usize> AmlFragment<N, K> {
         &self.bytes
     }
 
-    /// Apply a const-evaluable, explicitly-sized operand during initialization.
+    pub const fn fixups(&self) -> &[Fixup; K] {
+        &self.fixups
+    }
+
+    #[doc(hidden)]
+    pub const fn with_const_integer(self, offset: usize, kind: FixupKind, value: u64) -> Self {
+        assert!(offset > 0 && offset <= N, "invalid const AML integer patch");
+        assert!(
+            self.bytes[offset - 1] == fixup_prefix(kind),
+            "wrong const AML integer encoding"
+        );
+        self.with_const(offset, kind, value)
+    }
+
+    /// Apply a const-evaluable, explicitly-sized raw field during initialization.
     #[must_use]
     pub const fn with_const(mut self, offset: usize, kind: FixupKind, value: u64) -> Self {
         let width = fixup_width(kind);
+        assert!(
+            offset <= N && width <= N - offset,
+            "invalid const AML patch"
+        );
         assert!(
             value_fits(value, width),
             "const AML operand exceeds its declared width"
@@ -203,36 +334,46 @@ impl<const N: usize, const K: usize> AmlFragment<N, K> {
         self
     }
 
-    pub fn emit(&self, out: &mut impl AmlFragmentSink, operands: &[u64; K]) {
+    pub fn emit(
+        &self,
+        out: &mut impl AmlFragmentSink,
+        operands: &[u64; K],
+    ) -> Result<(), AmlError> {
+        // Preflight *all* values, including derived fields, before appending.
         for (fixup, value) in self.fixups.iter().zip(operands) {
-            assert!(
-                value_fits(*value, fixup_width(fixup.kind)),
-                "runtime AML operand exceeds its declared width"
-            );
+            if !value_fits(*value, fixup_width(fixup.kind)) {
+                return out.reject(AmlError::InvalidOperand);
+            }
+            if let Err(error) = self.range_length(fixup, operands) {
+                return out.reject(error);
+            }
         }
-        let bytes = out.append_fragment(&self.bytes);
+        let bytes = out.append_fragment(&self.bytes)?;
         for (fixup, value) in self.fixups.iter().zip(operands) {
             let width = fixup_width(fixup.kind);
             bytes[fixup.offset..fixup.offset + width]
                 .copy_from_slice(&value.to_le_bytes()[..width]);
+            if let Some((offset, length)) = self.range_length(fixup, operands)? {
+                bytes[offset..offset + width].copy_from_slice(&length.to_le_bytes()[..width]);
+            }
         }
-        for fixup in &self.fixups {
-            let FixupAction::RangeLength { offset, min, max } = fixup.action else {
-                continue;
-            };
-            let min = fixup_value(min, operands);
-            let max = fixup_value(max, operands);
-            let length = max
-                .checked_sub(min)
-                .and_then(|value| value.checked_add(1))
-                .expect("invalid AML address resource range");
-            let width = fixup_width(fixup.kind);
-            assert!(
-                value_fits(length, width),
-                "derived AML resource length exceeds its operand width"
-            );
-            bytes[offset..offset + width].copy_from_slice(&length.to_le_bytes()[..width]);
-        }
+        Ok(())
+    }
+
+    fn range_length(
+        &self,
+        fixup: &Fixup,
+        operands: &[u64; K],
+    ) -> Result<Option<(usize, u64)>, AmlError> {
+        let FixupAction::RangeLength { offset, min, max } = fixup.action else {
+            return Ok(None);
+        };
+        let length = fixup_value(max, operands)
+            .checked_sub(fixup_value(min, operands))
+            .and_then(|value| value.checked_add(1))
+            .filter(|value| value_fits(*value, fixup_width(fixup.kind)))
+            .ok_or(AmlError::InvalidRange)?;
+        Ok(Some((offset, length)))
     }
 }
 
@@ -240,10 +381,14 @@ impl<const N: usize, const K: usize> AmlFragment<N, K> {
 ///
 /// `acpi_dsl!` produces this type when the DSL contains typed runtime operands,
 /// preserving the source-order relationship between each expression and fixup.
+/// Invalid scalar conversions are retained here and returned by `emit` before
+/// any output is appended. `From<BoundAmlFragment> for Vec<u8>` is a panicking
+/// convenience; callers that handle construction failure should use `emit`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BoundAmlFragment<const N: usize, const K: usize> {
     fragment: &'static AmlFragment<N, K>,
     operands: [u64; K],
+    error: Option<AmlError>,
 }
 
 impl<const N: usize> core::ops::Deref for AmlFragment<N, 0> {
@@ -261,29 +406,64 @@ impl<const N: usize> From<AmlFragment<N, 0>> for Vec<u8> {
 }
 
 impl<const N: usize, const K: usize> BoundAmlFragment<N, K> {
-    pub const fn new(fragment: &'static AmlFragment<N, K>, operands: [u64; K]) -> Self {
-        Self { fragment, operands }
+    pub const fn new(
+        fragment: &'static AmlFragment<N, K>,
+        operands: [Result<u64, AmlError>; K],
+    ) -> Self {
+        let mut values = [0; K];
+        let mut error = None;
+        let mut index = 0;
+        while index < K {
+            match operands[index] {
+                Ok(value) => values[index] = value,
+                Err(value) if error.is_none() => error = Some(value),
+                Err(_) => {}
+            }
+            index += 1;
+        }
+        Self {
+            fragment,
+            operands: values,
+            error,
+        }
     }
 
     /// Copy the precompiled bytes and apply the bound operands.
-    pub fn emit(&self, out: &mut impl AmlFragmentSink) {
-        self.fragment.emit(out, &self.operands);
+    pub fn emit(&self, sink: &mut impl AmlFragmentSink) -> Result<(), AmlError> {
+        if let Some(error) = self.error {
+            return sink.reject(error);
+        }
+        self.fragment.emit(sink, &self.operands)
     }
 
     pub const fn fragment(&self) -> &'static AmlFragment<N, K> {
         self.fragment
     }
 
-    pub const fn operands(&self) -> &[u64; K] {
-        &self.operands
+    pub const fn operands(&self) -> Result<&[u64; K], AmlError> {
+        match self.error {
+            Some(error) => Err(error),
+            None => Ok(&self.operands),
+        }
     }
 }
 
 impl<const N: usize, const K: usize> From<BoundAmlFragment<N, K>> for Vec<u8> {
     fn from(fragment: BoundAmlFragment<N, K>) -> Self {
         let mut bytes = Vec::new();
-        fragment.emit(&mut bytes);
+        fragment
+            .emit(&mut bytes)
+            .expect("invalid AML fragment binding");
         bytes
+    }
+}
+
+const fn fixup_prefix(kind: FixupKind) -> u8 {
+    match kind {
+        FixupKind::Byte => 0x0a,
+        FixupKind::Word => 0x0b,
+        FixupKind::DWord => 0x0c,
+        FixupKind::QWord => 0x0e,
     }
 }
 

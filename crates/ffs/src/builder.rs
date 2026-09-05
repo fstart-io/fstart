@@ -6,7 +6,7 @@
 //! 2. For each container, lays out files and their segments.
 //! 3. Computes digests for each file.
 //! 4. Builds the `ImageManifest` with computed offsets.
-//! 5. Serializes and signs the manifest.
+//! 5. Serializes the directory and signs its bounded boot root.
 //! 6. Builds the anchor block with embedded keys.
 //! 7. Produces the final image as a `Vec<u8>`.
 //!
@@ -18,6 +18,7 @@ extern crate std;
 use std::string::String;
 use std::vec::Vec;
 
+use crate::root::{BootstrapDescriptor, BootstrapRole, DirectoryRef, ROOT_SIZE, Root, SIGNED_SIZE};
 use fstart_core::ffs::{
     ANCHOR_MAX_KEYS, ANCHOR_SIZE, AnchorBlock, Compression, EntryContent, FFS_MAGIC, FFS_VERSION,
     FileType, ImageManifest, Region, RegionContent, RegionEntry, Segment, SegmentFlags,
@@ -25,6 +26,14 @@ use fstart_core::ffs::{
 };
 use fstart_crypto::digest;
 use heapless::String as HString;
+
+/// Protected packaging policy. Names select flat stage files, never arbitrary offsets.
+#[derive(Default)]
+pub struct BootRootConfig {
+    pub image_family: [u8; 16],
+    pub security_version: u64,
+    pub bootstrap: Vec<(String, BootstrapRole)>,
+}
 
 /// A file being assembled into the FFS image.
 pub struct InputFile {
@@ -163,18 +172,49 @@ pub struct FfsImage {
 ///
 /// The first file in the first Container region is placed at offset 0 of
 /// the image (making it directly bootable by QEMU `-bios`). Regions are
-/// laid out sequentially. The signed manifest is appended at the end.
+/// laid out sequentially. The directory and signed boot root are appended.
 ///
 /// The first file must contain an embedded `FSTART_ANCHOR` placeholder
 /// (with `FFS_MAGIC` at an 8-byte-aligned offset). The builder scans for
 /// it and patches the anchor in-place with the real layout offsets.
 ///
-/// `sign` is called to sign the manifest. It receives the raw manifest
-/// bytes and must return a `Signature`.
+/// This convenience entry uses the development family ID and no bootstrap
+/// descriptors. Real board packaging calls `build_image_with_root` with explicit
+/// policy. `sign` receives the first 448 root bytes and must return Ed25519.
 pub fn build_image<F>(config: &FfsImageConfig, sign: &F) -> Result<FfsImage, String>
 where
     F: Fn(&[u8]) -> Result<Signature, String>,
 {
+    build_image_with_root(config, &BootRootConfig::default(), sign)
+}
+
+pub fn build_image_with_root<F>(
+    config: &FfsImageConfig,
+    root_config: &BootRootConfig,
+    sign: &F,
+) -> Result<FfsImage, String>
+where
+    F: Fn(&[u8]) -> Result<Signature, String>,
+{
+    if root_config.bootstrap.len() > 2 {
+        return Err("boot root supports at most two bootstrap stages".into());
+    }
+    for (i, key) in config.keys.iter().enumerate() {
+        if config.keys[..i]
+            .iter()
+            .any(|prev| prev.key_id == key.key_id)
+        {
+            return Err("duplicate authorized key ID".into());
+        }
+    }
+    for (i, (name, role)) in root_config.bootstrap.iter().enumerate() {
+        if root_config.bootstrap[..i]
+            .iter()
+            .any(|(previous, previous_role)| previous == name || previous_role == role)
+        {
+            return Err("duplicate bootstrap name or role".into());
+        }
+    }
     let mut image: Vec<u8> = Vec::new();
     let mut file_data: Vec<FileDataLocation> = Vec::new();
 
@@ -184,7 +224,7 @@ where
     for input_region in &config.regions {
         match input_region {
             InputRegion::Container { name, files } => {
-                let region_base = image.len() as u32;
+                let region_base = image_len(&image)?;
                 let mut children: heapless::Vec<RegionEntry, 8> = heapless::Vec::new();
 
                 for file in files {
@@ -194,8 +234,14 @@ where
                     if let EntryContent::File { segments, .. } = &entry.content
                         && let Some(first_seg) = segments.first()
                     {
-                        let abs_offset = region_base + entry.offset + first_seg.offset;
-                        let total_stored: u32 = segments.iter().map(|s| s.stored_size).sum();
+                        let abs_offset = region_base
+                            .checked_add(entry.offset)
+                            .and_then(|n| n.checked_add(first_seg.offset))
+                            .ok_or("file offset exceeds u32")?;
+                        let total_stored = segments
+                            .iter()
+                            .try_fold(0u32, |sum, s| sum.checked_add(s.stored_size))
+                            .ok_or("stored file exceeds u32")?;
                         file_data.push(FileDataLocation {
                             name: file.name.clone(),
                             data_offset: abs_offset,
@@ -208,7 +254,7 @@ where
                         .map_err(|_| "too many files in container (max 8)".to_string())?;
                 }
 
-                let region_size = image.len() as u32 - region_base;
+                let region_size = image_len(&image)? - region_base;
                 let region_name: HString<64> = HString::try_from(name.as_str())
                     .map_err(|_| format!("region name too long: {name}"))?;
 
@@ -227,7 +273,7 @@ where
                 external_files,
                 size,
             } => {
-                let region_base = image.len() as u32;
+                let region_base = image_len(&image)?;
                 let mut children: heapless::Vec<RegionEntry, 8> = heapless::Vec::new();
 
                 for file in files {
@@ -236,8 +282,14 @@ where
                     if let EntryContent::File { segments, .. } = &entry.content
                         && let Some(first_seg) = segments.first()
                     {
-                        let abs_offset = region_base + entry.offset + first_seg.offset;
-                        let total_stored: u32 = segments.iter().map(|s| s.stored_size).sum();
+                        let abs_offset = region_base
+                            .checked_add(entry.offset)
+                            .and_then(|n| n.checked_add(first_seg.offset))
+                            .ok_or("file offset exceeds u32")?;
+                        let total_stored = segments
+                            .iter()
+                            .try_fold(0u32, |sum, s| sum.checked_add(s.stored_size))
+                            .ok_or("stored file exceeds u32")?;
                         file_data.push(FileDataLocation {
                             name: file.name.clone(),
                             data_offset: abs_offset,
@@ -250,10 +302,15 @@ where
                         .map_err(|_| "too many files in container (max 8)".to_string())?;
                 }
 
-                let mut region_size = image.len() as u32 - region_base;
+                let mut region_size = image_len(&image)? - region_base;
                 for file in external_files {
                     let entry = external_file_entry(file)?;
-                    region_size = region_size.max(entry.offset + entry.size);
+                    region_size = region_size.max(
+                        entry
+                            .offset
+                            .checked_add(entry.size)
+                            .ok_or("external file range exceeds u32")?,
+                    );
                     children
                         .push(entry)
                         .map_err(|_| "too many files in container (max 8)".to_string())?;
@@ -275,8 +332,11 @@ where
                     .map_err(|_| "too many regions (max 6)".to_string())?;
             }
             InputRegion::Raw { name, size, fill } => {
-                let offset = image.len() as u32;
-                image.resize(image.len() + *size as usize, *fill);
+                let offset = image_len(&image)?;
+                image.resize(
+                    offset.checked_add(*size).ok_or("raw region exceeds u32")? as usize,
+                    *fill,
+                );
 
                 let region_name: HString<64> = HString::try_from(name.as_str())
                     .map_err(|_| format!("region name too long: {name}"))?;
@@ -311,15 +371,17 @@ where
         }
     }
 
-    // ---- Phase 2: Build and sign the image manifest ----
+    // ---- Phase 2: Reserve fixed directory and boot-root storage ----
     let mut manifest = ImageManifest {
         regions: manifest_regions,
     };
 
-    let signed = sign_manifest(&manifest, sign)?;
-    let manifest_offset = image.len() as u32;
-    let manifest_size = signed.len() as u32;
-    image.extend_from_slice(&signed);
+    let directory_bytes = crate::manifest::encode_manifest(&manifest)?;
+    let directory_offset = u32::try_from(image.len()).map_err(|_| "image exceeds u32")?;
+    image.extend_from_slice(&directory_bytes);
+    let manifest_offset = u32::try_from(image.len()).map_err(|_| "image exceeds u32")?;
+    let manifest_size = ROOT_SIZE as u32;
+    image.resize(image.len() + ROOT_SIZE, 0);
 
     // ---- Phase 3: Build anchor and patch it into the bootblock binary ----
     if config.keys.len() > ANCHOR_MAX_KEYS {
@@ -349,7 +411,7 @@ where
 
     // Compute total_image_size *after* potentially appending the anchor,
     // so it accurately reflects the final image size.
-    let total_image_size = image.len() as u32;
+    let total_image_size = image_len(&image)?;
     let microcode = file_data
         .iter()
         .find(|file| file.name == "cpu_microcode_blob.bin");
@@ -360,11 +422,12 @@ where
         manifest_offset,
         manifest_size,
         total_image_size,
-        anchor_offset: anchor_offset as u32,
+        anchor_offset: u32::try_from(anchor_offset).map_err(|_| "anchor offset exceeds u32")?,
         microcode_offset: microcode.map_or(0, |file| file.data_offset),
         microcode_size: microcode.map_or(0, |file| file.data_size),
         key_count: config.keys.len() as u32,
         keys,
+        image_family: root_config.image_family,
     };
 
     for &offset in &anchor_offsets {
@@ -388,7 +451,20 @@ where
         &anchor,
     )?;
 
-    let new_manifest_serialized = sign_manifest(&manifest, sign)?;
+    let new_directory = crate::manifest::encode_manifest(&manifest)?;
+    if new_directory.len() != directory_bytes.len() {
+        return Err("directory size changed during anchor patch".into());
+    }
+    image[directory_offset as usize..directory_offset as usize + new_directory.len()]
+        .copy_from_slice(&new_directory);
+    let new_manifest_serialized = sign_root(
+        &manifest,
+        root_config,
+        directory_offset,
+        &new_directory,
+        &config.keys,
+        sign,
+    )?;
 
     if new_manifest_serialized.len() != manifest_size as usize {
         return Err(format!(
@@ -454,7 +530,7 @@ fn lay_out_file(
     let mut segments: heapless::Vec<Segment, 12> = heapless::Vec::new();
     let mut digest_input: Vec<u8> = Vec::new();
 
-    let entry_offset = image.len() as u32 - region_base;
+    let entry_offset = image_len(&image)? - region_base;
 
     for seg in &file.segments {
         // Align each segment to 8 bytes so embedded structures (like
@@ -490,7 +566,7 @@ fn lay_out_file(
         };
 
         // Record the offset relative to the entry base (which is relative to region base)
-        let seg_offset = image.len() as u32 - region_base - entry_offset;
+        let seg_offset = image_len(&image)? - region_base - entry_offset;
 
         // Append stored data to the image
         image.extend_from_slice(&stored_data);
@@ -501,19 +577,25 @@ fn lay_out_file(
         let name: HString<32> = HString::try_from(seg.name.as_str())
             .map_err(|_| format!("segment name too long: {}", seg.name))?;
 
-        // loaded_size = mem_size if provided (includes BSS tail),
-        // otherwise falls back to data.len() (no BSS).
+        // loaded_size is total memory, initialized_size is the digest boundary.
+        // A BSS tail is zeroed separately and is not part of the content hash.
         let loaded_size = seg
             .mem_size
-            .map(|m| m as u32)
-            .unwrap_or(seg.data.len() as u32);
+            .map(|m| u32::try_from(m).map_err(|_| "segment memory size exceeds u32"))
+            .transpose()?
+            .unwrap_or(u32::try_from(seg.data.len()).map_err(|_| "segment exceeds u32")?);
 
         segments
             .push(Segment {
                 name,
                 kind: seg.kind,
                 offset: seg_offset,
-                stored_size: stored_data.len() as u32,
+                stored_size: u32::try_from(stored_data.len())
+                    .map_err(|_| "stored segment exceeds u32")?,
+                initialized_size: u32::try_from(seg.data.len())
+                    .map_err(|_| "initialized segment exceeds u32")?,
+                stored_digest: segment_hash(&stored_data),
+                loaded_digest: segment_hash(&seg.data),
                 loaded_size,
                 in_place_size,
                 load_addr: seg.load_addr,
@@ -524,10 +606,9 @@ fn lay_out_file(
     }
 
     // Compute digests over concatenated uncompressed segment data
-    let digests =
-        digest::hash_digest_set(&digest_input).map_err(|_| "no digest algorithms available")?;
+    let digests = file_hash(&digest_input).map_err(|_| "no digest algorithms available")?;
 
-    let entry_size = image.len() as u32 - region_base - entry_offset;
+    let entry_size = image_len(&image)? - region_base - entry_offset;
 
     let name: HString<64> = HString::try_from(file.name.as_str())
         .map_err(|_| format!("file name too long: {}", file.name))?;
@@ -560,15 +641,21 @@ fn external_file_entry(file: &ExternalInputFile) -> Result<RegionEntry, String> 
         digest_input.extend_from_slice(&seg.data);
         let loaded_size = seg
             .mem_size
-            .map(|m| m as u32)
-            .unwrap_or(seg.data.len() as u32);
+            .map(|m| u32::try_from(m).map_err(|_| "segment memory size exceeds u32"))
+            .transpose()?
+            .unwrap_or(u32::try_from(seg.data.len()).map_err(|_| "segment exceeds u32")?);
         segments
             .push(Segment {
                 name: HString::try_from(seg.name.as_str())
                     .map_err(|_| format!("segment name too long: {}", seg.name))?,
                 kind: seg.kind,
                 offset: seg_offset,
-                stored_size: seg.data.len() as u32,
+                stored_size: u32::try_from(seg.data.len())
+                    .map_err(|_| "stored segment exceeds u32")?,
+                initialized_size: u32::try_from(seg.data.len())
+                    .map_err(|_| "initialized segment exceeds u32")?,
+                stored_digest: segment_hash(&seg.data),
+                loaded_digest: segment_hash(&seg.data),
                 loaded_size,
                 in_place_size: 0,
                 load_addr: seg.load_addr,
@@ -576,11 +663,12 @@ fn external_file_entry(file: &ExternalInputFile) -> Result<RegionEntry, String> 
                 flags: seg.flags,
             })
             .map_err(|_| format!("too many segments in file '{}'", file.name))?;
-        entry_size = entry_size.saturating_add(seg.data.len() as u32);
+        entry_size = entry_size
+            .checked_add(u32::try_from(seg.data.len()).map_err(|_| "external segment exceeds u32")?)
+            .ok_or("external file exceeds u32")?;
     }
 
-    let digests =
-        digest::hash_digest_set(&digest_input).map_err(|_| "no digest algorithms available")?;
+    let digests = file_hash(&digest_input).map_err(|_| "no digest algorithms available")?;
     let name: HString<64> = HString::try_from(file.name.as_str())
         .map_err(|_| format!("file name too long: {}", file.name))?;
 
@@ -727,7 +815,7 @@ fn recompute_inline_file_digests(
             };
 
             let mut digest_input: Vec<u8> = Vec::new();
-            for seg in segments.iter() {
+            for seg in segments.iter_mut() {
                 if seg.compression != Compression::None {
                     return Err(format!(
                         "segment '{}' in file '{}' uses {:?} compression —                          files containing FSTART_ANCHOR must be uncompressed                          because anchors are patched directly into the image",
@@ -742,11 +830,12 @@ fn recompute_inline_file_digests(
                         seg.name
                     ));
                 }
+                seg.stored_digest = segment_hash(&image[abs_offset..end]);
+                seg.loaded_digest = seg.stored_digest;
                 digest_input.extend_from_slice(&image[abs_offset..end]);
             }
 
-            *digests = digest::hash_digest_set(&digest_input)
-                .map_err(|_| "no digest algorithms available")?;
+            *digests = file_hash(&digest_input).map_err(|_| "no digest algorithms available")?;
         }
     }
 
@@ -797,7 +886,7 @@ fn recompute_external_file_digests(
 
             let mut digest_input: Vec<u8> = Vec::new();
             let mut segment_base = 0u32;
-            for (input_segment, segment) in file.segments.iter().zip(segments.iter()) {
+            for (input_segment, segment) in file.segments.iter().zip(segments.iter_mut()) {
                 if segment.compression != Compression::None {
                     return Err(format!(
                         "segment '{}' in external file '{}' uses {:?} compression — external files containing FSTART_ANCHOR must be uncompressed",
@@ -819,115 +908,256 @@ fn recompute_external_file_digests(
                     patched_anchor.anchor_offset = anchor_offset;
                     patched_anchor.write_to(&mut data[placeholder_offset..]);
                 }
+                segment.stored_digest = segment_hash(&data);
+                segment.loaded_digest = segment.stored_digest;
                 digest_input.extend_from_slice(&data);
                 segment_base = segment_base
                     .checked_add(segment.stored_size)
                     .ok_or_else(|| format!("external file '{}' size overflows u32", file.name))?;
             }
 
-            *digests = digest::hash_digest_set(&digest_input)
-                .map_err(|_| "no digest algorithms available")?;
+            *digests = file_hash(&digest_input).map_err(|_| "no digest algorithms available")?;
         }
     }
 
     Ok(())
 }
 
-/// Encode a manifest, sign it, and return a fixed-format signed manifest envelope.
-fn sign_manifest<F>(manifest: &ImageManifest, sign: &F) -> Result<Vec<u8>, String>
+/// Empty pure zero-fill segments have no content digest.
+fn segment_hash(bytes: &[u8]) -> [u8; 32] {
+    if bytes.is_empty() {
+        [0; 32]
+    } else {
+        digest::hash_sha256(bytes)
+    }
+}
+fn file_hash(bytes: &[u8]) -> Result<fstart_core::ffs::DigestSet, digest::DigestError> {
+    Ok(fstart_core::ffs::DigestSet {
+        sha256: Some(digest::hash_sha256(bytes)),
+        sha3_256: None,
+    })
+}
+
+fn sign_root<F>(
+    manifest: &ImageManifest,
+    config: &BootRootConfig,
+    directory_offset: u32,
+    directory: &[u8],
+    keys: &[VerificationKey],
+    sign: &F,
+) -> Result<Vec<u8>, String>
 where
     F: Fn(&[u8]) -> Result<Signature, String>,
 {
-    let manifest_bytes = crate::manifest::encode_manifest(manifest)?;
-    let signature = sign(&manifest_bytes)?;
-    crate::manifest::encode_signed_manifest(&manifest_bytes, &signature)
+    let mut descriptors = [None; 2];
+    for (i, (name, role)) in config.bootstrap.iter().enumerate() {
+        let count = manifest
+            .regions
+            .iter()
+            .map(|r| match &r.content {
+                RegionContent::Container { children } => {
+                    children.iter().filter(|e| e.name.as_str() == name).count()
+                }
+                _ => 0,
+            })
+            .sum::<usize>();
+        if count != 1 {
+            return Err(format!("bootstrap '{name}' must identify exactly one file"));
+        }
+        let (region, entry) = manifest
+            .regions
+            .iter()
+            .find_map(|r| {
+                if let RegionContent::Container { children } = &r.content {
+                    children
+                        .iter()
+                        .find(|e| e.name.as_str() == name)
+                        .map(|e| (r, e))
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| format!("bootstrap file '{name}' missing"))?;
+        let EntryContent::File {
+            file_type: FileType::StageCode,
+            segments,
+            ..
+        } = &entry.content
+        else {
+            return Err(format!("bootstrap '{name}' is not stage code"));
+        };
+        if segments.len() != 1 {
+            return Err(format!("bootstrap '{name}' must be a flat image"));
+        }
+        let seg = &segments[0];
+        if !seg.flags.execute || seg.initialized_size != seg.loaded_size {
+            return Err(format!(
+                "bootstrap '{name}' must contain initialized executable bytes only"
+            ));
+        }
+        let descriptor = BootstrapDescriptor {
+            role: *role,
+            compression: seg.compression,
+            offset: u64::from(region.offset) + u64::from(entry.offset) + u64::from(seg.offset),
+            stored_size: u64::from(seg.stored_size),
+            loaded_size: u64::from(seg.initialized_size),
+            load_addr: seg.load_addr,
+            entry_offset: 0,
+            // Stable compressed buffer + distinct decoder destination; no overlap.
+            scratch_size: if seg.compression == Compression::Lz4 {
+                u64::from(seg.stored_size) + u64::from(seg.initialized_size)
+            } else {
+                0
+            },
+            stored_digest: seg.stored_digest,
+            loaded_digest: seg.loaded_digest,
+        };
+        descriptor
+            .validate(u64::MAX)
+            .map_err(|e| format!("invalid bootstrap '{name}': {e:?}"))?;
+        descriptors[i] = Some(descriptor);
+    }
+    let key = keys.first().ok_or("boot root requires an Ed25519 key")?;
+    if key.signature_kind() != Some(fstart_core::ffs::SignatureKind::Ed25519) {
+        return Err("boot root revision 1 requires Ed25519; ECDSA roots unsupported".into());
+    }
+    let mut root = Root {
+        security_version: config.security_version,
+        image_family: config.image_family,
+        key_id: u32::from(key.key_id),
+        descriptors,
+        directory: DirectoryRef {
+            offset: u64::from(directory_offset),
+            size: directory.len() as u64,
+            digest: digest::hash_sha256(directory),
+        },
+        signature: [0; 64],
+    };
+    let bytes = root.encode();
+    let signature = sign(&bytes[..SIGNED_SIZE])?;
+    if signature.kind != fstart_core::ffs::SignatureKind::Ed25519 || signature.key_id != key.key_id
+    {
+        return Err("root signer must use the selected Ed25519 key".into());
+    }
+    fstart_crypto::verify::verify_signature(&bytes[..SIGNED_SIZE], &signature, key)
+        .map_err(|e| format!("root signer verification: {e:?}"))?;
+    root.signature = signature.signature_bytes();
+    Ok(root.encode().to_vec())
 }
 
-/// Verify that an LZ4-compressed segment can be safely decompressed in-place.
-///
-/// Follows coreboot's cbfstool approach: simulate the in-place decompression
-/// at build time. The compressed data is placed at the **end** of the output
-/// buffer, then the decompressor writes from the beginning.
-/// The decompressor reads from the tail while writing from the head; as long
-/// as the buffer is large enough the write pointer never overtakes the read
-/// pointer.
-///
-/// Returns the minimum contiguous buffer size (`in_place_size`) needed at
-/// the load address, or an error if in-place decompression is not possible.
-///
-/// The worst-case margin is `8 + loaded_size / 255` bytes (from the LZ4 block
-/// format: every 255 bytes of incompressible literals adds 1 byte of encoding
-/// overhead, plus an 8-byte wild-copy guard). In practice the margin is much
-/// smaller.
+/// Reserve disjoint compressed input and decoder destination. Do not construct
+/// overlapping Rust slices, even for a decoder with an overlap-aware algorithm.
 fn verify_in_place_lz4(
     compressed: &[u8],
     original_size: usize,
-    seg_name: &str,
-    file_name: &str,
+    _seg_name: &str,
+    _file_name: &str,
 ) -> Result<u32, String> {
-    if compressed.is_empty() || original_size == 0 {
-        return Ok(0);
+    original_size
+        .checked_add(compressed.len())
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| "LZ4 workspace exceeds u32".into())
+}
+
+/// Finalize a non-bootstrap, uncompressed initial stage (pins/ROM headers), then
+/// rebuild its digests, the directory digest and root signature. No other bytes
+/// can be changed by the callback, avoiding stale authenticated descriptors.
+pub fn finalize_initial_stage<F, P>(
+    built: &mut FfsImage,
+    initial_name: &str,
+    patch: P,
+    sign: &F,
+) -> Result<(), String>
+where
+    F: Fn(&[u8]) -> Result<Signature, String>,
+    P: FnOnce(&mut [u8], &Root) -> Result<(), String>,
+{
+    let anchor =
+        unsafe { core::ptr::read_unaligned(built.anchor_bytes.as_ptr().cast::<AnchorBlock>()) };
+    let root_start = anchor.manifest_offset as usize;
+    let mut root = Root::parse(
+        built
+            .image
+            .get(root_start..root_start + ROOT_SIZE)
+            .ok_or("root outside image")?,
+    )
+    .map_err(|e| format!("root parse: {e:?}"))?;
+    let dir_start =
+        usize::try_from(root.directory.offset).map_err(|_| "directory offset overflow")?;
+    let dir_size = usize::try_from(root.directory.size).map_err(|_| "directory size overflow")?;
+    let directory = built
+        .image
+        .get(
+            dir_start
+                ..dir_start
+                    .checked_add(dir_size)
+                    .ok_or("directory range overflow")?,
+        )
+        .ok_or("directory outside image")?;
+    root.directory
+        .verify_bytes(directory)
+        .map_err(|e| format!("directory digest: {e:?}"))?;
+    let mut manifest = crate::manifest::ManifestView::parse(directory)
+        .and_then(|v| v.to_owned_manifest())
+        .map_err(|e| format!("directory: {e:?}"))?;
+    let (start, size) = manifest
+        .regions
+        .iter()
+        .find_map(|region| {
+            let RegionContent::Container { children } = &region.content else {
+                return None;
+            };
+            children
+                .iter()
+                .find(|e| e.name.as_str() == initial_name)
+                .map(|entry| (region, entry))
+        })
+        .ok_or("initial stage missing")
+        .and_then(|(region, entry)| {
+            let EntryContent::File { segments, .. } = &entry.content else {
+                return Err("initial stage not a file");
+            };
+            if segments.len() != 1 || segments[0].compression != Compression::None {
+                return Err("initial stage must be flat and uncompressed");
+            }
+            Ok((
+                region.offset as usize + entry.offset as usize + segments[0].offset as usize,
+                segments[0].stored_size as usize,
+            ))
+        })?;
+    if root
+        .descriptors
+        .iter()
+        .flatten()
+        .any(|d| d.offset < (start + size) as u64 && d.offset + d.stored_size > start as u64)
+    {
+        return Err("cannot finalize a bootstrap target".into());
     }
-
-    // Start with just loaded_size as the buffer size and increase if needed.
-    // The theoretical worst-case overhead is 8 + original_size / 255 bytes,
-    // but we verify empirically because the actual data may need less.
-    let worst_case_margin = 8 + original_size / 255;
-    let max_buf_size = original_size + worst_case_margin;
-
-    // Try progressively larger buffers, starting from just `original_size`
-    let mut buf_size = original_size;
-    loop {
-        // Simulate in-place decompression (coreboot cbfstool approach):
-        // 1. Allocate a buffer of `buf_size` bytes
-        // 2. Copy compressed data to the END of the buffer
-        // 3. Decompress from tail to head
-        //
-        // Rust's borrow checker prevents simultaneous &[..] and &mut [..]
-        // on the same buffer, so we use raw pointers for the simulation,
-        // exactly as the runtime would.
-        let mut buf = vec![0u8; buf_size];
-        let src_offset = buf_size - compressed.len();
-        buf[src_offset..].copy_from_slice(compressed);
-
-        // Use our own overlap-safe decompressor — lz4_flex uses
-        // copy_nonoverlapping internally which panics on overlapping ranges.
-        let result = unsafe {
-            let src = core::slice::from_raw_parts(buf.as_ptr().add(src_offset), compressed.len());
-            let dst = core::slice::from_raw_parts_mut(buf.as_mut_ptr(), original_size);
-            crate::lz4::decompress_block(src, dst)
-        };
-
-        match result {
-            Ok(n) if n == original_size => {
-                return Ok(buf_size as u32);
-            }
-            Ok(_) | Err(_) if buf_size < max_buf_size => {
-                // Not enough scratch space — the in-place guard triggered
-                // (Err) or match copies corrupted unread source data causing
-                // a short decompression (Ok with wrong size). Try a larger
-                // buffer so compressed data sits further from the output.
-                buf_size += (original_size / 255).max(1);
-                if buf_size > max_buf_size {
-                    buf_size = max_buf_size;
-                }
-            }
-            Ok(n) => {
-                return Err(format!(
-                    "LZ4 in-place decompression size mismatch for segment '{}' in \
-                     file '{}': expected {original_size}, got {n} (even with \
-                     worst-case buffer size {max_buf_size})",
-                    seg_name, file_name,
-                ));
-            }
-            Err(_) => {
-                return Err(format!(
-                    "LZ4 in-place decompression failed for segment '{}' in file '{}' \
-                     even with worst-case buffer size ({max_buf_size} bytes = \
-                     {original_size} + {worst_case_margin} margin)",
-                    seg_name, file_name,
-                ));
-            }
-        }
+    patch(
+        built
+            .image
+            .get_mut(start..start + size)
+            .ok_or("initial stage outside image")?,
+        &root,
+    )?;
+    recompute_inline_file_digests(&built.image, &mut manifest, &[start])?;
+    let directory = crate::manifest::encode_manifest(&manifest)?;
+    if directory.len() != dir_size {
+        return Err("directory size changed during finalization".into());
     }
+    built.image[dir_start..dir_start + dir_size].copy_from_slice(&directory);
+    root.directory.digest = digest::hash_sha256(&directory);
+    let signature = sign(&root.encode()[..SIGNED_SIZE])?;
+    if signature.kind != fstart_core::ffs::SignatureKind::Ed25519
+        || u32::from(signature.key_id) != root.key_id
+    {
+        return Err("invalid root signer".into());
+    }
+    root.signature = signature.signature_bytes();
+    built.image[root_start..root_start + ROOT_SIZE].copy_from_slice(&root.encode());
+    Ok(())
+}
+
+fn image_len(image: &[u8]) -> Result<u32, String> {
+    u32::try_from(image.len()).map_err(|_| "image exceeds u32 directory offsets".into())
 }

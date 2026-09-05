@@ -1,15 +1,15 @@
 //! Reusable pieces for board-owned handwritten stage flows.
 
+#[cfg(all(test, feature = "bootstrap"))]
+#[path = "entry_tests.rs"]
+mod entry_tests;
+
 use fstart_core::ffs::{ANCHOR_SIZE, FileType};
 use fstart_core::services::boot::BootLinuxParams;
-#[cfg(feature = "ffs")]
-use fstart_core::services::boot_media::BootMedia;
 use fstart_core::services::boot_media::{BlockDeviceMedia, LinearMap, MemoryMapped};
 use fstart_core::services::{BlockDevice, ServiceError};
 
-/// Firmware filesystem stored behind a block device such as MMC or SPI flash.
-const BLOCK_FFS_MANIFEST_MAX_SIZE: usize = 16 * 1024;
-
+#[cfg_attr(not(feature = "ffs"), allow(dead_code))]
 #[repr(align(8))]
 struct AlignedAnchorBytes([u8; ANCHOR_SIZE]);
 
@@ -18,8 +18,6 @@ pub struct BlockDeviceFfs {
     media_offset: u64,
     anchor: Option<AlignedAnchorBytes>,
     ffs_size: usize,
-    // ponytail: bounded mainstage-owned manifest buffer; grow only if an image exceeds 16 KiB.
-    manifest: [u8; BLOCK_FFS_MANIFEST_MAX_SIZE],
 }
 
 #[cfg_attr(not(feature = "ffs"), allow(dead_code))]
@@ -31,7 +29,6 @@ impl BlockDeviceFfs {
             media_offset,
             anchor: None,
             ffs_size: 0,
-            manifest: [0; BLOCK_FFS_MANIFEST_MAX_SIZE],
         }
     }
 
@@ -128,11 +125,7 @@ impl BlockDeviceFfs {
                 .map_err(|_| ServiceError::NotInitialized)?;
             let entry = crate::load_file_segments_from_media(&media, &file, image_size)
                 .ok_or(ServiceError::NotInitialized)?;
-            if crate::verify_loaded_file_digests(&file) {
-                Ok(entry)
-            } else {
-                Err(ServiceError::NotInitialized)
-            }
+            Ok(entry)
         }
 
         #[cfg(not(feature = "ffs"))]
@@ -143,31 +136,15 @@ impl BlockDeviceFfs {
     }
 
     #[cfg(feature = "ffs")]
-    fn manifest_view<B>(&mut self, block: &B) -> Result<fstart_ffs::ManifestView<'_>, ServiceError>
+    fn manifest_view<B>(&self, block: &B) -> Result<fstart_ffs::ManifestView<'static>, ServiceError>
     where
         B: BlockDevice,
     {
-        let anchor_bytes = &self.anchor.as_ref().ok_or(ServiceError::NotInitialized)?.0;
-        // SAFETY: AlignedAnchorBytes provides AnchorBlock alignment and mount()
-        // filled all ANCHOR_SIZE bytes from a validated anchor.
-        let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }
-            .map_err(|_| ServiceError::NotInitialized)?;
-        let size = anchor.manifest_size() as usize;
-        if size == 0 || size > self.manifest.len() {
-            return Err(ServiceError::InvalidParam);
-        }
+        let anchor = &self.anchor.as_ref().ok_or(ServiceError::NotInitialized)?.0;
         let media = self.media(block)?;
-        let read = media
-            .read_at(
-                anchor.manifest_offset() as usize,
-                &mut self.manifest[..size],
-            )
-            .map_err(|_| ServiceError::IoError)?;
-        if read != size {
-            return Err(ServiceError::IoError);
-        }
-        fstart_ffs::reader::verify_and_manifest_view(&self.manifest[..size], anchor.valid_keys())
-            .map_err(|_| ServiceError::NotInitialized)
+        crate::directory::ensure_context(anchor, &media)
+            .map_err(|_| ServiceError::NotInitialized)?;
+        crate::directory::view(&media).map_err(|_| ServiceError::NotInitialized)
     }
 }
 
@@ -255,16 +232,16 @@ impl BlockDeviceLinuxBoot {
     ) -> Result<(), ServiceError> {
         #[cfg(feature = "fdt")]
         {
-            crate::fdt_prepare_platform(self.dtb_addr, dst_dtb_addr, bootargs, ram_base, ram_size);
+            crate::fdt_prepare_platform(self.dtb_addr, dst_dtb_addr, bootargs, ram_base, ram_size)?;
             self.dtb_addr = dst_dtb_addr;
+            Ok(())
         }
 
         #[cfg(not(feature = "fdt"))]
         {
             let _ = (dst_dtb_addr, bootargs, ram_base, ram_size);
+            Err(ServiceError::NotSupported)
         }
-
-        Ok(())
     }
 
     /// Return whether the kernel payload has been loaded.
@@ -316,6 +293,7 @@ impl MemoryMappedFfs {
         self.base
     }
 
+    #[cfg_attr(not(feature = "ffs"), allow(dead_code))]
     fn media(self) -> MemoryMapped<LinearMap> {
         // SAFETY: callers construct this descriptor from board-declared ROM/flash
         // windows that remain readable for the whole boot flow.
@@ -333,23 +311,27 @@ impl MemoryMappedFfs {
         Ok(())
     }
 
-    /// Verify the FFS manifest/signature policy when the backend is enabled.
+    /// Open the authenticated directory once, after DRAM/allocator setup.
+    /// A verified predecessor context is reused without any root signature.
     pub fn verify(self) -> Result<(), ServiceError> {
-        let media = self.media();
-        crate::sig_verify(crate::fstart_anchor_bytes(), &media);
-        Ok(())
+        #[cfg(feature = "ffs")]
+        {
+            crate::directory::ensure_context(crate::fstart_anchor_bytes(), &self.media())
+                .map_err(|_| ServiceError::NotInitialized)
+        }
+        #[cfg(not(feature = "ffs"))]
+        {
+            Err(ServiceError::NotSupported)
+        }
     }
 
     /// Load one file by FFS type into its packaged load address.
-    pub fn load_file(self, file_type: FileType) -> Result<(), ServiceError> {
+    pub fn load_file(self, file_type: FileType) -> Result<u64, ServiceError> {
         #[cfg(feature = "ffs")]
         {
             let media = self.media();
-            if crate::load_ffs_file_by_type(crate::fstart_anchor_bytes(), &media, file_type) {
-                Ok(())
-            } else {
-                Err(ServiceError::NotInitialized)
-            }
+            crate::load_ffs_file_entry_by_type(&media, file_type)
+                .ok_or(ServiceError::NotInitialized)
         }
 
         #[cfg(not(feature = "ffs"))]
@@ -383,8 +365,8 @@ impl MemoryMappedFfs {
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryMappedLinuxBoot {
     ffs: MemoryMappedFfs,
-    firmware_loaded: bool,
-    kernel_loaded: bool,
+    firmware_addr: u64,
+    kernel_addr: u64,
     dtb_addr: u64,
 }
 
@@ -392,7 +374,7 @@ pub struct MemoryMappedLinuxBoot {
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryMappedUefiBoot {
     ffs: MemoryMappedFfs,
-    firmware_loaded: bool,
+    firmware_addr: u64,
     fdt_addr: u64,
 }
 
@@ -402,7 +384,7 @@ impl MemoryMappedUefiBoot {
     pub const fn new(ffs_base: u64, ffs_size: usize, fdt_addr: u64) -> Self {
         Self {
             ffs: MemoryMappedFfs::new(ffs_base, ffs_size),
-            firmware_loaded: false,
+            firmware_addr: 0,
             fdt_addr,
         }
     }
@@ -425,15 +407,20 @@ impl MemoryMappedUefiBoot {
 
     /// Load board firmware, such as TF-A BL31, from FFS.
     pub fn load_firmware(&mut self) -> Result<(), ServiceError> {
-        self.ffs.load_file(FileType::Firmware)?;
-        self.firmware_loaded = true;
+        self.firmware_addr = self.ffs.load_file(FileType::Firmware)?;
         Ok(())
     }
 
     /// Return whether the firmware blob has been loaded.
     #[must_use]
     pub const fn firmware_loaded(&self) -> bool {
-        self.firmware_loaded
+        self.firmware_addr != 0
+    }
+
+    /// Return the actual verified firmware entry only when it matches trusted
+    /// platform configuration. Callers must use this value, not a loaded flag.
+    pub fn checked_firmware_entry(&self, expected: u64) -> Result<u64, ServiceError> {
+        checked_entry(self.firmware_addr, expected)
     }
 
     /// Borrow the platform FDT as bytes when the bootloader supplied a valid FDT.
@@ -468,8 +455,8 @@ impl MemoryMappedLinuxBoot {
     pub const fn new(ffs_base: u64, ffs_size: usize, dtb_addr: u64) -> Self {
         Self {
             ffs: MemoryMappedFfs::new(ffs_base, ffs_size),
-            firmware_loaded: false,
-            kernel_loaded: false,
+            firmware_addr: 0,
+            kernel_addr: 0,
             dtb_addr,
         }
     }
@@ -492,22 +479,20 @@ impl MemoryMappedLinuxBoot {
 
     /// Load a Linux kernel payload from FFS.
     pub fn load_kernel(&mut self) -> Result<(), ServiceError> {
-        self.ffs.load_file(FileType::Payload)?;
-        self.kernel_loaded = true;
+        self.kernel_addr = self.ffs.load_file(FileType::Payload)?;
         Ok(())
     }
 
     /// Load an override FDT from FFS and make it the current DTB.
     pub fn load_fdt(&mut self, dtb_addr: u64) -> Result<(), ServiceError> {
-        self.ffs.load_file(FileType::Fdt)?;
-        self.dtb_addr = dtb_addr;
+        let actual = self.ffs.load_file(FileType::Fdt)?;
+        self.dtb_addr = checked_entry(actual, dtb_addr)?;
         Ok(())
     }
 
     /// Load firmware, such as OpenSBI or BL31, and then the Linux kernel.
     pub fn load_firmware_and_kernel(&mut self) -> Result<(), ServiceError> {
-        self.ffs.load_file(FileType::Firmware)?;
-        self.firmware_loaded = true;
+        self.firmware_addr = self.ffs.load_file(FileType::Firmware)?;
         self.load_kernel()
     }
 
@@ -521,60 +506,82 @@ impl MemoryMappedLinuxBoot {
     ) -> Result<(), ServiceError> {
         #[cfg(feature = "fdt")]
         {
-            crate::fdt_prepare_platform(self.dtb_addr, dst_dtb_addr, bootargs, ram_base, ram_size);
+            crate::fdt_prepare_platform(self.dtb_addr, dst_dtb_addr, bootargs, ram_base, ram_size)?;
             self.dtb_addr = dst_dtb_addr;
+            Ok(())
         }
 
         #[cfg(not(feature = "fdt"))]
         {
             let _ = (dst_dtb_addr, bootargs, ram_base, ram_size);
+            Err(ServiceError::NotSupported)
         }
-
-        Ok(())
     }
 
     /// Return whether the kernel payload has been loaded.
     #[must_use]
     pub const fn kernel_loaded(&self) -> bool {
-        self.kernel_loaded
+        self.kernel_addr != 0
     }
 
     /// Return whether the firmware payload has been loaded.
     #[must_use]
     pub const fn firmware_loaded(&self) -> bool {
-        self.firmware_loaded
+        self.firmware_addr != 0
     }
 
-    /// Build common Linux boot params from board/platform constants.
-    #[must_use]
-    pub const fn boot_params<'a>(
+    /// Validate trusted configured destinations against the entries actually
+    /// loaded and verified. Returned params contain only those actual entries.
+    pub fn checked_boot_params<'a>(
         &self,
         kernel_addr: u64,
         firmware_addr: u64,
         hart_id: u64,
         bootargs: &'a str,
-    ) -> BootLinuxParams<'a> {
-        BootLinuxParams {
-            kernel_addr,
+    ) -> Result<BootLinuxParams<'a>, ServiceError> {
+        let kernel = checked_entry(self.kernel_addr, kernel_addr)?;
+        let firmware = if self.firmware_addr == 0 && firmware_addr == 0 {
+            0
+        } else {
+            checked_entry(self.firmware_addr, firmware_addr)?
+        };
+        Ok(BootLinuxParams {
+            kernel_addr: kernel,
             dtb_addr: self.dtb_addr,
-            fw_addr: firmware_addr,
+            fw_addr: firmware,
             rsdp_addr: 0,
             bootargs,
             e820_entries: &[],
             zero_page_addr: 0,
             hart_id,
             print_x86_mtrrs: false,
-        }
+        })
+    }
+
+    /// Fixed-flow convenience wrapper. A mismatched/unloaded entry halts via
+    /// the stage panic handler; it can never become an unchecked jump address.
+    #[must_use]
+    pub fn boot_params<'a>(
+        &self,
+        kernel_addr: u64,
+        firmware_addr: u64,
+        hart_id: u64,
+        bootargs: &'a str,
+    ) -> BootLinuxParams<'a> {
+        self.checked_boot_params(kernel_addr, firmware_addr, hart_id, bootargs)
+            .expect("payload entry was not loaded and verified at its configured address")
     }
 
     /// Build x86 Linux bzImage boot params, including the zero-page address.
     #[must_use]
-    pub const fn x86_boot_params<'a>(
+    pub fn x86_boot_params<'a>(
         &self,
         kernel_addr: u64,
         zero_page_addr: u64,
         bootargs: &'a str,
     ) -> BootLinuxParams<'a> {
+        let kernel_addr = checked_entry(self.kernel_addr, kernel_addr)
+            .expect("x86 payload entry was not loaded and verified at its configured address");
         BootLinuxParams {
             kernel_addr,
             dtb_addr: 0,
@@ -587,6 +594,13 @@ impl MemoryMappedLinuxBoot {
             print_x86_mtrrs: false,
         }
     }
+}
+
+fn checked_entry(actual: u64, expected: u64) -> Result<u64, ServiceError> {
+    if actual == 0 || actual != expected {
+        return Err(ServiceError::InvalidParam);
+    }
+    Ok(actual)
 }
 
 unsafe fn fdt_total_size(fdt_addr: u64) -> Option<u64> {

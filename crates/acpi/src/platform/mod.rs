@@ -131,6 +131,41 @@ pub fn assemble_and_write(
     device_dsdt_aml: &[u8],
     device_extra_tables: &[Vec<u8>],
 ) -> usize {
+    let data = assemble_for_platform(table_addr, platform, device_dsdt_aml, device_extra_tables);
+    let len = data.len();
+    // SAFETY: the caller supplies a sufficiently large writable physical region.
+    unsafe {
+        core::ptr::copy_nonoverlapping(data.as_ptr(), table_addr as *mut u8, len);
+    }
+    len
+}
+
+/// Assemble into bounded caller-owned storage. No bytes are copied until the
+/// complete table set fits; callers publish RSDP only after this succeeds.
+pub fn assemble_into(
+    bytes: &mut [u8],
+    table_addr: u64,
+    platform: &PlatformConfig,
+    device_dsdt_aml: &[u8],
+    device_extra_tables: &[Vec<u8>],
+) -> Result<usize, crate::AmlError> {
+    table_addr
+        .checked_add(u64::try_from(bytes.len()).map_err(|_| crate::AmlError::LengthOverflow)?)
+        .ok_or(crate::AmlError::LengthOverflow)?;
+    let data = assemble_for_platform(table_addr, platform, device_dsdt_aml, device_extra_tables);
+    let out = bytes
+        .get_mut(..data.len())
+        .ok_or(crate::AmlError::Capacity)?;
+    out.copy_from_slice(&data);
+    Ok(data.len())
+}
+
+fn assemble_for_platform(
+    table_addr: u64,
+    platform: &PlatformConfig,
+    device_dsdt_aml: &[u8],
+    device_extra_tables: &[Vec<u8>],
+) -> Vec<u8> {
     // Delegate to the platform module to build platform-specific
     // tables (MADT, GTDT/HPET) and FADT configuration.
     let (platform_tables, fadt_config) = match platform {
@@ -140,24 +175,13 @@ pub fn assemble_and_write(
         PlatformConfig::X86(cfg) => x86::build_platform_tables(cfg),
     };
 
-    let data = assemble(
+    assemble(
         table_addr,
         &fadt_config,
         &platform_tables,
         device_dsdt_aml,
         device_extra_tables,
-    );
-
-    let len = data.len();
-
-    // SAFETY: table_addr points to writable DRAM reserved for ACPI tables.
-    // The board config guarantees this region is available and does not
-    // overlap with stack, heap, or code.
-    unsafe {
-        core::ptr::copy_nonoverlapping(data.as_ptr(), table_addr as *mut u8, len);
-    }
-
-    len
+    )
 }
 
 /// Assemble a complete ACPI table set into a contiguous buffer.
@@ -423,10 +447,12 @@ pub fn build_dsdt(device_aml: &[u8]) -> Vec<u8> {
             crate::OEM_REVISION,
             |writer| {
                 if !device_aml.is_empty() {
-                    writer.scope("\\_SB_", |writer| writer.raw(device_aml));
+                    writer.scope("\\_SB_", |writer| writer.raw(device_aml))?;
                 }
+                Ok(())
             },
-        );
+        )
+        .expect("DSDT construction failed");
         writer.position()
     };
     bytes.truncate(len);

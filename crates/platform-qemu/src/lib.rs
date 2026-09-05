@@ -6,6 +6,9 @@
 extern crate alloc;
 extern crate ufmt;
 
+#[cfg(feature = "stage")]
+mod boot;
+
 pub mod fw_cfg;
 pub mod sbsa;
 pub mod sifive_u;
@@ -217,7 +220,6 @@ mod stage {
     use fstart_core::services::memory_detect::{E820Entry, E820State};
     use fstart_core::services::{Console, ServiceError};
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::fixed_helpers::MemoryMappedFfs;
     use fstart_stage::payload::{MainstagePayload, X86UefiPayloadContext};
     use fstart_stage::{StageBoard, StageEnvironment};
 
@@ -256,13 +258,6 @@ mod stage {
                 e820: E820State::new(),
                 acpi_rsdp: None,
             })
-        }
-
-        fn firmware(&self) -> MemoryMappedFfs {
-            MemoryMappedFfs::new(
-                self.config.firmware_base,
-                self.config.firmware_size as usize,
-            )
         }
 
         fn init_console<B: QemuQ35Board>(&mut self) -> Result<(), ServiceError> {
@@ -307,8 +302,37 @@ mod stage {
 
         fn mount_boot_media(&self) -> Result<(), ServiceError> {
             fstart_arch::x86_64::enable_boot_media_rom_cache();
-            self.firmware().mount()?;
-            self.firmware().verify()
+            use fstart_core::services::memory_detect::E820Kind;
+            use fstart_stage::boot::MemoryWindow;
+            let mut writable = heapless::Vec::<MemoryWindow, 32>::new();
+            let mut reserved = heapless::Vec::<MemoryWindow, 32>::new();
+            for entry in self.e820.entries() {
+                let window = MemoryWindow {
+                    start: entry.addr,
+                    size: entry.size,
+                };
+                if entry.kind == E820Kind::Ram as u32 {
+                    writable
+                        .push(window)
+                        .map_err(|_| ServiceError::InvalidParam)?;
+                } else {
+                    reserved
+                        .push(window)
+                        .map_err(|_| ServiceError::InvalidParam)?;
+                }
+            }
+            reserved
+                .push(MemoryWindow {
+                    start: crate::QEMU_Q35_PAGE_TABLE_ADDR,
+                    size: crate::QEMU_Q35_PAGE_TABLE_SIZE,
+                })
+                .map_err(|_| ServiceError::InvalidParam)?;
+            crate::boot::install(
+                &writable,
+                &reserved,
+                self.config.firmware_base,
+                self.config.firmware_size,
+            )
         }
     }
 
@@ -351,8 +375,8 @@ mod stage {
         };
         phase("console", || mainstage.init_console::<B>());
         phase("memory_detect", || mainstage.detect_memory_and_tables());
-        phase("bus_scan", || mainstage.init_pci());
         phase("mount_boot_media", || mainstage.mount_boot_media());
+        phase("bus_scan", || mainstage.init_pci());
         phase("finalize", || {
             fstart_log::info!("qemu-q35 ramstage: ready for payload");
             Ok(())
@@ -365,7 +389,9 @@ mod stage {
         where
             B: QemuQ35Board,
         {
-            let _ = env;
+            if !matches!(env, StageEnvironment::Monolithic) {
+                fstart_arch::halt();
+            }
             run_qemu_q35_mainstage::<B>()
         }
     }

@@ -99,6 +99,9 @@ pub const POSTCAR_STASH_ADDR: u64 = 0x2000;
 /// Magic at the start of [`PostcarMtrrStash`] (`"PCST"`).
 pub const POSTCAR_STASH_MAGIC: u32 = 0x5453_4350;
 
+/// Version of the authenticated bootstrap handoff following the MTRR prefix.
+pub const POSTCAR_STASH_VERSION: u32 = 1;
+
 /// Maximum variable-MTRR entries the stash can carry (Core2/Atom have 8;
 /// the table needs 1x low-DRAM WB + ROM WP chunks).
 pub const POSTCAR_STASH_MAX_ENTRIES: usize = 8;
@@ -116,11 +119,10 @@ pub struct PostcarMtrrEntry {
 /// Precomputed post-CAR variable-MTRR table in UC-DRAM scratch.
 ///
 /// The only data (besides ROM constants and hardware registers) that the
-/// postcar entry may depend on after `INVD`. The trailing file fields let
-/// postcar raw-load the ramstage without an FFS parser or crypto: the
-/// bootblock already signature-verified the manifest (ROM-immutable, so the
-/// parse is sound to trust), and the ramstage re-verifies its own bytes
-/// against the manifest before running tables or payloads.
+/// postcar entry may depend on after `INVD`. The fixed MTRR prefix is consumed
+/// by assembly. The versioned tail carries authenticated metadata, not a claim
+/// that the executable has already been loaded: postcar verifies ramstage
+/// before entry. RAM integrity across the transition is a platform assumption.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct PostcarMtrrStash {
@@ -130,20 +132,46 @@ pub struct PostcarMtrrStash {
     pub count: u32,
     /// Raw `(base, mask)` MSR values, programmed in order as MTRR 0..n.
     pub entries: [PostcarMtrrEntry; POSTCAR_STASH_MAX_ENTRIES],
-    /// FFS-image-relative byte offset of the ramstage file's data segment.
-    pub file_offset: u64,
-    /// Stored (possibly compressed) size of that segment.
-    pub stored_size: u64,
-    /// Decompressed size at `load_addr`.
-    pub loaded_size: u64,
-    /// Builder-verified scratch size for in-place LZ4 (`0` when uncompressed).
-    pub in_place_size: u64,
-    /// DRAM address the segment loads to (also the entry point).
-    pub load_addr: u64,
-    /// Compression tag: `0` = none, `1` = LZ4. Anything else halts postcar.
-    pub compression: u32,
-    /// Reserved, must be zero.
-    pub _reserved: u32,
+    /// Must match [`POSTCAR_STASH_VERSION`].
+    pub version: u32,
+    /// Exact size of this ABI structure.
+    pub size: u32,
+    /// Explicit little-endian bootstrap descriptor; arch does not parse FFS.
+    pub descriptor: [u8; 160],
+    /// Authenticated directory reference for mainstage.
+    pub directory: [u8; 64],
+    /// Image family accepted by the initial verifier.
+    pub image_family: [u8; 16],
+    /// Signed security version, not proof of persistent rollback enforcement.
+    pub security_version: u64,
+    /// CPU-visible image window inherited from trusted platform configuration.
+    pub image_base: u64,
+    pub image_size: u64,
+    /// End of the initial low-DRAM window, excluding untrained memory.
+    pub ram_end: u64,
+}
+
+// Assembly consumes only this fixed prefix. Keep Rust/entry offsets coupled.
+const _: () = {
+    assert!(core::mem::offset_of!(PostcarMtrrStash, magic) == 0);
+    assert!(core::mem::offset_of!(PostcarMtrrStash, count) == 4);
+    assert!(core::mem::offset_of!(PostcarMtrrStash, entries) == 8);
+    assert!(core::mem::size_of::<PostcarMtrrStash>() <= 0x1000);
+};
+
+impl PostcarMtrrStash {
+    /// Structural checks only. The trusted predecessor and reserved RAM
+    /// lifetime, not this magic value, establish the handoff's provenance.
+    pub fn valid_header(&self) -> bool {
+        self.magic == POSTCAR_STASH_MAGIC
+            && self.version == POSTCAR_STASH_VERSION
+            && self.size as usize == core::mem::size_of::<Self>()
+            && self.count != 0
+            && self.count as usize <= POSTCAR_STASH_MAX_ENTRIES
+            && self.image_size != 0
+            && self.image_base.checked_add(self.image_size).is_some()
+            && self.ram_end != 0
+    }
 }
 
 /// Tear down Cache-as-RAM non-evict mode.
@@ -157,24 +185,13 @@ pub unsafe fn car_teardown() {
     unsafe { _car_teardown() }
 }
 
-/// Raw ramstage location for the [`PostcarMtrrStash`] file fields.
-///
-/// Resolved by the bootblock from the signature-verified manifest; postcar
-/// copies/decompresses these bytes without parsing FFS itself.
+/// Authenticated boot metadata encoded by the image-format layer.
 #[derive(Debug, Clone, Copy)]
-pub struct PostcarFile {
-    /// FFS-image-relative byte offset of the data segment.
-    pub file_offset: u64,
-    /// Stored (possibly compressed) size.
-    pub stored_size: u64,
-    /// Decompressed size at `load_addr`.
-    pub loaded_size: u64,
-    /// Builder-verified scratch size for in-place LZ4 (`0` = uncompressed).
-    pub in_place_size: u64,
-    /// DRAM load address (also the entry point).
-    pub load_addr: u64,
-    /// `true` when the segment is LZ4-compressed.
-    pub compressed: bool,
+pub struct PostcarBootContext {
+    pub descriptor: [u8; 160],
+    pub directory: [u8; 64],
+    pub image_family: [u8; 16],
+    pub security_version: u64,
 }
 
 /// Write the post-CAR MTRR stash to [`POSTCAR_STASH_ADDR`].
@@ -185,8 +202,10 @@ pub struct PostcarFile {
 /// This mirrors the old `postcar_mtrr_setup` layout; the ramstage later
 /// refines MTRRs (fixed, per-CPU) via `setup_ram_wb`.
 ///
-/// `file` carries the ramstage's raw location so postcar loads it without
-/// an FFS parser or crypto (see [`PostcarMtrrStash`] for the trust argument).
+/// `boot` carries the ramstage descriptor and mainstage directory reference.
+/// Postcar hashes the executable before entry without a directory parser or
+/// signature implementation. Returns false without publishing valid magic
+/// if the MTRR program cannot cover the requested window.
 ///
 /// All stores are volatile so they reach DRAM even under CAR-phase MTRRs
 /// (UC), making the stash `INVD`-proof by construction.
@@ -197,8 +216,21 @@ pub struct PostcarFile {
 /// CPU-visible firmware window. Low DRAM below [`POSTCAR_STASH_ADDR`] + table
 /// size must be writable (it always is — the stash sits in conventional
 /// memory).
-pub unsafe fn write_postcar_stash(ram_end: u64, rom_base: u64, rom_size: u64, file: PostcarFile) {
+pub unsafe fn write_postcar_stash(
+    ram_end: u64,
+    rom_base: u64,
+    rom_size: u64,
+    boot: PostcarBootContext,
+) -> bool {
     let stash = POSTCAR_STASH_ADDR as *mut PostcarMtrrStash;
+    // Invalidate an earlier boot's handoff before writing any new fields.
+    unsafe { core::ptr::addr_of_mut!((*stash).magic).write_volatile(0) };
+    let Some(size) = ram_end.checked_next_power_of_two() else {
+        return false;
+    };
+    if ram_end == 0 || rom_size == 0 || rom_base.checked_add(rom_size).is_none() {
+        return false;
+    }
     let mut count = 0usize;
     // Push one raw `(base, mask)` entry; silently drops overflow past the
     // fixed array (the table needs 1x WB + ROM WP chunks — far below 8).
@@ -214,7 +246,7 @@ pub unsafe fn write_postcar_stash(ram_end: u64, rom_base: u64, rom_size: u64, fi
     };
 
     // Low DRAM: single WB MTRR, next power of two covering ram_end.
-    let size = ram_end.next_power_of_two().max(0x0010_0000);
+    let size = size.max(0x0010_0000);
     let (base, mask) = mtrr::encode_variable(0, size, mtrr::MTRR_TYPE_WRITE_BACK);
     push(&mut count, base, mask);
 
@@ -229,19 +261,30 @@ pub unsafe fn write_postcar_stash(ram_end: u64, rom_base: u64, rom_size: u64, fi
         remaining -= size;
     }
 
+    if remaining != 0 {
+        return false;
+    }
     // SAFETY: stash points at writable low DRAM per the caller's contract.
     unsafe {
+        for index in count..POSTCAR_STASH_MAX_ENTRIES {
+            core::ptr::addr_of_mut!((*stash).entries[index])
+                .write_volatile(PostcarMtrrEntry::default());
+        }
         core::ptr::addr_of_mut!((*stash).count).write_volatile(count as u32);
-        core::ptr::addr_of_mut!((*stash).file_offset).write_volatile(file.file_offset);
-        core::ptr::addr_of_mut!((*stash).stored_size).write_volatile(file.stored_size);
-        core::ptr::addr_of_mut!((*stash).loaded_size).write_volatile(file.loaded_size);
-        core::ptr::addr_of_mut!((*stash).in_place_size).write_volatile(file.in_place_size);
-        core::ptr::addr_of_mut!((*stash).load_addr).write_volatile(file.load_addr);
-        core::ptr::addr_of_mut!((*stash).compression).write_volatile(u32::from(file.compressed));
-        core::ptr::addr_of_mut!((*stash)._reserved).write_volatile(0);
-        // Magic last: the postcar entry validates it before trusting anything.
+        core::ptr::addr_of_mut!((*stash).version).write_volatile(POSTCAR_STASH_VERSION);
+        core::ptr::addr_of_mut!((*stash).size)
+            .write_volatile(core::mem::size_of::<PostcarMtrrStash>() as u32);
+        core::ptr::addr_of_mut!((*stash).descriptor).write_volatile(boot.descriptor);
+        core::ptr::addr_of_mut!((*stash).directory).write_volatile(boot.directory);
+        core::ptr::addr_of_mut!((*stash).image_family).write_volatile(boot.image_family);
+        core::ptr::addr_of_mut!((*stash).security_version).write_volatile(boot.security_version);
+        core::ptr::addr_of_mut!((*stash).image_base).write_volatile(rom_base);
+        core::ptr::addr_of_mut!((*stash).image_size).write_volatile(rom_size);
+        core::ptr::addr_of_mut!((*stash).ram_end).write_volatile(ram_end);
+        // Magic last: structural validity is checked before consuming the ABI.
         core::ptr::addr_of_mut!((*stash).magic).write_volatile(POSTCAR_STASH_MAGIC);
     }
+    true
 }
 
 fn highest_power_of_two_le(value: u64) -> u64 {

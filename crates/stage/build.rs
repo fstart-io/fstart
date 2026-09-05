@@ -4,6 +4,9 @@
 //! forwards optional target environment variables for shared stage support code.
 
 fn main() {
+    println!(
+        "cargo:rustc-check-cfg=cfg(fstart_stage_env, values(\"car\", \"ram\", \"postcar\", \"monolithic\"))"
+    );
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_NAME");
     println!("cargo:rerun-if-env-changed=FSTART_STAGE_ENV");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_COREBOOT_HEADER");

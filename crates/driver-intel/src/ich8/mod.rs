@@ -2360,6 +2360,7 @@ mod acpi_impl {
     fn root_prt_scope_aml() -> Vec<u8> {
         let prt = root_prt_aml();
         fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &prt)
+            .expect("ICH8 required PCI routing scope emission failed")
     }
 
     fn root_prt_aml() -> Vec<u8> {
@@ -2383,7 +2384,8 @@ mod acpi_impl {
         package_body.extend(entries);
         let mut bytes = Vec::with_capacity(package_body.len() + 8);
         bytes.extend_from_slice(&[0x08, b'_', b'P', b'R', b'T', 0x12]);
-        let (length, width) = fstart_acpi::aml_linker::package_length(package_body.len());
+        let (length, width) = fstart_acpi::aml_linker::package_length(package_body.len())
+            .expect("ICH8 routing package exceeds AML length limit");
         bytes.extend_from_slice(&length[..width]);
         bytes.extend(package_body);
         bytes
@@ -2416,7 +2418,8 @@ mod acpi_impl {
             }
         }
         entries.push(0x12); // PackageOp
-        let (length, width) = fstart_acpi::aml_linker::package_length(body.len());
+        let (length, width) = fstart_acpi::aml_linker::package_length(body.len())
+            .expect("ICH8 routing entry exceeds AML length limit");
         entries.extend_from_slice(&length[..width]);
         entries.extend(body);
     }

@@ -2,8 +2,8 @@
 
 use fstart_core::services::DeviceError;
 
-use super::regs::{HIFIVE_UNMATCHED_DENALI_CTL, HIFIVE_UNMATCHED_DENALI_PHY};
 use super::FU740_DRAM_BASE;
+use super::regs::{HIFIVE_UNMATCHED_DENALI_CTL, HIFIVE_UNMATCHED_DENALI_PHY};
 use crate::config::{Fu740DdrConfig, Fu740DdrProfile};
 
 const FU740_DDR_CTL_BASE: u64 = 0x100b_0000;

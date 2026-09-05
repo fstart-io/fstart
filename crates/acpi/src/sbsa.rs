@@ -333,10 +333,12 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
         }
     };
     let mut uart_aml = Vec::new();
-    uart_fragment.emit(&mut uart_aml);
+    uart_fragment
+        .emit(&mut uart_aml)
+        .expect("invalid SBSA ACPI operands");
 
     // --- AHC0: AHCI ---
-    let ahci_base = config.ahci_base as u32;
+    let ahci_base = config.ahci_base;
     let ahci_gsiv = config.ahci_gsiv;
     let ahci_fragment = fstart_acpi_macros::acpi_dsl! {
         Device("AHC0") {
@@ -351,7 +353,9 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
         }
     };
     let mut ahci_aml = Vec::new();
-    ahci_fragment.emit(&mut ahci_aml);
+    ahci_fragment
+        .emit(&mut ahci_aml)
+        .expect("invalid SBSA ACPI operands");
 
     // --- USB0: xHCI ---
     let xhci_base = config.xhci_base;
@@ -368,7 +372,9 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
         }
     };
     let mut xhci_aml = Vec::new();
-    xhci_fragment.emit(&mut xhci_aml);
+    xhci_fragment
+        .emit(&mut xhci_aml)
+        .expect("invalid SBSA ACPI operands");
 
     // --- PCI0: PCIe Root Complex ---
     // Keep the SBSA host-bridge contract distinct from the generic PCIe root:
@@ -396,7 +402,9 @@ fn build_dsdt(config: &SbsaConfig) -> Sdt {
         }
     };
     let mut pci_aml = Vec::new();
-    pci_fragment.emit(&mut pci_aml);
+    pci_fragment
+        .emit(&mut pci_aml)
+        .expect("invalid SBSA ACPI operands");
 
     // Combine all device AML bytes and wrap in \_SB scope.
     let mut all_device_aml = Vec::new();

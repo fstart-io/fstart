@@ -149,7 +149,7 @@ mod stage {
 
     #[cfg(feature = "linux")]
     use crate::egon::ffs_total_size_at;
-    use crate::egon::{BootDevice, boot_device_at, next_stage_offset_at, next_stage_size_at};
+    use crate::egon::{BootDevice, boot_device_at};
 
     /// BROM state retained so a Sunxi stage can return to FEL.
     #[cfg(target_arch = "arm")]
@@ -552,61 +552,26 @@ fstart_sunxi_fel_stash:
             return Err(ServiceError::NotSupported);
         }
 
-        let next_stage_offset = u64::from(next_stage_offset_at(sram_base));
-        let next_stage_size = next_stage_size_at(sram_base) as usize;
-        validate_next_stage(config.mainstage_load_addr, next_stage_size, dram_size)?;
-        let offset = H3_EGON_MMC_OFFSET
-            .checked_add(next_stage_offset)
-            .ok_or(ServiceError::InvalidParam)?;
-
         {
             let mut ctx = SunxiEarlyCtx::<H3>::new(&ccu, Some(dram_size));
             hooks.before_handoff(&mut ctx)?;
         }
 
-        let read = fstart_stage::next_stage::read_stage_to_addr(
+        let entry = crate::boot::load_mainstage(
             &mmc0,
-            "mmc0",
-            "main",
-            offset,
+            H3_EGON_MMC_OFFSET,
+            crate::egon::ffs_total_size_at(sram_base) as usize,
+            H3_DRAM_BASE,
+            dram_size,
             config.mainstage_load_addr,
-            next_stage_size,
+            config.handoff_addr,
         )?;
-        if read != next_stage_size {
-            return Err(ServiceError::IoError);
-        }
         fstart_stage::next_stage::serialize_handoff(dram_size, config.handoff_addr)
             .map_err(|_| ServiceError::HardwareError)?;
         #[cfg(target_arch = "arm")]
-        fstart_arch::armv7::jump_to_with_handoff(
-            config.mainstage_load_addr,
-            config.handoff_addr as usize,
-        );
+        fstart_arch::armv7::jump_to_with_handoff(entry, config.handoff_addr as usize);
         #[cfg(target_arch = "aarch64")]
-        fstart_arch::aarch64::jump_to_with_handoff(
-            config.mainstage_load_addr,
-            config.handoff_addr as usize,
-        )
-    }
-
-    fn validate_next_stage(
-        load_addr: u64,
-        size: usize,
-        dram_size: u64,
-    ) -> Result<(), ServiceError> {
-        if size == 0 || !in_h3_dram(load_addr) {
-            return Err(ServiceError::InvalidParam);
-        }
-        let dram_end = H3_DRAM_BASE
-            .checked_add(dram_size)
-            .ok_or(ServiceError::InvalidParam)?;
-        let end = load_addr
-            .checked_add(size as u64)
-            .ok_or(ServiceError::InvalidParam)?;
-        if end > dram_end {
-            return Err(ServiceError::InvalidParam);
-        }
-        Ok(())
+        fstart_arch::aarch64::jump_to_with_handoff(entry, config.handoff_addr as usize)
     }
 
     /// Handwritten H3 DRAM mainstage setup.
@@ -644,6 +609,18 @@ fstart_sunxi_fel_stash:
             config: B::CONFIG,
         };
         fstart_log::info!("h3 mainstage: {} MiB DRAM", mainstage.dram_size() >> 20);
+        #[cfg(feature = "linux")]
+        if crate::boot::install_mainstage_policy(
+            H3_DRAM_BASE,
+            mainstage.dram_size,
+            B::CONFIG.handoff_addr,
+            B::CONFIG.fdt_dst_addr,
+        )
+        .is_err()
+        {
+            fstart_log::error!("sunxi: invalid mainstage memory policy");
+            fstart_arch::halt();
+        }
         B::Payload::boot(mainstage)
     }
 }

@@ -92,13 +92,17 @@ fn fragment_is_const_and_runtime_operands_are_fixed_width() {
             Name("_UID", 0u32);
         }
     };
-    assert_eq!(&LITERAL.bytes[..2], &[0x5b, 0x82]);
+    assert_eq!(&LITERAL.as_bytes()[..2], &[0x5b, 0x82]);
 
     const BASE: u32 = 0x1234;
     const CONST_FRAGMENT: AmlFragment<10, 0> = acpi_dsl! {
         Name("CST", #{const dword BASE + 1});
     };
-    assert!(CONST_FRAGMENT.bytes.ends_with(&0x1235u32.to_le_bytes()));
+    assert!(
+        CONST_FRAGMENT
+            .as_bytes()
+            .ends_with(&0x1235u32.to_le_bytes())
+    );
 
     let const_fragment = acpi_dsl! {
         Name("CST", #{const 0x1234u16});
@@ -107,13 +111,13 @@ fn fragment_is_const_and_runtime_operands_are_fixed_width() {
     };
     assert!(
         const_fragment
-            .bytes
+            .as_bytes()
             .windows(4)
             .any(|bytes| bytes == b"PARN")
     );
     assert!(
         const_fragment
-            .bytes
+            .as_bytes()
             .windows(4)
             .any(|bytes| bytes == b"RHK_")
     );
@@ -129,7 +133,7 @@ fn fragment_is_const_and_runtime_operands_are_fixed_width() {
         Name("QVAL", #{qword qword});
     };
     assert_eq!(
-        fragment.fragment().fixups.map(|fixup| fixup.kind),
+        fragment.fragment().fixups().map(|fixup| fixup.kind()),
         [
             FixupKind::Byte,
             FixupKind::Word,
@@ -138,15 +142,15 @@ fn fragment_is_const_and_runtime_operands_are_fixed_width() {
         ]
     );
     let mut bytes = Vec::new();
-    fragment.emit(&mut bytes);
-    for (fixup, expected) in fragment.fragment().fixups.iter().zip([
+    fragment.emit(&mut bytes).unwrap();
+    for (fixup, expected) in fragment.fragment().fixups().iter().zip([
         &[0x12][..],
         &[0x56, 0x34][..],
         &[0xde, 0xbc, 0x9a, 0x78][..],
         &[0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01][..],
     ]) {
         assert_eq!(
-            &bytes[fixup.offset..fixup.offset + expected.len()],
+            &bytes[fixup.offset()..fixup.offset() + expected.len()],
             expected
         );
     }
@@ -164,15 +168,17 @@ fn runtime_expressions_are_evaluated_once_in_source_order() {
         Name("QVAL", #{qword { let value = values[index]; index += 1; value }});
     };
     assert_eq!(index, values.len());
-    assert_eq!(fragment.operands(), &values);
+    assert_eq!(fragment.operands().unwrap(), &values);
 }
 
 #[test]
-#[should_panic(expected = "runtime AML operand exceeds its declared width")]
 fn runtime_operand_overflow_is_rejected() {
     let too_large = 0x100u16;
     let fragment = acpi_dsl! { Name("OVFL", #{byte too_large}); };
-    fragment.emit(&mut Vec::new());
+    assert_eq!(
+        fragment.emit(&mut Vec::new()),
+        Err(fstart_acpi::AmlError::InvalidOperand)
+    );
 }
 
 #[test]
@@ -201,13 +207,13 @@ fn remaining_operation_and_resource_families_encode() {
     };
     for opcode in [0x8a, 0x70, 0x79, 0x74, 0x72, 0x83, 0x88, 0x86, 0x87] {
         assert!(
-            fragment.bytes.contains(&opcode),
+            fragment.as_bytes().contains(&opcode),
             "missing opcode {opcode:#x}"
         );
     }
     for descriptor in [0x23, 0x87, 0x88, 0x8a] {
         assert!(
-            fragment.bytes.contains(&descriptor),
+            fragment.as_bytes().contains(&descriptor),
             "missing descriptor {descriptor:#x}"
         );
     }
@@ -235,7 +241,7 @@ fn runtime_resource_ranges_and_buffer_operands_are_linked() {
         });
     };
     let mut bytes = Vec::new();
-    fragment.emit(&mut bytes);
+    fragment.emit(&mut bytes).unwrap();
     assert!(
         bytes
             .windows(4)
