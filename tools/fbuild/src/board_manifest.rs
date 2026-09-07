@@ -23,6 +23,8 @@ pub struct BoardManifest {
     pub variants: Vec<(String, Vec<String>)>,
     pub acpi_only_devices: bool,
     pub stage_bin: Option<String>,
+    pub build_profile: Option<crate::resolved::ProfileRef>,
+    pub layout: crate::resolved::Overrides,
 }
 
 // Only fstart's tables are closed. Cargo and other tools own the rest of the
@@ -43,8 +45,8 @@ struct PackageMetadata {
     fstart: BoardMetadata,
 }
 
-/// Schema 1 currently describes discovery, not resolved build geometry.
-/// Layout/profile fields will be added with their consuming resolver.
+/// Discovery and opt-in resolved build metadata. Legacy boards keep their
+/// existing host path until their scope is migrated.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct BoardMetadata {
@@ -59,6 +61,9 @@ struct BoardMetadata {
     #[serde(default)]
     acpi_only_devices: bool,
     stage_bin: Option<String>,
+    build_profile: Option<crate::resolved::ProfileRef>,
+    #[serde(default)]
+    layout: crate::resolved::Overrides,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +177,13 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
             manifest.display(),
         ));
     }
+    if metadata.build_profile.is_none() && metadata.layout != crate::resolved::Overrides::default()
+    {
+        return Err(format!(
+            "layout overrides require build-profile in {}",
+            manifest.display()
+        ));
+    }
     for id in std::iter::once(&metadata.board).chain(metadata.variants.keys()) {
         // Identity becomes an artifact/workspace path component. Do not accept
         // path traversal, separators, whitespace or non-portable spellings.
@@ -208,6 +220,8 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
             .collect(),
         acpi_only_devices: metadata.acpi_only_devices,
         stage_bin: metadata.stage_bin,
+        build_profile: metadata.build_profile,
+        layout: metadata.layout,
     })
 }
 

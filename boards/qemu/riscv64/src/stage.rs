@@ -2,26 +2,11 @@
 
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_qemu::{
-    virt_riscv64::QEMU_RISCV64_UART_BASE, QemuRiscv64Virt, QemuRiscv64VirtBoard,
-    QemuRiscv64VirtConfig, QemuRiscv64VirtHooks,
+    QemuRiscv64VirtBoard, QemuRiscv64VirtConfig, QemuRiscv64VirtHooks,
+    virt_riscv64::QEMU_RISCV64_UART_BASE,
 };
-use fstart_stage::{payload::BuildSelectedPayload, StageBoard, StageEnvironment};
 
 use crate::Board;
-
-impl StageBoard for Board {
-    const NAME: &'static str = crate::BOARD_NAME;
-    const PLATFORM: fstart_core::Platform = crate::PLATFORM;
-
-    fn run_stage(env: StageEnvironment, handoff: usize) -> ! {
-        QemuRiscv64Virt::run_stage::<Self>(env, handoff)
-    }
-
-    #[cfg(feature = "crabefi")]
-    fn resume_sbi(hart_id: u64, dtb_addr: u64) -> ! {
-        QemuRiscv64Virt::resume_sbi::<Self>(hart_id, dtb_addr)
-    }
-}
 
 /// Board-specific seams for the fixed RISC-V virt flow.
 #[derive(Default)]
@@ -31,7 +16,6 @@ impl QemuRiscv64VirtHooks for QemuRiscv64Hooks {}
 
 impl QemuRiscv64VirtBoard for Board {
     type Hooks = QemuRiscv64Hooks;
-    type Payload = BuildSelectedPayload;
 
     const CONFIG: &'static QemuRiscv64VirtConfig = &crate::QEMU_RISCV64_VIRT;
 

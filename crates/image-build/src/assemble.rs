@@ -22,6 +22,7 @@ pub fn assemble(
     board_dir: &Path,
     config: &BoardConfig,
     stage_binaries: &[StageBinary],
+    output_dir: Option<&Path>,
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
     fit_path: Option<&str>,
@@ -265,7 +266,9 @@ pub fn assemble(
     }
     let image_bytes = ffs_image.image;
 
-    let output_dir = workspace_root.join("target").join("ffs");
+    let output_dir = output_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| workspace_root.join("target").join("ffs"));
     fs::create_dir_all(&output_dir).map_err(|e| format!("failed to create output dir: {e}"))?;
 
     let image_path = output_dir.join(format!("{}.ffs", config.name));

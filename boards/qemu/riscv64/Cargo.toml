@@ -9,48 +9,20 @@ publish = false
 schema = 1
 board = "qemu-riscv64"
 platform = "riscv64"
-target = "riscv64gc-unknown-none-elf"
 stage-bin = "fstart-stage"
-features = ["qemu-riscv64"]
+build-profile = { dependency = "fstart-platform-qemu", name = "riscv64-xip" }
 
 [features]
 default = []
-host = ["dep:fbuild", "fstart-platform-qemu/host"]
-runtime = []
-stage = [
-  "runtime",
-  "dep:fstart-driver-uart",
-  "dep:fstart-stage",
-  "fstart-platform-qemu/stage",
-]
-riscv64 = ["fstart-stage?/riscv64", "fstart-platform-qemu/riscv64"]
-ffs = ["fstart-stage?/ffs"]
-bootstrap = ["fstart-stage?/bootstrap"]
-ffs-signature = ["fstart-stage?/ffs-signature"]
-ed25519 = ["fstart-stage?/ed25519"]
-sha2-digest = ["fstart-stage?/sha2-digest"]
-sha3-digest = ["fstart-stage?/sha3-digest"]
-lz4 = ["fstart-stage?/lz4"]
-fdt = ["fstart-stage?/fdt"]
-linux = ["fstart-stage?/linux", "fstart-platform-qemu/linux"]
-crabefi = ["fstart-stage?/crabefi", "fstart-platform-qemu/crabefi"]
-fit = ["fstart-stage?/fit"]
-handoff = ["fstart-stage?/handoff"]
-qemu-riscv64 = []
+stage = ["dep:fstart-driver-uart", "dep:fstart-stage"]
 
 [dependencies]
 fstart-core = { path = "../../../crates/core" }
-fstart-platform-qemu = { path = "../../../crates/platform-qemu" }
+fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
 fstart-driver-uart = { path = "../../../crates/driver-uart", optional = true }
-fstart-stage = { path = "../../../crates/stage", optional = true }
-fbuild = { path = "../../../tools/fbuild", optional = true }
+fstart-stage = { path = "../../../crates/stage", default-features = false, optional = true }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
 required-features = ["stage"]
-
-[[bin]]
-name = "fstart-host"
-path = "src/host_main.rs"
-required-features = ["host"]

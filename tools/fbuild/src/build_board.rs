@@ -36,6 +36,9 @@ pub fn build_with_parsed(
     parsed: &crate::build_plan::ParsedBoard,
     release: bool,
 ) -> Result<BuildResult, String> {
+    if let Some(resolved) = &parsed.resolved {
+        return crate::resolved_build::build(workspace_root, board_manifest, resolved, release);
+    }
     let config = &parsed.config;
 
     eprintln!("[fstart] board: {}", config.name);
@@ -469,7 +472,7 @@ pub fn workspace_root_pub() -> Result<PathBuf, String> {
     workspace_root()
 }
 
-fn write_flat_binary(elf_path: &Path, bin_path: &Path) -> Result<(), String> {
+pub(crate) fn write_flat_binary(elf_path: &Path, bin_path: &Path) -> Result<(), String> {
     let elf_data = fs::read(elf_path)
         .map_err(|e| format!("failed to read ELF {}: {e}", elf_path.display()))?;
     let load_segments = elf_load_segments(&elf_data, elf_path)?;

@@ -12,14 +12,7 @@ use fstart_pci::{
 };
 use serde::Serialize;
 
-pub const QEMU_RISCV64_FLASH_BASE: u64 = 0x2000_0000;
-pub const QEMU_RISCV64_FLASH_SIZE: u64 = 0x0200_0000;
-pub const QEMU_RISCV64_STAGE_STACK_SIZE: u32 = 0x10_0000;
-pub const QEMU_RISCV64_STAGE_HEAP_SIZE: u32 = 0x40_000;
-pub const QEMU_RISCV64_STAGE_DATA_ADDR: u64 = 0x8100_0000;
 pub const QEMU_RISCV64_ECAM_BASE: u64 = 0x3000_0000;
-pub const QEMU_RISCV64_OPENSBI_RESERVE_SIZE: u64 = 0x0020_0000;
-pub const QEMU_RISCV64_UEFI_DTB_ADDR: u64 = 0x80f0_0000;
 pub const QEMU_AARCH64_FLASH_BANK_SIZE: u64 = 0x0400_0000;
 pub const QEMU_AARCH64_STAGE_STACK_SIZE: u32 = 0x30_0000;
 pub const QEMU_AARCH64_STAGE_HEAP_SIZE: u32 = 0x10_0000;
@@ -28,7 +21,7 @@ pub const QEMU_ARMV7_STAGE_STACK_SIZE: u32 = 0x40_000;
 pub const QEMU_ARMV7_STAGE_HEAP_SIZE: u32 = 0x40_000;
 pub const QEMU_ARMV7_STAGE_DATA_ADDR: u64 = 0x4020_0000;
 
-/// POD policy shared by the three QEMU virt flows.
+/// Legacy ARM virt policy; RISC-V build geometry is metadata-owned.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QemuVirtConfig {
@@ -174,7 +167,8 @@ impl PciRootProvider for QemuPciRootConfig {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QemuRiscv64VirtConfig {
-    pub common: QemuVirtConfig,
+    pub ram_base: u64,
+    pub bootargs: &'static str,
     pub pci: QemuPciRootConfig,
 }
 
@@ -182,16 +176,8 @@ impl QemuRiscv64VirtConfig {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            common: QemuVirtConfig::new(
-                0x2100_0000,
-                0x0100_0000,
-                0x8000_0000,
-                0x0800_0000,
-                0x87f0_0000,
-                0x8200_0000,
-                0x8010_0000,
-                "console=ttyS0 earlycon=sbi",
-            ),
+            ram_base: 0x8000_0000,
+            bootargs: "console=ttyS0 earlycon=sbi",
             pci: QemuPciRootConfig::new(
                 QEMU_RISCV64_ECAM_BASE,
                 0xff,
@@ -205,7 +191,7 @@ impl QemuRiscv64VirtConfig {
 
     #[must_use]
     pub const fn build(self) -> Self {
-        let _ = self.common.build();
+        assert!(self.ram_base != 0);
         let _ = self.pci.build();
         self
     }
@@ -323,30 +309,6 @@ pub fn qemu_virt_security_config(pubkey_file: &str) -> SecurityConfig {
     }
 }
 
-/// Shared host metadata for the RISC-V QEMU virt platform.
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_riscv64_virt_memory() -> MemoryMap {
-    MemoryMap {
-        regions: hvec([
-            MemoryRegion {
-                name: hstr("flash"),
-                base: QEMU_RISCV64_FLASH_BASE,
-                size: QEMU_RISCV64_FLASH_SIZE,
-                kind: RegionKind::Rom,
-            },
-            MemoryRegion {
-                name: hstr("ram"),
-                base: QemuRiscv64VirtConfig::new().common.ram_base,
-                size: QemuRiscv64VirtConfig::new().common.ram_size,
-                kind: RegionKind::Ram,
-            },
-        ]),
-        flash_layout: None,
-        car: None,
-    }
-}
-
 /// Shared host metadata for the AArch64 QEMU virt platform.
 #[cfg(feature = "host")]
 #[must_use]
@@ -386,32 +348,6 @@ fn qemu_arm_virt_memory(config: &QemuVirtConfig) -> MemoryMap {
         ]),
         flash_layout: None,
         car: None,
-    }
-}
-
-/// Shared Linux payload defaults for RISC-V QEMU virt.
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_riscv64_virt_linux_payload() -> PayloadConfig {
-    let config = QemuRiscv64VirtConfig::new().common;
-    PayloadConfig {
-        kind: PayloadKind::LinuxBoot,
-        kernel_file: Some(hstr("vmlinux")),
-        kernel_load_addr: Some(config.kernel_addr),
-        fdt: FdtSource::Platform,
-        dtb_addr: Some(config.dtb_addr),
-        src_dtb_addr: None,
-        bootargs: Some(hstr(config.bootargs)),
-        print_x86_mtrrs: false,
-        compression: Compression::Lz4,
-        firmware: Some(FirmwareConfig {
-            kind: FirmwareKind::OpenSbi,
-            file: hstr("fw_dynamic.bin"),
-            load_addr: config.firmware_addr,
-        }),
-        fit_file: None,
-        fit_config: None,
-        fit_parse: None,
     }
 }
 
@@ -461,18 +397,6 @@ pub fn qemu_armv7_virt_linux_payload() -> PayloadConfig {
         fit_config: None,
         fit_parse: None,
     }
-}
-
-/// Shared monolithic stage policy for RISC-V QEMU virt.
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_riscv64_virt_stages() -> StageLayout {
-    qemu_virt_stages(
-        QEMU_RISCV64_FLASH_BASE,
-        QEMU_RISCV64_STAGE_STACK_SIZE,
-        QEMU_RISCV64_STAGE_HEAP_SIZE,
-        QEMU_RISCV64_STAGE_DATA_ADDR,
-    )
 }
 
 /// Shared monolithic stage policy for AArch64 QEMU virt.
@@ -528,22 +452,6 @@ fn qemu_virt_stages(
         page_table_addr: None,
         page_size: Default::default(),
     })
-}
-
-/// Shared image policy for the RISC-V QEMU virt platform.
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_riscv64_virt_build_policy() -> BoardBuildPolicy {
-    BoardBuildPolicy {
-        qemu_machine: None,
-        firmware_image: FirmwareImagePolicy::memory_mapped(0x2100_0000, 0x0100_0000),
-        flash_image: Some(FirmwareImagePolicy::memory_mapped(
-            QEMU_RISCV64_FLASH_BASE,
-            QEMU_RISCV64_FLASH_SIZE,
-        )),
-        pci_root_feature: None,
-        cpu_feature: None,
-    }
 }
 
 /// Shared image policy for ARM QEMU virt platforms.

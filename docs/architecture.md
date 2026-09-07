@@ -312,6 +312,12 @@ This revision starts from source revision `38586a3e`; the review's original
 `8009aceb` audit counts are historical. Initial source budgets and fresh command
 results belong in [the migration baseline](architecture-baseline.md).
 
+Current progress: discovery and the QEMU RISC-V vertical slice are integrated,
+including halt/Linux/CrabEFI release boots, metadata-only geometry/relink proof,
+the platform entry adapter, additive-backend checks and selection-aware `check`.
+The bounded editor view and canonical lock prototype remain unproven; workspace
+ownership has not cut over. Other boards retain their previous build path.
+
 1. **Boundary and discovery:** record ownership, selection, descriptor, adapter and
    lock decisions. Replace textual manifest parsing with typed/versioned TOML and
    globally unique board/variant identities. This does not migrate build geometry.

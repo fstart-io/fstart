@@ -14,6 +14,7 @@ use crate::toolchain::TargetSpec;
 pub struct ParsedBoard {
     pub config: BoardConfig,
     pub acpi_only_devices: Vec<AcpiExtraDevice>,
+    pub resolved: Option<crate::resolved::ResolvedBuild>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -499,6 +500,7 @@ mod tests {
         ParsedBoard {
             config,
             acpi_only_devices: Vec::new(),
+            resolved: None,
         }
     }
 
@@ -515,6 +517,8 @@ mod tests {
             variants: Vec::new(),
             acpi_only_devices: false,
             stage_bin: Some("fstart-stage".to_string()),
+            build_profile: None,
+            layout: Default::default(),
         }
     }
 

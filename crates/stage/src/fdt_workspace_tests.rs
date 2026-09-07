@@ -64,6 +64,39 @@ fn malformed_source_ranges_and_small_capacity_fail_before_copy() {
     assert!(prepare_in(config, source_addr, destination_addr, None).is_err());
 }
 
+#[test]
+fn expanded_dtb_is_accepted_only_in_registered_workspace() {
+    #[cfg(feature = "ffs")]
+    crate::loaded::initialize();
+    let mut source = Buffer([0; 16 * 1024]);
+    let mut destination = Buffer([0; 16 * 1024]);
+    source.0[..72].copy_from_slice(&minimal());
+    let source_addr = source.0.as_ptr() as u64;
+    let destination_addr = destination.0.as_mut_ptr() as u64;
+    let config = Workspace {
+        source: MemoryWindow {
+            start: source_addr,
+            size: 72,
+        },
+        destination: MemoryWindow {
+            start: destination_addr,
+            size: 16 * 1024,
+        },
+    };
+    prepare_in(config, source_addr, destination_addr, None).unwrap();
+    // OpenSBI must receive the writable destination, not enlarge the original
+    // source bound when adding DTB properties and updating totalsize.
+    source.0[4..8].copy_from_slice(&112u32.to_be_bytes());
+    assert!(prepare_in(config, source_addr, destination_addr, None).is_err());
+    destination.0[4..8].copy_from_slice(&112u32.to_be_bytes());
+    assert_eq!(
+        prepare_in(config, destination_addr, destination_addr, None).unwrap(),
+        72
+    );
+    destination.0[4..8].copy_from_slice(&0x10000u32.to_be_bytes());
+    assert!(prepare_in(config, destination_addr, destination_addr, None).is_err());
+}
+
 #[cfg(feature = "fdt")]
 #[test]
 fn cumulative_patch_growth_is_bounded_before_mutation() {

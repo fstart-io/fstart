@@ -452,7 +452,17 @@ impl StageEnvironment {
     }
 }
 
-/// Static typed firmware board selected by build glue.
+/// Platform-owned entry adapter supplied by a migrated board binary.
+pub trait StageProgram {
+    fn run_stage(handoff: usize) -> !;
+    fn resume_sbi(_hart_id: u64, _dtb_addr: u64) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Static typed firmware board selected by legacy build glue.
 pub trait StageBoard: Sized + 'static {
     /// Stable fstart board name.
     const NAME: &'static str;
@@ -473,6 +483,20 @@ pub trait StageBoard: Sized + 'static {
 /// Declare a board-owned stage entry binary.
 #[macro_export]
 macro_rules! stage_bin {
+    (program: $program:ty) => {
+        #[unsafe(no_mangle)]
+        pub extern "Rust" fn fstart_main(handoff: usize) -> ! {
+            <$program as $crate::StageProgram>::run_stage(handoff)
+        }
+        #[used]
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
+        static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+        #[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn fstart_sbi_resume(hart_id: u64, dtb_addr: u64) -> ! {
+            <$program as $crate::StageProgram>::resume_sbi(hart_id, dtb_addr)
+        }
+    };
     ($board:ty) => {
         #[unsafe(no_mangle)]
         pub extern "Rust" fn fstart_main(handoff_ptr: usize) -> ! {

@@ -339,10 +339,27 @@ impl Riscv64UefiPayload {
             fstart_log::error!("RISC-V UEFI payload: configured OpenSBI entry was not verified");
             fstart_arch::riscv64::halt();
         };
+        // OpenSBI adds DTB properties/reservations. Give it the dedicated
+        // writable workspace, not QEMU's exactly bounded source blob. On
+        // return, copy_fdt_to_workspace accepts growth only within that same
+        // registered capacity; do not relax the original source bound.
+        let Ok(used) = crate::copy_fdt_to_workspace(boot.fdt_addr(), config.dtb_addr) else {
+            fstart_log::error!("RISC-V UEFI payload: bounded FDT preparation failed");
+            fstart_arch::riscv64::halt();
+        };
+        let capacity = crate::fdt_workspace::destination().map_or(0, |r| r.size);
+        // Keep working room for the supported OpenSBI image's DTB fixups.
+        if (used as u64)
+            .checked_add(8192)
+            .is_none_or(|end| end > capacity)
+        {
+            fstart_log::error!("RISC-V UEFI payload: insufficient FDT workspace slack");
+            fstart_arch::riscv64::halt();
+        }
         fstart_arch::riscv64::boot_sbi(
             entry,
             fstart_arch::riscv64::boot_hart_id(),
-            boot.fdt_addr(),
+            config.dtb_addr,
             &info,
         )
     }

@@ -32,14 +32,13 @@ pub use virt::{
 pub use virt::{
     qemu_aarch64_virt_linux_payload, qemu_aarch64_virt_memory, qemu_aarch64_virt_stages,
     qemu_arm_virt_build_policy, qemu_armv7_virt_linux_payload, qemu_armv7_virt_memory,
-    qemu_armv7_virt_stages, qemu_riscv64_virt_build_policy, qemu_riscv64_virt_linux_payload,
-    qemu_riscv64_virt_memory, qemu_riscv64_virt_stages,
+    qemu_armv7_virt_stages,
 };
 #[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
 pub mod virt_aarch64;
 #[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]
 pub mod virt_armv7;
-#[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
+#[cfg(all(feature = "stage", feature = "virt-riscv64", target_arch = "riscv64"))]
 pub mod virt_riscv64;
 
 #[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
@@ -57,9 +56,10 @@ pub use virt_aarch64::{
 pub use virt_armv7::{
     QemuArmv7Virt, QemuArmv7VirtBoard, QemuArmv7VirtHooks, QemuArmv7VirtMainstage,
 };
-#[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
+#[cfg(all(feature = "stage", feature = "virt-riscv64", target_arch = "riscv64"))]
 pub use virt_riscv64::{
-    QemuRiscv64Virt, QemuRiscv64VirtBoard, QemuRiscv64VirtHooks, QemuRiscv64VirtMainstage,
+    QemuRiscv64Program, QemuRiscv64Virt, QemuRiscv64VirtBoard, QemuRiscv64VirtHooks,
+    QemuRiscv64VirtMainstage,
 };
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod q35;

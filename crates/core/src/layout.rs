@@ -38,6 +38,11 @@ pub enum RegionKind {
     Flash = 5,
     /// Additional physical exclusion, such as a handoff buffer.
     Reserved = 6,
+    /// CPU-mapped firmware filesystem partition within flash.
+    Firmware = 7,
+    Payload = 8,
+    PayloadFirmware = 9,
+    DeviceTree = 10,
 }
 
 impl RegionKind {
@@ -49,6 +54,10 @@ impl RegionKind {
             4 => Ok(Self::Heap),
             5 => Ok(Self::Flash),
             6 => Ok(Self::Reserved),
+            7 => Ok(Self::Firmware),
+            8 => Ok(Self::Payload),
+            9 => Ok(Self::PayloadFirmware),
+            10 => Ok(Self::DeviceTree),
             _ => Err(Error::UnknownRegionKind),
         }
     }
@@ -228,7 +237,7 @@ mod tests {
             (10, 33, Error::InvalidCount),
             (10, 2, Error::InvalidLength),
             (12, 1, Error::ReservedBits),
-            (16, 7, Error::UnknownRegionKind),
+            (16, 11, Error::UnknownRegionKind),
             (18, 1, Error::ReservedBits),
             (35, 0, Error::InvalidRange),
         ] {

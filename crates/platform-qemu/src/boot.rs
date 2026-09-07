@@ -62,6 +62,27 @@ pub(crate) fn from_dtb(
     firmware_base: u64,
     firmware_size: u64,
 ) -> Result<(), ServiceError> {
+    from_dtb_with_layout(
+        dtb_addr,
+        fdt_destination,
+        ram_base,
+        firmware_base,
+        firmware_size,
+        None,
+    )
+}
+
+/// Validate fixed build reservations against actual DTB RAM before installing
+/// the existing authenticated-load policy. Other boards retain the legacy wrapper.
+#[cfg(any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) fn from_dtb_with_layout(
+    dtb_addr: u64,
+    fdt_destination: Option<u64>,
+    ram_base: u64,
+    firmware_base: u64,
+    firmware_size: u64,
+    layout: Option<fstart_core::layout::Layout<'_>>,
+) -> Result<(), ServiceError> {
     use dtoolkit::{Node, Property, fdt::Fdt};
     if dtb_addr < ram_base || dtb_addr & 3 != 0 || usize::try_from(dtb_addr).is_err() {
         return Err(ServiceError::InvalidParam);
@@ -171,6 +192,40 @@ pub(crate) fn from_dtb(
     };
     if !source_policy.permits(source.start, source.size) {
         return Err(ServiceError::InvalidParam);
+    }
+    if let Some(layout) = layout {
+        use fstart_core::layout::RegionKind;
+        let available = MemoryPolicy {
+            writable: &writable,
+            reserved: &reserved,
+            entry_alignment: 4,
+        };
+        for region in layout.regions().filter(|r| {
+            matches!(
+                r.kind,
+                RegionKind::Writable
+                    | RegionKind::Payload
+                    | RegionKind::PayloadFirmware
+                    | RegionKind::DeviceTree
+                    | RegionKind::Reserved
+            )
+        }) {
+            if !available.permits(region.base, region.size) {
+                fstart_log::error!("resolved reservation is outside available RAM");
+                return Err(ServiceError::InvalidParam);
+            }
+        }
+        for region in layout
+            .regions()
+            .filter(|r| matches!(r.kind, RegionKind::Writable | RegionKind::Reserved))
+        {
+            reserved
+                .push(MemoryWindow {
+                    start: region.base,
+                    size: region.size,
+                })
+                .map_err(|_| ServiceError::InvalidParam)?;
+        }
     }
     install(&writable, &reserved, firmware_base, firmware_size)?;
     if let Some(destination) = fdt_destination {

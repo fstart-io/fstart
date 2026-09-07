@@ -62,6 +62,20 @@ enum Command {
         #[arg(short, long)]
         image: String,
     },
+    /// Explain a migrated board's resolved geometry and compiler selection.
+    Explain {
+        board: String,
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
+    },
+    /// Type-check a migrated board using its resolved firmware selection.
+    Check {
+        board: String,
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
+        #[arg(long)]
+        release: bool,
+    },
     Flash {
         #[arg(short, long)]
         board: String,
@@ -81,6 +95,9 @@ enum Command {
 fn dispatch_board_host(board: &str, args: &[String]) -> Result<(), String> {
     let workspace_root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&workspace_root, board)?;
+    if manifest.build_profile.is_some() {
+        return fbuild::board_tool::run_metadata(&manifest, args);
+    }
     let selected_workspace =
         build_board::prepare_selected_board_workspace(&workspace_root, &manifest)?;
     let mut host_features = String::from("host");
@@ -213,6 +230,21 @@ fn board_tool_flash_args(
     args
 }
 
+fn explain(board: &str, payload: Option<PayloadChoice>) -> Result<(), String> {
+    let root = build_board::workspace_root_pub()?;
+    let manifest = board_manifest::find(&root, board)?;
+    let resolved = fbuild::resolved::ResolvedBuild::load(&root, &manifest, payload)?;
+    println!("{}", resolved.json()?);
+    Ok(())
+}
+
+fn check(board: &str, payload: Option<PayloadChoice>, release: bool) -> Result<(), String> {
+    let root = build_board::workspace_root_pub()?;
+    let manifest = board_manifest::find(&root, board)?;
+    let resolved = fbuild::resolved::ResolvedBuild::load(&root, &manifest, payload)?;
+    resolved.check(&root, &manifest, release)
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -259,6 +291,12 @@ fn main() {
             &board_tool_assemble_args("assemble", release, payload, kernel, firmware, fit),
         ),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
+        Command::Explain { board, payload } => explain(&board, payload),
+        Command::Check {
+            board,
+            payload,
+            release,
+        } => check(&board, payload, release),
         Command::Flash {
             board,
             release,

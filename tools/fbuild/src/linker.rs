@@ -12,18 +12,54 @@ use fstart_core::{
 /// region. The region name is linker-owned, not arbitrary board input. BYTE
 /// emission preserves the wire format even on a big-endian target; it creates
 /// real section contents independently of input-section garbage collection.
+/// With LLD it must immediately follow a loaded read-only section: BYTE-only
+/// sections inherit preceding flags, not the MEMORY region's attributes.
 ///
 /// Not wired into legacy layouts: callers must first resolve fixed capacities.
-pub fn layout_section(
-    layout: &fstart_image_build::layout::EncodedLayout,
-    region: &str,
-) -> String {
-    let mut out = String::from("    .fstart.layout : ALIGN(8) {\n        _fstart_layout_start = .;\n");
+pub fn layout_section(layout: &fstart_image_build::layout::EncodedLayout, region: &str) -> String {
+    let mut out =
+        String::from("    .fstart.layout : ALIGN(8) {\n        _fstart_layout_start = .;\n");
     for byte in layout.as_bytes() {
         writeln!(out, "        BYTE({byte:#04x});").unwrap();
     }
     writeln!(out, "        _fstart_layout_end = .;\n    }} > {region}").unwrap();
     out
+}
+
+/// Fixed-budget XIP placement. Image/BSS growth never moves the heap or stack.
+pub fn resolved_xip(layout: &crate::resolved::ResolvedBuild) -> Result<String, String> {
+    let mut out = String::from("OUTPUT_ARCH(riscv)\nENTRY(_start)\n_boot_hart_id = 0;\nMEMORY {\n");
+    for (name, flags, base, size) in [
+        ("ROM", "rx", layout.image.base, layout.image.size),
+        (
+            "RAM",
+            "rw",
+            layout.writable.base,
+            layout.heap.base - layout.writable.base,
+        ),
+        ("HEAP", "rw", layout.heap.base, layout.heap.size),
+        ("STACK", "rw", layout.stack.base, layout.stack.size),
+    ] {
+        writeln!(
+            out,
+            " {name} ({flags}) : ORIGIN = {base:#x}, LENGTH = {size:#x}"
+        )
+        .unwrap();
+    }
+    out.push_str("}\nSECTIONS {\n");
+    write_text_section(&mut out, "ROM");
+    // LLD's BYTE-only sections inherit flags from the preceding section.
+    // Emit immediately after executable text, before potentially writable
+    // keep anchors; MEMORY attributes alone do not clear SHF_WRITE.
+    out.push_str(&layout_section(&layout.descriptor()?, "ROM"));
+    write_anchor_section(&mut out, "ROM", Platform::Riscv64, layout.heap.size);
+    write_rodata_section(&mut out, "ROM");
+    out.push_str(" .data : ALIGN(16) { _data_start = .; *(.data .data.* .ldata .ldata.*) _data_end = .; } > RAM AT > ROM\n _data_load = LOADADDR(.data);\n");
+    write_bss_section(&mut out, "RAM");
+    write_heap(&mut out, layout.heap.size, "HEAP");
+    write_stack(&mut out, layout.stack.size, "STACK");
+    out.push_str(" ASSERT(_bss_end <= ORIGIN(HEAP), \"stage data/BSS exceed resolved capacity\")\n ASSERT(_data_load + SIZEOF(.data) <= ORIGIN(ROM) + LENGTH(ROM), \"stage image exceeds resolved capacity\")\n}\n");
+    Ok(out)
 }
 
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {

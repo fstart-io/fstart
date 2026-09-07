@@ -11,6 +11,12 @@ pub struct BoardCallbacks {
     pub acpi_only_devices: Option<fn() -> Vec<AcpiExtraDevice>>,
 }
 
+#[derive(Clone, Copy)]
+enum Source<'a> {
+    Legacy(BoardCallbacks),
+    Metadata(&'a crate::board_manifest::BoardManifest),
+}
+
 #[derive(Parser)]
 #[command(name = "fstart-board-tool", about = "board-owned fstart build tool")]
 struct Cli {
@@ -93,8 +99,24 @@ macro_rules! board_host_tool {
 }
 
 pub fn main(callbacks: BoardCallbacks) {
-    let cli = Cli::parse();
-    let result = match cli.command {
+    if let Err(err) = dispatch(Cli::parse(), Source::Legacy(callbacks)) {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
+}
+
+/// Run a migrated board directly in fbuild; no board Rust is built on the host.
+pub fn run_metadata(
+    manifest: &crate::board_manifest::BoardManifest,
+    args: &[String],
+) -> Result<(), String> {
+    let cli = Cli::try_parse_from(std::iter::once("fbuild").chain(args.iter().map(String::as_str)))
+        .map_err(|e| e.to_string())?;
+    dispatch(cli, Source::Metadata(manifest))
+}
+
+fn dispatch(cli: Cli, callbacks: Source<'_>) -> Result<(), String> {
+    match cli.command {
         Command::Build { release, payload } => build(callbacks, release, payload).map(|_| ()),
         Command::Run {
             release,
@@ -146,18 +168,29 @@ pub fn main(callbacks: BoardCallbacks) {
             probe.as_deref(),
             base_address.as_deref(),
         ),
-    };
-
-    if let Err(err) = result {
-        eprintln!("error: {err}");
-        std::process::exit(1);
     }
 }
 
 fn load(
-    callbacks: BoardCallbacks,
+    source: Source<'_>,
     payload: Option<PayloadChoice>,
 ) -> Result<(crate::board_manifest::BoardManifest, ParsedBoard), String> {
+    let callbacks = match source {
+        Source::Legacy(callbacks) => callbacks,
+        Source::Metadata(manifest) => {
+            let root = crate::build_board::workspace_root_pub()?;
+            let resolved = crate::resolved::ResolvedBuild::load(&root, manifest, payload)?;
+            let config = resolved.assembler_config(&manifest.board)?;
+            return Ok((
+                manifest.clone(),
+                ParsedBoard {
+                    config,
+                    acpi_only_devices: Vec::new(),
+                    resolved: Some(resolved),
+                },
+            ));
+        }
+    };
     let mut config = (callbacks.board_config)();
     apply_payload_override(&mut config, payload)?;
     config
@@ -179,12 +212,13 @@ fn load(
         ParsedBoard {
             config,
             acpi_only_devices,
+            resolved: None,
         },
     ))
 }
 
 fn build(
-    callbacks: BoardCallbacks,
+    callbacks: Source<'_>,
     release: bool,
     payload: Option<PayloadChoice>,
 ) -> Result<crate::build_board::BuildResult, String> {
@@ -194,7 +228,7 @@ fn build(
 }
 
 fn assemble(
-    callbacks: BoardCallbacks,
+    callbacks: Source<'_>,
     release: bool,
     payload: Option<PayloadChoice>,
     kernel: Option<&str>,
@@ -235,7 +269,7 @@ fn assemble_loaded(
 }
 
 fn flash(
-    callbacks: BoardCallbacks,
+    callbacks: Source<'_>,
     release: bool,
     probe_run: bool,
     chip: Option<&str>,
@@ -350,7 +384,7 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
 }
 
 fn run(
-    callbacks: BoardCallbacks,
+    callbacks: Source<'_>,
     release: bool,
     payload: Option<PayloadChoice>,
     kernel: Option<&str>,

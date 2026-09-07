@@ -6,4 +6,6 @@ pub mod build_plan;
 pub mod linker;
 pub mod payload;
 pub mod qemu;
+pub mod resolved;
+mod resolved_build;
 pub mod toolchain;

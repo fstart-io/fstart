@@ -192,6 +192,13 @@ pub unsafe fn set_load_policy(policy: &MemoryPolicy<'_>) -> Result<(), LoadError
     Ok(())
 }
 
+/// Platform-published writable RAM windows before exclusions. This is a
+/// read-only topology view, not permission to load: callers must still apply
+/// the reserved ranges through the normal load policy.
+pub fn writable_memory() -> Option<&'static [MemoryWindow]> {
+    load_policy().map(|policy| policy.writable)
+}
+
 pub(crate) fn load_policy() -> Option<MemoryPolicy<'static>> {
     // SAFETY: immutable allocations remain owned for the entire stage lifetime.
     let owned = unsafe { POLICY.load(Ordering::Acquire).as_ref() }?;
