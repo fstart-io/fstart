@@ -6,6 +6,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [package.metadata.fstart]
+schema = 1
 board = "orangepi-pc2"
 platform = "aarch64"
 target = "aarch64-unknown-none"

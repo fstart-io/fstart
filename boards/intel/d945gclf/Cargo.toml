@@ -6,6 +6,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [package.metadata.fstart]
+schema = 1
 board = "intel-d945gclf"
 platform = "x86_64"
 target = "x86_64-unknown-none"
