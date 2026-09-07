@@ -76,6 +76,17 @@ enum Command {
         #[arg(long)]
         release: bool,
     },
+    /// Generate an opt-in editor workspace for a resolved firmware selection.
+    Ide {
+        board: String,
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
+        #[arg(long)]
+        release: bool,
+        /// Compare against a disposable all-board build-lock prototype.
+        #[arg(long)]
+        audit_lock: bool,
+    },
     Flash {
         #[arg(short, long)]
         board: String,
@@ -245,6 +256,20 @@ fn check(board: &str, payload: Option<PayloadChoice>, release: bool) -> Result<(
     resolved.check(&root, &manifest, release)
 }
 
+fn ide(
+    board: &str,
+    payload: Option<PayloadChoice>,
+    release: bool,
+    audit_lock: bool,
+) -> Result<(), String> {
+    let root = build_board::workspace_root_pub()?;
+    let manifest = board_manifest::find(&root, board)?;
+    let resolved = fbuild::resolved::ResolvedBuild::load(&root, &manifest, payload)?;
+    let workspace = fbuild::ide::generate(&root, &manifest, &resolved, release, audit_lock)?;
+    println!("{}", workspace.display());
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -292,6 +317,12 @@ fn main() {
         ),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
         Command::Explain { board, payload } => explain(&board, payload),
+        Command::Ide {
+            board,
+            payload,
+            release,
+            audit_lock,
+        } => ide(&board, payload, release, audit_lock),
         Command::Check {
             board,
             payload,

@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use object::read::elf::{ElfFile64, ProgramHeader};
 use object::{Object, ObjectSection, ObjectSymbol};
@@ -16,56 +16,11 @@ fn cargo_stage(
     release: bool,
     checking: bool,
 ) -> Result<Option<PathBuf>, String> {
-    let directory = layout.artifact_dir(root, &board.board, release)?;
-    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    let script = directory.join("link.ld");
-    fs::write(&script, crate::linker::resolved_xip(layout)?).map_err(|e| e.to_string())?;
-    fs::write(directory.join("resolved-build.json"), layout.json()?).map_err(|e| e.to_string())?;
-    // load() already prepared this workspace and resolved its dependencies.
-    let workspace = root.join("target/fstart-workspaces").join(&board.board);
+    let selection = crate::selection::Selection::prepare(root, board, layout, release)?;
+    let directory = &selection.directory;
     let bin = board.stage_bin.as_deref().ok_or("missing stage-bin")?;
-    let payload = if layout.payload == "uefi" {
-        "crabefi"
-    } else {
-        &layout.payload
-    };
-    let mut flags = crate::toolchain::rustflags_for_triple(&layout.target);
-    flags.push_str(&format!(
-        " --cfg fstart_stage_env=\"{}\" --cfg fstart_entry=\"{}\" --cfg fstart_payload=\"{payload}\" --check-cfg=cfg(fstart_stage_env,values(\"monolithic\")) --check-cfg=cfg(fstart_entry,values(\"riscv64\")) --check-cfg=cfg(fstart_payload,values(\"halt\",\"linux\",\"crabefi\")) -Clink-arg=-T{}",
-        layout.env, layout.entry, script.display(),
-    ));
-    if std::env::var_os("FSTART_EXTRA_RUSTFLAGS").is_some() {
-        return Err("resolved builds do not accept unrecorded FSTART_EXTRA_RUSTFLAGS".into());
-    }
-    fs::write(directory.join("rustflags.txt"), &flags).map_err(|e| e.to_string())?;
-    let mut command = Command::new("cargo");
-    command
-        .current_dir(root)
-        .args([
-            if checking { "check" } else { "build" },
-            "--locked",
-            "--message-format=json-render-diagnostics",
-            "--no-default-features",
-        ])
-        .arg("--manifest-path")
-        .arg(workspace.join("Cargo.toml"))
-        .arg("--package")
-        .arg(&board.package)
-        .arg("--bin")
-        .arg(bin)
-        .arg("--target")
-        .arg(&layout.target)
-        .arg("--target-dir")
-        .arg(directory.join("cargo"))
-        .arg("--features")
-        .arg(layout.features.join(","))
-        .args(["-Z", "build-std=core,alloc"])
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env("RUSTFLAGS", flags)
-        .stderr(Stdio::inherit());
-    if release {
-        command.arg("--release");
-    }
+    let mut command = selection.command(!checking);
+    command.current_dir(root).stderr(Stdio::inherit());
     eprintln!(
         "[fstart] resolved build: {} ({}, {})",
         board.board, layout.target, layout.payload

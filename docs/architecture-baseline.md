@@ -93,11 +93,12 @@ cargo run --locked -p fbuild -- run --board qemu-riscv64 --release --payload uef
   --firmware boot-assets/payloads/fw_dynamic.bin
 ```
 
-`explain` and `check` currently require a migrated board. The existing selected
-workspace mechanism remains in use; this does **not** cut over to the canonical
-all-board lock or claim rust-analyzer acceptance. Metadata resolution still
-refreshes a disposable selected-workspace lock; subsequent stage compilation
-uses `--locked`. Unrecorded `FSTART_EXTRA_RUSTFLAGS` is rejected on this path.
+`explain`, `check` and `ide` currently require a migrated board. Compilation still
+uses the existing selected workspace, with a refreshed disposable lock followed
+by `--locked` stage compilation. The editor uses a Cargo-derived JSON graph with
+canonical source paths instead; see [editor usage and acceptance](ide.md).
+Unrecorded `FSTART_EXTRA_RUSTFLAGS` is rejected on this path. Neither the editor
+view nor its optional all-board lock audit changes source workspace ownership.
 
 ## Budgets and observed failures
 
@@ -134,8 +135,9 @@ config warnings remain leads for the compilation-closure cleanup.
 Current checks:
 
 - `cargo test --locked -p fbuild -p fstart-core -p fstart-image-build --lib`:
-  38 passed. Includes deterministic resolution, geometry projection/override,
-  invalid ranges/budgets/selections and direct feature-reference validation.
+  41 passed. Includes deterministic resolution, geometry projection/override,
+  invalid ranges/budgets/selections, direct feature-reference validation, editor
+  unit projection and normalized build-lock graph comparison.
 - `cargo test --locked -p fstart-stage --lib --features ffs,fdt -- --test-threads=1`:
   13 passed. Includes a focused DTB-growth test preserving the source bound while
   accepting bounded growth in the dedicated destination.
@@ -158,15 +160,22 @@ relink-key coverage. Development-run logs are under `target/qemu-boot-tests/`;
 geometry/selection experiment logs are `/tmp/fstart-geometry-proof.log` and
 `/tmp/fstart-selection-proof.log`.
 
-No full board matrix, fresh Intel hardware validation, clean-build benchmark,
-stack high-water measurement or bounded-editor-workspace acceptance is claimed.
+The editor increment passed real-source navigation, proc-macro expansion,
+compiler-diagnostic/error-recovery and payload/profile switching probes. An
+additional 100 temporary inventory boards left its graph unchanged. The all-board
+lock prototype (14 boards / 35 members) agreed with the selected QEMU compiler
+graphs and external pins; it was not promoted. Full evidence and remaining editor
+gates are in [editor usage and acceptance](ide.md).
+
+No full board matrix, fresh Intel hardware validation, clean-build benchmark or
+stack high-water measurement is claimed.
 X61 cold boot remains hardware-validation outstanding. Emulator boots remain
 explicitly development-integrity, not hardware-authenticated boot.
 
 ## Next gates
 
-- Prove the bounded rust-analyzer view, real-source identity, proc macros,
-  diagnostics and target/selection switching before workspace/lock cutover.
+- Extend editor acceptance to cross-ISA/multistage switching, clean regeneration
+  and macro/build-script edit workflows before workspace/lock cutover.
 - Extend resolved entry/layout support to further QEMU targets, proving relocation
   where applicable; then cut over the Intel multistage boundary and reservations.
 - Retain one authoritative path per migrated board. Remaining boards still use

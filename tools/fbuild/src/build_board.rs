@@ -252,6 +252,38 @@ pub fn prepare_selected_board_workspace(
     Ok(selected)
 }
 
+/// Disposable all-board lock prototype. Never replaces the source workspace.
+pub(crate) fn prepare_inventory_workspace(
+    root: &Path,
+    boards: &[crate::board_manifest::BoardManifest],
+) -> Result<PathBuf, String> {
+    let directory = root.join("target/fstart-lock-prototype");
+    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    for name in ["crates", "tools", "boards"] {
+        replace_with_symlink(root.join(name), directory.join(name))?;
+    }
+    replace_with_file_copy(root.join("Cargo.lock"), directory.join("Cargo.lock"))?;
+    let original = fs::read_to_string(root.join("Cargo.toml")).map_err(|e| e.to_string())?;
+    let marker = "members = [";
+    let at = original.find(marker).ok_or("missing workspace members")? + marker.len();
+    let additions = boards
+        .iter()
+        .map(|board| {
+            serde_json::to_string(&format!("boards/{}", board.rel_dir.display()))
+                .map(|path| format!("  {path},\n"))
+        })
+        .collect::<Result<String, _>>()
+        .map_err(|e| e.to_string())?;
+    let manifest = format!("{}\n{}{}", &original[..at], additions, &original[at..]);
+    let manifest = manifest
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("exclude = "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(directory.join("Cargo.toml"), manifest).map_err(|e| e.to_string())?;
+    Ok(directory)
+}
+
 fn replace_with_symlink(target: PathBuf, link: PathBuf) -> Result<(), String> {
     remove_path_if_present(&link)?;
     std::os::unix::fs::symlink(&target, &link).map_err(|e| {
