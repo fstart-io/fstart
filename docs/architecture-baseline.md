@@ -2,7 +2,7 @@
 
 <!-- markdownlint-disable MD013 -->
 
-This tracks the first increment of the [architecture migration](architecture.md).
+This tracks the initial increments of the [architecture migration](architecture.md).
 The starting firmware source is revision `38586a3e`. Values below describe that
 source, not proposed layout defaults or measured stack high-water marks.
 
@@ -79,13 +79,58 @@ No fresh Intel release/hardware result, full board matrix, clean build timing,
 stack high-water measurement or rust-analyzer workspace acceptance is claimed.
 The previous X61 status remains cold-boot hardware validation outstanding.
 
+## Layout wire and linker foundation
+
+The next development increment implements the transport, not the board cutover:
+
+- `crates/core/src/layout.rs`: allocation-free borrowed wire decoder, with a
+  versioned 16-byte header and at most 32 physical range records. It rejects
+  malformed/truncated/trailing bytes, nonzero reserved fields, unknown roles,
+  duplicate singleton roles, empty ranges and overflowing ends. Image, writable,
+  stack, heap and mapped-flash roles are singleton; additional reserved ranges
+  may repeat. Overlap/containment policy belongs to the future resolver.
+- `crates/image-build/src/layout.rs`: immutable host encoding using explicit
+  little-endian fields, validated by the firmware decoder. Independent golden
+  bytes check their agreement; no native struct cast is part of the ABI.
+- `crates/stage/src/layout.rs`: one safe accessor encapsulates the unsafe linker
+  boundary, bounds the length before forming a borrowed slice, and validates it.
+  Migrated linkers must supply initialized, immutable stage-lifetime storage.
+  Missing symbols are a link error, not a fallback to old board constants.
+- `tools/fbuild/src/linker.rs`: descriptor `BYTE` emission for a caller-selected
+  read-only load region. It is not called by the legacy layout generator.
+
+The current linker puts heap/stack after actual linked sections. Those addresses
+are not pre-link reservations. Do not feed them into this descriptor as if a
+fixed-capacity `ResolvedBuild` already existed.
+
+Validation:
+
+- `cargo test --locked -p fstart-core -p fstart-image-build -p fbuild --lib`:
+  34 tests passed.
+- `cargo test --locked -p fstart-stage --lib layout::`: 1 test passed.
+- `cargo run --locked -p fbuild -- build --board qemu-riscv64 --release --payload halt`:
+  release link passed with the new API compiled for the firmware target. The
+  descriptor accessor is not called by that board yet, so this is a build
+  compatibility check, not proof of an integrated descriptor boot.
+- The fbuild test invokes the pinned toolchain's real LLD for little-endian
+  RISC-V and big-endian AArch64. With `--gc-sections`, it checks allocated,
+  file-backed, non-writable descriptor bytes, 8-byte alignment, start/end
+  symbols, and byte-for-byte preservation through the existing PT_LOAD flat
+  extractor. Both outputs decode with the same little-endian wire reader.
+  These are synthetic link fixtures, **not** boot or relocation evidence.
+
+No production board consumes this API yet. This is staged development toward the
+vertical slice, not another authoritative layout model or a completed migration.
+
 ## Next cutover
 
-The next scope is QEMU RISC-V virt's build/runtime vertical slice: platform and
-board layout metadata, host-only `ResolvedBuild`, linker projection, core borrowed
-layout view, stage accessor and assembler consumption. Remove that board's host
-layout discovery path when the slice works. Preserve the existing authenticated
-loading implementation.
+Finish QEMU RISC-V virt's build/runtime vertical slice: platform and board layout
+metadata, host-only `ResolvedBuild` assigning fixed capacity/subranges, then wire
+its linker projection, runtime accessor and assembler inputs together. Prove a
+geometry-only change updates all consumers and forces relinking, validate actual
+ELF ranges against reservations, and boot the migrated image. Remove that board's
+host layout discovery path when the slice works. Preserve the existing
+authenticated loading implementation.
 
 In the same slice, prototype the platform-owned entry adapter, explicit cfg
 selection, additive backend checks and bounded IDE/check view. Do not cut over

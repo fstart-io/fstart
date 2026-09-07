@@ -5,6 +5,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(test)]
+#[path = "layout_linker_tests.rs"]
+mod layout_linker_tests;
+
 struct SmmStageBuild {
     deps_dir: PathBuf,
     link_dir: PathBuf,

@@ -38,6 +38,7 @@ pub mod root;
 pub use fstart_boot::crabefi;
 
 pub mod fixed_helpers;
+pub mod layout;
 pub mod payload;
 
 // Fixed-flow stage helpers moved here so stage build metadata is not a

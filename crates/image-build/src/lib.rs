@@ -1,6 +1,7 @@
 pub mod assemble;
 pub mod image;
 pub mod inspect;
+pub mod layout;
 pub mod smm_image;
 
 use std::path::PathBuf;

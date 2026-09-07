@@ -8,6 +8,24 @@ use fstart_core::{
     StageLayout, effective_stage_load_addr,
 };
 
+/// Emit inside SECTIONS, in the selected stage's initialized read-only load
+/// region. The region name is linker-owned, not arbitrary board input. BYTE
+/// emission preserves the wire format even on a big-endian target; it creates
+/// real section contents independently of input-section garbage collection.
+///
+/// Not wired into legacy layouts: callers must first resolve fixed capacities.
+pub fn layout_section(
+    layout: &fstart_image_build::layout::EncodedLayout,
+    region: &str,
+) -> String {
+    let mut out = String::from("    .fstart.layout : ALIGN(8) {\n        _fstart_layout_start = .;\n");
+    for byte in layout.as_bytes() {
+        writeln!(out, "        BYTE({byte:#04x});").unwrap();
+    }
+    writeln!(out, "        _fstart_layout_end = .;\n    }} > {region}").unwrap();
+    out
+}
+
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
     let mut out = String::new();
 

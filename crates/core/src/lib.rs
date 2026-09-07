@@ -14,6 +14,7 @@ pub mod const_vec;
 pub mod device;
 pub mod ffs;
 pub mod handoff;
+pub mod layout;
 pub mod memory;
 pub mod security;
 pub mod smbios;
