@@ -11,6 +11,47 @@ use fstart_platform_intel::gm965::{
     LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
 };
 
+/// Factory 4-MiB SPI image map, const-validated in the real board source.
+pub const FLASH: fstart_core::IntelIfdFlashLayout = {
+    use fstart_core::{
+        ConstVec, IntelIfdFlashLayout, IntelIfdRegion as Kind, IntelIfdRegionConfig as Region,
+    };
+    const DESCRIPTOR: Region = Region {
+        kind: Kind::Descriptor,
+        offset: 0,
+        size: 0x1000,
+    };
+    IntelIfdFlashLayout::new(
+        ConstVec::new(DESCRIPTOR)
+            .push(DESCRIPTOR)
+            .push(Region {
+                kind: Kind::Gbe,
+                offset: 0x1000,
+                size: 0x2000,
+            })
+            .push(Region {
+                kind: Kind::Me,
+                offset: 0x3000,
+                size: 0x27d000,
+            })
+            .push(Region {
+                kind: Kind::Bios,
+                offset: 0x280000,
+                size: 0x180000,
+            }),
+    )
+};
+
+impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
+    const FACTS: fstart_platform_intel::facts::BoardFacts =
+        fstart_platform_intel::facts::BoardFacts::new(
+            FLASH,
+            0x400000,
+            2,
+            fstart_platform_intel::facts::Chipset::Gm965Ich8,
+        );
+}
+
 pub const BOARD_NAME: &str = "lenovo-x61";
 pub const BOARD_PACKAGE: &str = "fstart-board-lenovo-x61";
 pub const PLATFORM: Platform = Platform::X86_64;

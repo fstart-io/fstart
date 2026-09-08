@@ -662,6 +662,7 @@ dependencies = [
  "fstart-smm",
  "object 0.37.3",
  "rand_core",
+ "serde",
 ]
 
 [[package]]
@@ -694,12 +695,15 @@ dependencies = [
  "fstart-driver-superio",
  "fstart-driver-uart",
  "fstart-ffs",
+ "fstart-image-build",
  "fstart-log",
  "fstart-pci",
+ "fstart-smm",
  "fstart-stage",
  "heapless",
  "konst",
  "serde",
+ "serde_json",
  "ufmt",
 ]
 

@@ -1,9 +1,9 @@
 //! Lenovo ThinkPad X61 mainboard SMM policy.
 
 use fstart_driver_intel::ich8::smm::Ich8SmmHandler;
-use fstart_smm::{SmmBoardHandler, SmmContext, SMM_PLATFORM_INTEL_ICH};
+use fstart_platform_intel::smm::{SMM_PLATFORM_INTEL_ICH, SmmBoardHandler, SmmContext};
 
-use crate::{mainboard::dock, Board};
+use crate::{Board, mainboard::dock};
 
 /// ACPI/SMM command byte for dock connect, shared with generated ACPI.
 pub const SMI_DOCK_CONNECT: u8 = 0x01;
@@ -30,7 +30,7 @@ impl SmmBoardHandler for LenovoX61SmmHandler {
     }
 }
 
-fstart_smm::smm_bin!(
+fstart_platform_intel::smm::smm_bin!(
     Board,
     SMM_PLATFORM_INTEL_ICH,
     Ich8SmmHandler<LenovoX61SmmHandler>

@@ -1,7 +1,9 @@
 pub mod assemble;
 pub mod image;
 pub mod inspect;
+pub mod intel_plan;
 pub mod layout;
+pub mod plan;
 pub mod smm_image;
 
 use std::path::PathBuf;

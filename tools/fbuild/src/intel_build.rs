@@ -22,8 +22,14 @@ pub(crate) fn producer(
     release: bool,
 ) -> Result<BTreeMap<String, String>, String> {
     let config = layout.assembler_config(&board.board)?;
-    let artifacts = crate::build_board::build_smm_artifacts(root, board, release, &config)?
-        .ok_or("Intel ramstage requires an SMM image")?;
+    let artifacts = crate::build_board::build_smm_artifacts(
+        root,
+        board,
+        release,
+        &config,
+        Some(&layout.smm_features),
+    )?
+    .ok_or("Intel ramstage requires an SMM image")?;
     let mut env = BTreeMap::from([(
         "FSTART_SMM_IMAGE".into(),
         artifacts.image_path.display().to_string(),

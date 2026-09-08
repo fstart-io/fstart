@@ -18,11 +18,21 @@ impl ResolvedImage {
         payload: Option<PayloadChoice>,
     ) -> Result<Self, String> {
         let source = crate::profile_source::load_profile(root, board)?;
-        match source.profile["family"].as_str() {
-            Some("intel-car") => {
-                ResolvedIntel::from_profile_source(root, board, payload, source).map(Self::Intel)
+        if board
+            .build_profile
+            .as_ref()
+            .is_some_and(|p| p.name == "rust")
+        {
+            let selection = fstart_image_build::plan::BuildSelection {
+                payload: payload.map(|p| p.as_str().to_owned()),
+            };
+            match crate::host_plan::load(root, &source, &board.variant_features, &selection)? {
+                fstart_image_build::plan::ResolvedPlan::Intel(plan) => {
+                    ResolvedIntel::from_plan(root, board, source, plan).map(Self::Intel)
+                }
             }
-            _ => ResolvedBuild::from_profile_source(board, payload, source).map(Self::Monolithic),
+        } else {
+            ResolvedBuild::from_profile_source(board, payload, source).map(Self::Monolithic)
         }
     }
     pub fn json(&self) -> Result<String, String> {

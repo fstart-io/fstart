@@ -12,6 +12,8 @@ struct PlatformMetadata {
 }
 
 pub(crate) struct ProfileSource {
+    pub workspace: std::path::PathBuf,
+    pub platform: serde_json::Value,
     pub profile: serde_json::Value,
     pub source: String,
     pub platform_manifest: std::path::PathBuf,
@@ -32,7 +34,14 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
             "--format-version=1",
             "--no-default-features",
             "--features",
-            "stage",
+            &if reference.name == "rust" {
+                std::iter::once(format!("{}/host", reference.dependency))
+                    .chain(board.variant_features.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            } else {
+                "stage".into()
+            },
         ])
         .arg("--manifest-path")
         .arg(workspace.join("Cargo.toml"))
@@ -91,6 +100,20 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
         .iter()
         .find(|p| p["id"] == dep["pkg"])
         .ok_or("missing platform package")?;
+    if reference.name == "rust" {
+        return Ok(ProfileSource {
+            workspace,
+            platform: platform.clone(),
+            profile: serde_json::Value::Null,
+            source: format!("{}:Plan<board::Board>", reference.dependency),
+            platform_manifest: platform["manifest_path"]
+                .as_str()
+                .ok_or("missing platform manifest path")?
+                .into(),
+            package: package.clone(),
+            metadata,
+        });
+    }
     let mut declared: PlatformMetadata =
         serde_json::from_value(platform["metadata"]["fstart"].clone())
             .map_err(|e| format!("platform fstart metadata: {e}"))?;
@@ -111,7 +134,10 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
         reference.name
     );
     let package = package.clone();
+    let platform = platform.clone();
     Ok(ProfileSource {
+        workspace,
+        platform,
         profile,
         source,
         platform_manifest,

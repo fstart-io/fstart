@@ -9,15 +9,31 @@
 
 #![allow(clippy::result_unit_err)]
 
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 use fstart_core::services::ServiceError;
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 use fstart_platform_intel::gm965::Gm965Ich8;
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 
 /// Board-specific X61 hooks for the GM965/ICH8 flow.
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 pub struct X61Mainboard;
 
 /// The mainboard contributes ACPI fragments through the same `AcpiDevice`
@@ -37,7 +53,11 @@ mod mainboard_acpi_device {
     }
 }
 
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 impl X61Mainboard {
     #[must_use]
     pub const fn new() -> Self {
@@ -45,7 +65,11 @@ impl X61Mainboard {
     }
 }
 
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
     fn before_console(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
         // Match coreboot's bootblock_mainboard_early_init(): DLPC init and
@@ -587,7 +611,21 @@ mod acpi_impl {
 #[cfg(fstart_stage_env = "ram")]
 pub use acpi_impl::x61_mainboard_dsdt_aml;
 
-#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
+#[cfg(all(
+    any(
+        fstart_stage_env = "car",
+        fstart_stage_env = "postcar",
+        fstart_stage_env = "ram"
+    ),
+    fstart_stage_env = "ram"
+))]
 mod ec;
-#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
+#[cfg(all(
+    any(
+        fstart_stage_env = "car",
+        fstart_stage_env = "postcar",
+        fstart_stage_env = "ram"
+    ),
+    fstart_stage_env = "ram"
+))]
 pub use ec::x61_ec_init;

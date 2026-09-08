@@ -13,8 +13,10 @@ interfaces below are not claims that the cutover is implemented. See
 - Scale to hundreds of platforms and thousands of boards through change locality.
 - New boards on supported hardware change their own directory and, when needed,
   the generated inventory/committed build lock. No central registry.
-- Rust owns hardware policy; Cargo metadata owns build geometry and host inputs.
-  No devicetree, RON, hardware graph or execution-order DSL.
+- Rust owns hardware policy and typed board/image facts; platform Rust derives
+  shared build geometry. Cargo metadata selects identity and the platform export.
+  No devicetree, RON, Cargo hardware schema or execution-order DSL.
+  QEMU retains its existing metadata geometry path until explicitly migrated.
 - Fixed handwritten family flows construct live drivers from static config.
 - Shared IP-block fixes reach all supported variants through one implementation.
 - Unrelated SoCs do not enter an existing board's compilation closure.
@@ -43,8 +45,8 @@ blobs remain deferred; serialization is not a reason to invent a registry.
 
 Typed addresses (`IoAddr<T>`, `MmioAddr<T>`, `Irq`, `Bdf`, `Gpe`) are config data,
 not live backends. Construct register accessors at runtime and retain
-`tock-registers` register/bitfield definitions. Peripheral bases and decode choices
-remain Rust even though executable placement belongs to metadata.
+`tock-registers` register/bitfield definitions. Peripheral bases and decode choices remain Rust. Intel executable placement is
+shared platform policy, not repeated board geometry.
 
 ## Ownership and layering
 
@@ -52,19 +54,19 @@ remain Rust even though executable placement belongs to metadata.
 | --- | --- | --- |
 | DRAM policy, GPIO, pinmux, device config, SMBIOS strings | Board Rust and typed platform defaults | Static config and runtime table builders |
 | Board/variant identity and platform reference | Board Cargo metadata | Discovery, selection, build report |
-| Target, entry mode, stage structure, fixed ROM/SRAM windows and default budgets | Platform build-profile metadata | Resolved build and its projections |
-| Flash geometry and partition map | Board metadata, optionally a platform image profile | Assembler and runtime layout view; no duplicate board `FLASH` |
-| Stage load ranges, stacks, heaps and reservations | Platform profile plus permitted overrides | Linker symbols and runtime descriptor |
+| Target, entry mode, stage structure and default budgets | Platform Rust policy (QEMU still uses profiles) | Resolved build and its projections |
+| Flash chip capacity and partition map | Typed board Rust facts for Intel; existing metadata for QEMU | Host resolver, assembler and linked runtime descriptor |
+| Stage load ranges, stacks, heaps and reservations | Shared platform Rust calculations and real chipset deltas | Linker symbols and runtime descriptor |
 | Detected DRAM and usable memory | Memory-init results | Existing runtime map/handoff, intersected with reservations |
-| Microcode/blob defaults and payload files | Platform/board metadata plus explicit CLI inputs | Host assembler only |
+| Microcode/blob defaults and payload files | Platform Rust / board facts plus explicit CLI inputs (QEMU retains metadata) | Host assembler only |
 | Final offsets, lengths and compression results | Image assembly | Existing image directory/descriptor mechanisms |
 | Hardware initialization order | Platform Rust | Handwritten calls, never a metadata step list |
 
 ```text
 boards/<vendor>/<board>        hardware policy, wiring, hooks, board tables
-    ↓                         metadata: identity, layout overrides, blobs
+    ↓                         metadata: identity and platform export
 platform-<family>              flows, contracts, pairing, vendor entry
-    ↓                         metadata: shared layouts and build selections
+    ↓                         Rust: shared layouts, Cargo stage bundles
  driver-<vendor|class>         IP-block mechanisms and real hardware variants
     ↓
 core / arch / pci / acpi / fdt / image reader / boot / smm
@@ -75,7 +77,8 @@ fbuild + image-build (host)    discover, resolve, link, assemble, explain
 `fstart-stage` owns entry/runtime glue and stage-local layout access. Payload
 launch belongs in `fstart-boot`; image loading stays in existing image facilities.
 The layout wire definition belongs in a small `fstart-core::layout` module, not a
-new crate. Host metadata types belong in fbuild/image-build, not core.
+new crate. Host plan transport and reservation types belong in image-build, not core.
+Platform-specific calculations stay in the platform, not in fbuild.
 
 Crates are compilation/reuse boundaries, not a count target. A new crate needs a
 real host/runtime boundary, independent reuse or target/dependency isolation.
@@ -92,22 +95,35 @@ ambiguous identities. Never compile boards to discover them. Use Cargo metadata
 to resolve the selected package's actual dependency graph and platform package.
 Cache discovery by manifest contents when needed, not by compiling all boards.
 
-Metadata composition is limited to one family layout referenced by a concrete
-platform profile. Resolve family → platform → permitted board overrides →
-permitted variant overrides → explicit CLI inputs. No recursive inheritance,
-arbitrary stage-list override or inferred feature bag. Preserve field origins for
-`fbuild explain`. Validate supported target/entry/payload combinations, direct
-feature references, paths, overflow, overlaps and capacity before compilation.
+Intel/X61 uses `build-profile = { dependency = "fstart-platform-intel", name = "rust" }`.
+The dependency is resolved through Cargo's actual graph (including renames), not
+through a chipset registry in fbuild. The selected board exposes `Board` and
+implements the platform's small host-clean facts trait. Its `const` IFD value
+calls `IntelIfdFlashLayout::new`; the facts constructor checks the separately
+declared physical chip capacity and CPU population. VBT and hardware config
+remain typed board source, active in both firmware and editor graphs.
 
-IFD images import partition geometry through the existing image-format parser
-from a descriptor input, or declare an explicit map from which image-build makes
-the descriptor. Never keep both maps as independent authorities. Non-IFD images
-use explicit geometry. Check supplied blobs against resolved regions.
+The platform's optional host module exports the conventional `Plan<B>::emit(selection_json)`.
+The generated adapter passes an explicit serialized `BuildSelection` argument
+to `platform::Plan::<board::Board>::emit`;
+Cargo owns its dependency graph, build scripts, proc macros and linking. It emits
+image-build's `ResolvedPlan` transport, including the selected target, payload,
+stage units/features and SMM features. Defaults, supported payloads and terminal
+stage assignment belong to platform Rust; fbuild only qualifies Cargo aliases,
+validates references and executes the selected backend. This is not a generated authoring API,
+board host feature/executable or firmware recipe. The Intel family calculates
+common capacities once; the tested i945 comparison changes only the real CAR
+window, without migrating that board's legacy build path.
+
+QEMU still uses the existing family/profile metadata resolver (`profile_source`).
+Do not remove it or silently migrate its schema as part of Intel work. Imported
+IFD/host transport and selected reservations retain checked dynamic validation;
+const authoring is not a reason to skip ELF and assembly validation.
 
 ### One immutable resolved build, three projections
 
 ```text
-manifest discovery + platform profiles + inputs + CLI
+manifest discovery + typed board facts + platform calculation + inputs + CLI
                          ↓
                  ResolvedBuild (host)
                    /     |      \
@@ -187,7 +203,7 @@ Boards remain real Cargo packages with checked-in sources and board-owned bins:
 
 ```text
 boards/<vendor>/<board>/
-  Cargo.toml       identity, platform, geometry overrides, blob inputs, bin
+  Cargo.toml       identity, platform reference, real dependencies/variants, bin
   src/lib.rs       family board contract and hooks
   src/main.rs      shared entry macro with platform-owned adapter
   src/hw.rs        static hardware data
@@ -196,30 +212,26 @@ boards/<vendor>/<board>/
   data/           board blobs
 ```
 
-The target has no board host executable for layout discovery. The current
-`host`/`BoardConfig` path is removed in each migrated scope, not duplicated.
+Intel/X61 has no board host feature or executable. Its generated host adapter
+only calls the shared platform export; the legacy `host`/`BoardConfig` path
+remains solely on unmigrated boards.
 
-Proposed entry contract (to be proved by the first vertical slice):
+Current X61 entry uses a platform-owned adapter and hygienic macro:
 
 ```rust
-// fstart-stage
-pub trait StageProgram {
-    fn run_stage(handoff: usize) -> !;
-}
-
-// platform-intel owns the adapter, so this satisfies Rust's orphan rules.
-pub struct IntelProgram<B>(core::marker::PhantomData<B>);
-impl<B: IntelBoard> fstart_stage::StageProgram for IntelProgram<B> {
-    fn run_stage(handoff: usize) -> ! {
-        crate::run_stage::<B>(handoff)
-    }
-}
-
-// board bin: no forwarding impl or platform → board dependency
-fstart_stage::stage_bin!(
-    fstart_platform_intel::IntelProgram<fstart_board_lenovo_x61::Board>
+fstart_platform_intel::stage_bin!(
+    fstart_platform_intel::gm965::Program<fstart_board_lenovo_x61::Board>
 );
 ```
+
+`Program<B>` implements `fstart_stage::StageProgram` inside its owning platform.
+The board no longer relays `stage`, `runtime`, `smm` or payload Cargo features.
+Platform `bundle-bootblock`, `bundle-postcar`, `bundle-ramstage`, `bundle-smm`
+features activate real shared dependencies. The ramstage bundle includes ACPI,
+MP and SMBIOS; UEFI selects the direct platform dependency's `payload-uefi`.
+Board-imported Lenovo/UART/ACPI-macro drivers remain ordinary direct dependencies.
+SMM uses the platform's shared SMM export and `fstart_stage_env="smm"`; its
+current-artifact-only producer still runs before ramstage and embeds exact bytes.
 
 Do not implement a foreign stage trait for an uncovered generic board type in
 a platform crate. SMM adapters follow the same ownership rule while preserving
@@ -238,7 +250,7 @@ and dynamic plug-in drivers are acceptable after DRAM, not prerequisites for
 fixed hardware. ACPI/FDT contributions live near drivers; board fragments and
 SMBIOS policy stay in board Rust.
 
-ACPI is the normal Intel ramstage policy, owned by the platform profile rather
+ACPI is the normal Intel ramstage policy, owned by the platform ramstage bundle rather
 than a per-board opt-in. Boards supply their table fragments and hooks; any
 Cargo dependency activation needed to compile them is not a board policy
 selector. Hardware initialization (including Lenovo EC/PMH7 bring-up) is
@@ -278,11 +290,33 @@ does not validate electrical behavior or raminit.
 
 ## Cargo lock and editor contract
 
+### Current Intel packaging (not a workspace ownership cutover)
+
+The pre-existing selected-source preparation still copies the root lock and lets
+Cargo metadata resolve it; this change does **not** establish end-to-end
+zero-resolution builds. After that preparation, the host adapter adds exactly
+one deterministic local runner package entry, preserving every prepared package
+entry and pin verbatim. Adapter compilation uses `--locked` and fails closed;
+there is no resolution fallback. No board locks are removed, no audit workspace
+is promoted and no new committed lock authority is introduced. Native linking,
+proc macros, toolchain/profile compatibility and dependency aliases stay Cargo's
+responsibility, not a hand-built rustc driver.
+
+Host and firmware use separate target directories and feature selections. Typed
+board facts are unconditional original-source modules, not host-only cfgs. The
+existing Cargo-derived editor/check views still select one real stage graph.
+Generating a new view needs valid host facts; an already generated view can
+report original-source errors without regenerating the plan. Host compilation
+alone is not evidence of live editor behavior.
+
+### Future workspace cutover (unchanged, separate work)
+
 Keep boards excluded from the root development workspace. The target is one
 **discovered resolution/build workspace** containing all board/runtime packages,
 with one committed `build-support/boards.lock`. Release invocation selects one
-package, not `--workspace`. Generate only workspace/editor config and necessary
-source links, never package manifests or Rust wrappers.
+package, not `--workspace`. Generate workspace/editor config and necessary source links, not board package
+manifests or board-authoring interfaces. The thin shared host adapter described
+above is an executable shim only.
 
 `fbuild lock` intentionally refreshes the committed build lock. Normal builds
 seed the generated workspace lock from it and use `--locked`. The root workspace
@@ -330,12 +364,14 @@ lock prototype agrees with the tested selected compiler graphs. ARMv7 now uses
 that same resolved path, with ELF32 validation, halt/Linux release boots and live
 RISC-V ↔ ARMv7 editor switches passing. AArch64 now has distinct flash-storage,
 RAM-execution and writable reservations, validated relocation extents, and passing
-halt/Linux/CrabEFI release boots. X61 now uses a resolved Intel aggregate through
-fixed stage compilation, assembly and descriptor-backed runtime bounds, without
-its old host executable or geometry helpers. Release halt/UEFI assembly and
-stage-specific editor graphs/checks pass; live multistage editor switching and
-hardware boot remain separate outstanding gates. Workspace ownership has not cut
-over. Other boards retain their previous path.
+halt/Linux/CrabEFI release boots. X61 uses typed board IFD/CPU facts and a shared
+platform host export to produce one resolved Intel aggregate through fixed stage
+compilation, assembly and descriptor-backed runtime bounds, without a board host
+executable or Cargo geometry schema. Release halt/UEFI assembly, stage-specific
+editor graphs/checks, live car → postcar → ram editor switching and original-source
+const-overlap diagnostics pass. Hardware boot and stack high-water measurements
+remain outstanding. Workspace ownership has not cut over; other boards retain
+their previous paths. See [Intel typed-facts acceptance](architecture-intel-typed-facts.md).
 
 1. **Boundary and discovery:** record ownership, selection, descriptor, adapter and
    lock decisions. Replace textual manifest parsing with typed/versioned TOML and
@@ -346,8 +382,8 @@ over. Other boards retain their previous path.
 3. **Cargo/editor proof in that slice:** implement the adapter, direct dependency
    selections, additive payload checks, isolated artifacts, `ide`/`check` and common
    lock prototype. Workspace cutover remains blocked by the gates above.
-4. **Intel build boundary:** prove multistage reservations; remove the superseded
-   host layout path, board `FLASH` and inferred features in the migrated scope.
+4. **Intel build boundary:** prove multistage reservations; replace duplicated
+   metadata geometry with const-validated board facts and shared platform policy.
    Do not rewrite authenticated loading or hardware register sequences.
 5. **Pairing proof:** i945/ICH7 and Pineview/ICH7 share southbridge operations;
    release-build both and preserve available boot evidence.
@@ -373,3 +409,19 @@ Record clean/incremental release time, actual compilation closure, image sizes a
 stack-budget/high-water evidence on representative boards. Source stack budgets
 are not measurements of stack usage. Run affected/representative boards for each
 change and the complete declared release matrix periodically and before releases.
+
+### Intel IFD active-list correction and image safety
+
+The immediate metadata baseline declared descriptor/GbE/ME/BIOS, but its
+`ConstVec::new(first)` conversion failed to push the descriptor into the active
+list. X61's typed constructor explicitly pushes all four regions. This is a
+separate active-list validation bug fix, not byte-identical restoration of the
+old serialized list. Descriptor overlap now participates in validation.
+
+The existing assembler is unchanged: its generated 4-MiB firmware image has
+erased (`0xff`) non-BIOS ranges. It does not contain a populated factory IFD,
+GbE MAC/settings or ME firmware and is not a factory/full-chip backup. **Do not
+blindly flash the entire generated image onto hardware.** This scope adds no
+opaque blob import, manufacture or replacement. Runtime flash geometry still
+comes from the linker-embedded descriptor, never by independently evaluating
+board facts in firmware.

@@ -3,6 +3,25 @@
 #[cfg(feature = "stage")]
 pub use stage::{Gm965Ich8, Gm965Ich8Board, Gm965Ich8Mainstage, run_gm965_ich8_mainstage};
 
+/// Platform-owned adapter for the fixed GM965 stage dispatch.
+#[cfg(feature = "stage")]
+pub struct Program<B>(core::marker::PhantomData<B>);
+#[cfg(feature = "stage")]
+impl<B: Gm965Ich8Board> fstart_stage::StageProgram for Program<B> {
+    fn run_stage(handoff: usize) -> ! {
+        #[cfg(fstart_stage_env = "car")]
+        Gm965Ich8::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
+        #[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
+        Gm965Ich8::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
+        #[cfg(not(any(
+            fstart_stage_env = "car",
+            fstart_stage_env = "postcar",
+            fstart_stage_env = "ram"
+        )))]
+        panic!("GM965 requires a fixed Intel stage selection");
+    }
+}
+
 use fstart_core::ConstVec;
 use fstart_driver_intel::gm965;
 pub use fstart_driver_intel::gm965::{Gm965IgdConfig, IntelGm965Config};

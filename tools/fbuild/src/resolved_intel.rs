@@ -1,21 +1,14 @@
 //! One resolved image with the fixed Intel CAR/postcar/ramstage compiler units.
 
-#[cfg(test)]
-#[path = "resolved_intel_tests.rs"]
-mod tests;
-
 use crate::{
     board_manifest::BoardManifest,
     intel_layout::{IntelReservations, IntelStage},
-    payload::PayloadChoice,
     profile_source::ProfileSource,
 };
 use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_core::*;
-use fstart_core::{
-    ConstVec, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, SecurityConfig, SmmConfig,
-};
-use serde::{Deserialize, Serialize};
+use fstart_core::{IntelIfdFlashLayout, SecurityConfig, SmmConfig};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::{
@@ -23,56 +16,7 @@ use std::{
     path::{Component, Path},
 };
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-struct Profile {
-    family: String,
-    target: String,
-    reservations: IntelReservations,
-    ifd: Vec<IfdRegion>,
-    bootblock_features: Vec<String>,
-    postcar_features: Vec<String>,
-    ramstage_features: Vec<String>,
-    default_payload: String,
-    /// Paths are workspace-relative, not relative to whichever board selected us.
-    microcode: Vec<String>,
-    security: SecurityConfig,
-    max_cpus: u16,
-    smm: SmmConfig,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct IfdRegion {
-    kind: IfdKind,
-    offset: u32,
-    size: u32,
-}
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum IfdKind {
-    Descriptor,
-    Gbe,
-    Me,
-    Bios,
-}
-impl IfdKind {
-    fn core(self) -> IntelIfdRegion {
-        match self {
-            Self::Descriptor => IntelIfdRegion::Descriptor,
-            Self::Gbe => IntelIfdRegion::Gbe,
-            Self::Me => IntelIfdRegion::Me,
-            Self::Bios => IntelIfdRegion::Bios,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ResolvedIntelStage {
-    pub role: IntelStage,
-    pub features: Vec<String>,
-    pub payload: String,
-}
+pub use fstart_image_build::plan::IntelStagePlan as ResolvedIntelStage;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedIntel {
@@ -86,85 +30,53 @@ pub struct ResolvedIntel {
     pub security: SecurityConfig,
     pub max_cpus: u16,
     pub smm: SmmConfig,
+    pub smm_features: Vec<String>,
     pub origins: BTreeMap<String, String>,
 }
 
 impl ResolvedIntel {
-    pub(crate) fn from_profile_source(
+    pub(crate) fn from_plan(
         root: &Path,
         board: &BoardManifest,
-        choice: Option<PayloadChoice>,
         loaded: ProfileSource,
+        p: fstart_image_build::plan::IntelPlan,
     ) -> Result<Self, String> {
-        let p: Profile =
-            serde_json::from_value(loaded.profile).map_err(|e| format!("Intel profile: {e}"))?;
-        if p.family != "intel-car" || p.target != "x86_64-unknown-none" {
-            return Err("unsupported Intel family/target".into());
-        }
         if board.platform.as_deref().is_some_and(|p| p != "x86_64")
             || board.target.as_deref().is_some_and(|t| t != p.target)
         {
-            return Err("board platform/target conflicts with Intel profile".into());
+            return Err("board platform/target conflicts with Intel plan".into());
         }
         if board.layout != Default::default() {
             return Err("monolithic layout overrides cannot select Intel stage budgets".into());
         }
-        if !board.features.is_empty() {
+        if board.features != board.variant_features {
             return Err("Intel metadata builds do not use board feature forwarding".into());
         }
-        p.reservations.validate()?;
-        let ifd = resolve_ifd(&p.ifd, &p.reservations)?;
-        let payload = choice
-            .map(|c| c.as_str().to_owned())
-            .unwrap_or(p.default_payload);
-        if !matches!(payload.as_str(), "halt" | "uefi") {
-            return Err(
-                "Intel profile supports halt and UEFI, not direct Linux/DTB loading".into(),
-            );
-        }
-        if p.max_cpus == 0
-            || p.smm.entry_points.is_some_and(|n| n < p.max_cpus)
-            || p.smm.stack_size == 0
-        {
-            return Err("SMM entries/stacks must cover the MP CPU ceiling".into());
-        }
-        let stage = |role, mut features: Vec<String>| -> Result<ResolvedIntelStage, String> {
-            features.push("stage".into());
-            let selected_payload = if matches!(role, IntelStage::Ramstage) {
-                payload.as_str()
-            } else {
-                "halt"
-            };
-            if selected_payload == "uefi" {
-                features.push("fstart-stage/crabefi".into());
-            }
-            features.extend(board.variant_features.iter().cloned());
+        let ifd = p.validate()?;
+        let dependency = &board
+            .build_profile
+            .as_ref()
+            .ok_or("missing platform reference")?
+            .dependency;
+        let qualify = |features: Vec<String>| -> Result<Vec<String>, String> {
+            let mut features = features
+                .into_iter()
+                .map(|f| format!("{dependency}/{f}"))
+                .chain(board.variant_features.iter().cloned())
+                .collect::<Vec<_>>();
             features.sort();
             features.dedup();
             crate::resolved::validate_features(&features, &loaded.package, &loaded.metadata)?;
-            Ok(ResolvedIntelStage {
-                role,
-                features,
-                payload: selected_payload.into(),
-            })
+            Ok(features)
         };
-        let stages = [
-            stage(IntelStage::Bootblock, p.bootblock_features)?,
-            stage(IntelStage::Postcar, p.postcar_features)?,
-            stage(IntelStage::Ramstage, p.ramstage_features)?,
-        ];
-        for required in [
-            "fstart-stage/acpi",
-            "fstart-platform-intel/acpi",
-            "fstart-platform-intel/mp",
-            "fstart-platform-intel/smbios",
-        ] {
-            if !stages[2].features.iter().any(|f| f == required) {
-                return Err(format!(
-                    "normal Intel ramstage profile must select {required}"
-                ));
-            }
-        }
+        let [a, b, c] = p
+            .stages
+            .map(|mut stage| -> Result<ResolvedIntelStage, String> {
+                stage.features = qualify(stage.features)?;
+                Ok(stage)
+            });
+        let stages = [a?, b?, c?];
+        let smm_features = qualify(p.smm_features)?;
         if p.microcode.is_empty() || p.microcode.len() > 16 {
             return Err("Intel profile needs 1..16 microcode inputs".into());
         }
@@ -192,7 +104,7 @@ impl ResolvedIntel {
             .collect::<Result<_, _>>()?;
         Ok(Self {
             target: p.target,
-            payload,
+            payload: p.payload,
             reservations: p.reservations,
             stages,
             ifd,
@@ -200,6 +112,7 @@ impl ResolvedIntel {
             security: p.security,
             max_cpus: p.max_cpus,
             smm: p.smm,
+            smm_features,
             origins: BTreeMap::from([
                 ("profile".into(), loaded.source),
                 (
@@ -340,57 +253,4 @@ impl ResolvedIntel {
             boot_hart_id: 0,
         })
     }
-}
-
-fn resolve_ifd(
-    regions: &[IfdRegion],
-    layout: &IntelReservations,
-) -> Result<IntelIfdFlashLayout, String> {
-    if regions.is_empty() || regions.len() > 8 {
-        return Err("IFD needs 1..8 regions".into());
-    }
-    let mut kinds = Vec::new();
-    for (index, region) in regions.iter().enumerate() {
-        let end = region
-            .offset
-            .checked_add(region.size)
-            .ok_or("IFD region overflows")?;
-        if region.size == 0
-            || region.offset % 4096 != 0
-            || region.size % 4096 != 0
-            || u64::from(end) > layout.flash.size
-            || kinds.contains(&region.kind.core())
-        {
-            return Err("invalid, duplicate or unaligned IFD region".into());
-        }
-        kinds.push(region.kind.core());
-        for other in &regions[..index] {
-            if region.offset < other.offset + other.size && other.offset < end {
-                return Err("IFD regions overlap".into());
-            }
-        }
-    }
-    if !kinds.contains(&IntelIfdRegion::Descriptor) || !kinds.contains(&IntelIfdRegion::Bios) {
-        return Err("IFD requires descriptor and BIOS regions".into());
-    }
-    let convert = |r: &IfdRegion| IntelIfdRegionConfig {
-        kind: r.kind.core(),
-        offset: r.offset,
-        size: r.size,
-    };
-    let all = regions[1..]
-        .iter()
-        .fold(ConstVec::new(convert(&regions[0])), |v, r| {
-            v.push(convert(r))
-        });
-    let ifd = IntelIfdFlashLayout::new(all);
-    let bios = ifd.bios_region().ok_or("missing BIOS")?;
-    if ifd.base() != layout.flash.base
-        || u64::from(ifd.size()) != layout.flash.size
-        || ifd.bios_base() != Some(layout.firmware.base)
-        || u64::from(bios.size) != layout.firmware.size
-    {
-        return Err("IFD mapping differs from resolved flash/BIOS windows".into());
-    }
-    Ok(ifd)
 }

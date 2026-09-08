@@ -3,6 +3,7 @@ pub mod board_manifest;
 pub mod board_tool;
 pub mod build_board;
 pub mod build_plan;
+mod host_plan;
 pub mod ide;
 mod ide_graph;
 mod ide_lock;

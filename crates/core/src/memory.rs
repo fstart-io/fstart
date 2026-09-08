@@ -291,9 +291,10 @@ impl IntelIfdFlashLayout {
     /// Build a validated descriptor layout.
     ///
     /// Panics (a compile error when evaluated in a `const` context) unless:
-    /// - exactly one BIOS region is declared,
+    /// - exactly one BIOS and one descriptor region are declared,
+    /// - active regions have nonzero, page-aligned sizes and offsets,
     /// - every region lies within the derived total flash size,
-    /// - no two regions overlap.
+    /// - no two regions overlap or repeat a region kind.
     #[must_use]
     pub const fn new(regions: ConstVec<IntelIfdRegionConfig, 8>) -> Self {
         let layout = Self { regions };
@@ -307,38 +308,59 @@ impl IntelIfdFlashLayout {
     /// this is public so existing layout values can be checked in a `const`
     /// assertion (`const _: () = LAYOUT.validate();`).
     pub const fn validate(&self) {
+        if let Err(error) = self.check() {
+            panic!("{}", error);
+        }
+    }
+
+    /// Checked form for imported layouts and host plan transport.
+    pub const fn check(&self) -> Result<(), &'static str> {
         let size = self.size();
         if size == 0 {
-            panic!("Intel IFD flash_layout declares no sized regions");
+            return Err("Intel IFD flash_layout declares no sized regions");
         }
         let mut bios_count = 0usize;
+        let mut descriptor_count = 0usize;
         let mut i = 0;
         while i < self.regions.len() {
             let region = self.regions.get_ref(i);
             if matches!(region.kind, IntelIfdRegion::Bios) {
                 bios_count += 1;
             }
+            if matches!(region.kind, IntelIfdRegion::Descriptor) {
+                descriptor_count += 1;
+            }
+            if region.size == 0 || !region.offset.is_multiple_of(4096) || !region.size.is_multiple_of(4096) {
+                return Err("Intel IFD active regions must be nonzero and page-aligned");
+            }
             let region_end = match region.offset.checked_add(region.size) {
                 Some(end) => end,
-                None => panic!("Intel IFD region exceeds declared flash size"),
+                None => return Err("Intel IFD region exceeds declared flash size"),
             };
             if region_end > size {
-                panic!("Intel IFD region exceeds declared flash size");
+                return Err("Intel IFD region exceeds declared flash size");
             }
             let mut j = 0;
             while j < i {
                 let other = self.regions.get_ref(j);
+                if region.kind as u8 == other.kind as u8 {
+                    return Err("Intel IFD declares duplicate region kinds");
+                }
                 let other_end = other.offset + other.size;
                 if region.offset < other_end && other.offset < region_end {
-                    panic!("Intel IFD regions overlap");
+                    return Err("Intel IFD regions overlap");
                 }
                 j += 1;
             }
             i += 1;
         }
         if bios_count != 1 {
-            panic!("Intel IFD flash_layout requires exactly one BIOS region");
+            return Err("Intel IFD flash_layout requires exactly one BIOS region");
         }
+        if descriptor_count != 1 {
+            return Err("Intel IFD flash_layout requires exactly one descriptor region");
+        }
+        Ok(())
     }
 
     /// Return the configured BIOS region.

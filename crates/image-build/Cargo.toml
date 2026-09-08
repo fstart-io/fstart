@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+serde = { workspace = true, features = ["std"] }
 object = { workspace = true }
 fstart-core = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }

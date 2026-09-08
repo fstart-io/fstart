@@ -45,7 +45,7 @@ pub fn build_with_parsed(
     eprintln!("[fstart] platform: {}", config.platform);
     eprintln!("[fstart] board package: {}", board_manifest.package);
 
-    let smm_artifacts = build_smm_artifacts(workspace_root, board_manifest, release, config)?;
+    let smm_artifacts = build_smm_artifacts(workspace_root, board_manifest, release, config, None)?;
     let plan = crate::build_plan::plan(parsed, board_manifest)?;
 
     eprintln!("[fstart] target: {}", plan.target.triple);
@@ -87,6 +87,7 @@ pub(crate) fn build_smm_artifacts(
     board_manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     config: &fstart_core::BoardConfig,
+    selected_features: Option<&[String]>,
 ) -> Result<Option<SmmArtifacts>, String> {
     let Some(smm) = config.smm else {
         return Ok(None);
@@ -120,7 +121,7 @@ pub(crate) fn build_smm_artifacts(
         coreboot_module_args: smm.coreboot.module_args,
         coreboot_header: smm.coreboot.emit_header,
     };
-    let smm_stage = build_board_smm_stage(workspace_root, board_manifest)?;
+    let smm_stage = build_board_smm_stage(workspace_root, board_manifest, selected_features)?;
     let handler =
         fstart_image_build::smm_image::handler_from_rlibs(&smm_stage.deps_dir, &smm_stage.link_dir)
             .map_err(|e| format!("failed to link SMM handler: {e}"))?;
@@ -151,6 +152,7 @@ pub(crate) fn build_smm_artifacts(
 fn build_board_smm_stage(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
+    selected_features: Option<&[String]>,
 ) -> Result<SmmStageBuild, String> {
     let target_dir = workspace_root
         .join("target")
@@ -160,11 +162,15 @@ fn build_board_smm_stage(
 
     let selected_workspace = prepare_selected_board_workspace(workspace_root, board_manifest)?;
 
-    let mut smm_features = String::from("smm");
-    for feature in &board_manifest.variant_features {
-        smm_features.push(',');
-        smm_features.push_str(feature);
-    }
+    let smm_features = selected_features.map_or_else(
+        || {
+            std::iter::once("smm".to_owned())
+                .chain(board_manifest.variant_features.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(",")
+        },
+        |features| features.join(","),
+    );
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root)
         .arg("build")
@@ -185,7 +191,7 @@ fn build_board_smm_stage(
     cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");
     cmd.env(
         "RUSTFLAGS",
-        format!("-C panic=abort -C opt-level=s -C relocation-model=pic -C no-redzone=yes -C linker-plugin-lto=no -C embed-bitcode=no -Z function-sections=yes {}", crate::toolchain::STAGE_ENV_CHECK_CFG),
+        format!("-C panic=abort -C opt-level=s -C relocation-model=pic -C no-redzone=yes -C linker-plugin-lto=no -C embed-bitcode=no -Z function-sections=yes {} {}", crate::toolchain::STAGE_ENV_CHECK_CFG, if selected_features.is_some() { "--cfg fstart_stage_env=\"smm\"" } else { "" }),
     );
 
     eprintln!(

@@ -83,8 +83,8 @@ enum Command {
         payload: Option<PayloadChoice>,
         #[arg(long)]
         release: bool,
-        /// Select exactly one Intel compiler role (required for Intel profiles).
-        #[arg(long, value_enum)]
+        /// Select exactly one Intel compiler role: bootblock, postcar, ramstage.
+        #[arg(long)]
         stage: Option<fbuild::intel_layout::IntelStage>,
         /// Compare against a disposable all-board build-lock prototype.
         #[arg(long)]

@@ -11,6 +11,23 @@ extern crate ufmt;
 #[cfg(any(feature = "acpi", feature = "smbios"))]
 pub mod tables;
 
+pub mod facts;
+#[cfg(feature = "host")]
+pub mod host;
+#[cfg(feature = "bundle-smm")]
+pub use fstart_smm as smm;
+#[cfg(feature = "stage")]
+#[doc(hidden)]
+pub use fstart_stage as stage_runtime;
+#[cfg(feature = "host")]
+pub use host::Plan;
+
+/// Hygienic firmware entry; dependency names stay inside the platform.
+#[macro_export]
+macro_rules! stage_bin {
+    ($program:ty) => { $crate::stage_runtime::stage_bin!(program: $program); };
+}
+
 pub mod gm965;
 pub mod i945;
 pub mod layout;

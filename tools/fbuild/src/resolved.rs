@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use fstart_core::layout::{Region, RegionKind};
+use fstart_core::layout::RegionKind;
 use fstart_core::*;
 use fstart_image_build::layout::EncodedLayout;
 use serde::{Deserialize, Serialize};
@@ -35,40 +35,7 @@ pub struct Overrides {
     pub firmware_capacity: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Span {
-    pub base: u64,
-    pub size: u64,
-}
-
-impl Span {
-    pub(crate) fn end(self) -> Result<u64, String> {
-        if self.size == 0 {
-            return Err("empty layout range".into());
-        }
-        self.base
-            .checked_add(self.size)
-            .ok_or_else(|| "layout range overflows".into())
-    }
-    pub fn contains(self, base: u64, size: u64) -> bool {
-        base >= self.base
-            && base
-                .checked_add(size)
-                .zip(self.base.checked_add(self.size))
-                .is_some_and(|(end, limit)| end <= limit)
-    }
-    pub(crate) fn overlaps(self, other: Self) -> bool {
-        self.base < other.base + other.size && other.base < self.base + self.size
-    }
-    pub(crate) fn region(self, kind: RegionKind) -> Region {
-        Region {
-            kind,
-            base: self.base,
-            size: self.size,
-        }
-    }
-}
+pub use fstart_image_build::plan::Span;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
