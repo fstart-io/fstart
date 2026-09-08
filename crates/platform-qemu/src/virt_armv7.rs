@@ -113,7 +113,7 @@ impl QemuArmv7VirtMainstage {
 impl fstart_stage::payload::LinuxPayloadContext for QemuArmv7VirtMainstage {
     fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
         let config = self.config;
-        let firmware = self.region(RegionKind::Firmware);
+        let firmware = crate::boot::mounted_image();
         let ram_size = fstart_stage::directory::writable_memory()
             .and_then(|windows| windows.iter().find(|w| w.start == config.ram_base))
             .expect("ARMv7 virt RAM was not discovered")

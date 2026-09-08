@@ -1,6 +1,5 @@
 use fstart_core::ffs::{
-    ANCHOR_SIZE, Compression, FFS_MAGIC, FFS_VERSION, FileType, SegmentFlags, SegmentKind,
-    Signature, VerificationKey,
+    Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout};
 use fstart_core::{
@@ -180,7 +179,7 @@ pub fn assemble(
         }
     }
 
-    let mut image_config = FfsImageConfig {
+    let image_config = FfsImageConfig {
         keys: vec![verification_key],
         regions: ffs_input_regions(config, ro_files)?,
     };
@@ -212,14 +211,8 @@ pub fn assemble(
     eprintln!(
         "[fstart] development-integrity image: generated local key, security version 0; no rollback protection"
     );
-    let compressed_anchor_slots = compressed_anchor_slots(&image_config.regions)?;
     let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
-    let mut ffs_image = build_image_with_static_compressed_anchors(
-        &mut image_config,
-        &root_config,
-        &compressed_anchor_slots,
-        &sign,
-    )?;
+    let mut ffs_image = build_image_with_root(&image_config, &root_config, &sign)?;
 
     if config.soc_image_format == SocImageFormat::AllwinnerEgon {
         let total_size = u32::try_from(ffs_image.image.len()).map_err(|_| "image exceeds u32")?;
@@ -279,6 +272,16 @@ pub fn assemble(
         .unwrap_or_else(|| workspace_root.join("target").join("ffs"));
     fs::create_dir_all(&output_dir).map_err(|e| format!("failed to create output dir: {e}"))?;
 
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let identities = ffs_image.patched_inputs.iter().map(|input| format!(
+        "region={:?} file={:?} segment={} patched_input_sha256={} constant_trust_sha256={}\n",
+        input.region, input.file, input.segment, hex(&input.sha256), hex(&input.trust_sha256),
+    )).collect::<String>();
+    fs::write(
+        output_dir.join(format!("{}.inputs.txt", config.name)),
+        identities,
+    )
+    .map_err(|e| format!("write patched artifact identities: {e}"))?;
     let image_path = output_dir.join(format!("{}.ffs", config.name));
     fs::write(&image_path, &image_bytes).map_err(|e| format!("failed to write FFS image: {e}"))?;
 
@@ -307,6 +310,7 @@ pub fn assemble(
             bootblock_elf: &stage_binaries[0].path,
             bootblock_bin: &stage_binaries[0].run_path,
             ffs_data: &image_bytes,
+            trust_bytes: &ffs_image.trust_bytes,
             ffs_anchor_offset: ffs_image.anchor_offset,
             ffs_path: &image_path,
         };
@@ -314,130 +318,6 @@ pub fn assemble(
     }
 
     Ok(image_path)
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CompressedAnchorSlot {
-    region_idx: usize,
-    file_idx: usize,
-    segment_idx: usize,
-    offset: usize,
-}
-
-fn build_image_with_static_compressed_anchors<F>(
-    config: &mut FfsImageConfig,
-    root_config: &BootRootConfig,
-    slots: &[CompressedAnchorSlot],
-    sign: &F,
-) -> Result<fstart_ffs::builder::FfsImage, String>
-where
-    F: Fn(&[u8]) -> Result<Signature, String>,
-{
-    if slots.is_empty() {
-        return build_image_with_root(config, root_config, sign);
-    }
-
-    let mut patched_anchor: Option<Vec<u8>> = None;
-    for _ in 0..8 {
-        let image = build_image_with_root(config, root_config, sign)?;
-        if patched_anchor.as_deref() == Some(image.anchor_bytes.as_slice()) {
-            return Ok(image);
-        }
-        patch_compressed_anchor_slots(&mut config.regions, slots, &image.anchor_bytes)?;
-        patched_anchor = Some(image.anchor_bytes);
-    }
-
-    Err("compressed FSTART_ANCHOR patching did not converge".to_string())
-}
-
-fn compressed_anchor_slots(regions: &[InputRegion]) -> Result<Vec<CompressedAnchorSlot>, String> {
-    let mut slots = Vec::new();
-    for (region_idx, region) in regions.iter().enumerate() {
-        let files = match region {
-            InputRegion::Container { files, .. }
-            | InputRegion::ContainerWithExternal { files, .. } => files,
-            InputRegion::Raw { .. } | InputRegion::ExternalRaw { .. } => continue,
-        };
-
-        for (file_idx, file) in files.iter().enumerate() {
-            for (segment_idx, segment) in file.segments.iter().enumerate() {
-                if segment.compression == Compression::None {
-                    continue;
-                }
-                for offset in anchor_placeholder_offsets(&segment.data) {
-                    slots.push(CompressedAnchorSlot {
-                        region_idx,
-                        file_idx,
-                        segment_idx,
-                        offset,
-                    });
-                }
-            }
-        }
-    }
-    Ok(slots)
-}
-
-fn anchor_placeholder_offsets(data: &[u8]) -> Vec<usize> {
-    let mut offsets = Vec::new();
-    let mut offset = 0usize;
-    while offset + ANCHOR_SIZE <= data.len() {
-        if data[offset..offset + FFS_MAGIC.len()] == FFS_MAGIC {
-            let rest = &data[offset + FFS_MAGIC.len()..offset + ANCHOR_SIZE];
-            let version = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
-            let manifest_off = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]);
-            let manifest_sz = u32::from_le_bytes([rest[8], rest[9], rest[10], rest[11]]);
-            let total_sz = u32::from_le_bytes([rest[12], rest[13], rest[14], rest[15]]);
-            if version == FFS_VERSION && manifest_off == 0 && manifest_sz == 0 && total_sz == 0 {
-                offsets.push(offset);
-            }
-        }
-        offset += 8;
-    }
-    offsets
-}
-
-fn patch_compressed_anchor_slots(
-    regions: &mut [InputRegion],
-    slots: &[CompressedAnchorSlot],
-    anchor_bytes: &[u8],
-) -> Result<(), String> {
-    if anchor_bytes.len() != ANCHOR_SIZE {
-        return Err(format!(
-            "patched anchor has {} bytes, expected {}",
-            anchor_bytes.len(),
-            ANCHOR_SIZE
-        ));
-    }
-
-    for slot in slots {
-        let Some(region) = regions.get_mut(slot.region_idx) else {
-            return Err("compressed anchor slot region index is stale".to_string());
-        };
-        let files = match region {
-            InputRegion::Container { files, .. }
-            | InputRegion::ContainerWithExternal { files, .. } => files,
-            InputRegion::Raw { .. } | InputRegion::ExternalRaw { .. } => {
-                return Err("compressed anchor slot points at a raw region".to_string());
-            }
-        };
-        let Some(file) = files.get_mut(slot.file_idx) else {
-            return Err("compressed anchor slot file index is stale".to_string());
-        };
-        let Some(segment) = file.segments.get_mut(slot.segment_idx) else {
-            return Err("compressed anchor slot segment index is stale".to_string());
-        };
-        let end = slot.offset + ANCHOR_SIZE;
-        if end > segment.data.len() {
-            return Err(format!(
-                "compressed anchor slot in '{}'/'{}' exceeds segment size",
-                file.name, segment.name
-            ));
-        }
-        segment.data[slot.offset..end].copy_from_slice(anchor_bytes);
-    }
-
-    Ok(())
 }
 
 fn ffs_input_regions(
@@ -597,6 +477,7 @@ struct FullFlashInput<'a> {
     bootblock_elf: &'a Path,
     bootblock_bin: &'a Path,
     ffs_data: &'a [u8],
+    trust_bytes: &'a [u8; fstart_core::ffs::trust::TRUST_SIZE],
     ffs_anchor_offset: usize,
     ffs_path: &'a Path,
 }
@@ -608,6 +489,7 @@ fn create_xip_flash_image(
     bootblock_elf: &Path,
     bootblock_bin: &Path,
     ffs_data: &[u8],
+    trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
     ffs_anchor_offset: usize,
     ffs_path: &Path,
 ) -> Result<PathBuf, String> {
@@ -697,7 +579,13 @@ fn create_xip_flash_image(
         .checked_add(ffs_data.len())
         .ok_or_else(|| "FFS range overflows composite flash image".to_string())?;
     image[ffs_start..ffs_end].copy_from_slice(ffs_data);
-    patch_stage_anchor(&mut image, ffs_data, ffs_anchor_offset)?;
+    if ffs_start != 0 {
+        // Two-bank placement has a separate uncompressed reset copy. In the
+        // single-bank packed case the builder already finalized the initial
+        // stage at offset zero, including its locator and constant policy.
+        patch_initial_trust(&mut image[..ffs_start], trust_bytes);
+        patch_stage_anchor(&mut image, ffs_data, ffs_anchor_offset)?;
+    }
 
     let mib = image.len() / (1024 * 1024);
     let out_path = ffs_path.with_file_name(format!("{}-{mib}m.pflash", config.name));
@@ -714,6 +602,22 @@ fn create_xip_flash_image(
         ffs_data.len(),
     );
     Ok(out_path)
+}
+
+/// Patch only the uncompressed initial extent, with the identical constant
+/// policy used by the builder before hashing external/inline file inputs.
+fn patch_initial_trust(
+    initial: &mut [u8],
+    trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
+) {
+    use fstart_core::ffs::trust::{TRUST_SIZE, TrustBlock};
+    let mut placeholder = [0; TRUST_SIZE];
+    TrustBlock::placeholder().write_to(&mut placeholder);
+    for offset in (0..initial.len().saturating_sub(TRUST_SIZE - 1)).step_by(8) {
+        if initial[offset..offset + TRUST_SIZE] == placeholder {
+            initial[offset..offset + TRUST_SIZE].copy_from_slice(trust_bytes);
+        }
+    }
 }
 
 fn patch_stage_anchor(
@@ -762,6 +666,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         bootblock_elf,
         bootblock_bin,
         ffs_data,
+        trust_bytes,
         ffs_anchor_offset,
         ffs_path,
     } = input;
@@ -774,6 +679,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
             bootblock_elf,
             bootblock_bin,
             ffs_data,
+            trust_bytes,
             ffs_anchor_offset,
             ffs_path,
         );
@@ -785,6 +691,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
             bootblock_elf,
             bootblock_bin,
             ffs_data,
+            trust_bytes,
             ffs_anchor_offset,
             ffs_path,
         );
@@ -846,12 +753,13 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         );
     }
 
-    let bootblock_data = fs::read(bootblock_bin).map_err(|e| {
+    let mut bootblock_data = fs::read(bootblock_bin).map_err(|e| {
         format!(
             "failed to read bootblock flat binary {}: {e}",
             bootblock_bin.display()
         )
     })?;
+    patch_initial_trust(&mut bootblock_data, trust_bytes);
     if bootblock_data.len() > flash_size {
         return Err(format!(
             "bootblock flat binary is {} bytes, larger than flash size {}",
@@ -936,6 +844,7 @@ fn create_intel_ifd_flash_image(
     bootblock_elf: &Path,
     bootblock_bin: &Path,
     ffs_data: &[u8],
+    trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
     ffs_anchor_offset: usize,
     ffs_path: &Path,
 ) -> Result<PathBuf, String> {
@@ -997,12 +906,13 @@ fn create_intel_ifd_flash_image(
         );
     }
 
-    let bootblock_data = fs::read(bootblock_bin).map_err(|e| {
+    let mut bootblock_data = fs::read(bootblock_bin).map_err(|e| {
         format!(
             "failed to read bootblock flat binary {}: {e}",
             bootblock_bin.display()
         )
     })?;
+    patch_initial_trust(&mut bootblock_data, trust_bytes);
     if bootblock_data.len() > bios.size as usize {
         return Err(format!(
             "bootblock flat binary is {} bytes, larger than BIOS region size {}",
@@ -1668,4 +1578,58 @@ fn sign_with_ed25519(
 
     let sig = signing_key.sign(message);
     Ok(Signature::ed25519(0, sig.to_bytes()))
+}
+
+#[cfg(test)]
+mod trust_copy_tests {
+    use super::*;
+    use fstart_core::ffs::trust::{TRUST_SIZE, TrustBlock};
+
+    #[test]
+    fn physical_reset_copy_uses_builder_policy_not_an_image_record() {
+        let signer = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
+        let key = VerificationKey::ed25519(0, signer.verifying_key().to_bytes());
+        let mut initial = vec![0; 512];
+        TrustBlock::placeholder().write_to(&mut initial[64..64 + TRUST_SIZE]);
+        let config = FfsImageConfig {
+            keys: vec![key],
+            regions: vec![InputRegion::Container {
+                name: "ro".into(),
+                files: vec![InputFile {
+                    name: "initial".into(),
+                    file_type: FileType::StageCode,
+                    segments: vec![InputSegment {
+                        name: ".flat".into(),
+                        kind: SegmentKind::Code,
+                        data: initial.clone(),
+                        mem_size: None,
+                        load_addr: 0,
+                        compression: Compression::None,
+                        flags: SegmentFlags::CODE,
+                    }],
+                }],
+            }],
+        };
+        let root = BootRootConfig {
+            image_family: [0x33; 16],
+            ..Default::default()
+        };
+        let mut built =
+            build_image_with_root(&config, &root, &|b| sign_with_ed25519(&signer, b)).unwrap();
+        let policy = TrustBlock::parse(&built.trust_bytes).unwrap();
+        assert_eq!(policy.image_family, root.image_family);
+        assert_eq!(policy.valid_keys()[0].key_lo, key.key_lo);
+        let mut decoy = policy;
+        decoy.image_family = [0x99; 16];
+        decoy.write_to(&mut built.image[..TRUST_SIZE]);
+        assert_eq!(
+            fstart_ffs::FfsReader::new(&built.image)
+                .read_trust()
+                .unwrap()
+                .image_family,
+            decoy.image_family
+        );
+        patch_initial_trust(&mut initial, &built.trust_bytes);
+        assert_eq!(&initial[64..64 + TRUST_SIZE], &built.trust_bytes);
+    }
 }

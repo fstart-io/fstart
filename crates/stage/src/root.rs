@@ -37,18 +37,24 @@ pub fn authenticate_boot_root(
     anchor_data: &[u8],
     media: &(impl BootMedia + ?Sized),
 ) -> Result<AuthenticatedRoot, RootError> {
-    // SAFETY: read_volatile validates length/alignment before borrowing.
+    // Expected policy is linked into this verifier and finalized before its
+    // compression/hash pin. Never obtain expected keys from the locator/media.
+    // SAFETY: the immutable build-patched static owns this policy's provenance.
+    let trust =
+        unsafe { fstart_core::ffs::trust::TrustRef::read_volatile(crate::fstart_trust_bytes()) }
+            .ok_or(RootError::InvalidFormat)?;
+    // SAFETY: fixed-size locator bytes are readable for this snapshot.
     let anchor = unsafe { fstart_core::ffs::AnchorRef::read_volatile(anchor_data) }
         .ok_or(RootError::InvalidFormat)?;
-    if anchor.manifest_size() as usize != ROOT_SIZE || anchor.total_image_size() == 0 {
+    if anchor.image_offset() != 0 || !anchor.media().validate(media.size() as u64) {
         return Err(RootError::InvalidFormat);
     }
     let policy = RootPolicy {
-        image_family: anchor.image_family(),
-        minimum_security_version: 0,
+        image_family: trust.image_family(),
+        minimum_security_version: trust.minimum_security_version(),
         image_size: anchor.total_image_size() as u64,
         max_directory_size: 64 * 1024,
-        keys: anchor.valid_keys(),
+        keys: trust.valid_keys(),
     };
     read_boot_root(media, anchor.manifest_offset() as u64, &policy)
 }

@@ -46,11 +46,8 @@ impl BlockDeviceFfs {
         ))
     }
 
-    /// Mount the FFS image and cache the stage's embedded anchor.
-    ///
-    /// The anchor is not stored at a fixed media offset — the image builder
-    /// patches it into each stage's embedded `FSTART_ANCHOR` static — so the
-    /// caller passes its own patched copy (`fstart_stage::fstart_anchor_bytes()`).
+    /// Mount with predecessor location metadata, bounded by the actual device.
+    /// Verification policy remains the current verifier's constant trust block.
     pub fn mount<B>(
         &mut self,
         block: &B,
@@ -66,10 +63,19 @@ impl BlockDeviceFfs {
                 fstart_log::error!("invalid block FFS size: {:#x}", ffs_size);
                 return Err(ServiceError::InvalidParam);
             }
-            // SAFETY: stage anchor statics are aligned and contain ANCHOR_SIZE bytes.
-            if unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }.is_err() {
-                fstart_log::error!("embedded FFS anchor invalid");
-                return Err(ServiceError::NotInitialized);
+            // SAFETY: stable initial/predecessor locator bytes, copied below.
+            let locator = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }
+                .map_err(|_| ServiceError::InvalidParam)?
+                .media();
+            let capacity = block
+                .size()
+                .checked_sub(self.media_offset)
+                .ok_or(ServiceError::InvalidParam)?;
+            if locator.image_offset != 0
+                || locator.image_size != ffs_size as u64
+                || !locator.validate(capacity)
+            {
+                return Err(ServiceError::InvalidParam);
             }
 
             self.ffs_size = ffs_size;
@@ -302,12 +308,22 @@ impl MemoryMappedFfs {
 
     /// Publish this memory-mapped FFS window to stage-local services.
     pub fn mount(self) -> Result<(), ServiceError> {
+        let anchor = crate::fstart_anchor_bytes();
+        if anchor.is_empty() {
+            return Err(ServiceError::NotInitialized);
+        }
+        // SAFETY: initial or publish-once inherited bytes remain immutable.
+        let locator = unsafe { fstart_core::ffs::AnchorRef::read_volatile(anchor) }
+            .ok_or(ServiceError::InvalidParam)?;
+        if self.base == 0
+            || self.base.checked_add(self.size as u64).is_none()
+            || locator.image_offset() != 0
+            || !locator.media().validate(self.size as u64)
+        {
+            return Err(ServiceError::InvalidParam);
+        }
         fstart_log::info!("mounting memory-mapped FFS at {:#x}", self.base);
-        fstart_core::services::ffs_context::set_memory_mapped(
-            crate::fstart_anchor_bytes(),
-            self.base,
-            self.size as u64,
-        );
+        fstart_core::services::ffs_context::set_memory_mapped(anchor, self.base, self.size as u64);
         Ok(())
     }
 

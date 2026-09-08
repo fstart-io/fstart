@@ -15,6 +15,22 @@ pub(crate) fn install(
     firmware_base: u64,
     firmware_size: u64,
 ) -> Result<(), ServiceError> {
+    install_image(
+        writable,
+        extra_reserved,
+        firmware_base,
+        firmware_size,
+        false,
+    )
+}
+
+fn install_image(
+    writable: &[MemoryWindow],
+    extra_reserved: &[MemoryWindow],
+    firmware_base: u64,
+    firmware_size: u64,
+    packed: bool,
+) -> Result<(), ServiceError> {
     let mut reserved = Windows::new();
     for window in fstart_stage::boot::running_stage_windows()
         .map_err(|_| ServiceError::InvalidParam)?
@@ -44,13 +60,39 @@ pub(crate) fn install(
     fstart_log::info!(
         "qemu: development integrity; no hardware secure boot or rollback enforcement"
     );
+    // Physical bank capacity comes from the platform, never from the locator.
+    // Within it, mount only the actually packed image rather than erased slack.
+    let locator = fstart_stage::anchor::media_locator().ok_or(ServiceError::InvalidParam)?;
+    if locator.image_offset != 0 || !locator.validate(firmware_size) {
+        return Err(ServiceError::InvalidParam);
+    }
     let firmware = fstart_stage::fixed_helpers::MemoryMappedFfs::new(
         firmware_base,
-        usize::try_from(firmware_size).map_err(|_| ServiceError::InvalidParam)?,
+        // Legacy QEMU consumers retain their existing full-window contract;
+        // only the fixed-layout virt flows and their consumers switch together.
+        usize::try_from(if packed {
+            locator.image_size
+        } else {
+            firmware_size
+        })
+        .map_err(|_| ServiceError::InvalidParam)?,
     );
     firmware.mount()?;
     // Authenticate ROOT512 and retain its exact directory bytes in RAM.
     firmware.verify()
+}
+
+/// Payload consumers reuse the exact bounded image mounted and authenticated
+/// during boot setup, rather than reconstructing a bank-capacity-sized view.
+#[cfg(any(feature = "linux", feature = "crabefi"))]
+pub(crate) fn mounted_image() -> fstart_core::layout::Region {
+    let mounted =
+        fstart_core::services::ffs_context::memory_mapped().expect("QEMU boot image not mounted");
+    fstart_core::layout::Region {
+        kind: fstart_core::layout::RegionKind::Firmware,
+        base: mounted.image_base,
+        size: mounted.image_size,
+    }
 }
 
 /// QEMU's supplied DTB is machine configuration, not updatable FFS content.
@@ -252,7 +294,13 @@ pub(crate) fn from_dtb_with_layout(
                 .map_err(|_| ServiceError::InvalidParam)?;
         }
     }
-    install(&writable, &reserved, firmware_base, firmware_size)?;
+    install_image(
+        &writable,
+        &reserved,
+        firmware_base,
+        firmware_size,
+        layout.is_some(),
+    )?;
     if let Some(destination) = fdt_destination {
         // SAFETY: source is the exact validated, reserved QEMU DTB above.
         // Registration validates the dedicated 64 KiB destination against the

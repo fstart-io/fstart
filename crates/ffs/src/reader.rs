@@ -1,17 +1,19 @@
 //! FFS reader — no_std, no alloc, operates on a `&[u8]` flash image.
 //!
-//! This convenience reader is intended for host inspection or a stable image
-//! snapshot. It authenticates the root and directory relative to the supplied
-//! anchor; scanning an untrusted image does not establish a protected trust root.
+//! Its std-only consistency helpers inspect a self-contained image's root and
+//! directory using the separate locator and constant policy record. Scanning
+//! untrusted media does not establish protected expected verification keys.
 //! Firmware boot boundaries use `root::authenticate_root` with protected policy,
 //! then retain one verified directory buffer rather than borrowing mutable media.
 //! The anchor's historical `manifest_offset`/`manifest_size` now point to the root.
 
 use fstart_core::ffs::{
-    ANCHOR_MAX_KEYS, ANCHOR_SIZE, AnchorBlock, AnchorRef, EntryContent, FFS_MAGIC, FFS_VERSION,
-    ImageManifest, Region, RegionContent, RegionEntry, Segment,
+    ANCHOR_SIZE, AnchorBlock, AnchorRef, EntryContent, FFS_MAGIC, FFS_VERSION, ImageManifest,
+    Region, RegionContent, RegionEntry, Segment,
 };
 
+#[cfg(feature = "std")]
+use fstart_core::ffs::trust::{TRUST_SIZE, TrustBlock};
 use fstart_crypto::digest;
 
 /// Errors returned by the FFS reader.
@@ -27,7 +29,7 @@ pub enum ReaderError {
     DeserializeError,
     /// Manifest signature verification failed.
     SignatureInvalid,
-    /// No key with matching key_id found in the anchor.
+    /// No matching key/policy record found for host consistency inspection.
     KeyNotFound,
     /// File/entry not found in the region.
     FileNotFound,
@@ -67,11 +69,8 @@ impl<'a> FfsReader<'a> {
     /// The anchor is `#[repr(C)]` — read via pointer cast, no deserialization.
     pub fn read_anchor(&self, offset: usize) -> Result<AnchorBlock, ReaderError> {
         let data = self.image.get(offset..).ok_or(ReaderError::OutOfBounds)?;
-        // SAFETY: the image is a contiguous byte slice; we check length
-        // and AnchorBlock validates magic + version internally.
-        unsafe { AnchorBlock::from_bytes(data) }
+        AnchorBlock::parse(data.get(..ANCHOR_SIZE).ok_or(ReaderError::OutOfBounds)?)
             .ok_or(ReaderError::BadMagic)
-            .cloned()
     }
 
     /// Borrow an anchor from raw bytes (e.g., the `FSTART_ANCHOR` static).
@@ -107,10 +106,10 @@ impl<'a> FfsReader<'a> {
 
     /// Borrowed concatenated Intel microcode blob recorded in `anchor`.
     ///
-    /// The blob deliberately lives outside the signed manifest so pre-Rust
-    /// entry code can apply it without an FFS parser; the anchor duplicates
-    /// its offset and size for later consumers (e.g. per-AP microcode update
-    /// during MP init).
+    /// The builder also records this file in the signed directory, but this
+    /// early/AP access path does NOT verify its directory digest. The initial
+    /// locator (or retained predecessor copy) duplicates its bounded span so
+    /// vendor validation can run without changing pre-Rust/AP sequencing.
     pub fn intel_microcode(&self, anchor: AnchorRef<'_>) -> Option<&'a [u8]> {
         let start = anchor.microcode_offset() as usize;
         let size = anchor.microcode_size() as usize;
@@ -129,9 +128,7 @@ impl<'a> FfsReader<'a> {
         let manifest_offset = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
         let manifest_size = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
         let total_image_size = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
-        let key_count = u32::from_le_bytes([header[36], header[37], header[38], header[39]]);
-
-        if version != FFS_VERSION || manifest_size == 0 || key_count as usize > ANCHOR_MAX_KEYS {
+        if version != FFS_VERSION || manifest_size == 0 {
             return false;
         }
 
@@ -143,19 +140,33 @@ impl<'a> FfsReader<'a> {
             && (total_image_size == 0 || total_image_size as usize <= self.image.len())
     }
 
-    /// Authenticate the root and directory against the supplied anchor.
+    /// Find a constant policy block for HOST inspection of a self-contained
+    /// image. This does not establish protected expected keys. Firmware callers
+    /// must use their linked TrustRef with root::authenticate_root instead.
+    #[cfg(feature = "std")]
+    pub fn read_trust(&self) -> Result<TrustBlock, ReaderError> {
+        for offset in (0..self.image.len().saturating_sub(TRUST_SIZE - 1)).step_by(8) {
+            if let Some(trust) = TrustBlock::parse(&self.image[offset..offset + TRUST_SIZE]) {
+                return Ok(trust);
+            }
+        }
+        Err(ReaderError::KeyNotFound)
+    }
+
+    /// Authenticate the root and directory for host consistency inspection.
     /// This inspection helper imposes no persistent rollback minimum. Firmware
     /// must supply its own protected RootPolicy and stable-directory lifetime.
+    #[cfg(feature = "std")]
     pub fn read_manifest(&self, anchor: &AnchorBlock) -> Result<ImageManifest, ReaderError> {
         self.read_verified_manifest(
             anchor.manifest_offset as usize,
             anchor.manifest_size as usize,
-            anchor.valid_keys(),
-            anchor.image_family,
+            self.read_trust()?,
         )
     }
 
     /// Read and verify the manifest referenced by a post-build-patched anchor.
+    #[cfg(feature = "std")]
     pub fn read_manifest_volatile(
         &self,
         anchor: AnchorRef<'_>,
@@ -163,8 +174,7 @@ impl<'a> FfsReader<'a> {
         self.read_verified_manifest(
             anchor.manifest_offset() as usize,
             anchor.manifest_size() as usize,
-            anchor.valid_keys(),
-            anchor.image_family(),
+            self.read_trust()?,
         )
     }
 
@@ -252,12 +262,12 @@ impl<'a> FfsReader<'a> {
     // ---- Internal helpers ----
 
     /// Authenticate a bounded root, then hash and parse its exact directory.
+    #[cfg(feature = "std")]
     fn read_verified_manifest(
         &self,
         offset: usize,
         size: usize,
-        keys: &[fstart_core::ffs::VerificationKey],
-        image_family: [u8; 16],
+        trust: TrustBlock,
     ) -> Result<ImageManifest, ReaderError> {
         let end = offset.checked_add(size).ok_or(ReaderError::OutOfBounds)?;
         let data = self
@@ -266,11 +276,11 @@ impl<'a> FfsReader<'a> {
             .ok_or(ReaderError::OutOfBounds)?;
 
         let policy = crate::root::RootPolicy {
-            image_family,
-            minimum_security_version: 0,
+            image_family: trust.image_family,
+            minimum_security_version: trust.minimum_security_version,
             image_size: self.image.len() as u64,
             max_directory_size: self.image.len() as u64,
-            keys,
+            keys: trust.valid_keys(),
         };
         let root = crate::root::authenticate_root(&policy, data)
             .map_err(|_| ReaderError::SignatureInvalid)?;

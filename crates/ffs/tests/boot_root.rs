@@ -125,12 +125,13 @@ fn signed_root_directory_and_compressed_bytes_authenticate_exact_buffers() {
     let reader = fstart_ffs::FfsReader::new(&built.image);
     let anchor = reader.read_anchor(built.anchor_offset).unwrap();
     assert_eq!(anchor.manifest_size, 512);
-    assert_eq!(anchor.image_family, [0x44; 16]);
+    let trust = reader.read_trust().unwrap();
+    assert_eq!(trust.image_family, [0x44; 16]);
     let bytes =
         &built.image[anchor.manifest_offset as usize..anchor.manifest_offset as usize + 512];
     let keys = [key];
     let mut policy = RootPolicy {
-        image_family: anchor.image_family,
+        image_family: trust.image_family,
         minimum_security_version: 5,
         image_size: built.image.len() as u64,
         max_directory_size: 65536,
@@ -142,7 +143,7 @@ fn signed_root_directory_and_compressed_bytes_authenticate_exact_buffers() {
     policy.minimum_security_version = 5;
     policy.image_family = [0; 16];
     assert!(authenticate_root(&policy, bytes).is_err());
-    policy.image_family = anchor.image_family;
+    policy.image_family = trust.image_family;
     let mut corrupt = bytes.to_vec();
     corrupt[120] ^= 1;
     assert!(authenticate_root(&policy, &corrupt).is_err());

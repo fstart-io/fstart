@@ -143,10 +143,12 @@ where
     // Postcar authenticated our initialized image before entry. Import only
     // the bounded directory reference, then retain its verified bytes in RAM.
     // Drivers use the published verified asset service, not a new signature.
-    run_mainstage_phase(platform, "publish_boot_media", halt, || boot_media.mount());
     run_mainstage_phase(platform, "import_boot_context", halt, || {
         import_intel_directory(firmware_base, firmware_size)
     });
+    // Import publishes the inherited locator; mounting before it must fail.
+    // Neither metadata phase performs chipset/device initialization.
+    run_mainstage_phase(platform, "publish_boot_media", halt, || boot_media.mount());
     run_mainstage_phase(platform, "pre_bus_scan", halt, || mainstage.pre_bus_scan());
     run_mainstage_phase(platform, "load_memory_policy", halt, || {
         mainstage.refresh_load_policy()
@@ -552,9 +554,20 @@ where
     let media = unsafe {
         fstart_core::services::boot_media::MemoryMapped::from_raw_addr(firmware_base, firmware_size)
     };
-    let root =
-        fstart_stage::root::authenticate_boot_root(fstart_stage::fstart_anchor_bytes(), &media)
-            .map_err(|_| ServiceError::HardwareError)?;
+    // Snapshot locator fields once. The same bounded bytes drive root lookup
+    // and the retained handoff; AP vendor microcode does not gain directory auth.
+    let locator = unsafe {
+        fstart_core::ffs::locator::LocatorRef::read_volatile(fstart_stage::fstart_anchor_bytes())
+    }
+    .ok_or(ServiceError::InvalidParam)?
+    .value();
+    if locator.image_offset != 0 || !locator.media().validate(firmware_size as u64) {
+        return Err(ServiceError::InvalidParam);
+    }
+    let mut locator_bytes = [0; fstart_core::ffs::locator::LOCATOR_SIZE];
+    locator.write_to(&mut locator_bytes);
+    let root = fstart_stage::root::authenticate_boot_root(&locator_bytes, &media)
+        .map_err(|_| ServiceError::HardwareError)?;
     let [Some(postcar), Some(ramstage)] = root.descriptors() else {
         return Err(ServiceError::InvalidParam);
     };
@@ -602,6 +615,7 @@ where
                 directory: root.directory().encode(),
                 image_family: root.root().image_family,
                 security_version: root.root().security_version,
+                locator: locator_bytes,
             },
         )
     };

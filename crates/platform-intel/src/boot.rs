@@ -76,6 +76,11 @@ pub(crate) fn handoff(
     {
         return Err(ServiceError::InvalidParam);
     }
+    let locator = fstart_core::ffs::locator::LocatorBlock::parse(&stash.locator)
+        .ok_or(ServiceError::InvalidParam)?;
+    if locator.image_offset != 0 || !locator.media().validate(image_size as u64) {
+        return Err(ServiceError::InvalidParam);
+    }
     Ok(stash)
 }
 
@@ -97,6 +102,12 @@ pub(crate) fn import_intel_directory(
     // SAFETY: the platform supplies the mapped firmware window. The digest was
     // authenticated in bootblock and carried in protected-lifetime handoff RAM.
     let media = unsafe { MemoryMapped::from_raw_addr(image_base, image_size) };
+    let locator = fstart_core::ffs::locator::LocatorBlock::parse(&stash.locator)
+        .ok_or(ServiceError::InvalidParam)?;
+    // SAFETY: same predecessor/lifetime as the directory, bounded by the
+    // independently linked firmware window. No keys or policy are transported.
+    unsafe { fstart_stage::anchor::install_locator(locator, image_size as u64) }
+        .map_err(|_| ServiceError::InvalidParam)?;
     unsafe { fstart_stage::directory::install_directory_context(&media, directory) }
         .map_err(|_| ServiceError::HardwareError)
 }

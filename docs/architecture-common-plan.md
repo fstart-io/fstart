@@ -5,7 +5,89 @@ That change moved hardware facts and feature policy into Rust, but fbuild still
 selected Intel roles, SMM consumers, linker entry points and ELF checks. Merely
 moving its Intel executor would not have fixed the boundary.
 
-## Packed-storage correction (Intel first phase)
+## Locator/trust separation (phase2a)
+
+The initial-only locator is wire version 7, 40 bytes. It preserves x86's
+`anchor_offset`/microcode offset/size fields at 24/28/32. The separate 320-byte
+`FSTRUST1` policy holds expected keys, family and an explicit minimum version
+(currently zero, **not** persistent anti-rollback). Expected policy is linked
+into a verifier protected by the platform/predecessor trust boundary, never
+selected from an image header or handoff. Media policy scanning is a `std`-only
+host consistency facility, unavailable to firmware callers. Host decoding is
+by-value little-endian parsing, independent of buffer alignment. Current mounts and
+root entry reject nonzero image origins; slot-relative selection remains phase2b.
+
+The builder finalizes constant policy before compression, rejects compressed
+locators and stale prepatched policy, then packs actual extents. Its explicit
+`FfsImage::trust_bytes` output supplies separate physical reset copies; their
+policy is never selected by scanning the packed image. Initial locator
+fields and Sunxi's successor pin can then be patched without changing any
+compressed input. The fixed Sunxi callback computes eGON checksum, hashes the
+complete final SPL (including locator/checksum), and reseals the fixed-length
+directory and ROOT512. There is no compression/layout convergence loop. Existing
+root and directory formats remain; this is not root-first slots or phase2b A/B.
+
+`*.inputs.txt` identifies **pre-compression constant-policy-patched inputs** by
+SHA256 and policy hash. Compiler artifacts retain their unpatched identity;
+there is no separately cached compression result to reuse across policy changes.
+These input identities are not presented as final initial-stage hashes: final
+locator/pin/checksum bytes are covered by the published directory's file hashes.
+
+Sunxi's version-2 handoff has a fixed magic/version/body-length header bounded by
+the unchanged 256-byte reservation. Mainstage checks the configured pointer;
+ARM late media consumers validate carried image/root/microcode bounds against
+initialized MMC capacity before publishing an immutable locator snapshot. SPL
+also checks real device bounds but remains hash-pin-only: no early directory or
+Ed25519 dependency, raw fallback, or retroactive self-authentication claim. D1's
+existing halt-only mainstage is not turned into a Linux/FFS consumer here.
+
+Intel's version-2 retained stash appends the 40-byte locator without moving the
+assembly MTRR prefix or changing the reserved-page lifetime. Mainstage intersects
+it with independently linked firmware bounds and imports locator/directory
+metadata before publishing the mounted context. Mounting an uninstalled or
+invalid locator fails instead of silently publishing an empty context. These
+prerequisite phases do not initialize hardware. APs reuse the bounded microcode
+span. Microcode is also a signed-directory file, but the existing pre-Rust/AP
+access path performs vendor validation, **not** directory digest verification.
+This change does not add verification work or alter early/AP hardware ordering.
+
+RISC-V virt now packs its initial stage and subsequent files into one physical
+32-MiB bank; there is no artificial 16-MiB separation. The linked descriptor
+bounds the bank, the locator bounds the actual mounted image, and payload
+consumers reuse that exact mounted extent. Physical pflash output is still
+32 MiB. ARMv7/AArch64 retain their two physical 64-MiB banks, reset placement and
+AArch64 relocation contract. Legacy QEMU consumers retain their full-window
+contract until changed together; this is not a migration of those boards.
+
+Final evidence lives outside the repository under `/tmp/fstart-phase2a-review-*` (superseding pre-review receipts):
+
+- `final-images/proof.json`: 21 release selections assembled twice with identical
+  FFS, physical images and input identities; immutable per-selection snapshots.
+- `final-auth.json`: 21 board-key Ed25519/directory checks, bootstrap stored/loaded
+  SHA256 checks and 57 independently verified loaded-file hashes. External Intel
+  initial files are checked against actual physical BIOS bytes, not a short FFS
+  buffer. Separate physical reset-copy policy bytes also match the builder's
+  explicit policy identity. Sunxi checksum, complete SPL digest, pin and hash-only symbols pass.
+- `final-boots/proof.json`: eight fresh virt halt/Linux/UEFI boots from those
+  exact physical bytes. `negative/proof.json`: seven fresh rejection boots for
+  signature, directory, payload and malformed/out-of-bank locator mutations.
+- `final-tests.log`, `final-ffs-tests.log`, `final-stage-tests.log`,
+  `final-ram-test.log`: 65 + 25 + 13 + 1 passing tests. These include policy changes
+  that change compressed extent, repeat identity, stale policy rejection and
+  malformed transport bounds/version/length; explicit physical-policy copying
+  despite a decoy media record; unaligned host parsing; and real `ram`-cfg
+  pre-import mount rejection followed by working microcode and verified assets.
+- `host-proof.log`, `editor-proof.log`: fresh/cached locked host graphs and live
+  Intel car/postcar/ram/SMM → AArch64 cfg, navigation, macro and compiler views.
+- `final-lock-proof.json`: original root/eight standalone locks and file set
+  unchanged, no external pin or board-source edits, no temporary linker override.
+
+These are software/emulator checks, not Intel/Sunxi hardware boots, stack
+high-water measurements, secure boot or rollback. D945 UEFI's baseline missing
+ECAM trait implementation remains outside this phase. The phase1 measurements
+below are historical; its deferred locator loop and RISC-V split are superseded.
+
+## Packed-storage correction (phase1 historical evidence)
 
 The fixed-storage premise in the historical acceptance below is retracted.
 Runtime load/BSS/stack/heap windows remain fixed and validated; flash files do
@@ -237,7 +319,7 @@ The platform presets preserve these fixed reservations (bytes):
 
 | Machine | Flash / split | Writable | Stack / heap | Linux kernel | Payload runtime / DTB |
 | --- | --- | --- | --- | --- | --- |
-| RISC-V | `0x20000000`, 32 MiB / 16 MiB | `0x81000000`, 4 MiB | 1 MiB / 256 KiB | `0x82000000`, 64 MiB | OpenSBI `0x80100000`, 2 MiB; DTB 64 KiB at `0x87f00000` (Linux) or `0x80f00000` (UEFI) |
+| RISC-V | `0x20000000`, one packed 32-MiB bank | `0x81000000`, 4 MiB | 1 MiB / 256 KiB | `0x82000000`, 64 MiB | OpenSBI `0x80100000`, 2 MiB; DTB 64 KiB at `0x87f00000` (Linux) or `0x80f00000` (UEFI) |
 | ARMv7 | `0`, 128 MiB / 64 MiB | `0x40200000`, 1 MiB | 256 KiB / 256 KiB | `0x41000000`, 64 MiB | No external firmware; DTB `0x40f00000`, 64 KiB |
 
 Halt has no payload/kernel/runtime/DTB inputs. ARMv7 supports halt and direct

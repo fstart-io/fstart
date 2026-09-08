@@ -1,4 +1,6 @@
-//! Independent output snapshots captured from the pre-removal metadata resolver.
+//! Output snapshots captured from the pre-removal metadata resolver, with the
+//! intentional phase2a RISC-V change to one packed 32-MiB bank applied explicitly.
+//! ARM retains its original two-bank geometry.
 //! Linker text uses a digest to avoid repeating hundreds of descriptor BYTE lines;
 //! the wire bytes, ELF expectations and assembly remain directly inspectable.
 use fstart_image_build::{build_plan::UnitOutput, plan::BuildSelection};

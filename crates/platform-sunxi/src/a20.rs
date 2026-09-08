@@ -134,8 +134,6 @@ mod stage {
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
 
-    #[cfg(feature = "linux")]
-    use crate::egon::ffs_total_size_at;
     use crate::egon::{BootDevice, boot_device_at};
 
     /// BROM state retained so a Sunxi stage can return to FEL.
@@ -335,7 +333,7 @@ fstart_sunxi_fel_stash:
                 fstart_log::error!("a20: invalid mainstage memory policy");
                 fstart_arch::halt();
             }
-            let ffs_size = ffs_total_size_at(A20_SRAM_BASE as usize) as usize;
+            let ffs_size = fstart_stage::anchor::image_size();
             let mut boot =
                 fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(A20_EGON_MMC_OFFSET, 0);
             let anchor = fstart_stage::fstart_anchor_bytes();
@@ -468,7 +466,6 @@ fstart_sunxi_fel_stash:
         let entry = crate::boot::load_mainstage(
             &mmc0,
             A20_EGON_MMC_OFFSET,
-            crate::egon::ffs_total_size_at(A20_SRAM_BASE as usize) as usize,
             A20_DRAM_BASE,
             dram_size,
             config.mainstage_load_addr,
@@ -488,7 +485,12 @@ fstart_sunxi_fel_stash:
     where
         B: A20Board,
     {
-        let Some(handoff) = fstart_stage::handoff::try_deserialize(handoff) else {
+        if handoff != B::CONFIG.handoff_addr as usize {
+            fstart_arch::halt();
+        }
+        // SAFETY: the fixed predecessor reserves this configured buffer and
+        // validates it against trained DRAM before jumping here.
+        let Some(handoff) = (unsafe { fstart_stage::handoff::try_deserialize(handoff) }) else {
             fstart_arch::halt();
         };
         let mut console = match Ns16550::new(B::CONSOLE_CONFIG) {
@@ -504,6 +506,9 @@ fstart_sunxi_fel_stash:
         let mut mmc0 = A20Mmc::new_from_config(&B::CONFIG.mmc0);
         if mmc0.init().is_err() {
             fstart_log::error!("a20 mainstage: MMC0 init failed");
+            fstart_arch::halt();
+        }
+        if crate::boot::install_mainstage_locator(&mmc0, A20_EGON_MMC_OFFSET, &handoff).is_err() {
             fstart_arch::halt();
         }
         let mainstage = A20Mainstage {

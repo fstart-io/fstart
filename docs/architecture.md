@@ -163,10 +163,14 @@ alignment, rejecting partition overflow. No fixed bootblock budget is subtracted
 from filesystem capacity. This corrects the earlier fixed-storage interpretation;
 it does not change runtime protection or restore the removed metadata resolver.
 
-Linking needs no measure/relink cycle. The existing compressed-anchor finalization
-loop is a separate unresolved dependency cycle, not evidence of acyclic signing.
-Its removal requires auditing locator/trust consumers; do not confuse packed
-storage with that later authentication-format correction.
+Linking needs no measure/relink cycle. Constant verification policy is finalized
+before compression; mutable locators occur only in uncompressed initial storage
+and are transported separately to successors. Compressed locator inputs fail
+packaging, rather than triggering layout/compression convergence. Sunxi's fixed
+finalizer seals its checksum before the initial digest and final directory/root.
+RISC-V virt packs into one physical 32-MiB bank; ARM's two 64-MiB banks remain.
+See [phase2a contracts and evidence](architecture-common-plan.md#locatortrust-separation-phase2a).
+This is not root-first slots, A/B recovery, hardware secure boot or rollback.
 
 ### Linker-embedded descriptor
 

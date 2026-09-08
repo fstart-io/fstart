@@ -48,7 +48,7 @@ pub fn read_verified_asset(name: &str) -> Option<&'static [u8]> {
 /// Memory-mapped FFS context published by the active stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryMappedFfsContext {
-    /// Address of the stage's linked `FSTART_ANCHOR` bytes.
+    /// Address of the stage's immutable initial/inherited locator bytes.
     pub anchor_addr: usize,
     /// Size of the anchor byte slice.
     pub anchor_len: usize,
@@ -102,7 +102,7 @@ impl MemoryMappedFfsContext {
     ///
     /// # Safety
     ///
-    /// The selected stage publishes a pointer to its static `FSTART_ANCHOR`,
+    /// The selected stage publishes its static initial/inherited locator,
     /// which lives for the entire stage execution.
     #[inline]
     pub unsafe fn anchor_bytes(&self) -> &'static [u8] {

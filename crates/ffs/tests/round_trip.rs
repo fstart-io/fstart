@@ -79,9 +79,9 @@ fn test_ro_only_round_trip() {
     let anchor = reader
         .read_anchor(anchor_offset)
         .expect("should read anchor");
-    assert_eq!(anchor.key_count, 1);
-    assert_eq!(anchor.valid_keys().len(), 1);
-    assert_eq!(anchor.valid_keys()[0].key_id, 0);
+    let trust = reader.read_trust().expect("separate constant policy");
+    assert_eq!(trust.valid_keys().len(), 1);
+    assert_eq!(trust.valid_keys()[0].key_id, 0);
 
     // Read and verify manifest
     let manifest = reader.read_manifest(&anchor).expect("should read manifest");

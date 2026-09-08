@@ -81,7 +81,8 @@ pub fn pinned_bootstrap_descriptor()
 /// encoding error).
 #[cfg(feature = "handoff")]
 pub fn serialize_handoff(dram_size: u64, handoff_addr: u64) -> Result<usize, &'static str> {
-    let handoff_data = fstart_core::handoff::StageHandoff::new(dram_size);
+    let mut handoff_data = fstart_core::handoff::StageHandoff::new(dram_size);
+    handoff_data.media = Some(crate::anchor::media_locator().ok_or("initial locator missing")?);
     // SAFETY: handoff_addr points to writable RAM, 4K below next stage load_addr.
     let handoff_buf = unsafe {
         core::slice::from_raw_parts_mut(

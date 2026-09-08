@@ -24,7 +24,7 @@ pub const HANDOFF_MAGIC: u32 = 0x4653_5448;
 ///
 /// Increment when fields are added or the layout changes. The incoming
 /// stage should reject versions it doesn't understand.
-pub const HANDOFF_VERSION: u16 = 1;
+pub const HANDOFF_VERSION: u16 = 2;
 
 /// Maximum serialized size of a StageHandoff.
 ///
@@ -50,6 +50,10 @@ pub struct StageHandoff {
     /// 0 means DRAM size was not determined (e.g., QEMU, or DRAM init
     /// was not performed by the previous stage).
     pub dram_size: u64,
+    /// Location-only image metadata from the predecessor. Consumers must check
+    /// it against platform/device bounds before any read; it carries no trust
+    /// policy and cannot expand writable RAM or media authority.
+    pub media: Option<crate::ffs::locator::MediaLocator>,
 }
 
 impl StageHandoff {
@@ -59,6 +63,7 @@ impl StageHandoff {
             magic: HANDOFF_MAGIC,
             version: HANDOFF_VERSION,
             dram_size,
+            media: None,
         }
     }
 

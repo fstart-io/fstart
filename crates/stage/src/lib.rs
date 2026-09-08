@@ -54,6 +54,9 @@ pub mod handoff;
 
 pub mod next_stage;
 
+#[cfg(all(test, feature = "ffs", fstart_stage_env = "ram"))]
+mod ram_locator_tests;
+
 // ---------------------------------------------------------------------------
 // FDT blob utilities
 // ---------------------------------------------------------------------------
@@ -383,46 +386,8 @@ fn effective_image_size(media_size: usize, anchor: fstart_core::ffs::AnchorRef<'
     }
 }
 
-/// Storage for an FFS anchor patched after the stage has been linked.
-///
-/// Interior mutability prevents LLVM from treating the placeholder bytes as a
-/// constant while preserving the exact `AnchorBlock` representation expected
-/// by the post-build patcher.
-#[repr(transparent)]
-pub struct PatchableAnchor(core::cell::UnsafeCell<fstart_core::ffs::AnchorBlock>);
-
-impl PatchableAnchor {
-    const fn placeholder() -> Self {
-        Self(core::cell::UnsafeCell::new(
-            fstart_core::ffs::AnchorBlock::placeholder(),
-        ))
-    }
-}
-
-// SAFETY: firmware only reads this storage at runtime. `fbuild assemble`
-// modifies the flat binary before execution, not through a Rust reference.
-unsafe impl Sync for PatchableAnchor {}
-
-/// Fixed FFS anchor placeholder for handwritten stage flow.
-///
-/// `fbuild assemble` patches this block in the flat stage binary after laying out
-/// the complete firmware image.
-#[used]
-#[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.anchor"))]
-pub static FSTART_ANCHOR: PatchableAnchor = PatchableAnchor::placeholder();
-
-#[must_use]
-pub fn fstart_anchor_bytes() -> &'static [u8] {
-    // SAFETY: FSTART_ANCHOR is transparent over a repr(C) AnchorBlock, is
-    // placed in `.fstart.anchor`, and has exactly ANCHOR_SIZE initialized bytes.
-    // Runtime code only reads it after the image patcher has finished.
-    unsafe {
-        core::slice::from_raw_parts(
-            FSTART_ANCHOR.0.get().cast::<u8>(),
-            fstart_core::ffs::ANCHOR_SIZE,
-        )
-    }
-}
+pub mod anchor;
+pub use anchor::{fstart_anchor_bytes, fstart_trust_bytes};
 
 /// Runtime environment selected by build glue for a firmware entry point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

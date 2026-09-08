@@ -32,6 +32,9 @@ pub fn inspect(path: &str) -> Result<(), String> {
         .get(image_base..)
         .ok_or_else(|| format!("computed image base {image_base:#x} is outside input"))?;
     let reader = FfsReader::new(image_data);
+    let trust = reader
+        .read_trust()
+        .map_err(|e| format!("missing inspection policy: {e:?}"))?;
 
     println!("Anchor");
     if image_base != 0 {
@@ -56,13 +59,14 @@ pub fn inspect(path: &str) -> Result<(), String> {
         anchor.manifest_offset, anchor.manifest_offset
     );
     println!("  boot root size:   {} bytes", anchor.manifest_size);
-    println!("  image family:     {}", hex_full(&anchor.image_family));
+    println!("  image family:     {}", hex_full(&trust.image_family));
     if anchor.anchor_offset >= anchor.total_image_size {
         println!("  note:             XIP anchor outside FFS blob (top-aligned XIP bootblock)");
     }
-    println!("  keys:             {}", anchor.key_count);
+    println!("  keys:             {}", trust.valid_keys().len());
+    println!("  policy source:    media record (inspection only, not protected authority)");
 
-    for (i, key) in anchor.valid_keys().iter().enumerate() {
+    for (i, key) in trust.valid_keys().iter().enumerate() {
         let alg = match key.signature_kind() {
             Some(SignatureKind::Ed25519) => "Ed25519",
             Some(SignatureKind::EcdsaP256) => "ECDSA-P256",

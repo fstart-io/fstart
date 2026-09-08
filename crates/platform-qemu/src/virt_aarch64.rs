@@ -167,7 +167,7 @@ fn source_dtb_addr(config: &super::virt::QemuAarch64VirtConfig) -> u64 {
 #[cfg(feature = "linux")]
 impl fstart_stage::payload::LinuxPayloadContext for QemuAarch64VirtMainstage {
     fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
-        let firmware = self.region(RegionKind::Firmware);
+        let firmware = crate::boot::mounted_image();
         fstart_stage::payload::LinuxPayloadConfig::new(
             firmware.base,
             firmware.size,
@@ -187,7 +187,7 @@ impl fstart_stage::payload::LinuxPayloadContext for QemuAarch64VirtMainstage {
 impl fstart_stage::payload::Aarch64UefiPayloadContext for QemuAarch64VirtMainstage {
     fn aarch64_uefi_payload_context(&self) -> fstart_stage::payload::Aarch64UefiPayloadConfig {
         let flash = self.region(RegionKind::Flash);
-        let firmware = self.region(RegionKind::Firmware);
+        let firmware = crate::boot::mounted_image();
         fstart_stage::payload::Aarch64UefiPayloadConfig::new(
             flash.base,
             flash.size,

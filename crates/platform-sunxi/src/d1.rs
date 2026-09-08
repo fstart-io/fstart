@@ -195,7 +195,6 @@ mod stage {
         let entry = crate::boot::load_mainstage(
             &mmc0,
             D1_EGON_MMC_OFFSET,
-            crate::egon::ffs_total_size_at(sram_base) as usize,
             D1_DRAM_BASE,
             dram_size,
             config.mainstage_load_addr,
@@ -215,7 +214,12 @@ mod stage {
     where
         B: D1Board,
     {
-        let Some(handoff) = fstart_stage::handoff::try_deserialize(handoff) else {
+        if handoff != B::CONFIG.handoff_addr as usize {
+            fstart_arch::halt();
+        }
+        // SAFETY: the fixed predecessor reserves this configured buffer and
+        // validates it against trained DRAM before jumping here.
+        let Some(handoff) = (unsafe { fstart_stage::handoff::try_deserialize(handoff) }) else {
             fstart_arch::halt();
         };
         let mut console = match Ns16550::new(B::CONSOLE_CONFIG) {

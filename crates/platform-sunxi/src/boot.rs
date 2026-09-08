@@ -10,7 +10,6 @@ use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 pub(crate) fn load_mainstage(
     block: &impl BlockDevice,
     media_base: u64,
-    image_size: usize,
     dram_base: u64,
     dram_size: u64,
     load_addr: u64,
@@ -25,6 +24,15 @@ pub(crate) fn load_mainstage(
     if descriptor.load_addr != load_addr || dram_size == 0 {
         return Err(ServiceError::InvalidParam);
     }
+    let locator = fstart_stage::anchor::media_locator().ok_or(ServiceError::InvalidParam)?;
+    let capacity = block
+        .size()
+        .checked_sub(media_base)
+        .ok_or(ServiceError::InvalidParam)?;
+    if locator.image_offset != 0 || !locator.validate(capacity) {
+        return Err(ServiceError::InvalidParam);
+    }
+    let image_size = usize::try_from(locator.image_size).map_err(|_| ServiceError::InvalidParam)?;
     let media = BlockDeviceMedia::new(block, media_base, image_size);
     let writable = [MemoryWindow {
         start: dram_base,
@@ -44,6 +52,29 @@ pub(crate) fn load_mainstage(
     let executable = unsafe { fstart_stage::boot::load_bootstrap(&media, &descriptor, &policy) }
         .map_err(|_| ServiceError::InvalidParam)?;
     Ok(executable.entry())
+}
+
+/// Publish inherited location only after the existing MMC initialization has
+/// established the physical device size. No keys or root policy are imported.
+pub(crate) fn install_mainstage_locator(
+    block: &impl BlockDevice,
+    media_base: u64,
+    handoff: &fstart_core::handoff::StageHandoff,
+) -> Result<(), ServiceError> {
+    let media = handoff.media.ok_or(ServiceError::InvalidParam)?;
+    let capacity = block
+        .size()
+        .checked_sub(media_base)
+        .ok_or(ServiceError::InvalidParam)?;
+    if media.image_offset != 0 || !media.validate(capacity) {
+        return Err(ServiceError::InvalidParam);
+    }
+    let locator = fstart_core::ffs::locator::LocatorBlock::from_media(media)
+        .ok_or(ServiceError::InvalidParam)?;
+    // SAFETY: fixed predecessor handoff, reserved RAM and single-threaded
+    // mainstage entry; actual device bounds checked before any FFS read.
+    unsafe { fstart_stage::anchor::install_locator(locator, capacity) }
+        .map_err(|_| ServiceError::InvalidParam)
 }
 
 fn validate_dram(base: u64, size: u64, handoff: u64) -> Result<(), ServiceError> {

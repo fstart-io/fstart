@@ -103,7 +103,7 @@ pub const POSTCAR_STASH_ADDR: u64 = 0x2000;
 pub const POSTCAR_STASH_MAGIC: u32 = 0x5453_4350;
 
 /// Version of the authenticated bootstrap handoff following the MTRR prefix.
-pub const POSTCAR_STASH_VERSION: u32 = 1;
+pub const POSTCAR_STASH_VERSION: u32 = 2;
 
 /// Maximum variable-MTRR entries the stash can carry (Core2/Atom have 8;
 /// the table needs 1x low-DRAM WB + ROM WP chunks).
@@ -152,6 +152,9 @@ pub struct PostcarMtrrStash {
     pub image_size: u64,
     /// End of the initial low-DRAM window, excluding untrained memory.
     pub ram_end: u64,
+    /// Initial locator snapshot, including vendor microcode bounds. This is
+    /// predecessor-owned transport, NOT newly signed directory content.
+    pub locator: [u8; 40],
 }
 
 // Assembly consumes only this fixed prefix. Keep Rust/entry offsets coupled.
@@ -195,6 +198,7 @@ pub struct PostcarBootContext {
     pub directory: [u8; 64],
     pub image_family: [u8; 16],
     pub security_version: u64,
+    pub locator: [u8; 40],
 }
 
 /// Write the post-CAR MTRR stash to [`POSTCAR_STASH_ADDR`].
@@ -284,6 +288,7 @@ pub unsafe fn write_postcar_stash(
         core::ptr::addr_of_mut!((*stash).image_base).write_volatile(rom_base);
         core::ptr::addr_of_mut!((*stash).image_size).write_volatile(rom_size);
         core::ptr::addr_of_mut!((*stash).ram_end).write_volatile(ram_end);
+        core::ptr::addr_of_mut!((*stash).locator).write_volatile(boot.locator);
         // Magic last: structural validity is checked before consuming the ABI.
         core::ptr::addr_of_mut!((*stash).magic).write_volatile(POSTCAR_STASH_MAGIC);
     }

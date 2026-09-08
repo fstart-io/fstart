@@ -16,7 +16,7 @@
 //! │  │ Anchor Block (embedded in bootblock binary)        │  │
 //! │  │  • MAGIC: "FSTART01"                               │  │
 //! │  │  • pointer → signed 512-byte boot root              │  │
-//! │  │  • embedded verification keys                      │  │
+//! │  │  • location only; constant trust is separate       │  │
 //! │  └────────────────────────────────────────────────────┘  │
 //! │  … bootblock code …                                     │
 //! ├─────────────────────────────────────────────────────────┤
@@ -44,6 +44,9 @@
 //! authenticated by the root's SHA-256 reference, not a second signature.
 //! Exact root and directory wire definitions live in fstart-ffs.
 
+pub mod locator;
+pub mod trust;
+
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
@@ -51,254 +54,16 @@ use serde::{Deserialize, Serialize};
 // Magic and version
 // ============================================================================
 
-/// Magic bytes for anchor block identification.
-///
-/// Tools scanning a binary for the fstart anchor search for these 8 bytes
-/// at 8-byte-aligned offsets. The anchor is embedded in the bootblock
-/// binary, so this is found by scanning the XIP code image.
-pub const FFS_MAGIC: [u8; 8] = *b"FSTART01";
+/// Location-only initial-image wire format. Version 6 combined anchors are not decoded.
+pub use locator::{
+    LOCATOR_MAGIC as FFS_MAGIC, LOCATOR_SIZE as ANCHOR_SIZE, LOCATOR_VERSION as FFS_VERSION,
+    LocatorBlock as AnchorBlock, LocatorRef as AnchorRef,
+};
 
-/// Current FFS format version.
-///
-/// Revision 6 anchors reference a 512-byte boot root and pin its image family.
-pub const FFS_VERSION: u32 = 6;
+/// Bounded key capacity of the independent constant trust policy.
+pub const TRUST_MAX_KEYS: usize = 4;
 
-// ============================================================================
-// Anchor block — embedded in the bootblock binary
-// ============================================================================
-
-/// Maximum number of verification keys in the anchor block.
-pub const ANCHOR_MAX_KEYS: usize = 4;
-
-/// Size of an `AnchorBlock` in bytes (`core::mem::size_of::<AnchorBlock>()`).
-///
-/// Stage code uses this to size the `FSTART_ANCHOR` placeholder static.
-/// The builder uses this to locate and patch the anchor in the binary.
-pub const ANCHOR_SIZE: usize = core::mem::size_of::<AnchorBlock>();
-
-/// The anchor block is embedded in the bootblock binary at build time.
-///
-/// `#[repr(C)]` with fixed layout — no serialization needed. The builder
-/// writes raw bytes; the bootblock reads via volatile pointer cast.
-///
-/// Because the bootblock executes in place (XIP) from memory-mapped flash,
-/// the anchor is accessible as plain memory — no SPI driver, no flash
-/// reads, just a pointer dereference from the bootblock's own address space.
-///
-/// **How it gets there**: `fstart-stage` emits the anchor as a `#[link_section]`
-/// static in the bootblock. The linker places it. The `fbuild assemble`
-/// step patches the fields after the full image is laid out.
-///
-/// **How tools find it**: scan the firmware binary for `FFS_MAGIC` at
-/// 8-byte-aligned offsets (host-side only).
-///
-/// **How the bootblock uses it**: the bootblock code references the static
-/// directly via volatile read — no scanning needed at runtime. It reads the
-/// root pointer, authenticates that bounded root using the protected keys and
-/// image-family policy, then authenticates the directory in stable RAM.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct AnchorBlock {
-    /// Magic bytes — must equal `FFS_MAGIC`.
-    pub magic: [u8; 8],
-    /// Format version — must equal `FFS_VERSION`.
-    pub version: u32,
-    /// Offset of the signed boot root from the image base (bytes).
-    ///
-    /// The bootblock adds this to the flash base address to get a pointer.
-    pub manifest_offset: u32,
-    /// Size of the boot root (512 bytes).
-    pub manifest_size: u32,
-    /// Total firmware image size in bytes (all regions combined).
-    pub total_image_size: u32,
-    /// Offset of this anchor block from image base.
-    ///
-    /// Pre-Rust x86 entry code uses this with the link-time `FSTART_ANCHOR`
-    /// address to reconstruct the firmware image base before Rust is running.
-    pub anchor_offset: u32,
-    /// Offset of the concatenated CPU microcode blob from image base.
-    ///
-    /// Zero means no early microcode blob is present. This is deliberately
-    /// duplicated from the manifest so pre-Rust x86 entry code can apply BSP
-    /// microcode before it has a stack or FFS parser.
-    pub microcode_offset: u32,
-    /// Size of the concatenated CPU microcode blob in bytes.
-    pub microcode_size: u32,
-    /// Number of valid keys in the `keys` array (0..=4).
-    pub key_count: u32,
-    /// Verification keys for manifest signatures.
-    ///
-    /// Only the first `key_count` entries are valid. The rest are zeroed.
-    ///
-    /// Up to 4 keys for key rotation / algorithm agility.
-    pub keys: [VerificationKey; ANCHOR_MAX_KEYS],
-    /// Protected expected image-family ID. Appended to preserve assembly offsets.
-    pub image_family: [u8; 16],
-}
-
-impl AnchorBlock {
-    /// Create a zeroed anchor with just the magic and version set.
-    ///
-    /// Used by stage code to emit the placeholder static; `fbuild assemble`
-    /// patches the remaining fields.
-    pub const fn placeholder() -> Self {
-        Self {
-            magic: FFS_MAGIC,
-            version: FFS_VERSION,
-            manifest_offset: 0,
-            manifest_size: 0,
-            total_image_size: 0,
-            anchor_offset: 0,
-            microcode_offset: 0,
-            microcode_size: 0,
-            key_count: 0,
-            keys: [VerificationKey::ZERO; ANCHOR_MAX_KEYS],
-            image_family: [0; 16],
-        }
-    }
-
-    /// Get the valid keys as a slice.
-    pub fn valid_keys(&self) -> &[VerificationKey] {
-        let n = (self.key_count as usize).min(ANCHOR_MAX_KEYS);
-        &self.keys[..n]
-    }
-
-    /// Interpret a byte slice as an `AnchorBlock` reference.
-    ///
-    /// Validates magic and version. The slice must be at least
-    /// `ANCHOR_SIZE` bytes and properly aligned (8-byte aligned from
-    /// the `.fstart.anchor` linker section).
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the bytes represent a valid `AnchorBlock`
-    /// (correct alignment, no uninit memory). For the embedded static
-    /// this is guaranteed by the linker.
-    pub unsafe fn from_bytes(data: &[u8]) -> Option<&Self> {
-        if data.len() < ANCHOR_SIZE {
-            return None;
-        }
-        let ptr = data.as_ptr() as *const Self;
-        // SAFETY: caller guarantees alignment and validity
-        let anchor = unsafe { &*ptr };
-        if anchor.magic != FFS_MAGIC {
-            return None;
-        }
-        if anchor.version != FFS_VERSION {
-            return None;
-        }
-        Some(anchor)
-    }
-
-    /// Write this anchor block as raw bytes into a mutable slice.
-    ///
-    /// Used by the builder to patch the anchor into the image.
-    pub fn write_to(&self, dest: &mut [u8]) {
-        let size = ANCHOR_SIZE;
-        assert!(dest.len() >= size, "destination too small for AnchorBlock");
-        // SAFETY: AnchorBlock is repr(C) with no padding concerns —
-        // all fields are simple integers and arrays.
-        let src = unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size) };
-        dest[..size].copy_from_slice(src);
-    }
-}
-
-/// Borrowed view of a post-build-patched [`AnchorBlock`].
-///
-/// Scalar accessors use volatile reads so the compiler cannot substitute the
-/// placeholder values compiled into a stage. The substantially larger key
-/// array remains borrowed in place instead of being copied onto the stack.
-#[derive(Clone, Copy)]
-pub struct AnchorRef<'a> {
-    anchor: &'a AnchorBlock,
-}
-
-impl<'a> AnchorRef<'a> {
-    /// Borrow an aligned anchor and validate its volatile magic and version.
-    ///
-    /// # Safety
-    ///
-    /// `data` must contain at least [`ANCHOR_SIZE`] initialized bytes and be
-    /// aligned to `align_of::<AnchorBlock>()`. The bytes must remain readable
-    /// for the returned view's lifetime.
-    pub unsafe fn read_volatile(data: &'a [u8]) -> Option<Self> {
-        if data.len() < ANCHOR_SIZE {
-            return None;
-        }
-        let ptr = data.as_ptr().cast::<AnchorBlock>();
-        // SAFETY: the caller guarantees that a complete, aligned anchor is
-        // readable. Read each header byte independently to avoid copying the
-        // complete anchor merely to validate it.
-        let magic_ptr = unsafe { core::ptr::addr_of!((*ptr).magic).cast::<u8>() };
-        for (index, expected) in FFS_MAGIC.iter().enumerate() {
-            // SAFETY: `magic` contains eight initialized bytes.
-            if unsafe { core::ptr::read_volatile(magic_ptr.add(index)) } != *expected {
-                return None;
-            }
-        }
-        // SAFETY: `version` is an initialized, aligned scalar field.
-        if unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*ptr).version)) } != FFS_VERSION {
-            return None;
-        }
-        // SAFETY: the caller guarantees the anchor remains valid for `'a`.
-        Some(Self {
-            anchor: unsafe { &*ptr },
-        })
-    }
-
-    fn read_u32(self, field: *const u32) -> u32 {
-        // SAFETY: callers pass aligned scalar fields within `self.anchor`.
-        unsafe { core::ptr::read_volatile(field) }
-    }
-
-    /// Offset of the signed manifest from the image base.
-    pub fn manifest_offset(self) -> u32 {
-        self.read_u32(core::ptr::addr_of!(self.anchor.manifest_offset))
-    }
-
-    /// Size of the signed manifest envelope.
-    pub fn manifest_size(self) -> u32 {
-        self.read_u32(core::ptr::addr_of!(self.anchor.manifest_size))
-    }
-
-    /// Total size of the assembled firmware image.
-    pub fn total_image_size(self) -> u32 {
-        self.read_u32(core::ptr::addr_of!(self.anchor.total_image_size))
-    }
-
-    /// Offset of the concatenated CPU microcode blob.
-    pub fn microcode_offset(self) -> u32 {
-        self.read_u32(core::ptr::addr_of!(self.anchor.microcode_offset))
-    }
-
-    /// Size of the concatenated CPU microcode blob.
-    pub fn microcode_size(self) -> u32 {
-        self.read_u32(core::ptr::addr_of!(self.anchor.microcode_size))
-    }
-
-    /// Number of valid verification keys.
-    pub fn key_count(self) -> u32 {
-        self.read_u32(core::ptr::addr_of!(self.anchor.key_count))
-    }
-
-    /// Expected family from the protected, post-build patched anchor.
-    pub fn image_family(&self) -> [u8; 16] {
-        // SAFETY: this field is contained in the live anchor.
-        unsafe { core::ptr::read_volatile(core::ptr::addr_of!(self.anchor.image_family)) }
-    }
-
-    /// Borrow the valid verification keys directly from the patched anchor.
-    ///
-    /// These loads need not be volatile: stage anchor storage has interior
-    /// mutability, so LLVM cannot treat its post-build-patched bytes as a
-    /// compile-time constant.
-    pub fn valid_keys(self) -> &'a [VerificationKey] {
-        let count = (self.key_count() as usize).min(ANCHOR_MAX_KEYS);
-        &self.anchor.keys[..count]
-    }
-}
-
-/// A public key embedded in the anchor for manifest verification.
+/// A public key embedded in constant policy for root verification.
 ///
 /// `#[repr(C)]` fixed layout — 68 bytes per key.
 #[derive(Debug, Clone, Copy)]
@@ -328,7 +93,7 @@ impl VerificationKey {
     /// Algorithm byte for ECDSA P-256.
     pub const ALG_ECDSA_P256: u8 = 1;
 
-    /// A zeroed key (used to fill unused slots in the anchor).
+    /// A zeroed key (used to fill unused slots in constant policy).
     pub const ZERO: Self = Self {
         key_id: 0,
         algorithm: 0,
@@ -708,7 +473,7 @@ pub enum SignatureKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Signature {
-    /// Which key was used to produce this signature (matches anchor key_id).
+    /// Which key was used to produce this signature (matches constant-policy key_id).
     pub key_id: u8,
     /// Algorithm used.
     pub kind: SignatureKind,

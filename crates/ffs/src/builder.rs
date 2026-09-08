@@ -2,27 +2,30 @@
 //!
 //! The builder produces a complete firmware image:
 //!
-//! 1. Lays out regions (containers of files, raw reserved areas).
-//! 2. For each container, lays out files and their segments.
-//! 3. Computes digests for each file.
-//! 4. Builds the `ImageManifest` with computed offsets.
-//! 5. Serializes the directory and signs its bounded boot root.
-//! 6. Builds the anchor block with embedded keys.
-//! 7. Produces the final image as a `Vec<u8>`.
+//! 1. Finalizes constant verification policy before compression.
+//! 2. Compresses permitted segments and packs files into regions.
+//! 3. Places the fixed-length directory and bounded boot root.
+//! 4. Patches locators only in uncompressed initial storage.
+//! 5. Hashes final stored/loaded file bytes into the directory.
+//! 6. Serializes the directory and signs its bounded boot root.
+//! 7. Returns final bytes plus pre-compression input identities.
 //!
 //! Signing is done by accepting a closure — the builder doesn't know
 //! about private keys directly (the fstart-image-build caller provides the signer).
 
 extern crate std;
 
+mod trust;
+pub use trust::PatchedInputIdentity;
+
 use std::string::String;
 use std::vec::Vec;
 
 use crate::root::{BootstrapDescriptor, BootstrapRole, DirectoryRef, ROOT_SIZE, Root, SIGNED_SIZE};
 use fstart_core::ffs::{
-    ANCHOR_MAX_KEYS, ANCHOR_SIZE, AnchorBlock, Compression, EntryContent, FFS_MAGIC, FFS_VERSION,
-    FileType, ImageManifest, Region, RegionContent, RegionEntry, Segment, SegmentFlags,
-    SegmentKind, Signature, VerificationKey,
+    ANCHOR_SIZE, AnchorBlock, Compression, EntryContent, FFS_MAGIC, FFS_VERSION, FileType,
+    ImageManifest, Region, RegionContent, RegionEntry, Segment, SegmentFlags, SegmentKind,
+    Signature, TRUST_MAX_KEYS, VerificationKey,
 };
 use fstart_crypto::digest;
 use heapless::String as HString;
@@ -36,6 +39,7 @@ pub struct BootRootConfig {
 }
 
 /// A file being assembled into the FFS image.
+#[derive(Clone)]
 pub struct InputFile {
     /// File name.
     pub name: String,
@@ -50,6 +54,7 @@ pub struct InputFile {
 /// This is used for XIP bootblocks that are top-aligned in flash. The manifest
 /// records their real image-relative offset and digest, while the bytes are
 /// supplied separately by the full-flash assembler.
+#[derive(Clone)]
 pub struct ExternalInputFile {
     /// File name.
     pub name: String,
@@ -62,6 +67,7 @@ pub struct ExternalInputFile {
 }
 
 /// A segment with its raw data, ready for inclusion in the image.
+#[derive(Clone)]
 pub struct InputSegment {
     /// Segment name (e.g., ".text").
     pub name: String,
@@ -84,6 +90,7 @@ pub struct InputSegment {
 }
 
 /// A region to include in the image.
+#[derive(Clone)]
 pub enum InputRegion {
     /// A container of files.
     Container {
@@ -131,8 +138,9 @@ pub enum InputRegion {
 }
 
 /// Configuration for building an FFS image.
+#[derive(Clone)]
 pub struct FfsImageConfig {
-    /// Verification keys to embed in the anchor.
+    /// Verification keys to embed in the independent constant policy.
     pub keys: Vec<VerificationKey>,
     /// Regions to include in the image, in order.
     ///
@@ -155,6 +163,10 @@ pub struct FileDataLocation {
 
 /// Result of building an FFS image.
 pub struct FfsImage {
+    /// Exact raw input identities after constant policy patching, before compression.
+    pub patched_inputs: Vec<PatchedInputIdentity>,
+    /// Exact selected policy encoding, also used for separate physical reset copies.
+    pub trust_bytes: [u8; fstart_core::ffs::trust::TRUST_SIZE],
     /// The complete firmware image bytes.
     pub image: Vec<u8>,
     /// Offset of the anchor block in the image (for patching into bootblock).
@@ -196,6 +208,9 @@ pub fn build_image_with_root<F>(
 where
     F: Fn(&[u8]) -> Result<Signature, String>,
 {
+    let mut patched = config.clone();
+    let (patched_inputs, trust_bytes) = trust::finalize_trust(&mut patched, root_config)?;
+    let config = &patched;
     if root_config.bootstrap.len() > 2 {
         return Err("boot root supports at most two bootstrap stages".into());
     }
@@ -371,6 +386,13 @@ where
         }
     }
 
+    // Keep one uncompressed policy record available for host inspection even
+    // when all verifier-containing files are compressed or externally placed.
+    // Runtime expected policy comes from linked code, never this media scan.
+    let pad = (8 - image.len() % 8) % 8;
+    image.extend(core::iter::repeat_n(0u8, pad));
+    image.extend_from_slice(&trust_bytes);
+
     // ---- Phase 2: Reserve fixed directory and boot-root storage ----
     let mut manifest = ImageManifest {
         regions: manifest_regions,
@@ -384,17 +406,12 @@ where
     image.resize(image.len() + ROOT_SIZE, 0);
 
     // ---- Phase 3: Build anchor and patch it into the bootblock binary ----
-    if config.keys.len() > ANCHOR_MAX_KEYS {
+    if config.keys.len() > TRUST_MAX_KEYS {
         return Err(format!(
-            "too many keys ({}, max {ANCHOR_MAX_KEYS})",
+            "too many keys ({}, max {TRUST_MAX_KEYS})",
             config.keys.len()
         ));
     }
-    let mut keys = [VerificationKey::ZERO; ANCHOR_MAX_KEYS];
-    for (i, key) in config.keys.iter().enumerate() {
-        keys[i] = *key;
-    }
-
     // Scan the image for every `FSTART_ANCHOR` placeholder. Multi-stage
     // images contain one placeholder per FFS-using stage; all must be
     // patched because later stages reference their own embedded static.
@@ -425,9 +442,7 @@ where
         anchor_offset: u32::try_from(anchor_offset).map_err(|_| "anchor offset exceeds u32")?,
         microcode_offset: microcode.map_or(0, |file| file.data_offset),
         microcode_size: microcode.map_or(0, |file| file.data_size),
-        key_count: config.keys.len() as u32,
-        keys,
-        image_family: root_config.image_family,
+        image_offset: 0,
     };
 
     for &offset in &anchor_offsets {
@@ -485,6 +500,8 @@ where
     anchor.write_to(&mut anchor_bytes);
 
     Ok(FfsImage {
+        trust_bytes,
+        patched_inputs,
         image,
         anchor_offset,
         anchor_bytes,
@@ -530,7 +547,7 @@ fn lay_out_file(
     let mut segments: heapless::Vec<Segment, 12> = heapless::Vec::new();
     let mut digest_input: Vec<u8> = Vec::new();
 
-    let entry_offset = image_len(&image)? - region_base;
+    let entry_offset = image_len(image)? - region_base;
 
     for seg in &file.segments {
         // Align each segment to 8 bytes so embedded structures (like
@@ -566,7 +583,7 @@ fn lay_out_file(
         };
 
         // Record the offset relative to the entry base (which is relative to region base)
-        let seg_offset = image_len(&image)? - region_base - entry_offset;
+        let seg_offset = image_len(image)? - region_base - entry_offset;
 
         // Append stored data to the image
         image.extend_from_slice(&stored_data);
@@ -608,7 +625,7 @@ fn lay_out_file(
     // Compute digests over concatenated uncompressed segment data
     let digests = file_hash(&digest_input).map_err(|_| "no digest algorithms available")?;
 
-    let entry_size = image_len(&image)? - region_base - entry_offset;
+    let entry_size = image_len(image)? - region_base - entry_offset;
 
     let name: HString<64> = HString::try_from(file.name.as_str())
         .map_err(|_| format!("file name too long: {}", file.name))?;

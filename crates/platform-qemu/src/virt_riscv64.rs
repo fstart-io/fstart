@@ -156,7 +156,7 @@ impl QemuRiscv64VirtMainstage {
 #[cfg(feature = "linux")]
 impl fstart_stage::payload::LinuxPayloadContext for QemuRiscv64VirtMainstage {
     fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
-        let firmware = self.region(RegionKind::Firmware);
+        let firmware = crate::boot::mounted_image();
         fstart_stage::payload::LinuxPayloadConfig::new(
             firmware.base,
             firmware.size,
@@ -175,7 +175,7 @@ impl fstart_stage::payload::LinuxPayloadContext for QemuRiscv64VirtMainstage {
 #[cfg(feature = "crabefi")]
 impl fstart_stage::payload::Riscv64UefiPayloadContext for QemuRiscv64VirtMainstage {
     fn riscv64_uefi_payload_context(&self) -> fstart_stage::payload::Riscv64UefiPayloadConfig {
-        let firmware = self.region(RegionKind::Firmware);
+        let firmware = crate::boot::mounted_image();
         let opensbi = self.region(RegionKind::PayloadFirmware);
         fstart_stage::payload::Riscv64UefiPayloadConfig::new(
             firmware.base,

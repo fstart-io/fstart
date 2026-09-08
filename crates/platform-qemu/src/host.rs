@@ -38,9 +38,9 @@ impl<B: VirtBoardFacts> Plan<B> {
 }
 
 /// Platform-owned presets, not a board-authored lifecycle or geometry schema.
-/// All supported virt machines split their fixed flash window equally between
-/// initialized stage storage and the firmware filesystem. Relocation changes
-/// execution, not that storage convention.
+/// ARM retains two physical 64-MiB banks. RISC-V has one physical 32-MiB
+/// bank: the initial stage and subsequent files are packed together at actual
+/// size, not separated by an artificial half-bank reservation.
 struct MachinePolicy {
     platform: Platform,
     target: &'static str,
@@ -141,8 +141,12 @@ pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildP
     let payload = selection.payload.unwrap_or_else(|| "linux".into());
     let policy = machine.policy(&payload)?;
     let flash = policy.flash;
-    let image = span(flash.base, flash.size / 2);
-    let firmware = span(image.end()?, flash.size / 2);
+    let (image, firmware) = if matches!(machine, VirtMachine::Riscv64) {
+        (flash, flash)
+    } else {
+        let image = span(flash.base, flash.size / 2);
+        (image, span(image.end()?, flash.size / 2))
+    };
     let execution = policy.execution;
     let code = execution.unwrap_or(image);
     let writable = policy.writable;
@@ -371,6 +375,12 @@ mod tests {
                 assert_eq!(*load_address, flash);
                 assert_eq!(expectations.runtime[1].base, writable);
                 let layout = Layout::parse(&expectations.descriptor.bytes).unwrap();
+                let firmware = layout.region(Kind::Firmware).unwrap();
+                if matches!(machine, VirtMachine::Riscv64) {
+                    assert_eq!((firmware.base, firmware.size), (flash, 0x0200_0000));
+                } else {
+                    assert_eq!((firmware.base, firmware.size), (0x0400_0000, 0x0400_0000));
+                }
                 assert_eq!(layout.region(Kind::Stack).unwrap().size, stack);
                 assert_eq!(layout.region(Kind::Heap).unwrap().size, heap);
                 assert_eq!(
