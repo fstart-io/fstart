@@ -17,11 +17,8 @@ pub const QEMU_AARCH64_FLASH_BANK_SIZE: u64 = 0x0400_0000;
 pub const QEMU_AARCH64_STAGE_STACK_SIZE: u32 = 0x30_0000;
 pub const QEMU_AARCH64_STAGE_HEAP_SIZE: u32 = 0x10_0000;
 pub const QEMU_AARCH64_STAGE_DATA_ADDR: u64 = 0x4020_0000;
-pub const QEMU_ARMV7_STAGE_STACK_SIZE: u32 = 0x40_000;
-pub const QEMU_ARMV7_STAGE_HEAP_SIZE: u32 = 0x40_000;
-pub const QEMU_ARMV7_STAGE_DATA_ADDR: u64 = 0x4020_0000;
 
-/// Legacy ARM virt policy; RISC-V build geometry is metadata-owned.
+/// Legacy AArch64 virt policy; RISC-V and ARMv7 geometry is metadata-owned.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QemuVirtConfig {
@@ -261,7 +258,8 @@ impl Default for QemuAarch64VirtConfig {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QemuArmv7VirtConfig {
-    pub common: QemuVirtConfig,
+    pub ram_base: u64,
+    pub bootargs: &'static str,
     pub pci: QemuPciRootConfig,
     pub source_dtb_addr: u64,
 }
@@ -270,16 +268,8 @@ impl QemuArmv7VirtConfig {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            common: QemuVirtConfig::new(
-                0x0400_0000,
-                0x0400_0000,
-                0x4000_0000,
-                0x0800_0000,
-                0x40f0_0000,
-                0x4100_0000,
-                0,
-                "console=ttyAMA0 earlycon=pl011,mmio32,0x09000000",
-            ),
+            ram_base: 0x4000_0000,
+            bootargs: "console=ttyAMA0 earlycon=pl011,mmio32,0x09000000",
             pci: QemuPciRootConfig::new(0x3f00_0000, 0x0f, 0x1000_0000, 0x2eff_0000, 0, 0),
             source_dtb_addr: 0x4000_0000,
         }
@@ -287,7 +277,6 @@ impl QemuArmv7VirtConfig {
 
     #[must_use]
     pub const fn build(self) -> Self {
-        let _ = self.common.build();
         let _ = self.pci.build();
         self
     }
@@ -314,13 +303,6 @@ pub fn qemu_virt_security_config(pubkey_file: &str) -> SecurityConfig {
 #[must_use]
 pub fn qemu_aarch64_virt_memory() -> MemoryMap {
     qemu_arm_virt_memory(&QemuAarch64VirtConfig::new().common)
-}
-
-/// Shared host metadata for the ARMv7 QEMU virt platform.
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_armv7_virt_memory() -> MemoryMap {
-    qemu_arm_virt_memory(&QemuArmv7VirtConfig::new().common)
 }
 
 #[cfg(feature = "host")]
@@ -377,28 +359,6 @@ pub fn qemu_aarch64_virt_linux_payload() -> PayloadConfig {
     }
 }
 
-/// Shared Linux payload defaults for ARMv7 QEMU virt.
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_armv7_virt_linux_payload() -> PayloadConfig {
-    let config = QemuArmv7VirtConfig::new();
-    PayloadConfig {
-        kind: PayloadKind::LinuxBoot,
-        kernel_file: Some(hstr("zImage")),
-        kernel_load_addr: Some(config.common.kernel_addr),
-        fdt: FdtSource::Platform,
-        dtb_addr: Some(config.common.dtb_addr),
-        src_dtb_addr: Some(config.source_dtb_addr),
-        bootargs: Some(hstr(config.common.bootargs)),
-        print_x86_mtrrs: false,
-        compression: Compression::Lz4,
-        firmware: None,
-        fit_file: None,
-        fit_config: None,
-        fit_parse: None,
-    }
-}
-
 /// Shared monolithic stage policy for AArch64 QEMU virt.
 #[cfg(feature = "host")]
 #[must_use]
@@ -412,18 +372,6 @@ pub fn qemu_aarch64_virt_stages() -> StageLayout {
         QEMU_AARCH64_STAGE_STACK_SIZE,
         QEMU_AARCH64_STAGE_HEAP_SIZE,
         QEMU_AARCH64_STAGE_DATA_ADDR,
-    )
-}
-
-/// Shared monolithic stage policy for ARMv7 QEMU virt.
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_armv7_virt_stages() -> StageLayout {
-    qemu_virt_stages(
-        0,
-        QEMU_ARMV7_STAGE_STACK_SIZE,
-        QEMU_ARMV7_STAGE_HEAP_SIZE,
-        QEMU_ARMV7_STAGE_DATA_ADDR,
     )
 }
 

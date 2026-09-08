@@ -28,7 +28,11 @@ pub fn layout_section(layout: &fstart_image_build::layout::EncodedLayout, region
 
 /// Fixed-budget XIP placement. Image/BSS growth never moves the heap or stack.
 pub fn resolved_xip(layout: &crate::resolved::ResolvedBuild) -> Result<String, String> {
-    let mut out = String::from("OUTPUT_ARCH(riscv)\nENTRY(_start)\n_boot_hart_id = 0;\nMEMORY {\n");
+    let platform = layout.platform();
+    let mut out = format!(
+        "OUTPUT_ARCH({})\nENTRY(_start)\n_boot_hart_id = 0;\nMEMORY {{\n",
+        platform.linker_arch()
+    );
     for (name, flags, base, size) in [
         ("ROM", "rx", layout.image.base, layout.image.size),
         (
@@ -52,7 +56,7 @@ pub fn resolved_xip(layout: &crate::resolved::ResolvedBuild) -> Result<String, S
     // Emit immediately after executable text, before potentially writable
     // keep anchors; MEMORY attributes alone do not clear SHF_WRITE.
     out.push_str(&layout_section(&layout.descriptor()?, "ROM"));
-    write_anchor_section(&mut out, "ROM", Platform::Riscv64, layout.heap.size);
+    write_anchor_section(&mut out, "ROM", platform, layout.heap.size);
     write_rodata_section(&mut out, "ROM");
     out.push_str(" .data : ALIGN(16) { _data_start = .; *(.data .data.* .ldata .ldata.*) _data_end = .; } > RAM AT > ROM\n _data_load = LOADADDR(.data);\n");
     write_bss_section(&mut out, "RAM");

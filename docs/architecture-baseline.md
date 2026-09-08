@@ -59,7 +59,7 @@ security inputs and all geometry come from the profile, not address heuristics.
 Permitted board overrides under `[package.metadata.fstart.layout]` currently are
 `image-capacity`, `writable-capacity`, `stack`, `heap`, `firmware-offset` and
 `firmware-capacity`. Unknown overrides fail. Variant geometry overrides and other
-entry/target combinations are not implemented yet.
+entry/target combinations beyond RISC-V and ARMv7 monolithic XIP are not implemented yet.
 
 Fixed reservations are allocated before compilation. The writable footprint is
 split into data/BSS capacity followed by a fixed heap and stack. Section growth
@@ -99,6 +99,30 @@ by `--locked` stage compilation. The editor uses a Cargo-derived JSON graph with
 canonical source paths instead; see [editor usage and acceptance](ide.md).
 Unrecorded `FSTART_EXTRA_RUSTFLAGS` is rejected on this path. Neither the editor
 view nor its optional all-board lock audit changes source workspace ownership.
+
+### ARMv7 and cross-ISA increment
+
+`qemu-armv7` now selects `armv7-xip` from the same platform manifest and uses
+`QemuArmv7Program<Board>`. Its host binary, authored Rust geometry and feature
+forwarding are removed. Hardware policy and the console/PCI/init sequence remain
+handwritten. ARMv7 boots Linux directly: no SBI/TF-A firmware input is fabricated.
+
+The profile retains two 64 MiB flash banks: stage in bank 0, FFS in bank 1. Its
+fixed writable footprint is 1 MiB at `0x40200000`, including 256 KiB each for heap
+and stack; the remaining 512 KiB is data/BSS capacity. The kernel reservation is
+64 MiB at `0x41000000`; the destination DTB remains 64 KiB at `0x40f00000`.
+Runtime firmware/payload placement comes from the descriptor; RAM size comes from
+the DTB-discovered load policy, not a second static board memory map.
+
+The linker selects ARM anchors/architecture and the post-link validator handles
+ELF32 and ELF64 while checking target architecture, endianness and class.
+ARMv7 reservations, including their ends, must fit 32-bit addresses. Real LLD
+fixtures exercise writable-anchor retention and descriptor validation in both
+RISC-V ELF64 and ARM ELF32. ARM halt/PCI and Linux userspace release boots passed
+before and after migration. RISC-V ↔ ARMv7 editor switches passed in one LSP
+session, with both ARM selections also passing the all-board lock prototype audit.
+Logs: `/tmp/fstart-armv7-resolved-boots.log`, `/tmp/fstart-cross-isa-tests.log` and
+`/tmp/fstart-cross-isa-ide.log`. The focused fbuild suite now has 23 passing tests.
 
 ## Budgets and observed failures
 
@@ -174,7 +198,7 @@ explicitly development-integrity, not hardware-authenticated boot.
 
 ## Next gates
 
-- Extend editor acceptance to cross-ISA/multistage switching, clean regeneration
+- Extend editor acceptance to multistage switching, clean regeneration
   and macro/build-script edit workflows before workspace/lock cutover.
 - Extend resolved entry/layout support to further QEMU targets, proving relocation
   where applicable; then cut over the Intel multistage boundary and reservations.

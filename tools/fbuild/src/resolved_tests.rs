@@ -1,17 +1,25 @@
 use super::*;
 
 fn profile() -> Profile {
+    named_profile("riscv64-xip")
+}
+
+fn named_profile(name: &str) -> Profile {
     let manifest: toml::Value =
         toml::from_str(include_str!("../../../crates/platform-qemu/Cargo.toml")).unwrap();
-    manifest["package"]["metadata"]["fstart"]["layouts"]["riscv64-xip"]
+    manifest["package"]["metadata"]["fstart"]["layouts"][name]
         .clone()
         .try_into()
         .unwrap()
 }
 
 pub(crate) fn resolved(payload: &str) -> ResolvedBuild {
+    resolved_for("riscv64-xip", payload)
+}
+
+pub(crate) fn resolved_for(profile: &str, payload: &str) -> ResolvedBuild {
     ResolvedBuild::resolve(
-        profile(),
+        named_profile(profile),
         &Overrides::default(),
         Some(payload),
         "platform profile",
@@ -21,8 +29,14 @@ pub(crate) fn resolved(payload: &str) -> ResolvedBuild {
 
 #[test]
 fn all_payloads_project_the_same_geometry_to_linker_runtime_and_assembler() {
-    for payload in ["halt", "linux", "uefi"] {
-        let build = resolved(payload);
+    for (profile, payload) in [
+        ("riscv64-xip", "halt"),
+        ("riscv64-xip", "linux"),
+        ("riscv64-xip", "uefi"),
+        ("armv7-xip", "halt"),
+        ("armv7-xip", "linux"),
+    ] {
+        let build = resolved_for(profile, payload);
         let encoded = build.descriptor().unwrap();
         let view = fstart_core::layout::Layout::parse(encoded.as_bytes()).unwrap();
         assert_eq!(
@@ -54,7 +68,46 @@ fn all_payloads_project_the_same_geometry_to_linker_runtime_and_assembler() {
             "ORIGIN = {:#x}, LENGTH = {:#x}",
             build.stack.base, build.stack.size
         )));
-        assert_eq!(build.json().unwrap(), resolved(payload).json().unwrap());
+        assert_eq!(
+            build.json().unwrap(),
+            resolved_for(profile, payload).json().unwrap()
+        );
+    }
+}
+
+#[test]
+fn armv7_requires_representable_addresses_and_direct_linux_without_firmware() {
+    let linux = resolved_for("armv7-xip", "linux");
+    let config = linux.assembler_config("qemu-armv7").unwrap();
+    assert_eq!(config.platform, Platform::Armv7);
+    assert!(config.payload.unwrap().firmware.is_none());
+    assert!(
+        ResolvedBuild::resolve(
+            named_profile("armv7-xip"),
+            &Overrides::default(),
+            Some("uefi"),
+            "test"
+        )
+        .is_err()
+    );
+    for payload_range in [false, true] {
+        let mut p = named_profile("armv7-xip");
+        if payload_range {
+            p.payloads
+                .get_mut("linux")
+                .unwrap()
+                .kernel
+                .as_mut()
+                .unwrap()
+                .base = 0x1_0000_0000;
+        } else {
+            p.writable.base = 0x1_0000_0000;
+        }
+        assert!(
+            ResolvedBuild::resolve(p, &Overrides::default(), Some("linux"), "test")
+                .unwrap_err()
+                .contains("32-bit")
+        );
     }
 }
 

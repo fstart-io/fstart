@@ -31,8 +31,7 @@ pub use virt::{
 #[cfg(feature = "host")]
 pub use virt::{
     qemu_aarch64_virt_linux_payload, qemu_aarch64_virt_memory, qemu_aarch64_virt_stages,
-    qemu_arm_virt_build_policy, qemu_armv7_virt_linux_payload, qemu_armv7_virt_memory,
-    qemu_armv7_virt_stages,
+    qemu_arm_virt_build_policy,
 };
 #[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
 pub mod virt_aarch64;
@@ -54,7 +53,7 @@ pub use virt_aarch64::{
 };
 #[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]
 pub use virt_armv7::{
-    QemuArmv7Virt, QemuArmv7VirtBoard, QemuArmv7VirtHooks, QemuArmv7VirtMainstage,
+    QemuArmv7Program, QemuArmv7Virt, QemuArmv7VirtBoard, QemuArmv7VirtHooks, QemuArmv7VirtMainstage,
 };
 #[cfg(all(feature = "stage", feature = "virt-riscv64", target_arch = "riscv64"))]
 pub use virt_riscv64::{

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use object::read::elf::{ElfFile64, ProgramHeader};
+use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 use object::{Object, ObjectSection, ObjectSymbol};
 
 use crate::resolved::ResolvedBuild;
@@ -91,17 +91,19 @@ pub fn build(
     })
 }
 
-pub(crate) fn validate_elf(bytes: &[u8], layout: &ResolvedBuild) -> Result<(), String> {
-    let elf = ElfFile64::<object::Endianness>::parse(bytes).map_err(|e| e.to_string())?;
+fn validate_segments<Elf: FileHeader>(
+    elf: &ElfFile<'_, Elf>,
+    layout: &ResolvedBuild,
+) -> Result<(), String> {
     for segment in elf
         .elf_program_headers()
         .iter()
         .filter(|s| s.p_type(elf.endian()) == object::elf::PT_LOAD)
     {
-        let paddr = segment.p_paddr(elf.endian());
-        let vaddr = segment.p_vaddr(elf.endian());
-        let filesz = segment.p_filesz(elf.endian());
-        let memsz = segment.p_memsz(elf.endian());
+        let paddr: u64 = segment.p_paddr(elf.endian()).into();
+        let vaddr: u64 = segment.p_vaddr(elf.endian()).into();
+        let filesz: u64 = segment.p_filesz(elf.endian()).into();
+        let memsz: u64 = segment.p_memsz(elf.endian()).into();
         if filesz > memsz
             || (filesz != 0 && !layout.image.contains(paddr, filesz))
             || (memsz != 0
@@ -113,7 +115,28 @@ pub(crate) fn validate_elf(bytes: &[u8], layout: &ResolvedBuild) -> Result<(), S
             ));
         }
     }
+    Ok(())
+}
+
+pub(crate) fn validate_elf(bytes: &[u8], layout: &ResolvedBuild) -> Result<(), String> {
     let object = object::File::parse(bytes).map_err(|e| e.to_string())?;
+    let expected = match layout.platform() {
+        fstart_core::Platform::Armv7 => object::Architecture::Arm,
+        fstart_core::Platform::Riscv64 => object::Architecture::Riscv64,
+        _ => return Err("unsupported resolved ELF architecture".into()),
+    };
+    if object.architecture() != expected || !object.is_little_endian() {
+        return Err("ELF architecture/endianness differs from resolved target".into());
+    }
+    match &object {
+        object::File::Elf32(elf) if layout.platform() == fstart_core::Platform::Armv7 => {
+            validate_segments(elf, layout)?
+        }
+        object::File::Elf64(elf) if layout.platform() == fstart_core::Platform::Riscv64 => {
+            validate_segments(elf, layout)?
+        }
+        _ => return Err("ELF class differs from resolved target".into()),
+    }
     let section = object
         .section_by_name(".fstart.layout")
         .ok_or("ELF lost layout descriptor")?;

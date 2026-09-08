@@ -177,14 +177,17 @@ class Client:
         self.log.close()
 
 
-def inspect(client, payload, release):
-    stage = ROOT / "boards/qemu/riscv64/src/stage.rs"
+def inspect(client, payload, release, board="riscv64"):
+    architecture, trait = {"riscv64": ("riscv64", "QemuRiscv64VirtBoard"),
+                           "armv7": ("arm", "QemuArmv7VirtBoard")}[board]
+    platform = ROOT / f"crates/platform-qemu/src/virt_{board}.rs"
+    stage = ROOT / f"boards/qemu/{board}/src/stage.rs"
     original, uri = client.open(stage)
-    definitions = client.at("textDocument/definition", uri, original, "QemuRiscv64VirtBoard")
-    assert len(definitions) == 1 and definitions[0]["uri"] == (ROOT / "crates/platform-qemu/src/virt_riscv64.rs").as_uri(), definitions
+    definitions = client.at("textDocument/definition", uri, original, trait)
+    assert len(definitions) == 1 and definitions[0]["uri"] == platform.as_uri(), definitions
     selected = "crabefi" if payload == "uefi" else payload
     debug = "not(debug_assertions)" if release else "debug_assertions"
-    condition = f'target_arch="riscv64", fstart_payload="{selected}", {debug}, not(test)'
+    condition = f'target_arch="{architecture}", fstart_entry="{board}", fstart_payload="{selected}", {debug}, not(test)'
     addition = (f"\n#[cfg(all({condition}))]\nconst FSTART_IDE_CFG: u8 = 1;\n"
                 f"#[cfg(not(all({condition})))]\nconst FSTART_IDE_CFG: u8 = 2;\n"
                 "fn fstart_ide_cfg_probe() -> u8 { FSTART_IDE_CFG }\n")
@@ -194,7 +197,7 @@ def inspect(client, payload, release):
         assert hover and "= 1" in hover["contents"]["value"], hover
     finally:
         client.change(uri, original)
-    text, uri = client.open(ROOT / "crates/platform-qemu/src/virt_riscv64.rs")
+    text, uri = client.open(platform)
     definitions = client.at("textDocument/definition", uri, text, "Selected as")
     expected = {"halt": "HaltPayload", "linux": "LinuxPayload", "uefi": "Riscv64UefiPayload"}[payload]
     assert len(definitions) == 1 and expected in text.splitlines()[definitions[0]["range"]["start"]["line"]], definitions
@@ -202,7 +205,7 @@ def inspect(client, payload, release):
     expansion = client.at("rust-analyzer/expandMacro", uri, text, "Serialize)]")
     assert expansion and "impl _serde::Serialize for BoardConfig" in expansion["expansion"], expansion
     assert client.request("workspace/symbol", {"query": "Gm965Ich8Config"}) == []
-    print(f"PASS {payload} {'release' if release else 'debug'}: real-source definition, cfgs, selected launcher, proc macro, bounded symbols", flush=True)
+    print(f"PASS {board} {payload} {'release' if release else 'debug'}: real-source definition, cfgs, selected launcher, proc macro, bounded symbols", flush=True)
 
 
 def edit_check(client):
@@ -270,28 +273,31 @@ def main():
     args = parser.parse_args()
     if args.inventory_noise < 0:
         parser.error("--inventory-noise must be nonnegative")
-    cases = [("halt", True), ("linux", True), ("uefi", True), ("halt", False)]
+    cases = [("riscv64", "halt", True), ("riscv64", "linux", True),
+             ("riscv64", "uefi", True), ("riscv64", "halt", False),
+             ("armv7", "halt", True), ("armv7", "linux", True),
+             ("riscv64", "halt", True)]
     paths = []
-    for payload, release in cases:
-        command = ["cargo", "run", "--locked", "-p", "fbuild", "--", "ide", "qemu-riscv64", "--payload", payload]
+    for board, payload, release in cases:
+        command = ["cargo", "run", "--locked", "-p", "fbuild", "--", "ide", f"qemu-{board}", "--payload", payload]
         if release:
             command.append("--release")
         if args.audit_lock:
             command.append("--audit-lock")
         subprocess.run(command, cwd=ROOT, check=True)
-        directory = ROOT / "target/fstart-ide/qemu-riscv64" / ("release" if release else "debug") / payload
+        directory = ROOT / f"target/fstart-ide/qemu-{board}" / ("release" if release else "debug") / payload
         project = load_json(directory / "rust-project.json")
         for crate in project["crates"]:
             source = pathlib.Path(crate["root_module"])
             assert source.resolve() == source, source
             if source.is_relative_to(ROOT / "boards"):
-                assert source.is_relative_to(ROOT / "boards/qemu/riscv64"), source
+                assert source.is_relative_to(ROOT / f"boards/qemu/{board}"), source
         paths.append(directory / "rust-analyzer.json")
     evidence = ROOT / "target/fstart-ide/proof"
     evidence.mkdir(parents=True, exist_ok=True)
     client = Client(configuration(paths[0]), evidence)
     try:
-        for index, ((payload, release), config_path) in enumerate(zip(cases, paths)):
+        for index, ((board, payload, release), config_path) in enumerate(zip(cases, paths)):
             started = time.monotonic()
             if index == 0:
                 status = client.initialize()
@@ -300,7 +306,7 @@ def main():
                 client.notify("workspace/didChangeConfiguration", {"settings": None})
                 status = client.ready()
             (evidence / f"{index}-status.txt").write_text(status)
-            inspect(client, payload, release)
+            inspect(client, payload, release, board)
             print(f"  switch + semantic probes: {time.monotonic() - started:.2f}s", flush=True)
             if index == 0 and args.edit_check:
                 edit_check(client)

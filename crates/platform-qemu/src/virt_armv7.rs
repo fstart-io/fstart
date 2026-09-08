@@ -1,9 +1,24 @@
 //! Handwritten QEMU ARMv7 virt flow.
 
+use fstart_core::layout::{Layout, Region, RegionKind};
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
-use fstart_stage::{StageBoard, StageEnvironment};
+use fstart_stage::{StageEnvironment, StageProgram};
+
+#[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "armv7")))]
+compile_error!("ARMv7 virt requires monolithic/armv7 stage and entry selections");
+#[cfg(any(
+    not(any(fstart_payload = "halt", fstart_payload = "linux")),
+    all(fstart_payload = "halt", fstart_payload = "linux")
+))]
+compile_error!("select exactly one ARMv7 virt payload");
+#[cfg(all(fstart_payload = "linux", not(feature = "linux")))]
+compile_error!("selected Linux backend is not enabled");
+#[cfg(fstart_payload = "halt")]
+type Selected = fstart_stage::payload::HaltPayload;
+#[cfg(all(fstart_payload = "linux", feature = "linux"))]
+type Selected = fstart_stage::payload::LinuxPayload;
 
 use crate::virt::{QemuArmv7VirtConfig, enumerate_pci, phase};
 
@@ -22,29 +37,51 @@ pub trait QemuArmv7VirtHooks {
     }
 }
 
-pub trait QemuArmv7VirtBoard: StageBoard {
+pub trait QemuArmv7VirtBoard: 'static {
     type Hooks: QemuArmv7VirtHooks + Default;
-    type Payload: MainstagePayload<QemuArmv7VirtMainstage>;
 
     const CONFIG: &'static QemuArmv7VirtConfig;
     fn console_config() -> Pl011Config;
+}
+
+pub struct QemuArmv7Program<B>(core::marker::PhantomData<B>);
+impl<B: QemuArmv7VirtBoard> StageProgram for QemuArmv7Program<B> {
+    fn run_stage(handoff: usize) -> ! {
+        QemuArmv7Virt::run_stage::<B>(StageEnvironment::Monolithic, handoff)
+    }
 }
 
 pub struct QemuArmv7Virt;
 
 pub struct QemuArmv7VirtMainstage {
     config: &'static QemuArmv7VirtConfig,
+    layout: Layout<'static>,
     console: Pl011,
     pci: Option<fstart_pci::PciEcam>,
 }
 
 impl QemuArmv7VirtMainstage {
     fn new<B: QemuArmv7VirtBoard>() -> Result<Self, ServiceError> {
+        let layout = fstart_stage::layout::current().map_err(|_| ServiceError::InvalidParam)?;
+        for kind in [RegionKind::Firmware, RegionKind::Stack, RegionKind::Heap] {
+            layout.region(kind).ok_or(ServiceError::InvalidParam)?;
+        }
+        #[cfg(fstart_payload = "linux")]
+        for kind in [RegionKind::DeviceTree, RegionKind::Payload] {
+            layout.region(kind).ok_or(ServiceError::InvalidParam)?;
+        }
         Ok(Self {
             config: B::CONFIG,
+            layout,
             console: Pl011::new(B::console_config())?,
             pci: None,
         })
+    }
+
+    fn region(&self, kind: RegionKind) -> Region {
+        self.layout
+            .region(kind)
+            .expect("resolved layout role missing")
     }
 
     fn init_console(&mut self) -> Result<(), ServiceError> {
@@ -52,6 +89,12 @@ impl QemuArmv7VirtMainstage {
         // SAFETY: the monolithic flow owns the console through payload handoff.
         unsafe { fstart_log::init(&self.console) };
         fstart_log::info!("qemu-armv7: pl011 console ready");
+        fstart_log::info!(
+            "resolved layout: stack={} heap={} firmware={}",
+            self.region(RegionKind::Stack).size,
+            self.region(RegionKind::Heap).size,
+            self.region(RegionKind::Firmware).size
+        );
         Ok(())
     }
 
@@ -69,16 +112,21 @@ impl QemuArmv7VirtMainstage {
 #[cfg(feature = "linux")]
 impl fstart_stage::payload::LinuxPayloadContext for QemuArmv7VirtMainstage {
     fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
-        let config = self.config.common;
+        let config = self.config;
+        let firmware = self.region(RegionKind::Firmware);
+        let ram_size = fstart_stage::directory::writable_memory()
+            .and_then(|windows| windows.iter().find(|w| w.start == config.ram_base))
+            .expect("ARMv7 virt RAM was not discovered")
+            .size;
         fstart_stage::payload::LinuxPayloadConfig::new(
-            config.firmware_base,
-            config.firmware_size,
+            firmware.base,
+            firmware.size,
             self.config.source_dtb_addr,
-            config.dtb_addr,
-            config.kernel_addr,
-            config.firmware_addr,
+            self.region(RegionKind::DeviceTree).base,
+            self.region(RegionKind::Payload).base,
+            0,
             config.ram_base,
-            config.ram_size,
+            ram_size,
             0,
             config.bootargs,
         )
@@ -104,12 +152,16 @@ impl QemuArmv7Virt {
             || !phase(
                 "qemu-armv7",
                 "boot_integrity",
-                crate::boot::from_dtb(
+                crate::boot::from_dtb_with_layout(
                     B::CONFIG.source_dtb_addr,
-                    cfg!(feature = "linux").then_some(B::CONFIG.common.dtb_addr),
-                    B::CONFIG.common.ram_base,
-                    B::CONFIG.common.firmware_base,
-                    B::CONFIG.common.firmware_size,
+                    mainstage
+                        .layout
+                        .region(RegionKind::DeviceTree)
+                        .map(|r| r.base),
+                    B::CONFIG.ram_base,
+                    mainstage.region(RegionKind::Firmware).base,
+                    mainstage.region(RegionKind::Firmware).size,
+                    Some(mainstage.layout),
                 ),
             )
             || !phase("qemu-armv7", "bus_scan", mainstage.init_pci())
@@ -119,6 +171,6 @@ impl QemuArmv7Virt {
         }
         fstart_log::info!("qemu-armv7 ramstage: finalize");
         fstart_log::info!("qemu-armv7 ramstage: ready for payload");
-        B::Payload::boot(mainstage)
+        <Selected as MainstagePayload<_>>::boot(mainstage)
     }
 }

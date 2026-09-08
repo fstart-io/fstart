@@ -126,6 +126,14 @@ pub struct ResolvedBuild {
     origins: BTreeMap<String, String>,
 }
 
+fn resolved_platform(target: &str, entry: &str, env: &str) -> Result<Platform, String> {
+    match (target, entry, env) {
+        ("riscv64gc-unknown-none-elf", "riscv64", "monolithic") => Ok(Platform::Riscv64),
+        ("armv7a-none-eabi", "armv7", "monolithic") => Ok(Platform::Armv7),
+        _ => Err("unsupported target/entry/environment for resolved XIP layout".into()),
+    }
+}
+
 impl ResolvedBuild {
     pub fn load(
         root: &Path,
@@ -223,7 +231,7 @@ impl ResolvedBuild {
         if board
             .platform
             .as_deref()
-            .is_some_and(|platform| platform != "riscv64")
+            .is_some_and(|platform| platform != resolved.platform().as_str())
         {
             return Err("board platform conflicts with resolved entry".into());
         }
@@ -255,10 +263,7 @@ impl ResolvedBuild {
         choice: Option<&str>,
         source: &str,
     ) -> Result<Self, String> {
-        if p.target != "riscv64gc-unknown-none-elf" || p.entry != "riscv64" || p.env != "monolithic"
-        {
-            return Err("unsupported target/entry/environment for resolved XIP layout".into());
-        }
+        let platform = resolved_platform(&p.target, &p.entry, &p.env)?;
         let mut origins = BTreeMap::new();
         for key in [
             "image-capacity",
@@ -381,10 +386,10 @@ impl ResolvedBuild {
             ranges.push(range);
         }
         if (payload == "linux" && (inputs.kernel.is_none() || inputs.kernel_file.is_none()))
-            || (payload != "halt"
-                && (inputs.firmware.is_none()
-                    || inputs.firmware_file.is_none()
-                    || inputs.device_tree.is_none()))
+            || (payload != "halt" && inputs.device_tree.is_none())
+            || (payload != "halt" && platform == Platform::Riscv64 && inputs.firmware.is_none())
+            || (inputs.firmware.is_some() != inputs.firmware_file.is_some())
+            || (platform == Platform::Armv7 && (payload == "uefi" || inputs.firmware.is_some()))
             || (payload == "halt"
                 && (inputs.kernel.is_some()
                     || inputs.firmware.is_some()
@@ -394,6 +399,13 @@ impl ResolvedBuild {
         }
         if payload == "uefi" && (inputs.kernel.is_some() || inputs.kernel_file.is_some()) {
             return Err("UEFI profile cannot include a direct kernel input".into());
+        }
+        if platform == Platform::Armv7
+            && ranges
+                .iter()
+                .any(|r| r.end().is_ok_and(|end| end > u64::from(u32::MAX)))
+        {
+            return Err("ARMv7 reservations and their ends must fit 32-bit addresses".into());
         }
         let mut features = p.features;
         features.extend(inputs.features.iter().cloned());
@@ -444,6 +456,10 @@ impl ResolvedBuild {
         release: bool,
     ) -> Result<(), String> {
         crate::resolved_build::check(root, board, self, release)
+    }
+
+    pub(crate) fn platform(&self) -> Platform {
+        resolved_platform(&self.target, &self.entry, &self.env).expect("validated resolved target")
     }
 
     pub fn json(&self) -> Result<String, String> {
@@ -516,7 +532,7 @@ impl ResolvedBuild {
         };
         Ok(BoardConfig {
             name: hstring(board)?,
-            platform: Platform::Riscv64,
+            platform: self.platform(),
             memory: MemoryMap {
                 regions: hvec([
                     MemoryRegion {

@@ -56,7 +56,7 @@ impl Selection {
         }
         flags.extend([
             "--check-cfg=cfg(fstart_stage_env,values(\"monolithic\"))".into(),
-            "--check-cfg=cfg(fstart_entry,values(\"riscv64\"))".into(),
+            "--check-cfg=cfg(fstart_entry,values(\"riscv64\",\"armv7\"))".into(),
             "--check-cfg=cfg(fstart_payload,values(\"halt\",\"linux\",\"crabefi\"))".into(),
             format!("-Clink-arg=-T{}", script.display()),
         ]);
