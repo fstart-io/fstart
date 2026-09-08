@@ -1,0 +1,79 @@
+# Test-only legacy resolver inputs. Not a board or platform authoring path.
+[riscv64-xip]
+target = "riscv64gc-unknown-none-elf"
+entry = "riscv64"
+env = "monolithic"
+features = [
+  "stage",
+  "fstart-platform-qemu/virt-riscv64",
+  "fstart-platform-qemu/riscv64",
+  "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519",
+  "fstart-stage/sha2-digest", "fstart-stage/sha3-digest",
+  "fstart-stage/fdt", "fstart-stage/lz4",
+]
+flash = { base = 0x20000000, size = 0x02000000 }
+image-capacity = 0x01000000
+firmware-offset = 0x01000000
+firmware-capacity = 0x01000000
+# Includes CrabEFI's ~1.1 MiB initialized data, plus fixed heap and stack.
+writable = { base = 0x81000000, size = 0x00400000 }
+stack = 0x00100000
+heap = 0x00040000
+default-payload = "linux"
+
+[riscv64-xip.security]
+signing_algorithm = "Ed25519"
+pubkey_file = "keys/dev-signing.pub"
+required_digests = ["Sha256", "Sha3_256"]
+
+[riscv64-xip.payloads.halt]
+features = []
+
+[riscv64-xip.payloads.linux]
+features = ["fstart-platform-qemu/linux"]
+kernel = { base = 0x82000000, size = 0x04000000 }
+kernel-file = "Image"
+firmware = { base = 0x80100000, size = 0x00200000 }
+firmware-file = "fw_dynamic.bin"
+device-tree = { base = 0x87f00000, size = 0x10000 }
+
+[riscv64-xip.payloads.uefi]
+features = ["fstart-platform-qemu/crabefi"]
+firmware = { base = 0x80100000, size = 0x00200000 }
+firmware-file = "fw_dynamic.bin"
+device-tree = { base = 0x80f00000, size = 0x10000 }
+
+[armv7-xip]
+target = "armv7a-none-eabi"
+entry = "armv7"
+env = "monolithic"
+features = [
+  "stage", "fstart-platform-qemu/stage", "fstart-platform-qemu/armv7",
+  "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519",
+  "fstart-stage/sha2-digest", "fstart-stage/sha3-digest",
+  "fstart-stage/fdt", "fstart-stage/lz4",
+]
+# QEMU virt's two contiguous 64 MiB flash banks.
+flash = { base = 0, size = 0x08000000 }
+image-capacity = 0x04000000
+firmware-offset = 0x04000000
+firmware-capacity = 0x04000000
+writable = { base = 0x40200000, size = 0x00100000 }
+stack = 0x00040000
+heap = 0x00040000
+default-payload = "linux"
+
+[armv7-xip.security]
+signing_algorithm = "Ed25519"
+pubkey_file = "keys/dev-signing.pub"
+required_digests = ["Sha256", "Sha3_256"]
+
+[armv7-xip.payloads.halt]
+features = []
+
+[armv7-xip.payloads.linux]
+features = ["fstart-platform-qemu/linux"]
+kernel = { base = 0x41000000, size = 0x04000000 }
+kernel-file = "zImage"
+device-tree = { base = 0x40f00000, size = 0x10000 }
+

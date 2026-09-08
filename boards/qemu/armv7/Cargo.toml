@@ -10,19 +10,12 @@ schema = 1
 board = "qemu-armv7"
 platform = "armv7"
 stage-bin = "fstart-stage"
-build-profile = { dependency = "fstart-platform-qemu", name = "armv7-xip" }
-
-[features]
-default = []
-stage = ["dep:fstart-driver-uart", "dep:fstart-stage"]
+build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
-fstart-core = { path = "../../../crates/core" }
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
-fstart-driver-uart = { path = "../../../crates/driver-uart", optional = true }
-fstart-stage = { path = "../../../crates/stage", default-features = false, optional = true }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
-required-features = ["stage"]

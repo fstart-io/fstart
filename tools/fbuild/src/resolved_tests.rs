@@ -5,12 +5,8 @@ fn profile() -> Profile {
 }
 
 fn named_profile(name: &str) -> Profile {
-    let manifest: toml::Value =
-        toml::from_str(include_str!("../../../crates/platform-qemu/Cargo.toml")).unwrap();
-    manifest["package"]["metadata"]["fstart"]["layouts"][name]
-        .clone()
-        .try_into()
-        .unwrap()
+    let manifest: toml::Value = toml::from_str(include_str!("fixtures/legacy-xip.toml")).unwrap();
+    manifest[name].clone().try_into().unwrap()
 }
 
 pub(crate) fn resolved(payload: &str) -> ResolvedBuild {
@@ -25,6 +21,55 @@ pub(crate) fn resolved_for(profile: &str, payload: &str) -> ResolvedBuild {
         "platform profile",
     )
     .unwrap()
+}
+
+#[test]
+fn typed_qemu_presets_match_frozen_legacy_geometry_and_assembly() {
+    use fstart_platform_qemu::facts::VirtMachine;
+    for (profile, machine, payloads) in [
+        (
+            "riscv64-xip",
+            VirtMachine::Riscv64,
+            &["halt", "linux", "uefi"][..],
+        ),
+        ("armv7-xip", VirtMachine::Armv7, &["halt", "linux"][..]),
+    ] {
+        for payload in payloads {
+            let old = resolved_for(profile, payload);
+            let new = fstart_platform_qemu::host::resolve(
+                machine,
+                fstart_image_build::plan::BuildSelection {
+                    payload: Some((*payload).into()),
+                },
+            )
+            .unwrap();
+            let unit = &new.units[0];
+            let fstart_image_build::build_plan::UnitOutput::Executable { expectations, .. } =
+                &unit.output
+            else {
+                panic!("not executable")
+            };
+            assert_eq!(
+                old.descriptor().unwrap().as_bytes(),
+                expectations.descriptor.bytes
+            );
+            assert_eq!(
+                crate::linker::resolved_xip(&old).unwrap(),
+                *unit.linker_script.as_ref().unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(old.elf_expectations().unwrap()).unwrap(),
+                serde_json::to_value(expectations).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(old.assembler_config("fixture").unwrap()).unwrap(),
+                serde_json::to_value(new.assembly.config("fixture").unwrap()).unwrap()
+            );
+            assert_eq!(unit.target, old.target);
+            assert_eq!(unit.entry, old.entry);
+            assert_eq!(unit.environment, old.env);
+        }
+    }
 }
 
 #[test]

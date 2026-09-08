@@ -16,8 +16,8 @@ interfaces below are not claims that the cutover is implemented. See
 - Rust owns hardware policy and typed board/image facts; platform Rust derives
   shared build geometry. Cargo metadata selects identity and the platform export.
   No devicetree, RON, Cargo hardware schema or execution-order DSL.
-  QEMU AArch64 also uses typed Rust facts and a concrete platform plan;
-  QEMU RISC-V/ARMv7 retain their explicitly legacy metadata geometry path.
+  QEMU RISC-V, ARMv7 and AArch64 select typed platform-owned machine presets
+  and share the concrete platform-plan executor.
 - Fixed handwritten family flows construct live drivers from static config.
 - Shared IP-block fixes reach all supported variants through one implementation.
 - Unrelated SoCs do not enter an existing board's compilation closure.
@@ -55,11 +55,11 @@ shared platform policy, not repeated board geometry.
 | --- | --- | --- |
 | DRAM policy, GPIO, pinmux, device config, SMBIOS strings | Board Rust and typed platform defaults | Static config and runtime table builders |
 | Board/variant identity and platform reference | Board Cargo metadata | Discovery, selection, build report |
-| Target, entry mode, stage structure and default budgets | Platform Rust policy (unmigrated QEMU uses profiles) | Concrete compiler units and their projections |
-| Flash chip capacity and partition map | Typed board Rust facts for Intel/AArch64; metadata for unmigrated QEMU | Host resolver, assembler and linked runtime descriptor |
+| Target, entry mode, stage structure and default budgets | Platform Rust policy | Concrete compiler units and their projections |
+| Flash chip capacity and partition map | Typed board facts where physical boards vary (Intel); platform invariants for supported QEMU virt presets | Host resolver, assembler and linked runtime descriptor |
 | Stage load ranges, stacks, heaps and reservations | Shared platform Rust calculations and real chipset deltas | Linker symbols and runtime descriptor |
 | Detected DRAM and usable memory | Memory-init results | Existing runtime map/handoff, intersected with reservations |
-| Microcode/blob defaults and payload files | Platform Rust / board facts plus explicit CLI inputs (unmigrated QEMU retains metadata) | Host assembler only |
+| Microcode/blob defaults and payload files | Platform Rust / board facts plus explicit CLI inputs | Host assembler only |
 | Final offsets, lengths and compression results | Image assembly | Existing image directory/descriptor mechanisms |
 | Hardware initialization order | Platform Rust | Handwritten calls, never a metadata step list |
 
@@ -118,11 +118,12 @@ board host feature/executable or firmware recipe. The Intel family calculates
 common capacities once; the tested i945 comparison changes only the real CAR
 window, without migrating that board's legacy build path.
 
-QEMU AArch64 now calls the same platform host export from an unconditional typed
-physical-flash fact. Its one relocating unit has distinct storage, execution and
-writable mappings and no producer dependency. RISC-V/ARMv7 QEMU still use the
-explicit legacy profile route; other board-host builds remain legacy too. There
-is no claim that all fbuild paths are generic. Imported IFD/host transport and
+QEMU virt boards select `VirtMachine::{Riscv64, Armv7, Aarch64}` in unconditional
+Rust source. The platform owns invariant flash banks, fixed reservations and
+compiler bundles, sharing one image projection while keeping explicit XIP,
+direct ARM Linux and AArch64 relocation differences. AArch64 no longer repeats
+an artificial fixed flash-capacity fact in board source. Other board-host builds
+remain legacy; there is no claim that all fbuild paths are generic. Imported IFD/host transport and
 selected reservations retain checked validation; const authoring is not a reason
 to skip ELF and assembly validation. See the [common-plan boundary and acceptance](architecture-common-plan.md).
 
@@ -375,10 +376,11 @@ that same resolved path, with ELF32 validation, halt/Linux release boots and liv
 RISC-V ↔ ARMv7 editor switches passing. AArch64 now has distinct flash-storage,
 RAM-execution and writable reservations, validated relocation extents, and passing
 halt/Linux/CrabEFI release boots from the earlier relocation milestone. X61's
-typed board IFD/CPU facts and AArch64's physical-flash fact now feed the **same
-concrete platform-plan executor** through Cargo host exports. Intel multistage
-and single-unit AArch64 relocation no longer require family branches in common
-build/check/IDE tools. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
+typed board IFD/CPU facts and all three QEMU virt machine selections now feed the
+**same concrete platform-plan executor** through Cargo host exports. Intel
+multistage, RISC-V/ARMv7 XIP and AArch64 relocation require no family branches in
+common build/check/IDE tools. The former virt Cargo geometry profiles now exist
+only as frozen legacy-resolver test fixtures, not platform authoring paths. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
 AArch64 halt assembly/boot, and live car → postcar → ram → SMM → AArch64 editor
 switching with original-source invalid-fact diagnostics pass. Hardware boot and
 stack high-water measurements remain outstanding. Workspace ownership has not

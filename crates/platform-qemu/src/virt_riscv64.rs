@@ -1,4 +1,4 @@
-//! Handwritten QEMU RISC-V virt flow with metadata-owned stage geometry.
+//! Handwritten QEMU RISC-V virt flow with linked-descriptor stage geometry.
 
 use crate::virt::{QemuRiscv64VirtConfig, enumerate_pci, phase};
 use fstart_core::layout::{Layout, Region, RegionKind};

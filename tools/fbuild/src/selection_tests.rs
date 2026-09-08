@@ -109,7 +109,7 @@ fn platform_cfg_schema_accepts_new_vocabulary_but_not_selected_typos() {
     let scratch =
         Scratch(std::env::temp_dir().join(format!("fstart cfg schema {}", std::process::id())));
     let mut unit = fstart_platform_qemu::host::resolve(
-        fstart_platform_qemu::facts::Aarch64ImageFacts::new(0x0800_0000),
+        fstart_platform_qemu::facts::VirtMachine::Aarch64,
         fstart_image_build::plan::BuildSelection {
             payload: Some("halt".into()),
         },
@@ -197,7 +197,7 @@ fn ambient_artifact_environment_isolation() {
     let scratch =
         Scratch(std::env::temp_dir().join(format!("fstart env isolation {}", std::process::id())));
     let unit = fstart_platform_qemu::host::resolve(
-        fstart_platform_qemu::facts::Aarch64ImageFacts::new(0x0800_0000),
+        fstart_platform_qemu::facts::VirtMachine::Aarch64,
         fstart_image_build::plan::BuildSelection {
             payload: Some("halt".into()),
         },

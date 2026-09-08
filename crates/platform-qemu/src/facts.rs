@@ -1,19 +1,14 @@
-//! Host-clean image facts for the migrated AArch64 virt board contract.
-//! Runtime geometry remains the validated linked descriptor, not these facts.
+//! Host-clean selection of supported QEMU virt machines.
+//! Flash mapping and all normal image reservations are machine invariants owned
+//! by the platform. Runtime geometry remains the validated linked descriptor.
 
 #[derive(Debug, Clone, Copy)]
-pub struct Aarch64ImageFacts {
-    pub flash_capacity: u64,
+pub enum VirtMachine {
+    Riscv64,
+    Armv7,
+    Aarch64,
 }
-impl Aarch64ImageFacts {
-    pub const fn new(flash_capacity: u64) -> Self {
-        assert!(
-            flash_capacity == 0x0800_0000,
-            "AArch64 virt requires its two fixed 64-MiB flash banks"
-        );
-        Self { flash_capacity }
-    }
-}
-pub trait Aarch64BoardFacts {
-    const IMAGE: Aarch64ImageFacts;
+
+pub trait VirtBoardFacts {
+    const MACHINE: VirtMachine;
 }

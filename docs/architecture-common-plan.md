@@ -7,11 +7,10 @@ moving its Intel executor would not have fixed the boundary.
 
 ## Migrated scope
 
-**X61 and QEMU AArch64 use the same concrete plan and executor.** This is not a
-claim that all of fbuild is generic. RISC-V/ARMv7 QEMU metadata profiles use the
-explicit `ResolvedImage::Legacy` route; remaining board-host/BoardConfig builds,
-including i945 and Pineview, retain their earlier legacy path. There is no
-AArch64 Cargo geometry recipe alongside its migrated Rust constructor.
+**X61 and QEMU RISC-V, ARMv7 and AArch64 use the same concrete plan and executor.**
+This is not a claim that all of fbuild is generic. Remaining board-host/BoardConfig
+builds, including i945 and Pineview, retain their earlier legacy path. None of
+these three virt boards has a Cargo geometry recipe beside its Rust preset.
 
 - `crates/image-build/src/build_plan.rs`: family-free `BuildPlan`, named
   `CompilationUnit`s, explicit Cargo target kind/triple, entry/environment/payload
@@ -21,11 +20,13 @@ AArch64 Cargo geometry recipe alongside its migrated Rust constructor.
   The SMM library unit explicitly selects release/PIC compilation and its format
   operation. Ramstage explicitly binds that producer's current image/header.
   The executor does not discover that relationship from a role or name.
-- `crates/platform-qemu/src/{facts,host}.rs` and
-  `boards/qemu/aarch64/src/config.rs`: unconditional typed physical flash fact,
-  fixed platform reservations and a single relocating compiler unit. Storage
-  starts at zero; execution is at `0x40400000`; writable storage is separate at
-  `0x40800000`. No producer, CAR flow or Intel entry convention is imposed.
+- `crates/platform-qemu/src/{facts,host}.rs` and the three virt board configs:
+  unconditional typed `VirtMachine` selection and hardware config. The platform
+  owns invariant flash banks, reservations and compiler bundles. One projection
+  composes explicit RISC-V XIP, ARMv7 XIP/direct Linux and AArch64 relocation
+  policy; it is not three copied constructors or a lifecycle DSL. AArch64 storage
+  starts at zero, execution at `0x40400000`, writable storage at `0x40800000`.
+  No producer, CAR flow or Intel entry convention is imposed.
 - `tools/fbuild/src/{host_plan,plan_executor,selection}.rs`: existing Cargo-owned
   host runner, alias qualification, bounded dependency execution and one compiler
   selection used by build, check and IDE. The old `intel_build.rs` and
@@ -127,17 +128,123 @@ entry to its prepared lock and builds with `--locked`, with no fallback. This
 continues to be a guarantee **after** the pre-existing selected-source preparation,
 not a claim of end-to-end zero-resolution builds.
 
-The AArch64 board uses the same platform-owned hygienic stage export pattern as
-Intel. Its physical fact and normal hardware config live in original Rust source,
-not behind a host-only feature. The platform owns its shared firmware feature
-bundle; the board has no forwarding recipe, direct stage runtime dependency or
-host executable. Editor projects remain Cargo-derived, target-bounded and
+All three virt boards use the same platform-owned hygienic stage export pattern
+as Intel. Their machine selection and hardware config live in original Rust
+source, not behind a host-only feature. The platform owns shared firmware bundles;
+the boards have no forwarding recipe, direct stage runtime dependency or host
+executable. AArch64's former board-authored fixed flash capacity was removed:
+it was a machine invariant, not demonstrated supported variation. Editor projects remain Cargo-derived, target-bounded and
 canonical original-source graphs.
 
-## Acceptance evidence
+## RISC-V / ARMv7 virt follow-up batch
+
+The platform presets preserve these fixed reservations (bytes):
+
+| Machine | Flash / split | Writable | Stack / heap | Linux kernel | Payload runtime / DTB |
+| --- | --- | --- | --- | --- | --- |
+| RISC-V | `0x20000000`, 32 MiB / 16 MiB | `0x81000000`, 4 MiB | 1 MiB / 256 KiB | `0x82000000`, 64 MiB | OpenSBI `0x80100000`, 2 MiB; DTB 64 KiB at `0x87f00000` (Linux) or `0x80f00000` (UEFI) |
+| ARMv7 | `0`, 128 MiB / 64 MiB | `0x40200000`, 1 MiB | 256 KiB / 256 KiB | `0x41000000`, 64 MiB | No external firmware; DTB `0x40f00000`, 64 KiB |
+
+Halt has no payload/kernel/runtime/DTB inputs. ARMv7 supports halt and direct
+Linux, rejects UEFI, and never requests an external firmware file. RISC-V keeps
+halt/Linux/UEFI, its distinct payload DTB destinations, bounded OpenSBI DTB growth,
+authenticated loading and MP/handoff behavior. Hardware flows and entry/loader
+ABIs are unchanged; only the stale RISC-V module description was updated.
+
+The last production consumers of `riscv64-xip` / `armv7-xip` Cargo geometry are
+gone. The ten remaining boards use the **BoardConfig host-callback path**, not
+this metadata resolver. The explicit next cleanup is to replace the frozen
+resolver comparison with golden output fixtures, then delete the orphaned
+metadata schema/resolver, `ResolvedImage::Legacy`, `resolved_build.rs` and its
+selection route. Preserve helpers actually shared with BoardConfig/common
+callers; do not keep a production resolver solely for tests indefinitely.
+That deletion is a separate bounded follow-up, **not this batch**. Test-only
+legacy input currently lives at `tools/fbuild/src/fixtures/legacy-xip.toml`, not
+in platform Cargo metadata. New real LLD tests select typed presets for all
+three architectures, and a frozen-fixture comparison covers exact descriptor,
+linker, ELF expectations and assembly projection for all five new combinations.
+
+The selected machine and handwritten runtime program remain separate Rust
+selections: selecting the wrong pair fails later when compiling the target
+program, not in a unified type-level constructor. No lifecycle abstraction is
+introduced to hide that coupling. Another follow-up validation gate is restoring
+the legacy resolver's early ARM32 representability check in a reusable format
+validator: fixed ARM presets fit today and actual LLD/ELF validation still runs,
+but `Xip::validate` does not itself reject every over-32-bit range.
+
+Ten legacy packages remain for subsequent batches (no migration claim):
+`qemu-q35`, `qemu-sbsa`, `qemu-sifive-u`, `sifive-unmatched`, `intel-d945gclf`
+(i945), `foxconn-d41s` (Pineview), `bananapi-m1`, `orangepi-r1`, `orangepi-pc2`,
+and `licheerv-dock` (the four Sunxi boards).
+
+### Batch acceptance commands and evidence
+
+The bounded command/probe scripts are `/tmp/fstart-qemu-batch-{builds,finish}.sh`.
+Representative commands (kernel/firmware inputs are explicit):
+
+```sh
+cargo test --locked -p fbuild -p fstart-core -p fstart-image-build \
+  -p fstart-platform-intel -p fstart-platform-qemu \
+  --features fstart-platform-intel/host,fstart-platform-qemu/host
+fbuild assemble -b qemu-riscv64 --release --payload linux \
+  --kernel boot-assets/payloads/Image-riscv64 --firmware boot-assets/payloads/fw_dynamic.bin
+fbuild assemble -b qemu-armv7 --release --payload linux \
+  --kernel boot-assets/payloads/zImage-armv7
+fbuild check qemu-riscv64 --release --payload uefi --stage stage
+fbuild ide qemu-armv7 --release --payload linux --stage stage
+```
+
+- **64 focused tests pass**, including actual LLD fixed-capacity/ELF range and
+  AArch64 copy-extent tests: `/tmp/fstart-qemu-batch-final-tests.log`.
+- Final release assembly: RISC-V halt/Linux/UEFI, ARMv7 halt/Linux, AArch64 halt,
+  and X61 halt (no hardware boot): `/tmp/fstart-qemu-batch-final-builds.log` and
+  `/tmp/fstart-qemu-batch-{riscv64,armv7,aarch64,x61}-*.log`.
+- Six fresh post-review boots with existing `ci/qemu-boot-tests.sh`, filtered to
+  the affected machines: `/tmp/fstart-qemu-batch-final-boots.log` and the matching
+  directory. Linux reaches `FSTART_CI_BOOT_SUCCESS`, RISC-V UEFI reaches
+  `Boot manager finished`, halt reaches ready-for-payload/PCI. No ARM UEFI claim.
+- Immediate prechange plans for all five combinations and halt assemblies:
+  `/tmp/fstart-qemu-batch-baseline/`. Exact descriptor/effective ranges and actual
+  linked ELF comparison: `/tmp/fstart-qemu-batch-image-proof.json`. AArch64's
+  assembly/output geometry also matches its earlier common-plan baseline.
+  Full binary equality is not required: ARM halt happens to match exactly;
+  RISC-V halt retains the same 79,312-byte flat size and all 119 common sized
+  text symbols retain sizes, but 73 move, changing relocations/code bytes and
+  signed image content after compiler feature/graph changes. Details:
+  `/tmp/fstart-qemu-batch-{byte-comparison,riscv-codegen}.json`.
+- Fresh/cached **actual Cargo-reported** host artifacts, canonical original
+  sources, no firmware feature/cfg selection, unchanged prepared runner locks,
+  and selected external pins equal to root:
+  `/tmp/fstart-qemu-batch-host-proof-final.log` and matching directory.
+- Live RISC-V halt → ARM Linux → AArch64 halt → RISC-V UEFI → ARM halt selection,
+  original preset/hardware navigation, cfgs, proc macros/hygienic entry and
+  named checks: `/tmp/fstart-qemu-batch-editor-proof.log` and matching directory.
+  Both new boards produce compiler and live RA E0080 for a genuinely invalid
+  typed PCI resource capacity, then recover after source restoration. There is
+  no artificial board flash-capacity negative test.
+- A temporary **shared platform policy-only** ARM heap change (256 → 192 KiB)
+  reaches descriptor, linker symbols, ELF expectations, actual flat image,
+  assembly, compiler identity, named check and IDE, then restores the original
+  plan exactly: `/tmp/fstart-qemu-batch-policy-proof.log` and matching directory.
+  This does not expose a supported board geometry override. All probes restored.
+
+Root `Cargo.lock` is byte-identical to the parent; there are no new root edges.
+Eight existing standalone board locks are retained across the fourteen board
+packages. These files are ignored/untracked: pre-batch byte preservation of the
+RISC-V/ARM standalone locks is **unproven**, and refresh was observed during the
+work (cause not established from mtime alone). Do not confuse that limitation
+with the verified root/selected-runner lock guarantees. Current standalone locks
+were snapshotted under `/tmp/fstart-qemu-batch-retained-locks/`; subsequent probe
+changes were restored to that snapshot. No workspace/lock ownership cutover,
+benchmark, high-water measurement or full-matrix claim.
+
+## Earlier common-plan acceptance evidence
 
 Evidence is recorded in the implementation environment, not shipped as generated
-board configuration. Final compiler and regression commands are collected in
+board configuration. The earlier evidence below is historical: its AArch64
+invalid physical-capacity board fact was deliberately superseded by a platform
+machine invariant in this batch, rather than preserved as an artificial input.
+Final compiler and regression commands for that earlier scope are collected in
 `/tmp/fstart-common-final-builds.sh`.
 
 - The original 59 focused tests pass in `/tmp/fstart-common-tests.log`.

@@ -13,7 +13,6 @@ stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
-fstart-core = { path = "../../../crates/core" }
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
 fstart-driver-uart = { path = "../../../crates/driver-uart" }
 

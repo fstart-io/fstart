@@ -117,29 +117,33 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
 
     // Exercise the actual resolved script with a retained writable anchor.
     // BYTE-only output sections can inherit its SHF_WRITE despite ROM (rx).
-    for (architecture, profile, emulation, relocation) in [
+    for (architecture, emulation, relocation) in [
         (
             object::Architecture::Riscv64,
-            "riscv64-xip",
             "elf64lriscv",
             object::elf::R_RISCV_64,
         ),
         (
             object::Architecture::Arm,
-            "armv7-xip",
             "armelf",
             object::elf::R_ARM_ABS32,
         ),
         (
             object::Architecture::Aarch64,
-            "aarch64-relocate",
             "aarch64elf",
             object::elf::R_AARCH64_ABS64,
         ),
     ] {
-        let (script_text, expectations) = if architecture == object::Architecture::Aarch64 {
+        let (script_text, expectations) = {
+            use fstart_platform_qemu::facts::VirtMachine;
+            let machine = match architecture {
+                object::Architecture::Riscv64 => VirtMachine::Riscv64,
+                object::Architecture::Arm => VirtMachine::Armv7,
+                object::Architecture::Aarch64 => VirtMachine::Aarch64,
+                _ => unreachable!(),
+            };
             let plan = fstart_platform_qemu::host::resolve(
-                fstart_platform_qemu::facts::Aarch64ImageFacts::new(0x0800_0000),
+                machine,
                 fstart_image_build::plan::BuildSelection {
                     payload: Some("halt".into()),
                 },
@@ -152,12 +156,6 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
                 panic!("expected executable")
             };
             (unit.linker_script.unwrap(), expectations)
-        } else {
-            let resolved = crate::resolved::tests::resolved_for(profile, "halt");
-            (
-                crate::linker::resolved_xip(&resolved).unwrap(),
-                resolved.elf_expectations().unwrap(),
-            )
         };
         let mut input = object::write::Object::new(
             object::BinaryFormat::Elf,
