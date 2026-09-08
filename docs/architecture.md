@@ -16,7 +16,8 @@ interfaces below are not claims that the cutover is implemented. See
 - Rust owns hardware policy and typed board/image facts; platform Rust derives
   shared build geometry. Cargo metadata selects identity and the platform export.
   No devicetree, RON, Cargo hardware schema or execution-order DSL.
-  QEMU retains its existing metadata geometry path until explicitly migrated.
+  QEMU AArch64 also uses typed Rust facts and a concrete platform plan;
+  QEMU RISC-V/ARMv7 retain their explicitly legacy metadata geometry path.
 - Fixed handwritten family flows construct live drivers from static config.
 - Shared IP-block fixes reach all supported variants through one implementation.
 - Unrelated SoCs do not enter an existing board's compilation closure.
@@ -54,11 +55,11 @@ shared platform policy, not repeated board geometry.
 | --- | --- | --- |
 | DRAM policy, GPIO, pinmux, device config, SMBIOS strings | Board Rust and typed platform defaults | Static config and runtime table builders |
 | Board/variant identity and platform reference | Board Cargo metadata | Discovery, selection, build report |
-| Target, entry mode, stage structure and default budgets | Platform Rust policy (QEMU still uses profiles) | Resolved build and its projections |
-| Flash chip capacity and partition map | Typed board Rust facts for Intel; existing metadata for QEMU | Host resolver, assembler and linked runtime descriptor |
+| Target, entry mode, stage structure and default budgets | Platform Rust policy (unmigrated QEMU uses profiles) | Concrete compiler units and their projections |
+| Flash chip capacity and partition map | Typed board Rust facts for Intel/AArch64; metadata for unmigrated QEMU | Host resolver, assembler and linked runtime descriptor |
 | Stage load ranges, stacks, heaps and reservations | Shared platform Rust calculations and real chipset deltas | Linker symbols and runtime descriptor |
 | Detected DRAM and usable memory | Memory-init results | Existing runtime map/handoff, intersected with reservations |
-| Microcode/blob defaults and payload files | Platform Rust / board facts plus explicit CLI inputs (QEMU retains metadata) | Host assembler only |
+| Microcode/blob defaults and payload files | Platform Rust / board facts plus explicit CLI inputs (unmigrated QEMU retains metadata) | Host assembler only |
 | Final offsets, lengths and compression results | Image assembly | Existing image directory/descriptor mechanisms |
 | Hardware initialization order | Platform Rust | Handwritten calls, never a metadata step list |
 
@@ -107,18 +108,23 @@ The platform's optional host module exports the conventional `Plan<B>::emit(sele
 The generated adapter passes an explicit serialized `BuildSelection` argument
 to `platform::Plan::<board::Board>::emit`;
 Cargo owns its dependency graph, build scripts, proc macros and linking. It emits
-image-build's `ResolvedPlan` transport, including the selected target, payload,
-stage units/features and SMM features. Defaults, supported payloads and terminal
-stage assignment belong to platform Rust; fbuild only qualifies Cargo aliases,
-validates references and executes the selected backend. This is not a generated authoring API,
+image-build's family-free `ResolvedPlan`/`BuildPlan` transport: named compiler
+units with their own target, Cargo target kind, cfgs, features, flags, generated
+linker text, ELF expectations and artifact bindings, plus concrete image inputs.
+Defaults, supported payloads and terminal-stage assignment belong to platform
+Rust; fbuild qualifies Cargo aliases, validates references and executes the same
+bounded unit contract for build, check and IDE. This is not a generated authoring API,
 board host feature/executable or firmware recipe. The Intel family calculates
 common capacities once; the tested i945 comparison changes only the real CAR
 window, without migrating that board's legacy build path.
 
-QEMU still uses the existing family/profile metadata resolver (`profile_source`).
-Do not remove it or silently migrate its schema as part of Intel work. Imported
-IFD/host transport and selected reservations retain checked dynamic validation;
-const authoring is not a reason to skip ELF and assembly validation.
+QEMU AArch64 now calls the same platform host export from an unconditional typed
+physical-flash fact. Its one relocating unit has distinct storage, execution and
+writable mappings and no producer dependency. RISC-V/ARMv7 QEMU still use the
+explicit legacy profile route; other board-host builds remain legacy too. There
+is no claim that all fbuild paths are generic. Imported IFD/host transport and
+selected reservations retain checked validation; const authoring is not a reason
+to skip ELF and assembly validation. See the [common-plan boundary and acceptance](architecture-common-plan.md).
 
 ### One immutable resolved build, three projections
 
@@ -131,9 +137,13 @@ manifest discovery + typed board facts + platform calculation + inputs + CLI
              script    bytes     inputs
 ```
 
-`ResolvedBuild` is not a board-authored builder or an execution model. It records
-explicit compiler selections and geometry. `resolved-build.json` is a diagnostic
-projection, never another editable configuration source.
+The concrete resolved plan is not a board-authored builder or hardware execution
+model. It records compiler units, fixed geometry and a bounded producer-artifact
+dependency relation, not a lifecycle DSL. All units and bindings are validated
+before execution; named selections build only their required producer closure.
+Linker, ELF and format helpers are selected by platform Rust, not by family
+matches in fbuild. `resolved-build.json` is a diagnostic projection, never another
+editable configuration source.
 
 1. Allocate fixed capacities/reservations before compiling; serialize each stage's
    runtime subset. Capacity covers image/BSS, stack and heap subranges.
@@ -290,7 +300,7 @@ does not validate electrical behavior or raminit.
 
 ## Cargo lock and editor contract
 
-### Current Intel packaging (not a workspace ownership cutover)
+### Current Rust-plan packaging (not a workspace ownership cutover)
 
 The pre-existing selected-source preparation still copies the root lock and lets
 Cargo metadata resolve it; this change does **not** establish end-to-end
@@ -364,14 +374,17 @@ lock prototype agrees with the tested selected compiler graphs. ARMv7 now uses
 that same resolved path, with ELF32 validation, halt/Linux release boots and live
 RISC-V ↔ ARMv7 editor switches passing. AArch64 now has distinct flash-storage,
 RAM-execution and writable reservations, validated relocation extents, and passing
-halt/Linux/CrabEFI release boots. X61 uses typed board IFD/CPU facts and a shared
-platform host export to produce one resolved Intel aggregate through fixed stage
-compilation, assembly and descriptor-backed runtime bounds, without a board host
-executable or Cargo geometry schema. Release halt/UEFI assembly, stage-specific
-editor graphs/checks, live car → postcar → ram editor switching and original-source
-const-overlap diagnostics pass. Hardware boot and stack high-water measurements
-remain outstanding. Workspace ownership has not cut over; other boards retain
-their previous paths. See [Intel typed-facts acceptance](architecture-intel-typed-facts.md).
+halt/Linux/CrabEFI release boots from the earlier relocation milestone. X61's
+typed board IFD/CPU facts and AArch64's physical-flash fact now feed the **same
+concrete platform-plan executor** through Cargo host exports. Intel multistage
+and single-unit AArch64 relocation no longer require family branches in common
+build/check/IDE tools. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
+AArch64 halt assembly/boot, and live car → postcar → ram → SMM → AArch64 editor
+switching with original-source invalid-fact diagnostics pass. Hardware boot and
+stack high-water measurements remain outstanding. Workspace ownership has not
+cut over, and explicit legacy routes remain for other boards. See
+[common-plan acceptance and scope](architecture-common-plan.md) and the earlier
+[Intel typed-facts acceptance](architecture-intel-typed-facts.md).
 
 1. **Boundary and discovery:** record ownership, selection, descriptor, adapter and
    lock decisions. Replace textual manifest parsing with typed/versioned TOML and

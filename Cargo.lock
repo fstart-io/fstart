@@ -464,6 +464,7 @@ dependencies = [
  "clap",
  "fstart-core",
  "fstart-image-build",
+ "fstart-platform-qemu",
  "heapless",
  "object 0.37.3",
  "serde",
@@ -715,11 +716,13 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-driver-uart",
+ "fstart-image-build",
  "fstart-log",
  "fstart-pci",
  "fstart-stage",
  "heapless",
  "serde",
+ "serde_json",
  "ufmt",
 ]
 

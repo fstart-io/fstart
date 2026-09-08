@@ -58,39 +58,27 @@ pub fn generate_image(
     root: &Path,
     board: &BoardManifest,
     layout: &crate::resolved_image::ResolvedImage,
-    role: Option<crate::intel_layout::IntelStage>,
+    name: Option<&str>,
     release: bool,
     audit_lock: bool,
 ) -> Result<PathBuf, String> {
     match layout {
-        crate::resolved_image::ResolvedImage::Monolithic(layout) => {
-            if role.is_some() {
-                return Err("--stage is only valid for Intel multistage profiles".into());
+        crate::resolved_image::ResolvedImage::Legacy(layout) => {
+            if name.is_some_and(|n| n != "stage") {
+                return Err("legacy metadata profile has only unit 'stage'".into());
             }
             generate(root, board, layout, release, audit_lock)
         }
-        crate::resolved_image::ResolvedImage::Intel(layout) => {
-            let role = role
-                .ok_or("Intel editor selection requires --stage bootblock, postcar or ramstage")?;
-            let producer = if role == crate::intel_layout::IntelStage::Ramstage {
-                crate::intel_build::producer(root, board, layout, release)?
-            } else {
-                Default::default()
-            };
-            let selection =
-                crate::intel_build::selection(root, board, layout, role, release, &producer)?;
-            let row = layout
-                .stages
-                .iter()
-                .find(|row| row.role == role)
-                .ok_or("missing Intel stage")?;
+        crate::resolved_image::ResolvedImage::Common(layout) => {
+            let unit = layout.selected(name)?;
+            let selection = layout.selection(root, board, &unit.name, release)?;
             generate_selection(
                 root,
                 board,
-                &layout.target,
-                &layout.payload,
-                &row.features,
-                role.name(),
+                &unit.target,
+                &layout.plan.payload,
+                &unit.features,
+                &unit.name,
                 release,
                 audit_lock,
                 selection,
@@ -110,7 +98,9 @@ fn generate_selection(
     audit_lock: bool,
     selection: Selection,
 ) -> Result<PathBuf, String> {
-    let output = Command::new("cargo")
+    let mut command = Command::new("cargo");
+    selection.apply_environment(&mut command);
+    let output = command
         .current_dir(root)
         .args([
             "metadata",
@@ -124,7 +114,6 @@ fn generate_selection(
         .arg(target)
         .arg("--features")
         .arg(features.join(","))
-        .envs(selection.environment())
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {

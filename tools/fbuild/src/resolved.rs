@@ -329,6 +329,23 @@ impl ResolvedBuild {
         })
     }
 
+    pub fn linker_layout(&self) -> Result<fstart_image_build::linker::Xip, String> {
+        Ok(fstart_image_build::linker::Xip {
+            platform: self.platform(),
+            boot_hart_id: 0,
+            image: self.image,
+            execution: self.execution,
+            writable: self.writable,
+            heap: self.heap,
+            stack: self.stack,
+            descriptor: self.descriptor()?,
+        })
+    }
+
+    pub fn elf_expectations(&self) -> Result<fstart_image_build::elf::Expectations, String> {
+        self.linker_layout()?.elf_expectations()
+    }
+
     pub fn descriptor(&self) -> Result<EncodedLayout, String> {
         let mut regions = vec![
             self.image.region(RegionKind::Image),

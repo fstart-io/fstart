@@ -137,7 +137,28 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
             object::elf::R_AARCH64_ABS64,
         ),
     ] {
-        let resolved = crate::resolved::tests::resolved_for(profile, "halt");
+        let (script_text, expectations) = if architecture == object::Architecture::Aarch64 {
+            let plan = fstart_platform_qemu::host::resolve(
+                fstart_platform_qemu::facts::Aarch64ImageFacts::new(0x0800_0000),
+                fstart_image_build::plan::BuildSelection {
+                    payload: Some("halt".into()),
+                },
+            )
+            .unwrap();
+            let unit = plan.units.into_iter().next().unwrap();
+            let fstart_image_build::build_plan::UnitOutput::Executable { expectations, .. } =
+                unit.output
+            else {
+                panic!("expected executable")
+            };
+            (unit.linker_script.unwrap(), expectations)
+        } else {
+            let resolved = crate::resolved::tests::resolved_for(profile, "halt");
+            (
+                crate::linker::resolved_xip(&resolved).unwrap(),
+                resolved.elf_expectations().unwrap(),
+            )
+        };
         let mut input = object::write::Object::new(
             object::BinaryFormat::Elf,
             architecture,
@@ -206,7 +227,7 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
         let script = scratch.0.join("resolved.ld");
         let elf = scratch.0.join("resolved.elf");
         fs::write(&object_path, input.write().unwrap()).unwrap();
-        fs::write(&script, crate::linker::resolved_xip(&resolved).unwrap()).unwrap();
+        fs::write(&script, &script_text).unwrap();
         let link = || {
             Command::new(&linker)
                 .args(["-flavor", "gnu", "-m", emulation, "--gc-sections", "-T"])
@@ -231,8 +252,9 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
             panic!("not ELF")
         };
         assert_ne!(sh_flags & u64::from(object::elf::SHF_WRITE), 0);
-        crate::resolved_build::validate_elf(&bytes, &resolved).unwrap();
-        if let Some(execution) = resolved.execution {
+        fstart_image_build::elf::validate(&bytes, &expectations).unwrap();
+        if let Some(copy) = &expectations.copy {
+            let execution = copy.execution;
             let flat = scratch.0.join("relocated.bin");
             super::write_flat_binary(&elf, &flat).unwrap();
             let flat_bytes = fs::read(&flat).unwrap();
@@ -240,7 +262,7 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
             let offset = usize::try_from(descriptor.address() - execution.base).unwrap();
             assert_eq!(
                 &flat_bytes[offset..offset + descriptor.size() as usize],
-                resolved.descriptor().unwrap().as_bytes()
+                &expectations.descriptor.bytes
             );
             let binary_end = linked
                 .symbols()
@@ -253,8 +275,7 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
                 0x4000
             );
             assert!(
-                resolved
-                    .writable
+                expectations.runtime[1]
                     .contains(linked.section_by_name(".data").unwrap().address(), 16)
             );
             assert_eq!(&flat_bytes[flat_bytes.len() - 16..], &[7; 16]);
@@ -269,22 +290,24 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
             assert!(linked.section_by_name(".text").unwrap().size() >= 4096 + 32);
             fs::write(
                 &script,
-                format!(
-                    "{}\n_binary_end = {};\n",
-                    crate::linker::resolved_xip(&resolved).unwrap(),
-                    binary_end - 8
-                ),
+                format!("{}\n_binary_end = {};\n", script_text, binary_end - 8),
             )
             .unwrap();
             assert!(link().status.success());
             assert!(
-                crate::resolved_build::validate_elf(&fs::read(&elf).unwrap(), &resolved)
+                fstart_image_build::elf::validate(&fs::read(&elf).unwrap(), &expectations)
                     .unwrap_err()
                     .contains("copy extent")
             );
-            let mut small = crate::resolved::tests::resolved_for(profile, "halt");
-            small.execution.as_mut().unwrap().size = 16;
-            fs::write(&script, crate::linker::resolved_xip(&small).unwrap()).unwrap();
+            let small = script_text.replace(
+                &format!(
+                    "EXEC (rx) : ORIGIN = {:#x}, LENGTH = {:#x}",
+                    execution.base, execution.size
+                ),
+                &format!("EXEC (rx) : ORIGIN = {:#x}, LENGTH = 0x10", execution.base),
+            );
+            assert_ne!(small, script_text);
+            fs::write(&script, small).unwrap();
             let overflow = link();
             assert!(!overflow.status.success());
             assert!(String::from_utf8_lossy(&overflow.stderr).contains("EXEC"));

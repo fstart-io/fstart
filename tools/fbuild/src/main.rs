@@ -12,6 +12,9 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Build {
+        /// Build one named unit and its producers instead of the complete image.
+        #[arg(long)]
+        stage: Option<String>,
         #[arg(short, long)]
         board: String,
         #[arg(short, long, default_value_t = false)]
@@ -71,6 +74,9 @@ enum Command {
     /// Type-check a migrated board using its resolved firmware selection.
     Check {
         board: String,
+        /// Check one named unit after building its producer closure.
+        #[arg(long)]
+        stage: Option<String>,
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[arg(long)]
@@ -83,9 +89,9 @@ enum Command {
         payload: Option<PayloadChoice>,
         #[arg(long)]
         release: bool,
-        /// Select exactly one Intel compiler role: bootblock, postcar, ramstage.
+        /// Select a named compilation unit from the resolved platform plan.
         #[arg(long)]
-        stage: Option<fbuild::intel_layout::IntelStage>,
+        stage: Option<String>,
         /// Compare against a disposable all-board build-lock prototype.
         #[arg(long)]
         audit_lock: bool,
@@ -252,7 +258,28 @@ fn explain(board: &str, payload: Option<PayloadChoice>) -> Result<(), String> {
     Ok(())
 }
 
-fn check(board: &str, payload: Option<PayloadChoice>, release: bool) -> Result<(), String> {
+fn compile_named(
+    board: &str,
+    payload: Option<PayloadChoice>,
+    release: bool,
+    name: &str,
+    checking: bool,
+) -> Result<(), String> {
+    let root = build_board::workspace_root_pub()?;
+    let manifest = board_manifest::find(&root, board)?;
+    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
+    resolved.compile_selected(&root, &manifest, name, release, checking)
+}
+
+fn check(
+    board: &str,
+    payload: Option<PayloadChoice>,
+    release: bool,
+    stage: Option<String>,
+) -> Result<(), String> {
+    if let Some(stage) = stage {
+        return compile_named(board, payload, release, &stage, true);
+    }
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
     let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
@@ -264,13 +291,19 @@ fn ide(
     payload: Option<PayloadChoice>,
     release: bool,
     audit_lock: bool,
-    stage: Option<fbuild::intel_layout::IntelStage>,
+    stage: Option<String>,
 ) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
     let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
-    let workspace =
-        fbuild::ide::generate_image(&root, &manifest, &resolved, stage, release, audit_lock)?;
+    let workspace = fbuild::ide::generate_image(
+        &root,
+        &manifest,
+        &resolved,
+        stage.as_deref(),
+        release,
+        audit_lock,
+    )?;
     println!("{}", workspace.display());
     Ok(())
 }
@@ -283,7 +316,11 @@ fn main() {
             board,
             release,
             payload,
-        } => dispatch_board_host(&board, &board_tool_build_args("build", release, payload)),
+            stage,
+        } => match stage {
+            Some(name) => compile_named(&board, payload, release, &name, false),
+            None => dispatch_board_host(&board, &board_tool_build_args("build", release, payload)),
+        },
         Command::Run {
             board,
             release,
@@ -333,7 +370,8 @@ fn main() {
             board,
             payload,
             release,
-        } => check(&board, payload, release),
+            stage,
+        } => check(&board, payload, release, stage),
         Command::Flash {
             board,
             release,

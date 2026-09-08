@@ -30,5 +30,9 @@ pub fn assemble_with_parsed(
         kernel_path,
         firmware_path,
         fit_path,
+        parsed
+            .resolved
+            .as_ref()
+            .and_then(|plan| plan.bootstrap_bindings()),
     )
 }

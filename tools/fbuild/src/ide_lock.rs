@@ -130,11 +130,11 @@ pub(crate) fn audit(root: &Path, selection: &Selection) -> Result<Value, String>
         .ok_or("missing selected manifest argument")?;
     args[at + 1] = manifest.into_os_string();
     command = Command::new("cargo");
+    selection.apply_environment(&mut command);
     let result = command
         .current_dir(root)
         .args(args)
         .args(["-Zunstable-options", "--unit-graph"])
-        .envs(selection.environment())
         .output()
         .map_err(|e| e.to_string())?;
     if !result.status.success() {

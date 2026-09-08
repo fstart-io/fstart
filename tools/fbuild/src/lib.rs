@@ -7,17 +7,16 @@ mod host_plan;
 pub mod ide;
 mod ide_graph;
 mod ide_lock;
-mod intel_build;
 pub mod intel_layout;
 #[cfg(test)]
 mod intel_linker_tests;
 pub mod linker;
 pub mod payload;
+mod plan_executor;
 mod profile_source;
 pub mod qemu;
 pub mod resolved;
 mod resolved_build;
 pub mod resolved_image;
-pub mod resolved_intel;
 mod selection;
 pub mod toolchain;

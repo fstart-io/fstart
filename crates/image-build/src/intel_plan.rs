@@ -117,6 +117,43 @@ pub struct IntelReservations {
 }
 
 impl IntelReservations {
+    /// Family policy projects concrete checks; the ELF validator has no roles.
+    pub fn elf_expectations(&self, role: IntelStage) -> Result<crate::elf::Expectations, String> {
+        use crate::elf::{Architecture, Descriptor, Expectations};
+        self.validate()?;
+        let stage = self.stage(role);
+        let boot = role == IntelStage::Bootblock;
+        let mut symbols = std::collections::BTreeMap::from([
+            ("_stack_bottom".into(), stage.stack_span().base),
+            ("_stack_top".into(), stage.stack_span().end()?),
+        ]);
+        if let Some(heap) = stage.heap_span() {
+            symbols.insert("_FSTART_HEAP".into(), heap.base);
+        }
+        Ok(Expectations {
+            architecture: Architecture::X86_64,
+            elf64: true,
+            little_endian: true,
+            stored: if boot {
+                vec![stage.image]
+            } else {
+                vec![stage.image, stage.writable]
+            },
+            runtime: vec![stage.image, stage.writable],
+            identity_mapping: !boot,
+            entry: Some(if boot { 0xfffffff0 } else { stage.image.base }),
+            copy: None,
+            descriptor: Descriptor {
+                section: ".fstart.layout".into(),
+                start_symbol: "_fstart_layout_start".into(),
+                end_symbol: "_fstart_layout_end".into(),
+                bytes: self.descriptor(role)?.as_bytes().to_vec(),
+                reservation: stage.image,
+            },
+            symbols,
+        })
+    }
+
     pub fn stage(&self, role: IntelStage) -> StageReservation {
         match role {
             IntelStage::Bootblock => self.bootblock,

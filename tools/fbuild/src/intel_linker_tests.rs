@@ -112,13 +112,19 @@ fn intel_fixed_linker_retains_descriptors_and_rejects_growth() {
             String::from_utf8_lossy(&result.stderr)
         );
         let bytes = fs::read(&elf).unwrap();
-        crate::intel_build::validate_elf(&bytes, &config, role).unwrap();
+        fstart_image_build::elf::validate(&bytes, &config.elf_expectations(role).unwrap()).unwrap();
         let wrong_role = if role == IntelStage::Bootblock {
             IntelStage::Postcar
         } else {
             IntelStage::Bootblock
         };
-        assert!(crate::intel_build::validate_elf(&bytes, &config, wrong_role).is_err());
+        assert!(
+            fstart_image_build::elf::validate(
+                &bytes,
+                &config.elf_expectations(wrong_role).unwrap()
+            )
+            .is_err()
+        );
         let linked = object::File::parse(&*bytes).unwrap();
         assert_eq!(
             linked.entry(),

@@ -3,9 +3,18 @@ extern crate std;
 use crate::facts::{BoardFacts, Chipset, IntelBoardFacts};
 use fstart_image_build::{
     intel_plan::{IntelReservations, IntelStage, StageReservation},
-    plan::{BuildSelection, IntelPlan, IntelStagePlan, ResolvedPlan, Span},
+    plan::{BuildSelection, IntelPlan, IntelStagePlan, Span},
 };
 use std::{format, string::ToString, vec, vec::Vec};
+
+fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
+    let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
+    fstart_image_build::build_plan::CompilerCfgSchema {
+        entries: strings(&["riscv64", "armv7", "aarch64-relocate", "x86_64"]),
+        environments: strings(&["monolithic", "car", "postcar", "ram", "smm"]),
+        payloads: strings(&["halt", "linux", "crabefi"]),
+    }
+}
 
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
@@ -16,9 +25,93 @@ impl<B: IntelBoardFacts> Plan<B> {
         let plan = resolve(B::FACTS, selection).expect("invalid Intel board plan");
         std::println!(
             "{}",
-            serde_json::to_string(&ResolvedPlan::Intel(plan)).expect("serialize Intel plan")
+            serde_json::to_string(&compilation_plan(plan).expect("concrete Intel plan"))
+                .expect("serialize Intel plan")
         );
     }
+}
+
+pub fn compilation_plan(
+    plan: IntelPlan,
+) -> Result<fstart_image_build::build_plan::BuildPlan, std::string::String> {
+    use fstart_image_build::build_plan::{
+        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, UnitOutput,
+    };
+    use std::collections::BTreeMap;
+    let flags = |value: &str| {
+        value
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    };
+    let mut units = vec![CompilationUnit {
+        name: "smm".into(),
+        cargo_target: CargoTarget::BoardLibrary,
+        target: plan.target.clone(),
+        entry: "x86_64".into(),
+        cfg_schema: compiler_cfg_schema(),
+        environment: "smm".into(),
+        payload: "halt".into(),
+        features: plan.smm_features.clone(),
+        build_std: None,
+        release_only: true,
+        linker_script: None,
+        rustflags: flags(
+            "-Cpanic=abort -Copt-level=s -Crelocation-model=pic -Cno-redzone=yes -Clinker-plugin-lto=no -Cembed-bitcode=no -Zfunction-sections=yes",
+        ),
+        environment_values: BTreeMap::new(),
+        bindings: vec![],
+        output: UnitOutput::SmmImage {
+            entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
+            stack_size: plan.smm.stack_size,
+            coreboot_module_args: plan.smm.coreboot.module_args,
+            coreboot_header: plan.smm.coreboot.emit_header,
+        },
+    }];
+    for row in &plan.stages {
+        let ram = row.role == IntelStage::Ramstage;
+        let boot = row.role == IntelStage::Bootblock;
+        let reservation = plan.reservations.stage(row.role);
+        let mut bindings = vec![];
+        if ram {
+            bindings.push(ArtifactBinding {
+                producer: "smm".into(),
+                artifact: "image".into(),
+                environment: "FSTART_SMM_IMAGE".into(),
+            });
+            if plan.smm.coreboot.emit_header {
+                bindings.push(ArtifactBinding {
+                    producer: "smm".into(),
+                    artifact: "header".into(),
+                    environment: "FSTART_SMM_COREBOOT_HEADER".into(),
+                });
+            }
+        }
+        units.push(CompilationUnit {
+            name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target.clone(), entry: "x86_64".into(),
+            cfg_schema: compiler_cfg_schema(),
+            environment: row.role.environment().into(), payload: if row.payload == "uefi" { "crabefi".into() } else { row.payload.clone() },
+            features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
+            rustflags: flags("-Zub-checks=no -Crelocation-model=static -Ccode-model=large --cfg curve25519_dalek_backend=\"serial\""),
+            linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true)?),
+            environment_values: if ram { BTreeMap::from([("FSTART_INTEL_MAX_CPUS".into(), plan.max_cpus.to_string())]) } else { BTreeMap::new() },
+            bindings,
+            output: UnitOutput::Executable {
+                expectations: plan.reservations.elf_expectations(row.role)?, load_address: reservation.image.base,
+                flat_capacity: if boot { reservation.image.size } else { reservation.load_window()?.size },
+                flat_exact_size: boot,
+            },
+        });
+    }
+    let resolved = BuildPlan {
+        payload: plan.payload.clone(),
+        units,
+        stages: plan.stages.iter().map(|r| r.role.name().into()).collect(),
+        assembly: plan.assembly()?,
+        inputs: vec![],
+    };
+    resolved.order()?;
+    Ok(resolved)
 }
 
 pub fn reservations(facts: BoardFacts) -> Result<IntelReservations, std::string::String> {

@@ -14,10 +14,13 @@ cargo run --locked -p fbuild -- ide qemu-riscv64 --release --payload linux
 cargo run --locked -p fbuild -- ide lenovo-x61 --release --payload uefi --stage ramstage
 ```
 
-Intel requires exactly one `--stage bootblock|postcar|ramstage`; its output has
-an additional stage-name subdirectory. It never combines stage features.
-Ramstage generation builds the SMM producer first and records the actual image
-in both editor and check environments. Bootblock/postcar do not inherit it.
+Rust-plan views select a named compiler unit from the platform's concrete plan;
+multistage images require `--stage`. X61 currently exports `bootblock`, `postcar`,
+`ramstage` and `smm`. The shared executor builds only that unit's producer closure
+and records its actual artifacts in both editor and check environments. Thus
+ramstage receives its explicitly bound SMM image, while bootblock/postcar do not.
+AArch64's sole `stage` unit is selected by default. No family-specific selection
+logic lives in IDE generation; see [the common-plan boundary](architecture-common-plan.md).
 
 Open the printed `fstart.code-workspace` in VS Code. The generated files live in
 `target/fstart-ide/<board>/<debug|release>/<payload>/`:
@@ -75,8 +78,8 @@ rust-analyzer; Cargo remains responsible for the actual `-Zbuild-std` check.
 
 `selection.rs` owns the target/profile/features/cfg flags for build, check and
 editor checks. Encoded Rust flags preserve whitespace in paths and override
-ambient Rust flags consistently. `rustflags.json` records their token boundaries;
-`rustflags.txt` remains a readable rendering, not shell-quoting instructions.
+ambient Rust flags consistently. `rustflags.json` records their token boundaries; any `rustflags.txt` rendering
+is diagnostic text, not shell-quoting instructions.
 
 The check command emits Cargo JSON diagnostics. It runs once from the opened
 repository so relative diagnostic filenames resolve to original source files.
@@ -143,8 +146,10 @@ messages and status/timing receipts live under `target/fstart-ide/proof/`.
 ## Remaining gates
 
 Workspace/lock ownership is intentionally unchanged. Switching among all three
-QEMU virt ISAs passes. X61 stage generation and checks pass, but live LSP
-switching between CAR/postcar/RAM is not yet covered by the protocol probes.
+QEMU virt ISAs passed earlier probes. The concrete-plan correction additionally
+passes live Intel CAR/postcar/RAM/SMM → AArch64 switching, macro expansion,
+original-source fact navigation and invalid-fact diagnostics/recovery; current
+receipts are linked from [common-plan acceptance](architecture-common-plan.md).
 Clean-checkout regeneration,
 broader inventory build coverage, and macro/build-script edit workflows need
 further acceptance before removing existing workspace or board-lock paths.

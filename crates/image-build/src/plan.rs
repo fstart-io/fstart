@@ -101,11 +101,7 @@ pub struct IntelStagePlan {
 }
 
 /// A compiled platform export, not a board-authoring schema.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "family", content = "plan")]
-pub enum ResolvedPlan {
-    Intel(IntelPlan),
-}
+pub type ResolvedPlan = crate::build_plan::BuildPlan;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IntelPlan {
@@ -122,7 +118,7 @@ pub struct IntelPlan {
 }
 
 /// Bounded active-region transport; authoring uses core's const-validated type.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IfdTransport(pub Vec<(IntelIfdRegion, u32, u32)>);
 impl From<IntelIfdFlashLayout> for IfdTransport {
     fn from(layout: IntelIfdFlashLayout) -> Self {

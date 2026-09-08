@@ -3,7 +3,14 @@
 Correction to `ab52d16c` (the completed X61 metadata cutover). This is an Intel/X61
 migration, not a QEMU schema migration or Cargo workspace/lock ownership cutover.
 
-## Ownership
+This page records the `90b16411` baseline and its evidence. Its family-specific
+fbuild orchestration has since been replaced by the
+[concrete common-plan boundary](architecture-common-plan.md), proven with Intel
+and QEMU AArch64. The typed IFD/CPU facts, runtime descriptor authority and hardware
+flow documented here remain; the ownership details below describe that baseline,
+not the current common executor.
+
+## Baseline ownership
 
 - `boards/lenovo/x61/src/config.rs`: const-validated factory IFD map, separately
   declared physical chip capacity and CPU population. VBT and chipset/device

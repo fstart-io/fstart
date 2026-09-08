@@ -11,6 +11,20 @@ mod boot;
 #[cfg(any(test, feature = "stage"))]
 mod dtb_memory;
 
+pub mod facts;
+#[cfg(feature = "host")]
+pub mod host;
+#[cfg(feature = "host")]
+pub use host::Plan;
+
+#[cfg(feature = "stage")]
+#[doc(hidden)]
+pub use fstart_stage as stage_runtime;
+#[macro_export]
+macro_rules! stage_bin {
+    ($program:ty) => { $crate::stage_runtime::stage_bin!(program: $program); };
+}
+
 pub mod fw_cfg;
 pub mod sbsa;
 pub mod sifive_u;

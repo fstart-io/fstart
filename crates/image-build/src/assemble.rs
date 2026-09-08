@@ -26,6 +26,7 @@ pub fn assemble(
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
     fit_path: Option<&str>,
+    bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
 ) -> Result<PathBuf, String> {
     eprintln!("[fstart] assembling FFS image for: {}", config.name);
 
@@ -188,18 +189,25 @@ pub fn assemble(
     let root_config = BootRootConfig {
         image_family: family_digest[..16].try_into().unwrap(),
         security_version: 0,
-        bootstrap: stage_binaries
-            .iter()
-            .skip(1)
-            .map(|stage| {
-                let role = if stage.name == "postcar" {
-                    fstart_ffs::root::BootstrapRole::Postcar
-                } else {
-                    fstart_ffs::root::BootstrapRole::Mainstage
-                };
-                (stage.name.clone(), role)
-            })
-            .collect(),
+        bootstrap: match bootstrap {
+            Some(bindings) => bindings
+                .iter()
+                .map(|(name, role)| (name.clone(), role.wire()))
+                .collect(),
+            // Explicitly legacy callers have not migrated image-role policy.
+            None => stage_binaries
+                .iter()
+                .skip(1)
+                .map(|stage| {
+                    let role = if stage.name == "postcar" {
+                        fstart_ffs::root::BootstrapRole::Postcar
+                    } else {
+                        fstart_ffs::root::BootstrapRole::Mainstage
+                    };
+                    (stage.name.clone(), role)
+                })
+                .collect(),
+        },
     };
     eprintln!(
         "[fstart] development-integrity image: generated local key, security version 0; no rollback protection"

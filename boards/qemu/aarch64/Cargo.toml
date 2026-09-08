@@ -10,19 +10,13 @@ schema = 1
 board = "qemu-aarch64"
 platform = "aarch64"
 stage-bin = "fstart-stage"
-build-profile = { dependency = "fstart-platform-qemu", name = "aarch64-relocate" }
-
-[features]
-default = []
-stage = ["dep:fstart-driver-uart", "dep:fstart-stage"]
+build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core" }
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
-fstart-driver-uart = { path = "../../../crates/driver-uart", optional = true }
-fstart-stage = { path = "../../../crates/stage", default-features = false, optional = true }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
-required-features = ["stage"]

@@ -6,6 +6,7 @@ use fstart_image_build::plan::{BuildSelection, ResolvedPlan};
 use std::{fs, path::Path, process::Command};
 
 const RUNNER: &str = "fstart-plan-runner";
+const HOST_CFG_FLAGS: &str = "--check-cfg=cfg(fstart_stage_env,values(any())) --check-cfg=cfg(fstart_entry,values(any())) --check-cfg=cfg(fstart_payload,values(any()))";
 
 /// Preserve every prepared package entry/pin verbatim. No resolver fallback.
 fn runner_lock(lock: &str, dependencies: &[String]) -> Result<String, String> {
@@ -116,7 +117,10 @@ pub(crate) fn load(
         .arg(target)
         .args(["--message-format=json-render-diagnostics"])
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env("RUSTFLAGS", crate::toolchain::STAGE_ENV_CHECK_CFG)
+        // No firmware selection exists before the platform emits its plan.
+        // Register names without a tool-owned vocabulary for inactive board guards;
+        // the resulting target units validate against explicit platform schemas.
+        .env("RUSTFLAGS", HOST_CFG_FLAGS)
         .stderr(std::process::Stdio::inherit())
         .output()
         .map_err(|e| e.to_string())?;
@@ -143,9 +147,10 @@ pub(crate) fn load(
                 .and_then(|s| Path::new(s).canonicalize().ok())
                 .as_ref()
                 == Some(&expected_manifest)
-            && let Some(file) = row["executable"].as_str() {
-                executables.push(file.to_owned());
-            }
+            && let Some(file) = row["executable"].as_str()
+        {
+            executables.push(file.to_owned());
+        }
     }
     if executables.len() != 1 {
         return Err("Cargo did not report exactly one current host runner executable".into());
@@ -190,13 +195,13 @@ mod tests {
                 ),
             )
             .unwrap();
-            fs::write(package.join("src/lib.rs"), "pub struct Marker;\n").unwrap();
+            fs::write(package.join("src/lib.rs"), "#![deny(unexpected_cfgs)]\n#[cfg(any(fstart_stage_env=\"novel-memory\", fstart_entry=\"novel-reset\", fstart_payload=\"novel-launcher\"))]\ncompile_error!(\"host adapter must not select firmware code\");\npub struct Marker;\n").unwrap();
         }
         let cargo = |args: &[&str]| {
             Command::new("cargo")
                 .current_dir(&directory)
                 .args(args)
-                .env_remove("RUSTFLAGS")
+                .env("RUSTFLAGS", HOST_CFG_FLAGS)
                 .env_remove("CARGO_ENCODED_RUSTFLAGS")
                 .output()
                 .unwrap()

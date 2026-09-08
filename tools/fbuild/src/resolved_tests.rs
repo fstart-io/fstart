@@ -35,9 +35,6 @@ fn all_payloads_project_the_same_geometry_to_linker_runtime_and_assembler() {
         ("riscv64-xip", "uefi"),
         ("armv7-xip", "halt"),
         ("armv7-xip", "linux"),
-        ("aarch64-relocate", "halt"),
-        ("aarch64-relocate", "linux"),
-        ("aarch64-relocate", "uefi"),
     ] {
         let build = resolved_for(profile, payload);
         let encoded = build.descriptor().unwrap();
@@ -80,46 +77,6 @@ fn all_payloads_project_the_same_geometry_to_linker_runtime_and_assembler() {
             resolved_for(profile, payload).json().unwrap()
         );
     }
-}
-
-#[test]
-fn relocation_requires_a_disjoint_execution_reservation() {
-    for placement in [
-        None,
-        Some(Span {
-            base: 0,
-            size: 0x1000,
-        }),
-        Some(Span {
-            base: 0x40800000,
-            size: 0x1000,
-        }),
-        Some(Span {
-            base: 0x41000000,
-            size: 0x1000,
-        }),
-    ] {
-        let mut p = named_profile("aarch64-relocate");
-        p.execution = placement;
-        assert!(ResolvedBuild::resolve(p, &Overrides::default(), Some("linux"), "test").is_err());
-    }
-    let mut p = profile();
-    p.execution = Some(Span {
-        base: 0x90000000,
-        size: 0x1000,
-    });
-    assert!(ResolvedBuild::resolve(p, &Overrides::default(), Some("halt"), "test").is_err());
-    assert!(matches!(
-        resolved_for("aarch64-relocate", "linux")
-            .assembler_config("test")
-            .unwrap()
-            .payload
-            .unwrap()
-            .firmware
-            .unwrap()
-            .kind,
-        FirmwareKind::ArmTrustedFirmware
-    ));
 }
 
 #[test]

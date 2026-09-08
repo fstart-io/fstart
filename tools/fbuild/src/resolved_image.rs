@@ -1,15 +1,15 @@
-//! Family dispatch: an image resolves once, then projects fixed compiler units.
+//! Explicit migration boundary: concrete Rust plans or the legacy metadata route.
 use crate::{
-    board_manifest::BoardManifest, payload::PayloadChoice, resolved::ResolvedBuild,
-    resolved_intel::ResolvedIntel,
+    board_manifest::BoardManifest, payload::PayloadChoice, plan_executor::Resolved,
+    resolved::ResolvedBuild,
 };
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "family", content = "build")]
+#[serde(tag = "route", content = "build")]
 pub enum ResolvedImage {
-    Monolithic(ResolvedBuild),
-    Intel(ResolvedIntel),
+    Legacy(ResolvedBuild),
+    Common(Resolved),
 }
 impl ResolvedImage {
     pub fn load(
@@ -26,13 +26,10 @@ impl ResolvedImage {
             let selection = fstart_image_build::plan::BuildSelection {
                 payload: payload.map(|p| p.as_str().to_owned()),
             };
-            match crate::host_plan::load(root, &source, &board.variant_features, &selection)? {
-                fstart_image_build::plan::ResolvedPlan::Intel(plan) => {
-                    ResolvedIntel::from_plan(root, board, source, plan).map(Self::Intel)
-                }
-            }
+            let plan = crate::host_plan::load(root, &source, &board.variant_features, &selection)?;
+            Resolved::new(root, board, &source, plan).map(Self::Common)
         } else {
-            ResolvedBuild::from_profile_source(board, payload, source).map(Self::Monolithic)
+            ResolvedBuild::from_profile_source(board, payload, source).map(Self::Legacy)
         }
     }
     pub fn json(&self) -> Result<String, String> {
@@ -40,14 +37,23 @@ impl ResolvedImage {
     }
     pub fn artifact_dir(&self, root: &Path, board: &str, release: bool) -> Result<PathBuf, String> {
         match self {
-            Self::Monolithic(r) => r.artifact_dir(root, board, release),
-            Self::Intel(r) => r.artifact_dir(root, board, release),
+            Self::Legacy(r) => r.artifact_dir(root, board, release),
+            Self::Common(r) => r.artifact_dir(root, board, release),
         }
     }
+    pub fn bootstrap_bindings(
+        &self,
+    ) -> Option<&[(String, fstart_image_build::build_plan::BootstrapRole)]> {
+        match self {
+            Self::Common(plan) => Some(&plan.plan.assembly.bootstrap),
+            Self::Legacy(_) => None,
+        }
+    }
+
     pub fn assembler_config(&self, board: &str) -> Result<fstart_core::BoardConfig, String> {
         match self {
-            Self::Monolithic(r) => r.assembler_config(board),
-            Self::Intel(r) => r.assembler_config(board),
+            Self::Legacy(r) => r.assembler_config(board),
+            Self::Common(r) => r.assembler_config(board),
         }
     }
     pub fn validate_inputs(
@@ -58,15 +64,32 @@ impl ResolvedImage {
         fit: Option<&str>,
     ) -> Result<(), String> {
         match self {
-            Self::Monolithic(r) => r.validate_inputs(board, kernel, firmware, fit),
-            Self::Intel(_) if kernel.is_none() && firmware.is_none() && fit.is_none() => Ok(()),
-            Self::Intel(_) => Err("Intel halt/UEFI does not accept external payload inputs".into()),
+            Self::Legacy(r) => r.validate_inputs(board, kernel, firmware, fit),
+            Self::Common(r) => r.validate_inputs(board, kernel, firmware, fit),
         }
     }
+    pub fn compile_selected(
+        &self,
+        root: &Path,
+        board: &BoardManifest,
+        name: &str,
+        release: bool,
+        checking: bool,
+    ) -> Result<(), String> {
+        match self {
+            Self::Common(plan) => plan.compile_selected(root, board, name, release, checking),
+            Self::Legacy(_) if name != "stage" => {
+                Err("legacy metadata profile has only unit 'stage'".into())
+            }
+            Self::Legacy(_) if checking => self.check(root, board, release),
+            Self::Legacy(_) => self.build(root, board, release).map(|_| ()),
+        }
+    }
+
     pub fn check(&self, root: &Path, board: &BoardManifest, release: bool) -> Result<(), String> {
         match self {
-            Self::Monolithic(r) => r.check(root, board, release),
-            Self::Intel(r) => crate::intel_build::check(root, board, r, release),
+            Self::Legacy(r) => r.check(root, board, release),
+            Self::Common(r) => r.check(root, board, release),
         }
     }
     pub fn build(
@@ -76,8 +99,8 @@ impl ResolvedImage {
         release: bool,
     ) -> Result<crate::build_board::BuildResult, String> {
         match self {
-            Self::Monolithic(r) => crate::resolved_build::build(root, board, r, release),
-            Self::Intel(r) => crate::intel_build::build(root, board, r, release),
+            Self::Legacy(r) => crate::resolved_build::build(root, board, r, release),
+            Self::Common(r) => r.build(root, board, release),
         }
     }
 }
