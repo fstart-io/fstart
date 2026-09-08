@@ -14,7 +14,7 @@ use crate::toolchain::TargetSpec;
 pub struct ParsedBoard {
     pub config: BoardConfig,
     pub acpi_only_devices: Vec<AcpiExtraDevice>,
-    pub resolved: Option<crate::resolved::ResolvedBuild>,
+    pub resolved: Option<crate::resolved_image::ResolvedImage>,
 }
 
 #[derive(Debug, Clone, Default)]

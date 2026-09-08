@@ -4,7 +4,9 @@
 //! protection or persistent rollback enforcement has been established. The
 //! software chain still authenticates each executable before entry.
 
+use crate::layout::BootGeometry;
 use fstart_arch::x86_64::car_teardown::{POSTCAR_STASH_ADDR, PostcarMtrrStash};
+use fstart_core::layout::RegionKind;
 use fstart_core::services::ServiceError;
 use fstart_core::services::boot_media::MemoryMapped;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MAX_E820_ENTRIES};
@@ -20,12 +22,31 @@ pub(crate) fn bootstrap_window(
     role: BootstrapRole,
     expected_address: u64,
     ram_end: u64,
+    geometry: BootGeometry,
 ) -> Result<MemoryWindow, ServiceError> {
     if descriptor.role != role
         || descriptor.load_addr != expected_address
         || descriptor.entry_offset != 0
     {
         return Err(ServiceError::InvalidParam);
+    }
+    if let BootGeometry::Descriptor(layout) = geometry {
+        let kind = match role {
+            BootstrapRole::Postcar => RegionKind::BootstrapPostcar,
+            BootstrapRole::Mainstage => RegionKind::BootstrapMainstage,
+        };
+        let window = layout.destination(kind, ram_end)?;
+        if window.base != expected_address
+            || fstart_stage::boot::bootstrap_footprint(descriptor)
+                .map_err(|_| ServiceError::InvalidParam)?
+                > window.size
+        {
+            return Err(ServiceError::InvalidParam);
+        }
+        return Ok(MemoryWindow {
+            start: window.base,
+            size: window.size,
+        });
     }
     let end = expected_address
         .checked_add(BOOTSTRAP_WINDOW_SIZE)
@@ -80,9 +101,58 @@ pub(crate) fn import_intel_directory(
         .map_err(|_| ServiceError::HardwareError)
 }
 
-pub(crate) fn install_intel_load_policy(entries: &[E820Entry]) -> Result<(), ServiceError> {
+pub(crate) fn running_reservations(
+    geometry: BootGeometry,
+) -> Result<heapless::Vec<MemoryWindow, 16>, ServiceError> {
+    let mut windows = heapless::Vec::new();
+    match geometry {
+        BootGeometry::Descriptor(layout) => {
+            for region in [
+                layout.region(RegionKind::Image)?,
+                layout.region(RegionKind::Writable)?,
+            ]
+            .into_iter()
+            .chain(layout.exclusions())
+            {
+                windows
+                    .push(MemoryWindow {
+                        start: region.base,
+                        size: region.size,
+                    })
+                    .map_err(|_| ServiceError::InvalidParam)?;
+            }
+        }
+        BootGeometry::Legacy(_) => {
+            for window in [
+                MemoryWindow {
+                    start: 0,
+                    size: 0x100000,
+                },
+                MemoryWindow {
+                    start: 0x2000000,
+                    size: 0x1000000,
+                },
+            ]
+            .into_iter()
+            .chain(
+                fstart_stage::boot::running_stage_windows()
+                    .map_err(|_| ServiceError::InvalidParam)?,
+            ) {
+                windows
+                    .push(window)
+                    .map_err(|_| ServiceError::InvalidParam)?;
+            }
+        }
+    }
+    Ok(windows)
+}
+
+pub(crate) fn install_intel_load_policy(
+    entries: &[E820Entry],
+    geometry: BootGeometry,
+) -> Result<(), ServiceError> {
     let mut writable = heapless::Vec::<MemoryWindow, MAX_E820_ENTRIES>::new();
-    let mut reserved = heapless::Vec::<MemoryWindow, { MAX_E820_ENTRIES + 4 }>::new();
+    let mut reserved = heapless::Vec::<MemoryWindow, { MAX_E820_ENTRIES + 16 }>::new();
     for entry in entries.iter().filter(|entry| entry.size != 0) {
         let window = MemoryWindow {
             start: entry.addr,
@@ -100,19 +170,7 @@ pub(crate) fn install_intel_load_policy(entries: &[E820Entry]) -> Result<(), Ser
     }
     // Never grant generic file loads the IVT/BDA, trampoline, SMRAM or handoff
     // page. Preserve the family-owned temporary boot-media arena as well.
-    for window in [
-        MemoryWindow {
-            start: 0,
-            size: 0x0010_0000,
-        },
-        MemoryWindow {
-            start: 0x0200_0000,
-            size: 0x0100_0000,
-        },
-    ]
-    .into_iter()
-    .chain(fstart_stage::boot::running_stage_windows().map_err(|_| ServiceError::InvalidParam)?)
-    {
+    for window in running_reservations(geometry)? {
         reserved
             .push(window)
             .map_err(|_| ServiceError::InvalidParam)?;

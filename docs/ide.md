@@ -3,14 +3,21 @@
 <!-- markdownlint-disable MD013 -->
 
 `fbuild ide` generates an opt-in rust-analyzer view for a migrated board. It
-currently supports QEMU RISC-V, ARMv7 and AArch64 monolithic flows. It does not modify the source
+supports QEMU RISC-V, ARMv7 and AArch64 monolithic flows and the Lenovo X61
+Intel multistage flow. It does not modify the source
 workspace, editor settings in the source tree, or committed/per-board locks.
 
 ## Use
 
 ```sh
 cargo run --locked -p fbuild -- ide qemu-riscv64 --release --payload linux
+cargo run --locked -p fbuild -- ide lenovo-x61 --release --payload uefi --stage ramstage
 ```
+
+Intel requires exactly one `--stage bootblock|postcar|ramstage`; its output has
+an additional stage-name subdirectory. It never combines stage features.
+Ramstage generation builds the SMM producer first and records the actual image
+in both editor and check environments. Bootblock/postcar do not inherit it.
 
 Open the printed `fstart.code-workspace` in VS Code. The generated files live in
 `target/fstart-ide/<board>/<debug|release>/<payload>/`:
@@ -99,7 +106,9 @@ The audit compares the **same selected command** against both workspaces:
 A mismatch fails the explicit audit and leaves a report in the prototype folder.
 The prototype currently contains 14 boards / 35 workspace members. The four
 QEMU RISC-V, two ARMv7 and three AArch64 selections passed the comparison. This is a
-selected-closure proof, **not** a build or boot of every inventory member, nor a
+selected-closure proof. X61 UEFI ramstage also passes this audit, and all three
+Intel original-source graphs and per-role compiler selections were inspected.
+These results are **not** a build or boot of every inventory member, nor a
 claim of byte-identical binaries across differently located workspaces.
 
 ## Reproduce the acceptance checks
@@ -134,7 +143,8 @@ messages and status/timing receipts live under `target/fstart-ide/proof/`.
 ## Remaining gates
 
 Workspace/lock ownership is intentionally unchanged. Switching among all three
-QEMU virt ISAs passes; multistage switching still needs a migrated multistage flow and cannot be
-inferred from these monolithic cases. Clean-checkout regeneration,
+QEMU virt ISAs passes. X61 stage generation and checks pass, but live LSP
+switching between CAR/postcar/RAM is not yet covered by the protocol probes.
+Clean-checkout regeneration,
 broader inventory build coverage, and macro/build-script edit workflows need
 further acceptance before removing existing workspace or board-lock paths.

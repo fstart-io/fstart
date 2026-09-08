@@ -330,8 +330,12 @@ lock prototype agrees with the tested selected compiler graphs. ARMv7 now uses
 that same resolved path, with ELF32 validation, halt/Linux release boots and live
 RISC-V ↔ ARMv7 editor switches passing. AArch64 now has distinct flash-storage,
 RAM-execution and writable reservations, validated relocation extents, and passing
-halt/Linux/CrabEFI release boots. Multistage switching remains unproven; workspace
-ownership has not cut over. Other boards retain their previous path.
+halt/Linux/CrabEFI release boots. X61 now uses a resolved Intel aggregate through
+fixed stage compilation, assembly and descriptor-backed runtime bounds, without
+its old host executable or geometry helpers. Release halt/UEFI assembly and
+stage-specific editor graphs/checks pass; live multistage editor switching and
+hardware boot remain separate outstanding gates. Workspace ownership has not cut
+over. Other boards retain their previous path.
 
 1. **Boundary and discovery:** record ownership, selection, descriptor, adapter and
    lock decisions. Replace textual manifest parsing with typed/versioned TOML and

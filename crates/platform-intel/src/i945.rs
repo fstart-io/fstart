@@ -574,7 +574,7 @@ mod stage {
                 platform: "i945/ich7",
                 next_stage: I945_POSTCAR_STAGE_NAME,
                 next_load_addr: I945_POSTCAR_LOAD_ADDR,
-                flash_layout: B::flash_layout(),
+                geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
                 dram_end: I945_DRAM_END,
                 ramstage_name: I945_NEXT_STAGE_NAME,
                 ramstage_load_addr: I945_RAMSTAGE_LOAD_ADDR,
@@ -599,7 +599,7 @@ mod stage {
             platform: "i945/ich7",
             next_stage: I945_NEXT_STAGE_NAME,
             next_load_addr: I945_RAMSTAGE_LOAD_ADDR,
-            flash_layout: B::flash_layout(),
+            geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
             dram_end: I945_DRAM_END,
             ramstage_name: I945_NEXT_STAGE_NAME,
             ramstage_load_addr: I945_RAMSTAGE_LOAD_ADDR,
@@ -641,7 +641,7 @@ mod stage {
             I945Ich7AcpiContext,
         >(
             MainstageSpec {
-                flash_layout: B::flash_layout(),
+                geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
                 nb_config: B::NB_CONFIG,
                 sb_config: B::SB_CONFIG,
                 console_config: B::console_config(),

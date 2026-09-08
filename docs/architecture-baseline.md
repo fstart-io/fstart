@@ -261,38 +261,68 @@ stack high-water measurement is claimed.
 X61 cold boot remains hardware-validation outstanding. Emulator boots remain
 explicitly development-integrity, not hardware-authenticated boot.
 
-## Intel multistage foundation (not a board cutover)
+## Lenovo X61 metadata cutover
 
-X61 release halt and UEFI builds and full-image assembly pass on the unchanged
-legacy path. The UEFI baseline stores 115,284 bootblock bytes in a 124 KiB
-flat top-of-flash extent, a 16,576-byte postcar, and a 2,503,824-byte ramstage.
-Compressed FFS including the 86,016-byte microcode bundle occupies 876,002 bytes
-of the 1.5 MiB BIOS region. The SMM image is 11,856 bytes. These are build and
-assembly measurements, not hardware execution evidence.
+X61 now selects `fstart-platform-intel:gm965-car` metadata. One Intel aggregate
+resolves the three fixed compiler roles, security, IFD, microcode and SMM policy.
+SMM is built first from the board binding; only ramstage receives its image,
+whose contents participate in the compiler artifact identity. The old X61 host
+binary, BoardConfig builder, flash helpers and generic Cargo feature relays are
+removed. GM965 consumes the linked descriptor; i945/Pineview retain legacy bounds.
 
-`tools/fbuild/src/intel_layout.rs` introduces a reservation-model prototype with
-closed bootblock/postcar/ramstage roles, separate CAR/DRAM storage, persistent
-low-memory and scratch exclusions, and explicit stack/heap budgets. The fixed
-linker prototype keeps the bootblock base, writable base, heap and stack fixed;
-its real x86-64 LLD fixture covers all three roles, reset-vector placement,
-read-only descriptor retention, initialized-data flat extraction and rejection
-of code or BSS growth past capacity. Candidate capacities live only in test
-fixtures; no board or platform metadata selects this path yet.
+Full BIOS identity remains `0xffe80000/0x180000`, including the bootblock tail at
+`0xfffc0000/0x40000`. The filesystem therefore has `0x140000` bytes before the
+fixed bootblock. CAR/postcar have no heap. RAM stages keep distinct image and
+writable reservations; their initialized flat files include any intervening gap.
 
-The metadata resolver, compiler/editor stage selection, assembler bounds and
-runtime successor-window consumption still need integration. In particular,
-this descriptor is not authorization to load a successor. Authenticated loading,
-register sequences, source workspace and lock ownership remain unchanged.
-Baseline logs: `/tmp/fstart-x61-baseline-{halt,uefi}.log` and
-`/tmp/fstart-x61-image-{halt,uefi}.log`; prototype tests:
-`/tmp/fstart-intel-foundation.log`.
+| Release measurement | Halt | UEFI |
+|---|---:|---:|
+| Bootblock flat extent | 262,144 | 262,144 |
+| Postcar initialized flat bytes | 20,868 | 20,868 |
+| Ramstage initialized flat bytes | 4,194,312 | 5,334,792 |
+| BIOS FFS bytes | 220,770 | 893,658 |
+| Full IFD flash bytes | 4,194,304 | 4,194,304 |
+
+Both images include seven microcode inputs totaling 86,016 bytes and an
+11,856-byte SMM image with two entries. The larger flat files are fixed placement
+(including padding), not measurements of live code or runtime stack use.
+
+The allocation-free runtime adapter checks complete successor reservations
+against the profile envelope and trained/inherited RAM cap. Signed role, exact
+load address, zero entry offset and bootstrap output-plus-input footprint remain
+mandatory. Complete current Image/Writable and persistent exclusions accompany
+E820-based load policy. Authentication, stash ABI, CAR teardown and hardware
+phase ordering are preserved; the descriptor is not authentication.
+
+Evidence from this cutover:
+
+- Final release halt/UEFI links and full assembly:
+  `/tmp/fstart-x61-cutover-final-{halt,uefi}.log`.
+- Metadata-only postcar move to `0x01200000` links and assembles; shrinking the
+  bootblock to 64 KiB fails at the linker. Both experiments were restored:
+  `/tmp/fstart-intel-metadata-{move,overflow}.log` and
+  `/tmp/fstart-intel-metadata-proof.log`.
+- 30 fbuild, 11 core, 8 image-build and one Intel layout unit test pass;
+  UEFI check and all three stage-specific editor generations pass. The ramstage
+  all-board lock prototype agrees. QEMU RISC-V, ARMv7 XIP and AArch64 relocation
+  release halt links pass: `/tmp/fstart-intel-editor-regression-gates.log`.
+- Original-source editor graphs, isolated cfg/features and SMM producer inputs
+  were inspected: `/tmp/fstart-intel-editor-inspection.log`. Both ramstage flat
+  images contain the exact generated SMM bytes:
+  `/tmp/fstart-intel-smm-embedding.log`.
+- Legacy i945/ICH7 (`intel-d945gclf`) and Pineview/ICH7 (`foxconn-d41s`) release
+  halt links pass: `/tmp/fstart-intel-legacy-pairing.log`.
+
+No new emulator boots, live Intel rust-analyzer switching, full board matrix,
+stack high-water measurements or X61 hardware boots are claimed. Source workspace
+and lock ownership are unchanged; board locks were not edited.
 
 ## Next gates
 
 - Extend editor acceptance to multistage switching, clean regeneration
   and macro/build-script edit workflows before workspace/lock cutover.
-- Cut over the Intel multistage boundary and reservations, retaining separate
-  build/emulator/hardware evidence. The three QEMU virt ISAs now have resolved flows.
+- Extend descriptor-backed Intel geometry to the remaining families and obtain
+  X61 hardware evidence separately from successful links and assembly.
 - Retain one authoritative path per migrated board. Remaining boards still use
   their old host path; do not remove it globally before their replacements work.
 - Complete input-digest/reproducibility reporting, canonical build-lock ownership

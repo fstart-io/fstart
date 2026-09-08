@@ -19,9 +19,9 @@ pub struct BuildResult {
 }
 
 #[derive(Debug, Clone)]
-struct SmmArtifacts {
-    image_path: PathBuf,
-    header_path: Option<PathBuf>,
+pub(crate) struct SmmArtifacts {
+    pub image_path: PathBuf,
+    pub header_path: Option<PathBuf>,
 }
 
 impl BuildResult {
@@ -37,7 +37,7 @@ pub fn build_with_parsed(
     release: bool,
 ) -> Result<BuildResult, String> {
     if let Some(resolved) = &parsed.resolved {
-        return crate::resolved_build::build(workspace_root, board_manifest, resolved, release);
+        return resolved.build(workspace_root, board_manifest, release);
     }
     let config = &parsed.config;
 
@@ -82,7 +82,7 @@ pub fn build_with_parsed(
 
     Ok(BuildResult { stages: result })
 }
-fn build_smm_artifacts(
+pub(crate) fn build_smm_artifacts(
     workspace_root: &std::path::Path,
     board_manifest: &crate::board_manifest::BoardManifest,
     release: bool,
@@ -180,28 +180,63 @@ fn build_board_smm_stage(
         .arg("--no-default-features")
         .arg("--features")
         .arg(&smm_features)
-        .arg("--release");
+        .arg("--release")
+        .arg("--message-format=json-render-diagnostics");
+    cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");
     cmd.env(
         "RUSTFLAGS",
-        "-C panic=abort -C opt-level=s -C relocation-model=pic -C no-redzone=yes -C linker-plugin-lto=no -C embed-bitcode=no -Z function-sections=yes",
+        format!("-C panic=abort -C opt-level=s -C relocation-model=pic -C no-redzone=yes -C linker-plugin-lto=no -C embed-bitcode=no -Z function-sections=yes {}", crate::toolchain::STAGE_ENV_CHECK_CFG),
     );
 
     eprintln!(
         "[fstart] building board SMM stage: {}...",
         board_manifest.package
     );
-    let status = cmd
-        .status()
+    let output = cmd
+        .stderr(std::process::Stdio::inherit())
+        .output()
         .map_err(|e| format!("failed to run cargo for SMM stage: {e}"))?;
-    if !status.success() {
+    if !output.status.success() {
         return Err("board SMM stage build failed".to_string());
+    }
+    // Link exactly Cargo's current artifact graph, never stale hashed rlibs
+    // left in deps/ by another feature or flag selection.
+    let deps_dir = target_dir.join("selected-rlibs");
+    if deps_dir.exists() {
+        fs::remove_dir_all(&deps_dir).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir_all(&deps_dir).map_err(|e| e.to_string())?;
+    for line in output
+        .stdout
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let artifact: serde_json::Value =
+            serde_json::from_slice(line).map_err(|e| e.to_string())?;
+        if artifact["reason"] != "compiler-artifact" {
+            continue;
+        }
+        for file in artifact["filenames"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f.as_str())
+        {
+            let path = Path::new(file);
+            if path.starts_with(target_dir.join("x86_64-unknown-none"))
+                && path.extension().is_some_and(|ext| ext == "rlib")
+            {
+                fs::copy(
+                    path,
+                    deps_dir.join(path.file_name().ok_or("SMM artifact has no name")?),
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
     }
 
     Ok(SmmStageBuild {
-        deps_dir: target_dir
-            .join("x86_64-unknown-none")
-            .join("release")
-            .join("deps"),
+        deps_dir,
         link_dir: workspace_root
             .join("target")
             .join("smm")

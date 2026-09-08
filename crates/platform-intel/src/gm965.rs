@@ -3,13 +3,7 @@
 #[cfg(feature = "stage")]
 pub use stage::{Gm965Ich8, Gm965Ich8Board, Gm965Ich8Mainstage, run_gm965_ich8_mainstage};
 
-#[cfg(feature = "host")]
-use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
-use fstart_core::{
-    CarConfig, Compression, ConstVec, FirmwareImageConfig, FlashLayout, MemoryMap, MemoryRegion,
-    MpBuildConfig, RegionKind, RunsFrom, StageBuildConfig, StageConfig, StageLayout, TempRamBuffer,
-    hstr, hvec,
-};
+use fstart_core::ConstVec;
 use fstart_driver_intel::gm965;
 pub use fstart_driver_intel::gm965::{Gm965IgdConfig, IntelGm965Config};
 use fstart_driver_intel::ich8;
@@ -23,15 +17,8 @@ use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use serde::Serialize;
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
-pub const GM965_BOOTBLOCK_LOAD_ADDR: u64 = 0xffff_ffff;
-pub const GM965_POSTCAR_LOAD_ADDR: u64 = 0x0100_0000;
-pub const GM965_RAMSTAGE_LOAD_ADDR: u64 = 0x0400_0000;
-pub const GM965_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
 pub const GM965_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
 pub const GM965_NEXT_STAGE_NAME: &str = "ramstage";
-/// End of the static low-DRAM window (`workram` base + size): the bootblock
-/// publishes it to the postcar MTRR stash (rounded up to one WB MTRR).
-pub const GM965_DRAM_END: u64 = 0x0010_0000 + 0x3FF0_0000;
 pub const GM965_MCHBAR: u64 = 0xFED1_4000;
 pub const GM965_DMIBAR: u64 = 0xFED1_8000;
 pub const GM965_EPBAR: u64 = 0xFED1_9000;
@@ -60,8 +47,6 @@ pub struct Gm965Ich8Config {
     pub hda: Option<HdaConfig>,
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     pub gpio: gpio::GpioConfig,
-    /// Maximum logical CPU count (BSP + APs) the board populates.
-    pub max_cpus: u16,
 }
 
 impl Gm965Ich8Config {
@@ -80,7 +65,6 @@ impl Gm965Ich8Config {
             hda: None,
             io_traps: ConstVec::new(empty_io_trap()),
             gpio: gpio::GpioConfig::new(),
-            max_cpus: 1,
         }
     }
 
@@ -115,12 +99,6 @@ impl Gm965Ich8Config {
         config.smbus_base = ICH8_SMBUS_BASE;
         config.gpio = self.gpio;
         config
-    }
-
-    #[must_use]
-    pub const fn max_cpus(mut self, max_cpus: u16) -> Self {
-        self.max_cpus = max_cpus;
-        self
     }
 
     #[must_use]
@@ -323,114 +301,6 @@ impl Gm965Ich8AcpiContext {
     }
 }
 
-#[cfg(feature = "host")]
-pub fn gm965_ich8_microcode() -> MicrocodeConfig {
-    MicrocodeConfig::Intel(IntelMicrocodeConfig {
-        files: hvec([
-            hstr("../../../intel-microcode/intel-ucode/06-0f-02"),
-            hstr("../../../intel-microcode/intel-ucode/06-0f-06"),
-            hstr("../../../intel-microcode/intel-ucode/06-0f-07"),
-            hstr("../../../intel-microcode/intel-ucode/06-0f-0a"),
-            hstr("../../../intel-microcode/intel-ucode/06-0f-0b"),
-            hstr("../../../intel-microcode/intel-ucode/06-0f-0d"),
-            hstr("../../../intel-microcode/intel-ucode/06-16-01"),
-        ]),
-        early: true,
-        mp: true,
-    })
-}
-
-pub fn gm965_ich8_memory(flash_layout: Option<FlashLayout>) -> MemoryMap {
-    MemoryMap {
-        regions: hvec([MemoryRegion {
-            name: hstr("workram"),
-            base: 0x0010_0000,
-            size: 0x3FF0_0000,
-            kind: RegionKind::Ram,
-        }]),
-        flash_layout,
-        car: Some(CarConfig {
-            base: 0xFEF0_0000,
-            size: 0x80000,
-        }),
-    }
-}
-
-pub fn gm965_ich8_stages(config: &Gm965Ich8Config) -> StageLayout {
-    StageLayout::MultiStage(hvec([
-        StageConfig {
-            name: hstr("bootblock"),
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig {
-                    temp_ram_buffer: None,
-                }),
-                // Truthful: the bootblock verifies the manifest signature
-                // and the postcar file digests (drives ed25519/sha features).
-                verify_firmware: true,
-                load_next_stage: Some(hstr(GM965_POSTCAR_STAGE_NAME)),
-                ..StageBuildConfig::default()
-            },
-            load_addr: GM965_BOOTBLOCK_LOAD_ADDR,
-            stack_size: 0x2000,
-            heap_size: None,
-            runs_from: RunsFrom::Rom,
-            compression: Compression::None,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        },
-        // Postcar is uncompressed and verified by bootblock before entry.
-        // After teardown it authenticates and decompresses ramstage using the
-        // inherited descriptor. SHA-256 is required; signatures are not.
-        StageConfig {
-            name: hstr(GM965_POSTCAR_STAGE_NAME),
-            build: StageBuildConfig {
-                load_next_stage: Some(hstr(GM965_NEXT_STAGE_NAME)),
-                ..StageBuildConfig::default()
-            },
-            load_addr: GM965_POSTCAR_LOAD_ADDR,
-            // Bounded descriptor loader, compact SHA-256, LZ4 and console.
-            // Full compressed input lives in the reserved DRAM load window.
-            stack_size: 0x2000,
-            heap_size: None,
-            runs_from: RunsFrom::Ram,
-            compression: Compression::None,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        },
-        StageConfig {
-            name: hstr(GM965_NEXT_STAGE_NAME),
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig {
-                    temp_ram_buffer: Some(TempRamBuffer {
-                        base: 0x0200_0000,
-                        size: 0x0100_0000,
-                    }),
-                }),
-                verify_firmware: true,
-                payload: true,
-                pci: true,
-                acpi: true,
-                smbios: true,
-                mp: Some(MpBuildConfig {
-                    max_cpus: config.max_cpus,
-                    smm: true,
-                }),
-                ..StageBuildConfig::default()
-            },
-            load_addr: GM965_RAMSTAGE_LOAD_ADDR,
-            stack_size: 0x400000,
-            heap_size: Some(GM965_RAMSTAGE_HEAP_SIZE as u32),
-            runs_from: RunsFrom::Ram,
-            compression: Compression::Lz4,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        },
-    ]))
-}
-
 #[cfg(feature = "stage")]
 mod stage {
     use super::*;
@@ -529,7 +399,6 @@ mod stage {
         const NB_CONFIG: &'static IntelGm965Config = &Self::CONFIG.northbridge_config();
         const SB_CONFIG: &'static IntelIch8Config = &Self::CONFIG.southbridge_config();
 
-        fn flash_layout() -> fstart_core::FlashLayout;
         type Console: fstart_core::services::ConsoleDevice;
 
         fn console_config() -> <Self::Console as fstart_core::services::ConsoleDevice>::Config;
@@ -540,8 +409,8 @@ mod stage {
     }
 
     /// Bring up BSP + APs with the platform's CPU driver. The CPU model and
-    /// PMBASE are platform knowledge; the board only states `max_cpus` in its
-    /// config.
+    /// PMBASE are platform knowledge; the resolved profile supplies the MP
+    /// ceiling together with the matching SMM producer settings.
     ///
     /// When fbuild embedded an SMM image into this stage (`SMM_IMAGE`), MP
     /// setup also performs SMM relocation, installs the handler in TSEG, and
@@ -554,11 +423,12 @@ mod stage {
         let cpu = fstart_arch::cpu_intel::core2_cpu::Core2CpuDriver::new(ICH8_PMBASE, microcode);
         let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
         let northbridge = IntelGm965::new_from_config(nb_config)?;
-        let smm = crate::SMM_IMAGE.map(|_| &northbridge as &dyn fstart_arch::mp::SmmOps);
+        let smm_image = crate::SMM_IMAGE.ok_or(ServiceError::InvalidParam)?;
+        let smm = Some(&northbridge as &dyn fstart_arch::mp::SmmOps);
         fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
             cpu_drivers: &drivers,
             smm,
-            smm_image: crate::SMM_IMAGE,
+            smm_image: Some(smm_image),
             max_cpus,
         })
         .map(|_| ())
@@ -576,17 +446,7 @@ mod stage {
         let northbridge = IntelGm965::new_from_config(B::NB_CONFIG)?;
         let southbridge = IntelIch8::new_from_config(B::SB_CONFIG)?;
         crate::run_intel_bootblock::<Gm965Ich8, _, _, _, B::Console>(
-            FfsLoadSpec {
-                platform: "gm965/ich8",
-                next_stage: GM965_POSTCAR_STAGE_NAME,
-                next_load_addr: GM965_POSTCAR_LOAD_ADDR,
-                flash_layout: B::flash_layout(),
-                dram_end: GM965_DRAM_END,
-                ramstage_name: GM965_NEXT_STAGE_NAME,
-                ramstage_load_addr: GM965_RAMSTAGE_LOAD_ADDR,
-                console_config: B::console_config(),
-                console_node: B::console_node(),
-            },
+            bootstrap_spec::<B>(0)?,
             hooks,
             northbridge,
             southbridge,
@@ -601,14 +461,28 @@ mod stage {
     where
         B: Gm965Ich8Board,
     {
-        crate::run_intel_postcar::<B::Console>(FfsLoadSpec {
+        let Ok(spec) = bootstrap_spec::<B>(1) else {
+            fstart_arch::x86_64::halt()
+        };
+        crate::run_intel_postcar::<B::Console>(spec)
+    }
+
+    fn bootstrap_spec<B: Gm965Ich8Board>(
+        index: u16,
+    ) -> Result<FfsLoadSpec<B::Console>, ServiceError> {
+        use fstart_core::layout::RegionKind;
+        let layout = crate::layout::IntelBootLayout::current(index)?;
+        Ok(FfsLoadSpec {
             platform: "gm965/ich8",
-            next_stage: GM965_NEXT_STAGE_NAME,
-            next_load_addr: GM965_RAMSTAGE_LOAD_ADDR,
-            flash_layout: B::flash_layout(),
-            dram_end: GM965_DRAM_END,
+            next_stage: GM965_POSTCAR_STAGE_NAME,
+            next_load_addr: layout.region(RegionKind::BootstrapPostcar)?.base,
+            geometry: crate::layout::BootGeometry::Descriptor(layout),
+            dram_end: layout
+                .region(RegionKind::BootstrapRam)?
+                .end()
+                .ok_or(ServiceError::InvalidParam)?,
             ramstage_name: GM965_NEXT_STAGE_NAME,
-            ramstage_load_addr: GM965_RAMSTAGE_LOAD_ADDR,
+            ramstage_load_addr: layout.region(RegionKind::BootstrapMainstage)?.base,
             console_config: B::console_config(),
             console_node: B::console_node(),
         })
@@ -627,7 +501,11 @@ mod stage {
 
     #[cfg(feature = "mp")]
     fn init_mp_for_board<B: Gm965Ich8Board>() -> Result<(), ServiceError> {
-        init_mp(B::NB_CONFIG, B::CONFIG.max_cpus)
+        let max_cpus = option_env!("FSTART_INTEL_MAX_CPUS")
+            .ok_or(ServiceError::InvalidParam)?
+            .parse()
+            .map_err(|_| ServiceError::InvalidParam)?;
+        init_mp(B::NB_CONFIG, max_cpus)
     }
 
     /// Handwritten fixed GM965/ICH8 mainstage flow. Ordering is this function.
@@ -638,6 +516,9 @@ mod stage {
         let Ok(hooks) = B::hooks() else {
             fstart_arch::x86_64::halt();
         };
+        let Ok(layout) = crate::layout::IntelBootLayout::current(2) else {
+            fstart_arch::x86_64::halt()
+        };
         let Ok(mainstage) = crate::bind_intel_mainstage::<
             Gm965Ich8,
             IntelGm965,
@@ -647,7 +528,7 @@ mod stage {
             Gm965Ich8AcpiContext,
         >(
             MainstageSpec {
-                flash_layout: B::flash_layout(),
+                geometry: crate::layout::BootGeometry::Descriptor(layout),
                 nb_config: B::NB_CONFIG,
                 sb_config: B::SB_CONFIG,
                 console_config: B::console_config(),

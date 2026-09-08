@@ -16,9 +16,9 @@ mod stage;
 pub struct Board;
 
 pub use config::*;
-#[cfg(feature = "acpi")]
-pub use mainboard::x61_mainboard_dsdt_aml;
+#[cfg(fstart_stage_env = "ram")]
+pub use mainboard::X61_SMBIOS_DESC;
 #[cfg(feature = "stage")]
 pub use mainboard::X61Mainboard;
-#[cfg(feature = "smbios")]
-pub use mainboard::X61_SMBIOS_DESC;
+#[cfg(fstart_stage_env = "ram")]
+pub use mainboard::x61_mainboard_dsdt_aml;

@@ -523,7 +523,7 @@ mod stage {
                 platform: "pineview/ich7",
                 next_stage: PINEVIEW_POSTCAR_STAGE_NAME,
                 next_load_addr: PINEVIEW_POSTCAR_LOAD_ADDR,
-                flash_layout: B::flash_layout(),
+                geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
                 dram_end: PINEVIEW_DRAM_END,
                 ramstage_name: PINEVIEW_NEXT_STAGE_NAME,
                 ramstage_load_addr: PINEVIEW_RAMSTAGE_LOAD_ADDR,
@@ -548,7 +548,7 @@ mod stage {
             platform: "pineview/ich7",
             next_stage: PINEVIEW_NEXT_STAGE_NAME,
             next_load_addr: PINEVIEW_RAMSTAGE_LOAD_ADDR,
-            flash_layout: B::flash_layout(),
+            geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
             dram_end: PINEVIEW_DRAM_END,
             ramstage_name: PINEVIEW_NEXT_STAGE_NAME,
             ramstage_load_addr: PINEVIEW_RAMSTAGE_LOAD_ADDR,
@@ -590,7 +590,7 @@ mod stage {
             PineviewIch7AcpiContext,
         >(
             MainstageSpec {
-                flash_layout: B::flash_layout(),
+                geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
                 nb_config: B::NB_CONFIG,
                 sb_config: B::SB_CONFIG,
                 console_config: B::console_config(),

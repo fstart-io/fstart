@@ -1,23 +1,11 @@
-//! Lenovo ThinkPad X61 board metadata and build policy.
+//! Lenovo ThinkPad X61 chipset and attached-device configuration.
 
-use fstart_core::smbios::{
-    ChassisType, MemoryDeviceType, ProcessorFamily, SmbiosMemoryDevice, SmbiosProcessor,
-};
-#[cfg(feature = "host")]
-use fstart_core::{
-    dev_security_config, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig, SmmConfig,
-};
-use fstart_core::{
-    hstr, hvec, ConstVec, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig,
-    Platform, SmbiosConfig,
-};
+use fstart_core::{Platform, hvec};
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
+use fstart_driver_intel::southbridge::hda;
 use fstart_driver_superio::pc87382;
 use fstart_driver_superio::pc87392;
-use fstart_driver_intel::southbridge::hda;
-#[cfg(feature = "host")]
-use fstart_platform_intel::gm965::{gm965_ich8_memory, gm965_ich8_microcode, gm965_ich8_stages};
 use fstart_platform_intel::gm965::{
     Gm965Ich8Config, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode,
     LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
@@ -31,7 +19,6 @@ pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
 pub static X61_PLATFORM: Gm965Ich8Config = Gm965Ich8Config::new()
-    .max_cpus(2)
     .igd(x61_igd_config())
     .pcie_port(0, true)
     .pcie_port(1, true)
@@ -86,119 +73,6 @@ pub static X61_PLATFORM: Gm965Ich8Config = Gm965Ich8Config::new()
         access: IoTrapAccess::Any,
     }])
     .build();
-
-#[cfg(feature = "host")]
-#[must_use]
-pub fn board_config() -> BoardConfig {
-    let flash_layout = x61_flash_layout();
-
-    BoardConfig {
-        name: hstr(BOARD_NAME),
-        platform: PLATFORM,
-        memory: gm965_ich8_memory(Some(flash_layout)),
-        stages: gm965_ich8_stages(&X61_PLATFORM),
-        security: dev_security_config("keys/dev-signing.pub"),
-        payload: None,
-        microcode: Some(gm965_ich8_microcode()),
-        soc_image_format: Default::default(),
-        full_flash_image: true,
-        acpi: Some(AcpiConfig {
-            print_hex: true,
-            platform: AcpiPlatform::X86,
-        }),
-        smbios: Some(x61_smbios()),
-        smm: Some(SmmConfig::default()),
-        build: BoardBuildPolicy {
-            cpu_feature: Some(hstr("cpu-intel-core2")),
-            ..Default::default()
-        },
-        boot_hart_id: 0,
-    }
-}
-
-#[must_use]
-pub const fn board_name() -> &'static str {
-    BOARD_NAME
-}
-
-#[must_use]
-pub const fn x61_flash_layout() -> FlashLayout {
-    FlashLayout::IntelIfd(x61_ifd_flash_layout())
-}
-
-/// X61 Intel IFD flash layout: descriptor, GbE, ME, and BIOS regions.
-///
-/// `IntelIfdFlashLayout::new` validates region fit and overlap; the `const`
-/// assertion below turns any invariant violation into a compile error.
-#[must_use]
-pub const fn x61_ifd_flash_layout() -> IntelIfdFlashLayout {
-    IntelIfdFlashLayout::new(
-        ConstVec::new(IntelIfdRegionConfig {
-            kind: IntelIfdRegion::Descriptor,
-            offset: 0x000000,
-            size: 0x001000,
-        })
-        .push(IntelIfdRegionConfig {
-            kind: IntelIfdRegion::Gbe,
-            offset: 0x001000,
-            size: 0x002000,
-        })
-        .push(IntelIfdRegionConfig {
-            kind: IntelIfdRegion::Me,
-            offset: 0x003000,
-            size: 0x27D000,
-        })
-        .push(IntelIfdRegionConfig {
-            kind: IntelIfdRegion::Bios,
-            offset: 0x280000,
-            size: 0x180000,
-        }),
-    )
-}
-
-const _: () = {
-    let layout = x61_ifd_flash_layout();
-    layout.validate();
-};
-
-pub fn x61_smbios() -> SmbiosConfig {
-    SmbiosConfig {
-        bios_vendor: hstr("fstart"),
-        bios_version: hstr("0.1.0"),
-        bios_release_date: hstr(option_env!("FSTART_SMBIOS_DATE").unwrap_or("04/15/2026")),
-        system_manufacturer: hstr("LENOVO"),
-        system_product: hstr("ThinkPad X61"),
-        system_version: hstr("1.0"),
-        system_serial: hstr(""),
-        baseboard_manufacturer: hstr("LENOVO"),
-        baseboard_product: hstr("ThinkPad X61"),
-        chassis_type: ChassisType::Other,
-        chassis_manufacturer: hstr("LENOVO"),
-        processors: hvec([SmbiosProcessor {
-            socket: hstr("Socket M"),
-            manufacturer: hstr("Intel"),
-            processor_family: ProcessorFamily::X86_64,
-            max_speed_mhz: None,
-            core_count: None,
-            thread_count: None,
-            caches: hvec([]),
-        }]),
-        memory_devices: hvec([
-            SmbiosMemoryDevice {
-                locator: hstr("DIMM0"),
-                size_mb: None,
-                speed_mhz: None,
-                memory_type: Some(MemoryDeviceType::Unknown),
-            },
-            SmbiosMemoryDevice {
-                locator: hstr("DIMM1"),
-                size_mb: None,
-                speed_mhz: None,
-                memory_type: Some(MemoryDeviceType::Unknown),
-            },
-        ]),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Board device configuration facts

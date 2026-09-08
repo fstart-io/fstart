@@ -5,6 +5,32 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[package.metadata.fstart]
+schema = 1
+
+[package.metadata.fstart.layouts.gm965-car]
+family = "intel-car"
+target = "x86_64-unknown-none"
+default-payload = "halt"
+max-cpus = 2
+bootblock-features = ["fstart-stage/x86_64", "fstart-stage/x86-static-page-tables", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest", "fstart-platform-intel/stage"]
+postcar-features = ["fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/lz4", "fstart-platform-intel/stage"]
+ramstage-features = ["fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/lz4", "fstart-stage/acpi", "fstart-platform-intel/stage", "fstart-platform-intel/acpi", "fstart-platform-intel/mp", "fstart-platform-intel/smbios"]
+microcode = ["intel-microcode/intel-ucode/06-0f-02", "intel-microcode/intel-ucode/06-0f-06", "intel-microcode/intel-ucode/06-0f-07", "intel-microcode/intel-ucode/06-0f-0a", "intel-microcode/intel-ucode/06-0f-0b", "intel-microcode/intel-ucode/06-0f-0d", "intel-microcode/intel-ucode/06-16-01"]
+ifd = [{ kind = "descriptor", offset = 0, size = 0x1000 }, { kind = "gbe", offset = 0x1000, size = 0x2000 }, { kind = "me", offset = 0x3000, size = 0x27d000 }, { kind = "bios", offset = 0x280000, size = 0x180000 }]
+security = { signing_algorithm = "Ed25519", pubkey_file = "keys/dev-signing.pub", required_digests = ["Sha256"] }
+smm = { entry_points = 2, stack_size = 0x400 }
+
+[package.metadata.fstart.layouts.gm965-car.reservations]
+flash = { base = 0xffc00000, size = 0x400000 }
+firmware = { base = 0xffe80000, size = 0x180000 }
+bootstrap-ram = { base = 0x100000, size = 0x3ff00000 }
+low-memory = { base = 0, size = 0x100000 }
+scratch = { base = 0x2000000, size = 0x1000000 }
+bootblock = { image = { base = 0xfffc0000, size = 0x40000 }, writable = { base = 0xfef00000, size = 0x80000 }, stack = 0x2000, heap = 0 }
+postcar = { image = { base = 0x1000000, size = 0x10000 }, writable = { base = 0x1010000, size = 0x10000 }, stack = 0x2000, heap = 0 }
+ramstage = { image = { base = 0x4000000, size = 0x400000 }, writable = { base = 0x4400000, size = 0xc00000 }, stack = 0x400000, heap = 0x200000 }
+
 [features]
 default = []
 host = []

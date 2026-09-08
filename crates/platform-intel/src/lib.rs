@@ -13,6 +13,7 @@ pub mod tables;
 
 pub mod gm965;
 pub mod i945;
+pub mod layout;
 pub mod pineview;
 
 #[cfg(feature = "stage")]
@@ -168,10 +169,10 @@ pub(crate) struct FfsLoadSpec<C: ConsoleDevice> {
     pub platform: &'static str,
     pub next_stage: &'static str,
     pub next_load_addr: u64,
-    pub flash_layout: fstart_core::FlashLayout,
-    /// End of the board's static low-DRAM window (ROM constant from the
-    /// platform memory map). The bootblock rounds it up to a single WB MTRR
-    /// in the postcar stash; postcar/ramstage never read this field.
+    pub geometry: layout::BootGeometry,
+    /// End of the profile's low-DRAM envelope (authored platform bounds for
+    /// unmigrated families). The trained limit is published in the existing
+    /// postcar MTRR stash; postcar/ramstage never read this field.
     pub dram_end: u64,
     /// FFS name of the ramstage file. The bootblock resolves its raw extent
     /// from the verified manifest into the stash; postcar loads it without
@@ -203,6 +204,7 @@ where
     hooks: Hooks,
     console: C,
     ctx: MainstageCtx,
+    geometry: layout::BootGeometry,
     platform_node: &'static str,
     console_node: &'static str,
     #[cfg(feature = "mp")]
@@ -316,7 +318,7 @@ where
     }
 
     fn refresh_load_policy(&self) -> Result<(), ServiceError> {
-        install_intel_load_policy(self.ctx.e820())
+        install_intel_load_policy(self.ctx.e820(), self.geometry)
     }
 }
 
@@ -327,7 +329,7 @@ where
     SB: IntelSouthbridgeDriver,
     C: ConsoleDevice,
 {
-    pub flash_layout: fstart_core::FlashLayout,
+    pub geometry: layout::BootGeometry,
     pub nb_config: &'static NB::Config,
     pub sb_config: &'static SB::Config,
     pub console_config: C::Config,
@@ -351,7 +353,7 @@ where
     Hooks: IntelEarlyBoardHooks<P>,
     C: ConsoleDevice,
 {
-    let (firmware_base, firmware_size) = firmware_window(spec.flash_layout)?;
+    let (firmware_base, firmware_size) = spec.geometry.firmware()?;
     Ok(IntelMainstage {
         northbridge: NB::new_from_config(spec.nb_config)?,
         southbridge: SB::new_from_config(spec.sb_config)?,
@@ -360,6 +362,7 @@ where
         hooks,
         console: C::new(spec.console_config)?,
         ctx: MainstageCtx::new(firmware_base, firmware_size),
+        geometry: spec.geometry,
         platform_node: spec.platform_node,
         console_node: spec.console_node,
         #[cfg(feature = "mp")]
@@ -482,14 +485,14 @@ where
         platform,
         next_stage,
         next_load_addr,
-        flash_layout,
+        geometry,
         dram_end,
         ramstage_name,
         ramstage_load_addr,
         console_config,
         console_node,
     } = spec;
-    let (firmware_base, firmware_size) = firmware_window(flash_layout)?;
+    let (firmware_base, firmware_size) = geometry.firmware()?;
 
     northbridge.pre_console_init()?;
     southbridge.pre_console_init()?;
@@ -528,7 +531,7 @@ where
         "boot trust: development-integrity; RO root and rollback enforcement not established"
     );
     fstart_arch::x86_64::enable_boot_media_rom_cache();
-    // SAFETY: firmware_window comes from the trusted platform flash layout.
+    // SAFETY: the firmware window comes from trusted linked/platform geometry.
     let media = unsafe {
         fstart_core::services::boot_media::MemoryMapped::from_raw_addr(firmware_base, firmware_size)
     };
@@ -545,15 +548,16 @@ where
         fstart_ffs::root::BootstrapRole::Postcar,
         next_load_addr,
         ram_end,
+        geometry,
     )?;
     let _ = boot::bootstrap_window(
         ramstage,
         fstart_ffs::root::BootstrapRole::Mainstage,
         ramstage_load_addr,
         ram_end,
+        geometry,
     )?;
-    let reserved =
-        fstart_stage::boot::running_stage_windows().map_err(|_| ServiceError::InvalidParam)?;
+    let reserved = boot::running_reservations(geometry)?;
     // SAFETY: trained DRAM, bounded family-owned postcar window, and all live
     // bootblock code/data/stack excluded. The loader verifies final bytes.
     let verified = unsafe {
@@ -604,7 +608,7 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
         platform,
         next_stage: _,
         next_load_addr: _,
-        flash_layout,
+        geometry,
         dram_end: _,
         ramstage_name,
         ramstage_load_addr,
@@ -623,7 +627,7 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
     fstart_log::info!("{}: {} console ready", console_node, C::NAME);
     fstart_log::info!("{} postcar console ready", platform);
 
-    let (firmware_base, firmware_size) = match firmware_window(flash_layout) {
+    let (firmware_base, firmware_size) = match geometry.firmware() {
         Ok(window) => window,
         Err(_) => fstart_arch::x86_64::halt(),
     };
@@ -636,9 +640,9 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
             fstart_ffs::root::BootstrapRole::Mainstage,
             ramstage_load_addr,
             stash.ram_end,
+            geometry,
         )?;
-        let reserved =
-            fstart_stage::boot::running_stage_windows().map_err(|_| ServiceError::InvalidParam)?;
+        let reserved = boot::running_reservations(geometry)?;
         // SAFETY: family-owned trained DRAM range, live postcar excluded, and
         // the media mapping is trusted configuration, not descriptor data.
         let media = unsafe {
@@ -830,7 +834,7 @@ pub trait IntelPlatform {}
 
 /// Board contract common to Intel handwritten early flows.
 #[cfg(feature = "stage")]
-pub trait IntelEarlyBoard: StageBoard {
+pub trait IntelEarlyBoard: Sized + 'static {
     type Platform: IntelEarlyPlatform;
     type Hooks: IntelEarlyBoardHooks<Self::Platform>;
 

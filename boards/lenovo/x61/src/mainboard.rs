@@ -17,12 +17,12 @@ use fstart_platform_intel::gm965::Gm965Ich8;
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 
 /// Board-specific X61 hooks for the GM965/ICH8 flow.
-#[cfg(any(feature = "stage", feature = "acpi"))]
+#[cfg(feature = "stage")]
 pub struct X61Mainboard;
 
 /// The mainboard contributes ACPI fragments through the same `AcpiDevice`
 /// abstraction the chipset drivers use.
-#[cfg(feature = "acpi")]
+#[cfg(fstart_stage_env = "ram")]
 mod mainboard_acpi_device {
     extern crate alloc;
 
@@ -406,7 +406,7 @@ pub static X61_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> =
         ram_end: 0x3fff_ffff,
     };
 
-#[cfg(feature = "acpi")]
+#[cfg(fstart_stage_env = "ram")]
 mod acpi_impl {
     extern crate alloc;
 
@@ -584,7 +584,7 @@ mod acpi_impl {
     }
 }
 
-#[cfg(feature = "acpi")]
+#[cfg(fstart_stage_env = "ram")]
 pub use acpi_impl::x61_mainboard_dsdt_aml;
 
 #[cfg(all(feature = "stage", fstart_stage_env = "ram"))]

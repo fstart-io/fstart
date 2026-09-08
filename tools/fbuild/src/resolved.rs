@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use fstart_core::layout::{Region, RegionKind};
 use fstart_core::*;
@@ -102,13 +101,6 @@ struct Profile {
     security: SecurityConfig,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PlatformMetadata {
-    schema: u32,
-    layouts: BTreeMap<String, Profile>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedBuild {
     pub(crate) target: String,
@@ -143,94 +135,23 @@ impl ResolvedBuild {
         board: &crate::board_manifest::BoardManifest,
         choice: Option<crate::payload::PayloadChoice>,
     ) -> Result<Self, String> {
-        let reference = board
-            .build_profile
-            .as_ref()
-            .ok_or("missing build-profile")?;
-        let workspace = crate::build_board::prepare_selected_board_workspace(root, board)?;
-        let output = Command::new("cargo")
-            .current_dir(root)
-            .args([
-                "metadata",
-                "--format-version=1",
-                "--no-default-features",
-                "--features",
-                "stage",
-            ])
-            .arg("--manifest-path")
-            .arg(workspace.join("Cargo.toml"))
-            .output()
-            .map_err(|e| format!("cargo metadata: {e}"))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-        }
-        let metadata: serde_json::Value =
-            serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-        let packages = metadata["packages"]
-            .as_array()
-            .ok_or("Cargo metadata has no packages")?;
-        let board_path = board
-            .dir
-            .join("Cargo.toml")
-            .canonicalize()
-            .map_err(|e| e.to_string())?;
-        let package = packages
-            .iter()
-            .find(|p| {
-                p["manifest_path"]
-                    .as_str()
-                    .and_then(|s| Path::new(s).canonicalize().ok())
-                    .as_ref()
-                    == Some(&board_path)
-            })
-            .ok_or("selected board missing from Cargo metadata")?;
-        let dependencies = package["dependencies"]
-            .as_array()
-            .ok_or("missing board dependencies")?;
-        if !dependencies
-            .iter()
-            .any(|d| d["rename"].as_str().or(d["name"].as_str()) == Some(&reference.dependency))
-        {
-            return Err(format!(
-                "build-profile dependency '{}' is not direct",
-                reference.dependency
-            ));
-        }
-        let nodes = metadata["resolve"]["nodes"]
-            .as_array()
-            .ok_or("missing Cargo resolve graph")?;
-        let node = nodes
-            .iter()
-            .find(|node| node["id"] == package["id"])
-            .ok_or("missing board resolve node")?;
-        let key = reference.dependency.replace('-', "_");
-        let dep = node["deps"]
-            .as_array()
-            .ok_or("missing resolved dependencies")?
-            .iter()
-            .find(|dep| dep["name"].as_str() == Some(&key))
-            .ok_or("profile dependency is not enabled")?;
-        let platform = packages
-            .iter()
-            .find(|p| p["id"] == dep["pkg"])
-            .ok_or("missing platform package")?;
-        let mut declared: PlatformMetadata =
-            serde_json::from_value(platform["metadata"]["fstart"].clone())
-                .map_err(|e| format!("platform fstart metadata: {e}"))?;
-        if declared.schema != 1 {
-            return Err("unsupported platform metadata schema".into());
-        }
-        let profile = declared
-            .layouts
-            .remove(&reference.name)
-            .ok_or_else(|| format!("unknown layout '{}'", reference.name))?;
-        let source = format!(
-            "{}:package.metadata.fstart.layouts.{}",
-            platform["manifest_path"].as_str().unwrap_or("platform"),
-            reference.name
-        );
-        let mut resolved =
-            Self::resolve(profile, &board.layout, choice.map(|c| c.as_str()), &source)?;
+        let loaded = crate::profile_source::load_profile(root, board)?;
+        Self::from_profile_source(board, choice, loaded)
+    }
+
+    pub(crate) fn from_profile_source(
+        board: &crate::board_manifest::BoardManifest,
+        choice: Option<crate::payload::PayloadChoice>,
+        loaded: crate::profile_source::ProfileSource,
+    ) -> Result<Self, String> {
+        let profile =
+            serde_json::from_value(loaded.profile).map_err(|e| format!("XIP profile: {e}"))?;
+        let mut resolved = Self::resolve(
+            profile,
+            &board.layout,
+            choice.map(|c| c.as_str()),
+            &loaded.source,
+        )?;
         if board
             .platform
             .as_deref()
@@ -256,7 +177,7 @@ impl ResolvedBuild {
             .extend(board.variant_features.iter().cloned());
         resolved.features.sort();
         resolved.features.dedup();
-        validate_features(&resolved.features, package, &metadata)?;
+        validate_features(&resolved.features, &loaded.package, &loaded.metadata)?;
         Ok(resolved)
     }
 
@@ -674,7 +595,7 @@ fn hstring<const N: usize>(value: &str) -> Result<heapless::String<N>, String> {
     heapless::String::try_from(value).map_err(|_| format!("metadata string too long: {value}"))
 }
 
-fn validate_features(
+pub(crate) fn validate_features(
     features: &[String],
     board: &serde_json::Value,
     metadata: &serde_json::Value,

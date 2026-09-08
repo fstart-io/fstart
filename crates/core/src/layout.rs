@@ -39,13 +39,22 @@ pub enum RegionKind {
     Flash = 5,
     /// Additional physical exclusion, such as a handoff buffer.
     Reserved = 6,
-    /// CPU-mapped firmware filesystem partition within flash.
+    /// CPU-mapped firmware filesystem window within flash. Intel's BIOS
+    /// mapping also includes a separately reserved XIP bootblock tail.
     Firmware = 7,
     Payload = 8,
     PayloadFirmware = 9,
     DeviceTree = 10,
     /// RAM destination of the initial image copy, including data initializers.
     Execution = 11,
+    /// Complete destination reservation for the fixed postcar bootstrap role.
+    BootstrapPostcar = 12,
+    /// Complete destination reservation for the fixed mainstage bootstrap role.
+    BootstrapMainstage = 13,
+    /// Platform bootstrap RAM envelope; actual trained RAM must also bound it.
+    BootstrapRam = 14,
+    /// Temporary boot-media arena, distinct from the bootstrap decoder's input.
+    BootMediaScratch = 15,
 }
 
 impl RegionKind {
@@ -62,6 +71,10 @@ impl RegionKind {
             9 => Ok(Self::PayloadFirmware),
             10 => Ok(Self::DeviceTree),
             11 => Ok(Self::Execution),
+            12 => Ok(Self::BootstrapPostcar),
+            13 => Ok(Self::BootstrapMainstage),
+            14 => Ok(Self::BootstrapRam),
+            15 => Ok(Self::BootMediaScratch),
             _ => Err(Error::UnknownRegionKind),
         }
     }

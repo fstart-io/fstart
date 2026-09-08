@@ -41,6 +41,75 @@ pub fn generate(
     audit_lock: bool,
 ) -> Result<PathBuf, String> {
     let selection = Selection::prepare(root, board, layout, release)?;
+    generate_selection(
+        root,
+        board,
+        &layout.target,
+        &layout.payload,
+        &layout.features,
+        "stage",
+        release,
+        audit_lock,
+        selection,
+    )
+}
+
+pub fn generate_image(
+    root: &Path,
+    board: &BoardManifest,
+    layout: &crate::resolved_image::ResolvedImage,
+    role: Option<crate::intel_layout::IntelStage>,
+    release: bool,
+    audit_lock: bool,
+) -> Result<PathBuf, String> {
+    match layout {
+        crate::resolved_image::ResolvedImage::Monolithic(layout) => {
+            if role.is_some() {
+                return Err("--stage is only valid for Intel multistage profiles".into());
+            }
+            generate(root, board, layout, release, audit_lock)
+        }
+        crate::resolved_image::ResolvedImage::Intel(layout) => {
+            let role = role
+                .ok_or("Intel editor selection requires --stage bootblock, postcar or ramstage")?;
+            let producer = if role == crate::intel_layout::IntelStage::Ramstage {
+                crate::intel_build::producer(root, board, layout, release)?
+            } else {
+                Default::default()
+            };
+            let selection =
+                crate::intel_build::selection(root, board, layout, role, release, &producer)?;
+            let row = layout
+                .stages
+                .iter()
+                .find(|row| row.role == role)
+                .ok_or("missing Intel stage")?;
+            generate_selection(
+                root,
+                board,
+                &layout.target,
+                &layout.payload,
+                &row.features,
+                role.name(),
+                release,
+                audit_lock,
+                selection,
+            )
+        }
+    }
+}
+
+fn generate_selection(
+    root: &Path,
+    board: &BoardManifest,
+    target: &str,
+    payload: &str,
+    features: &[String],
+    role: &str,
+    release: bool,
+    audit_lock: bool,
+    selection: Selection,
+) -> Result<PathBuf, String> {
     let output = Command::new("cargo")
         .current_dir(root)
         .args([
@@ -52,9 +121,9 @@ pub fn generate(
         .arg("--manifest-path")
         .arg(&selection.manifest)
         .arg("--filter-platform")
-        .arg(&layout.target)
+        .arg(target)
         .arg("--features")
-        .arg(layout.features.join(","))
+        .arg(features.join(","))
         .envs(selection.environment())
         .output()
         .map_err(|e| e.to_string())?;
@@ -114,10 +183,15 @@ pub fn generate(
         .join("target/fstart-ide")
         .join(&board.board)
         .join(if release { "release" } else { "debug" })
-        .join(&layout.payload);
+        .join(payload);
+    let directory = if role == "stage" {
+        directory
+    } else {
+        directory.join(role)
+    };
     let settings = json!({
         "rust-analyzer.linkedProjects": [directory.join("rust-project.json")],
-        "rust-analyzer.cargo.target": layout.target,
+        "rust-analyzer.cargo.target": target,
         "rust-analyzer.cargo.cfgs": [],
         "rust-analyzer.cfg.setTest": false,
         "rust-analyzer.cargo.extraEnv": selection.environment(),
@@ -146,7 +220,7 @@ pub fn generate(
     write_json(
         directory.join("report.json"),
         &json!({
-            "board": board.board, "target": layout.target, "payload": layout.payload,
+            "board": board.board, "target": target, "payload": payload, "stage": role,
             "workspace_members": sources, "resolved_build": selection.directory.join("resolved-build.json"),
             "external_pins_match_root_candidate": differences.is_empty(),
             "external_pins_missing_from_root_candidate": differences,

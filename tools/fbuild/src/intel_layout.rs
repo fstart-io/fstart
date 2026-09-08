@@ -1,7 +1,7 @@
 //! Fixed Intel CAR/postcar/ramstage reservation model.
 //!
-//! This is the pre-link geometry boundary, not an initialization graph or an
-//! authenticated-load policy. The existing board path is not cut over yet.
+//! This is the X61 pre-link geometry boundary, not an initialization graph or
+//! authentication policy. The fixed runtime flow consumes its linked descriptor.
 
 use crate::resolved::Span;
 use fstart_core::layout::RegionKind;
@@ -32,6 +32,19 @@ impl StageReservation {
         Ok(())
     }
 
+    /// Whole future runtime footprint. Bootstrap decoding may also place its
+    /// compressed input here, after initialized output and before stage entry.
+    pub(crate) fn load_window(self) -> Result<Span, String> {
+        if self.image.end()? != self.writable.base {
+            return Err("RAM stage image and writable reservations must be adjacent".into());
+        }
+        let end = self.writable.end()?;
+        Ok(Span {
+            base: self.image.base,
+            size: end - self.image.base,
+        })
+    }
+
     pub(crate) fn stack_span(self) -> Span {
         Span {
             base: self.writable.base + self.writable.size - self.stack,
@@ -48,24 +61,46 @@ impl StageReservation {
 }
 
 /// Closed family roles: metadata cannot reorder stages or invent transitions.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum IntelStage {
     Bootblock,
     Postcar,
     Ramstage,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+impl IntelStage {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Bootblock => "bootblock",
+            Self::Postcar => "postcar",
+            Self::Ramstage => "ramstage",
+        }
+    }
+    pub fn environment(self) -> &'static str {
+        match self {
+            Self::Bootblock => "car",
+            Self::Postcar => "postcar",
+            Self::Ramstage => "ram",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct IntelReservations {
     pub flash: Span,
+    /// Full BIOS mapping used by media identity and postcar ROM caching.
+    /// The bootblock occupies its tail; filesystem capacity excludes that tail.
     pub firmware: Span,
+    /// Static bootstrap envelope, additionally limited by trained RAM at boot.
+    pub bootstrap_ram: Span,
     pub bootblock: StageReservation,
     pub postcar: StageReservation,
     pub ramstage: StageReservation,
     /// Persistent low-memory exclusion including the architecture handoff page.
     pub low_memory: Span,
-    /// Dedicated compressed-input / boot-media scratch, not a stage heap.
+    /// Boot-media arena, not the bootstrap decoder's appended compressed input.
     pub scratch: Span,
 }
 
@@ -78,6 +113,15 @@ impl IntelReservations {
         }
     }
 
+    pub fn filesystem_capacity(&self) -> Result<u64, String> {
+        self.bootblock
+            .image
+            .base
+            .checked_sub(self.firmware.base)
+            .filter(|size| *size != 0)
+            .ok_or_else(|| "BIOS mapping leaves no filesystem capacity".into())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let ram_regions = [
             ("CAR", self.bootblock.writable),
@@ -88,14 +132,15 @@ impl IntelReservations {
             ("low memory", self.low_memory),
             ("scratch", self.scratch),
         ];
-        let regions: Vec<_> = [
-            ("bootblock image", self.bootblock.image),
+        let regions: Vec<_> = [("bootblock image", self.bootblock.image)]
+            .into_iter()
+            .chain(ram_regions)
+            .collect();
+        for (name, span) in regions.iter().copied().chain([
+            ("flash", self.flash),
             ("firmware", self.firmware),
-        ]
-        .into_iter()
-        .chain(ram_regions)
-        .collect();
-        for (name, span) in regions.iter().copied().chain([("flash", self.flash)]) {
+            ("bootstrap RAM", self.bootstrap_ram),
+        ]) {
             let end = span.end().map_err(|e| format!("{name}: {e}"))?;
             if span.base % 4096 != 0 || span.size % 4096 != 0 || end > 0x1_0000_0000 {
                 return Err(format!(
@@ -111,6 +156,14 @@ impl IntelReservations {
                 return Err("bootblock/firmware exceeds flash".into());
             }
         }
+        if self.firmware.end()? != self.flash.end()?
+            || !self
+                .firmware
+                .contains(self.bootblock.image.base, self.bootblock.image.size)
+        {
+            return Err("BIOS mapping must contain the fixed bootblock tail".into());
+        }
+        self.filesystem_capacity()?;
         for (i, (name, span)) in regions.iter().enumerate() {
             for (other_name, other) in &regions[i + 1..] {
                 if span.overlaps(*other) {
@@ -129,9 +182,18 @@ impl IntelReservations {
         if !self.flash.size.is_power_of_two() || !self.flash.base.is_multiple_of(self.flash.size) {
             return Err("flash must fit one aligned ROM MTRR".into());
         }
-        for stage in [self.postcar, self.ramstage] {
-            if stage.image.end()? != stage.writable.base {
-                return Err("RAM stage image and writable reservations must be adjacent".into());
+        for span in [
+            self.postcar.load_window()?,
+            self.ramstage.load_window()?,
+            self.scratch,
+        ] {
+            if !self.bootstrap_ram.contains(span.base, span.size) {
+                return Err("complete stage/scratch reservation exceeds bootstrap RAM".into());
+            }
+        }
+        for span in [self.low_memory, self.bootblock.writable, self.flash] {
+            if self.bootstrap_ram.overlaps(span) {
+                return Err("bootstrap RAM overlaps low-memory/CAR/flash exclusion".into());
             }
         }
         let car = self.bootblock.writable;
@@ -150,8 +212,9 @@ impl IntelReservations {
         Ok(())
     }
 
-    /// Emit only current-stage geometry and persistent exclusions. Successor
-    /// authentication and destination authorization remain separate concerns.
+    /// Emit current reservations and fixed-role bootstrap geometry. Consumers
+    /// must intersect bootstrap bounds with trained RAM and authenticate bytes;
+    /// the layout descriptor does not replace the authenticated bootstrap root.
     pub fn descriptor(&self, role: IntelStage) -> Result<EncodedLayout, String> {
         self.validate()?;
         let (index, stage) = match role {
@@ -167,6 +230,14 @@ impl IntelReservations {
             self.firmware.region(RegionKind::Firmware),
             self.low_memory.region(RegionKind::Reserved),
             self.scratch.region(RegionKind::Reserved),
+            self.scratch.region(RegionKind::BootMediaScratch),
+            self.bootstrap_ram.region(RegionKind::BootstrapRam),
+            self.postcar
+                .load_window()?
+                .region(RegionKind::BootstrapPostcar),
+            self.ramstage
+                .load_window()?
+                .region(RegionKind::BootstrapMainstage),
         ];
         if let Some(heap) = stage.heap_span() {
             regions.push(heap.region(RegionKind::Heap));
@@ -185,7 +256,8 @@ pub(crate) mod tests {
         let span = |base, size| Span { base, size };
         IntelReservations {
             flash: span(0xffc00000, 0x400000),
-            firmware: span(0xffe80000, 0x140000),
+            firmware: span(0xffe80000, 0x180000),
+            bootstrap_ram: span(0x100000, 0x3ff00000),
             bootblock: StageReservation {
                 image: span(0xfffc0000, 0x40000),
                 writable: span(0xfef00000, 0x80000),
@@ -212,6 +284,7 @@ pub(crate) mod tests {
     #[test]
     fn stages_keep_fixed_budgets_and_distinct_wire_identities() {
         let config = candidate();
+        assert_eq!(config.filesystem_capacity().unwrap(), 0x140000);
         for (index, role) in [
             IntelStage::Bootblock,
             IntelStage::Postcar,
@@ -227,6 +300,18 @@ pub(crate) mod tests {
             let writable = layout.region(RegionKind::Writable).unwrap();
             assert_eq!(stack.base + stack.size, writable.base + writable.size);
             assert_eq!(layout.region(RegionKind::Heap).is_some(), index == 2);
+            for (kind, stage) in [
+                (RegionKind::BootstrapPostcar, config.postcar),
+                (RegionKind::BootstrapMainstage, config.ramstage),
+            ] {
+                let window = layout.region(kind).unwrap();
+                assert_eq!(window.base, stage.image.base);
+                assert_eq!(window.end(), Some(stage.writable.end().unwrap()));
+            }
+            assert_eq!(
+                layout.region(RegionKind::BootMediaScratch).unwrap().base,
+                config.scratch.base
+            );
         }
     }
 
@@ -244,5 +329,9 @@ pub(crate) mod tests {
         let mut config = candidate();
         config.postcar.image.base = u64::MAX - 4095;
         assert!(config.validate().is_err());
+        let mut config = candidate();
+        config.bootstrap_ram.size = 0x4700000;
+        assert!(config.ramstage.image.end().unwrap() <= config.bootstrap_ram.end().unwrap());
+        assert!(config.validate().unwrap_err().contains("complete stage"));
     }
 }

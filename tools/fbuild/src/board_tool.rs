@@ -179,7 +179,7 @@ fn load(
         Source::Legacy(callbacks) => callbacks,
         Source::Metadata(manifest) => {
             let root = crate::build_board::workspace_root_pub()?;
-            let resolved = crate::resolved::ResolvedBuild::load(&root, manifest, payload)?;
+            let resolved = crate::resolved_image::ResolvedImage::load(&root, manifest, payload)?;
             let config = resolved.assembler_config(&manifest.board)?;
             return Ok((
                 manifest.clone(),

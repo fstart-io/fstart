@@ -83,6 +83,9 @@ enum Command {
         payload: Option<PayloadChoice>,
         #[arg(long)]
         release: bool,
+        /// Select exactly one Intel compiler role (required for Intel profiles).
+        #[arg(long, value_enum)]
+        stage: Option<fbuild::intel_layout::IntelStage>,
         /// Compare against a disposable all-board build-lock prototype.
         #[arg(long)]
         audit_lock: bool,
@@ -244,7 +247,7 @@ fn board_tool_flash_args(
 fn explain(board: &str, payload: Option<PayloadChoice>) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved::ResolvedBuild::load(&root, &manifest, payload)?;
+    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
     println!("{}", resolved.json()?);
     Ok(())
 }
@@ -252,7 +255,7 @@ fn explain(board: &str, payload: Option<PayloadChoice>) -> Result<(), String> {
 fn check(board: &str, payload: Option<PayloadChoice>, release: bool) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved::ResolvedBuild::load(&root, &manifest, payload)?;
+    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
     resolved.check(&root, &manifest, release)
 }
 
@@ -261,11 +264,13 @@ fn ide(
     payload: Option<PayloadChoice>,
     release: bool,
     audit_lock: bool,
+    stage: Option<fbuild::intel_layout::IntelStage>,
 ) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved::ResolvedBuild::load(&root, &manifest, payload)?;
-    let workspace = fbuild::ide::generate(&root, &manifest, &resolved, release, audit_lock)?;
+    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
+    let workspace =
+        fbuild::ide::generate_image(&root, &manifest, &resolved, stage, release, audit_lock)?;
     println!("{}", workspace.display());
     Ok(())
 }
@@ -322,7 +327,8 @@ fn main() {
             payload,
             release,
             audit_lock,
-        } => ide(&board, payload, release, audit_lock),
+            stage,
+        } => ide(&board, payload, release, audit_lock, stage),
         Command::Check {
             board,
             payload,
