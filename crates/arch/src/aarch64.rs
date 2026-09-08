@@ -240,6 +240,8 @@ fstart_aarch64_entry:
     // Save boot argument from QEMU before any register is clobbered.
     // QEMU AArch64 virt passes: x0 = DTB address.
     mov x19, x0
+    // Boot receipt: only our EL3 path establishes known Secure EL1.
+    mov x21, #0
 
     // Disable all interrupts
     msr daifset, #0xf
@@ -287,8 +289,9 @@ fstart_aarch64_entry:
     isb
     eret
 
-    // === At EL3: configure for EL1 non-secure entry ===
+    // === At EL3: configure for Secure EL1 entry ===
 .Lel3_setup:
+    mov x21, #1
 
     // SCR_EL3: NS=0 (secure), RW=1 (AArch64 for EL2/EL1),
     //          SMD=0 (SMC enabled), HCE=0 (no HVC at Secure EL1)
@@ -503,6 +506,8 @@ fstart_aarch64_entry:
     // Store boot DTB address to global (after BSS is cleared to zero)
     ldr x0, =BOOT_DTB_ADDR
     str x19, [x0]
+    ldr x0, =BOOT_SECURE_EL1
+    str x21, [x0]
 
     // Clear .page_tables section (separate from BSS to prevent
     // corruption from CrabEFI or other BSS-resident statics).
@@ -748,6 +753,17 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// DTB address saved from `x0` at reset (written by `_start` assembly).
 #[unsafe(no_mangle)]
 static BOOT_DTB_ADDR: AtomicU64 = AtomicU64::new(0);
+
+/// Written after BSS clearing by the common entry's known EL3 → Secure EL1 path.
+#[unsafe(no_mangle)]
+static BOOT_SECURE_EL1: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the fixed entry established Secure EL1 for initial boot setup.
+/// This is a boot receipt, not a security-state query after TF-A/payload handoff.
+/// Unknown incoming EL1/EL2 states conservatively report false.
+pub fn booted_secure_el1() -> bool {
+    BOOT_SECURE_EL1.load(Ordering::Relaxed) != 0
+}
 
 /// Return the DTB address passed by QEMU/firmware at reset (`x0`).
 pub fn boot_dtb_addr() -> u64 {

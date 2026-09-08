@@ -7,6 +7,8 @@ use heapless::Vec;
 
 type Windows = Vec<MemoryWindow, 32>;
 
+use crate::dtb_memory::memory_visibility;
+
 pub(crate) fn install(
     writable: &[MemoryWindow],
     extra_reserved: &[MemoryWindow],
@@ -102,11 +104,27 @@ pub(crate) fn from_dtb_with_layout(
     let bytes = unsafe { core::slice::from_raw_parts(dtb_addr as *const u8, size) };
     let fdt = Fdt::new(bytes).map_err(|_| ServiceError::InvalidParam)?;
     let mut writable = Windows::new();
-    for node in fdt
-        .root()
-        .children()
-        .filter(|node| node.name().starts_with("memory@") || node.name() == "memory")
-    {
+    // QEMU virt's BL31 destination is secure RAM (secram@e000000), not
+    // normal DRAM. Discover it from the machine DTB, but only admit it while
+    // the entry established Secure EL1 for this initial setup. Never infer
+    // secure access merely from the target architecture or the DT property.
+    #[cfg(target_arch = "aarch64")]
+    let secure = fstart_arch::aarch64::booted_secure_el1();
+    #[cfg(not(target_arch = "aarch64"))]
+    let secure = false;
+    for node in fdt.root().children().filter(|node| {
+        node.property("device_type")
+            .is_some_and(|p| p.value() == b"memory\0")
+    }) {
+        let status = node.property("status");
+        let secure_status = node.property("secure-status");
+        let Some(secure_only) = memory_visibility(
+            status.as_ref().map(|p| p.value()),
+            secure_status.as_ref().map(|p| p.value()),
+            secure,
+        ) else {
+            continue;
+        };
         for reg in node
             .reg()
             .map_err(|_| ServiceError::InvalidParam)?
@@ -116,12 +134,16 @@ pub(crate) fn from_dtb_with_layout(
                 .address::<u64>()
                 .map_err(|_| ServiceError::InvalidParam)?;
             let size = reg.size::<u64>().map_err(|_| ServiceError::InvalidParam)?;
-            if start < ram_base || size == 0 || start.checked_add(size).is_none() {
+            if (start < ram_base && !secure_only) || size == 0 || start.checked_add(size).is_none()
+            {
                 return Err(ServiceError::InvalidParam);
             }
             writable
                 .push(MemoryWindow { start, size })
                 .map_err(|_| ServiceError::InvalidParam)?;
+            if secure_only {
+                fstart_log::info!("qemu: secure boot RAM {:#x}+{:#x}", start, size);
+            }
         }
     }
     let detected = MemoryPolicy {

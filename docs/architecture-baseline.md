@@ -149,6 +149,30 @@ rejected it. The RISC-V UEFI handoff now copies the source into the registered
 relax the original source bound. Root authentication, executable verification,
 image-directory formats and SMM packaging were not redesigned.
 
+### AArch64 baseline repair before layout migration
+
+The first AArch64 baseline reached PCI setup but both Linux and UEFI failed
+loading BL31. QEMU describes its 16 MiB secure RAM at `0x0e000000` as
+`secram@e000000`, with `device_type = "memory"`, `status = "disabled"` and
+`secure-status = "okay"`. The old discovery loop only considered `memory@*`
+names, so BL31's destination `0x0e090000` was correctly denied by the installed
+load policy because the hardware RAM window had never been registered.
+
+Discovery now uses device type and availability properties. Secure-only RAM is
+admitted only during initial setup when the architecture entry recorded its
+existing EL3 → Secure EL1 path. Unknown incoming EL1/EL2 states conservatively
+receive no secure access. This boot receipt does not describe security state
+after TF-A handoff. The EL transitions, MMU setup and authenticated loader remain
+unchanged; the fix does not permit arbitrary firmware destinations.
+
+AArch64 halt/Linux/CrabEFI and ARMv7 halt/Linux release boots pass after the fix.
+The same AArch64 image booted non-secure, both via EL2 and directly at EL1, rejects
+BL31 loading and registers no secure RAM. A focused host test covers the status
+precedence and denial cases without linking the firmware allocator. Evidence:
+`/tmp/fstart-secure-ram-boots.log`, `/tmp/fstart-secure-ram-tests.log` and
+`/tmp/fstart-aarch64-nonsecure-{on,off}.log`. AArch64 still uses its legacy layout
+path at this checkpoint; these are baseline boots, not resolved relocation proof.
+
 ## Validation evidence
 
 Before migration, a cached QEMU RISC-V halt release build reported 1.52 seconds;
@@ -159,7 +183,7 @@ config warnings remain leads for the compilation-closure cleanup.
 Current checks:
 
 - `cargo test --locked -p fbuild -p fstart-core -p fstart-image-build --lib`:
-  41 passed. Includes deterministic resolution, geometry projection/override,
+  42 passed. Includes deterministic resolution, geometry projection/override,
   invalid ranges/budgets/selections, direct feature-reference validation, editor
   unit projection and normalized build-lock graph comparison.
 - `cargo test --locked -p fstart-stage --lib --features ffs,fdt -- --test-threads=1`:

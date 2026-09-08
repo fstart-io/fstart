@@ -8,6 +8,8 @@ extern crate ufmt;
 
 #[cfg(feature = "stage")]
 mod boot;
+#[cfg(any(test, feature = "stage"))]
+mod dtb_memory;
 
 pub mod fw_cfg;
 pub mod sbsa;

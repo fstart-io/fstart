@@ -201,6 +201,9 @@ def inspect(client, payload, release, board="riscv64"):
     definitions = client.at("textDocument/definition", uri, text, "Selected as")
     expected = {"halt": "HaltPayload", "linux": "LinuxPayload", "uefi": "Riscv64UefiPayload"}[payload]
     assert len(definitions) == 1 and expected in text.splitlines()[definitions[0]["range"]["start"]["line"]], definitions
+    text, uri = client.open(ROOT / "crates/platform-qemu/src/lib.rs")
+    definitions = client.at("textDocument/definition", uri, text, "dtb_memory")
+    assert len(definitions) == 1 and definitions[0]["uri"] == (ROOT / "crates/platform-qemu/src/dtb_memory.rs").as_uri(), definitions
     text, uri = client.open(ROOT / "crates/core/src/board.rs")
     expansion = client.at("rust-analyzer/expandMacro", uri, text, "Serialize)]")
     assert expansion and "impl _serde::Serialize for BoardConfig" in expansion["expansion"], expansion
