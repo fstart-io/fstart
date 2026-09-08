@@ -60,8 +60,9 @@ impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
 
     fn after_memory(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
         dock::post_raminit_setup(ctx.southbridge());
-        // The ACPI-enabled mainstage owns EC/PMH7 runtime bring-up.
-        #[cfg(feature = "acpi")]
+        // EC/PMH7 initialization belongs to mainstage hardware bring-up,
+        // regardless of whether that stage emits ACPI tables.
+        #[cfg(fstart_stage_env = "ram")]
         x61_ec_init();
         Ok(())
     }
@@ -411,14 +412,8 @@ mod acpi_impl {
 
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
-    use fstart_driver_lenovo::h8::{H8, H8_CONFIG0_EVENTS_ENABLE, H8Config};
-    use fstart_driver_lenovo::pmh7::Pmh7;
+    use fstart_driver_lenovo::h8::H8Config;
     use fstart_platform_intel::gm965::Gm965Ich8AcpiContext;
-
-    const X61_H8_EVENT_MASKS: [u8; 16] = [
-        0x00, 0x00, 0xff, 0xff, 0xf4, 0x3c, 0x80, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
-        0x00,
-    ];
 
     /// Assemble the X61 DSDT: board glue (TRAP mechanism, sleep/wake hooks,
     /// dock, GPE routing) plus the complete H8 EC surface from the Lenovo
@@ -525,41 +520,6 @@ mod acpi_impl {
         out
     }
 
-    /// Runtime EC/PMH7 bring-up, mirroring coreboot's `h8_enable()` and
-    /// `pmh7` device init: thermal management + event/hotkey reporting on,
-    /// trackpoint and USB power on, WLAN/BT radios per board presence, and
-    /// the PMH7 backlight + dock-event sources the board declares.
-    pub fn x61_ec_init() {
-        let pmh7 = Pmh7::new(0x15e0);
-        pmh7.log_identity();
-        pmh7.backlight_enable(true);
-        pmh7.dock_event_enable(true);
-
-        let h8 = H8;
-        h8.clear_out_queue();
-        // CONFIG0: events + hotkey enable (SMM H8 + thermal management are
-        // set by init_config0 itself, matching coreboot).
-        let config_ok = h8.init_config0(H8_CONFIG0_EVENTS_ENABLE);
-        let events_ok = h8.program_event_masks(&X61_H8_EVENT_MASKS);
-        let trackpoint_ok = h8.trackpoint_enable(true);
-        let usb_ok = h8.usb_power_enable(true);
-        let wlan_ok = h8.wlan_enable(true);
-        let bluetooth_ok = h8.bluetooth_enable(true);
-        if ![
-            config_ok,
-            events_ok,
-            trackpoint_ok,
-            usb_ok,
-            wlan_ok,
-            bluetooth_ok,
-        ]
-        .into_iter()
-        .all(core::convert::identity)
-        {
-            fstart_log::error!("lenovo-x61: H8 EC initialization incomplete");
-        }
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -583,10 +543,8 @@ mod acpi_impl {
             aml.extend(x61_mainboard_dsdt_aml(Gm965Ich8AcpiContext));
             let dsdt = fstart_acpi::platform::build_dsdt(&aml);
 
-            let dir = std::env::temp_dir().join(std::format!(
-                "fstart-x61-dsdt-{}",
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(std::format!("fstart-x61-dsdt-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("dsdt.aml"), &dsdt).unwrap();
@@ -629,5 +587,7 @@ mod acpi_impl {
 #[cfg(feature = "acpi")]
 pub use acpi_impl::x61_mainboard_dsdt_aml;
 
-#[cfg(all(feature = "acpi", feature = "stage"))]
-pub use acpi_impl::x61_ec_init;
+#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
+mod ec;
+#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
+pub use ec::x61_ec_init;

@@ -20,6 +20,7 @@ crabefi = ["fstart-stage?/crabefi"]
 stage = [
   "runtime",
   "dep:fstart-driver-uart",
+  "dep:fstart-driver-lenovo",
   "dep:fstart-stage",
   "fstart-platform-intel/stage",
 ]

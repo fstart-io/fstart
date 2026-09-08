@@ -238,6 +238,15 @@ and dynamic plug-in drivers are acceptable after DRAM, not prerequisites for
 fixed hardware. ACPI/FDT contributions live near drivers; board fragments and
 SMBIOS policy stay in board Rust.
 
+ACPI is the normal Intel ramstage policy, owned by the platform profile rather
+than a per-board opt-in. Boards supply their table fragments and hooks; any
+Cargo dependency activation needed to compile them is not a board policy
+selector. Hardware initialization (including Lenovo EC/PMH7 bring-up) is
+independent of table emission. A future explicit bring-up profile may omit
+ACPI without omitting that hardware initialization; do not add such a profile
+until needed. The legacy board Cargo forwarding feature disappears with that
+board's metadata cutover, not through a second interim selection mechanism.
+
 Variants share one package only when hardware structure and flow are shared.
 Use explicit exactly-one variant selection with `--no-default-features`; reject
 zero/multiple variants where a board requires one. Defaults are editor convenience,

@@ -55,7 +55,7 @@ impl Selection {
             flags.extend(["--cfg".into(), cfg.clone()]);
         }
         flags.extend([
-            "--check-cfg=cfg(fstart_stage_env,values(\"monolithic\"))".into(),
+            crate::toolchain::STAGE_ENV_CHECK_CFG.into(),
             "--check-cfg=cfg(fstart_entry,values(\"riscv64\",\"armv7\",\"aarch64-relocate\"))"
                 .into(),
             "--check-cfg=cfg(fstart_payload,values(\"halt\",\"linux\",\"crabefi\"))".into(),

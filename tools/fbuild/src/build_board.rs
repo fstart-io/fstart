@@ -425,6 +425,8 @@ fn build_one_stage(
     rustflags.push_str(" --cfg fstart_stage_env=\"");
     rustflags.push_str(stage_env);
     rustflags.push('"');
+    rustflags.push(' ');
+    rustflags.push_str(crate::toolchain::STAGE_ENV_CHECK_CFG);
     rustflags.push_str(" -Clink-arg=-T");
     rustflags.push_str(&link_ld.display().to_string());
     if let Ok(extra) = std::env::var("FSTART_EXTRA_RUSTFLAGS") {
