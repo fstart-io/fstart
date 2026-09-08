@@ -44,7 +44,7 @@ pub struct Span {
 }
 
 impl Span {
-    fn end(self) -> Result<u64, String> {
+    pub(crate) fn end(self) -> Result<u64, String> {
         if self.size == 0 {
             return Err("empty layout range".into());
         }
@@ -59,10 +59,10 @@ impl Span {
                 .zip(self.base.checked_add(self.size))
                 .is_some_and(|(end, limit)| end <= limit)
     }
-    fn overlaps(self, other: Self) -> bool {
+    pub(crate) fn overlaps(self, other: Self) -> bool {
         self.base < other.base + other.size && other.base < self.base + self.size
     }
-    fn region(self, kind: RegionKind) -> Region {
+    pub(crate) fn region(self, kind: RegionKind) -> Region {
         Region {
             kind,
             base: self.base,

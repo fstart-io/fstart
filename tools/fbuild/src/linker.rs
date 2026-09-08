@@ -97,6 +97,100 @@ pub fn resolved_xip(layout: &crate::resolved::ResolvedBuild) -> Result<String, S
     Ok(out)
 }
 
+/// Fixed Intel stage placement. No section size feeds back into the bootblock
+/// base, heap base or stack top. The board build path opts in only after its
+/// complete metadata/assembler boundary is migrated.
+pub fn resolved_intel(
+    layout: &crate::intel_layout::IntelReservations,
+    role: crate::intel_layout::IntelStage,
+    early_microcode: bool,
+) -> Result<String, String> {
+    use crate::intel_layout::IntelStage;
+    layout.validate()?;
+    let stage = layout.stage(role);
+    let bootblock = matches!(role, IntelStage::Bootblock);
+    let entry = match role {
+        IntelStage::Bootblock => "_start",
+        IntelStage::Postcar => "_start_postcar",
+        IntelStage::Ramstage => "_start_ram",
+    };
+    let stack = stage.stack_span();
+    let heap_base = stage.heap_span().map_or(stack.base, |heap| heap.base);
+    let mut out = format!("OUTPUT_ARCH(i386:x86-64)\nENTRY({entry})\nMEMORY {{\n");
+    for (name, flags, base, size) in [
+        ("IMAGE", "rx", stage.image.base, stage.image.size),
+        (
+            "DATA",
+            "rw",
+            stage.writable.base,
+            heap_base - stage.writable.base,
+        ),
+        ("HEAP", "rw", heap_base, stage.heap),
+        ("STACK", "rw", stack.base, stack.size),
+    ] {
+        writeln!(
+            out,
+            " {name} ({flags}) : ORIGIN = {base:#x}, LENGTH = {size:#x}"
+        )
+        .unwrap();
+    }
+    out.push_str("}\nSECTIONS {\n");
+    write_text_section(&mut out, "IMAGE");
+    out.push_str(&layout_section(&layout.descriptor(role)?, "IMAGE"));
+    out.push_str(" .fstart.anchor : ALIGN(16) { _fstart_anchor_early = .; *(.fstart.anchor) _fstart_early_microcode_enabled = .;\n");
+    writeln!(out, " LONG({})", u8::from(bootblock && early_microcode)).unwrap();
+    write_heap_size_constant(&mut out, Platform::X86_64, stage.heap);
+    out.push_str(" } > IMAGE\n");
+    write_rodata_section(&mut out, "IMAGE");
+    for section in [".fstart.keep", ".eh_frame_hdr", ".eh_frame"] {
+        writeln!(out, " {section} : ALIGN(8) {{ *({section}) }} > IMAGE").unwrap();
+    }
+    write_data_section(&mut out, if bootblock { "DATA AT > IMAGE" } else { "DATA" });
+    write_bss_section(&mut out, "DATA");
+    write_heap(&mut out, stage.heap, "HEAP");
+    write_stack(&mut out, stage.stack, "STACK");
+    if bootblock {
+        let end = stage.image.end()?;
+        writeln!(
+            out,
+            " _bootblock = ORIGIN(IMAGE); _bootblock_base = ORIGIN(IMAGE); _bootblock_top = {:#x};",
+            end - 4096
+        )
+        .unwrap();
+        writeln!(
+            out,
+            " _has_car = 1; _car_base = {:#x}; _car_size = {:#x}; _ecar_stack = _stack_top;",
+            stage.writable.base, stage.writable.size
+        )
+        .unwrap();
+        writeln!(
+            out,
+            " _rom_mtrr_base = {:#x}; _rom_mtrr_mask = {:#x};",
+            layout.flash.base,
+            !(layout.flash.size - 1) & 0xffff_ffff
+        )
+        .unwrap();
+        writeln!(
+            out,
+            " .x86boot {0:#x} : AT({0:#x}) {{ KEEP(*(.x86boot)) }} > IMAGE",
+            end - 4096
+        )
+        .unwrap();
+        writeln!(
+            out,
+            " .reset {0:#x} : AT({0:#x}) {{ KEEP(*(.reset)) }} > IMAGE",
+            end - 16
+        )
+        .unwrap();
+        writeln!(out, " _binary_end = {end:#x};").unwrap();
+        out.push_str(" ASSERT(LOADADDR(.data) + SIZEOF(.data) <= _bootblock_top, \"bootblock overlaps reset page\")\n");
+    } else {
+        write_x86_car_symbols(&mut out, Platform::X86_64, false);
+    }
+    out.push_str(" ASSERT(_bss_end <= ORIGIN(HEAP), \"data/BSS exceed fixed capacity\")\n}\n");
+    Ok(out)
+}
+
 pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
     let mut out = String::new();
 

@@ -6,6 +6,9 @@ pub mod build_plan;
 pub mod ide;
 mod ide_graph;
 mod ide_lock;
+pub mod intel_layout;
+#[cfg(test)]
+mod intel_linker_tests;
 pub mod linker;
 pub mod payload;
 pub mod qemu;

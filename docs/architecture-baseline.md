@@ -261,6 +261,32 @@ stack high-water measurement is claimed.
 X61 cold boot remains hardware-validation outstanding. Emulator boots remain
 explicitly development-integrity, not hardware-authenticated boot.
 
+## Intel multistage foundation (not a board cutover)
+
+X61 release halt and UEFI builds and full-image assembly pass on the unchanged
+legacy path. The UEFI baseline stores 115,284 bootblock bytes in a 124 KiB
+flat top-of-flash extent, a 16,576-byte postcar, and a 2,503,824-byte ramstage.
+Compressed FFS including the 86,016-byte microcode bundle occupies 876,002 bytes
+of the 1.5 MiB BIOS region. The SMM image is 11,856 bytes. These are build and
+assembly measurements, not hardware execution evidence.
+
+`tools/fbuild/src/intel_layout.rs` introduces a reservation-model prototype with
+closed bootblock/postcar/ramstage roles, separate CAR/DRAM storage, persistent
+low-memory and scratch exclusions, and explicit stack/heap budgets. The fixed
+linker prototype keeps the bootblock base, writable base, heap and stack fixed;
+its real x86-64 LLD fixture covers all three roles, reset-vector placement,
+read-only descriptor retention, initialized-data flat extraction and rejection
+of code or BSS growth past capacity. Candidate capacities live only in test
+fixtures; no board or platform metadata selects this path yet.
+
+The metadata resolver, compiler/editor stage selection, assembler bounds and
+runtime successor-window consumption still need integration. In particular,
+this descriptor is not authorization to load a successor. Authenticated loading,
+register sequences, source workspace and lock ownership remain unchanged.
+Baseline logs: `/tmp/fstart-x61-baseline-{halt,uefi}.log` and
+`/tmp/fstart-x61-image-{halt,uefi}.log`; prototype tests:
+`/tmp/fstart-intel-foundation.log`.
+
 ## Next gates
 
 - Extend editor acceptance to multistage switching, clean regeneration
