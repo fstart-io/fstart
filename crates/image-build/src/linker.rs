@@ -28,6 +28,7 @@ impl Xip {
             .chain(self.execution)
         {
             range.end()?;
+            crate::elf::address_extent(self.platform != Platform::Armv7, range.base, range.size)?;
             if range.base % 16 != 0 || range.size % 16 != 0 {
                 return Err("unaligned XIP reservation".into());
             }
@@ -46,6 +47,14 @@ impl Xip {
                 "XIP code, writable, heap and stack reservations overlap or are inconsistent"
                     .into(),
             );
+        }
+        let elf64 = self.platform != Platform::Armv7;
+        // The stack top is emitted as an ELF symbol, not merely a range end.
+        crate::elf::address_extent(elf64, self.stack.end()?, 0)?;
+        let descriptor = fstart_core::layout::Layout::parse(self.descriptor.as_bytes())
+            .map_err(|e| e.to_string())?;
+        for region in descriptor.regions() {
+            crate::elf::address_extent(elf64, region.base, region.size)?;
         }
         Ok(())
     }

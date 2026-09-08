@@ -16,8 +16,24 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
     let root = scratch.0.canonicalize().unwrap();
     let actual_root = crate::build_board::workspace_root_pub().unwrap();
     let board = crate::board_manifest::find(&actual_root, "qemu-riscv64").unwrap();
-    let layout = crate::resolved::tests::resolved("halt");
-    let selection = Selection::prepare(&root, &board, &layout, true).unwrap();
+    let plan = fstart_platform_qemu::host::resolve(
+        fstart_platform_qemu::facts::VirtMachine::Riscv64,
+        fstart_image_build::plan::BuildSelection {
+            payload: Some("halt".into()),
+        },
+    )
+    .unwrap();
+    let selection = Selection::prepare_unit(
+        &root,
+        &board,
+        &plan.units[0],
+        root.join("selection"),
+        &serde_json::to_string(&plan).unwrap(),
+        Default::default(),
+        &[],
+        true,
+    )
+    .unwrap();
     let build = selection.command(true);
     let check = selection.check_command();
     let args: Vec<_> = build.get_args().map(|s| s.to_str().unwrap()).collect();

@@ -1,0 +1,123 @@
+{
+  "assembly": {
+    "acpi": null,
+    "boot_hart_id": 0,
+    "build": {
+      "cpu_feature": null,
+      "firmware_image": {
+        "MemoryMapped": {
+          "cpu_base": 553648128,
+          "size": 16777216
+        }
+      },
+      "flash_image": {
+        "MemoryMapped": {
+          "cpu_base": 536870912,
+          "size": 33554432
+        }
+      },
+      "pci_root_feature": null,
+      "qemu_machine": null
+    },
+    "full_flash_image": true,
+    "memory": {
+      "car": null,
+      "flash_layout": null,
+      "regions": [
+        {
+          "base": 536870912,
+          "kind": "Rom",
+          "name": "flash",
+          "size": 33554432
+        },
+        {
+          "base": 2164260864,
+          "kind": "Ram",
+          "name": "stage-reservation",
+          "size": 4194304
+        }
+      ]
+    },
+    "microcode": null,
+    "name": "fixture",
+    "payload": null,
+    "platform": "Riscv64",
+    "security": {
+      "pubkey_file": "keys/dev-signing.pub",
+      "required_digests": [
+        "Sha256",
+        "Sha3_256"
+      ],
+      "signing_algorithm": "Ed25519"
+    },
+    "smbios": null,
+    "smm": null,
+    "soc_image_format": "None",
+    "stages": {
+      "Monolithic": {
+        "build": {
+          "acpi": false,
+          "fdt": true,
+          "firmware_image": {
+            "temp_ram_buffer": null
+          },
+          "load_next_stage": null,
+          "mp": null,
+          "payload": true,
+          "pci": true,
+          "smbios": false,
+          "verify_firmware": true
+        },
+        "data_addr": 2164260864,
+        "heap_size": 262144,
+        "load_addr": 536870912,
+        "page_size": "Size2MiB",
+        "page_table_addr": null,
+        "stack_size": 1048576
+      }
+    }
+  },
+  "descriptor_hex": "46534c590100a0000000060000000000010000000000000000000020000000000000000100000000020000000000000000000081000000000000400000000000030000000000000000003081000000000000100000000000040000000000000000002c81000000000000040000000000050000000000000000000020000000000000000200000000070000000000000000000021000000000000000100000000",
+  "elf": {
+    "architecture": "Riscv64",
+    "copy": null,
+    "descriptor": {
+      "end_symbol": "_fstart_layout_end",
+      "reservation": {
+        "base": 536870912,
+        "size": 16777216
+      },
+      "section": ".fstart.layout",
+      "start_symbol": "_fstart_layout_start"
+    },
+    "elf64": true,
+    "entry": null,
+    "identity_mapping": false,
+    "little_endian": true,
+    "runtime": [
+      {
+        "base": 536870912,
+        "size": 16777216
+      },
+      {
+        "base": 2164260864,
+        "size": 4194304
+      }
+    ],
+    "stored": [
+      {
+        "base": 536870912,
+        "size": 16777216
+      }
+    ],
+    "symbols": {
+      "_FSTART_HEAP": 2167144448,
+      "_stack_bottom": 2167406592,
+      "_stack_top": 2168455168
+    }
+  },
+  "entry": "riscv64",
+  "environment": "monolithic",
+  "linker_sha256": "00c6a924eb855f485eb4c623c80066c7dbff3225fb9e688cffc5422f7ae08374",
+  "target": "riscv64gc-unknown-none-elf"
+}

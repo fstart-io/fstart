@@ -6,6 +6,12 @@ This tracks the [architecture migration](architecture.md), starting from firmwar
 revision `38586a3e`. Historical sizes/budgets below are evidence, not build inputs
 or measurements of stack high-water usage.
 
+The metadata-profile implementation described below is a **historical milestone**,
+not a current authoring API. X61 and all three QEMU virt boards now use Rust
+platform plans; the obsolete metadata geometry resolver/schema has been removed.
+Independent golden outputs retain its behavior proof. The other ten boards still
+use BoardConfig host callbacks. See [current common-plan scope](architecture-common-plan.md).
+
 ## Implemented scopes
 
 ### Discovery

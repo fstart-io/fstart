@@ -23,8 +23,15 @@ pub struct BoardManifest {
     pub variants: Vec<(String, Vec<String>)>,
     pub acpi_only_devices: bool,
     pub stage_bin: Option<String>,
-    pub build_profile: Option<crate::resolved::ProfileRef>,
-    pub layout: crate::resolved::Overrides,
+    pub build_profile: Option<ProfileRef>,
+}
+
+/// Direct Cargo dependency exposing the Rust Plan<board::Board> host contract.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRef {
+    pub dependency: String,
+    pub name: String,
 }
 
 // Only fstart's tables are closed. Cargo and other tools own the rest of the
@@ -61,9 +68,7 @@ struct BoardMetadata {
     #[serde(default)]
     acpi_only_devices: bool,
     stage_bin: Option<String>,
-    build_profile: Option<crate::resolved::ProfileRef>,
-    #[serde(default)]
-    layout: crate::resolved::Overrides,
+    build_profile: Option<ProfileRef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,10 +182,13 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
             manifest.display(),
         ));
     }
-    if metadata.build_profile.is_none() && metadata.layout != crate::resolved::Overrides::default()
+    if metadata
+        .build_profile
+        .as_ref()
+        .is_some_and(|profile| profile.name != "rust")
     {
         return Err(format!(
-            "layout overrides require build-profile in {}",
+            "build-profile must name 'rust' in {}",
             manifest.display()
         ));
     }
@@ -221,7 +229,6 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         acpi_only_devices: metadata.acpi_only_devices,
         stage_bin: metadata.stage_bin,
         build_profile: metadata.build_profile,
-        layout: metadata.layout,
     })
 }
 
@@ -318,6 +325,13 @@ mod tests {
                 "unsupported fstart schema 2",
             ),
             (MANIFEST.replace("schema = 1", ""), "missing field `schema`"),
+            (
+                MANIFEST.replace(
+                    "schema = 1",
+                    "schema = 1\nbuild-profile = { dependency = 'platform', name = 'unknown' }",
+                ),
+                "build-profile must name 'rust'",
+            ),
             (
                 MANIFEST.replace("board = 'test-board'", ""),
                 "missing field `board`",

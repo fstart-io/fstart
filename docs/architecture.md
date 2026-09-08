@@ -379,8 +379,9 @@ halt/Linux/CrabEFI release boots from the earlier relocation milestone. X61's
 typed board IFD/CPU facts and all three QEMU virt machine selections now feed the
 **same concrete platform-plan executor** through Cargo host exports. Intel
 multistage, RISC-V/ARMv7 XIP and AArch64 relocation require no family branches in
-common build/check/IDE tools. The former virt Cargo geometry profiles now exist
-only as frozen legacy-resolver test fixtures, not platform authoring paths. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
+common build/check/IDE tools. The former virt Cargo geometry profiles and their
+metadata resolver have been deleted; independent captured output fixtures retain
+the behavior proof. The remaining ten boards still use BoardConfig host callbacks. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
 AArch64 halt assembly/boot, and live car → postcar → ram → SMM → AArch64 editor
 switching with original-source invalid-fact diagnostics pass. Hardware boot and
 stack high-water measurements remain outstanding. Workspace ownership has not

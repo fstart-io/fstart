@@ -5,6 +5,10 @@ use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+#[path = "elf_tests.rs"]
+mod tests;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Architecture {
     Arm,
@@ -40,6 +44,44 @@ pub struct Expectations {
     pub symbols: BTreeMap<String, u64>,
 }
 
+/// Check an address extent without confusing its exclusive end with an address.
+/// A 32-bit range may end at 2^32; entry points and symbol values may not.
+pub(crate) fn address_extent(elf64: bool, base: u64, size: u64) -> Result<(), String> {
+    let end = base.checked_add(size).ok_or("address extent overflow")?;
+    if !elf64 && (base > u64::from(u32::MAX) || end > (1u64 << 32)) {
+        return Err("address extent is not representable in 32-bit ELF".into());
+    }
+    Ok(())
+}
+
+impl Expectations {
+    pub fn validate(&self) -> Result<(), String> {
+        for range in self
+            .stored
+            .iter()
+            .chain(&self.runtime)
+            .chain([&self.descriptor.reservation])
+            .chain(
+                self.copy
+                    .iter()
+                    .flat_map(|copy| [&copy.storage, &copy.execution]),
+            )
+        {
+            range.end()?;
+            address_extent(self.elf64, range.base, range.size)?;
+        }
+        for address in self.entry.iter().chain(self.symbols.values()) {
+            address_extent(self.elf64, *address, 0)?;
+        }
+        let layout = fstart_core::layout::Layout::parse(&self.descriptor.bytes)
+            .map_err(|e| e.to_string())?;
+        for region in layout.regions() {
+            address_extent(self.elf64, region.base, region.size)?;
+        }
+        Ok(())
+    }
+}
+
 fn segments<Elf: FileHeader>(
     elf: &ElfFile<'_, Elf>,
     expected: &Expectations,
@@ -55,6 +97,8 @@ fn segments<Elf: FileHeader>(
         let vaddr = segment.p_vaddr(elf.endian()).into();
         let filesz = segment.p_filesz(elf.endian()).into();
         let memsz = segment.p_memsz(elf.endian()).into();
+        address_extent(expected.elf64, paddr, filesz)?;
+        address_extent(expected.elf64, vaddr, memsz)?;
         if filesz > memsz
             || (filesz != 0 && !expected.stored.iter().any(|r| r.contains(paddr, filesz)))
             || (memsz != 0 && !expected.runtime.iter().any(|r| r.contains(vaddr, memsz)))
@@ -87,14 +131,7 @@ fn segments<Elf: FileHeader>(
 }
 
 pub fn validate(bytes: &[u8], expected: &Expectations) -> Result<(), String> {
-    for range in expected
-        .stored
-        .iter()
-        .chain(&expected.runtime)
-        .chain([&expected.descriptor.reservation])
-    {
-        range.end()?;
-    }
+    expected.validate()?;
     let file = object::File::parse(bytes).map_err(|e| e.to_string())?;
     let architecture = match expected.architecture {
         Architecture::Arm => object::Architecture::Arm,
@@ -110,6 +147,10 @@ pub fn validate(bytes: &[u8], expected: &Expectations) -> Result<(), String> {
         object::File::Elf64(elf) if expected.elf64 => segments(elf, expected)?,
         _ => return Err("ELF class mismatch".into()),
     };
+    address_extent(expected.elf64, file.entry(), 0)?;
+    for symbol in file.symbols() {
+        address_extent(expected.elf64, symbol.address(), symbol.size())?;
+    }
     let has_symbol = |name: &str, address| {
         file.symbols()
             .any(|s| s.name() == Ok(name) && s.address() == address)

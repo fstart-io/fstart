@@ -152,25 +152,31 @@ authenticated loading and MP/handoff behavior. Hardware flows and entry/loader
 ABIs are unchanged; only the stale RISC-V module description was updated.
 
 The last production consumers of `riscv64-xip` / `armv7-xip` Cargo geometry are
-gone. The ten remaining boards use the **BoardConfig host-callback path**, not
-this metadata resolver. The explicit next cleanup is to replace the frozen
-resolver comparison with golden output fixtures, then delete the orphaned
-metadata schema/resolver, `ResolvedImage::Legacy`, `resolved_build.rs` and its
-selection route. Preserve helpers actually shared with BoardConfig/common
-callers; do not keep a production resolver solely for tests indefinitely.
-That deletion is a separate bounded follow-up, **not this batch**. Test-only
-legacy input currently lives at `tools/fbuild/src/fixtures/legacy-xip.toml`, not
-in platform Cargo metadata. New real LLD tests select typed presets for all
-three architectures, and a frozen-fixture comparison covers exact descriptor,
-linker, ELF expectations and assembly projection for all five new combinations.
+gone. The bounded follow-up has now deleted the metadata schema/resolver,
+`ResolvedImage::Legacy`, `resolved_build.rs`, metadata layout overrides and the
+old `Selection::prepare/prepare_stage` route. All build-profile references name
+`rust`; the ten remaining boards use the separate **BoardConfig host-callback
+path**, which is preserved. Direct Cargo feature validation now lives in the
+narrow `cargo_features` module. Shared BoardConfig linker helpers and its cfg
+vocabulary remain; the common executor still consumes platform-owned schemas.
+
+Five independently captured pre-removal output fixtures live in
+`tools/fbuild/src/fixtures/qemu-xip/`. Exact descriptor bytes (hex), complete ELF
+expectations and assembly JSON are inspectable; linker SHA256 fingerprints avoid
+repeating hundreds of descriptor BYTE lines. The original resolver and the new
+golden test were checked equivalent before deletion. No production resolver or
+metadata recipe is retained for tests. Real LLD tests still select typed presets
+for all three architectures, including negative fixed-capacity/copy-extent checks.
 
 The selected machine and handwritten runtime program remain separate Rust
 selections: selecting the wrong pair fails later when compiling the target
 program, not in a unified type-level constructor. No lifecycle abstraction is
-introduced to hide that coupling. Another follow-up validation gate is restoring
-the legacy resolver's early ARM32 representability check in a reusable format
-validator: fixed ARM presets fit today and actual LLD/ELF validation still runs,
-but `Xip::validate` does not itself reject every over-32-bit range.
+introduced to hide that coupling. Shared XIP/ELF validation now rejects
+unrepresentable 32-bit reservations, including descriptor-only payload regions,
+expected entries/symbol addresses and actual PT_LOAD/symbol extents. A range may
+end exclusively at `2^32`; an entry or emitted symbol (such as `_stack_top`) may
+not have that value. Checked arithmetic also rejects 64-bit extent overflow.
+This is format validation, not a chipset-specific checker.
 
 Ten legacy packages remain for subsequent batches (no migration claim):
 `qemu-q35`, `qemu-sbsa`, `qemu-sifive-u`, `sifive-unmatched`, `intel-d945gclf`
@@ -237,6 +243,48 @@ with the verified root/selected-runner lock guarantees. Current standalone locks
 were snapshotted under `/tmp/fstart-qemu-batch-retained-locks/`; subsequent probe
 changes were restored to that snapshot. No workspace/lock ownership cutover,
 benchmark, high-water measurement or full-matrix claim.
+
+## Metadata resolver removal acceptance
+
+This bounded follow-up changes no hardware/runtime program or family migration.
+
+- **61 focused tests pass** with the root `--locked` command above:
+  `/tmp/fstart-metadata-cleanup-tests.log`. Relative to the preceding 64, four
+  obsolete resolver-only tests and the old compiler-selection test are removed;
+  two shared ELF-width tests are added. Feature validation and the editor graph
+  proof now use the live common path. Actual LLD and negative overflow tests remain.
+- Pre-removal capture and simultaneous old-resolver/new-golden equivalence:
+  `/tmp/fstart-metadata-cleanup-{golden-capture,predelete-proof}.log` and
+  `/tmp/fstart-metadata-cleanup-goldens/`. The shipped fixtures remove duplicate
+  descriptor byte arrays (the same bytes are retained as hex).
+- Seven common effective plans (RISC-V halt/Linux/UEFI, ARMv7 halt/Linux,
+  AArch64 halt, X61 halt) are byte-identical before/after, and all seven release
+  assemblies succeed. i945, Pineview and qemu-sifive-u BoardConfig host releases
+  link. All four common routes pass named `check` and generated Cargo-derived
+  `ide` with release selections; no live-editor or hardware claim in this cleanup.
+  Commands/logs: `/tmp/fstart-metadata-cleanup-acceptance.sh`, matching `.log`,
+  and `/tmp/fstart-metadata-cleanup-after/`.
+- Selected compiler receipts, linker text, flags and actual executable bytes
+  match the immediate prechange capture:
+  `/tmp/fstart-metadata-cleanup-after/selected-artifact-proof.json`. Thirty
+  flat/assembled outputs also match a replay with the saved prechange fbuild
+  executable and the identical plans; this is an explicit old-executable replay,
+  not an invented prechange image snapshot. See `image-hashes-{new,prechange-replay}.json`
+  in that directory and `/tmp/fstart-metadata-cleanup-replay.log`. No changed
+  common output required another boot; earlier affected-machine boot evidence
+  above is not claimed as freshly rerun here.
+- Root and all eight existing standalone board locks were snapshotted **before
+  any repository/Cargo/LSP inspection** and remain byte-identical:
+  `/tmp/fstart-metadata-cleanup-locks/manifest.json`. No new standalone locks.
+  Common selected-runner locks also match the prechange capture. The broad
+  historic artifact audit records two exceptions outside that common scope:
+  qemu-sifive-u's stale host linker output and disposable selected-workspace lock
+  were regenerated by its existing halt preparation. This does not change root
+  or board lock authority and is not a claim that every historic target file is
+  immutable. No workspace/lock ownership cutover or source probes remain.
+
+The ten unmigrated BoardConfig host packages listed above are still the remaining
+scope. No whole-matrix, hardware-boot, stack-high-water or benchmark claim.
 
 ## Earlier common-plan acceptance evidence
 

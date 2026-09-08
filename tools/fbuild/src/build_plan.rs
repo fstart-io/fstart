@@ -518,7 +518,6 @@ mod tests {
             acpi_only_devices: false,
             stage_bin: Some("fstart-stage".to_string()),
             build_profile: None,
-            layout: Default::default(),
         }
     }
 

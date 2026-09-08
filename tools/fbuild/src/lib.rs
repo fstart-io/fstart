@@ -3,6 +3,7 @@ pub mod board_manifest;
 pub mod board_tool;
 pub mod build_board;
 pub mod build_plan;
+mod cargo_features;
 mod host_plan;
 pub mod ide;
 mod ide_graph;
@@ -15,8 +16,8 @@ pub mod payload;
 mod plan_executor;
 mod profile_source;
 pub mod qemu;
-pub mod resolved;
-mod resolved_build;
+#[cfg(test)]
+mod qemu_golden_tests;
 pub mod resolved_image;
 mod selection;
 pub mod toolchain;

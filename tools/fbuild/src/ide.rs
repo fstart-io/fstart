@@ -1,6 +1,6 @@
 //! Selected Cargo editor view. This is not a workspace/lock ownership cutover.
 
-use crate::{board_manifest::BoardManifest, resolved::ResolvedBuild, selection::Selection};
+use crate::{board_manifest::BoardManifest, selection::Selection};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -33,27 +33,6 @@ pub(crate) fn external_pins(text: &str) -> Result<BTreeSet<Pin>, String> {
 
 /// Generate an opt-in VS Code workspace and an editor-neutral RA configuration.
 /// Does not modify editor settings in the source tree or remove any board locks.
-pub fn generate(
-    root: &Path,
-    board: &BoardManifest,
-    layout: &ResolvedBuild,
-    release: bool,
-    audit_lock: bool,
-) -> Result<PathBuf, String> {
-    let selection = Selection::prepare(root, board, layout, release)?;
-    generate_selection(
-        root,
-        board,
-        &layout.target,
-        &layout.payload,
-        &layout.features,
-        "stage",
-        release,
-        audit_lock,
-        selection,
-    )
-}
-
 pub fn generate_image(
     root: &Path,
     board: &BoardManifest,
@@ -62,29 +41,20 @@ pub fn generate_image(
     release: bool,
     audit_lock: bool,
 ) -> Result<PathBuf, String> {
-    match layout {
-        crate::resolved_image::ResolvedImage::Legacy(layout) => {
-            if name.is_some_and(|n| n != "stage") {
-                return Err("legacy metadata profile has only unit 'stage'".into());
-            }
-            generate(root, board, layout, release, audit_lock)
-        }
-        crate::resolved_image::ResolvedImage::Common(layout) => {
-            let unit = layout.selected(name)?;
-            let selection = layout.selection(root, board, &unit.name, release)?;
-            generate_selection(
-                root,
-                board,
-                &unit.target,
-                &layout.plan.payload,
-                &unit.features,
-                &unit.name,
-                release,
-                audit_lock,
-                selection,
-            )
-        }
-    }
+    let layout = &layout.build;
+    let unit = layout.selected(name)?;
+    let selection = layout.selection(root, board, &unit.name, release)?;
+    generate_selection(
+        root,
+        board,
+        &unit.target,
+        &layout.plan.payload,
+        &unit.features,
+        &unit.name,
+        release,
+        audit_lock,
+        selection,
+    )
 }
 
 fn generate_selection(

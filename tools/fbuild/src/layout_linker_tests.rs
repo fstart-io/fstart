@@ -312,13 +312,12 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
         }
         if architecture == object::Architecture::Arm {
             assert!(!linked.is_64());
+            let mut wrong_architecture = expectations.clone();
+            wrong_architecture.architecture = fstart_image_build::elf::Architecture::Riscv64;
             assert!(
-                crate::resolved_build::validate_elf(
-                    &bytes,
-                    &crate::resolved::tests::resolved("halt")
-                )
-                .unwrap_err()
-                .contains("architecture")
+                fstart_image_build::elf::validate(&bytes, &wrong_architecture)
+                    .unwrap_err()
+                    .contains("architecture")
             );
         }
     }

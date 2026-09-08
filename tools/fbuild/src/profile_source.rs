@@ -1,22 +1,11 @@
 //! Resolve a selected profile through Cargo's direct-dependency graph once.
 
 use crate::board_manifest::BoardManifest;
-use serde::Deserialize;
-use std::{collections::BTreeMap, path::Path, process::Command};
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PlatformMetadata {
-    schema: u32,
-    layouts: BTreeMap<String, serde_json::Value>,
-}
+use std::{path::Path, process::Command};
 
 pub(crate) struct ProfileSource {
     pub workspace: std::path::PathBuf,
     pub platform: serde_json::Value,
-    pub profile: serde_json::Value,
-    pub source: String,
-    pub platform_manifest: std::path::PathBuf,
     pub package: serde_json::Value,
     pub metadata: serde_json::Value,
 }
@@ -34,14 +23,10 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
             "--format-version=1",
             "--no-default-features",
             "--features",
-            &if reference.name == "rust" {
-                std::iter::once(format!("{}/host", reference.dependency))
-                    .chain(board.variant_features.iter().cloned())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            } else {
-                "stage".into()
-            },
+            &std::iter::once(format!("{}/host", reference.dependency))
+                .chain(board.variant_features.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(","),
         ])
         .arg("--manifest-path")
         .arg(workspace.join("Cargo.toml"))
@@ -100,48 +85,10 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
         .iter()
         .find(|p| p["id"] == dep["pkg"])
         .ok_or("missing platform package")?;
-    if reference.name == "rust" {
-        return Ok(ProfileSource {
-            workspace,
-            platform: platform.clone(),
-            profile: serde_json::Value::Null,
-            source: format!("{}:Plan<board::Board>", reference.dependency),
-            platform_manifest: platform["manifest_path"]
-                .as_str()
-                .ok_or("missing platform manifest path")?
-                .into(),
-            package: package.clone(),
-            metadata,
-        });
-    }
-    let mut declared: PlatformMetadata =
-        serde_json::from_value(platform["metadata"]["fstart"].clone())
-            .map_err(|e| format!("platform fstart metadata: {e}"))?;
-    if declared.schema != 1 {
-        return Err("unsupported platform metadata schema".into());
-    }
-    let profile = declared
-        .layouts
-        .remove(&reference.name)
-        .ok_or_else(|| format!("unknown layout '{}'", reference.name))?;
-    let platform_manifest = platform["manifest_path"]
-        .as_str()
-        .ok_or("missing platform manifest path")?
-        .into();
-    let source = format!(
-        "{}:package.metadata.fstart.layouts.{}",
-        platform["manifest_path"].as_str().unwrap(),
-        reference.name
-    );
-    let package = package.clone();
-    let platform = platform.clone();
     Ok(ProfileSource {
         workspace,
-        platform,
-        profile,
-        source,
-        platform_manifest,
-        package,
+        platform: platform.clone(),
+        package: package.clone(),
         metadata,
     })
 }

@@ -26,8 +26,8 @@ impl Resolved {
         source: &ProfileSource,
         mut plan: BuildPlan,
     ) -> Result<Self, String> {
-        if board.layout != Default::default() || board.features != board.variant_features {
-            return Err("Rust plans do not accept legacy layout or feature recipes".into());
+        if board.features != board.variant_features {
+            return Err("Rust plans do not accept legacy feature recipes".into());
         }
         let dependency = &board
             .build_profile
@@ -43,7 +43,11 @@ impl Resolved {
                 .collect();
             unit.features.sort();
             unit.features.dedup();
-            crate::resolved::validate_features(&unit.features, &source.package, &source.metadata)?;
+            crate::cargo_features::validate_features(
+                &unit.features,
+                &source.package,
+                &source.metadata,
+            )?;
         }
         plan.order()?;
         let image_target = &plan.unit(&plan.stages[0])?.target;

@@ -1,9 +1,9 @@
 //! Intel reservation projections shared with the platform host resolver.
 #[cfg(test)]
-use crate::resolved::Span;
-#[cfg(test)]
 use fstart_core::layout::RegionKind;
 pub use fstart_image_build::intel_plan::*;
+#[cfg(test)]
+use fstart_image_build::plan::Span;
 
 #[cfg(test)]
 pub(crate) mod tests {
