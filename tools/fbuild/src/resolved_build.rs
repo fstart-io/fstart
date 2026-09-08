@@ -86,7 +86,7 @@ pub fn build(
             name: "stage".into(),
             path: elf,
             run_path: flat,
-            load_addr: layout.image.base,
+            load_addr: layout.code_reservation().base,
         }],
     })
 }
@@ -94,7 +94,8 @@ pub fn build(
 fn validate_segments<Elf: FileHeader>(
     elf: &ElfFile<'_, Elf>,
     layout: &ResolvedBuild,
-) -> Result<(), String> {
+) -> Result<u64, String> {
+    let mut stored_end = layout.image.base;
     for segment in elf
         .elf_program_headers()
         .iter()
@@ -107,15 +108,25 @@ fn validate_segments<Elf: FileHeader>(
         if filesz > memsz
             || (filesz != 0 && !layout.image.contains(paddr, filesz))
             || (memsz != 0
-                && !layout.image.contains(vaddr, memsz)
+                && !layout.code_reservation().contains(vaddr, memsz)
                 && !layout.writable.contains(vaddr, memsz))
         {
             return Err(format!(
                 "PT_LOAD exceeds resolved reservations: physical {paddr:#x}, virtual {vaddr:#x}, file {filesz:#x}, memory {memsz:#x}"
             ));
         }
+        if let Some(execution) = layout.execution
+            && filesz != 0
+            && execution.contains(vaddr, memsz)
+            && vaddr - execution.base != paddr - layout.image.base
+        {
+            return Err("execution PT_LOAD is not a linear copy of image storage".into());
+        }
+        if filesz != 0 {
+            stored_end = stored_end.max(paddr + filesz);
+        }
     }
-    Ok(())
+    Ok(stored_end)
 }
 
 pub(crate) fn validate_elf(bytes: &[u8], layout: &ResolvedBuild) -> Result<(), String> {
@@ -123,19 +134,38 @@ pub(crate) fn validate_elf(bytes: &[u8], layout: &ResolvedBuild) -> Result<(), S
     let expected = match layout.platform() {
         fstart_core::Platform::Armv7 => object::Architecture::Arm,
         fstart_core::Platform::Riscv64 => object::Architecture::Riscv64,
+        fstart_core::Platform::Aarch64 => object::Architecture::Aarch64,
         _ => return Err("unsupported resolved ELF architecture".into()),
     };
     if object.architecture() != expected || !object.is_little_endian() {
         return Err("ELF architecture/endianness differs from resolved target".into());
     }
-    match &object {
+    let stored_end = match &object {
         object::File::Elf32(elf) if layout.platform() == fstart_core::Platform::Armv7 => {
             validate_segments(elf, layout)?
         }
-        object::File::Elf64(elf) if layout.platform() == fstart_core::Platform::Riscv64 => {
+        object::File::Elf64(elf)
+            if matches!(
+                layout.platform(),
+                fstart_core::Platform::Riscv64 | fstart_core::Platform::Aarch64
+            ) =>
+        {
             validate_segments(elf, layout)?
         }
         _ => return Err("ELF class differs from resolved target".into()),
+    };
+    if let Some(execution) = layout.execution {
+        let copied = stored_end - layout.image.base;
+        if copied > execution.size
+            || !object
+                .symbols()
+                .any(|s| s.name() == Ok("_binary_end") && s.address() == execution.base + copied)
+        {
+            return Err("relocation copy extent differs from stored PT_LOAD bytes or exceeds execution capacity".into());
+        }
+        if object.entry() != execution.base {
+            return Err("relocation entry must begin the execution reservation".into());
+        }
     }
     let section = object
         .section_by_name(".fstart.layout")
@@ -143,7 +173,10 @@ pub(crate) fn validate_elf(bytes: &[u8], layout: &ResolvedBuild) -> Result<(), S
     if section.data().map_err(|e| e.to_string())? != layout.descriptor()?.as_bytes() {
         return Err("ELF descriptor differs from resolved build".into());
     }
-    if !layout.image.contains(section.address(), section.size()) {
+    if !layout
+        .code_reservation()
+        .contains(section.address(), section.size())
+    {
         return Err("descriptor outside image reservation".into());
     }
     let object::SectionFlags::Elf { sh_flags } = section.flags() else {

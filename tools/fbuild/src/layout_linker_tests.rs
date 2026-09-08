@@ -130,6 +130,12 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
             "armelf",
             object::elf::R_ARM_ABS32,
         ),
+        (
+            object::Architecture::Aarch64,
+            "aarch64-relocate",
+            "aarch64elf",
+            object::elf::R_AARCH64_ABS64,
+        ),
     ] {
         let resolved = crate::resolved::tests::resolved_for(profile, "halt");
         let mut input = object::write::Object::new(
@@ -142,11 +148,11 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
             b".text.entry".to_vec(),
             object::SectionKind::Text,
         );
-        input.append_section_data(text, &[0; 8], 8);
+        input.append_section_data(text, &[0; 16], 8);
         input.add_symbol(object::write::Symbol {
             name: b"_start".to_vec(),
             value: 0,
-            size: 8,
+            size: 16,
             kind: object::SymbolKind::Text,
             scope: object::SymbolScope::Linkage,
             weak: false,
@@ -171,19 +177,47 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
                 },
             )
             .unwrap();
+        let data = input.add_section(Vec::new(), b".data".to_vec(), object::SectionKind::Data);
+        input.append_section_data(data, &[7; 16], 16);
+        let data_symbol = input.section_symbol(data);
+        input
+            .add_relocation(
+                text,
+                object::write::Relocation {
+                    offset: 8,
+                    symbol: data_symbol,
+                    addend: 0,
+                    flags: object::RelocationFlags::Elf { r_type: relocation },
+                },
+            )
+            .unwrap();
+        if architecture == object::Architecture::Aarch64 {
+            let vectors =
+                input.add_section(Vec::new(), b".vectors".to_vec(), object::SectionKind::Text);
+            input.append_section_data(vectors, &[0; 32], 4096);
+            let tables = input.add_section(
+                Vec::new(),
+                b".page_tables".to_vec(),
+                object::SectionKind::UninitializedData,
+            );
+            input.append_section_bss(tables, 0x4000, 4096);
+        }
         let object_path = scratch.0.join("anchors.o");
         let script = scratch.0.join("resolved.ld");
         let elf = scratch.0.join("resolved.elf");
         fs::write(&object_path, input.write().unwrap()).unwrap();
         fs::write(&script, crate::linker::resolved_xip(&resolved).unwrap()).unwrap();
-        let result = Command::new(&linker)
-            .args(["-flavor", "gnu", "-m", emulation, "--gc-sections", "-T"])
-            .arg(&script)
-            .arg(&object_path)
-            .arg("-o")
-            .arg(&elf)
-            .output()
-            .unwrap();
+        let link = || {
+            Command::new(&linker)
+                .args(["-flavor", "gnu", "-m", emulation, "--gc-sections", "-T"])
+                .arg(&script)
+                .arg(&object_path)
+                .arg("-o")
+                .arg(&elf)
+                .output()
+                .unwrap()
+        };
+        let result = link();
         assert!(
             result.status.success(),
             "{}",
@@ -198,6 +232,63 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
         };
         assert_ne!(sh_flags & u64::from(object::elf::SHF_WRITE), 0);
         crate::resolved_build::validate_elf(&bytes, &resolved).unwrap();
+        if let Some(execution) = resolved.execution {
+            let flat = scratch.0.join("relocated.bin");
+            super::write_flat_binary(&elf, &flat).unwrap();
+            let flat_bytes = fs::read(&flat).unwrap();
+            let descriptor = linked.section_by_name(".fstart.layout").unwrap();
+            let offset = usize::try_from(descriptor.address() - execution.base).unwrap();
+            assert_eq!(
+                &flat_bytes[offset..offset + descriptor.size() as usize],
+                resolved.descriptor().unwrap().as_bytes()
+            );
+            let binary_end = linked
+                .symbols()
+                .find(|s| s.name() == Ok("_binary_end"))
+                .unwrap()
+                .address();
+            assert_eq!(binary_end - execution.base, flat_bytes.len() as u64);
+            assert_eq!(
+                linked.section_by_name(".page_tables").unwrap().size(),
+                0x4000
+            );
+            assert!(
+                resolved
+                    .writable
+                    .contains(linked.section_by_name(".data").unwrap().address(), 16)
+            );
+            assert_eq!(&flat_bytes[flat_bytes.len() - 16..], &[7; 16]);
+            assert_eq!(
+                linked
+                    .symbols()
+                    .find(|s| s.name() == Ok("_data_load"))
+                    .unwrap()
+                    .address(),
+                binary_end - 16
+            );
+            assert!(linked.section_by_name(".text").unwrap().size() >= 4096 + 32);
+            fs::write(
+                &script,
+                format!(
+                    "{}\n_binary_end = {};\n",
+                    crate::linker::resolved_xip(&resolved).unwrap(),
+                    binary_end - 8
+                ),
+            )
+            .unwrap();
+            assert!(link().status.success());
+            assert!(
+                crate::resolved_build::validate_elf(&fs::read(&elf).unwrap(), &resolved)
+                    .unwrap_err()
+                    .contains("copy extent")
+            );
+            let mut small = crate::resolved::tests::resolved_for(profile, "halt");
+            small.execution.as_mut().unwrap().size = 16;
+            fs::write(&script, crate::linker::resolved_xip(&small).unwrap()).unwrap();
+            let overflow = link();
+            assert!(!overflow.status.success());
+            assert!(String::from_utf8_lossy(&overflow.stderr).contains("EXEC"));
+        }
         if architecture == object::Architecture::Arm {
             assert!(!linked.is_64());
             assert!(

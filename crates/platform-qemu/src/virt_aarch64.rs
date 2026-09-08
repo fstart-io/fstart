@@ -1,11 +1,36 @@
 //! Handwritten QEMU AArch64 virt flow.
 
+use fstart_core::layout::{Layout, Region, RegionKind};
 #[cfg(feature = "crabefi")]
 use fstart_core::services::Console;
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
-use fstart_stage::{StageBoard, StageEnvironment};
+use fstart_stage::{StageEnvironment, StageProgram};
+
+#[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "aarch64-relocate")))]
+compile_error!("AArch64 virt requires monolithic/aarch64-relocate selections");
+#[cfg(any(
+    not(any(
+        fstart_payload = "halt",
+        fstart_payload = "linux",
+        fstart_payload = "crabefi"
+    )),
+    all(fstart_payload = "halt", fstart_payload = "linux"),
+    all(fstart_payload = "halt", fstart_payload = "crabefi"),
+    all(fstart_payload = "linux", fstart_payload = "crabefi")
+))]
+compile_error!("select exactly one AArch64 virt payload");
+#[cfg(all(fstart_payload = "linux", not(feature = "linux")))]
+compile_error!("selected Linux backend is not enabled");
+#[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi")))]
+compile_error!("selected CrabEFI backend is not enabled");
+#[cfg(fstart_payload = "halt")]
+type Selected = fstart_stage::payload::HaltPayload;
+#[cfg(all(fstart_payload = "linux", feature = "linux"))]
+type Selected = fstart_stage::payload::LinuxPayload;
+#[cfg(all(fstart_payload = "crabefi", feature = "crabefi"))]
+type Selected = fstart_stage::payload::Aarch64UefiPayload;
 
 use crate::virt::{QemuAarch64VirtConfig, enumerate_pci, phase};
 
@@ -24,29 +49,79 @@ pub trait QemuAarch64VirtHooks {
     }
 }
 
-pub trait QemuAarch64VirtBoard: StageBoard {
+pub trait QemuAarch64VirtBoard: 'static {
     type Hooks: QemuAarch64VirtHooks + Default;
-    type Payload: MainstagePayload<QemuAarch64VirtMainstage>;
 
     const CONFIG: &'static QemuAarch64VirtConfig;
     fn console_config() -> Pl011Config;
+}
+
+pub struct QemuAarch64Program<B>(core::marker::PhantomData<B>);
+impl<B: QemuAarch64VirtBoard> StageProgram for QemuAarch64Program<B> {
+    fn run_stage(handoff: usize) -> ! {
+        QemuAarch64Virt::run_stage::<B>(StageEnvironment::Monolithic, handoff)
+    }
 }
 
 pub struct QemuAarch64Virt;
 
 pub struct QemuAarch64VirtMainstage {
     config: &'static QemuAarch64VirtConfig,
+    layout: Layout<'static>,
     console: Pl011,
     pci: Option<fstart_pci::PciEcam>,
 }
 
 impl QemuAarch64VirtMainstage {
     fn new<B: QemuAarch64VirtBoard>() -> Result<Self, ServiceError> {
+        let layout = fstart_stage::layout::current().map_err(|_| ServiceError::InvalidParam)?;
+        for kind in [
+            RegionKind::Execution,
+            RegionKind::Writable,
+            RegionKind::Firmware,
+            RegionKind::Flash,
+            RegionKind::Stack,
+            RegionKind::Heap,
+        ] {
+            layout.region(kind).ok_or(ServiceError::InvalidParam)?;
+        }
+        #[cfg(any(fstart_payload = "linux", fstart_payload = "crabefi"))]
+        for kind in [RegionKind::DeviceTree, RegionKind::PayloadFirmware] {
+            layout.region(kind).ok_or(ServiceError::InvalidParam)?;
+        }
+        #[cfg(fstart_payload = "linux")]
+        layout
+            .region(RegionKind::Payload)
+            .ok_or(ServiceError::InvalidParam)?;
         Ok(Self {
             config: B::CONFIG,
+            layout,
             console: Pl011::new(B::console_config())?,
             pci: None,
         })
+    }
+
+    fn region(&self, kind: RegionKind) -> Region {
+        self.layout
+            .region(kind)
+            .expect("resolved layout role missing")
+    }
+
+    #[cfg(any(feature = "linux", feature = "crabefi"))]
+    fn ram_size(&self) -> u64 {
+        fstart_stage::directory::writable_memory()
+            .and_then(|windows| windows.iter().find(|w| w.start == self.config.ram_base))
+            .expect("AArch64 virt RAM was not discovered")
+            .size
+    }
+
+    fn prepare_device_tree(&self) -> Result<(), ServiceError> {
+        #[cfg(fstart_payload = "crabefi")]
+        fstart_stage::copy_fdt_to_workspace(
+            source_dtb_addr(self.config),
+            self.region(RegionKind::DeviceTree).base,
+        )?;
+        Ok(())
     }
 
     fn init_console(&mut self) -> Result<(), ServiceError> {
@@ -54,6 +129,13 @@ impl QemuAarch64VirtMainstage {
         // SAFETY: the monolithic flow owns the console through payload handoff.
         unsafe { fstart_log::init(&self.console) };
         fstart_log::info!("qemu-aarch64: pl011 console ready");
+        fstart_log::info!(
+            "resolved layout: execution={:#x} stack={} heap={} firmware={}",
+            self.region(RegionKind::Execution).base,
+            self.region(RegionKind::Stack).size,
+            self.region(RegionKind::Heap).size,
+            self.region(RegionKind::Firmware).size
+        );
         Ok(())
     }
 
@@ -85,18 +167,18 @@ fn source_dtb_addr(config: &super::virt::QemuAarch64VirtConfig) -> u64 {
 #[cfg(feature = "linux")]
 impl fstart_stage::payload::LinuxPayloadContext for QemuAarch64VirtMainstage {
     fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
-        let config = self.config.common;
+        let firmware = self.region(RegionKind::Firmware);
         fstart_stage::payload::LinuxPayloadConfig::new(
-            config.firmware_base,
-            config.firmware_size,
-            source_dtb_addr(&self.config),
-            config.dtb_addr,
-            config.kernel_addr,
-            config.firmware_addr,
-            config.ram_base,
-            config.ram_size,
+            firmware.base,
+            firmware.size,
+            source_dtb_addr(self.config),
+            self.region(RegionKind::DeviceTree).base,
+            self.region(RegionKind::Payload).base,
+            self.region(RegionKind::PayloadFirmware).base,
+            self.config.ram_base,
+            self.ram_size(),
             0,
-            config.bootargs,
+            self.config.bootargs,
         )
     }
 }
@@ -104,16 +186,17 @@ impl fstart_stage::payload::LinuxPayloadContext for QemuAarch64VirtMainstage {
 #[cfg(feature = "crabefi")]
 impl fstart_stage::payload::Aarch64UefiPayloadContext for QemuAarch64VirtMainstage {
     fn aarch64_uefi_payload_context(&self) -> fstart_stage::payload::Aarch64UefiPayloadConfig {
-        let config = self.config.common;
+        let flash = self.region(RegionKind::Flash);
+        let firmware = self.region(RegionKind::Firmware);
         fstart_stage::payload::Aarch64UefiPayloadConfig::new(
-            self.config.flash_base,
-            self.config.flash_size,
-            config.firmware_base,
-            config.firmware_size,
-            source_dtb_addr(&self.config),
-            config.firmware_addr,
-            config.ram_base,
-            config.ram_size,
+            flash.base,
+            flash.size,
+            firmware.base,
+            firmware.size,
+            self.region(RegionKind::DeviceTree).base,
+            self.region(RegionKind::PayloadFirmware).base,
+            self.config.ram_base,
+            self.ram_size(),
             self.config.pci.ecam_base,
         )
     }
@@ -142,13 +225,22 @@ impl QemuAarch64Virt {
             || !phase(
                 "qemu-aarch64",
                 "boot_integrity",
-                crate::boot::from_dtb(
+                crate::boot::from_dtb_with_layout(
                     source_dtb_addr(B::CONFIG),
-                    cfg!(feature = "linux").then_some(B::CONFIG.common.dtb_addr),
-                    B::CONFIG.common.ram_base,
-                    B::CONFIG.common.firmware_base,
-                    B::CONFIG.common.firmware_size,
+                    mainstage
+                        .layout
+                        .region(RegionKind::DeviceTree)
+                        .map(|r| r.base),
+                    B::CONFIG.ram_base,
+                    mainstage.region(RegionKind::Firmware).base,
+                    mainstage.region(RegionKind::Firmware).size,
+                    Some(mainstage.layout),
                 ),
+            )
+            || !phase(
+                "qemu-aarch64",
+                "device_tree",
+                mainstage.prepare_device_tree(),
             )
             || !phase("qemu-aarch64", "bus_scan", mainstage.init_pci())
             || !phase("qemu-aarch64", "before_payload", hooks.before_payload())
@@ -157,6 +249,6 @@ impl QemuAarch64Virt {
         }
         fstart_log::info!("qemu-aarch64 ramstage: finalize");
         fstart_log::info!("qemu-aarch64 ramstage: ready for payload");
-        B::Payload::boot(mainstage)
+        <Selected as MainstagePayload<_>>::boot(mainstage)
     }
 }

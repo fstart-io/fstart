@@ -28,7 +28,8 @@ pub const MAX_ENCODED_LEN: usize = HEADER_LEN + MAX_REGIONS * REGION_LEN;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum RegionKind {
-    /// Initialized stage image reservation (RAM or ROM).
+    /// Initialized image storage. XIP also executes here; relocated images
+    /// have a separate Execution reservation.
     Image = 1,
     /// Writable stage footprint, including BSS and any stack/heap subranges.
     Writable = 2,
@@ -43,6 +44,8 @@ pub enum RegionKind {
     Payload = 8,
     PayloadFirmware = 9,
     DeviceTree = 10,
+    /// RAM destination of the initial image copy, including data initializers.
+    Execution = 11,
 }
 
 impl RegionKind {
@@ -58,6 +61,7 @@ impl RegionKind {
             8 => Ok(Self::Payload),
             9 => Ok(Self::PayloadFirmware),
             10 => Ok(Self::DeviceTree),
+            11 => Ok(Self::Execution),
             _ => Err(Error::UnknownRegionKind),
         }
     }
@@ -237,7 +241,7 @@ mod tests {
             (10, 33, Error::InvalidCount),
             (10, 2, Error::InvalidLength),
             (12, 1, Error::ReservedBits),
-            (16, 11, Error::UnknownRegionKind),
+            (16, 255, Error::UnknownRegionKind),
             (18, 1, Error::ReservedBits),
             (35, 0, Error::InvalidRange),
         ] {

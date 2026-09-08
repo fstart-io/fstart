@@ -28,14 +28,8 @@ pub use sifive_u::{
 pub use virt::qemu_virt_security_config;
 pub use virt::{
     QemuAarch64VirtConfig, QemuArmv7VirtConfig, QemuPciRootConfig, QemuRiscv64VirtConfig,
-    QemuVirtConfig,
 };
-#[cfg(feature = "host")]
-pub use virt::{
-    qemu_aarch64_virt_linux_payload, qemu_aarch64_virt_memory, qemu_aarch64_virt_stages,
-    qemu_arm_virt_build_policy,
-};
-#[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
+#[cfg(all(feature = "stage", feature = "virt-aarch64", target_arch = "aarch64"))]
 pub mod virt_aarch64;
 #[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]
 pub mod virt_armv7;
@@ -49,9 +43,10 @@ pub use sifive_u::{
     QemuSifiveU, QemuSifiveUBoard, QemuSifiveUBuildSelectedPayload, QemuSifiveUHooks,
     QemuSifiveUMainstage,
 };
-#[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
+#[cfg(all(feature = "stage", feature = "virt-aarch64", target_arch = "aarch64"))]
 pub use virt_aarch64::{
-    QemuAarch64Virt, QemuAarch64VirtBoard, QemuAarch64VirtHooks, QemuAarch64VirtMainstage,
+    QemuAarch64Program, QemuAarch64Virt, QemuAarch64VirtBoard, QemuAarch64VirtHooks,
+    QemuAarch64VirtMainstage,
 };
 #[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]
 pub use virt_armv7::{

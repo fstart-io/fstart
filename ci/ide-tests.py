@@ -178,8 +178,11 @@ class Client:
 
 
 def inspect(client, payload, release, board="riscv64"):
-    architecture, trait = {"riscv64": ("riscv64", "QemuRiscv64VirtBoard"),
-                           "armv7": ("arm", "QemuArmv7VirtBoard")}[board]
+    architecture, trait, entry = {
+        "riscv64": ("riscv64", "QemuRiscv64VirtBoard", "riscv64"),
+        "armv7": ("arm", "QemuArmv7VirtBoard", "armv7"),
+        "aarch64": ("aarch64", "QemuAarch64VirtBoard", "aarch64-relocate"),
+    }[board]
     platform = ROOT / f"crates/platform-qemu/src/virt_{board}.rs"
     stage = ROOT / f"boards/qemu/{board}/src/stage.rs"
     original, uri = client.open(stage)
@@ -187,7 +190,8 @@ def inspect(client, payload, release, board="riscv64"):
     assert len(definitions) == 1 and definitions[0]["uri"] == platform.as_uri(), definitions
     selected = "crabefi" if payload == "uefi" else payload
     debug = "not(debug_assertions)" if release else "debug_assertions"
-    condition = f'target_arch="{architecture}", fstart_entry="{board}", fstart_payload="{selected}", {debug}, not(test)'
+    width = 32 if board == "armv7" else 64
+    condition = f'target_arch="{architecture}", target_pointer_width="{width}", fstart_entry="{entry}", fstart_payload="{selected}", {debug}, not(test)'
     addition = (f"\n#[cfg(all({condition}))]\nconst FSTART_IDE_CFG: u8 = 1;\n"
                 f"#[cfg(not(all({condition})))]\nconst FSTART_IDE_CFG: u8 = 2;\n"
                 "fn fstart_ide_cfg_probe() -> u8 { FSTART_IDE_CFG }\n")
@@ -199,7 +203,8 @@ def inspect(client, payload, release, board="riscv64"):
         client.change(uri, original)
     text, uri = client.open(platform)
     definitions = client.at("textDocument/definition", uri, text, "Selected as")
-    expected = {"halt": "HaltPayload", "linux": "LinuxPayload", "uefi": "Riscv64UefiPayload"}[payload]
+    uefi = "Aarch64UefiPayload" if board == "aarch64" else "Riscv64UefiPayload"
+    expected = {"halt": "HaltPayload", "linux": "LinuxPayload", "uefi": uefi}[payload]
     assert len(definitions) == 1 and expected in text.splitlines()[definitions[0]["range"]["start"]["line"]], definitions
     text, uri = client.open(ROOT / "crates/platform-qemu/src/lib.rs")
     definitions = client.at("textDocument/definition", uri, text, "dtb_memory")
@@ -279,7 +284,8 @@ def main():
     cases = [("riscv64", "halt", True), ("riscv64", "linux", True),
              ("riscv64", "uefi", True), ("riscv64", "halt", False),
              ("armv7", "halt", True), ("armv7", "linux", True),
-             ("riscv64", "halt", True)]
+             ("aarch64", "halt", True), ("aarch64", "linux", True),
+             ("aarch64", "uefi", True), ("riscv64", "halt", True)]
     paths = []
     for board, payload, release in cases:
         command = ["cargo", "run", "--locked", "-p", "fbuild", "--", "ide", f"qemu-{board}", "--payload", payload]

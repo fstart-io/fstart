@@ -91,6 +91,7 @@ struct Profile {
     features: Vec<String>,
     flash: Span,
     image_capacity: u64,
+    execution: Option<Span>,
     firmware_offset: u64,
     firmware_capacity: u64,
     writable: Span,
@@ -117,6 +118,7 @@ pub struct ResolvedBuild {
     pub(crate) features: Vec<String>,
     pub(crate) flash: Span,
     pub(crate) image: Span,
+    pub(crate) execution: Option<Span>,
     pub(crate) firmware: Span,
     pub(crate) writable: Span,
     pub(crate) stack: Span,
@@ -130,6 +132,7 @@ fn resolved_platform(target: &str, entry: &str, env: &str) -> Result<Platform, S
     match (target, entry, env) {
         ("riscv64gc-unknown-none-elf", "riscv64", "monolithic") => Ok(Platform::Riscv64),
         ("armv7a-none-eabi", "armv7", "monolithic") => Ok(Platform::Armv7),
+        ("aarch64-unknown-none", "aarch64-relocate", "monolithic") => Ok(Platform::Aarch64),
         _ => Err("unsupported target/entry/environment for resolved XIP layout".into()),
     }
 }
@@ -264,6 +267,11 @@ impl ResolvedBuild {
         source: &str,
     ) -> Result<Self, String> {
         let platform = resolved_platform(&p.target, &p.entry, &p.env)?;
+        if p.execution.is_some() != (platform == Platform::Aarch64) {
+            return Err(
+                "only the AArch64 relocation entry requires an execution reservation".into(),
+            );
+        }
         let mut origins = BTreeMap::new();
         for key in [
             "image-capacity",
@@ -372,9 +380,14 @@ impl ResolvedBuild {
             return Err("the current FDT workspace requires a 64 KiB reservation".into());
         }
         let mut ranges = vec![p.flash, p.writable];
-        for range in [inputs.kernel, inputs.firmware, inputs.device_tree]
-            .into_iter()
-            .flatten()
+        for range in [
+            p.execution,
+            inputs.kernel,
+            inputs.firmware,
+            inputs.device_tree,
+        ]
+        .into_iter()
+        .flatten()
         {
             range.end()?;
             if range.base % 16 != 0
@@ -387,7 +400,7 @@ impl ResolvedBuild {
         }
         if (payload == "linux" && (inputs.kernel.is_none() || inputs.kernel_file.is_none()))
             || (payload != "halt" && inputs.device_tree.is_none())
-            || (payload != "halt" && platform == Platform::Riscv64 && inputs.firmware.is_none())
+            || (payload != "halt" && platform != Platform::Armv7 && inputs.firmware.is_none())
             || (inputs.firmware.is_some() != inputs.firmware_file.is_some())
             || (platform == Platform::Armv7 && (payload == "uefi" || inputs.firmware.is_some()))
             || (payload == "halt"
@@ -417,6 +430,7 @@ impl ResolvedBuild {
             features,
             flash: p.flash,
             image,
+            execution: p.execution,
             firmware,
             writable: p.writable,
             stack,
@@ -437,6 +451,7 @@ impl ResolvedBuild {
             self.firmware.region(RegionKind::Firmware),
         ];
         for (kind, range) in [
+            (RegionKind::Execution, self.execution),
             (RegionKind::Payload, self.inputs.kernel),
             (RegionKind::PayloadFirmware, self.inputs.firmware),
             (RegionKind::DeviceTree, self.inputs.device_tree),
@@ -456,6 +471,10 @@ impl ResolvedBuild {
         release: bool,
     ) -> Result<(), String> {
         crate::resolved_build::check(root, board, self, release)
+    }
+
+    pub(crate) fn code_reservation(&self) -> Span {
+        self.execution.unwrap_or(self.image)
     }
 
     pub(crate) fn platform(&self) -> Platform {
@@ -514,7 +533,11 @@ impl ResolvedBuild {
                     .firmware
                     .map(|range| {
                         Ok::<_, String>(FirmwareConfig {
-                            kind: FirmwareKind::OpenSbi,
+                            kind: if self.platform() == Platform::Aarch64 {
+                                FirmwareKind::ArmTrustedFirmware
+                            } else {
+                                FirmwareKind::OpenSbi
+                            },
                             file: hstring(
                                 self.inputs
                                     .firmware_file
@@ -562,7 +585,7 @@ impl ResolvedBuild {
                     pci: true,
                     ..Default::default()
                 },
-                load_addr: self.image.base,
+                load_addr: self.code_reservation().base,
                 data_addr: Some(self.writable.base),
                 stack_size: self
                     .stack

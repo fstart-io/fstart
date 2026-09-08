@@ -2,21 +2,11 @@
 
 use fstart_driver_uart::pl011::Pl011Config;
 use fstart_platform_qemu::{
-    virt_aarch64::QEMU_AARCH64_UART_BASE, QemuAarch64Virt, QemuAarch64VirtBoard,
-    QemuAarch64VirtConfig, QemuAarch64VirtHooks,
+    QemuAarch64VirtBoard, QemuAarch64VirtConfig, QemuAarch64VirtHooks,
+    virt_aarch64::QEMU_AARCH64_UART_BASE,
 };
-use fstart_stage::{payload::BuildSelectedPayload, StageBoard, StageEnvironment};
 
 use crate::Board;
-
-impl StageBoard for Board {
-    const NAME: &'static str = crate::BOARD_NAME;
-    const PLATFORM: fstart_core::Platform = crate::PLATFORM;
-
-    fn run_stage(env: StageEnvironment, handoff: usize) -> ! {
-        QemuAarch64Virt::run_stage::<Self>(env, handoff)
-    }
-}
 
 /// Board-specific seams for the fixed AArch64 virt flow.
 #[derive(Default)]
@@ -26,7 +16,6 @@ impl QemuAarch64VirtHooks for QemuAarch64Hooks {}
 
 impl QemuAarch64VirtBoard for Board {
     type Hooks = QemuAarch64Hooks;
-    type Payload = BuildSelectedPayload;
 
     const CONFIG: &'static QemuAarch64VirtConfig = &crate::QEMU_AARCH64_VIRT;
 

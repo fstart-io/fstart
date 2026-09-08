@@ -319,8 +319,10 @@ The [Cargo-derived editor view](ide.md) now passes original-source navigation,
 proc macros, compiler diagnostics and payload/profile switching. Its all-board
 lock prototype agrees with the tested selected compiler graphs. ARMv7 now uses
 that same resolved path, with ELF32 validation, halt/Linux release boots and live
-RISC-V ↔ ARMv7 editor switches passing. Multistage switching remains unproven;
-workspace ownership has not cut over. Other boards retain their previous path.
+RISC-V ↔ ARMv7 editor switches passing. AArch64 now has distinct flash-storage,
+RAM-execution and writable reservations, validated relocation extents, and passing
+halt/Linux/CrabEFI release boots. Multistage switching remains unproven; workspace
+ownership has not cut over. Other boards retain their previous path.
 
 1. **Boundary and discovery:** record ownership, selection, descriptor, adapter and
    lock decisions. Replace textual manifest parsing with typed/versioned TOML and

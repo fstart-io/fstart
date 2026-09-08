@@ -3,7 +3,7 @@
 <!-- markdownlint-disable MD013 -->
 
 `fbuild ide` generates an opt-in rust-analyzer view for a migrated board. It
-currently supports QEMU RISC-V and ARMv7 monolithic flows. It does not modify the source
+currently supports QEMU RISC-V, ARMv7 and AArch64 monolithic flows. It does not modify the source
 workspace, editor settings in the source tree, or committed/per-board locks.
 
 ## Use
@@ -32,9 +32,10 @@ understand these configuration keys.
 
 One active selection per editor session is supported. Generate another view and
 open its workspace, or replace your client's settings with the newly generated
-ones. RISC-V halt → Linux → CrabEFI → debug-halt → ARMv7 halt → Linux → RISC-V
-halt switching was exercised in one LSP session without restarting it, including
-original-source definitions, target/entry cfgs and macro expansion after switches.
+ones. RISC-V halt → Linux → CrabEFI → debug-halt → ARMv7 halt → Linux → AArch64
+halt → Linux → CrabEFI → RISC-V halt switching passed in one LSP session without
+restarting it, including original-source definitions, target/entry/pointer-width
+cfgs and macro expansion after switches.
 
 Ordinary Rust edits use live analysis and check-on-save. Regenerate the view after
 changing manifests, features, layout, toolchain or build scripts. After modifying
@@ -97,7 +98,7 @@ The audit compares the **same selected command** against both workspaces:
 
 A mismatch fails the explicit audit and leaves a report in the prototype folder.
 The prototype currently contains 14 boards / 35 workspace members. The four
-QEMU RISC-V and two ARMv7 selections used by the LSP probe passed the comparison. This is a
+QEMU RISC-V, two ARMv7 and three AArch64 selections passed the comparison. This is a
 selected-closure proof, **not** a build or boot of every inventory member, nor a
 claim of byte-identical binaries across differently located workspaces.
 
@@ -132,8 +133,8 @@ messages and status/timing receipts live under `target/fstart-ide/proof/`.
 
 ## Remaining gates
 
-Workspace/lock ownership is intentionally unchanged. RISC-V ↔ ARMv7 switching
-passes; multistage switching still needs a migrated multistage flow and cannot be
+Workspace/lock ownership is intentionally unchanged. Switching among all three
+QEMU virt ISAs passes; multistage switching still needs a migrated multistage flow and cannot be
 inferred from these monolithic cases. Clean-checkout regeneration,
 broader inventory build coverage, and macro/build-script edit workflows need
 further acceptance before removing existing workspace or board-lock paths.

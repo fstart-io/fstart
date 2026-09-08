@@ -59,7 +59,7 @@ security inputs and all geometry come from the profile, not address heuristics.
 Permitted board overrides under `[package.metadata.fstart.layout]` currently are
 `image-capacity`, `writable-capacity`, `stack`, `heap`, `firmware-offset` and
 `firmware-capacity`. Unknown overrides fail. Variant geometry overrides and other
-entry/target combinations beyond RISC-V and ARMv7 monolithic XIP are not implemented yet.
+entry/target combinations beyond the three QEMU virt profiles are not implemented yet.
 
 Fixed reservations are allocated before compilation. The writable footprint is
 split into data/BSS capacity followed by a fixed heap and stack. Section growth
@@ -170,8 +170,49 @@ The same AArch64 image booted non-secure, both via EL2 and directly at EL1, reje
 BL31 loading and registers no secure RAM. A focused host test covers the status
 precedence and denial cases without linking the firmware allocator. Evidence:
 `/tmp/fstart-secure-ram-boots.log`, `/tmp/fstart-secure-ram-tests.log` and
-`/tmp/fstart-aarch64-nonsecure-{on,off}.log`. AArch64 still uses its legacy layout
-path at this checkpoint; these are baseline boots, not resolved relocation proof.
+`/tmp/fstart-aarch64-nonsecure-{on,off}.log`. Those tests used the legacy layout
+before the separate relocation migration below.
+
+### AArch64 resolved relocation
+
+`qemu-aarch64` now selects `aarch64-relocate` and supplies
+`QemuAarch64Program<Board>`. Its old host binary, Rust geometry builders and
+feature-forwarding layer are removed. The two flash banks remain unchanged.
+The profile separately reserves:
+
+- Image storage: 64 MiB at flash address zero.
+- Initial RAM execution copy: 4 MiB at `0x40400000`, including data initializers.
+- Writable RAM: 8 MiB at `0x40800000`, with 4 MiB data/BSS/page-table capacity,
+  a fixed 1 MiB heap and 3 MiB stack ending at `0x41000000`.
+- Linux: 64 MiB at `0x41000000`; BL31: 2 MiB at `0x0e090000` in discovered
+  secure RAM; destination DTB: 64 KiB at `0x40100000`.
+
+These are explicit capacity budgets, not measurements or section-growth-driven
+placements. The descriptor's `Execution` role describes the initial RAM copy;
+`Image` continues to describe storage. Runtime setup validates and excludes the
+whole execution/writable reservations from subsequent authenticated loads. UEFI
+receives a copy of the source DTB in the registered destination workspace.
+
+The existing reset copier still copies `_binary_end - _start`. The linker now
+provides distinct physical flash and virtual RAM addresses, computes the exact
+stored copy extent including initialized data, and points `_data_load` into the
+copied RAM image. This keeps common entry and running-stage bounds consistent.
+Explicit placement of retention/unwind sections and inclusion of UEFI vectors
+in text prevent LLD orphans from acquiring incorrect physical addresses.
+Post-link validation checks the linear execution mapping, copy extent, target,
+descriptor and fixed boundaries; real LLD fixtures test vector alignment, data
+source addresses, flat descriptor retention and capacity/extent rejection.
+
+Release halt/PCI, Linux userspace and CrabEFI boots all passed on this path
+(`/tmp/fstart-aarch64-resolved-boots.log`). This is emulator relocation evidence,
+not Intel multistage or hardware validation. Workspace/lock ownership is unchanged.
+
+A metadata-only experiment moved execution to `0x40200000`; ELF validation and
+halt boot passed at that address, and the profile was restored. Final validation
+passed 44 host tests, editor/lock checks across all three ISAs (including 100
+unrelated inventory boards), and all RISC-V/ARMv7 release boot regressions.
+Evidence: `/tmp/fstart-aarch64-move-proof.log`, `/tmp/fstart-aarch64-final-tests.log`,
+`/tmp/fstart-aarch64-final-ide.log` and `/tmp/fstart-aarch64-final-regressions.log`.
 
 ## Validation evidence
 
@@ -183,7 +224,7 @@ config warnings remain leads for the compilation-closure cleanup.
 Current checks:
 
 - `cargo test --locked -p fbuild -p fstart-core -p fstart-image-build --lib`:
-  42 passed. Includes deterministic resolution, geometry projection/override,
+  43 passed (plus the platform memory-visibility test: 44 total). Includes deterministic resolution, geometry projection/override,
   invalid ranges/budgets/selections, direct feature-reference validation, editor
   unit projection and normalized build-lock graph comparison.
 - `cargo test --locked -p fstart-stage --lib --features ffs,fdt -- --test-threads=1`:
@@ -224,8 +265,8 @@ explicitly development-integrity, not hardware-authenticated boot.
 
 - Extend editor acceptance to multistage switching, clean regeneration
   and macro/build-script edit workflows before workspace/lock cutover.
-- Extend resolved entry/layout support to further QEMU targets, proving relocation
-  where applicable; then cut over the Intel multistage boundary and reservations.
+- Cut over the Intel multistage boundary and reservations, retaining separate
+  build/emulator/hardware evidence. The three QEMU virt ISAs now have resolved flows.
 - Retain one authoritative path per migrated board. Remaining boards still use
   their old host path; do not remove it globally before their replacements work.
 - Complete input-digest/reproducibility reporting, canonical build-lock ownership

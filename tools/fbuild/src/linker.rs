@@ -50,19 +50,50 @@ pub fn resolved_xip(layout: &crate::resolved::ResolvedBuild) -> Result<String, S
         )
         .unwrap();
     }
+    let code = if let Some(execution) = layout.execution {
+        writeln!(
+            out,
+            " EXEC (rx) : ORIGIN = {:#x}, LENGTH = {:#x}",
+            execution.base, execution.size
+        )
+        .unwrap();
+        "EXEC AT > ROM"
+    } else {
+        "ROM"
+    };
     out.push_str("}\nSECTIONS {\n");
-    write_text_section(&mut out, "ROM");
+    write_text_section(&mut out, code);
     // LLD's BYTE-only sections inherit flags from the preceding section.
     // Emit immediately after executable text, before potentially writable
     // keep anchors; MEMORY attributes alone do not clear SHF_WRITE.
-    out.push_str(&layout_section(&layout.descriptor()?, "ROM"));
-    write_anchor_section(&mut out, "ROM", platform, layout.heap.size);
-    write_rodata_section(&mut out, "ROM");
+    out.push_str(&layout_section(&layout.descriptor()?, code));
+    write_anchor_section(&mut out, code, platform, layout.heap.size);
+    write_rodata_section(&mut out, code);
+    // Explicit placement prevents LLD's orphan sections from acquiring RAM
+    // physical addresses in a relocated image.
+    for section in [".fstart.keep", ".eh_frame_hdr", ".eh_frame"] {
+        writeln!(out, " {section} : ALIGN(8) {{ *({section}) }} > {code}").unwrap();
+    }
     out.push_str(" .data : ALIGN(16) { _data_start = .; *(.data .data.* .ldata .ldata.*) _data_end = .; } > RAM AT > ROM\n _data_load = LOADADDR(.data);\n");
     write_bss_section(&mut out, "RAM");
+    write_page_tables_section(&mut out, "RAM", platform);
     write_heap(&mut out, layout.heap.size, "HEAP");
     write_stack(&mut out, layout.stack.size, "STACK");
-    out.push_str(" ASSERT(_bss_end <= ORIGIN(HEAP), \"stage data/BSS exceed resolved capacity\")\n ASSERT(_data_load + SIZEOF(.data) <= ORIGIN(ROM) + LENGTH(ROM), \"stage image exceeds resolved capacity\")\n}\n");
+    if layout.execution.is_some() {
+        // The unchanged reset copier uses _binary_end - _start. Include the
+        // initialized data's flash bytes in the RAM copy, not its final VMA.
+        let stored_end = [".text", ".fstart.layout", ".fstart.anchor", ".rodata", ".fstart.keep", ".eh_frame_hdr", ".eh_frame", ".data"].iter().fold("ORIGIN(ROM)".to_owned(), |end, section| format!("MAX({end}, SIZEOF({section}) == 0 ? ORIGIN(ROM) : LOADADDR({section}) + SIZEOF({section}))"));
+        writeln!(
+            out,
+            " _binary_end = ORIGIN(EXEC) + {stored_end} - ORIGIN(ROM);"
+        )
+        .unwrap();
+        // The reset copier has already brought these initializers into RAM.
+        // Keep the common entry and running-stage bounds in that same address space.
+        out.push_str(" _data_load = ORIGIN(EXEC) + LOADADDR(.data) - ORIGIN(ROM);\n");
+        out.push_str(" ASSERT(_binary_end <= ORIGIN(EXEC) + LENGTH(EXEC), \"relocated image exceeds execution capacity\")\n ASSERT(_page_tables_end <= ORIGIN(HEAP), \"page tables exceed writable capacity\")\n");
+    }
+    out.push_str(" ASSERT(_bss_end <= ORIGIN(HEAP), \"stage data/BSS exceed resolved capacity\")\n ASSERT(LOADADDR(.data) + SIZEOF(.data) <= ORIGIN(ROM) + LENGTH(ROM), \"stage image exceeds resolved capacity\")\n}\n");
     Ok(out)
 }
 
@@ -560,6 +591,7 @@ fn write_text_section(out: &mut String, region: &str) {
     writeln!(out, "        _text_start = .;").unwrap();
     writeln!(out, "        KEEP(*(.text.entry))").unwrap();
     writeln!(out, "        *(.text .text.* .ltext .ltext.*)").unwrap();
+    writeln!(out, "        KEEP(*(.vectors .vectors.*))").unwrap();
     writeln!(out, "        _text_end = .;").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }

@@ -85,9 +85,55 @@ kernel = { base = 0x41000000, size = 0x04000000 }
 kernel-file = "zImage"
 device-tree = { base = 0x40f00000, size = 0x10000 }
 
+# QEMU AArch64's fixed flash-to-RAM relocation layout.
+[package.metadata.fstart.layouts.aarch64-relocate]
+target = "aarch64-unknown-none"
+entry = "aarch64-relocate"
+env = "monolithic"
+features = [
+  "stage", "fstart-platform-qemu/virt-aarch64", "fstart-platform-qemu/aarch64",
+  "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519",
+  "fstart-stage/sha2-digest", "fstart-stage/sha3-digest",
+  "fstart-stage/fdt", "fstart-stage/lz4",
+]
+flash = { base = 0, size = 0x08000000 }
+image-capacity = 0x04000000
+firmware-offset = 0x04000000
+firmware-capacity = 0x04000000
+# The initial copy includes text, rodata and data initializers. Data/BSS,
+# page tables, heap and stack have a separate fixed writable reservation.
+execution = { base = 0x40400000, size = 0x00400000 }
+writable = { base = 0x40800000, size = 0x00800000 }
+stack = 0x00300000
+heap = 0x00100000
+default-payload = "linux"
+
+[package.metadata.fstart.layouts.aarch64-relocate.security]
+signing_algorithm = "Ed25519"
+pubkey_file = "keys/dev-signing.pub"
+required_digests = ["Sha256", "Sha3_256"]
+
+[package.metadata.fstart.layouts.aarch64-relocate.payloads.halt]
+features = []
+
+[package.metadata.fstart.layouts.aarch64-relocate.payloads.linux]
+features = ["fstart-platform-qemu/linux"]
+kernel = { base = 0x41000000, size = 0x04000000 }
+kernel-file = "Image"
+firmware = { base = 0x0e090000, size = 0x00200000 }
+firmware-file = "bl31.bin"
+device-tree = { base = 0x40100000, size = 0x10000 }
+
+[package.metadata.fstart.layouts.aarch64-relocate.payloads.uefi]
+features = ["fstart-platform-qemu/crabefi"]
+firmware = { base = 0x0e090000, size = 0x00200000 }
+firmware-file = "bl31.bin"
+device-tree = { base = 0x40100000, size = 0x10000 }
+
 [features]
 default = []
 virt-riscv64 = ["stage"]
+virt-aarch64 = ["stage", "fstart-arch/aarch64-el2-relocate-entry"]
 host = []
 stage = [
   "dep:fstart-stage",

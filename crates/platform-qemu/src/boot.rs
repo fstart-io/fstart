@@ -226,6 +226,7 @@ pub(crate) fn from_dtb_with_layout(
             matches!(
                 r.kind,
                 RegionKind::Writable
+                    | RegionKind::Execution
                     | RegionKind::Payload
                     | RegionKind::PayloadFirmware
                     | RegionKind::DeviceTree
@@ -237,10 +238,12 @@ pub(crate) fn from_dtb_with_layout(
                 return Err(ServiceError::InvalidParam);
             }
         }
-        for region in layout
-            .regions()
-            .filter(|r| matches!(r.kind, RegionKind::Writable | RegionKind::Reserved))
-        {
+        for region in layout.regions().filter(|r| {
+            matches!(
+                r.kind,
+                RegionKind::Writable | RegionKind::Execution | RegionKind::Reserved
+            )
+        }) {
             reserved
                 .push(MemoryWindow {
                     start: region.base,
