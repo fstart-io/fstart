@@ -312,7 +312,6 @@ pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildP
                 expectations: layout.elf_expectations()?,
                 load_address: code.base,
                 flat_capacity: image.size,
-                flat_exact_size: false,
             },
         }],
         stages: vec!["stage".into()],

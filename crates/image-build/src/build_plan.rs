@@ -204,7 +204,6 @@ pub enum UnitOutput {
         expectations: crate::elf::Expectations,
         load_address: u64,
         flat_capacity: u64,
-        flat_exact_size: bool,
     },
     SmmImage {
         entry_count: u16,
@@ -485,7 +484,6 @@ mod tests {
             },
             load_address: span.base,
             flat_capacity: span.size,
-            flat_exact_size: false,
         };
         BuildPlan {
             payload: "halt".into(),

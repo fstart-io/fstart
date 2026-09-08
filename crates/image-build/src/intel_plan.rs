@@ -103,7 +103,7 @@ impl IntelStage {
 pub struct IntelReservations {
     pub flash: Span,
     /// Full BIOS mapping used by media identity and postcar ROM caching.
-    /// The bootblock occupies its tail; filesystem capacity excludes that tail.
+    /// Actual bootblock storage is measured after link; no slot is deducted here.
     pub firmware: Span,
     /// Static bootstrap envelope, additionally limited by trained RAM at boot.
     pub bootstrap_ram: Span,
@@ -134,11 +134,7 @@ impl IntelReservations {
             architecture: Architecture::X86_64,
             elf64: true,
             little_endian: true,
-            stored: if boot {
-                vec![stage.image]
-            } else {
-                vec![stage.image, stage.writable]
-            },
+            stored: vec![stage.image],
             runtime: vec![stage.image, stage.writable],
             identity_mapping: !boot,
             entry: Some(if boot { 0xfffffff0 } else { stage.image.base }),
@@ -160,15 +156,6 @@ impl IntelReservations {
             IntelStage::Postcar => self.postcar,
             IntelStage::Ramstage => self.ramstage,
         }
-    }
-
-    pub fn filesystem_capacity(&self) -> Result<u64, String> {
-        self.bootblock
-            .image
-            .base
-            .checked_sub(self.firmware.base)
-            .filter(|size| *size != 0)
-            .ok_or_else(|| "BIOS mapping leaves no filesystem capacity".into())
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -210,9 +197,8 @@ impl IntelReservations {
                 .firmware
                 .contains(self.bootblock.image.base, self.bootblock.image.size)
         {
-            return Err("BIOS mapping must contain the fixed bootblock tail".into());
+            return Err("BIOS mapping must contain the bootblock address window".into());
         }
-        self.filesystem_capacity()?;
         for (i, (name, span)) in regions.iter().enumerate() {
             for (other_name, other) in &regions[i + 1..] {
                 if span.overlaps(*other) {

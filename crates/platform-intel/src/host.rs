@@ -99,7 +99,6 @@ pub fn compilation_plan(
             output: UnitOutput::Executable {
                 expectations: plan.reservations.elf_expectations(row.role)?, load_address: reservation.image.base,
                 flat_capacity: if boot { reservation.image.size } else { reservation.load_window()?.size },
-                flat_exact_size: boot,
             },
         });
     }
@@ -137,7 +136,12 @@ pub fn reservations(facts: BoardFacts) -> Result<IntelReservations, std::string:
         ),
         bootstrap_ram: span(0x100000, 0x3ff00000),
         bootblock: StageReservation {
-            image: span(flash.end() - 0x40000, 0x40000),
+            // This is the legal XIP address window, not a reserved media slot.
+            // The linker places the actual initialized image at its upper end.
+            image: span(
+                flash.bios_base().ok_or("missing BIOS")?,
+                u64::from(bios.size),
+            ),
             writable: car,
             stack: 0x2000,
             heap: 0,
@@ -282,7 +286,10 @@ mod tests {
         let plan = resolve(FACTS, BuildSelection::default()).unwrap();
         assert_eq!(plan.reservations.firmware.base, 0xffe80000);
         assert_eq!(plan.reservations.firmware.size, 0x180000);
-        assert_eq!(plan.reservations.filesystem_capacity().unwrap(), 0x140000);
+        assert_eq!(
+            plan.reservations.bootblock.image,
+            plan.reservations.firmware
+        );
         const LARGER_BIOS: IntelIfdFlashLayout =
             IntelIfdFlashLayout::new(ConstVec::new(DESCRIPTOR).push(DESCRIPTOR).push(Region {
                 kind: Kind::Bios,
@@ -296,12 +303,8 @@ mod tests {
         .unwrap();
         assert_eq!(changed.reservations.firmware.base, 0xffe00000);
         assert_eq!(
-            changed.reservations.filesystem_capacity().unwrap(),
-            0x1c0000
-        );
-        assert_eq!(
-            changed.reservations.bootblock.image.base,
-            plan.reservations.bootblock.image.base
+            changed.reservations.bootblock.image,
+            changed.reservations.firmware
         );
     }
     #[test]
@@ -323,9 +326,6 @@ mod tests {
                 i945.descriptor(role).unwrap().as_bytes()
             );
         }
-        assert_eq!(
-            gm.filesystem_capacity().unwrap(),
-            i945.filesystem_capacity().unwrap()
-        );
+        assert_eq!(gm.bootblock.image, i945.bootblock.image);
     }
 }

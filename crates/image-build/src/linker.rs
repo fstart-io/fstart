@@ -190,9 +190,8 @@ pub fn resolved_xip(layout: &Xip) -> Result<String, String> {
     Ok(out)
 }
 
-/// Fixed Intel stage placement. No section size feeds back into the bootblock
-/// base, heap base or stack top. The board build path opts in only after its
-/// complete metadata/assembler boundary is migrated.
+/// Intel runtime reservations with compact initialized storage. The XIP image
+/// sizes itself at the top of flash in one link; RAM heap/stack bounds stay fixed.
 pub fn resolved_intel(
     layout: &crate::intel_plan::IntelReservations,
     role: crate::intel_plan::IntelStage,
@@ -228,7 +227,16 @@ pub fn resolved_intel(
         .unwrap();
     }
     out.push_str("}\nSECTIONS {\n");
-    write_text_section(&mut out, "IMAGE");
+    if bootblock {
+        writeln!(out, " _bootblock_top = {:#x};", stage.image.end()? - 4096).unwrap();
+        out.push_str(" _bootblock_program_size = SIZEOF(.text) + SIZEOF(.fstart.layout) + SIZEOF(.fstart.anchor) + SIZEOF(.rodata) + SIZEOF(.fstart.keep) + SIZEOF(.eh_frame_hdr) + SIZEOF(.eh_frame) + SIZEOF(.data);\n");
+        out.push_str(
+            " _bootblock_base = ((_bootblock_top - _bootblock_program_size) & ~0xfff) - 0x1000;\n",
+        );
+        out.push_str(" .text _bootblock_base : { _bootblock = .; _text_start = .; KEEP(*(.text.entry)) *(.text .text.* .ltext .ltext.*) _text_end = .; } > IMAGE\n");
+    } else {
+        write_text_section(&mut out, "IMAGE");
+    }
     out.push_str(&layout_section(&layout.descriptor(role)?, "IMAGE"));
     out.push_str(" .fstart.anchor : ALIGN(16) { _fstart_anchor_early = .; *(.fstart.anchor) _fstart_early_microcode_enabled = .;\n");
     writeln!(out, " LONG({})", u8::from(bootblock && early_microcode)).unwrap();
@@ -238,18 +246,24 @@ pub fn resolved_intel(
     for section in [".fstart.keep", ".eh_frame_hdr", ".eh_frame"] {
         writeln!(out, " {section} : ALIGN(8) {{ *({section}) }} > IMAGE").unwrap();
     }
-    write_data_section(&mut out, if bootblock { "DATA AT > IMAGE" } else { "DATA" });
+    // RAM-resident initialized data is writable in place. BSS remains in the
+    // separate runtime reservation, without turning that gap into media bytes.
+    write_data_section(
+        &mut out,
+        if bootblock {
+            "DATA AT > IMAGE"
+        } else {
+            "IMAGE"
+        },
+    );
     write_bss_section(&mut out, "DATA");
     write_heap(&mut out, stage.heap, "HEAP");
     write_stack(&mut out, stage.stack, "STACK");
     if bootblock {
         let end = stage.image.end()?;
-        writeln!(
-            out,
-            " _bootblock = ORIGIN(IMAGE); _bootblock_base = ORIGIN(IMAGE); _bootblock_top = {:#x};",
-            end - 4096
-        )
-        .unwrap();
+        out.push_str(
+            " ASSERT(_bootblock_base >= ORIGIN(IMAGE), \"bootblock exceeds firmware window\")\n",
+        );
         writeln!(
             out,
             " _has_car = 1; _car_base = {:#x}; _car_size = {:#x}; _ecar_stack = _stack_top;",

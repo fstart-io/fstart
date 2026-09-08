@@ -1,4 +1,4 @@
-//! Synthetic ELF proof: fixed Intel placement, not execution or hardware proof.
+//! Synthetic ELF proof: compact storage within Intel runtime bounds, not hardware proof.
 use crate::intel_layout::{IntelStage, tests::candidate};
 use object::{Object, ObjectSection, ObjectSymbol};
 use std::{fs, path::PathBuf, process::Command};
@@ -11,7 +11,7 @@ impl Drop for Scratch {
 }
 
 #[test]
-fn intel_fixed_linker_retains_descriptors_and_rejects_growth() {
+fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
     let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
         .args(["--print", "target-libdir"])
         .output()
@@ -148,7 +148,11 @@ fn intel_fixed_linker_retains_descriptors_and_rejects_growth() {
                 .heap_span()
                 .map_or(stage.stack_span().base, |heap| heap.base)
         );
-        assert_eq!(symbol("_data_start"), stage.writable.base);
+        if role == IntelStage::Bootblock {
+            assert_eq!(symbol("_data_start"), stage.writable.base);
+        } else {
+            assert!(stage.image.contains(symbol("_data_start"), 16));
+        }
         let descriptor = linked.section_by_name(".fstart.layout").unwrap();
         let object::SectionFlags::Elf { sh_flags } = descriptor.flags() else {
             panic!("not ELF")
@@ -160,28 +164,65 @@ fn intel_fixed_linker_retains_descriptors_and_rejects_growth() {
         );
         crate::build_board::write_flat_binary(&elf, &flat).unwrap();
         let flat_bytes = fs::read(&flat).unwrap();
-        let descriptor_offset = (descriptor.address() - stage.image.base) as usize;
+        let stored_base = if role == IntelStage::Bootblock {
+            symbol("_bootblock_base")
+        } else {
+            stage.image.base
+        };
+        let descriptor_offset = (descriptor.address() - stored_base) as usize;
         assert_eq!(
             &flat_bytes[descriptor_offset..descriptor_offset + descriptor.size() as usize],
             descriptor.data().unwrap()
         );
         if matches!(role, IntelStage::Bootblock) {
-            assert_eq!(flat_bytes.len() as u64, stage.image.size);
+            assert_eq!(
+                flat_bytes.len() as u64,
+                stage.image.end().unwrap() - stored_base
+            );
+            assert!((flat_bytes.len() as u64) < stage.image.size);
             assert_eq!(
                 linked.section_by_name(".reset").unwrap().address(),
                 0xfffffff0
             );
         }
-        // Initialized data stays in flash only for CAR; RAM stage flat images
-        // include the gap up to the fixed writable initializer destination.
+        // BSS/runtime reservations never pad initialized media storage.
         let data_load = symbol("_data_load");
-        let offset = (data_load - stage.image.base) as usize;
+        let offset = (data_load - stored_base) as usize;
         assert_eq!(&flat_bytes[offset..offset + 16], &[7; 16]);
-        assert!(if matches!(role, IntelStage::Bootblock) {
-            stage.image.contains(data_load, 16)
-        } else {
-            data_load == stage.writable.base
-        });
+        assert!(stage.image.contains(data_load, 16));
+        if role != IntelStage::Bootblock {
+            assert_eq!(data_load, symbol("_data_start"));
+            assert!((flat_bytes.len() as u64) < stage.image.size);
+        }
+        // Actual storage grows and shrinks with initialized content, while
+        // adding uninitialized BSS consumes only the protected RAM window.
+        for (pattern, extra, expected_growth) in [
+            ("*(.text .text.* .ltext .ltext.*)", 4096, 4096),
+            ("*(.bss .bss.* .lbss .lbss.*)", 4096, 0),
+        ] {
+            let changed = original.replace(pattern, &format!("{pattern} . += {extra};"));
+            fs::write(&script, changed).unwrap();
+            let result = link();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            fstart_image_build::elf::validate(
+                &fs::read(&elf).unwrap(),
+                &config.elf_expectations(role).unwrap(),
+            )
+            .unwrap();
+            crate::build_board::write_flat_binary(&elf, &flat).unwrap();
+            assert_eq!(
+                fs::metadata(&flat).unwrap().len(),
+                flat_bytes.len() as u64 + expected_growth
+            );
+            fs::write(&script, &original).unwrap();
+            assert!(link().status.success());
+            crate::build_board::write_flat_binary(&elf, &flat).unwrap();
+            assert_eq!(fs::read(&flat).unwrap(), flat_bytes);
+        }
         let bloated = original.replace(
             "*(.bss .bss.* .lbss .lbss.*)",
             &format!(

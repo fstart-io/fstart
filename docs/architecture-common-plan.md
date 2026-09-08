@@ -5,6 +5,97 @@ That change moved hardware facts and feature policy into Rust, but fbuild still
 selected Intel roles, SMM consumers, linker entry points and ELF checks. Merely
 moving its Intel executor would not have fixed the boundary.
 
+## Packed-storage correction (Intel first phase)
+
+The fixed-storage premise in the historical acceptance below is retracted.
+Runtime load/BSS/stack/heap windows remain fixed and validated; flash files do
+not receive arbitrary preallocated slots. X61 now links its initial XIP bytes
+at the BIOS top using section-size arithmetic in one link. The full BIOS region
+is its legal address window; actual linked bytes determine the space available
+to the existing packer. Reset-vector addresses, physical flash/BIOS identity and
+MTRR policy are unchanged. RAM-stage `.data` is writable in place immediately
+after initialized code/rodata (`VMA = LMA`); `.bss`, heap and stack remain in their
+separate protected runtime reservation. There is no new startup copy or ABI.
+The common `flat_exact_size` field/check is removed; maximum load bounds remain.
+
+Matched release measurements, captured before this correction:
+
+| X61 stage / payload | Before flat bytes | After flat bytes |
+| --- | ---: | ---: |
+| Bootblock, both payloads | 262,144 | 126,976 |
+| Postcar, both payloads | 20,740 | 20,744 |
+| Ramstage, halt | 4,194,312 | 145,944 |
+| Ramstage, UEFI | 5,334,792 | 2,500,224 |
+
+The four-byte postcar difference is alignment, not a removed large gap.
+Bootblock PT_LOAD initialized bytes remain 115,088; the flat includes required
+alignment/reset-page placement. FFS halt shrinks 217,253 → 201,373 bytes and UEFI
+889,829 → 878,621: compression previously hid much of the zero padding on media,
+but not in the authenticated/decompressed initialized extent. These are matched
+payloads, not the invalid comparison of historic halt against current UEFI.
+
+Evidence: `/tmp/fstart-packed-baseline/`, `/tmp/fstart-packed-x61-{halt,uefi}.log`
+and `/tmp/fstart-packed-image-proof.json`. The artifact proof checks unchanged
+postcar/ramstage descriptor bytes, identical current SMM embedded once, identical
+86,016-byte microcode and 2,621,440 erased non-BIOS bytes. The latter remain
+**generated erased content, not a factory/full-chip backup**.
+
+All supported three-virt release payload assemblies and named X61
+bootblock/postcar/ramstage/SMM plus virt check/IDE commands pass:
+`/tmp/fstart-packed-regression.log` and matching directory. Eight fresh virt
+emulator boots pass (`/tmp/fstart-packed-boots.log`); no Intel hardware boot.
+ARMv7/AArch64's two 64-MiB flash banks are real backing devices, **not** an
+arbitrary within-bank half split. They remain unchanged. RISC-V's artificial
+16-MiB split inside one 32-MiB bank is deferred to the locator-transport phase.
+
+The compressed-anchor iteration is deliberately still present. AP microcode
+lookup and late block-media mounts still consume locator-bearing anchors; a
+stash-backed directory alone does not eliminate those dependencies. Splitting
+constant trust from mutable location needs a separate audited consumer change.
+No root-first/A/B format, updater, raw Sunxi mode or D945/D41S migration is claimed
+here. In particular this phase does not claim acyclic signature finalization,
+power-fail safety, secure boot, stack high-water or a full board matrix.
+
+Additional gates: the 61 focused tests pass, including real-LLD initialized
+storage growth/shrink, BSS growth without media growth, reset placement and
+capacity rejection (`/tmp/fstart-packed-final-tests.log`). Fresh/cached actual
+`--locked` Intel/AArch64 board/platform/runner graphs pass with original sources
+and unchanged prepared locks (`/tmp/fstart-packed-host-proof.log`). Root and all
+eight existing standalone locks were snapshotted before Cargo/LSP work and are
+byte-identical, with no new standalone files:
+`/tmp/fstart-packed-locks-1788881097938681837/manifest.json` and
+`/tmp/fstart-packed-final-lock-proof.json`. No external pins changed. Both corrected X61 halt/UEFI images are byte-identical
+to a later reassembly (full flash and FFS), recorded in
+`/tmp/fstart-packed-determinism.json`. This demonstrates deterministic outputs,
+not absence of the still-retained compressed-anchor iteration.
+
+The remaining gates passed after the parent restored the **exact original** Nix
+glibc/zlib/rustup-wrapper closures with `nix-store --realise`. An intervening
+missing-loader failure is retained in the conversation; no compiler replacement
+or global binary patch was used. Live RA now passes Intel car → postcar → ram →
+SMM → AArch64 switching, original-source definitions, cfg and hygienic macro
+views, plus the corresponding compiler commands
+(`/tmp/fstart-packed-editor-proof.log`). No on-disk source probes remain.
+
+Legacy release assemblies pass for D945 halt/debug variant, D41S halt/UEFI,
+Banana Pi ARM and LicheeRV RISC-V, with locks checked after every selection
+(`/tmp/fstart-packed-legacy.log`). D945 UEFI's pre-existing missing ECAM trait
+implementation is not fixed or claimed supported. Both Sunxi SPLs remain
+24,576-byte eGON images (20,580/20,148 initialized PT_LOAD bytes respectively),
+with SHA pin support but no FFS/Ed25519/directory compiler features or linked
+verification symbols. Independent pin SHA256, eGON checksum and final initial
+file digest checks pass (`/tmp/fstart-packed-sunxi-proof.json`). Their images
+match the pre-rebuild retained files; those files are **not** claimed as fresh
+matched baselines. No new raw-loader mode or secure-boot claim is introduced.
+
+Twenty-one FFS tests pass (`/tmp/fstart-packed-ffs-tests.log`). Fresh RISC-V Linux
+negative boots reject root-signature corruption, directory corruption and
+compressed payload corruption at the expected verification gates, without
+reaching successful payload boot (`/tmp/fstart-packed-negative/proof.json`).
+This is existing single-image integrity behavior, not A/B recovery. Sunxi's
+eGON checksum remains finalized before the SPL digest; no finalizer source was
+changed in this correction.
+
 ## Migrated scope
 
 **X61 and QEMU RISC-V, ARMv7 and AArch64 use the same concrete plan and executor.**
@@ -113,8 +204,12 @@ not be smuggled in as platform identity tests in the executor.
 Existing register sequences, auth/stash/handoff ABI, reset relocation code and
 runtime descriptor authority are unchanged. Intel's full BIOS mapping/MTRR
 identity remains distinct from FFS capacity. ACPI remains normal ramstage policy,
-independent of EC initialization. Fixed capacities do not adapt to linked sizes;
-ELF validation checks architecture/class/endianness, PT_LOAD physical and virtual
+independent of EC initialization. Fixed **runtime** capacities do not adapt to
+linked sizes; stored file extents do. Intel's initial XIP image now self-sizes at
+the BIOS top in one link, and RAM-stage initialized data is contiguous rather
+than spanning the gap to its BSS reservation. The full BIOS is the legal XIP
+address window, not a preallocated bootblock slot. ELF validation checks
+architecture/class/endianness, PT_LOAD physical and virtual
 bounds, entries, linear copy extents, symbols and exact retained descriptor bytes.
 The descriptor's file bytes must actually be covered by its load mapping.
 

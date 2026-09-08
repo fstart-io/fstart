@@ -18,7 +18,7 @@ pub(crate) mod tests {
             firmware: span(0xffe80000, 0x180000),
             bootstrap_ram: span(0x100000, 0x3ff00000),
             bootblock: StageReservation {
-                image: span(0xfffc0000, 0x40000),
+                image: span(0xffe80000, 0x180000),
                 writable: span(0xfef00000, 0x80000),
                 stack: 0x2000,
                 heap: 0,
@@ -43,7 +43,7 @@ pub(crate) mod tests {
     #[test]
     fn stages_keep_fixed_budgets_and_distinct_wire_identities() {
         let config = candidate();
-        assert_eq!(config.filesystem_capacity().unwrap(), 0x140000);
+        assert_eq!(config.bootblock.image, config.firmware);
         for (index, role) in [
             IntelStage::Bootblock,
             IntelStage::Postcar,

@@ -146,17 +146,27 @@ Linker, ELF and format helpers are selected by platform Rust, not by family
 matches in fbuild. `resolved-build.json` is a diagnostic projection, never another
 editable configuration source.
 
-1. Allocate fixed capacities/reservations before compiling; serialize each stage's
-   runtime subset. Capacity covers image/BSS, stack and heap subranges.
+1. Allocate fixed **runtime** capacities/reservations before compiling; serialize
+   each stage's runtime subset. Capacity covers image/BSS, stack and heap
+   subranges. Physical flash banks/BIOS partitions are storage policy, not
+   preallocated per-file slots.
 2. Emit the linker script from the same value, including entry symbols, layout
    bytes and `ASSERT` checks for section/reservation budgets.
 3. Compile the stage and validate actual ELF load/section ranges against the plan.
 4. Assemble with the same plan and check compressed/uncompressed and partition
    limits. Oversized stages fail; they are not silently relocated.
 
-There is no build-size cycle: reserved ranges are known before linking, while
-actual file offsets are finalized by the existing assembler. No geometry inferred
-from a first-stage address, duplicated Rust constants or growing env protocol.
+Intel XIP placement uses single-link section-size arithmetic at the BIOS top;
+RAM-stage initialized data is compact, with BSS/heap/stack protected separately.
+The assembler measures actual artifacts and packs files using compression and
+alignment, rejecting partition overflow. No fixed bootblock budget is subtracted
+from filesystem capacity. This corrects the earlier fixed-storage interpretation;
+it does not change runtime protection or restore the removed metadata resolver.
+
+Linking needs no measure/relink cycle. The existing compressed-anchor finalization
+loop is a separate unresolved dependency cycle, not evidence of acyclic signing.
+Its removal requires auditing locator/trust consumers; do not confuse packed
+storage with that later authentication-format correction.
 
 ### Linker-embedded descriptor
 

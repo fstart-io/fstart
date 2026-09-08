@@ -309,7 +309,6 @@ fn execute(
         UnitOutput::Executable {
             expectations,
             flat_capacity,
-            flat_exact_size,
             ..
         } => {
             let executables = messages
@@ -331,8 +330,8 @@ fn execute(
             let flat = selection.directory.join("stage.bin");
             crate::build_board::write_flat_binary(&elf, &flat)?;
             let size = fs::metadata(&flat).map_err(|e| e.to_string())?.len();
-            if size > *flat_capacity || (*flat_exact_size && size != *flat_capacity) {
-                return Err("flat image differs from fixed reservation".into());
+            if size > *flat_capacity {
+                return Err("flat image exceeds its load window".into());
             }
             Ok(BTreeMap::from([("elf".into(), elf), ("flat".into(), flat)]))
         }
