@@ -149,7 +149,7 @@ fn launch_linux(params: &fstart_core::services::BootLinuxParams<'_>) -> ! {
 }
 
 /// Small platform context consumed by the AArch64 UEFI payload launcher.
-#[cfg(all(feature = "crabefi", feature = "aarch64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "aarch64"))]
 #[derive(Debug, Clone, Copy)]
 pub struct Aarch64UefiPayloadConfig {
     pub flash_base: u64,
@@ -160,10 +160,10 @@ pub struct Aarch64UefiPayloadConfig {
     pub firmware_addr: u64,
     pub ram_base: u64,
     pub ram_size: u64,
-    pub ecam_base: u64,
+    pub pci_root: Option<fstart_pci::PciRootInfo>,
 }
 
-#[cfg(all(feature = "crabefi", feature = "aarch64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "aarch64"))]
 impl Aarch64UefiPayloadConfig {
     #[must_use]
     pub const fn new(
@@ -175,7 +175,7 @@ impl Aarch64UefiPayloadConfig {
         firmware_addr: u64,
         ram_base: u64,
         ram_size: u64,
-        ecam_base: u64,
+        pci_root: Option<fstart_pci::PciRootInfo>,
     ) -> Self {
         Self {
             flash_base,
@@ -186,23 +186,23 @@ impl Aarch64UefiPayloadConfig {
             firmware_addr,
             ram_base,
             ram_size,
-            ecam_base,
+            pci_root,
         }
     }
 }
 
 /// Platform context source for the AArch64 UEFI payload launcher.
-#[cfg(all(feature = "crabefi", feature = "aarch64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "aarch64"))]
 pub trait Aarch64UefiPayloadContext {
     fn aarch64_uefi_payload_context(&self) -> Aarch64UefiPayloadConfig;
     fn console(&self) -> &dyn fstart_core::services::Console;
 }
 
 /// AArch64 UEFI launcher for a memory-mapped FFS and BL31.
-#[cfg(all(feature = "crabefi", feature = "aarch64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "aarch64"))]
 pub struct Aarch64UefiPayload;
 
-#[cfg(all(feature = "crabefi", feature = "aarch64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "aarch64"))]
 impl<D: Aarch64UefiPayloadContext> MainstagePayload<D> for Aarch64UefiPayload {
     fn boot(devices: D) -> ! {
         use crate::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
@@ -230,19 +230,12 @@ impl<D: Aarch64UefiPayloadContext> MainstagePayload<D> for Aarch64UefiPayload {
         fstart_arch::aarch64::boot_bl31_and_resume(entry, boot.fdt_addr());
         fstart_log::info!("aarch64 uefi: BL31 returned, launching CrabEFI");
 
-        let runtime_region = crate::crabefi::compute_runtime_region();
-        let static_entries = [
-            MemoryRegion {
-                base: config.flash_base,
-                size: config.flash_size,
-                region_type: MemoryType::Reserved,
-            },
-            MemoryRegion {
-                base: runtime_region.code_base,
-                size: runtime_region.code_size,
-                region_type: MemoryType::RuntimeServicesCode,
-            },
-        ];
+        let ecam = uefi_ecam(config.pci_root);
+        let static_entries = [MemoryRegion {
+            base: config.flash_base,
+            size: config.flash_size,
+            region_type: MemoryType::Reserved,
+        }];
         crate::crabefi::launch_flat_uefi(
             UefiLaunchConfig {
                 console: Some(devices.console()),
@@ -250,20 +243,18 @@ impl<D: Aarch64UefiPayloadContext> MainstagePayload<D> for Aarch64UefiPayload {
                 acpi_rsdp: None,
                 smbios: None,
                 fdt,
-                ecam_base: Some(config.ecam_base),
-                runtime_region: Some(runtime_region),
+                ecam_regions: ecam.as_slice(),
             },
             &static_entries,
             config.ram_base,
             config.ram_size,
-            runtime_region,
             fdt_reservation,
         )
     }
 }
 
 /// Small platform context consumed by the RISC-V UEFI payload launcher.
-#[cfg(all(feature = "crabefi", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
 #[derive(Debug, Clone, Copy)]
 pub struct Riscv64UefiPayloadConfig {
     pub firmware_base: u64,
@@ -273,10 +264,10 @@ pub struct Riscv64UefiPayloadConfig {
     pub dtb_addr: u64,
     pub ram_base: u64,
     pub ram_size: u64,
-    pub ecam_base: u64,
+    pub pci_root: Option<fstart_pci::PciRootInfo>,
 }
 
-#[cfg(all(feature = "crabefi", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
 impl Riscv64UefiPayloadConfig {
     #[must_use]
     pub const fn new(
@@ -287,7 +278,7 @@ impl Riscv64UefiPayloadConfig {
         dtb_addr: u64,
         ram_base: u64,
         ram_size: u64,
-        ecam_base: u64,
+        pci_root: Option<fstart_pci::PciRootInfo>,
     ) -> Self {
         Self {
             firmware_base,
@@ -297,23 +288,23 @@ impl Riscv64UefiPayloadConfig {
             dtb_addr,
             ram_base,
             ram_size,
-            ecam_base,
+            pci_root,
         }
     }
 }
 
 /// Platform context source for the RISC-V UEFI payload launcher.
-#[cfg(all(feature = "crabefi", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
 pub trait Riscv64UefiPayloadContext {
     fn riscv64_uefi_payload_context(&self) -> Riscv64UefiPayloadConfig;
     fn console(&self) -> &dyn fstart_core::services::Console;
 }
 
 /// RISC-V UEFI launcher using OpenSBI for the S-mode transition.
-#[cfg(all(feature = "crabefi", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
 pub struct Riscv64UefiPayload;
 
-#[cfg(all(feature = "crabefi", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
 impl Riscv64UefiPayload {
     /// Load OpenSBI, then ask it to resume the board-selected S-mode entry.
     pub fn boot<D: Riscv64UefiPayloadContext>(devices: D) -> ! {
@@ -381,13 +372,8 @@ impl Riscv64UefiPayload {
             fdt.map(|bytes| (config.dtb_addr, (bytes.len() as u64 + 0xfff) & !0xfff));
         crate::crabefi::set_riscv_boot_hartid(hart_id);
 
-        let runtime_region = crate::crabefi::compute_runtime_region();
+        let ecam = uefi_ecam(config.pci_root);
         let static_entries = [
-            MemoryRegion {
-                base: runtime_region.code_base,
-                size: runtime_region.code_size,
-                region_type: MemoryType::RuntimeServicesCode,
-            },
             MemoryRegion {
                 base: config.firmware_addr,
                 size: config.firmware_reserve_size,
@@ -409,11 +395,6 @@ impl Riscv64UefiPayload {
                 region_type: MemoryType::Mmio,
             },
             MemoryRegion {
-                base: config.ecam_base,
-                size: 0x1000_0000,
-                region_type: MemoryType::Mmio,
-            },
-            MemoryRegion {
                 base: 0x4000_0000,
                 size: 0x4000_0000,
                 region_type: MemoryType::Mmio,
@@ -426,19 +407,17 @@ impl Riscv64UefiPayload {
                 acpi_rsdp: None,
                 smbios: None,
                 fdt,
-                ecam_base: Some(config.ecam_base),
-                runtime_region: Some(runtime_region),
+                ecam_regions: ecam.as_slice(),
             },
             &static_entries,
             config.ram_base,
             config.ram_size,
-            runtime_region,
             fdt_reservation,
         )
     }
 }
 
-#[cfg(all(feature = "crabefi", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
 impl<D: Riscv64UefiPayloadContext> MainstagePayload<D> for Riscv64UefiPayload {
     fn boot(devices: D) -> ! {
         Self::boot(devices)
@@ -446,23 +425,23 @@ impl<D: Riscv64UefiPayloadContext> MainstagePayload<D> for Riscv64UefiPayload {
 }
 
 /// Payload launcher selected by fbuild features.
-#[cfg(all(feature = "crabefi", feature = "aarch64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "aarch64"))]
 pub type BuildSelectedPayload = Aarch64UefiPayload;
 
 /// Payload launcher selected by fbuild features.
-#[cfg(all(feature = "crabefi", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
 pub type BuildSelectedPayload = Riscv64UefiPayload;
 
 /// Payload launcher selected by fbuild features.
-#[cfg(all(feature = "crabefi", feature = "x86_64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "x86_64"))]
 pub type BuildSelectedPayload = X86UefiPayload;
 
 /// Payload launcher selected by fbuild features.
-#[cfg(all(not(feature = "crabefi"), feature = "linux"))]
+#[cfg(all(not(feature = "crabefi-basic"), feature = "linux"))]
 pub type BuildSelectedPayload = LinuxPayload;
 
 /// Payload launcher used when fbuild selected no payload backend.
-#[cfg(all(not(feature = "crabefi"), not(feature = "linux")))]
+#[cfg(all(not(feature = "crabefi-basic"), not(feature = "linux")))]
 pub type BuildSelectedPayload = HaltPayload;
 
 /// Device context needed by the common x86 CrabEFI launcher.
@@ -471,7 +450,7 @@ pub trait X86UefiPayloadContext {
     fn console(&self) -> Option<&dyn fstart_core::services::Console>;
     /// Return the detected x86 memory map.
     fn e820(&self) -> &[E820Entry];
-    /// Return the firmware image region to reserve for runtime services.
+    /// Return the firmware media region to keep out of RAM allocation.
     fn firmware_region(&self) -> (u64, u64);
     /// Return the ACPI RSDP physical address, if ACPI was emitted.
     fn acpi_rsdp(&self) -> Option<u64>;
@@ -479,15 +458,15 @@ pub trait X86UefiPayloadContext {
     fn smbios(&self) -> Option<u64> {
         None
     }
-    /// Return the PCI ECAM base, if the platform has one.
-    fn ecam_base(&self) -> Option<u64>;
+    /// Return the actual PCI ECAM segment/bus bounds, if available.
+    fn pci_root(&self) -> Option<fstart_pci::PciRootInfo>;
 }
 
 /// Common x86 CrabEFI payload launcher.
-#[cfg(all(feature = "crabefi", feature = "x86_64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "x86_64"))]
 pub struct X86UefiPayload;
 
-#[cfg(all(feature = "crabefi", feature = "x86_64"))]
+#[cfg(all(feature = "crabefi-basic", feature = "x86_64"))]
 impl<D> MainstagePayload<D> for X86UefiPayload
 where
     D: X86UefiPayloadContext,
@@ -501,7 +480,7 @@ where
             MemoryRegion {
                 base: firmware_base,
                 size: firmware_size,
-                region_type: MemoryType::RuntimeServicesCode,
+                region_type: MemoryType::Reserved,
             },
             MemoryRegion {
                 base: acpi_base,
@@ -510,6 +489,7 @@ where
             },
         ];
 
+        let ecam = uefi_ecam(devices.pci_root());
         crate::crabefi::launch_x86_uefi(
             UefiLaunchConfig {
                 console: devices.console(),
@@ -517,11 +497,20 @@ where
                 acpi_rsdp: devices.acpi_rsdp(),
                 smbios: devices.smbios(),
                 fdt: None,
-                ecam_base: devices.ecam_base(),
-                runtime_region: Some(crate::crabefi::compute_runtime_region()),
+                ecam_regions: ecam.as_slice(),
             },
             devices.e820(),
             &platform_entries,
         )
     }
+}
+
+#[cfg(feature = "crabefi-basic")]
+fn uefi_ecam(root: Option<fstart_pci::PciRootInfo>) -> Option<crate::crabefi::PciEcamRegion> {
+    root.map(|root| crate::crabefi::PciEcamRegion {
+        base: root.ecam_base,
+        segment: root.segment,
+        bus_start: root.bus_start,
+        bus_end: root.bus_end,
+    })
 }

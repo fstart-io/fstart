@@ -363,8 +363,14 @@ mod stage {
             self.acpi_rsdp
         }
 
-        fn ecam_base(&self) -> Option<u64> {
-            Some(self.config.hostbridge.ecam_base)
+        fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
+            let config = self.config.hostbridge;
+            Some(fstart_pci::PciRootInfo {
+                ecam_base: config.ecam_base,
+                segment: 0,
+                bus_start: config.bus_start,
+                bus_end: config.bus_end,
+            })
         }
     }
 

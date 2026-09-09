@@ -197,7 +197,7 @@ impl fstart_stage::payload::Aarch64UefiPayloadContext for QemuAarch64VirtMainsta
             self.region(RegionKind::PayloadFirmware).base,
             self.config.ram_base,
             self.ram_size(),
-            self.config.pci.ecam_base,
+            Some(fstart_pci::PciRootProvider::root_info(&self.config.pci)),
         )
     }
 

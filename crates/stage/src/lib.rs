@@ -9,7 +9,7 @@
 #[cfg(any(
     feature = "acpi",
     feature = "ffs",
-    feature = "crabefi",
+    feature = "crabefi-basic",
     feature = "smbios"
 ))]
 mod alloc;
@@ -34,7 +34,7 @@ mod loaded;
 #[cfg(feature = "bootstrap")]
 pub mod root;
 
-#[cfg(feature = "crabefi")]
+#[cfg(feature = "crabefi-basic")]
 pub use fstart_boot::crabefi;
 
 pub mod fixed_helpers;

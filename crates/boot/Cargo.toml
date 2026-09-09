@@ -7,7 +7,10 @@ license.workspace = true
 [features]
 default = []
 fit = ["dep:dtoolkit", "dep:heapless", "dep:fstart-crypto"]
-crabefi = ["dep:crabefi"]
+# Existing consumers retain the full capability set. Cargo features are additive:
+# combining full and basic always selects the full core and matching bundle.
+crabefi = ["crabefi-basic", "crabefi/full"]
+crabefi-basic = ["dep:crabefi"]
 std = ["fit", "fstart-crypto?/all"]
 sha2-digest = ["fit", "fstart-crypto?/sha2-digest"]
 sha3-digest = ["fit", "fstart-crypto?/sha3-digest"]
@@ -18,7 +21,7 @@ fstart-crypto = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 # Upstream split into a workspace; package `crabefi-core` keeps lib name `crabefi`.
-crabefi = { package = "crabefi-core", git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "2ab071995b4c137e7b316a0cb965bb5762898221", default-features = false, optional = true }
+crabefi = { package = "crabefi-core", git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "3368804307f77ac1a21d3ad4ec0eca2ca89eca1d", default-features = false, features = ["bundled-runtime-image", "variable-store"], optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 fstart-arch = { workspace = true, features = ["x86_64"] }

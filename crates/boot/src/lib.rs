@@ -5,5 +5,5 @@
 #[cfg(feature = "fit")]
 pub mod fit;
 
-#[cfg(feature = "crabefi")]
+#[cfg(feature = "crabefi-basic")]
 pub mod crabefi;

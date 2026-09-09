@@ -1,5 +1,6 @@
-//! Host-clean board facts. No stage budgets, linker addresses or Cargo relays.
-use fstart_core::FlashLayout;
+//! Host-clean hardware facts and explicit payload build policy.
+//! No stage budgets, linker addresses or Cargo relays.
+use fstart_core::{FlashLayout, board::UefiBuildProfile};
 
 /// Real chipset differences; common stage placement belongs to the family.
 #[derive(Debug, Clone, Copy)]
@@ -15,6 +16,8 @@ pub struct BoardFacts {
     pub flash_size: u32,
     pub max_cpus: u16,
     pub chipset: Chipset,
+    /// Requested payload capabilities, independent of hardware and persistence.
+    pub uefi_build_profile: UefiBuildProfile,
 }
 impl BoardFacts {
     pub const fn new(flash: FlashLayout, flash_size: u32, max_cpus: u16, chipset: Chipset) -> Self {
@@ -37,7 +40,13 @@ impl BoardFacts {
             flash_size,
             max_cpus,
             chipset,
+            uefi_build_profile: UefiBuildProfile::Full,
         }
+    }
+
+    pub const fn with_uefi_build_profile(mut self, profile: UefiBuildProfile) -> Self {
+        self.uefi_build_profile = profile;
+        self
     }
 }
 

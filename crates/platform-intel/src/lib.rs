@@ -459,7 +459,6 @@ impl<P, NB, SB, Hooks, C, AcpiContext> fstart_stage::payload::X86UefiPayloadCont
 where
     P: IntelEarlyPlatform<Southbridge = SB>,
     NB: IntelNorthbridgeDriver,
-    NB::Config: IntelEcamConfig,
     SB: IntelSouthbridgeDriver,
     Hooks: IntelEarlyBoardHooks<P>,
     C: ConsoleDevice,
@@ -481,8 +480,8 @@ where
         self.acpi_rsdp()
     }
 
-    fn ecam_base(&self) -> Option<u64> {
-        Some(self.northbridge.config().ecam_base())
+    fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
+        Some(fstart_pci::PciRootProvider::root_info(&self.northbridge))
     }
 }
 

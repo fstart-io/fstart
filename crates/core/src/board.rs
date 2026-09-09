@@ -157,6 +157,18 @@ pub struct BoardConfig {
     pub boot_hart_id: u32,
 }
 
+/// Requested UEFI payload build capabilities, not immutable hardware facts or
+/// a variable-persistence policy. Effective Cargo features remain additive:
+/// a full consumer unifies a basic request upward to the full runtime bundle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UefiBuildProfile {
+    /// Existing non-graphical CrabEFI capabilities.
+    #[default]
+    Full,
+    /// Normal runtime services without TPM, xHCI, UEFI Secure Boot or SPI tools.
+    Basic,
+}
+
 /// Board/platform-owned host build policy.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

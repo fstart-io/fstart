@@ -79,7 +79,8 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             FLASH_SIZE,
             D945GCLF_PLATFORM.max_cpus,
             fstart_platform_intel::facts::Chipset::I945Ich7,
-        );
+        )
+        .with_uefi_build_profile(fstart_core::board::UefiBuildProfile::Basic);
 }
 
 #[must_use]

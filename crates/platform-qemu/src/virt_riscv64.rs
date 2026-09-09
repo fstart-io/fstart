@@ -185,7 +185,7 @@ impl fstart_stage::payload::Riscv64UefiPayloadContext for QemuRiscv64VirtMainsta
             self.region(RegionKind::DeviceTree).base,
             self.config.ram_base,
             self.ram_size(),
-            self.config.pci.ecam_base,
+            Some(fstart_pci::PciRootProvider::root_info(&self.config.pci)),
         )
     }
     fn console(&self) -> &dyn Console {

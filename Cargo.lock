@@ -172,13 +172,13 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
 name = "cms"
-version = "0.2.3"
+version = "0.3.0-pre.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b77c319abfd5219629c45c34c89ba945ed3c5e49fcde9d16b6c3885f118a730"
+checksum = "986e7713348fbe5322df18082d73a0ad53a2946dbb7a02452cf3622b83b91e7c"
 dependencies = [
- "const-oid",
- "der",
- "spki",
+ "const-oid 0.10.2",
+ "der 0.8.2",
+ "spki 0.8.0",
  "x509-cert",
 ]
 
@@ -202,6 +202,12 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "const_fn"
@@ -230,37 +236,55 @@ dependencies = [
 [[package]]
 name = "crabefi-core"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=2ab071995b4c137e7b316a0cb965bb5762898221#2ab071995b4c137e7b316a0cb965bb5762898221"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=3368804307f77ac1a21d3ad4ec0eca2ca89eca1d#3368804307f77ac1a21d3ad4ec0eca2ca89eca1d"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.10.0",
  "cms",
- "const-oid",
- "der",
+ "const-oid 0.10.2",
+ "crabefi-efi-types",
+ "crabefi-runtime-abi",
+ "crabefi-runtime-bundle",
+ "der 0.8.2",
  "fdt",
- "heapless",
+ "heapless 0.9.3",
+ "linked_list_allocator",
  "log",
  "mem-barrier",
- "noto-sans-mono-bitmap",
  "object 0.39.1",
  "pci_types",
- "postcard",
  "r-efi",
  "rflasher-core",
  "rflasher-internal",
  "rsa",
- "serde",
  "sha1",
  "sha2",
- "signature",
- "spin",
- "spki",
+ "signature 3.0.0",
+ "spin 0.12.3",
  "tock-registers",
  "x509-cert",
  "x86_64",
  "xhci",
  "zerocopy",
 ]
+
+[[package]]
+name = "crabefi-efi-types"
+version = "0.1.0"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=3368804307f77ac1a21d3ad4ec0eca2ca89eca1d#3368804307f77ac1a21d3ad4ec0eca2ca89eca1d"
+dependencies = [
+ "zerocopy",
+]
+
+[[package]]
+name = "crabefi-runtime-abi"
+version = "0.1.0"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=3368804307f77ac1a21d3ad4ec0eca2ca89eca1d#3368804307f77ac1a21d3ad4ec0eca2ca89eca1d"
+
+[[package]]
+name = "crabefi-runtime-bundle"
+version = "0.1.0"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=3368804307f77ac1a21d3ad4ec0eca2ca89eca1d#3368804307f77ac1a21d3ad4ec0eca2ca89eca1d"
 
 [[package]]
 name = "crc32fast"
@@ -326,18 +350,27 @@ version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
- "const-oid",
+ "const-oid 0.9.6",
+ "zeroize",
+]
+
+[[package]]
+name = "der"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
+dependencies = [
+ "const-oid 0.10.2",
  "der_derive",
  "flagset",
- "pem-rfc7468",
  "zeroize",
 ]
 
 [[package]]
 name = "der_derive"
-version = "0.7.3"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
+checksum = "59600e2c2d636fde9b65e99cc6445ac770c63d3628195ff39932b8d6d7409903"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -351,7 +384,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
- "const-oid",
+ "const-oid 0.9.6",
  "crypto-common",
  "subtle",
 ]
@@ -374,11 +407,11 @@ version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee27f32b5c5292967d2d4a9d7f1e0b0aed2c15daded5a60300e4abb9d8020bca"
 dependencies = [
- "der",
+ "der 0.7.10",
  "digest",
  "elliptic-curve",
  "rfc6979",
- "signature",
+ "signature 2.2.0",
 ]
 
 [[package]]
@@ -388,7 +421,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
  "pkcs8",
- "signature",
+ "signature 2.2.0",
 ]
 
 [[package]]
@@ -432,12 +465,6 @@ checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
 
 [[package]]
 name = "embedded-io"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
-
-[[package]]
-name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
@@ -448,7 +475,7 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ff09972d4073aa8c299395be75161d582e7629cd663171d62af73c8d50dba3f"
 dependencies = [
- "embedded-io 0.6.1",
+ "embedded-io",
 ]
 
 [[package]]
@@ -465,7 +492,7 @@ dependencies = [
  "fstart-core",
  "fstart-image-build",
  "fstart-platform-qemu",
- "heapless",
+ "heapless 0.8.0",
  "object 0.37.3",
  "serde",
  "serde_json",
@@ -547,7 +574,7 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-crypto",
- "heapless",
+ "heapless 0.8.0",
 ]
 
 [[package]]
@@ -556,7 +583,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.10.0",
  "embedded-hal",
- "heapless",
+ "heapless 0.8.0",
  "serde",
  "tock-registers",
  "x86",
@@ -586,7 +613,7 @@ dependencies = [
  "fstart-log",
  "fstart-pci",
  "fstart-smm",
- "heapless",
+ "heapless 0.8.0",
  "serde",
  "tock-registers",
  "ufmt",
@@ -624,7 +651,7 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-core",
  "fstart-log",
- "heapless",
+ "heapless 0.8.0",
  "serde",
  "ufmt",
 ]
@@ -645,7 +672,7 @@ dependencies = [
  "ed25519-dalek",
  "fstart-core",
  "fstart-crypto",
- "heapless",
+ "heapless 0.8.0",
  "lz4_flex",
  "rand_core",
  "zerocopy",
@@ -679,7 +706,7 @@ name = "fstart-pci"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
- "heapless",
+ "heapless 0.8.0",
  "pci_types",
  "serde",
  "tock-registers",
@@ -701,7 +728,7 @@ dependencies = [
  "fstart-pci",
  "fstart-smm",
  "fstart-stage",
- "heapless",
+ "heapless 0.8.0",
  "konst",
  "serde",
  "serde_json",
@@ -720,7 +747,7 @@ dependencies = [
  "fstart-log",
  "fstart-pci",
  "fstart-stage",
- "heapless",
+ "heapless 0.8.0",
  "serde",
  "serde_json",
  "ufmt",
@@ -757,7 +784,8 @@ dependencies = [
  "fstart-crypto",
  "fstart-ffs",
  "fstart-log",
- "heapless",
+ "fstart-pci",
+ "heapless 0.8.0",
  "postcard",
  "ufmt",
 ]
@@ -831,6 +859,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "heapless"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -892,7 +930,7 @@ version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
- "spin",
+ "spin 0.9.8",
 ]
 
 [[package]]
@@ -906,6 +944,15 @@ name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
+name = "linked_list_allocator"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b23ac50abb8261cb38c6e2a7192d3302e0836dac1628f6a93b82b4fad185897"
+dependencies = [
+ "spinning_top",
+]
 
 [[package]]
 name = "lock_api"
@@ -953,12 +1000,6 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
-
-[[package]]
-name = "noto-sans-mono-bitmap"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc"
 
 [[package]]
 name = "num-bigint-dig"
@@ -1039,12 +1080,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "once_cell"
-version = "1.21.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
 name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1079,23 +1114,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "pem-rfc7468"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
-dependencies = [
- "base64ct",
-]
-
-[[package]]
 name = "pkcs1"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f"
 dependencies = [
- "der",
+ "der 0.7.10",
  "pkcs8",
- "spki",
+ "spki 0.7.3",
 ]
 
 [[package]]
@@ -1104,8 +1130,8 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
 dependencies = [
- "der",
- "spki",
+ "der 0.7.10",
+ "spki 0.7.3",
 ]
 
 [[package]]
@@ -1115,8 +1141,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
 dependencies = [
  "cobs",
- "embedded-io 0.4.0",
- "embedded-io 0.6.1",
  "serde",
 ]
 
@@ -1211,27 +1235,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "rflasher-core"
+name = "rflasher-chip-types"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=2f0b625865c0a530b3f151166be95319543e2aff#2f0b625865c0a530b3f151166be95319543e2aff"
+source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0#a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0"
 dependencies = [
  "bitflags 2.10.0",
- "embedded-io 0.6.1",
+ "heapless 0.8.0",
+]
+
+[[package]]
+name = "rflasher-core"
+version = "0.1.0"
+source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0#a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0"
+dependencies = [
+ "bitflags 2.10.0",
+ "embedded-io",
  "embedded-io-async",
- "heapless",
  "log",
  "maybe-async",
- "once_cell",
+ "rflasher-chip-types",
  "zerocopy",
 ]
 
 [[package]]
 name = "rflasher-internal"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=2f0b625865c0a530b3f151166be95319543e2aff#2f0b625865c0a530b3f151166be95319543e2aff"
+source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0#a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0"
 dependencies = [
  "log",
  "rflasher-core",
+ "rflasher-pci",
+]
+
+[[package]]
+name = "rflasher-pci"
+version = "0.1.0"
+source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0#a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0"
+dependencies = [
+ "pci_types",
 ]
 
 [[package]]
@@ -1240,7 +1281,7 @@ version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8573f03f5883dcaebdfcf4725caa1ecb9c15b2ef50c43a07b816e06799bb12d"
 dependencies = [
- "const-oid",
+ "const-oid 0.9.6",
  "digest",
  "num-bigint-dig",
  "num-integer",
@@ -1248,8 +1289,8 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core",
- "signature",
- "spki",
+ "signature 2.2.0",
+ "spki 0.7.3",
  "subtle",
  "zeroize",
 ]
@@ -1282,7 +1323,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
 dependencies = [
  "base16ct",
- "der",
+ "der 0.7.10",
  "generic-array",
  "subtle",
  "zeroize",
@@ -1389,6 +1430,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "signature"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
+
+[[package]]
 name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1399,6 +1446,21 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+
+[[package]]
+name = "spin"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
+dependencies = [
+ "lock_api",
+]
+
+[[package]]
+name = "spinning_top"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b9eb1a2f4c41445a3a0ff9abc5221c5fcd28e1f13cd7c0397706f9ac938ddb0"
 dependencies = [
  "lock_api",
 ]
@@ -1410,7 +1472,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
- "der",
+ "der 0.7.10",
+]
+
+[[package]]
+name = "spki"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f"
+dependencies = [
+ "base64ct",
+ "der 0.8.2",
 ]
 
 [[package]]
@@ -1616,13 +1688,13 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "x509-cert"
-version = "0.2.5"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
+checksum = "105ef4642d9cb137ef83d623d0e4bf08b8adf69e9918ca904a174adb6d3d038b"
 dependencies = [
- "const-oid",
- "der",
- "spki",
+ "const-oid 0.10.2",
+ "der 0.8.2",
+ "spki 0.8.0",
 ]
 
 [[package]]

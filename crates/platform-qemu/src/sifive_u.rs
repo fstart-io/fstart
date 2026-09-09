@@ -310,7 +310,9 @@ mod stage {
                 config.dtb_addr,
                 config.ram_base,
                 config.ram_size,
-                0x3000_0000,
+                // No described PCI root: let CrabEFI inspect the firmware FDT,
+                // rather than inventing bus bounds from a bare ECAM address.
+                None,
             )
         }
 

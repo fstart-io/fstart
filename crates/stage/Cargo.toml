@@ -53,12 +53,14 @@ acpi = []
 smbios = []
 # CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
 # Requires the local stage allocator.
-crabefi = ["bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi"]
+crabefi = ["crabefi-basic", "fstart-boot/crabefi"]
+crabefi-basic = ["bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi-basic"]
 
 [dependencies]
 # Core firmware infrastructure
 fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
+fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 heapless = { workspace = true }

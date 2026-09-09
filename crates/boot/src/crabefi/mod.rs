@@ -8,11 +8,14 @@
 
 use core::{cell::Cell, fmt};
 
+mod runtime;
+use runtime::{EMPTY_REGION, firmware_reservations, runtime_platform_config};
+
 // Type aliases used by board-owned UEFI payload configuration.
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
-pub type RuntimeRegion = crabefi::RuntimeRegion;
+pub use crabefi::{PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, StorageBackend};
 
 /// fstart-owned UEFI payload configuration.
 ///
@@ -27,8 +30,9 @@ pub struct PlatformConfig<'a> {
     pub reset: &'a dyn crabefi::ResetHandler,
     /// Block devices to expose to EFI.
     pub block_devices: &'a mut [&'a mut dyn crabefi::BlockDevice],
-    /// Variable persistence backend.
-    pub variable_backend: Option<&'a mut dyn crabefi::VariableBackend>,
+    /// Optional bounded, boot-lifetime variable region. None is explicitly
+    /// volatile; this adapter never discovers or unlocks whole-chip flash.
+    pub variable_storage: Option<&'a mut dyn StorageBackend>,
     /// Debug/log output.
     pub debug_output: Option<&'a mut dyn crabefi::DebugOutput>,
     /// Console input.
@@ -43,10 +47,11 @@ pub struct PlatformConfig<'a> {
     pub fdt: Option<&'a [u8]>,
     /// Hardware random number generator.
     pub rng: Option<&'a dyn crabefi::Rng>,
-    /// PCI ECAM base address.
-    pub ecam_base: Option<u64>,
-    /// Runtime-services code/data region.
-    pub runtime_region: Option<RuntimeRegion>,
+    /// Actual PCI ECAM segment/bus bounds (empty enables ACPI/FDT discovery).
+    pub ecam_regions: &'a [PciEcamRegion],
+    /// Normalized separate runtime image and value-only platform mechanisms.
+    pub runtime_image: RuntimeImageSource<'a>,
+    pub runtime: RuntimePlatformConfig<'a>,
     /// Whether CrabEFI heap/environment initialization already ran.
     pub heap_pre_initialized: bool,
 }
@@ -63,38 +68,38 @@ pub struct UefiLaunchConfig<'a> {
     pub smbios: Option<u64>,
     /// Flattened Device Tree blob.
     pub fdt: Option<&'a [u8]>,
-    /// PCI ECAM base address.
-    pub ecam_base: Option<u64>,
-    /// Runtime-services code/data region.
-    pub runtime_region: Option<RuntimeRegion>,
+    /// Actual PCI ECAM segment/bus bounds (empty enables ACPI/FDT discovery).
+    pub ecam_regions: &'a [PciEcamRegion],
 }
 
 fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
     enable_payload_cpu_features();
+    // The builder owns conditional fields (including TPM) under CrabEFI's
+    // effective Cargo features, not the profile originally requested by a host.
+    let defaults = crabefi::PlatformConfigBuilder::new(
+        config.memory_map,
+        config.timer,
+        config.reset,
+        config.block_devices,
+        config.runtime_image,
+        config.runtime,
+    )
+    .heap_pre_initialized(config.heap_pre_initialized)
+    .build();
     crabefi::init_platform(crabefi::PlatformConfig {
-        memory_map: config.memory_map,
-        timer: config.timer,
-        timestamp_recorder: None,
-        reset: config.reset,
-        block_devices: config.block_devices,
-        variable_backend: config.variable_backend,
-        variable_store_locator: None,
+        variable_storage: config.variable_storage.map_or(
+            crabefi::VariableStorage::None,
+            crabefi::VariableStorage::Platform,
+        ),
         debug_output: config.debug_output,
         console_input: config.console_input,
         framebuffer: config.framebuffer,
         acpi_rsdp: config.acpi_rsdp,
         smbios: config.smbios,
         fdt: config.fdt,
-        firmware_info: None,
-        capsule_regions: &[],
-        hooks: None,
         rng: config.rng,
-        ecam_base: config.ecam_base,
-        ecam_size: None,
-        deferred_buffer: None,
-        runtime_region: config.runtime_region,
-        tpm_event_log: None,
-        heap_pre_initialized: config.heap_pre_initialized,
+        ecam_regions: config.ecam_regions,
+        ..defaults
     })
 }
 
@@ -124,8 +129,10 @@ pub fn launch_x86_uefi(
         size: 0,
         region_type: MemoryType::Reserved,
     }; 64];
+    let mut reserved = [EMPTY_REGION; 16];
+    let count = collect_firmware_reservations(platform_entries, &mut reserved);
     let memory_map_len =
-        build_efi_memory_map_from_e820(e820, 0, 0, 0, 0, platform_entries, &mut memory_map_buf);
+        build_efi_memory_map_from_e820(e820, &reserved[..count], &mut memory_map_buf);
     let memory_map = &memory_map_buf[..memory_map_len];
     launch_with_adapters(launch, memory_map, &timer, &reset, Some(&rng))
 }
@@ -136,7 +143,6 @@ pub fn launch_flat_uefi(
     static_entries: &[MemoryRegion],
     ram_base: u64,
     ram_size: u64,
-    runtime_region: RuntimeRegion,
     fdt_reservation: Option<(u64, u64)>,
 ) -> ! {
     #[cfg(not(target_arch = "riscv64"))]
@@ -152,7 +158,6 @@ pub fn launch_flat_uefi(
         static_entries,
         ram_base,
         ram_size,
-        runtime_region,
         fdt_reservation,
         &mut memory_map_buf,
     );
@@ -180,46 +185,41 @@ fn launch_with_adapters(
     rng: Option<&dyn crabefi::Rng>,
 ) -> ! {
     let mut block_devices: [&mut dyn crabefi::BlockDevice; 0] = [];
-    match launch.console {
-        Some(console) => {
-            let mut debug_output = ConsoleAdapter::new(console);
-            let mut console_input = ConsoleAdapter::new(console);
-            init_platform_raw(PlatformConfig {
-                memory_map,
-                timer,
-                reset,
-                block_devices: &mut block_devices,
-                variable_backend: None,
-                debug_output: Some(&mut debug_output),
-                console_input: Some(&mut console_input),
-                framebuffer: launch.framebuffer,
-                acpi_rsdp: launch.acpi_rsdp,
-                smbios: launch.smbios,
-                fdt: launch.fdt,
-                rng,
-                ecam_base: launch.ecam_base,
-                runtime_region: launch.runtime_region,
-                heap_pre_initialized: false,
-            })
-        }
-        None => init_platform_raw(PlatformConfig {
-            memory_map,
-            timer,
-            reset,
-            block_devices: &mut block_devices,
-            variable_backend: None,
-            debug_output: None,
-            console_input: None,
-            framebuffer: launch.framebuffer,
-            acpi_rsdp: launch.acpi_rsdp,
-            smbios: launch.smbios,
-            fdt: launch.fdt,
-            rng,
-            ecam_base: launch.ecam_base,
-            runtime_region: launch.runtime_region,
-            heap_pre_initialized: false,
-        }),
+    let mut debug_output = launch.console.map(ConsoleAdapter::new);
+    let mut console_input = launch.console.map(ConsoleAdapter::new);
+    if let Some(output) = debug_output.as_mut() {
+        b"fstart: CrabEFI variables have no persistent backend or retained journal\r\n"
+            .iter()
+            .for_each(|byte| crabefi::DebugOutput::write_byte(output, *byte));
+        #[cfg(not(target_arch = "x86_64"))]
+        b"fstart: runtime wall-clock unsupported; no RTC runtime MMIO mapping\r\n"
+            .iter()
+            .for_each(|byte| crabefi::DebugOutput::write_byte(output, *byte));
     }
+    init_platform_raw(PlatformConfig {
+        memory_map,
+        timer,
+        reset,
+        block_devices: &mut block_devices,
+        variable_storage: None,
+        debug_output: debug_output
+            .as_mut()
+            .map(|d| d as &mut dyn crabefi::DebugOutput),
+        console_input: console_input
+            .as_mut()
+            .map(|c| c as &mut dyn crabefi::ConsoleInput),
+        framebuffer: launch.framebuffer,
+        acpi_rsdp: launch.acpi_rsdp,
+        smbios: launch.smbios,
+        fdt: launch.fdt,
+        rng,
+        ecam_regions: launch.ecam_regions,
+        // This constant follows the effective dependency features, including
+        // full/basic unification. The loader checks ABI and exact capabilities.
+        runtime_image: crabefi::BUNDLED_RUNTIME_IMAGE,
+        runtime: runtime_platform_config(),
+        heap_pre_initialized: false,
+    })
 }
 
 /// Enable architectural CPU features expected by common UEFI applications.
@@ -362,130 +362,59 @@ pub unsafe fn fdt_page_aligned_size(fdt_addr: u64) -> u64 {
     (total + 0xFFF) & !0xFFF // page-align up
 }
 
-/// Build the EFI memory map with linker-defined runtime regions carved out.
+/// Build the EFI map without exposing boot firmware or the FDT as allocatable
+/// RAM. The separate runtime loader owns runtime-code/data reservations.
 pub fn build_efi_memory_map(
     static_entries: &[MemoryRegion],
     ram_base: u64,
     ram_size: u64,
-    runtime_region: RuntimeRegion,
     fdt_reservation: Option<(u64, u64)>,
     buf: &mut [MemoryRegion],
 ) -> usize {
-    let mut idx = 0;
-    let ram_end = ram_base + ram_size;
-    let mut holes = [(0, 0); 16];
-    let mut hole_count = 0;
-
-    for entry in static_entries {
-        buf[idx] = *entry;
-        idx += 1;
-        if entry.region_type != MemoryType::Ram
-            && entry.base < ram_end
-            && entry.base + entry.size > ram_base
-        {
-            holes[hole_count] = (entry.base, entry.base + entry.size);
-            hole_count += 1;
-        }
-    }
-
+    let mut reserved = [EMPTY_REGION; 16];
+    let mut count = collect_firmware_reservations(static_entries, &mut reserved);
     if let Some((base, size)) = fdt_reservation.filter(|(_, size)| *size > 0) {
-        buf[idx] = MemoryRegion {
+        reserved[count] = MemoryRegion {
             base,
             size,
             region_type: MemoryType::Reserved,
         };
-        idx += 1;
-        holes[hole_count] = (base, base + size);
-        hole_count += 1;
+        count += 1;
     }
-
-    buf[idx] = MemoryRegion {
-        base: runtime_region.data_base,
-        size: runtime_region.data_size,
-        region_type: MemoryType::RuntimeServicesData,
+    let ram = E820Entry {
+        addr: ram_base,
+        size: ram_size,
+        kind: 1,
     };
-    idx += 1;
-    holes[hole_count] = (
-        runtime_region.data_base,
-        runtime_region.data_base + runtime_region.data_size,
-    );
-    hole_count += 1;
-
-    // A tiny insertion sort keeps free ranges ordered without allocation.
-    for i in 1..hole_count {
-        let hole = holes[i];
-        let mut j = i;
-        while j > 0 && holes[j - 1].0 > hole.0 {
-            holes[j] = holes[j - 1];
-            j -= 1;
-        }
-        holes[j] = hole;
-    }
-
-    let mut cursor = ram_base;
-    for &(start, end) in holes.iter().take(hole_count) {
-        let start = start.max(ram_base).max(cursor);
-        let end = end.min(ram_end);
-        if cursor < start {
-            buf[idx] = MemoryRegion {
-                base: cursor,
-                size: start - cursor,
-                region_type: MemoryType::Ram,
-            };
-            idx += 1;
-        }
-        cursor = cursor.max(end);
-    }
-    if cursor < ram_end {
-        buf[idx] = MemoryRegion {
-            base: cursor,
-            size: ram_end - cursor,
-            region_type: MemoryType::Ram,
-        };
-        idx += 1;
-    }
-
-    idx
+    build_efi_memory_map_from_e820(&[ram], &reserved[..count], buf)
 }
 
 // Re-export types used by the CrabEFI adapter.
 pub use fstart_core::services::memory_detect::E820Entry;
 
-/// Compute the runtime memory region from linker-provided symbols.
-///
-/// Splits fstart's memory into code (RuntimeServicesCode) and data
-/// (RuntimeServicesData) so the OS kernel can mark them with the
-/// correct page protections after ExitBootServices.
-///
-/// Uses `_text_start`, `_text_end`, `_data_start`, and `_writable_end` linker symbols.
-/// All boundaries are page-aligned (4 KiB). `_data_start.._writable_end`
-/// covers the stage-owned writable footprint, including XIP layouts where
-/// writable data lives in RAM.
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "riscv64"
-))]
-pub fn compute_runtime_region() -> RuntimeRegion {
-    unsafe extern "C" {
-        static _text_start: u8;
-        static _text_end: u8;
-        static _data_start: u8;
-        static _writable_end: u8;
+fn collect_firmware_reservations(entries: &[MemoryRegion], buf: &mut [MemoryRegion]) -> usize {
+    let firmware = firmware_reservations();
+    let mut count = 0;
+    for entry in entries
+        .iter()
+        .chain(&firmware)
+        .filter(|entry| entry.size != 0)
+    {
+        let end = entry
+            .base
+            .checked_add(entry.size)
+            .expect("memory region overflow");
+        if buf[..count].iter().any(|previous| {
+            previous.region_type == entry.region_type
+                && previous.base <= entry.base
+                && previous.base + previous.size >= end
+        }) {
+            continue;
+        }
+        buf[count] = *entry;
+        count += 1;
     }
-    const PAGE: u64 = 0x1000;
-    // SAFETY: these are linker-defined symbols — their addresses (not
-    // values) delimit the stage's text and writable image regions.
-    let code_base = unsafe { &_text_start as *const u8 as u64 } & !(PAGE - 1);
-    let code_end = (unsafe { &_text_end as *const u8 as u64 } + PAGE - 1) & !(PAGE - 1);
-    let data_base = unsafe { &_data_start as *const u8 as u64 } & !(PAGE - 1);
-    let data_end = (unsafe { &_writable_end as *const u8 as u64 } + PAGE - 1) & !(PAGE - 1);
-    RuntimeRegion {
-        code_base,
-        code_size: code_end - code_base,
-        data_base,
-        data_size: data_end - data_base,
-    }
+    count
 }
 
 // ---------------------------------------------------------------------------
@@ -815,28 +744,20 @@ impl crabefi::Rng for X86Rng {
 
 /// Build an EFI memory map from e820 entries, carving out firmware regions.
 ///
-/// Converts e820 type codes to EFI memory types, adds ROM as
-/// `RuntimeServicesCode`, and splits RAM regions that overlap with the
-/// firmware's BSS/stack areas (marked as `RuntimeServicesData`).
+/// Converts e820 type codes and carves platform/boot-firmware reservations
+/// out of RAM. Only CrabEFI's separate loader allocates runtime code/data.
 ///
 /// Returns the number of entries written to `buf`.
 ///
 /// # Arguments
 ///
 /// - `e820`: slice of e820 entries from MemoryDetect
-/// - `fw_data_addr`: start of firmware BSS/data in RAM
-/// - `fw_data_size`: size of firmware BSS/data/heap region
-/// - `fw_stack_addr`: start of firmware stack (grows down from here)
-/// - `fw_stack_size`: size of firmware stack
-/// - `rom_entries`: static ROM entries (flash as RuntimeServicesCode)
+/// - `rom_entries`: platform and firmware reservations
 /// - `buf`: output buffer for EFI memory regions
-#[allow(clippy::too_many_arguments)]
+///
+/// Panics if bounded buffers cannot represent the map; never drops a reservation.
 pub fn build_efi_memory_map_from_e820(
     e820: &[E820Entry],
-    fw_data_addr: u64,
-    fw_data_size: u64,
-    fw_stack_addr: u64,
-    fw_stack_size: u64,
     rom_entries: &[MemoryRegion],
     buf: &mut [MemoryRegion],
 ) -> usize {
@@ -856,24 +777,13 @@ pub fn build_efi_memory_map_from_e820(
         if overlaps_ram || overlaps_non_ram {
             continue;
         }
-        if idx >= buf.len() {
-            break;
-        }
         buf[idx] = *entry;
         idx += 1;
     }
 
-    // 2. Firmware reserved regions (BSS/data/heap + stack).
-    let fw_data_end = fw_data_addr + fw_data_size;
-    let fw_stack_bottom = fw_stack_addr;
-    let fw_stack_top = fw_stack_addr + fw_stack_size;
-
-    // 3. Convert e820 entries, splitting RAM that overlaps firmware or
+    // 2. Convert e820 entries, splitting RAM that overlaps firmware or
     // platform table allocations (ACPI/SMBIOS) supplied as static entries.
     for e in e820 {
-        if idx >= buf.len() {
-            break;
-        }
         let region_type = match e.kind {
             1 => MemoryType::Ram,
             2 => MemoryType::Reserved,
@@ -896,31 +806,10 @@ pub fn build_efi_memory_map_from_e820(
         let r_start = e.addr;
         let r_end = e.addr + e.size;
 
-        let mut holes: [(u64, u64, MemoryType); 8] = [(0, 0, MemoryType::Reserved); 8];
+        let mut holes: [(u64, u64, MemoryType); 16] = [(0, 0, MemoryType::Reserved); 16];
         let mut n_holes = 0;
 
-        if fw_data_addr < r_end && fw_data_end > r_start && n_holes < holes.len() {
-            let h_start = fw_data_addr.max(r_start);
-            let h_end = fw_data_end.min(r_end);
-            if h_start < h_end {
-                holes[n_holes] = (h_start, h_end, MemoryType::RuntimeServicesData);
-                n_holes += 1;
-            }
-        }
-
-        if fw_stack_bottom < r_end && fw_stack_top > r_start && n_holes < holes.len() {
-            let h_start = fw_stack_bottom.max(r_start);
-            let h_end = fw_stack_top.min(r_end);
-            if h_start < h_end {
-                holes[n_holes] = (h_start, h_end, MemoryType::RuntimeServicesData);
-                n_holes += 1;
-            }
-        }
-
         for entry in rom_entries {
-            if n_holes >= holes.len() {
-                break;
-            }
             let h_start = entry.base.max(r_start);
             let h_end = entry.base.saturating_add(entry.size).min(r_end);
             if h_start < h_end {
@@ -939,7 +828,7 @@ pub fn build_efi_memory_map_from_e820(
 
         let mut cursor = r_start;
         for &(h_start, h_end, h_type) in holes.iter().take(n_holes) {
-            if cursor < h_start && idx < buf.len() {
+            if cursor < h_start {
                 buf[idx] = MemoryRegion {
                     base: cursor,
                     size: h_start - cursor,
@@ -948,7 +837,7 @@ pub fn build_efi_memory_map_from_e820(
                 idx += 1;
             }
 
-            if h_end > cursor && idx < buf.len() {
+            if h_end > cursor {
                 let start = h_start.max(cursor);
                 buf[idx] = MemoryRegion {
                     base: start,
@@ -960,7 +849,7 @@ pub fn build_efi_memory_map_from_e820(
             }
         }
 
-        if cursor < r_end && idx < buf.len() {
+        if cursor < r_end {
             buf[idx] = MemoryRegion {
                 base: cursor,
                 size: r_end - cursor,

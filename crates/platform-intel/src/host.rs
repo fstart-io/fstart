@@ -177,7 +177,13 @@ pub fn resolve(
         };
         let mut features = vec![bundle.into()];
         if selected_payload == "uefi" {
-            features.push("payload-uefi".into());
+            features.push(
+                match facts.uefi_build_profile {
+                    fstart_core::board::UefiBuildProfile::Full => "payload-uefi",
+                    fstart_core::board::UefiBuildProfile::Basic => "payload-uefi-basic",
+                }
+                .into(),
+            );
         }
         IntelStagePlan {
             role,
@@ -270,6 +276,36 @@ mod tests {
                 }
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn uefi_build_policy_selects_capabilities_without_changing_hardware_geometry() {
+        use fstart_core::board::UefiBuildProfile;
+        let select = |facts| {
+            resolve(
+                facts,
+                BuildSelection {
+                    payload: Some("uefi".into()),
+                },
+            )
+            .unwrap()
+        };
+        let full = select(FACTS);
+        let basic = select(FACTS.with_uefi_build_profile(UefiBuildProfile::Basic));
+        assert_eq!(full.stages[2].features, ["bundle-ramstage", "payload-uefi"]);
+        assert_eq!(
+            basic.stages[2].features,
+            ["bundle-ramstage", "payload-uefi-basic"]
+        );
+        assert_eq!(full.reservations.flash, basic.reservations.flash);
+        assert_eq!(
+            full.reservations.ramstage.image,
+            basic.reservations.ramstage.image
+        );
+        assert_eq!(
+            full.reservations.ramstage.writable,
+            basic.reservations.ramstage.writable
         );
     }
 

@@ -13,6 +13,7 @@ bundle-postcar = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstar
 bundle-ramstage = ["stage", "acpi", "mp", "smbios", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/lz4", "fstart-stage/acpi"]
 bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin"]
 payload-uefi = ["fstart-stage/crabefi"]
+payload-uefi-basic = ["fstart-stage/crabefi-basic"]
 stage = [
   "dep:fstart-driver-superio",
   "dep:fstart-driver-uart",
