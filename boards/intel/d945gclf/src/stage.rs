@@ -2,20 +2,11 @@
 
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_platform_intel::i945::{I945Ich7, I945Ich7Board, I945Ich7Config};
 use fstart_platform_intel::IntelEarlyBoard;
-use fstart_stage::{payload::BuildSelectedPayload, StageBoard, StageEnvironment};
+use fstart_platform_intel::i945::{I945Ich7, I945Ich7Board, I945Ich7Config};
+use fstart_platform_intel::stage_runtime::payload::BuildSelectedPayload;
 
 use crate::{Board, D945GclfMainboard};
-
-impl StageBoard for Board {
-    const NAME: &'static str = crate::BOARD_NAME;
-    const PLATFORM: fstart_core::Platform = crate::PLATFORM;
-
-    fn run_stage(env: StageEnvironment, handoff: usize) -> ! {
-        I945Ich7::run_stage::<Self>(env, handoff)
-    }
-}
 
 impl IntelEarlyBoard for Board {
     type Platform = I945Ich7;
@@ -32,10 +23,6 @@ impl I945Ich7Board for Board {
 
     const CONFIG: &'static I945Ich7Config = &crate::D945GCLF_PLATFORM;
 
-    fn flash_layout() -> fstart_core::FlashLayout {
-        crate::d945gclf_flash_layout()
-    }
-
     fn console_config() -> Ns16550Config {
         Ns16550Config {
             regs: AccessMode::Pio {
@@ -50,7 +37,7 @@ impl I945Ich7Board for Board {
         crate::UART0_NODE
     }
 
-    #[cfg(feature = "smbios")]
+    #[cfg(fstart_stage_env = "ram")]
     fn smbios_desc() -> &'static fstart_platform_intel::tables::SmbiosDesc<'static> {
         &crate::D945GCLF_SMBIOS_DESC
     }

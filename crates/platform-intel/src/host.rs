@@ -38,6 +38,7 @@ pub fn compilation_plan(
         ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, UnitOutput,
     };
     use std::collections::BTreeMap;
+    plan.validate()?;
     let flags = |value: &str| {
         value
             .split_whitespace()
@@ -114,34 +115,24 @@ pub fn compilation_plan(
 }
 
 pub fn reservations(facts: BoardFacts) -> Result<IntelReservations, std::string::String> {
-    let flash = facts.flash;
-    flash.check().map_err(str::to_string)?;
-    if flash.size() != facts.flash_size {
-        return Err("IFD map differs from physical flash capacity".into());
+    let (flash, firmware) =
+        fstart_image_build::plan::FlashTransport::from(facts.flash).windows()?;
+    if flash.size != u64::from(facts.flash_size) {
+        return Err("layout differs from physical flash capacity".into());
     }
-    let bios = flash.bios_region().ok_or("missing BIOS region")?;
     let span = |base, size| Span { base, size };
     let car = match facts.chipset {
         Chipset::Gm965Ich8 => span(0xfef00000, 0x80000),
         Chipset::I945Ich7 => span(crate::i945::I945_CAR_BASE, crate::i945::I945_CAR_SIZE),
     };
     let reservations = IntelReservations {
-        flash: span(
-            0x1_0000_0000 - u64::from(facts.flash_size),
-            u64::from(facts.flash_size),
-        ),
-        firmware: span(
-            flash.bios_base().ok_or("missing BIOS")?,
-            u64::from(bios.size),
-        ),
+        flash,
+        firmware,
         bootstrap_ram: span(0x100000, 0x3ff00000),
         bootblock: StageReservation {
             // This is the legal XIP address window, not a reserved media slot.
             // The linker places the actual initialized image at its upper end.
-            image: span(
-                flash.bios_base().ok_or("missing BIOS")?,
-                u64::from(bios.size),
-            ),
+            image: firmware,
             writable: car,
             stack: 0x2000,
             heap: 0,
@@ -195,23 +186,19 @@ pub fn resolve(
         }
     });
     let reservations = reservations(facts)?;
-    let signatures: &[&str] =
-        match facts.chipset {
-            Chipset::Gm965Ich8 => &[
-                "06-0f-02", "06-0f-06", "06-0f-07", "06-0f-0a", "06-0f-0b", "06-0f-0d", "06-16-01",
-            ],
-            Chipset::I945Ich7 => return Err(
-                "only GM965 microcode inputs have migrated; reservation reuse is tested separately"
-                    .into(),
-            ),
-        };
+    let signatures: &[&str] = match facts.chipset {
+        Chipset::Gm965Ich8 => &[
+            "06-0f-02", "06-0f-06", "06-0f-07", "06-0f-0a", "06-0f-0b", "06-0f-0d", "06-16-01",
+        ],
+        Chipset::I945Ich7 => &["06-1c-02", "06-1c-0a"],
+    };
     let plan = IntelPlan {
         reservations,
         target: "x86_64-unknown-none".into(),
         payload,
         stages,
         smm_features: vec!["bundle-smm".into()],
-        ifd: facts.flash.into(),
+        flash: facts.flash.into(),
         max_cpus: facts.max_cpus,
         microcode: signatures
             .iter()
@@ -245,7 +232,12 @@ mod tests {
             offset: 0x280000,
             size: 0x180000,
         }));
-    const FACTS: BoardFacts = BoardFacts::new(FLASH, 0x400000, 2, Chipset::Gm965Ich8);
+    const FACTS: BoardFacts = BoardFacts::new(
+        fstart_core::FlashLayout::IntelIfd(FLASH),
+        0x400000,
+        2,
+        Chipset::Gm965Ich8,
+    );
     #[test]
     fn platform_selects_target_payload_stage_bundles_and_smm() {
         let default = resolve(FACTS, BuildSelection::default()).unwrap();
@@ -297,7 +289,12 @@ mod tests {
                 size: 0x200000,
             }));
         let changed = resolve(
-            BoardFacts::new(LARGER_BIOS, 0x400000, 2, Chipset::Gm965Ich8),
+            BoardFacts::new(
+                fstart_core::FlashLayout::IntelIfd(LARGER_BIOS),
+                0x400000,
+                2,
+                Chipset::Gm965Ich8,
+            ),
             BuildSelection::default(),
         )
         .unwrap();
@@ -308,24 +305,85 @@ mod tests {
         );
     }
     #[test]
+    fn i945_payload_ecam_matches_the_config_used_by_pciexbar_setup() {
+        use fstart_driver_intel::IntelEcamConfig;
+        let mut config = crate::i945::I945Ich7Config::new()
+            .variant(crate::i945::I945Variant::DesktopGc)
+            .build()
+            .northbridge_config();
+        assert_eq!(config.ecam_base(), crate::i945::I945_ECAM_BASE);
+        assert_eq!(config.ecam_buses, 64);
+        config.ecam_base = 0xe0000000;
+        assert_eq!(config.ecam_base(), 0xe0000000);
+    }
+
+    #[test]
+    fn legacy_transport_rejects_invalid_capacity_and_reservation_mismatch() {
+        use fstart_image_build::plan::FlashTransport;
+        for size in [0, 0x80001] {
+            assert!(
+                FlashTransport::X86Legacy(fstart_core::X86LegacyFlashLayout { size })
+                    .decode()
+                    .is_err()
+            );
+        }
+        let mut plan = resolve(FACTS, BuildSelection::default()).unwrap();
+        plan.flash = FlashTransport::X86Legacy(fstart_core::X86LegacyFlashLayout { size: 0x80000 });
+        assert!(plan.validate().is_err());
+        assert!(compilation_plan(plan).is_err());
+    }
+
+    #[test]
     fn i945_pairing_reuses_family_reservations_with_real_car_delta() {
         let gm = reservations(FACTS).unwrap();
-        let i945 = reservations(BoardFacts {
-            chipset: Chipset::I945Ich7,
-            ..FACTS
-        })
-        .unwrap();
+        let facts = BoardFacts::new(
+            fstart_core::FlashLayout::X86Legacy(fstart_core::X86LegacyFlashLayout {
+                size: 0x80000,
+            }),
+            0x80000,
+            2,
+            Chipset::I945Ich7,
+        );
+        let plan = resolve(facts, BuildSelection::default()).unwrap();
+        let i945 = &plan.reservations;
+        assert_eq!(
+            i945.flash,
+            Span {
+                base: 0xfff80000,
+                size: 0x80000
+            }
+        );
+        assert_eq!(i945.firmware, i945.flash);
+        assert_eq!(
+            plan.microcode,
+            [
+                "intel-microcode/intel-ucode/06-1c-02",
+                "intel-microcode/intel-ucode/06-1c-0a"
+            ]
+        );
+        assert!(matches!(
+            plan.assembly()
+                .unwrap()
+                .config("test")
+                .unwrap()
+                .memory
+                .flash_layout,
+            Some(fstart_core::FlashLayout::X86Legacy(
+                fstart_core::X86LegacyFlashLayout { size: 0x80000 }
+            ))
+        ));
         assert_eq!(i945.bootblock.writable.base, crate::i945::I945_CAR_BASE);
         assert_eq!(i945.bootblock.writable.size, crate::i945::I945_CAR_SIZE);
         for role in [
             fstart_image_build::intel_plan::IntelStage::Postcar,
             fstart_image_build::intel_plan::IntelStage::Ramstage,
         ] {
+            let (gm, i945) = (gm.stage(role), i945.stage(role));
             assert_eq!(
-                gm.descriptor(role).unwrap().as_bytes(),
-                i945.descriptor(role).unwrap().as_bytes()
+                (gm.image, gm.writable, gm.stack, gm.heap),
+                (i945.image, i945.writable, i945.stack, i945.heap)
             );
         }
-        assert_eq!(gm.bootblock.image, i945.bootblock.image);
+        assert_eq!(i945.bootblock.image, i945.firmware);
     }
 }

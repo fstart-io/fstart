@@ -3,13 +3,25 @@
 #[cfg(feature = "stage")]
 pub use stage::{I945Ich7, I945Ich7Board, I945Ich7Mainstage, run_i945_ich7_mainstage};
 
-#[cfg(feature = "host")]
-use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
-use fstart_core::{
-    CarConfig, Compression, FirmwareImageConfig, FlashLayout, MemoryMap, MemoryRegion,
-    MpBuildConfig, RegionKind, RunsFrom, StageBuildConfig, StageConfig, StageLayout, TempRamBuffer,
-    hstr, hvec,
-};
+/// Platform-owned adapter for fixed i945 stage dispatch.
+#[cfg(feature = "stage")]
+pub struct Program<B>(core::marker::PhantomData<B>);
+#[cfg(feature = "stage")]
+impl<B: I945Ich7Board> fstart_stage::StageProgram for Program<B> {
+    fn run_stage(handoff: usize) -> ! {
+        #[cfg(fstart_stage_env = "car")]
+        I945Ich7::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
+        #[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
+        I945Ich7::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
+        #[cfg(not(any(
+            fstart_stage_env = "car",
+            fstart_stage_env = "postcar",
+            fstart_stage_env = "ram"
+        )))]
+        panic!("i945 requires a fixed Intel stage selection");
+    }
+}
+
 use fstart_driver_intel::i945;
 pub use fstart_driver_intel::i945::{I945Variant, IntelI945Config};
 use fstart_driver_intel::ich7;
@@ -22,15 +34,8 @@ use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use serde::Serialize;
 
 pub const I945_NORTHBRIDGE_NODE: &str = "northbridge";
-pub const I945_BOOTBLOCK_LOAD_ADDR: u64 = 0xffff_ffff;
-pub const I945_POSTCAR_LOAD_ADDR: u64 = 0x0100_0000;
-pub const I945_RAMSTAGE_LOAD_ADDR: u64 = 0x0400_0000;
-pub const I945_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
 pub const I945_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
 pub const I945_NEXT_STAGE_NAME: &str = "ramstage";
-/// End of the static low-DRAM window (`workram` base + size): the bootblock
-/// publishes it to the postcar MTRR stash (rounded up to one WB MTRR).
-pub const I945_DRAM_END: u64 = 0x0010_0000 + 0x3FF0_0000;
 pub const I945_MCHBAR: u64 = 0xFED1_4000;
 pub const I945_DMIBAR: u64 = 0xFED1_8000;
 pub const I945_EPBAR: u64 = 0xFED1_9000;
@@ -314,117 +319,6 @@ impl I945Ich7AcpiContext {
     }
 }
 
-/// Diamondville (Atom 230, family 6 model 0x1c) microcode.
-///
-/// The 106cx blobs already ship in `intel-microcode/`; the D945GCLF's Atom
-/// 230 is stepping 0x106c2 (`06-1c-02`), with `06-1c-0a` covering later
-/// steppings — the same pair the Pineview port uses for its 0x1c Atoms.
-#[cfg(feature = "host")]
-pub fn i945_ich7_microcode() -> MicrocodeConfig {
-    MicrocodeConfig::Intel(IntelMicrocodeConfig {
-        files: hvec([
-            hstr("../../../intel-microcode/intel-ucode/06-1c-02"),
-            hstr("../../../intel-microcode/intel-ucode/06-1c-0a"),
-        ]),
-        early: true,
-        mp: true,
-    })
-}
-
-pub fn i945_ich7_memory(flash_layout: Option<FlashLayout>) -> MemoryMap {
-    MemoryMap {
-        regions: hvec([MemoryRegion {
-            name: hstr("workram"),
-            base: 0x0010_0000,
-            size: 0x3FF0_0000,
-            kind: RegionKind::Ram,
-        }]),
-        flash_layout,
-        car: Some(CarConfig {
-            // Socket 441 hardware constraint: 32 KiB CAR window (coreboot
-            // DCACHE_RAM_BASE/SIZE). Same budgeting rules as Pineview: keep
-            // the bootblock small, never grow this.
-            base: I945_CAR_BASE,
-            size: I945_CAR_SIZE,
-        }),
-    }
-}
-
-pub fn i945_ich7_stages(config: &I945Ich7Config) -> StageLayout {
-    StageLayout::MultiStage(hvec([
-        StageConfig {
-            name: hstr("bootblock"),
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig {
-                    temp_ram_buffer: None,
-                }),
-                // Truthful: the bootblock verifies the manifest signature
-                // and the postcar file digests (drives ed25519/sha features).
-                verify_firmware: true,
-                load_next_stage: Some(hstr(I945_POSTCAR_STAGE_NAME)),
-                ..StageBuildConfig::default()
-            },
-            load_addr: I945_BOOTBLOCK_LOAD_ADDR,
-            stack_size: 0x2000,
-            heap_size: None,
-            runs_from: RunsFrom::Rom,
-            compression: Compression::None,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        },
-        // Postcar is uncompressed and verified by bootblock before entry.
-        // After teardown it authenticates and decompresses ramstage using the
-        // inherited descriptor. SHA-256 is required; signatures are not.
-        StageConfig {
-            name: hstr(I945_POSTCAR_STAGE_NAME),
-            build: StageBuildConfig {
-                load_next_stage: Some(hstr(I945_NEXT_STAGE_NAME)),
-                ..StageBuildConfig::default()
-            },
-            load_addr: I945_POSTCAR_LOAD_ADDR,
-            // Bounded descriptor loader, compact SHA-256, LZ4 and console.
-            // Full compressed input lives in the reserved DRAM load window.
-            stack_size: 0x2000,
-            heap_size: None,
-            runs_from: RunsFrom::Ram,
-            compression: Compression::None,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        },
-        StageConfig {
-            name: hstr(I945_NEXT_STAGE_NAME),
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig {
-                    temp_ram_buffer: Some(TempRamBuffer {
-                        base: 0x0200_0000,
-                        size: 0x0100_0000,
-                    }),
-                }),
-                verify_firmware: true,
-                payload: true,
-                pci: true,
-                acpi: true,
-                smbios: true,
-                mp: Some(MpBuildConfig {
-                    max_cpus: config.max_cpus,
-                    smm: true,
-                }),
-                ..StageBuildConfig::default()
-            },
-            load_addr: I945_RAMSTAGE_LOAD_ADDR,
-            stack_size: 0x400000,
-            heap_size: Some(I945_RAMSTAGE_HEAP_SIZE as u32),
-            runs_from: RunsFrom::Ram,
-            compression: Compression::Lz4,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        },
-    ]))
-}
-
 #[cfg(feature = "stage")]
 mod stage {
     use super::*;
@@ -523,7 +417,6 @@ mod stage {
         const NB_CONFIG: &'static IntelI945Config = &Self::CONFIG.northbridge_config();
         const SB_CONFIG: &'static IntelIch7Config = &Self::CONFIG.southbridge_config();
 
-        fn flash_layout() -> fstart_core::FlashLayout;
         type Console: fstart_core::services::ConsoleDevice;
 
         fn console_config() -> <Self::Console as fstart_core::services::ConsoleDevice>::Config;
@@ -570,17 +463,7 @@ mod stage {
         let northbridge = IntelI945::new_from_config(B::NB_CONFIG)?;
         let southbridge = IntelIch7::new_from_config(B::SB_CONFIG)?;
         crate::run_intel_bootblock::<I945Ich7, _, _, _, B::Console>(
-            FfsLoadSpec {
-                platform: "i945/ich7",
-                next_stage: I945_POSTCAR_STAGE_NAME,
-                next_load_addr: I945_POSTCAR_LOAD_ADDR,
-                geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
-                dram_end: I945_DRAM_END,
-                ramstage_name: I945_NEXT_STAGE_NAME,
-                ramstage_load_addr: I945_RAMSTAGE_LOAD_ADDR,
-                console_config: B::console_config(),
-                console_node: B::console_node(),
-            },
+            bootstrap_spec::<B>(0)?,
             hooks,
             northbridge,
             southbridge,
@@ -595,14 +478,28 @@ mod stage {
     where
         B: I945Ich7Board,
     {
-        crate::run_intel_postcar::<B::Console>(FfsLoadSpec {
+        let Ok(spec) = bootstrap_spec::<B>(1) else {
+            fstart_arch::x86_64::halt()
+        };
+        crate::run_intel_postcar::<B::Console>(spec)
+    }
+
+    fn bootstrap_spec<B: I945Ich7Board>(
+        index: u16,
+    ) -> Result<FfsLoadSpec<B::Console>, ServiceError> {
+        use fstart_core::layout::RegionKind;
+        let layout = crate::layout::IntelBootLayout::current(index)?;
+        Ok(FfsLoadSpec {
             platform: "i945/ich7",
-            next_stage: I945_NEXT_STAGE_NAME,
-            next_load_addr: I945_RAMSTAGE_LOAD_ADDR,
-            geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
-            dram_end: I945_DRAM_END,
+            next_stage: I945_POSTCAR_STAGE_NAME,
+            next_load_addr: layout.region(RegionKind::BootstrapPostcar)?.base,
+            geometry: crate::layout::BootGeometry::Descriptor(layout),
+            dram_end: layout
+                .region(RegionKind::BootstrapRam)?
+                .end()
+                .ok_or(ServiceError::InvalidParam)?,
             ramstage_name: I945_NEXT_STAGE_NAME,
-            ramstage_load_addr: I945_RAMSTAGE_LOAD_ADDR,
+            ramstage_load_addr: layout.region(RegionKind::BootstrapMainstage)?.base,
             console_config: B::console_config(),
             console_node: B::console_node(),
         })
@@ -621,7 +518,11 @@ mod stage {
 
     #[cfg(feature = "mp")]
     fn init_mp_for_board<B: I945Ich7Board>() -> Result<(), ServiceError> {
-        init_mp(B::NB_CONFIG, B::CONFIG.max_cpus)
+        let max_cpus = option_env!("FSTART_INTEL_MAX_CPUS")
+            .ok_or(ServiceError::InvalidParam)?
+            .parse()
+            .map_err(|_| ServiceError::InvalidParam)?;
+        init_mp(B::NB_CONFIG, max_cpus)
     }
 
     /// Handwritten fixed i945/ICH7 mainstage flow. Ordering is this function.
@@ -632,6 +533,9 @@ mod stage {
         let Ok(hooks) = B::hooks() else {
             fstart_arch::x86_64::halt();
         };
+        let Ok(layout) = crate::layout::IntelBootLayout::current(2) else {
+            fstart_arch::x86_64::halt()
+        };
         let Ok(mainstage) = crate::bind_intel_mainstage::<
             I945Ich7,
             IntelI945,
@@ -641,7 +545,7 @@ mod stage {
             I945Ich7AcpiContext,
         >(
             MainstageSpec {
-                geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
+                geometry: crate::layout::BootGeometry::Descriptor(layout),
                 nb_config: B::NB_CONFIG,
                 sb_config: B::SB_CONFIG,
                 console_config: B::console_config(),

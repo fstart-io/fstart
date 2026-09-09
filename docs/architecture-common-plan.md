@@ -5,6 +5,56 @@ That change moved hardware facts and feature policy into Rust, but fbuild still
 selected Intel roles, SMM consumers, linker entry points and ELF checks. Merely
 moving its Intel executor would not have fixed the boundary.
 
+## D945GCLF common-plan migration
+
+D945GCLF and its postcar-debug variant now use the platform-owned Intel host
+export, bundles, stage adapter and linked runtime descriptors. Physical layout
+transport distinguishes `IntelIfd` from `X86Legacy`; D945 retains its real
+512-KiB contiguous flash, without a synthetic descriptor. Shared platform policy
+owns RAM/CAR reservations and actual-size XIP placement. The old board host
+executable, capability relays and duplicate i945 stage geometry are removed.
+Diamondville microcode and the current-artifact ICH7 SMM producer remain real.
+X61 adopts only the generalized physical-layout wrapper; D41S remains legacy.
+
+A separate correction implements `IntelEcamConfig` for `IntelI945Config`,
+reporting the same configured base used by existing PCIEXBAR programming.
+DesktopGc uses `F0000000` with 64 buses. No hardware register sequence changes.
+The old canonical UEFI payload now compiles/links, but packing correctly fails:
+FFS length `0xc80d8` overlaps the actual bootblock `[0x5f000..0x80000)`.
+There is no flash enlargement or fixed per-stage storage slot to hide this.
+
+Hardware evidence: **Intel Desktop Board D945GCLF Technical Product
+Specification**, April 2008, E35968-001US revision -001, identifies 82801GB ICH7
+and, in §3.2, a 4-Mbit SPI device. **Intel I/O Controller Hub 7 Family
+Datasheet**, April 2007, 307013-003, §12.3 explicitly excludes 82801GB from AHCI;
+§10.1.33 defines FDVCT bit 3 as AHCI disabled when set. This is documentary
+silicon evidence, not an observed board FDVCT read. The existing `Ahci` request
+is a baseline board-policy bug, deliberately retained for a separate correction.
+No SATA boot claim is made; an ATA driver/host block device is separate work.
+USB2, PS/2 and serial policy are preserved.
+
+Fresh receipts under `/tmp/fstart-d945-*` cover 106 tests, seven double-identical
+release selections, independent signature/directory/physical-copy verification,
+ELF descriptors and load bounds, exact SMM embedding, two representative virt
+boots, fresh/cached locked host graphs and live D945 stage-to-AArch64 editor
+switching. `plan.md` records primary URLs, baseline and effective budgets;
+`images/proof.json`, `auth.json`, `boots/proof.json`, `host-proof.log` and
+`editor-proof.log` are the detailed software evidence, not hardware boots.
+`debug-proof.json` checks the six raw COM1 checkpoint encodings: absent in the
+normal image and present in debug, matching the accepted baseline selections.
+
+Variables and the new CrabEFI API/pin are **not implemented in this step**.
+`InputRegion::Raw` reserves bytes and records metadata without raw-content
+hashes; `ExternalRaw` only describes an extent and cannot by itself prevent
+packing over it. A variable partition still needs chip/erase evidence, a
+persistent-capacity decision and bounded backend integration. No partition is
+allocated from guessed RAM-cache capacity or apparent free flash. Mutable
+contents must stay outside FFS content authentication; approved local FV-header
+checksums/journal CRCs remain. Only a fully erased region may autoformat;
+nonblank corruption and read/protection failures must be preserved and reported,
+not silently converted to volatile storage. Post-EBS durable NV policy remains
+unresolved. No update, power-fail-safety or A/B claim is added.
+
 ## Locator/trust separation (phase2a)
 
 The initial-only locator is wire version 7, 40 bytes. It preserves x86's

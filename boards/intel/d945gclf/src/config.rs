@@ -6,13 +6,9 @@
 //! `Kconfig` (512 KiB flash, Atom 230).
 
 use fstart_core::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
-#[cfg(feature = "host")]
-use fstart_core::{dev_security_config, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig};
-use fstart_core::{hstr, hvec, FlashLayout, X86LegacyFlashLayout, Platform, SmbiosConfig};
+use fstart_core::{FlashLayout, Platform, SmbiosConfig, X86LegacyFlashLayout, hstr, hvec};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_superio::smsc_lpc47m15x;
-#[cfg(feature = "host")]
-use fstart_platform_intel::i945::{i945_ich7_memory, i945_ich7_microcode, i945_ich7_stages};
 use fstart_platform_intel::i945::{
     I945Ich7Config, I945Variant, LpcFixedIoDecode, LpcGenericIoDecode, LpcSerialDecode, SataConfig,
     SataMode, UsbConfig,
@@ -71,42 +67,24 @@ pub static D945GCLF_PLATFORM: I945Ich7Config = I945Ich7Config::new()
     .gpe0_en(0x2000_0601)
     .build();
 
-#[cfg(feature = "host")]
-#[must_use]
-pub fn board_config() -> BoardConfig {
-    let flash_layout = d945gclf_flash_layout();
+/// Intel TPS §3.2: 4-Mbit SPI flash, contiguous legacy mapping (no IFD).
+/// Erase geometry and persistent variable capacity are not inferred from this.
+pub const FLASH_SIZE: u32 = 0x0008_0000;
+pub const FLASH: FlashLayout = FlashLayout::X86Legacy(X86LegacyFlashLayout { size: FLASH_SIZE });
 
-    BoardConfig {
-        name: hstr(BOARD_NAME),
-        platform: PLATFORM,
-        memory: i945_ich7_memory(Some(flash_layout)),
-        stages: i945_ich7_stages(&D945GCLF_PLATFORM),
-        security: dev_security_config("keys/dev-signing.pub"),
-        payload: None,
-        microcode: Some(i945_ich7_microcode()),
-        soc_image_format: Default::default(),
-        full_flash_image: true,
-        acpi: Some(AcpiConfig {
-            print_hex: true,
-            platform: AcpiPlatform::X86,
-        }),
-        smbios: Some(d945gclf_smbios()),
-        smm: Some(fstart_core::SmmConfig::default()),
-        build: BoardBuildPolicy {
-            cpu_feature: Some(hstr("cpu-intel-diamondville")),
-            ..Default::default()
-        },
-        boot_hart_id: 0,
-    }
+impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
+    const FACTS: fstart_platform_intel::facts::BoardFacts =
+        fstart_platform_intel::facts::BoardFacts::new(
+            FLASH,
+            FLASH_SIZE,
+            D945GCLF_PLATFORM.max_cpus,
+            fstart_platform_intel::facts::Chipset::I945Ich7,
+        );
 }
 
 #[must_use]
 pub const fn board_name() -> &'static str {
     BOARD_NAME
-}
-
-pub fn d945gclf_flash_layout() -> FlashLayout {
-    FlashLayout::X86Legacy(X86LegacyFlashLayout { size: 0x0008_0000 })
 }
 
 pub fn d945gclf_smbios() -> SmbiosConfig {

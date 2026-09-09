@@ -76,7 +76,7 @@ impl IntelPlan {
                 size: self.reservations.bootstrap_ram.size,
                 kind: RegionKind::Ram,
             }],
-            ifd: Some(self.ifd.clone()),
+            flash: Some(self.flash.clone()),
             bootstrap: vec![
                 ("postcar".into(), crate::build_plan::BootstrapRole::Postcar),
                 (

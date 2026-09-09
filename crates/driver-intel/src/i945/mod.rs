@@ -1039,6 +1039,14 @@ impl IntelI945 {
     }
 }
 
+// Payload handoff must report the same base that enable_ecam programs into
+// PCIEXBAR, not an unrelated platform default or fabricated compatibility value.
+impl crate::IntelEcamConfig for IntelI945Config {
+    fn ecam_base(&self) -> u64 {
+        self.ecam_base
+    }
+}
+
 impl crate::IntelNorthbridgeDriver for IntelI945 {
     type Config = IntelI945Config;
 

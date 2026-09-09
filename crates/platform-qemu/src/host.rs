@@ -220,7 +220,7 @@ pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildP
                 kind: RegionKind::Ram,
             },
         ],
-        ifd: None,
+        flash: None,
         bootstrap: vec![],
         stages: StageLayout::Monolithic(MonolithicConfig {
             build: StageBuildConfig {

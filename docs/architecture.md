@@ -96,12 +96,13 @@ ambiguous identities. Never compile boards to discover them. Use Cargo metadata
 to resolve the selected package's actual dependency graph and platform package.
 Cache discovery by manifest contents when needed, not by compiling all boards.
 
-Intel/X61 uses `build-profile = { dependency = "fstart-platform-intel", name = "rust" }`.
+Intel/X61 and D945GCLF use `build-profile = { dependency = "fstart-platform-intel", name = "rust" }`.
 The dependency is resolved through Cargo's actual graph (including renames), not
 through a chipset registry in fbuild. The selected board exposes `Board` and
-implements the platform's small host-clean facts trait. Its `const` IFD value
-calls `IntelIfdFlashLayout::new`; the facts constructor checks the separately
-declared physical chip capacity and CPU population. VBT and hardware config
+implements the platform's small host-clean facts trait. X61's `const` IFD value
+calls `IntelIfdFlashLayout::new`; D945GCLF declares a genuine 512-KiB
+`X86Legacy` layout, not a synthetic descriptor. The facts constructor checks
+the separately declared physical chip capacity and CPU population. VBT and hardware config
 remain typed board source, active in both firmware and editor graphs.
 
 The platform's optional host module exports the conventional `Plan<B>::emit(selection_json)`.
@@ -115,8 +116,8 @@ Defaults, supported payloads and terminal-stage assignment belong to platform
 Rust; fbuild qualifies Cargo aliases, validates references and executes the same
 bounded unit contract for build, check and IDE. This is not a generated authoring API,
 board host feature/executable or firmware recipe. The Intel family calculates
-common capacities once; the tested i945 comparison changes only the real CAR
-window, without migrating that board's legacy build path.
+common runtime capacities once; D945GCLF reuses them with the real i945 CAR
+window, legacy flash identity and Diamondville microcode inputs.
 
 QEMU virt boards select `VirtMachine::{Riscv64, Armv7, Aarch64}` in unconditional
 Rust source. The platform owns invariant flash banks, fixed reservations and
@@ -237,7 +238,7 @@ boards/<vendor>/<board>/
   data/           board blobs
 ```
 
-Intel/X61 has no board host feature or executable. Its generated host adapter
+Intel/X61 and D945GCLF have no board host feature or executable. Its generated host adapter
 only calls the shared platform export; the legacy `host`/`BoardConfig` path
 remains solely on unmigrated boards.
 
@@ -395,7 +396,9 @@ typed board IFD/CPU facts and all three QEMU virt machine selections now feed th
 multistage, RISC-V/ARMv7 XIP and AArch64 relocation require no family branches in
 common build/check/IDE tools. The former virt Cargo geometry profiles and their
 metadata resolver have been deleted; independent captured output fixtures retain
-the behavior proof. The remaining ten boards still use BoardConfig host callbacks. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
+the behavior proof. D945GCLF and its postcar-debug variant now also use that executor, with explicit
+legacy-flash transport and the same actual-size linker/packer. Other boards
+still use BoardConfig host callbacks. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
 AArch64 halt assembly/boot, and live car → postcar → ram → SMM → AArch64 editor
 switching with original-source invalid-fact diagnostics pass. Hardware boot and
 stack high-water measurements remain outstanding. Workspace ownership has not

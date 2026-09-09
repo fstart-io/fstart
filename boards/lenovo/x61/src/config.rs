@@ -45,7 +45,7 @@ pub const FLASH: fstart_core::IntelIfdFlashLayout = {
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(
-            FLASH,
+            fstart_core::FlashLayout::IntelIfd(FLASH),
             0x400000,
             2,
             fstart_platform_intel::facts::Chipset::Gm965Ich8,

@@ -20,7 +20,7 @@ pub struct BuildPlan {
 pub struct Assembly {
     pub platform: fstart_core::Platform,
     pub memory: Vec<fstart_core::MemoryRegion>,
-    pub ifd: Option<crate::plan::IfdTransport>,
+    pub flash: Option<crate::plan::FlashTransport>,
     /// Explicit authenticated-bootstrap ABI bindings, independent of unit names.
     pub bootstrap: Vec<(String, BootstrapRole)>,
     pub stages: fstart_core::StageLayout,
@@ -91,9 +91,9 @@ impl Assembly {
             memory: MemoryMap {
                 regions: memory,
                 flash_layout: self
-                    .ifd
+                    .flash
                     .as_ref()
-                    .map(|ifd| ifd.decode().map(FlashLayout::IntelIfd))
+                    .map(crate::plan::FlashTransport::decode)
                     .transpose()?,
                 car: None,
             },
@@ -498,7 +498,7 @@ mod tests {
             assembly: Assembly {
                 platform: Platform::Aarch64,
                 memory: vec![],
-                ifd: None,
+                flash: None,
                 bootstrap: vec![],
                 stages: StageLayout::MultiStage(hvec([])),
                 security: dev_security_config("unused"),
@@ -586,7 +586,7 @@ mod tests {
         let assembly = Assembly {
             platform: Platform::X86_64,
             memory: vec![],
-            ifd: None,
+            flash: None,
             bootstrap: vec![],
             stages: StageLayout::MultiStage(hvec([])),
             security: dev_security_config("unused"),

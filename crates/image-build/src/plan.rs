@@ -110,7 +110,7 @@ pub struct IntelPlan {
     pub payload: String,
     pub stages: [IntelStagePlan; 3],
     pub smm_features: Vec<String>,
-    pub ifd: IfdTransport,
+    pub flash: FlashTransport,
     pub max_cpus: u16,
     pub microcode: Vec<String>,
     pub security: SecurityConfig,
@@ -151,17 +151,64 @@ impl IfdTransport {
     }
 }
 
+/// Physical flash identity, without inventing descriptor regions on legacy hardware.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FlashTransport {
+    IntelIfd(IfdTransport),
+    X86Legacy(fstart_core::X86LegacyFlashLayout),
+}
+
+impl From<fstart_core::FlashLayout> for FlashTransport {
+    fn from(layout: fstart_core::FlashLayout) -> Self {
+        match layout {
+            fstart_core::FlashLayout::IntelIfd(ifd) => Self::IntelIfd(ifd.into()),
+            fstart_core::FlashLayout::X86Legacy(legacy) => Self::X86Legacy(legacy),
+        }
+    }
+}
+
+impl FlashTransport {
+    pub fn decode(&self) -> Result<fstart_core::FlashLayout, String> {
+        match self {
+            Self::IntelIfd(ifd) => ifd.decode().map(fstart_core::FlashLayout::IntelIfd),
+            Self::X86Legacy(legacy) if legacy.size.is_power_of_two() => {
+                Ok(fstart_core::FlashLayout::X86Legacy(*legacy))
+            }
+            Self::X86Legacy(_) => {
+                Err("legacy flash capacity must be a nonzero power of two".into())
+            }
+        }
+    }
+
+    pub fn windows(&self) -> Result<(Span, Span), String> {
+        match self.decode()? {
+            fstart_core::FlashLayout::IntelIfd(ifd) => Ok((
+                Span {
+                    base: ifd.base(),
+                    size: u64::from(ifd.size()),
+                },
+                Span {
+                    base: ifd.bios_base().ok_or("missing BIOS")?,
+                    size: u64::from(ifd.bios_region().ok_or("missing BIOS")?.size),
+                },
+            )),
+            fstart_core::FlashLayout::X86Legacy(legacy) => {
+                let window = Span {
+                    base: legacy.base(),
+                    size: u64::from(legacy.size),
+                };
+                Ok((window, window))
+            }
+        }
+    }
+}
+
 impl IntelPlan {
-    pub fn validate(&self) -> Result<IntelIfdFlashLayout, String> {
+    pub fn validate(&self) -> Result<fstart_core::FlashLayout, String> {
         self.reservations.validate()?;
-        let ifd = self.ifd.decode()?;
-        let bios = ifd.bios_region().ok_or("missing BIOS")?;
-        if ifd.base() != self.reservations.flash.base
-            || u64::from(ifd.size()) != self.reservations.flash.size
-            || ifd.bios_base() != Some(self.reservations.firmware.base)
-            || u64::from(bios.size) != self.reservations.firmware.size
-        {
-            return Err("IFD mapping differs from resolved flash/BIOS windows".into());
+        let (flash, firmware) = self.flash.windows()?;
+        if flash != self.reservations.flash || firmware != self.reservations.firmware {
+            return Err("physical layout differs from resolved flash/firmware windows".into());
         }
         if self.max_cpus == 0
             || self.smm.entry_points.is_some_and(|n| n < self.max_cpus)
@@ -169,6 +216,6 @@ impl IntelPlan {
         {
             return Err("SMM entries/stacks must cover the MP CPU ceiling".into());
         }
-        Ok(ifd)
+        self.flash.decode()
     }
 }

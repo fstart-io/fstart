@@ -5,8 +5,8 @@
 //! covers it. This module only binds the board to that handler.
 
 use fstart_driver_intel::ich7::smm::Ich7SmmHandler;
-use fstart_smm::SMM_PLATFORM_INTEL_ICH;
+use fstart_platform_intel::smm::SMM_PLATFORM_INTEL_ICH;
 
 use crate::Board;
 
-fstart_smm::smm_bin!(Board, SMM_PLATFORM_INTEL_ICH, Ich7SmmHandler);
+fstart_platform_intel::smm::smm_bin!(Board, SMM_PLATFORM_INTEL_ICH, Ich7SmmHandler);
