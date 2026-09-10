@@ -635,6 +635,7 @@ dependencies = [
 name = "fstart-driver-sunxi"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal",
  "fstart-arch",
  "fstart-core",
  "fstart-log",
@@ -761,9 +762,11 @@ dependencies = [
  "fstart-core",
  "fstart-driver-sunxi",
  "fstart-driver-uart",
+ "fstart-image-build",
  "fstart-log",
  "fstart-stage",
  "serde",
+ "serde_json",
  "ufmt",
 ]
 

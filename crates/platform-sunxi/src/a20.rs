@@ -4,6 +4,7 @@ use fstart_core::handoff::HANDOFF_MAX_SIZE;
 use fstart_driver_sunxi::a20_ccu::{A20CcuConfig, A20Uart};
 use fstart_driver_sunxi::a20_dramc::A20DramcConfig;
 use fstart_driver_sunxi::a20_mmc::{A20MmcConfig, A20MmcController};
+use fstart_driver_sunxi::a20_spi::{A20_SPI_DEFAULT_FREQ, A20_SPI_DEFAULT_SIZE, A20SpiConfig};
 use serde::Serialize;
 
 /// A20 physical DRAM window. The controller detects the actual populated size.
@@ -17,6 +18,7 @@ pub struct A20Config {
     pub ccu: A20CcuConfig,
     pub dram: A20DramcConfig,
     pub mmc0: A20MmcConfig,
+    pub spi: A20SpiConfig,
     pub mainstage_load_addr: u64,
     pub handoff_addr: u64,
     /// Kernel command line patched into the FDT chosen node for Linux boot.
@@ -33,6 +35,7 @@ impl A20Config {
             ccu: A20CcuConfig::new(A20Uart::Uart0),
             dram,
             mmc0: A20MmcConfig::new(A20MmcController::Mmc0),
+            spi: A20SpiConfig::new(A20_SPI_DEFAULT_FREQ, A20_SPI_DEFAULT_SIZE),
             mainstage_load_addr,
             handoff_addr,
             bootargs: "",
@@ -65,6 +68,13 @@ impl A20Config {
     #[must_use]
     pub const fn mmc0(mut self, mmc0: A20MmcConfig) -> Self {
         self.mmc0 = mmc0;
+        self
+    }
+
+    /// Replace the SPI0 NOR flash policy used on SPI boot.
+    #[must_use]
+    pub const fn spi(mut self, spi: A20SpiConfig) -> Self {
+        self.spi = spi;
         self
     }
 
@@ -109,7 +119,10 @@ impl A20Config {
         if self.dram.zq == 0 || self.dram.tpr0 == 0 || self.dram.tpr1 == 0 || self.dram.tpr2 == 0 {
             panic!("A20 DRAM timing is incomplete");
         }
-        self
+        Self {
+            spi: self.spi.build(),
+            ..self
+        }
     }
 }
 
@@ -127,10 +140,12 @@ const fn in_a20_dram_end(addr: u64, size: u64) -> bool {
 #[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
 mod stage {
     use super::*;
-    use fstart_core::services::ServiceError;
+    use fstart_core::services::{BlockDevice, ServiceError};
     use fstart_driver_sunxi::a20_ccu::{A20_EGON_MMC_OFFSET, A20_SRAM_BASE, A20Ccu};
     use fstart_driver_sunxi::a20_dramc::A20Dramc;
     use fstart_driver_sunxi::a20_mmc::A20Mmc;
+    use fstart_driver_sunxi::a20_spi::{A20Spi, A20SpiFlash};
+    use fstart_driver_sunxi::spi_nor::SpiNorFlash;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
 
@@ -286,10 +301,76 @@ fstart_sunxi_fel_stash:
         const CONSOLE_CONFIG: Ns16550Config;
     }
 
+    /// Boot medium selected by the BROM eGON boot device.
+    pub enum A20BootMedia {
+        Mmc(A20Mmc),
+        Spi(A20SpiFlash),
+    }
+
+    impl BlockDevice for A20BootMedia {
+        fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, ServiceError> {
+            match self {
+                Self::Mmc(mmc) => mmc.read(offset, buf),
+                Self::Spi(flash) => flash.read(offset, buf),
+            }
+        }
+
+        fn write(&self, offset: u64, buf: &[u8]) -> Result<usize, ServiceError> {
+            match self {
+                Self::Mmc(mmc) => mmc.write(offset, buf),
+                Self::Spi(flash) => flash.write(offset, buf),
+            }
+        }
+
+        fn size(&self) -> u64 {
+            match self {
+                Self::Mmc(mmc) => mmc.size(),
+                Self::Spi(flash) => flash.size(),
+            }
+        }
+
+        fn block_size(&self) -> u32 {
+            match self {
+                Self::Mmc(mmc) => mmc.block_size(),
+                Self::Spi(flash) => flash.block_size(),
+            }
+        }
+    }
+
+    /// SPI NOR images start at flash offset 0; eGON MMC images at 8 KiB.
+    const A20_SPI_MEDIA_BASE: u64 = 0;
+
+    /// Initialize the BROM-selected boot medium and its image base offset.
+    /// Shared by the SRAM bootblock and the DRAM mainstage re-init.
+    fn init_boot_media(
+        config: &'static super::A20Config,
+    ) -> Result<(A20BootMedia, u64), ServiceError> {
+        match boot_device_at(A20_SRAM_BASE as usize) {
+            BootDevice::Mmc0 => {
+                let mut mmc0 = A20Mmc::new_from_config(&config.mmc0);
+                mmc0.init()?;
+                Ok((A20BootMedia::Mmc(mmc0), A20_EGON_MMC_OFFSET))
+            }
+            BootDevice::Spi => {
+                let mut spi = A20Spi::new_from_config(&config.spi);
+                spi.init()?;
+                let flash = SpiNorFlash::from_controller(spi, config.spi.flash_size);
+                flash.probe()?;
+                Ok((A20BootMedia::Spi(flash), A20_SPI_MEDIA_BASE))
+            }
+            _ => {
+                fstart_log::error!("a20: unsupported eGON boot device");
+                Err(ServiceError::NotSupported)
+            }
+        }
+    }
+
     /// State retained by the DRAM-backed A20 mainstage.
     pub struct A20Mainstage {
         console: Ns16550,
-        mmc0: A20Mmc,
+        boot_media: A20BootMedia,
+        /// Image base offset on the boot medium (8 KiB MMC, 0 SPI).
+        media_base: u64,
         dram_size: u64,
         config: &'static super::A20Config,
     }
@@ -306,8 +387,8 @@ fstart_sunxi_fel_stash:
         }
 
         #[must_use]
-        pub const fn mmc0(&self) -> &A20Mmc {
-            &self.mmc0
+        pub const fn boot_media(&self) -> &A20BootMedia {
+            &self.boot_media
         }
     }
 
@@ -334,13 +415,15 @@ fstart_sunxi_fel_stash:
                 fstart_arch::halt();
             }
             let ffs_size = fstart_stage::anchor::image_size();
-            let mut boot =
-                fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(A20_EGON_MMC_OFFSET, 0);
+            let mut boot = fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(
+                devices.media_base,
+                0,
+            );
             let anchor = fstart_stage::fstart_anchor_bytes();
-            if boot.mount(&devices.mmc0, ffs_size, anchor).is_err()
-                || boot.verify(&devices.mmc0).is_err()
-                || boot.load_kernel(&devices.mmc0).is_err()
-                || boot.load_fdt(&devices.mmc0).is_err()
+            if boot.mount(&devices.boot_media, ffs_size, anchor).is_err()
+                || boot.verify(&devices.boot_media).is_err()
+                || boot.load_kernel(&devices.boot_media).is_err()
+                || boot.load_fdt(&devices.boot_media).is_err()
             {
                 fstart_log::error!("a20 mainstage: FFS payload load failed");
                 fstart_arch::halt();
@@ -451,12 +534,7 @@ fstart_sunxi_fel_stash:
             hooks.after_memory(&mut ctx)?;
         }
 
-        let mut mmc0 = A20Mmc::new_from_config(&config.mmc0);
-        mmc0.init()?;
-        if boot_device_at(A20_SRAM_BASE as usize) != BootDevice::Mmc0 {
-            fstart_log::error!("a20: only eGON MMC0 boot is supported");
-            return Err(ServiceError::NotSupported);
-        }
+        let (boot_media, media_base) = init_boot_media(config)?;
 
         {
             let mut ctx = SunxiEarlyCtx::<A20>::new(&ccu, Some(dram_size));
@@ -464,8 +542,8 @@ fstart_sunxi_fel_stash:
         }
 
         let entry = crate::boot::load_mainstage(
-            &mmc0,
-            A20_EGON_MMC_OFFSET,
+            &boot_media,
+            media_base,
             A20_DRAM_BASE,
             dram_size,
             config.mainstage_load_addr,
@@ -503,17 +581,17 @@ fstart_sunxi_fel_stash:
         // SAFETY: the mainstage owns this console until a later payload handoff.
         unsafe { fstart_log::init(&console) };
 
-        let mut mmc0 = A20Mmc::new_from_config(&B::CONFIG.mmc0);
-        if mmc0.init().is_err() {
-            fstart_log::error!("a20 mainstage: MMC0 init failed");
+        let Ok((boot_media, media_base)) = init_boot_media(B::CONFIG) else {
+            fstart_log::error!("a20 mainstage: boot media init failed");
             fstart_arch::halt();
-        }
-        if crate::boot::install_mainstage_locator(&mmc0, A20_EGON_MMC_OFFSET, &handoff).is_err() {
+        };
+        if crate::boot::install_mainstage_locator(&boot_media, media_base, &handoff).is_err() {
             fstart_arch::halt();
         }
         let mainstage = A20Mainstage {
             console,
-            mmc0,
+            boot_media,
+            media_base,
             dram_size: handoff.dram_size,
             config: B::CONFIG,
         };
@@ -522,9 +600,24 @@ fstart_sunxi_fel_stash:
     }
 }
 
+/// Platform-owned adapter for fixed A20 stage dispatch.
+#[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
+pub struct Program<B>(core::marker::PhantomData<B>);
+#[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
+impl<B: stage::A20Board> fstart_stage::StageProgram for Program<B> {
+    fn run_stage(handoff: usize) -> ! {
+        #[cfg(fstart_stage_env = "car")]
+        stage::A20::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
+        #[cfg(fstart_stage_env = "ram")]
+        stage::A20::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
+        #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
+        panic!("a20 requires a fixed sunxi stage selection");
+    }
+}
+
 #[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
 pub use stage::{
-    A20, A20Board, A20BuildSelectedPayload, A20Mainstage, FelStash, SunxiEarlyBoard,
+    A20, A20Board, A20BootMedia, A20BuildSelectedPayload, A20Mainstage, FelStash, SunxiEarlyBoard,
     SunxiEarlyBoardHooks, SunxiEarlyCtx, SunxiEarlyPlatform, SunxiPlatform, return_to_fel,
     run_a20_bootblock, run_a20_mainstage,
 };

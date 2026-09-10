@@ -126,6 +126,7 @@ pub const H3_EGON_MMC_OFFSET: u64 = 8192;
 pub const H3_CCU_BASE: u64 = 0x01c2_0000;
 pub const H3_PIO_BASE: u64 = 0x01c2_0800;
 pub const H3_UART0_BASE: u64 = 0x01c2_8000;
+pub const H3_SPI0_BASE: u64 = 0x01c6_8000;
 
 /// Allwinner H3/H2+ Clock Control Unit + GPIO pin mux driver.
 pub struct H3Ccu {

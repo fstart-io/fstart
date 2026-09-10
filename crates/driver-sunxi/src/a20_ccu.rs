@@ -20,6 +20,8 @@ pub const A20_DRAMC_BASE: u64 = 0x01c0_1000;
 pub const A20_UART0_BASE: u64 = 0x01c2_8000;
 /// A20 MMC0 base address.
 pub const A20_MMC0_BASE: u64 = 0x01c0_f000;
+/// A20 SPI0 base address.
+pub const A20_SPI0_BASE: u64 = 0x01c0_5000;
 /// eGON's MMC image offset.
 pub const A20_EGON_MMC_OFFSET: u64 = 8192;
 

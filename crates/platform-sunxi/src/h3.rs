@@ -4,6 +4,7 @@ use fstart_core::handoff::HANDOFF_MAX_SIZE;
 use fstart_driver_sunxi::h3_ccu::H3CcuConfig;
 use fstart_driver_sunxi::h3_dramc::H3DramcConfig;
 use fstart_driver_sunxi::h3_mmc::{H3MmcConfig, H3MmcController};
+use fstart_driver_sunxi::h3_spi::{H3_SPI_DEFAULT_FREQ, H3_SPI_DEFAULT_SIZE, H3SpiConfig};
 use serde::Serialize;
 
 /// H3 physical DRAM window. The controller detects the actual populated size.
@@ -17,6 +18,7 @@ pub struct H3Config {
     pub ccu: H3CcuConfig,
     pub dram: H3DramcConfig,
     pub mmc0: H3MmcConfig,
+    pub spi: H3SpiConfig,
     pub mainstage_load_addr: u64,
     pub handoff_addr: u64,
     /// SRAM base the BROM loads the eGON image to (0x0 on H3, 0x10000 on H5).
@@ -35,6 +37,7 @@ impl H3Config {
             ccu: H3CcuConfig::new(0),
             dram,
             mmc0: H3MmcConfig::new(H3MmcController::Mmc0),
+            spi: H3SpiConfig::new(H3_SPI_DEFAULT_FREQ, H3_SPI_DEFAULT_SIZE),
             mainstage_load_addr,
             handoff_addr,
             sram_base: 0,
@@ -78,6 +81,13 @@ impl H3Config {
         self
     }
 
+    /// Replace the SPI0 NOR flash policy used on SPI boot.
+    #[must_use]
+    pub const fn spi(mut self, spi: H3SpiConfig) -> Self {
+        self.spi = spi;
+        self
+    }
+
     /// Set the DRAM mainstage destination.
     #[must_use]
     pub const fn mainstage_load_addr(mut self, mainstage_load_addr: u64) -> Self {
@@ -118,7 +128,10 @@ impl H3Config {
         if self.dram.zq == 0 {
             panic!("H3 DRAM ZQ calibration is incomplete");
         }
-        self
+        Self {
+            spi: self.spi.build(),
+            ..self
+        }
     }
 }
 
@@ -140,10 +153,12 @@ const fn in_h3_dram_end(addr: u64, size: u64) -> bool {
 ))]
 mod stage {
     use super::*;
-    use fstart_core::services::ServiceError;
+    use fstart_core::services::{BlockDevice, ServiceError};
     use fstart_driver_sunxi::h3_ccu::{H3_EGON_MMC_OFFSET, H3Ccu};
     use fstart_driver_sunxi::h3_dramc::H3Dramc;
     use fstart_driver_sunxi::h3_mmc::H3Mmc;
+    use fstart_driver_sunxi::h3_spi::{H3Spi, H3SpiFlash};
+    use fstart_driver_sunxi::spi_nor::SpiNorFlash;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
 
@@ -306,10 +321,76 @@ fstart_sunxi_fel_stash:
         const CONSOLE_CONFIG: Ns16550Config;
     }
 
+    /// Boot medium selected by the BROM eGON boot device.
+    pub enum H3BootMedia {
+        Mmc(H3Mmc),
+        Spi(H3SpiFlash),
+    }
+
+    impl BlockDevice for H3BootMedia {
+        fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, ServiceError> {
+            match self {
+                Self::Mmc(mmc) => mmc.read(offset, buf),
+                Self::Spi(flash) => flash.read(offset, buf),
+            }
+        }
+
+        fn write(&self, offset: u64, buf: &[u8]) -> Result<usize, ServiceError> {
+            match self {
+                Self::Mmc(mmc) => mmc.write(offset, buf),
+                Self::Spi(flash) => flash.write(offset, buf),
+            }
+        }
+
+        fn size(&self) -> u64 {
+            match self {
+                Self::Mmc(mmc) => mmc.size(),
+                Self::Spi(flash) => flash.size(),
+            }
+        }
+
+        fn block_size(&self) -> u32 {
+            match self {
+                Self::Mmc(mmc) => mmc.block_size(),
+                Self::Spi(flash) => flash.block_size(),
+            }
+        }
+    }
+
+    /// SPI NOR images start at flash offset 0; eGON MMC images at 8 KiB.
+    const H3_SPI_MEDIA_BASE: u64 = 0;
+
+    /// Initialize the BROM-selected boot medium and its image base offset.
+    /// Shared by the SRAM bootblock and the DRAM mainstage re-init.
+    fn init_boot_media(
+        config: &'static super::H3Config,
+    ) -> Result<(H3BootMedia, u64), ServiceError> {
+        match boot_device_at(config.sram_base as usize) {
+            BootDevice::Mmc0 => {
+                let mut mmc0 = H3Mmc::new_from_config(&config.mmc0);
+                mmc0.init()?;
+                Ok((H3BootMedia::Mmc(mmc0), H3_EGON_MMC_OFFSET))
+            }
+            BootDevice::Spi => {
+                let mut spi = H3Spi::new_from_config(&config.spi);
+                spi.init()?;
+                let flash = SpiNorFlash::from_controller(spi, config.spi.flash_size);
+                flash.probe()?;
+                Ok((H3BootMedia::Spi(flash), H3_SPI_MEDIA_BASE))
+            }
+            _ => {
+                fstart_log::error!("h3: unsupported eGON boot device");
+                Err(ServiceError::NotSupported)
+            }
+        }
+    }
+
     /// State retained by the DRAM-backed H3 mainstage.
     pub struct H3Mainstage {
         console: Ns16550,
-        mmc0: H3Mmc,
+        boot_media: H3BootMedia,
+        /// Image base offset on the boot medium (8 KiB MMC, 0 SPI).
+        media_base: u64,
         dram_size: u64,
         config: &'static super::H3Config,
     }
@@ -326,16 +407,16 @@ fstart_sunxi_fel_stash:
         }
 
         #[must_use]
-        pub const fn mmc0(&self) -> &H3Mmc {
-            &self.mmc0
+        pub const fn boot_media(&self) -> &H3BootMedia {
+            &self.boot_media
         }
     }
 
     /// Block-backed Linux payload launcher for the H3 mainstage.
     ///
     /// The common `LinuxPayload` launcher boots from memory-mapped firmware;
-    /// H3 boards load the FFS from MMC, so the platform owns this launcher
-    /// behind the same `MainstagePayload` contract.
+    /// H3 boards load the FFS from the boot medium, so the platform owns
+    /// this launcher behind the same `MainstagePayload` contract.
     #[cfg(all(feature = "linux", target_arch = "arm"))]
     pub struct H3LinuxPayload;
 
@@ -343,24 +424,26 @@ fstart_sunxi_fel_stash:
     impl fstart_stage::payload::MainstagePayload<H3Mainstage> for H3LinuxPayload {
         fn boot(devices: H3Mainstage) -> ! {
             let ffs_size = fstart_stage::anchor::image_size();
-            let mut boot =
-                fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(H3_EGON_MMC_OFFSET, 0);
+            let mut boot = fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(
+                devices.media_base,
+                0,
+            );
             let anchor = fstart_stage::fstart_anchor_bytes();
-            let step = if boot.mount(&devices.mmc0, ffs_size, anchor).is_err() {
+            let step = if boot.mount(&devices.boot_media, ffs_size, anchor).is_err() {
                 "mount"
             } else if {
                 fstart_log::info!("h3 mainstage: verifying FFS");
-                boot.verify(&devices.mmc0).is_err()
+                boot.verify(&devices.boot_media).is_err()
             } {
                 "verify"
             } else if {
                 fstart_log::info!("h3 mainstage: loading kernel");
-                boot.load_kernel(&devices.mmc0).is_err()
+                boot.load_kernel(&devices.boot_media).is_err()
             } {
                 "kernel"
             } else if {
                 fstart_log::info!("h3 mainstage: loading FDT");
-                boot.load_fdt(&devices.mmc0).is_err()
+                boot.load_fdt(&devices.boot_media).is_err()
             } {
                 "fdt"
             } else {
@@ -397,29 +480,31 @@ fstart_sunxi_fel_stash:
     impl fstart_stage::payload::MainstagePayload<H3Mainstage> for H5LinuxPayload {
         fn boot(devices: H3Mainstage) -> ! {
             let ffs_size = fstart_stage::anchor::image_size();
-            let mut boot =
-                fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(H3_EGON_MMC_OFFSET, 0);
+            let mut boot = fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(
+                devices.media_base,
+                0,
+            );
             let anchor = fstart_stage::fstart_anchor_bytes();
-            let step = if boot.mount(&devices.mmc0, ffs_size, anchor).is_err() {
+            let step = if boot.mount(&devices.boot_media, ffs_size, anchor).is_err() {
                 "mount"
             } else if {
                 fstart_log::info!("h5 mainstage: verifying FFS");
-                boot.verify(&devices.mmc0).is_err()
+                boot.verify(&devices.boot_media).is_err()
             } {
                 "verify"
             } else if {
                 fstart_log::info!("h5 mainstage: loading BL31");
-                boot.load_firmware(&devices.mmc0).is_err()
+                boot.load_firmware(&devices.boot_media).is_err()
             } {
                 "BL31"
             } else if {
                 fstart_log::info!("h5 mainstage: loading kernel");
-                boot.load_kernel(&devices.mmc0).is_err()
+                boot.load_kernel(&devices.boot_media).is_err()
             } {
                 "kernel"
             } else if {
                 fstart_log::info!("h5 mainstage: loading FDT");
-                boot.load_fdt(&devices.mmc0).is_err()
+                boot.load_fdt(&devices.boot_media).is_err()
             } {
                 "fdt"
             } else {
@@ -542,13 +627,7 @@ fstart_sunxi_fel_stash:
             hooks.after_memory(&mut ctx)?;
         }
 
-        let mut mmc0 = H3Mmc::new_from_config(&config.mmc0);
-        mmc0.init()?;
-        let sram_base = config.sram_base as usize;
-        if boot_device_at(sram_base) != BootDevice::Mmc0 {
-            fstart_log::error!("h3: only eGON MMC0 boot is supported");
-            return Err(ServiceError::NotSupported);
-        }
+        let (boot_media, media_base) = init_boot_media(config)?;
 
         {
             let mut ctx = SunxiEarlyCtx::<H3>::new(&ccu, Some(dram_size));
@@ -556,8 +635,8 @@ fstart_sunxi_fel_stash:
         }
 
         let entry = crate::boot::load_mainstage(
-            &mmc0,
-            H3_EGON_MMC_OFFSET,
+            &boot_media,
+            media_base,
             H3_DRAM_BASE,
             dram_size,
             config.mainstage_load_addr,
@@ -599,17 +678,17 @@ fstart_sunxi_fel_stash:
         unsafe { fstart_log::init(&console) };
         fstart_log::info!("h3 mainstage: console ready");
 
-        let mut mmc0 = H3Mmc::new_from_config(&B::CONFIG.mmc0);
-        if mmc0.init().is_err() {
-            fstart_log::error!("h3 mainstage: MMC0 init failed");
+        let Ok((boot_media, media_base)) = init_boot_media(B::CONFIG) else {
+            fstart_log::error!("h3 mainstage: boot media init failed");
             fstart_arch::halt();
-        }
-        if crate::boot::install_mainstage_locator(&mmc0, H3_EGON_MMC_OFFSET, &handoff).is_err() {
+        };
+        if crate::boot::install_mainstage_locator(&boot_media, media_base, &handoff).is_err() {
             fstart_arch::halt();
         }
         let mainstage = H3Mainstage {
             console,
-            mmc0,
+            boot_media,
+            media_base,
             dram_size: handoff.dram_size,
             config: B::CONFIG,
         };
@@ -638,9 +717,38 @@ pub use stage::{FelStash, return_to_fel};
     feature = "h3",
     any(target_arch = "arm", target_arch = "aarch64")
 ))]
+/// Platform-owned adapter for fixed H3/H5 stage dispatch.
+#[cfg(all(
+    feature = "stage",
+    feature = "h3",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
+pub struct Program<B>(core::marker::PhantomData<B>);
+#[cfg(all(
+    feature = "stage",
+    feature = "h3",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
+impl<B: stage::H3Board> fstart_stage::StageProgram for Program<B> {
+    fn run_stage(handoff: usize) -> ! {
+        #[cfg(fstart_stage_env = "car")]
+        stage::H3::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
+        #[cfg(fstart_stage_env = "ram")]
+        stage::H3::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
+        #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
+        panic!("h3 requires a fixed sunxi stage selection");
+    }
+}
+
+#[cfg(all(
+    feature = "stage",
+    feature = "h3",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 pub use stage::{
-    H3, H3Board, H3BuildSelectedPayload, H3Mainstage, SunxiEarlyBoard, SunxiEarlyBoardHooks,
-    SunxiEarlyCtx, SunxiEarlyPlatform, SunxiPlatform, run_h3_bootblock, run_h3_mainstage,
+    H3, H3Board, H3BootMedia, H3BuildSelectedPayload, H3Mainstage, SunxiEarlyBoard,
+    SunxiEarlyBoardHooks, SunxiEarlyCtx, SunxiEarlyPlatform, SunxiPlatform, run_h3_bootblock,
+    run_h3_mainstage,
 };
 
 #[cfg(test)]

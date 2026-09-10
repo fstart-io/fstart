@@ -36,6 +36,8 @@ pub enum Pull {
 pub const PORT_A: u8 = 0;
 /// Port B index.
 pub const PORT_B: u8 = 1;
+/// Port C index.
+pub const PORT_C: u8 = 2;
 /// Port F index.
 pub const PORT_F: u8 = 5;
 
