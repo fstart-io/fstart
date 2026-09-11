@@ -34,6 +34,12 @@ pub const MAINSTAGE_LOAD_ADDR: u64 = 0x4100_0000;
 pub const HANDOFF_ADDR: u64 = 0x40ff_f000;
 pub const BOOTBLOCK_STACK_SIZE: u32 = 0x1000;
 pub const MAINSTAGE_STACK_SIZE: u32 = 0x10000;
+/// DRAM mainstage heap for the bump allocator. The linux mainstage path
+/// installs its load policy and opens the FFS directory through heap
+/// (`Vec`/`Box` in `fstart-stage`), so a zero heap fails the boot with
+/// `invalid mainstage memory policy`. Sized to the repo's linux-payload
+/// precedent; the manifest buffer dominates and stays well below this.
+pub const MAINSTAGE_HEAP_SIZE: u32 = 256 * 1024;
 
 fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
@@ -99,7 +105,9 @@ fn policy(soc: SunxiSoc) -> SocPolicy {
 }
 
 /// Shared board geometry as the retired builders declared it: two memory
-/// regions, an SRAM SPL loading the DRAM mainstage, no compression, no heap.
+/// regions, an SRAM SPL loading the DRAM mainstage, no compression. The
+/// DRAM mainstage reserves heap (see MAINSTAGE_HEAP_SIZE); the SPL stays
+/// heapless.
 fn board_config(facts: BoardFacts, policy: &SocPolicy, payload: &Option<PayloadConfig>) -> BoardConfig {
     BoardConfig {
         name: hstr("sunxi"),
@@ -148,7 +156,7 @@ fn board_config(facts: BoardFacts, policy: &SocPolicy, payload: &Option<PayloadC
                 },
                 load_addr: MAINSTAGE_LOAD_ADDR,
                 stack_size: MAINSTAGE_STACK_SIZE,
-                heap_size: None,
+                heap_size: Some(MAINSTAGE_HEAP_SIZE),
                 runs_from: RunsFrom::Ram,
                 compression: Compression::None,
                 data_addr: None,
