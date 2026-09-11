@@ -11,50 +11,17 @@ board = "sifive-unmatched"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
 stage-bin = "fstart-stage"
-features = ["sifive-unmatched"]
-
-[features]
-default = []
-host = ["dep:fbuild"]
-runtime = []
-stage = [
-  "runtime",
-  "dep:fstart-arch",
-  "dep:fstart-driver-uart",
-  "dep:fstart-log",
-  "dep:fstart-stage",
-  "dep:serde",
-  "dep:ufmt",
-]
-riscv64 = ["fstart-arch?/riscv64", "fstart-stage?/riscv64"]
-ffs = ["fstart-stage?/ffs"]
-bootstrap = ["fstart-stage?/bootstrap"]
-ffs-signature = ["fstart-stage?/ffs-signature"]
-ed25519 = ["fstart-stage?/ed25519"]
-sha2-digest = ["fstart-stage?/sha2-digest"]
-sha3-digest = ["fstart-stage?/sha3-digest"]
-lz4 = ["fstart-stage?/lz4"]
-fdt = ["fstart-stage?/fdt"]
-linux = ["fstart-stage?/linux"]
-crabefi = ["fstart-arch?/riscv64-sbi-resume", "fstart-stage?/crabefi"]
-sifive-unmatched = []
+build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core" }
-fstart-arch = { path = "../../../crates/arch", optional = true }
-fstart-driver-uart = { path = "../../../crates/driver-uart", optional = true }
-fstart-log = { path = "../../../crates/log", optional = true }
-fstart-stage = { path = "../../../crates/stage", optional = true }
-fbuild = { path = "../../../tools/fbuild", optional = true }
-serde = { version = "1", default-features = false, features = ["derive"], optional = true }
-ufmt = { version = "0.2", optional = true }
+fstart-arch = { path = "../../../crates/arch", features = ["riscv64"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
+fstart-log = { path = "../../../crates/log" }
+fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
+serde = { workspace = true }
+ufmt = { workspace = true }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
-required-features = ["stage"]
-
-[[bin]]
-name = "fstart-host"
-path = "src/host_main.rs"
-required-features = ["host"]

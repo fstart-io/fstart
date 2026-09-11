@@ -9,19 +9,16 @@ type Windows = Vec<MemoryWindow, 32>;
 
 use crate::dtb_memory::memory_visibility;
 
-pub(crate) fn install(
+/// Fixed-layout install: mount only the image the locator describes instead
+/// of the whole firmware window, so trailing erased flash never enters the
+/// authenticated view.
+pub(crate) fn install_packed(
     writable: &[MemoryWindow],
     extra_reserved: &[MemoryWindow],
     firmware_base: u64,
     firmware_size: u64,
 ) -> Result<(), ServiceError> {
-    install_image(
-        writable,
-        extra_reserved,
-        firmware_base,
-        firmware_size,
-        false,
-    )
+    install_image(writable, extra_reserved, firmware_base, firmware_size, true)
 }
 
 fn install_image(

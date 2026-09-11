@@ -49,7 +49,7 @@ pub use fstart_driver_intel::{
     BootPath, IntelEcamConfig, IntelNorthbridgeDriver, IntelSouthbridgeDriver,
 };
 #[cfg(feature = "stage")]
-pub use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
+pub use fstart_stage::{StageEnvironment, payload::MainstagePayload};
 
 /// Native SMM handler image built by fbuild, embedded into stages whose build
 /// had `FSTART_SMM_IMAGE` set (the DRAM mainstage of SMM-capable boards).
@@ -81,28 +81,6 @@ pub fn intel_microcode_blob() -> Option<&'static [u8]> {
     // SAFETY: the anchor bytes are the stage's aligned `.fstart.anchor` static.
     let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }.ok()?;
     FfsReader::new(image).intel_microcode(anchor)
-}
-
-#[cfg(feature = "stage")]
-pub(crate) fn firmware_window(
-    layout: fstart_core::FlashLayout,
-) -> Result<(u64, usize), ServiceError> {
-    let (base, size) = match layout {
-        fstart_core::FlashLayout::IntelIfd(layout) => {
-            let Some(bios) = layout.bios_region() else {
-                return Err(ServiceError::NotInitialized);
-            };
-            let Some(base) = layout.base().checked_add(u64::from(bios.offset)) else {
-                return Err(ServiceError::NotInitialized);
-            };
-            (base, bios.size)
-        }
-        fstart_core::FlashLayout::X86Legacy(layout) => (layout.base(), layout.size()),
-    };
-    if size == 0 {
-        return Err(ServiceError::NotInitialized);
-    }
-    Ok((base, size as usize))
 }
 
 #[cfg(feature = "stage")]
@@ -188,9 +166,8 @@ pub(crate) struct FfsLoadSpec<C: ConsoleDevice> {
     pub platform: &'static str,
     pub next_stage: &'static str,
     pub next_load_addr: u64,
-    pub geometry: layout::BootGeometry,
-    /// End of the profile's low-DRAM envelope (authored platform bounds for
-    /// unmigrated families). The trained limit is published in the existing
+    pub geometry: layout::IntelBootLayout<'static>,
+    /// End of the linked low-DRAM envelope (BootstrapRam). The trained limit is published in the existing
     /// postcar MTRR stash; postcar/ramstage never read this field.
     pub dram_end: u64,
     /// FFS name of the ramstage file. The bootblock resolves its raw extent
@@ -223,7 +200,7 @@ where
     hooks: Hooks,
     console: C,
     ctx: MainstageCtx,
-    geometry: layout::BootGeometry,
+    geometry: layout::IntelBootLayout<'static>,
     platform_node: &'static str,
     console_node: &'static str,
     #[cfg(feature = "mp")]
@@ -348,7 +325,7 @@ where
     SB: IntelSouthbridgeDriver,
     C: ConsoleDevice,
 {
-    pub geometry: layout::BootGeometry,
+    pub geometry: layout::IntelBootLayout<'static>,
     pub nb_config: &'static NB::Config,
     pub sb_config: &'static SB::Config,
     pub console_config: C::Config,

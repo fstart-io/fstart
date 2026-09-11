@@ -14,7 +14,8 @@ transport distinguishes `IntelIfd` from `X86Legacy`; D945 retains its real
 owns RAM/CAR reservations and actual-size XIP placement. The old board host
 executable, capability relays and duplicate i945 stage geometry are removed.
 Diamondville microcode and the current-artifact ICH7 SMM producer remain real.
-X61 adopts only the generalized physical-layout wrapper; D41S remains legacy.
+X61 adopts only the generalized physical-layout wrapper; D41S was migrated
+in the final batch (see Final board migration and legacy-route removal).
 
 A separate correction implements `IntelEcamConfig` for `IntelI945Config`,
 reporting the same configured base used by existing PCIEXBAR programming.
@@ -231,8 +232,10 @@ changed in this correction.
 ## Migrated scope
 
 **X61 and QEMU RISC-V, ARMv7 and AArch64 use the same concrete plan and executor.**
-This is not a claim that all of fbuild is generic. Remaining board-host/BoardConfig
-builds, including i945 and Pineview, retain their earlier legacy path. None of
+This is not a claim that all of fbuild is generic. At the time, remaining
+board-host/BoardConfig builds, including i945 and Pineview, retained their
+earlier legacy path; all have since been migrated and the legacy path deleted
+(see Final board migration and legacy-route removal). None of
 these three virt boards has a Cargo geometry recipe beside its Rust preset.
 
 - `crates/image-build/src/build_plan.rs`: family-free `BuildPlan`, named
@@ -382,8 +385,9 @@ The last production consumers of `riscv64-xip` / `armv7-xip` Cargo geometry are
 gone. The bounded follow-up has now deleted the metadata schema/resolver,
 `ResolvedImage::Legacy`, `resolved_build.rs`, metadata layout overrides and the
 old `Selection::prepare/prepare_stage` route. All build-profile references name
-`rust`; the ten remaining boards use the separate **BoardConfig host-callback
-path**, which is preserved. Direct Cargo feature validation now lives in the
+`rust`. The ten boards still on the separate **BoardConfig host-callback
+path** at the time have since been migrated and that path deleted (see Final
+board migration and legacy-route removal). Direct Cargo feature validation now lives in the
 narrow `cargo_features` module. Shared BoardConfig linker helpers and its cfg
 vocabulary remain; the common executor still consumes platform-owned schemas.
 
@@ -405,7 +409,9 @@ end exclusively at `2^32`; an entry or emitted symbol (such as `_stack_top`) may
 not have that value. Checked arithmetic also rejects 64-bit extent overflow.
 This is format validation, not a chipset-specific checker.
 
-Ten legacy packages remain for subsequent batches (no migration claim):
+Ten legacy packages remained for subsequent batches at the time (no migration
+claim then; all have since been migrated, see Final board migration and
+legacy-route removal):
 `qemu-q35`, `qemu-sbsa`, `qemu-sifive-u`, `sifive-unmatched`, `intel-d945gclf`
 (i945), `foxconn-d41s` (Pineview), `bananapi-m1`, `orangepi-r1`, `orangepi-pc2`,
 and `licheerv-dock` (the four Sunxi boards).
@@ -487,7 +493,7 @@ This bounded follow-up changes no hardware/runtime program or family migration.
 - Seven common effective plans (RISC-V halt/Linux/UEFI, ARMv7 halt/Linux,
   AArch64 halt, X61 halt) are byte-identical before/after, and all seven release
   assemblies succeed. i945, Pineview and qemu-sifive-u BoardConfig host releases
-  link. All four common routes pass named `check` and generated Cargo-derived
+  link (pre-migration evidence; those flows are now platform plans). All four common routes pass named `check` and generated Cargo-derived
   `ide` with release selections; no live-editor or hardware claim in this cleanup.
   Commands/logs: `/tmp/fstart-metadata-cleanup-acceptance.sh`, matching `.log`,
   and `/tmp/fstart-metadata-cleanup-after/`.
@@ -510,8 +516,9 @@ This bounded follow-up changes no hardware/runtime program or family migration.
   or board lock authority and is not a claim that every historic target file is
   immutable. No workspace/lock ownership cutover or source probes remain.
 
-The ten unmigrated BoardConfig host packages listed above are still the remaining
-scope. No whole-matrix, hardware-boot, stack-high-water or benchmark claim.
+The ten then-unmigrated BoardConfig host packages listed above have since
+been migrated (see Final board migration and legacy-route removal).
+No whole-matrix, hardware-boot, stack-high-water or benchmark claim.
 
 ## Earlier common-plan acceptance evidence
 
@@ -559,3 +566,50 @@ Cargo recipe.
 No hardware boot, stack high-water measurement or full board-matrix claim.
 X61 generated images still contain **erased non-BIOS IFD/GbE/ME ranges** and are
 not factory/full-chip backups. Do not blindly flash the entire generated image.
+
+## Final board migration and legacy-route removal
+
+All ten remaining boards now use the shared Rust platform-plan path, so the
+"ten legacy packages remain" scope stated above is closed: `foxconn-d41s`
+(Pineview), `qemu-q35`, `qemu-sbsa`, `qemu-sifive-u`, `sifive-unmatched`, and
+the four sunxi boards (`bananapi-m1`, `orangepi-r1`, `orangepi-pc2`,
+`licheerv-dock`). Board crates carry typed facts only; platform `host.rs`
+resolvers own all build geometry. The `D41S remains legacy` note above is
+superseded.
+
+The legacy route is deleted, not deprecated:
+
+- `tools/fbuild/src/main.rs`: the `cargo run fstart-host` fallback is gone;
+  every board dispatches through `run_metadata` and must declare a `rust`
+  build-profile.
+- `tools/fbuild/src/board_tool.rs`: `BoardCallbacks`, `board_host_tool!`,
+  the `Source::Legacy` path, and the payload-override/flash-normalize/
+  manifest-validate helpers are gone; every command resolves a platform plan.
+- `tools/fbuild/src/build_board.rs`: the `build_plan::plan` +
+  `build_one_stage` executor and its SMM-artifact builder are gone; the plan
+  executor owns stage and SMM compilation.
+- `tools/fbuild/src/build_plan.rs`: the legacy BoardConfig feature/stage
+  planner and its tests are gone; only `ParsedBoard` remains.
+- `tools/fbuild/src/board_manifest.rs`: the top-level `features` recipe
+  field is gone (deny-unknown-fields rejects it); selected-variant
+  `variant_features` (e.g. the D945 postcar-debug variant) stay.
+- `crates/stage/src/lib.rs`: the `StageBoard` trait and the
+  `stage_bin!(Board)` arm are gone; only `stage_bin!(program: ...)` with a
+  platform `StageProgram` remains. The `StageBoard` re-export in
+  `platform-intel` is removed with it.
+
+q35 fixes that fell out of the migration: `fbuild run` threads the linked
+stage ELF from the plan build result into the x86 pflash (no more guessed
+`fstart-stage.bin` path, which produced a flash without reset vector); the
+pflash step patches the finalized FFS trust policy over the overlaid ELF's
+placeholder trust block; q35 mounts the packed locator-bounded image instead
+of the whole firmware window. q35 halt and UEFI now boot in QEMU; both failed
+before (no serial output on the migrated tree, `mount_boot_media` failure on
+the pre-migration baseline).
+
+Known remaining issues, all reproduced identical on the pre-migration
+baseline and therefore out of migration scope: `qemu-sbsa` halt (RAM
+DTB discovery), `qemu-sifive-u` linux (`boot_integrity`), and the q35
+uefi-disk guest-kernel memory-map failure (firmware boots and launches the
+disk bootloader). `fstart-arch` clippy lints under the current toolchain
+(e.g. `mp.rs` interior-mutable consts) predate this work.

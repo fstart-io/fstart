@@ -18,10 +18,10 @@
 //! `0x500`, VGA regs at `0x400`). `-vga std` (class `0x0300`, no MMIO BAR)
 //! is not supported — use `-device bochs-display`.
 
-use fstart_core::mmio::{read16, write16, write8};
+use fstart_core::mmio::{read16, write8, write16};
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::framebuffer::{Framebuffer, FramebufferInfo};
-use fstart_pci::{PciAddress, PciEcam, PCI_BAR0, PCI_BAR2, PCI_VENDOR_ID, PCI_VENDOR_INVALID};
+use fstart_pci::{PCI_BAR0, PCI_BAR2, PCI_VENDOR_ID, PCI_VENDOR_INVALID, PciAddress, PciEcam};
 use serde::{Deserialize, Serialize};
 
 // -----------------------------------------------------------------------
@@ -98,10 +98,7 @@ impl BochsDisplay {
     /// Returns `None` when no bochs-display device is present.
     /// Returns `Err` when the device is present but unusable
     /// (BARs not allocated).
-    pub fn probe(
-        ecam: &PciEcam,
-        config: BochsDisplayConfig,
-    ) -> Result<Option<Self>, DeviceError> {
+    pub fn probe(ecam: &PciEcam, config: BochsDisplayConfig) -> Result<Option<Self>, DeviceError> {
         let found = Self::find_device(ecam);
         let Some(addr) = found else {
             return Ok(None);

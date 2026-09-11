@@ -1,16 +1,9 @@
-use fstart_platform_qemu::{QemuSbsa, QemuSbsaBoard, QemuSbsaConfig};
-use fstart_stage::{payload::BuildSelectedPayload, StageBoard, StageEnvironment};
+//! QEMU SBSA binding for the handwritten monolithic flow.
+
+use fstart_platform_qemu::{QemuSbsaBoard, QemuSbsaConfig};
+use fstart_platform_qemu::stage_runtime::payload::BuildSelectedPayload;
 
 use crate::Board;
-
-impl StageBoard for Board {
-    const NAME: &'static str = crate::BOARD_NAME;
-    const PLATFORM: fstart_core::Platform = fstart_core::Platform::Aarch64;
-
-    fn run_stage(env: StageEnvironment, handoff: usize) -> ! {
-        QemuSbsa::run_stage::<Self>(env, handoff)
-    }
-}
 
 impl QemuSbsaBoard for Board {
     type Payload = BuildSelectedPayload;

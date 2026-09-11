@@ -124,6 +124,10 @@ pub fn reservations(facts: BoardFacts) -> Result<IntelReservations, std::string:
     let car = match facts.chipset {
         Chipset::Gm965Ich8 => span(0xfef00000, 0x80000),
         Chipset::I945Ich7 => span(crate::i945::I945_CAR_BASE, crate::i945::I945_CAR_SIZE),
+        Chipset::PineviewIch7 => span(
+            crate::pineview::PINEVIEW_CAR_BASE,
+            crate::pineview::PINEVIEW_CAR_SIZE,
+        ),
     };
     let reservations = IntelReservations {
         flash,
@@ -197,6 +201,7 @@ pub fn resolve(
             "06-0f-02", "06-0f-06", "06-0f-07", "06-0f-0a", "06-0f-0b", "06-0f-0d", "06-16-01",
         ],
         Chipset::I945Ich7 => &["06-1c-02", "06-1c-0a"],
+        Chipset::PineviewIch7 => &["06-1c-02", "06-1c-0a"],
     };
     let plan = IntelPlan {
         reservations,
@@ -367,6 +372,60 @@ mod tests {
         plan.flash = FlashTransport::X86Legacy(fstart_core::X86LegacyFlashLayout { size: 0x80000 });
         assert!(plan.validate().is_err());
         assert!(compilation_plan(plan).is_err());
+    }
+
+    #[test]
+    fn pineview_pairing_reuses_family_reservations_with_real_car_delta() {
+        let gm = reservations(FACTS).unwrap();
+        let facts = BoardFacts::new(
+            fstart_core::FlashLayout::X86Legacy(fstart_core::X86LegacyFlashLayout {
+                size: 0x1000000,
+            }),
+            0x1000000,
+            4,
+            Chipset::PineviewIch7,
+        );
+        let plan = resolve(facts, BuildSelection::default()).unwrap();
+        let pineview = &plan.reservations;
+        assert_eq!(
+            pineview.flash,
+            Span {
+                base: 0xff000000,
+                size: 0x1000000
+            }
+        );
+        assert_eq!(pineview.firmware, pineview.flash);
+        assert_eq!(
+            plan.microcode,
+            [
+                "intel-microcode/intel-ucode/06-1c-02",
+                "intel-microcode/intel-ucode/06-1c-0a"
+            ]
+        );
+        assert_eq!(
+            pineview.bootblock.writable.base,
+            crate::pineview::PINEVIEW_CAR_BASE
+        );
+        assert_eq!(
+            pineview.bootblock.writable.size,
+            crate::pineview::PINEVIEW_CAR_SIZE
+        );
+        for role in [
+            fstart_image_build::intel_plan::IntelStage::Postcar,
+            fstart_image_build::intel_plan::IntelStage::Ramstage,
+        ] {
+            let (gm, pineview) = (gm.stage(role), pineview.stage(role));
+            assert_eq!(
+                (gm.image, gm.writable, gm.stack, gm.heap),
+                (
+                    pineview.image,
+                    pineview.writable,
+                    pineview.stack,
+                    pineview.heap
+                )
+            );
+        }
+        assert_eq!(pineview.bootblock.image, pineview.firmware);
     }
 
     #[test]

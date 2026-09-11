@@ -1,11 +1,6 @@
 //! Handwritten QEMU SBSA-ref flow.
 
 use crate::virt::QemuPciRootConfig;
-#[cfg(feature = "host")]
-use fstart_core::{
-    BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryMap, MemoryRegion,
-    MonolithicConfig, RegionKind, StageBuildConfig, StageLayout, hstr, hvec,
-};
 use serde::Serialize;
 
 pub const QEMU_SBSA_FLASH_BASE: u64 = 0x1000_0000;
@@ -14,10 +9,6 @@ pub const QEMU_SBSA_RAM_BASE: u64 = 0x100_0000_0000;
 pub const QEMU_SBSA_RAM_SIZE: u64 = 0x4000_0000;
 pub const QEMU_SBSA_STAGE_LOAD_ADDR: u64 = 0x100_0010_0000;
 pub const QEMU_SBSA_UART_BASE: u64 = 0x6000_0000;
-#[cfg(any(
-    feature = "host",
-    all(feature = "stage", feature = "aarch64", target_arch = "aarch64")
-))]
 const QEMU_SBSA_FFS_OFFSET: u64 = 0x10_0000;
 
 /// Closed SBSA-ref facts consumed by the fixed flow.
@@ -64,81 +55,30 @@ impl Default for QemuSbsaConfig {
     }
 }
 
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_sbsa_memory() -> MemoryMap {
-    MemoryMap {
-        regions: hvec([
-            MemoryRegion {
-                name: hstr("flash"),
-                base: QEMU_SBSA_FLASH_BASE,
-                size: QEMU_SBSA_FLASH_SIZE,
-                kind: RegionKind::Rom,
-            },
-            MemoryRegion {
-                name: hstr("ram"),
-                base: QEMU_SBSA_RAM_BASE,
-                size: QEMU_SBSA_RAM_SIZE,
-                kind: RegionKind::Ram,
-            },
-        ]),
-        flash_layout: None,
-        car: None,
-    }
-}
-
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_sbsa_stages() -> StageLayout {
-    StageLayout::Monolithic(MonolithicConfig {
-        build: StageBuildConfig {
-            firmware_image: Some(FirmwareImageConfig {
-                temp_ram_buffer: None,
-            }),
-            verify_firmware: true,
-            payload: true,
-            pci: true,
-            ..StageBuildConfig::default()
-        },
-        load_addr: QEMU_SBSA_STAGE_LOAD_ADDR,
-        stack_size: 0x40_000,
-        heap_size: Some(0x40_000),
-        data_addr: Some(QEMU_SBSA_STAGE_LOAD_ADDR + 0x20_0000),
-        page_table_addr: None,
-        page_size: Default::default(),
-    })
-}
-
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_sbsa_build_policy() -> BoardBuildPolicy {
-    BoardBuildPolicy {
-        qemu_machine: Some(fstart_core::QemuMachine::SbsaRef),
-        // Leave flash offset zero for the TF-A-loaded BL33 reset stub.
-        firmware_image: FirmwareImagePolicy::memory_mapped(
-            QEMU_SBSA_FLASH_BASE + QEMU_SBSA_FFS_OFFSET,
-            QEMU_SBSA_FLASH_SIZE - QEMU_SBSA_FFS_OFFSET,
-        ),
-        flash_image: Some(FirmwareImagePolicy::memory_mapped(
-            QEMU_SBSA_FLASH_BASE,
-            QEMU_SBSA_FLASH_SIZE,
-        )),
-        pci_root_feature: None,
-        cpu_feature: None,
-    }
-}
-
-#[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
+#[cfg(all(feature = "bundle-sbsa", target_arch = "aarch64"))]
 mod stage {
     use super::QemuSbsaConfig;
     use crate::virt::enumerate_pci;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::pl011::{Pl011, Pl011Config};
-    use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
+    use fstart_stage::{StageEnvironment, StageProgram, payload::MainstagePayload};
 
-    pub trait QemuSbsaBoard: StageBoard {
+    #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "aarch64-relocate")))]
+    compile_error!("SBSA requires monolithic/aarch64-relocate stage and entry selections");
+    #[cfg(not(fstart_payload = "halt"))]
+    compile_error!("SBSA selects the halt payload only");
+
+    pub trait QemuSbsaBoard: 'static {
         type Payload: MainstagePayload<QemuSbsaMainstage>;
         const CONFIG: &'static QemuSbsaConfig;
+    }
+
+    /// Platform-owned adapter for fixed SBSA stage dispatch.
+    pub struct QemuSbsaProgram<B>(core::marker::PhantomData<B>);
+    impl<B: QemuSbsaBoard> StageProgram for QemuSbsaProgram<B> {
+        fn run_stage(handoff: usize) -> ! {
+            QemuSbsa::run_stage::<B>(StageEnvironment::Monolithic, handoff)
+        }
     }
 
     pub struct QemuSbsa;
@@ -209,5 +149,5 @@ mod stage {
     }
 }
 
-#[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
-pub use stage::{QemuSbsa, QemuSbsaBoard, QemuSbsaMainstage};
+#[cfg(all(feature = "bundle-sbsa", target_arch = "aarch64"))]
+pub use stage::{QemuSbsa, QemuSbsaBoard, QemuSbsaMainstage, QemuSbsaProgram};

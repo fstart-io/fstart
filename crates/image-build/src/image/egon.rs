@@ -5,9 +5,10 @@ const CHECKSUM_STAMP: u32 = 0x5F0A6C39;
 const HEADER_LEN: usize = 96;
 const SPL_SIGNATURE: &[u8; 4] = b"SPL\x02";
 
-pub fn patch_file(bin_path: &Path) -> Result<(), String> {
-    let mut data = std::fs::read(bin_path).map_err(|e| format!("failed to read binary: {e}"))?;
-
+/// Pad a flat SPL to the eGON 8-KiB granule and fill its length, signature
+/// and checksum. The FFS assembler applies this to the initial stage before
+/// packing; `patch_ffs` later reseals the checksum once the locator is set.
+pub fn prepare_image(data: &mut Vec<u8>) -> Result<(), String> {
     if data.len() < HEADER_LEN {
         return Err("binary too small for Allwinner eGON header (< 96 bytes)".to_string());
     }
@@ -28,17 +29,21 @@ pub fn patch_file(bin_path: &Path) -> Result<(), String> {
     data[0x10..0x14].copy_from_slice(&image_size.to_le_bytes());
     data[0x14..0x18].copy_from_slice(SPL_SIGNATURE);
 
-    let checksum = word_sum(&data);
+    let checksum = word_sum(data);
     data[0x0C..0x10].copy_from_slice(&checksum.to_le_bytes());
-    verify(&data)?;
-
-    std::fs::write(bin_path, &data).map_err(|e| format!("failed to write patched binary: {e}"))?;
+    verify(data)?;
 
     eprintln!(
         "[fstart] Allwinner eGON patched: raw_size={raw_size:#x}, \
          image_size={image_size:#x}, checksum={checksum:#010x}"
     );
     Ok(())
+}
+
+pub fn patch_file(bin_path: &Path) -> Result<(), String> {
+    let mut data = std::fs::read(bin_path).map_err(|e| format!("failed to read binary: {e}"))?;
+    prepare_image(&mut data)?;
+    std::fs::write(bin_path, &data).map_err(|e| format!("failed to write patched binary: {e}"))
 }
 
 pub fn verify(data: &[u8]) -> Result<(), String> {

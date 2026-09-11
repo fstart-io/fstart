@@ -5,13 +5,25 @@ pub use stage::{
     PineviewIch7, PineviewIch7Board, PineviewIch7Mainstage, run_pineview_ich7_mainstage,
 };
 
-#[cfg(feature = "host")]
-use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
-use fstart_core::{
-    CarConfig, Compression, FirmwareImageConfig, FlashLayout, MemoryMap, MemoryRegion,
-    MpBuildConfig, RegionKind, RunsFrom, StageBuildConfig, StageConfig, StageLayout, TempRamBuffer,
-    hstr, hvec,
-};
+/// Platform-owned adapter for fixed Pineview stage dispatch.
+#[cfg(feature = "stage")]
+pub struct Program<B>(core::marker::PhantomData<B>);
+#[cfg(feature = "stage")]
+impl<B: PineviewIch7Board> fstart_stage::StageProgram for Program<B> {
+    fn run_stage(handoff: usize) -> ! {
+        #[cfg(fstart_stage_env = "car")]
+        PineviewIch7::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
+        #[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
+        PineviewIch7::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
+        #[cfg(not(any(
+            fstart_stage_env = "car",
+            fstart_stage_env = "postcar",
+            fstart_stage_env = "ram"
+        )))]
+        panic!("pineview requires a fixed Intel stage selection");
+    }
+}
+
 use fstart_driver_intel::ich7;
 pub use fstart_driver_intel::ich7::{
     HdaConfig, HdaVerbTable, IntelIch7Config, LpcDecodeConfig, LpcFixedIoDecode, LpcFloppyDecode,
@@ -24,15 +36,11 @@ use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use serde::Serialize;
 
 pub const PINEVIEW_NORTHBRIDGE_NODE: &str = "northbridge";
-pub const PINEVIEW_BOOTBLOCK_LOAD_ADDR: u64 = 0xffff_ffff;
-pub const PINEVIEW_POSTCAR_LOAD_ADDR: u64 = 0x0100_0000;
-pub const PINEVIEW_RAMSTAGE_LOAD_ADDR: u64 = 0x0400_0000;
-pub const PINEVIEW_RAMSTAGE_HEAP_SIZE: usize = 0x200000;
 pub const PINEVIEW_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
 pub const PINEVIEW_NEXT_STAGE_NAME: &str = "ramstage";
-/// End of the static low-DRAM window (`workram` base + size): the bootblock
-/// publishes it to the postcar MTRR stash (rounded up to one WB MTRR).
-pub const PINEVIEW_DRAM_END: u64 = 0x0010_0000 + 0x3FF0_0000;
+/// Pineview 32 KiB CAR window.
+pub const PINEVIEW_CAR_BASE: u64 = 0xFEFC_0000;
+pub const PINEVIEW_CAR_SIZE: u64 = 0x8000;
 pub const PINEVIEW_MCHBAR: u64 = 0xFED1_0000;
 pub const PINEVIEW_DMIBAR: u64 = 0xFED1_8000;
 pub const PINEVIEW_EPBAR: u64 = 0xFED1_9000;
@@ -264,126 +272,6 @@ impl PineviewIch7AcpiContext {
     }
 }
 
-#[cfg(feature = "host")]
-pub fn pineview_ich7_microcode() -> MicrocodeConfig {
-    MicrocodeConfig::Intel(IntelMicrocodeConfig {
-        files: hvec([
-            hstr("../../../intel-microcode/intel-ucode/06-1c-02"),
-            hstr("../../../intel-microcode/intel-ucode/06-1c-0a"),
-            hstr("../../../intel-microcode/intel-ucode/06-1c-02"),
-            hstr("../../../intel-microcode/intel-ucode/06-1c-0a"),
-            hstr("../../../intel-microcode/intel-ucode/06-1c-02"),
-            hstr("../../../intel-microcode/intel-ucode/06-1c-0a"),
-            hstr("../../../intel-microcode/intel-ucode/06-1c-02"),
-        ]),
-        early: true,
-        mp: true,
-    })
-}
-
-pub fn pineview_ich7_memory(flash_layout: Option<FlashLayout>) -> MemoryMap {
-    MemoryMap {
-        regions: hvec([MemoryRegion {
-            name: hstr("workram"),
-            base: 0x0010_0000,
-            size: 0x3FF0_0000,
-            kind: RegionKind::Ram,
-        }]),
-        flash_layout,
-        car: Some(CarConfig {
-            // Hardware constraint: 32 KiB CAR window. The bootblock's
-            // writable footprint (.data/.bss + stack + heap) must fit; do
-            // NOT grow this to make an oversized bootblock fit — shrink the
-            // bootblock instead (no mainstage-sized statics in drivers).
-            base: 0xFEFC_0000,
-            size: 0x8000,
-        }),
-    }
-}
-
-pub fn pineview_ich7_stages(config: &PineviewIch7Config) -> StageLayout {
-    StageLayout::MultiStage(hvec([
-        StageConfig {
-            name: hstr("bootblock"),
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig {
-                    temp_ram_buffer: None,
-                }),
-                // Truthful: the bootblock verifies the manifest signature
-                // and the postcar file digests (drives ed25519/sha features).
-                verify_firmware: true,
-                load_next_stage: Some(hstr(PINEVIEW_POSTCAR_STAGE_NAME)),
-                ..StageBuildConfig::default()
-            },
-            load_addr: PINEVIEW_BOOTBLOCK_LOAD_ADDR,
-            // 8 KiB of the 32 KiB CAR window; the rest holds .data/.bss
-            // (the x86-64 IDT dominates) plus heap. This is enough only
-            // because dependency crates compile with opt-level "s" even in
-            // dev builds (see [profile.dev.package."*"] in the root Cargo.toml):
-            // at opt-level 0 the FFS manifest-verification chain alone needs
-            // ~9 KiB of stack (ManifestView::parse peaked at a 3.7 KiB frame).
-            // If a bootblock stack overflows again, measure frames with
-            // objdump before growing this: the CAR window cannot grow.
-            stack_size: 0x2000,
-            heap_size: None,
-            runs_from: RunsFrom::Rom,
-            compression: Compression::None,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        },
-        // Postcar is uncompressed and verified by bootblock before entry.
-        // After teardown it authenticates and decompresses ramstage using the
-        // inherited descriptor. SHA-256 is required; signatures are not.
-        StageConfig {
-            name: hstr(PINEVIEW_POSTCAR_STAGE_NAME),
-            build: StageBuildConfig {
-                load_next_stage: Some(hstr(PINEVIEW_NEXT_STAGE_NAME)),
-                ..StageBuildConfig::default()
-            },
-            load_addr: PINEVIEW_POSTCAR_LOAD_ADDR,
-            // Bounded descriptor loader, compact SHA-256, LZ4 and console.
-            // Full compressed input lives in the reserved DRAM load window.
-            stack_size: 0x2000,
-            heap_size: None,
-            runs_from: RunsFrom::Ram,
-            compression: Compression::None,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        },
-        StageConfig {
-            name: hstr(PINEVIEW_NEXT_STAGE_NAME),
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig {
-                    temp_ram_buffer: Some(TempRamBuffer {
-                        base: 0x0200_0000,
-                        size: 0x0100_0000,
-                    }),
-                }),
-                verify_firmware: true,
-                payload: true,
-                pci: true,
-                acpi: true,
-                smbios: true,
-                mp: Some(MpBuildConfig {
-                    max_cpus: config.max_cpus,
-                    smm: false,
-                }),
-                ..StageBuildConfig::default()
-            },
-            load_addr: PINEVIEW_RAMSTAGE_LOAD_ADDR,
-            stack_size: 0x400000,
-            heap_size: Some(PINEVIEW_RAMSTAGE_HEAP_SIZE as u32),
-            runs_from: RunsFrom::Ram,
-            compression: Compression::Lz4,
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        },
-    ]))
-}
-
 #[cfg(feature = "stage")]
 mod stage {
     use super::*;
@@ -482,7 +370,6 @@ mod stage {
         const NB_CONFIG: &'static IntelPineviewConfig = &Self::CONFIG.northbridge_config();
         const SB_CONFIG: &'static IntelIch7Config = &Self::CONFIG.southbridge_config();
 
-        fn flash_layout() -> fstart_core::FlashLayout;
         type Console: fstart_core::services::ConsoleDevice;
 
         fn console_config() -> <Self::Console as fstart_core::services::ConsoleDevice>::Config;
@@ -491,18 +378,28 @@ mod stage {
         fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
     }
 
-    /// Bring up BSP + APs with the platform's CPU driver. The CPU model and
-    /// PMBASE are platform knowledge; the board only states `max_cpus` in its
-    /// config.
+    /// Bring up BSP + APs with the platform's CPU driver. The Pineview Atom
+    /// is family 6 model 0x1c, covered by the 106cx Pineview CPU driver
+    /// (signatures 0x106c0/0x106ca); only the PMBASE is platform knowledge.
+    /// The board states `max_cpus` in its config.
+    ///
+    /// When fbuild embedded an SMM image into this stage (`SMM_IMAGE`), MP
+    /// setup also performs SMM relocation, installs the handler in TSEG, and
+    /// locks SMRAM via [`fstart_arch::mp::SmmOps`].
     #[cfg(feature = "mp")]
-    fn init_mp(config: &PineviewIch7Config) -> Result<(), ServiceError> {
-        let cpu = fstart_arch::cpu_intel::pineview::PineviewCpuDriver::new(ICH7_PMBASE, None);
+    fn init_mp(nb_config: &'static IntelPineviewConfig, max_cpus: u16) -> Result<(), ServiceError> {
+        // APs must run the same updated microcode as the BSP, whose update
+        // happens in pre-CAR assembly; the blob sits in boot flash.
+        let microcode = crate::intel_microcode_blob();
+        let cpu = fstart_arch::cpu_intel::pineview::PineviewCpuDriver::new(ICH7_PMBASE, microcode);
         let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
+        let northbridge = IntelPineview::new_from_config(nb_config)?;
+        let smm = crate::SMM_IMAGE.map(|_| &northbridge as &dyn fstart_arch::mp::SmmOps);
         fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
             cpu_drivers: &drivers,
-            smm: None,
-            smm_image: None,
-            max_cpus: config.max_cpus,
+            smm,
+            smm_image: crate::SMM_IMAGE,
+            max_cpus,
         })
         .map(|_| ())
         .map_err(|_| ServiceError::HardwareError)
@@ -519,17 +416,7 @@ mod stage {
         let northbridge = IntelPineview::new_from_config(B::NB_CONFIG)?;
         let southbridge = IntelIch7::new_from_config(B::SB_CONFIG)?;
         crate::run_intel_bootblock::<PineviewIch7, _, _, _, B::Console>(
-            FfsLoadSpec {
-                platform: "pineview/ich7",
-                next_stage: PINEVIEW_POSTCAR_STAGE_NAME,
-                next_load_addr: PINEVIEW_POSTCAR_LOAD_ADDR,
-                geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
-                dram_end: PINEVIEW_DRAM_END,
-                ramstage_name: PINEVIEW_NEXT_STAGE_NAME,
-                ramstage_load_addr: PINEVIEW_RAMSTAGE_LOAD_ADDR,
-                console_config: B::console_config(),
-                console_node: B::console_node(),
-            },
+            bootstrap_spec::<B>(0)?,
             hooks,
             northbridge,
             southbridge,
@@ -544,14 +431,28 @@ mod stage {
     where
         B: PineviewIch7Board,
     {
-        crate::run_intel_postcar::<B::Console>(FfsLoadSpec {
+        let Ok(spec) = bootstrap_spec::<B>(1) else {
+            fstart_arch::x86_64::halt()
+        };
+        crate::run_intel_postcar::<B::Console>(spec)
+    }
+
+    fn bootstrap_spec<B: PineviewIch7Board>(
+        index: u16,
+    ) -> Result<FfsLoadSpec<B::Console>, ServiceError> {
+        use fstart_core::layout::RegionKind;
+        let layout = crate::layout::IntelBootLayout::current(index)?;
+        Ok(FfsLoadSpec {
             platform: "pineview/ich7",
-            next_stage: PINEVIEW_NEXT_STAGE_NAME,
-            next_load_addr: PINEVIEW_RAMSTAGE_LOAD_ADDR,
-            geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
-            dram_end: PINEVIEW_DRAM_END,
+            next_stage: PINEVIEW_POSTCAR_STAGE_NAME,
+            next_load_addr: layout.region(RegionKind::BootstrapPostcar)?.base,
+            geometry: layout,
+            dram_end: layout
+                .region(RegionKind::BootstrapRam)?
+                .end()
+                .ok_or(ServiceError::InvalidParam)?,
             ramstage_name: PINEVIEW_NEXT_STAGE_NAME,
-            ramstage_load_addr: PINEVIEW_RAMSTAGE_LOAD_ADDR,
+            ramstage_load_addr: layout.region(RegionKind::BootstrapMainstage)?.base,
             console_config: B::console_config(),
             console_node: B::console_node(),
         })
@@ -570,7 +471,11 @@ mod stage {
 
     #[cfg(feature = "mp")]
     fn init_mp_for_board<B: PineviewIch7Board>() -> Result<(), ServiceError> {
-        init_mp(B::CONFIG)
+        let max_cpus = option_env!("FSTART_INTEL_MAX_CPUS")
+            .ok_or(ServiceError::InvalidParam)?
+            .parse()
+            .map_err(|_| ServiceError::InvalidParam)?;
+        init_mp(B::NB_CONFIG, max_cpus)
     }
 
     /// Handwritten fixed Pineview/ICH7 mainstage flow. Ordering is this function.
@@ -581,6 +486,9 @@ mod stage {
         let Ok(hooks) = B::hooks() else {
             fstart_arch::x86_64::halt();
         };
+        let Ok(layout) = crate::layout::IntelBootLayout::current(2) else {
+            fstart_arch::x86_64::halt()
+        };
         let Ok(mainstage) = crate::bind_intel_mainstage::<
             PineviewIch7,
             IntelPineview,
@@ -590,7 +498,7 @@ mod stage {
             PineviewIch7AcpiContext,
         >(
             MainstageSpec {
-                geometry: crate::layout::BootGeometry::Legacy(B::flash_layout()),
+                geometry: layout,
                 nb_config: B::NB_CONFIG,
                 sb_config: B::SB_CONFIG,
                 console_config: B::console_config(),

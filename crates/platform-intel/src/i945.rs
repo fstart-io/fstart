@@ -493,7 +493,7 @@ mod stage {
             platform: "i945/ich7",
             next_stage: I945_POSTCAR_STAGE_NAME,
             next_load_addr: layout.region(RegionKind::BootstrapPostcar)?.base,
-            geometry: crate::layout::BootGeometry::Descriptor(layout),
+            geometry: layout,
             dram_end: layout
                 .region(RegionKind::BootstrapRam)?
                 .end()
@@ -545,7 +545,7 @@ mod stage {
             I945Ich7AcpiContext,
         >(
             MainstageSpec {
-                geometry: crate::layout::BootGeometry::Descriptor(layout),
+                geometry: layout,
                 nb_config: B::NB_CONFIG,
                 sb_config: B::SB_CONFIG,
                 console_config: B::console_config(),

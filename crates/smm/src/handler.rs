@@ -67,6 +67,7 @@ impl<'a> SmmContext<'a> {
     /// `params` must be either null or a valid, uniquely borrowed pointer to an
     /// [`SmmEntryParams`] block for the current SMI. The caller must be running
     /// in an environment where reading the APM control port is valid.
+    #[inline(always)]
     pub unsafe fn from_raw(params: *mut SmmEntryParams) -> Option<Self> {
         if params.is_null() {
             return None;
@@ -90,6 +91,7 @@ impl<'a> SmmContext<'a> {
     /// The runtime pointer inside `self.params` must either be zero or point to
     /// the single live [`SmmRuntime`] instance. The caller must ensure exclusive
     /// access to the runtime for the duration of the returned borrow.
+    #[inline(always)]
     pub unsafe fn runtime_mut(&mut self) -> Option<&'static mut SmmRuntime> {
         // SAFETY: caller guarantees the runtime pointer contract.
         unsafe { runtime_mut(self.params) }
@@ -102,6 +104,7 @@ impl<'a> SmmContext<'a> {
     /// The context runtime pointer must satisfy [`Self::runtime_mut`]'s safety
     /// requirements. The caller must ensure concurrent SMM handlers serialize
     /// access appropriately if multiple CPUs may update counters.
+    #[inline(always)]
     pub unsafe fn record_entry(&mut self) {
         let cpu = self.params.cpu as usize;
         let apm_command = self.apm_command;
@@ -134,6 +137,7 @@ impl<'a> SmmContext<'a> {
     /// The context runtime pointer must satisfy [`Self::runtime_mut`]'s safety
     /// requirements. The caller must ensure the flag update is serialized with
     /// other SMM runtime users when needed.
+    #[inline(always)]
     pub unsafe fn set_runtime_flags(&mut self, flags: u32) {
         // SAFETY: caller guarantees the runtime pointer contract and
         // serialization of flag updates.
@@ -150,6 +154,7 @@ impl<'a> SmmContext<'a> {
 /// `params.runtime` must either be zero or point to the single live
 /// [`SmmRuntime`] allocation. The caller must ensure exclusive access to that
 /// runtime for the duration of the returned borrow.
+#[inline(always)]
 pub unsafe fn runtime_mut(params: &mut SmmEntryParams) -> Option<&'static mut SmmRuntime> {
     if params.runtime == 0 {
         None
@@ -167,6 +172,7 @@ pub unsafe fn runtime_mut(params: &mut SmmEntryParams) -> Option<&'static mut Sm
 /// `runtime` must point to the shared SMM runtime block and its `handler_lock`
 /// field must be accessible with atomic x86 `xchg` semantics. The caller must
 /// release the lock with [`release_handler_lock`] after a successful acquire.
+#[inline(always)]
 pub unsafe fn obtain_handler_lock(runtime: &mut SmmRuntime) -> bool {
     let lock = &mut runtime.handler_lock as *mut u32;
     let mut old: u32 = 1;
@@ -188,6 +194,7 @@ pub unsafe fn obtain_handler_lock(runtime: &mut SmmRuntime) -> bool {
 ///
 /// `runtime` must point to the shared SMM runtime block and its `handler_lock`
 /// field must remain valid while this function spins.
+#[inline(always)]
 pub unsafe fn wait_for_handler_unlock(runtime: &SmmRuntime) {
     // SAFETY: caller guarantees the lock field stays valid while spinning.
     while unsafe { core::ptr::read_volatile(&runtime.handler_lock) } != 0 {
@@ -201,6 +208,7 @@ pub unsafe fn wait_for_handler_unlock(runtime: &SmmRuntime) {
 ///
 /// The caller must have successfully acquired the lock for `runtime` and must
 /// not release a lock owned by another CPU.
+#[inline(always)]
 pub unsafe fn release_handler_lock(runtime: &mut SmmRuntime) {
     // SAFETY: caller owns the lock acquired via obtain_handler_lock.
     unsafe { core::ptr::write_volatile(&mut runtime.handler_lock, 0) };
@@ -212,6 +220,7 @@ pub unsafe fn release_handler_lock(runtime: &mut SmmRuntime) {
 ///
 /// The caller must be running on a platform where `DEBUGCON` is decoded and
 /// writing bytes to it is safe for the current firmware phase.
+#[inline(always)]
 pub unsafe fn debug_trace(cpu: u32) {
     // SAFETY: caller guarantees DEBUGCON is decoded and safe to write.
     unsafe {

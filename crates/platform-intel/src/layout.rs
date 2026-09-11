@@ -76,36 +76,22 @@ impl<'a> IntelBootLayout<'a> {
     }
 }
 
-/// Geometry source for fixed Intel flows. Only unmigrated families use the
-/// authored legacy windows; GM965 requires the linked descriptor.
-#[cfg(feature = "stage")]
-#[derive(Clone, Copy)]
-pub(crate) enum BootGeometry {
-    Legacy(fstart_core::FlashLayout),
-    Descriptor(IntelBootLayout<'static>),
-}
-
-#[cfg(feature = "stage")]
-impl BootGeometry {
-    pub fn firmware(self) -> Result<(u64, usize), ServiceError> {
-        match self {
-            Self::Legacy(flash) => crate::firmware_window(flash),
-            Self::Descriptor(layout) => {
-                let region = layout.region(RegionKind::Firmware)?;
-                Ok((
-                    region.base,
-                    region
-                        .size
-                        .try_into()
-                        .map_err(|_| ServiceError::InvalidParam)?,
-                ))
-            }
-        }
-    }
-}
-
+/// Linked stage geometry for fixed Intel flows. All Intel boards resolve
+/// their windows from the linked runtime descriptor; there is no authored
+/// board geometry fallback.
 #[cfg(feature = "stage")]
 impl IntelBootLayout<'static> {
+    pub fn firmware(self) -> Result<(u64, usize), ServiceError> {
+        let region = self.region(RegionKind::Firmware)?;
+        Ok((
+            region.base,
+            region
+                .size
+                .try_into()
+                .map_err(|_| ServiceError::InvalidParam)?,
+        ))
+    }
+
     pub fn current(expected_stage: u16) -> Result<Self, ServiceError> {
         Self::parse(
             fstart_stage::layout::current().map_err(|_| ServiceError::InvalidParam)?,

@@ -15,9 +15,8 @@ pub struct BoardManifest {
     pub rel_dir: PathBuf,
     pub platform: Option<String>,
     pub target: Option<String>,
-    pub features: Vec<String>,
-    /// Cargo features contributed by the selected variant (already merged
-    /// into `features`); the host tool build needs them separately.
+    /// Cargo features contributed by the selected variant, merged into unit
+    /// feature sets by the plan executor.
     pub variant_features: Vec<String>,
     /// Declared variants: variant id -> cargo features.
     pub variants: Vec<(String, Vec<String>)>,
@@ -52,8 +51,7 @@ struct PackageMetadata {
     fstart: BoardMetadata,
 }
 
-/// Discovery and opt-in resolved build metadata. Legacy boards keep their
-/// existing host path until their scope is migrated.
+/// Discovery and opt-in resolved build metadata.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct BoardMetadata {
@@ -61,8 +59,6 @@ struct BoardMetadata {
     board: String,
     platform: Option<String>,
     target: Option<String>,
-    #[serde(default)]
-    features: Vec<String>,
     #[serde(default)]
     variants: BTreeMap<String, VariantMetadata>,
     #[serde(default)]
@@ -154,7 +150,6 @@ pub fn find(workspace_root: &Path, board_name: &str) -> Result<BoardManifest, St
             let mut resolved = board.clone();
             resolved.board = variant.clone();
             resolved.variant_features = variant_features.clone();
-            resolved.features.extend(variant_features.iter().cloned());
             return Ok(resolved);
         }
     }
@@ -219,7 +214,6 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         rel_dir,
         platform: metadata.platform,
         target: metadata.target,
-        features: metadata.features,
         variant_features: Vec::new(),
         variants: metadata
             .variants
@@ -265,10 +259,6 @@ mod tests {
         target = 'riscv64gc-unknown-none-elf'
         stage-bin = 'fstart-stage'
         acpi-only-devices = true
-        features = [
-            'base', # commas and closing brackets in comments must not leak: , ]
-            "second",
-        ]
         [package.metadata.fstart.variants."test-variant"]
         features = [
             'variant-test', # comment
@@ -310,7 +300,6 @@ mod tests {
         assert_eq!(board.target.as_deref(), Some("riscv64gc-unknown-none-elf"));
         assert_eq!(board.stage_bin.as_deref(), Some("fstart-stage"));
         assert!(board.acpi_only_devices);
-        assert_eq!(board.features, ["base", "second"]);
         assert_eq!(
             board.variants,
             [("test-variant".into(), vec!["variant-test".into()])]
@@ -384,13 +373,11 @@ mod tests {
         // Deliberately no workspace manifest or board compilation.
         inventory.add("vendor/test", MANIFEST);
         let base = find(&inventory.0, "test-board").unwrap();
-        assert_eq!(base.features, ["base", "second"]);
         assert!(base.variant_features.is_empty());
         let variant = find(&inventory.0, "test-variant").unwrap();
         assert_eq!(variant.board, "test-variant");
         assert_eq!(variant.package, base.package);
         assert_eq!(variant.rel_dir, Path::new("vendor/test"));
-        assert_eq!(variant.features, ["base", "second", "variant-test"]);
         assert_eq!(variant.variant_features, ["variant-test"]);
         assert!(find(&inventory.0, "missing").is_err());
     }

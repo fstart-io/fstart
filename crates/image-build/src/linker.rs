@@ -8,6 +8,94 @@ use fstart_core::{
     StageLayout, effective_stage_load_addr,
 };
 
+/// RAM-loaded stage resolved for the common executor: linker text with the
+/// platform-encoded layout descriptor plus the ELF expectations validated
+/// after link. Family-free: any RAM-loaded stage (an SRAM SPL or a DRAM
+/// mainstage) selects it with its own fixed window and descriptor regions.
+/// XIP and x86 stages keep their own resolvers.
+#[derive(Debug)]
+pub struct ResolvedRamStage {
+    pub linker_script: String,
+    pub expectations: crate::elf::Expectations,
+    /// Linked RAM window backing the flat-image capacity and the descriptor
+    /// reservation.
+    pub memory: crate::plan::Span,
+}
+
+/// Emit the legacy RAM layout for one stage with an embedded layout
+/// descriptor, plus the expectations the common executor validates.
+/// The descriptor section follows `.text` so its BYTE emission inherits
+/// loaded read-only flags, mirroring the XIP layout contract.
+pub fn resolved_ram_stage(
+    config: &BoardConfig,
+    stage_name: &str,
+    descriptor: &crate::layout::EncodedLayout,
+) -> Result<ResolvedRamStage, String> {
+    if config.platform == Platform::X86_64 {
+        return Err("x86 stages keep their family resolver".into());
+    }
+    if config
+        .memory
+        .regions
+        .iter()
+        .any(|r| r.kind == RegionKind::Rom)
+    {
+        return Err("RAM-resolved stages cannot reserve XIP flash storage".into());
+    }
+    if let StageLayout::MultiStage(stages) = &config.stages
+        && !stages.iter().any(|s| s.name.as_str() == stage_name)
+    {
+        return Err("unknown stage".into());
+    }
+    let linker_script =
+        generate_linker_script_with_layout(config, Some(stage_name), Some(descriptor));
+    let (load_addr, _, _) = stage_memory_params(config, Some(stage_name));
+    let (region_base, region_size) = ram_region_base_size(config, load_addr);
+    let region_end = region_base
+        .checked_add(region_size)
+        .ok_or("RAM region overflows")?;
+    if load_addr < region_base || load_addr >= region_end {
+        return Err("stage load address is outside its RAM region".into());
+    }
+    let memory = crate::plan::Span {
+        base: load_addr,
+        size: region_end - load_addr,
+    };
+    let architecture = match config.platform {
+        Platform::Armv7 => crate::elf::Architecture::Arm,
+        Platform::Aarch64 => crate::elf::Architecture::Aarch64,
+        Platform::Riscv64 => crate::elf::Architecture::Riscv64,
+        _ => return Err("unsupported RAM stage ELF architecture".into()),
+    };
+    let elf64 = config.platform != Platform::Armv7;
+    let expectations = crate::elf::Expectations {
+        architecture,
+        elf64,
+        little_endian: true,
+        stored: std::vec![memory],
+        runtime: std::vec![memory],
+        identity_mapping: true,
+        // The eGON head jump and the normal entry both open their section
+        // at the window origin.
+        entry: Some(memory.base),
+        copy: None,
+        descriptor: crate::elf::Descriptor {
+            section: ".fstart.layout".into(),
+            start_symbol: "_fstart_layout_start".into(),
+            end_symbol: "_fstart_layout_end".into(),
+            bytes: descriptor.as_bytes().to_vec(),
+            reservation: memory,
+        },
+        symbols: std::collections::BTreeMap::new(),
+    };
+    expectations.validate()?;
+    Ok(ResolvedRamStage {
+        linker_script,
+        expectations,
+        memory,
+    })
+}
+
 /// Fixed XIP/copy geometry consumed by reusable linker and ELF helpers.
 /// Platforms supply the already-validated reservations and descriptor bytes.
 pub struct Xip {
@@ -298,52 +386,39 @@ pub fn resolved_intel(
     Ok(out)
 }
 
-pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
-    let mut out = String::new();
-
-    let arch = config.platform.linker_arch();
-
-    let (load_addr, stack_size, heap_size, data_addr, _page_table_addr) =
-        match (&config.stages, stage_name) {
-            (StageLayout::Monolithic(mono), _) => (
-                mono.load_addr,
-                mono.stack_size as u64,
-                u64::from(mono.heap_size.unwrap_or(0)),
-                mono.data_addr,
-                mono.page_table_addr,
-            ),
-            (StageLayout::MultiStage(stages), Some(name)) => {
-                if let Some((index, stage)) = stages
-                    .iter()
-                    .enumerate()
-                    .find(|(_, s)| s.name.as_str() == name)
-                {
-                    (
-                        effective_stage_load_addr(config, index, stage),
-                        stage.stack_size as u64,
-                        u64::from(stage.heap_size.unwrap_or(0)),
-                        stage.data_addr,
-                        stage.page_table_addr,
-                    )
-                } else {
-                    (0x8000_0000, 0x10000, 0, None, None)
-                }
+/// Load/stack/heap selection shared by the legacy script emitter and the
+/// resolved RAM constructor.
+fn stage_memory_params(config: &BoardConfig, stage_name: Option<&str>) -> (u64, u64, u64) {
+    match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => (
+            mono.load_addr,
+            mono.stack_size as u64,
+            u64::from(mono.heap_size.unwrap_or(0)),
+        ),
+        (StageLayout::MultiStage(stages), Some(name)) => {
+            if let Some((index, stage)) = stages
+                .iter()
+                .enumerate()
+                .find(|(_, s)| s.name.as_str() == name)
+            {
+                (
+                    effective_stage_load_addr(config, index, stage),
+                    stage.stack_size as u64,
+                    u64::from(stage.heap_size.unwrap_or(0)),
+                )
+            } else {
+                (0x8000_0000, 0x10000, 0)
             }
-            _ => (0x8000_0000, 0x10000, 0, None, None),
-        };
+        }
+        _ => (0x8000_0000, 0x10000, 0),
+    }
+}
 
-    let rom_region =
-        config.memory.regions.iter().find(|r| {
-            r.kind == RegionKind::Rom && load_addr >= r.base && load_addr < r.base + r.size
-        });
-
-    let car_config = if rom_region.is_some() {
-        config.memory.car.as_ref().map(|c| (c.base, c.size))
-    } else {
-        None
-    };
-
-    let ram_region = config
+/// RAM region lookup shared by the legacy script emitter and the resolved
+/// RAM constructor: the region containing the load address, else the first
+/// RAM region, else any containing region.
+fn ram_region_base_size(config: &BoardConfig, load_addr: u64) -> (u64, u64) {
+    config
         .memory
         .regions
         .iter()
@@ -361,14 +436,53 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
                 .regions
                 .iter()
                 .find(|r| load_addr >= r.base && load_addr < r.base + r.size)
+        })
+        .map(|r| (r.base, r.size))
+        .unwrap_or((0x8000_0000, 0x0800_0000))
+}
+
+pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
+    generate_linker_script_with_layout(config, stage_name, None)
+}
+
+/// Legacy RAM layout plus an optional embedded layout descriptor selected
+/// by migrated RAM-loaded stages. `None` preserves the legacy bytes
+/// exactly; existing callers are unaffected.
+pub fn generate_linker_script_with_layout(
+    config: &BoardConfig,
+    stage_name: Option<&str>,
+    layout: Option<&crate::layout::EncodedLayout>,
+) -> String {
+    let mut out = String::new();
+
+    let arch = config.platform.linker_arch();
+
+    let (load_addr, stack_size, heap_size) = stage_memory_params(config, stage_name);
+    let (data_addr, _page_table_addr) = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => (mono.data_addr, mono.page_table_addr),
+        (StageLayout::MultiStage(stages), Some(name)) => stages
+            .iter()
+            .find(|s| s.name.as_str() == name)
+            .map(|stage| (stage.data_addr, stage.page_table_addr))
+            .unwrap_or((None, None)),
+        _ => (None, None),
+    };
+
+    let rom_region =
+        config.memory.regions.iter().find(|r| {
+            r.kind == RegionKind::Rom && load_addr >= r.base && load_addr < r.base + r.size
         });
+
+    let car_config = if rom_region.is_some() {
+        config.memory.car.as_ref().map(|c| (c.base, c.size))
+    } else {
+        None
+    };
 
     let (ram_origin, ram_length) = if let Some((car_base, car_size)) = car_config {
         (car_base, car_size)
     } else {
-        ram_region
-            .map(|r| (r.base, r.size))
-            .unwrap_or((0x8000_0000, 0x0800_0000))
+        ram_region_base_size(config, load_addr)
     };
 
     let is_first_stage = match (&config.stages, stage_name) {
@@ -468,6 +582,7 @@ pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) ->
             needs_egon_header,
             config.platform,
             has_x86_car,
+            layout,
         );
     }
 
@@ -719,6 +834,7 @@ fn generate_xip_layout(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn generate_ram_layout(
     out: &mut String,
     ram_origin: u64,
@@ -729,6 +845,7 @@ fn generate_ram_layout(
     needs_egon_header: bool,
     platform: Platform,
     has_x86_car: bool,
+    layout: Option<&crate::layout::EncodedLayout>,
 ) {
     if let Some(bss_addr) = bss_origin {
         let code_length = bss_addr - ram_origin;
@@ -752,6 +869,9 @@ fn generate_ram_layout(
             write_allwinner_egon_section(out, "CODE");
         }
         write_text_section(out, "CODE");
+        if let Some(descriptor) = layout {
+            out.push_str(&layout_section(descriptor, "CODE"));
+        }
         write_anchor_section(out, "CODE", platform, heap_size);
         write_rodata_section(out, "CODE");
         write_data_section(out, "CODE");
@@ -775,6 +895,9 @@ fn generate_ram_layout(
             write_allwinner_egon_section(out, "RAM");
         }
         write_text_section(out, "RAM");
+        if let Some(descriptor) = layout {
+            out.push_str(&layout_section(descriptor, "RAM"));
+        }
         write_anchor_section(out, "RAM", platform, heap_size);
         write_rodata_section(out, "RAM");
         write_data_section(out, "RAM");
@@ -896,7 +1019,175 @@ mod tests {
         RegionKind, SecurityConfig, SignatureAlgorithm, StageBuildConfig, StageLayout, hstr, hvec,
     };
 
-    use super::generate_linker_script;
+    use super::{generate_linker_script, resolved_ram_stage};
+    use crate::layout::EncodedLayout;
+    use crate::plan::Span;
+    use fstart_core::layout::RegionKind as LayoutKind;
+
+    fn sunxi_like_config() -> fstart_core::BoardConfig {
+        fstart_core::BoardConfig {
+            name: hstr("sunxi-test"),
+            platform: Platform::Armv7,
+            memory: MemoryMap {
+                regions: hvec([
+                    MemoryRegion {
+                        name: hstr("sram"),
+                        base: 0,
+                        size: 0x8000,
+                        kind: RegionKind::Ram,
+                    },
+                    MemoryRegion {
+                        name: hstr("dram"),
+                        base: 0x4000_0000,
+                        size: 0x4000_0000,
+                        kind: RegionKind::Ram,
+                    },
+                ]),
+                flash_layout: None,
+                car: None,
+            },
+            stages: StageLayout::MultiStage(hvec([
+                fstart_core::StageConfig {
+                    name: hstr("bootblock"),
+                    build: StageBuildConfig {
+                        load_next_stage: Some(hstr("main")),
+                        ..StageBuildConfig::default()
+                    },
+                    load_addr: 0,
+                    stack_size: 0x1000,
+                    heap_size: None,
+                    runs_from: fstart_core::RunsFrom::Ram,
+                    compression: fstart_core::Compression::None,
+                    data_addr: None,
+                    page_table_addr: None,
+                    page_size: Default::default(),
+                },
+                fstart_core::StageConfig {
+                    name: hstr("main"),
+                    build: StageBuildConfig {
+                        verify_firmware: true,
+                        payload: true,
+                        fdt: true,
+                        ..StageBuildConfig::default()
+                    },
+                    load_addr: 0x4100_0000,
+                    stack_size: 0x10000,
+                    heap_size: None,
+                    runs_from: fstart_core::RunsFrom::Ram,
+                    compression: fstart_core::Compression::None,
+                    data_addr: None,
+                    page_table_addr: None,
+                    page_size: Default::default(),
+                },
+            ])),
+            security: SecurityConfig {
+                signing_algorithm: SignatureAlgorithm::Ed25519,
+                pubkey_file: hstr("keys/dev-signing.pub"),
+                required_digests: hvec([fstart_core::DigestAlgorithm::Sha256]),
+            },
+            payload: None,
+            microcode: None,
+            soc_image_format: fstart_core::SocImageFormat::AllwinnerEgon,
+            full_flash_image: false,
+            build: BoardBuildPolicy::default(),
+            acpi: None,
+            smbios: None,
+            smm: None,
+            boot_hart_id: 0,
+        }
+    }
+
+    #[test]
+    fn ram_stage_resolution_embeds_descriptor_and_expects_ram_window() {
+        let config = sunxi_like_config();
+        let sram = Span {
+            base: 0,
+            size: 0x8000,
+        };
+        let boot_descriptor = EncodedLayout::encode(
+            0,
+            &[
+                sram.region(LayoutKind::Image),
+                sram.region(LayoutKind::Writable),
+            ],
+        )
+        .unwrap();
+        let bootblock = resolved_ram_stage(&config, "bootblock", &boot_descriptor).unwrap();
+        assert!(bootblock.linker_script.contains("ENTRY(_head_jump)"));
+        assert!(bootblock.linker_script.contains("KEEP(*(.head.egon))"));
+        assert!(
+            bootblock
+                .linker_script
+                .contains(".fstart.layout : ALIGN(8)")
+        );
+        assert_eq!(bootblock.memory, sram);
+        bootblock.expectations.validate().unwrap();
+        assert_eq!(bootblock.expectations.entry, Some(0));
+
+        let main_window = Span {
+            base: 0x4100_0000,
+            size: 0x8000_0000 - 0x4100_0000,
+        };
+        let main_descriptor = EncodedLayout::encode(
+            1,
+            &[
+                main_window.region(LayoutKind::Image),
+                main_window.region(LayoutKind::Writable),
+            ],
+        )
+        .unwrap();
+        let main = resolved_ram_stage(&config, "main", &main_descriptor).unwrap();
+        assert!(main.linker_script.contains("ENTRY(_start)"));
+        assert!(!main.linker_script.contains("KEEP(*(.head.egon))"));
+        assert_eq!(main.memory, main_window);
+        main.expectations.validate().unwrap();
+
+        // The descriptor is opt-in: legacy output has no layout section.
+        assert!(!generate_linker_script(&config, Some("bootblock")).contains(".fstart.layout"));
+    }
+
+    #[test]
+    fn ram_stage_resolution_rejects_xip_flash_and_unknown_stages() {
+        let config = sunxi_like_config();
+        let descriptor = EncodedLayout::encode(
+            0,
+            &[Span {
+                base: 0,
+                size: 0x8000,
+            }
+            .region(LayoutKind::Image)],
+        )
+        .unwrap();
+        assert!(
+            resolved_ram_stage(&config, "postcar", &descriptor)
+                .unwrap_err()
+                .contains("unknown stage")
+        );
+        let mut xip = sunxi_like_config();
+        xip.memory
+            .regions
+            .push(MemoryRegion {
+                name: hstr("flash"),
+                base: 0x2000_0000,
+                size: 0x0200_0000,
+                kind: RegionKind::Rom,
+            })
+            .unwrap();
+        // The bootblock load address stays in SRAM, but any flash storage
+        // reservation keeps the XIP resolver authoritative.
+        assert!(
+            resolved_ram_stage(&xip, "bootblock", &descriptor)
+                .unwrap_err()
+                .contains("XIP")
+        );
+        let mut x86 = sunxi_like_config();
+        x86.platform = Platform::X86_64;
+        assert!(
+            resolved_ram_stage(&x86, "bootblock", &descriptor)
+                .unwrap_err()
+                .contains("x86")
+        );
+    }
 
     #[test]
     fn ram_loaded_ffs_reserves_its_build_policy_window() {

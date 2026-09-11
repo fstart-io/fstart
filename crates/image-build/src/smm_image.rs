@@ -273,6 +273,11 @@ pub fn handler_from_rlibs(deps_dir: &Path, work_dir: &Path) -> Result<SmmHandler
         // build_board_smm_stage) so each function/data item lands in its own
         // section.
         .arg("--gc-sections")
+        // Root GC at the SMM handler itself: the default `_start` entry
+        // would otherwise pull the entire stage world (console formatting,
+        // CAR setup, …) into the SMRAM blob.
+        .arg("-e")
+        .arg("fstart_smm_handler")
         .arg("-o")
         .arg(&elf)
         .arg("-u")
@@ -283,7 +288,94 @@ pub fn handler_from_rlibs(deps_dir: &Path, work_dir: &Path) -> Result<SmmHandler
     }
     cmd.arg("--end-group");
     run_tool(&mut cmd)?;
+    assert_no_got_indirects(&elf)?;
     handler_from_elf(&elf, work_dir)
+}
+
+/// Reject SMM handler blobs that need a dynamic loader.
+///
+/// The installed blob is a raw byte copy into SMRAM: RIP-relative
+/// indirect calls/jumps through `.got`/`.data` (what rustc emits for
+/// cross-crate calls without LTO) would resolve to link-time addresses and
+/// fault on entry. The SMI path must instead be force-inlined into the
+/// board's `fstart_smm_handler` (see `#[inline(always)]` on the SMI
+/// dispatch chain), leaving only direct relative calls behind. Any
+/// remaining GOT-indirect whose slot lives in a data section fails the
+/// build loudly instead of producing a blob that triple-faults.
+fn assert_no_got_indirects(elf: &Path) -> Result<(), BuildError> {
+    let data = std::fs::read(elf)?;
+    let file = object::File::parse(data.as_slice())
+        .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
+    let text = file
+        .section_by_name(".text")
+        .ok_or_else(|| BuildError::Tool(format!(".text section not found in {}", elf.display())))?;
+    let text_vma = text.address();
+    let bytes = text.data().map_err(|e| {
+        BuildError::Tool(format!("failed to read .text from {}: {e}", elf.display()))
+    })?;
+    let mut data_ranges = Vec::new();
+    for section in file.sections() {
+        let name = section.name().unwrap_or("");
+        if matches!(
+            name,
+            ".got" | ".got.plt" | ".data" | ".data.rel.ro" | ".rodata" | ".fstart.keep"
+        ) {
+            data_ranges.push((section.address(), section.address() + section.size()));
+        }
+    }
+    if let Some((off, slot)) = find_got_indirect(text_vma, bytes, &data_ranges) {
+        return Err(BuildError::Tool(format!(
+            "SMM blob calls through GOT at .text+{off:#x} (slot {slot:#x}); \
+             force-inline the SMI path into fstart_smm_handler",
+        )));
+    }
+    Ok(())
+}
+
+/// Scan `.text` bytes for RIP-relative indirect calls/jumps whose slot lives
+/// in a data section. Returns the first hit as (text offset, slot address).
+/// Pure to stay unit-testable; see [`assert_no_got_indirects`].
+fn find_got_indirect(
+    text_vma: u64,
+    bytes: &[u8],
+    data_ranges: &[(u64, u64)],
+) -> Option<(usize, u64)> {
+    let mut i = 0usize;
+    while i + 6 <= bytes.len() {
+        // Optional REX prefix, then FF /2 (call) or FF /4 (jmp) with
+        // ModRM mod=00 rm=101 (RIP-relative).
+        let (modrm_off, insn_len) =
+            if bytes[i] == 0xFF && (bytes[i + 1] == 0x15 || bytes[i + 1] == 0x25) {
+                (i + 1, 6u64)
+            } else if (0x40..0x50).contains(&bytes[i])
+                && i + 7 <= bytes.len()
+                && bytes[i + 1] == 0xFF
+                && (bytes[i + 2] == 0x15 || bytes[i + 2] == 0x25)
+            {
+                (i + 2, 7u64)
+            } else {
+                i += 1;
+                continue;
+            };
+        let disp = i32::from_le_bytes([
+            bytes[modrm_off + 1],
+            bytes[modrm_off + 2],
+            bytes[modrm_off + 3],
+            bytes[modrm_off + 4],
+        ]) as i64;
+        let slot = text_vma
+            .wrapping_add(i as u64)
+            .wrapping_add(insn_len)
+            .wrapping_add(disp as u64);
+        if data_ranges
+            .iter()
+            .any(|&(base, end)| slot >= base && slot < end)
+        {
+            return Some((i, slot));
+        }
+        i += 1;
+    }
+    None
 }
 
 fn rlibs_in(dir: &Path) -> Result<Vec<PathBuf>, BuildError> {
@@ -447,6 +539,28 @@ fn as_u32(value: usize) -> Result<u32, BuildError> {
 mod tests {
     use super::*;
     use fstart_smm::header::{HeaderError, SmmImageHeader};
+
+    #[test]
+    fn got_indirect_scan_finds_rip_relative_calls() {
+        // call *0x100(%rip) at offset 0 with .text at 0: slot = 6 + 0x100.
+        let bytes = [0xff, 0x15, 0x00, 0x01, 0x00, 0x00, 0x90];
+        assert_eq!(
+            find_got_indirect(0, &bytes, &[(0x100, 0x200)]),
+            Some((0, 0x106)),
+        );
+        // Direct relative call is not an indirect.
+        let direct = [0xe8, 0x00, 0x01, 0x00, 0x00, 0x90];
+        assert_eq!(find_got_indirect(0, &direct, &[(0x100, 0x200)]), None);
+        // REX-prefixed jmp through GOT is caught too.
+        let jmp = [0x48, 0xff, 0x25, 0xf9, 0x00, 0x00, 0x00];
+        assert_eq!(
+            find_got_indirect(0, &jmp, &[(0x100, 0x200)]),
+            Some((0, 0x100)),
+        );
+        // Indirect through a slot inside .text (jump table) is fine.
+        let table = [0xff, 0x15, 0x00, 0x01, 0x00, 0x00, 0x90];
+        assert_eq!(find_got_indirect(0, &table, &[(0x1000, 0x1100)]), None);
+    }
 
     fn test_handler() -> SmmHandlerImage {
         SmmHandlerImage {

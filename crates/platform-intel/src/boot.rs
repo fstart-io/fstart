@@ -4,7 +4,7 @@
 //! protection or persistent rollback enforcement has been established. The
 //! software chain still authenticates each executable before entry.
 
-use crate::layout::BootGeometry;
+use crate::layout::IntelBootLayout;
 use fstart_arch::x86_64::car_teardown::{POSTCAR_STASH_ADDR, PostcarMtrrStash};
 use fstart_core::layout::RegionKind;
 use fstart_core::services::ServiceError;
@@ -13,16 +13,16 @@ use fstart_core::services::memory_detect::{E820Entry, E820Kind, MAX_E820_ENTRIES
 use fstart_ffs::root::{BootstrapDescriptor, BootstrapRole, DirectoryRef};
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 
-/// Initial stage windows are family layout policy, not image-provided bounds.
-/// Each contains code plus loader scratch and leaves the next stage disjoint.
-const BOOTSTRAP_WINDOW_SIZE: u64 = 0x0100_0000;
+/// Initial stage windows come from the linked descriptor, not authored
+/// board bounds. Each contains code plus loader scratch and leaves the
+/// next stage disjoint.
 
 pub(crate) fn bootstrap_window(
     descriptor: &BootstrapDescriptor,
     role: BootstrapRole,
     expected_address: u64,
     ram_end: u64,
-    geometry: BootGeometry,
+    geometry: IntelBootLayout<'static>,
 ) -> Result<MemoryWindow, ServiceError> {
     if descriptor.role != role
         || descriptor.load_addr != expected_address
@@ -30,35 +30,21 @@ pub(crate) fn bootstrap_window(
     {
         return Err(ServiceError::InvalidParam);
     }
-    if let BootGeometry::Descriptor(layout) = geometry {
-        let kind = match role {
-            BootstrapRole::Postcar => RegionKind::BootstrapPostcar,
-            BootstrapRole::Mainstage => RegionKind::BootstrapMainstage,
-        };
-        let window = layout.destination(kind, ram_end)?;
-        if window.base != expected_address
-            || fstart_stage::boot::bootstrap_footprint(descriptor)
-                .map_err(|_| ServiceError::InvalidParam)?
-                > window.size
-        {
-            return Err(ServiceError::InvalidParam);
-        }
-        return Ok(MemoryWindow {
-            start: window.base,
-            size: window.size,
-        });
+    let kind = match role {
+        BootstrapRole::Postcar => RegionKind::BootstrapPostcar,
+        BootstrapRole::Mainstage => RegionKind::BootstrapMainstage,
+    };
+    let window = geometry.destination(kind, ram_end)?;
+    if window.base != expected_address
+        || fstart_stage::boot::bootstrap_footprint(descriptor)
+            .map_err(|_| ServiceError::InvalidParam)?
+            > window.size
+    {
+        return Err(ServiceError::InvalidParam);
     }
-    let end = expected_address
-        .checked_add(BOOTSTRAP_WINDOW_SIZE)
-        .ok_or(ServiceError::InvalidParam)?
-        .min(ram_end);
-    let size = end
-        .checked_sub(expected_address)
-        .filter(|&size| size != 0)
-        .ok_or(ServiceError::InvalidParam)?;
     Ok(MemoryWindow {
-        start: expected_address,
-        size,
+        start: window.base,
+        size: window.size,
     })
 }
 
@@ -113,54 +99,29 @@ pub(crate) fn import_intel_directory(
 }
 
 pub(crate) fn running_reservations(
-    geometry: BootGeometry,
+    geometry: IntelBootLayout<'static>,
 ) -> Result<heapless::Vec<MemoryWindow, 16>, ServiceError> {
     let mut windows = heapless::Vec::new();
-    match geometry {
-        BootGeometry::Descriptor(layout) => {
-            for region in [
-                layout.region(RegionKind::Image)?,
-                layout.region(RegionKind::Writable)?,
-            ]
-            .into_iter()
-            .chain(layout.exclusions())
-            {
-                windows
-                    .push(MemoryWindow {
-                        start: region.base,
-                        size: region.size,
-                    })
-                    .map_err(|_| ServiceError::InvalidParam)?;
-            }
-        }
-        BootGeometry::Legacy(_) => {
-            for window in [
-                MemoryWindow {
-                    start: 0,
-                    size: 0x100000,
-                },
-                MemoryWindow {
-                    start: 0x2000000,
-                    size: 0x1000000,
-                },
-            ]
-            .into_iter()
-            .chain(
-                fstart_stage::boot::running_stage_windows()
-                    .map_err(|_| ServiceError::InvalidParam)?,
-            ) {
-                windows
-                    .push(window)
-                    .map_err(|_| ServiceError::InvalidParam)?;
-            }
-        }
+    for region in [
+        geometry.region(RegionKind::Image)?,
+        geometry.region(RegionKind::Writable)?,
+    ]
+    .into_iter()
+    .chain(geometry.exclusions())
+    {
+        windows
+            .push(MemoryWindow {
+                start: region.base,
+                size: region.size,
+            })
+            .map_err(|_| ServiceError::InvalidParam)?;
     }
     Ok(windows)
 }
 
 pub(crate) fn install_intel_load_policy(
     entries: &[E820Entry],
-    geometry: BootGeometry,
+    geometry: IntelBootLayout<'static>,
 ) -> Result<(), ServiceError> {
     let mut writable = heapless::Vec::<MemoryWindow, MAX_E820_ENTRIES>::new();
     let mut reserved = heapless::Vec::<MemoryWindow, { MAX_E820_ENTRIES + 16 }>::new();

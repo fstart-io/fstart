@@ -56,6 +56,10 @@ macro_rules! smm_bin {
 /// by the SMM trampoline for the current CPU, or null to indicate no work. The
 /// caller must invoke this only while executing in SMM with the expected CPU and
 /// platform state for `B`.
+/// Force-inline the whole SMI dispatch chain into the board's
+/// `fstart_smm_handler` so the installed blob contains no cross-crate
+/// PLT/GOT calls (the raw `ld` link cannot resolve them for SMRAM).
+#[inline(always)]
 pub unsafe fn handle<B: SmmStageBoard>(params: *mut SmmEntryParams) {
     unsafe {
         let Some(mut ctx) = SmmContext::from_raw(params) else {

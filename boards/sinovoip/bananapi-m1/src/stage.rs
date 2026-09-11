@@ -7,18 +7,8 @@ use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_sunxi::a20::{
     A20Board, A20BuildSelectedPayload, SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx, A20,
 };
-use fstart_stage::{StageBoard, StageEnvironment};
 
 use crate::Board;
-
-impl StageBoard for Board {
-    const NAME: &'static str = crate::BOARD_NAME;
-    const PLATFORM: fstart_core::Platform = crate::PLATFORM;
-
-    fn run_stage(env: StageEnvironment, handoff: usize) -> ! {
-        A20::run_stage::<Self>(env, handoff)
-    }
-}
 
 /// Board-specific seams for the fixed A20 flow.
 pub struct BananaPiM1Hooks;

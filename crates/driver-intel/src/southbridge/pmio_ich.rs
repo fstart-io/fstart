@@ -197,19 +197,19 @@ impl PmIo {
     /// Create a new PM I/O accessor.
     ///
     /// `base` is the PMBASE I/O port address (e.g., 0x0500 for ICH7).
-    #[inline]
+    #[inline(always)]
     pub const fn new(base: u16) -> Self {
         Self { base }
     }
 
     /// Return the PMBASE I/O port address.
-    #[inline]
+    #[inline(always)]
     pub const fn base(&self) -> u16 {
         self.base
     }
 
     /// Read a 32-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn read32(&self, offset: u16) -> u32 {
         debug_assert!(offset + 4 <= PMSIZE);
         // SAFETY: caller constructed PmIo with a valid PMBASE.
@@ -217,7 +217,7 @@ impl PmIo {
     }
 
     /// Write a 32-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn write32(&self, offset: u16, val: u32) {
         debug_assert!(offset + 4 <= PMSIZE);
         // SAFETY: caller constructed PmIo with a valid PMBASE.
@@ -225,56 +225,56 @@ impl PmIo {
     }
 
     /// Read a 16-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn read16(&self, offset: u16) -> u16 {
         debug_assert!(offset + 2 <= PMSIZE);
         unsafe { fstart_core::pio::inw(self.base + offset) }
     }
 
     /// Write a 16-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn write16(&self, offset: u16, val: u16) {
         debug_assert!(offset + 2 <= PMSIZE);
         unsafe { fstart_core::pio::outw(self.base + offset, val) }
     }
 
     /// Read an 8-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn read8(&self, offset: u16) -> u8 {
         debug_assert!(offset < PMSIZE);
         unsafe { fstart_core::pio::inb(self.base + offset) }
     }
 
     /// Write an 8-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn write8(&self, offset: u16, val: u8) {
         debug_assert!(offset < PMSIZE);
         unsafe { fstart_core::pio::outb(self.base + offset, val) }
     }
 
     /// Set bits in a 32-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn setbits32(&self, offset: u16, bits: u32) {
         let v = self.read32(offset);
         self.write32(offset, v | bits);
     }
 
     /// Clear bits in a 32-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn clrbits32(&self, offset: u16, bits: u32) {
         let v = self.read32(offset);
         self.write32(offset, v & !bits);
     }
 
     /// Set bits in a 16-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn setbits16(&self, offset: u16, bits: u16) {
         let v = self.read16(offset);
         self.write16(offset, v | bits);
     }
 
     /// Clear bits in a 16-bit PM register.
-    #[inline]
+    #[inline(always)]
     pub fn clrbits16(&self, offset: u16, bits: u16) {
         let v = self.read16(offset);
         self.write16(offset, v & !bits);
@@ -357,7 +357,7 @@ impl PmIo {
     }
 
     /// Get a [`TcoIo`] sub-accessor for the TCO register block.
-    #[inline]
+    #[inline(always)]
     pub const fn tco(&self) -> TcoIo {
         TcoIo {
             base: self.base + TCO_BASE_OFFSET,
@@ -380,54 +380,54 @@ pub struct TcoIo {
 
 impl TcoIo {
     /// Read an 8-bit TCO register.
-    #[inline]
+    #[inline(always)]
     pub fn read8(&self, offset: u16) -> u8 {
         debug_assert!(offset < 0x20);
         unsafe { fstart_core::pio::inb(self.base + offset) }
     }
 
     /// Write an 8-bit TCO register.
-    #[inline]
+    #[inline(always)]
     pub fn write8(&self, offset: u16, val: u8) {
         debug_assert!(offset < 0x20);
         unsafe { fstart_core::pio::outb(self.base + offset, val) }
     }
 
     /// Read the OS/ACPI command byte written to TCO_DAT_IN.
-    #[inline]
+    #[inline(always)]
     pub fn read_dat_in(&self) -> u8 {
         self.read8(TCO_DAT_IN)
     }
 
     /// Write the SMI handler response byte to TCO_DAT_OUT.
-    #[inline]
+    #[inline(always)]
     pub fn write_dat_out(&self, value: u8) {
         self.write8(TCO_DAT_OUT, value);
     }
 
     /// Read a 16-bit TCO register.
-    #[inline]
+    #[inline(always)]
     pub fn read16(&self, offset: u16) -> u16 {
         debug_assert!(offset + 2 <= 0x20);
         unsafe { fstart_core::pio::inw(self.base + offset) }
     }
 
     /// Write a 16-bit TCO register.
-    #[inline]
+    #[inline(always)]
     pub fn write16(&self, offset: u16, val: u16) {
         debug_assert!(offset + 2 <= 0x20);
         unsafe { fstart_core::pio::outw(self.base + offset, val) }
     }
 
     /// Read a 32-bit TCO register (TCO1_STS + TCO2_STS combined).
-    #[inline]
+    #[inline(always)]
     pub fn read32(&self, offset: u16) -> u32 {
         debug_assert!(offset + 4 <= 0x20);
         unsafe { fstart_core::pio::inl(self.base + offset) }
     }
 
     /// Write a 32-bit TCO register.
-    #[inline]
+    #[inline(always)]
     pub fn write32(&self, offset: u16, val: u32) {
         debug_assert!(offset + 4 <= 0x20);
         unsafe { fstart_core::pio::outl(self.base + offset, val) }
@@ -437,6 +437,10 @@ impl TcoIo {
     ///
     /// Handles the BOOT_STS ordering requirement: clear other bits first,
     /// then clear BOOT_STS (must be cleared after SECOND_TO_STS).
+    ///
+    /// Force-inlined: the SMM handler blob is a raw copy with no dynamic
+    /// loader, so no cross-crate PLT call may survive on the SMI path.
+    #[inline(always)]
     pub fn reset_tco_status(&self) -> u32 {
         let sts = self.read32(TCO1_STS);
         // Clear everything except BOOT_STS first.

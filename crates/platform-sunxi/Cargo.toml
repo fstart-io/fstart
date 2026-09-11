@@ -8,11 +8,7 @@ publish = false
 
 [features]
 default = []
-a20 = []
-d1 = []
-h3 = []
-host = []
-linux = ["fstart-stage?/linux", "fstart-stage?/ffs", "fstart-stage?/ffs-signature"]
+host = ["dep:fstart-image-build", "dep:serde_json"]
 stage = [
   "dep:fstart-arch",
   "dep:fstart-driver-uart",
@@ -36,8 +32,54 @@ riscv64 = [
   "fstart-arch?/riscv64",
   "fstart-stage?/riscv64",
 ]
+a20 = []
+d1 = []
+h3 = []
+linux = ["fstart-stage?/linux", "fstart-stage?/ffs", "fstart-stage?/ffs-signature"]
+# Firmware policy belongs to this platform, not per-board forwarding recipes.
+# The SRAM SPL verifies firmware through the hash-pinned bootstrap only; it
+# still links the FFS reader for the stage-local allocator the current
+# bootstrap path requires at link time.
+bundle-a20-bootblock = ["stage", "a20", "armv7", "fstart-stage?/armv7", "fstart-stage?/ffs"]
+bundle-a20-main = [
+  "stage", "a20", "armv7", "linux",
+  "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
+  "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
+  "fstart-stage?/lz4", "fstart-stage?/fdt", "fstart-stage?/linux",
+]
+bundle-h3-bootblock = ["stage", "h3", "armv7", "fstart-stage?/armv7", "fstart-stage?/ffs"]
+bundle-h3-main = [
+  "stage", "h3", "armv7", "linux",
+  "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
+  "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
+  "fstart-stage?/lz4", "fstart-stage?/fdt", "fstart-stage?/linux",
+]
+bundle-h5-bootblock = [
+  "stage", "h3", "aarch64",
+  "fstart-stage?/aarch64", "fstart-stage?/aarch64-sunxi-rmr-entry", "fstart-stage?/ffs",
+]
+bundle-h5-main = [
+  "stage", "h3", "aarch64", "linux",
+  "fstart-stage?/aarch64", "fstart-stage?/aarch64-sunxi-rmr-entry",
+  "fstart-stage?/ffs", "fstart-stage?/ed25519",
+  "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
+  "fstart-stage?/lz4", "fstart-stage?/fdt", "fstart-stage?/linux",
+]
+bundle-d1-bootblock = [
+  "stage", "d1", "riscv64",
+  "fstart-stage?/riscv64", "fstart-stage?/riscv64-sunxi-entry", "fstart-stage?/ffs",
+]
+bundle-d1-main = [
+  "stage", "d1", "riscv64", "linux",
+  "fstart-stage?/riscv64", "fstart-stage?/riscv64-sunxi-entry",
+  "fstart-stage?/ffs", "fstart-stage?/ed25519",
+  "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
+  "fstart-stage?/lz4", "fstart-stage?/fdt", "fstart-stage?/linux",
+]
 
 [dependencies]
+fstart-image-build = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
 fstart-core = { workspace = true }
 fstart-driver-sunxi = { workspace = true }
 fstart-arch = { workspace = true, optional = true }

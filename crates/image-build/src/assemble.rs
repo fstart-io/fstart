@@ -61,9 +61,12 @@ pub fn assemble(
         StageLayout::MultiStage(stages) => {
             for (i, stage_bin) in stage_binaries.iter().enumerate() {
                 if i == 0 {
-                    let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
+                    let mut bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
                     })?;
+                    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
+                        crate::image::egon::prepare_image(&mut bin_data)?;
+                    }
                     match parse_elf_segments(&stage_bin.path, Compression::None) {
                         Ok(segs) => log_stage_segments(&stage_bin.name, &stage_bin.path, &segs),
                         Err(err) => eprintln!(

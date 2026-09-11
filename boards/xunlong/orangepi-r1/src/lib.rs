@@ -3,7 +3,7 @@
 #![no_std]
 
 pub mod config;
-#[cfg(feature = "stage")]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 mod stage;
 
 /// Orange Pi R1 marker selected by the board-owned stage entry.

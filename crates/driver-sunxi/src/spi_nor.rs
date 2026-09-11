@@ -132,16 +132,11 @@ impl<B> SpiNorFlash<B> {
             fstart_log::error!("spi-nor: no flash detected");
             return Err(ServiceError::HardwareError);
         }
-        let jedec =
-            (u32::from(id[0]) << 16) | (u32::from(id[1]) << 8) | u32::from(id[2]);
+        let jedec = (u32::from(id[0]) << 16) | (u32::from(id[1]) << 8) | u32::from(id[2]);
         fstart_log::info!(
             "spi-nor: JEDEC {}{}",
             fstart_log::Hex(u64::from(jedec)),
-            if self.fast_read {
-                " (fast read)"
-            } else {
-                ""
-            }
+            if self.fast_read { " (fast read)" } else { "" }
         );
         Ok(id)
     }
@@ -280,8 +275,9 @@ mod tests {
                     if fast {
                         self.last_dummy = words[4];
                     }
-                    let addr =
-                        (u32::from(words[1]) << 16) | (u32::from(words[2]) << 8) | u32::from(words[3]);
+                    let addr = (u32::from(words[1]) << 16)
+                        | (u32::from(words[2]) << 8)
+                        | u32::from(words[3]);
                     // Wipe the command echo like real full-duplex RX would.
                     words[..cmd_len].fill(0);
                     let data_len = words.len() - cmd_len;
@@ -342,7 +338,10 @@ mod tests {
         let mut buf = [0u8; 32];
         assert_eq!(flash.read(240, &mut buf), Ok(16));
         assert_eq!(flash.read(256, &mut buf), Err(ServiceError::InvalidParam));
-        assert_eq!(flash.read(u64::from(u32::MAX) + 1, &mut buf), Err(ServiceError::InvalidParam));
+        assert_eq!(
+            flash.read(u64::from(u32::MAX) + 1, &mut buf),
+            Err(ServiceError::InvalidParam)
+        );
     }
 
     #[test]

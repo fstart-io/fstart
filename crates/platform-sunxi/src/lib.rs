@@ -14,4 +14,19 @@ mod boot;
 pub mod a20;
 pub mod d1;
 pub mod egon;
+pub mod facts;
 pub mod h3;
+#[cfg(feature = "host")]
+pub mod host;
+
+#[cfg(feature = "stage")]
+#[doc(hidden)]
+pub use fstart_stage as stage_runtime;
+#[cfg(feature = "host")]
+pub use host::Plan;
+
+/// Hygienic firmware entry; dependency names stay inside the platform.
+#[macro_export]
+macro_rules! stage_bin {
+    ($program:ty) => { $crate::stage_runtime::stage_bin!(program: $program); };
+}

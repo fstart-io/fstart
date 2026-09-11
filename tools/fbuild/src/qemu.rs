@@ -31,6 +31,7 @@ pub fn run(
     disk: Option<&str>,
     memory: Option<&str>,
     secure_firmware: Option<&str>,
+    x86_stage_elf: Option<&Path>,
 ) -> Result<(), String> {
     let use_sbsa_ref = build_policy.qemu_machine == Some(QemuMachine::SbsaRef);
     let use_sifive_u = build_policy.qemu_machine == Some(QemuMachine::SifiveU);
@@ -138,27 +139,13 @@ pub fn run(
             }
             Platform::X86_64 => {
                 let pflash_size = 16 * 1024 * 1024;
-                let workspace = binary.parent().unwrap().parent().unwrap();
-                let profile = if binary.to_str().unwrap_or("").contains("release")
-                    || std::env::args().any(|a| a == "--release")
-                {
-                    "release"
-                } else {
-                    "debug"
-                };
-
-                let stage_bin = workspace
-                    .join("x86_64-unknown-none")
-                    .join(profile)
-                    .join("fstart-stage.bin");
-                let pflash_path = if stage_bin.exists() {
-                    create_x86_pflash(binary, &stage_bin, pflash_size)?
-                } else {
-                    eprintln!(
-                        "[fstart] warning: stage .bin not found at {}, using FFS directly",
-                        stage_bin.display()
-                    );
-                    create_pflash_image_aligned(binary, pflash_size, true)?
+                // The plan build always hands over the linked stage ELF;
+                // without it there is no reset vector or anchor source.
+                let pflash_path = match x86_stage_elf {
+                    Some(elf) => create_x86_pflash_from_elf(binary, elf, pflash_size)?,
+                    None => {
+                        return Err("x86 pflash requires the linked stage ELF".to_string());
+                    }
                 };
 
                 let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
@@ -397,6 +384,9 @@ fn overlay_x86_elf_segments(
     let phentsize = read_elf_u16(&elf_data, 54, "e_phentsize")? as usize;
     let phnum = read_elf_u16(&elf_data, 56, "e_phnum")? as usize;
 
+    // A zero overlay means a mis-linked ELF or wrong base and silently
+    // reproduces a flash without reset vector; fail loudly instead.
+    let mut overlaid = 0u32;
     for idx in 0..phnum {
         let ph = phoff
             .checked_add(idx * phentsize)
@@ -441,6 +431,13 @@ fn overlay_x86_elf_segments(
         let dst_start = (start - flash_base) as usize;
         let dst_end = dst_start + file_size as usize;
         pflash[dst_start..dst_end].copy_from_slice(&elf_data[src_start..src_end]);
+        overlaid += 1;
+    }
+    if overlaid == 0 {
+        return Err(format!(
+            "no flash PT_LOAD segments overlaid from {}",
+            elf_path.display()
+        ));
     }
 
     eprintln!(
@@ -477,38 +474,71 @@ fn read_elf_u64(data: &[u8], offset: usize, field: &str) -> Result<u64, String> 
     Ok(u64::from_le_bytes(bytes))
 }
 
-fn create_x86_pflash(
+/// x86 pflash from the linked stage ELF: overlay its file-backed segments at
+/// their linked addresses (bootblock, reset vector), then lay the FFS image
+/// at its firmware offset and patch the ROM anchor copy.
+fn create_x86_pflash_from_elf(
     ffs_image: &Path,
-    stage_bin: &Path,
+    stage_elf: &Path,
     flash_size: usize,
 ) -> Result<PathBuf, String> {
     let mut pflash = vec![0xFFu8; flash_size];
-    let flash_base = 0x1_0000_0000u64
-        .checked_sub(flash_size as u64)
-        .ok_or_else(|| "invalid x86 flash size".to_string())?;
-
-    let stage_elf = stage_bin.with_extension("");
-    if stage_elf.exists() {
-        overlay_x86_elf_segments(&stage_elf, &mut pflash, flash_base)?;
-    } else {
-        let stage_data =
-            std::fs::read(stage_bin).map_err(|e| format!("failed to read stage binary: {e}"))?;
-        if stage_data.len() != flash_size {
-            return Err(format!(
-                "x86 stage binary {} is {} bytes, but flash size is {} bytes; \
-                 compact .bin images are not safe for x86 pflash placement without ELF {}",
-                stage_bin.display(),
-                stage_data.len(),
-                flash_size,
-                stage_elf.display(),
-            ));
-        }
-        pflash.copy_from_slice(&stage_data);
-    }
-
+    let flash_base = x86_flash_base(flash_size)?;
+    overlay_x86_elf_segments(stage_elf, &mut pflash, flash_base)?;
     let ffs_data =
         std::fs::read(ffs_image).map_err(|e| format!("failed to read FFS image: {e}"))?;
+    finish_x86_pflash(
+        pflash, ffs_image, &ffs_data, stage_elf, flash_base, flash_size,
+    )
+}
 
+fn x86_flash_base(flash_size: usize) -> Result<u64, String> {
+    0x1_0000_0000u64
+        .checked_sub(flash_size as u64)
+        .ok_or_else(|| "invalid x86 flash size".to_string())
+}
+
+/// Legacy compact-.bin fallback for boards without a stage ELF: the binary
+/// must already be a full flash image.
+/// Copy the finalized FFS trust policy over the stage's placeholder trust
+/// block. The ELF overlay carries linked placeholder bytes, but runtime reads
+/// its expected keys from linked code, so the ROM copy must carry the policy
+/// the image builder finalized. Runs after the FFS copy and returns the
+/// patched flash offset for the overlap check.
+fn patch_x86_stage_trust(pflash: &mut [u8], ffs_data: &[u8]) -> Result<usize, String> {
+    use fstart_core::ffs::trust::{TRUST_SIZE, TrustBlock};
+    let mut placeholder = [0u8; TRUST_SIZE];
+    TrustBlock::placeholder().write_to(&mut placeholder);
+    let trust = (0..ffs_data.len().saturating_sub(TRUST_SIZE - 1))
+        .step_by(8)
+        .filter_map(|offset| {
+            let window = &ffs_data[offset..offset + TRUST_SIZE];
+            if window == placeholder {
+                return None;
+            }
+            TrustBlock::parse(window).filter(|block| block.key_count > 0)
+        })
+        .next()
+        .ok_or_else(|| "no finalized trust block found in FFS image".to_string())?;
+    let mut patched = [0u8; TRUST_SIZE];
+    trust.write_to(&mut patched);
+    let dst = (0..pflash.len().saturating_sub(TRUST_SIZE - 1))
+        .step_by(8)
+        .find(|&offset| pflash[offset..offset + TRUST_SIZE] == placeholder)
+        .ok_or_else(|| "stage trust placeholder not found in x86 pflash".to_string())?;
+    pflash[dst..dst + TRUST_SIZE].copy_from_slice(&patched);
+    eprintln!("[fstart] x86 pflash: patched trust at flash offset {dst:#x}");
+    Ok(dst)
+}
+
+fn finish_x86_pflash(
+    mut pflash: Vec<u8>,
+    ffs_image: &Path,
+    ffs_data: &[u8],
+    stage_elf: &Path,
+    flash_base: u64,
+    flash_size: usize,
+) -> Result<PathBuf, String> {
     if ffs_data.len() > flash_size {
         return Err(format!(
             "FFS image ({} bytes) exceeds flash size ({} bytes)",
@@ -530,7 +560,7 @@ fn create_x86_pflash(
         ));
     }
 
-    pflash[FFS_FLASH_OFFSET..ffs_end].copy_from_slice(&ffs_data);
+    pflash[FFS_FLASH_OFFSET..ffs_end].copy_from_slice(ffs_data);
 
     let anchor_magic = b"FSTART01";
     let ffs_anchor_off =
@@ -563,7 +593,7 @@ fn create_x86_pflash(
         )
     })?;
     let stage_anchor_off =
-        x86_elf_symbol_flash_offset(&stage_elf, "_fstart_anchor_early", flash_base, flash_size)?
+        x86_elf_symbol_flash_offset(stage_elf, "_fstart_anchor_early", flash_base, flash_size)?
             .ok_or_else(|| {
                 format!(
                     "missing _fstart_anchor_early in {} while building x86 pflash",
@@ -591,6 +621,16 @@ fn create_x86_pflash(
         "[fstart] x86 pflash: patched anchor at flash offset {:#x} (from FFS offset {:#x})",
         stage_dst, ffs_src,
     );
+    // The trust search must see final bytes, and the patched site must not
+    // overlap the FFS window it was just copied beside.
+    let trust_dst = patch_x86_stage_trust(&mut pflash, ffs_data)?;
+    let trust_end = trust_dst + fstart_core::ffs::trust::TRUST_SIZE;
+    if trust_dst < ffs_end && trust_end > FFS_FLASH_OFFSET {
+        return Err(format!(
+            "stage trust at flash offset {trust_dst:#x} overlaps the FFS window \
+             [{FFS_FLASH_OFFSET:#x}..{ffs_end:#x})",
+        ));
+    }
 
     let pflash_path = ffs_image.with_extension("pflash");
     std::fs::write(&pflash_path, &pflash)

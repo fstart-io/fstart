@@ -2,13 +2,12 @@
 
 #![no_std]
 
-#[cfg(feature = "stage")]
 extern crate ufmt;
 
 pub mod config;
-#[cfg(feature = "stage")]
-mod fu740;
-#[cfg(feature = "stage")]
+#[cfg(fstart_stage_env = "monolithic")]
+pub mod fu740;
+#[cfg(fstart_stage_env = "monolithic")]
 mod stage;
 
 /// HiFive Unmatched board marker selected by the board-owned stage entry.

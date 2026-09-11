@@ -7,6 +7,7 @@ use fstart_core::{FlashLayout, board::UefiBuildProfile};
 pub enum Chipset {
     Gm965Ich8,
     I945Ich7,
+    PineviewIch7,
 }
 
 #[derive(Debug, Clone, Copy)]

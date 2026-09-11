@@ -108,7 +108,11 @@ fn policy(soc: SunxiSoc) -> SocPolicy {
 /// regions, an SRAM SPL loading the DRAM mainstage, no compression. The
 /// DRAM mainstage reserves heap (see MAINSTAGE_HEAP_SIZE); the SPL stays
 /// heapless.
-fn board_config(facts: BoardFacts, policy: &SocPolicy, payload: &Option<PayloadConfig>) -> BoardConfig {
+fn board_config(
+    facts: BoardFacts,
+    policy: &SocPolicy,
+    payload: &Option<PayloadConfig>,
+) -> BoardConfig {
     BoardConfig {
         name: hstr("sunxi"),
         platform: policy.platform,
@@ -451,7 +455,12 @@ mod tests {
             assert_eq!(unit.entry, "armv7");
             assert_eq!(unit.build_std.as_deref(), Some("core,alloc"));
         }
-        let UnitOutput::Executable { load_address, flat_capacity, .. } = &main.output else {
+        let UnitOutput::Executable {
+            load_address,
+            flat_capacity,
+            ..
+        } = &main.output
+        else {
             panic!("main is not executable")
         };
         assert_eq!(
@@ -497,15 +506,29 @@ mod tests {
             ..BANANAPI
         };
         let halt = resolve(dock, select("halt")).unwrap();
-        assert_eq!(halt.unit("bootblock").unwrap().target, "riscv64gc-unknown-none-elf");
-        assert!(resolve(dock, select("linux")).unwrap_err().contains("halt-only"));
-        assert!(resolve(BANANAPI, select("uefi")).unwrap_err().contains("halt and direct Linux"));
+        assert_eq!(
+            halt.unit("bootblock").unwrap().target,
+            "riscv64gc-unknown-none-elf"
+        );
+        assert!(
+            resolve(dock, select("linux"))
+                .unwrap_err()
+                .contains("halt-only")
+        );
+        assert!(
+            resolve(BANANAPI, select("uefi"))
+                .unwrap_err()
+                .contains("halt and direct Linux")
+        );
     }
 
     #[test]
     fn h5_firmware_and_h3_qemu_machine_follow_the_legacy_boards() {
         let plan = resolve(ORANGEPI_PC2, select("linux")).unwrap();
-        assert_eq!(plan.unit("bootblock").unwrap().target, "aarch64-unknown-none");
+        assert_eq!(
+            plan.unit("bootblock").unwrap().target,
+            "aarch64-unknown-none"
+        );
         assert_eq!(plan.unit("main").unwrap().features, ["bundle-h5-main"]);
         let payload = plan.assembly.payload.as_ref().unwrap();
         let firmware = payload.firmware.as_ref().unwrap();
@@ -522,7 +545,10 @@ mod tests {
             ..BANANAPI
         };
         let plan = resolve(r1, select("halt")).unwrap();
-        assert_eq!(plan.assembly.build.qemu_machine, Some(QemuMachine::OrangePiPc));
+        assert_eq!(
+            plan.assembly.build.qemu_machine,
+            Some(QemuMachine::OrangePiPc)
+        );
         assert_eq!(plan.unit("main").unwrap().features, ["bundle-h3-main"]);
         let UnitOutput::Executable { flat_capacity, .. } = &plan.unit("main").unwrap().output
         else {

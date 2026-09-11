@@ -23,7 +23,7 @@ members = [
   "crates/smm",
   "crates/boot",
 ]
-exclude = ["attic", "boards"]
+exclude = ["boards"]
 
 [workspace.package]
 version = "0.1.0"

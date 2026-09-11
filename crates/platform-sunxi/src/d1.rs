@@ -102,7 +102,7 @@ mod stage {
     use fstart_driver_sunxi::d1_dramc::D1Dramc;
     use fstart_driver_sunxi::d1_mmc::D1Mmc;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::{StageBoard, StageEnvironment};
+    use fstart_stage::StageEnvironment;
 
     use crate::egon::{BootDevice, boot_device_at};
 
@@ -111,7 +111,7 @@ mod stage {
     /// ponytail: no board hooks yet — the D1 CCU muxes its own UART pins and
     /// the first board needs nothing else; add a hooks trait like H3's when
     /// a board does.
-    pub trait D1Board: StageBoard {
+    pub trait D1Board: Sized + 'static {
         const CONFIG: &'static D1Config;
         const CONSOLE_CONFIG: Ns16550Config;
     }
@@ -237,6 +237,21 @@ mod stage {
         loop {
             core::hint::spin_loop();
         }
+    }
+}
+
+/// Platform-owned adapter for fixed D1 stage dispatch.
+#[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
+pub struct Program<B>(core::marker::PhantomData<B>);
+#[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
+impl<B: stage::D1Board> fstart_stage::StageProgram for Program<B> {
+    fn run_stage(handoff: usize) -> ! {
+        #[cfg(fstart_stage_env = "car")]
+        stage::D1::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
+        #[cfg(fstart_stage_env = "ram")]
+        stage::D1::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
+        #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
+        panic!("d1 requires a fixed sunxi stage selection");
     }
 }
 

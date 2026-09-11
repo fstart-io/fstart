@@ -34,6 +34,10 @@ pub struct Q35HostBridgeConfig {
 pub struct Q35HostBridge {
     config: Q35HostBridgeConfig,
     ecam: PciEcam,
+    /// TSEG base captured from the e820 map during [`Self::init_with_e820`].
+    /// Zero until initialized; consumed by the SMM flow (`q35_smm`).
+    #[cfg(feature = "smm")]
+    tseg_base: u64,
 }
 
 unsafe impl Send for Q35HostBridge {}
@@ -54,7 +58,12 @@ impl Q35HostBridge {
             bus_end: config.bus_end,
         })
         .map_err(|_| ServiceError::InvalidParam)?;
-        Ok(Self { config, ecam })
+        Ok(Self {
+            config,
+            ecam,
+            #[cfg(feature = "smm")]
+            tseg_base: 0,
+        })
     }
 
     pub fn init_with_e820(&mut self, entries: &[E820Entry]) -> Result<(), ServiceError> {
@@ -91,6 +100,18 @@ impl Q35HostBridge {
             .enumerate_and_allocate()
             .map_err(|_| ServiceError::HardwareError)?;
         self.assign_irqs();
+        // Capture the TSEG window for the SMM flow while the firmware map is
+        // at hand. Decode is a pure MCH config-space read, valid any time.
+        #[cfg(feature = "smm")]
+        {
+            let size = crate::q35_smm::decode_tseg_size();
+            self.tseg_base = crate::q35_smm::tseg_base_from_e820(entries, size);
+            fstart_log::info!(
+                "Q35: TSEG window base={:#x} size={:#x}",
+                self.tseg_base,
+                size
+            );
+        }
         Ok(())
     }
 
@@ -102,6 +123,12 @@ impl Q35HostBridge {
     /// (e.g. the bochs-display probe after `init_with_e820`).
     pub fn ecam(&self) -> &PciEcam {
         &self.ecam
+    }
+
+    /// TSEG base captured during [`Self::init_with_e820`]; zero before init.
+    #[cfg(feature = "smm")]
+    pub(crate) fn tseg_base(&self) -> u64 {
+        self.tseg_base
     }
 
     fn enable_ecam(&self) {

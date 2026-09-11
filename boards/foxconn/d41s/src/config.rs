@@ -1,19 +1,11 @@
 //! Foxconn D41S board metadata and build policy.
 
 use fstart_core::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
-#[cfg(feature = "host")]
-use fstart_core::{dev_security_config, AcpiConfig, AcpiPlatform, BoardBuildPolicy, BoardConfig};
-use fstart_core::{
-    hstr, hvec, FlashLayout, X86LegacyFlashLayout, Platform, SmbiosConfig,
-};
+use fstart_core::{FlashLayout, Platform, SmbiosConfig, X86LegacyFlashLayout, hstr, hvec};
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_superio::ite8721f;
 use fstart_driver_intel::southbridge::hda;
-#[cfg(feature = "host")]
-use fstart_platform_intel::pineview::{
-    pineview_ich7_memory, pineview_ich7_microcode, pineview_ich7_stages,
-};
 use fstart_platform_intel::pineview::{
     LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PineviewIch7Config,
     PineviewIgdConfig, SataConfig, SataMode, UsbConfig,
@@ -60,42 +52,24 @@ pub static D41S_PLATFORM: PineviewIch7Config = PineviewIch7Config::new()
     .gpe0_en(0x0441)
     .build();
 
-#[cfg(feature = "host")]
-#[must_use]
-pub fn board_config() -> BoardConfig {
-    let flash_layout = d41s_flash_layout();
+/// 16-Mbit SPI flash, contiguous legacy mapping (no IFD).
+/// Erase geometry and persistent variable capacity are not inferred from this.
+pub const FLASH_SIZE: u32 = 0x0100_0000;
+pub const FLASH: FlashLayout = FlashLayout::X86Legacy(X86LegacyFlashLayout { size: FLASH_SIZE });
 
-    BoardConfig {
-        name: hstr(BOARD_NAME),
-        platform: PLATFORM,
-        memory: pineview_ich7_memory(Some(flash_layout)),
-        stages: pineview_ich7_stages(&D41S_PLATFORM),
-        security: dev_security_config("keys/dev-signing.pub"),
-        payload: None,
-        microcode: Some(pineview_ich7_microcode()),
-        soc_image_format: Default::default(),
-        full_flash_image: true,
-        acpi: Some(AcpiConfig {
-            print_hex: true,
-            platform: AcpiPlatform::X86,
-        }),
-        smbios: Some(d41s_smbios()),
-        smm: None,
-        build: BoardBuildPolicy {
-            cpu_feature: Some(hstr("cpu-intel-pineview")),
-            ..Default::default()
-        },
-        boot_hart_id: 0,
-    }
+impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
+    const FACTS: fstart_platform_intel::facts::BoardFacts =
+        fstart_platform_intel::facts::BoardFacts::new(
+            FLASH,
+            FLASH_SIZE,
+            D41S_PLATFORM.max_cpus,
+            fstart_platform_intel::facts::Chipset::PineviewIch7,
+        );
 }
 
 #[must_use]
 pub const fn board_name() -> &'static str {
     BOARD_NAME
-}
-
-pub fn d41s_flash_layout() -> FlashLayout {
-    FlashLayout::X86Legacy(X86LegacyFlashLayout { size: 0x0100_0000 })
 }
 
 pub fn d41s_smbios() -> SmbiosConfig {

@@ -1,21 +1,15 @@
-//! HiFive Unmatched static policy and host build metadata.
+//! HiFive Unmatched static policy and board facts.
+//!
+//! Platform Rust owns fixed image budgets; the FU740 SoC policy below stays
+//! board-local and is evaluated by the fixed board flow.
 
-#[cfg(feature = "host")]
-use fstart_core::{
-    dev_security_config, hstr, hvec, BoardBuildPolicy, BoardConfig, Compression, FdtSource,
-    FirmwareConfig, FirmwareImageConfig, FirmwareImagePolicy, FirmwareKind, MemoryMap,
-    MemoryRegion, MonolithicConfig, PayloadConfig, PayloadKind, RegionKind, StageBuildConfig,
-    StageLayout,
-};
-#[cfg(feature = "stage")]
 use fstart_core::mmio32;
-use fstart_core::Platform;
-#[cfg(feature = "stage")]
 use fstart_driver_uart::sifive::SifiveUartConfig;
+use fstart_platform_qemu::facts::{VirtBoardFacts, VirtMachine};
 
-pub const BOARD_NAME: &str = "sifive-unmatched";
-pub const BOARD_PACKAGE: &str = "fstart-board-sifive-unmatched";
-pub const PLATFORM: Platform = Platform::Riscv64;
+impl VirtBoardFacts for crate::Board {
+    const MACHINE: VirtMachine = VirtMachine::Unmatched;
+}
 
 const LIM_BASE: u64 = 0x0800_0000;
 const LIM_SIZE: u64 = 0x0020_0000;
@@ -29,7 +23,6 @@ const FIRMWARE_ADDR: u64 = 0x8300_0000;
 const BOOTARGS: &str = "console=ttySIF0 earlycon=sbi";
 
 /// DDR register profile supported by the fixed FU740 flow.
-#[cfg(feature = "stage")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Fu740DdrProfile {
     /// HiFive Unmatched DIMM/controller values from SiFive's reference setup.
@@ -37,7 +30,6 @@ pub enum Fu740DdrProfile {
 }
 
 /// Static FU740 DDR policy.
-#[cfg(feature = "stage")]
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fu740DdrConfig {
@@ -45,7 +37,6 @@ pub struct Fu740DdrConfig {
     pub dram_size: u64,
 }
 
-#[cfg(feature = "stage")]
 impl Fu740DdrConfig {
     #[must_use]
     pub const fn hifive_unmatched(dram_size: u64) -> Self {
@@ -65,14 +56,12 @@ impl Fu740DdrConfig {
 }
 
 /// Static FU740 PRCI policy.
-#[cfg(feature = "stage")]
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fu740PrciConfig {
     pub reference_clock_hz: u32,
 }
 
-#[cfg(feature = "stage")]
 impl Fu740PrciConfig {
     #[must_use]
     pub const fn hifive_unmatched() -> Self {
@@ -91,7 +80,6 @@ impl Fu740PrciConfig {
 }
 
 /// Closed FU740 policy consumed by the fixed early flow.
-#[cfg(feature = "stage")]
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fu740Config {
@@ -106,7 +94,6 @@ pub struct Fu740Config {
     pub bootargs: &'static str,
 }
 
-#[cfg(feature = "stage")]
 impl Fu740Config {
     #[must_use]
     pub const fn new(
@@ -152,7 +139,6 @@ impl Fu740Config {
 }
 
 /// Unmatched's DDR profile and SPI FFS window, retained in ROM.
-#[cfg(feature = "stage")]
 pub static HIFIVE_UNMATCHED: Fu740Config = Fu740Config::new(
     Fu740DdrConfig::hifive_unmatched(DRAM_SIZE),
     SPI_XIP_BASE,
@@ -165,92 +151,5 @@ pub static HIFIVE_UNMATCHED: Fu740Config = Fu740Config::new(
 .build();
 
 /// Unmatched UART wiring and precomputed divisor, retained in ROM.
-#[cfg(feature = "stage")]
 pub static HIFIVE_UNMATCHED_UART: SifiveUartConfig =
     SifiveUartConfig::new(mmio32(0x1001_0000), 130_000_000, 115_200);
-
-#[cfg(feature = "host")]
-#[must_use]
-pub fn board_config() -> BoardConfig {
-    BoardConfig {
-        name: hstr(BOARD_NAME),
-        platform: PLATFORM,
-        memory: MemoryMap {
-            regions: hvec([
-                MemoryRegion {
-                    name: hstr("lim"),
-                    base: LIM_BASE,
-                    size: LIM_SIZE,
-                    kind: RegionKind::Ram,
-                },
-                MemoryRegion {
-                    name: hstr("spi-xip"),
-                    base: SPI_XIP_BASE,
-                    size: SPI_XIP_SIZE,
-                    kind: RegionKind::Rom,
-                },
-                MemoryRegion {
-                    name: hstr("dram"),
-                    base: DRAM_BASE,
-                    size: DRAM_SIZE,
-                    kind: RegionKind::Ram,
-                },
-            ]),
-            flash_layout: None,
-            car: None,
-        },
-        stages: StageLayout::Monolithic(MonolithicConfig {
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig {
-                    temp_ram_buffer: None,
-                }),
-                verify_firmware: true,
-                payload: true,
-                fdt: true,
-                ..StageBuildConfig::default()
-            },
-            load_addr: LIM_BASE,
-            stack_size: 0x4000,
-            heap_size: Some(0x4000),
-            data_addr: None,
-            page_table_addr: None,
-            page_size: Default::default(),
-        }),
-        security: dev_security_config("keys/dev-signing.pub"),
-        payload: Some(PayloadConfig {
-            kind: PayloadKind::LinuxBoot,
-            kernel_file: Some(hstr("Image-riscv64")),
-            kernel_load_addr: Some(KERNEL_ADDR),
-            fdt: FdtSource::Override(hstr("unmatched.dtb")),
-            dtb_addr: Some(DTB_ADDR),
-            src_dtb_addr: None,
-            bootargs: Some(hstr(BOOTARGS)),
-            print_x86_mtrrs: false,
-            compression: Compression::Lz4,
-            firmware: Some(FirmwareConfig {
-                kind: FirmwareKind::OpenSbi,
-                file: hstr("fw_dynamic.bin"),
-                load_addr: FIRMWARE_ADDR,
-            }),
-            fit_file: None,
-            fit_config: None,
-            fit_parse: None,
-        }),
-        microcode: None,
-        soc_image_format: Default::default(),
-        full_flash_image: false,
-        build: BoardBuildPolicy {
-            firmware_image: FirmwareImagePolicy::memory_mapped(SPI_XIP_BASE, SPI_XIP_SIZE),
-            ..BoardBuildPolicy::default()
-        },
-        acpi: None,
-        smbios: None,
-        smm: None,
-        boot_hart_id: 1,
-    }
-}
-
-#[must_use]
-pub const fn board_name() -> &'static str {
-    BOARD_NAME
-}

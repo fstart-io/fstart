@@ -15,6 +15,9 @@ const APM_CNT_FINALIZE: u8 = 0xcb;
 pub struct Ich7SmmHandler<B = NoBoardSmmHandler>(PhantomData<B>);
 
 impl<B: SmmBoardHandler> SmmHandler for Ich7SmmHandler<B> {
+    /// Inlined into the board SMM entry: the installed blob is a raw copy
+    /// with no dynamic loader, so no cross-crate PLT call may survive here.
+    #[inline(always)]
     unsafe fn handle(ctx: &mut SmmContext<'_>) {
         unsafe {
             let pm_base =
@@ -26,11 +29,16 @@ impl<B: SmmBoardHandler> SmmHandler for Ich7SmmHandler<B> {
             let pm = PmIo::new(pm_base);
             match ctx.apm_command {
                 APM_CNT_ACPI_DISABLE => {
-                    pm.clrbits32(pmio::PM1_CNT, pmio::SCI_EN);
+                    // 16-bit PM1a access: QEMU TCG mishandles 32-bit PIO to
+                    // ACPI-core PM registers (writes vanish), while 16-bit
+                    // works on every engine; SCI_EN is a PM1a bit and the
+                    // upper half stays untouched either way.
+                    pm.clrbits16(pmio::PM1_CNT, pmio::SCI_EN as u16);
                     B::on_apmc(ctx, ctx.apm_command);
                 }
                 APM_CNT_ACPI_ENABLE => {
-                    pm.setbits32(pmio::PM1_CNT, pmio::SCI_EN);
+                    // See above: 16-bit PM1a access for TCG compatibility.
+                    pm.setbits16(pmio::PM1_CNT, pmio::SCI_EN as u16);
                     B::on_apmc(ctx, ctx.apm_command);
                 }
                 APM_CNT_FINALIZE => ctx.set_runtime_flags(SMM_RUNTIME_FLAG_FINALIZED),
@@ -51,6 +59,7 @@ impl<B: SmmBoardHandler> SmmHandler for Ich7SmmHandler<B> {
     }
 }
 
+#[inline(always)]
 fn handle_tco<B: SmmBoardHandler>(ctx: &mut SmmContext<'_>, pm: &PmIo) {
     let tco = pm.tco();
     let sts = tco.read32(pmio::TCO1_STS);

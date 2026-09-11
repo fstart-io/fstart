@@ -26,9 +26,6 @@ impl Resolved {
         source: &ProfileSource,
         mut plan: BuildPlan,
     ) -> Result<Self, String> {
-        if board.features != board.variant_features {
-            return Err("Rust plans do not accept legacy feature recipes".into());
-        }
         let dependency = &board
             .build_profile
             .as_ref()

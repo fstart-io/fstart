@@ -1,24 +1,11 @@
 use clap::{Parser, Subcommand};
-use fstart_core::acpi::AcpiExtraDevice;
-use fstart_core::{BoardConfig, StageLayout};
 
 use crate::build_plan::ParsedBoard;
-use crate::payload::{PayloadChoice, apply_payload_override};
-
-#[derive(Clone, Copy)]
-pub struct BoardCallbacks {
-    pub board_config: fn() -> BoardConfig,
-    pub acpi_only_devices: Option<fn() -> Vec<AcpiExtraDevice>>,
-}
-
-#[derive(Clone, Copy)]
-enum Source<'a> {
-    Legacy(BoardCallbacks),
-    Metadata(&'a crate::board_manifest::BoardManifest),
-}
+use crate::payload::PayloadChoice;
+use fstart_core::StageLayout;
 
 #[derive(Parser)]
-#[command(name = "fstart-board-tool", about = "board-owned fstart build tool")]
+#[command(name = "fbuild", about = "fstart firmware build tool")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -78,33 +65,6 @@ enum Command {
     },
 }
 
-#[macro_export]
-macro_rules! board_host_tool {
-    ($board_config:path) => {
-        fn main() {
-            fbuild::board_tool::main(fbuild::board_tool::BoardCallbacks {
-                board_config: $board_config,
-                acpi_only_devices: None,
-            });
-        }
-    };
-    ($board_config:path, acpi_only_devices = $acpi_only_devices:path) => {
-        fn main() {
-            fbuild::board_tool::main(fbuild::board_tool::BoardCallbacks {
-                board_config: $board_config,
-                acpi_only_devices: Some($acpi_only_devices),
-            });
-        }
-    };
-}
-
-pub fn main(callbacks: BoardCallbacks) {
-    if let Err(err) = dispatch(Cli::parse(), Source::Legacy(callbacks)) {
-        eprintln!("error: {err}");
-        std::process::exit(1);
-    }
-}
-
 /// Run a migrated board directly in fbuild; no board Rust is built on the host.
 pub fn run_metadata(
     manifest: &crate::board_manifest::BoardManifest,
@@ -112,12 +72,12 @@ pub fn run_metadata(
 ) -> Result<(), String> {
     let cli = Cli::try_parse_from(std::iter::once("fbuild").chain(args.iter().map(String::as_str)))
         .map_err(|e| e.to_string())?;
-    dispatch(cli, Source::Metadata(manifest))
+    dispatch(cli, manifest)
 }
 
-fn dispatch(cli: Cli, callbacks: Source<'_>) -> Result<(), String> {
+fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result<(), String> {
     match cli.command {
-        Command::Build { release, payload } => build(callbacks, release, payload).map(|_| ()),
+        Command::Build { release, payload } => build(manifest, release, payload).map(|_| ()),
         Command::Run {
             release,
             payload,
@@ -128,7 +88,7 @@ fn dispatch(cli: Cli, callbacks: Source<'_>) -> Result<(), String> {
             memory,
             secure_firmware,
         } => run(
-            callbacks,
+            manifest,
             release,
             payload,
             kernel.as_deref(),
@@ -138,7 +98,7 @@ fn dispatch(cli: Cli, callbacks: Source<'_>) -> Result<(), String> {
             memory.as_deref(),
             secure_firmware.as_deref(),
         ),
-        Command::Test => run(callbacks, true, None, None, None, None, None, None, None),
+        Command::Test => run(manifest, true, None, None, None, None, None, None, None),
         Command::Assemble {
             release,
             payload,
@@ -146,7 +106,7 @@ fn dispatch(cli: Cli, callbacks: Source<'_>) -> Result<(), String> {
             firmware,
             fit,
         } => assemble(
-            callbacks,
+            manifest,
             release,
             payload,
             kernel.as_deref(),
@@ -161,7 +121,7 @@ fn dispatch(cli: Cli, callbacks: Source<'_>) -> Result<(), String> {
             probe,
             base_address,
         } => flash(
-            callbacks,
+            manifest,
             release,
             probe_run,
             chip.as_deref(),
@@ -172,63 +132,34 @@ fn dispatch(cli: Cli, callbacks: Source<'_>) -> Result<(), String> {
 }
 
 fn load(
-    source: Source<'_>,
+    manifest: &crate::board_manifest::BoardManifest,
     payload: Option<PayloadChoice>,
 ) -> Result<(crate::board_manifest::BoardManifest, ParsedBoard), String> {
-    let callbacks = match source {
-        Source::Legacy(callbacks) => callbacks,
-        Source::Metadata(manifest) => {
-            let root = crate::build_board::workspace_root_pub()?;
-            let resolved = crate::resolved_image::ResolvedImage::load(&root, manifest, payload)?;
-            let config = resolved.assembler_config(&manifest.board)?;
-            return Ok((
-                manifest.clone(),
-                ParsedBoard {
-                    config,
-                    acpi_only_devices: Vec::new(),
-                    resolved: Some(resolved),
-                },
-            ));
-        }
-    };
-    let mut config = (callbacks.board_config)();
-    apply_payload_override(&mut config, payload)?;
-    config
-        .memory
-        .normalize_derived_flash()
-        .map_err(|err| err.to_string())?;
-    let acpi_only_devices = callbacks
-        .acpi_only_devices
-        .map_or_else(Vec::new, |load| load());
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    // The outer fbuild process selects a Cargo-feature variant before this
-    // board-owned host tool starts. Preserve that selection instead of
-    // rediscovering only the base board name from BoardConfig.
-    let board = std::env::var("FSTART_BOARD_VARIANT").unwrap_or_else(|_| config.name.to_string());
-    let manifest = crate::board_manifest::find(&workspace_root, &board)?;
-    validate(&manifest, &config)?;
+    let root = crate::build_board::workspace_root_pub()?;
+    let resolved = crate::resolved_image::ResolvedImage::load(&root, manifest, payload)?;
+    let config = resolved.assembler_config(&manifest.board)?;
     Ok((
-        manifest,
+        manifest.clone(),
         ParsedBoard {
             config,
-            acpi_only_devices,
-            resolved: None,
+            acpi_only_devices: Vec::new(),
+            resolved: Some(resolved),
         },
     ))
 }
 
 fn build(
-    callbacks: Source<'_>,
+    manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
 ) -> Result<crate::build_board::BuildResult, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(callbacks, payload)?;
+    let (manifest, parsed) = load(manifest, payload)?;
     crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)
 }
 
 fn assemble(
-    callbacks: Source<'_>,
+    manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
     kernel: Option<&str>,
@@ -236,7 +167,7 @@ fn assemble(
     fit: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(callbacks, payload)?;
+    let (manifest, parsed) = load(manifest, payload)?;
     assemble_loaded(
         &workspace_root,
         manifest,
@@ -246,6 +177,7 @@ fn assemble(
         firmware,
         fit,
     )
+    .map(|assembled| assembled.image)
 }
 
 fn assemble_loaded(
@@ -256,7 +188,7 @@ fn assemble_loaded(
     kernel: Option<&str>,
     firmware: Option<&str>,
     fit: Option<&str>,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<crate::assemble::AssembledImage, String> {
     crate::assemble::assemble_with_parsed(
         workspace_root,
         manifest,
@@ -269,7 +201,7 @@ fn assemble_loaded(
 }
 
 fn flash(
-    callbacks: Source<'_>,
+    manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     probe_run: bool,
     chip: Option<&str>,
@@ -277,7 +209,7 @@ fn flash(
     base_address: Option<&str>,
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(callbacks, None)?;
+    let (manifest, parsed) = load(manifest, None)?;
     let chip_name = chip.unwrap_or("auto");
     let probe_rs = find_probe_rs().map_err(|e| format!("probe-rs not found: {e}"))?;
 
@@ -311,7 +243,8 @@ fn flash(
             None,
             None,
             None,
-        )?;
+        )?
+        .image;
 
         let ffs_size = std::fs::metadata(&ffs_path).map(|m| m.len()).unwrap_or(0);
         eprintln!(
@@ -384,7 +317,7 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
 }
 
 fn run(
-    callbacks: Source<'_>,
+    manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
     kernel: Option<&str>,
@@ -395,7 +328,7 @@ fn run(
     secure_firmware: Option<&str>,
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(callbacks, payload)?;
+    let (manifest, parsed) = load(manifest, payload)?;
     let config = &parsed.config;
     let build_policy = config.build.clone();
     let platform = config.platform;
@@ -418,7 +351,7 @@ fn run(
         });
 
     if is_multi_stage || has_payload_blobs || needs_x86_pflash || needs_firmware_image {
-        let image_path = assemble_loaded(
+        let assembled = assemble_loaded(
             &workspace_root,
             manifest,
             parsed,
@@ -427,13 +360,20 @@ fn run(
             firmware,
             fit,
         )?;
+        // The x86 pflash combines the assembled FFS with the linked stage
+        // ELF (reset vector, anchor). The plan layout hashes unit dirs, so
+        // the ELF travels with the build result instead of a guessed path.
+        let x86_stage_elf = needs_x86_pflash
+            .then(|| assembled.stages.first().map(|stage| stage.path.as_path()))
+            .flatten();
         crate::qemu::run(
             &build_policy,
             platform,
-            &image_path,
+            &assembled.image,
             disk,
             memory,
             secure_firmware,
+            x86_stage_elf,
         )
     } else {
         let res =
@@ -445,41 +385,7 @@ fn run(
             disk,
             memory,
             secure_firmware,
+            None,
         )
     }
-}
-
-fn validate(
-    manifest: &crate::board_manifest::BoardManifest,
-    config: &BoardConfig,
-) -> Result<(), String> {
-    let is_selected_variant = manifest
-        .variants
-        .iter()
-        .any(|(name, _)| name == &manifest.board);
-    if config.name.as_str() != manifest.board && !is_selected_variant {
-        return Err(format!(
-            "board config name mismatch for {}: manifest board is '{}', board returned '{}'",
-            manifest.package, manifest.board, config.name
-        ));
-    }
-    if let Some(platform) = &manifest.platform
-        && config.platform.as_str() != platform
-    {
-        return Err(format!(
-            "board platform mismatch for {}: manifest platform is '{}', board returned '{}'",
-            manifest.package, platform, config.platform
-        ));
-    }
-    if let Some(target) = &manifest.target
-        && config.platform.target_triple() != target
-    {
-        return Err(format!(
-            "board target mismatch for {}: manifest target is '{}', platform implies '{}'",
-            manifest.package,
-            target,
-            config.platform.target_triple()
-        ));
-    }
-    Ok(())
 }

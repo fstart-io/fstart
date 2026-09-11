@@ -147,7 +147,7 @@ mod stage {
     use fstart_driver_sunxi::a20_spi::{A20Spi, A20SpiFlash};
     use fstart_driver_sunxi::spi_nor::SpiNorFlash;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
+    use fstart_stage::{StageEnvironment, payload::MainstagePayload};
 
     use crate::egon::{BootDevice, boot_device_at};
 
@@ -220,7 +220,7 @@ fstart_sunxi_fel_stash:
     pub trait SunxiEarlyPlatform: SunxiPlatform {}
 
     /// Board contract shared by handwritten sunxi early flows.
-    pub trait SunxiEarlyBoard: StageBoard {
+    pub trait SunxiEarlyBoard: Sized + 'static {
         type Platform: SunxiEarlyPlatform;
         type Hooks: SunxiEarlyBoardHooks<Self::Platform>;
 
@@ -415,10 +415,8 @@ fstart_sunxi_fel_stash:
                 fstart_arch::halt();
             }
             let ffs_size = fstart_stage::anchor::image_size();
-            let mut boot = fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(
-                devices.media_base,
-                0,
-            );
+            let mut boot =
+                fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(devices.media_base, 0);
             let anchor = fstart_stage::fstart_anchor_bytes();
             if boot.mount(&devices.boot_media, ffs_size, anchor).is_err()
                 || boot.verify(&devices.boot_media).is_err()

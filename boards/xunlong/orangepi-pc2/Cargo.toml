@@ -11,48 +11,14 @@ board = "orangepi-pc2"
 platform = "aarch64"
 target = "aarch64-unknown-none"
 stage-bin = "fstart-stage"
-features = [
-  "allwinner-h3",
-]
-
-[features]
-default = []
-host = ["dep:fbuild", "fstart-platform-sunxi/host"]
-runtime = []
-stage = [
-  "runtime",
-  "dep:fstart-driver-uart",
-  "dep:fstart-stage",
-  "fstart-platform-sunxi/stage",
-]
-aarch64 = ["fstart-stage?/aarch64", "fstart-platform-sunxi/aarch64"]
-aarch64-sunxi-rmr-entry = ["fstart-stage?/aarch64-sunxi-rmr-entry"]
-ffs = ["fstart-stage?/ffs"]
-bootstrap = ["fstart-stage?/bootstrap"]
-ffs-signature = ["fstart-stage?/ffs-signature"]
-ed25519 = ["fstart-stage?/ed25519"]
-sha2-digest = ["fstart-stage?/sha2-digest"]
-sha3-digest = ["fstart-stage?/sha3-digest"]
-lz4 = ["fstart-stage?/lz4"]
-fdt = ["fstart-stage?/fdt"]
-linux = ["fstart-stage?/linux", "fstart-platform-sunxi/linux"]
-handoff = ["fstart-stage?/handoff"]
-allwinner-h3 = ["fstart-platform-sunxi/h3"]
+build-profile = { dependency = "fstart-platform-sunxi", name = "rust" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core" }
 fstart-driver-sunxi = { path = "../../../crates/driver-sunxi" }
 fstart-platform-sunxi = { path = "../../../crates/platform-sunxi" }
-fstart-driver-uart = { path = "../../../crates/driver-uart", optional = true }
-fstart-stage = { path = "../../../crates/stage", optional = true }
-fbuild = { path = "../../../tools/fbuild", optional = true }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
-required-features = ["stage"]
-
-[[bin]]
-name = "fstart-host"
-path = "src/host_main.rs"
-required-features = ["host"]

@@ -7,14 +7,6 @@ use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_sunxi::h3::{
     H3Board, H3BuildSelectedPayload, SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx, H3,
 };
-use fstart_stage::{StageBoard, StageEnvironment};
-impl StageBoard for Board {
-    const NAME: &'static str = crate::BOARD_NAME;
-    const PLATFORM: fstart_core::Platform = crate::PLATFORM;
-    fn run_stage(env: StageEnvironment, handoff: usize) -> ! {
-        H3::run_stage::<Self>(env, handoff)
-    }
-}
 pub struct OrangePiR1Hooks;
 impl SunxiEarlyBoardHooks<H3> for OrangePiR1Hooks {
     fn before_console(&mut self, _: &mut SunxiEarlyCtx<H3>) -> Result<(), ServiceError> {

@@ -330,7 +330,10 @@ impl IntelIfdFlashLayout {
             if matches!(region.kind, IntelIfdRegion::Descriptor) {
                 descriptor_count += 1;
             }
-            if region.size == 0 || !region.offset.is_multiple_of(4096) || !region.size.is_multiple_of(4096) {
+            if region.size == 0
+                || !region.offset.is_multiple_of(4096)
+                || !region.size.is_multiple_of(4096)
+            {
                 return Err("Intel IFD active regions must be nonzero and page-aligned");
             }
             let region_end = match region.offset.checked_add(region.size) {

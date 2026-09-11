@@ -10,15 +10,17 @@
 use embedded_hal::spi::{ErrorType, SpiBus};
 use fstart_arch::udelay;
 use fstart_core::mmio::{self, MmioReadWrite};
-use fstart_core::services::ServiceError;
 use fstart_core::mmio32;
+use fstart_core::services::ServiceError;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
 
 use crate::a20_ccu::{A20_CCU_BASE, A20_PIO_BASE, A20_SPI0_BASE};
 use crate::pio::{PORT_C, PioGen, SunxiPio};
-use crate::spi_nor::{NOR_FAST_READ_THRESHOLD_HZ, NOR_MAX_3BYTE_SIZE, SpiClockReport, SpiNorFlash, SunxiSpiError};
+use crate::spi_nor::{
+    NOR_FAST_READ_THRESHOLD_HZ, NOR_MAX_3BYTE_SIZE, SpiClockReport, SpiNorFlash, SunxiSpiError,
+};
 
 // ---------------------------------------------------------------------------
 // Board policy
@@ -262,7 +264,10 @@ fn compute_clock(target: u32) -> (u32, u32, u32) {
 fn compute_cdr2(mod_clk: u64, target: u64) -> (u32, u32) {
     let div = mod_clk.div_ceil(2 * target);
     let cdr2 = div.saturating_sub(1).min(255) as u32;
-    (1 << 12 | cdr2, (mod_clk / (2 * (u64::from(cdr2) + 1))) as u32)
+    (
+        1 << 12 | cdr2,
+        (mod_clk / (2 * (u64::from(cdr2) + 1))) as u32,
+    )
 }
 
 /// Smallest `(N, M)` with `(2^N) * (M + 1) >= min_div`.

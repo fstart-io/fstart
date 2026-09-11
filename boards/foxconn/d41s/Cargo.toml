@@ -11,69 +11,18 @@ board = "foxconn-d41s"
 platform = "x86_64"
 target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
-features = [
-  "intel-pineview",
-  "intel-ich7",
-  "ite8721f",
-  "i2c-ck505",
-]
-
-[features]
-default = []
-host = ["dep:fbuild", "fstart-platform-intel/host"]
-runtime = []
-crabefi = ["fstart-stage?/crabefi"]
-stage = [
-  "runtime",
-  "dep:fstart-driver-uart",
-  "dep:fstart-stage",
-  "fstart-platform-intel/stage",
-]
-x86_64 = ["fstart-stage?/x86_64"]
-x86-static-page-tables = ["fstart-stage?/x86-static-page-tables"]
-x86-writable-page-tables = ["fstart-stage?/x86-writable-page-tables"]
-x86-1g-pages = ["fstart-stage?/x86-1g-pages"]
-ffs = ["fstart-stage?/ffs"]
-bootstrap = ["fstart-stage?/bootstrap"]
-ffs-signature = ["fstart-stage?/ffs-signature"]
-ed25519 = ["fstart-stage?/ed25519"]
-sha2-digest = ["fstart-stage?/sha2-digest"]
-sha3-digest = ["fstart-stage?/sha3-digest"]
-lz4 = ["fstart-stage?/lz4"]
-fit = ["fstart-stage?/fit"]
-fdt = ["fstart-stage?/fdt"]
-handoff = ["fstart-stage?/handoff"]
-intel-pineview = []
-intel-ich7 = []
-ite8721f = []
-i2c-ck505 = []
-acpi = [
-  "fstart-stage?/acpi",
-  "fstart-platform-intel/acpi",
-  "fstart-driver-intel/acpi",
-  "fstart-driver-intel/ffs-vbt",
-  "fstart-driver-superio/acpi",
-]
-mp = ["stage", "fstart-platform-intel/mp"]
-smbios = ["fstart-platform-intel/smbios"]
+build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
 fstart-platform-intel = { path = "../../../crates/platform-intel" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
-fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel", features = ["ffs-vbt"] }
-fstart-driver-superio = { path = "../../../crates/driver-superio" }
-fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"], optional = true }
-fstart-stage = { path = "../../../crates/stage", optional = true }
-fbuild = { path = "../../../tools/fbuild", optional = true }
+fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-log = { path = "../../../crates/log" }
+ufmt = { workspace = true }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
-required-features = ["stage"]
-
-[[bin]]
-name = "fstart-host"
-path = "src/host_main.rs"
-required-features = ["host"]

@@ -747,6 +747,7 @@ dependencies = [
  "fstart-image-build",
  "fstart-log",
  "fstart-pci",
+ "fstart-smm",
  "fstart-stage",
  "heapless 0.8.0",
  "serde",
@@ -762,9 +763,11 @@ dependencies = [
  "fstart-core",
  "fstart-driver-sunxi",
  "fstart-driver-uart",
+ "fstart-image-build",
  "fstart-log",
  "fstart-stage",
  "serde",
+ "serde_json",
  "ufmt",
 ]
 

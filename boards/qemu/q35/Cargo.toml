@@ -11,50 +11,16 @@ board = "qemu-q35"
 platform = "x86_64"
 target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
-features = [
-  "qemu-q35",
-]
-
-[features]
-default = []
-host = ["dep:fbuild", "fstart-platform-qemu/host"]
-runtime = []
-crabefi = ["fstart-stage?/crabefi"]
-stage = [
-  "runtime",
-  "dep:fstart-driver-uart",
-  "dep:fstart-stage",
-  "fstart-platform-qemu/stage",
-]
-x86_64 = ["fstart-stage?/x86_64", "fstart-platform-qemu/x86_64"]
-x86-static-page-tables = ["fstart-stage?/x86-static-page-tables"]
-x86-writable-page-tables = ["fstart-stage?/x86-writable-page-tables"]
-x86-1g-pages = ["fstart-stage?/x86-1g-pages"]
-ffs = ["fstart-stage?/ffs"]
-bootstrap = ["fstart-stage?/bootstrap"]
-ffs-signature = ["fstart-stage?/ffs-signature"]
-ed25519 = ["fstart-stage?/ed25519"]
-sha2-digest = ["fstart-stage?/sha2-digest"]
-sha3-digest = ["fstart-stage?/sha3-digest"]
-lz4 = ["fstart-stage?/lz4"]
-fit = ["fstart-stage?/fit"]
-fdt = ["fstart-stage?/fdt"]
-handoff = ["fstart-stage?/handoff"]
-qemu-q35 = []
+build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
+fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
+# ICH8 SMM handler reused for the emulated ICH9 (same PMBASE layout).
+fstart-driver-intel = { path = "../../../crates/driver-intel" }
+# TEMP-PROBE: port I/O for the SMI entry probe.
 fstart-core = { path = "../../../crates/core" }
-fstart-platform-qemu = { path = "../../../crates/platform-qemu" }
-fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"], optional = true }
-fstart-stage = { path = "../../../crates/stage", optional = true }
-fbuild = { path = "../../../tools/fbuild", optional = true }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
-required-features = ["stage"]
-
-[[bin]]
-name = "fstart-host"
-path = "src/host_main.rs"
-required-features = ["host"]

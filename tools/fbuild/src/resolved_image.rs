@@ -1,5 +1,6 @@
 //! Load and execute a concrete Rust platform plan.
-//! BoardConfig host-callback boards are selected separately by board_tool.
+//! Every board resolves through this module; the BoardConfig host-callback
+//! path is retired.
 use crate::{board_manifest::BoardManifest, payload::PayloadChoice, plan_executor::Resolved};
 use std::path::{Path, PathBuf};
 

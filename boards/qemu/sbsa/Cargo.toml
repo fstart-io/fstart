@@ -11,41 +11,12 @@ board = "qemu-sbsa"
 platform = "aarch64"
 target = "aarch64-unknown-none"
 stage-bin = "fstart-stage"
-features = ["qemu-sbsa"]
-
-[features]
-default = []
-host = ["dep:fbuild", "fstart-platform-qemu/host"]
-runtime = []
-stage = ["runtime", "dep:fstart-stage", "dep:fstart-driver-uart", "fstart-platform-qemu/stage"]
-aarch64 = ["fstart-stage?/aarch64", "fstart-platform-qemu/aarch64"]
-aarch64-el2-relocate-entry = ["fstart-stage?/aarch64-el2-relocate-entry"]
-ffs = ["fstart-stage?/ffs"]
-bootstrap = ["fstart-stage?/bootstrap"]
-ffs-signature = ["fstart-stage?/ffs-signature"]
-ed25519 = ["fstart-stage?/ed25519"]
-sha2-digest = ["fstart-stage?/sha2-digest"]
-sha3-digest = ["fstart-stage?/sha3-digest"]
-lz4 = ["fstart-stage?/lz4"]
-linux = ["fstart-stage?/linux"]
-fdt = ["fstart-stage?/fdt"]
-acpi = ["fstart-stage?/acpi"]
-smbios = ["fstart-stage?/smbios", "fstart-platform-qemu/smbios"]
-qemu-sbsa = []
+build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
-fstart-core = { path = "../../../crates/core" }
-fstart-platform-qemu = { path = "../../../crates/platform-qemu" }
-fstart-driver-uart = { path = "../../../crates/driver-uart", optional = true }
-fstart-stage = { path = "../../../crates/stage", optional = true }
-fbuild = { path = "../../../tools/fbuild", optional = true }
+fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
-required-features = ["stage"]
-
-[[bin]]
-name = "fstart-host"
-path = "src/host_main.rs"
-required-features = ["host"]

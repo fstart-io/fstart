@@ -9,17 +9,37 @@ mod regs;
 /// FU740 DRAM physical base.
 pub const FU740_DRAM_BASE: u64 = 0x8000_0000;
 /// FU740 PCIe ECAM aperture used by its RISC-V UEFI payload context.
-#[cfg(feature = "crabefi")]
+#[cfg(fstart_payload = "crabefi")]
 pub const FU740_ECAM_BASE: u64 = 0x3000_0000;
 
 mod stage {
     use super::*;
     use super::{ddr::Fu740Ddr, prci::Fu740Prci};
-    #[cfg(feature = "crabefi")]
+    #[cfg(fstart_payload = "crabefi")]
     use fstart_core::services::Console;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
-    use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
+    // The board selects payload backends through platform features; all
+    // stage runtime paths below resolve through that re-export.
+    use fstart_platform_qemu::stage_runtime as fstart_stage;
+    use fstart_stage::{StageEnvironment, StageProgram, payload::MainstagePayload};
+
+    #[cfg(not(all(
+        fstart_stage_env = "monolithic",
+        fstart_entry = "riscv64"
+    )))]
+    compile_error!("FU740 requires monolithic/riscv64 stage and entry selections");
+    #[cfg(any(
+        not(any(
+            fstart_payload = "halt",
+            fstart_payload = "linux",
+            fstart_payload = "crabefi"
+        )),
+        all(fstart_payload = "halt", fstart_payload = "linux"),
+        all(fstart_payload = "halt", fstart_payload = "crabefi"),
+        all(fstart_payload = "linux", fstart_payload = "crabefi")
+    ))]
+    compile_error!("select exactly one FU740 payload");
 
     /// Board seams in the fixed FU740 flow. Defaults compile away.
     pub trait Fu740Hooks {
@@ -46,8 +66,20 @@ mod stage {
         }
     }
 
+    /// Platform-owned adapter for fixed FU740 stage dispatch.
+    pub struct Fu740Program<B>(core::marker::PhantomData<B>);
+    impl<B: Fu740Board> StageProgram for Fu740Program<B> {
+        fn run_stage(handoff: usize) -> ! {
+            Fu740::run_stage::<B>(StageEnvironment::Monolithic, handoff)
+        }
+        #[cfg(fstart_payload = "crabefi")]
+        fn resume_sbi(hart_id: u64, dtb_addr: u64) -> ! {
+            Fu740::resume_sbi::<B>(hart_id, dtb_addr)
+        }
+    }
+
     /// Board contract for the FU740 flow.
-    pub trait Fu740Board: StageBoard {
+    pub trait Fu740Board: 'static {
         type Hooks: Fu740Hooks + Default;
         type Payload: MainstagePayload<Fu740Mainstage>;
 
@@ -143,7 +175,7 @@ mod stage {
             })
         }
 
-        #[cfg(feature = "crabefi")]
+        #[cfg(fstart_payload = "crabefi")]
         pub fn resume_sbi<B>(hart_id: u64, dtb_addr: u64) -> !
         where
             B: Fu740Board,
@@ -180,7 +212,6 @@ mod stage {
         detected_size: u64,
         handoff: usize,
     ) -> Result<(), ServiceError> {
-        #[cfg(feature = "ffs")]
         {
             use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
             use fstart_stage::fixed_helpers::MemoryMappedFfs;
@@ -202,12 +233,12 @@ mod stage {
                 size: 64 * 1024,
             };
             let source = {
-                #[cfg(all(feature = "crabefi", not(feature = "linux")))]
+                #[cfg(all(fstart_payload = "crabefi", not(fstart_payload = "linux")))]
                 {
                     let readable = [writable[0]];
                     boot_dtb_window(workspace, &readable)?
                 }
-                #[cfg(not(all(feature = "crabefi", not(feature = "linux"))))]
+                #[cfg(not(all(fstart_payload = "crabefi", not(fstart_payload = "linux"))))]
                 {
                     workspace
                 }
@@ -257,7 +288,7 @@ mod stage {
             // harts and configures no external temporary allocation arena.
             unsafe { fstart_stage::directory::set_load_policy(&policy) }
                 .map_err(|_| ServiceError::InvalidParam)?;
-            #[cfg(any(feature = "linux", feature = "crabefi"))]
+            #[cfg(any(fstart_payload = "linux", fstart_payload = "crabefi"))]
             // SAFETY: source is either a bounded boot DTB in trusted readable
             // memory, or the dedicated destination for an authenticated FFS DTB.
             // Registration checks destination RAM and all live reservations.
@@ -272,14 +303,9 @@ mod stage {
             firmware.mount()?;
             firmware.verify()
         }
-        #[cfg(not(feature = "ffs"))]
-        {
-            let _ = (config, detected_size, handoff);
-            Err(ServiceError::NotSupported)
-        }
     }
 
-    #[cfg(all(feature = "ffs", feature = "crabefi", not(feature = "linux")))]
+    #[cfg(all(fstart_payload = "crabefi", not(fstart_payload = "linux")))]
     fn boot_dtb_window(
         destination: fstart_stage::boot::MemoryWindow,
         readable: &[fstart_stage::boot::MemoryWindow],
@@ -320,7 +346,7 @@ mod stage {
         }
     }
 
-    #[cfg(feature = "linux")]
+    #[cfg(fstart_payload = "linux")]
     impl fstart_stage::payload::LinuxPayloadContext for Fu740Mainstage {
         fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
             let config = self.config;
@@ -339,7 +365,7 @@ mod stage {
         }
     }
 
-    #[cfg(all(feature = "crabefi", feature = "riscv64"))]
+    #[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
     impl fstart_stage::payload::Riscv64UefiPayloadContext for Fu740Mainstage {
         fn riscv64_uefi_payload_context(&self) -> fstart_stage::payload::Riscv64UefiPayloadConfig {
             let config = self.config;
@@ -361,10 +387,10 @@ mod stage {
     }
 
     /// Linux payload launcher that requires the board-supplied FFS DTB.
-    #[cfg(feature = "linux")]
+    #[cfg(fstart_payload = "linux")]
     pub struct Fu740LinuxPayload;
 
-    #[cfg(feature = "linux")]
+    #[cfg(fstart_payload = "linux")]
     impl MainstagePayload<Fu740Mainstage> for Fu740LinuxPayload {
         fn boot(devices: Fu740Mainstage) -> ! {
             use fstart_stage::fixed_helpers::MemoryMappedLinuxBoot;
@@ -397,13 +423,13 @@ mod stage {
         }
     }
 
-    #[cfg(feature = "linux")]
+    #[cfg(fstart_payload = "linux")]
     pub type Fu740BuildSelectedPayload = Fu740LinuxPayload;
-    #[cfg(all(not(feature = "linux"), feature = "crabefi"))]
+    #[cfg(all(not(fstart_payload = "linux"), fstart_payload = "crabefi"))]
     pub type Fu740BuildSelectedPayload = fstart_stage::payload::Riscv64UefiPayload;
-    #[cfg(all(not(feature = "linux"), not(feature = "crabefi")))]
+    #[cfg(all(not(fstart_payload = "linux"), not(fstart_payload = "crabefi")))]
     pub type Fu740BuildSelectedPayload = fstart_stage::payload::HaltPayload;
 }
 
-#[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
-pub use stage::{Fu740, Fu740Board, Fu740BuildSelectedPayload, Fu740Hooks};
+#[cfg(all(fstart_stage_env = "monolithic", target_arch = "riscv64"))]
+pub use stage::{Fu740, Fu740Board, Fu740BuildSelectedPayload, Fu740Hooks, Fu740Program};

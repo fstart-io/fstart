@@ -11,48 +11,14 @@ board = "licheerv-dock"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
 stage-bin = "fstart-stage"
-features = [
-  "allwinner-d1",
-]
-
-[features]
-default = []
-host = ["dep:fbuild", "fstart-platform-sunxi/host"]
-runtime = []
-stage = [
-  "runtime",
-  "dep:fstart-driver-uart",
-  "dep:fstart-stage",
-  "fstart-platform-sunxi/stage",
-]
-riscv64 = ["fstart-stage?/riscv64", "fstart-platform-sunxi/riscv64"]
-riscv64-sunxi-entry = ["fstart-stage?/riscv64-sunxi-entry"]
-ffs = ["fstart-stage?/ffs"]
-bootstrap = ["fstart-stage?/bootstrap"]
-ffs-signature = ["fstart-stage?/ffs-signature"]
-ed25519 = ["fstart-stage?/ed25519"]
-sha2-digest = ["fstart-stage?/sha2-digest"]
-sha3-digest = ["fstart-stage?/sha3-digest"]
-lz4 = ["fstart-stage?/lz4"]
-fdt = ["fstart-stage?/fdt"]
-linux = ["fstart-stage?/linux", "fstart-platform-sunxi/linux"]
-handoff = ["fstart-stage?/handoff"]
-allwinner-d1 = ["fstart-platform-sunxi/d1"]
+build-profile = { dependency = "fstart-platform-sunxi", name = "rust" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core" }
 fstart-driver-sunxi = { path = "../../../crates/driver-sunxi" }
 fstart-platform-sunxi = { path = "../../../crates/platform-sunxi" }
-fstart-driver-uart = { path = "../../../crates/driver-uart", optional = true }
-fstart-stage = { path = "../../../crates/stage", optional = true }
-fbuild = { path = "../../../tools/fbuild", optional = true }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
 
 [[bin]]
 name = "fstart-stage"
 path = "src/main.rs"
-required-features = ["stage"]
-
-[[bin]]
-name = "fstart-host"
-path = "src/host_main.rs"
-required-features = ["host"]

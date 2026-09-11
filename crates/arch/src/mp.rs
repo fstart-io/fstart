@@ -357,6 +357,15 @@ const SMM_SAVE_STATE_SIZE: u64 = 0x1_0000;
 const SMM_REVISION_OFFSET_FROM_TOP: u64 = 0x104;
 const SMM_EM64T101_REVISION: u32 = 0x0003_0101;
 const SMM_LEGACY_REVISION_OFFSET: u64 = 0xff04;
+/// AMD64 SMM revision reported by QEMU (coreboot q35 `relocation_handler`
+/// case `0x20064`). Verified on QEMU 11 KVM: the relocated SMBASE belongs
+/// at [`SMM_AMD64_SMBASE_OFFSET`], not next to the revision word.
+const SMM_AMD64_REVISION: u32 = 0x0002_0064;
+/// Relocated-SMBASE quirk word for the AMD64-revision layout (QEMU/KVM).
+const SMM_AMD64_SMBASE_OFFSET: u64 = 0xff00;
+/// Intel-offset relocated-SMBASE word (save-state top `- 0x104 - 4`).
+/// Updated alongside the quirk word for engines (TCG) that honor it.
+const SMM_INTEL_SMBASE_OFFSET: u64 = 0xfef8;
 
 /// Static mailbox array.  One slot per AP (index 0 = AP #1, etc.).
 /// Placed in BSS (zero-init = idle).
@@ -595,14 +604,35 @@ pub extern "C" fn default_smm_relocation_handler(_params: *mut fstart_smm::SmmEn
         return;
     }
 
-    let save_state_smbase = default_save_state_smbase_ptr();
+    let (save_state_smbase, revision) = default_save_state_location();
 
     // SAFETY: this runs in SMM from the default save-state window while SMRAM
     // is open. `smm_relocate_trampoline()` serializes all CPUs.
     unsafe { core::ptr::write_unaligned(save_state_smbase, smbase) };
+    // QEMU reports the AMD64 revision; KVM honors the `+0xff00` word, so it
+    // is always updated, plus the Intel-offset word for engines that honor
+    // that one instead (dual-write verified on KVM and TCG). Either word is
+    // inert on engines — and real Intel hardware, which reports EM64T101 —
+    // that use the other.
+    if revision == SMM_AMD64_REVISION {
+        // SAFETY: same default save-state area as above.
+        unsafe {
+            core::ptr::write_unaligned(
+                (SMM_DEFAULT_SMBASE + SMM_INTEL_SMBASE_OFFSET) as *mut u32,
+                smbase,
+            );
+            core::ptr::write_unaligned(
+                (SMM_DEFAULT_SMBASE + SMM_AMD64_SMBASE_OFFSET) as *mut u32,
+                smbase,
+            );
+        }
+    }
 }
 
-fn default_save_state_smbase_ptr() -> *mut u32 {
+/// Locate the relocated-SMBASE word and report the observed save-state
+/// revision. Callers update the returned word; for the AMD64 revision they
+/// additionally cover the engine-specific quirk word (see the caller).
+fn default_save_state_location() -> (*mut u32, u32) {
     let save_state_top = SMM_DEFAULT_SMBASE + SMM_SAVE_STATE_SIZE;
     let revision_addr = (save_state_top - SMM_REVISION_OFFSET_FROM_TOP) as *const u32;
 
@@ -610,7 +640,13 @@ fn default_save_state_smbase_ptr() -> *mut u32 {
     // architectural save state at the default SMBASE.
     let revision = unsafe { core::ptr::read_unaligned(revision_addr) };
     if revision == SMM_EM64T101_REVISION {
-        return revision_addr.wrapping_sub(1).cast_mut();
+        return (revision_addr.wrapping_sub(1).cast_mut(), revision);
+    }
+    if revision == SMM_AMD64_REVISION {
+        return (
+            (SMM_DEFAULT_SMBASE + SMM_AMD64_SMBASE_OFFSET) as *mut u32,
+            revision,
+        );
     }
 
     let legacy_revision_addr = (SMM_DEFAULT_SMBASE + SMM_LEGACY_REVISION_OFFSET) as *const u32;
@@ -618,10 +654,10 @@ fn default_save_state_smbase_ptr() -> *mut u32 {
     // legacy/AMD64 SMBASE field at 0xff00 with revision immediately after it.
     let legacy_revision = unsafe { core::ptr::read_unaligned(legacy_revision_addr) };
     if legacy_revision != 0 {
-        return legacy_revision_addr.wrapping_sub(1).cast_mut();
+        return (legacy_revision_addr.wrapping_sub(1).cast_mut(), revision);
     }
 
-    revision_addr.wrapping_sub(1).cast_mut()
+    (revision_addr.wrapping_sub(1).cast_mut(), revision)
 }
 
 /// AP mailbox loop — the terminal flight plan step for APs.

@@ -1,3 +1,5 @@
 #![no_std]
 #![no_main]
-fstart_stage::stage_bin!(fstart_board_bananapi_m1::Board);
+fstart_platform_sunxi::stage_bin!(
+    fstart_platform_sunxi::a20::Program<fstart_board_bananapi_m1::Board>
+);

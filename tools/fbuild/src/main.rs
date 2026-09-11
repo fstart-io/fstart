@@ -112,49 +112,15 @@ enum Command {
     },
 }
 
-fn dispatch_board_host(board: &str, args: &[String]) -> Result<(), String> {
+fn dispatch_board(board: &str, args: &[String]) -> Result<(), String> {
     let workspace_root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&workspace_root, board)?;
-    if manifest.build_profile.is_some() {
-        return fbuild::board_tool::run_metadata(&manifest, args);
+    if manifest.build_profile.is_none() {
+        return Err(format!(
+            "board '{board}' has no build-profile; legacy host tools are retired"
+        ));
     }
-    let selected_workspace =
-        build_board::prepare_selected_board_workspace(&workspace_root, &manifest)?;
-    let mut host_features = String::from("host");
-    for feature in &manifest.variant_features {
-        host_features.push(',');
-        host_features.push_str(feature);
-    }
-    let status = std::process::Command::new("cargo")
-        .current_dir(&workspace_root)
-        .arg("run")
-        .arg("--quiet")
-        .arg("--manifest-path")
-        .arg(selected_workspace.join("Cargo.toml"))
-        .arg("--target-dir")
-        .arg(workspace_root.join("target"))
-        .arg("--package")
-        .arg(&manifest.package)
-        .arg("--bin")
-        .arg("fstart-host")
-        .arg("--no-default-features")
-        .arg("--features")
-        .arg(&host_features)
-        .arg("--")
-        .args(args)
-        .env("FSTART_WORKSPACE_ROOT", &workspace_root)
-        .env("FSTART_BOARD_VARIANT", &manifest.board)
-        .status()
-        .map_err(|e| format!("failed to run host tool for {}: {e}", manifest.board))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "host tool for '{}' failed with {status}",
-            manifest.board
-        ))
-    }
+    fbuild::board_tool::run_metadata(&manifest, args)
 }
 
 fn board_tool_build_args(
@@ -319,7 +285,7 @@ fn main() {
             stage,
         } => match stage {
             Some(name) => compile_named(&board, payload, release, &name, false),
-            None => dispatch_board_host(&board, &board_tool_build_args("build", release, payload)),
+            None => dispatch_board(&board, &board_tool_build_args("build", release, payload)),
         },
         Command::Run {
             board,
@@ -331,7 +297,7 @@ fn main() {
             disk,
             memory,
             secure_firmware,
-        } => dispatch_board_host(
+        } => dispatch_board(
             &board,
             &board_tool_run_args(
                 "run",
@@ -345,7 +311,7 @@ fn main() {
                 secure_firmware,
             ),
         ),
-        Command::Test { board } => dispatch_board_host(&board, &["test".into()]),
+        Command::Test { board } => dispatch_board(&board, &["test".into()]),
         Command::Assemble {
             board,
             release,
@@ -353,7 +319,7 @@ fn main() {
             kernel,
             firmware,
             fit,
-        } => dispatch_board_host(
+        } => dispatch_board(
             &board,
             &board_tool_assemble_args("assemble", release, payload, kernel, firmware, fit),
         ),
@@ -379,7 +345,7 @@ fn main() {
             chip,
             probe,
             base_address,
-        } => dispatch_board_host(
+        } => dispatch_board(
             &board,
             &board_tool_flash_args(release, probe_run, chip, probe, base_address),
         ),

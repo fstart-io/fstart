@@ -1,25 +1,53 @@
 //! Foxconn D41S mainboard hooks.
 
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 use fstart_core::services::ServiceError;
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 use fstart_core::services::device::BusDevice;
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 use fstart_driver_intel::generic::ck505::I2cCk505;
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 use fstart_driver_superio::ite8721f::Ite8721f;
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 use fstart_platform_intel::pineview::PineviewIch7;
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 
 /// Board-specific D41S hooks for the Pineview/ICH7 flow.
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 pub struct D41SMainboard {
     superio: Option<Ite8721f>,
 }
 
-#[cfg(feature = "acpi")]
+#[cfg(fstart_stage_env = "ram")]
 mod mainboard_acpi_device {
     extern crate alloc;
 
@@ -34,7 +62,11 @@ mod mainboard_acpi_device {
     }
 }
 
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 impl D41SMainboard {
     #[must_use]
     pub const fn new() -> Self {
@@ -42,7 +74,11 @@ impl D41SMainboard {
     }
 }
 
-#[cfg(feature = "stage")]
+#[cfg(any(
+    fstart_stage_env = "car",
+    fstart_stage_env = "postcar",
+    fstart_stage_env = "ram"
+))]
 impl IntelEarlyBoardHooks<PineviewIch7> for D41SMainboard {
     fn before_console(
         &mut self,
@@ -64,7 +100,7 @@ impl IntelEarlyBoardHooks<PineviewIch7> for D41SMainboard {
     }
 }
 
-#[cfg(feature = "acpi")]
+#[cfg(fstart_stage_env = "ram")]
 mod acpi_impl {
     extern crate alloc;
 
@@ -79,5 +115,39 @@ mod acpi_impl {
     }
 }
 
-#[cfg(feature = "acpi")]
+#[cfg(fstart_stage_env = "ram")]
 pub use acpi_impl::d41s_mainboard_dsdt_aml;
+
+static D41S_SMBIOS_PROCESSORS: [fstart_acpi::smbios::ProcessorDesc<'static>; 1] =
+    [fstart_acpi::smbios::ProcessorDesc {
+        socket: "FCBGA559",
+        manufacturer: "Intel",
+        family: 0x28,
+        max_speed_mhz: 0,
+        core_count: 0,
+        thread_count: 0,
+        caches: &[],
+    }];
+
+const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
+    Some(date) => date,
+    None => "04/15/2026",
+};
+
+pub static D41S_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> = fstart_acpi::smbios::SmbiosDesc {
+    bios_vendor: "fstart",
+    bios_version: "0.1.0",
+    bios_release_date: BIOS_RELEASE_DATE,
+    sys_manufacturer: "Foxconn",
+    sys_product: "D41S",
+    sys_version: "1.0",
+    sys_serial: None,
+    bb_manufacturer: "Foxconn",
+    bb_product: "D41S",
+    chassis_type: 0x03,
+    chassis_manufacturer: "Foxconn",
+    processors: &D41S_SMBIOS_PROCESSORS,
+    memory_devices: &[],
+    ram_base: 0x0010_0000,
+    ram_end: 0x3fff_ffff,
+};

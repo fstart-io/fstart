@@ -5,13 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "host")]
-use fstart_core::{
-    BoardBuildPolicy, Compression, FdtSource, FirmwareConfig, FirmwareImageConfig,
-    FirmwareImagePolicy, FirmwareKind, MemoryMap, MemoryRegion, MonolithicConfig, PayloadConfig,
-    PayloadKind, QemuMachine, RegionKind, StageBuildConfig, StageLayout, hstr, hvec,
-};
-
 pub const QEMU_SIFIVE_U_FFS_BASE: u64 = 0x8000_0000;
 pub const QEMU_SIFIVE_U_FFS_SIZE: u64 = 0x1000_0000;
 pub const QEMU_SIFIVE_U_RAM_SIZE: u64 = 0x4000_0000;
@@ -68,84 +61,6 @@ impl Default for QemuSifiveUConfig {
     }
 }
 
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_sifive_u_memory() -> MemoryMap {
-    let config = QemuSifiveUConfig::new();
-    MemoryMap {
-        regions: hvec([MemoryRegion {
-            name: hstr("dram"),
-            base: config.ram_base,
-            size: config.ram_size,
-            kind: RegionKind::Ram,
-        }]),
-        flash_layout: None,
-        car: None,
-    }
-}
-
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_sifive_u_stages() -> StageLayout {
-    StageLayout::Monolithic(MonolithicConfig {
-        build: StageBuildConfig {
-            firmware_image: Some(FirmwareImageConfig {
-                temp_ram_buffer: None,
-            }),
-            verify_firmware: true,
-            payload: true,
-            fdt: true,
-            ..StageBuildConfig::default()
-        },
-        load_addr: QEMU_SIFIVE_U_FFS_BASE,
-        stack_size: 0x40000,
-        heap_size: Some(0x40000),
-        data_addr: None,
-        page_table_addr: None,
-        page_size: Default::default(),
-    })
-}
-
-#[cfg(feature = "host")]
-#[must_use]
-pub fn qemu_sifive_u_linux_payload() -> PayloadConfig {
-    let config = QemuSifiveUConfig::new();
-    PayloadConfig {
-        kind: PayloadKind::LinuxBoot,
-        kernel_file: Some(hstr("Image-riscv64")),
-        kernel_load_addr: Some(config.kernel_addr),
-        fdt: FdtSource::Platform,
-        dtb_addr: Some(config.dtb_addr),
-        src_dtb_addr: None,
-        bootargs: Some(hstr(config.bootargs)),
-        print_x86_mtrrs: false,
-        compression: Compression::Lz4,
-        firmware: Some(FirmwareConfig {
-            kind: FirmwareKind::OpenSbi,
-            file: hstr("fw_dynamic.bin"),
-            load_addr: config.firmware_addr,
-        }),
-        fit_file: None,
-        fit_config: None,
-        fit_parse: None,
-    }
-}
-
-#[cfg(feature = "host")]
-#[must_use]
-pub const fn qemu_sifive_u_build_policy() -> BoardBuildPolicy {
-    BoardBuildPolicy {
-        qemu_machine: Some(QemuMachine::SifiveU),
-        firmware_image: FirmwareImagePolicy::memory_mapped(
-            QEMU_SIFIVE_U_FFS_BASE,
-            QEMU_SIFIVE_U_FFS_SIZE,
-        ),
-        flash_image: None,
-        pci_root_feature: None,
-        cpu_feature: None,
-    }
-}
-
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 mod stage {
     use super::*;
@@ -153,7 +68,25 @@ mod stage {
     use fstart_core::services::Console;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
-    use fstart_stage::{StageBoard, StageEnvironment, payload::MainstagePayload};
+    use fstart_stage::{StageEnvironment, StageProgram, payload::MainstagePayload};
+
+    #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
+    compile_error!("sifive-u requires monolithic/riscv64 stage and entry selections");
+    #[cfg(any(
+        not(any(
+            fstart_payload = "halt",
+            fstart_payload = "linux",
+            fstart_payload = "crabefi"
+        )),
+        all(fstart_payload = "halt", fstart_payload = "linux"),
+        all(fstart_payload = "halt", fstart_payload = "crabefi"),
+        all(fstart_payload = "linux", fstart_payload = "crabefi")
+    ))]
+    compile_error!("select exactly one sifive-u payload");
+    #[cfg(all(fstart_payload = "linux", not(feature = "linux")))]
+    compile_error!("selected Linux backend is not enabled");
+    #[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi")))]
+    compile_error!("selected CrabEFI backend is not enabled");
 
     /// Board seams in the direct QEMU `sifive_u` flow.
     pub trait QemuSifiveUHooks {
@@ -168,8 +101,20 @@ mod stage {
         }
     }
 
+    /// Platform-owned adapter for fixed sifive-u stage dispatch.
+    pub struct QemuSifiveUProgram<B>(core::marker::PhantomData<B>);
+    impl<B: QemuSifiveUBoard> StageProgram for QemuSifiveUProgram<B> {
+        fn run_stage(handoff: usize) -> ! {
+            QemuSifiveU::run_stage::<B>(StageEnvironment::Monolithic, handoff)
+        }
+        #[cfg(feature = "crabefi")]
+        fn resume_sbi(hart_id: u64, dtb_addr: u64) -> ! {
+            QemuSifiveU::resume_sbi::<B>(hart_id, dtb_addr)
+        }
+    }
+
     /// Static QEMU `sifive_u` board contract.
-    pub trait QemuSifiveUBoard: StageBoard {
+    pub trait QemuSifiveUBoard: 'static {
         type Hooks: QemuSifiveUHooks + Default;
         type Payload: MainstagePayload<QemuSifiveUMainstage>;
 
@@ -332,5 +277,5 @@ mod stage {
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 pub use stage::{
     QemuSifiveU, QemuSifiveUBoard, QemuSifiveUBuildSelectedPayload, QemuSifiveUHooks,
-    QemuSifiveUMainstage,
+    QemuSifiveUMainstage, QemuSifiveUProgram,
 };
