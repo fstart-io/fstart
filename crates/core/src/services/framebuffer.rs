@@ -1,4 +1,10 @@
-//! Framebuffer service — linear framebuffer information for display output.
+//! Framebuffer service — the common typed linear-framebuffer handoff.
+//!
+//! Display init is platform-owned (QEMU bochs init, future Intel/AMD init):
+//! each programs its own hardware, then advertises the resulting mode here.
+//! This mirrors coreboot's `struct lb_framebuffer` published via
+//! `fb_add_framebuffer_info()`. Payloads (UEFI GOP, Linux efifb) consume
+//! this handoff without knowing which init programmed the mode.
 //!
 //! A device implementing `Framebuffer` provides a linear framebuffer that
 //! can be passed to a UEFI GOP implementation or used directly for early

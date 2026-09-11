@@ -460,6 +460,11 @@ pub trait X86UefiPayloadContext {
     }
     /// Return the actual PCI ECAM segment/bus bounds, if available.
     fn pci_root(&self) -> Option<fstart_pci::PciRootInfo>;
+    /// Return the programmed linear framebuffer for UEFI GOP, if any.
+    #[cfg(feature = "crabefi-basic")]
+    fn framebuffer(&self) -> Option<crate::crabefi::FramebufferConfig> {
+        None
+    }
 }
 
 /// Common x86 CrabEFI payload launcher.
@@ -493,7 +498,7 @@ where
         crate::crabefi::launch_x86_uefi(
             UefiLaunchConfig {
                 console: devices.console(),
-                framebuffer: None,
+                framebuffer: devices.framebuffer(),
                 acpi_rsdp: devices.acpi_rsdp(),
                 smbios: devices.smbios(),
                 fdt: None,

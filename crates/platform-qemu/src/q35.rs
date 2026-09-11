@@ -98,6 +98,12 @@ impl Q35HostBridge {
         self.ecam.device_count()
     }
 
+    /// Config-space access for post-enumeration PCI children
+    /// (e.g. the bochs-display probe after `init_with_e820`).
+    pub fn ecam(&self) -> &PciEcam {
+        &self.ecam
+    }
+
     fn enable_ecam(&self) {
         const PCIEXBAR_LO: u8 = 0x60;
         const PCIEXBAR_HI: u8 = 0x64;

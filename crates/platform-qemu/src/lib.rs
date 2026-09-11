@@ -11,6 +11,13 @@ mod boot;
 #[cfg(any(test, feature = "stage"))]
 mod dtb_memory;
 
+/// QEMU bochs-display init. Platform-owned like coreboot's
+/// `drivers/emulation/qemu/bochs.c`: it programs this platform's exact
+/// display device and advertises the mode via the common [`FramebufferInfo`]
+/// handoff, it is not a generic display driver.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub mod display;
+
 pub mod facts;
 #[cfg(feature = "host")]
 pub mod host;
@@ -85,7 +92,6 @@ use fstart_core::{
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use serde::Serialize;
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_PLATFORM_NODE: &str = "q35";
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -229,6 +235,7 @@ pub const fn qemu_q35_build_policy() -> BoardBuildPolicy {
 mod stage {
     use fstart_core::services::memory_detect::{E820Entry, E820State};
     use fstart_core::services::{Console, ServiceError};
+    use crate::display::{BochsDisplay, BochsDisplayConfig};
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_stage::payload::{MainstagePayload, X86UefiPayloadContext};
     use fstart_stage::{StageBoard, StageEnvironment};
@@ -255,6 +262,7 @@ mod stage {
         hostbridge: Q35HostBridge,
         e820: E820State,
         acpi_rsdp: Option<u64>,
+        framebuffer: Option<fstart_core::services::FramebufferInfo>,
     }
 
     impl QemuQ35Mainstage {
@@ -267,6 +275,7 @@ mod stage {
                 hostbridge: Q35HostBridge::new(B::CONFIG.hostbridge)?,
                 e820: E820State::new(),
                 acpi_rsdp: None,
+                framebuffer: None,
             })
         }
 
@@ -307,6 +316,32 @@ mod stage {
                 "qemu-q35: PCI root ready ({} devices)",
                 self.hostbridge.device_count(),
             );
+            Ok(())
+        }
+
+        fn init_display(&mut self) -> Result<(), ServiceError> {
+            // fbuild always passes `-device bochs-display`; program it
+            // at 1024x768 when present, ignore when absent (e.g. a
+            // custom QEMU command line without the device).
+            let info = BochsDisplay::probe_and_init(
+                self.hostbridge.ecam(),
+                BochsDisplayConfig {
+                    width: 1024,
+                    height: 768,
+                },
+            )
+            .map_err(|_| ServiceError::HardwareError)?;
+            if let Some(info) = info {
+                fstart_log::info!(
+                    "qemu-q35: display {}x{} fb={:#x}",
+                    info.width,
+                    info.height,
+                    info.base_addr,
+                );
+                self.framebuffer = Some(info);
+            } else {
+                fstart_log::info!("qemu-q35: no bochs-display, continuing headless");
+            }
             Ok(())
         }
 
@@ -372,6 +407,25 @@ mod stage {
                 bus_end: config.bus_end,
             })
         }
+
+        #[cfg(feature = "crabefi")]
+        fn framebuffer(&self) -> Option<fstart_stage::crabefi::FramebufferConfig> {
+            self.framebuffer.map(|info| {
+                fstart_stage::crabefi::FramebufferConfig {
+                    physical_address: info.base_addr,
+                    width: info.width,
+                    height: info.height,
+                    stride: info.stride,
+                    bits_per_pixel: info.bits_per_pixel,
+                    red_mask_pos: info.red_pos,
+                    red_mask_size: info.red_size,
+                    green_mask_pos: info.green_pos,
+                    green_mask_size: info.green_size,
+                    blue_mask_pos: info.blue_pos,
+                    blue_mask_size: info.blue_size,
+                }
+            })
+        }
     }
 
     fn phase(name: &str, f: impl FnOnce() -> Result<(), ServiceError>) {
@@ -393,6 +447,7 @@ mod stage {
         phase("memory_detect", || mainstage.detect_memory_and_tables());
         phase("mount_boot_media", || mainstage.mount_boot_media());
         phase("bus_scan", || mainstage.init_pci());
+        phase("display", || mainstage.init_display());
         phase("finalize", || {
             fstart_log::info!("qemu-q35 ramstage: ready for payload");
             Ok(())
