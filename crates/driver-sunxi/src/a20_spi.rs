@@ -5,8 +5,7 @@
 //! NOR framing (opcodes, chunking) lives in [`crate::spi_nor`]; this file
 //! only knows the sun4i register layout, clock gating and pin mux.
 //!
-//! Ported from U-Boot `arch/arm/mach-sunxi/spl_spi_sunxi.c` via the attic
-//! `fstart-driver-sunxi-spi` crate.
+//! Ported from U-Boot `arch/arm/mach-sunxi/spl_spi_sunxi.c`.
 
 use embedded_hal::spi::{ErrorType, SpiBus};
 use fstart_arch::udelay;

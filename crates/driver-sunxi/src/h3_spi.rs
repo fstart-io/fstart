@@ -9,8 +9,7 @@
 //! CTL), moves TX/RX to FIFO windows at 0x200/0x300, and needs a bus-reset
 //! deassert plus soft reset. CS is on PC3 (vs. PC23 on sun4i).
 //!
-//! Ported from U-Boot `arch/arm/mach-sunxi/spl_spi_sunxi.c` via the attic
-//! `fstart-driver-sunxi-spi` crate.
+//! Ported from U-Boot `arch/arm/mach-sunxi/spl_spi_sunxi.c`.
 
 use embedded_hal::spi::{ErrorType, SpiBus};
 use fstart_arch::udelay;

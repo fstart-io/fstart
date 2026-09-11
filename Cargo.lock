@@ -762,11 +762,9 @@ dependencies = [
  "fstart-core",
  "fstart-driver-sunxi",
  "fstart-driver-uart",
- "fstart-image-build",
  "fstart-log",
  "fstart-stage",
  "serde",
- "serde_json",
  "ufmt",
 ]
 
