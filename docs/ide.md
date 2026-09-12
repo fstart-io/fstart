@@ -35,8 +35,8 @@ Open the printed `fstart.code-workspace` in VS Code. The generated files live in
   explicit all-board lock audit.
 
 Use the project's pinned Rust toolchain with `rust-src` and a compatible
-rust-analyzer. The live protocol probes used rust-analyzer 1.95.0-nightly
-(`1ed4882`, 2026-02-25) and the pinned nightly-2026-02-26 toolchain's proc-macro
+rust-analyzer. The live protocol probes use rust-analyzer 1.100.0-nightly
+(`e457a7b`, 2026-08-27) and the pinned nightly-2026-08-28 toolchain's proc-macro
 server. This is not an assertion that arbitrary older rust-analyzer versions
 understand these configuration keys.
 
