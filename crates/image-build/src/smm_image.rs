@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSymbol, RelocationKind, SectionFlags};
 
 use fstart_smm::header::{
     CorebootOffsets, EntryDescriptor, FLAG_COREBOOT_HEADER, FLAG_COREBOOT_MODULE_ARGS,
@@ -288,24 +288,42 @@ pub fn handler_from_rlibs(deps_dir: &Path, work_dir: &Path) -> Result<SmmHandler
     }
     cmd.arg("--end-group");
     run_tool(&mut cmd)?;
-    assert_no_got_indirects(&elf)?;
+    audit_smm_blob(&elf)?;
     handler_from_elf(&elf, work_dir)
+}
+
+/// Audit the linked SMM blob for SMRAM soundness before extraction.
+///
+/// The installed blob is a raw `.text`-only copy into SMRAM, linked at
+/// `-Ttext=0` with no loader: only relative addressing is correct at any
+/// load base. Four independent failures, one loud build error instead of a
+/// triple-fault:
+/// 1. GOT-indirect calls/jumps through data slots (unresolvable).
+/// 2. Allocated data sections with content (unshipped `.rodata`/`.data`/
+///    `.got` would read as SMRAM garbage through RIP-relative access).
+/// 3. Absolute relocations in shipped sections (baked link addresses).
+/// 4. Rust panic machinery (its format strings live in unshipped `.rodata`,
+///    and SMM has no console to report to; mirrored from CrabEFI's runtime
+///    image audit).
+fn audit_smm_blob(elf: &Path) -> Result<(), BuildError> {
+    let data = std::fs::read(elf)?;
+    let file = object::File::parse(data.as_slice())
+        .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
+    assert_no_got_indirects(elf, &file)?;
+    assert_shipped_sections_only(elf, &file)?;
+    assert_no_absolute_relocs(elf, &file)?;
+    assert_no_panic_symbols(elf, &file)?;
+    Ok(())
 }
 
 /// Reject SMM handler blobs that need a dynamic loader.
 ///
 /// The installed blob is a raw byte copy into SMRAM: RIP-relative
-/// indirect calls/jumps through `.got`/`.data` (what rustc emits for
-/// cross-crate calls without LTO) would resolve to link-time addresses and
-/// fault on entry. The SMI path must instead be force-inlined into the
-/// board's `fstart_smm_handler` (see `#[inline(always)]` on the SMI
-/// dispatch chain), leaving only direct relative calls behind. Any
-/// remaining GOT-indirect whose slot lives in a data section fails the
-/// build loudly instead of producing a blob that triple-faults.
-fn assert_no_got_indirects(elf: &Path) -> Result<(), BuildError> {
-    let data = std::fs::read(elf)?;
-    let file = object::File::parse(data.as_slice())
-        .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
+/// indirect calls/jumps through `.got`/`.data` would resolve to link-time
+/// addresses and fault on entry. Any remaining GOT-indirect whose slot
+/// lives in a data section fails the build loudly instead of producing a
+/// blob that triple-faults.
+fn assert_no_got_indirects(elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
     let text = file
         .section_by_name(".text")
         .ok_or_else(|| BuildError::Tool(format!(".text section not found in {}", elf.display())))?;
@@ -330,6 +348,126 @@ fn assert_no_got_indirects(elf: &Path) -> Result<(), BuildError> {
         )));
     }
     Ok(())
+}
+
+/// Reject allocated data sections with content in the linked blob.
+///
+/// Only `.text*` ships (`write_text_section`); `.fstart.keep` holds the
+/// entry marker consumed by the assembler. Anything else allocated
+/// (`.rodata`, `.data*`, `.got*`) would be read as SMRAM garbage through
+/// RIP-relative access, so its mere presence fails the build.
+fn assert_shipped_sections_only(_elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
+    use object::elf::{SHF_ALLOC, SHF_EXECINSTR};
+    for section in file.sections() {
+        let name = section.name().unwrap_or("");
+        let (is_alloc, is_exec) = match section.flags() {
+            SectionFlags::Elf { sh_flags } => (
+                sh_flags & u64::from(SHF_ALLOC) != 0,
+                sh_flags & u64::from(SHF_EXECINSTR) != 0,
+            ),
+            _ => (false, false),
+        };
+        if forbidden_section(name, is_alloc, is_exec, section.size()) {
+            return Err(BuildError::Tool(format!(
+                "SMM blob contains allocated {name} ({} bytes); only .text ships to SMRAM",
+                section.size(),
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether an ELF section may not exist with content in the SMM blob.
+/// Pure over (name, is_alloc, is_executable, size); see
+/// [`assert_shipped_sections_only`].
+fn forbidden_section(name: &str, is_alloc: bool, is_executable: bool, size: u64) -> bool {
+    if !is_alloc || size == 0 {
+        return false;
+    }
+    // Extraction ships the single merged .text only: a surviving .text.foo
+    // would be silently dropped, so it fails loudly instead.
+    if is_executable {
+        return name != ".text";
+    }
+    name != ".fstart.keep"
+}
+
+/// Reject absolute relocations in shipped sections.
+///
+/// A static link resolves relative relocations; anything absolute left in
+/// shipped bytes (`R_X86_64_64/32`, GOT flavors) is a link-time address
+/// that faults in SMRAM. Pure predicate over the kind in
+/// [`find_absolute_reloc`]; the [`audit_smm_blob`] wrapper scopes the scan
+/// to shipped sections.
+fn assert_no_absolute_relocs(_elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
+    for section in file.sections() {
+        let name = section.name().unwrap_or("");
+        if !(name == ".text" || name.starts_with(".text.")) {
+            continue;
+        }
+        let mut relocs = Vec::new();
+        for (offset, reloc) in section.relocations() {
+            relocs.push((offset, reloc.kind()));
+        }
+        if let Some((offset, kind)) = find_absolute_reloc(&relocs) {
+            return Err(BuildError::Tool(format!(
+                "SMM blob has absolute relocation {kind:?} at {name}+{offset:#x}; \
+                 only relative addressing survives the SMRAM copy",
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// First relocation with a link-absolute kind, if any.
+/// Pure over (offset, kind) pairs; see [`assert_no_absolute_relocs`].
+fn find_absolute_reloc(relocs: &[(u64, RelocationKind)]) -> Option<(u64, RelocationKind)> {
+    relocs.iter().find_map(|&(offset, kind)| {
+        matches!(
+            kind,
+            RelocationKind::Absolute
+                | RelocationKind::Got
+                | RelocationKind::GotRelative
+                | RelocationKind::GotBaseRelative
+                | RelocationKind::GotBaseOffset
+        )
+        .then_some((offset, kind))
+    })
+}
+
+/// Substrings identifying Rust panic machinery in symbol names, mirrored
+/// from CrabEFI's runtime image audit: any of these linked into the blob
+/// means a panic path survived GC, and its format strings live in
+/// unshipped `.rodata` (and SMM has no console to report to anyway).
+const PANIC_SYMBOL_MARKERS: &[&str] = &[
+    "rust_begin_unwind",
+    "panic_is_possible",
+    "panicking",
+    "panic_fmt",
+    "panic_bounds_check",
+    "unwrap_failed",
+    "expect_failed",
+    "slice_index_fail",
+    "len_mismatch_fail",
+    "handle_alloc_error",
+];
+
+/// Reject Rust panic machinery linked into the SMM blob.
+fn assert_no_panic_symbols(_elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
+    let names: Vec<&str> = file.symbols().filter_map(|s| s.name().ok()).collect();
+    if let Some(hit) = find_panic_symbol(names.iter().copied()) {
+        return Err(BuildError::Tool(format!(
+            "SMM blob links Rust panic symbol {hit}; SMM code must handle errors \
+             without panicking (format strings live in unshipped .rodata)",
+        )));
+    }
+    Ok(())
+}
+
+/// First panic-machinery symbol name, if any.
+/// Pure over symbol names; see [`assert_no_panic_symbols`].
+fn find_panic_symbol<'a>(mut names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    names.find(|name| PANIC_SYMBOL_MARKERS.iter().any(|m| name.contains(m)))
 }
 
 /// Scan `.text` bytes for RIP-relative indirect calls/jumps whose slot lives
@@ -560,6 +698,58 @@ mod tests {
         // Indirect through a slot inside .text (jump table) is fine.
         let table = [0xff, 0x15, 0x00, 0x01, 0x00, 0x00, 0x90];
         assert_eq!(find_got_indirect(0, &table, &[(0x1000, 0x1100)]), None);
+    }
+
+    #[test]
+    fn shipped_sections_only_permits_text_and_keep_marker() {
+        // Exact .text ships; the keep marker is assembler-consumed.
+        assert!(!forbidden_section(".text", true, true, 100));
+        assert!(!forbidden_section(".fstart.keep", true, false, 8));
+        // Unshipped data with content fails, empty sections pass.
+        assert!(forbidden_section(".rodata", true, false, 10));
+        assert!(forbidden_section(".data.rel.ro", true, false, 8));
+        assert!(forbidden_section(".got", true, false, 8));
+        assert!(!forbidden_section(".data", true, false, 0));
+        // Non-allocated sections (debug info) never ship.
+        assert!(!forbidden_section(".debug_info", false, false, 100));
+        // Unmerged .text.foo would be silently dropped by extraction.
+        assert!(forbidden_section(".text.unlikely", true, true, 16));
+    }
+
+    #[test]
+    fn absolute_reloc_scan_rejects_got_and_address_kinds() {
+        use object::RelocationKind;
+        assert_eq!(
+            find_absolute_reloc(&[
+                (0x10, RelocationKind::Relative),
+                (0x20, RelocationKind::PltRelative),
+            ]),
+            None,
+        );
+        assert_eq!(
+            find_absolute_reloc(&[(0x30, RelocationKind::Absolute)]),
+            Some((0x30, RelocationKind::Absolute)),
+        );
+        assert_eq!(
+            find_absolute_reloc(&[(0x40, RelocationKind::GotRelative)]),
+            Some((0x40, RelocationKind::GotRelative)),
+        );
+    }
+
+    #[test]
+    fn panic_symbol_scan_matches_machinery_not_handler() {
+        assert_eq!(
+            find_panic_symbol(["fstart_smm_handler", "FSTART_SMM_KEEP", "main"].into_iter()),
+            None,
+        );
+        assert_eq!(
+            find_panic_symbol(["core::panicking::panic_fmt"].into_iter()),
+            Some("core::panicking::panic_fmt"),
+        );
+        assert_eq!(
+            find_panic_symbol(["my_unwrap_failed_helper"].into_iter()),
+            Some("my_unwrap_failed_helper"),
+        );
     }
 
     fn test_handler() -> SmmHandlerImage {
