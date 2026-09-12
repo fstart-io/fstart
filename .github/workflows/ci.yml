@@ -49,15 +49,10 @@ jobs:
       # fail closed on unrecorded ambient inputs (see
       # tools/fbuild/src/selection.rs).
       #
-      # NOTE: lenovo-x61 is excluded until its SMM blob links without
-      # GOT-indirects (dock_disconnect pulls an rdtsc call through a data
-      # slot; fbuild rejects the blob instead of shipping one that
-      # triple-faults). Tracked pre-existing failure, also red in
-      # assemble-boards before this exclusion.
       - name: Build supported boards
         run: |
           for board in \
-            foxconn-d41s intel-d945gclf \
+            foxconn-d41s intel-d945gclf lenovo-x61 \
             qemu-aarch64 qemu-armv7 qemu-q35 qemu-riscv64 qemu-sbsa qemu-sifive-u \
             sifive-unmatched \
             bananapi-m1 licheerv-dock orangepi-pc2 orangepi-r1; do
@@ -116,9 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # lenovo-x61 excluded: same pre-existing SMM GOT-indirect failure
-        # as the build gate above (assemble needs the SMM image).
-        board: [foxconn-d41s]
+        board: [foxconn-d41s, lenovo-x61]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
