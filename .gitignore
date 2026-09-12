@@ -1,6 +1,8 @@
 **/target
 *.rom
 *.bin
+# FFS test goldens are committed fixtures, not build outputs.
+!crates/ffs/tests/fixtures/*.bin
 *.ffs
 *.key
 !*.pub
