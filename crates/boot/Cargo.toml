@@ -21,7 +21,7 @@ fstart-crypto = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 # Upstream split into a workspace; package `crabefi-core` keeps lib name `crabefi`.
-crabefi = { package = "crabefi-core", git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "3368804307f77ac1a21d3ad4ec0eca2ca89eca1d", default-features = false, features = ["bundled-runtime-image", "variable-store"], optional = true }
+crabefi = { package = "crabefi-core", git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "9aea88ab3fc3ab92813125667d45683e981ea282", default-features = false, features = ["bundled-runtime-image", "variable-store"], optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 fstart-arch = { workspace = true, features = ["x86_64"] }

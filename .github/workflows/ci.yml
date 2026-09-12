@@ -29,6 +29,11 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y acpica-tools
+
       - name: Tests
         env:
           RUST_MIN_STACK: 8388608
@@ -51,11 +56,21 @@ jobs:
       #
       - name: Build supported boards
         run: |
-          for board in \
-            foxconn-d41s intel-d945gclf lenovo-x61 \
-            qemu-aarch64 qemu-armv7 qemu-q35 qemu-riscv64 qemu-sbsa qemu-sifive-u \
-            sifive-unmatched \
-            bananapi-m1 licheerv-dock orangepi-pc2 orangepi-r1; do
+          mapfile -t boards < <(
+            python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          boards = {
+              metadata["board"]
+              for manifest in Path("boards").glob("*/*/Cargo.toml")
+              if (metadata := tomllib.loads(manifest.read_text())["package"]["metadata"].get("fstart"))
+          }
+          print(*sorted(boards), sep="\n")
+          PY
+          )
+          ((${#boards[@]} > 0))
+          for board in "${boards[@]}"; do
             cargo fbuild build --board "$board" --release
           done
 
@@ -105,32 +120,3 @@ jobs:
 
       - name: Run QEMU boot matrix
         run: ci/qemu-boot-tests.sh boot-assets/payloads
-
-  assemble-boards:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        board: [foxconn-d41s, lenovo-x61]
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: true
-
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: nightly-2026-02-26
-          components: rust-src, llvm-tools
-          targets: x86_64-unknown-none
-
-      - name: Add llvm-tools to PATH
-        run: |
-          TOOLCHAIN_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
-          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
-
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-        with:
-          shared-key: release-${{ matrix.board }}
-
-      - name: Assemble ${{ matrix.board }}
-        run: cargo fbuild assemble --board ${{ matrix.board }} --release
