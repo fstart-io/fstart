@@ -302,6 +302,29 @@ struct RuntimeCacheDesc {
     cache_type: u8,
 }
 
+/// Resolve SMBIOS Type 4 counts, coreboot-style.
+///
+/// Hardware truth comes from CPUID on the BSP (`0xB`, else leaf 4, else
+/// leaf 1); `core_enabled` is capped by actually online APs from MP init,
+/// which runs before `emit_tables`. A board descriptor value of 0 means
+/// "detect at runtime" (same sentinel as empty `caches`).
+#[cfg(feature = "smbios")]
+fn resolve_processor_counts(proc: &fstart_acpi::smbios::ProcessorDesc) -> (u16, u16, u16) {
+    let (mut cores, mut threads) = (proc.core_count, proc.thread_count);
+    if cores == 0 || threads == 0 {
+        let (rt_cores, rt_threads) = fstart_arch::x86_64::cpuid::cpu_core_thread_counts();
+        if cores == 0 {
+            cores = rt_cores;
+        }
+        if threads == 0 {
+            threads = rt_threads;
+        }
+    }
+    let online = fstart_arch::mp::online_cpus();
+    let enabled = cores.min(online.max(1));
+    (cores.max(1), enabled.max(1), threads.max(enabled))
+}
+
 #[cfg(feature = "smbios")]
 fn add_runtime_cache_info(w: &mut fstart_acpi::smbios::SmbiosWriter) -> (u16, u16, u16) {
     let caches = runtime_x86_caches::<8>();
@@ -462,6 +485,7 @@ pub fn prepare_smbios(
 
         // Type 4 + Type 7: Processors and caches
         for proc in desc.processors {
+            let (cores, enabled, threads) = resolve_processor_counts(proc);
             if proc.caches.is_empty() {
                 let (l1, l2, l3) = add_runtime_cache_info(&mut *w);
                 if l1 == 0xFFFF && l2 == 0xFFFF && l3 == 0xFFFF {
@@ -470,8 +494,9 @@ pub fn prepare_smbios(
                         proc.manufacturer,
                         proc.family,
                         proc.max_speed_mhz,
-                        proc.core_count,
-                        proc.thread_count,
+                        cores,
+                        enabled,
+                        threads,
                     );
                 } else {
                     w.add_processor_with_caches(
@@ -479,8 +504,9 @@ pub fn prepare_smbios(
                         proc.manufacturer,
                         proc.family,
                         proc.max_speed_mhz,
-                        proc.core_count,
-                        proc.thread_count,
+                        cores,
+                        enabled,
+                        threads,
                         l1,
                         l2,
                         l3,
@@ -512,8 +538,9 @@ pub fn prepare_smbios(
                     proc.manufacturer,
                     proc.family,
                     proc.max_speed_mhz,
-                    proc.core_count,
-                    proc.thread_count,
+                    cores,
+                    enabled,
+                    threads,
                     l1,
                     l2,
                     l3,

@@ -134,19 +134,49 @@ pub fn cpu_topology() -> CpuTopology {
 /// Returns `(cores_per_package, threads_per_core)`.
 /// Falls back to (1, 1) if leaf 4 is not supported.
 pub fn core_thread_count() -> (u8, u8) {
-    if max_standard_leaf() < 4 {
-        return (1, 1);
-    }
-    let r = cpuid(4, 0);
-    let max_cores = ((r.eax >> 26) & 0x3F) as u8 + 1;
-    // Bits 25:14 are 12 bits wide (max 4095) — use u16 to avoid truncation.
-    let max_threads_sharing = ((r.eax >> 14) & 0xFFF) as u16 + 1;
-    let threads_per_core = if max_cores > 0 {
-        (max_threads_sharing / max_cores as u16) as u8
+    let (cores, threads) = cpu_core_thread_counts();
+    // threads-per-core = threads / cores, preserving the legacy u8 API.
+    let threads_per_core = if cores > 0 {
+        (threads / cores).clamp(1, u8::MAX as u16) as u8
     } else {
         1
     };
-    (max_cores, threads_per_core.max(1))
+    (
+        cores.clamp(1, u8::MAX as u16) as u8,
+        threads_per_core.max(1),
+    )
+}
+
+/// Read total cores and threads per package, coreboot-style.
+///
+/// Prefers CPUID leaf 0xB (x2APIC topology) like coreboot's
+/// `smbios_write_type4`: `cores = EBX(1)/EBX(0)`, `threads = EBX(1)`.
+/// Falls back to deterministic cache leaf 4, then to leaf 1 `EBX[23:16]`
+/// (maximum addressable logical processors). Bonnell/Pineview has no
+/// leaf 0xB, so leaf 4 is what yields the correct 1C/2T there.
+///
+/// Returns `(cores_per_package, threads_per_package)`.
+pub fn cpu_core_thread_counts() -> (u16, u16) {
+    if max_standard_leaf() >= 0xb {
+        let pkg = (cpuid(0xb, 1).ebx & 0xffff) as u16;
+        let smt = (cpuid(0xb, 0).ebx & 0xffff) as u16;
+        let threads = if pkg == 0 { smt.max(1) } else { pkg };
+        let threads_per_core = if smt == 0 { 1 } else { smt };
+        let cores = threads / threads_per_core.max(1);
+        if threads > 0 && cores > 0 {
+            return (cores, threads);
+        }
+    }
+    if max_standard_leaf() >= 4 {
+        let r = cpuid(4, 0);
+        let max_cores = ((r.eax >> 26) & 0x3F) as u16 + 1;
+        let max_sharing = ((r.eax >> 14) & 0xFFF) as u16 + 1;
+        if max_cores > 0 && max_sharing > 0 {
+            return (max_cores, max_sharing);
+        }
+    }
+    let logical = cpu_topology().max_logical as u16;
+    (logical.max(1), logical.max(1))
 }
 
 /// Cache descriptor from CPUID leaf 4.

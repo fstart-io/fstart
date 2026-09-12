@@ -110,9 +110,9 @@ pub struct ProcessorDesc<'a> {
     pub family: u16,
     /// Maximum speed in MHz.
     pub max_speed_mhz: u16,
-    /// Number of cores.
+    /// Number of cores (0 = detect at runtime via CPUID).
     pub core_count: u16,
-    /// Number of threads.
+    /// Number of threads (0 = detect at runtime via CPUID).
     pub thread_count: u16,
     /// Cache descriptors. Empty means the runtime should detect caches when supported.
     pub caches: &'a [CacheDesc<'a>],
@@ -534,6 +534,7 @@ impl SmbiosWriter {
         processor_family: u16,
         max_speed_mhz: u16,
         core_count: u16,
+        core_enabled: u16,
         thread_count: u16,
     ) {
         self.add_processor_with_caches(
@@ -542,6 +543,7 @@ impl SmbiosWriter {
             processor_family,
             max_speed_mhz,
             core_count,
+            core_enabled,
             thread_count,
             0xFFFF,
             0xFFFF,
@@ -561,6 +563,7 @@ impl SmbiosWriter {
         processor_family: u16,
         max_speed_mhz: u16,
         core_count: u16,
+        core_enabled: u16,
         thread_count: u16,
         l1_cache_handle: u16,
         l2_cache_handle: u16,
@@ -588,13 +591,13 @@ impl SmbiosWriter {
         self.write_u8(0); // asset tag (no string)
         self.write_u8(0); // part number (no string)
         self.write_u8(cap_u8(core_count)); // core count (legacy)
-        self.write_u8(cap_u8(core_count)); // core enabled (legacy)
+        self.write_u8(cap_u8(core_enabled)); // core enabled (legacy)
         self.write_u8(cap_u8(thread_count)); // thread count (legacy)
         self.write_u16(0); // processor characteristics
         self.write_u16(processor_family); // processor family 2
         // SMBIOS 3.0 extended fields
         self.write_u16(core_count); // core count 2
-        self.write_u16(core_count); // core enabled 2
+        self.write_u16(core_enabled); // core enabled 2
         self.write_u16(thread_count); // thread count 2
 
         // Strings
@@ -958,7 +961,7 @@ mod tests {
     #[test]
     fn test_processor_info_structure() {
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_processor("CPU0", "ARM", 0x0119, 2000, 4, 4);
+            w.add_processor("CPU0", "ARM", 0x0119, 2000, 4, 4, 4);
             w.add_end_of_table();
         });
 
@@ -976,7 +979,7 @@ mod tests {
     #[test]
     fn test_processor_family_x86() {
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_processor("CPU0", "Intel", 0x28, 3600, 8, 16);
+            w.add_processor("CPU0", "Intel", 0x28, 3600, 8, 8, 16);
             w.add_end_of_table();
         });
 
@@ -1010,7 +1013,7 @@ mod tests {
             w.add_system_info("QEMU", "SBSA Reference", "1.0", None);
             w.add_baseboard_info("QEMU", "sbsa-ref");
             w.add_enclosure(0x17, "QEMU"); // rack mount
-            w.add_processor("CPU0", "ARM", 0x0119, 2000, 1, 1);
+            w.add_processor("CPU0", "ARM", 0x0119, 2000, 1, 1, 1);
             w.add_physical_memory_array(1024 * 1024, 1);
             w.add_memory_device("DIMM0", 1024, 2400, 0x1A);
             w.add_memory_array_mapped_address(0x10000000000, 0x1003FFFFFFF, 1);
