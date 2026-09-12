@@ -73,13 +73,35 @@ pub fn timestamp_us() -> u64 {
     rdtsc() / (tsc_frequency_hz() / 1_000_000).max(1)
 }
 
-#[cfg(target_arch = "x86_64")]
+// SMM builds substitute a call-free POST-port delay below: the TSC path's
+// frequency table lives in unshipped .rodata and its discovery calls cannot
+// survive the SMRAM blob audit. Selected per build unit, so all other stages
+// keep the precise TSC implementation with no call-site changes.
+#[cfg(all(target_arch = "x86_64", not(fstart_stage_env = "smm")))]
 pub fn udelay(us: u32) {
     // Compute the TSC frequency once per delay.  `tsc_frequency_hz()` may use
     // CPUID/MSR reads on Core 2-era CPUs; doing that inside the polling loop is
     // both extremely slow and unsafe for early firmware delay paths.
     let hz = sanitize_tsc_frequency_hz(tsc_frequency_hz());
     udelay_tsc(us, hz);
+}
+
+/// SMM microsecond delay via POST-port writes (see above).
+#[cfg(all(target_arch = "x86_64", fstart_stage_env = "smm"))]
+#[inline(always)]
+pub fn udelay(us: u32) {
+    for _ in 0..us {
+        // SAFETY: POST port 0x80 is always LPC-decoded; writes are side-effect
+        // free and touch no memory, stack, or flags.
+        unsafe {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") 0x80u16,
+                in("al") 0u8,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
