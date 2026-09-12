@@ -1,0 +1,46 @@
+//! Memory controller service trait.
+//!
+//! Implemented by DRAM controller drivers. Board/platform memory steps perform
+//! the full DRAM initialization sequence (PLL setup, PHY training, size
+//! detection). This trait exposes detected parameters for use by later firmware
+//! stages.
+
+use super::ServiceError;
+
+/// Memory controller — DRAM initialization and detection.
+///
+/// Board/platform memory steps run the full hardware init sequence:
+/// - Program the DRAM PLL
+/// - Configure controller timing parameters
+/// - Reset the DRAM chips (DDR3 reset sequence)
+/// - Run DQS gate training / read calibration
+/// - Detect installed DRAM size
+///
+/// After `dram_init()` succeeds, `detected_size_bytes()` returns the usable
+/// DRAM capacity.
+pub trait MemoryController: Send + Sync {
+    /// Run DRAM initialization/training for this controller.
+    ///
+    /// This is intentionally a dedicated memory-init hook because x86
+    /// northbridge drivers are constructed before the console and chipset init
+    /// are available. Real DRAM training is dispatched later by the fixed-flow
+    /// memory step, after SMBus/GPIO/BAR setup has completed.
+    fn dram_init(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Return the detected DRAM size in bytes.
+    ///
+    /// Only valid after `dram_init()` or equivalent platform firmware has
+    /// completed successfully. Returns 0 if DRAM init failed or has not been
+    /// run.
+    fn detected_size_bytes(&self) -> u64;
+
+    /// Perform a basic memory test (optional, default no-op).
+    ///
+    /// Writes and reads back a pattern at several addresses to verify
+    /// DRAM is functional.  Returns `HardwareError` if the test fails.
+    fn memory_test(&self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}

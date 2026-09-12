@@ -1,0 +1,20 @@
+[package]
+name = "fstart-acpi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["arm"]
+std = []
+arm = []
+x86 = []
+
+[dependencies]
+acpi_tables = "0.2"
+fstart-core = { path = "../core" }
+fstart-acpi-macros = { path = "../acpi-macros" }
+tock-registers = { workspace = true }
+zerocopy = { workspace = true }
+
+[dev-dependencies]

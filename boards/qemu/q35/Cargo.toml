@@ -1,0 +1,26 @@
+[package]
+name = "fstart-board-qemu-q35"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "qemu-q35"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
+
+[dependencies]
+fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
+# ICH8 SMM handler reused for the emulated ICH9 (same PMBASE layout).
+fstart-driver-intel = { path = "../../../crates/driver-intel" }
+# TEMP-PROBE: port I/O for the SMI entry probe.
+fstart-core = { path = "../../../crates/core" }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

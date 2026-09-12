@@ -1,0 +1,19 @@
+[package]
+name = "fstart-driver-lenovo"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+default = []
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
+x86_64 = ["fstart-arch/x86_64"]
+
+[dependencies]
+fstart-arch = { workspace = true }
+fstart-core = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }
+fstart-acpi = { workspace = true, optional = true }
+fstart-acpi-macros = { path = "../acpi-macros", optional = true }

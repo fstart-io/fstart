@@ -1,0 +1,15 @@
+[package]
+name = "fstart-driver-uart"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+pio = []
+
+[dependencies]
+fstart-core = { workspace = true }
+serde = { workspace = true }
+tock-registers = { workspace = true }

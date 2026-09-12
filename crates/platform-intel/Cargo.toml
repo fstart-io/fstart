@@ -1,0 +1,55 @@
+[package]
+name = "fstart-platform-intel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+host = ["dep:fstart-image-build", "dep:serde_json"]
+bundle-bootblock = ["stage", "fstart-stage/x86_64", "fstart-stage/x86-static-page-tables", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest"]
+bundle-postcar = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/lz4"]
+bundle-ramstage = ["stage", "acpi", "mp", "smbios", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/lz4", "fstart-stage/acpi"]
+bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin"]
+payload-uefi = ["fstart-stage/crabefi"]
+payload-uefi-basic = ["fstart-stage/crabefi-basic"]
+stage = [
+  "dep:fstart-driver-superio",
+  "dep:fstart-driver-uart",
+  "dep:fstart-log",
+  "dep:fstart-stage",
+  "dep:fstart-ffs",
+  "fstart-stage/ffs",
+  "dep:fstart-arch",
+  "dep:ufmt",
+  "fstart-core/pci",
+]
+acpi = [
+  "dep:fstart-acpi",
+  "dep:fstart-arch",
+  "dep:fstart-log",
+  "dep:ufmt",
+  "fstart-driver-intel/acpi",
+]
+mp = ["stage", "dep:fstart-arch", "dep:fstart-ffs", "fstart-stage/ffs"]
+smbios = ["stage", "dep:fstart-acpi", "dep:fstart-arch"]
+
+[dependencies]
+fstart-image-build = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
+fstart-smm = { workspace = true, optional = true }
+fstart-core = { workspace = true }
+fstart-pci = { workspace = true }
+fstart-driver-intel = { workspace = true, features = ["ffs-vbt"] }
+fstart-driver-superio = { workspace = true, optional = true }
+fstart-driver-uart = { workspace = true, optional = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
+fstart-log = { workspace = true, optional = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-ffs = { workspace = true, optional = true }
+heapless = { workspace = true }
+konst = { workspace = true }
+serde = { workspace = true }
+ufmt = { workspace = true, optional = true }

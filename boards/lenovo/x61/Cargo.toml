@@ -1,0 +1,34 @@
+[package]
+name = "fstart-board-lenovo-x61"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "lenovo-x61"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-intel", name = "rust" }
+
+[dependencies]
+fstart-core = { path = "../../../crates/core", features = ["pci"] }
+fstart-platform-intel = { path = "../../../crates/platform-intel" }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-acpi-macros = { path = "../../../crates/acpi-macros" }
+fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
+fstart-driver-intel = { path = "../../../crates/driver-intel", features = ["ffs-vbt"] }
+fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
+fstart-driver-superio = { path = "../../../crates/driver-superio" }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-log = { path = "../../../crates/log" }
+# Required at the crate root wherever fstart_log macros expand
+# (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+

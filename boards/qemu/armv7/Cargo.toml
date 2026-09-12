@@ -1,0 +1,21 @@
+[package]
+name = "fstart-board-qemu-armv7"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "qemu-armv7"
+platform = "armv7"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
+
+[dependencies]
+fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

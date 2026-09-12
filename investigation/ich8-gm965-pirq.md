@@ -16,7 +16,7 @@
 13. `crates/fstart-mainboard-lenovo-x61/src/lib.rs` (lines 407-685) - fstart X61 ACPI glue currently hardcodes `\_SB_.PCI0...` paths.
 14. `boards/lenovo-x61/board.ron` (lines 91-174, 285-321) - fstart X61 ICH8 config and current `late_rcba` values.
 15. `crates/fstart-codegen/src/stage_gen/board_gen/model.rs` (lines 237-287) and `caps_tables.rs` (lines 120-174) - topology-derived ACPI parent path wrapping.
-16. `crates/fstart-acpi/src/lib.rs` (lines 62-134) and `platform/mod.rs` (lines 393-431) - root-scope fragment handling and automatic `\_SB_` DSDT wrapper.
+16. `crates/acpi/src/lib.rs` (lines 62-134) and `platform/mod.rs` (lines 393-431) - root-scope fragment handling and automatic `\_SB_` DSDT wrapper.
 
 ## Key Code
 

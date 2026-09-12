@@ -1,0 +1,28 @@
+[package]
+name = "fstart-board-foxconn-d41s"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "foxconn-d41s"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-intel", name = "rust" }
+
+[dependencies]
+fstart-core = { path = "../../../crates/core", features = ["pci"] }
+fstart-platform-intel = { path = "../../../crates/platform-intel" }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-driver-intel = { path = "../../../crates/driver-intel", features = ["ffs-vbt"] }
+fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-log = { path = "../../../crates/log" }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

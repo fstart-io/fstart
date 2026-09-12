@@ -1,0 +1,24 @@
+[package]
+name = "fstart-board-licheerv-dock"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "licheerv-dock"
+platform = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-sunxi", name = "rust" }
+
+[dependencies]
+fstart-core = { path = "../../../crates/core" }
+fstart-driver-sunxi = { path = "../../../crates/driver-sunxi" }
+fstart-platform-sunxi = { path = "../../../crates/platform-sunxi" }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

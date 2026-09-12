@@ -1,0 +1,19 @@
+[package]
+name = "fstart-image-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["std"] }
+object = { workspace = true }
+fstart-core = { workspace = true }
+fstart-ffs = { workspace = true, features = ["std"] }
+fstart-boot = { workspace = true, features = ["std"] }
+fstart-crypto = { workspace = true, features = ["all"] }
+fstart-smm = { workspace = true, features = ["std", "coreboot"] }
+ed25519-dalek = { workspace = true, features = ["std", "rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[build-dependencies]
+object = { workspace = true }

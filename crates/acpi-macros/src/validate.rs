@@ -1,0 +1,217 @@
+//! Compile-time validation of ACPI names and method arguments.
+//!
+//! ACPI names must be 1-4 characters, `[A-Z0-9_]` only. Predefined
+//! names like `_HID`, `_CRS`, `_STA` are allowed. Method argument
+//! count must be 0-7.
+
+use proc_macro2::Span;
+use syn::{Error, Result};
+
+use crate::parse::{DslItem, NameOrInterp};
+
+/// Validate a list of DSL items.
+pub fn validate_items(items: &[DslItem]) -> Result<()> {
+    for item in items {
+        validate_item(item)?;
+    }
+    Ok(())
+}
+
+fn validate_item(item: &DslItem) -> Result<()> {
+    match item {
+        DslItem::Mutex { name, span, .. } => {
+            validate_acpi_name(name, *span)?;
+        }
+        DslItem::Acquire { mutex, span, .. } | DslItem::Release { mutex, span, .. } => {
+            validate_acpi_name(mutex, *span)?;
+        }
+        DslItem::ThermalZone {
+            name,
+            children,
+            span,
+        } => {
+            validate_acpi_name(name, *span)?;
+            validate_items(children)?;
+        }
+        DslItem::PowerResource {
+            name,
+            children,
+            span,
+            ..
+        } => {
+            validate_acpi_name(name, *span)?;
+            validate_items(children)?;
+        }
+        DslItem::Scope {
+            path,
+            children,
+            span,
+        } => {
+            if let NameOrInterp::Literal(p) = path {
+                validate_acpi_path(p, *span)?;
+            }
+            validate_items(children)?;
+        }
+        DslItem::Device {
+            name,
+            children,
+            span,
+        } => {
+            if let NameOrInterp::Literal(n) = name {
+                validate_acpi_path(n, *span)?;
+            }
+            validate_items(children)?;
+        }
+        DslItem::Name { name, span, .. } => {
+            validate_acpi_name(name, *span)?;
+        }
+        DslItem::Method {
+            name,
+            argc,
+            body,
+            span,
+            ..
+        } => {
+            validate_acpi_name(name, *span)?;
+            if *argc > 7 {
+                return Err(Error::new(*span, "method argument count must be 0-7"));
+            }
+            validate_items(body)?;
+        }
+        DslItem::Return { .. } => {}
+        DslItem::OpRegion { name, span, .. } => {
+            validate_acpi_name(name, *span)?;
+        }
+        DslItem::Field { region, span, .. } => {
+            validate_acpi_name(region, *span)?;
+        }
+        DslItem::CreateDwordField { name, span, .. } => {
+            validate_acpi_name(name, *span)?;
+        }
+        DslItem::If {
+            body, else_body, ..
+        } => {
+            validate_items(body)?;
+            if let Some(else_items) = else_body {
+                validate_items(else_items)?;
+            }
+        }
+        DslItem::While { body, .. } => {
+            validate_items(body)?;
+        }
+        DslItem::MethodCall { name, span, .. } => {
+            if let NameOrInterp::Literal(p) = name {
+                validate_acpi_path(p, *span)?;
+            }
+        }
+        DslItem::Store { .. }
+        | DslItem::ShiftLeft { .. }
+        | DslItem::Subtract { .. }
+        | DslItem::Add { .. }
+        | DslItem::Assign { .. }
+        | DslItem::Notify { .. }
+        | DslItem::Sleep { .. }
+        | DslItem::Stall { .. }
+        | DslItem::Break { .. }
+        | DslItem::Increment { .. }
+        | DslItem::Decrement { .. }
+        | DslItem::DivideAssign { .. } => {}
+    }
+    Ok(())
+}
+
+/// Validate an ACPI path (e.g., `\\_SB_`, `\\_SB.PCI0`).
+fn validate_acpi_path(path: &str, span: Span) -> Result<()> {
+    if path.is_empty() {
+        return Err(Error::new(span, "ACPI path cannot be empty"));
+    }
+
+    let path = path.strip_prefix('\\').unwrap_or(path);
+    let path = path.trim_start_matches('^');
+    if path.is_empty() {
+        return Ok(());
+    }
+    let segments: Vec<&str> = path.split('.').collect();
+
+    for seg in &segments {
+        let clean = seg.trim_start_matches('_');
+        if seg.is_empty() {
+            return Err(Error::new(span, format!("empty path segment in `{path}`")));
+        }
+        if seg.len() > 4 {
+            return Err(Error::new(
+                span,
+                format!("ACPI name segment `{seg}` exceeds 4 characters"),
+            ));
+        }
+        if !seg
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        {
+            return Err(Error::new(
+                span,
+                format!("ACPI name `{seg}` contains invalid characters (allowed: A-Z, 0-9, _)"),
+            ));
+        }
+        let _ = clean;
+    }
+    Ok(())
+}
+
+/// Validate a single ACPI NameSeg (1-4 chars, `[A-Z0-9_]`).
+fn validate_acpi_name(name: &str, span: Span) -> Result<()> {
+    if name.is_empty() || name.len() > 4 {
+        return Err(Error::new(
+            span,
+            format!("ACPI name `{name}` must be 1-4 characters"),
+        ));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return Err(Error::new(
+            span,
+            format!("ACPI name `{name}` contains invalid characters (allowed: A-Z, 0-9, _)"),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_names() {
+        let span = Span::call_site();
+        assert!(validate_acpi_name("_HID", span).is_ok());
+        assert!(validate_acpi_name("PCI0", span).is_ok());
+        assert!(validate_acpi_name("COM0", span).is_ok());
+        assert!(validate_acpi_name("_CRS", span).is_ok());
+        assert!(validate_acpi_name("_UID", span).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_names() {
+        let span = Span::call_site();
+        assert!(validate_acpi_name("", span).is_err());
+        assert!(validate_acpi_name("TOOLONG", span).is_err());
+        assert!(validate_acpi_name("bad!", span).is_err());
+    }
+
+    #[test]
+    fn test_valid_paths() {
+        let span = Span::call_site();
+        assert!(validate_acpi_path("\\_SB_", span).is_ok());
+        assert!(validate_acpi_path("\\_SB.PCI0", span).is_ok());
+        assert!(validate_acpi_path("PCI0", span).is_ok());
+        assert!(validate_acpi_path("\\", span).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_paths() {
+        let span = Span::call_site();
+        assert!(validate_acpi_path("", span).is_err());
+    }
+}

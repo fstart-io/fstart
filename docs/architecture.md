@@ -1,636 +1,460 @@
-# fstart Architecture
+# fstart Architecture: Config as Data, Fixed Family Flows, Few Crates
 
-This document explains how fstart is built: how a board RON file becomes a
-running firmware, how the crates fit together, and why the system is designed
-the way it is.
+<!-- markdownlint-disable MD013 -->
 
-## Core idea
+This is the target architecture, revised from the
+[architecture review](https://uwkm2gle6nsv.postplan.dev). It supersedes the earlier
+board-builder/stage-flow, BSP/platform-recipe and fstart-new plans. Target
+interfaces below are not claims that the cutover is implemented. See
+[Implementation and acceptance](#implementation-and-acceptance) for the gates.
 
-A firmware build has two halves: a host-side pipeline that runs on your
-workstation, and a target-side binary that runs on the board. The host side
-reads the board RON file, generates Rust source code and a linker script, then
-compiles that source into a bare-metal binary. The target side is that binary
-— it initializes hardware and boots an OS.
+## Goals
 
-The board RON file is the only input. There is no hand-written stage code, no
-Makefile per board, no Kconfig. Adding a board means adding one file.
+- Scale to hundreds of platforms and thousands of boards through change locality.
+- New boards on supported hardware change their own directory and, when needed,
+  the generated inventory/committed build lock. No central registry.
+- Rust owns hardware policy and typed board/image facts; platform Rust derives
+  shared build geometry. Cargo metadata selects identity and the platform export.
+  No devicetree, RON, Cargo hardware schema or execution-order DSL.
+  QEMU RISC-V, ARMv7 and AArch64 select typed platform-owned machine presets
+  and share the concrete platform-plan executor.
+- Fixed handwritten family flows construct live drivers from static config.
+- Shared IP-block fixes reach all supported variants through one implementation.
+- Unrelated SoCs do not enter an existing board's compilation closure.
+- Release builds are the reference configuration. Build-only, emulator-booted
+  and hardware-booted are separate support statuses.
 
-## Build pipeline
+## Configuration is data
 
-```
-boards/my-board/board.ron
-       |
-       v
-  xtask (host binary)
-       |
-       |  1. parse RON -> BoardConfig
-       |  2. determine target triple, cargo features, env vars
-       |  3. invoke: cargo build -p fstart-stage --target <triple>
-       |             --features <features> -Z build-std=core
-       |             (sets FSTART_BOARD_RON=<path>)
-       |
-       v
-  fstart-stage/build.rs (runs during cargo build)
-       |
-       |  4. read $FSTART_BOARD_RON
-       |  5. two-phase parse: RON -> RonBoardConfig -> ParsedBoard
-       |  6. call stage_gen -> write generated_stage.rs to $OUT_DIR
-       |  7. call linker    -> write link.ld to $OUT_DIR
-       |
-       v
-  fstart-stage/src/main.rs
-       |
-       |  8. include!(generated_stage.rs)
-       |  9. compile against link.ld
-       |
-       v
-  ELF binary
-       |
-       |  10. object-crate ELF PT_LOAD extraction (flat binary for all platforms)
-       |  11. (armv7/sunxi) patch eGON header: length + checksum
-       |
-       v
-  stage binary on disk
-       |
-       |  (if multi-stage or payload blobs exist)
-       |  12. xtask assemble: parse ELF segments, build FFS image,
-       |      sign manifest, patch anchor block
-       |
-       v
-  firmware.ffs (or pflash image for QEMU)
-       |
-       |  13. xtask run: launch QEMU with the image
-       v
-  running firmware
-```
-
-### Step details
-
-**Steps 1-3: xtask orchestration.** Xtask is a standard Rust xtask binary.
-It locates the board RON under `boards/`, parses it to determine the
-platform (`riscv64` / `aarch64` / `armv7`), maps that to a target triple
-(`riscv64gc-unknown-none-elf`, etc.), and derives cargo feature flags from
-the board config. Features come from two sources: the drivers listed in
-`devices` (e.g. a board with an `Ns16550` device enables the `ns16550`
-feature), and the capabilities listed in each stage (e.g. `SigVerify`
-enables `ed25519` and digest features). Xtask then invokes cargo with
-`-Z build-std=core` (or `core,alloc` when a heap is needed).
-
-**Steps 4-7: build.rs codegen.** The `fstart-stage` crate has a build script
-that reads the board RON from the `FSTART_BOARD_RON` environment variable.
-It performs a two-phase parse: first into a `RonBoardConfig` (generic RON
-structure), then into a `ParsedBoard` with typed driver configs via the
-device registry. The parsed board is passed to two generators:
-
-- `stage_gen::generate_stage_source()` produces a complete Rust source file
-  containing the `fstart_main()` function, device structs, and all
-  initialization logic.
-- `linker::generate_linker_script()` produces a `link.ld` with memory
-  regions derived from the board's memory map.
-
-The build script emits `cargo:rustc-link-arg=-Tlink.ld` so the linker
-picks up the generated script automatically.
-
-**Steps 8-9: compilation.** `fstart-stage/src/main.rs` is four lines:
+Board/platform hardware configuration is const-evaluable `no_std` data. Builders
+write fields and validate invariants; they do not create drivers, closures,
+trait objects or runtime state. Closed platform config describes the hardware
+its flow programs; open board hooks handle board-attached devices and quirks.
 
 ```rust
-#![no_std]
-#![no_main]
-include!(concat!(env!("OUT_DIR"), "/generated_stage.rs"));
+static PLATFORM: Gm965Ich8Config = Gm965Ich8Config::new()
+    .sata(SataMode::Ahci, SataPorts::P0)
+    .lpc(LpcDecode::new().com1().superio(io16(0x2e)))
+    .build();
 ```
 
-Everything else comes from codegen. The platform crate provides `_start`
-(the entry point), and `fstart-runtime` provides the `#[panic_handler]`.
+Config lives in `.rodata`, not on the early CAR/SRAM stack. Board contracts expose
+`const CONFIG: &'static Config`; driver configs are const-derived and borrowed,
+not reconstructed or copied at runtime before DRAM. `build()` enforces hardware
+invariants in the owning platform, not in a central validator. Dynamic board
+blobs remain deferred; serialization is not a reason to invent a registry.
 
-**Steps 10-11: post-processing.** All platforms produce flat binaries by
-reading ELF `PT_LOAD` segments with the Rust `object` crate and laying out
-file-backed segment contents by physical address. Pure BSS segments are not
-written, avoiding a multi-gigabyte file spanning the ROM-to-RAM address gap.
-For Allwinner SoCs, the binary is further patched with an eGON boot header
-(magic bytes, length, checksum) that the SoC's BROM expects.
+Typed addresses (`IoAddr<T>`, `MmioAddr<T>`, `Irq`, `Bdf`, `Gpe`) are config data,
+not live backends. Construct register accessors at runtime and retain
+`tock-registers` register/bitfield definitions. Peripheral bases and decode choices remain Rust. Intel executable placement is
+shared platform policy, not repeated board geometry.
 
-**Steps 12-13: assembly and launch.** For multi-stage boards or boards with
-payload blobs (kernel, OpenSBI, ATF), xtask runs the assembly step: it
-parses the ELF to extract segments, packages everything into an FFS image,
-signs the manifest, and patches the anchor block into the bootblock binary.
-QEMU is launched with the resulting image — either via pflash (RISC-V) or
-`-bios` (AArch64/ARMv7).
+## Ownership and layering
 
-## Crate graph
+| Fact | Authoritative source | Consumers |
+| --- | --- | --- |
+| DRAM policy, GPIO, pinmux, device config, SMBIOS strings | Board Rust and typed platform defaults | Static config and runtime table builders |
+| Board/variant identity and platform reference | Board Cargo metadata | Discovery, selection, build report |
+| Target, entry mode, stage structure and default budgets | Platform Rust policy | Concrete compiler units and their projections |
+| Flash chip capacity and partition map | Typed board facts where physical boards vary (Intel); platform invariants for supported QEMU virt presets | Host resolver, assembler and linked runtime descriptor |
+| Stage load ranges, stacks, heaps and reservations | Shared platform Rust calculations and real chipset deltas | Linker symbols and runtime descriptor |
+| Detected DRAM and usable memory | Memory-init results | Existing runtime map/handoff, intersected with reservations |
+| Microcode/blob defaults and payload files | Platform Rust / board facts plus explicit CLI inputs | Host assembler only |
+| Final offsets, lengths and compression results | Image assembly | Existing image directory/descriptor mechanisms |
+| Hardware initialization order | Platform Rust | Handwritten calls, never a metadata step list |
 
-fstart has 26 crates in three groups: host-only, shared, and target-only.
+```text
+boards/<vendor>/<board>        hardware policy, wiring, hooks, board tables
+    ↓                         metadata: identity and platform export
+platform-<family>              flows, contracts, pairing, vendor entry
+    ↓                         Rust: shared layouts, Cargo stage bundles
+ driver-<vendor|class>         IP-block mechanisms and real hardware variants
+    ↓
+core / arch / pci / acpi / fdt / image reader / boot / smm
 
-### Host-only (std)
-
-```
-xtask
-  reads board RON, invokes cargo, assembles FFS, launches QEMU
-  depends on: fstart-types, fstart-ffs, fstart-fit, fstart-crypto,
-              fstart-device-registry, object (ELF parsing/extraction),
-              ed25519-dalek (signing)
-
-fstart-codegen
-  RON parser, Rust code generator, linker script generator
-  used by: fstart-stage/build.rs
-  depends on: fstart-types, fstart-device-registry, syn, quote,
-              prettyplease, proc-macro2
-
-fstart-device-registry
-  maps DriverInstance variants to driver crate metadata
-  depends on: every fstart-driver-* crate (feature-gated)
+fbuild + image-build (host)    discover, resolve, link, assemble, explain
 ```
 
-### Shared (std for host, no_std for target)
+`fstart-stage` owns entry/runtime glue and stage-local layout access. Payload
+launch belongs in `fstart-boot`; image loading stays in existing image facilities.
+The layout wire definition belongs in a small `fstart-core::layout` module, not a
+new crate. Host plan transport and reservation types belong in image-build, not core.
+Platform-specific calculations stay in the platform, not in fbuild.
 
-```
-fstart-types
-  BoardConfig, MemoryMap, DeviceConfig, StageLayout, Capability,
-  PayloadConfig, SecurityConfig, FFS types (AnchorBlock, Manifest, etc.)
-  used by: everything
+Crates are compilation/reuse boundaries, not a count target. A new crate needs a
+real host/runtime boundary, independent reuse or target/dependency isolation.
+Gate actual modules and dependencies, not just feature declarations. Optional
+`std` support for real tests/tools is fine; firmware closures remain `no_std`.
 
-fstart-ffs
-  firmware filesystem reader (no_std) + builder (std)
-  depends on: fstart-types, fstart-crypto, postcard (serde)
+## Build/runtime boundary
 
-fstart-fit
-  FIT image parser (U-Boot .itb format)
-  depends on: fstart-crypto, dtoolkit (FDT parser)
-```
+### Discovery and resolution
 
-### Target-only (no_std, no_main)
+Scan `boards/*/*/Cargo.toml`, including packages excluded from the root workspace.
+Parse TOML into typed, versioned host metadata; reject unknown fstart keys and
+ambiguous identities. Never compile boards to discover them. Use Cargo metadata
+to resolve the selected package's actual dependency graph and platform package.
+Cache discovery by manifest contents when needed, not by compiling all boards.
 
-```
-fstart-stage           the final binary; include!s generated code
-fstart-runtime         #[panic_handler]
-fstart-services        trait definitions (Console, BlockDevice, Device, ...)
-fstart-capabilities    capability implementations called from generated code
-fstart-log             global logger backed by ufmt
-fstart-arch            architecture helpers (delay loops, halt)
-fstart-mmio            MMIO register access
-fstart-crypto          signature verification, hashing
-fstart-alloc           bump allocator
+Intel/X61 and D945GCLF use `build-profile = { dependency = "fstart-platform-intel", name = "rust" }`.
+The dependency is resolved through Cargo's actual graph (including renames), not
+through a chipset registry in fbuild. The selected board exposes `Board` and
+implements the platform's small host-clean facts trait. X61's `const` IFD value
+calls `IntelIfdFlashLayout::new`; D945GCLF declares a genuine 512-KiB
+`X86Legacy` layout, not a synthetic descriptor. The facts constructor checks
+the separately declared physical chip capacity and CPU population. VBT and hardware config
+remain typed board source, active in both firmware and editor graphs.
 
-fstart-platform-*      _start entry, stack setup, boot protocol jumps
-fstart-soc-sunxi       Allwinner eGON header, FEL support
+The platform's optional host module exports the conventional `Plan<B>::emit(selection_json)`.
+The generated adapter passes an explicit serialized `BuildSelection` argument
+to `platform::Plan::<board::Board>::emit`;
+Cargo owns its dependency graph, build scripts, proc macros and linking. It emits
+image-build's family-free `ResolvedPlan`/`BuildPlan` transport: named compiler
+units with their own target, Cargo target kind, cfgs, features, flags, generated
+linker text, ELF expectations and artifact bindings, plus concrete image inputs.
+Defaults, supported payloads and terminal-stage assignment belong to platform
+Rust; fbuild qualifies Cargo aliases, validates references and executes the same
+bounded unit contract for build, check and IDE. This is not a generated authoring API,
+board host feature/executable or firmware recipe. The Intel family calculates
+common runtime capacities once; D945GCLF reuses them with the real i945 CAR
+window, legacy flash identity and Diamondville microcode inputs.
 
-fstart-driver-*        individual hardware drivers
-```
+QEMU virt boards select `VirtMachine::{Riscv64, Armv7, Aarch64}` in unconditional
+Rust source. The platform owns invariant flash banks, fixed reservations and
+compiler bundles, sharing one image projection while keeping explicit XIP,
+direct ARM Linux and AArch64 relocation differences. AArch64 no longer repeats
+an artificial fixed flash-capacity fact in board source. Other board-host builds
+remain legacy; there is no claim that all fbuild paths are generic. Imported IFD/host transport and
+selected reservations retain checked validation; const authoring is not a reason
+to skip ELF and assembly validation. See the [common-plan boundary and acceptance](architecture-common-plan.md).
 
-### Dependency flow
+### One immutable resolved build, three projections
 
-```
-board.ron ──► fstart-codegen ──► generated_stage.rs
-                  |                     |
-                  v                     v
-          fstart-device-registry   fstart-stage
-                  |                     |
-                  v                     v
-          fstart-driver-*          fstart-services
-                                        |
-                                        v
-                                   fstart-capabilities
-                                        |
-                                        v
-                                   fstart-ffs, fstart-crypto, fstart-log
-```
-
-Host tools (xtask, codegen) depend on everything. Target crates have a
-strict layered dependency: `fstart-stage` depends on `fstart-capabilities`,
-which depends on `fstart-ffs` and `fstart-crypto`, which depend on
-`fstart-types`. Driver crates depend only on `fstart-services` (for the
-traits they implement) and register-access crates.
-
-## Code generation
-
-The code generator (`fstart-codegen/src/stage_gen/`) transforms a
-`ParsedBoard` into a formatted Rust source file. The generator is organized
-into submodules:
-
-```
-stage_gen/
-  mod.rs          top-level generate_stage_source()
-  capabilities.rs code emitters for each Capability variant
-  config_ser.rs   serializes driver configs into Rust struct literals
-  flexible.rs     generates service dispatch enums (Flexible mode)
-  registry.rs     maps driver metadata to code generation
-  tokens.rs       helper functions (halt expressions, hex literals)
-  topology.rs     device tree validation (cycles, missing parents)
-  validation.rs   capability ordering checks
+```text
+manifest discovery + typed board facts + platform calculation + inputs + CLI
+                         ↓
+                 ResolvedBuild (host)
+                   /     |      \
+             linker   runtime   image-build
+             script    bytes     inputs
 ```
 
-### What gets generated
+The concrete resolved plan is not a board-authored builder or hardware execution
+model. It records compiler units, fixed geometry and a bounded producer-artifact
+dependency relation, not a lifecycle DSL. All units and bindings are validated
+before execution; named selections build only their required producer closure.
+Linker, ELF and format helpers are selected by platform Rust, not by family
+matches in fbuild. `resolved-build.json` is a diagnostic projection, never another
+editable configuration source.
 
-`generate_stage_source()` builds a `proc_macro2::TokenStream` by calling
-generators in sequence. The output has these sections:
+1. Allocate fixed **runtime** capacities/reservations before compiling; serialize
+   each stage's runtime subset. Capacity covers image/BSS, stack and heap
+   subranges. Physical flash banks/BIOS partitions are storage policy, not
+   preallocated per-file slots.
+2. Emit the linker script from the same value, including entry symbols, layout
+   bytes and `ASSERT` checks for section/reservation budgets.
+3. Compile the stage and validate actual ELF load/section ranges against the plan.
+4. Assemble with the same plan and check compressed/uncompressed and partition
+   limits. Oversized stages fail; they are not silently relocated.
 
-1. `extern crate` declarations for the platform and runtime crates.
-2. `use` imports for driver types, service traits, and capabilities.
-3. Constants (`FLASH_BASE`, `FLASH_SIZE`) when boot media is memory-mapped.
-4. Allwinner eGON header (global_asm + static) for sunxi first stages.
-5. FFS anchor static in `.fstart.anchor` — a placeholder patched after build.
-6. Heap storage (a large aligned static) when `heap_size` is set.
-7. Service dispatch enums (Flexible mode only).
-8. `Devices` struct with one field per device.
-9. `StageContext` struct with typed service accessors.
-10. `DEVICE_TREE` static (flat table of `DeviceNode` entries).
-11. `fstart_main()` — the entry point with the full init sequence.
+Intel XIP placement uses single-link section-size arithmetic at the BIOS top;
+RAM-stage initialized data is compact, with BSS/heap/stack protected separately.
+The assembler measures actual artifacts and packs files using compression and
+alignment, rejecting partition overflow. No fixed bootblock budget is subtracted
+from filesystem capacity. This corrects the earlier fixed-storage interpretation;
+it does not change runtime protection or restore the removed metadata resolver.
 
-The token stream is parsed into a `syn::File` AST and formatted with
-`prettyplease` to produce readable Rust.
+Linking needs no measure/relink cycle. Constant verification policy is finalized
+before compression; mutable locators occur only in uncompressed initial storage
+and are transported separately to successors. Compressed locator inputs fail
+packaging, rather than triggering layout/compression convergence. Sunxi's fixed
+finalizer seals its checksum before the initial digest and final directory/root.
+RISC-V virt packs into one physical 32-MiB bank; ARM's two 64-MiB banks remain.
+See [phase2a contracts and evidence](architecture-common-plan.md#locatortrust-separation-phase2a).
+This is not root-first slots, A/B recovery, hardware secure boot or rollback.
 
-### fstart_main() structure
+### Linker-embedded descriptor
 
-The generated `fstart_main(handoff_ptr: usize) -> !` has three phases:
+Use explicit-width little-endian bytes with magic, version, encoded length,
+bounded counts, stage identity and relevant physical ranges/reservations. Host
+encoding lives in image-build; core provides an allocation-free borrowed decoder.
+Share wire constants and test agreement, malformed lengths/counts and overflow.
+Decode byte fields, never cast to a native Rust struct.
 
-**Device construction.** Every device is constructed with its exact config:
+The linker emits a retained, allocated, loaded `.fstart.layout` section with
+`BYTE(...)` directives and `_fstart_layout_start`/`_fstart_layout_end` symbols.
+Place it in initialized read-only storage, not BSS/debug space. Early assembly
+uses absolute symbols such as `_fstart_stack_top`; Rust uses one stage-local
+accessor that encapsulates the unsafe linker boundary and validates the bytes.
+Prove retention in ELF and flat binaries and relocation on position-independent
+stages before adopting the mechanism there.
+
+The descriptor is **not** an inter-stage handoff, image directory or authentication
+authority. [Authenticated boot](authenticated-boot.md) remains authoritative;
+do not redesign loading or SMM packaging as part of this migration.
+
+Detected RAM must contain planned RAM reservations. Exclude reservations and
+platform MMIO apertures from the usable map at runtime. This validates actual
+hardware, rather than inventing a second host hardware model.
+
+### Selection and artifacts
+
+Cargo features provide additive hardware/backend availability. Selection uses
+three explicit target cfgs, supplied consistently to relevant target crates:
+
+| cfg | Meaning |
+| --- | --- |
+| `fstart_stage_env` | One environment, including the existing SMM stage mode |
+| `fstart_entry` | One architecture/vendor entry mode from the profile |
+| `fstart_payload` | One terminal launcher, independently of enabled backends |
+
+Register allowed cfg names/values; also reject missing/multiple selections and
+selected backends without their feature. `--check-cfg` alone cannot enforce this.
+Early stages need not compile payload backends. Do not mirror cfgs into env vars.
+
+Feature selections refer to the board's actual direct dependency keys and
+existing features. Shared propagation stays inside platform crates; boards only
+own variant features, not forwarding features for every shared capability.
+Multiple payload backends may coexist with one selection. Do not require global
+`--all-features` across incompatible architectures or board variants.
+
+Key output directories by board/variant, stage, target, profile, selections and
+resolved-layout digest. A digest-specific `-T` path forces layout-only changes to
+relink. Find outputs through Cargo JSON artifact messages, not a guessed shared
+binary path. Concurrent boards must not overwrite artifacts.
+
+## Board entry and flows
+
+Boards remain real Cargo packages with checked-in sources and board-owned bins:
+
+```text
+boards/<vendor>/<board>/
+  Cargo.toml       identity, platform reference, real dependencies/variants, bin
+  src/lib.rs       family board contract and hooks
+  src/main.rs      shared entry macro with platform-owned adapter
+  src/hw.rs        static hardware data
+  src/quirks.rs    board-specific orchestration
+  src/acpi.rs      board-specific table contributions when needed
+  data/           board blobs
+```
+
+Intel/X61 and D945GCLF have no board host feature or executable. Its generated host adapter
+only calls the shared platform export; the legacy `host`/`BoardConfig` path
+remains solely on unmigrated boards.
+
+Current X61 entry uses a platform-owned adapter and hygienic macro:
 
 ```rust
-let uart0 = Ns16550::new(&Ns16550Config {
-    base_addr: 0x10000000,
-    clock_freq: 3686400,
-    baud_rate: 115200,
-    reg_shift: 0,
-}).unwrap_or_else(|_| halt!());
+fstart_platform_intel::stage_bin!(
+    fstart_platform_intel::gm965::Program<fstart_board_lenovo_x61::Board>
+);
 ```
 
-Bus-attached devices receive their parent by name:
-
-```rust
-let sensor = Bmp280::new_on_bus(&Bmp280Config { addr: 0x76 }, &i2c0)
-    .unwrap_or_else(|_| halt!());
-```
-
-All parent references are resolved at compile time — no runtime device
-lookup.
-
-**Capability execution.** Each capability in the stage's list maps to
-a block of generated code. The order in the RON file is the execution order.
-For example, `ConsoleInit { device: "uart0" }` generates:
-
-```rust
-uart0.init().unwrap_or_else(|_| halt!());
-unsafe { fstart_log::init(&uart0) };
-fstart_capabilities::console_ready("uart0", "ns16550");
-```
-
-An `inited_devices` set tracks which devices have already been initialized
-to prevent double-init when `DriverInit` runs later.
-
-**Finalize.** Constructs the `StageContext`, logs completion, and halts. If
-the last capability was a jump (`PayloadLoad`, `StageLoad`), the halt is
-unreachable — it exists as a safety backstop.
-
-### Rigid vs Flexible mode
-
-In **Rigid** mode, every field in `Devices` has the concrete driver type.
-Service accessors return `&impl Console` (or whichever trait). The compiler
-sees through everything and can inline, DCE, and optimize aggressively.
-One board, one binary, zero overhead.
-
-In **Flexible** mode, the generator emits a dispatch enum for each service
-that has multiple possible drivers:
-
-```rust
-enum ConsoleDevice { Uart0(Ns16550) }
-impl Console for ConsoleDevice {
-    fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
-        match self { ConsoleDevice::Uart0(d) => d.write_byte(byte) }
-    }
-}
-```
-
-This avoids trait objects and heap allocation while allowing a single binary
-to support multiple hardware variants at runtime.
-
-### Validation
-
-Before generating code, the pipeline validates:
-
-- **Capability ordering**: `ConsoleInit` must appear before capabilities that
-  log. `BootMedia` must appear before `SigVerify`, `StageLoad`, or
-  `PayloadLoad`. `ClockInit` must appear before `ConsoleInit` when both exist.
-- **Device references**: Every device named in a capability must exist in the
-  `devices` list.
-- **Device tree topology**: No cycles, no missing parents, bus children
-  reference valid bus controllers.
-
-Validation failures produce `compile_error!()` in the generated source,
-surfacing the problem through the normal cargo error reporting.
-
-### Linker script generation
-
-The linker script generator reads the board's memory map and stage config to
-produce a layout appropriate for the boot mode:
-
-**XIP (code in ROM, data in RAM):** Two `MEMORY` regions. `.text` and
-`.rodata` go into `ROM`. `.data` has its VMA in `RAM` but loads from `ROM`
-via an `AT > ROM` directive — the `_start` assembly copies it at boot.
-`.bss` is `NOLOAD` in `RAM`. Stack grows down from the top of `RAM`.
-
-**RAM-only:** A single `MEMORY` region starting at `load_addr`. Everything
-is contiguous. `.data` does not need copying (LMA == VMA), and `_start`
-skips the copy loop when it detects `_data_load == _data_start`.
-
-For Allwinner eGON, the script places a `.head` section before `.text` so
-the eGON magic appears at offset 0 of the binary.
-
-## Runtime boot flow
-
-### Platform entry (\_start)
-
-Each platform crate (`fstart-platform-riscv64`, etc.) provides a `_start`
-in a `global_asm!` block placed in `.text.entry`. The assembly does four
-things:
-
-1. **Save boot arguments.** On RISC-V, the DTB address arrives in `a1` and
-   is saved to `mscratch` (a CSR immune to stack corruption). On AArch64,
-   it is saved to a dedicated register or memory location.
-
-2. **Set up the stack.** `sp = _stack_top` (symbol from the linker script).
-
-3. **Copy .data from ROM to RAM.** A word-by-word loop from `_data_load` to
-   `_data_start..._data_end`. Skipped when source equals destination (RAM
-   layout).
-
-4. **Zero .bss.** A word-by-word loop from `_bss_start` to `_bss_end`.
-
-Then it calls `fstart_main(0)` — the codegen-produced function.
-
-### Capability sequence
-
-Inside `fstart_main()`, capabilities execute in declared order. A typical
-monolithic boot:
-
-1. `ConsoleInit` — init UART hardware, register as global logger. All
-   subsequent code can call `info!()`, `error!()`, etc.
-2. `MemoryInit` (or `DramInit`) — initialize DRAM. On real hardware this
-   runs the full training sequence; on QEMU it is a no-op.
-3. `BootMedia` — declare where the FFS image lives (flash address or block
-   device).
-4. `SigVerify` — read the FFS anchor (volatile, to see post-build patched
-   values), verify the manifest signature, verify per-file digests.
-5. `FdtPrepare` — copy the platform DTB to the payload's expected address,
-   patch `/chosen/bootargs` and `/memory`.
-6. `PayloadLoad` — load kernel and firmware blobs from FFS to their load
-   addresses, then jump via the platform boot protocol. Does not return.
-
-For multi-stage boards, the bootblock ends with `StageLoad` instead of
-`PayloadLoad`. The next stage's `fstart_main` receives a `handoff_ptr` with
-DRAM size and boot media info from the previous stage.
-
-### Platform boot protocols
-
-Each platform crate provides a jump function:
-
-- **RISC-V**: `boot_linux_sbi(fw_addr, hart_id, dtb_addr, &fw_dynamic_info)`
-  jumps to OpenSBI with the fw_dynamic protocol. OpenSBI then starts the
-  kernel in S-mode.
-- **AArch64**: `boot_linux_atf(fw_addr, &bl_params)` jumps to ARM Trusted
-  Firmware BL31, which starts the kernel in EL1.
-- **ARMv7**: `boot_linux(kernel_addr, dtb_addr)` cleans caches and jumps
-  directly to a zImage.
-
-## Firmware filesystem (FFS)
-
-FFS is the on-disk format for assembled firmware images. It packages stage
-binaries, payload blobs, a manifest, and cryptographic signatures into a
-single image.
-
-### Layout
-
-```
-+---------------------------+
-| Region 0 data             |  stage binaries, payload blobs
-|   File 0 (bootblock)      |    segments: code, rodata, rwdata
-|   File 1 (main stage)     |
-|   File 2 (kernel)         |
-|   File 3 (firmware blob)  |
-+---------------------------+
-| Signed manifest           |  postcard-serialized, Ed25519-signed
-+---------------------------+
-| Anchor block              |  embedded in bootblock via link section
-|   (patched post-build)    |
-+---------------------------+
-```
-
-### Anchor block
-
-The anchor is a fixed-size `#[repr(C)]` struct embedded in the bootblock
-binary at link time (in the `.fstart.anchor` section). At build time, the
-FFS builder scans the image for the anchor's magic bytes and patches it
-with the manifest offset, image size, and verification keys. The anchor
-must be read with volatile reads at runtime because the compiler saw the
-pre-patch placeholder values at compile time.
-
-### Manifest
-
-The manifest is a `postcard`-serialized structure listing every region, file,
-and segment in the image. Each file entry includes:
-
-- Segment list: name, kind (code/rodata/rwdata/bss), offset, sizes, load
-  address, compression method.
-- Digest set: optional SHA-256 and SHA3-256 hashes of the file's data.
-
-The manifest itself is signed with Ed25519 (or ECDSA P-256). The signature
-covers the serialized manifest bytes.
-
-### Builder
-
-The FFS builder (std-only, used by xtask) works in four phases:
-
-1. **Layout**: assign offsets to all segments (8-byte aligned). Attempt LZ4
-   compression; fall back to uncompressed if it does not save space.
-2. **Sign**: serialize the manifest with postcard, sign with the provided
-   closure, append the signed manifest to the image.
-3. **Anchor patch**: find the placeholder anchor in the bootblock region and
-   overwrite it with real offsets and keys.
-4. **Re-sign**: patching the anchor invalidated the bootblock's digest.
-   Recompute it from the actual image bytes and re-sign the manifest. The
-   re-serialized manifest is guaranteed to be the same size.
-
-### Reader
-
-The FFS reader is `no_std` and zero-alloc. It borrows the firmware image as
-`&[u8]` and provides:
-
-- Manifest reading and signature verification.
-- Region/file/segment lookup by name or type.
-- Digest verification for individual files.
-- Segment data access with three-level offset resolution
-  (region + file + segment).
-
-For memory-mapped flash, reads are zero-copy pointer arithmetic. For block
-devices, reads go through a `BootMedia` trait that abstracts the storage.
-
-### LZ4 compression
-
-Segments can be LZ4-compressed. Decompression uses an in-place technique
-following coreboot's cbfstool approach: the compressed data is read to the
-tail of the destination buffer, then decompressed from tail to head. The
-builder verifies at build time that the in-place operation is safe (the
-read cursor never catches the write cursor). This avoids needing a separate
-scratch buffer.
-
-## Boot media abstraction
-
-The `BootMedia` trait provides a uniform read interface over different
-storage types:
-
-```
-BootMedia
-  |
-  +-- MemoryMapped<F: FlashMap>    zero-copy reads from memory-mapped flash
-  |     read_at() -> ptr::copy
-  |     as_slice() -> &[u8] directly from flash
-  |
-  +-- BlockDeviceMedia<B>          reads via BlockDevice trait (MMC, SPI)
-  |     read_at() -> block device read
-  |     as_slice() -> None (no zero-copy)
-  |
-  +-- SubRegion<M>                 windowed view into another BootMedia
-        offset translation on reads
-```
-
-`MemoryMapped` is generic over a `FlashMap` trait that translates flash
-offsets to CPU-visible addresses. The default `LinearMap` handles the common
-case of contiguous mapping. The `FlashMap` abstraction exists to support SoCs
-with banked or non-contiguous flash mappings.
-
-All FFS operations are generic over `BootMedia`. For memory-mapped flash,
-the compiler monomorphizes everything down to pointer arithmetic — no
-function pointers, no vtable, no overhead.
-
-## Driver / device / service architecture
-
-### Three layers
-
-```
-Service traits (Console, BlockDevice, Timer, ...)
-     ^
-     |  implemented by
-     |
-Driver structs (Ns16550, Pl011, SunxiA20Mmc, ...)
-     ^
-     |  constructed via
-     |
-Device trait (new + init lifecycle)
-```
-
-**Service traits** define what a device can do. They live in
-`fstart-services` and require `Send + Sync`. Each trait is a minimal
-interface — `Console` has `write_byte` and `read_byte`, `BlockDevice` has
-`read`, `write`, `size`.
-
-**Driver structs** live in their own crates (`fstart-driver-ns16550`, etc.).
-Each struct holds MMIO register references or base addresses, plus config
-values needed at runtime (clock frequency, baud rate). Drivers implement
-one or more service traits.
-
-**The `Device` trait** defines the construction lifecycle:
-
-- `type Config` — the driver's configuration struct (what goes in the RON
-  file).
-- `fn new(config: &Config) -> Result<Self, DeviceError>` — construct the
-  driver. Stores config values but does not touch hardware.
-- `fn init(&self) -> Result<(), DeviceError>` — initialize hardware.
-  Programs registers, enables clocks, runs calibration.
-
-The split between `new` (pure) and `init` (side-effectful) matters because
-codegen constructs all devices first, then initializes them in capability
-order.
-
-### Bus devices
-
-Devices on a bus (I2C sensors, SPI flash) implement `BusDevice` instead of
-`Device`:
-
-```rust
-trait BusDevice {
-    type Config;
-    type Bus: ?Sized;
-    fn new_on_bus(config: &Config, bus: &Bus) -> Result<Self, DeviceError>;
-    fn init(&self) -> Result<(), DeviceError>;
-}
-```
-
-The bus reference (`&Bus`) is the parent device, passed by codegen at
-construction time. Bus resolution is purely compile-time — no device tree
-walks, no linked lists.
-
-### Device registry
-
-The device registry (`fstart-device-registry`) maps RON driver variant names
-to driver crate metadata. It defines a `DriverInstance` enum with one variant
-per supported driver, and a `DriverMeta` struct with:
-
-- The Rust type name (`"Ns16550"`).
-- The crate path (`"fstart_driver_ns16550"`).
-- The config type name (`"Ns16550Config"`).
-- The list of service traits the driver implements.
-
-Codegen uses this metadata to emit the correct `use` statements, struct
-construction calls, and service accessor methods. Adding a new driver
-requires adding a variant to `DriverInstance` and a feature flag — the rest
-of the pipeline adapts automatically.
-
-## Logging
-
-`fstart-log` provides `info!()`, `error!()`, `warn!()`, `debug!()`, and
-`trace!()` macros backed by `ufmt` (a code-size-efficient formatting library
-for `no_std`).
-
-A global `&'static dyn Console` reference is set once by `ConsoleInit` via
-`fstart_log::init()`. The reference lifetime is extended with `transmute`
-— safe because the console lives in `fstart_main()`, which never returns.
-
-The `ConsoleWriter` translates `\n` to `\r\n` on the fly (serial terminals
-require carriage returns). Before `init()` is called, log output is silently
-discarded.
-
-## Security model
-
-Every assembled firmware image is signed and verified at boot.
-
-**Build time:** xtask generates Ed25519 dev keys if none exist, computes
-SHA-256 (and optionally SHA3-256) digests for every file in the image, signs
-the manifest, and embeds the public key in the anchor block.
-
-**Boot time:** the `SigVerify` capability reads the anchor (volatile),
-deserializes the manifest, verifies the signature against the embedded
-public key, then verifies per-file digests against the actual image data.
-If any check fails, the firmware halts.
-
-The anchor is read with volatile because the compiler saw the pre-patch
-placeholder at compile time and would otherwise constant-fold the zeros.
-
-## FIT image support
-
-fstart can boot FIT images (U-Boot's `.itb` format) containing kernel,
-ramdisk, FDT, and firmware in a single DTB-format blob. The `fstart-fit`
-crate parses FIT images identically at build time (std) and runtime
-(no_std).
-
-**Buildtime parse:** xtask reads the `.itb`, extracts each component, and
-stores them as separate FFS file entries with load addresses from the FIT
-metadata. The firmware loads them the same way it loads a LinuxBoot payload.
-
-**Runtime parse:** the entire `.itb` is embedded as a single FFS entry. At
-boot, the firmware parses the FIT in-place (zero-copy on memory-mapped
-flash) and copies each component to its load address.
-
-## Multi-stage boot
-
-Boards can define multiple stages (e.g. bootblock + main). Each stage is a
-separate invocation of the codegen pipeline and produces its own
-`fstart_main()`. Stages are packaged as separate files in the FFS image.
-
-The bootblock loads the next stage via `StageLoad`: it finds the named stage
-in the FFS manifest, copies its segments to the load addresses, and jumps.
-The next stage receives a `handoff_ptr` with information from the previous
-stage (DRAM size, boot media identity).
-
-Codegen performs cross-stage analysis at compile time: it examines all
-previous stages' capabilities to determine which devices have persistent
-hardware state (clocks, DRAM) and should not be re-initialized. Devices
-whose state is lost between stages (UART FIFO, MMC controller) are
-re-initialized in the new stage.
+`Program<B>` implements `fstart_stage::StageProgram` inside its owning platform.
+The board no longer relays `stage`, `runtime`, `smm` or payload Cargo features.
+Platform `bundle-bootblock`, `bundle-postcar`, `bundle-ramstage`, `bundle-smm`
+features activate real shared dependencies. The ramstage bundle includes ACPI,
+MP and SMBIOS; UEFI selects the direct platform dependency's `payload-uefi`.
+Board-imported Lenovo/UART/ACPI-macro drivers remain ordinary direct dependencies.
+SMM uses the platform's shared SMM export and `fstart_stage_env="smm"`; its
+current-artifact-only producer still runs before ramstage and embeds exact bytes.
+
+Do not implement a foreign stage trait for an uncovered generic board type in
+a platform crate. SMM adapters follow the same ownership rule while preserving
+its existing entry contract.
+
+Family flows remain handwritten: Intel CAR/postcar/ramstage, Sunxi SRAM/DRAM,
+and simple QEMU direct flows. The current Intel flow can cover GM965, i945 and
+Pineview; split it only for demonstrated sequencing differences, not hypothetical
+future generations. No generic early-device lifecycle or ordering DSL.
+
+Bootblock and ramstage hooks are distinct traits; Sunxi SRAM/DRAM hooks likewise.
+Document prerequisites, available memory/console/buses and cold/warm/resume
+execution points. Never reuse an early hook accidentally to reconstruct mainstage
+state. Mainstage owns the real memory map, PCI/resource and table state. Heap
+and dynamic plug-in drivers are acceptable after DRAM, not prerequisites for
+fixed hardware. ACPI/FDT contributions live near drivers; board fragments and
+SMBIOS policy stay in board Rust.
+
+ACPI is the normal Intel ramstage policy, owned by the platform ramstage bundle rather
+than a per-board opt-in. Boards supply their table fragments and hooks; any
+Cargo dependency activation needed to compile them is not a board policy
+selector. Hardware initialization (including Lenovo EC/PMH7 bring-up) is
+independent of table emission. A future explicit bring-up profile may omit
+ACPI without omitting that hardware initialization; do not add such a profile
+until needed. The legacy board Cargo forwarding feature disappears with that
+board's metadata cutover, not through a second interim selection mechanism.
+
+Variants share one package only when hardware structure and flow are shared.
+Use explicit exactly-one variant selection with `--no-default-features`; reject
+zero/multiple variants where a board requires one. Defaults are editor convenience,
+not firmware selection. Divergent flows indicate separate boards.
+
+## Reuse proofs
+
+- **Intel:** `I945Ich7` and `PineviewIch7` compose different northbridges with the
+  **same Ich7 driver implementation**. Pairing modules own closed config, defaults
+  and type associations, not copies of ICH7 initialization. GM965/ICH8 is the
+  adjacent-generation comparison. Share verified ICH7/ICH8 mechanisms, not
+  sequences assumed equivalent from similar APIs. The current flow may use
+  I801/ICH-specific services without pretending to cover all future Intel.
+- **Sunxi MMC:** inventory A20/H3/D1 FIFO, timing, calibration, clock/reset and DMA
+  differences before sharing IP algorithms. Use typed variant enums/validated
+  constants or narrowly named variant operations, not a boolean matrix allowing
+  impossible combinations. Similar DRAMC files do not prove reusable algorithms.
+- **Board devices:** datasheet register sequences for Super I/O, EC, clock/dock
+  devices belong in drivers. Board hooks own wiring, policy and actual quirks.
+- **SiFive:** reusable FU740 hardware code moves out of the board into the
+  appropriate platform/driver owner.
+
+Drivers may compose through public device/bus services, including PCI and SMBus;
+they do not discover boards or select/load stages, payloads or firmware images.
+For host tests, start with pure calculations and existing mockable buses. Add
+only the smallest access boundary a meaningful sequence test needs, retaining
+register definitions and modeling relevant side effects/ordering. A write trace
+does not validate electrical behavior or raminit.
+
+## Cargo lock and editor contract
+
+### Current Rust-plan packaging (not a workspace ownership cutover)
+
+The pre-existing selected-source preparation still copies the root lock and lets
+Cargo metadata resolve it; this change does **not** establish end-to-end
+zero-resolution builds. After that preparation, the host adapter adds exactly
+one deterministic local runner package entry, preserving every prepared package
+entry and pin verbatim. Adapter compilation uses `--locked` and fails closed;
+there is no resolution fallback. No board locks are removed, no audit workspace
+is promoted and no new committed lock authority is introduced. Native linking,
+proc macros, toolchain/profile compatibility and dependency aliases stay Cargo's
+responsibility, not a hand-built rustc driver.
+
+Host and firmware use separate target directories and feature selections. Typed
+board facts are unconditional original-source modules, not host-only cfgs. The
+existing Cargo-derived editor/check views still select one real stage graph.
+Generating a new view needs valid host facts; an already generated view can
+report original-source errors without regenerating the plan. Host compilation
+alone is not evidence of live editor behavior.
+
+### Future workspace cutover (unchanged, separate work)
+
+Keep boards excluded from the root development workspace. The target is one
+**discovered resolution/build workspace** containing all board/runtime packages,
+with one committed `build-support/boards.lock`. Release invocation selects one
+package, not `--workspace`. Generate workspace/editor config and necessary source links, not board package
+manifests or board-authoring interfaces. The thin shared host adapter described
+above is an executable shim only.
+
+`fbuild lock` intentionally refreshes the committed build lock. Normal builds
+seed the generated workspace lock from it and use `--locked`. The root workspace
+may retain its own lock for its different inventory. Pin toolchain and record
+external blob digests and compiler settings as well; a Cargo lock is insufficient
+for reproducibility.
+
+The all-board workspace is **not** automatically the editor project. Both
+`fbuild ide <board> --stage <stage> --payload <payload>` and `fbuild check` consume
+the same resolved selection as build. Generate a bounded active-board view with
+real sources, target, features, exact cfgs and proc-macro/build-script settings.
+Analysis and check-on-save must agree; a check command alone is insufficient.
+Preserve unrelated user editor settings and document reload when switching.
+
+Before workspace cutover, prove:
+
+- Real-source navigation through entry macro, adapter, platform and driver;
+  completion, macro expansion and matching editor/check type errors.
+- Switching stage/variant/payload and architecture clears stale cfgs and identities.
+- Edits reach original sources; symlink canonicalization and workspace membership
+  do not duplicate or misidentify packages.
+- The active view does not analyze unrelated boards; measure indexing as inventory
+  grows. `cargo check -p` alone does not bound rust-analyzer analysis.
+- Any disposable development lock preserves selected versions, sources and
+  checksums from the canonical lock. A copied full lock is not assumed to work.
+- Regeneration from clean checkouts preserves package identity and lock stability.
+
+One active selection per editor session is sufficient. If a selected-source
+workspace cannot meet these constraints, derive an alternative view from Cargo
+metadata while retaining proc-macro/build-script support. Do not delete working
+editor paths or board locks until these gates pass.
+
+## Implementation and acceptance
+
+This revision starts from source revision `38586a3e`; the review's original
+`8009aceb` audit counts are historical. Initial source budgets and fresh command
+results belong in [the migration baseline](architecture-baseline.md).
+
+Current progress: discovery and the QEMU RISC-V vertical slice are integrated,
+including halt/Linux/CrabEFI release boots, metadata-only geometry/relink proof,
+the platform entry adapter, additive-backend checks and selection-aware `check`.
+The [Cargo-derived editor view](ide.md) now passes original-source navigation,
+proc macros, compiler diagnostics and payload/profile switching. Its all-board
+lock prototype agrees with the tested selected compiler graphs. ARMv7 now uses
+that same resolved path, with ELF32 validation, halt/Linux release boots and live
+RISC-V ↔ ARMv7 editor switches passing. AArch64 now has distinct flash-storage,
+RAM-execution and writable reservations, validated relocation extents, and passing
+halt/Linux/CrabEFI release boots from the earlier relocation milestone. X61's
+typed board IFD/CPU facts and all three QEMU virt machine selections now feed the
+**same concrete platform-plan executor** through Cargo host exports. Intel
+multistage, RISC-V/ARMv7 XIP and AArch64 relocation require no family branches in
+common build/check/IDE tools. The former virt Cargo geometry profiles and their
+metadata resolver have been deleted; independent captured output fixtures retain
+the behavior proof. D945GCLF and its postcar-debug variant now also use that executor, with explicit
+legacy-flash transport and the same actual-size linker/packer. Other boards
+still use BoardConfig host callbacks. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
+AArch64 halt assembly/boot, and live car → postcar → ram → SMM → AArch64 editor
+switching with original-source invalid-fact diagnostics pass. Hardware boot and
+stack high-water measurements remain outstanding. Workspace ownership has not
+cut over, and explicit legacy routes remain for other boards. See
+[common-plan acceptance and scope](architecture-common-plan.md) and the earlier
+[Intel typed-facts acceptance](architecture-intel-typed-facts.md).
+
+1. **Boundary and discovery:** record ownership, selection, descriptor, adapter and
+   lock decisions. Replace textual manifest parsing with typed/versioned TOML and
+   globally unique board/variant identities. This does not migrate build geometry.
+2. **QEMU vertical slice:** metadata → ResolvedBuild → linker bytes/symbols → runtime
+   view → assembler. Prove geometry-only changes reach all consumers, no host board
+   executable, descriptor retention and a release boot.
+3. **Cargo/editor proof in that slice:** implement the adapter, direct dependency
+   selections, additive payload checks, isolated artifacts, `ide`/`check` and common
+   lock prototype. Workspace cutover remains blocked by the gates above.
+4. **Intel build boundary:** prove multistage reservations; replace duplicated
+   metadata geometry with const-validated board facts and shared platform policy.
+   Do not rewrite authenticated loading or hardware register sequences.
+5. **Pairing proof:** i945/ICH7 and Pineview/ICH7 share southbridge operations;
+   release-build both and preserve available boot evidence.
+6. **Flow/port cleanup:** stage-specific hooks, adapters, no shared-feature
+   forwarding, shared Sunxi hook vocabulary and reusable FU740 ownership.
+7. **Sunxi MMC:** consolidate verified mechanisms with focused variant checks and
+   available boots; consider CCU next, not automatic DRAMC consolidation.
+8. **Validation/cleanup:** full discovered release matrix and representative boots;
+   remove superseded models, SMBIOS duplication and locks only after replacement.
+   Preserve unported attic hardware knowledge rather than mechanically deleting it.
+
+Every migrated merged scope has one authoritative path. Intermediate development
+may be staged, but must name its next cutover and must not claim a prototype is
+proven. No backward-compatibility framework or permanent dual model.
+
+Retain existing QEMU coverage, especially q35 → CrabEFI → GRUB → Linux, and
+[authenticated-boot validation](authenticated-boot-validation.md). X61 cold-boot
+DDR2 training exists but the previous architecture record still awaited observed
+cold boot on hardware; this revision does not upgrade that status. Do not equate
+successful linking or emulator boots with hardware validation.
+
+Record clean/incremental release time, actual compilation closure, image sizes and
+stack-budget/high-water evidence on representative boards. Source stack budgets
+are not measurements of stack usage. Run affected/representative boards for each
+change and the complete declared release matrix periodically and before releases.
+
+### Intel IFD active-list correction and image safety
+
+The immediate metadata baseline declared descriptor/GbE/ME/BIOS, but its
+`ConstVec::new(first)` conversion failed to push the descriptor into the active
+list. X61's typed constructor explicitly pushes all four regions. This is a
+separate active-list validation bug fix, not byte-identical restoration of the
+old serialized list. Descriptor overlap now participates in validation.
+
+The existing assembler is unchanged: its generated 4-MiB firmware image has
+erased (`0xff`) non-BIOS ranges. It does not contain a populated factory IFD,
+GbE MAC/settings or ME firmware and is not a factory/full-chip backup. **Do not
+blindly flash the entire generated image onto hardware.** This scope adds no
+opaque blob import, manufacture or replacement. Runtime flash geometry still
+comes from the linker-embedded descriptor, never by independently evaluating
+board facts in firmware.

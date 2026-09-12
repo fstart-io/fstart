@@ -1,0 +1,38 @@
+[package]
+name = "fstart-driver-intel"
+description = "Intel chipset and support drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+acpi = [
+  "dep:fstart-acpi",
+  "dep:fstart-acpi-macros",
+]
+ffs-vbt = []
+gm965 = []
+ich8 = []
+pineview = []
+ich7 = []
+
+[dependencies]
+bitflags = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../acpi-macros", optional = true }
+fstart-arch = { workspace = true, features = ["x86_64"] }
+
+fstart-driver-superio = { workspace = true }
+
+fstart-log = { workspace = true }
+
+fstart-core = { workspace = true, features = ["pci"] }
+
+fstart-pci = { workspace = true }
+fstart-smm = { workspace = true }
+heapless = { workspace = true }
+serde = { workspace = true }
+tock-registers = { workspace = true }
+ufmt = { workspace = true }

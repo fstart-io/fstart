@@ -1,0 +1,532 @@
+//! Memory map types.
+
+use core::fmt;
+
+use heapless::String as HString;
+use serde::{Deserialize, Serialize};
+
+use crate::const_vec::ConstVec;
+
+/// Complete memory map for a board.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryMap {
+    /// Named memory regions (ROM, RAM only — not per-device MMIO)
+    pub regions: heapless::Vec<MemoryRegion, 16>,
+    /// Optional physical flash partition map.
+    ///
+    /// Descriptor-based systems can split SPI flash into descriptor, GbE, ME,
+    /// BIOS, and other regions. Host-side image assembly can describe and
+    /// optionally populate non-firmware regions.
+    #[serde(default)]
+    pub flash_layout: Option<FlashLayout>,
+    /// Cache-as-RAM (CAR) region for pre-DRAM x86 stages.
+    ///
+    /// On x86 platforms, bootblock (and optionally romstage) runs
+    /// before DRAM is initialized. CAR uses the CPU's L1/L2 cache as
+    /// temporary writable RAM by programming MTRRs and entering
+    /// Non-Evict Mode (NEM) or a similar cache-locking mechanism.
+    ///
+    /// When this field is set, the linker **automatically** places
+    /// `.data`, `.bss`, and the stack of every XIP stage
+    /// (`runs_from: Rom` with `load_addr` in a ROM region) into this
+    /// CAR region instead of the first RAM region. RAM-loaded stages
+    /// (`runs_from: Ram`) are unaffected.
+    ///
+    /// `None` for boards that don't need CAR (ARM / RISC-V, where
+    /// DRAM is live at reset; QEMU virt; etc.).
+    #[serde(default)]
+    pub car: Option<CarConfig>,
+}
+
+impl MemoryMap {
+    /// Return the firmware aperture declared by the memory map.
+    ///
+    /// Boot media does not consume this directly; firmware-image mappings come
+    /// from Rust providers. Linker/setup code still uses the ROM aperture for
+    /// placement and x86 cache/MTRR setup.
+    pub fn firmware_window(&self) -> Option<(u64, u64)> {
+        match &self.flash_layout {
+            Some(FlashLayout::IntelIfd(layout)) => {
+                let bios = layout.bios_region()?;
+                Some((layout.base() + u64::from(bios.offset), u64::from(bios.size)))
+            }
+            Some(FlashLayout::X86Legacy(layout)) => Some((layout.base(), u64::from(layout.size()))),
+            None => self.contiguous_rom_window(),
+        }
+    }
+
+    /// Derive redundant firmware-image facts.
+    ///
+    /// A declared flash layout provides the linker-visible firmware window;
+    /// this helper ensures the corresponding ROM region exists.
+    pub fn normalize_derived_flash(&mut self) -> Result<(), MemoryMapError> {
+        if let Some((base, size)) = self.ifd_bios_window()? {
+            return self.ensure_rom_region(base, size);
+        }
+
+        Ok(())
+    }
+
+    fn ifd_bios_window(&self) -> Result<Option<(u64, u64)>, MemoryMapError> {
+        let Some(layout) = &self.flash_layout else {
+            return Ok(None);
+        };
+        match layout {
+            FlashLayout::IntelIfd(layout) => {
+                let bios = layout
+                    .bios_region()
+                    .ok_or(MemoryMapError::MissingBiosRegion)?;
+                Ok(Some((
+                    layout.base() + u64::from(bios.offset),
+                    u64::from(bios.size),
+                )))
+            }
+            FlashLayout::X86Legacy(layout) => Ok(Some((layout.base(), u64::from(layout.size())))),
+        }
+    }
+
+    fn contiguous_rom_window(&self) -> Option<(u64, u64)> {
+        let mut count = 0usize;
+        let mut base = u64::MAX;
+        let mut end = 0u64;
+        let mut total_size = 0u64;
+
+        for region in self
+            .regions
+            .iter()
+            .filter(|region| region.kind == RegionKind::Rom)
+        {
+            let region_end = region.base.checked_add(region.size)?;
+            count += 1;
+            base = base.min(region.base);
+            end = end.max(region_end);
+            total_size = total_size.checked_add(region.size)?;
+        }
+
+        if count == 0 || end.checked_sub(base)? != total_size {
+            return None;
+        }
+
+        Some((base, total_size))
+    }
+
+    fn ensure_rom_region(
+        &mut self,
+        expected_base: u64,
+        expected_size: u64,
+    ) -> Result<(), MemoryMapError> {
+        let expected_end = expected_base.saturating_add(expected_size);
+        for region in &self.regions {
+            if region.kind != RegionKind::Rom {
+                continue;
+            }
+            if region.base == expected_base && region.size == expected_size {
+                return Ok(());
+            }
+            let region_end = region.base.saturating_add(region.size);
+            if region.base < expected_end && expected_base < region_end {
+                return Err(MemoryMapError::RomRegionOverlap {
+                    expected_base,
+                    expected_size,
+                    actual_base: region.base,
+                    actual_size: region.size,
+                });
+            }
+        }
+
+        self.regions
+            .push(MemoryRegion {
+                name: HString::try_from("flash").map_err(|_| MemoryMapError::RegionsFull)?,
+                base: expected_base,
+                size: expected_size,
+                kind: RegionKind::Rom,
+            })
+            .map_err(|_| MemoryMapError::RegionsFull)
+    }
+}
+
+/// Error while deriving redundant memory-map facts from a flash layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMapError {
+    /// A descriptor-based layout lacks a BIOS region entry.
+    MissingBiosRegion,
+    /// A ROM memory region overlaps the derived firmware window without matching it.
+    RomRegionOverlap {
+        /// Expected ROM base.
+        expected_base: u64,
+        /// Expected ROM size.
+        expected_size: u64,
+        /// Actual configured ROM base.
+        actual_base: u64,
+        /// Actual configured ROM size.
+        actual_size: u64,
+    },
+    /// `memory.regions` has no room for the derived ROM region.
+    RegionsFull,
+}
+
+impl fmt::Display for MemoryMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::MissingBiosRegion => {
+                f.write_str("descriptor flash_layout requires a BIOS region")
+            }
+            Self::RomRegionOverlap {
+                expected_base,
+                expected_size,
+                actual_base,
+                actual_size,
+            } => write!(
+                f,
+                "ROM memory region overlaps the firmware image region but does not match it: \
+                 expected base={expected_base:#x} size={expected_size:#x}, got base={actual_base:#x} size={actual_size:#x}"
+            ),
+            Self::RegionsFull => {
+                f.write_str("memory.regions is full; cannot add derived firmware ROM region")
+            }
+        }
+    }
+}
+
+/// Cache-as-RAM (CAR) configuration for pre-DRAM x86 stages.
+///
+/// Describes a region of cache-locked memory used as temporary writable
+/// storage before the DRAM controller is programmed. The firmware's
+/// bootblock enters this mode via MTRR programming + a CPU-specific
+/// which  is detected at runtime using cpuid
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CarConfig {
+    /// Base physical address of the CAR region.
+    ///
+    /// Typically in the 0xFEF0_0000 range for Intel Atom-class parts,
+    /// or a cache-sized window below 4 GiB for other CPUs.
+    pub base: u64,
+    /// Size of the CAR region in bytes.
+    ///
+    /// Must not exceed the cache size. For Intel Atom D4xx/D5xx
+    /// (Pineview), L2 cache is 512 KiB, so `size <= 0x8_0000`.
+    pub size: u64,
+}
+
+/// A single memory region.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryRegion {
+    /// Region name (e.g., "rom", "ram", "mmio")
+    pub name: HString<32>,
+    /// Base physical address
+    pub base: u64,
+    /// Size in bytes
+    pub size: u64,
+    /// What kind of memory this is
+    pub kind: RegionKind,
+}
+
+/// Type of memory region.
+///
+/// Device MMIO ranges do not belong here — keep them in typed driver/platform config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RegionKind {
+    /// Read-only memory (flash, ROM)
+    Rom,
+    /// Read-write memory (DRAM, SRAM)
+    Ram,
+    /// Reserved (firmware-owned, not passed to OS)
+    Reserved,
+}
+
+/// Physical flash layout for platforms with non-BIOS firmware regions.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub enum FlashLayout {
+    /// Intel Firmware Descriptor controlled SPI flash.
+    IntelIfd(IntelIfdFlashLayout),
+    /// Contiguous x86 flash mapped immediately below the 4-GiB boundary.
+    X86Legacy(X86LegacyFlashLayout),
+}
+
+impl FlashLayout {
+    /// Validate the layout's internal consistency.
+    ///
+    /// In a `const` context (e.g. building a board `static`) invariant
+    /// violations are compile errors.
+    pub const fn validate(&self) {
+        match self {
+            FlashLayout::IntelIfd(layout) => layout.validate(),
+            FlashLayout::X86Legacy(_) => {}
+        }
+    }
+}
+
+/// Contiguous x86 flash mapped immediately below the 4-GiB boundary.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct X86LegacyFlashLayout {
+    /// Total flash size in bytes.
+    pub size: u32,
+}
+
+impl X86LegacyFlashLayout {
+    /// Total flash size.
+    #[must_use]
+    pub const fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// Physical base of the top-of-4-GiB legacy flash mapping.
+    #[must_use]
+    pub const fn base(&self) -> u64 {
+        0x1_0000_0000u64 - self.size as u64
+    }
+}
+
+/// Intel Firmware Descriptor flash layout.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct IntelIfdFlashLayout {
+    /// Regions described by the descriptor.
+    pub regions: ConstVec<IntelIfdRegionConfig, 8>,
+}
+
+impl IntelIfdFlashLayout {
+    /// Build a validated descriptor layout.
+    ///
+    /// Panics (a compile error when evaluated in a `const` context) unless:
+    /// - exactly one BIOS and one descriptor region are declared,
+    /// - active regions have nonzero, page-aligned sizes and offsets,
+    /// - every region lies within the derived total flash size,
+    /// - no two regions overlap or repeat a region kind.
+    #[must_use]
+    pub const fn new(regions: ConstVec<IntelIfdRegionConfig, 8>) -> Self {
+        let layout = Self { regions };
+        layout.validate();
+        layout
+    }
+
+    /// Check layout invariants; panics on violation.
+    ///
+    /// Call sites should prefer [`Self::new`], which runs this implicitly;
+    /// this is public so existing layout values can be checked in a `const`
+    /// assertion (`const _: () = LAYOUT.validate();`).
+    pub const fn validate(&self) {
+        if let Err(error) = self.check() {
+            panic!("{}", error);
+        }
+    }
+
+    /// Checked form for imported layouts and host plan transport.
+    pub const fn check(&self) -> Result<(), &'static str> {
+        let size = self.size();
+        if size == 0 {
+            return Err("Intel IFD flash_layout declares no sized regions");
+        }
+        let mut bios_count = 0usize;
+        let mut descriptor_count = 0usize;
+        let mut i = 0;
+        while i < self.regions.len() {
+            let region = self.regions.get_ref(i);
+            if matches!(region.kind, IntelIfdRegion::Bios) {
+                bios_count += 1;
+            }
+            if matches!(region.kind, IntelIfdRegion::Descriptor) {
+                descriptor_count += 1;
+            }
+            if region.size == 0
+                || !region.offset.is_multiple_of(4096)
+                || !region.size.is_multiple_of(4096)
+            {
+                return Err("Intel IFD active regions must be nonzero and page-aligned");
+            }
+            let region_end = match region.offset.checked_add(region.size) {
+                Some(end) => end,
+                None => return Err("Intel IFD region exceeds declared flash size"),
+            };
+            if region_end > size {
+                return Err("Intel IFD region exceeds declared flash size");
+            }
+            let mut j = 0;
+            while j < i {
+                let other = self.regions.get_ref(j);
+                if region.kind as u8 == other.kind as u8 {
+                    return Err("Intel IFD declares duplicate region kinds");
+                }
+                let other_end = other.offset + other.size;
+                if region.offset < other_end && other.offset < region_end {
+                    return Err("Intel IFD regions overlap");
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+        if bios_count != 1 {
+            return Err("Intel IFD flash_layout requires exactly one BIOS region");
+        }
+        if descriptor_count != 1 {
+            return Err("Intel IFD flash_layout requires exactly one descriptor region");
+        }
+        Ok(())
+    }
+
+    /// Return the configured BIOS region.
+    #[must_use]
+    pub const fn bios_region(&self) -> Option<&IntelIfdRegionConfig> {
+        let mut i = 0;
+        while i < self.regions.len() {
+            let region = self.regions.get_ref(i);
+            if matches!(region.kind, IntelIfdRegion::Bios) {
+                return Some(region);
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Memory-mapped BIOS base address.
+    #[must_use]
+    pub const fn bios_base(&self) -> Option<u64> {
+        match self.bios_region() {
+            Some(region) => Some(self.base() + region.offset as u64),
+            None => None,
+        }
+    }
+
+    /// Total flash size derived from the furthest configured region end.
+    #[must_use]
+    pub const fn size(&self) -> u32 {
+        let mut max = 0u32;
+        let mut i = 0;
+        while i < self.regions.len() {
+            let region = self.regions.get_ref(i);
+            let end = region.offset.saturating_add(region.size);
+            if end > max {
+                max = end;
+            }
+            i += 1;
+        }
+        max
+    }
+
+    /// Physical base of the top-of-4-GiB SPI flash mapping.
+    #[must_use]
+    pub const fn base(&self) -> u64 {
+        0x1_0000_0000u64 - self.size() as u64
+    }
+
+    /// Memory-mapped end of the whole flash aperture.
+    #[must_use]
+    pub const fn end(&self) -> u64 {
+        self.base() + self.size() as u64
+    }
+}
+
+/// One Intel IFD flash region declared in board metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntelIfdRegionConfig {
+    /// Descriptor region kind.
+    pub kind: IntelIfdRegion,
+    /// Offset from the start of the physical flash image.
+    pub offset: u32,
+    /// Region size in bytes.  Zero means the region is unused.
+    pub size: u32,
+}
+
+/// Intel IFD region identifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IntelIfdRegion {
+    /// Flash descriptor.
+    Descriptor,
+    /// Host-visible BIOS region.
+    Bios,
+    /// Intel Management Engine region.
+    Me,
+    /// Intel GbE region.
+    Gbe,
+    /// Platform data region.
+    Pdr,
+    /// Reserved or unsupported region number.
+    Reserved,
+}
+
+impl IntelIfdRegion {
+    /// Numeric FLREG index used by Intel descriptors.
+    pub fn flreg_index(self) -> Option<usize> {
+        match self {
+            IntelIfdRegion::Descriptor => Some(0),
+            IntelIfdRegion::Bios => Some(1),
+            IntelIfdRegion::Me => Some(2),
+            IntelIfdRegion::Gbe => Some(3),
+            IntelIfdRegion::Pdr => Some(4),
+            IntelIfdRegion::Reserved => None,
+        }
+    }
+
+    /// Conventional lower-case region name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IntelIfdRegion::Descriptor => "descriptor",
+            IntelIfdRegion::Bios => "bios",
+            IntelIfdRegion::Me => "me",
+            IntelIfdRegion::Gbe => "gbe",
+            IntelIfdRegion::Pdr => "pdr",
+            IntelIfdRegion::Reserved => "reserved",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn region(kind: IntelIfdRegion, offset: u32, size: u32) -> IntelIfdRegionConfig {
+        IntelIfdRegionConfig { kind, offset, size }
+    }
+
+    #[test]
+    fn valid_layout_passes_const_validation() {
+        const LAYOUT: IntelIfdFlashLayout = IntelIfdFlashLayout::new(
+            ConstVec::new(region(IntelIfdRegion::Descriptor, 0, 0))
+                .push(region(IntelIfdRegion::Descriptor, 0x0, 0x1000))
+                .push(region(IntelIfdRegion::Bios, 0x280000, 0x180000)),
+        );
+        assert_eq!(LAYOUT.size(), 0x400000);
+        assert_eq!(LAYOUT.base(), 0xFFC0_0000);
+        assert_eq!(LAYOUT.bios_region().unwrap().offset, 0x280000);
+        assert_eq!(LAYOUT.bios_base(), Some(0xFFE8_0000));
+        assert_eq!(LAYOUT.end(), 0x1_0000_0000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Intel IFD regions overlap")]
+    fn overlapping_regions_rejected() {
+        let _ = IntelIfdFlashLayout::new(
+            ConstVec::new(region(IntelIfdRegion::Descriptor, 0, 0))
+                .push(region(IntelIfdRegion::Bios, 0x0, 0x2000))
+                .push(region(IntelIfdRegion::Me, 0x1000, 0x1000)),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds declared flash size")]
+    fn region_past_end_rejected() {
+        // A region whose end overflows u32 cannot fit any derived flash size.
+        let _ = IntelIfdFlashLayout::new(
+            ConstVec::new(region(IntelIfdRegion::Descriptor, 0, 0)).push(region(
+                IntelIfdRegion::Bios,
+                0xffff_f000,
+                0x2_0000,
+            )),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly one BIOS region")]
+    fn missing_bios_region_rejected() {
+        let _ = IntelIfdFlashLayout::new(
+            ConstVec::new(region(IntelIfdRegion::Descriptor, 0, 0)).push(region(
+                IntelIfdRegion::Me,
+                0x1000,
+                0x1000,
+            )),
+        );
+    }
+}

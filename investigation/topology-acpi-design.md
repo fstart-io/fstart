@@ -19,20 +19,19 @@ Clean direction: make the nested board topology the only parent relation, give A
 
 - The worktree adds `DeviceConfig.acpi_parent` at `crates/fstart-types/src/device.rs:90-96` and parses it from RON at `crates/fstart-codegen/src/ron_loader.rs:148-154` / `323-329`.
 - `RuntimeDeviceTable::acpi_parent_index()` at `crates/fstart-codegen/src/stage_gen/board_gen/model.rs:275-284` resolves that string by scanning entries by name. This reintroduces ad hoc cross references.
-- `boards/foxconn-d41s/board.ron:75-96` and `boards/lenovo-x61/board.ron:53-80` now set `acpi_name: "PCI0"` on the northbridge and `acpi_parent: "northbridge"` on the southbridge. These are workaround annotations, not topology.
-- `crates/fstart-codegen/src/stage_gen/board_gen/caps_tables.rs:135-143` wraps driver AML with `scoped_aml_with_root_fragments(parent_path, ...)`, where `parent_path` may be derived from `acpi_parent`.
+- `boards/foxconn-d41s/src/lib.rs:75-96` and `boards/lenovo-x61/board.ron:53-80` now set `acpi_name: "PCI0"` on the northbridge and `acpi_parent: "northbridge"` on the southbridge. These are workaround annotations, not topology.
+- The historical generated assembly wrapped driver AML according to a parent path that could be derived from `acpi_parent`.
 
-### ACPI assembly currently assumes unscoped device AML goes under `\_SB_`
+### ACPI assembly assumes unscoped device AML goes under `\_SB_`
 
-- `fstart-acpi::device::AcpiDevice` says `dsdt_aml()` returns serialized AML and “the caller places the returned bytes inside a `\_SB` scope” (`crates/fstart-acpi/src/device.rs:27-41`). This is too weak for nested bus scopes.
-- `fstart-acpi::platform::build_dsdt()` always splits root fragments and wraps all normal AML in `\_SB_` (`crates/fstart-acpi/src/platform/mod.rs:393-428`).
-- `RootScope` is already the right mechanism for true DSDT-root objects: it marks `Scope("\\")` content so the assembler can strip it and place it at DSDT root (`crates/fstart-acpi/src/lib.rs:65-95`, platform split at `crates/fstart-acpi/src/platform/mod.rs:436-464`).
-- The new `scoped_aml_with_root_fragments()` helper (`crates/fstart-acpi/src/lib.rs:121-135`) can be kept as an implementation primitive, but the scope path must come from topology, not board string overrides.
+- `fstart-acpi::device::AcpiDevice` says `dsdt_aml()` returns serialized AML and “the caller places the returned bytes inside a `\_SB` scope” (`crates/acpi/src/device.rs:27-41`). This is too weak for nested bus scopes.
+- `fstart-acpi::platform::build_dsdt()` wraps collected AML in `\_SB_`; AML's normal absolute-name semantics allow an embedded `Scope("\\")` to select the DSDT root without markers or fragment splitting (`crates/acpi/src/platform/mod.rs`).
+- Scope paths must come from topology, not board string overrides.
 
 ### Driver AML is inconsistent today
 
-- Pineview currently emits sibling `Device(MCHC)`, `Device(PDRC)`, and `Device("PCI0")` at one caller scope (`crates/fstart-driver-intel-pineview/src/lib.rs:1370-1508`). The board workaround sets topology `acpi_name: "PCI0"` while the Pineview config still uses `acpi_name: "MCHC"` (`boards/foxconn-d41s/board.ron:75-91`). That is two conflicting meanings of “the device ACPI name”.
-- GM965 is closer to the desired host-bridge shape: it emits one `Device(PCI0)` containing `MCHC`, `PDRC`, GFX, etc. (`crates/fstart-driver-intel-gm965/src/lib.rs:2112-2148`). But its root fragments `_PIC`/sleep states are appended as normal AML (`crates/fstart-driver-intel-gm965/src/lib.rs:2337-2350`), so if this driver ever has a parent wrapper, those root objects would be misplaced. They should use `RootScope`/`Scope("\\")`.
+- Pineview currently emits sibling `Device(MCHC)`, `Device(PDRC)`, and `Device("PCI0")` at one caller scope (`crates/fstart-driver-intel-pineview/src/lib.rs:1370-1508`). The board workaround sets topology `acpi_name: "PCI0"` while the Pineview config still uses `acpi_name: "MCHC"` (`boards/foxconn-d41s/src/lib.rs:75-91`). That is two conflicting meanings of “the device ACPI name”.
+- GM965 is closer to the desired host-bridge shape: it emits one `Device(PCI0)` containing `MCHC`, `PDRC`, GFX, etc. (`crates/fstart-driver-intel-gm965/src/lib.rs:2112-2148`). But its root fragments `_PIC`/sleep states are appended as normal AML (`crates/fstart-driver-intel-gm965/src/lib.rs:2337-2350`), so if this driver ever has a parent wrapper, those root objects would be misplaced. They should use a literal `Scope("\\")`.
 - ICH7 says the caller should embed its output inside the appropriate PCI0 scope (`crates/fstart-driver-intel-ich7/src/lib.rs:1972-1978`) and emits `Device(LPCB)` plus PCI function siblings as relative AML, but it also emits an absolute `Scope("\\_SB_.PCI0")` for RCRB (`crates/fstart-driver-intel-ich7/src/lib.rs:2054-2086`). That hardcoded root path must go.
 - ICH8 currently emits PCI0-relative fragments as a local `pci0_aml` (`crates/fstart-driver-intel-ich8/src/lib.rs:2070-2223`), but its doc still says `\_SB.PCI0` (`2032`) and its device names (`LPCB`, `SATA`, `SBUS`, `RP01`...) are hardcoded.
 - SuperIO ACPI says its nodes are nested by the assembler (`crates/fstart-superio/src/lib.rs:1030-1036`) and emits relative children like `COM1`, `KBC`, etc. This is the pattern to preserve.
@@ -94,7 +93,7 @@ Validation in this model should catch:
 - duplicate `acpi_name` siblings under the same derived ACPI parent scope;
 - an ACPI contributor whose `NamedNode` has no name;
 - path construction through `acpi_parent` or any non-topology edge (should not exist);
-- absolute scope AML in drivers except true root fragments (`RootScope` / `Scope("\\")`).
+- absolute scope AML in drivers except true root content (`Scope("\\")`).
 
 Generated runtime context for drivers:
 
@@ -136,13 +135,12 @@ struct ScopedAml<'a> {
 }
 ```
 
-Implementation can still serialize through existing `RootScope` markers and `scoped_aml_with_root_fragments()`, but the higher-level API should be explicit:
+The higher-level API should be explicit; literal absolute scopes need no marker or splitting mechanism:
 
 1. For each ACPI contributor, derive `scope = namespace.contribution_scope(idx)`.
 2. Call the driver with `AcpiDeviceContext`.
-3. Split root fragments from relative fragments.
-4. Append root fragments to DSDT root.
-5. Group normal fragments by scope path and emit one `Scope(path)` per path (or append directly to the implicit `\_SB_` wrapper for `\_SB_`).
+3. Group fragments by scope path and emit one `Scope(path)` per path (or append directly to the implicit `\_SB_` wrapper for `\_SB_`).
+4. Preserve literal `Scope("\\")` AML as-is; AML namespace semantics place its body at the root.
 
 This avoids repeated wrappers and makes it testable that, for example, ICH7 contributes to `\_SB_.PCI0`, SuperIO contributes to `\_SB_.PCI0.LPCB`, and mainboard EC contributes to `\_SB_.PCI0.LPCB` without a board-level parent override.
 
@@ -153,7 +151,7 @@ Drivers should emit relative AML:
 - A simple device emits `Device(<node_name>) { ... }` and never emits an absolute parent scope.
 - A root bridge emits `Device(<node_name, e.g. PCI0>) { ... }` relative to `\_SB_`.
 - A southbridge aggregate emits child objects relative to the PCI root scope: `Device(LPCB)`, `Device(SBUS)`, `Device(RP01)`, USB/SATA/HDA siblings, `Name(_PRT)`, etc. It should get `LPCB`/`SBUS`/`RPxx` names from the structural children in `AcpiDeviceContext`, with chipset defaults only as compatibility fallbacks during migration.
-- Root-scope objects (`_PIC`, `_S0_`, `_S5_`, global operation regions that truly belong at root) must be emitted as `Scope("\\")` / `RootScope`, not as normal relative AML.
+- Root-scope objects (`_PIC`, `_S0_`, `_S5_`, global operation regions that truly belong at root) must be emitted inside literal `Scope("\\")`, not as normal relative AML.
 - No driver should emit `Scope("\\_SB_.PCI0")` or concatenate a hardcoded `PCI0` parent path.
 - Mainboard drivers should use generated context paths for cross references. For Lenovo X61, replace `\_SB_.PCI0.LPCB.EC__...` string literals with `ctx.path_by_device_name("ec")`-style generated constants or split the EC into its own ACPI node under the LPC structural node.
 
@@ -186,7 +184,7 @@ Drivers should emit relative AML:
 3. Mark ICH8 as `ParentScopeFragment`; its contribution scope should derive as `\_SB_.PCI0`.
 4. Add structural child ACPI names for `LPCB`, `SBUS`, and root ports as above.
 5. Refactor ICH8 AML to use context-provided structural names and to stop documenting/hardcoding `\_SB.PCI0`.
-6. Refactor GM965 root objects (`PICM`, `_PIC`, sleep states, CPU objects if intended under root/`_SB`) so placement is explicit. Root objects use `RootScope`; CPU devices should probably be under `\_SB_` unless coreboot reference requires otherwise.
+6. Refactor GM965 root objects (`PICM`, `_PIC`, sleep states, CPU objects if intended under root/`_SB`) so placement is explicit. Root objects use literal `Scope("\\")`; CPU devices should probably be under `\_SB_` unless coreboot reference requires otherwise.
 7. Refactor `fstart-mainboard-lenovo-x61`:
    - Put the EC/dock ACPI node under the LPC structural path via topology-derived scope, not `Scope("\\_SB_.PCI0.LPCB")`.
    - Use generated path constants for methods/notifies that must reference the EC from root or `\_GPE`.

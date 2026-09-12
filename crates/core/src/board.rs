@@ -1,0 +1,419 @@
+//! Board configuration — the top-level Rust board metadata type.
+
+use heapless::String as HString;
+use serde::{Deserialize, Serialize};
+
+use crate::memory::MemoryMap;
+use crate::security::SecurityConfig;
+use crate::stage::StageLayout;
+
+/// Target platform / ISA.
+///
+/// This enum is the single source of truth for platform identity.
+/// Adding a new platform variant automatically produces compiler errors
+/// at every `match` site that needs updating — no stringly-typed
+/// matching required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Platform {
+    /// RISC-V 64-bit (riscv64gc-unknown-none-elf)
+    Riscv64,
+    /// AArch64 / ARMv8-A (aarch64-unknown-none)
+    Aarch64,
+    /// ARMv7-A (armv7a-none-eabi)
+    Armv7,
+    /// x86-64 / AMD64 (x86_64-unknown-none)
+    X86_64,
+}
+
+impl Platform {
+    /// Rust target triple for cross-compilation.
+    pub fn target_triple(&self) -> &'static str {
+        match self {
+            Platform::Riscv64 => "riscv64gc-unknown-none-elf",
+            Platform::Aarch64 => "aarch64-unknown-none",
+            Platform::Armv7 => "armv7a-none-eabi",
+            Platform::X86_64 => "x86_64-unknown-none",
+        }
+    }
+
+    /// Linker `OUTPUT_ARCH(...)` name.
+    pub fn linker_arch(&self) -> &'static str {
+        match self {
+            Platform::Riscv64 => "riscv",
+            Platform::Aarch64 => "aarch64",
+            Platform::Armv7 => "arm",
+            Platform::X86_64 => "i386:x86-64",
+        }
+    }
+
+    /// Short string identifier (used for cargo feature names, log messages).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Platform::Riscv64 => "riscv64",
+            Platform::Aarch64 => "aarch64",
+            Platform::Armv7 => "armv7",
+            Platform::X86_64 => "x86_64",
+        }
+    }
+}
+
+impl core::fmt::Display for Platform {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Top-level board configuration produced by board crates.
+///
+/// This is the single source of truth for board wiring, stage policy, and
+/// security settings. Rust driver crates are the source of truth for the
+/// services each driver provides.
+#[derive(Debug, Clone, Serialize)]
+pub struct BoardConfig {
+    /// Human-readable board name (e.g., "qemu-riscv64")
+    pub name: HString<64>,
+    /// Target platform / ISA
+    pub platform: Platform,
+    /// Memory map: ROM, RAM, MMIO regions
+    pub memory: MemoryMap,
+    /// Stage composition: monolithic or multi-stage
+    pub stages: StageLayout,
+    /// Security: signing algorithm, pubkey, digest requirements
+    pub security: SecurityConfig,
+    /// Optional payload configuration
+    pub payload: Option<PayloadConfig>,
+    /// Optional CPU microcode updates to package into FFS.
+    ///
+    /// x86 stages can use this blob twice: very early BSP assembly reads the
+    /// anchor-patched location before Rust starts, and MP init reloads the
+    /// matching patch on BSP/APs during CPU bring-up.
+    #[serde(default)]
+    pub microcode: Option<MicrocodeConfig>,
+    /// SoC-specific binary image format required by the boot ROM.
+    ///
+    /// Each SoC family has its own boot ROM that expects a particular
+    /// binary layout on the boot medium (SD card, SPI flash, eMMC).
+    /// When set, the stage/linker emits the required header/structure in
+    /// dedicated sections and fbuild patches length/checksum fields post-build.
+    ///
+    /// This is intentionally NOT a generic abstraction — each variant
+    /// carries the exact semantics of one SoC family's boot ROM.
+    #[serde(default)]
+    pub soc_image_format: SocImageFormat,
+
+    /// Also emit a complete flash image padded/laid out to the firmware window size.
+    ///
+    /// The normal `.ffs` output is a firmware filesystem blob. Hardware flash
+    /// programmers usually need the entire NOR image, with XIP stages overlaid
+    /// at their linked physical flash addresses and unused bytes filled with
+    /// `0xff`. When true, `fbuild assemble` writes
+    /// `target/ffs/<board>-<size>m.pflash` in addition to `<board>.ffs`.
+    #[serde(default)]
+    pub full_flash_image: bool,
+
+    /// Host build policy that belongs to the board/platform, not to driver metadata.
+    #[serde(default)]
+    pub build: BoardBuildPolicy,
+
+    /// ACPI table generation configuration.
+    ///
+    /// Used by fixed platform flows that emit ACPI tables. Contains the target
+    /// address for tables, platform parameters (MADT, GTDT, FADT), and
+    /// declarations for ACPI-only devices (hardware without fstart driver crates).
+    ///
+    /// Per-driver ACPI fields (e.g., `acpi_name`, `acpi_gsiv`) live in each
+    /// driver's own `Config` struct, not here.
+    #[serde(default)]
+    pub acpi: Option<crate::acpi::AcpiConfig>,
+
+    /// SMBIOS table generation configuration.
+    ///
+    /// Used by fixed platform flows that emit SMBIOS tables. Contains system
+    /// identity strings, processor descriptions, and memory device declarations
+    /// for SMBIOS Type 0/1/2/3/4/16/17/19.
+    #[serde(default)]
+    pub smbios: Option<crate::smbios::SmbiosConfig>,
+
+    /// System Management Mode handler/image configuration.
+    ///
+    /// Required when an x86 stage build enables SMM. The normal stage embeds
+    /// the separately built SMM image and asks the platform adapter selected
+    /// here to copy its precompiled PIC entry stubs into SMRAM.
+    #[serde(default)]
+    pub smm: Option<crate::smm::SmmConfig>,
+
+    /// Boot hart ID for multi-hart platforms.
+    ///
+    /// On multi-hart SoCs (e.g., SiFive FU740 with 5 harts), the boot ROM
+    /// starts all harts simultaneously. Only the hart matching this ID
+    /// continues past `_start`; all others enter a WFI loop waiting for
+    /// an IPI from the SBI firmware.
+    ///
+    /// Defaults to `0` when absent, which is correct for single-hart
+    /// platforms and for QEMU `virt` (which starts only hart 0 by default).
+    /// Set to `1` for the SiFive FU740 (hart 0 is the S7 monitor core
+    /// without S-mode; hart 1 is the first U74 application core).
+    #[serde(default)]
+    pub boot_hart_id: u32,
+}
+
+/// Requested UEFI payload build capabilities, not immutable hardware facts or
+/// a variable-persistence policy. Effective Cargo features remain additive:
+/// a full consumer unifies a basic request upward to the full runtime bundle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UefiBuildProfile {
+    /// Existing non-graphical CrabEFI capabilities.
+    #[default]
+    Full,
+    /// Normal runtime services without TPM, xHCI, UEFI Secure Boot or SPI tools.
+    Basic,
+}
+
+/// Board/platform-owned host build policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoardBuildPolicy {
+    /// QEMU machine selection for boards with non-default emulation.
+    #[serde(default)]
+    pub qemu_machine: Option<QemuMachine>,
+    /// How host tooling should map the runtime firmware filesystem.
+    #[serde(default)]
+    pub firmware_image: FirmwareImagePolicy,
+    /// Complete flash aperture for composite XIP firmware images.
+    ///
+    /// This is distinct from `firmware_image` when the reset stage and FFS
+    /// occupy separate windows, as on QEMU virt.
+    #[serde(default)]
+    pub flash_image: Option<FirmwareImagePolicy>,
+    /// Optional stage feature for the board/platform PCI root implementation.
+    ///
+    /// When absent, `PciInit` uses the generic ECAM implementation.
+    #[serde(default)]
+    pub pci_root_feature: Option<HString<32>>,
+    /// Optional stage feature for board/platform CPU initialization.
+    #[serde(default)]
+    pub cpu_feature: Option<HString<32>>,
+}
+
+/// QEMU machine selected by a board's host build policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QemuMachine {
+    /// SiFive FU740-compatible `sifive_u` machine, booted through `-bios`.
+    SifiveU,
+    /// Allwinner H3 `orangepi-pc` machine, booted from SD eGON at 8 KiB.
+    OrangePiPc,
+    /// Arm SBSA reference platform, booted TF-A-first from two pflash banks.
+    SbsaRef,
+}
+
+/// Board/platform-owned firmware-image mapping policy for host tooling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub enum FirmwareImagePolicy {
+    /// Derive from board memory metadata, such as an explicit flash layout or a
+    /// contiguous ROM window.
+    #[default]
+    Auto,
+    /// This board does not expose a host-side firmware-image mapping.
+    None,
+    /// Firmware image is a fixed memory-mapped window.
+    MemoryMapped { cpu_base: u64, size: u64 },
+}
+
+impl FirmwareImagePolicy {
+    /// Construct a fixed memory-mapped firmware-image policy.
+    pub const fn memory_mapped(cpu_base: u64, size: u64) -> Self {
+        Self::MemoryMapped { cpu_base, size }
+    }
+}
+
+/// CPU microcode packaging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MicrocodeConfig {
+    /// Intel concatenated microcode update files.
+    Intel(IntelMicrocodeConfig),
+}
+
+/// Intel microcode files to concatenate into `cpu_microcode_blob.bin`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntelMicrocodeConfig {
+    /// Source files, resolved relative to the board directory unless absolute.
+    pub files: heapless::Vec<HString<128>, 16>,
+    /// Patch the blob location into the FFS anchor for pre-Rust BSP update.
+    #[serde(default = "default_true")]
+    pub early: bool,
+    /// Use the blob again during MP init for BSP/AP updates.
+    #[serde(default = "default_true")]
+    pub mp: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+/// SoC-specific binary image format required by the boot ROM.
+///
+/// Different SoC families have incompatible boot ROM requirements:
+/// Allwinner uses eGON.BT0, TI uses MLO/CH, Mediatek uses BRLYT, etc.
+/// Each variant here describes exactly one SoC family's format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SocImageFormat {
+    /// No SoC-specific image format — binary starts with `.text.entry`.
+    #[default]
+    None,
+    /// Allwinner eGON.BT0 header (sun4i/sun5i/sun7i/sun8i/sun50i/sun20i).
+    ///
+    /// Required by the boot ROM on ALL Allwinner SoCs
+    /// (A10/A13/A20/A31/A64/H3/H5/H6/D1/…).
+    ///
+    /// The BROM scans the boot medium for the `"eGON.BT0"` magic and
+    /// validates the checksum, then loads `length` bytes into SRAM.
+    /// Format:
+    /// - Offset 0x00: ARM/RISC-V branch instruction (jumps over header)
+    /// - Offset 0x04: `"eGON.BT0"` magic (8 bytes)
+    /// - Offset 0x0C: checksum (word-add over entire image)
+    /// - Offset 0x10: total image length (512-byte aligned)
+    ///
+    /// The length field is set to a placeholder at compile time. Xtask
+    /// computes the actual binary size (rounded up to 512-byte alignment),
+    /// pads the binary, and patches both the length and checksum fields
+    /// post-build — just like U-Boot's `mksunxiboot` tool.
+    ///
+    /// See oreboot's D1 implementation for the reference Rust approach.
+    AllwinnerEgon,
+}
+
+/// Payload configuration: what to boot after firmware init.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PayloadConfig {
+    /// Kind of payload
+    pub kind: PayloadKind,
+    /// Filename of kernel in FFS (e.g., "vmlinux")
+    pub kernel_file: Option<HString<64>>,
+    /// Load address for the kernel in RAM
+    pub kernel_load_addr: Option<u64>,
+    /// FDT source.
+    pub fdt: FdtSource,
+    /// Target address for the patched DTB in RAM
+    pub dtb_addr: Option<u64>,
+    /// Explicit source address for the platform-provided DTB.
+    ///
+    /// On RISC-V, QEMU passes DTB in `a1` and the platform crate saves it,
+    /// so this field is unnecessary. On AArch64 firmware boot (`-bios`),
+    /// QEMU zeroes all registers and places the DTB at the base of RAM —
+    /// `x0` is 0, not a DTB pointer. Set this to the known DTB address
+    /// (e.g., `0x40000000` for QEMU AArch64 virt).
+    ///
+    /// When `None`, platform payload code uses its default DTB address.
+    #[serde(default)]
+    pub src_dtb_addr: Option<u64>,
+    /// Kernel command line (set in /chosen/bootargs)
+    pub bootargs: Option<HString<256>>,
+    /// Print BSP x86 MTRR/control-register state immediately before Linux handoff.
+    #[serde(default)]
+    pub print_x86_mtrrs: bool,
+    /// Compression to use for raw kernel payload segments stored in FFS.
+    #[serde(default = "default_payload_compression")]
+    pub compression: crate::ffs::Compression,
+    /// SBI / ATF firmware blob configuration
+    pub firmware: Option<FirmwareConfig>,
+    /// Path to a FIT (.itb) image file (relative to board directory).
+    ///
+    /// Used when `kind` is `FitImage`. The FIT bundles kernel, ramdisk,
+    /// and optionally FDT into a single DTB-format blob.
+    #[serde(default)]
+    pub fit_file: Option<HString<128>>,
+    /// FIT configuration name to use (e.g., "conf-1").
+    ///
+    /// When `None`, the FIT's `default` configuration is used.
+    #[serde(default)]
+    pub fit_config: Option<HString<64>>,
+    /// Whether to parse the FIT at buildtime or runtime.
+    ///
+    /// Defaults to `None` (same as `Buildtime` when `kind` is `FitImage`).
+    #[serde(default)]
+    pub fit_parse: Option<FitParseMode>,
+}
+
+fn default_payload_compression() -> crate::ffs::Compression {
+    crate::ffs::Compression::Lz4
+}
+
+/// What kind of payload to boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PayloadKind {
+    /// Boot Linux kernel via platform boot protocol
+    LinuxBoot,
+    /// Boot from a FIT (Flattened Image Tree) image.
+    ///
+    /// FIT images bundle kernel, ramdisk, FDT, and firmware into a single
+    /// DTB-format blob with hash integrity and configuration selection.
+    /// See `fit_parse` for whether the FIT is parsed at buildtime or runtime.
+    FitImage,
+    /// Interactive debug shell
+    Shell,
+    /// Custom ELF payload
+    CustomElf,
+    /// UEFI payload via CrabEFI library.
+    ///
+    /// Links the CrabEFI library and calls `init_platform()` with a
+    /// `PlatformConfig` constructed from fstart's drivers.  fstart
+    /// handles hardware init (console, PCI BAR allocation, etc.) and
+    /// injects drivers as trait objects.
+    UefiPayload,
+}
+
+/// When to parse a FIT image.
+///
+/// Both modes use the same parser code (`fstart-boot::fit`); this controls
+/// whether extraction happens at buildtime (fbuild) or runtime (firmware).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FitParseMode {
+    /// Parse at buildtime: fbuild reads the .itb, extracts kernel/ramdisk/fdt
+    /// components, and embeds them as separate FFS entries. The firmware
+    /// loads them as individual blobs (like LinuxBoot).
+    Buildtime,
+    /// Parse at runtime: the whole .itb is embedded in FFS as a single entry.
+    /// The firmware parses the FIT in-place (zero-copy on memory-mapped flash)
+    /// and copies each component to its load address.
+    Runtime,
+}
+
+/// Where the Flattened Device Tree comes from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FdtSource {
+    /// Use the DTB passed by QEMU/firmware at reset
+    Platform,
+    /// Generate FDT automatically from board metadata.
+    Generated,
+    /// Use a separate DTS file (path relative to board directory)
+    Override(HString<128>),
+    /// Generate from board metadata but merge in DTS fragments
+    GeneratedWithOverride(HString<128>),
+}
+
+/// Configuration for the SBI firmware (RISC-V) or ATF BL31 (AArch64)
+/// binary that is loaded before jumping to the OS.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirmwareConfig {
+    /// Kind of firmware
+    pub kind: FirmwareKind,
+    /// Path to the firmware binary (relative to board directory)
+    pub file: HString<128>,
+    /// Address in RAM where the firmware blob is loaded
+    pub load_addr: u64,
+}
+
+/// Kind of runtime firmware loaded before the OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FirmwareKind {
+    /// OpenSBI or RustSBI using the fw_dynamic protocol.
+    /// Entry: a0=hartid, a1=dtb, a2=&fw_dynamic_info.
+    OpenSbi,
+    /// ARM Trusted Firmware BL31.
+    /// Entry: x0=&bl_params.
+    ArmTrustedFirmware,
+}

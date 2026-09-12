@@ -12,7 +12,7 @@
 9. `crates/fstart-driver-intel-ich8/src/lib.rs` (lines 1788-1857) - fstart ICH8 PIRQ_ROUT, default DxxIP/DxxIR, and board late RCBA writes.
 10. `crates/fstart-driver-intel-ich8/src/lib.rs` (lines 1900-1950) - init ordering: default intmap then optional `late_rcba`.
 11. `crates/fstart-driver-intel-ich8/src/lib.rs` (lines 2030-2289) - fstart ICH8 static ACPI `_PRT`/link generation.
-12. `boards/foxconn-d41s-uefi/board.ron` (lines 90-210, 360-383) - D41S ICH7 config and ACPI platform constants.
+12. `boards/foxconn-d41s-uefi/src/lib.rs` (lines 90-210, 360-383) - D41S ICH7 config and ACPI platform constants.
 13. `boards/lenovo-x61/board.ron` (lines 76-220, 345-384) - X61 ICH8 config, `late_rcba`, and ACPI platform constants.
 14. `/home/arthur/src/coreboot/src/southbridge/intel/i82801gx/lpc.c` (lines 46-116) - coreboot ICH7 LPC PIRQ[A-H]_ROUT programming semantics.
 15. `/home/arthur/src/coreboot/src/southbridge/intel/i82801gx/i82801gx.h` (lines 185-194) - coreboot ICH7 DxxIP/DxxIR offsets.

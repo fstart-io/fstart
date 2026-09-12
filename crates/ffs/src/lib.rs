@@ -1,0 +1,38 @@
+//! Firmware Filesystem: read, verify, and build.
+//!
+//! ## Reader (no_std, no alloc)
+//!
+//! The reader operates on a `&[u8]` slice representing the firmware image
+//! (typically the memory-mapped flash region). It can:
+//!
+//! - Find the anchor block (by scanning for `FFS_MAGIC` or at a known offset)
+//! - Deserialize and verify the RO manifest
+//! - Follow pointers to RW manifests and verify those
+//! - Look up files by name
+//! - Read segment data from the image
+//!
+//! ## Builder (std, fbuild)
+//!
+//! The builder module (behind `std` feature) constructs FFS images:
+//! assemble files + segments, compute digests, build manifests, sign,
+//! and produce the final binary.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(feature = "std")]
+extern crate alloc;
+
+pub mod lz4;
+#[cfg(feature = "directory")]
+pub mod manifest;
+#[cfg(feature = "directory")]
+pub mod reader;
+pub mod root;
+
+#[cfg(feature = "std")]
+pub mod builder;
+
+#[cfg(feature = "directory")]
+pub use manifest::{FileView, ManifestSummary, ManifestView};
+#[cfg(feature = "directory")]
+pub use reader::{FfsReader, ReaderError};

@@ -1,0 +1,1027 @@
+//! PCI ECAM host bridge driver with bus enumeration and resource allocation.
+//!
+//! This driver implements a PCIe root complex that uses the Enhanced
+//! Configuration Access Mechanism (ECAM) for config-space access.  On
+//! `init()` it performs a full bus walk, sizes every BAR, allocates
+//! resources from the MMIO/IO windows declared in its config, programs
+//! the BARs and bridge forwarding windows, and enables memory/IO decode.
+//!
+//! The allocation algorithm is a simplified version of coreboot's
+//! `resource_allocator_v4`: largest-alignment-first within each resource
+//! type, single-pass bottom-up accumulation for bridge windows, then
+//! top-down absolute address assignment.
+//!
+//! **Requires a heap allocator** — the device list uses `alloc::vec::Vec`
+//! so arbitrary bus topologies are supported.  Ensure `MemoryInit` (or
+//! equivalent heap setup) runs before `PciInit`.
+//!
+//! Compatible: `"pci-host-ecam-generic"`.
+
+extern crate alloc;
+
+use heapless::Vec as HVec;
+
+use crate::{
+    ConfigRegionAccess, PCI_BAR0, PCI_CMD_BUS_MASTER, PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND,
+    PCI_HEADER_TYPE, PCI_HEADER_TYPE_BRIDGE, PCI_HEADER_TYPE_CARDBUS, PCI_HEADER_TYPE_MULTI_FUNC,
+    PCI_IO_BASE, PCI_MEMORY_BASE, PCI_PREF_BASE_UPPER32, PCI_PREF_LIMIT_UPPER32,
+    PCI_PREF_MEMORY_BASE, PCI_PRIMARY_BUS, PCI_VENDOR_ID, PCI_VENDOR_INVALID, PciAddress,
+    PciWindow, PciWindowKind,
+};
+use serde::{Deserialize, Serialize};
+
+// -----------------------------------------------------------------------
+// Config
+// -----------------------------------------------------------------------
+
+/// Typed configuration for the PCI ECAM host bridge.
+///
+/// All addresses come from the board metadata and describe the fixed platform
+/// windows that QEMU / the SoC provides for PCI.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PciEcamConfig {
+    /// ECAM base address (memory-mapped PCI config space).
+    pub ecam_base: u64,
+    /// Size of the ECAM region in bytes (256 MB for 256 buses).
+    pub ecam_size: u64,
+    /// 32-bit MMIO window base for BAR allocation.
+    pub mmio32_base: u64,
+    /// 32-bit MMIO window size.
+    pub mmio32_size: u64,
+    /// 64-bit MMIO window base for BAR allocation.
+    pub mmio64_base: u64,
+    /// 64-bit MMIO window size.
+    pub mmio64_size: u64,
+    /// PCI I/O port window base (MMIO-mapped on ARM).
+    pub pio_base: u64,
+    /// PCI I/O port window size.
+    pub pio_size: u64,
+    /// First bus number in this segment.
+    pub bus_start: u8,
+    /// Last bus number in this segment.
+    pub bus_end: u8,
+}
+
+// -----------------------------------------------------------------------
+// Internal types
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PciEcamError {
+    ConfigError,
+}
+
+/// BAR type after sizing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BarType {
+    None,
+    Io,
+    Memory32,
+    Memory64,
+}
+
+/// A sized but not yet allocated BAR.
+#[derive(Debug, Clone, Copy)]
+struct BarInfo {
+    bar_type: BarType,
+    size: u64,
+    prefetchable: bool,
+    /// BAR register offset (0x10..0x24).
+    reg: u16,
+    /// Whether this BAR has been successfully assigned by the allocator.
+    allocated: bool,
+}
+
+/// A discovered PCI device or bridge.
+struct PciDev {
+    addr: PciAddress,
+    header_type: u8,
+    bars: [BarInfo; 6],
+    /// For bridges: secondary bus number.
+    secondary_bus: u8,
+    /// For bridges: subordinate bus number.
+    subordinate_bus: u8,
+}
+
+/// Maximum number of free intervals kept for one resource type.
+const MAX_RESOURCE_RANGES: usize = 8;
+
+#[derive(Debug, Clone, Copy)]
+struct ResourceRange {
+    base: u64,
+    end: u64,
+}
+
+/// Free-range allocator for one address type (MMIO32, MMIO64, or IO).
+///
+/// Unlike a plain bump allocator, this preserves holes occupied by fixed
+/// chipset resources such as ECAM. This matches coreboot's domain allocator,
+/// which subtracts fixed resources before placing dynamic BARs.
+#[derive(Debug, Clone, Copy)]
+struct ResourcePool {
+    ranges: [ResourceRange; MAX_RESOURCE_RANGES],
+    count: usize,
+}
+
+const EMPTY_RESOURCE_RANGE: ResourceRange = ResourceRange { base: 0, end: 0 };
+
+impl ResourcePool {
+    fn new(base: u64, size: u64) -> Self {
+        let mut pool = Self {
+            ranges: [EMPTY_RESOURCE_RANGE; MAX_RESOURCE_RANGES],
+            count: 0,
+        };
+        pool.push_range(base, base.saturating_add(size));
+        pool
+    }
+
+    fn push_range(&mut self, base: u64, end: u64) {
+        if base < end && self.count < MAX_RESOURCE_RANGES {
+            self.ranges[self.count] = ResourceRange { base, end };
+            self.count += 1;
+        }
+    }
+
+    /// Remove a fixed address interval from the free space.
+    fn reserve_range(&mut self, base: u64, size: u64) {
+        if size == 0 || self.count == 0 {
+            return;
+        }
+        let end = base.saturating_add(size);
+        let old_ranges = self.ranges;
+        let old_count = self.count;
+        self.ranges = [EMPTY_RESOURCE_RANGE; MAX_RESOURCE_RANGES];
+        self.count = 0;
+
+        for range in old_ranges.into_iter().take(old_count) {
+            if end <= range.base || base >= range.end {
+                self.push_range(range.base, range.end);
+                continue;
+            }
+            if range.base < base {
+                self.push_range(range.base, base.min(range.end));
+            }
+            if end < range.end {
+                self.push_range(end.max(range.base), range.end);
+            }
+        }
+    }
+
+    fn allocate_aligned(&mut self, size: u64, align: u64) -> Option<u64> {
+        if size == 0 || align == 0 {
+            return None;
+        }
+        for idx in 0..self.count {
+            let range = self.ranges[idx];
+            let aligned = range.base.checked_add(align - 1)? & !(align - 1);
+            let end = aligned.checked_add(size)?;
+            if end > range.end {
+                continue;
+            }
+            self.ranges[idx].base = end;
+            if self.ranges[idx].base == self.ranges[idx].end {
+                for next in idx + 1..self.count {
+                    self.ranges[next - 1] = self.ranges[next];
+                }
+                self.count -= 1;
+            }
+            return Some(aligned);
+        }
+        None
+    }
+}
+
+// -----------------------------------------------------------------------
+// Driver struct
+// -----------------------------------------------------------------------
+
+/// Maximum number of address windows a single root bridge can have.
+///
+/// Three is typical (low MMIO, high MMIO, I/O) but a few extra slots
+/// accommodate unusual platforms.
+const MAX_WINDOWS: usize = crate::MAX_PCI_ROOT_WINDOWS;
+const MAX_PCI_DEVICES: usize = 128;
+
+/// PCI ECAM host bridge driver.
+pub struct PciEcam {
+    segment: u16,
+    ecam_base: usize,
+    ecam_size: usize,
+    bus_start: u8,
+    bus_end: u8,
+    mmio32: ResourcePool,
+    mmio64: ResourcePool,
+    io_pool: ResourcePool,
+    /// Remaining allocatable address windows after fixed reservations.
+    windows: [PciWindow; MAX_WINDOWS],
+    window_count: usize,
+    devices: HVec<PciDev, MAX_PCI_DEVICES>,
+    /// Next bus number to assign to a bridge.
+    next_bus: u8,
+}
+
+// SAFETY: MMIO registers are hardware-fixed addresses from the board metadata.
+// The driver is used single-threaded during firmware init.
+unsafe impl Send for PciEcam {}
+unsafe impl Sync for PciEcam {}
+
+impl PciEcam {
+    // -- Window management (public for composition by platform drivers) --
+
+    /// Replace the resource pools and rebuild the external window list.
+    ///
+    /// Platform host-bridge drivers (e.g., Q35) use this to set MMIO/IO
+    /// windows computed at runtime from hardware state (TOLUD, e820).
+    /// Must be called **before** `init()`.
+    pub fn configure_windows(
+        &mut self,
+        mmio32_base: u64,
+        mmio32_size: u64,
+        mmio64_base: u64,
+        mmio64_size: u64,
+        pio_base: u64,
+        pio_size: u64,
+    ) {
+        self.mmio32 = ResourcePool::new(mmio32_base, mmio32_size);
+        self.mmio64 = ResourcePool::new(mmio64_base, mmio64_size);
+        self.io_pool = ResourcePool::new(pio_base, pio_size);
+        self.rebuild_windows();
+    }
+
+    /// Reserve a fixed MMIO range before enumeration.
+    ///
+    /// The range is removed from both 32-bit and 64-bit allocation pools so
+    /// platform-fixed resources cannot be overlapped by dynamic BARs.
+    pub fn reserve_mmio_range(&mut self, base: u64, size: u64) {
+        self.mmio32.reserve_range(base, size);
+        self.mmio64.reserve_range(base, size);
+        self.rebuild_windows();
+    }
+
+    /// Rebuild the external `windows` array from the current resource pools.
+    fn rebuild_windows(&mut self) {
+        self.window_count = 0;
+
+        for range in self.mmio32.ranges[..self.mmio32.count].iter().copied() {
+            if self.window_count == MAX_WINDOWS {
+                break;
+            }
+            self.windows[self.window_count] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: range.base,
+                size: range.end - range.base,
+                prefetchable: false,
+            };
+            self.window_count += 1;
+        }
+        for range in self.mmio64.ranges[..self.mmio64.count].iter().copied() {
+            if self.window_count == MAX_WINDOWS {
+                break;
+            }
+            self.windows[self.window_count] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: range.base,
+                size: range.end - range.base,
+                prefetchable: true,
+            };
+            self.window_count += 1;
+        }
+        for range in self.io_pool.ranges[..self.io_pool.count].iter().copied() {
+            if self.window_count == MAX_WINDOWS {
+                break;
+            }
+            self.windows[self.window_count] = PciWindow {
+                kind: PciWindowKind::Io,
+                base: range.base,
+                size: range.end - range.base,
+                prefetchable: false,
+            };
+            self.window_count += 1;
+        }
+    }
+
+    // -- ECAM helpers --
+
+    fn ecam_addr(&self, addr: PciAddress, reg: u16) -> Option<usize> {
+        if addr.segment() != self.segment
+            || addr.bus() < self.bus_start
+            || addr.bus() > self.bus_end
+        {
+            return None;
+        }
+        let offset = ((addr.bus() as usize) << 20)
+            | ((addr.device() as usize) << 15)
+            | ((addr.function() as usize) << 12)
+            | ((reg as usize) & 0xFFC);
+        if offset < self.ecam_size {
+            Some(self.ecam_base + offset)
+        } else {
+            None
+        }
+    }
+
+    fn read32(&self, addr: PciAddress, reg: u16) -> u32 {
+        match self.ecam_addr(addr, reg) {
+            // SAFETY: ECAM region is memory-mapped PCI config space.
+            Some(a) => unsafe { fstart_core::mmio::read32(a as *const u32) },
+            None => 0xFFFF_FFFF,
+        }
+    }
+
+    fn write32(&self, addr: PciAddress, reg: u16, val: u32) {
+        if let Some(a) = self.ecam_addr(addr, reg) {
+            // SAFETY: ECAM region is memory-mapped PCI config space.
+            unsafe { fstart_core::mmio::write32(a as *mut u32, val) };
+        }
+    }
+
+    // -- BAR sizing --
+
+    /// Size a single BAR.  Returns the BAR info and whether it consumed
+    /// two BAR slots (64-bit).
+    fn size_bar(&self, addr: PciAddress, bar_idx: usize) -> (BarInfo, bool) {
+        let reg = PCI_BAR0 + (bar_idx as u16) * 4;
+        let original = self.read32(addr, reg);
+
+        // Write all-ones, read back to determine size.
+        self.write32(addr, reg, 0xFFFF_FFFF);
+        let sized = self.read32(addr, reg);
+        self.write32(addr, reg, original);
+
+        let none = BarInfo {
+            bar_type: BarType::None,
+            size: 0,
+            prefetchable: false,
+            reg,
+            allocated: false,
+        };
+
+        if sized == 0 || sized == 0xFFFF_FFFF {
+            return (none, false);
+        }
+
+        // Devices with BARs already programmed to a fixed legacy address may
+        // ignore the all-ones sizing write. Treat those as fixed resources;
+        // they are already decoded by chipset init and should not be allocated.
+        if sized == original && original != 0 {
+            return (none, false);
+        }
+
+        if original & 1 == 1 {
+            // I/O BAR. On x86 legacy PCI I/O port BARs are constrained to
+            // the 16-bit I/O port space even though the config register is
+            // 32 bits wide. Mask to bits 15:2 for sizing; otherwise ICH
+            // devices that return 0xffff_ffe0 become bogus 4 GiB allocations.
+            let size = (!(sized & 0x0000_FFFC)).wrapping_add(1) as u16 as u64;
+            return (
+                BarInfo {
+                    bar_type: BarType::Io,
+                    size,
+                    prefetchable: false,
+                    reg,
+                    allocated: false,
+                },
+                false,
+            );
+        }
+
+        // Memory BAR
+        let prefetchable = (original & 0x8) != 0;
+        let mem_type = (original >> 1) & 0x3;
+
+        match mem_type {
+            0 => {
+                // 32-bit
+                let size = (!(sized & 0xFFFF_FFF0)).wrapping_add(1) as u64;
+                (
+                    BarInfo {
+                        bar_type: BarType::Memory32,
+                        size,
+                        prefetchable,
+                        reg,
+                        allocated: false,
+                    },
+                    false,
+                )
+            }
+            2 => {
+                // 64-bit — also probe upper BAR
+                let upper_reg = reg + 4;
+                let original_hi = self.read32(addr, upper_reg);
+                self.write32(addr, upper_reg, 0xFFFF_FFFF);
+                let sized_hi = self.read32(addr, upper_reg);
+                self.write32(addr, upper_reg, original_hi);
+
+                let full_sized = ((sized_hi as u64) << 32) | (sized as u64);
+                let size = (!(full_sized & 0xFFFF_FFFF_FFFF_FFF0)).wrapping_add(1);
+                (
+                    BarInfo {
+                        bar_type: BarType::Memory64,
+                        size,
+                        prefetchable,
+                        reg,
+                        allocated: false,
+                    },
+                    true,
+                )
+            }
+            _ => (none, false),
+        }
+    }
+
+    /// Probe a single device/function, size its BARs.
+    fn probe_device(&self, addr: PciAddress) -> Option<PciDev> {
+        let vendor_device = self.read32(addr, PCI_VENDOR_ID);
+        if vendor_device == PCI_VENDOR_INVALID {
+            return None;
+        }
+        let hdr = self.read32(addr, PCI_HEADER_TYPE);
+        let header_type = (hdr >> 16) as u8 & 0x7F;
+
+        let max_bars = match header_type {
+            PCI_HEADER_TYPE_BRIDGE => 2,
+            // PCI-to-CardBus bridges use header type 2. Only BAR0 is a base
+            // address register; offsets that look like BAR2..BAR5 are CardBus
+            // bus/window registers and must not be sized as endpoint BARs.
+            PCI_HEADER_TYPE_CARDBUS => 1,
+            _ => 6,
+        };
+
+        let none_bar = BarInfo {
+            bar_type: BarType::None,
+            size: 0,
+            prefetchable: false,
+            reg: 0,
+            allocated: false,
+        };
+        let mut bars = [none_bar; 6];
+
+        let mut i = 0;
+        while i < max_bars {
+            let (info, is_64) = self.size_bar(addr, i);
+            bars[i] = info;
+            if is_64 {
+                i += 1; // skip upper half
+            }
+            i += 1;
+        }
+
+        Some(PciDev {
+            addr,
+            header_type,
+            bars,
+            secondary_bus: 0,
+            subordinate_bus: 0,
+        })
+    }
+
+    // -- Enumeration --
+
+    /// Enumerate a bus recursively.  Discovers devices, assigns bus numbers
+    /// to bridges, and recurses behind them.
+    fn enumerate_bus(&mut self, bus: u8) {
+        for dev in 0..32u8 {
+            let addr = PciAddress::new(self.segment, bus, dev, 0);
+            if self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
+                continue;
+            }
+
+            // Check multi-function bit
+            let hdr = self.read32(addr, PCI_HEADER_TYPE);
+            let multi_func = (hdr >> 16) as u8 & PCI_HEADER_TYPE_MULTI_FUNC;
+            let max_func = if multi_func != 0 { 8 } else { 1 };
+
+            for func in 0..max_func {
+                let faddr = PciAddress::new(self.segment, bus, dev, func);
+                if func > 0 && self.read32(faddr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
+                    continue;
+                }
+
+                if let Some(mut pci_dev) = self.probe_device(faddr) {
+                    match pci_dev.header_type {
+                        PCI_HEADER_TYPE_BRIDGE => {
+                            let secondary = self.next_bus;
+                            self.next_bus = self.next_bus.saturating_add(1);
+                            pci_dev.secondary_bus = secondary;
+
+                            // Temporarily set subordinate to max so scanning works.
+                            self.write32(
+                                faddr,
+                                PCI_PRIMARY_BUS,
+                                (bus as u32)
+                                    | ((secondary as u32) << 8)
+                                    | ((self.bus_end as u32) << 16),
+                            );
+
+                            self.enumerate_bus(secondary);
+
+                            // Finalise subordinate = highest bus found.
+                            pci_dev.subordinate_bus = self.next_bus.saturating_sub(1);
+                            self.write32(
+                                faddr,
+                                PCI_PRIMARY_BUS,
+                                (bus as u32)
+                                    | ((secondary as u32) << 8)
+                                    | ((pci_dev.subordinate_bus as u32) << 16),
+                            );
+                        }
+                        PCI_HEADER_TYPE_CARDBUS => {
+                            let secondary = self.next_bus;
+                            // CardBus bridges need a bus-number range for
+                            // cards inserted later. Reserve the conventional
+                            // four-bus window used by Linux/coreboot rather
+                            // than leaving the bridge at [bus 00-00].
+                            let subordinate = secondary.saturating_add(3).min(self.bus_end);
+                            self.next_bus = subordinate.saturating_add(1);
+                            pci_dev.secondary_bus = secondary;
+                            pci_dev.subordinate_bus = subordinate;
+                            self.write32(
+                                faddr,
+                                PCI_PRIMARY_BUS,
+                                (bus as u32)
+                                    | ((secondary as u32) << 8)
+                                    | ((subordinate as u32) << 16),
+                            );
+                        }
+                        _ => {}
+                    }
+
+                    if self.devices.push(pci_dev).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // -- Resource allocation --
+
+    fn endpoint_in_pass(&self, dev_idx: usize, pass: usize) -> bool {
+        if self.devices[dev_idx].header_type == PCI_HEADER_TYPE_BRIDGE {
+            return false;
+        }
+        let behind_bridge = self.devices[dev_idx].addr.bus() != self.bus_start;
+        (pass == 0 && !behind_bridge) || (pass == 1 && behind_bridge)
+    }
+
+    fn bar_allocation_alignment(&self, dev_idx: usize, bar_idx: usize) -> u64 {
+        let bar = self.devices[dev_idx].bars[bar_idx];
+        let behind_bridge = self.devices[dev_idx].addr.bus() != self.bus_start;
+        match bar.bar_type {
+            BarType::Memory32 | BarType::Memory64 => {
+                if behind_bridge {
+                    bar.size.max(0x100000)
+                } else {
+                    bar.size
+                }
+            }
+            BarType::Io => {
+                if behind_bridge {
+                    bar.size.max(0x1000)
+                } else {
+                    bar.size
+                }
+            }
+            BarType::None => 0,
+        }
+    }
+
+    fn next_bar_to_allocate(&self, pass: usize) -> Option<(usize, usize)> {
+        let mut best: Option<(usize, usize, u64)> = None;
+        for dev_idx in 0..self.devices.len() {
+            if !self.endpoint_in_pass(dev_idx, pass) {
+                continue;
+            }
+            for bar_idx in 0..6 {
+                let bar = self.devices[dev_idx].bars[bar_idx];
+                if bar.bar_type == BarType::None || bar.allocated {
+                    continue;
+                }
+                let rank = self.bar_allocation_alignment(dev_idx, bar_idx);
+                if best.is_none_or(|(_, _, best_rank)| rank > best_rank) {
+                    best = Some((dev_idx, bar_idx, rank));
+                }
+            }
+        }
+        best.map(|(dev_idx, bar_idx, _)| (dev_idx, bar_idx))
+    }
+
+    fn allocate_one_bar(&mut self, dev_idx: usize, bar_idx: usize) {
+        let addr = self.devices[dev_idx].addr;
+        let bar = self.devices[dev_idx].bars[bar_idx];
+        let align = self.bar_allocation_alignment(dev_idx, bar_idx);
+        let base = match bar.bar_type {
+            BarType::Memory32 => self.mmio32.allocate_aligned(bar.size, align),
+            BarType::Memory64 => self
+                .mmio64
+                .allocate_aligned(bar.size, align)
+                .or_else(|| self.mmio32.allocate_aligned(bar.size, align)),
+            BarType::Io => self.io_pool.allocate_aligned(bar.size, align),
+            BarType::None => None,
+        };
+
+        if let Some(base) = base {
+            match bar.bar_type {
+                BarType::Memory32 => {
+                    let val = (base as u32 & 0xFFFF_FFF0) | if bar.prefetchable { 0x8 } else { 0 };
+                    self.write32(addr, bar.reg, val);
+                }
+                BarType::Memory64 => {
+                    let lo =
+                        (base as u32 & 0xFFFF_FFF0) | 0x4 | if bar.prefetchable { 0x8 } else { 0 };
+                    self.write32(addr, bar.reg, lo);
+                    self.write32(addr, bar.reg + 4, (base >> 32) as u32);
+                }
+                BarType::Io => {
+                    self.write32(addr, bar.reg, (base as u32) | 0x1);
+                }
+                BarType::None => {}
+            }
+        }
+
+        // Mark the BAR as handled even on allocation failure. Otherwise the
+        // largest-first allocation loop will keep selecting the same BAR
+        // forever on systems whose firmware aperture cannot satisfy it.
+        self.devices[dev_idx].bars[bar_idx].allocated = true;
+    }
+
+    /// Allocate and program BARs for all non-bridge devices, then program
+    /// bridge forwarding windows.
+    fn allocate_resources(&mut self) {
+        // Phase 1: allocate endpoint BARs. Within each topology pass, allocate
+        // largest-alignment BARs first. This avoids consuming the front of a
+        // constrained 32-bit aperture with a small BAR, then aligning a large
+        // framebuffer BAR up and stranding the remaining space below it.
+        for pass in 0..2 {
+            while let Some((dev_idx, bar_idx)) = self.next_bar_to_allocate(pass) {
+                self.allocate_one_bar(dev_idx, bar_idx);
+            }
+        }
+
+        for dev in &self.devices {
+            if dev.header_type == PCI_HEADER_TYPE_BRIDGE {
+                continue;
+            }
+            let cmd = self.read32(dev.addr, PCI_COMMAND) as u16;
+            let new_cmd = cmd | PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
+            self.write32(dev.addr, PCI_COMMAND, new_cmd as u32);
+        }
+
+        // Phase 2: program bridge forwarding windows.
+        for i in 0..self.devices.len() {
+            if self.devices[i].header_type != PCI_HEADER_TYPE_BRIDGE {
+                continue;
+            }
+
+            let baddr = self.devices[i].addr;
+            let sec = self.devices[i].secondary_bus;
+            let sub = self.devices[i].subordinate_bus;
+
+            // Compute the span of addresses used by children behind this bridge.
+            let mut mem_lo: u64 = u64::MAX;
+            let mut mem_hi: u64 = 0;
+            let mut pref_lo: u64 = u64::MAX;
+            let mut pref_hi: u64 = 0;
+            let mut io_lo: u64 = u64::MAX;
+            let mut io_hi: u64 = 0;
+
+            for child in &self.devices {
+                if child.addr.bus() < sec || child.addr.bus() > sub {
+                    continue;
+                }
+                for bar in &child.bars {
+                    if bar.bar_type == BarType::None {
+                        continue;
+                    }
+                    if bar.bar_type == BarType::Io {
+                        let base = (self.read32(child.addr, bar.reg) & 0x0000_FFFC) as u64;
+                        if base != 0 {
+                            io_lo = io_lo.min(base);
+                            io_hi = io_hi.max(base + bar.size);
+                        }
+                        continue;
+                    }
+                    // Read back the programmed base.
+                    let base_lo = self.read32(child.addr, bar.reg) & 0xFFFF_FFF0;
+                    let base = if bar.bar_type == BarType::Memory64 {
+                        let hi = self.read32(child.addr, bar.reg + 4);
+                        ((hi as u64) << 32) | (base_lo as u64)
+                    } else {
+                        base_lo as u64
+                    };
+                    if base == 0 {
+                        continue;
+                    }
+                    let end = base + bar.size;
+
+                    if bar.prefetchable {
+                        pref_lo = pref_lo.min(base);
+                        pref_hi = pref_hi.max(end);
+                    } else {
+                        mem_lo = mem_lo.min(base);
+                        mem_hi = mem_hi.max(end);
+                    }
+                }
+            }
+
+            // Non-prefetchable memory window (base/limit in 1 MiB granularity).
+            if mem_lo < mem_hi {
+                let base_reg = ((mem_lo >> 16) & 0xFFF0) as u16;
+                let limit_reg = (((mem_hi - 1) >> 16) & 0xFFF0) as u16;
+                self.write32(
+                    baddr,
+                    PCI_MEMORY_BASE,
+                    (base_reg as u32) | ((limit_reg as u32) << 16),
+                );
+            } else {
+                // Disable: base > limit.
+                self.write32(baddr, PCI_MEMORY_BASE, 0x0000_FFFF);
+            }
+
+            // Prefetchable memory window (64-bit capable).
+            if pref_lo < pref_hi {
+                let base_reg = ((pref_lo >> 16) & 0xFFF0) as u16;
+                let limit_reg = (((pref_hi - 1) >> 16) & 0xFFF0) as u16;
+                self.write32(
+                    baddr,
+                    PCI_PREF_MEMORY_BASE,
+                    (base_reg as u32) | ((limit_reg as u32) << 16),
+                );
+                self.write32(baddr, PCI_PREF_BASE_UPPER32, (pref_lo >> 32) as u32);
+                self.write32(baddr, PCI_PREF_LIMIT_UPPER32, ((pref_hi - 1) >> 32) as u32);
+            } else {
+                self.write32(baddr, PCI_PREF_MEMORY_BASE, 0x0000_FFFF);
+                self.write32(baddr, PCI_PREF_BASE_UPPER32, 0);
+                self.write32(baddr, PCI_PREF_LIMIT_UPPER32, 0);
+            }
+
+            if io_lo < io_hi {
+                let base = ((io_lo >> 8) & 0xF0) as u8;
+                let limit = (((io_hi - 1) >> 8) & 0xF0) as u8;
+                self.write32(baddr, PCI_IO_BASE, (base as u32) | ((limit as u32) << 8));
+            } else {
+                self.write32(baddr, PCI_IO_BASE, 0x00FF);
+            }
+
+            // Enable memory + IO + bus master on the bridge.
+            let cmd = self.read32(baddr, PCI_COMMAND) as u16;
+            let new_cmd = cmd | PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
+            self.write32(baddr, PCI_COMMAND, new_cmd as u32);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Device trait
+// -----------------------------------------------------------------------
+
+impl PciEcam {
+    /// Enumerate the PCI hierarchy, allocate BAR resources, and enable decode.
+    pub fn enumerate_and_allocate(&mut self) -> Result<(), PciEcamError> {
+        self.enumerate_bus(self.bus_start);
+
+        if !self.devices.is_empty() {
+            self.allocate_resources();
+        }
+
+        Ok(())
+    }
+
+    /// Construct an ECAM root bridge from a runtime provider.
+    ///
+    /// The provider is queried once, after memory discovery, and the returned
+    /// allocation windows are copied into the allocator as a stable snapshot.
+    pub fn from_provider<P>(provider: &P) -> Result<Self, PciEcamError>
+    where
+        P: crate::PciRootProvider + ?Sized,
+    {
+        let info = provider.root_info();
+        if info.bus_end < info.bus_start {
+            return Err(PciEcamError::ConfigError);
+        }
+
+        let supplied = provider
+            .resource_windows()
+            .map_err(|_| PciEcamError::ConfigError)?;
+        let dummy = PciWindow {
+            kind: PciWindowKind::Mmio,
+            base: 0,
+            size: 0,
+            prefetchable: false,
+        };
+        let mut windows = [dummy; MAX_WINDOWS];
+        let mut window_count = 0;
+        let mut mmio32 = ResourcePool::new(0, 0);
+        let mut mmio64 = ResourcePool::new(0, 0);
+        let mut io_pool = ResourcePool::new(0, 0);
+
+        for window in supplied {
+            if window.size == 0 {
+                continue;
+            }
+            let Some(end) = window.base.checked_add(window.size) else {
+                return Err(PciEcamError::ConfigError);
+            };
+            if window_count == MAX_WINDOWS {
+                return Err(PciEcamError::ConfigError);
+            }
+
+            match window.kind {
+                PciWindowKind::Io => io_pool.push_range(window.base, end),
+                PciWindowKind::Mmio if window.is_below_4g() => {
+                    mmio32.push_range(window.base, end);
+                }
+                PciWindowKind::Mmio => mmio64.push_range(window.base, end),
+            }
+            windows[window_count] = window;
+            window_count += 1;
+        }
+
+        Ok(Self {
+            segment: info.segment,
+            ecam_base: info.ecam_base as usize,
+            ecam_size: info.ecam_size() as usize,
+            bus_start: info.bus_start,
+            bus_end: info.bus_end,
+            mmio32,
+            mmio64,
+            io_pool,
+            windows,
+            window_count,
+            devices: HVec::new(),
+            next_bus: info.bus_start.saturating_add(1),
+        })
+    }
+
+    /// Construct an ECAM root bridge from a temporary config.
+    ///
+    /// `PciEcam` copies only scalar window values into runtime pools and does
+    /// not retain a reference to the config, so composed host bridges can build
+    /// this from hardware-derived local values without cloning a board config.
+    pub fn from_config(config: &PciEcamConfig) -> Result<Self, PciEcamError> {
+        if config.bus_end < config.bus_start {
+            return Err(PciEcamError::ConfigError);
+        }
+
+        // Build the window list from the config.  Only add windows that
+        // have a non-zero size (the platform may omit some).
+        let dummy = PciWindow {
+            kind: PciWindowKind::Mmio,
+            base: 0,
+            size: 0,
+            prefetchable: false,
+        };
+        let mut windows = [dummy; MAX_WINDOWS];
+        let mut wc = 0;
+
+        let (mmio32_base, mmio32_size) = (config.mmio32_base, config.mmio32_size);
+
+        if mmio32_size > 0 {
+            windows[wc] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: mmio32_base,
+                size: mmio32_size,
+                prefetchable: false,
+            };
+            wc += 1;
+        }
+        if config.mmio64_size > 0 {
+            windows[wc] = PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: config.mmio64_base,
+                size: config.mmio64_size,
+                // The high MMIO window is typically used for prefetchable
+                // 64-bit BARs (framebuffers, NVMe, etc.).  Mark it
+                // prefetchable so ACPI _CRS descriptors are correct.
+                prefetchable: true,
+            };
+            wc += 1;
+        }
+        if config.pio_size > 0 {
+            windows[wc] = PciWindow {
+                kind: PciWindowKind::Io,
+                base: config.pio_base,
+                size: config.pio_size,
+                prefetchable: false,
+            };
+            wc += 1;
+        }
+
+        Ok(Self {
+            segment: 0,
+            ecam_base: config.ecam_base as usize,
+            ecam_size: config.ecam_size as usize,
+            bus_start: config.bus_start,
+            bus_end: config.bus_end,
+            mmio32: ResourcePool::new(mmio32_base, mmio32_size),
+            mmio64: ResourcePool::new(config.mmio64_base, config.mmio64_size),
+            io_pool: ResourcePool::new(config.pio_base, config.pio_size),
+            windows,
+            window_count: wc,
+            devices: HVec::new(),
+            next_bus: config.bus_start + 1,
+        })
+    }
+}
+
+impl PciEcam {
+    pub fn config_read32(&self, addr: PciAddress, reg: u16) -> u32 {
+        self.read32(addr, reg)
+    }
+
+    pub fn config_write32(&self, addr: PciAddress, reg: u16, val: u32) {
+        self.write32(addr, reg, val);
+    }
+
+    pub fn ecam_base(&self) -> u64 {
+        self.ecam_base as u64
+    }
+
+    pub fn ecam_size(&self) -> u64 {
+        self.ecam_size as u64
+    }
+
+    pub fn bus_start(&self) -> u8 {
+        self.bus_start
+    }
+
+    pub fn bus_end(&self) -> u8 {
+        self.bus_end
+    }
+
+    pub fn device_count(&self) -> usize {
+        self.devices.len()
+    }
+
+    pub fn windows(&self) -> &[PciWindow] {
+        &self.windows[..self.window_count]
+    }
+}
+
+#[allow(unused_unsafe)]
+impl ConfigRegionAccess for PciEcam {
+    unsafe fn read(&self, address: PciAddress, offset: u16) -> u32 {
+        // SAFETY: the caller guarantees that the PCI address and offset are valid.
+        unsafe { self.read32(address, offset) }
+    }
+
+    unsafe fn write(&self, address: PciAddress, offset: u16, value: u32) {
+        // SAFETY: the caller guarantees that the PCI address and offset are valid.
+        unsafe { self.write32(address, offset, value) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{PciRootError, PciRootInfo, PciRootProvider, PciRootWindows};
+
+    struct TestRoot;
+
+    impl PciRootProvider for TestRoot {
+        fn root_info(&self) -> PciRootInfo {
+            PciRootInfo {
+                segment: 3,
+                ecam_base: 0xe000_0000,
+                bus_start: 0x40,
+                bus_end: 0x7f,
+            }
+        }
+
+        fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
+            let mut windows = PciRootWindows::new();
+            windows
+                .push(PciWindow {
+                    kind: PciWindowKind::Mmio,
+                    base: 0x8000_0000,
+                    size: 0x1000_0000,
+                    prefetchable: false,
+                })
+                .map_err(|_| PciRootError::TooManyWindows)?;
+            windows
+                .push(PciWindow {
+                    kind: PciWindowKind::Io,
+                    base: 0x1000,
+                    size: 0xf000,
+                    prefetchable: false,
+                })
+                .map_err(|_| PciRootError::TooManyWindows)?;
+            Ok(windows)
+        }
+    }
+
+    #[test]
+    fn provider_is_snapshotted_into_ecam_allocator() {
+        let pci = PciEcam::from_provider(&TestRoot).unwrap();
+
+        assert_eq!(pci.segment, 3);
+        assert_eq!(pci.ecam_base(), 0xe000_0000);
+        assert_eq!(pci.ecam_size(), 64 * 1024 * 1024);
+        assert_eq!(pci.bus_start(), 0x40);
+        assert_eq!(pci.bus_end(), 0x7f);
+        assert_eq!(pci.windows().len(), 2);
+        assert_eq!(pci.windows()[0].kind, PciWindowKind::Mmio);
+        assert_eq!(pci.windows()[1].kind, PciWindowKind::Io);
+    }
+}

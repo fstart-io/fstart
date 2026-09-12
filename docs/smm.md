@@ -44,7 +44,7 @@ normal handler/stub code is position-independent and is never patched as code.
 - The number of entry points is known before building the SMM image:
   - coreboot compatibility builds use `CONFIG_MAX_CPUS`.
   - fstart boards declare it in `board.smm.entry_points`, defaulting to the
-    `MpInit.num_cpus` value of the SMM-enabled stage.
+    `MpInit.max_cpus` value of the SMM-enabled stage.
 - The SMM image contains **multiple precompiled PIC entry stubs**, one per
   configured CPU slot.  The installer copies entry `N` to CPU `N`'s
   `SMBASE + 0x8000`; it does not copy one canonical stub to all offsets.
@@ -56,30 +56,32 @@ normal handler/stub code is position-independent and is never patched as code.
   enabled, its image-relative offset is also emitted in the compatibility
   header.
 
-## Board RON schema
+## Board metadata
 
-`BoardConfig` has an optional top-level `smm` block:
+The current board-authoring direction is Rust builder metadata rather than RON.
+A board enables SMM by describing an SMM image block and selecting the MP/SMM
+stage flow in its board crate metadata, for example:
 
-```ron
-smm: Some((
-    platform: QemuQ35,          // or PineviewIch7
-    entry_points: Some(4),      // default: MpInit.num_cpus
-    stack_size: 0x400,
-    coreboot: (
-        emit_header: true,
-        module_args: true,
-    ),
-)),
+```rust
+Board::new("qemu-q35")
+    .smm(
+        Smm::new(SmmPlatform::QemuQ35)
+            .entry_points(4) // default can come from MP max_cpus
+            .stack_size(0x400)
+            .coreboot_compat(
+                CorebootCompat::new()
+                    .emit_header(true)
+                    .module_args(true),
+            ),
+    )
+    .stage(
+        Stage::ramstage()
+            .mp_init(MpInit::new().max_cpus(4).smm(true)),
+    );
 ```
 
-An x86 stage enables SMM by declaring:
-
-```ron
-MpInit(cpu_model: "qemu-x86", num_cpus: 4, smm: true)
-```
-
-For the first implementation this capability belongs in a DRAM-backed stage,
-after `MemoryInit` or `DramInit`.  CAR/XIP bootblocks should not install SMM.
+For the first implementation, SMM setup belongs in a DRAM-backed stage after
+memory initialization. CAR/XIP bootblocks should not install SMM.
 
 ## Native image format
 

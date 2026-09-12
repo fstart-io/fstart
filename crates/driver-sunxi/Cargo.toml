@@ -1,0 +1,20 @@
+[package]
+name = "fstart-driver-sunxi"
+description = "Allwinner sunxi SoC drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+armv7 = ["fstart-arch/armv7"]
+
+[dependencies]
+embedded-hal = { workspace = true }
+fstart-arch = { workspace = true, features = ["armv7"] }
+fstart-core = { workspace = true }
+fstart-log = { workspace = true }
+serde = { workspace = true }
+tock-registers = { workspace = true }
+ufmt = { workspace = true }

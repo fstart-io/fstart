@@ -1,0 +1,1128 @@
+//! Generic SuperIO chip framework.
+//!
+//! x86 SuperIO controllers (ITE IT87xx, Winbond / Nuvoton W836xx, SMSC
+//! SCH3xxx, ...) follow a common pattern:
+//!
+//! 1. Enter configuration mode by writing a magic byte sequence to an
+//!    index port (commonly `0x2e` or `0x4e`).
+//! 2. Select a Logical Device Number (LDN) via config register `0x07`.
+//! 3. Program the LDN's registers (`0x30` = enable, `0x60/0x61` = I/O
+//!    base, `0x70` = IRQ, ...).
+//! 4. Exit configuration mode by writing a chip-specific sequence.
+//!
+//! Individual chips differ only in:
+//! - The enter-config magic sequence (e.g., `[0x87, 0x87]` for ITE,
+//!   `[0x87, 0x87]` twice for some W836xx, `[0x55]` for SMSC).
+//! - The exit-config register/value (`(0x02, 0x02)` for ITE).
+//! - Which LDNs map to which functions (COM1 is LDN 1 on ITE, LDN 2 on
+//!   W836xx).
+//! - The chip ID reported by reading `0x20/0x21`.
+//!
+//! The `SuperIoChip` trait captures all of these per-chip details as
+//! associated constants. The generic `SuperIo<C>` driver then works
+//! uniformly for all chips — a new chip requires only ~25 lines.
+//!
+//! Board authors never touch LDNs. They describe functions by name
+//! ([`ComPortConfig`], [`KbcConfig`], etc.) and the driver maps names
+//! to the chip's LDNs via the trait's associated constants.
+
+#![allow(clippy::redundant_locals)]
+
+use fstart_core::BusAddress;
+use fstart_core::services::device::{BusDevice, DeviceError};
+use serde::{Deserialize, Serialize};
+
+use core::marker::PhantomData;
+
+/// Standard PC/AT i8042 data port.
+pub const I8042_DATA_PORT: u16 = 0x60;
+
+/// Standard PC/AT i8042 status and command port.
+pub const I8042_COMMAND_PORT: u16 = 0x64;
+
+/// Leave a PC/AT i8042 controller quiet for OS handoff.
+///
+/// This drains stale output bytes and writes a command byte with the keyboard
+/// interface enabled, AUX disabled, translation enabled, and IRQ generation
+/// disabled. Operating systems such as Linux run their own i8042 probe and
+/// re-enable IRQs after handlers are installed.
+pub fn quiesce_i8042_for_os() {
+    quiesce_i8042_for_os_at(I8042_DATA_PORT, I8042_COMMAND_PORT);
+}
+
+/// Leave an i8042 controller quiet for OS handoff using explicit ports.
+pub fn quiesce_i8042_for_os_at(data_port: u16, command_port: u16) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: callers select the legacy i8042 I/O ports decoded by the platform.
+        unsafe {
+            if !i8042_flush(data_port, command_port) || !i8042_wait_input_empty(command_port) {
+                return;
+            }
+
+            fstart_core::pio::outb(command_port, 0x60);
+            if !i8042_wait_input_empty(command_port) {
+                return;
+            }
+            fstart_core::pio::outb(data_port, 0x64);
+            let _ = i8042_flush(data_port, command_port);
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (data_port, command_port);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
+    for _ in 0..100_000 {
+        // SAFETY: caller selected a decoded i8042 status port.
+        if unsafe { fstart_core::pio::inb(status_port) } & 0x02 == 0 {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn i8042_flush(data_port: u16, status_port: u16) -> bool {
+    for _ in 0..256 {
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        let status = unsafe { fstart_core::pio::inb(status_port) };
+        if status & 0x01 == 0 {
+            return true;
+        }
+        // SAFETY: output buffer is full; reading drains one byte.
+        let _ = unsafe { fstart_core::pio::inb(data_port) };
+    }
+    false
+}
+
+// ===================================================================
+// Common SuperIO configuration register indices
+// ===================================================================
+
+/// Logical Device Number select register.
+const SIO_REG_LDN: u8 = 0x07;
+/// Device ID high byte.
+const SIO_REG_DEVID_HI: u8 = 0x20;
+/// Device ID low byte.
+const SIO_REG_DEVID_LO: u8 = 0x21;
+/// LDN activate/enable (bit 0 = enable).
+const SIO_REG_ENABLE: u8 = 0x30;
+/// I/O base address high byte.
+const SIO_REG_IO_BASE_HI: u8 = 0x60;
+/// I/O base address low byte.
+const SIO_REG_IO_BASE_LO: u8 = 0x61;
+/// Secondary I/O base address high byte.
+const SIO_REG_IO_BASE2_HI: u8 = 0x62;
+/// Secondary I/O base address low byte.
+const SIO_REG_IO_BASE2_LO: u8 = 0x63;
+/// IRQ select register 0 (primary).
+const SIO_REG_IRQ: u8 = 0x70;
+
+// ---------------------------------------------------------------------------
+// The SuperIoChip trait — per-chip specialization
+// ---------------------------------------------------------------------------
+
+/// Per-chip characterization for the generic [`SuperIo`] driver.
+///
+/// A chip descriptor is a zero-sized type that implements this trait
+/// as a bag of associated constants. Each constant tells the generic
+/// driver how to talk to this particular chip.
+pub trait SuperIoChip: Send + Sync + 'static {
+    /// Magic byte sequence that unlocks configuration mode.
+    ///
+    /// Written in order to the chip's index port. For ITE parts this
+    /// is `[0x87, 0x87]`; for Winbond `[0x87, 0x87]` twice is common.
+    const ENTER_SEQ: &'static [u8];
+    /// Register offset to write for exiting configuration mode.
+    const EXIT_REG: u8;
+    /// Value to write at [`Self::EXIT_REG`] to exit configuration mode.
+    const EXIT_VAL: u8;
+    /// Expected chip ID (combined from registers `0x20` and `0x21`).
+    ///
+    /// `0x20` is the high byte, `0x21` the low byte. Driver init fails
+    /// with [`DeviceError::InitFailed`] if the read value does not match.
+    const CHIP_ID: u16;
+
+    /// LDN for COM1, if supported.
+    const COM1_LDN: Option<u8>;
+    /// LDN for COM2, if supported.
+    const COM2_LDN: Option<u8>;
+    /// LDN for the PS/2 keyboard controller, if supported.
+    const KBC_LDN: Option<u8>;
+    /// LDN for the PS/2 mouse, if supported.
+    const MOUSE_LDN: Option<u8>;
+    /// LDN for the embedded controller / environment controller.
+    const EC_LDN: Option<u8>;
+    /// LDN for GPIO, if supported.
+    const GPIO_LDN: Option<u8>;
+    /// LDN for consumer IR, if supported.
+    const CIR_LDN: Option<u8>;
+    /// LDN for the parallel port, if supported.
+    const PARALLEL_LDN: Option<u8>;
+
+    /// Raw exit byte written straight to the index port instead of the
+    /// `EXIT_REG`/`EXIT_VAL` register/value pair.
+    ///
+    /// SMSC parts (LPC47M15x: `0xAA`) exit configuration mode with a
+    /// single write to the index port; a register write would land on an
+    /// unrelated data port after the exit. `None` (default) keeps the
+    /// register/value behavior used by ITE/Winbond/NSC parts.
+    const EXIT_RAW: Option<u8> = None;
+
+    /// Optional chip-specific init hook, invoked inside config mode
+    /// after the ID check and before any LDN is configured.
+    fn chip_init(_base_port: u16) {}
+
+    /// Optional override byte appended to the enter sequence.
+    ///
+    /// ITE parts use `0x55` for port 0x2E and `0xAA` for port 0x4E as
+    /// the fourth byte. Chips that don't need this return `None`.
+    fn enter_last_byte(base_port: u16) -> Option<u8> {
+        let _ = base_port;
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config types
+// ---------------------------------------------------------------------------
+
+/// Top-level SuperIO config shared by every chip.
+///
+/// Board authors enable individual functions by setting the matching
+/// field to `Some(...)`. The base port (e.g., `0x2e`) comes from the
+/// device's `bus: Lpc(0x2e)` attachment, not from this config.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SuperIoConfig {
+    /// Primary UART (COM1).
+    #[serde(default)]
+    pub com1: Option<ComPortConfig>,
+    /// Secondary UART (COM2).
+    #[serde(default)]
+    pub com2: Option<ComPortConfig>,
+    /// PS/2 keyboard controller.
+    #[serde(default)]
+    pub keyboard: Option<KbcConfig>,
+    /// PS/2 mouse.
+    #[serde(default)]
+    pub mouse: Option<MouseConfig>,
+    /// Embedded / environment controller.
+    #[serde(default)]
+    pub env_controller: Option<EcConfig>,
+    /// Parallel port.
+    #[serde(default)]
+    pub parallel: Option<ParallelConfig>,
+    /// Consumer IR receiver.
+    #[serde(default)]
+    pub cir: Option<CirConfig>,
+    /// General-purpose I/O.
+    #[serde(default)]
+    pub gpio: Option<GpioConfig>,
+    /// ACPI namespace name for the SuperIO container device (e.g., "SIO0").
+    ///
+    /// When set, ACPI generation emits child device nodes for each
+    /// enabled LDN (COM1, KBC, mouse, etc.) with standard PNP HIDs.
+    #[serde(default)]
+    pub acpi_name: Option<heapless::String<8>>,
+    /// Which COM port to use as the firmware console.
+    ///
+    /// When set to `"com1"` or `"com2"`, the SuperIO driver implements
+    /// the `Console` service directly — no separate NS16550 child
+    /// device is needed.  The driver initializes the 16550 registers
+    /// (baud divisor, 8N1, FIFO enable) during `init()` and provides
+    /// `write_byte`/`read_byte` via port I/O at the COM port's
+    /// configured `io_base`.
+    #[serde(default)]
+    pub console_port: Option<heapless::String<8>>,
+}
+
+/// 16550-compatible UART settings exposed by the SuperIO.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComPortConfig {
+    /// I/O base port (e.g., `0x3F8`).
+    pub io_base: u16,
+    /// IRQ number.
+    pub irq: u8,
+    /// Desired baud rate (default 115200).
+    #[serde(default = "default_baud")]
+    pub baud_rate: u32,
+}
+
+fn default_baud() -> u32 {
+    115200
+}
+
+/// PS/2 keyboard controller settings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KbcConfig {
+    /// Primary I/O base (typically `0x60`).
+    pub io_base: u16,
+    /// Extended I/O base (typically `0x64`).
+    pub io_ext: u16,
+    /// IRQ number (typically 1).
+    pub irq: u8,
+}
+
+/// PS/2 mouse settings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MouseConfig {
+    /// IRQ number (typically 12).
+    pub irq: u8,
+}
+
+/// Embedded controller / environment controller settings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EcConfig {
+    /// Primary EC I/O base.
+    pub io_base: u16,
+    /// Secondary (extended) EC I/O base.
+    pub io_ext: u16,
+}
+
+/// Parallel port settings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParallelConfig {
+    /// I/O base port (typically `0x378`).
+    pub io_base: u16,
+    /// IRQ number (typically 7).
+    pub irq: u8,
+}
+
+/// Consumer IR receiver settings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CirConfig {
+    /// I/O base port.
+    pub io_base: u16,
+    /// IRQ number.
+    pub irq: u8,
+}
+
+/// GPIO block settings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpioConfig {
+    /// Base I/O port for the GPIO registers.
+    pub io_base: u16,
+}
+
+// ---------------------------------------------------------------------------
+// Generic SuperIo<C> driver
+// ---------------------------------------------------------------------------
+
+/// Generic SuperIO driver parameterized by a [`SuperIoChip`] descriptor.
+///
+/// Constructed via [`BusDevice::new_on_bus`]: the base port comes from
+/// board-authored typed topology (`BusAddress::Lpc`) and is passed through by
+/// the LPC bus driver when constructing the child.
+///
+/// When the `com1` config is present, the driver implements [`Console`]
+/// by accessing the classic NS16550 registers at `com1.io_base`. This
+/// makes the SuperIO usable as an early console without needing a separate
+/// NS16550 runtime device.
+pub struct SuperIo<C: SuperIoChip> {
+    /// LPC config index port (e.g., `0x2e` or `0x4e`).
+    base_port: u16,
+    /// Saved config (used at `init()` time to actually program the chip).
+    config: SuperIoConfig,
+    _phantom: PhantomData<C>,
+}
+
+// SAFETY: All I/O is port-based with CPU-exclusive ownership; no shared
+// state across threads (firmware is single-threaded).
+unsafe impl<C: SuperIoChip> Send for SuperIo<C> {}
+unsafe impl<C: SuperIoChip> Sync for SuperIo<C> {}
+
+impl<C: SuperIoChip> SuperIo<C> {
+    /// Index port (writes select the config register).
+    #[inline]
+    fn idx_port(&self) -> u16 {
+        self.base_port
+    }
+
+    /// Data port (reads/writes the currently-selected register).
+    #[inline]
+    fn data_port(&self) -> u16 {
+        self.base_port + 1
+    }
+
+    /// Enter configuration mode by writing the chip-specific sequence.
+    fn enter_config(&self) {
+        for b in C::ENTER_SEQ {
+            // SAFETY: base_port is from the board metadata, `b` is a chip constant.
+            unsafe { fstart_core::pio::outb(self.idx_port(), *b) };
+        }
+        // Some chips (ITE) need a port-dependent final byte.
+        if let Some(last) = C::enter_last_byte(self.base_port) {
+            unsafe { fstart_core::pio::outb(self.idx_port(), last) };
+        }
+    }
+
+    /// Exit configuration mode.
+    fn exit_config(&self) {
+        // SAFETY: chip-provided constants; base_port validated in new_on_bus.
+        unsafe {
+            if let Some(byte) = C::EXIT_RAW {
+                fstart_core::pio::outb(self.idx_port(), byte);
+            } else {
+                fstart_core::pio::outb(self.idx_port(), C::EXIT_REG);
+                fstart_core::pio::outb(self.data_port(), C::EXIT_VAL);
+            }
+        }
+    }
+
+    /// Write an 8-bit value to a config register at `reg`.
+    fn write_reg(&self, reg: u8, val: u8) {
+        // SAFETY: callers always bracket writes with enter_config/exit_config.
+        unsafe {
+            fstart_core::pio::outb(self.idx_port(), reg);
+            fstart_core::pio::outb(self.data_port(), val);
+        }
+    }
+
+    /// Read an 8-bit value from a config register at `reg`.
+    fn read_reg(&self, reg: u8) -> u8 {
+        // SAFETY: callers always bracket reads with enter_config/exit_config.
+        unsafe {
+            fstart_core::pio::outb(self.idx_port(), reg);
+            fstart_core::pio::inb(self.data_port())
+        }
+    }
+
+    /// Select the given Logical Device Number.
+    fn select_ldn(&self, ldn: u8) {
+        self.write_reg(SIO_REG_LDN, ldn);
+    }
+
+    /// Read the 16-bit chip ID from config registers.
+    fn read_chip_id(&self) -> u16 {
+        let hi = self.read_reg(SIO_REG_DEVID_HI) as u16;
+        let lo = self.read_reg(SIO_REG_DEVID_LO) as u16;
+        (hi << 8) | lo
+    }
+
+    /// Program a COM-port LDN (io_base, IRQ, enable).
+    fn program_com(&self, ldn: u8, cfg: &ComPortConfig) {
+        self.select_ldn(ldn);
+        // Match coreboot's `ite_enable_serial()`: disable the LDN before
+        // moving its decode window, then enable it after the new base is set.
+        self.write_reg(SIO_REG_ENABLE, 0x00);
+        self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_IRQ, cfg.irq);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
+    }
+
+    /// Program an EC/env-controller LDN (two I/O bases).
+    fn program_ec(&self, ldn: u8, cfg: &EcConfig) {
+        self.select_ldn(ldn);
+        self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_HI, (cfg.io_ext >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_ext & 0xFF) as u8);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
+    }
+
+    /// Program the keyboard controller LDN.
+    fn program_kbc(&self, ldn: u8, cfg: &KbcConfig) {
+        self.select_ldn(ldn);
+        self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_HI, (cfg.io_ext >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_ext & 0xFF) as u8);
+        self.write_reg(SIO_REG_IRQ, cfg.irq);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
+        self.init_kbc_coreboot(cfg.io_base, cfg.io_ext, self.config.mouse.is_some());
+    }
+
+    fn init_kbc_coreboot(&self, data_port: u16, command_port: u16, mut enable_aux: bool) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            // Port the essential parts of coreboot pc_keyboard_init(): drain
+            // stale bytes, self-test the 8042, then enable IRQs only after the
+            // keyboard (and optional AUX mouse) have been reset/programmed.
+            // D41S exposes a real IT8721F KBCM LDN, so unlike the previous
+            // NO_AUX_DEVICE-only path we must not leave the AUX clock disabled
+            // while ACPI advertises a PNP0F13 mouse on IRQ12.
+            if !Self::kbc_flush(data_port, command_port) {
+                return;
+            }
+            if !Self::kbc_wait_input_empty(command_port) {
+                return;
+            }
+            fstart_core::pio::outb(command_port, 0xAA); // controller self-test
+            if !Self::kbc_wait_output_full(command_port) || fstart_core::pio::inb(data_port) != 0x55
+            {
+                return;
+            }
+            let _ = Self::kbc_flush(data_port, command_port);
+
+            if !Self::kbc_wait_input_empty(command_port) {
+                return;
+            }
+            fstart_core::pio::outb(command_port, 0xAB); // keyboard interface test
+            if !Self::kbc_wait_output_full(command_port) {
+                return;
+            }
+            let _ = fstart_core::pio::inb(data_port);
+
+            // Enable keyboard interface and keep AUX disabled until the mouse
+            // path is explicitly tested.  IRQs stay off while cleaning/programming.
+            if !Self::kbc_write_command_byte(data_port, command_port, 0x20) {
+                return;
+            }
+            let _ = Self::kbc_flush(data_port, command_port);
+
+            if enable_aux {
+                if !Self::kbc_wait_input_empty(command_port) {
+                    return;
+                }
+                fstart_core::pio::outb(command_port, 0xA8); // enable AUX interface
+                if !Self::kbc_wait_input_empty(command_port) {
+                    return;
+                }
+                fstart_core::pio::outb(command_port, 0xA9); // AUX interface test
+                if !Self::kbc_wait_output_full(command_port)
+                    || fstart_core::pio::inb(data_port) != 0x00
+                {
+                    enable_aux = false;
+                    let _ = Self::kbc_write_command_byte(data_port, command_port, 0x20);
+                } else {
+                    let _ = Self::kbc_flush(data_port, command_port);
+                }
+            }
+
+            // Reset keyboard and require the same ACK/self-test sequence as
+            // coreboot. If no keyboard is present, leave the 8042 command byte
+            // at 0x20 (keyboard interface enabled, IRQ1 disabled, AUX disabled)
+            // instead of unconditionally enabling IRQ1 on a floating line.
+            if Self::kbc_send_keyboard(data_port, command_port, 0xFF) != Some(0xFA) {
+                let _ = Self::kbc_flush(data_port, command_port);
+                return;
+            }
+            if !Self::kbc_wait_output_full(command_port) || fstart_core::pio::inb(data_port) != 0xAA
+            {
+                let _ = Self::kbc_flush(data_port, command_port);
+                return;
+            }
+            if Self::kbc_send_keyboard(data_port, command_port, 0xF5) != Some(0xFA) {
+                return;
+            }
+            if Self::kbc_send_keyboard(data_port, command_port, 0xF0) != Some(0xFA) {
+                return;
+            }
+            if Self::kbc_send_keyboard(data_port, command_port, 0x02) != Some(0xFA) {
+                return;
+            }
+
+            // Leave the devices quiescent for the OS. Coreboot enables IRQ1
+            // here for many boards, but D41S currently reaches Linux with a
+            // pending/stuck i8042 SERIRQ when firmware has enabled KBC IRQs.
+            // Advertise the PNP devices through ACPI and leave IRQ generation
+            // disabled; Linux's i8042 driver will run its own controller
+            // setup, enable scanning, and unmask IRQ1/IRQ12 after its handlers
+            // are installed.
+            let _ = Self::kbc_flush(data_port, command_port);
+            let command_byte = if enable_aux { 0x44 } else { 0x64 };
+            let _ = Self::kbc_write_command_byte(data_port, command_port, command_byte);
+            let _ = Self::kbc_flush(data_port, command_port);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_wait_input_empty(status_port: u16) -> bool {
+        for _ in 0..100_000 {
+            // SAFETY: caller selected a decoded i8042 status port.
+            if unsafe { fstart_core::pio::inb(status_port) } & 0x02 == 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_wait_output_full(status_port: u16) -> bool {
+        for _ in 0..100_000 {
+            // SAFETY: caller selected a decoded i8042 status port.
+            if unsafe { fstart_core::pio::inb(status_port) } & 0x01 != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_flush(data_port: u16, status_port: u16) -> bool {
+        for _ in 0..1024 {
+            // SAFETY: caller selected decoded i8042 data/status ports.
+            let status = unsafe { fstart_core::pio::inb(status_port) };
+            if status & 0x03 == 0 {
+                return true;
+            }
+            if status & 0x01 != 0 {
+                // SAFETY: output buffer is full; reading drains one byte.
+                let _ = unsafe { fstart_core::pio::inb(data_port) };
+            }
+        }
+        false
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_write_command_byte(data_port: u16, command_port: u16, value: u8) -> bool {
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        if !unsafe { Self::kbc_wait_input_empty(command_port) } {
+            return false;
+        }
+        // SAFETY: caller selected decoded i8042 command/data ports.
+        unsafe { fstart_core::pio::outb(command_port, 0x60) };
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        if !unsafe { Self::kbc_wait_input_empty(command_port) } {
+            return false;
+        }
+        // SAFETY: caller selected decoded i8042 command/data ports.
+        unsafe { fstart_core::pio::outb(data_port, value) };
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        unsafe { Self::kbc_wait_input_empty(command_port) }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn kbc_send_keyboard(data_port: u16, status_port: u16, command: u8) -> Option<u8> {
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        if !unsafe { Self::kbc_wait_input_empty(status_port) } {
+            return None;
+        }
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        unsafe { fstart_core::pio::outb(data_port, command) };
+        // SAFETY: caller selected decoded i8042 data/status ports.
+        if !unsafe { Self::kbc_wait_output_full(status_port) } {
+            return None;
+        }
+        // SAFETY: output buffer is full; reading consumes the keyboard response.
+        Some(unsafe { fstart_core::pio::inb(data_port) })
+    }
+
+    /// Program the mouse LDN (IRQ only).
+    ///
+    /// IT8721F exposes PS/2 mouse as its own LDN 0x06, and coreboot's
+    /// D41S config programs IRQ register 0x70 on that LDN.
+    fn program_mouse(&self, ldn: u8, cfg: &MouseConfig) {
+        self.select_ldn(ldn);
+        self.write_reg(SIO_REG_IRQ, cfg.irq);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
+    }
+
+    /// Program a simple single-base LDN (parallel, CIR).
+    fn program_simple(&self, ldn: u8, io_base: u16, irq: u8) {
+        self.select_ldn(ldn);
+        self.write_reg(SIO_REG_IO_BASE_HI, (io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE_LO, (io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_IRQ, irq);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
+    }
+
+    /// Program the GPIO LDN (io_base, no IRQ).
+    fn program_gpio(&self, ldn: u8, cfg: &GpioConfig) {
+        self.select_ldn(ldn);
+        self.write_reg(SIO_REG_IO_BASE2_HI, (cfg.io_base >> 8) as u8);
+        self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_base & 0xFF) as u8);
+        self.write_reg(SIO_REG_ENABLE, 0x01);
+    }
+}
+
+impl<C: SuperIoChip> SuperIo<C> {
+    /// Construct a SuperIO at a fixed LPC PnP config port.
+    pub fn new_at_base(config: SuperIoConfig, base_port: u16) -> Result<Self, DeviceError> {
+        if base_port == 0 {
+            return Err(DeviceError::MissingResource("lpc_base"));
+        }
+        Ok(Self {
+            base_port,
+            config,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BusDevice impl — constructed by the parent LPC bus
+// ---------------------------------------------------------------------------
+
+/// The parent bus type for SuperIO. Any driver providing an LPC bus
+/// service with a `base_port(...)` getter can serve as the parent.
+///
+/// For the initial implementation we use `()` as the bus type and
+/// require the caller to pass the base port in a different way; a
+/// future revision will tie this to the `LpcBus` trait once its
+/// concrete shape is settled. For now, `new_on_bus` takes the base
+/// port directly encoded in the parent reference.
+pub trait LpcBaseProvider {
+    /// Return the LPC config index port for this child.
+    fn lpc_base(&self) -> u16;
+}
+
+impl<C: SuperIoChip> BusDevice for SuperIo<C> {
+    const NAME: &'static str = "superio";
+    const COMPATIBLE: &'static [&'static str] = &[];
+    type Config = SuperIoConfig;
+    type Bus = dyn LpcBaseProvider;
+
+    fn new_on_bus(config: Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError> {
+        Self::new_on_bus_at(config, bus, None)
+    }
+
+    fn new_on_bus_at(
+        config: Self::Config,
+        bus: &Self::Bus,
+        address: Option<BusAddress>,
+    ) -> Result<Self, DeviceError> {
+        let base_port = match address {
+            Some(BusAddress::Lpc(port)) => port,
+            Some(_) => return Err(DeviceError::MissingResource("lpc_address")),
+            None => bus.lpc_base(),
+        };
+        Self::new_at_base(config, base_port)
+    }
+
+    fn init_on_bus(&mut self, _bus: &mut Self::Bus) -> Result<(), DeviceError> {
+        self.init()
+    }
+
+    fn init(&mut self) -> Result<(), DeviceError> {
+        self.enter_config();
+
+        // Chip ID sanity check.  A CHIP_ID of 0 means the board uses a fixed
+        // PnP resource where the chip ID registers are not reliable/available.
+        let id = self.read_chip_id();
+        if C::CHIP_ID != 0 && id != C::CHIP_ID {
+            self.exit_config();
+            fstart_log::error!("superio: chip ID mismatch: read {:#06x}", id);
+            return Err(DeviceError::InitFailed);
+        }
+
+        C::chip_init(self.base_port);
+
+        // Program each enabled function.  If the board requests a
+        // function that the chip doesn't support (LDN is None), fail
+        // so the misconfiguration is caught at boot, not later.
+        if let Some(cfg) = self.config.com1 {
+            if let Some(ldn) = C::COM1_LDN {
+                self.program_com(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: com1 requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
+        }
+        if let Some(cfg) = self.config.com2 {
+            if let Some(ldn) = C::COM2_LDN {
+                self.program_com(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: com2 requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
+        }
+        if let Some(cfg) = self.config.keyboard {
+            if let Some(ldn) = C::KBC_LDN {
+                self.program_kbc(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: keyboard requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
+        }
+        if let Some(cfg) = self.config.mouse {
+            if let Some(ldn) = C::MOUSE_LDN {
+                self.program_mouse(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: mouse requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
+        }
+        if let Some(cfg) = self.config.env_controller {
+            if let Some(ldn) = C::EC_LDN {
+                self.program_ec(ldn, &cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: env_controller requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
+        }
+        if let Some(cfg) = self.config.parallel {
+            if let Some(ldn) = C::PARALLEL_LDN {
+                self.program_simple(ldn, cfg.io_base, cfg.irq);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: parallel requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
+        }
+        if let Some(cfg) = self.config.cir {
+            if let Some(ldn) = C::CIR_LDN {
+                self.program_simple(ldn, cfg.io_base, cfg.irq);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: cir requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
+        }
+        if let Some(ref cfg) = self.config.gpio {
+            if let Some(ldn) = C::GPIO_LDN {
+                self.program_gpio(ldn, cfg);
+            } else {
+                self.exit_config();
+                fstart_log::error!("superio: gpio requested but chip has no LDN");
+                return Err(DeviceError::MissingResource("unsupported LDN"));
+            }
+        }
+
+        self.exit_config();
+
+        // If a console port is configured, initialize the 16550
+        // registers (divisor latch, 8N1, FIFO enable) so the
+        // SuperIO can serve as a Console without a separate NS16550
+        // child device.
+        if let Some(com) = self.console_com() {
+            uart_init(com.io_base, com.baud_rate);
+        }
+
+        Ok(())
+    }
+}
+
+impl<C: SuperIoChip> SuperIo<C> {
+    /// Resolve the console COM port config from the `console_port` field.
+    fn console_com(&self) -> Option<ComPortConfig> {
+        let port = self.config.console_port.as_deref()?;
+        match port {
+            "com1" => self.config.com1,
+            "com2" => self.config.com2,
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Console implementation — 16550 register access via PIO
+// ---------------------------------------------------------------------------
+
+// 16550 register indices (byte offset from io_base).
+const UART_THR: u16 = 0; // Transmit Holding / Receive Buffer / Divisor Low
+const UART_IER: u16 = 1; // Interrupt Enable / Divisor High
+const UART_FCR: u16 = 2; // FIFO Control (write-only)
+const UART_LCR: u16 = 3; // Line Control
+const UART_MCR: u16 = 4; // Modem Control
+const UART_LSR: u16 = 5; // Line Status
+
+/// LSR bit: Transmitter Holding Register Empty.
+const LSR_THRE: u8 = 1 << 5;
+/// LSR bit: Data Ready.
+const LSR_DR: u8 = 1 << 0;
+/// LCR bit: Divisor Latch Access Bit.
+const LCR_DLAB: u8 = 1 << 7;
+
+/// Standard ISA UART input clock (1.8432 MHz).
+const ISA_UART_CLOCK: u32 = 1_843_200;
+/// Conservative transmit wait bound, matching coreboot's 8250 I/O driver.
+const UART_SINGLE_CHAR_TIMEOUT: u32 = 50_000;
+
+/// Initialize a 16550 UART at `io_base` to 8N1 at the given baud rate.
+///
+/// Matches coreboot's 8250 I/O init path: do not wait for TEMT before
+/// programming the UART.  A disabled or not-yet-decoded SuperIO UART may
+/// report LSR=0, and an unbounded pre-init wait would hang before the first
+/// console byte is possible.
+fn uart_init(io_base: u16, baud_rate: u32) {
+    let baud = if baud_rate == 0 { 115_200 } else { baud_rate };
+    let divisor = (ISA_UART_CLOCK + baud * 8) / (baud * 16);
+
+    // SAFETY: io_base comes from the board metadata config.
+    unsafe {
+        // Disable interrupts.
+        fstart_core::pio::outb(io_base + UART_IER, 0);
+        // Enable FIFO and clear both FIFOs.
+        fstart_core::pio::outb(io_base + UART_FCR, 0x07);
+        // Assert DTR + RTS + OUT2. OUT2 gates the 16550 interrupt output on
+        // PC-compatible SuperIO UARTs; leaving it low can produce confused
+        // legacy IRQ behaviour once Linux switches from earlycon to 8250.
+        fstart_core::pio::outb(io_base + UART_MCR, 0x0b);
+        // Set baud via divisor latch, with 8N1 selected.
+        fstart_core::pio::outb(io_base + UART_LCR, LCR_DLAB | 0x03);
+        fstart_core::pio::outb(io_base + UART_THR, divisor as u8);
+        fstart_core::pio::outb(io_base + UART_IER, (divisor >> 8) as u8);
+        fstart_core::pio::outb(io_base + UART_LCR, 0x03);
+    }
+}
+
+impl<C: SuperIoChip> fstart_core::services::Console for SuperIo<C> {
+    fn write_byte(&self, byte: u8) -> Result<(), fstart_core::services::ServiceError> {
+        let com = match self.console_com() {
+            Some(c) => c,
+            None => return Err(fstart_core::services::ServiceError::NotSupported),
+        };
+        // SAFETY: io_base from board config.
+        unsafe {
+            let mut timeout = UART_SINGLE_CHAR_TIMEOUT;
+            while timeout != 0 && fstart_core::pio::inb(com.io_base + UART_LSR) & LSR_THRE == 0 {
+                timeout -= 1;
+                core::hint::spin_loop();
+            }
+            fstart_core::pio::outb(com.io_base + UART_THR, byte);
+        }
+        Ok(())
+    }
+
+    fn read_byte(&self) -> Result<Option<u8>, fstart_core::services::ServiceError> {
+        let com = match self.console_com() {
+            Some(c) => c,
+            None => return Err(fstart_core::services::ServiceError::NotSupported),
+        };
+        // SAFETY: io_base from board config.
+        unsafe {
+            if fstart_core::pio::inb(com.io_base + UART_LSR) & LSR_DR != 0 {
+                Ok(Some(fstart_core::pio::inb(com.io_base + UART_THR)))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ACPI device generation — one DSDT node per enabled logical device
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "acpi")]
+mod acpi_impl {
+    extern crate alloc;
+    use alloc::vec::Vec;
+    use fstart_acpi::device::AcpiDevice;
+
+    use super::*;
+
+    // PNP ACPI HIDs for standard SuperIO logical devices.
+    const HID_COM: &str = "PNP0501"; // 16550A-compatible COM port
+    const HID_KBC: &str = "PNP0303"; // IBM enhanced keyboard (101/102-key)
+    const HID_MOUSE: &str = "PNP0F13"; // PS/2 port for PS/2-style mice
+    const HID_LPT: &str = "PNP0400"; // Standard LPT parallel port
+    const HID_EC: &str = "PNP0C02"; // SuperIO environment-controller resources
+
+    fn emit_named<const N: usize, const K: usize>(
+        fragment: &fstart_acpi::BoundAmlFragment<N, K>,
+        name: &str,
+        irq: Option<u8>,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        fragment
+            .emit(&mut bytes)
+            .expect("required Super I/O AML operands are invalid");
+        assert!(
+            name.len() <= 4
+                && fstart_acpi::aml_linker::AmlPath::new(name).is_ok()
+                && !name.contains(['\\', '^', '.']),
+            "invalid Super I/O device NameSeg"
+        );
+        let name_offset = 3 + usize::from(bytes[2] >> 6);
+        assert_eq!(&bytes[name_offset..name_offset + 4], b"____");
+        bytes[name_offset..name_offset + 4].fill(b'_');
+        bytes[name_offset..name_offset + name.len()].copy_from_slice(name.as_bytes());
+        if let Some(irq) = irq {
+            assert!(irq < 16, "Super I/O ISA IRQ exceeds 15");
+            let descriptor = bytes
+                .windows(3)
+                .position(|window| window == [0x22, 0x01, 0x00])
+                .expect("Super I/O IRQ descriptor missing");
+            bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
+        }
+        bytes
+    }
+
+    /// Emit an IO resource descriptor for the given port/size, plus an
+    /// optional IRQ descriptor.
+    fn ldn_device(
+        name: &str,
+        hid: &str,
+        uid: u32,
+        io_base: u16,
+        io_size: u16,
+        irq: Option<u8>,
+    ) -> Vec<u8> {
+        let uid = u64::from(uid);
+        let io_base = u64::from(io_base);
+        let io_size = u64::from(io_size);
+        let hid = u64::from(fstart_acpi::eisa_id(hid));
+        if irq.is_some() {
+            let fragment = fstart_acpi_macros::acpi_dsl! {
+                Device("____") {
+                    Name("_HID", #{dword hid});
+                    Name("_UID", #{dword uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{word io_base}, #{word io_base}, 0x01u8, #{byte io_size});
+                        IRQNoFlags(0u8);
+                    });
+                }
+            };
+            emit_named(&fragment, name, irq)
+        } else {
+            let fragment = fstart_acpi_macros::acpi_dsl! {
+                Device("____") {
+                    Name("_HID", #{dword hid});
+                    Name("_UID", #{dword uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{word io_base}, #{word io_base}, 0x01u8, #{byte io_size});
+                    });
+                }
+            };
+            emit_named(&fragment, name, None)
+        }
+    }
+
+    fn emit<const N: usize, const K: usize>(
+        fragment: &fstart_acpi::BoundAmlFragment<N, K>,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        fragment
+            .emit(&mut bytes)
+            .expect("required Super I/O AML operands are invalid");
+        bytes
+    }
+
+    /// KBC needs two I/O ranges (0x60 and 0x64).
+    fn kbc_device(cfg: &KbcConfig) -> Vec<u8> {
+        let base1 = u64::from(cfg.io_base);
+        let base2 = u64::from(cfg.io_ext);
+        let irq = u64::from(cfg.irq);
+        let mut bytes = emit(&fstart_acpi_macros::acpi_dsl! {
+            Device("PS2K") {
+                Name("_HID", EisaId("PNP0303"));
+                Name("_CID", EisaId("PNP030B"));
+                Name("_UID", 0u32);
+                Name("_CRS", ResourceTemplate {
+                    IO(#{word base1}, #{word base1}, 0x01u8, 0x01u8);
+                    IO(#{word base2}, #{word base2}, 0x01u8, 0x01u8);
+                    IRQ(Edge, ActiveHigh, Exclusive, 0u8);
+                });
+                Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+            }
+        });
+        let descriptor = bytes
+            .windows(4)
+            .position(|w| w[0..3] == [0x23, 1, 0])
+            .unwrap();
+        bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
+        bytes
+    }
+
+    /// Mouse shares KBC ports but has its own IRQ.
+    fn mouse_device(_kbc: &KbcConfig, mouse: &MouseConfig) -> Vec<u8> {
+        let irq = u64::from(mouse.irq);
+        let fragment = fstart_acpi_macros::acpi_dsl! {
+            Device("PS2M") {
+                Name("_HID", EisaId("PNP0F13"));
+                Name("_UID", 0u32);
+                Name("_CRS", ResourceTemplate {
+                    IRQ(Edge, ActiveHigh, Exclusive, 0u8);
+                });
+                Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+            }
+        };
+        let mut bytes = fragment.as_bytes().to_vec();
+        let descriptor = bytes
+            .windows(4)
+            .position(|w| w[0..3] == [0x23, 1, 0])
+            .unwrap();
+        bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
+        bytes
+    }
+
+    /// Environment controller resources.
+    fn ec_device(cfg: &EcConfig) -> Vec<u8> {
+        let base1 = u64::from(cfg.io_base);
+        let base2 = u64::from(cfg.io_ext);
+        emit(&fstart_acpi_macros::acpi_dsl! {
+            Device("EC00") {
+                Name("_HID", EisaId("PNP0C02"));
+                Name("_UID", 0u32);
+                Name("_CRS", ResourceTemplate {
+                    IO(#{word base1}, #{word base1}, 0x01u8, 0x08u8);
+                    IO(#{word base2}, #{word base2}, 0x01u8, 0x04u8);
+                });
+            }
+        })
+    }
+
+    /// Produce unscoped DSDT AML for all enabled SuperIO logical devices.
+    pub fn superio_dsdt_aml(config: &SuperIoConfig) -> Vec<u8> {
+        let mut aml = Vec::new();
+
+        if let Some(ref com) = config.com1 {
+            aml.extend(ldn_device(
+                "COM1",
+                HID_COM,
+                0,
+                com.io_base,
+                8,
+                Some(com.irq),
+            ));
+        }
+        if let Some(ref com) = config.com2 {
+            aml.extend(ldn_device(
+                "COM2",
+                HID_COM,
+                1,
+                com.io_base,
+                8,
+                Some(com.irq),
+            ));
+        }
+        if let Some(ref kbc) = config.keyboard {
+            aml.extend(kbc_device(kbc));
+        }
+        if let (Some(kbc), Some(mouse)) = (&config.keyboard, &config.mouse) {
+            aml.extend(mouse_device(kbc, mouse));
+        }
+        if let Some(ref pp) = config.parallel {
+            aml.extend(ldn_device("LPT0", HID_LPT, 0, pp.io_base, 8, Some(pp.irq)));
+        }
+        if let Some(ref ec) = config.env_controller {
+            aml.extend(ec_device(ec));
+        }
+        if let Some(ref cir) = config.cir {
+            aml.extend(ldn_device(
+                "CIR0",
+                "PNP0510",
+                0,
+                cir.io_base,
+                8,
+                Some(cir.irq),
+            ));
+        }
+
+        aml
+    }
+
+    impl<C: SuperIoChip> AcpiDevice for SuperIo<C> {
+        type Config = SuperIoConfig;
+
+        /// Produce DSDT AML for all enabled SuperIO logical devices.
+        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
+            superio_dsdt_aml(config)
+        }
+    }
+}
+
+#[cfg(feature = "acpi")]
+pub use acpi_impl::superio_dsdt_aml;

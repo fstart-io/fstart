@@ -1,0 +1,27 @@
+[package]
+name = "fstart-board-sifive-unmatched"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "sifive-unmatched"
+platform = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
+
+[dependencies]
+fstart-core = { path = "../../../crates/core" }
+fstart-arch = { path = "../../../crates/arch", features = ["riscv64"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
+fstart-log = { path = "../../../crates/log" }
+fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
+serde = { workspace = true }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

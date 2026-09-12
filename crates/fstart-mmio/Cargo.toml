@@ -1,8 +1,0 @@
-[package]
-name = "fstart-mmio"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-tock-registers = "0.10"
