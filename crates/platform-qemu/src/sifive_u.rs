@@ -6,9 +6,18 @@
 use serde::{Deserialize, Serialize};
 
 pub const QEMU_SIFIVE_U_FFS_BASE: u64 = 0x8000_0000;
-pub const QEMU_SIFIVE_U_FFS_SIZE: u64 = 0x1000_0000;
+// Reservation for the memory-mapped boot image. This is a policy window,
+// not the image size (mount uses the anchor's actual size). It must cover
+// the largest packed image across payload selections while leaving the
+// hardware-convention payload addresses (firmware 0x83000000, kernel
+// 0x84000000, FDT workspace 0x90000000) outside it: loads into reserved
+// windows are rejected by the boot policy.
+pub const QEMU_SIFIVE_U_FFS_SIZE: u64 = 0x100_0000;
 pub const QEMU_SIFIVE_U_RAM_SIZE: u64 = 0x4000_0000;
-pub const QEMU_SIFIVE_U_DTB_ADDR: u64 = 0x8f00_0000;
+// FDT workspace must sit outside the reserved firmware window
+// ([FFS_BASE, FFS_BASE + FFS_SIZE)) or workspace registration rejects it.
+// 0x90000000 follows the 256 MiB firmware window inside DTB-discovered RAM.
+pub const QEMU_SIFIVE_U_DTB_ADDR: u64 = 0x9000_0000;
 pub const QEMU_SIFIVE_U_KERNEL_ADDR: u64 = 0x8400_0000;
 pub const QEMU_SIFIVE_U_FIRMWARE_ADDR: u64 = 0x8300_0000;
 pub const QEMU_SIFIVE_U_BOOTARGS: &str = "console=ttySIF0 earlycon=sbi";
