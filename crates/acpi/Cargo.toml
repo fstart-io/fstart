@@ -15,5 +15,6 @@ acpi_tables = "0.2"
 fstart-core = { path = "../core" }
 fstart-acpi-macros = { path = "../acpi-macros" }
 tock-registers = { workspace = true }
+zerocopy = { workspace = true }
 
 [dev-dependencies]
