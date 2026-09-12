@@ -47,18 +47,31 @@ pub(super) fn runtime_platform_config() -> RuntimePlatformConfig<'static> {
     }
 }
 
-/// Reserve initialized image/rodata, copied data, and BSS/heap/stack. These are
-/// boot-firmware reservations, not runtime code/data. CrabEFI allocates and
-/// describes the separate runtime image itself.
-pub(super) fn firmware_reservations() -> [MemoryRegion; 3] {
+/// Reserve initialized image/rodata, copied data, BSS, heap, and stack as
+/// separate regions. These are boot-firmware reservations, not runtime
+/// code/data. CrabEFI allocates and describes the separate runtime image
+/// itself.
+///
+/// Each live area is reserved individually: merging them into one span (e.g.
+/// BSS start through stack top) would swallow the idle RAM between heap and
+/// stack and starve UEFI loaders (GRUB aborts when it cannot satisfy its
+/// allocations below 4 GiB).
+pub(super) fn firmware_reservations() -> [MemoryRegion; 5] {
     unsafe extern "C" {
         static _text_start: u8;
         static _binary_end: u8;
         static _data_start: u8;
         static _data_end: u8;
         static _bss_start: u8;
-        static _writable_end: u8;
+        static _bss_end: u8;
+        static _FSTART_HEAP: u8;
+        static _FSTART_HEAP_SIZE: usize;
+        static _stack_bottom: u8;
+        static _stack_top: u8;
     }
+    let heap_base = core::ptr::addr_of!(_FSTART_HEAP) as u64;
+    // SAFETY: linker-emitted pointer-sized constant holding the heap size.
+    let heap_size = unsafe { core::ptr::read(core::ptr::addr_of!(_FSTART_HEAP_SIZE)) } as u64;
     regions_from_bounds([
         (
             core::ptr::addr_of!(_text_start) as u64,
@@ -70,14 +83,19 @@ pub(super) fn firmware_reservations() -> [MemoryRegion; 3] {
         ),
         (
             core::ptr::addr_of!(_bss_start) as u64,
-            core::ptr::addr_of!(_writable_end) as u64,
+            core::ptr::addr_of!(_bss_end) as u64,
+        ),
+        (heap_base, heap_base.saturating_add(heap_size)),
+        (
+            core::ptr::addr_of!(_stack_bottom) as u64,
+            core::ptr::addr_of!(_stack_top) as u64,
         ),
     ])
 }
 
-fn regions_from_bounds(mut bounds: [(u64, u64); 3]) -> [MemoryRegion; 3] {
+fn regions_from_bounds<const N: usize>(mut bounds: [(u64, u64); N]) -> [MemoryRegion; N] {
     bounds.sort_unstable_by_key(|&(base, _)| base);
-    let mut regions = [EMPTY_REGION; 3];
+    let mut regions = [EMPTY_REGION; N];
     let mut count = 0;
     for (start, end) in bounds {
         assert!(end >= start, "reversed firmware memory bounds");
