@@ -92,6 +92,35 @@ pub(crate) fn mounted_image() -> fstart_core::layout::Region {
     }
 }
 
+/// Static-RAM boot setup for machines whose boot ABI supplies no DTB.
+///
+/// QEMU sbsa-ref entered from TF-A BL31 receives x0 == 0: the secure world
+/// keeps its HW_CONFIG DTB and the non-secure ABI carries no DTB pointer.
+/// RAM geometry there is architectural (already in the board's closed
+/// config), so the whole DTB discovery phase is skipped and the fixed RAM
+/// window feeds the authenticated-load policy directly.
+#[cfg(any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) fn from_static_ram(
+    ram_base: u64,
+    ram_size: u64,
+    firmware_base: u64,
+    firmware_size: u64,
+) -> Result<(), ServiceError> {
+    if ram_base == 0 || ram_size == 0 || ram_base.checked_add(ram_size).is_none() {
+        return Err(ServiceError::InvalidParam);
+    }
+    install_image(
+        &[MemoryWindow {
+            start: ram_base,
+            size: ram_size,
+        }],
+        &[],
+        firmware_base,
+        firmware_size,
+        false,
+    )
+}
+
 /// QEMU's supplied DTB is machine configuration, not updatable FFS content.
 /// Reject unsupported dynamic reserved-memory allocations rather than treating
 /// them as free RAM. Bound the initial pointer read by the platform boot ABI.

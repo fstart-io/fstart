@@ -125,18 +125,27 @@ mod stage {
             }
             unsafe { fstart_log::init(&mainstage.console) };
             fstart_log::info!("qemu-sbsa: pl011 console ready");
-            if crate::boot::from_dtb(
-                fstart_arch::aarch64::boot_dtb_addr(),
-                None,
-                B::CONFIG.ram_base,
-                super::QEMU_SBSA_FLASH_BASE + super::QEMU_SBSA_FFS_OFFSET,
-                super::QEMU_SBSA_FLASH_SIZE - super::QEMU_SBSA_FFS_OFFSET,
-            )
-            .is_err()
-            {
-                fstart_log::error!(
-                    "qemu-sbsa: boot integrity requires a supported RAM discovery DTB"
-                );
+            // TF-A hands BL33 x0 == 0 (no DTB crosses the secure boundary),
+            // so RAM comes from the closed board config, not DTB discovery.
+            let dtb_addr = fstart_arch::aarch64::boot_dtb_addr();
+            let boot = if dtb_addr == 0 {
+                crate::boot::from_static_ram(
+                    B::CONFIG.ram_base,
+                    B::CONFIG.ram_size,
+                    super::QEMU_SBSA_FLASH_BASE + super::QEMU_SBSA_FFS_OFFSET,
+                    super::QEMU_SBSA_FLASH_SIZE - super::QEMU_SBSA_FFS_OFFSET,
+                )
+            } else {
+                crate::boot::from_dtb(
+                    dtb_addr,
+                    None,
+                    B::CONFIG.ram_base,
+                    super::QEMU_SBSA_FLASH_BASE + super::QEMU_SBSA_FFS_OFFSET,
+                    super::QEMU_SBSA_FLASH_SIZE - super::QEMU_SBSA_FFS_OFFSET,
+                )
+            };
+            if boot.is_err() {
+                fstart_log::error!("qemu-sbsa: boot integrity setup failed");
                 fstart_arch::halt();
             }
             if mainstage.init_pci().is_err() {
