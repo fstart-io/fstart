@@ -313,7 +313,9 @@ impl OutputPipeline {
 /// Reject legacy-GMCH ports outside the currently hardware-enabled board scope.
 pub(crate) const fn validate_current_board_port(cpu: Cpu, port: Port) -> Result<(), GmaError> {
     match (cpu, port) {
-        (Cpu::Pineview, Port::Vga)
+        (Cpu::I945G, Port::Vga)
+        | (Cpu::I945GM | Cpu::PineviewM, Port::Lvds | Port::Vga)
+        | (Cpu::Pineview, Port::Vga)
         | (Cpu::Gm965, Port::Lvds | Port::Vga)
         | (
             Cpu::G45 | Cpu::Gm45,
@@ -451,9 +453,12 @@ pub(crate) const fn lvds_disable_op() -> PortRegisterOp {
 }
 
 /// Return the plane address model for the implemented legacy GMCH CPUs.
+///
+/// Gen3 (i945/Pineview) uses the pre-i965 `DSPADDR` model; i965+ uses
+/// `DSPSURF` with optional offset registers.
 pub(crate) const fn legacy_plane_address_model(cpu: Cpu) -> PlaneAddressModel {
     match cpu {
-        Cpu::Pineview => PlaneAddressModel::Address,
+        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM => PlaneAddressModel::Address,
         _ => PlaneAddressModel::Surface,
     }
 }

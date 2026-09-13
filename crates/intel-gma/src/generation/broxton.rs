@@ -31,7 +31,7 @@ impl GenerationOps for Broxton {
     fn init_display(ctx: &mut crate::GmaContext<'_>, mode: Mode) -> Result<(), GmaError> {
         map_gtt(ctx)?;
         // SAFETY: the selected surface is backed by the just-programmed GTT mapping.
-        unsafe { ctx.surface.fill_bringup_pattern()? };
+        unsafe { ctx.surface.fill_opaque_black()? };
         let port = selected_port(ctx)?;
         let kind = if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC) {
             BxtDisplayKind::Hdmi
@@ -57,7 +57,7 @@ fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
 }
 
 fn map_gtt(ctx: &crate::GmaContext<'_>) -> Result<(), GmaError> {
-    gtt::map_surface_to_stolen(ctx.resources, &ctx.surface)?;
+    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
     gtt::flush_gfx(&ctx.mmio());
     Ok(())
 }
@@ -170,9 +170,9 @@ const PORT_PLL_0_M2_INT_MASK: u32 = BXT_PORT_PLL0::M2_INT.val(0xff).value;
 const PORT_PLL_1_N_MASK: u32 = BXT_PORT_PLL1::N.val(0x0f).value;
 const PORT_PLL_2_M2_FRAC_MASK: u32 = BXT_PORT_PLL2::M2_FRAC.val(0x003f_ffff).value;
 const PORT_PLL_3_M2_FRAC_EN_MASK: u32 = BXT_PORT_PLL3::M2_FRAC_ENABLE::SET.value;
-const PORT_PLL_6_GAIN_MASK: u32 = BXT_PORT_PLL6::PROP_COEFF.val(0x07).value
+const PORT_PLL_6_GAIN_MASK: u32 = BXT_PORT_PLL6::GAIN_CTL.val(0x07).value
     | BXT_PORT_PLL6::INT_COEFF.val(0x1f).value
-    | BXT_PORT_PLL6::GAIN_COEFF.val(0x0f).value;
+    | BXT_PORT_PLL6::PROP_COEFF.val(0x0f).value;
 const PORT_PLL_8_TARGET_CNT_MASK: u32 = BXT_PORT_PLL8::TARGET_CNT.val(0x3ff).value;
 const PORT_PLL_9_LOCK_THRESHOLD_MASK: u32 = BXT_PORT_PLL9::LOCK_THRESHOLD.val(0x07).value;
 const PORT_PLL_10_DCO_AMP_MASK: u32 = BXT_PORT_PLL10::DCO_AMP.val(0x0f).value;
@@ -444,10 +444,12 @@ const fn gain_coeff(vco_hz: u64) -> u32 {
     }
 }
 
-const fn bxt_pll6_gain_coeff(prop: u32, int: u32, gain: u32) -> u32 {
-    BXT_PORT_PLL6::PROP_COEFF.val(prop).value
+/// libgfxinit `PORT_PLL_6_GAIN_COEFF`: gain control in bits 18:16, integral
+/// coefficient in 11:8 and proportional coefficient in 3:0.
+const fn bxt_pll6_gain_coeff(gain: u32, int: u32, prop: u32) -> u32 {
+    BXT_PORT_PLL6::GAIN_CTL.val(gain).value
         | BXT_PORT_PLL6::INT_COEFF.val(int).value
-        | BXT_PORT_PLL6::GAIN_COEFF.val(gain).value
+        | BXT_PORT_PLL6::PROP_COEFF.val(prop).value
 }
 
 const fn lane_stagger(dotclock_hz: u64) -> u32 {

@@ -410,8 +410,11 @@ pub const fn panel_power_control_plan(regs: PanelPowerRegs) -> PanelPowerControl
 /// Backlight PWM register layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BacklightRegisterModel {
-    /// Legacy CPU/PCH split PWM control.
-    Legacy { cpu_ctl: usize, pch_ctl2: usize },
+    /// Legacy split PWM control: `duty_ctl` holds the low-16-bit duty cycle,
+    /// `freq_ctl` the modulation frequency. On GMCH (i965/G45) these are
+    /// `BLC_PWM_CTL` (0x61254) and `BLC_PWM_CTL2` (0x61250); on PCH-era parts
+    /// they are the CPU-side `BLC_PWM_CPU_CTL` and `BLC_PWM_PCH_CTL2`.
+    Legacy { duty_ctl: usize, freq_ctl: usize },
     /// Newer Broxton-style PWM control/frequency/duty registers.
     New {
         ctl: usize,
@@ -423,8 +426,8 @@ pub enum BacklightRegisterModel {
 /// Build a libgfxinit-style backlight duty operation.
 pub const fn set_backlight_op(model: BacklightRegisterModel, level: u32) -> PanelRegisterOp {
     match model {
-        BacklightRegisterModel::Legacy { cpu_ctl, .. } => PanelRegisterOp::Update {
-            register: cpu_ctl,
+        BacklightRegisterModel::Legacy { duty_ctl, .. } => PanelRegisterOp::Update {
+            register: duty_ctl,
             mask_unset: CPU_BLC_PWM_DATA_BL_DUTY_CYC_MASK,
             mask_set: level & CPU_BLC_PWM_DATA_BL_DUTY_CYC_MASK,
         },
@@ -432,6 +435,20 @@ pub const fn set_backlight_op(model: BacklightRegisterModel, level: u32) -> Pane
             register: duty,
             value: level,
         },
+    }
+}
+
+/// Build the i945/Pineview backlight duty operation.
+///
+/// GNU/Linux `i9xx_set_backlight` uses bits 15:1 with a `0xfffe` mask on these
+/// parts (`BACKLIGHT_DUTY_CYCLE_MASK_PNV`), unlike the bit-0 16-bit field on
+/// i965/G45.
+pub const fn set_pnv_backlight_op(duty_ctl: usize, level: u32) -> PanelRegisterOp {
+    const PNV_DUTY_MASK: u32 = 0xfffe;
+    PanelRegisterOp::Update {
+        register: duty_ctl,
+        mask_unset: PNV_DUTY_MASK,
+        mask_set: (level << 1) & PNV_DUTY_MASK,
     }
 }
 
@@ -595,8 +612,8 @@ mod tests {
         assert_eq!(
             set_backlight_op(
                 BacklightRegisterModel::Legacy {
-                    cpu_ctl: 0x48254,
-                    pch_ctl2: 0xc8254,
+                    duty_ctl: 0x48254,
+                    freq_ctl: 0xc8254,
                 },
                 0x1_2345,
             ),
@@ -627,8 +644,8 @@ mod tests {
         );
         assert_eq!(
             backlight_pwm_disable_op(BacklightRegisterModel::Legacy {
-                cpu_ctl: 1,
-                pch_ctl2: 2
+                duty_ctl: 1,
+                freq_ctl: 2
             }),
             None
         );

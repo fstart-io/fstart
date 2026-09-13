@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 /// Intel display generation family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Generation {
-    /// i9xx-style display block, used by Pineview in this crate.
-    I9xx,
+    /// Gen3 i945 display block, also used by Pineview.
+    I945,
     /// G45-family display block, also used for GM965/Crestline bring-up.
     G45,
     /// Ironlake/Sandybridge/Ivybridge display family.
@@ -24,14 +24,20 @@ pub enum Generation {
 /// Intel CPU/platform identifier for display init dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Cpu {
+    /// 945G desktop chipset.
+    I945G,
+    /// 945GM mobile chipset.
+    I945GM,
     /// GM965/Crestline mobile chipset.
     Gm965,
     /// G45 desktop chipset.
     G45,
     /// GM45 mobile chipset.
     Gm45,
-    /// Pineview Atom integrated northbridge.
+    /// Pineview Atom integrated northbridge (desktop).
     Pineview,
+    /// Pineview-M Atom integrated northbridge (mobile, LVDS).
+    PineviewM,
     /// Ironlake platform.
     Ironlake,
     /// Sandybridge platform.

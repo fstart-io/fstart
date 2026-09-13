@@ -71,6 +71,24 @@ pub(crate) const fn legacy_gmch_detect_state(
     dpc: u32,
     dpd: u32,
 ) -> LegacyPortDetectState {
+    // Gen3 (i945/i945GM/Pineview) exposes VGA and, on mobile parts only, LVDS;
+    // there are no digital ports (libgfxinit `common/i945/port_detect.adb`).
+    if matches!(
+        cpu,
+        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM
+    ) {
+        let mut state = LegacyPortDetectState {
+            valid_ports: [None; 8],
+            valid_len: 0,
+            hotplug_enable: CRT_HOTPLUG_INT_EN | CRT_HOTPLUG_ACTIVATION_PERIOD_64,
+        }
+        .push(Port::Vga);
+        if matches!(cpu, Cpu::I945GM | Cpu::PineviewM) {
+            state = state.push(Port::Lvds);
+        }
+        return state;
+    }
+
     let mut state = LegacyPortDetectState {
         valid_ports: [None; 8],
         valid_len: 0,
@@ -80,6 +98,10 @@ pub(crate) const fn legacy_gmch_detect_state(
 
     if matches!(cpu, Cpu::Gm965 | Cpu::Gm45) {
         state = state.push(Port::Lvds);
+    }
+    // libgfxinit skips all digital port probing on GM965 (`if not GMCH_GM965`).
+    if matches!(cpu, Cpu::Gm965) {
+        return state;
     }
     if (hdmib & PORT_DETECTED) != 0 {
         state = state.push(Port::HdmiA);
@@ -164,6 +186,48 @@ mod tests {
         assert!(state.is_valid(Port::Vga));
         assert!(state.is_valid(Port::Lvds));
         assert!(!state.is_valid(Port::HdmiA));
+        assert_eq!(
+            state.hotplug_enable,
+            CRT_HOTPLUG_INT_EN | CRT_HOTPLUG_ACTIVATION_PERIOD_64
+        );
+    }
+
+    #[test]
+    fn gen3_detects_vga_and_only_mobile_lvds() {
+        let i945g = legacy_gmch_detect_state(Cpu::I945G, 0, 0, 0, 0, 0);
+        assert!(i945g.is_valid(Port::Vga));
+        assert!(!i945g.is_valid(Port::Lvds));
+        assert!(!i945g.is_valid(Port::HdmiA));
+
+        for mobile in [Cpu::I945GM, Cpu::PineviewM] {
+            let state = legacy_gmch_detect_state(mobile, 0, 0, 0, 0, 0);
+            assert!(state.is_valid(Port::Vga));
+            assert!(state.is_valid(Port::Lvds));
+            assert_eq!(
+                state.hotplug_enable,
+                CRT_HOTPLUG_INT_EN | CRT_HOTPLUG_ACTIVATION_PERIOD_64
+            );
+        }
+
+        let pineview = legacy_gmch_detect_state(Cpu::Pineview, 0, 0, 0, 0, 0);
+        assert!(!pineview.is_valid(Port::Lvds));
+    }
+
+    #[test]
+    fn gm965_never_probes_digital_ports() {
+        // Even with every digital detect bit set, GM965 exposes only VGA/LVDS.
+        let state = legacy_gmch_detect_state(
+            Cpu::Gm965,
+            PORT_DETECTED,
+            PORT_DETECTED,
+            PORT_DETECTED,
+            PORT_DETECTED,
+            PORT_DETECTED,
+        );
+        assert!(state.is_valid(Port::Vga));
+        assert!(state.is_valid(Port::Lvds));
+        assert!(!state.is_valid(Port::HdmiA));
+        assert!(!state.is_valid(Port::DpA));
         assert_eq!(
             state.hotplug_enable,
             CRT_HOTPLUG_INT_EN | CRT_HOTPLUG_ACTIVATION_PERIOD_64

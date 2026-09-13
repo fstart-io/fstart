@@ -49,6 +49,95 @@ pub(crate) fn initialize_legacy_gmch(
     }
 }
 
+/// Initialize/read Gen3 (i945/i945GM/Pineview) display clocks.
+///
+/// Matches libgfxinit's `common/i945` power-and-clocks module and Linux
+/// `intel_cdclk.c` (`i945gm_get_cdclk`, `pnv_get_cdclk`).
+pub(crate) fn initialize_i945(mmio: &Mmio, cpu: Cpu, gcfgc: Option<u16>) -> LegacyPowerClocks {
+    let cdclk_hz = i945_cdclk(cpu, gcfgc);
+    let raw_clock_hz = i945_raw_clock(
+        gmch_clock_regs(mmio).clkcfg.read(GMCH_CLKCFG::FSB_FREQ_SEL),
+        cpu,
+    );
+    LegacyPowerClocks {
+        cdclk_hz,
+        max_cdclk_hz: cdclk_hz,
+        raw_clock_hz,
+    }
+}
+
+const GCFGC_LOW_FREQUENCY_ENABLE: u16 = 1 << 7;
+const GCFGC_DISPLAY_CLOCK_MASK: u16 = 7 << 4;
+const GCFGC_DISPLAY_CLOCK_320_MHZ: u16 = 4 << 4;
+const GCFGC_PNV_DISPLAY_CLOCK_267_MHZ: u16 = 0 << 4;
+const GCFGC_PNV_DISPLAY_CLOCK_333_MHZ: u16 = 1 << 4;
+const GCFGC_PNV_DISPLAY_CLOCK_444_MHZ: u16 = 2 << 4;
+const GCFGC_PNV_DISPLAY_CLOCK_200_MHZ: u16 = 5 << 4;
+const GCFGC_PNV_DISPLAY_CLOCK_167_MHZ: u16 = 7 << 4;
+
+const fn i945_cdclk(cpu: Cpu, gcfgc: Option<u16>) -> u64 {
+    let Some(gcfgc) = gcfgc else {
+        return fallback_cdclk_i945(cpu);
+    };
+    match cpu {
+        Cpu::Pineview | Cpu::PineviewM => {
+            match gcfgc & GCFGC_DISPLAY_CLOCK_MASK {
+                GCFGC_PNV_DISPLAY_CLOCK_267_MHZ => 266_666_667,
+                GCFGC_PNV_DISPLAY_CLOCK_333_MHZ => 333_333_333,
+                GCFGC_PNV_DISPLAY_CLOCK_444_MHZ => 444_444_444,
+                GCFGC_PNV_DISPLAY_CLOCK_200_MHZ => 200_000_000,
+                GCFGC_PNV_DISPLAY_CLOCK_167_MHZ => 166_666_667,
+                // 6<<4 is 133 MHz; Linux/libgfxinit treat the rest the same.
+                _ => 133_333_333,
+            }
+        }
+        Cpu::I945GM => {
+            if gcfgc & GCFGC_LOW_FREQUENCY_ENABLE != 0 {
+                133_333_333
+            } else if gcfgc & GCFGC_DISPLAY_CLOCK_MASK == GCFGC_DISPLAY_CLOCK_320_MHZ {
+                320_000_000
+            } else {
+                200_000_000
+            }
+        }
+        // i945G desktop has a fixed 400 MHz CDClk.
+        _ => 400_000_000,
+    }
+}
+
+const fn fallback_cdclk_i945(cpu: Cpu) -> u64 {
+    match cpu {
+        Cpu::Pineview | Cpu::PineviewM | Cpu::I945GM => 200_000_000,
+        _ => 400_000_000,
+    }
+}
+
+/// Decode the CLKCFG FSB selector; the mobile/Pineview and desktop encodings
+/// differ (libgfxinit `common/i945` `Get_Raw_Clock`).
+const fn i945_raw_clock(fsb_freq_sel: u32, cpu: Cpu) -> u64 {
+    match cpu {
+        Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM => match fsb_freq_sel {
+            0 => CLKCFG_FSB_400,
+            1 => CLKCFG_FSB_533,
+            2 => CLKCFG_FSB_800,
+            3 => CLKCFG_FSB_667,
+            6 => CLKCFG_FSB_1067,
+            7 => CLKCFG_FSB_1333,
+            _ => CLKCFG_FSB_533,
+        },
+        _ => match fsb_freq_sel {
+            0 => CLKCFG_FSB_1067,
+            1 => CLKCFG_FSB_533,
+            2 => CLKCFG_FSB_800,
+            3 => CLKCFG_FSB_667,
+            4 => CLKCFG_FSB_1333,
+            5 => CLKCFG_FSB_400,
+            6 => 400_000_000,
+            _ => CLKCFG_FSB_533,
+        },
+    }
+}
+
 fn hpll_vco(mmio: &Mmio, cpu: Cpu) -> HpllVco {
     match cpu {
         Cpu::Gm965 => {
@@ -249,6 +338,35 @@ mod tests {
         assert_eq!(cdclk_from_gcfgc(Cpu::Gm965, vco, Some(1 << 8)), 200_000_000);
         assert_eq!(cdclk_from_gcfgc(Cpu::Gm965, vco, Some(2 << 8)), 333_333_333);
         assert_eq!(cdclk_from_gcfgc(Cpu::Gm965, vco, Some(0)), 200_000_000);
+    }
+
+    #[test]
+    fn i945_cdclk_matches_linux_decoding() {
+        // i945G desktop is fixed at 400 MHz.
+        assert_eq!(i945_cdclk(Cpu::I945G, None), 400_000_000);
+        // i945GM: low-frequency bit, 320 MHz selector, otherwise 200 MHz.
+        assert_eq!(i945_cdclk(Cpu::I945GM, Some(1 << 7)), 133_333_333);
+        assert_eq!(i945_cdclk(Cpu::I945GM, Some(4 << 4)), 320_000_000);
+        assert_eq!(i945_cdclk(Cpu::I945GM, Some(0)), 200_000_000);
+        // Pineview: GCFGC bits 6:4 (Linux `pnv_get_cdclk`).
+        assert_eq!(i945_cdclk(Cpu::Pineview, Some(0 << 4)), 266_666_667);
+        assert_eq!(i945_cdclk(Cpu::Pineview, Some(1 << 4)), 333_333_333);
+        assert_eq!(i945_cdclk(Cpu::Pineview, Some(2 << 4)), 444_444_444);
+        assert_eq!(i945_cdclk(Cpu::Pineview, Some(5 << 4)), 200_000_000);
+        assert_eq!(i945_cdclk(Cpu::Pineview, Some(6 << 4)), 133_333_333);
+        assert_eq!(i945_cdclk(Cpu::Pineview, Some(7 << 4)), 166_666_667);
+    }
+
+    #[test]
+    fn i945_raw_clock_uses_mobile_and_desktop_tables() {
+        // Mobile/Pineview encoding.
+        assert_eq!(i945_raw_clock(0, Cpu::I945GM), CLKCFG_FSB_400);
+        assert_eq!(i945_raw_clock(6, Cpu::Pineview), CLKCFG_FSB_1067);
+        assert_eq!(i945_raw_clock(7, Cpu::PineviewM), CLKCFG_FSB_1333);
+        // Desktop i945G encoding.
+        assert_eq!(i945_raw_clock(0, Cpu::I945G), CLKCFG_FSB_1067);
+        assert_eq!(i945_raw_clock(4, Cpu::I945G), CLKCFG_FSB_1333);
+        assert_eq!(i945_raw_clock(6, Cpu::I945G), 400_000_000);
     }
 
     #[test]

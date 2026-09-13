@@ -354,7 +354,7 @@ pub const fn caps_for(cpu: Cpu) -> ScalerCaps {
                 single_global_scaler: false,
             }
         }
-        Cpu::Pineview => ScalerCaps {
+        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM => ScalerCaps {
             kind: Some(ScalerKind::GmchPanelFitterPreI965),
             implemented: true,
             single_global_scaler: true,

@@ -42,19 +42,23 @@ pub enum TilingMode {
 }
 
 impl TilingMode {
-    /// Tile width in bytes divided by 4, matching libgfxinit's fence pitch unit.
+    /// Tile width in 4-byte units, matching libgfxinit's `Tile_Width`.
+    ///
+    /// libgfxinit: `(Linear => 16, X_Tiled => 128, Y_Tiled => 32)`, so a linear
+    /// stride must be 64-byte aligned and an X-tiled stride 512-byte aligned.
     pub const fn tile_width_units(self) -> u32 {
         match self {
-            Self::Linear => 1,
-            Self::X => 8,
+            Self::Linear => 16,
+            Self::X => 128,
             Self::Y => 32,
         }
     }
 
-    /// Tile row granularity in scanlines.
+    /// Tile row granularity in scanlines, matching libgfxinit's `Tile_Rows`.
     pub const fn tile_rows(self) -> u32 {
         match self {
-            Self::Linear | Self::X => 1,
+            Self::Linear => 1,
+            Self::X => 8,
             Self::Y => 32,
         }
     }
@@ -155,7 +159,10 @@ impl SurfaceConfig {
         {
             return Err(GmaError::ModeUnavailable);
         }
-        if self.required_bytes()? > region_size {
+        // libgfxinit `Validate_FB` bounds the last framebuffer page, which
+        // includes the aperture offset.
+        let end = u64::from(self.offset) + u64::from(self.required_bytes()?);
+        if end > u64::from(region_size) {
             return Err(GmaError::GttSetupFailed);
         }
         Ok(())
@@ -199,29 +206,29 @@ impl SurfaceConfig {
         self.offset & 0xffff_f000
     }
 
-    /// Fill the framebuffer with a deterministic bring-up test pattern.
+    /// Fill the visible framebuffer area with opaque black (XRGB8888
+    /// `0xff000000`).
     ///
-    /// This mirrors libgfxinit's framebuffer-filler role: make a successful
-    /// modeset visible even before a payload draws into the handoff buffer.
+    /// This matches libgfxinit's `Framebuffer_Filler.Fill`, which
+    /// `Setup_Default_FB (Clear => true)` runs before the framebuffer is handed
+    /// to a payload. It deliberately does not stamp a bring-up test pattern
+    /// into memory that the payload will own.
     ///
     /// # Safety
     ///
     /// `base_addr` must be CPU-accessible memory for at least
     /// `required_bytes()` bytes, and no other agent may concurrently mutate the
     /// same framebuffer while this runs.
-    pub unsafe fn fill_bringup_pattern(&self) -> Result<(), GmaError> {
+    pub unsafe fn fill_opaque_black(&self) -> Result<(), GmaError> {
         self.validate_fits(self.required_bytes()?)?;
         let base = self.base_addr.0 as *mut u32;
         let stride = self.stride as usize;
-        let width = self.width as usize;
-        let height = self.height as usize;
-        for y in 0..height {
-            for x in 0..width {
-                let pixel = bringup_pattern_pixel(x as u32, y as u32, self.width, self.height);
+        for y in 0..self.height as usize {
+            for x in 0..self.width as usize {
                 // SAFETY: caller guarantees that the framebuffer mapping covers
-                // the full surface. `validate_fits(required_bytes())` checked
-                // dimensions and stride arithmetic before this loop.
-                unsafe { base.add(y * stride + x).write_volatile(pixel) };
+                // the visible surface, and `validate_fits` checked the stride
+                // arithmetic above.
+                unsafe { base.add(y * stride + x).write_volatile(0xff00_0000) };
             }
         }
         Ok(())
@@ -245,20 +252,6 @@ impl SurfaceConfig {
             },
         }
     }
-}
-
-/// Return one XRGB8888 pixel for the firmware bring-up test pattern.
-pub const fn bringup_pattern_pixel(x: u32, y: u32, width: u32, height: u32) -> u32 {
-    let safe_width = if width > 1 { width - 1 } else { 1 };
-    let safe_height = if height > 1 { height - 1 } else { 1 };
-    let red = (x.saturating_mul(255) / safe_width) & 0xff;
-    let green = (y.saturating_mul(255) / safe_height) & 0xff;
-    let checker = if ((x / 32) ^ (y / 32)) & 1 == 0 {
-        0x40
-    } else {
-        0xc0
-    };
-    0xff00_0000 | (red << 16) | (green << 8) | checker
 }
 
 /// Board policy for framebuffer dimensions and mode selection.
@@ -317,20 +310,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bringup_pattern_has_gradient_and_checkerboard() {
-        assert_eq!(bringup_pattern_pixel(0, 0, 1024, 768), 0xff00_0040);
-        assert_eq!(bringup_pattern_pixel(1023, 767, 1024, 768), 0xffff_ff40);
-        assert_eq!(bringup_pattern_pixel(32, 0, 1024, 768) & 0xff, 0xc0);
-    }
-
-    #[test]
-    fn fill_bringup_pattern_writes_surface_pixels_only() {
-        let mut backing = [0u32; 8];
+    fn fill_opaque_black_writes_visible_pixels_only() {
+        // libgfxinit requires a linear stride to be 64-byte aligned
+        // (`Tile_Width (Linear) = 16` u32 units).
+        let mut backing = [0u32; 32];
         let surface = SurfaceConfig {
             base_addr: PhysAddr(backing.as_mut_ptr() as u64),
             width: 2,
             height: 2,
-            stride: 4,
+            stride: 16,
             v_stride: 2,
             start_x: 0,
             start_y: 0,
@@ -340,14 +328,13 @@ mod tests {
             pixel_format: PixelFormat::Xrgb8888,
         };
         // SAFETY: `backing` covers a 2x2 surface with stride 4 u32 pixels.
-        unsafe { surface.fill_bringup_pattern().unwrap() };
-        assert_ne!(backing[0], 0);
-        assert_ne!(backing[1], 0);
+        unsafe { surface.fill_opaque_black().unwrap() };
+        assert_eq!(backing[0], 0xff00_0000);
+        assert_eq!(backing[1], 0xff00_0000);
         assert_eq!(backing[2], 0);
-        assert_eq!(backing[3], 0);
-        assert_ne!(backing[4], 0);
-        assert_ne!(backing[5], 0);
-        assert_eq!(backing[6], 0);
-        assert_eq!(backing[7], 0);
+        assert_eq!(backing[15], 0);
+        assert_eq!(backing[16], 0xff00_0000);
+        assert_eq!(backing[17], 0xff00_0000);
+        assert_eq!(backing[18], 0);
     }
 }

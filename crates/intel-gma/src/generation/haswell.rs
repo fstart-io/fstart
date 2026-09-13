@@ -34,7 +34,7 @@ impl GenerationOps for Haswell {
     fn init_display(ctx: &mut crate::GmaContext<'_>, mode: Mode) -> Result<(), GmaError> {
         map_gtt(ctx)?;
         // SAFETY: the selected surface is backed by the just-programmed GTT mapping.
-        unsafe { ctx.surface.fill_bringup_pattern()? };
+        unsafe { ctx.surface.fill_opaque_black()? };
         let port = selected_port(ctx)?;
         let pipe = ddi_pipe_for_port(port);
         let plan = if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC) {
@@ -82,7 +82,7 @@ fn ddi_pipe_for_port(port: Port) -> Pipe {
 }
 
 fn map_gtt(ctx: &crate::GmaContext<'_>) -> Result<(), GmaError> {
-    gtt::map_surface_to_stolen(ctx.resources, &ctx.surface)?;
+    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
     gtt::flush_gfx(&ctx.mmio());
     Ok(())
 }

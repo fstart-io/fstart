@@ -228,15 +228,15 @@ pub(crate) fn train_gmch_dp(
     pipe: Pipe,
     mode: Mode,
 ) -> Result<DpLinkConfig, GmaError> {
-    train_gmch_dp_with_retry(mmio, port, pipe, mode, || Ok(()), || {})
+    train_gmch_dp_with_retry(mmio, port, pipe, mode, |_| Ok(()), || {})
 }
 
 /// Train a GMCH DP link, trying each usable link setting with rollback between failures.
 ///
 /// libgfxinit's `Enable_Output` loops over `Preferred_Link_Setting` and
-/// `Next_Link_Setting`, and tries each DP lane/rate setting twice.  This helper
-/// keeps that behavior local to the DP path while letting generation code
-/// provide display-controller setup and rollback around every attempt.
+/// `Next_Link_Setting`, allocates the PLL for each setting, and tries each DP
+/// lane/rate configuration twice. `pre_try` receives the candidate link config
+/// so generation code can program the matching PLL before each attempt.
 pub(crate) fn train_gmch_dp_with_retry<PreTry, Rollback>(
     mmio: &Mmio,
     port: Port,
@@ -246,7 +246,7 @@ pub(crate) fn train_gmch_dp_with_retry<PreTry, Rollback>(
     mut rollback: Rollback,
 ) -> Result<DpLinkConfig, GmaError>
 where
-    PreTry: FnMut() -> Result<(), GmaError>,
+    PreTry: FnMut(DpLinkConfig) -> Result<(), GmaError>,
     Rollback: FnMut(),
 {
     let mut caps_bytes = [0u8; RECEIVER_CAPS_LEN];
@@ -258,7 +258,13 @@ where
     while let Some(config) = candidates.get(index) {
         let mut try_count = 0;
         while try_count < 2 {
-            pre_try()?;
+            // A candidate whose PLL/pipe setup fails (for example 5.4 Gbit/s on
+            // GMCH, which has no DPLL tuple) is skipped rather than retried.
+            if let Err(err) = pre_try(config) {
+                last_error = err;
+                rollback();
+                break;
+            }
             match train_gmch_dp_once(mmio, port, pipe, mode, config) {
                 Ok(()) => return Ok(config),
                 Err(err) => {

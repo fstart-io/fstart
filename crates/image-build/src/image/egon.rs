@@ -131,7 +131,7 @@ pub fn patch_ffs(ffs_image: &mut [u8], bootblock_size: u32) -> Result<(), String
 }
 
 fn word_sum(data: &[u8]) -> u32 {
-    data.chunks_exact(4).fold(0u32, |checksum, chunk| {
+    data.as_chunks::<4>().0.iter().fold(0u32, |checksum, chunk| {
         let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         checksum.wrapping_add(word)
     })

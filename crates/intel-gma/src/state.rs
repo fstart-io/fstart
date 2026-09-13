@@ -15,7 +15,8 @@ use crate::pci::GmaResources;
 use crate::port;
 use crate::types::{Cpu, Generation, Pipe, Port};
 use crate::{
-    GmaInitConfig, GmaInitResult, caps_for, cleanup_after_failed_candidate, init_candidate,
+    GmaInitConfig, GmaInitResult, caps_for, clean_generation_state, disable_generation_output,
+    init_candidate,
 };
 
 const MAX_PORTS: usize = 8;
@@ -62,6 +63,8 @@ pub struct GmaDisplayState {
     wait_for_hpd: [Option<Port>; MAX_PORTS],
     wait_for_hpd_deadline_us: [u64; MAX_PORTS],
     wait_for_hpd_len: usize,
+    /// Whether the one-time libgfxinit `Clean_State` teardown has run.
+    clean: bool,
 }
 
 impl Default for GmaDisplayState {
@@ -78,6 +81,7 @@ impl GmaDisplayState {
             wait_for_hpd: [None; MAX_PORTS],
             wait_for_hpd_deadline_us: [0; MAX_PORTS],
             wait_for_hpd_len: 0,
+            clean: false,
         }
     }
 
@@ -145,6 +149,14 @@ impl GmaDisplayState {
             self.apply_hpd_filter(mmio, &mut new_configs, now_us);
         }
 
+        // libgfxinit's `Initialize (Clean_State => true)` clears every pipe,
+        // port and PLL once before the first modeset. Doing it per output would
+        // tear down already-enabled outputs, which is the bug this replaces.
+        if !self.clean {
+            clean_generation_state(resources, config.cpu);
+            self.clean = true;
+        }
+
         self.disable_changed_outputs(
             resources,
             config.cpu,
@@ -196,7 +208,16 @@ impl GmaDisplayState {
                             last_error = err;
                             self.current[pipe_index] = None;
                             self.set_wait_for_hpd_at(new_config.port, now_us);
-                            cleanup_after_failed_candidate(resources, config.cpu);
+                            // Only the failed pipe's output is torn down; other
+                            // outputs must survive.
+                            if let Ok(pipe) = pipe_from_index(pipe_index) {
+                                disable_generation_output(
+                                    resources,
+                                    config.cpu,
+                                    pipe,
+                                    new_config.port,
+                                );
+                            }
                         }
                     }
                 }
@@ -297,7 +318,9 @@ impl GmaDisplayState {
                     .map(|new| full_update(current, new))
                     .unwrap_or(true)
             {
-                cleanup_after_failed_candidate(resources, cpu);
+                if let Ok(pipe) = pipe_from_index(pipe_index) {
+                    disable_generation_output(resources, cpu, pipe, current.port);
+                }
                 self.current[pipe_index] = None;
                 if unplug_detected {
                     self.set_wait_for_hpd_at(current.port, u64::MAX);
@@ -383,7 +406,7 @@ fn resolve_pipe_config(
     let mode = crate::choose_mode(resources, &candidate_config)?;
     let surface = crate::gtt::choose_framebuffer_surface(resources, &config.framebuffer)?;
     let pipeline = match caps_for(config.cpu).generation {
-        Generation::I9xx | Generation::G45 => {
+        Generation::I945 | Generation::G45 => {
             port::OutputPipeline::legacy_gmch(config.cpu, port, mode, surface)?
         }
         _ => return Err(GmaError::UnsupportedPlatform),
@@ -403,10 +426,20 @@ fn full_update(current: PipeOutputConfig, new_config: PipeOutputConfig) -> bool 
 }
 
 fn legacy_mmio(resources: &GmaResources, cpu: Cpu) -> Option<Mmio> {
-    if matches!(caps_for(cpu).generation, Generation::I9xx | Generation::G45) {
+    if matches!(caps_for(cpu).generation, Generation::I945 | Generation::G45) {
         Some(crate::mmio_from_validated_resources(resources))
     } else {
         None
+    }
+}
+
+/// Map a pipe array index back to a pipe.
+const fn pipe_from_index(index: usize) -> Result<Pipe, GmaError> {
+    match index {
+        0 => Ok(Pipe::A),
+        1 => Ok(Pipe::B),
+        2 => Ok(Pipe::C),
+        _ => Err(GmaError::InvalidConfig),
     }
 }
 
