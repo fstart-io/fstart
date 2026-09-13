@@ -293,7 +293,7 @@ impl GmbusCommand {
         index: u8,
         direction: GmbusDirection,
     ) -> Result<Self, GmaError> {
-        if byte_count > 511 || slave_address > 0x7f {
+        if byte_count > 128 || slave_address > 0x7f {
             return Err(GmaError::InvalidConfig);
         }
         Ok(Self {
@@ -413,9 +413,15 @@ impl GmbusStatus {
         self.stall_timeout || self.nak
     }
 
-    /// Status can satisfy a polling wait for data/error/interrupt.
+    /// Status can satisfy a poll for transaction completion: the cycle finished
+    /// or an error was raised. Data is only valid once `hardware_ready` is set.
     pub const fn is_wait_complete(self) -> bool {
-        self.hardware_ready || self.wait_phase || self.interrupt || self.has_error()
+        !self.active || self.has_error()
+    }
+
+    /// Status reports a 4-byte word available in GMBUS3.
+    pub const fn is_data_ready(self) -> bool {
+        self.hardware_ready || self.has_error()
     }
 
     /// The bus is fully idle after a STOP/reset sequence.
@@ -641,14 +647,69 @@ impl HardwareGmbus {
         let mut timeout = 100_000;
         while timeout != 0 {
             if self.status().is_idle() {
+                // Release ownership (libgfxinit `Release_GMBUS` sets GMBUS2
+                // INUSE) before disabling the pin selection.
+                self.mmio.set_bits32(self.reg(0x08), 1 << 15);
                 self.mmio.write32(self.reg(0x00), 0);
                 return Ok(());
             }
             timeout -= 1;
             core::hint::spin_loop();
         }
+        self.mmio.set_bits32(self.reg(0x08), 1 << 15);
         self.mmio.write32(self.reg(0x00), 0);
         Err(GmaError::Timeout)
+    }
+
+    /// Take ownership of the bus after a stale transfer (libgfxinit
+    /// `Wait_Unset_Mask (GMBUS2_INUSE)` plus `Check_And_Reset`).
+    fn acquire(&self) -> Result<(), GmaError> {
+        self.mmio.write32(self.reg(0x00), 0);
+        self.mmio.write32(self.reg(0x04), 0);
+        let mut timeout = 100_000;
+        while timeout != 0 {
+            if !self.status().in_use {
+                return Ok(());
+            }
+            timeout -= 1;
+            core::hint::spin_loop();
+        }
+        Err(GmaError::Timeout)
+    }
+
+    /// Wait for the 4-byte word in GMBUS3 to become valid.
+    fn wait_data_ready(&self) -> Result<(), GmaError> {
+        let mut timeout = 100_000;
+        while timeout != 0 {
+            let status = self.status();
+            if status.has_error() {
+                return Err(GmaError::HardwareError);
+            }
+            if status.is_data_ready() {
+                return Ok(());
+            }
+            timeout -= 1;
+            core::hint::spin_loop();
+        }
+        Err(GmaError::Timeout)
+    }
+
+    /// Write one byte to a slave register (E-DDC segment pointer).
+    fn write_byte(&self, address: u8, value: u8) -> Result<(), GmaError> {
+        let command = GmbusCommand::new(
+            GmbusCycle::IndexWait,
+            1,
+            address,
+            0,
+            GmbusDirection::Write,
+        )?;
+        self.mmio.write32(self.reg(0x04), command.encode());
+        self.wait_data_ready().inspect_err(|_| {
+            let _ = self.stop();
+        })?;
+        self.mmio.write32(self.reg(0x0c), u32::from(value));
+        self.wait_complete()?;
+        Ok(())
     }
 }
 
@@ -659,24 +720,37 @@ impl DdcBus for HardwareGmbus {
         block_index: u8,
         block: &mut [u8; EDID_BLOCK_LEN],
     ) -> Result<(), GmaError> {
+        self.acquire().inspect_err(|_error| {
+            let _ = self.stop();
+        })?;
         self.mmio.write32(
             self.reg(0x00),
             Gmbus0Config::conservative(self.pin).encode(),
         );
         self.mmio.write32(self.reg(0x20), 0);
         self.mmio.write32(self.reg(0x10), 0);
+
+        // E-DDC: extension blocks live behind the segment pointer at 0x30.
+        if block_index != 0 {
+            self.write_byte(0x30, block_index).inspect_err(|_error| {
+                let _ = self.stop();
+            })?;
+        }
+
         let command = GmbusCommand::new(
             GmbusCycle::IndexWait,
             EDID_BLOCK_LEN as u16,
             address,
-            (usize::from(block_index) * EDID_BLOCK_LEN) as u8,
+            (usize::from(block_index) * EDID_BLOCK_LEN % 256) as u8,
             GmbusDirection::Read,
         )?;
         self.mmio.write32(self.reg(0x04), command.encode());
 
         let mut offset = 0usize;
         while offset < EDID_BLOCK_LEN {
-            let _ = self.wait_complete().inspect_err(|_error| {
+            // Data is only valid once HARDWARE_READY is set (libgfxinit waits
+            // for GMBUS2_HARDWARE_READY before each GMBUS3 read).
+            self.wait_data_ready().inspect_err(|_error| {
                 let _ = self.stop();
             })?;
             let word = self.mmio.read32(self.reg(0x0c)).to_le_bytes();
@@ -685,6 +759,9 @@ impl DdcBus for HardwareGmbus {
             block[offset..offset + count].copy_from_slice(&word[..count]);
             offset += count;
         }
+        self.wait_complete().inspect_err(|_error| {
+            let _ = self.stop();
+        })?;
 
         self.stop()
     }
@@ -920,6 +997,7 @@ mod tests {
     fn gmbus_status_decodes_ready_error_and_idle_states() {
         let ready = GmbusStatus::from_bits((1 << 11) | 4);
         assert!(ready.hardware_ready);
+        assert!(ready.is_data_ready());
         assert_eq!(ready.byte_count, 4);
         assert!(ready.is_wait_complete());
         assert!(!ready.has_error());
@@ -927,6 +1005,12 @@ mod tests {
         let nak = GmbusStatus::from_bits(1 << 10);
         assert!(nak.has_error());
         assert!(nak.is_wait_complete());
+        assert!(nak.is_data_ready());
+
+        // A busy transfer (ACTIVE) is not complete yet.
+        let busy = GmbusStatus::from_bits(1 << 9);
+        assert!(!busy.is_wait_complete());
+        assert!(!busy.is_data_ready());
 
         let idle = GmbusStatus::from_bits(0);
         assert!(idle.is_idle());

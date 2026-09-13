@@ -15,6 +15,8 @@ use crate::types::{PhysAddr, Port};
 
 /// Maximum raw AUX message size handled by Intel GMA AUX data registers.
 pub const AUX_MAX_MESSAGE_LEN: usize = 20;
+/// Maximum accepted AUX response length (libgfxinit `Aux_Response_Length`).
+pub const AUX_MAX_RESPONSE_LEN: usize = 17;
 /// Maximum native AUX payload bytes after the four-byte AUX header.
 pub const AUX_MAX_PAYLOAD_LEN: usize = AUX_MAX_MESSAGE_LEN - AUX_HEADER_LEN;
 /// Raw AUX request header length.
@@ -479,7 +481,9 @@ fn raw_aux_request_once(
         return Err(GmaError::HardwareError);
     }
     let response_len = aux_ctl_response_len(ctl);
-    if response_len > AUX_MAX_MESSAGE_LEN {
+    // libgfxinit bounds `Aux_Response_Length` to 1 .. 17; a zero-length reply
+    // is malformed and longer replies are rejected here.
+    if response_len == 0 || response_len > AUX_MAX_RESPONSE_LEN {
         return Err(GmaError::HardwareError);
     }
     let mut response_regs = [0u32; AUX_DATA_REG_COUNT];
@@ -736,7 +740,10 @@ impl DpLinkRate {
             0x06 => Self::Rbr,
             0x0a => Self::Hbr,
             0x14 => Self::Hbr2,
-            other => Self::Unknown(other),
+            // libgfxinit `DP_Info`: codes above 0x14 are treated as HBR2,
+            // everything else unrecognised as RBR.
+            other if other > 0x14 => Self::Hbr2,
+            _ => Self::Rbr,
         }
     }
 
@@ -1129,6 +1136,18 @@ mod tests {
             AuxRegs::gmch_for_port(Port::DpD),
             Err(GmaError::UnsupportedPort)
         );
+    }
+
+    #[test]
+    fn unknown_dpcd_link_rates_are_normalised_like_libgfxinit() {
+        // 0x14 is HBR2; codes above it collapse to HBR2, everything else to RBR.
+        assert_eq!(DpLinkRate::decode(0x14), DpLinkRate::Hbr2);
+        assert_eq!(DpLinkRate::decode(0x15), DpLinkRate::Hbr2);
+        assert_eq!(DpLinkRate::decode(0x20), DpLinkRate::Hbr2);
+        assert_eq!(DpLinkRate::decode(0x00), DpLinkRate::Rbr);
+        assert_eq!(DpLinkRate::decode(0x0f), DpLinkRate::Rbr);
+        assert_eq!(DpLinkRate::decode(0x06), DpLinkRate::Rbr);
+        assert_eq!(DpLinkRate::decode(0x0a), DpLinkRate::Hbr);
     }
 
     #[test]
