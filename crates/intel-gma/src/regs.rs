@@ -638,7 +638,9 @@ register_bitfields! [u32,
     /// Split-PCH transcoder config register.
     pub TRANS_CONF [
         /// Enable PCH transcoder.
-        ENABLE OFFSET(31) NUMBITS(1) []
+        ENABLE OFFSET(31) NUMBITS(1) [],
+        /// Transcoder running state, cleared asynchronously after disable.
+        TRANSCODER_STATE OFFSET(30) NUMBITS(1) []
     ],
 
     /// Ironlake CPU eDP DisplayPort control register (`DP_CTL_A`).

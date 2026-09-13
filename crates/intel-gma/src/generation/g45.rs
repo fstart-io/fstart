@@ -7,6 +7,7 @@
 
 use crate::dp_training::train_gmch_dp_with_retry;
 use crate::error::GmaError;
+use crate::framebuffer::{SurfaceConfig, TilingMode};
 use crate::generation::{GenerationOps, sealed};
 use crate::gtt;
 use crate::mmio::{Mmio, delay_us};
@@ -58,13 +59,8 @@ impl GenerationOps for G45 {
         // whose configuration changed, so enabling a second output leaves the
         // first running. Boot-state cleanup happens once in `clean()`.
         let panel = selected_lfp_panel(ctx);
-        pre_pll_enable_port(
-            &mmio,
-            pipeline.port,
-            pipeline.pipe.pipe,
-            pipeline.pipe.mode,
-            panel,
-        )?;
+        let cpu = ctx.config.cpu;
+        pre_pll_enable_port(&mmio, pipeline.port, pipeline.pipe.pipe, pipeline.pipe.mode)?;
         if is_gmch_dp_port(pipeline.port) {
             train_gmch_dp_with_retry(
                 &mmio,
@@ -82,7 +78,7 @@ impl GenerationOps for G45 {
                     Ok(())
                 },
                 || {
-                    disable_legacy_display_state(&mmio);
+                    disable_legacy_display_state(&mmio, cpu);
                     let _ = crate::port_detect::clear_hotplug_detect(&mmio, pipeline.port);
                 },
             )?;
@@ -155,44 +151,15 @@ impl GenerationOps for G45 {
     }
 
     fn program_primary_plane(ctx: &mut GmaContext<'_>, plane: Plane) -> Result<(), GmaError> {
-        let regs = PlaneRegs::for_plane(plane)?;
         let pipe = pipe_for_plane(plane)?;
-        let plane_config = crate::plane::PlaneConfig::new(
-            plane,
+        let regs = PlaneRegs::for_plane(plane)?;
+        program_gmch_plane(
+            &ctx.mmio(),
+            regs.base,
             pipe,
-            crate::port::legacy_plane_address_model(ctx.config.cpu),
             ctx.surface,
-        );
-        let mmio = ctx.mmio();
-        // SAFETY: `regs.base` is the generation-validated GMCH primary plane
-        // register block for `plane` inside the decoded display MMIO BAR.
-        let plane_regs = unsafe { mmio.reg_block::<GmchPlaneRegs>(regs.base) };
-        let stride_bytes = plane_config.stride_bytes()?;
-        let ctl = (DSPCNTR::ENABLE::SET + DSPCNTR::FORMAT::Xrgb8888).value
-            | dspcntr_pipe_select(plane)?
-            | plane_config.legacy_tiling_bits();
-        if plane_config.address_model == PlaneAddressModel::Address {
-            plane_regs.stride.set(stride_bytes);
-            plane_regs.pos.set(0);
-            plane_regs.size.set(plane_config.encoded_size()?);
-            plane_regs.cntr.set(ctl);
-            plane_regs.addr.set(0);
-            let _ = plane_regs.addr.get();
-        } else {
-            plane_regs.stride.set(stride_bytes);
-            if ctx.surface.tiling == crate::framebuffer::TilingMode::Linear {
-                plane_regs.addr.set(plane_config.linear_offset_bytes()?);
-                plane_regs.tileoff.set(0);
-            } else {
-                plane_regs.addr.set(0);
-                plane_regs.tileoff.set(plane_config.tile_offset());
-            }
-            plane_regs.surf.set(ctx.surface.plane_surface_offset());
-            plane_regs.cntr.set(ctl);
-            plane_regs.surf.set(ctx.surface.plane_surface_offset());
-            let _ = plane_regs.surf.get();
-        }
-        Ok(())
+            crate::port::legacy_plane_address_model(ctx.config.cpu),
+        )
     }
 
     fn enable_port(ctx: &mut GmaContext<'_>, port: Port, pipe: Pipe) -> Result<(), GmaError> {
@@ -214,16 +181,15 @@ impl GenerationOps for G45 {
             panel_backlight_off(mmio);
             panel_power_off(mmio);
         }
-        disable_pipe_state(mmio, pipe);
+        disable_pipe_state(mmio, cpu, pipe);
         disable_port(mmio, port);
-        let _ = cpu;
         let pll = crate::port::legacy_pll_for_pipe(pipe)?;
         pll::disable_legacy_pll(mmio, pll);
         Ok(())
     }
 
     fn clean(mmio: &Mmio, cpu: Cpu) {
-        disable_legacy_display_state(mmio);
+        disable_legacy_display_state(mmio, cpu);
         disable_legacy_path(mmio, cpu);
     }
 }
@@ -273,26 +239,17 @@ fn program_pll_for_dp_rate(
     Ok(())
 }
 
+/// Apply the port's pre-PLL plan, if it has one.
+///
+/// libgfxinit's GMCH `Connectors.Pre_On` is a no-op: LVDS is enabled in
+/// `Post_On` after the PLL, pipe and plane are up, so there is nothing to do
+/// before DPLL programming for the legacy GMCH ports we support.
 fn pre_pll_enable_port(
     mmio: &Mmio,
     port: Port,
     pipe: Pipe,
     mode: Mode,
-    panel: Option<LfpPanelMetadata>,
 ) -> Result<(), GmaError> {
-    if port == Port::Lvds {
-        // Legacy GMCH LVDS requires the port enable bit and lane power to be
-        // programmed before the LVDS DPLL is enabled. Linux i915 and
-        // libgfxinit both preserve this ordering for LVDS PLL bring-up.
-        apply_port_op(
-            mmio,
-            PortRegisterOp::Write {
-                register: crate::port::GMCH_LVDS,
-                value: lvds_port_value_with_config(pipe, mode, lvds_port_config(panel))?,
-            },
-        );
-        return Ok(());
-    }
     let plan = LegacyPortPlan::for_port(port, pipe, mode)?;
     if let Some(op) = plan.pre_pll {
         apply_port_op(mmio, op);
@@ -521,32 +478,50 @@ pub(crate) fn disable_port(mmio: &Mmio, port: Port) {
             }
         }
         Port::DpA | Port::DpB | Port::DpC => {
-            if let Ok(op) = dp_idle_op(port) {
+            // libgfxinit posts after both the idle and the zero write.
+            for op in [dp_idle_op(port), dp_off_op(port)].into_iter().flatten() {
+                let register = port_op_register(op);
                 apply_port_op(mmio, op);
-            }
-            if let Ok(op) = dp_off_op(port) {
-                apply_port_op(mmio, op);
+                mmio.posting_read(register);
             }
         }
         _ => {}
     }
 }
 
-fn disable_legacy_display_state(mmio: &Mmio) {
+/// Register address of a port operation.
+const fn port_op_register(op: PortRegisterOp) -> usize {
+    match op {
+        PortRegisterOp::Write { register, .. } | PortRegisterOp::Update { register, .. } => register,
+    }
+}
+
+fn disable_legacy_display_state(mmio: &Mmio, cpu: Cpu) {
     legacy_vga_plane_off(mmio);
     for pipe in [Pipe::A, Pipe::B] {
-        disable_pipe_state(mmio, pipe);
+        disable_pipe_state(mmio, cpu, pipe);
     }
 }
 
 /// Disable one legacy GMCH pipe: its plane, panel fitter and PIPECONF enable.
-fn disable_pipe_state(mmio: &Mmio, pipe: Pipe) {
-    if let Ok(regs) = PipeRegs::for_pipe(pipe) {
-        planes_off(mmio, regs.plane);
-        panel_fitter_off_for_pipe(mmio, pipe);
-        mmio.clear_bits32(regs.pipeconf, PIPECONF::ENABLE::SET.value);
-        mmio.posting_read(regs.pipeconf);
+fn disable_pipe_state(mmio: &Mmio, cpu: Cpu, pipe: Pipe) {
+    let Ok(regs) = PipeRegs::for_pipe(pipe) else {
+        return;
+    };
+    // libgfxinit `Pipe_Setup.Off`: planes off, then the transcoder, then the
+    // panel fitter. `Transcoder.Off` clears the enable and waits for the
+    // enabled status to drop before the fitter is touched.
+    planes_off(mmio, regs.plane);
+    mmio.clear_bits32(regs.pipeconf, PIPECONF::ENABLE::SET.value);
+    let mut timeout = 100_000u32;
+    while timeout != 0 {
+        if (mmio.read32(regs.pipeconf) & PIPECONF::ENABLED_STATUS::SET.value) == 0 {
+            break;
+        }
+        timeout -= 1;
+        core::hint::spin_loop();
     }
+    panel_fitter_off_for_pipe(mmio, cpu, pipe);
 }
 
 pub(crate) fn legacy_vga_plane_off(mmio: &Mmio) {
@@ -586,6 +561,61 @@ fn vga_sequencer_screen_off() {
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn vga_sequencer_screen_off() {}
 
+/// Program a legacy GMCH primary plane, following libgfxinit
+/// `Setup_Hires_Plane`.
+///
+/// The control register is written without the enable bit first, then stride,
+/// geometry and address, and only then enabled. pre-SKL hardware self-arms the
+/// plane on the disabled-to-enabled transition and would otherwise latch stale
+/// geometry values. Gen3 additionally requires size and position before the
+/// address write that arms the double-buffered registers.
+pub(crate) fn program_gmch_plane(
+    mmio: &Mmio,
+    base: usize,
+    pipe: Pipe,
+    surface: SurfaceConfig,
+    address_model: PlaneAddressModel,
+) -> Result<(), GmaError> {
+    let plane = crate::plane::primary_for_pipe(pipe);
+    let plane_config = crate::plane::PlaneConfig::new(plane, pipe, address_model, surface);
+    // SAFETY: `base` is a generation-validated GMCH primary plane register
+    // block inside the decoded display MMIO BAR.
+    let regs = unsafe { mmio.reg_block::<GmchPlaneRegs>(base) };
+    let pri = DSPCNTR::FORMAT::Xrgb8888.value
+        | match pipe {
+            Pipe::B => DSPCNTR::PIPE_SELECT::PipeB.value,
+            _ => DSPCNTR::PIPE_SELECT::PipeA.value,
+        };
+    let tiling = plane_config.legacy_tiling_bits();
+    regs.cntr.set(pri | tiling);
+    regs.stride.set(plane_config.stride_bytes()?);
+    match address_model {
+        PlaneAddressModel::Address => {
+            regs.pos.set(0);
+            regs.size.set(plane_config.encoded_size()?);
+            if surface.tiling == TilingMode::Linear {
+                regs.addr.set(plane_config.aperture_linear_address()?);
+            } else {
+                regs.addr.set(surface.plane_surface_offset());
+            }
+            let _ = regs.addr.get();
+        }
+        PlaneAddressModel::Surface => {
+            if surface.tiling == TilingMode::Linear {
+                regs.addr.set(plane_config.linear_offset_bytes()?);
+                regs.tileoff.set(0);
+            } else {
+                regs.addr.set(0);
+                regs.tileoff.set(plane_config.tile_offset());
+            }
+            regs.surf.set(surface.plane_surface_offset());
+        }
+    }
+    regs.cntr.set(DSPCNTR::ENABLE::SET.value | pri | tiling);
+    let _ = regs.cntr.get();
+    Ok(())
+}
+
 fn planes_off(mmio: &Mmio, regs: PlaneRegs) {
     mmio.write32(regs.cursor_control, 0);
     mmio.clear_bits32(regs.sprite_control, DSPCNTR::ENABLE::SET.value);
@@ -594,21 +624,29 @@ fn planes_off(mmio: &Mmio, regs: PlaneRegs) {
     mmio.posting_read(regs.surf);
 }
 
-pub(crate) fn panel_fitter_off_for_pipe(mmio: &Mmio, pipe: Pipe) {
+pub(crate) fn panel_fitter_off_for_pipe(mmio: &Mmio, cpu: Cpu, pipe: Pipe) {
     let panel_regs = gmch_panel_regs(mmio);
-    let control = panel_regs.pfit_control.extract();
-    if !control.is_set(PFIT_CONTROL::ENABLE) {
-        return;
-    }
-    let selected_pipe = match control.read(PFIT_CONTROL::PIPE_SELECT) {
-        1 => Pipe::B,
-        2 => Pipe::C,
-        _ => Pipe::A,
-    };
-    if selected_pipe == pipe {
-        panel_regs
+    // Gen3 has no PFIT pipe-select field: the fitter is hardwired to pipe B.
+    let owner = if matches!(
+        cpu,
+        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM
+    ) {
+        Pipe::B
+    } else {
+        match panel_regs
             .pfit_control
-            .set(panel_regs.pfit_control.get() & !PFIT_CONTROL::ENABLE::SET.value);
+            .extract()
+            .read(PFIT_CONTROL::PIPE_SELECT)
+        {
+            1 => Pipe::B,
+            2 => Pipe::C,
+            _ => Pipe::A,
+        }
+    };
+    if owner == pipe {
+        // Clear every bit: clearing only ENABLE leaves stale Gen3 auto-scale
+        // bits that confuse the hardware (libgfxinit `Panel_Fitter_Off`).
+        panel_regs.pfit_control.set(0);
         let _ = panel_regs.pfit_control.get();
     }
 }

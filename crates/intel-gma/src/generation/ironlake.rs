@@ -170,8 +170,10 @@ const PCH_FPB1: usize = 0xc604c;
 const PCH_DPLL_SEL: usize = 0xc7000;
 const TRANS_TIMING_A: usize = 0xe0000;
 const TRANS_TIMING_B: usize = 0xe1000;
+const TRANS_TIMING_C: usize = 0xe2000;
 const TRANSACONF: usize = 0xf0008;
 const TRANSBCONF: usize = 0xf1008;
+const TRANSCCONF: usize = 0xf2008;
 const PCH_ADPA: usize = 0xe1100;
 const PCH_HDMIB: usize = 0xe1140;
 const PCH_HDMIC: usize = 0xe1150;
@@ -780,6 +782,21 @@ pub(crate) const fn pch_pll_plan(pll: PchPll, mode: PchDpllMode, clock: PchClock
 }
 
 /// Return the PCH DPLL_SEL update for a transcoder/PLL pair.
+/// Clear the shared PCH DPLL select enable for an FDI port (`PCH.DPLL_SEL`
+/// cleanup in libgfxinit's `Transcoder.Off`).
+pub(crate) const fn pch_dpll_sel_clear_op(fdi: FdiPort) -> PortRegisterOp {
+    let (mask_unset, mask_set) = match fdi {
+        FdiPort::A => (PCH_DPLL_SEL_ENABLE_A, 0),
+        FdiPort::B => (PCH_DPLL_SEL_ENABLE_B, 0),
+        FdiPort::C => (1 << 11, 0),
+    };
+    PortRegisterOp::Update {
+        register: PCH_DPLL_SEL,
+        mask_unset,
+        mask_set,
+    }
+}
+
 pub(crate) const fn pch_dpll_sel_op(fdi: FdiPort, pll: PchPll) -> PortRegisterOp {
     let pll_bit = match pll {
         PchPll::A => 0,
@@ -853,9 +870,13 @@ pub(crate) const fn pch_transcoder_regs(fdi: FdiPort) -> PchTranscoderRegs {
             timing: TRANS_TIMING_A,
             conf: TRANSACONF,
         },
-        FdiPort::B | FdiPort::C => PchTranscoderRegs {
+        FdiPort::B => PchTranscoderRegs {
             timing: TRANS_TIMING_B,
             conf: TRANSBCONF,
+        },
+        FdiPort::C => PchTranscoderRegs {
+            timing: TRANS_TIMING_C,
+            conf: TRANSCCONF,
         },
     }
 }
@@ -1703,9 +1724,18 @@ fn disable_cpu_pipe_for_executor<S: IronlakeMmioSink>(sink: &mut S, pipe: Pipe, 
         sink.update32(regs.pipeconf, CPU_PIPECONF_ENABLE, 0);
         sink.posting_read(regs.pipeconf);
     }
+    // libgfxinit `PCH.Transcoder.Off`: clear the enable, wait for the running
+    // state to drop, then clear the shared DPLL select enable.
     let timing = pch_transcoder_regs(fdi);
     sink.update32(timing.conf, TRANS_CONF_ENABLE, 0);
-    sink.posting_read(timing.conf);
+    let mut timeout = 50_000u32;
+    while timeout != 0 {
+        if (sink.read32(timing.conf) & (1 << 30)) == 0 {
+            break;
+        }
+        timeout -= 1;
+    }
+    apply_executor_port_op(sink, pch_dpll_sel_clear_op(fdi));
     sink.write32(fdi_tx_ctl_register(fdi), 0);
     sink.posting_read(fdi_tx_ctl_register(fdi));
 }
@@ -1835,15 +1865,20 @@ fn program_primary_plane_for_executor<S: IronlakeMmioSink>(
 ) -> Result<(), GmaError> {
     let regs = CpuPlaneRegs::for_plane(plane)?;
     let plane_config = PlaneConfig::new(plane, pipe, PlaneAddressModel::Surface, surface);
+    let pri = CPU_DSPCNTR_FORMAT_XRGB8888 | cpu_dspcntr_pipe_select(pipe);
+    // libgfxinit `Setup_Hires_Plane`: control without enable, then geometry and
+    // offsets, then the enable write that self-arms the plane.
+    sink.write32(regs.cntr, pri);
     sink.write32(regs.stride, plane_config.stride_bytes()?);
-    sink.write32(regs.tileoff, 0);
-    sink.write32(regs.linoff, 0);
-    sink.write32(regs.surf, surface.offset);
-    sink.write32(
-        regs.cntr,
-        CPU_DSPCNTR_ENABLE | CPU_DSPCNTR_FORMAT_XRGB8888 | cpu_dspcntr_pipe_select(pipe),
-    );
-    sink.write32(regs.surf, surface.offset);
+    if surface.tiling == crate::framebuffer::TilingMode::Linear {
+        sink.write32(regs.linoff, plane_config.linear_offset_bytes()?);
+        sink.write32(regs.tileoff, 0);
+    } else {
+        sink.write32(regs.linoff, 0);
+        sink.write32(regs.tileoff, plane_config.tile_offset());
+    }
+    sink.write32(regs.surf, surface.plane_surface_offset());
+    sink.write32(regs.cntr, CPU_DSPCNTR_ENABLE | pri);
     sink.posting_read(regs.surf);
     Ok(())
 }
@@ -2121,6 +2156,30 @@ mod tests {
                 },
             ),
             Err(GmaError::InvalidConfig)
+        );
+    }
+
+    #[test]
+    fn pch_transcoder_c_uses_its_own_registers_and_dpll_clear() {
+        // FDI C is transcoder C, not an alias of transcoder B.
+        let c = pch_transcoder_regs(FdiPort::C);
+        assert_eq!(c.timing, TRANS_TIMING_C);
+        assert_eq!(c.conf, TRANSCCONF);
+        assert_eq!(
+            pch_dpll_sel_clear_op(FdiPort::C),
+            PortRegisterOp::Update {
+                register: PCH_DPLL_SEL,
+                mask_unset: 1 << 11,
+                mask_set: 0,
+            }
+        );
+        assert_eq!(
+            pch_dpll_sel_clear_op(FdiPort::A),
+            PortRegisterOp::Update {
+                register: PCH_DPLL_SEL,
+                mask_unset: PCH_DPLL_SEL_ENABLE_A,
+                mask_set: 0,
+            }
         );
     }
 

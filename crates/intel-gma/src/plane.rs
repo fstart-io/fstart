@@ -52,6 +52,13 @@ impl PlaneConfig {
         self.surface.stride_bytes()
     }
 
+    /// Legacy (pre-DSPSURF) plane address: the aperture offset plus the linear
+    /// start offset, matching libgfxinit's `DSPLINOFF`/`DSPADDR` write for
+    /// Gen3.
+    pub fn aperture_linear_address(self) -> Result<u32, GmaError> {
+        Ok(self.surface.plane_surface_offset() | self.linear_offset_bytes()?)
+    }
+
     /// Return DSPLINOFF for a linear surface.
     pub fn linear_offset_bytes(self) -> Result<u32, GmaError> {
         self.surface
@@ -119,6 +126,31 @@ mod tests {
         );
         assert_eq!(plane.stride_bytes(), Ok(4096));
         assert_eq!(plane.encoded_size(), Ok(0x02ff_03ff));
+    }
+
+    #[test]
+    fn legacy_aperture_address_combines_offset_and_linear_start() {
+        let surface = SurfaceConfig {
+            base_addr: PhysAddr(0xd000_0000 + 0x4000),
+            width: 64,
+            height: 64,
+            stride: 64,
+            v_stride: 64,
+            start_x: 2,
+            start_y: 3,
+            offset: 0x0000_4000,
+            tiling: crate::framebuffer::TilingMode::Linear,
+            rotation: crate::framebuffer::Rotation::None,
+            pixel_format: PixelFormat::Xrgb8888,
+        };
+        let plane = PlaneConfig::new(
+            Plane::PrimaryA,
+            Pipe::A,
+            PlaneAddressModel::Address,
+            surface,
+        );
+        // Aperture offset keeps its 4 KiB alignment, linear start is added in.
+        assert_eq!(plane.aperture_linear_address().unwrap(), 0x4000 | (3 * 64 + 2) * 4);
     }
 
     #[test]
