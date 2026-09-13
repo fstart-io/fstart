@@ -616,7 +616,6 @@ dependencies = [
  "fstart-pci",
  "fstart-smm",
  "heapless 0.8.0",
- "serde",
  "tock-registers",
  "ufmt",
 ]
@@ -746,7 +745,6 @@ dependencies = [
  "fstart-stage",
  "heapless 0.8.0",
  "konst",
- "serde",
  "serde_json",
  "ufmt",
 ]

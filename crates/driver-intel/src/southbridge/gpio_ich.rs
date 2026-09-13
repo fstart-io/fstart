@@ -37,7 +37,6 @@
 #![allow(clippy::derivable_impls)]
 
 use fstart_core::ConstVec;
-use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // GPIOBASE register offsets
@@ -72,11 +71,11 @@ const IO_SEL_REGS: [u16; 3] = [GP_IO_SEL, GP_IO_SEL2, GP_IO_SEL3];
 const LVL_REGS: [u16; 3] = [GP_LVL, GP_LVL2, GP_LVL3];
 
 // ---------------------------------------------------------------------------
-// Per-pin configuration types (serde, for Rust board metadata)
+// Per-pin configuration types used by Rust board metadata
 // ---------------------------------------------------------------------------
 
 /// GPIO pin function select.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpioMode {
     /// Pin controlled by its native hardware function (USE_SEL = 0).
     Native,
@@ -92,7 +91,7 @@ impl Default for GpioMode {
 }
 
 /// GPIO pin direction (only meaningful in GPIO mode).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpioDir {
     /// Pin drives an output (IO_SEL = 0).
     Output,
@@ -107,7 +106,7 @@ impl Default for GpioDir {
 }
 
 /// GPIO output level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpioLevel {
     /// Output driven low / reads as low (LVL = 0).
     Low,
@@ -122,7 +121,7 @@ impl Default for GpioLevel {
 }
 
 /// GPIO reset type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpioReset {
     /// Reset on PWROK de-assertion (RST_SEL = 0).
     Pwrok,
@@ -153,28 +152,21 @@ impl Default for GpioReset {
 /// GpioPin { pin: 10, reset: GpioReset::Rsmrst, ..output(10, GpioLevel::Low) }; // S3/S4
 /// GpioPin { pin: 5, mode: GpioMode::Native, ..output(5, GpioLevel::Low) }; // explicit native
 /// ```
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct GpioPin {
     /// Pin number (0–75).
     pub pin: u8,
     /// Function select: `Gpio` (default) or `Native`.
-    #[serde(default)]
     pub mode: GpioMode,
     /// I/O direction: `Output` (default) or `Input`.
-    #[serde(default)]
     pub dir: GpioDir,
     /// Output level: `Low` (default) or `High`.
-    #[serde(default)]
     pub level: GpioLevel,
     /// Blink enable (set 1 only, pins 0–31). Default: `false`.
-    #[serde(default)]
     pub blink: bool,
     /// Input inversion (set 1 only, pins 0–31). Default: `false`.
-    #[serde(default)]
     pub invert: bool,
     /// Reset type: `Pwrok` (default) or `Rsmrst`.
-    #[serde(default)]
     pub reset: GpioReset,
 }
 
@@ -195,11 +187,9 @@ pub struct GpioPin {
 ///     .pin(input(33))
 ///     .pin(input(34));
 /// ```
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct GpioConfig {
     /// Per-pin configurations. Only list pins that differ from defaults.
-    #[serde(default)]
     pub pins: ConstVec<GpioPin, 76>,
 }
 

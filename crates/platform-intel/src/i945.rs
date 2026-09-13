@@ -31,7 +31,6 @@ pub use fstart_driver_intel::ich7::{
     PinConnector, PinDevice, PinGeoLoc, PinLoc, SataConfig, SataMode, UsbConfig,
 };
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
-use serde::Serialize;
 
 pub const I945_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const I945_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
@@ -52,8 +51,7 @@ pub const I945_CAR_SIZE: u64 = 0x8000;
 ///
 /// Board-attached devices stay in board hooks/code; fixed chipset windows
 /// (MCHBAR/DMIBAR/EPBAR/RCBA/SMBus base) are platform constants.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct I945Ich7Config {
     pub variant: I945Variant,
     pub gfx_gms: u8,

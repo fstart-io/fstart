@@ -38,7 +38,6 @@ use fstart_pci::ecam;
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
 };
-use serde::Serialize;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -156,7 +155,7 @@ pub mod dmibar {
 }
 
 /// i945 silicon stepping target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum I945Variant {
     /// 82945G/GZ/P/PL desktop parts.
     Desktop,
@@ -170,8 +169,7 @@ pub enum I945Variant {
 ///
 /// Board-attached devices stay in board hooks/code; fixed chipset windows
 /// (MCHBAR/DMIBAR/EPBAR/RCBA/SMBus base) are platform constants.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct IntelI945Config {
     /// MCHBAR base address (`0xFED14000`).
     pub mchbar: u64,
@@ -180,10 +178,8 @@ pub struct IntelI945Config {
     /// EPBAR base address (`0xFED19000`).
     pub epbar: u64,
     /// ECAM (PCIEXBAR) base address. Default: `0xF0000000`.
-    #[serde(default = "default_ecam_base")]
     pub ecam_base: u64,
     /// Number of buses decoded by PCIEXBAR (256, 128, or 64).
-    #[serde(default = "default_ecam_buses")]
     pub ecam_buses: u16,
     /// ICH7 RCBA base programmed by the southbridge driver.
     pub rcba: u64,
@@ -191,17 +187,13 @@ pub struct IntelI945Config {
     pub variant: I945Variant,
     /// Graphics Mode Select: UMA size index into
     /// `{0, 1, 4, 8, 16, 32, 48, 64} MiB`. Default 4 (16 MiB).
-    #[serde(default = "default_gfx_gms")]
     pub gfx_gms: u8,
     /// PCI MMIO window in MiB reserved below 4 GiB when programming TOLUD.
     /// coreboot refuses sizes below 768 MiB; default matches D945GCLF (768).
-    #[serde(default = "default_pci_mmio_size")]
     pub pci_mmio_size: u32,
     /// SMBus I/O base used for DIMM SPD probing during raminit.
-    #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
     /// SPD EEPROM addresses in i945 slot order: ch0 (2 slots), ch1 (2 slots).
-    #[serde(default = "default_spd_addresses")]
     pub spd_addresses: [u8; 4],
 }
 

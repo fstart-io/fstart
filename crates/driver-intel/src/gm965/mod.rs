@@ -34,7 +34,6 @@ use fstart_pci::pci_type0_config;
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
 };
-use serde::Serialize;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use tock_registers::{register_bitfields, register_structs};
@@ -391,65 +390,46 @@ impl crate::MmioBar for EpBar {
 }
 
 /// Integrated graphics configuration.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct Gm965IgdConfig {
     /// Enable the integrated VGA function (D2:F0).
-    #[serde(default = "default_true")]
     pub enable_vga: bool,
     /// Enable the secondary display function (D2:F1).
-    #[serde(default = "default_true")]
     pub enable_pipe_b: bool,
     /// Fixed GTTMMADR BAR0 address used for non-display GMA setup.
-    #[serde(default = "default_gtt_mmio_base")]
     pub gtt_mmio_base: u64,
     /// Fixed GMADR graphics aperture BAR2 address.
-    #[serde(default = "default_gmadr_base")]
     pub gmadr_base: u64,
     /// GMADR graphics aperture size in bytes.
-    #[serde(default = "default_gmadr_size")]
     pub gmadr_size: u32,
     /// IGD stolen memory size in MiB. GM965 supports 1, 4, 8, 16, 32, 48, or 64 MiB.
-    #[serde(default = "default_igd_stolen_memory_mb")]
     pub stolen_memory_mb: u16,
     /// Board-relative VBT file path stored as a compressed FFS data file.
-    #[serde(default)]
     pub vbt_file: Option<&'static str>,
     /// Raw VBT physical address, if firmware has staged a `vbt.bin` blob.
-    #[serde(default)]
     pub vbt_addr: Option<u64>,
     /// Raw VBT size at `vbt_addr`.
-    #[serde(default)]
     pub vbt_size: u32,
     /// Optional legacy VBIOS/VBT probe base, matching coreboot's 0xc0000 fallback.
-    #[serde(default = "default_legacy_vbt_probe")]
     pub legacy_vbt_probe: Option<u64>,
     /// Panel power-up delay in 100us units.
-    #[serde(default = "default_panel_power_up_delay")]
     pub panel_power_up_delay: u16,
     /// Panel power-down delay in 100us units.
-    #[serde(default = "default_panel_power_down_delay")]
     pub panel_power_down_delay: u16,
     /// Panel backlight-on delay in 100us units.
-    #[serde(default = "default_panel_backlight_on_delay")]
     pub panel_backlight_on_delay: u16,
     /// Panel backlight-off delay in 100us units.
-    #[serde(default = "default_panel_backlight_off_delay")]
     pub panel_backlight_off_delay: u16,
     /// Panel power-cycle delay in 100ms units.
-    #[serde(default = "default_panel_power_cycle_delay")]
     pub panel_power_cycle_delay: u8,
     /// Default backlight PWM frequency in Hz. Zero uses the coreboot fallback.
-    #[serde(default)]
     pub default_pwm_freq: u16,
     /// Initial duty cycle percentage.
-    #[serde(default = "default_backlight_duty_cycle")]
     pub duty_cycle: u8,
     /// Board display policy. `None` leaves the display engine untouched.
     ///
     /// Board code, not chipset metadata, so it is deliberately outside any
     /// serialized form.
-    #[serde(skip)]
     pub display: Option<super::igd::IgdDisplayPolicy>,
 }
 
@@ -590,8 +570,7 @@ static GM965_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
 ));
 
 /// GM965 northbridge configuration.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct IntelGm965Config {
     /// MCHBAR base address. X61 uses `0xfed14000`.
     pub mchbar: u64,
@@ -600,25 +579,18 @@ pub struct IntelGm965Config {
     /// EPBAR base address.
     pub epbar: u64,
     /// ECAM (PCIEXBAR) base address. Default: `0xe0000000`.
-    #[serde(default = "default_ecam_base")]
     pub ecam_base: u64,
     /// Number of buses decoded by PCIEXBAR (256, 128, or 64).
-    #[serde(default = "default_ecam_buses")]
     pub ecam_buses: u16,
     /// Enable the PEG root port (D1:F0). X61 has no discrete GPU, so this is off by default.
-    #[serde(default)]
     pub enable_peg: bool,
     /// Optional integrated graphics function enables.
-    #[serde(default)]
     pub igd: Gm965IgdConfig,
     /// SMBus I/O base used for DIMM SPD probing during raminit.
-    #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
     /// SPD EEPROM addresses in GM965 slot order: ch0 slot0/1, ch1 slot0/1.
-    #[serde(default = "default_spd_addresses")]
     pub spd_addresses: [u8; 4],
     /// ACPI device name (reserved for future ACPI device generation).
-    #[serde(default)]
     pub acpi_name: Option<&'static str>,
 }
 
@@ -1354,7 +1326,10 @@ impl IntelGm965 {
     }
 
     /// Hand the IGD to the shared GMA layer for the actual modeset.
-    fn gma_display_init(&mut self) -> Result<(), ServiceError> {
+    ///
+    /// Best effort: a panel that will not come up leaves the machine booting
+    /// headless rather than aborting the stage, matching coreboot.
+    fn gma_display_init(&mut self) {
         let igd = self.igd();
         igd.write32(
             hostbridge::IGD_BAR2_GMADR,
@@ -1380,8 +1355,7 @@ impl IntelGm965 {
             self.config.igd.display.as_ref(),
             &addresses,
             vbt,
-        )?;
-        Ok(())
+        );
     }
 
     fn gtt_mmio_read32(&self, off: usize) -> u32 {
@@ -1670,7 +1644,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         if self.config.igd.display.is_some() {
             self.gma_non_display_init();
             self.gtt_setup();
-            self.gma_display_init()?;
+            self.gma_display_init();
         }
         Ok(())
     }

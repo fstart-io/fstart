@@ -33,7 +33,6 @@ pub use fstart_driver_intel::ich8::{
     SataConfig, SataMode, UsbConfig,
 };
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
-use serde::Serialize;
 
 pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const GM965_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
@@ -51,8 +50,7 @@ pub const ICH8_SMBUS_BASE: u16 = 0x0400;
 ///
 /// Board-attached devices stay in board hooks/code; fixed chipset windows
 /// (MCHBAR/DMIBAR/EPBAR/RCBA/SMBus base) are platform constants.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct Gm965Ich8Config {
     pub igd: gm965::Gm965IgdConfig,
     pub enable_peg: bool,

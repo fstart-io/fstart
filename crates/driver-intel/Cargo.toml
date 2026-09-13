@@ -38,6 +38,5 @@ fstart-core = { workspace = true, features = ["pci"] }
 fstart-pci = { workspace = true }
 fstart-smm = { workspace = true }
 heapless = { workspace = true }
-serde = { workspace = true }
 tock-registers = { workspace = true }
 ufmt = { workspace = true }

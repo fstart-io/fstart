@@ -18,7 +18,6 @@ use fstart_core::services::{
 };
 use fstart_pci::ecam;
 use fstart_pci::{PCI_COMMAND_BITS, PciType0Config, PciType1Config, pci_type0_config};
-use serde::{Deserialize, Serialize};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -585,24 +584,20 @@ mod rcba_pirq {
 }
 
 /// SATA configuration.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct SataConfig {
     pub mode: SataMode,
     pub ports: u8,
     /// AHCI hot-plug port bitmap.
-    #[serde(default)]
     pub hotplug_map: u8,
     /// Enable the SATA clock-request path when GPIO35 indicates it is usable.
-    #[serde(default)]
     pub clock_request: bool,
     /// Enable the mobile SATA traffic monitor when C-state popup/popdown is enabled.
-    #[serde(default)]
     pub traffic_monitor: bool,
 }
 
 /// I/O access types matched by an ICH8 trap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoTrapAccess {
     /// Trap read cycles only.
     Read,
@@ -613,8 +608,7 @@ pub enum IoTrapAccess {
 }
 
 /// Semantic ICH8 I/O trap configuration.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct IoTrapConfig {
     /// I/O trap register index, 0..3.
     pub index: u8,
@@ -654,48 +648,39 @@ impl IoTrapConfig {
 }
 
 /// ICH8-M PATA/IDE controller configuration.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct IdeConfig {
     /// Enable the primary PATA channel.
-    #[serde(default)]
     pub enable_primary: bool,
     /// Enable the secondary PATA channel.
-    #[serde(default)]
     pub enable_secondary: bool,
 }
 
 /// PCIe slot power-limit fields.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PciePowerLimit {
     /// Power-limit value encoded in PCIe Slot Capabilities.
-    #[serde(default)]
     pub value: u8,
     /// Power-limit scale encoded in PCIe Slot Capabilities.
-    #[serde(default)]
     pub scale: u8,
 }
 
 /// SATA controller operating mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SataMode {
     Ide,
     Ahci,
 }
 
 /// USB controller configuration.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct UsbConfig {
-    #[serde(default)]
     pub ehci: [bool; 2],
-    #[serde(default)]
     pub uhci: [bool; 6],
 }
 
 /// Legacy serial-port decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LpcSerialDecode {
     /// COM1 at 0x3f8.
     Com1,
@@ -731,7 +716,7 @@ impl LpcSerialDecode {
 }
 
 /// Parallel-port decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LpcParallelDecode {
     /// LPT at 0x378.
     Lpt378,
@@ -752,7 +737,7 @@ impl LpcParallelDecode {
 }
 
 /// Floppy-controller decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LpcFloppyDecode {
     /// FDC at 0x3f0.
     Fdd3f0,
@@ -778,20 +763,15 @@ const fn default_com_b() -> LpcSerialDecode {
 }
 
 /// Fixed legacy I/O decode selections for COM/LPT/FDC ranges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcFixedIoDecode {
     /// COMA selector. COMA is enabled through `LPC_EN_ALL`.
-    #[serde(default = "default_com_a")]
     pub com_a: LpcSerialDecode,
     /// COMB selector. COMB is enabled through `LPC_EN_ALL`.
-    #[serde(default = "default_com_b")]
     pub com_b: LpcSerialDecode,
     /// Optional LPT selector.
-    #[serde(default)]
     pub lpt: Option<LpcParallelDecode>,
     /// Optional FDC selector.
-    #[serde(default)]
     pub fdd: Option<LpcFloppyDecode>,
 }
 
@@ -820,8 +800,7 @@ impl LpcFixedIoDecode {
 }
 
 /// One LPC generic I/O decode window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcGenericIoDecode {
     /// I/O base address. Must be 4-byte aligned.
     pub base: u16,
@@ -842,14 +821,11 @@ impl LpcGenericIoDecode {
 }
 
 /// Board-level LPC decode policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcDecodeConfig {
     /// Fixed COM/LPT/FDC decode selector register.
-    #[serde(default)]
     pub fixed_io: LpcFixedIoDecode,
     /// Up to four generic I/O decode windows, programmed to GEN1..GEN4.
-    #[serde(default)]
     pub generic_io: ConstVec<LpcGenericIoDecode, 4>,
 }
 
@@ -875,8 +851,7 @@ impl Default for LpcDecodeConfig {
 }
 
 /// ICH8 southbridge configuration.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct IntelIch8Config {
     /// Root Complex Base Address register value.
     pub rcba: u64,
@@ -887,73 +862,50 @@ pub struct IntelIch8Config {
     /// GPE0 enable bits (ICH8 low dword at PMBASE+0x28).
     pub gpe0_en: u32,
     /// GPI routing selectors for GPIO0..15 (0=no route, 1=SMI, 2=SCI).
-    #[serde(default)]
     pub gpi_routing: [u8; 16],
     /// Alternate GPI SMI enable bits.
-    #[serde(default)]
     pub alt_gp_smi_en: u16,
     /// Enable C4-on-C3 in GEN_PMCON_1 for mobile board power policy.
-    #[serde(default)]
     pub c4_on_c3: bool,
     /// Enable C5/C6 PMSYNC support.
-    #[serde(default)]
     pub c5_enable: bool,
     /// Enable C6 exit timing when C5/C6 PMSYNC support is active.
-    #[serde(default)]
     pub c6_enable: bool,
     /// LPC fixed and generic I/O decode policy.
-    #[serde(default)]
     pub lpc_decode: LpcDecodeConfig,
     /// Optional HD Audio verb table.
-    #[serde(default)]
     pub hda: Option<HdaConfig>,
     /// Optional PATA/IDE controller configuration.
-    #[serde(default)]
     pub ide: Option<IdeConfig>,
     /// SATA configuration.
-    #[serde(default)]
     pub sata: Option<SataConfig>,
     /// USB configuration.
-    #[serde(default)]
     pub usb: Option<UsbConfig>,
     /// PCIe root ports 1..6 enabled.
-    #[serde(default = "default_pcie_ports")]
     pub pcie_ports: [bool; 6],
     /// PCIe root ports implemented as slots.
-    #[serde(default)]
     pub pcie_slots: [bool; 6],
     /// PCIe slot power limits for ports 1..6.
-    #[serde(default)]
     pub pcie_power_limits: [PciePowerLimit; 6],
     /// I/O trap registers to program.
-    #[serde(default)]
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     /// SMBus I/O base.
-    #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
     /// GPIO pad configuration.
-    #[serde(default)]
     pub gpio: GpioConfig,
     /// ACPI device name (reserved for future ACPI device generation).
-    #[serde(default)]
     pub acpi_name: Option<&'static str>,
     /// C3 latency in microseconds.
-    #[serde(default = "default_c3_latency")]
     pub c3_latency: u16,
     /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
-    #[serde(default)]
     pub power_on_after_fail: u8,
     /// Hardware throttle duty cycle (PMBASE+0x10 bits [7:5]).
-    #[serde(default)]
     pub throttle_duty: u8,
     /// Disable the integrated LAN function through the SUS-well FD register.
-    #[serde(default)]
     pub disable_lan: bool,
     /// Disable the second SATA function. ICH8-M boards commonly leave it hidden.
-    #[serde(default = "default_true")]
     pub disable_sata2: bool,
     /// Disable the desktop thermal-throttle function. ICH8-M does not expose it.
-    #[serde(default = "default_true")]
     pub disable_thermal: bool,
 }
 
