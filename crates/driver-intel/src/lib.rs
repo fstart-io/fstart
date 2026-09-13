@@ -12,6 +12,7 @@ pub mod gm965;
 pub mod i945;
 pub mod ich7;
 pub mod ich8;
+pub mod igd;
 pub mod pineview;
 pub use fstart_arch::cpu_intel::microcode;
 pub mod southbridge;
@@ -159,6 +160,12 @@ pub trait IntelNorthbridgeDriver:
 
     /// Caches policy derived from the detected memory map.
     fn memory_detected(&mut self, _e820: &fstart_core::services::memory_detect::E820State) {}
+
+    /// Framebuffer programmed during [`Self::stage_local_init`], if the board
+    /// asked for display bring-up. The platform hands this to the payload.
+    fn framebuffer_info(&self) -> Option<fstart_core::services::FramebufferInfo> {
+        None
+    }
 }
 
 /// ECAM base exposed by northbridge config.

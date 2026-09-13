@@ -32,6 +32,7 @@ use fstart_core::services::MemoryController;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_core::services::{ServiceError, SmBus};
+use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
 use fstart_pci::{
@@ -86,6 +87,20 @@ impl VbtBytes<'_> {
     }
 }
 
+/// IGD PCI configuration offsets and command bits.
+const IGD_BAR0_GTTMMADR: u16 = 0x10;
+const IGD_BAR2_GMADR: u16 = 0x18;
+const IGD_BAR3_GTTADR: u16 = 0x1c;
+const IGD_MSAC: u16 = 0x62;
+const PCI_COMMAND: u16 = 0x04;
+const PCI_CMD_MEMORY: u16 = 1 << 1;
+const PCI_CMD_MASTER: u16 = 1 << 2;
+/// GTTMMADR BAR0 window size. Pineview keeps the display MMIO in the lower
+/// 512 KiB and exposes the page table through BAR3.
+const IGD_GTTMMADR_SIZE: u32 = 512 * 1024;
+/// GTT page-table size in bytes.
+const IGD_GTT_SIZE: u32 = 512 * 1024;
+
 /// Intel integrated graphics configuration.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -102,6 +117,37 @@ pub struct PineviewIgdConfig {
     /// Board-relative VBT file path stored as a compressed FFS data file.
     #[serde(default)]
     pub vbt_file: Option<&'static str>,
+    /// Fixed GTTMMADR BAR0 address.
+    #[serde(default = "default_gtt_mmio_base")]
+    pub gtt_mmio_base: u64,
+    /// MMIO-visible GTT page-table BAR3 address.
+    #[serde(default = "default_gtt_pte_base")]
+    pub gtt_pte_base: u64,
+    /// Fixed GMADR graphics aperture BAR2 address.
+    #[serde(default = "default_gmadr_base")]
+    pub gmadr_base: u64,
+    /// GMADR graphics aperture size in bytes.
+    #[serde(default = "default_gmadr_size")]
+    pub gmadr_size: u32,
+    /// Board display policy. `None` leaves the display engine untouched.
+    #[serde(skip)]
+    pub display: Option<super::igd::IgdDisplayPolicy>,
+}
+
+const fn default_gtt_mmio_base() -> u64 {
+    0xfed0_0000
+}
+
+const fn default_gtt_pte_base() -> u64 {
+    0xfed8_0000
+}
+
+const fn default_gmadr_base() -> u64 {
+    0xc000_0000
+}
+
+const fn default_gmadr_size() -> u32 {
+    256 * 1024 * 1024
 }
 
 /// Pineview northbridge configuration.
@@ -147,6 +193,11 @@ impl PineviewIgdConfig {
             use_lvds: false,
             spread_spectrum: false,
             vbt_file: None,
+            gtt_mmio_base: default_gtt_mmio_base(),
+            gtt_pte_base: default_gtt_pte_base(),
+            gmadr_base: default_gmadr_base(),
+            gmadr_size: default_gmadr_size(),
+            display: None,
         }
     }
 }
@@ -222,6 +273,8 @@ pub struct IntelPineview {
     /// Detected DRAM size (bytes), populated by `init()`.
     detected_size: u64,
     boot_path: crate::BootPath,
+    /// Framebuffer programmed by the shared GMA layer, if the board asked for it.
+    display: super::igd::IgdDisplay,
 }
 
 // SAFETY: Driver holds no unsynchronized shared state; MMIO and PCI
@@ -522,6 +575,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
             config,
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
+            display: super::igd::IgdDisplay::new(),
         })
     }
 
@@ -562,7 +616,14 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         self.init_igd_opregion();
+        if self.config.igd.display.is_some() {
+            self.gma_display_init()?;
+        }
         Ok(())
+    }
+
+    fn framebuffer_info(&self) -> Option<fstart_core::services::FramebufferInfo> {
+        self.display.framebuffer_info()
     }
 }
 
@@ -1100,6 +1161,71 @@ impl IntelPineview {
     // ---------------------------------------------------------------
     // Full memory map (from northbridge.c)
     // ---------------------------------------------------------------
+
+    /// Program the IGD BARs and hand the display engine to the shared GMA layer.
+    ///
+    /// Pineview exposes its GTT through a dedicated BAR3, and coreboot programs
+    /// `PGETBL_CTL` from the stolen-memory base register (`BGSM`) twice with a
+    /// short delay before the modeset. Without that enable bit the display
+    /// engine cannot translate framebuffer addresses.
+    fn gma_display_init(&mut self) -> Result<(), ServiceError> {
+        let igd = ecam::EcamDevice::new(0, 2, 0);
+        igd.write32(
+            IGD_BAR0_GTTMMADR,
+            (self.config.igd.gtt_mmio_base as u32) & 0xfff8_0000,
+        );
+        igd.write32(
+            IGD_BAR2_GMADR,
+            (self.config.igd.gmadr_base as u32) & 0xf000_0000,
+        );
+        igd.write32(
+            IGD_BAR3_GTTADR,
+            (self.config.igd.gtt_pte_base as u32) & 0xfff8_0000,
+        );
+        igd.or16(PCI_COMMAND, PCI_CMD_MEMORY | PCI_CMD_MASTER);
+        igd.and8_or8(IGD_MSAC, !0x3, 0x2);
+
+        // coreboot writes PGETBL_CTL twice around a short delay, then flushes.
+        let gtt_base = self.gtt_base();
+        super::igd::program_gtt_base(self.config.igd.gtt_mmio_base, gtt_base, 0);
+        fstart_arch::x86::udelay(50);
+        super::igd::program_gtt_base(self.config.igd.gtt_mmio_base, gtt_base, 0);
+        super::igd::clear_gtt_table(self.config.igd.gtt_pte_base, IGD_GTT_SIZE);
+
+        // Stolen memory runs from the IGD base up to the GTT base, plus the
+        // page table itself.
+        let stolen_base = self.igd_base();
+        let stolen_size = self
+            .gtt_base()
+            .saturating_sub(stolen_base)
+            .saturating_add(IGD_GTT_SIZE);
+        let addresses = super::igd::IgdAddresses {
+            pci_bdf: PciAddress::new(0, 0, 2, 0),
+            gtt_mmio_base: self.config.igd.gtt_mmio_base,
+            gtt_mmio_size: IGD_GTTMMADR_SIZE,
+            gtt_pte_base: Some(self.config.igd.gtt_pte_base),
+            gmadr_base: Some(self.config.igd.gmadr_base),
+            gmadr_size: self.config.igd.gmadr_size,
+            stolen_base: u64::from(stolen_base),
+            stolen_size,
+            gtt_size: IGD_GTT_SIZE,
+            gcfgc: Some(self.mchbar().read16(mchbar::MCH_GCFGC)),
+        };
+        let cpu = if self.platform_type() == raminit::PLATFORM_MOBILE {
+            Cpu::PineviewM
+        } else {
+            Cpu::Pineview
+        };
+        #[cfg(feature = "ffs-vbt")]
+        let vbt = self.locate_vbt();
+        #[cfg(feature = "ffs-vbt")]
+        let vbt = vbt.as_ref().map(|bytes| bytes.as_slice());
+        #[cfg(not(feature = "ffs-vbt"))]
+        let vbt: Option<&[u8]> = None;
+        self.display
+            .initialize(cpu, self.config.igd.display.as_ref(), &addresses, vbt)?;
+        Ok(())
+    }
 
     /// Read the graphics stolen memory base (GBSM register).
     pub fn igd_base(&self) -> u32 {

@@ -6,9 +6,44 @@ use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_intel::southbridge::hda;
 use fstart_driver_superio::pc87382;
 use fstart_driver_superio::pc87392;
+use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
+use fstart_intel_gma::{FallbackMode, OutputConfig, PreferredMode, Port};
 use fstart_platform_intel::gm965::{
     Gm965Ich8Config, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode,
     LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
+};
+use fstart_platform_intel::igd::IgdDisplayPolicy;
+
+/// X61 is a 12.1" 1024x768 XGA LVDS panel.
+///
+/// Only the internal panel is enabled: the shared GMA layer initializes the
+/// first enabled output, and the panel is the display that is always present.
+/// The VGA, DP and HDMI ports are left to the OS, which re-programs them from
+/// the VBT we publish in the OpRegion.
+const X61_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
+    outputs: &[OutputConfig {
+        port: Port::Lvds,
+        enabled: true,
+    }],
+    framebuffer: FramebufferConfig {
+        width: 1024,
+        height: 768,
+        bits_per_pixel: 32,
+        stride: None,
+        v_stride: None,
+        start_x: 0,
+        start_y: 0,
+        offset: 0,
+        tiling: TilingMode::Linear,
+        rotation: Rotation::None,
+        preferred_mode: PreferredMode::VbtPanel,
+        fallback_mode: Some(FallbackMode {
+            width: 1024,
+            height: 768,
+            refresh_hz: 60,
+        }),
+        scaling: fstart_intel_gma::ScalingPolicy::None,
+    },
 };
 
 /// Factory 4-MiB SPI image map, const-validated in the real board source.
@@ -124,6 +159,8 @@ pub const fn x61_igd_config() -> Gm965IgdConfig {
         enable_vga: true,
         enable_pipe_b: true,
         gtt_mmio_base: 0xFEB0_0000,
+        gmadr_base: 0xD000_0000,
+        gmadr_size: 256 * 1024 * 1024,
         stolen_memory_mb: 32,
         vbt_file: Some("data.vbt"),
         vbt_addr: None,
@@ -136,6 +173,7 @@ pub const fn x61_igd_config() -> Gm965IgdConfig {
         panel_power_cycle_delay: 6,
         default_pwm_freq: 0,
         duty_cycle: 100,
+        display: Some(X61_DISPLAY),
     }
 }
 

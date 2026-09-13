@@ -28,6 +28,7 @@ use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_core::services::{MemoryController, ServiceError};
+use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
 use fstart_pci::{
@@ -80,6 +81,7 @@ pub mod hostbridge {
     pub const IGD_FUNC: u8 = 0;
     pub const IGD_ALT_FUNC: u8 = 1;
     pub const IGD_BAR0_GTTMMADR: u16 = 0x10;
+    pub const IGD_BAR2_GMADR: u16 = 0x18;
     pub const IGD_BSM: u16 = 0x5c;
     pub const IGD_MSAC: u16 = 0x62;
     pub const IGD_SWSCI: u16 = 0xe8;
@@ -401,6 +403,12 @@ pub struct Gm965IgdConfig {
     /// Fixed GTTMMADR BAR0 address used for non-display GMA setup.
     #[serde(default = "default_gtt_mmio_base")]
     pub gtt_mmio_base: u64,
+    /// Fixed GMADR graphics aperture BAR2 address.
+    #[serde(default = "default_gmadr_base")]
+    pub gmadr_base: u64,
+    /// GMADR graphics aperture size in bytes.
+    #[serde(default = "default_gmadr_size")]
+    pub gmadr_size: u32,
     /// IGD stolen memory size in MiB. GM965 supports 1, 4, 8, 16, 32, 48, or 64 MiB.
     #[serde(default = "default_igd_stolen_memory_mb")]
     pub stolen_memory_mb: u16,
@@ -437,6 +445,12 @@ pub struct Gm965IgdConfig {
     /// Initial duty cycle percentage.
     #[serde(default = "default_backlight_duty_cycle")]
     pub duty_cycle: u8,
+    /// Board display policy. `None` leaves the display engine untouched.
+    ///
+    /// Board code, not chipset metadata, so it is deliberately outside any
+    /// serialized form.
+    #[serde(skip)]
+    pub display: Option<super::igd::IgdDisplayPolicy>,
 }
 
 impl Gm965IgdConfig {
@@ -446,6 +460,8 @@ impl Gm965IgdConfig {
             enable_vga: true,
             enable_pipe_b: true,
             gtt_mmio_base: default_gtt_mmio_base(),
+            gmadr_base: default_gmadr_base(),
+            gmadr_size: default_gmadr_size(),
             stolen_memory_mb: default_igd_stolen_memory_mb(),
             vbt_file: None,
             vbt_addr: None,
@@ -458,6 +474,7 @@ impl Gm965IgdConfig {
             panel_power_cycle_delay: default_panel_power_cycle_delay(),
             default_pwm_freq: 0,
             duty_cycle: default_backlight_duty_cycle(),
+            display: None,
         }
     }
 }
@@ -470,6 +487,14 @@ impl Default for Gm965IgdConfig {
 
 const fn default_gtt_mmio_base() -> u64 {
     0xfeb0_0000
+}
+
+const fn default_gmadr_base() -> u64 {
+    0xd000_0000
+}
+
+const fn default_gmadr_size() -> u32 {
+    256 * 1024 * 1024
 }
 
 const fn default_igd_stolen_memory_mb() -> u16 {
@@ -510,6 +535,7 @@ const PCI_PIO_SIZE: u64 = 0xf000;
 
 const IGD_OPREGION_BASE_SIZE: usize = 8 * 1024;
 const IGD_OPREGION_TOTAL_SIZE: usize = 16 * 1024;
+const IGD_GTTMMADR_SIZE: u32 = 1024 * 1024;
 const IGD_GTTMMADR_GTT_OFFSET: usize = 512 * 1024;
 const IGD_GTTMMADR_GTT_SIZE: usize = 512 * 1024;
 const IGD_VBT_INLINE_OFFSET: usize = 0x400;
@@ -629,6 +655,8 @@ pub struct IntelGm965 {
     detected_size: u64,
     /// PCI mmio32 window derived from the e820 map after memory detection.
     mmio32_window: Option<(u64, u64)>,
+    /// Framebuffer programmed by the shared GMA layer, if the board asked for it.
+    display: super::igd::IgdDisplay,
 }
 
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
@@ -1305,6 +1333,57 @@ impl IntelGm965 {
         );
     }
 
+    /// Program the hardware GTT base register.
+    ///
+    /// Crestline keeps the GTT page table at the top of stolen memory
+    /// (`TOLUD - 512 KiB`), which is where the vendor BIOS and Linux's GMCH
+    /// layer expect it. Without `PGETBL_CTL` the display engine cannot resolve
+    /// framebuffer addresses, so this must precede the modeset.
+    fn gtt_setup(&self) {
+        let tolud = self.tolud();
+        if tolud < 512 * 1024 {
+            fstart_log::error!("intel-gm965: TOLUD too low for a GTT page table");
+            return;
+        }
+        let gtt_base = tolud - 512 * 1024;
+        super::igd::program_gtt_base(
+            self.config.igd.gtt_mmio_base,
+            gtt_base,
+            super::igd::PGETBL_ENABLED,
+        );
+    }
+
+    /// Hand the IGD to the shared GMA layer for the actual modeset.
+    fn gma_display_init(&mut self) -> Result<(), ServiceError> {
+        let igd = self.igd();
+        igd.write32(
+            hostbridge::IGD_BAR2_GMADR,
+            (self.config.igd.gmadr_base as u32) & 0xf000_0000,
+        );
+        let stolen_base = self.igd_stolen_base();
+        let addresses = super::igd::IgdAddresses {
+            pci_bdf: PciAddress::new(0, 0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC),
+            gtt_mmio_base: self.config.igd.gtt_mmio_base,
+            gtt_mmio_size: IGD_GTTMMADR_SIZE,
+            gtt_pte_base: None,
+            gmadr_base: Some(self.config.igd.gmadr_base),
+            gmadr_size: self.config.igd.gmadr_size,
+            stolen_base: u64::from(stolen_base),
+            stolen_size: self.tolud().saturating_sub(stolen_base),
+            gtt_size: IGD_GTTMMADR_GTT_SIZE as u32,
+            gcfgc: Some(igd.read16(hostbridge::GCFGC)),
+        };
+        let vbt = self.locate_vbt();
+        let vbt = vbt.as_ref().map(|bytes| bytes.as_slice());
+        self.display.initialize(
+            Cpu::Gm965,
+            self.config.igd.display.as_ref(),
+            &addresses,
+            vbt,
+        )?;
+        Ok(())
+    }
+
     fn gtt_mmio_read32(&self, off: usize) -> u32 {
         // SAFETY: GTTMMADR BAR0 has been programmed by `gma_non_display_init`.
         unsafe {
@@ -1562,6 +1641,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
             config,
             detected_size: 0,
             mmio32_window: None,
+            display: super::igd::IgdDisplay::new(),
         })
     }
 
@@ -1581,9 +1661,22 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         Ok(())
     }
 
+    /// Ramstage: bring the IGD and, when the board asked for it, the display up.
+    ///
+    /// coreboot runs the IGD device init here (`gma_func0_init`), and the
+    /// OpRegion needs the mainstage heap, so neither belongs in the bootblock.
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
+        if self.config.igd.display.is_some() {
+            self.gma_non_display_init();
+            self.gtt_setup();
+            self.gma_display_init()?;
+        }
         Ok(())
+    }
+
+    fn framebuffer_info(&self) -> Option<fstart_core::services::FramebufferInfo> {
+        self.display.framebuffer_info()
     }
 
     fn memory_detected(&mut self, e820: &fstart_core::services::memory_detect::E820State) {

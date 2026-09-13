@@ -611,6 +611,7 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-driver-superio",
+ "fstart-intel-gma",
  "fstart-log",
  "fstart-pci",
  "fstart-smm",
