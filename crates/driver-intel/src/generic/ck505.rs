@@ -11,15 +11,13 @@
 use fstart_core::services::SmBus;
 use fstart_core::services::device::DeviceError;
 use heapless::Vec;
-use serde::{Deserialize, Serialize};
 
 /// Configuration for the CK505 clock generator.
 ///
 /// `mask` and `regs` must have the same length — one entry per
 /// clock register. Typical clock generators have 5–21 registers;
 /// the `Vec<u8, 32>` capacity handles all known parts.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct I2cCk505Config {
     /// Mask bytes — bit set = register position is written from `regs`.
     pub mask: Vec<u8, 32>,

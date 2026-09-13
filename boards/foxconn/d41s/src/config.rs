@@ -6,9 +6,40 @@ use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_superio::ite8721f;
 use fstart_driver_intel::southbridge::hda;
+use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
+use fstart_intel_gma::{FallbackMode, OutputConfig, PreferredMode, Port};
+use fstart_platform_intel::igd::IgdDisplayPolicy;
 use fstart_platform_intel::pineview::{
     LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PineviewIch7Config,
     PineviewIgdConfig, SataConfig, SataMode, UsbConfig,
+};
+
+/// D41S is a desktop board: the shared GMA layer lights the analog CRT port,
+/// and the OS takes over the DVI/HDMI side from the VBT in the OpRegion.
+const D41S_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
+    outputs: &[OutputConfig {
+        port: Port::Vga,
+        enabled: true,
+    }],
+    framebuffer: FramebufferConfig {
+        width: 1024,
+        height: 768,
+        bits_per_pixel: 32,
+        stride: None,
+        v_stride: None,
+        start_x: 0,
+        start_y: 0,
+        offset: 0,
+        tiling: TilingMode::Linear,
+        rotation: Rotation::None,
+        preferred_mode: PreferredMode::VbtPanel,
+        fallback_mode: Some(FallbackMode {
+            width: 1024,
+            height: 768,
+            refresh_hz: 60,
+        }),
+        scaling: fstart_intel_gma::ScalingPolicy::None,
+    },
 };
 
 pub const BOARD_NAME: &str = "foxconn-d41s";
@@ -104,6 +135,11 @@ pub const fn d41s_igd_config() -> PineviewIgdConfig {
         use_lvds: false,
         spread_spectrum: false,
         vbt_file: Some("data.vbt"),
+        gtt_mmio_base: 0xFED0_0000,
+        gtt_pte_base: 0xFED8_0000,
+        gmadr_base: 0xC000_0000,
+        gmadr_size: 256 * 1024 * 1024,
+        display: Some(D41S_DISPLAY),
     }
 }
 

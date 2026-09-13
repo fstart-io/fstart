@@ -11,7 +11,6 @@
 //! runs; `PGETBL_CTL` points the display engine at the page table, while the
 //! page-table entries themselves are written by the shared GMA library.
 
-use fstart_core::services::ServiceError;
 use fstart_core::services::framebuffer::{Framebuffer, FramebufferInfo};
 #[cfg(feature = "display")]
 use fstart_core::typed::mmio32;
@@ -158,28 +157,33 @@ impl IgdDisplay {
 
     /// Program the display engine and record the resulting framebuffer.
     ///
-    /// Returns `Ok(false)` when the board declares no display policy, which
-    /// leaves the IGD untouched, and in build units that do not link the shared
-    /// GMA library (see the `display` feature). The chipset prerequisites (BAR
-    /// programming, GDRST reset, OpRegion, GTT base) are the caller's job.
+    /// Best effort, like coreboot's `gma_func0_init`: a board with no display
+    /// policy, or one whose panel or monitor cannot be brought up, still boots.
+    /// Returns whether a framebuffer was programmed. The chipset prerequisites
+    /// (BAR programming, GDRST reset, OpRegion, GTT base) are the caller's job.
     pub fn initialize(
         &mut self,
         cpu: Cpu,
         policy: Option<&IgdDisplayPolicy>,
         addresses: &IgdAddresses,
         vbt: Option<&[u8]>,
-    ) -> Result<bool, ServiceError> {
+    ) -> bool {
         #[cfg(feature = "display")]
-        {
-            self.modeset(cpu, policy, addresses, vbt)
+        match self.modeset(cpu, policy, addresses, vbt) {
+            Ok(programmed) => programmed,
+            Err(err) => {
+                fstart_log::error!("intel-igd: display initialization failed: {}", err.as_str());
+                false
+            }
         }
         #[cfg(not(feature = "display"))]
         {
             let _ = (cpu, policy, addresses, vbt);
-            Ok(false)
+            false
         }
     }
 
+    #[cfg(feature = "display")]
     #[cfg(feature = "display")]
     fn modeset(
         &mut self,
@@ -187,7 +191,7 @@ impl IgdDisplay {
         policy: Option<&IgdDisplayPolicy>,
         addresses: &IgdAddresses,
         vbt: Option<&[u8]>,
-    ) -> Result<bool, ServiceError> {
+    ) -> Result<bool, fstart_intel_gma::GmaError> {
         let Some(policy) = policy else {
             return Ok(false);
         };
@@ -208,10 +212,7 @@ impl IgdDisplay {
                 self.info = Some(framebuffer);
                 Ok(true)
             }
-            Err(err) => {
-                fstart_log::error!("intel-igd: display initialization failed: {}", err.as_str());
-                Err(ServiceError::HardwareError)
-            }
+            Err(err) => Err(err),
         }
     }
 }

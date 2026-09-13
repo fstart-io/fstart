@@ -33,7 +33,6 @@ pub use fstart_driver_intel::ich7::{
 use fstart_driver_intel::pineview;
 pub use fstart_driver_intel::pineview::{IntelPineviewConfig, PineviewIgdConfig};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
-use serde::Serialize;
 
 pub const PINEVIEW_NORTHBRIDGE_NODE: &str = "northbridge";
 pub const PINEVIEW_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
@@ -54,8 +53,7 @@ pub const ICH7_SMBUS_BASE: u16 = 0x0400;
 ///
 /// Board-attached devices stay in board hooks/code; fixed chipset windows
 /// (MCHBAR/DMIBAR/EPBAR/RCBA/SMBus base) are platform constants.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct PineviewIch7Config {
     pub igd: pineview::PineviewIgdConfig,
     pub pcie_ports: [bool; 4],

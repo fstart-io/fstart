@@ -266,7 +266,6 @@ use fstart_core::services::{
     FirmwareImage, FirmwareImageProvider, ServiceError, SmBus, Southbridge,
 };
 use fstart_driver_superio::LpcBaseProvider;
-use serde::Serialize;
 
 // Re-export HDA types from the shared crate so board configs
 // can reference them via the ICH7 driver path.
@@ -418,27 +417,23 @@ const SLP_TYP_S3: u32 = 0x1400;
 // ---------------------------------------------------------------------------
 
 /// SATA configuration.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct SataConfig {
     pub mode: SataMode,
     pub ports: u8,
 }
 
 /// SATA controller operating mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SataMode {
     Ide,
     Ahci,
 }
 
 /// USB controller configuration.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct UsbConfig {
-    #[serde(default)]
     pub ehci: bool,
-    #[serde(default)]
     pub uhci: [bool; 4],
 }
 
@@ -446,7 +441,7 @@ pub struct UsbConfig {
 // See crate::southbridge::hda::{hda_verb, hda_pin_cfg, hda_pin_nc} for helpers.
 
 /// Legacy serial-port decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LpcSerialDecode {
     /// COM1 at 0x3f8.
     Com1,
@@ -482,7 +477,7 @@ impl LpcSerialDecode {
 }
 
 /// Parallel-port decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LpcParallelDecode {
     /// LPT at 0x378.
     Lpt378,
@@ -503,7 +498,7 @@ impl LpcParallelDecode {
 }
 
 /// Floppy-controller decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LpcFloppyDecode {
     /// FDC at 0x3f0.
     Fdd3f0,
@@ -529,20 +524,15 @@ const fn default_com_b() -> LpcSerialDecode {
 }
 
 /// Fixed legacy I/O decode selections for COM/LPT/FDC ranges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcFixedIoDecode {
     /// COMA selector. COMA is enabled through `LPC_EN_ALL`.
-    #[serde(default = "default_com_a")]
     pub com_a: LpcSerialDecode,
     /// COMB selector. COMB is enabled through `LPC_EN_ALL`.
-    #[serde(default = "default_com_b")]
     pub com_b: LpcSerialDecode,
     /// Optional LPT selector.
-    #[serde(default)]
     pub lpt: Option<LpcParallelDecode>,
     /// Optional FDC selector.
-    #[serde(default)]
     pub fdd: Option<LpcFloppyDecode>,
 }
 
@@ -571,8 +561,7 @@ impl LpcFixedIoDecode {
 }
 
 /// One LPC generic I/O decode window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcGenericIoDecode {
     /// I/O base address. Must be 4-byte aligned.
     pub base: u16,
@@ -593,14 +582,11 @@ impl LpcGenericIoDecode {
 }
 
 /// Board-level LPC decode policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcDecodeConfig {
     /// Fixed COM/LPT/FDC decode selector register.
-    #[serde(default)]
     pub fixed_io: LpcFixedIoDecode,
     /// Up to four generic I/O decode windows, programmed to GEN1..GEN4.
-    #[serde(default)]
     pub generic_io: ConstVec<LpcGenericIoDecode, 4>,
 }
 
@@ -631,8 +617,7 @@ pub use crate::southbridge::gpio_ich::{
 };
 
 /// ICH7 southbridge configuration.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct IntelIch7Config {
     /// Root Complex Base Address register value.
     pub rcba: u64,
@@ -640,54 +625,39 @@ pub struct IntelIch7Config {
     pub pirq_routing: [u8; 8],
     /// PCIe root ports 0-3 present. Absent ports are hidden with the FD
     /// `ICH_DISABLE_PCIE` bits. Defaults to all present (reset behavior).
-    #[serde(default = "default_pcie_ports")]
     pub pcie_ports: [bool; 4],
     /// Internal LAN function present. `false` sets `FD_INTLAN`.
     /// Defaults to present (reset behavior).
-    #[serde(default = "default_true")]
     pub lan: bool,
     /// AC97 audio (D30:F2) / modem (D30:F3) functions present.
     /// Absent functions set `FD_ACAUD` / `FD_ACMOD`.
     /// Defaults to present (reset behavior).
-    #[serde(default = "default_true")]
     pub ac97_audio: bool,
-    #[serde(default = "default_true")]
     pub ac97_modem: bool,
     /// GPI routing (2 bits per GPI 0..15): 0 = none, 1 = SMI, 2 = SCI.
     /// Programmed into LPC `GPIO_ROUT` (0xb8). Defaults to all-none.
-    #[serde(default)]
     pub gpi_routing: [u8; 16],
     /// GPE0 enable bits.
     pub gpe0_en: u32,
     /// LPC fixed and generic I/O decode policy.
-    #[serde(default)]
     pub lpc_decode: LpcDecodeConfig,
     /// HD Audio (Azalia) configuration with verb tables.
-    #[serde(default)]
     pub hda: Option<HdaConfig>,
     /// SATA configuration.
-    #[serde(default)]
     pub sata: Option<SataConfig>,
     /// USB configuration.
-    #[serde(default)]
     pub usb: Option<UsbConfig>,
     /// Enable PATA (legacy IDE) function.
-    #[serde(default)]
     pub pata: bool,
     /// SMBus I/O base address.
-    #[serde(default = "default_smbus_base")]
     pub smbus_base: u16,
     /// GPIO pad configuration (sets 1/2/3, all 76 pins).
-    #[serde(default)]
     pub gpio: GpioConfig,
     /// ACPI device name (e.g., "LPCB"). If `None`, no ACPI node.
-    #[serde(default)]
     pub acpi_name: Option<&'static str>,
     /// C3 latency in microseconds (for FADT p_lvl3_lat).
-    #[serde(default = "default_c3_latency")]
     pub c3_latency: u16,
     /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
-    #[serde(default)]
     pub power_on_after_fail: u8,
 }
 

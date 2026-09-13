@@ -50,7 +50,6 @@
 use core::ptr;
 
 use fstart_core::ConstVec;
-use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // HDA standard register offsets (relative to BAR0)
@@ -83,7 +82,7 @@ pub const MAX_CODECS: u8 = 15;
 // ---------------------------------------------------------------------------
 
 /// Port connectivity (bits [31:30]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinConn {
     /// External jack.
     Jack,
@@ -113,7 +112,7 @@ impl Default for PinConn {
 }
 
 /// Gross location (bits [29:28] of location field).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinLoc {
     /// External, on primary chassis.
     External,
@@ -132,7 +131,7 @@ impl Default for PinLoc {
 }
 
 /// Geometric location (bits [27:24] — fine location within gross).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinGeoLoc {
     NA,
     Rear,
@@ -179,7 +178,7 @@ const fn encode_location(gross: PinLoc, geo: PinGeoLoc) -> u32 {
 }
 
 /// Default device function (bits [23:20]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinDevice {
     LineOut,
     Speaker,
@@ -227,7 +226,7 @@ impl Default for PinDevice {
 }
 
 /// Connection type / connector (bits [19:16]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinConnector {
     Unknown,
     /// 1/8" (3.5mm) stereo/mono jack.
@@ -274,7 +273,7 @@ impl Default for PinConnector {
 }
 
 /// Jack color (bits [15:12]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinColor {
     ColorUnknown,
     Black,
@@ -347,43 +346,32 @@ pub const MISC_NO_PRESENCE_DETECT: u8 = 1;
 /// ( nid: 0x14, device: LineOut, conn: Jack, color: Green,
 ///   loc: Rear, connector: StereoMono18, group: 1, seq: 0 )
 /// ```
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct PinConfig {
     /// Widget node ID (NID) — the pin number on the codec (e.g. 0x14).
     pub nid: u8,
     /// Not-connected shorthand — if `Some(seq)`, produces NC config.
     /// All other fields are ignored when this is set.
-    #[serde(default)]
     pub nc: Option<u8>,
     /// Port connectivity.
-    #[serde(default)]
     pub conn: PinConn,
     /// Gross location.
-    #[serde(default)]
     pub loc: PinLoc,
     /// Geometric location (fine position within gross location).
-    #[serde(default)]
     pub geo: PinGeoLoc,
     /// Default device function.
-    #[serde(default)]
     pub device: PinDevice,
     /// Connection type (physical connector).
-    #[serde(default)]
     pub connector: PinConnector,
     /// Jack color.
-    #[serde(default)]
     pub color: PinColor,
     /// Misc field (bits [11:8]). Only bit 0 is defined by the HDA spec
     /// (0 = jack presence detect, 1 = no presence detect). BIOS-extracted
     /// configs may have additional codec-specific bits set.
-    #[serde(default)]
     pub misc: u8,
     /// Default association group (bits [7:4], 1–15). 0 = reserved.
-    #[serde(default)]
     pub group: u8,
     /// Sequence within the association group (bits [3:0], 0–15).
-    #[serde(default)]
     pub seq: u8,
 }
 
@@ -478,7 +466,7 @@ pub const fn hda_get_param(codec: u32, nid: u32, param: u32) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Verb table types (serde-compatible for board metadata)
+// Verb table types used by Rust board metadata
 // ---------------------------------------------------------------------------
 
 /// A single codec's verb table entry.
@@ -498,8 +486,7 @@ pub const fn hda_get_param(codec: u32, nid: u32, param: u32) -> u32 {
 ///     .pin(pin_not_connected(0x15, 0))
 ///     .verb(0x00c3_b027)
 /// ```
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct HdaVerbTable {
     /// Codec vendor/device ID (e.g. `0x10ec0662` for Realtek ALC662).
     pub vendor_id: u32,
@@ -507,11 +494,9 @@ pub struct HdaVerbTable {
     pub subsystem_id: u32,
     /// Per-pin configurations. Expanded into SET_CONFIGURATION_DEFAULT
     /// verbs at setup time.
-    #[serde(default)]
     pub pins: ConstVec<PinConfig, 16>,
     /// Additional raw 32-bit verbs (amp gains, power states, EAPD, etc.)
     /// sent after pin configs.
-    #[serde(default)]
     pub extra_verbs: ConstVec<u32, 32>,
 }
 
@@ -519,11 +504,9 @@ pub struct HdaVerbTable {
 ///
 /// Contains verb tables for all codecs present on the board.
 /// Placed in the southbridge/chipset driver config in Rust board metadata.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct HdaConfig {
     /// Codec verb tables.  Up to 4 codecs on one HDA link.
-    #[serde(default)]
     pub verbs: ConstVec<HdaVerbTable, 4>,
 }
 

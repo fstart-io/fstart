@@ -51,5 +51,4 @@ fstart-stage = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
 heapless = { workspace = true }
 konst = { workspace = true }
-serde = { workspace = true }
 ufmt = { workspace = true, optional = true }

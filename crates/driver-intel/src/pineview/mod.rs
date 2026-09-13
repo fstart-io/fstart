@@ -38,7 +38,6 @@ use fstart_pci::pci_type0_config;
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
 };
-use serde::Serialize;
 use tock_registers::interfaces::{Readable, Writeable};
 
 fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
@@ -102,35 +101,25 @@ const IGD_GTTMMADR_SIZE: u32 = 512 * 1024;
 const IGD_GTT_SIZE: u32 = 512 * 1024;
 
 /// Intel integrated graphics configuration.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct PineviewIgdConfig {
     /// Enable the VGA CRT output.
-    #[serde(default)]
     pub use_crt: bool,
     /// Enable the LVDS panel output.
-    #[serde(default)]
     pub use_lvds: bool,
     /// Enable PLL spread spectrum.
-    #[serde(default)]
     pub spread_spectrum: bool,
     /// Board-relative VBT file path stored as a compressed FFS data file.
-    #[serde(default)]
     pub vbt_file: Option<&'static str>,
     /// Fixed GTTMMADR BAR0 address.
-    #[serde(default = "default_gtt_mmio_base")]
     pub gtt_mmio_base: u64,
     /// MMIO-visible GTT page-table BAR3 address.
-    #[serde(default = "default_gtt_pte_base")]
     pub gtt_pte_base: u64,
     /// Fixed GMADR graphics aperture BAR2 address.
-    #[serde(default = "default_gmadr_base")]
     pub gmadr_base: u64,
     /// GMADR graphics aperture size in bytes.
-    #[serde(default = "default_gmadr_size")]
     pub gmadr_size: u32,
     /// Board display policy. `None` leaves the display engine untouched.
-    #[serde(skip)]
     pub display: Option<super::igd::IgdDisplayPolicy>,
 }
 
@@ -151,8 +140,7 @@ const fn default_gmadr_size() -> u32 {
 }
 
 /// Pineview northbridge configuration.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct IntelPineviewConfig {
     /// MCHBAR base address.
     pub mchbar: u64,
@@ -161,19 +149,14 @@ pub struct IntelPineviewConfig {
     /// EPBAR base address.
     pub epbar: u64,
     /// ECAM (PCIEXBAR) base address. Default: `0xE000_0000`.
-    #[serde(default = "default_ecam_base")]
     pub ecam_base: u64,
     /// Optional integrated graphics configuration.
-    #[serde(default)]
     pub igd: PineviewIgdConfig,
     /// SPD EEPROM SMBus addresses for DIMM slots A/B. Zero means absent.
-    #[serde(default = "default_spd_addresses")]
     pub spd_addresses: [u8; 4],
     /// Apply Foxconn D41S/vendor CK505 clock-generator setup before raminit.
-    #[serde(default)]
     pub ck505_pre_raminit: bool,
     /// ACPI device name (e.g., "MCHC"). If `None`, no ACPI node.
-    #[serde(default)]
     pub acpi_name: Option<&'static str>,
 }
 
@@ -617,7 +600,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         self.enable_ecam();
         self.init_igd_opregion();
         if self.config.igd.display.is_some() {
-            self.gma_display_init()?;
+            self.gma_display_init();
         }
         Ok(())
     }
@@ -1168,7 +1151,7 @@ impl IntelPineview {
     /// `PGETBL_CTL` from the stolen-memory base register (`BGSM`) twice with a
     /// short delay before the modeset. Without that enable bit the display
     /// engine cannot translate framebuffer addresses.
-    fn gma_display_init(&mut self) -> Result<(), ServiceError> {
+    fn gma_display_init(&mut self) {
         let igd = ecam::EcamDevice::new(0, 2, 0);
         igd.write32(
             IGD_BAR0_GTTMMADR,
@@ -1223,8 +1206,7 @@ impl IntelPineview {
         #[cfg(not(feature = "ffs-vbt"))]
         let vbt: Option<&[u8]> = None;
         self.display
-            .initialize(cpu, self.config.igd.display.as_ref(), &addresses, vbt)?;
-        Ok(())
+            .initialize(cpu, self.config.igd.display.as_ref(), &addresses, vbt);
     }
 
     /// Read the graphics stolen memory base (GBSM register).
