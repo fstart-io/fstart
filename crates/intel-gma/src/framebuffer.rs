@@ -5,7 +5,6 @@ use fstart_core::services::FramebufferInfo;
 use crate::error::GmaError;
 use crate::gtt::GTT_PAGE_SIZE;
 use crate::scaler::ScalingPolicy;
-use crate::types::PhysAddr;
 
 /// Supported framebuffer pixel formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,7 +92,7 @@ impl Rotation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SurfaceConfig {
     /// CPU-visible framebuffer physical address, normally GMADR aperture base.
-    pub base_addr: PhysAddr,
+    pub base_addr: u64,
     /// Active width in pixels.
     pub width: u32,
     /// Active height in pixels.
@@ -118,7 +117,7 @@ pub struct SurfaceConfig {
 
 impl SurfaceConfig {
     /// Create a surface with tightly packed scanlines.
-    pub fn packed(base_addr: PhysAddr, width: u32, height: u32, pixel_format: PixelFormat) -> Self {
+    pub fn packed(base_addr: u64, width: u32, height: u32, pixel_format: PixelFormat) -> Self {
         Self {
             base_addr,
             width,
@@ -220,7 +219,7 @@ impl SurfaceConfig {
     /// same framebuffer while this runs.
     pub unsafe fn fill_opaque_black(&self) -> Result<(), GmaError> {
         self.validate_fits(self.required_bytes()?)?;
-        let base = self.base_addr.0 as *mut u32;
+        let base = self.base_addr as *mut u32;
         let stride = self.stride as usize;
         for y in 0..self.height as usize {
             for x in 0..self.width as usize {
@@ -237,7 +236,7 @@ impl SurfaceConfig {
     pub const fn to_framebuffer_info(self) -> FramebufferInfo {
         match self.pixel_format {
             PixelFormat::Xrgb8888 => FramebufferInfo {
-                base_addr: self.base_addr.0,
+                base_addr: self.base_addr,
                 width: self.width,
                 height: self.height,
                 stride: self.stride,
@@ -305,7 +304,7 @@ mod tests {
         // (`Tile_Width (Linear) = 16` u32 units).
         let mut backing = [0u32; 32];
         let surface = SurfaceConfig {
-            base_addr: PhysAddr(backing.as_mut_ptr() as u64),
+            base_addr: backing.as_mut_ptr() as u64,
             width: 2,
             height: 2,
             stride: 16,

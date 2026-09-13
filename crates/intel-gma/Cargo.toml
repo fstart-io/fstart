@@ -7,7 +7,9 @@ license.workspace = true
 
 [dependencies]
 bitflags = { workspace = true }
+fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-core = { workspace = true }
+fstart-pci = { workspace = true }
 heapless = { workspace = true }
 tock-registers = { workspace = true }
 zerocopy = { workspace = true }

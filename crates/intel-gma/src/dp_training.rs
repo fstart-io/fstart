@@ -549,7 +549,8 @@ mod tests {
 
     #[test]
     fn selects_lowest_link_config_that_fits_mode() {
-        let config = select_link_config(caps(DpLinkRate::Hbr, 4), Mode::XGA_1024X768_60, true).unwrap();
+        let config =
+            select_link_config(caps(DpLinkRate::Hbr, 4), Mode::XGA_1024X768_60, true).unwrap();
         assert_eq!(config.link_rate, DpLinkRate::Hbr);
         assert_eq!(config.lane_count, 1);
         assert!(config.enhanced_framing);
@@ -573,10 +574,11 @@ mod tests {
     #[test]
     fn gmch_source_capability_gates_training_pattern_three() {
         // Sink advertises TP3, but the GMCH source does not implement it.
-        let with_source = link_config_candidates(caps(DpLinkRate::Hbr, 1), Mode::XGA_1024X768_60, true)
-            .unwrap()
-            .get(0)
-            .unwrap();
+        let with_source =
+            link_config_candidates(caps(DpLinkRate::Hbr, 1), Mode::XGA_1024X768_60, true)
+                .unwrap()
+                .get(0)
+                .unwrap();
         assert!(with_source.tps3_supported);
         let gmch = link_config_candidates(caps(DpLinkRate::Hbr, 1), Mode::XGA_1024X768_60, false)
             .unwrap()

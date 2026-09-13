@@ -670,12 +670,11 @@ const fn lvds_dual_channel_bits_with_config(mode: Mode, config: LvdsPortConfig) 
 mod tests {
     use super::*;
     use crate::framebuffer::{PixelFormat, SurfaceConfig};
-    use crate::types::{PhysAddr, Plane};
+    use crate::types::Plane;
 
     #[test]
     fn resolves_enabled_board_pipelines() {
-        let surface =
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 1024, 768, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 1024, 768, PixelFormat::Xrgb8888);
         let lvds =
             OutputPipeline::legacy_gmch(Cpu::Gm965, Port::Lvds, Mode::XGA_1024X768_60, surface)
                 .unwrap();
@@ -713,8 +712,7 @@ mod tests {
 
     #[test]
     fn rejects_unimplemented_connector_pipelines() {
-        let surface =
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 1024, 768, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 1024, 768, PixelFormat::Xrgb8888);
         for (cpu, port) in [(Cpu::Gm965, Port::DpB), (Cpu::Pineview, Port::Lvds)] {
             assert!(matches!(
                 OutputPipeline::legacy_gmch(cpu, port, Mode::XGA_1024X768_60, surface),

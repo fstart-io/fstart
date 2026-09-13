@@ -171,12 +171,7 @@ impl GenerationOps for G45 {
         )
     }
 
-    fn disable_output(
-        mmio: &Mmio,
-        cpu: Cpu,
-        pipe: Pipe,
-        port: Port,
-    ) -> Result<(), GmaError> {
+    fn disable_output(mmio: &Mmio, cpu: Cpu, pipe: Pipe, port: Port) -> Result<(), GmaError> {
         if port == Port::Lvds {
             panel_backlight_off(mmio);
             panel_power_off(mmio);
@@ -244,12 +239,7 @@ fn program_pll_for_dp_rate(
 /// libgfxinit's GMCH `Connectors.Pre_On` is a no-op: LVDS is enabled in
 /// `Post_On` after the PLL, pipe and plane are up, so there is nothing to do
 /// before DPLL programming for the legacy GMCH ports we support.
-fn pre_pll_enable_port(
-    mmio: &Mmio,
-    port: Port,
-    pipe: Pipe,
-    mode: Mode,
-) -> Result<(), GmaError> {
+fn pre_pll_enable_port(mmio: &Mmio, port: Port, pipe: Pipe, mode: Mode) -> Result<(), GmaError> {
     let plan = LegacyPortPlan::for_port(port, pipe, mode)?;
     if let Some(op) = plan.pre_pll {
         apply_port_op(mmio, op);
@@ -494,7 +484,9 @@ pub(crate) fn disable_port(mmio: &Mmio, port: Port) {
 /// Register address of a port operation.
 const fn port_op_register(op: PortRegisterOp) -> usize {
     match op {
-        PortRegisterOp::Write { register, .. } | PortRegisterOp::Update { register, .. } => register,
+        PortRegisterOp::Write { register, .. } | PortRegisterOp::Update { register, .. } => {
+            register
+        }
     }
 }
 
@@ -849,7 +841,7 @@ mod tests {
     #[test]
     fn g45_dp_pipeline_is_exposed_in_caps() {
         let surface = crate::framebuffer::SurfaceConfig::packed(
-            crate::types::PhysAddr(0xd000_0000),
+            0xd000_0000,
             1024,
             768,
             crate::framebuffer::PixelFormat::Xrgb8888,

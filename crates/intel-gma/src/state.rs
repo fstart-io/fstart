@@ -134,6 +134,11 @@ impl GmaDisplayState {
     }
 
     /// Update outputs using `now_us` as the current monotonic time in microseconds.
+    ///
+    /// Time is passed in rather than read from a global so the update stays
+    /// testable. Callers on hardware supply `Timer::timestamp_us()` from
+    /// `fstart_core::services::timer`; `update_outputs` passes `u64::MAX` to
+    /// disable hot-plug rechecking.
     pub fn update_outputs_at(
         &mut self,
         resources: &GmaResources,
@@ -451,21 +456,18 @@ mod tests {
     use crate::mode::FallbackMode;
     use crate::pci::GmaResources;
     use crate::scaler::ScalingPolicy;
-    use crate::types::{PciBdf, PhysAddr};
+    use crate::types::PciAddress;
+    use fstart_core::typed::mmio32;
 
     fn resources() -> GmaResources {
         GmaResources {
-            pci_bdf: PciBdf {
-                bus: 0,
-                dev: 2,
-                func: 0,
-            },
-            gtt_mmio_base: PhysAddr(0x1000),
+            pci_bdf: PciAddress::new(0, 0, 2, 0),
+            gtt_mmio_base: mmio32(0x1000),
             gtt_mmio_size: 0x80000,
             gtt_pte_base: None,
-            gmadr_base: Some(PhysAddr(0x8000_0000)),
+            gmadr_base: Some(0x8000_0000),
             gmadr_size: 0x1000_0000,
-            stolen_base: PhysAddr(0x7f00_0000),
+            stolen_base: 0x7f00_0000,
             stolen_size: 0x800000,
             gtt_size: 0x10000,
             gcfgc: None,
@@ -578,8 +580,7 @@ mod tests {
 
     #[test]
     fn full_update_detects_port_mode_or_surface_change() {
-        let surface =
-            SurfaceConfig::packed(PhysAddr(0x8000_0000), 1024, 768, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0x8000_0000, 1024, 768, PixelFormat::Xrgb8888);
         let current = PipeOutputConfig {
             pipe: Pipe::A,
             port: Port::Vga,

@@ -6,7 +6,6 @@
 //! restriction explicit and keeps future hardware enablement local to this
 //! module and the generation-specific pipe setup code.
 
-
 use crate::error::GmaError;
 use crate::framebuffer::SurfaceConfig;
 use crate::mode::Mode;
@@ -810,7 +809,6 @@ mod tests {
     use super::*;
     use crate::framebuffer::PixelFormat;
     use crate::mode::Mode;
-    use crate::types::PhysAddr;
 
     #[test]
     fn classifies_scaling_aspect_like_libgfxinit() {
@@ -828,8 +826,7 @@ mod tests {
 
     #[test]
     fn exact_size_plan_is_accepted_without_programming_scaler() {
-        let surface =
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 1024, 768, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 1024, 768, PixelFormat::Xrgb8888);
         let plan = ScalerPlan::resolve(
             Cpu::Gm965,
             Pipe::B,
@@ -844,7 +841,7 @@ mod tests {
 
     #[test]
     fn gmch_upscale_is_accepted_when_scaling_policy_is_set() {
-        let surface = SurfaceConfig::packed(PhysAddr(0xd000_0000), 800, 600, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 800, 600, PixelFormat::Xrgb8888);
         let gm965 = ScalerPlan::resolve(
             Cpu::Gm965,
             Pipe::B,
@@ -873,7 +870,7 @@ mod tests {
         let gmch_downscale = ScalerPlan::resolve(
             Cpu::Gm965,
             Pipe::B,
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 1280, 800, PixelFormat::Xrgb8888),
+            SurfaceConfig::packed(0xd000_0000, 1280, 800, PixelFormat::Xrgb8888),
             Mode::XGA_1024X768_60,
             ScalingPolicy::PreserveAspect,
         );
@@ -885,7 +882,7 @@ mod tests {
         let pch_downscale = ScalerPlan::resolve(
             Cpu::Ironlake,
             Pipe::B,
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 1280, 800, PixelFormat::Xrgb8888),
+            SurfaceConfig::packed(0xd000_0000, 1280, 800, PixelFormat::Xrgb8888),
             Mode::XGA_1024X768_60,
             ScalingPolicy::PreserveAspect,
         );
@@ -894,7 +891,7 @@ mod tests {
         let no_policy = ScalerPlan::resolve(
             Cpu::Gm965,
             Pipe::B,
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 800, 600, PixelFormat::Xrgb8888),
+            SurfaceConfig::packed(0xd000_0000, 800, 600, PixelFormat::Xrgb8888),
             Mode::XGA_1024X768_60,
             ScalingPolicy::None,
         );
@@ -1011,7 +1008,7 @@ mod tests {
         let gmch_downscale = ScalerPlan::resolve(
             Cpu::Gm965,
             Pipe::B,
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 1280, 720, PixelFormat::Xrgb8888),
+            SurfaceConfig::packed(0xd000_0000, 1280, 720, PixelFormat::Xrgb8888),
             Mode::XGA_1024X768_60,
             ScalingPolicy::PreserveAspect,
         );
@@ -1023,7 +1020,7 @@ mod tests {
         let pch_upscale = ScalerPlan::resolve(
             Cpu::Ironlake,
             Pipe::B,
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 800, 600, PixelFormat::Xrgb8888),
+            SurfaceConfig::packed(0xd000_0000, 800, 600, PixelFormat::Xrgb8888),
             Mode::XGA_1024X768_60,
             ScalingPolicy::PreserveAspect,
         );
@@ -1041,7 +1038,7 @@ mod tests {
 
     #[test]
     fn global_gmch_panel_fitter_reservation_is_pipe_owned() {
-        let surface = SurfaceConfig::packed(PhysAddr(0xd000_0000), 800, 600, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 800, 600, PixelFormat::Xrgb8888);
         let plan = ScalerPlan::resolve(
             Cpu::Gm965,
             Pipe::B,
@@ -1211,7 +1208,7 @@ mod tests {
         let plan = ScalerPlan::resolve(
             Cpu::Ironlake,
             Pipe::B,
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 1021, 768, PixelFormat::Xrgb8888),
+            SurfaceConfig::packed(0xd000_0000, 1021, 768, PixelFormat::Xrgb8888),
             Mode::XGA_1024X768_60,
             ScalingPolicy::Center,
         );

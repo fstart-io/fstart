@@ -10,11 +10,10 @@
 use tock_registers::interfaces::{Readable, Writeable};
 
 use crate::ddi::{
-    DdiClockRouting, DdiDpInitStep, DdiPortRegs,
-    HSW_PORT_CLK_SEL_BASE, HSW_WRPLL_BASE, HSW_WRPLL_CTL_REG, HswDdiPllPlan, HswDpInitParams,
-    HswDpInitSequencePlan, HswHdmiInitParams, HswHdmiInitSequencePlan, HswPllSelect,
-    HswPortClockSelectRegs, HswWrpllRegs, SKL_DPLL_CTRL2_REG, hsw_dp_init_sequence_plan,
-    hsw_hdmi_init_sequence_plan,
+    DdiClockRouting, DdiDpInitStep, DdiPortRegs, HSW_PORT_CLK_SEL_BASE, HSW_WRPLL_BASE,
+    HSW_WRPLL_CTL_REG, HswDdiPllPlan, HswDpInitParams, HswDpInitSequencePlan, HswHdmiInitParams,
+    HswHdmiInitSequencePlan, HswPllSelect, HswPortClockSelectRegs, HswWrpllRegs,
+    SKL_DPLL_CTRL2_REG, hsw_dp_init_sequence_plan, hsw_hdmi_init_sequence_plan,
 };
 use crate::error::GmaError;
 use crate::generation::{GenerationOps, sealed};
@@ -30,8 +29,7 @@ impl sealed::Sealed for Haswell {}
 
 impl GenerationOps for Haswell {
     const GENERATION: Generation = Generation::Haswell;
-
-    }
+}
 
 fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
     crate::selected_enabled_port(ctx.config.outputs)
@@ -132,9 +130,8 @@ fn apply_routing(mmio: &Mmio, routing: DdiClockRouting) {
 fn port_clock_select_reg(
     mmio: &Mmio,
     register: usize,
-) -> Option<
-    &'static fstart_core::mmio::MmioReadWrite<u32, crate::ddi::PORT_CLK_SEL_REG::Register>,
-> {
+) -> Option<&'static fstart_core::mmio::MmioReadWrite<u32, crate::ddi::PORT_CLK_SEL_REG::Register>>
+{
     if register < HSW_PORT_CLK_SEL_BASE {
         return None;
     }

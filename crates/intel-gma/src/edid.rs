@@ -6,10 +6,10 @@
 
 use heapless::Vec;
 
+use crate::dtd::{dtd_present, mode_from_dtd};
 use crate::error::GmaError;
 use crate::mode::{Mode, ModeFlags};
 use crate::types::Port;
-use crate::dtd::{dtd_present, mode_from_dtd};
 
 /// Size in bytes of an EDID base block.
 pub const EDID_BLOCK_LEN: usize = 128;

@@ -7,8 +7,11 @@
 //! Layers, from the bottom up:
 //!
 //! - [`types`], [`error`], [`mode`]: small copy types and structured errors.
-//! - [`regs`], [`mmio`], [`pci`]: typed `tock-registers` definitions and the
-//!   single unsafe MMIO boundary.
+//! - [`regs`], [`mmio`]: typed `tock-registers` definitions and the single
+//!   unsafe MMIO boundary. MMIO bases use `fstart_core::typed::MmioAddr<Mmio32>`
+//!   and the IGD's PCI address is `fstart_pci::PciAddress`, so callers pass the
+//!   same values they use for the rest of the chipset.
+//! - [`pci`]: the [`GmaResources`] hand-off from the northbridge driver.
 //! - Pure encoders: [`pipe`], [`plane`], [`port`], [`pll`], [`panel`],
 //!   [`scaler`], [`gtt`], [`framebuffer`].
 //! - [`vbt`], [`edid`]: bounded zero-copy parsers.
@@ -63,7 +66,7 @@ pub use panel::{
 pub use pci::GmaResources;
 pub use scaler::{DestinationKind, DestinationRect, ScalerKind, ScalingAspect, ScalingPolicy};
 pub use state::{GmaDisplayState, PipeOutputConfig, UpdateOutputsResult};
-pub use types::{Cpu, Generation, PciBdf, PhysAddr, Pipe, Plane, Port};
+pub use types::{Cpu, Generation, PciAddress, Pipe, Plane, Port};
 pub use vbt::GeneralDefinitionsMetadata;
 
 use crate::generation::GenerationOps;
@@ -367,11 +370,7 @@ pub(crate) fn init_candidate(
     config: &GmaInitConfig<'_>,
 ) -> Result<GmaInitResult, GmaError> {
     let port = selected_enabled_port(config.outputs)?;
-    let mode = clamp_hdmi_dotclock(
-        config.cpu,
-        port,
-        choose_mode(resources, config)?,
-    );
+    let mode = clamp_hdmi_dotclock(config.cpu, port, choose_mode(resources, config)?);
     let surface = gtt::choose_framebuffer_surface(resources, &config.framebuffer)?;
     let scaler_pipe = port::pipe_for_legacy_gmch_port(selected_enabled_port(config.outputs)?)?;
     scaler::ScalerPlan::resolve(
@@ -418,7 +417,9 @@ pub(crate) fn disable_generation_output(
     let _ = match caps_for(cpu).generation {
         Generation::I945 => generation::i945::I945::disable_output(&mmio, cpu, pipe, port),
         Generation::G45 => generation::g45::G45::disable_output(&mmio, cpu, pipe, port),
-        Generation::Ironlake => generation::ironlake::Ironlake::disable_output(&mmio, cpu, pipe, port),
+        Generation::Ironlake => {
+            generation::ironlake::Ironlake::disable_output(&mmio, cpu, pipe, port)
+        }
         _ => Ok(()),
     };
 }
@@ -471,7 +472,12 @@ fn validate_outputs(cpu: Cpu, outputs: &[OutputConfig]) -> Result<(), GmaError> 
 /// the factor is 1.
 const fn hdmi_max_dotclock_khz(cpu: Cpu) -> u32 {
     match cpu {
-        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM | Cpu::Gm965 | Cpu::G45
+        Cpu::I945G
+        | Cpu::I945GM
+        | Cpu::Pineview
+        | Cpu::PineviewM
+        | Cpu::Gm965
+        | Cpu::G45
         | Cpu::Gm45 => 165_000,
         Cpu::Ironlake | Cpu::Sandybridge | Cpu::Ivybridge => 225_000,
         Cpu::Haswell | Cpu::Broadwell | Cpu::Broxton | Cpu::Skylake | Cpu::Kabylake => 300_000,
@@ -612,20 +618,17 @@ fn fallback_mode(framebuffer: &FramebufferConfig) -> Result<Mode, GmaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fstart_core::typed::mmio32;
 
     fn dummy_resources() -> GmaResources {
         GmaResources {
-            pci_bdf: PciBdf {
-                bus: 0,
-                dev: 2,
-                func: 0,
-            },
-            gtt_mmio_base: PhysAddr(0x1000),
+            pci_bdf: PciAddress::new(0, 0, 2, 0),
+            gtt_mmio_base: mmio32(0x1000),
             gtt_mmio_size: 0x80000,
             gtt_pte_base: None,
-            gmadr_base: Some(PhysAddr(0x8000_0000)),
+            gmadr_base: Some(0x8000_0000),
             gmadr_size: 0x1000_0000,
-            stolen_base: PhysAddr(0x7f00_0000),
+            stolen_base: 0x7f00_0000,
             stolen_size: 0x800000,
             gtt_size: 0x10000,
             gcfgc: None,
@@ -685,8 +688,7 @@ mod tests {
 
     #[test]
     fn framebuffer_info_uses_pixel_stride() {
-        let surface =
-            SurfaceConfig::packed(PhysAddr(0xe000_0000), 1024, 768, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xe000_0000, 1024, 768, PixelFormat::Xrgb8888);
         let info = surface.to_framebuffer_info();
         assert_eq!(info.stride, 1024);
         assert_eq!(surface.required_bytes(), Ok(1024 * 768 * 4));
@@ -694,7 +696,7 @@ mod tests {
 
     #[test]
     fn gm965_framebuffer_surface_may_upscale_with_policy() {
-        let surface = SurfaceConfig::packed(PhysAddr(0xe000_0000), 800, 600, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xe000_0000, 800, 600, PixelFormat::Xrgb8888);
         let plan = scaler::ScalerPlan::resolve(
             Cpu::Gm965,
             Pipe::B,
@@ -1017,7 +1019,7 @@ mod tests {
         assert_eq!(gtt::ptes_for_bytes(4096), 1);
         assert_eq!(gtt::ptes_for_bytes(4097), 2);
         assert_eq!(
-            gtt::encode_gtt_pte(PhysAddr(0x1234_5678), gtt::GttPteEncoding::Bits32).0,
+            gtt::encode_gtt_pte(0x1234_5678, gtt::GttPteEncoding::Bits32).0,
             0x1234_5001
         );
     }
@@ -1025,22 +1027,18 @@ mod tests {
     #[test]
     fn maps_framebuffer_to_stolen_pages() {
         let resources = GmaResources {
-            pci_bdf: PciBdf {
-                bus: 0,
-                dev: 2,
-                func: 0,
-            },
-            gtt_mmio_base: PhysAddr(0xfeb0_0000),
+            pci_bdf: PciAddress::new(0, 0, 2, 0),
+            gtt_mmio_base: mmio32(0xfeb0_0000),
             gtt_mmio_size: 1024 * 1024,
             gtt_pte_base: None,
-            gmadr_base: Some(PhysAddr(0xd000_0000)),
+            gmadr_base: Some(0xd000_0000),
             gmadr_size: 16 * 1024 * 1024,
-            stolen_base: PhysAddr(0x3f00_0000),
+            stolen_base: 0x3f00_0000,
             stolen_size: 16 * 1024 * 1024,
             gtt_size: 512 * 1024,
             gcfgc: None,
         };
-        let surface = SurfaceConfig::packed(PhysAddr(0xd000_0000), 2, 2, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 2, 2, PixelFormat::Xrgb8888);
         let mut ptes = [0u32; 129];
         // SAFETY: test buffer has exactly `ptes.len()` writable u32 entries and
         // is cast to the equivalent tock-registers MMIO cell type for testing.

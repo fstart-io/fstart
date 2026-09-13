@@ -1,7 +1,7 @@
 //! Legacy GMCH DPLL helpers, matching libgfxinit's G45 and i945 PLL models.
 
-use tock_registers::interfaces::{Readable, Writeable};
 use fstart_core::mmio::MmioReadWrite;
+use tock_registers::interfaces::{Readable, Writeable};
 
 use crate::dp_aux::DpLinkRate;
 use crate::error::GmaError;

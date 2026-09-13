@@ -7,9 +7,9 @@
 //! MMIO-readable parts and falls back to the same conservative libgfxinit
 //! defaults.
 
+use fstart_core::mmio::MmioReadWrite;
 use tock_registers::LocalRegisterCopy;
 use tock_registers::interfaces::Readable;
-use fstart_core::mmio::MmioReadWrite;
 
 use crate::mmio::Mmio;
 use crate::regs::{GCFGC, GMCH_CLKCFG, GMCH_HPLLVCO, GmchClockRegs};
@@ -203,7 +203,9 @@ fn hpllvco_mobile_reg(mmio: &Mmio) -> &'static MmioReadWrite<u32, GMCH_HPLLVCO::
     // SAFETY: the mobile HPLLVCO selector is mirrored in the aligned dword at
     // 0x10c0c; `MOBILE_SELECTOR` extracts the top byte field that contains it.
     unsafe {
-        mmio.reg_block::<MmioReadWrite<u32, GMCH_HPLLVCO::Register>>(GMCH_HPLLVCO_MOBILE_ALIGNED_OFFSET)
+        mmio.reg_block::<MmioReadWrite<u32, GMCH_HPLLVCO::Register>>(
+            GMCH_HPLLVCO_MOBILE_ALIGNED_OFFSET,
+        )
     }
 }
 
