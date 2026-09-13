@@ -11,7 +11,6 @@ use crate::error::GmaError;
 use crate::generation::{GenerationOps, sealed};
 use crate::gtt;
 use crate::mmio::Mmio;
-use crate::mode::Mode;
 use crate::port::PortRegisterOp;
 use crate::regs::{
     BXT_PORT_PCS_DW12, BXT_PORT_PLL_EBB0, BXT_PORT_PLL_EBB4, BXT_PORT_PLL_ENABLE, BXT_PORT_PLL0,
@@ -28,29 +27,7 @@ impl sealed::Sealed for Broxton {}
 impl GenerationOps for Broxton {
     const GENERATION: Generation = Generation::Broxton;
 
-    fn init_display(ctx: &mut crate::GmaContext<'_>, mode: Mode) -> Result<(), GmaError> {
-        map_gtt(ctx)?;
-        // SAFETY: the selected surface is backed by the just-programmed GTT mapping.
-        unsafe { ctx.surface.fill_opaque_black()? };
-        let port = selected_port(ctx)?;
-        let kind = if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC) {
-            BxtDisplayKind::Hdmi
-        } else {
-            BxtDisplayKind::Dp
-        };
-        let bandwidth = if kind == BxtDisplayKind::Dp {
-            Some(BxtDpBandwidth::Hbr)
-        } else {
-            None
-        };
-        let plan = bxt_pll_plan(port, kind, mode.pixel_clock_khz as u64 * 1_000, bandwidth)?;
-        let mut mmio = ctx.mmio();
-        for op in plan.ops {
-            apply_port_op(&mut mmio, op);
-        }
-        Ok(())
     }
-}
 
 fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
     crate::selected_enabled_port(ctx.config.outputs)

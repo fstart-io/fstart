@@ -10,7 +10,7 @@
 use tock_registers::interfaces::{Readable, Writeable};
 
 use crate::ddi::{
-    DdiClockRouting, DdiDpInitStep, DdiLaneCount, DdiPortRegs, DpTrainingPattern,
+    DdiClockRouting, DdiDpInitStep, DdiPortRegs,
     HSW_PORT_CLK_SEL_BASE, HSW_WRPLL_BASE, HSW_WRPLL_CTL_REG, HswDdiPllPlan, HswDpInitParams,
     HswDpInitSequencePlan, HswHdmiInitParams, HswHdmiInitSequencePlan, HswPllSelect,
     HswPortClockSelectRegs, HswWrpllRegs, SKL_DPLL_CTRL2_REG, hsw_dp_init_sequence_plan,
@@ -31,43 +31,7 @@ impl sealed::Sealed for Haswell {}
 impl GenerationOps for Haswell {
     const GENERATION: Generation = Generation::Haswell;
 
-    fn init_display(ctx: &mut crate::GmaContext<'_>, mode: Mode) -> Result<(), GmaError> {
-        map_gtt(ctx)?;
-        // SAFETY: the selected surface is backed by the just-programmed GTT mapping.
-        unsafe { ctx.surface.fill_opaque_black()? };
-        let port = selected_port(ctx)?;
-        let pipe = ddi_pipe_for_port(port);
-        let plan = if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC) {
-            hdmi_modeset_plan(HswHdmiModesetParams {
-                cpu: ctx.config.cpu,
-                port,
-                pipe,
-                mode,
-                pll: HswPllSelect::Wrpll0,
-                per_ddi_clock_sel: true,
-                hdmi_translation: 7,
-            })?
-        } else {
-            dp_modeset_plan(HswDpInitParams {
-                cpu: ctx.config.cpu,
-                port,
-                pipe,
-                lanes: DdiLaneCount::Four,
-                pll: if port == Port::Edp || port == Port::DpA {
-                    HswPllSelect::Lcpll0
-                } else {
-                    HswPllSelect::Spll
-                },
-                pattern: DpTrainingPattern::Pattern1,
-                enhanced_framing: true,
-                per_ddi_clock_sel: true,
-                iboost_enabled: false,
-            })?
-        };
-        let mut mmio = ctx.mmio();
-        execute_hsw_modeset_plan(&mut mmio, plan)
     }
-}
 
 fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
     crate::selected_enabled_port(ctx.config.outputs)
@@ -125,6 +89,8 @@ fn write_ddi_port(mmio: &Mmio, buf_ctl_register: usize, buf_ctl: u32, dp_tp_ctl:
 
 fn program_hsw_pll(mmio: &Mmio, pll: HswDdiPllPlan) {
     if let HswDdiPllPlan::Wrpll { pll, plan } = pll {
+        // libgfxinit waits 20 us after enabling the WRPLL before the port can
+        // lock to it.
         // SAFETY: `HSW_WRPLL_BASE` is the WRPLL0 register, and `HswWrpllRegs`
         // models the WRPLL0/WRPLL1 spacing used by HSW/BDW.
         let regs = unsafe { mmio.reg_block::<HswWrpllRegs>(HSW_WRPLL_BASE) };
@@ -140,6 +106,7 @@ fn program_hsw_pll(mmio: &Mmio, pll: HswDdiPllPlan) {
             }
             _ => {}
         }
+        crate::mmio::delay_us(20);
     }
 }
 
@@ -330,7 +297,8 @@ const fn has_dp_training_step(steps: [DdiDpInitStep; crate::ddi::DDI_DP_INIT_STE
 mod tests {
     use super::*;
     use crate::ddi::{
-        DdiClockRouting, DdiPort, DdiRegisterOp, HswDdiPllPlan, HswHdmiInitStep, HswWrpllPlan,
+        DdiClockRouting, DdiLaneCount, DdiPort, DdiRegisterOp, DpTrainingPattern, HswDdiPllPlan,
+        HswHdmiInitStep, HswWrpllPlan,
     };
 
     #[test]

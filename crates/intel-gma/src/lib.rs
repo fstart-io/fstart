@@ -132,6 +132,11 @@ const PORTS_DDI: &[Port] = &[
 ];
 
 /// Return static platform capabilities for a CPU.
+///
+/// Haswell and newer report their port set for planning purposes, but their
+/// modeset executors are not implemented: `init_display` returns
+/// [`GmaError::UnsupportedPlatform`] rather than half-applying a modeset. Only
+/// the I945 and G45 generations and Ironlake currently drive hardware.
 pub const fn caps_for(cpu: Cpu) -> PlatformCaps {
     match cpu {
         Cpu::I945G => PlatformCaps {
