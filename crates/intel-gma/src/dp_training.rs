@@ -22,7 +22,7 @@ use crate::types::{Pipe, Port};
 const RECEIVER_CAPS_LEN: usize = 15;
 const LINK_STATUS_LEN: usize = 6;
 const CLOCK_RECOVERY_MAX_TRIES: u8 = 32;
-const CLOCK_RECOVERY_MAX_SAME_VS_TRIES: u8 = 4;
+const CLOCK_RECOVERY_MAX_SAME_VS_TRIES: u8 = 5;
 const CHANNEL_EQ_MAX_TRIES: u8 = 6;
 
 /// Selected source/sink DP link parameters.
@@ -98,8 +98,12 @@ impl DpLinkConfigCandidates {
 const MAX_LINK_CONFIG_CANDIDATES: usize = 9;
 
 /// Select the lowest bandwidth link that can carry a 24-bpp framebuffer mode.
-pub fn select_link_config(caps: ReceiverCaps, mode: Mode) -> Result<DpLinkConfig, GmaError> {
-    link_config_candidates(caps, mode)?
+pub fn select_link_config(
+    caps: ReceiverCaps,
+    mode: Mode,
+    source_tps3: bool,
+) -> Result<DpLinkConfig, GmaError> {
+    link_config_candidates(caps, mode, source_tps3)?
         .get(0)
         .ok_or(GmaError::ModeUnavailable)
 }
@@ -113,6 +117,7 @@ pub fn select_link_config(caps: ReceiverCaps, mode: Mode) -> Result<DpLinkConfig
 pub fn link_config_candidates(
     caps: ReceiverCaps,
     mode: Mode,
+    source_tps3: bool,
 ) -> Result<DpLinkConfigCandidates, GmaError> {
     let max_lanes = normalize_lane_count(caps.max_lane_count)?;
     let rates = candidate_rates(caps.max_link_rate);
@@ -128,7 +133,7 @@ pub fn link_config_candidates(
                     link_rate: rate,
                     lane_count: lane,
                     enhanced_framing: caps.enhanced_framing,
-                    tps3_supported: caps.tps3_supported,
+                    tps3_supported: caps.tps3_supported && source_tps3,
                     aux_rd_interval: caps.aux_rd_interval,
                 });
                 len += 1;
@@ -252,7 +257,8 @@ where
     let mut caps_bytes = [0u8; RECEIVER_CAPS_LEN];
     gmch_native_aux_read(mmio, port, DPCD_RECEIVER_CAPS, &mut caps_bytes)?;
     let caps = ReceiverCaps::parse(&caps_bytes)?;
-    let candidates = link_config_candidates(caps, mode)?;
+    // GMCH instantiates the generic trainer with TPS3_Supported => False.
+    let candidates = link_config_candidates(caps, mode, false)?;
     let mut last_error = GmaError::ModeUnavailable;
     let mut index = 0usize;
     while let Some(config) = candidates.get(index) {
@@ -344,6 +350,8 @@ fn clock_recovery(
         set_source_and_sink_training(mmio, port, TrainingPattern::Pattern1, train_set, config)?;
         tries += 1;
     }
+    // libgfxinit sends the sink TP_None before touching the source pattern.
+    let _ = clear_sink_and_source_training(mmio, port, config);
     let _ = dp_failure_off(mmio, port);
     Err(GmaError::HardwareError)
 }
@@ -374,6 +382,7 @@ fn channel_equalization(
         set_source_and_sink_training(mmio, port, pattern, train_set, config)?;
         tries += 1;
     }
+    let _ = clear_sink_and_source_training(mmio, port, config);
     let _ = dp_failure_off(mmio, port);
     Err(GmaError::HardwareError)
 }
@@ -540,7 +549,7 @@ mod tests {
 
     #[test]
     fn selects_lowest_link_config_that_fits_mode() {
-        let config = select_link_config(caps(DpLinkRate::Hbr, 4), Mode::XGA_1024X768_60).unwrap();
+        let config = select_link_config(caps(DpLinkRate::Hbr, 4), Mode::XGA_1024X768_60, true).unwrap();
         assert_eq!(config.link_rate, DpLinkRate::Hbr);
         assert_eq!(config.lane_count, 1);
         assert!(config.enhanced_framing);
@@ -550,7 +559,7 @@ mod tests {
     #[test]
     fn link_config_candidates_progress_to_higher_bandwidth_settings() {
         let configs =
-            link_config_candidates(caps(DpLinkRate::Hbr, 4), Mode::XGA_1024X768_60).unwrap();
+            link_config_candidates(caps(DpLinkRate::Hbr, 4), Mode::XGA_1024X768_60, true).unwrap();
         assert_eq!(configs.len(), 5);
         assert_eq!(configs.get(0).unwrap().link_rate, DpLinkRate::Hbr);
         assert_eq!(configs.get(0).unwrap().lane_count, 1);
@@ -562,11 +571,26 @@ mod tests {
     }
 
     #[test]
+    fn gmch_source_capability_gates_training_pattern_three() {
+        // Sink advertises TP3, but the GMCH source does not implement it.
+        let with_source = link_config_candidates(caps(DpLinkRate::Hbr, 1), Mode::XGA_1024X768_60, true)
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert!(with_source.tps3_supported);
+        let gmch = link_config_candidates(caps(DpLinkRate::Hbr, 1), Mode::XGA_1024X768_60, false)
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert!(!gmch.tps3_supported);
+    }
+
+    #[test]
     fn rejects_modes_that_exceed_sink_bandwidth() {
         let mut mode = Mode::XGA_1024X768_60;
         mode.pixel_clock_khz = 600_000;
         assert_eq!(
-            select_link_config(caps(DpLinkRate::Rbr, 1), mode),
+            select_link_config(caps(DpLinkRate::Rbr, 1), mode, true),
             Err(GmaError::ModeUnavailable)
         );
     }
