@@ -39,11 +39,42 @@ impl GenerationOps for Ironlake {
         // SAFETY: the framebuffer surface was selected from validated GMADR
         // aperture/stolen-memory resources and mapped into the GTT immediately
         // above, so the CPU-visible aperture covers this surface.
-        unsafe { ctx.surface.fill_bringup_pattern()? };
+        unsafe { ctx.surface.fill_opaque_black()? };
         let pipe = ironlake_pipeline_plan(ctx.config.cpu, port, mode)?.fdi_pipe();
         let plane = primary_for_pipe(pipe);
         let mut mmio = ctx.mmio();
-        execute_ironlake_init_plan_registers(&mut mmio, &plan, mode, ctx.surface, pipe, plane)
+        execute_ironlake_init_plan_registers(&mut mmio, &plan, port, mode, ctx.surface, pipe, plane)
+    }
+
+    fn disable_output(
+        mmio: &Mmio,
+        cpu: Cpu,
+        pipe: Pipe,
+        port: Port,
+    ) -> Result<(), GmaError> {
+        let fdi = fdi_for_port(port)?;
+        let port_op = match port {
+            Port::Lvds => pch_lvds_off_op(),
+            Port::Vga => pch_vga_off_op(true),
+            Port::HdmiA => pch_hdmi_off_op(PchHdmiPort::B),
+            Port::HdmiB => pch_hdmi_off_op(PchHdmiPort::C),
+            Port::HdmiC => pch_hdmi_off_op(PchHdmiPort::D),
+            _ => return Err(GmaError::UnsupportedPort),
+        };
+        let _ = cpu;
+        let mut sink = *mmio;
+        apply_executor_port_op(&mut sink, port_op);
+        disable_cpu_pipe_for_executor(&mut sink, pipe, fdi);
+        Ok(())
+    }
+
+    fn clean(mmio: &Mmio, cpu: Cpu) {
+        let _ = cpu;
+        let mut sink = *mmio;
+        disable_pch_ports_for_executor(&mut sink);
+        for (pipe, fdi) in [(Pipe::A, FdiPort::A), (Pipe::B, FdiPort::B)] {
+            disable_cpu_pipe_for_executor(&mut sink, pipe, fdi);
+        }
     }
 }
 
@@ -52,7 +83,7 @@ fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
 }
 
 fn map_gtt(ctx: &crate::GmaContext<'_>) -> Result<(), GmaError> {
-    gtt::map_surface_to_stolen(ctx.resources, &ctx.surface)?;
+    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
     gtt::flush_gfx(&ctx.mmio());
     Ok(())
 }
@@ -1476,7 +1507,6 @@ fn ironlake_init_sequence_plan(
     let mut ops = IronlakeInitPlan::new();
     push_init_op(&mut ops, IronlakeInitOp::MapGtt)?;
     push_init_op(&mut ops, IronlakeInitOp::FillFramebuffer)?;
-    push_init_op(&mut ops, IronlakeInitOp::DisablePchPorts)?;
     push_init_op(
         &mut ops,
         IronlakeInitOp::PchPllFp0 {
@@ -1591,6 +1621,7 @@ impl IronlakeMmioSink for Mmio {
 pub(crate) fn execute_ironlake_init_plan_registers<S: IronlakeMmioSink>(
     sink: &mut S,
     plan: &IronlakeInitPlan,
+    port: Port,
     mode: Mode,
     surface: crate::framebuffer::SurfaceConfig,
     pipe: Pipe,
@@ -1599,7 +1630,9 @@ pub(crate) fn execute_ironlake_init_plan_registers<S: IronlakeMmioSink>(
     for op in plan {
         match *op {
             IronlakeInitOp::MapGtt | IronlakeInitOp::FillFramebuffer => {}
-            IronlakeInitOp::ProgramCpuPipe => program_cpu_pipe_for_executor(sink, pipe, mode)?,
+            IronlakeInitOp::ProgramCpuPipe => {
+                program_cpu_pipe_for_executor(sink, pipe, mode, port)?
+            }
             IronlakeInitOp::ProgramPrimaryPlane => {
                 program_primary_plane_for_executor(sink, plane, pipe, surface)?
             }
@@ -1647,6 +1680,34 @@ fn disable_pch_ports_for_executor<S: IronlakeMmioSink>(sink: &mut S) {
     apply_executor_port_op(sink, pch_hdmi_off_op(PchHdmiPort::B));
     apply_executor_port_op(sink, pch_hdmi_off_op(PchHdmiPort::C));
     apply_executor_port_op(sink, pch_hdmi_off_op(PchHdmiPort::D));
+}
+
+/// FDI link that carries a PCH output: LVDS uses FDI B, everything else FDI A.
+pub(crate) const fn fdi_for_port(port: Port) -> Result<FdiPort, GmaError> {
+    match port {
+        Port::Lvds => Ok(FdiPort::B),
+        Port::Vga | Port::HdmiA | Port::HdmiB | Port::HdmiC => Ok(FdiPort::A),
+        _ => Err(GmaError::UnsupportedPort),
+    }
+}
+
+/// Disable one Ironlake CPU pipe, its plane, the matching PCH transcoder and
+/// FDI transmitter, without touching other pipes.
+fn disable_cpu_pipe_for_executor<S: IronlakeMmioSink>(sink: &mut S, pipe: Pipe, fdi: FdiPort) {
+    if let Ok(regs) = CpuPipeRegs::for_pipe(pipe) {
+        if let Ok(plane_regs) = CpuPlaneRegs::for_plane(crate::plane::primary_for_pipe(pipe)) {
+            sink.write32(plane_regs.cntr, 0);
+            sink.write32(plane_regs.surf, 0);
+            sink.posting_read(plane_regs.surf);
+        }
+        sink.update32(regs.pipeconf, CPU_PIPECONF_ENABLE, 0);
+        sink.posting_read(regs.pipeconf);
+    }
+    let timing = pch_transcoder_regs(fdi);
+    sink.update32(timing.conf, TRANS_CONF_ENABLE, 0);
+    sink.posting_read(timing.conf);
+    sink.write32(fdi_tx_ctl_register(fdi), 0);
+    sink.posting_read(fdi_tx_ctl_register(fdi));
 }
 
 fn execute_fdi_training<S: IronlakeMmioSink>(
@@ -1747,6 +1808,7 @@ fn program_cpu_pipe_for_executor<S: IronlakeMmioSink>(
     sink: &mut S,
     pipe: Pipe,
     mode: Mode,
+    port: Port,
 ) -> Result<(), GmaError> {
     let regs = CpuPipeRegs::for_pipe(pipe)?;
     let pipe_config = crate::pipe::PipeConfig::new(pipe, mode);
@@ -1757,7 +1819,10 @@ fn program_cpu_pipe_for_executor<S: IronlakeMmioSink>(
     sink.write32(regs.vblank, pipe_config.vblank());
     sink.write32(regs.vsync, pipe_config.vsync());
     sink.write32(regs.pipesrc, pipe_config.pipesrc());
-    sink.write32(regs.pipeconf, CPU_PIPECONF_ENABLE | CPU_PIPECONF_6BPC);
+    sink.write32(
+        regs.pipeconf,
+        CPU_PIPECONF_ENABLE | crate::pipe::pipeconf_bpc_bits(port),
+    );
     sink.posting_read(regs.pipeconf);
     Ok(())
 }
@@ -1868,7 +1933,6 @@ impl CpuPlaneRegs {
 }
 
 const CPU_PIPECONF_ENABLE: u32 = CPU_PIPECONF::ENABLE::SET.value;
-const CPU_PIPECONF_6BPC: u32 = CPU_PIPECONF::BPC::Bits6.value;
 const CPU_DSPCNTR_ENABLE: u32 = CPU_DSPCNTR::ENABLE::SET.value;
 const CPU_DSPCNTR_FORMAT_XRGB8888: u32 = CPU_DSPCNTR::FORMAT::Xrgb8888.value;
 
@@ -2346,7 +2410,7 @@ mod tests {
         let mode = Mode::XGA_1024X768_60;
         let plan = ironlake_init_sequence_for_mode(Cpu::Ironlake, Port::Lvds, mode).unwrap();
         assert_eq!(
-            plan[3],
+            plan[2],
             IronlakeInitOp::PchPllFp0 {
                 register: PCH_FPB0,
                 value: encode_pch_fp(find_pch_clock(Port::Lvds, mode).unwrap()),
@@ -2371,28 +2435,27 @@ mod tests {
         let plan = ironlake_init_sequence_plan(Cpu::Ironlake, Port::Lvds, mode, clock).unwrap();
         assert_eq!(plan[0], IronlakeInitOp::MapGtt);
         assert_eq!(plan[1], IronlakeInitOp::FillFramebuffer);
-        assert_eq!(plan[2], IronlakeInitOp::DisablePchPorts);
         assert!(matches!(
-            plan[3],
+            plan[2],
             IronlakeInitOp::PchPllFp0 {
                 register: PCH_FPB0,
                 ..
             }
         ));
         assert!(matches!(
-            plan[5],
+            plan[4],
             IronlakeInitOp::PchPllControl {
                 register: PCH_DPLL_B,
                 ..
             }
         ));
         assert_eq!(
-            plan[7],
+            plan[6],
             IronlakeInitOp::PchDpllSelect(pch_dpll_sel_op(FdiPort::B, PchPll::B))
         );
-        assert_eq!(plan[8], IronlakeInitOp::ProgramCpuPipe);
+        assert_eq!(plan[7], IronlakeInitOp::ProgramCpuPipe);
         assert!(matches!(
-            plan[9],
+            plan[8],
             IronlakeInitOp::ProgramPchTranscoder(PchTranscoderTimingPlan {
                 regs: PchTranscoderRegs {
                     timing: TRANS_TIMING_B,
@@ -2401,18 +2464,18 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(plan[10], IronlakeInitOp::ProgramPrimaryPlane);
-        assert!(matches!(plan[11], IronlakeInitOp::FdiPreTrainRx(_)));
-        assert!(matches!(plan[16], IronlakeInitOp::FdiPreTrainRx(_)));
+        assert_eq!(plan[9], IronlakeInitOp::ProgramPrimaryPlane);
+        assert!(matches!(plan[10], IronlakeInitOp::FdiPreTrainRx(_)));
+        assert!(matches!(plan[15], IronlakeInitOp::FdiPreTrainRx(_)));
         assert!(matches!(
-            plan[17],
+            plan[16],
             IronlakeInitOp::FdiPreTrainTx(PortRegisterOp::Write {
                 register: FDI_TX_CTL_B,
                 ..
             })
         ));
         assert_eq!(
-            plan[18],
+            plan[17],
             IronlakeInitOp::FdiTrain {
                 fdi: FdiPort::B,
                 mode: FdiTrainingMode::Simple,
@@ -2420,10 +2483,10 @@ mod tests {
             }
         );
         assert_eq!(
-            plan[19],
+            plan[18],
             IronlakeInitOp::EnablePchPort(pch_lvds_enable_op(FdiPort::B, mode))
         );
-        assert_eq!(plan.len(), 20);
+        assert_eq!(plan.len(), 19);
     }
 
     #[test]
@@ -2438,11 +2501,11 @@ mod tests {
         };
         let vga = ironlake_init_sequence_plan(Cpu::Sandybridge, Port::Vga, mode, clock).unwrap();
         assert_eq!(
-            vga[7],
+            vga[6],
             IronlakeInitOp::PchDpllSelect(pch_dpll_sel_op(FdiPort::A, PchPll::A))
         );
         assert!(matches!(
-            vga[18],
+            vga[17],
             IronlakeInitOp::FdiTrain {
                 fdi: FdiPort::A,
                 mode: FdiTrainingMode::Full,
@@ -2450,13 +2513,13 @@ mod tests {
             }
         ));
         assert_eq!(
-            vga[19],
+            vga[18],
             IronlakeInitOp::EnablePchPort(pch_vga_enable_op(FdiPort::A, mode))
         );
 
         let hdmi = ironlake_init_sequence_plan(Cpu::Ivybridge, Port::HdmiB, mode, clock).unwrap();
         assert!(matches!(
-            hdmi[18],
+            hdmi[17],
             IronlakeInitOp::FdiTrain {
                 fdi: FdiPort::A,
                 mode: FdiTrainingMode::Auto,
@@ -2464,7 +2527,7 @@ mod tests {
             }
         ));
         assert_eq!(
-            hdmi[19],
+            hdmi[18],
             IronlakeInitOp::EnablePchPort(pch_hdmi_enable_op(PchHdmiPort::C, FdiPort::A, mode))
         );
         assert_eq!(
@@ -2493,6 +2556,7 @@ mod tests {
             execute_ironlake_init_plan_registers(
                 &mut sink,
                 &plan,
+                Port::Lvds,
                 mode,
                 crate::framebuffer::SurfaceConfig::packed(
                     crate::types::PhysAddr(0xd000_0000),
@@ -2505,7 +2569,11 @@ mod tests {
             ),
             Ok(())
         );
-        assert!(sink.wrote(PCH_LVDS, 0));
+        // Enabling one output must not disable unrelated PCH ports.
+        assert!(!sink.wrote(PCH_HDMID, 0));
+        // LVDS is an 18bpp path: 6 bpc (2 << 5) with dithering.
+        assert_eq!(sink.latest(0x71008) & (7 << 5), 2 << 5);
+        assert_eq!(sink.latest(0x71008) & (1 << 4), 1 << 4);
         assert!(sink.wrote(PCH_FPB0, encode_pch_fp(clock)));
         assert!(sink.wrote(PCH_DPLL_B, encode_pch_dpll(PchDpllMode::Lvds, clock)));
         assert_eq!(
@@ -2538,6 +2606,7 @@ mod tests {
             PchPll::A,
         )))
         .unwrap();
+        plan.push(IronlakeInitOp::ProgramCpuPipe).unwrap();
         plan.push(IronlakeInitOp::ProgramPchTranscoder(timing))
             .unwrap();
         plan.push(IronlakeInitOp::EnablePchPort(pch_vga_enable_op(
@@ -2550,6 +2619,7 @@ mod tests {
             execute_ironlake_init_plan_registers(
                 &mut sink,
                 &plan,
+                Port::Vga,
                 mode,
                 crate::framebuffer::SurfaceConfig::packed(
                     crate::types::PhysAddr(0xd000_0000),
@@ -2563,6 +2633,9 @@ mod tests {
             Ok(())
         );
         assert!(sink.wrote(PCH_FPA0, 0x1234));
+        // VGA uses 8 bpc (0 << 5) with no dither.
+        assert_eq!(sink.latest(0x70008) & (7 << 5), 0);
+        assert_eq!(sink.latest(0x70008) & (1 << 4), 0);
         assert!(sink.wrote(timing.regs.conf, TRANS_CONF_ENABLE));
         assert_ne!(sink.latest(PCH_ADPA) & PCH_ADPA_DAC_ENABLE, 0);
     }

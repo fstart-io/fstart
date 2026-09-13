@@ -145,10 +145,17 @@ register_bitfields! [u32,
         ENABLE OFFSET(31) NUMBITS(1) [],
         /// Hardware pipe enabled status.
         ENABLED_STATUS OFFSET(30) NUMBITS(1) [],
-        /// Bits-per-component selector. Legacy 6bpc is encoded as zero.
+        /// Bits-per-component selector. Encoding is not numeric order:
+        /// 8bpc = 0, 10bpc = 1, 6bpc = 2, 12bpc = 3 (libgfxinit
+        /// `TRANS_CONF_BPC`, Linux `TRANSCONF_BPC_*`).
         BPC OFFSET(5) NUMBITS(3) [
-            Bits6 = 0
-        ]
+            Bits8 = 0,
+            Bits10 = 1,
+            Bits6 = 2,
+            Bits12 = 3
+        ],
+        /// Pipe dither enable.
+        DITHER OFFSET(4) NUMBITS(1) []
     ],
 
     /// Legacy GMCH primary display plane control.
@@ -156,7 +163,7 @@ register_bitfields! [u32,
         /// Plane enable bit.
         ENABLE OFFSET(31) NUMBITS(1) [],
         /// Pixel format selector.
-        FORMAT OFFSET(26) NUMBITS(3) [
+        FORMAT OFFSET(26) NUMBITS(4) [
             Xrgb8888 = 6
         ],
         /// Pipe routed to this plane.
@@ -296,6 +303,8 @@ register_bitfields! [u32,
 
     /// Panel power divisor/cycle-delay register.
     pub PP_DIVISOR [
+        /// Reference divider (24 bits, units of 100 us).
+        REF_DIVIDER OFFSET(8) NUMBITS(24) [],
         /// Power-cycle delay field.
         PWR_CYC_DELAY OFFSET(0) NUMBITS(5) []
     ],
@@ -367,11 +376,11 @@ register_bitfields! [u32,
     /// Broxton port PLL gain coefficient register.
     pub BXT_PORT_PLL6 [
         /// Proportional gain coefficient.
-        PROP_COEFF OFFSET(16) NUMBITS(3) [],
+        GAIN_CTL OFFSET(16) NUMBITS(3) [],
         /// Integral gain coefficient.
         INT_COEFF OFFSET(8) NUMBITS(5) [],
         /// Gain coefficient.
-        GAIN_COEFF OFFSET(0) NUMBITS(4) []
+        PROP_COEFF OFFSET(0) NUMBITS(4) []
     ],
 
     /// Broxton port PLL target-count register.
@@ -428,10 +437,11 @@ register_bitfields! [u32,
         /// Reference clock selector.
         REFCLK OFFSET(13) NUMBITS(2) [
             Dref = 0,
+            Sdvo = 2,
             Ssc = 3
         ],
         /// Pulse phase selector.
-        PULSE_PHASE OFFSET(9) NUMBITS(3) [
+        PULSE_PHASE OFFSET(9) NUMBITS(4) [
             Phase6 = 6
         ]
     ],
@@ -594,6 +604,7 @@ register_bitfields! [u32,
         /// Reference clock selector.
         REFCLK OFFSET(13) NUMBITS(2) [
             Dref = 0,
+            Sdvo = 2,
             Ssc = 3
         ]
     ],
@@ -766,15 +777,21 @@ register_bitfields! [u32,
     /// Ironlake CPU pipe configuration register.
     pub CPU_PIPECONF [
         ENABLE OFFSET(31) NUMBITS(1) [],
+        /// Same non-numeric BPC encoding as `PIPECONF`.
         BPC OFFSET(5) NUMBITS(3) [
-            Bits6 = 0
-        ]
+            Bits8 = 0,
+            Bits10 = 1,
+            Bits6 = 2,
+            Bits12 = 3
+        ],
+        /// Pipe dither enable.
+        DITHER OFFSET(4) NUMBITS(1) []
     ],
 
     /// Ironlake CPU primary plane control register.
     pub CPU_DSPCNTR [
         ENABLE OFFSET(31) NUMBITS(1) [],
-        FORMAT OFFSET(26) NUMBITS(3) [
+        FORMAT OFFSET(26) NUMBITS(4) [
             Xrgb8888 = 6
         ],
         PIPE_SELECT OFFSET(24) NUMBITS(2) [
@@ -823,7 +840,10 @@ register_bitfields! [u32,
         TIME_OUT_ERROR OFFSET(28) NUMBITS(1) [],
         /// Timeout timer selector.
         TIME_OUT_TIMER OFFSET(26) NUMBITS(2) [
-            Timer600us = 1
+            Timer400us = 0,
+            Timer600us = 1,
+            Timer800us = 2,
+            Timer1600us = 3
         ],
         /// Receive error latch.
         RECEIVE_ERROR OFFSET(25) NUMBITS(1) [],

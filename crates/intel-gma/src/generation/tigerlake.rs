@@ -1,11 +1,14 @@
 //! Tigerlake/Alderlake Intel GMA generation support.
 //!
-//! libgfxinit's Tigerlake backend is intentionally skeletal today: PLL
-//! allocation succeeds with `Invalid_PLL`, register hints are zero, power/CDCLK
-//! routines are no-ops, connector `Pre_On` succeeds without register writes,
-//! connector `Post_On` turns panel backlight on, and hotplug detection always
-//! reports false. This module captures that behavior as explicit compatibility
-//! plans for Tigerlake/Type-C routing.
+//! This module is currently a scaffold, not parity. libgfxinit's Tigerlake
+//! backend is fully implemented: it allocates Combo/Dekel PHY PLLs
+//! (`common/tigerlake/hw-gfx-gma-plls.adb` `Alloc`), initializes power domains,
+//! CDCLK and raw clock (`hw-gfx-gma-power_and_clocks.adb` `Initialize`), maps
+//! the PLL to the DDI port, enables the pipe clock and transcoder, programs
+//! Type-C mode and runs DP training in `Pre_On`, and reads combo/Type-C
+//! hotplug state in `port_detect.adb`. The Rust plans below model that shape
+//! but `init_display` does not execute them yet (see the parity-audit report).
+//! Do not read this file as evidence that upstream Tigerlake is skeletal.
 
 use crate::error::GmaError;
 use crate::generation::{GenerationOps, sealed};
@@ -25,7 +28,7 @@ impl GenerationOps for Tigerlake {
     fn init_display(ctx: &mut crate::GmaContext<'_>, _mode: Mode) -> Result<(), GmaError> {
         map_gtt(ctx)?;
         // SAFETY: the selected surface is backed by the just-programmed GTT mapping.
-        unsafe { ctx.surface.fill_bringup_pattern()? };
+        unsafe { ctx.surface.fill_opaque_black()? };
         let port = selected_port(ctx)?;
         let pipe = ddi_pipe_for_port(port);
         let pll = tgl_alloc_pll_plan(port);
@@ -58,7 +61,7 @@ fn ddi_pipe_for_port(port: Port) -> Pipe {
 }
 
 fn map_gtt(ctx: &crate::GmaContext<'_>) -> Result<(), GmaError> {
-    gtt::map_surface_to_stolen(ctx.resources, &ctx.surface)?;
+    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
     gtt::flush_gfx(&ctx.mmio());
     Ok(())
 }

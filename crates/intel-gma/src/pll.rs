@@ -1,8 +1,9 @@
-//! Legacy GMCH DPLL helpers, ported from libgfxinit's G45 PLL model.
+//! Legacy GMCH DPLL helpers, matching libgfxinit's G45 and i945 PLL models.
 
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::registers::ReadWrite;
 
+use crate::dp_aux::DpLinkRate;
 use crate::error::GmaError;
 use crate::mmio::{Mmio, delay_us};
 use crate::mode::Mode;
@@ -43,7 +44,7 @@ pub(crate) struct LegacyClock {
     dotclock_hz: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Limits {
     n_min: u32,
     n_max: u32,
@@ -124,6 +125,26 @@ const G45_LVDS_SINGLE_LIMITS: Limits = Limits {
     vco_max: 3_500_000_000,
 };
 
+const G45_LVDS_DUAL_LIMITS: Limits = Limits {
+    n_min: 3,
+    n_max: 5,
+    m_min: 104,
+    m_max: 138,
+    m1_min: 19,
+    m1_max: 25,
+    m2_min: 7,
+    m2_max: 13,
+    p_min: 14,
+    p_max: 56,
+    p1_min: 2,
+    p1_max: 6,
+    p2_fast: 7,
+    p2_slow: 7,
+    p2_threshold_hz: 0,
+    vco_min: 1_750_000_000,
+    vco_max: 3_500_000_000,
+};
+
 const G45_ANALOG_LIMITS: Limits = Limits {
     n_min: 3,
     n_max: 6,
@@ -184,26 +205,82 @@ const PINEVIEW_ANALOG_LIMITS: Limits = Limits {
     vco_max: 3_500_000_000,
 };
 
+/// libgfxinit `Config.LVDS_Dual_Threshold`: LVDS dot clocks at or above this
+/// value need the dual-channel PLL limits.
+const LVDS_DUAL_THRESHOLD_HZ: u64 = 95_000_000;
+/// libgfxinit's G45/GM965 `On` rejects dot clocks above 340 MHz.
+const MAX_DOTCLOCK_HZ: u64 = 340_000_000;
+/// libgfxinit's i945/Pineview `On` rejects dot clocks above 400 MHz.
+const MAX_DOTCLOCK_I945_HZ: u64 = 400_000_000;
+
+/// True for the two Pineview parts, which use the one-hot-N DPLL encoding.
+const fn is_pineview(cpu: Cpu) -> bool {
+    matches!(cpu, Cpu::Pineview | Cpu::PineviewM)
+}
+
+/// True for CPUs whose display block is the Gen3/i945 generation.
+const fn is_i945_generation(cpu: Cpu) -> bool {
+    matches!(
+        cpu,
+        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM
+    )
+}
+
+/// Select the legacy PLL limits for a CPU and port, returning `None` for ports
+/// that use a different PLL model (DisplayPort).
+fn select_legacy_limits(cpu: Cpu, port: Port, target_hz: u64) -> Option<Limits> {
+    match (cpu, port) {
+        (_, Port::DpA | Port::DpB | Port::DpC | Port::DpD | Port::Edp) => None,
+        (Cpu::Pineview | Cpu::PineviewM, Port::Lvds) => Some(PINEVIEW_LVDS_LIMITS),
+        (Cpu::Pineview | Cpu::PineviewM, _) => Some(PINEVIEW_ANALOG_LIMITS),
+        (Cpu::I945G | Cpu::I945GM | Cpu::Gm965, Port::Lvds) => Some(I9XX_LVDS_LIMITS),
+        (Cpu::I945G | Cpu::I945GM | Cpu::Gm965, _) => Some(I9XX_OTHER_LIMITS),
+        (_, Port::Lvds) => Some(if target_hz >= LVDS_DUAL_THRESHOLD_HZ {
+            G45_LVDS_DUAL_LIMITS
+        } else {
+            G45_LVDS_SINGLE_LIMITS
+        }),
+        (_, _) => Some(G45_ANALOG_LIMITS),
+    }
+}
+
 /// Find the best legacy PLL tuple for a mode and port.
 pub(crate) fn find_legacy_clock(cpu: Cpu, port: Port, mode: Mode) -> Result<LegacyClock, GmaError> {
     let target_hz = u64::from(mode.pixel_clock_khz) * 1000;
-    if target_hz > 340_000_000 {
+    let limits = select_legacy_limits(cpu, port, target_hz).ok_or(GmaError::UnsupportedPort)?;
+    let max_dotclock = if is_i945_generation(cpu) {
+        MAX_DOTCLOCK_I945_HZ
+    } else {
+        MAX_DOTCLOCK_HZ
+    };
+    if target_hz > max_dotclock {
         return Err(GmaError::PllNoSolution);
     }
-    if cpu == Cpu::Pineview {
-        let limits = match port {
-            Port::Lvds => PINEVIEW_LVDS_LIMITS,
-            _ => PINEVIEW_ANALOG_LIMITS,
-        };
+    if is_pineview(cpu) {
         return calculate_pineview_clock(target_hz, 96_000_000, limits);
     }
-    let limits = match (matches!(cpu, Cpu::Gm965), port) {
-        (true, Port::Lvds) => I9XX_LVDS_LIMITS,
-        (true, _) => I9XX_OTHER_LIMITS,
-        (false, Port::Lvds) => G45_LVDS_SINGLE_LIMITS,
-        (false, _) => G45_ANALOG_LIMITS,
-    };
     calculate_clock(target_hz, 96_000_000, limits)
+}
+
+/// Fixed DPLL tuples libgfxinit programs for GMCH DisplayPort links.
+///
+/// The DP PLL is not derived from the pixel clock. libgfxinit selects these
+/// constants from the negotiated DP bandwidth, and GMCH only supports 1.62 and
+/// 2.7 Gbit/s; 5.4 Gbit/s needs a newer DPLL. `dotclock_hz` is unused for DP.
+pub(crate) fn find_legacy_dp_clock(rate: DpLinkRate) -> Result<LegacyClock, GmaError> {
+    let (n, m1, m2, p1, p2) = match rate {
+        DpLinkRate::Rbr => (4, 25, 10, 2, 10),
+        DpLinkRate::Hbr => (3, 16, 4, 1, 10),
+        _ => return Err(GmaError::PllNoSolution),
+    };
+    Ok(LegacyClock {
+        n,
+        m1,
+        m2,
+        p1,
+        p2,
+        dotclock_hz: 0,
+    })
 }
 
 fn calculate_pineview_clock(
@@ -211,19 +288,21 @@ fn calculate_pineview_clock(
     reference_hz: u64,
     limits: Limits,
 ) -> Result<LegacyClock, GmaError> {
-    let p2 = if target_hz < limits.p2_threshold_hz {
+    let p2 = if target_hz <= limits.p2_threshold_hz {
         limits.p2_slow
     } else {
         limits.p2_fast
     };
     let mut best: Option<(LegacyClock, u64)> = None;
-    for m2 in limits.m2_min..=limits.m2_max {
-        for n in limits.n_min..=limits.n_max {
-            for p1 in limits.p1_min..=limits.p1_max {
+    // libgfxinit iterates N ascending and M2/P1 descending, so equal-delta
+    // parameter sets prefer the higher divider values.
+    for n in limits.n_min..=limits.n_max {
+        for m2 in (limits.m2_min..=limits.m2_max).rev() {
+            for p1 in (limits.p1_min..=limits.p1_max).rev() {
                 let m = m2 + 2;
                 let p = p1 * p2;
-                let vco = (reference_hz * u64::from(m) + u64::from(n / 2)) / u64::from(n);
-                let dotclock_hz = (vco + u64::from(p / 2)) / u64::from(p);
+                let vco = reference_hz * u64::from(m) / u64::from(n);
+                let dotclock_hz = vco / u64::from(p);
                 if m < limits.m_min
                     || m > limits.m_max
                     || p < limits.p_min
@@ -334,7 +413,7 @@ pub(crate) fn program_legacy_pll(
 }
 
 fn encode_legacy_fp(cpu: Cpu, clock: LegacyClock) -> u32 {
-    if cpu == Cpu::Pineview {
+    if is_pineview(cpu) {
         (1u32 << clock.n) << FP_N_SHIFT | clock.m2
     } else {
         ((clock.n - 2) << FP_N_SHIFT) | ((clock.m1 - 2) << FP_M1_SHIFT) | (clock.m2 - 2)
@@ -348,18 +427,29 @@ fn encode_legacy_dpll(cpu: Cpu, port: Port, clock: LegacyClock) -> u32 {
     } else {
         0
     };
+    // libgfxinit g45 `DPLL_Mode`: LVDS and DP use the SSC reference clock,
+    // VGA uses DREF, and HDMI/DP enable the high-speed (DVO 2x) path.
     let mode_bits = match port {
         Port::Lvds => DPLL_MODE_LVDS | DPLL_SSC,
         Port::Vga => DPLL_MODE_DAC | DPLL_DREFCLK,
+        Port::DpA | Port::DpB | Port::DpC | Port::DpD | Port::Edp => {
+            DPLL_MODE_DAC | DPLL_SSC | DPLL_HIGH_SPEED
+        }
         _ => DPLL_MODE_DAC | DPLL_DREFCLK | DPLL_HIGH_SPEED,
     };
-    let p1_shift = if cpu == Cpu::Pineview {
+    let p1_shift = if is_pineview(cpu) {
         DPLL_PINEVIEW_P1_DIVIDER_SHIFT
     } else {
         DPLL_P1_DIVIDER_SHIFT
     };
+    // i945/Pineview have no PULSE_PHASE field (Gen4+ only).
+    let pulse_phase = if is_i945_generation(cpu) {
+        0
+    } else {
+        DPLL_PULSE_PHASE_6
+    };
 
-    mode_bits | DPLL_VGA_MODE_DIS | DPLL_PULSE_PHASE_6 | encoded_p2 | (encoded_p1 << p1_shift)
+    mode_bits | DPLL_VGA_MODE_DIS | pulse_phase | encoded_p2 | (encoded_p1 << p1_shift)
 }
 
 /// Data-only operation needed to update one legacy PLL register.
@@ -503,5 +593,134 @@ mod tests {
                 mask: DPLL_VCO_ENABLE,
             })
         );
+    }
+
+    #[test]
+    fn selects_g45_dual_lvds_limits_at_libgfxinit_threshold() {
+        // Below the 95 MHz dual-channel threshold: single-channel limits.
+        let single = select_legacy_limits(Cpu::G45, Port::Lvds, 94_999_999).unwrap();
+        assert_eq!((single.p_min, single.p_max, single.p1_max), (28, 112, 8));
+        // At or above it: dual-channel limits.
+        let dual = select_legacy_limits(Cpu::G45, Port::Lvds, LVDS_DUAL_THRESHOLD_HZ).unwrap();
+        assert_eq!((dual.p_min, dual.p_max, dual.p1_max), (14, 56, 6));
+        assert_eq!((dual.p2_fast, dual.p2_slow), (7, 7));
+        // GM965 keeps the i9xx limits regardless of dot clock.
+        let gm965 = select_legacy_limits(Cpu::Gm965, Port::Lvds, 200_000_000).unwrap();
+        assert_eq!((gm965.p_min, gm965.p_max), (7, 98));
+        // VGA still uses the analog limits.
+        let vga = select_legacy_limits(Cpu::G45, Port::Vga, 65_000_000).unwrap();
+        assert_eq!((vga.m1_min, vga.p_max), (18, 80));
+    }
+
+    #[test]
+    fn gmch_dp_clock_matches_libgfxinit_static_tuples() {
+        let rbr = find_legacy_dp_clock(DpLinkRate::Rbr).unwrap();
+        assert_eq!((rbr.n, rbr.m1, rbr.m2, rbr.p1, rbr.p2), (4, 25, 10, 2, 10));
+        let hbr = find_legacy_dp_clock(DpLinkRate::Hbr).unwrap();
+        assert_eq!((hbr.n, hbr.m1, hbr.m2, hbr.p1, hbr.p2), (3, 16, 4, 1, 10));
+        // GMCH has no 5.4 Gbit/s DPLL.
+        assert_eq!(
+            find_legacy_dp_clock(DpLinkRate::Hbr2),
+            Err(GmaError::PllNoSolution)
+        );
+    }
+
+    #[test]
+    fn dp_ports_use_the_fixed_dp_clock_not_the_pixel_clock_search() {
+        assert_eq!(
+            find_legacy_clock(Cpu::G45, Port::DpA, Mode::XGA_1024X768_60),
+            Err(GmaError::UnsupportedPort)
+        );
+        assert_eq!(select_legacy_limits(Cpu::G45, Port::DpB, 65_000_000), None);
+    }
+
+    #[test]
+    fn gmch_dpll_mode_bits_match_libgfxinit() {
+        let clock = find_legacy_clock(Cpu::Gm965, Port::Lvds, Mode::XGA_1024X768_60).unwrap();
+        let lvds = encode_legacy_dpll(Cpu::Gm965, Port::Lvds, clock);
+        assert_eq!(
+            lvds & (DPLL_MODE_LVDS | DPLL_SSC),
+            DPLL_MODE_LVDS | DPLL_SSC
+        );
+        assert_eq!(lvds & DPLL_HIGH_SPEED, 0);
+
+        let vga = encode_legacy_dpll(Cpu::Gm965, Port::Vga, clock);
+        assert_eq!(vga & DPLL_MODE_DAC, DPLL_MODE_DAC);
+        assert_eq!(vga & DPLL_SSC, 0);
+        assert_eq!(vga & DPLL_HIGH_SPEED, 0);
+
+        // HDMI uses DREF, DP keeps the SSC reference (libgfxinit MODE_DPLL_DP).
+        let hdmi = encode_legacy_dpll(Cpu::G45, Port::HdmiA, clock);
+        assert_eq!(hdmi & DPLL_HIGH_SPEED, DPLL_HIGH_SPEED);
+        assert_eq!(hdmi & DPLL_SSC, 0);
+        let dp = encode_legacy_dpll(Cpu::G45, Port::DpA, clock);
+        assert_eq!(dp & DPLL_HIGH_SPEED, DPLL_HIGH_SPEED);
+        assert_eq!(dp & DPLL_SSC, DPLL_SSC);
+    }
+
+    #[test]
+    fn pineview_dpll_omits_pulse_phase_and_shifts_p1_by_15() {
+        let clock = find_legacy_clock(Cpu::Pineview, Port::Vga, Mode::XGA_1024X768_60).unwrap();
+        let dpll = encode_legacy_dpll(Cpu::Pineview, Port::Vga, clock);
+        assert_eq!(dpll & DPLL_PULSE_PHASE_6, 0);
+        assert_eq!(
+            dpll & (0x00ff_8000),
+            (1u32 << (clock.p1 - 1)) << DPLL_PINEVIEW_P1_DIVIDER_SHIFT
+        );
+        // G45 still sets the Gen4+ pulse phase field.
+        let g45 = encode_legacy_dpll(Cpu::G45, Port::Vga, clock);
+        assert_eq!(g45 & DPLL_PULSE_PHASE_6, DPLL_PULSE_PHASE_6);
+    }
+
+    #[test]
+    fn i945_uses_i9xx_limits_and_standard_encoding_without_pulse_phase() {
+        let clock = find_legacy_clock(Cpu::I945GM, Port::Lvds, Mode::XGA_1024X768_60).unwrap();
+        assert!(clock.dotclock_hz.abs_diff(65_000_000) < 250_000);
+        let dpll = encode_legacy_dpll(Cpu::I945GM, Port::Lvds, clock);
+        assert_eq!(dpll & DPLL_PULSE_PHASE_6, 0);
+        // P1 shift 16 on i945; only Pineview shifts by 15.
+        assert_eq!(
+            dpll & 0x00ff_0000,
+            (1u32 << (clock.p1 - 1)) << DPLL_P1_DIVIDER_SHIFT
+        );
+        // Standard (N-2, M1-2, M2-2) FP encoding, not the Pineview one-hot N.
+        assert_eq!(
+            encode_legacy_fp(Cpu::I945GM, clock),
+            ((clock.n - 2) << 16) | ((clock.m1 - 2) << 8) | (clock.m2 - 2)
+        );
+    }
+
+    #[test]
+    fn i945_accepts_dot_clocks_up_to_400mhz() {
+        let mut mode = Mode::XGA_1024X768_60;
+        mode.pixel_clock_khz = 350_000;
+        assert!(find_legacy_clock(Cpu::I945GM, Port::Vga, mode).is_ok());
+        assert!(find_legacy_clock(Cpu::I945G, Port::Vga, mode).is_ok());
+        mode.pixel_clock_khz = 401_000;
+        assert!(find_legacy_clock(Cpu::I945GM, Port::Vga, mode).is_err());
+    }
+
+    #[test]
+    fn pineview_m_uses_the_pineview_encoding() {
+        let pm = find_legacy_clock(Cpu::PineviewM, Port::Vga, Mode::XGA_1024X768_60).unwrap();
+        assert_eq!(pm.m1, 0);
+        let fp = encode_legacy_fp(Cpu::PineviewM, pm);
+        assert_eq!((fp >> FP_N_SHIFT).count_ones(), 1);
+        let dpll = encode_legacy_dpll(Cpu::PineviewM, Port::Vga, pm);
+        assert_eq!(dpll & DPLL_PULSE_PHASE_6, 0);
+        assert_eq!(
+            dpll & 0x00ff_8000,
+            (1u32 << (pm.p1 - 1)) << DPLL_PINEVIEW_P1_DIVIDER_SHIFT
+        );
+    }
+
+    #[test]
+    fn pineview_accepts_dot_clocks_above_the_g45_cap() {
+        let mut mode = Mode::XGA_1024X768_60;
+        mode.pixel_clock_khz = 350_000;
+        assert!(find_legacy_clock(Cpu::Gm965, Port::Vga, mode).is_err());
+        assert!(find_legacy_clock(Cpu::Pineview, Port::Vga, mode).is_ok());
+        mode.pixel_clock_khz = 401_000;
+        assert!(find_legacy_clock(Cpu::Pineview, Port::Vga, mode).is_err());
     }
 }

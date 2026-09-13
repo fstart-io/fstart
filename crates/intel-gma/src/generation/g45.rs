@@ -53,9 +53,10 @@ impl GenerationOps for G45 {
         // SAFETY: the framebuffer surface was selected from validated GMADR
         // aperture/stolen-memory resources and mapped into the GTT immediately
         // above, so the CPU-visible aperture covers this surface.
-        unsafe { ctx.surface.fill_bringup_pattern()? };
-        disable_legacy_display_state(&mmio);
-        disable_legacy_path(&mmio);
+        unsafe { ctx.surface.fill_opaque_black()? };
+        // No global teardown here: `GmaDisplayState` disables only the outputs
+        // whose configuration changed, so enabling a second output leaves the
+        // first running. Boot-state cleanup happens once in `clean()`.
         let panel = selected_lfp_panel(ctx);
         pre_pll_enable_port(
             &mmio,
@@ -64,16 +65,18 @@ impl GenerationOps for G45 {
             pipeline.pipe.mode,
             panel,
         )?;
-        program_pll_for_port(ctx, &pipeline)?;
         if is_gmch_dp_port(pipeline.port) {
             train_gmch_dp_with_retry(
                 &mmio,
                 pipeline.port,
                 pipeline.pipe.pipe,
                 pipeline.pipe.mode,
-                || {
+                |config| {
+                    // libgfxinit allocates the PLL per link setting, so the
+                    // fixed DP tuple must match the candidate being tried.
+                    program_pll_for_dp_rate(ctx, pipeline.pll, pipeline.port, config.link_rate)?;
                     Self::program_pipe(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
-                    program_gmch_panel_fitter(ctx, &pipeline)?;
+                    program_gmch_panel_fitter(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
                     Self::program_primary_plane(ctx, pipeline.plane.plane)?;
                     let _ = crate::port_detect::clear_hotplug_detect(&mmio, pipeline.port);
                     Ok(())
@@ -84,8 +87,9 @@ impl GenerationOps for G45 {
                 },
             )?;
         } else {
+            program_pll_for_port(ctx, &pipeline)?;
             Self::program_pipe(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
-            program_gmch_panel_fitter(ctx, &pipeline)?;
+            program_gmch_panel_fitter(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
             Self::program_primary_plane(ctx, pipeline.plane.plane)?;
             let _ = crate::port_detect::clear_hotplug_detect(&mmio, pipeline.port);
             enable_port_with_mode_and_panel(
@@ -117,6 +121,7 @@ impl GenerationOps for G45 {
     }
 
     fn program_pipe(ctx: &mut GmaContext<'_>, pipe: Pipe, mode: Mode) -> Result<(), GmaError> {
+        let port = selected_port(ctx)?;
         let regs = PipeRegs::for_pipe(pipe)?;
         let pipe_config = crate::pipe::PipeConfig::new(pipe, mode);
         let mmio = ctx.mmio();
@@ -136,7 +141,7 @@ impl GenerationOps for G45 {
         timing.vblank.set(pipe_config.vblank());
         timing.vsync.set(pipe_config.vsync());
         timing.pipesrc.set(pipe_config.pipesrc());
-        pipeconf.write(PIPECONF::ENABLE::SET + PIPECONF::BPC::Bits6);
+        pipeconf.set(PIPECONF::ENABLE::SET.value | crate::pipe::pipeconf_bpc_bits(port));
         let _ = pipeconf.get();
         let mut timeout = 100_000u32;
         while timeout != 0 {
@@ -198,9 +203,32 @@ impl GenerationOps for G45 {
             crate::choose_mode(ctx.resources, ctx.config)?,
         )
     }
+
+    fn disable_output(
+        mmio: &Mmio,
+        cpu: Cpu,
+        pipe: Pipe,
+        port: Port,
+    ) -> Result<(), GmaError> {
+        if port == Port::Lvds {
+            panel_backlight_off(mmio);
+            panel_power_off(mmio);
+        }
+        disable_pipe_state(mmio, pipe);
+        disable_port(mmio, port);
+        let _ = cpu;
+        let pll = crate::port::legacy_pll_for_pipe(pipe)?;
+        pll::disable_legacy_pll(mmio, pll);
+        Ok(())
+    }
+
+    fn clean(mmio: &Mmio, cpu: Cpu) {
+        disable_legacy_display_state(mmio);
+        disable_legacy_path(mmio, cpu);
+    }
 }
 
-fn gmch_panel_regs(mmio: &Mmio) -> &'static GmchPanelRegs {
+pub(crate) fn gmch_panel_regs(mmio: &Mmio) -> &'static GmchPanelRegs {
     // SAFETY: GMCH panel power/fitter registers live at the fixed PP_STATUS
     // block within the decoded display MMIO BAR for this generation.
     unsafe { mmio.reg_block::<GmchPanelRegs>(GmchPanelRegs::BASE) }
@@ -224,6 +252,24 @@ fn program_pll_for_port(
         pipeline.port,
         clock,
     );
+    Ok(())
+}
+
+/// Program the legacy DPLL for a GMCH DisplayPort link rate.
+///
+/// libgfxinit uses fixed N/M1/M2/P1/P2 tuples for DP instead of searching the
+/// pixel clock, and re-allocates the PLL for every link setting it tries.
+fn program_pll_for_dp_rate(
+    ctx: &GmaContext<'_>,
+    pll: LegacyPll,
+    port: Port,
+    rate: crate::dp_aux::DpLinkRate,
+) -> Result<(), GmaError> {
+    let clock = pll::find_legacy_dp_clock(rate)?;
+    let mmio = ctx.mmio();
+    pll::disable_legacy_pll(&mmio, pll);
+    delay_us(150);
+    pll::program_legacy_pll(&mmio, ctx.config.cpu, pll, port, clock);
     Ok(())
 }
 
@@ -283,7 +329,7 @@ const fn is_gmch_dp_port(port: Port) -> bool {
     matches!(port, Port::DpA | Port::DpB | Port::DpC)
 }
 
-fn apply_port_op(mmio: &Mmio, op: PortRegisterOp) {
+pub(crate) fn apply_port_op(mmio: &Mmio, op: PortRegisterOp) {
     match op {
         PortRegisterOp::Write { register, value } => mmio.write32(register, value),
         PortRegisterOp::Update {
@@ -295,23 +341,24 @@ fn apply_port_op(mmio: &Mmio, op: PortRegisterOp) {
 }
 
 fn map_gtt(ctx: &GmaContext<'_>) -> Result<(), GmaError> {
-    gtt::map_surface_to_stolen(ctx.resources, &ctx.surface)?;
+    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
     let mmio = ctx.mmio();
-    gtt::clear_legacy_fences(&mmio);
-    gtt::add_legacy_fence(&mmio, &ctx.surface)?;
+    gtt::clear_legacy_fences(&mmio, ctx.config.cpu);
+    gtt::add_legacy_fence(&mmio, ctx.config.cpu, &ctx.surface)?;
     gtt::flush_gfx(&mmio);
     Ok(())
 }
 
-fn program_gmch_panel_fitter(
+pub(crate) fn program_gmch_panel_fitter(
     ctx: &GmaContext<'_>,
-    pipeline: &OutputPipeline,
+    pipe: Pipe,
+    mode: Mode,
 ) -> Result<(), GmaError> {
     let plan = scaler::ScalerPlan::resolve(
         ctx.config.cpu,
-        pipeline.pipe.pipe,
+        pipe,
         ctx.surface,
-        pipeline.pipe.mode,
+        mode,
         ctx.config.framebuffer.scaling,
     );
     if !plan.requires_scaling {
@@ -322,22 +369,22 @@ fn program_gmch_panel_fitter(
         return Ok(());
     }
     plan.validate_current()?;
-    let encoding = if ctx.config.cpu == Cpu::Pineview {
+    let encoding = if matches!(crate::caps_for(ctx.config.cpu).generation, Generation::I945) {
         scaler::encode_gmch_pre_i965(
             ctx.surface.width,
             ctx.surface.height,
-            pipeline.pipe.mode.hdisplay,
-            pipeline.pipe.mode.vdisplay,
+            mode.hdisplay,
+            mode.vdisplay,
             ctx.config.framebuffer.scaling,
             24,
         )
     } else {
         scaler::encode_gmch_i965(
-            pipeline.pipe.pipe,
+            pipe,
             ctx.surface.width,
             ctx.surface.height,
-            pipeline.pipe.mode.hdisplay,
-            pipeline.pipe.mode.vdisplay,
+            mode.hdisplay,
+            mode.vdisplay,
             ctx.config.framebuffer.scaling,
         )?
     };
@@ -384,7 +431,7 @@ const fn panel_lvds_dual_channel(panel: LfpPanelMetadata) -> Option<bool> {
     }
 }
 
-fn setup_gmch_panel_power_sequencer(mmio: &Mmio) {
+pub(crate) fn setup_gmch_panel_power_sequencer(mmio: &Mmio) {
     let panel_regs = gmch_panel_regs(mmio);
     let delays = PanelPowerDelays::from_registers(
         panel_regs.pp_on_delays.get(),
@@ -404,7 +451,7 @@ fn setup_gmch_panel_power_sequencer(mmio: &Mmio) {
     apply_panel_op(mmio, plan.control);
 }
 
-fn apply_panel_op(mmio: &Mmio, op: PanelRegisterOp) {
+pub(crate) fn apply_panel_op(mmio: &Mmio, op: PanelRegisterOp) {
     match op {
         PanelRegisterOp::Write { register, value } => mmio.write32(register, value),
         PanelRegisterOp::Update {
@@ -417,7 +464,7 @@ fn apply_panel_op(mmio: &Mmio, op: PanelRegisterOp) {
     }
 }
 
-fn program_vbt_panel_registers(mmio: &Mmio, panel: LfpPanelMetadata) {
+pub(crate) fn program_vbt_panel_registers(mmio: &Mmio, panel: LfpPanelMetadata) {
     let Some(timing) = panel.fp_timing else {
         return;
     };
@@ -446,46 +493,63 @@ const fn is_safe_vbt_panel_register(register: u32) -> bool {
 /// Best-effort rollback used when a configured output candidate fails during
 /// bring-up. This mirrors the legacy clean-state off path without surfacing
 /// secondary cleanup errors over the original failure.
-pub(crate) fn cleanup_legacy_gmch_after_failure(mmio: &Mmio) {
-    disable_legacy_display_state(mmio);
-    disable_legacy_path(mmio);
-}
-
-fn disable_legacy_path(mmio: &Mmio) {
-    apply_port_op(mmio, vga_disable_op());
-    apply_port_op(mmio, lvds_disable_op());
-    if let Ok(op) = hdmi_disable_op(Port::HdmiA) {
-        apply_port_op(mmio, op);
-    }
-    if let Ok(op) = hdmi_disable_op(Port::HdmiB) {
-        apply_port_op(mmio, op);
-    }
-    for port in [Port::DpA, Port::DpB, Port::DpC] {
-        if let Ok(op) = dp_idle_op(port) {
-            apply_port_op(mmio, op);
-        }
-        if let Ok(op) = dp_off_op(port) {
-            apply_port_op(mmio, op);
-        }
+fn disable_legacy_path(mmio: &Mmio, cpu: Cpu) {
+    for port in [
+        Port::Vga,
+        Port::Lvds,
+        Port::HdmiA,
+        Port::HdmiB,
+        Port::DpA,
+        Port::DpB,
+        Port::DpC,
+    ] {
+        disable_port(mmio, port);
     }
     pll::disable_legacy_pll(mmio, LegacyPll::A);
     pll::disable_legacy_pll(mmio, LegacyPll::B);
-    gtt::clear_legacy_fences(mmio);
+    gtt::clear_legacy_fences(mmio, cpu);
+}
+
+/// Disable one legacy GMCH output port without touching its pipe or PLL.
+pub(crate) fn disable_port(mmio: &Mmio, port: Port) {
+    match port {
+        Port::Lvds => apply_port_op(mmio, lvds_disable_op()),
+        Port::Vga => apply_port_op(mmio, vga_disable_op()),
+        Port::HdmiA | Port::HdmiB => {
+            if let Ok(op) = hdmi_disable_op(port) {
+                apply_port_op(mmio, op);
+            }
+        }
+        Port::DpA | Port::DpB | Port::DpC => {
+            if let Ok(op) = dp_idle_op(port) {
+                apply_port_op(mmio, op);
+            }
+            if let Ok(op) = dp_off_op(port) {
+                apply_port_op(mmio, op);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn disable_legacy_display_state(mmio: &Mmio) {
     legacy_vga_plane_off(mmio);
     for pipe in [Pipe::A, Pipe::B] {
-        if let Ok(regs) = PipeRegs::for_pipe(pipe) {
-            planes_off(mmio, regs.plane);
-            panel_fitter_off_for_pipe(mmio, pipe);
-            mmio.clear_bits32(regs.pipeconf, PIPECONF::ENABLE::SET.value);
-            mmio.posting_read(regs.pipeconf);
-        }
+        disable_pipe_state(mmio, pipe);
     }
 }
 
-fn legacy_vga_plane_off(mmio: &Mmio) {
+/// Disable one legacy GMCH pipe: its plane, panel fitter and PIPECONF enable.
+fn disable_pipe_state(mmio: &Mmio, pipe: Pipe) {
+    if let Ok(regs) = PipeRegs::for_pipe(pipe) {
+        planes_off(mmio, regs.plane);
+        panel_fitter_off_for_pipe(mmio, pipe);
+        mmio.clear_bits32(regs.pipeconf, PIPECONF::ENABLE::SET.value);
+        mmio.posting_read(regs.pipeconf);
+    }
+}
+
+pub(crate) fn legacy_vga_plane_off(mmio: &Mmio) {
     vga_sequencer_screen_off();
     // SAFETY: `GMCH_VGACNTRL_OFFSET` is the fixed legacy VGA control register
     // in the validated GMCH display MMIO BAR.
@@ -530,7 +594,7 @@ fn planes_off(mmio: &Mmio, regs: PlaneRegs) {
     mmio.posting_read(regs.surf);
 }
 
-fn panel_fitter_off_for_pipe(mmio: &Mmio, pipe: Pipe) {
+pub(crate) fn panel_fitter_off_for_pipe(mmio: &Mmio, pipe: Pipe) {
     let panel_regs = gmch_panel_regs(mmio);
     let control = panel_regs.pfit_control.extract();
     if !control.is_set(PFIT_CONTROL::ENABLE) {
@@ -549,7 +613,7 @@ fn panel_fitter_off_for_pipe(mmio: &Mmio, pipe: Pipe) {
     }
 }
 
-fn panel_power_on(mmio: &Mmio) -> Result<(), GmaError> {
+pub(crate) fn panel_power_on(mmio: &Mmio) -> Result<(), GmaError> {
     let panel_regs = gmch_panel_regs(mmio);
     let control = panel_regs.pp_control.get();
     let was_on = panel_regs.pp_control.is_set(PP_CONTROL::TARGET_ON);
@@ -592,8 +656,8 @@ fn panel_backlight_on(mmio: &Mmio, panel: Option<LfpPanelMetadata>) {
             mmio,
             set_backlight_op(
                 BacklightRegisterModel::Legacy {
-                    cpu_ctl: BLC_PWM_CPU_CTL,
-                    pch_ctl2: BLC_PWM_PCH_CTL2,
+                    duty_ctl: BLC_PWM_GMCH_CTL,
+                    freq_ctl: BLC_PWM_GMCH_CTL2,
                 },
                 CPU_BLC_PWM_DUTY_MAX,
             ),
@@ -607,6 +671,35 @@ fn panel_backlight_on(mmio: &Mmio, panel: Option<LfpPanelMetadata>) {
     let _ = panel_regs.pp_control.get();
 }
 
+/// Disable the panel power-sequencer backlight gate (libgfxinit `Panel.Backlight_Off`).
+pub(crate) fn panel_backlight_off(mmio: &Mmio) {
+    let panel_regs = gmch_panel_regs(mmio);
+    let control = panel_regs.pp_control.get();
+    panel_regs.pp_control.set(panel_control_unlocked(
+        control & !PP_CONTROL::BACKLIGHT_ENABLE::SET.value,
+    ));
+    let _ = panel_regs.pp_control.get();
+}
+
+/// Clear panel target power/VDD override and wait for the sequencer to settle
+/// (libgfxinit `Panel.Off`).
+pub(crate) fn panel_power_off(mmio: &Mmio) {
+    let panel_regs = gmch_panel_regs(mmio);
+    let control = panel_regs.pp_control.get();
+    panel_regs.pp_control.set(panel_control_unlocked(
+        control & !(PP_CONTROL::TARGET_ON::SET.value | PP_CONTROL::VDD_OVERRIDE::SET.value),
+    ));
+    let _ = panel_regs.pp_control.get();
+    let mut timeout = 300_000u32;
+    while timeout != 0 {
+        if (panel_regs.pp_status.get() & PP_STATUS::SEQUENCE.mask) == 0 {
+            break;
+        }
+        timeout -= 1;
+        core::hint::spin_loop();
+    }
+}
+
 const fn dspcntr_pipe_select(plane: Plane) -> Result<u32, GmaError> {
     match plane {
         Plane::PrimaryA => Ok(DSPCNTR::PIPE_SELECT::PipeA.value),
@@ -615,7 +708,7 @@ const fn dspcntr_pipe_select(plane: Plane) -> Result<u32, GmaError> {
     }
 }
 
-const fn panel_control_unlocked(control: u32) -> u32 {
+pub(crate) const fn panel_control_unlocked(control: u32) -> u32 {
     (control & !PP_CONTROL_UNLOCK_MASK) | PP_CONTROL_UNLOCK_KEY
 }
 
@@ -682,12 +775,12 @@ impl PlaneRegs {
     }
 }
 
-const BLC_PWM_CPU_CTL: usize = 0x48254;
-const BLC_PWM_PCH_CTL2: usize = 0x61254;
+pub(crate) const BLC_PWM_GMCH_CTL: usize = 0x61254;
+pub(crate) const BLC_PWM_GMCH_CTL2: usize = 0x61250;
 #[allow(dead_code)]
 const CPU_BLC_PWM_DUTY_MAX: u32 = 0x0000_ffff;
-const PP_CONTROL_UNLOCK_MASK: u32 = PP_CONTROL::UNLOCK_KEY.val(0xffff).value;
-const PP_CONTROL_UNLOCK_KEY: u32 = PP_CONTROL::UNLOCK_KEY.val(0xabcd).value;
+pub(crate) const PP_CONTROL_UNLOCK_MASK: u32 = PP_CONTROL::UNLOCK_KEY.val(0xffff).value;
+pub(crate) const PP_CONTROL_UNLOCK_KEY: u32 = PP_CONTROL::UNLOCK_KEY.val(0xabcd).value;
 #[cfg(test)]
 const PP_CONTROL_TARGET_ON: u32 = PP_CONTROL::TARGET_ON::SET.value;
 
@@ -788,7 +881,10 @@ mod tests {
 
     #[test]
     fn legacy_backlight_constants_match_libgfxinit_register_model() {
-        assert_eq!(BLC_PWM_CPU_CTL, 0x48254);
+        // GNU/Linux i9xx (i965/G45) programs duty in BLC_PWM_CTL, not the
+        // Ironlake CPU-side BLC_PWM_CPU_CTL.
+        assert_eq!(BLC_PWM_GMCH_CTL, 0x61254);
+        assert_eq!(BLC_PWM_GMCH_CTL2, 0x61250);
         assert_eq!(CPU_BLC_PWM_DUTY_MAX, 0xffff);
     }
 

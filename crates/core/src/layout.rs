@@ -146,7 +146,7 @@ impl<'a> Layout<'a> {
         }
 
         let mut seen = 0u16;
-        for record in bytes[HEADER_LEN..].chunks_exact(REGION_LEN) {
+        for record in bytes[HEADER_LEN..].as_chunks::<REGION_LEN>().0 {
             let kind = RegionKind::decode(u16_at(record, 0))?;
             if record[2..8].iter().any(|&b| b != 0) {
                 return Err(Error::ReservedBits);
@@ -177,7 +177,7 @@ impl<'a> Layout<'a> {
 
     pub fn regions(self) -> impl ExactSizeIterator<Item = Region> + 'a {
         self.bytes[HEADER_LEN..]
-            .chunks_exact(REGION_LEN)
+            .as_chunks::<REGION_LEN>().0.iter()
             .map(|record| {
                 // parse() validated every record; the borrowed bytes are immutable.
                 let kind = RegionKind::decode(u16_at(record, 0)).unwrap();

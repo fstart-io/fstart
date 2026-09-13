@@ -6,8 +6,8 @@
 //! intermediate shape explicit and testable.
 
 use crate::mode::Mode;
-use crate::regs::PIPE_RANGE;
-use crate::types::Pipe;
+use crate::regs::{PIPE_RANGE, PIPECONF};
+use crate::types::{Pipe, Port};
 
 /// Resolved pipe timing configuration for one active output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,9 +67,33 @@ impl PipeConfig {
     }
 }
 
+/// Legacy/GMCH `PIPECONF.BPC` selector for a port.
+///
+/// The legacy paths implement 18bpp (6 bpc) LVDS, so dithering is enabled to
+/// hide banding against the 8 bpc framebuffer, matching libgfxinit's
+/// `BPC_Conf` (dither when `Framebuffer.BPC /= Mode.BPC`). VGA, HDMI and DP
+/// run at 8 bpc with no dither.
+pub(crate) const fn pipeconf_bpc_bits(port: Port) -> u32 {
+    match port {
+        Port::Lvds => PIPECONF::BPC::Bits6.value | PIPECONF::DITHER::SET.value,
+        _ => PIPECONF::BPC::Bits8.value,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bpc_selects_six_for_lvds_and_eight_otherwise() {
+        // 6 bpc = 2 << 5 and 8 bpc = 0 << 5 in hardware encoding.
+        assert_eq!(pipeconf_bpc_bits(Port::Lvds) & (7 << 5), 2 << 5);
+        assert_eq!(pipeconf_bpc_bits(Port::Lvds) & (1 << 4), 1 << 4);
+        assert_eq!(pipeconf_bpc_bits(Port::Vga), PIPECONF::BPC::Bits8.value);
+        assert_eq!(pipeconf_bpc_bits(Port::Vga) & (7 << 5), 0);
+        assert_eq!(pipeconf_bpc_bits(Port::HdmiA), PIPECONF::BPC::Bits8.value);
+        assert_eq!(pipeconf_bpc_bits(Port::DpA), PIPECONF::BPC::Bits8.value);
+    }
 
     #[test]
     fn encodes_libgfxinit_style_ranges() {

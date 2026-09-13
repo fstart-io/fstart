@@ -445,7 +445,7 @@ pub mod mtrr {
         if base == 0 {
             return max_by_remaining;
         }
-        let max_by_alignment = base & base.wrapping_neg();
+        let max_by_alignment = base.isolate_lowest_one();
         max_by_remaining.min(max_by_alignment)
     }
 

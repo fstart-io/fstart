@@ -96,6 +96,8 @@ pub struct PlatformCaps {
 
 const PIPES_AB: &[Pipe] = &[Pipe::A, Pipe::B];
 const PIPES_ABC: &[Pipe] = &[Pipe::A, Pipe::B, Pipe::C];
+const PORTS_I945G: &[Port] = &[Port::Vga];
+const PORTS_I945GM: &[Port] = &[Port::Lvds, Port::Vga];
 const PORTS_PINEVIEW: &[Port] = &[Port::Vga];
 const PORTS_GM965: &[Port] = &[Port::Lvds, Port::Vga];
 const PORTS_G45: &[Port] = &[
@@ -132,11 +134,50 @@ const PORTS_DDI: &[Port] = &[
 /// Return static platform capabilities for a CPU.
 pub const fn caps_for(cpu: Cpu) -> PlatformCaps {
     match cpu {
+        Cpu::I945G => PlatformCaps {
+            generation: Generation::I945,
+            cpu,
+            pipes: PIPES_AB,
+            ports: PORTS_I945G,
+            has_pch_split: false,
+            has_fdi: false,
+            has_gmbus: true,
+            has_lvds: false,
+            has_ddi: false,
+            supports_displayport: false,
+            requires_pineview_gmbus_clock_wa: false,
+        },
+        Cpu::I945GM => PlatformCaps {
+            generation: Generation::I945,
+            cpu,
+            pipes: PIPES_AB,
+            ports: PORTS_I945GM,
+            has_pch_split: false,
+            has_fdi: false,
+            has_gmbus: true,
+            has_lvds: true,
+            has_ddi: false,
+            supports_displayport: false,
+            requires_pineview_gmbus_clock_wa: false,
+        },
         Cpu::Pineview => PlatformCaps {
-            generation: Generation::I9xx,
+            generation: Generation::I945,
             cpu,
             pipes: PIPES_AB,
             ports: PORTS_PINEVIEW,
+            has_pch_split: false,
+            has_fdi: false,
+            has_gmbus: true,
+            has_lvds: false,
+            has_ddi: false,
+            supports_displayport: false,
+            requires_pineview_gmbus_clock_wa: true,
+        },
+        Cpu::PineviewM => PlatformCaps {
+            generation: Generation::I945,
+            cpu,
+            pipes: PIPES_AB,
+            ports: PORTS_I945GM,
             has_pch_split: false,
             has_fdi: false,
             has_gmbus: true,
@@ -337,7 +378,7 @@ pub(crate) fn init_candidate(
     };
 
     match caps_for(config.cpu).generation {
-        Generation::I9xx => GmaController::<generation::i9xx::I9xx>::new(ctx).init(mode),
+        Generation::I945 => GmaController::<generation::i945::I945>::new(ctx).init(mode),
         Generation::G45 => GmaController::<generation::g45::G45>::new(ctx).init(mode),
         Generation::Ironlake => {
             GmaController::<generation::ironlake::Ironlake>::new(ctx).init(mode)
@@ -351,10 +392,38 @@ pub(crate) fn init_candidate(
     }
 }
 
-pub(crate) fn cleanup_after_failed_candidate(resources: &GmaResources, cpu: Cpu) {
-    if matches!(caps_for(cpu).generation, Generation::I9xx | Generation::G45) {
-        let mmio = mmio_from_validated_resources(resources);
-        generation::g45::cleanup_legacy_gmch_after_failure(&mmio);
+/// Disable one pipe's display controller and its output port.
+///
+/// This is the per-pipe half of libgfxinit's `Update_Outputs`, which disables
+/// only the outputs whose configuration changed instead of tearing down every
+/// pipe. Enabling a second output must not disturb the first.
+pub(crate) fn disable_generation_output(
+    resources: &GmaResources,
+    cpu: Cpu,
+    pipe: Pipe,
+    port: Port,
+) {
+    let mmio = mmio_from_validated_resources(resources);
+    let _ = match caps_for(cpu).generation {
+        Generation::I945 => generation::i945::I945::disable_output(&mmio, cpu, pipe, port),
+        Generation::G45 => generation::g45::G45::disable_output(&mmio, cpu, pipe, port),
+        Generation::Ironlake => generation::ironlake::Ironlake::disable_output(&mmio, cpu, pipe, port),
+        _ => Ok(()),
+    };
+}
+
+/// Return all pipes, ports and PLLs to libgfxinit's `Clean_State`.
+///
+/// Runs once before the first modeset, so unknown firmware state cannot leak
+/// into the display output. It is deliberately not part of the per-output
+/// enable path.
+pub(crate) fn clean_generation_state(resources: &GmaResources, cpu: Cpu) {
+    let mmio = mmio_from_validated_resources(resources);
+    match caps_for(cpu).generation {
+        Generation::I945 => generation::i945::I945::clean(&mmio, cpu),
+        Generation::G45 => generation::g45::G45::clean(&mmio, cpu),
+        Generation::Ironlake => generation::ironlake::Ironlake::clean(&mmio, cpu),
+        _ => {}
     }
 }
 
@@ -398,7 +467,7 @@ pub(crate) fn initialize_port_detect(
     resources: &GmaResources,
     cpu: Cpu,
 ) -> Option<port_detect::LegacyPortDetectState> {
-    if matches!(caps_for(cpu).generation, Generation::I9xx | Generation::G45) {
+    if matches!(caps_for(cpu).generation, Generation::I945 | Generation::G45) {
         let mmio = mmio_from_validated_resources(resources);
         Some(port_detect::initialize_legacy_gmch(&mmio, cpu))
     } else {
@@ -480,7 +549,7 @@ fn aux_ddc_bus(
         Generation::Haswell | Generation::Broxton | Generation::Skylake | Generation::Tigerlake => unsafe {
             dp_aux::HardwareDpAuxDdc::ddi(resources.gtt_mmio_base, port)
         },
-        Generation::I9xx => Err(GmaError::UnsupportedPort),
+        Generation::I945 => Err(GmaError::UnsupportedPort),
     }
 }
 
@@ -530,9 +599,25 @@ mod tests {
     #[test]
     fn pineview_caps_match_plan() {
         let caps = caps_for(Cpu::Pineview);
-        assert_eq!(caps.generation, Generation::I9xx);
+        assert_eq!(caps.generation, Generation::I945);
         assert_eq!(caps.ports, &[Port::Vga]);
         assert!(caps.requires_pineview_gmbus_clock_wa);
+    }
+
+    #[test]
+    fn i945_caps_cover_desktop_and_mobile_parts() {
+        let desktop = caps_for(Cpu::I945G);
+        assert_eq!(desktop.generation, Generation::I945);
+        assert_eq!(desktop.ports, &[Port::Vga]);
+        assert!(!desktop.has_lvds);
+        for mobile in [Cpu::I945GM, Cpu::PineviewM] {
+            let caps = caps_for(mobile);
+            assert_eq!(caps.generation, Generation::I945);
+            assert_eq!(caps.ports, &[Port::Lvds, Port::Vga]);
+            assert!(caps.has_lvds);
+        }
+        // Pineview desktop has no LVDS either.
+        assert_eq!(caps_for(Cpu::Pineview).ports, &[Port::Vga]);
     }
 
     #[test]
@@ -885,7 +970,10 @@ mod tests {
         assert_eq!(gtt::ptes_for_bytes(1), 1);
         assert_eq!(gtt::ptes_for_bytes(4096), 1);
         assert_eq!(gtt::ptes_for_bytes(4097), 2);
-        assert_eq!(gtt::legacy_pte(PhysAddr(0x1234_5678)), 0x1234_5001);
+        assert_eq!(
+            gtt::encode_gtt_pte(PhysAddr(0x1234_5678), gtt::GttPteEncoding::Bits32).0,
+            0x1234_5001
+        );
     }
 
     #[test]
@@ -916,6 +1004,7 @@ mod tests {
                 &surface,
                 ptes.as_mut_ptr() as *mut gtt::GttPte,
                 ptes.len(),
+                gtt::GttPteEncoding::Bits32,
             )
             .unwrap();
         }
