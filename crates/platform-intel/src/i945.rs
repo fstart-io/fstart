@@ -23,7 +23,7 @@ impl<B: I945Ich7Board> fstart_stage::StageProgram for Program<B> {
 }
 
 use fstart_driver_intel::i945;
-pub use fstart_driver_intel::i945::{I945Variant, IntelI945Config};
+pub use fstart_driver_intel::i945::{I945IgdConfig, I945Variant, IntelI945Config};
 use fstart_driver_intel::ich7;
 pub use fstart_driver_intel::ich7::{
     HdaConfig, HdaVerbTable, IntelIch7Config, LpcDecodeConfig, LpcFixedIoDecode, LpcFloppyDecode,
@@ -72,6 +72,8 @@ pub struct I945Ich7Config {
     pub gpio: gpio::GpioConfig,
     /// Maximum logical CPU count (BSP + APs) the board populates.
     pub max_cpus: u16,
+    /// Integrated graphics configuration.
+    pub igd: i945::I945IgdConfig,
 }
 
 impl I945Ich7Config {
@@ -94,6 +96,7 @@ impl I945Ich7Config {
             hda: None,
             gpio: gpio::GpioConfig::new(),
             max_cpus: 1,
+            igd: i945::I945IgdConfig::new(),
         }
     }
 
@@ -110,7 +113,14 @@ impl I945Ich7Config {
         config.gfx_gms = self.gfx_gms;
         config.pci_mmio_size = self.pci_mmio_size;
         config.smbus_base = ICH7_SMBUS_BASE;
+        config.igd = self.igd;
         config
+    }
+
+    #[must_use]
+    pub const fn igd(mut self, igd: i945::I945IgdConfig) -> Self {
+        self.igd = igd;
+        self
     }
 
     #[must_use]

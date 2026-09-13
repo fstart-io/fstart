@@ -34,6 +34,7 @@ use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_core::services::{MemoryController, ServiceError};
+use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::ecam;
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
@@ -95,6 +96,109 @@ pub mod hostbridge {
         pub const VC0RCTL: u16 = 0x114;
         pub const PVCCAP1: u16 = 0x104;
     }
+}
+
+/// IGD PCI configuration offsets, panel registers and command bits.
+const IGD_BAR0_GTTMMADR: u16 = 0x10;
+const IGD_BAR2_GMADR: u16 = 0x18;
+const IGD_ASLS: u16 = 0xfc;
+const IGD_SWSCI: u16 = 0xe8;
+const IGD_MSAC: u16 = 0x62;
+const IGD_GDRST: u16 = 0xc0;
+const PCI_COMMAND: u16 = 0x04;
+const PCI_CMD_MEMORY: u16 = 1 << 1;
+const PCI_CMD_MASTER: u16 = 1 << 2;
+/// Panel power sequencing registers, shared with the later GMCH parts.
+const PP_ON_DELAYS: usize = 0x61208;
+const PP_OFF_DELAYS: usize = 0x6120c;
+const PP_DIVISOR: usize = 0x61210;
+const BLC_PWM_CTL: usize = 0x61254;
+/// Gen3 backlight control lives in the legacy PWM register.
+const BLM_LEGACY_MODE: u32 = 1 << 16;
+/// Backlight PWM frequency coreboot uses when the board names none.
+const DEFAULT_BLC_PWM_FREQ: u16 = 180;
+/// Gen3 GTT page table size, selected by `PGETBL_CTL` bit 1.
+const I945_GTT_SIZE: u32 = 256 * 1024;
+const I945_GTT_256_KIB_FLAG: u32 = 2;
+
+/// Integrated graphics configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct I945IgdConfig {
+    /// Fixed GTTMMADR BAR0 address: the display MMIO window.
+    pub gtt_mmio_base: u64,
+    /// Fixed GMADR graphics aperture BAR2 address.
+    pub gmadr_base: u64,
+    /// GMADR graphics aperture size in bytes.
+    pub gmadr_size: u32,
+    /// Board-relative VBT file stored as a verified FFS asset.
+    pub vbt_file: Option<&'static str>,
+    /// Raw VBT physical address, when firmware has staged a blob.
+    pub vbt_addr: Option<u64>,
+    /// Raw VBT size at `vbt_addr`.
+    pub vbt_size: u32,
+    /// Legacy VBIOS window to probe when no VBT is staged.
+    pub legacy_vbt_probe: Option<u64>,
+    /// Panel power-up delay in 100us units (mobile parts only).
+    pub panel_power_up_delay: u16,
+    /// Backlight-on delay in 100us units.
+    pub panel_backlight_on_delay: u16,
+    /// Panel power-down delay in 100us units.
+    pub panel_power_down_delay: u16,
+    /// Backlight-off delay in 100us units.
+    pub panel_backlight_off_delay: u16,
+    /// Panel power-cycle delay in 100ms units.
+    pub panel_power_cycle_delay: u8,
+    /// Backlight PWM frequency in Hz. Zero uses the coreboot default.
+    pub default_pwm_freq: u16,
+    /// Initial backlight duty cycle percentage.
+    pub duty_cycle: u8,
+    /// Board display policy. `None` leaves the display engine untouched.
+    pub display: Option<super::igd::IgdDisplayPolicy>,
+}
+
+impl I945IgdConfig {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            gtt_mmio_base: default_igd_gtt_mmio_base(),
+            gmadr_base: default_igd_gmadr_base(),
+            gmadr_size: default_igd_gmadr_size(),
+            vbt_file: None,
+            vbt_addr: None,
+            vbt_size: 0,
+            legacy_vbt_probe: default_igd_legacy_vbt_probe(),
+            panel_power_up_delay: 2000,
+            panel_backlight_on_delay: 2000,
+            panel_power_down_delay: 2000,
+            panel_backlight_off_delay: 2000,
+            panel_power_cycle_delay: 6,
+            default_pwm_freq: 0,
+            duty_cycle: 100,
+            display: None,
+        }
+    }
+}
+
+impl Default for I945IgdConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const fn default_igd_gtt_mmio_base() -> u64 {
+    0xfeb0_0000
+}
+
+const fn default_igd_gmadr_base() -> u64 {
+    0xd000_0000
+}
+
+const fn default_igd_gmadr_size() -> u32 {
+    256 * 1024 * 1024
+}
+
+const fn default_igd_legacy_vbt_probe() -> Option<u64> {
+    Some(0x000c_0000)
 }
 
 /// i945 MCHBAR register offsets from `i945.h`.
@@ -195,6 +299,8 @@ pub struct IntelI945Config {
     pub smbus_base: u16,
     /// SPD EEPROM addresses in i945 slot order: ch0 (2 slots), ch1 (2 slots).
     pub spd_addresses: [u8; 4],
+    /// Integrated graphics configuration.
+    pub igd: I945IgdConfig,
 }
 
 impl IntelI945Config {
@@ -212,6 +318,7 @@ impl IntelI945Config {
             pci_mmio_size: default_pci_mmio_size(),
             smbus_base: default_smbus_base(),
             spd_addresses: default_spd_addresses(),
+            igd: I945IgdConfig::new(),
         }
     }
 }
@@ -383,6 +490,8 @@ pub struct IntelI945 {
     boot_path: crate::BootPath,
     /// PCI mmio32 window derived from the e820 map after memory detection.
     mmio32_window: Option<(u64, u64)>,
+    /// Framebuffer programmed by the shared GMA layer, if the board asked for it.
+    display: super::igd::IgdDisplay,
 }
 
 /// CF9 full reset, mirroring coreboot `full_reset()`.
@@ -956,6 +1065,184 @@ impl IntelI945 {
         self.mchbar().write16(mchbar::SSKPD, 0xcafe);
     }
 
+    /// Display generation selector for the shared GMA layer.
+    fn display_cpu(&self) -> Cpu {
+        match self.config.variant {
+            I945Variant::Desktop | I945Variant::DesktopGc => Cpu::I945G,
+            I945Variant::Mobile => Cpu::I945GM,
+        }
+    }
+
+    fn igd(&self) -> ecam::EcamDevice {
+        ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC)
+    }
+
+    /// Core display clock in Hz, from the chipset `GCFGC` value.
+    fn cdclk_hz(&self) -> u32 {
+        fstart_intel_gma::gen3_display_clock_hz(
+            self.display_cpu(),
+            Some(self.igd().read16(hostbridge::IGD_GCFC)),
+        )
+    }
+
+    fn igd_mmio_write32(&self, offset: usize, value: u32) {
+        // SAFETY: BAR0 has been programmed and enabled before the display path
+        // runs; offsets are the fixed panel/backlight registers.
+        unsafe {
+            fstart_core::mmio::write32(
+                (self.config.igd.gtt_mmio_base as usize + offset) as *mut u32,
+                value,
+            )
+        };
+    }
+
+    /// Panel power sequencing and backlight (coreboot i945 `panel_setup`).
+    ///
+    /// Only mobile parts drive an LVDS panel; desktop parts leave these
+    /// registers at their firmware values.
+    fn igd_panel_setup(&self) {
+        if self.config.variant != I945Variant::Mobile {
+            return;
+        }
+        let conf = &self.config.igd;
+        let cdclk = self.cdclk_hz();
+        self.igd_mmio_write32(
+            PP_ON_DELAYS,
+            ((conf.panel_power_up_delay as u32 & 0x1fff) << 16)
+                | (conf.panel_backlight_on_delay as u32 & 0x1fff),
+        );
+        self.igd_mmio_write32(
+            PP_OFF_DELAYS,
+            ((conf.panel_power_down_delay as u32 & 0x1fff) << 16)
+                | (conf.panel_backlight_off_delay as u32 & 0x1fff),
+        );
+        self.igd_mmio_write32(
+            PP_DIVISOR,
+            ((cdclk / 20_000 - 1) << 8) | (conf.panel_power_cycle_delay as u32 & 0x1f),
+        );
+        let freq = if conf.default_pwm_freq == 0 {
+            DEFAULT_BLC_PWM_FREQ
+        } else {
+            conf.default_pwm_freq
+        };
+        let modulus = cdclk / (32 * u32::from(freq).max(1));
+        let half = modulus / 2;
+        self.igd_mmio_write32(BLC_PWM_CTL, BLM_LEGACY_MODE | (half << 17) | (half << 1));
+    }
+
+    /// Program the physical GTT base (coreboot i945 `gtt_setup`).
+    ///
+    /// The Video BIOS places the 256 KiB GTT page table below the top of low
+    /// memory, and the display engine cannot translate framebuffer addresses
+    /// until `PGETBL_CTL` enables it.
+    fn gtt_setup(&self) {
+        let tolud = self.tolud();
+        if tolud < I945_GTT_SIZE {
+            fstart_log::error!("intel-i945: TOLUD too low for a GTT page table");
+            return;
+        }
+        let gtt_base = tolud - I945_GTT_SIZE;
+        super::igd::program_gtt_base(
+            self.config.igd.gtt_mmio_base,
+            gtt_base,
+            super::igd::PGETBL_ENABLED | I945_GTT_256_KIB_FLAG,
+        );
+        // Gen3 keeps the page table in stolen memory, which the CPU addresses
+        // directly, so PTEs are written at the physical base.
+        super::igd::clear_gtt_table(u64::from(gtt_base), I945_GTT_SIZE);
+    }
+
+    /// Publish the IGD OpRegion so the OS can read the VBT and panel data.
+    fn init_igd_opregion(&self) {
+        let vbt = super::igd::locate_vbt(
+            self.config.igd.vbt_file,
+            self.config.igd.vbt_addr,
+            self.config.igd.vbt_size,
+            self.config.igd.legacy_vbt_probe,
+        );
+        let Some(vbt) = vbt else {
+            fstart_log::error!("intel-i945: no valid VBT found for IGD opregion");
+            return;
+        };
+        let vbt = vbt.as_slice();
+        let opregion = crate::igd_opregion_buf(super::igd::OPREGION_TOTAL_SIZE);
+        super::igd::build_opregion(opregion, vbt);
+
+        let igd = self.igd();
+        igd.write32(IGD_ASLS, opregion.as_ptr() as u32);
+        let swsci = (igd.read16(IGD_SWSCI) & !1) | (1 << 15);
+        igd.write16(IGD_SWSCI, swsci);
+        fstart_log::info!(
+            "intel-i945: IGD opregion at {:#x}, VBT {} bytes",
+            opregion.as_ptr() as usize,
+            vbt.len() as u32
+        );
+    }
+
+    /// Enable the IGD function and hand the display engine to the shared GMA
+    /// layer, mirroring coreboot's `gma_func0_init`.
+    ///
+    /// Best effort: a panel that will not come up leaves the machine booting
+    /// headless rather than failing the mainstage phase.
+    fn gma_display_init(&mut self) {
+        let igd = self.igd();
+        if igd.read16(0) == 0xffff {
+            fstart_log::error!("intel-i945: IGD function not present");
+            return;
+        }
+        igd.write32(
+            IGD_BAR0_GTTMMADR,
+            (self.config.igd.gtt_mmio_base as u32) & 0xfff0_0000,
+        );
+        igd.write32(
+            IGD_BAR2_GMADR,
+            (self.config.igd.gmadr_base as u32) & 0xf000_0000,
+        );
+        igd.or16(PCI_COMMAND, PCI_CMD_MEMORY | PCI_CMD_MASTER);
+        igd.and8_or8(IGD_MSAC, !0x3, 0x2);
+
+        // coreboot resets the graphics engine unconditionally on i945.
+        igd.write8(IGD_GDRST, 1);
+        fstart_arch::x86::udelay(50);
+        igd.write8(IGD_GDRST, 0);
+        let mut timeout = 1_000_000u32;
+        while (igd.read8(IGD_GDRST) & 1) != 0 && timeout != 0 {
+            timeout -= 1;
+            core::hint::spin_loop();
+        }
+
+        self.init_igd_opregion();
+        self.igd_panel_setup();
+        self.gtt_setup();
+
+        let stolen_base = self.igd_stolen_base();
+        let addresses = super::igd::IgdAddresses {
+            pci_bdf: PciAddress::new(0, 0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC),
+            gtt_mmio_base: self.config.igd.gtt_mmio_base,
+            gtt_mmio_size: 512 * 1024,
+            gtt_pte_base: Some(u64::from(self.tolud().saturating_sub(I945_GTT_SIZE))),
+            gmadr_base: Some(self.config.igd.gmadr_base),
+            gmadr_size: self.config.igd.gmadr_size,
+            stolen_base: u64::from(stolen_base),
+            stolen_size: self.tolud().saturating_sub(stolen_base),
+            gtt_size: I945_GTT_SIZE,
+            gcfgc: Some(igd.read16(hostbridge::IGD_GCFC)),
+        };
+        let vbt = super::igd::locate_vbt(
+            self.config.igd.vbt_file,
+            self.config.igd.vbt_addr,
+            self.config.igd.vbt_size,
+            self.config.igd.legacy_vbt_probe,
+        );
+        let vbt = vbt.as_ref().map(|bytes| bytes.as_slice());
+        self.display.initialize(
+            self.display_cpu(),
+            self.config.igd.display.as_ref(),
+            &addresses,
+            vbt,
+        );
+    }
+
     fn tolud(&self) -> u32 {
         u32::from(Self::hb().read8(hostbridge::TOLUD) & 0xf8) << 24
     }
@@ -1048,6 +1335,7 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             mmio32_window: None,
+            display: super::igd::IgdDisplay::new(),
         })
     }
 
@@ -1079,9 +1367,20 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
         Ok(())
     }
 
+    /// Ramstage: bring the IGD and, when the board asked for it, the display up.
+    ///
+    /// coreboot runs the IGD device init here, and the OpRegion needs the
+    /// mainstage heap, so neither belongs in the bootblock.
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
+        if self.config.igd.display.is_some() {
+            self.gma_display_init();
+        }
         Ok(())
+    }
+
+    fn framebuffer_info(&self) -> Option<fstart_core::services::FramebufferInfo> {
+        self.display.framebuffer_info()
     }
 
     fn memory_detected(&mut self, e820: &fstart_core::services::memory_detect::E820State) {

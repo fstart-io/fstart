@@ -513,14 +513,9 @@ const PCI_MMIO32_FALLBACK_BASE: u64 = 0x8000_0000;
 const PCI_PIO_BASE: u64 = 0x1000;
 const PCI_PIO_SIZE: u64 = 0xf000;
 
-const IGD_OPREGION_BASE_SIZE: usize = 8 * 1024;
-const IGD_OPREGION_TOTAL_SIZE: usize = 16 * 1024;
 const IGD_GTTMMADR_SIZE: u32 = 1024 * 1024;
 const IGD_GTTMMADR_GTT_OFFSET: usize = 512 * 1024;
 const IGD_GTTMMADR_GTT_SIZE: usize = 512 * 1024;
-const IGD_VBT_INLINE_OFFSET: usize = 0x400;
-const IGD_VBT_INLINE_SIZE: usize = 6 * 1024;
-const IGD_VBT_EXT_OFFSET: usize = IGD_OPREGION_BASE_SIZE;
 const VBT_SIGNATURE: u32 = 0x5442_5624;
 
 #[allow(clippy::large_enum_variant)]
@@ -1255,44 +1250,8 @@ impl IntelGm965 {
         };
         let vbt = vbt.as_slice();
 
-        let opregion = crate::igd_opregion_buf(IGD_OPREGION_TOTAL_SIZE);
-        opregion.fill(0);
-        opregion[0..16].copy_from_slice(b"IntelGraphicsMem");
-        Self::opregion_write_u32(opregion, 16, (IGD_OPREGION_BASE_SIZE / 1024) as u32);
-        opregion[20] = 0;
-        opregion[21] = 0;
-        opregion[22] = 1;
-        opregion[23] = 2;
-        if vbt.len() >= 82 {
-            opregion[56..60].copy_from_slice(&vbt[78..82]);
-        }
-        Self::opregion_write_u32(opregion, 88, (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4));
-
-        Self::opregion_write_u32(opregion, 0x100 + 172, 1);
-        Self::opregion_write_u32(opregion, 0x300 + 16, 0xff);
-        Self::opregion_write_u32(opregion, 0x300 + 20, (1 << 31) | 6);
-        Self::opregion_write_u32(opregion, 0x300 + 24, (1 << 31) | 0x64);
-        for (idx, level) in [
-            0x0000u16, 0x0a19, 0x1433, 0x1e4c, 0x2866, 0x327f, 0x3c99, 0x46b2, 0x50cc, 0x5ae5,
-            0x64ff,
-        ]
-        .iter()
-        .copied()
-        .enumerate()
-        {
-            Self::opregion_write_u16(opregion, 0x300 + 28 + idx * 2, 0x8000 | level);
-        }
-
-        if vbt.len() <= IGD_VBT_INLINE_SIZE {
-            opregion[IGD_VBT_INLINE_OFFSET..IGD_VBT_INLINE_OFFSET + vbt.len()].copy_from_slice(vbt);
-        } else {
-            let ext_size = (vbt.len() + 511) & !511;
-            let ext_size = ext_size.min(IGD_OPREGION_TOTAL_SIZE - IGD_VBT_EXT_OFFSET);
-            opregion[IGD_VBT_EXT_OFFSET..IGD_VBT_EXT_OFFSET + vbt.len().min(ext_size)]
-                .copy_from_slice(&vbt[..vbt.len().min(ext_size)]);
-            Self::opregion_write_u64(opregion, 0x300 + 186, IGD_OPREGION_BASE_SIZE as u64);
-            Self::opregion_write_u32(opregion, 0x300 + 194, ext_size as u32);
-        }
+        let opregion = crate::igd_opregion_buf(super::igd::OPREGION_TOTAL_SIZE);
+        super::igd::build_opregion(opregion, vbt);
 
         let igd = self.igd();
         igd.write32(hostbridge::IGD_ASLS, opregion.as_ptr() as u32);

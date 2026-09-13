@@ -64,6 +64,7 @@ pub use panel::{
     LfpBacklightInfo, LfpFpTiming, LfpPanelMetadata, LfpPowerFeatures, LvdsPanelOptions,
 };
 pub use pci::GmaResources;
+pub use power::gen3_display_clock_hz;
 pub use scaler::{DestinationKind, DestinationRect, ScalerKind, ScalingAspect, ScalingPolicy};
 pub use state::{GmaDisplayState, PipeOutputConfig, UpdateOutputsResult};
 pub use types::{Cpu, Generation, PciAddress, Pipe, Plane, Port};

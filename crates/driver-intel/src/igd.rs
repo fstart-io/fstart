@@ -105,6 +105,177 @@ impl IgdAddresses {
     }
 }
 
+/// OpRegion base region: the part Linux reads through the ASLS register.
+pub const OPREGION_BASE_SIZE: usize = 8 * 1024;
+/// OpRegion allocation, including the VBT extension area past the base region.
+pub const OPREGION_TOTAL_SIZE: usize = 16 * 1024;
+/// VBT mailbox inside the base region.
+const OPREGION_VBT_INLINE_OFFSET: usize = 0x400;
+/// Largest VBT that fits the inline mailbox.
+const OPREGION_VBT_INLINE_SIZE: usize = 6 * 1024;
+/// VBT extension area, referenced from mailbox 3.
+const OPREGION_VBT_EXT_OFFSET: usize = OPREGION_BASE_SIZE;
+/// Backlight levels advertised in mailbox 3, scaled to 0xffff.
+const OPREGION_BRIGHTNESS_LEVELS: [u16; 11] = [
+    0x0000, 0x0a19, 0x1433, 0x1e4c, 0x2866, 0x327f, 0x3c99, 0x46b2, 0x50cc, 0x5ae5, 0x64ff,
+];
+
+fn write_u16(buffer: &mut [u8], offset: usize, value: u16) {
+    buffer[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
+    buffer[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
+    buffer[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+/// Fill the OpRegion body that the OS reads after it is published via ASLS.
+///
+/// This is the layout coreboot's `intel_gma_init_igd_opregion` produces: the
+/// header, the display and backlight mailboxes, and the VBT either inline or in
+/// the extension area when it is larger than the inline mailbox. The caller
+/// publishes the buffer and selects the chipset's SCI register, which differs
+/// between the GMCH parts and the Atom platforms.
+pub fn build_opregion(buffer: &mut [u8], vbt: &[u8]) {
+    buffer[..OPREGION_TOTAL_SIZE].fill(0);
+    buffer[0..16].copy_from_slice(b"IntelGraphicsMem");
+    write_u32(buffer, 16, (OPREGION_BASE_SIZE / 1024) as u32);
+    buffer[22] = 1;
+    buffer[23] = 2;
+    if vbt.len() >= 82 {
+        // Panel type and backlight fields the OS reads from the VBT header.
+        buffer[56..60].copy_from_slice(&vbt[78..82]);
+    }
+    // Supported mailboxes: ACPI, ASLE and the extended ASLE mailbox.
+    write_u32(buffer, 88, (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4));
+    write_u32(buffer, 0x100 + 172, 1);
+    write_u32(buffer, 0x300 + 16, 0xff);
+    write_u32(buffer, 0x300 + 20, (1 << 31) | 6);
+    write_u32(buffer, 0x300 + 24, (1 << 31) | 0x64);
+    for (index, level) in OPREGION_BRIGHTNESS_LEVELS.iter().copied().enumerate() {
+        write_u16(buffer, 0x300 + 28 + index * 2, 0x8000 | level);
+    }
+
+    if vbt.len() <= OPREGION_VBT_INLINE_SIZE {
+        buffer[OPREGION_VBT_INLINE_OFFSET..OPREGION_VBT_INLINE_OFFSET + vbt.len()]
+            .copy_from_slice(vbt);
+        return;
+    }
+
+    // Larger VBTs live in the extension area, which mailbox 3 points at.
+    let available = OPREGION_TOTAL_SIZE - OPREGION_VBT_EXT_OFFSET;
+    let extension_size = ((vbt.len() + 511) & !511).min(available);
+    let copy_len = vbt.len().min(extension_size);
+    buffer[OPREGION_VBT_EXT_OFFSET..OPREGION_VBT_EXT_OFFSET + copy_len]
+        .copy_from_slice(&vbt[..copy_len]);
+    write_u64(buffer, 0x300 + 186, OPREGION_BASE_SIZE as u64);
+    write_u32(buffer, 0x300 + 194, extension_size as u32);
+}
+
+/// VBT signature, `$VBT`.
+pub const VBT_SIGNATURE: u32 = 0x5442_5624;
+/// Offset of the total VBT length in the VBT header.
+const VBT_LENGTH_OFFSET: usize = 24;
+/// Minimum header length needed to read the VBT length.
+const VBT_MIN_LEN: usize = 28;
+/// Legacy option-ROM window probed when no VBT is staged.
+const LEGACY_VBT_WINDOW: usize = 128 * 1024;
+/// Scan stride through the legacy window.
+const LEGACY_VBT_STRIDE: usize = 16;
+
+/// VBT bytes: borrowed from a fixed window, or copied out of a verified asset.
+pub enum VbtBytes<'a> {
+    /// Points into firmware-owned memory.
+    Borrowed(&'a [u8]),
+    /// Copied out of a verified FFS asset.
+    Owned(alloc::vec::Vec<u8>),
+}
+
+impl VbtBytes<'_> {
+    /// The VBT bytes.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes.as_slice(),
+        }
+    }
+}
+
+/// Validate a VBT header and return its declared length.
+#[must_use]
+pub fn vbt_len(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < VBT_MIN_LEN
+        || u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != VBT_SIGNATURE
+    {
+        return None;
+    }
+    let size =
+        u16::from_le_bytes([bytes[VBT_LENGTH_OFFSET], bytes[VBT_LENGTH_OFFSET + 1]]) as usize;
+    (size != 0 && size <= bytes.len()).then_some(size)
+}
+
+/// Read a VBT from a raw physical address staged by board firmware.
+fn configured_vbt(address: Option<u64>, size: u32) -> Option<&'static [u8]> {
+    let address = address? as usize;
+    let size = size as usize;
+    if size == 0 {
+        return None;
+    }
+    // SAFETY: board config promises this physical address holds a raw VBT blob.
+    let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
+    vbt_len(bytes).map(|len| &bytes[..len])
+}
+
+/// Scan the legacy VBIOS window for a VBT.
+fn legacy_vbt(probe_base: Option<u64>) -> Option<&'static [u8]> {
+    let base = probe_base? as usize;
+    // SAFETY: the legacy option-ROM window is readable on PC-compatible x86.
+    let rom = unsafe { core::slice::from_raw_parts(base as *const u8, LEGACY_VBT_WINDOW) };
+    let mut offset = 0usize;
+    while offset + 4 < rom.len() {
+        if u32::from_le_bytes([
+            rom[offset],
+            rom[offset + 1],
+            rom[offset + 2],
+            rom[offset + 3],
+        ]) == VBT_SIGNATURE
+            && let Some(size) = vbt_len(&rom[offset..])
+        {
+            return Some(&rom[offset..offset + size]);
+        }
+        offset += LEGACY_VBT_STRIDE;
+    }
+    None
+}
+
+/// Locate the board's VBT.
+///
+/// A configured authenticated asset is authoritative: if the board names one,
+/// a verification failure must not silently fall back to unverified memory.
+/// Otherwise firmware-staged bytes are used, then the legacy VBIOS window.
+#[must_use]
+pub fn locate_vbt(
+    vbt_file: Option<&'static str>,
+    vbt_addr: Option<u64>,
+    vbt_size: u32,
+    legacy_vbt_probe: Option<u64>,
+) -> Option<VbtBytes<'static>> {
+    #[cfg(feature = "ffs-vbt")]
+    if let Some(file_name) = vbt_file {
+        let bytes = fstart_core::services::ffs_context::read_verified_asset(file_name)?;
+        let len = vbt_len(bytes)?;
+        return Some(VbtBytes::Owned(bytes[..len].to_vec()));
+    }
+    let _ = vbt_file;
+    configured_vbt(vbt_addr, vbt_size)
+        .or_else(|| legacy_vbt(legacy_vbt_probe))
+        .map(VbtBytes::Borrowed)
+}
+
 /// Program the physical base of the hardware GTT page table.
 ///
 /// libgfxinit never touches `PGETBL_CTL`; coreboot programs it per chipset
