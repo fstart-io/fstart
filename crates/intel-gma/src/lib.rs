@@ -209,7 +209,7 @@ pub const fn caps_for(cpu: Cpu) -> PlatformCaps {
             has_gmbus: true,
             has_lvds: true,
             has_ddi: false,
-            supports_displayport: false,
+            supports_displayport: true,
             requires_pineview_gmbus_clock_wa: false,
         },
         Cpu::Ironlake | Cpu::Sandybridge | Cpu::Ivybridge => PlatformCaps {
@@ -360,7 +360,12 @@ pub(crate) fn init_candidate(
     resources: &GmaResources,
     config: &GmaInitConfig<'_>,
 ) -> Result<GmaInitResult, GmaError> {
-    let mode = choose_mode(resources, config)?;
+    let port = selected_enabled_port(config.outputs)?;
+    let mode = clamp_hdmi_dotclock(
+        config.cpu,
+        port,
+        choose_mode(resources, config)?,
+    );
     let surface = gtt::choose_framebuffer_surface(resources, &config.framebuffer)?;
     let scaler_pipe = port::pipe_for_legacy_gmch_port(selected_enabled_port(config.outputs)?)?;
     scaler::ScalerPlan::resolve(
@@ -452,6 +457,31 @@ fn validate_outputs(cpu: Cpu, outputs: &[OutputConfig]) -> Result<(), GmaError> 
         0 => Err(GmaError::UnsupportedPort),
         _ => Ok(()),
     }
+}
+
+/// Maximum HDMI dot clock at 24 bpp, per libgfxinit `HDMI_Max_Clock_24bpp`.
+///
+/// libgfxinit scales this by `8 / Mode.BPC`; the framebuffer is 8 bpc here, so
+/// the factor is 1.
+const fn hdmi_max_dotclock_khz(cpu: Cpu) -> u32 {
+    match cpu {
+        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM | Cpu::Gm965 | Cpu::G45
+        | Cpu::Gm45 => 165_000,
+        Cpu::Ironlake | Cpu::Sandybridge | Cpu::Ivybridge => 225_000,
+        Cpu::Haswell | Cpu::Broadwell | Cpu::Broxton | Cpu::Skylake | Cpu::Kabylake => 300_000,
+        Cpu::Tigerlake | Cpu::Alderlake => 600_000,
+    }
+}
+
+/// Clamp an HDMI mode's dot clock to the platform maximum.
+fn clamp_hdmi_dotclock(cpu: Cpu, port: Port, mut mode: Mode) -> Mode {
+    if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC) {
+        let max = hdmi_max_dotclock_khz(cpu);
+        if mode.pixel_clock_khz > max {
+            mode.pixel_clock_khz = max;
+        }
+    }
+    mode
 }
 
 /// Return the first enabled output port in board-policy order.
@@ -618,6 +648,16 @@ mod tests {
         }
         // Pineview desktop has no LVDS either.
         assert_eq!(caps_for(Cpu::Pineview).ports, &[Port::Vga]);
+    }
+
+    #[test]
+    fn g45_family_advertises_displayport() {
+        for cpu in [Cpu::G45, Cpu::Gm45] {
+            assert!(caps_for(cpu).supports_displayport);
+            assert!(caps_for(cpu).ports.contains(&Port::DpA));
+        }
+        // GM965 has no DisplayPort.
+        assert!(!caps_for(Cpu::Gm965).supports_displayport);
     }
 
     #[test]

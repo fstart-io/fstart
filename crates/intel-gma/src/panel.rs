@@ -171,6 +171,16 @@ impl PanelPowerDelays {
         }
     }
 
+    /// True when any decoded field is zero, so libgfxinit substitutes the
+    /// default set and writes the delay registers (`Check_PP_Delays`).
+    pub const fn needs_override(self) -> bool {
+        self.power_up_us == 0
+            || self.power_up_to_backlight_on_us == 0
+            || self.power_down_us == 0
+            || self.backlight_off_to_power_down_us == 0
+            || self.power_cycle_us == 0
+    }
+
     /// Return delays with libgfxinit defaults substituted for zero fields.
     pub const fn with_defaults(self) -> Self {
         Self {
@@ -230,7 +240,7 @@ impl PanelPowerPortSelect {
     pub const fn from_port(port: Port) -> Self {
         match port {
             Port::Lvds => Self::Lvds,
-            Port::Edp | Port::DpA | Port::HdmiA => Self::DpA,
+            Port::Edp => Self::DpA,
             Port::DpB | Port::HdmiB => Self::DpC,
             Port::DpC | Port::HdmiC => Self::DpD,
             _ => Self::None,
@@ -305,6 +315,9 @@ impl PanelPowerRegs {
 pub struct PanelPowerSequencerPlan {
     /// Effective delay values after applying defaults.
     pub delays: PanelPowerDelays,
+    /// Whether the delay registers should be written at all. libgfxinit only
+    /// writes them when it had to substitute a default (`Override_Delays`).
+    pub override_delays: bool,
     /// PP_ON_DELAYS operation.
     pub on_delays: PanelRegisterOp,
     /// PP_OFF_DELAYS operation.
@@ -323,9 +336,11 @@ pub const fn panel_power_sequencer_plan(
     has_divisor_reg: bool,
     has_write_protection: bool,
 ) -> PanelPowerSequencerPlan {
+    let override_delays = delays.needs_override();
     let effective = delays.with_defaults();
     PanelPowerSequencerPlan {
         delays: effective,
+        override_delays,
         on_delays: PanelRegisterOp::Update {
             register: regs.on_delays,
             mask_unset: PP_ON_DELAYS_PORT_SELECT_MASK
@@ -524,6 +539,41 @@ mod tests {
             PanelPowerDelays::from_registers(0, 0, 0).with_defaults(),
             PanelPowerDelays::DEFAULT_EDP
         );
+    }
+
+    #[test]
+    fn only_edp_selects_the_dp_a_panel_port() {
+        assert_eq!(
+            PanelPowerPortSelect::from_port(Port::Edp),
+            PanelPowerPortSelect::DpA
+        );
+        // DP1/HDMI1 are not DP-A; libgfxinit maps only eDP there.
+        assert_eq!(
+            PanelPowerPortSelect::from_port(Port::DpA),
+            PanelPowerPortSelect::None
+        );
+        assert_eq!(
+            PanelPowerPortSelect::from_port(Port::HdmiA),
+            PanelPowerPortSelect::None
+        );
+        assert_eq!(
+            PanelPowerPortSelect::from_port(Port::DpB),
+            PanelPowerPortSelect::DpC
+        );
+        assert_eq!(
+            PanelPowerPortSelect::from_port(Port::HdmiC),
+            PanelPowerPortSelect::DpD
+        );
+    }
+
+    #[test]
+    fn delay_override_is_only_requested_for_zero_fields() {
+        assert!(!PanelPowerDelays::DEFAULT_EDP.needs_override());
+        assert!(PanelPowerDelays::from_registers(0, 0, 0).needs_override());
+        // A single zero field is enough (libgfxinit `Check_PP_Delays`).
+        let mut partial = PanelPowerDelays::DEFAULT_EDP;
+        partial.power_cycle_us = 0;
+        assert!(partial.needs_override());
     }
 
     #[test]
