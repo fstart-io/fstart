@@ -106,15 +106,32 @@ impl IgdAddresses {
 }
 
 /// OpRegion base region: the part Linux reads through the ASLS register.
+///
+/// This is `sizeof(igd_opregion_t)` in coreboot, and the value the header's
+/// size field reports even when a VBT extension follows it.
 pub const OPREGION_BASE_SIZE: usize = 8 * 1024;
-/// OpRegion allocation, including the VBT extension area past the base region.
-pub const OPREGION_TOTAL_SIZE: usize = 16 * 1024;
-/// VBT mailbox inside the base region.
+/// VBT mailbox inside the base region, coreboot's `opregion->vbt.gvd1`.
 const OPREGION_VBT_INLINE_OFFSET: usize = 0x400;
 /// Largest VBT that fits the inline mailbox.
 const OPREGION_VBT_INLINE_SIZE: usize = 6 * 1024;
-/// VBT extension area, referenced from mailbox 3.
+/// VBT extension address, relative to the OpRegion base in version 2.1+.
 const OPREGION_VBT_EXT_OFFSET: usize = OPREGION_BASE_SIZE;
+/// Offset of the VBT core block's BIOS build stamp.
+///
+/// coreboot copies `vbt->coreblock_biosbuild` into the header's
+/// `vbios_version` field.
+const VBT_BIOS_BUILD_OFFSET: usize = 79;
+/// Length of the VBT BIOS build stamp.
+const VBT_BIOS_BUILD_SIZE: usize = 4;
+
+/// Allocation size for an OpRegion carrying `vbt_len` bytes of VBT.
+///
+/// coreboot sizes its OpRegion as the base region plus the VBT aligned to a
+/// 512-byte boundary, even when the VBT fits the inline mailbox.
+#[must_use]
+pub const fn opregion_size(vbt_len: usize) -> usize {
+    OPREGION_BASE_SIZE + vbt_len.div_ceil(512) * 512
+}
 /// Backlight levels advertised in mailbox 3, scaled to 0xffff.
 const OPREGION_BRIGHTNESS_LEVELS: [u16; 11] = [
     0x0000, 0x0a19, 0x1433, 0x1e4c, 0x2866, 0x327f, 0x3c99, 0x46b2, 0x50cc, 0x5ae5, 0x64ff,
@@ -140,14 +157,16 @@ fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
 /// publishes the buffer and selects the chipset's SCI register, which differs
 /// between the GMCH parts and the Atom platforms.
 pub fn build_opregion(buffer: &mut [u8], vbt: &[u8]) {
-    buffer[..OPREGION_TOTAL_SIZE].fill(0);
+    let size = opregion_size(vbt.len());
+    buffer[..size].fill(0);
     buffer[0..16].copy_from_slice(b"IntelGraphicsMem");
     write_u32(buffer, 16, (OPREGION_BASE_SIZE / 1024) as u32);
     buffer[22] = 1;
     buffer[23] = 2;
-    if vbt.len() >= 82 {
-        // Panel type and backlight fields the OS reads from the VBT header.
-        buffer[56..60].copy_from_slice(&vbt[78..82]);
+    if vbt.len() >= VBT_BIOS_BUILD_OFFSET + VBT_BIOS_BUILD_SIZE {
+        // Video BIOS build stamp, which the OS reports in its OpRegion dump.
+        let build = &vbt[VBT_BIOS_BUILD_OFFSET..VBT_BIOS_BUILD_OFFSET + VBT_BIOS_BUILD_SIZE];
+        buffer[56..60].copy_from_slice(build);
     }
     // Supported mailboxes: ACPI, ASLE and the extended ASLE mailbox.
     write_u32(buffer, 88, (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4));
@@ -165,14 +184,11 @@ pub fn build_opregion(buffer: &mut [u8], vbt: &[u8]) {
         return;
     }
 
-    // Larger VBTs live in the extension area, which mailbox 3 points at.
-    let available = OPREGION_TOTAL_SIZE - OPREGION_VBT_EXT_OFFSET;
-    let extension_size = ((vbt.len() + 511) & !511).min(available);
-    let copy_len = vbt.len().min(extension_size);
-    buffer[OPREGION_VBT_EXT_OFFSET..OPREGION_VBT_EXT_OFFSET + copy_len]
-        .copy_from_slice(&vbt[..copy_len]);
+    // Larger VBTs live in the extension area just past the base region, which
+    // mailbox 3 points at with a base-relative address.
+    buffer[OPREGION_VBT_EXT_OFFSET..OPREGION_VBT_EXT_OFFSET + vbt.len()].copy_from_slice(vbt);
     write_u64(buffer, 0x300 + 186, OPREGION_BASE_SIZE as u64);
-    write_u32(buffer, 0x300 + 194, extension_size as u32);
+    write_u32(buffer, 0x300 + 194, vbt.len().div_ceil(512) as u32 * 512);
 }
 
 /// VBT signature, `$VBT`.
