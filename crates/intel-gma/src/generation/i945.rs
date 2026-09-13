@@ -115,7 +115,7 @@ impl GenerationOps for I945 {
             g45::panel_backlight_off(mmio);
             g45::panel_power_off(mmio);
         }
-        disable_pipe_state(mmio, pipe);
+        disable_pipe_state(mmio, cpu, pipe);
         g45::disable_port(mmio, port);
         let _ = cpu;
         pll::disable_legacy_pll(mmio, legacy_pll_for_pipe(pipe)?);
@@ -125,7 +125,7 @@ impl GenerationOps for I945 {
     fn clean(mmio: &Mmio, cpu: Cpu) {
         g45::legacy_vga_plane_off(mmio);
         for pipe in [Pipe::A, Pipe::B] {
-            disable_pipe_state(mmio, pipe);
+            disable_pipe_state(mmio, cpu, pipe);
         }
         for port in [Port::Vga, Port::Lvds] {
             g45::disable_port(mmio, port);
@@ -179,6 +179,15 @@ const PLANE_A_BASE: usize = 0x70180;
 const PLANE_B_BASE: usize = 0x71180;
 const PLANE_A_CURSOR: usize = 0x70080;
 const PLANE_B_CURSOR: usize = 0x700c0;
+
+/// Gen3 sprite/overlay plane control, per pipe (not part of the plane/pipe swap).
+const fn plane_sprite_for_pipe(pipe: Pipe) -> Result<usize, GmaError> {
+    match pipe {
+        Pipe::A => Ok(0x72180),
+        Pipe::B => Ok(0x73180),
+        Pipe::C => Err(GmaError::InvalidConfig),
+    }
+}
 
 const fn plane_cursor_for_pipe(pipe: Pipe) -> Result<usize, GmaError> {
     match pipe {
@@ -250,29 +259,13 @@ fn program_pipe(mmio: &Mmio, pipe: Pipe, mode: Mode, port: Port) -> Result<(), G
 }
 
 fn program_primary_plane(ctx: &GmaContext<'_>, pipe: Pipe, _port: Port) -> Result<(), GmaError> {
-    let base = plane_base_for_pipe(pipe)?;
-    let plane = crate::plane::primary_for_pipe(pipe);
-    let plane_config = crate::plane::PlaneConfig::new(
-        plane,
+    g45::program_gmch_plane(
+        &ctx.mmio(),
+        plane_base_for_pipe(pipe)?,
         pipe,
-        crate::port::legacy_plane_address_model(ctx.config.cpu),
         ctx.surface,
-    );
-    let mmio = ctx.mmio();
-    // SAFETY: `base` is the Gen3 plane register block for this pipe inside the
-    // decoded display MMIO BAR.
-    let regs = unsafe { mmio.reg_block::<GmchPlaneRegs>(base) };
-    let stride_bytes = plane_config.stride_bytes()?;
-    let ctl = (DSPCNTR::ENABLE::SET + DSPCNTR::FORMAT::Xrgb8888).value
-        | dspcntr_pipe_select(pipe)?
-        | plane_config.legacy_tiling_bits();
-    regs.stride.set(stride_bytes);
-    regs.pos.set(0);
-    regs.size.set(plane_config.encoded_size()?);
-    regs.cntr.set(ctl);
-    regs.addr.set(0);
-    let _ = regs.addr.get();
-    Ok(())
+        crate::port::legacy_plane_address_model(ctx.config.cpu),
+    )
 }
 
 fn enable_port(mmio: &Mmio, port: Port, pipe: Pipe, mode: Mode) -> Result<(), GmaError> {
@@ -285,24 +278,36 @@ fn enable_port(mmio: &Mmio, port: Port, pipe: Pipe, mode: Mode) -> Result<(), Gm
     }
 }
 
-fn disable_pipe_state(mmio: &Mmio, pipe: Pipe) {
+fn disable_pipe_state(mmio: &Mmio, cpu: Cpu, pipe: Pipe) {
     let Ok(base) = plane_base_for_pipe(pipe) else {
         return;
     };
     let Ok((_, pipeconf_off)) = pipe_regs(pipe) else {
         return;
     };
-    // SAFETY: `base` is the Gen3 plane register block for this pipe.
-    let regs = unsafe { mmio.reg_block::<GmchPlaneRegs>(base) };
-    regs.cntr.set(0);
-    regs.surf.set(0);
-    let _ = regs.surf.get();
+    // libgfxinit `Pipe_Setup.Off`: planes off, then the transcoder, then the
+    // panel fitter. Gen3 has a second (overlay/sprite) plane to clear.
+    if let Ok(sprite) = plane_sprite_for_pipe(pipe) {
+        mmio.clear_bits32(sprite, DSPCNTR::ENABLE::SET.value);
+    }
     if let Ok(cursor) = plane_cursor_for_pipe(pipe) {
         mmio.write32(cursor, 0);
     }
-    g45::panel_fitter_off_for_pipe(mmio, pipe);
+    // SAFETY: `base` is the Gen3 plane register block for this pipe.
+    let regs = unsafe { mmio.reg_block::<GmchPlaneRegs>(base) };
+    regs.cntr.set(0);
+    regs.addr.set(0);
+    let _ = regs.addr.get();
     mmio.clear_bits32(pipeconf_off, PIPECONF::ENABLE::SET.value);
-    mmio.posting_read(pipeconf_off);
+    let mut timeout = 100_000u32;
+    while timeout != 0 {
+        if (mmio.read32(pipeconf_off) & PIPECONF::ENABLED_STATUS::SET.value) == 0 {
+            break;
+        }
+        timeout -= 1;
+        core::hint::spin_loop();
+    }
+    g45::panel_fitter_off_for_pipe(mmio, cpu, pipe);
 }
 
 const PNV_BLC_PWM_DUTY_MAX: u32 = 0x7fff;
