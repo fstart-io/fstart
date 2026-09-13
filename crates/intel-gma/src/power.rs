@@ -33,6 +33,17 @@ impl LegacyPowerClocks {
     }
 }
 
+/// Display clock in Hz for Gen3 (i945/i945GM/Pineview) from `GCFGC`.
+///
+/// Chipset drivers need this for the panel power-cycle divider and the
+/// backlight PWM frequency, which coreboot programs in each chipset's gma.c
+/// rather than in libgfxinit. `None` yields the conservative fallback used
+/// when the register value is unavailable.
+#[must_use]
+pub const fn gen3_display_clock_hz(cpu: Cpu, gcfgc: Option<u16>) -> u32 {
+    i945_cdclk(cpu, gcfgc) as u32
+}
+
 /// Initialize/read legacy GMCH clocks for GM965/G45/GM45/Pineview.
 pub(crate) fn initialize_legacy_gmch(
     mmio: &Mmio,

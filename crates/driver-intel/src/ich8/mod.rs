@@ -754,14 +754,6 @@ impl LpcFloppyDecode {
     }
 }
 
-const fn default_com_a() -> LpcSerialDecode {
-    LpcSerialDecode::Com1
-}
-
-const fn default_com_b() -> LpcSerialDecode {
-    LpcSerialDecode::Com2
-}
-
 /// Fixed legacy I/O decode selections for COM/LPT/FDC ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcFixedIoDecode {

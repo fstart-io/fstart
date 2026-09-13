@@ -8,6 +8,10 @@
 use fstart_core::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
 use fstart_core::{FlashLayout, Platform, SmbiosConfig, X86LegacyFlashLayout, hstr, hvec};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
+use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
+use fstart_intel_gma::{FallbackMode, OutputConfig, PreferredMode, Port};
+use fstart_platform_intel::i945::I945IgdConfig;
+use fstart_platform_intel::igd::IgdDisplayPolicy;
 use fstart_driver_superio::smsc_lpc47m15x;
 use fstart_platform_intel::i945::{
     I945Ich7Config, I945Variant, LpcFixedIoDecode, LpcGenericIoDecode, LpcSerialDecode, SataConfig,
@@ -29,8 +33,57 @@ pub const SUPERIO_PNP_BASE: u16 = 0x2e;
 pub const SUPERIO_PME_LDN: u8 = 10;
 pub const SUPERIO_PME_BASE: u16 = 0x0680;
 
+/// D945GCLF drives its analog VGA output; the OS takes over from the VBT.
+const D945GCLF_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
+    outputs: &[OutputConfig {
+        port: Port::Vga,
+        enabled: true,
+    }],
+    framebuffer: FramebufferConfig {
+        width: 1024,
+        height: 768,
+        bits_per_pixel: 32,
+        stride: None,
+        v_stride: None,
+        start_x: 0,
+        start_y: 0,
+        offset: 0,
+        tiling: TilingMode::Linear,
+        rotation: Rotation::None,
+        preferred_mode: PreferredMode::VbtPanel,
+        fallback_mode: Some(FallbackMode {
+            width: 1024,
+            height: 768,
+            refresh_hz: 60,
+        }),
+        scaling: fstart_intel_gma::ScalingPolicy::None,
+    },
+};
+
+/// Integrated graphics configuration for the onboard GMA950.
+pub const fn d945gclf_igd_config() -> I945IgdConfig {
+    I945IgdConfig {
+        gtt_mmio_base: 0xFEB0_0000,
+        gmadr_base: 0xD000_0000,
+        gmadr_size: 256 * 1024 * 1024,
+        vbt_file: None,
+        vbt_addr: None,
+        vbt_size: 0,
+        legacy_vbt_probe: Some(0x000C_0000),
+        panel_power_up_delay: 2000,
+        panel_backlight_on_delay: 2000,
+        panel_power_down_delay: 2000,
+        panel_backlight_off_delay: 2000,
+        panel_power_cycle_delay: 6,
+        default_pwm_freq: 0,
+        duty_cycle: 100,
+        display: Some(D945GCLF_DISPLAY),
+    }
+}
+
 pub static D945GCLF_PLATFORM: I945Ich7Config = I945Ich7Config::new()
     .variant(I945Variant::DesktopGc)
+    .igd(d945gclf_igd_config())
     // Atom 230: single core with HT -> 2 logical CPUs.
     .max_cpus(2)
     .gfx_gms(4)
