@@ -23,6 +23,7 @@ pub mod config;
 pub mod ddi;
 pub mod dp_aux;
 pub mod dp_training;
+pub mod dtd;
 pub mod error;
 pub mod framebuffer;
 pub mod generation;
@@ -62,7 +63,7 @@ pub use panel::{
 pub use pci::GmaResources;
 pub use scaler::{DestinationKind, DestinationRect, ScalerKind, ScalingAspect, ScalingPolicy};
 pub use state::{GmaDisplayState, PipeOutputConfig, UpdateOutputsResult};
-pub use types::{Cpu, Generation, KHz, PciBdf, PhysAddr, Pipe, Plane, Port};
+pub use types::{Cpu, Generation, PciBdf, PhysAddr, Pipe, Plane, Port};
 pub use vbt::GeneralDefinitionsMetadata;
 
 use crate::generation::GenerationOps;

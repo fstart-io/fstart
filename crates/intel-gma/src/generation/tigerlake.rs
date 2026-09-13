@@ -10,6 +10,8 @@
 //! but `init_display` does not execute them yet (see the parity-audit report).
 //! Do not read this file as evidence that upstream Tigerlake is skeletal.
 
+#![allow(dead_code)]
+
 use crate::error::GmaError;
 use crate::generation::{GenerationOps, sealed};
 use crate::gtt;

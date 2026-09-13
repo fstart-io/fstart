@@ -1,9 +1,8 @@
 //! Common Intel GMA data types.
 
-use serde::{Deserialize, Serialize};
 
 /// Intel display generation family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Generation {
     /// Gen3 i945 display block, also used by Pineview.
     I945,
@@ -22,7 +21,7 @@ pub enum Generation {
 }
 
 /// Intel CPU/platform identifier for display init dispatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cpu {
     /// 945G desktop chipset.
     I945G,
@@ -61,42 +60,32 @@ pub enum Cpu {
 }
 
 /// Logical display port requested by board policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Port {
     /// LVDS panel port.
-    #[serde(alias = "LVDS")]
     Lvds,
     /// Embedded DisplayPort panel port.
-    #[serde(alias = "EDP")]
     Edp,
     /// VGA/CRT output.
-    #[serde(alias = "VGA")]
     Vga,
     /// First HDMI port.
-    #[serde(alias = "HDMI_A", alias = "HDMI1")]
     HdmiA,
     /// Second HDMI port.
-    #[serde(alias = "HDMI_B", alias = "HDMI2")]
     HdmiB,
     /// Third HDMI port.
-    #[serde(alias = "HDMI_C", alias = "HDMI3")]
     HdmiC,
     /// First DisplayPort.
-    #[serde(alias = "DP_A", alias = "DP1")]
     DpA,
     /// Second DisplayPort.
-    #[serde(alias = "DP_B", alias = "DP2")]
     DpB,
     /// Third DisplayPort.
-    #[serde(alias = "DP_C", alias = "DP3")]
     DpC,
     /// Fourth DisplayPort.
-    #[serde(alias = "DP_D", alias = "DP4")]
     DpD,
 }
 
 /// Display pipe identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pipe {
     /// Pipe A.
     A,
@@ -107,7 +96,7 @@ pub enum Pipe {
 }
 
 /// Primary plane identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plane {
     /// Primary plane on pipe A.
     PrimaryA,
@@ -118,11 +107,11 @@ pub enum Plane {
 }
 
 /// Physical address newtype.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PhysAddr(pub u64);
 
 /// PCI bus/device/function tuple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PciBdf {
     /// PCI bus number.
     pub bus: u8,
@@ -132,6 +121,3 @@ pub struct PciBdf {
     pub func: u8,
 }
 
-/// Kilohertz clock value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct KHz(pub u32);

@@ -1,7 +1,7 @@
 //! Legacy GMCH DPLL helpers, matching libgfxinit's G45 and i945 PLL models.
 
 use tock_registers::interfaces::{Readable, Writeable};
-use tock_registers::registers::ReadWrite;
+use fstart_core::mmio::MmioReadWrite;
 
 use crate::dp_aux::DpLinkRate;
 use crate::error::GmaError;
@@ -398,11 +398,11 @@ pub(crate) fn program_legacy_pll(
     let fp = encode_legacy_fp(cpu, clock);
     // SAFETY: `pll_regs` returns generation-defined legacy GMCH DPLL/FP
     // offsets inside the decoded display MMIO BAR supplied by chipset code.
-    let fp0_reg = unsafe { mmio.reg_block::<ReadWrite<u32, FP::Register>>(fp0) };
+    let fp0_reg = unsafe { mmio.reg_block::<MmioReadWrite<u32, FP::Register>>(fp0) };
     // SAFETY: see `fp0_reg` above.
-    let fp1_reg = unsafe { mmio.reg_block::<ReadWrite<u32, FP::Register>>(fp1) };
+    let fp1_reg = unsafe { mmio.reg_block::<MmioReadWrite<u32, FP::Register>>(fp1) };
     // SAFETY: see `fp0_reg` above.
-    let dpll_reg = unsafe { mmio.reg_block::<ReadWrite<u32, DPLL::Register>>(dpll) };
+    let dpll_reg = unsafe { mmio.reg_block::<MmioReadWrite<u32, DPLL::Register>>(dpll) };
     fp0_reg.set(fp);
     fp1_reg.set(fp);
 
@@ -508,7 +508,7 @@ fn apply_pll_register_op(mmio: &Mmio, op: PllRegisterOp) {
         PllRegisterOp::ClearBits { register, mask } => {
             // SAFETY: release plans are built from `pll_regs`, which returns
             // valid legacy DPLL control register offsets for this MMIO window.
-            let dpll = unsafe { mmio.reg_block::<ReadWrite<u32, DPLL::Register>>(register) };
+            let dpll = unsafe { mmio.reg_block::<MmioReadWrite<u32, DPLL::Register>>(register) };
             dpll.set(dpll.get() & !mask);
         }
     }

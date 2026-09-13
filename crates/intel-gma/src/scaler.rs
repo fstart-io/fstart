@@ -6,7 +6,6 @@
 //! restriction explicit and keeps future hardware enablement local to this
 //! module and the generation-specific pipe setup code.
 
-use serde::{Deserialize, Serialize};
 
 use crate::error::GmaError;
 use crate::framebuffer::SurfaceConfig;
@@ -15,7 +14,7 @@ use crate::regs::{PF_CTL, PF_WIN, PFIT_CONTROL, PFIT_PGM_RATIOS};
 use crate::types::{Cpu, Pipe};
 
 /// Board policy for framebuffer-to-mode scaling.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ScalingPolicy {
     /// Require framebuffer dimensions to exactly match the display mode.
     #[default]

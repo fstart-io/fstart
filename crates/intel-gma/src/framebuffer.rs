@@ -1,7 +1,6 @@
 //! Framebuffer surface layout helpers.
 
 use fstart_core::services::FramebufferInfo;
-use serde::{Deserialize, Serialize};
 
 use crate::error::GmaError;
 use crate::gtt::GTT_PAGE_SIZE;
@@ -9,7 +8,7 @@ use crate::scaler::ScalingPolicy;
 use crate::types::PhysAddr;
 
 /// Supported framebuffer pixel formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
     /// XRGB8888 in little-endian memory, byte order B, G, R, X.
     Xrgb8888,
@@ -30,7 +29,7 @@ impl PixelFormat {
 }
 
 /// Framebuffer memory tiling mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TilingMode {
     /// Linear framebuffer layout.
     #[default]
@@ -70,7 +69,7 @@ impl TilingMode {
 }
 
 /// Framebuffer scanout rotation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Rotation {
     /// No rotation.
     #[default]
@@ -255,7 +254,7 @@ impl SurfaceConfig {
 }
 
 /// Board policy for framebuffer dimensions and mode selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FramebufferConfig {
     /// Requested framebuffer width in pixels.
     pub width: u32,
@@ -264,34 +263,25 @@ pub struct FramebufferConfig {
     /// Requested bits per pixel. Initial implementation supports 32.
     pub bits_per_pixel: u8,
     /// Optional scanline stride in pixels. Defaults to `width`.
-    #[serde(default)]
     pub stride: Option<u32>,
     /// Optional vertical stride in scanlines. Defaults to `height`.
-    #[serde(default)]
     pub v_stride: Option<u32>,
     /// Surface start X offset in pixels.
-    #[serde(default)]
     pub start_x: u32,
     /// Surface start Y offset in pixels.
-    #[serde(default)]
     pub start_y: u32,
     /// Aperture byte offset.
-    #[serde(default)]
     pub offset: u32,
     /// Framebuffer tiling mode.
-    #[serde(default)]
     pub tiling: TilingMode,
     /// Framebuffer scanout rotation.
-    #[serde(default)]
     pub rotation: Rotation,
     /// Preferred mode source.
     pub preferred_mode: crate::config::PreferredMode,
     /// Optional board-policy mode. Used directly by `PreferredMode::Fixed` and
     /// as fallback for `PreferredMode::VbtPanel`.
-    #[serde(default)]
     pub fallback_mode: Option<crate::mode::FallbackMode>,
     /// Requested scaler behavior. Defaults to exact-size scanout with no scaling.
-    #[serde(default)]
     pub scaling: ScalingPolicy,
 }
 

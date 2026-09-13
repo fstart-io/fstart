@@ -9,7 +9,7 @@
 
 use tock_registers::LocalRegisterCopy;
 use tock_registers::interfaces::Readable;
-use tock_registers::registers::ReadWrite;
+use fstart_core::mmio::MmioReadWrite;
 
 use crate::mmio::Mmio;
 use crate::regs::{GCFGC, GMCH_CLKCFG, GMCH_HPLLVCO, GmchClockRegs};
@@ -199,11 +199,11 @@ fn gmch_clock_regs(mmio: &Mmio) -> &'static GmchClockRegs {
     unsafe { mmio.reg_block::<GmchClockRegs>(GMCH_CLKCFG_OFFSET) }
 }
 
-fn hpllvco_mobile_reg(mmio: &Mmio) -> &'static ReadWrite<u32, GMCH_HPLLVCO::Register> {
+fn hpllvco_mobile_reg(mmio: &Mmio) -> &'static MmioReadWrite<u32, GMCH_HPLLVCO::Register> {
     // SAFETY: the mobile HPLLVCO selector is mirrored in the aligned dword at
     // 0x10c0c; `MOBILE_SELECTOR` extracts the top byte field that contains it.
     unsafe {
-        mmio.reg_block::<ReadWrite<u32, GMCH_HPLLVCO::Register>>(GMCH_HPLLVCO_MOBILE_ALIGNED_OFFSET)
+        mmio.reg_block::<MmioReadWrite<u32, GMCH_HPLLVCO::Register>>(GMCH_HPLLVCO_MOBILE_ALIGNED_OFFSET)
     }
 }
 

@@ -4,7 +4,6 @@
 //! Hardware sequencing still lives in generation code and is not changed by
 //! these helpers.
 
-use serde::{Deserialize, Serialize};
 
 use crate::mode::Mode;
 use crate::regs::{
@@ -13,7 +12,7 @@ use crate::regs::{
 use crate::types::Port;
 
 /// LVDS panel options from VBT block 40 (`BDB_LFP_OPTIONS`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LvdsPanelOptions {
     /// Selected panel type from the VBT, when it names one of the 16 LFP slots.
     pub panel_type: Option<u8>,
@@ -46,7 +45,7 @@ pub struct LvdsPanelOptions {
 }
 
 /// Register values embedded in one VBT LFP FP-timing record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LfpFpTiming {
     /// FP timing X resolution.
     pub x_res: u16,
@@ -75,7 +74,7 @@ pub struct LfpFpTiming {
 }
 
 /// Backlight control data from VBT block 43 for one panel slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LfpBacklightInfo {
     /// Raw backlight type from the legacy data entry (`2` is PWM in Linux).
     pub backlight_type: u8,
@@ -103,7 +102,7 @@ impl LfpBacklightInfo {
 }
 
 /// Power-conservation feature bits from VBT block 44.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LfpPowerFeatures {
     /// Display Power Saving Technology support bit.
     pub dpst_supported: bool,
@@ -118,7 +117,7 @@ pub struct LfpPowerFeatures {
 }
 
 /// Selected panel metadata assembled from safe VBT/LFP blocks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LfpPanelMetadata {
     /// Selected LFP panel type/slot.
     pub panel_type: u8,
@@ -135,7 +134,7 @@ pub struct LfpPanelMetadata {
 }
 
 /// Panel power-sequencer delay set in microseconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelPowerDelays {
     /// Delay from panel power target-on to usable panel power.
     pub power_up_us: u32,
@@ -221,7 +220,7 @@ impl PanelPowerDelays {
 }
 
 /// Panel power port-select values used in PP_ON_DELAYS on PCH platforms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelPowerPortSelect {
     /// LVDS panel power port select.
     Lvds,
@@ -259,7 +258,7 @@ impl PanelPowerPortSelect {
 }
 
 /// Pure register operation used by panel/backlight sequence planners.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelRegisterOp {
     /// Write a full 32-bit register value.
     Write { register: usize, value: u32 },
@@ -276,7 +275,7 @@ pub enum PanelRegisterOp {
 }
 
 /// Register block for a panel power sequencer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelPowerRegs {
     /// PP_STATUS register.
     pub status: usize,
@@ -311,7 +310,7 @@ impl PanelPowerRegs {
 }
 
 /// Plan for libgfxinit-style PP sequencer setup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelPowerSequencerPlan {
     /// Effective delay values after applying defaults.
     pub delays: PanelPowerDelays,
@@ -382,7 +381,7 @@ pub const fn panel_power_sequencer_plan(
 }
 
 /// Plan for panel target on/off, VDD override, and backlight operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelPowerControlPlan {
     /// Operation to request panel power on.
     pub panel_on: PanelRegisterOp,
@@ -423,7 +422,7 @@ pub const fn panel_power_control_plan(regs: PanelPowerRegs) -> PanelPowerControl
 }
 
 /// Backlight PWM register layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BacklightRegisterModel {
     /// Legacy split PWM control: `duty_ctl` holds the low-16-bit duty cycle,
     /// `freq_ctl` the modulation frequency. On GMCH (i965/G45) these are

@@ -1,11 +1,10 @@
 //! Intel GMA PCI resource descriptions.
 
-use serde::{Deserialize, Serialize};
 
 use crate::types::{PciBdf, PhysAddr};
 
 /// Prepared chipset resources supplied by the northbridge driver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GmaResources {
     /// PCI address of the IGD function.
     pub pci_bdf: PciBdf,

@@ -126,7 +126,7 @@ impl GenerationOps for G45 {
         let timing = unsafe { mmio.reg_block::<GmchPipeTimingRegs>(regs.timing) };
         // SAFETY: see the timing block above; pipeconf is a single typed register.
         let pipeconf = unsafe {
-            mmio.reg_block::<tock_registers::registers::ReadWrite<u32, PIPECONF::Register>>(
+            mmio.reg_block::<fstart_core::mmio::MmioReadWrite<u32, PIPECONF::Register>>(
                 regs.pipeconf,
             )
         };
@@ -531,7 +531,7 @@ pub(crate) fn legacy_vga_plane_off(mmio: &Mmio) {
     // SAFETY: `GMCH_VGACNTRL_OFFSET` is the fixed legacy VGA control register
     // in the validated GMCH display MMIO BAR.
     let vga_control = unsafe {
-        mmio.reg_block::<tock_registers::registers::ReadWrite<u32, VGACNTRL::Register>>(
+        mmio.reg_block::<fstart_core::mmio::MmioReadWrite<u32, VGACNTRL::Register>>(
             GMCH_VGACNTRL_OFFSET,
         )
     };

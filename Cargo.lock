@@ -702,8 +702,8 @@ dependencies = [
  "bitflags 2.10.0",
  "fstart-core",
  "heapless 0.8.0",
- "serde",
  "tock-registers",
+ "zerocopy",
 ]
 
 [[package]]
