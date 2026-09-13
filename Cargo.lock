@@ -696,6 +696,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-intel-gma"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.10.0",
+ "fstart-core",
+ "heapless 0.8.0",
+ "serde",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [

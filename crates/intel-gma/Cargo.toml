@@ -1,0 +1,13 @@
+[package]
+name = "fstart-intel-gma"
+description = "Shared Intel GMA display initialization support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bitflags = { workspace = true }
+fstart-core = { workspace = true }
+heapless = { workspace = true }
+serde = { workspace = true }
+tock-registers = { workspace = true }
