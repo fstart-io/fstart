@@ -4,7 +4,7 @@
 //! `tock-registers` definitions. Generation executors should prefer these
 //! register blocks/bitfields over ad-hoc integer masks.
 
-use tock_registers::registers::ReadWrite;
+use fstart_core::mmio::MmioReadWrite;
 use tock_registers::{register_bitfields, register_structs};
 
 register_bitfields! [u32,
@@ -873,9 +873,9 @@ register_bitfields! [u16,
 register_structs! {
     /// Legacy GMCH display clock registers, relative to CLKCFG.
     pub GmchClockRegs {
-        (0x00 => pub clkcfg: ReadWrite<u32, GMCH_CLKCFG::Register>),
+        (0x00 => pub clkcfg: MmioReadWrite<u32, GMCH_CLKCFG::Register>),
         (0x04 => _reserved0),
-        (0x38 => pub hpllvco: ReadWrite<u32, GMCH_HPLLVCO::Register>),
+        (0x38 => pub hpllvco: MmioReadWrite<u32, GMCH_HPLLVCO::Register>),
         (0x3c => @END),
     }
 }
@@ -883,8 +883,8 @@ register_structs! {
 register_structs! {
     /// Legacy GTT fence register pair.
     pub LegacyFenceRegs {
-        (0x00 => pub lower: ReadWrite<u32, FENCE_LOWER::Register>),
-        (0x04 => pub upper: ReadWrite<u32, FENCE_UPPER::Register>),
+        (0x00 => pub lower: MmioReadWrite<u32, FENCE_LOWER::Register>),
+        (0x04 => pub upper: MmioReadWrite<u32, FENCE_UPPER::Register>),
         (0x08 => @END),
     }
 }
@@ -892,7 +892,7 @@ register_structs! {
 register_structs! {
     /// Legacy graphics flush register block, relative to `GFX_FLSH_CNTL`.
     pub GfxFlushRegs {
-        (0x00 => pub control: ReadWrite<u32, GFX_FLSH_CNTL::Register>),
+        (0x00 => pub control: MmioReadWrite<u32, GFX_FLSH_CNTL::Register>),
         (0x04 => @END),
     }
 }
@@ -905,10 +905,10 @@ impl GfxFlushRegs {
 register_structs! {
     /// Intel DisplayPort AUX channel register block, relative to AUX_CTL.
     pub DpAuxRegs {
-        (0x00 => pub ctl: ReadWrite<u32, DP_AUX_CTL::Register>),
-        (0x04 => pub data: [ReadWrite<u32>; 5]),
+        (0x00 => pub ctl: MmioReadWrite<u32, DP_AUX_CTL::Register>),
+        (0x04 => pub data: [MmioReadWrite<u32>; 5]),
         (0x18 => _reserved0),
-        (0x1c => pub mutex: ReadWrite<u32>),
+        (0x1c => pub mutex: MmioReadWrite<u32>),
         (0x20 => @END),
     }
 }
@@ -916,8 +916,8 @@ register_structs! {
 register_structs! {
     /// Legacy GMCH hotplug register block, relative to `PORT_HOTPLUG_EN`.
     pub GmchHotplugRegs {
-        (0x00 => pub enable: ReadWrite<u32, PORT_HOTPLUG_EN::Register>),
-        (0x04 => pub status: ReadWrite<u32, PORT_HOTPLUG_STAT::Register>),
+        (0x00 => pub enable: MmioReadWrite<u32, PORT_HOTPLUG_EN::Register>),
+        (0x04 => pub status: MmioReadWrite<u32, PORT_HOTPLUG_STAT::Register>),
         (0x08 => @END),
     }
 }
@@ -925,14 +925,14 @@ register_structs! {
 register_structs! {
     /// Legacy GMCH pipe timing register block, relative to pipe timing base.
     pub GmchPipeTimingRegs {
-        (0x00 => pub htotal: ReadWrite<u32>),
-        (0x04 => pub hblank: ReadWrite<u32>),
-        (0x08 => pub hsync: ReadWrite<u32>),
-        (0x0c => pub vtotal: ReadWrite<u32>),
-        (0x10 => pub vblank: ReadWrite<u32>),
-        (0x14 => pub vsync: ReadWrite<u32>),
+        (0x00 => pub htotal: MmioReadWrite<u32>),
+        (0x04 => pub hblank: MmioReadWrite<u32>),
+        (0x08 => pub hsync: MmioReadWrite<u32>),
+        (0x0c => pub vtotal: MmioReadWrite<u32>),
+        (0x10 => pub vblank: MmioReadWrite<u32>),
+        (0x14 => pub vsync: MmioReadWrite<u32>),
         (0x18 => _reserved0),
-        (0x1c => pub pipesrc: ReadWrite<u32>),
+        (0x1c => pub pipesrc: MmioReadWrite<u32>),
         (0x20 => @END),
     }
 }
@@ -940,12 +940,12 @@ register_structs! {
 register_structs! {
     /// Split-PCH transcoder timing register block, relative to transcoder timing base.
     pub PchTranscoderTimingRegs {
-        (0x00 => pub htotal: ReadWrite<u32>),
-        (0x04 => pub hblank: ReadWrite<u32>),
-        (0x08 => pub hsync: ReadWrite<u32>),
-        (0x0c => pub vtotal: ReadWrite<u32>),
-        (0x10 => pub vblank: ReadWrite<u32>),
-        (0x14 => pub vsync: ReadWrite<u32>),
+        (0x00 => pub htotal: MmioReadWrite<u32>),
+        (0x04 => pub hblank: MmioReadWrite<u32>),
+        (0x08 => pub hsync: MmioReadWrite<u32>),
+        (0x0c => pub vtotal: MmioReadWrite<u32>),
+        (0x10 => pub vblank: MmioReadWrite<u32>),
+        (0x14 => pub vsync: MmioReadWrite<u32>),
         (0x18 => @END),
     }
 }
@@ -953,15 +953,15 @@ register_structs! {
 register_structs! {
     /// Legacy GMCH primary plane register block, relative to plane base.
     pub GmchPlaneRegs {
-        (0x00 => pub cntr: ReadWrite<u32, DSPCNTR::Register>),
-        (0x04 => pub addr: ReadWrite<u32>),
-        (0x08 => pub stride: ReadWrite<u32>),
-        (0x0c => pub pos: ReadWrite<u32>),
-        (0x10 => pub size: ReadWrite<u32>),
+        (0x00 => pub cntr: MmioReadWrite<u32, DSPCNTR::Register>),
+        (0x04 => pub addr: MmioReadWrite<u32>),
+        (0x08 => pub stride: MmioReadWrite<u32>),
+        (0x0c => pub pos: MmioReadWrite<u32>),
+        (0x10 => pub size: MmioReadWrite<u32>),
         (0x14 => _reserved0),
-        (0x1c => pub surf: ReadWrite<u32>),
+        (0x1c => pub surf: MmioReadWrite<u32>),
         (0x20 => _reserved1),
-        (0x24 => pub tileoff: ReadWrite<u32>),
+        (0x24 => pub tileoff: MmioReadWrite<u32>),
         (0x28 => @END),
     }
 }
@@ -969,14 +969,14 @@ register_structs! {
 register_structs! {
     /// Legacy GMCH panel power/fitter register block, relative to `PP_STATUS`.
     pub GmchPanelRegs {
-        (0x00 => pub pp_status: ReadWrite<u32, PP_STATUS::Register>),
-        (0x04 => pub pp_control: ReadWrite<u32, PP_CONTROL::Register>),
-        (0x08 => pub pp_on_delays: ReadWrite<u32, PP_ON_DELAYS::Register>),
-        (0x0c => pub pp_off_delays: ReadWrite<u32, PP_OFF_DELAYS::Register>),
-        (0x10 => pub pp_divisor: ReadWrite<u32, PP_DIVISOR::Register>),
+        (0x00 => pub pp_status: MmioReadWrite<u32, PP_STATUS::Register>),
+        (0x04 => pub pp_control: MmioReadWrite<u32, PP_CONTROL::Register>),
+        (0x08 => pub pp_on_delays: MmioReadWrite<u32, PP_ON_DELAYS::Register>),
+        (0x0c => pub pp_off_delays: MmioReadWrite<u32, PP_OFF_DELAYS::Register>),
+        (0x10 => pub pp_divisor: MmioReadWrite<u32, PP_DIVISOR::Register>),
         (0x14 => _reserved0),
-        (0x30 => pub pfit_control: ReadWrite<u32, PFIT_CONTROL::Register>),
-        (0x34 => pub pfit_pgm_ratios: ReadWrite<u32, PFIT_PGM_RATIOS::Register>),
+        (0x30 => pub pfit_control: MmioReadWrite<u32, PFIT_CONTROL::Register>),
+        (0x34 => pub pfit_pgm_ratios: MmioReadWrite<u32, PFIT_PGM_RATIOS::Register>),
         (0x38 => @END),
     }
 }
@@ -999,7 +999,7 @@ impl GmchPanelRegs {
 register_structs! {
     /// Ironlake-family CPU FDI TX register block, relative to `FDI_TX_CTL_*`.
     pub IronlakeFdiTxRegs {
-        (0x00 => pub ctl: ReadWrite<u32, FDI_TX_CTL::Register>),
+        (0x00 => pub ctl: MmioReadWrite<u32, FDI_TX_CTL::Register>),
         (0x04 => @END),
     }
 }
@@ -1019,12 +1019,12 @@ impl IronlakeFdiTxOffsets {
 register_structs! {
     /// Ironlake-family PCH FDI RX register block, relative to `FDI_RX*_CTL`.
     pub IronlakeFdiRxRegs {
-        (0x00 => pub ctl: ReadWrite<u32, FDI_RX_CTL::Register>),
-        (0x04 => pub misc: ReadWrite<u32, FDI_RX_MISC::Register>),
-        (0x08 => pub iir: ReadWrite<u32, FDI_RX_IIR::Register>),
-        (0x0c => pub imr: ReadWrite<u32, FDI_RX_IIR::Register>),
+        (0x00 => pub ctl: MmioReadWrite<u32, FDI_RX_CTL::Register>),
+        (0x04 => pub misc: MmioReadWrite<u32, FDI_RX_MISC::Register>),
+        (0x08 => pub iir: MmioReadWrite<u32, FDI_RX_IIR::Register>),
+        (0x0c => pub imr: MmioReadWrite<u32, FDI_RX_IIR::Register>),
         (0x10 => _reserved0),
-        (0x24 => pub tusize: ReadWrite<u32, FDI_RX_TUSIZE1::Register>),
+        (0x24 => pub tusize: MmioReadWrite<u32, FDI_RX_TUSIZE1::Register>),
         (0x28 => @END),
     }
 }

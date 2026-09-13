@@ -122,7 +122,7 @@ fn apply_routing(mmio: &Mmio, routing: DdiClockRouting) {
     // SAFETY: DDI routing operations carry MMIO offsets from typed DDI planning
     // helpers. This fallback covers the shared DPLL_CTRL2-style route register.
     let reg = unsafe {
-        mmio.reg_block::<tock_registers::registers::ReadWrite<u32, SKL_DPLL_CTRL2_REG::Register>>(
+        mmio.reg_block::<fstart_core::mmio::MmioReadWrite<u32, SKL_DPLL_CTRL2_REG::Register>>(
             op.register,
         )
     };
@@ -133,7 +133,7 @@ fn port_clock_select_reg(
     mmio: &Mmio,
     register: usize,
 ) -> Option<
-    &'static tock_registers::registers::ReadWrite<u32, crate::ddi::PORT_CLK_SEL_REG::Register>,
+    &'static fstart_core::mmio::MmioReadWrite<u32, crate::ddi::PORT_CLK_SEL_REG::Register>,
 > {
     if register < HSW_PORT_CLK_SEL_BASE {
         return None;

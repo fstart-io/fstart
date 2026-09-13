@@ -150,7 +150,7 @@ mod tests {
             surface,
         );
         // Aperture offset keeps its 4 KiB alignment, linear start is added in.
-        assert_eq!(plane.aperture_linear_address().unwrap(), 0x4000 | (3 * 64 + 2) * 4);
+        assert_eq!(plane.aperture_linear_address().unwrap(), 0x4000 | ((3 * 64 + 2) * 4));
     }
 
     #[test]

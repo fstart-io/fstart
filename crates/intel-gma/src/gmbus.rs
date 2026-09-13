@@ -12,10 +12,9 @@ use crate::error::GmaError;
 use crate::mmio::Mmio;
 use crate::types::{PhysAddr, Port};
 
-use serde::{Deserialize, Serialize};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
-use tock_registers::registers::ReadWrite;
+use fstart_core::mmio::MmioReadWrite;
 
 /// Standard 7-bit DDC EDID I2C address.
 pub const DDC_EDID_ADDRESS: u8 = 0x50;
@@ -108,24 +107,24 @@ register_structs! {
     /// Typed GMBUS register window relative to either GMCH or PCH GMBUS base.
     pub GmbusRegs {
         /// GMBUS0 clock/pin select register.
-        (0x00 => pub gmbus0: ReadWrite<u32, GMBUS0_REG::Register>),
+        (0x00 => pub gmbus0: MmioReadWrite<u32, GMBUS0_REG::Register>),
         /// GMBUS1 command register.
-        (0x04 => pub gmbus1: ReadWrite<u32, GMBUS1_REG::Register>),
+        (0x04 => pub gmbus1: MmioReadWrite<u32, GMBUS1_REG::Register>),
         /// GMBUS2 status register.
-        (0x08 => pub gmbus2: ReadWrite<u32, GMBUS2_REG::Register>),
+        (0x08 => pub gmbus2: MmioReadWrite<u32, GMBUS2_REG::Register>),
         /// GMBUS3 data register.
-        (0x0c => pub gmbus3: ReadWrite<u32>),
+        (0x0c => pub gmbus3: MmioReadWrite<u32>),
         /// GMBUS4 interrupt mask register.
-        (0x10 => pub gmbus4: ReadWrite<u32, GMBUS4_REG::Register>),
+        (0x10 => pub gmbus4: MmioReadWrite<u32, GMBUS4_REG::Register>),
         (0x14 => _reserved0),
         /// GMBUS5 extended index register.
-        (0x20 => pub gmbus5: ReadWrite<u32, GMBUS5_REG::Register>),
+        (0x20 => pub gmbus5: MmioReadWrite<u32, GMBUS5_REG::Register>),
         (0x24 => @END),
     }
 }
 
 /// Logical GMBUS pin pair used for DDC on a connector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GmbusPin {
     /// Analog/VGA DDC pins.
     Analog,
@@ -258,15 +257,24 @@ impl Gmbus0Config {
         }
     }
 
-    /// Encode the value to write to GMBUS0.
+    /// Encode the value to write to GMBUS0 using the typed bitfields.
     pub const fn encode(self) -> u32 {
-        let hold = if self.hold_ext { 1u32 << 7 } else { 0 };
-        let override_bit = if self.byte_count_override {
-            1u32 << 6
+        let hold = if self.hold_ext {
+            GMBUS0_REG::HOLD_EXT::SET.value
         } else {
             0
         };
-        (self.pin.legacy_select() as u32) | ((self.rate.select() as u32) << 8) | hold | override_bit
+        let override_bit = if self.byte_count_override {
+            GMBUS0_REG::BYTE_COUNT_OVERRIDE::SET.value
+        } else {
+            0
+        };
+        GMBUS0_REG::PIN_SELECT
+            .val(self.pin.legacy_select() as u32)
+            .value
+            | GMBUS0_REG::RATE.val(self.rate.select() as u32).value
+            | hold
+            | override_bit
     }
 }
 
@@ -345,17 +353,25 @@ impl GmbusCommand {
         self.software_ready
     }
 
-    /// Encode the value to write to GMBUS1.
+    /// Encode the value to write to GMBUS1 using the typed bitfields.
     pub const fn encode(self) -> u32 {
-        let timeout = if self.enable_timeout { 1u32 << 29 } else { 0 };
-        let ready = if self.software_ready { 1u32 << 30 } else { 0 };
+        let timeout = if self.enable_timeout {
+            GMBUS1_REG::TIMEOUT_EN::SET.value
+        } else {
+            0
+        };
+        let ready = if self.software_ready {
+            GMBUS1_REG::SW_RDY::SET.value
+        } else {
+            0
+        };
         ready
             | timeout
-            | ((self.cycle.select() as u32) << 25)
-            | ((self.byte_count as u32) << 16)
-            | ((self.index as u32) << 8)
-            | ((self.slave_address as u32) << 1)
-            | (self.direction.bit() as u32)
+            | GMBUS1_REG::CYCLE.val(self.cycle.select() as u32).value
+            | GMBUS1_REG::BYTE_COUNT.val(self.byte_count as u32).value
+            | GMBUS1_REG::SLAVE_INDEX.val(self.index as u32).value
+            | GMBUS1_REG::SLAVE_ADDR.val(self.slave_address as u32).value
+            | GMBUS1_REG::DIRECTION.val(self.direction.bit() as u32).value
     }
 
     /// Linux-style STOP command used to terminate a transaction.
@@ -394,17 +410,17 @@ pub struct GmbusStatus {
 }
 
 impl GmbusStatus {
-    /// Decode raw GMBUS2 bits.
+    /// Decode raw GMBUS2 bits using the typed bitfields.
     pub const fn from_bits(bits: u32) -> Self {
         Self {
-            in_use: bits & (1 << 15) != 0,
-            wait_phase: bits & (1 << 14) != 0,
-            stall_timeout: bits & (1 << 13) != 0,
-            interrupt: bits & (1 << 12) != 0,
-            hardware_ready: bits & (1 << 11) != 0,
-            nak: bits & (1 << 10) != 0,
-            active: bits & (1 << 9) != 0,
-            byte_count: (bits & 0x01ff) as u16,
+            in_use: bits & GMBUS2_REG::INUSE::SET.value != 0,
+            wait_phase: bits & GMBUS2_REG::HW_WAIT_PHASE::SET.value != 0,
+            stall_timeout: bits & GMBUS2_REG::STALL_TIMEOUT::SET.value != 0,
+            interrupt: bits & GMBUS2_REG::INT_STATUS::SET.value != 0,
+            hardware_ready: bits & GMBUS2_REG::HW_RDY::SET.value != 0,
+            nak: bits & GMBUS2_REG::NAK::SET.value != 0,
+            active: bits & GMBUS2_REG::ACTIVE::SET.value != 0,
+            byte_count: (bits & GMBUS2_REG::BYTE_COUNT.val(0x1ff).value) as u16,
         }
     }
 
@@ -427,132 +443,6 @@ impl GmbusStatus {
     /// The bus is fully idle after a STOP/reset sequence.
     pub const fn is_idle(self) -> bool {
         !self.active && !self.in_use && !self.wait_phase
-    }
-}
-
-/// One modeled register action in a future GMBUS transfer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GmbusPlanStep {
-    /// Program GMBUS0 with the given value.
-    SelectPin(u32),
-    /// Program GMBUS1 with a command value.
-    Command(u32),
-    /// Poll GMBUS2 for completion/error.
-    PollStatus,
-    /// Read data bytes from GMBUS3.
-    ReadData { bytes: u16 },
-    /// Disable GMBUS0 after idle.
-    Disable,
-}
-
-/// Small, fixed plan for one GMBUS read transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GmbusReadPlan {
-    /// Ordered modeled steps; entries after `len` are padding.
-    pub steps: [GmbusPlanStep; 6],
-    /// Number of valid steps.
-    pub len: usize,
-}
-
-impl GmbusReadPlan {
-    /// Model an indexed read like EDID block 0 without touching hardware.
-    pub const fn indexed_read(
-        pin: GmbusPin,
-        address: u8,
-        index: u8,
-        bytes: u16,
-    ) -> Result<Self, GmaError> {
-        let command = match GmbusCommand::new(
-            GmbusCycle::IndexWait,
-            bytes,
-            address,
-            index,
-            GmbusDirection::Read,
-        ) {
-            Ok(command) => command,
-            Err(error) => return Err(error),
-        };
-        Ok(Self {
-            steps: [
-                GmbusPlanStep::SelectPin(Gmbus0Config::conservative(pin).encode()),
-                GmbusPlanStep::Command(command.encode()),
-                GmbusPlanStep::PollStatus,
-                GmbusPlanStep::ReadData { bytes },
-                GmbusPlanStep::Command(GmbusCommand::stop().encode()),
-                GmbusPlanStep::Disable,
-            ],
-            len: 6,
-        })
-    }
-}
-
-/// Data-only connector probe candidate for GMBUS/DDC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DdcProbeCandidate {
-    /// Logical port being probed.
-    pub port: Port,
-    /// GMBUS pin pair to try for this port.
-    pub pin: GmbusPin,
-}
-
-/// Data-only libgfxinit-style DDC probe order for GMBUS-backed ports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DdcProbePlan {
-    /// Candidate entries; entries after `len` are padding.
-    pub candidates: [DdcProbeCandidate; 5],
-    /// Number of valid candidates.
-    pub len: usize,
-}
-
-impl DdcProbePlan {
-    /// Build a single-port DDC probe plan.
-    pub const fn for_port(port: Port) -> Result<Self, GmaError> {
-        match ddc_pin_for_port(port) {
-            Some(pin) => Ok(Self {
-                candidates: [DdcProbeCandidate { port, pin }; 5],
-                len: 1,
-            }),
-            None => Err(GmaError::UnsupportedPort),
-        }
-    }
-
-    /// Build the legacy all-GMBUS probe order used when board policy does not
-    /// name one connector: VGA, LVDS panel, then HDMI/DVI digital pins B/C/D.
-    pub const fn legacy_gmbus_order() -> Self {
-        Self {
-            candidates: [
-                DdcProbeCandidate {
-                    port: Port::Vga,
-                    pin: GmbusPin::Analog,
-                },
-                DdcProbeCandidate {
-                    port: Port::Lvds,
-                    pin: GmbusPin::Panel,
-                },
-                DdcProbeCandidate {
-                    port: Port::HdmiA,
-                    pin: GmbusPin::DigitalB,
-                },
-                DdcProbeCandidate {
-                    port: Port::HdmiB,
-                    pin: GmbusPin::DigitalC,
-                },
-                DdcProbeCandidate {
-                    port: Port::HdmiC,
-                    pin: GmbusPin::DigitalD,
-                },
-            ],
-            len: 5,
-        }
-    }
-
-    /// Return a candidate by index.
-    pub const fn candidate(self, index: usize) -> Option<DdcProbeCandidate> {
-        if index < self.len {
-            Some(self.candidates[index])
-        } else {
-            None
-        }
     }
 }
 
@@ -767,21 +657,6 @@ impl DdcBus for HardwareGmbus {
     }
 }
 
-/// Placeholder bus for explicitly unsupported DDC paths.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct UnsupportedDdcBus;
-
-impl DdcBus for UnsupportedDdcBus {
-    fn read_edid_block(
-        &mut self,
-        _address: u8,
-        _block_index: u8,
-        _block: &mut [u8; EDID_BLOCK_LEN],
-    ) -> Result<(), GmaError> {
-        Err(GmaError::UnsupportedPlatform)
-    }
-}
-
 /// Read, sanitize, and validate the EDID preferred mode source over DDC.
 pub fn read_base_edid<'a, B: DdcBus>(
     bus: &mut B,
@@ -790,20 +665,6 @@ pub fn read_base_edid<'a, B: DdcBus>(
     bus.read_edid_block(DDC_EDID_ADDRESS, 0, storage)?;
     *storage = edid::sanitize(*storage)?;
     Edid::parse(storage)
-}
-
-/// Read an EDID block and verify that it is compatible with the probed port.
-pub fn read_compatible_base_edid<'a, B: DdcBus>(
-    bus: &mut B,
-    candidate: DdcProbeCandidate,
-    storage: &'a mut [u8; EDID_BLOCK_LEN],
-) -> Result<Edid<'a>, GmaError> {
-    let edid = read_base_edid(bus, storage)?;
-    if edid.compatible_with_port(candidate.port) {
-        Ok(edid)
-    } else {
-        Err(GmaError::ModeUnavailable)
-    }
 }
 
 /// Read EDID base and advertised extension blocks, then return ranked modes.
@@ -876,31 +737,6 @@ mod tests {
         assert_eq!(ddc_pin_for_port(Port::HdmiA), Some(GmbusPin::DigitalB));
         assert_eq!(ddc_pin_for_port(Port::HdmiB), Some(GmbusPin::DigitalC));
         assert_eq!(ddc_pin_for_port(Port::HdmiC), Some(GmbusPin::DigitalD));
-    }
-
-    #[test]
-    fn ddc_probe_plan_models_single_port_and_legacy_order() {
-        let hdmi = DdcProbePlan::for_port(Port::HdmiB).unwrap();
-        assert_eq!(hdmi.len, 1);
-        assert_eq!(
-            hdmi.candidate(0),
-            Some(DdcProbeCandidate {
-                port: Port::HdmiB,
-                pin: GmbusPin::DigitalC,
-            })
-        );
-        assert_eq!(hdmi.candidate(1), None);
-        assert_eq!(
-            DdcProbePlan::for_port(Port::DpA),
-            Err(GmaError::UnsupportedPort)
-        );
-
-        let all = DdcProbePlan::legacy_gmbus_order();
-        assert_eq!(all.len, 5);
-        assert_eq!(all.candidate(0).unwrap().port, Port::Vga);
-        assert_eq!(all.candidate(1).unwrap().pin, GmbusPin::Panel);
-        assert_eq!(all.candidate(4).unwrap().port, Port::HdmiC);
-        assert_eq!(all.candidate(5), None);
     }
 
     #[test]
@@ -1017,74 +853,12 @@ mod tests {
     }
 
     #[test]
-    fn gmbus_edid_read_plan_matches_live_ddc_sequence() {
-        let plan = GmbusReadPlan::indexed_read(GmbusPin::Analog, DDC_EDID_ADDRESS, 0, 128).unwrap();
-        assert_eq!(plan.len, 6);
-        assert_eq!(plan.steps[0], GmbusPlanStep::SelectPin(2));
-        assert_eq!(
-            plan.steps[1],
-            GmbusPlanStep::Command((1 << 30) | (0b011 << 25) | (128 << 16) | (0x50 << 1) | 1)
-        );
-        assert_eq!(plan.steps[2], GmbusPlanStep::PollStatus);
-        assert_eq!(plan.steps[3], GmbusPlanStep::ReadData { bytes: 128 });
-        assert_eq!(
-            plan.steps[4],
-            GmbusPlanStep::Command(GmbusCommand::stop().encode())
-        );
-        assert_eq!(plan.steps[5], GmbusPlanStep::Disable);
-
-        let mut bus = UnsupportedDdcBus;
-        let mut storage = [0u8; EDID_BLOCK_LEN];
-        assert_eq!(
-            read_base_edid(&mut bus, &mut storage).err(),
-            Some(GmaError::UnsupportedPlatform)
-        );
-    }
-
-    #[test]
     fn dp_edp_ports_use_aux_instead_of_gmbus_pins() {
         assert_eq!(ddc_pin_for_port(Port::DpA), None);
         assert_eq!(ddc_pin_for_port(Port::DpB), None);
         assert_eq!(ddc_pin_for_port(Port::DpC), None);
         assert_eq!(ddc_pin_for_port(Port::DpD), None);
         assert_eq!(ddc_pin_for_port(Port::Edp), None);
-    }
-
-    #[test]
-    fn unsupported_bus_fails_explicitly() {
-        let mut bus = UnsupportedDdcBus;
-        let mut storage = [0u8; EDID_BLOCK_LEN];
-        assert_eq!(
-            read_base_edid(&mut bus, &mut storage).err(),
-            Some(GmaError::UnsupportedPlatform)
-        );
-    }
-
-    #[test]
-    fn read_compatible_base_edid_rejects_wrong_input_type_for_port() {
-        let block = xga_edid();
-        let mut bus = FakeDdcBus { block };
-        let mut storage = [0u8; EDID_BLOCK_LEN];
-        let candidate = DdcProbeCandidate {
-            port: Port::Vga,
-            pin: GmbusPin::Analog,
-        };
-        assert!(read_compatible_base_edid(&mut bus, candidate, &mut storage).is_ok());
-
-        let mut digital_block = xga_edid();
-        digital_block[20] = 0x80;
-        digital_block[127] = 0u8.wrapping_sub(
-            digital_block[..127]
-                .iter()
-                .fold(0u8, |sum, b| sum.wrapping_add(*b)),
-        );
-        let mut bus = FakeDdcBus {
-            block: digital_block,
-        };
-        assert_eq!(
-            read_compatible_base_edid(&mut bus, candidate, &mut storage).err(),
-            Some(GmaError::ModeUnavailable)
-        );
     }
 
     #[test]

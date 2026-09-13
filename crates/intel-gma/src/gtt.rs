@@ -31,9 +31,9 @@ const FENCE_PAGE_MASK: u32 = FENCE_LOWER::PAGE.val(0x000f_ffff).value;
 
 /// MMIO-visible GTT page-table entry.
 ///
-/// Kept as an untyped `ReadWrite<u32>` so chipset drivers can hand in raw
+/// Kept as an untyped `MmioReadWrite<u32>` so chipset drivers can hand in raw
 /// pointers to the GTT aperture; PTE bit layout lives in [`encode_gtt_pte`].
-pub type GttPte = tock_registers::registers::ReadWrite<u32>;
+pub type GttPte = fstart_core::mmio::MmioReadWrite<u32>;
 
 /// GTT page-table entry encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -486,23 +486,6 @@ const fn gen3_fence_offset(fence: usize) -> usize {
 
 const fn floor_log2(value: u32) -> u32 {
     31 - value.leading_zeros()
-}
-
-/// Remove a fence matching the given surface if one is present.
-#[allow(dead_code)]
-pub(crate) fn remove_legacy_fence(mmio: &Mmio, surface: &SurfaceConfig) -> Result<(), GmaError> {
-    let page_lower = FENCE_LOWER::PAGE.val(surface.first_page()?).value;
-    let page_upper = FENCE_UPPER::PAGE.val(surface.last_page()?).value;
-    for fence in 0..FENCE_COUNT_LEGACY {
-        let regs = legacy_fence_regs(mmio, fence);
-        let lower = regs.lower.get();
-        let upper = regs.upper.get();
-        if (lower & FENCE_PAGE_MASK) == page_lower && (upper & FENCE_PAGE_MASK) == page_upper {
-            regs.lower.set(0);
-            return Ok(());
-        }
-    }
-    Ok(())
 }
 
 fn legacy_fence_regs(mmio: &Mmio, fence: usize) -> &'static LegacyFenceRegs {

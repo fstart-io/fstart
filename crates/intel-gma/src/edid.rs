@@ -9,7 +9,7 @@ use heapless::Vec;
 use crate::error::GmaError;
 use crate::mode::{Mode, ModeFlags};
 use crate::types::Port;
-use crate::vbt::mode_from_dtd;
+use crate::dtd::{dtd_present, mode_from_dtd};
 
 /// Size in bytes of an EDID base block.
 pub const EDID_BLOCK_LEN: usize = 128;
@@ -315,19 +315,7 @@ fn checksum(raw: &[u8; EDID_BLOCK_LEN]) -> u8 {
 }
 
 fn detailed_timing_present(dtd: &[u8]) -> bool {
-    if dtd.len() < DESCRIPTOR_LEN {
-        return false;
-    }
-    let pixel_clock = u16::from_le_bytes([dtd[0], dtd[1]]);
-    pixel_clock != 0
-        && (dtd[2] != 0 || (dtd[4] & 0xf0) != 0)
-        && (dtd[8] != 0 || (dtd[11] & 0xc0) != 0)
-        && (dtd[9] != 0 || (dtd[11] & 0x30) != 0)
-        && (dtd[3] != 0 || (dtd[4] & 0x0f) != 0)
-        && (dtd[5] != 0 || (dtd[7] & 0xf0) != 0)
-        && ((dtd[10] & 0xf0) != 0 || (dtd[11] & 0x0c) != 0)
-        && ((dtd[10] & 0x0f) != 0 || (dtd[11] & 0x03) != 0)
-        && (dtd[6] != 0 || (dtd[7] & 0x0f) != 0)
+    dtd_present(dtd)
 }
 
 fn standard_timing_mode(width_byte: u8, aspect_refresh: u8, edid_revision: u8) -> Option<Mode> {

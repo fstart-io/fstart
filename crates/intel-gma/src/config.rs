@@ -1,11 +1,10 @@
 //! Board display policy shared with chipset drivers.
 
-use serde::{Deserialize, Serialize};
 
 use crate::types::Port;
 
 /// Board policy for selecting a display mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreferredMode {
     /// Use `framebuffer.fallback_mode` as the fixed board-policy mode.
     Fixed,
@@ -17,7 +16,7 @@ pub enum PreferredMode {
 }
 
 /// Per-output board enable policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputConfig {
     /// Logical output port.
     pub port: Port,

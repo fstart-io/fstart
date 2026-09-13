@@ -1,7 +1,7 @@
 //! MMIO helpers for Intel GMA display initialization.
 
 use tock_registers::interfaces::{Readable, Writeable};
-use tock_registers::registers::ReadWrite;
+use fstart_core::mmio::MmioReadWrite;
 
 use crate::error::GmaError;
 use crate::types::PhysAddr;
@@ -35,7 +35,7 @@ impl Mmio {
         self.reg32(offset).set(value);
     }
 
-    fn reg32(&self, offset: usize) -> &'static ReadWrite<u32> {
+    fn reg32(&self, offset: usize) -> &'static MmioReadWrite<u32> {
         // SAFETY: construction requires a valid MMIO window; offsets are chosen
         // from generation register tables and point to aligned 32-bit GMA
         // registers. The returned reference is only used for volatile register

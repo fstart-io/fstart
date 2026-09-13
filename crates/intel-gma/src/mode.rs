@@ -1,7 +1,6 @@
 //! Display mode timing and selection helpers.
 
 use bitflags::bitflags;
-use serde::{Deserialize, Serialize};
 
 use crate::error::GmaError;
 
@@ -22,27 +21,8 @@ bitflags! {
     }
 }
 
-impl Serialize for ModeFlags {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u32(self.bits())
-    }
-}
-
-impl<'de> Deserialize<'de> for ModeFlags {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bits = u32::deserialize(deserializer)?;
-        Ok(Self::from_bits_truncate(bits))
-    }
-}
-
 /// Complete display mode timing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mode {
     /// Active horizontal pixels.
     pub hdisplay: u16,
@@ -96,7 +76,7 @@ impl Mode {
 }
 
 /// Fixed width/height/refresh fallback from board policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FallbackMode {
     /// Horizontal active pixels.
     pub width: u16,

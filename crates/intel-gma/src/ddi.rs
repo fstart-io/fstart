@@ -7,7 +7,7 @@
 //! routing and buffer/transport programming; pipe and plane commit is not yet
 //! wired for those families.
 
-use tock_registers::registers::ReadWrite;
+use fstart_core::mmio::MmioReadWrite;
 use tock_registers::{register_bitfields, register_structs};
 
 use crate::error::GmaError;
@@ -120,9 +120,9 @@ register_bitfields! [u32,
 register_structs! {
     /// Haswell/Broadwell WRPLL control registers, relative to WRPLL0.
     pub HswWrpllRegs {
-        (0x00 => pub wrpll0: ReadWrite<u32, HSW_WRPLL_CTL_REG::Register>),
+        (0x00 => pub wrpll0: MmioReadWrite<u32, HSW_WRPLL_CTL_REG::Register>),
         (0x04 => _reserved0),
-        (0x20 => pub wrpll1: ReadWrite<u32, HSW_WRPLL_CTL_REG::Register>),
+        (0x20 => pub wrpll1: MmioReadWrite<u32, HSW_WRPLL_CTL_REG::Register>),
         (0x24 => @END),
     }
 }
@@ -130,10 +130,10 @@ register_structs! {
 register_structs! {
     /// HSW/SKL-style DDI port-local register block, relative to `DDI_BUF_CTL`.
     pub DdiPortRegs {
-        (0x00 => pub buf_ctl: ReadWrite<u32, DDI_BUF_CTL_REG::Register>),
+        (0x00 => pub buf_ctl: MmioReadWrite<u32, DDI_BUF_CTL_REG::Register>),
         (0x04 => _reserved1),
-        (0x40 => pub dp_tp_ctl: ReadWrite<u32, DP_TP_CTL_REG::Register>),
-        (0x44 => pub dp_tp_status: ReadWrite<u32>),
+        (0x40 => pub dp_tp_ctl: MmioReadWrite<u32, DP_TP_CTL_REG::Register>),
+        (0x44 => pub dp_tp_status: MmioReadWrite<u32>),
         (0x48 => @END),
     }
 }
@@ -141,11 +141,11 @@ register_structs! {
 register_structs! {
     /// Per-DDI port clock select registers, relative to DDI A `PORT_CLK_SEL`.
     pub HswPortClockSelectRegs {
-        (0x00 => pub ddi_a: ReadWrite<u32, PORT_CLK_SEL_REG::Register>),
-        (0x04 => pub ddi_b: ReadWrite<u32, PORT_CLK_SEL_REG::Register>),
-        (0x08 => pub ddi_c: ReadWrite<u32, PORT_CLK_SEL_REG::Register>),
-        (0x0c => pub ddi_d: ReadWrite<u32, PORT_CLK_SEL_REG::Register>),
-        (0x10 => pub ddi_e: ReadWrite<u32, PORT_CLK_SEL_REG::Register>),
+        (0x00 => pub ddi_a: MmioReadWrite<u32, PORT_CLK_SEL_REG::Register>),
+        (0x04 => pub ddi_b: MmioReadWrite<u32, PORT_CLK_SEL_REG::Register>),
+        (0x08 => pub ddi_c: MmioReadWrite<u32, PORT_CLK_SEL_REG::Register>),
+        (0x0c => pub ddi_d: MmioReadWrite<u32, PORT_CLK_SEL_REG::Register>),
+        (0x10 => pub ddi_e: MmioReadWrite<u32, PORT_CLK_SEL_REG::Register>),
         (0x14 => @END),
     }
 }

@@ -11,7 +11,7 @@
 //! - `intel_backlight.c`: `i9xx_set_backlight` (bits 15:1 on pre-i965).
 
 use tock_registers::interfaces::{Readable, Writeable};
-use tock_registers::registers::ReadWrite;
+use fstart_core::mmio::MmioReadWrite;
 
 use crate::GmaContext;
 use crate::error::GmaError;
@@ -206,6 +206,7 @@ const fn pipe_regs(pipe: Pipe) -> Result<(usize, usize), GmaError> {
 }
 
 /// DSPCNTR pipe-select bit, keyed on the pipe (not the plane register letter).
+#[cfg_attr(not(test), allow(dead_code))]
 const fn dspcntr_pipe_select(pipe: Pipe) -> Result<u32, GmaError> {
     match pipe {
         Pipe::A => Ok(DSPCNTR::PIPE_SELECT::PipeA.value),
@@ -237,7 +238,7 @@ fn program_pipe(mmio: &Mmio, pipe: Pipe, mode: Mode, port: Port) -> Result<(), G
     // decoded display MMIO BAR supplied by chipset code.
     let timing = unsafe { mmio.reg_block::<GmchPipeTimingRegs>(timing_off) };
     // SAFETY: see the timing block above.
-    let pipeconf = unsafe { mmio.reg_block::<ReadWrite<u32, PIPECONF::Register>>(pipeconf_off) };
+    let pipeconf = unsafe { mmio.reg_block::<MmioReadWrite<u32, PIPECONF::Register>>(pipeconf_off) };
     timing.htotal.set(pipe_config.htotal());
     timing.hblank.set(pipe_config.hblank());
     timing.hsync.set(pipe_config.hsync());
