@@ -737,6 +737,11 @@ const fn validate_destination_for_kind(
     Ok(())
 }
 
+/// Half the gap, rounded up.
+///
+/// Note: libgfxinit's `Align_Framebuffer` uses `Gap / 2` (floor), while the
+/// Linux i915 PFIT paths the crate models round the odd remainder up. The
+/// Linux behaviour is kept deliberately; see the scaler tests.
 const fn ceil_half(value: u32) -> u32 {
     value.div_ceil(2)
 }
