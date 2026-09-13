@@ -8,6 +8,7 @@ members = [
   "crates/platform-qemu",
   "crates/ffs",
   "crates/image-build",
+  "crates/intel-gma",
   "crates/crypto",
   "crates/arch",
   "crates/log",
@@ -78,6 +79,7 @@ fstart-crypto = { path = "crates/crypto" }
 fstart-log = { path = "crates/log" }
 fstart-arch = { path = "crates/arch" }
 fstart-driver-intel = { path = "crates/driver-intel" }
+fstart-intel-gma = { path = "crates/intel-gma" }
 fstart-driver-sunxi = { path = "crates/driver-sunxi" }
 fstart-driver-superio = { path = "crates/driver-superio" }
 fstart-driver-uart = { path = "crates/driver-uart" }
@@ -122,6 +124,8 @@ opt-level = "s"
 [profile.dev.package.fstart-platform-sunxi]
 opt-level = "s"
 [profile.dev.package.fstart-platform-qemu]
+opt-level = "s"
+[profile.dev.package.fstart-intel-gma]
 opt-level = "s"
 [profile.dev.package.fstart-driver-intel]
 opt-level = "s"
