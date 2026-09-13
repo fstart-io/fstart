@@ -20,6 +20,7 @@ fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-acpi-macros = { path = "../../../crates/acpi-macros" }
 fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel", features = ["ffs-vbt"] }
+fstart-intel-gma = { path = "../../../crates/intel-gma" }
 fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
 fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }

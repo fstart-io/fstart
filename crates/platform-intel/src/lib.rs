@@ -33,6 +33,9 @@ pub mod i945;
 pub mod layout;
 pub mod pineview;
 
+/// Shared IGD display bring-up types used by board display policy.
+pub use fstart_driver_intel::igd;
+
 #[cfg(feature = "stage")]
 mod boot;
 #[cfg(feature = "stage")]
@@ -459,6 +462,25 @@ where
 
     fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
         Some(fstart_pci::PciRootProvider::root_info(&self.northbridge))
+    }
+
+    #[cfg(feature = "crabefi-basic")]
+    fn framebuffer(&self) -> Option<fstart_stage::crabefi::FramebufferConfig> {
+        self.northbridge
+            .framebuffer_info()
+            .map(|info| fstart_stage::crabefi::FramebufferConfig {
+                physical_address: info.base_addr,
+                width: info.width,
+                height: info.height,
+                stride: info.stride,
+                bits_per_pixel: info.bits_per_pixel,
+                red_mask_pos: info.red_pos,
+                red_mask_size: info.red_size,
+                green_mask_pos: info.green_pos,
+                green_mask_size: info.green_size,
+                blue_mask_pos: info.blue_pos,
+                blue_mask_size: info.blue_size,
+            })
     }
 }
 
