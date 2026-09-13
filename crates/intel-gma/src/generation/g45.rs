@@ -402,9 +402,11 @@ pub(crate) fn setup_gmch_panel_power_sequencer(mmio: &Mmio) {
         true,
         true,
     );
-    apply_panel_op(mmio, plan.on_delays);
-    apply_panel_op(mmio, plan.off_delays);
-    apply_panel_op(mmio, plan.cycle_delay);
+    if plan.override_delays {
+        apply_panel_op(mmio, plan.on_delays);
+        apply_panel_op(mmio, plan.off_delays);
+        apply_panel_op(mmio, plan.cycle_delay);
+    }
     apply_panel_op(mmio, plan.control);
 }
 
@@ -581,11 +583,7 @@ pub(crate) fn program_gmch_plane(
     // SAFETY: `base` is a generation-validated GMCH primary plane register
     // block inside the decoded display MMIO BAR.
     let regs = unsafe { mmio.reg_block::<GmchPlaneRegs>(base) };
-    let pri = DSPCNTR::FORMAT::Xrgb8888.value
-        | match pipe {
-            Pipe::B => DSPCNTR::PIPE_SELECT::PipeB.value,
-            _ => DSPCNTR::PIPE_SELECT::PipeA.value,
-        };
+    let pri = DSPCNTR::FORMAT::Xrgb8888.value | dspcntr_pipe_select(plane)?;
     let tiling = plane_config.legacy_tiling_bits();
     regs.cntr.set(pri | tiling);
     regs.stride.set(plane_config.stride_bytes()?);
@@ -685,6 +683,14 @@ pub(crate) fn panel_power_on(mmio: &Mmio) -> Result<(), GmaError> {
 }
 
 fn panel_backlight_on(mmio: &Mmio, panel: Option<LfpPanelMetadata>) {
+    // libgfxinit `Panel.Backlight_On` only opens the power-sequencer gate; the
+    // duty cycle is set afterwards, so open the gate first.
+    let panel_regs = gmch_panel_regs(mmio);
+    let control = panel_regs.pp_control.get();
+    panel_regs.pp_control.set(panel_control_unlocked(
+        control | PP_CONTROL::BACKLIGHT_ENABLE::SET.value,
+    ));
+    let _ = panel_regs.pp_control.get();
     if panel
         .and_then(|panel| panel.backlight)
         .map(|backlight| backlight.is_pwm())
@@ -701,12 +707,6 @@ fn panel_backlight_on(mmio: &Mmio, panel: Option<LfpPanelMetadata>) {
             ),
         );
     }
-    let panel_regs = gmch_panel_regs(mmio);
-    let control = panel_regs.pp_control.get();
-    panel_regs.pp_control.set(panel_control_unlocked(
-        control | PP_CONTROL::BACKLIGHT_ENABLE::SET.value,
-    ));
-    let _ = panel_regs.pp_control.get();
 }
 
 /// Disable the panel power-sequencer backlight gate (libgfxinit `Panel.Backlight_Off`).
@@ -723,11 +723,22 @@ pub(crate) fn panel_backlight_off(mmio: &Mmio) {
 /// (libgfxinit `Panel.Off`).
 pub(crate) fn panel_power_off(mmio: &Mmio) {
     let panel_regs = gmch_panel_regs(mmio);
+    let was_on = panel_regs.pp_control.is_set(PP_CONTROL::TARGET_ON);
     let control = panel_regs.pp_control.get();
     panel_regs.pp_control.set(panel_control_unlocked(
         control & !(PP_CONTROL::TARGET_ON::SET.value | PP_CONTROL::VDD_OVERRIDE::SET.value),
     ));
     let _ = panel_regs.pp_control.get();
+    if was_on {
+        // libgfxinit `Panel.Off` waits the configured power-down delay.
+        let delays = PanelPowerDelays::from_registers(
+            panel_regs.pp_on_delays.get(),
+            panel_regs.pp_off_delays.get(),
+            panel_regs.pp_divisor.get(),
+        )
+        .with_defaults();
+        delay_us(delays.power_down_us);
+    }
     let mut timeout = 300_000u32;
     while timeout != 0 {
         if (panel_regs.pp_status.get() & PP_STATUS::SEQUENCE.mask) == 0 {

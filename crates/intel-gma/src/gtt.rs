@@ -60,7 +60,9 @@ pub(crate) const fn gtt_pte_encoding(cpu: Cpu) -> Option<GttPteEncoding> {
 /// 32-bit GTTs -> 0x200000).
 pub(crate) const fn gtt_pte_offset(cpu: Cpu) -> Option<usize> {
     match cpu {
-        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM => Some(0x0000_0000),
+        // Gen3 exposes the GTT through a separate BAR (libgfxinit `PCI.Res3`),
+        // so the chipset driver must supply `gtt_pte_base`.
+        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM => None,
         Cpu::Gm965 => Some(0x0008_0000),
         Cpu::G45 | Cpu::Gm45 | Cpu::Ironlake | Cpu::Sandybridge | Cpu::Ivybridge => {
             Some(0x0020_0000)
@@ -169,7 +171,7 @@ pub const GTT_DUMMY_PAGES_AFTER_FB: usize = 128;
 ///
 /// `gtt_aperture` must point at a writable MMIO-visible GTT table for the
 /// platform, and `gtt_entries` must describe its valid PTE count.
-pub unsafe fn map_framebuffer_to_stolen(
+pub(crate) unsafe fn map_framebuffer_to_stolen(
     resources: &GmaResources,
     surface: &SurfaceConfig,
     gtt_aperture: *mut GttPte,
@@ -636,8 +638,8 @@ mod tests {
 
     #[test]
     fn pte_base_offset_matches_libgfxinit_per_platform() {
-        assert_eq!(gtt_pte_offset(Cpu::I945GM), Some(0));
-        assert_eq!(gtt_pte_offset(Cpu::Pineview), Some(0));
+        assert_eq!(gtt_pte_offset(Cpu::I945GM), None);
+        assert_eq!(gtt_pte_offset(Cpu::Pineview), None);
         assert_eq!(gtt_pte_offset(Cpu::Gm965), Some(0x0008_0000));
         assert_eq!(gtt_pte_offset(Cpu::G45), Some(0x0020_0000));
         assert!(gtt_pte_offset(Cpu::Haswell).is_none());

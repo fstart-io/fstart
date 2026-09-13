@@ -81,7 +81,7 @@ const fn i945_cdclk(cpu: Cpu, gcfgc: Option<u16>) -> u64 {
     };
     match cpu {
         Cpu::Pineview | Cpu::PineviewM => {
-            match gcfgc & GCFGC_DISPLAY_CLOCK_MASK {
+            let cdclk = match gcfgc & GCFGC_DISPLAY_CLOCK_MASK {
                 GCFGC_PNV_DISPLAY_CLOCK_267_MHZ => 266_666_667,
                 GCFGC_PNV_DISPLAY_CLOCK_333_MHZ => 333_333_333,
                 GCFGC_PNV_DISPLAY_CLOCK_444_MHZ => 444_444_444,
@@ -89,15 +89,25 @@ const fn i945_cdclk(cpu: Cpu, gcfgc: Option<u16>) -> u64 {
                 GCFGC_PNV_DISPLAY_CLOCK_167_MHZ => 166_666_667,
                 // 6<<4 is 133 MHz; Linux/libgfxinit treat the rest the same.
                 _ => 133_333_333,
+            };
+            if cdclk >= CDCLK_MIN_HZ && cdclk <= CDCLK_MAX_HZ {
+                cdclk
+            } else {
+                fallback_cdclk_i945(cpu)
             }
         }
         Cpu::I945GM => {
-            if gcfgc & GCFGC_LOW_FREQUENCY_ENABLE != 0 {
+            let cdclk = if gcfgc & GCFGC_LOW_FREQUENCY_ENABLE != 0 {
                 133_333_333
             } else if gcfgc & GCFGC_DISPLAY_CLOCK_MASK == GCFGC_DISPLAY_CLOCK_320_MHZ {
                 320_000_000
             } else {
                 200_000_000
+            };
+            if cdclk >= CDCLK_MIN_HZ && cdclk <= CDCLK_MAX_HZ {
+                cdclk
+            } else {
+                fallback_cdclk_i945(cpu)
             }
         }
         // i945G desktop has a fixed 400 MHz CDClk.
@@ -105,9 +115,14 @@ const fn i945_cdclk(cpu: Cpu, gcfgc: Option<u16>) -> u64 {
     }
 }
 
+/// Conservative fallback when the chipset did not supply GCFGC.
+///
+/// Mobile parts can run at 320/333/444 MHz, so assuming 200 MHz would
+/// over-admit dot clocks. Use the lowest supported rate instead so the 90 %
+/// guard can only reject, never accept an unclockable mode.
 const fn fallback_cdclk_i945(cpu: Cpu) -> u64 {
     match cpu {
-        Cpu::Pineview | Cpu::PineviewM | Cpu::I945GM => 200_000_000,
+        Cpu::Pineview | Cpu::PineviewM | Cpu::I945GM => 133_333_333,
         _ => 400_000_000,
     }
 }
@@ -208,11 +223,22 @@ fn cdclk_from_gcfgc(cpu: Cpu, vco: HpllVco, gcfgc: Option<u16>) -> u64 {
     };
     let divisor = vco.divisors[selector];
     if vco.hz == 0 || divisor == 0 {
-        fallback_cdclk(cpu)
+        return fallback_cdclk(cpu);
+    }
+    // libgfxinit range-checks the decoded clock against `Config.CDClk_Range`
+    // and falls back when it is out of range.
+    let decoded = vco.hz / divisor;
+    if (CDCLK_MIN_HZ..=CDCLK_MAX_HZ).contains(&decoded) {
+        decoded
     } else {
-        vco.hz / divisor
+        fallback_cdclk(cpu)
     }
 }
+
+/// `Frequency_Type` bounds from libgfxinit, with `CDClk_Min` rounded up for the
+/// I945..Ironlake generations.
+const CDCLK_MIN_HZ: u64 = 1_111_112;
+const CDCLK_MAX_HZ: u64 = 2_500_000_000;
 
 const fn fallback_cdclk(cpu: Cpu) -> u64 {
     match cpu {
@@ -344,6 +370,10 @@ mod tests {
     fn i945_cdclk_matches_linux_decoding() {
         // i945G desktop is fixed at 400 MHz.
         assert_eq!(i945_cdclk(Cpu::I945G, None), 400_000_000);
+        // Conservative fallback for mobile parts when GCFGC is unavailable.
+        assert_eq!(i945_cdclk(Cpu::I945GM, None), 133_333_333);
+        assert_eq!(i945_cdclk(Cpu::Pineview, None), 133_333_333);
+        assert_eq!(i945_cdclk(Cpu::PineviewM, None), 133_333_333);
         // i945GM: low-frequency bit, 320 MHz selector, otherwise 200 MHz.
         assert_eq!(i945_cdclk(Cpu::I945GM, Some(1 << 7)), 133_333_333);
         assert_eq!(i945_cdclk(Cpu::I945GM, Some(4 << 4)), 320_000_000);
