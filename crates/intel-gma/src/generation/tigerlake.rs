@@ -13,7 +13,6 @@
 use crate::error::GmaError;
 use crate::generation::{GenerationOps, sealed};
 use crate::gtt;
-use crate::mode::Mode;
 use crate::regs::{TGL_DPLL_SELECT, TGL_HOTPLUG_STATUS, TGL_TYPEC_ORIENTATION};
 use crate::types::{Cpu, Generation, Pipe, Port};
 
@@ -25,28 +24,7 @@ impl sealed::Sealed for Tigerlake {}
 impl GenerationOps for Tigerlake {
     const GENERATION: Generation = Generation::Tigerlake;
 
-    fn init_display(ctx: &mut crate::GmaContext<'_>, _mode: Mode) -> Result<(), GmaError> {
-        map_gtt(ctx)?;
-        // SAFETY: the selected surface is backed by the just-programmed GTT mapping.
-        unsafe { ctx.surface.fill_opaque_black()? };
-        let port = selected_port(ctx)?;
-        let pipe = ddi_pipe_for_port(port);
-        let pll = tgl_alloc_pll_plan(port);
-        let _power = tgl_power_clock_plan(TglPowerClockStep::Initialize);
-        let _pre = tgl_ddi_pre_on_plan(
-            ctx.config.cpu,
-            port,
-            pipe,
-            pll.register_value,
-            TglTypeCOrientation::None,
-        )?;
-        let _post = tgl_ddi_post_on_plan(port, pipe, pll.register_value)?;
-        let _hotplug = tgl_hotplug_detect_plan(port)?;
-        let mmio = ctx.mmio();
-        mmio.posting_read(0);
-        Ok(())
     }
-}
 
 fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
     crate::selected_enabled_port(ctx.config.outputs)

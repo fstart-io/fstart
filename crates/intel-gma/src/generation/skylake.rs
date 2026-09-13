@@ -10,9 +10,9 @@
 use heapless::Vec;
 
 use crate::ddi::{
-    DdiClockRouting, DdiClockSelect, DdiDpInitStep, DdiLaneCount, DdiRegisterOp, DpTrainingPattern,
+    DdiClockRouting, DdiDpInitStep, DdiRegisterOp,
     SKL_DPLL_CTL_REG, SKL_DPLL_STATUS_REG, SklDdiPllPlan, SklDpInitParams, SklDpll,
-    SklHdmiInitParams, SklHdmiInitStep, SklPllSelect, skl_dp_dpll_ctrl1_update,
+    SklHdmiInitParams, SklHdmiInitStep, skl_dp_dpll_ctrl1_update,
     skl_dp_init_sequence_plan, skl_dpll_enable_ops, skl_hdmi_dpll_ctrl1_update,
     skl_hdmi_init_sequence_plan,
 };
@@ -20,7 +20,6 @@ use crate::error::GmaError;
 use crate::generation::{GenerationOps, sealed};
 use crate::gtt;
 use crate::mmio::Mmio;
-use crate::mode::Mode;
 use crate::types::{Generation, Pipe, Port};
 
 /// Skylake generation marker.
@@ -31,40 +30,7 @@ impl sealed::Sealed for Skylake {}
 impl GenerationOps for Skylake {
     const GENERATION: Generation = Generation::Skylake;
 
-    fn init_display(ctx: &mut crate::GmaContext<'_>, mode: Mode) -> Result<(), GmaError> {
-        map_gtt(ctx)?;
-        // SAFETY: the selected surface is backed by the just-programmed GTT mapping.
-        unsafe { ctx.surface.fill_opaque_black()? };
-        let port = selected_port(ctx)?;
-        let pipe = ddi_pipe_for_port(port);
-        let ops = if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC) {
-            skl_hdmi_sequence_ops(SklHdmiInitParams {
-                cpu: ctx.config.cpu,
-                port,
-                pipe,
-                dotclock_hz: mode.pixel_clock_khz as u64 * 1_000,
-                pll: SklPllSelect::Dpll1,
-            })?
-        } else {
-            skl_dp_sequence_ops(SklDpInitParams {
-                cpu: ctx.config.cpu,
-                port,
-                pipe,
-                lanes: DdiLaneCount::Four,
-                pll: if port == Port::Edp || port == Port::DpA {
-                    SklPllSelect::Dpll0
-                } else {
-                    SklPllSelect::Dpll1
-                },
-                clock: DdiClockSelect::Lcpll2700,
-                pattern: DpTrainingPattern::Pattern1,
-                enhanced_framing: true,
-            })?
-        };
-        let mut mmio = ctx.mmio();
-        execute_skl_ddi_ops(&mut mmio, &ops)
     }
-}
 
 fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
     crate::selected_enabled_port(ctx.config.outputs)
@@ -361,7 +327,10 @@ fn poll_set<S: SklDdiMmioSink>(sink: &mut S, register: usize, mask: u32) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ddi::{DdiClockSelect, SklCentralFrequency, SklDpll, SklDpllPlan};
+    use crate::ddi::{
+        DdiClockSelect, DdiLaneCount, DpTrainingPattern, SklCentralFrequency, SklDpll, SklDpllPlan,
+        SklPllSelect,
+    };
     use crate::types::Cpu;
 
     #[test]

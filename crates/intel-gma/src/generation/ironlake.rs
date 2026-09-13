@@ -751,7 +751,9 @@ pub(crate) const fn encode_pch_dpll(mode: PchDpllMode, clock: PchClock) -> u32 {
     } else {
         0
     };
-    mode_bits | p2 | PCH_DPLL::P1_DIVIDER.val(1u32 << (clock.p1 - 1)).value
+    let encoded_p1 = 1u32 << (clock.p1 - 1);
+    // libgfxinit writes the P1 divider both shifted and unshifted.
+    mode_bits | p2 | PCH_DPLL::P1_DIVIDER.val(encoded_p1).value | encoded_p1
 }
 
 /// Data-only PCH DPLL programming plan.
@@ -1428,6 +1430,8 @@ pub(crate) enum IronlakeInitOp {
     },
     /// Enable the final PCH output port.
     EnablePchPort(PortRegisterOp),
+    /// Additional set-mask write, used to repeat the PCH HDMI enable.
+    SetPortMask(PortRegisterOp),
 }
 
 /// Pure ordered plan for one split-PCH Ironlake-family modeset path.
@@ -1582,6 +1586,18 @@ fn ironlake_init_sequence_plan(
         &mut ops,
         IronlakeInitOp::EnablePchPort(pipeline.pch_port_enable),
     )?;
+    if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC) {
+        // libgfxinit sets the PCH HDMI enable bit a second time because the
+        // hardware can miss the first write.
+        push_init_op(
+            &mut ops,
+            IronlakeInitOp::SetPortMask(PortRegisterOp::Update {
+                register: pch_hdmi_register(pch_hdmi_port(port)?),
+                mask_unset: 0,
+                mask_set: PCH_HDMI_ENABLE,
+            }),
+        )?;
+    }
     Ok(ops)
 }
 
@@ -1664,11 +1680,14 @@ pub(crate) fn execute_ironlake_init_plan_registers<S: IronlakeMmioSink>(
             IronlakeInitOp::PchPllEnable { register, mask } => {
                 sink.set_bits32(register, mask);
                 sink.posting_read(register);
+                // libgfxinit waits 150 us after enabling the PCH VCO.
+                crate::mmio::delay_us(150);
             }
             IronlakeInitOp::PchDpllSelect(port_op)
             | IronlakeInitOp::FdiPreTrainRx(port_op)
             | IronlakeInitOp::FdiPreTrainTx(port_op)
-            | IronlakeInitOp::EnablePchPort(port_op) => apply_executor_port_op(sink, port_op),
+            | IronlakeInitOp::EnablePchPort(port_op)
+            | IronlakeInitOp::SetPortMask(port_op) => apply_executor_port_op(sink, port_op),
             IronlakeInitOp::ProgramPchTranscoder(timing) => {
                 program_pch_transcoder_timing_for_executor(sink, timing);
             }
@@ -1774,8 +1793,10 @@ fn execute_fdi_full_training<S: IronlakeMmioSink>(
     fdi: FdiPort,
     config: FdiLinkConfig,
 ) -> Result<(), GmaError> {
-    let mut vp = 0;
-    while vp < 4 {
+    // libgfxinit tries every VP/pre-emphasis pair twice.
+    let mut attempt = 0;
+    while attempt < 8 {
+        let vp = attempt / 2;
         let plan = fdi_full_training_attempt_plan(fdi, config, vp);
         if execute_fdi_train_step(sink, fdi, plan.steps[0])
             && execute_fdi_train_step(sink, fdi, plan.steps[1])
@@ -1785,7 +1806,7 @@ fn execute_fdi_full_training<S: IronlakeMmioSink>(
             return Ok(());
         }
         apply_executor_port_op(sink, plan.retry_tx_off);
-        vp += 1;
+        attempt += 1;
     }
     Err(GmaError::HardwareError)
 }
@@ -1795,8 +1816,9 @@ fn execute_fdi_auto_training<S: IronlakeMmioSink>(
     fdi: FdiPort,
     config: FdiLinkConfig,
 ) -> Result<(), GmaError> {
-    let mut vp = 0;
-    while vp < 4 {
+    let mut attempt = 0;
+    while attempt < 8 {
+        let vp = attempt / 2;
         let plan = fdi_auto_training_attempt_plan(fdi, config, vp);
         apply_executor_port_op(sink, plan.rx_auto_op);
         apply_executor_port_op(sink, plan.tx_auto_op);
@@ -1805,7 +1827,7 @@ fn execute_fdi_auto_training<S: IronlakeMmioSink>(
             return Ok(());
         }
         apply_executor_port_op(sink, plan.retry_tx_off);
-        vp += 1;
+        attempt += 1;
     }
     Err(GmaError::HardwareError)
 }
@@ -1815,12 +1837,27 @@ fn execute_fdi_train_step<S: IronlakeMmioSink>(
     fdi: FdiPort,
     step: FdiTrainStep,
 ) -> bool {
-    apply_executor_port_op(sink, step.rx_op);
+    // libgfxinit programs the CPU FDI transmitter first, then the PCH receiver.
     apply_executor_port_op(sink, step.tx_op);
-    match step.lock_bit {
-        Some(bit) => poll_register_set(sink, fdi_rx_regs(fdi).iir, bit),
-        None => true,
+    apply_executor_port_op(sink, step.rx_op);
+    let Some(bit) = step.lock_bit else {
+        return true;
+    };
+    // `PCH.FDI.Check_Lock` polls symbol lock, acknowledges it, then polls
+    // interlane alignment, instead of requiring both at once.
+    if bit & FDI_RX_SYMBOL_LOCK != 0 {
+        if !poll_register_set(sink, fdi_rx_regs(fdi).iir, FDI_RX_SYMBOL_LOCK) {
+            return false;
+        }
+        sink.write32(fdi_rx_regs(fdi).iir, FDI_RX_SYMBOL_LOCK);
     }
+    if bit & FDI_RX_INTERLANE_ALIGNMENT != 0 {
+        if !poll_register_set(sink, fdi_rx_regs(fdi).iir, FDI_RX_INTERLANE_ALIGNMENT) {
+            return false;
+        }
+        sink.write32(fdi_rx_regs(fdi).iir, FDI_RX_INTERLANE_ALIGNMENT);
+    }
+    true
 }
 
 fn poll_register_set<S: IronlakeMmioSink>(sink: &mut S, register: usize, mask: u32) -> bool {
@@ -2269,7 +2306,10 @@ mod tests {
         );
         assert_eq!(
             encode_pch_dpll(PchDpllMode::Lvds, clock),
-            PCH_DPLL_MODE_LVDS | PCH_DPLL_SSC | PCH_DPLL::P1_DIVIDER.val(2).value
+            PCH_DPLL_MODE_LVDS
+                | PCH_DPLL_SSC
+                | PCH_DPLL::P1_DIVIDER.val(2).value
+                | 2
         );
         assert_eq!(
             encode_pch_dpll(PchDpllMode::DacHdmi, clock),
@@ -2277,6 +2317,7 @@ mod tests {
                 | PCH_DPLL_DREFCLK
                 | PCH_DPLL_HIGH_SPEED
                 | PCH_DPLL::P1_DIVIDER.val(2).value
+                | 2
         );
         let mut dp_clock = clock;
         dp_clock.p2 = 7;
@@ -2287,6 +2328,7 @@ mod tests {
                 | PCH_DPLL_HIGH_SPEED
                 | PCH_DPLL_P2_5_OR_7
                 | PCH_DPLL::P1_DIVIDER.val(2).value
+                | 2
         );
 
         let plan = pch_pll_plan(PchPll::B, PchDpllMode::DacHdmi, clock);
@@ -2723,7 +2765,12 @@ mod tests {
 
     impl IronlakeMmioSink for MockSink {
         fn read32(&mut self, register: usize) -> u32 {
-            self.latest(register)
+            // Status registers latch bits: acknowledge writes must not make a
+            // previously reported lock disappear in the mock.
+            self.writes
+                .iter()
+                .filter(|(written, _)| *written == register)
+                .fold(0u32, |acc, (_, value)| acc | *value)
         }
 
         fn write32(&mut self, register: usize, value: u32) {
