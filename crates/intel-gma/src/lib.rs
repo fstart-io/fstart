@@ -32,7 +32,6 @@ pub mod framebuffer;
 pub mod generation;
 pub mod gtt;
 pub mod mode;
-pub mod opregion;
 pub mod pci;
 pub mod vbt;
 

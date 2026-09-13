@@ -881,21 +881,6 @@ impl IntelPineview {
     }
 
     #[cfg(feature = "ffs-vbt")]
-    fn opregion_write_u16(buf: &mut [u8], off: usize, val: u16) {
-        buf[off..off + 2].copy_from_slice(&val.to_le_bytes());
-    }
-
-    #[cfg(feature = "ffs-vbt")]
-    fn opregion_write_u32(buf: &mut [u8], off: usize, val: u32) {
-        buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
-    }
-
-    #[cfg(feature = "ffs-vbt")]
-    fn opregion_write_u64(buf: &mut [u8], off: usize, val: u64) {
-        buf[off..off + 8].copy_from_slice(&val.to_le_bytes());
-    }
-
-    #[cfg(feature = "ffs-vbt")]
     fn vbt_size(vbt: &[u8]) -> Option<usize> {
         if vbt.len() < 28 || u32::from_le_bytes([vbt[0], vbt[1], vbt[2], vbt[3]]) != VBT_SIGNATURE {
             return None;
@@ -955,7 +940,7 @@ impl IntelPineview {
         };
         let vbt = vbt.as_slice();
 
-        let opregion = crate::igd_opregion_buf(super::igd::OPREGION_TOTAL_SIZE);
+        let opregion = crate::igd_opregion_buf(super::igd::opregion_size(vbt.len()));
         super::igd::build_opregion(opregion, vbt);
 
         let igd = self.igd();

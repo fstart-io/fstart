@@ -1165,7 +1165,7 @@ impl IntelI945 {
             return;
         };
         let vbt = vbt.as_slice();
-        let opregion = crate::igd_opregion_buf(super::igd::OPREGION_TOTAL_SIZE);
+        let opregion = crate::igd_opregion_buf(super::igd::opregion_size(vbt.len()));
         super::igd::build_opregion(opregion, vbt);
 
         let igd = self.igd();
