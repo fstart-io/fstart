@@ -10,8 +10,8 @@
 //! - `intel_cdclk.c`: `i945gm_get_cdclk` and `pnv_get_cdclk`.
 //! - `intel_backlight.c`: `i9xx_set_backlight` (bits 15:1 on pre-i965).
 
-use tock_registers::interfaces::{Readable, Writeable};
 use fstart_core::mmio::MmioReadWrite;
+use tock_registers::interfaces::{Readable, Writeable};
 
 use crate::GmaContext;
 use crate::error::GmaError;
@@ -105,12 +105,7 @@ impl GenerationOps for I945 {
         enable_port(&ctx.mmio(), port, pipe, mode)
     }
 
-    fn disable_output(
-        mmio: &Mmio,
-        cpu: Cpu,
-        pipe: Pipe,
-        port: Port,
-    ) -> Result<(), GmaError> {
+    fn disable_output(mmio: &Mmio, cpu: Cpu, pipe: Pipe, port: Port) -> Result<(), GmaError> {
         if port == Port::Lvds {
             g45::panel_backlight_off(mmio);
             g45::panel_power_off(mmio);
@@ -238,7 +233,8 @@ fn program_pipe(mmio: &Mmio, pipe: Pipe, mode: Mode, port: Port) -> Result<(), G
     // decoded display MMIO BAR supplied by chipset code.
     let timing = unsafe { mmio.reg_block::<GmchPipeTimingRegs>(timing_off) };
     // SAFETY: see the timing block above.
-    let pipeconf = unsafe { mmio.reg_block::<MmioReadWrite<u32, PIPECONF::Register>>(pipeconf_off) };
+    let pipeconf =
+        unsafe { mmio.reg_block::<MmioReadWrite<u32, PIPECONF::Register>>(pipeconf_off) };
     timing.htotal.set(pipe_config.htotal());
     timing.hblank.set(pipe_config.hblank());
     timing.hsync.set(pipe_config.hsync());

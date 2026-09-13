@@ -10,11 +10,13 @@ use heapless::Vec;
 use crate::edid::{self, EDID_BLOCK_LEN, Edid, MAX_EDID_MODES, MAX_EXTENSION_BLOCKS};
 use crate::error::GmaError;
 use crate::mmio::Mmio;
-use crate::types::{PhysAddr, Port};
+use fstart_core::typed::{Mmio32, MmioAddr};
 
+use crate::types::Port;
+
+use fstart_core::mmio::MmioReadWrite;
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
-use fstart_core::mmio::MmioReadWrite;
 
 /// Standard 7-bit DDC EDID I2C address.
 pub const DDC_EDID_ADDRESS: u8 = 0x50;
@@ -483,7 +485,7 @@ impl HardwareGmbus {
     /// # Safety
     ///
     /// `gtt_mmio_base` must point at a valid, mapped Intel GMA display MMIO BAR.
-    pub const unsafe fn gmch(gtt_mmio_base: PhysAddr, pin: GmbusPin) -> Self {
+    pub const unsafe fn gmch(gtt_mmio_base: MmioAddr<Mmio32>, pin: GmbusPin) -> Self {
         Self {
             // SAFETY: forwarded to the caller contract above.
             mmio: unsafe { Mmio::new(gtt_mmio_base) },
@@ -497,7 +499,7 @@ impl HardwareGmbus {
     /// # Safety
     ///
     /// `gtt_mmio_base` must point at a valid, mapped Intel GMA display MMIO BAR.
-    pub const unsafe fn pch(gtt_mmio_base: PhysAddr, pin: GmbusPin) -> Self {
+    pub const unsafe fn pch(gtt_mmio_base: MmioAddr<Mmio32>, pin: GmbusPin) -> Self {
         Self {
             // SAFETY: forwarded to the caller contract above.
             mmio: unsafe { Mmio::new(gtt_mmio_base) },
@@ -586,13 +588,8 @@ impl HardwareGmbus {
 
     /// Write one byte to a slave register (E-DDC segment pointer).
     fn write_byte(&self, address: u8, value: u8) -> Result<(), GmaError> {
-        let command = GmbusCommand::new(
-            GmbusCycle::IndexWait,
-            1,
-            address,
-            0,
-            GmbusDirection::Write,
-        )?;
+        let command =
+            GmbusCommand::new(GmbusCycle::IndexWait, 1, address, 0, GmbusDirection::Write)?;
         self.mmio.write32(self.reg(0x04), command.encode());
         self.wait_data_ready().inspect_err(|_| {
             let _ = self.stop();

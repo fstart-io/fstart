@@ -112,12 +112,10 @@ pub(crate) const fn primary_for_pipe(pipe: Pipe) -> Plane {
 mod tests {
     use super::*;
     use crate::framebuffer::PixelFormat;
-    use crate::types::PhysAddr;
 
     #[test]
     fn encodes_plane_size_and_stride() {
-        let surface =
-            SurfaceConfig::packed(PhysAddr(0xd000_0000), 1024, 768, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 1024, 768, PixelFormat::Xrgb8888);
         let plane = PlaneConfig::new(
             Plane::PrimaryA,
             Pipe::A,
@@ -131,7 +129,7 @@ mod tests {
     #[test]
     fn legacy_aperture_address_combines_offset_and_linear_start() {
         let surface = SurfaceConfig {
-            base_addr: PhysAddr(0xd000_0000 + 0x4000),
+            base_addr: 0xd000_0000 + 0x4000,
             width: 64,
             height: 64,
             stride: 64,
@@ -150,7 +148,10 @@ mod tests {
             surface,
         );
         // Aperture offset keeps its 4 KiB alignment, linear start is added in.
-        assert_eq!(plane.aperture_linear_address().unwrap(), 0x4000 | ((3 * 64 + 2) * 4));
+        assert_eq!(
+            plane.aperture_linear_address().unwrap(),
+            0x4000 | ((3 * 64 + 2) * 4)
+        );
     }
 
     #[test]

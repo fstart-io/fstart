@@ -6,9 +6,9 @@
 use zerocopy::byteorder::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
+use crate::dtd::{DTD_LEN, mode_from_dtd};
 use crate::error::GmaError;
 use crate::gmbus::GmbusPin;
-use crate::dtd::{mode_from_dtd, DTD_LEN};
 use crate::mode::Mode;
 use crate::panel::{
     LfpBacklightInfo, LfpFpTiming, LfpPanelMetadata, LfpPowerFeatures, LvdsPanelOptions,
@@ -212,12 +212,9 @@ impl<'a> Vbt<'a> {
         if header_size > bytes.len() || vbt_size > bytes.len() {
             return Err(GmaError::VbtInvalid);
         }
-        let (bdb, _) = BdbHeader::ref_from_prefix(
-            bytes
-                .get(bdb_offset..)
-                .ok_or(GmaError::VbtInvalid)?,
-        )
-        .map_err(|_| GmaError::VbtInvalid)?;
+        let (bdb, _) =
+            BdbHeader::ref_from_prefix(bytes.get(bdb_offset..).ok_or(GmaError::VbtInvalid)?)
+                .map_err(|_| GmaError::VbtInvalid)?;
         if &bdb.signature != BDB_SIGNATURE {
             return Err(GmaError::VbtInvalid);
         }
@@ -278,6 +275,10 @@ impl<'a> Vbt<'a> {
     }
 
     /// Return true when VBT indicates an LVDS/LFP child device or LFP options block.
+    ///
+    /// Gen5 (Ironlake, Sandy Bridge) selects its eDP/LVDS panel source from this
+    /// rather than from the per-port child device list, so the flag is kept as
+    /// public API ahead of the Sandy Bridge backend.
     pub fn has_lvds(&self) -> bool {
         self.block(BDB_LVDS_OPTIONS).is_some()
             || self
@@ -339,8 +340,8 @@ fn parse_general_definitions(block: BdbBlock<'_>) -> Option<GeneralDefinitionsMe
 }
 
 fn parse_lfp_options(block: BdbBlock<'_>) -> Result<LvdsPanelOptions, GmaError> {
-    let (raw, _) = LvdsOptionsPrefix::ref_from_prefix(block.data)
-        .map_err(|_| GmaError::ModeUnavailable)?;
+    let (raw, _) =
+        LvdsOptionsPrefix::ref_from_prefix(block.data).map_err(|_| GmaError::ModeUnavailable)?;
     let raw_panel_type = raw.panel_type;
     let capabilities = raw.capabilities;
     Ok(LvdsPanelOptions {
@@ -405,7 +406,12 @@ fn parse_lfp_selected_entry(
         .ok_or(GmaError::ModeUnavailable)?;
     let dtd = data
         .data
-        .get(relative..relative.checked_add(DTD_LEN).ok_or(GmaError::ModeUnavailable)?)
+        .get(
+            relative
+                ..relative
+                    .checked_add(DTD_LEN)
+                    .ok_or(GmaError::ModeUnavailable)?,
+        )
         .ok_or(GmaError::ModeUnavailable)?;
     let fp_timing = parse_lfp_fp_timing(data, fp_offset, fp_size, dvo_offset);
     Ok((mode_from_dtd(dtd)?, fp_timing))

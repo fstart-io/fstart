@@ -4,7 +4,6 @@
 //! Hardware sequencing still lives in generation code and is not changed by
 //! these helpers.
 
-
 use crate::mode::Mode;
 use crate::regs::{
     BXT_BLC_PWM_CTL, CPU_BLC_PWM_CTL, PP_CONTROL, PP_DIVISOR, PP_OFF_DELAYS, PP_ON_DELAYS,

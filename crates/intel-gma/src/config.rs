@@ -1,6 +1,5 @@
 //! Board display policy shared with chipset drivers.
 
-
 use crate::types::Port;
 
 /// Board policy for selecting a display mode.

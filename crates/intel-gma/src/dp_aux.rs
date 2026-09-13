@@ -11,7 +11,9 @@ use crate::error::GmaError;
 use crate::gmbus::DdcBus;
 use crate::mmio::{Mmio, delay_us};
 use crate::regs::{DP_AUX_CTL, DpAuxRegs};
-use crate::types::{PhysAddr, Port};
+use fstart_core::typed::{Mmio32, MmioAddr};
+
+use crate::types::Port;
 
 /// Maximum raw AUX message size handled by Intel GMA AUX data registers.
 pub const AUX_MAX_MESSAGE_LEN: usize = 20;
@@ -591,7 +593,7 @@ impl HardwareDpAuxDdc {
     ///
     /// `mmio_base` must point at a decoded Intel display MMIO BAR whose AUX
     /// registers for `port` are accessible.
-    pub unsafe fn gmch(mmio_base: PhysAddr, port: Port) -> Result<Self, GmaError> {
+    pub unsafe fn gmch(mmio_base: MmioAddr<Mmio32>, port: Port) -> Result<Self, GmaError> {
         unsafe {
             Ok(Self {
                 mmio: Mmio::new(mmio_base),
@@ -606,7 +608,7 @@ impl HardwareDpAuxDdc {
     ///
     /// `mmio_base` must point at a decoded Intel display MMIO BAR whose AUX
     /// registers for `port` are accessible.
-    pub unsafe fn pch(mmio_base: PhysAddr, port: Port) -> Result<Self, GmaError> {
+    pub unsafe fn pch(mmio_base: MmioAddr<Mmio32>, port: Port) -> Result<Self, GmaError> {
         unsafe {
             Ok(Self {
                 mmio: Mmio::new(mmio_base),
@@ -621,7 +623,7 @@ impl HardwareDpAuxDdc {
     ///
     /// `mmio_base` must point at a decoded Intel display MMIO BAR whose AUX
     /// registers for `port` are accessible.
-    pub unsafe fn ddi(mmio_base: PhysAddr, port: Port) -> Result<Self, GmaError> {
+    pub unsafe fn ddi(mmio_base: MmioAddr<Mmio32>, port: Port) -> Result<Self, GmaError> {
         unsafe {
             Ok(Self {
                 mmio: Mmio::new(mmio_base),

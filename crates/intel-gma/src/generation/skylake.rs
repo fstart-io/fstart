@@ -10,11 +10,10 @@
 use heapless::Vec;
 
 use crate::ddi::{
-    DdiClockRouting, DdiDpInitStep, DdiRegisterOp,
-    SKL_DPLL_CTL_REG, SKL_DPLL_STATUS_REG, SklDdiPllPlan, SklDpInitParams, SklDpll,
-    SklHdmiInitParams, SklHdmiInitStep, skl_dp_dpll_ctrl1_update,
-    skl_dp_init_sequence_plan, skl_dpll_enable_ops, skl_hdmi_dpll_ctrl1_update,
-    skl_hdmi_init_sequence_plan,
+    DdiClockRouting, DdiDpInitStep, DdiRegisterOp, SKL_DPLL_CTL_REG, SKL_DPLL_STATUS_REG,
+    SklDdiPllPlan, SklDpInitParams, SklDpll, SklHdmiInitParams, SklHdmiInitStep,
+    skl_dp_dpll_ctrl1_update, skl_dp_init_sequence_plan, skl_dpll_enable_ops,
+    skl_hdmi_dpll_ctrl1_update, skl_hdmi_init_sequence_plan,
 };
 use crate::error::GmaError;
 use crate::generation::{GenerationOps, sealed};
@@ -29,8 +28,7 @@ impl sealed::Sealed for Skylake {}
 
 impl GenerationOps for Skylake {
     const GENERATION: Generation = Generation::Skylake;
-
-    }
+}
 
 fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
     crate::selected_enabled_port(ctx.config.outputs)

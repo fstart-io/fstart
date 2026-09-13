@@ -25,8 +25,7 @@ impl sealed::Sealed for Tigerlake {}
 
 impl GenerationOps for Tigerlake {
     const GENERATION: Generation = Generation::Tigerlake;
-
-    }
+}
 
 fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
     crate::selected_enabled_port(ctx.config.outputs)

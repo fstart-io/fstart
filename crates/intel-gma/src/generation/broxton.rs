@@ -26,8 +26,7 @@ impl sealed::Sealed for Broxton {}
 
 impl GenerationOps for Broxton {
     const GENERATION: Generation = Generation::Broxton;
-
-    }
+}
 
 fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
     crate::selected_enabled_port(ctx.config.outputs)

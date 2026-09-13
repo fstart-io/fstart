@@ -1,6 +1,5 @@
 //! Common Intel GMA data types.
 
-
 /// Intel display generation family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Generation {
@@ -106,18 +105,9 @@ pub enum Plane {
     PrimaryC,
 }
 
-/// Physical address newtype.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PhysAddr(pub u64);
-
-/// PCI bus/device/function tuple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PciBdf {
-    /// PCI bus number.
-    pub bus: u8,
-    /// PCI device number.
-    pub dev: u8,
-    /// PCI function number.
-    pub func: u8,
-}
-
+/// PCI address of the IGD function.
+///
+/// This is fstart's shared PCI address type (`pci_types::PciAddress`, re-exported
+/// by `fstart-pci`), not a crate-local tuple, so callers can pass the same value
+/// to PCI config access and to this crate.
+pub use fstart_pci::PciAddress;

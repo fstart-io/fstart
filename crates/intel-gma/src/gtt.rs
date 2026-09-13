@@ -10,7 +10,7 @@ use crate::framebuffer::{FramebufferConfig, SurfaceConfig, TilingMode};
 use crate::mmio::Mmio;
 use crate::pci::GmaResources;
 use crate::regs::{FENCE_LOWER, FENCE_UPPER, GFX_FLSH_CNTL, GfxFlushRegs, LegacyFenceRegs};
-use crate::types::{Cpu, PhysAddr};
+use crate::types::Cpu;
 
 /// Intel GTT page size.
 pub const GTT_PAGE_SIZE: u32 = 4096;
@@ -27,7 +27,6 @@ pub const GTT_ROTATION_OFFSET_BYTES: u32 = GTT_ROTATION_OFFSET * GTT_PAGE_SIZE;
 const FENCE_LEGACY_BASE: usize = 0x3000;
 const FENCE_GEN3_BASE: usize = 0x2000;
 const FENCE_COUNT_LEGACY: usize = 16;
-const FENCE_PAGE_MASK: u32 = FENCE_LOWER::PAGE.val(0x000f_ffff).value;
 
 /// MMIO-visible GTT page-table entry.
 ///
@@ -48,8 +47,14 @@ pub(crate) enum GttPteEncoding {
 pub(crate) const fn gtt_pte_encoding(cpu: Cpu) -> Option<GttPteEncoding> {
     match cpu {
         Cpu::I945G | Cpu::I945GM => Some(GttPteEncoding::I945Simple),
-        Cpu::Gm965 | Cpu::G45 | Cpu::Gm45 | Cpu::Pineview | Cpu::PineviewM | Cpu::Ironlake
-        | Cpu::Sandybridge | Cpu::Ivybridge => Some(GttPteEncoding::Bits32),
+        Cpu::Gm965
+        | Cpu::G45
+        | Cpu::Gm45
+        | Cpu::Pineview
+        | Cpu::PineviewM
+        | Cpu::Ironlake
+        | Cpu::Sandybridge
+        | Cpu::Ivybridge => Some(GttPteEncoding::Bits32),
         // Haswell and later use 64-bit PTEs; not modelled here.
         _ => None,
     }
@@ -79,16 +84,13 @@ pub(crate) const fn gtt_pte_size(encoding: GttPteEncoding) -> usize {
 }
 
 /// Encode one GTT page-table entry as a (low, high) word pair.
-pub(crate) const fn encode_gtt_pte(
-    phys: PhysAddr,
-    encoding: GttPteEncoding,
-) -> (u32, u32) {
-    let base = (phys.0 & 0x000f_ffff_f000) as u32;
+pub(crate) const fn encode_gtt_pte(phys: u64, encoding: GttPteEncoding) -> (u32, u32) {
+    let base = (phys & 0x000f_ffff_f000) as u32;
     match encoding {
         GttPteEncoding::I945Simple => (base | 1, 0),
         GttPteEncoding::Bits32 => {
             // Physical bits 38:32 land in PTE bits 10:4.
-            let high = (((phys.0 >> 28) & 0x7f0) as u32) & 0x0000_07f0;
+            let high = (((phys >> 28) & 0x7f0) as u32) & 0x0000_07f0;
             (base | high | 1, 0)
         }
     }
@@ -119,7 +121,7 @@ pub fn choose_framebuffer_surface(
     let stride = config.stride.unwrap_or(config.width);
     let v_stride = config.v_stride.unwrap_or(config.height);
     let surface = SurfaceConfig {
-        base_addr: PhysAddr(gmadr_base.0 + u64::from(config.offset)),
+        base_addr: gmadr_base + u64::from(config.offset),
         width: config.width,
         height: config.height,
         stride,
@@ -212,7 +214,6 @@ pub(crate) unsafe fn map_framebuffer_to_stolen(
 
     let base_phys = resources
         .stolen_base
-        .0
         .checked_add(phys_offset)
         .ok_or(GmaError::GttSetupFailed)?;
     // SAFETY: bounds were checked against `gtt_entries` above.
@@ -274,7 +275,7 @@ unsafe fn write_gtt_run(
     pte_words: usize,
 ) {
     for idx in 0..count {
-        let phys = PhysAddr(base_phys + (idx as u64) * u64::from(GTT_PAGE_SIZE));
+        let phys = base_phys + (idx as u64) * u64::from(GTT_PAGE_SIZE);
         let (low, high) = encode_gtt_pte(phys, encoding);
         let slot = first_page + idx;
         // SAFETY: caller bounds-checked the range.
@@ -295,12 +296,12 @@ pub(crate) fn map_surface_to_stolen(
 ) -> Result<(), GmaError> {
     let encoding = gtt_pte_encoding(cpu).ok_or(GmaError::UnsupportedPlatform)?;
     let gtt_base = match resources.gtt_pte_base {
-        Some(base) => base.0,
+        Some(base) => base.raw(),
         // i945 exposes its GTT through a separate BAR that the chipset driver
         // must supply; the MMIO-relative offset is the fallback for the rest.
         None => {
             let offset = gtt_pte_offset(cpu).ok_or(GmaError::UnsupportedPlatform)?;
-            resources.gtt_mmio_base.0 + offset as u64
+            resources.gtt_mmio_base.raw() + offset as u64
         }
     };
     let gtt_entries = (resources.gtt_size / gtt_pte_size(encoding) as u32) as usize;
@@ -349,7 +350,7 @@ unsafe fn map_rotated_y_tiled_alias(
         phys = phys
             .checked_sub(u64::from(bytes_per_row))
             .ok_or(GmaError::GttSetupFailed)?;
-        let (low, high) = encode_gtt_pte(PhysAddr(phys), encoding);
+        let (low, high) = encode_gtt_pte(phys, encoding);
         let slot = alias_base + first_page + page;
         // SAFETY: caller validated the alias range.
         unsafe {
@@ -366,7 +367,7 @@ unsafe fn map_rotated_y_tiled_alias(
         }
     }
     for idx in 0..GTT_DUMMY_PAGES_AFTER_FB {
-        let (low, high) = encode_gtt_pte(PhysAddr(phys), encoding);
+        let (low, high) = encode_gtt_pte(phys, encoding);
         let slot = alias_base + first_page + pages + idx;
         // SAFETY: caller validated the alias range.
         unsafe {
@@ -380,7 +381,10 @@ unsafe fn map_rotated_y_tiled_alias(
 }
 
 const fn uses_gen3_fences(cpu: Cpu) -> bool {
-    matches!(cpu, Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM)
+    matches!(
+        cpu,
+        Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM
+    )
 }
 
 /// Clear legacy fence registers for a CPU's fence layout.
@@ -458,11 +462,7 @@ fn add_gen3_fence(
         let offset = gen3_fence_offset(fence);
         let current = mmio.read32(offset);
         if (current & FENCE_LOWER::VALID::SET.value) == 0 {
-            let size_bits = if size_mb >= 1 {
-                floor_log2(size_mb)
-            } else {
-                0
-            };
+            let size_bits = if size_mb >= 1 { floor_log2(size_mb) } else { 0 };
             let pitch_bits = if stride_tiles >= 1 {
                 floor_log2(stride_tiles)
             } else {
@@ -506,21 +506,18 @@ pub(crate) fn flush_gfx(mmio: &Mmio) {
 mod tests {
     use super::*;
     use crate::framebuffer::{PixelFormat, Rotation};
-    use crate::types::PciBdf;
+    use crate::types::PciAddress;
+    use fstart_core::typed::mmio32;
 
     fn resources() -> GmaResources {
         GmaResources {
-            pci_bdf: PciBdf {
-                bus: 0,
-                dev: 2,
-                func: 0,
-            },
-            gtt_mmio_base: PhysAddr(0xfeb0_0000),
+            pci_bdf: PciAddress::new(0, 0, 2, 0),
+            gtt_mmio_base: mmio32(0xfeb0_0000),
             gtt_mmio_size: 512 * 1024,
             gtt_pte_base: None,
-            gmadr_base: Some(PhysAddr(0xd000_0000)),
+            gmadr_base: Some(0xd000_0000),
             gmadr_size: 256 * 1024 * 1024,
-            stolen_base: PhysAddr(0xcff0_0000),
+            stolen_base: 0xcff0_0000,
             stolen_size: 8 * 1024 * 1024,
             gtt_size: 512 * 1024,
             gcfgc: None,
@@ -541,7 +538,7 @@ mod tests {
 
     #[test]
     fn zero_sized_surface_rejects_without_pte_underflow() {
-        let surface = SurfaceConfig::packed(PhysAddr(0xd000_0000), 0, 0, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 0, 0, PixelFormat::Xrgb8888);
         let mut ptes = [0u32; 1];
         assert_eq!(map(&mut ptes, &surface), Err(GmaError::GttSetupFailed));
         assert_eq!(ptes[0], 0);
@@ -549,7 +546,7 @@ mod tests {
 
     #[test]
     fn zero_gtt_entries_rejects_even_for_valid_surface() {
-        let surface = SurfaceConfig::packed(PhysAddr(0xd000_0000), 64, 64, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 64, 64, PixelFormat::Xrgb8888);
         let mut ptes = [0u32; 1];
         assert_eq!(
             unsafe {
@@ -568,7 +565,7 @@ mod tests {
 
     #[test]
     fn maps_libgfxinit_style_dummy_pages_after_framebuffer() {
-        let surface = SurfaceConfig::packed(PhysAddr(0xd000_0000), 64, 64, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 64, 64, PixelFormat::Xrgb8888);
         let visible = ptes_for_bytes(surface.required_bytes().unwrap()) as usize;
         let total = visible + GTT_DUMMY_PAGES_AFTER_FB;
         let mut ptes = [0u32; 132];
@@ -582,7 +579,7 @@ mod tests {
 
     #[test]
     fn rejects_when_dummy_pages_do_not_fit_gtt() {
-        let surface = SurfaceConfig::packed(PhysAddr(0xd000_0000), 64, 64, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 64, 64, PixelFormat::Xrgb8888);
         let mut ptes = [0u32; 4];
         assert_eq!(map(&mut ptes, &surface), Err(GmaError::GttSetupFailed));
         assert_eq!(ptes[0], 0);
@@ -593,7 +590,7 @@ mod tests {
         // 1024x768x4 needs 3 MiB; shrink stolen to 1 MiB.
         let mut res = resources();
         res.stolen_size = 1024 * 1024;
-        let surface = SurfaceConfig::packed(PhysAddr(0xd000_0000), 1024, 768, PixelFormat::Xrgb8888);
+        let surface = SurfaceConfig::packed(0xd000_0000, 1024, 768, PixelFormat::Xrgb8888);
         let mut ptes = [0u32; 4096];
         assert_eq!(
             unsafe {
@@ -611,7 +608,7 @@ mod tests {
 
     #[test]
     fn i945_simple_pte_omits_high_address_bits() {
-        let phys = PhysAddr(0x1_2345_6000);
+        let phys = 0x1_2345_6000u64;
         let (simple, _) = encode_gtt_pte(phys, GttPteEncoding::I945Simple);
         let (wide, _) = encode_gtt_pte(phys, GttPteEncoding::Bits32);
         assert_eq!(simple & 0x0000_07f0, 0);
@@ -626,15 +623,21 @@ mod tests {
         assert_eq!(gtt_pte_offset(Cpu::Gm965), Some(0x0008_0000));
         assert_eq!(gtt_pte_offset(Cpu::G45), Some(0x0020_0000));
         assert!(gtt_pte_offset(Cpu::Haswell).is_none());
-        assert_eq!(gtt_pte_encoding(Cpu::I945G), Some(GttPteEncoding::I945Simple));
-        assert_eq!(gtt_pte_encoding(Cpu::Pineview), Some(GttPteEncoding::Bits32));
+        assert_eq!(
+            gtt_pte_encoding(Cpu::I945G),
+            Some(GttPteEncoding::I945Simple)
+        );
+        assert_eq!(
+            gtt_pte_encoding(Cpu::Pineview),
+            Some(GttPteEncoding::Bits32)
+        );
         assert!(gtt_pte_encoding(Cpu::Skylake).is_none());
     }
 
     #[test]
     fn x_tiled_surface_programs_fence_pitch_like_libgfxinit() {
         let surface = SurfaceConfig {
-            base_addr: PhysAddr(0xd000_0000),
+            base_addr: 0xd000_0000,
             width: 128,
             height: 64,
             stride: 128,
@@ -654,7 +657,7 @@ mod tests {
     #[test]
     fn rotation_alias_does_not_fit_a_512kib_gtt() {
         let surface = SurfaceConfig {
-            base_addr: PhysAddr(0xd000_0000 + u64::from(GTT_ROTATION_OFFSET_BYTES)),
+            base_addr: 0xd000_0000 + u64::from(GTT_ROTATION_OFFSET_BYTES),
             width: 64,
             height: 64,
             stride: 64,
@@ -673,7 +676,7 @@ mod tests {
     #[test]
     fn rotated_surface_without_alias_offset_is_rejected() {
         let surface = SurfaceConfig {
-            base_addr: PhysAddr(0xd000_0000),
+            base_addr: 0xd000_0000,
             width: 64,
             height: 64,
             stride: 64,

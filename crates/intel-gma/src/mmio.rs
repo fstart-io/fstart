@@ -1,10 +1,11 @@
 //! MMIO helpers for Intel GMA display initialization.
 
-use tock_registers::interfaces::{Readable, Writeable};
 use fstart_core::mmio::MmioReadWrite;
+use tock_registers::interfaces::{Readable, Writeable};
+
+use fstart_core::typed::{Mmio32, MmioAddr};
 
 use crate::error::GmaError;
-use crate::types::PhysAddr;
 
 /// Volatile 32-bit MMIO register window.
 #[derive(Debug, Clone, Copy)]
@@ -19,9 +20,9 @@ impl Mmio {
     ///
     /// The caller must ensure `base` is mapped and points at the GMA MMIO BAR
     /// for the duration of all accesses through the returned value.
-    pub(crate) const unsafe fn new(base: PhysAddr) -> Self {
+    pub(crate) const unsafe fn new(base: MmioAddr<Mmio32>) -> Self {
         Self {
-            base: base.0 as *mut u8,
+            base: base.raw() as *mut u8,
         }
     }
 
@@ -112,12 +113,10 @@ impl Mmio {
 }
 
 /// Short busy delay used around legacy DPLL enable/disable sequencing.
+///
+/// Delegates to the architecture delay (`TSC`-based on x86_64 during normal
+/// stages, POST-port based under SMM) so GMA timing matches the rest of the
+/// Intel drivers instead of using an uncalibrated spin loop.
 pub(crate) fn delay_us(us: u32) {
-    // TODO(display): replace this bring-up fallback with calibrated arch delay
-    // once the shared GMA crate has an approved cross-arch delay dependency.
-    // Chipset drivers still own precise platform delays around reset and panel
-    // power sequencing.
-    for _ in 0..us.saturating_mul(64) {
-        core::hint::spin_loop();
-    }
+    fstart_arch::udelay(us);
 }

@@ -46,12 +46,7 @@ impl GenerationOps for Ironlake {
         execute_ironlake_init_plan_registers(&mut mmio, &plan, port, mode, ctx.surface, pipe, plane)
     }
 
-    fn disable_output(
-        mmio: &Mmio,
-        cpu: Cpu,
-        pipe: Pipe,
-        port: Port,
-    ) -> Result<(), GmaError> {
+    fn disable_output(mmio: &Mmio, cpu: Cpu, pipe: Pipe, port: Port) -> Result<(), GmaError> {
         let fdi = fdi_for_port(port)?;
         let port_op = match port {
             Port::Lvds => pch_lvds_off_op(),
@@ -2306,10 +2301,7 @@ mod tests {
         );
         assert_eq!(
             encode_pch_dpll(PchDpllMode::Lvds, clock),
-            PCH_DPLL_MODE_LVDS
-                | PCH_DPLL_SSC
-                | PCH_DPLL::P1_DIVIDER.val(2).value
-                | 2
+            PCH_DPLL_MODE_LVDS | PCH_DPLL_SSC | PCH_DPLL::P1_DIVIDER.val(2).value | 2
         );
         assert_eq!(
             encode_pch_dpll(PchDpllMode::DacHdmi, clock),
@@ -2660,7 +2652,7 @@ mod tests {
                 Port::Lvds,
                 mode,
                 crate::framebuffer::SurfaceConfig::packed(
-                    crate::types::PhysAddr(0xd000_0000),
+                    0xd000_0000,
                     1024,
                     768,
                     crate::framebuffer::PixelFormat::Xrgb8888,
@@ -2723,7 +2715,7 @@ mod tests {
                 Port::Vga,
                 mode,
                 crate::framebuffer::SurfaceConfig::packed(
-                    crate::types::PhysAddr(0xd000_0000),
+                    0xd000_0000,
                     1024,
                     768,
                     crate::framebuffer::PixelFormat::Xrgb8888,
