@@ -243,16 +243,15 @@ fn program_pipe(mmio: &Mmio, pipe: Pipe, mode: Mode, port: Port) -> Result<(), G
     timing.vsync.set(pipe_config.vsync());
     timing.pipesrc.set(pipe_config.pipesrc());
     pipeconf.set(PIPECONF::ENABLE::SET.value | pipeconf_bpc_bits(port));
-    let _ = pipeconf.get();
-    let mut timeout = 100_000u32;
-    while timeout != 0 {
-        if pipeconf.is_set(PIPECONF::ENABLED_STATUS) {
-            return Ok(());
-        }
-        timeout -= 1;
-        core::hint::spin_loop();
+    // Gen3 reports no pipe-active status: `PIPECONF` bit 30 is `DOUBLE_WIDE`
+    // here and only became the active-status bit on 965+ (Linux's
+    // `I965_PIPECONF_ACTIVE`). Polling it can only time out, so confirm the
+    // write by reading the enable bit back instead.
+    if pipeconf.is_set(PIPECONF::ENABLE) {
+        Ok(())
+    } else {
+        Err(GmaError::HardwareError)
     }
-    Err(GmaError::Timeout)
 }
 
 fn program_primary_plane(ctx: &GmaContext<'_>, pipe: Pipe, _port: Port) -> Result<(), GmaError> {

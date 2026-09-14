@@ -1346,12 +1346,8 @@ impl IntelIch7 {
         // SMBus from its device ops, which run after enumeration and after
         // `lpc_init()`; re-arm it here, before the board hook programs the
         // CK505 through it.
-        let _ = I801SmBus::enable_on_i801(
-            0,
-            ich7::SMBUS_DEV,
-            ich7::SMBUS_FUNC,
-            self.config.smbus_base,
-        );
+        let _ =
+            I801SmBus::enable_on_i801(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, self.config.smbus_base);
         fstart_log::info!(
             "intel-ich7: SMBus HST_STS after re-arm = {:#x}",
             self.smbus_status_probe()
