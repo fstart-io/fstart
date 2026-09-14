@@ -648,8 +648,10 @@ impl HardwareGmbus {
 
     /// Write one byte to a slave register (E-DDC segment pointer).
     fn write_byte(&self, address: u8, value: u8) -> Result<(), GmaError> {
+        // Plain 1-byte message: an INDEX cycle would transmit the index byte
+        // before the payload, which a segment register latches instead.
         let command =
-            GmbusCommand::new(GmbusCycle::IndexWait, 1, address, 0, GmbusDirection::Write)?;
+            GmbusCommand::new(GmbusCycle::Wait, 1, address, 0, GmbusDirection::Write)?;
         self.mmio.write32(self.reg(0x04), command.encode());
         self.wait_data_ready().inspect_err(|_| {
             let _ = self.stop();
@@ -678,8 +680,9 @@ impl DdcBus for HardwareGmbus {
         self.mmio.write32(self.reg(0x10), 0);
 
         // E-DDC: extension blocks live behind the segment pointer at 0x30.
+        let (segment, index) = edid_block_address(block_index);
         if block_index != 0 {
-            self.write_byte(0x30, block_index)
+            self.write_byte(0x30, segment)
                 .inspect_err(|_error| self.release())?;
         }
 
@@ -687,7 +690,7 @@ impl DdcBus for HardwareGmbus {
             GmbusCycle::IndexWait,
             EDID_BLOCK_LEN as u16,
             address,
-            (usize::from(block_index) * EDID_BLOCK_LEN % 256) as u8,
+            index,
             GmbusDirection::Read,
         )?;
         self.mmio.write32(self.reg(0x04), command.encode());
@@ -715,6 +718,20 @@ impl DdcBus for HardwareGmbus {
 
 }
 
+/// E-DDC addressing for one EDID block: the byte written to the segment
+/// pointer (0x30) and the byte offset carried in the GMBUS index field.
+///
+/// Mirrors Linux `drm_do_probe_ddc_edid`: `segment = block >> 1` and
+/// `start = (block * 128) & 0xff`, which for the two blocks behind one segment
+/// means offsets 0 and 128. Addressing the segment with the block index instead
+/// (and the offset with `block * 128` unshifted) reads block 3 for block 1.
+pub const fn edid_block_address(block_index: u8) -> (u8, u8) {
+    (
+        block_index >> 1,
+        (block_index & 1) * EDID_BLOCK_LEN as u8,
+    )
+}
+
 /// Read, sanitize, and validate the EDID preferred mode source over DDC.
 pub fn read_base_edid<'a, B: DdcBus>(
     bus: &mut B,
@@ -740,11 +757,18 @@ pub fn read_edid_modes<B: DdcBus>(
     let mut read_count = 0usize;
     while read_count < extension_count {
         let block_index = (read_count + 1) as u8;
-        bus.read_edid_block(
-            DDC_EDID_ADDRESS,
-            block_index,
-            &mut extension_storage[read_count],
-        )?;
+        // The base block is the primary mode source and is already validated;
+        // a sink that NAKs an extension must not cost the whole probe.
+        if bus
+            .read_edid_block(
+                DDC_EDID_ADDRESS,
+                block_index,
+                &mut extension_storage[read_count],
+            )
+            .is_err()
+        {
+            break;
+        }
         read_count += 1;
     }
     Ok(edid.modes_with_extensions(&extension_storage[..read_count]))
@@ -922,6 +946,19 @@ mod tests {
         assert_eq!(ddc_pin_for_port(Port::DpC), None);
         assert_eq!(ddc_pin_for_port(Port::DpD), None);
         assert_eq!(ddc_pin_for_port(Port::Edp), None);
+    }
+
+    #[test]
+    fn edid_block_addressing_matches_eddc() {
+        // Segment and GMBUS index per block, mirroring Linux
+        // `drm_do_probe_ddc_edid`: block 1 is segment 0 offset 128, not segment
+        // 1 offset 0 (which would address block 3).
+        assert_eq!(edid_block_address(0), (0, 0));
+        assert_eq!(edid_block_address(1), (0, 128));
+        assert_eq!(edid_block_address(2), (1, 0));
+        assert_eq!(edid_block_address(3), (1, 128));
+        assert_eq!(edid_block_address(4), (2, 0));
+        assert_eq!(edid_block_address(5), (2, 128));
     }
 
     #[test]
