@@ -24,7 +24,10 @@ pub use installer::{
     install_default_relocation_handler, install_default_relocation_table_handler,
     install_pic_image,
 };
-pub use layout::{CpuSmmLayout, LayoutError, SmramLayout, compute_common_base, compute_cpu_layout};
+pub use layout::{
+    CpuSmmLayout, LayoutError, SmramLayout, build_relocation_identity_tables,
+    compute_common_base, compute_cpu_layout,
+};
 pub use runtime::{
     CorebootModuleArgs, SMM_PLATFORM_DATA_ICH_GPE0_STS_OFFSET, SMM_PLATFORM_DATA_ICH_PM_BASE,
     SMM_PLATFORM_FLAG_ICH_GPE0_64BIT, SMM_PLATFORM_INTEL_ICH, SMM_PLATFORM_NONE, SmmEntryParams,

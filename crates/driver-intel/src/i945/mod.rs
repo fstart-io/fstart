@@ -1373,6 +1373,11 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
     /// mainstage heap, so neither belongs in the bootblock.
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
+        Ok(())
+    }
+
+    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
+        // Needs the verified boot media for the VBT-backed display policy.
         if self.config.igd.display.is_some() {
             self.gma_display_init();
         }

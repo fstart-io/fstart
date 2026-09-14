@@ -559,12 +559,30 @@ fn load_smm_ops() -> Option<&'static dyn SmmOps> {
     Some(unsafe { core::mem::transmute((data, vtable)) })
 }
 
+/// Entries into the default SMM relocation handler. Used to detect that the
+/// relocation SMI was not delivered (see the ICH APM command port fallback).
+static SMM_HANDLER_HITS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// Number of times the default SMM relocation handler has been entered.
+pub fn smm_handler_hits() -> u32 {
+    SMM_HANDLER_HITS.load(Ordering::Acquire)
+}
+
 fn smm_relocate_trampoline() {
+    // Bounded: an unbounded spin here wedges the whole boot if another CPU never
+    // completes its relocation.
+    let mut spins = 0u32;
     while SMM_RELOCATION_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         core::hint::spin_loop();
+        spins += 1;
+        if spins == 50_000_000 {
+            fstart_log::error!("mp: SMM relocation lock timeout");
+            return;
+        }
     }
 
     if let Some(ops) = load_smm_ops() {
@@ -598,6 +616,7 @@ pub fn prepare_default_smm_relocation(cpus: &[fstart_smm::CpuSmmLayout]) {
 /// only a trampoline back to normal firmware code. The MP flight plan
 /// serializes calls so the shared default save-state area is not corrupted.
 pub extern "C" fn default_smm_relocation_handler(_params: *mut fstart_smm::SmmEntryParams) {
+    SMM_HANDLER_HITS.fetch_add(1, Ordering::AcqRel);
     let apic_id = core::arch::x86_64::__cpuid(1).ebx >> 24;
     let apic_id = (apic_id as usize) & (MAX_CPUS - 1);
     let smbase = SMM_RELOCATION_SMBASES[apic_id].load(Ordering::Acquire) as u32;

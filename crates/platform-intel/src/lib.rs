@@ -104,6 +104,12 @@ pub(crate) fn run_mainstage_phase(
 pub(crate) trait IntelMainstageFlow: MainstagePhases {
     fn firmware_region(&self) -> (u64, usize);
     fn stage_local_init(&mut self) -> Result<(), ServiceError>;
+    /// Chipset work that needs *verified* boot media, such as the graphics
+    /// OpRegion and modeset, which embed and read the VBT. Runs after the
+    /// `verify_boot_media` phase; platforms without such work keep the default.
+    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
     fn refresh_load_policy(&self) -> Result<(), ServiceError>;
 }
 
@@ -141,6 +147,9 @@ where
         mainstage.stage_local_init()
     });
     run_mainstage_phase(platform, "verify_boot_media", halt, || boot_media.verify());
+    // The graphics OpRegion and modeset read the VBT out of the verified boot
+    // media, so they run only after verification.
+    run_mainstage_phase(platform, "display_init", halt, || mainstage.post_verify_init());
     run_mainstage_phase(platform, "emit_tables", halt, || mainstage.emit_tables());
     // Table allocation changes the memory map; payload loads must respect it.
     run_mainstage_phase(platform, "load_memory_policy", halt, || {
@@ -314,6 +323,10 @@ where
 
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.northbridge.stage_local_init()
+    }
+
+    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
+        self.northbridge.post_verify_init()
     }
 
     fn refresh_load_policy(&self) -> Result<(), ServiceError> {
