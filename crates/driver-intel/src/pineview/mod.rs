@@ -1114,13 +1114,12 @@ impl IntelPineview {
         super::igd::program_gtt_base(self.config.igd.gtt_mmio_base, gtt_base, 0);
         super::igd::clear_gtt_table(self.config.igd.gtt_pte_base, IGD_GTT_SIZE);
 
-        // Stolen memory runs from the IGD base up to the GTT base, plus the
-        // page table itself.
+        // Graphics stolen memory runs from the graphics stolen base up to
+        // TOLUD. The GTT sits *below* it on this platform (BGSM is 2039 MiB and
+        // GBSM 2040 MiB on a D41S), so a GTT-relative size collapses to the GTT
+        // size alone and the framebuffer never fits.
         let stolen_base = self.igd_base();
-        let stolen_size = self
-            .gtt_base()
-            .saturating_sub(stolen_base)
-            .saturating_add(IGD_GTT_SIZE);
+        let stolen_size = self.tolud().saturating_sub(stolen_base);
         let addresses = super::igd::IgdAddresses {
             pci_bdf: PciAddress::new(0, 0, 2, 0),
             gtt_mmio_base: self.config.igd.gtt_mmio_base,
