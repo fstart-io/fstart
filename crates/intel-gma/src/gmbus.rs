@@ -431,10 +431,14 @@ impl GmbusStatus {
         self.stall_timeout || self.nak
     }
 
-    /// Status can satisfy a poll for transaction completion: the cycle finished
-    /// or an error was raised. Data is only valid once `hardware_ready` is set.
+    /// Status satisfies the post-transfer wait: the cycle reached the hardware
+    /// wait phase, or an error was raised.
+    ///
+    /// libgfxinit waits for `GMBUS2_HARDWARE_WAIT_PHASE` here, *not* for ACTIVE
+    /// to clear: the bus stays active until the STOP cycle is issued, so
+    /// waiting for `!active` before STOP can only time out.
     pub const fn is_wait_complete(self) -> bool {
-        !self.active || self.has_error()
+        self.wait_phase || self.has_error()
     }
 
     /// Status reports a 4-byte word available in GMBUS3.
@@ -442,9 +446,14 @@ impl GmbusStatus {
         self.hardware_ready || self.has_error()
     }
 
-    /// The bus is fully idle after a STOP/reset sequence.
+    /// The bus is ready for the next cycle: libgfxinit `GMBUS_Ready`, i.e. no
+    /// wait phase, no stall/interrupt, no NAK and no active cycle.
+    ///
+    /// GMBUS2 INUSE is deliberately not part of this: it is the software
+    /// ownership flag, which is set while a pin pair is selected, so including
+    /// it would make every check fail as soon as the pin pair is programmed.
     pub const fn is_idle(self) -> bool {
-        !self.active && !self.in_use && !self.wait_phase
+        !self.active && !self.wait_phase && !self.stall_timeout && !self.interrupt && !self.nak
     }
 }
 
@@ -516,6 +525,14 @@ impl HardwareGmbus {
         GmbusStatus::from_bits(self.mmio.read32(self.reg(0x08)))
     }
 
+    /// libgfxinit `Release_GMBUS`: deselect the pin pair, then clear INUSE so
+    /// the next transfer can start.
+    fn release(&self) {
+        self.mmio.write32(self.reg(0x00), 0);
+        self.mmio
+            .write32(self.reg(0x08), GMBUS2_REG::INUSE::SET.value);
+    }
+
     fn wait_complete(&self) -> Result<GmbusStatus, GmaError> {
         let mut timeout = 100_000;
         while timeout != 0 {
@@ -536,20 +553,20 @@ impl HardwareGmbus {
         self.mmio
             .write32(self.reg(0x04), GmbusCommand::stop().encode());
         self.mmio.posting_read(self.reg(0x04));
+        // Only the active cycle decides whether the STOP finished: GMBUS2 INUSE
+        // is the software ownership flag that `release` clears, so waiting for
+        // an "idle" state that includes it can never succeed (libgfxinit waits
+        // for `GMBUS2_GMBUS_ACTIVE` alone).
         let mut timeout = 100_000;
         while timeout != 0 {
-            if self.status().is_idle() {
-                // Release ownership (libgfxinit `Release_GMBUS` sets GMBUS2
-                // INUSE) before disabling the pin selection.
-                self.mmio.set_bits32(self.reg(0x08), 1 << 15);
-                self.mmio.write32(self.reg(0x00), 0);
+            if !self.status().active {
+                self.release();
                 return Ok(());
             }
             timeout -= 1;
             core::hint::spin_loop();
         }
-        self.mmio.set_bits32(self.reg(0x08), 1 << 15);
-        self.mmio.write32(self.reg(0x00), 0);
+        self.release();
         Err(GmaError::Timeout)
     }
 
@@ -561,6 +578,11 @@ impl HardwareGmbus {
         // stop a transfer that is still active, and fall back to the software
         // clear-interrupt path. Without this, a bus left busy by earlier
         // firmware makes every later transfer time out.
+        // Clear a stale INUSE left behind by earlier firmware before waiting
+        // for the bus: libgfxinit's `Release_GMBUS` writes GMBUS2_INUSE to
+        // release the bus, so the flag is not something we can simply wait out.
+        self.mmio
+            .write32(self.reg(0x08), GMBUS2_REG::INUSE::SET.value);
         let mut timeout = 100_000;
         while timeout != 0 {
             if !self.status().in_use {
@@ -646,7 +668,7 @@ impl DdcBus for HardwareGmbus {
         block: &mut [u8; EDID_BLOCK_LEN],
     ) -> Result<(), GmaError> {
         self.acquire().inspect_err(|_error| {
-            let _ = self.stop();
+            self.release();
         })?;
         self.mmio.write32(
             self.reg(0x00),
@@ -657,9 +679,8 @@ impl DdcBus for HardwareGmbus {
 
         // E-DDC: extension blocks live behind the segment pointer at 0x30.
         if block_index != 0 {
-            self.write_byte(0x30, block_index).inspect_err(|_error| {
-                let _ = self.stop();
-            })?;
+            self.write_byte(0x30, block_index)
+                .inspect_err(|_error| self.release())?;
         }
 
         let command = GmbusCommand::new(
@@ -675,9 +696,8 @@ impl DdcBus for HardwareGmbus {
         while offset < EDID_BLOCK_LEN {
             // Data is only valid once HARDWARE_READY is set (libgfxinit waits
             // for GMBUS2_HARDWARE_READY before each GMBUS3 read).
-            self.wait_data_ready().inspect_err(|_error| {
-                let _ = self.stop();
-            })?;
+            self.wait_data_ready()
+                .inspect_err(|_error| self.release())?;
             let word = self.mmio.read32(self.reg(0x0c)).to_le_bytes();
             let remaining = EDID_BLOCK_LEN - offset;
             let count = remaining.min(4);
@@ -688,8 +708,11 @@ impl DdcBus for HardwareGmbus {
             let _ = self.stop();
         })?;
 
-        self.stop()
+        self.stop()?;
+        self.release();
+        Ok(())
     }
+
 }
 
 /// Read, sanitize, and validate the EDID preferred mode source over DDC.
@@ -870,8 +893,13 @@ mod tests {
         assert!(ready.hardware_ready);
         assert!(ready.is_data_ready());
         assert_eq!(ready.byte_count, 4);
-        assert!(ready.is_wait_complete());
+        // HW_RDY alone is not the post-transfer wait: libgfxinit waits for the
+        // hardware wait phase, which the bus raises once the data is out.
+        assert!(!ready.is_wait_complete());
         assert!(!ready.has_error());
+
+        let wait_phase = GmbusStatus::from_bits(1 << 14);
+        assert!(wait_phase.is_wait_complete());
 
         let nak = GmbusStatus::from_bits(1 << 10);
         assert!(nak.has_error());

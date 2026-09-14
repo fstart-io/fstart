@@ -290,6 +290,7 @@ pub const fn caps_for(cpu: Cpu) -> PlatformCaps {
 }
 
 /// Input configuration for shared GMA initialization.
+#[derive(Clone, Copy)]
 pub struct GmaInitConfig<'a> {
     /// CPU/platform selector.
     pub cpu: Cpu,
@@ -358,6 +359,14 @@ pub fn init(
 ) -> Result<GmaInitResult, GmaError> {
     resources.validate()?;
     validate_outputs(config.cpu, config.outputs)?;
+    // libgfxinit programs the panel/display power sequencer in `Initialize`,
+    // before it probes DDC for the attached display. Do the same: on this
+    // platform the DDC transfer does not complete while that power is still
+    // off, and the probe would time out and fall back to a fixed mode.
+    if matches!(caps_for(config.cpu).generation, Generation::I945 | Generation::G45) {
+        let mmio = mmio_from_validated_resources(resources);
+        generation::g45::setup_gmch_panel_power_sequencer(&mmio);
+    }
     let mut state = GmaDisplayState::new();
     state
         .update_outputs(resources, config)?
@@ -371,6 +380,22 @@ pub(crate) fn init_candidate(
 ) -> Result<GmaInitResult, GmaError> {
     let port = selected_enabled_port(config.outputs)?;
     let mode = clamp_hdmi_dotclock(config.cpu, port, choose_mode(resources, config)?);
+
+    // Without scaling the framebuffer *is* the mode: libgfxinit sizes its
+    // framebuffer to the selected mode, so a board that pins a fixed
+    // framebuffer size (for its fallback mode) must not force that size on a
+    // larger mode selected from the display's EDID.
+    let mut config = *config;
+    if config.framebuffer.scaling == scaler::ScalingPolicy::None
+        && (u32::from(mode.hdisplay) != config.framebuffer.width
+            || u32::from(mode.vdisplay) != config.framebuffer.height)
+    {
+        config.framebuffer.width = u32::from(mode.hdisplay);
+        config.framebuffer.height = u32::from(mode.vdisplay);
+        config.framebuffer.stride = None;
+        config.framebuffer.v_stride = None;
+    }
+    let config = &config;
     let surface = gtt::choose_framebuffer_surface(resources, &config.framebuffer)?;
     let scaler_pipe = port::pipe_for_legacy_gmch_port(selected_enabled_port(config.outputs)?)?;
     scaler::ScalerPlan::resolve(
