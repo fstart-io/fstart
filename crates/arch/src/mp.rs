@@ -809,9 +809,14 @@ pub fn online_cpus() -> u16 {
 }
 
 pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
-    let max_aps = config.max_cpus.saturating_sub(1);
+    let num_cpus = discovered_logical_cpus(config.max_cpus);
+    let max_aps = num_cpus.saturating_sub(1);
 
-    fstart_log::info!("mp: initializing {} CPUs", config.max_cpus);
+    fstart_log::info!(
+        "mp: initializing {} CPUs (max_cpus bound {})",
+        num_cpus,
+        config.max_cpus
+    );
 
     // --- Step 1: BSP LAPIC setup ---
     let lapic = Lapic::from_msr();
@@ -1000,12 +1005,14 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
         }
     }
 
+    // Fewer APs than the bound is normal: `max_cpus` bounds per-CPU storage,
+    // it is not the number of CPUs that exist. coreboot logs the shortfall and
+    // carries on, so do the same rather than failing the stage.
     let final_count = AP_COUNT.load(Ordering::Acquire) as u16;
-    fstart_log::info!("mp: {}/{} APs checked in", final_count, max_aps);
-
-    if final_count == 0 {
-        clear_mp_globals();
-        return Err(MpError::NoApsResponded);
+    if final_count < max_aps {
+        fstart_log::error!("mp: {}/{} APs checked in", final_count, max_aps);
+    } else {
+        fstart_log::info!("mp: {}/{} APs checked in", final_count, max_aps);
     }
 
     // Install SMM handlers only after APs have checked in and are blocked at
@@ -1404,6 +1411,29 @@ fn trampoline_indexed<F: Fn(u32)>(data: *const (), cpu: u32) {
 // ---------------------------------------------------------------------------
 
 /// Spin-delay for approximately `us` microseconds.
+/// Logical processors this package reports, bounded by `max_cpus`.
+///
+/// `CPUID.1.EBX[23:16]` is the maximum number of addressable logical
+/// processors in the package, which is what a hyper-threaded Atom reports:
+/// two for a D410, four for a D510. `max_cpus` only bounds per-CPU storage
+/// (coreboot's `CONFIG_MAX_CPUS` plays the same role), so a package with fewer
+/// logical CPUs than the bound simply leaves the rest idle.
+fn discovered_logical_cpus(max_cpus: u16) -> u16 {
+    let (_, ebx, _, _) = crate::x86::cpuid(1);
+    let logical = ((ebx >> 16) & 0xff) as u16;
+    let count = logical.max(1);
+    if count > max_cpus {
+        fstart_log::info!(
+            "mp: {} logical CPUs reported, capping at {}",
+            count,
+            max_cpus
+        );
+        max_cpus
+    } else {
+        count
+    }
+}
+
 fn delay_us(us: u64) {
     crate::x86::udelay(us.min(u32::MAX as u64) as u32);
 }
