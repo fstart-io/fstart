@@ -304,7 +304,9 @@ impl SmmOps for Q35HostBridge {
         // self-SMI is what all live Intel drivers use and what coreboot uses
         // on q35 as well.)
         let lapic = fstart_arch::lapic::Lapic::from_msr();
-        lapic.send_ipi_self(fstart_arch::lapic::INT_ASSERT | fstart_arch::lapic::MT_SMI);
+        // SMI delivery rejects the destination shorthand, so the local APIC ID
+        // must go in the destination field (see `Lapic::send_smi_self`).
+        lapic.send_smi_self();
         lapic.wait_ready();
     }
 
