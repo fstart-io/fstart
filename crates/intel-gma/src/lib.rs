@@ -526,6 +526,11 @@ pub(crate) fn choose_mode(
             .vbt
             .and_then(|bytes| vbt::Vbt::parse(bytes).ok())
             .and_then(|vbt| vbt.lfp_fixed_mode().ok())
+            // No VBT, or a VBT without a panel mode (desktop boards with the
+            // monitor on the analog port): ask the attached display, exactly
+            // as libgfxinit's probing does, before falling back to the
+            // board's hardcoded mode.
+            .or_else(|| edid_mode(resources, config).ok())
             .or_else(|| fallback_mode(&config.framebuffer).ok())
             .ok_or(GmaError::ModeUnavailable),
         PreferredMode::Fixed => fallback_mode(&config.framebuffer),

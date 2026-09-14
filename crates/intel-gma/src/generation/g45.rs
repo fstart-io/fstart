@@ -583,8 +583,12 @@ pub(crate) fn program_gmch_plane(
         PlaneAddressModel::Address => {
             regs.pos.set(0);
             regs.size.set(plane_config.encoded_size()?);
+            // Gen3 keeps the plane base in `DSPLINOFF`; `DSPBSURF` does not
+            // exist there (`Has_DSPSURF := G45_On`), and the linear start
+            // offset is OR'd into the same aperture-offset value.
             if surface.tiling == TilingMode::Linear {
                 regs.addr.set(plane_config.aperture_linear_address()?);
+                regs.tileoff.set(0);
             } else {
                 regs.addr.set(surface.plane_surface_offset());
             }
