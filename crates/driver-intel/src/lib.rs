@@ -158,6 +158,13 @@ pub trait IntelNorthbridgeDriver:
     }
     fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
 
+    /// Chipset work that needs *verified* boot media: the graphics OpRegion and
+    /// the modeset, which embed and read the VBT. Runs after the
+    /// `verify_boot_media` phase; platforms without such work keep the default.
+    fn post_verify_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+
     /// Caches policy derived from the detected memory map.
     fn memory_detected(&mut self, _e820: &fstart_core::services::memory_detect::E820State) {}
 

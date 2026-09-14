@@ -594,6 +594,12 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
 
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
+        Ok(())
+    }
+
+    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
+        // Needs the verified boot media: the OpRegion embeds the VBT and the
+        // modeset reads it for the panel and DDC policy.
         self.init_igd_opregion();
         if self.config.igd.display.is_some() {
             self.gma_display_init();
@@ -1248,12 +1254,22 @@ impl SmmOps for IntelPineview {
             Ok(installed) => {
                 let targets = &installed.cpus[..num_cpus as usize];
                 fstart_arch::mp::prepare_default_smm_relocation(targets);
+                // The relocation stub enters long mode, but firmware stages run
+                // unpaged, so it must be given its own identity page tables
+                // instead of the (stale) firmware CR3.
+                // SAFETY: the default SMBASE region is writable low memory and
+                // unused until the stub itself is installed there.
+                let relocation_cr3 = unsafe {
+                    fstart_smm::build_relocation_identity_tables(
+                        fstart_arch::mp::SMM_DEFAULT_SMBASE,
+                    )
+                };
                 let default_handler = unsafe {
                     fstart_smm::install_default_relocation_callback_stub(
                         image,
                         fstart_smm::DefaultRelocationCallbackConfig {
                             default_smbase: fstart_arch::mp::SMM_DEFAULT_SMBASE,
-                            cr3: Self::cr3(),
+                            cr3: relocation_cr3,
                             callback: fstart_arch::mp::default_smm_relocation_handler as *const ()
                                 as usize as u64,
                             stack_top: fstart_arch::mp::SMM_DEFAULT_ENTRY_STACK_TOP,
@@ -1291,9 +1307,25 @@ impl SmmOps for IntelPineview {
         // with a local-APIC SMI IPI to *this* CPU, not by writing APM_CNT.
         // APM_CNT is reserved for firmware/OS SMI commands such as ACPI
         // enable/disable once the permanent SMI handler is installed.
+        let before = fstart_arch::mp::smm_handler_hits();
         let lapic = fstart_arch::lapic::Lapic::from_msr();
         lapic.send_ipi_self(fstart_arch::lapic::INT_ASSERT | fstart_arch::lapic::MT_SMI);
-        lapic.wait_ready();
+        let _ = lapic.wait_ready();
+        if fstart_arch::mp::smm_handler_hits() != before {
+            return;
+        }
+
+        // The SMI through the LAPIC ICR is not delivered on every chipset.
+        // The ICH7 APM command port raises the same SMI from the PCH, and
+        // `smi_enable_for_relocation` already enables that source (APMC_EN),
+        // so use it as the fallback. The relocation stub runs before the
+        // permanent handler is in place, so the command byte carries no
+        // meaning here.
+        fstart_log::warn!("pineview SMM: LAPIC SMI not delivered, using APM_CNT");
+        // SAFETY: 0xB2 is the ICH7 APM command port while SMI is enabled.
+        unsafe {
+            core::arch::asm!("out dx, al", in("dx") 0xB2u16, in("al") 0x00u8, options(nomem, nostack));
+        }
     }
 
     fn pre_smm_init(&self) {

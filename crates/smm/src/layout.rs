@@ -196,6 +196,60 @@ fn align_up(value: u64, align: u64) -> Result<u64, LayoutError> {
         .ok_or(LayoutError::Overflow)
 }
 
+/// Physical base of the identity page tables the default relocation stub loads
+/// into CR3. They live in the unused part of the architectural default SMBASE
+/// region, below the entry stub at `SMM_ENTRY_OFFSET`.
+pub const SMM_RELOCATION_TABLE_OFFSET: u64 = 0x1000;
+
+/// Size in bytes of the identity page tables: PML4, one PDPT and four page
+/// directories mapping the low 4 GiB with 2 MiB pages.
+pub const SMM_RELOCATION_TABLE_SIZE: u64 = 6 * 4096;
+
+/// Build a 4 GiB identity map with 2 MiB pages in the default SMBASE region and
+/// return the PML4 physical address to load into CR3.
+///
+/// The relocation stub runs before any SMM page tables exist, and firmware
+/// stages run unpaged (CR0.PG clear), so the stub cannot inherit a usable CR3
+/// from the interrupted context: without these tables, enabling paging in the
+/// stub faults immediately.
+///
+/// # Safety
+///
+/// `default_smbase` must address writable low memory that is not in use for the
+/// duration of the relocation, and the CPU must not be using live page tables
+/// that these writes would disturb.
+pub unsafe fn build_relocation_identity_tables(default_smbase: u64) -> u64 {
+    const PTE_PRESENT: u64 = 1 << 0;
+    const PTE_WRITABLE: u64 = 1 << 1;
+    const PTE_PAGE_SIZE: u64 = 1 << 7;
+    const ENTRIES: usize = 512;
+
+    let base = default_smbase + SMM_RELOCATION_TABLE_OFFSET;
+    let pml4 = base as *mut u64;
+    let pdpt = (base + 4096) as *mut u64;
+    let pds = (base + 2 * 4096) as *mut u64;
+
+    // SAFETY: caller guarantees the region is writable; all offsets stay within
+    // SMM_RELOCATION_TABLE_SIZE.
+    unsafe {
+        for i in 0..ENTRIES {
+            pml4.add(i).write(0);
+        }
+        pml4.write((pdpt as u64) | PTE_PRESENT | PTE_WRITABLE);
+        for i in 0..4 {
+            pdpt.add(i).write(((pds as u64) + (i as u64) * 4096) | PTE_PRESENT | PTE_WRITABLE);
+        }
+        for pd in 0..4 {
+            for entry in 0..ENTRIES {
+                let phys = ((pd * ENTRIES + entry) as u64) << 21;
+                pds.add(pd * ENTRIES + entry)
+                    .write(phys | PTE_PRESENT | PTE_WRITABLE | PTE_PAGE_SIZE);
+            }
+        }
+    }
+    base
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

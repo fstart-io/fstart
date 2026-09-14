@@ -1591,6 +1591,13 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         if self.config.igd.display.is_some() {
             self.gma_non_display_init();
             self.gtt_setup();
+        }
+        Ok(())
+    }
+
+    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
+        // The modeset reads the VBT out of the verified boot media.
+        if self.config.igd.display.is_some() {
             self.gma_display_init();
         }
         Ok(())
