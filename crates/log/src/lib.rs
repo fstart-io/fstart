@@ -74,11 +74,45 @@ pub enum Level {
 // ---------------------------------------------------------------------------
 
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Guards the console across CPUs.
+///
+/// Application processors log as well (CPU drivers, MP flight-plan steps) and
+/// the console backend has a single transmit path, so two CPUs writing at once
+/// interleave their bytes and can wedge the output. One message is written
+/// while this is held; coreboot guards its console the same way.
+///
+/// An SMI that interrupts a CPU while it holds this lock and then logs would
+/// deadlock; firmware SMI handlers use their own output path.
+static CONSOLE_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Releases [`CONSOLE_LOCK`] when the writer for one message is dropped.
+struct ConsoleLockGuard;
+
+impl ConsoleLockGuard {
+    fn acquire() -> Self {
+        while CONSOLE_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        Self
+    }
+}
+
+impl Drop for ConsoleLockGuard {
+    fn drop(&mut self) {
+        CONSOLE_LOCK.store(false, Ordering::Release);
+    }
+}
 
 /// Interior-mutable cell that is `Sync` by firmware invariant.
 ///
-/// Firmware boot is single-threaded (one hart/core active). All writes
-/// happen during init before any concurrent access is possible.
+/// Console and level are written once during single-threaded init, then only
+/// read; concurrent *writes* to the console itself are serialised by
+/// [`CONSOLE_LOCK`].
 /// This replaces `static mut` which is deprecated in Rust edition 2024.
 struct SyncCell<T>(UnsafeCell<T>);
 
@@ -166,7 +200,11 @@ pub fn max_level() -> Level {
 ///
 /// If no console has been registered via [`init`], writes are silently
 /// discarded.
-pub struct ConsoleWriter;
+pub struct ConsoleWriter {
+    /// Held from `writer()` until the macro's writer goes out of scope, which
+    /// brackets the tag, the message and the flush.
+    _guard: ConsoleLockGuard,
+}
 
 impl ufmt::uWrite for ConsoleWriter {
     type Error = ();
@@ -210,7 +248,9 @@ impl ufmt::uWrite for ConsoleWriter {
 #[doc(hidden)]
 #[inline]
 pub fn writer() -> ConsoleWriter {
-    ConsoleWriter
+    ConsoleWriter {
+        _guard: ConsoleLockGuard::acquire(),
+    }
 }
 
 /// Return `true` if messages at `level` would be emitted.
