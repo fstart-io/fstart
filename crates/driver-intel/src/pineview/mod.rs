@@ -1303,25 +1303,15 @@ impl SmmOps for IntelPineview {
     fn smm_relocate(&self) {
         Self::smi_enable_for_relocation();
 
-        // Match coreboot smm_initiate_relocation(): relocation is triggered
-        // with a local-APIC SMI IPI to *this* CPU, not by writing APM_CNT.
-        // APM_CNT is reserved for firmware/OS SMI commands such as ACPI
-        // enable/disable once the permanent SMI handler is installed.
-        let before = fstart_arch::mp::smm_handler_hits();
-        let lapic = fstart_arch::lapic::Lapic::from_msr();
-        lapic.send_ipi_self(fstart_arch::lapic::INT_ASSERT | fstart_arch::lapic::MT_SMI);
-        let _ = lapic.wait_ready();
-        if fstart_arch::mp::smm_handler_hits() != before {
-            return;
-        }
-
-        // The SMI through the LAPIC ICR is not delivered on every chipset.
-        // The ICH7 APM command port raises the same SMI from the PCH, and
-        // `smi_enable_for_relocation` already enables that source (APMC_EN),
-        // so use it as the fallback. The relocation stub runs before the
-        // permanent handler is in place, so the command byte carries no
-        // meaning here.
-        fstart_log::warn!("pineview SMM: LAPIC SMI not delivered, using APM_CNT");
+        // coreboot triggers the relocation with a local-APIC self SMI
+        // (`smm_initiate_relocation`). This chipset does not deliver an SMI
+        // raised through the LAPIC ICR, so use the ICH7 APM command port,
+        // which `smi_enable_for_relocation` already enables through APMC_EN.
+        // The SMI raised there is broadcast, so the MP flight plan holds the
+        // relocation lock until the handler has run (see
+        // `smm_relocate_trampoline`): every CPU shares the architectural
+        // default SMBASE until it has relocated itself.
+        //
         // SAFETY: 0xB2 is the ICH7 APM command port while SMI is enabled.
         unsafe {
             core::arch::asm!("out dx, al", in("dx") 0xB2u16, in("al") 0x00u8, options(nomem, nostack));

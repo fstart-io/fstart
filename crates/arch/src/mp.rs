@@ -559,14 +559,21 @@ fn load_smm_ops() -> Option<&'static dyn SmmOps> {
     Some(unsafe { core::mem::transmute((data, vtable)) })
 }
 
-/// Entries into the default SMM relocation handler. Used to detect that the
-/// relocation SMI was not delivered (see the ICH APM command port fallback).
+/// Entries into the default SMM relocation handler.
 static SMM_HANDLER_HITS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+/// Completions of the default SMM relocation handler.
+static SMM_HANDLER_DONE: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
 
 /// Number of times the default SMM relocation handler has been entered.
 pub fn smm_handler_hits() -> u32 {
     SMM_HANDLER_HITS.load(Ordering::Acquire)
+}
+
+/// Number of times the default SMM relocation handler has completed.
+pub fn smm_handler_done() -> u32 {
+    SMM_HANDLER_DONE.load(Ordering::Acquire)
 }
 
 fn smm_relocate_trampoline() {
@@ -586,7 +593,22 @@ fn smm_relocate_trampoline() {
     }
 
     if let Some(ops) = load_smm_ops() {
+        let before = smm_handler_done();
         ops.smm_relocate();
+        // Every CPU shares the architectural default SMBASE until it has
+        // relocated itself, so two CPUs must never be inside that stub at the
+        // same time. The SMI can be delivered asynchronously, so hold the
+        // lock until the relocation handler has actually run (coreboot does
+        // the same by holding its relocation spin lock across the trigger).
+        let mut spins = 0u32;
+        while smm_handler_done() == before {
+            core::hint::spin_loop();
+            spins += 1;
+            if spins == 200_000_000 {
+                fstart_log::error!("mp: SMM relocation timeout");
+                break;
+            }
+        }
     }
 
     SMM_RELOCATION_LOCK.store(false, Ordering::Release);
@@ -621,6 +643,7 @@ pub extern "C" fn default_smm_relocation_handler(_params: *mut fstart_smm::SmmEn
     let apic_id = (apic_id as usize) & (MAX_CPUS - 1);
     let smbase = SMM_RELOCATION_SMBASES[apic_id].load(Ordering::Acquire) as u32;
     if smbase == 0 {
+        SMM_HANDLER_DONE.fetch_add(1, Ordering::AcqRel);
         return;
     }
 
@@ -647,6 +670,7 @@ pub extern "C" fn default_smm_relocation_handler(_params: *mut fstart_smm::SmmEn
             );
         }
     }
+    SMM_HANDLER_DONE.fetch_add(1, Ordering::AcqRel);
 }
 
 /// Locate the relocated-SMBASE word and report the observed save-state

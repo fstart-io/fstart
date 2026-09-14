@@ -197,9 +197,10 @@ fn align_up(value: u64, align: u64) -> Result<u64, LayoutError> {
 }
 
 /// Physical base of the identity page tables the default relocation stub loads
-/// into CR3. They live in the unused part of the architectural default SMBASE
-/// region, below the entry stub at `SMM_ENTRY_OFFSET`.
-pub const SMM_RELOCATION_TABLE_OFFSET: u64 = 0x1000;
+/// into CR3. They live above the entry stub in the architectural default SMBASE
+/// region, because everything below the stub belongs to the stub's stack (`top`
+/// at SMBASE + 0x7000) and the save state occupies the top of the region.
+pub const SMM_RELOCATION_TABLE_OFFSET: u64 = 0x9000;
 
 /// Size in bytes of the identity page tables: PML4, one PDPT and four page
 /// directories mapping the low 4 GiB with 2 MiB pages.
