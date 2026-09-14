@@ -15,7 +15,6 @@ acpi = [
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
 ]
-ffs-vbt = []
 gm965 = []
 ich8 = []
 pineview = []

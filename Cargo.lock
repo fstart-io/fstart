@@ -756,6 +756,7 @@ dependencies = [
  "dtoolkit",
  "fstart-arch",
  "fstart-core",
+ "fstart-driver-intel",
  "fstart-driver-uart",
  "fstart-image-build",
  "fstart-log",

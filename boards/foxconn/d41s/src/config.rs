@@ -4,14 +4,14 @@ use fstart_core::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
 use fstart_core::{FlashLayout, Platform, SmbiosConfig, X86LegacyFlashLayout, hstr, hvec};
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
-use fstart_driver_superio::ite8721f;
 use fstart_driver_intel::southbridge::hda;
+use fstart_driver_superio::ite8721f;
 use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
-use fstart_intel_gma::{FallbackMode, OutputConfig, PreferredMode, Port};
-use fstart_platform_intel::igd::IgdDisplayPolicy;
+use fstart_intel_gma::{FallbackMode, OutputConfig, Port, PreferredMode};
+use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 use fstart_platform_intel::pineview::{
     LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PineviewIch7Config,
-    PineviewIgdConfig, SataConfig, SataMode, UsbConfig,
+    PineviewIch7Platform, PineviewIgdConfig, SataConfig, SataMode, UsbConfig,
 };
 
 /// D41S is a desktop board: the shared GMA layer lights the analog CRT port,
@@ -53,7 +53,7 @@ pub const SUPERIO_NODE: &str = "superio";
 pub const SUPERIO_PNP_BASE: u16 = 0x2e;
 pub const CK505_NODE: &str = "ck505";
 pub const CK505_ADDR: u8 = 0x69;
-pub static D41S_PLATFORM: PineviewIch7Config = PineviewIch7Config::new()
+pub static D41S_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
     .max_cpus(4)
     .igd(d41s_igd_config())
     .ck505_pre_raminit(true)
@@ -134,10 +134,7 @@ pub const fn d41s_igd_config() -> PineviewIgdConfig {
         use_crt: true,
         use_lvds: false,
         spread_spectrum: false,
-        vbt_file: Some("data.vbt"),
-        gtt_mmio_base: 0xFED0_0000,
-        gtt_pte_base: 0xFED8_0000,
-        gmadr_base: 0xC000_0000,
+        vbt: VbtSource::ffs("data.vbt"),
         gmadr_size: 256 * 1024 * 1024,
         display: Some(D41S_DISPLAY),
     }
@@ -319,20 +316,21 @@ const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
     None => "04/15/2026",
 };
 
-pub static D41S_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> = fstart_acpi::smbios::SmbiosDesc {
-    bios_vendor: "fstart",
-    bios_version: "0.1.0",
-    bios_release_date: BIOS_RELEASE_DATE,
-    sys_manufacturer: "Foxconn",
-    sys_product: "D41S",
-    sys_version: "1.0",
-    sys_serial: None,
-    bb_manufacturer: "Foxconn",
-    bb_product: "D41S",
-    chassis_type: 0x03,
-    chassis_manufacturer: "Foxconn",
-    processors: &D41S_SMBIOS_PROCESSORS,
-    memory_devices: &[],
-    ram_base: 0x0010_0000,
-    ram_end: 0x3fff_ffff,
-};
+pub static D41S_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> =
+    fstart_acpi::smbios::SmbiosDesc {
+        bios_vendor: "fstart",
+        bios_version: "0.1.0",
+        bios_release_date: BIOS_RELEASE_DATE,
+        sys_manufacturer: "Foxconn",
+        sys_product: "D41S",
+        sys_version: "1.0",
+        sys_serial: None,
+        bb_manufacturer: "Foxconn",
+        bb_product: "D41S",
+        chassis_type: 0x03,
+        chassis_manufacturer: "Foxconn",
+        processors: &D41S_SMBIOS_PROCESSORS,
+        memory_devices: &[],
+        ram_base: 0x0010_0000,
+        ram_end: 0x3fff_ffff,
+    };

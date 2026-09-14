@@ -100,7 +100,7 @@ pub fn compilation_plan(
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
             rustflags: flags("-Zub-checks=no -Crelocation-model=static -Ccode-model=large --cfg curve25519_dalek_backend=\"serial\""),
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true)?),
-            environment_values: if ram { BTreeMap::from([("FSTART_INTEL_MAX_CPUS".into(), plan.max_cpus.to_string())]) } else { BTreeMap::new() },
+            environment_values: BTreeMap::new(),
             bindings,
             output: UnitOutput::Executable {
                 expectations: plan.reservations.elf_expectations(row.role)?, load_address: reservation.image.base,
@@ -356,7 +356,7 @@ mod tests {
         let mut config = crate::i945::I945Ich7Config::new()
             .variant(crate::i945::I945Variant::DesktopGc)
             .build()
-            .northbridge_config();
+            .northbridge;
         assert_eq!(config.ecam_base(), crate::i945::I945_ECAM_BASE);
         assert_eq!(config.ecam_buses, 64);
         config.ecam_base = 0xe0000000;

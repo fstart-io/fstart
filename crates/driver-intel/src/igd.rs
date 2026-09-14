@@ -202,24 +202,46 @@ const LEGACY_VBT_WINDOW: usize = 128 * 1024;
 /// Scan stride through the legacy window.
 const LEGACY_VBT_STRIDE: usize = 16;
 
-/// VBT bytes: borrowed from a fixed window, or copied out of a verified asset.
-pub enum VbtBytes<'a> {
-    /// Points into firmware-owned memory.
-    Borrowed(&'a [u8]),
-    /// Copied out of a verified FFS asset.
-    Owned(alloc::vec::Vec<u8>),
+/// Where a board's VBT comes from.
+///
+/// A verified FFS asset is authoritative: when one is named, a verification
+/// failure must not silently fall back to unverified memory. Otherwise raw
+/// firmware-staged bytes are used, then the legacy VBIOS window is scanned.
+#[derive(Debug, Clone, Copy)]
+pub struct VbtSource {
+    /// Board-relative VBT file stored as a compressed FFS data file.
+    pub file: Option<&'static str>,
+    /// Raw VBT blob staged at a physical address by board firmware.
+    pub staged: Option<(u64, u32)>,
+    /// Legacy option-ROM window to scan for a `$VBT` signature.
+    pub legacy_probe: Option<u64>,
 }
 
-impl VbtBytes<'_> {
-    /// The VBT bytes.
+impl VbtSource {
+    /// No VBT at all; the OpRegion is not published.
+    pub const NONE: Self = Self {
+        file: None,
+        staged: None,
+        legacy_probe: None,
+    };
+    /// Scan the PC legacy VBIOS window at `0xc0000`.
+    pub const LEGACY: Self = Self {
+        legacy_probe: Some(0x000C_0000),
+        ..Self::NONE
+    };
+
+    /// A verified FFS asset.
     #[must_use]
-    pub fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Borrowed(bytes) => bytes,
-            Self::Owned(bytes) => bytes.as_slice(),
+    pub const fn ffs(file: &'static str) -> Self {
+        Self {
+            file: Some(file),
+            ..Self::NONE
         }
     }
 }
+
+/// VBT bytes: borrowed from a fixed window, or copied out of a verified asset.
+pub type Vbt = alloc::borrow::Cow<'static, [u8]>;
 
 /// Validate a VBT header and return its declared length.
 #[must_use]
@@ -235,14 +257,13 @@ pub fn vbt_len(bytes: &[u8]) -> Option<usize> {
 }
 
 /// Read a VBT from a raw physical address staged by board firmware.
-fn configured_vbt(address: Option<u64>, size: u32) -> Option<&'static [u8]> {
-    let address = address? as usize;
-    let size = size as usize;
+fn staged_vbt(staged: Option<(u64, u32)>) -> Option<&'static [u8]> {
+    let (address, size) = staged?;
     if size == 0 {
         return None;
     }
     // SAFETY: board config promises this physical address holds a raw VBT blob.
-    let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
+    let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, size as usize) };
     vbt_len(bytes).map(|len| &bytes[..len])
 }
 
@@ -251,45 +272,150 @@ fn legacy_vbt(probe_base: Option<u64>) -> Option<&'static [u8]> {
     let base = probe_base? as usize;
     // SAFETY: the legacy option-ROM window is readable on PC-compatible x86.
     let rom = unsafe { core::slice::from_raw_parts(base as *const u8, LEGACY_VBT_WINDOW) };
-    let mut offset = 0usize;
-    while offset + 4 < rom.len() {
-        if u32::from_le_bytes([
-            rom[offset],
-            rom[offset + 1],
-            rom[offset + 2],
-            rom[offset + 3],
-        ]) == VBT_SIGNATURE
-            && let Some(size) = vbt_len(&rom[offset..])
-        {
-            return Some(&rom[offset..offset + size]);
-        }
-        offset += LEGACY_VBT_STRIDE;
-    }
-    None
+    (0..rom.len() - 4)
+        .step_by(LEGACY_VBT_STRIDE)
+        .find_map(|offset| vbt_len(&rom[offset..]).map(|size| &rom[offset..offset + size]))
 }
 
-/// Locate the board's VBT.
-///
-/// A configured authenticated asset is authoritative: if the board names one,
-/// a verification failure must not silently fall back to unverified memory.
-/// Otherwise firmware-staged bytes are used, then the legacy VBIOS window.
+/// Locate the board's VBT per [`VbtSource`] policy.
 #[must_use]
-pub fn locate_vbt(
-    vbt_file: Option<&'static str>,
-    vbt_addr: Option<u64>,
-    vbt_size: u32,
-    legacy_vbt_probe: Option<u64>,
-) -> Option<VbtBytes<'static>> {
-    #[cfg(feature = "ffs-vbt")]
-    if let Some(file_name) = vbt_file {
+pub fn locate_vbt(source: &VbtSource) -> Option<Vbt> {
+    if let Some(file_name) = source.file {
         let bytes = fstart_core::services::ffs_context::read_verified_asset(file_name)?;
         let len = vbt_len(bytes)?;
-        return Some(VbtBytes::Owned(bytes[..len].to_vec()));
+        return Some(Vbt::Owned(bytes[..len].to_vec()));
     }
-    let _ = vbt_file;
-    configured_vbt(vbt_addr, vbt_size)
-        .or_else(|| legacy_vbt(legacy_vbt_probe))
-        .map(VbtBytes::Borrowed)
+    staged_vbt(source.staged)
+        .or_else(|| legacy_vbt(source.legacy_probe))
+        .map(Vbt::Borrowed)
+}
+
+/// IGD config-space register that arms the OpRegion software SCI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpRegionSci {
+    /// GMCH parts: `SWSCI` at 0xe8.
+    Swsci,
+    /// Atom parts: combined `SWSMISCI` at 0xe0.
+    Swsmisci,
+}
+
+impl OpRegionSci {
+    const fn offset(self) -> u16 {
+        match self {
+            Self::Swsci => 0xe8,
+            Self::Swsmisci => 0xe0,
+        }
+    }
+}
+
+/// `ASLS`: OpRegion physical address the OS reads.
+const IGD_ASLS: u16 = 0xfc;
+
+/// Allocate the OpRegion once on the mainstage heap.
+///
+/// A `static` buffer would land in every stage's `.bss`, including the
+/// bootblock whose CAR is as small as 32 KiB on Pineview. The OS reads the
+/// region through ASLS for the machine's lifetime, so it is never freed.
+fn opregion_buf(size: usize) -> &'static mut [u8] {
+    let layout = core::alloc::Layout::from_size_align(size, 4096).expect("opregion layout");
+    // SAFETY: non-zero-sized layout; the allocation is intentionally leaked.
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    assert!(!ptr.is_null(), "IGD opregion allocation failed");
+    // SAFETY: fresh, exclusively owned, zeroed allocation of `size` bytes.
+    unsafe { core::slice::from_raw_parts_mut(ptr, size) }
+}
+
+/// Locate the VBT, build the OpRegion around it and publish it through
+/// `ASLS` (coreboot's `intel_gma_init_igd_opregion`). Returns the VBT so the
+/// modeset can consume the same bytes.
+///
+/// Best effort: a missing VBT logs and leaves the OS without an OpRegion.
+/// Callers check that the IGD function is present first.
+pub fn publish_opregion(
+    igd: &fstart_pci::ecam::EcamDevice,
+    sci: OpRegionSci,
+    source: &VbtSource,
+) -> Option<Vbt> {
+    let Some(vbt) = locate_vbt(source) else {
+        fstart_log::error!("intel-igd: no valid VBT found for the OpRegion");
+        return None;
+    };
+    publish_opregion_bytes(igd, sci, &vbt);
+    Some(vbt)
+}
+
+fn publish_opregion_bytes(igd: &fstart_pci::ecam::EcamDevice, sci: OpRegionSci, vbt: &[u8]) {
+    let opregion = opregion_buf(opregion_size(vbt.len()));
+    build_opregion(opregion, vbt);
+
+    igd.write32(IGD_ASLS, opregion.as_ptr() as u32);
+    let sci_reg = sci.offset();
+    igd.write16(sci_reg, (igd.read16(sci_reg) & !1) | (1 << 15));
+    fstart_log::info!(
+        "intel-igd: OpRegion at {:#x}, VBT {} bytes",
+        opregion.as_ptr() as usize,
+        vbt.len()
+    );
+}
+
+const IGD_BAR0_GTTMMADR: u16 = 0x10;
+const IGD_BAR2_GMADR: u16 = 0x18;
+const IGD_BAR3_GTTADR: u16 = 0x1c;
+
+/// IGD windows as PCI enumeration assigned them.
+///
+/// The allocator lays these out among every other device; drivers consume
+/// its assignment instead of re-programming fixed addresses, which on
+/// Pineview moved the GMCH register block away from the strapped window and
+/// on every chipset can alias a neighbour's BAR.
+#[derive(Debug, Clone, Copy)]
+pub struct IgdBars {
+    /// GTTMMADR (BAR0): the display MMIO window.
+    pub gtt_mmio: u64,
+    /// GMADR (BAR2): the CPU-visible graphics aperture.
+    pub gmadr: u64,
+    /// GTTADR (BAR3): the MMIO-visible GTT page table on chipsets that expose
+    /// one (Pineview); `None` where the GTT lives inside GTTMMADR.
+    pub gtt_pte: Option<u64>,
+}
+
+/// Read the IGD BARs after resource allocation.
+///
+/// `gtt_pte_bar` selects chipsets with a separate GTT page-table BAR. Logs
+/// and returns `None` when a required window was left unassigned; display
+/// bring-up is then skipped rather than guessing an address.
+#[must_use]
+pub fn assigned_bars(igd: &fstart_pci::ecam::EcamDevice, gtt_pte_bar: bool) -> Option<IgdBars> {
+    let bars = IgdBars {
+        gtt_mmio: igd.memory_bar(IGD_BAR0_GTTMMADR)?,
+        gmadr: igd.memory_bar(IGD_BAR2_GMADR)?,
+        gtt_pte: if gtt_pte_bar {
+            Some(igd.memory_bar(IGD_BAR3_GTTADR)?)
+        } else {
+            None
+        },
+    };
+    fstart_log::info!(
+        "intel-igd: GTTMMADR={:#x} GMADR={:#x} GTTADR={:?}",
+        bars.gtt_mmio,
+        bars.gmadr,
+        bars.gtt_pte
+    );
+    Some(bars)
+}
+
+/// Read a display MMIO register relative to GTTMMADR.
+#[must_use]
+pub fn mmio_read32(gtt_mmio: u64, offset: u32) -> u32 {
+    // SAFETY: GTTMMADR was assigned by enumeration and memory decoding is
+    // enabled before any display register access.
+    unsafe { fstart_core::mmio::read32((gtt_mmio + u64::from(offset)) as *const u32) }
+}
+
+/// Write a display MMIO register relative to GTTMMADR.
+pub fn mmio_write32(gtt_mmio: u64, offset: u32, value: u32) {
+    // SAFETY: see `mmio_read32`.
+    unsafe { fstart_core::mmio::write32((gtt_mmio + u64::from(offset)) as *mut u32, value) }
 }
 
 /// Program the physical base of the hardware GTT page table.
@@ -299,15 +425,9 @@ pub fn locate_vbt(
 /// resolve framebuffer addresses until the enable bit is set. `flags` carries
 /// the per-generation GTT size encoding.
 pub fn program_gtt_base(gtt_mmio_base: u64, gtt_base: u32, flags: u32) {
-    let flush = (gtt_mmio_base + u64::from(GFX_FLSH_CNTL)) as *mut u32;
-    let pgetbl = (gtt_mmio_base + u64::from(PGETBL_CTL)) as *mut u32;
-    // SAFETY: the caller has programmed and enabled the GTTMMADR BAR, and both
-    // offsets are fixed registers inside that window.
-    unsafe {
-        fstart_core::mmio::write32(flush, 0);
-        fstart_core::mmio::write32(pgetbl, gtt_base | flags);
-        fstart_core::mmio::write32(flush, 0);
-    }
+    mmio_write32(gtt_mmio_base, GFX_FLSH_CNTL, 0);
+    mmio_write32(gtt_mmio_base, PGETBL_CTL, gtt_base | flags);
+    mmio_write32(gtt_mmio_base, GFX_FLSH_CNTL, 0);
 }
 
 /// Clear a GTT page-table aperture through its MMIO-visible window.
@@ -370,7 +490,6 @@ impl IgdDisplay {
         }
     }
 
-    #[cfg(feature = "display")]
     #[cfg(feature = "display")]
     fn modeset(
         &mut self,

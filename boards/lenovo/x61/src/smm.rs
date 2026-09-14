@@ -1,6 +1,6 @@
 //! Lenovo ThinkPad X61 mainboard SMM policy.
 
-use fstart_driver_intel::ich8::smm::Ich8SmmHandler;
+use fstart_driver_intel::southbridge::smi::IchSmmHandler;
 use fstart_platform_intel::smm::{SMM_PLATFORM_INTEL_ICH, SmmBoardHandler, SmmContext};
 
 use crate::{Board, mainboard::dock};
@@ -33,5 +33,5 @@ impl SmmBoardHandler for LenovoX61SmmHandler {
 fstart_platform_intel::smm::smm_bin!(
     Board,
     SMM_PLATFORM_INTEL_ICH,
-    Ich8SmmHandler<LenovoX61SmmHandler>
+    IchSmmHandler<LenovoX61SmmHandler>
 );

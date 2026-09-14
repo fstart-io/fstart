@@ -245,12 +245,16 @@ remains solely on unmigrated boards.
 Current X61 entry uses a platform-owned adapter and hygienic macro:
 
 ```rust
-fstart_platform_intel::stage_bin!(
-    fstart_platform_intel::gm965::Program<fstart_board_lenovo_x61::Board>
-);
+fstart_platform_intel::stage_bin!(fstart_board_lenovo_x61::Board);
 ```
 
-`Program<B>` implements `fstart_stage::StageProgram` inside its owning platform.
+One `Program<B: IntelBoard>` implements `fstart_stage::StageProgram` for every
+Intel chipset pair: the board names its chipset (`type Platform = PineviewIch7`)
+and the chipset module supplies only types and constants (`IntelEarlyPlatform`:
+northbridge, southbridge, CPU driver, ACPI context). The bootblock, postcar and
+mainstage flows are written once in `platform-intel`; SMM installation and
+relocation are likewise written once in `fstart_arch::cpu_intel::smm`, composed
+from the northbridge's `SmramControl` and the southbridge's `SmiControl`.
 The board no longer relays `stage`, `runtime`, `smm` or payload Cargo features.
 Platform `bundle-bootblock`, `bundle-postcar`, `bundle-ramstage`, `bundle-smm`
 features activate real shared dependencies. The ramstage bundle includes ACPI,

@@ -25,7 +25,7 @@ pub use host::Plan;
 /// Hygienic firmware entry; dependency names stay inside the platform.
 #[macro_export]
 macro_rules! stage_bin {
-    ($program:ty) => { $crate::stage_runtime::stage_bin!(program: $program); };
+    ($board:ty) => { $crate::stage_runtime::stage_bin!(program: $crate::Program<$board>); };
 }
 
 pub mod gm965;
@@ -38,13 +38,17 @@ pub use fstart_driver_intel::igd;
 
 #[cfg(feature = "stage")]
 mod boot;
-#[cfg(feature = "stage")]
-use boot::{import_intel_directory, install_intel_load_policy};
+#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
+mod bootblock;
+#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
+mod mainstage;
+#[cfg(all(feature = "stage", fstart_stage_env = "postcar"))]
+mod postcar;
+#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
+pub use mainstage::{IntelMainstage, Mainstage, MainstageCtx};
 
 #[cfg(feature = "stage")]
 use core::marker::PhantomData;
-#[cfg(feature = "stage")]
-use fstart_core::services::memory_detect::E820Entry;
 #[cfg(feature = "stage")]
 use fstart_core::services::{ConsoleDevice, ServiceError};
 #[cfg(feature = "stage")]
@@ -52,7 +56,7 @@ pub use fstart_driver_intel::{
     BootPath, IntelEcamConfig, IntelNorthbridgeDriver, IntelSouthbridgeDriver,
 };
 #[cfg(feature = "stage")]
-pub use fstart_stage::{StageEnvironment, payload::MainstagePayload};
+pub use fstart_stage::payload::MainstagePayload;
 
 /// Native SMM handler image built by fbuild, embedded into stages whose build
 /// had `FSTART_SMM_IMAGE` set (the DRAM mainstage of SMM-capable boards).
@@ -86,85 +90,176 @@ pub fn intel_microcode_blob() -> Option<&'static [u8]> {
     FfsReader::new(image).intel_microcode(anchor)
 }
 
+// ---------------------------------------------------------------------------
+// Chipset and board contracts
+// ---------------------------------------------------------------------------
+
+/// A fixed Intel chipset pair (northbridge + southbridge + CPU family) driven
+/// by the shared flow below. Chipset modules implement this once; the flow
+/// itself is not duplicated per generation.
 #[cfg(feature = "stage")]
-pub(crate) fn run_mainstage_phase(
-    platform: &str,
-    name: &str,
-    halt: fn() -> !,
-    phase: impl FnOnce() -> Result<(), ServiceError>,
-) {
-    fstart_log::info!("{} mainstage: {}", platform, name);
-    if phase().is_err() {
-        fstart_log::error!("{} mainstage: {} failed", platform, name);
-        halt();
-    }
+pub trait IntelEarlyPlatform: Sized + 'static {
+    /// Log prefix, e.g. `"pineview/ich7"`.
+    const NAME: &'static str;
+    /// Board-facing chipset policy, built in `.rodata` by the board.
+    type Config: IntelChipsetConfig<Northbridge = Self::Northbridge, Southbridge = Self::Southbridge>
+        + 'static;
+    type Northbridge: IntelNorthbridgeDriver
+        + fstart_arch::cpu_intel::smm::SmramControl
+        + NorthbridgeAcpi<Self::Northbridge>;
+    type Southbridge: IntelSouthbridgeDriver
+        + fstart_arch::cpu_intel::smm::SmiControl
+        + SouthbridgeAcpi<Self::Southbridge>;
+    /// CPU family driver for MP bring-up.
+    #[cfg(feature = "mp")]
+    type Cpu: fstart_arch::mp::CpuDriver;
+    #[cfg(feature = "mp")]
+    fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu;
+    /// Platform-owned ACPI namespace context handed to `AcpiDevice` emitters.
+    #[cfg(feature = "acpi")]
+    type AcpiContext: Default;
 }
 
-#[cfg(feature = "stage")]
-pub(crate) trait IntelMainstageFlow: MainstagePhases {
-    fn firmware_region(&self) -> (u64, usize);
-    fn stage_local_init(&mut self) -> Result<(), ServiceError>;
-    /// Chipset work that needs *verified* boot media, such as the graphics
-    /// OpRegion and modeset, which embed and read the VBT. Runs after the
-    /// `verify_boot_media` phase; platforms without such work keep the default.
-    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn refresh_load_policy(&self) -> Result<(), ServiceError>;
-}
-
-#[cfg(feature = "stage")]
-pub(crate) fn run_intel_mainstage<M, Payload>(
-    platform: &str,
-    _own_stage_name: &'static str,
-    halt: fn() -> !,
-    mut mainstage: M,
-) -> !
-where
-    M: IntelMainstageFlow,
-    Payload: MainstagePayload<M>,
+/// ACPI contribution required of a northbridge driver; vacuous without ACPI.
+#[cfg(all(feature = "stage", feature = "acpi"))]
+pub trait NorthbridgeAcpi<NB: IntelNorthbridgeDriver>:
+    fstart_acpi::device::AcpiDevice<Config = NB::Config>
 {
-    let (firmware_base, firmware_size) = mainstage.firmware_region();
-    let boot_media =
-        fstart_stage::fixed_helpers::MemoryMappedFfs::new(firmware_base, firmware_size);
-    // Postcar authenticated our initialized image before entry. Import only
-    // the bounded directory reference, then retain its verified bytes in RAM.
-    // Drivers use the published verified asset service, not a new signature.
-    run_mainstage_phase(platform, "import_boot_context", halt, || {
-        import_intel_directory(firmware_base, firmware_size)
-    });
-    // Import publishes the inherited locator; mounting before it must fail.
-    // Neither metadata phase performs chipset/device initialization.
-    run_mainstage_phase(platform, "publish_boot_media", halt, || boot_media.mount());
-    run_mainstage_phase(platform, "pre_bus_scan", halt, || mainstage.pre_bus_scan());
-    run_mainstage_phase(platform, "load_memory_policy", halt, || {
-        mainstage.refresh_load_policy()
-    });
-    run_mainstage_phase(platform, "bus_scan", halt, || mainstage.bus_scan());
-    run_mainstage_phase(platform, "init_devices", halt, || mainstage.init_devices());
-    run_mainstage_phase(platform, "mount_boot_media", halt, || {
-        fstart_arch::x86_64::enable_boot_media_rom_cache();
-        mainstage.stage_local_init()
-    });
-    run_mainstage_phase(platform, "verify_boot_media", halt, || boot_media.verify());
-    // The graphics OpRegion and modeset read the VBT out of the verified boot
-    // media, so they run only after verification.
-    run_mainstage_phase(platform, "display_init", halt, || mainstage.post_verify_init());
-    run_mainstage_phase(platform, "emit_tables", halt, || mainstage.emit_tables());
-    // Table allocation changes the memory map; payload loads must respect it.
-    run_mainstage_phase(platform, "load_memory_policy", halt, || {
-        mainstage.refresh_load_policy()
-    });
-    run_mainstage_phase(platform, "finalize", halt, || mainstage.finalize());
+}
+#[cfg(all(feature = "stage", feature = "acpi"))]
+impl<NB, T> NorthbridgeAcpi<NB> for T
+where
+    NB: IntelNorthbridgeDriver,
+    T: fstart_acpi::device::AcpiDevice<Config = NB::Config>,
+{
+}
+#[cfg(all(feature = "stage", not(feature = "acpi")))]
+pub trait NorthbridgeAcpi<NB> {}
+#[cfg(all(feature = "stage", not(feature = "acpi")))]
+impl<NB, T> NorthbridgeAcpi<NB> for T {}
 
-    // Leave the legacy keyboard controller quiet before the payload/OS probes it.
-    fstart_driver_superio::quiesce_i8042_for_os();
+/// ACPI contribution required of a southbridge driver; vacuous without ACPI.
+#[cfg(all(feature = "stage", feature = "acpi"))]
+pub trait SouthbridgeAcpi<SB: IntelSouthbridgeDriver>:
+    fstart_acpi::device::AcpiDevice<Config = SB::Config> + fstart_acpi::platform::X86PlatformProvider
+{
+}
+#[cfg(all(feature = "stage", feature = "acpi"))]
+impl<SB, T> SouthbridgeAcpi<SB> for T
+where
+    SB: IntelSouthbridgeDriver,
+    T: fstart_acpi::device::AcpiDevice<Config = SB::Config>
+        + fstart_acpi::platform::X86PlatformProvider,
+{
+}
+#[cfg(all(feature = "stage", not(feature = "acpi")))]
+pub trait SouthbridgeAcpi<SB> {}
+#[cfg(all(feature = "stage", not(feature = "acpi")))]
+impl<SB, T> SouthbridgeAcpi<SB> for T {}
 
-    Payload::boot(mainstage)
+/// Built chipset policy: the derived driver configs and the CPU population.
+#[cfg(feature = "stage")]
+pub trait IntelChipsetConfig {
+    type Northbridge: IntelNorthbridgeDriver;
+    type Southbridge: IntelSouthbridgeDriver;
+    fn northbridge(&'static self)
+    -> &'static <Self::Northbridge as IntelNorthbridgeDriver>::Config;
+    fn southbridge(&'static self)
+    -> &'static <Self::Southbridge as IntelSouthbridgeDriver>::Config;
+    /// Maximum logical CPU count (BSP + APs) the board populates.
+    fn max_cpus(&self) -> u16;
 }
 
-/// Fixed stage name for the Intel CAR-teardown loader stage.
-///
+/// Board contract for the Intel flow.
+#[cfg(feature = "stage")]
+pub trait IntelBoard: Sized + 'static {
+    type Platform: IntelEarlyPlatform;
+    type Hooks: IntelEarlyBoardHooks<Self::Platform>;
+    type Console: ConsoleDevice;
+    /// Terminal payload launcher; only the DRAM mainstage links one.
+    #[cfg(fstart_stage_env = "ram")]
+    type Payload: MainstagePayload<Mainstage<Self>>;
+
+    /// Board platform policy. Points at a board `static` so the config lives
+    /// in `.rodata`, never on the early-stage stack.
+    const CONFIG: &'static <Self::Platform as IntelEarlyPlatform>::Config;
+
+    fn hooks() -> Result<Self::Hooks, ServiceError>;
+    fn console_config() -> <Self::Console as ConsoleDevice>::Config;
+    fn console_node() -> &'static str;
+    #[cfg(feature = "smbios")]
+    fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
+}
+
+/// Platform-owned adapter for the fixed Intel stage dispatch.
+#[cfg(feature = "stage")]
+pub struct Program<B>(PhantomData<B>);
+
+#[cfg(feature = "stage")]
+impl<B: IntelBoard> fstart_stage::StageProgram for Program<B> {
+    fn run_stage(_handoff: usize) -> ! {
+        #[cfg(fstart_stage_env = "car")]
+        {
+            let Ok(mut hooks) = B::hooks() else {
+                fstart_arch::x86_64::halt();
+            };
+            let flow = bootstrap_spec::<B>(0)
+                .and_then(|spec| bootblock::run_intel_bootblock::<B>(spec, &mut hooks));
+            if flow.is_err() {
+                fstart_log::error!("{} bootblock failed", B::Platform::NAME);
+            }
+            fstart_arch::x86_64::halt()
+        }
+        #[cfg(fstart_stage_env = "postcar")]
+        {
+            // Teardown already done by the entry; load the ramstage cached.
+            let Ok(spec) = bootstrap_spec::<B>(1) else {
+                fstart_arch::x86_64::halt()
+            };
+            postcar::run_intel_postcar::<B::Console>(spec)
+        }
+        #[cfg(fstart_stage_env = "ram")]
+        {
+            mainstage::run_intel_mainstage::<B>()
+        }
+        #[cfg(not(any(
+            fstart_stage_env = "car",
+            fstart_stage_env = "postcar",
+            fstart_stage_env = "ram"
+        )))]
+        panic!("Intel boards require a fixed stage selection");
+    }
+}
+
+#[cfg(all(
+    feature = "stage",
+    any(fstart_stage_env = "car", fstart_stage_env = "postcar")
+))]
+fn bootstrap_spec<B: IntelBoard>(index: u16) -> Result<FfsLoadSpec<B::Console>, ServiceError> {
+    Ok(FfsLoadSpec {
+        platform: B::Platform::NAME,
+        geometry: layout::IntelBootLayout::current(index)?,
+        console_config: B::console_config(),
+        console_node: B::console_node(),
+    })
+}
+
+/// FFS name of the DRAM mainstage.
+pub const RAMSTAGE_NAME: &str = "ramstage";
+
+#[cfg(all(
+    feature = "stage",
+    any(fstart_stage_env = "car", fstart_stage_env = "postcar")
+))]
+pub(crate) struct FfsLoadSpec<C: ConsoleDevice> {
+    pub platform: &'static str,
+    pub geometry: layout::IntelBootLayout<'static>,
+    pub console_config: C::Config,
+    pub console_node: &'static str,
+}
+
+/// Shared Intel mainstage state: the chipset drivers bound from typed config
+/// plus the flow-owned context.
 /// Canonical role name (see `fstart_core::stage::POSTCAR_STAGE_NAME`):
 /// all Intel CAR boards insert a stage with this name between bootblock and
 /// ramstage. `fbuild` selects the postcar entry and stage environment by it,
@@ -173,725 +268,9 @@ where
 /// not a board registry.
 pub use fstart_core::stage::POSTCAR_STAGE_NAME;
 
-#[cfg(feature = "stage")]
-pub(crate) struct FfsLoadSpec<C: ConsoleDevice> {
-    pub platform: &'static str,
-    pub next_stage: &'static str,
-    pub next_load_addr: u64,
-    pub geometry: layout::IntelBootLayout<'static>,
-    /// End of the linked low-DRAM envelope (BootstrapRam). The trained limit is published in the existing
-    /// postcar MTRR stash; postcar/ramstage never read this field.
-    pub dram_end: u64,
-    /// FFS name of the ramstage file. The bootblock resolves its raw extent
-    /// from the verified manifest into the stash; postcar loads it without
-    /// parsing FFS. Unused by the postcar spec itself.
-    pub ramstage_name: &'static str,
-    /// Trusted preferred address, independent of the signed image's request.
-    pub ramstage_load_addr: u64,
-    pub console_config: C::Config,
-    pub console_node: &'static str,
-}
-
-/// Shared Intel mainstage machinery. Chipset modules bind board facts once,
-/// then the common phase code owns the rest.
-#[cfg(feature = "stage")]
-pub struct IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-    C: ConsoleDevice,
-{
-    northbridge: NB,
-    southbridge: SB,
-    /// Constructed only when the mainstage reaches bus scanning. The
-    /// bootblock owns no PCI allocator state.
-    #[cfg(not(fstart_stage_env = "car"))]
-    pci: Option<fstart_pci::PciEcam>,
-    hooks: Hooks,
-    console: C,
-    ctx: MainstageCtx,
-    geometry: layout::IntelBootLayout<'static>,
-    platform_node: &'static str,
-    console_node: &'static str,
-    #[cfg(feature = "mp")]
-    init_mp: fn() -> Result<(), ServiceError>,
-    #[cfg(feature = "smbios")]
-    smbios_desc: &'static crate::tables::SmbiosDesc<'static>,
-    _platform: PhantomData<P>,
-    _acpi: PhantomData<AcpiContext>,
-}
-
-#[cfg(feature = "stage")]
-impl<P, NB, SB, Hooks, C, AcpiContext> IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-    C: ConsoleDevice,
-{
-    #[must_use]
-    pub const fn northbridge(&self) -> &NB {
-        &self.northbridge
-    }
-
-    #[must_use]
-    pub const fn southbridge(&self) -> &SB {
-        &self.southbridge
-    }
-
-    #[must_use]
-    pub const fn ctx(&self) -> &MainstageCtx {
-        &self.ctx
-    }
-
-    #[must_use]
-    pub fn e820(&self) -> &[E820Entry] {
-        self.ctx.e820()
-    }
-
-    #[must_use]
-    pub const fn acpi_rsdp(&self) -> Option<u64> {
-        self.ctx.acpi_rsdp()
-    }
-}
-
-#[cfg(all(feature = "stage", feature = "acpi"))]
-trait MainstageAcpi {
-    fn emit_acpi(&mut self) -> Result<(), ServiceError>;
-}
-
-#[cfg(all(feature = "stage", feature = "acpi"))]
-impl<P, NB, SB, Hooks, C, AcpiContext> MainstageAcpi
-    for IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB, AcpiContext = AcpiContext>,
-    Hooks: IntelEarlyBoardHooks<P>,
-    C: ConsoleDevice,
-    NB: IntelNorthbridgeDriver
-        + fstart_acpi::device::AcpiDevice<Config = <NB as IntelNorthbridgeDriver>::Config>,
-    SB: IntelSouthbridgeDriver
-        + fstart_acpi::device::AcpiDevice<Config = <SB as IntelSouthbridgeDriver>::Config>
-        + fstart_acpi::platform::X86PlatformProvider,
-    Hooks: fstart_acpi::device::AcpiDevice<Config = AcpiContext>,
-    AcpiContext: Default,
-{
-    fn emit_acpi(&mut self) -> Result<(), ServiceError> {
-        let acpi_ctx = AcpiContext::default();
-        let rsdp = emit_x86_acpi_tables(
-            self.ctx.e820_state_mut(),
-            &self.northbridge,
-            self.northbridge.config(),
-            &self.southbridge,
-            self.southbridge.config(),
-            &self.hooks,
-            &acpi_ctx,
-        )?;
-        self.ctx.set_acpi_rsdp(Some(rsdp));
-        Ok(())
-    }
-}
-
-#[cfg(all(feature = "stage", not(feature = "acpi")))]
-trait MainstageAcpi {
-    fn emit_acpi(&mut self) -> Result<(), ServiceError>;
-}
-
-#[cfg(all(feature = "stage", not(feature = "acpi")))]
-impl<T> MainstageAcpi for T {
-    fn emit_acpi(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-}
-
-#[cfg(feature = "stage")]
-impl<P, NB, SB, Hooks, C, AcpiContext> IntelMainstageFlow
-    for IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-    C: ConsoleDevice,
-    IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>: MainstageAcpi,
-{
-    fn firmware_region(&self) -> (u64, usize) {
-        self.ctx.firmware_region()
-    }
-
-    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
-        self.northbridge.stage_local_init()
-    }
-
-    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
-        self.northbridge.post_verify_init()
-    }
-
-    fn refresh_load_policy(&self) -> Result<(), ServiceError> {
-        install_intel_load_policy(self.ctx.e820(), self.geometry)
-    }
-}
-
-#[cfg(feature = "stage")]
-pub(crate) struct MainstageSpec<NB, SB, C>
-where
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-    C: ConsoleDevice,
-{
-    pub geometry: layout::IntelBootLayout<'static>,
-    pub nb_config: &'static NB::Config,
-    pub sb_config: &'static SB::Config,
-    pub console_config: C::Config,
-    pub console_node: &'static str,
-    pub platform_node: &'static str,
-    #[cfg(feature = "mp")]
-    pub init_mp: fn() -> Result<(), ServiceError>,
-    #[cfg(feature = "smbios")]
-    pub smbios_desc: &'static crate::tables::SmbiosDesc<'static>,
-}
-
-#[cfg(feature = "stage")]
-pub(crate) fn bind_intel_mainstage<P, NB, SB, Hooks, C, AcpiContext>(
-    spec: MainstageSpec<NB, SB, C>,
-    hooks: Hooks,
-) -> Result<IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>, ServiceError>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-    C: ConsoleDevice,
-{
-    let (firmware_base, firmware_size) = spec.geometry.firmware()?;
-    Ok(IntelMainstage {
-        northbridge: NB::new_from_config(spec.nb_config)?,
-        southbridge: SB::new_from_config(spec.sb_config)?,
-        #[cfg(not(fstart_stage_env = "car"))]
-        pci: None,
-        hooks,
-        console: C::new(spec.console_config)?,
-        ctx: MainstageCtx::new(firmware_base, firmware_size),
-        geometry: spec.geometry,
-        platform_node: spec.platform_node,
-        console_node: spec.console_node,
-        #[cfg(feature = "mp")]
-        init_mp: spec.init_mp,
-        #[cfg(feature = "smbios")]
-        smbios_desc: spec.smbios_desc,
-        _platform: PhantomData,
-        _acpi: PhantomData,
-    })
-}
-
-#[cfg(feature = "stage")]
-impl<P, NB, SB, Hooks, C, AcpiContext> MainstagePhases
-    for IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-    C: ConsoleDevice,
-    IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>: MainstageAcpi,
-{
-    fn pre_bus_scan(&mut self) -> Result<(), ServiceError> {
-        intel_pre_bus_scan::<P, _, _, _, C>(
-            self.platform_node,
-            self.console_node,
-            &mut self.northbridge,
-            &mut self.southbridge,
-            &mut self.hooks,
-            &mut self.console,
-            &mut self.ctx,
-        )
-    }
-
-    fn bus_scan(&mut self) -> Result<(), ServiceError> {
-        #[cfg(not(fstart_stage_env = "car"))]
-        {
-            if self.pci.is_none() {
-                self.pci = Some(
-                    fstart_pci::PciEcam::from_provider(&self.northbridge)
-                        .map_err(|_| ServiceError::HardwareError)?,
-                );
-            }
-            let pci = self.pci.as_mut().ok_or(ServiceError::NotInitialized)?;
-            return intel_bus_scan(pci);
-        }
-
-        #[cfg(fstart_stage_env = "car")]
-        Err(ServiceError::NotSupported)
-    }
-
-    fn init_devices(&mut self) -> Result<(), ServiceError> {
-        intel_init_devices::<P, _, _>(&mut self.southbridge, &mut self.hooks, || {
-            #[cfg(feature = "mp")]
-            (self.init_mp)()?;
-            Ok(())
-        })
-    }
-
-    fn emit_tables(&mut self) -> Result<(), ServiceError> {
-        self.emit_acpi()?;
-        #[cfg(feature = "smbios")]
-        crate::tables::prepare_smbios(self.ctx.e820_state_mut(), self.smbios_desc);
-        Ok(())
-    }
-
-    fn finalize(&mut self) -> Result<(), ServiceError> {
-        intel_finalize::<P, _, _>(&mut self.southbridge, &mut self.hooks)
-    }
-}
-
-#[cfg(feature = "stage")]
-impl<P, NB, SB, Hooks, C, AcpiContext> fstart_stage::payload::X86UefiPayloadContext
-    for IntelMainstage<P, NB, SB, Hooks, C, AcpiContext>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-    C: ConsoleDevice,
-{
-    fn console(&self) -> Option<&dyn fstart_core::services::Console> {
-        Some(&self.console)
-    }
-
-    fn e820(&self) -> &[E820Entry] {
-        self.e820()
-    }
-
-    fn firmware_region(&self) -> (u64, u64) {
-        let (base, size) = self.ctx.firmware_region();
-        (base, size as u64)
-    }
-
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.acpi_rsdp()
-    }
-
-    fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
-        Some(fstart_pci::PciRootProvider::root_info(&self.northbridge))
-    }
-
-    #[cfg(feature = "crabefi-basic")]
-    fn framebuffer(&self) -> Option<fstart_stage::crabefi::FramebufferConfig> {
-        self.northbridge
-            .framebuffer_info()
-            .map(|info| fstart_stage::crabefi::FramebufferConfig {
-                physical_address: info.base_addr,
-                width: info.width,
-                height: info.height,
-                stride: info.stride,
-                bits_per_pixel: info.bits_per_pixel,
-                red_mask_pos: info.red_pos,
-                red_mask_size: info.red_size,
-                green_mask_pos: info.green_pos,
-                green_mask_size: info.green_size,
-                blue_mask_pos: info.blue_pos,
-                blue_mask_size: info.blue_size,
-            })
-    }
-}
-
-#[cfg(feature = "stage")]
-pub(crate) fn run_intel_bootblock<P, NB, SB, Hooks, C>(
-    spec: FfsLoadSpec<C>,
-    hooks: &mut Hooks,
-    mut northbridge: NB,
-    mut southbridge: SB,
-) -> Result<(), ServiceError>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-    C: ConsoleDevice,
-{
-    let FfsLoadSpec {
-        platform,
-        next_stage,
-        next_load_addr,
-        geometry,
-        dram_end,
-        ramstage_name,
-        ramstage_load_addr,
-        console_config,
-        console_node,
-    } = spec;
-    let (firmware_base, firmware_size) = geometry.firmware()?;
-
-    northbridge.pre_console_init()?;
-    southbridge.pre_console_init()?;
-    hooks.before_console(&mut IntelEarlyCtx::new(&mut southbridge))?;
-
-    let mut console = C::new(console_config)?;
-    console.init()?;
-    // SAFETY: this function never returns after installing the stack-owned console.
-    unsafe { fstart_log::init(&console) };
-    fstart_log::info!("{}: {} console ready", console_node, C::NAME);
-    fstart_log::info!("{} bootblock console ready", platform);
-
-    // Complete the pre-RAM chipset flow before touching the postcar load
-    // address. The bootblock itself executes from ROM with its writable state
-    // in CAR, but the next stage is loaded into ordinary DRAM.
-    northbridge.early_init()?;
-    southbridge.early_init()?;
-    hooks.before_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
-
-    fstart_log::info!("{}: initializing DRAM", platform);
-    let boot_path = if southbridge.detect_s3_resume() {
-        BootPath::S3Resume
-    } else if northbridge.detect_warm_reset() {
-        BootPath::WarmReset
-    } else {
-        BootPath::Normal
-    };
-    northbridge.set_boot_path(boot_path);
-    northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
-    northbridge.early_post_dram_init()?;
-    southbridge.early_post_dram_init()?;
-    hooks.after_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
-    fstart_log::info!("{}: DRAM ready", platform);
-
-    fstart_log::info!(
-        "boot trust: development-integrity; RO root and rollback enforcement not established"
-    );
-    fstart_arch::x86_64::enable_boot_media_rom_cache();
-    // SAFETY: the firmware window comes from trusted linked/platform geometry.
-    let media = unsafe {
-        fstart_core::services::boot_media::MemoryMapped::from_raw_addr(firmware_base, firmware_size)
-    };
-    // Snapshot locator fields once. The same bounded bytes drive root lookup
-    // and the retained handoff; AP vendor microcode does not gain directory auth.
-    let locator = unsafe {
-        fstart_core::ffs::locator::LocatorRef::read_volatile(fstart_stage::fstart_anchor_bytes())
-    }
-    .ok_or(ServiceError::InvalidParam)?
-    .value();
-    if locator.image_offset != 0 || !locator.media().validate(firmware_size as u64) {
-        return Err(ServiceError::InvalidParam);
-    }
-    let mut locator_bytes = [0; fstart_core::ffs::locator::LOCATOR_SIZE];
-    locator.write_to(&mut locator_bytes);
-    let root = fstart_stage::root::authenticate_boot_root(&locator_bytes, &media)
-        .map_err(|_| ServiceError::HardwareError)?;
-    let [Some(postcar), Some(ramstage)] = root.descriptors() else {
-        return Err(ServiceError::InvalidParam);
-    };
-    // Only trained low memory may be used, regardless of the signed request.
-    let ram_end = dram_end.min(northbridge.total_ram_bytes()?);
-    let postcar_window = boot::bootstrap_window(
-        postcar,
-        fstart_ffs::root::BootstrapRole::Postcar,
-        next_load_addr,
-        ram_end,
-        geometry,
-    )?;
-    let _ = boot::bootstrap_window(
-        ramstage,
-        fstart_ffs::root::BootstrapRole::Mainstage,
-        ramstage_load_addr,
-        ram_end,
-        geometry,
-    )?;
-    let reserved = boot::running_reservations(geometry)?;
-    // SAFETY: trained DRAM, bounded family-owned postcar window, and all live
-    // bootblock code/data/stack excluded. The loader verifies final bytes.
-    let verified = unsafe {
-        fstart_stage::boot::load_bootstrap(
-            &media,
-            postcar,
-            &fstart_stage::boot::MemoryPolicy {
-                writable: &[postcar_window],
-                reserved: &reserved,
-                entry_alignment: 1,
-            },
-        )
-    }
-    .map_err(|_| ServiceError::HardwareError)?;
-
-    // Explicit wire bytes avoid coupling the assembly MTRR ABI to Rust types.
-    // The low handoff page is disjoint from both family bootstrap windows.
-    let published = unsafe {
-        fstart_arch::x86_64::car_teardown::write_postcar_stash(
-            ram_end,
-            firmware_base,
-            firmware_size as u64,
-            fstart_arch::x86_64::car_teardown::PostcarBootContext {
-                descriptor: ramstage.encode(),
-                directory: root.directory().encode(),
-                image_family: root.root().image_family,
-                security_version: root.root().security_version,
-                locator: locator_bytes,
-            },
-        )
-    };
-    if !published {
-        return Err(ServiceError::HardwareError);
-    }
-    let _ = ramstage_name; // Names are diagnostic; the authenticated role selects the image.
-
-    hooks.before_handoff(&mut IntelEarlyCtx::new(&mut southbridge))?;
-    fstart_log::info!("jumping to {} at {:#x}", next_stage, verified.entry());
-    fstart_arch::x86_64::jump_to(verified.entry())
-}
-
-/// Post-CAR loader on a fresh DRAM stack. The bootblock-authenticated descriptor
-/// crosses the transition in reserved RAM. Postcar verifies stored compressed
-/// input and final initialized output before entering ramstage; it needs SHA-256
-/// but no directory parser or public-key verifier in the linked execution path.
-#[cfg(all(feature = "stage", fstart_stage_env = "postcar"))]
-pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
-    let FfsLoadSpec {
-        platform,
-        next_stage: _,
-        next_load_addr: _,
-        geometry,
-        dram_end: _,
-        ramstage_name,
-        ramstage_load_addr,
-        console_config,
-        console_node,
-    } = spec;
-    let mut console = match C::new(console_config) {
-        Ok(console) => console,
-        Err(_) => fstart_arch::x86_64::halt(),
-    };
-    if console.init().is_err() {
-        fstart_arch::x86_64::halt();
-    }
-    // SAFETY: postcar owns this console until it jumps to the ramstage.
-    unsafe { fstart_log::init(&console) };
-    fstart_log::info!("{}: {} console ready", console_node, C::NAME);
-    fstart_log::info!("{} postcar console ready", platform);
-
-    let (firmware_base, firmware_size) = match geometry.firmware() {
-        Ok(window) => window,
-        Err(_) => fstart_arch::x86_64::halt(),
-    };
-    let entry = (|| -> Result<u64, ServiceError> {
-        let stash = boot::handoff(firmware_base, firmware_size)?;
-        let descriptor = fstart_ffs::root::BootstrapDescriptor::parse(&stash.descriptor)
-            .map_err(|_| ServiceError::InvalidParam)?;
-        let window = boot::bootstrap_window(
-            &descriptor,
-            fstart_ffs::root::BootstrapRole::Mainstage,
-            ramstage_load_addr,
-            stash.ram_end,
-            geometry,
-        )?;
-        let reserved = boot::running_reservations(geometry)?;
-        // SAFETY: family-owned trained DRAM range, live postcar excluded, and
-        // the media mapping is trusted configuration, not descriptor data.
-        let media = unsafe {
-            fstart_core::services::boot_media::MemoryMapped::from_raw_addr(
-                firmware_base,
-                firmware_size,
-            )
-        };
-        let verified = unsafe {
-            fstart_stage::boot::load_bootstrap(
-                &media,
-                &descriptor,
-                &fstart_stage::boot::MemoryPolicy {
-                    writable: &[window],
-                    reserved: &reserved,
-                    entry_alignment: 1,
-                },
-            )
-        }
-        .map_err(|_| ServiceError::HardwareError)?;
-        Ok(verified.entry())
-    })();
-    let Ok(entry) = entry else {
-        fstart_log::error!(
-            "{} postcar: authentication/load failed for '{}'",
-            platform,
-            ramstage_name
-        );
-        fstart_arch::x86_64::halt();
-    };
-
-    fstart_log::info!("jumping to {} at {:#x}", ramstage_name, entry);
-    fstart_arch::x86_64::jump_to(entry)
-}
-
-#[cfg(feature = "stage")]
-pub(crate) fn intel_pre_bus_scan<P, NB, SB, Hooks, C>(
-    platform_node: &str,
-    console_node: &str,
-    northbridge: &mut NB,
-    southbridge: &mut SB,
-    hooks: &mut Hooks,
-    console: &mut C,
-    ctx: &mut MainstageCtx,
-) -> Result<(), ServiceError>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    NB: IntelNorthbridgeDriver,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-    C: ConsoleDevice,
-{
-    northbridge.pre_console_init()?;
-    southbridge.pre_console_init()?;
-    hooks.before_console(&mut IntelEarlyCtx::new(southbridge))?;
-
-    console.init()?;
-    // SAFETY: the mainstage owns the console until it hands control to the payload.
-    unsafe { fstart_log::init(console) };
-    fstart_log::info!("fstart ramstage console ready");
-    fstart_log::info!("{}: {} console ready", console_node, C::NAME);
-
-    northbridge.early_init()?;
-    southbridge.early_init()?;
-
-    hooks.before_memory(&mut IntelEarlyCtx::new(southbridge))?;
-    let count = northbridge.detect_memory(ctx.e820_state_mut().entries_mut())?;
-    let total = northbridge.total_ram_bytes()?;
-    fstart_log::info!(
-        "Detected {} MiB RAM, {} e820 entries from {}",
-        total >> 20,
-        count,
-        platform_node,
-    );
-    ctx.e820_state_mut().set_detected(count, total);
-    northbridge.memory_detected(ctx.e820_state());
-
-    // DRAM was initialized by the bootblock. Mainstage only reconstructs the
-    // memory map and must not retrain or issue JEDEC commands again.
-    //
-    // Cache is still off at this point: the RAM-stage entry tore down CAR
-    // (CR0.CD=1, MTRRs disabled) and nothing re-enabled it yet. The ranges
-    // the northbridge just published are enough to restore caching now,
-    // instead of leaving the whole mainstage uncached until MP init repeats
-    // the same MTRR program per CPU.
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        fstart_arch::x86::mtrr::setup_ram_wb();
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "stage", not(fstart_stage_env = "car")))]
-pub(crate) fn intel_bus_scan(pci: &mut fstart_pci::PciEcam) -> Result<(), ServiceError> {
-    pci.enumerate_and_allocate()
-        .map_err(|_| ServiceError::HardwareError)
-}
-
-#[cfg(feature = "stage")]
-pub(crate) fn intel_init_devices<P, SB, Hooks>(
-    southbridge: &mut SB,
-    hooks: &mut Hooks,
-    init_mp: impl FnOnce() -> Result<(), ServiceError>,
-) -> Result<(), ServiceError>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-{
-    southbridge.post_dram_init()?;
-    hooks.after_memory(&mut IntelEarlyCtx::new(southbridge))?;
-    init_mp()
-}
-
-#[cfg(feature = "stage")]
-pub(crate) fn intel_finalize<P, SB, Hooks>(
-    southbridge: &mut SB,
-    hooks: &mut Hooks,
-) -> Result<(), ServiceError>
-where
-    P: IntelEarlyPlatform<Southbridge = SB>,
-    SB: IntelSouthbridgeDriver,
-    Hooks: IntelEarlyBoardHooks<P>,
-{
-    hooks.before_handoff(&mut IntelEarlyCtx::new(southbridge))?;
-    southbridge.finalize_init()
-}
-
-#[cfg(all(feature = "stage", feature = "acpi"))]
-pub(crate) fn emit_acpi_tables<Northbridge, Southbridge, Hooks>(
-    e820: &mut fstart_core::services::memory_detect::E820State,
-    platform: &fstart_acpi::platform::PlatformConfig,
-    northbridge: &Northbridge,
-    northbridge_config: &Northbridge::Config,
-    southbridge: &Southbridge,
-    southbridge_config: &Southbridge::Config,
-    hooks: &Hooks,
-    hooks_config: &Hooks::Config,
-) -> Result<u64, ServiceError>
-where
-    Northbridge: fstart_acpi::device::AcpiDevice,
-    Southbridge: fstart_acpi::device::AcpiDevice,
-    Hooks: fstart_acpi::device::AcpiDevice,
-{
-    crate::tables::prepare_acpi(e820, platform, |dsdt, extra| {
-        dsdt.extend(northbridge.dsdt_aml(northbridge_config));
-        dsdt.extend(southbridge.dsdt_aml(southbridge_config));
-        dsdt.extend(hooks.dsdt_aml(hooks_config));
-        extra.extend(northbridge.extra_tables(northbridge_config));
-        extra.extend(southbridge.extra_tables(southbridge_config));
-        extra.extend(hooks.extra_tables(hooks_config));
-    })
-    .map_err(|_| ServiceError::HardwareError)
-}
-
-#[cfg(all(feature = "stage", feature = "acpi"))]
-pub(crate) fn emit_x86_acpi_tables<Northbridge, Southbridge, Hooks>(
-    e820: &mut fstart_core::services::memory_detect::E820State,
-    northbridge: &Northbridge,
-    northbridge_config: &Northbridge::Config,
-    southbridge: &Southbridge,
-    southbridge_config: &Southbridge::Config,
-    hooks: &Hooks,
-    hooks_config: &Hooks::Config,
-) -> Result<u64, ServiceError>
-where
-    Northbridge: fstart_acpi::device::AcpiDevice,
-    Southbridge: fstart_acpi::device::AcpiDevice + fstart_acpi::platform::X86PlatformProvider,
-    Hooks: fstart_acpi::device::AcpiDevice,
-{
-    let platform = fstart_acpi::platform::PlatformConfig::X86(
-        southbridge.x86_platform_config(u32::from(fstart_arch::mp::online_cpus())),
-    );
-    emit_acpi_tables(
-        e820,
-        &platform,
-        northbridge,
-        northbridge_config,
-        southbridge,
-        southbridge_config,
-        hooks,
-        hooks_config,
-    )
-}
-
-/// Marker for Intel platform families with handwritten early flows.
-#[cfg(feature = "stage")]
-pub trait IntelPlatform {}
-
-/// Board contract common to Intel handwritten early flows.
-#[cfg(feature = "stage")]
-pub trait IntelEarlyBoard: Sized + 'static {
-    type Platform: IntelEarlyPlatform;
-    type Hooks: IntelEarlyBoardHooks<Self::Platform>;
-
-    fn hooks() -> Result<Self::Hooks, ServiceError>;
-}
-
-/// Fixed Intel early-flow platform contract.
-#[cfg(feature = "stage")]
-pub trait IntelEarlyPlatform: IntelPlatform {
-    type Southbridge;
-    type State: Default;
-    /// Platform-owned ACPI namespace context handed to `AcpiDevice` emitters.
-    #[cfg(feature = "acpi")]
-    type AcpiContext;
-}
+// ---------------------------------------------------------------------------
+// Board hooks
+// ---------------------------------------------------------------------------
 
 /// Mainboard hooks contribute ACPI fragments through the same [`AcpiDevice`]
 /// abstraction chipset drivers use. Vacuous when ACPI is disabled.
@@ -922,6 +301,7 @@ pub struct IntelEarlyCtx<'a, P: IntelEarlyPlatform> {
 
 #[cfg(feature = "stage")]
 impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
+    #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
     pub(crate) fn new(southbridge: &'a mut P::Southbridge) -> Self {
         Self { southbridge }
     }
@@ -950,75 +330,4 @@ pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: MainboardAcpi<P> {
     fn before_handoff(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
         Ok(())
     }
-}
-
-/// Shared mainstage state owned by the flow, not by board hooks or drivers.
-///
-/// Owns the authoritative [`E820State`]: memory detection populates it and
-/// table emission carves reservations from it, so the payload hands the OS
-/// a map that includes ACPI/SMBIOS regions. There is no global copy.
-#[cfg(feature = "stage")]
-pub struct MainstageCtx {
-    e820: fstart_core::services::memory_detect::E820State,
-    acpi_rsdp: Option<u64>,
-    firmware_base: u64,
-    firmware_size: usize,
-}
-
-#[cfg(feature = "stage")]
-impl MainstageCtx {
-    pub(crate) fn new(firmware_base: u64, firmware_size: usize) -> Self {
-        Self {
-            e820: fstart_core::services::memory_detect::E820State::new(),
-            acpi_rsdp: None,
-            firmware_base,
-            firmware_size,
-        }
-    }
-
-    #[must_use]
-    pub fn e820(&self) -> &[E820Entry] {
-        self.e820.entries()
-    }
-
-    #[must_use]
-    pub fn total_ram(&self) -> u64 {
-        self.e820.total_ram()
-    }
-
-    #[must_use]
-    pub fn e820_state(&self) -> &fstart_core::services::memory_detect::E820State {
-        &self.e820
-    }
-
-    pub(crate) fn e820_state_mut(
-        &mut self,
-    ) -> &mut fstart_core::services::memory_detect::E820State {
-        &mut self.e820
-    }
-
-    #[must_use]
-    pub const fn acpi_rsdp(&self) -> Option<u64> {
-        self.acpi_rsdp
-    }
-
-    #[must_use]
-    pub const fn firmware_region(&self) -> (u64, usize) {
-        (self.firmware_base, self.firmware_size)
-    }
-
-    #[cfg(feature = "acpi")]
-    pub(crate) fn set_acpi_rsdp(&mut self, rsdp: Option<u64>) {
-        self.acpi_rsdp = rsdp;
-    }
-}
-
-/// Phase-oriented contract for DRAM-backed mainstage flows.
-#[cfg(feature = "stage")]
-pub trait MainstagePhases: Sized {
-    fn pre_bus_scan(&mut self) -> Result<(), ServiceError>;
-    fn bus_scan(&mut self) -> Result<(), ServiceError>;
-    fn init_devices(&mut self) -> Result<(), ServiceError>;
-    fn emit_tables(&mut self) -> Result<(), ServiceError>;
-    fn finalize(&mut self) -> Result<(), ServiceError>;
 }

@@ -5,8 +5,6 @@
 //! board hooks. X61-specific DLPC/dock SuperIO setup lives in the
 //! Board-specific dock/DLPC sequencing lives in `boards/lenovo/x61`.
 
-pub mod smm;
-
 use crate::southbridge::gpio_ich::IchGpio;
 use crate::southbridge::pmio_ich::{self as pmio, PmIo};
 use crate::southbridge::smbus::I801SmBus;
@@ -500,7 +498,6 @@ register_structs! {
 }
 
 const HPET_BASE: usize = 0xfed0_0000;
-const SATA_ABAR_BASE: usize = 0xfea0_0000;
 const ICH8_SPIBAR_OFFSET: usize = 0x3020;
 const SPIBAR_HSFS: usize = 0x04;
 const SPIBAR_FREG0: usize = 0x54;
@@ -1150,6 +1147,15 @@ impl IntelIch8 {
         self.pm
     }
 
+    /// SMI routing view of this southbridge for SMM installation.
+    #[must_use]
+    pub const fn smi(&self) -> crate::southbridge::smi::IchSmi {
+        crate::southbridge::smi::IchSmi::new(
+            self.pm.base(),
+            crate::southbridge::smi::Gpe0Block::ICH8,
+        )
+    }
+
     fn enable_spi_prefetching_and_caching(&self) {
         let lpc = self.lpc();
         // Match coreboot i82801hx bootblock: enable SPI prefetch/cache before
@@ -1512,13 +1518,13 @@ impl IntelIch8 {
         sata.write32(ich8::SATA_SDAT, (val & !clear) | set);
     }
 
-    fn sata_enable_ahci_mmap(&self, sata: &SataConfig, is_mobile: bool) {
+    fn sata_enable_ahci_mmap(&self, sata: &SataConfig, is_mobile: bool, abar: usize) {
         let port_mask = if is_mobile { 0x07 } else { 0x3f };
         let port_map = sata.ports & port_mask;
         let num_ports = if is_mobile { 3 } else { 6 };
-        // SAFETY: `sata_init` programs BAR5 to this fixed ABAR before use.
+        // SAFETY: `abar` is the BAR5 window PCI enumeration assigned and
+        // memory decoding was enabled by the caller.
         unsafe {
-            let abar = SATA_ABAR_BASE;
             let ghc = fstart_core::mmio::read32((abar + 0x04) as *const u32) | (1 << 31);
             fstart_core::mmio::write32((abar + 0x04) as *mut u32, ghc);
             let mut cap = fstart_core::mmio::read32(abar as *const u32);
@@ -1589,6 +1595,23 @@ impl IntelIch8 {
         );
     }
 
+    /// Select the SATA controller mode before the bus scan (coreboot
+    /// `sata_enable`), so the allocator sizes the BARs the mode exposes
+    /// (ABAR only exists in AHCI mode) and `sata_init` can consume them.
+    fn sata_enable(&self, config: &SataConfig) {
+        let sata = ecam::EcamDevice::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
+        if sata.read16(0) == 0xffff {
+            return;
+        }
+        match config.mode {
+            SataMode::Ahci => sata.write8(ich8::SATA_MAP, 0x60),
+            SataMode::Ide => {
+                sata.write8(ich8::SATA_MAP, 0);
+                Self::prog_if_regs(sata).prog_if.set(0x8f);
+            }
+        }
+    }
+
     fn sata_init(&self, config: &SataConfig) {
         let sata = ecam::EcamDevice::new(0, ich8::SATA_DEV, ich8::SATA_FUNC);
         if sata.read16(0) == 0xffff {
@@ -1607,22 +1630,11 @@ impl IntelIch8 {
                 + PCI_COMMAND_BITS::MEMORY_SPACE::SET
                 + PCI_COMMAND_BITS::BUS_MASTER::SET,
         );
-        match config.mode {
-            SataMode::Ahci => {
-                sata.write8(ich8::SATA_MAP, 0x60);
-                // In AHCI mode D31:F2 does not use the legacy/native IDE bus
-                // master I/O BAR.  The generic PCI allocator may have assigned
-                // it before the southbridge switches SATA_MAP; clear it so
-                // Linux does not see an overlap with the separate D31:F1 PATA
-                // controller's BMIBA.
-                sata_regs.bar[4].set(0);
-                sata_regs.bar[5].set(SATA_ABAR_BASE as u32);
-            }
-            SataMode::Ide => {
-                sata.write8(ich8::SATA_MAP, 0);
-                Self::prog_if_regs(sata).prog_if.set(0x8f);
-                sata_regs.bar[5].set(0);
-            }
+        if matches!(config.mode, SataMode::Ahci) {
+            // In AHCI mode D31:F2 does not use the legacy/native IDE bus
+            // master I/O BAR; clear it so Linux does not see an overlap with
+            // the separate D31:F1 PATA controller's BMIBA.
+            sata_regs.bar[4].set(0);
         }
         sata.write16(ich8::SATA_IDE_TIM_PRI, 1 << 15);
         sata.write16(ich8::SATA_IDE_TIM_SEC, 1 << 15);
@@ -1648,7 +1660,14 @@ impl IntelIch8 {
             sata.and8_or8(0x9c, !(0x1f << 2), 3 << 2);
         }
         if matches!(config.mode, SataMode::Ahci) {
-            self.sata_enable_ahci_mmap(config, is_mobile);
+            // ABAR is whatever PCI enumeration assigned to BAR5, sized in the
+            // mode `sata_enable` selected before the bus scan.
+            match sata.memory_bar(0x24) {
+                Some(abar) => self.sata_enable_ahci_mmap(config, is_mobile, abar as usize),
+                None => {
+                    fstart_log::error!("intel-ich8: SATA ABAR unassigned, AHCI left unconfigured")
+                }
+            }
         }
         self.sata_program_indexed(is_mobile);
         fstart_log::info!("intel-ich8: SATA init complete ports={:#x}", ports as u32);
@@ -2103,6 +2122,21 @@ impl IntelIch8 {
     }
 }
 
+impl crate::southbridge::smi::SmiControl for IntelIch8 {
+    fn pm_base(&self) -> u16 {
+        self.smi().pm_base()
+    }
+    fn gpe0(&self) -> crate::southbridge::smi::Gpe0Block {
+        self.smi().gpe0()
+    }
+    fn enable_relocation_smi(&self) {
+        self.smi().enable_relocation_smi();
+    }
+    fn enable_permanent_smi(&self) {
+        self.smi().enable_permanent_smi();
+    }
+}
+
 impl crate::IntelSouthbridgeDriver for IntelIch8 {
     type Config = IntelIch8Config;
 
@@ -2168,6 +2202,9 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         self.pm().write32(GPE0_EN_ICH8, self.config.gpe0_en);
         self.enable_hpet();
         self.setup_dmi();
+        if let Some(sata) = self.config.sata.as_ref() {
+            self.sata_enable(sata);
+        }
         let _ = self.detect_s3_resume();
         fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd.bits());
         Ok(())

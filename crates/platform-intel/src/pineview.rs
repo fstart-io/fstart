@@ -1,29 +1,5 @@
 //! Pineview/ICH7 platform defaults and fixed handwritten flow.
 
-#[cfg(feature = "stage")]
-pub use stage::{
-    PineviewIch7, PineviewIch7Board, PineviewIch7Mainstage, run_pineview_ich7_mainstage,
-};
-
-/// Platform-owned adapter for fixed Pineview stage dispatch.
-#[cfg(feature = "stage")]
-pub struct Program<B>(core::marker::PhantomData<B>);
-#[cfg(feature = "stage")]
-impl<B: PineviewIch7Board> fstart_stage::StageProgram for Program<B> {
-    fn run_stage(handoff: usize) -> ! {
-        #[cfg(fstart_stage_env = "car")]
-        PineviewIch7::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
-        #[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
-        PineviewIch7::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
-        #[cfg(not(any(
-            fstart_stage_env = "car",
-            fstart_stage_env = "postcar",
-            fstart_stage_env = "ram"
-        )))]
-        panic!("pineview requires a fixed Intel stage selection");
-    }
-}
-
 use fstart_driver_intel::ich7;
 pub use fstart_driver_intel::ich7::{
     HdaConfig, HdaVerbTable, IntelIch7Config, LpcDecodeConfig, LpcFixedIoDecode, LpcFloppyDecode,
@@ -34,9 +10,6 @@ use fstart_driver_intel::pineview;
 pub use fstart_driver_intel::pineview::{IntelPineviewConfig, PineviewIgdConfig};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 
-pub const PINEVIEW_NORTHBRIDGE_NODE: &str = "northbridge";
-pub const PINEVIEW_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
-pub const PINEVIEW_NEXT_STAGE_NAME: &str = "ramstage";
 /// Pineview 32 KiB CAR window.
 pub const PINEVIEW_CAR_BASE: u64 = 0xFEFC_0000;
 pub const PINEVIEW_CAR_SIZE: u64 = 0x8000;
@@ -187,7 +160,7 @@ impl PineviewIch7Config {
         self
     }
     #[must_use]
-    pub const fn build(self) -> Self {
+    pub const fn build(self) -> PineviewIch7Platform {
         if self.lpc_decode.fixed_io.com_a as u8 == self.lpc_decode.fixed_io.com_b as u8 {
             panic!("ICH7 COMA and COMB decode the same port");
         }
@@ -204,7 +177,11 @@ impl PineviewIch7Config {
         if self.max_cpus == 0 {
             panic!("Pineview max_cpus must be non-zero");
         }
-        self
+        PineviewIch7Platform {
+            northbridge: self.northbridge_config(),
+            southbridge: self.southbridge_config(),
+            max_cpus: self.max_cpus,
+        }
     }
 }
 
@@ -244,6 +221,18 @@ const fn validate_pirq_routing(routing: &[u8; 8]) {
     }
 }
 
+/// Built Pineview/ICH7 policy: the derived driver configs the fixed flow binds.
+///
+/// Produced by [`PineviewIch7Config::build`]; boards point their
+/// `IntelBoard::CONFIG` at a `static` of this type.
+#[derive(Debug, Clone, Copy)]
+pub struct PineviewIch7Platform {
+    pub northbridge: IntelPineviewConfig,
+    pub southbridge: IntelIch7Config,
+    /// Maximum logical CPU count (BSP + APs) the board populates.
+    pub max_cpus: u16,
+}
+
 impl Default for PineviewIch7Config {
     fn default() -> Self {
         Self::new()
@@ -271,251 +260,46 @@ impl PineviewIch7AcpiContext {
 }
 
 #[cfg(feature = "stage")]
+pub use stage::PineviewIch7;
+
+#[cfg(feature = "stage")]
 mod stage {
     use super::*;
-    use crate::{
-        FfsLoadSpec, IntelEarlyBoard, IntelEarlyPlatform, IntelNorthbridgeDriver, IntelPlatform,
-        IntelSouthbridgeDriver, MainstageSpec,
-    };
-    use fstart_core::services::ServiceError;
+    use crate::{IntelChipsetConfig, IntelEarlyPlatform};
+    #[cfg(feature = "mp")]
+    use fstart_arch::cpu_intel::pineview::PineviewCpuDriver;
     use fstart_driver_intel::ich7::IntelIch7;
     use fstart_driver_intel::pineview::IntelPineview;
-    use fstart_stage::StageEnvironment;
-    use fstart_stage::payload::MainstagePayload;
 
-    /// PINEVIEW northbridge + ICH7 southbridge Intel early-flow platform.
+    /// Pineview/ICH7 chipset pair for the shared Intel flow.
     pub struct PineviewIch7;
 
-    impl IntelPlatform for PineviewIch7 {}
-
     impl IntelEarlyPlatform for PineviewIch7 {
+        const NAME: &'static str = "pineview/ich7";
+        type Config = PineviewIch7Platform;
+        type Northbridge = IntelPineview;
         type Southbridge = IntelIch7;
-        type State = ();
+        #[cfg(feature = "mp")]
+        type Cpu = PineviewCpuDriver;
+        #[cfg(feature = "mp")]
+        fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
+            PineviewCpuDriver::new(ICH7_PMBASE, microcode)
+        }
         #[cfg(feature = "acpi")]
         type AcpiContext = PineviewIch7AcpiContext;
     }
 
-    impl PineviewIch7 {
-        pub fn run_early<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
-        where
-            B: PineviewIch7Board,
-        {
-            run_pineview_ich7_bootblock::<B>(hooks)
+    impl IntelChipsetConfig for PineviewIch7Platform {
+        type Northbridge = IntelPineview;
+        type Southbridge = IntelIch7;
+        fn northbridge(&'static self) -> &'static IntelPineviewConfig {
+            &self.northbridge
         }
-
-        pub fn run_stage<B>(env: StageEnvironment, _handoff: usize) -> !
-        where
-            B: PineviewIch7Board,
-        {
-            let _ = env;
-
-            #[cfg(fstart_stage_env = "car")]
-            {
-                let Ok(mut hooks) = B::hooks() else {
-                    fstart_arch::x86_64::halt();
-                };
-                if Self::run_early::<B>(&mut hooks).is_err() {
-                    fstart_arch::x86_64::halt();
-                }
-                fstart_arch::x86_64::halt()
-            }
-
-            #[cfg(fstart_stage_env = "postcar")]
-            {
-                // Cut-B postcar loader: teardown already done by the entry;
-                // load and decompress the ramstage cached. Noreturn.
-                run_pineview_ich7_postcar::<B>()
-            }
-
-            #[cfg(fstart_stage_env = "ram")]
-            {
-                run_pineview_ich7_mainstage::<B>()
-            }
-
-            #[cfg(not(any(
-                fstart_stage_env = "car",
-                fstart_stage_env = "ram",
-                fstart_stage_env = "postcar"
-            )))]
-            {
-                match env {
-                    StageEnvironment::Car => {
-                        let Ok(mut hooks) = B::hooks() else {
-                            fstart_arch::x86_64::halt();
-                        };
-                        if Self::run_early::<B>(&mut hooks).is_err() {
-                            fstart_arch::x86_64::halt();
-                        }
-                        fstart_arch::x86_64::halt()
-                    }
-                    StageEnvironment::Ram => run_pineview_ich7_mainstage::<B>(),
-                    StageEnvironment::Monolithic => fstart_arch::x86_64::halt(),
-                }
-            }
+        fn southbridge(&'static self) -> &'static IntelIch7Config {
+            &self.southbridge
         }
-    }
-
-    /// Board facts required by the Pineview/ICH7 flow.
-    pub trait PineviewIch7Board: IntelEarlyBoard<Platform = PineviewIch7> {
-        type Payload: MainstagePayload<PineviewIch7Mainstage<Self>>;
-
-        /// Board platform policy. Points at a board `static` so the config lives
-        /// in `.rodata`, never on the early-stage stack.
-        const CONFIG: &'static PineviewIch7Config;
-
-        /// Derived driver configs, const-evaluated into `.rodata`. Boards do not
-        /// override these.
-        const NB_CONFIG: &'static IntelPineviewConfig = &Self::CONFIG.northbridge_config();
-        const SB_CONFIG: &'static IntelIch7Config = &Self::CONFIG.southbridge_config();
-
-        type Console: fstart_core::services::ConsoleDevice;
-
-        fn console_config() -> <Self::Console as fstart_core::services::ConsoleDevice>::Config;
-        fn console_node() -> &'static str;
-        #[cfg(feature = "smbios")]
-        fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
-    }
-
-    /// Bring up BSP + APs with the platform's CPU driver. The Pineview Atom
-    /// is family 6 model 0x1c, covered by the 106cx Pineview CPU driver
-    /// (signatures 0x106c0/0x106ca); only the PMBASE is platform knowledge.
-    /// The board states `max_cpus` in its config.
-    ///
-    /// When fbuild embedded an SMM image into this stage (`SMM_IMAGE`), MP
-    /// setup also performs SMM relocation, installs the handler in TSEG, and
-    /// locks SMRAM via [`fstart_arch::mp::SmmOps`].
-    #[cfg(feature = "mp")]
-    fn init_mp(nb_config: &'static IntelPineviewConfig, max_cpus: u16) -> Result<(), ServiceError> {
-        // APs must run the same updated microcode as the BSP, whose update
-        // happens in pre-CAR assembly; the blob sits in boot flash.
-        let microcode = crate::intel_microcode_blob();
-        let cpu = fstart_arch::cpu_intel::pineview::PineviewCpuDriver::new(ICH7_PMBASE, microcode);
-        let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
-        let northbridge = IntelPineview::new_from_config(nb_config)?;
-        let smm = crate::SMM_IMAGE.map(|_| &northbridge as &dyn fstart_arch::mp::SmmOps);
-        fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
-            cpu_drivers: &drivers,
-            smm,
-            smm_image: crate::SMM_IMAGE,
-            max_cpus,
-        })
-        .map(|_| ())
-        .map_err(|_| ServiceError::HardwareError)
-    }
-
-    /// Handwritten fixed Pineview/ICH7 bootblock flow. Ordering is this function.
-    /// Ends by authenticating and loading postcar and publishing the MTRR stash (shared
-    /// `run_intel_bootblock` tail); the bulk ramstage copy stays cached in
-    /// postcar.
-    fn run_pineview_ich7_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
-    where
-        B: PineviewIch7Board,
-    {
-        let northbridge = IntelPineview::new_from_config(B::NB_CONFIG)?;
-        let southbridge = IntelIch7::new_from_config(B::SB_CONFIG)?;
-        crate::run_intel_bootblock::<PineviewIch7, _, _, _, B::Console>(
-            bootstrap_spec::<B>(0)?,
-            hooks,
-            northbridge,
-            southbridge,
-        )
-    }
-
-    /// Handwritten fixed Pineview/ICH7 postcar flow: fresh program, fresh
-    /// stack, caching on. Re-inits the console from ROM constants, loads and
-    /// decompresses the ramstage cached, and jumps to it. Noreturn.
-    #[cfg(fstart_stage_env = "postcar")]
-    pub fn run_pineview_ich7_postcar<B>() -> !
-    where
-        B: PineviewIch7Board,
-    {
-        let Ok(spec) = bootstrap_spec::<B>(1) else {
-            fstart_arch::x86_64::halt()
-        };
-        crate::run_intel_postcar::<B::Console>(spec)
-    }
-
-    fn bootstrap_spec<B: PineviewIch7Board>(
-        index: u16,
-    ) -> Result<FfsLoadSpec<B::Console>, ServiceError> {
-        use fstart_core::layout::RegionKind;
-        let layout = crate::layout::IntelBootLayout::current(index)?;
-        Ok(FfsLoadSpec {
-            platform: "pineview/ich7",
-            next_stage: PINEVIEW_POSTCAR_STAGE_NAME,
-            next_load_addr: layout.region(RegionKind::BootstrapPostcar)?.base,
-            geometry: layout,
-            dram_end: layout
-                .region(RegionKind::BootstrapRam)?
-                .end()
-                .ok_or(ServiceError::InvalidParam)?,
-            ramstage_name: PINEVIEW_NEXT_STAGE_NAME,
-            ramstage_load_addr: layout.region(RegionKind::BootstrapMainstage)?.base,
-            console_config: B::console_config(),
-            console_node: B::console_node(),
-        })
-    }
-
-    /// Pineview/ICH7 mainstage: fixed platform devices bound from typed config and
-    /// driven through the shared Intel mainstage phases.
-    pub type PineviewIch7Mainstage<B> = crate::IntelMainstage<
-        PineviewIch7,
-        IntelPineview,
-        IntelIch7,
-        <B as IntelEarlyBoard>::Hooks,
-        <B as PineviewIch7Board>::Console,
-        PineviewIch7AcpiContext,
-    >;
-
-    #[cfg(feature = "mp")]
-    fn init_mp_for_board<B: PineviewIch7Board>() -> Result<(), ServiceError> {
-        let max_cpus = option_env!("FSTART_INTEL_MAX_CPUS")
-            .ok_or(ServiceError::InvalidParam)?
-            .parse()
-            .map_err(|_| ServiceError::InvalidParam)?;
-        init_mp(B::NB_CONFIG, max_cpus)
-    }
-
-    /// Handwritten fixed Pineview/ICH7 mainstage flow. Ordering is this function.
-    pub fn run_pineview_ich7_mainstage<B>() -> !
-    where
-        B: PineviewIch7Board,
-    {
-        let Ok(hooks) = B::hooks() else {
-            fstart_arch::x86_64::halt();
-        };
-        let Ok(layout) = crate::layout::IntelBootLayout::current(2) else {
-            fstart_arch::x86_64::halt()
-        };
-        let Ok(mainstage) = crate::bind_intel_mainstage::<
-            PineviewIch7,
-            IntelPineview,
-            IntelIch7,
-            B::Hooks,
-            B::Console,
-            PineviewIch7AcpiContext,
-        >(
-            MainstageSpec {
-                geometry: layout,
-                nb_config: B::NB_CONFIG,
-                sb_config: B::SB_CONFIG,
-                console_config: B::console_config(),
-                console_node: B::console_node(),
-                platform_node: PINEVIEW_NORTHBRIDGE_NODE,
-                #[cfg(feature = "mp")]
-                init_mp: init_mp_for_board::<B>,
-                #[cfg(feature = "smbios")]
-                smbios_desc: B::smbios_desc(),
-            },
-            hooks,
-        ) else {
-            fstart_arch::x86_64::halt();
-        };
-        crate::run_intel_mainstage::<_, B::Payload>(
-            "pineview/ich7",
-            PINEVIEW_NEXT_STAGE_NAME,
-            fstart_arch::x86_64::halt,
-            mainstage,
-        )
+        fn max_cpus(&self) -> u16 {
+            self.max_cpus
+        }
     }
 }

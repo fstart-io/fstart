@@ -8,15 +8,15 @@
 use fstart_core::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
 use fstart_core::{FlashLayout, Platform, SmbiosConfig, X86LegacyFlashLayout, hstr, hvec};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
-use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
-use fstart_intel_gma::{FallbackMode, OutputConfig, PreferredMode, Port};
-use fstart_platform_intel::i945::I945IgdConfig;
-use fstart_platform_intel::igd::IgdDisplayPolicy;
 use fstart_driver_superio::smsc_lpc47m15x;
+use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
+use fstart_intel_gma::{FallbackMode, OutputConfig, Port, PreferredMode};
+use fstart_platform_intel::i945::I945IgdConfig;
 use fstart_platform_intel::i945::{
-    I945Ich7Config, I945Variant, LpcFixedIoDecode, LpcGenericIoDecode, LpcSerialDecode, SataConfig,
-    SataMode, UsbConfig,
+    I945Ich7Config, I945Ich7Platform, I945Variant, LpcFixedIoDecode, LpcGenericIoDecode,
+    LpcSerialDecode, SataConfig, SataMode, UsbConfig,
 };
+use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 
 pub const BOARD_NAME: &str = "intel-d945gclf";
 pub const BOARD_PACKAGE: &str = "fstart-board-intel-d945gclf";
@@ -63,13 +63,8 @@ const D945GCLF_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
 /// Integrated graphics configuration for the onboard GMA950.
 pub const fn d945gclf_igd_config() -> I945IgdConfig {
     I945IgdConfig {
-        gtt_mmio_base: 0xFEB0_0000,
-        gmadr_base: 0xD000_0000,
         gmadr_size: 256 * 1024 * 1024,
-        vbt_file: None,
-        vbt_addr: None,
-        vbt_size: 0,
-        legacy_vbt_probe: Some(0x000C_0000),
+        vbt: VbtSource::LEGACY,
         panel_power_up_delay: 2000,
         panel_backlight_on_delay: 2000,
         panel_power_down_delay: 2000,
@@ -81,7 +76,7 @@ pub const fn d945gclf_igd_config() -> I945IgdConfig {
     }
 }
 
-pub static D945GCLF_PLATFORM: I945Ich7Config = I945Ich7Config::new()
+pub static D945GCLF_PLATFORM: I945Ich7Platform = I945Ich7Config::new()
     .variant(I945Variant::DesktopGc)
     .igd(d945gclf_igd_config())
     // Atom 230: single core with HT -> 2 logical CPUs.

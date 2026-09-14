@@ -17,15 +17,11 @@
 pub mod raminit;
 mod regs;
 
-#[cfg(feature = "ffs-vbt")]
-use alloc::vec::Vec;
-use core::cell::UnsafeCell;
 use core::ptr;
 
 use self::regs::{DmiBar, MchBar, Rcba, hostbridge, mchbar};
 use crate::MmioBar;
 use crate::ich7::ich7;
-use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_arch::x86::mtrr;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::MemoryController;
@@ -52,34 +48,7 @@ fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
     mtrr::set_ram_wb_ranges(&ranges[..count]);
 }
 
-#[cfg(feature = "ffs-vbt")]
-const IGD_ASLS: u16 = 0xFC;
-#[cfg(feature = "ffs-vbt")]
-const IGD_SWSMISCI: u16 = 0xE0;
-#[cfg(feature = "ffs-vbt")]
-const VBT_SIGNATURE: u32 = 0x5442_5624;
-
-#[cfg(feature = "ffs-vbt")]
-#[allow(clippy::large_enum_variant)]
-enum VbtBytes<'a> {
-    Borrowed(&'a [u8]),
-    Owned(Vec<u8>),
-}
-
-#[cfg(feature = "ffs-vbt")]
-impl VbtBytes<'_> {
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Borrowed(bytes) => bytes,
-            Self::Owned(bytes) => bytes.as_slice(),
-        }
-    }
-}
-
 /// IGD PCI configuration offsets and command bits.
-const IGD_BAR0_GTTMMADR: u16 = 0x10;
-const IGD_BAR2_GMADR: u16 = 0x18;
-const IGD_BAR3_GTTADR: u16 = 0x1c;
 const IGD_MSAC: u16 = 0x62;
 const PCI_COMMAND: u16 = 0x04;
 const PCI_CMD_MEMORY: u16 = 1 << 1;
@@ -99,31 +68,12 @@ pub struct PineviewIgdConfig {
     pub use_lvds: bool,
     /// Enable PLL spread spectrum.
     pub spread_spectrum: bool,
-    /// Board-relative VBT file path stored as a compressed FFS data file.
-    pub vbt_file: Option<&'static str>,
-    /// GTTMMADR BAR0 fallback address, used only when PCI enumeration left the
-    /// window unassigned.
-    pub gtt_mmio_base: u64,
-    /// MMIO-visible GTT page-table BAR3 fallback address.
-    pub gtt_pte_base: u64,
-    /// GMADR graphics aperture BAR2 fallback address.
-    pub gmadr_base: u64,
+    /// Where the VBT for the OpRegion comes from.
+    pub vbt: super::igd::VbtSource,
     /// GMADR graphics aperture size in bytes.
     pub gmadr_size: u32,
     /// Board display policy. `None` leaves the display engine untouched.
     pub display: Option<super::igd::IgdDisplayPolicy>,
-}
-
-const fn default_gtt_mmio_base() -> u64 {
-    0xfed0_0000
-}
-
-const fn default_gtt_pte_base() -> u64 {
-    0xfed8_0000
-}
-
-const fn default_gmadr_base() -> u64 {
-    0xc000_0000
 }
 
 const fn default_gmadr_size() -> u32 {
@@ -166,10 +116,7 @@ impl PineviewIgdConfig {
             use_crt: false,
             use_lvds: false,
             spread_spectrum: false,
-            vbt_file: None,
-            gtt_mmio_base: default_gtt_mmio_base(),
-            gtt_pte_base: default_gtt_pte_base(),
-            gmadr_base: default_gmadr_base(),
+            vbt: super::igd::VbtSource::LEGACY,
             gmadr_size: default_gmadr_size(),
             display: None,
         }
@@ -204,16 +151,6 @@ impl Default for IntelPineviewConfig {
     }
 }
 
-// Pineview/NM10 SMM constants.  SMRAM bits match coreboot's
-// `cpu/intel/smm/gen1/smmrelocate.c`; PM I/O bits live in
-// `fstart-pmio-ich`.
-const SMRAM_G_SMRAME: u8 = 1 << 3;
-const SMRAM_D_LCK: u8 = 1 << 4;
-const SMRAM_D_OPEN: u8 = 1 << 6;
-const SMRAM_C_BASE_SEG: u8 = 0b010;
-const ICH7_PMBASE: u16 = 0x0500;
-const APM_CNT: u16 = 0x00b2;
-const EM64T101_SAVE_STATE_SIZE: usize = 0x400;
 const PCI_ECAM_SIZE: u64 = 0x1000_0000;
 const PCI_MMIO32_LIMIT: u64 = 0xfec0_0000;
 const PCI_MMIO64_LIMIT: u64 = 0x0010_0000_0000_0000;
@@ -221,25 +158,6 @@ const PCI_PIO_BASE: u64 = 0x1000;
 const PCI_PIO_SIZE: u64 = 0xf000;
 const PCI_BUS_START: u8 = 0;
 const PCI_BUS_END: u8 = 0xff;
-
-const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
-    smbase: 0,
-    entry_addr: 0,
-    save_state_base: 0,
-    save_state_top: 0,
-    stack_bottom: 0,
-    stack_top: 0,
-};
-
-struct CpuLayoutStore(UnsafeCell<[fstart_smm::CpuSmmLayout; fstart_smm::runtime::MAX_SMM_CPUS]>);
-
-// SAFETY: firmware invokes SMM installation from the BSP while SMRAM is open;
-// this scratch buffer is not shared with APs or interrupt context.
-unsafe impl Sync for CpuLayoutStore {}
-
-static PINEVIEW_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
-    [ZERO_CPU_LAYOUT; fstart_smm::runtime::MAX_SMM_CPUS],
-));
 
 /// Pineview NB driver.
 pub struct IntelPineview {
@@ -598,11 +516,18 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
     }
 
     fn post_verify_init(&mut self) -> Result<(), ServiceError> {
-        // Needs the verified boot media: the OpRegion embeds the VBT and the
-        // modeset reads it for the panel and DDC policy.
-        self.init_igd_opregion();
+        // The OpRegion embeds the VBT out of the verified boot media, and the
+        // modeset reads the same bytes for its panel and DDC policy.
+        if !self.igd_present() {
+            return Ok(());
+        }
+        let vbt = super::igd::publish_opregion(
+            &self.igd(),
+            super::igd::OpRegionSci::Swsmisci,
+            &self.config.igd.vbt,
+        );
         if self.config.igd.display.is_some() {
-            self.gma_display_init();
+            self.gma_display_init(vbt.as_deref());
         }
         Ok(())
     }
@@ -887,88 +812,13 @@ impl IntelPineview {
         (raw as u64) << 26
     }
 
-    #[cfg(feature = "ffs-vbt")]
     fn igd(&self) -> ecam::EcamDevice {
         ecam::EcamDevice::new(0, 2, 0)
     }
 
-    #[cfg(feature = "ffs-vbt")]
-    fn vbt_size(vbt: &[u8]) -> Option<usize> {
-        if vbt.len() < 28 || u32::from_le_bytes([vbt[0], vbt[1], vbt[2], vbt[3]]) != VBT_SIGNATURE {
-            return None;
-        }
-        let size = u16::from_le_bytes([vbt[24], vbt[25]]) as usize;
-        if size == 0 || size > vbt.len() {
-            return None;
-        }
-        Some(size)
+    fn igd_present(&self) -> bool {
+        self.igd().read16(0) != 0xffff
     }
-
-    #[cfg(feature = "ffs-vbt")]
-    fn ffs_vbt(&self) -> Option<Vec<u8>> {
-        let file_name = self.config.igd.vbt_file?;
-        let bytes = fstart_core::services::ffs_context::read_verified_asset(file_name)?;
-        let size = Self::vbt_size(bytes)?;
-        Some(bytes[..size].to_vec())
-    }
-
-    #[cfg(feature = "ffs-vbt")]
-    fn legacy_vbt(&self) -> Option<&'static [u8]> {
-        // SAFETY: 0xc0000 legacy option ROM window is readable on PC-compatible x86.
-        let rom = unsafe { core::slice::from_raw_parts(0xC0000 as *const u8, 128 * 1024) };
-        let mut off = 0usize;
-        while off + 4 < rom.len() {
-            if u32::from_le_bytes([rom[off], rom[off + 1], rom[off + 2], rom[off + 3]])
-                == VBT_SIGNATURE
-                && let Some(size) = Self::vbt_size(&rom[off..])
-            {
-                return Some(&rom[off..off + size]);
-            }
-            off += 16;
-        }
-        None
-    }
-
-    #[cfg(feature = "ffs-vbt")]
-    fn locate_vbt(&self) -> Option<VbtBytes<'static>> {
-        #[cfg(feature = "ffs-vbt")]
-        if self.config.igd.vbt_file.is_some() {
-            // A configured authenticated asset must not fall back to legacy
-            // memory after a verification failure.
-            return self.ffs_vbt().map(VbtBytes::Owned);
-        }
-        self.legacy_vbt().map(VbtBytes::Borrowed)
-    }
-
-    #[cfg(feature = "ffs-vbt")]
-    fn init_igd_opregion(&self) {
-        if self.igd().read16(0) == 0xffff {
-            return;
-        }
-
-        let Some(vbt) = self.locate_vbt() else {
-            fstart_log::error!("pineview: no valid VBT found for IGD opregion");
-            return;
-        };
-        let vbt = vbt.as_slice();
-
-        let opregion = crate::igd_opregion_buf(super::igd::opregion_size(vbt.len()));
-        super::igd::build_opregion(opregion, vbt);
-
-        let igd = self.igd();
-        igd.write32(IGD_ASLS, opregion.as_ptr() as u32);
-        // Atom platforms use the combined SWSMISCI register.
-        let swsmisci = (igd.read16(IGD_SWSMISCI) & !1) | (1 << 15);
-        igd.write16(IGD_SWSMISCI, swsmisci);
-        fstart_log::info!(
-            "pineview: IGD opregion at {:#x}, VBT {} bytes",
-            opregion.as_ptr() as usize,
-            vbt.len() as u32,
-        );
-    }
-
-    #[cfg(not(feature = "ffs-vbt"))]
-    fn init_igd_opregion(&self) {}
 
     fn igd_memory_size_kb(&self) -> u32 {
         let ggc = self.hostbridge_regs().ggc.get();
@@ -1061,37 +911,6 @@ impl IntelPineview {
         self.hostbridge_regs().smram.get()
     }
 
-    fn smm_open(&self) {
-        self.write_smram(SMRAM_D_OPEN | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
-    }
-
-    fn smm_close(&self) {
-        self.write_smram(SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
-    }
-
-    fn smm_lock(&self) {
-        self.write_smram(SMRAM_D_LCK | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
-    }
-
-    fn smi_enable_for_relocation() {
-        let pm = crate::southbridge::pmio_ich::PmIo::new(ICH7_PMBASE);
-        pm.setbits32(
-            crate::southbridge::pmio_ich::SMI_EN,
-            crate::southbridge::pmio_ich::APMC_EN
-                | crate::southbridge::pmio_ich::GBL_SMI_EN
-                | crate::southbridge::pmio_ich::EOS,
-        );
-    }
-
-    fn cr3() -> u64 {
-        let cr3: u64;
-        // SAFETY: reading CR3 is safe in firmware privileged mode.
-        unsafe {
-            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
-        }
-        cr3
-    }
-
     // ---------------------------------------------------------------
     // Full memory map (from northbridge.c)
     // ---------------------------------------------------------------
@@ -1102,42 +921,26 @@ impl IntelPineview {
     /// `PGETBL_CTL` from the stolen-memory base register (`BGSM`) twice with a
     /// short delay before the modeset. Without that enable bit the display
     /// engine cannot translate framebuffer addresses.
-    /// Keep the BAR assignment PCI enumeration produced, programming the
-    /// platform default only when the window was left unassigned.
-    fn keep_or_program_bar(igd: &ecam::EcamDevice, reg: u16, fallback: u64) -> u64 {
-        let value = igd.read32(reg);
-        if value == 0 {
-            igd.write32(reg, (fallback & 0xffff_ffff) as u32);
-            fallback & !0xf
-        } else {
-            u64::from(value) & !0xf
-        }
-    }
+    fn gma_display_init(&mut self, vbt: Option<&[u8]>) {
+        let igd = self.igd();
 
-    fn gma_display_init(&mut self) {
-        let igd = ecam::EcamDevice::new(0, 2, 0);
-
-        // The graphics windows are assigned by PCI enumeration and resource
-        // allocation: use those values. Re-programming them moves the GMCH
-        // register block, which follows the BAR, away from the window the PCH
-        // side is strapped to, and the display logic there stops responding.
-        // (A hardcoded 0xfed00000 also overlaps the fixed MCHBAR/DMIBAR/EPBAR
-        // windows, so accesses above +0x10000 land in chipset registers.)
-        let gtt_mmio_base =
-            Self::keep_or_program_bar(&igd, IGD_BAR0_GTTMMADR, self.config.igd.gtt_mmio_base);
-        let gmadr_base =
-            Self::keep_or_program_bar(&igd, IGD_BAR2_GMADR, self.config.igd.gmadr_base);
-        let gtt_pte_base =
-            Self::keep_or_program_bar(&igd, IGD_BAR3_GTTADR, self.config.igd.gtt_pte_base);
+        // Re-programming the enumerated windows moves the GMCH register
+        // block, which follows the BAR, away from the window the PCH side is
+        // strapped to, and the display logic there stops responding.
+        let Some(bars) = super::igd::assigned_bars(&igd, true) else {
+            fstart_log::error!("pineview: IGD windows unassigned, skipping display");
+            return;
+        };
+        let gtt_pte_base = bars.gtt_pte.unwrap_or(0);
 
         igd.or16(PCI_COMMAND, PCI_CMD_MEMORY | PCI_CMD_MASTER);
         igd.and8_or8(IGD_MSAC, !0x3, 0x2);
 
         // coreboot writes PGETBL_CTL twice around a short delay, then flushes.
         let gtt_base = self.gtt_base();
-        super::igd::program_gtt_base(gtt_mmio_base, gtt_base, 0);
+        super::igd::program_gtt_base(bars.gtt_mmio, gtt_base, 0);
         fstart_arch::x86::udelay(50);
-        super::igd::program_gtt_base(gtt_mmio_base, gtt_base, 0);
+        super::igd::program_gtt_base(bars.gtt_mmio, gtt_base, 0);
         super::igd::clear_gtt_table(gtt_pte_base, IGD_GTT_SIZE);
 
         // Graphics stolen memory runs from the graphics stolen base up to
@@ -1148,10 +951,10 @@ impl IntelPineview {
         let stolen_size = self.tolud().saturating_sub(stolen_base);
         let addresses = super::igd::IgdAddresses {
             pci_bdf: PciAddress::new(0, 0, 2, 0),
-            gtt_mmio_base,
+            gtt_mmio_base: bars.gtt_mmio,
             gtt_mmio_size: IGD_GTTMMADR_SIZE,
             gtt_pte_base: Some(gtt_pte_base),
-            gmadr_base: Some(gmadr_base),
+            gmadr_base: Some(bars.gmadr),
             gmadr_size: self.config.igd.gmadr_size,
             stolen_base: u64::from(stolen_base),
             stolen_size,
@@ -1163,12 +966,6 @@ impl IntelPineview {
         } else {
             Cpu::Pineview
         };
-        #[cfg(feature = "ffs-vbt")]
-        let vbt = self.locate_vbt();
-        #[cfg(feature = "ffs-vbt")]
-        let vbt = vbt.as_ref().map(|bytes| bytes.as_slice());
-        #[cfg(not(feature = "ffs-vbt"))]
-        let vbt: Option<&[u8]> = None;
         self.display
             .initialize(cpu, self.config.igd.display.as_ref(), &addresses, vbt);
     }
@@ -1208,170 +1005,19 @@ impl IntelPineview {
     }
 }
 
-impl SmmOps for IntelPineview {
-    fn smm_info(&self) -> Option<SmmInfo> {
+impl fstart_arch::cpu_intel::smm::SmramControl for IntelPineview {
+    fn tseg(&self) -> Option<(u64, u32)> {
         let (base, size) = self.smm_region();
-        if size == 0 {
-            fstart_log::error!("pineview SMM: TSEG is disabled");
-            return None;
-        }
-        fstart_log::info!("pineview SMM: TSEG base={:#x} size={:#x}", base, size);
-        Some(SmmInfo {
-            smbase: base as u64,
-            smsize: size as usize,
-            save_state_size: EM64T101_SAVE_STATE_SIZE,
-        })
+        (size != 0).then_some((u64::from(base), size))
     }
-
-    fn install_smm_handlers(
-        &self,
-        info: &SmmInfo,
-        num_cpus: u16,
-        image: &[u8],
-    ) -> Result<(), SmmError> {
-        self.smm_open();
-
-        let layouts = unsafe { &mut *PINEVIEW_SMM_CPU_LAYOUTS.0.get() };
-        let result = unsafe {
-            fstart_smm::install_pic_image(
-                image,
-                fstart_smm::InstallConfig {
-                    smram_base: info.smbase,
-                    smram_size: info.smsize as u64,
-                    num_cpus,
-                    save_state_size: info.save_state_size as u32,
-                    page_table_size: 0,
-                    cr3: Self::cr3(),
-                    platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
-                    platform_flags: 0,
-                    platform_data: [ICH7_PMBASE as u64, 0x28, 0, 0],
-                },
-                layouts,
-            )
-        };
-
-        match result {
-            Ok(installed) => {
-                let targets = &installed.cpus[..num_cpus as usize];
-                fstart_arch::mp::prepare_default_smm_relocation(targets);
-                // The relocation stub enters long mode, but firmware stages run
-                // unpaged, so it must be given its own identity page tables
-                // instead of the (stale) firmware CR3.
-                // SAFETY: the default SMBASE region is writable low memory and
-                // unused until the stub itself is installed there.
-                let relocation_cr3 = unsafe {
-                    fstart_smm::build_relocation_identity_tables(
-                        fstart_arch::mp::SMM_DEFAULT_SMBASE,
-                    )
-                };
-                let default_handler = unsafe {
-                    fstart_smm::install_default_relocation_callback_stub(
-                        image,
-                        fstart_smm::DefaultRelocationCallbackConfig {
-                            default_smbase: fstart_arch::mp::SMM_DEFAULT_SMBASE,
-                            cr3: relocation_cr3,
-                            callback: fstart_arch::mp::default_smm_relocation_handler as *const ()
-                                as usize as u64,
-                            stack_top: fstart_arch::mp::SMM_DEFAULT_ENTRY_STACK_TOP,
-                        },
-                    )
-                };
-                if default_handler.is_err() {
-                    self.smm_close();
-                    fstart_log::error!(
-                        "pineview SMM: failed to install default relocation handler"
-                    );
-                    return Err(SmmError::InstallFailed);
-                }
-
-                fstart_log::info!(
-                    "pineview SMM: installed image common={:#x} entry={:#x} cpus={}",
-                    installed.common_base,
-                    installed.common_entry,
-                    installed.cpus.len()
-                );
-                Ok(())
-            }
-            Err(_) => {
-                self.smm_close();
-                fstart_log::error!("pineview SMM: failed to install SMM image");
-                Err(SmmError::InstallFailed)
-            }
-        }
+    fn smram_open(&self) {
+        self.write_smram(crate::gmch::smram::OPEN);
     }
-
-    fn smm_relocate(&self) {
-        Self::smi_enable_for_relocation();
-
-        // Match coreboot's `smm_initiate_relocation`: a self SMI IPI. It must
-        // stay per-CPU, because every CPU shares the architectural default
-        // SMBASE (and therefore one save state) until it has relocated itself.
-        let lapic = fstart_arch::lapic::Lapic::from_msr();
-        lapic.send_smi_self();
+    fn smram_close(&self) {
+        self.write_smram(crate::gmch::smram::CLOSED);
     }
-
-    fn pre_smm_init(&self) {
-        let pm = crate::southbridge::pmio_ich::PmIo::new(ICH7_PMBASE);
-
-        // Keep the relocation SMI setup minimal. The permanent handler is not
-        // installed yet; enabling only APMC + global SMI matches the path that
-        // previously allowed CPU SMBASE relocation to complete. Full
-        // coreboot-style PM/TCO/GPE cleanup is done in post_smm_init(), after
-        // the permanent handler is installed.
-        pm.reset_smi_status();
-        pm.write32(
-            crate::southbridge::pmio_ich::SMI_EN,
-            crate::southbridge::pmio_ich::APMC_EN
-                | crate::southbridge::pmio_ich::GBL_SMI_EN
-                | crate::southbridge::pmio_ich::EOS,
-        );
-        fstart_log::info!(
-            "pineview SMM: relocation SMI_EN={:#x} PM1_CNT={:#x}",
-            pm.read32(crate::southbridge::pmio_ich::SMI_EN),
-            pm.read32(crate::southbridge::pmio_ich::PM1_CNT),
-        );
-    }
-
-    fn post_smm_init(&self) {
-        self.smm_close();
-        let pm = crate::southbridge::pmio_ich::PmIo::new(ICH7_PMBASE);
-
-        // Match coreboot's smm_southbridge_clear_state() followed by
-        // global_smi_enable(): clear stale PM/SMI/TCO/GPE status before
-        // enabling permanent SMI sources, then enable TCO/APMC/SLP SMI plus
-        // EOS and the global SMI gate.
-        pm.reset_smi_status();
-        pm.reset_pm1_status();
-        pm.tco().reset_tco_status();
-        pm.reset_gpe0_status();
-        pm.write16(
-            crate::southbridge::pmio_ich::PM1_EN,
-            crate::southbridge::pmio_ich::PWRBTN_EN | crate::southbridge::pmio_ich::GBL_EN,
-        );
-        pm.write32(
-            crate::southbridge::pmio_ich::SMI_EN,
-            crate::southbridge::pmio_ich::TCO_EN
-                | crate::southbridge::pmio_ich::APMC_EN
-                | crate::southbridge::pmio_ich::SLP_SMI_EN
-                | crate::southbridge::pmio_ich::GBL_SMI_EN
-                | crate::southbridge::pmio_ich::EOS,
-        );
-
-        // Match coreboot i82801gx_set_acpi_mode() on a normal boot: after
-        // permanent SMM is installed, issue APM_CNT_ACPI_DISABLE so the SMI
-        // handler clears PM1_CNT.SCI_EN and all stale PM/GPE/TCO status.  The
-        // FADT advertises APM_CNT_ACPI_ENABLE (0xe1), so Linux will re-enable
-        // SCI only after ACPICA has installed its handler.
-        unsafe { fstart_core::pio::outb(APM_CNT, 0x1e) };
-
-        fstart_log::info!(
-            "pineview SMM: SMI_EN={:#x} PM1_CNT={:#x}",
-            pm.read32(crate::southbridge::pmio_ich::SMI_EN),
-            pm.read32(crate::southbridge::pmio_ich::PM1_CNT),
-        );
-
-        self.smm_lock();
-        fstart_log::info!("pineview SMM: global SMI enabled and SMRAM locked");
+    fn smram_lock(&self) {
+        self.write_smram(crate::gmch::smram::LOCKED);
     }
 }
 

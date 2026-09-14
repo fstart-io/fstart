@@ -73,7 +73,11 @@ pub use virt_riscv64::{
 };
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod q35;
-#[cfg(all(feature = "smm", any(target_arch = "x86", target_arch = "x86_64")))]
+#[cfg(all(
+    feature = "smm",
+    feature = "stage",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 mod q35_smm;
 /// SMM image ABI and handler binding for the q35 SMM flow.
 ///
@@ -355,7 +359,10 @@ mod stage {
         fn init_mp_smm(&self) -> Result<(), ServiceError> {
             let cpu = fstart_arch::mp::GenericX86CpuDriver;
             let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
-            let smm = SMM_IMAGE.map(|_| &self.hostbridge as &dyn fstart_arch::mp::SmmOps);
+            let smi = crate::q35_smm::ich9_smi();
+            let smm_flow =
+                fstart_arch::cpu_intel::smm::IntelSmm::new("Q35", &self.hostbridge, &smi);
+            let smm = SMM_IMAGE.map(|_| &smm_flow as &dyn fstart_arch::mp::SmmOps);
             if smm.is_some() {
                 // Locking SMM hides TSEG from non-SMM access. Firmware
                 // statics live below the plan-time reservation by

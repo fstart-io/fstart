@@ -61,7 +61,7 @@
 )]
 
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
 
 use crate::lapic::Lapic;
 
@@ -444,47 +444,42 @@ static FLIGHT_PLAN_LEN: AtomicUsize = AtomicUsize::new(0);
 /// fn() signature for flight plan callbacks.
 type FlightFn = fn();
 
-/// Global CPU-driver slice pointer — set by BSP before APs start.
-static CPU_DRIVERS_PTR: AtomicUsize = AtomicUsize::new(0);
-/// Global CPU-driver slice length — set by BSP before APs start.
-static CPU_DRIVERS_LEN: AtomicUsize = AtomicUsize::new(0);
-/// Global cpu_init trampoline.
-static CPU_INIT_FN: AtomicUsize = AtomicUsize::new(0);
+/// The configuration of the running [`mp_init`], published for the
+/// monomorphic `fn()` flight-plan callbacks that APs execute.
+///
+/// Set before any AP starts and cleared before `mp_init` returns, so the
+/// borrowed CPU drivers and SMM ops outlive every access through it.
+static MP_CONFIG: AtomicPtr<MpConfig<'static>> = AtomicPtr::new(core::ptr::null_mut());
 static CPU_INIT_ERRORS: AtomicUsize = AtomicUsize::new(0);
-/// Global `&dyn SmmOps` fat pointer split into data/vtable words for
-/// monomorphized `fn()` flight-plan callbacks.
-static SMM_OPS_DATA: AtomicUsize = AtomicUsize::new(0);
-static SMM_OPS_VTABLE: AtomicUsize = AtomicUsize::new(0);
 static SMM_RELOCATION_LOCK: AtomicBool = AtomicBool::new(false);
 static SMM_RELOCATION_SMBASES: [AtomicUsize; MAX_CPUS] = [const { AtomicUsize::new(0) }; MAX_CPUS];
-/// Global smm_relocate trampoline.
-static SMM_RELOCATE_FN: AtomicUsize = AtomicUsize::new(0);
 
-fn store_cpu_drivers(drivers: &[&dyn CpuDriver]) {
-    CPU_DRIVERS_PTR.store(drivers.as_ptr() as usize, Ordering::Release);
-    CPU_DRIVERS_LEN.store(drivers.len(), Ordering::Release);
-}
-
-fn clear_cpu_drivers() {
-    CPU_DRIVERS_PTR.store(0, Ordering::Release);
-    CPU_DRIVERS_LEN.store(0, Ordering::Release);
+fn publish_config(config: &MpConfig<'_>) {
+    MP_CONFIG.store(
+        core::ptr::from_ref(config)
+            .cast_mut()
+            .cast::<MpConfig<'static>>(),
+        Ordering::Release,
+    );
 }
 
 fn clear_mp_globals() {
-    clear_cpu_drivers();
-    clear_smm_ops();
+    MP_CONFIG.store(core::ptr::null_mut(), Ordering::Release);
+}
+
+fn active_config() -> Option<&'static MpConfig<'static>> {
+    let config = MP_CONFIG.load(Ordering::Acquire);
+    // SAFETY: published by `publish_config()` from a borrow that `mp_init`
+    // keeps alive until it clears the pointer; the callee never outlives it.
+    (!config.is_null()).then(|| unsafe { &*config })
 }
 
 fn load_cpu_drivers() -> &'static [&'static dyn CpuDriver] {
-    let ptr = CPU_DRIVERS_PTR.load(Ordering::Acquire) as *const &'static dyn CpuDriver;
-    let len = CPU_DRIVERS_LEN.load(Ordering::Acquire);
-    if ptr.is_null() || len == 0 {
-        return &[];
-    }
-    // SAFETY: set by `store_cpu_drivers()` before APs start. The referenced
-    // slice and drivers remain alive until `mp_init()` finishes and clears the
-    // globals after all APs have entered the mailbox loop.
-    unsafe { core::slice::from_raw_parts(ptr, len) }
+    active_config().map_or(&[], |config| config.cpu_drivers)
+}
+
+fn load_smm_ops() -> Option<&'static dyn SmmOps> {
+    active_config()?.smm
 }
 
 fn find_cpu_driver(identity: CpuIdentity) -> Option<&'static dyn CpuDriver> {
@@ -534,37 +529,10 @@ fn post_mp_cpu_drivers(drivers: &[&dyn CpuDriver]) {
     }
 }
 
-fn store_smm_ops(ops: &dyn SmmOps) {
-    // SAFETY: A trait-object reference is two machine words on this target
-    // family (data pointer + vtable pointer).  APs use it only while
-    // `mp_init()` is active and the borrowed platform object is still alive.
-    let (data, vtable): (usize, usize) = unsafe { core::mem::transmute(ops) };
-    SMM_OPS_DATA.store(data, Ordering::Release);
-    SMM_OPS_VTABLE.store(vtable, Ordering::Release);
-}
-
-fn clear_smm_ops() {
-    SMM_OPS_DATA.store(0, Ordering::Release);
-    SMM_OPS_VTABLE.store(0, Ordering::Release);
-}
-
-fn load_smm_ops() -> Option<&'static dyn SmmOps> {
-    let data = SMM_OPS_DATA.load(Ordering::Acquire);
-    let vtable = SMM_OPS_VTABLE.load(Ordering::Acquire);
-    if data == 0 || vtable == 0 {
-        return None;
-    }
-    // SAFETY: set by `store_smm_ops()` before the flight plan is released;
-    // both words remain valid until the BSP clears them after SMM init.
-    Some(unsafe { core::mem::transmute((data, vtable)) })
-}
-
 /// Entries into the default SMM relocation handler.
-static SMM_HANDLER_HITS: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
+static SMM_HANDLER_HITS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 /// Completions of the default SMM relocation handler.
-static SMM_HANDLER_DONE: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
+static SMM_HANDLER_DONE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Number of times the default SMM relocation handler has been entered.
 pub fn smm_handler_hits() -> u32 {
@@ -874,7 +842,7 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
 
     // Pre-MP CPU-driver hooks (BSP only).
     pre_mp_cpu_drivers(config.cpu_drivers);
-    store_cpu_drivers(config.cpu_drivers);
+    publish_config(config);
     CPU_INIT_ERRORS.store(0, Ordering::Release);
 
     if max_aps == 0 {
@@ -920,7 +888,7 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
         }
         fstart_log::info!("mp: BSP post MP init");
         post_mp_cpu_drivers(config.cpu_drivers);
-        clear_cpu_drivers();
+        clear_mp_globals();
         ONLINE_CPUS.store(1, Ordering::Release);
         return Ok(MpHandle { num_aps: 0 });
     }
@@ -932,17 +900,7 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
 
     // Build the flight plan.
     let mut step_count = 0usize;
-    let smm_info = config.smm.and_then(|smm| {
-        let info = smm.smm_info();
-        if info.is_some() {
-            store_smm_ops(smm);
-            SMM_RELOCATE_FN.store(
-                smm_relocate_trampoline as *const () as usize,
-                Ordering::Release,
-            );
-        }
-        info
-    });
+    let smm_info = config.smm.and_then(SmmOps::smm_info);
 
     // If SMM is configured, APs first block at a relocation step.  The BSP
     // installs the handlers after AP check-in and before releasing this step.
@@ -991,7 +949,6 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     }
 
     // Step: All CPUs run cpu_init (barriered).
-    CPU_INIT_FN.store(cpu_init_trampoline as *const () as usize, Ordering::Release);
     FLIGHT_PLAN[step_count].barrier.store(0, Ordering::Release);
     FLIGHT_PLAN[step_count]
         .cpus_entered
@@ -1117,9 +1074,8 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     }
 
     // --- Step 6: Post-init ---
-    clear_smm_ops();
     post_mp_cpu_drivers(config.cpu_drivers);
-    clear_cpu_drivers();
+    clear_mp_globals();
 
     ONLINE_CPUS.store((final_count + 1) as usize, Ordering::Release);
     fstart_log::info!("mp: initialization complete ({} CPUs)", final_count + 1);

@@ -15,7 +15,7 @@ build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
-# ICH8 SMM handler reused for the emulated ICH9 (same PMBASE layout).
+# Shared ICH SMM handler, reused for the emulated ICH9.
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
 # TEMP-PROBE: port I/O for the SMI entry probe.
 fstart-core = { path = "../../../crates/core" }

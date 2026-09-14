@@ -18,11 +18,8 @@ pub mod raminit;
 use self::fields::*;
 
 use crate::MmioBar;
-#[cfg(feature = "ffs-vbt")]
-use alloc::vec::Vec;
-use core::{cell::UnsafeCell, ptr};
+use core::ptr;
 
-use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
@@ -396,22 +393,12 @@ pub struct Gm965IgdConfig {
     pub enable_vga: bool,
     /// Enable the secondary display function (D2:F1).
     pub enable_pipe_b: bool,
-    /// Fixed GTTMMADR BAR0 address used for non-display GMA setup.
-    pub gtt_mmio_base: u64,
-    /// Fixed GMADR graphics aperture BAR2 address.
-    pub gmadr_base: u64,
     /// GMADR graphics aperture size in bytes.
     pub gmadr_size: u32,
     /// IGD stolen memory size in MiB. GM965 supports 1, 4, 8, 16, 32, 48, or 64 MiB.
     pub stolen_memory_mb: u16,
-    /// Board-relative VBT file path stored as a compressed FFS data file.
-    pub vbt_file: Option<&'static str>,
-    /// Raw VBT physical address, if firmware has staged a `vbt.bin` blob.
-    pub vbt_addr: Option<u64>,
-    /// Raw VBT size at `vbt_addr`.
-    pub vbt_size: u32,
-    /// Optional legacy VBIOS/VBT probe base, matching coreboot's 0xc0000 fallback.
-    pub legacy_vbt_probe: Option<u64>,
+    /// Where the VBT for the OpRegion comes from.
+    pub vbt: super::igd::VbtSource,
     /// Panel power-up delay in 100us units.
     pub panel_power_up_delay: u16,
     /// Panel power-down delay in 100us units.
@@ -439,14 +426,9 @@ impl Gm965IgdConfig {
         Self {
             enable_vga: true,
             enable_pipe_b: true,
-            gtt_mmio_base: default_gtt_mmio_base(),
-            gmadr_base: default_gmadr_base(),
             gmadr_size: default_gmadr_size(),
             stolen_memory_mb: default_igd_stolen_memory_mb(),
-            vbt_file: None,
-            vbt_addr: None,
-            vbt_size: 0,
-            legacy_vbt_probe: default_legacy_vbt_probe(),
+            vbt: super::igd::VbtSource::LEGACY,
             panel_power_up_delay: default_panel_power_up_delay(),
             panel_power_down_delay: default_panel_power_down_delay(),
             panel_backlight_on_delay: default_panel_backlight_on_delay(),
@@ -465,24 +447,12 @@ impl Default for Gm965IgdConfig {
     }
 }
 
-const fn default_gtt_mmio_base() -> u64 {
-    0xfeb0_0000
-}
-
-const fn default_gmadr_base() -> u64 {
-    0xd000_0000
-}
-
 const fn default_gmadr_size() -> u32 {
     256 * 1024 * 1024
 }
 
 const fn default_igd_stolen_memory_mb() -> u16 {
     32
-}
-
-const fn default_legacy_vbt_probe() -> Option<u64> {
-    Some(0x000c_0000)
 }
 
 const fn default_panel_power_up_delay() -> u16 {
@@ -516,54 +486,6 @@ const PCI_PIO_SIZE: u64 = 0xf000;
 const IGD_GTTMMADR_SIZE: u32 = 1024 * 1024;
 const IGD_GTTMMADR_GTT_OFFSET: usize = 512 * 1024;
 const IGD_GTTMMADR_GTT_SIZE: usize = 512 * 1024;
-const VBT_SIGNATURE: u32 = 0x5442_5624;
-
-#[allow(clippy::large_enum_variant)]
-enum VbtBytes<'a> {
-    Borrowed(&'a [u8]),
-    #[cfg(feature = "ffs-vbt")]
-    Owned(Vec<u8>),
-}
-
-impl VbtBytes<'_> {
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Borrowed(bytes) => bytes,
-            #[cfg(feature = "ffs-vbt")]
-            Self::Owned(bytes) => bytes.as_slice(),
-        }
-    }
-}
-
-// GM965/ICH8 SMM constants. SMRAM bit definitions match coreboot's
-// `cpu/intel/smm/gen1/smmrelocate.c`; PM I/O offsets live in
-// `pmio_ich`.
-const SMRAM_G_SMRAME: u8 = 1 << 3;
-const SMRAM_D_LCK: u8 = 1 << 4;
-const SMRAM_D_OPEN: u8 = 1 << 6;
-const SMRAM_C_BASE_SEG: u8 = 0b010;
-const ICH8_PMBASE: u16 = 0x0500;
-const EM64T101_SAVE_STATE_SIZE: usize = 0x400;
-
-const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
-    smbase: 0,
-    entry_addr: 0,
-    save_state_base: 0,
-    save_state_top: 0,
-    stack_bottom: 0,
-    stack_top: 0,
-};
-
-struct CpuLayoutStore(UnsafeCell<[fstart_smm::CpuSmmLayout; fstart_smm::runtime::MAX_SMM_CPUS]>);
-
-// SAFETY: firmware invokes SMM installation from the BSP while SMRAM is open;
-// this scratch buffer is not shared with APs or interrupt context.
-unsafe impl Sync for CpuLayoutStore {}
-
-static GM965_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
-    [ZERO_CPU_LAYOUT; fstart_smm::runtime::MAX_SMM_CPUS],
-));
-
 /// GM965 northbridge configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct IntelGm965Config {
@@ -624,6 +546,8 @@ pub struct IntelGm965 {
     mmio32_window: Option<(u64, u64)>,
     /// Framebuffer programmed by the shared GMA layer, if the board asked for it.
     display: super::igd::IgdDisplay,
+    /// IGD windows as PCI enumeration assigned them; read in the mainstage.
+    igd_bars: Option<super::igd::IgdBars>,
 }
 
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
@@ -857,28 +781,6 @@ impl IntelGm965 {
 
     fn write_smram(&self, val: u8) {
         self.hostbridge_regs().smram.set(val);
-    }
-
-    fn smm_open(&self) {
-        self.write_smram(SMRAM_D_OPEN | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
-    }
-
-    fn smm_close(&self) {
-        self.write_smram(SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
-    }
-
-    fn smm_lock(&self) {
-        self.write_smram(SMRAM_D_LCK | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
-    }
-
-    fn smi_enable_for_relocation() {
-        let pm = crate::southbridge::pmio_ich::PmIo::new(ICH8_PMBASE);
-        pm.setbits32(
-            crate::southbridge::pmio_ich::SMI_EN,
-            crate::southbridge::pmio_ich::APMC_EN
-                | crate::southbridge::pmio_ich::GBL_SMI_EN
-                | crate::southbridge::pmio_ich::EOS,
-        );
     }
 
     fn init_egress(&self) -> Result<(), ServiceError> {
@@ -1167,159 +1069,50 @@ impl IntelGm965 {
             && self.igd().read16(0) != 0xffff
     }
 
-    fn vbt_size(vbt: &[u8]) -> Option<usize> {
-        if vbt.len() < 28 || u32::from_le_bytes([vbt[0], vbt[1], vbt[2], vbt[3]]) != VBT_SIGNATURE {
-            return None;
-        }
-        let size = u16::from_le_bytes([vbt[24], vbt[25]]) as usize;
-        if size == 0 || size > vbt.len() {
-            None
-        } else {
-            Some(size)
-        }
-    }
-
-    #[cfg(feature = "ffs-vbt")]
-    fn ffs_vbt(&self) -> Option<Vec<u8>> {
-        let file_name = self.config.igd.vbt_file?;
-        let bytes = fstart_core::services::ffs_context::read_verified_asset(file_name)?;
-        let size = Self::vbt_size(bytes)?;
-        Some(bytes[..size].to_vec())
-    }
-
-    fn configured_vbt(&self) -> Option<&'static [u8]> {
-        let addr = self.config.igd.vbt_addr? as usize;
-        let size = self.config.igd.vbt_size as usize;
-        if size == 0 {
-            return None;
-        }
-        // SAFETY: board config promises this physical address contains a raw VBT blob.
-        let bytes = unsafe { core::slice::from_raw_parts(addr as *const u8, size) };
-        Self::vbt_size(bytes).map(|vbt_size| &bytes[..vbt_size])
-    }
-
-    fn legacy_vbt(&self) -> Option<&'static [u8]> {
-        let base = self.config.igd.legacy_vbt_probe? as usize;
-        // SAFETY: 0xc0000 legacy option ROM window is readable on PC-compatible x86.
-        let rom = unsafe { core::slice::from_raw_parts(base as *const u8, 128 * 1024) };
-        let mut off = 0usize;
-        while off + 4 < rom.len() {
-            if u32::from_le_bytes([rom[off], rom[off + 1], rom[off + 2], rom[off + 3]])
-                == VBT_SIGNATURE
-                && let Some(size) = Self::vbt_size(&rom[off..])
-            {
-                return Some(&rom[off..off + size]);
-            }
-            off += 16;
-        }
-        None
-    }
-
-    fn locate_vbt(&self) -> Option<VbtBytes<'static>> {
-        #[cfg(feature = "ffs-vbt")]
-        if self.config.igd.vbt_file.is_some() {
-            // A configured authenticated asset must not fall back to legacy
-            // memory after a verification failure.
-            return self.ffs_vbt().map(VbtBytes::Owned);
-        }
-        self.configured_vbt()
-            .or_else(|| self.legacy_vbt())
-            .map(VbtBytes::Borrowed)
-    }
-
-    fn init_igd_opregion(&self) {
-        if !self.igd_enabled() {
-            return;
-        }
-
-        let Some(vbt) = self.locate_vbt() else {
-            fstart_log::error!("intel-gm965: no valid VBT found for IGD opregion");
-            return;
-        };
-        let vbt = vbt.as_slice();
-
-        let opregion = crate::igd_opregion_buf(super::igd::opregion_size(vbt.len()));
-        super::igd::build_opregion(opregion, vbt);
-
-        let igd = self.igd();
-        igd.write32(hostbridge::IGD_ASLS, opregion.as_ptr() as u32);
-        let swsci = (igd.read16(hostbridge::IGD_SWSCI) & !1) | (1 << 15);
-        igd.write16(hostbridge::IGD_SWSCI, swsci);
-        fstart_log::info!(
-            "intel-gm965: IGD opregion at {:#x}, VBT {} bytes",
-            opregion.as_ptr() as usize,
-            vbt.len() as u32,
-        );
-    }
-
     /// Program the hardware GTT base register.
     ///
     /// Crestline keeps the GTT page table at the top of stolen memory
     /// (`TOLUD - 512 KiB`), which is where the vendor BIOS and Linux's GMCH
     /// layer expect it. Without `PGETBL_CTL` the display engine cannot resolve
     /// framebuffer addresses, so this must precede the modeset.
-    fn gtt_setup(&self) {
+    fn gtt_setup(&self, bars: &super::igd::IgdBars) {
         let tolud = self.tolud();
         if tolud < 512 * 1024 {
             fstart_log::error!("intel-gm965: TOLUD too low for a GTT page table");
             return;
         }
         let gtt_base = tolud - 512 * 1024;
-        super::igd::program_gtt_base(
-            self.config.igd.gtt_mmio_base,
-            gtt_base,
-            super::igd::PGETBL_ENABLED,
-        );
+        super::igd::program_gtt_base(bars.gtt_mmio, gtt_base, super::igd::PGETBL_ENABLED);
     }
 
     /// Hand the IGD to the shared GMA layer for the actual modeset.
     ///
     /// Best effort: a panel that will not come up leaves the machine booting
     /// headless rather than aborting the stage, matching coreboot.
-    fn gma_display_init(&mut self) {
+    fn gma_display_init(&mut self, vbt: Option<&[u8]>) {
+        let Some(bars) = self.igd_bars else {
+            return;
+        };
         let igd = self.igd();
-        igd.write32(
-            hostbridge::IGD_BAR2_GMADR,
-            (self.config.igd.gmadr_base as u32) & 0xf000_0000,
-        );
         let stolen_base = self.igd_stolen_base();
         let addresses = super::igd::IgdAddresses {
             pci_bdf: PciAddress::new(0, 0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC),
-            gtt_mmio_base: self.config.igd.gtt_mmio_base,
+            gtt_mmio_base: bars.gtt_mmio,
             gtt_mmio_size: IGD_GTTMMADR_SIZE,
             gtt_pte_base: None,
-            gmadr_base: Some(self.config.igd.gmadr_base),
+            gmadr_base: Some(bars.gmadr),
             gmadr_size: self.config.igd.gmadr_size,
             stolen_base: u64::from(stolen_base),
             stolen_size: self.tolud().saturating_sub(stolen_base),
             gtt_size: IGD_GTTMMADR_GTT_SIZE as u32,
             gcfgc: Some(igd.read16(hostbridge::GCFGC)),
         };
-        let vbt = self.locate_vbt();
-        let vbt = vbt.as_ref().map(|bytes| bytes.as_slice());
         self.display.initialize(
             Cpu::Gm965,
             self.config.igd.display.as_ref(),
             &addresses,
             vbt,
         );
-    }
-
-    fn gtt_mmio_read32(&self, off: usize) -> u32 {
-        // SAFETY: GTTMMADR BAR0 has been programmed by `gma_non_display_init`.
-        unsafe {
-            fstart_core::mmio::read32((self.config.igd.gtt_mmio_base as usize + off) as *const u32)
-        }
-    }
-
-    fn gtt_mmio_write32(&self, off: usize, val: u32) {
-        // SAFETY: GTTMMADR BAR0 has been programmed by `gma_non_display_init`.
-        unsafe {
-            fstart_core::mmio::write32(
-                (self.config.igd.gtt_mmio_base as usize + off) as *mut u32,
-                val,
-            )
-        }
     }
 
     fn get_cdclk(&self) -> u32 {
@@ -1355,58 +1148,58 @@ impl IntelGm965 {
         (blc_mod << 16) | (blc_mod * duty / 100)
     }
 
-    fn gma_pm_init_post_vbios(&self) {
-        const PP_ON_DELAYS: usize = 0x61208;
-        const PP_OFF_DELAYS: usize = 0x6120c;
-        const PP_DIVISOR: usize = 0x61210;
-        const BLC_PWM_CTL2: usize = 0x61250;
-        const BLC_PWM_CTL: usize = 0x61254;
+    fn gma_pm_init_post_vbios(&self, gtt_mmio: u64) {
+        const PP_ON_DELAYS: u32 = 0x61208;
+        const PP_OFF_DELAYS: u32 = 0x6120c;
+        const PP_DIVISOR: u32 = 0x61210;
+        const BLC_PWM_CTL2: u32 = 0x61250;
+        const BLC_PWM_CTL: u32 = 0x61254;
         let conf = &self.config.igd;
-        if self.gtt_mmio_read32(PP_ON_DELAYS) == 0 {
-            self.gtt_mmio_write32(
+        let read = |off| super::igd::mmio_read32(gtt_mmio, off);
+        let write = |off, val| super::igd::mmio_write32(gtt_mmio, off, val);
+        if read(PP_ON_DELAYS) == 0 {
+            write(
                 PP_ON_DELAYS,
                 ((conf.panel_power_up_delay as u32 & 0x1fff) << 16)
                     | (conf.panel_backlight_on_delay as u32 & 0x1fff),
             );
         }
-        if self.gtt_mmio_read32(PP_OFF_DELAYS) == 0 {
-            self.gtt_mmio_write32(
+        if read(PP_OFF_DELAYS) == 0 {
+            write(
                 PP_OFF_DELAYS,
                 ((conf.panel_power_down_delay as u32 & 0x1fff) << 16)
                     | (conf.panel_backlight_off_delay as u32 & 0x1fff),
             );
         }
         if conf.panel_power_cycle_delay != 0 {
-            self.gtt_mmio_write32(
+            write(
                 PP_DIVISOR,
                 ((self.get_cdclk() / 20_000 - 1) << 8)
                     | (conf.panel_power_cycle_delay as u32 & 0x1f),
             );
         }
-        self.gtt_mmio_write32(BLC_PWM_CTL2, 1 << 31);
+        write(BLC_PWM_CTL2, 1 << 31);
         if conf.default_pwm_freq == 0 {
-            self.gtt_mmio_write32(BLC_PWM_CTL, 0x0610_0610);
+            write(BLC_PWM_CTL, 0x0610_0610);
         } else {
-            self.gtt_mmio_write32(
+            write(
                 BLC_PWM_CTL,
                 self.freq_to_blc_pwm_ctl(conf.default_pwm_freq, conf.duty_cycle),
             );
         }
     }
 
-    fn clear_gtt_table(&self) {
+    fn clear_gtt_table(gtt_mmio: u64) {
         // Match coreboot's non-libgfxinit GM965 path. GTTMMADR BAR0 is
         // 1 MiB total on Crestline: the lower 512 KiB is display MMIO and the
         // upper 512 KiB is the CPU-visible GTT page table. Clear the table so
         // stale firmware entries do not leak into the OS handoff. Do not
         // program PGETBL_CTL here; coreboot only does that before libgfxinit,
         // while the non-libgfxinit/VBIOS path leaves GTT ownership to the OS.
-        let gtt = (self.config.igd.gtt_mmio_base as usize + IGD_GTTMMADR_GTT_OFFSET) as *mut u32;
-        for idx in 0..(IGD_GTTMMADR_GTT_SIZE / core::mem::size_of::<u32>()) {
-            // SAFETY: BAR0 has been programmed and enabled above; this range is
-            // the upper 512 KiB GTT table aperture of GM965 GTTMMADR.
-            unsafe { ptr::write_volatile(gtt.add(idx), 0) };
-        }
+        super::igd::clear_gtt_table(
+            gtt_mmio + IGD_GTTMMADR_GTT_OFFSET as u64,
+            IGD_GTTMMADR_GTT_SIZE as u32,
+        );
     }
 
     fn gm965_igd_init(&self) {
@@ -1456,21 +1249,13 @@ impl IntelGm965 {
         }
     }
 
-    fn gma_non_display_init(&self) {
-        if !self.igd_enabled() {
-            return;
-        }
+    fn gma_non_display_init(&self, bars: &super::igd::IgdBars) {
         let igd = self.igd();
-        igd.write32(
-            hostbridge::IGD_BAR0_GTTMMADR,
-            (self.config.igd.gtt_mmio_base as u32) & 0xfff0_0000,
-        );
         igd.or16(
             hostbridge::PCI_COMMAND,
             hostbridge::PCI_CMD_MEMORY | hostbridge::PCI_CMD_MASTER,
         );
         igd.and8_or8(hostbridge::IGD_MSAC, !0x3, 0x2);
-        self.init_igd_opregion();
         igd.write8(hostbridge::IGD_GDRST, 1);
         fstart_arch::x86::udelay(50);
         igd.write8(hostbridge::IGD_GDRST, 0);
@@ -1479,24 +1264,25 @@ impl IntelGm965 {
             timeout -= 1;
             core::hint::spin_loop();
         }
-        self.clear_gtt_table();
+        Self::clear_gtt_table(bars.gtt_mmio);
         if self.config.igd.enable_pipe_b {
             let igd_alt = ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_ALT_FUNC);
             if igd_alt.read16(0) != 0xffff {
                 igd_alt.or16(hostbridge::PCI_COMMAND, hostbridge::PCI_CMD_MASTER);
             }
         }
-        self.gma_pm_init_post_vbios();
+        self.gma_pm_init_post_vbios(bars.gtt_mmio);
         fstart_log::info!("intel-gm965: IGD non-display init complete");
     }
 
-    /// DRAM-backed chipset init: DMI/egress link, PM tuning, and IGD setup.
-    pub fn post_dram_init(&self) -> Result<(), ServiceError> {
+    /// DRAM-backed chipset init: DMI/egress link, PM tuning and the IGD
+    /// clock/PEG setup (coreboot `northbridge_init`). The IGD's own device
+    /// init follows once its BARs are known, in `stage_local_init`.
+    fn mainstage_chipset_init(&self) -> Result<(), ServiceError> {
         self.gm965_dmi_init()?;
         self.init_dma_remap_bars();
         self.gm965_pm_init();
         self.gm965_igd_init();
-        self.gma_non_display_init();
         self.write_coreboot_scratchpad_marker();
         Ok(())
     }
@@ -1563,6 +1349,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
             detected_size: 0,
             mmio32_window: None,
             display: super::igd::IgdDisplay::new(),
+            igd_bars: None,
         })
     }
 
@@ -1582,23 +1369,43 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         Ok(())
     }
 
+    fn post_dram_init(&mut self) -> Result<(), ServiceError> {
+        self.mainstage_chipset_init()
+    }
+
     /// Ramstage: bring the IGD and, when the board asked for it, the display up.
     ///
     /// coreboot runs the IGD device init here (`gma_func0_init`), and the
     /// OpRegion needs the mainstage heap, so neither belongs in the bootblock.
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
-        if self.config.igd.display.is_some() {
-            self.gma_non_display_init();
-            self.gtt_setup();
+        if self.config.igd.display.is_some() && self.igd_enabled() {
+            // Consume the windows PCI enumeration assigned; never re-program them.
+            self.igd_bars = super::igd::assigned_bars(&self.igd(), false);
+            match &self.igd_bars {
+                Some(bars) => {
+                    self.gma_non_display_init(bars);
+                    self.gtt_setup(bars);
+                }
+                None => fstart_log::error!("intel-gm965: IGD windows unassigned, skipping display"),
+            }
         }
         Ok(())
     }
 
     fn post_verify_init(&mut self) -> Result<(), ServiceError> {
-        // The modeset reads the VBT out of the verified boot media.
+        // The OpRegion embeds the VBT out of the verified boot media, and the
+        // modeset reads the same bytes for its panel and DDC policy.
+        if !self.igd_enabled() {
+            return Ok(());
+        }
+        let vbt = super::igd::publish_opregion(
+            &self.igd(),
+            super::igd::OpRegionSci::Swsci,
+            &self.config.igd.vbt,
+        );
         if self.config.igd.display.is_some() {
-            self.gma_display_init();
+            self.gma_display_init(vbt.as_deref());
         }
         Ok(())
     }
@@ -1797,130 +1604,6 @@ impl MemoryDetector for IntelGm965 {
     }
 }
 
-impl SmmOps for IntelGm965 {
-    fn smm_info(&self) -> Option<SmmInfo> {
-        let (base, size) = self.smm_region();
-        if size == 0 {
-            fstart_log::error!("gm965 SMM: TSEG is disabled");
-            return None;
-        }
-        fstart_log::info!("gm965 SMM: TSEG base={:#x} size={:#x}", base, size);
-        Some(SmmInfo {
-            smbase: u64::from(base),
-            smsize: size as usize,
-            save_state_size: EM64T101_SAVE_STATE_SIZE,
-        })
-    }
-
-    fn install_smm_handlers(
-        &self,
-        info: &SmmInfo,
-        num_cpus: u16,
-        image: &[u8],
-    ) -> Result<(), SmmError> {
-        self.smm_open();
-
-        let layouts = unsafe { &mut *GM965_SMM_CPU_LAYOUTS.0.get() };
-        let result = unsafe {
-            fstart_smm::install_pic_image(
-                image,
-                fstart_smm::InstallConfig {
-                    smram_base: info.smbase,
-                    smram_size: info.smsize as u64,
-                    num_cpus,
-                    save_state_size: info.save_state_size as u32,
-                    page_table_size: 0,
-                    cr3: fstart_arch::x86::controlregs::cr3(),
-                    platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
-                    platform_flags: fstart_smm::SMM_PLATFORM_FLAG_ICH_GPE0_64BIT,
-                    platform_data: [ICH8_PMBASE as u64, 0x20, 0, 0],
-                },
-                layouts,
-            )
-        };
-
-        match result {
-            Ok(installed) => {
-                let targets = &installed.cpus[..num_cpus as usize];
-                fstart_arch::mp::prepare_default_smm_relocation(targets);
-                let default_handler = unsafe {
-                    fstart_smm::install_default_relocation_callback_stub(
-                        image,
-                        fstart_smm::DefaultRelocationCallbackConfig {
-                            default_smbase: fstart_arch::mp::SMM_DEFAULT_SMBASE,
-                            cr3: fstart_arch::x86::controlregs::cr3(),
-                            callback: fstart_arch::mp::default_smm_relocation_handler as *const ()
-                                as usize as u64,
-                            stack_top: fstart_arch::mp::SMM_DEFAULT_ENTRY_STACK_TOP,
-                        },
-                    )
-                };
-                if default_handler.is_err() {
-                    self.smm_close();
-                    fstart_log::error!("gm965 SMM: failed to install default relocation handler");
-                    return Err(SmmError::InstallFailed);
-                }
-
-                fstart_log::info!(
-                    "gm965 SMM: installed image common={:#x} entry={:#x} cpus={}",
-                    installed.common_base,
-                    installed.common_entry,
-                    installed.cpus.len()
-                );
-                Ok(())
-            }
-            Err(_) => {
-                self.smm_close();
-                fstart_log::error!("gm965 SMM: failed to install SMM image");
-                Err(SmmError::InstallFailed)
-            }
-        }
-    }
-
-    fn smm_relocate(&self) {
-        Self::smi_enable_for_relocation();
-        let lapic = fstart_arch::lapic::Lapic::from_msr();
-        // SMI delivery rejects the destination shorthand, so the local APIC ID
-        // must go in the destination field (see `Lapic::send_smi_self`).
-        lapic.send_smi_self();
-        lapic.wait_ready();
-    }
-
-    fn pre_smm_init(&self) {
-        let pm = crate::southbridge::pmio_ich::PmIo::new(ICH8_PMBASE);
-        pm.reset_smi_status();
-        pm.write32(
-            crate::southbridge::pmio_ich::SMI_EN,
-            crate::southbridge::pmio_ich::APMC_EN
-                | crate::southbridge::pmio_ich::GBL_SMI_EN
-                | crate::southbridge::pmio_ich::EOS,
-        );
-    }
-
-    fn post_smm_init(&self) {
-        self.smm_close();
-        let pm = crate::southbridge::pmio_ich::PmIo::new(ICH8_PMBASE);
-        pm.reset_smi_status();
-        pm.reset_pm1_status();
-        pm.tco().reset_tco_status();
-        pm.reset_gpe0_status();
-        pm.write16(
-            crate::southbridge::pmio_ich::PM1_EN,
-            crate::southbridge::pmio_ich::PWRBTN_EN | crate::southbridge::pmio_ich::GBL_EN,
-        );
-        pm.write32(
-            crate::southbridge::pmio_ich::SMI_EN,
-            crate::southbridge::pmio_ich::TCO_EN
-                | crate::southbridge::pmio_ich::APMC_EN
-                | crate::southbridge::pmio_ich::SLP_SMI_EN
-                | crate::southbridge::pmio_ich::GBL_SMI_EN
-                | crate::southbridge::pmio_ich::EOS,
-        );
-        self.smm_lock();
-        fstart_log::info!("gm965 SMM: permanent SMI enabled and SMRAM locked");
-    }
-}
-
 impl MemoryController for IntelGm965 {
     fn dram_init(&mut self) -> Result<(), ServiceError> {
         let mut smbus = crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base);
@@ -1966,6 +1649,22 @@ impl MemoryController for IntelGm965 {
     }
 }
 
+impl fstart_arch::cpu_intel::smm::SmramControl for IntelGm965 {
+    fn tseg(&self) -> Option<(u64, u32)> {
+        let (base, size) = self.smm_region();
+        (size != 0).then_some((u64::from(base), size))
+    }
+    fn smram_open(&self) {
+        self.write_smram(crate::gmch::smram::OPEN);
+    }
+    fn smram_close(&self) {
+        self.write_smram(crate::gmch::smram::CLOSED);
+    }
+    fn smram_lock(&self) {
+        self.write_smram(crate::gmch::smram::LOCKED);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ACPI device implementation — GM965 host bridge / PCI0
 // ---------------------------------------------------------------------------
@@ -2005,11 +1704,13 @@ mod acpi_impl {
             // Match coreboot GM45/GM965 hostbridge.asl: the PCI MMIO
             // producer window runs from TOLUD through 0xfebf_ffff.  ECAM,
             // MCHBAR/DMIBAR/EPBAR/RCBA, HPET, and TPM are also described as
-            // motherboard resources so Linux will not allocate over them, but
-            // fixed chipset BARs such as IGD GTTMMADR at 0xfeb0_0000 and AHCI
-            // ABAR at 0xfea0_0000 still need a compatible host bridge window.
+            // motherboard resources so Linux will not allocate over them; the
+            // device BARs the firmware allocator placed below 0xfec0_0000
+            // need a host bridge window that covers them.
             let pci_mmio_limit = 0xfebf_ffffu32;
-            let gttmmio = config.igd.gtt_mmio_base;
+            // The GTTMMADR window PCI enumeration assigned; zero while the
+            // IGD is absent or the mainstage has not resolved it.
+            let gttmmio = self.igd_bars.map_or(0, |bars| bars.gtt_mmio);
             let rcba: u32 = 0xfed1_c000;
 
             let mut aml: Vec<u8> = acpi_dsl! {

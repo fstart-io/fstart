@@ -18,7 +18,7 @@ fstart-core = { path = "../../../crates/core", features = ["pci"] }
 fstart-platform-intel = { path = "../../../crates/platform-intel" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-intel-gma = { path = "../../../crates/intel-gma" }
-fstart-driver-intel = { path = "../../../crates/driver-intel", features = ["ffs-vbt"] }
+fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 fstart-log = { path = "../../../crates/log" }

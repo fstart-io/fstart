@@ -54,29 +54,6 @@ pub struct InstalledSmmImage<'a> {
     pub cpus: &'a [CpuSmmLayout],
 }
 
-/// Inputs for installing a minimal default-SMRAM relocation handler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DefaultRelocationConfig {
-    /// Current/default SMBASE.  On x86 this is normally `0x30000`.
-    pub default_smbase: u64,
-    /// Permanent SMBASE to write into the current CPU save state.
-    pub target_smbase: u64,
-    /// Offset of the SMBASE field from `default_smbase` in this CPU's
-    /// architectural save-state format (for example `0xff00` on QEMU's
-    /// AMD64/legacy format, `0xfef8` on Intel EM64T101/Pineview).
-    pub save_state_smbase_offset: u16,
-}
-
-/// Inputs for installing an APIC-ID-indexed default-SMRAM relocation handler.
-pub struct DefaultRelocationTableConfig<'a> {
-    /// Current/default SMBASE.  On x86 this is normally `0x30000`.
-    pub default_smbase: u64,
-    /// Permanent SMBASE table indexed by the CPU's initial xAPIC ID.
-    pub target_smbases: &'a [u64],
-    /// Offset of the SMBASE field from `default_smbase` in this CPU's save state.
-    pub save_state_smbase_offset: u16,
-}
-
 /// Inputs for installing a default-SMRAM entry stub that calls normal firmware
 /// relocation code.
 pub struct DefaultRelocationCallbackConfig {
@@ -108,8 +85,6 @@ pub enum InstallError {
     BadModuleArgs,
     /// Address arithmetic overflowed.
     Overflow,
-    /// The requested target SMBASE cannot be represented in the x86 save state.
-    SmbaseOutOfRange,
 }
 
 impl From<HeaderError> for InstallError {
@@ -293,29 +268,6 @@ pub unsafe fn install_pic_image<'a>(
     })
 }
 
-/// Install a tiny 16-bit default-SMRAM relocation handler.
-///
-/// This single-target helper is kept for BSP-only flows and tests.  Multi-CPU
-/// relocation should use [`install_default_relocation_table_handler`].
-///
-/// # Safety
-///
-/// The caller must have opened the chipset's default SMRAM/ASEG window, and
-/// `default_smbase + 0x8000` must be writable.
-pub unsafe fn install_default_relocation_handler(
-    config: DefaultRelocationConfig,
-) -> Result<(), InstallError> {
-    // SAFETY: same caller contract as the table handler; SMRAM window is open
-    // and the target SMBASE is writable.
-    unsafe {
-        install_default_relocation_table_handler(DefaultRelocationTableConfig {
-            default_smbase: config.default_smbase,
-            target_smbases: core::slice::from_ref(&config.target_smbase),
-            save_state_smbase_offset: config.save_state_smbase_offset,
-        })
-    }
-}
-
 /// Install a default-SMRAM entry stub that enters long mode and calls a normal
 /// firmware relocation callback.
 ///
@@ -384,96 +336,6 @@ pub unsafe fn install_default_relocation_callback_stub(
     }
 
     Ok(())
-}
-
-/// Install an APIC-ID-indexed 16-bit default-SMRAM relocation handler.
-///
-/// The handler runs at the architectural default SMM entry point, reads the
-/// CPU's initial xAPIC ID with CPUID leaf 1, masks it to the current 64-entry
-/// ABI cap, looks up the permanent SMBASE in a patched table, writes that value
-/// into the current CPU save state, and RSMs.
-/// This avoids coreboot's relocatable-module trick while still allowing all CPUs
-/// to relocate through one default-SMRAM entry during the MP flight plan.
-///
-/// # Safety
-///
-/// The caller must have opened the chipset's default SMRAM/ASEG window, and
-/// `default_smbase + 0x8000` must be writable.  `target_smbases` is indexed by
-/// initial xAPIC ID modulo 64; platforms with sparse or high APIC IDs should
-/// prefill unused entries with a safe fallback SMBASE.
-pub unsafe fn install_default_relocation_table_handler(
-    config: DefaultRelocationTableConfig<'_>,
-) -> Result<(), InstallError> {
-    if config.target_smbases.is_empty() {
-        return Err(InstallError::NotEnoughEntries);
-    }
-
-    let entry = config
-        .default_smbase
-        .checked_add(SMM_ENTRY_OFFSET)
-        .ok_or(InstallError::Overflow)? as *mut u8;
-
-    let table_offset = align_up(DEFAULT_RELOCATION_HANDLER.len(), 4)?;
-    let table_bytes = config
-        .target_smbases
-        .len()
-        .checked_mul(size_of::<u32>())
-        .ok_or(InstallError::Overflow)?;
-    let total = table_offset
-        .checked_add(table_bytes)
-        .ok_or(InstallError::Overflow)?;
-    if total as u64 >= SMM_ENTRY_OFFSET {
-        return Err(InstallError::BadEntryRange);
-    }
-
-    let mut code = DEFAULT_RELOCATION_HANDLER;
-    let table_disp = (SMM_ENTRY_OFFSET as usize)
-        .checked_add(table_offset)
-        .ok_or(InstallError::Overflow)?;
-    code[DEFAULT_RELOCATION_TABLE_PATCH..DEFAULT_RELOCATION_TABLE_PATCH + 2]
-        .copy_from_slice(&(table_disp as u16).to_le_bytes());
-    code[DEFAULT_RELOCATION_SAVE_STATE_PATCH..DEFAULT_RELOCATION_SAVE_STATE_PATCH + 2]
-        .copy_from_slice(&config.save_state_smbase_offset.to_le_bytes());
-
-    // SAFETY: caller guarantees the default-SMRAM window is open and writable.
-    unsafe {
-        ptr::copy_nonoverlapping(code.as_ptr(), entry, code.len());
-        for i in code.len()..table_offset {
-            ptr::write(entry.add(i), 0x90);
-        }
-        for (i, smbase) in config.target_smbases.iter().enumerate() {
-            let target = u32::try_from(*smbase).map_err(|_| InstallError::SmbaseOutOfRange)?;
-            ptr::write_unaligned(entry.add(table_offset + i * 4) as *mut u32, target);
-        }
-    }
-    Ok(())
-}
-
-const DEFAULT_RELOCATION_TABLE_PATCH: usize = 28;
-const DEFAULT_RELOCATION_SAVE_STATE_PATCH: usize = 32;
-
-// 16-bit code:
-//   push cs; pop ds
-//   mov eax, 1; cpuid
-//   shr ebx, 24              ; EBX = initial xAPIC ID
-//   and ebx, 0x3f             ; current ABI cap is 64 entries
-//   shl ebx, 2               ; table index
-//   mov eax, [bx + table]
-//   mov [save_state_smbase], eax
-//   rsm
-//   hlt; jmp $-1             ; defensive fallthrough
-const DEFAULT_RELOCATION_HANDLER: [u8; 39] = [
-    0x0e, 0x1f, 0x66, 0xb8, 0x01, 0x00, 0x00, 0x00, 0x0f, 0xa2, 0x66, 0xc1, 0xeb, 0x18, 0x66, 0x81,
-    0xe3, 0x3f, 0x00, 0x00, 0x00, 0x66, 0xc1, 0xe3, 0x02, 0x66, 0x8b, 0x87, 0x00, 0x00, 0x66, 0xa3,
-    0x00, 0x00, 0x0f, 0xaa, 0xf4, 0xeb, 0xfd,
-];
-
-fn align_up(value: usize, align: usize) -> Result<usize, InstallError> {
-    debug_assert!(align.is_power_of_two());
-    value
-        .checked_add(align - 1)
-        .map(|v| v & !(align - 1))
-        .ok_or(InstallError::Overflow)
 }
 
 fn check_entry_range(
@@ -613,28 +475,5 @@ mod tests {
         assert_eq!(params.platform_kind, crate::runtime::SMM_PLATFORM_INTEL_ICH);
         assert_eq!(params.platform_data[0], 0x600);
         assert_eq!(params.platform_data[1], 0x20);
-    }
-
-    #[test]
-    fn installs_default_relocation_handler_bytes() {
-        let mut smram = vec![0u8; 0x1_0000 + 16];
-        let default_smbase = smram.as_mut_ptr() as u64;
-        unsafe {
-            install_default_relocation_handler(DefaultRelocationConfig {
-                default_smbase,
-                target_smbase: 0x7ff8_0000,
-                save_state_smbase_offset: 0xff00,
-            })
-        }
-        .unwrap();
-
-        let entry = SMM_ENTRY_OFFSET as usize;
-        assert_eq!(&smram[entry..entry + 2], &[0x0e, 0x1f]);
-        assert_eq!(&smram[entry + 28..entry + 30], &[0x28, 0x80]);
-        assert_eq!(&smram[entry + 32..entry + 34], &[0x00, 0xff]);
-        assert_eq!(
-            &smram[entry + 40..entry + 44],
-            &0x7ff8_0000u32.to_le_bytes()
-        );
     }
 }
