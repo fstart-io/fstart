@@ -1336,6 +1336,27 @@ impl IntelIch7 {
         // ---- Clock gating ----
         self.enable_clock_gating();
 
+        // ---- Re-arm the SMBus host controller ----
+        //
+        // The PCI resource pass treats `SMB_BASE` (config 0x20) as an ordinary
+        // I/O BAR and rewrites it, and clock gating clears its decode as well.
+        // Either way the controller stops answering at the configured base and
+        // every status read returns 0xff, which the transaction code reports as
+        // a permanent `not-busy` timeout. coreboot avoids this by enabling the
+        // SMBus from its device ops, which run after enumeration and after
+        // `lpc_init()`; re-arm it here, before the board hook programs the
+        // CK505 through it.
+        let _ = I801SmBus::enable_on_i801(
+            0,
+            ich7::SMBUS_DEV,
+            ich7::SMBUS_FUNC,
+            self.config.smbus_base,
+        );
+        fstart_log::info!(
+            "intel-ich7: SMBus HST_STS after re-arm = {:#x}",
+            self.smbus_status_probe()
+        );
+
         // ---- ISA DMA controller reset ----
         self.isa_dma_init();
 
@@ -1512,6 +1533,23 @@ impl IntelIch7 {
         );
 
         fstart_log::info!("intel-ich7: power management configured");
+    }
+
+    /// Read the SMBus host status byte straight from the I/O port.
+    ///
+    /// Diagnostic for bring-up: a controller whose I/O space has stopped
+    /// decoding reads back as `0xff`, which the transaction code reports as a
+    /// permanent `not-busy` timeout.
+    fn smbus_status_probe(&self) -> u8 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: reads the SMBus host status register at the configured base.
+            unsafe { fstart_core::pio::inb(self.config.smbus_base) }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            0
+        }
     }
 
     /// Enable clock gating (from coreboot `enable_clock_gating`).
