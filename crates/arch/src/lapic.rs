@@ -333,11 +333,27 @@ impl Lapic {
 
     /// Send an IPI to self with the given flags.
     ///
-    /// Used for SMM relocation (`MT_SMI`) or self-NMI.
+    /// Used for self-NMI and other fixed/lowest-priority IPIs, where the
+    /// destination shorthand is valid.
     pub fn send_ipi_self(&self, flags: u32) {
         if self.wait_ready() {
             self.write(REG_ICR_LO, DEST_SELF | flags);
         }
+    }
+
+    /// Send an SMI to this processor, for SMM relocation.
+    ///
+    /// The SMI delivery mode does not accept the destination *shorthand*, so
+    /// the local APIC ID is placed in the destination field instead, exactly as
+    /// coreboot's `lapic_send_ipi_self` does. With the shorthand the IPI is
+    /// silently dropped: the entry stub is never entered and every CPU keeps
+    /// the architectural default SMBASE.
+    pub fn send_smi_self(&self) {
+        if !self.wait_ready() {
+            return;
+        }
+        let id = self.id();
+        self.write(REG_ICR_LO, (id << 24) | INT_ASSERT | MT_SMI);
     }
 
     // ---- Timer (for future use) ----

@@ -605,7 +605,11 @@ fn smm_relocate_trampoline() {
             core::hint::spin_loop();
             spins += 1;
             if spins == 200_000_000 {
-                fstart_log::error!("mp: SMM relocation timeout");
+                fstart_log::error!(
+                    "mp: SMM relocation timeout (hits={} done={})",
+                    smm_handler_hits(),
+                    smm_handler_done()
+                );
                 break;
             }
         }
