@@ -101,11 +101,12 @@ pub struct PineviewIgdConfig {
     pub spread_spectrum: bool,
     /// Board-relative VBT file path stored as a compressed FFS data file.
     pub vbt_file: Option<&'static str>,
-    /// Fixed GTTMMADR BAR0 address.
+    /// GTTMMADR BAR0 fallback address, used only when PCI enumeration left the
+    /// window unassigned.
     pub gtt_mmio_base: u64,
-    /// MMIO-visible GTT page-table BAR3 address.
+    /// MMIO-visible GTT page-table BAR3 fallback address.
     pub gtt_pte_base: u64,
-    /// Fixed GMADR graphics aperture BAR2 address.
+    /// GMADR graphics aperture BAR2 fallback address.
     pub gmadr_base: u64,
     /// GMADR graphics aperture size in bytes.
     pub gmadr_size: u32,
@@ -1095,29 +1096,43 @@ impl IntelPineview {
     /// `PGETBL_CTL` from the stolen-memory base register (`BGSM`) twice with a
     /// short delay before the modeset. Without that enable bit the display
     /// engine cannot translate framebuffer addresses.
+    /// Keep the BAR assignment PCI enumeration produced, programming the
+    /// platform default only when the window was left unassigned.
+    fn keep_or_program_bar(igd: &ecam::EcamDevice, reg: u16, fallback: u64) -> u64 {
+        let value = igd.read32(reg);
+        if value == 0 {
+            igd.write32(reg, (fallback & 0xffff_ffff) as u32);
+            fallback & !0xf
+        } else {
+            u64::from(value) & !0xf
+        }
+    }
+
     fn gma_display_init(&mut self) {
         let igd = ecam::EcamDevice::new(0, 2, 0);
-        igd.write32(
-            IGD_BAR0_GTTMMADR,
-            (self.config.igd.gtt_mmio_base as u32) & 0xfff8_0000,
-        );
-        igd.write32(
-            IGD_BAR2_GMADR,
-            (self.config.igd.gmadr_base as u32) & 0xf000_0000,
-        );
-        igd.write32(
-            IGD_BAR3_GTTADR,
-            (self.config.igd.gtt_pte_base as u32) & 0xfff8_0000,
-        );
+
+        // The graphics windows are assigned by PCI enumeration and resource
+        // allocation: use those values. Re-programming them moves the GMCH
+        // register block, which follows the BAR, away from the window the PCH
+        // side is strapped to, and the display logic there stops responding.
+        // (A hardcoded 0xfed00000 also overlaps the fixed MCHBAR/DMIBAR/EPBAR
+        // windows, so accesses above +0x10000 land in chipset registers.)
+        let gtt_mmio_base =
+            Self::keep_or_program_bar(&igd, IGD_BAR0_GTTMMADR, self.config.igd.gtt_mmio_base);
+        let gmadr_base =
+            Self::keep_or_program_bar(&igd, IGD_BAR2_GMADR, self.config.igd.gmadr_base);
+        let gtt_pte_base =
+            Self::keep_or_program_bar(&igd, IGD_BAR3_GTTADR, self.config.igd.gtt_pte_base);
+
         igd.or16(PCI_COMMAND, PCI_CMD_MEMORY | PCI_CMD_MASTER);
         igd.and8_or8(IGD_MSAC, !0x3, 0x2);
 
         // coreboot writes PGETBL_CTL twice around a short delay, then flushes.
         let gtt_base = self.gtt_base();
-        super::igd::program_gtt_base(self.config.igd.gtt_mmio_base, gtt_base, 0);
+        super::igd::program_gtt_base(gtt_mmio_base, gtt_base, 0);
         fstart_arch::x86::udelay(50);
-        super::igd::program_gtt_base(self.config.igd.gtt_mmio_base, gtt_base, 0);
-        super::igd::clear_gtt_table(self.config.igd.gtt_pte_base, IGD_GTT_SIZE);
+        super::igd::program_gtt_base(gtt_mmio_base, gtt_base, 0);
+        super::igd::clear_gtt_table(gtt_pte_base, IGD_GTT_SIZE);
 
         // Graphics stolen memory runs from the graphics stolen base up to
         // TOLUD. The GTT sits *below* it on this platform (BGSM is 2039 MiB and
@@ -1127,10 +1142,10 @@ impl IntelPineview {
         let stolen_size = self.tolud().saturating_sub(stolen_base);
         let addresses = super::igd::IgdAddresses {
             pci_bdf: PciAddress::new(0, 0, 2, 0),
-            gtt_mmio_base: self.config.igd.gtt_mmio_base,
+            gtt_mmio_base,
             gtt_mmio_size: IGD_GTTMMADR_SIZE,
-            gtt_pte_base: Some(self.config.igd.gtt_pte_base),
-            gmadr_base: Some(self.config.igd.gmadr_base),
+            gtt_pte_base: Some(gtt_pte_base),
+            gmadr_base: Some(gmadr_base),
             gmadr_size: self.config.igd.gmadr_size,
             stolen_base: u64::from(stolen_base),
             stolen_size,
