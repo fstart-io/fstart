@@ -556,17 +556,55 @@ impl HardwareGmbus {
     /// Take ownership of the bus after a stale transfer (libgfxinit
     /// `Wait_Unset_Mask (GMBUS2_INUSE)` plus `Check_And_Reset`).
     fn acquire(&self) -> Result<(), GmaError> {
-        self.mmio.write32(self.reg(0x00), 0);
-        self.mmio.write32(self.reg(0x04), 0);
+        // libgfxinit `Init_GMBUS`: select a valid pin pair *before* resetting
+        // the state machine (the reset only takes effect with a port selected),
+        // stop a transfer that is still active, and fall back to the software
+        // clear-interrupt path. Without this, a bus left busy by earlier
+        // firmware makes every later transfer time out.
         let mut timeout = 100_000;
         while timeout != 0 {
             if !self.status().in_use {
-                return Ok(());
+                break;
             }
             timeout -= 1;
             core::hint::spin_loop();
         }
-        Err(GmaError::Timeout)
+        if timeout == 0 {
+            return Err(GmaError::Timeout);
+        }
+        self.mmio.write32(self.reg(0x10), 0);
+        self.mmio.write32(self.reg(0x20), 0);
+        self.mmio
+            .write32(self.reg(0x00), Gmbus0Config::conservative(self.pin).encode());
+        self.check_and_reset()
+    }
+
+    /// libgfxinit `Check_And_Reset`: finish an in-flight cycle, then confirm the
+    /// bus is idle, retrying once through the clear-interrupt path.
+    fn check_and_reset(&self) -> Result<(), GmaError> {
+        if self.status().active {
+            self.mmio
+                .write32(self.reg(0x04), GmbusCommand::stop().encode());
+            let mut timeout = 100_000;
+            while timeout != 0 {
+                if !self.status().active {
+                    break;
+                }
+                timeout -= 1;
+                core::hint::spin_loop();
+            }
+        }
+        if self.status().is_idle() {
+            return Ok(());
+        }
+        self.mmio
+            .write32(self.reg(0x04), GMBUS1_REG::SW_CLR_INT::SET.value);
+        self.mmio.write32(self.reg(0x04), 0);
+        if self.status().is_idle() {
+            Ok(())
+        } else {
+            Err(GmaError::Timeout)
+        }
     }
 
     /// Wait for the 4-byte word in GMBUS3 to become valid.
