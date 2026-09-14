@@ -55,6 +55,10 @@ const REG_ICR_LO: u32 = 0x300;
 /// Interrupt Command Register (high 32 bits — destination field).
 #[allow(dead_code)]
 const REG_ICR_HI: u32 = 0x310;
+
+/// Spin budget for the ICR delivery-status wait (~1 ms), matching coreboot's
+/// `icr_wait_timeout()`.
+const ICR_READY_SPINS: u32 = 10_000;
 /// LVT Local Interrupt 0 (LINT0).
 const REG_LVT0: u32 = 0x350;
 /// LVT Local Interrupt 1 (LINT1).
@@ -288,17 +292,29 @@ impl Lapic {
         (self.read(REG_ICR_LO) & ICR_BUSY) != 0
     }
 
-    /// Spin-wait until the LAPIC is ready to accept an IPI.
-    pub fn wait_ready(&self) {
+    /// Wait until the LAPIC is ready to accept an IPI.
+    ///
+    /// Bounded like coreboot's `icr_wait_timeout()`: a wedged ICR delivery
+    /// status must not hang the boot. Returns whether the ICR came ready; a
+    /// timeout is logged and the caller proceeds without the IPI.
+    pub fn wait_ready(&self) -> bool {
+        let mut spins = ICR_READY_SPINS;
         while self.busy() {
+            spins -= 1;
+            if spins == 0 {
+                fstart_log::error!("lapic: ICR stayed busy; dropping this IPI");
+                return false;
+            }
             core::hint::spin_loop();
         }
+        true
     }
 
     /// Send an INIT IPI to all processors except self.
     pub fn send_init_all_but_self(&self) {
-        self.wait_ready();
-        self.write(REG_ICR_LO, DEST_ALL_EXCL | INT_ASSERT | MT_INIT);
+        if self.wait_ready() {
+            self.write(REG_ICR_LO, DEST_ALL_EXCL | INT_ASSERT | MT_INIT);
+        }
     }
 
     /// Send a Startup IPI (SIPI) to all processors except self.
@@ -306,7 +322,9 @@ impl Lapic {
     /// `vector_page` is the 4K-aligned physical page number where the
     /// SIPI trampoline has been placed (e.g., `0x01` for address `0x1000`).
     pub fn send_sipi_all_but_self(&self, vector_page: u8) {
-        self.wait_ready();
+        if !self.wait_ready() {
+            return;
+        }
         self.write(
             REG_ICR_LO,
             DEST_ALL_EXCL | INT_ASSERT | MT_STARTUP | (vector_page as u32),
@@ -317,8 +335,9 @@ impl Lapic {
     ///
     /// Used for SMM relocation (`MT_SMI`) or self-NMI.
     pub fn send_ipi_self(&self, flags: u32) {
-        self.wait_ready();
-        self.write(REG_ICR_LO, DEST_SELF | flags);
+        if self.wait_ready() {
+            self.write(REG_ICR_LO, DEST_SELF | flags);
+        }
     }
 
     // ---- Timer (for future use) ----
