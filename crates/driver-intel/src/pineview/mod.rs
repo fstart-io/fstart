@@ -391,6 +391,11 @@ impl IntelPineview {
         let mch = self.mchbar();
 
         let hb = self.hostbridge_regs();
+        // Enable the host bridge, the IGD and its display function, as coreboot
+        // does (`BOARD_DEVEN = D0F0 | D2F0 | D2F1`). Without this the
+        // integrated graphics function stays disabled: its display registers
+        // and its DDC/GMBUS unit do not respond.
+        hb.deven.set((1 << 0) | (1 << 3) | (1 << 4));
         // GGC: 1 MiB GTT (GGMS=1), 8 MiB stolen (GMS=3).
         hb.ggc.set((1 << 8) | (3 << 4));
 
