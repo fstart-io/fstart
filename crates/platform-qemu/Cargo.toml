@@ -39,7 +39,7 @@ bundle-q35 = [
 ]
 # Q35 TSEG/SMM chipset ops (no SMM panic handler: safe inside the stage build).
 # bundle-q35 enables this; the smm image unit additionally enables bundle-smm.
-smm = ["dep:fstart-smm", "fstart-arch/x86_64"]
+smm = ["dep:fstart-smm", "dep:fstart-driver-intel", "fstart-arch/x86_64"]
 # Full SMM image build support (handler binding macro + SMM panic handler).
 # SMM-unit builds only: never enable inside a stage build, where fstart-stage
 # already provides the panic handler. Mirrors fstart-platform-intel's bundle-smm.
@@ -64,6 +64,7 @@ fstart-log = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-stage = { workspace = true, optional = true }
 fstart-smm = { workspace = true, optional = true }
+fstart-driver-intel = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }
 serde = { workspace = true }
 dtoolkit = { workspace = true, optional = true }

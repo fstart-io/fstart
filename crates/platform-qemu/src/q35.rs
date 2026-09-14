@@ -36,7 +36,7 @@ pub struct Q35HostBridge {
     ecam: PciEcam,
     /// TSEG base captured from the e820 map during [`Self::init_with_e820`].
     /// Zero until initialized; consumed by the SMM flow (`q35_smm`).
-    #[cfg(feature = "smm")]
+    #[cfg(all(feature = "smm", feature = "stage"))]
     tseg_base: u64,
 }
 
@@ -61,7 +61,7 @@ impl Q35HostBridge {
         Ok(Self {
             config,
             ecam,
-            #[cfg(feature = "smm")]
+            #[cfg(all(feature = "smm", feature = "stage"))]
             tseg_base: 0,
         })
     }
@@ -102,7 +102,7 @@ impl Q35HostBridge {
         self.assign_irqs();
         // Capture the TSEG window for the SMM flow while the firmware map is
         // at hand. Decode is a pure MCH config-space read, valid any time.
-        #[cfg(feature = "smm")]
+        #[cfg(all(feature = "smm", feature = "stage"))]
         {
             let size = crate::q35_smm::decode_tseg_size();
             self.tseg_base = crate::q35_smm::tseg_base_from_e820(entries, size);
@@ -126,7 +126,7 @@ impl Q35HostBridge {
     }
 
     /// TSEG base captured during [`Self::init_with_e820`]; zero before init.
-    #[cfg(feature = "smm")]
+    #[cfg(all(feature = "smm", feature = "stage"))]
     pub(crate) fn tseg_base(&self) -> u64 {
         self.tseg_base
     }

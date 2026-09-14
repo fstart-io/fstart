@@ -5,18 +5,16 @@
 //! software chain still authenticates each executable before entry.
 
 use crate::layout::IntelBootLayout;
-use fstart_arch::x86_64::car_teardown::{POSTCAR_STASH_ADDR, PostcarMtrrStash};
 use fstart_core::layout::RegionKind;
 use fstart_core::services::ServiceError;
-use fstart_core::services::boot_media::MemoryMapped;
-use fstart_core::services::memory_detect::{E820Entry, E820Kind, MAX_E820_ENTRIES};
-use fstart_ffs::root::{BootstrapDescriptor, BootstrapRole, DirectoryRef};
-use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
+use fstart_ffs::root::{BootstrapDescriptor, BootstrapRole};
+use fstart_stage::boot::MemoryWindow;
 
 /// Initial stage windows come from the linked descriptor, not authored
 /// board bounds. Each contains code plus loader scratch and leaves the
 /// next stage disjoint.
 
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "postcar"))]
 pub(crate) fn bootstrap_window(
     descriptor: &BootstrapDescriptor,
     role: BootstrapRole,
@@ -50,10 +48,12 @@ pub(crate) fn bootstrap_window(
 
 /// The stash remains reserved through mainstage import. Its provenance comes
 /// from the predecessor, not from validation of its magic/version fields.
+#[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
 pub(crate) fn handoff(
     image_base: u64,
     image_size: usize,
-) -> Result<&'static PostcarMtrrStash, ServiceError> {
+) -> Result<&'static fstart_arch::x86_64::car_teardown::PostcarMtrrStash, ServiceError> {
+    use fstart_arch::x86_64::car_teardown::{POSTCAR_STASH_ADDR, PostcarMtrrStash};
     // SAFETY: Intel's fixed flow reserves this low-DRAM page across CAR teardown.
     let stash = unsafe { &*(POSTCAR_STASH_ADDR as *const PostcarMtrrStash) };
     if !stash.valid_header()
@@ -70,10 +70,13 @@ pub(crate) fn handoff(
     Ok(stash)
 }
 
+#[cfg(fstart_stage_env = "ram")]
 pub(crate) fn import_intel_directory(
     image_base: u64,
     image_size: usize,
 ) -> Result<(), ServiceError> {
+    use fstart_core::services::boot_media::MemoryMapped;
+    use fstart_ffs::root::DirectoryRef;
     let stash = handoff(image_base, image_size)?;
     let descriptor =
         BootstrapDescriptor::parse(&stash.descriptor).map_err(|_| ServiceError::InvalidParam)?;
@@ -119,10 +122,13 @@ pub(crate) fn running_reservations(
     Ok(windows)
 }
 
+#[cfg(fstart_stage_env = "ram")]
 pub(crate) fn install_intel_load_policy(
-    entries: &[E820Entry],
+    entries: &[fstart_core::services::memory_detect::E820Entry],
     geometry: IntelBootLayout<'static>,
 ) -> Result<(), ServiceError> {
+    use fstart_core::services::memory_detect::{E820Kind, MAX_E820_ENTRIES};
+    use fstart_stage::boot::MemoryPolicy;
     let mut writable = heapless::Vec::<MemoryWindow, MAX_E820_ENTRIES>::new();
     let mut reserved = heapless::Vec::<MemoryWindow, { MAX_E820_ENTRIES + 16 }>::new();
     for entry in entries.iter().filter(|entry| entry.size != 0) {

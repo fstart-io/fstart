@@ -7,12 +7,13 @@ use fstart_driver_intel::southbridge::hda;
 use fstart_driver_superio::pc87382;
 use fstart_driver_superio::pc87392;
 use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
-use fstart_intel_gma::{FallbackMode, OutputConfig, PreferredMode, Port};
+use fstart_intel_gma::{FallbackMode, OutputConfig, Port, PreferredMode};
 use fstart_platform_intel::gm965::{
-    Gm965Ich8Config, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig, LpcFixedIoDecode,
-    LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
+    Gm965Ich8Config, Gm965Ich8Platform, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig,
+    LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode,
+    UsbConfig,
 };
-use fstart_platform_intel::igd::IgdDisplayPolicy;
+use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 
 /// X61 is a 12.1" 1024x768 XGA LVDS panel.
 ///
@@ -82,7 +83,7 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
         fstart_platform_intel::facts::BoardFacts::new(
             fstart_core::FlashLayout::IntelIfd(FLASH),
             0x400000,
-            2,
+            X61_PLATFORM.max_cpus,
             fstart_platform_intel::facts::Chipset::Gm965Ich8,
         );
 }
@@ -94,7 +95,8 @@ pub const UART0_NODE: &str = "dock_superio/com1";
 pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
-pub static X61_PLATFORM: Gm965Ich8Config = Gm965Ich8Config::new()
+pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
+    .max_cpus(2)
     .igd(x61_igd_config())
     .pcie_port(0, true)
     .pcie_port(1, true)
@@ -158,14 +160,9 @@ pub const fn x61_igd_config() -> Gm965IgdConfig {
     Gm965IgdConfig {
         enable_vga: true,
         enable_pipe_b: true,
-        gtt_mmio_base: 0xFEB0_0000,
-        gmadr_base: 0xD000_0000,
         gmadr_size: 256 * 1024 * 1024,
         stolen_memory_mb: 32,
-        vbt_file: Some("data.vbt"),
-        vbt_addr: None,
-        vbt_size: 0,
-        legacy_vbt_probe: Some(0x000C_0000),
+        vbt: VbtSource::ffs("data.vbt"),
         panel_power_up_delay: 2000,
         panel_power_down_delay: 2000,
         panel_backlight_on_delay: 2000,

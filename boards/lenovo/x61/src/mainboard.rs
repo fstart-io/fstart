@@ -551,14 +551,13 @@ mod acpi_impl {
         use fstart_driver_intel::gm965::IntelGm965;
         use fstart_driver_intel::ich8::IntelIch8;
         use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
-        use std::boxed::Box;
         use std::fs;
         use std::process::Command;
 
         #[test]
         fn complete_dsdt_iasl_round_trip() {
-            let north_config = Box::leak(Box::new(crate::X61_PLATFORM.northbridge_config()));
-            let south_config = Box::leak(Box::new(crate::X61_PLATFORM.southbridge_config()));
+            let north_config = &crate::X61_PLATFORM.northbridge;
+            let south_config = &crate::X61_PLATFORM.southbridge;
             let north = IntelGm965::new_from_config(north_config).unwrap();
             let south = IntelIch8::new_from_config(south_config).unwrap();
 

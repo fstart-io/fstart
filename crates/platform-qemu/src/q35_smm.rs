@@ -1,18 +1,14 @@
-//! QEMU q35 TSEG/SMM operations.
+//! QEMU q35 TSEG geometry and SMRAM window control.
 //!
-//! Uses the LAPIC self-SMI relocation trigger shared by the live Intel
-//! drivers, which matches coreboot's `smm_initiate_relocation()`.
-//!
-//! Hardware sequence mirrors coreboot's `mainboard/emulation/qemu-q35`:
-//! `memmap.c` (`decode_tseg_size`, `smm_region`, `smm_open/close/lock`) and
-//! `cpu.c` (`get_smm_info`, AMD64 save-state size), with SMI routing per
-//! `southbridge/intel/common/smi.c` (`smm_southbridge_clear_state()` then
-//! `global_smi_enable()`).
+//! The install/relocation flow itself is the shared Intel gen1
+//! [`IntelSmm`](fstart_arch::cpu_intel::smm::IntelSmm); this module supplies
+//! the chipset halves: [`SmramControl`] for the MCH (coreboot's
+//! `mainboard/emulation/qemu-q35/memmap.c`) and the ICH9 PM I/O block for
+//! [`IchSmi`] (`southbridge/intel/common/smi.c`).
 
-use core::cell::UnsafeCell;
-
-use fstart_arch::mp::{SmmError, SmmInfo, SmmOps};
+use fstart_arch::cpu_intel::smm::{Gpe0Block, SmramControl};
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
+use fstart_driver_intel::southbridge::smi::IchSmi;
 
 use crate::q35::Q35HostBridge;
 
@@ -30,91 +26,11 @@ const TSEG_SZ_MASK: u8 = 3 << 1;
 
 /// ICH9 PMBASE programmed by [`Q35HostBridge::setup_ich9_pm_io`](crate::q35).
 pub const Q35_PMBASE: u16 = 0x0600;
-/// AMD64 SMM save-state size (coreboot q35 `cpu.c` uses the amd64 area).
-const AMD64_SAVE_STATE_SIZE: usize = 0x400;
 
-// ---------------------------------------------------------------------------
-// Minimal PMBASE PIO accessor (ICH9 SMI/PM1/GPE0 subset)
-// ---------------------------------------------------------------------------
-
-const SMI_EN: u16 = 0x30;
-const SMI_STS: u16 = 0x34;
-const GPE0_STS_64: u16 = 0x20;
-const PM1_STS: u16 = 0x00;
-const PM1_EN: u16 = 0x02;
-const TCO_BASE_OFF: u16 = 0x60;
-const TCO1_STS: u16 = 0x04;
-
-const GBL_SMI_EN: u32 = 1 << 0;
-const EOS: u32 = 1 << 1;
-const SLP_SMI_EN: u32 = 1 << 4;
-const APMC_EN: u32 = 1 << 5;
-const TCO_EN: u32 = 1 << 13;
-const PWRBTN_EN: u16 = 1 << 8;
-const GBL_EN: u16 = 1 << 5;
-
-#[derive(Clone, Copy)]
-struct Pm(u16);
-
-impl Pm {
-    fn read32(self, reg: u16) -> u32 {
-        // SAFETY: PMBASE was programmed by the q35 init flow.
-        unsafe { fstart_core::pio::inl(self.0 + reg) }
-    }
-    fn write32(self, reg: u16, val: u32) {
-        // SAFETY: PMBASE was programmed by the q35 init flow.
-        unsafe { fstart_core::pio::outl(self.0 + reg, val) }
-    }
-    fn read16(self, reg: u16) -> u16 {
-        // SAFETY: PMBASE was programmed by the q35 init flow.
-        unsafe { fstart_core::pio::inw(self.0 + reg) }
-    }
-    fn write16(self, reg: u16, val: u16) {
-        // SAFETY: PMBASE was programmed by the q35 init flow.
-        unsafe { fstart_core::pio::outw(self.0 + reg, val) }
-    }
-    fn setbits32(self, reg: u16, bits: u32) {
-        self.write32(reg, self.read32(reg) | bits);
-    }
-    /// coreboot `reset_smi_status()` + `reset_pm1_status()` +
-    /// `reset_tco_status()` + `reset_gpe0_status()` (64-bit GPE0 on ICH9).
-    fn clear_smi_state(self) {
-        let sts = self.read32(SMI_STS);
-        self.write32(SMI_STS, sts);
-        let pm1 = self.read16(PM1_STS);
-        self.write16(PM1_STS, pm1);
-        let tco = self.read32(TCO_BASE_OFF + TCO1_STS);
-        self.write32(TCO_BASE_OFF + TCO1_STS, tco & !(1 << 18));
-        if tco & (1 << 18) != 0 {
-            self.write32(TCO_BASE_OFF + TCO1_STS, 1 << 18);
-        }
-        self.write32(GPE0_STS_64, 0xffff_ffff);
-        self.write32(GPE0_STS_64 + 4, 0xffff_ffff);
-    }
+/// SMI routing for the emulated ICH9: ICH8-style 64-bit GPE0 at 0x20.
+pub(crate) const fn ich9_smi() -> IchSmi {
+    IchSmi::new(Q35_PMBASE, Gpe0Block::ICH8)
 }
-
-// ---------------------------------------------------------------------------
-// Per-CPU layout scratch (BSP-only installer use, mirrors Intel drivers)
-// ---------------------------------------------------------------------------
-
-const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
-    smbase: 0,
-    entry_addr: 0,
-    save_state_base: 0,
-    save_state_top: 0,
-    stack_bottom: 0,
-    stack_top: 0,
-};
-
-struct CpuLayoutStore(UnsafeCell<[fstart_smm::CpuSmmLayout; fstart_smm::runtime::MAX_SMM_CPUS]>);
-
-// SAFETY: firmware runs the SMM installer on the BSP while SMRAM is open;
-// no other code accesses this scratch buffer concurrently.
-unsafe impl Sync for CpuLayoutStore {}
-
-static Q35_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
-    [ZERO_CPU_LAYOUT; fstart_smm::runtime::MAX_SMM_CPUS],
-));
 
 // ---------------------------------------------------------------------------
 // TSEG geometry (coreboot q35 `memmap.c`)
@@ -188,142 +104,25 @@ pub(crate) fn tseg_base_from_e820(entries: &[E820Entry], size: usize) -> u64 {
 // SMRAM window control (coreboot q35 `memmap.c` open/close/lock)
 // ---------------------------------------------------------------------------
 
-fn smm_open() {
-    pci_write_host8(SMRAMC, D_OPEN | G_SMRAME | C_BASE_SEG);
-    let esmramc = pci_read_host8(ESMRAMC);
-    pci_write_host8(ESMRAMC, esmramc & !T_EN);
-}
-
-fn smm_close() {
-    pci_write_host8(SMRAMC, G_SMRAME | C_BASE_SEG);
-    let esmramc = pci_read_host8(ESMRAMC);
-    pci_write_host8(ESMRAMC, esmramc | T_EN);
-}
-
-fn smm_lock() {
-    pci_write_host8(SMRAMC, D_LCK | G_SMRAME | C_BASE_SEG);
-}
-
-fn smi_enable_for_relocation() {
-    Pm(Q35_PMBASE).setbits32(SMI_EN, APMC_EN | GBL_SMI_EN | EOS);
-}
-
-// ---------------------------------------------------------------------------
-// SmmOps
-// ---------------------------------------------------------------------------
-
-impl SmmOps for Q35HostBridge {
-    fn smm_info(&self) -> Option<SmmInfo> {
+impl SmramControl for Q35HostBridge {
+    fn tseg(&self) -> Option<(u64, u32)> {
         let size = decode_tseg_size();
-        if size == 0 || self.tseg_base() == 0 {
-            fstart_log::error!("Q35 SMM: TSEG unavailable");
-            return None;
-        }
-        fstart_log::info!(
-            "Q35 SMM: TSEG base={:#x} size={:#x}",
-            self.tseg_base(),
-            size
-        );
-        Some(SmmInfo {
-            smbase: self.tseg_base(),
-            smsize: size,
-            save_state_size: AMD64_SAVE_STATE_SIZE,
-        })
+        (size != 0 && self.tseg_base() != 0).then(|| (self.tseg_base(), size as u32))
     }
 
-    fn install_smm_handlers(
-        &self,
-        info: &SmmInfo,
-        num_cpus: u16,
-        image: &[u8],
-    ) -> Result<(), SmmError> {
-        smm_open();
-
-        let layouts = unsafe { &mut *Q35_SMM_CPU_LAYOUTS.0.get() };
-        let result = unsafe {
-            fstart_smm::install_pic_image(
-                image,
-                fstart_smm::InstallConfig {
-                    smram_base: info.smbase,
-                    smram_size: info.smsize as u64,
-                    num_cpus,
-                    save_state_size: info.save_state_size as u32,
-                    page_table_size: 0,
-                    cr3: fstart_arch::x86::controlregs::cr3(),
-                    platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
-                    platform_flags: fstart_smm::SMM_PLATFORM_FLAG_ICH_GPE0_64BIT,
-                    platform_data: [Q35_PMBASE as u64, 0x20, 0, 0],
-                },
-                layouts,
-            )
-        };
-
-        match result {
-            Ok(installed) => {
-                let targets = &installed.cpus[..num_cpus as usize];
-                fstart_arch::mp::prepare_default_smm_relocation(targets);
-                let default_handler = unsafe {
-                    fstart_smm::install_default_relocation_callback_stub(
-                        image,
-                        fstart_smm::DefaultRelocationCallbackConfig {
-                            default_smbase: fstart_arch::mp::SMM_DEFAULT_SMBASE,
-                            cr3: fstart_arch::x86::controlregs::cr3(),
-                            callback: fstart_arch::mp::default_smm_relocation_handler as *const ()
-                                as usize as u64,
-                            stack_top: fstart_arch::mp::SMM_DEFAULT_ENTRY_STACK_TOP,
-                        },
-                    )
-                };
-                if default_handler.is_err() {
-                    smm_close();
-                    fstart_log::error!("Q35 SMM: failed to install default relocation handler");
-                    return Err(SmmError::InstallFailed);
-                }
-
-                fstart_log::info!(
-                    "Q35 SMM: installed image common={:#x} entry={:#x} cpus={}",
-                    installed.common_base,
-                    installed.common_entry,
-                    installed.cpus.len()
-                );
-                Ok(())
-            }
-            Err(_) => {
-                smm_close();
-                fstart_log::error!("Q35 SMM: failed to install SMM image");
-                Err(SmmError::InstallFailed)
-            }
-        }
+    fn smram_open(&self) {
+        pci_write_host8(SMRAMC, D_OPEN | G_SMRAME | C_BASE_SEG);
+        let esmramc = pci_read_host8(ESMRAMC);
+        pci_write_host8(ESMRAMC, esmramc & !T_EN);
     }
 
-    fn smm_relocate(&self) {
-        smi_enable_for_relocation();
-        // Match coreboot `smm_initiate_relocation()`: relocation is triggered
-        // with a local-APIC SMI IPI to *this* CPU, not by writing APM_CNT.
-        // (An APM_CNT write also reaches QEMU's SMI path, but LAPIC
-        // self-SMI is what all live Intel drivers use and what coreboot uses
-        // on q35 as well.)
-        let lapic = fstart_arch::lapic::Lapic::from_msr();
-        // SMI delivery rejects the destination shorthand, so the local APIC ID
-        // must go in the destination field (see `Lapic::send_smi_self`).
-        lapic.send_smi_self();
-        lapic.wait_ready();
+    fn smram_close(&self) {
+        pci_write_host8(SMRAMC, G_SMRAME | C_BASE_SEG);
+        let esmramc = pci_read_host8(ESMRAMC);
+        pci_write_host8(ESMRAMC, esmramc | T_EN);
     }
 
-    fn pre_smm_init(&self) {
-        let pm = Pm(Q35_PMBASE);
-        pm.clear_smi_state();
-        pm.write32(SMI_EN, APMC_EN | GBL_SMI_EN | EOS);
-    }
-
-    fn post_smm_init(&self) {
-        smm_close();
-        // coreboot `global_smi_enable()` after `smm_southbridge_clear_state()`.
-        let pm = Pm(Q35_PMBASE);
-        pm.clear_smi_state();
-        pm.write16(PM1_EN, PWRBTN_EN | GBL_EN);
-        pm.write32(SMI_EN, TCO_EN | APMC_EN | SLP_SMI_EN | GBL_SMI_EN | EOS);
-        smm_lock();
-        fstart_log::info!("Q35 SMM: global SMI enabled and SMRAM locked");
+    fn smram_lock(&self) {
+        pci_write_host8(SMRAMC, D_LCK | G_SMRAME | C_BASE_SEG);
     }
 }

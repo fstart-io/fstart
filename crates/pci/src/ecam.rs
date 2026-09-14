@@ -187,6 +187,30 @@ impl EcamDevice {
         let v = self.read8(reg);
         self.write8(reg, (v & mask) | bits);
     }
+
+    /// Physical base of the memory BAR at `reg` as PCI enumeration assigned
+    /// it, or `None` when the window is unassigned or an I/O BAR.
+    ///
+    /// Drivers that run after resource allocation must consume the
+    /// allocator's assignment rather than re-programming a fixed address:
+    /// the allocator has already laid the window out among every other
+    /// device, and a driver-chosen base may alias a neighbour.
+    pub fn memory_bar(&self, reg: u16) -> Option<u64> {
+        const IO_SPACE: u32 = 1 << 0;
+        const TYPE_64: u32 = 0b10 << 1;
+        const TYPE_MASK: u32 = 0b11 << 1;
+        let low = self.read32(reg);
+        if low & IO_SPACE != 0 {
+            return None;
+        }
+        let high = if low & TYPE_MASK == TYPE_64 {
+            u64::from(self.read32(reg + 4)) << 32
+        } else {
+            0
+        };
+        let base = high | u64::from(low & !0xf);
+        (base != 0).then_some(base)
+    }
 }
 
 #[allow(unused_unsafe)]

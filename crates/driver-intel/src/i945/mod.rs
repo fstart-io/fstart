@@ -23,9 +23,7 @@ pub mod raminit;
 
 use self::fields::*;
 
-use core::{cell::UnsafeCell, ptr};
-
-use fstart_arch::mp::{SmmError, SmmInfo};
+use core::ptr;
 
 use crate::MmioBar;
 use crate::ich7::Rcba;
@@ -99,20 +97,16 @@ pub mod hostbridge {
 }
 
 /// IGD PCI configuration offsets, panel registers and command bits.
-const IGD_BAR0_GTTMMADR: u16 = 0x10;
-const IGD_BAR2_GMADR: u16 = 0x18;
-const IGD_ASLS: u16 = 0xfc;
-const IGD_SWSCI: u16 = 0xe8;
 const IGD_MSAC: u16 = 0x62;
 const IGD_GDRST: u16 = 0xc0;
 const PCI_COMMAND: u16 = 0x04;
 const PCI_CMD_MEMORY: u16 = 1 << 1;
 const PCI_CMD_MASTER: u16 = 1 << 2;
 /// Panel power sequencing registers, shared with the later GMCH parts.
-const PP_ON_DELAYS: usize = 0x61208;
-const PP_OFF_DELAYS: usize = 0x6120c;
-const PP_DIVISOR: usize = 0x61210;
-const BLC_PWM_CTL: usize = 0x61254;
+const PP_ON_DELAYS: u32 = 0x61208;
+const PP_OFF_DELAYS: u32 = 0x6120c;
+const PP_DIVISOR: u32 = 0x61210;
+const BLC_PWM_CTL: u32 = 0x61254;
 /// Gen3 backlight control lives in the legacy PWM register.
 const BLM_LEGACY_MODE: u32 = 1 << 16;
 /// Backlight PWM frequency coreboot uses when the board names none.
@@ -124,20 +118,10 @@ const I945_GTT_256_KIB_FLAG: u32 = 2;
 /// Integrated graphics configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct I945IgdConfig {
-    /// Fixed GTTMMADR BAR0 address: the display MMIO window.
-    pub gtt_mmio_base: u64,
-    /// Fixed GMADR graphics aperture BAR2 address.
-    pub gmadr_base: u64,
     /// GMADR graphics aperture size in bytes.
     pub gmadr_size: u32,
-    /// Board-relative VBT file stored as a verified FFS asset.
-    pub vbt_file: Option<&'static str>,
-    /// Raw VBT physical address, when firmware has staged a blob.
-    pub vbt_addr: Option<u64>,
-    /// Raw VBT size at `vbt_addr`.
-    pub vbt_size: u32,
-    /// Legacy VBIOS window to probe when no VBT is staged.
-    pub legacy_vbt_probe: Option<u64>,
+    /// Where the VBT for the OpRegion comes from.
+    pub vbt: super::igd::VbtSource,
     /// Panel power-up delay in 100us units (mobile parts only).
     pub panel_power_up_delay: u16,
     /// Backlight-on delay in 100us units.
@@ -160,13 +144,8 @@ impl I945IgdConfig {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            gtt_mmio_base: default_igd_gtt_mmio_base(),
-            gmadr_base: default_igd_gmadr_base(),
             gmadr_size: default_igd_gmadr_size(),
-            vbt_file: None,
-            vbt_addr: None,
-            vbt_size: 0,
-            legacy_vbt_probe: default_igd_legacy_vbt_probe(),
+            vbt: super::igd::VbtSource::LEGACY,
             panel_power_up_delay: 2000,
             panel_backlight_on_delay: 2000,
             panel_power_down_delay: 2000,
@@ -185,20 +164,8 @@ impl Default for I945IgdConfig {
     }
 }
 
-const fn default_igd_gtt_mmio_base() -> u64 {
-    0xfeb0_0000
-}
-
-const fn default_igd_gmadr_base() -> u64 {
-    0xd000_0000
-}
-
 const fn default_igd_gmadr_size() -> u32 {
     256 * 1024 * 1024
-}
-
-const fn default_igd_legacy_vbt_probe() -> Option<u64> {
-    Some(0x000c_0000)
 }
 
 /// i945 MCHBAR register offsets from `i945.h`.
@@ -453,35 +420,6 @@ impl crate::MmioBar for DmiBar {
         self.base
     }
 }
-
-/// SMRAM control bits (shared with GM965; same register layout).
-const SMRAM_G_SMRAME: u8 = 1 << 3;
-const SMRAM_D_LCK: u8 = 1 << 4;
-const SMRAM_D_OPEN: u8 = 1 << 6;
-const SMRAM_C_BASE_SEG: u8 = 0b010;
-/// ICH7 PMBASE programmed by the southbridge driver; must match the
-/// platform's `ICH7_PMBASE` for SMM setup.
-const ICH7_PM_BASE: u16 = 0x0500;
-const EM64T101_SAVE_STATE_SIZE: usize = 0x400;
-
-const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
-    smbase: 0,
-    entry_addr: 0,
-    save_state_base: 0,
-    save_state_top: 0,
-    stack_bottom: 0,
-    stack_top: 0,
-};
-
-struct CpuLayoutStore(UnsafeCell<[fstart_smm::CpuSmmLayout; fstart_smm::runtime::MAX_SMM_CPUS]>);
-
-// SAFETY: firmware invokes SMM installation from the BSP while SMRAM is open;
-// this scratch buffer is not shared with APs or interrupt context.
-unsafe impl Sync for CpuLayoutStore {}
-
-static I945_SMM_CPU_LAYOUTS: CpuLayoutStore = CpuLayoutStore(UnsafeCell::new(
-    [ZERO_CPU_LAYOUT; fstart_smm::runtime::MAX_SMM_CPUS],
-));
 
 /// Intel i945 northbridge driver.
 pub struct IntelI945 {
@@ -1066,6 +1004,10 @@ impl IntelI945 {
     }
 
     /// Display generation selector for the shared GMA layer.
+    fn igd_present(&self) -> bool {
+        self.igd().read16(0) != 0xffff
+    }
+
     fn display_cpu(&self) -> Cpu {
         match self.config.variant {
             I945Variant::Desktop | I945Variant::DesktopGc => Cpu::I945G,
@@ -1085,38 +1027,28 @@ impl IntelI945 {
         )
     }
 
-    fn igd_mmio_write32(&self, offset: usize, value: u32) {
-        // SAFETY: BAR0 has been programmed and enabled before the display path
-        // runs; offsets are the fixed panel/backlight registers.
-        unsafe {
-            fstart_core::mmio::write32(
-                (self.config.igd.gtt_mmio_base as usize + offset) as *mut u32,
-                value,
-            )
-        };
-    }
-
     /// Panel power sequencing and backlight (coreboot i945 `panel_setup`).
     ///
     /// Only mobile parts drive an LVDS panel; desktop parts leave these
     /// registers at their firmware values.
-    fn igd_panel_setup(&self) {
+    fn igd_panel_setup(&self, gtt_mmio: u64) {
         if self.config.variant != I945Variant::Mobile {
             return;
         }
         let conf = &self.config.igd;
         let cdclk = self.cdclk_hz();
-        self.igd_mmio_write32(
+        let write = |off, val| super::igd::mmio_write32(gtt_mmio, off, val);
+        write(
             PP_ON_DELAYS,
             ((conf.panel_power_up_delay as u32 & 0x1fff) << 16)
                 | (conf.panel_backlight_on_delay as u32 & 0x1fff),
         );
-        self.igd_mmio_write32(
+        write(
             PP_OFF_DELAYS,
             ((conf.panel_power_down_delay as u32 & 0x1fff) << 16)
                 | (conf.panel_backlight_off_delay as u32 & 0x1fff),
         );
-        self.igd_mmio_write32(
+        write(
             PP_DIVISOR,
             ((cdclk / 20_000 - 1) << 8) | (conf.panel_power_cycle_delay as u32 & 0x1f),
         );
@@ -1127,7 +1059,7 @@ impl IntelI945 {
         };
         let modulus = cdclk / (32 * u32::from(freq).max(1));
         let half = modulus / 2;
-        self.igd_mmio_write32(BLC_PWM_CTL, BLM_LEGACY_MODE | (half << 17) | (half << 1));
+        write(BLC_PWM_CTL, BLM_LEGACY_MODE | (half << 17) | (half << 1));
     }
 
     /// Program the physical GTT base (coreboot i945 `gtt_setup`).
@@ -1135,7 +1067,7 @@ impl IntelI945 {
     /// The Video BIOS places the 256 KiB GTT page table below the top of low
     /// memory, and the display engine cannot translate framebuffer addresses
     /// until `PGETBL_CTL` enables it.
-    fn gtt_setup(&self) {
+    fn gtt_setup(&self, gtt_mmio: u64) {
         let tolud = self.tolud();
         if tolud < I945_GTT_SIZE {
             fstart_log::error!("intel-i945: TOLUD too low for a GTT page table");
@@ -1143,7 +1075,7 @@ impl IntelI945 {
         }
         let gtt_base = tolud - I945_GTT_SIZE;
         super::igd::program_gtt_base(
-            self.config.igd.gtt_mmio_base,
+            gtt_mmio,
             gtt_base,
             super::igd::PGETBL_ENABLED | I945_GTT_256_KIB_FLAG,
         );
@@ -1152,52 +1084,18 @@ impl IntelI945 {
         super::igd::clear_gtt_table(u64::from(gtt_base), I945_GTT_SIZE);
     }
 
-    /// Publish the IGD OpRegion so the OS can read the VBT and panel data.
-    fn init_igd_opregion(&self) {
-        let vbt = super::igd::locate_vbt(
-            self.config.igd.vbt_file,
-            self.config.igd.vbt_addr,
-            self.config.igd.vbt_size,
-            self.config.igd.legacy_vbt_probe,
-        );
-        let Some(vbt) = vbt else {
-            fstart_log::error!("intel-i945: no valid VBT found for IGD opregion");
-            return;
-        };
-        let vbt = vbt.as_slice();
-        let opregion = crate::igd_opregion_buf(super::igd::opregion_size(vbt.len()));
-        super::igd::build_opregion(opregion, vbt);
-
-        let igd = self.igd();
-        igd.write32(IGD_ASLS, opregion.as_ptr() as u32);
-        let swsci = (igd.read16(IGD_SWSCI) & !1) | (1 << 15);
-        igd.write16(IGD_SWSCI, swsci);
-        fstart_log::info!(
-            "intel-i945: IGD opregion at {:#x}, VBT {} bytes",
-            opregion.as_ptr() as usize,
-            vbt.len() as u32
-        );
-    }
-
     /// Enable the IGD function and hand the display engine to the shared GMA
     /// layer, mirroring coreboot's `gma_func0_init`.
     ///
     /// Best effort: a panel that will not come up leaves the machine booting
     /// headless rather than failing the mainstage phase.
-    fn gma_display_init(&mut self) {
+    fn gma_display_init(&mut self, vbt: Option<&[u8]>) {
         let igd = self.igd();
-        if igd.read16(0) == 0xffff {
-            fstart_log::error!("intel-i945: IGD function not present");
+        // Consume the windows PCI enumeration assigned; never re-program them.
+        let Some(bars) = super::igd::assigned_bars(&igd, false) else {
+            fstart_log::error!("intel-i945: IGD windows unassigned, skipping display");
             return;
-        }
-        igd.write32(
-            IGD_BAR0_GTTMMADR,
-            (self.config.igd.gtt_mmio_base as u32) & 0xfff0_0000,
-        );
-        igd.write32(
-            IGD_BAR2_GMADR,
-            (self.config.igd.gmadr_base as u32) & 0xf000_0000,
-        );
+        };
         igd.or16(PCI_COMMAND, PCI_CMD_MEMORY | PCI_CMD_MASTER);
         igd.and8_or8(IGD_MSAC, !0x3, 0x2);
 
@@ -1211,30 +1109,22 @@ impl IntelI945 {
             core::hint::spin_loop();
         }
 
-        self.init_igd_opregion();
-        self.igd_panel_setup();
-        self.gtt_setup();
+        self.igd_panel_setup(bars.gtt_mmio);
+        self.gtt_setup(bars.gtt_mmio);
 
         let stolen_base = self.igd_stolen_base();
         let addresses = super::igd::IgdAddresses {
             pci_bdf: PciAddress::new(0, 0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC),
-            gtt_mmio_base: self.config.igd.gtt_mmio_base,
+            gtt_mmio_base: bars.gtt_mmio,
             gtt_mmio_size: 512 * 1024,
             gtt_pte_base: Some(u64::from(self.tolud().saturating_sub(I945_GTT_SIZE))),
-            gmadr_base: Some(self.config.igd.gmadr_base),
+            gmadr_base: Some(bars.gmadr),
             gmadr_size: self.config.igd.gmadr_size,
             stolen_base: u64::from(stolen_base),
             stolen_size: self.tolud().saturating_sub(stolen_base),
             gtt_size: I945_GTT_SIZE,
             gcfgc: Some(igd.read16(hostbridge::IGD_GCFC)),
         };
-        let vbt = super::igd::locate_vbt(
-            self.config.igd.vbt_file,
-            self.config.igd.vbt_addr,
-            self.config.igd.vbt_size,
-            self.config.igd.legacy_vbt_probe,
-        );
-        let vbt = vbt.as_ref().map(|bytes| bytes.as_slice());
         self.display.initialize(
             self.display_cpu(),
             self.config.igd.display.as_ref(),
@@ -1293,28 +1183,6 @@ impl IntelI945 {
 
     fn write_smram(&self, val: u8) {
         Self::hb().write8(hostbridge::SMRAM, val);
-    }
-
-    fn smm_open(&self) {
-        self.write_smram(SMRAM_D_OPEN | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
-    }
-
-    fn smm_close(&self) {
-        self.write_smram(SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
-    }
-
-    fn smm_lock(&self) {
-        self.write_smram(SMRAM_D_LCK | SMRAM_G_SMRAME | SMRAM_C_BASE_SEG);
-    }
-
-    fn smi_enable_for_relocation() {
-        let pm = crate::southbridge::pmio_ich::PmIo::new(ICH7_PM_BASE);
-        pm.setbits32(
-            crate::southbridge::pmio_ich::SMI_EN,
-            crate::southbridge::pmio_ich::APMC_EN
-                | crate::southbridge::pmio_ich::GBL_SMI_EN
-                | crate::southbridge::pmio_ich::EOS,
-        );
     }
 }
 
@@ -1377,9 +1245,18 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
     }
 
     fn post_verify_init(&mut self) -> Result<(), ServiceError> {
-        // Needs the verified boot media for the VBT-backed display policy.
+        // The OpRegion embeds the VBT out of the verified boot media, and the
+        // modeset reads the same bytes for its panel and DDC policy.
+        if !self.igd_present() {
+            return Ok(());
+        }
+        let vbt = super::igd::publish_opregion(
+            &self.igd(),
+            super::igd::OpRegionSci::Swsci,
+            &self.config.igd.vbt,
+        );
         if self.config.igd.display.is_some() {
-            self.gma_display_init();
+            self.gma_display_init(vbt.as_deref());
         }
         Ok(())
     }
@@ -1461,128 +1338,19 @@ impl PciRootProvider for IntelI945 {
     }
 }
 
-impl fstart_arch::mp::SmmOps for IntelI945 {
-    fn smm_info(&self) -> Option<SmmInfo> {
+impl fstart_arch::cpu_intel::smm::SmramControl for IntelI945 {
+    fn tseg(&self) -> Option<(u64, u32)> {
         let (base, size) = self.smm_region();
-        if size == 0 {
-            fstart_log::error!("i945 SMM: TSEG is disabled");
-            return None;
-        }
-        fstart_log::info!("i945 SMM: TSEG base={:#x} size={:#x}", base, size);
-        Some(SmmInfo {
-            smbase: u64::from(base),
-            smsize: size as usize,
-            save_state_size: EM64T101_SAVE_STATE_SIZE,
-        })
+        (size != 0).then_some((u64::from(base), size))
     }
-
-    fn install_smm_handlers(
-        &self,
-        info: &SmmInfo,
-        num_cpus: u16,
-        image: &[u8],
-    ) -> Result<(), SmmError> {
-        self.smm_open();
-
-        let layouts = unsafe { &mut *I945_SMM_CPU_LAYOUTS.0.get() };
-        let result = unsafe {
-            fstart_smm::install_pic_image(
-                image,
-                fstart_smm::InstallConfig {
-                    smram_base: info.smbase,
-                    smram_size: info.smsize as u64,
-                    num_cpus,
-                    save_state_size: info.save_state_size as u32,
-                    page_table_size: 0,
-                    cr3: fstart_arch::x86::controlregs::cr3(),
-                    platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
-                    // ICH7 has a single 32-bit GPE0 block (no 64-bit flag).
-                    platform_flags: 0,
-                    platform_data: [ICH7_PM_BASE as u64, 0x28, 0, 0],
-                },
-                layouts,
-            )
-        };
-
-        match result {
-            Ok(installed) => {
-                let targets = &installed.cpus[..num_cpus as usize];
-                fstart_arch::mp::prepare_default_smm_relocation(targets);
-                let default_handler = unsafe {
-                    fstart_smm::install_default_relocation_callback_stub(
-                        image,
-                        fstart_smm::DefaultRelocationCallbackConfig {
-                            default_smbase: fstart_arch::mp::SMM_DEFAULT_SMBASE,
-                            cr3: fstart_arch::x86::controlregs::cr3(),
-                            callback: fstart_arch::mp::default_smm_relocation_handler as *const ()
-                                as usize as u64,
-                            stack_top: fstart_arch::mp::SMM_DEFAULT_ENTRY_STACK_TOP,
-                        },
-                    )
-                };
-                if default_handler.is_err() {
-                    self.smm_close();
-                    fstart_log::error!("i945 SMM: failed to install default relocation handler");
-                    return Err(SmmError::InstallFailed);
-                }
-
-                fstart_log::info!(
-                    "i945 SMM: installed image common={:#x} entry={:#x} cpus={}",
-                    installed.common_base,
-                    installed.common_entry,
-                    installed.cpus.len()
-                );
-                Ok(())
-            }
-            Err(_) => {
-                self.smm_close();
-                fstart_log::error!("i945 SMM: failed to install SMM image");
-                Err(SmmError::InstallFailed)
-            }
-        }
+    fn smram_open(&self) {
+        self.write_smram(crate::gmch::smram::OPEN);
     }
-
-    fn smm_relocate(&self) {
-        Self::smi_enable_for_relocation();
-        let lapic = fstart_arch::lapic::Lapic::from_msr();
-        // SMI delivery rejects the destination shorthand, so the local APIC ID
-        // must go in the destination field (see `Lapic::send_smi_self`).
-        lapic.send_smi_self();
-        lapic.wait_ready();
+    fn smram_close(&self) {
+        self.write_smram(crate::gmch::smram::CLOSED);
     }
-
-    fn pre_smm_init(&self) {
-        let pm = crate::southbridge::pmio_ich::PmIo::new(ICH7_PM_BASE);
-        pm.reset_smi_status();
-        pm.write32(
-            crate::southbridge::pmio_ich::SMI_EN,
-            crate::southbridge::pmio_ich::APMC_EN
-                | crate::southbridge::pmio_ich::GBL_SMI_EN
-                | crate::southbridge::pmio_ich::EOS,
-        );
-    }
-
-    fn post_smm_init(&self) {
-        self.smm_close();
-        let pm = crate::southbridge::pmio_ich::PmIo::new(ICH7_PM_BASE);
-        pm.reset_smi_status();
-        pm.reset_pm1_status();
-        pm.tco().reset_tco_status();
-        pm.reset_gpe0_status();
-        pm.write16(
-            crate::southbridge::pmio_ich::PM1_EN,
-            crate::southbridge::pmio_ich::PWRBTN_EN | crate::southbridge::pmio_ich::GBL_EN,
-        );
-        pm.write32(
-            crate::southbridge::pmio_ich::SMI_EN,
-            crate::southbridge::pmio_ich::TCO_EN
-                | crate::southbridge::pmio_ich::APMC_EN
-                | crate::southbridge::pmio_ich::SLP_SMI_EN
-                | crate::southbridge::pmio_ich::GBL_SMI_EN
-                | crate::southbridge::pmio_ich::EOS,
-        );
-        self.smm_lock();
-        fstart_log::info!("i945 SMM: permanent SMI enabled and SMRAM locked");
+    fn smram_lock(&self) {
+        self.write_smram(crate::gmch::smram::LOCKED);
     }
 }
 

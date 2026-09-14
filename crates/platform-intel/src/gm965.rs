@@ -1,27 +1,5 @@
 //! GM965/ICH8 platform defaults and fixed handwritten flow.
 
-#[cfg(feature = "stage")]
-pub use stage::{Gm965Ich8, Gm965Ich8Board, Gm965Ich8Mainstage, run_gm965_ich8_mainstage};
-
-/// Platform-owned adapter for the fixed GM965 stage dispatch.
-#[cfg(feature = "stage")]
-pub struct Program<B>(core::marker::PhantomData<B>);
-#[cfg(feature = "stage")]
-impl<B: Gm965Ich8Board> fstart_stage::StageProgram for Program<B> {
-    fn run_stage(handoff: usize) -> ! {
-        #[cfg(fstart_stage_env = "car")]
-        Gm965Ich8::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
-        #[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
-        Gm965Ich8::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
-        #[cfg(not(any(
-            fstart_stage_env = "car",
-            fstart_stage_env = "postcar",
-            fstart_stage_env = "ram"
-        )))]
-        panic!("GM965 requires a fixed Intel stage selection");
-    }
-}
-
 use fstart_core::ConstVec;
 use fstart_driver_intel::gm965;
 pub use fstart_driver_intel::gm965::{Gm965IgdConfig, IntelGm965Config};
@@ -34,9 +12,6 @@ pub use fstart_driver_intel::ich8::{
 };
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 
-pub const GM965_NORTHBRIDGE_NODE: &str = "northbridge";
-pub const GM965_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
-pub const GM965_NEXT_STAGE_NAME: &str = "ramstage";
 pub const GM965_MCHBAR: u64 = 0xFED1_4000;
 pub const GM965_DMIBAR: u64 = 0xFED1_8000;
 pub const GM965_EPBAR: u64 = 0xFED1_9000;
@@ -64,6 +39,8 @@ pub struct Gm965Ich8Config {
     pub hda: Option<HdaConfig>,
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     pub gpio: gpio::GpioConfig,
+    /// Maximum logical CPU count (BSP + APs) the board populates.
+    pub max_cpus: u16,
 }
 
 impl Gm965Ich8Config {
@@ -82,7 +59,14 @@ impl Gm965Ich8Config {
             hda: None,
             io_traps: ConstVec::new(empty_io_trap()),
             gpio: gpio::GpioConfig::new(),
+            max_cpus: 1,
         }
+    }
+
+    #[must_use]
+    pub const fn max_cpus(mut self, max_cpus: u16) -> Self {
+        self.max_cpus = max_cpus;
+        self
     }
 
     #[must_use]
@@ -230,7 +214,7 @@ impl Gm965Ich8Config {
     }
 
     #[must_use]
-    pub const fn build(self) -> Self {
+    pub const fn build(self) -> Gm965Ich8Platform {
         if self.lpc_decode.fixed_io.com_a as u8 == self.lpc_decode.fixed_io.com_b as u8 {
             panic!("ICH8 COMA and COMB decode the same port");
         }
@@ -242,8 +226,15 @@ impl Gm965Ich8Config {
 
         validate_lpc_generic_io_decodes(&self.lpc_decode.generic_io);
         validate_io_traps(&self.io_traps);
+        if self.max_cpus == 0 {
+            panic!("GM965 max_cpus must be non-zero");
+        }
 
-        self
+        Gm965Ich8Platform {
+            northbridge: self.northbridge_config(),
+            southbridge: self.southbridge_config(),
+            max_cpus: self.max_cpus,
+        }
     }
 }
 
@@ -292,6 +283,18 @@ const fn validate_io_traps(traps: &fstart_core::ConstVec<IoTrapConfig, 4>) {
     }
 }
 
+/// Built GM965/ICH8 policy: the derived driver configs the fixed flow binds.
+///
+/// Produced by [`Gm965Ich8Config::build`]; boards point their
+/// `IntelBoard::CONFIG` at a `static` of this type.
+#[derive(Debug, Clone, Copy)]
+pub struct Gm965Ich8Platform {
+    pub northbridge: IntelGm965Config,
+    pub southbridge: IntelIch8Config,
+    /// Maximum logical CPU count (BSP + APs) the board populates.
+    pub max_cpus: u16,
+}
+
 impl Default for Gm965Ich8Config {
     fn default() -> Self {
         Self::new()
@@ -319,252 +322,46 @@ impl Gm965Ich8AcpiContext {
 }
 
 #[cfg(feature = "stage")]
+pub use stage::Gm965Ich8;
+
+#[cfg(feature = "stage")]
 mod stage {
     use super::*;
-    use crate::{
-        FfsLoadSpec, IntelEarlyBoard, IntelEarlyPlatform, IntelNorthbridgeDriver, IntelPlatform,
-        IntelSouthbridgeDriver, MainstageSpec,
-    };
-    use fstart_core::services::ServiceError;
+    use crate::{IntelChipsetConfig, IntelEarlyPlatform};
+    #[cfg(feature = "mp")]
+    use fstart_arch::cpu_intel::core2_cpu::Core2CpuDriver;
     use fstart_driver_intel::gm965::IntelGm965;
     use fstart_driver_intel::ich8::IntelIch8;
-    use fstart_stage::StageEnvironment;
-    use fstart_stage::payload::MainstagePayload;
 
-    /// GM965 northbridge + ICH8 southbridge Intel early-flow platform.
+    /// GM965/ICH8 chipset pair for the shared Intel flow.
     pub struct Gm965Ich8;
 
-    impl IntelPlatform for Gm965Ich8 {}
-
     impl IntelEarlyPlatform for Gm965Ich8 {
+        const NAME: &'static str = "gm965/ich8";
+        type Config = Gm965Ich8Platform;
+        type Northbridge = IntelGm965;
         type Southbridge = IntelIch8;
-        type State = ();
+        #[cfg(feature = "mp")]
+        type Cpu = Core2CpuDriver;
+        #[cfg(feature = "mp")]
+        fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
+            Core2CpuDriver::new(ICH8_PMBASE, microcode)
+        }
         #[cfg(feature = "acpi")]
         type AcpiContext = Gm965Ich8AcpiContext;
     }
 
-    impl Gm965Ich8 {
-        pub fn run_early<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
-        where
-            B: Gm965Ich8Board,
-        {
-            run_gm965_ich8_bootblock::<B>(hooks)
+    impl IntelChipsetConfig for Gm965Ich8Platform {
+        type Northbridge = IntelGm965;
+        type Southbridge = IntelIch8;
+        fn northbridge(&'static self) -> &'static IntelGm965Config {
+            &self.northbridge
         }
-
-        pub fn run_stage<B>(env: StageEnvironment, _handoff: usize) -> !
-        where
-            B: Gm965Ich8Board,
-        {
-            let _ = env;
-
-            #[cfg(fstart_stage_env = "car")]
-            {
-                let Ok(mut hooks) = B::hooks() else {
-                    fstart_arch::x86_64::halt();
-                };
-                if Self::run_early::<B>(&mut hooks).is_err() {
-                    fstart_arch::x86_64::halt();
-                }
-                fstart_arch::x86_64::halt()
-            }
-
-            #[cfg(fstart_stage_env = "postcar")]
-            {
-                // Cut-B postcar loader: teardown already done by the entry;
-                // load and decompress the ramstage cached. Noreturn.
-                run_gm965_ich8_postcar::<B>()
-            }
-
-            #[cfg(fstart_stage_env = "ram")]
-            {
-                run_gm965_ich8_mainstage::<B>()
-            }
-
-            #[cfg(not(any(
-                fstart_stage_env = "car",
-                fstart_stage_env = "ram",
-                fstart_stage_env = "postcar"
-            )))]
-            {
-                match env {
-                    StageEnvironment::Car => {
-                        let Ok(mut hooks) = B::hooks() else {
-                            fstart_arch::x86_64::halt();
-                        };
-                        if Self::run_early::<B>(&mut hooks).is_err() {
-                            fstart_arch::x86_64::halt();
-                        }
-                        fstart_arch::x86_64::halt()
-                    }
-                    StageEnvironment::Ram => run_gm965_ich8_mainstage::<B>(),
-                    StageEnvironment::Monolithic => fstart_arch::x86_64::halt(),
-                }
-            }
+        fn southbridge(&'static self) -> &'static IntelIch8Config {
+            &self.southbridge
         }
-    }
-
-    /// Board facts required by the GM965/ICH8 flow.
-    pub trait Gm965Ich8Board: IntelEarlyBoard<Platform = Gm965Ich8> {
-        type Payload: MainstagePayload<Gm965Ich8Mainstage<Self>>;
-
-        /// Board platform policy. Points at a board `static` so the config lives
-        /// in `.rodata`, never on the early-stage stack.
-        const CONFIG: &'static Gm965Ich8Config;
-
-        /// Derived driver configs, const-evaluated into `.rodata`. Boards do not
-        /// override these.
-        const NB_CONFIG: &'static IntelGm965Config = &Self::CONFIG.northbridge_config();
-        const SB_CONFIG: &'static IntelIch8Config = &Self::CONFIG.southbridge_config();
-
-        type Console: fstart_core::services::ConsoleDevice;
-
-        fn console_config() -> <Self::Console as fstart_core::services::ConsoleDevice>::Config;
-        fn console_node() -> &'static str;
-
-        #[cfg(feature = "smbios")]
-        fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
-    }
-
-    /// Bring up BSP + APs with the platform's CPU driver. The CPU model and
-    /// PMBASE are platform knowledge; the resolved profile supplies the MP
-    /// ceiling together with the matching SMM producer settings.
-    ///
-    /// When fbuild embedded an SMM image into this stage (`SMM_IMAGE`), MP
-    /// setup also performs SMM relocation, installs the handler in TSEG, and
-    /// locks SMRAM via [`fstart_arch::mp::SmmOps`].
-    #[cfg(feature = "mp")]
-    fn init_mp(nb_config: &'static IntelGm965Config, max_cpus: u16) -> Result<(), ServiceError> {
-        // APs must run the same updated microcode as the BSP, whose update
-        // happens in pre-CAR assembly; the blob sits in boot flash.
-        let microcode = crate::intel_microcode_blob();
-        let cpu = fstart_arch::cpu_intel::core2_cpu::Core2CpuDriver::new(ICH8_PMBASE, microcode);
-        let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
-        let northbridge = IntelGm965::new_from_config(nb_config)?;
-        let smm_image = crate::SMM_IMAGE.ok_or(ServiceError::InvalidParam)?;
-        let smm = Some(&northbridge as &dyn fstart_arch::mp::SmmOps);
-        fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
-            cpu_drivers: &drivers,
-            smm,
-            smm_image: Some(smm_image),
-            max_cpus,
-        })
-        .map(|_| ())
-        .map_err(|_| ServiceError::HardwareError)
-    }
-
-    /// Handwritten fixed GM965/ICH8 bootblock flow. Ordering is this function.
-    /// Ends by authenticating and loading postcar and publishing the MTRR stash (shared
-    /// `run_intel_bootblock` tail); the bulk ramstage copy stays cached in
-    /// postcar.
-    fn run_gm965_ich8_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
-    where
-        B: Gm965Ich8Board,
-    {
-        let northbridge = IntelGm965::new_from_config(B::NB_CONFIG)?;
-        let southbridge = IntelIch8::new_from_config(B::SB_CONFIG)?;
-        crate::run_intel_bootblock::<Gm965Ich8, _, _, _, B::Console>(
-            bootstrap_spec::<B>(0)?,
-            hooks,
-            northbridge,
-            southbridge,
-        )
-    }
-
-    /// Handwritten fixed GM965/ICH8 postcar flow: fresh program, fresh stack,
-    /// caching on. Re-inits the console from ROM constants, loads and
-    /// decompresses the ramstage cached, and jumps to it. Noreturn.
-    #[cfg(fstart_stage_env = "postcar")]
-    pub fn run_gm965_ich8_postcar<B>() -> !
-    where
-        B: Gm965Ich8Board,
-    {
-        let Ok(spec) = bootstrap_spec::<B>(1) else {
-            fstart_arch::x86_64::halt()
-        };
-        crate::run_intel_postcar::<B::Console>(spec)
-    }
-
-    fn bootstrap_spec<B: Gm965Ich8Board>(
-        index: u16,
-    ) -> Result<FfsLoadSpec<B::Console>, ServiceError> {
-        use fstart_core::layout::RegionKind;
-        let layout = crate::layout::IntelBootLayout::current(index)?;
-        Ok(FfsLoadSpec {
-            platform: "gm965/ich8",
-            next_stage: GM965_POSTCAR_STAGE_NAME,
-            next_load_addr: layout.region(RegionKind::BootstrapPostcar)?.base,
-            geometry: layout,
-            dram_end: layout
-                .region(RegionKind::BootstrapRam)?
-                .end()
-                .ok_or(ServiceError::InvalidParam)?,
-            ramstage_name: GM965_NEXT_STAGE_NAME,
-            ramstage_load_addr: layout.region(RegionKind::BootstrapMainstage)?.base,
-            console_config: B::console_config(),
-            console_node: B::console_node(),
-        })
-    }
-
-    /// GM965/ICH8 mainstage: fixed platform devices bound from typed config and
-    /// driven through the shared Intel mainstage phases.
-    pub type Gm965Ich8Mainstage<B> = crate::IntelMainstage<
-        Gm965Ich8,
-        IntelGm965,
-        IntelIch8,
-        <B as IntelEarlyBoard>::Hooks,
-        <B as Gm965Ich8Board>::Console,
-        Gm965Ich8AcpiContext,
-    >;
-
-    #[cfg(feature = "mp")]
-    fn init_mp_for_board<B: Gm965Ich8Board>() -> Result<(), ServiceError> {
-        let max_cpus = option_env!("FSTART_INTEL_MAX_CPUS")
-            .ok_or(ServiceError::InvalidParam)?
-            .parse()
-            .map_err(|_| ServiceError::InvalidParam)?;
-        init_mp(B::NB_CONFIG, max_cpus)
-    }
-
-    /// Handwritten fixed GM965/ICH8 mainstage flow. Ordering is this function.
-    pub fn run_gm965_ich8_mainstage<B>() -> !
-    where
-        B: Gm965Ich8Board,
-    {
-        let Ok(hooks) = B::hooks() else {
-            fstart_arch::x86_64::halt();
-        };
-        let Ok(layout) = crate::layout::IntelBootLayout::current(2) else {
-            fstart_arch::x86_64::halt()
-        };
-        let Ok(mainstage) = crate::bind_intel_mainstage::<
-            Gm965Ich8,
-            IntelGm965,
-            IntelIch8,
-            B::Hooks,
-            B::Console,
-            Gm965Ich8AcpiContext,
-        >(
-            MainstageSpec {
-                geometry: layout,
-                nb_config: B::NB_CONFIG,
-                sb_config: B::SB_CONFIG,
-                console_config: B::console_config(),
-                console_node: B::console_node(),
-                platform_node: GM965_NORTHBRIDGE_NODE,
-                #[cfg(feature = "mp")]
-                init_mp: init_mp_for_board::<B>,
-                #[cfg(feature = "smbios")]
-                smbios_desc: B::smbios_desc(),
-            },
-            hooks,
-        ) else {
-            fstart_arch::x86_64::halt();
-        };
-        crate::run_intel_mainstage::<_, B::Payload>(
-            "gm965/ich8",
-            GM965_NEXT_STAGE_NAME,
-            fstart_arch::x86_64::halt,
-            mainstage,
-        )
+        fn max_cpus(&self) -> u16 {
+            self.max_cpus
+        }
     }
 }

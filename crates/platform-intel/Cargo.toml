@@ -41,7 +41,7 @@ serde_json = { version = "1", optional = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
-fstart-driver-intel = { workspace = true, features = ["ffs-vbt"] }
+fstart-driver-intel = { workspace = true }
 fstart-driver-superio = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }

@@ -1,27 +1,5 @@
 //! i945/ICH7 platform defaults and fixed handwritten flow.
 
-#[cfg(feature = "stage")]
-pub use stage::{I945Ich7, I945Ich7Board, I945Ich7Mainstage, run_i945_ich7_mainstage};
-
-/// Platform-owned adapter for fixed i945 stage dispatch.
-#[cfg(feature = "stage")]
-pub struct Program<B>(core::marker::PhantomData<B>);
-#[cfg(feature = "stage")]
-impl<B: I945Ich7Board> fstart_stage::StageProgram for Program<B> {
-    fn run_stage(handoff: usize) -> ! {
-        #[cfg(fstart_stage_env = "car")]
-        I945Ich7::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
-        #[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
-        I945Ich7::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
-        #[cfg(not(any(
-            fstart_stage_env = "car",
-            fstart_stage_env = "postcar",
-            fstart_stage_env = "ram"
-        )))]
-        panic!("i945 requires a fixed Intel stage selection");
-    }
-}
-
 use fstart_driver_intel::i945;
 pub use fstart_driver_intel::i945::{I945IgdConfig, I945Variant, IntelI945Config};
 use fstart_driver_intel::ich7;
@@ -32,9 +10,6 @@ pub use fstart_driver_intel::ich7::{
 };
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 
-pub const I945_NORTHBRIDGE_NODE: &str = "northbridge";
-pub const I945_POSTCAR_STAGE_NAME: &str = crate::POSTCAR_STAGE_NAME;
-pub const I945_NEXT_STAGE_NAME: &str = "ramstage";
 pub const I945_MCHBAR: u64 = 0xFED1_4000;
 pub const I945_DMIBAR: u64 = 0xFED1_8000;
 pub const I945_EPBAR: u64 = 0xFED1_9000;
@@ -240,7 +215,7 @@ impl I945Ich7Config {
         self
     }
     #[must_use]
-    pub const fn build(self) -> Self {
+    pub const fn build(self) -> I945Ich7Platform {
         if self.lpc_decode.fixed_io.com_a as u8 == self.lpc_decode.fixed_io.com_b as u8 {
             panic!("ICH7 COMA and COMB decode the same port");
         }
@@ -260,7 +235,11 @@ impl I945Ich7Config {
         if self.max_cpus == 0 {
             panic!("i945 max_cpus must be non-zero");
         }
-        self
+        I945Ich7Platform {
+            northbridge: self.northbridge_config(),
+            southbridge: self.southbridge_config(),
+            max_cpus: self.max_cpus,
+        }
     }
 }
 
@@ -300,6 +279,18 @@ const fn validate_pirq_routing(routing: &[u8; 8]) {
     }
 }
 
+/// Built i945/ICH7 policy: the derived driver configs the fixed flow binds.
+///
+/// Produced by [`I945Ich7Config::build`]; boards point their
+/// `IntelBoard::CONFIG` at a `static` of this type.
+#[derive(Debug, Clone, Copy)]
+pub struct I945Ich7Platform {
+    pub northbridge: IntelI945Config,
+    pub southbridge: IntelIch7Config,
+    /// Maximum logical CPU count (BSP + APs) the board populates.
+    pub max_cpus: u16,
+}
+
 impl Default for I945Ich7Config {
     fn default() -> Self {
         Self::new()
@@ -328,251 +319,46 @@ impl I945Ich7AcpiContext {
 }
 
 #[cfg(feature = "stage")]
+pub use stage::I945Ich7;
+
+#[cfg(feature = "stage")]
 mod stage {
     use super::*;
-    use crate::{
-        FfsLoadSpec, IntelEarlyBoard, IntelEarlyPlatform, IntelNorthbridgeDriver, IntelPlatform,
-        IntelSouthbridgeDriver, MainstageSpec,
-    };
-    use fstart_core::services::ServiceError;
+    use crate::{IntelChipsetConfig, IntelEarlyPlatform};
+    #[cfg(feature = "mp")]
+    use fstart_arch::cpu_intel::pineview::PineviewCpuDriver;
     use fstart_driver_intel::i945::IntelI945;
     use fstart_driver_intel::ich7::IntelIch7;
-    use fstart_stage::StageEnvironment;
-    use fstart_stage::payload::MainstagePayload;
 
-    /// i945 northbridge + ICH7 southbridge Intel early-flow platform.
+    /// i945/ICH7 chipset pair for the shared Intel flow.
     pub struct I945Ich7;
 
-    impl IntelPlatform for I945Ich7 {}
-
     impl IntelEarlyPlatform for I945Ich7 {
+        const NAME: &'static str = "i945/ich7";
+        type Config = I945Ich7Platform;
+        type Northbridge = IntelI945;
         type Southbridge = IntelIch7;
-        type State = ();
+        #[cfg(feature = "mp")]
+        type Cpu = PineviewCpuDriver;
+        #[cfg(feature = "mp")]
+        fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
+            PineviewCpuDriver::new(ICH7_PMBASE, microcode)
+        }
         #[cfg(feature = "acpi")]
         type AcpiContext = I945Ich7AcpiContext;
     }
 
-    impl I945Ich7 {
-        pub fn run_early<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
-        where
-            B: I945Ich7Board,
-        {
-            run_i945_ich7_bootblock::<B>(hooks)
+    impl IntelChipsetConfig for I945Ich7Platform {
+        type Northbridge = IntelI945;
+        type Southbridge = IntelIch7;
+        fn northbridge(&'static self) -> &'static IntelI945Config {
+            &self.northbridge
         }
-
-        pub fn run_stage<B>(env: StageEnvironment, _handoff: usize) -> !
-        where
-            B: I945Ich7Board,
-        {
-            let _ = env;
-
-            #[cfg(fstart_stage_env = "car")]
-            {
-                let Ok(mut hooks) = B::hooks() else {
-                    fstart_arch::x86_64::halt();
-                };
-                if Self::run_early::<B>(&mut hooks).is_err() {
-                    fstart_arch::x86_64::halt();
-                }
-                fstart_arch::x86_64::halt()
-            }
-
-            #[cfg(fstart_stage_env = "postcar")]
-            {
-                // Cut-B postcar loader: teardown already done by the entry;
-                // load and decompress the ramstage cached. Noreturn.
-                run_i945_ich7_postcar::<B>()
-            }
-
-            #[cfg(fstart_stage_env = "ram")]
-            {
-                run_i945_ich7_mainstage::<B>()
-            }
-
-            #[cfg(not(any(
-                fstart_stage_env = "car",
-                fstart_stage_env = "ram",
-                fstart_stage_env = "postcar"
-            )))]
-            {
-                match env {
-                    StageEnvironment::Car => {
-                        let Ok(mut hooks) = B::hooks() else {
-                            fstart_arch::x86_64::halt();
-                        };
-                        if Self::run_early::<B>(&mut hooks).is_err() {
-                            fstart_arch::x86_64::halt();
-                        }
-                        fstart_arch::x86_64::halt()
-                    }
-                    StageEnvironment::Ram => run_i945_ich7_mainstage::<B>(),
-                    StageEnvironment::Monolithic => fstart_arch::x86_64::halt(),
-                }
-            }
+        fn southbridge(&'static self) -> &'static IntelIch7Config {
+            &self.southbridge
         }
-    }
-
-    /// Board facts required by the i945/ICH7 flow.
-    pub trait I945Ich7Board: IntelEarlyBoard<Platform = I945Ich7> {
-        type Payload: MainstagePayload<I945Ich7Mainstage<Self>>;
-
-        /// Board platform policy. Points at a board `static` so the config lives
-        /// in `.rodata`, never on the early-stage stack.
-        const CONFIG: &'static I945Ich7Config;
-
-        /// Derived driver configs, const-evaluated into `.rodata`. Boards do not
-        /// override these.
-        const NB_CONFIG: &'static IntelI945Config = &Self::CONFIG.northbridge_config();
-        const SB_CONFIG: &'static IntelIch7Config = &Self::CONFIG.southbridge_config();
-
-        type Console: fstart_core::services::ConsoleDevice;
-
-        fn console_config() -> <Self::Console as fstart_core::services::ConsoleDevice>::Config;
-        fn console_node() -> &'static str;
-        #[cfg(feature = "smbios")]
-        fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
-    }
-
-    /// Bring up BSP + APs with the platform's CPU driver. The Diamondville
-    /// Atom 230 is family 6 model 0x1c, covered by the 106cx Pineview CPU
-    /// driver (signatures 0x106c0/0x106ca); only the PMBASE is platform
-    /// knowledge. The board states `max_cpus` in its config.
-    ///
-    /// When fbuild embedded an SMM image into this stage (`SMM_IMAGE`), MP
-    /// setup also performs SMM relocation, installs the handler in TSEG, and
-    /// locks SMRAM via [`fstart_arch::mp::SmmOps`].
-    #[cfg(feature = "mp")]
-    fn init_mp(nb_config: &'static IntelI945Config, max_cpus: u16) -> Result<(), ServiceError> {
-        // APs must run the same updated microcode as the BSP, whose update
-        // happens in pre-CAR assembly; the blob sits in boot flash.
-        let microcode = crate::intel_microcode_blob();
-        let cpu = fstart_arch::cpu_intel::pineview::PineviewCpuDriver::new(ICH7_PMBASE, microcode);
-        let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
-        let northbridge = IntelI945::new_from_config(nb_config)?;
-        let smm = crate::SMM_IMAGE.map(|_| &northbridge as &dyn fstart_arch::mp::SmmOps);
-        fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
-            cpu_drivers: &drivers,
-            smm,
-            smm_image: crate::SMM_IMAGE,
-            max_cpus,
-        })
-        .map(|_| ())
-        .map_err(|_| ServiceError::HardwareError)
-    }
-
-    /// Handwritten fixed i945/ICH7 bootblock flow. Ordering is this function.
-    /// Ends by authenticating and loading postcar and publishing the MTRR stash (shared
-    /// `run_intel_bootblock` tail); the bulk ramstage copy stays cached in
-    /// postcar.
-    fn run_i945_ich7_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
-    where
-        B: I945Ich7Board,
-    {
-        let northbridge = IntelI945::new_from_config(B::NB_CONFIG)?;
-        let southbridge = IntelIch7::new_from_config(B::SB_CONFIG)?;
-        crate::run_intel_bootblock::<I945Ich7, _, _, _, B::Console>(
-            bootstrap_spec::<B>(0)?,
-            hooks,
-            northbridge,
-            southbridge,
-        )
-    }
-
-    /// Handwritten fixed i945/ICH7 postcar flow: fresh program, fresh stack,
-    /// caching on. Re-inits the console from ROM constants, loads and
-    /// decompresses the ramstage cached, and jumps to it. Noreturn.
-    #[cfg(fstart_stage_env = "postcar")]
-    pub fn run_i945_ich7_postcar<B>() -> !
-    where
-        B: I945Ich7Board,
-    {
-        let Ok(spec) = bootstrap_spec::<B>(1) else {
-            fstart_arch::x86_64::halt()
-        };
-        crate::run_intel_postcar::<B::Console>(spec)
-    }
-
-    fn bootstrap_spec<B: I945Ich7Board>(
-        index: u16,
-    ) -> Result<FfsLoadSpec<B::Console>, ServiceError> {
-        use fstart_core::layout::RegionKind;
-        let layout = crate::layout::IntelBootLayout::current(index)?;
-        Ok(FfsLoadSpec {
-            platform: "i945/ich7",
-            next_stage: I945_POSTCAR_STAGE_NAME,
-            next_load_addr: layout.region(RegionKind::BootstrapPostcar)?.base,
-            geometry: layout,
-            dram_end: layout
-                .region(RegionKind::BootstrapRam)?
-                .end()
-                .ok_or(ServiceError::InvalidParam)?,
-            ramstage_name: I945_NEXT_STAGE_NAME,
-            ramstage_load_addr: layout.region(RegionKind::BootstrapMainstage)?.base,
-            console_config: B::console_config(),
-            console_node: B::console_node(),
-        })
-    }
-
-    /// i945/ICH7 mainstage: fixed platform devices bound from typed config and
-    /// driven through the shared Intel mainstage phases.
-    pub type I945Ich7Mainstage<B> = crate::IntelMainstage<
-        I945Ich7,
-        IntelI945,
-        IntelIch7,
-        <B as IntelEarlyBoard>::Hooks,
-        <B as I945Ich7Board>::Console,
-        I945Ich7AcpiContext,
-    >;
-
-    #[cfg(feature = "mp")]
-    fn init_mp_for_board<B: I945Ich7Board>() -> Result<(), ServiceError> {
-        let max_cpus = option_env!("FSTART_INTEL_MAX_CPUS")
-            .ok_or(ServiceError::InvalidParam)?
-            .parse()
-            .map_err(|_| ServiceError::InvalidParam)?;
-        init_mp(B::NB_CONFIG, max_cpus)
-    }
-
-    /// Handwritten fixed i945/ICH7 mainstage flow. Ordering is this function.
-    pub fn run_i945_ich7_mainstage<B>() -> !
-    where
-        B: I945Ich7Board,
-    {
-        let Ok(hooks) = B::hooks() else {
-            fstart_arch::x86_64::halt();
-        };
-        let Ok(layout) = crate::layout::IntelBootLayout::current(2) else {
-            fstart_arch::x86_64::halt()
-        };
-        let Ok(mainstage) = crate::bind_intel_mainstage::<
-            I945Ich7,
-            IntelI945,
-            IntelIch7,
-            B::Hooks,
-            B::Console,
-            I945Ich7AcpiContext,
-        >(
-            MainstageSpec {
-                geometry: layout,
-                nb_config: B::NB_CONFIG,
-                sb_config: B::SB_CONFIG,
-                console_config: B::console_config(),
-                console_node: B::console_node(),
-                platform_node: I945_NORTHBRIDGE_NODE,
-                #[cfg(feature = "mp")]
-                init_mp: init_mp_for_board::<B>,
-                #[cfg(feature = "smbios")]
-                smbios_desc: B::smbios_desc(),
-            },
-            hooks,
-        ) else {
-            fstart_arch::x86_64::halt();
-        };
-        crate::run_intel_mainstage::<_, B::Payload>(
-            "i945/ich7",
-            I945_NEXT_STAGE_NAME,
-            fstart_arch::x86_64::halt,
-            mainstage,
-        )
+        fn max_cpus(&self) -> u16 {
+            self.max_cpus
+        }
     }
 }

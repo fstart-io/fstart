@@ -18,8 +18,6 @@
     dead_code
 )]
 
-pub mod smm;
-
 use fstart_core::mmio::MmioReadWrite;
 use fstart_pci::ecam;
 use fstart_pci::{PCI_COMMAND_BITS, PciType0Config, PciType1Config, pci_type0_config};
@@ -1063,6 +1061,21 @@ impl FirmwareImageProvider for IntelIch7 {
     }
 }
 
+impl crate::southbridge::smi::SmiControl for IntelIch7 {
+    fn pm_base(&self) -> u16 {
+        self.smi().pm_base()
+    }
+    fn gpe0(&self) -> crate::southbridge::smi::Gpe0Block {
+        self.smi().gpe0()
+    }
+    fn enable_relocation_smi(&self) {
+        self.smi().enable_relocation_smi();
+    }
+    fn enable_permanent_smi(&self) {
+        self.smi().enable_permanent_smi();
+    }
+}
+
 impl crate::IntelSouthbridgeDriver for IntelIch7 {
     type Config = IntelIch7Config;
 
@@ -1870,93 +1883,13 @@ impl IntelIch7 {
         &self.pm
     }
 
-    // -----------------------------------------------------------------------
-    // PM/SMI/GPE/TCO status management (from pmutil.c)
-    // -----------------------------------------------------------------------
-
-    /// Read and clear pmio::PM1_STS (write-1-to-clear).
-    #[cfg(target_arch = "x86_64")]
-    pub fn reset_pm1_status(&self) -> u16 {
-        let sts = self.pm().read16(pmio::PM1_STS);
-        self.pm().write16(pmio::PM1_STS, sts);
-        sts
-    }
-
-    /// Read and clear pmio::SMI_STS (write-1-to-clear).
-    #[cfg(target_arch = "x86_64")]
-    pub fn reset_smi_status(&self) -> u32 {
-        let sts = self.pm().read32(pmio::SMI_STS);
-        self.pm().write32(pmio::SMI_STS, sts);
-        sts
-    }
-
-    /// Read and clear pmio::GPE0_STS (write-1-to-clear).
-    #[cfg(target_arch = "x86_64")]
-    pub fn reset_gpe0_status(&self) -> u32 {
-        let sts = self.pm().read32(pmio::GPE0_STS);
-        self.pm().write32(pmio::GPE0_STS, sts);
-        sts
-    }
-
-    /// Read and clear TCO status registers (write-1-to-clear).
-    ///
-    /// Returns combined pmio::TCO1_STS | (pmio::TCO2_STS << 16).
-    #[cfg(target_arch = "x86_64")]
-    pub fn reset_tco_status(&self) -> u32 {
-        self.pm().tco().reset_tco_status()
-    }
-
-    /// Read and clear pmio::ALT_GP_SMI_STS.
-    #[cfg(target_arch = "x86_64")]
-    pub fn reset_alt_gp_smi_status(&self) -> u16 {
-        let sts = self.pm().read16(pmio::ALT_GP_SMI_STS);
-        self.pm().write16(pmio::ALT_GP_SMI_STS, sts);
-        sts
-    }
-
-    /// Clear all PM/SMI/GPE/TCO status registers.
-    ///
-    /// Called before enabling SMIs to start from a clean state.
-    /// Ported from coreboot `smm_southbridge_clear_state()`.
-    #[cfg(target_arch = "x86_64")]
-    pub fn clear_pm_status(&self) {
-        self.reset_smi_status();
-        self.reset_pm1_status();
-        self.reset_tco_status();
-        self.reset_gpe0_status();
-    }
-
-    // -----------------------------------------------------------------------
-    // SMI enable (from smi.c)
-    // -----------------------------------------------------------------------
-
-    /// Enable global SMI generation.
-    ///
-    /// Programs pmio::SMI_EN for TCO, APMC (APM port 0xB2), and SLP_SMI
-    /// events.  Sets pmio::GBL_SMI_EN + pmio::EOS to activate the SMI logic.
-    ///
-    /// Called after SMM handler installation and relocation.
-    /// Ported from coreboot `global_smi_enable()`.
-    #[cfg(target_arch = "x86_64")]
-    pub fn global_smi_enable(&self) {
-        let smi_en = self.pm().read32(pmio::SMI_EN);
-        if smi_en & pmio::APMC_EN != 0 {
-            fstart_log::info!("intel-ich7: SMI already enabled");
-            return;
-        }
-
-        // Clear all status registers first.
-        self.clear_pm_status();
-
-        // Enable PM1 events: power button + global.
-        self.pm()
-            .write16(pmio::PM1_EN, pmio::PWRBTN_EN | pmio::GBL_EN);
-
-        // Enable SMI sources: TCO, APMC, SLP_SMI, GBL_SMI + pmio::EOS.
-        let smi = pmio::TCO_EN | pmio::APMC_EN | pmio::SLP_SMI_EN | pmio::GBL_SMI_EN | pmio::EOS;
-        self.pm().write32(pmio::SMI_EN, smi);
-
-        fstart_log::info!("intel-ich7: global SMI enabled");
+    /// SMI routing view of this southbridge for SMM installation.
+    #[must_use]
+    pub const fn smi(&self) -> crate::southbridge::smi::IchSmi {
+        crate::southbridge::smi::IchSmi::new(
+            self.pm.base(),
+            crate::southbridge::smi::Gpe0Block::ICH7,
+        )
     }
 
     // -----------------------------------------------------------------------
