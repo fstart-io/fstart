@@ -177,7 +177,9 @@ impl<'a> Layout<'a> {
 
     pub fn regions(self) -> impl ExactSizeIterator<Item = Region> + 'a {
         self.bytes[HEADER_LEN..]
-            .as_chunks::<REGION_LEN>().0.iter()
+            .as_chunks::<REGION_LEN>()
+            .0
+            .iter()
             .map(|record| {
                 // parse() validated every record; the borrowed bytes are immutable.
                 let kind = RegionKind::decode(u16_at(record, 0)).unwrap();
