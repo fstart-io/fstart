@@ -828,6 +828,8 @@ pub struct IntelIch8Config {
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     /// SMBus I/O base.
     pub smbus_base: u16,
+    /// Date written into the RTC when it lost power (MM/DD/YYYY).
+    pub rtc_default_date: &'static str,
     /// GPIO pad configuration.
     pub gpio: GpioConfig,
     /// ACPI device name (reserved for future ACPI device generation).
@@ -870,6 +872,7 @@ impl IntelIch8Config {
             pcie_power_limits: [PciePowerLimit { value: 0, scale: 0 }; 6],
             io_traps: ConstVec::new(empty_io_trap()),
             smbus_base: ich8::DEFAULT_SMBUS_BASE,
+            rtc_default_date: "01/01/2000",
             gpio: GpioConfig::new(),
             acpi_name: Some("LPCB"),
             c3_latency: 85,
@@ -1383,13 +1386,17 @@ impl IntelIch8 {
         let _ = rcba.regs().oic.get();
     }
 
-    fn rtc_init_status(&self) {
+    /// Configure the CMOS clock, using `default_date` when it lost power.
+    pub fn rtc_init(&self, default_date: &str) {
+        // Sticky battery-dead flag, cleared here exactly like coreboot.
         let lpc = self.lpc_regs();
-        if lpc.gen_pmcon_3.is_set(GEN_PMCON_3_REG::RTC_BATTERY_DEAD) {
+        let battery_dead = lpc.gen_pmcon_3.is_set(GEN_PMCON_3_REG::RTC_BATTERY_DEAD);
+        if battery_dead {
             lpc.gen_pmcon_3
                 .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
-            fstart_log::info!("intel-ich8: RTC battery-dead flag was set");
         }
+
+        crate::southbridge::rtc::init_clock("intel-ich8", battery_dead, default_date);
     }
 
     fn ramstage_lpc_init(&self) {
@@ -1398,7 +1405,7 @@ impl IntelIch8 {
         self.lpc_regs().serirq_cntl.set(0xd0);
         self.configure_power_options();
         self.configure_cstates();
-        self.rtc_init_status();
+        self.rtc_init(self.config.rtc_default_date);
         self.isa_dma_init();
         self.i8259_init();
         self.enable_hpet();
@@ -2287,15 +2294,7 @@ mod acpi_impl {
     use fstart_acpi_macros::acpi_dsl;
 
     use super::*;
-
-    fn root_prt_scope_aml(routing: &fstart_pci::pirq::PirqRouting) -> Vec<u8> {
-        let routes = routing
-            .root_bus_routes()
-            .map(|(slot, pin, gsi)| (slot, pin.index(), gsi));
-        let prt = fstart_acpi::pirq::prt_name_aml(routes);
-        fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &prt)
-            .expect("ICH8 required PCI routing scope emission failed")
-    }
+    use crate::southbridge::acpi as acpi_fragments;
 
     const LAPIC_BASE: u64 = 0xFEE0_0000;
     const IOAPIC_BASE: u64 = 0xFEC0_0000;
@@ -2373,19 +2372,10 @@ mod acpi_impl {
         /// nodes, and APIC-mode `_PRT` routing. Mainboard-specific EC,
         /// dock/GPE/SMI trap glue is emitted by mainboard drivers.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
-            let pirq_irq = |idx: usize| u32::from(config.pirq_routing[idx] & 0x0f);
-            let pirq_a = pirq_irq(0);
-            let pirq_b = pirq_irq(1);
-            let pirq_c = pirq_irq(2);
-            let pirq_d = pirq_irq(3);
-            let pirq_e = pirq_irq(4);
-            let pirq_f = pirq_irq(5);
-            let pirq_g = pirq_irq(6);
-            let pirq_h = pirq_irq(7);
-
+            // Root-scope windows this chipset exposes to mainboard AML.
             let mut aml: Vec<u8> = acpi_dsl! {
                 Scope("\\") {
-                    OperationRegion("PMIO", SystemIO, 0x0500u32, 0x80u32);
+                    OperationRegion("PMIO", SystemIO, #{const dword ich8::DEFAULT_PMBASE as u32}, 0x80u32);
                     Field("PMIO", ByteAcc, NoLock, Preserve) {
                         Offset(0x11),
                         THRO, 1,
@@ -2396,7 +2386,7 @@ mod acpi_impl {
                         , 9,
                         SCIS, 1,
                     }
-                    OperationRegion("GPIO", SystemIO, 0x0580u32, 0x3Cu32);
+                    OperationRegion("GPIO", SystemIO, #{const dword ich8::DEFAULT_GPIOBASE as u32}, 0x3Cu32);
                     Field("GPIO", ByteAcc, NoLock, Preserve) {
                         Offset(0x0C),
                         GP00, 1, GP01, 1, GP02, 1, GP03, 1,
@@ -2415,391 +2405,142 @@ mod acpi_impl {
             }
             .into();
 
-            aml.extend_from_slice(&root_prt_scope_aml(&config.pirq));
-
-            aml.extend(Vec::from(acpi_dsl! {
-                Scope("\\_SB_.PCI0") {
-                    OperationRegion("RCRB", SystemMemory, 0xFED1C000u32, 0x4000u32);
-                    Field("RCRB", DWordAcc, Lock, Preserve) {
-                        Offset(0x3404),
-                        HPAS, 2,
-                        , 5,
-                        HPTE, 1,
-                        Offset(0x3418),
-                        , 2,
-                        SA1D, 1,
-                        SMBD, 1,
-                        HDAD, 1,
-                        , 3,
-                        US1D, 1,
-                        US2D, 1,
-                        US3D, 1,
-                        US4D, 1,
-                        US5D, 1,
-                        EH2D, 1,
-                        LPBD, 1,
-                        EH1D, 1,
-                        Offset(0x341A),
-                        RP1D, 1,
-                        RP2D, 1,
-                        RP3D, 1,
-                        RP4D, 1,
-                        RP5D, 1,
-                        RP6D, 1,
-                        , 2,
-                        THRD, 1,
-                    }
-
-                    Device("HDEF") {
-                        Name("_ADR", 0x001B0000u32);
-                        Name("_PRW", Package(5u32, 4u32));
-                    }
-
-                    Device("RP01") {
-                        Name("_ADR", 0x001C0000u32);
-                        Name("_PRT", Package(
-                            Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
-                            Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
-                            Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
-                            Package(0x0000FFFFu32, 3u32, 0u32, 19u32)
-                        ));
-                    }
-                    Device("RP02") {
-                        Name("_ADR", 0x001C0001u32);
-                        Name("_PRT", Package(
-                            Package(0x0000FFFFu32, 0u32, 0u32, 17u32),
-                            Package(0x0000FFFFu32, 1u32, 0u32, 18u32),
-                            Package(0x0000FFFFu32, 2u32, 0u32, 19u32),
-                            Package(0x0000FFFFu32, 3u32, 0u32, 16u32)
-                        ));
-                    }
-                    Device("RP03") {
-                        Name("_ADR", 0x001C0002u32);
-                        Name("_PRT", Package(
-                            Package(0x0000FFFFu32, 0u32, 0u32, 18u32),
-                            Package(0x0000FFFFu32, 1u32, 0u32, 19u32),
-                            Package(0x0000FFFFu32, 2u32, 0u32, 16u32),
-                            Package(0x0000FFFFu32, 3u32, 0u32, 17u32)
-                        ));
-                    }
-                    Device("RP04") {
-                        Name("_ADR", 0x001C0003u32);
-                        Name("_PRT", Package(
-                            Package(0x0000FFFFu32, 0u32, 0u32, 19u32),
-                            Package(0x0000FFFFu32, 1u32, 0u32, 16u32),
-                            Package(0x0000FFFFu32, 2u32, 0u32, 17u32),
-                            Package(0x0000FFFFu32, 3u32, 0u32, 18u32)
-                        ));
-                    }
-                    Device("RP05") {
-                        Name("_ADR", 0x001C0004u32);
-                        Name("_PRT", Package(
-                            Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
-                            Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
-                            Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
-                            Package(0x0000FFFFu32, 3u32, 0u32, 19u32)
-                        ));
-                    }
-                    Device("RP06") {
-                        Name("_ADR", 0x001C0005u32);
-                        Name("_PRT", Package(
-                            Package(0x0000FFFFu32, 0u32, 0u32, 17u32),
-                            Package(0x0000FFFFu32, 1u32, 0u32, 18u32),
-                            Package(0x0000FFFFu32, 2u32, 0u32, 19u32),
-                            Package(0x0000FFFFu32, 3u32, 0u32, 16u32)
-                        ));
-                    }
-
-                    Device("USB1") {
-                        Name("_ADR", 0x001D0000u32);
-                        Name("_PRW", Package(3u32, 4u32));
-                        Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                        Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                    }
-                    Device("USB2") {
-                        Name("_ADR", 0x001D0001u32);
-                        Name("_PRW", Package(3u32, 4u32));
-                        Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                        Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                    }
-                    Device("USB3") {
-                        Name("_ADR", 0x001D0002u32);
-                        Name("_PRW", Package(3u32, 4u32));
-                        Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                        Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                    }
-                    Device("USB4") {
-                        Name("_ADR", 0x001A0000u32);
-                        Name("_PRW", Package(3u32, 4u32));
-                        Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                        Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                    }
-                    Device("USB5") {
-                        Name("_ADR", 0x001A0001u32);
-                        Name("_PRW", Package(3u32, 4u32));
-                        Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                        Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                    }
-                    Device("USB6") {
-                        Name("_ADR", 0x001A0002u32);
-                        Name("_PRW", Package(3u32, 4u32));
-                        Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                        Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                    }
-                    Device("EHC1") {
-                        Name("_ADR", 0x001D0007u32);
-                        Name("_PRW", Package(13u32, 4u32));
-                        Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                        Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                    }
-                    Device("EHC2") {
-                        Name("_ADR", 0x001A0007u32);
-                        Name("_PRW", Package(13u32, 4u32));
-                        Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                        Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                    }
-
-                    Device("PCIB") {
-                        Name("_ADR", 0x001E0000u32);
-                        Name("_PRT", Package(
-                            Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
-                            Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
-                            Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
-                            Package(0x0000FFFFu32, 3u32, 0u32, 19u32),
-                            Package(0x0001FFFFu32, 0u32, 0u32, 16u32),
-                            Package(0x0002FFFFu32, 0u32, 0u32, 21u32),
-                            Package(0x0002FFFFu32, 1u32, 0u32, 22u32),
-                            Package(0x0008FFFFu32, 0u32, 0u32, 20u32)
-                        ));
-                    }
-
-                    Device("SATA") {
-                        Name("_ADR", 0x001F0002u32);
-                    }
-                    Device("SBUS") {
-                        Name("_ADR", 0x001F0003u32);
-                    }
-
-                    Device("LPCB") {
-                        Name("_ADR", 0x001F0000u32);
-                        OperationRegion("LPC0", PciConfig, 0x00u32, 0x100u32);
-                        Field("LPC0", AnyAcc, NoLock, Preserve) {
-                            Offset(0x40),
-                            PMBS, 16,
-                            Offset(0x60),
-                            PRTA, 8, PRTB, 8, PRTC, 8, PRTD, 8,
-                            Offset(0x68),
-                            PRTE, 8, PRTF, 8, PRTG, 8, PRTH, 8,
-                            Offset(0x80),
-                            IOD0, 8, IOD1, 8,
-                        }
-
-                        Device("LNKA") {
-                            Name("_HID", EisaId("PNP0C0F"));
-                            Name("_UID", 1u32);
-                            Name("_PRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                                    3u32, 4u32, 5u32, 6u32, 7u32,
-                                    10u32, 11u32, 12u32, 14u32, 15u32);
-                            });
-                            Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_a});
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                        }
-
-                        Device("LNKB") {
-                            Name("_HID", EisaId("PNP0C0F"));
-                            Name("_UID", 2u32);
-                            Name("_PRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                                    3u32, 4u32, 5u32, 6u32, 7u32,
-                                    10u32, 11u32, 12u32, 14u32, 15u32);
-                            });
-                            Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_b});
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                        }
-
-                        Device("LNKC") {
-                            Name("_HID", EisaId("PNP0C0F"));
-                            Name("_UID", 3u32);
-                            Name("_PRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                                    3u32, 4u32, 5u32, 6u32, 7u32,
-                                    10u32, 11u32, 12u32, 14u32, 15u32);
-                            });
-                            Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_c});
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                        }
-
-                        Device("LNKD") {
-                            Name("_HID", EisaId("PNP0C0F"));
-                            Name("_UID", 4u32);
-                            Name("_PRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                                    3u32, 4u32, 5u32, 6u32, 7u32,
-                                    10u32, 11u32, 12u32, 14u32, 15u32);
-                            });
-                            Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_d});
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                        }
-
-                        Device("LNKE") {
-                            Name("_HID", EisaId("PNP0C0F"));
-                            Name("_UID", 5u32);
-                            Name("_PRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                                    3u32, 4u32, 5u32, 6u32, 7u32,
-                                    10u32, 11u32, 12u32, 14u32, 15u32);
-                            });
-                            Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_e});
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                        }
-
-                        Device("LNKF") {
-                            Name("_HID", EisaId("PNP0C0F"));
-                            Name("_UID", 6u32);
-                            Name("_PRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                                    3u32, 4u32, 5u32, 6u32, 7u32,
-                                    10u32, 11u32, 12u32, 14u32, 15u32);
-                            });
-                            Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_f});
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                        }
-
-                        Device("LNKG") {
-                            Name("_HID", EisaId("PNP0C0F"));
-                            Name("_UID", 7u32);
-                            Name("_PRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                                    3u32, 4u32, 5u32, 6u32, 7u32,
-                                    10u32, 11u32, 12u32, 14u32, 15u32);
-                            });
-                            Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_g});
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                        }
-
-                        Device("LNKH") {
-                            Name("_HID", EisaId("PNP0C0F"));
-                            Name("_UID", 8u32);
-                            Name("_PRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                                    3u32, 4u32, 5u32, 6u32, 7u32,
-                                    10u32, 11u32, 12u32, 14u32, 15u32);
-                            });
-                            Name("_CRS", ResourceTemplate {
-                                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword pirq_h});
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                        }
-
-                        Device("DMAC") {
-                            Name("_HID", EisaId("PNP0200"));
-                            Name("_CRS", ResourceTemplate {
-                                IO(0x0000u16, 0x0000u16, 0x01u8, 0x20u8);
-                                IO(0x0081u16, 0x0081u16, 0x01u8, 0x11u8);
-                                IO(0x0093u16, 0x0093u16, 0x01u8, 0x0Du8);
-                                IO(0x00C0u16, 0x00C0u16, 0x01u8, 0x20u8);
-                            });
-                        }
-
-                        Device("FWH_") {
-                            Name("_HID", EisaId("INT0800"));
-                            Name("_CRS", ResourceTemplate {
-                                Memory32Fixed(ReadOnly, 0xFF000000u32, 0x01000000u32);
-                            });
-                        }
-
-                        Device("HPET") {
-                            Name("_HID", EisaId("PNP0103"));
-                            Name("_CID", 0x010CD041u32);
-                            Name("_CRS", ResourceTemplate {
-                                Memory32Fixed(ReadOnly, 0xFED00000u32, 0x400u32);
-                            });
-                        }
-
-                        Device("PIC_") {
-                            Name("_HID", EisaId("PNP0000"));
-                            Name("_CRS", ResourceTemplate {
-                                IO(0x0020u16, 0x0020u16, 0x01u8, 0x02u8);
-                                IO(0x00A0u16, 0x00A0u16, 0x01u8, 0x02u8);
-                                IO(0x04D0u16, 0x04D0u16, 0x01u8, 0x02u8);
-                                Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 2u32);
-                            });
-                        }
-
-                        Device("MATH") {
-                            Name("_HID", EisaId("PNP0C04"));
-                            Name("_CRS", ResourceTemplate {
-                                IO(0x00F0u16, 0x00F0u16, 0x01u8, 0x01u8);
-                                Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 13u32);
-                            });
-                        }
-
-                        Device("LDRC") {
-                            Name("_HID", EisaId("PNP0C02"));
-                            Name("_UID", 2u32);
-                            Name("_CRS", ResourceTemplate {
-                                IO(0x002Eu16, 0x002Eu16, 0x01u8, 0x02u8);
-                                IO(0x004Eu16, 0x004Eu16, 0x01u8, 0x02u8);
-                                IO(0x0061u16, 0x0061u16, 0x01u8, 0x01u8);
-                                IO(0x0080u16, 0x0080u16, 0x01u8, 0x01u8);
-                                IO(0x00B2u16, 0x00B2u16, 0x01u8, 0x02u8);
-                                IO(0x0500u16, 0x0500u16, 0x01u8, 0x80u8);
-                                IO(0x0580u16, 0x0580u16, 0x01u8, 0x40u8);
-                            });
-                        }
-
-                        Device("RTC_") {
-                            Name("_HID", EisaId("PNP0B00"));
-                            Name("_CRS", ResourceTemplate {
-                                IO(0x0070u16, 0x0070u16, 0x01u8, 0x08u8);
-                            });
-                        }
-
-                        Device("TIMR") {
-                            Name("_HID", EisaId("PNP0100"));
-                            Name("_CRS", ResourceTemplate {
-                                IO(0x0040u16, 0x0040u16, 0x01u8, 0x04u8);
-                                IO(0x0050u16, 0x0050u16, 0x10u8, 0x04u8);
-                                Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, 0u32);
-                            });
-                        }
-                        Device("PS2K") {
-                            Name("_HID", EisaId("PNP0303"));
-                            Name("_CID", EisaId("PNP030B"));
-                            Name("_CRS", ResourceTemplate {
-                                IO(0x0060u16, 0x0060u16, 0x01u8, 0x01u8);
-                                IO(0x0064u16, 0x0064u16, 0x01u8, 0x01u8);
-                                IRQ(Edge, ActiveHigh, Exclusive, 1u32);
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                        }
-
-                        Device("PS2M") {
-                            Name("_HID", EisaId("PNP0F13"));
-                            Name("_CRS", ResourceTemplate {
-                                IRQ(Edge, ActiveHigh, Exclusive, 12u32);
-                            });
-                            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                        }
-                    }
+            // The PCI0 body: this chipset's RCRB window and downstream PCI
+            // bridge, plus the fragments every ICH shares (coreboot's
+            // `pcie.asl`, `usb.asl`, `azalia.asl` device nodes and the LPC
+            // bridge's ISA children, PIRQ links and root-bus `_PRT`).
+            let mut body: Vec<u8> = acpi_dsl! {
+                OperationRegion("RCRB", SystemMemory, 0xFED1C000u32, 0x4000u32);
+                Field("RCRB", DWordAcc, Lock, Preserve) {
+                    Offset(0x3404),
+                    HPAS, 2,
+                    , 5,
+                    HPTE, 1,
+                    Offset(0x3418),
+                    , 2,
+                    SA1D, 1,
+                    SMBD, 1,
+                    HDAD, 1,
+                    , 3,
+                    US1D, 1,
+                    US2D, 1,
+                    US3D, 1,
+                    US4D, 1,
+                    US5D, 1,
+                    EH2D, 1,
+                    LPBD, 1,
+                    EH1D, 1,
+                    Offset(0x341A),
+                    RP1D, 1,
+                    RP2D, 1,
+                    RP3D, 1,
+                    RP4D, 1,
+                    RP5D, 1,
+                    RP6D, 1,
+                    , 2,
+                    THRD, 1,
                 }
-            }));
+            }
+            .into();
 
+            body.extend_from_slice(&fstart_acpi::pirq::prt_name_aml(
+                config
+                    .pirq
+                    .root_bus_routes()
+                    .map(|(slot, pin, gsi)| (slot, pin.index(), gsi)),
+            ));
+
+            body.extend_from_slice(&acpi_fragments::hda_node());
+            for (offset, name) in ["USB1", "USB2", "USB3", "USB4"].iter().enumerate() {
+                let adr = 0x001D_0000u32 | offset as u32;
+                body.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
+            }
+            for (offset, name) in ["USB5", "USB6"].iter().enumerate() {
+                let adr = 0x001A_0001u32 | offset as u32;
+                body.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
+            }
+            body.extend_from_slice(&acpi_fragments::ehci_node("EHC1", 0x001D_0007, 13, 6));
+            body.extend_from_slice(&acpi_fragments::ehci_node("EHC2", 0x001A_0007, 13, 6));
+            for port in 1..=6u8 {
+                let adr = 0x001C_0000u32 + u32::from(port - 1);
+                let name = alloc::format!("RP0{port}");
+                body.extend_from_slice(&acpi_fragments::pcie_root_port(&name, adr, port, false));
+            }
+            body.extend_from_slice(&acpi_fragments::sata_node());
+            body.extend_from_slice(&acpi_fragments::smbus_node());
+
+            // The downstream PCI bridge carries the board's own slot layout.
+            let pcib: Vec<u8> = acpi_dsl! {
+                Device("PCIB") {
+                    Name("_ADR", 0x001E0000u32);
+                    Name("_PRT", Package(
+                        Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
+                        Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
+                        Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
+                        Package(0x0000FFFFu32, 3u32, 0u32, 19u32),
+                        Package(0x0001FFFFu32, 0u32, 0u32, 16u32),
+                        Package(0x0002FFFFu32, 0u32, 0u32, 21u32),
+                        Package(0x0002FFFFu32, 1u32, 0u32, 22u32),
+                        Package(0x0008FFFFu32, 0u32, 0u32, 20u32)
+                    ));
+                }
+            }
+            .into();
+            body.extend_from_slice(&pcib);
+
+            // The LPC bridge: its own register window, the shared ISA children
+            // and PIRQ links, then this board's PS/2 nodes.
+            let mut lpcb: Vec<u8> = acpi_dsl! {
+                Name("_ADR", 0x001F0000u32);
+                OperationRegion("LPC0", PciConfig, 0x00u32, 0x100u32);
+                Field("LPC0", AnyAcc, NoLock, Preserve) {
+                    Offset(0x40),
+                    PMBS, 16,
+                    Offset(0x60),
+                    PRTA, 8, PRTB, 8, PRTC, 8, PRTD, 8,
+                    Offset(0x68),
+                    PRTE, 8, PRTF, 8, PRTG, 8, PRTH, 8,
+                    Offset(0x80),
+                    IOD0, 8, IOD1, 8,
+                }
+            }
+            .into();
+            lpcb.extend_from_slice(&acpi_fragments::legacy_isa_children(
+                ich8::DEFAULT_PMBASE,
+                ich8::DEFAULT_GPIOBASE,
+            ));
+            lpcb.extend_from_slice(&acpi_fragments::pci_irq_links(&config.pirq_routing));
+            let ps2: Vec<u8> = acpi_dsl! {
+                Device("PS2K") {
+                    Name("_HID", EisaId("PNP0303"));
+                    Name("_CID", EisaId("PNP030B"));
+                    Name("_CRS", ResourceTemplate {
+                        IO(0x0060u16, 0x0060u16, 0x01u8, 0x01u8);
+                        IO(0x0064u16, 0x0064u16, 0x01u8, 0x01u8);
+                        IRQ(Edge, ActiveHigh, Exclusive, 1u32);
+                    });
+                    Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+                }
+
+                Device("PS2M") {
+                    Name("_HID", EisaId("PNP0F13"));
+                    Name("_CRS", ResourceTemplate {
+                        IRQ(Edge, ActiveHigh, Exclusive, 12u32);
+                    });
+                    Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+                }
+            }
+            .into();
+            lpcb.extend_from_slice(&ps2);
+            body.extend_from_slice(
+                &fstart_acpi::aml_linker::device_vec("LPCB", &lpcb)
+                    .expect("ICH8 LPCB device emission"),
+            );
+
+            aml.extend_from_slice(
+                &fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &body)
+                    .expect("ICH8 PCI scope emission"),
+            );
             aml
         }
 

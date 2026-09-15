@@ -1956,6 +1956,7 @@ impl IntelIch7 {
     /// chip's update cycle never runs and the OS gives up on it (Linux reports
     /// "unable to read the hardware clock"). Program the divider and control
     /// registers, put a known date back and re-mark the RAM valid.
+    /// Configure the CMOS clock, using `default_date` when it lost power.
     pub fn rtc_init(&self, default_date: &str) {
         // Sticky battery-dead flag, cleared here exactly like coreboot.
         let battery_dead = self.rtc_failure();
@@ -1965,35 +1966,7 @@ impl IntelIch7 {
                 .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
         }
 
-        let date = match crate::southbridge::rtc::Date::parse_mm_dd_yyyy(default_date) {
-            Some(date) => Some(date),
-            None => {
-                fstart_log::error!("intel-ich7: RTC default date is not MM/DD/YYYY");
-                None
-            }
-        };
-        let report = crate::southbridge::rtc::init(battery_dead, date);
-        fstart_log::info!(
-            "intel-ich7: RTC power_lost={} time_invalid={} date_reset={} (A={:#04x} B={:#04x} D={:#04x})",
-            report.power_lost,
-            report.time_invalid,
-            report.date_reset,
-            crate::southbridge::rtc::read(crate::southbridge::rtc::reg::FREQ_SELECT),
-            crate::southbridge::rtc::read(crate::southbridge::rtc::reg::CONTROL),
-            crate::southbridge::rtc::read(crate::southbridge::rtc::reg::VALID)
-        );
-        if report.date_reset {
-            fstart_log::info!(
-                "intel-ich7: RTC date set to {} (sec={:#04x} min={:#04x} hour={:#04x} day={:#04x} mon={:#04x} year={:#04x})",
-                default_date,
-                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::SECONDS),
-                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::MINUTES),
-                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::HOURS),
-                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::DAY_OF_MONTH),
-                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::MONTH),
-                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::YEAR)
-            );
-        }
+        crate::southbridge::rtc::init_clock("intel-ich7", battery_dead, default_date);
     }
 
     // -----------------------------------------------------------------------
