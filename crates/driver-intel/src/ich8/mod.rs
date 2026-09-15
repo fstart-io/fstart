@@ -522,64 +522,6 @@ const LPC_EN_COMA: u16 = 1 << 0;
 const LPC_EN_COREBOOT_BASE: u16 =
     LPC_EN_CNF2 | LPC_EN_CNF1 | LPC_EN_MC | LPC_EN_KBC | LPC_EN_COMB | LPC_EN_COMA;
 
-mod rcba_pirq {
-    /// Default ICH8/ICH8-M RCBA interrupt routing.
-    ///
-    /// The route table belongs in the chipset driver rather than generic board metadata
-    /// because it is tightly coupled to the fixed internal ICH8 device/function
-    /// layout.
-    #[derive(Clone, Copy)]
-    pub struct RouteSet {
-        pub d31ip: u32,
-        pub d30ip: u32,
-        pub d29ip: u32,
-        pub d28ip: u32,
-        pub d27ip: u32,
-        pub d26ip: u32,
-        pub d25ip: u32,
-        pub d31ir: u16,
-        pub d30ir: u16,
-        pub d29ir: u16,
-        pub d28ir: u16,
-        pub d27ir: u16,
-        pub d26ir: u16,
-        pub d25ir: u16,
-    }
-
-    pub const DEFAULT_ROUTE: RouteSet = RouteSet {
-        d31ip: 0x0000_1230,
-        d30ip: 0x0000_0001,
-        d29ip: 0x4000_4321,
-        d28ip: 0x0000_4321,
-        d27ip: 0x0000_0002,
-        d26ip: 0x3000_0021,
-        d25ip: 0x0000_0001,
-        d31ir: 0x1007,
-        d30ir: 0x0076,
-        d29ir: 0x3210,
-        d28ir: 0x7654,
-        d27ir: 0x0010,
-        d26ir: 0x0654,
-        d25ir: 0x0001,
-    };
-
-    impl RouteSet {
-        #[cfg_attr(not(all(feature = "acpi", target_os = "none")), allow(dead_code))]
-        pub const fn dxxir_for_slot(self, slot: u8) -> Option<u16> {
-            match slot {
-                25 => Some(self.d25ir),
-                26 => Some(self.d26ir),
-                27 => Some(self.d27ir),
-                28 => Some(self.d28ir),
-                29 => Some(self.d29ir),
-                30 => Some(self.d30ir),
-                31 => Some(self.d31ir),
-                _ => None,
-            }
-        }
-    }
-}
-
 /// SATA configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct SataConfig {
@@ -844,9 +786,15 @@ impl Default for LpcDecodeConfig {
 pub struct IntelIch8Config {
     /// Root Complex Base Address register value.
     pub rcba: u64,
+    /// RCBA interrupt router programming, and the `_PRT` it implies.
+    ///
+    /// The driver programs `DxxIP`/`DxxIR` from this and generates the ACPI
+    /// tables from it, so the GSIs an OS derives are the ones the router
+    /// delivers on.
+    pub pirq: fstart_pci::pirq::PirqRouting,
     /// Northbridge DMIBAR base address, used as the RCBA upstream RCRB target.
     pub dmibar: u64,
-    /// PIRQ routing (A..H).
+    /// PIRQ routing (A..H) for PIC mode.
     pub pirq_routing: [u8; 8],
     /// GPE0 enable bits (ICH8 low dword at PMBASE+0x28).
     pub gpe0_en: u32,
@@ -903,6 +851,7 @@ impl IntelIch8Config {
     pub const fn new() -> Self {
         Self {
             rcba: 0xFED1_C000,
+            pirq: fstart_pci::pirq::ICH8_ROUTING,
             dmibar: 0xFED1_8000,
             pirq_routing: [0x0b; 8],
             gpe0_en: 0,
@@ -2103,22 +2052,22 @@ impl IntelIch8 {
 
     fn configure_default_intmap(&self) {
         let rcba = self.rcba();
-        let routes = rcba_pirq::DEFAULT_ROUTE;
-        rcba.regs().d31ip.set(routes.d31ip);
-        rcba.regs().d30ip.set(routes.d30ip);
-        rcba.regs().d29ip.set(routes.d29ip);
-        rcba.regs().d28ip.set(routes.d28ip);
-        rcba.regs().d27ip.set(routes.d27ip);
-        rcba.regs().d26ip.set(routes.d26ip);
-        rcba.regs().d25ip.set(routes.d25ip);
+        let routing = &self.config.pirq;
+        rcba.regs().d31ip.set(routing.ip_value(0x1f));
+        rcba.regs().d30ip.set(routing.ip_value(0x1e));
+        rcba.regs().d29ip.set(routing.ip_value(0x1d));
+        rcba.regs().d28ip.set(routing.ip_value(0x1c));
+        rcba.regs().d27ip.set(routing.ip_value(0x1b));
+        rcba.regs().d26ip.set(routing.ip_value(0x1a));
+        rcba.regs().d25ip.set(routing.ip_value(0x19));
 
-        rcba.regs().d31ir.set(routes.d31ir);
-        rcba.regs().d30ir.set(routes.d30ir);
-        rcba.regs().d29ir.set(routes.d29ir);
-        rcba.regs().d28ir.set(routes.d28ir);
-        rcba.regs().d27ir.set(routes.d27ir);
-        rcba.regs().d26ir.set(routes.d26ir);
-        rcba.regs().d25ir.set(routes.d25ir);
+        rcba.regs().d31ir.set(routing.ir_value(0x1f));
+        rcba.regs().d30ir.set(routing.ir_value(0x1e));
+        rcba.regs().d29ir.set(routing.ir_value(0x1d));
+        rcba.regs().d28ir.set(routing.ir_value(0x1c));
+        rcba.regs().d27ir.set(routing.ir_value(0x1b));
+        rcba.regs().d26ir.set(routing.ir_value(0x1a));
+        rcba.regs().d25ir.set(routing.ir_value(0x19));
         self.enable_ioapic();
     }
 }
@@ -2339,71 +2288,13 @@ mod acpi_impl {
 
     use super::*;
 
-    fn root_prt_scope_aml() -> Vec<u8> {
-        let prt = root_prt_aml();
+    fn root_prt_scope_aml(routing: &fstart_pci::pirq::PirqRouting) -> Vec<u8> {
+        let routes = routing
+            .root_bus_routes()
+            .map(|(slot, pin, gsi)| (slot, pin.index(), gsi));
+        let prt = fstart_acpi::pirq::prt_name_aml(routes);
         fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &prt)
             .expect("ICH8 required PCI routing scope emission failed")
-    }
-
-    fn root_prt_aml() -> Vec<u8> {
-        // The ICH8 DxxIR swizzles are platform constants, not discovered
-        // hardware. Describe every routed slot/pin so host and firmware link
-        // exactly the same namespace.
-        let mut entries = Vec::new();
-        let mut count = 0u8;
-        for dev in 0u8..32 {
-            if rcba_pirq::DEFAULT_ROUTE.dxxir_for_slot(dev).is_none() {
-                continue;
-            }
-            for pin in 1u8..=4 {
-                add_prt_entry(&mut entries, dev, pin - 1, root_bus_gsi(dev, pin));
-                count += 1;
-            }
-        }
-
-        let mut package_body = Vec::with_capacity(entries.len() + 1);
-        package_body.push(count);
-        package_body.extend(entries);
-        let mut bytes = Vec::with_capacity(package_body.len() + 8);
-        bytes.extend_from_slice(&[0x08, b'_', b'P', b'R', b'T', 0x12]);
-        let (length, width) = fstart_acpi::aml_linker::package_length(package_body.len())
-            .expect("ICH8 routing package exceeds AML length limit");
-        bytes.extend_from_slice(&length[..width]);
-        bytes.extend(package_body);
-        bytes
-    }
-
-    fn root_bus_gsi(slot: u8, pci_pin: u8) -> u32 {
-        let pirq = rcba_pirq::DEFAULT_ROUTE
-            .dxxir_for_slot(slot)
-            .map(|dxxir| (u32::from(dxxir) >> (u32::from(pci_pin - 1) * 4)) & 0x7)
-            .unwrap_or_else(|| u32::from(pci_pin - 1));
-        16 + pirq
-    }
-
-    fn add_prt_entry(entries: &mut Vec<u8>, slot: u8, pin: u8, gsi: u32) {
-        let mut body = Vec::with_capacity(21);
-        body.push(4);
-        for value in [(u32::from(slot) << 16) | 0xffff, u32::from(pin), 0, gsi] {
-            match value {
-                0 => body.push(0x00),
-                1 => body.push(0x01),
-                2..=0xff => body.extend_from_slice(&[0x0a, value as u8]),
-                0x100..=0xffff => {
-                    body.push(0x0b);
-                    body.extend_from_slice(&(value as u16).to_le_bytes());
-                }
-                _ => {
-                    body.push(0x0c);
-                    body.extend_from_slice(&value.to_le_bytes());
-                }
-            }
-        }
-        entries.push(0x12); // PackageOp
-        let (length, width) = fstart_acpi::aml_linker::package_length(body.len())
-            .expect("ICH8 routing entry exceeds AML length limit");
-        entries.extend_from_slice(&length[..width]);
-        entries.extend(body);
     }
 
     const LAPIC_BASE: u64 = 0xFEE0_0000;
@@ -2506,7 +2397,7 @@ mod acpi_impl {
             }
             .into();
 
-            aml.extend_from_slice(&root_prt_scope_aml());
+            aml.extend_from_slice(&root_prt_scope_aml(&config.pirq));
 
             aml.extend(Vec::from(acpi_dsl! {
                 Scope("\\_SB_.PCI0") {
