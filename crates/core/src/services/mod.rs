@@ -65,6 +65,10 @@ pub enum ServiceError {
     InvalidParam,
     /// Hardware error
     HardwareError,
+    /// The addressed device is not present: it did not acknowledge
+    /// (SMBus NAK). Distinct from a host-controller or bus failure, so
+    /// probes can treat an absent device as a normal result.
+    NoDevice,
     /// Operation not supported by this driver
     NotSupported,
     /// Device not yet initialized
