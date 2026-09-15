@@ -77,8 +77,6 @@ const REG_TDCR: u32 = 0x3E0;
 // ICR flags
 // ---------------------------------------------------------------------------
 
-/// Destination shorthand: self only.
-pub const DEST_SELF: u32 = 0x0004_0000;
 /// Destination shorthand: all including self.
 pub const DEST_ALL_INCL: u32 = 0x0008_0000;
 /// Destination shorthand: all excluding self.
@@ -331,14 +329,15 @@ impl Lapic {
         );
     }
 
-    /// Send an IPI to self with the given flags.
-    ///
-    /// Used for self-NMI and other fixed/lowest-priority IPIs, where the
-    /// destination shorthand is valid.
-    pub fn send_ipi_self(&self, flags: u32) {
-        if self.wait_ready() {
-            self.write(REG_ICR_LO, DEST_SELF | flags);
+    /// Send an IPI to one processor by local APIC ID (coreboot's
+    /// `lapic_send_ipi`): the destination goes into ICR_HI, then the
+    /// delivery flags into ICR_LO.
+    pub fn send_ipi(&self, apic_id: u32, flags: u32) {
+        if !self.wait_ready() {
+            return;
         }
+        self.write(REG_ICR_HI, apic_id << 24);
+        self.write(REG_ICR_LO, flags);
     }
 
     /// Send an SMI to this processor, for SMM relocation.
@@ -349,11 +348,7 @@ impl Lapic {
     /// silently dropped: the entry stub is never entered and every CPU keeps
     /// the architectural default SMBASE.
     pub fn send_smi_self(&self) {
-        if !self.wait_ready() {
-            return;
-        }
-        let id = self.id();
-        self.write(REG_ICR_LO, (id << 24) | INT_ASSERT | MT_SMI);
+        self.send_ipi(self.id(), INT_ASSERT | MT_SMI);
     }
 
     // ---- Timer (for future use) ----

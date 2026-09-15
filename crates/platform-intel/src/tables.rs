@@ -118,8 +118,12 @@ fn print_acpi_table(data: &[u8]) {
     };
     let sig = &data[..4];
     let sig_str = core::str::from_utf8(sig).unwrap_or("????");
-    let mut w = fstart_log::writer();
-    let _ = ufmt::uwriteln!(w, "{} @ 0x0000000000000000", sig_str);
+    // The writer holds the console lock; release it before the hexdump takes
+    // it again per line.
+    {
+        let mut w = fstart_log::writer();
+        let _ = ufmt::uwriteln!(w, "{} @ 0x0000000000000000", sig_str);
+    }
     print_acpixtract_hexdump(&data[..len]);
     fstart_log::raw_write_byte(b'\r');
     fstart_log::raw_write_byte(b'\n');

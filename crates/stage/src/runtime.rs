@@ -9,7 +9,7 @@ use core::panic::PanicInfo;
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     // Best-effort output — write the panic location to the console.
-    let mut w = fstart_log::writer();
+    let mut w = fstart_log::panic_writer();
     use fstart_log::ufmt::uWrite;
     let _ = w.write_str("[PANIC] ");
     // Try to print the panic message if available.

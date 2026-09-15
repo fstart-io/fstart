@@ -253,6 +253,19 @@ pub fn writer() -> ConsoleWriter {
     }
 }
 
+/// Console writer for the panic handler.
+///
+/// A panic may fire while this CPU holds the console lock (for example from
+/// inside a log call), so the lock is taken over rather than waited for: the
+/// panic is terminal and its message must get out.
+#[doc(hidden)]
+pub fn panic_writer() -> ConsoleWriter {
+    CONSOLE_LOCK.store(true, Ordering::Release);
+    ConsoleWriter {
+        _guard: ConsoleLockGuard,
+    }
+}
+
 /// Return `true` if messages at `level` would be emitted.
 #[doc(hidden)]
 #[inline]
