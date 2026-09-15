@@ -254,6 +254,18 @@ pub mod ich7 {
     pub const SATA_FUNC: u8 = 2;
     /// AHCI base address register on the SATA function.
     pub const SATA_ABAR: u16 = 0x24;
+    /// PCI slot numbers used by the RCBA interrupt router.
+    pub const SLOT_PCI_BRIDGE: u8 = 0x1e;
+    pub const SLOT_USB: u8 = 0x1d;
+    pub const SLOT_PCIE: u8 = 0x1c;
+    pub const SLOT_HDA: u8 = 0x1b;
+    /// EHCI: bus 0, dev 0x1d, func 7.
+    pub const EHCI_DEV: u8 = 0x1d;
+    pub const EHCI_FUNC: u8 = 7;
+    /// EHCI memory BAR.
+    pub const EHCI_BAR0: u16 = 0x10;
+    /// EHCI USB status register (operational registers start at the BAR).
+    pub const EHCI_USBSTS: usize = 0x24;
     /// Host Configuration register.
     pub const HOSTC: u16 = 0x40;
     /// HOSTC enable bit.
@@ -1198,6 +1210,8 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         ehci.modify32(0xFC, !(3 << 2), (2 << 2) | (1 << 29) | (1 << 17));
         ehci.or32(0xDC, (1 << 31) | (1 << 27));
         for func in 0..4u8 {
+            // Erratum: clear the register, then set bit 0 (coreboot usb.c).
+            ecam::EcamDevice::new(0, 0x1d, func).write8(0xCA, 0x0);
             ecam::EcamDevice::new(0, 0x1d, func).or8(0xCA, 0x1);
         }
 
@@ -1540,6 +1554,17 @@ impl IntelIch7 {
         ehci.write32(0xFC, (v & !(3 << 2)) | (2 << 2) | (1 << 29) | (1 << 17));
         // Errata.
         ehci.or8(0x84, 1 << 4);
+        // Clear pending port-change status: USBSTS.PCD is write-1-to-clear, and
+        // the OS should start from a quiet controller (coreboot usb_ehci.c).
+        if let Some(base) = ehci.memory_bar(ich7::EHCI_BAR0) {
+            let usbsts = base as usize + ich7::EHCI_USBSTS;
+            // SAFETY: the BAR was assigned by enumeration and is mapped; USBSTS
+            // is a write-1-to-clear status register.
+            unsafe {
+                let status = core::ptr::read_volatile(usbsts as *const u32);
+                core::ptr::write_volatile(usbsts as *mut u32, status | (1 << 2));
+            }
+        }
         fstart_log::info!("intel-ich7: EHCI init done");
     }
 
