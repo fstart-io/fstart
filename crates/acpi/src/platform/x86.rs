@@ -58,6 +58,18 @@ pub struct X86Config {
     /// Leave as `None` unless the platform has installed an SMI handler
     /// that handles those commands.
     pub acpi_smi: Option<AcpiSmiConfig>,
+    /// Optional reset register (I/O port and value) for platforms with a
+    /// CF9-style reset the OS may drive itself.
+    pub reset: Option<ResetConfig>,
+}
+
+/// ACPI reset register for a platform that implements one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetConfig {
+    /// I/O port the OS writes to reset the platform.
+    pub port: u16,
+    /// Value that triggers the reset.
+    pub value: u8,
 }
 
 /// Runtime provider for chipset/platform-owned x86 ACPI topology.
@@ -156,6 +168,9 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         smi_cmd,
         acpi_enable,
         acpi_disable,
+        reset_reg: config
+            .reset
+            .map(|reset| (u32::from(reset.port), reset.value)),
     };
 
     (platform_tables, fadt_config)
@@ -294,6 +309,7 @@ mod tests {
             sci_irq: 9,
             pmbase: 0x0500,
             acpi_smi: None,
+            reset: None,
         }
     }
 
