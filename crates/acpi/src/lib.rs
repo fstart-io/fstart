@@ -47,6 +47,7 @@ pub mod devices;
 pub mod ext;
 pub mod gtdt;
 pub mod iort;
+pub mod pirq;
 pub mod platform;
 pub mod sbsa;
 pub mod smbios;

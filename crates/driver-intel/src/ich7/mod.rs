@@ -320,57 +320,6 @@ const LPC_EN_ALL: u16 = (1 << 13)
     | (1 << 1)
     | (1 << 0);
 
-mod rcba_pirq {
-    pub const NO_INT: u32 = 0;
-    pub const INT_A: u32 = 1;
-    pub const INT_B: u32 = 2;
-    pub const INT_C: u32 = 3;
-    pub const INT_D: u32 = 4;
-
-    const fn dip_route(functions: [u32; 8]) -> u32 {
-        functions[0]
-            | (functions[1] << 4)
-            | (functions[2] << 8)
-            | (functions[3] << 12)
-            | (functions[4] << 16)
-            | (functions[5] << 20)
-            | (functions[6] << 24)
-            | (functions[7] << 28)
-    }
-
-    /// Default ICH7/NM10 RCBA interrupt routing.
-    ///
-    /// Coreboot writes some DxxIR values with overlapping RCBA32 stores at
-    /// 0x3142 and 0x3146. These constants are the resulting 16-bit register
-    /// values used by the ICH7/NM10 boards we currently support.
-    #[derive(Clone, Copy)]
-    pub struct RouteSet {
-        pub d31ip: u32,
-        pub d30ip: u32,
-        pub d29ip: u32,
-        pub d28ip: u32,
-        pub d27ip: u32,
-        pub d31ir: u16,
-        pub d30ir: u16,
-        pub d29ir: u16,
-        pub d28ir: u16,
-        pub d27ir: u16,
-    }
-
-    pub const DEFAULT_ROUTE: RouteSet = RouteSet {
-        d31ip: dip_route([NO_INT, INT_A, INT_B, INT_B, NO_INT, INT_D, NO_INT, NO_INT]),
-        d30ip: 0,
-        d29ip: dip_route([INT_A, INT_B, INT_C, INT_D, NO_INT, NO_INT, NO_INT, INT_A]),
-        d28ip: dip_route([INT_A, INT_B, INT_C, INT_D, INT_A, INT_B, NO_INT, NO_INT]),
-        d27ip: INT_A,
-        d31ir: 0x0132,
-        d30ir: 0x0146,
-        d29ir: 0x0237,
-        d28ir: 0x3201,
-        d27ir: 0x0146,
-    };
-}
-
 /// ICH7 I/O APIC MMIO base.
 const IOAPIC_BASE: usize = 0xFEC0_0000;
 /// Local APIC MMIO base.
@@ -641,6 +590,12 @@ pub use crate::southbridge::gpio_ich::{
 pub struct IntelIch7Config {
     /// Root Complex Base Address register value.
     pub rcba: u64,
+    /// RCBA interrupt router programming, and the `_PRT` it implies.
+    ///
+    /// The driver programs `DxxIP`/`DxxIR` from this and the ACPI tables are
+    /// generated from it, so the GSIs the OS derives are the ones the router
+    /// actually delivers.
+    pub pirq: fstart_pci::pirq::PirqRouting,
     /// PIRQ routing (one byte per PIRQ A..H).
     pub pirq_routing: [u8; 8],
     /// PCIe root ports 0-3 present. Absent ports are hidden with the FD
@@ -707,6 +662,7 @@ impl IntelIch7Config {
     pub const fn new() -> Self {
         Self {
             rcba: 0xFED1_C000,
+            pirq: fstart_pci::pirq::ICH7_PINEVIEW_ROUTING,
             pirq_routing: [0; 8],
             pcie_ports: default_pcie_ports(),
             lan: true,
@@ -922,26 +878,27 @@ impl IntelIch7 {
     }
 
     fn setup_interrupt_routing(&self, rcba: &Rcba) {
-        // Program the ICH7 RCBA device interrupt pin and route registers.
-        // These are the hardware side of the ACPI _PRT tables: each internal
-        // device first selects an INTx pin (DxxIP), then maps INT[A-D] to a
-        // PIRQ line (DxxIR). Linux maps PIRQ A-H to IOAPIC GSIs 16-23.
-        //
-        // Match the default ICH7/NM10 routing. In particular, D29IP must
-        // describe all UHCI/EHCI functions on device 0x1d; programming only
-        // function 0 leaves Linux with "Found HC with no IRQ" for 0:1d.1/2/3/7.
-        let routes = rcba_pirq::DEFAULT_ROUTE;
-        rcba.regs().d31ip.set(routes.d31ip);
-        rcba.regs().d30ip.set(routes.d30ip);
-        rcba.regs().d29ip.set(routes.d29ip);
-        rcba.regs().d28ip.set(routes.d28ip);
-        rcba.regs().d27ip.set(routes.d27ip);
+        // Program the router from the board's routing data: `DxxIP` selects the
+        // interrupt pin each function asserts, `DxxIR` maps that pin onto a
+        // PIRQ line. The ACPI `_PRT` is generated from the same data (see
+        // `southbridge::pirq`), so an OS cannot be told a GSI the chipset will
+        // not deliver on.
+        let routing = &self.config.pirq;
+        rcba.regs().d31ip.set(routing.ip_value(ich7::LPC_DEV));
+        rcba.regs()
+            .d30ip
+            .set(routing.ip_value(ich7::SLOT_PCI_BRIDGE));
+        rcba.regs().d29ip.set(routing.ip_value(ich7::SLOT_USB));
+        rcba.regs().d28ip.set(routing.ip_value(ich7::SLOT_PCIE));
+        rcba.regs().d27ip.set(routing.ip_value(ich7::SLOT_HDA));
 
-        rcba.regs().d31ir.set(routes.d31ir);
-        rcba.regs().d30ir.set(routes.d30ir);
-        rcba.regs().d29ir.set(routes.d29ir);
-        rcba.regs().d28ir.set(routes.d28ir);
-        rcba.regs().d27ir.set(routes.d27ir);
+        rcba.regs().d31ir.set(routing.ir_value(ich7::LPC_DEV));
+        rcba.regs()
+            .d30ir
+            .set(routing.ir_value(ich7::SLOT_PCI_BRIDGE));
+        rcba.regs().d29ir.set(routing.ir_value(ich7::SLOT_USB));
+        rcba.regs().d28ir.set(routing.ir_value(ich7::SLOT_PCIE));
+        rcba.regs().d27ir.set(routing.ir_value(ich7::SLOT_HDA));
 
         fstart_log::info!(
             "intel-ich7: RCBA IRQ routing D31IP={:#x} D31IR={:#x} D29IP={:#x} D29IR={:#x}",
@@ -2287,7 +2244,7 @@ mod acpi_impl {
         /// `SATA` 0:1F.2, `PATA` 0:1F.1, `SBUS` 0:1F.3.
         ///
         /// Ported from coreboot `src/southbridge/intel/i82801gx/acpi/`.
-        fn dsdt_aml(&self, _config: &Self::Config) -> Vec<u8> {
+        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
             // ---------------------------------------------------------------
             // 1. LPCB device with all ISA legacy children.
             //
@@ -2599,33 +2556,16 @@ mod acpi_impl {
             //      sata.asl, pata.asl, smbus.asl
             // ---------------------------------------------------------------
 
-            // Root-bus PCI interrupt routing.  Without this table Linux can
-            // enumerate the ICH7 functions but cannot derive GSIs for devices
-            // such as SATA (0:1f.2 INTB), so drivers fall back to "no GSI".
-            // APIC-mode direct GSIs use the chipset PIRQ range 16..23.
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Name("_PRT", Package(
-                    Package(0x0002FFFFu32, 0u32, 0u32, 16u32),
-                    Package(0x0002FFFFu32, 1u32, 0u32, 17u32),
-                    Package(0x001BFFFFu32, 0u32, 0u32, 16u32),
-                    Package(0x001DFFFFu32, 0u32, 0u32, 16u32),
-                    Package(0x001DFFFFu32, 1u32, 0u32, 17u32),
-                    Package(0x001DFFFFu32, 2u32, 0u32, 18u32),
-                    Package(0x001DFFFFu32, 3u32, 0u32, 19u32),
-                    Package(0x001CFFFFu32, 0u32, 0u32, 16u32),
-                    Package(0x001CFFFFu32, 1u32, 0u32, 17u32),
-                    Package(0x001CFFFFu32, 2u32, 0u32, 18u32),
-                    Package(0x001CFFFFu32, 3u32, 0u32, 19u32),
-                    Package(0x001EFFFFu32, 0u32, 0u32, 20u32),
-                    Package(0x001EFFFFu32, 1u32, 0u32, 21u32),
-                    Package(0x001EFFFFu32, 2u32, 0u32, 22u32),
-                    Package(0x001EFFFFu32, 3u32, 0u32, 23u32),
-                    Package(0x001FFFFFu32, 0u32, 0u32, 16u32),
-                    Package(0x001FFFFFu32, 1u32, 0u32, 17u32),
-                    Package(0x001FFFFFu32, 2u32, 0u32, 18u32),
-                    Package(0x001FFFFFu32, 3u32, 0u32, 19u32)
-                ));
-            });
+            // Root-bus PCI interrupt routing, generated from the same data the
+            // router registers are programmed with: each pin delivers on the
+            // PIRQ line it is wired to, and PIRQs map to GSIs from 16 on.
+            // The root ports and the PCI bridge carry their own `_PRT` for the
+            // buses behind them.
+            let routes = config
+                .pirq
+                .root_bus_routes()
+                .map(|(slot, pin, gsi)| (slot, pin.index(), gsi));
+            pci0_aml.extend_from_slice(&fstart_acpi::pirq::prt_name_aml(routes));
 
             // HDEF — HD Audio controller  0:1B.0
             // _PRW: GPE bit 5, can wake from S4.
