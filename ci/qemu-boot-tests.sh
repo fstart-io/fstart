@@ -91,11 +91,17 @@ run_boot() {
 	matches_filter "$payload" "${payload_filters[@]}" || return 0
 	selected=$((selected + 1))
 
-	# The matrix label may carry a variant suffix (uefi-disk); fbuild only
-	# sees the payload kind before the first dash.
+	# The matrix label may carry a variant suffix (uefi-disk, halt-smp4);
+	# fbuild only sees the payload kind before the first dash. An `smpN`
+	# suffix boots with N vCPUs to exercise AP bring-up and SMM relocation.
 	local payload_arg="${payload%%-*}"
+	local smp=1
+	if [[ $payload =~ -smp([0-9]+) ]]; then
+		smp="${BASH_REMATCH[1]}"
+	fi
 	local log="$LOG_DIR/${board}-${payload}.log"
 	local -a command=(
+		env "FSTART_QEMU_SMP=$smp"
 		timeout --kill-after=10s "$BOOT_TIMEOUT"
 		cargo run -q -p fbuild -- run --board "$board" --release --payload "$payload_arg"
 	)
@@ -118,6 +124,9 @@ run_boot() {
 
 run_boot qemu-q35 halt 'ramstage: ready for payload'
 require_boot_marker qemu-q35 halt 'PCI root ready ('
+# Multi-processor bring-up with SMM relocation on every CPU.
+run_boot qemu-q35 halt-smp4 'mp: initialization complete (4 CPUs)'
+require_boot_marker qemu-q35 halt-smp4 'SMM: permanent SMI enabled and SMRAM locked'
 run_boot qemu-q35 uefi 'Boot manager finished'
 # Full boot chain: fstart -> CrabEFI -> GRUB (ESP) -> Linux -> u-root init.
 if [[ -f "$X86_ASSET_DIR/disk.img" ]]; then

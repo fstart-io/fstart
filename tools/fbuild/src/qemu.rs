@@ -149,6 +149,9 @@ pub fn run(
                 };
 
                 let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
+                // `FSTART_QEMU_SMP` selects the vCPU count so the MP/SMM
+                // flight plan can be exercised with APs.
+                let smp = std::env::var("FSTART_QEMU_SMP").unwrap_or_else(|_| "1".to_string());
                 let use_kvm = match accel.as_deref() {
                     Some("kvm") => true,
                     Some("tcg") => false,
@@ -164,7 +167,7 @@ pub fn run(
                     "-m".to_string(),
                     "1G".to_string(),
                     "-smp".to_string(),
-                    "1".to_string(),
+                    smp,
                     "-no-reboot".to_string(),
                     "-display".to_string(),
                     "none".to_string(),

@@ -354,19 +354,19 @@ pub const SMM_DEFAULT_ENTRY: u64 = SMM_DEFAULT_SMBASE + fstart_smm::layout::SMM_
 /// Temporary stack top for the default-SMRAM entry stub.
 pub const SMM_DEFAULT_ENTRY_STACK_TOP: u64 = SMM_DEFAULT_SMBASE + 0x7000;
 
-const SMM_SAVE_STATE_SIZE: u64 = 0x1_0000;
-const SMM_REVISION_OFFSET_FROM_TOP: u64 = 0x104;
-const SMM_EM64T101_REVISION: u32 = 0x0003_0101;
-const SMM_LEGACY_REVISION_OFFSET: u64 = 0xff04;
+/// `smm_revision` word: at `SMBASE + 0xfefc` in every Intel and AMD64 layout.
+const SMM_REVISION_OFFSET: u64 = 0xfefc;
+/// Relocated-SMBASE word of the Intel layouts (legacy 32-bit, EM64T100,
+/// EM64T101): `SMBASE + 0xfef8`, immediately below the revision. coreboot's
+/// gen1 relocation writes this offset for every Intel CPU, whatever the
+/// revision says (`cpu/intel/smm/gen1/smmrelocate.c`).
+const SMM_INTEL_SMBASE_OFFSET: u64 = 0xfef8;
 /// AMD64 SMM revision reported by QEMU (coreboot q35 `relocation_handler`
 /// case `0x20064`). Verified on QEMU 11 KVM: the relocated SMBASE belongs
 /// at [`SMM_AMD64_SMBASE_OFFSET`], not next to the revision word.
 const SMM_AMD64_REVISION: u32 = 0x0002_0064;
-/// Relocated-SMBASE quirk word for the AMD64-revision layout (QEMU/KVM).
+/// Relocated-SMBASE word for the AMD64-revision layout (QEMU/KVM).
 const SMM_AMD64_SMBASE_OFFSET: u64 = 0xff00;
-/// Intel-offset relocated-SMBASE word (save-state top `- 0x104 - 4`).
-/// Updated alongside the quirk word for engines (TCG) that honor it.
-const SMM_INTEL_SMBASE_OFFSET: u64 = 0xfef8;
 
 /// Static mailbox array.  One slot per AP (index 0 = AP #1, etc.).
 /// Placed in BSS (zero-init = idle).
@@ -396,53 +396,126 @@ static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
 // Flight plan (internal)
 // ---------------------------------------------------------------------------
 
-/// Maximum flight plan steps.
-const MAX_FLIGHT_STEPS: usize = 8;
-
-/// A single step in the flight plan.
+/// One step of the flight plan (coreboot's `mp_flight_record`).
 ///
-/// APs increment `cpus_entered`, then wait on `barrier`.  The BSP
-/// waits for all APs to enter, calls `bsp_call`, then releases the
-/// barrier.  If `barrier` starts at 1, APs proceed immediately
-/// (no-block mode, used for parallel SMM relocation).
-struct FlightStep {
+/// Every step is barriered: APs announce their arrival and wait, the BSP
+/// waits for all of them, runs [`bsp`](Self::bsp), then releases the barrier
+/// and the APs run [`ap`](Self::ap). Sides without work keep the defaults.
+trait FlightStep: Sync {
+    fn bsp(&self) {}
+    fn ap(&self) {}
+}
+
+/// Every CPU relocates its SMBASE through the shared default SMRAM entry,
+/// one at a time.
+struct SmmRelocate;
+impl FlightStep for SmmRelocate {
+    fn bsp(&self) {
+        smm_relocate_serialised();
+    }
+    fn ap(&self) {
+        smm_relocate_serialised();
+    }
+}
+
+/// Close and lock SMRAM and enable the permanent SMI sources.
+struct SmmPostInit;
+impl FlightStep for SmmPostInit {
+    fn bsp(&self) {
+        fstart_log::info!(
+            "mp: SMM save state revision {:#x}, {} CPUs relocated",
+            SMM_SAVE_STATE_REVISION.load(Ordering::Acquire),
+            smm_handler_done()
+        );
+        if let Some(ops) = load_smm_ops() {
+            ops.post_smm_init();
+        }
+    }
+}
+
+/// Enter the permanent handler once from every CPU after SMRAM is locked.
+///
+/// The relocated handler has a private save state and stack per CPU, so no
+/// serialisation is needed and nothing outside SMRAM can observe completion:
+/// a handler that fails to return simply stops the boot here, which is the
+/// point of the check.
+struct SmmPermanentEntry;
+impl FlightStep for SmmPermanentEntry {
+    fn bsp(&self) {
+        self.ap();
+    }
+    fn ap(&self) {
+        if let Some(ops) = load_smm_ops() {
+            ops.smm_relocate();
+        }
+    }
+}
+
+/// Every CPU identifies itself and runs the matching CPU driver.
+struct CpuInit;
+impl FlightStep for CpuInit {
+    fn bsp(&self) {
+        cpu_init();
+    }
+    fn ap(&self) {
+        cpu_init();
+    }
+}
+
+/// APs park in the mailbox loop; the BSP continues.
+struct ParkAps;
+impl FlightStep for ParkAps {
+    fn ap(&self) {
+        ap_mailbox_loop();
+    }
+}
+
+/// Flight plan with SMM: relocate every CPU's SMBASE through the default
+/// SMRAM entry, close and lock SMRAM once, then prove the permanent handler
+/// by entering it from every CPU before ordinary CPU init.
+const SMM_FLIGHT_PLAN: &[&dyn FlightStep] = &[
+    &SmmRelocate,
+    &SmmPostInit,
+    &SmmPermanentEntry,
+    &CpuInit,
+    &ParkAps,
+];
+
+/// Flight plan without SMM.
+const FLIGHT_PLAN: &[&dyn FlightStep] = &[&CpuInit, &ParkAps];
+
+const MAX_FLIGHT_STEPS: usize = SMM_FLIGHT_PLAN.len();
+
+/// Per-step rendezvous state, reset by the BSP before APs start.
+struct StepSync {
     /// 0 = APs blocked, 1 = APs may proceed.
     barrier: AtomicUsize,
     /// Number of APs that have reached this step.
     cpus_entered: AtomicUsize,
-    /// Function for APs to call (0 = skip).
-    ap_fn: AtomicUsize,
-    /// Function for BSP to call (0 = skip).
-    bsp_fn: AtomicUsize,
 }
 
-impl FlightStep {
-    const fn blocked(ap: usize, bsp: usize) -> Self {
-        Self {
-            barrier: AtomicUsize::new(0),
-            cpus_entered: AtomicUsize::new(0),
-            ap_fn: AtomicUsize::new(ap),
-            bsp_fn: AtomicUsize::new(bsp),
-        }
+static STEP_SYNC: [StepSync; MAX_FLIGHT_STEPS] = [const {
+    StepSync {
+        barrier: AtomicUsize::new(0),
+        cpus_entered: AtomicUsize::new(0),
     }
-    const fn empty() -> Self {
-        Self::blocked(0, 0)
+}; MAX_FLIGHT_STEPS];
+
+/// The plan for the running [`mp_init`], selected once SMM availability is
+/// known; APs read it through the published config.
+static ACTIVE_PLAN_IS_SMM: AtomicBool = AtomicBool::new(false);
+
+fn active_flight_plan() -> &'static [&'static dyn FlightStep] {
+    if ACTIVE_PLAN_IS_SMM.load(Ordering::Acquire) {
+        SMM_FLIGHT_PLAN
+    } else {
+        FLIGHT_PLAN
     }
 }
-
-/// Global flight plan.  Set by BSP before APs are released.
-static FLIGHT_PLAN: [FlightStep; MAX_FLIGHT_STEPS] = {
-    const STEP: FlightStep = FlightStep::empty();
-    [STEP; MAX_FLIGHT_STEPS]
-};
-static FLIGHT_PLAN_LEN: AtomicUsize = AtomicUsize::new(0);
 
 // ---------------------------------------------------------------------------
 // Trampoline types used by the flight plan
 // ---------------------------------------------------------------------------
-
-/// fn() signature for flight plan callbacks.
-type FlightFn = fn();
 
 /// The configuration of the running [`mp_init`], published for the
 /// monomorphic `fn()` flight-plan callbacks that APs execute.
@@ -489,7 +562,7 @@ fn find_cpu_driver(identity: CpuIdentity) -> Option<&'static dyn CpuDriver> {
         .find(|driver| driver.matches(identity))
 }
 
-fn cpu_init_trampoline() {
+fn cpu_init() {
     let identity = CpuIdentity::current();
     if let Some(driver) = find_cpu_driver(identity) {
         fstart_log::info!(
@@ -531,6 +604,9 @@ fn post_mp_cpu_drivers(drivers: &[&dyn CpuDriver]) {
 
 /// Entries into the default SMM relocation handler.
 static SMM_HANDLER_HITS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// `smm_revision` observed by the relocation handler, for the BSP's log.
+static SMM_SAVE_STATE_REVISION: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
 /// Completions of the default SMM relocation handler.
 static SMM_HANDLER_DONE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
@@ -544,7 +620,7 @@ pub fn smm_handler_done() -> u32 {
     SMM_HANDLER_DONE.load(Ordering::Acquire)
 }
 
-fn smm_relocate_trampoline() {
+fn smm_relocate_serialised() {
     // Bounded: an unbounded spin here wedges the whole boot if another CPU never
     // completes its relocation.
     let mut spins = 0u32;
@@ -586,12 +662,6 @@ fn smm_relocate_trampoline() {
     SMM_RELOCATION_LOCK.store(false, Ordering::Release);
 }
 
-fn smm_post_init_trampoline() {
-    if let Some(ops) = load_smm_ops() {
-        ops.post_smm_init();
-    }
-}
-
 /// Prepare the SMBASE lookup table used by [`default_smm_relocation_handler`].
 pub fn prepare_default_smm_relocation(cpus: &[fstart_smm::CpuSmmLayout]) {
     let fallback = cpus.first().map(|cpu| cpu.smbase as usize).unwrap_or(0);
@@ -619,23 +689,21 @@ pub extern "C" fn default_smm_relocation_handler(_params: *mut fstart_smm::SmmEn
         return;
     }
 
-    let (save_state_smbase, revision) = default_save_state_location();
-
     // SAFETY: this runs in SMM from the default save-state window while SMRAM
-    // is open. `smm_relocate_trampoline()` serializes all CPUs.
-    unsafe { core::ptr::write_unaligned(save_state_smbase, smbase) };
-    // QEMU reports the AMD64 revision; KVM honors the `+0xff00` word, so it
-    // is always updated, plus the Intel-offset word for engines that honor
-    // that one instead (dual-write verified on KVM and TCG). Either word is
-    // inert on engines — and real Intel hardware, which reports EM64T101 —
-    // that use the other.
-    if revision == SMM_AMD64_REVISION {
-        // SAFETY: same default save-state area as above.
-        unsafe {
-            core::ptr::write_unaligned(
-                (SMM_DEFAULT_SMBASE + SMM_INTEL_SMBASE_OFFSET) as *mut u32,
-                smbase,
-            );
+    // is open and `smm_relocate_serialised()` serialises all CPUs, so the
+    // architectural save state at the default SMBASE belongs to this CPU.
+    unsafe {
+        let revision =
+            core::ptr::read_unaligned((SMM_DEFAULT_SMBASE + SMM_REVISION_OFFSET) as *const u32);
+        SMM_SAVE_STATE_REVISION.store(revision, Ordering::Release);
+        core::ptr::write_unaligned(
+            (SMM_DEFAULT_SMBASE + SMM_INTEL_SMBASE_OFFSET) as *mut u32,
+            smbase,
+        );
+        // QEMU reports the AMD64 revision; KVM honours the `+0xff00` word and
+        // TCG the Intel one (dual-write verified on both), and the other word
+        // is inert on each engine.
+        if revision == SMM_AMD64_REVISION {
             core::ptr::write_unaligned(
                 (SMM_DEFAULT_SMBASE + SMM_AMD64_SMBASE_OFFSET) as *mut u32,
                 smbase,
@@ -643,37 +711,6 @@ pub extern "C" fn default_smm_relocation_handler(_params: *mut fstart_smm::SmmEn
         }
     }
     SMM_HANDLER_DONE.fetch_add(1, Ordering::AcqRel);
-}
-
-/// Locate the relocated-SMBASE word and report the observed save-state
-/// revision. Callers update the returned word; for the AMD64 revision they
-/// additionally cover the engine-specific quirk word (see the caller).
-fn default_save_state_location() -> (*mut u32, u32) {
-    let save_state_top = SMM_DEFAULT_SMBASE + SMM_SAVE_STATE_SIZE;
-    let revision_addr = (save_state_top - SMM_REVISION_OFFSET_FROM_TOP) as *const u32;
-
-    // SAFETY: during default-SMRAM relocation, the CPU has populated the
-    // architectural save state at the default SMBASE.
-    let revision = unsafe { core::ptr::read_unaligned(revision_addr) };
-    if revision == SMM_EM64T101_REVISION {
-        return (revision_addr.wrapping_sub(1).cast_mut(), revision);
-    }
-    if revision == SMM_AMD64_REVISION {
-        return (
-            (SMM_DEFAULT_SMBASE + SMM_AMD64_SMBASE_OFFSET) as *mut u32,
-            revision,
-        );
-    }
-
-    let legacy_revision_addr = (SMM_DEFAULT_SMBASE + SMM_LEGACY_REVISION_OFFSET) as *const u32;
-    // SAFETY: same default save-state area as above. Some emulators expose the
-    // legacy/AMD64 SMBASE field at 0xff00 with revision immediately after it.
-    let legacy_revision = unsafe { core::ptr::read_unaligned(legacy_revision_addr) };
-    if legacy_revision != 0 {
-        return (legacy_revision_addr.wrapping_sub(1).cast_mut(), revision);
-    }
-
-    (revision_addr.wrapping_sub(1).cast_mut(), revision)
 }
 
 /// AP mailbox loop — the terminal flight plan step for APs.
@@ -765,25 +802,16 @@ pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
     AP_COUNT.fetch_add(1, Ordering::Release);
 
     // Walk the flight plan.
-    let num_steps = FLIGHT_PLAN_LEN.load(Ordering::Acquire);
-    for i in 0..num_steps {
-        let step = &FLIGHT_PLAN[i];
-
+    for (step, sync) in active_flight_plan().iter().zip(STEP_SYNC.iter()) {
         // Signal that we've reached this step.
-        step.cpus_entered.fetch_add(1, Ordering::Release);
+        sync.cpus_entered.fetch_add(1, Ordering::Release);
 
         // Wait for the barrier (BSP releases it after all APs check in).
-        while step.barrier.load(Ordering::Acquire) == 0 {
+        while sync.barrier.load(Ordering::Acquire) == 0 {
             core::hint::spin_loop();
         }
 
-        // Call the AP function if present.
-        let ap_fn = step.ap_fn.load(Ordering::Acquire);
-        if ap_fn != 0 {
-            // SAFETY: BSP set this to a valid fn() before releasing APs.
-            let f: FlightFn = unsafe { core::mem::transmute(ap_fn) };
-            f();
-        }
+        step.ap();
     }
 
     // If we get past the flight plan, enter the mailbox loop.
@@ -800,190 +828,17 @@ pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
 // mp_init — the main entry point
 // ---------------------------------------------------------------------------
 
-/// Initialize all CPUs.
-///
-/// Brings up application processors via INIT+SIPI, runs a flight plan
-/// for CPU and optional SMM initialization, then parks APs in a
-/// mailbox loop for later work dispatch via [`MpHandle::scope`].
-///
-/// # Sequence
-///
-/// 1. BSP: enable LAPIC, call CPU-driver `pre_mp_init()` hooks
-/// 2. BSP: copy SIPI trampoline to low memory (`0x1000`)
-/// 3. BSP: send INIT + SIPI to all APs
-/// 4. BSP: wait for APs to check in (with timeout)
-/// 5. Flight plan:
-///    - If SMM: step "install handlers" (BSP), step "relocate" (all, parallel)
-///    - Step "cpu_init" (all CPUs identify themselves and run a matching driver)
-///    - Step "mailbox loop" (APs park, BSP continues)
-/// 6. BSP: `smm.post_smm_init()` (if SMM), CPU-driver `post_mp_init()` hooks
-/// 7. Return [`MpHandle`]
 /// Return the number of logical CPUs brought online by the most recent MP init.
 pub fn online_cpus() -> u16 {
     ONLINE_CPUS.load(Ordering::Acquire) as u16
 }
 
-pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
-    let num_cpus = discovered_logical_cpus(config.max_cpus);
-    let max_aps = num_cpus.saturating_sub(1);
+/// Copy the SIPI trampoline, send INIT + SIPI and wait for the APs to check
+/// in. Returns how many did; fewer than `max_aps` is normal, `max_cpus`
+/// bounds per-CPU storage rather than counting the CPUs that exist.
+fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
+    install_sipi_trampoline(max_aps, lapic)?;
 
-    fstart_log::info!(
-        "mp: initializing {} CPUs (max_cpus bound {})",
-        num_cpus,
-        config.max_cpus
-    );
-
-    // --- Step 1: BSP LAPIC setup ---
-    let lapic = Lapic::from_msr();
-    lapic.enable();
-    lapic.setup_virtual_wire(true);
-
-    fstart_log::info!("mp: BSP LAPIC ID = {}", lapic.id());
-
-    // Pre-MP CPU-driver hooks (BSP only).
-    pre_mp_cpu_drivers(config.cpu_drivers);
-    publish_config(config);
-    CPU_INIT_ERRORS.store(0, Ordering::Release);
-
-    if max_aps == 0 {
-        // Single-CPU system.  Still perform the SMM install + relocation path
-        // when requested; coreboot also relocates the BSP before enabling
-        // global SMIs.
-        if let Some(smm) = config.smm {
-            fstart_log::info!("mp: single-CPU SMM path");
-            if let Some(info) = smm.smm_info() {
-                fstart_log::info!("mp: SMM pre init");
-                smm.pre_smm_init();
-                let Some(image) = config.smm_image else {
-                    fstart_log::error!("mp: SMM requested but no SMM image was provided");
-                    clear_mp_globals();
-                    return Err(MpError::MissingSmmImage);
-                };
-                fstart_log::info!("mp: installing SMM handlers");
-                if smm
-                    .install_smm_handlers(&info, config.max_cpus, image)
-                    .is_err()
-                {
-                    clear_mp_globals();
-                    return Err(MpError::SmmInstallFailed);
-                }
-                // First SMI runs the default-SMRAM relocation handler; after
-                // post_smm_init() closes/locks SMRAM, the second SMI proves the
-                // permanent copied handler is usable.
-                fstart_log::info!("mp: SMM relocate #1");
-                smm.smm_relocate();
-                fstart_log::info!("mp: SMM post init");
-                smm.post_smm_init();
-                fstart_log::info!("mp: SMM relocate #2");
-                smm.smm_relocate();
-            } else {
-                fstart_log::info!("mp: SMM provider returned no SMRAM info");
-            }
-        }
-        fstart_log::info!("mp: BSP CPU init");
-        cpu_init_trampoline();
-        if CPU_INIT_ERRORS.load(Ordering::Acquire) != 0 {
-            clear_mp_globals();
-            return Err(MpError::UnsupportedCpu);
-        }
-        fstart_log::info!("mp: BSP post MP init");
-        post_mp_cpu_drivers(config.cpu_drivers);
-        clear_mp_globals();
-        ONLINE_CPUS.store(1, Ordering::Release);
-        return Ok(MpHandle { num_aps: 0 });
-    }
-
-    // --- Step 2: Set up global state for APs ---
-    AP_COUNT.store(0, Ordering::Release);
-    AP_IN_MAILBOX_LOOP.store(0, Ordering::Release);
-    SMM_RELOCATION_LOCK.store(false, Ordering::Release);
-
-    // Build the flight plan.
-    let mut step_count = 0usize;
-    let smm_info = config.smm.and_then(SmmOps::smm_info);
-
-    // If SMM is configured, APs first block at a relocation step.  The BSP
-    // installs the handlers after AP check-in and before releasing this step.
-    // A later BSP-only post step closes/locks SMRAM and enables global SMI;
-    // then every CPU triggers one more SMI through the permanent handler so
-    // multi-core SMM entry is validated before APs park in the mailbox loop.
-    if smm_info.is_some() {
-        FLIGHT_PLAN[step_count].barrier.store(0, Ordering::Release);
-        FLIGHT_PLAN[step_count]
-            .cpus_entered
-            .store(0, Ordering::Release);
-        FLIGHT_PLAN[step_count].ap_fn.store(
-            smm_relocate_trampoline as *const () as usize,
-            Ordering::Release,
-        );
-        FLIGHT_PLAN[step_count].bsp_fn.store(
-            smm_relocate_trampoline as *const () as usize,
-            Ordering::Release,
-        );
-        step_count += 1;
-
-        FLIGHT_PLAN[step_count].barrier.store(0, Ordering::Release);
-        FLIGHT_PLAN[step_count]
-            .cpus_entered
-            .store(0, Ordering::Release);
-        FLIGHT_PLAN[step_count].ap_fn.store(0, Ordering::Release);
-        FLIGHT_PLAN[step_count].bsp_fn.store(
-            smm_post_init_trampoline as *const () as usize,
-            Ordering::Release,
-        );
-        step_count += 1;
-
-        FLIGHT_PLAN[step_count].barrier.store(0, Ordering::Release);
-        FLIGHT_PLAN[step_count]
-            .cpus_entered
-            .store(0, Ordering::Release);
-        FLIGHT_PLAN[step_count].ap_fn.store(
-            smm_relocate_trampoline as *const () as usize,
-            Ordering::Release,
-        );
-        FLIGHT_PLAN[step_count].bsp_fn.store(
-            smm_relocate_trampoline as *const () as usize,
-            Ordering::Release,
-        );
-        step_count += 1;
-    }
-
-    // Step: All CPUs run cpu_init (barriered).
-    FLIGHT_PLAN[step_count].barrier.store(0, Ordering::Release);
-    FLIGHT_PLAN[step_count]
-        .cpus_entered
-        .store(0, Ordering::Release);
-    FLIGHT_PLAN[step_count]
-        .ap_fn
-        .store(cpu_init_trampoline as *const () as usize, Ordering::Release);
-    FLIGHT_PLAN[step_count]
-        .bsp_fn
-        .store(cpu_init_trampoline as *const () as usize, Ordering::Release);
-    step_count += 1;
-
-    // Step: APs enter mailbox loop (barriered).
-    FLIGHT_PLAN[step_count].barrier.store(0, Ordering::Release);
-    FLIGHT_PLAN[step_count]
-        .cpus_entered
-        .store(0, Ordering::Release);
-    FLIGHT_PLAN[step_count]
-        .ap_fn
-        .store(ap_mailbox_loop as *const () as usize, Ordering::Release);
-    FLIGHT_PLAN[step_count].bsp_fn.store(0, Ordering::Release);
-    step_count += 1;
-
-    FLIGHT_PLAN_LEN.store(step_count, Ordering::Release);
-    fence(Ordering::SeqCst);
-
-    // --- Step 3: Copy SIPI trampoline to low memory ---
-    // The trampoline will be defined in sipi.rs (global_asm!).
-    // For now, we set up the parameter block and copy.
-    if let Err(err) = install_sipi_trampoline(max_aps, &lapic) {
-        clear_mp_globals();
-        return Err(err);
-    }
-
-    // --- Step 4: Send INIT + SIPI ---
     fstart_log::info!("mp: sending INIT IPI");
     lapic.send_init_all_but_self();
 
@@ -1018,68 +873,57 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     } else {
         fstart_log::info!("mp: {}/{} APs checked in", final_count, max_aps);
     }
+    Ok(final_count)
+}
 
-    // Install SMM handlers only after APs have checked in and are blocked at
-    // the first flight-plan step.  This matches coreboot's sequencing: load
-    // permanent handlers, then let every CPU enter SMM to relocate SMBASE.
-    if let (Some(smm), Some(info)) = (config.smm, smm_info) {
-        smm.pre_smm_init();
-        let Some(image) = config.smm_image else {
-            fstart_log::error!("mp: SMM requested but no SMM image was provided");
-            clear_mp_globals();
-            return Err(MpError::MissingSmmImage);
-        };
-        if smm
-            .install_smm_handlers(&info, config.max_cpus, image)
-            .is_err()
-        {
-            clear_mp_globals();
-            return Err(MpError::SmmInstallFailed);
-        }
-    }
+/// Initialize all CPUs.
+///
+/// Brings up application processors via INIT+SIPI, walks the flight plan
+/// ([`SMM_FLIGHT_PLAN`] or [`FLIGHT_PLAN`]) for SMM relocation and CPU
+/// initialization, then parks APs in a mailbox loop for later work dispatch
+/// via [`MpHandle::scope`]. A single-CPU system walks the same plan alone.
+///
+/// # Sequence
+///
+/// 1. BSP: enable LAPIC, call CPU-driver `pre_mp_init()` hooks
+/// 2. BSP: copy SIPI trampoline to low memory, send INIT + SIPI, wait for check-in
+/// 3. BSP: install the SMM handlers while APs block at the first step
+/// 4. Flight plan (all steps barriered):
+///    - If SMM: relocate (serialised), BSP post-init (close + lock SMRAM,
+///      enable SMIs), permanent-handler entry from every CPU
+///    - cpu_init (all CPUs identify themselves and run a matching driver)
+///    - mailbox loop (APs park, BSP continues)
+/// 5. BSP: CPU-driver `post_mp_init()` hooks, return [`MpHandle`]
+pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
+    let num_cpus = discovered_logical_cpus(config.max_cpus);
+    let max_aps = num_cpus.saturating_sub(1);
 
-    // --- Step 5: Walk the flight plan (BSP side) ---
-    for i in 0..step_count {
-        let step = &FLIGHT_PLAN[i];
+    fstart_log::info!(
+        "mp: initializing {} CPUs (max_cpus bound {})",
+        num_cpus,
+        config.max_cpus
+    );
 
-        // Wait for all APs to reach this step (if barrier is 0 = blocked).
-        if step.barrier.load(Ordering::Acquire) == 0 {
-            let timeout_us = 1_000_000u64; // 1 second
-            let mut elapsed = 0u64;
-            while (step.cpus_entered.load(Ordering::Acquire) as u16) < final_count {
-                delay_us(100);
-                elapsed += 100;
-                if elapsed >= timeout_us {
-                    fstart_log::error!("mp: flight plan step {} timeout", i);
-                    break;
-                }
-            }
-        }
+    // --- Step 1: BSP LAPIC setup ---
+    let lapic = Lapic::from_msr();
+    lapic.enable();
+    lapic.setup_virtual_wire(true);
 
-        // BSP calls its function.
-        let bsp_fn = step.bsp_fn.load(Ordering::Acquire);
-        if bsp_fn != 0 {
-            // SAFETY: we set this to a valid fn() above.
-            let f: FlightFn = unsafe { core::mem::transmute(bsp_fn) };
-            f();
-        }
+    fstart_log::info!("mp: BSP LAPIC ID = {}", lapic.id());
 
-        // Release the barrier so APs can proceed.
-        step.barrier.store(1, Ordering::Release);
-    }
+    // Pre-MP CPU-driver hooks (BSP only).
+    pre_mp_cpu_drivers(config.cpu_drivers);
 
-    if CPU_INIT_ERRORS.load(Ordering::Acquire) != 0 {
-        clear_mp_globals();
-        return Err(MpError::UnsupportedCpu);
-    }
-
-    // --- Step 6: Post-init ---
-    post_mp_cpu_drivers(config.cpu_drivers);
+    // APs reach the drivers and SMM ops through the published config; it is
+    // withdrawn before returning on every path.
+    publish_config(config);
+    let flown = fly(config, max_aps, &lapic);
     clear_mp_globals();
+    let final_count = flown?;
 
+    post_mp_cpu_drivers(config.cpu_drivers);
     ONLINE_CPUS.store((final_count + 1) as usize, Ordering::Release);
     fstart_log::info!("mp: initialization complete ({} CPUs)", final_count + 1);
-
     if final_count < max_aps {
         fstart_log::warn!(
             "mp: fewer APs than max responded (expected max {}, actual {})",
@@ -1091,6 +935,66 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     Ok(MpHandle {
         num_aps: final_count,
     })
+}
+
+/// Start the APs, install SMM and walk the flight plan on the BSP side.
+/// Returns the number of APs that checked in.
+fn fly(config: &MpConfig<'_>, max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
+    CPU_INIT_ERRORS.store(0, Ordering::Release);
+    AP_COUNT.store(0, Ordering::Release);
+    AP_IN_MAILBOX_LOOP.store(0, Ordering::Release);
+    SMM_RELOCATION_LOCK.store(false, Ordering::Release);
+
+    let smm_info = config.smm.and_then(SmmOps::smm_info);
+    ACTIVE_PLAN_IS_SMM.store(smm_info.is_some(), Ordering::Release);
+    for sync in STEP_SYNC.iter() {
+        sync.barrier.store(0, Ordering::Release);
+        sync.cpus_entered.store(0, Ordering::Release);
+    }
+    let plan = active_flight_plan();
+    fence(Ordering::SeqCst);
+
+    let final_count = if max_aps == 0 {
+        0
+    } else {
+        start_aps(max_aps, lapic)?
+    };
+
+    // Install SMM handlers only after APs have checked in and are blocked at
+    // the first flight-plan step.  This matches coreboot's sequencing: load
+    // permanent handlers, then let every CPU enter SMM to relocate SMBASE.
+    if let (Some(smm), Some(info)) = (config.smm, smm_info) {
+        smm.pre_smm_init();
+        let image = config.smm_image.ok_or_else(|| {
+            fstart_log::error!("mp: SMM requested but no SMM image was provided");
+            MpError::MissingSmmImage
+        })?;
+        smm.install_smm_handlers(&info, config.max_cpus, image)
+            .map_err(|_| MpError::SmmInstallFailed)?;
+    }
+
+    // Walk the flight plan on the BSP side; APs walk it in `fstart_ap_entry`.
+    for (i, (step, sync)) in plan.iter().zip(STEP_SYNC.iter()).enumerate() {
+        // Wait for all APs to reach this step.
+        let timeout_us = 1_000_000u64; // 1 second
+        let mut elapsed = 0u64;
+        while (sync.cpus_entered.load(Ordering::Acquire) as u16) < final_count {
+            delay_us(100);
+            elapsed += 100;
+            if elapsed >= timeout_us {
+                fstart_log::error!("mp: flight plan step {} timeout", i);
+                break;
+            }
+        }
+        step.bsp();
+        // Release the barrier so APs can proceed.
+        sync.barrier.store(1, Ordering::Release);
+    }
+
+    if CPU_INIT_ERRORS.load(Ordering::Acquire) != 0 {
+        return Err(MpError::UnsupportedCpu);
+    }
+    Ok(final_count)
 }
 
 // ---------------------------------------------------------------------------

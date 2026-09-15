@@ -47,11 +47,13 @@ impl Selection {
         }
         // Fail closed on undeclared ambient firmware inputs, including producer
         // namespaces belonging to another plan. WORKSPACE_ROOT selects this tool's
-        // checkout, not firmware content. Known unbound keys are removed below.
+        // checkout and FSTART_QEMU_* steer the emulator launch, not firmware
+        // content. Known unbound keys are removed below.
         for (key, _) in std::env::vars_os() {
             let name = key.to_string_lossy();
             if name.starts_with("FSTART_")
                 && name != "FSTART_WORKSPACE_ROOT"
+                && !name.starts_with("FSTART_QEMU_")
                 && !artifact_environment.iter().any(|k| k == &name)
                 && !environment.contains_key(name.as_ref())
             {
