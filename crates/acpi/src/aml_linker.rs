@@ -230,6 +230,24 @@ pub fn scope_vec(path: &str, children: &[u8]) -> Result<Vec<u8>, AmlError> {
     Ok(bytes)
 }
 
+/// Serialize a `Device(name) { body }` object over pre-serialized children.
+///
+/// The DSL cannot take a runtime device name, so drivers that compose a device
+/// from shared fragments build its body first and wrap it here.
+pub fn device_vec(name: &str, body: &[u8]) -> Result<Vec<u8>, AmlError> {
+    AmlPath::new(name)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(name.len() + body.len() + 8)
+        .map_err(|_| AmlError::Capacity)?;
+    bytes.extend_from_slice(&[0x5B, 0x82]);
+    let (length, width) = package_length(name.len() + body.len())?;
+    bytes.extend_from_slice(&length[..width]);
+    bytes.extend_from_slice(name.as_bytes());
+    bytes.extend_from_slice(body);
+    Ok(bytes)
+}
+
 fn write_name_string(writer: &mut AmlWriter<'_>, path: AmlPath<'_>) -> Result<(), AmlError> {
     let mut rest = path.0;
     if let Some(stripped) = rest.strip_prefix('\\') {
@@ -281,4 +299,26 @@ pub fn package_length(content_len: usize) -> Result<([u8; 4], usize), AmlError> 
         *byte = (total >> (4 + (index - 1) * 8)) as u8;
     }
     Ok((bytes, width))
+}
+
+#[cfg(test)]
+mod device_vec_tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn device_header_matches_the_aml_encoding() {
+        let bytes = device_vec("LPCB", &[0x00]).expect("name is valid");
+        // DeviceOp, one-byte PkgLength (name + body), name, body.
+        assert_eq!(bytes, vec![0x5B, 0x82, 0x06, b'L', b'P', b'C', b'B', 0x00]);
+    }
+
+    #[test]
+    fn names_outside_the_aml_name_space_are_rejected() {
+        // ACPI names are up to four characters from A-Z, 0-9 and `_`.
+        assert!(device_vec("LPCBB", &[]).is_err());
+        assert!(device_vec("LP-B", &[]).is_err());
+        // Shorter names are legitimately padded (`LPC` becomes `LPC_`).
+        assert!(device_vec("LPC", &[]).is_ok());
+    }
 }
