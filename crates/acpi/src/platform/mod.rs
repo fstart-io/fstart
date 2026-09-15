@@ -91,6 +91,8 @@ pub struct FadtConfig {
     pub acpi_enable: u8,
     /// Value written to `smi_cmd` to disable ACPI mode.
     pub acpi_disable: u8,
+    /// ACPI reset register (I/O port, value) when the platform has one.
+    pub reset_reg: Option<(u32, u8)>,
 }
 
 impl Default for FadtConfig {
@@ -109,6 +111,7 @@ impl Default for FadtConfig {
             smi_cmd: 0,
             acpi_enable: 0,
             acpi_disable: 0,
+            reset_reg: None,
         }
     }
 }
@@ -310,6 +313,10 @@ pub fn assemble(
 }
 
 /// Build the FADT from architecture-neutral configuration.
+/// CMOS/RTC day-of-month alarm register (mc146818 offset).
+const RTC_DAY_ALRM: u8 = 0x05;
+/// CMOS/RTC month alarm register.
+const RTC_MON_ALRM: u8 = 0x07;
 fn build_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // ARM platform has its own build_fadt that handles arm_boot_arch.
     #[cfg(feature = "arm")]
@@ -410,6 +417,14 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     // Duty cycle.
     b.duty_offset = 1;
 
+    // RTC alarm register offsets (mc146818 on every PC-compatible platform).
+    // The century register is deliberately not advertised: this chipset does
+    // not take firmware writes to it (Linux read a bogus century and dated the
+    // system to the year 16126), and its year heuristic already resolves the
+    // two-digit year the RTC stores.
+    b.day_alrm = RTC_DAY_ALRM;
+    b.mon_alrm = RTC_MON_ALRM;
+
     // IAPC boot architecture flags.
     b.iapc_boot_arch = config.iapc_boot_arch.into();
 
@@ -417,10 +432,18 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     b = b
         .flag(Flags::Wbinvd)
         .flag(Flags::ProcC1)
+        .flag(Flags::PLvl2Up)
         .flag(Flags::SlpButton)
         .flag(Flags::RtcS4)
         .flag(Flags::TmrValExt)
         .flag(Flags::UsePlatformClock);
+
+    // Platform reset register, when the chipset implements one.
+    if let Some((port, value)) = config.reset_reg {
+        b.reset_reg = gas_io(port, 8);
+        b.reset_value = value;
+        b = b.flag(Flags::ResetRegSup);
+    }
 
     // Extended PM block addresses (GAS).
     b.x_pm1a_evt_blk = gas_io(config.pm1a_evt_blk, 32);

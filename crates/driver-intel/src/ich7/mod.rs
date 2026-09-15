@@ -2172,6 +2172,13 @@ mod acpi_impl {
     const HPET_BASE: u64 = 0xFED0_0000;
     const SCI_IRQ: u8 = 9;
     const PMBASE: u16 = 0x0500;
+    /// APM command port firmware and OSPM use to switch ACPI mode.
+    const APM_CNT: u32 = 0x00b2;
+    /// Command written to [`APM_CNT`] to enable ACPI mode (coreboot
+    /// `APM_CNT_ACPI_ENABLE`, handled by the ICH SMM handler).
+    const APM_CNT_ACPI_ENABLE: u8 = 0xe1;
+    /// Command written to [`APM_CNT`] to disable ACPI mode.
+    const APM_CNT_ACPI_DISABLE: u8 = 0x1e;
 
     static IOAPICS: [IoApicConfig; 1] = [IoApicConfig {
         id: 0,
@@ -2210,7 +2217,18 @@ mod acpi_impl {
                 legacy_devices: true,
                 sci_irq: SCI_IRQ,
                 pmbase: PMBASE,
-                acpi_smi: None,
+                // The SMM image handles the APM command port the way coreboot's
+                // smihandler does: 0xe1 sets SCI_EN, 0x1e clears it.
+                acpi_smi: Some(fstart_core::acpi::AcpiSmiConfig {
+                    smi_cmd: APM_CNT,
+                    acpi_enable: APM_CNT_ACPI_ENABLE,
+                    acpi_disable: APM_CNT_ACPI_DISABLE,
+                }),
+                // CF9 reset: RST_CPU | SYS_RST, implemented by system_reset().
+                reset: Some(fstart_acpi::platform::x86::ResetConfig {
+                    port: 0x0cf9,
+                    value: 0x06,
+                }),
             }
         }
     }
@@ -2333,8 +2351,10 @@ mod acpi_impl {
             });
 
             let mut pci0_aml = Vec::new();
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("LPCB") {
+            // The LPC bridge's own registers, then the ISA children and PIRQ
+            // links every ICH shares (see `southbridge::acpi`).
+            let mut lpcb: Vec<u8> = acpi_dsl! {
+
                     Name("_ADR", 0x001F0000u32);
                     Name("_HID", EisaId("PNP0A05"));
 
@@ -2355,27 +2375,6 @@ mod acpi_impl {
                         PRTF, 8,
                         PRTG, 8,
                         PRTH, 8,
-                    }
-
-                    // DMAC — 8237 DMA Controller (PNP0200)
-                    // Coreboot: lpc.asl Device(DMAC)
-                    Device("DMAC") {
-                        Name("_HID", EisaId("PNP0200"));
-                        Name("_CRS", ResourceTemplate {
-                            IO(0x0000u16, 0x0000u16, 0x01u8, 0x20u8);
-                            IO(0x0081u16, 0x0081u16, 0x01u8, 0x11u8);
-                            IO(0x0093u16, 0x0093u16, 0x01u8, 0x0Du8);
-                            IO(0x00C0u16, 0x00C0u16, 0x01u8, 0x20u8);
-                        });
-                    }
-
-                    // FWH_ — Firmware Hub (INT0800)
-                    // Coreboot: lpc.asl Device(FWH)
-                    Device("FWH_") {
-                        Name("_HID", EisaId("INT0800"));
-                        Name("_CRS", ResourceTemplate {
-                            Memory32Fixed(ReadOnly, 0xFF000000u32, 0x01000000u32);
-                        });
                     }
 
                     // HPET — High Precision Event Timer (PNP0103)
@@ -2414,137 +2413,9 @@ mod acpi_impl {
                         });
                     }
 
-                    // MATH — FPU / x87 co-processor (PNP0C04)
-                    // Coreboot: lpc.asl Device(MATH)
-                    Device("MATH") {
-                        Name("_HID", EisaId("PNP0C04"));
-                        Name("_CRS", ResourceTemplate {
-                            IO(0x00F0u16, 0x00F0u16, 0x01u8, 0x01u8);
-                            IRQ(Edge, ActiveHigh, Exclusive, 13u32);
-                        });
-                    }
-
-                    // LDRC — LPC device resource consumption (PNP0C02)
-                    // Covers SuperIO ports, NMI, POST, ACPI I/O, PMBASE, GPIOBASE.
-                    // Coreboot: lpc.asl Device(LDRC)
-                    Device("LDRC") {
-                        Name("_HID", EisaId("PNP0C02"));
-                        Name("_UID", 2u32);
-                        Name("_CRS", ResourceTemplate {
-                            IO(0x002Eu16, 0x002Eu16, 0x01u8, 0x02u8);
-                            IO(0x004Eu16, 0x004Eu16, 0x01u8, 0x02u8);
-                            IO(0x0061u16, 0x0061u16, 0x01u8, 0x01u8);
-                            IO(0x0063u16, 0x0063u16, 0x01u8, 0x01u8);
-                            IO(0x0065u16, 0x0065u16, 0x01u8, 0x01u8);
-                            IO(0x0067u16, 0x0067u16, 0x01u8, 0x01u8);
-                            IO(0x0080u16, 0x0080u16, 0x01u8, 0x01u8);
-                            IO(0x0092u16, 0x0092u16, 0x01u8, 0x01u8);
-                            IO(0x00B2u16, 0x00B2u16, 0x01u8, 0x02u8);
-                            IO(0x0800u16, 0x0800u16, 0x01u8, 0x10u8);
-                            IO(0x0500u16, 0x0500u16, 0x01u8, 0x80u8);
-                            IO(0x0480u16, 0x0480u16, 0x01u8, 0x40u8);
-                        });
-                    }
-
-                    // RTC_ — Real Time Clock (PNP0B00)
-                    // Coreboot: lpc.asl Device(RTC)
-                    Device("RTC_") {
-                        Name("_HID", EisaId("PNP0B00"));
-                        Name("_CRS", ResourceTemplate {
-                            IO(0x0070u16, 0x0070u16, 0x01u8, 0x08u8);
-                        });
-                    }
-
-                    // TIMR — 8254 Programmable Interval Timer (PNP0100)
-                    // Coreboot: lpc.asl Device(TIMR)
-                    Device("TIMR") {
-                        Name("_HID", EisaId("PNP0100"));
-                        Name("_CRS", ResourceTemplate {
-                            IO(0x0040u16, 0x0040u16, 0x01u8, 0x04u8);
-                            IO(0x0050u16, 0x0050u16, 0x10u8, 0x04u8);
-                            IRQ(Edge, ActiveHigh, Exclusive, 0u32);
-                        });
-                    }
-
-                    // -------------------------------------------------------
-                    // PIRQ link devices LNKA-LNKH (PNP0C0F)
-                    //
-                    // These represent the ICH7’s 8 PCI interrupt routing
-                    // links.  Full _CRS/_SRS methods (which read/write
-                    // the PRTA-PRTH fields above) require CreateWordField
-                    // and FindSetRightBit, which are not yet supported
-                    // by the acpi_dsl macro.  The stubs below give each
-                    // link a _UID and _STA (active).  Linux uses the
-                    // APIC-mode _PRT entries on PCIe root ports (with
-                    // direct GSI numbers) when IOAPIC is available, so
-                    // these stubs are sufficient for APIC-mode boot.
-                    //
-                    // Coreboot: irqlinks.asl
-                    // -------------------------------------------------------
-                    Device("LNKA") {
-                        Name("_HID", EisaId("PNP0C0F"));
-                        Name("_UID", 1u32);
-                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
-                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                    }
-                    Device("LNKB") {
-                        Name("_HID", EisaId("PNP0C0F"));
-                        Name("_UID", 2u32);
-                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
-                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                    }
-                    Device("LNKC") {
-                        Name("_HID", EisaId("PNP0C0F"));
-                        Name("_UID", 3u32);
-                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
-                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                    }
-                    Device("LNKD") {
-                        Name("_HID", EisaId("PNP0C0F"));
-                        Name("_UID", 4u32);
-                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
-                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                    }
-                    Device("LNKE") {
-                        Name("_HID", EisaId("PNP0C0F"));
-                        Name("_UID", 5u32);
-                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
-                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                    }
-                    Device("LNKF") {
-                        Name("_HID", EisaId("PNP0C0F"));
-                        Name("_UID", 6u32);
-                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
-                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                    }
-                    Device("LNKG") {
-                        Name("_HID", EisaId("PNP0C0F"));
-                        Name("_UID", 7u32);
-                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
-                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                    }
-                    Device("LNKH") {
-                        Name("_HID", EisaId("PNP0C0F"));
-                        Name("_UID", 8u32);
-                        Name("_PRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 3u32, 4u32, 5u32, 6u32, 7u32, 10u32, 11u32, 12u32, 14u32, 15u32); });
-                        Name("_CRS", ResourceTemplate { Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 11u32); });
-                        Method("_STA", 0, NotSerialized) { Return(0x0Bu32); }
-                    }
-
-                    // PS/2 keyboard/mouse nodes are emitted by the concrete
-                    // SuperIO driver when the board enables those LDNs. D41S
-                    // has real IT8721F PS/2 keyboard and mouse functions, so
-                    // they are advertised by the IT8721F/SuperIO ACPI, not by
-                    // the reusable ICH7 LPC bridge.
-                }
-            });
+            // PS/2 keyboard and mouse nodes come from the concrete SuperIO
+            // driver when the board enables those LDNs, not from the reusable
+            // LPC bridge.
 
             // ---------------------------------------------------------------
             // 2. Per-function PCI device nodes — siblings to LPCB at PCI0

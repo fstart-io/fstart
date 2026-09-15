@@ -2302,6 +2302,13 @@ mod acpi_impl {
     const HPET_BASE: u64 = 0xFED0_0000;
     const SCI_IRQ: u8 = 9;
     const PMBASE: u16 = 0x0500;
+    /// APM command port firmware and OSPM use to switch ACPI mode.
+    const APM_CNT: u32 = 0x00b2;
+    /// Command written to [`APM_CNT`] to enable ACPI mode (coreboot
+    /// `APM_CNT_ACPI_ENABLE`, handled by the ICH SMM handler).
+    const APM_CNT_ACPI_ENABLE: u8 = 0xe1;
+    /// Command written to [`APM_CNT`] to disable ACPI mode.
+    const APM_CNT_ACPI_DISABLE: u8 = 0x1e;
 
     static IOAPICS: [IoApicConfig; 1] = [IoApicConfig {
         id: 0,
@@ -2340,7 +2347,18 @@ mod acpi_impl {
                 legacy_devices: true,
                 sci_irq: SCI_IRQ,
                 pmbase: PMBASE,
-                acpi_smi: None,
+                // The SMM image handles the APM command port the way coreboot's
+                // smihandler does: 0xe1 sets SCI_EN, 0x1e clears it.
+                acpi_smi: Some(fstart_core::acpi::AcpiSmiConfig {
+                    smi_cmd: APM_CNT,
+                    acpi_enable: APM_CNT_ACPI_ENABLE,
+                    acpi_disable: APM_CNT_ACPI_DISABLE,
+                }),
+                // CF9 reset: RST_CPU | SYS_RST, implemented by system_reset().
+                reset: Some(fstart_acpi::platform::x86::ResetConfig {
+                    port: 0x0cf9,
+                    value: 0x06,
+                }),
             }
         }
     }
