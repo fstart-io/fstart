@@ -238,7 +238,8 @@ pub unsafe fn build_relocation_identity_tables(default_smbase: u64) -> u64 {
         }
         pml4.write((pdpt as u64) | PTE_PRESENT | PTE_WRITABLE);
         for i in 0..4 {
-            pdpt.add(i).write(((pds as u64) + (i as u64) * 4096) | PTE_PRESENT | PTE_WRITABLE);
+            pdpt.add(i)
+                .write(((pds as u64) + (i as u64) * 4096) | PTE_PRESENT | PTE_WRITABLE);
         }
         for pd in 0..4 {
             for entry in 0..ENTRIES {

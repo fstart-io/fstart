@@ -363,7 +363,10 @@ pub fn init(
     // before it probes DDC for the attached display. Do the same: on this
     // platform the DDC transfer does not complete while that power is still
     // off, and the probe would time out and fall back to a fixed mode.
-    if matches!(caps_for(config.cpu).generation, Generation::I945 | Generation::G45) {
+    if matches!(
+        caps_for(config.cpu).generation,
+        Generation::I945 | Generation::G45
+    ) {
         let mmio = mmio_from_validated_resources(resources);
         generation::g45::setup_gmch_panel_power_sequencer(&mmio);
     }

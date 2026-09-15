@@ -596,8 +596,10 @@ impl HardwareGmbus {
         }
         self.mmio.write32(self.reg(0x10), 0);
         self.mmio.write32(self.reg(0x20), 0);
-        self.mmio
-            .write32(self.reg(0x00), Gmbus0Config::conservative(self.pin).encode());
+        self.mmio.write32(
+            self.reg(0x00),
+            Gmbus0Config::conservative(self.pin).encode(),
+        );
         self.check_and_reset()
     }
 
@@ -650,8 +652,7 @@ impl HardwareGmbus {
     fn write_byte(&self, address: u8, value: u8) -> Result<(), GmaError> {
         // Plain 1-byte message: an INDEX cycle would transmit the index byte
         // before the payload, which a segment register latches instead.
-        let command =
-            GmbusCommand::new(GmbusCycle::Wait, 1, address, 0, GmbusDirection::Write)?;
+        let command = GmbusCommand::new(GmbusCycle::Wait, 1, address, 0, GmbusDirection::Write)?;
         self.mmio.write32(self.reg(0x04), command.encode());
         self.wait_data_ready().inspect_err(|_| {
             let _ = self.stop();
@@ -715,7 +716,6 @@ impl DdcBus for HardwareGmbus {
         self.release();
         Ok(())
     }
-
 }
 
 /// E-DDC addressing for one EDID block: the byte written to the segment
@@ -726,10 +726,7 @@ impl DdcBus for HardwareGmbus {
 /// means offsets 0 and 128. Addressing the segment with the block index instead
 /// (and the offset with `block * 128` unshifted) reads block 3 for block 1.
 pub const fn edid_block_address(block_index: u8) -> (u8, u8) {
-    (
-        block_index >> 1,
-        (block_index & 1) * EDID_BLOCK_LEN as u8,
-    )
+    (block_index >> 1, (block_index & 1) * EDID_BLOCK_LEN as u8)
 }
 
 /// Read, sanitize, and validate the EDID preferred mode source over DDC.
