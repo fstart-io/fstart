@@ -118,6 +118,10 @@ pub struct IntelPlan {
     /// Their names are also the runtime lookup names.
     #[serde(default)]
     pub data_assets: Vec<String>,
+    /// Assembler inputs for the selected payload, built by the platform
+    /// policy: one place decides what the payload is and where it loads.
+    #[serde(default)]
+    pub payload_config: Option<PayloadConfig>,
     pub security: SecurityConfig,
     pub smm: SmmConfig,
 }

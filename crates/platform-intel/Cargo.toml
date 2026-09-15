@@ -14,6 +14,9 @@ bundle-ramstage = ["stage", "acpi", "mp", "smbios", "fstart-driver-intel/display
 bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin"]
 payload-uefi = ["fstart-stage/crabefi"]
 payload-uefi-basic = ["fstart-stage/crabefi-basic"]
+# Direct Linux payload: the ramstage loads a bzImage from FFS and enters it
+# through the x86 boot protocol instead of handing off to a UEFI firmware.
+payload-linux = ["fstart-stage/linux"]
 stage = [
   "dep:fstart-driver-superio",
   "dep:fstart-driver-uart",

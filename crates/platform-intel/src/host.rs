@@ -1,11 +1,13 @@
 //! Intel family policy, evaluated on the host from the selected board's Rust facts.
 extern crate std;
-use crate::facts::{BoardFacts, Chipset, IntelBoardFacts};
+use crate::facts::{BoardFacts, Chipset, IntelBoardFacts, X86LinuxBoot};
+use fstart_core::{Compression, FdtSource, PayloadConfig, PayloadKind};
 use fstart_image_build::{
     intel_plan::{IntelReservations, IntelStage, StageReservation},
     plan::{BuildSelection, IntelPlan, IntelStagePlan, Span},
 };
-use std::{format, string::ToString, vec, vec::Vec};
+use heapless::String as HString;
+use std::{format, string::String, string::ToString, vec, vec::Vec};
 
 fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
@@ -35,7 +37,7 @@ pub fn compilation_plan(
     plan: IntelPlan,
 ) -> Result<fstart_image_build::build_plan::BuildPlan, std::string::String> {
     use fstart_image_build::build_plan::{
-        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, UnitOutput,
+        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, InputFile, UnitOutput,
     };
     use std::collections::BTreeMap;
     plan.validate()?;
@@ -108,12 +110,26 @@ pub fn compilation_plan(
             },
         });
     }
+    // A kernel payload is the one assembler input a caller may supply instead
+    // of a board file. The capacity is the whole flash window: the assembler
+    // enforces what actually fits, this only rejects absurd files early.
+    let inputs = plan
+        .payload_config
+        .as_ref()
+        .and_then(|payload| payload.kernel_file.as_ref())
+        .map(|kernel| InputFile {
+            name: "kernel".into(),
+            default: Some(kernel.to_string()),
+            capacity: plan.reservations.firmware.size,
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
     let resolved = BuildPlan {
         payload: plan.payload.clone(),
         units,
         stages: plan.stages.iter().map(|r| r.role.name().into()).collect(),
         assembly: plan.assembly()?,
-        inputs: vec![],
+        inputs,
     };
     resolved.order()?;
     Ok(resolved)
@@ -170,8 +186,8 @@ pub fn resolve(
     selection: BuildSelection,
 ) -> Result<IntelPlan, std::string::String> {
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
-    if !matches!(payload.as_str(), "halt" | "uefi") {
-        return Err("Intel supports halt and UEFI, not direct Linux/DTB loading".into());
+    if !matches!(payload.as_str(), "halt" | "uefi" | "linux") {
+        return Err("Intel supports halt, UEFI and direct Linux payloads".into());
     }
     let stages = [
         (IntelStage::Bootblock, "bundle-bootblock"),
@@ -194,6 +210,9 @@ pub fn resolve(
                 .into(),
             );
         }
+        if selected_payload == "linux" {
+            features.push("payload-linux".into());
+        }
         IntelStagePlan {
             role,
             features,
@@ -207,6 +226,15 @@ pub fn resolve(
         ],
         Chipset::I945Ich7 => &["06-1c-02", "06-1c-0a"],
         Chipset::PineviewIch7 => &["06-1c-02", "06-1c-0a"],
+    };
+    let payload_config = match payload.as_str() {
+        "uefi" => Some(fstart_core::x86_uefi_payload()),
+        "linux" => {
+            Some(x86_linux_payload(facts.linux.as_ref().ok_or(
+                "the board declares no direct Linux payload policy",
+            )?)?)
+        }
+        _ => None,
     };
     let plan = IntelPlan {
         reservations,
@@ -225,6 +253,7 @@ pub fn resolve(
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
+        payload_config,
         security: fstart_core::dev_security_config("keys/dev-signing.pub"),
         smm: fstart_core::SmmConfig {
             entry_points: Some(facts.max_cpus),
@@ -234,6 +263,35 @@ pub fn resolve(
     };
     plan.validate()?;
     Ok(plan)
+}
+
+/// Project the board's direct Linux policy into assembler payload inputs.
+///
+/// A bzImage carries its own compression, so the FFS segment is stored
+/// verbatim: compressing it again costs boot time and saves nothing.
+fn x86_linux_payload(boot: &X86LinuxBoot) -> Result<PayloadConfig, String> {
+    let too_long = |what: &str, capacity: usize, got: usize| {
+        format!("{what} is {got} bytes; payload metadata allows {capacity}")
+    };
+    let kernel_file = HString::<64>::try_from(boot.kernel_file)
+        .map_err(|_| too_long("kernel file name", 64, boot.kernel_file.len()))?;
+    let bootargs = HString::<256>::try_from(boot.bootargs)
+        .map_err(|_| too_long("kernel command line", 256, boot.bootargs.len()))?;
+    Ok(PayloadConfig {
+        kind: PayloadKind::LinuxBoot,
+        kernel_file: Some(kernel_file),
+        kernel_load_addr: Some(boot.kernel_load_addr),
+        fdt: FdtSource::Platform,
+        dtb_addr: None,
+        src_dtb_addr: None,
+        bootargs: Some(bootargs),
+        print_x86_mtrrs: boot.print_x86_mtrrs,
+        compression: Compression::None,
+        firmware: None,
+        fit_file: None,
+        fit_config: None,
+        fit_parse: None,
+    })
 }
 
 #[cfg(test)]

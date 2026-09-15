@@ -86,7 +86,7 @@ impl IntelPlan {
             ],
             stages: StageLayout::MultiStage(stages),
             security: self.security.clone(),
-            payload: (self.payload == "uefi").then(x86_uefi_payload),
+            payload: self.payload_config.clone(),
             microcode: Some(MicrocodeConfig::Intel(IntelMicrocodeConfig {
                 files: microcode,
                 early: true,
