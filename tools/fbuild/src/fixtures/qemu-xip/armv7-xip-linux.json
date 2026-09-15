@@ -19,6 +19,7 @@
       "pci_root_feature": null,
       "qemu_machine": null
     },
+    "data_assets": [],
     "full_flash_image": true,
     "memory": {
       "car": null,

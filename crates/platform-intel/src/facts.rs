@@ -19,6 +19,12 @@ pub struct BoardFacts {
     pub chipset: Chipset,
     /// Requested payload capabilities, independent of hardware and persistence.
     pub uefi_build_profile: UefiBuildProfile,
+    /// Board-directory files packaged into the FFS as verified data assets.
+    ///
+    /// A name is both the board-directory file and the name firmware looks the
+    /// asset up by at runtime, so `VbtSource::ffs(NAME)` and this list cannot
+    /// disagree.
+    pub data_assets: &'static [&'static str],
 }
 impl BoardFacts {
     pub const fn new(flash: FlashLayout, flash_size: u32, max_cpus: u16, chipset: Chipset) -> Self {
@@ -42,8 +48,17 @@ impl BoardFacts {
             max_cpus,
             chipset,
             uefi_build_profile: UefiBuildProfile::Full,
+            data_assets: &[],
         }
     }
+
+    /// Declare board-shipped FFS data assets (see [`Self::data_assets`]).
+    #[must_use]
+    pub const fn with_data_assets(mut self, assets: &'static [&'static str]) -> Self {
+        self.data_assets = assets;
+        self
+    }
+
 
     pub const fn with_uefi_build_profile(mut self, profile: UefiBuildProfile) -> Self {
         self.uefi_build_profile = profile;

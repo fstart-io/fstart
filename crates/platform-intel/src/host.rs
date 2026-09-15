@@ -220,6 +220,11 @@ pub fn resolve(
             .iter()
             .map(|name| format!("intel-microcode/intel-ucode/{name}"))
             .collect::<Vec<_>>(),
+        data_assets: facts
+            .data_assets
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         security: fstart_core::dev_security_config("keys/dev-signing.pub"),
         smm: fstart_core::SmmConfig {
             entry_points: Some(facts.max_cpus),

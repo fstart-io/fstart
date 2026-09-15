@@ -85,10 +85,15 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             0x400000,
             X61_PLATFORM.max_cpus,
             fstart_platform_intel::facts::Chipset::Gm965Ich8,
-        );
+        )
+        .with_data_assets(&[X61_VBT]);
 }
 
 pub const BOARD_NAME: &str = "lenovo-x61";
+
+/// Board VBT: packaged as a verified FFS data asset under this name and read
+/// back by the same name when the OpRegion is published.
+const X61_VBT: &str = "data.vbt";
 pub const BOARD_PACKAGE: &str = "fstart-board-lenovo-x61";
 pub const PLATFORM: Platform = Platform::X86_64;
 pub const UART0_NODE: &str = "dock_superio/com1";
@@ -162,7 +167,7 @@ pub const fn x61_igd_config() -> Gm965IgdConfig {
         enable_pipe_b: true,
         gmadr_size: 256 * 1024 * 1024,
         stolen_memory_mb: 32,
-        vbt: VbtSource::ffs("data.vbt"),
+        vbt: VbtSource::ffs(X61_VBT),
         panel_power_up_delay: 2000,
         panel_power_down_delay: 2000,
         panel_backlight_on_delay: 2000,

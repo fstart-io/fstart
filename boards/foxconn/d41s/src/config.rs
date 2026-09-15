@@ -16,6 +16,11 @@ use fstart_platform_intel::pineview::{
 
 /// D41S is a desktop board: the shared GMA layer lights the analog CRT port,
 /// and the OS takes over the DVI/HDMI side from the VBT in the OpRegion.
+///
+/// The VBT is packaged as a verified FFS data asset under this name and read
+/// back by the same name when the OpRegion is published.
+const D41S_VBT: &str = "data.vbt";
+
 const D41S_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
     outputs: &[OutputConfig {
         port: Port::Vga,
@@ -95,7 +100,8 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             FLASH_SIZE,
             D41S_PLATFORM.max_cpus,
             fstart_platform_intel::facts::Chipset::PineviewIch7,
-        );
+        )
+        .with_data_assets(&[D41S_VBT]);
 }
 
 #[must_use]
@@ -134,7 +140,7 @@ pub const fn d41s_igd_config() -> PineviewIgdConfig {
         use_crt: true,
         use_lvds: false,
         spread_spectrum: false,
-        vbt: VbtSource::ffs("data.vbt"),
+        vbt: VbtSource::ffs(D41S_VBT),
         gmadr_size: 256 * 1024 * 1024,
         display: Some(D41S_DISPLAY),
     }
