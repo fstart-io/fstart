@@ -27,6 +27,10 @@ pub struct Assembly {
     pub security: fstart_core::SecurityConfig,
     pub payload: Option<fstart_core::PayloadConfig>,
     pub microcode: Option<fstart_core::board::MicrocodeConfig>,
+    /// Board-directory files packaged as verified `FileType::Data` assets.
+    /// Their names are also the runtime lookup names.
+    #[serde(default)]
+    pub data_assets: Vec<String>,
     pub full_flash_image: bool,
     pub soc_image_format: fstart_core::SocImageFormat,
     pub boot_hart_id: u32,
@@ -85,6 +89,16 @@ impl Assembly {
                 .push(region.clone())
                 .map_err(|_| "too many assembly memory regions")?;
         }
+        let mut data_assets = heapless::Vec::new();
+        for name in &self.data_assets {
+            data_assets
+                .push(
+                    name.as_str()
+                        .try_into()
+                        .map_err(|_| "data asset name too long")?,
+                )
+                .map_err(|_| "too many data assets")?;
+        }
         Ok(BoardConfig {
             name: name.try_into().map_err(|_| "board name too long")?,
             platform: self.platform,
@@ -101,6 +115,7 @@ impl Assembly {
             security: self.security.clone(),
             payload: self.payload.clone(),
             microcode: self.microcode.clone(),
+            data_assets,
             soc_image_format: self.soc_image_format,
             full_flash_image: self.full_flash_image,
             // Tables, live CAR and SMM runtime settings are not assembler inputs.
@@ -504,6 +519,7 @@ mod tests {
                 security: dev_security_config("unused"),
                 payload: None,
                 microcode: None,
+                data_assets: vec![],
                 full_flash_image: false,
                 soc_image_format: SocImageFormat::None,
                 boot_hart_id: 0,
@@ -592,6 +608,7 @@ mod tests {
             security: dev_security_config("unused"),
             payload: None,
             microcode: None,
+            data_assets: vec![],
             full_flash_image: false,
             soc_image_format: SocImageFormat::None,
             boot_hart_id: 0,

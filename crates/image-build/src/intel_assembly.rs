@@ -92,6 +92,7 @@ impl IntelPlan {
                 early: true,
                 mp: true,
             })),
+            data_assets: self.data_assets.clone(),
             full_flash_image: true,
             soc_image_format: SocImageFormat::None,
             boot_hart_id: 0,

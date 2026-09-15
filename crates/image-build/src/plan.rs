@@ -1,7 +1,8 @@
 //! Host plan transport, shared by platform calculation and build orchestration.
 use fstart_core::layout::{Region, RegionKind};
 use fstart_core::{
-    ConstVec, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, SecurityConfig, SmmConfig,
+    ConstVec, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, PayloadConfig,
+    SecurityConfig, SmmConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -113,6 +114,10 @@ pub struct IntelPlan {
     pub flash: FlashTransport,
     pub max_cpus: u16,
     pub microcode: Vec<String>,
+    /// Board-directory files packaged as verified `FileType::Data` assets.
+    /// Their names are also the runtime lookup names.
+    #[serde(default)]
+    pub data_assets: Vec<String>,
     pub security: SecurityConfig,
     pub smm: SmmConfig,
 }

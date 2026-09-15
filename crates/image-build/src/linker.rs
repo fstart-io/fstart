@@ -1087,6 +1087,7 @@ mod tests {
             },
             payload: None,
             microcode: None,
+            data_assets: heapless::Vec::new(),
             soc_image_format: fstart_core::SocImageFormat::AllwinnerEgon,
             full_flash_image: false,
             build: BoardBuildPolicy::default(),
@@ -1225,6 +1226,7 @@ mod tests {
             },
             payload: None,
             microcode: None,
+            data_assets: heapless::Vec::new(),
             soc_image_format: Default::default(),
             full_flash_image: false,
             build: BoardBuildPolicy {

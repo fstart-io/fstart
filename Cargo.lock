@@ -690,6 +690,7 @@ dependencies = [
  "fstart-crypto",
  "fstart-ffs",
  "fstart-smm",
+ "heapless 0.8.0",
  "object 0.37.3",
  "rand_core",
  "serde",

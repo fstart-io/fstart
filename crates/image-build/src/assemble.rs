@@ -136,6 +136,31 @@ pub fn assemble(
         assemble_microcode(microcode, board_dir, &mut ro_files)?;
     }
 
+    // Board-shipped data assets. The name is the FFS file name the firmware
+    // looks up at runtime, so it is also the board-directory file to read.
+    for name in &config.data_assets {
+        let path = board_dir.join(name.as_str());
+        let data = fs::read(&path).map_err(|e| format!("failed to read data asset {name}: {e}"))?;
+        eprintln!(
+            "[fstart] data asset: {name} ({} bytes, from {})",
+            data.len(),
+            path.display(),
+        );
+        ro_files.push(InputFile {
+            name: name.as_str().to_string(),
+            file_type: FileType::Data,
+            segments: vec![InputSegment {
+                name: ".data".to_string(),
+                kind: SegmentKind::ReadOnlyData,
+                data,
+                mem_size: None,
+                load_addr: 0,
+                compression: Compression::None,
+                flags: SegmentFlags::RODATA,
+            }],
+        });
+    }
+
     if let Some(ref payload) = config.payload {
         if payload.kind == fstart_core::PayloadKind::FitImage {
             assemble_fit_payload(payload, board_dir, fit_path.or(kernel_path), &mut ro_files)?;

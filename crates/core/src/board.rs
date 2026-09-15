@@ -89,6 +89,16 @@ pub struct BoardConfig {
     /// matching patch on BSP/APs during CPU bring-up.
     #[serde(default)]
     pub microcode: Option<MicrocodeConfig>,
+
+    /// Board-shipped files packaged verbatim into the FFS as verified
+    /// `FileType::Data` assets.
+    ///
+    /// Each name is both the board-directory file to read and the name the
+    /// firmware looks the asset up by at runtime
+    /// (`services::ffs_context::read_verified_asset`), so a board's runtime
+    /// request and its packaging cannot disagree.
+    #[serde(default)]
+    pub data_assets: heapless::Vec<HString<64>, 8>,
     /// SoC-specific binary image format required by the boot ROM.
     ///
     /// Each SoC family has its own boot ROM that expects a particular
