@@ -127,6 +127,7 @@ pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
     ])
     .gpe0_en(0x0104_0046)
     .gpi_routing([0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0])
+    .rtc_default_date(crate::mainboard::BIOS_RELEASE_DATE)
     .ide(IdeConfig {
         enable_primary: true,
         enable_secondary: false,

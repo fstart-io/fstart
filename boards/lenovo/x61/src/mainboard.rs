@@ -380,7 +380,7 @@ pub mod dock {
     }
 }
 
-const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
+pub(crate) const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
     Some(date) => date,
     None => "05/08/2026",
 };

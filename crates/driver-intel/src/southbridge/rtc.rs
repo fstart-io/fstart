@@ -213,6 +213,45 @@ pub fn init(battery_dead: bool, default_date: Option<Date>) -> InitReport {
     }
 }
 
+/// Report and repair the CMOS clock the way coreboot's `__cmos_init` does.
+///
+/// `label` names the chipset that owns the clock in the log lines, and
+/// `power_lost` is that chipset's sticky battery-dead state, which the caller
+/// reads and clears from its own power-management registers.
+pub fn init_clock(label: &str, power_lost: bool, default_date: &str) {
+    let date = match Date::parse_mm_dd_yyyy(default_date) {
+        Some(date) => Some(date),
+        None => {
+            fstart_log::error!("{}: RTC default date is not MM/DD/YYYY", label);
+            None
+        }
+    };
+    let report = init(power_lost, date);
+    fstart_log::info!(
+        "{}: RTC power_lost={} time_invalid={} date_reset={} (A={:#04x} B={:#04x} D={:#04x})",
+        label,
+        report.power_lost,
+        report.time_invalid,
+        report.date_reset,
+        read(reg::FREQ_SELECT),
+        read(reg::CONTROL),
+        read(reg::VALID)
+    );
+    if report.date_reset {
+        fstart_log::info!(
+            "{}: RTC date set to {} (sec={:#04x} min={:#04x} hour={:#04x} day={:#04x} mon={:#04x} year={:#04x})",
+            label,
+            default_date,
+            read(reg::SECONDS),
+            read(reg::MINUTES),
+            read(reg::HOURS),
+            read(reg::DAY_OF_MONTH),
+            read(reg::MONTH),
+            read(reg::YEAR)
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -41,6 +41,9 @@ pub struct Gm965Ich8Config {
     pub gpio: gpio::GpioConfig,
     /// Maximum logical CPU count (BSP + APs) the board populates.
     pub max_cpus: u16,
+    /// Date (`MM/DD/YYYY`) written back to the RTC when it lost power: the same
+    /// build date the board publishes in SMBIOS.
+    pub rtc_default_date: &'static str,
 }
 
 impl Gm965Ich8Config {
@@ -60,6 +63,7 @@ impl Gm965Ich8Config {
             io_traps: ConstVec::new(empty_io_trap()),
             gpio: gpio::GpioConfig::new(),
             max_cpus: 1,
+            rtc_default_date: ich8::IntelIch8Config::new().rtc_default_date,
         }
     }
 
@@ -99,7 +103,16 @@ impl Gm965Ich8Config {
         config.io_traps = self.io_traps;
         config.smbus_base = ICH8_SMBUS_BASE;
         config.gpio = self.gpio;
+        config.rtc_default_date = self.rtc_default_date;
         config
+    }
+
+    /// Date the RTC is reset to after a power loss; pass the board's SMBIOS
+    /// build date so both come from one constant.
+    #[must_use]
+    pub const fn rtc_default_date(mut self, date: &'static str) -> Self {
+        self.rtc_default_date = date;
+        self
     }
 
     #[must_use]

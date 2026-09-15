@@ -38,6 +38,12 @@ acpi = [
 mp = ["stage", "dep:fstart-arch", "dep:fstart-ffs", "fstart-stage/ffs"]
 smbios = ["stage", "dep:fstart-acpi", "dep:fstart-arch"]
 
+[dev-dependencies]
+# The DSDT render test disassembles both Intel southbridges' namespaces, so it
+# needs the driver's ACPI builders and the DSDT table writer on the host.
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-driver-intel = { workspace = true, features = ["acpi"] }
+
 [dependencies]
 fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
