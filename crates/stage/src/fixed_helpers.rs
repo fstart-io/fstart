@@ -7,6 +7,7 @@ mod entry_tests;
 use fstart_core::ffs::{ANCHOR_SIZE, FileType};
 use fstart_core::services::boot::BootLinuxParams;
 use fstart_core::services::boot_media::{BlockDeviceMedia, LinearMap, MemoryMapped};
+use fstart_core::services::memory_detect::E820Entry;
 use fstart_core::services::{BlockDevice, ServiceError};
 
 #[cfg_attr(not(feature = "ffs"), allow(dead_code))]
@@ -534,6 +535,12 @@ impl MemoryMappedLinuxBoot {
         }
     }
 
+    /// Return the address the kernel payload was loaded and verified at.
+    #[must_use]
+    pub const fn kernel_addr(&self) -> u64 {
+        self.kernel_addr
+    }
+
     /// Return whether the kernel payload has been loaded.
     #[must_use]
     pub const fn kernel_loaded(&self) -> bool {
@@ -589,26 +596,30 @@ impl MemoryMappedLinuxBoot {
     }
 
     /// Build x86 Linux bzImage boot params, including the zero-page address.
-    #[must_use]
+    ///
+    /// The returned kernel entry is the one actually loaded and verified from
+    /// the FFS: a mismatch against trusted platform configuration is an error,
+    /// never a jump to a recomputed address.
     pub fn x86_boot_params<'a>(
         &self,
         kernel_addr: u64,
         zero_page_addr: u64,
+        rsdp_addr: u64,
+        e820_entries: &'a [E820Entry],
         bootargs: &'a str,
-    ) -> BootLinuxParams<'a> {
-        let kernel_addr = checked_entry(self.kernel_addr, kernel_addr)
-            .expect("x86 payload entry was not loaded and verified at its configured address");
-        BootLinuxParams {
-            kernel_addr,
+        print_x86_mtrrs: bool,
+    ) -> Result<BootLinuxParams<'a>, ServiceError> {
+        Ok(BootLinuxParams {
+            kernel_addr: checked_entry(self.kernel_addr, kernel_addr)?,
             dtb_addr: 0,
             fw_addr: 0,
-            rsdp_addr: 0,
+            rsdp_addr,
             bootargs,
-            e820_entries: &[],
+            e820_entries,
             zero_page_addr,
             hart_id: 0,
-            print_x86_mtrrs: false,
-        }
+            print_x86_mtrrs,
+        })
     }
 }
 

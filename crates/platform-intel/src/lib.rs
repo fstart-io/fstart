@@ -172,7 +172,7 @@ pub trait IntelChipsetConfig {
 
 /// Board contract for the Intel flow.
 #[cfg(feature = "stage")]
-pub trait IntelBoard: Sized + 'static {
+pub trait IntelBoard: Sized + 'static + crate::facts::IntelBoardFacts {
     type Platform: IntelEarlyPlatform;
     type Hooks: IntelEarlyBoardHooks<Self::Platform>;
     type Console: ConsoleDevice;

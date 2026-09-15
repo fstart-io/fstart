@@ -21,6 +21,23 @@ use fstart_platform_intel::pineview::{
 /// back by the same name when the OpRegion is published.
 const D41S_VBT: &str = "data.vbt";
 
+/// The direct Linux payload: board file name, load address and the handoff
+/// addresses the ramstage builds the zero page from.
+///
+/// The kernel is loaded at 256 MiB: above the ramstage (64 MiB) and the
+/// reserved scratch window (32-48 MiB), and clear of the decompression window
+/// the kernel opens at `pref_address` (16 MiB plus its own `init_size`).
+/// The zero page and its command line sit at the classic 0x90000, below the
+/// EBDA at 0x9f000 where the firmware copies the ACPI RSDP.
+const D41S_LINUX: fstart_platform_intel::facts::X86LinuxBoot =
+    fstart_platform_intel::facts::X86LinuxBoot {
+        kernel_file: "vmlinuz",
+        kernel_load_addr: 0x1000_0000,
+        zero_page_addr: 0x0009_0000,
+        bootargs: "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8",
+        print_x86_mtrrs: true,
+    };
+
 const D41S_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
     outputs: &[OutputConfig {
         port: Port::Vga,
@@ -101,7 +118,8 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             D41S_PLATFORM.max_cpus,
             fstart_platform_intel::facts::Chipset::PineviewIch7,
         )
-        .with_data_assets(&[D41S_VBT]);
+        .with_data_assets(&[D41S_VBT])
+        .with_linux_boot(D41S_LINUX);
 }
 
 #[must_use]

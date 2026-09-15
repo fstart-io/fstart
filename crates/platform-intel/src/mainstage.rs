@@ -122,6 +122,9 @@ where
     geometry: layout::IntelBootLayout<'static>,
     console_node: &'static str,
     max_cpus: u16,
+    /// Board-declared direct Linux payload, when the plan selected one.
+    #[cfg_attr(not(feature = "payload-linux"), allow(dead_code))]
+    linux: Option<crate::facts::X86LinuxBoot>,
     #[cfg(feature = "smbios")]
     smbios_desc: &'static crate::tables::SmbiosDesc<'static>,
 }
@@ -150,6 +153,9 @@ where
             geometry,
             console_node: B::console_node(),
             max_cpus: B::CONFIG.max_cpus(),
+            // The very constant the host plan packaged the payload with: the
+            // launcher cannot jump anywhere the image was not built for.
+            linux: B::FACTS.linux,
             #[cfg(feature = "smbios")]
             smbios_desc: B::smbios_desc(),
         })
@@ -305,6 +311,34 @@ where
 {
     fn emit_acpi(&mut self) -> Result<(), ServiceError> {
         Ok(())
+    }
+}
+
+/// Direct x86 Linux payload: the ramstage hands the kernel the memory map and
+/// ACPI tables it produced, through the board's own payload policy.
+#[cfg(feature = "payload-linux")]
+impl<P, Hooks, C> fstart_stage::payload::X86LinuxPayloadContext for IntelMainstage<P, Hooks, C>
+where
+    P: IntelEarlyPlatform,
+    Hooks: IntelEarlyBoardHooks<P>,
+    C: ConsoleDevice,
+{
+    fn x86_linux_payload_config(&self) -> Option<fstart_stage::payload::X86LinuxPayloadConfig> {
+        self.linux
+            .map(|linux| fstart_stage::payload::X86LinuxPayloadConfig {
+                kernel_load_addr: linux.kernel_load_addr,
+                zero_page_addr: linux.zero_page_addr,
+                bootargs: linux.bootargs,
+                print_x86_mtrrs: linux.print_x86_mtrrs,
+            })
+    }
+
+    fn e820(&self) -> &[E820Entry] {
+        self.e820()
+    }
+
+    fn acpi_rsdp(&self) -> Option<u64> {
+        self.acpi_rsdp()
     }
 }
 
