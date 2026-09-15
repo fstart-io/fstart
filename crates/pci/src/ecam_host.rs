@@ -588,7 +588,7 @@ impl PciEcam {
     }
 
     fn next_bar_to_allocate(&self, pass: usize) -> Option<(usize, usize)> {
-        let mut best: Option<(usize, usize, u64)> = None;
+        let mut best: Option<(usize, usize, (u8, u64))> = None;
         for dev_idx in 0..self.devices.len() {
             if !self.endpoint_in_pass(dev_idx, pass) {
                 continue;
@@ -598,7 +598,7 @@ impl PciEcam {
                 if bar.bar_type == BarType::None || bar.allocated {
                     continue;
                 }
-                let rank = self.bar_allocation_alignment(dev_idx, bar_idx);
+                let rank = self.bar_allocation_rank(dev_idx, bar_idx);
                 if best.is_none_or(|(_, _, best_rank)| rank > best_rank) {
                     best = Some((dev_idx, bar_idx, rank));
                 }
@@ -607,16 +607,37 @@ impl PciEcam {
         best.map(|(dev_idx, bar_idx, _)| (dev_idx, bar_idx))
     }
 
+    /// Allocation rank, highest first.
+    ///
+    /// The below-4-GiB window is the constrained resource: firmware drivers
+    /// reach a BAR through a mapping that does not cover above 4 GiB, and a
+    /// 32-bit BAR has no alternative home, while a 64-bit BAR can fall back
+    /// above 4 GiB. So BARs that only fit below 4 GiB are placed first, and
+    /// within each group the largest alignment goes first. Spending the low
+    /// window on alignment alone would let a large 64-bit BAR strand a 32-bit
+    /// BAR with nothing left to allocate from.
+    fn bar_allocation_rank(&self, dev_idx: usize, bar_idx: usize) -> (u8, u64) {
+        let needs_low_window = self.devices[dev_idx].bars[bar_idx].bar_type == BarType::Memory32;
+        (
+            u8::from(needs_low_window),
+            self.bar_allocation_alignment(dev_idx, bar_idx),
+        )
+    }
+
     fn allocate_one_bar(&mut self, dev_idx: usize, bar_idx: usize) {
         let addr = self.devices[dev_idx].addr;
         let bar = self.devices[dev_idx].bars[bar_idx];
         let align = self.bar_allocation_alignment(dev_idx, bar_idx);
         let base = match bar.bar_type {
             BarType::Memory32 => self.mmio32.allocate_aligned(bar.size, align),
+            // The below-4-GiB window comes first: firmware drivers reach a BAR
+            // through a mapping that does not cover above 4 GiB, and some
+            // devices that declare a 64-bit BAR still do not decode that high.
+            // The above-4-GiB window is the fallback for what does not fit.
             BarType::Memory64 => self
-                .mmio64
+                .mmio32
                 .allocate_aligned(bar.size, align)
-                .or_else(|| self.mmio32.allocate_aligned(bar.size, align)),
+                .or_else(|| self.mmio64.allocate_aligned(bar.size, align)),
             BarType::Io => self.io_pool.allocate_aligned(bar.size, align),
             BarType::None => None,
         };

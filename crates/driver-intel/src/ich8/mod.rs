@@ -1729,17 +1729,18 @@ impl IntelIch8 {
         hda.and8(0x4d, !(1 << 7));
         hda.write32(0x74, hda.read32(0x74));
 
-        let hda_regs = Self::type0_regs(hda);
-        let bar0 = hda_regs.bar[0].get() & !0x0f;
-        if bar0 == 0 {
+        // MMIO base as enumeration assigned it. The HD Audio BAR is 64-bit
+        // capable, so the low dword alone is not necessarily the address.
+        let Some(bar0) = hda.memory_bar(0x10) else {
             fstart_log::error!("intel-ich8: HDA BAR0 is unassigned");
             return;
-        }
-        hda_regs
+        };
+        let bar0 = bar0 as usize;
+        Self::type0_regs(hda)
             .command
             .modify(PCI_COMMAND_BITS::MEMORY_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
 
-        let controller = HdaController::new(bar0 as usize);
+        let controller = HdaController::new(bar0);
         let codec_mask = controller.detect_codecs();
         if codec_mask != 0 {
             let programmed = controller.program_verb_tables(config, codec_mask);
