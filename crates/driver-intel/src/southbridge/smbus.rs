@@ -219,6 +219,17 @@ impl I801SmBus {
                         return Ok(());
                     }
                     regs.status().set(stat);
+                    // A device that does not acknowledge is an ordinary probe
+                    // result (an empty DIMM slot, an absent clock generator),
+                    // not a host-controller failure. Report it distinctly and
+                    // let the caller decide what an absent device means.
+                    if stat & SMBHSTSTS_ERROR == SMBHSTSTS_DEV_ERR {
+                        fstart_log::debug!(
+                            "i801-smbus: no device at {:#x}",
+                            regs.xmit_addr().get() >> 1
+                        );
+                        return Err(ServiceError::NoDevice);
+                    }
                     fstart_log::error!("i801-smbus: transaction error, status={:#x}", stat);
                     return Err(ServiceError::HardwareError);
                 }
