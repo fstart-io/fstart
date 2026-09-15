@@ -667,6 +667,11 @@ pub struct IntelIch7Config {
     pub c3_latency: u16,
     /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
     pub power_on_after_fail: u8,
+    /// Date (`MM/DD/YYYY`) written back to the RTC when it lost power.
+    ///
+    /// Boards set this to the same build date they publish in SMBIOS; the
+    /// default is a placeholder a board with a real build date overrides.
+    pub rtc_default_date: &'static str,
 }
 
 const fn default_c3_latency() -> u16 {
@@ -707,6 +712,7 @@ impl IntelIch7Config {
             acpi_name: Some("LPCB"),
             c3_latency: default_c3_latency(),
             power_on_after_fail: 0,
+            rtc_default_date: "01/01/2000",
         }
     }
 }
@@ -1164,8 +1170,6 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
     }
 
     fn early_init(&mut self) -> Result<(), ServiceError> {
-        let lpc = self.lpc_regs();
-
         // Bootblock-level SPI, fixed BAR, CMOS/watchdog, and LPC decode setup
         // was already done by pre_console_init(). Do not repeat it here: this
         // hook runs after the SuperIO console is live and should only do the
@@ -1183,9 +1187,8 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
             .secondary_latency_timer
             .set(0x20);
 
-        // ---- 8. Reset RTC power status ----
-        lpc.gen_pmcon_3
-            .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
+        // The RTC battery-dead flag is consumed by `rtc_init` in the ramstage,
+        // which is where coreboot's LPC init reads and clears it too.
 
         // ---- 9. USB pre-config ----
         ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC).or8(0xAD, 3);
@@ -1398,6 +1401,9 @@ impl IntelIch7 {
         if let Some(ref hda) = self.config.hda {
             self.hda_init(hda);
         }
+
+        // ---- RTC / CMOS init (coreboot i82801gx_rtc_init + cmos_init) ----
+        self.rtc_init(self.config.rtc_default_date);
 
         // ---- USB Transient Disconnect Detect (fixup) ----
         lpc.write8(0xAD, 0x03);
@@ -1961,41 +1967,50 @@ impl IntelIch7 {
             != 0
     }
 
-    /// Initialize the RTC / CMOS.
+    /// Initialize the RTC and CMOS, matching coreboot's `i82801gx_rtc_init`
+    /// followed by `cmos_init`.
     ///
-    /// If the RTC battery died, clears the status bit and initialises
-    /// CMOS to defaults.  Otherwise just validates the checksum.
-    ///
-    /// Ported from coreboot `sb_rtc_init()`. The actual CMOS init
-    /// (mc146818 register programming) is a sequence of port 0x70/0x71
-    /// writes that sets up the RTC oscillator and clears CMOS RAM.
-    pub fn rtc_init(&self) {
-        let failed = self.rtc_failure();
-        if failed {
-            // Clear the RTC battery dead bit.
+    /// The board has no CMOS battery, so every power-up loses the RTC: the
+    /// chip's update cycle never runs and the OS gives up on it (Linux reports
+    /// "unable to read the hardware clock"). Program the divider and control
+    /// registers, put a known date back and re-mark the RAM valid.
+    pub fn rtc_init(&self, default_date: &str) {
+        // Sticky battery-dead flag, cleared here exactly like coreboot.
+        let battery_dead = self.rtc_failure();
+        if battery_dead {
             self.lpc_regs()
                 .gen_pmcon_3
                 .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
-            fstart_log::info!("intel-ich7: RTC battery dead — reinitializing CMOS");
         }
 
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            // Standard CMOS/RTC initialization:
-            // Register A: divider = 32.768 KHz, rate = 1024 Hz.
-            fstart_core::pio::outb(0x70, 0x0A);
-            fstart_core::pio::outb(0x71, 0x26);
-            // Register B: 24hr mode, BCD, no alarms, update enabled.
-            fstart_core::pio::outb(0x70, 0x0B);
-            let reg_b = fstart_core::pio::inb(0x71);
-            fstart_core::pio::outb(0x70, 0x0B);
-            fstart_core::pio::outb(0x71, (reg_b | 0x02) & !0x40); // 24hr, update enabled
-            // Register C: clear interrupt flags (read-to-clear).
-            fstart_core::pio::outb(0x70, 0x0C);
-            let _ = fstart_core::pio::inb(0x71);
-            // Register D: read-only, but reading clears VRT.
-            fstart_core::pio::outb(0x70, 0x0D);
-            let _ = fstart_core::pio::inb(0x71);
+        let date = match crate::southbridge::rtc::Date::parse_mm_dd_yyyy(default_date) {
+            Some(date) => Some(date),
+            None => {
+                fstart_log::error!("intel-ich7: RTC default date is not MM/DD/YYYY");
+                None
+            }
+        };
+        let report = crate::southbridge::rtc::init(battery_dead, date);
+        fstart_log::info!(
+            "intel-ich7: RTC power_lost={} time_invalid={} date_reset={} (A={:#04x} B={:#04x} D={:#04x})",
+            report.power_lost,
+            report.time_invalid,
+            report.date_reset,
+            crate::southbridge::rtc::read(crate::southbridge::rtc::reg::FREQ_SELECT),
+            crate::southbridge::rtc::read(crate::southbridge::rtc::reg::CONTROL),
+            crate::southbridge::rtc::read(crate::southbridge::rtc::reg::VALID)
+        );
+        if report.date_reset {
+            fstart_log::info!(
+                "intel-ich7: RTC date set to {} (sec={:#04x} min={:#04x} hour={:#04x} day={:#04x} mon={:#04x} year={:#04x})",
+                default_date,
+                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::SECONDS),
+                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::MINUTES),
+                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::HOURS),
+                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::DAY_OF_MONTH),
+                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::MONTH),
+                crate::southbridge::rtc::read(crate::southbridge::rtc::reg::YEAR)
+            );
         }
     }
 

@@ -40,6 +40,9 @@ pub struct PineviewIch7Config {
     pub ck505_pre_raminit: bool,
     /// Maximum logical CPU count (BSP + APs) the board populates.
     pub max_cpus: u16,
+    /// Date (`MM/DD/YYYY`) written back to the RTC when it lost power: the same
+    /// build date the board publishes in SMBIOS.
+    pub rtc_default_date: &'static str,
 }
 
 impl PineviewIch7Config {
@@ -57,6 +60,7 @@ impl PineviewIch7Config {
             gpio: gpio::GpioConfig::new(),
             ck505_pre_raminit: false,
             max_cpus: 1,
+            rtc_default_date: ich7::IntelIch7Config::new().rtc_default_date,
         }
     }
 
@@ -85,7 +89,16 @@ impl PineviewIch7Config {
         config.usb = self.usb;
         config.smbus_base = ICH7_SMBUS_BASE;
         config.gpio = self.gpio;
+        config.rtc_default_date = self.rtc_default_date;
         config
+    }
+
+    /// Date the RTC is reset to after a power loss; pass the board's SMBIOS
+    /// build date so both come from one constant.
+    #[must_use]
+    pub const fn rtc_default_date(mut self, date: &'static str) -> Self {
+        self.rtc_default_date = date;
+        self
     }
 
     #[must_use]
