@@ -2151,6 +2151,7 @@ impl IntelIch7 {
 #[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
+    use crate::southbridge::acpi as acpi_fragments;
     use alloc::vec::Vec;
     use fstart_acpi::device::AcpiDevice;
     use fstart_acpi::platform::{IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
@@ -2376,42 +2377,16 @@ mod acpi_impl {
                         PRTG, 8,
                         PRTH, 8,
                     }
-
-                    // HPET — High Precision Event Timer (PNP0103)
-                    // Fixed at 0xFED00000, 0x400 bytes.
-                    // Coreboot: lpc.asl Device(HPET)
-                    Device("HPET") {
-                        Name("_HID", EisaId("PNP0103"));
-                        Name("_CRS", ResourceTemplate {
-                            Memory32Fixed(ReadOnly, 0xFED00000u32, 0x400u32);
-                        });
-                    }
-
-                    // PIC_ — 8259 Programmable Interrupt Controller (PNP0000)
-                    // Coreboot: lpc.asl Device(PIC)
-                    Device("PIC_") {
-                        Name("_HID", EisaId("PNP0000"));
-                        Name("_CRS", ResourceTemplate {
-                            IO(0x0020u16, 0x0020u16, 0x01u8, 0x02u8);
-                            IO(0x0024u16, 0x0024u16, 0x01u8, 0x02u8);
-                            IO(0x0028u16, 0x0028u16, 0x01u8, 0x02u8);
-                            IO(0x002Cu16, 0x002Cu16, 0x01u8, 0x02u8);
-                            IO(0x0030u16, 0x0030u16, 0x01u8, 0x02u8);
-                            IO(0x0034u16, 0x0034u16, 0x01u8, 0x02u8);
-                            IO(0x0038u16, 0x0038u16, 0x01u8, 0x02u8);
-                            IO(0x003Cu16, 0x003Cu16, 0x01u8, 0x02u8);
-                            IO(0x00A0u16, 0x00A0u16, 0x01u8, 0x02u8);
-                            IO(0x00A4u16, 0x00A4u16, 0x01u8, 0x02u8);
-                            IO(0x00A8u16, 0x00A8u16, 0x01u8, 0x02u8);
-                            IO(0x00ACu16, 0x00ACu16, 0x01u8, 0x02u8);
-                            IO(0x00B0u16, 0x00B0u16, 0x01u8, 0x02u8);
-                            IO(0x00B4u16, 0x00B4u16, 0x01u8, 0x02u8);
-                            IO(0x00B8u16, 0x00B8u16, 0x01u8, 0x02u8);
-                            IO(0x00BCu16, 0x00BCu16, 0x01u8, 0x02u8);
-                            IO(0x04D0u16, 0x04D0u16, 0x01u8, 0x02u8);
-                            IRQ(Edge, ActiveHigh, Exclusive, 2u32);
-                        });
-                    }
+            }
+            .into();
+            lpcb.extend_from_slice(&acpi_fragments::legacy_isa_children(
+                DEFAULT_PMBASE as u16,
+                DEFAULT_GPIOBASE as u16,
+            ));
+            lpcb.extend_from_slice(&acpi_fragments::pci_irq_links(&config.pirq_routing));
+            pci0_aml.extend_from_slice(
+                &fstart_acpi::aml_linker::device_vec("LPCB", &lpcb).expect("LPCB device emission"),
+            );
 
             // PS/2 keyboard and mouse nodes come from the concrete SuperIO
             // driver when the board enables those LDNs, not from the reusable
@@ -2440,73 +2415,23 @@ mod acpi_impl {
 
             // HDEF — HD Audio controller  0:1B.0
             // _PRW: GPE bit 5, can wake from S4.
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("HDEF") {
-                    Name("_ADR", 0x001B0000u32);
-                    Name("_PRW", Package(5u32, 4u32));
-                }
-            });
+            pci0_aml.extend_from_slice(&acpi_fragments::hda_node());
 
             // USB UHCI controllers  0:1D.0–3
             // _PRW: GPE bit 3, can wake from S4.
             // _S3D/_S4D: highest D-state in S3/S4 (D2 — USB stays
             //   partially powered for wake-on-USB).
             // Coreboot: usb.asl USB1–USB4
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("USB1") {
-                    Name("_ADR", 0x001D0000u32);
-                    Name("_PRW", Package(3u32, 4u32));
-                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                }
-            });
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("USB2") {
-                    Name("_ADR", 0x001D0001u32);
-                    Name("_PRW", Package(3u32, 4u32));
-                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                }
-            });
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("USB3") {
-                    Name("_ADR", 0x001D0002u32);
-                    Name("_PRW", Package(3u32, 4u32));
-                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                }
-            });
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("USB4") {
-                    Name("_ADR", 0x001D0003u32);
-                    Name("_PRW", Package(3u32, 4u32));
-                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
-                }
-            });
+            for (index, name) in ["USB1", "USB2", "USB3", "USB4"].iter().enumerate() {
+                let adr = 0x001D_0000u32 | index as u32;
+                pci0_aml.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
+            }
 
             // EHC1 — EHCI USB 2.0 controller  0:1D.7
             // Includes root hub (HUB7) with 6 port child devices.
             // _PRW: GPE bit 13, can wake from S4.
             // Coreboot: usb.asl EHC1 + HUB7
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("EHC1") {
-                    Name("_ADR", 0x001D0007u32);
-                    Name("_PRW", Package(13u32, 4u32));
-                    Method("_S3D", 0, NotSerialized) { Return(2u32); }
-                    Method("_S4D", 0, NotSerialized) { Return(2u32); }
-
-                    Device("HUB7") {
-                        Name("_ADR", 0x00000000u32);
-                        Device("PRT1") { Name("_ADR", 1u32); }
-                        Device("PRT2") { Name("_ADR", 2u32); }
-                        Device("PRT3") { Name("_ADR", 3u32); }
-                        Device("PRT4") { Name("_ADR", 4u32); }
-                        Device("PRT5") { Name("_ADR", 5u32); }
-                        Device("PRT6") { Name("_ADR", 6u32); }
-                    }
-                }
-            });
+            pci0_aml.extend_from_slice(&acpi_fragments::ehci_node("EHC1", 0x001D_0007, 13, 6));
 
             // ---------------------------------------------------------------
             // PCIe root ports  0:1C.0–5 with APIC-mode _PRT routing.
@@ -2523,66 +2448,22 @@ mod acpi_impl {
             // devices) since the kernel uses IOAPIC when available.
             // ---------------------------------------------------------------
 
-            // Helper: emit a PCIe root port with APIC-mode _PRT.
-            // `port_num` is 1-based (matches coreboot convention).
-            let emit_rp = |name: &str, adr: u32, port_num: u32| -> Vec<u8> {
-                let base = ((port_num - 1) % 4) as u32;
-                let a = 16 + base;
-                let b = 16 + (base + 1) % 4;
-                let c = 16 + (base + 2) % 4;
-                let d = 16 + (base + 3) % 4;
-
-                // Each root port has:
-                //  - RPCS: PCI config OpRegion for hotplug status
-                //    (RPPN = root port number, PDC = presence detect,
-                //     HPCS = hot-plug capable slot)
-                //  - _PRT: APIC-mode interrupt routing table
-                //
-                // Coreboot: pcie.asl + pcie_port.asl
-                let adr = u64::from(adr);
-                let a = u64::from(a);
-                let b = u64::from(b);
-                let c = u64::from(c);
-                let d = u64::from(d);
-                let fragment = acpi_dsl! {
-                    Device("____") {
-                        Name("_ADR", #{dword adr});
-
-                        OperationRegion("RPCS", PciConfig, 0x00u32, 0xFFu32);
-                        Field("RPCS", AnyAcc, NoLock, Preserve) {
-                            Offset(0x4C),
-                            , 24,
-                            RPPN, 8,
-                            Offset(0x5A),
-                            , 3,
-                            PDC_, 1,
-                            Offset(0xDF),
-                            , 6,
-                            HPCS, 1,
-                        }
-
-                        Name("_PRT", Package(
-                            Package(0x0000FFFFu32, 0u32, 0u32, #{dword a}),
-                            Package(0x0000FFFFu32, 1u32, 0u32, #{dword b}),
-                            Package(0x0000FFFFu32, 2u32, 0u32, #{dword c}),
-                            Package(0x0000FFFFu32, 3u32, 0u32, #{dword d})
-                        ));
-                    }
-                };
-                let mut bytes = Vec::from(fragment);
-                let offset = 3 + usize::from(bytes[2] >> 6);
-                bytes[offset..offset + 4].copy_from_slice(name.as_bytes());
-                bytes
-            };
-
-            pci0_aml.extend_from_slice(&emit_rp("RP01", 0x001C0000, 1));
-            pci0_aml.extend_from_slice(&emit_rp("RP02", 0x001C0001, 2));
-            pci0_aml.extend_from_slice(&emit_rp("RP03", 0x001C0002, 3));
-            pci0_aml.extend_from_slice(&emit_rp("RP04", 0x001C0003, 4));
-            pci0_aml.extend_from_slice(&emit_rp("RP05", 0x001C0004, 5));
-            pci0_aml.extend_from_slice(&emit_rp("RP06", 0x001C0005, 6));
-            pci0_aml.extend_from_slice(&emit_rp("RP07", 0x001C0006, 7));
-            pci0_aml.extend_from_slice(&emit_rp("RP08", 0x001C0007, 8));
+            pci0_aml
+                .extend_from_slice(&acpi_fragments::pcie_root_port("RP01", 0x001C0000, 1, true));
+            pci0_aml
+                .extend_from_slice(&acpi_fragments::pcie_root_port("RP02", 0x001C0001, 2, true));
+            pci0_aml
+                .extend_from_slice(&acpi_fragments::pcie_root_port("RP03", 0x001C0002, 3, true));
+            pci0_aml
+                .extend_from_slice(&acpi_fragments::pcie_root_port("RP04", 0x001C0003, 4, true));
+            pci0_aml
+                .extend_from_slice(&acpi_fragments::pcie_root_port("RP05", 0x001C0004, 5, true));
+            pci0_aml
+                .extend_from_slice(&acpi_fragments::pcie_root_port("RP06", 0x001C0005, 6, true));
+            pci0_aml
+                .extend_from_slice(&acpi_fragments::pcie_root_port("RP07", 0x001C0006, 7, true));
+            pci0_aml
+                .extend_from_slice(&acpi_fragments::pcie_root_port("RP08", 0x001C0007, 8, true));
 
             // PCIB — PCI-to-PCI bridge  0:1E.0
             // _PRT for devices behind the bridge (APIC mode).
@@ -2654,16 +2535,7 @@ mod acpi_impl {
             // _GTM/_STM timing methods omitted (need CreateDwordField;
             // Linux libata doesn’t use them in AHCI mode).
             // Coreboot: sata.asl
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("SATA") {
-                    Name("_ADR", 0x001F0002u32);
-                    Device("PRID") {
-                        Name("_ADR", 0u32);
-                        Device("DSK0") { Name("_ADR", 0u32); }
-                        Device("DSK1") { Name("_ADR", 1u32); }
-                    }
-                }
-            });
+            pci0_aml.extend_from_slice(&acpi_fragments::sata_node());
 
             // PATA — IDE / PATA controller  0:1F.1
             // Coreboot: pata.asl
@@ -2679,11 +2551,7 @@ mod acpi_impl {
             });
 
             // SBUS — SMBus controller  0:1F.3
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("SBUS") {
-                    Name("_ADR", 0x001F0003u32);
-                }
-            });
+            pci0_aml.extend_from_slice(&acpi_fragments::smbus_node());
 
             aml.extend_from_slice(&pci0_scope_aml(&pci0_aml));
 

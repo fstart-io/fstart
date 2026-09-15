@@ -1,3 +1,4 @@
+pub mod acpi;
 pub mod gpio_ich;
 pub mod hda;
 pub mod pmio_ich;
