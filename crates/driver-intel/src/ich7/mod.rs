@@ -244,6 +244,16 @@ pub mod ich7 {
     pub const SMBUS_FUNC: u8 = 3;
     /// SMBus I/O base register.
     pub const SMB_BASE: u16 = 0x20;
+    /// HD Audio: bus 0, dev 0x1b, func 0.
+    pub const HDA_DEV: u8 = 0x1b;
+    pub const HDA_FUNC: u8 = 0;
+    /// HD Audio memory BAR (16 KiB, 64-bit capable).
+    pub const HDA_BAR0: u16 = 0x10;
+    /// SATA: bus 0, dev 0x1f, func 2.
+    pub const SATA_DEV: u8 = 0x1f;
+    pub const SATA_FUNC: u8 = 2;
+    /// AHCI base address register on the SATA function.
+    pub const SATA_ABAR: u16 = 0x24;
     /// Host Configuration register.
     pub const HOSTC: u16 = 0x40;
     /// HOSTC enable bit.
@@ -1411,7 +1421,7 @@ impl IntelIch7 {
     /// Ported from coreboot `sata_init()`. Programs the SATA controller
     /// into AHCI or IDE mode and runs the mandatory init sequence.
     fn sata_init(&self, sata: &SataConfig) {
-        let sata_dev = ecam::EcamDevice::new(0, 0x1f, 2);
+        let sata_dev = ecam::EcamDevice::new(0, ich7::SATA_DEV, ich7::SATA_FUNC);
 
         // Enable BARs.
         Self::type0_regs(sata_dev).command.modify(
@@ -1452,12 +1462,19 @@ impl IntelIch7 {
             // Coreboot writes AHCI GHC_PI (ABAR+0x0c) after PCI resource
             // assignment. If PI is left zero Linux guesses all 4 ports and
             // prints "forcing PORTS_IMPL", then probes disabled ports.
-            let abar = sata_dev.read32(0x24) & 0xFFFF_FC00;
-            if abar != 0 {
-                // SAFETY: ABAR is a PCI BAR just assigned by PciInit and
-                // memory decoding was enabled above.
-                unsafe {
-                    fstart_core::mmio::write32((abar + 0x0c) as *mut u32, sata.ports as u32);
+            match sata_dev.memory_bar(ich7::SATA_ABAR) {
+                Some(abar) => {
+                    // SAFETY: ABAR is a PCI BAR just assigned by PciInit and
+                    // memory decoding was enabled above.
+                    unsafe {
+                        fstart_core::mmio::write32(
+                            (abar as usize + 0x0c) as *mut u32,
+                            sata.ports as u32,
+                        );
+                    }
+                }
+                None => {
+                    fstart_log::error!("intel-ich7: SATA ABAR unassigned, AHCI left unconfigured")
                 }
             }
         }
@@ -1745,7 +1762,7 @@ impl IntelIch7 {
     ///
     /// Ported from coreboot `azalia.c::azalia_init()`.
     fn hda_init(&self, hda: &HdaConfig) {
-        let hda_dev = ecam::EcamDevice::new(0, 0x1B, 0);
+        let hda_dev = ecam::EcamDevice::new(0, ich7::HDA_DEV, ich7::HDA_FUNC);
 
         let vid = hda_dev.read16(0x00);
         if vid == 0xFFFF {
@@ -1789,13 +1806,14 @@ impl IntelIch7 {
         // Disable docking.
         hda_dev.and8(0x4D, !(1 << 7));
 
-        // Read BAR0 for MMIO base.
-        let bar = hda_regs.bar[0].get() & !0xF;
-        if bar == 0 {
+        // MMIO base as enumeration assigned it. The HD Audio BAR is 64-bit
+        // capable, so enumeration may place it in the above-4-GiB window and
+        // the low dword alone is not the address.
+        let Some(base) = hda_dev.memory_bar(ich7::HDA_BAR0) else {
             fstart_log::error!("intel-ich7: HDA BAR0 not assigned");
             return;
-        }
-        let base = bar as usize;
+        };
+        let base = base as usize;
 
         // Use the shared HDA controller for codec detection + verb programming.
         let hda_ctrl = HdaController::new(base);
