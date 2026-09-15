@@ -103,6 +103,7 @@ pub static D41S_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
     .hda(d41s_hda_config())
     .gpio_pins(d41s_gpio_pins())
     .gpe0_en(0x0441)
+    .rtc_default_date(BIOS_RELEASE_DATE)
     .build();
 
 /// 16-Mbit SPI flash, contiguous legacy mapping (no IFD).
