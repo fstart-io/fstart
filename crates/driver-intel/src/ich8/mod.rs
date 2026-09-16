@@ -2277,6 +2277,36 @@ impl SmBus for IntelIch8 {
             None => Err(ServiceError::HardwareError),
         }
     }
+
+    fn read_word(&mut self, addr: u8, cmd: u8) -> Result<u16, ServiceError> {
+        match self.smbus.as_mut() {
+            Some(bus) => bus.read_word(addr, cmd),
+            None => Err(ServiceError::HardwareError),
+        }
+    }
+
+    fn write_word(&mut self, addr: u8, cmd: u8, value: u16) -> Result<(), ServiceError> {
+        match self.smbus.as_mut() {
+            Some(bus) => bus.write_word(addr, cmd, value),
+            None => Err(ServiceError::HardwareError),
+        }
+    }
+
+    // The controller implements these protocols; without the forwarding the
+    // trait default would report them unsupported.
+    fn block_read(&mut self, addr: u8, cmd: u8, buf: &mut [u8]) -> Result<usize, ServiceError> {
+        match self.smbus.as_mut() {
+            Some(bus) => bus.block_read(addr, cmd, buf),
+            None => Err(ServiceError::HardwareError),
+        }
+    }
+
+    fn block_write(&mut self, addr: u8, cmd: u8, data: &[u8]) -> Result<(), ServiceError> {
+        match self.smbus.as_mut() {
+            Some(bus) => bus.block_write(addr, cmd, data),
+            None => Err(ServiceError::HardwareError),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

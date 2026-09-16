@@ -125,6 +125,44 @@ register_structs! {
     }
 }
 
+/// `DSPCLK_GATE_D` — display clock gating.
+pub const DSPCLK_GATE_D: usize = 0x6200;
+/// GMBUS unit clock gate in `DSPCLK_GATE_D`. Linux un-gates this on Pineview
+/// (`PNV_GMBUSUNIT_CLOCK_GATE_DISABLE`, `pnv_gmbus_clock_gating`); without it
+/// DDC transfers on that generation never complete.
+pub const PNV_GMBUSUNIT_CLOCK_GATE_DISABLE: u32 = 1 << 24;
+/// `SOUTH_DSPCLK_GATE_D` — south display clock gating on PCH platforms.
+pub const SOUTH_DSPCLK_GATE_D: usize = 0xc2020;
+/// GMBUS unit clock gate in `SOUTH_DSPCLK_GATE_D` (Linux
+/// `PCH_GMBUSUNIT_CLOCK_GATE_DISABLE`, `pch_gmbus_clock_gating`).
+pub const PCH_GMBUSUNIT_CLOCK_GATE_DISABLE: u32 = 1 << 31;
+
+/// Clock gate the GMBUS unit needs un-gated while a DDC transfer runs.
+///
+/// Linux and libgfxinit both un-gate the GMBUS unit around each transfer on the
+/// generations where its clock is gated by default. Leaving it gated makes
+/// every DDC read time out, which surfaces as "no EDID" rather than an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GmbusClockGate {
+    /// The unit is always clocked.
+    None,
+    /// Pineview: `DSPCLK_GATE_D` bit 24.
+    Pineview,
+    /// PCH platforms: `SOUTH_DSPCLK_GATE_D` bit 31.
+    PchSouth,
+}
+
+impl GmbusClockGate {
+    /// Register offset and bit to toggle, if this platform needs un-gating.
+    pub const fn register_bits(self) -> Option<(usize, u32)> {
+        match self {
+            Self::None => None,
+            Self::Pineview => Some((DSPCLK_GATE_D, PNV_GMBUSUNIT_CLOCK_GATE_DISABLE)),
+            Self::PchSouth => Some((SOUTH_DSPCLK_GATE_D, PCH_GMBUSUNIT_CLOCK_GATE_DISABLE)),
+        }
+    }
+}
+
 /// Logical GMBUS pin pair used for DDC on a connector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GmbusPin {
@@ -486,6 +524,7 @@ pub struct HardwareGmbus {
     mmio: Mmio,
     base_offset: usize,
     pin: GmbusPin,
+    gate: GmbusClockGate,
 }
 
 impl HardwareGmbus {
@@ -500,6 +539,7 @@ impl HardwareGmbus {
             mmio: unsafe { Mmio::new(gtt_mmio_base) },
             base_offset: GMCH_GMBUS_BASE_OFFSET,
             pin,
+            gate: GmbusClockGate::None,
         }
     }
 
@@ -514,7 +554,27 @@ impl HardwareGmbus {
             mmio: unsafe { Mmio::new(gtt_mmio_base) },
             base_offset: PCH_GMBUS_BASE_OFFSET,
             pin,
+            gate: GmbusClockGate::None,
         }
+    }
+
+    /// Un-gate this platform's GMBUS unit clock for the duration of a transfer.
+    #[must_use]
+    pub const fn with_clock_gate(mut self, gate: GmbusClockGate) -> Self {
+        self.gate = gate;
+        self
+    }
+
+    /// Set or clear the GMBUS unit clock gate.
+    ///
+    /// The gate bit reads as "clock disabled"; a DDC transfer needs it cleared.
+    fn apply_clock_gate(&self, ungated: bool) {
+        let Some((offset, bit)) = self.gate.register_bits() else {
+            return;
+        };
+        let value = self.mmio.read32(offset);
+        let value = if ungated { value | bit } else { value & !bit };
+        self.mmio.write32(offset, value);
     }
 
     fn reg(&self, offset: usize) -> usize {
@@ -573,6 +633,9 @@ impl HardwareGmbus {
     /// Take ownership of the bus after a stale transfer (libgfxinit
     /// `Wait_Unset_Mask (GMBUS2_INUSE)` plus `Check_And_Reset`).
     fn acquire(&self) -> Result<(), GmaError> {
+        // Both Linux and libgfxinit un-gate the unit clock before touching the
+        // bus on the generations where it is gated by default (Pineview).
+        self.apply_clock_gate(true);
         // libgfxinit `Init_GMBUS`: select a valid pin pair *before* resetting
         // the state machine (the reset only takes effect with a port selected),
         // stop a transfer that is still active, and fall back to the software
@@ -807,6 +870,21 @@ mod tests {
         ]);
         edid[127] = 0u8.wrapping_sub(edid[..127].iter().fold(0u8, |sum, b| sum.wrapping_add(*b)));
         edid
+    }
+
+    #[test]
+    fn clock_gate_matches_linux_register_and_bit() {
+        assert_eq!(GmbusClockGate::None.register_bits(), None);
+        assert_eq!(
+            GmbusClockGate::Pineview.register_bits(),
+            Some((0x6200, 1 << 24)),
+            "Linux PNV_GMBUSUNIT_CLOCK_GATE_DISABLE is DSPCLK_GATE_D bit 24"
+        );
+        assert_eq!(
+            GmbusClockGate::PchSouth.register_bits(),
+            Some((0xc2020, 1 << 31)),
+            "Linux PCH_GMBUSUNIT_CLOCK_GATE_DISABLE is SOUTH_DSPCLK_GATE_D bit 31"
+        );
     }
 
     #[test]

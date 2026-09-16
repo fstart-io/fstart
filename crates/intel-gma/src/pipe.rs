@@ -37,6 +37,10 @@ impl PipeConfig {
     }
 
     /// Encoded horizontal blank register value.
+    ///
+    /// The blanking interval runs from the end of the active region to the end
+    /// of the line, so this equals the total register -- the same relation
+    /// libgfxinit's `H_Blank_End == H_Total` encodes.
     pub const fn hblank(self) -> u32 {
         Self::encode_range(self.mode.hdisplay, self.mode.htotal)
     }
@@ -52,11 +56,16 @@ impl PipeConfig {
     }
 
     /// Encoded vertical blank register value.
+    ///
+    /// As with `hblank`, the blanking interval ends with the frame.
     pub const fn vblank(self) -> u32 {
         Self::encode_range(self.mode.vdisplay, self.mode.vtotal)
     }
 
     /// Encoded vertical sync register value.
+    ///
+    /// Gen3/Gen4 have no VSYNC register (0x6001c is the pipe source size);
+    /// generations with one use this to program the sync window.
     pub const fn vsync(self) -> u32 {
         Self::encode_range(self.mode.vsync_start, self.mode.vsync_end)
     }
@@ -99,7 +108,8 @@ mod tests {
     fn encodes_libgfxinit_style_ranges() {
         let pipe = PipeConfig::new(Pipe::B, Mode::XGA_1024X768_60);
         assert_eq!(pipe.htotal(), 0x053f_03ff);
-        assert_eq!(pipe.vsync(), 0x0308_0302);
+        assert_eq!(pipe.hblank(), 0x053f_03ff, "blanking runs to the line end");
+        assert_eq!(pipe.vblank(), 0x0325_02ff, "blanking runs to the frame end");
         assert_eq!(pipe.pipesrc(), 0x03ff_02ff);
     }
 }

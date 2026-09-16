@@ -853,7 +853,12 @@ fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
     // First SIPI.
     fstart_log::info!("mp: sending SIPI (vector page {:#x})", SIPI_VECTOR_PAGE);
     lapic.send_sipi_all_but_self(SIPI_VECTOR_PAGE as u8);
+    fstart_log::info!("mp: first SIPI sent, BSP alive");
     delay_us(200);
+    fstart_log::info!(
+        "mp: after 200us, {} AP(s) checked in",
+        AP_COUNT.load(Ordering::Acquire) as u16
+    );
 
     // Check if all APs responded.
     let checked_in = AP_COUNT.load(Ordering::Acquire) as u16;
@@ -1048,6 +1053,19 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
         patch_u32(dst, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
         patch_u32(dst, sipi_blob::AP_COUNTER_OFFSET, 0);
     }
+
+    // Diagnostic: the AP's first fetch depends entirely on this page and the
+    // values patched into it. A wrong entry or stack turns into a triple fault
+    // on the AP, which the chipset reports as a platform reset, so log both the
+    // copied bytes and the patch values.
+    // SAFETY: `dst` points at the copied page, which holds at least one u32.
+    let words = unsafe { core::ptr::read_unaligned(dst as *const [u32; 4]) };
+    // SAFETY: the entry symbol is a function in this stage.
+    let entry = fstart_ap_entry as *const () as usize as u64;
+    fstart_log::info!("mp: tramp[0]={:#010x} [4]={:#010x}", words[0], words[1]);
+    fstart_log::info!("mp: tramp[8]={:#010x} [12]={:#010x}", words[2], words[3]);
+    fstart_log::info!("mp: patch cr3={:#x}", read_cr3());
+    fstart_log::info!("mp: patch entry={:#x} base={:#x}", entry, stack_base);
 
     fstart_log::info!(
         "mp: SIPI trampoline at {:#x}, AP stacks at {:#x}, {} bytes each",

@@ -95,8 +95,6 @@ pub struct IntelPineviewConfig {
     pub igd: PineviewIgdConfig,
     /// SPD EEPROM SMBus addresses for DIMM slots A/B. Zero means absent.
     pub spd_addresses: [u8; 4],
-    /// Apply Foxconn D41S/vendor CK505 clock-generator setup before raminit.
-    pub ck505_pre_raminit: bool,
     /// ACPI device name (e.g., "MCHC"). If `None`, no ACPI node.
     pub acpi_name: Option<&'static str>,
 }
@@ -139,7 +137,6 @@ impl IntelPineviewConfig {
             ecam_base: hostbridge::DEFAULT_ECAM_BASE as u64,
             igd: PineviewIgdConfig::new(),
             spd_addresses: [0x50, 0x51, 0, 0],
-            ck505_pre_raminit: false,
             acpi_name: Some("MCHC"),
         }
     }
@@ -537,35 +534,6 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
     }
 }
 
-fn pineview_ck505_pre_raminit<B: SmBus + ?Sized>(smbus: &mut B) {
-    const CLOCKGEN_ADDR: u8 = 0x69;
-    const REGS: [u8; 5] = [0x00, 0x80, 0xfe, 0xff, 0xfc];
-
-    let mut block = [0u8; 5];
-    for (idx, byte) in block.iter_mut().enumerate() {
-        match smbus.read_byte(CLOCKGEN_ADDR, idx as u8) {
-            Ok(v) => *byte = v,
-            Err(_) => {
-                fstart_log::error!("pineview: failed reading CK505 configuration");
-                return;
-            }
-        }
-    }
-
-    block[1] |= 0x80;
-    block[2] = REGS[2];
-    block[3] = REGS[3];
-    block[4] = REGS[4];
-
-    for (idx, byte) in block.iter().copied().enumerate() {
-        if smbus.write_byte(CLOCKGEN_ADDR, idx as u8, byte).is_err() {
-            fstart_log::error!("pineview: failed writing CK505 configuration");
-            return;
-        }
-    }
-    fstart_log::info!("pineview: CK505 pre-raminit configuration applied");
-}
-
 fn pineview_lower_memory_test(test_top: u32) -> Result<(), ServiceError> {
     let top = test_top as usize;
     let test_addr = if top > (32 * 1024 * 1024) {
@@ -677,9 +645,9 @@ impl IntelPineview {
         &mut self,
         smbus: &mut (impl SmBus + ?Sized),
     ) -> Result<(), ServiceError> {
-        if self.config.ck505_pre_raminit {
-            pineview_ck505_pre_raminit(smbus);
-        }
+        // The board programs its clock generator through the shared CK505
+        // driver before DRAM init (see the board's `before_memory` hook); the
+        // northbridge does not carry a copy of a board's clock table.
         let platform_type = self.platform_type();
         let size = raminit::sdram_initialize(
             &self.mchbar(),
@@ -966,8 +934,73 @@ impl IntelPineview {
         } else {
             Cpu::Pineview
         };
-        self.display
-            .initialize(cpu, self.config.igd.display.as_ref(), &addresses, vbt);
+        let programmed =
+            self.display
+                .initialize(cpu, self.config.igd.display.as_ref(), &addresses, vbt);
+
+        // A modeset can report success while a pipe, plane, PLL or output port
+        // is left disabled. Read the state back so that is visible: coreboot
+        // dumps the same registers for this generation.
+        let ggc = self.hostbridge_regs().ggc.get();
+        fstart_log::info!(
+            "pineview: GGC={:#06x} vga_disable={} gms={} ggms={} modeset={}",
+            ggc,
+            u32::from((ggc >> 1) & 1),
+            u32::from((ggc >> 4) & 0xf),
+            u32::from((ggc >> 8) & 0xf),
+            u32::from(programmed)
+        );
+        self.dump_display_state(bars.gtt_mmio);
+    }
+
+    /// Log the display engine's live registers after a modeset.
+    ///
+    /// The register set mirrors coreboot's `dump_display_regs` for the same
+    /// generation, plus pipe B, so a fstart run and a libgfxinit run can be
+    /// compared register by register.
+    fn dump_display_state(&self, gtt_mmio: u64) {
+        for (name, offset) in [
+            ("VGACNTRL", 0x71400u32),
+            ("PGETBL_CTL", 0x2020),
+            // Linux `DSPCLK_GATE_D`: holds the GMBUS unit clock gate.
+            ("DSPCLK_GATE_D", 0x6200),
+            // Verified against coreboot + libgfxinit driving this board at
+            // 1920x1080 on the Analog port: the timing block starts at 0x60000,
+            // and PIPECONF is the +0x18 slot (which coreboot's dump table
+            // leaves unlabelled and mislabels everything after).
+            ("HTOTAL_A", 0x60000),
+            ("HBLANK_A", 0x60004),
+            ("HSYNC_A", 0x60008),
+            ("VTOTAL_A", 0x6000c),
+            ("VBLANK_A", 0x60010),
+            ("VSYNC_A", 0x60014),
+            ("PIPECONF_A", 0x60018),
+            ("PIPESRC_A", 0x6001c),
+            ("DPLL_A", 0x6014),
+            ("FPA0", 0x6040),
+            ("FPA1", 0x6044),
+            ("DSPACNTR", 0x70180),
+            ("DSPALINOFF", 0x70184),
+            ("DSPASTRIDE", 0x70188),
+            ("DSPAPOS", 0x7018c),
+            ("DSPASIZE", 0x70190),
+            ("DSPASURF", 0x7019c),
+            ("ADPA", 0x61100),
+            ("PIPECONF_B", 0x61000),
+            ("DPLL_B", 0x6018),
+            ("DSPBCNTR", 0x71180),
+            ("DSPBLINOFF", 0x71184),
+            ("DSPBSTRIDE", 0x71188),
+            ("DSPBPOS", 0x7118c),
+            ("DSPBSIZE", 0x71190),
+            ("DSPBSURF", 0x7119c),
+        ] {
+            fstart_log::info!(
+                "pineview: disp {} = {:#010x}",
+                name,
+                super::igd::mmio_read32(gtt_mmio, offset)
+            );
+        }
     }
 
     /// Read the graphics stolen memory base (GBSM register).

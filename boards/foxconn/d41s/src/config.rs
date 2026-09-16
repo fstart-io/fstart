@@ -34,7 +34,7 @@ const D41S_LINUX: fstart_platform_intel::facts::X86LinuxBoot =
         kernel_file: "vmlinuz",
         kernel_load_addr: 0x1000_0000,
         zero_page_addr: 0x0009_0000,
-        bootargs: "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 no_console_suspend",
+        bootargs: "console=tty0 console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 no_console_suspend",
         print_x86_mtrrs: true,
     };
 
@@ -54,7 +54,10 @@ const D41S_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
         offset: 0,
         tiling: TilingMode::Linear,
         rotation: Rotation::None,
-        preferred_mode: PreferredMode::VbtPanel,
+        // A VGA port has no VBT panel: the synthesized fallback timings are
+        // wrong (VBLANK 0, a 256-line VSYNC window), so take the mode from the
+        // monitor's EDID like libgfxinit does.
+        preferred_mode: PreferredMode::Edid,
         fallback_mode: Some(FallbackMode {
             width: 1024,
             height: 768,
@@ -78,7 +81,6 @@ pub const CK505_ADDR: u8 = 0x69;
 pub static D41S_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
     .max_cpus(4)
     .igd(d41s_igd_config())
-    .ck505_pre_raminit(true)
     .pcie_port(0, true)
     .pcie_port(1, true)
     .pirq_routing([0x0b; 8])
@@ -106,7 +108,7 @@ pub static D41S_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
     .rtc_default_date(BIOS_RELEASE_DATE)
     .build();
 
-/// 16-Mbit SPI flash, contiguous legacy mapping (no IFD).
+/// 16-MiB (128-Mbit) SPI flash, contiguous legacy mapping (no IFD).
 /// Erase geometry and persistent variable capacity are not inferred from this.
 pub const FLASH_SIZE: u32 = 0x0100_0000;
 pub const FLASH: FlashLayout = FlashLayout::X86Legacy(X86LegacyFlashLayout { size: FLASH_SIZE });
@@ -120,7 +122,8 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             fstart_platform_intel::facts::Chipset::PineviewIch7,
         )
         .with_data_assets(&[D41S_VBT])
-        .with_linux_boot(D41S_LINUX);
+        .with_linux_boot(D41S_LINUX)
+        .with_uefi_build_profile(fstart_core::board::UefiBuildProfile::Ui);
 }
 
 #[must_use]

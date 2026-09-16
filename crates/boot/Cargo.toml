@@ -7,9 +7,10 @@ license.workspace = true
 [features]
 default = []
 fit = ["dep:dtoolkit", "dep:heapless", "dep:fstart-crypto"]
-# Existing consumers retain the full capability set. Cargo features are additive:
-# combining full and basic always selects the full core and matching bundle.
+# Capabilities are additive: UI includes the full core, and combining full and
+# basic still selects the full runtime bundle.
 crabefi = ["crabefi-basic", "crabefi/full"]
+crabefi-ui = ["crabefi", "crabefi/ui"]
 crabefi-basic = ["dep:crabefi"]
 std = ["fit", "fstart-crypto?/all"]
 sha2-digest = ["fit", "fstart-crypto?/sha2-digest"]
