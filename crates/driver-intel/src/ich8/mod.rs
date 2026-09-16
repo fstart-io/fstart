@@ -2451,12 +2451,14 @@ mod acpi_impl {
             ));
 
             body.extend_from_slice(&acpi_fragments::hda_node());
-            for (offset, name) in ["USB1", "USB2", "USB3", "USB4"].iter().enumerate() {
-                let adr = 0x001D_0000u32 | offset as u32;
+            // UHCI controllers 1-3 live on device 0x1D, 4-6 on device 0x1A
+            // (coreboot i82801ix usb.asl): device 0x1D has no function 3.
+            for (function, name) in ["USB1", "USB2", "USB3"].iter().enumerate() {
+                let adr = 0x001D_0000u32 | function as u32;
                 body.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
             }
-            for (offset, name) in ["USB5", "USB6"].iter().enumerate() {
-                let adr = 0x001A_0001u32 | offset as u32;
+            for (function, name) in ["USB4", "USB5", "USB6"].iter().enumerate() {
+                let adr = 0x001A_0000u32 | function as u32;
                 body.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
             }
             body.extend_from_slice(&acpi_fragments::ehci_node("EHC1", 0x001D_0007, 13, 6));
@@ -2546,6 +2548,38 @@ mod acpi_impl {
 
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
             Vec::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::IntelSouthbridgeDriver;
+
+        /// `Name("_ADR", <dword>)` as the DSL encodes it.
+        fn adr_name_aml(adr: u32) -> [u8; 10] {
+            let mut bytes = [0u8; 10];
+            bytes[0] = 0x08; // NameOp
+            bytes[1..5].copy_from_slice(b"_ADR");
+            bytes[5] = 0x0C; // DwordPrefix
+            bytes[6..10].copy_from_slice(&adr.to_le_bytes());
+            bytes
+        }
+
+        #[test]
+        fn uhci_nodes_match_the_ich8_function_layout() {
+            static CONFIG: IntelIch8Config = IntelIch8Config::new();
+            let south = IntelIch8::new_from_config(&CONFIG).expect("ICH8 config is valid");
+            let aml = south.dsdt_aml(&CONFIG);
+
+            let has_adr = |adr: u32| aml.windows(10).any(|window| window == adr_name_aml(adr));
+            // Coreboot i82801ix: USB1-3 on device 0x1D, USB4-6 on 0x1A.
+            for function in 0..3u32 {
+                assert!(has_adr(0x001D_0000 | function), "missing 0:1D.{function}");
+                assert!(has_adr(0x001A_0000 | function), "missing 0:1A.{function}");
+            }
+            // Device 0x1D has no function 3 on ICH8; USB4 is at 0:1A.0.
+            assert!(!has_adr(0x001D_0003), "0:1D.3 does not exist on ICH8");
         }
     }
 }
