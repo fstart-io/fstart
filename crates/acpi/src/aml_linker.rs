@@ -233,17 +233,24 @@ pub fn scope_vec(path: &str, children: &[u8]) -> Result<Vec<u8>, AmlError> {
 /// Serialize a `Device(name) { body }` object over pre-serialized children.
 ///
 /// The DSL cannot take a runtime device name, so drivers that compose a device
-/// from shared fragments build its body first and wrap it here.
+/// from shared fragments build its body first and wrap it here. `name` is a
+/// bare ACPI name (a path is not meaningful for a device name); shorter names
+/// are padded to the four characters a NameSeg occupies.
 pub fn device_vec(name: &str, body: &[u8]) -> Result<Vec<u8>, AmlError> {
     AmlPath::new(name)?;
+    if name.len() > 4 || name.bytes().any(|b| matches!(b, b'.' | b'\\' | b'^')) {
+        return Err(AmlError::InvalidPath);
+    }
+    let mut name_seg = [b'_'; 4];
+    name_seg[..name.len()].copy_from_slice(name.as_bytes());
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(name.len() + body.len() + 8)
+        .try_reserve_exact(name_seg.len() + body.len() + 8)
         .map_err(|_| AmlError::Capacity)?;
     bytes.extend_from_slice(&[0x5B, 0x82]);
-    let (length, width) = package_length(name.len() + body.len())?;
+    let (length, width) = package_length(name_seg.len() + body.len())?;
     bytes.extend_from_slice(&length[..width]);
-    bytes.extend_from_slice(name.as_bytes());
+    bytes.extend_from_slice(&name_seg);
     bytes.extend_from_slice(body);
     Ok(bytes)
 }
@@ -318,7 +325,15 @@ mod device_vec_tests {
         // ACPI names are up to four characters from A-Z, 0-9 and `_`.
         assert!(device_vec("LPCBB", &[]).is_err());
         assert!(device_vec("LP-B", &[]).is_err());
-        // Shorter names are legitimately padded (`LPC` becomes `LPC_`).
-        assert!(device_vec("LPC", &[]).is_ok());
+        // A device name is a bare name, not a path.
+        assert!(device_vec("LPC.B", &[]).is_err());
+        assert!(device_vec("^LPC", &[]).is_err());
+    }
+
+    #[test]
+    fn short_names_are_padded_to_a_name_seg() {
+        // A NameSeg is exactly four characters: `LPC` becomes `LPC_`.
+        let bytes = device_vec("LPC", &[0x00]).expect("name is valid");
+        assert_eq!(bytes, vec![0x5B, 0x82, 0x06, b'L', b'P', b'C', b'_', 0x00]);
     }
 }
