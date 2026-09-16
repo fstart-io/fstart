@@ -353,6 +353,11 @@ pub const SMM_DEFAULT_SMBASE: u64 = 0x30000;
 pub const SMM_DEFAULT_ENTRY: u64 = SMM_DEFAULT_SMBASE + fstart_smm::layout::SMM_ENTRY_OFFSET;
 /// Temporary stack top for the default-SMRAM entry stub.
 pub const SMM_DEFAULT_ENTRY_STACK_TOP: u64 = SMM_DEFAULT_SMBASE + 0x7000;
+/// Architectural 64 KiB SMM "AB segment" around the default SMBASE: the entry
+/// stub, its stack and the relocation identity tables are written here while
+/// SMM relocates. Platforms must exclude it from OS-visible RAM on every path
+/// that re-runs MP/SMM init, including an S3 resume.
+pub const SMM_DEFAULT_ASEG: (u64, u64) = (SMM_DEFAULT_SMBASE, SMM_DEFAULT_SMBASE + 0x1_0000);
 
 /// `smm_revision` word: at `SMBASE + 0xfefc` in every Intel and AMD64 layout.
 const SMM_REVISION_OFFSET: u64 = 0xfefc;

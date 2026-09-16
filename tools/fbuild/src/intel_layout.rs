@@ -37,6 +37,8 @@ pub(crate) mod tests {
             },
             low_memory: span(0, 0x100000),
             scratch: span(0x2000000, 0x1000000),
+            stage_cache_postcar: span(0x5000000, 0x8000),
+            stage_cache_mainstage: span(0x5008000, 0x80000),
         }
     }
 

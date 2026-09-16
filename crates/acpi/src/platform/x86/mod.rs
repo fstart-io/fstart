@@ -27,6 +27,8 @@ use fstart_core::acpi::AcpiSmiConfig;
 
 use super::FadtConfig;
 
+pub mod wake;
+
 /// x86 platform configuration for ACPI table generation.
 ///
 /// Describes the APIC interrupt controller, optional HPET, and

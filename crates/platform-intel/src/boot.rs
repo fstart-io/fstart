@@ -5,7 +5,7 @@
 //! software chain still authenticates each executable before entry.
 
 use crate::layout::IntelBootLayout;
-use fstart_core::layout::RegionKind;
+use fstart_core::layout::{Region, RegionKind};
 use fstart_core::services::ServiceError;
 use fstart_ffs::root::{BootstrapDescriptor, BootstrapRole};
 use fstart_stage::boot::MemoryWindow;
@@ -70,6 +70,79 @@ pub(crate) fn handoff(
     Ok(stash)
 }
 
+/// Load a bootstrap stage and keep its S3 cache slot coherent.
+///
+/// Cold boot: verify the stage from flash, then copy its compressed body into
+/// the slot. S3 resume: load it from the slot through the same verified path,
+/// which re-checks the stored digest against the freshly authenticated
+/// descriptor. A resume without a usable slot is fatal (reset): resuming a
+/// mixed-revision or corrupted image is never acceptable, and the flash copy
+/// may belong to a flash update that happened while suspended.
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "postcar"))]
+pub(crate) fn load_stage_with_cache(
+    media: &(impl fstart_core::services::BootMedia + ?Sized),
+    stage: fstart_stage::stage_cache::CachedStage,
+    descriptor: &BootstrapDescriptor,
+    window: MemoryWindow,
+    reserved: &[MemoryWindow],
+    slot: Region,
+    resume: bool,
+) -> Result<fstart_stage::boot::VerifiedExecutable, ServiceError> {
+    let policy = fstart_stage::boot::MemoryPolicy {
+        writable: core::slice::from_ref(&window),
+        reserved,
+        entry_alignment: 1,
+    };
+    // SAFETY: the slot span comes from the trusted linked descriptor and is
+    // reserved for this purpose on every boot path. On the resume branch only
+    // a shared view exists; the store's exclusive view is taken below.
+    if resume {
+        let slot_media = unsafe {
+            fstart_core::services::boot_media::MemoryMapped::from_raw_addr(
+                slot.base,
+                slot.size as usize,
+            )
+        };
+        return match fstart_stage::stage_cache::load_from_slot(
+            &slot_media,
+            stage,
+            descriptor,
+            &policy,
+        ) {
+            Some(verified) => {
+                fstart_log::info!("stage cache: {} loaded from slot", stage.name());
+                Ok(verified)
+            }
+            None => {
+                fstart_log::error!(
+                    "stage cache: no valid {} slot on resume; resetting",
+                    stage.name()
+                );
+                fstart_log::flush();
+                fstart_arch::x86_64::system_reset(true)
+            }
+        };
+    }
+
+    // SAFETY: trained DRAM, bounded family-owned window, and all live stage
+    // code/data/stack excluded by `reserved`. The loader verifies final bytes.
+    let verified = unsafe { fstart_stage::boot::load_bootstrap(media, descriptor, &policy) }
+        .map_err(|_| ServiceError::HardwareError)?;
+    // SAFETY: exclusive access is taken only after the loader released its own
+    // destination borrow, and the slot is disjoint from every stage window.
+    let slot_bytes =
+        unsafe { core::slice::from_raw_parts_mut(slot.base as *mut u8, slot.size as usize) };
+    match fstart_stage::stage_cache::store(slot_bytes, stage, media, descriptor) {
+        Ok(()) => fstart_log::info!("stage cache: {} stored", stage.name()),
+        Err(_) => fstart_log::error!(
+            "stage cache: {} slot too small for {} bytes; resume will reset",
+            stage.name(),
+            descriptor.stored_size as u32
+        ),
+    }
+    Ok(verified)
+}
+
 #[cfg(fstart_stage_env = "ram")]
 pub(crate) fn import_intel_directory(
     image_base: u64,
@@ -120,6 +193,34 @@ pub(crate) fn running_reservations(
             .map_err(|_| ServiceError::InvalidParam)?;
     }
     Ok(windows)
+}
+
+/// Exclude everything the firmware rewrites across an S3 resume from the map
+/// handed to the OS: the bootstrap windows, the boot-media arena, the stage
+/// cache slots and the low conventional-memory scratch the resume path uses.
+///
+/// Without this, Linux is free to allocate over the very bytes that postcar
+/// and the ramstage are reloaded into on wake.
+#[cfg(fstart_stage_env = "ram")]
+pub(crate) fn reserve_firmware_memory(
+    e820: &mut fstart_core::services::memory_detect::E820State,
+    geometry: IntelBootLayout<'static>,
+) -> Result<(), ServiceError> {
+    use fstart_core::services::memory_detect::E820Kind;
+    for region in geometry.firmware_owned_regions()? {
+        e820.reserve_range_as(region.base, region.size, E820Kind::Reserved);
+    }
+    // Postcar handoff stash, S3 wake trampoline and SIPI page.
+    e820.reserve_range_as(
+        fstart_arch::x86_64::LOW_SCRATCH_START,
+        fstart_arch::x86_64::LOW_SCRATCH_END - fstart_arch::x86_64::LOW_SCRATCH_START,
+        E820Kind::Reserved,
+    );
+    // Default-SMBASE ASEG: SMM relocation rewrites it during MP init, which
+    // runs again on an S3 resume while the suspended OS image is live.
+    let (aseg_start, aseg_end) = fstart_arch::mp::SMM_DEFAULT_ASEG;
+    e820.reserve_range_as(aseg_start, aseg_end - aseg_start, E820Kind::Reserved);
+    Ok(())
 }
 
 #[cfg(fstart_stage_env = "ram")]

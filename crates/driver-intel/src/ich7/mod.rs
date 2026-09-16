@@ -946,11 +946,19 @@ impl IntelIch7 {
         generic
     }
 
-    /// Detect S3 resume from pmio::PM1_CNT SLP_TYP field.
+    /// Detect S3 resume: PM1_STS.WAK_STS set and PM1_CNT SLP_TYP == S3.
     ///
-    /// Ported from coreboot `southbridge_detect_s3_resume()`.
+    /// Ported from coreboot `platform_is_resuming()` +
+    /// `southbridge_detect_s3_resume()`. The WAK_STS gate matters: PM1_CNT is
+    /// suspend-well and survives G3, so SLP_TYP alone would "resume" from a
+    /// power cut during S3 with dead RAM. Clears SLP_TYP so a later reset
+    /// cold-boots instead of re-detecting resume.
     #[cfg(target_arch = "x86_64")]
     fn detect_s3_resume(&self) -> bool {
+        let pm1_sts = self.pm().read16(pmio::PM1_STS);
+        if pm1_sts & pmio::WAK_STS == 0 {
+            return false;
+        }
         let pm1_cnt = self.pm().read32(pmio::PM1_CNT);
         let slp_typ = pm1_cnt & pmio::SLP_TYP_MASK;
         if slp_typ == SLP_TYP_S3 {
@@ -1239,6 +1247,10 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
     fn finalize_init(&mut self) -> Result<(), ServiceError> {
         IntelIch7::finalize(self);
         Ok(())
+    }
+
+    fn system_reset(&self, hard: bool) -> ! {
+        IntelIch7::system_reset(self, hard)
     }
 }
 
@@ -1667,6 +1679,13 @@ impl IntelIch7 {
             self.pm().write32(pmio::GPE0_STS, 0xffff_ffff);
             // GPE0_EN from board config.
             self.pm().write32(pmio::GPE0_EN, self.config.gpe0_en);
+            // Wake sources that survive S3. RTC and power-button events stay
+            // latched in the suspend well, but the chipset only wakes the
+            // system when the matching PM1_EN bit is set; the OS manages the
+            // wake GPEs, not these. A PC firmware leaves them enabled so an
+            // RTC alarm or a power-button press resumes the machine.
+            self.pm()
+                .write16(pmio::PM1_EN, pmio::RTC_EN | pmio::PWRBTN_EN);
         }
 
         // NMI source control (port 0x61).
