@@ -54,9 +54,14 @@ impl SmiControl for IchSmi {
         self.clear_status();
         self.pm
             .write16(pmio::PM1_EN, pmio::PWRBTN_EN | pmio::GBL_EN);
+        // No `SLP_SMI_EN`: this SMM has no sleep-transition work to do, and
+        // intercepting the OS's sleep write would run a handler during the
+        // machine's most delicate transition. coreboot's ICH7 boards without
+        // SMM do not intercept it either (their SMM sleep handler exists only
+        // to gate the memory reset on newer PCHs).
         self.pm.write32(
             pmio::SMI_EN,
-            pmio::TCO_EN | pmio::APMC_EN | pmio::SLP_SMI_EN | pmio::GBL_SMI_EN | pmio::EOS,
+            pmio::TCO_EN | pmio::APMC_EN | pmio::GBL_SMI_EN | pmio::EOS,
         );
     }
 }
@@ -99,17 +104,24 @@ impl<B: SmmBoardHandler> SmmHandler for IchSmmHandler<B> {
             };
 
             let pm = PmIo::new(pm_base);
-            match ctx.apm_command {
+            // The APM command port keeps its last written value, so a command
+            // may only be consumed when this SMI came from the APM port.
+            // Otherwise the install-time ACPI-disable would replay on every
+            // unrelated SMI (TCO, GPE, sleep) and drop the chipset out of
+            // ACPI mode in the middle of a suspend.
+            let apm_command =
+                (pm.read32(pmio::SMI_STS) & pmio::APM_STS != 0).then_some(ctx.apm_command);
+            match apm_command {
                 // 16-bit PM1a access: QEMU TCG mishandles 32-bit PIO to
                 // ACPI-core PM registers (writes vanish), while 16-bit works
                 // on every engine; SCI_EN is a PM1a bit either way.
-                APM_CNT_ACPI_DISABLE => pm.clrbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
-                APM_CNT_ACPI_ENABLE => pm.setbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
-                APM_CNT_FINALIZE => ctx.set_runtime_flags(SMM_RUNTIME_FLAG_FINALIZED),
+                Some(APM_CNT_ACPI_DISABLE) => pm.clrbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
+                Some(APM_CNT_ACPI_ENABLE) => pm.setbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
+                Some(APM_CNT_FINALIZE) => ctx.set_runtime_flags(SMM_RUNTIME_FLAG_FINALIZED),
                 _ => {}
             }
-            if ctx.apm_command != APM_CNT_FINALIZE {
-                B::on_apmc(ctx, ctx.apm_command);
+            if let Some(command) = apm_command.filter(|command| *command != APM_CNT_FINALIZE) {
+                B::on_apmc(ctx, command);
             }
 
             handle_tco::<B>(ctx, &pm);

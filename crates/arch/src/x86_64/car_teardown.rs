@@ -103,7 +103,10 @@ pub const POSTCAR_STASH_ADDR: u64 = 0x2000;
 pub const POSTCAR_STASH_MAGIC: u32 = 0x5453_4350;
 
 /// Version of the authenticated bootstrap handoff following the MTRR prefix.
-pub const POSTCAR_STASH_VERSION: u32 = 2;
+pub const POSTCAR_STASH_VERSION: u32 = 3;
+
+/// [`PostcarMtrrStash::boot_flags`] bit: the boot is an S3 resume.
+pub const BOOT_FLAG_S3_RESUME: u32 = 1 << 0;
 
 /// Maximum variable-MTRR entries the stash can carry (Core2/Atom have 8;
 /// the table needs 1x low-DRAM WB + ROM WP chunks).
@@ -155,6 +158,10 @@ pub struct PostcarMtrrStash {
     /// Initial locator snapshot, including vendor microcode bounds. This is
     /// predecessor-owned transport, NOT newly signed directory content.
     pub locator: [u8; 40],
+    /// Boot-path flags from the bootblock (`BOOT_FLAG_*`), e.g. S3 resume.
+    pub boot_flags: u32,
+    /// Reserved for 8-byte alignment and future flags; must be zero.
+    pub reserved: u32,
 }
 
 // Assembly consumes only this fixed prefix. Keep Rust/entry offsets coupled.
@@ -199,6 +206,8 @@ pub struct PostcarBootContext {
     pub image_family: [u8; 16],
     pub security_version: u64,
     pub locator: [u8; 40],
+    /// Boot-path flags (`BOOT_FLAG_*`), carried to the mainstage.
+    pub boot_flags: u32,
 }
 
 /// Write the post-CAR MTRR stash to [`POSTCAR_STASH_ADDR`].
@@ -289,6 +298,8 @@ pub unsafe fn write_postcar_stash(
         core::ptr::addr_of_mut!((*stash).image_size).write_volatile(rom_size);
         core::ptr::addr_of_mut!((*stash).ram_end).write_volatile(ram_end);
         core::ptr::addr_of_mut!((*stash).locator).write_volatile(boot.locator);
+        core::ptr::addr_of_mut!((*stash).boot_flags).write_volatile(boot.boot_flags);
+        core::ptr::addr_of_mut!((*stash).reserved).write_volatile(0);
         // Magic last: structural validity is checked before consuming the ABI.
         core::ptr::addr_of_mut!((*stash).magic).write_volatile(POSTCAR_STASH_MAGIC);
     }

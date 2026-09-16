@@ -34,7 +34,7 @@ const D41S_LINUX: fstart_platform_intel::facts::X86LinuxBoot =
         kernel_file: "vmlinuz",
         kernel_load_addr: 0x1000_0000,
         zero_page_addr: 0x0009_0000,
-        bootargs: "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8",
+        bootargs: "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 no_console_suspend",
         print_x86_mtrrs: true,
     };
 

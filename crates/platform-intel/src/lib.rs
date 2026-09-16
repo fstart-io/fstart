@@ -101,6 +101,11 @@ pub fn intel_microcode_blob() -> Option<&'static [u8]> {
 pub trait IntelEarlyPlatform: Sized + 'static {
     /// Log prefix, e.g. `"pineview/ich7"`.
     const NAME: &'static str;
+    /// Re-run native display init (modeset + OpRegion) on the S3 resume path.
+    /// Chipsets whose OS display driver restores the screen leave this false
+    /// so resume skips the modeset flicker.
+    #[cfg(feature = "acpi")]
+    const RESUME_DISPLAY_INIT: bool;
     /// Board-facing chipset policy, built in `.rodata` by the board.
     type Config: IntelChipsetConfig<Northbridge = Self::Northbridge, Southbridge = Self::Southbridge>
         + 'static;

@@ -348,6 +348,8 @@ mod stage {
 
     impl IntelEarlyPlatform for I945Ich7 {
         const NAME: &'static str = "i945/ich7";
+        #[cfg(feature = "acpi")]
+        const RESUME_DISPLAY_INIT: bool = false;
         type Config = I945Ich7Platform;
         type Northbridge = IntelI945;
         type Southbridge = IntelIch7;

@@ -55,6 +55,10 @@ pub enum RegionKind {
     BootstrapRam = 14,
     /// Temporary boot-media arena, distinct from the bootstrap decoder's input.
     BootMediaScratch = 15,
+    /// S3-resident compressed postcar slot (header + body).
+    StageCachePostcar = 16,
+    /// S3-resident compressed mainstage slot (header + body).
+    StageCacheMainstage = 17,
 }
 
 impl RegionKind {
@@ -75,6 +79,8 @@ impl RegionKind {
             13 => Ok(Self::BootstrapMainstage),
             14 => Ok(Self::BootstrapRam),
             15 => Ok(Self::BootMediaScratch),
+            16 => Ok(Self::StageCachePostcar),
+            17 => Ok(Self::StageCacheMainstage),
             _ => Err(Error::UnknownRegionKind),
         }
     }
@@ -145,7 +151,7 @@ impl<'a> Layout<'a> {
             return Err(Error::ReservedBits);
         }
 
-        let mut seen = 0u16;
+        let mut seen = 0u32;
         for record in bytes[HEADER_LEN..].as_chunks::<REGION_LEN>().0 {
             let kind = RegionKind::decode(u16_at(record, 0))?;
             if record[2..8].iter().any(|&b| b != 0) {
@@ -156,7 +162,8 @@ impl<'a> Layout<'a> {
                 return Err(Error::InvalidRange);
             }
             if kind != RegionKind::Reserved {
-                let bit = 1 << kind as u16;
+                // One bit per scalar kind; widen with the kind namespace.
+                let bit = 1u32 << kind as u32;
                 if seen & bit != 0 {
                     return Err(Error::DuplicateRegionKind);
                 }

@@ -111,6 +111,16 @@ pub const LEGACY_USB2_EN: u32 = 1 << 17;
 pub const INTEL_USB2_EN: u32 = 1 << 18;
 
 // -----------------------------------------------------------------------
+// SMI_STS bits (same numbering as the SMI_EN sources)
+// -----------------------------------------------------------------------
+/// Sleep-transition SMI status (a write to `PM1_CNT.SLP_EN`).
+pub const SLP_SMI_STS: u32 = 1 << 4;
+/// APM command port SMI status (a write to `APM_CNT`).
+pub const APM_STS: u32 = 1 << 5;
+/// TCO SMI status.
+pub const TCO_STS: u32 = 1 << 13;
+
+// -----------------------------------------------------------------------
 // GPE0_STS bits (ICH7 32-bit layout)
 // -----------------------------------------------------------------------
 pub const THRM_STS: u32 = 1 << 0;

@@ -110,23 +110,24 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         geometry,
     )?;
     let reserved = crate::boot::running_reservations(geometry)?;
-    // SAFETY: trained DRAM, bounded family-owned postcar window, and all live
-    // bootblock code/data/stack excluded. The loader verifies final bytes.
-    let verified = unsafe {
-        fstart_stage::boot::load_bootstrap(
-            &media,
-            postcar,
-            &fstart_stage::boot::MemoryPolicy {
-                writable: &[postcar_window],
-                reserved: &reserved,
-                entry_alignment: 1,
-            },
-        )
-    }
-    .map_err(|_| ServiceError::HardwareError)?;
+    let postcar_slot = geometry.region(RegionKind::StageCachePostcar)?;
+    let verified = crate::boot::load_stage_with_cache(
+        &media,
+        fstart_stage::stage_cache::CachedStage::Postcar,
+        postcar,
+        postcar_window,
+        &reserved,
+        postcar_slot,
+        boot_path == BootPath::S3Resume,
+    )?;
 
     // Explicit wire bytes avoid coupling the assembly MTRR ABI to Rust types.
     // The low handoff page is disjoint from both family bootstrap windows.
+    let boot_flags = if boot_path == BootPath::S3Resume {
+        fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME
+    } else {
+        0
+    };
     let published = unsafe {
         fstart_arch::x86_64::car_teardown::write_postcar_stash(
             ram_end,
@@ -138,6 +139,7 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
                 image_family: root.root().image_family,
                 security_version: root.root().security_version,
                 locator: locator_bytes,
+                boot_flags,
             },
         )
     };

@@ -114,6 +114,11 @@ pub struct IntelReservations {
     pub low_memory: Span,
     /// Boot-media arena, not the bootstrap decoder's appended compressed input.
     pub scratch: Span,
+    /// S3-resident compressed postcar slot, written on cold boot and read on
+    /// resume. Sized above the stage's compressed body, asserted at assembly.
+    pub stage_cache_postcar: Span,
+    /// S3-resident compressed mainstage slot (see `stage_cache_postcar`).
+    pub stage_cache_mainstage: Span,
 }
 
 impl IntelReservations {
@@ -167,6 +172,8 @@ impl IntelReservations {
             ("ramstage writable", self.ramstage.writable),
             ("low memory", self.low_memory),
             ("scratch", self.scratch),
+            ("stage cache postcar", self.stage_cache_postcar),
+            ("stage cache mainstage", self.stage_cache_mainstage),
         ];
         let regions: Vec<_> = [("bootblock image", self.bootblock.image)]
             .into_iter()
@@ -273,6 +280,10 @@ impl IntelReservations {
             self.ramstage
                 .load_window()?
                 .region(RegionKind::BootstrapMainstage),
+            self.stage_cache_postcar
+                .region(RegionKind::StageCachePostcar),
+            self.stage_cache_mainstage
+                .region(RegionKind::StageCacheMainstage),
         ];
         if let Some(heap) = stage.heap_span() {
             regions.push(heap.region(RegionKind::Heap));

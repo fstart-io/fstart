@@ -208,4 +208,22 @@ pub trait IntelSouthbridgeDriver: Sized {
     }
     fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
     fn finalize_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+
+    /// Reset the system through the generic x86 CF9 port. Southbridges with
+    /// sticky CF9 side state (e.g. ICH7's ETR3) override this to clear it.
+    /// Used on unrecoverable S3-resume paths (no wake vector, invalid stage
+    /// cache); never returns.
+    fn system_reset(&self, hard: bool) -> ! {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: the CF9 port is the architected x86 reset register; writing
+        // it is the point of this function.
+        unsafe {
+            fstart_core::pio::outb(0xCF9, 0x00);
+            fstart_core::pio::outb(0xCF9, if hard { 0x06 } else { 0x02 });
+        }
+        let _ = hard;
+        loop {
+            core::hint::spin_loop();
+        }
+    }
 }

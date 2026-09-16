@@ -44,6 +44,11 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     let (firmware_base, firmware_size) = mainstage.ctx.firmware_region();
     let boot_media =
         fstart_stage::fixed_helpers::MemoryMappedFfs::new(firmware_base, firmware_size);
+    // S3 resume is bootblock policy transported through the postcar stash.
+    let resume = crate::boot::handoff(firmware_base, firmware_size)
+        .map(|stash| stash.boot_flags & fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME != 0)
+        .unwrap_or(false);
+    mainstage.resume = resume;
     // Postcar authenticated our initialized image before entry. Import only
     // the bounded directory reference, then retain its verified bytes in RAM.
     // Drivers use the published verified asset service, not a new signature.
@@ -54,6 +59,12 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     // Neither metadata phase performs chipset/device initialization.
     run_mainstage_phase(platform, "publish_boot_media", || boot_media.mount());
     run_mainstage_phase(platform, "pre_bus_scan", || mainstage.pre_bus_scan());
+    // Reserve the firmware's own windows before any loader policy or table
+    // allocation reads the map: on resume the OS may not own the bytes the
+    // next boot reloads postcar and the ramstage into.
+    run_mainstage_phase(platform, "reserve_firmware_memory", || {
+        mainstage.reserve_firmware_memory()
+    });
     run_mainstage_phase(platform, "load_memory_policy", || {
         mainstage.refresh_load_policy()
     });
@@ -65,10 +76,24 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     });
     run_mainstage_phase(platform, "verify_boot_media", || boot_media.verify());
     // The graphics OpRegion and modeset read the VBT out of the verified boot
-    // media, so they run only after verification.
+    // media, so they run only after verification. On S3 resume the platform
+    // decides: Intel skips the modeset, the OS display driver restores it.
     run_mainstage_phase(platform, "display_init", || {
+        if mainstage.resume && !B::Platform::RESUME_DISPLAY_INIT {
+            fstart_log::info!("{} mainstage: display init skipped on S3 resume", platform);
+            return Ok(());
+        }
         mainstage.northbridge.post_verify_init()
     });
+    // The OS wake vector must be read from the *surviving* FACS before the
+    // table set is re-emitted: rebuild zeroes it (coreboot runs
+    // BS_OS_RESUME_CHECK before BS_WRITE_TABLES for the same reason).
+    #[cfg(feature = "acpi")]
+    let wake_vector = if resume {
+        fstart_acpi::platform::x86::wake::find_wakeup_vector()
+    } else {
+        None
+    };
     run_mainstage_phase(platform, "emit_tables", || mainstage.emit_tables());
     // Table allocation changes the memory map; payload loads must respect it.
     run_mainstage_phase(platform, "load_memory_policy", || {
@@ -78,6 +103,33 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
 
     // Leave the legacy keyboard controller quiet before the payload/OS probes it.
     fstart_driver_superio::quiesce_i8042_for_os();
+
+    #[cfg(feature = "acpi")]
+    if resume {
+        match wake_vector {
+            Some(vector) => {
+                fstart_log::info!("{}: resuming OS at wake vector {:#x}", platform, vector);
+                fstart_log::flush();
+                fstart_arch::x86_64::s3_wake::jump_to_wakeup_vector(vector);
+            }
+            None => {
+                // Decided policy: no valid vector means the surviving tables
+                // are unusable; come up cleanly instead of booting over the
+                // suspended OS image.
+                fstart_log::error!("{}: S3 resume without a wake vector, resetting", platform);
+                fstart_log::flush();
+                mainstage.southbridge().system_reset(true);
+            }
+        }
+    }
+    #[cfg(not(feature = "acpi"))]
+    if resume {
+        // S3 needs ACPI (FACS wake vector); without tables there is nothing
+        // to resume into.
+        fstart_log::error!("{}: S3 resume without ACPI, resetting", platform);
+        fstart_log::flush();
+        mainstage.southbridge().system_reset(true);
+    }
 
     B::Payload::boot(mainstage)
 }
@@ -122,6 +174,9 @@ where
     geometry: layout::IntelBootLayout<'static>,
     console_node: &'static str,
     max_cpus: u16,
+    /// S3 resume: the OS wake vector is where this boot ends, and hardware
+    /// that survived in RAM must not be reinitialized blindly.
+    pub resume: bool,
     /// Board-declared direct Linux payload, when the plan selected one.
     #[cfg_attr(not(feature = "payload-linux"), allow(dead_code))]
     linux: Option<crate::facts::X86LinuxBoot>,
@@ -153,6 +208,7 @@ where
             geometry,
             console_node: B::console_node(),
             max_cpus: B::CONFIG.max_cpus(),
+            resume: false,
             // The very constant the host plan packaged the payload with: the
             // launcher cannot jump anywhere the image was not built for.
             linux: B::FACTS.linux,
@@ -233,6 +289,12 @@ where
 
     fn refresh_load_policy(&self) -> Result<(), ServiceError> {
         install_intel_load_policy(self.ctx.e820(), self.geometry)
+    }
+
+    /// Mark the firmware's bootstrap windows, boot-media arena, stage cache
+    /// slots and low scratch as reserved for the OS and for later loads.
+    fn reserve_firmware_memory(&mut self) -> Result<(), ServiceError> {
+        crate::boot::reserve_firmware_memory(self.ctx.e820_state_mut(), self.geometry)
     }
 
     fn bus_scan(&mut self) -> Result<(), ServiceError> {

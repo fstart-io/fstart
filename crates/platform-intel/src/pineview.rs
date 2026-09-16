@@ -289,6 +289,8 @@ mod stage {
 
     impl IntelEarlyPlatform for PineviewIch7 {
         const NAME: &'static str = "pineview/ich7";
+        #[cfg(feature = "acpi")]
+        const RESUME_DISPLAY_INIT: bool = false;
         type Config = PineviewIch7Platform;
         type Northbridge = IntelPineview;
         type Southbridge = IntelIch7;

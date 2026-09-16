@@ -351,6 +351,8 @@ mod stage {
 
     impl IntelEarlyPlatform for Gm965Ich8 {
         const NAME: &'static str = "gm965/ich8";
+        #[cfg(feature = "acpi")]
+        const RESUME_DISPLAY_INIT: bool = false;
         type Config = Gm965Ich8Platform;
         type Northbridge = IntelGm965;
         type Southbridge = IntelIch8;

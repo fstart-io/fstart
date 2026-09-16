@@ -55,18 +55,16 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
                 firmware_size,
             )
         };
-        let verified = unsafe {
-            fstart_stage::boot::load_bootstrap(
-                &media,
-                &descriptor,
-                &fstart_stage::boot::MemoryPolicy {
-                    writable: &[window],
-                    reserved: &reserved,
-                    entry_alignment: 1,
-                },
-            )
-        }
-        .map_err(|_| ServiceError::HardwareError)?;
+        let resume = stash.boot_flags & fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME != 0;
+        let verified = crate::boot::load_stage_with_cache(
+            &media,
+            fstart_stage::stage_cache::CachedStage::Mainstage,
+            &descriptor,
+            window,
+            &reserved,
+            geometry.region(RegionKind::StageCacheMainstage)?,
+            resume,
+        )?;
         Ok(verified.entry())
     })();
     let Ok(entry) = entry else {

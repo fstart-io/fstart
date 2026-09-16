@@ -19,9 +19,42 @@
 
 #![allow(clippy::doc_lazy_continuation)]
 
+/// Reset the system through the architected x86 CF9 reset register.
+///
+/// Used by early stages that have no chipset driver bound (e.g. the postcar
+/// rejecting an invalid S3 resume). Southbridge drivers that must clear
+/// sticky reset side state override this with their own sequence.
+///
+/// # Safety of the operation
+/// CF9 is the architected reset port on every IA-32 platform fstart supports;
+/// the write sequence is the documented one (clear, then request reset).
+pub fn system_reset(hard: bool) -> ! {
+    unsafe {
+        fstart_core::pio::outb(0xCF9, 0x00);
+        fstart_core::pio::outb(0xCF9, if hard { 0x06 } else { 0x02 });
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 pub mod car;
 pub mod car_teardown;
 pub mod cpuid;
+pub mod s3_wake;
+
+/// Conventional-memory window the x86 stages use across an S3 resume and AP
+/// bring-up: the postcar handoff stash
+/// ([`car_teardown::POSTCAR_STASH_ADDR`], 0x2000) and the SIPI trampoline page
+/// (0x8000). Platforms must exclude it from OS-visible RAM: on resume the
+/// firmware rewrites these bytes while the suspended OS image is live.
+///
+/// Starts at 0x1000 because the real-mode IVT/BDA below it is reserved by
+/// every consumer already; [`s3_wake::WAKEUP_BASE`] (0x600) is inside that
+/// first page.
+pub const LOW_SCRATCH_START: u64 = 0x1000;
+/// End of [`LOW_SCRATCH_START`], exclusive.
+pub const LOW_SCRATCH_END: u64 = 0x9000;
 
 use crate::x86::mtrr;
 use fstart_core::services::memory_detect::E820Entry;
