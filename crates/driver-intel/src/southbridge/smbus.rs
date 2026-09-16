@@ -55,7 +55,7 @@ const I801_QUICK: u8 = 0 << 2;
 const I801_BYTE: u8 = 1 << 2;
 const I801_BYTE_DATA: u8 = 2 << 2;
 const I801_WORD_DATA: u8 = 3 << 2;
-
+const I801_BLOCK_DATA: u8 = 5 << 2;
 // ---------------------------------------------------------------------------
 // Host status register bits
 // ---------------------------------------------------------------------------
@@ -79,11 +79,18 @@ const SMBHSTSTS_NON_COMPLETION: u8 =
 
 const SMBHSTCNT_START: u8 = 1 << 6;
 
+/// Abort the transaction in progress (PIIX4/ICH host-control KILL bit).
+const SMBHSTCNT_KILL: u8 = 1 << 1;
+
 // ---------------------------------------------------------------------------
 // Timeout (spin-loop iterations)
 // ---------------------------------------------------------------------------
 
 const SMBUS_TIMEOUT: u32 = 10_000_000;
+
+/// Maximum data bytes in one SMBus block transfer (SMBus 2.0 limit). The
+/// transfer additionally carries the device's count byte.
+pub const SMBUS_BLOCK_MAXLEN: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Address encoding
@@ -109,6 +116,9 @@ const fn xmit_write(addr: u8) -> u8 {
 /// [`I801SmBus::enable_on_i801`] (auto-configure via PCI config space).
 pub struct I801SmBus {
     base: u16,
+    /// Config-space coordinates of the controller, when known. Used to
+    /// diagnose and recover a controller left busy by a stuck transaction.
+    bdf: Option<(u8, u8, u8)>,
 }
 
 // SAFETY: All state is CPU-exclusive during firmware; I/O port access
@@ -119,7 +129,7 @@ unsafe impl Sync for I801SmBus {}
 impl I801SmBus {
     /// Create a driver with a known I/O base.
     pub const fn new(base: u16) -> Self {
-        Self { base }
+        Self { base, bdf: None }
     }
 
     #[inline(always)]
@@ -144,7 +154,10 @@ impl I801SmBus {
         smbus_pci.write32(HOSTC, HST_EN);
         let cmd = smbus_pci.read16(PCI_COMMAND);
         smbus_pci.write16(PCI_COMMAND, cmd | PCI_CMD_IO);
-        let s = Self { base: smbus_base };
+        let s = Self {
+            base: smbus_base,
+            bdf: Some((bus, dev, func)),
+        };
         s.host_reset();
         fstart_log::info!("i801-smbus: enabled at I/O base {:#x}", smbus_base);
         s
@@ -153,15 +166,39 @@ impl I801SmBus {
     /// Reset the SMBus host controller.
     ///
     /// Disables interrupts and clears any lingering status bits so
-    /// new transactions can run.
+    /// new transactions can run. A block transfer that never completes (a
+    /// device that does not answer) leaves HOST_BUSY set and no status bit to
+    /// clear, so abort it explicitly with the controller's KILL bit first;
+    /// without that the bus stays wedged for every later transaction.
     pub fn host_reset(&self) {
         #[cfg(target_arch = "x86_64")]
         {
             let regs = self.regs();
+            regs.control().set(SMBHSTCNT_KILL);
             regs.control().set(0);
             let stat = regs.status().get();
             regs.status().set(stat);
         }
+    }
+
+    /// Log the controller's config-space state, so a controller that refuses
+    /// to become idle can be told apart from an undecoded I/O BAR.
+    fn log_pci_state(&self, why: &str) {
+        #[cfg(target_arch = "x86_64")]
+        if let Some((bus, dev, func)) = self.bdf {
+            let pci = ecam::EcamDevice::new(bus, dev, func);
+            fstart_log::warn!(
+                "i801-smbus: {}: vid/did {:#06x}/{:#06x} cmd {:#06x} base {:#010x} hostc {:#010x}",
+                why,
+                pci.read16(0x00),
+                pci.read16(0x02),
+                pci.read16(0x04),
+                pci.read32(0x20),
+                pci.read32(0x40)
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = why;
     }
 
     /// Spin until the host controller is not busy.
@@ -176,6 +213,19 @@ impl I801SmBus {
                 }
                 loops -= 1;
                 if loops == 0 {
+                    // A previous transaction may have been left in flight (a
+                    // device that stopped answering). Abort it and try once
+                    // more instead of declaring the bus dead.
+                    fstart_log::warn!(
+                        "i801-smbus: controller busy (sts {:#04x} ctl {:#04x})",
+                        self.regs().status().get(),
+                        self.regs().control().get()
+                    );
+                    self.log_pci_state("busy controller");
+                    self.host_reset();
+                    if self.regs().status().get() & SMBHSTSTS_HOST_BUSY == 0 {
+                        return Ok(());
+                    }
                     fstart_log::error!("i801-smbus: timeout waiting for not-busy");
                     return Err(ServiceError::Timeout);
                 }
@@ -298,6 +348,144 @@ impl I801SmBus {
         Err(ServiceError::HardwareError)
     }
 
+    /// Start a block transaction and service its byte engine.
+    ///
+    /// The controller raises BYTE_DONE for every byte it is ready to hand over
+    /// or collect, and finishes the transaction itself once the device's byte
+    /// count is reached. Bytes must be serviced as they are requested — waiting
+    /// for completion first deadlocks the controller, which then keeps
+    /// HOST_BUSY set across resets and wedges the whole bus.
+    fn block_cmd_loop(
+        &self,
+        buf: &mut [u8],
+        max_bytes: usize,
+        write: bool,
+    ) -> Result<usize, ServiceError> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let regs = self.regs();
+            // A write announces the byte count it will send; a read starts
+            // from the count byte the device sends.
+            regs.data0().set(if write { max_bytes as u8 } else { 0 });
+            // BYTE_DONE is raised before the host can be serviced, so the
+            // first byte is loaded before the command is started.
+            if write {
+                regs.block_data().set(buf[0]);
+            }
+            let ctl = regs.control().get();
+            regs.control().set(ctl | SMBHSTCNT_START);
+
+            let mut bytes = 0usize;
+            let mut status = 0u8;
+            let mut loops = SMBUS_TIMEOUT;
+            loop {
+                status = regs.status().get();
+                if status & SMBHSTSTS_BYTE_DONE != 0 {
+                    if write {
+                        bytes += 1;
+                        if bytes < max_bytes {
+                            regs.block_data().set(buf[bytes]);
+                        }
+                    } else {
+                        if bytes < max_bytes {
+                            buf[bytes] = regs.block_data().get();
+                        }
+                        bytes += 1;
+                    }
+                    // Acknowledge the byte so the engine fetches the next one.
+                    // Only this bit is written, as the controller expects.
+                    regs.status().set(SMBHSTSTS_BYTE_DONE);
+                }
+                let completion = status & !SMBHSTSTS_NON_COMPLETION;
+                if completion != 0 && status & SMBHSTSTS_HOST_BUSY == 0 {
+                    regs.status().set(status);
+                    if completion & SMBHSTSTS_ERROR != 0 {
+                        fstart_log::error!("i801-smbus: block error, status={:#x}", status);
+                        return Err(ServiceError::HardwareError);
+                    }
+                    return Ok(bytes);
+                }
+                loops -= 1;
+                if loops == 0 {
+                    fstart_log::error!(
+                        "i801-smbus: block transfer did not complete, status={:#x}",
+                        status
+                    );
+                    return Err(ServiceError::Timeout);
+                }
+                core::hint::spin_loop();
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (buf, max_bytes, write);
+            Err(ServiceError::HardwareError)
+        }
+    }
+
+    /// Read a block via I801_BLOCK_DATA (SMBus Block Read).
+    ///
+    /// `buf[0]` receives the device's count byte and the following bytes its
+    /// data. Returns the number of bytes received, count byte included.
+    pub fn read_block_data(
+        &self,
+        addr: u8,
+        cmd: u8,
+        buf: &mut [u8],
+    ) -> Result<usize, ServiceError> {
+        let max_bytes = buf.len().min(SMBUS_BLOCK_MAXLEN);
+        if max_bytes == 0 {
+            return Err(ServiceError::InvalidParam);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.setup_command(I801_BLOCK_DATA, xmit_read(addr))?;
+            self.regs().command().set(cmd);
+            let moved = self.block_cmd_loop(&mut buf[..max_bytes], max_bytes, false)?;
+            // The device announces its length; a short read is a failed
+            // transaction rather than a short block.
+            let announced = self.regs().data0().get() as usize;
+            if moved < announced {
+                fstart_log::error!(
+                    "i801-smbus: block read got {} of {} bytes",
+                    moved as u32,
+                    announced as u32
+                );
+                return Err(ServiceError::HardwareError);
+            }
+            Ok(moved)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        Err(ServiceError::HardwareError)
+    }
+
+    /// Write a block via I801_BLOCK_DATA (SMBus Block Write).
+    ///
+    /// `data[0]` is the count byte the device will see, followed by that many
+    /// data bytes.
+    pub fn write_block_data(&self, addr: u8, cmd: u8, data: &[u8]) -> Result<(), ServiceError> {
+        if data.is_empty() || data.len() > SMBUS_BLOCK_MAXLEN {
+            return Err(ServiceError::InvalidParam);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut scratch = [0u8; SMBUS_BLOCK_MAXLEN];
+            scratch[..data.len()].copy_from_slice(data);
+            self.setup_command(I801_BLOCK_DATA, xmit_write(addr))?;
+            self.regs().command().set(cmd);
+            let moved = self.block_cmd_loop(&mut scratch[..data.len()], data.len(), true)?;
+            if moved < data.len() {
+                fstart_log::error!(
+                    "i801-smbus: block write sent {} of {} bytes",
+                    moved as u32,
+                    data.len() as u32
+                );
+                return Err(ServiceError::HardwareError);
+            }
+        }
+        Ok(())
+    }
+
     /// Write a 16-bit word via I801_WORD_DATA command.
     pub fn write_word_data(&self, addr: u8, cmd: u8, val: u16) -> Result<(), ServiceError> {
         self.setup_command(I801_WORD_DATA, xmit_write(addr))?;
@@ -324,5 +512,11 @@ impl SmBus for I801SmBus {
     }
     fn write_word(&mut self, addr: u8, cmd: u8, value: u16) -> Result<(), ServiceError> {
         self.write_word_data(addr, cmd, value)
+    }
+    fn block_read(&mut self, addr: u8, cmd: u8, buf: &mut [u8]) -> Result<usize, ServiceError> {
+        self.read_block_data(addr, cmd, buf)
+    }
+    fn block_write(&mut self, addr: u8, cmd: u8, data: &[u8]) -> Result<(), ServiceError> {
+        self.write_block_data(addr, cmd, data)
     }
 }

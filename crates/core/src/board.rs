@@ -175,6 +175,8 @@ pub enum UefiBuildProfile {
     /// Existing non-graphical CrabEFI capabilities.
     #[default]
     Full,
+    /// Full CrabEFI capabilities plus the graphical boot manager and setup UI.
+    Ui,
     /// Normal runtime services without TPM, xHCI, UEFI Secure Boot or SPI tools.
     Basic,
 }

@@ -37,7 +37,6 @@ pub struct PineviewIch7Config {
     pub usb: Option<UsbConfig>,
     pub hda: Option<HdaConfig>,
     pub gpio: gpio::GpioConfig,
-    pub ck505_pre_raminit: bool,
     /// Maximum logical CPU count (BSP + APs) the board populates.
     pub max_cpus: u16,
     /// Date (`MM/DD/YYYY`) written back to the RTC when it lost power: the same
@@ -58,7 +57,6 @@ impl PineviewIch7Config {
             usb: None,
             hda: None,
             gpio: gpio::GpioConfig::new(),
-            ck505_pre_raminit: false,
             max_cpus: 1,
             rtc_default_date: ich7::IntelIch7Config::new().rtc_default_date,
         }
@@ -72,7 +70,6 @@ impl PineviewIch7Config {
         config.epbar = PINEVIEW_EPBAR;
         config.ecam_base = PINEVIEW_ECAM_BASE;
         config.igd = self.igd;
-        config.ck505_pre_raminit = self.ck505_pre_raminit;
         config
     }
 
@@ -165,11 +162,6 @@ impl PineviewIch7Config {
             self.gpio.pins = self.gpio.pins.push(pins[idx]);
             idx += 1;
         }
-        self
-    }
-    #[must_use]
-    pub const fn ck505_pre_raminit(mut self, enabled: bool) -> Self {
-        self.ck505_pre_raminit = enabled;
         self
     }
     #[must_use]

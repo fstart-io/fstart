@@ -12,7 +12,8 @@ bundle-bootblock = ["stage", "fstart-stage/x86_64", "fstart-stage/x86-static-pag
 bundle-postcar = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/lz4"]
 bundle-ramstage = ["stage", "acpi", "mp", "smbios", "fstart-driver-intel/display", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/lz4", "fstart-stage/acpi"]
 bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin"]
-payload-uefi = ["fstart-stage/crabefi"]
+payload-uefi = ["payload-uefi-basic", "fstart-stage/crabefi"]
+payload-uefi-ui = ["payload-uefi", "fstart-stage/crabefi-ui"]
 payload-uefi-basic = ["fstart-stage/crabefi-basic"]
 # Direct Linux payload: the ramstage loads a bzImage from FFS and enters it
 # through the x86 boot protocol instead of handing off to a UEFI firmware.

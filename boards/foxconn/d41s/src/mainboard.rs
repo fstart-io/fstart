@@ -93,10 +93,26 @@ impl IntelEarlyBoardHooks<PineviewIch7> for D41SMainboard {
     }
 
     fn after_memory(&mut self, ctx: &mut IntelEarlyCtx<PineviewIch7>) -> Result<(), ServiceError> {
+        // The clock generator feeds the display reference and PCIe/USB clocks.
+        // Programming it is required for a correct picture, but a failure must
+        // not stop the boot: log it and carry on so the payload can still be
+        // brought up and the failure is visible in the log.
         let southbridge = ctx.southbridge();
-        let mut ck505 = I2cCk505::new_at_address(crate::d41s_ck505_config(), crate::CK505_ADDR)
-            .map_err(ServiceError::from)?;
-        ck505.init_on_smbus(southbridge).map_err(ServiceError::from)
+        match I2cCk505::new_at_address(crate::d41s_ck505_config(), crate::CK505_ADDR) {
+            Ok(mut ck505) => match ck505.init_on_smbus(southbridge) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    let _ = err;
+                    fstart_log::error!("d41s: clock generator programming failed");
+                    Ok(())
+                }
+            },
+            Err(err) => {
+                let _ = err;
+                fstart_log::error!("d41s: invalid clock generator config");
+                Ok(())
+            }
+        }
     }
 }
 

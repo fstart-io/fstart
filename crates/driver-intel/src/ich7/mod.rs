@@ -1299,6 +1299,24 @@ impl SmBus for IntelIch7 {
     fn write_byte(&mut self, addr: u8, cmd: u8, value: u8) -> Result<(), ServiceError> {
         self.smbus_mut().write_byte(addr, cmd, value)
     }
+
+    fn read_word(&mut self, addr: u8, cmd: u8) -> Result<u16, ServiceError> {
+        self.smbus_mut().read_word(addr, cmd)
+    }
+
+    fn write_word(&mut self, addr: u8, cmd: u8, value: u16) -> Result<(), ServiceError> {
+        self.smbus_mut().write_word(addr, cmd, value)
+    }
+
+    // The controller implements these protocols; without the forwarding the
+    // trait default would report them unsupported.
+    fn block_read(&mut self, addr: u8, cmd: u8, buf: &mut [u8]) -> Result<usize, ServiceError> {
+        self.smbus_mut().block_read(addr, cmd, buf)
+    }
+
+    fn block_write(&mut self, addr: u8, cmd: u8, data: &[u8]) -> Result<(), ServiceError> {
+        self.smbus_mut().block_write(addr, cmd, data)
+    }
 }
 
 impl LpcBaseProvider for IntelIch7 {

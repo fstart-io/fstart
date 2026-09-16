@@ -507,6 +507,19 @@ impl IgdDisplay {
             framebuffer: policy.framebuffer,
             vbt,
         };
+        // Report what the DDC/GMBUS/EDID path yields before the modeset: on
+        // Pineview the GMBUS unit's clock gate must be un-gated for the read to
+        // complete at all, and a failed read silently degrades to the fixed
+        // board mode.
+        match fstart_intel_gma::edid_mode(&addresses.to_gma_resources(), &config) {
+            Ok(mode) => fstart_log::info!(
+                "intel-igd: EDID preferred mode {}x{}@{}kHz",
+                mode.hdisplay,
+                mode.vdisplay,
+                mode.pixel_clock_khz
+            ),
+            Err(_) => fstart_log::warn!("intel-igd: no EDID mode from DDC (read failed)"),
+        }
         match fstart_intel_gma::init(&addresses.to_gma_resources(), &config) {
             Ok(GmaInitResult { framebuffer }) => {
                 fstart_log::info!(

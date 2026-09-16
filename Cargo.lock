@@ -251,6 +251,7 @@ dependencies = [
  "linked_list_allocator",
  "log",
  "mem-barrier",
+ "noto-sans-mono-bitmap",
  "object 0.39.1",
  "pci_types",
  "r-efi",
@@ -1019,6 +1020,12 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+
+[[package]]
+name = "noto-sans-mono-bitmap"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc"
 
 [[package]]
 name = "num-bigint-dig"

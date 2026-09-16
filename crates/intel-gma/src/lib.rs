@@ -566,7 +566,12 @@ pub(crate) fn choose_mode(
     }
 }
 
-fn edid_mode(resources: &GmaResources, config: &GmaInitConfig<'_>) -> Result<Mode, GmaError> {
+/// Select a mode from the connector's EDID over DDC.
+///
+/// Exposed so the chipset driver can report what the DDC/GMBUS path actually
+/// returned: with the bus misconfigured this fails quietly and mode selection
+/// falls back to the board's fixed mode, which looks identical on screen.
+pub fn edid_mode(resources: &GmaResources, config: &GmaInitConfig<'_>) -> Result<Mode, GmaError> {
     let port = selected_enabled_port(config.outputs)?;
     let caps = caps_for(config.cpu);
     if let Some(detect) = initialize_port_detect(resources, config.cpu)
@@ -584,6 +589,16 @@ fn edid_mode(resources: &GmaResources, config: &GmaInitConfig<'_>) -> Result<Mod
         if !caps.has_gmbus {
             return Err(GmaError::UnsupportedPlatform);
         }
+        // On Pineview the GMBUS unit's clock is gated by default and DDC
+        // transfers never complete until it is un-gated (Linux
+        // `pnv_gmbus_clock_gating`, which toggles `DSPCLK_GATE_D` bit 24 around
+        // every transfer). Without this the EDID read times out and mode
+        // selection silently falls back to the board's fixed mode.
+        let gate = if caps.requires_pineview_gmbus_clock_wa {
+            gmbus::GmbusClockGate::Pineview
+        } else {
+            gmbus::GmbusClockGate::None
+        };
         // SAFETY: `resources.validate()` has accepted the display MMIO BAR before
         // mode selection, and the shared init path only runs after chipset code has
         // mapped/decoded that BAR. Split-PCH platforms use the PCH GMBUS register
@@ -594,7 +609,8 @@ fn edid_mode(resources: &GmaResources, config: &GmaInitConfig<'_>) -> Result<Mod
             } else {
                 gmbus::HardwareGmbus::gmch(resources.gtt_mmio_base, pin)
             }
-        };
+        }
+        .with_clock_gate(gate);
         gmbus::read_edid_modes(&mut bus, port, &mut storage, &mut extension_storage)?
     };
     modes.first().copied().ok_or(GmaError::ModeUnavailable)

@@ -41,6 +41,7 @@ pub fn system_reset(hard: bool) -> ! {
 pub mod car;
 pub mod car_teardown;
 pub mod cpuid;
+pub mod paging;
 pub mod s3_wake;
 
 /// Conventional-memory window the x86 stages use across an S3 resume and AP
@@ -54,7 +55,14 @@ pub mod s3_wake;
 /// first page.
 pub const LOW_SCRATCH_START: u64 = 0x1000;
 /// End of [`LOW_SCRATCH_START`], exclusive.
-pub const LOW_SCRATCH_END: u64 = 0x9000;
+pub const LOW_SCRATCH_END: u64 = 0xf000;
+
+/// Physical address of the DRAM-backed identity page tables postcar builds.
+///
+/// Inside the reserved low-scratch window, above the postcar stash (0x2000) and
+/// the SIPI trampoline page (0x8000), and below the EBDA. It must stay reserved:
+/// the tables are live until the payload replaces CR3.
+pub const PAGE_TABLES_ADDR: u64 = 0x9000;
 
 use crate::x86::mtrr;
 use fstart_core::services::memory_detect::E820Entry;

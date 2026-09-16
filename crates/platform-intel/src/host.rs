@@ -211,6 +211,7 @@ pub fn resolve(
             features.push(
                 match facts.uefi_build_profile {
                     fstart_core::board::UefiBuildProfile::Full => "payload-uefi",
+                    fstart_core::board::UefiBuildProfile::Ui => "payload-uefi-ui",
                     fstart_core::board::UefiBuildProfile::Basic => "payload-uefi-basic",
                 }
                 .into(),
@@ -371,12 +372,18 @@ mod tests {
             .unwrap()
         };
         let full = select(FACTS);
+        let ui = select(FACTS.with_uefi_build_profile(UefiBuildProfile::Ui));
         let basic = select(FACTS.with_uefi_build_profile(UefiBuildProfile::Basic));
         assert_eq!(full.stages[2].features, ["bundle-ramstage", "payload-uefi"]);
+        assert_eq!(
+            ui.stages[2].features,
+            ["bundle-ramstage", "payload-uefi-ui"]
+        );
         assert_eq!(
             basic.stages[2].features,
             ["bundle-ramstage", "payload-uefi-basic"]
         );
+        assert_eq!(full.reservations.flash, ui.reservations.flash);
         assert_eq!(full.reservations.flash, basic.reservations.flash);
         assert_eq!(
             full.reservations.ramstage.image,
