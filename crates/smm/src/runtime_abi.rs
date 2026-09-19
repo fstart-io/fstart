@@ -15,6 +15,11 @@ pub const SMM_PLATFORM_INTEL_ICH: u32 = 1;
 /// ICH7 has one 32-bit GPE0 block at PMBASE+0x28. ICH8 and newer split
 /// GPE0_STS into low/high dwords at PMBASE+0x20/0x24, with GPE0_EN at 0x28.
 pub const SMM_PLATFORM_FLAG_ICH_GPE0_64BIT: u32 = 1 << 0;
+/// Dispatch shared chipset SMI state only on logical CPU 0.
+///
+/// Pineview/ICH7 cannot use the normal locked exchange in TSEG without
+/// stalling, so secondary CPUs return after entering the permanent handler.
+pub const SMM_PLATFORM_FLAG_BSP_ONLY: u32 = 1 << 1;
 
 /// Index of the Intel ICH PMBASE value in [`SmmEntryParams::platform_data`].
 pub const SMM_PLATFORM_DATA_ICH_PM_BASE: usize = 0;

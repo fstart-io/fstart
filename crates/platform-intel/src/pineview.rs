@@ -287,6 +287,8 @@ mod stage {
         type Northbridge = IntelPineview;
         type Southbridge = IntelIch7;
         #[cfg(feature = "mp")]
+        const SMM_BSP_ONLY_DISPATCH: bool = true;
+        #[cfg(feature = "mp")]
         type Cpu = PineviewCpuDriver;
         #[cfg(feature = "mp")]
         fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {

@@ -147,7 +147,12 @@ fn init_mp<P: IntelEarlyPlatform>(
     // happens in pre-CAR assembly; the blob sits in boot flash.
     let cpu = P::cpu_driver(crate::intel_microcode_blob());
     let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
-    let smm = fstart_arch::cpu_intel::smm::IntelSmm::new(P::NAME, northbridge, southbridge);
+    let smm = fstart_arch::cpu_intel::smm::IntelSmm::new(
+        P::NAME,
+        northbridge,
+        southbridge,
+        P::SMM_BSP_ONLY_DISPATCH,
+    );
     fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
         cpu_drivers: &drivers,
         smm: crate::SMM_IMAGE.map(|_| &smm as &dyn fstart_arch::mp::SmmOps),

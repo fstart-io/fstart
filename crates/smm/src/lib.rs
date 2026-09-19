@@ -28,8 +28,8 @@ pub use layout::{
 };
 pub use runtime::{
     CorebootModuleArgs, SMM_PLATFORM_DATA_ICH_GPE0_STS_OFFSET, SMM_PLATFORM_DATA_ICH_PM_BASE,
-    SMM_PLATFORM_FLAG_ICH_GPE0_64BIT, SMM_PLATFORM_INTEL_ICH, SMM_PLATFORM_NONE, SmmEntryParams,
-    SmmRuntime,
+    SMM_PLATFORM_FLAG_BSP_ONLY, SMM_PLATFORM_FLAG_ICH_GPE0_64BIT, SMM_PLATFORM_INTEL_ICH,
+    SMM_PLATFORM_NONE, SmmEntryParams, SmmRuntime,
 };
 #[cfg(feature = "stage-bin")]
 pub use stage::{SmmStageBoard, handle};

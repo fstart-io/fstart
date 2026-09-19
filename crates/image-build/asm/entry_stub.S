@@ -134,9 +134,13 @@ gdtr:
 
 gdt:
 	.quad 0x0000000000000000
-	.quad 0x00cf9a000000ffff /* 32-bit flat code */
-	.quad 0x00cf92000000ffff /* flat data */
-	.quad 0x00af9a0000000000 /* 64-bit flat code */
+	/* SMM entry may execute from cache-disabled memory. Pre-set descriptor
+	 * accessed bits, as coreboot/Linux do, so the mode switch does not depend
+	 * on a GDT write before the first protected-mode instruction.
+	 */
+	.quad 0x00cf9b000000ffff /* 32-bit flat code */
+	.quad 0x00cf93000000ffff /* flat data */
+	.quad 0x00af9b0000000000 /* 64-bit flat code */
 gdt_end:
 
 pm_far_ptr:

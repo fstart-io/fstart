@@ -361,7 +361,7 @@ mod stage {
             let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
             let smi = crate::q35_smm::ich9_smi();
             let smm_flow =
-                fstart_arch::cpu_intel::smm::IntelSmm::new("Q35", &self.hostbridge, &smi);
+                fstart_arch::cpu_intel::smm::IntelSmm::new("Q35", &self.hostbridge, &smi, false);
             let smm = SMM_IMAGE.map(|_| &smm_flow as &dyn fstart_arch::mp::SmmOps);
             if smm.is_some() {
                 // Locking SMM hides TSEG from non-SMM access. Firmware

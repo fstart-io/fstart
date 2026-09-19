@@ -44,6 +44,10 @@ impl SmiControl for IchSmi {
         self.gpe0
     }
 
+    fn disable_acpi_mode(&self) {
+        self.pm.clrbits16(pmio::PM1_CNT, pmio::SCI_EN as u16);
+    }
+
     fn enable_relocation_smi(&self) {
         self.pm.reset_smi_status();
         self.pm
