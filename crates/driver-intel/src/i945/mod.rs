@@ -1067,11 +1067,11 @@ impl IntelI945 {
     /// The Video BIOS places the 256 KiB GTT page table below the top of low
     /// memory, and the display engine cannot translate framebuffer addresses
     /// until `PGETBL_CTL` enables it.
-    fn gtt_setup(&self, gtt_mmio: u64) {
+    fn gtt_setup(&self, gtt_mmio: u64) -> bool {
         let tolud = self.tolud();
         if tolud < I945_GTT_SIZE {
             fstart_log::error!("intel-i945: TOLUD too low for a GTT page table");
-            return;
+            return false;
         }
         let gtt_base = tolud - I945_GTT_SIZE;
         super::igd::program_gtt_base(
@@ -1079,9 +1079,16 @@ impl IntelI945 {
             gtt_base,
             super::igd::PGETBL_ENABLED | I945_GTT_256_KIB_FLAG,
         );
+        if super::igd::mmio_read32(gtt_mmio, super::igd::PGETBL_CTL) & super::igd::PGETBL_ENABLED
+            == 0
+        {
+            fstart_log::error!("intel-i945: GTT page table did not enable");
+            return false;
+        }
         // Gen3 keeps the page table in stolen memory, which the CPU addresses
         // directly, so PTEs are written at the physical base.
         super::igd::clear_gtt_table(u64::from(gtt_base), I945_GTT_SIZE);
+        true
     }
 
     /// Enable the IGD function and hand the display engine to the shared GMA
@@ -1108,9 +1115,15 @@ impl IntelI945 {
             timeout -= 1;
             core::hint::spin_loop();
         }
+        if (igd.read8(IGD_GDRST) & 1) != 0 {
+            fstart_log::error!("intel-i945: graphics reset timed out, skipping display");
+            return;
+        }
 
         self.igd_panel_setup(bars.gtt_mmio);
-        self.gtt_setup(bars.gtt_mmio);
+        if !self.gtt_setup(bars.gtt_mmio) {
+            return;
+        }
 
         let stolen_base = self.igd_stolen_base();
         let addresses = super::igd::IgdAddresses {

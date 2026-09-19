@@ -50,10 +50,7 @@ impl GenerationOps for I945 {
         // SAFETY: the framebuffer surface was selected from validated GMADR
         // aperture/stolen-memory resources and mapped into the GTT immediately
         // above, so the CPU-visible aperture covers this surface.
-        // Test pattern instead of opaque black: the board's display init used to
-        // succeed while painting black, which is indistinguishable from a dead
-        // signal. Bars prove the scanout.
-        unsafe { ctx.surface.fill_test_bars()? };
+        unsafe { ctx.surface.fill_opaque_black()? };
 
         // libgfxinit's i945 `Connectors.Pre_On` is a no-op; the LVDS port
         // register is written by `Post_On` after the PLL and pipe are up.
@@ -197,11 +194,11 @@ const fn plane_cursor_for_pipe(pipe: Pipe) -> Result<usize, GmaError> {
 
 const fn pipe_regs(pipe: Pipe) -> Result<(usize, usize), GmaError> {
     match pipe {
-        // (timing block base, PIPECONF): PIPECONF is the +0x18 slot of the
-        // same block. Writing it at 0x70008 (the Gen2 address) left the real
-        // pipe disabled while the read-back check still passed.
-        Pipe::A => Ok((0x60000, 0x60018)),
-        Pipe::B => Ok((0x61000, 0x61018)),
+        // Gen3 timing registers live at 0x60000/0x61000, but PIPECONF is in
+        // the transcoder block. Linux, coreboot and libgfxinit all define the
+        // Gen3 PIPEACONF/PIPEBCONF registers at 0x70008/0x71008.
+        Pipe::A => Ok((0x60000, 0x70008)),
+        Pipe::B => Ok((0x61000, 0x71008)),
         Pipe::C => Err(GmaError::InvalidConfig),
     }
 }
@@ -249,14 +246,14 @@ fn program_pipe(mmio: &Mmio, pipe: Pipe, mode: Mode, port: Port) -> Result<(), G
     timing.vsync.set(pipe_config.vsync());
     timing.pipesrc.set(pipe_config.pipesrc());
     pipeconf.set(PIPECONF::ENABLE::SET.value | pipeconf_bpc_bits(port));
-    // No read-back check here. In the vendor's own working configuration for
-    // this board (coreboot + libgfxinit, Analog port at 1920x1080) this register
-    // slot reads back zero, so requiring the enable bit to stick fails on a
-    // healthy pipe and aborts the whole bring-up before the plane and output
-    // port are programmed -- which is exactly what it did. Write it and carry on;
-    // the plane and port state in the register dump shows whether it took.
-    let _ = pipeconf.get();
-    Ok(())
+    // Gen3 has no i965-style active-status bit, but the programmed enable bit
+    // must read back. A failure here means the decoded display MMIO window is
+    // not accepting the modeset.
+    if pipeconf.is_set(PIPECONF::ENABLE) {
+        Ok(())
+    } else {
+        Err(GmaError::HardwareError)
+    }
 }
 
 fn program_primary_plane(ctx: &GmaContext<'_>, pipe: Pipe, _port: Port) -> Result<(), GmaError> {
@@ -363,6 +360,8 @@ mod tests {
         );
         assert_eq!(legacy_pll_for_pipe(Pipe::A).unwrap(), LegacyPll::A);
         assert_eq!(legacy_pll_for_pipe(Pipe::B).unwrap(), LegacyPll::B);
+        assert_eq!(pipe_regs(Pipe::A).unwrap(), (0x60000, 0x70008));
+        assert_eq!(pipe_regs(Pipe::B).unwrap(), (0x61000, 0x71008));
         assert!(legacy_pll_for_pipe(Pipe::C).is_err());
     }
 }

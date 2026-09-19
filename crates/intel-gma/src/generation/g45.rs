@@ -12,7 +12,7 @@ use crate::generation::{GenerationOps, sealed};
 use crate::gtt;
 use crate::mmio::{Mmio, delay_us};
 use crate::mode::Mode;
-use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::interfaces::{Readable, Writeable};
 
 use crate::GmaContext;
 use crate::panel::{
@@ -519,7 +519,12 @@ fn disable_pipe_state(mmio: &Mmio, cpu: Cpu, pipe: Pipe) {
 }
 
 pub(crate) fn legacy_vga_plane_off(mmio: &Mmio) {
-    vga_sequencer_screen_off();
+    vga_disable_legacy_decode();
+    // Linux waits for the legacy decode change to settle before resetting
+    // VGACNTRL.  The shorter libgfxinit delay has proven insufficient on some
+    // older display engines.
+    delay_us(300);
+
     // SAFETY: `GMCH_VGACNTRL_OFFSET` is the fixed legacy VGA control register
     // in the validated GMCH display MMIO BAR.
     let vga_control = unsafe {
@@ -527,33 +532,42 @@ pub(crate) fn legacy_vga_plane_off(mmio: &Mmio) {
             GMCH_VGACNTRL_OFFSET,
         )
     };
-    vga_control.modify(VGACNTRL::VGA_DISPLAY_DISABLE::SET);
+    vga_control.set(VGACNTRL::VGA_DISPLAY_DISABLE::SET.value);
     let _ = vga_control.get();
-    delay_us(100);
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn vga_sequencer_screen_off() {
+fn vga_disable_legacy_decode() {
     const VGA_SEQ_INDEX: u16 = 0x3c4;
     const VGA_SEQ_DATA: u16 = 0x3c5;
     const VGA_SEQ_CLOCKING_MODE: u8 = 0x01;
     const VGA_SEQ_SCREEN_OFF: u8 = 1 << 5;
+    const VGA_MISC_READ: u16 = 0x3cc;
+    const VGA_MISC_WRITE: u16 = 0x3c2;
+    const VGA_MISC_COLOR_IO: u8 = 1 << 0;
+    const VGA_MISC_MEMORY_ACCESS: u8 = 1 << 1;
 
-    let current: u8;
-    // SAFETY: VGA sequencer index/data ports are the architectural legacy VGA
-    // I/O registers. This helper only sets SR01 bit 5 to blank legacy VGA
-    // scanout before MMIO modesetting, matching libgfxinit's legacy VGA off
-    // sequence on x86 platforms.
+    let sequencer: u8;
+    let misc: u8;
+    // SAFETY: these are the architectural legacy VGA I/O registers. Blank the
+    // sequencer, disable VGA memory decode and select monochrome I/O decode
+    // before disabling the MMIO VGA plane, following Linux's Gen3 teardown.
     unsafe {
         core::arch::asm!("out dx, al", in("dx") VGA_SEQ_INDEX, in("al") VGA_SEQ_CLOCKING_MODE);
-        core::arch::asm!("in al, dx", in("dx") VGA_SEQ_DATA, out("al") current);
+        core::arch::asm!("in al, dx", in("dx") VGA_SEQ_DATA, out("al") sequencer);
         core::arch::asm!("out dx, al", in("dx") VGA_SEQ_INDEX, in("al") VGA_SEQ_CLOCKING_MODE);
-        core::arch::asm!("out dx, al", in("dx") VGA_SEQ_DATA, in("al") current | VGA_SEQ_SCREEN_OFF);
+        core::arch::asm!("out dx, al", in("dx") VGA_SEQ_DATA, in("al") sequencer | VGA_SEQ_SCREEN_OFF);
+        core::arch::asm!("in al, dx", in("dx") VGA_MISC_READ, out("al") misc);
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") VGA_MISC_WRITE,
+            in("al") misc & !(VGA_MISC_COLOR_IO | VGA_MISC_MEMORY_ACCESS)
+        );
     }
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn vga_sequencer_screen_off() {}
+fn vga_disable_legacy_decode() {}
 
 /// Program a legacy GMCH primary plane, following libgfxinit
 /// `Setup_Hires_Plane`.

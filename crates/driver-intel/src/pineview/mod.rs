@@ -28,7 +28,7 @@ use fstart_core::services::MemoryController;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_core::services::{ServiceError, SmBus};
-use fstart_intel_gma::types::{Cpu, PciAddress};
+use fstart_intel_gma::types::{Cpu, PciAddress, Port};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
 use fstart_pci::{
@@ -66,8 +66,10 @@ pub struct PineviewIgdConfig {
     pub use_crt: bool,
     /// Enable the LVDS panel output.
     pub use_lvds: bool,
-    /// Enable PLL spread spectrum.
-    pub spread_spectrum: bool,
+    /// IGD stolen memory size in MiB.
+    ///
+    /// Pineview supports 8, 16, 32, 48, 64, 128, or 256 MiB.
+    pub stolen_memory_mb: u16,
     /// Where the VBT for the OpRegion comes from.
     pub vbt: super::igd::VbtSource,
     /// GMADR graphics aperture size in bytes.
@@ -78,6 +80,23 @@ pub struct PineviewIgdConfig {
 
 const fn default_gmadr_size() -> u32 {
     256 * 1024 * 1024
+}
+
+const fn default_stolen_memory_mb() -> u16 {
+    8
+}
+
+const fn pineview_gms(stolen_memory_mb: u16) -> Option<u16> {
+    match stolen_memory_mb {
+        8 => Some(3),
+        16 => Some(4),
+        32 => Some(5),
+        48 => Some(6),
+        64 => Some(7),
+        128 => Some(8),
+        256 => Some(9),
+        _ => None,
+    }
 }
 
 /// Pineview northbridge configuration.
@@ -113,7 +132,7 @@ impl PineviewIgdConfig {
         Self {
             use_crt: false,
             use_lvds: false,
-            spread_spectrum: false,
+            stolen_memory_mb: default_stolen_memory_mb(),
             vbt: super::igd::VbtSource::LEGACY,
             gmadr_size: default_gmadr_size(),
             display: None,
@@ -312,8 +331,25 @@ impl IntelPineview {
         // integrated graphics function stays disabled: its display registers
         // and its DDC/GMBUS unit do not respond.
         hb.deven.set((1 << 0) | (1 << 3) | (1 << 4));
-        // GGC: 1 MiB GTT (GGMS=1), 8 MiB stolen (GMS=3).
-        hb.ggc.set((1 << 8) | (3 << 4));
+        // GGC: Pineview uses a fixed 1 MiB GTT reservation (GGMS=1), while
+        // the board chooses the stolen framebuffer reservation through GMS.
+        let (stolen_memory_mb, gms) = match pineview_gms(self.config.igd.stolen_memory_mb) {
+            Some(gms) => (self.config.igd.stolen_memory_mb, gms),
+            None => {
+                fstart_log::error!(
+                    "pineview: unsupported stolen_memory_mb={}, using 8 MiB",
+                    self.config.igd.stolen_memory_mb
+                );
+                (default_stolen_memory_mb(), 3)
+            }
+        };
+        hb.ggc.set((1 << 8) | (gms << 4));
+        fstart_log::info!(
+            "pineview: IGD stolen={} MiB GMS={} GGC={:#06x}",
+            stolen_memory_mb as u32,
+            gms as u32,
+            hb.ggc.get() as u32
+        );
 
         // Graphics clock dividers.
         const CRCLK_PINEVIEW: u32 = 0x02;
@@ -333,7 +369,13 @@ impl IntelPineview {
             0x4 => 0xAD_u16, // 2666 MHz
             0x0 => 0xA0,     // 3200 MHz
             0x1 => 0xAD,     // 4000 MHz
-            _ => 0xA0,
+            _ => {
+                fstart_log::error!(
+                    "pineview: unsupported HPLLVCO encoding {}, leaving IGD core clock field clear",
+                    hpllvco as u32
+                );
+                0
+            }
         };
         let igd = ecam::EcamDevice::new(0, 2, 0);
         let cc_val = igd.read16(0xCC) & !0x1FF;
@@ -788,6 +830,35 @@ impl IntelPineview {
         self.igd().read16(0) != 0xffff
     }
 
+    fn igd_matches_platform(&self) -> bool {
+        const INTEL_VENDOR_ID: u16 = 0x8086;
+        const PINEVIEW_IGD_ID: u16 = 0xa001;
+        const PINEVIEW_M_IGD_ID: u16 = 0xa011;
+
+        let igd = self.igd();
+        let expected = if self.platform_type() == raminit::PLATFORM_MOBILE {
+            PINEVIEW_M_IGD_ID
+        } else {
+            PINEVIEW_IGD_ID
+        };
+        igd.read16(0) == INTEL_VENDOR_ID && igd.read16(2) == expected
+    }
+
+    fn display_policy_matches_electrical_config(&self) -> bool {
+        let Some(policy) = self.config.igd.display.as_ref() else {
+            return true;
+        };
+        policy
+            .outputs
+            .iter()
+            .filter(|output| output.enabled)
+            .all(|output| match output.port {
+                Port::Vga => self.config.igd.use_crt,
+                Port::Lvds => self.config.igd.use_lvds,
+                _ => false,
+            })
+    }
+
     fn igd_memory_size_kb(&self) -> u32 {
         let ggc = self.hostbridge_regs().ggc.get();
         let gms = ((ggc >> 4) & 0xF) as usize;
@@ -891,6 +962,21 @@ impl IntelPineview {
     /// engine cannot translate framebuffer addresses.
     fn gma_display_init(&mut self, vbt: Option<&[u8]>) {
         let igd = self.igd();
+        if !self.igd_matches_platform() {
+            fstart_log::error!(
+                "pineview: unexpected IGD {:04x}:{:04x} for platform type {}, skipping display",
+                igd.read16(0) as u32,
+                igd.read16(2) as u32,
+                self.platform_type() as u32
+            );
+            return;
+        }
+        if !self.display_policy_matches_electrical_config() {
+            fstart_log::error!(
+                "pineview: display outputs contradict use_crt/use_lvds electrical configuration"
+            );
+            return;
+        }
 
         // Re-programming the enumerated windows moves the GMCH register
         // block, which follows the BAR, away from the window the PCH side is
@@ -964,17 +1050,16 @@ impl IntelPineview {
             ("PGETBL_CTL", 0x2020),
             // Linux `DSPCLK_GATE_D`: holds the GMBUS unit clock gate.
             ("DSPCLK_GATE_D", 0x6200),
-            // Verified against coreboot + libgfxinit driving this board at
-            // 1920x1080 on the Analog port: the timing block starts at 0x60000,
-            // and PIPECONF is the +0x18 slot (which coreboot's dump table
-            // leaves unlabelled and mislabels everything after).
+            // The timing block starts at 0x60000, while PIPECONF lives in the
+            // separate transcoder block at 0x70008 (Linux `_TRANSACONF`,
+            // coreboot `_PIPEACONF`, libgfxinit `PIPEACONF`).
             ("HTOTAL_A", 0x60000),
             ("HBLANK_A", 0x60004),
             ("HSYNC_A", 0x60008),
             ("VTOTAL_A", 0x6000c),
             ("VBLANK_A", 0x60010),
             ("VSYNC_A", 0x60014),
-            ("PIPECONF_A", 0x60018),
+            ("PIPECONF_A", 0x70008),
             ("PIPESRC_A", 0x6001c),
             ("DPLL_A", 0x6014),
             ("FPA0", 0x6040),
@@ -986,7 +1071,7 @@ impl IntelPineview {
             ("DSPASIZE", 0x70190),
             ("DSPASURF", 0x7019c),
             ("ADPA", 0x61100),
-            ("PIPECONF_B", 0x61000),
+            ("PIPECONF_B", 0x71008),
             ("DPLL_B", 0x6018),
             ("DSPBCNTR", 0x71180),
             ("DSPBLINOFF", 0x71184),

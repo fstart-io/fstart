@@ -232,37 +232,6 @@ impl SurfaceConfig {
         Ok(())
     }
 
-    /// Fill the visible surface with vertical colour bars.
-    ///
-    /// The board's own init clears to opaque black, which looks identical to
-    /// having no signal at all. Bars make the scanout verifiable by eye and
-    /// expose stride or pixel-format mistakes, which a solid fill would hide.
-    pub unsafe fn fill_test_bars(&self) -> Result<(), GmaError> {
-        self.validate_fits(self.required_bytes()?)?;
-        const BARS: [u32; 8] = [
-            0xffff_ffff, // white
-            0xffff_ff00, // yellow
-            0xff00_ffff, // cyan
-            0xff00_ff00, // green
-            0xffff_00ff, // magenta
-            0xffff_0000, // red
-            0xff00_00ff, // blue
-            0xff00_0000, // black
-        ];
-        let base = self.base_addr as *mut u32;
-        let stride = self.stride as usize;
-        let width = self.width as usize;
-        for y in 0..self.height as usize {
-            for x in 0..width {
-                let bar = x * BARS.len() / width.max(1);
-                // SAFETY: caller guarantees the framebuffer mapping covers the
-                // visible surface; `validate_fits` checked the stride arithmetic.
-                unsafe { base.add(y * stride + x).write_volatile(BARS[bar]) };
-            }
-        }
-        Ok(())
-    }
-
     /// Convert to fstart's generic framebuffer handoff structure.
     pub const fn to_framebuffer_info(self) -> FramebufferInfo {
         match self.pixel_format {
