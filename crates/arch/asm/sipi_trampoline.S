@@ -14,6 +14,8 @@
 .set DATA_SEL, 0x10
 .set CODE64_SEL, 0x18
 .set CR0_PE, 1
+.set CR0_NW, (1 << 29)
+.set CR0_CD, (1 << 30)
 .set CR4_PAE, (1 << 5)
 .set EFER_MSR, 0xc0000080
 .set EFER_LME, (1 << 8)
@@ -41,7 +43,10 @@ fstart_sipi_start:
 	movl %cr0, %eax
 	orl $CR0_PE, %eax
 	movl %eax, %cr0
-	ljmpl *%cs:(pm_far_ptr - fstart_sipi_start)
+	/* Match coreboot's startup vector: transfer directly to the flat code
+	 * selector without another memory access in the mode-switch window.
+	 */
+	ljmpl $CODE32_SEL, $(SIPI_BASE + prot32 - fstart_sipi_start)
 
 .balign 4
 .code32
@@ -68,6 +73,11 @@ prot32:
 	movl SIPI_BASE + fstart_sipi_stack_size - fstart_sipi_start, %ecx
 	imull %ecx, %ebx
 	addl SIPI_BASE + fstart_sipi_stack_base - fstart_sipi_start, %ebx
+	/* A tail jump into the Rust entry must present the SysV function-entry
+	 * alignment (RSP % 16 == 8), as if a return address had been pushed.
+	 */
+	andl $-16, %ebx
+	subl $8, %ebx
 	movl %ebx, %esp
 
 	movl %cr4, %eax
@@ -86,7 +96,13 @@ prot32:
 	orl $CR0_PG, %eax
 	movl %eax, %cr0
 
-	ljmpl *(SIPI_BASE + lm_far_ptr - fstart_sipi_start)
+	/* INIT starts the AP with caching disabled. The page tables and trampoline
+	 * are now DRAM-visible, so join normal cache coherency before entering Rust.
+	 */
+	andl $~(CR0_CD | CR0_NW), %eax
+	movl %eax, %cr0
+
+	ljmpl $CODE64_SEL, $(SIPI_BASE + long64 - fstart_sipi_start)
 
 .balign 16
 .code64
@@ -107,18 +123,12 @@ gdtr:
 
 gdt:
 	.quad 0x0000000000000000
-	.quad 0x00cf9a000000ffff /* 32-bit flat code */
-	.quad 0x00cf92000000ffff /* flat data */
-	.quad 0x00af9a0000000000 /* 64-bit flat code */
+	/* Keep the accessed bit set, matching coreboot/Linux startup GDTs. This
+	 * avoids a descriptor-table write during the fragile AP mode switch. */
+	.quad 0x00cf9b000000ffff /* 32-bit flat code */
+	.quad 0x00cf93000000ffff /* flat data */
+	.quad 0x00af9b0000000000 /* 64-bit flat code */
 gdt_end:
-
-pm_far_ptr:
-	.long SIPI_BASE + prot32 - fstart_sipi_start
-	.word CODE32_SEL
-
-lm_far_ptr:
-	.long SIPI_BASE + long64 - fstart_sipi_start
-	.word CODE64_SEL
 
 .balign 8
 fstart_sipi_cr3:
