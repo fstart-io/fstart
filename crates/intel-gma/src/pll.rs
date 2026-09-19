@@ -406,10 +406,25 @@ pub(crate) fn program_legacy_pll(
     fp0_reg.set(fp);
     fp1_reg.set(fp);
 
-    dpll_reg.set(encode_legacy_dpll(cpu, port, clock));
-    dpll_reg.set(dpll_reg.get() | DPLL::VCO_ENABLE::SET.value);
+    let enabled_dpll = encode_legacy_dpll(cpu, port, clock) | DPLL::VCO_ENABLE::SET.value;
+
+    // Linux documents a Gen2/Gen3 hardware requirement here: VGA mode must be
+    // enabled while changing P1/P2, otherwise the register can show the new
+    // divisors while the PLL continues using the old ones.
+    dpll_reg.set(enabled_dpll & !DPLL_VGA_MODE_DIS);
+    dpll_reg.set(enabled_dpll);
     let _ = dpll_reg.get();
     delay_us(150);
+
+    // On Gen3 the pixel multiplier shares DPLL, and can only latch after the
+    // clock is stable.  Rewrite it once, then repeat the final value three
+    // times with warm-up delays, matching Linux's i9xx_enable_pll sequence.
+    dpll_reg.set(enabled_dpll);
+    for _ in 0..3 {
+        dpll_reg.set(enabled_dpll);
+        let _ = dpll_reg.get();
+        delay_us(150);
+    }
 }
 
 fn encode_legacy_fp(cpu: Cpu, clock: LegacyClock) -> u32 {
@@ -569,6 +584,18 @@ mod tests {
             (1u32 << (clock.p1 - 1)) << DPLL_PINEVIEW_P1_DIVIDER_SHIFT
         );
         assert_eq!(dpll & DPLL_MODE_DAC, DPLL_MODE_DAC);
+    }
+
+    #[test]
+    fn pineview_enabled_dpll_can_transition_through_vga_mode() {
+        let clock = find_legacy_clock(Cpu::Pineview, Port::Vga, Mode::XGA_1024X768_60).unwrap();
+        let enabled = encode_legacy_dpll(Cpu::Pineview, Port::Vga, clock) | DPLL_VCO_ENABLE;
+        let transition = enabled & !DPLL_VGA_MODE_DIS;
+
+        assert_eq!(enabled & DPLL_VCO_ENABLE, DPLL_VCO_ENABLE);
+        assert_eq!(enabled & DPLL_VGA_MODE_DIS, DPLL_VGA_MODE_DIS);
+        assert_eq!(transition & DPLL_VCO_ENABLE, DPLL_VCO_ENABLE);
+        assert_eq!(transition & DPLL_VGA_MODE_DIS, 0);
     }
 
     #[test]

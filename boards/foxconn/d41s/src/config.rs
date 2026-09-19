@@ -161,7 +161,7 @@ pub const fn d41s_igd_config() -> PineviewIgdConfig {
     PineviewIgdConfig {
         use_crt: true,
         use_lvds: false,
-        spread_spectrum: false,
+        stolen_memory_mb: 8,
         vbt: VbtSource::ffs(D41S_VBT),
         gmadr_size: 256 * 1024 * 1024,
         display: Some(D41S_DISPLAY),
