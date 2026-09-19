@@ -1061,6 +1061,9 @@ impl crate::southbridge::smi::SmiControl for IntelIch7 {
     fn gpe0(&self) -> crate::southbridge::smi::Gpe0Block {
         self.smi().gpe0()
     }
+    fn disable_acpi_mode(&self) {
+        self.smi().disable_acpi_mode();
+    }
     fn enable_relocation_smi(&self) {
         self.smi().enable_relocation_smi();
     }

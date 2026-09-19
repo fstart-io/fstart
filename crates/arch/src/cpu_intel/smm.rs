@@ -12,10 +12,6 @@
 use crate::mp::{SmmError, SmmInfo, SmmOps};
 use core::cell::UnsafeCell;
 
-/// APM command port; writing the ACPI-disable command after the permanent
-/// handler is installed matches coreboot's `*_set_acpi_mode()` on a normal boot.
-const APM_CNT: u16 = 0x00b2;
-const APM_CNT_ACPI_DISABLE: u8 = 0x1e;
 /// EM64T101 save-state area size (QEMU's AMD64 save state is the same size).
 const SAVE_STATE_SIZE: usize = 0x400;
 
@@ -37,6 +33,9 @@ pub trait SmiControl {
     fn pm_base(&self) -> u16;
     /// GPE0 status block as the SMM runtime expects it.
     fn gpe0(&self) -> Gpe0Block;
+    /// Clear SCI_EN directly before permanent SMM is enabled. Doing this from
+    /// normal firmware avoids an unnecessary broadcast SMI during setup.
+    fn disable_acpi_mode(&self);
     /// Clear stale status and enable only what the relocation SMI needs
     /// (APMC + global SMI).
     fn enable_relocation_smi(&self);
@@ -92,13 +91,24 @@ pub struct IntelSmm<'a, NB: SmramControl, SB: SmiControl> {
     name: &'static str,
     smram: &'a NB,
     smi: &'a SB,
+    bsp_only_dispatch: bool,
 }
 
 impl<'a, NB: SmramControl, SB: SmiControl> IntelSmm<'a, NB, SB> {
     /// Compose the flow from a northbridge and a southbridge; `name` prefixes
     /// log lines.
-    pub const fn new(name: &'static str, smram: &'a NB, smi: &'a SB) -> Self {
-        Self { name, smram, smi }
+    pub const fn new(
+        name: &'static str,
+        smram: &'a NB,
+        smi: &'a SB,
+        bsp_only_dispatch: bool,
+    ) -> Self {
+        Self {
+            name,
+            smram,
+            smi,
+            bsp_only_dispatch,
+        }
     }
 }
 
@@ -153,13 +163,12 @@ impl<NB: SmramControl, SB: SmiControl> SmmOps for IntelSmm<'_, NB, SB> {
     }
 
     fn post_smm_init(&self) {
+        // Do not use the APM command to leave ACPI mode here: an APM SMI is
+        // broadcast to every logical CPU, while the next flight-plan step
+        // deliberately proves the permanent handler one CPU at a time.
+        self.smi.disable_acpi_mode();
         self.smram.smram_close();
         self.smi.enable_permanent_smi();
-        // Have the freshly installed handler clear PM1_CNT.SCI_EN and the
-        // stale PM/GPE/TCO status. The FADT advertises the ACPI-enable
-        // command, so the OS re-enables SCI only once ACPICA owns it.
-        // SAFETY: APM_CNT is the architectural APM command port.
-        unsafe { fstart_core::pio::outb(APM_CNT, APM_CNT_ACPI_DISABLE) };
         self.smram.smram_lock();
         fstart_log::info!("{} SMM: permanent SMI enabled and SMRAM locked", self.name);
     }
@@ -187,11 +196,10 @@ impl<NB: SmramControl, SB: SmiControl> IntelSmm<'_, NB, SB> {
                     page_table_size: 0,
                     cr3: crate::x86::controlregs::cr3(),
                     platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
-                    platform_flags: if gpe0.wide {
-                        fstart_smm::SMM_PLATFORM_FLAG_ICH_GPE0_64BIT
-                    } else {
-                        0
-                    },
+                    platform_flags: u32::from(gpe0.wide)
+                        * fstart_smm::SMM_PLATFORM_FLAG_ICH_GPE0_64BIT
+                        | u32::from(self.bsp_only_dispatch)
+                            * fstart_smm::SMM_PLATFORM_FLAG_BSP_ONLY,
                     platform_data: [
                         u64::from(self.smi.pm_base()),
                         u64::from(gpe0.sts_offset),
@@ -236,6 +244,18 @@ impl<NB: SmramControl, SB: SmiControl> IntelSmm<'_, NB, SB> {
             );
             SmmError::InstallFailed
         })?;
+
+        // SMM entry begins with caching disabled on this generation. Ensure the
+        // permanent image, per-CPU stubs and default-SMBASE relocation area are
+        // in DRAM before either the BSP or an AP takes its first SMI.
+        unsafe {
+            crate::x86::writeback_cache_range(info.smbase as *const u8, info.smsize);
+            let (default_base, default_end) = crate::mp::SMM_DEFAULT_ASEG;
+            crate::x86::writeback_cache_range(
+                default_base as *const u8,
+                (default_end - default_base) as usize,
+            );
+        }
 
         fstart_log::info!(
             "{} SMM: installed image common={:#x} entry={:#x} cpus={}",

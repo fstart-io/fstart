@@ -2,8 +2,8 @@
 use core::panic::PanicInfo;
 
 use crate::{
-    SMM_PLATFORM_NONE, SmmContext, SmmHandler, debug_trace, obtain_handler_lock,
-    release_handler_lock, wait_for_handler_unlock,
+    SMM_PLATFORM_FLAG_BSP_ONLY, SMM_PLATFORM_NONE, SmmContext, SmmHandler, debug_trace,
+    obtain_handler_lock, release_handler_lock, wait_for_handler_unlock,
 };
 
 pub use crate::SmmEntryParams;
@@ -66,14 +66,27 @@ pub unsafe fn handle<B: SmmStageBoard>(params: *mut SmmEntryParams) {
             return;
         };
 
+        let bsp_only = ctx.params.platform_flags & SMM_PLATFORM_FLAG_BSP_ONLY != 0;
+
+        // Pineview/ICH7 stalls on locked exchanges against TSEG. Its broadcast
+        // SMIs therefore dispatch shared southbridge state only on the BSP;
+        // secondary CPUs still prove their private entry and RSM paths.
+        if bsp_only && ctx.params.cpu != 0 {
+            debug_trace(ctx.params.cpu);
+            return;
+        }
+
         ctx.record_entry();
 
-        if let Some(runtime) = ctx.runtime_mut() {
-            if !obtain_handler_lock(runtime) {
-                wait_for_handler_unlock(runtime);
-                debug_trace(ctx.params.cpu);
-                return;
-            }
+        // Platforms without the Pineview restriction retain the normal shared
+        // handler lock, including Q35 and ICH8 systems.
+        if !bsp_only
+            && let Some(runtime) = ctx.runtime_mut()
+            && !obtain_handler_lock(runtime)
+        {
+            wait_for_handler_unlock(runtime);
+            debug_trace(ctx.params.cpu);
+            return;
         }
 
         match ctx.params.platform_kind {
@@ -84,7 +97,7 @@ pub unsafe fn handle<B: SmmStageBoard>(params: *mut SmmEntryParams) {
 
         debug_trace(ctx.params.cpu);
 
-        if let Some(runtime) = ctx.runtime_mut() {
+        if !bsp_only && let Some(runtime) = ctx.runtime_mut() {
             release_handler_lock(runtime);
         }
     }
