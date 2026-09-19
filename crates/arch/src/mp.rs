@@ -1052,6 +1052,11 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
         patch_u64(dst, sipi_blob::STACK_BASE_OFFSET, stack_base);
         patch_u32(dst, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
         patch_u32(dst, sipi_blob::AP_COUNTER_OFFSET, 0);
+
+        // INIT leaves AP caches disabled. Write the complete copied and patched
+        // trampoline back to DRAM before sending SIPI, as coreboot does for its
+        // SIPI module.
+        crate::x86::writeback_cache_range(dst, sipi_blob::TRAMPOLINE.len());
     }
 
     // Diagnostic: the AP's first fetch depends entirely on this page and the

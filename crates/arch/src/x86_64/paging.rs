@@ -80,6 +80,9 @@ pub unsafe fn build_identity_tables(tables_phys: u64) -> u64 {
 /// CPU will execute or touch after the switch — including its own stack.
 pub unsafe fn install_identity_tables(tables_phys: u64) -> u64 {
     let base = unsafe { build_identity_tables(tables_phys) };
+    // APs begin after INIT with caching disabled. Make the page tables visible
+    // in DRAM rather than leaving any entries dirty in the BSP's cache.
+    unsafe { crate::x86::writeback_cache_range(base as *const u8, TABLE_BYTES) };
     load_cr3(base);
     base
 }

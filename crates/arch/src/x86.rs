@@ -223,6 +223,50 @@ pub fn physical_address_limit() -> u64 {
     physical_address_mask().saturating_add(0x1000)
 }
 
+/// Write every cache line intersecting `addr..addr + len` back to memory.
+///
+/// APs leave INIT with normal caching disabled, so startup code and page tables
+/// prepared by the BSP must reach DRAM before a SIPI. This mirrors coreboot's
+/// `write_back_cached_data()` before it starts application processors.
+///
+/// # Safety
+///
+/// The range must be readable for `len` bytes. The caller must ensure no other
+/// CPU concurrently mutates it until the returned writeback fence completes.
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn writeback_cache_range(addr: *const u8, len: usize) {
+    if len == 0 {
+        return;
+    }
+
+    let (_, ebx, _, edx) = cpuid(1);
+    if edx & (1 << 19) == 0 {
+        // SAFETY: firmware runs at CPL0. The caller invokes this while normal
+        // caching is enabled, so WBINVD is a safe conservative fallback.
+        unsafe { core::arch::asm!("wbinvd", options(nostack, preserves_flags)) };
+        return;
+    }
+
+    let line_size = (((ebx >> 8) & 0xff) as usize * 8).max(8);
+    let start = (addr as usize) & !(line_size - 1);
+    let end = (addr as usize).saturating_add(len);
+    let mut line = start;
+    while line < end {
+        // SAFETY: `line` intersects the caller-provided readable range and
+        // CLFLUSH accepts any byte address within the cache line.
+        unsafe {
+            core::arch::asm!(
+                "clflush [{line}]",
+                line = in(reg) line,
+                options(nostack, preserves_flags)
+            )
+        };
+        line = line.saturating_add(line_size);
+    }
+    // Order all writebacks before publishing the range to another CPU.
+    unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)) };
+}
+
 // ---------------------------------------------------------------------------
 // x86 MTRR helpers
 // ---------------------------------------------------------------------------
