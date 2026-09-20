@@ -197,6 +197,10 @@ pub trait IntelSouthbridgeDriver: Sized {
     fn config(&self) -> &'static Self::Config;
     fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
     fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    /// Chipset-owned PCI BARs that generic resource allocation must preserve.
+    fn fixed_pci_bars(&self) -> fstart_pci::PciFixedBars {
+        fstart_pci::PciFixedBars::new()
+    }
     fn detect_s3_resume(&self) -> bool {
         false
     }

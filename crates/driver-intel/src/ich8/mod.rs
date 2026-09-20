@@ -15,7 +15,10 @@ use fstart_core::services::{
     FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus, Southbridge,
 };
 use fstart_pci::ecam;
-use fstart_pci::{PCI_COMMAND_BITS, PciType0Config, PciType1Config, pci_type0_config};
+use fstart_pci::{
+    PCI_COMMAND_BITS, PciAddress, PciFixedBar, PciFixedBarType, PciFixedBars, PciType0Config,
+    PciType1Config, pci_type0_config,
+};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -2168,6 +2171,20 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         let _ = self.detect_s3_resume();
         fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd.bits());
         Ok(())
+    }
+
+    fn fixed_pci_bars(&self) -> PciFixedBars {
+        let mut bars = PciFixedBars::new();
+        bars.push(PciFixedBar {
+            address: PciAddress::new(0, 0, ich8::SMBUS_DEV, ich8::SMBUS_FUNC),
+            register: ich8::SMB_BASE,
+            kind: PciFixedBarType::Io,
+            base: u64::from(self.config.smbus_base),
+            size: 0x20,
+            prefetchable: false,
+        })
+        .expect("ICH8 fixed PCI resource list capacity");
+        bars
     }
 
     /// DRAM-backed ramstage device init: PCIe/PCI bridge, USB, IDE/HDA/SATA,

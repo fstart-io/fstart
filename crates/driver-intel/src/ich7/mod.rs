@@ -20,7 +20,10 @@
 
 use fstart_core::mmio::MmioReadWrite;
 use fstart_pci::ecam;
-use fstart_pci::{PCI_COMMAND_BITS, PciType0Config, PciType1Config, pci_type0_config};
+use fstart_pci::{
+    PCI_COMMAND_BITS, PciAddress, PciFixedBar, PciFixedBarType, PciFixedBars, PciType0Config,
+    PciType1Config, pci_type0_config,
+};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -1196,6 +1199,15 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         let fd = self.function_disable_mask();
         rcba.regs().fd.set(fd.bits());
 
+        // Select the SATA personality before generic PCI resource probing.
+        // ICH7 changes both the device ID and BAR layout when SATA_MAP enters
+        // AHCI mode (BAR4 grows from 16 to 32 bytes). Coreboot performs this
+        // in the device-enable phase, before read_resources(), for the same
+        // reason.
+        if let Some(sata) = self.config.sata.as_ref() {
+            self.set_sata_mode(sata.mode);
+        }
+
         // ---- 13. GPIO pad programming ----
         self.setup_gpios();
 
@@ -1211,6 +1223,20 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
 
         fstart_log::info!("intel-ich7: early init complete (fd_mask={:#x})", fd.bits());
         Ok(())
+    }
+
+    fn fixed_pci_bars(&self) -> PciFixedBars {
+        let mut bars = PciFixedBars::new();
+        bars.push(PciFixedBar {
+            address: PciAddress::new(0, 0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC),
+            register: ich7::SMB_BASE,
+            kind: PciFixedBarType::Io,
+            base: u64::from(self.config.smbus_base),
+            size: 0x20,
+            prefetchable: false,
+        })
+        .expect("ICH7 fixed PCI resource list capacity");
+        bars
     }
 
     fn post_dram_init(&mut self) -> Result<(), ServiceError> {
@@ -1333,6 +1359,18 @@ impl LpcBaseProvider for IntelIch7 {
 // ---------------------------------------------------------------------------
 
 impl IntelIch7 {
+    fn set_sata_mode(&self, mode: SataMode) {
+        let sata_dev = ecam::EcamDevice::new(0, ich7::SATA_DEV, ich7::SATA_FUNC);
+        let map = sata_dev.read8(0x90);
+        sata_dev.write8(
+            0x90,
+            match mode {
+                SataMode::Ahci => (map & !0xC3) | 0x40,
+                SataMode::Ide => map & !0xC3,
+            },
+        );
+    }
+
     /// Late initialisation, called from the ramstage after DRAM is online.
     ///
     /// Ported from coreboot's ICH7 ramstage device ops: `lpc_init`,
@@ -1368,14 +1406,10 @@ impl IntelIch7 {
 
         // ---- Re-arm the SMBus host controller ----
         //
-        // The PCI resource pass treats `SMB_BASE` (config 0x20) as an ordinary
-        // I/O BAR and rewrites it, and clock gating clears its decode as well.
-        // Either way the controller stops answering at the configured base and
-        // every status read returns 0xff, which the transaction code reports as
-        // a permanent `not-busy` timeout. coreboot avoids this by enabling the
-        // SMBus from its device ops, which run after enumeration and after
-        // `lpc_init()`; re-arm it here, before the board hook programs the
-        // CK505 through it.
+        // Generic PCI allocation preserves this chipset-owned BAR. Clock
+        // gating can still clear its decode, so re-arm it here before the
+        // board hook programs the CK505 through it, matching coreboot's SMBus
+        // device init ordering.
         let _ =
             I801SmBus::enable_on_i801(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, self.config.smbus_base);
         fstart_log::info!(
@@ -1443,9 +1477,7 @@ impl IntelIch7 {
         match sata.mode {
             SataMode::Ahci => {
                 fstart_log::info!("intel-ich7: SATA in AHCI mode");
-                // Map = AHCI.
-                let v = sata_dev.read8(0x90);
-                sata_dev.write8(0x90, (v & !0xC3) | 0x40);
+                self.set_sata_mode(sata.mode);
                 // Native mode on both channels.
                 sata_dev.write8(0x09, 0x8F);
                 // Interrupt line.
@@ -1453,7 +1485,7 @@ impl IntelIch7 {
             }
             SataMode::Ide => {
                 fstart_log::info!("intel-ich7: SATA in IDE mode");
-                sata_dev.write8(0x90, sata_dev.read8(0x90) & !0xC3);
+                self.set_sata_mode(sata.mode);
                 sata_dev.write8(0x09, 0x8F);
                 Self::type0_regs(sata_dev).interrupt_line.set(0xFF);
                 // IDE timings.
