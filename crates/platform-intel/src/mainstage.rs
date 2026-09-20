@@ -315,10 +315,12 @@ where
 
     fn bus_scan(&mut self) -> Result<(), ServiceError> {
         if self.pci.is_none() {
-            self.pci = Some(
-                fstart_pci::PciEcam::from_provider(&self.northbridge)
-                    .map_err(|_| ServiceError::HardwareError)?,
-            );
+            let mut pci = fstart_pci::PciEcam::from_provider(&self.northbridge)
+                .map_err(|_| ServiceError::HardwareError)?;
+            let fixed_bars = self.southbridge.fixed_pci_bars();
+            pci.add_fixed_bars(fixed_bars.as_slice())
+                .map_err(|_| ServiceError::HardwareError)?;
+            self.pci = Some(pci);
         }
         let pci = self.pci.as_mut().ok_or(ServiceError::NotInitialized)?;
         pci.enumerate_and_allocate()

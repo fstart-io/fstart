@@ -88,14 +88,16 @@ impl Q35HostBridge {
             mmio64_base + mmio64_size,
         );
 
-        self.ecam.configure_windows(
-            mmio32_base,
-            mmio32_size,
-            mmio64_base,
-            mmio64_size,
-            PIO_BASE,
-            PIO_SIZE,
-        );
+        self.ecam
+            .configure_windows(
+                mmio32_base,
+                mmio32_size,
+                mmio64_base,
+                mmio64_size,
+                PIO_BASE,
+                PIO_SIZE,
+            )
+            .map_err(|_| ServiceError::HardwareError)?;
         self.ecam
             .enumerate_and_allocate()
             .map_err(|_| ServiceError::HardwareError)?;

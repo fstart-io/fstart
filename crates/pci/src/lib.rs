@@ -15,7 +15,10 @@ pub mod window;
 
 pub use config::*;
 pub use ecam::EcamDevice;
-pub use ecam_host::{PciEcam, PciEcamConfig, PciEcamError};
+pub use ecam_host::{
+    MAX_PCI_FIXED_BARS, PciEcam, PciEcamConfig, PciEcamError, PciFixedBar, PciFixedBarType,
+    PciFixedBars,
+};
 pub use overlay::{PciType0Config, PciType1Config};
 pub use pci_types::{ConfigRegionAccess, HeaderType, PciAddress, PciHeader, capability};
 pub use window::{PciWindow, PciWindowKind};
