@@ -565,6 +565,7 @@ dependencies = [
  "object 0.37.3",
  "ufmt",
  "x86",
+ "x86_64",
 ]
 
 [[package]]
