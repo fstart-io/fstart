@@ -72,14 +72,9 @@ pub struct PineviewIgdConfig {
     pub stolen_memory_mb: u16,
     /// Where the VBT for the OpRegion comes from.
     pub vbt: super::igd::VbtSource,
-    /// GMADR graphics aperture size in bytes.
-    pub gmadr_size: u32,
+
     /// Board display policy. `None` leaves the display engine untouched.
     pub display: Option<super::igd::IgdDisplayPolicy>,
-}
-
-const fn default_gmadr_size() -> u32 {
-    256 * 1024 * 1024
 }
 
 const fn default_stolen_memory_mb() -> u16 {
@@ -134,7 +129,6 @@ impl PineviewIgdConfig {
             use_lvds: false,
             stolen_memory_mb: default_stolen_memory_mb(),
             vbt: super::igd::VbtSource::LEGACY,
-            gmadr_size: default_gmadr_size(),
             display: None,
         }
     }
@@ -1009,7 +1003,7 @@ impl IntelPineview {
             gtt_mmio_size: IGD_GTTMMADR_SIZE,
             gtt_pte_base: Some(gtt_pte_base),
             gmadr_base: Some(bars.gmadr),
-            gmadr_size: self.config.igd.gmadr_size,
+            gmadr_size: super::igd::gmadr_size_from_msac(igd.read8(IGD_MSAC)),
             stolen_base: u64::from(stolen_base),
             stolen_size,
             gtt_size: IGD_GTT_SIZE,

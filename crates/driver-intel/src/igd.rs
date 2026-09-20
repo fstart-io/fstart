@@ -29,6 +29,20 @@ pub const GFX_FLSH_CNTL: u32 = 0x02170;
 /// `PGETBL_CTL` bit that enables GTT address translation.
 pub const PGETBL_ENABLED: u32 = 1;
 
+/// Decode the GMCH Multi Size Aperture Control register.
+///
+/// These generations expose either a 128 MiB or 256 MiB CPU aperture. The
+/// northbridge programs MSAC before display setup, so later code reads the
+/// resulting hardware state instead of repeating the size in board metadata.
+#[must_use]
+pub const fn gmadr_size_from_msac(msac: u8) -> u32 {
+    match msac & 0x3 {
+        0x0 => 128 * 1024 * 1024,
+        0x2 => 256 * 1024 * 1024,
+        _ => 0,
+    }
+}
+
 /// Framebuffer reported before the display engine is programmed.
 const NO_FRAMEBUFFER: FramebufferInfo = FramebufferInfo {
     base_addr: 0,

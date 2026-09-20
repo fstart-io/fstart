@@ -11,6 +11,7 @@ const SCAN_LO: u64 = 0xE_0000;
 const SCAN_HI: u64 = 0xF_FFFF;
 /// Wake vectors are 16-bit real-mode code, hence below 1 MiB.
 const REAL_MODE_LIMIT: u32 = 0x10_0000;
+#[cfg(test)]
 const RSDP_LEN: usize = 36;
 
 /// Scan 16-byte-aligned candidates in `[lo, hi)` for a valid RSDP.

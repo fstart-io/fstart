@@ -18,11 +18,15 @@ const FACS_LEN: usize = 16;
 const FACS_WAKE_VECTOR_OFF: usize = 12;
 
 fn u32_at(bytes: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(off..off + 4)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        bytes.get(off..off + 4)?.try_into().ok()?,
+    ))
 }
 
 fn u64_at(bytes: &[u8], off: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(bytes.get(off..off + 8)?.try_into().ok()?))
+    Some(u64::from_le_bytes(
+        bytes.get(off..off + 8)?.try_into().ok()?,
+    ))
 }
 
 fn checksum_ok(bytes: &[u8]) -> bool {
@@ -94,10 +98,7 @@ fn facs_wake_vector(bytes: &[u8]) -> Option<u32> {
 /// `read(addr, buf)` copies physical memory into `buf`. Every externally sized
 /// table is bounded before it is read.
 #[must_use]
-pub fn wakeup_vector_from_rsdp_with(
-    read: &impl Fn(u64, &mut [u8]),
-    rsdp_addr: u64,
-) -> Option<u32> {
+pub fn wakeup_vector_from_rsdp_with(read: &impl Fn(u64, &mut [u8]), rsdp_addr: u64) -> Option<u32> {
     let mut rsdp = [0u8; RSDP_LEN];
     read(rsdp_addr, &mut rsdp);
     let xsdt_addr = rsdp_xsdt_addr(&rsdp)?;

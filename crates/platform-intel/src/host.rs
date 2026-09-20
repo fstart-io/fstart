@@ -1,13 +1,12 @@
 //! Intel family policy, evaluated on the host from the selected board's Rust facts.
 extern crate std;
-use crate::facts::{BoardFacts, Chipset, IntelBoardFacts, X86LinuxBoot};
-use fstart_core::{Compression, FdtSource, PayloadConfig, PayloadKind};
+use crate::facts::{BoardFacts, Chipset, IntelBoardFacts};
 use fstart_image_build::{
     intel_plan::{IntelReservations, IntelStage, StageReservation},
     plan::{BuildSelection, IntelPlan, IntelStagePlan, Span},
 };
-use heapless::String as HString;
-use std::{format, string::String, string::ToString, vec, vec::Vec};
+
+use std::{format, string::ToString, vec, vec::Vec};
 
 fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
@@ -190,10 +189,18 @@ pub fn resolve(
     facts: BoardFacts,
     selection: BuildSelection,
 ) -> Result<IntelPlan, std::string::String> {
-    let payload = selection.payload.unwrap_or_else(|| "halt".into());
-    if !matches!(payload.as_str(), "halt" | "uefi" | "linux") {
-        return Err("Intel supports halt, UEFI and direct Linux payloads".into());
+    let requested_payload = selection.payload.unwrap_or_else(|| "halt".into());
+    if !matches!(
+        requested_payload.as_str(),
+        "halt" | "uefi" | "uefi-ui" | "uefi-basic"
+    ) {
+        return Err("Intel supports halt and UEFI payloads".into());
     }
+    let payload = if requested_payload.starts_with("uefi") {
+        "uefi".to_string()
+    } else {
+        requested_payload.clone()
+    };
     let stages = [
         (IntelStage::Bootblock, "bundle-bootblock"),
         (IntelStage::Postcar, "bundle-postcar"),
@@ -208,16 +215,14 @@ pub fn resolve(
         let mut features = vec![bundle.into()];
         if selected_payload == "uefi" {
             features.push(
-                match facts.uefi_build_profile {
-                    fstart_core::board::UefiBuildProfile::Full => "payload-uefi",
-                    fstart_core::board::UefiBuildProfile::Ui => "payload-uefi-ui",
-                    fstart_core::board::UefiBuildProfile::Basic => "payload-uefi-basic",
+                match requested_payload.as_str() {
+                    "uefi" => "payload-uefi",
+                    "uefi-ui" => "payload-uefi-ui",
+                    "uefi-basic" => "payload-uefi-basic",
+                    _ => unreachable!(),
                 }
                 .into(),
             );
-        }
-        if selected_payload == "linux" {
-            features.push("payload-linux".into());
         }
         IntelStagePlan {
             role,
@@ -235,11 +240,6 @@ pub fn resolve(
     };
     let payload_config = match payload.as_str() {
         "uefi" => Some(fstart_core::x86_uefi_payload()),
-        "linux" => {
-            Some(x86_linux_payload(facts.linux.as_ref().ok_or(
-                "the board declares no direct Linux payload policy",
-            )?)?)
-        }
         _ => None,
     };
     let plan = IntelPlan {
@@ -269,35 +269,6 @@ pub fn resolve(
     };
     plan.validate()?;
     Ok(plan)
-}
-
-/// Project the board's direct Linux policy into assembler payload inputs.
-///
-/// A bzImage carries its own compression, so the FFS segment is stored
-/// verbatim: compressing it again costs boot time and saves nothing.
-fn x86_linux_payload(boot: &X86LinuxBoot) -> Result<PayloadConfig, String> {
-    let too_long = |what: &str, capacity: usize, got: usize| {
-        format!("{what} is {got} bytes; payload metadata allows {capacity}")
-    };
-    let kernel_file = HString::<64>::try_from(boot.kernel_file)
-        .map_err(|_| too_long("kernel file name", 64, boot.kernel_file.len()))?;
-    let bootargs = HString::<256>::try_from(boot.bootargs)
-        .map_err(|_| too_long("kernel command line", 256, boot.bootargs.len()))?;
-    Ok(PayloadConfig {
-        kind: PayloadKind::LinuxBoot,
-        kernel_file: Some(kernel_file),
-        kernel_load_addr: Some(boot.kernel_load_addr),
-        fdt: FdtSource::Platform,
-        dtb_addr: None,
-        src_dtb_addr: None,
-        bootargs: Some(bootargs),
-        print_x86_mtrrs: boot.print_x86_mtrrs,
-        compression: Compression::None,
-        firmware: None,
-        fit_file: None,
-        fit_config: None,
-        fit_parse: None,
-    })
 }
 
 #[cfg(test)]
@@ -359,20 +330,19 @@ mod tests {
     }
 
     #[test]
-    fn uefi_build_policy_selects_capabilities_without_changing_hardware_geometry() {
-        use fstart_core::board::UefiBuildProfile;
-        let select = |facts| {
+    fn uefi_cli_profile_selects_capabilities_without_changing_hardware_geometry() {
+        let select = |payload: &str| {
             resolve(
-                facts,
+                FACTS,
                 BuildSelection {
-                    payload: Some("uefi".into()),
+                    payload: Some(payload.into()),
                 },
             )
             .unwrap()
         };
-        let full = select(FACTS);
-        let ui = select(FACTS.with_uefi_build_profile(UefiBuildProfile::Ui));
-        let basic = select(FACTS.with_uefi_build_profile(UefiBuildProfile::Basic));
+        let full = select("uefi");
+        let ui = select("uefi-ui");
+        let basic = select("uefi-basic");
         assert_eq!(full.stages[2].features, ["bundle-ramstage", "payload-uefi"]);
         assert_eq!(
             ui.stages[2].features,
