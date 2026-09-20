@@ -2422,38 +2422,10 @@ mod acpi_impl {
         /// nodes, and APIC-mode `_PRT` routing. Mainboard-specific EC,
         /// dock/GPE/SMI trap glue is emitted by mainboard drivers.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
-            // Root-scope windows this chipset exposes to mainboard AML.
-            let mut aml: Vec<u8> = acpi_dsl! {
-                Scope("\\") {
-                    OperationRegion("PMIO", SystemIO, #{const dword ich8::DEFAULT_PMBASE as u32}, 0x80u32);
-                    Field("PMIO", ByteAcc, NoLock, Preserve) {
-                        Offset(0x11),
-                        THRO, 1,
-                        Offset(0x42),
-                        , 1,
-                        GPEC, 1,
-                        Offset(0x64),
-                        , 9,
-                        SCIS, 1,
-                    }
-                    OperationRegion("GPIO", SystemIO, #{const dword ich8::DEFAULT_GPIOBASE as u32}, 0x3Cu32);
-                    Field("GPIO", ByteAcc, NoLock, Preserve) {
-                        Offset(0x0C),
-                        GP00, 1, GP01, 1, GP02, 1, GP03, 1,
-                        GP04, 1, GP05, 1, GP06, 1, GP07, 1,
-                        GP08, 1, GP09, 1, GP10, 1, GP11, 1,
-                        GP12, 1, GP13, 1, GP14, 1, GP15, 1,
-                        GP16, 1, GP17, 1, GP18, 1, GP19, 1,
-                        GP20, 1, GP21, 1, GP22, 1, GP23, 1,
-                        GP24, 1, GP25, 1, GP26, 1, GP27, 1,
-                        GP28, 1, GP29, 1, GP30, 1, GP31, 1,
-                        Offset(0x38),
-                        GP32, 1, GP33, 1, GP34, 1, GP35, 1,
-                        GP36, 1, GP37, 1, GP38, 1, GP39, 1,
-                    }
-                }
-            }
-            .into();
+            // PM/GPIO SystemIO OpRegions are intentionally omitted until an
+            // emitted AML method actually consumes them. Declaring unused
+            // regions makes ACPI claim the native lpc_ich driver resources.
+            let mut aml = Vec::new();
 
             // The PCI0 body: this chipset's RCRB window and downstream PCI
             // bridge, plus the fragments every ICH shares (coreboot's

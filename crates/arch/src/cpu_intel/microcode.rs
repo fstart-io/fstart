@@ -175,7 +175,6 @@ pub fn current_revision() -> u32 {
 /// Find the best matching patch for the current CPU in a concatenated blob.
 pub fn find_for_current_cpu(blob: &[u8]) -> Result<Option<MicrocodePatch<'_>>, MicrocodeError> {
     let (sig, platform) = current_signature_and_platform();
-    let current = current_revision();
     let mut best: Option<MicrocodePatch<'_>> = None;
     let mut offset = 0usize;
 
@@ -190,7 +189,7 @@ pub fn find_for_current_cpu(blob: &[u8]) -> Result<Option<MicrocodePatch<'_>>, M
             return Err(MicrocodeError::TruncatedRecord);
         }
         let record = &remaining[..size];
-        if record_matches(record, header, sig, platform) && header.revision > current {
+        if record_matches(record, header, sig, platform) {
             let candidate = MicrocodePatch {
                 record,
                 revision: header.revision,

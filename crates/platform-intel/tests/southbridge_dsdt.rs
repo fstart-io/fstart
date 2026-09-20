@@ -13,7 +13,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Disassemble `aml` as the DSDT `iasl` would see it on a booted machine.
-fn iasl_round_trip(chipset: &str, aml: &[u8]) {
+fn iasl_round_trip(chipset: &str, aml: &[u8]) -> String {
     let dsdt = fstart_acpi::platform::build_dsdt(aml);
     let dir =
         std::env::temp_dir().join(std::format!("fstart-{chipset}-dsdt-{}", std::process::id()));
@@ -33,6 +33,21 @@ fn iasl_round_trip(chipset: &str, aml: &[u8]) {
         !diagnostics.contains("Error"),
         "iasl reported errors in the {chipset} DSDT:\n{diagnostics}"
     );
+    std::fs::read_to_string(dir.join("input.dsl")).expect("read disassembled DSDT")
+}
+
+fn assert_legacy_resources(dsl: &str) {
+    let rtc = dsl
+        .split("Device (RTC)")
+        .nth(1)
+        .and_then(|rest| rest.split("Device (").next())
+        .expect("RTC device in disassembled DSDT");
+    assert!(
+        rtc.contains("0x23, 0x00, 0x01, 0x01"),
+        "RTC must advertise an edge-triggered, active-high, exclusive IRQ 8"
+    );
+    assert!(!dsl.contains("OperationRegion (PMIO"));
+    assert!(!dsl.contains("OperationRegion (GPIO"));
 }
 
 fn run_iasl(dir: &Path, args: &[&str]) -> std::process::Output {
@@ -47,12 +62,12 @@ fn run_iasl(dir: &Path, args: &[&str]) -> std::process::Output {
 fn ich7_dsdt_disassembles() {
     static CONFIG: IntelIch7Config = IntelIch7Config::new();
     let south = IntelIch7::new_from_config(&CONFIG).expect("ICH7 config is valid");
-    iasl_round_trip("ich7", &south.dsdt_aml(&CONFIG));
+    assert_legacy_resources(&iasl_round_trip("ich7", &south.dsdt_aml(&CONFIG)));
 }
 
 #[test]
 fn ich8_dsdt_disassembles() {
     static CONFIG: IntelIch8Config = IntelIch8Config::new();
     let south = IntelIch8::new_from_config(&CONFIG).expect("ICH8 config is valid");
-    iasl_round_trip("ich8", &south.dsdt_aml(&CONFIG));
+    assert_legacy_resources(&iasl_round_trip("ich8", &south.dsdt_aml(&CONFIG)));
 }

@@ -340,7 +340,10 @@ where
     fn emit_tables(&mut self) -> Result<(), ServiceError> {
         self.emit_acpi()?;
         #[cfg(feature = "smbios")]
-        crate::tables::prepare_smbios(self.ctx.e820_state_mut(), self.smbios_desc);
+        {
+            let smbios = crate::tables::prepare_smbios(self.ctx.e820_state_mut(), self.smbios_desc);
+            self.ctx.set_smbios(Some(smbios));
+        }
         Ok(())
     }
 
@@ -445,6 +448,10 @@ where
         self.acpi_rsdp()
     }
 
+    fn smbios(&self) -> Option<u64> {
+        self.ctx.smbios()
+    }
+
     fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
         Some(fstart_pci::PciRootProvider::root_info(&self.northbridge))
     }
@@ -472,6 +479,7 @@ where
 pub struct MainstageCtx {
     e820: fstart_core::services::memory_detect::E820State,
     acpi_rsdp: Option<u64>,
+    smbios: Option<u64>,
     firmware_base: u64,
     firmware_size: usize,
 }
@@ -481,6 +489,7 @@ impl MainstageCtx {
         Self {
             e820: fstart_core::services::memory_detect::E820State::new(),
             acpi_rsdp: None,
+            smbios: None,
             firmware_base,
             firmware_size,
         }
@@ -513,6 +522,11 @@ impl MainstageCtx {
     }
 
     #[must_use]
+    pub const fn smbios(&self) -> Option<u64> {
+        self.smbios
+    }
+
+    #[must_use]
     pub const fn firmware_region(&self) -> (u64, usize) {
         (self.firmware_base, self.firmware_size)
     }
@@ -520,5 +534,10 @@ impl MainstageCtx {
     #[cfg(feature = "acpi")]
     pub(crate) fn set_acpi_rsdp(&mut self, rsdp: Option<u64>) {
         self.acpi_rsdp = rsdp;
+    }
+
+    #[cfg(feature = "smbios")]
+    pub(crate) fn set_smbios(&mut self, smbios: Option<u64>) {
+        self.smbios = smbios;
     }
 }
