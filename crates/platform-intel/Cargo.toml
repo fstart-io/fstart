@@ -15,9 +15,7 @@ bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin"]
 payload-uefi = ["payload-uefi-basic", "fstart-stage/crabefi"]
 payload-uefi-ui = ["payload-uefi", "fstart-stage/crabefi-ui"]
 payload-uefi-basic = ["fstart-stage/crabefi-basic"]
-# Direct Linux payload: the ramstage loads a bzImage from FFS and enters it
-# through the x86 boot protocol instead of handing off to a UEFI firmware.
-payload-linux = ["fstart-stage/linux"]
+
 stage = [
   "dep:fstart-driver-superio",
   "dep:fstart-driver-uart",

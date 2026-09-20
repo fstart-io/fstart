@@ -4,6 +4,8 @@ use fstart_core::{BoardConfig, Compression, FdtSource, PayloadConfig, PayloadKin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PayloadChoice {
     Uefi,
+    UefiUi,
+    UefiBasic,
     Linux,
     Fit,
     Shell,
@@ -16,6 +18,8 @@ impl PayloadChoice {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Uefi => "uefi",
+            Self::UefiUi => "uefi-ui",
+            Self::UefiBasic => "uefi-basic",
             Self::Linux => "linux",
             Self::Fit => "fit",
             Self::Shell => "shell",
@@ -26,7 +30,7 @@ impl PayloadChoice {
 
     pub const fn kind(self) -> Option<PayloadKind> {
         match self {
-            Self::Uefi => Some(PayloadKind::UefiPayload),
+            Self::Uefi | Self::UefiUi | Self::UefiBasic => Some(PayloadKind::UefiPayload),
             Self::Linux => Some(PayloadKind::LinuxBoot),
             Self::Fit => Some(PayloadKind::FitImage),
             Self::Shell => Some(PayloadKind::Shell),
@@ -61,7 +65,7 @@ fn validate_choice(config: &BoardConfig, choice: Option<PayloadChoice>) -> Resul
             .payload
             .as_ref()
             .is_some_and(|payload| payload.kind == PayloadKind::LinuxBoot),
-        PayloadChoice::Uefi => matches!(
+        PayloadChoice::Uefi | PayloadChoice::UefiUi | PayloadChoice::UefiBasic => matches!(
             config.platform,
             fstart_core::Platform::X86_64
                 | fstart_core::Platform::Aarch64

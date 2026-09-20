@@ -1,7 +1,6 @@
 //! Foxconn D41S board metadata and build policy.
 
-use fstart_core::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
-use fstart_core::{FlashLayout, Platform, SmbiosConfig, X86LegacyFlashLayout, hstr, hvec};
+use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hstr, hvec};
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_intel::southbridge::hda;
@@ -21,22 +20,6 @@ use fstart_platform_intel::pineview::{
 /// back by the same name when the OpRegion is published.
 const D41S_VBT: &str = "data.vbt";
 
-/// The direct Linux payload: board file name, load address and the handoff
-/// addresses the ramstage builds the zero page from.
-///
-/// The kernel is loaded at 256 MiB: above the ramstage (64 MiB) and the
-/// reserved scratch window (32-48 MiB), and clear of the decompression window
-/// the kernel opens at `pref_address` (16 MiB plus its own `init_size`).
-/// The zero page and its command line sit at the classic 0x90000, below the
-/// EBDA at 0x9f000 where the firmware copies the ACPI RSDP.
-const D41S_LINUX: fstart_platform_intel::facts::X86LinuxBoot =
-    fstart_platform_intel::facts::X86LinuxBoot {
-        kernel_file: "vmlinuz",
-        kernel_load_addr: 0x1000_0000,
-        zero_page_addr: 0x0009_0000,
-        bootargs: "console=tty0 console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 no_console_suspend",
-        print_x86_mtrrs: true,
-    };
 
 const D41S_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
     outputs: &[OutputConfig {
@@ -121,9 +104,7 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             D41S_PLATFORM.max_cpus,
             fstart_platform_intel::facts::Chipset::PineviewIch7,
         )
-        .with_data_assets(&[D41S_VBT])
-        .with_linux_boot(D41S_LINUX)
-        .with_uefi_build_profile(fstart_core::board::UefiBuildProfile::Ui);
+        .with_data_assets(&[D41S_VBT]);
 }
 
 #[must_use]
@@ -131,31 +112,6 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
-pub fn d41s_smbios() -> SmbiosConfig {
-    SmbiosConfig {
-        bios_vendor: hstr("fstart"),
-        bios_version: hstr("0.1.0"),
-        bios_release_date: hstr(option_env!("FSTART_SMBIOS_DATE").unwrap_or("04/15/2026")),
-        system_manufacturer: hstr("Foxconn"),
-        system_product: hstr("D41S"),
-        system_version: hstr("1.0"),
-        system_serial: hstr(""),
-        baseboard_manufacturer: hstr("Foxconn"),
-        baseboard_product: hstr("D41S"),
-        chassis_type: ChassisType::Desktop,
-        chassis_manufacturer: hstr("Foxconn"),
-        processors: hvec([SmbiosProcessor {
-            socket: hstr("FCBGA559"),
-            manufacturer: hstr("Intel"),
-            processor_family: ProcessorFamily::X86_64,
-            max_speed_mhz: None,
-            core_count: None,
-            thread_count: None,
-            caches: hvec([]),
-        }]),
-        memory_devices: hvec([]),
-    }
-}
 
 pub const fn d41s_igd_config() -> PineviewIgdConfig {
     PineviewIgdConfig {
@@ -163,7 +119,6 @@ pub const fn d41s_igd_config() -> PineviewIgdConfig {
         use_lvds: false,
         stolen_memory_mb: 8,
         vbt: VbtSource::ffs(D41S_VBT),
-        gmadr_size: 256 * 1024 * 1024,
         display: Some(D41S_DISPLAY),
     }
 }
@@ -328,37 +283,7 @@ pub fn d41s_ck505_config() -> I2cCk505Config {
     }
 }
 
-static D41S_SMBIOS_PROCESSORS: [fstart_acpi::smbios::ProcessorDesc<'static>; 1] =
-    [fstart_acpi::smbios::ProcessorDesc {
-        socket: "FCBGA559",
-        manufacturer: "Intel",
-        family: 0x28,
-        max_speed_mhz: 0,
-        core_count: 0,
-        thread_count: 0,
-        caches: &[],
-    }];
-
 const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
     Some(date) => date,
     None => "04/15/2026",
 };
-
-pub static D41S_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> =
-    fstart_acpi::smbios::SmbiosDesc {
-        bios_vendor: "fstart",
-        bios_version: "0.1.0",
-        bios_release_date: BIOS_RELEASE_DATE,
-        sys_manufacturer: "Foxconn",
-        sys_product: "D41S",
-        sys_version: "1.0",
-        sys_serial: None,
-        bb_manufacturer: "Foxconn",
-        bb_product: "D41S",
-        chassis_type: 0x03,
-        chassis_manufacturer: "Foxconn",
-        processors: &D41S_SMBIOS_PROCESSORS,
-        memory_devices: &[],
-        ram_base: 0x0010_0000,
-        ram_end: 0x3fff_ffff,
-    };

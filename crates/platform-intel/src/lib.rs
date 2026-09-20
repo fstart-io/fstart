@@ -199,7 +199,7 @@ pub trait IntelBoard: Sized + 'static + crate::facts::IntelBoardFacts {
     fn console_config() -> <Self::Console as ConsoleDevice>::Config;
     fn console_node() -> &'static str;
     #[cfg(feature = "smbios")]
-    fn smbios_desc() -> &'static crate::tables::SmbiosDesc<'static>;
+    fn smbios_identity() -> &'static crate::tables::SmbiosIdentity<'static>;
 }
 
 /// Platform-owned adapter for the fixed Intel stage dispatch.

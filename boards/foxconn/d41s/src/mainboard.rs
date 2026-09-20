@@ -134,23 +134,14 @@ mod acpi_impl {
 #[cfg(fstart_stage_env = "ram")]
 pub use acpi_impl::d41s_mainboard_dsdt_aml;
 
-static D41S_SMBIOS_PROCESSORS: [fstart_acpi::smbios::ProcessorDesc<'static>; 1] =
-    [fstart_acpi::smbios::ProcessorDesc {
-        socket: "FCBGA559",
-        manufacturer: "Intel",
-        family: 0x28,
-        max_speed_mhz: 0,
-        core_count: 0,
-        thread_count: 0,
-        caches: &[],
-    }];
+static D41S_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["FCBGA559"];
 
 const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
     Some(date) => date,
     None => "04/15/2026",
 };
 
-pub static D41S_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> = fstart_acpi::smbios::SmbiosDesc {
+pub static D41S_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> = fstart_acpi::smbios::SmbiosIdentity {
     bios_vendor: "fstart",
     bios_version: "0.1.0",
     bios_release_date: BIOS_RELEASE_DATE,
@@ -162,8 +153,5 @@ pub static D41S_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> = fstart_a
     bb_product: "D41S",
     chassis_type: 0x03,
     chassis_manufacturer: "Foxconn",
-    processors: &D41S_SMBIOS_PROCESSORS,
-    memory_devices: &[],
-    ram_base: 0x0010_0000,
-    ram_end: 0x3fff_ffff,
+    processor_sockets: &D41S_SMBIOS_PROCESSOR_SOCKETS,
 };

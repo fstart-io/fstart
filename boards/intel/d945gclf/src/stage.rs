@@ -37,7 +37,7 @@ impl IntelBoard for Board {
     }
 
     #[cfg(fstart_stage_env = "ram")]
-    fn smbios_desc() -> &'static fstart_platform_intel::tables::SmbiosDesc<'static> {
-        &crate::D945GCLF_SMBIOS_DESC
+    fn smbios_identity() -> &'static fstart_platform_intel::tables::SmbiosIdentity<'static> {
+        &crate::D945GCLF_SMBIOS_IDENTITY
     }
 }

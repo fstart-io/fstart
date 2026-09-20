@@ -5,8 +5,7 @@
 //! `gpio.c` (pad tables), `early_init.c` (SuperIO PME at 0x680), and
 //! `Kconfig` (512 KiB flash, Atom 230).
 
-use fstart_core::smbios::{ChassisType, ProcessorFamily, SmbiosProcessor};
-use fstart_core::{FlashLayout, Platform, SmbiosConfig, X86LegacyFlashLayout, hstr, hvec};
+use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hstr, hvec};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_superio::smsc_lpc47m15x;
 use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
@@ -50,7 +49,7 @@ const D945GCLF_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
         offset: 0,
         tiling: TilingMode::Linear,
         rotation: Rotation::None,
-        preferred_mode: PreferredMode::VbtPanel,
+        preferred_mode: PreferredMode::Edid,
         fallback_mode: Some(FallbackMode {
             width: 1024,
             height: 768,
@@ -63,15 +62,8 @@ const D945GCLF_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
 /// Integrated graphics configuration for the onboard GMA950.
 pub const fn d945gclf_igd_config() -> I945IgdConfig {
     I945IgdConfig {
-        gmadr_size: 256 * 1024 * 1024,
         vbt: VbtSource::LEGACY,
-        panel_power_up_delay: 2000,
-        panel_backlight_on_delay: 2000,
-        panel_power_down_delay: 2000,
-        panel_backlight_off_delay: 2000,
-        panel_power_cycle_delay: 6,
-        default_pwm_freq: 0,
-        duty_cycle: 100,
+        panel: None,
         display: Some(D945GCLF_DISPLAY),
     }
 }
@@ -128,8 +120,7 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             FLASH_SIZE,
             D945GCLF_PLATFORM.max_cpus,
             fstart_platform_intel::facts::Chipset::I945Ich7,
-        )
-        .with_uefi_build_profile(fstart_core::board::UefiBuildProfile::Basic);
+        );
 }
 
 #[must_use]
@@ -137,31 +128,6 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
-pub fn d945gclf_smbios() -> SmbiosConfig {
-    SmbiosConfig {
-        bios_vendor: hstr("fstart"),
-        bios_version: hstr("0.1.0"),
-        bios_release_date: hstr(option_env!("FSTART_SMBIOS_DATE").unwrap_or("04/15/2026")),
-        system_manufacturer: hstr("Intel"),
-        system_product: hstr("D945GCLF"),
-        system_version: hstr("1.0"),
-        system_serial: hstr(""),
-        baseboard_manufacturer: hstr("Intel"),
-        baseboard_product: hstr("D945GCLF"),
-        chassis_type: ChassisType::Desktop,
-        chassis_manufacturer: hstr("Intel"),
-        processors: hvec([SmbiosProcessor {
-            socket: hstr("Socket 441"),
-            manufacturer: hstr("Intel"),
-            processor_family: ProcessorFamily::X86_64,
-            max_speed_mhz: None,
-            core_count: None,
-            thread_count: None,
-            caches: hvec([]),
-        }]),
-        memory_devices: hvec([]),
-    }
-}
 
 pub fn d945gclf_superio_config() -> smsc_lpc47m15x::SmscLpc47m15xConfig {
     smsc_lpc47m15x::SmscLpc47m15xConfig(smsc_lpc47m15x::SuperIoConfig {

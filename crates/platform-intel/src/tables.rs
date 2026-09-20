@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use fstart_core::services::memory_detect::E820Kind;
 
 #[cfg(feature = "smbios")]
-pub use fstart_acpi::smbios::SmbiosDesc;
+pub use fstart_acpi::smbios::SmbiosIdentity;
 
 #[cfg(feature = "acpi")]
 const RSDP_LEN: usize = 36;
@@ -306,24 +306,10 @@ struct RuntimeCacheDesc {
     cache_type: u8,
 }
 
-/// Resolve SMBIOS Type 4 counts, coreboot-style.
-///
-/// Hardware truth comes from CPUID on the BSP (`0xB`, else leaf 4, else
-/// leaf 1); `core_enabled` is capped by actually online APs from MP init,
-/// which runs before `emit_tables`. A board descriptor value of 0 means
-/// "detect at runtime" (same sentinel as empty `caches`).
+/// Resolve SMBIOS Type 4 counts from runtime CPU and MP state.
 #[cfg(feature = "smbios")]
-fn resolve_processor_counts(proc: &fstart_acpi::smbios::ProcessorDesc) -> (u16, u16, u16) {
-    let (mut cores, mut threads) = (proc.core_count, proc.thread_count);
-    if cores == 0 || threads == 0 {
-        let (rt_cores, rt_threads) = fstart_arch::x86_64::cpuid::cpu_core_thread_counts();
-        if cores == 0 {
-            cores = rt_cores;
-        }
-        if threads == 0 {
-            threads = rt_threads;
-        }
-    }
+fn runtime_processor_counts() -> (u16, u16, u16) {
+    let (cores, threads) = fstart_arch::x86_64::cpuid::cpu_core_thread_counts();
     let online = fstart_arch::mp::online_cpus();
     let enabled = cores.min(online.max(1));
     (cores.max(1), enabled.max(1), threads.max(enabled))
@@ -449,7 +435,7 @@ fn smbios_associativity(ways: u32) -> u8 {
 #[cfg(feature = "smbios")]
 pub fn prepare_smbios(
     e820: &mut fstart_core::services::memory_detect::E820State,
-    desc: &SmbiosDesc,
+    desc: &SmbiosIdentity,
 ) -> u64 {
     // 64 KiB table area + 32 bytes entry point header.
     // `assemble_and_write` writes ENTRY_POINT_SIZE bytes at `table_addr`
@@ -467,6 +453,7 @@ pub fn prepare_smbios(
             smbios_addr
         });
 
+    let total_ram = e820.total_ram();
     let smbios_len = fstart_acpi::smbios::assemble_and_write(smbios_addr, |w| {
         // Type 0: BIOS Information
         w.add_bios_info(desc.bios_vendor, desc.bios_version, desc.bios_release_date);
@@ -487,88 +474,34 @@ pub fn prepare_smbios(
         // Type 3: Enclosure
         w.add_enclosure(desc.chassis_type, desc.chassis_manufacturer);
 
-        // Type 4 + Type 7: Processors and caches
-        for proc in desc.processors {
-            let (cores, enabled, threads) = resolve_processor_counts(proc);
-            if proc.caches.is_empty() {
-                let (l1, l2, l3) = add_runtime_cache_info(&mut *w);
-                if l1 == 0xFFFF && l2 == 0xFFFF && l3 == 0xFFFF {
-                    w.add_processor(
-                        proc.socket,
-                        proc.manufacturer,
-                        proc.family,
-                        proc.max_speed_mhz,
-                        cores,
-                        enabled,
-                        threads,
-                    );
-                } else {
-                    w.add_processor_with_caches(
-                        proc.socket,
-                        proc.manufacturer,
-                        proc.family,
-                        proc.max_speed_mhz,
-                        cores,
-                        enabled,
-                        threads,
-                        l1,
-                        l2,
-                        l3,
-                    );
-                }
+        // Type 4 + Type 7: board socket identity plus runtime CPU topology.
+        let (vendor_ebx, vendor_edx, vendor_ecx) = {
+            let (_, ebx, ecx, edx) = fstart_arch::x86::cpuid(0);
+            (ebx, edx, ecx)
+        };
+        let mut vendor_bytes = [0u8; 12];
+        vendor_bytes[..4].copy_from_slice(&vendor_ebx.to_le_bytes());
+        vendor_bytes[4..8].copy_from_slice(&vendor_edx.to_le_bytes());
+        vendor_bytes[8..].copy_from_slice(&vendor_ecx.to_le_bytes());
+        let vendor = core::str::from_utf8(&vendor_bytes).unwrap_or("Unknown");
+        for socket in desc.processor_sockets {
+            let (cores, enabled, threads) = runtime_processor_counts();
+            let (l1, l2, l3) = add_runtime_cache_info(&mut *w);
+            if l1 == 0xFFFF && l2 == 0xFFFF && l3 == 0xFFFF {
+                w.add_processor(socket, vendor, 0x28, 0, cores, enabled, threads);
             } else {
-                // Emit Type 7 cache entries first, collecting handles for
-                // the L1/L2/L3 slots that Type 4 references.
-                let mut l1 = 0xFFFFu16;
-                let mut l2 = 0xFFFFu16;
-                let mut l3 = 0xFFFFu16;
-                for cache in proc.caches {
-                    let handle = w.add_cache_info(
-                        cache.designation,
-                        cache.level,
-                        cache.size_kb,
-                        cache.associativity,
-                        cache.cache_type,
-                    );
-                    match cache.level {
-                        1 => l1 = handle,
-                        2 => l2 = handle,
-                        3 => l3 = handle,
-                        _ => {}
-                    }
-                }
                 w.add_processor_with_caches(
-                    proc.socket,
-                    proc.manufacturer,
-                    proc.family,
-                    proc.max_speed_mhz,
-                    cores,
-                    enabled,
-                    threads,
-                    l1,
-                    l2,
-                    l3,
+                    socket, vendor, 0x28, 0, cores, enabled, threads, l1, l2, l3,
                 );
             }
         }
 
-        // Type 16/17/19: Memory
-        if !desc.memory_devices.is_empty() {
-            let total_capacity_kb: u64 = desc
-                .memory_devices
-                .iter()
-                .map(|d| d.size_mb as u64 * 1024)
-                .sum();
-            w.add_physical_memory_array(total_capacity_kb, desc.memory_devices.len() as u16);
-
-            for dev in desc.memory_devices {
-                w.add_memory_device(dev.locator, dev.size_mb, dev.speed_mhz, dev.memory_type);
-            }
-
-            // Type 19: Memory Array Mapped Address
-            if desc.ram_end > desc.ram_base {
-                w.add_memory_array_mapped_address(desc.ram_base, desc.ram_end, 1);
-            }
+        // Type 16/19: runtime-detected memory capacity and address range.
+        // Do not invent a Type 17 DIMM: per-device identity belongs to future
+        // SPD discovery, not board constants or a synthetic "System RAM" slot.
+        if total_ram != 0 {
+            w.add_physical_memory_array(total_ram / 1024, 0);
+            w.add_memory_array_mapped_address(0, total_ram - 1, 1);
         }
 
         // Type 32 + Type 127

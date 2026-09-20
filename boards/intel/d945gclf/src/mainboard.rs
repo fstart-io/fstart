@@ -144,34 +144,10 @@ pub(crate) const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE
     None => "05/08/2026",
 };
 
-static D945GCLF_SMBIOS_PROCESSORS: [fstart_acpi::smbios::ProcessorDesc<'static>; 1] =
-    [fstart_acpi::smbios::ProcessorDesc {
-        socket: "Socket 441",
-        manufacturer: "Intel",
-        family: 0x28,
-        max_speed_mhz: 0,
-        core_count: 0,
-        thread_count: 0,
-        caches: &[],
-    }];
+static D945GCLF_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket 441"];
 
-static D945GCLF_SMBIOS_MEMORY_DEVICES: [fstart_acpi::smbios::MemoryDeviceDesc<'static>; 2] = [
-    fstart_acpi::smbios::MemoryDeviceDesc {
-        locator: "DIMM0",
-        size_mb: 0,
-        speed_mhz: 0,
-        memory_type: 0x02,
-    },
-    fstart_acpi::smbios::MemoryDeviceDesc {
-        locator: "DIMM1",
-        size_mb: 0,
-        speed_mhz: 0,
-        memory_type: 0x02,
-    },
-];
-
-pub static D945GCLF_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> =
-    fstart_acpi::smbios::SmbiosDesc {
+pub static D945GCLF_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
+    fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",
         bios_version: "0.1.0",
         bios_release_date: BIOS_RELEASE_DATE,
@@ -183,10 +159,7 @@ pub static D945GCLF_SMBIOS_DESC: fstart_acpi::smbios::SmbiosDesc<'static> =
         bb_product: "D945GCLF",
         chassis_type: 0x03,
         chassis_manufacturer: "Intel",
-        processors: &D945GCLF_SMBIOS_PROCESSORS,
-        memory_devices: &D945GCLF_SMBIOS_MEMORY_DEVICES,
-        ram_base: 0x0010_0000,
-        ram_end: 0x7fff_ffff,
+        processor_sockets: &D945GCLF_SMBIOS_PROCESSOR_SOCKETS,
     };
 
 #[cfg(fstart_stage_env = "ram")]

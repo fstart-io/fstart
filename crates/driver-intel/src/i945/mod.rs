@@ -118,10 +118,17 @@ const I945_GTT_256_KIB_FLAG: u32 = 2;
 /// Integrated graphics configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct I945IgdConfig {
-    /// GMADR graphics aperture size in bytes.
-    pub gmadr_size: u32,
     /// Where the VBT for the OpRegion comes from.
     pub vbt: super::igd::VbtSource,
+    /// LVDS panel sequencing. Desktop boards without a panel leave this unset.
+    pub panel: Option<I945PanelConfig>,
+    /// Board display policy. `None` leaves the display engine untouched.
+    pub display: Option<super::igd::IgdDisplayPolicy>,
+}
+
+/// Mobile i945 LVDS panel sequencing and backlight policy.
+#[derive(Debug, Clone, Copy)]
+pub struct I945PanelConfig {
     /// Panel power-up delay in 100us units (mobile parts only).
     pub panel_power_up_delay: u16,
     /// Backlight-on delay in 100us units.
@@ -134,26 +141,29 @@ pub struct I945IgdConfig {
     pub panel_power_cycle_delay: u8,
     /// Backlight PWM frequency in Hz. Zero uses the coreboot default.
     pub default_pwm_freq: u16,
-    /// Initial backlight duty cycle percentage.
-    pub duty_cycle: u8,
-    /// Board display policy. `None` leaves the display engine untouched.
-    pub display: Option<super::igd::IgdDisplayPolicy>,
 }
 
 impl I945IgdConfig {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            gmadr_size: default_igd_gmadr_size(),
             vbt: super::igd::VbtSource::LEGACY,
+            panel: None,
+            display: None,
+        }
+    }
+}
+
+impl I945PanelConfig {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
             panel_power_up_delay: 2000,
             panel_backlight_on_delay: 2000,
             panel_power_down_delay: 2000,
             panel_backlight_off_delay: 2000,
             panel_power_cycle_delay: 6,
             default_pwm_freq: 0,
-            duty_cycle: 100,
-            display: None,
         }
     }
 }
@@ -164,8 +174,10 @@ impl Default for I945IgdConfig {
     }
 }
 
-const fn default_igd_gmadr_size() -> u32 {
-    256 * 1024 * 1024
+impl Default for I945PanelConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// i945 MCHBAR register offsets from `i945.h`.
@@ -1035,7 +1047,9 @@ impl IntelI945 {
         if self.config.variant != I945Variant::Mobile {
             return;
         }
-        let conf = &self.config.igd;
+        let Some(conf) = self.config.igd.panel.as_ref() else {
+            return;
+        };
         let cdclk = self.cdclk_hz();
         let write = |off, val| super::igd::mmio_write32(gtt_mmio, off, val);
         write(
@@ -1132,7 +1146,7 @@ impl IntelI945 {
             gtt_mmio_size: 512 * 1024,
             gtt_pte_base: Some(u64::from(self.tolud().saturating_sub(I945_GTT_SIZE))),
             gmadr_base: Some(bars.gmadr),
-            gmadr_size: self.config.igd.gmadr_size,
+            gmadr_size: super::igd::gmadr_size_from_msac(igd.read8(IGD_MSAC)),
             stolen_base: u64::from(stolen_base),
             stolen_size: self.tolud().saturating_sub(stolen_base),
             gtt_size: I945_GTT_SIZE,
