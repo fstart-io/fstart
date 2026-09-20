@@ -36,14 +36,17 @@ fn iasl_round_trip(chipset: &str, aml: &[u8]) -> String {
     std::fs::read_to_string(dir.join("input.dsl")).expect("read disassembled DSDT")
 }
 
-fn assert_legacy_resources(dsl: &str) {
-    let rtc = dsl
-        .split("Device (RTC)")
-        .nth(1)
-        .and_then(|rest| rest.split("Device (").next())
-        .expect("RTC device in disassembled DSDT");
+fn assert_legacy_resources(aml: &[u8], dsl: &str) {
+    // Validate the resource bytes directly: ACPICA versions disagree on
+    // whether this buffer is disassembled as bytes or symbolic resource DSL.
+    const RTC_RESOURCES: &[u8] = &[
+        0x47, 0x01, 0x70, 0x00, 0x70, 0x00, 0x01, 0x08, // fixed I/O 0x70..0x77
+        0x23, 0x00, 0x01, 0x01, // IRQ 8, edge/high/exclusive
+        0x79, 0x00, // end tag
+    ];
     assert!(
-        rtc.contains("0x23, 0x00, 0x01, 0x01"),
+        aml.windows(RTC_RESOURCES.len())
+            .any(|window| window == RTC_RESOURCES),
         "RTC must advertise an edge-triggered, active-high, exclusive IRQ 8"
     );
     assert!(!dsl.contains("OperationRegion (PMIO"));
@@ -62,12 +65,14 @@ fn run_iasl(dir: &Path, args: &[&str]) -> std::process::Output {
 fn ich7_dsdt_disassembles() {
     static CONFIG: IntelIch7Config = IntelIch7Config::new();
     let south = IntelIch7::new_from_config(&CONFIG).expect("ICH7 config is valid");
-    assert_legacy_resources(&iasl_round_trip("ich7", &south.dsdt_aml(&CONFIG)));
+    let aml = south.dsdt_aml(&CONFIG);
+    assert_legacy_resources(&aml, &iasl_round_trip("ich7", &aml));
 }
 
 #[test]
 fn ich8_dsdt_disassembles() {
     static CONFIG: IntelIch8Config = IntelIch8Config::new();
     let south = IntelIch8::new_from_config(&CONFIG).expect("ICH8 config is valid");
-    assert_legacy_resources(&iasl_round_trip("ich8", &south.dsdt_aml(&CONFIG)));
+    let aml = south.dsdt_aml(&CONFIG);
+    assert_legacy_resources(&aml, &iasl_round_trip("ich8", &aml));
 }

@@ -1276,6 +1276,31 @@ fn assemble_linux_payload(
 ) -> Result<(), String> {
     add_firmware_blob(payload, board_dir, firmware_path, ro_files)?;
 
+    if let Some(zero_page_addr) = payload.x86_zero_page_addr {
+        let manifest = fstart_core::payload_manifest::X86LinuxManifest::encode(
+            payload
+                .kernel_load_addr
+                .unwrap_or(fstart_core::payload_manifest::X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
+            zero_page_addr,
+            payload.bootargs.as_deref().unwrap_or(""),
+            payload.print_x86_mtrrs,
+        )
+        .map_err(str::to_owned)?;
+        ro_files.push(InputFile {
+            name: fstart_core::payload_manifest::X86_LINUX_MANIFEST_ASSET.to_string(),
+            file_type: FileType::Data,
+            segments: vec![InputSegment {
+                name: ".data".to_string(),
+                kind: SegmentKind::ReadOnlyData,
+                data: manifest.into_iter().collect(),
+                mem_size: None,
+                load_addr: 0,
+                compression: Compression::None,
+                flags: SegmentFlags::RODATA,
+            }],
+        });
+    }
+
     let kernel_file = kernel_path.map(PathBuf::from).or_else(|| {
         payload
             .kernel_file

@@ -41,6 +41,7 @@ fn typed_qemu_presets_match_captured_xip_outputs() {
             machine,
             BuildSelection {
                 payload: Some(payload.into()),
+                ..Default::default()
             },
         )
         .unwrap();

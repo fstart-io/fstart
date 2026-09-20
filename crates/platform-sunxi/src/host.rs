@@ -190,6 +190,7 @@ fn payload_config(facts: BoardFacts) -> PayloadConfig {
         kind: PayloadKind::LinuxBoot,
         kernel_file: None,
         kernel_load_addr: Some(facts.kernel_load_addr),
+        x86_zero_page_addr: None,
         fdt: FdtSource::Override(hstr(facts.dtb)),
         dtb_addr: Some(facts.dtb_addr),
         src_dtb_addr: None,
@@ -433,6 +434,7 @@ mod tests {
     fn select(payload: &str) -> BuildSelection {
         BuildSelection {
             payload: Some(payload.into()),
+            ..Default::default()
         }
     }
 

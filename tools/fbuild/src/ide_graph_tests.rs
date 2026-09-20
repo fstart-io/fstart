@@ -20,6 +20,7 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
         fstart_platform_qemu::facts::VirtMachine::Riscv64,
         fstart_image_build::plan::BuildSelection {
             payload: Some("halt".into()),
+            ..Default::default()
         },
     )
     .unwrap();

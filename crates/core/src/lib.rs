@@ -23,6 +23,7 @@ pub mod stage;
 pub mod typed;
 
 pub mod mmio;
+pub mod payload_manifest;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod pio;
 pub mod services;
@@ -35,7 +36,7 @@ pub use board::{
     BoardBuildPolicy, BoardConfig, FdtSource, FirmwareConfig, FirmwareImagePolicy, FirmwareKind,
     FitParseMode, PayloadConfig, PayloadKind, Platform, QemuMachine, SocImageFormat,
 };
-pub use builder::{dev_security_config, hstr, hvec, x86_linuxboot_payload, x86_uefi_payload};
+pub use builder::{dev_security_config, hstr, hvec, x86_linux_payload, x86_uefi_payload};
 pub use const_vec::ConstVec;
 pub use device::BusAddress;
 pub use ffs::{

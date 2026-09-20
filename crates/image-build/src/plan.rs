@@ -91,6 +91,14 @@ mod tests {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct BuildSelection {
     pub payload: Option<String>,
+    #[serde(default)]
+    pub x86_linux_kernel_load_addr: Option<u64>,
+    #[serde(default)]
+    pub x86_linux_zero_page_addr: Option<u64>,
+    #[serde(default)]
+    pub x86_linux_bootargs: Option<String>,
+    #[serde(default)]
+    pub x86_linux_print_mtrrs: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

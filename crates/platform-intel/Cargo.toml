@@ -15,6 +15,7 @@ bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin"]
 payload-uefi = ["payload-uefi-basic", "fstart-stage/crabefi"]
 payload-uefi-ui = ["payload-uefi", "fstart-stage/crabefi-ui"]
 payload-uefi-basic = ["fstart-stage/crabefi-basic"]
+payload-linux = ["fstart-stage/linux"]
 
 stage = [
   "dep:fstart-driver-superio",

@@ -1,5 +1,9 @@
 use clap::{Parser, Subcommand};
-use fbuild::{board_manifest, build_board, payload::PayloadChoice};
+use fbuild::{
+    board_manifest, build_board,
+    payload::{PayloadChoice, X86LinuxArgs},
+};
+use fstart_image_build::plan::BuildSelection;
 use std::process;
 
 #[derive(Parser)]
@@ -21,6 +25,8 @@ enum Command {
         release: bool,
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
+        #[command(flatten)]
+        linux: X86LinuxArgs,
     },
     Run {
         #[arg(short, long)]
@@ -29,6 +35,8 @@ enum Command {
         release: bool,
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
+        #[command(flatten)]
+        linux: X86LinuxArgs,
         #[arg(short, long)]
         kernel: Option<String>,
         #[arg(short, long)]
@@ -54,6 +62,8 @@ enum Command {
         release: bool,
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
+        #[command(flatten)]
+        linux: X86LinuxArgs,
         #[arg(short, long)]
         kernel: Option<String>,
         #[arg(short, long)]
@@ -70,6 +80,8 @@ enum Command {
         board: String,
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
+        #[command(flatten)]
+        linux: X86LinuxArgs,
     },
     /// Type-check a migrated board using its resolved firmware selection.
     Check {
@@ -79,6 +91,8 @@ enum Command {
         stage: Option<String>,
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
+        #[command(flatten)]
+        linux: X86LinuxArgs,
         #[arg(long)]
         release: bool,
     },
@@ -87,6 +101,8 @@ enum Command {
         board: String,
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
+        #[command(flatten)]
+        linux: X86LinuxArgs,
         #[arg(long)]
         release: bool,
         /// Select a named compilation unit from the resolved platform plan.
@@ -127,6 +143,7 @@ fn board_tool_build_args(
     subcommand: &str,
     release: bool,
     payload: Option<PayloadChoice>,
+    linux: &X86LinuxArgs,
 ) -> Vec<String> {
     let mut args = vec![subcommand.to_string()];
     if release {
@@ -136,6 +153,7 @@ fn board_tool_build_args(
         args.push("--payload".to_string());
         args.push(payload.as_str().to_string());
     }
+    linux.append_cli_args(&mut args);
     args
 }
 
@@ -146,8 +164,9 @@ fn board_tool_assemble_args(
     kernel: Option<String>,
     firmware: Option<String>,
     fit: Option<String>,
+    linux: &X86LinuxArgs,
 ) -> Vec<String> {
-    let mut args = board_tool_build_args(subcommand, release, payload);
+    let mut args = board_tool_build_args(subcommand, release, payload, linux);
     if let Some(kernel) = kernel {
         args.push("--kernel".to_string());
         args.push(kernel);
@@ -173,8 +192,10 @@ fn board_tool_run_args(
     disk: Option<String>,
     memory: Option<String>,
     secure_firmware: Option<String>,
+    linux: &X86LinuxArgs,
 ) -> Vec<String> {
-    let mut args = board_tool_assemble_args(subcommand, release, payload, kernel, firmware, fit);
+    let mut args =
+        board_tool_assemble_args(subcommand, release, payload, kernel, firmware, fit, linux);
     if let Some(disk) = disk {
         args.push("--disk".to_string());
         args.push(disk);
@@ -197,7 +218,7 @@ fn board_tool_flash_args(
     probe: Option<String>,
     base_address: Option<String>,
 ) -> Vec<String> {
-    let mut args = board_tool_build_args("flash", release, None);
+    let mut args = board_tool_build_args("flash", release, None, &X86LinuxArgs::default());
     if probe_run {
         args.push("--probe-run".to_string());
     }
@@ -216,52 +237,52 @@ fn board_tool_flash_args(
     args
 }
 
-fn explain(board: &str, payload: Option<PayloadChoice>) -> Result<(), String> {
+fn explain(board: &str, selection: BuildSelection) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
+    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
     println!("{}", resolved.json()?);
     Ok(())
 }
 
 fn compile_named(
     board: &str,
-    payload: Option<PayloadChoice>,
+    selection: BuildSelection,
     release: bool,
     name: &str,
     checking: bool,
 ) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
+    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
     resolved.compile_selected(&root, &manifest, name, release, checking)
 }
 
 fn check(
     board: &str,
-    payload: Option<PayloadChoice>,
+    selection: BuildSelection,
     release: bool,
     stage: Option<String>,
 ) -> Result<(), String> {
     if let Some(stage) = stage {
-        return compile_named(board, payload, release, &stage, true);
+        return compile_named(board, selection, release, &stage, true);
     }
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
+    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
     resolved.check(&root, &manifest, release)
 }
 
 fn ide(
     board: &str,
-    payload: Option<PayloadChoice>,
+    selection: BuildSelection,
     release: bool,
     audit_lock: bool,
     stage: Option<String>,
 ) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, payload)?;
+    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
     let workspace = fbuild::ide::generate_image(
         &root,
         &manifest,
@@ -282,15 +303,20 @@ fn main() {
             board,
             release,
             payload,
+            linux,
             stage,
         } => match stage {
-            Some(name) => compile_named(&board, payload, release, &name, false),
-            None => dispatch_board(&board, &board_tool_build_args("build", release, payload)),
+            Some(name) => compile_named(&board, linux.selection(payload), release, &name, false),
+            None => dispatch_board(
+                &board,
+                &board_tool_build_args("build", release, payload, &linux),
+            ),
         },
         Command::Run {
             board,
             release,
             payload,
+            linux,
             kernel,
             firmware,
             fit,
@@ -309,6 +335,7 @@ fn main() {
                 disk,
                 memory,
                 secure_firmware,
+                &linux,
             ),
         ),
         Command::Test { board } => dispatch_board(&board, &["test".into()]),
@@ -316,28 +343,35 @@ fn main() {
             board,
             release,
             payload,
+            linux,
             kernel,
             firmware,
             fit,
         } => dispatch_board(
             &board,
-            &board_tool_assemble_args("assemble", release, payload, kernel, firmware, fit),
+            &board_tool_assemble_args("assemble", release, payload, kernel, firmware, fit, &linux),
         ),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
-        Command::Explain { board, payload } => explain(&board, payload),
+        Command::Explain {
+            board,
+            payload,
+            linux,
+        } => explain(&board, linux.selection(payload)),
         Command::Ide {
             board,
             payload,
+            linux,
             release,
             audit_lock,
             stage,
-        } => ide(&board, payload, release, audit_lock, stage),
+        } => ide(&board, linux.selection(payload), release, audit_lock, stage),
         Command::Check {
             board,
             payload,
+            linux,
             release,
             stage,
-        } => check(&board, payload, release, stage),
+        } => check(&board, linux.selection(payload), release, stage),
         Command::Flash {
             board,
             release,
