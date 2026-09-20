@@ -5,11 +5,11 @@
 //! `gpio.c` (pad tables), `early_init.c` (SuperIO PME at 0x680), and
 //! `Kconfig` (512 KiB flash, Atom 230).
 
-use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hstr, hvec};
+use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hstr};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_superio::smsc_lpc47m15x;
-use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port, PreferredMode};
+use fstart_intel_gma::framebuffer::FramebufferConfig;
+use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::i945::I945IgdConfig;
 use fstart_platform_intel::i945::{
     I945Ich7Config, I945Ich7Platform, I945Variant, LpcFixedIoDecode, LpcGenericIoDecode,
@@ -38,25 +38,11 @@ const D945GCLF_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
         port: Port::Vga,
         enabled: true,
     }],
-    framebuffer: FramebufferConfig {
+    framebuffer: FramebufferConfig::edid(FallbackMode {
         width: 1024,
         height: 768,
-        bits_per_pixel: 32,
-        stride: None,
-        v_stride: None,
-        start_x: 0,
-        start_y: 0,
-        offset: 0,
-        tiling: TilingMode::Linear,
-        rotation: Rotation::None,
-        preferred_mode: PreferredMode::Edid,
-        fallback_mode: Some(FallbackMode {
-            width: 1024,
-            height: 768,
-            refresh_hz: 60,
-        }),
-        scaling: fstart_intel_gma::ScalingPolicy::None,
-    },
+        refresh_hz: 60,
+    }),
 };
 
 /// Integrated graphics configuration for the onboard GMA950.

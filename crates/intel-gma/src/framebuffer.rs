@@ -285,6 +285,28 @@ pub struct FramebufferConfig {
 }
 
 impl FramebufferConfig {
+    /// Standard linear XRGB8888 framebuffer whose mode comes from monitor EDID.
+    ///
+    /// `fallback` is used only when no valid EDID mode can be selected.
+    #[must_use]
+    pub const fn edid(fallback: crate::mode::FallbackMode) -> Self {
+        Self {
+            width: fallback.width as u32,
+            height: fallback.height as u32,
+            bits_per_pixel: 32,
+            stride: None,
+            v_stride: None,
+            start_x: 0,
+            start_y: 0,
+            offset: 0,
+            tiling: TilingMode::Linear,
+            rotation: Rotation::None,
+            preferred_mode: crate::config::PreferredMode::Edid,
+            fallback_mode: Some(fallback),
+            scaling: ScalingPolicy::None,
+        }
+    }
+
     /// Return the requested pixel format.
     pub fn pixel_format(&self) -> Result<PixelFormat, GmaError> {
         match self.bits_per_pixel {

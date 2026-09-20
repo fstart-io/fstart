@@ -5,8 +5,8 @@ use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_intel::southbridge::hda;
 use fstart_driver_superio::ite8721f;
-use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port, PreferredMode};
+use fstart_intel_gma::framebuffer::FramebufferConfig;
+use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 use fstart_platform_intel::pineview::{
     LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PineviewIch7Config,
@@ -26,28 +26,13 @@ const D41S_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
         port: Port::Vga,
         enabled: true,
     }],
-    framebuffer: FramebufferConfig {
+    // A VGA port has no VBT panel, so take the mode from monitor EDID like
+    // libgfxinit and use 1024x768 only when EDID is unavailable.
+    framebuffer: FramebufferConfig::edid(FallbackMode {
         width: 1024,
         height: 768,
-        bits_per_pixel: 32,
-        stride: None,
-        v_stride: None,
-        start_x: 0,
-        start_y: 0,
-        offset: 0,
-        tiling: TilingMode::Linear,
-        rotation: Rotation::None,
-        // A VGA port has no VBT panel: the synthesized fallback timings are
-        // wrong (VBLANK 0, a 256-line VSYNC window), so take the mode from the
-        // monitor's EDID like libgfxinit does.
-        preferred_mode: PreferredMode::Edid,
-        fallback_mode: Some(FallbackMode {
-            width: 1024,
-            height: 768,
-            refresh_hz: 60,
-        }),
-        scaling: fstart_intel_gma::ScalingPolicy::None,
-    },
+        refresh_hz: 60,
+    }),
 };
 
 pub const BOARD_NAME: &str = "foxconn-d41s";
