@@ -131,6 +131,17 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         mainstage.southbridge().system_reset(true);
     }
 
+    // mp_init leaves APs polling firmware mailboxes so mainstage can dispatch
+    // scoped work. Stop that firmware activity before transferring ownership
+    // to a payload; an OS expects every AP to remain quiescent until its own
+    // INIT/SIPI sequence.
+    #[cfg(feature = "mp")]
+    if !fstart_arch::mp::park_aps_for_payload() {
+        fstart_log::error!("{}: failed to quiesce APs for payload handoff", platform);
+        fstart_log::flush();
+        fstart_arch::x86_64::halt();
+    }
+
     B::Payload::boot(mainstage)
 }
 
