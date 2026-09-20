@@ -79,9 +79,6 @@ const SMBHSTSTS_NON_COMPLETION: u8 =
 
 const SMBHSTCNT_START: u8 = 1 << 6;
 
-/// Abort the transaction in progress (PIIX4/ICH host-control KILL bit).
-const SMBHSTCNT_KILL: u8 = 1 << 1;
-
 // ---------------------------------------------------------------------------
 // Timeout (spin-loop iterations)
 // ---------------------------------------------------------------------------
@@ -145,13 +142,13 @@ impl I801SmBus {
     pub fn enable_on_i801(bus: u8, dev: u8, func: u8, smbus_base: u16) -> Self {
         const SMB_BASE: u16 = 0x20;
         const HOSTC: u16 = 0x40;
-        const HST_EN: u32 = 1;
+        const HST_EN: u8 = 1;
         const PCI_COMMAND: u16 = 0x04;
         const PCI_CMD_IO: u16 = 0x0001;
 
         let smbus_pci = ecam::EcamDevice::new(bus, dev, func);
         smbus_pci.write32(SMB_BASE, (smbus_base as u32) | 1);
-        smbus_pci.write32(HOSTC, HST_EN);
+        smbus_pci.write8(HOSTC, HST_EN);
         let cmd = smbus_pci.read16(PCI_COMMAND);
         smbus_pci.write16(PCI_COMMAND, cmd | PCI_CMD_IO);
         let s = Self {
@@ -163,18 +160,15 @@ impl I801SmBus {
         s
     }
 
-    /// Reset the SMBus host controller.
+    /// Reset the SMBus host controller to its normal idle programming.
     ///
-    /// Disables interrupts and clears any lingering status bits so
-    /// new transactions can run. A block transfer that never completes (a
-    /// device that does not answer) leaves HOST_BUSY set and no status bit to
-    /// clear, so abort it explicitly with the controller's KILL bit first;
-    /// without that the bus stays wedged for every later transaction.
+    /// This mirrors coreboot's initialization: disable interrupts and clear
+    /// the write-one-to-clear status bits. KILL is not part of initialization;
+    /// it is only meaningful while aborting a known active transaction.
     pub fn host_reset(&self) {
         #[cfg(target_arch = "x86_64")]
         {
             let regs = self.regs();
-            regs.control().set(SMBHSTCNT_KILL);
             regs.control().set(0);
             let stat = regs.status().get();
             regs.status().set(stat);
@@ -213,9 +207,8 @@ impl I801SmBus {
                 }
                 loops -= 1;
                 if loops == 0 {
-                    // A previous transaction may have been left in flight (a
-                    // device that stopped answering). Abort it and try once
-                    // more instead of declaring the bus dead.
+                    // Clear any lingering completion/error status and check
+                    // once more before declaring the controller dead.
                     fstart_log::warn!(
                         "i801-smbus: controller busy (sts {:#04x} ctl {:#04x})",
                         self.regs().status().get(),
