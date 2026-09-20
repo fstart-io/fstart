@@ -7,6 +7,10 @@
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub use crate::x86_crate::*;
 
+pub mod cpu;
+pub mod lapic;
+pub mod mp;
+
 /// Read the x86 Time Stamp Counter.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]

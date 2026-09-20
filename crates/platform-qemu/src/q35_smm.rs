@@ -1,12 +1,12 @@
 //! QEMU q35 TSEG geometry and SMRAM window control.
 //!
 //! The install/relocation flow itself is the shared Intel gen1
-//! [`IntelSmm`](fstart_arch::cpu_intel::smm::IntelSmm); this module supplies
+//! [`IntelSmm`](fstart_arch::x86::cpu::intel::smm::IntelSmm); this module supplies
 //! the chipset halves: [`SmramControl`] for the MCH (coreboot's
 //! `mainboard/emulation/qemu-q35/memmap.c`) and the ICH9 PM I/O block for
 //! [`IchSmi`] (`southbridge/intel/common/smi.c`).
 
-use fstart_arch::cpu_intel::smm::{Gpe0Block, SmramControl};
+use fstart_arch::x86::cpu::intel::smm::{Gpe0Block, SmramControl};
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_intel::southbridge::smi::IchSmi;
 

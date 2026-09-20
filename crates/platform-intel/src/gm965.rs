@@ -342,7 +342,7 @@ mod stage {
     use super::*;
     use crate::{IntelChipsetConfig, IntelEarlyPlatform};
     #[cfg(feature = "mp")]
-    use fstart_arch::cpu_intel::core2_cpu::Core2CpuDriver;
+    use fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
     use fstart_driver_intel::gm965::IntelGm965;
     use fstart_driver_intel::ich8::IntelIch8;
 

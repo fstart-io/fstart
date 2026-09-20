@@ -18,8 +18,7 @@ use x86_64_crate::PhysAddr;
 use x86_64_crate::structures::paging::{PageTable, PageTableFlags};
 
 /// Pages are present and writable; leaf entries map 2 MiB directly.
-const TABLE_FLAGS: PageTableFlags =
-    PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
+const TABLE_FLAGS: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
 const LEAF_FLAGS: PageTableFlags = TABLE_FLAGS.union(PageTableFlags::HUGE_PAGE);
 /// Write-through plus cache-disable selects PAT entry 3 (uncached).
 const MMIO_FLAGS: PageTableFlags = LEAF_FLAGS
@@ -149,10 +148,7 @@ mod tests {
         // Every leaf must be a present 2 MiB page at its own address.
         for index in 0..2048u64 {
             let entry = unsafe { base.add(1024 + index as usize).read_volatile() };
-            assert_eq!(
-                entry & LEAF_FLAGS.bits(),
-                LEAF_FLAGS.bits()
-            );
+            assert_eq!(entry & LEAF_FLAGS.bits(), LEAF_FLAGS.bits());
             assert_eq!(entry & !0xfff & !((1 << 21) - 1), index * (1 << 21));
         }
     }

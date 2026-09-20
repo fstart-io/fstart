@@ -15,7 +15,7 @@
 //!
 //! This crate is intentionally minimal — it exposes the LAPIC as a
 //! thin register interface, not a full interrupt framework.  Higher-level
-//! MP orchestration lives in [`crate::mp`].
+//! MP orchestration lives in [`crate::x86::mp`].
 
 use core::ptr;
 

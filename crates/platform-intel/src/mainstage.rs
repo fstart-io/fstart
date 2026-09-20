@@ -136,7 +136,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     // to a payload; an OS expects every AP to remain quiescent until its own
     // INIT/SIPI sequence.
     #[cfg(feature = "mp")]
-    if !fstart_arch::mp::park_aps_for_payload() {
+    if !fstart_arch::x86::mp::park_aps_for_payload() {
         fstart_log::error!("{}: failed to quiesce APs for payload handoff", platform);
         fstart_log::flush();
         fstart_arch::x86_64::halt();
@@ -157,16 +157,16 @@ fn init_mp<P: IntelEarlyPlatform>(
     // APs must run the same updated microcode as the BSP, whose update
     // happens in pre-CAR assembly; the blob sits in boot flash.
     let cpu = P::cpu_driver(crate::intel_microcode_blob());
-    let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
-    let smm = fstart_arch::cpu_intel::smm::IntelSmm::new(
+    let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
+    let smm = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
         P::NAME,
         northbridge,
         southbridge,
         P::SMM_BSP_ONLY_DISPATCH,
     );
-    fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
+    fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
         cpu_drivers: &drivers,
-        smm: crate::SMM_IMAGE.map(|_| &smm as &dyn fstart_arch::mp::SmmOps),
+        smm: crate::SMM_IMAGE.map(|_| &smm as &dyn fstart_arch::x86::mp::SmmOps),
         smm_image: crate::SMM_IMAGE,
         max_cpus,
     })
@@ -364,7 +364,7 @@ where
         let acpi_ctx = P::AcpiContext::default();
         let platform = fstart_acpi::platform::PlatformConfig::X86(
             self.southbridge
-                .x86_platform_config(u32::from(fstart_arch::mp::online_cpus())),
+                .x86_platform_config(u32::from(fstart_arch::x86::mp::online_cpus())),
         );
         let (northbridge, southbridge, hooks) = (&self.northbridge, &self.southbridge, &self.hooks);
         let rsdp =

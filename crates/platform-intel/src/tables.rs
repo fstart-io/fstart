@@ -310,7 +310,7 @@ struct RuntimeCacheDesc {
 #[cfg(feature = "smbios")]
 fn runtime_processor_counts() -> (u16, u16, u16) {
     let (cores, threads) = fstart_arch::x86_64::cpuid::cpu_core_thread_counts();
-    let online = fstart_arch::mp::online_cpus();
+    let online = fstart_arch::x86::mp::online_cpus();
     let enabled = cores.min(online.max(1));
     (cores.max(1), enabled.max(1), threads.max(enabled))
 }

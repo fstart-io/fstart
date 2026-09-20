@@ -339,7 +339,7 @@ mod stage {
     use super::*;
     use crate::{IntelChipsetConfig, IntelEarlyPlatform};
     #[cfg(feature = "mp")]
-    use fstart_arch::cpu_intel::pineview::PineviewCpuDriver;
+    use fstart_arch::x86::cpu::intel::pineview::PineviewCpuDriver;
     use fstart_driver_intel::i945::IntelI945;
     use fstart_driver_intel::ich7::IntelIch7;
 
