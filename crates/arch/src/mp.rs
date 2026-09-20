@@ -1164,10 +1164,11 @@ impl MpHandle {
             mb.func
                 .store(park_cpu as *const () as usize, Ordering::Release);
         }
-        // Wait for all APs to pick up the park command.
-        // (They won't signal completion — they're halted.)
-        delay_us(1000);
-        fstart_log::info!("mp: {} APs parked", self.num_aps);
+        if wait_for_aps_parked(self.num_aps as usize) {
+            fstart_log::info!("mp: {} APs parked", self.num_aps);
+        } else {
+            fstart_log::error!("mp: timed out parking {} APs", self.num_aps);
+        }
     }
 }
 
@@ -1177,10 +1178,11 @@ impl MpHandle {
 /// them.  An OS does not know about that mailbox and expects APs to be quiescent
 /// until it sends its own INIT/SIPI sequence.  Call this immediately before a
 /// final payload jump.
-pub fn park_aps_for_payload() {
+#[must_use]
+pub fn park_aps_for_payload() -> bool {
     let num_aps = AP_COUNT.load(Ordering::Acquire).min(MAX_CPUS);
     if num_aps == 0 {
-        return;
+        return true;
     }
 
     for i in 0..num_aps {
@@ -1190,16 +1192,52 @@ pub fn park_aps_for_payload() {
             .store(park_cpu as *const () as usize, Ordering::Release);
     }
 
-    delay_us(1000);
-    fstart_log::info!("mp: {} APs parked for payload handoff", num_aps as u32);
+    if wait_for_aps_parked(num_aps) {
+        fstart_log::info!("mp: {} APs parked for payload handoff", num_aps as u32);
+        true
+    } else {
+        fstart_log::error!(
+            "mp: timed out parking {} APs for payload handoff",
+            num_aps as u32
+        );
+        false
+    }
 }
 
 /// HLT loop for parking an AP.
-fn park_cpu(_data: *const (), _cpu: u32) {
+fn park_cpu(_data: *const (), cpu: u32) {
+    // Acknowledge the command before stopping. The trampoline never returns,
+    // so the mailbox loop cannot perform its normal completion store.
+    if let Some(mb) = cpu
+        .checked_sub(1)
+        .and_then(|index| MAILBOXES.get(index as usize))
+    {
+        mb.func.store(MB_IDLE, Ordering::Release);
+    }
+
+    // Keep the AP quiescent until the payload's INIT/SIPI sequence. Maskable
+    // firmware interrupts must not wake it back into firmware-owned state.
+    // SAFETY: disabling interrupts and halting is the terminal AP handoff path.
+    unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
     loop {
         // SAFETY: HLT is always safe.
         unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
     }
+}
+
+fn wait_for_aps_parked(num_aps: usize) -> bool {
+    const TIMEOUT_US: usize = 100_000;
+
+    for _ in 0..TIMEOUT_US {
+        if MAILBOXES[..num_aps]
+            .iter()
+            .all(|mb| mb.func.load(Ordering::Acquire) == MB_IDLE)
+        {
+            return true;
+        }
+        delay_us(1);
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
