@@ -3,88 +3,38 @@
 //! Entries come from the platform's PIRQ routing data, so the GSIs an OS
 //! derives are the ones the chipset's interrupt router delivers on.
 
-use alloc::vec;
 use alloc::vec::Vec;
+
+use acpi_tables::Aml;
+use acpi_tables::aml::{Name, PackageBuilder};
 
 /// AML `Name(_PRT, Package(...))` for a root-bus scope, one entry per route.
 ///
-/// This is the table the OS reads: every entry is derived from the same
-/// [`PinRoute`] data the router registers are programmed with, so the two
-/// cannot disagree.
+/// This is the table the OS reads: every entry is derived from the same route
+/// data the chipset's interrupt router is programmed with, so the two cannot
+/// disagree.
 #[must_use]
 pub fn prt_name_aml(routes: impl Iterator<Item = (u8, u8, u8)>) -> Vec<u8> {
-    let entries: Vec<Vec<u8>> = routes
-        .map(|(slot, pin, gsi)| {
-            package(&[
-                dword_aml((u32::from(slot) << 16) | 0xFFFF),
-                integer_aml(u64::from(pin)),
-                integer_aml(0),
-                integer_aml(u64::from(gsi)),
-            ])
-        })
-        .collect();
-    name_aml(b"_PRT", &package(&entries))
-}
-
-/// AML `Name` opcode with a four-character name and a single body object.
-fn name_aml(name: &[u8; 4], body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(body.len() + 5);
-    out.push(0x08); // NameOp
-    out.extend_from_slice(name);
-    out.extend_from_slice(body);
-    out
-}
-
-/// AML `Package` opcode over already-serialized elements.
-fn package(elements: &[Vec<u8>]) -> Vec<u8> {
-    let count = u8::try_from(elements.len()).expect("package holds at most 255 elements");
-    let content_len: usize = elements.iter().map(Vec::len).sum::<usize>() + 1;
-    let (length, width) = fstart_acpi::aml_linker::package_length(content_len)
-        .expect("package length fits in a PkgLength field");
-    let mut out = Vec::with_capacity(content_len + width + 1);
-    out.push(0x12); // PackageOp
-    out.extend_from_slice(&length[..width]);
-    out.push(count); // NumElements
-    for element in elements {
-        out.extend_from_slice(element);
+    let mut entries = PackageBuilder::new();
+    for (slot, pin, gsi) in routes {
+        let address = (u32::from(slot) << 16) | 0xFFFF;
+        let mut entry = PackageBuilder::new();
+        entry.add_element(&address);
+        entry.add_element(&u32::from(pin));
+        entry.add_element(&0u32);
+        entry.add_element(&u32::from(gsi));
+        entries.add_element(&entry);
     }
-    out
-}
 
-/// AML integer in its smallest encoding (bare `Zero` for zero).
-fn integer_aml(value: u64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(9);
-    match value {
-        0 => out.push(0x00), // ZeroOp
-        value if value <= u64::from(u8::MAX) => {
-            out.push(0x0A); // BytePrefix
-            out.push(value as u8);
-        }
-        value if value <= u64::from(u16::MAX) => {
-            out.push(0x0B); // WordPrefix
-            out.extend_from_slice(&(value as u16).to_le_bytes());
-        }
-        value if value <= u64::from(u32::MAX) => {
-            out.push(0x0C); // DwordPrefix
-            out.extend_from_slice(&(value as u32).to_le_bytes());
-        }
-        value => {
-            out.push(0x0E); // QwordPrefix
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-    }
-    out
-}
-
-/// AML dword constant, as `_PRT` address fields expect.
-fn dword_aml(value: u32) -> Vec<u8> {
-    let mut out = vec![0x0C]; // DwordPrefix
-    out.extend_from_slice(&value.to_le_bytes());
-    out
+    let mut bytes = Vec::new();
+    Name::new("_PRT".into(), &entries).to_aml_bytes(&mut bytes);
+    bytes
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     #[test]

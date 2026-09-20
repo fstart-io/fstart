@@ -53,6 +53,7 @@ pub mod sbsa;
 pub mod smbios;
 pub mod spcr;
 pub mod tock_bridge;
+pub mod wake;
 
 // Re-export commonly used types from acpi_tables.
 pub use acpi_tables::aml;

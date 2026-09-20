@@ -1,121 +1,23 @@
-//! Locate the OS wake vector for S3 resume.
+//! x86 discovery of the surviving ACPI RSDP used for S3 resume.
 //!
-//! Per ACPI, an OS writes its real-mode resume address into
-//! `FACS.firmware_waking_vector` before entering S3. The tables live in
-//! reserved RAM and survive S3, so on wake the firmware can find the vector
-//! by walking the *surviving* low-memory RSDP, exactly like coreboot's
-//! `acpi_find_wakeup_vector()`. This must run before the table set is
-//! re-emitted, since rebuilding zeroes the FACS.
-//!
-//! The parsers are pure byte decoders (no struct casts) driven by a caller
-//! supplied physical-memory reader, so the whole walk is host-testable.
-//! The firmware entry point reads through the x86 identity map.
+//! The architecture-neutral ACPI table walk lives in [`crate::wake`]. This
+//! module only implements the PC-specific BDA/EBDA and legacy BIOS-window RSDP
+//! search plus the identity-mapped physical-memory reader.
 
 /// BDA pointer to the EBDA segment (physical `0x40E`).
 const BDA_EBDA_SEG_PTR: u64 = 0x40E;
 /// Legacy RSDP scan window (top of conventional memory).
 const SCAN_LO: u64 = 0xE_0000;
 const SCAN_HI: u64 = 0xF_FFFF;
-/// Bound on XSDT bytes consumed from untrusted (S3-resident) memory.
-const MAX_XSDT_LEN: usize = 4096;
 /// Wake vectors are 16-bit real-mode code, hence below 1 MiB.
 const REAL_MODE_LIMIT: u32 = 0x10_0000;
-
-const RSDP_SIG: &[u8; 8] = b"RSD PTR ";
 const RSDP_LEN: usize = 36;
-const SDT_LEN_OFF: usize = 4;
-const RSDP_XSDT_OFF: usize = 24;
-const XSDT_ENTRY_OFF: usize = 36;
-const FADT_LEN: usize = 148;
-/// ACPI 1.0 32-bit FACS pointer.
-const FADT_FIRMWARE_CTRL_OFF: usize = 36;
-/// ACPI 2.0+ 64-bit FACS pointer (verified against the D41S FADT dump).
-const FADT_X_FIRMWARE_CTL_OFF: usize = 132;
-const FACS_LEN: usize = 16;
-const FACS_WAKE_VECTOR_OFF: usize = 12;
-
-fn u32_at(bytes: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap_or([0; 4]))
-}
-
-fn u64_at(bytes: &[u8], off: usize) -> u64 {
-    u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap_or([0; 8]))
-}
-
-fn checksum_ok(bytes: &[u8]) -> bool {
-    bytes.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte)) == 0
-}
-
-/// Validate an RSDP candidate; return the XSDT address it points to.
-fn rsdp_xsdt_addr(bytes: &[u8]) -> Option<u64> {
-    if bytes.len() < RSDP_LEN || &bytes[..8] != RSDP_SIG || !checksum_ok(&bytes[..20]) {
-        return None;
-    }
-    // ACPI 2.0+: validate the extended checksum over the stated length.
-    if bytes[15] >= 2 {
-        let len = u32_at(bytes, 20) as usize;
-        if len < RSDP_LEN || bytes.len() < len || !checksum_ok(&bytes[..len]) {
-            return None;
-        }
-    }
-    Some(u64_at(bytes, RSDP_XSDT_OFF))
-}
-
-/// XSDT walk that checks each candidate's signature through `read`.
-fn find_fadt_in_xsdt(read: &impl Fn(u64, &mut [u8]), xsdt_addr: u64) -> Option<u64> {
-    let mut header = [0u8; XSDT_ENTRY_OFF];
-    read(xsdt_addr, &mut header);
-    if &header[..4] != b"XSDT" {
-        return None;
-    }
-    let len = (u32_at(&header, SDT_LEN_OFF) as usize).clamp(XSDT_ENTRY_OFF, MAX_XSDT_LEN);
-    let mut bytes = [0u8; MAX_XSDT_LEN];
-    read(xsdt_addr, &mut bytes[..len]);
-    let entries = (len - XSDT_ENTRY_OFF) / 8;
-    (0..entries)
-        .map(|i| u64_at(&bytes, XSDT_ENTRY_OFF + i * 8))
-        .filter(|&addr| addr != 0)
-        .find(|&addr| {
-            let mut sig = [0u8; 4];
-            read(addr, &mut sig);
-            &sig == b"FACP"
-        })
-}
-
-/// FADT bytes → FACS address. Prefers the 64-bit pointer and falls back to
-/// the 32-bit one for ACPI 1.0 tables.
-fn fadt_facs_addr(bytes: &[u8]) -> Option<u64> {
-    if bytes.len() < FADT_LEN || &bytes[..4] != b"FACP" {
-        return None;
-    }
-    match u64_at(bytes, FADT_X_FIRMWARE_CTL_OFF) {
-        0 => match u32_at(bytes, FADT_FIRMWARE_CTRL_OFF) {
-            0 => None,
-            addr => Some(u64::from(addr)),
-        },
-        addr => Some(addr),
-    }
-}
-
-/// FACS bytes → firmware waking vector, if present and below 1 MiB.
-fn facs_wake_vector(bytes: &[u8]) -> Option<u32> {
-    if bytes.len() < FACS_LEN || &bytes[..4] != b"FACS" {
-        return None;
-    }
-    match u32_at(bytes, FACS_WAKE_VECTOR_OFF) {
-        0 => None,
-        vector if vector < REAL_MODE_LIMIT => Some(vector),
-        _ => None,
-    }
-}
 
 /// Scan 16-byte-aligned candidates in `[lo, hi)` for a valid RSDP.
 fn scan_rsdp(read: &impl Fn(u64, &mut [u8]), lo: u64, hi: u64) -> Option<u64> {
-    let mut buf = [0u8; RSDP_LEN];
-    (lo..hi).step_by(16).find_map(|addr| {
-        read(addr, &mut buf);
-        rsdp_xsdt_addr(&buf)
-    })
+    (lo..hi)
+        .step_by(16)
+        .find(|addr| crate::wake::rsdp_is_valid_with(read, *addr))
 }
 
 /// Walk the surviving tables to the OS wake vector.
@@ -132,21 +34,13 @@ pub fn find_wakeup_vector_with(read: impl Fn(u64, &mut [u8])) -> Option<u32> {
     let mut bda = [0u8; 2];
     read(BDA_EBDA_SEG_PTR, &mut bda);
     let ebda = u64::from(u16::from_le_bytes(bda)) << 4;
-    let xsdt_addr = if (0x8_0000..0xA_0000).contains(&ebda) {
+    let rsdp_addr = if (0x8_0000..0xA_0000).contains(&ebda) {
         scan_rsdp(&read, ebda, ebda + 0x400).or_else(|| scan_rsdp(&read, SCAN_LO, SCAN_HI))
     } else {
         scan_rsdp(&read, SCAN_LO, SCAN_HI)
     }?;
-
-    let fadt_addr = find_fadt_in_xsdt(&read, xsdt_addr)?;
-
-    let mut fadt = [0u8; FADT_LEN];
-    read(fadt_addr, &mut fadt);
-    let facs_addr = fadt_facs_addr(&fadt)?;
-
-    let mut facs = [0u8; FACS_LEN];
-    read(facs_addr, &mut facs);
-    facs_wake_vector(&facs)
+    crate::wake::wakeup_vector_from_rsdp_with(&read, rsdp_addr)
+        .filter(|vector| *vector < REAL_MODE_LIMIT)
 }
 
 /// Firmware entry: read the surviving tables through the identity map.
@@ -170,6 +64,14 @@ mod tests {
     use std::collections::BTreeMap;
     use std::vec;
     use std::vec::Vec;
+
+    const RSDP_SIG: &[u8; 8] = b"RSD PTR ";
+    const XSDT_ENTRY_OFF: usize = 36;
+    const FADT_LEN: usize = 148;
+    const FADT_FIRMWARE_CTRL_OFF: usize = 36;
+    const FADT_X_FIRMWARE_CTL_OFF: usize = 132;
+    const FACS_LEN: usize = 16;
+    const FACS_WAKE_VECTOR_OFF: usize = 12;
 
     /// Sparse fake physical memory served through the `read` closure.
     #[derive(Default)]
