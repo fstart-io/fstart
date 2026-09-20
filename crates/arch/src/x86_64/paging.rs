@@ -14,15 +14,17 @@
 /// Space the tables need: one PML4, one PDPT and four page directories.
 pub const TABLE_BYTES: usize = 6 * 4096;
 
+use x86_64_crate::PhysAddr;
+use x86_64_crate::structures::paging::{PageTable, PageTableFlags};
+
 /// Pages are present and writable; leaf entries map 2 MiB directly.
-const PTE_PRESENT: u64 = 1 << 0;
-const PTE_RW: u64 = 1 << 1;
-/// Page-level write-through and cache-disable: together these select PAT entry
-/// 3, i.e. uncached. MMIO must not be mapped write-back, or writes are absorbed
-/// by the cache and never reach the device.
-const PTE_PWT: u64 = 1 << 3;
-const PTE_PCD: u64 = 1 << 4;
-const PTE_PS: u64 = 1 << 7;
+const TABLE_FLAGS: PageTableFlags =
+    PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
+const LEAF_FLAGS: PageTableFlags = TABLE_FLAGS.union(PageTableFlags::HUGE_PAGE);
+/// Write-through plus cache-disable selects PAT entry 3 (uncached).
+const MMIO_FLAGS: PageTableFlags = LEAF_FLAGS
+    .union(PageTableFlags::WRITE_THROUGH)
+    .union(PageTableFlags::NO_CACHE);
 
 /// First address that is MMIO rather than RAM on this platform: GMADR and the
 /// display BAR sit at 0x8000_0000 and everything above is MMIO/flash/APIC.
@@ -41,32 +43,29 @@ const MMIO_START: u64 = 0x8000_0000;
 /// address space, and must have [`TABLE_BYTES`] free. The result stays live until
 /// the payload replaces CR3, so the region must remain reserved.
 pub unsafe fn build_identity_tables(tables_phys: u64) -> u64 {
-    let base = tables_phys as *mut u64;
-    // Layout: PML4 [0..512), PDPT [512..1024), four page directories [1024..3072).
-    let pdpt = unsafe { base.add(512) };
-    let pds = unsafe { base.add(1024) };
+    let pml4 = unsafe { &mut *(tables_phys as *mut PageTable) };
+    let pdpt = unsafe { &mut *((tables_phys + 4096) as *mut PageTable) };
     let pdpt_phys = tables_phys + 4096;
     let pds_phys = tables_phys + 8192;
 
-    unsafe {
-        base.write_volatile(pdpt_phys | PTE_PRESENT | PTE_RW);
-        for i in 0..4u64 {
-            // PDPT entry -> the page directory covering this 1 GiB chunk.
-            pdpt.add(i as usize)
-                .write_volatile(pds_phys + i * 4096 + PTE_PRESENT | PTE_RW);
-            for j in 0..512u64 {
-                let addr = i * (1 << 30) + j * (1 << 21);
-                // The display MMIO lives above MMIO_START; mapping it write-back
-                // makes the DPLL/PIPECONF writes vanish into the cache, which is
-                // what stopped the pipe from enabling.
-                let cache = if addr >= MMIO_START {
-                    PTE_PWT | PTE_PCD
-                } else {
-                    0
-                };
-                pds.add((i * 512 + j) as usize)
-                    .write_volatile(addr | PTE_PRESENT | PTE_RW | PTE_PS | cache);
-            }
+    pml4.zero();
+    pdpt.zero();
+    pml4[0].set_addr(PhysAddr::new(pdpt_phys), TABLE_FLAGS);
+    for i in 0..4u64 {
+        let pd_phys = pds_phys + i * 4096;
+        let pd = unsafe { &mut *(pd_phys as *mut PageTable) };
+        pd.zero();
+        pdpt[i as usize].set_addr(PhysAddr::new(pd_phys), TABLE_FLAGS);
+        for j in 0..512u64 {
+            let addr = i * (1 << 30) + j * (1 << 21);
+            // The display MMIO lives above MMIO_START; mapping it write-back
+            // makes the DPLL/PIPECONF writes vanish into the cache.
+            let flags = if addr >= MMIO_START {
+                MMIO_FLAGS
+            } else {
+                LEAF_FLAGS
+            };
+            pd[j as usize].set_addr(PhysAddr::new(addr), flags);
         }
     }
     tables_phys
@@ -116,37 +115,43 @@ mod tests {
 
         let base = storage.0.as_ptr() as *const u64;
         let pml4 = unsafe { base.read_volatile() };
-        assert_eq!(pml4, phys + 4096 + PTE_PRESENT + PTE_RW);
-        assert_eq!(pml4 & PTE_PRESENT, PTE_PRESENT, "low 4 GiB must be mapped");
+        assert_eq!(pml4, phys + 4096 + TABLE_FLAGS.bits());
+        assert_eq!(
+            pml4 & PageTableFlags::PRESENT.bits(),
+            PageTableFlags::PRESENT.bits(),
+            "low 4 GiB must be mapped"
+        );
 
         let pdpt = unsafe { base.add(512).read_volatile() };
-        assert_eq!(pdpt, phys + 8192 + PTE_PRESENT + PTE_RW);
+        assert_eq!(pdpt, phys + 8192 + TABLE_FLAGS.bits());
 
         // First and last leaf entries: 0 and 4 GiB - 2 MiB, both 2 MiB pages.
         let first = unsafe { base.add(1024).read_volatile() };
-        assert_eq!(first, PTE_PRESENT | PTE_RW | PTE_PS);
+        assert_eq!(first, LEAF_FLAGS.bits());
         let last = unsafe { base.add(1024 + 2047).read_volatile() };
         assert_eq!(
             last,
-            0xffe0_0000 | PTE_PRESENT | PTE_RW | PTE_PS | PTE_PWT | PTE_PCD,
+            0xffe0_0000 | MMIO_FLAGS.bits(),
             "MMIO must be uncached"
         );
         // RAM stays write-back; the first MMIO leaf (0x8000_0000) is uncached.
         assert_eq!(
-            unsafe { base.add(1024).read_volatile() } & (PTE_PWT | PTE_PCD),
+            unsafe { base.add(1024).read_volatile() }
+                & (PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE).bits(),
             0
         );
         assert_eq!(
-            unsafe { base.add(1024 + 1024).read_volatile() } & (PTE_PWT | PTE_PCD),
-            PTE_PWT | PTE_PCD
+            unsafe { base.add(1024 + 1024).read_volatile() }
+                & (PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE).bits(),
+            (PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE).bits()
         );
 
         // Every leaf must be a present 2 MiB page at its own address.
         for index in 0..2048u64 {
             let entry = unsafe { base.add(1024 + index as usize).read_volatile() };
             assert_eq!(
-                entry & (PTE_PRESENT | PTE_RW | PTE_PS),
-                PTE_PRESENT | PTE_RW | PTE_PS
+                entry & LEAF_FLAGS.bits(),
+                LEAF_FLAGS.bits()
             );
             assert_eq!(entry & !0xfff & !((1 << 21) - 1), index * (1 << 21));
         }
