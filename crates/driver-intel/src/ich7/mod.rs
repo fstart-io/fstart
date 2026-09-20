@@ -2319,48 +2319,10 @@ mod acpi_impl {
             // DMA() channel descriptor is also unsupported by the macro and
             // is omitted — Linux does not require it for boot enumeration.
             // ---------------------------------------------------------------
-            let mut aml: Vec<u8> = acpi_dsl! {
-                Scope("\\") {
-                    // Coreboot ich7.asl: PMBASE/GPIOBASE/RCBA operation regions.
-                    // These expose southbridge PM/GPIO/RCBA state to AML users
-                    // such as HPET _STA/_CRS, USB wake control, and board GPE
-                    // methods. Keep the fixed bases in sync with early init.
-                    OperationRegion("PMIO", SystemIO, 0x0500u32, 0x80u32);
-                    Field("PMIO", ByteAcc, NoLock, Preserve) {
-                        Offset(0x42),
-                        , 1,
-                        GPEC, 1,
-                        , 9,
-                        SCIS, 1,
-                    }
-
-                    OperationRegion("GPIO", SystemIO, 0x0480u32, 0x3Cu32);
-                    Field("GPIO", ByteAcc, NoLock, Preserve) {
-                        // GPIO Use Select
-                        GU00, 8, GU01, 8, GU02, 8, GU03, 8,
-                        // GPIO I/O Select
-                        GIO0, 8, GIO1, 8, GIO2, 8, GIO3, 8,
-                        Offset(0x0C),
-                        GP00, 1, GP01, 1, GP02, 1, GP03, 1,
-                        GP04, 1, GP05, 1, GP06, 1, GP07, 1,
-                        GP08, 1, GP09, 1, GP10, 1, GP11, 1,
-                        GP12, 1, GP13, 1, GP14, 1, GP15, 1,
-                        GP16, 1, GP17, 1, GP18, 1, GP19, 1,
-                        GP20, 1, GP21, 1, GP22, 1, GP23, 1,
-                        GP24, 1, GP25, 1, GP26, 1, GP27, 1,
-                        GP28, 1, GP29, 1, GP30, 1, GP31, 1,
-                        Offset(0x18),
-                        GB00, 8, GB01, 8, GB02, 8, GB03, 8,
-                        Offset(0x2C),
-                        GIV0, 8, GIV1, 8, GIV2, 8, GIV3, 8,
-                        GU04, 8, GU05, 8, GU06, 8, GU07, 8,
-                        GIO4, 8, GIO5, 8, GIO6, 8, GIO7, 8,
-                        GP32, 1, GP33, 1, GP34, 1, GP35, 1,
-                        GP36, 1, GP37, 1, GP38, 1, GP39, 1,
-                    }
-                }
-            }
-            .into();
+            // PM/GPIO SystemIO OpRegions are intentionally omitted until an
+            // emitted AML method actually consumes them. Declaring unused
+            // regions makes ACPI claim the native lpc_ich driver resources.
+            let mut aml = Vec::new();
 
             aml.extend_from_slice(&acpi_dsl! {
                 Scope("\\_SB_.PCI0") {

@@ -176,12 +176,11 @@ pub fn reservations(facts: BoardFacts) -> Result<IntelReservations, std::string:
         },
         low_memory: span(0, 0x100000),
         scratch: span(0x2000000, 0x1000000),
-        // S3-resident compressed stage bodies: comfortably above the measured
-        // LZ4 sizes (postcar ~20 KiB, mainstage ~216 KiB uncompressed) and far
-        // below the decompressed windows. A store that cannot fit is logged on
-        // cold boot and leaves resume to reset.
+        // S3-resident stored stage bodies. Keep headroom for payload-enabled
+        // release ramstages; a store that cannot fit is logged on cold boot
+        // and leaves resume to reset.
         stage_cache_postcar: span(0x5000000, 0x8000),
-        stage_cache_mainstage: span(0x5008000, 0x80000),
+        stage_cache_mainstage: span(0x5008000, 0x100000),
     };
     reservations.validate()?;
     Ok(reservations)

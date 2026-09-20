@@ -450,7 +450,7 @@ fn smbios_associativity(ways: u32) -> u8 {
 pub fn prepare_smbios(
     e820: &mut fstart_core::services::memory_detect::E820State,
     desc: &SmbiosDesc,
-) {
+) -> u64 {
     // 64 KiB table area + 32 bytes entry point header.
     // `assemble_and_write` writes ENTRY_POINT_SIZE bytes at `table_addr`
     // then up to MAX_TABLE_AREA bytes starting at `table_addr + 24`.
@@ -581,4 +581,5 @@ pub fn prepare_smbios(
         smbios_len as u32,
         fstart_log::Hex(smbios_addr),
     );
+    smbios_addr
 }

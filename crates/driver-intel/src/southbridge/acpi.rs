@@ -100,6 +100,7 @@ pub fn legacy_isa_children(pm1_base: u16, gpio_base: u16) -> Vec<u8> {
             Name("_HID", EisaId("PNP0B00"));
             Name("_CRS", ResourceTemplate {
                 IO(0x0070u16, 0x0070u16, 0x01u8, 0x08u8);
+                IRQ(Edge, ActiveHigh, Exclusive, 8u32);
             });
         }
 
