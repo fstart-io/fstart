@@ -1,18 +1,37 @@
 //! Register values shared by the GMCH-generation northbridges (i945,
 //! Pineview, GM965).
 
-/// `SMRAM` (host bridge config 0x9d) values; bits match coreboot's
+/// `SMRAM` (host bridge config 0x9d) fields; bits match coreboot's
 /// `cpu/intel/smm/gen1/smmrelocate.c`.
 pub mod smram {
-    const G_SMRAME: u8 = 1 << 3;
-    const D_LCK: u8 = 1 << 4;
-    const D_OPEN: u8 = 1 << 6;
-    const C_BASE_SEG: u8 = 0b010;
+    use tock_registers::register_bitfields;
 
-    /// SMRAM visible outside SMM (installation).
-    pub const OPEN: u8 = D_OPEN | G_SMRAME | C_BASE_SEG;
+    register_bitfields![u8,
+        pub SMRAM [
+            C_BASE_SEG OFFSET(0) NUMBITS(3) [
+                Legacy = 0b010
+            ],
+            G_SMRAME OFFSET(3) NUMBITS(1) [],
+            D_LCK OFFSET(4) NUMBITS(1) [],
+            D_OPEN OFFSET(6) NUMBITS(1) []
+        ]
+    ];
+
+    /// SMRAM visible outside SMM during installation.
+    #[must_use]
+    pub fn open() -> u8 {
+        (SMRAM::D_OPEN::SET + SMRAM::G_SMRAME::SET + SMRAM::C_BASE_SEG::Legacy).value
+    }
+
     /// SMRAM hidden outside SMM.
-    pub const CLOSED: u8 = G_SMRAME | C_BASE_SEG;
-    /// Closed and locked until reset.
-    pub const LOCKED: u8 = D_LCK | G_SMRAME | C_BASE_SEG;
+    #[must_use]
+    pub fn closed() -> u8 {
+        (SMRAM::G_SMRAME::SET + SMRAM::C_BASE_SEG::Legacy).value
+    }
+
+    /// SMRAM closed and locked until reset.
+    #[must_use]
+    pub fn locked() -> u8 {
+        (SMRAM::D_LCK::SET + SMRAM::G_SMRAME::SET + SMRAM::C_BASE_SEG::Legacy).value
+    }
 }

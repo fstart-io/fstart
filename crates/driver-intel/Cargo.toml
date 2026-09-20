@@ -39,3 +39,4 @@ fstart-smm = { workspace = true }
 heapless = { workspace = true }
 tock-registers = { workspace = true }
 ufmt = { workspace = true }
+zerocopy = { workspace = true }

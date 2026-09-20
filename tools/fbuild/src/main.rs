@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use fbuild::{
     board_manifest, build_board,
-    payload::{PayloadChoice, X86LinuxArgs},
+    payload::{BuildArgs, PayloadChoice},
 };
 use fstart_image_build::plan::BuildSelection;
 use std::process;
@@ -26,7 +26,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        linux: X86LinuxArgs,
+        options: BuildArgs,
     },
     Run {
         #[arg(short, long)]
@@ -36,7 +36,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        linux: X86LinuxArgs,
+        options: BuildArgs,
         #[arg(short, long)]
         kernel: Option<String>,
         #[arg(short, long)]
@@ -54,6 +54,8 @@ enum Command {
     Test {
         #[arg(short, long)]
         board: String,
+        #[command(flatten)]
+        options: BuildArgs,
     },
     Assemble {
         #[arg(short, long)]
@@ -63,7 +65,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        linux: X86LinuxArgs,
+        options: BuildArgs,
         #[arg(short, long)]
         kernel: Option<String>,
         #[arg(short, long)]
@@ -81,7 +83,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        linux: X86LinuxArgs,
+        options: BuildArgs,
     },
     /// Type-check a migrated board using its resolved firmware selection.
     Check {
@@ -92,7 +94,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        linux: X86LinuxArgs,
+        options: BuildArgs,
         #[arg(long)]
         release: bool,
     },
@@ -102,7 +104,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        linux: X86LinuxArgs,
+        options: BuildArgs,
         #[arg(long)]
         release: bool,
         /// Select a named compilation unit from the resolved platform plan.
@@ -117,6 +119,8 @@ enum Command {
         board: String,
         #[arg(short, long, default_value_t = false)]
         release: bool,
+        #[command(flatten)]
+        options: BuildArgs,
         #[arg(long, default_value_t = false)]
         probe_run: bool,
         #[arg(long)]
@@ -143,7 +147,7 @@ fn board_tool_build_args(
     subcommand: &str,
     release: bool,
     payload: Option<PayloadChoice>,
-    linux: &X86LinuxArgs,
+    options: &BuildArgs,
 ) -> Vec<String> {
     let mut args = vec![subcommand.to_string()];
     if release {
@@ -153,7 +157,7 @@ fn board_tool_build_args(
         args.push("--payload".to_string());
         args.push(payload.as_str().to_string());
     }
-    linux.append_cli_args(&mut args);
+    options.append_cli_args(&mut args);
     args
 }
 
@@ -164,9 +168,9 @@ fn board_tool_assemble_args(
     kernel: Option<String>,
     firmware: Option<String>,
     fit: Option<String>,
-    linux: &X86LinuxArgs,
+    options: &BuildArgs,
 ) -> Vec<String> {
-    let mut args = board_tool_build_args(subcommand, release, payload, linux);
+    let mut args = board_tool_build_args(subcommand, release, payload, options);
     if let Some(kernel) = kernel {
         args.push("--kernel".to_string());
         args.push(kernel);
@@ -192,10 +196,10 @@ fn board_tool_run_args(
     disk: Option<String>,
     memory: Option<String>,
     secure_firmware: Option<String>,
-    linux: &X86LinuxArgs,
+    options: &BuildArgs,
 ) -> Vec<String> {
     let mut args =
-        board_tool_assemble_args(subcommand, release, payload, kernel, firmware, fit, linux);
+        board_tool_assemble_args(subcommand, release, payload, kernel, firmware, fit, options);
     if let Some(disk) = disk {
         args.push("--disk".to_string());
         args.push(disk);
@@ -213,12 +217,13 @@ fn board_tool_run_args(
 
 fn board_tool_flash_args(
     release: bool,
+    options: &BuildArgs,
     probe_run: bool,
     chip: Option<String>,
     probe: Option<String>,
     base_address: Option<String>,
 ) -> Vec<String> {
-    let mut args = board_tool_build_args("flash", release, None, &X86LinuxArgs::default());
+    let mut args = board_tool_build_args("flash", release, None, options);
     if probe_run {
         args.push("--probe-run".to_string());
     }
@@ -303,20 +308,20 @@ fn main() {
             board,
             release,
             payload,
-            linux,
+            options,
             stage,
         } => match stage {
-            Some(name) => compile_named(&board, linux.selection(payload), release, &name, false),
+            Some(name) => compile_named(&board, options.selection(payload), release, &name, false),
             None => dispatch_board(
                 &board,
-                &board_tool_build_args("build", release, payload, &linux),
+                &board_tool_build_args("build", release, payload, &options),
             ),
         },
         Command::Run {
             board,
             release,
             payload,
-            linux,
+            options,
             kernel,
             firmware,
             fit,
@@ -335,53 +340,65 @@ fn main() {
                 disk,
                 memory,
                 secure_firmware,
-                &linux,
+                &options,
             ),
         ),
-        Command::Test { board } => dispatch_board(&board, &["test".into()]),
+        Command::Test { board, options } => dispatch_board(
+            &board,
+            &board_tool_build_args("test", false, None, &options),
+        ),
         Command::Assemble {
             board,
             release,
             payload,
-            linux,
+            options,
             kernel,
             firmware,
             fit,
         } => dispatch_board(
             &board,
-            &board_tool_assemble_args("assemble", release, payload, kernel, firmware, fit, &linux),
+            &board_tool_assemble_args(
+                "assemble", release, payload, kernel, firmware, fit, &options,
+            ),
         ),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
         Command::Explain {
             board,
             payload,
-            linux,
-        } => explain(&board, linux.selection(payload)),
+            options,
+        } => explain(&board, options.selection(payload)),
         Command::Ide {
             board,
             payload,
-            linux,
+            options,
             release,
             audit_lock,
             stage,
-        } => ide(&board, linux.selection(payload), release, audit_lock, stage),
+        } => ide(
+            &board,
+            options.selection(payload),
+            release,
+            audit_lock,
+            stage,
+        ),
         Command::Check {
             board,
             payload,
-            linux,
+            options,
             release,
             stage,
-        } => check(&board, linux.selection(payload), release, stage),
+        } => check(&board, options.selection(payload), release, stage),
         Command::Flash {
             board,
             release,
+            options,
             probe_run,
             chip,
             probe,
             base_address,
         } => dispatch_board(
             &board,
-            &board_tool_flash_args(release, probe_run, chip, probe, base_address),
+            &board_tool_flash_args(release, &options, probe_run, chip, probe, base_address),
         ),
     };
 

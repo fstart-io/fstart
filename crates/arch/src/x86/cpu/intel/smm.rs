@@ -54,19 +54,6 @@ pub struct Gpe0Block {
     pub wide: bool,
 }
 
-impl Gpe0Block {
-    /// ICH7/NM10: one 32-bit status word at 0x28.
-    pub const ICH7: Self = Self {
-        sts_offset: 0x28,
-        wide: false,
-    };
-    /// ICH8 through ICH10: 64-bit status at 0x20.
-    pub const ICH8: Self = Self {
-        sts_offset: 0x20,
-        wide: true,
-    };
-}
-
 const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
     smbase: 0,
     entry_addr: 0,

@@ -48,6 +48,24 @@ impl EcamDevice {
         self.address
     }
 
+    /// Return the PCI vendor ID.
+    #[inline]
+    pub fn vendor_id(&self) -> u16 {
+        self.read16(0x00)
+    }
+
+    /// Return the PCI device ID.
+    #[inline]
+    pub fn device_id(&self) -> u16 {
+        self.read16(0x02)
+    }
+
+    /// Whether this PCI function is present.
+    #[inline]
+    pub fn is_present(&self) -> bool {
+        self.vendor_id() != 0xffff
+    }
+
     /// Return the bus number.
     #[inline]
     pub fn bus(&self) -> u8 {

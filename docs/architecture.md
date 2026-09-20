@@ -116,17 +116,20 @@ Defaults, supported payloads and terminal-stage assignment belong to platform
 Rust; fbuild qualifies Cargo aliases, validates references and executes the same
 bounded unit contract for build, check and IDE. Direct x86 Linux launch policy is
 supplied through CLI selection (`--linux-kernel-load-addr`,
-`--linux-zero-page-addr`, `--linux-bootargs`, and `--linux-print-mtrrs`) and is
+`--linux-bootargs`, and `--linux-print-mtrrs`) and is
 packaged as a verified FFS manifest beside the kernel. The runtime launcher
 decodes that manifest; boards do not duplicate kernel addresses or command
-lines. Omitted addresses fall back to the family defaults
-(`X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR` / `X86_LINUX_DEFAULT_ZERO_PAGE_ADDR`);
-an omitted command line means no command line — there is deliberately no
+lines. An omitted kernel address falls back to the family default; the
+zero-page address is fixed Intel platform policy because it names an 8 KiB
+firmware write window. An omitted command line means no command line — there is deliberately no
 implicit serial-console default, so direct Linux stays silent unless
 `--linux-bootargs` is passed explicitly. This is not a generated authoring API,
 board host feature/executable or firmware recipe. The Intel family calculates
 common runtime capacities once; D945GCLF reuses them with the real i945 CAR
-window, legacy flash identity and Diamondville microcode inputs.
+window, legacy flash identity and Diamondville microcode inputs. SMBIOS release
+dates are likewise build selections: `--smbios-date` defaults to the current UTC
+build date, is recorded in every compiler unit's environment, and replaces
+board-authored date fallbacks.
 
 QEMU virt boards select `VirtMachine::{Riscv64, Armv7, Aarch64}` in unconditional
 Rust source. The platform owns invariant flash banks, fixed reservations and

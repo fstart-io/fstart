@@ -5,7 +5,9 @@
 //! software chain still authenticates each executable before entry.
 
 use crate::layout::IntelBootLayout;
-use fstart_core::layout::{Region, RegionKind};
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "postcar"))]
+use fstart_core::layout::Region;
+use fstart_core::layout::RegionKind;
 use fstart_core::services::ServiceError;
 use fstart_ffs::root::{BootstrapDescriptor, BootstrapRole};
 use fstart_stage::boot::MemoryWindow;

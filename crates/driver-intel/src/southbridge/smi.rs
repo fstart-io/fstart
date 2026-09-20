@@ -6,6 +6,17 @@
 use super::pmio_ich::{self as pmio, PmIo};
 pub use fstart_arch::x86::cpu::intel::smm::{Gpe0Block, SmiControl};
 
+/// ICH7/NM10: one 32-bit GPE0 status word at PMBASE+0x28.
+pub const ICH7_GPE0: Gpe0Block = Gpe0Block {
+    sts_offset: 0x28,
+    wide: false,
+};
+/// ICH8 through ICH10: 64-bit GPE0 status at PMBASE+0x20.
+pub const ICH8_GPE0: Gpe0Block = Gpe0Block {
+    sts_offset: 0x20,
+    wide: true,
+};
+
 /// SMI controller view of one ICH PM I/O block.
 #[derive(Debug, Clone, Copy)]
 pub struct IchSmi {

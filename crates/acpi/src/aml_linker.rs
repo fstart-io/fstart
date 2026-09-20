@@ -109,13 +109,44 @@ impl<'a> AmlWriter<'a> {
         path: &str,
         children: impl FnOnce(&mut Self) -> Result<(), AmlError>,
     ) -> Result<(), AmlError> {
+        let path = AmlPath::new(path);
+        self.named_package(&[0x10], path, children)
+    }
+
+    /// Emit `Device(name) { ... }` through the same checked package writer as scopes.
+    pub fn device(
+        &mut self,
+        name: &str,
+        children: impl FnOnce(&mut Self) -> Result<(), AmlError>,
+    ) -> Result<(), AmlError> {
+        let name = AmlPath::new(name).and_then(|name| {
+            if name.as_str().len() <= 4
+                && !name
+                    .as_str()
+                    .bytes()
+                    .any(|b| matches!(b, b'.' | b'\\' | b'^'))
+            {
+                Ok(name)
+            } else {
+                Err(AmlError::InvalidPath)
+            }
+        });
+        self.named_package(&[0x5B, 0x82], name, children)
+    }
+
+    fn named_package(
+        &mut self,
+        opcode: &[u8],
+        name: Result<AmlPath<'_>, AmlError>,
+        children: impl FnOnce(&mut Self) -> Result<(), AmlError>,
+    ) -> Result<(), AmlError> {
         let start = self.pos;
         let result = (|| {
-            let path = AmlPath::new(path)?;
-            self.byte(0x10)?;
+            let name = name?;
+            self.raw(opcode)?;
             let package = self.pos;
             self.raw(&[0; 4])?;
-            write_name_string(self, path)?;
+            write_name_string(self, name)?;
             children(self)?;
             self.status()?;
             let end = self.pos;
@@ -237,21 +268,16 @@ pub fn scope_vec(path: &str, children: &[u8]) -> Result<Vec<u8>, AmlError> {
 /// bare ACPI name (a path is not meaningful for a device name); shorter names
 /// are padded to the four characters a NameSeg occupies.
 pub fn device_vec(name: &str, body: &[u8]) -> Result<Vec<u8>, AmlError> {
-    AmlPath::new(name)?;
-    if name.len() > 4 || name.bytes().any(|b| matches!(b, b'.' | b'\\' | b'^')) {
-        return Err(AmlError::InvalidPath);
-    }
-    let mut name_seg = [b'_'; 4];
-    name_seg[..name.len()].copy_from_slice(name.as_bytes());
+    let capacity = body.len().checked_add(10).ok_or(AmlError::LengthOverflow)?;
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(name_seg.len() + body.len() + 8)
+        .try_reserve_exact(capacity)
         .map_err(|_| AmlError::Capacity)?;
-    bytes.extend_from_slice(&[0x5B, 0x82]);
-    let (length, width) = package_length(name_seg.len() + body.len())?;
-    bytes.extend_from_slice(&length[..width]);
-    bytes.extend_from_slice(&name_seg);
-    bytes.extend_from_slice(body);
+    bytes.resize(capacity, 0);
+    let mut writer = AmlWriter::new(&mut bytes);
+    writer.device(name, |writer| writer.raw(body))?;
+    let len = writer.position();
+    bytes.truncate(len);
     Ok(bytes)
 }
 

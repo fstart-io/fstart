@@ -108,7 +108,7 @@ pub fn udelay(us: u32) {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(fstart_stage_env = "smm")))]
 fn sanitize_tsc_frequency_hz(hz: u64) -> u64 {
     // Firmware delay loops must never turn into effectively infinite waits if
     // early CPU frequency discovery sees a bogus MSR/CPUID value.  Core 2 / X61

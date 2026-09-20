@@ -688,7 +688,7 @@ fn program_clkcfg_lock(info: &RaminitInfo, mch: &MchBar, warm: bool) {
     }
 
     let me = fstart_pci::ecam::EcamDevice::new(0, D3F0_DEV, D3F0_FUNC);
-    let me_active = me.read16(0) != 0xffff;
+    let me_active = me.is_present();
     if me_active {
         me.write32(0x10, D3F0_BAR | 1);
         me.or8(
@@ -734,7 +734,7 @@ fn program_gcfgc(info: &RaminitInfo, mch: &MchBar) {
     }
 
     let igd = fstart_pci::ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC);
-    if igd.read16(0) != 0xffff {
+    if igd.is_present() {
         set_pci8(&igd, hostbridge::GCFGC, 0xd0, render);
         set_pci8(&igd, hostbridge::GCFGC + 1, 0xe0, 2);
     }

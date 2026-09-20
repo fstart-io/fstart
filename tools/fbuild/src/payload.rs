@@ -1,5 +1,4 @@
 use clap::{Args, ValueEnum};
-use fstart_core::{BoardConfig, Compression, FdtSource, PayloadConfig, PayloadKind};
 use fstart_image_build::plan::BuildSelection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -8,9 +7,6 @@ pub enum PayloadChoice {
     UefiUi,
     UefiBasic,
     Linux,
-    Fit,
-    Shell,
-    Elf,
     Halt,
 }
 
@@ -22,40 +18,26 @@ impl PayloadChoice {
             Self::UefiUi => "uefi-ui",
             Self::UefiBasic => "uefi-basic",
             Self::Linux => "linux",
-            Self::Fit => "fit",
-            Self::Shell => "shell",
-            Self::Elf => "elf",
             Self::Halt => "halt",
-        }
-    }
-
-    pub const fn kind(self) -> Option<PayloadKind> {
-        match self {
-            Self::Uefi | Self::UefiUi | Self::UefiBasic => Some(PayloadKind::UefiPayload),
-            Self::Linux => Some(PayloadKind::LinuxBoot),
-            Self::Fit => Some(PayloadKind::FitImage),
-            Self::Shell => Some(PayloadKind::Shell),
-            Self::Elf => Some(PayloadKind::CustomElf),
-            Self::Halt => None,
         }
     }
 }
 
-/// Direct x86 Linux launch policy for Intel boards.
+/// Build-time firmware policy selected from the fbuild CLI.
 ///
-/// Every field is optional: omitted addresses fall back to the family
-/// defaults (`X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR` /
-/// `X86_LINUX_DEFAULT_ZERO_PAGE_ADDR`) and an omitted command line means no
-/// command line. There is deliberately no implicit serial-console default —
-/// pass `--linux-bootargs` explicitly.
-#[derive(Debug, Clone, Default, Args)]
-pub struct X86LinuxArgs {
+/// The SMBIOS date defaults to the current UTC date. Direct x86 Linux fields
+/// are optional: the omitted kernel address falls back to platform policy and
+/// an omitted command line means no command line. The zero-page address is
+/// fixed by Intel platform policy rather than exposed as an unchecked physical
+/// memory override.
+#[derive(Debug, Clone, Args)]
+pub struct BuildArgs {
+    /// SMBIOS Type 0 release date in MM/DD/YYYY form.
+    #[arg(long, value_parser = parse_smbios_date, default_value_t = current_smbios_date())]
+    pub smbios_date: String,
     /// Physical address at which the bzImage protected-mode payload is loaded.
     #[arg(long, value_parser = parse_u64)]
     pub linux_kernel_load_addr: Option<u64>,
-    /// Physical address used for the Linux boot-parameter zero page.
-    #[arg(long, value_parser = parse_u64)]
-    pub linux_zero_page_addr: Option<u64>,
     /// Command line passed by the direct x86 Linux launcher.
     #[arg(long)]
     pub linux_bootargs: Option<String>,
@@ -64,23 +46,32 @@ pub struct X86LinuxArgs {
     pub linux_print_mtrrs: bool,
 }
 
-impl X86LinuxArgs {
+impl Default for BuildArgs {
+    fn default() -> Self {
+        Self {
+            smbios_date: current_smbios_date(),
+            linux_kernel_load_addr: None,
+            linux_bootargs: None,
+            linux_print_mtrrs: false,
+        }
+    }
+}
+
+impl BuildArgs {
     pub fn selection(&self, payload: Option<PayloadChoice>) -> BuildSelection {
         BuildSelection {
             payload: payload.map(|choice| choice.as_str().to_owned()),
+            smbios_release_date: Some(self.smbios_date.clone()),
             x86_linux_kernel_load_addr: self.linux_kernel_load_addr,
-            x86_linux_zero_page_addr: self.linux_zero_page_addr,
             x86_linux_bootargs: self.linux_bootargs.clone(),
             x86_linux_print_mtrrs: self.linux_print_mtrrs,
         }
     }
 
     pub fn append_cli_args(&self, args: &mut Vec<String>) {
+        args.extend(["--smbios-date".into(), self.smbios_date.clone()]);
         if let Some(value) = self.linux_kernel_load_addr {
             args.extend(["--linux-kernel-load-addr".into(), format!("{value:#x}")]);
-        }
-        if let Some(value) = self.linux_zero_page_addr {
-            args.extend(["--linux-zero-page-addr".into(), format!("{value:#x}")]);
         }
         if let Some(value) = &self.linux_bootargs {
             args.extend(["--linux-bootargs".into(), value.clone()]);
@@ -89,6 +80,65 @@ impl X86LinuxArgs {
             args.push("--linux-print-mtrrs".into());
         }
     }
+}
+
+fn current_smbios_date() -> String {
+    let timestamp = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        });
+    let (year, month, day) = civil_from_days((timestamp / 86_400) as i64);
+    format!("{month:02}/{day:02}/{year:04}")
+}
+
+// Howard Hinnant's civil-from-days transform, with day zero at 1970-01-01.
+fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    (year as i32, month as u32, day as u32)
+}
+
+fn parse_smbios_date(value: &str) -> Result<String, String> {
+    let mut fields = value.split('/');
+    let month = fields
+        .next()
+        .and_then(|value| value.parse::<u8>().ok())
+        .ok_or("SMBIOS date must use MM/DD/YYYY")?;
+    let day = fields
+        .next()
+        .and_then(|value| value.parse::<u8>().ok())
+        .ok_or("SMBIOS date must use MM/DD/YYYY")?;
+    let year = fields
+        .next()
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or("SMBIOS date must use MM/DD/YYYY")?;
+    if fields.next().is_some() || value.len() != 10 || !(1..=12).contains(&month) {
+        return Err("SMBIOS date must use MM/DD/YYYY".into());
+    }
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if day == 0 || day > days {
+        return Err("SMBIOS date is not a valid calendar date".into());
+    }
+    Ok(value.to_owned())
 }
 
 fn parse_u64(value: &str) -> Result<u64, String> {
@@ -105,109 +155,20 @@ fn parse_u64(value: &str) -> Result<u64, String> {
     }
 }
 
-pub fn apply_payload_override(
-    config: &mut BoardConfig,
-    choice: Option<PayloadChoice>,
-) -> Result<(), String> {
-    validate_choice(config, choice)?;
-    apply_to_payload(&mut config.payload, choice);
-    Ok(())
-}
-
-fn validate_choice(config: &BoardConfig, choice: Option<PayloadChoice>) -> Result<(), String> {
-    let Some(choice) = choice else {
-        return Ok(());
-    };
-    let has_payload_stage = match &config.stages {
-        fstart_core::StageLayout::Monolithic(stage) => stage.build.payload,
-        fstart_core::StageLayout::MultiStage(stages) => {
-            stages.iter().any(|stage| stage.build.payload)
-        }
-    };
-    let supported = match choice {
-        PayloadChoice::Halt => true,
-        PayloadChoice::Linux => config
-            .payload
-            .as_ref()
-            .is_some_and(|payload| payload.kind == PayloadKind::LinuxBoot),
-        PayloadChoice::Uefi | PayloadChoice::UefiUi | PayloadChoice::UefiBasic => matches!(
-            config.platform,
-            fstart_core::Platform::X86_64
-                | fstart_core::Platform::Aarch64
-                | fstart_core::Platform::Riscv64
-        ),
-        PayloadChoice::Fit | PayloadChoice::Shell | PayloadChoice::Elf => false,
-    };
-    if has_payload_stage && supported {
-        Ok(())
-    } else {
-        Err(format!(
-            "payload '{}' is not supported by {}'s build plan",
-            choice.as_str(),
-            config.name
-        ))
-    }
-}
-
-fn apply_to_payload(payload: &mut Option<PayloadConfig>, choice: Option<PayloadChoice>) {
-    let Some(choice) = choice else {
-        return;
-    };
-
-    *payload = choice.kind().map(|kind| match payload.take() {
-        Some(mut config) if config.kind == kind => {
-            config.kind = kind;
-            config
-        }
-        Some(config) => PayloadConfig {
-            firmware: config.firmware,
-            ..empty_payload_config(kind)
-        },
-        None => empty_payload_config(kind),
-    });
-}
-
-fn empty_payload_config(kind: PayloadKind) -> PayloadConfig {
-    PayloadConfig {
-        kind,
-        kernel_file: None,
-        kernel_load_addr: None,
-        x86_zero_page_addr: None,
-        fdt: FdtSource::Platform,
-        dtb_addr: None,
-        src_dtb_addr: None,
-        bootargs: None,
-        print_x86_mtrrs: false,
-        compression: Compression::Lz4,
-        firmware: None,
-        fit_file: None,
-        fit_config: None,
-        fit_parse: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use fstart_core::{FirmwareConfig, FirmwareKind, hstr};
-
     use super::*;
 
     #[test]
-    fn cli_payload_overrides_board_default() {
-        let mut payload = Some(empty_payload_config(PayloadKind::LinuxBoot));
-        payload.as_mut().expect("linux payload").firmware = Some(FirmwareConfig {
-            kind: FirmwareKind::ArmTrustedFirmware,
-            file: hstr("bl31.bin"),
-            load_addr: 0x0e09_0000,
-        });
+    fn civil_dates_cover_epoch_and_leap_day() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+    }
 
-        apply_to_payload(&mut payload, Some(PayloadChoice::Uefi));
-        let payload_config = payload.as_ref().expect("uefi payload");
-        assert_eq!(payload_config.kind, PayloadKind::UefiPayload);
-        assert!(payload_config.kernel_file.is_none());
-        assert!(payload_config.firmware.is_some());
-
-        apply_to_payload(&mut payload, Some(PayloadChoice::Halt));
-        assert!(payload.is_none());
+    #[test]
+    fn smbios_date_parser_rejects_non_calendar_dates() {
+        assert!(parse_smbios_date("02/29/2024").is_ok());
+        assert!(parse_smbios_date("02/29/2025").is_err());
+        assert!(parse_smbios_date("2025-02-28").is_err());
     }
 }

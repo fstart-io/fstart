@@ -975,7 +975,7 @@ core::arch::global_asm!(
     // Step 2: program variable MTRRs from the UC stash.
     // Stash layout (car_teardown::PostcarMtrrStash): u32 magic, u32 count,
     // then count x (u64 base_msr, u64 mask_msr) programmed as MTRR 0..n.
-    "movabs $0x2000, %rsi",
+    "movabs ${postcar_stash}, %rsi",
     "cmpl $0x54534350, (%rsi)", // POSTCAR_STASH_MAGIC ("PCST")
     "jne _postcar_stash_fail",
     "movl 4(%rsi), %r15d",
@@ -1057,6 +1057,7 @@ core::arch::global_asm!(
     "5:",
     "hlt",
     "jmp 5b",
+    postcar_stash = const car_teardown::POSTCAR_STASH_ADDR,
     options(att_syntax),
 );
 

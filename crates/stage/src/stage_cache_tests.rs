@@ -72,8 +72,9 @@ fn store_then_load_round_trip() {
     )
     .unwrap();
     // Header fields are the descriptor's, body follows at the fixed offset.
-    assert_eq!(u32_at(&slot, MAGIC_OFF), STAGE_CACHE_MAGIC);
-    assert_eq!(u64_at(&slot, STORED_SIZE_OFF), BODY.len() as u64);
+    let (header, _) = CacheHeader::read_from_prefix(&slot).unwrap();
+    assert_eq!(header.magic.get(), STAGE_CACHE_MAGIC);
+    assert_eq!(header.stored_size.get(), BODY.len() as u64);
     assert_eq!(
         &slot[STAGE_CACHE_HEADER_LEN..STAGE_CACHE_HEADER_LEN + 5],
         BODY
@@ -96,7 +97,26 @@ fn invalid_magic_is_rejected() {
         &descriptor,
     )
     .unwrap();
-    slot[MAGIC_OFF] = 0;
+    slot[0] = 0;
+    let mut output = [0u8; 5];
+    assert_eq!(
+        load(&slot, CachedStage::Mainstage, &descriptor, &mut output),
+        None
+    );
+}
+
+#[test]
+fn nonzero_reserved_header_bytes_are_rejected() {
+    let descriptor = descriptor();
+    let mut slot = [0u8; 64];
+    store(
+        &mut slot,
+        CachedStage::Mainstage,
+        &SliceMedia(BODY),
+        &descriptor,
+    )
+    .unwrap();
+    slot[STAGE_CACHE_HEADER_LEN - 1] = 1;
     let mut output = [0u8; 5];
     assert_eq!(
         load(&slot, CachedStage::Mainstage, &descriptor, &mut output),
@@ -166,13 +186,23 @@ fn corrupted_body_fails_verification() {
 #[test]
 fn oversized_body_is_rejected_and_invalidates_the_slot() {
     let descriptor = descriptor();
-    let mut slot = [0u8; STAGE_CACHE_HEADER_LEN + 4];
+    let mut slot = [0u8; 64];
+    store(
+        &mut slot,
+        CachedStage::Mainstage,
+        &SliceMedia(BODY),
+        &descriptor,
+    )
+    .unwrap();
+
+    let mut oversized = descriptor;
+    oversized.stored_size = 100;
     assert_eq!(
         store(
             &mut slot,
             CachedStage::Mainstage,
             &SliceMedia(BODY),
-            &descriptor
+            &oversized
         ),
         Err(CacheError::SlotTooSmall)
     );

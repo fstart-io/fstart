@@ -139,18 +139,13 @@ fn pme_init() {
 ))]
 fn pme_init() {}
 
-pub(crate) const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
-    Some(date) => date,
-    None => "05/08/2026",
-};
-
 static D945GCLF_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket 441"];
 
 pub static D945GCLF_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",
         bios_version: "0.1.0",
-        bios_release_date: BIOS_RELEASE_DATE,
+        bios_release_date: fstart_platform_intel::SMBIOS_RELEASE_DATE,
         sys_manufacturer: "Intel",
         sys_product: "D945GCLF",
         sys_version: "1.0",

@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-host = ["dep:fstart-image-build", "dep:serde_json"]
+host = ["dep:fstart-image-build", "dep:serde_json", "dep:raw-cpuid"]
 bundle-bootblock = ["stage", "fstart-stage/x86_64", "fstart-stage/x86-static-page-tables", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest"]
 bundle-postcar = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/lz4"]
 bundle-ramstage = ["stage", "acpi", "mp", "smbios", "fstart-driver-intel/display", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/lz4", "fstart-stage/acpi"]
@@ -36,7 +36,7 @@ acpi = [
   "fstart-driver-intel/acpi",
 ]
 mp = ["stage", "dep:fstart-arch", "dep:fstart-ffs", "fstart-stage/ffs"]
-smbios = ["stage", "dep:fstart-acpi", "dep:fstart-arch"]
+smbios = ["stage", "dep:fstart-acpi", "dep:fstart-arch", "dep:raw-cpuid"]
 
 [dev-dependencies]
 # The DSDT render test disassembles both Intel southbridges' namespaces, so it
@@ -58,6 +58,7 @@ fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
 fstart-log = { workspace = true, optional = true }
 fstart-stage = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
+raw-cpuid = { workspace = true, optional = true }
 heapless = { workspace = true }
 konst = { workspace = true }
 ufmt = { workspace = true, optional = true }

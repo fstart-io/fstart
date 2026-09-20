@@ -49,9 +49,6 @@ pub struct I945Ich7Config {
     pub max_cpus: u16,
     /// Integrated graphics configuration.
     pub igd: i945::I945IgdConfig,
-    /// Date (`MM/DD/YYYY`) written back to the RTC when it lost power: the same
-    /// build date the board publishes in SMBIOS.
-    pub rtc_default_date: &'static str,
 }
 
 impl I945Ich7Config {
@@ -74,7 +71,6 @@ impl I945Ich7Config {
             hda: None,
             gpio: gpio::GpioConfig::new(),
             max_cpus: 1,
-            rtc_default_date: ich7::IntelIch7Config::new().rtc_default_date,
             igd: i945::I945IgdConfig::new(),
         }
     }
@@ -119,18 +115,11 @@ impl I945Ich7Config {
         config.usb = self.usb;
         config.smbus_base = ICH7_SMBUS_BASE;
         config.gpio = self.gpio;
-        config.rtc_default_date = self.rtc_default_date;
         config
     }
 
     /// Date the RTC is reset to after a power loss; pass the board's SMBIOS
     /// build date so both come from one constant.
-    #[must_use]
-    pub const fn rtc_default_date(mut self, date: &'static str) -> Self {
-        self.rtc_default_date = date;
-        self
-    }
-
     #[must_use]
     pub const fn max_cpus(mut self, max_cpus: u16) -> Self {
         self.max_cpus = max_cpus;

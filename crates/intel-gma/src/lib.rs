@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn malformed_bdb_header_size_is_rejected() {
         let mut bytes = *include_bytes!("../../../boards/lenovo/x61/data.vbt");
-        let bdb_offset = u16::from_le_bytes([bytes[0x16], bytes[0x17]]) as usize;
+        let bdb_offset = u32::from_le_bytes(bytes[0x1c..0x20].try_into().unwrap()) as usize;
         bytes[bdb_offset + 0x12] = 0xff;
         bytes[bdb_offset + 0x13] = 0xff;
         assert!(matches!(vbt::Vbt::parse(&bytes), Err(GmaError::VbtInvalid)));

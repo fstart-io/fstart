@@ -635,10 +635,6 @@ pub const ICH8_ROUTING: PirqRouting = PirqRouting {
 #[cfg(test)]
 mod tests {
     use super::*;
-    extern crate alloc;
-    use alloc::vec;
-    use alloc::vec::Vec;
-
     const ROUTING: PirqRouting = ICH7_PINEVIEW_ROUTING;
 
     #[test]

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::build_plan::ParsedBoard;
-use crate::payload::{PayloadChoice, X86LinuxArgs};
+use crate::payload::{BuildArgs, PayloadChoice};
 use fstart_core::StageLayout;
 
 #[derive(Parser)]
@@ -19,7 +19,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        linux: X86LinuxArgs,
+        options: BuildArgs,
     },
     Run {
         #[arg(short, long, default_value_t = false)]
@@ -27,7 +27,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        linux: X86LinuxArgs,
+        options: BuildArgs,
         #[arg(short, long)]
         kernel: Option<String>,
         #[arg(short, long)]
@@ -42,14 +42,17 @@ enum Command {
         #[arg(long)]
         secure_firmware: Option<String>,
     },
-    Test,
+    Test {
+        #[command(flatten)]
+        options: BuildArgs,
+    },
     Assemble {
         #[arg(short, long, default_value_t = false)]
         release: bool,
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        linux: X86LinuxArgs,
+        options: BuildArgs,
         #[arg(short, long)]
         kernel: Option<String>,
         #[arg(short, long)]
@@ -60,6 +63,8 @@ enum Command {
     Flash {
         #[arg(short, long, default_value_t = false)]
         release: bool,
+        #[command(flatten)]
+        options: BuildArgs,
         #[arg(long, default_value_t = false)]
         probe_run: bool,
         #[arg(long)]
@@ -86,12 +91,12 @@ fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result
         Command::Build {
             release,
             payload,
-            linux,
-        } => build(manifest, release, payload, &linux).map(|_| ()),
+            options,
+        } => build(manifest, release, payload, &options).map(|_| ()),
         Command::Run {
             release,
             payload,
-            linux,
+            options,
             kernel,
             firmware,
             fit,
@@ -108,24 +113,15 @@ fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result
             disk.as_deref(),
             memory.as_deref(),
             secure_firmware.as_deref(),
-            &linux,
+            &options,
         ),
-        Command::Test => run(
-            manifest,
-            true,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &X86LinuxArgs::default(),
+        Command::Test { options } => run(
+            manifest, true, None, None, None, None, None, None, None, &options,
         ),
         Command::Assemble {
             release,
             payload,
-            linux,
+            options,
             kernel,
             firmware,
             fit,
@@ -136,11 +132,12 @@ fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result
             kernel.as_deref(),
             firmware.as_deref(),
             fit.as_deref(),
-            &linux,
+            &options,
         )
         .map(|_| ()),
         Command::Flash {
             release,
+            options,
             probe_run,
             chip,
             probe,
@@ -148,6 +145,7 @@ fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result
         } => flash(
             manifest,
             release,
+            &options,
             probe_run,
             chip.as_deref(),
             probe.as_deref(),
@@ -159,11 +157,11 @@ fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result
 fn load(
     manifest: &crate::board_manifest::BoardManifest,
     payload: Option<PayloadChoice>,
-    linux: &X86LinuxArgs,
+    options: &BuildArgs,
 ) -> Result<(crate::board_manifest::BoardManifest, ParsedBoard), String> {
     let root = crate::build_board::workspace_root_pub()?;
     let resolved =
-        crate::resolved_image::ResolvedImage::load(&root, manifest, linux.selection(payload))?;
+        crate::resolved_image::ResolvedImage::load(&root, manifest, options.selection(payload))?;
     let config = resolved.assembler_config(&manifest.board)?;
     Ok((
         manifest.clone(),
@@ -179,10 +177,10 @@ fn build(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
-    linux: &X86LinuxArgs,
+    options: &BuildArgs,
 ) -> Result<crate::build_board::BuildResult, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, linux)?;
+    let (manifest, parsed) = load(manifest, payload, options)?;
     crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)
 }
 
@@ -193,10 +191,10 @@ fn assemble(
     kernel: Option<&str>,
     firmware: Option<&str>,
     fit: Option<&str>,
-    linux: &X86LinuxArgs,
+    options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, linux)?;
+    let (manifest, parsed) = load(manifest, payload, options)?;
     assemble_loaded(
         &workspace_root,
         manifest,
@@ -232,13 +230,14 @@ fn assemble_loaded(
 fn flash(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
+    options: &BuildArgs,
     probe_run: bool,
     chip: Option<&str>,
     probe_selector: Option<&str>,
     base_address: Option<&str>,
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, None, &X86LinuxArgs::default())?;
+    let (manifest, parsed) = load(manifest, None, options)?;
     let chip_name = chip.unwrap_or("auto");
     let probe_rs = find_probe_rs().map_err(|e| format!("probe-rs not found: {e}"))?;
 
@@ -355,10 +354,10 @@ fn run(
     disk: Option<&str>,
     memory: Option<&str>,
     secure_firmware: Option<&str>,
-    linux: &X86LinuxArgs,
+    options: &BuildArgs,
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, linux)?;
+    let (manifest, parsed) = load(manifest, payload, options)?;
     let config = &parsed.config;
     let build_policy = config.build.clone();
     let platform = config.platform;

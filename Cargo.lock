@@ -621,6 +621,7 @@ dependencies = [
  "heapless 0.8.0",
  "tock-registers",
  "ufmt",
+ "zerocopy",
 ]
 
 [[package]]
@@ -749,6 +750,7 @@ dependencies = [
  "fstart-stage",
  "heapless 0.8.0",
  "konst",
+ "raw-cpuid",
  "serde_json",
  "ufmt",
 ]
@@ -810,6 +812,7 @@ dependencies = [
  "heapless 0.8.0",
  "postcard",
  "ufmt",
+ "zerocopy",
 ]
 
 [[package]]

@@ -598,7 +598,7 @@ pub struct IntelIch7Config {
     /// The driver programs `DxxIP`/`DxxIR` from this and the ACPI tables are
     /// generated from it, so the GSIs the OS derives are the ones the router
     /// actually delivers.
-    pub pirq: fstart_pci::pirq::PirqRouting,
+    pub pirq: crate::southbridge::pirq::PirqRouting,
     /// PIRQ routing (one byte per PIRQ A..H).
     pub pirq_routing: [u8; 8],
     /// PCIe root ports 0-3 present. Absent ports are hidden with the FD
@@ -637,11 +637,6 @@ pub struct IntelIch7Config {
     pub c3_latency: u16,
     /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
     pub power_on_after_fail: u8,
-    /// Date (`MM/DD/YYYY`) written back to the RTC when it lost power.
-    ///
-    /// Boards set this to the same build date they publish in SMBIOS; the
-    /// default is a placeholder a board with a real build date overrides.
-    pub rtc_default_date: &'static str,
 }
 
 const fn default_c3_latency() -> u16 {
@@ -665,7 +660,7 @@ impl IntelIch7Config {
     pub const fn new() -> Self {
         Self {
             rcba: 0xFED1_C000,
-            pirq: fstart_pci::pirq::ICH7_PINEVIEW_ROUTING,
+            pirq: crate::southbridge::pirq::ICH7_PINEVIEW_ROUTING,
             pirq_routing: [0; 8],
             pcie_ports: default_pcie_ports(),
             lan: true,
@@ -683,7 +678,6 @@ impl IntelIch7Config {
             acpi_name: Some("LPCB"),
             c3_latency: default_c3_latency(),
             power_on_after_fail: 0,
-            rtc_default_date: "01/01/2000",
         }
     }
 }
@@ -1441,7 +1435,7 @@ impl IntelIch7 {
         }
 
         // ---- RTC / CMOS init (coreboot i82801gx_rtc_init + cmos_init) ----
-        self.rtc_init(self.config.rtc_default_date);
+        self.rtc_init();
 
         // ---- USB Transient Disconnect Detect (fixup) ----
         lpc.write8(0xAD, 0x03);
@@ -1964,34 +1958,20 @@ impl IntelIch7 {
     /// SMI routing view of this southbridge for SMM installation.
     #[must_use]
     pub const fn smi(&self) -> crate::southbridge::smi::IchSmi {
-        crate::southbridge::smi::IchSmi::new(
-            self.pm.base(),
-            crate::southbridge::smi::Gpe0Block::ICH7,
-        )
+        crate::southbridge::smi::IchSmi::new(self.pm.base(), crate::southbridge::smi::ICH7_GPE0)
     }
 
     // -----------------------------------------------------------------------
     // System reset (from reset.c + me.c)
     // -----------------------------------------------------------------------
 
-    /// Trigger a system reset via CF9 port.
-    ///
-    /// Writes 0x02 (soft reset) or 0x06 (hard reset) to port 0xCF9.
+    /// Clear ICH7's sticky global-reset state, then use the shared CF9 reset.
     pub fn system_reset(&self, hard: bool) -> ! {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            // Ensure CF9GR is cleared (no global reset).
-            let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
-            let etr3 = lpc.read32(ETR3);
-            lpc.write32(ETR3, (etr3 & !ETR3_CF9GR) & !ETR3_CWORWRE);
-
-            let val: u8 = if hard { 0x06 } else { 0x02 };
-            fstart_core::pio::outb(0xCF9, 0x00); // Clear first
-            fstart_core::pio::outb(0xCF9, val);
-        }
-        loop {
-            core::hint::spin_loop();
-        }
+        // Ensure CF9GR is cleared (no global reset).
+        let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        let etr3 = lpc.read32(ETR3);
+        lpc.write32(ETR3, (etr3 & !ETR3_CF9GR) & !ETR3_CWORWRE);
+        fstart_arch::x86_64::system_reset(hard)
     }
 
     /// Configure CF9 for global reset (ME reset).
@@ -2028,8 +2008,8 @@ impl IntelIch7 {
     /// chip's update cycle never runs and the OS gives up on it (Linux reports
     /// "unable to read the hardware clock"). Program the divider and control
     /// registers, put a known date back and re-mark the RAM valid.
-    /// Configure the CMOS clock, using `default_date` when it lost power.
-    pub fn rtc_init(&self, default_date: &str) {
+    /// Configure the CMOS clock, restoring the build date when it lost power.
+    pub fn rtc_init(&self) {
         // Sticky battery-dead flag, cleared here exactly like coreboot.
         let battery_dead = self.rtc_failure();
         if battery_dead {
@@ -2038,7 +2018,7 @@ impl IntelIch7 {
                 .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
         }
 
-        crate::southbridge::rtc::init_clock("intel-ich7", battery_dead, default_date);
+        crate::southbridge::rtc::init_clock("intel-ich7", battery_dead);
     }
 
     // -----------------------------------------------------------------------
@@ -2263,17 +2243,14 @@ mod acpi_impl {
                 legacy_devices: true,
                 sci_irq: SCI_IRQ,
                 pmbase: PMBASE,
+                gpe0_offset: 0x28,
+                gpe0_length: 8,
                 // The SMM image handles the APM command port the way coreboot's
                 // smihandler does: 0xe1 sets SCI_EN, 0x1e clears it.
                 acpi_smi: Some(fstart_core::acpi::AcpiSmiConfig {
                     smi_cmd: APM_CNT,
                     acpi_enable: APM_CNT_ACPI_ENABLE,
                     acpi_disable: APM_CNT_ACPI_DISABLE,
-                }),
-                // CF9 reset: RST_CPU | SYS_RST, implemented by system_reset().
-                reset: Some(fstart_acpi::platform::x86::ResetConfig {
-                    port: 0x0cf9,
-                    value: 0x06,
                 }),
             }
         }

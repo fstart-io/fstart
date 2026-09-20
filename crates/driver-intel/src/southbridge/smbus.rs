@@ -369,10 +369,9 @@ impl I801SmBus {
             regs.control().set(ctl | SMBHSTCNT_START);
 
             let mut bytes = 0usize;
-            let mut status = 0u8;
             let mut loops = SMBUS_TIMEOUT;
             loop {
-                status = regs.status().get();
+                let status = regs.status().get();
                 if status & SMBHSTSTS_BYTE_DONE != 0 {
                     if write {
                         bytes += 1;
