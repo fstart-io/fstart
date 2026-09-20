@@ -357,12 +357,16 @@ mod stage {
         /// Runs after PCI init: TSEG geometry is captured there and ICH9
         /// PMBASE is programmed, both required by the SMM flow.
         fn init_mp_smm(&self) -> Result<(), ServiceError> {
-            let cpu = fstart_arch::mp::GenericX86CpuDriver;
-            let drivers: [&dyn fstart_arch::mp::CpuDriver; 1] = [&cpu];
+            let cpu = fstart_arch::x86::mp::GenericX86CpuDriver;
+            let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
             let smi = crate::q35_smm::ich9_smi();
-            let smm_flow =
-                fstart_arch::cpu_intel::smm::IntelSmm::new("Q35", &self.hostbridge, &smi, false);
-            let smm = SMM_IMAGE.map(|_| &smm_flow as &dyn fstart_arch::mp::SmmOps);
+            let smm_flow = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
+                "Q35",
+                &self.hostbridge,
+                &smi,
+                false,
+            );
+            let smm = SMM_IMAGE.map(|_| &smm_flow as &dyn fstart_arch::x86::mp::SmmOps);
             if smm.is_some() {
                 // Locking SMM hides TSEG from non-SMM access. Firmware
                 // statics live below the plan-time reservation by
@@ -390,7 +394,7 @@ mod stage {
             // installer never addresses stubs that do not exist.
             let max_cpus = self.fw_cfg.max_cpus().min(Self::SMM_ENTRY_COUNT).max(1);
             fstart_log::info!("qemu-q35: MP init with {} CPUs", max_cpus);
-            fstart_arch::mp::mp_init(&fstart_arch::mp::MpConfig {
+            fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
                 cpu_drivers: &drivers,
                 smm,
                 smm_image: SMM_IMAGE,

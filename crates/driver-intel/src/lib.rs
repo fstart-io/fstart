@@ -15,7 +15,7 @@ pub mod ich7;
 pub mod ich8;
 pub mod igd;
 pub mod pineview;
-pub use fstart_arch::cpu_intel::microcode;
+pub use fstart_arch::x86::cpu::intel::microcode;
 pub mod southbridge;
 
 /// Boot condition selected before DRAM initialization.

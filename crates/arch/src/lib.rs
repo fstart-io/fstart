@@ -29,12 +29,6 @@ pub use x86::udelay;
 pub mod aarch64;
 #[cfg(all(feature = "armv7", target_arch = "arm"))]
 pub mod armv7;
-#[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]
-pub mod cpu_intel;
-#[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]
-pub mod lapic;
-#[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]
-pub mod mp;
 #[cfg(all(feature = "riscv64", target_arch = "riscv64"))]
 pub mod riscv64;
 #[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]

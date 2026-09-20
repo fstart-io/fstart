@@ -1,9 +1,9 @@
 //! Intel Core/Core 2 CPU operations for GM965-era systems.
 //!
 //! Mirrors the per-CPU MSR setup in coreboot's `cpu/intel/model_6fx` driver
-//! and optionally supplies an Intel microcode blob to [`crate::mp`].
+//! and optionally supplies an Intel microcode blob to [`crate::x86::mp`].
 
-use crate::mp::{CpuDriver, CpuIdMatch, CpuVendor};
+use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuVendor};
 use crate::x86::msr::{rdmsr, wrmsr};
 use crate::x86::mtrr;
 
@@ -148,13 +148,13 @@ impl CpuDriver for Core2CpuDriver {
 
     fn update_microcode(&self) {
         if let Some(blob) = self.microcode {
-            let cpu = crate::mp::current_cpu_index();
-            let before = crate::cpu_intel::microcode::current_revision();
+            let cpu = crate::x86::mp::current_cpu_index();
+            let before = crate::x86::cpu::intel::microcode::current_revision();
             fstart_log::info!("microcode: cpu{} before rev={:#x}", cpu, before);
             // SAFETY: board code supplies a firmware-image-backed Intel
             // microcode blob that remains reachable throughout MP init.
-            unsafe { crate::cpu_intel::microcode::update_current_cpu_logged(blob) };
-            let after = crate::cpu_intel::microcode::current_revision();
+            unsafe { crate::x86::cpu::intel::microcode::update_current_cpu_logged(blob) };
+            let after = crate::x86::cpu::intel::microcode::current_revision();
             fstart_log::info!("microcode: cpu{} after rev={:#x}", cpu, after);
         }
     }

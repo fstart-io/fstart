@@ -4,7 +4,7 @@
 //! differs in the GPE0 block, which [`Gpe0Block`] describes.
 
 use super::pmio_ich::{self as pmio, PmIo};
-pub use fstart_arch::cpu_intel::smm::{Gpe0Block, SmiControl};
+pub use fstart_arch::x86::cpu::intel::smm::{Gpe0Block, SmiControl};
 
 /// SMI controller view of one ICH PM I/O block.
 #[derive(Debug, Clone, Copy)]
@@ -88,7 +88,7 @@ const APM_CNT_FINALIZE: u8 = 0xcb;
 /// SMI handler for every ICH PM I/O layout.
 ///
 /// PMBASE and the GPE0 block come from the runtime parameters the installer
-/// published (see [`IntelSmm`](fstart_arch::cpu_intel::smm::IntelSmm)), so
+/// published (see [`IntelSmm`](fstart_arch::x86::cpu::intel::smm::IntelSmm)), so
 /// the same handler serves ICH7 and ICH8+ boards.
 pub struct IchSmmHandler<B = NoBoardSmmHandler>(PhantomData<B>);
 

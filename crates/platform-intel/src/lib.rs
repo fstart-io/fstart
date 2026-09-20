@@ -116,14 +116,14 @@ pub trait IntelEarlyPlatform: Sized + 'static {
     type Config: IntelChipsetConfig<Northbridge = Self::Northbridge, Southbridge = Self::Southbridge>
         + 'static;
     type Northbridge: IntelNorthbridgeDriver
-        + fstart_arch::cpu_intel::smm::SmramControl
+        + fstart_arch::x86::cpu::intel::smm::SmramControl
         + NorthbridgeAcpi<Self::Northbridge>;
     type Southbridge: IntelSouthbridgeDriver
-        + fstart_arch::cpu_intel::smm::SmiControl
+        + fstart_arch::x86::cpu::intel::smm::SmiControl
         + SouthbridgeAcpi<Self::Southbridge>;
     /// CPU family driver for MP bring-up.
     #[cfg(feature = "mp")]
-    type Cpu: fstart_arch::mp::CpuDriver;
+    type Cpu: fstart_arch::x86::mp::CpuDriver;
     #[cfg(feature = "mp")]
     fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu;
     /// Platform-owned ACPI namespace context handed to `AcpiDevice` emitters.

@@ -1,7 +1,7 @@
 //! Common SMM image ABI and SMRAM layout helpers.
 //!
 //! This crate intentionally contains only plain data structures and placement
-//! math.  The Intel gen1 flow in `fstart_arch::cpu_intel::smm` uses it to parse
+//! math.  The Intel gen1 flow in `fstart_arch::x86::cpu::intel::smm` uses it to parse
 //! a standalone PIC SMM image, copy precompiled entry stubs into SMRAM, and
 //! fill runtime data.  The SMM image crate uses the same definitions when emitting
 //! native and optional coreboot-compatible headers.

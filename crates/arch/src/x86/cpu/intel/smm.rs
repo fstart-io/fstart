@@ -9,7 +9,7 @@
 //! (SMI enables and status clearing). Each chipset implements only its own
 //! trait, so fixes to the relocation sequence reach every platform at once.
 
-use crate::mp::{SmmError, SmmInfo, SmmOps};
+use crate::x86::mp::{SmmError, SmmInfo, SmmOps};
 use core::cell::UnsafeCell;
 
 /// EM64T101 save-state area size (QEMU's AMD64 save state is the same size).
@@ -151,7 +151,7 @@ impl<NB: SmramControl, SB: SmiControl> SmmOps for IntelSmm<'_, NB, SB> {
         // APIC. It must stay per-CPU because every CPU shares the
         // architectural default SMBASE (and one save state) until it has
         // relocated itself.
-        let lapic = crate::lapic::Lapic::from_msr();
+        let lapic = crate::x86::lapic::Lapic::from_msr();
         lapic.send_smi_self();
         lapic.wait_ready();
     }
@@ -216,24 +216,25 @@ impl<NB: SmramControl, SB: SmiControl> IntelSmm<'_, NB, SB> {
         })?;
 
         let targets = &installed.cpus[..num_cpus as usize];
-        crate::mp::prepare_default_smm_relocation(targets);
+        crate::x86::mp::prepare_default_smm_relocation(targets);
         // The relocation stub enters long mode from the default SMBASE and
         // cannot rely on the interrupted context's CR3, so it gets its own
         // identity map next to the stub.
         // SAFETY: the default SMBASE region is writable low memory and unused
         // until the stub itself is installed there.
-        let relocation_cr3 =
-            unsafe { fstart_smm::build_relocation_identity_tables(crate::mp::SMM_DEFAULT_SMBASE) };
+        let relocation_cr3 = unsafe {
+            fstart_smm::build_relocation_identity_tables(crate::x86::mp::SMM_DEFAULT_SMBASE)
+        };
         // SAFETY: same region; the callback is a plain `extern "C"` firmware fn.
         unsafe {
             fstart_smm::install_default_relocation_callback_stub(
                 image,
                 fstart_smm::DefaultRelocationCallbackConfig {
-                    default_smbase: crate::mp::SMM_DEFAULT_SMBASE,
+                    default_smbase: crate::x86::mp::SMM_DEFAULT_SMBASE,
                     cr3: relocation_cr3,
-                    callback: crate::mp::default_smm_relocation_handler as *const () as usize
+                    callback: crate::x86::mp::default_smm_relocation_handler as *const () as usize
                         as u64,
-                    stack_top: crate::mp::SMM_DEFAULT_ENTRY_STACK_TOP,
+                    stack_top: crate::x86::mp::SMM_DEFAULT_ENTRY_STACK_TOP,
                 },
             )
         }
@@ -250,7 +251,7 @@ impl<NB: SmramControl, SB: SmiControl> IntelSmm<'_, NB, SB> {
         // in DRAM before either the BSP or an AP takes its first SMI.
         unsafe {
             crate::x86::writeback_cache_range(info.smbase as *const u8, info.smsize);
-            let (default_base, default_end) = crate::mp::SMM_DEFAULT_ASEG;
+            let (default_base, default_end) = crate::x86::mp::SMM_DEFAULT_ASEG;
             crate::x86::writeback_cache_range(
                 default_base as *const u8,
                 (default_end - default_base) as usize,

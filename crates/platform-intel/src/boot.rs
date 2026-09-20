@@ -218,7 +218,7 @@ pub(crate) fn reserve_firmware_memory(
     );
     // Default-SMBASE ASEG: SMM relocation rewrites it during MP init, which
     // runs again on an S3 resume while the suspended OS image is live.
-    let (aseg_start, aseg_end) = fstart_arch::mp::SMM_DEFAULT_ASEG;
+    let (aseg_start, aseg_end) = fstart_arch::x86::mp::SMM_DEFAULT_ASEG;
     e820.reserve_range_as(aseg_start, aseg_end - aseg_start, E820Kind::Reserved);
     Ok(())
 }

@@ -1649,7 +1649,7 @@ impl MemoryController for IntelGm965 {
     }
 }
 
-impl fstart_arch::cpu_intel::smm::SmramControl for IntelGm965 {
+impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm965 {
     fn tseg(&self) -> Option<(u64, u32)> {
         let (base, size) = self.smm_region();
         (size != 0).then_some((u64::from(base), size))

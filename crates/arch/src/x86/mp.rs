@@ -63,7 +63,7 @@
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
 
-use crate::lapic::Lapic;
+use crate::x86::lapic::Lapic;
 
 #[cfg(not(rust_analyzer))]
 mod sipi_blob {
