@@ -590,6 +590,7 @@ dependencies = [
  "serde",
  "tock-registers",
  "x86",
+ "zerocopy",
 ]
 
 [[package]]

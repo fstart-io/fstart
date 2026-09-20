@@ -24,6 +24,7 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
         fstart_platform_qemu::facts::VirtMachine::Aarch64,
         fstart_image_build::plan::BuildSelection {
             payload: Some("halt".into()),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -137,6 +138,7 @@ fn unsupported_required_input_is_rejected_by_input_validation_itself() {
         fstart_platform_qemu::facts::VirtMachine::Aarch64,
         fstart_image_build::plan::BuildSelection {
             payload: Some("halt".into()),
+            ..Default::default()
         },
     )
     .unwrap();

@@ -26,6 +26,7 @@ fn platform_cfg_schema_accepts_new_vocabulary_but_not_selected_typos() {
         fstart_platform_qemu::facts::VirtMachine::Aarch64,
         fstart_image_build::plan::BuildSelection {
             payload: Some("halt".into()),
+            ..Default::default()
         },
     )
     .unwrap()
@@ -114,6 +115,7 @@ fn ambient_artifact_environment_isolation() {
         fstart_platform_qemu::facts::VirtMachine::Aarch64,
         fstart_image_build::plan::BuildSelection {
             payload: Some("halt".into()),
+            ..Default::default()
         },
     )
     .unwrap()

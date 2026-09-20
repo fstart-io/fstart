@@ -146,6 +146,7 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
                 machine,
                 fstart_image_build::plan::BuildSelection {
                     payload: Some("halt".into()),
+                    ..Default::default()
                 },
             )
             .unwrap();

@@ -424,25 +424,15 @@ impl<D: Riscv64UefiPayloadContext> MainstagePayload<D> for Riscv64UefiPayload {
     }
 }
 
-/// Payload launcher for an x86 board that boots a kernel straight from its FFS.
+/// Platform context source for the direct x86 Linux payload launcher.
 ///
 /// x86 has no device tree: the launcher loads the bzImage payload, hands the
 /// kernel the firmware's own e820 map, ACPI RSDP and command line through the
-/// zero page, and jumps to the kernel's 64-bit entry point.
-#[cfg(all(feature = "linux", feature = "x86_64"))]
-#[derive(Debug, Clone, Copy)]
-pub struct X86LinuxPayloadConfig {
-    pub kernel_load_addr: u64,
-    pub zero_page_addr: u64,
-    pub bootargs: &'static str,
-    pub print_x86_mtrrs: bool,
-}
-
-/// Platform context source for the direct x86 Linux payload launcher.
+/// zero page, and jumps to the kernel's 64-bit entry point. Launch policy
+/// (load address, zero page, bootargs) arrives via the verified FFS manifest,
+/// so the only platform context is the memory map and RSDP below.
 #[cfg(all(feature = "linux", feature = "x86_64"))]
 pub trait X86LinuxPayloadContext {
-    /// Return the board's payload policy, or `None` when it declares none.
-    fn x86_linux_payload_config(&self) -> Option<X86LinuxPayloadConfig>;
     /// Return the detected memory map to hand to the kernel.
     fn e820(&self) -> &[E820Entry];
     /// Return the ACPI RSDP physical address, if ACPI was emitted.
@@ -458,8 +448,14 @@ impl<D: X86LinuxPayloadContext> MainstagePayload<D> for X86LinuxPayload {
     fn boot(devices: D) -> ! {
         use crate::fixed_helpers::MemoryMappedLinuxBoot;
 
-        let Some(config) = devices.x86_linux_payload_config() else {
-            halt_x86_linux("the board declares no direct Linux payload");
+        let Some(manifest_bytes) = fstart_core::services::ffs_context::read_verified_asset(
+            fstart_core::payload_manifest::X86_LINUX_MANIFEST_ASSET,
+        ) else {
+            halt_x86_linux("no verified x86 Linux payload manifest");
+        };
+        let Some(config) = fstart_core::payload_manifest::X86LinuxManifest::decode(manifest_bytes)
+        else {
+            halt_x86_linux("invalid x86 Linux payload manifest");
         };
         // Load through the window the mainstage already mounted and verified:
         // the FFS container is smaller than the flash it is mapped into, so its

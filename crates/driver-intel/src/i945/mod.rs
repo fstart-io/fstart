@@ -248,6 +248,40 @@ pub enum I945Variant {
     Mobile,
 }
 
+/// IGD (D2:F0) device IDs from coreboot `northbridge/intel/i945/gma.c`.
+/// Func1 display-controller IDs (`0x2776`/`0x27a6`) are not matched here;
+/// the fixed flow only drives the primary graphics function.
+pub const I945_IGD_DESKTOP_ID: u16 = 0x2772;
+pub const I945_IGD_MOBILE_IDS: [u16; 2] = [0x27a2, 0x27ae];
+
+/// Pure policy: does `(vendor, device)` identify the IGD for `variant`?
+///
+/// No hardware access; unit-tested below. Mirrors Pineview's
+/// `igd_matches_platform` so a misconfigured board fails closed to
+/// headless instead of running the wrong Gen3 clock limits.
+#[must_use]
+pub const fn i945_igd_id_matches_variant(variant: I945Variant, vendor: u16, device: u16) -> bool {
+    match variant {
+        I945Variant::Desktop | I945Variant::DesktopGc => {
+            super::igd::igd_id_matches(vendor, device, &[I945_IGD_DESKTOP_ID])
+        }
+        I945Variant::Mobile => super::igd::igd_id_matches(vendor, device, &I945_IGD_MOBILE_IDS),
+    }
+}
+
+/// Human-readable variant name for fail-closed display logs.
+///
+/// `fstart_log` is `ufmt`-based (no `std::fmt::Debug`), so the name is
+/// matched explicitly instead of derived.
+#[must_use]
+const fn i945_variant_name(variant: I945Variant) -> &'static str {
+    match variant {
+        I945Variant::Desktop => "desktop",
+        I945Variant::DesktopGc => "desktop-gc",
+        I945Variant::Mobile => "mobile",
+    }
+}
+
 /// Closed i945 chipset policy consumed by the fixed stage flow.
 ///
 /// Board-attached devices stay in board hooks/code; fixed chipset windows
@@ -1020,6 +1054,13 @@ impl IntelI945 {
         self.igd().read16(0) != 0xffff
     }
 
+    /// Fail closed to headless when the soldered IGD does not match the
+    /// configured variant (see the ID table above).
+    fn igd_matches_platform(&self) -> bool {
+        let igd = self.igd();
+        i945_igd_id_matches_variant(self.config.variant, igd.read16(0), igd.read16(2))
+    }
+
     fn display_cpu(&self) -> Cpu {
         match self.config.variant {
             I945Variant::Desktop | I945Variant::DesktopGc => Cpu::I945G,
@@ -1112,6 +1153,15 @@ impl IntelI945 {
     /// headless rather than failing the mainstage phase.
     fn gma_display_init(&mut self, vbt: Option<&[u8]>) {
         let igd = self.igd();
+        if !self.igd_matches_platform() {
+            fstart_log::error!(
+                "intel-i945: unexpected IGD {:04x}:{:04x} for variant {}, skipping display",
+                igd.read16(0),
+                igd.read16(2),
+                i945_variant_name(self.config.variant)
+            );
+            return;
+        }
         // Consume the windows PCI enumeration assigned; never re-program them.
         let Some(bars) = super::igd::assigned_bars(&igd, false) else {
             fstart_log::error!("intel-i945: IGD windows unassigned, skipping display");
@@ -1634,4 +1684,57 @@ pub(crate) fn ramtest_probe(addr: usize, top: usize) -> Result<(), ServiceError>
         ptr::write_volatile(p, old);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn igd_ids_match_coreboot_gma_table() {
+        // Desktop 82945G/GZ/GC (D945GCLF).
+        assert!(i945_igd_id_matches_variant(
+            I945Variant::DesktopGc,
+            0x8086,
+            0x2772
+        ));
+        assert!(i945_igd_id_matches_variant(
+            I945Variant::Desktop,
+            0x8086,
+            0x2772
+        ));
+        // Mobile 945GM/GMS/GSE.
+        assert!(i945_igd_id_matches_variant(
+            I945Variant::Mobile,
+            0x8086,
+            0x27a2
+        ));
+        assert!(i945_igd_id_matches_variant(
+            I945Variant::Mobile,
+            0x8086,
+            0x27ae
+        ));
+        // Cross-variant mismatches fail closed to headless.
+        assert!(!i945_igd_id_matches_variant(
+            I945Variant::DesktopGc,
+            0x8086,
+            0x27a2
+        ));
+        assert!(!i945_igd_id_matches_variant(
+            I945Variant::Mobile,
+            0x8086,
+            0x2772
+        ));
+        // Wrong vendor or Pineview silicon never matches i945.
+        assert!(!i945_igd_id_matches_variant(
+            I945Variant::DesktopGc,
+            0x10de,
+            0x2772
+        ));
+        assert!(!i945_igd_id_matches_variant(
+            I945Variant::DesktopGc,
+            0x8086,
+            0xa001
+        ));
+    }
 }

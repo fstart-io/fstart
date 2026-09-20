@@ -306,6 +306,9 @@ pub struct PayloadConfig {
     pub kernel_file: Option<HString<64>>,
     /// Load address for the kernel in RAM
     pub kernel_load_addr: Option<u64>,
+    /// Physical address of the x86 Linux boot-parameter zero page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x86_zero_page_addr: Option<u64>,
     /// FDT source.
     pub fdt: FdtSource,
     /// Target address for the patched DTB in RAM

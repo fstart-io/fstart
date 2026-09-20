@@ -29,6 +29,34 @@ pub const GFX_FLSH_CNTL: u32 = 0x02170;
 /// `PGETBL_CTL` bit that enables GTT address translation.
 pub const PGETBL_ENABLED: u32 = 1;
 
+/// PCI vendor ID shared by every Intel IGD policy check in this crate.
+///
+/// Kept here — next to the shared display bring-up — so the gm965, i945,
+/// and Pineview drivers match against one constant instead of each
+/// declaring their own.
+pub const INTEL_VENDOR_ID: u16 = 0x8086;
+
+/// Pure policy: does `(vendor, device)` match one of the expected IGD IDs?
+///
+/// No hardware access. Each chipset driver keeps a thin `const fn` wrapper
+/// pinning its own ID table (unit-tested there); this owns the single copy
+/// of the vendor check and the table scan so a misconfigured board fails
+/// closed to headless.
+#[must_use]
+pub const fn igd_id_matches(vendor: u16, device: u16, expected: &[u16]) -> bool {
+    if vendor != INTEL_VENDOR_ID {
+        return false;
+    }
+    let mut i = 0;
+    while i < expected.len() {
+        if device == expected[i] {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Decode the GMCH Multi Size Aperture Control register.
 ///
 /// These generations expose either a 128 MiB or 256 MiB CPU aperture. The

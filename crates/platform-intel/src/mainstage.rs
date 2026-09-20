@@ -394,6 +394,22 @@ where
     }
 }
 
+#[cfg(feature = "payload-linux")]
+impl<P, Hooks, C> fstart_stage::payload::X86LinuxPayloadContext for IntelMainstage<P, Hooks, C>
+where
+    P: IntelEarlyPlatform,
+    Hooks: IntelEarlyBoardHooks<P>,
+    C: ConsoleDevice,
+{
+    fn e820(&self) -> &[E820Entry] {
+        self.e820()
+    }
+
+    fn acpi_rsdp(&self) -> Option<u64> {
+        self.acpi_rsdp()
+    }
+}
+
 impl<P, Hooks, C> fstart_stage::payload::X86UefiPayloadContext for IntelMainstage<P, Hooks, C>
 where
     P: IntelEarlyPlatform,

@@ -59,6 +59,24 @@ const IGD_GTTMMADR_SIZE: u32 = 512 * 1024;
 /// GTT page-table size in bytes.
 const IGD_GTT_SIZE: u32 = 512 * 1024;
 
+/// IGD (D2:F0) device IDs from coreboot `northbridge/intel/pineview/gma.c`.
+/// The fixed flow only drives the primary graphics function.
+pub const PINEVIEW_IGD_ID: u16 = 0xa001;
+pub const PINEVIEW_M_IGD_ID: u16 = 0xa011;
+
+/// Pure policy: does `(vendor, device)` identify a Pineview IGD?
+///
+/// No hardware access; unit-tested below. Mirrors the gm965/i945 platform
+/// match so a misconfigured board fails closed to headless.
+#[must_use]
+pub const fn pineview_igd_id_matches(mobile: bool, vendor: u16, device: u16) -> bool {
+    if mobile {
+        super::igd::igd_id_matches(vendor, device, &[PINEVIEW_M_IGD_ID])
+    } else {
+        super::igd::igd_id_matches(vendor, device, &[PINEVIEW_IGD_ID])
+    }
+}
+
 /// Intel integrated graphics configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct PineviewIgdConfig {
@@ -824,18 +842,15 @@ impl IntelPineview {
         self.igd().read16(0) != 0xffff
     }
 
+    /// Fail closed to headless when the soldered IGD does not match the
+    /// detected platform type (see the ID table above).
     fn igd_matches_platform(&self) -> bool {
-        const INTEL_VENDOR_ID: u16 = 0x8086;
-        const PINEVIEW_IGD_ID: u16 = 0xa001;
-        const PINEVIEW_M_IGD_ID: u16 = 0xa011;
-
         let igd = self.igd();
-        let expected = if self.platform_type() == raminit::PLATFORM_MOBILE {
-            PINEVIEW_M_IGD_ID
-        } else {
-            PINEVIEW_IGD_ID
-        };
-        igd.read16(0) == INTEL_VENDOR_ID && igd.read16(2) == expected
+        pineview_igd_id_matches(
+            self.platform_type() == raminit::PLATFORM_MOBILE,
+            igd.read16(0),
+            igd.read16(2),
+        )
     }
 
     fn display_policy_matches_electrical_config(&self) -> bool {
@@ -957,11 +972,13 @@ impl IntelPineview {
     fn gma_display_init(&mut self, vbt: Option<&[u8]>) {
         let igd = self.igd();
         if !self.igd_matches_platform() {
+            // `platform_type` reads the host-bridge DID: 1 is mobile, 0 desktop.
+            let mobile = (self.platform_type() == raminit::PLATFORM_MOBILE) as u32;
             fstart_log::error!(
-                "pineview: unexpected IGD {:04x}:{:04x} for platform type {}, skipping display",
-                igd.read16(0) as u32,
-                igd.read16(2) as u32,
-                self.platform_type() as u32
+                "pineview: unexpected IGD {:04x}:{:04x} for mobile {}, skipping display",
+                igd.read16(0),
+                igd.read16(2),
+                mobile
             );
             return;
         }
@@ -1407,5 +1424,25 @@ mod acpi_impl {
             fstart_acpi::Aml::to_aml_bytes(&mcfg, &mut bytes);
             alloc::vec![bytes]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn igd_ids_match_coreboot_gma_table() {
+        // Desktop Pineview (Atom D4xx) and mobile Pineview-M (N4xx).
+        assert!(pineview_igd_id_matches(false, 0x8086, 0xa001));
+        assert!(pineview_igd_id_matches(true, 0x8086, 0xa011));
+        // Cross-type mismatches fail closed to headless.
+        assert!(!pineview_igd_id_matches(false, 0x8086, 0xa011));
+        assert!(!pineview_igd_id_matches(true, 0x8086, 0xa001));
+        // Wrong vendor or other Intel graphics never match Pineview.
+        assert!(!pineview_igd_id_matches(false, 0x10de, 0xa001));
+        assert!(!pineview_igd_id_matches(false, 0x8086, 0x2a02));
+        assert!(!pineview_igd_id_matches(true, 0x8086, 0x2772));
+        assert!(!pineview_igd_id_matches(false, 0xffff, 0xffff));
     }
 }

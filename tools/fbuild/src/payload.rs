@@ -1,5 +1,6 @@
-use clap::ValueEnum;
+use clap::{Args, ValueEnum};
 use fstart_core::{BoardConfig, Compression, FdtSource, PayloadConfig, PayloadKind};
+use fstart_image_build::plan::BuildSelection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PayloadChoice {
@@ -37,6 +38,70 @@ impl PayloadChoice {
             Self::Elf => Some(PayloadKind::CustomElf),
             Self::Halt => None,
         }
+    }
+}
+
+/// Direct x86 Linux launch policy for Intel boards.
+///
+/// Every field is optional: omitted addresses fall back to the family
+/// defaults (`X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR` /
+/// `X86_LINUX_DEFAULT_ZERO_PAGE_ADDR`) and an omitted command line means no
+/// command line. There is deliberately no implicit serial-console default —
+/// pass `--linux-bootargs` explicitly.
+#[derive(Debug, Clone, Default, Args)]
+pub struct X86LinuxArgs {
+    /// Physical address at which the bzImage protected-mode payload is loaded.
+    #[arg(long, value_parser = parse_u64)]
+    pub linux_kernel_load_addr: Option<u64>,
+    /// Physical address used for the Linux boot-parameter zero page.
+    #[arg(long, value_parser = parse_u64)]
+    pub linux_zero_page_addr: Option<u64>,
+    /// Command line passed by the direct x86 Linux launcher.
+    #[arg(long)]
+    pub linux_bootargs: Option<String>,
+    /// Dump BSP MTRRs and control registers immediately before Linux handoff.
+    #[arg(long, default_value_t = false)]
+    pub linux_print_mtrrs: bool,
+}
+
+impl X86LinuxArgs {
+    pub fn selection(&self, payload: Option<PayloadChoice>) -> BuildSelection {
+        BuildSelection {
+            payload: payload.map(|choice| choice.as_str().to_owned()),
+            x86_linux_kernel_load_addr: self.linux_kernel_load_addr,
+            x86_linux_zero_page_addr: self.linux_zero_page_addr,
+            x86_linux_bootargs: self.linux_bootargs.clone(),
+            x86_linux_print_mtrrs: self.linux_print_mtrrs,
+        }
+    }
+
+    pub fn append_cli_args(&self, args: &mut Vec<String>) {
+        if let Some(value) = self.linux_kernel_load_addr {
+            args.extend(["--linux-kernel-load-addr".into(), format!("{value:#x}")]);
+        }
+        if let Some(value) = self.linux_zero_page_addr {
+            args.extend(["--linux-zero-page-addr".into(), format!("{value:#x}")]);
+        }
+        if let Some(value) = &self.linux_bootargs {
+            args.extend(["--linux-bootargs".into(), value.clone()]);
+        }
+        if self.linux_print_mtrrs {
+            args.push("--linux-print-mtrrs".into());
+        }
+    }
+}
+
+fn parse_u64(value: &str) -> Result<u64, String> {
+    let value = value.replace('_', "");
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16).map_err(|error| error.to_string())
+    } else {
+        value
+            .parse()
+            .map_err(|error: std::num::ParseIntError| error.to_string())
     }
 }
 
@@ -107,6 +172,7 @@ fn empty_payload_config(kind: PayloadKind) -> PayloadConfig {
         kind,
         kernel_file: None,
         kernel_load_addr: None,
+        x86_zero_page_addr: None,
         fdt: FdtSource::Platform,
         dtb_addr: None,
         src_dtb_addr: None,

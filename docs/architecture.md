@@ -114,7 +114,16 @@ units with their own target, Cargo target kind, cfgs, features, flags, generated
 linker text, ELF expectations and artifact bindings, plus concrete image inputs.
 Defaults, supported payloads and terminal-stage assignment belong to platform
 Rust; fbuild qualifies Cargo aliases, validates references and executes the same
-bounded unit contract for build, check and IDE. This is not a generated authoring API,
+bounded unit contract for build, check and IDE. Direct x86 Linux launch policy is
+supplied through CLI selection (`--linux-kernel-load-addr`,
+`--linux-zero-page-addr`, `--linux-bootargs`, and `--linux-print-mtrrs`) and is
+packaged as a verified FFS manifest beside the kernel. The runtime launcher
+decodes that manifest; boards do not duplicate kernel addresses or command
+lines. Omitted addresses fall back to the family defaults
+(`X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR` / `X86_LINUX_DEFAULT_ZERO_PAGE_ADDR`);
+an omitted command line means no command line — there is deliberately no
+implicit serial-console default, so direct Linux stays silent unless
+`--linux-bootargs` is passed explicitly. This is not a generated authoring API,
 board host feature/executable or firmware recipe. The Intel family calculates
 common runtime capacities once; D945GCLF reuses them with the real i945 CAR
 window, legacy flash identity and Diamondville microcode inputs.

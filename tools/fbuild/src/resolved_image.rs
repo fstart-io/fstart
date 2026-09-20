@@ -1,7 +1,8 @@
 //! Load and execute a concrete Rust platform plan.
 //! Every board resolves through this module; the BoardConfig host-callback
 //! path is retired.
-use crate::{board_manifest::BoardManifest, payload::PayloadChoice, plan_executor::Resolved};
+use crate::{board_manifest::BoardManifest, plan_executor::Resolved};
+use fstart_image_build::plan::BuildSelection;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -13,12 +14,9 @@ impl ResolvedImage {
     pub fn load(
         root: &Path,
         board: &BoardManifest,
-        payload: Option<PayloadChoice>,
+        selection: BuildSelection,
     ) -> Result<Self, String> {
         let source = crate::profile_source::load_profile(root, board)?;
-        let selection = fstart_image_build::plan::BuildSelection {
-            payload: payload.map(|p| p.as_str().to_owned()),
-        };
         let plan = crate::host_plan::load(root, &source, &board.variant_features, &selection)?;
         Ok(Self {
             build: Resolved::new(root, board, &source, plan)?,

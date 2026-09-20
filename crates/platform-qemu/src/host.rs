@@ -265,6 +265,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             },
             kernel_file: kernel.map(|_| hstr(policy.kernel_file)),
             kernel_load_addr: kernel.map(|r| r.base),
+            x86_zero_page_addr: None,
             fdt: FdtSource::Platform,
             dtb_addr: dtb.map(|r| r.base),
             src_dtb_addr: None,
@@ -958,6 +959,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             kind: PayloadKind::LinuxBoot,
             kernel_file: Some(hstr(p.kernel_file)),
             kernel_load_addr: Some(p.kernel_addr),
+            x86_zero_page_addr: None,
             fdt: match p.dtb_override {
                 Some(name) => FdtSource::Override(hstr(name)),
                 None => FdtSource::Platform,
@@ -981,6 +983,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             kind: PayloadKind::UefiPayload,
             kernel_file: None,
             kernel_load_addr: None,
+            x86_zero_page_addr: None,
             fdt: FdtSource::Platform,
             dtb_addr: None,
             src_dtb_addr: None,
@@ -1195,6 +1198,7 @@ mod tests {
                     machine,
                     BuildSelection {
                         payload: Some(payload.into()),
+                        ..Default::default()
                     },
                 );
                 if matches!(machine, VirtMachine::Armv7) && payload == "uefi" {
@@ -1301,6 +1305,7 @@ mod tests {
                 machine,
                 BuildSelection {
                     payload: Some("halt".into()),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -1353,6 +1358,7 @@ mod tests {
                     machine,
                     BuildSelection {
                         payload: Some(payload.into()),
+                        ..Default::default()
                     }
                 )
                 .is_err()
@@ -1364,6 +1370,7 @@ mod tests {
             VirtMachine::Q35,
             BuildSelection {
                 payload: Some("uefi".into()),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1377,7 +1384,14 @@ mod tests {
         for machine in [VirtMachine::SifiveU, VirtMachine::Unmatched] {
             // The legacy Linux defaults survive: kernel plus OpenSBI firmware
             // at the historic DRAM addresses with the SIF0 bootargs.
-            let linux = resolve(machine, BuildSelection { payload: None }).unwrap();
+            let linux = resolve(
+                machine,
+                BuildSelection {
+                    payload: None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             assert_eq!(linux.payload, "linux");
             let payload = linux.assembly.payload.unwrap();
             assert!(matches!(payload.kind, PayloadKind::LinuxBoot));
@@ -1403,6 +1417,7 @@ mod tests {
                 machine,
                 BuildSelection {
                     payload: Some("uefi".into()),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -1413,6 +1428,7 @@ mod tests {
             VirtMachine::Unmatched,
             BuildSelection {
                 payload: Some("linux".into()),
+                ..Default::default()
             },
         )
         .unwrap()
@@ -1431,6 +1447,7 @@ mod tests {
             VirtMachine::Aarch64,
             BuildSelection {
                 payload: Some("halt".into()),
+                ..Default::default()
             },
         )
         .unwrap();

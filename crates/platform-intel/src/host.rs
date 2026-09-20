@@ -115,10 +115,10 @@ pub fn compilation_plan(
     let inputs = plan
         .payload_config
         .as_ref()
-        .and_then(|payload| payload.kernel_file.as_ref())
-        .map(|kernel| InputFile {
+        .filter(|payload| payload.kind == fstart_core::PayloadKind::LinuxBoot)
+        .map(|payload| InputFile {
             name: "kernel".into(),
-            default: Some(kernel.to_string()),
+            default: payload.kernel_file.as_ref().map(ToString::to_string),
             capacity: plan.reservations.firmware.size,
         })
         .into_iter()
@@ -190,11 +190,12 @@ pub fn resolve(
     selection: BuildSelection,
 ) -> Result<IntelPlan, std::string::String> {
     let requested_payload = selection.payload.unwrap_or_else(|| "halt".into());
+    let x86_linux_bootargs = selection.x86_linux_bootargs.unwrap_or_default();
     if !matches!(
         requested_payload.as_str(),
-        "halt" | "uefi" | "uefi-ui" | "uefi-basic"
+        "halt" | "linux" | "uefi" | "uefi-ui" | "uefi-basic"
     ) {
-        return Err("Intel supports halt and UEFI payloads".into());
+        return Err("Intel supports halt, direct Linux, and UEFI payloads".into());
     }
     let payload = if requested_payload.starts_with("uefi") {
         "uefi".to_string()
@@ -223,6 +224,8 @@ pub fn resolve(
                 }
                 .into(),
             );
+        } else if selected_payload == "linux" {
+            features.push("payload-linux".into());
         }
         IntelStagePlan {
             role,
@@ -240,6 +243,22 @@ pub fn resolve(
     };
     let payload_config = match payload.as_str() {
         "uefi" => Some(fstart_core::x86_uefi_payload()),
+        // Empty bootargs default to no command line: there is deliberately no
+        // implicit serial-console policy, so direct Linux stays silent unless
+        // the caller passes `--linux-bootargs` explicitly.
+        "linux" => Some(
+            fstart_core::x86_linux_payload(
+                selection
+                    .x86_linux_kernel_load_addr
+                    .unwrap_or(fstart_core::payload_manifest::X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
+                selection
+                    .x86_linux_zero_page_addr
+                    .unwrap_or(fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR),
+                &x86_linux_bootargs,
+                selection.x86_linux_print_mtrrs,
+            )
+            .map_err(ToString::to_string)?,
+        ),
         _ => None,
     };
     let plan = IntelPlan {
@@ -304,6 +323,7 @@ mod tests {
             FACTS,
             BuildSelection {
                 payload: Some("uefi".into()),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -318,15 +338,26 @@ mod tests {
         assert_eq!(uefi.stages[1].features, ["bundle-postcar"]);
         assert_eq!(uefi.stages[2].features, ["bundle-ramstage", "payload-uefi"]);
         assert_eq!(uefi.smm_features, ["bundle-smm"]);
-        assert!(
-            resolve(
-                FACTS,
-                BuildSelection {
-                    payload: Some("linux".into())
-                }
-            )
-            .is_err()
+        let linux = resolve(
+            FACTS,
+            BuildSelection {
+                payload: Some("linux".into()),
+                x86_linux_kernel_load_addr: Some(0x0200_0000),
+                x86_linux_zero_page_addr: Some(0x0009_0000),
+                x86_linux_bootargs: Some("console=ttyS0".into()),
+                x86_linux_print_mtrrs: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            linux.stages[2].features,
+            ["bundle-ramstage", "payload-linux"]
         );
+        let payload = linux.payload_config.as_ref().unwrap();
+        assert_eq!(payload.kernel_load_addr, Some(0x0200_0000));
+        assert_eq!(payload.x86_zero_page_addr, Some(0x0009_0000));
+        assert_eq!(payload.bootargs.as_deref(), Some("console=ttyS0"));
+        assert!(payload.print_x86_mtrrs);
     }
 
     #[test]
@@ -336,6 +367,7 @@ mod tests {
                 FACTS,
                 BuildSelection {
                     payload: Some(payload.into()),
+                    ..Default::default()
                 },
             )
             .unwrap()

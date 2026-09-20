@@ -89,6 +89,20 @@ pub mod hostbridge {
     pub const DEFAULT_ECAM_BASE: usize = 0xe000_0000;
 }
 
+/// IGD (D2:F0) device ID from coreboot `northbridge/intel/gm965/gma.c`.
+/// Func1 (`0x2a03`) is the display controller sibling; the fixed flow only
+/// drives the primary graphics function.
+pub const GM965_IGD_ID: u16 = 0x2a02;
+
+/// Pure policy: does `(vendor, device)` identify a Crestline IGD?
+///
+/// No hardware access; unit-tested below. Mirrors the i945/Pineview
+/// platform match so a misconfigured board fails closed to headless.
+#[must_use]
+pub const fn gm965_igd_id_matches(vendor: u16, device: u16) -> bool {
+    super::igd::igd_id_matches(vendor, device, &[GM965_IGD_ID])
+}
+
 /// MCHBAR register offsets used by early init and memory-size readback.
 pub mod mchbar {
     pub const FSBPMC3: u32 = 0x0040;
@@ -1069,6 +1083,11 @@ impl IntelGm965 {
             && self.igd().read16(0) != 0xffff
     }
 
+    fn igd_matches_platform(&self) -> bool {
+        let igd = self.igd();
+        gm965_igd_id_matches(igd.read16(0), igd.read16(2))
+    }
+
     /// Program the hardware GTT base register.
     ///
     /// Crestline keeps the GTT page table at the top of stolen memory
@@ -1094,6 +1113,14 @@ impl IntelGm965 {
             return;
         };
         let igd = self.igd();
+        if !self.igd_matches_platform() {
+            fstart_log::error!(
+                "intel-gm965: unexpected IGD {:04x}:{:04x}, skipping display",
+                igd.read16(0),
+                igd.read16(2)
+            );
+            return;
+        }
         let stolen_base = self.igd_stolen_base();
         let addresses = super::igd::IgdAddresses {
             pci_bdf: PciAddress::new(0, 0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC),
@@ -1952,5 +1979,23 @@ mod acpi_impl {
             mcfg.to_aml_bytes(&mut bytes);
             alloc::vec![bytes]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn igd_id_matches_coreboot_gma_table() {
+        // Mobile GM965/GL960 primary graphics function.
+        assert!(gm965_igd_id_matches(0x8086, 0x2a02));
+        // Sibling display controller, wrong vendor, and other Intel
+        // graphics (i945/Pineview) never match Crestline.
+        assert!(!gm965_igd_id_matches(0x8086, 0x2a03));
+        assert!(!gm965_igd_id_matches(0x10de, 0x2a02));
+        assert!(!gm965_igd_id_matches(0x8086, 0x2772));
+        assert!(!gm965_igd_id_matches(0x8086, 0xa001));
+        assert!(!gm965_igd_id_matches(0xffff, 0xffff));
     }
 }
