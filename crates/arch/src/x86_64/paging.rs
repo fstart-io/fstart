@@ -20,14 +20,6 @@ use x86_64_crate::structures::paging::{PageTable, PageTableFlags};
 /// Pages are present and writable; leaf entries map 2 MiB directly.
 const TABLE_FLAGS: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
 const LEAF_FLAGS: PageTableFlags = TABLE_FLAGS.union(PageTableFlags::HUGE_PAGE);
-/// Write-through plus cache-disable selects PAT entry 3 (uncached).
-const MMIO_FLAGS: PageTableFlags = LEAF_FLAGS
-    .union(PageTableFlags::WRITE_THROUGH)
-    .union(PageTableFlags::NO_CACHE);
-
-/// First address that is MMIO rather than RAM on this platform: GMADR and the
-/// display BAR sit at 0x8000_0000 and everything above is MMIO/flash/APIC.
-const MMIO_START: u64 = 0x8000_0000;
 
 /// Build identity tables for the low 4 GiB at `tables_phys`.
 ///
@@ -57,14 +49,10 @@ pub unsafe fn build_identity_tables(tables_phys: u64) -> u64 {
         pdpt[i as usize].set_addr(PhysAddr::new(pd_phys), TABLE_FLAGS);
         for j in 0..512u64 {
             let addr = i * (1 << 30) + j * (1 << 21);
-            // The display MMIO lives above MMIO_START; mapping it write-back
-            // makes the DPLL/PIPECONF writes vanish into the cache.
-            let flags = if addr >= MMIO_START {
-                MMIO_FLAGS
-            } else {
-                LEAF_FLAGS
-            };
-            pd[j as usize].set_addr(PhysAddr::new(addr), flags);
+            // PTEs request write-back uniformly. Platform MTRRs remain the
+            // source of truth for RAM versus MMIO cacheability, so valid RAM
+            // above 2 GiB is not accidentally forced uncached here.
+            pd[j as usize].set_addr(PhysAddr::new(addr), LEAF_FLAGS);
         }
     }
     tables_phys
@@ -128,22 +116,15 @@ mod tests {
         let first = unsafe { base.add(1024).read_volatile() };
         assert_eq!(first, LEAF_FLAGS.bits());
         let last = unsafe { base.add(1024 + 2047).read_volatile() };
-        assert_eq!(
-            last,
-            0xffe0_0000 | MMIO_FLAGS.bits(),
-            "MMIO must be uncached"
-        );
-        // RAM stays write-back; the first MMIO leaf (0x8000_0000) is uncached.
-        assert_eq!(
-            unsafe { base.add(1024).read_volatile() }
-                & (PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE).bits(),
-            0
-        );
-        assert_eq!(
-            unsafe { base.add(1024 + 1024).read_volatile() }
-                & (PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE).bits(),
-            (PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE).bits()
-        );
+        assert_eq!(last, 0xffe0_0000 | LEAF_FLAGS.bits());
+        // Page tables do not duplicate platform cacheability policy.
+        for index in [0usize, 1024, 2047] {
+            assert_eq!(
+                unsafe { base.add(1024 + index).read_volatile() }
+                    & (PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE).bits(),
+                0
+            );
+        }
 
         // Every leaf must be a present 2 MiB page at its own address.
         for index in 0..2048u64 {

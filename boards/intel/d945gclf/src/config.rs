@@ -91,7 +91,6 @@ pub static D945GCLF_PLATFORM: I945Ich7Platform = I945Ich7Config::new()
     .hda(fstart_driver_intel::southbridge::hda::HdaConfig::new())
     .gpio_pins(d945gclf_gpio_pins())
     .gpe0_en(0x2000_0601)
-    .rtc_default_date(crate::mainboard::BIOS_RELEASE_DATE)
     .build();
 
 /// Intel TPS §3.2: 4-Mbit SPI flash, contiguous legacy mapping (no IFD).

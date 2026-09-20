@@ -18,8 +18,10 @@ pub const X86_LINUX_MANIFEST_ASSET: &str = "x86-linux-manifest";
 /// Family default: physical address at which the bzImage protected-mode
 /// payload is loaded when `--linux-kernel-load-addr` is omitted.
 pub const X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR: u64 = 0x1000_0000;
-/// Family default: physical address of the Linux boot-parameter zero page
-/// when `--linux-zero-page-addr` is omitted.
+/// Intel-family physical address of the Linux boot-parameter zero page.
+///
+/// This is fixed platform policy rather than a CLI override because the
+/// launcher writes an 8 KiB boot-parameter/command-line window here.
 pub const X86_LINUX_DEFAULT_ZERO_PAGE_ADDR: u64 = 0x0009_0000;
 /// Maximum accepted x86 Linux command-line length in bytes.
 ///

@@ -6,9 +6,9 @@
 //! `mainboard/emulation/qemu-q35/memmap.c`) and the ICH9 PM I/O block for
 //! [`IchSmi`] (`southbridge/intel/common/smi.c`).
 
-use fstart_arch::x86::cpu::intel::smm::{Gpe0Block, SmramControl};
+use fstart_arch::x86::cpu::intel::smm::SmramControl;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
-use fstart_driver_intel::southbridge::smi::IchSmi;
+use fstart_driver_intel::southbridge::smi::{ICH8_GPE0, IchSmi};
 
 use crate::q35::Q35HostBridge;
 
@@ -29,7 +29,7 @@ pub const Q35_PMBASE: u16 = 0x0600;
 
 /// SMI routing for the emulated ICH9: ICH8-style 64-bit GPE0 at 0x20.
 pub(crate) const fn ich9_smi() -> IchSmi {
-    IchSmi::new(Q35_PMBASE, Gpe0Block::ICH8)
+    IchSmi::new(Q35_PMBASE, ICH8_GPE0)
 }
 
 // ---------------------------------------------------------------------------

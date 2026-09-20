@@ -21,6 +21,11 @@ use fstart_intel_gma::pci::GmaResources;
 use fstart_intel_gma::types::{Cpu, PciAddress};
 #[cfg(feature = "display")]
 use fstart_intel_gma::{GmaInitConfig, GmaInitResult};
+use tock_registers::interfaces::Writeable;
+use tock_registers::registers::ReadWrite as MmioReadWrite;
+use tock_registers::{register_bitfields, register_structs};
+use zerocopy::byteorder::{LE, U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// `PGETBL_CTL`: physical base and flags of the GTT page table.
 pub const PGETBL_CTL: u32 = 0x02020;
@@ -28,6 +33,23 @@ pub const PGETBL_CTL: u32 = 0x02020;
 pub const GFX_FLSH_CNTL: u32 = 0x02170;
 /// `PGETBL_CTL` bit that enables GTT address translation.
 pub const PGETBL_ENABLED: u32 = 1;
+
+register_bitfields![u32,
+    PgetblCtl [
+        ENABLE OFFSET(0) NUMBITS(1) [],
+        TABLE_SIZE OFFSET(1) NUMBITS(1) []
+    ]
+];
+
+register_structs! {
+    IgdGttRegisters {
+        (0x0000 => _reserved0: [u8; 0x2020]),
+        (0x2020 => pgetbl_ctl: MmioReadWrite<u32, PgetblCtl::Register>),
+        (0x2024 => _reserved1: [u8; 0x2170 - 0x2024]),
+        (0x2170 => gfx_flush: MmioReadWrite<u32>),
+        (0x2174 => @END),
+    }
+}
 
 /// PCI vendor ID shared by every Intel IGD policy check in this crate.
 ///
@@ -179,16 +201,41 @@ const OPREGION_BRIGHTNESS_LEVELS: [u16; 11] = [
     0x0000, 0x0a19, 0x1433, 0x1e4c, 0x2866, 0x327f, 0x3c99, 0x46b2, 0x50cc, 0x5ae5, 0x64ff,
 ];
 
-fn write_u16(buffer: &mut [u8], offset: usize, value: u16) {
-    buffer[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct OpRegionHeader {
+    signature: [u8; 16],
+    size_kib: U32<LE>,
+    _reserved0: [u8; 2],
+    version: u8,
+    revision: u8,
+    _reserved1: [u8; 32],
+    vbios_version: [u8; 4],
+    _reserved2: [u8; 28],
+    supported_mailboxes: U32<LE>,
+    _reserved3: [u8; 164],
 }
 
-fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
-    buffer[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct OpRegionMailbox1 {
+    _reserved0: [u8; 172],
+    driver_ready: U32<LE>,
+    _reserved1: [u8; 80],
 }
 
-fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
-    buffer[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct OpRegionMailbox3 {
+    _reserved0: [u8; 16],
+    supported_events: U32<LE>,
+    requested_brightness: U32<LE>,
+    current_brightness: U32<LE>,
+    brightness_levels: [U16<LE>; 11],
+    _reserved1: [u8; 136],
+    vbt_address: U64<LE>,
+    vbt_size: U32<LE>,
+    _reserved2: [u8; 58],
 }
 
 /// Fill the OpRegion body that the OS reads after it is published via ASLS.
@@ -201,23 +248,41 @@ fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
 pub fn build_opregion(buffer: &mut [u8], vbt: &[u8]) {
     let size = opregion_size(vbt.len());
     buffer[..size].fill(0);
-    buffer[0..16].copy_from_slice(b"IntelGraphicsMem");
-    write_u32(buffer, 16, (OPREGION_BASE_SIZE / 1024) as u32);
-    buffer[22] = 1;
-    buffer[23] = 2;
-    if vbt.len() >= VBT_BIOS_BUILD_OFFSET + VBT_BIOS_BUILD_SIZE {
-        // Video BIOS build stamp, which the OS reports in its OpRegion dump.
-        let build = &vbt[VBT_BIOS_BUILD_OFFSET..VBT_BIOS_BUILD_OFFSET + VBT_BIOS_BUILD_SIZE];
-        buffer[56..60].copy_from_slice(build);
+    {
+        let header = OpRegionHeader::mut_from_bytes(&mut buffer[..0x100])
+            .expect("OpRegion header has its wire size");
+        header.signature = *b"IntelGraphicsMem";
+        header.size_kib.set((OPREGION_BASE_SIZE / 1024) as u32);
+        header.version = 1;
+        header.revision = 2;
+        if vbt.len() >= VBT_BIOS_BUILD_OFFSET + VBT_BIOS_BUILD_SIZE {
+            // Video BIOS build stamp, which the OS reports in its OpRegion dump.
+            header.vbios_version.copy_from_slice(
+                &vbt[VBT_BIOS_BUILD_OFFSET..VBT_BIOS_BUILD_OFFSET + VBT_BIOS_BUILD_SIZE],
+            );
+        }
+        // Supported mailboxes: ACPI, ASLE and the extended ASLE mailbox.
+        header
+            .supported_mailboxes
+            .set((1 << 0) | (1 << 2) | (1 << 3) | (1 << 4));
     }
-    // Supported mailboxes: ACPI, ASLE and the extended ASLE mailbox.
-    write_u32(buffer, 88, (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4));
-    write_u32(buffer, 0x100 + 172, 1);
-    write_u32(buffer, 0x300 + 16, 0xff);
-    write_u32(buffer, 0x300 + 20, (1 << 31) | 6);
-    write_u32(buffer, 0x300 + 24, (1 << 31) | 0x64);
-    for (index, level) in OPREGION_BRIGHTNESS_LEVELS.iter().copied().enumerate() {
-        write_u16(buffer, 0x300 + 28 + index * 2, 0x8000 | level);
+    OpRegionMailbox1::mut_from_bytes(&mut buffer[0x100..0x200])
+        .expect("OpRegion mailbox 1 has its wire size")
+        .driver_ready
+        .set(1);
+    {
+        let mailbox = OpRegionMailbox3::mut_from_bytes(&mut buffer[0x300..0x400])
+            .expect("OpRegion mailbox 3 has its wire size");
+        mailbox.supported_events.set(0xff);
+        mailbox.requested_brightness.set((1 << 31) | 6);
+        mailbox.current_brightness.set((1 << 31) | 0x64);
+        for (entry, level) in mailbox
+            .brightness_levels
+            .iter_mut()
+            .zip(OPREGION_BRIGHTNESS_LEVELS)
+        {
+            entry.set(0x8000 | level);
+        }
     }
 
     if vbt.len() <= OPREGION_VBT_INLINE_SIZE {
@@ -229,16 +294,25 @@ pub fn build_opregion(buffer: &mut [u8], vbt: &[u8]) {
     // Larger VBTs live in the extension area just past the base region, which
     // mailbox 3 points at with a base-relative address.
     buffer[OPREGION_VBT_EXT_OFFSET..OPREGION_VBT_EXT_OFFSET + vbt.len()].copy_from_slice(vbt);
-    write_u64(buffer, 0x300 + 186, OPREGION_BASE_SIZE as u64);
-    write_u32(buffer, 0x300 + 194, vbt.len().div_ceil(512) as u32 * 512);
+    let mailbox = OpRegionMailbox3::mut_from_bytes(&mut buffer[0x300..0x400])
+        .expect("OpRegion mailbox 3 has its wire size");
+    mailbox.vbt_address.set(OPREGION_BASE_SIZE as u64);
+    mailbox.vbt_size.set(vbt.len().div_ceil(512) as u32 * 512);
 }
 
 /// VBT signature, `$VBT`.
 pub const VBT_SIGNATURE: u32 = 0x5442_5624;
-/// Offset of the total VBT length in the VBT header.
-const VBT_LENGTH_OFFSET: usize = 24;
-/// Minimum header length needed to read the VBT length.
-const VBT_MIN_LEN: usize = 28;
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct VbtHeaderPrefix {
+    signature: [u8; 20],
+    version: U16<LE>,
+    header_size: U16<LE>,
+    size: U16<LE>,
+    checksum: u8,
+    _reserved: u8,
+    bdb_offset: U32<LE>,
+}
 /// Legacy option-ROM window probed when no VBT is staged.
 const LEGACY_VBT_WINDOW: usize = 128 * 1024;
 /// Scan stride through the legacy window.
@@ -288,13 +362,11 @@ pub type Vbt = alloc::borrow::Cow<'static, [u8]>;
 /// Validate a VBT header and return its declared length.
 #[must_use]
 pub fn vbt_len(bytes: &[u8]) -> Option<usize> {
-    if bytes.len() < VBT_MIN_LEN
-        || u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != VBT_SIGNATURE
-    {
+    let (header, _) = VbtHeaderPrefix::ref_from_prefix(bytes).ok()?;
+    if !header.signature.starts_with(&VBT_SIGNATURE.to_le_bytes()) {
         return None;
     }
-    let size =
-        u16::from_le_bytes([bytes[VBT_LENGTH_OFFSET], bytes[VBT_LENGTH_OFFSET + 1]]) as usize;
+    let size = usize::from(header.size.get());
     (size != 0 && size <= bytes.len()).then_some(size)
 }
 
@@ -467,9 +539,13 @@ pub fn mmio_write32(gtt_mmio: u64, offset: u32, value: u32) {
 /// resolve framebuffer addresses until the enable bit is set. `flags` carries
 /// the per-generation GTT size encoding.
 pub fn program_gtt_base(gtt_mmio_base: u64, gtt_base: u32, flags: u32) {
-    mmio_write32(gtt_mmio_base, GFX_FLSH_CNTL, 0);
-    mmio_write32(gtt_mmio_base, PGETBL_CTL, gtt_base | flags);
-    mmio_write32(gtt_mmio_base, GFX_FLSH_CNTL, 0);
+    // SAFETY: GTTMMADR was assigned by PCI enumeration and memory decoding is
+    // enabled before display setup. The typed view covers only documented
+    // registers inside that BAR.
+    let registers = unsafe { &*(gtt_mmio_base as *const IgdGttRegisters) };
+    registers.gfx_flush.set(0);
+    registers.pgetbl_ctl.set(gtt_base | flags);
+    registers.gfx_flush.set(0);
 }
 
 /// Clear a GTT page-table aperture through its MMIO-visible window.
@@ -581,5 +657,43 @@ impl IgdDisplay {
 impl Framebuffer for IgdDisplay {
     fn info(&self) -> FramebufferInfo {
         self.info.unwrap_or(NO_FRAMEBUFFER)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_opregion_layout_matches_the_wire_offsets() {
+        let mut vbt = alloc::vec![0u8; OPREGION_VBT_INLINE_SIZE + 1];
+        vbt[VBT_BIOS_BUILD_OFFSET..VBT_BIOS_BUILD_OFFSET + VBT_BIOS_BUILD_SIZE]
+            .copy_from_slice(b"TEST");
+        let mut opregion = alloc::vec![0u8; opregion_size(vbt.len())];
+        build_opregion(&mut opregion, &vbt);
+
+        let header = OpRegionHeader::ref_from_bytes(&opregion[..0x100]).unwrap();
+        assert_eq!(&header.signature, b"IntelGraphicsMem");
+        assert_eq!(header.size_kib.get(), 8);
+        assert_eq!(&header.vbios_version, b"TEST");
+        assert_eq!(header.supported_mailboxes.get(), 0x1d);
+
+        let mailbox = OpRegionMailbox3::ref_from_bytes(&opregion[0x300..0x400]).unwrap();
+        assert_eq!(mailbox.vbt_address.get(), OPREGION_BASE_SIZE as u64);
+        assert_eq!(mailbox.vbt_size.get(), 6656);
+        assert_eq!(
+            &opregion[OPREGION_VBT_EXT_OFFSET..OPREGION_VBT_EXT_OFFSET + vbt.len()],
+            vbt.as_slice()
+        );
+    }
+
+    #[test]
+    fn typed_vbt_prefix_validates_signature_and_length() {
+        let mut bytes = [0u8; 32];
+        bytes[..4].copy_from_slice(&VBT_SIGNATURE.to_le_bytes());
+        bytes[24..26].copy_from_slice(&32u16.to_le_bytes());
+        assert_eq!(vbt_len(&bytes), Some(32));
+        bytes[24..26].copy_from_slice(&33u16.to_le_bytes());
+        assert_eq!(vbt_len(&bytes), None);
     }
 }

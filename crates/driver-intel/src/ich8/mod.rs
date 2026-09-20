@@ -794,7 +794,7 @@ pub struct IntelIch8Config {
     /// The driver programs `DxxIP`/`DxxIR` from this and generates the ACPI
     /// tables from it, so the GSIs an OS derives are the ones the router
     /// delivers on.
-    pub pirq: fstart_pci::pirq::PirqRouting,
+    pub pirq: crate::southbridge::pirq::PirqRouting,
     /// Northbridge DMIBAR base address, used as the RCBA upstream RCRB target.
     pub dmibar: u64,
     /// PIRQ routing (A..H) for PIC mode.
@@ -831,8 +831,6 @@ pub struct IntelIch8Config {
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     /// SMBus I/O base.
     pub smbus_base: u16,
-    /// Date written into the RTC when it lost power (MM/DD/YYYY).
-    pub rtc_default_date: &'static str,
     /// GPIO pad configuration.
     pub gpio: GpioConfig,
     /// ACPI device name (reserved for future ACPI device generation).
@@ -856,7 +854,7 @@ impl IntelIch8Config {
     pub const fn new() -> Self {
         Self {
             rcba: 0xFED1_C000,
-            pirq: fstart_pci::pirq::ICH8_ROUTING,
+            pirq: crate::southbridge::pirq::ICH8_ROUTING,
             dmibar: 0xFED1_8000,
             pirq_routing: [0x0b; 8],
             gpe0_en: 0,
@@ -875,7 +873,6 @@ impl IntelIch8Config {
             pcie_power_limits: [PciePowerLimit { value: 0, scale: 0 }; 6],
             io_traps: ConstVec::new(empty_io_trap()),
             smbus_base: ich8::DEFAULT_SMBUS_BASE,
-            rtc_default_date: "01/01/2000",
             gpio: GpioConfig::new(),
             acpi_name: Some("LPCB"),
             c3_latency: 85,
@@ -1105,10 +1102,7 @@ impl IntelIch8 {
     /// SMI routing view of this southbridge for SMM installation.
     #[must_use]
     pub const fn smi(&self) -> crate::southbridge::smi::IchSmi {
-        crate::southbridge::smi::IchSmi::new(
-            self.pm.base(),
-            crate::southbridge::smi::Gpe0Block::ICH8,
-        )
+        crate::southbridge::smi::IchSmi::new(self.pm.base(), crate::southbridge::smi::ICH8_GPE0)
     }
 
     fn enable_spi_prefetching_and_caching(&self) {
@@ -1389,8 +1383,8 @@ impl IntelIch8 {
         let _ = rcba.regs().oic.get();
     }
 
-    /// Configure the CMOS clock, using `default_date` when it lost power.
-    pub fn rtc_init(&self, default_date: &str) {
+    /// Configure the CMOS clock, restoring the build date when it lost power.
+    pub fn rtc_init(&self) {
         // Sticky battery-dead flag, cleared here exactly like coreboot.
         let lpc = self.lpc_regs();
         let battery_dead = lpc.gen_pmcon_3.is_set(GEN_PMCON_3_REG::RTC_BATTERY_DEAD);
@@ -1399,7 +1393,7 @@ impl IntelIch8 {
                 .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
         }
 
-        crate::southbridge::rtc::init_clock("intel-ich8", battery_dead, default_date);
+        crate::southbridge::rtc::init_clock("intel-ich8", battery_dead);
     }
 
     fn ramstage_lpc_init(&self) {
@@ -1408,7 +1402,7 @@ impl IntelIch8 {
         self.lpc_regs().serirq_cntl.set(0xd0);
         self.configure_power_options();
         self.configure_cstates();
-        self.rtc_init(self.config.rtc_default_date);
+        self.rtc_init();
         self.isa_dma_init();
         self.i8259_init();
         self.enable_hpet();
@@ -2396,17 +2390,14 @@ mod acpi_impl {
                 legacy_devices: true,
                 sci_irq: SCI_IRQ,
                 pmbase: PMBASE,
+                gpe0_offset: GPE0_STS_ICH8,
+                gpe0_length: 16,
                 // The SMM image handles the APM command port the way coreboot's
                 // smihandler does: 0xe1 sets SCI_EN, 0x1e clears it.
                 acpi_smi: Some(fstart_core::acpi::AcpiSmiConfig {
                     smi_cmd: APM_CNT,
                     acpi_enable: APM_CNT_ACPI_ENABLE,
                     acpi_disable: APM_CNT_ACPI_DISABLE,
-                }),
-                // CF9 reset: RST_CPU | SYS_RST, implemented by system_reset().
-                reset: Some(fstart_acpi::platform::x86::ResetConfig {
-                    port: 0x0cf9,
-                    value: 0x06,
                 }),
             }
         }

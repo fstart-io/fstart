@@ -66,6 +66,7 @@ fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 heapless = { workspace = true }
+zerocopy = { workspace = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

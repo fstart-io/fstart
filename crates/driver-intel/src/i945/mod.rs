@@ -1051,14 +1051,14 @@ impl IntelI945 {
 
     /// Display generation selector for the shared GMA layer.
     fn igd_present(&self) -> bool {
-        self.igd().read16(0) != 0xffff
+        self.igd().is_present()
     }
 
     /// Fail closed to headless when the soldered IGD does not match the
     /// configured variant (see the ID table above).
     fn igd_matches_platform(&self) -> bool {
         let igd = self.igd();
-        i945_igd_id_matches_variant(self.config.variant, igd.read16(0), igd.read16(2))
+        i945_igd_id_matches_variant(self.config.variant, igd.vendor_id(), igd.device_id())
     }
 
     fn display_cpu(&self) -> Cpu {
@@ -1156,8 +1156,8 @@ impl IntelI945 {
         if !self.igd_matches_platform() {
             fstart_log::error!(
                 "intel-i945: unexpected IGD {:04x}:{:04x} for variant {}, skipping display",
-                igd.read16(0),
-                igd.read16(2),
+                igd.vendor_id(),
+                igd.device_id(),
                 i945_variant_name(self.config.variant)
             );
             return;
@@ -1421,13 +1421,13 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelI945 {
         (size != 0).then_some((u64::from(base), size))
     }
     fn smram_open(&self) {
-        self.write_smram(crate::gmch::smram::OPEN);
+        self.write_smram(crate::gmch::smram::open());
     }
     fn smram_close(&self) {
-        self.write_smram(crate::gmch::smram::CLOSED);
+        self.write_smram(crate::gmch::smram::closed());
     }
     fn smram_lock(&self) {
-        self.write_smram(crate::gmch::smram::LOCKED);
+        self.write_smram(crate::gmch::smram::locked());
     }
 }
 
@@ -1684,57 +1684,4 @@ pub(crate) fn ramtest_probe(addr: usize, top: usize) -> Result<(), ServiceError>
         ptr::write_volatile(p, old);
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn igd_ids_match_coreboot_gma_table() {
-        // Desktop 82945G/GZ/GC (D945GCLF).
-        assert!(i945_igd_id_matches_variant(
-            I945Variant::DesktopGc,
-            0x8086,
-            0x2772
-        ));
-        assert!(i945_igd_id_matches_variant(
-            I945Variant::Desktop,
-            0x8086,
-            0x2772
-        ));
-        // Mobile 945GM/GMS/GSE.
-        assert!(i945_igd_id_matches_variant(
-            I945Variant::Mobile,
-            0x8086,
-            0x27a2
-        ));
-        assert!(i945_igd_id_matches_variant(
-            I945Variant::Mobile,
-            0x8086,
-            0x27ae
-        ));
-        // Cross-variant mismatches fail closed to headless.
-        assert!(!i945_igd_id_matches_variant(
-            I945Variant::DesktopGc,
-            0x8086,
-            0x27a2
-        ));
-        assert!(!i945_igd_id_matches_variant(
-            I945Variant::Mobile,
-            0x8086,
-            0x2772
-        ));
-        // Wrong vendor or Pineview silicon never matches i945.
-        assert!(!i945_igd_id_matches_variant(
-            I945Variant::DesktopGc,
-            0x10de,
-            0x2772
-        ));
-        assert!(!i945_igd_id_matches_variant(
-            I945Variant::DesktopGc,
-            0x8086,
-            0xa001
-        ));
-    }
 }

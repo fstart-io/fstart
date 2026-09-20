@@ -73,7 +73,6 @@ pub static D41S_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
     .hda(d41s_hda_config())
     .gpio_pins(d41s_gpio_pins())
     .gpe0_en(0x0441)
-    .rtc_default_date(BIOS_RELEASE_DATE)
     .build();
 
 /// 16-MiB (128-Mbit) SPI flash, contiguous legacy mapping (no IFD).
@@ -97,14 +96,12 @@ pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
 
-
 pub const fn d41s_igd_config() -> PineviewIgdConfig {
     PineviewIgdConfig {
         use_crt: true,
-        use_lvds: false,
-        stolen_memory_mb: 8,
         vbt: VbtSource::ffs(D41S_VBT),
         display: Some(D41S_DISPLAY),
+        ..PineviewIgdConfig::new()
     }
 }
 
@@ -267,8 +264,3 @@ pub fn d41s_ck505_config() -> I2cCk505Config {
         regs: hvec([0x00, 0x80, 0xfe, 0xff, 0xfc]),
     }
 }
-
-const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
-    Some(date) => date,
-    None => "04/15/2026",
-};

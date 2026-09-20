@@ -23,8 +23,8 @@ use tock_registers::register_structs;
 // Bitfield definitions
 // ===================================================================
 
-register_bitfields! [u32,
-    /// GGC — GMCH Graphics Control (PCI config 0x52, 16-bit).
+register_bitfields! [u16,
+    /// GGC — GMCH Graphics Control (PCI config 0x52).
     pub GGC_REG [
         /// VGA Disable.
         VGADIS OFFSET(1) NUMBITS(1) [],
@@ -32,7 +32,20 @@ register_bitfields! [u32,
         GMS OFFSET(4) NUMBITS(4) [],
         /// GGMS — GTT Graphics Memory Size.
         GGMS OFFSET(8) NUMBITS(2) []
-    ],
+    ]
+];
+
+register_bitfields! [u8,
+    /// DEVEN — host-bridge device enables (PCI config 0x54).
+    pub DEVEN_REG [
+        D0F0 OFFSET(0) NUMBITS(1) [],
+        D1F0 OFFSET(1) NUMBITS(1) [],
+        D2F0 OFFSET(3) NUMBITS(1) [],
+        D2F1 OFFSET(4) NUMBITS(1) []
+    ]
+];
+
+register_bitfields! [u32,
     /// MCH_GCFGC — Graphics Clock Frequency & Gating Control (MCHBAR+0xC8C).
     pub MCH_GCFGC_REG [
         /// Core render clock frequency.
@@ -173,11 +186,6 @@ pub mod hostbridge {
     pub const GGC: u16 = 0x52;
     /// Device Enable register.
     pub const DEVEN: u16 = 0x54;
-    pub const DEVEN_D0F0: u8 = 1 << 0;
-    pub const DEVEN_D1F0: u8 = 1 << 1;
-    pub const DEVEN_D2F0: u8 = 1 << 3;
-    pub const DEVEN_D2F1: u8 = 1 << 4;
-    pub const BOARD_DEVEN: u8 = DEVEN_D0F0 | DEVEN_D2F0 | DEVEN_D2F1;
     /// PCIe base address register (PCIEXBAR / ECAM).
     pub const PCIEXBAR: u16 = 0x60;
     /// DMI base address register.

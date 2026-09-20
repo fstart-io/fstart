@@ -15,7 +15,7 @@ const REAL_MODE_LIMIT: u32 = 0x10_0000;
 const RSDP_LEN: usize = 36;
 
 /// Scan 16-byte-aligned candidates in `[lo, hi)` for a valid RSDP.
-fn scan_rsdp(read: &impl Fn(u64, &mut [u8]), lo: u64, hi: u64) -> Option<u64> {
+fn scan_rsdp(read: &impl Fn(u64, &mut [u8]) -> bool, lo: u64, hi: u64) -> Option<u64> {
     (lo..hi)
         .step_by(16)
         .find(|addr| crate::wake::rsdp_is_valid_with(read, *addr))
@@ -29,11 +29,13 @@ fn scan_rsdp(read: &impl Fn(u64, &mut [u8]), lo: u64, hi: u64) -> Option<u64> {
 ///
 /// Returns the 16-bit real-mode wake vector, or `None` when no valid chain
 /// exists (caller then falls back to a clean cold boot).
-pub fn find_wakeup_vector_with(read: impl Fn(u64, &mut [u8])) -> Option<u32> {
+pub fn find_wakeup_vector_with(read: impl Fn(u64, &mut [u8]) -> bool) -> Option<u32> {
     // ACPI scan order: first KiB of the EBDA (from the BDA), then the legacy
     // BIOS window. The EBDA survives S3 (conventional memory, OS-reserved).
     let mut bda = [0u8; 2];
-    read(BDA_EBDA_SEG_PTR, &mut bda);
+    if !read(BDA_EBDA_SEG_PTR, &mut bda) {
+        return None;
+    }
     let ebda = u64::from(u16::from_le_bytes(bda)) << 4;
     let rsdp_addr = if (0x8_0000..0xA_0000).contains(&ebda) {
         scan_rsdp(&read, ebda, ebda + 0x400).or_else(|| scan_rsdp(&read, SCAN_LO, SCAN_HI))
@@ -44,18 +46,26 @@ pub fn find_wakeup_vector_with(read: impl Fn(u64, &mut [u8])) -> Option<u32> {
         .filter(|vector| *vector < REAL_MODE_LIMIT)
 }
 
-/// Firmware entry: read the surviving tables through the identity map.
+/// Firmware entry: read surviving tables through the low-4-GiB identity map.
 ///
-/// # Safety
-/// Requires the identity-mapped page tables the x86 stages run with, and
-/// that low memory (BDA/EBDA) plus the ACPI table region are readable.
+/// `readable` must approve only physical-memory spans that firmware may read;
+/// rejected or overflowing table pointers make the walk fail closed.
 #[cfg(target_arch = "x86_64")]
-pub fn find_wakeup_vector() -> Option<u32> {
+pub fn find_wakeup_vector(readable: impl Fn(u64, usize) -> bool) -> Option<u32> {
     find_wakeup_vector_with(|addr, buf| {
-        // SAFETY: the caller contract; RAM reads have no side effects.
-        unsafe {
-            core::ptr::copy_nonoverlapping(addr as usize as *const u8, buf.as_mut_ptr(), buf.len());
+        let Some(end) = addr.checked_add(buf.len() as u64) else {
+            return false;
+        };
+        if end > 0x1_0000_0000 || !readable(addr, buf.len()) {
+            return false;
         }
+        // SAFETY: the checked span lies inside the installed low-4-GiB
+        // identity map; `copy` also permits a corrupt source to overlap this
+        // stack buffer, and RAM reads have no side effects.
+        unsafe {
+            core::ptr::copy(addr as usize as *const u8, buf.as_mut_ptr(), buf.len());
+        }
+        true
     })
 }
 
@@ -89,7 +99,7 @@ mod tests {
             }
         }
 
-        fn reader(&self) -> impl Fn(u64, &mut [u8]) + '_ {
+        fn reader(&self) -> impl Fn(u64, &mut [u8]) -> bool + '_ {
             |addr, buf| {
                 for (i, byte) in buf.iter_mut().enumerate() {
                     let a = addr + i as u64;
@@ -98,6 +108,7 @@ mod tests {
                         .get(&(a & !0xFFF))
                         .map_or(0, |p| p[(a & 0xFFF) as usize]);
                 }
+                true
             }
         }
     }
@@ -105,6 +116,12 @@ mod tests {
     fn fix_checksum(bytes: &mut [u8]) {
         let sum = bytes.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
         bytes[8] = bytes[8].wrapping_sub(sum);
+    }
+
+    fn fix_sdt_checksum(bytes: &mut [u8]) {
+        bytes[9] = 0;
+        let sum = bytes.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+        bytes[9] = 0u8.wrapping_sub(sum);
     }
 
     fn rsdp(xsdt: u64) -> Vec<u8> {
@@ -132,6 +149,7 @@ mod tests {
             b[XSDT_ENTRY_OFF + i * 8..XSDT_ENTRY_OFF + i * 8 + 8]
                 .copy_from_slice(&entry.to_le_bytes());
         }
+        fix_sdt_checksum(&mut b);
         b
     }
 
@@ -141,6 +159,7 @@ mod tests {
         b[4..8].copy_from_slice(&(FADT_LEN as u32).to_le_bytes());
         b[FADT_X_FIRMWARE_CTL_OFF..FADT_X_FIRMWARE_CTL_OFF + 8]
             .copy_from_slice(&facs.to_le_bytes());
+        fix_sdt_checksum(&mut b);
         b
     }
 
@@ -148,6 +167,7 @@ mod tests {
     fn fadt_legacy(facs: u32) -> Vec<u8> {
         let mut b = fadt(0);
         b[FADT_FIRMWARE_CTRL_OFF..FADT_FIRMWARE_CTRL_OFF + 4].copy_from_slice(&facs.to_le_bytes());
+        fix_sdt_checksum(&mut b);
         b
     }
 
@@ -188,11 +208,10 @@ mod tests {
     #[test]
     fn ignores_dsdt_pointer() {
         let mut mem = valid_mem();
-        mem.write(0x2_0000, &fadt(0x3_0000));
-        mem.write(
-            0x2_0000u64 + (FADT_LEN - 8) as u64,
-            &0x3_0000u64.to_le_bytes(),
-        );
+        let mut table = fadt(0x3_0000);
+        table[FADT_LEN - 8..].copy_from_slice(&0x3_0000u64.to_le_bytes());
+        fix_sdt_checksum(&mut table);
+        mem.write(0x2_0000, &table);
         assert_eq!(find_wakeup_vector_with(mem.reader()), Some(0x8000));
     }
 
@@ -213,6 +232,31 @@ mod tests {
         bad[9] ^= 0xFF; // corrupt OEMID without fixing checksums
         mem.write(0x9F000, &bad);
         mem.write(0x40E, &0u16.to_le_bytes());
+        assert_eq!(find_wakeup_vector_with(mem.reader()), None);
+    }
+
+    #[test]
+    fn rejects_unreadable_table_spans() {
+        let mem = valid_mem();
+        let reader = mem.reader();
+        assert_eq!(
+            find_wakeup_vector_with(|addr, buf| addr != 0x1_0000 && reader(addr, buf)),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_corrupt_sdt_checksums() {
+        let mut mem = valid_mem();
+        let mut table = xsdt(&[0x2_0000]);
+        table[10] ^= 0xff;
+        mem.write(0x1_0000, &table);
+        assert_eq!(find_wakeup_vector_with(mem.reader()), None);
+
+        let mut mem = valid_mem();
+        let mut table = fadt(0x3_0000);
+        table[10] ^= 0xff;
+        mem.write(0x2_0000, &table);
         assert_eq!(find_wakeup_vector_with(mem.reader()), None);
     }
 

@@ -582,7 +582,7 @@ where
             MemoryRegion {
                 base: acpi_base,
                 size: 0x10000,
-                region_type: MemoryType::AcpiReclaimable,
+                region_type: MemoryType::AcpiNvs,
             },
         ];
 

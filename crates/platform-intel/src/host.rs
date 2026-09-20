@@ -38,7 +38,6 @@ pub fn compilation_plan(
     use fstart_image_build::build_plan::{
         ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, InputFile, UnitOutput,
     };
-    use std::collections::BTreeMap;
     plan.validate()?;
     let flags = |value: &str| {
         value
@@ -66,7 +65,7 @@ pub fn compilation_plan(
             // it in line with every other firmware unit in the tree.
             "-Cpanic=abort -Copt-level=s -Crelocation-model=static -Cno-redzone=yes -Clinker-plugin-lto=no -Cembed-bitcode=no -Zfunction-sections=yes",
         ),
-        environment_values: BTreeMap::new(),
+        environment_values: std::collections::BTreeMap::new(),
         bindings: vec![],
         output: UnitOutput::SmmImage {
             entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
@@ -101,7 +100,7 @@ pub fn compilation_plan(
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
             rustflags: flags("-Zub-checks=no -Crelocation-model=static -Ccode-model=large --cfg curve25519_dalek_backend=\"serial\""),
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true)?),
-            environment_values: BTreeMap::new(),
+            environment_values: std::collections::BTreeMap::new(),
             bindings,
             output: UnitOutput::Executable {
                 expectations: plan.reservations.elf_expectations(row.role)?, load_address: reservation.image.base,
@@ -189,7 +188,11 @@ pub fn resolve(
     facts: BoardFacts,
     selection: BuildSelection,
 ) -> Result<IntelPlan, std::string::String> {
-    let requested_payload = selection.payload.unwrap_or_else(|| "halt".into());
+    let has_x86_linux_overrides = selection.has_x86_linux_overrides();
+    let requested_payload = selection.payload.clone().unwrap_or_else(|| "halt".into());
+    if has_x86_linux_overrides && requested_payload != "linux" {
+        return Err("x86 Linux options require '--payload linux'".into());
+    }
     let x86_linux_bootargs = selection.x86_linux_bootargs.unwrap_or_default();
     if !matches!(
         requested_payload.as_str(),
@@ -251,9 +254,7 @@ pub fn resolve(
                 selection
                     .x86_linux_kernel_load_addr
                     .unwrap_or(fstart_core::payload_manifest::X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
-                selection
-                    .x86_linux_zero_page_addr
-                    .unwrap_or(fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR),
+                fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                 &x86_linux_bootargs,
                 selection.x86_linux_print_mtrrs,
             )
@@ -343,9 +344,9 @@ mod tests {
             BuildSelection {
                 payload: Some("linux".into()),
                 x86_linux_kernel_load_addr: Some(0x0200_0000),
-                x86_linux_zero_page_addr: Some(0x0009_0000),
                 x86_linux_bootargs: Some("console=ttyS0".into()),
                 x86_linux_print_mtrrs: true,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -358,6 +359,18 @@ mod tests {
         assert_eq!(payload.x86_zero_page_addr, Some(0x0009_0000));
         assert_eq!(payload.bootargs.as_deref(), Some("console=ttyS0"));
         assert!(payload.print_x86_mtrrs);
+    }
+
+    #[test]
+    fn x86_linux_options_require_the_linux_payload() {
+        let selection = BuildSelection {
+            x86_linux_bootargs: Some("console=ttyS0".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve(FACTS, selection).unwrap_err(),
+            "x86 Linux options require '--payload linux'"
+        );
     }
 
     #[test]

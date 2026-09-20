@@ -90,7 +90,25 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     // BS_OS_RESUME_CHECK before BS_WRITE_TABLES for the same reason).
     #[cfg(feature = "acpi")]
     let wake_vector = if resume {
-        fstart_acpi::platform::x86::wake::find_wakeup_vector()
+        fstart_acpi::platform::x86::wake::find_wakeup_vector(|addr, size| {
+            let Some(end) = addr.checked_add(size as u64) else {
+                return false;
+            };
+            // BDA, EBDA and the legacy BIOS scan window are below 1 MiB.
+            // Every table pointer above that must stay inside a chipset-
+            // reported physical-memory span, never an unlisted MMIO hole.
+            end <= 0x10_0000
+                || mainstage.ctx.e820().iter().any(|entry| {
+                    entry.size != 0
+                        && entry.kind
+                            != fstart_core::services::memory_detect::E820Kind::Unusable as u32
+                        && addr >= entry.addr
+                        && entry
+                            .addr
+                            .checked_add(entry.size)
+                            .is_some_and(|entry_end| end <= entry_end)
+                })
+        })
     } else {
         None
     };

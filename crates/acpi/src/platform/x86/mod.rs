@@ -52,26 +52,18 @@ pub struct X86Config {
     pub sci_irq: u8,
     /// PMBASE I/O port base (chipset-specific, e.g. 0x500 for ICH7).
     ///
-    /// Used to derive PM1a_EVT_BLK, PM1a_CNT_BLK, PM_TMR_BLK,
-    /// and GPE0_BLK addresses in the FADT.
+    /// Used to derive PM1a_EVT_BLK, PM1a_CNT_BLK, and PM_TMR_BLK addresses
+    /// in the FADT.
     pub pmbase: u16,
+    /// Offset of the chipset's GPE0 status block from PMBASE.
+    pub gpe0_offset: u16,
+    /// Total GPE0 status-plus-enable block length in bytes.
+    pub gpe0_length: u8,
     /// Optional SMI command port and ACPI enable/disable values.
     ///
     /// Leave as `None` unless the platform has installed an SMI handler
     /// that handles those commands.
     pub acpi_smi: Option<AcpiSmiConfig>,
-    /// Optional reset register (I/O port and value) for platforms with a
-    /// CF9-style reset the OS may drive itself.
-    pub reset: Option<ResetConfig>,
-}
-
-/// ACPI reset register for a platform that implements one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResetConfig {
-    /// I/O port the OS writes to reset the platform.
-    pub port: u16,
-    /// Value that triggers the reset.
-    pub value: u8,
 }
 
 /// Runtime provider for chipset/platform-owned x86 ACPI topology.
@@ -164,15 +156,17 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         pm1a_evt_blk: pmbase,
         pm1a_cnt_blk: pmbase + 0x04,
         pm_tmr_blk: pmbase + 0x08,
-        gpe0_blk: pmbase + 0x28,
+        gpe0_blk: pmbase + u32::from(config.gpe0_offset),
+        gpe0_blk_len: config.gpe0_length,
         sci_int: config.sci_irq as u16,
         iapc_boot_arch: iapc,
         smi_cmd,
         acpi_enable,
         acpi_disable,
-        reset_reg: config
-            .reset
-            .map(|reset| (u32::from(reset.port), reset.value)),
+        // CF9 is the common PC reset register. Platforms needing a different
+        // mechanism should override table construction rather than duplicating
+        // this hardware constant in every chipset configuration.
+        reset_reg: Some((0x0cf9, 0x06)),
     };
 
     (platform_tables, fadt_config)
@@ -310,8 +304,9 @@ mod tests {
             legacy_devices: true,
             sci_irq: 9,
             pmbase: 0x0500,
+            gpe0_offset: 0x28,
+            gpe0_length: 8,
             acpi_smi: None,
-            reset: None,
         }
     }
 
@@ -374,6 +369,18 @@ mod tests {
         // x86 should not be HW-reduced
         assert!(!fadt_cfg.hw_reduced);
         assert!(!fadt_cfg.arm_psci);
+        assert_eq!(fadt_cfg.gpe0_blk, 0x0528);
+        assert_eq!(fadt_cfg.gpe0_blk_len, 8);
+    }
+
+    #[test]
+    fn gpe0_geometry_is_chipset_provided() {
+        let mut config = test_config();
+        config.gpe0_offset = 0x20;
+        config.gpe0_length = 16;
+        let (_, fadt) = build_platform_tables(&config);
+        assert_eq!(fadt.gpe0_blk, 0x0520);
+        assert_eq!(fadt.gpe0_blk_len, 16);
     }
 
     #[test]

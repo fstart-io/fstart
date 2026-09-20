@@ -5,10 +5,17 @@
 
 #![no_std]
 
+/// SMBIOS Type 0 release date selected by fbuild, defaulting to the build date.
+pub const SMBIOS_RELEASE_DATE: &str = env!("FSTART_SMBIOS_DATE");
+
 #[cfg(any(feature = "stage", feature = "acpi", feature = "smbios"))]
 extern crate ufmt;
 
-#[cfg(any(feature = "acpi", feature = "smbios"))]
+#[cfg(any(feature = "host", feature = "acpi", feature = "smbios"))]
+#[cfg_attr(
+    all(feature = "host", not(any(feature = "acpi", feature = "smbios"))),
+    allow(dead_code)
+)]
 pub mod tables;
 
 pub mod facts;
@@ -36,7 +43,14 @@ pub mod pineview;
 /// Shared IGD display bring-up types used by board display policy.
 pub use fstart_driver_intel::igd;
 
-#[cfg(feature = "stage")]
+#[cfg(all(
+    feature = "stage",
+    any(
+        fstart_stage_env = "car",
+        fstart_stage_env = "postcar",
+        fstart_stage_env = "ram"
+    )
+))]
 mod boot;
 #[cfg(all(feature = "stage", fstart_stage_env = "car"))]
 mod bootblock;

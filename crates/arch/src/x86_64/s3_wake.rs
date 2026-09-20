@@ -10,6 +10,10 @@
 
 use core::arch::global_asm;
 
+/// Physical address the trampoline executes from. Clear of the IVT/BDA (below
+/// 0x500) and the SIPI page (0x8000); matches coreboot's `WAKEUP_BASE`.
+pub const WAKEUP_BASE: usize = 0x600;
+
 global_asm!(
     ".section .text.s3wake, \"ax\"",
     ".code64",
@@ -44,7 +48,7 @@ global_asm!(
     "andl $0xfffffeff, %eax",
     "wrmsr",
     // Into 16-bit protected mode (selector 0x18, limit 64 KiB, base 0).
-    "ljmp $0x18, $(_s3wake_prot16 - _s3wake_blob_start + 0x600)",
+    "ljmp $0x18, $(_s3wake_prot16 - _s3wake_blob_start + {wakeup_base})",
     ".code16",
     "_s3wake_prot16:",
     "mov $0x20, %ax",
@@ -59,7 +63,7 @@ global_asm!(
     "movl %eax, %cr0",
     // Far jump to load CS = 0 (ptr16:16).
     ".byte 0xea",
-    ".word (_s3wake_real - _s3wake_blob_start + 0x600)",
+    ".word (_s3wake_real - _s3wake_blob_start + {wakeup_base})",
     ".word 0x0000",
     "_s3wake_real:",
     "xorw %ax, %ax",
@@ -95,15 +99,12 @@ global_asm!(
     // 64-bit lgdt operand: 2-byte limit + 8-byte base.
     "_s3wake_gdt_desc:",
     ".word _s3wake_gdt_end - _s3wake_gdt - 1",
-    ".quad (_s3wake_gdt - _s3wake_blob_start + 0x600)",
+    ".quad (_s3wake_gdt - _s3wake_blob_start + {wakeup_base})",
     ".global _s3wake_blob_end",
     "_s3wake_blob_end:",
+    wakeup_base = const WAKEUP_BASE,
     options(att_syntax),
 );
-
-/// Physical address the trampoline executes from. Clear of the IVT/BDA (below
-/// 0x500) and the SIPI page (0x8000); matches coreboot's `WAKEUP_BASE`.
-pub const WAKEUP_BASE: usize = 0x600;
 
 unsafe extern "C" {
     static _s3wake_blob_start: u8;

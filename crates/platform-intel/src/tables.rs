@@ -49,10 +49,12 @@ fn allocate_x86_handoff_region(
     let mut selected = 0u64;
 
     for entry in e820.entries() {
-        if entry.kind != E820Kind::Ram as u32 || entry.size < size {
+        if entry.kind != E820Kind::Ram as u32 || entry.size < size || entry.addr >= 0x1_0000_0000 {
             continue;
         }
-        let top = entry.addr.saturating_add(entry.size);
+        // Postcar installs an identity map for the low 4 GiB only. Reclaimed
+        // RAM may exist above it, but firmware table buffers must remain mapped.
+        let top = entry.addr.saturating_add(entry.size).min(0x1_0000_0000);
         let base = top.saturating_sub(size) & !align_mask;
         if base >= entry.addr && base > selected {
             selected = base;
@@ -248,7 +250,9 @@ pub fn prepare_acpi(
     // (dozens of devices, IORT with many ID mappings). Increase if a
     // board exceeds this limit.
     const BUF_SIZE: usize = 128 * 1024;
-    let acpi_addr = allocate_x86_handoff_region(e820, BUF_SIZE, 0x1000, E820Kind::Acpi)
+    // FACS shares this contiguous allocation and must survive S3, so keep the
+    // complete table set in ACPI NVS rather than reclaimable ACPI memory.
+    let acpi_addr = allocate_x86_handoff_region(e820, BUF_SIZE, 0x1000, E820Kind::Nvs)
         .inspect(|addr| unsafe {
             core::ptr::write_bytes(*addr as *mut u8, 0, BUF_SIZE);
         })
@@ -296,16 +300,6 @@ pub fn prepare_acpi(
     Ok(acpi_addr)
 }
 
-#[cfg(feature = "smbios")]
-#[derive(Debug, Clone, Copy)]
-struct RuntimeCacheDesc {
-    designation: &'static str,
-    level: u8,
-    size_kb: u32,
-    associativity: u8,
-    cache_type: u8,
-}
-
 /// Resolve SMBIOS Type 4 counts from runtime CPU and MP state.
 #[cfg(feature = "smbios")]
 fn runtime_processor_counts() -> (u16, u16, u16) {
@@ -317,75 +311,42 @@ fn runtime_processor_counts() -> (u16, u16, u16) {
 
 #[cfg(feature = "smbios")]
 fn add_runtime_cache_info(w: &mut fstart_acpi::smbios::SmbiosWriter) -> (u16, u16, u16) {
-    let caches = runtime_x86_caches::<8>();
-    let mut l1 = 0xFFFFu16;
-    let mut l2 = 0xFFFFu16;
-    let mut l3 = 0xFFFFu16;
-    for cache in caches.iter().flatten() {
-        let handle = w.add_cache_info(
-            cache.designation,
-            cache.level,
-            cache.size_kb,
-            cache.associativity,
-            cache.cache_type,
-        );
-        match cache.level {
-            1 => l1 = handle,
-            2 => l2 = handle,
-            3 => l3 = handle,
-            _ => {}
-        }
-    }
-    (l1, l2, l3)
-}
-
-#[cfg(feature = "smbios")]
-fn runtime_x86_caches<const N: usize>() -> [Option<RuntimeCacheDesc>; N] {
-    let mut out = [None; N];
-    let (max_leaf, _, _, _) = fstart_arch::x86::cpuid(0);
-    if max_leaf < 4 {
-        return out;
-    }
-
-    let mut count = 0usize;
-    for idx in 0..N as u32 {
-        let (eax, ebx, ecx, _) = fstart_arch::x86::cpuid_count(4, idx);
-        let cache_type = (eax & 0x1f) as u8;
-        if cache_type == 0 {
-            break;
-        }
-
-        let level = ((eax >> 5) & 0x7) as u8;
-        let ways = ((ebx >> 22) & 0x3ff) + 1;
-        let partitions = ((ebx >> 12) & 0x3ff) + 1;
-        let line_size = (ebx & 0xfff) + 1;
-        let sets = ecx + 1;
-        let size_kb = ways
-            .saturating_mul(partitions)
-            .saturating_mul(line_size)
-            .saturating_mul(sets)
+    let mut handles = [0xFFFFu16; 3];
+    for cache in raw_cpuid::CpuId::new()
+        .get_cache_parameters()
+        .into_iter()
+        .flatten()
+    {
+        let level = cache.level();
+        let cache_type = cache.cache_type();
+        let size_kb = cache
+            .associativity()
+            .saturating_mul(cache.physical_line_partitions())
+            .saturating_mul(cache.coherency_line_size())
+            .saturating_mul(cache.sets())
             / 1024;
-
-        out[count] = Some(RuntimeCacheDesc {
-            designation: cache_designation(level, cache_type),
+        let handle = w.add_cache_info(
+            cache_designation(level, &cache_type),
             level,
-            size_kb,
-            associativity: smbios_associativity(ways),
-            cache_type: smbios_cache_type(cache_type),
-        });
-        count += 1;
-        if count == N {
-            break;
+            u32::try_from(size_kb).unwrap_or(u32::MAX),
+            smbios_associativity(cache.associativity(), cache.is_fully_associative()),
+            smbios_cache_type(&cache_type),
+        );
+        if let Some(slot) = level
+            .checked_sub(1)
+            .and_then(|level| handles.get_mut(level as usize))
+        {
+            *slot = handle;
         }
     }
-    out
+    (handles[0], handles[1], handles[2])
 }
 
 #[cfg(feature = "smbios")]
-fn cache_designation(level: u8, cache_type: u8) -> &'static str {
+fn cache_designation(level: u8, cache_type: &raw_cpuid::CacheType) -> &'static str {
     match (level, cache_type) {
-        (1, 1) => "L1 Data Cache",
-        (1, 2) => "L1 Instruction Cache",
+        (1, raw_cpuid::CacheType::Data) => "L1 Data Cache",
+        (1, raw_cpuid::CacheType::Instruction) => "L1 Instruction Cache",
         (1, _) => "L1 Cache",
         (2, _) => "L2 Cache",
         (3, _) => "L3 Cache",
@@ -393,30 +354,33 @@ fn cache_designation(level: u8, cache_type: u8) -> &'static str {
     }
 }
 
-#[cfg(feature = "smbios")]
-fn smbios_cache_type(cache_type: u8) -> u8 {
+#[cfg(any(feature = "smbios", feature = "host"))]
+fn smbios_cache_type(cache_type: &raw_cpuid::CacheType) -> u8 {
     match cache_type {
-        1 => 0x05, // Data
-        2 => 0x04, // Instruction
-        3 => 0x03, // Unified
-        _ => 0x02, // Unknown
+        raw_cpuid::CacheType::Instruction => 0x03,
+        raw_cpuid::CacheType::Data => 0x04,
+        raw_cpuid::CacheType::Unified => 0x05,
+        _ => 0x02,
     }
 }
 
-#[cfg(feature = "smbios")]
-fn smbios_associativity(ways: u32) -> u8 {
+#[cfg(any(feature = "smbios", feature = "host"))]
+fn smbios_associativity(ways: usize, fully_associative: bool) -> u8 {
+    if fully_associative {
+        return 0x06;
+    }
     match ways {
         1 => 0x03,
         2 => 0x04,
         4 => 0x05,
-        8 => 0x06,
-        16 => 0x07,
-        12 => 0x08,
-        24 => 0x09,
-        32 => 0x0a,
-        48 => 0x0b,
-        64 => 0x0c,
-        20 => 0x0d,
+        8 => 0x07,
+        16 => 0x08,
+        12 => 0x09,
+        24 => 0x0a,
+        32 => 0x0b,
+        48 => 0x0c,
+        64 => 0x0d,
+        20 => 0x0e,
         _ => 0x02,
     }
 }
@@ -430,7 +394,7 @@ fn smbios_associativity(ways: u32) -> u8 {
 /// Handles:
 /// - Type 0 (BIOS), Type 1 (System), Type 2 (Baseboard), Type 3 (Chassis)
 /// - Type 4 (Processor) with runtime Type 7 (Cache) detection when descriptors are empty
-/// - Type 16 (Physical Memory Array), Type 17 (Memory Device), Type 19 (Mapped Address)
+/// - Type 16 (Physical Memory Array); Type 17/19 wait for exact SPD/range data
 /// - Type 32 (System Boot) and Type 127 (End of Table)
 #[cfg(feature = "smbios")]
 pub fn prepare_smbios(
@@ -475,15 +439,12 @@ pub fn prepare_smbios(
         w.add_enclosure(desc.chassis_type, desc.chassis_manufacturer);
 
         // Type 4 + Type 7: board socket identity plus runtime CPU topology.
-        let (vendor_ebx, vendor_edx, vendor_ecx) = {
-            let (_, ebx, ecx, edx) = fstart_arch::x86::cpuid(0);
-            (ebx, edx, ecx)
-        };
-        let mut vendor_bytes = [0u8; 12];
-        vendor_bytes[..4].copy_from_slice(&vendor_ebx.to_le_bytes());
-        vendor_bytes[4..8].copy_from_slice(&vendor_edx.to_le_bytes());
-        vendor_bytes[8..].copy_from_slice(&vendor_ecx.to_le_bytes());
-        let vendor = core::str::from_utf8(&vendor_bytes).unwrap_or("Unknown");
+        let cpuid = raw_cpuid::CpuId::new();
+        let vendor_info = cpuid.get_vendor_info();
+        let vendor = vendor_info
+            .as_ref()
+            .map(raw_cpuid::VendorInfo::as_str)
+            .unwrap_or("Unknown");
         for socket in desc.processor_sockets {
             let (cores, enabled, threads) = runtime_processor_counts();
             let (l1, l2, l3) = add_runtime_cache_info(&mut *w);
@@ -496,12 +457,11 @@ pub fn prepare_smbios(
             }
         }
 
-        // Type 16/19: runtime-detected memory capacity and address range.
-        // Do not invent a Type 17 DIMM: per-device identity belongs to future
-        // SPD discovery, not board constants or a synthetic "System RAM" slot.
+        // Type 16: runtime-detected installed capacity. Do not invent Type 17
+        // DIMMs or a Type 19 physical range: e820 contains legacy/PCI holes and
+        // may include remapped RAM above 4 GiB, so `0..total_ram` is not a map.
         if total_ram != 0 {
             w.add_physical_memory_array(total_ram / 1024, 0);
-            w.add_memory_array_mapped_address(0, total_ram - 1, 1);
         }
 
         // Type 32 + Type 127
@@ -515,4 +475,38 @@ pub fn prepare_smbios(
         fstart_log::Hex(smbios_addr),
     );
     smbios_addr
+}
+
+#[cfg(all(test, feature = "host"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smbios_cache_types_follow_the_type7_enum() {
+        assert_eq!(smbios_cache_type(&raw_cpuid::CacheType::Instruction), 0x03);
+        assert_eq!(smbios_cache_type(&raw_cpuid::CacheType::Data), 0x04);
+        assert_eq!(smbios_cache_type(&raw_cpuid::CacheType::Unified), 0x05);
+        assert_eq!(smbios_cache_type(&raw_cpuid::CacheType::Reserved), 0x02);
+    }
+
+    #[test]
+    fn smbios_cache_associativity_follows_the_type7_enum() {
+        for (ways, encoded) in [
+            (1, 0x03),
+            (2, 0x04),
+            (4, 0x05),
+            (8, 0x07),
+            (16, 0x08),
+            (12, 0x09),
+            (24, 0x0a),
+            (32, 0x0b),
+            (48, 0x0c),
+            (64, 0x0d),
+            (20, 0x0e),
+        ] {
+            assert_eq!(smbios_associativity(ways, false), encoded);
+        }
+        assert_eq!(smbios_associativity(1, true), 0x06);
+        assert_eq!(smbios_associativity(3, false), 0x02);
+    }
 }

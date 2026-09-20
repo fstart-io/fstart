@@ -6,8 +6,8 @@ use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_intel::southbridge::hda;
 use fstart_driver_superio::pc87382;
 use fstart_driver_superio::pc87392;
-use fstart_intel_gma::framebuffer::{FramebufferConfig, Rotation, TilingMode};
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port, PreferredMode};
+use fstart_intel_gma::framebuffer::FramebufferConfig;
+use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::gm965::{
     Gm965Ich8Config, Gm965Ich8Platform, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig,
     LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode,
@@ -26,25 +26,11 @@ const X61_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
         port: Port::Lvds,
         enabled: true,
     }],
-    framebuffer: FramebufferConfig {
+    framebuffer: FramebufferConfig::vbt_panel(FallbackMode {
         width: 1024,
         height: 768,
-        bits_per_pixel: 32,
-        stride: None,
-        v_stride: None,
-        start_x: 0,
-        start_y: 0,
-        offset: 0,
-        tiling: TilingMode::Linear,
-        rotation: Rotation::None,
-        preferred_mode: PreferredMode::VbtPanel,
-        fallback_mode: Some(FallbackMode {
-            width: 1024,
-            height: 768,
-            refresh_hz: 60,
-        }),
-        scaling: fstart_intel_gma::ScalingPolicy::None,
-    },
+        refresh_hz: 60,
+    }),
 };
 
 /// Factory 4-MiB SPI image map, const-validated in the real board source.
@@ -127,7 +113,6 @@ pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
     ])
     .gpe0_en(0x0104_0046)
     .gpi_routing([0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0])
-    .rtc_default_date(crate::mainboard::BIOS_RELEASE_DATE)
     .ide(IdeConfig {
         enable_primary: true,
         enable_secondary: false,
@@ -166,7 +151,6 @@ pub const fn x61_igd_config() -> Gm965IgdConfig {
     Gm965IgdConfig {
         enable_vga: true,
         enable_pipe_b: true,
-        gmadr_size: 256 * 1024 * 1024,
         stolen_memory_mb: 32,
         vbt: VbtSource::ffs(X61_VBT),
         panel_power_up_delay: 2000,

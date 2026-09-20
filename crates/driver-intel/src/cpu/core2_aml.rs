@@ -175,14 +175,10 @@ fn hex_digit(n: u8) -> u8 {
 }
 
 fn append_device(out: &mut Vec<u8>, name: [u8; 4], body: &[u8]) {
-    let mut payload = Vec::new();
-    payload.extend_from_slice(&name);
-    payload.extend_from_slice(body);
-    out.extend_from_slice(&[0x5b, 0x82]);
-    let (length, width) = fstart_acpi::aml_linker::package_length(payload.len())
-        .expect("required CPU AML package exceeds length limit");
-    out.extend_from_slice(&length[..width]);
-    out.extend_from_slice(&payload);
+    let name = core::str::from_utf8(&name).expect("CPU AML names are ASCII");
+    let device = fstart_acpi::aml_linker::device_vec(name, body)
+        .expect("required CPU AML device exceeds length limit");
+    out.extend_from_slice(&device);
 }
 
 fn append_processor_package(out: &mut Vec<u8>, logical_cpus: usize) {

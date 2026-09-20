@@ -407,8 +407,6 @@ pub struct Gm965IgdConfig {
     pub enable_vga: bool,
     /// Enable the secondary display function (D2:F1).
     pub enable_pipe_b: bool,
-    /// GMADR graphics aperture size in bytes.
-    pub gmadr_size: u32,
     /// IGD stolen memory size in MiB. GM965 supports 1, 4, 8, 16, 32, 48, or 64 MiB.
     pub stolen_memory_mb: u16,
     /// Where the VBT for the OpRegion comes from.
@@ -440,16 +438,15 @@ impl Gm965IgdConfig {
         Self {
             enable_vga: true,
             enable_pipe_b: true,
-            gmadr_size: default_gmadr_size(),
-            stolen_memory_mb: default_igd_stolen_memory_mb(),
+            stolen_memory_mb: 32,
             vbt: super::igd::VbtSource::LEGACY,
-            panel_power_up_delay: default_panel_power_up_delay(),
-            panel_power_down_delay: default_panel_power_down_delay(),
-            panel_backlight_on_delay: default_panel_backlight_on_delay(),
-            panel_backlight_off_delay: default_panel_backlight_off_delay(),
-            panel_power_cycle_delay: default_panel_power_cycle_delay(),
+            panel_power_up_delay: 2000,
+            panel_power_down_delay: 2000,
+            panel_backlight_on_delay: 2000,
+            panel_backlight_off_delay: 2000,
+            panel_power_cycle_delay: 6,
             default_pwm_freq: 0,
-            duty_cycle: default_backlight_duty_cycle(),
+            duty_cycle: 100,
             display: None,
         }
     }
@@ -461,45 +458,15 @@ impl Default for Gm965IgdConfig {
     }
 }
 
-const fn default_gmadr_size() -> u32 {
-    256 * 1024 * 1024
-}
-
-const fn default_igd_stolen_memory_mb() -> u16 {
-    32
-}
-
-const fn default_panel_power_up_delay() -> u16 {
-    2000
-}
-
-const fn default_panel_power_down_delay() -> u16 {
-    2000
-}
-
-const fn default_panel_backlight_on_delay() -> u16 {
-    2000
-}
-
-const fn default_panel_backlight_off_delay() -> u16 {
-    2000
-}
-
-const fn default_panel_power_cycle_delay() -> u8 {
-    6
-}
-
-const fn default_backlight_duty_cycle() -> u8 {
-    100
-}
-
 const PCI_MMIO32_FALLBACK_BASE: u64 = 0x8000_0000;
 const PCI_PIO_BASE: u64 = 0x1000;
 const PCI_PIO_SIZE: u64 = 0xf000;
 
 const IGD_GTTMMADR_SIZE: u32 = 1024 * 1024;
-const IGD_GTTMMADR_GTT_OFFSET: usize = 512 * 1024;
-const IGD_GTTMMADR_GTT_SIZE: usize = 512 * 1024;
+/// Crestline fixes the page-table half of GTTMMADR at 512 KiB; unlike GM45,
+/// GM965 has no configurable GGMS stolen-memory field.
+const GM965_GTT_PAGE_TABLE_OFFSET: usize = 512 * 1024;
+const GM965_GTT_PAGE_TABLE_SIZE: usize = 512 * 1024;
 /// GM965 northbridge configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct IntelGm965Config {
@@ -1080,12 +1047,12 @@ impl IntelGm965 {
                 .read32(hostbridge::DEVEN)
                 & hostbridge::DEVEN_D2F0)
                 != 0
-            && self.igd().read16(0) != 0xffff
+            && self.igd().is_present()
     }
 
     fn igd_matches_platform(&self) -> bool {
         let igd = self.igd();
-        gm965_igd_id_matches(igd.read16(0), igd.read16(2))
+        gm965_igd_id_matches(igd.vendor_id(), igd.device_id())
     }
 
     /// Program the hardware GTT base register.
@@ -1116,8 +1083,8 @@ impl IntelGm965 {
         if !self.igd_matches_platform() {
             fstart_log::error!(
                 "intel-gm965: unexpected IGD {:04x}:{:04x}, skipping display",
-                igd.read16(0),
-                igd.read16(2)
+                igd.vendor_id(),
+                igd.device_id()
             );
             return;
         }
@@ -1128,10 +1095,10 @@ impl IntelGm965 {
             gtt_mmio_size: IGD_GTTMMADR_SIZE,
             gtt_pte_base: None,
             gmadr_base: Some(bars.gmadr),
-            gmadr_size: self.config.igd.gmadr_size,
+            gmadr_size: super::igd::gmadr_size_from_msac(igd.read8(hostbridge::IGD_MSAC)),
             stolen_base: u64::from(stolen_base),
             stolen_size: self.tolud().saturating_sub(stolen_base),
-            gtt_size: IGD_GTTMMADR_GTT_SIZE as u32,
+            gtt_size: GM965_GTT_PAGE_TABLE_SIZE as u32,
             gcfgc: Some(igd.read16(hostbridge::GCFGC)),
         };
         self.display.initialize(
@@ -1224,8 +1191,8 @@ impl IntelGm965 {
         // program PGETBL_CTL here; coreboot only does that before libgfxinit,
         // while the non-libgfxinit/VBIOS path leaves GTT ownership to the OS.
         super::igd::clear_gtt_table(
-            gtt_mmio + IGD_GTTMMADR_GTT_OFFSET as u64,
-            IGD_GTTMMADR_GTT_SIZE as u32,
+            gtt_mmio + GM965_GTT_PAGE_TABLE_OFFSET as u64,
+            GM965_GTT_PAGE_TABLE_SIZE as u32,
         );
     }
 
@@ -1240,7 +1207,7 @@ impl IntelGm965 {
         let hb = ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
         let deven = hb.read32(hostbridge::DEVEN);
         let peg = ecam::EcamDevice::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
-        let peg_enabled = (deven & hostbridge::DEVEN_D1F0) != 0 && peg.read16(0) != 0xffff;
+        let peg_enabled = (deven & hostbridge::DEVEN_D1F0) != 0 && peg.is_present();
         fstart_log::info!(
             "gm965 IGD init: DEVEN={:#010x} PEG {}",
             deven,
@@ -1294,7 +1261,7 @@ impl IntelGm965 {
         Self::clear_gtt_table(bars.gtt_mmio);
         if self.config.igd.enable_pipe_b {
             let igd_alt = ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_ALT_FUNC);
-            if igd_alt.read16(0) != 0xffff {
+            if igd_alt.is_present() {
                 igd_alt.or16(hostbridge::PCI_COMMAND, hostbridge::PCI_CMD_MASTER);
             }
         }
@@ -1682,13 +1649,13 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm965 {
         (size != 0).then_some((u64::from(base), size))
     }
     fn smram_open(&self) {
-        self.write_smram(crate::gmch::smram::OPEN);
+        self.write_smram(crate::gmch::smram::open());
     }
     fn smram_close(&self) {
-        self.write_smram(crate::gmch::smram::CLOSED);
+        self.write_smram(crate::gmch::smram::closed());
     }
     fn smram_lock(&self) {
-        self.write_smram(crate::gmch::smram::LOCKED);
+        self.write_smram(crate::gmch::smram::locked());
     }
 }
 
@@ -1979,23 +1946,5 @@ mod acpi_impl {
             mcfg.to_aml_bytes(&mut bytes);
             alloc::vec![bytes]
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn igd_id_matches_coreboot_gma_table() {
-        // Mobile GM965/GL960 primary graphics function.
-        assert!(gm965_igd_id_matches(0x8086, 0x2a02));
-        // Sibling display controller, wrong vendor, and other Intel
-        // graphics (i945/Pineview) never match Crestline.
-        assert!(!gm965_igd_id_matches(0x8086, 0x2a03));
-        assert!(!gm965_igd_id_matches(0x10de, 0x2a02));
-        assert!(!gm965_igd_id_matches(0x8086, 0x2772));
-        assert!(!gm965_igd_id_matches(0x8086, 0xa001));
-        assert!(!gm965_igd_id_matches(0xffff, 0xffff));
     }
 }

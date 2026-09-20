@@ -8,6 +8,23 @@
 //! the hardware clock. coreboot's answer, kept here, is to program the divider,
 //! the control register and the validity bit, and to put a known date back.
 
+use tock_registers::register_bitfields;
+
+register_bitfields![u8,
+    RtcFrequency [
+        RATE OFFSET(0) NUMBITS(4) [],
+        DIVIDER OFFSET(4) NUMBITS(3) []
+    ],
+    RtcControl [
+        MODE_24_HOUR OFFSET(1) NUMBITS(1) [],
+        BINARY_MODE OFFSET(2) NUMBITS(1) [],
+        SET OFFSET(7) NUMBITS(1) []
+    ],
+    RtcValid [
+        VALID OFFSET(7) NUMBITS(1) []
+    ]
+];
+
 /// CMOS/RTC register indices (mc146818, via ports 0x70/0x71).
 pub mod reg {
     pub const SECONDS: u8 = 0x00;
@@ -27,37 +44,64 @@ pub mod reg {
     pub const VALID: u8 = 0x0D;
 }
 
+/// Build-selected date used when the RTC lost power.
+const DEFAULT_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
+    Some(date) => date,
+    None => "01/01/2000",
+};
+
 /// 32.768 kHz reference with a 1024 Hz rate, coreboot's
 /// `RTC_FREQ_SELECT_DEFAULT`.
-const FREQ_SELECT_DEFAULT: u8 = 0x20 | 0x06;
+fn frequency_select_default() -> u8 {
+    (RtcFrequency::DIVIDER.val(2) + RtcFrequency::RATE.val(6)).value
+}
 /// 24-hour mode, BCD, no interrupts, counters running, coreboot's
 /// `RTC_CONTROL_DEFAULT`.
-const CONTROL_DEFAULT: u8 = 0x02;
-/// `RTC_SET`: stops the divider so the time registers can be rewritten.
-const CONTROL_SET: u8 = 0x80;
-/// `RTC_VRT`: data in the time/RAM registers is valid.
-const VALID_VRT: u8 = 0x80;
+fn control_default() -> u8 {
+    RtcControl::MODE_24_HOUR::SET.value
+}
 
-fn cmos_read(register: u8) -> u8 {
-    // SAFETY: port I/O is available in every stage that programs the RTC.
-    unsafe {
-        fstart_core::pio::outb(0x70, register);
-        fstart_core::pio::inb(0x71)
+fn control_mode(control: u8) -> u8 {
+    let hour_mode = if RtcControl::MODE_24_HOUR::SET.any_matching_bits_set(control) {
+        RtcControl::MODE_24_HOUR::SET.value
+    } else {
+        0
+    };
+    let data_mode = if RtcControl::BINARY_MODE::SET.any_matching_bits_set(control) {
+        RtcControl::BINARY_MODE::SET.value
+    } else {
+        0
+    };
+    hour_mode | data_mode
+}
+
+/// Indexed mc146818 register access through ports 0x70/0x71.
+struct Rtc;
+
+const RTC: Rtc = Rtc;
+
+impl Rtc {
+    fn read(&self, register: u8) -> u8 {
+        // SAFETY: port I/O is available in every stage that programs the RTC.
+        unsafe {
+            fstart_core::pio::outb(0x70, register);
+            fstart_core::pio::inb(0x71)
+        }
+    }
+
+    fn write(&self, value: u8, register: u8) {
+        // SAFETY: as above; this never runs concurrently with another RTC user.
+        unsafe {
+            fstart_core::pio::outb(0x70, register);
+            fstart_core::pio::outb(0x71, value);
+        }
     }
 }
 
 /// Read one CMOS/RTC register, for callers that report the clock's state.
 #[must_use]
 pub fn read(register: u8) -> u8 {
-    cmos_read(register)
-}
-
-fn cmos_write(value: u8, register: u8) {
-    // SAFETY: as above; this never runs concurrently with another RTC user.
-    unsafe {
-        fstart_core::pio::outb(0x70, register);
-        fstart_core::pio::outb(0x71, value);
-    }
+    RTC.read(register)
 }
 
 const fn bin_to_bcd(value: u8) -> u8 {
@@ -79,35 +123,54 @@ const fn bcd_to_bin(value: u8) -> Option<u8> {
 /// can still read as valid while the time registers hold whatever the chip had.
 /// The OS then fails the read (`rtc_valid_tm`) instead of the firmware noticing,
 /// which is exactly what happened on the D41S. Treat an undecodable reading as
-/// lost power. Both 24-hour (what this module programs) and 12-hour readings are
-/// accepted, so a clock an OS already set is never reset by mistake.
+/// lost power. Both binary and BCD data, and both 12- and 24-hour readings,
+/// are accepted according to register B, so a clock an OS already set is never
+/// reset or silently reinterpreted.
 #[must_use]
 pub fn time_registers_are_valid() -> bool {
-    time_registers_ok([
-        cmos_read(reg::SECONDS),
-        cmos_read(reg::MINUTES),
-        cmos_read(reg::HOURS),
-        cmos_read(reg::DAY_OF_MONTH),
-        cmos_read(reg::MONTH),
-        cmos_read(reg::YEAR),
-    ])
+    time_registers_are_valid_in_mode(RTC.read(reg::CONTROL))
 }
 
-/// Decode a raw `seconds, minutes, hours, day, month, year` reading.
-fn time_registers_ok(raw: [u8; 6]) -> bool {
-    let [seconds, minutes, hours, day, month, year] = raw;
-    let _ = year;
-    let hours_ok = if hours & 0x80 != 0 {
-        // 12-hour mode: bit 7 is the PM flag, the rest is 1..12 in BCD.
-        matches!(bcd_to_bin(hours & 0x7F), Some(1..=12))
+fn time_registers_are_valid_in_mode(control: u8) -> bool {
+    time_registers_ok(
+        [
+            RTC.read(reg::SECONDS),
+            RTC.read(reg::MINUTES),
+            RTC.read(reg::HOURS),
+            RTC.read(reg::DAY_OF_MONTH),
+            RTC.read(reg::MONTH),
+            RTC.read(reg::YEAR),
+        ],
+        control,
+    )
+}
+
+fn decode_time_value(value: u8, binary_mode: bool) -> Option<u8> {
+    if binary_mode {
+        Some(value)
     } else {
-        matches!(bcd_to_bin(hours), Some(0..=23))
+        bcd_to_bin(value)
+    }
+}
+
+/// Decode a raw `seconds, minutes, hours, day, month, year` reading in the mode
+/// selected by RTC register B.
+fn time_registers_ok(raw: [u8; 6], control: u8) -> bool {
+    let [seconds, minutes, hours, day, month, year] = raw;
+    let binary_mode = RtcControl::BINARY_MODE::SET.any_matching_bits_set(control);
+    let hour_24 = RtcControl::MODE_24_HOUR::SET.any_matching_bits_set(control);
+    let hours_ok = if hour_24 {
+        matches!(decode_time_value(hours, binary_mode), Some(0..=23))
+    } else {
+        // In 12-hour mode bit 7 is the PM flag in both BCD and binary modes.
+        matches!(decode_time_value(hours & 0x7f, binary_mode), Some(1..=12))
     };
     hours_ok
-        && matches!(bcd_to_bin(minutes), Some(0..=59))
-        && matches!(bcd_to_bin(seconds), Some(0..=59))
-        && matches!(bcd_to_bin(month), Some(1..=12))
-        && matches!(bcd_to_bin(day), Some(1..=31))
+        && matches!(decode_time_value(minutes, binary_mode), Some(0..=59))
+        && matches!(decode_time_value(seconds, binary_mode), Some(0..=59))
+        && matches!(decode_time_value(month, binary_mode), Some(1..=12))
+        && matches!(decode_time_value(day, binary_mode), Some(1..=31))
+        && matches!(decode_time_value(year, binary_mode), Some(0..=99))
 }
 
 /// A calendar date written into the RTC when it lost power.
@@ -159,13 +222,13 @@ impl Date {
     }
 
     fn write(self) {
-        cmos_write(bin_to_bcd(0), reg::SECONDS);
-        cmos_write(bin_to_bcd(0), reg::MINUTES);
-        cmos_write(bin_to_bcd(0), reg::HOURS);
-        cmos_write(bin_to_bcd(self.day), reg::DAY_OF_MONTH);
-        cmos_write(bin_to_bcd(self.month), reg::MONTH);
-        cmos_write(bin_to_bcd((self.year % 100) as u8), reg::YEAR);
-        cmos_write(bin_to_bcd(self.weekday()), reg::DAY_OF_WEEK);
+        RTC.write(bin_to_bcd(0), reg::SECONDS);
+        RTC.write(bin_to_bcd(0), reg::MINUTES);
+        RTC.write(bin_to_bcd(0), reg::HOURS);
+        RTC.write(bin_to_bcd(self.day), reg::DAY_OF_MONTH);
+        RTC.write(bin_to_bcd(self.month), reg::MONTH);
+        RTC.write(bin_to_bcd((self.year % 100) as u8), reg::YEAR);
+        RTC.write(bin_to_bcd(self.weekday()), reg::DAY_OF_WEEK);
     }
 }
 
@@ -187,12 +250,13 @@ pub struct InitReport {
 /// can log it; the registers are always left valid for the OS.
 pub fn init(battery_dead: bool, default_date: Option<Date>) -> InitReport {
     // coreboot's cmos_error(): the clock reports a power problem.
-    let power_lost = cmos_read(reg::VALID) & VALID_VRT == 0;
-    let time_invalid = !time_registers_are_valid();
+    let power_lost = !RtcValid::VALID::SET.any_matching_bits_set(RTC.read(reg::VALID));
+    let control = RTC.read(reg::CONTROL);
+    let time_invalid = !time_registers_are_valid_in_mode(control);
 
     if power_lost || battery_dead || time_invalid {
         // Stop the divider before rewriting the time registers.
-        cmos_write(cmos_read(reg::CONTROL) | CONTROL_SET, reg::CONTROL);
+        RTC.write(RtcControl::SET::SET.modify(control), reg::CONTROL);
     }
 
     let date_reset = (power_lost || battery_dead || time_invalid) && default_date.is_some();
@@ -200,11 +264,20 @@ pub fn init(battery_dead: bool, default_date: Option<Date>) -> InitReport {
         date.write();
     }
 
-    cmos_write(CONTROL_DEFAULT, reg::CONTROL);
-    cmos_write(FREQ_SELECT_DEFAULT, reg::FREQ_SELECT);
+    // Date::write emits BCD in 24-hour form. Otherwise preserve the existing
+    // representation while clearing SET and interrupt enables.
+    RTC.write(
+        if date_reset {
+            control_default()
+        } else {
+            control_mode(control)
+        },
+        reg::CONTROL,
+    );
+    RTC.write(frequency_select_default(), reg::FREQ_SELECT);
     // Mark the clock and CMOS RAM valid again, and drop any pending flags.
-    cmos_write(VALID_VRT, reg::VALID);
-    let _ = cmos_read(reg::INTR_FLAGS);
+    RTC.write(RtcValid::VALID::SET.value, reg::VALID);
+    let _ = RTC.read(reg::INTR_FLAGS);
 
     InitReport {
         power_lost,
@@ -218,8 +291,8 @@ pub fn init(battery_dead: bool, default_date: Option<Date>) -> InitReport {
 /// `label` names the chipset that owns the clock in the log lines, and
 /// `power_lost` is that chipset's sticky battery-dead state, which the caller
 /// reads and clears from its own power-management registers.
-pub fn init_clock(label: &str, power_lost: bool, default_date: &str) {
-    let date = match Date::parse_mm_dd_yyyy(default_date) {
+pub fn init_clock(label: &str, power_lost: bool) {
+    let date = match Date::parse_mm_dd_yyyy(DEFAULT_DATE) {
         Some(date) => Some(date),
         None => {
             fstart_log::error!("{}: RTC default date is not MM/DD/YYYY", label);
@@ -241,7 +314,7 @@ pub fn init_clock(label: &str, power_lost: bool, default_date: &str) {
         fstart_log::info!(
             "{}: RTC date set to {} (sec={:#04x} min={:#04x} hour={:#04x} day={:#04x} mon={:#04x} year={:#04x})",
             label,
-            default_date,
+            DEFAULT_DATE,
             read(reg::SECONDS),
             read(reg::MINUTES),
             read(reg::HOURS),
@@ -328,17 +401,60 @@ mod tests {
     }
 
     #[test]
-    fn time_register_validation_accepts_clocks_and_rejects_garbage() {
-        // 24-hour 23:59:59 on 2026-04-15, then the same clock at 11:59:59.
-        assert!(time_registers_ok([0x59, 0x59, 0x23, 0x15, 0x04, 0x26]));
-        assert!(time_registers_ok([0x59, 0x59, 0x11, 0x15, 0x04, 0x26]));
-        // 12-hour mode carries the PM flag in bit 7.
-        assert!(time_registers_ok([0x00, 0x00, 0x92, 0x15, 0x04, 0x26]));
-        assert!(!time_registers_ok([0x00, 0x00, 0x9F, 0x15, 0x04, 0x26]));
+    fn time_register_validation_follows_register_b_mode() {
+        let bcd_24 = RtcControl::MODE_24_HOUR::SET.value;
+        let bcd_12 = 0;
+        let binary_24 = (RtcControl::MODE_24_HOUR::SET + RtcControl::BINARY_MODE::SET).value;
+        let binary_12 = RtcControl::BINARY_MODE::SET.value;
+
+        assert!(time_registers_ok(
+            [0x59, 0x59, 0x23, 0x15, 0x04, 0x26],
+            bcd_24
+        ));
+        assert!(time_registers_ok(
+            [0x00, 0x00, 0x89, 0x15, 0x04, 0x26],
+            bcd_12
+        ));
+        assert!(time_registers_ok([59, 59, 23, 15, 4, 26], binary_24));
+        assert!(time_registers_ok([0, 0, 0x80 | 9, 15, 4, 26], binary_12));
+
+        // The same bytes can be valid in one representation and invalid in
+        // another; validation must never guess from the hour's PM bit.
+        assert!(!time_registers_ok(
+            [0x59, 0x59, 0x23, 0x15, 0x04, 0x26],
+            binary_24
+        ));
+        assert!(!time_registers_ok([59, 59, 23, 15, 4, 26], bcd_24));
         // Garbage a lost-power RTC reports: non-decimal digits and zero fields.
-        assert!(!time_registers_ok([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]));
-        assert!(!time_registers_ok([0x00, 0x00, 0x00, 0x00, 0x1A, 0x26]));
-        assert!(!time_registers_ok([0x00, 0x00, 0x00, 0x00, 0x04, 0x26]));
-        assert!(!time_registers_ok([0x00, 0x00, 0x60, 0x15, 0x04, 0x26]));
+        assert!(!time_registers_ok(
+            [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            bcd_24
+        ));
+        assert!(!time_registers_ok(
+            [0x00, 0x00, 0x00, 0x00, 0x1A, 0x26],
+            bcd_24
+        ));
+        assert!(!time_registers_ok(
+            [0x00, 0x00, 0x00, 0x00, 0x04, 0x26],
+            bcd_24
+        ));
+        assert!(!time_registers_ok(
+            [0x00, 0x00, 0x60, 0x15, 0x04, 0x26],
+            bcd_24
+        ));
+    }
+
+    #[test]
+    fn valid_clocks_keep_their_data_and_hour_modes() {
+        let modes = [
+            0,
+            RtcControl::MODE_24_HOUR::SET.value,
+            RtcControl::BINARY_MODE::SET.value,
+            (RtcControl::MODE_24_HOUR::SET + RtcControl::BINARY_MODE::SET).value,
+        ];
+        for mode in modes {
+            let noisy_control = mode | RtcControl::SET::SET.value | 0x70;
+            assert_eq!(control_mode(noisy_control), mode);
+        }
     }
 }

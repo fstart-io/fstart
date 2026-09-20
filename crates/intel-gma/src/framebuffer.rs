@@ -307,6 +307,28 @@ impl FramebufferConfig {
         }
     }
 
+    /// Standard linear XRGB8888 framebuffer whose mode comes from the VBT panel.
+    ///
+    /// `fallback` is used when the VBT does not provide a usable native panel mode.
+    #[must_use]
+    pub const fn vbt_panel(fallback: crate::mode::FallbackMode) -> Self {
+        Self {
+            width: fallback.width as u32,
+            height: fallback.height as u32,
+            bits_per_pixel: 32,
+            stride: None,
+            v_stride: None,
+            start_x: 0,
+            start_y: 0,
+            offset: 0,
+            tiling: TilingMode::Linear,
+            rotation: Rotation::None,
+            preferred_mode: crate::config::PreferredMode::VbtPanel,
+            fallback_mode: Some(fallback),
+            scaling: ScalingPolicy::None,
+        }
+    }
+
     /// Return the requested pixel format.
     pub fn pixel_format(&self) -> Result<PixelFormat, GmaError> {
         match self.bits_per_pixel {
@@ -319,6 +341,22 @@ impl FramebufferConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standard_framebuffers_encode_only_the_mode_source_difference() {
+        let fallback = crate::mode::FallbackMode {
+            width: 1024,
+            height: 768,
+            refresh_hz: 60,
+        };
+        let edid = FramebufferConfig::edid(fallback);
+        let panel = FramebufferConfig::vbt_panel(fallback);
+        assert_eq!(edid.preferred_mode, crate::config::PreferredMode::Edid);
+        assert_eq!(panel.preferred_mode, crate::config::PreferredMode::VbtPanel);
+        assert_eq!(edid.fallback_mode, panel.fallback_mode);
+        assert_eq!(edid.width, panel.width);
+        assert_eq!(edid.height, panel.height);
+    }
 
     #[test]
     fn fill_opaque_black_writes_visible_pixels_only() {

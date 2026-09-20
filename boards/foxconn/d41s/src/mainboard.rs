@@ -136,15 +136,10 @@ pub use acpi_impl::d41s_mainboard_dsdt_aml;
 
 static D41S_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["FCBGA559"];
 
-const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
-    Some(date) => date,
-    None => "04/15/2026",
-};
-
 pub static D41S_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> = fstart_acpi::smbios::SmbiosIdentity {
     bios_vendor: "fstart",
     bios_version: "0.1.0",
-    bios_release_date: BIOS_RELEASE_DATE,
+    bios_release_date: fstart_platform_intel::SMBIOS_RELEASE_DATE,
     sys_manufacturer: "Foxconn",
     sys_product: "D41S",
     sys_version: "1.0",

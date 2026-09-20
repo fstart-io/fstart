@@ -81,6 +81,8 @@ pub struct FadtConfig {
     pub pm_tmr_blk: u32,
     /// GPE0 Block I/O port base.
     pub gpe0_blk: u32,
+    /// Total GPE0 status-plus-enable block length in bytes.
+    pub gpe0_blk_len: u8,
     /// SCI interrupt number.
     pub sci_int: u16,
     /// IAPC boot arch flags (8042, legacy devices, etc.).
@@ -106,6 +108,7 @@ impl Default for FadtConfig {
             pm1a_cnt_blk: 0,
             pm_tmr_blk: 0,
             gpe0_blk: 0,
+            gpe0_blk_len: 0,
             sci_int: 0,
             iapc_boot_arch: 0,
             smi_cmd: 0,
@@ -313,10 +316,11 @@ pub fn assemble(
 }
 
 /// Build the FADT from architecture-neutral configuration.
-/// CMOS/RTC day-of-month alarm register (mc146818 offset).
-const RTC_DAY_ALRM: u8 = 0x05;
-/// CMOS/RTC month alarm register.
-const RTC_MON_ALRM: u8 = 0x07;
+/// Coreboot's PC-compatible date-alarm index. Register D advertises that the
+/// optional day-of-month alarm is not a normal time register.
+const RTC_DAY_ALRM: u8 = 0x0d;
+/// This mc146818-compatible RTC has no month-alarm register.
+const RTC_MON_ALRM: u8 = 0;
 fn build_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8> {
     // ARM platform has its own build_fadt that handles arm_boot_arch.
     #[cfg(feature = "arm")]
@@ -408,7 +412,7 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     b.pm1_evt_len = 4;
     b.pm1_cnt_len = 2;
     b.pm_tmr_len = 4;
-    b.gpe0_blk_len = 8;
+    b.gpe0_blk_len = config.gpe0_blk_len;
 
     // C-state latencies.
     b.p_lvl2_lat = 1u16.into();
@@ -449,7 +453,7 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     b.x_pm1a_evt_blk = gas_io(config.pm1a_evt_blk, 32);
     b.x_pm1a_cnt_blk = gas_io(config.pm1a_cnt_blk, 16);
     b.x_pm_tmr_blk = gas_io(config.pm_tmr_blk, 32);
-    b.x_gpe0_blk = gas_io(config.gpe0_blk, 64);
+    b.x_gpe0_blk = gas_io(config.gpe0_blk, config.gpe0_blk_len.saturating_mul(8));
 
     let fadt = b.finalize();
     let mut bytes = Vec::new();
@@ -485,6 +489,18 @@ pub fn build_dsdt(device_aml: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn x86_fadt_advertises_only_the_supported_rtc_date_alarm() {
+        let config = FadtConfig {
+            pm1a_evt_blk: 0x500,
+            gpe0_blk_len: 8,
+            ..Default::default()
+        };
+        let bytes = build_x86_fadt(0x1000, 0x2000, &config);
+        assert_eq!(bytes[core::mem::offset_of!(FADTBuilder, day_alrm)], 0x0d);
+        assert_eq!(bytes[core::mem::offset_of!(FADTBuilder, mon_alrm)], 0);
+    }
 
     #[test]
     fn test_assemble_generic() {

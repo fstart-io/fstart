@@ -17,7 +17,13 @@ impl ResolvedImage {
         selection: BuildSelection,
     ) -> Result<Self, String> {
         let source = crate::profile_source::load_profile(root, board)?;
-        let plan = crate::host_plan::load(root, &source, &board.variant_features, &selection)?;
+        let mut plan = crate::host_plan::load(root, &source, &board.variant_features, &selection)?;
+        if let Some(date) = &selection.smbios_release_date {
+            for unit in &mut plan.units {
+                unit.environment_values
+                    .insert("FSTART_SMBIOS_DATE".into(), date.clone());
+            }
+        }
         Ok(Self {
             build: Resolved::new(root, board, &source, plan)?,
         })

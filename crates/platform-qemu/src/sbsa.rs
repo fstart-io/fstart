@@ -9,6 +9,7 @@ pub const QEMU_SBSA_RAM_BASE: u64 = 0x100_0000_0000;
 pub const QEMU_SBSA_RAM_SIZE: u64 = 0x4000_0000;
 pub const QEMU_SBSA_STAGE_LOAD_ADDR: u64 = 0x100_0010_0000;
 pub const QEMU_SBSA_UART_BASE: u64 = 0x6000_0000;
+#[cfg(all(feature = "bundle-sbsa", target_arch = "aarch64"))]
 const QEMU_SBSA_FFS_OFFSET: u64 = 0x10_0000;
 
 /// Closed SBSA-ref facts consumed by the fixed flow.

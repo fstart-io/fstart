@@ -380,25 +380,20 @@ pub mod dock {
     }
 }
 
-pub(crate) const BIOS_RELEASE_DATE: &str = match option_env!("FSTART_SMBIOS_DATE") {
-    Some(date) => date,
-    None => "05/08/2026",
-};
-
 static X61_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket M"];
 
 pub static X61_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",
         bios_version: "0.1.0",
-        bios_release_date: BIOS_RELEASE_DATE,
+        bios_release_date: fstart_platform_intel::SMBIOS_RELEASE_DATE,
         sys_manufacturer: "LENOVO",
         sys_product: "ThinkPad X61",
         sys_version: "1.0",
         sys_serial: None,
         bb_manufacturer: "LENOVO",
         bb_product: "ThinkPad X61",
-        chassis_type: 0x01,
+        chassis_type: 0x0a,
         chassis_manufacturer: "LENOVO",
         processor_sockets: &X61_SMBIOS_PROCESSOR_SOCKETS,
     };

@@ -18,6 +18,8 @@ use fstart_core::services::BootMedia;
 use fstart_core::services::boot_media::SubRegion;
 
 use fstart_ffs::root::BootstrapDescriptor;
+use zerocopy::byteorder::{LE, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::boot::{MemoryPolicy, VerifiedExecutable, load_bootstrap};
 
@@ -25,14 +27,22 @@ use crate::boot::{MemoryPolicy, VerifiedExecutable, load_bootstrap};
 pub const STAGE_CACHE_MAGIC: u32 = u32::from_le_bytes(*b"FSCC");
 /// Wire version of the slot header.
 pub const STAGE_CACHE_VERSION: u32 = 1;
-/// Header size preceding the cached compressed body.
-pub const STAGE_CACHE_HEADER_LEN: usize = 32;
 
-const MAGIC_OFF: usize = 0;
-const VERSION_OFF: usize = 4;
-const STORED_SIZE_OFF: usize = 8;
-const LOADED_SIZE_OFF: usize = 16;
-const ROLE_OFF: usize = 24;
+#[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C)]
+struct CacheHeader {
+    magic: U32<LE>,
+    version: U32<LE>,
+    stored_size: U64<LE>,
+    loaded_size: U64<LE>,
+    role: u8,
+    reserved: [u8; 7],
+}
+
+/// Header size preceding the cached compressed body.
+pub const STAGE_CACHE_HEADER_LEN: usize = core::mem::size_of::<CacheHeader>();
+
+const _: () = assert!(STAGE_CACHE_HEADER_LEN == 32);
 
 /// Which stage a slot holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,27 +78,15 @@ pub enum CacheError {
     Media,
 }
 
-fn u32_at(bytes: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap_or([0; 4]))
-}
-
-fn u64_at(bytes: &[u8], off: usize) -> u64 {
-    u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap_or([0; 8]))
-}
-
-/// Validate a slot header against `stage`; returns the cached body length.
-fn valid_body_len(header: &[u8], stage: CachedStage) -> Option<usize> {
-    if header.len() < STAGE_CACHE_HEADER_LEN
-        || u32_at(header, MAGIC_OFF) != STAGE_CACHE_MAGIC
-        || u32_at(header, VERSION_OFF) != STAGE_CACHE_VERSION
-        || header[ROLE_OFF] != stage.role_byte()
-    {
-        return None;
-    }
-    let stored = usize::try_from(u64_at(header, STORED_SIZE_OFF)).ok()?;
-    // A body must exist and fit; the slot's own length is the only bound the
-    // caller can check here, and `load_from_slot` re-checks it against media.
-    (stored != 0).then_some(stored)
+/// Validate a slot header against `stage`; returns the typed header.
+fn valid_header(bytes: &[u8], stage: CachedStage) -> Option<CacheHeader> {
+    let (header, _) = CacheHeader::read_from_prefix(bytes).ok()?;
+    (header.magic.get() == STAGE_CACHE_MAGIC
+        && header.version.get() == STAGE_CACHE_VERSION
+        && header.role == stage.role_byte()
+        && header.reserved == [0; 7]
+        && header.stored_size.get() != 0)
+        .then_some(header)
 }
 
 /// Copy the compressed stage body from `source` into `slot` and seal the
@@ -108,27 +106,34 @@ pub fn store(
     source: &(impl BootMedia + ?Sized),
     descriptor: &BootstrapDescriptor,
 ) -> Result<(), CacheError> {
+    // Invalidate the old header before any fallible size or media operation.
+    if let Some(magic) = slot.get_mut(..core::mem::size_of::<u32>()) {
+        magic.fill(0);
+    }
     let stored = usize::try_from(descriptor.stored_size).map_err(|_| CacheError::SlotTooSmall)?;
-    if slot.len() < STAGE_CACHE_HEADER_LEN + stored {
+    let required = STAGE_CACHE_HEADER_LEN
+        .checked_add(stored)
+        .ok_or(CacheError::SlotTooSmall)?;
+    if slot.len() < required {
         return Err(CacheError::SlotTooSmall);
     }
-    // Invalidate the old header before writing a new body.
-    slot[MAGIC_OFF..MAGIC_OFF + 4].fill(0);
     let body = &mut slot[STAGE_CACHE_HEADER_LEN..STAGE_CACHE_HEADER_LEN + stored];
     let offset = usize::try_from(descriptor.offset).map_err(|_| CacheError::Media)?;
     match source.read_at(offset, body) {
         Ok(read) if read == stored => {}
         _ => return Err(CacheError::Media),
     }
-    slot[STORED_SIZE_OFF..STORED_SIZE_OFF + 8]
-        .copy_from_slice(&descriptor.stored_size.to_le_bytes());
-    slot[LOADED_SIZE_OFF..LOADED_SIZE_OFF + 8]
-        .copy_from_slice(&descriptor.loaded_size.to_le_bytes());
-    slot[ROLE_OFF] = stage.role_byte();
-    slot[ROLE_OFF + 1..STAGE_CACHE_HEADER_LEN].fill(0);
-    slot[VERSION_OFF..VERSION_OFF + 4].copy_from_slice(&STAGE_CACHE_VERSION.to_le_bytes());
+    let header = CacheHeader {
+        magic: U32::new(0),
+        version: U32::new(STAGE_CACHE_VERSION),
+        stored_size: U64::new(descriptor.stored_size),
+        loaded_size: U64::new(descriptor.loaded_size),
+        role: stage.role_byte(),
+        reserved: [0; 7],
+    };
+    slot[..STAGE_CACHE_HEADER_LEN].copy_from_slice(header.as_bytes());
     // Magic last: a valid header implies a complete body.
-    slot[MAGIC_OFF..MAGIC_OFF + 4].copy_from_slice(&STAGE_CACHE_MAGIC.to_le_bytes());
+    slot[..core::mem::size_of::<u32>()].copy_from_slice(&STAGE_CACHE_MAGIC.to_le_bytes());
     Ok(())
 }
 
@@ -147,11 +152,12 @@ pub fn load_from_slot(
     if slot_media.read_at(0, &mut header).ok()? != STAGE_CACHE_HEADER_LEN {
         return None;
     }
-    let stored = valid_body_len(&header, stage)?;
+    let header = valid_header(&header, stage)?;
+    let stored = usize::try_from(header.stored_size.get()).ok()?;
     // The slot must hold exactly the body the authenticated descriptor names:
     // this is what makes a flash update while suspended fail closed.
-    if stored as u64 != descriptor.stored_size
-        || u64_at(&header, LOADED_SIZE_OFF) != descriptor.loaded_size
+    if header.stored_size.get() != descriptor.stored_size
+        || header.loaded_size.get() != descriptor.loaded_size
     {
         return None;
     }

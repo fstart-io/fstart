@@ -91,14 +91,24 @@ mod tests {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct BuildSelection {
     pub payload: Option<String>,
+    /// SMBIOS Type 0 release date selected by fbuild, in MM/DD/YYYY form.
+    #[serde(default)]
+    pub smbios_release_date: Option<String>,
     #[serde(default)]
     pub x86_linux_kernel_load_addr: Option<u64>,
-    #[serde(default)]
-    pub x86_linux_zero_page_addr: Option<u64>,
     #[serde(default)]
     pub x86_linux_bootargs: Option<String>,
     #[serde(default)]
     pub x86_linux_print_mtrrs: bool,
+}
+
+impl BuildSelection {
+    #[must_use]
+    pub fn has_x86_linux_overrides(&self) -> bool {
+        self.x86_linux_kernel_load_addr.is_some()
+            || self.x86_linux_bootargs.is_some()
+            || self.x86_linux_print_mtrrs
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

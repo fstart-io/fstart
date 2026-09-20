@@ -27,12 +27,13 @@ const BDB_LVDS_POWER: u8 = 44;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
 struct VbtHeader {
-    signature: [u8; 4],
-    _reserved: [u8; 0x10],
+    signature: [u8; 20],
+    version: U16,
     header_size: U16,
-    bdb_offset: U16,
     vbt_size: U16,
-    _tail: [u8; 6],
+    checksum: u8,
+    _reserved: u8,
+    bdb_offset: U32,
 }
 
 /// BDB header (0x00..0x16 relative to the BDB offset).
@@ -203,13 +204,19 @@ impl<'a> Vbt<'a> {
     /// Parse and validate VBT/BDB headers.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, GmaError> {
         let (header, _) = VbtHeader::ref_from_prefix(bytes).map_err(|_| GmaError::VbtInvalid)?;
-        if &header.signature != VBT_SIGNATURE {
+        if !header.signature.starts_with(VBT_SIGNATURE) {
             return Err(GmaError::VbtInvalid);
         }
         let header_size = usize::from(header.header_size.get());
-        let bdb_offset = usize::from(header.bdb_offset.get());
+        let bdb_offset =
+            usize::try_from(header.bdb_offset.get()).map_err(|_| GmaError::VbtInvalid)?;
         let vbt_size = usize::from(header.vbt_size.get());
-        if header_size > bytes.len() || vbt_size > bytes.len() {
+        if header_size < size_of::<VbtHeader>()
+            || header_size > vbt_size
+            || vbt_size > bytes.len()
+            || bdb_offset < header_size
+            || bdb_offset > vbt_size
+        {
             return Err(GmaError::VbtInvalid);
         }
         let (bdb, _) =
@@ -493,7 +500,7 @@ fn parse_lfp_power_features(block: BdbBlock<'_>) -> Option<LfpPowerFeatures> {
 /// Return VBT total size when the header is present.
 pub fn declared_vbt_size(bytes: &[u8]) -> Option<u32> {
     let (header, _) = VbtHeader::ref_from_prefix(bytes).ok()?;
-    if &header.signature != VBT_SIGNATURE {
+    if !header.signature.starts_with(VBT_SIGNATURE) {
         return None;
     }
     Some(u32::from(header.vbt_size.get()))
@@ -505,6 +512,23 @@ mod tests {
 
     const X61_VBT: &[u8] = include_bytes!("../../../boards/lenovo/x61/data.vbt");
     const FOXCONN_VBT: &[u8] = include_bytes!("../../../boards/foxconn/d41s/data.vbt");
+
+    #[test]
+    fn vbt_uses_the_32bit_bdb_offset_not_the_header_size() {
+        let mut bytes = [0u8; 86];
+        bytes[..4].copy_from_slice(VBT_SIGNATURE);
+        bytes[0x16..0x18].copy_from_slice(&32u16.to_le_bytes());
+        let vbt_size = bytes.len() as u16;
+        bytes[0x18..0x1a].copy_from_slice(&vbt_size.to_le_bytes());
+        bytes[0x1c..0x20].copy_from_slice(&64u32.to_le_bytes());
+        bytes[64..68].copy_from_slice(BDB_SIGNATURE);
+        bytes[64 + 0x12..64 + 0x14].copy_from_slice(&22u16.to_le_bytes());
+        bytes[64 + 0x14..64 + 0x16].copy_from_slice(&22u16.to_le_bytes());
+
+        let vbt = Vbt::parse(&bytes).unwrap();
+        assert_eq!(vbt.bdb_offset(), 64);
+        assert_eq!(vbt.blocks().count(), 0);
+    }
 
     fn panel_entry(bytes: &[u8]) -> LfpDataPtrEntry {
         let vbt = Vbt::parse(bytes).unwrap();

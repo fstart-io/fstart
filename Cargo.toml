@@ -53,6 +53,7 @@ tock-registers = "0.10"
 pci_types = "0.10.1"
 x86 = { version = "0.52", default-features = false }
 x86_64_crate = { package = "x86_64", version = "0.15", default-features = false }
+raw-cpuid = { version = "10.7", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }

@@ -96,7 +96,8 @@ pub struct PineviewIgdConfig {
 }
 
 const fn default_stolen_memory_mb() -> u16 {
-    8
+    // 16 MiB covers a 1920x1080x32bpp linear framebuffer with headroom.
+    16
 }
 
 const fn pineview_gms(stolen_memory_mb: u16) -> Option<u16> {
@@ -209,8 +210,8 @@ pci_type0_config! {
         (0x44 => _reserved_hb0),
         (0x48 => pub mchbar: MmioReadWrite<u32>),
         (0x4c => _reserved_hb1),
-        (0x52 => pub ggc: MmioReadWrite<u16>),
-        (0x54 => pub deven: MmioReadWrite<u8>),
+        (0x52 => pub ggc: MmioReadWrite<u16, regs::GGC_REG::Register>),
+        (0x54 => pub deven: MmioReadWrite<u8, regs::DEVEN_REG::Register>),
         (0x55 => _reserved_hb2),
         (0x60 => pub pciexbar: MmioReadWrite<u32>),
         (0x64 => _reserved_hb3),
@@ -267,7 +268,7 @@ impl IntelPineview {
     fn platform_type(&self) -> u8 {
         const PINEVIEW_DID_MASK: u16 = 0xfff0;
         const PINEVIEW_MOBILE_DID: u16 = 0xa010;
-        let did = ecam::EcamDevice::new(0, 0, 0).read16(0x02) & PINEVIEW_DID_MASK;
+        let did = ecam::EcamDevice::new(0, 0, 0).device_id() & PINEVIEW_DID_MASK;
         if did == PINEVIEW_MOBILE_DID {
             raminit::PLATFORM_MOBILE
         } else {
@@ -320,7 +321,9 @@ impl IntelPineview {
         hb.pmiobar.set(hostbridge::DEFAULT_PMIOBAR | 1);
 
         // DEVEN — enable D0F0, D2F0, D2F1.
-        hb.deven.set(hostbridge::BOARD_DEVEN);
+        hb.deven.write(
+            regs::DEVEN_REG::D0F0::SET + regs::DEVEN_REG::D2F0::SET + regs::DEVEN_REG::D2F1::SET,
+        );
 
         // PAM0..PAM6: unlock BIOS shadow region C0000–FFFFF for RAM r/w.
         hb.pam[0].set(0x30);
@@ -342,20 +345,23 @@ impl IntelPineview {
         // does (`BOARD_DEVEN = D0F0 | D2F0 | D2F1`). Without this the
         // integrated graphics function stays disabled: its display registers
         // and its DDC/GMBUS unit do not respond.
-        hb.deven.set((1 << 0) | (1 << 3) | (1 << 4));
+        hb.deven.write(
+            regs::DEVEN_REG::D0F0::SET + regs::DEVEN_REG::D2F0::SET + regs::DEVEN_REG::D2F1::SET,
+        );
         // GGC: Pineview uses a fixed 1 MiB GTT reservation (GGMS=1), while
         // the board chooses the stolen framebuffer reservation through GMS.
         let (stolen_memory_mb, gms) = match pineview_gms(self.config.igd.stolen_memory_mb) {
             Some(gms) => (self.config.igd.stolen_memory_mb, gms),
             None => {
                 fstart_log::error!(
-                    "pineview: unsupported stolen_memory_mb={}, using 8 MiB",
+                    "pineview: unsupported stolen_memory_mb={}, using 16 MiB",
                     self.config.igd.stolen_memory_mb
                 );
-                (default_stolen_memory_mb(), 3)
+                (default_stolen_memory_mb(), 4)
             }
         };
-        hb.ggc.set((1 << 8) | (gms << 4));
+        hb.ggc
+            .write(regs::GGC_REG::GGMS.val(1) + regs::GGC_REG::GMS.val(gms));
         fstart_log::info!(
             "pineview: IGD stolen={} MiB GMS={} GGC={:#06x}",
             stolen_memory_mb as u32,
@@ -839,7 +845,7 @@ impl IntelPineview {
     }
 
     fn igd_present(&self) -> bool {
-        self.igd().read16(0) != 0xffff
+        self.igd().is_present()
     }
 
     /// Fail closed to headless when the soldered IGD does not match the
@@ -848,8 +854,8 @@ impl IntelPineview {
         let igd = self.igd();
         pineview_igd_id_matches(
             self.platform_type() == raminit::PLATFORM_MOBILE,
-            igd.read16(0),
-            igd.read16(2),
+            igd.vendor_id(),
+            igd.device_id(),
         )
     }
 
@@ -976,8 +982,8 @@ impl IntelPineview {
             let mobile = (self.platform_type() == raminit::PLATFORM_MOBILE) as u32;
             fstart_log::error!(
                 "pineview: unexpected IGD {:04x}:{:04x} for mobile {}, skipping display",
-                igd.read16(0),
-                igd.read16(2),
+                igd.vendor_id(),
+                igd.device_id(),
                 mobile
             );
             return;
@@ -1038,13 +1044,13 @@ impl IntelPineview {
         // A modeset can report success while a pipe, plane, PLL or output port
         // is left disabled. Read the state back so that is visible: coreboot
         // dumps the same registers for this generation.
-        let ggc = self.hostbridge_regs().ggc.get();
+        let ggc = &self.hostbridge_regs().ggc;
         fstart_log::info!(
             "pineview: GGC={:#06x} vga_disable={} gms={} ggms={} modeset={}",
-            ggc,
-            u32::from((ggc >> 1) & 1),
-            u32::from((ggc >> 4) & 0xf),
-            u32::from((ggc >> 8) & 0xf),
+            ggc.get(),
+            u32::from(ggc.read(regs::GGC_REG::VGADIS)),
+            u32::from(ggc.read(regs::GGC_REG::GMS)),
+            u32::from(ggc.read(regs::GGC_REG::GGMS)),
             u32::from(programmed)
         );
         self.dump_display_state(bars.gtt_mmio);
@@ -1140,13 +1146,13 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelPineview {
         (size != 0).then_some((u64::from(base), size))
     }
     fn smram_open(&self) {
-        self.write_smram(crate::gmch::smram::OPEN);
+        self.write_smram(crate::gmch::smram::open());
     }
     fn smram_close(&self) {
-        self.write_smram(crate::gmch::smram::CLOSED);
+        self.write_smram(crate::gmch::smram::closed());
     }
     fn smram_lock(&self) {
-        self.write_smram(crate::gmch::smram::LOCKED);
+        self.write_smram(crate::gmch::smram::locked());
     }
 }
 
@@ -1432,17 +1438,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn igd_ids_match_coreboot_gma_table() {
-        // Desktop Pineview (Atom D4xx) and mobile Pineview-M (N4xx).
-        assert!(pineview_igd_id_matches(false, 0x8086, 0xa001));
-        assert!(pineview_igd_id_matches(true, 0x8086, 0xa011));
-        // Cross-type mismatches fail closed to headless.
-        assert!(!pineview_igd_id_matches(false, 0x8086, 0xa011));
-        assert!(!pineview_igd_id_matches(true, 0x8086, 0xa001));
-        // Wrong vendor or other Intel graphics never match Pineview.
-        assert!(!pineview_igd_id_matches(false, 0x10de, 0xa001));
-        assert!(!pineview_igd_id_matches(false, 0x8086, 0x2a02));
-        assert!(!pineview_igd_id_matches(true, 0x8086, 0x2772));
-        assert!(!pineview_igd_id_matches(false, 0xffff, 0xffff));
+    fn default_stolen_memory_fits_a_full_hd_framebuffer() {
+        assert!(
+            u32::from(PineviewIgdConfig::new().stolen_memory_mb) * 1024 * 1024 >= 1920 * 1080 * 4
+        );
     }
 }

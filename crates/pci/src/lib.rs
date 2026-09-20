@@ -10,7 +10,6 @@ pub mod config;
 pub mod ecam;
 pub mod ecam_host;
 pub mod overlay;
-pub mod pirq;
 pub mod window;
 
 pub use config::*;
