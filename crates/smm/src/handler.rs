@@ -1,228 +1,154 @@
+#[cfg(any(feature = "stage-bin", test))]
 use core::arch::asm;
+#[cfg(any(feature = "stage-bin", test))]
+use core::mem::{align_of, size_of};
+#[cfg(any(feature = "stage-bin", test))]
+use core::sync::atomic::Ordering;
 
-pub use crate::runtime::{
-    MAX_SMM_CPUS, SMM_PLATFORM_DATA_ICH_GPE0_STS_OFFSET, SMM_PLATFORM_DATA_ICH_PM_BASE,
-    SMM_PLATFORM_FLAG_BSP_ONLY, SMM_PLATFORM_FLAG_ICH_GPE0_64BIT, SMM_PLATFORM_INTEL_ICH,
-    SMM_PLATFORM_NONE, SmmEntryParams, SmmRuntime,
-};
+#[cfg(any(feature = "stage-bin", test))]
+use crate::runtime::{HANDLER_CONFIG_ALIGNMENT, HANDLER_CONFIG_CAPACITY};
+pub use crate::runtime::{SmmEntryParams, SmmRuntime};
 
-pub const SMM_RUNTIME_FLAG_FINALIZED: u32 = 1;
-pub const APM_CNT: u16 = 0x00b2;
+/// Debug console port used by [`debug_trace`].
 pub const DEBUGCON: u16 = 0x0402;
 
+/// Per-entry view handed to the concrete SMM handler.
 pub struct SmmContext<'a> {
-    pub params: &'a mut SmmEntryParams,
-    pub apm_command: u8,
+    params: &'a mut SmmEntryParams,
 }
 
+/// A concrete permanent SMM handler, typically a southbridge SMI dispatcher.
 pub trait SmmHandler {
-    /// Handle one SMI entry.
+    /// Immutable configuration written by the normal-mode installer.
+    ///
+    /// The installer and the handler must name the same type; the driver
+    /// that owns the handler also owns this type.
+    type Config: Copy;
+
+    /// Handle one SMI.
     ///
     /// # Safety
     ///
-    /// The caller must ensure `ctx.params` points at the firmware-provided SMM
-    /// entry parameter block for the current SMI, that the handler is running
-    /// in SMM with the expected CPU state, and that any platform MMIO/PIO
-    /// accesses performed by the implementation are valid for the board.
-    unsafe fn handle(ctx: &mut SmmContext<'_>);
+    /// Called only by the framework-owned SMM entry after it has validated
+    /// the loader parameters and acquired the permanent rendezvous.
+    unsafe fn handle(ctx: &mut SmmContext<'_>, config: &Self::Config);
 }
-
-pub trait SmmBoardHandler {
-    /// Handle an APMC software SMI command.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `ctx` describes the current SMI entry and that
-    /// invoking board-specific APMC handling is valid for the platform state.
-    unsafe fn on_apmc(_ctx: &mut SmmContext<'_>, _command: u8) {}
-
-    /// Handle pending GPE status bits.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `ctx` describes the current SMI entry and that
-    /// `gpe_status` was read from the platform's active GPE status register.
-    unsafe fn on_gpe(_ctx: &mut SmmContext<'_>, _gpe_status: u64) {}
-
-    /// Handle a TCO command byte, optionally returning a response byte.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `ctx` describes the current SMI entry and that
-    /// the command was obtained from the platform's TCO/SMI source.
-    unsafe fn on_tco_command(_ctx: &mut SmmContext<'_>, _command: u8) -> Option<u8> {
-        None
-    }
-}
-
-pub struct NoBoardSmmHandler;
-
-impl SmmBoardHandler for NoBoardSmmHandler {}
 
 impl<'a> SmmContext<'a> {
-    /// Build an SMM context from the raw entry-parameter pointer.
+    /// Build a context from the raw entry-parameter pointer.
     ///
     /// # Safety
     ///
-    /// `params` must be either null or a valid, uniquely borrowed pointer to an
-    /// [`SmmEntryParams`] block for the current SMI. The caller must be running
-    /// in an environment where reading the APM control port is valid.
+    /// `params` must be null or the current CPU's loader-filled entry block.
     #[inline(always)]
     pub unsafe fn from_raw(params: *mut SmmEntryParams) -> Option<Self> {
         if params.is_null() {
             return None;
         }
-        // SAFETY: caller guarantees `params` is a valid, uniquely borrowed
-        // entry-parameter block and port I/O is valid here.
-        unsafe {
-            let params = &mut *params;
-            let apm_command = fstart_core::pio::inb(APM_CNT);
-            Some(Self {
-                params,
-                apm_command,
-            })
-        }
+        let params = unsafe { &mut *params };
+        Some(Self { params })
     }
 
-    /// Return the mutable SMM runtime pointed to by this context.
+    /// Logical CPU index of the current entry.
+    #[inline(always)]
+    pub const fn cpu(&self) -> u32 {
+        self.params.cpu
+    }
+
+    #[cfg(any(feature = "stage-bin", test))]
+    #[inline(always)]
+    fn runtime_ptr(&self) -> Option<*mut SmmRuntime> {
+        (self.params.runtime != 0).then_some(self.params.runtime as *mut SmmRuntime)
+    }
+
+    /// Copy the installer-written handler configuration.
+    ///
+    /// Returns `None` unless the runtime records exactly `size_of::<T>()`
+    /// bytes at an aligned offset inside SMRAM.
     ///
     /// # Safety
     ///
-    /// The runtime pointer inside `self.params` must either be zero or point to
-    /// the single live [`SmmRuntime`] instance. The caller must ensure exclusive
-    /// access to the runtime for the duration of the returned borrow.
+    /// `T` must be the type the installer wrote.
+    #[cfg(any(feature = "stage-bin", test))]
     #[inline(always)]
-    pub unsafe fn runtime_mut(&mut self) -> Option<&'static mut SmmRuntime> {
-        // SAFETY: caller guarantees the runtime pointer contract.
-        unsafe { runtime_mut(self.params) }
-    }
-
-    /// Record per-CPU and per-APM-command SMI entry counters.
-    ///
-    /// # Safety
-    ///
-    /// The context runtime pointer must satisfy [`Self::runtime_mut`]'s safety
-    /// requirements. The caller must ensure concurrent SMM handlers serialize
-    /// access appropriately if multiple CPUs may update counters.
-    #[inline(always)]
-    pub unsafe fn record_entry(&mut self) {
-        let cpu = self.params.cpu as usize;
-        let apm_command = self.apm_command;
-        // SAFETY: caller guarantees the runtime pointer contract and that
-        // concurrent counter updates are serialized appropriately.
-        let runtime = unsafe { self.runtime_mut() };
-        let Some(runtime) = runtime else {
-            return;
+    pub(crate) unsafe fn handler_config<T: Copy>(&self) -> Option<T> {
+        let runtime = self.runtime_ptr()?;
+        // SAFETY: the runtime pointer was written by the installer and the
+        // block lives in locked SMRAM for the whole SMI.
+        let (offset, size, smram_base, smram_size) = unsafe {
+            (
+                (*runtime).handler_config_offset as usize,
+                (*runtime).handler_config_size as usize,
+                (*runtime).smram_base as usize,
+                (*runtime).smram_size as usize,
+            )
         };
-
-        unsafe {
-            if cpu < MAX_SMM_CPUS {
-                let count = runtime.cpu_entry_counts.as_mut_ptr().add(cpu);
-                count.write(count.read().wrapping_add(1));
-            }
-
-            runtime.last_apm_command = apm_command as u32;
-            let count = runtime
-                .apm_command_counts
-                .as_mut_ptr()
-                .add(apm_command as usize);
-            count.write(count.read().wrapping_add(1));
+        let start = (runtime as usize).checked_add(offset)?;
+        let end = start.checked_add(size)?;
+        if size != size_of::<T>()
+            || size > HANDLER_CONFIG_CAPACITY
+            || align_of::<T>() > HANDLER_CONFIG_ALIGNMENT
+            || !offset.is_multiple_of(HANDLER_CONFIG_ALIGNMENT)
+            || offset < size_of::<SmmRuntime>()
+            || start < smram_base
+            || end > smram_base.checked_add(smram_size)?
+        {
+            return None;
         }
-    }
-
-    /// OR runtime flags into the SMM runtime block.
-    ///
-    /// # Safety
-    ///
-    /// The context runtime pointer must satisfy [`Self::runtime_mut`]'s safety
-    /// requirements. The caller must ensure the flag update is serialized with
-    /// other SMM runtime users when needed.
-    #[inline(always)]
-    pub unsafe fn set_runtime_flags(&mut self, flags: u32) {
-        // SAFETY: caller guarantees the runtime pointer contract and
-        // serialization of flag updates.
-        if let Some(runtime) = unsafe { self.runtime_mut() } {
-            runtime.flags |= flags;
-        }
+        // SAFETY: the range was validated above and holds a `T` written by
+        // the installer.
+        Some(unsafe { core::ptr::read(start as *const T) })
     }
 }
 
-/// Return the mutable SMM runtime referenced by an entry-parameter block.
-///
-/// # Safety
-///
-/// `params.runtime` must either be zero or point to the single live
-/// [`SmmRuntime`] allocation. The caller must ensure exclusive access to that
-/// runtime for the duration of the returned borrow.
+#[cfg(any(feature = "stage-bin", test))]
 #[inline(always)]
-pub unsafe fn runtime_mut(params: &mut SmmEntryParams) -> Option<&'static mut SmmRuntime> {
-    if params.runtime == 0 {
-        None
+fn claim_owner(owner: &core::sync::atomic::AtomicU32, token: u32) -> bool {
+    owner
+        .compare_exchange(0, token, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+/// Enter the permanent SMI rendezvous.
+///
+/// Exactly one CPU owns shared chipset dispatch. Every other CPU stays in SMM
+/// until the owner releases the lock, then returns through RSM. This matches
+/// coreboot's `smi_obtain_lock()` handling in `smm_module_handler.c`.
+#[cfg(any(feature = "stage-bin", test))]
+#[inline(always)]
+pub(crate) unsafe fn enter_rendezvous(ctx: &SmmContext<'_>) -> bool {
+    let Some(runtime) = ctx.runtime_ptr() else {
+        return false;
+    };
+    let owner = unsafe { &(*runtime).owner };
+    if claim_owner(owner, ctx.cpu().wrapping_add(1)) {
+        true
     } else {
-        // SAFETY: caller guarantees `params.runtime` points to the single live
-        // SmmRuntime with exclusive access.
-        Some(unsafe { &mut *(params.runtime as *mut SmmRuntime) })
+        while owner.load(Ordering::Acquire) != 0 {
+            unsafe { asm!("pause", options(nomem, nostack, preserves_flags)) };
+        }
+        false
     }
 }
 
-/// Try to acquire the SMM handler lock.
-///
-/// # Safety
-///
-/// `runtime` must point to the shared SMM runtime block and its `handler_lock`
-/// field must be accessible with atomic x86 `xchg` semantics. The caller must
-/// release the lock with [`release_handler_lock`] after a successful acquire.
+/// Release the rendezvous taken by [`enter_rendezvous`].
+#[cfg(any(feature = "stage-bin", test))]
 #[inline(always)]
-pub unsafe fn obtain_handler_lock(runtime: &mut SmmRuntime) -> bool {
-    let lock = &mut runtime.handler_lock as *mut u32;
-    let mut old: u32 = 1;
-    // SAFETY: caller guarantees `lock` is accessible with atomic xchg semantics.
-    unsafe {
-        asm!(
-            "xchg dword ptr [{lock}], {old:e}",
-            lock = in(reg) lock,
-            old = inout(reg) old,
-            options(nostack, preserves_flags)
-        );
-    }
-    old == 0
-}
-
-/// Spin until the SMM handler lock becomes free.
-///
-/// # Safety
-///
-/// `runtime` must point to the shared SMM runtime block and its `handler_lock`
-/// field must remain valid while this function spins.
-#[inline(always)]
-pub unsafe fn wait_for_handler_unlock(runtime: &SmmRuntime) {
-    // SAFETY: caller guarantees the lock field stays valid while spinning.
-    while unsafe { core::ptr::read_volatile(&runtime.handler_lock) } != 0 {
-        unsafe { asm!("pause", options(nomem, nostack, preserves_flags)) };
-    }
-}
-
-/// Release the SMM handler lock.
-///
-/// # Safety
-///
-/// The caller must have successfully acquired the lock for `runtime` and must
-/// not release a lock owned by another CPU.
-#[inline(always)]
-pub unsafe fn release_handler_lock(runtime: &mut SmmRuntime) {
-    // SAFETY: caller owns the lock acquired via obtain_handler_lock.
-    unsafe { core::ptr::write_volatile(&mut runtime.handler_lock, 0) };
+pub(crate) unsafe fn leave_rendezvous(ctx: &SmmContext<'_>) {
+    let Some(runtime) = ctx.runtime_ptr() else {
+        return;
+    };
+    let owner = unsafe { &(*runtime).owner };
+    owner.store(0, Ordering::Release);
 }
 
 /// Emit a minimal SMM debug trace for a CPU number.
 ///
 /// # Safety
 ///
-/// The caller must be running on a platform where `DEBUGCON` is decoded and
-/// writing bytes to it is safe for the current firmware phase.
+/// The caller must run where `DEBUGCON` port I/O is permitted.
 #[inline(always)]
 pub unsafe fn debug_trace(cpu: u32) {
-    // SAFETY: caller guarantees DEBUGCON is decoded and safe to write.
     unsafe {
         fstart_core::pio::outb(DEBUGCON, b'S');
         let mut digit = (cpu & 0x0f) as u8;
@@ -231,5 +157,76 @@ pub unsafe fn debug_trace(cpu: u32) {
         }
         fstart_core::pio::outb(DEBUGCON, digit.wrapping_add(b'0'));
         fstart_core::pio::outb(DEBUGCON, b'\n');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(cpu: u32, runtime: u64) -> SmmEntryParams {
+        SmmEntryParams {
+            cpu,
+            stack_size: 0,
+            stack_top: 0,
+            common_entry: 0,
+            runtime,
+            coreboot_module_args: 0,
+            cr3: 0,
+            entry_base: 0,
+        }
+    }
+
+    #[test]
+    fn owner_enter_leave_and_failed_claim_preserve_the_token() {
+        let mut runtime = SmmRuntime::new(0, 0, 1, 0x400, 0, 0);
+        let mut entry = params(0, core::ptr::addr_of_mut!(runtime) as u64);
+        let ctx = SmmContext { params: &mut entry };
+        assert!(unsafe { enter_rendezvous(&ctx) });
+        assert_eq!(runtime.owner.load(Ordering::Acquire), 1);
+        assert!(!claim_owner(&runtime.owner, 2));
+        assert_eq!(runtime.owner.load(Ordering::Acquire), 1);
+        unsafe { leave_rendezvous(&ctx) };
+        assert_eq!(runtime.owner.load(Ordering::Acquire), 0);
+    }
+
+    #[repr(C, align(16))]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Config([u16; 4]);
+
+    #[repr(C)]
+    struct Fixture {
+        runtime: SmmRuntime,
+        config: Config,
+    }
+
+    #[test]
+    #[allow(unused_assignments)]
+    fn handler_config_requires_exact_size_inside_smram() {
+        let mut fixture = Fixture {
+            runtime: SmmRuntime::new(0, 0, 1, 0x400, 0, 0),
+            config: Config([0x600, 0x20, 2, 0]),
+        };
+        let base = core::ptr::addr_of!(fixture) as u64;
+        let offset = core::mem::offset_of!(Fixture, config) as u32;
+        fixture.runtime = SmmRuntime::new(
+            base,
+            size_of::<Fixture>() as u64,
+            1,
+            0x400,
+            offset,
+            size_of::<Config>() as u32,
+        );
+        let mut entry = params(0, base);
+        let ctx = SmmContext { params: &mut entry };
+        assert_eq!(
+            unsafe { ctx.handler_config::<Config>() },
+            Some(Config([0x600, 0x20, 2, 0]))
+        );
+        assert_eq!(unsafe { ctx.handler_config::<[u16; 2]>() }, None);
+
+        fixture.runtime.smram_size = 8;
+        let ctx = SmmContext { params: &mut entry };
+        assert_eq!(unsafe { ctx.handler_config::<Config>() }, None);
     }
 }

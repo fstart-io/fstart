@@ -3,7 +3,9 @@
 //! Mirrors the per-CPU MSR setup in coreboot's `cpu/intel/model_6fx` driver
 //! and optionally supplies an Intel microcode blob to [`crate::x86::mp`].
 
-use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuVendor};
+use crate::x86::cpu::intel::feature_control;
+use crate::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
+use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor};
 use crate::x86::msr::{rdmsr, wrmsr};
 use crate::x86::mtrr;
 
@@ -137,6 +139,28 @@ impl Core2CpuDriver {
     }
 }
 
+/// Model 0Fh (Merom/Conroe) has the alternative SMRR pair; model 16h
+/// (Merom-L) the architectural one. Same split as coreboot's
+/// `cpu_has_alternative_smrr()`.
+fn smrr_pair_for(identity: CpuIdentity) -> SmrrPair {
+    if identity.model() == 0x0f {
+        SmrrPair::Core2Alternative
+    } else {
+        SmrrPair::Architectural
+    }
+}
+
+impl SmmCpu for Core2CpuDriver {
+    fn smm_save_state_format(&self) -> X86SaveStateFormat {
+        X86SaveStateFormat::IntelEm64t
+    }
+
+    /// Assumes every package in the system is the same model as the BSP.
+    fn smrr_pair(&self) -> Option<SmrrPair> {
+        Some(smrr_pair_for(CpuIdentity::current()))
+    }
+}
+
 impl CpuDriver for Core2CpuDriver {
     fn name(&self) -> &'static str {
         "Intel Core/Core 2"
@@ -166,6 +190,10 @@ impl CpuDriver for Core2CpuDriver {
         configure_c_states(self.pmbase);
         configure_misc();
         configure_pic_thermal_sensors();
+        let smrr = smrr_pair_for(CpuIdentity::current()).feature_control_bits();
+        // SAFETY: Core/Core 2 CPUs implement IA32_FEATURE_CONTROL, and
+        // `feature_control_bits` only names bits this model has.
+        unsafe { feature_control::enable_and_lock(smrr) };
         fstart_log::info!("cpu: Core 2 MSR configuration complete");
     }
 }

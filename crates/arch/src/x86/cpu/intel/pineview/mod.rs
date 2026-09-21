@@ -9,6 +9,8 @@
 //!
 //! This matches coreboot's `cpu/intel/model_106cx/model_106cx_init.c`.
 
+use crate::x86::cpu::intel::feature_control;
+use crate::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
 use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuVendor};
 use crate::x86::msr::{rdmsr, wrmsr};
 use crate::x86::mtrr;
@@ -177,6 +179,17 @@ impl PineviewCpuDriver {
     }
 }
 
+impl SmmCpu for PineviewCpuDriver {
+    fn smm_save_state_format(&self) -> X86SaveStateFormat {
+        X86SaveStateFormat::IntelEm64t
+    }
+
+    /// Model 1Ch Atoms use the alternative SMRR pair (coreboot `model_106cx`).
+    fn smrr_pair(&self) -> Option<SmrrPair> {
+        Some(SmrrPair::Core2Alternative)
+    }
+}
+
 impl CpuDriver for PineviewCpuDriver {
     fn name(&self) -> &'static str {
         "Intel Atom Pineview (106cx)"
@@ -206,6 +219,10 @@ impl CpuDriver for PineviewCpuDriver {
         log_mtrr_solution("per-CPU ramstage layout");
         configure_c_states(self.pmbase);
         configure_misc();
+        let smrr = SmrrPair::Core2Alternative.feature_control_bits();
+        // SAFETY: model 1Ch Atoms implement IA32_FEATURE_CONTROL, and
+        // `feature_control_bits` only names bits this model has.
+        unsafe { feature_control::enable_and_lock(smrr) };
         fstart_log::info!("cpu: Pineview MSR configuration complete");
     }
 

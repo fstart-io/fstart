@@ -6,7 +6,7 @@
 //! `mainboard/emulation/qemu-q35/memmap.c`) and the ICH9 PM I/O block for
 //! [`IchSmi`] (`southbridge/intel/common/smi.c`).
 
-use fstart_arch::x86::cpu::intel::smm::SmramControl;
+use fstart_arch::x86::cpu::intel::smm::{SmmCpu, SmramControl, SmrrPair, X86SaveStateFormat};
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_intel::southbridge::smi::{ICH8_GPE0, IchSmi};
 
@@ -30,6 +30,22 @@ pub const Q35_PMBASE: u16 = 0x0600;
 /// SMI routing for the emulated ICH9: ICH8-style 64-bit GPE0 at 0x20.
 pub(crate) const fn ich9_smi() -> IchSmi {
     IchSmi::new(Q35_PMBASE, ICH8_GPE0)
+}
+
+/// SMM facts of QEMU's emulated x86_64 CPU, whatever `-cpu` model is chosen.
+pub(crate) struct QemuSmmCpu;
+
+impl SmmCpu for QemuSmmCpu {
+    /// QEMU writes the AMD64 layout (revision `0x20064`) for every x86_64
+    /// CPU model, like coreboot's q35 `relocation_handler` expects.
+    fn smm_save_state_format(&self) -> X86SaveStateFormat {
+        X86SaveStateFormat::Amd64
+    }
+
+    /// QEMU does not emulate SMRR.
+    fn smrr_pair(&self) -> Option<SmrrPair> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

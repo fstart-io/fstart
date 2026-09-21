@@ -120,12 +120,6 @@ pub trait IntelEarlyPlatform: Sized + 'static {
     /// so resume skips the modeset flicker.
     #[cfg(feature = "acpi")]
     const RESUME_DISPLAY_INIT: bool;
-    /// Dispatch shared SMI state only on logical CPU 0.
-    ///
-    /// Pineview requires this because locked exchanges against its TSEG mapping
-    /// stall. Other platforms retain normal serialized dispatch.
-    #[cfg(feature = "mp")]
-    const SMM_BSP_ONLY_DISPATCH: bool = false;
     /// Board-facing chipset policy, built in `.rodata` by the board.
     type Config: IntelChipsetConfig<Northbridge = Self::Northbridge, Southbridge = Self::Southbridge>
         + 'static;
@@ -135,9 +129,10 @@ pub trait IntelEarlyPlatform: Sized + 'static {
     type Southbridge: IntelSouthbridgeDriver
         + fstart_arch::x86::cpu::intel::smm::SmiControl
         + SouthbridgeAcpi<Self::Southbridge>;
-    /// CPU family driver for MP bring-up.
+    /// CPU family driver for MP bring-up; also supplies the CPU-model facts
+    /// the shared SMM installer needs.
     #[cfg(feature = "mp")]
-    type Cpu: fstart_arch::x86::mp::CpuDriver;
+    type Cpu: fstart_arch::x86::mp::CpuDriver + fstart_arch::x86::cpu::intel::smm::SmmCpu;
     #[cfg(feature = "mp")]
     fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu;
     /// Platform-owned ACPI namespace context handed to `AcpiDevice` emitters.

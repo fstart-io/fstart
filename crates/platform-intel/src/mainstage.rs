@@ -172,25 +172,31 @@ fn init_mp<P: IntelEarlyPlatform>(
     northbridge: &P::Northbridge,
     southbridge: &P::Southbridge,
     max_cpus: u16,
+    resume: bool,
 ) -> Result<(), ServiceError> {
     // APs must run the same updated microcode as the BSP, whose update
     // happens in pre-CAR assembly; the blob sits in boot flash.
     let cpu = P::cpu_driver(crate::intel_microcode_blob());
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
-    let smm = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
-        P::NAME,
-        northbridge,
-        southbridge,
-        P::SMM_BSP_ONLY_DISPATCH,
-    );
-    fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
+    let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
         cpu_drivers: &drivers,
-        smm: crate::SMM_IMAGE.map(|_| &smm as &dyn fstart_arch::x86::mp::SmmOps),
-        smm_image: crate::SMM_IMAGE,
         max_cpus,
     })
-    .map(|_| ())
-    .map_err(|_| ServiceError::HardwareError)
+    .map_err(|_| ServiceError::HardwareError)?;
+    if let Some(image) = crate::SMM_IMAGE {
+        let smm = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
+            P::NAME,
+            northbridge,
+            southbridge,
+            &cpu,
+            resume,
+        );
+        if let Err(error) = smm.install(&mp, image) {
+            fstart_log::error!("{} SMM installation failed: {}", P::NAME, error.name());
+            return Err(ServiceError::HardwareError);
+        }
+    }
+    Ok(())
 }
 
 pub struct IntelMainstage<P, Hooks, C>
@@ -348,7 +354,12 @@ where
         self.hooks
             .after_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
         #[cfg(feature = "mp")]
-        init_mp::<P>(&self.northbridge, &self.southbridge, self.max_cpus)?;
+        init_mp::<P>(
+            &self.northbridge,
+            &self.southbridge,
+            self.max_cpus,
+            self.resume,
+        )?;
         Ok(())
     }
 

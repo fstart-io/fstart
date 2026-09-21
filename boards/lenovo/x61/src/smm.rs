@@ -1,7 +1,7 @@
 //! Lenovo ThinkPad X61 mainboard SMM policy.
 
-use fstart_driver_intel::southbridge::smi::IchSmmHandler;
-use fstart_platform_intel::smm::{SMM_PLATFORM_INTEL_ICH, SmmBoardHandler, SmmContext};
+use fstart_driver_intel::southbridge::smi::{IchBoardSmmHandler, IchSmmHandler};
+use fstart_platform_intel::smm::SmmContext;
 
 use crate::{Board, mainboard::dock};
 
@@ -13,7 +13,7 @@ pub const SMI_DOCK_DISCONNECT: u8 = 0x02;
 /// Board-specific X61 SMM handler.
 pub struct LenovoX61SmmHandler;
 
-impl SmmBoardHandler for LenovoX61SmmHandler {
+impl IchBoardSmmHandler for LenovoX61SmmHandler {
     #[allow(unused_unsafe)]
     unsafe fn on_tco_command(_ctx: &mut SmmContext<'_>, command: u8) -> Option<u8> {
         // SAFETY: SMM dispatch runs with the platform I/O decode active.
@@ -30,8 +30,4 @@ impl SmmBoardHandler for LenovoX61SmmHandler {
     }
 }
 
-fstart_platform_intel::smm::smm_bin!(
-    Board,
-    SMM_PLATFORM_INTEL_ICH,
-    IchSmmHandler<LenovoX61SmmHandler>
-);
+fstart_platform_intel::smm::smm_bin!(Board, IchSmmHandler<LenovoX61SmmHandler>);
