@@ -6,8 +6,7 @@
 //! the board to that handler.
 
 use fstart_driver_intel::southbridge::smi::IchSmmHandler;
-use fstart_platform_qemu::smm::SMM_PLATFORM_INTEL_ICH;
 
 use crate::Board;
 
-fstart_platform_qemu::smm::smm_bin!(Board, SMM_PLATFORM_INTEL_ICH, IchSmmHandler);
+fstart_platform_qemu::smm::smm_bin!(Board, IchSmmHandler);

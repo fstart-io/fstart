@@ -1105,9 +1105,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             rustflags: [
                 "-Cpanic=abort",
                 "-Copt-level=s",
-                // Static relocation, matching the Intel SMM unit: the image
-                // ships .text-only linked at -Ttext=0 with no loader, so
-                // calls must be relative direct calls, not GOT-indirect.
+                // Direct relative calls; absolute cross-section references are audited.
                 "-Crelocation-model=static",
                 "-Cno-redzone=yes",
                 "-Clinker-plugin-lto=no",

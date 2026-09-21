@@ -58,11 +58,8 @@ pub fn compilation_plan(
         release_only: true,
         linker_script: None,
         rustflags: flags(
-            // Static relocation: the SMM image ships .text-only linked at
-            // -Ttext=0 with no loader, so every call must be a relative
-            // direct call. PIC would route even direct source-level calls
-            // through unresolvable GOT slots and fail the blob check; keep
-            // it in line with every other firmware unit in the tree.
+            // Static-small emits direct relative calls; the retained-relocation
+            // audit rejects any load-base-dependent cross-section reference.
             "-Cpanic=abort -Copt-level=s -Crelocation-model=static -Cno-redzone=yes -Clinker-plugin-lto=no -Cembed-bitcode=no -Zfunction-sections=yes",
         ),
         environment_values: std::collections::BTreeMap::new(),

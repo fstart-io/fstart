@@ -1,101 +1,62 @@
-/// Maximum number of CPUs represented in the fixed runtime block.
-///
-/// This mirrors the current `fstart_arch::x86::mp` static mailbox limit. Boards may
-/// request fewer precompiled entry points, but they may not exceed this ABI cap
-/// without changing the SMM image format version.
-pub const MAX_SMM_CPUS: usize = 64;
+use core::sync::atomic::AtomicU32;
 
-/// No platform SMI dispatch backend.
-pub const SMM_PLATFORM_NONE: u32 = 0;
-/// Intel ICH-style PMBASE I/O SMI dispatch backend.
-pub const SMM_PLATFORM_INTEL_ICH: u32 = 1;
+/// Bytes reserved in every image for the concrete handler's configuration.
+pub const HANDLER_CONFIG_CAPACITY: usize = 256;
+/// Alignment of the handler configuration block.
+pub const HANDLER_CONFIG_ALIGNMENT: usize = 16;
 
-/// Intel ICH platform flag: clear a second 32-bit GPE0_STS register.
+/// Runtime block shared by every CPU's permanent SMM entry.
 ///
-/// ICH7 has one 32-bit GPE0 block at PMBASE+0x28. ICH8 and newer split
-/// GPE0_STS into low/high dwords at PMBASE+0x20/0x24, with GPE0_EN at 0x28.
-pub const SMM_PLATFORM_FLAG_ICH_GPE0_64BIT: u32 = 1 << 0;
-/// Dispatch shared chipset SMI state only on logical CPU 0.
-///
-/// Pineview/ICH7 cannot use the normal locked exchange in TSEG without
-/// stalling, so secondary CPUs return after entering the permanent handler.
-pub const SMM_PLATFORM_FLAG_BSP_ONLY: u32 = 1 << 1;
-
-/// Index of the Intel ICH PMBASE value in [`SmmEntryParams::platform_data`].
-pub const SMM_PLATFORM_DATA_ICH_PM_BASE: usize = 0;
-/// Index of the Intel ICH GPE0_STS offset in [`SmmEntryParams::platform_data`].
-pub const SMM_PLATFORM_DATA_ICH_GPE0_STS_OFFSET: usize = 1;
-
-/// Runtime block consumed by the fstart SMM handler.
-///
-/// Firmware writes this structure into SMRAM before locking the region.  The
-/// SMM handler is PIC and discovers this block from the copied handler blob
-/// rather than relying on link-time absolute addresses.
+/// The installer writes it into SMRAM before lock. It holds no pointers; the
+/// handler configuration is addressed relative to the start of this block.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct SmmRuntime {
     /// Permanent SMRAM/TSEG base.
     pub smram_base: u64,
     /// Permanent SMRAM/TSEG size.
     pub smram_size: u64,
-    /// Number of active CPU entries.
+    /// Number of CPUs whose SMBASE points at this image.
     pub num_cpus: u16,
-    /// Size of each CPU save-state area.
-    pub save_state_size: u16,
+    /// Reserved; zero.
+    pub reserved: u16,
     /// Per-CPU SMM stack size.
     pub stack_size: u32,
-    /// Image-relative handler/data region offset used to build this runtime.
-    pub common_offset: u32,
-    /// Image-relative entry descriptor table offset.
-    pub entries_offset: u32,
-    /// Save-state top address for each CPU, indexed by logical CPU number.
-    pub save_state_top: [u64; MAX_SMM_CPUS],
-    /// Runtime state flags maintained by the SMM handler.
-    pub flags: u32,
-    /// Global SMI handler serialization lock.
-    pub handler_lock: u32,
-    /// Last APMC command observed by the SMM handler.
-    pub last_apm_command: u32,
-    /// Per-APMC-command dispatch counters.
-    pub apm_command_counts: [u32; 256],
-    /// Per-logical-CPU SMI entry counters.
-    pub cpu_entry_counts: [u32; MAX_SMM_CPUS],
+    /// Offset of the handler configuration from the start of this block.
+    pub handler_config_offset: u32,
+    /// Size of the handler configuration actually written by the installer.
+    pub handler_config_size: u32,
+    /// Rendezvous owner: 0 when free, otherwise logical CPU index + 1.
+    pub owner: AtomicU32,
 }
 
 impl SmmRuntime {
-    /// Construct an empty runtime block for `num_cpus` CPUs.
+    /// Construct the runtime block written by the installer.
     pub const fn new(
         smram_base: u64,
         smram_size: u64,
         num_cpus: u16,
-        save_state_size: u16,
         stack_size: u32,
-        common_offset: u32,
-        entries_offset: u32,
+        handler_config_offset: u32,
+        handler_config_size: u32,
     ) -> Self {
         Self {
             smram_base,
             smram_size,
             num_cpus,
-            save_state_size,
+            reserved: 0,
             stack_size,
-            common_offset,
-            entries_offset,
-            save_state_top: [0; MAX_SMM_CPUS],
-            flags: 0,
-            handler_lock: 0,
-            last_apm_command: 0,
-            apm_command_counts: [0; 256],
-            cpu_entry_counts: [0; MAX_SMM_CPUS],
+            handler_config_offset,
+            handler_config_size,
+            owner: AtomicU32::new(0),
         }
     }
 }
 
-/// Per-entry PIC parameter block filled by the firmware loader after copying
-/// each entry stub to `SMBASE + 0x8000`.
+/// Per-entry parameter block inside each copied entry stub.
 ///
-/// This block is data, not relocated code.  fstart and coreboot may patch it
-/// in SMRAM without violating the image's no-code-relocation contract.
+/// This block is data, not code: the loader patches it after copying the stub
+/// to `SMBASE + 0x8000` without relocating any instruction.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmmEntryParams {
@@ -105,36 +66,26 @@ pub struct SmmEntryParams {
     pub stack_size: u32,
     /// Top of this CPU's stack.
     pub stack_top: u64,
-    /// Absolute address of the copied SMM handler entry.
+    /// Absolute address of the function the stub calls.
     pub common_entry: u64,
-    /// Absolute address of the copied runtime block, or 0 if absent.
+    /// Absolute address of the [`SmmRuntime`]. The temporary relocation stub
+    /// uses this field as its callback argument instead.
     pub runtime: u64,
-    /// Absolute address of this CPU's coreboot-compatible module args block,
-    /// or 0 if the image was built without that compatibility feature.
+    /// Absolute address of this CPU's coreboot module-args block, or 0.
     pub coreboot_module_args: u64,
-    /// CR3 to use before entering long mode on x86_64.
+    /// CR3 loaded before entering long mode.
     pub cr3: u64,
-    /// Absolute address where this entry stub was copied.
-    ///
-    /// SMM CS has a hidden full SMBASE but only a truncated visible selector on
-    /// high TSEG placements, so the 16-bit entry code cannot derive its own
-    /// physical base from `cs << 4`.  The loader patches this data field.
+    /// Absolute address where this stub was copied. SMM CS has the full
+    /// SMBASE in its hidden base but only a truncated selector, so the 16-bit
+    /// entry code cannot derive its own address from `cs << 4`.
     pub entry_base: u64,
-    /// Platform dispatch kind consumed by the Rust SMM handler.
-    pub platform_kind: u32,
-    /// Platform dispatch flags.
-    pub platform_flags: u32,
-    /// Opaque platform dispatch data.
-    pub platform_data: [u64; 4],
 }
 
 /// Coreboot-compatible module argument block.
 ///
-/// This intentionally keeps the stable subset needed by coreboot consumers:
-/// the logical CPU index and the stack canary pointer passed from the SMM
-/// entry stub.  Fields are fixed-width so the generated image is independent
-/// of the host tool's pointer width.  Additional coreboot-specific runtime data
-/// should be put behind a versioned extension rather than changing this prefix.
+/// The stable subset coreboot consumers need: the logical CPU index and the
+/// stack canary pointer. Fields are fixed-width so the image does not depend
+/// on the host tool's pointer width.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CorebootModuleArgs {

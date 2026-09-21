@@ -360,14 +360,7 @@ mod stage {
             let cpu = fstart_arch::x86::mp::GenericX86CpuDriver;
             let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
             let smi = crate::q35_smm::ich9_smi();
-            let smm_flow = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
-                "Q35",
-                &self.hostbridge,
-                &smi,
-                false,
-            );
-            let smm = SMM_IMAGE.map(|_| &smm_flow as &dyn fstart_arch::x86::mp::SmmOps);
-            if smm.is_some() {
+            if SMM_IMAGE.is_some() {
                 // Locking SMM hides TSEG from non-SMM access. Firmware
                 // statics live below the plan-time reservation by
                 // construction; halt loudly instead of corrupting the
@@ -394,14 +387,25 @@ mod stage {
             // installer never addresses stubs that do not exist.
             let max_cpus = self.fw_cfg.max_cpus().min(Self::SMM_ENTRY_COUNT).max(1);
             fstart_log::info!("qemu-q35: MP init with {} CPUs", max_cpus);
-            fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
+            let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
                 cpu_drivers: &drivers,
-                smm,
-                smm_image: SMM_IMAGE,
                 max_cpus,
             })
-            .map(|_| ())
-            .map_err(|_| ServiceError::HardwareError)
+            .map_err(|_| ServiceError::HardwareError)?;
+            if let Some(image) = SMM_IMAGE {
+                let smm = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
+                    "Q35",
+                    &self.hostbridge,
+                    &smi,
+                    &crate::q35_smm::QemuSmmCpu,
+                    false,
+                );
+                if let Err(error) = smm.install(&mp, image) {
+                    fstart_log::error!("Q35 SMM installation failed: {}", error.name());
+                    return Err(ServiceError::HardwareError);
+                }
+            }
+            Ok(())
         }
 
         fn mount_boot_media(&self) -> Result<(), ServiceError> {
