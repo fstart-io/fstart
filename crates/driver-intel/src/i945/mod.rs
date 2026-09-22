@@ -836,7 +836,7 @@ impl IntelI945 {
         let p2peg = ecam::EcamDevice::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
         let mch = self.mchbar();
 
-        p2peg.or16(hostbridge::DEVEN, hostbridge::DEVEN_D1F0);
+        Self::hb().or16(hostbridge::DEVEN, hostbridge::DEVEN_D1F0);
         p2peg.and32(PEGCC, !(1 << 8));
 
         // Force PCIRST# via secondary bus reset.
@@ -865,8 +865,8 @@ impl IntelI945 {
         }
         let peg_plugin = ecam::EcamDevice::new(0x0a, 0, 0);
         let mut id = peg_plugin.read32(0x00);
-        if (id == 0 || id == 0xffff_ffff) && timeout != 0 {
-            // First training attempt raced; retry at x1 before giving up.
+        if id == 0 || id == 0xffff_ffff {
+            // Retry at x1 before giving up.
             p2peg.modify32(PEGSTS, !(0xf << 1), 1);
             p2peg.or8(0x3e, 1 << 6);
             p2peg.and8_or8(0x3e, !(1 << 6), 0);
