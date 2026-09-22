@@ -1,0 +1,509 @@
+//! Intel GM45 (Cantiga) northbridge.
+//!
+//! This module implements the early host-bridge decode, board-selected graphics
+//! function policy, and readback contracts. DRAM initialization is deliberately
+//! unavailable until the GM45 DDR2/DDR3 training sequence is ported and verified.
+
+use fstart_core::mmio::MmioReadWrite;
+use fstart_core::services::memory_detect::{
+    E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
+};
+use fstart_core::services::{MemoryController, ServiceError};
+use fstart_pci::ecam;
+use fstart_pci::pci_type0_config;
+use fstart_pci::{
+    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
+};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::{register_bitfields, register_structs};
+
+const DEVEN_HOST: u32 = 1;
+const DEVEN_PEG: u32 = 1 << 1;
+const DEVEN_IGD: u32 = 1 << 3;
+const DEVEN_IGD_SECONDARY: u32 = 1 << 4;
+const PCI_PIO_BASE: u64 = 0x1000;
+const PCI_PIO_SIZE: u64 = 0xf000;
+
+pci_type0_config! {
+    /// GM45 host bridge register layout (PCI 00:00.0).
+    pub struct Gm45HostBridgePciConfig {
+        (0x40 => pub epbar_lo: MmioReadWrite<u32>),
+        (0x44 => pub epbar_hi: MmioReadWrite<u32>),
+        (0x48 => pub mchbar_lo: MmioReadWrite<u32>),
+        (0x4c => pub mchbar_hi: MmioReadWrite<u32>),
+        (0x50 => _reserved_hb0),
+        (0x52 => pub ggc: MmioReadWrite<u16>),
+        (0x54 => pub deven: MmioReadWrite<u32>),
+        (0x58 => _reserved_hb1),
+        (0x68 => pub dmibar_lo: MmioReadWrite<u32>),
+        (0x6c => pub dmibar_hi: MmioReadWrite<u32>),
+        (0x70 => _reserved_hb2),
+        (0x78 => pub pmbase: MmioReadWrite<u16>),
+        (0x7a => _reserved_hb3),
+        (0x90 => pub pam: [MmioReadWrite<u8>; 7]),
+        (0x97 => _reserved_hb4),
+        (0x9d => pub smram: MmioReadWrite<u8>),
+        (0x9e => pub esmramc: MmioReadWrite<u8>),
+        (0x9f => _reserved_hb5),
+        (0xa0 => pub tom: MmioReadWrite<u16>),
+        (0xa2 => pub touud: MmioReadWrite<u16>),
+        (0xa4 => _reserved_hb6),
+        (0xb0 => pub tolud: MmioReadWrite<u16>),
+        (0xb2 => @END),
+    }
+}
+
+/// Graphics functions requested by board policy (not a board identity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gm45GraphicsPolicy {
+    Integrated,
+    Discrete,
+    Hybrid,
+}
+
+impl Gm45GraphicsPolicy {
+    const fn deven_bits(self) -> u32 {
+        match self {
+            Self::Integrated => DEVEN_IGD | DEVEN_IGD_SECONDARY,
+            Self::Discrete => DEVEN_PEG,
+            Self::Hybrid => DEVEN_PEG | DEVEN_IGD | DEVEN_IGD_SECONDARY,
+        }
+    }
+}
+
+/// Typed, immutable chipset configuration. A board may override graphics
+/// selection at runtime after probing its GPIO/EC using `set_graphics_policy`.
+#[derive(Debug, Clone, Copy)]
+pub struct IntelGm45Config {
+    pub mchbar: u64,
+    pub dmibar: u64,
+    pub epbar: u64,
+    pub ecam_base: u64,
+    /// 64, 128 or 256 buses.
+    pub ecam_buses: u16,
+    pub pmbase: u16,
+    /// Default graphics policy; the board selects the actual runtime policy.
+    pub graphics: Gm45GraphicsPolicy,
+    /// SPD slot order: channel 0 slot 0/1, channel 1 slot 0/1.
+    pub spd_addresses: [u8; 4],
+    pub acpi_name: Option<&'static str>,
+}
+
+impl IntelGm45Config {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            mchbar: 0xfed1_4000,
+            dmibar: 0xfed1_8000,
+            epbar: 0xfed1_9000,
+            ecam_base: 0xe000_0000,
+            ecam_buses: 64,
+            pmbase: 0x500,
+            graphics: Gm45GraphicsPolicy::Integrated,
+            spd_addresses: [0x50, 0, 0x51, 0],
+            acpi_name: Some("PCI0"),
+        }
+    }
+}
+
+impl Default for IntelGm45Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+register_bitfields![u16,
+    /// GM45 DMIBAR link de-emphasis and equalization.
+    DmiLinkCtl2 [DEEMPH_EQ OFFSET(10) NUMBITS(2) []]
+];
+register_structs! {
+    /// Sparse view of GM45 early DMIBAR registers.
+    pub Gm45DmiBarRegs {
+        (0x0000 => _pad0: [u8; 0x204]),
+        (0x0204 => link_ctl2: MmioReadWrite<u16, DmiLinkCtl2::Register>),
+        (0x0206 => @END),
+    }
+}
+
+/// GM45 driver: early decode and readback of the trained memory map.
+pub struct IntelGm45 {
+    config: &'static IntelGm45Config,
+    graphics: Gm45GraphicsPolicy,
+    mmio32_window: Option<(u64, u64)>,
+}
+
+impl IntelGm45 {
+    /// Set graphics routing after board detection and before `early_init`.
+    /// The board owns discrete GPU detection, panel muxing and power rails.
+    pub fn set_graphics_policy(&mut self, policy: Gm45GraphicsPolicy) {
+        self.graphics = policy;
+    }
+
+    pub fn graphics_policy(&self) -> Gm45GraphicsPolicy {
+        self.graphics
+    }
+
+    fn hostbridge(&self) -> &'static Gm45HostBridgePciConfig {
+        // SAFETY: ECAM was installed in pre_console_init before hostbridge access.
+        unsafe { ecam::EcamDevice::new(0, 0, 0).regs::<Gm45HostBridgePciConfig>() }
+    }
+
+    fn enable_ecam(&self) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let length = match self.config.ecam_buses {
+                256 => 0,
+                128 => 1,
+                64 => 2,
+                _ => unreachable!(),
+            };
+            // SAFETY: the only legacy config accesses, needed to enable ECAM.
+            unsafe {
+                fstart_core::pio::pci_cfg_write32(0, 0, 0, 0x64, 0);
+                fstart_core::pio::pci_cfg_write32(
+                    0,
+                    0,
+                    0,
+                    0x60,
+                    (self.config.ecam_base as u32) | (length << 1) | 1,
+                );
+            }
+        }
+        ecam::init(self.config.ecam_base as usize);
+    }
+
+    fn setup_early_decode(&self) {
+        let hb = self.hostbridge();
+        hb.mchbar_lo.set(self.config.mchbar as u32 | 1);
+        hb.mchbar_hi.set(0);
+        hb.dmibar_lo.set(self.config.dmibar as u32 | 1);
+        hb.dmibar_hi.set(0);
+        hb.epbar_lo.set(self.config.epbar as u32 | 1);
+        hb.epbar_hi.set(0);
+        hb.pmbase.set(self.config.pmbase | 1);
+        hb.pam[0].set(0x30);
+        for pam in &hb.pam[1..] {
+            pam.set(0x33);
+        }
+        // Leave ME/other host functions intact; only change board-selected
+        // graphics and PEG functions, unlike the historical all-bit rewrite.
+        hb.deven.set(
+            (hb.deven.get() & !(DEVEN_PEG | DEVEN_IGD | DEVEN_IGD_SECONDARY))
+                | DEVEN_HOST
+                | self.graphics.deven_bits(),
+        );
+        // romstage.c clears DMILCTL2 deemphasis/EQ bits before RAM training.
+        // SAFETY: DMIBAR was enabled above; the overlay covers its link register.
+        let dmi = unsafe { &*(self.config.dmibar as *const Gm45DmiBarRegs) };
+        dmi.link_ctl2.modify(DmiLinkCtl2::DEEMPH_EQ.val(0));
+    }
+
+    fn tolud(&self) -> u32 {
+        u32::from(self.hostbridge().tolud.get() & 0xfff0) << 16
+    }
+    fn tom(&self) -> u64 {
+        u64::from(self.hostbridge().tom.get() & 0x1ff) << 27
+    }
+    fn touud(&self) -> u64 {
+        u64::from(self.hostbridge().touud.get()) << 20
+    }
+
+    fn tseg_size_from_esmramc(esmramc: u8) -> Option<u32> {
+        if esmramc & 1 == 0 {
+            return Some(0);
+        }
+        match (esmramc >> 1) & 3 {
+            0 => Some(1 << 20),
+            1 => Some(2 << 20),
+            2 => Some(8 << 20),
+            _ => None,
+        }
+    }
+
+    // coreboot gm45/memmap.c: graphics stolen and GTT follow TOLUD, then TSEG.
+    fn reserved_memory(gcc: u16, esmramc: u8) -> Option<u32> {
+        const UMA_MIB: [u16; 14] = [0, 1, 4, 8, 16, 32, 48, 64, 128, 256, 96, 160, 224, 352];
+        let mut reserved = Self::tseg_size_from_esmramc(esmramc)?;
+        if gcc & 2 == 0 {
+            let gms = usize::from((gcc >> 4) & 0xf);
+            let uma = u32::from(*UMA_MIB.get(gms)?) << 20;
+            let gtt = match (gcc >> 8) & 0xf {
+                0 => 0,
+                1 => 1 << 20,
+                3 | 9 => 2 << 20,
+                10 => 3 << 20,
+                11 => 4 << 20,
+                _ => return None,
+            };
+            reserved = reserved.checked_add(uma)?.checked_add(gtt)?;
+        }
+        Some(reserved)
+    }
+
+    fn memory_map(&self) -> Result<(u32, u32, u64), ServiceError> {
+        let hb = self.hostbridge();
+        let tolud = self.tolud();
+        let reserved = Self::reserved_memory(hb.ggc.get(), hb.esmramc.get())
+            .ok_or(ServiceError::HardwareError)?;
+        let usable = tolud
+            .checked_sub(reserved)
+            .ok_or(ServiceError::HardwareError)?;
+        let tom = self.tom();
+        let raw_touud = self.touud();
+        let max_reclaim = 0x1_0000_0000u64.saturating_sub(u64::from(tolud));
+        let touud = if raw_touud > 0x1_0000_0000 && raw_touud <= tom.saturating_add(max_reclaim) {
+            raw_touud
+        } else {
+            tom
+        };
+        if usable <= 0x10_0000 || tolud <= 0x10_0000 || tom <= 0x10_0000 || u64::from(tolud) > tom {
+            return Err(ServiceError::HardwareError);
+        }
+        Ok((usable, tolud, touud))
+    }
+}
+
+impl crate::IntelEcamConfig for IntelGm45Config {
+    fn ecam_base(&self) -> u64 {
+        self.ecam_base
+    }
+}
+
+impl crate::IntelNorthbridgeDriver for IntelGm45 {
+    type Config = IntelGm45Config;
+    fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
+        let buses = config.ecam_buses;
+        if !matches!(buses, 64 | 128 | 256)
+            || config.ecam_base == 0
+            || config.ecam_base & (u64::from(buses) * 1024 * 1024 - 1) != 0
+            || config
+                .ecam_base
+                .checked_add(u64::from(buses) << 20)
+                .is_none_or(|end| end > 0x1_0000_0000)
+            || [config.mchbar, config.dmibar, config.epbar]
+                .iter()
+                .any(|base| *base == 0 || *base > u32::MAX as u64 || (*base & 0xfff) != 0)
+            || config.pmbase == 0
+            || config.pmbase & 0xff != 0
+        {
+            return Err(ServiceError::HardwareError);
+        }
+        Ok(Self {
+            config,
+            graphics: config.graphics,
+            mmio32_window: None,
+        })
+    }
+    fn config(&self) -> &'static Self::Config {
+        self.config
+    }
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        self.enable_ecam();
+        Ok(())
+    }
+    fn early_init(&mut self) -> Result<(), ServiceError> {
+        self.enable_ecam();
+        self.setup_early_decode();
+        Ok(())
+    }
+    fn stage_local_init(&mut self) -> Result<(), ServiceError> {
+        self.enable_ecam();
+        Ok(())
+    }
+    fn memory_detected(&mut self, state: &fstart_core::services::memory_detect::E820State) {
+        if state.count() == 0 {
+            self.mmio32_window = None;
+            return;
+        }
+        let low_ram_top = state
+            .entries()
+            .iter()
+            .filter(|e| e.kind == E820Kind::Ram as u32 && e.addr < 0x1_0000_0000)
+            .map(|e| e.addr.saturating_add(e.size).min(0x1_0000_0000))
+            .max()
+            .unwrap_or(0x10_0000);
+        // The E820 reserved interval above RAM includes stolen graphics and
+        // TSEG; PCI BARs must start after those reservations, not after RAM.
+        let reserved_top = state
+            .entries()
+            .iter()
+            .filter(|e| {
+                e.kind != E820Kind::Ram as u32 && e.addr >= low_ram_top && e.addr < 0x1_0000_0000
+            })
+            .map(|e| e.addr.saturating_add(e.size).min(0x1_0000_0000))
+            .max()
+            .unwrap_or(low_ram_top);
+        let base = (reserved_top.max(low_ram_top).saturating_add(0xfffff)) & !0xfffff;
+        let limit = self.config.ecam_base.min(0x1_0000_0000);
+        self.mmio32_window = (base < limit).then_some((base, limit.saturating_sub(base)));
+    }
+}
+
+impl MemoryController for IntelGm45 {
+    fn dram_init(&mut self) -> Result<(), ServiceError> {
+        // Never treat firmware-trained RAM as initialized: JEDEC/RCOMP and S3
+        // training must be implemented before entering the post-DRAM flow.
+        Err(ServiceError::NotInitialized)
+    }
+    fn detected_size_bytes(&self) -> u64 {
+        self.tom()
+    }
+    fn memory_test(&self) -> Result<(), ServiceError> {
+        Err(ServiceError::NotInitialized)
+    }
+}
+
+impl MemoryDetector for IntelGm45 {
+    fn detect_memory(&self, entries: &mut [E820Entry]) -> Result<usize, ServiceError> {
+        let (usable, tolud, touud) = self.memory_map()?;
+        build_pc_compatible_e820(entries, usable, touud, tolud)
+    }
+    fn total_ram_bytes(&self) -> Result<u64, ServiceError> {
+        Ok(self.tom())
+    }
+}
+
+impl PciRootProvider for IntelGm45 {
+    fn root_info(&self) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: self.config.ecam_base,
+            bus_start: 0,
+            bus_end: (self.config.ecam_buses - 1) as u8,
+        }
+    }
+    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
+        let mut windows = PciRootWindows::new();
+        if let Some((base, size)) = self.mmio32_window {
+            windows
+                .push(PciWindow {
+                    kind: PciWindowKind::Mmio,
+                    base,
+                    size,
+                    prefetchable: false,
+                })
+                .map_err(|_| PciRootError::TooManyWindows)?;
+        }
+        windows
+            .push(PciWindow {
+                kind: PciWindowKind::Io,
+                base: PCI_PIO_BASE,
+                size: PCI_PIO_SIZE,
+                prefetchable: false,
+            })
+            .map_err(|_| PciRootError::TooManyWindows)?;
+        Ok(windows)
+    }
+}
+
+impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm45 {
+    fn tseg(&self) -> Option<(u64, u32)> {
+        let size = Self::tseg_size_from_esmramc(self.hostbridge().esmramc.get())?;
+        let (base, _, _) = self.memory_map().ok()?;
+        (size != 0).then_some((u64::from(base), size))
+    }
+    fn smram_open(&self) {
+        self.hostbridge().smram.set(crate::gmch::smram::open());
+    }
+    fn smram_close(&self) {
+        self.hostbridge().smram.set(crate::gmch::smram::closed());
+    }
+    fn smram_lock(&self) {
+        self.hostbridge().smram.set(crate::gmch::smram::locked());
+    }
+}
+
+#[cfg(feature = "acpi")]
+mod acpi_impl {
+    use super::*;
+    use alloc::vec::Vec;
+    use fstart_acpi::device::AcpiDevice;
+    use fstart_acpi_macros::acpi_dsl;
+
+    impl AcpiDevice for IntelGm45 {
+        type Config = IntelGm45Config;
+        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
+            let mchbar = config.mchbar;
+            let dmibar = config.dmibar;
+            let epbar = config.epbar;
+            let ecam_base = config.ecam_base;
+            let ecam_size = u64::from(config.ecam_buses) << 20;
+            acpi_dsl! {
+                Device("PCI0") {
+                    Name("_HID", EisaId("PNP0A08"));
+                    Name("_CID", EisaId("PNP0A03"));
+                    Name("_SEG", 0u32);
+                    Name("_BBN", 0u32);
+                    Device("MCHC") { Name("_ADR", 0u32); }
+                    Device("PDRC") {
+                        Name("_HID", EisaId("PNP0C02"));
+                        Name("_CRS", ResourceTemplate {
+                            Memory32Fixed(ReadWrite, #{dword mchbar}, 0x4000u32);
+                            Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
+                            Memory32Fixed(ReadWrite, #{dword epbar}, 0x1000u32);
+                            Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
+                        });
+                    }
+                }
+            }
+            .into()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn gm45_reserved_top_tracks_gms_ggms_and_tseg() {
+        // 32 MiB UMA + 2 MiB GTT + 8 MiB TSEG.
+        assert_eq!(
+            IntelGm45::reserved_memory((5 << 4) | (3 << 8), 5),
+            Some(42 << 20)
+        );
+        assert_eq!(IntelGm45::reserved_memory(2, 3), Some(2 << 20));
+        assert_eq!(IntelGm45::reserved_memory(15 << 4, 1), None);
+        assert_eq!(IntelGm45::reserved_memory(2, 7), None);
+    }
+    #[test]
+    fn gm45_invalid_ecam_config_fails_before_hardware_access() {
+        use crate::IntelNorthbridgeDriver;
+        static INVALID: IntelGm45Config = IntelGm45Config {
+            ecam_base: 0,
+            ..IntelGm45Config::new()
+        };
+        assert!(matches!(
+            IntelGm45::new_from_config(&INVALID),
+            Err(ServiceError::HardwareError)
+        ));
+    }
+    #[test]
+    fn gm45_unimplemented_training_fails_closed() {
+        use crate::IntelNorthbridgeDriver;
+        static CONFIG: IntelGm45Config = IntelGm45Config::new();
+        let mut driver = IntelGm45::new_from_config(&CONFIG).unwrap();
+        assert!(matches!(
+            driver.dram_init(),
+            Err(ServiceError::NotInitialized)
+        ));
+        assert!(matches!(
+            driver.memory_test(),
+            Err(ServiceError::NotInitialized)
+        ));
+        assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Integrated);
+        driver.set_graphics_policy(Gm45GraphicsPolicy::Discrete);
+        assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Discrete);
+    }
+    #[test]
+    fn gm45_graphics_policy_does_not_select_me_functions() {
+        assert_eq!(
+            Gm45GraphicsPolicy::Integrated.deven_bits(),
+            DEVEN_IGD | DEVEN_IGD_SECONDARY
+        );
+        assert_eq!(Gm45GraphicsPolicy::Discrete.deven_bits(), DEVEN_PEG);
+        assert_eq!(
+            Gm45GraphicsPolicy::Hybrid.deven_bits(),
+            DEVEN_IGD | DEVEN_IGD_SECONDARY | DEVEN_PEG
+        );
+    }
+}
