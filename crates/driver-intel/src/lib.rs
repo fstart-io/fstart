@@ -8,6 +8,7 @@ extern crate alloc;
 mod cpu;
 
 pub mod generic;
+pub mod gm45;
 #[cfg(feature = "gm965")]
 pub mod gm965;
 pub mod gmch;
