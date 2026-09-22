@@ -411,6 +411,15 @@ impl MemoryController for IntelGm45 {
         );
         let channels = raminit::probe_ddr3(&mut smbus, &self.config.spd_addresses)?;
         let timing = raminit::select_ddr3_timing(&channels, fsb_mhz, max_ddr3_mt)?;
+        let igd_enabled = matches!(
+            self.graphics,
+            Gm45GraphicsPolicy::Integrated | Gm45GraphicsPolicy::Hybrid
+        );
+        let capid_high = if igd_enabled {
+            ecam::EcamDevice::new(0, 0, 0).read32(0xe4)
+        } else {
+            0
+        };
         fstart_log::info!(
             "gm45: DDR3 SPD timing selected: {} MHz CL{}; JEDEC/training unavailable",
             timing.clock.mhz(),
@@ -418,7 +427,16 @@ impl MemoryController for IntelGm45 {
         );
         // The early controller slice is intentionally incomplete and returns
         // NotInitialized even after programming; never expose stale DRAM.
-        raminit::prepare_ddr3(self.config.mchbar, revision, fsb_mhz, &channels, &timing)
+        raminit::prepare_ddr3(
+            self.config.mchbar,
+            self.config.epbar,
+            revision,
+            fsb_mhz,
+            capid_high,
+            igd_enabled,
+            &channels,
+            &timing,
+        )
     }
     fn detected_size_bytes(&self) -> u64 {
         if self.dram_ready { self.tom() } else { 0 }
