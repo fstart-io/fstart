@@ -1,8 +1,8 @@
 //! GM45 DDR3 discovery and early controller programming.
 //!
 //! JEDEC, ZQ, receive-enable and high-rate read/write calibration, final
-//! physical mapping and post-map register setup are implemented. Memory testing
-//! is not; this code never announces usable memory.
+//! physical mapping and post-map register setup are implemented. The caller
+//! checks sparse DRAM readback before exposing usable memory.
 //! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
 
@@ -1674,8 +1674,25 @@ pub(super) fn prepare_ddr3(
         kind,
         display_clock,
     )?;
-    // Destructive memory testing is separate. Never expose unverified DRAM.
-    Err(ServiceError::NotInitialized)
+    // Check the programmed decode against the computed geometry *after* the
+    // post-map IGD policy (which may turn off graphics stolen memory). Only
+    // then may the caller test the mapped DRAM and publish it as usable.
+    let expected_ggc = if graphics == crate::gm45::Gm45GraphicsPolicy::Discrete {
+        2
+    } else {
+        final_map.ggc
+    };
+    if hb.tom.get() & 0x1ff != final_map.tom
+        || hb.tolud.get() & 0xfff0 != final_map.tolud
+        || hb.touud.get() != final_map.touud
+        || hb.remap_base.get() & 0x3ff != final_map.remap_base
+        || hb.remap_limit.get() & 0x3ff != final_map.remap_limit
+        || hb.esmramc.get() & 7 != 3
+        || hb.ggc.get() & 0x0ff2 != expected_ggc & 0x0ff2
+    {
+        return Err(ServiceError::HardwareError);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

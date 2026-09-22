@@ -197,6 +197,15 @@ pub trait IntelNorthbridgeDriver:
         false
     }
     fn set_boot_path(&mut self, _boot_path: BootPath) {}
+    /// Linked bootstrap DRAM windows as half-open physical address pairs.
+    /// Chipsets requiring pre-publication probes override this hook.
+    fn set_bootstrap_windows(
+        &mut self,
+        _postcar: (u64, u64),
+        _mainstage: (u64, u64),
+    ) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
     /// Stable chipset/CPU/SPD-map and memory-policy identity, not boot status.
     fn training_identity(&self) -> Option<[u8; 32]> {
         None
