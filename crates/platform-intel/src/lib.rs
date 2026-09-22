@@ -39,6 +39,7 @@ macro_rules! stage_bin {
     ($board:ty) => { $crate::stage_runtime::stage_bin!(program: $crate::Program<$board>); };
 }
 
+pub mod gm45;
 #[cfg(feature = "gm965-ich8")]
 pub mod gm965;
 #[cfg(feature = "i945-ich7")]
@@ -377,6 +378,38 @@ impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
     }
 }
 
+/// Board hook context after southbridge GPIO setup and before northbridge
+/// early init. The board can read GPIO/EC state and select graphics policy.
+#[cfg(feature = "stage")]
+pub struct IntelBeforeNorthbridgeCtx<'a, P: IntelEarlyPlatform> {
+    northbridge: &'a mut P::Northbridge,
+    southbridge: &'a mut P::Southbridge,
+}
+
+#[cfg(feature = "stage")]
+impl<'a, P: IntelEarlyPlatform> IntelBeforeNorthbridgeCtx<'a, P> {
+    #[cfg(fstart_stage_env = "car")]
+    pub(crate) fn new(
+        northbridge: &'a mut P::Northbridge,
+        southbridge: &'a mut P::Southbridge,
+    ) -> Self {
+        Self {
+            northbridge,
+            southbridge,
+        }
+    }
+
+    #[must_use]
+    pub fn northbridge(&mut self) -> &mut P::Northbridge {
+        self.northbridge
+    }
+
+    #[must_use]
+    pub fn southbridge(&mut self) -> &mut P::Southbridge {
+        self.southbridge
+    }
+}
+
 /// Bootblock hooks, called on cold, warm and S3 boots. State is CAR-local
 /// and is not carried into mainstage. Before console, only chipset decode
 /// is ready; before memory, chipset early init is complete. After training,
@@ -385,6 +418,13 @@ impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
 #[cfg(all(feature = "stage", fstart_stage_env = "car"))]
 pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: IntelSmbusRouting<P::Southbridge> {
     fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    fn before_northbridge(
+        &mut self,
+        _ctx: &mut IntelBeforeNorthbridgeCtx<P>,
+    ) -> Result<(), ServiceError> {
         Ok(())
     }
 
