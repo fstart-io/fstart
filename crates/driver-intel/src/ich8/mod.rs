@@ -428,8 +428,8 @@ register_structs! {
         (0x01f8 => _reserved7),
         (0x01fc => pub cir3: MmioReadWrite<u16>),
         (0x01fe => _reserved8),
-        (0x0200 => pub cir4: MmioReadWrite<u32>),
-        (0x0204 => _reserved9),
+        (0x0200 => pub cir4: MmioReadWrite<u16>),
+        (0x0202 => _reserved9),
         (0x0220 => pub bcr: MmioReadWrite<u8>),
         (0x0221 => _reserved10),
         (0x0234 => pub dmic: MmioReadWrite<u32, DMIC::Register>),
@@ -1178,6 +1178,7 @@ impl IntelIch8 {
             // Clear timeout status.
             tco.write16(pmio::TCO1_STS, 1 << 3);
             tco.write16(pmio::TCO2_STS, 1 << 1);
+            tco.write16(pmio::TCO_RLD, 0);
         }
     }
 
@@ -1346,7 +1347,7 @@ impl IntelIch8 {
             port61 &= !(1 << 3);
             port61 |= 1 << 2;
             fstart_core::pio::outb(0x61, port61);
-            let mut nmi = fstart_core::pio::inb(0x70);
+            let mut nmi = fstart_core::pio::inb(0x74);
             nmi |= 1 << 7;
             fstart_core::pio::outb(0x70, nmi);
         }
@@ -1402,7 +1403,7 @@ impl IntelIch8 {
     fn ramstage_lpc_init(&self) {
         let rcba = self.rcba();
         self.enable_ioapic();
-        self.lpc_regs().serirq_cntl.set(0xd0);
+        self.lpc_regs().serirq_cntl.set(0xc0);
         self.configure_power_options();
         self.configure_cstates();
         self.rtc_init();
@@ -1824,22 +1825,19 @@ impl IntelIch8 {
             .modify(PCI_COMMAND_BITS::IO_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
         Self::prog_if_regs(ide).prog_if.set(0x8a);
 
-        let timing_base = ich8::IDE_SITRE
-            | ich8::IDE_ISP_3_CLOCKS
-            | ich8::IDE_RCT_1_CLOCKS
-            | ich8::IDE_IE0
-            | ich8::IDE_TIME0;
+        let timing_base =
+            ich8::IDE_ISP_3_CLOCKS | ich8::IDE_RCT_1_CLOCKS | ich8::IDE_IE0 | ich8::IDE_TIME0;
         let primary_timing = (ide.read16(ich8::IDE_TIM_PRI) & !ich8::IDE_DECODE_ENABLE)
-            | timing_base
+            | ich8::IDE_SITRE
             | if config.enable_primary {
-                ich8::IDE_DECODE_ENABLE
+                ich8::IDE_DECODE_ENABLE | timing_base
             } else {
                 0
             };
         let secondary_timing = (ide.read16(ich8::IDE_TIM_SEC) & !ich8::IDE_DECODE_ENABLE)
-            | timing_base
+            | ich8::IDE_SITRE
             | if config.enable_secondary {
-                ich8::IDE_DECODE_ENABLE
+                ich8::IDE_DECODE_ENABLE | timing_base
             } else {
                 0
             };
@@ -1901,7 +1899,7 @@ impl IntelIch8 {
             fstart_core::pio::outb(0xa1, 0x02);
             fstart_core::pio::outb(0x21, 0x01);
             fstart_core::pio::outb(0xa1, 0x01);
-            fstart_core::pio::outb(0x21, 0xff);
+            fstart_core::pio::outb(0x21, 0xfb);
             fstart_core::pio::outb(0xa1, 0xff);
             let elcr2 = fstart_core::pio::inb(0x4d1);
             fstart_core::pio::outb(0x4d1, elcr2 | (1 << 1));

@@ -74,6 +74,8 @@ register_bitfields! [u16,
     /// LPC GEN_PMCON_1 register.
     GEN_PMCON_1_REG [
         SMI_RATE OFFSET(0) NUMBITS(2) [],
+        CLKRUN_EN OFFSET(2) NUMBITS(1) [],
+        SPEEDSTEP_EN OFFSET(3) NUMBITS(1) [],
         SMI_LOCK OFFSET(4) NUMBITS(1) [],
         CPUSLP_EN OFFSET(5) NUMBITS(1) [],
         BIOS_PCI_EXP_EN OFFSET(10) NUMBITS(1) []
@@ -1597,6 +1599,8 @@ impl IntelIch7 {
         // GEN_PMCON_1: SMI rate, SpeedStep, CPUSLP, BIOS_PCI_EXP.
         lpc.gen_pmcon_1.modify(
             GEN_PMCON_1_REG::SMI_RATE.val(0)
+                + GEN_PMCON_1_REG::CLKRUN_EN::SET
+                + GEN_PMCON_1_REG::SPEEDSTEP_EN::SET
                 + GEN_PMCON_1_REG::CPUSLP_EN::SET
                 + GEN_PMCON_1_REG::BIOS_PCI_EXP_EN::SET,
         );

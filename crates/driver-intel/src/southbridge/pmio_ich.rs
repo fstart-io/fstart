@@ -139,6 +139,8 @@ pub const USB4_STS: u32 = 1 << 14;
 /// TCO I/O block offset from PMBASE.
 pub const TCO_BASE_OFFSET: u16 = 0x60;
 
+/// TCO timer reload register (16-bit).
+pub const TCO_RLD: u16 = 0x00;
 /// TCO Data In: OS/ACPI command byte to SMI handler. Writes trigger SW_TCO_SMI.
 pub const TCO_DAT_IN: u16 = 0x02;
 /// TCO Data Out: SMI handler response byte to OS/ACPI.
