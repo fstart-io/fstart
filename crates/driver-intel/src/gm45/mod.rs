@@ -1,8 +1,9 @@
 //! Intel GM45 (Cantiga) northbridge.
 //!
-//! This module implements the early host-bridge decode, board-selected graphics
-//! function policy, and readback contracts. DRAM initialization is deliberately
-//! unavailable until the GM45 DDR2/DDR3 training sequence is ported and verified.
+//! This module implements early host-bridge decode and DDR3 SPD/timing discovery.
+//! No memory is exposed as initialized until the remaining GM45 training flow is ported.
+
+mod raminit;
 
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::memory_detect::{
@@ -49,7 +50,9 @@ pci_type0_config! {
         (0xa2 => pub touud: MmioReadWrite<u16>),
         (0xa4 => _reserved_hb6),
         (0xb0 => pub tolud: MmioReadWrite<u16>),
-        (0xb2 => @END),
+        (0xb2 => _reserved_hb7),
+        (0xe0 => pub capid0: MmioReadWrite<u32>),
+        (0xe4 => @END),
     }
 }
 
@@ -86,6 +89,8 @@ pub struct IntelGm45Config {
     pub graphics: Gm45GraphicsPolicy,
     /// SPD slot order: channel 0 slot 0/1, channel 1 slot 0/1.
     pub spd_addresses: [u8; 4],
+    /// ICH9 I801 SMBus I/O base used to read DIMM SPD before RAM is online.
+    pub smbus_base: u16,
     pub acpi_name: Option<&'static str>,
 }
 
@@ -101,6 +106,7 @@ impl IntelGm45Config {
             pmbase: 0x500,
             graphics: Gm45GraphicsPolicy::Integrated,
             spd_addresses: [0x50, 0, 0x51, 0],
+            smbus_base: crate::ich9::ich9::DEFAULT_SMBUS_BASE,
             acpi_name: Some("PCI0"),
         }
     }
@@ -125,11 +131,22 @@ register_structs! {
     }
 }
 
-/// GM45 driver: early decode and readback of the trained memory map.
+register_structs! {
+    /// GM45 memory/FSB clock strap; MCHBAR must already be enabled.
+    Gm45MchClockRegs {
+        (0x0000 => _pad: [u8; 0xc00]),
+        (0x0c00 => clkcfg: MmioReadWrite<u32>),
+        (0x0c04 => @END),
+    }
+}
+
+/// GM45 driver: early decode and (once trained) memory-map readback.
 pub struct IntelGm45 {
     config: &'static IntelGm45Config,
     graphics: Gm45GraphicsPolicy,
     mmio32_window: Option<(u64, u64)>,
+    dram_ready: bool,
+    boot_path: crate::BootPath,
 }
 
 impl IntelGm45 {
@@ -285,6 +302,8 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
                 .any(|base| *base == 0 || *base > u32::MAX as u64 || (*base & 0xfff) != 0)
             || config.pmbase == 0
             || config.pmbase & 0xff != 0
+            || config.smbus_base == 0
+            || config.smbus_base & 0x1f != 0
         {
             return Err(ServiceError::HardwareError);
         }
@@ -292,6 +311,8 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
             config,
             graphics: config.graphics,
             mmio32_window: None,
+            dram_ready: false,
+            boot_path: crate::BootPath::Normal,
         })
     }
     fn config(&self) -> &'static Self::Config {
@@ -309,6 +330,9 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         Ok(())
+    }
+    fn set_boot_path(&mut self, boot_path: crate::BootPath) {
+        self.boot_path = boot_path;
     }
     fn memory_detected(&mut self, state: &fstart_core::services::memory_detect::E820State) {
         if state.count() == 0 {
@@ -341,24 +365,82 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
 
 impl MemoryController for IntelGm45 {
     fn dram_init(&mut self) -> Result<(), ServiceError> {
-        // Never treat firmware-trained RAM as initialized: JEDEC/RCOMP and S3
-        // training must be implemented before entering the post-DRAM flow.
+        self.dram_ready = false;
+        // The southbridge clears SLP_TYP while detecting S3. Use the boot
+        // path passed down by the shared flow, never re-read PM1_CNT here.
+        if self.boot_path == crate::BootPath::S3Resume {
+            return Err(ServiceError::NotInitialized);
+        }
+        // Coreboot gm45/get_gmch_info accepts B1/B2/B3 and conversion A1.
+        // No supported stepping may skip its electrical calibration.
+        let revision = ecam::EcamDevice::new(0, 0, 0).read8(0x08);
+        if !matches!(revision, 5 | 6 | 7 | 9) {
+            return Err(ServiceError::HardwareError);
+        }
+        let clkcfg = {
+            // SAFETY: setup_early_decode enabled MCHBAR before dram_init.
+            let mch = unsafe { &*(self.config.mchbar as *const Gm45MchClockRegs) };
+            mch.clkcfg.get()
+        };
+        let fsb_mhz = match clkcfg & 7 {
+            6 => 1067,
+            2 => 800,
+            3 => 667,
+            _ => return Err(ServiceError::HardwareError),
+        };
+        let capid0 = self.hostbridge().capid0.get();
+        let max_ddr3_mt = match (capid0 >> 30) & 3 {
+            0 => 1067,
+            1 => 800,
+            _ => return Err(ServiceError::HardwareError),
+        };
+        let max_fsb_mhz = match (capid0 >> 28) & 3 {
+            1 => 1067,
+            2 => 800,
+            3 => 667,
+            _ => return Err(ServiceError::HardwareError),
+        };
+        if fsb_mhz > max_fsb_mhz {
+            return Err(ServiceError::HardwareError);
+        }
+        let mut smbus = crate::southbridge::smbus::I801SmBus::enable_on_i801(
+            0,
+            0x1f,
+            3,
+            self.config.smbus_base,
+        );
+        let channels = raminit::probe_ddr3(&mut smbus, &self.config.spd_addresses)?;
+        let timing = raminit::select_ddr3_timing(&channels, fsb_mhz, max_ddr3_mt)?;
+        fstart_log::info!(
+            "gm45: DDR3 SPD timing selected: {} MHz CL{}; training unavailable",
+            timing.clock.mhz(),
+            timing.cas
+        );
+        // No controller programming, JEDEC or training has occurred. Returning
+        // success here would use stale DRAM contents from an earlier firmware.
         Err(ServiceError::NotInitialized)
     }
     fn detected_size_bytes(&self) -> u64 {
-        self.tom()
+        if self.dram_ready { self.tom() } else { 0 }
     }
     fn memory_test(&self) -> Result<(), ServiceError> {
+        // Never issue destructive DRAM probes until training/map are complete.
         Err(ServiceError::NotInitialized)
     }
 }
 
 impl MemoryDetector for IntelGm45 {
     fn detect_memory(&self, entries: &mut [E820Entry]) -> Result<usize, ServiceError> {
+        if !self.dram_ready {
+            return Err(ServiceError::NotInitialized);
+        }
         let (usable, tolud, touud) = self.memory_map()?;
         build_pc_compatible_e820(entries, usable, touud, tolud)
     }
     fn total_ram_bytes(&self) -> Result<u64, ServiceError> {
+        if !self.dram_ready {
+            return Err(ServiceError::NotInitialized);
+        }
         Ok(self.tom())
     }
 }
@@ -398,6 +480,9 @@ impl PciRootProvider for IntelGm45 {
 
 impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm45 {
     fn tseg(&self) -> Option<(u64, u32)> {
+        if !self.dram_ready {
+            return None;
+        }
         let size = Self::tseg_size_from_esmramc(self.hostbridge().esmramc.get())?;
         let (base, _, _) = self.memory_map().ok()?;
         (size != 0).then_some((u64::from(base), size))
@@ -478,18 +563,29 @@ mod tests {
         ));
     }
     #[test]
-    fn gm45_unimplemented_training_fails_closed() {
+    fn gm45_untrained_memory_fails_closed() {
         use crate::IntelNorthbridgeDriver;
         static CONFIG: IntelGm45Config = IntelGm45Config::new();
         let mut driver = IntelGm45::new_from_config(&CONFIG).unwrap();
+        // dram_init touches live chipset registers; this host-side test may
+        // only exercise pre-training APIs which must not touch stale RAM.
+        assert_eq!(driver.detected_size_bytes(), 0);
         assert!(matches!(
-            driver.dram_init(),
+            driver.total_ram_bytes(),
+            Err(ServiceError::NotInitialized)
+        ));
+        let mut entries = [E820Entry::zeroed(); 8];
+        assert!(matches!(
+            driver.detect_memory(&mut entries),
             Err(ServiceError::NotInitialized)
         ));
         assert!(matches!(
             driver.memory_test(),
             Err(ServiceError::NotInitialized)
         ));
+        assert_eq!(driver.boot_path, crate::BootPath::Normal);
+        driver.set_boot_path(crate::BootPath::S3Resume);
+        assert_eq!(driver.boot_path, crate::BootPath::S3Resume);
         assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Integrated);
         driver.set_graphics_policy(Gm45GraphicsPolicy::Discrete);
         assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Discrete);
