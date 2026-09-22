@@ -204,6 +204,15 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             BootPath::Normal
         };
         self.northbridge.set_boot_path(self.boot_path);
+        let windows = (|| {
+            let postcar = self.geometry.region(RegionKind::BootstrapPostcar)?;
+            let mainstage = self.geometry.region(RegionKind::BootstrapMainstage)?;
+            self.northbridge.set_bootstrap_windows(
+                (postcar.base, postcar.end().ok_or(ServiceError::InvalidParam)?),
+                (mainstage.base, mainstage.end().ok_or(ServiceError::InvalidParam)?),
+            )
+        })();
+        self.check("bootstrap windows", windows);
         if self.boot_path == BootPath::S3Resume
             && (!B::FACTS.memory_cache || !self.northbridge.supports_s3_replay())
         {

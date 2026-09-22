@@ -1,9 +1,10 @@
 //! Intel GM45 (Cantiga) northbridge.
 //!
-//! This module implements early host-bridge decode and partial DDR3 initialization.
-//! No memory is exposed as initialized until destructive memory testing is ported.
+//! This module implements early host-bridge decode and cold-boot DDR3 initialization.
+//! Sparse destructive probes gate RAM availability; they are not exhaustive qualification.
 
 mod raminit;
+mod ramtest;
 
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::memory_detect::{
@@ -151,6 +152,7 @@ pub struct IntelGm45 {
     config: &'static IntelGm45Config,
     graphics: Gm45GraphicsPolicy,
     mmio32_window: Option<(u64, u64)>,
+    bootstrap_windows: Option<[(u32, u32); 2]>,
     dram_ready: bool,
     boot_path: crate::BootPath,
 }
@@ -263,16 +265,17 @@ impl IntelGm45 {
         Some(reserved)
     }
 
-    fn memory_map(&self) -> Result<(u32, u32, u64), ServiceError> {
-        let hb = self.hostbridge();
-        let tolud = self.tolud();
-        let reserved = Self::reserved_memory(hb.ggc.get(), hb.esmramc.get())
-            .ok_or(ServiceError::HardwareError)?;
+    fn checked_memory_map(
+        tom: u64,
+        tolud: u32,
+        raw_touud: u64,
+        ggc: u16,
+        esmramc: u8,
+    ) -> Result<(u32, u32, u64), ServiceError> {
+        let reserved = Self::reserved_memory(ggc, esmramc).ok_or(ServiceError::HardwareError)?;
         let usable = tolud
             .checked_sub(reserved)
             .ok_or(ServiceError::HardwareError)?;
-        let tom = self.tom();
-        let raw_touud = self.touud();
         let max_reclaim = 0x1_0000_0000u64.saturating_sub(u64::from(tolud));
         let touud = if raw_touud > 0x1_0000_0000 && raw_touud <= tom.saturating_add(max_reclaim) {
             raw_touud
@@ -283,6 +286,25 @@ impl IntelGm45 {
             return Err(ServiceError::HardwareError);
         }
         Ok((usable, tolud, touud))
+    }
+
+    fn memory_map(&self) -> Result<(u32, u32, u64), ServiceError> {
+        let hb = self.hostbridge();
+        Self::checked_memory_map(
+            self.tom(),
+            self.tolud(),
+            self.touud(),
+            hb.ggc.get(),
+            hb.esmramc.get(),
+        )
+    }
+
+    fn probe_low_memory(&self) -> Result<(), ServiceError> {
+        let (usable, _, _) = self.memory_map()?;
+        ramtest::sample(
+            usable,
+            self.bootstrap_windows.ok_or(ServiceError::NotInitialized)?,
+        )
     }
 }
 
@@ -317,6 +339,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
             config,
             graphics: config.graphics,
             mmio32_window: None,
+            bootstrap_windows: None,
             dram_ready: false,
             boot_path: crate::BootPath::Normal,
         })
@@ -339,6 +362,23 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     }
     fn set_boot_path(&mut self, boot_path: crate::BootPath) {
         self.boot_path = boot_path;
+    }
+    fn set_bootstrap_windows(
+        &mut self,
+        postcar: (u64, u64),
+        mainstage: (u64, u64),
+    ) -> Result<(), ServiceError> {
+        self.bootstrap_windows = None;
+        let windows = [postcar, mainstage].map(|(base, end)| -> Result<_, ServiceError> {
+            Ok((
+                u32::try_from(base).map_err(|_| ServiceError::HardwareError)?,
+                u32::try_from(end).map_err(|_| ServiceError::HardwareError)?,
+            ))
+        });
+        let windows = [windows[0]?, windows[1]?];
+        ramtest::validate_windows(windows)?;
+        self.bootstrap_windows = Some(windows);
+        Ok(())
     }
     fn memory_detected(&mut self, state: &fstart_core::services::memory_detect::E820State) {
         if state.count() == 0 {
@@ -374,7 +414,7 @@ impl MemoryController for IntelGm45 {
         self.dram_ready = false;
         // The southbridge clears SLP_TYP while detecting S3. Use the boot
         // path passed down by the shared flow, never re-read PM1_CNT here.
-        if self.boot_path == crate::BootPath::S3Resume {
+        if self.boot_path == crate::BootPath::S3Resume || self.bootstrap_windows.is_none() {
             return Err(ServiceError::NotInitialized);
         }
         // Coreboot gm45/get_gmch_info accepts B1/B2/B3 and conversion A1.
@@ -423,8 +463,6 @@ impl MemoryController for IntelGm45 {
             timing.clock.mhz(),
             timing.cas
         );
-        // Post-map programming still returns NotInitialized until a separate
-        // destructive memory test is implemented; never expose unverified DRAM.
         raminit::prepare_ddr3(
             self.config.mchbar,
             self.config.epbar,
@@ -434,14 +472,24 @@ impl MemoryController for IntelGm45 {
             self.graphics,
             &channels,
             &timing,
-        )
+        )?;
+        // The final map and all post-map programming must complete before
+        // touching DRAM. Failure keeps every public RAM API fail-closed.
+        self.probe_low_memory()?;
+        self.dram_ready = true;
+        Ok(())
     }
     fn detected_size_bytes(&self) -> u64 {
         if self.dram_ready { self.tom() } else { 0 }
     }
     fn memory_test(&self) -> Result<(), ServiceError> {
-        // Never issue destructive DRAM probes until training/map are complete.
-        Err(ServiceError::NotInitialized)
+        // Cold-boot probes already ran before setting dram_ready. Repeating
+        // them after postcar/mainstage loads would overwrite live stage code.
+        if self.dram_ready {
+            Ok(())
+        } else {
+            Err(ServiceError::NotInitialized)
+        }
     }
 }
 
@@ -567,6 +615,36 @@ mod tests {
         assert_eq!(IntelGm45::reserved_memory(2, 7), None);
     }
     #[test]
+    fn gm45_map_boundaries_fail_closed() {
+        let mib = 1 << 20;
+        // 128 MiB TOM, 128 MiB TOLUD, 2 MiB TSEG: usable DRAM ends at 126 MiB.
+        assert_eq!(
+            IntelGm45::checked_memory_map(128 * mib as u64, 128 * mib, 128 * mib as u64, 2, 3),
+            Ok((126 * mib, 128 * mib, 128 * mib as u64))
+        );
+        assert!(
+            IntelGm45::checked_memory_map(64 * mib as u64, 128 * mib, 64 * mib as u64, 2, 3)
+                .is_err()
+        );
+        assert!(
+            IntelGm45::checked_memory_map(128 * mib as u64, mib, 128 * mib as u64, 2, 3).is_err()
+        );
+        assert!(
+            IntelGm45::checked_memory_map(128 * mib as u64, 2 * mib, 128 * mib as u64, 2, 3)
+                .is_err()
+        );
+        assert!(
+            IntelGm45::checked_memory_map(
+                128 * mib as u64,
+                128 * mib,
+                128 * mib as u64,
+                15 << 4,
+                3
+            )
+            .is_err()
+        );
+    }
+    #[test]
     fn gm45_invalid_ecam_config_fails_before_hardware_access() {
         use crate::IntelNorthbridgeDriver;
         static INVALID: IntelGm45Config = IntelGm45Config {
@@ -600,8 +678,35 @@ mod tests {
             Err(ServiceError::NotInitialized)
         ));
         assert_eq!(driver.boot_path, crate::BootPath::Normal);
+        assert!(matches!(
+            driver.dram_init(),
+            Err(ServiceError::NotInitialized)
+        ));
+        assert!(driver.bootstrap_windows.is_none());
+        assert!(
+            driver
+                .set_bootstrap_windows((16 << 20, 16 << 20), (64 << 20, 80 << 20))
+                .is_err()
+        );
+        assert!(driver.bootstrap_windows.is_none());
+        assert!(
+            driver
+                .set_bootstrap_windows((1u64 << 32, (1u64 << 32) + 4096), (64 << 20, 80 << 20))
+                .is_err()
+        );
+        assert!(driver.bootstrap_windows.is_none());
+        assert!(
+            driver
+                .set_bootstrap_windows((16 << 20, 17 << 20), (64 << 20, 80 << 20))
+                .is_ok()
+        );
         driver.set_boot_path(crate::BootPath::S3Resume);
         assert_eq!(driver.boot_path, crate::BootPath::S3Resume);
+        assert!(matches!(
+            driver.dram_init(),
+            Err(ServiceError::NotInitialized)
+        ));
+        assert!(!driver.dram_ready);
         assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Integrated);
         driver.set_graphics_policy(Gm45GraphicsPolicy::Discrete);
         assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Discrete);
