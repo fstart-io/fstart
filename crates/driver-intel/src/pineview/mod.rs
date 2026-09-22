@@ -911,18 +911,10 @@ impl IntelPineview {
     /// Returns 0 if T_EN (bit 0) is not set.
     pub fn tseg_size(&self) -> u32 {
         let esmramc = self.hostbridge_regs().esmramc.get();
-        if esmramc & 1 == 0 {
-            return 0;
-        }
-        match (esmramc >> 1) & 3 {
-            0 => 1024 * 1024,     // 1 MiB
-            1 => 2 * 1024 * 1024, // 2 MiB
-            2 => 8 * 1024 * 1024, // 8 MiB
-            _ => {
-                fstart_log::error!("pineview: bad TSEG size encoding");
-                0
-            }
-        }
+        super::gmch::tseg_size_bytes(esmramc).unwrap_or_else(|| {
+            fstart_log::error!("pineview: bad TSEG size encoding");
+            0
+        })
     }
 
     /// Read the TSEG base address.
