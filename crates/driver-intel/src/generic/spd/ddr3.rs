@@ -520,6 +520,19 @@ pub fn validate_gm45(info: &Ddr3DimmInfo) -> Result<(), Ddr3SpdError> {
     if info.density_code > 3 {
         return Err(Ddr3SpdError::UnsupportedChipCapacity(info.density_code));
     }
+    // The rank boundaries must not be derived from geometry that contradicts
+    // the SPD density. Check this before JEDEC/training, not only at final map.
+    let chip_width = match info.width {
+        ChipWidth::X8 => 8,
+        ChipWidth::X16 => 16,
+        _ => unreachable!(),
+    };
+    if info.primary_bus_width_bits % chip_width != 0
+        || info.rank_capacity_mb
+            != (32u32 << info.density_code) * u32::from(info.primary_bus_width_bits / chip_width)
+    {
+        return Err(Ddr3SpdError::InvalidGeometry);
+    }
     if !matches!(info.raw_card_with_extension, 0 | 1 | 2 | 3 | 5) {
         return Err(Ddr3SpdError::UnsupportedRawCard(
             info.raw_card_with_extension,
@@ -639,6 +652,17 @@ mod tests {
             validate_gm45(&info),
             Err(Ddr3SpdError::UnsupportedBanks(16))
         );
+    }
+
+    #[test]
+    fn rejects_density_geometry_mismatch_before_gm45_training() {
+        let mut spd = synthetic_ddr3_spd();
+        // The density still says 1 Gbit, but 15 rows describe a 2 Gbit chip.
+        spd[SPD_ADDRESSING as usize] = (3 << 3) | 1;
+        let info = decode_dimm(&spd).expect("generic decoder retains SPD geometry");
+        assert_eq!(info.rank_capacity_mb, 2048);
+        assert_eq!(validate_gm45(&info), Err(Ddr3SpdError::InvalidGeometry));
+        assert_eq!(decode_dimm_gm45(&spd), Err(Ddr3SpdError::InvalidGeometry));
     }
 
     #[test]
