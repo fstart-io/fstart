@@ -285,10 +285,10 @@ register_bitfields! [u32,
 register_bitfields! [u16,
     /// LPC GEN_PMCON_1 register.
     GEN_PMCON_1_REG [
-        AFTERG3_EN OFFSET(0) NUMBITS(2) [],
-        SLP_S4_ASST_EN OFFSET(2) NUMBITS(1) [],
-        SUS_PWR_FLR OFFSET(3) NUMBITS(1) [],
-        DIS_SLP_X_STRCH_SUS_UP OFFSET(5) NUMBITS(1) [],
+        SMI_RATE OFFSET(0) NUMBITS(2) [],
+        CLKRUN_EN OFFSET(2) NUMBITS(1) [],
+        SPEEDSTEP_EN OFFSET(3) NUMBITS(1) [],
+        CPUSLP_EN OFFSET(5) NUMBITS(1) [],
         C4_ON_C3_EN OFFSET(7) NUMBITS(1) [],
         BIOS_PCI_EXP_EN OFFSET(10) NUMBITS(1) [],
         C5_EN OFFSET(11) NUMBITS(1) []
@@ -322,8 +322,8 @@ register_bitfields! [u8,
         STATE_AFTER_G3 OFFSET(0) NUMBITS(1) [],
         RTC_POWER_FAILED OFFSET(1) NUMBITS(1) [],
         RTC_BATTERY_DEAD OFFSET(2) NUMBITS(1) [],
-        MIN_SLP_S4_ASSERT OFFSET(3) NUMBITS(1) [],
-        SLP_S3_STRETCH OFFSET(4) NUMBITS(2) []
+        SLP_S4_STRETCH OFFSET(3) NUMBITS(1) [],
+        SLP_S4_MAW OFFSET(4) NUMBITS(2) []
     ],
     /// LPC C-state configuration.
     CXSTATE_CNF_REG [
@@ -1295,14 +1295,14 @@ impl IntelIch8 {
                 1
             } else {
                 0
-            }) + GEN_PMCON_3_REG::SLP_S3_STRETCH.val(3)
-                + GEN_PMCON_3_REG::MIN_SLP_S4_ASSERT::CLEAR,
+            }) + GEN_PMCON_3_REG::SLP_S4_MAW.val(3)
+                + GEN_PMCON_3_REG::SLP_S4_STRETCH::CLEAR,
         );
 
-        let gen_pmcon_1 = GEN_PMCON_1_REG::AFTERG3_EN.val(0)
-            + GEN_PMCON_1_REG::SLP_S4_ASST_EN::SET
-            + GEN_PMCON_1_REG::SUS_PWR_FLR::SET
-            + GEN_PMCON_1_REG::DIS_SLP_X_STRCH_SUS_UP::SET
+        let gen_pmcon_1 = GEN_PMCON_1_REG::SMI_RATE.val(0)
+            + GEN_PMCON_1_REG::CLKRUN_EN::SET
+            + GEN_PMCON_1_REG::SPEEDSTEP_EN::SET
+            + GEN_PMCON_1_REG::CPUSLP_EN::SET
             + GEN_PMCON_1_REG::BIOS_PCI_EXP_EN::SET;
         let gen_pmcon_1 = match (self.config.c4_on_c3, self.config.c5_enable) {
             (true, true) => {
