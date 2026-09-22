@@ -254,7 +254,7 @@ register_bitfields! [u32,
         FIELD_19_16 OFFSET(16) NUMBITS(4) []
     ],
     CIR10_REG [
-        FIELD_17_16 OFFSET(16) NUMBITS(2) []
+        BIT17 OFFSET(17) NUMBITS(1) []
     ],
     BIOS_CNTL_REG [
         EXTENDED_CMOS_ENABLE OFFSET(2) NUMBITS(1) []
@@ -1224,7 +1224,10 @@ impl IntelIch8 {
         rcba.regs().cir2.set(0x8600_0040);
         rcba.regs().cir4.set(0x0000_2008);
         rcba.regs().bcr.set(0x45);
-        rcba.regs().cir6.modify(CIR6_REG::BIT7::CLEAR);
+        let cir6 = rcba.regs().cir6.get();
+        rcba.regs()
+            .cir6
+            .set((cir6 & !((1 << 7) | (0xff00 << 16))) | (0x0d00 << 16));
 
         rcba.regs().v1ctl.modify(VCTL::ID.val(1));
         rcba.regs().v1ctl.modify(VCTL::TC_MAP.val(0x40));
@@ -1442,12 +1445,12 @@ impl IntelIch8 {
     fn early_chipset_settings(&self) {
         let rcba = self.rcba();
         rcba.regs().gcs.modify(GCS_REG::BOOT_SMI_EN::SET);
-        rcba.regs().cir8.modify(CIR8_REG::FIELD_1_0.val(2));
+        rcba.regs().cir8.modify(CIR8_REG::FIELD_1_0.val(1));
         rcba.regs().cir9.modify(CIR9_REG::FIELD_27_26.val(2));
         rcba.regs().cir7.modify(CIR7_REG::FIELD_19_16.val(5));
         rcba.regs().cir13.modify(CIR13_REG::FIELD_19_16.val(5));
         rcba.regs().cir5.modify(CIR5_REG::BIT0::SET);
-        rcba.regs().cir10.modify(CIR10_REG::FIELD_17_16.val(3));
+        rcba.regs().cir10.modify(CIR10_REG::BIT17::CLEAR);
     }
 
     fn configure_gpi_routing(&self) {
