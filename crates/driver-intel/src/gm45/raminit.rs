@@ -7,6 +7,7 @@
 use crate::generic::spd::{DDR3, SPD_MEMORY_TYPE, ddr3};
 use fstart_core::mmio::{self, MmioReadWrite};
 use fstart_core::services::{ServiceError, SmBus};
+use fstart_pci::ecam::EcamDevice;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_structs;
 
@@ -184,7 +185,18 @@ pub fn select_ddr3_timing(
 // dynamic register helpers below.
 register_structs! {
     PreJedecRegs {
-        (0x0000 => _r0: [u8; 0x400]),
+        (0x0000 => _r0: [u8; 0x208]),
+        (0x0208 => crossing0: MmioReadWrite<u32>),
+        (0x020c => crossing1: MmioReadWrite<u32>),
+        (0x0210 => crossing2: MmioReadWrite<u32>),
+        (0x0214 => _cross_pad0: [u8; 4]),
+        (0x0218 => misc0: MmioReadWrite<u32>),
+        (0x021c => _cross_pad1: [u8; 4]),
+        (0x0220 => misc1: MmioReadWrite<u32>),
+        (0x0224 => misc2: MmioReadWrite<u32>),
+        (0x0228 => _cross_pad2: [u8; 0xc]),
+        (0x0234 => misc3: MmioReadWrite<u8>),
+        (0x0235 => _r0b: [u8; 0x1cb]),
         (0x0400 => rcomp_ctrl: MmioReadWrite<u32>),
         (0x0404 => _r1: [u8; 8]),
         (0x040c => rcomp_cfg: MmioReadWrite<u32>),
@@ -199,15 +211,45 @@ register_structs! {
         (0x0530 => rcomp_status: MmioReadWrite<u32>),
         (0x0534 => _r6: [u8; 0x6cc]),
         (0x0c00 => clkcfg: MmioReadWrite<u32>),
-        (0x0c04 => _r7: [u8; 0x18]),
+        (0x0c04 => _r7: [u8; 0x0b]),
+        (0x0c0f => hpll_vco: MmioReadWrite<u8>),
+        (0x0c10 => _r7a: [u8; 0x0c]),
         (0x0c1c => scratchpad: MmioReadWrite<u16>),
         (0x0c1e => _r7b: [u8; 0x2a]),
         (0x0c48 => clk_gate: MmioReadWrite<u32>),
         (0x0c4c => _r8: [u8; 0x14]),
         (0x0c60 => clk_gate2: MmioReadWrite<u16>),
-        (0x0c62 => _r9: [u8; 0x7d2]),
+        (0x0c62 => _r9: [u8; 0x2ae]),
+        (0x0f10 => igd_gate: MmioReadWrite<u8>),
+        (0x0f11 => _r9b: [u8; 0x28d]),
+        (0x119e => igd_index: MmioReadWrite<u16>),
+        (0x11a0 => _r9c: [u8; 0x20]),
+        (0x11c0 => igd_control: MmioReadWrite<u16>),
+        (0x11c2 => _r9d: [u8; 0x272]),
         (0x1434 => dram_ctrl: MmioReadWrite<u32>),
         (0x1438 => @END),
+    }
+}
+
+// These eight DDR3 seed pairs share one register shape, but not a uniform
+// offset stride: coreboot skips 0x82c/0x830 between the sixth and seventh.
+const RCOMP_DDR3_SEEDS: [(usize, u8); 8] = [
+    (0x6ac, 0x55),
+    (0x6ec, 0x66),
+    (0x72c, 0x66),
+    (0x76c, 0x66),
+    (0x7ac, 0x66),
+    (0x7ec, 0x66),
+    (0x86c, 0x55),
+    (0x8ac, 0x66),
+];
+
+register_structs! {
+    RcompSeedRegs {
+        (0x00 => control: MmioReadWrite<u8>),
+        (0x01 => _pad: [u8; 3]),
+        (0x04 => value: MmioReadWrite<u8>),
+        (0x05 => @END),
     }
 }
 
@@ -225,6 +267,12 @@ impl Mchbar {
         // SAFETY: host-bridge early decode enabled MCHBAR; the overlay ends
         // inside its 16 KiB aperture and contains only aligned registers.
         unsafe { &*(self.base as *const PreJedecRegs) }
+    }
+    fn rcomp_seed_regs(&self, offset: usize) -> &RcompSeedRegs {
+        assert!(RCOMP_DDR3_SEEDS.iter().any(|(seed, _)| *seed == offset));
+        // SAFETY: this is one of the eight fixed seed offsets in the enabled
+        // MCHBAR aperture; the overlay names the control and value bytes.
+        unsafe { &*((self.base + offset) as *const RcompSeedRegs) }
     }
     // Only variable channel/rank/lane or RCOMP table offsets pass through
     // these helpers. All callers bound their indices before accessing MMIO.
@@ -246,6 +294,17 @@ impl Mchbar {
         // SAFETY: bounded offset in the enabled MCHBAR aperture.
         let addr = (self.base + offset) as *mut u8;
         unsafe { mmio::write8(addr, (mmio::read8(addr) & !clear) | set) }
+    }
+}
+
+register_structs! {
+    EpbarVc1Regs {
+        (0x0000 => _pad: [u8; 0x2c]),
+        (0x002c => interval: MmioReadWrite<u8>),
+        (0x002d => _pad2: [u8; 0xb]),
+        (0x0038 => slot0: MmioReadWrite<u32>),
+        (0x003c => slot1: MmioReadWrite<u32>),
+        (0x0040 => @END),
     }
 }
 
@@ -289,6 +348,84 @@ fn set_memory_clock(mch: &Mchbar, clock: MemClock, fsb_mhz: u32) -> Result<(), S
     // The CLKCFG + 0x48 32-bit gate write is part of the frequency sequence;
     // its lower 16 bits include the gate bit cleared above.
     regs.clk_gate.set(regs.clk_gate.get() | (0x3f << 24));
+    Ok(())
+}
+
+// Coreboot gm45/raminit.c get_gmch_info() CAPID0+4 subtype and render
+// fuse decode. GS45 requires an independently established power mode.
+fn igd_variant(capid_high: u32) -> Result<usize, ServiceError> {
+    const TYPES: [[Option<usize>; 5]; 8] = [
+        [None; 5],
+        [Some(1), Some(0), None, None, Some(2)],
+        [Some(3); 5],
+        [None, Some(5), Some(4), None, None],
+        [None, Some(7), Some(6), None, None],
+        [None; 5],
+        [None; 5],
+        [Some(8); 5],
+    ];
+    let variant = ((capid_high >> 10) & 7) as usize;
+    let render = (((capid_high >> 18) & 1) << 2 | ((capid_high >> 3) & 3)) as usize;
+    let subtype = TYPES[variant]
+        .get(render)
+        .copied()
+        .flatten()
+        .ok_or(ServiceError::HardwareError)?;
+    // GS45's low-power/performance distinction is board policy, not a fuse
+    // decoded here; refuse to guess its table column.
+    if subtype == 7 {
+        return Err(ServiceError::HardwareError);
+    }
+    Ok(subtype)
+}
+
+fn igd_frequency_codes(vco: u8, subtype: usize) -> Result<(u16, u16, u16), ServiceError> {
+    const RENDER: [[u16; 9]; 4] = [
+        [13, 13, 14, 13, 11, 13, 11, 10, 13],
+        [13, 14, 15, 13, 11, 13, 11, 9, 13],
+        [12, 13, 15, 12, 10, 12, 10, 9, 12],
+        [11, 12, 14, 11, 9, 11, 9, 8, 11],
+    ];
+    const SAMPLER: [[u16; 9]; 4] = [
+        [12, 12, 13, 12, 9, 12, 9, 8, 12],
+        [12, 13, 14, 12, 9, 12, 9, 8, 12],
+        [10, 12, 13, 10, 8, 10, 8, 8, 10],
+        [10, 10, 12, 10, 7, 10, 7, 6, 10],
+    ];
+    let vco_index = match vco & 7 {
+        4 => 0,
+        0 => 1,
+        1 => 2,
+        2 => 3,
+        _ => return Err(ServiceError::HardwareError),
+    };
+    let render = *RENDER[vco_index]
+        .get(subtype)
+        .ok_or(ServiceError::HardwareError)?;
+    let sampler = SAMPLER[vco_index][subtype];
+    Ok((render, sampler, u16::from(subtype != 7)))
+}
+
+fn set_igd_memory_frequencies(mch: &Mchbar, capid_high: u32) -> Result<(), ServiceError> {
+    let igd = EcamDevice::new(0, 2, 0);
+    if igd.read16(0) != 0x8086 {
+        return Err(ServiceError::HardwareError);
+    }
+    let subtype = igd_variant(capid_high)?;
+    let (render, sampler, display) = igd_frequency_codes(mch.regs().hpll_vco.get(), subtype)?;
+    let regs = mch.regs();
+    regs.igd_index.set(0xa800);
+    regs.igd_control
+        .set((regs.igd_control.get() & !(0xff << 8)) | (1 << 8));
+    regs.igd_index.set(0xb800);
+    regs.igd_gate.set(regs.igd_gate.get() | (1 << 7));
+    let codes = render | (sampler << 8);
+    let first = igd.read16(0xf0) & !((0xf << 8) | (1 << 5) | 0xf);
+    igd.write16(0xf0, first | codes);
+    let next = igd.read16(0xf0) & !((0xf << 8) | 0xf);
+    igd.write16(0xf0, next | codes | (1 << 5));
+    igd.write16(0xf0, igd.read16(0xf0) & !(1 << 5));
+    igd.write16(0xf0, (igd.read16(0xf0) & !(1 << 12)) | (display << 12));
     Ok(())
 }
 
@@ -430,15 +567,10 @@ const fn rcomp_table_offset(channel: usize, group: usize, pull: usize) -> usize 
 
 fn initialize_rcomp(mch: &Mchbar, revision: u8) -> Result<(), ServiceError> {
     let regs = mch.regs();
-    // DDR3 seed registers: 8 groups at 0x6ac..0x8ac, stride 0x40.
-    for group in 0..8 {
-        let offset = 0x6ac + group * 0x40;
-        mch.update8(offset, 0xf, 0);
-        mch.update8(
-            offset + 4,
-            0xff,
-            if group == 0 || group == 6 { 0x55 } else { 0x66 },
-        );
+    for (offset, value) in RCOMP_DDR3_SEEDS {
+        let seed = mch.rcomp_seed_regs(offset);
+        seed.control.set(seed.control.get() & !0x0f);
+        seed.value.set(value);
     }
     regs.rcomp_odt
         .set((regs.rcomp_odt.get() & !0x3f) | (2 << 3) | 2);
@@ -612,9 +744,6 @@ fn program_banks(mch: &Mchbar, dimms: &Ddr3Channels) {
         );
         let banks = (0..usize::from(ranks)).fold(0u32, |bits, rank| bits | (1 << (16 + 3 * rank)));
         mch.update32(channel_offset(ch, 0x1208), 0x07ff_0000, banks);
-        if ranks != 0 {
-            mch.update32(channel_offset(ch, 0x120c), 0, 3);
-        }
     }
 }
 
@@ -651,6 +780,79 @@ fn program_odt(mch: &Mchbar, t: &Ddr3Timing) {
     }
 }
 
+fn misc_settings(mch: &Mchbar, timing: &Ddr3Timing) {
+    let regs = mch.regs();
+    for ch in 0..2 {
+        mch.update32(channel_offset(ch, 0x1260), (1 << 24) | 0x1f, timing.trd);
+        mch.update8(0x1268 + ch * 0x100, 0xf, timing.twl as u8);
+        mch.update8(0x12a0 + ch * 0x100, 0xf, 0xa);
+    }
+    regs.misc0.set(
+        (regs.misc0.get() & !((7 << 29) | (7 << 25) | (3 << 22) | (3 << 10)))
+            | (4 << 29)
+            | (3 << 25)
+            | (1 << 10),
+    );
+    regs.misc1
+        .set((regs.misc1.get() & !(7 << 16)) | (1 << 21) | (1 << 16));
+    regs.misc2.set((regs.misc2.get() & !(7 << 8)) | (3 << 8));
+    regs.misc3.set(regs.misc3.get() | (1 << 3));
+}
+
+fn crossing_values(fsb_mhz: u32, clock: MemClock) -> Result<(u32, u32, u32, u32), ServiceError> {
+    // raminit.c clock_crossing_setup(): [0x20c, 0x208, 0x210, Cx1258].
+    let values = match (fsb_mhz, clock) {
+        (1067, MemClock::Mhz533) => (0x0018_0006, 0x0081_0060, 0, 0x4010_0401),
+        (1067, MemClock::Mhz400) => (0x0000_001c, 0x0003_00e0, 0, 0x1004_0220),
+        (800, MemClock::Mhz400) => (0x0030_000c, 0x0003_00c0, 0, 0x4010_0401),
+        (800, MemClock::Mhz333) => (0x0060_001c, 0x0003_0c00, 0x380, 0x0008_0201),
+        (667, MemClock::Mhz333) => (0x0030_000c, 0x0003_00c0, 0, 0x4010_0401),
+        _ => return Err(ServiceError::HardwareError),
+    };
+    Ok(values)
+}
+
+fn clock_crossing_setup(
+    mch: &Mchbar,
+    fsb_mhz: u32,
+    clock: MemClock,
+    dimms: &Ddr3Channels,
+) -> Result<(), ServiceError> {
+    let (cross1, cross0, cross2, channel_default) = crossing_values(fsb_mhz, clock)?;
+    let regs = mch.regs();
+    regs.crossing0.set(cross0);
+    regs.crossing1.set(cross1);
+    if fsb_mhz == 800 && clock == MemClock::Mhz333 {
+        regs.crossing2.set(cross2);
+    }
+    for (ch, dimm) in dimms.dimms.iter().enumerate() {
+        let card_f = dimm.is_some_and(|d| d.raw_card == 0xf);
+        let value = if fsb_mhz == 1067 && clock == MemClock::Mhz400 && card_f {
+            0x0804_0120
+        } else {
+            channel_default
+        };
+        mch.write32(channel_offset(ch, 0x1258), value);
+        mch.write32(channel_offset(ch, 0x125c), 0);
+    }
+    Ok(())
+}
+
+fn vc1_program_timings(epbar: u64, fsb_mhz: u32) -> Result<(), ServiceError> {
+    let (interval, slots) = match fsb_mhz {
+        1067 => (0x1a, 0x0138_0138),
+        800 => (0x14, 0x00f0_00f0),
+        667 => (0x10, 0x00c0_00c0),
+        _ => return Err(ServiceError::HardwareError),
+    };
+    // SAFETY: early host-bridge setup enabled EPBAR; all fields fit its aperture.
+    let regs = unsafe { &*(epbar as *const EpbarVc1Regs) };
+    regs.interval.set(interval);
+    regs.slot0.set(slots);
+    regs.slot1.set(slots);
+    Ok(())
+}
+
 fn powerup_ddr3(mch: &Mchbar) {
     let regs = mch.regs();
     fstart_arch::x86::udelay(200);
@@ -665,11 +867,14 @@ fn powerup_ddr3(mch: &Mchbar) {
     fstart_arch::x86::udelay(500);
 }
 
-/// Advance only through verified early DDR3 steps. Fail closed before JEDEC.
+/// Advance only through verified early DDR3 steps. Fail closed before IO/JEDEC.
 pub(super) fn prepare_ddr3(
     base: u64,
+    epbar: u64,
     revision: u8,
     fsb_mhz: u32,
+    capid_high: u32,
+    igd_enabled: bool,
     dimms: &Ddr3Channels,
     timing: &Ddr3Timing,
 ) -> Result<(), ServiceError> {
@@ -681,16 +886,32 @@ pub(super) fn prepare_ddr3(
         return Err(ServiceError::HardwareError);
     }
     validate_register_timings(timing)?;
+    // Check all derived values before beginning irreversible MMIO writes.
+    crossing_values(fsb_mhz, timing.clock)?;
+    if igd_enabled {
+        igd_variant(capid_high)?;
+    }
     let mch = Mchbar::new(base);
     let regs = mch.regs();
     regs.dram_ctrl.set(regs.dram_ctrl.get() | 3);
     set_memory_clock(&mch, timing.clock, fsb_mhz)?;
+    if igd_enabled {
+        set_igd_memory_frequencies(&mch, capid_high)?;
+    }
     configure_dram_control(&mch, dimms, timing.clock);
     initialize_rcomp(&mch, revision)?;
     powerup_ddr3(&mch);
     program_timings(&mch, timing);
     program_banks(&mch, dimms);
+    for (ch, dimm) in dimms.dimms.iter().enumerate() {
+        if dimm.is_some() {
+            mch.update32(channel_offset(ch, 0x120c), 0, 3);
+        }
+    }
     program_odt(&mch, timing);
+    misc_settings(&mch, timing);
+    clock_crossing_setup(&mch, fsb_mhz, timing.clock, dimms)?;
+    vc1_program_timings(epbar, fsb_mhz)?;
     // IO setup and the dummy JEDEC memory map remain unported. DRAM is not
     // accessible: neither JEDEC nor receive/read/write training has run.
     Err(ServiceError::NotInitialized)
@@ -702,6 +923,19 @@ mod tests {
 
     #[test]
     fn gm45_ddr3_clock_encodings_and_rcomp_lut_match_coreboot() {
+        assert_eq!(
+            RCOMP_DDR3_SEEDS,
+            [
+                (0x6ac, 0x55),
+                (0x6ec, 0x66),
+                (0x72c, 0x66),
+                (0x76c, 0x66),
+                (0x7ac, 0x66),
+                (0x7ec, 0x66),
+                (0x86c, 0x55),
+                (0x8ac, 0x66),
+            ]
+        );
         assert_eq!(
             [
                 clock_setting(MemClock::Mhz333),
@@ -726,6 +960,32 @@ mod tests {
         assert_eq!(rcomp_table_offset(0, 0, 0), 0x698);
         assert_eq!(rcomp_table_offset(1, 0, 1), 0x840);
         assert_eq!(rcomp_table_offset(1, 0, 0), 0x858);
+    }
+
+    #[test]
+    fn gm45_igd_fuses_and_vco_tables_match_coreboot() {
+        // Variant 1, render fuse 1 => GM45. Variant 7 => PM45.
+        assert_eq!(igd_variant((1 << 10) | (1 << 3)), Ok(0));
+        assert_eq!(igd_variant(7 << 10), Ok(8));
+        assert!(igd_variant((4 << 10) | (1 << 3)).is_err()); // GS45 power mode unknown
+        assert!(igd_variant(5 << 10).is_err());
+        assert_eq!(igd_frequency_codes(4, 0), Ok((13, 12, 1)));
+        assert_eq!(igd_frequency_codes(2, 8), Ok((11, 10, 1)));
+        assert!(igd_frequency_codes(3, 0).is_err());
+    }
+
+    #[test]
+    fn gm45_crossing_pairs_reject_unsupported_clocks() {
+        assert_eq!(
+            crossing_values(1067, MemClock::Mhz533),
+            Ok((0x0018_0006, 0x0081_0060, 0, 0x4010_0401))
+        );
+        assert_eq!(
+            crossing_values(800, MemClock::Mhz333),
+            Ok((0x0060_001c, 0x0003_0c00, 0x380, 0x0008_0201))
+        );
+        assert!(crossing_values(1067, MemClock::Mhz333).is_err());
+        assert!(crossing_values(667, MemClock::Mhz400).is_err());
     }
 
     #[test]
