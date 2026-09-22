@@ -83,10 +83,8 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
     // 200 µs settling time.
     fstart_arch::x86::hpet_udelay(200);
 
-    // Execute JEDEC sequence for each populated rank.  The controller's
-    // JEDEC command rank field is packed over populated ranks, not physical
-    // rank slots, so DIMM1-only systems use JEDEC ranks 0/1.
-    let mut jedec_rank: u8 = 0;
+    // Execute the JEDEC sequence using the physical rank slots also used by
+    // DRA/DRB and CKE programming. DIMM 1 therefore occupies ranks 2 and 3.
     for r in 0..super::RANKS_PER_CHANNEL {
         let dimm_idx = r / 2;
         let rank_in_dimm = (r % 2) as u8;
@@ -97,8 +95,7 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
             continue;
         }
 
-        let rank = jedec_rank;
-        jedec_rank += 1;
+        let rank = r as u8;
 
         // 1. NOP
         send_jedec_cmd(mch, rank, NOP_CMD, 0);

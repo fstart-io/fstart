@@ -129,9 +129,9 @@ fn chip_width_bits(width: ChipWidth) -> u8 {
 
 /// Determine the DIMM configuration code for a channel.
 ///
-/// Pineview has two incompatible encodings.  Desktop/UDIMM uses the
-/// vendor-MRC 4-bit DIMMA/DIMMB matrix.  Mobile/SO-DIMM keeps the older
-/// 0..6 encoding used by coreboot for DDR2 SO-DIMMs.
+/// This implementation has two incompatible encodings. Desktop/UDIMM uses
+/// a vendor-derived 4-bit DIMMA/DIMMB matrix that is not present in Pineview
+/// coreboot. Mobile/SO-DIMM uses the coreboot-derived 0..6 encoding.
 fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
     let dimma = chan * 2;
     let dimmb = dimma + 1;
@@ -144,10 +144,10 @@ fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
         return a_cfg | (b_cfg << 2);
     }
 
-    // Match coreboot's mobile/SO-DIMM vendor-MRC encoding exactly. A
-    // single populated socket is encoded as NC_xxx regardless of whether
-    // it is DIMMA or DIMMB; for two populated sockets DIMMA determines the
-    // dual-rank/x8 special case.
+    // Use the coreboot-derived mobile/SO-DIMM encoding, while normalizing a
+    // single populated socket regardless of whether it is DIMMA or DIMMB.
+    // For two populated sockets DIMMA determines the dual-rank/x8 special
+    // case.
     match (a.as_ref(), b.as_ref()) {
         (None, None) => 0,
         (Some(a), Some(_b)) => {

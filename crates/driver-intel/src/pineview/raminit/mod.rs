@@ -235,10 +235,9 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     mch.write8(mchbar::C0IOBUFACTCTL, (iobuf & !0x3F) | 0x08);
     mch.setbits32(mchbar::C0RSTCTL, 1 << 0);
 
-    // 15. RCOMP update (skip on warm-reset path, matching coreboot).
-    if si.boot_path != crate::BootPath::WarmReset {
-        phy::rcomp_update(&si, mch);
-    }
+    // 15. RCOMP update. Coreboot runs this after enabling the DDR I/O buffer
+    // on every boot path, including warm reset.
+    phy::rcomp_update(&si, mch);
 
     mch.setbits32(mchbar::HIT4, 1 << 1);
 
@@ -265,8 +264,9 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     // 21. Receive enable calibration.
     phy::sdram_rcven(&mut si, mch)?;
 
-    // Desktop UDIMMs require the Vref margining pass used by coreboot.
-    // SO-DIMMs use their existing fixed Vref setup instead.
+    // Desktop UDIMMs use the vendor-derived Vref margining path. Pineview
+    // coreboot has no equivalent pass; keep this separate from its SO-DIMM
+    // fixed-Vref flow until the vendor provenance is documented.
     if !si.is_sodimm() {
         if si.boot_path != crate::BootPath::S3Resume {
             phy::sdram_vref_margining(&mut si, mch)?;
