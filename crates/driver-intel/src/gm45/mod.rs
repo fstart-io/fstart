@@ -1,7 +1,7 @@
 //! Intel GM45 (Cantiga) northbridge.
 //!
-//! This module implements early host-bridge decode and DDR3 SPD/timing discovery.
-//! No memory is exposed as initialized until the remaining GM45 training flow is ported.
+//! This module implements early host-bridge decode and partial DDR3 initialization.
+//! No memory is exposed as initialized until JEDEC and training are ported.
 
 mod raminit;
 
@@ -412,13 +412,13 @@ impl MemoryController for IntelGm45 {
         let channels = raminit::probe_ddr3(&mut smbus, &self.config.spd_addresses)?;
         let timing = raminit::select_ddr3_timing(&channels, fsb_mhz, max_ddr3_mt)?;
         fstart_log::info!(
-            "gm45: DDR3 SPD timing selected: {} MHz CL{}; training unavailable",
+            "gm45: DDR3 SPD timing selected: {} MHz CL{}; JEDEC/training unavailable",
             timing.clock.mhz(),
             timing.cas
         );
-        // No controller programming, JEDEC or training has occurred. Returning
-        // success here would use stale DRAM contents from an earlier firmware.
-        Err(ServiceError::NotInitialized)
+        // The early controller slice is intentionally incomplete and returns
+        // NotInitialized even after programming; never expose stale DRAM.
+        raminit::prepare_ddr3(self.config.mchbar, revision, fsb_mhz, &channels, &timing)
     }
     fn detected_size_bytes(&self) -> u64 {
         if self.dram_ready { self.tom() } else { 0 }
