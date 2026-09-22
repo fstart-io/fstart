@@ -63,7 +63,7 @@ pub enum MemClock {
 /// needed by the DRAM init code.
 #[derive(Debug, Clone)]
 pub struct DimmInfo {
-    /// Non-zero module-present marker. For DDR2 this stores SPD revision byte 62.
+    /// Module/card type from the technology-specific SPD field.
     pub card_type: u8,
     /// Memory type (0x08 = DDR2, 0x0B = DDR3).
     pub mem_type: u8,

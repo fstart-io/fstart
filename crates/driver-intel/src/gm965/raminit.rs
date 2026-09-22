@@ -1812,6 +1812,8 @@ mod tests {
         use crate::generic::spd::ddr2;
         // Minimal valid DDR2 SPD so decode_dimm returns Some.
         let mut spd = [0u8; 256];
+        spd[0] = 128;
+        spd[1] = 8;
         spd[2] = 0x08;
         spd[62] = 0x12;
         spd[3] = 12;
@@ -1821,6 +1823,7 @@ mod tests {
         spd[10] = 0x45;
         spd[17] = 8;
         spd[18] = 1 << 5;
+        spd[31] = 1;
         spd[13] = 8;
         spd[6] = 64;
         spd[11] = 2;
