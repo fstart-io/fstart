@@ -1,7 +1,7 @@
 //! GM45 DDR3 discovery and early controller programming.
 //!
-//! JEDEC, ZQ and receive-enable calibration are implemented; high-rate
-//! read/write training, final mapping and memory test are not. This code
+//! JEDEC, ZQ, receive-enable and high-rate read/write calibration are implemented;
+//! final mapping and memory test are not. This code
 //! never announces usable memory.
 //! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
@@ -12,6 +12,8 @@ use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam::EcamDevice;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
+
+mod training;
 
 /// Coreboot GM45 indexes memory clocks by their physical MHz, not transfer rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +196,9 @@ register_structs! {
     PreJedecRegs {
         (0x0000 => _r0: [u8; 0x40]),
         (0x0040 => jedec_gate: MmioReadWrite<u32>),
-        (0x0044 => _r0a: [u8; 0x1bc]),
+        (0x0044 => _r0a: [u8; 0x34]),
+        (0x0078 => training_read_control: MmioReadWrite<u8>),
+        (0x0079 => _r0aa: [u8; 0x187]),
         (0x0200 => dcc: MmioReadWrite<u32, Dcc::Register>),
         (0x0204 => _dcc_pad: [u8; 4]),
         (0x0208 => crossing0: MmioReadWrite<u32>),
@@ -355,7 +359,9 @@ impl Mchbar {
 register_structs! {
     PostJedecChannelRegs {
         (0x00 => timing6: MmioReadWrite<u32>),
-        (0x04 => _pad: [u8; 0x24]),
+        (0x04 => _pad: [u8; 8]),
+        (0x0c => pointer_control: MmioReadWrite<u32>),
+        (0x10 => _pad2: [u8; 0x18]),
         (0x28 => control0: MmioReadWrite<u32>),
         (0x2c => control1: MmioReadWrite<u32>),
         (0x30 => @END),
@@ -1646,8 +1652,11 @@ pub(super) fn prepare_ddr3(
     jedec_ddr3(&mch, hb, &bases, &commands);
     post_jedec_ddr3(&mch, hb, cores == 4);
     receive_enable_calibration(&mch, dimms, timing, &bases)?;
-    // High-rate read/write training, final map and memory test are not
-    // implemented. Never advertise these dummy rank boundaries.
+    if timing.clock == MemClock::Mhz533 {
+        training::read_write_training(&mch, dimms, &bases)?;
+    }
+    // Final map, thermal/optimizations and destructive test are unavailable.
+    // Never advertise these dummy rank boundaries, including at lower clocks.
     Err(ServiceError::NotInitialized)
 }
 
@@ -1946,6 +1955,25 @@ mod tests {
             dummy_rank_map(&second_only),
             ([[0, 0], [0x0004_0004, 0x0004_0004]], [0, 2], 128)
         );
+    }
+
+    #[test]
+    fn gm45_training_addresses_follow_dummy_rank_boundaries() {
+        let mut bus = FakeBus {
+            spd: spd(),
+            extra_slot: true,
+        };
+        let mut dimms = probe_ddr3(&mut bus, &[0x50, 0, 0x51, 0]).unwrap();
+        dimms.dimms[0].as_mut().unwrap().ranks = 2;
+        let bases = jedec_rank_bases(&dimms).unwrap();
+        let bunches = training::rank_addresses(&dimms, &bases).unwrap();
+        assert!(bunches[0].iter().copied().eq([0, 128 << 20]));
+        assert!(bunches[1].iter().copied().eq([256 << 20]));
+        let mut invalid = bases;
+        invalid[1][0] = Some(128 << 20);
+        assert!(training::rank_addresses(&dimms, &invalid).is_err());
+        dimms.dimms[0].as_mut().unwrap().ranks = 3;
+        assert!(training::rank_addresses(&dimms, &bases).is_err());
     }
 
     struct FakeBus {
