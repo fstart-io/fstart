@@ -721,18 +721,10 @@ impl IntelGm965 {
 
     fn tseg_size(&self) -> u32 {
         let esmramc = self.hostbridge_regs().esmramc.get();
-        if esmramc & 1 == 0 {
-            return 0;
-        }
-        match (esmramc >> 1) & 3 {
-            0 => 1024 * 1024,
-            1 => 2 * 1024 * 1024,
-            2 => 8 * 1024 * 1024,
-            _ => {
-                fstart_log::error!("gm965: bad TSEG size encoding");
-                0
-            }
-        }
+        super::gmch::tseg_size_bytes(esmramc).unwrap_or_else(|| {
+            fstart_log::error!("gm965: bad TSEG size encoding");
+            0
+        })
     }
 
     fn tseg_base(&self) -> u32 {

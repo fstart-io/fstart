@@ -1712,7 +1712,7 @@ impl IntelIch7 {
     /// Late power options: GPE0 enable, NMI control, pmio::PM1_CNT.
     ///
     /// Completes the power management setup started in early_init.
-    /// Programs pmio::GPE0_EN from the board config, sets pmio::PM1_CNT for
+    /// Programs pmio::ICH7_GPE0_EN from the board config, sets pmio::PM1_CNT for
     /// SCI_EN and bus-master C3->C0 wakeup, configures NMI source
     /// control.
     fn power_options_late(&self) {
@@ -1723,9 +1723,9 @@ impl IntelIch7 {
             // pending can assert SCI before Linux has any useful event to
             // consume, producing an IRQ9 "nobody cared" storm.
             self.pm().write16(pmio::PM1_STS, 0xffff);
-            self.pm().write32(pmio::GPE0_STS, 0xffff_ffff);
+            self.pm().write32(pmio::ICH7_GPE0_STS, 0xffff_ffff);
             // GPE0_EN from board config.
-            self.pm().write32(pmio::GPE0_EN, self.config.gpe0_en);
+            self.pm().write32(pmio::ICH7_GPE0_EN, self.config.gpe0_en);
             // Wake sources that survive S3. RTC and power-button events stay
             // latched in the suspend well, but the chipset only wakes the
             // system when the matching PM1_EN bit is set; the OS manages the

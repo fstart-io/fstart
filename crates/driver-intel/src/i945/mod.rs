@@ -370,20 +370,6 @@ pub const fn decode_igd_memory_size_kb(gms: u32) -> u32 {
     GGC2UMA_KB[gms as usize]
 }
 
-/// ESMRAMC TSEG size decode in bytes (`decode_tseg_size` from `memmap.c`).
-#[must_use]
-pub const fn decode_tseg_size(esmramc: u8) -> u32 {
-    if esmramc & 1 == 0 {
-        return 0;
-    }
-    match (esmramc >> 1) & 3 {
-        0 => 1 << 20,
-        1 => 2 << 20,
-        2 => 8 << 20,
-        _ => panic!("i945: bad TSEG setting"),
-    }
-}
-
 register_structs! {
     /// Sparse typed overlay for the early i945 host-bridge registers.
     pub I945HostBridgePciConfig {
@@ -1216,7 +1202,7 @@ impl IntelI945 {
 
     fn tom(&self) -> u64 {
         // TOM is TOLUD in a different format (raminit programs tom = tolud >> 3).
-        u64::from(Self::hostbridge_regs().tom.get()) << 27
+        u64::from(Self::hostbridge_regs().tom.get() & 0x01ff) << 27
     }
 
     fn igd_stolen_base(&self) -> u32 {
@@ -1230,7 +1216,11 @@ impl IntelI945 {
     }
 
     fn tseg_size(&self) -> u32 {
-        decode_tseg_size(Self::hb().read8(hostbridge::ESMRAMC))
+        let esmramc = Self::hb().read8(hostbridge::ESMRAMC);
+        super::gmch::tseg_size_bytes(esmramc).unwrap_or_else(|| {
+            fstart_log::error!("i945: bad TSEG size encoding");
+            0
+        })
     }
 
     fn tseg_base(&self) -> u32 {
