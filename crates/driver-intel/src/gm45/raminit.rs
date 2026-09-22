@@ -1,7 +1,7 @@
 //! GM45 DDR3 discovery and early controller programming.
 //!
-//! JEDEC, ZQ, receive-enable and high-rate read/write calibration are implemented;
-//! final mapping and memory test are not. This code
+//! JEDEC, ZQ, receive-enable and high-rate read/write calibration and final
+//! physical mapping are implemented; post-map operations and memory test are not. This code
 //! never announces usable memory.
 //! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
@@ -13,6 +13,7 @@ use fstart_pci::ecam::EcamDevice;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
+mod map;
 mod training;
 
 /// Coreboot GM45 indexes memory clocks by their physical MHz, not transfer rate.
@@ -1655,8 +1656,14 @@ pub(super) fn prepare_ddr3(
     if timing.clock == MemClock::Mhz533 {
         training::read_write_training(&mch, dimms, &bases)?;
     }
-    // Final map, thermal/optimizations and destructive test are unavailable.
-    // Never advertise these dummy rank boundaries, including at lower clocks.
+    // Validate the entire map before changing rank boundaries. ME may be
+    // present even if its function is hidden by the host-bridge DEVEN bits.
+    let me_active = EcamDevice::new(0, 3, 0).read8(0x08) != 0xff;
+    let capid_high = hb.capid_high.get();
+    let final_map = map::compute(dimms, igd_enabled, capid_high, me_active)?;
+    map::program(&mch, hb, &final_map);
+    // Optimizations, thermal/IGD setup and destructive memory test remain
+    // unavailable. Never expose even the final-mapped DRAM yet.
     Err(ServiceError::NotInitialized)
 }
 
@@ -1955,6 +1962,96 @@ mod tests {
             dummy_rank_map(&second_only),
             ([[0, 0], [0x0004_0004, 0x0004_0004]], [0, 2], 128)
         );
+    }
+
+    #[test]
+    fn gm45_final_map_single_and_interleaved_rank_boundaries() {
+        let mut bus = FakeBus {
+            spd: spd(),
+            extra_slot: true,
+        };
+        let one = probe_ddr3(&mut bus, &[0x50, 0, 0, 0]).unwrap();
+        let rank_mb = one.dimms[0].unwrap().rank_capacity_mb;
+        let single = map::compute(&one, false, 1 << 15, false).unwrap();
+        assert!(!single.interleaved);
+        assert_eq!(single.bounds[0][0], ((rank_mb >> 5) & 0x1fc) * 0x1_0001);
+        assert_eq!(single.bounds[1][0], single.bounds[0][0]);
+        assert_eq!(single.pages, [3, 0]); // SPD 1 KiB/chip becomes 8 KiB/rank.
+        assert_eq!(single.tom, (rank_mb >> 7) as u16);
+        assert_eq!(single.touud, rank_mb as u16);
+        assert_eq!(single.remap_base, 0x3ff);
+        assert_eq!(single.ggc, 2);
+        assert_eq!(map::compute(&one, true, 1 << 1, false).unwrap().ggc, 2);
+        let mut both = probe_ddr3(&mut bus, &[0x50, 0, 0x51, 0]).unwrap();
+        both.dimms[0].as_mut().unwrap().ranks = 2;
+        both.dimms[1].as_mut().unwrap().ranks = 2;
+        let dual = map::compute(&both, true, 0, false).unwrap();
+        assert!(dual.interleaved);
+        assert_eq!(dual.bounds[0], dual.bounds[1]);
+        assert_eq!(
+            dual.bounds[0][0],
+            ((rank_mb * 2 >> 5) << 16) | (rank_mb >> 5)
+        );
+        assert_eq!(dual.ggc, 0x0b50);
+        assert_eq!(dual.tom, (rank_mb * 4 >> 7) as u16);
+        assert_eq!(dual.tolud, 2048 << 4);
+        assert_eq!(dual.touud, (rank_mb * 4 + 2048) as u16);
+        assert_eq!(dual.remap_base, (rank_mb * 4 >> 6) as u16);
+        assert_eq!(dual.remap_limit, ((rank_mb * 4 + 2048 - 64) >> 6) as u16);
+    }
+
+    #[test]
+    fn gm45_final_map_me_reclaim_and_e820_boundaries() {
+        use fstart_core::services::memory_detect::{E820Entry, E820Kind, build_pc_compatible_e820};
+        let mut bus = FakeBus {
+            spd: spd(),
+            extra_slot: true,
+        };
+        let mut both = probe_ddr3(&mut bus, &[0x50, 0, 0x51, 0]).unwrap();
+        both.dimms[0].as_mut().unwrap().ranks = 2;
+        both.dimms[1].as_mut().unwrap().ranks = 2;
+        let map = map::compute(&both, true, 1 << 16, true).unwrap();
+        // No VT-d shadow GTT: 32 MiB UMA + 2 MiB GTT + 2 MiB TSEG.
+        assert_eq!(map.ggc, 0x0350);
+        assert_eq!(map.tolud, 2048 << 4);
+        assert_eq!(map.remap_base, 4096 >> 6);
+        assert_eq!(map.touud, 6080); // 4096 + (4096 - 2048) - 64 MiB ME
+        let usable = (u32::from(map.tolud) >> 4) - 36;
+        let mut entries = [E820Entry::zeroed(); 8];
+        let n = build_pc_compatible_e820(
+            &mut entries,
+            usable << 20,
+            u64::from(map.touud) << 20,
+            u32::from(map.tolud) << 16,
+        )
+        .unwrap();
+        assert!(entries[..n].iter().any(|e| e.kind == E820Kind::Ram as u32
+            && e.addr == 0x1_0000_0000
+            && e.size == u64::from(map.touud - 4096) << 20));
+        assert!(
+            entries[..n]
+                .iter()
+                .any(|e| e.kind == E820Kind::Reserved as u32
+                    && e.addr == u64::from(usable) << 20
+                    && e.size == 36 << 20)
+        );
+    }
+
+    #[test]
+    fn gm45_final_map_rejects_asymmetry_and_invalid_geometry() {
+        let mut bus = FakeBus {
+            spd: spd(),
+            extra_slot: true,
+        };
+        let mut both = probe_ddr3(&mut bus, &[0x50, 0, 0x51, 0]).unwrap();
+        both.dimms[1].as_mut().unwrap().ranks = 2;
+        assert!(map::compute(&both, false, 0, false).is_err());
+        both.dimms[1].as_mut().unwrap().ranks = 1;
+        both.dimms[0].as_mut().unwrap().rank_capacity_mb = 33;
+        assert!(map::compute(&both, false, 0, false).is_err());
+        both.dimms[0].as_mut().unwrap().rank_capacity_mb = 1024;
+        both.dimms[0].as_mut().unwrap().page_size = 0;
+        assert!(map::compute(&both, false, 0, false).is_err());
     }
 
     #[test]
