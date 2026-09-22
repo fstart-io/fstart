@@ -1534,7 +1534,7 @@ impl IntelIch7 {
         sata_dev.write32(0xA4, (v & 0xC0C0_FF00) | 0x1212_00AA);
         sata_dev.write8(0xA0, 0x00);
         sata_dev.write8(0x3C, 0x00);
-        sata_dev.or32(0x94, 1 << 22); // SCRD due to bug
+        sata_dev.or32(0x94, 1 << 30); // SCRD due to bug
 
         fstart_log::info!("intel-ich7: SATA init done (ports={:#x})", ports);
     }

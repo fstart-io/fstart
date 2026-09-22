@@ -19,6 +19,8 @@ pub const SPD_NUM_DIMM_BANKS: u8 = 5;
 pub const SPD_MODULE_DATA_WIDTH_LSB: u8 = 6;
 /// SPD byte 7: module data width (MSB).
 pub const SPD_MODULE_DATA_WIDTH_MSB: u8 = 7;
+/// SPD byte 8: nominal module voltage interface level.
+pub const SPD_MODULE_VOLTAGE: u8 = 8;
 /// SPD byte 9: minimum cycle time at maximum supported CAS latency.
 pub const SPD_MIN_CYCLE_TIME_AT_CAS_MAX: u8 = 9;
 /// SPD byte 10: access time from clock.
@@ -66,6 +68,8 @@ pub const SPD_TRC_TRFC_EXT: u8 = 40;
 pub const SPD_TRFC_LO: u8 = 42;
 /// SPD byte 62: DDR2 SPD revision.
 pub const SPD_REVISION: u8 = 62;
+/// SPD byte 63: checksum of bytes 0 through 62.
+pub const SPD_CHECKSUM: u8 = 63;
 
 /// DDR2 memory type identifier (SPD byte 2).
 pub const DDR2: u8 = 0x08;
@@ -173,6 +177,14 @@ fn rank_density_mb(spd_data: &[u8; 256]) -> u32 {
     }
 }
 
+fn checksum_valid(spd_data: &[u8; 256]) -> bool {
+    spd_data[..SPD_CHECKSUM as usize]
+        .iter()
+        .copied()
+        .fold(0u8, u8::wrapping_add)
+        == spd_data[SPD_CHECKSUM as usize]
+}
+
 /// Decode DDR2 raw SPD data into a [`DimmInfo`].
 ///
 /// Returns `None` if the memory type is not DDR2 or the data looks
@@ -185,7 +197,11 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
     }
 
     let revision = spd_data[SPD_REVISION as usize];
-    if revision == 0 {
+    if revision & 0xf0 != 0x10 || !checksum_valid(spd_data) {
+        return None;
+    }
+
+    if spd_data[SPD_MODULE_VOLTAGE as usize] > 0x05 {
         return None;
     }
 
@@ -252,28 +268,34 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
     };
 
     let cas_latencies = spd_data[SPD_SUPPORTED_CAS_LATENCIES as usize];
+    if cas_latencies == 0
+        || cas_latencies & 0x03 != 0
+        || (revision < 0x13 && cas_latencies & 0x80 != 0)
+        || (revision < 0x12 && cas_latencies & 0x40 != 0)
+    {
+        return None;
+    }
+
     let mut cycle_time_256ns = [0u32; 8];
     let mut access_time_256ns = [0u32; 8];
     if let Some(max_cas) = msb_index(cas_latencies) {
         cycle_time_256ns[max_cas as usize] =
-            decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MAX as usize]).unwrap_or(0);
+            decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MAX as usize])?;
         access_time_256ns[max_cas as usize] =
-            decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK as usize]).unwrap_or(0);
+            decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK as usize])?;
 
         if max_cas >= 1 && (cas_latencies & (1 << (max_cas - 1))) != 0 {
             cycle_time_256ns[(max_cas - 1) as usize] =
-                decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MINUS_1 as usize]).unwrap_or(0);
+                decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MINUS_1 as usize])?;
             access_time_256ns[(max_cas - 1) as usize] =
-                decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK_CAS_MINUS_1 as usize])
-                    .unwrap_or(0);
+                decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK_CAS_MINUS_1 as usize])?;
         }
 
         if max_cas >= 2 && (cas_latencies & (1 << (max_cas - 2))) != 0 {
             cycle_time_256ns[(max_cas - 2) as usize] =
-                decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MINUS_2 as usize]).unwrap_or(0);
+                decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MINUS_2 as usize])?;
             access_time_256ns[(max_cas - 2) as usize] =
-                decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK_CAS_MINUS_2 as usize])
-                    .unwrap_or(0);
+                decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK_CAS_MINUS_2 as usize])?;
         }
     }
 
@@ -282,7 +304,7 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
         | (((spd_data[SPD_TRC_TRFC_EXT as usize] & 0x01) as u16) << 8);
 
     Some(DimmInfo {
-        card_type: revision,
+        card_type: spd_data[SPD_DIMM_TYPE as usize],
         mem_type,
         width,
         chip_capacity,
@@ -314,7 +336,7 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
         trrd_256ns: decode_quarter_256ns(spd_data[SPD_MIN_RAS_TO_RAS_DELAY as usize]),
         trtp_256ns: decode_quarter_256ns(spd_data[SPD_MIN_READ_TO_PRECHARGE as usize]),
         rank_capacity_mb,
-        is_ecc: spd_data[SPD_DIMM_CONFIG_TYPE as usize] & 0x3 != 0,
+        is_ecc: spd_data[SPD_DIMM_CONFIG_TYPE as usize] & 0x02 != 0,
         is_registered: is_registered_ddr2(spd_data[SPD_DIMM_TYPE as usize]),
         is_stacked: spd_data[SPD_NUM_DIMM_BANKS as usize] & 0x10 != 0,
         supports_bl8: spd_data[SPD_BURST_LENGTHS as usize] & 0x08 != 0,

@@ -287,9 +287,9 @@ impl IntelPineview {
     #[cfg(target_arch = "x86_64")]
     fn enable_ecam(&self) {
         // PCIEXBAR value: base address | length encoding | enable.
-        // Length encoding: 0 = 256 buses, 1 = 128, 2 = 64.
-        // Pineview uses 64 buses → encoding = 2.
-        let pciexbar_val = (self.config.ecam_base as u32) | (2 << 1) | 1;
+        // Length encoding 0 selects 256 buses, matching PCI_BUS_END and the
+        // 256 MiB ECAM resource published to later stages.
+        let pciexbar_val = (self.config.ecam_base as u32) | 1;
         // SAFETY: one-time legacy PCI config write to the host bridge
         // to enable ECAM. After this, ECAM MMIO is live.
         unsafe {
