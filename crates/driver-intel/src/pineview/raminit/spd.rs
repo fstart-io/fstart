@@ -53,6 +53,19 @@ pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
             return Err(ServiceError::HardwareError);
         };
 
+        // The controller's DRA/DRB tables only describe 12-15 row and 9-10
+        // column parts (coreboot `decode_spd`); anything else would be
+        // silently folded onto a neighbouring geometry.
+        if !(12..=15).contains(&info.rows) || !(9..=10).contains(&info.cols) {
+            fstart_log::error!(
+                "raminit: DIMM {} has unsupported geometry rows={} cols={}",
+                i,
+                info.rows as u32,
+                info.cols as u32,
+            );
+            return Err(ServiceError::HardwareError);
+        }
+
         si.spd_type = crate::generic::spd::ddr2::DDR2;
 
         // Preserve Pineview's coreboot CAS mask policy: only CAS3..CAS6 are
@@ -129,9 +142,9 @@ fn chip_width_bits(width: ChipWidth) -> u8 {
 
 /// Determine the DIMM configuration code for a channel.
 ///
-/// Pineview has two incompatible encodings.  Desktop/UDIMM uses the
-/// vendor-MRC 4-bit DIMMA/DIMMB matrix.  Mobile/SO-DIMM keeps the older
-/// 0..6 encoding used by coreboot for DDR2 SO-DIMMs.
+/// This implementation has two incompatible encodings. Desktop/UDIMM uses
+/// a vendor-derived 4-bit DIMMA/DIMMB matrix that is not present in Pineview
+/// coreboot. Mobile/SO-DIMM uses the coreboot-derived 0..6 encoding.
 fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
     let dimma = chan * 2;
     let dimmb = dimma + 1;
@@ -144,10 +157,10 @@ fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
         return a_cfg | (b_cfg << 2);
     }
 
-    // Match coreboot's mobile/SO-DIMM vendor-MRC encoding exactly. A
-    // single populated socket is encoded as NC_xxx regardless of whether
-    // it is DIMMA or DIMMB; for two populated sockets DIMMA determines the
-    // dual-rank/x8 special case.
+    // Use the coreboot-derived mobile/SO-DIMM encoding, while normalizing a
+    // single populated socket regardless of whether it is DIMMA or DIMMB.
+    // For two populated sockets DIMMA determines the dual-rank/x8 special
+    // case.
     match (a.as_ref(), b.as_ref()) {
         (None, None) => 0,
         (Some(a), Some(_b)) => {

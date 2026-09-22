@@ -647,10 +647,6 @@ const fn default_smbus_base() -> u16 {
     ich7::DEFAULT_SMBUS_BASE
 }
 
-const fn default_pcie_ports() -> [bool; 4] {
-    [true; 4]
-}
-
 const fn default_true() -> bool {
     true
 }
@@ -662,7 +658,7 @@ impl IntelIch7Config {
             rcba: 0xFED1_C000,
             pirq: crate::southbridge::pirq::ICH7_PINEVIEW_ROUTING,
             pirq_routing: [0; 8],
-            pcie_ports: default_pcie_ports(),
+            pcie_ports: [false; 4],
             lan: true,
             ac97_audio: true,
             ac97_modem: true,
@@ -677,7 +673,7 @@ impl IntelIch7Config {
             gpio: GpioConfig::new(),
             acpi_name: Some("LPCB"),
             c3_latency: default_c3_latency(),
-            power_on_after_fail: 0,
+            power_on_after_fail: 1,
         }
     }
 }
