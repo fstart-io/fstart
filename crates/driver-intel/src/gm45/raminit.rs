@@ -1,15 +1,16 @@
 //! GM45 DDR3 discovery and early controller programming.
 //!
 //! JEDEC, training and memory test are not implemented; this code never
-//! announces usable memory. Register sequences follow coreboot gm45/raminit.c
+//! announces usable memory. DDR3 IO and the dummy pre-JEDEC map are prepared.
+//! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
 
 use crate::generic::spd::{DDR3, SPD_MEMORY_TYPE, ddr3};
 use fstart_core::mmio::{self, MmioReadWrite};
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam::EcamDevice;
-use tock_registers::interfaces::{Readable, Writeable};
-use tock_registers::register_structs;
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::{register_bitfields, register_structs};
 
 /// Coreboot GM45 indexes memory clocks by their physical MHz, not transfer rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,12 +181,18 @@ pub fn select_ddr3_timing(
     Err(ServiceError::HardwareError)
 }
 
+register_bitfields![u32,
+    Dcc [INTERLEAVED OFFSET(1) NUMBITS(1) [], NO_CHANXOR OFFSET(10) NUMBITS(1) []]
+];
+
 // Named fixed offsets are represented by the MCHBAR overlay; the RCOMP
 // lookup window has data-dependent offsets and is accessed through checked
 // dynamic register helpers below.
 register_structs! {
     PreJedecRegs {
-        (0x0000 => _r0: [u8; 0x208]),
+        (0x0000 => _r0: [u8; 0x200]),
+        (0x0200 => dcc: MmioReadWrite<u32, Dcc::Register>),
+        (0x0204 => _dcc_pad: [u8; 4]),
         (0x0208 => crossing0: MmioReadWrite<u32>),
         (0x020c => crossing1: MmioReadWrite<u32>),
         (0x0210 => crossing2: MmioReadWrite<u32>),
@@ -198,9 +205,11 @@ register_structs! {
         (0x0234 => misc3: MmioReadWrite<u8>),
         (0x0235 => _r0b: [u8; 0x1cb]),
         (0x0400 => rcomp_ctrl: MmioReadWrite<u32>),
-        (0x0404 => _r1: [u8; 8]),
+        (0x0404 => rcomp_io: MmioReadWrite<u32>),
+        (0x0408 => _r1: [u8; 4]),
         (0x040c => rcomp_cfg: MmioReadWrite<u32>),
-        (0x0410 => _r2: [u8; 8]),
+        (0x0410 => rcomp_io2: MmioReadWrite<u32>),
+        (0x0414 => _r2: [u8; 4]),
         (0x0418 => rcomp_cfg2: MmioReadWrite<u32>),
         (0x041c => rcomp_cfg3: MmioReadWrite<u32>),
         (0x0420 => _r3: [u8; 0xb0]),
@@ -225,9 +234,28 @@ register_structs! {
         (0x119e => igd_index: MmioReadWrite<u16>),
         (0x11a0 => _r9c: [u8; 0x20]),
         (0x11c0 => igd_control: MmioReadWrite<u16>),
-        (0x11c2 => _r9d: [u8; 0x272]),
+        (0x11c2 => _r9d: [u8; 0x23e]),
+        (0x1400 => io0: MmioReadWrite<u32>),
+        (0x1404 => _io_pad0: [u8; 8]),
+        (0x140c => io1: MmioReadWrite<u32>),
+        (0x1410 => _io_pad1: [u8; 4]),
+        (0x1414 => io2: MmioReadWrite<u32>),
+        (0x1418 => io3: MmioReadWrite<u32>),
+        (0x141c => io4: MmioReadWrite<u32>),
+        (0x1420 => _io_pad2: [u8; 8]),
+        (0x1428 => io5: MmioReadWrite<u32>),
+        (0x142c => io6: MmioReadWrite<u32>),
+        (0x1430 => _io_pad3: [u8; 4]),
         (0x1434 => dram_ctrl: MmioReadWrite<u32>),
-        (0x1438 => @END),
+        (0x1438 => _io_pad4: [u8; 8]),
+        (0x1440 => io7: MmioReadWrite<u32>),
+        (0x1444 => _io_pad5: [u8; 0x4c]),
+        (0x1490 => write_io0: MmioReadWrite<u32>),
+        (0x1494 => write_io1: MmioReadWrite<u32>),
+        (0x1498 => _io_pad6: [u8; 0xf8]),
+        (0x1590 => write_io2: MmioReadWrite<u32>),
+        (0x1594 => write_io3: MmioReadWrite<u32>),
+        (0x1598 => @END),
     }
 }
 
@@ -582,7 +610,7 @@ fn initialize_rcomp(mch: &Mchbar, revision: u8) -> Result<(), ServiceError> {
     regs.rcomp_ctrl.set(regs.rcomp_ctrl.get() | 1);
 
     let mut indices = [[[None; 2]; 6]; 2];
-    let result: Result<(), ServiceError> = (|| {
+    let captured = (|| {
         for _ in 0..12 {
             rcomp_pulse(mch)?;
             let ctrl = regs.rcomp_ctrl.get();
@@ -597,31 +625,38 @@ fn initialize_rcomp(mch: &Mchbar, revision: u8) -> Result<(), ServiceError> {
                 Some(((index >> 16) & 0x7f) as u8),
             ];
         }
-        rcomp_pulse(mch)?;
-        for channel in 0..2 {
-            for group in 0..6 {
-                // Coreboot validates all 12 readings, even though channel B
-                // exposes only its first two table groups.
-                for pull in (0..2).rev() {
-                    let index = indices[channel][group][pull].ok_or(ServiceError::HardwareError)?;
-                    let col = [[0, 1], [2, 3], [4, 5], [4, 5], [6, 7], [6, 7]][group][pull];
-                    let words = rcomp_words(revision == 9, index, col)
-                        .ok_or(ServiceError::HardwareError)?;
-                    if channel == 1 && group >= 2 {
-                        continue;
-                    }
-                    // Group stride 0x40; channel B starts at 0x840.
-                    let base = rcomp_table_offset(channel, group, pull);
-                    for (i, word) in words.iter().enumerate() {
-                        mch.write32(base + i * 4, *word);
-                    }
+        rcomp_pulse(mch)
+    })();
+    // Coreboot stops calibration before validating and writing lookup tables.
+    // Also clear the enable bit when a bounded pulse times out.
+    regs.rcomp_ctrl.set(regs.rcomp_ctrl.get() & !(1 << 2));
+    captured?;
+    // Validate every index before programming any table: channel B exposes
+    // only two table groups, but coreboot still validates all six readings.
+    for channel in &indices {
+        for group in channel {
+            for &index in group {
+                if !matches!(index, Some(7..=55)) {
+                    return Err(ServiceError::HardwareError);
                 }
             }
         }
-        Ok(())
-    })();
-    regs.rcomp_ctrl.set(regs.rcomp_ctrl.get() & !(1 << 2));
-    result?;
+    }
+    for channel in 0..2 {
+        for group in 0..(if channel == 0 { 6 } else { 2 }) {
+            for pull in (0..2).rev() {
+                let index = indices[channel][group][pull].ok_or(ServiceError::HardwareError)?;
+                let col = [[0, 1], [2, 3], [4, 5], [4, 5], [6, 7], [6, 7]][group][pull];
+                let words =
+                    rcomp_words(revision == 9, index, col).ok_or(ServiceError::HardwareError)?;
+                // Group stride 0x40; channel B starts at 0x840.
+                let base = rcomp_table_offset(channel, group, pull);
+                for (i, word) in words.iter().enumerate() {
+                    mch.write32(base + i * 4, *word);
+                }
+            }
+        }
+    }
     rcomp_run(mch)?;
     regs.rcomp_cfg.set(regs.rcomp_cfg.get() | (1 << 19));
     rcomp_run(mch)?;
@@ -826,7 +861,8 @@ fn clock_crossing_setup(
         regs.crossing2.set(cross2);
     }
     for (ch, dimm) in dimms.dimms.iter().enumerate() {
-        let card_f = dimm.is_some_and(|d| d.raw_card == 0xf);
+        // Coreboot adds 0xa to SPD raw card 5 to obtain internal card F.
+        let card_f = dimm.is_some_and(|d| d.raw_card == 5);
         let value = if fsb_mhz == 1067 && clock == MemClock::Mhz400 && card_f {
             0x0804_0120
         } else {
@@ -867,7 +903,200 @@ fn powerup_ddr3(mch: &Mchbar) {
     fstart_arch::x86::udelay(500);
 }
 
-/// Advance only through verified early DDR3 steps. Fail closed before IO/JEDEC.
+// Coreboot gm45/raminit.c DDR3 memory-IO setup. The read/write lane and
+// channel offsets are computed; all singleton registers use the overlay.
+fn io_channel_offset(channel: usize, reg: usize) -> usize {
+    assert!(channel < 2 && (0x1470..=0x14cc).contains(&reg) && reg.is_multiple_of(4));
+    reg + channel * 0x100
+}
+
+fn clock_mux_codes(clock: MemClock, card_f: bool, mixed: bool) -> [u32; 8] {
+    let fast = clock == MemClock::Mhz533;
+    let codes = [
+        if fast && !card_f { 3 } else { 2 },
+        if !fast && !card_f { 2 } else { 3 },
+        2,
+        if card_f { 3 } else { 2 },
+        u32::from(fast && !card_f),
+        u32::from(fast || card_f),
+        0,
+        u32::from(card_f),
+    ];
+    codes.map(|code| (code + if mixed { 4 } else { 0 }) << 11)
+}
+
+fn write_io_values(clock: MemClock, revision: u8, channel: usize, card_f: bool) -> [u32; 4] {
+    const SLOW: [[[[u32; 4]; 2]; 2]; 2] = [
+        [
+            [
+                [0xa3255008, 0x26888209, 0x26288208, 0x6188040f],
+                [0x7524240b, 0xa5255608, 0x232b8508, 0x5528040f],
+            ],
+            [
+                [0xa6255308, 0x26888209, 0x212b7508, 0x6188040f],
+                [0x7524240b, 0xa6255708, 0x132b7508, 0x5528040f],
+            ],
+        ],
+        [
+            [
+                [0xc5257208, 0x26888209, 0x26288208, 0x6188040f],
+                [0x7524240b, 0xc5257608, 0x232b8508, 0x5528040f],
+            ],
+            [
+                [0xb6256308, 0x26888209, 0x212b7508, 0x6188040f],
+                [0x7524240b, 0xb6256708, 0x132b7508, 0x5528040f],
+            ],
+        ],
+    ];
+    const FAST: [[[u32; 4]; 2]; 2] = [
+        [
+            [0xb2254708, 0x002b7408, 0x132b8008, 0x7228060f],
+            [0xb0255008, 0xa4254108, 0x4528b409, 0x9428230f],
+        ],
+        [
+            [0xa4254208, 0x022b6108, 0x132b8208, 0x9228210f],
+            [0x6024140b, 0x92244408, 0x252ba409, 0x9328360c],
+        ],
+    ];
+    let card = usize::from(card_f);
+    match clock {
+        MemClock::Mhz333 => SLOW[usize::from(revision == 9)][0][card],
+        MemClock::Mhz400 => SLOW[usize::from(revision == 9)][1][card],
+        MemClock::Mhz533 => FAST[channel][card],
+    }
+}
+
+fn initialize_ddr3_io(mch: &Mchbar, dimms: &Ddr3Channels, clock: MemClock, revision: u8) {
+    let regs = mch.regs();
+    regs.io0
+        .set((regs.io0.get() & !(3 << 13)) | (1 << 9) | (1 << 13));
+    let rate = match clock {
+        MemClock::Mhz333 => (9, 2, 10, 2, 12, 1, 4),
+        MemClock::Mhz400 => (7, 3, 7, 3, 10, 2, 3),
+        MemClock::Mhz533 => (8, 4, 4, 4, 7, 2, 1),
+    };
+    regs.io1.set(
+        (regs.io1.get()
+            & !(0xff | (1 << 11) | (1 << 12) | (1 << 16) | (1 << 18) | (1 << 27) | (0xf << 28)))
+            | (1 << 7)
+            | (1 << 11)
+            | (1 << 16)
+            | (rate.0 << 28),
+    );
+    regs.io7.set(regs.io7.get() & !1);
+    regs.io2.set(
+        (regs.io2.get() & !((1 << 20) | (7 << 11) | (0xf << 24) | (0xf << 16)))
+            | (3 << 11)
+            | (rate.1 << 24)
+            | (rate.2 << 16),
+    );
+    for reg in [&regs.io3, &regs.io4] {
+        reg.set(reg.get() & !((1 << 3) | (1 << 11) | (1 << 19) | (1 << 27)));
+    }
+    regs.io5.set(regs.io5.get() | (1 << 14));
+    regs.io6.set(
+        (regs.io6.get() & !((0xf << 8) | (7 << 20) | 0xf | (0xf << 24)))
+            | (3 << 20)
+            | (5 << 24)
+            | (rate.3 << 8)
+            | rate.4,
+    );
+    regs.rcomp_ctrl
+        .set((regs.rcomp_ctrl.get() & !((3 << 4) | (3 << 16) | (3 << 30))) | (2 << 4) | (2 << 16));
+    regs.rcomp_io.set(regs.rcomp_io.get() & !(0xf << 20));
+    regs.rcomp_cfg.set(regs.rcomp_cfg.get() & !(1 << 6));
+    regs.rcomp_io2
+        .set((regs.rcomp_io2.get() & !(7 << 28)) | (2 << 28));
+    regs.rcomp_cfg3.set((regs.rcomp_cfg3.get() & !0x77) | 0x11);
+
+    let card_f = dimms.dimms.map(|d| d.is_some_and(|d| d.raw_card == 5));
+    for ch in 0..2 {
+        if dimms.dimms[ch].is_none() {
+            continue;
+        }
+        let mixed = ch == 1 && (dimms.dimms[0].is_none() || card_f[0] != card_f[1]);
+        let mux = clock_mux_codes(clock, card_f[ch], mixed);
+        for (lane, code) in mux.iter().enumerate() {
+            let offset = io_channel_offset(ch, 0x14b0 + lane * 4);
+            mch.update32(offset, 7 << 11, *code);
+        }
+    }
+    for ch in 0..2 {
+        if dimms.dimms[ch].is_none() {
+            continue;
+        }
+        // Coreboot skips channel B's write-lane table when both populated
+        // channels use the same card type (at every supported clock).
+        if ch == 1 && dimms.dimms[0].is_some() && card_f[0] == card_f[1] {
+            continue;
+        }
+        let values = write_io_values(clock, revision, ch, card_f[ch]);
+        for (lane, value) in values.iter().enumerate() {
+            mch.write32(io_channel_offset(ch, 0x147c - lane * 4), *value);
+        }
+    }
+    regs.write_io0.set(0x00e7_0067);
+    regs.write_io1.set(0x000d_8000);
+    regs.write_io2.set(0x00e7_0067);
+    regs.write_io3.set(0x000d_8000);
+    for ch in 0..2 {
+        if dimms.dimms[ch].is_none() {
+            continue;
+        }
+        for lane in (0..8).rev() {
+            let offset = io_channel_offset(ch, 0x14b0 + lane * 4);
+            mch.update32(
+                offset,
+                (3 << 25) | (1 << 8) | (7 << 16) | (0xf << 20) | (1 << 27),
+                (1 << 27) | (rate.5 << 16) | (rate.6 << 20),
+            );
+        }
+    }
+}
+
+// CxDRBy stores two rank boundaries (32 MiB units) per dword. The temporary
+// map must be sequential even if final channel mode would be interleaved.
+fn dummy_rank_map(dimms: &Ddr3Channels) -> ([[u32; 2]; 2], [u32; 2], u32) {
+    let mut bounds = [[0; 2]; 2];
+    let mut pages = [0; 2];
+    let mut base_mb = 0;
+    for ch in 0..2 {
+        let ranks = usize::from(dimms.dimms[ch].map_or(0, |d| d.ranks));
+        assert!(ranks <= 2);
+        for rank in 0..4 {
+            if rank < ranks {
+                base_mb += 128;
+                pages[ch] |= 2 << (rank * 4); // 4 KiB page: log2(4096) - 10
+            }
+            bounds[ch][rank / 2] |= (base_mb >> 5) << ((rank % 2) * 16);
+        }
+    }
+    (bounds, pages, base_mb)
+}
+
+fn prejedec_memory_map(mch: &Mchbar, dimms: &Ddr3Channels) {
+    let (bounds, pages, total_mb) = dummy_rank_map(dimms);
+    for ch in 0..2 {
+        for (pair, value) in bounds[ch].iter().enumerate() {
+            mch.write32(channel_offset(ch, 0x1200 + pair * 4), *value);
+        }
+        mch.update32(channel_offset(ch, 0x1208), 0xffff, pages[ch]);
+    }
+    // 2048 MiB PCI MMIO default, no ME allocation and at most four 128 MiB
+    // dummy ranks: no low-memory clipping or remap is possible here.
+    // SAFETY: the caller enabled ECAM before memory initialization.
+    let hb = unsafe { EcamDevice::new(0, 0, 0).regs::<super::Gm45HostBridgePciConfig>() };
+    hb.tom.set((total_mb >> 7) as u16);
+    hb.tolud.set((total_mb << 4) as u16);
+    hb.touud.set(total_mb as u16);
+    hb.remap_base.set(0x3ff);
+    hb.remap_limit.set(0);
+    let regs = mch.regs();
+    regs.dcc
+        .modify(Dcc::INTERLEAVED.val(0) + Dcc::NO_CHANXOR.val(1));
+}
+
+/// Advance through DDR3 IO and dummy-map setup; fail closed before JEDEC.
 pub(super) fn prepare_ddr3(
     base: u64,
     epbar: u64,
@@ -912,8 +1141,10 @@ pub(super) fn prepare_ddr3(
     misc_settings(&mch, timing);
     clock_crossing_setup(&mch, fsb_mhz, timing.clock, dimms)?;
     vc1_program_timings(epbar, fsb_mhz)?;
-    // IO setup and the dummy JEDEC memory map remain unported. DRAM is not
-    // accessible: neither JEDEC nor receive/read/write training has run.
+    initialize_ddr3_io(&mch, dimms, timing.clock, revision);
+    prejedec_memory_map(&mch, dimms);
+    // Stop before any JEDEC command: receive-enable and high-rate read/write
+    // training, the final map and the memory test are still unavailable.
     Err(ServiceError::NotInitialized)
 }
 
@@ -1002,6 +1233,69 @@ mod tests {
         timing.cas = 6;
         timing.tras = 32; // DRT1 tRAS field has five bits.
         assert!(validate_register_timings(&timing).is_err());
+    }
+
+    #[test]
+    fn gm45_ddr3_io_tables_and_clock_mux_follow_coreboot() {
+        assert_eq!(
+            clock_mux_codes(MemClock::Mhz400, false, false),
+            [2, 2, 2, 2, 0, 0, 0, 0].map(|v| v << 11)
+        );
+        assert_eq!(
+            clock_mux_codes(MemClock::Mhz533, true, true),
+            [6, 7, 6, 7, 4, 5, 4, 5].map(|v| v << 11)
+        );
+        assert_eq!(
+            write_io_values(MemClock::Mhz333, 5, 0, false),
+            [0xa3255008, 0x26888209, 0x26288208, 0x6188040f]
+        );
+        assert_eq!(
+            write_io_values(MemClock::Mhz400, 9, 1, true),
+            [0x7524240b, 0xb6256708, 0x132b7508, 0x5528040f]
+        );
+        assert_eq!(
+            write_io_values(MemClock::Mhz533, 7, 1, false),
+            [0xa4254208, 0x022b6108, 0x132b8208, 0x9228210f]
+        );
+        assert_eq!(io_channel_offset(1, 0x147c), 0x157c);
+        assert_eq!(core::mem::offset_of!(PreJedecRegs, io0), 0x1400);
+        assert_eq!(core::mem::offset_of!(PreJedecRegs, write_io2), 0x1590);
+        assert_eq!(core::mem::offset_of!(PreJedecRegs, dcc), 0x200);
+    }
+
+    #[test]
+    fn gm45_dummy_map_is_sequential_and_keeps_empty_rank_boundaries() {
+        let mut bus = FakeBus {
+            spd: spd(),
+            extra_slot: true,
+        };
+        let mut one = probe_ddr3(&mut bus, &[0x50, 0, 0, 0]).unwrap();
+        one.dimms[0].as_mut().unwrap().ranks = 2;
+        assert_eq!(
+            dummy_rank_map(&one),
+            (
+                [[0x0008_0004, 0x0008_0008], [0x0008_0008, 0x0008_0008]],
+                [0x22, 0],
+                256
+            )
+        );
+        let mut both = probe_ddr3(&mut bus, &[0x50, 0, 0x51, 0]).unwrap();
+        both.dimms[0].as_mut().unwrap().ranks = 2;
+        assert_eq!(
+            dummy_rank_map(&both),
+            (
+                [[0x0008_0004, 0x0008_0008], [0x000c_000c, 0x000c_000c]],
+                [0x22, 2],
+                384
+            )
+        );
+        let second_only = Ddr3Channels {
+            dimms: [None, both.dimms[1]],
+        };
+        assert_eq!(
+            dummy_rank_map(&second_only),
+            ([[0, 0], [0x0004_0004, 0x0004_0004]], [0, 2], 128)
+        );
     }
 
     struct FakeBus {
