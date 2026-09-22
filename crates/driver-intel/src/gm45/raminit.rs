@@ -1,8 +1,8 @@
 //! GM45 DDR3 discovery and early controller programming.
 //!
-//! JEDEC, ZQ, receive-enable and high-rate read/write calibration and final
-//! physical mapping are implemented; post-map operations and memory test are not. This code
-//! never announces usable memory.
+//! JEDEC, ZQ, receive-enable and high-rate read/write calibration, final
+//! physical mapping and post-map register setup are implemented. Memory testing
+//! is not; this code never announces usable memory.
 //! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
 
@@ -14,6 +14,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
 mod map;
+mod post_map;
 mod training;
 
 /// Coreboot GM45 indexes memory clocks by their physical MHz, not transfer rate.
@@ -1593,14 +1594,14 @@ fn receive_enable_calibration(
     Ok(())
 }
 
-/// Advance through DDR3 JEDEC/ZQ and receive-enable calibration; fail closed.
+/// Advance through DDR3 cold training, mapping and post-map register setup; fail closed.
 pub(super) fn prepare_ddr3(
     base: u64,
     epbar: u64,
     revision: u8,
     fsb_mhz: u32,
     capid_high: u32,
-    igd_enabled: bool,
+    graphics: crate::gm45::Gm45GraphicsPolicy,
     dimms: &Ddr3Channels,
     timing: &Ddr3Timing,
 ) -> Result<(), ServiceError> {
@@ -1622,10 +1623,9 @@ pub(super) fn prepare_ddr3(
     let cores = ((core::arch::x86_64::__cpuid_count(4, 0).eax >> 26) & 0x3f) + 1;
     // Check all derived values before beginning irreversible MMIO writes.
     crossing_values(fsb_mhz, timing.clock)?;
-    if igd_enabled {
-        igd_variant(capid_high)?;
-    }
+    let igd_enabled = graphics != crate::gm45::Gm45GraphicsPolicy::Discrete;
     let mch = Mchbar::new(base);
+    let (kind, display_clock) = post_map::preflight(&mch, dimms, timing, graphics, capid_high)?;
     let regs = mch.regs();
     regs.dram_ctrl.set(regs.dram_ctrl.get() | 3);
     set_memory_clock(&mch, timing.clock, fsb_mhz)?;
@@ -1662,8 +1662,19 @@ pub(super) fn prepare_ddr3(
     let capid_high = hb.capid_high.get();
     let final_map = map::compute(dimms, igd_enabled, capid_high, me_active)?;
     map::program(&mch, hb, &final_map);
-    // Optimizations, thermal/IGD setup and destructive memory test remain
-    // unavailable. Never expose even the final-mapped DRAM yet.
+    post_map::program(
+        &mch,
+        hb,
+        dimms,
+        timing,
+        final_map.interleaved,
+        fsb_mhz,
+        graphics,
+        capid_high,
+        kind,
+        display_clock,
+    )?;
+    // Destructive memory testing is separate. Never expose unverified DRAM.
     Err(ServiceError::NotInitialized)
 }
 

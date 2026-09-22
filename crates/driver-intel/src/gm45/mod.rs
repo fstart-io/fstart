@@ -1,8 +1,7 @@
 //! Intel GM45 (Cantiga) northbridge.
 //!
 //! This module implements early host-bridge decode and partial DDR3 initialization.
-//! No memory is exposed as initialized until post-map optimizations, thermal/IGD
-//! setup and destructive memory testing are ported.
+//! No memory is exposed as initialized until destructive memory testing is ported.
 
 mod raminit;
 
@@ -418,25 +417,21 @@ impl MemoryController for IntelGm45 {
         );
         let channels = raminit::probe_ddr3(&mut smbus, &self.config.spd_addresses)?;
         let timing = raminit::select_ddr3_timing(&channels, fsb_mhz, max_ddr3_mt)?;
-        let igd_enabled = matches!(
-            self.graphics,
-            Gm45GraphicsPolicy::Integrated | Gm45GraphicsPolicy::Hybrid
-        );
         let capid_high = self.hostbridge().capid_high.get();
         fstart_log::info!(
             "gm45: DDR3 SPD timing selected: {} MHz CL{}; RAM not yet usable",
             timing.clock.mhz(),
             timing.cas
         );
-        // Mapping still returns NotInitialized until all post-map work and
-        // destructive testing are implemented; never expose unverified DRAM.
+        // Post-map programming still returns NotInitialized until a separate
+        // destructive memory test is implemented; never expose unverified DRAM.
         raminit::prepare_ddr3(
             self.config.mchbar,
             self.config.epbar,
             revision,
             fsb_mhz,
             capid_high,
-            igd_enabled,
+            self.graphics,
             &channels,
             &timing,
         )
