@@ -3,6 +3,8 @@
 //! This module implements early host-bridge decode and cold-boot DDR3 initialization.
 //! Sparse destructive probes gate RAM availability; they are not exhaustive qualification.
 
+mod pm;
+mod post_dram;
 mod raminit;
 mod ramtest;
 
@@ -155,6 +157,7 @@ pub struct IntelGm45 {
     bootstrap_windows: Option<[(u32, u32); 2]>,
     dram_ready: bool,
     boot_path: crate::BootPath,
+    trained_mode: Option<(u8, u32, u32)>,
 }
 
 impl IntelGm45 {
@@ -342,6 +345,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
             bootstrap_windows: None,
             dram_ready: false,
             boot_path: crate::BootPath::Normal,
+            trained_mode: None,
         })
     }
     fn config(&self) -> &'static Self::Config {
@@ -358,6 +362,23 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     }
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
+        Ok(())
+    }
+    fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
+        let (revision, fsb, mem) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
+        if self.graphics != Gm45GraphicsPolicy::Integrated {
+            return Err(ServiceError::InvalidParam);
+        }
+        // coreboot romstage.c: D4F0 must be hidden before PM setup.
+        let hb = self.hostbridge();
+        hb.deven.set(hb.deven.get() & !0x4000);
+        self.post_dram_pm(revision, fsb, mem)?;
+        self.post_dram_pcie(revision)
+    }
+    fn early_post_southbridge_init(&mut self) -> Result<(), ServiceError> {
+        let (revision, _, _) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
+        self.mark_post_dram();
+        self.post_dram_iommu(revision);
         Ok(())
     }
     fn set_boot_path(&mut self, boot_path: crate::BootPath) {
@@ -412,6 +433,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
 impl MemoryController for IntelGm45 {
     fn dram_init(&mut self) -> Result<(), ServiceError> {
         self.dram_ready = false;
+        self.trained_mode = None;
         // The southbridge clears SLP_TYP while detecting S3. Use the boot
         // path passed down by the shared flow, never re-read PM1_CNT here.
         if self.boot_path == crate::BootPath::S3Resume || self.bootstrap_windows.is_none() {
@@ -476,6 +498,7 @@ impl MemoryController for IntelGm45 {
         // The final map and all post-map programming must complete before
         // touching DRAM. Failure keeps every public RAM API fail-closed.
         self.probe_low_memory()?;
+        self.trained_mode = Some((revision, fsb_mhz, timing.clock.mhz()));
         self.dram_ready = true;
         Ok(())
     }
@@ -710,6 +733,20 @@ mod tests {
         assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Integrated);
         driver.set_graphics_policy(Gm45GraphicsPolicy::Discrete);
         assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Discrete);
+    }
+    #[test]
+    fn gm45_post_dram_rejects_peg_without_board_slot_policy() {
+        use crate::IntelNorthbridgeDriver;
+        static CONFIG: IntelGm45Config = IntelGm45Config::new();
+        let mut driver = IntelGm45::new_from_config(&CONFIG).unwrap();
+        driver.trained_mode = Some((6, 800, 400));
+        for policy in [Gm45GraphicsPolicy::Discrete, Gm45GraphicsPolicy::Hybrid] {
+            driver.set_graphics_policy(policy);
+            assert!(matches!(
+                driver.early_post_dram_init(),
+                Err(ServiceError::InvalidParam)
+            ));
+        }
     }
     #[test]
     fn gm45_graphics_policy_does_not_select_me_functions() {
