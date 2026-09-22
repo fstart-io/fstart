@@ -29,6 +29,7 @@
 .global fstart_sipi_entry
 .global fstart_sipi_stack_base
 .global fstart_sipi_stack_size
+.global fstart_sipi_ap_limit
 .global fstart_sipi_ap_counter
 
 .code16
@@ -67,6 +68,11 @@ prot32:
 	lock xaddl %eax, SIPI_BASE + fstart_sipi_ap_counter - fstart_sipi_start
 	movl %eax, %esi
 
+	/* Broadcast SIPIs wake every AP, including CPUs beyond firmware's static
+	 * capacity. Park excess responders before indexing the stack arena. */
+	cmpl SIPI_BASE + fstart_sipi_ap_limit - fstart_sipi_start, %eax
+	jae excess_ap
+
 	/* ESP = stack_base + (index + 1) * stack_size. */
 	movl %eax, %ebx
 	incl %ebx
@@ -104,6 +110,11 @@ prot32:
 
 	ljmpl $CODE64_SEL, $(SIPI_BASE + long64 - fstart_sipi_start)
 
+excess_ap:
+	cli
+1:	hlt
+	jmp 1b
+
 .balign 16
 .code64
 long64:
@@ -138,6 +149,8 @@ fstart_sipi_entry:
 fstart_sipi_stack_base:
 	.quad 0
 fstart_sipi_stack_size:
+	.long 0
+fstart_sipi_ap_limit:
 	.long 0
 fstart_sipi_ap_counter:
 	.long 0
