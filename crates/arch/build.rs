@@ -48,12 +48,14 @@ fn main() {
              pub const ENTRY_OFFSET: usize = {:#x};\n\
              pub const STACK_BASE_OFFSET: usize = {:#x};\n\
              pub const STACK_SIZE_OFFSET: usize = {:#x};\n\
+             pub const AP_LIMIT_OFFSET: usize = {:#x};\n\
              pub const AP_COUNTER_OFFSET: usize = {:#x};\n",
             bin.display(),
             find_symbol_offset(elf.as_path(), "fstart_sipi_cr3"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_entry"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_stack_base"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_stack_size"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_ap_limit"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_ap_counter"),
         ),
     )

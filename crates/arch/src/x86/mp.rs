@@ -77,6 +77,7 @@ mod sipi_blob {
     pub const ENTRY_OFFSET: usize = 0;
     pub const STACK_BASE_OFFSET: usize = 0;
     pub const STACK_SIZE_OFFSET: usize = 0;
+    pub const AP_LIMIT_OFFSET: usize = 0;
     pub const AP_COUNTER_OFFSET: usize = 0;
 }
 
@@ -301,6 +302,10 @@ pub struct MpConfig<'a> {
 /// Errors from MP initialization.
 #[derive(Debug)]
 pub enum MpError {
+    /// The requested total CPU capacity exceeds the static MP limit.
+    TooManyCpus { requested: u16, supported: u16 },
+    /// Hardware reports or starts more CPUs than the configured storage can hold.
+    HardwareCpuCountExceedsCapacity { reported: u32, capacity: u32 },
     /// No APs responded to INIT+SIPI within the timeout.
     NoApsResponded,
     /// Fewer APs than expected checked in.
@@ -344,8 +349,9 @@ impl ApMailbox {
     }
 }
 
-/// Maximum number of CPUs supported.  Determines static mailbox array size.
+/// Maximum total CPU count supported, including the BSP.
 const MAX_CPUS: usize = 64;
+const MAX_APS: usize = MAX_CPUS - 1;
 
 /// Architectural default SMBASE used before SMM relocation.
 pub const SMM_DEFAULT_SMBASE: u64 = 0x30000;
@@ -375,18 +381,18 @@ const SMM_AMD64_SMBASE_OFFSET: u64 = 0xff00;
 
 /// Static mailbox array.  One slot per AP (index 0 = AP #1, etc.).
 /// Placed in BSS (zero-init = idle).
-static MAILBOXES: [ApMailbox; MAX_CPUS] = {
+static MAILBOXES: [ApMailbox; MAX_APS] = {
     // const-init workaround: can't use array::from_fn in const
     const MB: ApMailbox = ApMailbox::new();
-    [MB; MAX_CPUS]
+    [MB; MAX_APS]
 };
 
 const AP_STACK_SIZE: usize = 4 * 1024;
 
 #[repr(C, align(16))]
-struct ApStacks([[u8; AP_STACK_SIZE]; MAX_CPUS]);
+struct ApStacks([[u8; AP_STACK_SIZE]; MAX_APS]);
 
-static mut AP_STACKS: ApStacks = ApStacks([[0; AP_STACK_SIZE]; MAX_CPUS]);
+static mut AP_STACKS: ApStacks = ApStacks([[0; AP_STACK_SIZE]; MAX_APS]);
 
 /// Atomic counter: number of APs that have checked in.
 static AP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -726,7 +732,7 @@ fn ap_mailbox_loop() {
     // (Each AP atomically claimed an index during bringup.)
     // We find our mailbox by reading the cpu_index stored in each slot.
     let my_index = current_cpu_index();
-    if my_index == 0 || my_index as usize > MAX_CPUS {
+    if my_index == 0 || my_index as usize > MAX_APS {
         // BSP or invalid — shouldn't be in the mailbox loop.
         return;
     }
@@ -767,7 +773,7 @@ pub fn current_cpu_index() -> u32 {
     if Lapic::is_bsp() {
         return 0;
     }
-    for i in 0..MAX_CPUS {
+    for i in 0..MAX_APS {
         if MAILBOXES[i].cpu_index.load(Ordering::Relaxed) == id as usize {
             return (i + 1) as u32; // 1-based AP index
         }
@@ -797,7 +803,7 @@ pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
 
     // Store our LAPIC ID in the mailbox so BSP can identify us.
     let ap_slot = index as usize;
-    if ap_slot < MAX_CPUS {
+    if ap_slot < MAX_APS {
         MAILBOXES[ap_slot]
             .cpu_index
             .store(lapic.id() as usize, Ordering::Release);
@@ -838,9 +844,10 @@ pub fn online_cpus() -> u16 {
     ONLINE_CPUS.load(Ordering::Acquire) as u16
 }
 
-/// Copy the SIPI trampoline, send INIT + SIPI and wait for the APs to check
-/// in. Returns how many did; fewer than `max_aps` is normal, `max_cpus`
-/// bounds per-CPU storage rather than counting the CPUs that exist.
+/// Copy the SIPI trampoline, send INIT + SIPI and wait for every expected AP
+/// to check in. Zero or partial check-in is boot-fatal before barriers open.
+/// The trampoline parks responders beyond `max_aps` before they can index the
+/// stack arena, and this function rejects the machine if any is observed.
 fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
     install_sipi_trampoline(max_aps, lapic)?;
 
@@ -874,15 +881,40 @@ fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
         }
     }
 
-    // Fewer APs than the bound is normal: `max_cpus` bounds per-CPU storage,
-    // it is not the number of CPUs that exist. coreboot logs the shortfall and
-    // carries on, so do the same rather than failing the stage.
     let final_count = AP_COUNT.load(Ordering::Acquire) as u16;
-    if final_count < max_aps {
-        fstart_log::error!("mp: {}/{} APs checked in", final_count, max_aps);
-    } else {
-        fstart_log::info!("mp: {}/{} APs checked in", final_count, max_aps);
+
+    // Responders beyond `max_aps` park in the trampoline without touching the
+    // stack arena. Any that already claimed an ordinal make the capacity
+    // mismatch explicit; later ones stay parked harmlessly.
+    let claimed = sipi_claimed_ap_count();
+    if claimed > u32::from(max_aps) {
+        return Err(MpError::HardwareCpuCountExceedsCapacity {
+            reported: claimed.saturating_add(1),
+            capacity: u32::from(max_aps) + 1,
+        });
     }
+
+    complete_ap_bringup(final_count, max_aps)
+}
+
+fn complete_ap_bringup(final_count: u16, max_aps: u16) -> Result<u16, MpError> {
+    // Do not release any flight-plan barrier for a partial set. A responder
+    // that claimed a valid stack ordinal but has not reached `AP_COUNT` yet
+    // could otherwise arrive after the BSP snapshots `final_count`, pass
+    // barriers released for the smaller set, and outlive the borrowed MP
+    // configuration. Returning here leaves every late AP behind a closed
+    // barrier until the boot-fatal error path takes over.
+    if final_count == 0 {
+        return Err(MpError::NoApsResponded);
+    }
+    if final_count < max_aps {
+        return Err(MpError::PartialBringup {
+            expected: max_aps,
+            actual: final_count,
+        });
+    }
+
+    fstart_log::info!("mp: {}/{} APs checked in", final_count, max_aps);
     Ok(final_count)
 }
 
@@ -905,7 +937,8 @@ fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
 ///    - mailbox loop (APs park, BSP continues)
 /// 5. BSP: CPU-driver `post_mp_init()` hooks, return [`MpHandle`]
 pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
-    let num_cpus = discovered_logical_cpus(config.max_cpus);
+    validate_cpu_capacity(config.max_cpus)?;
+    let num_cpus = discovered_logical_cpus(config.max_cpus)?;
     let max_aps = num_cpus.saturating_sub(1);
 
     fstart_log::info!(
@@ -934,16 +967,10 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     post_mp_cpu_drivers(config.cpu_drivers);
     ONLINE_CPUS.store((final_count + 1) as usize, Ordering::Release);
     fstart_log::info!("mp: initialization complete ({} CPUs)", final_count + 1);
-    if final_count < max_aps {
-        fstart_log::warn!(
-            "mp: fewer APs than max responded (expected max {}, actual {})",
-            max_aps,
-            final_count
-        );
-    }
 
     Ok(MpHandle {
         num_aps: final_count,
+        _not_send: PhantomData,
     })
 }
 
@@ -1020,12 +1047,24 @@ const SIPI_VECTOR_PAGE: u32 = 0x08;
 /// Physical address of the SIPI trampoline.
 const SIPI_VECTOR_ADDR: usize = (SIPI_VECTOR_PAGE as usize) << 12;
 
+/// Raw count of APs that executed the trampoline, including parked excess ones.
+fn sipi_claimed_ap_count() -> u32 {
+    // SAFETY: the trampoline page remains reserved and mapped throughout MP
+    // bring-up. APs update this aligned field atomically before either taking a
+    // stack slot or parking as excess hardware.
+    unsafe {
+        core::ptr::read_volatile(
+            (SIPI_VECTOR_ADDR as *const u8).add(sipi_blob::AP_COUNTER_OFFSET) as *const u32,
+        )
+    }
+}
+
 /// Install the SIPI trampoline at the vector address.
 ///
 /// Copies the trampoline code to `SIPI_VECTOR_ADDR` and patches the
 /// parameter block (GDT, stack, CR3, AP entry point, etc.).
 fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> {
-    if max_aps as usize > MAX_CPUS || sipi_blob::TRAMPOLINE.len() > 4096 {
+    if max_aps as usize > MAX_APS || sipi_blob::TRAMPOLINE.len() > 4096 {
         return Err(MpError::TrampolinePlacementFailed);
     }
 
@@ -1051,6 +1090,7 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
         );
         patch_u64(dst, sipi_blob::STACK_BASE_OFFSET, stack_base);
         patch_u32(dst, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
+        patch_u32(dst, sipi_blob::AP_LIMIT_OFFSET, u32::from(max_aps));
         patch_u32(dst, sipi_blob::AP_COUNTER_OFFSET, 0);
 
         // INIT leaves AP caches disabled. Write the complete copied and patched
@@ -1111,6 +1151,7 @@ fn read_cr3() -> u64 {
 /// The handle is `!Send` because it should only be used from the BSP.
 pub struct MpHandle {
     num_aps: u16,
+    _not_send: PhantomData<*mut ()>,
 }
 
 impl MpHandle {
@@ -1180,7 +1221,7 @@ impl MpHandle {
 /// final payload jump.
 #[must_use]
 pub fn park_aps_for_payload() -> bool {
-    let num_aps = AP_COUNT.load(Ordering::Acquire).min(MAX_CPUS);
+    let num_aps = AP_COUNT.load(Ordering::Acquire).min(MAX_APS);
     if num_aps == 0 {
         return true;
     }
@@ -1383,30 +1424,84 @@ fn trampoline_indexed<F: Fn(u32)>(data: *const (), cpu: u32) {
 // Delay helper
 // ---------------------------------------------------------------------------
 
-/// Spin-delay for approximately `us` microseconds.
-/// Logical processors this package reports, bounded by `max_cpus`.
+fn validate_cpu_capacity(max_cpus: u16) -> Result<(), MpError> {
+    if usize::from(max_cpus) > MAX_CPUS {
+        Err(MpError::TooManyCpus {
+            requested: max_cpus,
+            supported: MAX_CPUS as u16,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Logical processors this package reports, checked against `max_cpus`.
 ///
 /// `CPUID.1.EBX[23:16]` is the maximum number of addressable logical
 /// processors in the package, which is what a hyper-threaded Atom reports:
-/// two for a D410, four for a D510. `max_cpus` only bounds per-CPU storage
-/// (coreboot's `CONFIG_MAX_CPUS` plays the same role), so a package with fewer
-/// logical CPUs than the bound simply leaves the rest idle.
-fn discovered_logical_cpus(max_cpus: u16) -> u16 {
+/// two for a D410, four for a D510. A package with fewer logical CPUs than the
+/// bound simply leaves the rest idle; a larger package is rejected because the
+/// bound sizes all per-CPU storage.
+fn discovered_logical_cpus(max_cpus: u16) -> Result<u16, MpError> {
     let (_, ebx, _, _) = crate::x86::cpuid(1);
-    let logical = ((ebx >> 16) & 0xff) as u16;
-    let count = logical.max(1);
+    checked_logical_cpu_count(((ebx >> 16) & 0xff) as u16, max_cpus)
+}
+
+fn checked_logical_cpu_count(reported: u16, max_cpus: u16) -> Result<u16, MpError> {
+    let count = reported.max(1);
     if count > max_cpus {
-        fstart_log::info!(
-            "mp: {} logical CPUs reported, capping at {}",
-            count,
-            max_cpus
-        );
-        max_cpus
+        Err(MpError::HardwareCpuCountExceedsCapacity {
+            reported: u32::from(count),
+            capacity: u32::from(max_cpus),
+        })
     } else {
-        count
+        Ok(count)
     }
 }
 
 fn delay_us(us: u64) {
     crate::x86::udelay(us.min(u32::MAX as u64) as u32);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn total_cpu_capacity_includes_the_bsp() {
+        assert!(validate_cpu_capacity(MAX_CPUS as u16).is_ok());
+        let Err(MpError::TooManyCpus {
+            requested,
+            supported,
+        }) = validate_cpu_capacity(MAX_CPUS as u16 + 1)
+        else {
+            panic!("oversized CPU capacity was accepted");
+        };
+        assert_eq!(requested, MAX_CPUS as u16 + 1);
+        assert_eq!(supported, MAX_CPUS as u16);
+        assert_eq!(MAX_APS + 1, MAX_CPUS);
+
+        assert_eq!(checked_logical_cpu_count(0, 4).unwrap(), 1);
+        assert_eq!(checked_logical_cpu_count(4, 4).unwrap(), 4);
+        assert!(matches!(
+            checked_logical_cpu_count(5, 4),
+            Err(MpError::HardwareCpuCountExceedsCapacity {
+                reported: 5,
+                capacity: 4
+            })
+        ));
+
+        assert!(matches!(
+            complete_ap_bringup(0, 3),
+            Err(MpError::NoApsResponded)
+        ));
+        assert!(matches!(
+            complete_ap_bringup(2, 3),
+            Err(MpError::PartialBringup {
+                expected: 3,
+                actual: 2
+            })
+        ));
+        assert_eq!(complete_ap_bringup(3, 3).unwrap(), 3);
+    }
 }

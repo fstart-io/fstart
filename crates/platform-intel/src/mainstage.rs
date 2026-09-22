@@ -122,6 +122,18 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     // Leave the legacy keyboard controller quiet before the payload/OS probes it.
     fstart_driver_superio::quiesce_i8042_for_os();
 
+    // mp_init leaves APs polling firmware mailboxes. Stop that activity before
+    // either payload or S3-resume ownership is transferred to the OS.
+    #[cfg(feature = "mp")]
+    if !fstart_arch::x86::mp::park_aps_for_payload() {
+        fstart_log::error!(
+            "{}: failed to quiesce APs for OS handoff; resetting",
+            platform
+        );
+        fstart_log::flush();
+        mainstage.southbridge().system_reset(true);
+    }
+
     #[cfg(feature = "acpi")]
     if resume {
         match wake_vector {
@@ -147,17 +159,6 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         fstart_log::error!("{}: S3 resume without ACPI, resetting", platform);
         fstart_log::flush();
         mainstage.southbridge().system_reset(true);
-    }
-
-    // mp_init leaves APs polling firmware mailboxes so mainstage can dispatch
-    // scoped work. Stop that firmware activity before transferring ownership
-    // to a payload; an OS expects every AP to remain quiescent until its own
-    // INIT/SIPI sequence.
-    #[cfg(feature = "mp")]
-    if !fstart_arch::x86::mp::park_aps_for_payload() {
-        fstart_log::error!("{}: failed to quiesce APs for payload handoff", platform);
-        fstart_log::flush();
-        fstart_arch::x86_64::halt();
     }
 
     B::Payload::boot(mainstage)
