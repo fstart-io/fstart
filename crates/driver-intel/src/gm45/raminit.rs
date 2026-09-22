@@ -1,7 +1,8 @@
 //! GM45 DDR3 discovery and early controller programming.
 //!
-//! JEDEC and ZQ are implemented, but training and the final memory test are
-//! not; this code never announces usable memory.
+//! JEDEC, ZQ and receive-enable calibration are implemented; high-rate
+//! read/write training, final mapping and memory test are not. This code
+//! never announces usable memory.
 //! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
 
@@ -243,7 +244,11 @@ register_structs! {
         (0x119e => igd_index: MmioReadWrite<u16>),
         (0x11a0 => _r9c: [u8; 0x20]),
         (0x11c0 => igd_control: MmioReadWrite<u16>),
-        (0x11c2 => _r9d: [u8; 0x23e]),
+        (0x11c2 => _r9d: [u8; 0xe2]),
+        (0x12a4 => receive_enable0: MmioReadWrite<u32>),
+        (0x12a8 => _rec_pad: [u8; 0xfc]),
+        (0x13a4 => receive_enable1: MmioReadWrite<u32>),
+        (0x13a8 => _rec_pad1: [u8; 0x58]),
         (0x1400 => io0: MmioReadWrite<u32>),
         (0x1404 => _io_pad0: [u8; 8]),
         (0x140c => io1: MmioReadWrite<u32>),
@@ -1287,7 +1292,301 @@ fn post_jedec_ddr3(mch: &Mchbar, hb: &super::Gm45HostBridgePciConfig, quadcore: 
     regs.dcc.set(regs.dcc.get() | (7 << 16));
 }
 
-/// Advance through DDR3 JEDEC and ZQ; fail closed before receive-enable training.
+// coreboot raminit_receive_enable_calibration.c: C is channel-wide after the
+// search, while PH/T/P and the group offset PRE live in CxRECy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RecTiming {
+    c: i32,
+    pre: i32,
+    ph: i32,
+    t: i32,
+    p: i32,
+    t_bound: i32,
+    p_bound: i32,
+}
+
+impl RecTiming {
+    fn new(timing: &Ddr3Timing) -> Self {
+        Self {
+            c: i32::from(timing.cas) + 1,
+            pre: 0,
+            ph: 0,
+            t: 0,
+            p: 0,
+            t_bound: if timing.clock == MemClock::Mhz533 {
+                9
+            } else {
+                12
+            },
+            p_bound: if timing.clock == MemClock::Mhz533 {
+                8
+            } else {
+                1
+            },
+        }
+    }
+
+    fn normalize(&mut self) -> Result<(), ServiceError> {
+        // A search may traverse a negative quarter step or a complete clock.
+        // Keep the values signed until every carry has been resolved.
+        self.t += self.p.div_euclid(self.p_bound);
+        self.p = self.p.rem_euclid(self.p_bound);
+        let halves = self.t.div_euclid(self.t_bound);
+        self.t = self.t.rem_euclid(self.t_bound);
+        self.ph += 2 * halves;
+        self.c += self.ph.div_euclid(4);
+        self.ph = self.ph.rem_euclid(4);
+        if !(0..16).contains(&self.c) || !(0..=3).contains(&self.pre) || self.t > 15 || self.p > 7 {
+            return Err(ServiceError::HardwareError);
+        }
+        Ok(())
+    }
+
+    fn quarter_step(&mut self) {
+        self.t += self.t_bound / 2;
+        self.p += (self.t_bound & 1) * (self.p_bound / 2);
+    }
+
+    fn quarter_backstep(&mut self) {
+        self.t -= self.t_bound / 2;
+        self.p -= (self.t_bound & 1) * (self.p_bound / 2);
+    }
+
+    fn fields(&self) -> u32 {
+        ((self.t as u32) << 28)
+            | ((self.p as u32) << 24)
+            | ((self.ph as u32) << 22)
+            | ((self.pre as u32) << 20)
+    }
+}
+
+const REC_FIELDS: u32 = (0xf << 28) | (7 << 24) | (3 << 22) | (3 << 20);
+const REC_LANES: [[[usize; 2]; 4]; 2] = [
+    [[0, 1], [2, 3], [4, 5], [6, 7]],
+    [[0, 2], [1, 3], [4, 6], [5, 7]],
+];
+const REC_PROBE_LANES: [[[usize; 2]; 4]; 2] = [
+    [[0, 1], [2, 3], [4, 5], [6, 7]],
+    [[0, 0], [3, 3], [6, 6], [5, 5]],
+];
+
+fn rec_group_offset(ch: usize, group: usize) -> usize {
+    assert!(ch < 2 && group < 4);
+    io_channel_offset(ch, 0x14a0 + (3 - group) * 4)
+}
+
+fn rec_lane_offset(ch: usize, lane: usize) -> usize {
+    assert!(ch < 2 && lane < 8);
+    io_channel_offset(ch, 0x14b0 + (7 - lane) * 4)
+}
+
+fn program_rec_timing(
+    mch: &Mchbar,
+    ch: usize,
+    group: usize,
+    timing: &mut RecTiming,
+) -> Result<(), ServiceError> {
+    timing.normalize()?;
+    mch.update32(channel_offset(ch, 0x121c), 0xf << 7, (timing.c as u32) << 7);
+    mch.update32(rec_group_offset(ch, group), REC_FIELDS, timing.fields());
+    Ok(())
+}
+
+fn read_dqs_level(mch: &Mchbar, ch: usize, lane: usize, rank0: usize) -> bool {
+    let pointer = if ch == 0 {
+        &mch.regs().write_pointer0
+    } else {
+        &mch.regs().write_pointer1
+    };
+    pointer.set(pointer.get() & !(1 << 9));
+    pointer.set(pointer.get() | (1 << 9));
+    // The temporary rank map places the first populated rank at address 0.
+    // Use a hardware read in assembly; Rust's volatile read requires non-null.
+    unsafe {
+        core::arch::asm!(
+            "mov {value:e}, dword ptr [{address}]",
+            address = in(reg) rank0,
+            value = out(reg) _,
+            options(nostack, preserves_flags),
+        );
+    }
+    mch.read32(rec_lane_offset(ch, lane)) & (1 << 30) != 0
+}
+
+#[derive(Clone, Copy)]
+enum RecProbe {
+    AnyHigh,
+    BothLow,
+    AnyLow,
+}
+
+fn seek_rec<S>(
+    mch: &Mchbar,
+    ch: usize,
+    group: usize,
+    rank0: usize,
+    lanes: [usize; 2],
+    timing: &mut RecTiming,
+    probe: RecProbe,
+    step: S,
+) -> Result<(), ServiceError>
+where
+    S: Fn(&mut RecTiming),
+{
+    // Also bounded by the representable C range, but a stuck DQS signal
+    // must never turn calibration into an unbounded polling loop.
+    for _ in 0..256 {
+        // Preserve coreboot's short-circuit reads. Each lane read resets
+        // the pointer and triggers exactly one rank-zero sampling read.
+        let first = read_dqs_level(mch, ch, lanes[0], rank0);
+        let searching = match probe {
+            RecProbe::AnyHigh => first || read_dqs_level(mch, ch, lanes[1], rank0),
+            RecProbe::BothLow => !first && !read_dqs_level(mch, ch, lanes[1], rank0),
+            RecProbe::AnyLow => !first || !read_dqs_level(mch, ch, lanes[1], rank0),
+        };
+        if !searching {
+            return Ok(());
+        }
+        step(timing);
+        program_rec_timing(mch, ch, group, timing)?;
+    }
+    Err(ServiceError::HardwareError)
+}
+
+fn rec_edge(
+    mch: &Mchbar,
+    ch: usize,
+    group: usize,
+    rank0: usize,
+    lanes: [usize; 2],
+    timing: &mut RecTiming,
+) -> Result<(), ServiceError> {
+    timing.t += 2;
+    program_rec_timing(mch, ch, group, timing)?;
+    seek_rec(
+        mch,
+        ch,
+        group,
+        rank0,
+        lanes,
+        timing,
+        RecProbe::BothLow,
+        |t| t.quarter_step(),
+    )?;
+    timing.quarter_backstep();
+    program_rec_timing(mch, ch, group, timing)?;
+    seek_rec(
+        mch,
+        ch,
+        group,
+        rank0,
+        lanes,
+        timing,
+        RecProbe::AnyLow,
+        |t| t.p += 1,
+    )
+}
+
+fn reset_readwrite_pointers(mch: &Mchbar) {
+    for ch in 0..2 {
+        let drc1 = channel_offset(ch, 0x1234);
+        mch.update32(drc1, 0, 1 << 6);
+        mch.update32(drc1, 1 << 6, 0);
+    }
+    for pointer in [&mch.regs().write_pointer0, &mch.regs().write_pointer1] {
+        pointer.set(pointer.get() & !(1 << 9));
+        pointer.set(pointer.get() | (1 << 9));
+        pointer.set(pointer.get() | (1 << 10));
+    }
+}
+
+fn receive_enable_calibration(
+    mch: &Mchbar,
+    dimms: &Ddr3Channels,
+    timing: &Ddr3Timing,
+    bases: &[[Option<usize>; 2]; 2],
+) -> Result<(), ServiceError> {
+    for ch in 0..2 {
+        if let Some(dimm) = dimms.dimms[ch] {
+            let map = &REC_LANES[usize::from(dimm.raw_card == 5)];
+            for (group, lanes) in map.iter().enumerate() {
+                let lo = (lanes[0] as i32 - group as i32) as u32 & 3;
+                let hi = (lanes[1] as i32 - group as i32 - 1) as u32 & 3;
+                mch.update32(
+                    rec_group_offset(ch, group),
+                    (3 << 16) | (1 << 8) | 3,
+                    lo | (hi << 16),
+                );
+            }
+        }
+    }
+    let regs = mch.regs();
+    for enable in [&regs.receive_enable0, &regs.receive_enable1] {
+        enable.set(enable.get() | (1 << 31));
+    }
+    for pointer in [&regs.write_pointer0, &regs.write_pointer1] {
+        pointer.set((pointer.get() & !(3 << 9)) | (1 << 9));
+    }
+    let result: Result<(), ServiceError> = (|| {
+        for ch in 0..2 {
+            let Some(dimm) = dimms.dimms[ch] else {
+                continue;
+            };
+            let rank0 = bases[ch][0].ok_or(ServiceError::HardwareError)?;
+            let card_f = dimm.raw_card == 5;
+            let mut groups = [RecTiming::new(timing); 4];
+            for (group, t) in groups.iter_mut().enumerate() {
+                let lanes = REC_PROBE_LANES[usize::from(card_f)][group];
+                program_rec_timing(mch, ch, group, t)?;
+                seek_rec(mch, ch, group, rank0, lanes, t, RecProbe::AnyHigh, |t| {
+                    t.quarter_step()
+                })?;
+                rec_edge(mch, ch, group, rank0, lanes, t)?;
+                t.quarter_step();
+                program_rec_timing(mch, ch, group, t)?;
+                seek_rec(mch, ch, group, rank0, lanes, t, RecProbe::AnyHigh, |t| {
+                    t.c -= 1
+                })?;
+                rec_edge(mch, ch, group, rank0, lanes, t)?;
+                t.ph -= 2;
+                t.normalize()?;
+                if card_f {
+                    t.t += 1;
+                    program_rec_timing(mch, ch, group, t)?;
+                }
+            }
+            let c_min = groups
+                .iter()
+                .map(|t| t.c)
+                .min()
+                .ok_or(ServiceError::HardwareError)?;
+            for (group, t) in groups.iter_mut().enumerate() {
+                t.pre = t.c - c_min;
+                t.c = c_min;
+                program_rec_timing(mch, ch, group, t)?;
+            }
+        }
+        Ok(())
+    })();
+    for enable in [&regs.receive_enable0, &regs.receive_enable1] {
+        enable.set(enable.get() & !(1 << 31));
+    }
+    reset_readwrite_pointers(mch);
+    result?;
+    // Coreboot lends CxDRT3[10:7] - 1 into CxDRT5[7:4]. Empty channels
+    // have no trained C and must not silently wrap zero to 15.
+    for ch in 0..2 {
+        if dimms.dimms[ch].is_none() {
+            continue;
+        }
+        let coarse = (mch.read32(channel_offset(ch, 0x121c)) >> 7) & 0xf;
+        let lent = coarse.checked_sub(1).ok_or(ServiceError::HardwareError)?;
+        mch.update32(channel_offset(ch, 0x1224), 0xf << 4, lent << 4);
+    }
+    Ok(())
+}
+
+/// Advance through DDR3 JEDEC/ZQ and receive-enable calibration; fail closed.
 pub(super) fn prepare_ddr3(
     base: u64,
     epbar: u64,
@@ -1346,14 +1645,97 @@ pub(super) fn prepare_ddr3(
     let hb = unsafe { EcamDevice::new(0, 0, 0).regs::<super::Gm45HostBridgePciConfig>() };
     jedec_ddr3(&mch, hb, &bases, &commands);
     post_jedec_ddr3(&mch, hb, cores == 4);
-    // Receive-enable and high-rate read/write training, final map and memory
-    // test are not implemented. Never advertise these dummy rank boundaries.
+    receive_enable_calibration(&mch, dimms, timing, &bases)?;
+    // High-rate read/write training, final map and memory test are not
+    // implemented. Never advertise these dummy rank boundaries.
     Err(ServiceError::NotInitialized)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gm45_receive_timing_carries_and_rejects_invalid_fields() {
+        let slow = Ddr3Timing {
+            clock: MemClock::Mhz400,
+            cas: 6,
+            tck_256ns: 0,
+            tras: 0,
+            trp: 0,
+            trcd: 0,
+            twr: 0,
+            trfc: 0,
+            trd: 0,
+            trrd: 0,
+            tfaw: 0,
+            twl: 0,
+        };
+        let mut t = RecTiming::new(&slow);
+        assert_eq!((t.c, t.t_bound, t.p_bound), (7, 12, 1));
+        t.quarter_step();
+        t.normalize().unwrap();
+        assert_eq!((t.c, t.ph, t.t, t.p), (7, 0, 6, 0));
+        t.quarter_step();
+        t.normalize().unwrap();
+        assert_eq!((t.c, t.ph, t.t, t.p), (7, 2, 0, 0));
+        t.ph -= 2;
+        t.quarter_backstep();
+        t.normalize().unwrap();
+        assert_eq!((t.c, t.ph, t.t, t.p), (6, 2, 6, 0));
+        let mut fast = RecTiming::new(&Ddr3Timing {
+            clock: MemClock::Mhz533,
+            ..slow
+        });
+        fast.quarter_step();
+        fast.normalize().unwrap();
+        assert_eq!((fast.t, fast.p), (4, 4));
+        fast.p += 5;
+        fast.normalize().unwrap();
+        assert_eq!((fast.t, fast.p), (5, 1));
+        fast.pre = 4;
+        assert!(fast.normalize().is_err());
+        fast.pre = 0;
+        fast.c = -1;
+        assert!(fast.normalize().is_err());
+        fast.c = 16;
+        assert!(fast.normalize().is_err());
+    }
+
+    #[test]
+    fn gm45_receive_offsets_and_lane_maps_follow_coreboot() {
+        assert_eq!(
+            (rec_group_offset(0, 0), rec_group_offset(1, 3)),
+            (0x14ac, 0x15a0)
+        );
+        assert_eq!(
+            (rec_lane_offset(0, 0), rec_lane_offset(1, 7)),
+            (0x14cc, 0x15b0)
+        );
+        assert_eq!(REC_LANES[1][1], [1, 3]);
+        assert_eq!(REC_PROBE_LANES[1][1], [3, 3]);
+        let mut t = RecTiming::new(&Ddr3Timing {
+            clock: MemClock::Mhz533,
+            cas: 6,
+            tck_256ns: 0,
+            tras: 0,
+            trp: 0,
+            trcd: 0,
+            twr: 0,
+            trfc: 0,
+            trd: 0,
+            trrd: 0,
+            tfaw: 0,
+            twl: 0,
+        });
+        t.t = 8;
+        t.p = 7;
+        t.ph = 2;
+        t.pre = 3;
+        assert_eq!(t.fields(), 0x87b0_0000);
+        assert_eq!(core::mem::offset_of!(PreJedecRegs, receive_enable0), 0x12a4);
+        assert_eq!(core::mem::offset_of!(PreJedecRegs, receive_enable1), 0x13a4);
+    }
 
     #[test]
     fn gm45_ddr3_jedec_mrs_order_and_cycles_match_coreboot() {
