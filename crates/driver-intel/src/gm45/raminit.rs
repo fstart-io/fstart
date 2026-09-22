@@ -1,7 +1,7 @@
 //! GM45 DDR3 discovery and early controller programming.
 //!
-//! JEDEC, training and memory test are not implemented; this code never
-//! announces usable memory. DDR3 IO and the dummy pre-JEDEC map are prepared.
+//! JEDEC and ZQ are implemented, but training and the final memory test are
+//! not; this code never announces usable memory.
 //! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
 
@@ -182,7 +182,8 @@ pub fn select_ddr3_timing(
 }
 
 register_bitfields![u32,
-    Dcc [INTERLEAVED OFFSET(1) NUMBITS(1) [], NO_CHANXOR OFFSET(10) NUMBITS(1) []]
+    Dcc [INTERLEAVED OFFSET(1) NUMBITS(1) [], NO_CHANXOR OFFSET(10) NUMBITS(1) [],
+        COMMAND OFFSET(16) NUMBITS(3) [], EREG OFFSET(21) NUMBITS(2) []]
 ];
 
 // Named fixed offsets are represented by the MCHBAR overlay; the RCOMP
@@ -190,7 +191,9 @@ register_bitfields![u32,
 // dynamic register helpers below.
 register_structs! {
     PreJedecRegs {
-        (0x0000 => _r0: [u8; 0x200]),
+        (0x0000 => _r0: [u8; 0x40]),
+        (0x0040 => jedec_gate: MmioReadWrite<u32>),
+        (0x0044 => _r0a: [u8; 0x1bc]),
         (0x0200 => dcc: MmioReadWrite<u32, Dcc::Register>),
         (0x0204 => _dcc_pad: [u8; 4]),
         (0x0208 => crossing0: MmioReadWrite<u32>),
@@ -201,9 +204,13 @@ register_structs! {
         (0x021c => _cross_pad1: [u8; 4]),
         (0x0220 => misc1: MmioReadWrite<u32>),
         (0x0224 => misc2: MmioReadWrite<u32>),
-        (0x0228 => _cross_pad2: [u8; 0xc]),
+        (0x0228 => _cross_pad2: [u8; 8]),
+        (0x0230 => jedec_setup: MmioReadWrite<u32>),
         (0x0234 => misc3: MmioReadWrite<u8>),
-        (0x0235 => _r0b: [u8; 0x1cb]),
+        (0x0235 => _r0b: [u8; 3]),
+        (0x0238 => jedec_channel0: MmioReadWrite<u32>),
+        (0x023c => jedec_channel1: MmioReadWrite<u32>),
+        (0x0240 => _r0c: [u8; 0x1c0]),
         (0x0400 => rcomp_ctrl: MmioReadWrite<u32>),
         (0x0404 => rcomp_io: MmioReadWrite<u32>),
         (0x0408 => _r1: [u8; 4]),
@@ -218,7 +225,9 @@ register_structs! {
         (0x0518 => rcomp_index: MmioReadWrite<u32>),
         (0x051c => _r5: [u8; 0x14]),
         (0x0530 => rcomp_status: MmioReadWrite<u32>),
-        (0x0534 => _r6: [u8; 0x6cc]),
+        (0x0534 => _r6: [u8; 0x5e0]),
+        (0x0b14 => quadcore_control: MmioReadWrite<u32>),
+        (0x0b18 => _r6a: [u8; 0xe8]),
         (0x0c00 => clkcfg: MmioReadWrite<u32>),
         (0x0c04 => _r7: [u8; 0x0b]),
         (0x0c0f => hpll_vco: MmioReadWrite<u8>),
@@ -252,10 +261,14 @@ register_structs! {
         (0x1444 => _io_pad5: [u8; 0x4c]),
         (0x1490 => write_io0: MmioReadWrite<u32>),
         (0x1494 => write_io1: MmioReadWrite<u32>),
-        (0x1498 => _io_pad6: [u8; 0xf8]),
+        (0x1498 => _io_pad6: [u8; 0x58]),
+        (0x14f0 => write_pointer0: MmioReadWrite<u32>),
+        (0x14f4 => _io_pad7: [u8; 0x9c]),
         (0x1590 => write_io2: MmioReadWrite<u32>),
         (0x1594 => write_io3: MmioReadWrite<u32>),
-        (0x1598 => @END),
+        (0x1598 => _io_pad8: [u8; 0x58]),
+        (0x15f0 => write_pointer1: MmioReadWrite<u32>),
+        (0x15f4 => @END),
     }
 }
 
@@ -296,6 +309,15 @@ impl Mchbar {
         // inside its 16 KiB aperture and contains only aligned registers.
         unsafe { &*(self.base as *const PreJedecRegs) }
     }
+    fn post_jedec_channels(&self) -> [&PostJedecChannelRegs; 2] {
+        // SAFETY: fixed channel 0/1 register blocks within enabled MCHBAR.
+        unsafe {
+            [
+                &*((self.base + 0x1228) as *const PostJedecChannelRegs),
+                &*((self.base + 0x1328) as *const PostJedecChannelRegs),
+            ]
+        }
+    }
     fn rcomp_seed_regs(&self, offset: usize) -> &RcompSeedRegs {
         assert!(RCOMP_DDR3_SEEDS.iter().any(|(seed, _)| *seed == offset));
         // SAFETY: this is one of the eight fixed seed offsets in the enabled
@@ -322,6 +344,16 @@ impl Mchbar {
         // SAFETY: bounded offset in the enabled MCHBAR aperture.
         let addr = (self.base + offset) as *mut u8;
         unsafe { mmio::write8(addr, (mmio::read8(addr) & !clear) | set) }
+    }
+}
+
+register_structs! {
+    PostJedecChannelRegs {
+        (0x00 => timing6: MmioReadWrite<u32>),
+        (0x04 => _pad: [u8; 0x24]),
+        (0x28 => control0: MmioReadWrite<u32>),
+        (0x2c => control1: MmioReadWrite<u32>),
+        (0x30 => @END),
     }
 }
 
@@ -1096,7 +1128,166 @@ fn prejedec_memory_map(mch: &Mchbar, dimms: &Ddr3Channels) {
         .modify(Dcc::INTERLEAVED.val(0) + Dcc::NO_CHANXOR.val(1));
 }
 
-/// Advance through DDR3 IO and dummy-map setup; fail closed before JEDEC.
+// gm45/raminit.c jedec_init_ddr3(): command bits in DCC, DRAM address
+// bits in the read address (not a write to DRAM). The second MR0 clears DLL
+// reset. The pre-JEDEC map places each populated rank at a 128 MiB boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JedecCommand {
+    selector: u32,
+    address_bits: u32,
+}
+
+fn ddr3_jedec_commands(t: &Ddr3Timing) -> Result<[JedecCommand; 5], ServiceError> {
+    const WR_LUT: [u32; 8] = [1, 2, 3, 4, 5, 5, 6, 6];
+    let wr = *WR_LUT
+        .get(
+            usize::try_from(t.twr)
+                .map_err(|_| ServiceError::HardwareError)?
+                .checked_sub(5)
+                .ok_or(ServiceError::HardwareError)?,
+        )
+        .ok_or(ServiceError::HardwareError)?;
+    if !(4..=11).contains(&t.cas) || !(5..=12).contains(&t.twl) {
+        return Err(ServiceError::HardwareError);
+    }
+    let mr0 = (wr << 12) | ((u32::from(t.cas) - 4) << 7) | (1 << 6);
+    Ok([
+        JedecCommand {
+            selector: (4 << 16) | (1 << 21),
+            address_bits: (t.twl - 5) << 6,
+        },
+        JedecCommand {
+            selector: (4 << 16) | (2 << 21),
+            address_bits: 0,
+        },
+        JedecCommand {
+            selector: 4 << 16,
+            address_bits: (1 << 9) | (1 << 4),
+        },
+        JedecCommand {
+            selector: 3 << 16,
+            address_bits: mr0 | (1 << 11),
+        },
+        JedecCommand {
+            selector: 3 << 16,
+            address_bits: mr0,
+        },
+    ])
+}
+
+fn jedec_rank_bases(dimms: &Ddr3Channels) -> Result<[[Option<usize>; 2]; 2], ServiceError> {
+    let mut bases = [[None; 2]; 2];
+    let mut next = 0;
+    for (ch, dimm) in dimms.dimms.iter().enumerate() {
+        let ranks = dimm.map_or(0, |d| d.ranks);
+        if ranks > 2 {
+            return Err(ServiceError::HardwareError);
+        }
+        for rank in 0..usize::from(ranks) {
+            bases[ch][rank] = Some(next);
+            next += 128 << 20;
+        }
+    }
+    if next == 0 {
+        return Err(ServiceError::HardwareError);
+    }
+    Ok(bases)
+}
+
+fn jedec_ddr3(
+    mch: &Mchbar,
+    hb: &super::Gm45HostBridgePciConfig,
+    bases: &[[Option<usize>; 2]; 2],
+    commands: &[JedecCommand; 5],
+) {
+    let regs = mch.regs();
+    regs.jedec_gate.set(regs.jedec_gate.get() | (1 << 1));
+    regs.jedec_setup.set(regs.jedec_setup.get() | (3 << 1));
+    regs.jedec_channel0
+        .set(regs.jedec_channel0.get() | (3 << 24));
+    regs.jedec_channel1
+        .set(regs.jedec_channel1.get() | (3 << 24));
+    for pointer in [&regs.write_pointer0, &regs.write_pointer1] {
+        pointer.set(pointer.get() | (1 << 9));
+    }
+    regs.dcc.modify(Dcc::COMMAND.val(1)); // NOP, preserve EREG select.
+    hb.jedec_control.set(hb.jedec_control.get() & !(1 << 2));
+    hb.jedec_control.set(hb.jedec_control.get() | (1 << 2));
+    fstart_arch::x86::udelay(2);
+    for channel in bases {
+        for &base in channel.iter().flatten() {
+            for command in commands {
+                regs.dcc
+                    .set((regs.dcc.get() & !((7 << 16) | (3 << 21))) | command.selector);
+                // SAFETY: the pre-JEDEC map decodes each dummy 128 MiB rank.
+                // Rank 0 is physical address zero: Rust volatile reads require
+                // a non-null pointer, so issue the command read in assembly.
+                unsafe {
+                    core::arch::asm!(
+                        "mov {value:e}, dword ptr [{address}]",
+                        address = in(reg) (base | command.address_bits as usize),
+                        value = out(reg) _,
+                        options(nostack, preserves_flags),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn post_jedec_ddr3(mch: &Mchbar, hb: &super::Gm45HostBridgePciConfig, quadcore: bool) {
+    let regs = mch.regs();
+    regs.jedec_gate.set(regs.jedec_gate.get() & !(1 << 1));
+    regs.jedec_setup.set(regs.jedec_setup.get() & !(3 << 1));
+    regs.jedec_setup.set(regs.jedec_setup.get() | (1 << 15));
+    regs.jedec_setup.set(regs.jedec_setup.get() & !(1 << 19));
+    let [ch0, ch1] = mch.post_jedec_channels();
+    ch0.control0.set(0x6c4);
+    ch1.control0.set(0x6c4);
+    ch0.control1.set(0x871a_066d);
+    ch1.control1.set(0x871a_066d);
+    regs.jedec_channel0
+        .set(regs.jedec_channel0.get() | (1 << 26));
+    regs.jedec_channel0
+        .set(regs.jedec_channel0.get() & !(3 << 24));
+    regs.jedec_channel0
+        .set(regs.jedec_channel0.get() | (1 << 23));
+    for shift in [20, 17, 14, 11, 8] {
+        let value = if shift == 20 { 3 } else { 6 };
+        regs.jedec_channel0
+            .set((regs.jedec_channel0.get() & !(7 << shift)) | (value << shift));
+    }
+    regs.jedec_channel1
+        .set(regs.jedec_channel1.get() & !(3 << 24));
+    regs.jedec_channel1
+        .set(regs.jedec_channel1.get() & !(1 << 23));
+    for shift in [20, 17, 14, 11, 8] {
+        let value = if shift == 20 { 3 } else { 6 };
+        regs.jedec_channel1
+            .set((regs.jedec_channel1.get() & !(7 << shift)) | (value << shift));
+    }
+    if quadcore {
+        regs.quadcore_control
+            .set(regs.quadcore_control.get() | (0xbfbf << 16));
+    }
+    regs.dcc.set(regs.dcc.get() | (7 << 16) | (1 << 19));
+    hb.jedec_control.set(hb.jedec_control.get() | (1 << 2));
+    hb.jedec_control.set(hb.jedec_control.get() & !(1 << 2));
+    // DDR3 ZQ: wait 2 us, select mode 5, pulse timing6 bit 3 for 1 us,
+    // then return to normal command mode 7 (coreboot raminit.c).
+    fstart_arch::x86::udelay(2);
+    regs.dcc.modify(Dcc::COMMAND.val(5));
+    for channel in mch.post_jedec_channels() {
+        channel.timing6.set(channel.timing6.get() | (1 << 3));
+    }
+    fstart_arch::x86::udelay(1);
+    for channel in mch.post_jedec_channels() {
+        channel.timing6.set(channel.timing6.get() & !(1 << 3));
+    }
+    regs.dcc.set(regs.dcc.get() | (7 << 16));
+}
+
+/// Advance through DDR3 JEDEC and ZQ; fail closed before receive-enable training.
 pub(super) fn prepare_ddr3(
     base: u64,
     epbar: u64,
@@ -1115,6 +1306,14 @@ pub(super) fn prepare_ddr3(
         return Err(ServiceError::HardwareError);
     }
     validate_register_timings(timing)?;
+    let commands = ddr3_jedec_commands(timing)?;
+    let bases = jedec_rank_bases(dimms)?;
+    // Coreboot get_gmch_info() uses CPUID leaf 4 EAX[31:26] for core count.
+    // Never guess whether the quad-core post-JEDEC register applies.
+    if core::arch::x86_64::__cpuid(0).eax < 4 {
+        return Err(ServiceError::HardwareError);
+    }
+    let cores = ((core::arch::x86_64::__cpuid_count(4, 0).eax >> 26) & 0x3f) + 1;
     // Check all derived values before beginning irreversible MMIO writes.
     crossing_values(fsb_mhz, timing.clock)?;
     if igd_enabled {
@@ -1143,14 +1342,83 @@ pub(super) fn prepare_ddr3(
     vc1_program_timings(epbar, fsb_mhz)?;
     initialize_ddr3_io(&mch, dimms, timing.clock, revision);
     prejedec_memory_map(&mch, dimms);
-    // Stop before any JEDEC command: receive-enable and high-rate read/write
-    // training, the final map and the memory test are still unavailable.
+    // SAFETY: ECAM was enabled by early host-bridge setup.
+    let hb = unsafe { EcamDevice::new(0, 0, 0).regs::<super::Gm45HostBridgePciConfig>() };
+    jedec_ddr3(&mch, hb, &bases, &commands);
+    post_jedec_ddr3(&mch, hb, cores == 4);
+    // Receive-enable and high-rate read/write training, final map and memory
+    // test are not implemented. Never advertise these dummy rank boundaries.
     Err(ServiceError::NotInitialized)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gm45_ddr3_jedec_mrs_order_and_cycles_match_coreboot() {
+        let mut bus = FakeBus {
+            spd: spd(),
+            extra_slot: false,
+        };
+        let dimms = probe_ddr3(&mut bus, &[0x50, 0, 0x51, 0]).unwrap();
+        let timing = select_ddr3_timing(&dimms, 800, 800).unwrap();
+        assert_eq!(
+            ddr3_jedec_commands(&timing).unwrap(),
+            [
+                JedecCommand {
+                    selector: 0x240000,
+                    address_bits: 0
+                }, // MR2, WL5
+                JedecCommand {
+                    selector: 0x440000,
+                    address_bits: 0
+                }, // MR3
+                JedecCommand {
+                    selector: 0x040000,
+                    address_bits: 0x210
+                }, // MR1, ODT/ODS
+                JedecCommand {
+                    selector: 0x030000,
+                    address_bits: 0x2940
+                }, // MR0, DLL reset
+                JedecCommand {
+                    selector: 0x030000,
+                    address_bits: 0x2140
+                }, // MR0
+            ]
+        );
+        let mut fast = timing;
+        fast.twl = 6;
+        fast.cas = 7;
+        fast.twr = 12;
+        let seq = ddr3_jedec_commands(&fast).unwrap();
+        assert_eq!(seq[0].address_bits, 1 << 6);
+        assert_eq!(seq[4].address_bits, (6 << 12) | (3 << 7) | (1 << 6));
+        for twr in [4, 13] {
+            fast.twr = twr;
+            assert!(ddr3_jedec_commands(&fast).is_err());
+        }
+        assert_eq!(
+            jedec_rank_bases(&dimms).unwrap(),
+            [[Some(0), None], [None; 2]]
+        );
+        let mut both = dimms;
+        both.dimms[0].as_mut().unwrap().ranks = 2;
+        both.dimms[1] = both.dimms[0];
+        assert_eq!(
+            jedec_rank_bases(&both).unwrap(),
+            [
+                [Some(0), Some(128 << 20)],
+                [Some(256 << 20), Some(384 << 20)],
+            ]
+        );
+        both.dimms[1].as_mut().unwrap().ranks = 3;
+        assert!(jedec_rank_bases(&both).is_err());
+        assert_eq!(core::mem::offset_of!(PreJedecRegs, jedec_gate), 0x40);
+        assert_eq!(core::mem::offset_of!(PreJedecRegs, write_pointer1), 0x15f0);
+        assert_eq!(core::mem::offset_of!(PostJedecChannelRegs, control0), 0x28);
+    }
 
     #[test]
     fn gm45_ddr3_clock_encodings_and_rcomp_lut_match_coreboot() {
