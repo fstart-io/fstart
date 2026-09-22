@@ -622,19 +622,13 @@ mod gpi_tests {
 pub struct LpcGenericIoDecode {
     /// I/O base address. Must be 4-byte aligned.
     pub base: u16,
-    /// Window size in bytes. Must be a non-zero multiple of 4 up to 256.
+    /// Window size in bytes. Must be a power of two from 4 through 256.
     pub size: u16,
 }
 
 impl LpcGenericIoDecode {
     fn encode(self) -> Option<u32> {
-        if self.base & 0x0003 != 0 || self.size == 0 || self.size > 0x0100 {
-            return None;
-        }
-        if self.size & 0x0003 != 0 {
-            return None;
-        }
-        Some(((u32::from(self.size) - 4) << 16) | u32::from(self.base & 0xfffc) | 1)
+        crate::southbridge::lpc::encode_generic_io_window(self.base, self.size)
     }
 }
 
@@ -777,7 +771,7 @@ impl Default for IntelIch7Config {
 
 #[must_use]
 pub const fn valid_lpc_generic_io(range: LpcGenericIoDecode) -> bool {
-    range.base & 0x0003 == 0 && range.size != 0 && range.size <= 0x0100 && range.size & 0x0003 == 0
+    crate::southbridge::lpc::valid_generic_io_window(range.base, range.size)
 }
 
 #[must_use]
