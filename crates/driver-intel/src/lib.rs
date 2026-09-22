@@ -19,6 +19,7 @@ pub mod i945;
 pub mod ich7;
 #[cfg(feature = "ich8")]
 pub mod ich8;
+pub mod ich9;
 pub mod igd;
 #[cfg(feature = "pineview")]
 pub mod pineview;
