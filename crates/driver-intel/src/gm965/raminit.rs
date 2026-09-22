@@ -1803,6 +1803,10 @@ mod tests {
         assert_eq!(ddr2_mode_registers(t), (0x4ad8, 0x42d8, 0x0200, 0x1e00));
     }
 
+    fn update_spd_checksum(spd: &mut [u8; 256]) {
+        spd[63] = spd[..63].iter().copied().fold(0u8, u8::wrapping_add);
+    }
+
     #[test]
     fn spd_decode_flags_ecc_and_registered_ddr2() {
         use crate::generic::spd::ddr2;
@@ -1812,19 +1816,30 @@ mod tests {
         spd[62] = 0x12;
         spd[3] = 12;
         spd[4] = 10;
+        spd[8] = 0x05;
+        spd[9] = 0x30;
+        spd[10] = 0x45;
         spd[17] = 8;
+        spd[18] = 1 << 5;
         spd[13] = 8;
         spd[6] = 64;
-        spd[11] = 1;
+        spd[11] = 2;
+        update_spd_checksum(&mut spd);
         let dimm = ddr2::decode_dimm(&spd).expect("decodes");
         assert!(dimm.is_ecc);
         assert!(!dimm.is_registered);
+        spd[11] = 1;
+        update_spd_checksum(&mut spd);
+        let dimm = ddr2::decode_dimm(&spd).expect("decodes");
+        assert!(!dimm.is_ecc);
         spd[11] = 0;
         spd[20] = 0x07;
+        update_spd_checksum(&mut spd);
         let dimm = ddr2::decode_dimm(&spd).expect("decodes");
         assert!(!dimm.is_ecc);
         assert!(dimm.is_registered);
         spd[20] = 0x04;
+        update_spd_checksum(&mut spd);
         let dimm = ddr2::decode_dimm(&spd).expect("decodes");
         assert!(!dimm.is_registered);
     }
