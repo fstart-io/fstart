@@ -527,7 +527,7 @@ pub fn validate_gm45(info: &Ddr3DimmInfo) -> Result<(), Ddr3SpdError> {
         ChipWidth::X16 => 16,
         _ => unreachable!(),
     };
-    if info.primary_bus_width_bits % chip_width != 0
+    if !info.primary_bus_width_bits.is_multiple_of(chip_width)
         || info.rank_capacity_mb
             != (32u32 << info.density_code) * u32::from(info.primary_bus_width_bits / chip_width)
     {
