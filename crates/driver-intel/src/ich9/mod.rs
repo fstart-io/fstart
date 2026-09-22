@@ -1242,7 +1242,7 @@ impl IntelIch9 {
             .modify(LCTL_REG::ASPM_CONTROL.val(if mobile { 3 } else { 1 }));
     }
 
-    fn poll_vc1(&self) {
+    fn poll_vc1(&self) -> Result<(), ServiceError> {
         let rcba = self.rcba();
         let mut timeout = 0x7ffff;
         while (rcba.regs().v1sts.get() & (1 << 1)) != 0 && timeout != 0 {
@@ -1251,6 +1251,7 @@ impl IntelIch9 {
         }
         if timeout == 0 {
             fstart_log::error!("intel-ich9: VC1 negotiation timeout");
+            return Err(ServiceError::HardwareError);
         }
 
         if ((rcba.regs().lsts.get() >> 4) & 0x3f) == 2 {
@@ -1266,7 +1267,9 @@ impl IntelIch9 {
         }
         if timeout == 0 {
             fstart_log::error!("intel-ich9: VC1 arbitration-table update timeout");
+            return Err(ServiceError::HardwareError);
         }
+        Ok(())
     }
 
     fn configure_power_options(&self) {
@@ -2221,10 +2224,15 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         bars
     }
 
+    fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
+        // ICH9 DMI setup ran in early_init. The MCH has now enabled VC1;
+        // poll only once both sides have finished negotiation.
+        self.poll_vc1()
+    }
+
     /// DRAM-backed ramstage device init: PCIe/PCI bridge, USB, HDA/SATA,
     /// LPC ramstage setup, interrupt routing, and I/O traps.
     fn post_dram_init(&mut self) -> Result<(), ServiceError> {
-        self.poll_vc1();
         self.early_chipset_settings();
         self.pcie_init();
         self.pci_bridge_init();
