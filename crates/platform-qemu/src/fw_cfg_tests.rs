@@ -159,11 +159,34 @@ fn table_loader_rejects_misalignment_and_out_of_file_patches() {
             Err(ServiceError::IoError)
         );
     });
-    command[..4].copy_from_slice(&4u32.to_le_bytes());
+    command[..4].copy_from_slice(&5u32.to_le_bytes());
     run(&dir, &[], &command, &[], |cfg| {
         assert_eq!(
             cfg.load_acpi_tables(&mut buffer),
             Err(ServiceError::NotSupported)
         );
+    });
+}
+
+#[test]
+fn write_pointer_does_not_block_acpi_loading_without_dma_write_support() {
+    let mut loader = [0u8; 2 * LOADER_COMMAND_SIZE];
+    loader[..4].copy_from_slice(&COMMAND_ALLOCATE.to_le_bytes());
+    loader[4..17].copy_from_slice(b"etc/acpi/rsdp");
+    loader[60..64].copy_from_slice(&1u32.to_le_bytes());
+    loader[LOADER_COMMAND_SIZE..LOADER_COMMAND_SIZE + 4]
+        .copy_from_slice(&COMMAND_WRITE_POINTER.to_le_bytes());
+    // vmgenid_addr is a writable fw_cfg file, not a guest ACPI allocation.
+    loader[LOADER_COMMAND_SIZE + 4..LOADER_COMMAND_SIZE + 20].copy_from_slice(b"etc/vmgenid_addr");
+    let dir = directory(&[
+        ("etc/table-loader", loader.len() as u32, 0x21),
+        ("etc/acpi/rsdp", 36, 0x22),
+    ]);
+    let mut rsdp = [0u8; 36];
+    rsdp[..8].copy_from_slice(b"RSD PTR ");
+    let mut buffer = [0u8; 128];
+    let expected = buffer.as_ptr() as u64;
+    run(&dir, &[], &loader, &rsdp, |cfg| {
+        assert_eq!(cfg.load_acpi_tables(&mut buffer), Ok(expected));
     });
 }
