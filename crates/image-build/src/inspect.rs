@@ -21,11 +21,11 @@ pub fn inspect(path: &str) -> Result<(), String> {
         .ok_or_else(|| "no FFS anchor found (FSTART01 magic not present)".to_string())?;
 
     let image_base = anchor_offset
-        .checked_sub(anchor.anchor_offset as usize)
+        .checked_sub(anchor.anchor_offset.get() as usize)
         .ok_or_else(|| {
             format!(
                 "anchor at {anchor_offset:#x} reports larger image-relative offset {:#x}",
-                anchor.anchor_offset
+                anchor.anchor_offset.get()
             )
         })?;
     let image_data = data
@@ -42,25 +42,31 @@ pub fn inspect(path: &str) -> Result<(), String> {
     }
     println!("  offset:           {anchor_offset:#x} ({anchor_offset})");
     println!("  size:             {ANCHOR_SIZE} bytes");
-    println!("  version:          {}", anchor.version);
-    println!("  image size:       {} bytes", anchor.total_image_size);
+    println!("  version:          {}", anchor.version.get());
+    println!(
+        "  image size:       {} bytes",
+        anchor.total_image_size.get()
+    );
     println!(
         "  anchor offset:    {:#x} ({})",
-        anchor.anchor_offset, anchor.anchor_offset
+        anchor.anchor_offset.get(),
+        anchor.anchor_offset.get()
     );
-    if anchor.microcode_size != 0 {
+    if anchor.microcode_size.get() != 0 {
         println!(
             "  microcode:        offset={:#x} size={}",
-            anchor.microcode_offset, anchor.microcode_size
+            anchor.microcode_offset.get(),
+            anchor.microcode_size.get()
         );
     }
     println!(
         "  boot root offset: {:#x} ({})",
-        anchor.manifest_offset, anchor.manifest_offset
+        anchor.manifest_offset.get(),
+        anchor.manifest_offset.get()
     );
-    println!("  boot root size:   {} bytes", anchor.manifest_size);
+    println!("  boot root size:   {} bytes", anchor.manifest_size.get());
     println!("  image family:     {}", hex_full(&trust.image_family));
-    if anchor.anchor_offset >= anchor.total_image_size {
+    if anchor.anchor_offset.get() >= anchor.total_image_size.get() {
         println!("  note:             XIP anchor outside FFS blob (top-aligned XIP bootblock)");
     }
     println!("  keys:             {}", trust.valid_keys().len());
@@ -84,10 +90,10 @@ pub fn inspect(path: &str) -> Result<(), String> {
         .read_manifest(&anchor)
         .map_err(|e| format!("failed to read/verify manifest: {e:?}"))?;
 
-    if anchor.version != FFS_VERSION {
+    if anchor.version.get() != FFS_VERSION {
         println!(
             "  warning: version {} (expected {FFS_VERSION})",
-            anchor.version
+            anchor.version.get()
         );
     }
     println!(
@@ -114,7 +120,7 @@ pub fn inspect(path: &str) -> Result<(), String> {
         None
     };
 
-    let xip_bootblock_file_offset = if anchor.anchor_offset >= anchor.total_image_size {
+    let xip_bootblock_file_offset = if anchor.anchor_offset.get() >= anchor.total_image_size.get() {
         manifest.regions.iter().find_map(|region| {
             if let RegionContent::Container { children } = &region.content {
                 children.iter().find_map(|entry| {
@@ -343,7 +349,7 @@ fn choose_display_anchor(anchors: &[(usize, AnchorBlock)]) -> Option<(usize, Anc
     anchors
         .iter()
         .copied()
-        .find(|(_, anchor)| anchor.anchor_offset >= anchor.total_image_size)
+        .find(|(_, anchor)| anchor.anchor_offset.get() >= anchor.total_image_size.get())
         .or_else(|| anchors.first().copied())
 }
 

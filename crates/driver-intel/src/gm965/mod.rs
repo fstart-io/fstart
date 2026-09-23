@@ -33,7 +33,7 @@ use fstart_pci::{
 };
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
-use tock_registers::{register_bitfields, register_structs};
+use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
 
 /// GM965 host bridge PCI configuration register offsets and bit definitions.
 pub mod hostbridge {
@@ -299,6 +299,13 @@ register_bitfields! [u32,
     /// DMILCTL2 — DMI Link Control 2.
     pub DMILCTL2_REG [
         DEEMPH_EQ OFFSET(10) NUMBITS(2) []
+    ]
+];
+
+register_bitfields! [u64,
+    /// Intel Core/Core2 extended configuration MSR (IA32_EXT_CONFIG, 0xee).
+    IA32_EXT_CONFIG [
+        SLFM_SUPPORTED OFFSET(27) NUMBITS(1) []
     ]
 ];
 
@@ -906,7 +913,9 @@ impl IntelGm965 {
     fn cpu_supports_slfm(&self) -> bool {
         // SAFETY: MSR 0xee is the Intel Core/Core2 extended config MSR used by
         // coreboot to detect SLFM support on this platform.
-        unsafe { (fstart_arch::x86::msr::rdmsr(0x00ee) & (1 << 27)) != 0 }
+        let value = unsafe { fstart_arch::x86::msr::rdmsr(0x00ee) };
+        LocalRegisterCopy::<u64, IA32_EXT_CONFIG::Register>::new(value)
+            .is_set(IA32_EXT_CONFIG::SLFM_SUPPORTED)
     }
 
     #[cfg(not(target_arch = "x86_64"))]

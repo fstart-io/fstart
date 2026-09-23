@@ -435,14 +435,16 @@ where
 
     let anchor = AnchorBlock {
         magic: FFS_MAGIC,
-        version: FFS_VERSION,
-        manifest_offset,
-        manifest_size,
-        total_image_size,
-        anchor_offset: u32::try_from(anchor_offset).map_err(|_| "anchor offset exceeds u32")?,
-        microcode_offset: microcode.map_or(0, |file| file.data_offset),
-        microcode_size: microcode.map_or(0, |file| file.data_size),
-        image_offset: 0,
+        version: FFS_VERSION.into(),
+        manifest_offset: manifest_offset.into(),
+        manifest_size: manifest_size.into(),
+        total_image_size: total_image_size.into(),
+        anchor_offset: u32::try_from(anchor_offset)
+            .map_err(|_| "anchor offset exceeds u32")?
+            .into(),
+        microcode_offset: microcode.map_or(0, |file| file.data_offset).into(),
+        microcode_size: microcode.map_or(0, |file| file.data_size).into(),
+        image_offset: 0.into(),
     };
 
     for &offset in &anchor_offsets {
@@ -509,33 +511,18 @@ where
     })
 }
 
-/// Scan the image for the `FSTART_ANCHOR` placeholder at 8-byte-aligned offsets.
-///
-/// A valid placeholder has `FFS_MAGIC` followed by `FFS_VERSION` and then all
-/// zeros (the output of `AnchorBlock::placeholder()`).  Matching only the
-/// 8-byte magic would produce false positives against `FFS_MAGIC` constants
-/// embedded in other binaries' `.rodata` sections.
+/// Scan for the exact `FSTART_ANCHOR` placeholder at 8-byte boundaries.
+/// Comparing its canonical wire bytes avoids both duplicated offset decoding
+/// and false matches against embedded magic constants.
 fn scan_for_placeholders(image: &[u8]) -> Vec<usize> {
-    let magic = &FFS_MAGIC;
-    let mut offsets = Vec::new();
-    let mut offset = 0;
-    while offset + ANCHOR_SIZE <= image.len() {
-        if &image[offset..offset + magic.len()] == magic {
-            // Verify this is a genuine placeholder: version must match and
-            // the mutable fields (manifest_offset, manifest_size,
-            // total_image_size) must all be zero.
-            let rest = &image[offset + magic.len()..offset + ANCHOR_SIZE];
-            let version = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
-            let manifest_off = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]);
-            let manifest_sz = u32::from_le_bytes([rest[8], rest[9], rest[10], rest[11]]);
-            let total_sz = u32::from_le_bytes([rest[12], rest[13], rest[14], rest[15]]);
-            if version == FFS_VERSION && manifest_off == 0 && manifest_sz == 0 && total_sz == 0 {
-                offsets.push(offset);
-            }
-        }
-        offset += 8;
-    }
-    offsets
+    let mut placeholder = [0; ANCHOR_SIZE];
+    AnchorBlock::placeholder().write_to(&mut placeholder);
+    image
+        .windows(ANCHOR_SIZE)
+        .step_by(8)
+        .enumerate()
+        .filter_map(|(index, window)| (window == placeholder).then_some(index * 8))
+        .collect()
 }
 
 /// Lay out a file's segments in the image, returning a `RegionEntry`.
@@ -922,7 +909,7 @@ fn recompute_external_file_digests(
                             format!("external file '{}' anchor offset overflows u32", file.name)
                         })?;
                     let mut patched_anchor = *anchor;
-                    patched_anchor.anchor_offset = anchor_offset;
+                    patched_anchor.anchor_offset.set(anchor_offset);
                     patched_anchor.write_to(&mut data[placeholder_offset..]);
                 }
                 segment.stored_digest = segment_hash(&data);
@@ -1091,7 +1078,7 @@ where
 {
     let anchor =
         unsafe { core::ptr::read_unaligned(built.anchor_bytes.as_ptr().cast::<AnchorBlock>()) };
-    let root_start = anchor.manifest_offset as usize;
+    let root_start = anchor.manifest_offset.get() as usize;
     let mut root = Root::parse(
         built
             .image

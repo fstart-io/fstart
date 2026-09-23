@@ -269,8 +269,8 @@ mod stage {
             self.fw_cfg.init()?;
             let count = self.fw_cfg.detect_memory(self.e820.entries_mut())?;
             let total = self.fw_cfg.total_ram_bytes()?;
-            self.e820.set_detected(count, total);
-            self.reserve_tseg();
+            self.e820.set_detected(count, total)?;
+            self.reserve_tseg()?;
             fstart_log::info!(
                 "Detected {} MiB RAM, {} e820 entries from {}",
                 self.e820.total_ram() >> 20,
@@ -278,10 +278,14 @@ mod stage {
                 QEMU_Q35_PLATFORM_NODE,
             );
 
-            static mut ACPI_BUFFER: [u8; QEMU_Q35_ACPI_BUFFER_SIZE] =
-                [0; QEMU_Q35_ACPI_BUFFER_SIZE];
+            // The table loader's ALLOCATE alignments (64 for the tables blob,
+            // 16 for the RSDP) are applied to offsets in this buffer, so the
+            // buffer itself must be at least as aligned as any request.
+            #[repr(C, align(4096))]
+            struct AcpiBuffer([u8; QEMU_Q35_ACPI_BUFFER_SIZE]);
+            static mut ACPI_BUFFER: AcpiBuffer = AcpiBuffer([0; QEMU_Q35_ACPI_BUFFER_SIZE]);
             // SAFETY: firmware init is single-threaded; this buffer is written once.
-            let acpi = unsafe { &mut *core::ptr::addr_of_mut!(ACPI_BUFFER) };
+            let acpi = unsafe { &mut (*core::ptr::addr_of_mut!(ACPI_BUFFER)).0 };
             self.acpi_rsdp = Some(self.fw_cfg.load_acpi_tables(acpi)?);
             Ok(())
         }
@@ -330,21 +334,22 @@ mod stage {
         /// treats it as usable DRAM. QEMU's `etc/e820` does not describe
         /// TSEG: it overlays the top of low RAM, so without this the
         /// overlay would be handed out as ordinary memory.
-        fn reserve_tseg(&mut self) {
+        fn reserve_tseg(&mut self) -> Result<(), ServiceError> {
             let size = crate::q35_smm::decode_tseg_size() as u64;
             if size == 0 {
-                return;
+                return Ok(());
             }
             let base = crate::q35_smm::tseg_base_from_e820(self.e820.entries(), size as usize);
             if base == 0 {
-                fstart_log::error!("Q35: unable to locate TSEG, leaving map uncarved");
-                return;
+                fstart_log::error!("Q35: unable to locate TSEG");
+                return Err(ServiceError::HardwareError);
             }
-            self.e820.reserve_range(base, size);
+            self.e820.reserve_range(base, size)?;
             let total = self.e820.total_ram().saturating_sub(size);
             let count = self.e820.count();
-            self.e820.set_detected(count, total);
+            self.e820.set_detected(count, total)?;
             fstart_log::info!("Q35: TSEG reserved base={:#x} size={:#x}", base, size);
+            Ok(())
         }
 
         /// Bring up APs and, when an SMM image is embedded, relocate SMBASE,
