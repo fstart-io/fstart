@@ -563,6 +563,7 @@ dependencies = [
  "fstart-log",
  "fstart-smm",
  "object 0.37.3",
+ "tock-registers",
  "ufmt",
  "x86",
  "x86_64",
@@ -698,6 +699,7 @@ dependencies = [
  "object 0.37.3",
  "rand_core",
  "serde",
+ "zerocopy",
 ]
 
 [[package]]
@@ -796,6 +798,7 @@ name = "fstart-smm"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
+ "zerocopy",
 ]
 
 [[package]]

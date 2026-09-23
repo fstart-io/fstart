@@ -8,6 +8,7 @@ license.workspace = true
 serde = { workspace = true, features = ["std"] }
 heapless = { workspace = true }
 object = { workspace = true }
+zerocopy = { workspace = true }
 fstart-core = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-boot = { workspace = true, features = ["std"] }

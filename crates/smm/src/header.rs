@@ -1,4 +1,12 @@
 //! Native, deliberately unversioned SMM image header.
+//!
+//! The image is an x86 little-endian ABI; the wire structs below have no
+//! padding, and zerocopy reads them without requiring aligned input.
+
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+#[cfg(target_endian = "big")]
+compile_error!("The native x86 SMM image format requires a little-endian build host");
 
 /// Magic value at the start of every native fstart SMM image: `FSMM`.
 pub const SMM_IMAGE_MAGIC: u32 = u32::from_le_bytes(*b"FSMM");
@@ -31,7 +39,7 @@ pub enum HeaderError {
 /// `handler_offset` and entry-stub offsets address bytes in the file. Every
 /// other handler/runtime offset is relative to the copied handler memory base.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub struct SmmImageHeader {
     /// [`SMM_IMAGE_MAGIC`].
     pub magic: u32,
@@ -118,30 +126,7 @@ impl SmmImageHeader {
 
     /// Parse and validate the fixed header from little-endian bytes.
     pub fn parse(image: &[u8]) -> Result<Self, HeaderError> {
-        if image.len() < core::mem::size_of::<Self>() {
-            return Err(HeaderError::TooSmall);
-        }
-        let h = Self {
-            magic: read_u32(image, 0),
-            header_size: read_u16(image, 4),
-            entry_desc_size: read_u16(image, 6),
-            flags: read_u32(image, 8),
-            image_size: read_u32(image, 12),
-            entry_count: read_u16(image, 16),
-            reserved: read_u16(image, 18),
-            entries_offset: read_u32(image, 20),
-            handler_offset: read_u32(image, 24),
-            handler_load_size: read_u32(image, 28),
-            handler_mem_size: read_u32(image, 32),
-            handler_entry_offset: read_u32(image, 36),
-            runtime_offset: read_u32(image, 40),
-            runtime_size: read_u32(image, 44),
-            handler_config_offset: read_u32(image, 48),
-            handler_config_capacity: read_u32(image, 52),
-            module_args_offset: read_u32(image, 56),
-            module_args_size: read_u32(image, 60),
-            stack_size: read_u32(image, 64),
-        };
+        let (h, _) = Self::read_from_prefix(image).map_err(|_| HeaderError::TooSmall)?;
         if h.magic != SMM_IMAGE_MAGIC {
             return Err(HeaderError::BadMagic);
         }
@@ -186,12 +171,9 @@ impl SmmImageHeader {
         if end > image.len() || end > self.image_size as usize {
             return Err(HeaderError::RangeOutOfBounds);
         }
-        Ok(EntryDescriptor {
-            stub_offset: read_u32(image, off),
-            stub_size: read_u32(image, off + 4),
-            entry_offset: read_u32(image, off + 8),
-            params_offset: read_u32(image, off + 12),
-        })
+        EntryDescriptor::read_from_prefix(&image[off..end])
+            .map(|(descriptor, _)| descriptor)
+            .map_err(|_| HeaderError::RangeOutOfBounds)
     }
 
     fn check_file_range(&self, offset: u32, size: u32) -> Result<(), HeaderError> {
@@ -217,7 +199,7 @@ impl SmmImageHeader {
 
 /// One precompiled PIC SMM entry stub.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub struct EntryDescriptor {
     /// File offset of this stub's bytes.
     pub stub_offset: u32,
@@ -271,13 +253,6 @@ pub fn render_coreboot_header(
     out
 }
 
-fn read_u16(bytes: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([bytes[off], bytes[off + 1]])
-}
-fn read_u32(bytes: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
-}
-
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -306,60 +281,17 @@ mod tests {
             0x400,
         );
         let mut image = std::vec![0u8; h.image_size as usize];
-        super::put_for_test(&mut image, &h);
-        image[hs as usize..hs as usize + 16].copy_from_slice(&[
-            (handler & 0xff) as u8,
-            ((handler >> 8) & 0xff) as u8,
-            ((handler >> 16) & 0xff) as u8,
-            ((handler >> 24) & 0xff) as u8,
-            16,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            8,
-            0,
-            0,
-            0,
-        ]);
+        h.write_to_prefix(&mut image).unwrap();
+        EntryDescriptor {
+            stub_offset: handler,
+            stub_size: 16,
+            entry_offset: 0,
+            params_offset: 8,
+        }
+        .write_to_prefix(&mut image[hs as usize..])
+        .unwrap();
         assert_eq!(SmmImageHeader::parse(&image).unwrap(), h);
         image[0..4].copy_from_slice(b"FSM1");
         assert_eq!(SmmImageHeader::parse(&image), Err(HeaderError::BadMagic));
-    }
-}
-
-#[cfg(test)]
-fn put_for_test(image: &mut [u8], h: &SmmImageHeader) {
-    let fields16 = [
-        (4, h.header_size),
-        (6, h.entry_desc_size),
-        (16, h.entry_count),
-        (18, h.reserved),
-    ];
-    for (off, value) in fields16 {
-        image[off..off + 2].copy_from_slice(&value.to_le_bytes());
-    }
-    let fields32 = [
-        (0, h.magic),
-        (8, h.flags),
-        (12, h.image_size),
-        (20, h.entries_offset),
-        (24, h.handler_offset),
-        (28, h.handler_load_size),
-        (32, h.handler_mem_size),
-        (36, h.handler_entry_offset),
-        (40, h.runtime_offset),
-        (44, h.runtime_size),
-        (48, h.handler_config_offset),
-        (52, h.handler_config_capacity),
-        (56, h.module_args_offset),
-        (60, h.module_args_size),
-        (64, h.stack_size),
-    ];
-    for (off, value) in fields32 {
-        image[off..off + 4].copy_from_slice(&value.to_le_bytes());
     }
 }
