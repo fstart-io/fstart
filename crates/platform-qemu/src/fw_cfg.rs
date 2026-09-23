@@ -21,6 +21,7 @@ const FW_CFG_FILE_DIR: u16 = 0x0019;
 const COMMAND_ALLOCATE: u32 = 1;
 const COMMAND_ADD_POINTER: u32 = 2;
 const COMMAND_ADD_CHECKSUM: u32 = 3;
+const COMMAND_WRITE_POINTER: u32 = 4;
 
 /// Entries in the fw_cfg file directory are always big-endian.
 #[repr(C)]
@@ -428,6 +429,13 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
                     buffer[off + checksum_offset] = 0u8.wrapping_sub(sum);
                 }
                 0 => {} // QEMU pads the file to a fixed number of commands.
+                COMMAND_WRITE_POINTER => {
+                    // QEMU uses this to write an allocated guest address back
+                    // to a writable fw_cfg file (for example vmgenid_addr).
+                    // This read-only transport has never supported DMA writes;
+                    // skipping it preserves boot without claiming VMGenID works.
+                    fstart_log::warn!("fw_cfg: WRITE_POINTER skipped (DMA write unsupported)");
+                }
                 _ => return Err(ServiceError::NotSupported),
             }
         }
