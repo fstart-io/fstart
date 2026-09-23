@@ -45,6 +45,9 @@ pub fn compilation_plan(
             .map(ToString::to_string)
             .collect::<Vec<_>>()
     };
+    let mp_capacity = || {
+        std::collections::BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), plan.max_cpus.to_string())])
+    };
     let mut units = vec![CompilationUnit {
         name: "smm".into(),
         cargo_target: CargoTarget::BoardLibrary,
@@ -62,7 +65,7 @@ pub fn compilation_plan(
             // audit rejects any load-base-dependent cross-section reference.
             "-Cpanic=abort -Copt-level=s -Crelocation-model=static -Cno-redzone=yes -Clinker-plugin-lto=no -Cembed-bitcode=no -Zfunction-sections=yes",
         ),
-        environment_values: std::collections::BTreeMap::new(),
+        environment_values: mp_capacity(),
         bindings: vec![],
         output: UnitOutput::SmmImage {
             entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
@@ -97,7 +100,7 @@ pub fn compilation_plan(
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
             rustflags: flags("-Zub-checks=no -Crelocation-model=static -Ccode-model=large --cfg curve25519_dalek_backend=\"serial\""),
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true)?),
-            environment_values: std::collections::BTreeMap::new(),
+            environment_values: mp_capacity(),
             bindings,
             output: UnitOutput::Executable {
                 expectations: plan.reservations.elf_expectations(row.role)?, load_address: reservation.image.base,
@@ -336,6 +339,13 @@ mod tests {
         assert_eq!(uefi.stages[1].features, ["bundle-postcar"]);
         assert_eq!(uefi.stages[2].features, ["bundle-ramstage", "payload-uefi"]);
         assert_eq!(uefi.smm_features, ["bundle-smm"]);
+        let units = compilation_plan(uefi).unwrap().units;
+        assert!(units.iter().all(|unit| {
+            unit.environment_values
+                .get("FSTART_MP_MAX_CPUS")
+                .map(|value| value.as_str())
+                == Some("2")
+        }));
         let linux = resolve(
             FACTS,
             BuildSelection {

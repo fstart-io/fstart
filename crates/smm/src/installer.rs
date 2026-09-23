@@ -155,6 +155,9 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
         .handler_config_offset
         .checked_sub(header.runtime_offset)
         .ok_or(InstallError::BadHandlerConfig)?;
+    if !(config_relative as usize).is_multiple_of(HANDLER_CONFIG_ALIGNMENT) {
+        return Err(InstallError::BadHandlerConfig);
+    }
     let runtime = SmmRuntime::new(
         config.smram_base,
         config.smram_size,
@@ -447,9 +450,10 @@ fn check_entry_range(
 mod tests {
     extern crate std;
     use super::*;
-    use crate::header::{EntryDescriptor, FLAG_COREBOOT_MODULE_ARGS, SMM_IMAGE_MAGIC};
+    use crate::header::{EntryDescriptor, FLAG_COREBOOT_MODULE_ARGS};
     use std::vec;
     use std::vec::Vec;
+    use zerocopy::IntoBytes;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct TestConfig {
@@ -526,38 +530,6 @@ mod tests {
         (value + alignment as u32 - 1) & !(alignment as u32 - 1)
     }
 
-    fn put16(bytes: &mut [u8], off: usize, value: u16) {
-        bytes[off..off + 2].copy_from_slice(&value.to_le_bytes());
-    }
-    fn put32(bytes: &mut [u8], off: usize, value: u32) {
-        bytes[off..off + 4].copy_from_slice(&value.to_le_bytes());
-    }
-    fn put_header(bytes: &mut [u8], h: &SmmImageHeader) {
-        put32(bytes, 0, SMM_IMAGE_MAGIC);
-        put16(bytes, 4, h.header_size);
-        put16(bytes, 6, h.entry_desc_size);
-        put32(bytes, 8, h.flags);
-        put32(bytes, 12, h.image_size);
-        put16(bytes, 16, h.entry_count);
-        put16(bytes, 18, 0);
-        for (off, value) in [
-            (20, h.entries_offset),
-            (24, h.handler_offset),
-            (28, h.handler_load_size),
-            (32, h.handler_mem_size),
-            (36, h.handler_entry_offset),
-            (40, h.runtime_offset),
-            (44, h.runtime_size),
-            (48, h.handler_config_offset),
-            (52, h.handler_config_capacity),
-            (56, h.module_args_offset),
-            (60, h.module_args_size),
-            (64, h.stack_size),
-        ] {
-            put32(bytes, off, value);
-        }
-    }
-
     fn test_image_with_entries(entry_count: u16) -> (Vec<u8>, SmmImageHeader) {
         let header_size = size_of::<SmmImageHeader>() as u32;
         let entries_offset = header_size;
@@ -593,7 +565,7 @@ mod tests {
             0x400,
         );
         let mut image = vec![0u8; image_size as usize];
-        put_header(&mut image, &header);
+        header.write_to_prefix(&mut image).unwrap();
         for i in 0..entry_count {
             let desc = EntryDescriptor {
                 stub_offset: stub_offset + u32::from(i) * stub_size,
@@ -603,14 +575,7 @@ mod tests {
             };
             let desc_offset =
                 entries_offset as usize + usize::from(i) * size_of::<EntryDescriptor>();
-            for (off, value) in [
-                (0, desc.stub_offset),
-                (4, desc.stub_size),
-                (8, 0),
-                (12, desc.params_offset),
-            ] {
-                put32(&mut image, desc_offset + off, value);
-            }
+            desc.write_to_prefix(&mut image[desc_offset..]).unwrap();
             image[desc.stub_offset as usize] = 0xbb;
         }
         image[handler_offset as usize] = 0xaa;
@@ -718,26 +683,56 @@ mod tests {
         let (image, header) = test_image();
 
         let mut overlap = image.clone();
-        put32(&mut overlap, 48, header.runtime_offset + 8);
+        SmmImageHeader {
+            handler_config_offset: header.runtime_offset + 8,
+            ..header
+        }
+        .write_to_prefix(&mut overlap)
+        .unwrap();
         assert_early_failure(&overlap, InstallError::BadHandlerConfig);
 
         let mut wrong_capacity = image.clone();
-        put32(
-            &mut wrong_capacity,
-            52,
-            header.handler_config_capacity + HANDLER_CONFIG_ALIGNMENT as u32,
-        );
+        SmmImageHeader {
+            handler_config_capacity: header.handler_config_capacity
+                + HANDLER_CONFIG_ALIGNMENT as u32,
+            ..header
+        }
+        .write_to_prefix(&mut wrong_capacity)
+        .unwrap();
         assert_early_failure(&wrong_capacity, InstallError::BadHandlerConfig);
 
         let mut misaligned = image.clone();
-        put32(&mut misaligned, 40, header.runtime_offset + 1);
+        SmmImageHeader {
+            runtime_offset: header.runtime_offset + 1,
+            ..header
+        }
+        .write_to_prefix(&mut misaligned)
+        .unwrap();
         assert_early_failure(&misaligned, InstallError::BadRuntime);
 
         let (mut bad_params, two_entry_header) = test_image_with_entries(2);
         let second_descriptor =
             two_entry_header.entries_offset as usize + size_of::<EntryDescriptor>();
-        put32(&mut bad_params, second_descriptor + 12, 0x21);
+        let mut descriptor = two_entry_header.entry(&bad_params, 1).unwrap();
+        descriptor.params_offset = 0x21;
+        descriptor
+            .write_to_prefix(&mut bad_params[second_descriptor..])
+            .unwrap();
         assert_early_failure(&bad_params, InstallError::BadParams);
+    }
+
+    #[test]
+    fn rejects_config_misaligned_relative_to_runtime() {
+        let (mut image, header) = test_image();
+        // Both absolute addresses are aligned, but the runtime-relative
+        // offset is not. The handler must never silently skip this config.
+        SmmImageHeader {
+            runtime_offset: header.runtime_offset + 8,
+            ..header
+        }
+        .write_to_prefix(&mut image)
+        .unwrap();
+        assert_early_failure(&image, InstallError::BadHandlerConfig);
     }
 
     #[test]

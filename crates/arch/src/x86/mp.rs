@@ -273,8 +273,9 @@ impl ApMailbox {
     }
 }
 
-/// Maximum total CPU count supported, including the BSP.
-pub(crate) const MAX_CPUS: usize = 64;
+// Build-time CPU storage budget selected by the board/platform plan.
+// The SIPI stack arena and mailboxes use the same generated capacity.
+include!(concat!(env!("OUT_DIR"), "/mp_capacity.rs"));
 const MAX_APS: usize = MAX_CPUS - 1;
 
 /// Architectural default SMBASE used before SMM relocation.
@@ -569,8 +570,9 @@ pub fn online_cpus() -> u16 {
 
 /// Copy the SIPI trampoline, send INIT + SIPI and wait for every expected AP
 /// to check in. Zero or partial check-in is boot-fatal before barriers open.
-/// The trampoline parks responders beyond `max_aps` before they can index the
-/// stack arena, and this function rejects the machine if any is observed.
+/// The trampoline resets the machine on a responder beyond `max_aps` before it
+/// can index the stack arena, and this function rejects the machine if one
+/// claimed an ordinal before the count is read.
 fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
     install_sipi_trampoline(max_aps, lapic)?;
 
@@ -606,9 +608,9 @@ fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
 
     let final_count = AP_COUNT.load(Ordering::Acquire) as u16;
 
-    // Responders beyond `max_aps` park in the trampoline without touching the
-    // stack arena. Any that already claimed an ordinal make the capacity
-    // mismatch explicit; later ones stay parked harmlessly.
+    // Responders beyond `max_aps` reset the machine in the trampoline without
+    // touching the stack arena. Any that already claimed an ordinal make the
+    // capacity mismatch explicit before that reset lands.
     let claimed = sipi_claimed_ap_count();
     if claimed > u32::from(max_aps) {
         return Err(MpError::HardwareCpuCountExceedsCapacity {
@@ -744,7 +746,7 @@ const SIPI_VECTOR_ADDR: usize = (SIPI_VECTOR_PAGE as usize) << 12;
 fn sipi_claimed_ap_count() -> u32 {
     // SAFETY: the trampoline page remains reserved and mapped throughout MP
     // bring-up. APs update this aligned field atomically before either taking a
-    // stack slot or parking as excess hardware.
+    // stack slot or resetting as excess hardware.
     unsafe {
         core::ptr::read_volatile(
             (SIPI_VECTOR_ADDR as *const u8).add(sipi_blob::AP_COUNTER_OFFSET) as *const u32,
@@ -1159,15 +1161,13 @@ mod tests {
     #[test]
     fn total_cpu_capacity_includes_the_bsp() {
         assert!(validate_cpu_capacity(MAX_CPUS as u16).is_ok());
-        let Err(MpError::TooManyCpus {
-            requested,
-            supported,
-        }) = validate_cpu_capacity(MAX_CPUS as u16 + 1)
-        else {
-            panic!("oversized CPU capacity was accepted");
-        };
-        assert_eq!(requested, MAX_CPUS as u16 + 1);
-        assert_eq!(supported, MAX_CPUS as u16);
+        if let Some(over_capacity) = (MAX_CPUS as u16).checked_add(1) {
+            assert!(matches!(
+                validate_cpu_capacity(over_capacity),
+                Err(MpError::TooManyCpus { requested, supported })
+                    if requested == over_capacity && supported == MAX_CPUS as u16
+            ));
+        }
         assert_eq!(MAX_APS + 1, MAX_CPUS);
 
         assert_eq!(checked_logical_cpu_count(0, 4).unwrap(), 1);

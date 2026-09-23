@@ -69,7 +69,9 @@ prot32:
 	movl %eax, %esi
 
 	/* Broadcast SIPIs wake every AP, including CPUs beyond firmware's static
-	 * capacity. Park excess responders before indexing the stack arena. */
+	 * capacity. Reset on an excess responder before it indexes the stack
+	 * arena: it would never be SMBASE-relocated, so it must not outlive MP
+	 * bring-up. */
 	cmpl SIPI_BASE + fstart_sipi_ap_limit - fstart_sipi_start, %eax
 	jae excess_ap
 
@@ -111,7 +113,12 @@ prot32:
 	ljmpl $CODE64_SEL, $(SIPI_BASE + long64 - fstart_sipi_start)
 
 excess_ap:
+	/* Hard reset through the ICH/Q35 reset control register. A halted CPU
+	 * still services SMI at the default SMBASE, so halting is not safe. */
 	cli
+	movw $0x0cf9, %dx
+	movb $0x06, %al
+	outb %al, %dx
 1:	hlt
 	jmp 1b
 

@@ -4,14 +4,20 @@
 //! enable VMX outside SMX when the CPU has it, then lock the register. A
 //! register that is already locked is left as found.
 
-use crate::x86::msr::{rdmsr, wrmsr};
+use super::msr_register::Msr;
+use tock_registers::{LocalRegisterCopy, register_bitfields};
 
-const IA32_FEATURE_CONTROL: u32 = 0x03a;
-/// Lock bit; the register is read-only until the next reset once set.
-pub const LOCK: u64 = 1 << 0;
-const VMX_OUTSIDE_SMX: u64 = 1 << 2;
-const CPUID_1_ECX_VMX: u32 = 1 << 5;
-
+pub(super) const IA32_FEATURE_CONTROL: u32 = 0x03a;
+register_bitfields![u32,
+    CPUID_1_ECX [ VMX OFFSET(5) NUMBITS(1) [] ]
+];
+register_bitfields![u64,
+    pub(super) FEATURE_CONTROL [
+        LOCK OFFSET(0) NUMBITS(1) [],
+        VMX_OUTSIDE_SMX OFFSET(2) NUMBITS(1) [],
+        SMRR_ENABLE OFFSET(3) NUMBITS(1) []
+    ]
+];
 /// Enable VMX when supported, OR in `extra` model-specific enable bits (for
 /// example [`SmrrPair::feature_control_bits`](super::smrr::SmrrPair::feature_control_bits)),
 /// and lock `IA32_FEATURE_CONTROL` on the current CPU.
@@ -22,16 +28,18 @@ const CPUID_1_ECX_VMX: u32 = 1 << 5;
 /// `extra`.
 pub unsafe fn enable_and_lock(extra: u64) {
     // SAFETY: the caller guarantees the MSR exists.
-    let current = unsafe { rdmsr(IA32_FEATURE_CONTROL) };
-    if current & LOCK != 0 {
+    let register = Msr::<FEATURE_CONTROL::Register>::new(IA32_FEATURE_CONTROL);
+    let current = unsafe { register.read() };
+    if current.is_set(FEATURE_CONTROL::LOCK) {
         return;
     }
     let (_, _, ecx, _) = crate::x86::cpuid(1);
-    let vmx = if ecx & CPUID_1_ECX_VMX != 0 {
-        VMX_OUTSIDE_SMX
+    let vmx = if LocalRegisterCopy::<u32, CPUID_1_ECX::Register>::new(ecx).is_set(CPUID_1_ECX::VMX)
+    {
+        FEATURE_CONTROL::VMX_OUTSIDE_SMX::SET.value
     } else {
         0
     };
     // SAFETY: the register is unlocked and the caller vouches for `extra`.
-    unsafe { wrmsr(IA32_FEATURE_CONTROL, current | vmx | extra | LOCK) };
+    unsafe { register.write(current.get() | vmx | extra | FEATURE_CONTROL::LOCK::SET.value) };
 }
