@@ -210,18 +210,18 @@ pub(crate) fn reserve_firmware_memory(
 ) -> Result<(), ServiceError> {
     use fstart_core::services::memory_detect::E820Kind;
     for region in geometry.firmware_owned_regions()? {
-        e820.reserve_range_as(region.base, region.size, E820Kind::Reserved);
+        e820.reserve_range_as(region.base, region.size, E820Kind::Reserved)?;
     }
     // Postcar handoff stash, S3 wake trampoline and SIPI page.
     e820.reserve_range_as(
         fstart_arch::x86_64::LOW_SCRATCH_START,
         fstart_arch::x86_64::LOW_SCRATCH_END - fstart_arch::x86_64::LOW_SCRATCH_START,
         E820Kind::Reserved,
-    );
+    )?;
     // Default-SMBASE ASEG: SMM relocation rewrites it during MP init, which
     // runs again on an S3 resume while the suspended OS image is live.
     let (aseg_start, aseg_end) = fstart_arch::x86::mp::SMM_DEFAULT_ASEG;
-    e820.reserve_range_as(aseg_start, aseg_end - aseg_start, E820Kind::Reserved);
+    e820.reserve_range_as(aseg_start, aseg_end - aseg_start, E820Kind::Reserved)?;
     Ok(())
 }
 

@@ -2,6 +2,8 @@
 //! signature policy. Only uncompressed initial images may contain a patch site.
 
 use serde::{Deserialize, Serialize};
+use zerocopy::byteorder::{LE, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 pub const LOCATOR_MAGIC: [u8; 8] = *b"FSTART01";
 pub const LOCATOR_VERSION: u32 = 7;
@@ -9,22 +11,24 @@ pub const LOCATOR_SIZE: usize = 40;
 
 /// Existing x86 pre-Rust offsets through `microcode_size` are retained. The last
 /// word locates the packed filesystem within a platform-owned media window.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C, align(8))]
 pub struct LocatorBlock {
     pub magic: [u8; 8],
-    pub version: u32,
-    pub manifest_offset: u32,
-    pub manifest_size: u32,
-    pub total_image_size: u32,
-    pub anchor_offset: u32,
-    pub microcode_offset: u32,
-    pub microcode_size: u32,
-    pub image_offset: u32,
+    pub version: U32<LE>,
+    pub manifest_offset: U32<LE>,
+    pub manifest_size: U32<LE>,
+    pub total_image_size: U32<LE>,
+    pub anchor_offset: U32<LE>,
+    pub microcode_offset: U32<LE>,
+    pub microcode_size: U32<LE>,
+    pub image_offset: U32<LE>,
 }
 
 const _: () = {
     assert!(core::mem::size_of::<LocatorBlock>() == LOCATOR_SIZE);
+    // Initial-image placeholders are scanned at eight-byte boundaries.
+    assert!(core::mem::align_of::<LocatorBlock>() == 8);
     assert!(core::mem::offset_of!(LocatorBlock, anchor_offset) == 24);
     assert!(core::mem::offset_of!(LocatorBlock, microcode_offset) == 28);
     assert!(core::mem::offset_of!(LocatorBlock, microcode_size) == 32);
@@ -67,80 +71,49 @@ impl LocatorBlock {
     pub const fn placeholder() -> Self {
         Self {
             magic: LOCATOR_MAGIC,
-            version: LOCATOR_VERSION,
-            manifest_offset: 0,
-            manifest_size: 0,
-            total_image_size: 0,
-            anchor_offset: 0,
-            microcode_offset: 0,
-            microcode_size: 0,
-            image_offset: 0,
+            version: U32::new(LOCATOR_VERSION),
+            manifest_offset: U32::new(0),
+            manifest_size: U32::new(0),
+            total_image_size: U32::new(0),
+            anchor_offset: U32::new(0),
+            microcode_offset: U32::new(0),
+            microcode_size: U32::new(0),
+            image_offset: U32::new(0),
         }
     }
 
     pub fn write_to(self, output: &mut [u8]) {
         assert!(output.len() >= LOCATOR_SIZE, "short locator output");
-        output[..8].copy_from_slice(&self.magic);
-        for (value, bytes) in [
-            self.version,
-            self.manifest_offset,
-            self.manifest_size,
-            self.total_image_size,
-            self.anchor_offset,
-            self.microcode_offset,
-            self.microcode_size,
-            self.image_offset,
-        ]
-        .into_iter()
-        .zip(output[8..LOCATOR_SIZE].chunks_exact_mut(4))
-        {
-            bytes.copy_from_slice(&value.to_le_bytes());
-        }
+        output[..LOCATOR_SIZE].copy_from_slice(self.as_bytes());
     }
 
     /// Decode exactly one fixed-size locator, including from an unaligned
     /// handoff buffer. Version 6 combined trust/location anchors are not accepted.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != LOCATOR_SIZE || bytes[..8] != LOCATOR_MAGIC {
-            return None;
-        }
-        let word = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        if word(8) != LOCATOR_VERSION {
-            return None;
-        }
-        Some(Self {
-            magic: LOCATOR_MAGIC,
-            version: LOCATOR_VERSION,
-            manifest_offset: word(12),
-            manifest_size: word(16),
-            total_image_size: word(20),
-            anchor_offset: word(24),
-            microcode_offset: word(28),
-            microcode_size: word(32),
-            image_offset: word(36),
-        })
+        let block = Self::read_from_bytes(bytes).ok()?;
+        (block.magic == LOCATOR_MAGIC && block.version.get() == LOCATOR_VERSION).then_some(block)
     }
 
     pub fn from_media(media: MediaLocator) -> Option<Self> {
         Some(Self {
-            manifest_offset: media.root_offset.try_into().ok()?,
-            manifest_size: media.root_size.try_into().ok()?,
-            total_image_size: media.image_size.try_into().ok()?,
-            microcode_offset: media.microcode_offset.try_into().ok()?,
-            microcode_size: media.microcode_size.try_into().ok()?,
-            image_offset: media.image_offset.try_into().ok()?,
+            manifest_offset: U32::new(media.root_offset.try_into().ok()?),
+            manifest_size: U32::new(media.root_size.try_into().ok()?),
+            total_image_size: U32::new(media.image_size.try_into().ok()?),
+            microcode_offset: U32::new(media.microcode_offset.try_into().ok()?),
+            microcode_size: U32::new(media.microcode_size.try_into().ok()?),
+            image_offset: U32::new(media.image_offset.try_into().ok()?),
             ..Self::placeholder()
         })
     }
 
     pub fn media(self) -> MediaLocator {
         MediaLocator {
-            image_offset: self.image_offset.into(),
-            image_size: self.total_image_size.into(),
-            root_offset: self.manifest_offset.into(),
-            root_size: self.manifest_size.into(),
-            microcode_offset: self.microcode_offset.into(),
-            microcode_size: self.microcode_size.into(),
+            image_offset: self.image_offset.get().into(),
+            image_size: self.total_image_size.get().into(),
+            root_offset: self.manifest_offset.get().into(),
+            root_size: self.manifest_size.get().into(),
+            microcode_offset: self.microcode_offset.get().into(),
+            microcode_size: self.microcode_size.get().into(),
         }
     }
 }
@@ -171,22 +144,22 @@ impl<'a> LocatorRef<'a> {
         })
     }
     pub fn manifest_offset(self) -> u32 {
-        self.value.manifest_offset
+        self.value.manifest_offset.get()
     }
     pub fn manifest_size(self) -> u32 {
-        self.value.manifest_size
+        self.value.manifest_size.get()
     }
     pub fn total_image_size(self) -> u32 {
-        self.value.total_image_size
+        self.value.total_image_size.get()
     }
     pub fn microcode_offset(self) -> u32 {
-        self.value.microcode_offset
+        self.value.microcode_offset.get()
     }
     pub fn microcode_size(self) -> u32 {
-        self.value.microcode_size
+        self.value.microcode_size.get()
     }
     pub fn image_offset(self) -> u32 {
-        self.value.image_offset
+        self.value.image_offset.get()
     }
     pub fn media(self) -> MediaLocator {
         self.value.media()
@@ -242,9 +215,9 @@ mod tests {
     #[test]
     fn locator_wire_keeps_x86_offsets_and_rejects_wrong_version_or_length() {
         let locator = LocatorBlock {
-            anchor_offset: 0x11223344,
-            microcode_offset: 0x55667788,
-            microcode_size: 0x99aabbcc,
+            anchor_offset: U32::new(0x11223344),
+            microcode_offset: U32::new(0x55667788),
+            microcode_size: U32::new(0x99aabbcc),
             ..LocatorBlock::placeholder()
         };
         let mut bytes = [0; LOCATOR_SIZE];
@@ -256,7 +229,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            LocatorBlock::parse(&bytes).unwrap().microcode_size,
+            LocatorBlock::parse(&bytes).unwrap().microcode_size.get(),
             0x99aabbcc
         );
         assert!(LocatorBlock::parse(&bytes[..39]).is_none());

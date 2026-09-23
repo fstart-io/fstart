@@ -6,29 +6,33 @@
 //! untrusted media does not establish trust.
 
 use super::{TRUST_MAX_KEYS, VerificationKey};
+use zerocopy::byteorder::{LE, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 pub const TRUST_MAGIC: [u8; 8] = *b"FSTRUST1";
 pub const TRUST_VERSION: u32 = 1;
 pub const TRUST_SIZE: usize = core::mem::size_of::<TrustBlock>();
 
 /// Fixed-size policy bytes; no root, directory, image or microcode location.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C, align(8))]
 pub struct TrustBlock {
     pub magic: [u8; 8],
-    pub version: u32,
-    pub encoded_size: u32,
-    pub minimum_security_version: u64,
-    pub key_count: u32,
-    pub reserved: u32,
+    pub version: U32<LE>,
+    pub encoded_size: U32<LE>,
+    pub minimum_security_version: U64<LE>,
+    pub key_count: U32<LE>,
+    pub reserved: U32<LE>,
     pub image_family: [u8; 16],
     pub keys: [VerificationKey; TRUST_MAX_KEYS],
 }
 
-// All fields have explicit widths, and every byte belongs to a field. These
-// offsets also ensure the borrowed key array never requires an unaligned load.
+// All fields have explicit widths and endian order, and every byte belongs
+// to a field. The borrowed key array never requires an unaligned load.
 const _: () = {
     assert!(TRUST_SIZE == 320);
+    // The packer scans initial-image patch sites at eight-byte boundaries.
+    assert!(core::mem::align_of::<TrustBlock>() == 8);
     assert!(core::mem::offset_of!(TrustBlock, minimum_security_version) == 16);
     assert!(core::mem::offset_of!(TrustBlock, image_family) == 32);
     assert!(core::mem::offset_of!(TrustBlock, keys) == 48);
@@ -38,11 +42,11 @@ impl TrustBlock {
     pub const fn placeholder() -> Self {
         Self {
             magic: TRUST_MAGIC,
-            version: TRUST_VERSION,
-            encoded_size: TRUST_SIZE as u32,
-            minimum_security_version: 0,
-            key_count: 0,
-            reserved: 0,
+            version: U32::new(TRUST_VERSION),
+            encoded_size: U32::new(TRUST_SIZE as u32),
+            minimum_security_version: U64::new(0),
+            key_count: U32::new(0),
+            reserved: U32::new(0),
             image_family: [0; 16],
             keys: [VerificationKey::ZERO; TRUST_MAX_KEYS],
         }
@@ -51,62 +55,31 @@ impl TrustBlock {
     /// Decode wire bytes by value, without alignment or volatile-memory assumptions.
     /// Parsing proves structure, not protected policy provenance.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != TRUST_SIZE {
-            return None;
-        }
-        let mut block = Self {
-            magic: bytes[..8].try_into().ok()?,
-            version: u32::from_le_bytes(bytes[8..12].try_into().ok()?),
-            encoded_size: u32::from_le_bytes(bytes[12..16].try_into().ok()?),
-            minimum_security_version: u64::from_le_bytes(bytes[16..24].try_into().ok()?),
-            key_count: u32::from_le_bytes(bytes[24..28].try_into().ok()?),
-            reserved: u32::from_le_bytes(bytes[28..32].try_into().ok()?),
-            image_family: bytes[32..48].try_into().ok()?,
-            keys: [VerificationKey::ZERO; TRUST_MAX_KEYS],
-        };
-        if block.magic != TRUST_MAGIC
-            || block.version != TRUST_VERSION
-            || block.encoded_size != TRUST_SIZE as u32
-            || block.key_count as usize > TRUST_MAX_KEYS
-            || block.reserved != 0
-        {
-            return None;
-        }
-        for (key, bytes) in block.keys.iter_mut().zip(bytes[48..].chunks_exact(68)) {
-            *key = VerificationKey {
-                key_id: bytes[0],
-                algorithm: bytes[1],
-                _pad: bytes[2..4].try_into().ok()?,
-                key_lo: bytes[4..36].try_into().ok()?,
-                key_hi: bytes[36..68].try_into().ok()?,
-            };
-        }
-        Some(block)
+        let block = Self::read_from_bytes(bytes).ok()?;
+        (block.magic == TRUST_MAGIC
+            && block.version.get() == TRUST_VERSION
+            && block.encoded_size.get() == TRUST_SIZE as u32
+            && block.key_count.get() as usize <= TRUST_MAX_KEYS
+            && block.reserved.get() == 0)
+            .then_some(block)
     }
 
     pub fn valid_keys(&self) -> &[VerificationKey] {
-        &self.keys[..self.key_count as usize]
+        &self.keys[..self.key_count.get() as usize]
     }
 
-    /// Host patch representation. Firmware targets and the host packer use
-    /// little-endian encoding, not the host's native scalar representation.
+    pub fn set_key_count(&mut self, count: u32) {
+        self.key_count.set(count);
+    }
+
+    pub fn set_minimum_security_version(&mut self, version: u64) {
+        self.minimum_security_version.set(version);
+    }
+
+    /// Host patch representation is explicitly little-endian on any host.
     pub fn write_to(&self, dest: &mut [u8]) {
         assert!(dest.len() >= TRUST_SIZE, "short trust destination");
-        let dest = &mut dest[..TRUST_SIZE];
-        dest[..8].copy_from_slice(&self.magic);
-        dest[8..12].copy_from_slice(&self.version.to_le_bytes());
-        dest[12..16].copy_from_slice(&self.encoded_size.to_le_bytes());
-        dest[16..24].copy_from_slice(&self.minimum_security_version.to_le_bytes());
-        dest[24..28].copy_from_slice(&self.key_count.to_le_bytes());
-        dest[28..32].copy_from_slice(&self.reserved.to_le_bytes());
-        dest[32..48].copy_from_slice(&self.image_family);
-        for (key, bytes) in self.keys.iter().zip(dest[48..].chunks_exact_mut(68)) {
-            bytes[0] = key.key_id;
-            bytes[1] = key.algorithm;
-            bytes[2..4].copy_from_slice(&key._pad);
-            bytes[4..36].copy_from_slice(&key.key_lo);
-            bytes[36..68].copy_from_slice(&key.key_hi);
-        }
+        dest[..TRUST_SIZE].copy_from_slice(self.as_bytes());
     }
 }
 
@@ -140,10 +113,10 @@ impl<'a> TrustRef<'a> {
         let count = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*ptr).key_count)) };
         let reserved = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*ptr).reserved)) };
         if magic != TRUST_MAGIC
-            || u32::from_le(version) != TRUST_VERSION
-            || u32::from_le(size) != TRUST_SIZE as u32
-            || u32::from_le(count) as usize > TRUST_MAX_KEYS
-            || reserved != 0
+            || version.get() != TRUST_VERSION
+            || size.get() != TRUST_SIZE as u32
+            || count.get() as usize > TRUST_MAX_KEYS
+            || reserved.get() != 0
         {
             return None;
         }
@@ -155,9 +128,10 @@ impl<'a> TrustRef<'a> {
 
     pub fn minimum_security_version(self) -> u64 {
         // SAFETY: aligned scalar in the live, immutable policy block.
-        u64::from_le(unsafe {
+        unsafe {
             core::ptr::read_volatile(core::ptr::addr_of!(self.block.minimum_security_version))
-        })
+        }
+        .get()
     }
 
     pub fn image_family(self) -> [u8; 16] {
@@ -167,9 +141,8 @@ impl<'a> TrustRef<'a> {
 
     pub fn valid_keys(self) -> &'a [VerificationKey] {
         // SAFETY: validated count in immutable storage. Keys contain only bytes.
-        let count = u32::from_le(unsafe {
-            core::ptr::read_volatile(core::ptr::addr_of!(self.block.key_count))
-        });
+        let count =
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(self.block.key_count)) }.get();
         &self.block.keys[..count as usize]
     }
 }
@@ -184,9 +157,9 @@ mod tests {
     #[test]
     fn constant_policy_round_trip_and_malformed_headers() {
         let mut policy = TrustBlock::placeholder();
-        policy.minimum_security_version = 7;
+        policy.set_minimum_security_version(7);
         policy.image_family = [0xa5; 16];
-        policy.key_count = 1;
+        policy.set_key_count(1);
         policy.keys[0] = VerificationKey::ed25519(3, [0x5a; 32]);
         let mut bytes = Bytes([0; TRUST_SIZE]);
         policy.write_to(&mut bytes.0);
