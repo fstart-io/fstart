@@ -70,3 +70,4 @@ serde = { workspace = true }
 dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 ufmt = { workspace = true }
+zerocopy = { workspace = true }

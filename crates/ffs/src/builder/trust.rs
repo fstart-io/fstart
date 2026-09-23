@@ -26,12 +26,12 @@ pub(super) fn finalize_trust(
         return Err("too many authorized keys".into());
     }
     let mut trust = TrustBlock::placeholder();
-    trust.key_count = config.keys.len() as u32;
+    trust.set_key_count(config.keys.len() as u32);
     trust.keys[..config.keys.len()].copy_from_slice(&config.keys);
     trust.image_family = root.image_family;
     // The current platform policy is explicitly zero, not persistent rollback.
     // It must not be inferred from the signed image's security version.
-    trust.minimum_security_version = 0;
+    trust.set_minimum_security_version(0);
     let mut encoded = [0; TRUST_SIZE];
     trust.write_to(&mut encoded);
     let mut placeholder = [0; TRUST_SIZE];

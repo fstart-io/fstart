@@ -306,7 +306,7 @@ where
             count,
             P::NAME,
         );
-        self.ctx.e820_state_mut().set_detected(count, total);
+        self.ctx.e820_state_mut().set_detected(count, total)?;
         self.northbridge.memory_detected(self.ctx.e820_state());
 
         // DRAM was initialized by the bootblock. Mainstage only reconstructs the

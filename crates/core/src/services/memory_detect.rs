@@ -155,9 +155,13 @@ impl E820State {
 
     /// Record the detected entry count and total RAM after in-place
     /// population via [`entries_mut`](Self::entries_mut).
-    pub fn set_detected(&mut self, count: usize, total_ram: u64) {
-        self.count = count.min(MAX_E820_ENTRIES);
+    pub fn set_detected(&mut self, count: usize, total_ram: u64) -> Result<(), ServiceError> {
+        if count > MAX_E820_ENTRIES {
+            return Err(ServiceError::InvalidParam);
+        }
+        self.count = count;
         self.total_ram = total_ram;
+        Ok(())
     }
 
     /// Get the stored e820 entries.
@@ -181,78 +185,136 @@ impl E820State {
     /// reserved / after pieces. Non-RAM entries are preserved. Zero-sized
     /// ranges are ignored. Intended for firmware-owned allocations (stage
     /// image, heap tables) before OS handoff.
-    pub fn reserve_range(&mut self, base: u64, size: u64) {
-        self.reserve_range_as(base, size, E820Kind::Reserved);
+    pub fn reserve_range(&mut self, base: u64, size: u64) -> Result<(), ServiceError> {
+        self.reserve_range_as(base, size, E820Kind::Reserved)
     }
 
     /// Carve a range with a specific e820 kind out of RAM entries in-place.
-    pub fn reserve_range_as(&mut self, base: u64, size: u64, kind: E820Kind) {
+    /// An oversized result leaves the original map intact rather than losing entries.
+    pub fn reserve_range_as(
+        &mut self,
+        base: u64,
+        size: u64,
+        kind: E820Kind,
+    ) -> Result<(), ServiceError> {
         if size == 0 {
-            return;
+            return Ok(());
         }
-        let Some(end) = base.checked_add(size) else {
-            return;
-        };
+        let end = base.checked_add(size).ok_or(ServiceError::InvalidParam)?;
 
         let mut out = [E820Entry::zeroed(); MAX_E820_ENTRIES];
         let mut out_count = 0usize;
         for entry in self.entries().iter().copied() {
             let entry_end = entry.addr.saturating_add(entry.size);
             if entry.kind != E820Kind::Ram as u32 || end <= entry.addr || base >= entry_end {
-                if out_count < MAX_E820_ENTRIES && entry.size != 0 {
-                    out[out_count] = entry;
-                    out_count += 1;
-                }
+                append_entry(&mut out, &mut out_count, entry)?;
                 continue;
             }
 
-            if entry.addr < base && out_count < MAX_E820_ENTRIES {
-                out[out_count] = E820Entry::new(entry.addr, base - entry.addr, E820Kind::Ram);
-                out_count += 1;
+            if entry.addr < base {
+                append_entry(
+                    &mut out,
+                    &mut out_count,
+                    E820Entry::new(entry.addr, base - entry.addr, E820Kind::Ram),
+                )?;
             }
 
             let res_base = entry.addr.max(base);
             let res_end = entry_end.min(end);
-            if res_end > res_base && out_count < MAX_E820_ENTRIES {
-                out[out_count] = E820Entry::new(res_base, res_end - res_base, kind);
-                out_count += 1;
+            if res_end > res_base {
+                append_entry(
+                    &mut out,
+                    &mut out_count,
+                    E820Entry::new(res_base, res_end - res_base, kind),
+                )?;
             }
 
-            if entry_end > end && out_count < MAX_E820_ENTRIES {
-                out[out_count] = E820Entry::new(end, entry_end - end, E820Kind::Ram);
-                out_count += 1;
+            if entry_end > end {
+                append_entry(
+                    &mut out,
+                    &mut out_count,
+                    E820Entry::new(end, entry_end - end, E820Kind::Ram),
+                )?;
             }
         }
 
         self.entries = out;
         self.count = out_count;
-        self.coalesce_adjacent();
+        Ok(())
+    }
+}
+
+fn append_entry(
+    entries: &mut [E820Entry; MAX_E820_ENTRIES],
+    count: &mut usize,
+    entry: E820Entry,
+) -> Result<(), ServiceError> {
+    if entry.size == 0 {
+        return Ok(());
+    }
+    if *count > 0 {
+        let prev = &mut entries[*count - 1];
+        if prev.kind == entry.kind && prev.addr.saturating_add(prev.size) == entry.addr {
+            prev.size = prev.size.saturating_add(entry.size);
+            return Ok(());
+        }
+    }
+    *entries.get_mut(*count).ok_or(ServiceError::HardwareError)? = entry;
+    *count += 1;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserving_with_a_full_map_fails_without_truncating() {
+        let mut map = E820State::new();
+        for (idx, entry) in map.entries_mut().iter_mut().enumerate() {
+            *entry = if idx == MAX_E820_ENTRIES - 1 {
+                E820Entry::new(0x10_0000, 0x10_000, E820Kind::Ram)
+            } else {
+                E820Entry::new((idx as u64) * 0x2000, 0x1000, E820Kind::Reserved)
+            };
+        }
+        assert_eq!(
+            map.set_detected(MAX_E820_ENTRIES + 1, 0),
+            Err(ServiceError::InvalidParam)
+        );
+        map.set_detected(MAX_E820_ENTRIES, 0).unwrap();
+        assert_eq!(
+            map.reserve_range(0x10_2000, 0x1000),
+            Err(ServiceError::HardwareError)
+        );
+        assert_eq!(map.count(), MAX_E820_ENTRIES);
+        let last = map.entries()[MAX_E820_ENTRIES - 1];
+        let addr = last.addr;
+        let size = last.size;
+        assert_eq!(addr, 0x10_0000);
+        assert_eq!(size, 0x10_000);
     }
 
-    fn coalesce_adjacent(&mut self) {
-        if self.count < 2 {
-            return;
-        }
-
-        let mut out = [E820Entry::zeroed(); MAX_E820_ENTRIES];
-        let mut out_count = 0usize;
-        for entry in self.entries().iter().copied() {
-            if entry.size == 0 {
-                continue;
-            }
-            if out_count > 0 {
-                let prev = &mut out[out_count - 1];
-                if prev.kind == entry.kind && prev.addr.saturating_add(prev.size) == entry.addr {
-                    prev.size = prev.size.saturating_add(entry.size);
-                    continue;
-                }
-            }
-            out[out_count] = entry;
-            out_count += 1;
-        }
-
-        self.entries = out;
-        self.count = out_count;
+    #[test]
+    fn reservation_splits_ram_without_losing_neighbors() {
+        let mut map = E820State::new();
+        map.entries_mut()[0] = E820Entry::new(0x1000, 0x4000, E820Kind::Ram);
+        map.set_detected(1, 0x4000).unwrap();
+        map.reserve_range_as(0x2000, 0x1000, E820Kind::Nvs).unwrap();
+        assert_eq!(map.count(), 3);
+        let kinds = [
+            map.entries()[0].kind,
+            map.entries()[1].kind,
+            map.entries()[2].kind,
+        ];
+        assert_eq!(
+            kinds,
+            [
+                E820Kind::Ram as u32,
+                E820Kind::Nvs as u32,
+                E820Kind::Ram as u32
+            ]
+        );
     }
 }
 
