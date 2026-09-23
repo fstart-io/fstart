@@ -27,6 +27,21 @@ pub struct Gpe0Block {
     pub wide: bool,
 }
 
+impl Gpe0Block {
+    #[inline(always)]
+    const fn enable_offset(self) -> u16 {
+        self.sts_offset + if self.wide { 8 } else { 4 }
+    }
+
+    #[inline(always)]
+    fn clear_status(self, pm: &PmIo) {
+        pm.write32(self.sts_offset, u32::MAX);
+        if self.wide {
+            pm.write32(self.sts_offset + 4, u32::MAX);
+        }
+    }
+}
+
 /// Chipset event enables saved while relocation admits only LAPIC self-SMIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmiEnableState {
@@ -69,10 +84,7 @@ impl IchSmi {
         self.pm.reset_smi_status();
         self.pm.reset_pm1_status();
         self.pm.tco().reset_tco_status();
-        self.pm.write32(self.gpe0.sts_offset, 0xffff_ffff);
-        if self.gpe0.wide {
-            self.pm.write32(self.gpe0.sts_offset + 4, 0xffff_ffff);
-        }
+        self.gpe0.clear_status(&self.pm);
     }
 }
 
@@ -99,7 +111,7 @@ impl SmiControl for IchSmi {
         // Block chipset-originated SMIs before changing individual source
         // enables. PM1_CNT is deliberately untouched so SCI_EN is preserved.
         self.pm.write32(pmio::SMI_EN, 0);
-        let gpe0_en = self.gpe0.sts_offset + if self.gpe0.wide { 8 } else { 4 };
+        let gpe0_en = self.gpe0.enable_offset();
         let previous = SmiEnableState {
             pm1: self.pm.read16(pmio::PM1_EN),
             gpe0_low: self.pm.read32(gpe0_en),
@@ -125,7 +137,7 @@ impl SmiControl for IchSmi {
 
     fn enable_permanent_smi(&self, previous: SmiEnableState) {
         self.clear_status();
-        let gpe0_en = self.gpe0.sts_offset + if self.gpe0.wide { 8 } else { 4 };
+        let gpe0_en = self.gpe0.enable_offset();
         self.pm
             .write16(pmio::PM1_EN, previous.pm1 | pmio::PWRBTN_EN | pmio::GBL_EN);
         self.pm.write32(gpe0_en, previous.gpe0_low);
@@ -217,10 +229,7 @@ impl<B: IchBoardSmmHandler> SmmHandler for IchSmmHandler<B> {
                 gpe_status |= u64::from(pm.read32(gpe0.sts_offset + 4)) << 32;
             }
             B::on_gpe(ctx, gpe_status);
-            pm.write32(gpe0.sts_offset, 0xffff_ffff);
-            if gpe0.wide {
-                pm.write32(gpe0.sts_offset + 4, 0xffff_ffff);
-            }
+            gpe0.clear_status(&pm);
             pm.write32(pmio::SMI_STS, 0xffff_ffff);
             pm.write16(pmio::ALT_GP_SMI_STS, 0xffff);
             pm.setbits32(pmio::SMI_EN, pmio::EOS);

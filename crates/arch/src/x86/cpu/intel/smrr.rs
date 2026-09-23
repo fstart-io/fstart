@@ -4,20 +4,23 @@
 //! driver through [`SmmCpu`](super::smm::SmmCpu); this module only knows the
 //! two architectural layouts and how to test whether they are usable.
 
-use crate::x86::msr::{rdmsr, wrmsr};
+use super::msr_register::Msr;
+use tock_registers::{LocalRegisterCopy, register_bitfields};
+
+register_bitfields![u32,
+    CPUID_1_EDX [ MTRR OFFSET(12) NUMBITS(1) [] ]
+];
+register_bitfields![u64,
+    MTRR_CAP [ SMRR OFFSET(11) NUMBITS(1) [] ],
+    SMRR_BASE [ MEMORY_TYPE OFFSET(0) NUMBITS(8) [], ADDRESS OFFSET(12) NUMBITS(20) [] ],
+    SMRR_MASK [ VALID OFFSET(11) NUMBITS(1) [], ADDRESS OFFSET(12) NUMBITS(20) [] ]
+];
 
 const IA32_MTRR_CAP: u32 = 0x0fe;
-const IA32_FEATURE_CONTROL: u32 = 0x03a;
 const CORE2_SMRR_PHYS_BASE: u32 = 0x0a0;
 const CORE2_SMRR_PHYS_MASK: u32 = 0x0a1;
 const IA32_SMRR_PHYS_BASE: u32 = 0x1f2;
 const IA32_SMRR_PHYS_MASK: u32 = 0x1f3;
-
-const CPUID_MTRR: u32 = 1 << 12;
-const MTRR_CAP_SMRR: u64 = 1 << 11;
-const MTRR_TYPE_WRITE_BACK: u64 = 6;
-const MTRR_PHYS_MASK_VALID: u64 = 1 << 11;
-const ADDRESS_MASK_32: u64 = 0xffff_f000;
 
 /// SMRR register layout of a CPU model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,14 +33,11 @@ pub enum SmrrPair {
     Core2Alternative,
 }
 
-/// `IA32_FEATURE_CONTROL` bit that unlocks the [`SmrrPair::Core2Alternative`]
-/// registers on the CPUs that have them.
-const FEATURE_CONTROL_SMRR_ENABLE: u64 = 1 << 3;
-
 fn mtrr_cap_has_smrr() -> bool {
     let (_, _, _, edx) = crate::x86::cpuid(1);
     // SAFETY: CPUID reports MTRR support, so IA32_MTRR_CAP exists.
-    edx & CPUID_MTRR != 0 && unsafe { rdmsr(IA32_MTRR_CAP) } & MTRR_CAP_SMRR != 0
+    LocalRegisterCopy::<u32, CPUID_1_EDX::Register>::new(edx).is_set(CPUID_1_EDX::MTRR)
+        && unsafe { Msr::<MTRR_CAP::Register>::new(IA32_MTRR_CAP).read() }.is_set(MTRR_CAP::SMRR)
 }
 
 impl SmrrPair {
@@ -46,7 +46,9 @@ impl SmrrPair {
     #[must_use]
     pub fn feature_control_bits(self) -> u64 {
         match self {
-            Self::Core2Alternative if mtrr_cap_has_smrr() => FEATURE_CONTROL_SMRR_ENABLE,
+            Self::Core2Alternative if mtrr_cap_has_smrr() => {
+                super::feature_control::FEATURE_CONTROL::SMRR_ENABLE::SET.value
+            }
             Self::Core2Alternative | Self::Architectural => 0,
         }
     }
@@ -78,9 +80,14 @@ impl SmrrPair {
             Self::Architectural => true,
             Self::Core2Alternative => {
                 // SAFETY: the model driver named a CPU with this MSR.
-                let feature = unsafe { rdmsr(IA32_FEATURE_CONTROL) };
-                feature & super::feature_control::LOCK != 0
-                    && feature & FEATURE_CONTROL_SMRR_ENABLE != 0
+                let feature = unsafe {
+                    Msr::<super::feature_control::FEATURE_CONTROL::Register>::new(
+                        super::feature_control::IA32_FEATURE_CONTROL,
+                    )
+                    .read()
+                };
+                feature.is_set(super::feature_control::FEATURE_CONTROL::LOCK)
+                    && feature.is_set(super::feature_control::FEATURE_CONTROL::SMRR_ENABLE)
             }
         }
     }
@@ -96,18 +103,20 @@ impl SmrrPair {
             Self::Core2Alternative => (
                 CORE2_SMRR_PHYS_BASE,
                 CORE2_SMRR_PHYS_MASK,
-                range.base & !0xfff,
+                SMRR_BASE::ADDRESS.val(range.base >> 12).value, // Type is reserved.
             ),
             Self::Architectural => (IA32_SMRR_PHYS_BASE, IA32_SMRR_PHYS_MASK, range.base),
         };
+        let base_reg = Msr::<SMRR_BASE::Register>::new(base_msr);
+        let mask_reg = Msr::<SMRR_MASK::Register>::new(mask_msr);
         // SAFETY: the caller established that this pair is usable.
         unsafe {
-            wrmsr(base_msr, base);
-            wrmsr(mask_msr, range.mask);
+            base_reg.write(base);
+            mask_reg.write(range.mask);
         }
         // SAFETY: same registers as above.
-        let (observed_base, observed_mask) = unsafe { (rdmsr(base_msr), rdmsr(mask_msr)) };
-        if observed_base != base || observed_mask != range.mask {
+        let (observed_base, observed_mask) = unsafe { (base_reg.read(), mask_reg.read()) };
+        if observed_base.get() != base || observed_mask.get() != range.mask {
             return Err(SmrrError::VerificationFailed);
         }
         Ok(())
@@ -141,8 +150,9 @@ impl SmrrRange {
             return Err(SmrrError::InvalidRange);
         }
         Ok(Self {
-            base: (base & ADDRESS_MASK_32) | MTRR_TYPE_WRITE_BACK,
-            mask: (!(size - 1) & ADDRESS_MASK_32) | MTRR_PHYS_MASK_VALID,
+            base: SMRR_BASE::ADDRESS.val(base >> 12).value | SMRR_BASE::MEMORY_TYPE.val(6).value,
+            mask: SMRR_MASK::ADDRESS.val((!(size - 1) >> 12) & 0xfffff).value
+                | SMRR_MASK::VALID::SET.value,
         })
     }
 

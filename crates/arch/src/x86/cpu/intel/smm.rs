@@ -19,8 +19,6 @@ pub use super::smrr::SmrrPair;
 pub use fstart_smm::X86SaveStateFormat;
 
 const SAVE_STATE_SIZE: u32 = 0x400;
-// Per-CPU failures are collected in a `u64` bitmap.
-const _: () = assert!(MAX_CPUS <= 64);
 const RELOCATION_LOCK_SPINS: u32 = 50_000_000;
 const RELOCATION_DONE_SPINS: u32 = 200_000_000;
 
@@ -241,7 +239,6 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
             format.name()
         );
 
-        let failures = AtomicU64::new(0);
         let smrr_programmed = AtomicU32::new(0);
         mp.scope(|scope| {
             scope.scatter(&|cpu| {
@@ -255,7 +252,6 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
                     }
                     Ok(()) => {}
                     Err(error) => {
-                        failures.fetch_or(1u64 << cpu, Ordering::AcqRel);
                         let _ = relocation.last_error.compare_exchange(
                             0,
                             error as u32 + 1,
@@ -266,7 +262,7 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
                 }
             });
         });
-        if failures.load(Ordering::Acquire) != 0 {
+        if relocation.last_error.load(Ordering::Acquire) != 0 {
             return Err(error_from_raw(
                 relocation.last_error.load(Ordering::Acquire),
             ));

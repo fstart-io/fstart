@@ -213,7 +213,11 @@ For each SMM-capable platform:
    capacity; the broadcast-SIPI trampoline parks responders beyond the AP
    limit before stack selection. Partial AP check-in is boot-fatal before any
    flight-plan barrier opens, so a late AP cannot outlive borrowed MP data
-   (coreboot reports the same condition as an MP error).
+   (coreboot reports the same condition as an MP error). The static AP stack
+   and mailbox budget is generated from `FSTART_MP_MAX_CPUS` by `fstart-arch`:
+   Intel board plans pass their `max_cpus`, and Q35 reserves 256 slots. A
+   standalone arch build defaults to 64. This is a build-time resource budget,
+   not an architectural 64-CPU limit; SMM's per-CPU layout uses the same bound.
 2. Discover and open TSEG.
 3. Install initialized handler bytes, zero BSS, write the runtime block and
    handler configuration, and build permanent SMRAM page tables.

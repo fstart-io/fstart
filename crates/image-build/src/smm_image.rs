@@ -7,6 +7,8 @@ use object::{
     SectionKind,
 };
 
+use zerocopy::IntoBytes;
+
 use fstart_smm::header::{
     CorebootOffsets, EntryDescriptor, FLAG_COREBOOT_HEADER, FLAG_COREBOOT_MODULE_ARGS,
     SmmImageHeader, render_coreboot_header,
@@ -108,7 +110,10 @@ pub fn build_image(
         .checked_add(stub_size * options.entry_count as usize)
         .ok_or(BuildError::Overflow)?;
 
-    let runtime_offset = align_up(handler.memory_size, align_of::<SmmRuntime>())?;
+    let runtime_offset = align_up(
+        handler.memory_size,
+        align_of::<SmmRuntime>().max(HANDLER_CONFIG_ALIGNMENT),
+    )?;
     let runtime_size = size_of::<SmmRuntime>();
     let handler_config_offset = align_up(
         runtime_offset
@@ -164,19 +169,19 @@ pub fn build_image(
     );
 
     let mut image = vec![0u8; image_size];
-    put_header(&mut image, &header);
+    header
+        .write_to_prefix(&mut image)
+        .expect("header space reserved");
     for i in 0..options.entry_count as usize {
         let stub_offset = stubs_offset + i * stub_size;
-        put_entry_descriptor(
-            &mut image,
-            entries_offset + i * desc_size,
-            &EntryDescriptor {
-                stub_offset: as_u32(stub_offset)?,
-                stub_size: as_u32(stub_size)?,
-                entry_offset: 0,
-                params_offset: as_u32(asm::ENTRY_PARAMS_OFFSET)?,
-            },
-        );
+        EntryDescriptor {
+            stub_offset: as_u32(stub_offset)?,
+            stub_size: as_u32(stub_size)?,
+            entry_offset: 0,
+            params_offset: as_u32(asm::ENTRY_PARAMS_OFFSET)?,
+        }
+        .write_to_prefix(&mut image[entries_offset + i * desc_size..])
+        .expect("descriptor space reserved");
         image[stub_offset..stub_offset + stub_size].copy_from_slice(asm::ENTRY_STUB);
     }
     image[handler_offset..handler_offset + handler.initialized.len()]
@@ -690,47 +695,6 @@ fn validate_options(options: ImageOptions) -> Result<(), BuildError> {
     }
     Ok(())
 }
-fn put_header(image: &mut [u8], h: &SmmImageHeader) {
-    put_u32(image, 0, h.magic);
-    put_u16(image, 4, h.header_size);
-    put_u16(image, 6, h.entry_desc_size);
-    put_u32(image, 8, h.flags);
-    put_u32(image, 12, h.image_size);
-    put_u16(image, 16, h.entry_count);
-    put_u16(image, 18, h.reserved);
-    for (off, value) in [
-        (20, h.entries_offset),
-        (24, h.handler_offset),
-        (28, h.handler_load_size),
-        (32, h.handler_mem_size),
-        (36, h.handler_entry_offset),
-        (40, h.runtime_offset),
-        (44, h.runtime_size),
-        (48, h.handler_config_offset),
-        (52, h.handler_config_capacity),
-        (56, h.module_args_offset),
-        (60, h.module_args_size),
-        (64, h.stack_size),
-    ] {
-        put_u32(image, off, value);
-    }
-}
-fn put_entry_descriptor(image: &mut [u8], off: usize, d: &EntryDescriptor) {
-    for (delta, value) in [
-        (0, d.stub_offset),
-        (4, d.stub_size),
-        (8, d.entry_offset),
-        (12, d.params_offset),
-    ] {
-        put_u32(image, off + delta, value);
-    }
-}
-fn put_u16(image: &mut [u8], off: usize, value: u16) {
-    image[off..off + 2].copy_from_slice(&value.to_le_bytes());
-}
-fn put_u32(image: &mut [u8], off: usize, value: u32) {
-    image[off..off + 4].copy_from_slice(&value.to_le_bytes());
-}
 fn align_up(value: usize, align: usize) -> Result<usize, BuildError> {
     value
         .checked_add(align - 1)
@@ -827,6 +791,7 @@ mod tests {
         )
         .unwrap();
         let header = SmmImageHeader::parse(&built.image).unwrap();
+        assert_eq!(header.runtime_offset as usize % HANDLER_CONFIG_ALIGNMENT, 0);
         assert_eq!(header.magic, SMM_IMAGE_MAGIC);
         assert_eq!(header.handler_load_size, 3);
         assert!(header.handler_mem_size > 0x40);
@@ -842,6 +807,29 @@ mod tests {
         let generated = built.coreboot_header.unwrap();
         assert!(generated.contains("FSTART_SMM_HANDLER_LOAD_SIZE 3u"));
         assert!(generated.contains("FSTART_SMM_ENTRY_COUNT 4u"));
+    }
+
+    #[test]
+    fn aligns_runtime_relative_config_when_handler_memory_ends_on_eight_bytes() {
+        let mut handler = test_handler();
+        handler.memory_size = 0x48;
+        let built = build_image(
+            ImageOptions {
+                entry_count: 1,
+                stack_size: 0x400,
+                coreboot_module_args: false,
+                coreboot_header: false,
+            },
+            &handler,
+        )
+        .unwrap();
+        let header = SmmImageHeader::parse(&built.image).unwrap();
+        assert_eq!(header.runtime_offset as usize % HANDLER_CONFIG_ALIGNMENT, 0);
+        assert_eq!(
+            (header.handler_config_offset - header.runtime_offset) as usize
+                % HANDLER_CONFIG_ALIGNMENT,
+            0
+        );
     }
 
     #[test]

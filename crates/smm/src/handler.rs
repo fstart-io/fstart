@@ -68,7 +68,8 @@ impl<'a> SmmContext<'a> {
     ///
     /// # Safety
     ///
-    /// `T` must be the type the installer wrote.
+    /// `T` must be the type the installer wrote, and `params.runtime` must
+    /// point to the live runtime block inside locked SMRAM.
     #[cfg(any(feature = "stage-bin", test))]
     #[inline(always)]
     pub(crate) unsafe fn handler_config<T: Copy>(&self) -> Option<T> {
@@ -114,6 +115,10 @@ fn claim_owner(owner: &core::sync::atomic::AtomicU32, token: u32) -> bool {
 /// Exactly one CPU owns shared chipset dispatch. Every other CPU stays in SMM
 /// until the owner releases the lock, then returns through RSM. This matches
 /// coreboot's `smi_obtain_lock()` handling in `smm_module_handler.c`.
+///
+/// # Safety
+///
+/// `ctx.params.runtime` must point to a live runtime block in locked SMRAM.
 #[cfg(any(feature = "stage-bin", test))]
 #[inline(always)]
 pub(crate) unsafe fn enter_rendezvous(ctx: &SmmContext<'_>) -> bool {
@@ -132,6 +137,11 @@ pub(crate) unsafe fn enter_rendezvous(ctx: &SmmContext<'_>) -> bool {
 }
 
 /// Release the rendezvous taken by [`enter_rendezvous`].
+///
+/// # Safety
+///
+/// The caller must own the current SMI's rendezvous, and
+/// `ctx.params.runtime` must point to its live SMRAM runtime block.
 #[cfg(any(feature = "stage-bin", test))]
 #[inline(always)]
 pub(crate) unsafe fn leave_rendezvous(ctx: &SmmContext<'_>) {

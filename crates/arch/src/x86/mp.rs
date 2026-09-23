@@ -273,8 +273,9 @@ impl ApMailbox {
     }
 }
 
-/// Maximum total CPU count supported, including the BSP.
-pub(crate) const MAX_CPUS: usize = 64;
+// Build-time CPU storage budget selected by the board/platform plan.
+// The SIPI stack arena and mailboxes use the same generated capacity.
+include!(concat!(env!("OUT_DIR"), "/mp_capacity.rs"));
 const MAX_APS: usize = MAX_CPUS - 1;
 
 /// Architectural default SMBASE used before SMM relocation.
@@ -1159,15 +1160,13 @@ mod tests {
     #[test]
     fn total_cpu_capacity_includes_the_bsp() {
         assert!(validate_cpu_capacity(MAX_CPUS as u16).is_ok());
-        let Err(MpError::TooManyCpus {
-            requested,
-            supported,
-        }) = validate_cpu_capacity(MAX_CPUS as u16 + 1)
-        else {
-            panic!("oversized CPU capacity was accepted");
-        };
-        assert_eq!(requested, MAX_CPUS as u16 + 1);
-        assert_eq!(supported, MAX_CPUS as u16);
+        if let Some(over_capacity) = (MAX_CPUS as u16).checked_add(1) {
+            assert!(matches!(
+                validate_cpu_capacity(over_capacity),
+                Err(MpError::TooManyCpus { requested, supported })
+                    if requested == over_capacity && supported == MAX_CPUS as u16
+            ));
+        }
         assert_eq!(MAX_APS + 1, MAX_CPUS);
 
         assert_eq!(checked_logical_cpu_count(0, 4).unwrap(), 1);
