@@ -1,6 +1,13 @@
 //! QEMU fw_cfg access used by the QEMU platform flow.
 
+#[cfg(test)]
+#[path = "fw_cfg_tests.rs"]
+mod tests;
+
 use core::convert::TryInto;
+
+use zerocopy::byteorder::{BE, LE, U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
@@ -14,6 +21,62 @@ const FW_CFG_FILE_DIR: u16 = 0x0019;
 const COMMAND_ALLOCATE: u32 = 1;
 const COMMAND_ADD_POINTER: u32 = 2;
 const COMMAND_ADD_CHECKSUM: u32 = 3;
+
+/// Entries in the fw_cfg file directory are always big-endian.
+#[repr(C)]
+#[derive(FromBytes, Immutable, KnownLayout)]
+struct FileDirEntry {
+    size: U32<BE>,
+    selector: U16<BE>,
+    reserved: U16<BE>,
+    name: [u8; 56],
+}
+
+/// `etc/e820` entries are packed little-endian records.
+#[repr(C)]
+#[derive(FromBytes, Immutable, KnownLayout)]
+struct E820Wire {
+    addr: U64<LE>,
+    size: U64<LE>,
+    kind: U32<LE>,
+}
+
+/// Each table-loader command occupies 128 bytes; the payload varies by opcode.
+const LOADER_COMMAND_SIZE: usize = 128;
+
+#[repr(C)]
+#[derive(FromBytes, Immutable, KnownLayout)]
+struct LoaderHeader {
+    command: U32<LE>,
+}
+
+#[repr(C)]
+#[derive(FromBytes, Immutable, KnownLayout)]
+struct AllocateCommand {
+    command: U32<LE>,
+    name: [u8; 56],
+    align: U32<LE>,
+}
+
+#[repr(C)]
+#[derive(FromBytes, Immutable, KnownLayout)]
+struct AddPointerCommand {
+    command: U32<LE>,
+    dest_name: [u8; 56],
+    src_name: [u8; 56],
+    ptr_offset: U32<LE>,
+    ptr_size: u8,
+}
+
+#[repr(C)]
+#[derive(FromBytes, Immutable, KnownLayout)]
+struct AddChecksumCommand {
+    command: U32<LE>,
+    name: [u8; 56],
+    checksum_offset: U32<LE>,
+    start: U32<LE>,
+    length: U32<LE>,
+}
 
 /// Stateless fw_cfg transport selected at compile time.
 pub trait FwCfgTransport: Copy {
@@ -110,12 +173,6 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
         }
     }
 
-    fn read_be16(&self) -> u16 {
-        let mut buf = [0; 2];
-        self.read_bytes(&mut buf);
-        u16::from_be_bytes(buf)
-    }
-
     fn read_be32(&self) -> u32 {
         let mut buf = [0; 4];
         self.read_bytes(&mut buf);
@@ -145,14 +202,16 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
         let count = self.read_be32();
 
         for _ in 0..count {
-            let size = self.read_be32();
-            let selector = self.read_be16();
-            let _reserved = self.read_be16();
-            let mut fname = [0u8; 56];
-            self.read_bytes(&mut fname);
-            let len = fname.iter().position(|&b| b == 0).unwrap_or(fname.len());
-            if len == name.len() && &fname[..len] == name.as_bytes() {
-                return Some((selector, size));
+            let mut bytes = [0u8; core::mem::size_of::<FileDirEntry>()];
+            self.read_bytes(&mut bytes);
+            let file = FileDirEntry::ref_from_bytes(&bytes).ok()?;
+            let len = file
+                .name
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(file.name.len());
+            if len == name.len() && &file.name[..len] == name.as_bytes() {
+                return Some((file.selector.get(), file.size.get()));
             }
         }
         None
@@ -169,15 +228,20 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
             .ok_or(ServiceError::NotSupported)?;
         fstart_log::info!("fw_cfg: etc/e820 sel={} size={}", sel as u32, size);
 
-        let entry_size = 20usize;
-        let count = ((size as usize) / entry_size).min(entries.len());
+        let count = e820_count(size).ok_or(ServiceError::InvalidParam)?;
+        if count > entries.len() {
+            return Err(ServiceError::InvalidParam);
+        }
         self.select(sel);
         for (idx, entry) in entries.iter_mut().take(count).enumerate() {
-            let mut buf = [0u8; 20];
-            self.read_bytes(&mut buf);
-            entry.addr = u64::from_le_bytes(buf[0..8].try_into().unwrap_or([0; 8]));
-            entry.size = u64::from_le_bytes(buf[8..16].try_into().unwrap_or([0; 8]));
-            entry.kind = u32::from_le_bytes(buf[16..20].try_into().unwrap_or([0; 4]));
+            let mut bytes = [0u8; core::mem::size_of::<E820Wire>()];
+            self.read_bytes(&mut bytes);
+            let wire = E820Wire::ref_from_bytes(&bytes).map_err(|_| ServiceError::InvalidParam)?;
+            *entry = E820Entry {
+                addr: wire.addr.get(),
+                size: wire.size.get(),
+                kind: wire.kind.get(),
+            };
             let addr = entry.addr;
             let size = entry.size;
             let kind = entry.kind;
@@ -207,17 +271,15 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
         let (sel, size) = self
             .find_file("etc/e820")
             .ok_or(ServiceError::NotSupported)?;
-        let entry_size = 20usize;
-        let count = (size as usize) / entry_size;
+        let count = e820_count(size).ok_or(ServiceError::InvalidParam)?;
         let mut total = 0u64;
         self.select(sel);
         for _ in 0..count {
-            let mut buf = [0u8; 20];
-            self.read_bytes(&mut buf);
-            let region_size = u64::from_le_bytes(buf[8..16].try_into().unwrap_or([0; 8]));
-            let kind = u32::from_le_bytes(buf[16..20].try_into().unwrap_or([0; 4]));
-            if kind == E820Kind::Ram as u32 {
-                total = total.saturating_add(region_size);
+            let mut bytes = [0u8; core::mem::size_of::<E820Wire>()];
+            self.read_bytes(&mut bytes);
+            let wire = E820Wire::ref_from_bytes(&bytes).map_err(|_| ServiceError::InvalidParam)?;
+            if wire.kind.get() == E820Kind::Ram as u32 {
+                total = total.saturating_add(wire.size.get());
             }
         }
         Ok(total)
@@ -235,11 +297,15 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
         );
 
         const MAX_CMDS: usize = 64;
-        static mut LOADER_BUF: [u8; MAX_CMDS * 128] = [0; MAX_CMDS * 128];
+        static mut LOADER_BUF: [u8; MAX_CMDS * LOADER_COMMAND_SIZE] =
+            [0; MAX_CMDS * LOADER_COMMAND_SIZE];
         // SAFETY: single-threaded firmware init.
         let loader_buf = unsafe { &mut *core::ptr::addr_of_mut!(LOADER_BUF) };
-        let cmd_count = (loader_size as usize) / 128;
-        if cmd_count > MAX_CMDS || loader_size as usize > loader_buf.len() {
+        let cmd_count = (loader_size as usize) / LOADER_COMMAND_SIZE;
+        if !(loader_size as usize).is_multiple_of(LOADER_COMMAND_SIZE)
+            || cmd_count > MAX_CMDS
+            || loader_size as usize > loader_buf.len()
+        {
             return Err(ServiceError::InvalidParam);
         }
         self.read_file(loader_sel, &mut loader_buf[..loader_size as usize]);
@@ -253,54 +319,69 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
         let mut cursor = 0usize;
 
         for cmd_idx in 0..cmd_count {
-            let base = cmd_idx * 128;
-            let command = u32::from_le_bytes(
-                loader_buf[base..base + 4]
-                    .try_into()
-                    .map_err(|_| ServiceError::InvalidParam)?,
-            );
-            match command {
+            let base = cmd_idx * LOADER_COMMAND_SIZE;
+            let bytes = &loader_buf[base..base + LOADER_COMMAND_SIZE];
+            let header = LoaderHeader::ref_from_prefix(bytes)
+                .map_err(|_| ServiceError::InvalidParam)?
+                .0;
+            match header.command.get() {
                 COMMAND_ALLOCATE => {
-                    let mut name = [0u8; 56];
-                    name.copy_from_slice(&loader_buf[base + 4..base + 60]);
-                    let align = u32::from_le_bytes(
-                        loader_buf[base + 60..base + 64]
-                            .try_into()
-                            .map_err(|_| ServiceError::InvalidParam)?,
-                    ) as usize;
+                    let cmd = AllocateCommand::ref_from_prefix(bytes)
+                        .map_err(|_| ServiceError::InvalidParam)?
+                        .0;
+                    let name = cmd.name;
+                    let align = (cmd.align.get() as usize).max(1);
+                    if !align.is_power_of_two() {
+                        return Err(ServiceError::InvalidParam);
+                    }
                     let name_len = name.iter().position(|&b| b == 0).unwrap_or(56);
                     let name_str = core::str::from_utf8(&name[..name_len]).unwrap_or("?");
                     fstart_log::info!("fw_cfg: ALLOCATE '{}'", name_str);
                     let (file_sel, file_size) =
                         self.find_file(name_str).ok_or(ServiceError::IoError)?;
-                    let align = align.max(1);
-                    cursor = (cursor + align - 1) & !(align - 1);
+                    cursor = cursor
+                        .checked_add(align - 1)
+                        .map(|value| value & !(align - 1))
+                        .ok_or(ServiceError::InvalidParam)?;
                     let file_size = file_size as usize;
-                    if cursor + file_size > buffer.len() || alloc_count >= allocs.len() {
+                    let end = cursor
+                        .checked_add(file_size)
+                        .ok_or(ServiceError::InvalidParam)?;
+                    if end > buffer.len() || alloc_count >= allocs.len() {
                         return Err(ServiceError::InvalidParam);
                     }
-                    self.read_file(file_sel, &mut buffer[cursor..cursor + file_size]);
+                    self.read_file(file_sel, &mut buffer[cursor..end]);
                     allocs[alloc_count] = Some(AllocEntry {
                         name,
                         offset: cursor,
                         size: file_size,
                     });
                     alloc_count += 1;
-                    cursor += file_size;
+                    cursor = end;
                 }
                 COMMAND_ADD_POINTER => {
-                    let dest_name = &loader_buf[base + 4..base + 60];
-                    let src_name = &loader_buf[base + 60..base + 116];
-                    let ptr_offset = u32::from_le_bytes(
-                        loader_buf[base + 116..base + 120]
-                            .try_into()
-                            .map_err(|_| ServiceError::InvalidParam)?,
-                    ) as usize;
-                    let ptr_size = loader_buf[base + 120];
-                    let dest_off = find_alloc(allocs, dest_name).ok_or(ServiceError::IoError)?;
-                    let src_off = find_alloc(allocs, src_name).ok_or(ServiceError::IoError)?;
-                    let patch_off = dest_off + ptr_offset;
-                    let src_phys = buffer.as_ptr() as u64 + src_off as u64;
+                    let cmd = AddPointerCommand::ref_from_prefix(bytes)
+                        .map_err(|_| ServiceError::InvalidParam)?
+                        .0;
+                    let ptr_offset = cmd.ptr_offset.get() as usize;
+                    let ptr_size = cmd.ptr_size as usize;
+                    if ptr_size != 4 && ptr_size != 8 {
+                        return Err(ServiceError::InvalidParam);
+                    }
+                    let dest = find_alloc_entry_by_name(allocs, &cmd.dest_name)
+                        .ok_or(ServiceError::IoError)?;
+                    let src = find_alloc_entry_by_name(allocs, &cmd.src_name)
+                        .ok_or(ServiceError::IoError)?;
+                    if ptr_offset
+                        .checked_add(ptr_size)
+                        .is_none_or(|end| end > dest.size)
+                    {
+                        return Err(ServiceError::InvalidParam);
+                    }
+                    let patch_off = dest.offset + ptr_offset;
+                    let src_phys = (buffer.as_ptr() as u64)
+                        .checked_add(src.offset as u64)
+                        .ok_or(ServiceError::InvalidParam)?;
                     match ptr_size {
                         4 => {
                             let mut val = u32::from_le_bytes(
@@ -308,7 +389,9 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
                                     .try_into()
                                     .map_err(|_| ServiceError::InvalidParam)?,
                             );
-                            val = val.wrapping_add(src_phys as u32);
+                            let src_phys =
+                                u32::try_from(src_phys).map_err(|_| ServiceError::InvalidParam)?;
+                            val = val.wrapping_add(src_phys);
                             buffer[patch_off..patch_off + 4].copy_from_slice(&val.to_le_bytes());
                         }
                         8 => {
@@ -320,34 +403,32 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
                             val = val.wrapping_add(src_phys);
                             buffer[patch_off..patch_off + 8].copy_from_slice(&val.to_le_bytes());
                         }
-                        _ => {}
+                        _ => unreachable!(),
                     }
                 }
                 COMMAND_ADD_CHECKSUM => {
-                    let name = &loader_buf[base + 4..base + 60];
-                    let checksum_offset = u32::from_le_bytes(
-                        loader_buf[base + 60..base + 64]
-                            .try_into()
-                            .map_err(|_| ServiceError::InvalidParam)?,
-                    ) as usize;
-                    let start = u32::from_le_bytes(
-                        loader_buf[base + 64..base + 68]
-                            .try_into()
-                            .map_err(|_| ServiceError::InvalidParam)?,
-                    ) as usize;
-                    let length = u32::from_le_bytes(
-                        loader_buf[base + 68..base + 72]
-                            .try_into()
-                            .map_err(|_| ServiceError::InvalidParam)?,
-                    ) as usize;
-                    let off = find_alloc(allocs, name).ok_or(ServiceError::IoError)?;
+                    let cmd = AddChecksumCommand::ref_from_prefix(bytes)
+                        .map_err(|_| ServiceError::InvalidParam)?
+                        .0;
+                    let entry =
+                        find_alloc_entry_by_name(allocs, &cmd.name).ok_or(ServiceError::IoError)?;
+                    let checksum_offset = cmd.checksum_offset.get() as usize;
+                    let start = cmd.start.get() as usize;
+                    let end = start
+                        .checked_add(cmd.length.get() as usize)
+                        .ok_or(ServiceError::InvalidParam)?;
+                    if checksum_offset >= entry.size || end > entry.size {
+                        return Err(ServiceError::InvalidParam);
+                    }
+                    let off = entry.offset;
                     buffer[off + checksum_offset] = 0;
-                    let sum = buffer[off + start..off + start + length]
+                    let sum = buffer[off + start..off + end]
                         .iter()
                         .fold(0u8, |acc, &b| acc.wrapping_add(b));
                     buffer[off + checksum_offset] = 0u8.wrapping_sub(sum);
                 }
-                _ => {}
+                0 => {} // QEMU pads the file to a fixed number of commands.
+                _ => return Err(ServiceError::NotSupported),
             }
         }
 
@@ -356,6 +437,12 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
         let rsdp_off = find_alloc_by_name(allocs, b"etc/acpi/rsdp").ok_or(ServiceError::IoError)?;
         Ok(buffer.as_ptr() as u64 + rsdp_off as u64)
     }
+}
+
+fn e820_count(size: u32) -> Option<usize> {
+    let size = usize::try_from(size).ok()?;
+    (size % core::mem::size_of::<E820Wire>() == 0)
+        .then_some(size / core::mem::size_of::<E820Wire>())
 }
 
 fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
@@ -380,22 +467,14 @@ struct AllocEntry {
     size: usize,
 }
 
-fn find_alloc(allocs: &[Option<AllocEntry>; 32], name: &[u8]) -> Option<usize> {
-    let name_len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-    allocs.iter().flatten().find_map(|entry| {
-        let entry_len = entry.name.iter().position(|&b| b == 0).unwrap_or(56);
-        (entry_len == name_len && entry.name[..entry_len] == name[..name_len])
-            .then_some(entry.offset)
-    })
-}
-
 fn find_alloc_entry_by_name<'a>(
     allocs: &'a [Option<AllocEntry>; 32],
     name: &[u8],
 ) -> Option<&'a AllocEntry> {
+    let name_len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     allocs.iter().flatten().find(|entry| {
         let entry_len = entry.name.iter().position(|&b| b == 0).unwrap_or(56);
-        entry_len == name.len() && &entry.name[..entry_len] == name
+        entry_len == name_len && entry.name[..entry_len] == name[..name_len]
     })
 }
 

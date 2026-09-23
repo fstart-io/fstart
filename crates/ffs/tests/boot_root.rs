@@ -127,8 +127,8 @@ fn signed_root_directory_and_compressed_bytes_authenticate_exact_buffers() {
     assert_eq!(anchor.manifest_size, 512);
     let trust = reader.read_trust().unwrap();
     assert_eq!(trust.image_family, [0x44; 16]);
-    let bytes =
-        &built.image[anchor.manifest_offset as usize..anchor.manifest_offset as usize + 512];
+    let bytes = &built.image
+        [anchor.manifest_offset.get() as usize..anchor.manifest_offset.get() as usize + 512];
     let keys = [key];
     let mut policy = RootPolicy {
         image_family: trust.image_family,

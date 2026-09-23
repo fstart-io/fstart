@@ -41,6 +41,7 @@ pub fn system_reset(hard: bool) -> ! {
 pub mod car;
 pub mod car_teardown;
 pub mod cpuid;
+mod linux_boot_params;
 pub mod paging;
 pub mod s3_wake;
 
@@ -66,6 +67,9 @@ pub const PAGE_TABLES_ADDR: u64 = 0x9000;
 
 use crate::x86::mtrr;
 use fstart_core::services::memory_detect::E820Entry;
+use linux_boot_params::{E820_CAPACITY, LinuxBootParams, LinuxE820Entry};
+use zerocopy::FromBytes;
+use zerocopy::byteorder::{LE, U32, U64};
 
 /// Enable the BSP-local ROM cacheability MTRR for memory-mapped boot media.
 ///
@@ -1344,7 +1348,9 @@ pub fn boot_linux_direct(
 
     // Read setup_sects (offset 0x1F1) to determine the size of the
     // real-mode portion of the bzImage.
-    let setup_sects = bzimage[0x1F1] as u64;
+    let image_params = LinuxBootParams::ref_from_bytes(&bzimage[..4096])
+        .expect("bzImage setup header must fit in its first page");
+    let setup_sects = image_params.setup_sects as u64;
     let setup_size = (setup_sects + 1) * 512; // bytes of real-mode code + header
     let pm_kernel_offset = setup_size;
 
@@ -1357,15 +1363,13 @@ pub fn boot_linux_direct(
     let copy_end = (setup_size as usize).min(0x290).min(bzimage.len());
     params[..copy_end].copy_from_slice(&bzimage[..copy_end]);
 
-    // Override fields that the bootloader must set.
-    params[0x210] = 0xFF; // type_of_loader = unregistered
-    params[0x211] |= 0x01; // loadflags |= LOADED_HIGH
-
-    // heap_end_ptr (offset 0x224): end of the setup heap relative to
-    // the start of the real-mode code. Set to end of boot_params.
-    // This is loadflags.CAN_USE_HEAP dependent; set it defensively.
-    params[0x211] |= 0x80; // loadflags |= CAN_USE_HEAP
-    params[0x224..0x226].copy_from_slice(&0xFE00u16.to_le_bytes());
+    // View the copied setup header and the cleared remainder as one typed
+    // zero-page. All fields are byte-aligned little-endian wire values.
+    let params = LinuxBootParams::mut_from_bytes(&mut params[..])
+        .expect("boot_params page has exactly the Linux wire size");
+    params.type_of_loader = 0xFF; // unregistered
+    params.loadflags |= 0x01 | 0x80; // LOADED_HIGH | CAN_USE_HEAP
+    params.heap_end_ptr.set(0xFE00);
 
     // Relocate the protected-mode kernel to pref_address.
     //
@@ -1378,13 +1382,12 @@ pub fn boot_linux_direct(
     // startup_64 uses RIP-relative addressing (leaq startup_32(%rip))
     // to discover its own address. The PM kernel must be at an aligned
     // address so the kernel's relocation calculation works correctly.
-    let pref_address = u64::from_le_bytes(bzimage[0x258..0x260].try_into().unwrap_or([0; 8]));
+    let pref_address = image_params.pref_address.get();
     let pm_kernel_src = kernel_addr + pm_kernel_offset;
 
     // syssize (offset 0x1F4): protected-mode code size in 16-byte
     // paragraphs. This is the exact amount to copy.
-    let syssize =
-        u32::from_le_bytes(bzimage[0x1F4..0x1F8].try_into().unwrap_or([0; 4])) as u64 * 16;
+    let syssize = image_params.syssize.get() as u64 * 16;
     let copy_len = syssize;
 
     let pm_kernel_addr = if pref_address != 0 && pref_address != pm_kernel_src {
@@ -1405,10 +1408,10 @@ pub fn boot_linux_direct(
     };
 
     // code32_start (offset 0x214): tell the kernel where the PM code is.
-    params[0x214..0x218].copy_from_slice(&(pm_kernel_addr as u32).to_le_bytes());
+    params.code32_start.set(pm_kernel_addr as u32);
 
     // vid_mode (offset 0x1FA) — 0xFFFF = "normal" (no video mode change)
-    params[0x1FA..0x1FC].copy_from_slice(&0xFFFFu16.to_le_bytes());
+    params.vid_mode.set(0xFFFF);
 
     // cmd_line_ptr (offset 0x228)
     let cmdline = unsafe { &mut *(cmd_line as *mut [u8; 4096]) };
@@ -1416,10 +1419,10 @@ pub fn boot_linux_direct(
     let copy_len = args_bytes.len().min(4095); // leave room for NUL
     cmdline[..copy_len].copy_from_slice(&args_bytes[..copy_len]);
     cmdline[copy_len] = 0; // NUL terminator
-    params[0x228..0x22C].copy_from_slice(&(cmd_line as u32).to_le_bytes());
+    params.cmd_line_ptr.set(cmd_line as u32);
 
     // ACPI RSDP address (offset 0x070, protocol 2.14+)
-    params[0x070..0x078].copy_from_slice(&rsdp_addr.to_le_bytes());
+    params.acpi_rsdp_addr.set(rsdp_addr);
 
     // e820 map: count at 0x1E8, entries at 0x2D0 (20 bytes each).
     // Real-hardware boards may not have a MemoryDetect provider yet; provide
@@ -1456,18 +1459,21 @@ pub fn boot_linux_direct(
     } else {
         e820_entries
     };
-    let count = e820.len().min(128) as u8;
-    params[0x1E8] = count;
-    for (i, entry) in e820.iter().take(128).enumerate() {
-        // SAFETY: E820Entry is #[repr(C, packed)] to match Linux's ABI.
-        // Read fields unaligned before copying/logging them.
+    assert!(
+        e820.len() <= E820_CAPACITY,
+        "e820 map exceeds Linux boot_params capacity"
+    );
+    params.e820_count = e820.len() as u8;
+    for (wire, entry) in params.e820_table.iter_mut().zip(e820) {
+        // SAFETY: E820Entry is packed; copy its scalar fields by value.
         let addr = unsafe { core::ptr::addr_of!(entry.addr).read_unaligned() };
         let size = unsafe { core::ptr::addr_of!(entry.size).read_unaligned() };
         let kind = unsafe { core::ptr::addr_of!(entry.kind).read_unaligned() };
-        let offset = 0x2D0 + i * 20;
-        params[offset..offset + 8].copy_from_slice(&addr.to_le_bytes());
-        params[offset + 8..offset + 16].copy_from_slice(&size.to_le_bytes());
-        params[offset + 16..offset + 20].copy_from_slice(&kind.to_le_bytes());
+        *wire = LinuxE820Entry {
+            addr: U64::<LE>::new(addr),
+            size: U64::<LE>::new(size),
+            kind: U32::<LE>::new(kind),
+        };
     }
 
     // 64-bit entry = protected-mode kernel base + 0x200
@@ -1507,9 +1513,9 @@ pub fn boot_linux_direct(
     }
 
     // Log critical setup header fields for debugging.
-    let init_size = u32::from_le_bytes(params[0x260..0x264].try_into().unwrap_or([0; 4]));
-    let kernel_alignment = u32::from_le_bytes(params[0x230..0x234].try_into().unwrap_or([0; 4]));
-    let xloadflags = u16::from_le_bytes(params[0x236..0x238].try_into().unwrap_or([0; 2]));
+    let init_size = params.init_size.get();
+    let kernel_alignment = params.kernel_alignment.get();
+    let xloadflags = params.xloadflags.get();
     fstart_log::info!("  init_size: {:#x}", init_size);
     fstart_log::info!("  kernel_alignment: {:#x}", kernel_alignment);
     fstart_log::info!("  xloadflags: {:#x}", xloadflags);

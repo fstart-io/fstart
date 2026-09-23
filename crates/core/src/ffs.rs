@@ -66,7 +66,15 @@ pub const TRUST_MAX_KEYS: usize = 4;
 /// A public key embedded in constant policy for root verification.
 ///
 /// `#[repr(C)]` fixed layout — 68 bytes per key.
-#[derive(Debug, Clone, Copy)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 #[repr(C)]
 pub struct VerificationKey {
     /// Key identifier (matches `key_id` in `Signature` for key selection).

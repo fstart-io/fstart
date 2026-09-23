@@ -815,37 +815,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         bootblock_data.len()
     );
 
-    let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
-    if ffs_anchor_offset + anchor_size > ffs_data.len() {
-        return Err(format!(
-            "FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"
-        ));
-    }
-    let placeholder = fstart_core::ffs::AnchorBlock::placeholder();
-    let placeholder_bytes = unsafe {
-        core::slice::from_raw_parts(
-            &placeholder as *const fstart_core::ffs::AnchorBlock as *const u8,
-            anchor_size,
-        )
-    };
-    let xip_anchor = image
-        .windows(placeholder_bytes.len())
-        .position(|w| w == placeholder_bytes)
-        .ok_or_else(|| {
-            "bootblock XIP anchor placeholder not found in full flash image".to_string()
-        })?;
-    let mut xip_anchor_block = unsafe {
-        core::ptr::read_unaligned(
-            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_core::ffs::AnchorBlock
-        )
-    };
-    xip_anchor_block.anchor_offset = xip_anchor as u32;
-    let mut anchor = vec![0u8; anchor_size];
-    xip_anchor_block.write_to(&mut anchor);
-    image[xip_anchor..xip_anchor + anchor_size].copy_from_slice(&anchor);
-    eprintln!(
-        "[fstart] full flash: patched XIP anchor at offset {xip_anchor:#x} from FFS offset {ffs_anchor_offset:#x}"
-    );
+    patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, 0)?;
 
     let mib = flash_size / (1024 * 1024);
     let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
@@ -995,39 +965,31 @@ fn patch_xip_anchor(
     image_base_delta: u32,
 ) -> Result<(), String> {
     let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
-    if ffs_anchor_offset + anchor_size > ffs_data.len() {
-        return Err(format!(
-            "FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"
-        ));
-    }
-    let placeholder = fstart_core::ffs::AnchorBlock::placeholder();
-    let placeholder_bytes = unsafe {
-        core::slice::from_raw_parts(
-            &placeholder as *const fstart_core::ffs::AnchorBlock as *const u8,
-            anchor_size,
-        )
-    };
+    let ffs_end = ffs_anchor_offset
+        .checked_add(anchor_size)
+        .ok_or("FFS anchor offset overflows")?;
+    let ffs_bytes = ffs_data
+        .get(ffs_anchor_offset..ffs_end)
+        .ok_or_else(|| format!("FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"))?;
+    let mut placeholder = [0u8; fstart_core::ffs::ANCHOR_SIZE];
+    fstart_core::ffs::AnchorBlock::placeholder().write_to(&mut placeholder);
     let xip_anchor = image
-        .windows(placeholder_bytes.len())
-        .position(|w| w == placeholder_bytes)
+        .windows(anchor_size)
+        .position(|window| window == placeholder)
         .ok_or_else(|| {
             "bootblock XIP anchor placeholder not found in full flash image".to_string()
         })?;
-    let mut xip_anchor_block = unsafe {
-        core::ptr::read_unaligned(
-            ffs_data[ffs_anchor_offset..].as_ptr() as *const fstart_core::ffs::AnchorBlock
-        )
-    };
-    xip_anchor_block.anchor_offset = (xip_anchor as u32)
-        .checked_sub(image_base_delta)
-        .ok_or_else(|| "XIP anchor lies before BIOS image base".to_string())?;
-    let mut anchor = vec![0u8; anchor_size];
-    xip_anchor_block.write_to(&mut anchor);
-    image[xip_anchor..xip_anchor + anchor_size].copy_from_slice(&anchor);
+    let mut anchor = fstart_core::ffs::AnchorBlock::parse(ffs_bytes)
+        .ok_or_else(|| "invalid FFS anchor in image".to_string())?;
+    let offset = u32::try_from(xip_anchor)
+        .ok()
+        .and_then(|offset| offset.checked_sub(image_base_delta))
+        .ok_or_else(|| "XIP anchor lies outside BIOS image".to_string())?;
+    anchor.anchor_offset.set(offset);
+    anchor.write_to(&mut image[xip_anchor..xip_anchor + anchor_size]);
     eprintln!(
         "[fstart] full flash: patched XIP anchor at offset {xip_anchor:#x} \
-         (image-relative {:#x}) from FFS offset {ffs_anchor_offset:#x}",
-        xip_anchor_block.anchor_offset
+         (image-relative {offset:#x}) from FFS offset {ffs_anchor_offset:#x}"
     );
     Ok(())
 }
