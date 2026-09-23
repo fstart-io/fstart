@@ -10,13 +10,27 @@ fn main() {
     // values here keeps `cfg(fstart_stage_env)` strict in this crate.
     println!("cargo:rustc-check-cfg=cfg(fstart_stage_env, values(\"car\", \"ram\", \"postcar\"))");
     println!("cargo:rerun-if-changed=asm/sipi_trampoline.S");
+    println!("cargo:rerun-if-env-changed=FSTART_MP_MAX_CPUS");
+
+    // fbuild supplies the selected board's CPU budget to the whole stage
+    // dependency graph. Standalone builds retain a modest default.
+    let max_cpus = env::var("FSTART_MP_MAX_CPUS")
+        .unwrap_or_else(|_| "64".into())
+        .parse::<u16>()
+        .expect("FSTART_MP_MAX_CPUS must fit in u16");
+    assert!(max_cpus > 0, "FSTART_MP_MAX_CPUS must be nonzero");
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR set by Cargo"));
+    fs::write(
+        out_dir.join("mp_capacity.rs"),
+        format!("pub(crate) const MAX_CPUS: usize = {max_cpus};\n"),
+    )
+    .unwrap();
 
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     if target_arch != "x86" && target_arch != "x86_64" {
         return;
     }
 
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR set by Cargo"));
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let source = manifest_dir.join("asm/sipi_trampoline.S");
 
@@ -48,12 +62,14 @@ fn main() {
              pub const ENTRY_OFFSET: usize = {:#x};\n\
              pub const STACK_BASE_OFFSET: usize = {:#x};\n\
              pub const STACK_SIZE_OFFSET: usize = {:#x};\n\
+             pub const AP_LIMIT_OFFSET: usize = {:#x};\n\
              pub const AP_COUNTER_OFFSET: usize = {:#x};\n",
             bin.display(),
             find_symbol_offset(elf.as_path(), "fstart_sipi_cr3"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_entry"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_stack_base"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_stack_size"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_ap_limit"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_ap_counter"),
         ),
     )

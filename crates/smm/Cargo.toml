@@ -12,3 +12,4 @@ stage-bin = []
 
 [dependencies]
 fstart-core = { workspace = true }
+zerocopy = { workspace = true }

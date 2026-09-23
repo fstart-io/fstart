@@ -1,89 +1,78 @@
 //! Native SMM image installation helpers.
-//!
-//! Platform adapters open SMRAM, call [`install_pic_image`] to copy the common
-//! blob and per-CPU PIC entry stubs, then close/lock SMRAM and trigger SMBASE
-//! relocation.  The helper only writes bytes/data into an already-accessible
-//! SMRAM mapping; chipset-specific open/close/lock and SMI triggering stay in
-//! the platform drivers.
 
-use core::mem::size_of;
+use core::mem::{align_of, size_of};
 use core::ptr;
 
-use crate::header::{EntryDescriptor, HeaderError, SmmImageHeader};
+use crate::header::{EntryDescriptor, FLAG_COREBOOT_MODULE_ARGS, HeaderError, SmmImageHeader};
 use crate::layout::{
-    CpuSmmLayout, LayoutError, SMM_ENTRY_OFFSET, SmramLayout, compute_common_base,
-    compute_cpu_layout,
+    CpuSmmLayout, LayoutError, SMM_ENTRY_OFFSET, SMM_IDENTITY_TABLE_SIZE,
+    SMM_RELOCATION_TABLE_OFFSET, SmramLayout, build_identity_tables, compute_common_base,
+    compute_cpu_layout, compute_page_table_base,
 };
-use crate::runtime::{CorebootModuleArgs, SmmEntryParams, SmmRuntime};
+use crate::runtime::{
+    CorebootModuleArgs, HANDLER_CONFIG_ALIGNMENT, HANDLER_CONFIG_CAPACITY, SmmEntryParams,
+    SmmRuntime,
+};
 
-/// Inputs needed to copy a native PIC SMM image into SMRAM.
+/// Placement and handler inputs for [`install_pic_image`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InstallConfig {
+pub struct InstallConfig<'a, T: Copy> {
     /// Permanent SMRAM/TSEG base.
     pub smram_base: u64,
     /// Permanent SMRAM/TSEG size.
     pub smram_size: u64,
-    /// Number of active logical CPUs to install.
+    /// Number of CPUs to give a permanent entry.
     pub num_cpus: u16,
-    /// Size of each CPU save-state area.
+    /// Per-CPU save-state size reserved at the top of each SMBASE window.
     pub save_state_size: u32,
-    /// Optional page-table bytes reserved below the handler/data region.
-    pub page_table_size: u32,
-    /// CR3 value patched into every entry parameter block.
-    pub cr3: u64,
-    /// Platform SMI dispatch kind patched into every entry parameter block.
-    pub platform_kind: u32,
-    /// Platform SMI dispatch flags patched into every entry parameter block.
-    pub platform_flags: u32,
-    /// Opaque platform SMI dispatch data patched into every entry parameter block.
-    pub platform_data: [u64; 4],
+    /// Configuration of the concrete handler, [`SmmHandler::Config`](crate::SmmHandler::Config).
+    pub handler_config: &'a T,
 }
 
-/// Result of installing a native PIC SMM image.
+/// Addresses of an installed image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstalledSmmImage<'a> {
     /// Parsed image header.
     pub header: SmmImageHeader,
-    /// Address where the handler/data region was copied.
+    /// SMRAM address of the copied handler memory image.
     pub common_base: u64,
-    /// Absolute address of the SMM handler entry.
+    /// SMRAM address of `fstart_smm_handler`.
     pub common_entry: u64,
-    /// Absolute address of the runtime block, or 0 when absent.
+    /// SMRAM address of the [`SmmRuntime`] block.
     pub runtime_addr: u64,
-    /// Per-CPU permanent SMRAM layout used for this install.
+    /// Permanent page tables inside SMRAM. Every entry stub loads this CR3.
+    pub cr3: u64,
+    /// Per-CPU SMBASE, entry, save-state and stack placement.
     pub cpus: &'a [CpuSmmLayout],
 }
 
-/// Inputs for installing a default-SMRAM entry stub that calls normal firmware
-/// relocation code.
+/// Inputs for the temporary default-SMBASE relocation stub.
 pub struct DefaultRelocationCallbackConfig {
-    /// Current/default SMBASE. On x86 this is normally `0x30000`, making the
-    /// architectural SMM entry point `0x38000`.
+    /// Architectural default SMBASE (normally `0x30000`).
     pub default_smbase: u64,
-    /// CR3 used by the copied entry stub before entering long mode.
+    /// Identity-map CR3 loaded by the stub.
     pub cr3: u64,
-    /// Absolute address of the normal firmware callback to run in SMM.
+    /// Normal-mode function called from SMM.
     pub callback: u64,
-    /// Stack top used by the temporary default-SMRAM entry stub.
+    /// Argument passed to `callback` through [`SmmEntryParams::runtime`].
+    pub callback_arg: u64,
+    /// Stack top used by the serialized relocation SMI.
     pub stack_top: u64,
 }
 
-/// Errors from [`install_pic_image`] and related installer helpers.
+/// Installation failure. Every variant is reported before the first SMRAM write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallError {
-    /// The native image header failed validation.
     Header(HeaderError),
-    /// SMRAM placement failed.
     Layout(LayoutError),
-    /// The image does not contain enough entry descriptors.
     NotEnoughEntries,
-    /// An entry descriptor references bytes outside the image.
     BadEntryRange,
-    /// An entry parameter block does not fit inside its copied stub.
     BadParams,
-    /// Coreboot module-args storage is enabled but too small for all CPUs.
+    BadRuntime,
+    BadHandlerConfig,
     BadModuleArgs,
-    /// Address arithmetic overflowed.
+    BadAlignment,
+    AddressAbove4G,
     Overflow,
 }
 
@@ -92,38 +81,51 @@ impl From<HeaderError> for InstallError {
         Self::Header(value)
     }
 }
-
 impl From<LayoutError> for InstallError {
     fn from(value: LayoutError) -> Self {
         Self::Layout(value)
     }
 }
 
-/// Copy a native PIC SMM image into accessible SMRAM and patch data blocks.
+/// Copy and initialize one SMM image in an open SMRAM window.
 ///
 /// # Safety
 ///
-/// `config.smram_base..smram_base + smram_size` must be mapped, writable, and
-/// exclusively owned by the caller for the duration of this function.  The
-/// caller must have opened SMRAM/TSEG in the chipset before calling and must
-/// close/lock it afterwards according to platform policy.
-pub unsafe fn install_pic_image<'a>(
+/// The configured SMRAM range must be writable and exclusively owned. The
+/// caller must close and lock it only after every CPU has relocated.
+pub unsafe fn install_pic_image<'a, T: Copy>(
     image: &[u8],
-    config: InstallConfig,
+    config: InstallConfig<'_, T>,
     cpu_layouts: &'a mut [CpuSmmLayout],
 ) -> Result<InstalledSmmImage<'a>, InstallError> {
     let header = SmmImageHeader::parse(image)?;
-    if header.entry_count < config.num_cpus {
+    if header.entry_count < config.num_cpus || config.num_cpus as usize > cpu_layouts.len() {
         return Err(InstallError::NotEnoughEntries);
     }
+    validate_memory_blocks(&header)?;
+    if size_of::<T>() > header.handler_config_capacity as usize
+        || align_of::<T>() > HANDLER_CONFIG_ALIGNMENT
+    {
+        return Err(InstallError::BadHandlerConfig);
+    }
 
+    // Validate every descriptor and its parameter block before the first SMRAM
+    // write. A malformed later CPU entry must not leave a partial install.
     let mut max_stub_size = 0u32;
     for i in 0..config.num_cpus {
         let entry = header.entry(image, i)?;
         check_entry_range(&header, image, &entry)?;
+        check_entry_params(&entry)?;
         max_stub_size = max_stub_size.max(entry.stub_size);
     }
 
+    let smram_top = config
+        .smram_base
+        .checked_add(config.smram_size)
+        .ok_or(InstallError::Overflow)?;
+    if smram_top & 0xfff != 0 {
+        return Err(InstallError::BadAlignment);
+    }
     let layout = SmramLayout {
         smram_base: config.smram_base,
         smram_size: config.smram_size,
@@ -131,70 +133,86 @@ pub unsafe fn install_pic_image<'a>(
         save_state_size: config.save_state_size,
         stack_size: header.stack_size,
         entry_stub_size: max_stub_size,
-        common_size: header.common_size,
-        page_table_size: config.page_table_size,
+        handler_mem_size: header.handler_mem_size,
+        page_table_size: SMM_IDENTITY_TABLE_SIZE,
     };
     let common_base = compute_common_base(&layout)?;
+    let page_table_base = compute_page_table_base(&layout)?;
+    if page_table_base & 0xfff != 0 {
+        return Err(InstallError::BadAlignment);
+    }
     let cpus = compute_cpu_layout(&layout, cpu_layouts)?;
 
-    // SAFETY: caller guarantees SMRAM is mapped, writable, and exclusively
-    // owned here.
-    unsafe {
-        ptr::copy_nonoverlapping(
-            image.as_ptr().add(header.common_offset as usize),
-            common_base as *mut u8,
-            header.common_size as usize,
-        );
-    }
-
-    let runtime_addr = if header.runtime_offset != 0 {
-        let mut runtime = SmmRuntime::new(
-            config.smram_base,
-            config.smram_size,
-            config.num_cpus,
-            config.save_state_size as u16,
-            header.stack_size,
-            header.common_offset,
-            header.entries_offset,
-        );
-        for (i, cpu) in cpus.iter().enumerate() {
-            runtime.save_state_top[i] = cpu.save_state_top;
-        }
-        let addr = common_base
-            .checked_add(header.runtime_offset as u64)
-            .ok_or(InstallError::Overflow)?;
-        // SAFETY: `addr` is inside the SMRAM block copied above and aligned
-        // well enough for an unaligned SmmRuntime store.
-        unsafe { ptr::write_unaligned(addr as *mut SmmRuntime, runtime) };
-        addr
-    } else {
-        0
-    };
-
+    let runtime_addr = checked_add(common_base, header.runtime_offset)?;
+    let config_addr = checked_add(common_base, header.handler_config_offset)?;
     let module_args_base = if header.module_args_offset != 0 {
-        let needed = size_of::<CorebootModuleArgs>()
-            .checked_mul(config.num_cpus as usize)
-            .ok_or(InstallError::Overflow)?;
-        if (header.module_args_size as usize) < needed {
-            return Err(InstallError::BadModuleArgs);
-        }
-        Some(
-            common_base
-                .checked_add((header.module_args_offset - header.common_offset) as u64)
-                .ok_or(InstallError::Overflow)?,
-        )
+        Some(checked_add(common_base, header.module_args_offset)?)
     } else {
         None
     };
+    let common_entry = checked_add(common_base, header.handler_entry_offset)?;
+    let config_relative = header
+        .handler_config_offset
+        .checked_sub(header.runtime_offset)
+        .ok_or(InstallError::BadHandlerConfig)?;
+    if !(config_relative as usize).is_multiple_of(HANDLER_CONFIG_ALIGNMENT) {
+        return Err(InstallError::BadHandlerConfig);
+    }
+    let runtime = SmmRuntime::new(
+        config.smram_base,
+        config.smram_size,
+        config.num_cpus,
+        header.stack_size,
+        config_relative,
+        size_of::<T>() as u32,
+    );
 
-    let common_entry = common_base
-        .checked_add(header.common_entry_offset as u64)
-        .ok_or(InstallError::Overflow)?;
+    // The entry stub carries these addresses through 32-bit registers and the
+    // permanent tables map only the low 4 GiB. Validate the complete permanent
+    // placement before writing either the handler or an entry stub.
+    check_low_range(common_base, header.handler_mem_size as u64)?;
+    check_low_range(page_table_base, SMM_IDENTITY_TABLE_SIZE as u64)?;
+    for address in [common_entry, runtime_addr, config_addr, page_table_base] {
+        check_low_address(address)?;
+    }
+    if let Some(address) = module_args_base {
+        check_low_address(address)?;
+    }
+    for cpu in cpus.iter() {
+        for address in [
+            cpu.smbase,
+            cpu.entry_addr,
+            cpu.save_state_base,
+            cpu.save_state_top,
+            cpu.stack_bottom,
+            cpu.stack_top,
+        ] {
+            check_low_address(address)?;
+        }
+        check_low_range(cpu.entry_addr, max_stub_size as u64)?;
+        check_low_range(cpu.stack_bottom, header.stack_size as u64)?;
+    }
+
+    // Start from a deterministic image: initialized bytes are copied and every
+    // alignment gap, BSS byte, and loader-owned block is zeroed first.
+    unsafe {
+        ptr::write_bytes(common_base as *mut u8, 0, header.handler_mem_size as usize);
+        ptr::copy_nonoverlapping(
+            image.as_ptr().add(header.handler_offset as usize),
+            common_base as *mut u8,
+            header.handler_load_size as usize,
+        );
+        ptr::write(runtime_addr as *mut SmmRuntime, runtime);
+        // Alignment was checked against HANDLER_CONFIG_ALIGNMENT above.
+        ptr::write(config_addr as *mut T, *config.handler_config);
+    }
+
+    // Permanent tables are built inside the same SMRAM allocation and remain
+    // inaccessible to the OS after chipset lock.
+    let cr3 = unsafe { build_identity_tables(page_table_base) };
 
     for (i, cpu) in cpus.iter().enumerate() {
         let entry = header.entry(image, i as u16)?;
-        // SAFETY: entry stub bytes are validated against the image by
-        // `header.entry`/`check_entry_range`; targets live in owned SMRAM.
         unsafe {
             ptr::copy_nonoverlapping(
                 image.as_ptr().add(entry.stub_offset as usize),
@@ -207,8 +225,6 @@ pub unsafe fn install_pic_image<'a>(
             let addr = base
                 .checked_add((i * size_of::<CorebootModuleArgs>()) as u64)
                 .ok_or(InstallError::Overflow)?;
-            // SAFETY: `addr` points into the module-args area reserved inside
-            // the copied common block; stores are unaligned by design.
             unsafe {
                 ptr::write_unaligned(
                     addr as *mut CorebootModuleArgs,
@@ -224,39 +240,20 @@ pub unsafe fn install_pic_image<'a>(
             0
         };
 
-        if entry.params_offset != 0 {
-            let params_end = entry
-                .params_offset
-                .checked_add(size_of::<SmmEntryParams>() as u32)
-                .ok_or(InstallError::Overflow)?;
-            if params_end > entry.stub_size {
-                return Err(InstallError::BadParams);
-            }
-            let params_addr = cpu
-                .entry_addr
-                .checked_add(entry.params_offset as u64)
-                .ok_or(InstallError::Overflow)?;
-            // SAFETY: `params_addr` lies inside the copied stub whose layout
-            // was validated above; the store is unaligned by design.
-            unsafe {
-                ptr::write_unaligned(
-                    params_addr as *mut SmmEntryParams,
-                    SmmEntryParams {
-                        cpu: i as u32,
-                        stack_size: header.stack_size,
-                        stack_top: cpu.stack_top,
-                        common_entry,
-                        runtime: runtime_addr,
-                        coreboot_module_args,
-                        cr3: config.cr3,
-                        entry_base: cpu.entry_addr,
-                        platform_kind: config.platform_kind,
-                        platform_flags: config.platform_flags,
-                        platform_data: config.platform_data,
-                    },
-                );
-            }
-        }
+        patch_entry_params(
+            cpu.entry_addr,
+            &entry,
+            SmmEntryParams {
+                cpu: i as u32,
+                stack_size: header.stack_size,
+                stack_top: cpu.stack_top,
+                common_entry,
+                runtime: runtime_addr,
+                coreboot_module_args,
+                cr3,
+                entry_base: cpu.entry_addr,
+            },
+        )?;
     }
 
     Ok(InstalledSmmImage {
@@ -264,25 +261,17 @@ pub unsafe fn install_pic_image<'a>(
         common_base,
         common_entry,
         runtime_addr,
+        cr3,
         cpus,
     })
 }
 
-/// Install a default-SMRAM entry stub that enters long mode and calls a normal
-/// firmware relocation callback.
-///
-/// This mirrors coreboot's gen1 flow more closely than the tiny built-in table
-/// relocator: SMM entry happens at the architectural default entry point, but
-/// the work is performed by regular firmware code while SMRAM is open. The
-/// image's first precompiled entry stub is reused for the temporary default
-/// entry.
+/// Install the temporary default-SMBASE trampoline.
 ///
 /// # Safety
 ///
-/// The caller must have opened the chipset's default SMRAM/ASEG window, and
-/// `default_smbase + 0x8000` must be writable. `config.callback` must be an
-/// `extern "C" fn(*mut SmmEntryParams)`-compatible function that is executable
-/// under `config.cr3` while handling the SMI.
+/// The default SMRAM window must be open and writable, and `callback` must be
+/// executable under `cr3` with the entry-stub ABI.
 pub unsafe fn install_default_relocation_callback_stub(
     image: &[u8],
     config: DefaultRelocationCallbackConfig,
@@ -291,50 +280,151 @@ pub unsafe fn install_default_relocation_callback_stub(
     if header.entry_count == 0 {
         return Err(InstallError::NotEnoughEntries);
     }
-
     let stub = header.entry(image, 0)?;
     check_entry_range(&header, image, &stub)?;
-    let params_end = stub
-        .params_offset
-        .checked_add(size_of::<SmmEntryParams>() as u32)
-        .ok_or(InstallError::Overflow)?;
-    if stub.params_offset == 0 || params_end > stub.stub_size {
-        return Err(InstallError::BadParams);
-    }
-
+    check_entry_params(&stub)?;
     let entry_addr = config
         .default_smbase
         .checked_add(SMM_ENTRY_OFFSET)
         .ok_or(InstallError::Overflow)?;
-    // SAFETY: caller guarantees the default-SMRAM window is open and writable.
+    let entry_end = entry_addr
+        .checked_add(stub.stub_size as u64)
+        .ok_or(InstallError::Overflow)?;
+    let page_tables = config
+        .default_smbase
+        .checked_add(SMM_RELOCATION_TABLE_OFFSET)
+        .ok_or(InstallError::Overflow)?;
+    if entry_end > page_tables {
+        return Err(InstallError::BadEntryRange);
+    }
+    if config.cr3 & 0xfff != 0 {
+        return Err(InstallError::BadAlignment);
+    }
+    for address in [
+        entry_addr,
+        config.cr3,
+        config.callback,
+        config.callback_arg,
+        config.stack_top,
+    ] {
+        check_low_address(address)?;
+    }
     unsafe {
         ptr::copy_nonoverlapping(
             image.as_ptr().add(stub.stub_offset as usize),
             entry_addr as *mut u8,
             stub.stub_size as usize,
         );
+    }
+    patch_entry_params(
+        entry_addr,
+        &stub,
+        SmmEntryParams {
+            cpu: 0,
+            stack_size: 0,
+            stack_top: config.stack_top,
+            common_entry: config.callback,
+            runtime: config.callback_arg,
+            coreboot_module_args: 0,
+            cr3: config.cr3,
+            entry_base: entry_addr,
+        },
+    )
+}
 
-        let params_addr = entry_addr
-            .checked_add(stub.params_offset as u64)
-            .ok_or(InstallError::Overflow)?;
-        ptr::write_unaligned(
-            params_addr as *mut SmmEntryParams,
-            SmmEntryParams {
-                cpu: 0,
-                stack_size: 0,
-                stack_top: config.stack_top,
-                common_entry: config.callback,
-                runtime: 0,
-                coreboot_module_args: 0,
-                cr3: config.cr3,
-                entry_base: entry_addr,
-                platform_kind: crate::runtime::SMM_PLATFORM_NONE,
-                platform_flags: 0,
-                platform_data: [0; 4],
-            },
-        );
+fn validate_memory_blocks(header: &SmmImageHeader) -> Result<(), InstallError> {
+    if !(header.runtime_offset as usize).is_multiple_of(align_of::<SmmRuntime>())
+        || (header.runtime_size as usize) < size_of::<SmmRuntime>()
+    {
+        return Err(InstallError::BadRuntime);
+    }
+    if !(header.handler_config_offset as usize).is_multiple_of(HANDLER_CONFIG_ALIGNMENT)
+        || header.handler_config_capacity as usize != HANDLER_CONFIG_CAPACITY
+    {
+        return Err(InstallError::BadHandlerConfig);
+    }
+    let runtime_end = header
+        .runtime_offset
+        .checked_add(header.runtime_size)
+        .ok_or(InstallError::Overflow)?;
+    let config_end = header
+        .handler_config_offset
+        .checked_add(header.handler_config_capacity)
+        .ok_or(InstallError::Overflow)?;
+    if runtime_end > header.handler_config_offset {
+        return Err(InstallError::BadHandlerConfig);
     }
 
+    let module_args_flag = header.flags & FLAG_COREBOOT_MODULE_ARGS != 0;
+    match (header.module_args_offset, header.module_args_size) {
+        (0, 0) if !module_args_flag => {}
+        (0, _) | (_, 0) => return Err(InstallError::BadModuleArgs),
+        (offset, size) => {
+            if !module_args_flag {
+                return Err(InstallError::BadModuleArgs);
+            }
+            let needed = size_of::<CorebootModuleArgs>()
+                .checked_mul(header.entry_count as usize)
+                .ok_or(InstallError::Overflow)?;
+            if !(offset as usize).is_multiple_of(align_of::<CorebootModuleArgs>())
+                || (size as usize) < needed
+                || config_end > offset
+            {
+                return Err(InstallError::BadModuleArgs);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn checked_add(base: u64, offset: u32) -> Result<u64, InstallError> {
+    base.checked_add(offset as u64)
+        .ok_or(InstallError::Overflow)
+}
+
+const LOW_4G_END: u64 = 1u64 << 32;
+
+fn check_low_address(address: u64) -> Result<(), InstallError> {
+    if address >= LOW_4G_END {
+        Err(InstallError::AddressAbove4G)
+    } else {
+        Ok(())
+    }
+}
+
+fn check_low_range(base: u64, size: u64) -> Result<(), InstallError> {
+    let end = base.checked_add(size).ok_or(InstallError::Overflow)?;
+    if base >= LOW_4G_END || end > LOW_4G_END {
+        Err(InstallError::AddressAbove4G)
+    } else {
+        Ok(())
+    }
+}
+
+fn check_entry_params(entry: &EntryDescriptor) -> Result<(), InstallError> {
+    let params_end = entry
+        .params_offset
+        .checked_add(size_of::<SmmEntryParams>() as u32)
+        .ok_or(InstallError::Overflow)?;
+    if entry.params_offset == 0
+        || !(entry.params_offset as usize).is_multiple_of(align_of::<SmmEntryParams>())
+        || params_end > entry.stub_size
+    {
+        return Err(InstallError::BadParams);
+    }
+    Ok(())
+}
+
+fn patch_entry_params(
+    entry_addr: u64,
+    entry: &EntryDescriptor,
+    params: SmmEntryParams,
+) -> Result<(), InstallError> {
+    check_entry_params(entry)?;
+    let params_addr = entry_addr
+        .checked_add(entry.params_offset as u64)
+        .ok_or(InstallError::Overflow)?;
+    unsafe { ptr::write_unaligned(params_addr as *mut SmmEntryParams, params) };
     Ok(())
 }
 
@@ -359,72 +449,180 @@ fn check_entry_range(
 #[cfg(test)]
 mod tests {
     extern crate std;
-
-    use std::vec;
-
     use super::*;
-    use crate::layout::SMM_ENTRY_OFFSET;
+    use crate::header::{EntryDescriptor, FLAG_COREBOOT_MODULE_ARGS};
+    use std::vec;
+    use std::vec::Vec;
+    use zerocopy::IntoBytes;
 
-    fn put_u32(image: &mut [u8], off: usize, v: u32) {
-        image[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct TestConfig {
+        pm_base: u16,
+        gpe0: u16,
+    }
+    const TEST_CONFIG: TestConfig = TestConfig {
+        pm_base: 0x600,
+        gpe0: 0x20,
+    };
+
+    struct TestSmram {
+        mapping: *mut core::ffi::c_void,
+        mapping_size: usize,
+        base: u64,
+        size: usize,
     }
 
-    fn put_u16(image: &mut [u8], off: usize, v: u16) {
-        image[off..off + 2].copy_from_slice(&v.to_le_bytes());
+    impl TestSmram {
+        fn new(size: usize, fill: u8) -> Self {
+            const PROT_READ: i32 = 1;
+            const PROT_WRITE: i32 = 2;
+            const MAP_PRIVATE: i32 = 2;
+            const MAP_ANONYMOUS: i32 = 0x20;
+            const MAP_32BIT: i32 = 0x40;
+            unsafe extern "C" {
+                fn mmap(
+                    address: *mut core::ffi::c_void,
+                    length: usize,
+                    protection: i32,
+                    flags: i32,
+                    fd: i32,
+                    offset: isize,
+                ) -> *mut core::ffi::c_void;
+            }
+            let mapping_size = size + 0x1000;
+            let mapping = unsafe {
+                mmap(
+                    core::ptr::null_mut(),
+                    mapping_size,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(mapping as usize, usize::MAX);
+            let base = ((mapping as usize + 0xfff) & !0xfff) as u64;
+            assert!(base + size as u64 <= mapping as u64 + mapping_size as u64);
+            unsafe { core::ptr::write_bytes(base as *mut u8, fill, size) };
+            Self {
+                mapping,
+                mapping_size,
+                base,
+                size,
+            }
+        }
+
+        fn bytes(&self) -> &[u8] {
+            unsafe { core::slice::from_raw_parts(self.base as *const u8, self.size) }
+        }
     }
 
-    fn put_header(image: &mut [u8], h: &SmmImageHeader) {
-        put_u32(image, 0, h.magic);
-        put_u16(image, 4, h.version);
-        put_u16(image, 6, h.header_size);
-        put_u32(image, 8, h.flags);
-        put_u32(image, 12, h.image_size);
-        put_u16(image, 16, h.entry_count);
-        put_u16(image, 18, h.entry_desc_size);
-        put_u32(image, 20, h.entries_offset);
-        put_u32(image, 24, h.common_offset);
-        put_u32(image, 28, h.common_size);
-        put_u32(image, 32, h.common_entry_offset);
-        put_u32(image, 36, h.runtime_offset);
-        put_u32(image, 40, h.module_args_offset);
-        put_u32(image, 44, h.module_args_size);
-        put_u32(image, 48, h.stack_size);
+    impl Drop for TestSmram {
+        fn drop(&mut self) {
+            unsafe extern "C" {
+                fn munmap(address: *mut core::ffi::c_void, length: usize) -> i32;
+            }
+            assert_eq!(unsafe { munmap(self.mapping, self.mapping_size) }, 0);
+        }
     }
 
-    #[test]
-    fn installs_common_stub_runtime_and_params() {
+    fn align(value: u32, alignment: usize) -> u32 {
+        (value + alignment as u32 - 1) & !(alignment as u32 - 1)
+    }
+
+    fn test_image_with_entries(entry_count: u16) -> (Vec<u8>, SmmImageHeader) {
         let header_size = size_of::<SmmImageHeader>() as u32;
         let entries_offset = header_size;
-        let common_offset = 0x80;
-        let common_size = 0x300;
-        let stub_offset = 0x400;
+        let handler_offset = 0x80;
+        let handler_load_size = 0x20;
+        let runtime_offset = 0x40;
+        let runtime_size = size_of::<SmmRuntime>() as u32;
+        let config_offset = align(runtime_offset + runtime_size, HANDLER_CONFIG_ALIGNMENT);
+        let module_offset = align(
+            config_offset + HANDLER_CONFIG_CAPACITY as u32,
+            align_of::<CorebootModuleArgs>(),
+        );
+        let module_args_size = size_of::<CorebootModuleArgs>() as u32 * u32::from(entry_count);
+        let handler_mem_size = module_offset + module_args_size;
+        let stub_offset = handler_offset + handler_load_size;
         let stub_size = 0x80;
-        let params_offset = 0x20;
-        let image_size = stub_offset + stub_size;
+        let image_size = stub_offset + stub_size * u32::from(entry_count);
         let header = SmmImageHeader::new(
-            0,
+            FLAG_COREBOOT_MODULE_ARGS,
             image_size,
-            1,
+            entry_count,
             entries_offset,
-            common_offset,
-            common_size,
+            handler_offset,
+            handler_load_size,
+            handler_mem_size,
             0,
-            0x20,
-            0,
-            0,
+            runtime_offset,
+            runtime_size,
+            config_offset,
+            HANDLER_CONFIG_CAPACITY as u32,
+            module_offset,
+            module_args_size,
             0x400,
         );
         let mut image = vec![0u8; image_size as usize];
-        put_header(&mut image, &header);
-        put_u32(&mut image, entries_offset as usize, stub_offset);
-        put_u32(&mut image, entries_offset as usize + 4, stub_size);
-        put_u32(&mut image, entries_offset as usize + 8, 0);
-        put_u32(&mut image, entries_offset as usize + 12, params_offset);
-        image[common_offset as usize] = 0xaa;
-        image[stub_offset as usize] = 0xbb;
+        header.write_to_prefix(&mut image).unwrap();
+        for i in 0..entry_count {
+            let desc = EntryDescriptor {
+                stub_offset: stub_offset + u32::from(i) * stub_size,
+                stub_size,
+                entry_offset: 0,
+                params_offset: 0x20,
+            };
+            let desc_offset =
+                entries_offset as usize + usize::from(i) * size_of::<EntryDescriptor>();
+            desc.write_to_prefix(&mut image[desc_offset..]).unwrap();
+            image[desc.stub_offset as usize] = 0xbb;
+        }
+        image[handler_offset as usize] = 0xaa;
+        (image, header)
+    }
 
-        let mut smram = vec![0u8; 0x4_0000];
-        let smram_base = smram.as_mut_ptr() as u64;
+    fn test_image() -> (Vec<u8>, SmmImageHeader) {
+        test_image_with_entries(1)
+    }
+
+    fn install_for_test(
+        image: &[u8],
+        smram_base: u64,
+        smram_size: u64,
+    ) -> Result<(), InstallError> {
+        let header = SmmImageHeader::parse(image)?;
+        let zero = CpuSmmLayout {
+            smbase: 0,
+            entry_addr: 0,
+            save_state_base: 0,
+            save_state_top: 0,
+            stack_bottom: 0,
+            stack_top: 0,
+        };
+        let mut cpus = vec![zero; header.entry_count as usize];
+        unsafe {
+            install_pic_image(
+                image,
+                InstallConfig {
+                    smram_base,
+                    smram_size,
+                    num_cpus: header.entry_count,
+                    save_state_size: 0x400,
+                    handler_config: &TEST_CONFIG,
+                },
+                &mut cpus,
+            )
+            .map(|_| ())
+        }
+    }
+
+    #[test]
+    fn installs_initialized_data_zeros_bss_and_uses_smram_cr3() {
+        let (image, header) = test_image();
+        let smram_size = 0x8_0000usize;
+        let smram = TestSmram::new(smram_size, 0x5a);
+        let smram_base = smram.base;
         let mut cpus = [CpuSmmLayout {
             smbase: 0,
             entry_addr: 0,
@@ -432,48 +630,121 @@ mod tests {
             save_state_top: 0,
             stack_bottom: 0,
             stack_top: 0,
-        }; 1];
-
+        }];
         let installed = unsafe {
             install_pic_image(
                 &image,
                 InstallConfig {
                     smram_base,
-                    smram_size: smram.len() as u64,
+                    smram_size: smram_size as u64,
                     num_cpus: 1,
                     save_state_size: 0x400,
-                    page_table_size: 0,
-                    cr3: 0x1234,
-                    platform_kind: crate::runtime::SMM_PLATFORM_INTEL_ICH,
-                    platform_flags: 0,
-                    platform_data: [0x600, 0x20, 0, 0],
+                    handler_config: &TEST_CONFIG,
                 },
                 &mut cpus,
             )
         }
         .unwrap();
-
         assert_eq!(unsafe { *(installed.common_base as *const u8) }, 0xaa);
-        assert_eq!(
-            unsafe { *(installed.cpus[0].entry_addr as *const u8) },
-            0xbb
-        );
-        assert_eq!(
-            installed.cpus[0].entry_addr,
-            installed.cpus[0].smbase + SMM_ENTRY_OFFSET
-        );
-
+        assert_eq!(unsafe { *((installed.common_base + 0x30) as *const u8) }, 0);
+        assert!(installed.cr3 >= smram_base);
+        assert!(installed.cr3 < smram_base + smram_size as u64);
+        assert_eq!(installed.cr3 % 4096, 0);
         let params = unsafe {
-            ptr::read_unaligned(
-                (installed.cpus[0].entry_addr + params_offset as u64) as *const SmmEntryParams,
+            ptr::read_unaligned((installed.cpus[0].entry_addr + 0x20) as *const SmmEntryParams)
+        };
+        assert_eq!(params.cr3, installed.cr3);
+        assert_eq!(params.runtime, installed.runtime_addr);
+        let runtime = unsafe { ptr::read(installed.runtime_addr as *const SmmRuntime) };
+        assert_eq!(runtime.num_cpus, 1);
+        assert_eq!(runtime.handler_config_size, size_of::<TestConfig>() as u32);
+        let config = unsafe {
+            ptr::read(
+                (installed.common_base + u64::from(header.handler_config_offset))
+                    as *const TestConfig,
             )
         };
-        assert_eq!(params.cpu, 0);
-        assert_eq!(params.common_entry, installed.common_entry);
-        assert_eq!(params.runtime, installed.runtime_addr);
-        assert_eq!(params.cr3, 0x1234);
-        assert_eq!(params.platform_kind, crate::runtime::SMM_PLATFORM_INTEL_ICH);
-        assert_eq!(params.platform_data[0], 0x600);
-        assert_eq!(params.platform_data[1], 0x20);
+        assert_eq!(config, TEST_CONFIG);
+    }
+
+    fn assert_early_failure(image: &[u8], expected: InstallError) {
+        let smram_size = 0x8_0000usize;
+        let storage = TestSmram::new(smram_size, 0x5a);
+        let base = storage.base;
+        assert_eq!(
+            install_for_test(image, base, smram_size as u64),
+            Err(expected)
+        );
+        assert!(storage.bytes().iter().all(|&byte| byte == 0x5a));
+    }
+
+    #[test]
+    fn rejects_overlapping_misaligned_and_bad_late_entry_before_writes() {
+        let (image, header) = test_image();
+
+        let mut overlap = image.clone();
+        SmmImageHeader {
+            handler_config_offset: header.runtime_offset + 8,
+            ..header
+        }
+        .write_to_prefix(&mut overlap)
+        .unwrap();
+        assert_early_failure(&overlap, InstallError::BadHandlerConfig);
+
+        let mut wrong_capacity = image.clone();
+        SmmImageHeader {
+            handler_config_capacity: header.handler_config_capacity
+                + HANDLER_CONFIG_ALIGNMENT as u32,
+            ..header
+        }
+        .write_to_prefix(&mut wrong_capacity)
+        .unwrap();
+        assert_early_failure(&wrong_capacity, InstallError::BadHandlerConfig);
+
+        let mut misaligned = image.clone();
+        SmmImageHeader {
+            runtime_offset: header.runtime_offset + 1,
+            ..header
+        }
+        .write_to_prefix(&mut misaligned)
+        .unwrap();
+        assert_early_failure(&misaligned, InstallError::BadRuntime);
+
+        let (mut bad_params, two_entry_header) = test_image_with_entries(2);
+        let second_descriptor =
+            two_entry_header.entries_offset as usize + size_of::<EntryDescriptor>();
+        let mut descriptor = two_entry_header.entry(&bad_params, 1).unwrap();
+        descriptor.params_offset = 0x21;
+        descriptor
+            .write_to_prefix(&mut bad_params[second_descriptor..])
+            .unwrap();
+        assert_early_failure(&bad_params, InstallError::BadParams);
+    }
+
+    #[test]
+    fn rejects_config_misaligned_relative_to_runtime() {
+        let (mut image, header) = test_image();
+        // Both absolute addresses are aligned, but the runtime-relative
+        // offset is not. The handler must never silently skip this config.
+        SmmImageHeader {
+            runtime_offset: header.runtime_offset + 8,
+            ..header
+        }
+        .write_to_prefix(&mut image)
+        .unwrap();
+        assert_early_failure(&image, InstallError::BadHandlerConfig);
+    }
+
+    #[test]
+    fn rejects_unaligned_smram_top_and_addresses_above_four_gib() {
+        let (image, _) = test_image();
+        assert_eq!(
+            install_for_test(&image, 0x10_0000, 0x8_0001),
+            Err(InstallError::BadAlignment)
+        );
+        assert_eq!(
+            install_for_test(&image, 0x1_0000_0000, 0x8_0000),
+            Err(InstallError::AddressAbove4G)
+        );
     }
 }

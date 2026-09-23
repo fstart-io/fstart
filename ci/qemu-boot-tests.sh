@@ -126,7 +126,9 @@ run_boot qemu-q35 halt 'ramstage: ready for payload'
 require_boot_marker qemu-q35 halt 'PCI root ready ('
 # Multi-processor bring-up with SMM relocation on every CPU.
 run_boot qemu-q35 halt-smp4 'mp: initialization complete (4 CPUs)'
+require_boot_marker qemu-q35 halt-smp4 'SMM: selected AMD64 revision 0x00020064; 4 CPUs relocated'
 require_boot_marker qemu-q35 halt-smp4 'SMM: permanent SMI enabled and SMRAM locked'
+require_boot_marker qemu-q35 halt-smp4 'SMM: permanent SMI returned on all 4 CPUs'
 run_boot qemu-q35 uefi 'Boot manager finished'
 # Full boot chain: fstart -> CrabEFI -> GRUB (ESP) -> Linux -> u-root init.
 if [[ -f "$X86_ASSET_DIR/disk.img" ]]; then

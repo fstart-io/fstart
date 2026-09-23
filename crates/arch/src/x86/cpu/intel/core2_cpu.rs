@@ -3,58 +3,27 @@
 //! Mirrors the per-CPU MSR setup in coreboot's `cpu/intel/model_6fx` driver
 //! and optionally supplies an Intel microcode blob to [`crate::x86::mp`].
 
-use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuVendor};
+use crate::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
+use crate::x86::cpu::intel::{common_power, feature_control};
+use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor};
 use crate::x86::msr::{rdmsr, wrmsr};
 use crate::x86::mtrr;
 
-const MSR_PKG_CST_CONFIG_CONTROL: u32 = 0xe2;
-const MSR_PMG_IO_BASE_ADDR: u32 = 0xe4;
-const MSR_PMG_IO_CAPTURE_ADDR: u32 = 0xe7;
 const IA32_PECI_CTL: u32 = 0x5a0;
 const IA32_PLATFORM_ID: u32 = 0x17;
 const IA32_PERF_STATUS: u32 = 0x198;
 const IA32_PERF_CTL: u32 = 0x199;
-const IA32_MISC_ENABLE: u32 = 0x1a0;
 const PIC_SENS_CFG: u32 = 0x1aa;
-const HIGHEST_CLEVEL: u64 = 3;
-
-fn configure_c_states(pmbase: u32) {
-    // SAFETY: these MSRs are defined for Intel Core/Core 2 CPUs.
-    unsafe {
-        let mut msr = rdmsr(MSR_PKG_CST_CONFIG_CONTROL);
-        msr |= 1 << 15; // config lock until next reset
-        msr |= 1 << 14; // deeper sleep
-        msr |= 1 << 10; // enable I/O MWAIT redirection for C-states
-        msr &= !(1 << 9); // single stop grant disabled
-        msr |= 1 << 3; // dynamic L2
-        msr = (msr & !7) | HIGHEST_CLEVEL;
-        wrmsr(MSR_PKG_CST_CONFIG_CONTROL, msr);
-
-        let io_base = ((pmbase + 4) & 0xffff) as u64;
-        wrmsr(MSR_PMG_IO_BASE_ADDR, io_base);
-
-        let io_capture = ((pmbase + 4) as u64) | ((HIGHEST_CLEVEL - 2) << 16);
-        wrmsr(MSR_PMG_IO_CAPTURE_ADDR, io_capture);
-    }
-}
 
 fn configure_misc() {
     // SAFETY: these MSRs are defined for Intel Core/Core 2 CPUs.
     unsafe {
-        let mut misc = rdmsr(IA32_MISC_ENABLE);
-        misc |= 1 << 3; // TM1 enable
-        misc |= 1 << 13; // TM2 enable
-        misc |= 1 << 17; // Bidirectional PROCHOT#
-        misc |= 1 << 10; // FERR# multiplexing
-        misc |= 1 << 16; // Enhanced SpeedStep enable
-        misc |= 1 << 26; // C2E
-        misc |= 1 << 32; // C4E
-        misc |= 1 << 33; // Hard C4E
-        misc |= 1 << 36; // EMTTM
-        wrmsr(IA32_MISC_ENABLE, misc);
-
-        misc |= 1 << 20; // Lock Enhanced SpeedStep enable
-        wrmsr(IA32_MISC_ENABLE, misc);
+        common_power::configure_misc(
+            common_power::MISC_ENABLE::C2E::SET.value
+                | common_power::MISC_ENABLE::C4E::SET.value
+                | common_power::MISC_ENABLE::HARD_C4E::SET.value
+                | common_power::MISC_ENABLE::EMTTM::SET.value,
+        );
 
         let status = rdmsr(IA32_PERF_STATUS);
         let busratio_max = (status >> 40) & 0x1f;
@@ -137,6 +106,28 @@ impl Core2CpuDriver {
     }
 }
 
+/// Model 0Fh (Merom/Conroe) has the alternative SMRR pair; model 16h
+/// (Merom-L) the architectural one. Same split as coreboot's
+/// `cpu_has_alternative_smrr()`.
+fn smrr_pair_for(identity: CpuIdentity) -> SmrrPair {
+    if identity.model() == 0x0f {
+        SmrrPair::Core2Alternative
+    } else {
+        SmrrPair::Architectural
+    }
+}
+
+impl SmmCpu for Core2CpuDriver {
+    fn smm_save_state_format(&self) -> X86SaveStateFormat {
+        X86SaveStateFormat::IntelEm64t
+    }
+
+    /// Assumes every package in the system is the same model as the BSP.
+    fn smrr_pair(&self) -> Option<SmrrPair> {
+        Some(smrr_pair_for(CpuIdentity::current()))
+    }
+}
+
 impl CpuDriver for Core2CpuDriver {
     fn name(&self) -> &'static str {
         "Intel Core/Core 2"
@@ -163,9 +154,20 @@ impl CpuDriver for Core2CpuDriver {
         // SAFETY: MP init runs this on every active logical CPU. All CPUs
         // receive the same low-DRAM WB MTRR layout before OS handoff.
         unsafe { mtrr::setup_ram_wb() };
-        configure_c_states(self.pmbase);
+        // SAFETY: this CPU model implements these power-management MSRs.
+        unsafe {
+            common_power::configure_c_states(
+                self.pmbase,
+                common_power::CST::DEEPER_SLEEP::SET.value
+                    | common_power::CST::DYNAMIC_L2::SET.value,
+            );
+        }
         configure_misc();
         configure_pic_thermal_sensors();
+        let smrr = smrr_pair_for(CpuIdentity::current()).feature_control_bits();
+        // SAFETY: Core/Core 2 CPUs implement IA32_FEATURE_CONTROL, and
+        // `feature_control_bits` only names bits this model has.
+        unsafe { feature_control::enable_and_lock(smrr) };
         fstart_log::info!("cpu: Core 2 MSR configuration complete");
     }
 }
