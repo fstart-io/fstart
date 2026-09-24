@@ -159,8 +159,8 @@ impl<'a> FfsReader<'a> {
     #[cfg(feature = "std")]
     pub fn read_manifest(&self, anchor: &AnchorBlock) -> Result<ImageManifest, ReaderError> {
         self.read_verified_manifest(
-            anchor.manifest_offset as usize,
-            anchor.manifest_size as usize,
+            anchor.manifest_offset.get() as usize,
+            anchor.manifest_size.get() as usize,
             self.read_trust()?,
         )
     }
@@ -277,7 +277,7 @@ impl<'a> FfsReader<'a> {
 
         let policy = crate::root::RootPolicy {
             image_family: trust.image_family,
-            minimum_security_version: trust.minimum_security_version,
+            minimum_security_version: trust.minimum_security_version.get(),
             image_size: self.image.len() as u64,
             max_directory_size: self.image.len() as u64,
             keys: trust.valid_keys(),

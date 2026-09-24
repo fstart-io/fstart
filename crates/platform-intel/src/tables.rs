@@ -65,16 +65,21 @@ fn allocate_x86_handoff_region(
         return None;
     }
 
-    e820.reserve_range_as(selected, size, kind);
+    e820.reserve_range_as(selected, size, kind)
+        .expect("e820 map cannot represent firmware table reservation");
     Some(selected)
 }
 
 #[cfg(feature = "acpi")]
+fn read_le_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    let raw = bytes.get(offset..offset.checked_add(8)?)?;
+    Some(u64::from_le_bytes(raw.try_into().ok()?))
+}
+
+#[cfg(feature = "acpi")]
 fn acpi_table_len(table: &[u8]) -> Option<usize> {
-    if table.len() < 36 {
-        return None;
-    }
-    let len = u32::from_le_bytes(table[4..8].try_into().ok()?) as usize;
+    let raw = table.get(4..8)?;
+    let len = u32::from_le_bytes(raw.try_into().ok()?) as usize;
     (len >= 36 && len <= table.len()).then_some(len)
 }
 
@@ -169,7 +174,10 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
         fstart_log::warn!("ACPI dump: buffer too small");
         return;
     }
-    let xsdt_addr = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+    let Some(xsdt_addr) = read_le_u64(data, 24) else {
+        fstart_log::warn!("ACPI dump: truncated RSDP XSDT pointer");
+        return;
+    };
     let Some(base_addr) = xsdt_addr.checked_sub(XSDT_OFF as u64) else {
         fstart_log::warn!(
             "ACPI dump: invalid XSDT address {}",
@@ -193,26 +201,31 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
     }
     // Entry 0 is FADT; FADT bytes begin after DSDT, so use its DSDT pointer
     // to print DSDT before the XSDT-listed tables like coreboot does.
-    let fadt_addr = u64::from_le_bytes(xsdt[36..44].try_into().unwrap_or([0; 8]));
+    let Some(fadt_addr) = read_le_u64(xsdt, 36) else {
+        fstart_log::warn!("ACPI dump: truncated FADT pointer");
+        return;
+    };
     let Some(fadt_off) = fadt_addr.checked_sub(base_addr).map(|v| v as usize) else {
         return;
     };
-    if fadt_off + FADT_X_DSDT_OFF + 8 <= data.len() {
-        let fadt = &data[fadt_off..];
-        let dsdt_addr = u64::from_le_bytes(
-            fadt[FADT_X_DSDT_OFF..FADT_X_DSDT_OFF + 8]
-                .try_into()
-                .unwrap_or([0; 8]),
-        );
-        if let Some(dsdt_off) = dsdt_addr.checked_sub(base_addr).map(|v| v as usize) {
-            if dsdt_off < data.len() {
-                print_acpi_table(&data[dsdt_off..]);
+    if let Some(fadt) = data
+        .get(fadt_off..)
+        .and_then(|tail| acpi_table_len(tail).and_then(|len| tail.get(..len)))
+    {
+        if let Some(dsdt_addr) = read_le_u64(fadt, FADT_X_DSDT_OFF) {
+            if let Some(dsdt_off) = dsdt_addr.checked_sub(base_addr).map(|v| v as usize) {
+                if dsdt_off < data.len() {
+                    print_acpi_table(&data[dsdt_off..]);
+                }
             }
         }
     }
     for i in 0..entries {
         let off = 36 + i * 8;
-        let addr = u64::from_le_bytes(xsdt[off..off + 8].try_into().unwrap_or([0; 8]));
+        let Some(addr) = read_le_u64(xsdt, off) else {
+            fstart_log::warn!("ACPI dump: truncated XSDT entry");
+            return;
+        };
         if let Some(table_off) = addr.checked_sub(base_addr).map(|v| v as usize) {
             if table_off < data.len() {
                 print_acpi_table(&data[table_off..]);

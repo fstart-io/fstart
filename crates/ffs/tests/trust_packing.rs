@@ -79,8 +79,8 @@ fn compression_uses_final_constant_policy_and_deterministic_input_identity() {
                 max_directory_size: 65536,
                 keys: &config.keys,
             },
-            &built.image
-                [locator.manifest_offset as usize..locator.manifest_offset as usize + ROOT_SIZE],
+            &built.image[locator.manifest_offset.get() as usize
+                ..locator.manifest_offset.get() as usize + ROOT_SIZE],
         )
         .unwrap();
         let descriptor = root.descriptors()[0].unwrap();
@@ -138,10 +138,10 @@ fn host_policy_inspection_accepts_unaligned_images_and_checks_the_wire_header() 
     struct Storage([u8; TRUST_SIZE + 16]);
     let mut storage = Storage([0; TRUST_SIZE + 16]);
     let mut policy = TrustBlock::placeholder();
-    policy.key_count = 1;
+    policy.set_key_count(1);
     policy.keys[0] = VerificationKey::ed25519(7, [0x42; 32]);
     policy.image_family = [0x39; 16];
-    policy.minimum_security_version = 0x0102_0304_0506_0708;
+    policy.set_minimum_security_version(0x0102_0304_0506_0708);
     policy.write_to(&mut storage.0[9..9 + TRUST_SIZE]);
     let image = &storage.0[1..];
     assert_ne!(image.as_ptr().align_offset(8), 0);
@@ -167,9 +167,9 @@ fn host_policy_inspection_accepts_unaligned_images_and_checks_the_wire_header() 
 fn stale_prepatched_policy_cannot_survive_a_new_packaging_selection() {
     let (mut config, signer) = config(1);
     let mut stale = TrustBlock::placeholder();
-    stale.key_count = 1;
+    stale.set_key_count(1);
     stale.keys[0] = config.keys[0];
-    stale.minimum_security_version = 99;
+    stale.set_minimum_security_version(99);
     let InputRegion::Container { files, .. } = &mut config.regions[0] else {
         unreachable!()
     };
