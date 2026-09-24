@@ -83,8 +83,10 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
     // 200 µs settling time.
     fstart_arch::x86::hpet_udelay(200);
 
-    // Execute the JEDEC sequence using the physical rank slots also used by
-    // DRA/DRB and CKE programming. DIMM 1 therefore occupies ranks 2 and 3.
+    // The temporary DRB map packs populated ranks into consecutive 128 MiB
+    // regions. JEDEC address strobes use that packed index, not the physical
+    // rank slots used by DRA/CKE (which may have gaps).
+    let mut rank = 0;
     for r in 0..super::RANKS_PER_CHANNEL {
         let dimm_idx = r / 2;
         let rank_in_dimm = (r % 2) as u8;
@@ -94,8 +96,6 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
         if !populated {
             continue;
         }
-
-        let rank = r as u8;
 
         // 1. NOP
         send_jedec_cmd(mch, rank, NOP_CMD, 0);
@@ -119,6 +119,7 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
         // 10. EMRS1 — OCD calibration default (bits 9:7 = 111), then exit
         send_jedec_cmd(mch, rank, EMRS1_CMD, rttnom | (7 << 7));
         send_jedec_cmd(mch, rank, EMRS1_CMD, rttnom);
+        rank += 1;
     }
 
     fstart_log::info!("raminit: JEDEC init complete (CAS={}, WR={})", cas, twr);
