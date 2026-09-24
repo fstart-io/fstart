@@ -74,6 +74,8 @@ register_bitfields! [u16,
     /// LPC GEN_PMCON_1 register.
     GEN_PMCON_1_REG [
         SMI_RATE OFFSET(0) NUMBITS(2) [],
+        CLKRUN_EN OFFSET(2) NUMBITS(1) [],
+        SPEEDSTEP_EN OFFSET(3) NUMBITS(1) [],
         SMI_LOCK OFFSET(4) NUMBITS(1) [],
         CPUSLP_EN OFFSET(5) NUMBITS(1) [],
         BIOS_PCI_EXP_EN OFFSET(10) NUMBITS(1) []
@@ -179,6 +181,9 @@ register_structs! {
         (0x2038 => _reserved9),
         (0x21a4 => pub cir_21a4: MmioReadWrite<u32>),
         (0x21a8 => _reserved10),
+        (0x3020 => pub spi: MmioReadWrite<u16, SPI_REG::Register>),
+        (0x3022 => pub spi_ctrl: MmioReadWrite<u16, SPI_CTRL_REG::Register>),
+        (0x3024 => _reserved_spi),
         (0x3100 => pub d31ip: MmioReadWrite<u32>),
         (0x3104 => pub d30ip: MmioReadWrite<u32>),
         (0x3108 => pub d29ip: MmioReadWrite<u32>),
@@ -204,9 +209,6 @@ register_structs! {
         (0x3421 => _reserved16),
         (0x3430 => pub cir8: MmioReadWrite<u32, CIR8_REG::Register>),
         (0x3434 => _reserved17),
-        (0x3800 => pub spi: MmioReadWrite<u16, SPI_REG::Register>),
-        (0x3802 => pub spi_ctrl: MmioReadWrite<u16, SPI_CTRL_REG::Register>),
-        (0x3804 => _reserved18),
         (0x3e08 => pub port_3e08: MmioReadWrite<u16, PCIE_TUNING16::Register>),
         (0x3e0a => _reserved19),
         (0x3e0e => pub port_3e0e: MmioReadWrite<u8, PCIE_TUNING8::Register>),
@@ -647,10 +649,6 @@ const fn default_smbus_base() -> u16 {
     ich7::DEFAULT_SMBUS_BASE
 }
 
-const fn default_pcie_ports() -> [bool; 4] {
-    [true; 4]
-}
-
 const fn default_true() -> bool {
     true
 }
@@ -662,7 +660,7 @@ impl IntelIch7Config {
             rcba: 0xFED1_C000,
             pirq: crate::southbridge::pirq::ICH7_PINEVIEW_ROUTING,
             pirq_routing: [0; 8],
-            pcie_ports: default_pcie_ports(),
+            pcie_ports: [false; 4],
             lan: true,
             ac97_audio: true,
             ac97_modem: true,
@@ -677,7 +675,7 @@ impl IntelIch7Config {
             gpio: GpioConfig::new(),
             acpi_name: Some("LPCB"),
             c3_latency: default_c3_latency(),
-            power_on_after_fail: 0,
+            power_on_after_fail: 1,
         }
     }
 }
@@ -1483,11 +1481,11 @@ impl IntelIch7 {
                 sata_dev.write8(0x09, 0x8F);
                 Self::type0_regs(sata_dev).interrupt_line.set(0xFF);
                 // IDE timings.
-                sata_dev.write16(0x40, 0xB301); // PRI
-                sata_dev.write16(0x42, 0xB301); // SEC
+                sata_dev.write16(0x40, 0xA307); // PRI
+                sata_dev.write16(0x42, 0xE303); // SEC
                 sata_dev.write16(0x48, 0x0005); // Sync DMA cnt
                 sata_dev.write16(0x4A, 0x0201); // Sync DMA tim
-                sata_dev.write32(0x54, 0x00000033); // IDE I/O cfg
+                sata_dev.write32(0x54, 0x0000_3003); // IDE I/O cfg
             }
         }
 
@@ -1534,7 +1532,7 @@ impl IntelIch7 {
         sata_dev.write32(0xA4, (v & 0xC0C0_FF00) | 0x1212_00AA);
         sata_dev.write8(0xA0, 0x00);
         sata_dev.write8(0x3C, 0x00);
-        sata_dev.or32(0x94, 1 << 22); // SCRD due to bug
+        sata_dev.or32(0x94, 1 << 30); // SCRD due to bug
 
         fstart_log::info!("intel-ich7: SATA init done (ports={:#x})", ports);
     }
@@ -1601,6 +1599,8 @@ impl IntelIch7 {
         // GEN_PMCON_1: SMI rate, SpeedStep, CPUSLP, BIOS_PCI_EXP.
         lpc.gen_pmcon_1.modify(
             GEN_PMCON_1_REG::SMI_RATE.val(0)
+                + GEN_PMCON_1_REG::CLKRUN_EN::SET
+                + GEN_PMCON_1_REG::SPEEDSTEP_EN::SET
                 + GEN_PMCON_1_REG::CPUSLP_EN::SET
                 + GEN_PMCON_1_REG::BIOS_PCI_EXP_EN::SET,
         );
@@ -1712,7 +1712,7 @@ impl IntelIch7 {
     /// Late power options: GPE0 enable, NMI control, pmio::PM1_CNT.
     ///
     /// Completes the power management setup started in early_init.
-    /// Programs pmio::GPE0_EN from the board config, sets pmio::PM1_CNT for
+    /// Programs pmio::ICH7_GPE0_EN from the board config, sets pmio::PM1_CNT for
     /// SCI_EN and bus-master C3->C0 wakeup, configures NMI source
     /// control.
     fn power_options_late(&self) {
@@ -1723,9 +1723,9 @@ impl IntelIch7 {
             // pending can assert SCI before Linux has any useful event to
             // consume, producing an IRQ9 "nobody cared" storm.
             self.pm().write16(pmio::PM1_STS, 0xffff);
-            self.pm().write32(pmio::GPE0_STS, 0xffff_ffff);
+            self.pm().write32(pmio::ICH7_GPE0_STS, 0xffff_ffff);
             // GPE0_EN from board config.
-            self.pm().write32(pmio::GPE0_EN, self.config.gpe0_en);
+            self.pm().write32(pmio::ICH7_GPE0_EN, self.config.gpe0_en);
             // Wake sources that survive S3. RTC and power-button events stay
             // latched in the suspend well, but the chipset only wakes the
             // system when the matching PM1_EN bit is set; the OS manages the
@@ -2088,7 +2088,7 @@ impl IntelIch7 {
         // IDE timing bits.
         const IDE_DECODE_ENABLE: u16 = 1 << 15;
         const IDE_SITRE: u16 = 1 << 14;
-        const IDE_ISP_3: u16 = 0x3000; // ISP = 3 clocks
+        const IDE_ISP_3: u16 = 0x2000; // ISP = 3 clocks
         const IDE_RCT_1: u16 = 0x0300; // RCT = 1 clock
         const IDE_IE0: u16 = 1 << 1;
         const IDE_TIME0: u16 = 1 << 0;
@@ -2114,10 +2114,10 @@ impl IntelIch7 {
         // IDE I/O configuration.
         let mut cfg = 0u32;
         if enable_primary {
-            cfg |= 0x0003_0003; // SIG_MODE_PRI_NORMAL + FAST_PCBx + PCBx
+            cfg |= 0x0000_3003; // FAST_PCBx + PCBx
         }
         if enable_secondary {
-            cfg |= 0x0030_0030; // SIG_MODE_SEC_NORMAL + FAST_SCBx + SCBx
+            cfg |= 0x0000_c00c; // FAST_SCBx + SCBx
         }
         ide.write32(IDE_CONFIG, cfg);
 

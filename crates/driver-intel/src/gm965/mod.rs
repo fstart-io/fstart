@@ -721,18 +721,10 @@ impl IntelGm965 {
 
     fn tseg_size(&self) -> u32 {
         let esmramc = self.hostbridge_regs().esmramc.get();
-        if esmramc & 1 == 0 {
-            return 0;
-        }
-        match (esmramc >> 1) & 3 {
-            0 => 1024 * 1024,
-            1 => 2 * 1024 * 1024,
-            2 => 8 * 1024 * 1024,
-            _ => {
-                fstart_log::error!("gm965: bad TSEG size encoding");
-                0
-            }
-        }
+        super::gmch::tseg_size_bytes(esmramc).unwrap_or_else(|| {
+            fstart_log::error!("gm965: bad TSEG size encoding");
+            0
+        })
     }
 
     fn tseg_base(&self) -> u32 {
@@ -1187,9 +1179,8 @@ impl IntelGm965 {
         // Match coreboot's non-libgfxinit GM965 path. GTTMMADR BAR0 is
         // 1 MiB total on Crestline: the lower 512 KiB is display MMIO and the
         // upper 512 KiB is the CPU-visible GTT page table. Clear the table so
-        // stale firmware entries do not leak into the OS handoff. Do not
-        // program PGETBL_CTL here; coreboot only does that before libgfxinit,
-        // while the non-libgfxinit/VBIOS path leaves GTT ownership to the OS.
+        // stale firmware entries do not leak into the OS handoff before
+        // gtt_setup() enables PGETBL_CTL for native modesetting.
         super::igd::clear_gtt_table(
             gtt_mmio + GM965_GTT_PAGE_TABLE_OFFSET as u64,
             GM965_GTT_PAGE_TABLE_SIZE as u32,

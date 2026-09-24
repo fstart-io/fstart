@@ -33,13 +33,10 @@ pub const PM1_TMR: u16 = 0x08;
 /// Processor Control register.
 pub const PROC_CNT: u16 = 0x10;
 
-/// GPE0 Status register (32-bit, W1C).
-///
-/// ICH7 uses a 32-bit GPE0 at offset 0x28.
-/// ICH8+ uses 64-bit GPE0 at offset 0x20 (low) and 0x24 (high).
-pub const GPE0_STS: u16 = 0x28;
-/// GPE0 Enable register (32-bit).
-pub const GPE0_EN: u16 = 0x2C;
+/// ICH7 GPE0 Status register (32-bit, W1C).
+pub const ICH7_GPE0_STS: u16 = 0x28;
+/// ICH7 GPE0 Enable register (32-bit).
+pub const ICH7_GPE0_EN: u16 = 0x2C;
 
 /// SMI Enable register (32-bit).
 pub const SMI_EN: u16 = 0x30;
@@ -142,6 +139,8 @@ pub const USB4_STS: u32 = 1 << 14;
 /// TCO I/O block offset from PMBASE.
 pub const TCO_BASE_OFFSET: u16 = 0x60;
 
+/// TCO timer reload register (16-bit).
+pub const TCO_RLD: u16 = 0x00;
 /// TCO Data In: OS/ACPI command byte to SMI handler. Writes trigger SW_TCO_SMI.
 pub const TCO_DAT_IN: u16 = 0x02;
 /// TCO Data Out: SMI handler response byte to OS/ACPI.
@@ -308,10 +307,10 @@ impl PmIo {
         sts
     }
 
-    /// Read and clear GPE0_STS (write-1-to-clear).
-    pub fn reset_gpe0_status(&self) -> u32 {
-        let sts = self.read32(GPE0_STS);
-        self.write32(GPE0_STS, sts);
+    /// Read and clear the ICH7 GPE0_STS register (write-1-to-clear).
+    pub fn reset_ich7_gpe0_status(&self) -> u32 {
+        let sts = self.read32(ICH7_GPE0_STS);
+        self.write32(ICH7_GPE0_STS, sts);
         sts
     }
 
@@ -322,15 +321,15 @@ impl PmIo {
         sts
     }
 
-    /// Enable global SMI generation.
-    pub fn global_smi_enable(&self) {
+    /// Open the global SMI gate without changing individual source enables.
+    pub fn open_smi_gate(&self) {
         self.setbits32(SMI_EN, GBL_SMI_EN | EOS);
     }
 
-    /// Mask GPE0 events: clear `clr` bits, set `set` bits.
-    pub fn gpe0_mask(&self, clr: u32, set: u32) {
-        let v = self.read32(GPE0_EN);
-        self.write32(GPE0_EN, (v & !clr) | set);
+    /// Mask ICH7 GPE0 events: clear `clr` bits, set `set` bits.
+    pub fn ich7_gpe0_mask(&self, clr: u32, set: u32) {
+        let v = self.read32(ICH7_GPE0_EN);
+        self.write32(ICH7_GPE0_EN, (v & !clr) | set);
     }
 
     /// Mask ALT_GP_SMI events: clear `clr` bits, set `set` bits.

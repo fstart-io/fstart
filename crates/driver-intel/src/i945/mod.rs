@@ -370,20 +370,6 @@ pub const fn decode_igd_memory_size_kb(gms: u32) -> u32 {
     GGC2UMA_KB[gms as usize]
 }
 
-/// ESMRAMC TSEG size decode in bytes (`decode_tseg_size` from `memmap.c`).
-#[must_use]
-pub const fn decode_tseg_size(esmramc: u8) -> u32 {
-    if esmramc & 1 == 0 {
-        return 0;
-    }
-    match (esmramc >> 1) & 3 {
-        0 => 1 << 20,
-        1 => 2 << 20,
-        2 => 8 << 20,
-        _ => panic!("i945: bad TSEG setting"),
-    }
-}
-
 register_structs! {
     /// Sparse typed overlay for the early i945 host-bridge registers.
     pub I945HostBridgePciConfig {
@@ -836,7 +822,7 @@ impl IntelI945 {
         let p2peg = ecam::EcamDevice::new(0, hostbridge::PEG_DEV, hostbridge::PEG_FUNC);
         let mch = self.mchbar();
 
-        p2peg.or16(hostbridge::DEVEN, hostbridge::DEVEN_D1F0);
+        Self::hb().or16(hostbridge::DEVEN, hostbridge::DEVEN_D1F0);
         p2peg.and32(PEGCC, !(1 << 8));
 
         // Force PCIRST# via secondary bus reset.
@@ -865,8 +851,8 @@ impl IntelI945 {
         }
         let peg_plugin = ecam::EcamDevice::new(0x0a, 0, 0);
         let mut id = peg_plugin.read32(0x00);
-        if (id == 0 || id == 0xffff_ffff) && timeout != 0 {
-            // First training attempt raced; retry at x1 before giving up.
+        if id == 0 || id == 0xffff_ffff {
+            // Retry at x1 before giving up.
             p2peg.modify32(PEGSTS, !(0xf << 1), 1);
             p2peg.or8(0x3e, 1 << 6);
             p2peg.and8_or8(0x3e, !(1 << 6), 0);
@@ -1216,7 +1202,7 @@ impl IntelI945 {
 
     fn tom(&self) -> u64 {
         // TOM is TOLUD in a different format (raminit programs tom = tolud >> 3).
-        u64::from(Self::hostbridge_regs().tom.get()) << 27
+        u64::from(Self::hostbridge_regs().tom.get() & 0x01ff) << 27
     }
 
     fn igd_stolen_base(&self) -> u32 {
@@ -1230,7 +1216,11 @@ impl IntelI945 {
     }
 
     fn tseg_size(&self) -> u32 {
-        decode_tseg_size(Self::hb().read8(hostbridge::ESMRAMC))
+        let esmramc = Self::hb().read8(hostbridge::ESMRAMC);
+        super::gmch::tseg_size_bytes(esmramc).unwrap_or_else(|| {
+            fstart_log::error!("i945: bad TSEG size encoding");
+            0
+        })
     }
 
     fn tseg_base(&self) -> u32 {
