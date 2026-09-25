@@ -727,6 +727,9 @@ impl SmbiosWriter {
     /// (e.g., `0x0119` for AArch64, `0x28` for x86-64, `0x0135` for RISC-V).
     /// Use [`fstart_core::smbios::ProcessorFamily::to_smbios_u16`] to
     /// convert from the typed enum.
+    // One parameter per SMBIOS Type 4 field; grouping them would only move the
+    // list somewhere less readable than the structure it mirrors.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_processor(
         &mut self,
         socket: &str,

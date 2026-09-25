@@ -205,7 +205,7 @@ impl PirqRouting {
 
     /// Every pin the `DxxIP` assignment uses, for the fail-closed check that an
     /// advertised route exists for each of them.
-    #[must_use]
+    #[must_use = "the fail-closed route check consumes every assigned pin"]
     pub fn assigned_pins(&self) -> impl Iterator<Item = (u8, PciPin)> + '_ {
         self.slot_pins.iter().flat_map(|pins| {
             pins.functions

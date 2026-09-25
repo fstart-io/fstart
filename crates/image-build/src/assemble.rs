@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use crate::StageBinary;
 
+// One parameter per image input; these are the board's declared payload files.
+#[allow(clippy::too_many_arguments)]
 pub fn assemble(
     workspace_root: &Path,
     board_dir: &Path,

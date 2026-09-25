@@ -40,6 +40,10 @@ static PUBLISHED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 /// Call once during single-threaded stage entry before media services/APs start.
 /// `capacity` must be the independently established platform/device limit, not
 /// a value taken from the carried locator. The caller establishes provenance.
+// Both failure modes (already published, locator over capacity) are reported
+// identically, and every caller maps the error to a single `ServiceError`, so a
+// typed error would carry no more information than the unit variant.
+#[allow(clippy::result_unit_err)]
 pub unsafe fn install_locator(locator: LocatorBlock, capacity: u64) -> Result<(), ()> {
     #[cfg(any(fstart_stage_env = "ram", fstart_stage_env = "postcar"))]
     {
