@@ -1,5 +1,7 @@
 # Typed PCI Configuration Access Plan
 
+> **Historical.** See the [documentation index](README.md#historical).
+
 > **Status:** the address, header, capability, and config-access vocabulary is
 > provided by the upstream `pci_types` crate. References below to defining
 > fstart-specific `PciBdf`, `PciSbdf`, or config-access traits are superseded;
