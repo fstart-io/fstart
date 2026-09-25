@@ -21,13 +21,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: nightly-2026-08-28
-          components: rust-src, llvm-tools, rustfmt
+          components: rust-src, llvm-tools, rustfmt, clippy
           targets: riscv64gc-unknown-none-elf, aarch64-unknown-none, armv7a-none-eabi, x86_64-unknown-none
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
       - name: Format check
         run: cargo fmt --all -- --check
+
+      # Lint gate for the host closure: every crate in the workspace, all
+      # targets. The firmware target closures are covered by the board builds
+      # below, which compile the same crates with their real features.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Install test dependencies
         run: |

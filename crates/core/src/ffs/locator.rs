@@ -92,7 +92,7 @@ impl LocatorBlock {
             self.image_offset,
         ]
         .into_iter()
-        .zip(output[8..LOCATOR_SIZE].chunks_exact_mut(4))
+        .zip(output[8..LOCATOR_SIZE].as_chunks_mut::<4>().0)
         {
             bytes.copy_from_slice(&value.to_le_bytes());
         }

@@ -183,10 +183,10 @@ impl<NB: SmramControl, SB: SmiControl> IntelSmm<'_, NB, SB> {
                     page_table_size: 0,
                     cr3: crate::x86::controlregs::cr3(),
                     platform_kind: fstart_smm::SMM_PLATFORM_INTEL_ICH,
-                    platform_flags: u32::from(gpe0.wide)
-                        * fstart_smm::SMM_PLATFORM_FLAG_ICH_GPE0_64BIT
-                        | u32::from(self.bsp_only_dispatch)
-                            * fstart_smm::SMM_PLATFORM_FLAG_BSP_ONLY,
+                    platform_flags: (u32::from(gpe0.wide)
+                        * fstart_smm::SMM_PLATFORM_FLAG_ICH_GPE0_64BIT)
+                        | (u32::from(self.bsp_only_dispatch)
+                            * fstart_smm::SMM_PLATFORM_FLAG_BSP_ONLY),
                     platform_data: [
                         u64::from(self.smi.pm_base()),
                         u64::from(gpe0.sts_offset),

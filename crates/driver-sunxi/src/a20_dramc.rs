@@ -260,6 +260,8 @@ pub struct A20DramcConfig {
 
 impl A20DramcConfig {
     /// Construct static A20 DDR3 policy.
+    // One parameter per DDR3 timing register; the list is the DRAM policy.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub const fn new(
         clock: u32,

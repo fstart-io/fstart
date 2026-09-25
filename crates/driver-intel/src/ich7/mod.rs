@@ -236,6 +236,10 @@ impl Rcba {
 }
 
 /// ICH7 / NM10 PCI config and RCBA register constants.
+///
+/// Nested under `ich7` so the raw register constants stay distinct from the
+/// `IntelIch7` driver types defined in this same file.
+#[allow(clippy::module_inception)]
 pub mod ich7 {
     /// LPC bridge: bus 0, dev 0x1f, func 0.
     pub const LPC_DEV: u8 = 0x1f;

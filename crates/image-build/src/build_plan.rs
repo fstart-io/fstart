@@ -213,6 +213,9 @@ pub struct ArtifactBinding {
 }
 
 /// Bounded format operations, not platform identities or arbitrary commands.
+// `Executable` is the larger variant, but this lives in host build metadata
+// that is constructed once per unit, so boxing it would only add indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UnitOutput {
     Executable {

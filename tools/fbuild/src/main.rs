@@ -186,6 +186,8 @@ fn board_tool_assemble_args(
     args
 }
 
+// One parameter per forwarded CLI option; each becomes its own argv entry.
+#[allow(clippy::too_many_arguments)]
 fn board_tool_run_args(
     subcommand: &str,
     release: bool,

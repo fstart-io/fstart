@@ -25,6 +25,8 @@ pub(crate) struct Selection {
 
 impl Selection {
     /// Concrete compiler unit shared by the common build/check/editor executor.
+    // One parameter per resolved input recorded in the compiler selection.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_unit(
         root: &Path,
         board: &BoardManifest,

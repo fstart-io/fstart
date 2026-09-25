@@ -834,7 +834,6 @@ fn generate_xip_layout(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn generate_ram_layout(
     out: &mut String,
     ram_origin: u64,

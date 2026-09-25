@@ -57,6 +57,9 @@ pub fn generate_image(
     )
 }
 
+// One parameter per rust-analyzer view setting; they are written out as a
+// single editor configuration rather than grouped.
+#[allow(clippy::too_many_arguments)]
 fn generate_selection(
     root: &Path,
     board: &BoardManifest,

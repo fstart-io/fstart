@@ -97,6 +97,10 @@ impl H8 {
     }
 
     /// Program all event-enable mask registers from board policy.
+    // Every register is written even if an earlier write fails, so the caller
+    // sees the complete outcome. `Iterator::all` would short-circuit and skip
+    // the remaining EC writes.
+    #[allow(clippy::unnecessary_fold)]
     pub fn program_event_masks(&self, masks: &[u8; EVENT_ENABLE_REGISTERS]) -> bool {
         masks
             .iter()
