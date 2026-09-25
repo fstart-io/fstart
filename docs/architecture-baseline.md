@@ -1,5 +1,9 @@
 # Architecture migration baseline and progress
 
+> **Historical.** The metadata-profile authoring API tracked here was removed.
+> [architecture.md](architecture.md) is the plan of record; see the
+> [documentation index](README.md#historical).
+
 <!-- markdownlint-disable MD013 -->
 
 This tracks the [architecture migration](architecture.md), starting from firmware

@@ -836,12 +836,9 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             if let Some(p) = linux {
                 regions.push(span(p.kernel_addr, p.kernel_capacity).region(Kind::Payload));
             }
-            if keep_firmware {
-                if let Some(p) = &policy.linux {
-                    regions.push(
-                        span(p.firmware_addr, p.firmware_capacity).region(Kind::PayloadFirmware),
-                    );
-                }
+            if keep_firmware && let Some(p) = &policy.linux {
+                regions
+                    .push(span(p.firmware_addr, p.firmware_capacity).region(Kind::PayloadFirmware));
             }
             if let Some(dtb) = dtb {
                 regions.push(dtb.region(Kind::DeviceTree));
@@ -905,12 +902,9 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             if let Some(p) = linux {
                 regions.push(span(p.kernel_addr, p.kernel_capacity).region(Kind::Payload));
             }
-            if keep_firmware {
-                if let Some(p) = &policy.linux {
-                    regions.push(
-                        span(p.firmware_addr, p.firmware_capacity).region(Kind::PayloadFirmware),
-                    );
-                }
+            if keep_firmware && let Some(p) = &policy.linux {
+                regions
+                    .push(span(p.firmware_addr, p.firmware_capacity).region(Kind::PayloadFirmware));
             }
             if let Some(dtb) = dtb {
                 regions.push(dtb.region(Kind::DeviceTree));

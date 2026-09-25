@@ -30,3 +30,4 @@ cargo fbuild assemble --board qemu-riscv64
 ## Documentation
 
 - **[fstart Architecture: Config as Data, Fixed Family Flows, Few Crates](docs/architecture.md)** — the plan of record.
+- **[Documentation index](docs/README.md)** — subsystem designs, evidence, and the superseded documents kept as record.

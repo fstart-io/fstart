@@ -731,8 +731,6 @@ mod tests {
             reset: GpioReset::Pwrok,
         });
         let regs = GpioRegisters::from_config(&cfg);
-        for i in 0..3 {
-            assert_eq!(regs.use_sel[i], 0);
-        }
+        assert!(regs.use_sel.iter().all(|&sel| sel == 0));
     }
 }

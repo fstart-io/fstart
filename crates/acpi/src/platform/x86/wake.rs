@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn rejects_missing_facs_signature() {
         let mut mem = valid_mem();
-        mem.write(0x3_0000, &vec![0u8; FACS_LEN]);
+        mem.write(0x3_0000, &[0u8; FACS_LEN]);
         assert_eq!(find_wakeup_vector_with(mem.reader()), None);
     }
 
