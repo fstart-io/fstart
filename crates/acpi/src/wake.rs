@@ -114,11 +114,12 @@ pub fn rsdp_is_valid_with(read: &impl Fn(u64, &mut [u8]) -> bool, rsdp_addr: u64
 fn find_fadt_in_xsdt(read: &impl Fn(u64, &mut [u8]) -> bool, xsdt_addr: u64) -> Option<u64> {
     let mut bytes = [0u8; MAX_SDT_LEN];
     let length = read_sdt(read, xsdt_addr, *b"XSDT", &mut bytes)?;
-    let entries = bytes[core::mem::size_of::<SdtHeader>()..length].chunks_exact(8);
-    if !entries.remainder().is_empty() {
+    let (entries, remainder) = bytes[core::mem::size_of::<SdtHeader>()..length].as_chunks::<8>();
+    if !remainder.is_empty() {
         return None;
     }
     entries
+        .iter()
         .filter_map(|bytes| {
             XsdtEntry::read_from_prefix(bytes)
                 .ok()

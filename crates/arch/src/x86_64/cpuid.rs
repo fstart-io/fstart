@@ -136,11 +136,9 @@ pub fn cpu_topology() -> CpuTopology {
 pub fn core_thread_count() -> (u8, u8) {
     let (cores, threads) = cpu_core_thread_counts();
     // threads-per-core = threads / cores, preserving the legacy u8 API.
-    let threads_per_core = if cores > 0 {
-        (threads / cores).clamp(1, u8::MAX as u16) as u8
-    } else {
-        1
-    };
+    let threads_per_core = threads
+        .checked_div(cores)
+        .map_or(1, |per_core| per_core.clamp(1, u8::MAX as u16) as u8);
     (
         cores.clamp(1, u8::MAX as u16) as u8,
         threads_per_core.max(1),

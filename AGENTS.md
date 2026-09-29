@@ -16,7 +16,7 @@ payload/stage architecture) and `~/src/u-boot` (C, device-tree-driven board defs
 
 ## Design Documents
 
-- **[fstart Architecture: Config as Data, Fixed Family Flows, Few Crates](docs/architecture.md)** — the plan of record. It supersedes the earlier board-builder/stage-flow and BSP/platform-recipe plans, and consolidates the fstart-new reboot sketch.
+- **[fstart Architecture: Config as Data, Fixed Family Flows, Few Crates](docs/architecture.md)** — the plan of record. It supersedes the earlier board-builder/stage-flow and BSP/platform-recipe plans, and consolidates the fstart-new reboot sketch. [docs/README.md](docs/README.md) indexes the subsystem designs and the historical record they replaced.
 
 ## Environment
 

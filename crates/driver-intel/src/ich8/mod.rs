@@ -31,6 +31,10 @@ pub use crate::southbridge::hda::{
 };
 
 /// ICH8/ICH8-M PCI config and RCBA constants.
+///
+/// Nested under `ich8` so the raw register constants stay distinct from the
+/// `IntelIch8` driver types defined in this same file.
+#[allow(clippy::module_inception)]
 pub mod ich8 {
     pub const LAN_DEV: u8 = 0x19;
     pub const LAN_FUNC: u8 = 0;

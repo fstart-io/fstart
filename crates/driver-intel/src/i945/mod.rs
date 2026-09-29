@@ -316,6 +316,13 @@ pub struct IntelI945Config {
     pub igd: I945IgdConfig,
 }
 
+impl Default for IntelI945Config {
+    /// Same platform defaults as [`IntelI945Config::new`].
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IntelI945Config {
     #[must_use]
     pub const fn new() -> Self {
@@ -676,7 +683,7 @@ impl IntelI945 {
             ep.read32(epbar::EPVC1RCTL) | EPVC1RCTL_REG::ARB_LOAD::SET.value,
         );
 
-        let mut timeout = 0x7fff_ffu32;
+        let mut timeout = 0x7f_ffffu32;
         while ep.read16(epbar::EPVC1RSTS) & 1 != 0 && timeout != 0 {
             timeout -= 1;
         }
@@ -800,7 +807,7 @@ impl IntelI945 {
             }
         }
 
-        timeout = 0x7fff_ff;
+        timeout = 0x7f_ffff;
         while dmi.read8(dmibar::DMI_MISC_32) & (1 << 1) != 0 && timeout != 0 {
             timeout -= 1;
         }
@@ -884,7 +891,7 @@ impl IntelI945 {
         let width = (p2peg.read16(0xb2) >> 4) & 0x3f;
         fstart_log::info!("i945: PCIe x{} link training succeeded", width);
 
-        if peg_plugin.read32(0x08) >> 8 == 0x0300_00 {
+        if peg_plugin.read32(0x08) >> 8 == 0x03_0000 {
             fstart_log::info!("i945: PCIe device is VGA; disabling IGD");
             Self::hb().write16(hostbridge::GGC, 1 << 1);
             Self::hb().and16(
@@ -949,7 +956,7 @@ impl IntelI945 {
         p2peg.or32(0x224, 1 << 8);
         p2peg.and8_or8(0x3e, !(1 << 6), 0);
 
-        let mut timeout = 0x7fff_ffu32;
+        let mut timeout = 0x7f_ffffu32;
         while p2peg.read32(PEGSTS) & 0x000f_0000 != 0 && timeout != 0 {
             timeout -= 1;
         }

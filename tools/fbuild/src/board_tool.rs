@@ -344,6 +344,8 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+// One parameter per CLI-supplied input forwarded to the assembler and QEMU.
+#[allow(clippy::too_many_arguments)]
 fn run(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,

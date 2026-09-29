@@ -72,7 +72,7 @@ impl TrustBlock {
         {
             return None;
         }
-        for (key, bytes) in block.keys.iter_mut().zip(bytes[48..].chunks_exact(68)) {
+        for (key, bytes) in block.keys.iter_mut().zip(bytes[48..].as_chunks::<68>().0) {
             *key = VerificationKey {
                 key_id: bytes[0],
                 algorithm: bytes[1],
@@ -100,7 +100,7 @@ impl TrustBlock {
         dest[24..28].copy_from_slice(&self.key_count.to_le_bytes());
         dest[28..32].copy_from_slice(&self.reserved.to_le_bytes());
         dest[32..48].copy_from_slice(&self.image_family);
-        for (key, bytes) in self.keys.iter().zip(dest[48..].chunks_exact_mut(68)) {
+        for (key, bytes) in self.keys.iter().zip(dest[48..].as_chunks_mut::<68>().0) {
             bytes[0] = key.key_id;
             bytes[1] = key.algorithm;
             bytes[2..4].copy_from_slice(&key._pad);

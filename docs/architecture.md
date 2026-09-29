@@ -8,6 +8,9 @@ board-builder/stage-flow, BSP/platform-recipe and fstart-new plans. Target
 interfaces below are not claims that the cutover is implemented. See
 [Implementation and acceptance](#implementation-and-acceptance) for the gates.
 
+Other design documents and the historical record they replaced are indexed in
+[docs/README.md](README.md).
+
 ## Goals
 
 - Scale to hundreds of platforms and thousands of boards through change locality.

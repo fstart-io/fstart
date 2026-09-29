@@ -909,9 +909,9 @@ fn gather_common_timing(
         let mut ok = matches!(ctx.smbus.block_read(device, 0, &mut raw[..64]), Ok(64));
         if !ok {
             ok = true;
-            for j in 0..64 {
+            for (j, slot) in raw[..64].iter_mut().enumerate() {
                 match ctx.smbus.read_byte(device, j as u8) {
-                    Ok(v) => raw[j] = v,
+                    Ok(v) => *slot = v,
                     Err(_) => {
                         ok = false;
                         break;
@@ -1366,6 +1366,8 @@ fn enable_system_memory_io(ctx: &Ctx<'_>, sys: &SysInfo) {
 }
 
 /// Program DRB/TOLUD/TOM (`sdram_program_row_boundaries`).
+// The loop index is the C0DRB/C1DRB register and bank position.
+#[allow(clippy::needless_range_loop)]
 fn program_row_boundaries(ctx: &Ctx<'_>, sys: &SysInfo) {
     let mut cum0 = 0u32;
     for i in 0..4 {
@@ -1463,6 +1465,8 @@ fn program_refresh_rate(ctx: &Ctx<'_>, sys: &SysInfo) {
 }
 
 /// Program CKE tristate (`sdram_program_cke_tristate`).
+// The loop index is the CKE bit position within C0DRC1/C1DRC1.
+#[allow(clippy::needless_range_loop)]
 fn program_cke_tristate(ctx: &Ctx<'_>, sys: &SysInfo) {
     let mut reg = ctx.mch.read32(r::C0DRC1);
     for i in 0..4 {
@@ -1484,6 +1488,8 @@ fn program_cke_tristate(ctx: &Ctx<'_>, sys: &SysInfo) {
 }
 
 /// Program ODT tristate (`sdram_program_odt_tristate`).
+// The loop index is the ODT bit position within C0DRC2/C1DRC2.
+#[allow(clippy::needless_range_loop)]
 fn program_odt_tristate(ctx: &Ctx<'_>, sys: &SysInfo) {
     let mut reg = ctx.mch.read32(r::C0DRC2);
     for i in 0..4 {

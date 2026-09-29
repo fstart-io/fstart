@@ -1,5 +1,10 @@
 # Intel/X61 typed facts acceptance
 
+> **Historical.** The family-specific fbuild orchestration described here was
+> replaced by the platform-plan executor in [architecture.md](architecture.md),
+> which is the plan of record. See the
+> [documentation index](README.md#historical).
+
 Correction to `ab52d16c` (the completed X61 metadata cutover). This is an Intel/X61
 migration, not a QEMU schema migration or Cargo workspace/lock ownership cutover.
 

@@ -650,6 +650,21 @@ fn finish_x86_pflash(
     Ok(pflash_path)
 }
 
+/// QEMU's H3 BROM reads eGON from SD byte 0x2000; provide a real-sized SD image.
+fn create_sunxi_sd_image(binary: &Path) -> Result<PathBuf, String> {
+    const SIZE: usize = 32 * 1024 * 1024;
+    const EGON_OFFSET: usize = 8 * 1024;
+    let image = std::fs::read(binary).map_err(|e| format!("failed to read eGON image: {e}"))?;
+    if image.len() > SIZE - EGON_OFFSET {
+        return Err("eGON image exceeds QEMU SD image".to_string());
+    }
+    let path = binary.with_extension("sunxi-sd.img");
+    let mut sd = vec![0u8; SIZE];
+    sd[EGON_OFFSET..EGON_OFFSET + image.len()].copy_from_slice(&image);
+    std::fs::write(&path, sd).map_err(|e| format!("failed to create Sunxi SD image: {e}"))?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,19 +700,4 @@ mod tests {
 
         assert_eq!(&pflash[0x20..0x24], b"data");
     }
-}
-
-/// QEMU's H3 BROM reads eGON from SD byte 0x2000; provide a real-sized SD image.
-fn create_sunxi_sd_image(binary: &Path) -> Result<PathBuf, String> {
-    const SIZE: usize = 32 * 1024 * 1024;
-    const EGON_OFFSET: usize = 8 * 1024;
-    let image = std::fs::read(binary).map_err(|e| format!("failed to read eGON image: {e}"))?;
-    if image.len() > SIZE - EGON_OFFSET {
-        return Err("eGON image exceeds QEMU SD image".to_string());
-    }
-    let path = binary.with_extension("sunxi-sd.img");
-    let mut sd = vec![0u8; SIZE];
-    sd[EGON_OFFSET..EGON_OFFSET + image.len()].copy_from_slice(&image);
-    std::fs::write(&path, sd).map_err(|e| format!("failed to create Sunxi SD image: {e}"))?;
-    Ok(path)
 }
