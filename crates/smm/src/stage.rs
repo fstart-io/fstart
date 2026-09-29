@@ -1,27 +1,11 @@
 #[cfg(target_os = "none")]
 use core::panic::PanicInfo;
 
-use crate::{
-    SMM_PLATFORM_FLAG_BSP_ONLY, SMM_PLATFORM_NONE, SmmContext, SmmHandler, debug_trace,
-    obtain_handler_lock, release_handler_lock, wait_for_handler_unlock,
-};
-
 pub use crate::SmmEntryParams;
-
-#[repr(align(16))]
-#[allow(dead_code)]
-struct HeapStore([u8; 4096]);
-
-#[unsafe(no_mangle)]
-static _FSTART_HEAP: HeapStore = HeapStore([0; 4096]);
-
-#[unsafe(no_mangle)]
-static _FSTART_HEAP_SIZE: usize = 4096;
+use crate::{SmmContext, SmmHandler, debug_trace, enter_rendezvous, leave_rendezvous};
 
 /// Selected-board SMM binding supplied by the board crate.
 pub trait SmmStageBoard {
-    /// Runtime platform kind accepted by this board's handler.
-    const PLATFORM_KIND: u32;
     /// Fully composed platform + board SMM handler.
     type Handler: SmmHandler;
 }
@@ -29,17 +13,31 @@ pub trait SmmStageBoard {
 /// Declare a board-owned SMM handler entry.
 #[macro_export]
 macro_rules! smm_bin {
-    ($board:ty, $platform_kind:expr, $handler:ty) => {
+    ($board:ty, $handler:ty) => {
         impl $crate::SmmStageBoard for $board {
-            const PLATFORM_KIND: u32 = $platform_kind;
             type Handler = $handler;
         }
 
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn fstart_smm_handler(params: *mut $crate::SmmEntryParams) {
-            // SAFETY: the SMM image trampoline provides the raw entry params.
+            // SAFETY: the SMM entry stub passes its loader-filled params.
             unsafe { $crate::handle::<$board>(params) }
         }
+
+        #[repr(align(16))]
+        #[allow(dead_code)]
+        struct FstartSmmHeap([u8; 4096]);
+
+        // Emit these roots beside the board's handler entry so archive member
+        // selection cannot discard the real BSS tail.
+        #[used]
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".bss.fstart.heap"))]
+        #[unsafe(no_mangle)]
+        static _FSTART_HEAP: FstartSmmHeap = FstartSmmHeap([0; 4096]);
+        #[used]
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".rodata.fstart.heap"))]
+        #[unsafe(no_mangle)]
+        static _FSTART_HEAP_SIZE: usize = 4096;
 
         #[used]
         #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
@@ -48,58 +46,33 @@ macro_rules! smm_bin {
     };
 }
 
-/// Dispatch one SMM entry through the selected board's handler.
+/// Dispatch one SMI through the selected board's handler.
+///
+/// Force-inlined into the board's `fstart_smm_handler` so the installed image
+/// contains no cross-crate PLT/GOT calls.
 ///
 /// # Safety
 ///
-/// `params` must be a valid pointer to the SMM entry parameter block provided
-/// by the SMM trampoline for the current CPU, or null to indicate no work. The
-/// caller must invoke this only while executing in SMM with the expected CPU and
-/// platform state for `B`.
-/// Force-inline the whole SMI dispatch chain into the board's
-/// `fstart_smm_handler` so the installed blob contains no cross-crate
-/// PLT/GOT calls (the raw `ld` link cannot resolve them for SMRAM).
+/// `params` must be the current CPU's valid entry block while executing in SMM.
 #[inline(always)]
 pub unsafe fn handle<B: SmmStageBoard>(params: *mut SmmEntryParams) {
+    let Some(mut ctx) = (unsafe { SmmContext::from_raw(params) }) else {
+        return;
+    };
+    // SAFETY: the installer wrote this handler's own configuration type.
+    let config = unsafe { ctx.handler_config::<<B::Handler as SmmHandler>::Config>() };
+
+    if !unsafe { enter_rendezvous(&ctx) } {
+        unsafe { debug_trace(ctx.cpu()) };
+        return;
+    }
+
     unsafe {
-        let Some(mut ctx) = SmmContext::from_raw(params) else {
-            return;
-        };
-
-        let bsp_only = ctx.params.platform_flags & SMM_PLATFORM_FLAG_BSP_ONLY != 0;
-
-        // Pineview/ICH7 stalls on locked exchanges against TSEG. Its broadcast
-        // SMIs therefore dispatch shared southbridge state only on the BSP;
-        // secondary CPUs still prove their private entry and RSM paths.
-        if bsp_only && ctx.params.cpu != 0 {
-            debug_trace(ctx.params.cpu);
-            return;
+        if let Some(config) = config {
+            B::Handler::handle(&mut ctx, &config);
         }
-
-        ctx.record_entry();
-
-        // Platforms without the Pineview restriction retain the normal shared
-        // handler lock, including Q35 and ICH8 systems.
-        if !bsp_only
-            && let Some(runtime) = ctx.runtime_mut()
-            && !obtain_handler_lock(runtime)
-        {
-            wait_for_handler_unlock(runtime);
-            debug_trace(ctx.params.cpu);
-            return;
-        }
-
-        match ctx.params.platform_kind {
-            SMM_PLATFORM_NONE => {}
-            kind if kind == B::PLATFORM_KIND => B::Handler::handle(&mut ctx),
-            _ => {}
-        }
-
-        debug_trace(ctx.params.cpu);
-
-        if !bsp_only && let Some(runtime) = ctx.runtime_mut() {
-            release_handler_lock(runtime);
-        }
+        debug_trace(ctx.cpu());
+        leave_rendezvous(&ctx);
     }
 }
 

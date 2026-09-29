@@ -1,7 +1,13 @@
+use std::mem::{align_of, size_of};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use object::{Object, ObjectSection, ObjectSymbol, RelocationKind, SectionFlags};
+use object::{
+    Object, ObjectSection, ObjectSymbol, RelocationKind, RelocationTarget, SectionFlags,
+    SectionKind,
+};
+
+use zerocopy::IntoBytes;
 
 use fstart_smm::header::{
     CorebootOffsets, EntryDescriptor, FLAG_COREBOOT_HEADER, FLAG_COREBOOT_MODULE_ARGS,
@@ -9,13 +15,14 @@ use fstart_smm::header::{
 };
 #[cfg(test)]
 use fstart_smm::runtime::SmmEntryParams;
-use fstart_smm::runtime::{CorebootModuleArgs, MAX_SMM_CPUS, SmmRuntime};
+use fstart_smm::runtime::{
+    CorebootModuleArgs, HANDLER_CONFIG_ALIGNMENT, HANDLER_CONFIG_CAPACITY, SmmRuntime,
+};
 
 #[cfg(not(rust_analyzer))]
 mod asm {
     include!(concat!(env!("OUT_DIR"), "/smm_image_asm.rs"));
 }
-
 #[cfg(rust_analyzer)]
 mod asm {
     pub const ENTRY_STUB: &[u8] = &[];
@@ -25,31 +32,25 @@ mod asm {
 #[derive(Debug)]
 pub enum BuildError {
     NoEntries,
-    TooManyEntries,
     BadStackSize,
+    BadHandler,
     Overflow,
     Io(std::io::Error),
     Tool(String),
 }
-
 impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoEntries => write!(f, "SMM image must contain at least one entry point"),
-            Self::TooManyEntries => write!(
-                f,
-                "SMM image entry count exceeds ABI maximum ({MAX_SMM_CPUS})"
-            ),
             Self::BadStackSize => write!(f, "SMM stack size must be non-zero"),
+            Self::BadHandler => write!(f, "SMM handler memory image is invalid"),
             Self::Overflow => write!(f, "SMM image layout arithmetic overflowed"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Tool(e) => write!(f, "SMM stage build failed: {e}"),
         }
     }
 }
-
 impl std::error::Error for BuildError {}
-
 impl From<std::io::Error> for BuildError {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
@@ -63,11 +64,18 @@ pub struct ImageOptions {
     pub coreboot_module_args: bool,
     pub coreboot_header: bool,
 }
-
 #[derive(Debug, Clone)]
 pub struct BuiltImage {
     pub image: Vec<u8>,
     pub coreboot_header: Option<String>,
+}
+
+/// Linked handler bytes plus the complete memory extent including BSS.
+#[derive(Debug, Clone)]
+pub struct SmmHandlerImage {
+    initialized: Vec<u8>,
+    memory_size: usize,
+    entry_offset: usize,
 }
 
 pub fn build_image(
@@ -75,46 +83,61 @@ pub fn build_image(
     handler: &SmmHandlerImage,
 ) -> Result<BuiltImage, BuildError> {
     validate_options(options)?;
-
-    let stub = asm::ENTRY_STUB;
-    let common_code = handler.code.as_slice();
+    if handler.initialized.is_empty()
+        || handler.memory_size < handler.initialized.len()
+        || handler.entry_offset >= handler.initialized.len()
+    {
+        return Err(BuildError::BadHandler);
+    }
 
     let header_size = size_of::<SmmImageHeader>();
     let desc_size = size_of::<EntryDescriptor>();
-    let params_offset = asm::ENTRY_PARAMS_OFFSET;
-    let stub_size = stub.len();
-    let common_runtime_offset = align_up(common_code.len(), 16)?;
-    let mut common_size = common_runtime_offset
-        .checked_add(size_of::<SmmRuntime>())
-        .ok_or(BuildError::Overflow)?;
-
-    let module_args_offset = if options.coreboot_module_args {
-        let off = align_up(common_size, 16)?;
-        let size = size_of::<CorebootModuleArgs>()
-            .checked_mul(options.entry_count as usize)
-            .ok_or(BuildError::Overflow)?;
-        common_size = off.checked_add(size).ok_or(BuildError::Overflow)?;
-        off
-    } else {
-        0
-    };
-
     let entries_offset = header_size;
-    let common_offset = align_up(
+    let handler_offset = align_up(
         entries_offset
             .checked_add(desc_size * options.entry_count as usize)
             .ok_or(BuildError::Overflow)?,
         16,
     )?;
     let stubs_offset = align_up(
-        common_offset
-            .checked_add(common_size)
+        handler_offset
+            .checked_add(handler.initialized.len())
             .ok_or(BuildError::Overflow)?,
         16,
     )?;
+    let stub_size = asm::ENTRY_STUB.len();
     let image_size = stubs_offset
         .checked_add(stub_size * options.entry_count as usize)
         .ok_or(BuildError::Overflow)?;
+
+    let runtime_offset = align_up(
+        handler.memory_size,
+        align_of::<SmmRuntime>().max(HANDLER_CONFIG_ALIGNMENT),
+    )?;
+    let runtime_size = size_of::<SmmRuntime>();
+    let handler_config_offset = align_up(
+        runtime_offset
+            .checked_add(runtime_size)
+            .ok_or(BuildError::Overflow)?,
+        HANDLER_CONFIG_ALIGNMENT,
+    )?;
+    let handler_config_capacity = HANDLER_CONFIG_CAPACITY;
+    let mut handler_mem_size = handler_config_offset
+        .checked_add(handler_config_capacity)
+        .ok_or(BuildError::Overflow)?;
+    let module_args_offset = if options.coreboot_module_args {
+        let offset = align_up(handler_mem_size, align_of::<CorebootModuleArgs>())?;
+        handler_mem_size = offset
+            .checked_add(
+                size_of::<CorebootModuleArgs>()
+                    .checked_mul(options.entry_count as usize)
+                    .ok_or(BuildError::Overflow)?,
+            )
+            .ok_or(BuildError::Overflow)?;
+        offset
+    } else {
+        0
+    };
 
     let mut flags = 0;
     if options.coreboot_module_args {
@@ -123,21 +146,20 @@ pub fn build_image(
     if options.coreboot_header {
         flags |= FLAG_COREBOOT_HEADER;
     }
-
     let header = SmmImageHeader::new(
         flags,
         as_u32(image_size)?,
         options.entry_count,
         as_u32(entries_offset)?,
-        as_u32(common_offset)?,
-        as_u32(common_size)?,
+        as_u32(handler_offset)?,
+        as_u32(handler.initialized.len())?,
+        as_u32(handler_mem_size)?,
         as_u32(handler.entry_offset)?,
-        as_u32(common_runtime_offset)?,
-        if options.coreboot_module_args {
-            as_u32(common_offset + module_args_offset)?
-        } else {
-            0
-        },
+        as_u32(runtime_offset)?,
+        as_u32(runtime_size)?,
+        as_u32(handler_config_offset)?,
+        as_u32(handler_config_capacity)?,
+        as_u32(module_args_offset)?,
         if options.coreboot_module_args {
             as_u32(size_of::<CorebootModuleArgs>() * options.entry_count as usize)?
         } else {
@@ -147,41 +169,40 @@ pub fn build_image(
     );
 
     let mut image = vec![0u8; image_size];
-    put_header(&mut image, 0, &header);
-
+    header
+        .write_to_prefix(&mut image)
+        .expect("header space reserved");
     for i in 0..options.entry_count as usize {
-        let desc_off = entries_offset + i * desc_size;
-        let stub_off = stubs_offset + i * stub_size;
-        put_entry_descriptor(
-            &mut image,
-            desc_off,
-            &EntryDescriptor {
-                stub_offset: as_u32(stub_off)?,
-                stub_size: as_u32(stub_size)?,
-                entry_offset: 0,
-                params_offset: as_u32(params_offset)?,
-            },
-        );
-        image[stub_off..stub_off + stub_size].copy_from_slice(stub);
+        let stub_offset = stubs_offset + i * stub_size;
+        EntryDescriptor {
+            stub_offset: as_u32(stub_offset)?,
+            stub_size: as_u32(stub_size)?,
+            entry_offset: 0,
+            params_offset: as_u32(asm::ENTRY_PARAMS_OFFSET)?,
+        }
+        .write_to_prefix(&mut image[entries_offset + i * desc_size..])
+        .expect("descriptor space reserved");
+        image[stub_offset..stub_offset + stub_size].copy_from_slice(asm::ENTRY_STUB);
     }
-
-    image[common_offset..common_offset + common_code.len()].copy_from_slice(common_code);
+    image[handler_offset..handler_offset + handler.initialized.len()]
+        .copy_from_slice(&handler.initialized);
 
     let coreboot_header = options.coreboot_header.then(|| {
         render_coreboot_header(
             CorebootOffsets {
                 native_header: 0,
                 entries: entries_offset as u32,
-                common: common_offset as u32,
-                common_entry: handler.entry_offset as u32,
-                runtime: common_runtime_offset as u32,
-                module_args: header.module_args_offset,
+                handler: handler_offset as u32,
+                handler_entry: handler.entry_offset as u32,
+                handler_load_size: handler.initialized.len() as u32,
+                handler_mem_size: handler_mem_size as u32,
+                runtime: runtime_offset as u32,
+                module_args: module_args_offset as u32,
                 entry_count: options.entry_count,
             },
             desc_size as u16,
         )
     });
-
     Ok(BuiltImage {
         image,
         coreboot_header,
@@ -199,22 +220,37 @@ pub fn write_image(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(image_path, &built.image)?;
-
     if let Some(path) = header_path {
-        let header = built.coreboot_header.as_deref().unwrap_or("");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, header)?;
+        std::fs::write(path, built.coreboot_header.as_deref().unwrap_or(""))?;
     }
-
     Ok(built)
 }
 
-#[derive(Debug, Clone)]
-pub struct SmmHandlerImage {
-    pub code: Vec<u8>,
-    pub entry_offset: usize,
+const LINKER_SCRIPT: &str = r#"
+ENTRY(fstart_smm_handler)
+SECTIONS {
+  . = 0;
+  .text : ALIGN(16) { *(.text .text.*) }
+  .rodata : ALIGN(16) {
+    KEEP(*(.rodata.fstart.heap))
+    *(.rodata .rodata.* .srodata .srodata.*)
+  }
+  .data : ALIGN(16) { *(.data .data.* .sdata .sdata.*) }
+  .bss (NOLOAD) : ALIGN(16) {
+    KEEP(*(.bss.fstart.heap))
+    *(.bss .bss.* .sbss .sbss.*) *(COMMON)
+  }
+  /DISCARD/ : { *(.fstart.keep) *(.eh_frame .eh_frame.*) *(.note .note.*) *(.comment) }
+}
+"#;
+
+fn write_linker_script(work_dir: &Path) -> Result<PathBuf, BuildError> {
+    let path = work_dir.join("smm-handler.ld");
+    std::fs::write(&path, LINKER_SCRIPT)?;
+    Ok(path)
 }
 
 pub fn handler_from_archive(
@@ -223,12 +259,22 @@ pub fn handler_from_archive(
 ) -> Result<SmmHandlerImage, BuildError> {
     std::fs::create_dir_all(work_dir)?;
     let elf = work_dir.join("smm_handler.elf");
-
+    let script = write_linker_script(work_dir)?;
     run_tool(
         Command::new("ld")
             .arg("-nostdlib")
-            .arg("-Ttext=0")
+            .arg("--gc-sections")
+            .arg("--emit-relocs")
+            .arg("--exclude-libs")
+            .arg("ALL")
+            .arg("-Bsymbolic")
+            .arg("-T")
+            .arg(&script)
             .arg("--oformat=elf64-x86-64")
+            .arg("-e")
+            .arg("fstart_smm_handler")
+            .arg("-u")
+            .arg("fstart_smm_handler")
             .arg("-o")
             .arg(&elf)
             .arg("--whole-archive")
@@ -238,20 +284,18 @@ pub fn handler_from_archive(
     handler_from_elf(&elf, work_dir)
 }
 
-pub fn handler_from_elf(elf: &Path, work_dir: &Path) -> Result<SmmHandlerImage, BuildError> {
-    std::fs::create_dir_all(work_dir)?;
-    let bin = work_dir.join("smm_handler.bin");
-    write_text_section(elf, &bin)?;
-
-    Ok(SmmHandlerImage {
-        code: std::fs::read(&bin)?,
-        entry_offset: find_symbol_offset(elf, "fstart_smm_handler")?,
-    })
+pub fn handler_from_elf(elf: &Path, _work_dir: &Path) -> Result<SmmHandlerImage, BuildError> {
+    audit_smm_blob(elf)?;
+    let data = std::fs::read(elf)?;
+    let file = object::File::parse(data.as_slice())
+        .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
+    extract_handler(elf, &file)
 }
 
 pub fn handler_from_rlibs(deps_dir: &Path, work_dir: &Path) -> Result<SmmHandlerImage, BuildError> {
     std::fs::create_dir_all(work_dir)?;
     let elf = work_dir.join("smm_handler.elf");
+    let script = write_linker_script(work_dir)?;
     let mut inputs = rlibs_in(deps_dir)?;
     inputs.extend(sysroot_rlibs()?);
     if inputs.is_empty() {
@@ -260,185 +304,252 @@ pub fn handler_from_rlibs(deps_dir: &Path, work_dir: &Path) -> Result<SmmHandler
             deps_dir.display()
         )));
     }
-
     let mut cmd = Command::new("ld");
     cmd.arg("-nostdlib")
-        .arg("-Ttext=0")
-        .arg("--oformat=elf64-x86-64")
-        .arg("--unresolved-symbols=ignore-all")
-        // Drop unreachable sections: the SMM rlibs contain every driver in
-        // the tree (all platforms, raminit, formatting), but the handler
-        // root only needs the southbridge PMIO/TCO path plus install code.
-        // Objects are built with -Z function-sections (see
-        // build_board_smm_stage) so each function/data item lands in its own
-        // section.
         .arg("--gc-sections")
-        // Root GC at the SMM handler itself: the default `_start` entry
-        // would otherwise pull the entire stage world (console formatting,
-        // CAR setup, …) into the SMRAM blob.
+        .arg("--emit-relocs")
+        .arg("--exclude-libs")
+        .arg("ALL")
+        .arg("-Bsymbolic")
+        .arg("-T")
+        .arg(&script)
+        .arg("--oformat=elf64-x86-64")
         .arg("-e")
+        .arg("fstart_smm_handler")
+        .arg("-u")
         .arg("fstart_smm_handler")
         .arg("-o")
         .arg(&elf)
-        .arg("-u")
-        .arg("fstart_smm_handler")
         .arg("--start-group");
     for input in &inputs {
         cmd.arg(input);
     }
     cmd.arg("--end-group");
     run_tool(&mut cmd)?;
-    audit_smm_blob(&elf)?;
     handler_from_elf(&elf, work_dir)
 }
 
-/// Audit the linked SMM blob for SMRAM soundness before extraction.
-///
-/// The installed blob is a raw `.text`-only copy into SMRAM, linked at
-/// `-Ttext=0` with no loader: only relative addressing is correct at any
-/// load base. Four independent failures, one loud build error instead of a
-/// triple-fault:
-/// 1. GOT-indirect calls/jumps through data slots (unresolvable).
-/// 2. Allocated data sections with content (unshipped `.rodata`/`.data`/
-///    `.got` would read as SMRAM garbage through RIP-relative access).
-/// 3. Absolute relocations in shipped sections (baked link addresses).
-/// 4. Rust panic machinery (its format strings live in unshipped `.rodata`,
-///    and SMM has no console to report to; mirrored from CrabEFI's runtime
-///    image audit).
+fn extract_handler(elf: &Path, file: &object::File<'_>) -> Result<SmmHandlerImage, BuildError> {
+    let mut load_end = 0usize;
+    let mut memory_end = 0usize;
+    for section in file.sections() {
+        if !is_allocated(&section) || section.size() == 0 {
+            continue;
+        }
+        let name = section.name().unwrap_or("");
+        if !is_handler_section(name) {
+            continue;
+        }
+        let start = usize::try_from(section.address()).map_err(|_| BuildError::Overflow)?;
+        let end = start
+            .checked_add(section.size() as usize)
+            .ok_or(BuildError::Overflow)?;
+        memory_end = memory_end.max(end);
+        if section.kind() != SectionKind::UninitializedData {
+            load_end = load_end.max(end);
+        }
+    }
+    if load_end == 0 || memory_end < load_end {
+        return Err(BuildError::BadHandler);
+    }
+    let mut initialized = vec![0u8; load_end];
+    for section in file.sections() {
+        if !is_allocated(&section)
+            || section.size() == 0
+            || section.kind() == SectionKind::UninitializedData
+        {
+            continue;
+        }
+        let name = section.name().unwrap_or("");
+        if !is_handler_section(name) {
+            continue;
+        }
+        let start = section.address() as usize;
+        let data = section.data().map_err(|e| {
+            BuildError::Tool(format!("failed to read {name} from {}: {e}", elf.display()))
+        })?;
+        initialized[start..start + data.len()].copy_from_slice(data);
+    }
+    Ok(SmmHandlerImage {
+        initialized,
+        memory_size: memory_end,
+        entry_offset: find_symbol_offset(elf, "fstart_smm_handler")?,
+    })
+}
+
 fn audit_smm_blob(elf: &Path) -> Result<(), BuildError> {
     let data = std::fs::read(elf)?;
     let file = object::File::parse(data.as_slice())
         .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
+    assert_alloc_sections(elf, &file)?;
     assert_no_got_indirects(elf, &file)?;
-    assert_shipped_sections_only(elf, &file)?;
-    assert_no_absolute_relocs(elf, &file)?;
+    assert_relative_relocations_only(elf, &file)?;
+    assert_no_undefined_symbols(elf, &file)?;
     assert_no_panic_symbols(elf, &file)?;
     Ok(())
 }
 
-/// Reject SMM handler blobs that need a dynamic loader.
-///
-/// The installed blob is a raw byte copy into SMRAM: RIP-relative
-/// indirect calls/jumps through `.got`/`.data` would resolve to link-time
-/// addresses and fault on entry. Any remaining GOT-indirect whose slot
-/// lives in a data section fails the build loudly instead of producing a
-/// blob that triple-faults.
+fn is_allocated<'data>(section: &impl ObjectSection<'data>) -> bool {
+    matches!(section.flags(), SectionFlags::Elf { sh_flags } if sh_flags & u64::from(object::elf::SHF_ALLOC) != 0)
+}
+fn is_handler_section(name: &str) -> bool {
+    matches!(name, ".text" | ".rodata" | ".data" | ".bss")
+}
+fn forbidden_section(name: &str, is_alloc: bool, size: u64) -> bool {
+    is_alloc && size != 0 && !is_handler_section(name)
+}
+fn assert_alloc_sections(elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
+    for section in file.sections() {
+        let name = section.name().unwrap_or("");
+        if forbidden_section(name, is_allocated(&section), section.size()) {
+            return Err(BuildError::Tool(format!(
+                "SMM blob contains unsupported allocated section {name} ({} bytes) in {}",
+                section.size(),
+                elf.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn assert_no_got_indirects(elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
     let text = file
         .section_by_name(".text")
         .ok_or_else(|| BuildError::Tool(format!(".text section not found in {}", elf.display())))?;
-    let text_vma = text.address();
-    let bytes = text.data().map_err(|e| {
-        BuildError::Tool(format!("failed to read .text from {}: {e}", elf.display()))
-    })?;
-    let mut data_ranges = Vec::new();
-    for section in file.sections() {
-        let name = section.name().unwrap_or("");
-        if matches!(
-            name,
-            ".got" | ".got.plt" | ".data" | ".data.rel.ro" | ".rodata" | ".fstart.keep"
-        ) {
-            data_ranges.push((section.address(), section.address() + section.size()));
-        }
-    }
-    if let Some((off, slot)) = find_got_indirect(text_vma, bytes, &data_ranges) {
+    let bytes = text
+        .data()
+        .map_err(|e| BuildError::Tool(format!("failed to read .text: {e}")))?;
+    let data_ranges = [".got", ".got.plt", ".data", ".rodata"]
+        .into_iter()
+        .filter_map(|name| file.section_by_name(name))
+        .map(|section| (section.address(), section.address() + section.size()))
+        .collect::<Vec<_>>();
+    if let Some((off, slot)) = find_got_indirect(text.address(), bytes, &data_ranges) {
         return Err(BuildError::Tool(format!(
-            "SMM blob calls through GOT at .text+{off:#x} (slot {slot:#x}); \
-             force-inline the SMI path into fstart_smm_handler",
+            "SMM blob calls through data/GOT at .text+{off:#x} (slot {slot:#x})"
         )));
     }
     Ok(())
 }
 
-/// Reject allocated data sections with content in the linked blob.
-///
-/// Only `.text*` ships (`write_text_section`); `.fstart.keep` holds the
-/// entry marker consumed by the assembler. Anything else allocated
-/// (`.rodata`, `.data*`, `.got*`) would be read as SMRAM garbage through
-/// RIP-relative access, so its mere presence fails the build.
-fn assert_shipped_sections_only(_elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
-    use object::elf::{SHF_ALLOC, SHF_EXECINSTR};
+fn assert_relative_relocations_only(elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
     for section in file.sections() {
         let name = section.name().unwrap_or("");
-        let (is_alloc, is_exec) = match section.flags() {
-            SectionFlags::Elf { sh_flags } => (
-                sh_flags & u64::from(SHF_ALLOC) != 0,
-                sh_flags & u64::from(SHF_EXECINSTR) != 0,
-            ),
-            _ => (false, false),
-        };
-        if forbidden_section(name, is_alloc, is_exec, section.size()) {
-            return Err(BuildError::Tool(format!(
-                "SMM blob contains allocated {name} ({} bytes); only .text ships to SMRAM",
-                section.size(),
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Whether an ELF section may not exist with content in the SMM blob.
-/// Pure over (name, is_alloc, is_executable, size); see
-/// [`assert_shipped_sections_only`].
-fn forbidden_section(name: &str, is_alloc: bool, is_executable: bool, size: u64) -> bool {
-    if !is_alloc || size == 0 {
-        return false;
-    }
-    // Extraction ships the single merged .text only: a surviving .text.foo
-    // would be silently dropped, so it fails loudly instead.
-    if is_executable {
-        return name != ".text";
-    }
-    name != ".fstart.keep"
-}
-
-/// Reject absolute relocations in shipped sections.
-///
-/// A static link resolves relative relocations; anything absolute left in
-/// shipped bytes (`R_X86_64_64/32`, GOT flavors) is a link-time address
-/// that faults in SMRAM. Pure predicate over the kind in
-/// [`find_absolute_reloc`]; the [`audit_smm_blob`] wrapper scopes the scan
-/// to shipped sections.
-fn assert_no_absolute_relocs(_elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
-    for section in file.sections() {
-        let name = section.name().unwrap_or("");
-        if !(name == ".text" || name.starts_with(".text.")) {
+        if !is_handler_section(name) {
             continue;
         }
-        let mut relocs = Vec::new();
-        for (offset, reloc) in section.relocations() {
-            relocs.push((offset, reloc.kind()));
-        }
-        if let Some((offset, kind)) = find_absolute_reloc(&relocs) {
-            return Err(BuildError::Tool(format!(
-                "SMM blob has absolute relocation {kind:?} at {name}+{offset:#x}; \
-                 only relative addressing survives the SMRAM copy",
-            )));
+        for (offset, relocation) in section.relocations() {
+            if !matches!(
+                relocation.kind(),
+                RelocationKind::Relative | RelocationKind::PltRelative
+            ) {
+                return Err(BuildError::Tool(format!(
+                    "SMM blob has load-base-dependent relocation {:?} at {name}+{offset:#x} in {}",
+                    relocation.kind(),
+                    elf.display()
+                )));
+            }
+            let target_ok = match relocation.target() {
+                RelocationTarget::Symbol(index) => file
+                    .symbol_by_index(index)
+                    .ok()
+                    .filter(|symbol| !symbol.is_undefined())
+                    .and_then(|symbol| symbol.section_index().map(|section| (symbol, section)))
+                    .and_then(|(symbol, index)| {
+                        file.section_by_index(index)
+                            .ok()
+                            .map(|section| (symbol, section))
+                    })
+                    .is_some_and(|(symbol, section)| {
+                        is_allocated(&section)
+                            && is_handler_section(section.name().unwrap_or(""))
+                            && address_in_section(symbol.address(), &section)
+                            && effective_relative_target(symbol.address(), &relocation)
+                                .is_some_and(|address| address_in_copied_image(file, address))
+                    }),
+                RelocationTarget::Section(index) => file
+                    .section_by_index(index)
+                    .ok()
+                    .filter(|section| {
+                        is_allocated(section) && is_handler_section(section.name().unwrap_or(""))
+                    })
+                    .and_then(|section| {
+                        effective_relative_target(section.address(), &relocation)
+                            .map(|address| (address, section))
+                    })
+                    .is_some_and(|(address, _)| address_in_copied_image(file, address)),
+                _ => false,
+            };
+            if !target_ok {
+                return Err(BuildError::Tool(format!(
+                    "SMM blob relocation at {name}+{offset:#x} targets an undefined or uncopied address in {}",
+                    elf.display()
+                )));
+            }
         }
     }
     Ok(())
 }
 
-/// First relocation with a link-absolute kind, if any.
-/// Pure over (offset, kind) pairs; see [`assert_no_absolute_relocs`].
-fn find_absolute_reloc(relocs: &[(u64, RelocationKind)]) -> Option<(u64, RelocationKind)> {
-    relocs.iter().find_map(|&(offset, kind)| {
-        matches!(
-            kind,
-            RelocationKind::Absolute
-                | RelocationKind::Got
-                | RelocationKind::GotRelative
-                | RelocationKind::GotBaseRelative
-                | RelocationKind::GotBaseOffset
-        )
-        .then_some((offset, kind))
+fn address_in_section<'data>(address: u64, section: &impl ObjectSection<'data>) -> bool {
+    section
+        .address()
+        .checked_add(section.size())
+        .is_some_and(|end| address >= section.address() && address < end)
+}
+
+fn address_in_copied_image(file: &object::File<'_>, address: u64) -> bool {
+    file.sections().any(|section| {
+        is_allocated(&section)
+            && is_handler_section(section.name().unwrap_or(""))
+            && address_in_section(address, &section)
     })
 }
 
-/// Substrings identifying Rust panic machinery in symbol names, mirrored
-/// from CrabEFI's runtime image audit: any of these linked into the blob
-/// means a panic path survived GC, and its format strings live in
-/// unshipped `.rodata` (and SMM has no console to report to anyway).
+fn effective_relative_target(base: u64, relocation: &object::Relocation) -> Option<u64> {
+    let size = relocation.size();
+    if size == 0 || !size.is_multiple_of(8) {
+        return None;
+    }
+    // x86 PC-relative fields are interpreted from the end of the encoded
+    // displacement. ELF addends normally include the corresponding negative
+    // bias (for example -4 for R_X86_64_PC32/PLT32).
+    let adjusted_addend = relocation.addend().checked_add(i64::from(size / 8))?;
+    add_signed(base, adjusted_addend)
+}
+
+fn add_signed(base: u64, addend: i64) -> Option<u64> {
+    if addend >= 0 {
+        base.checked_add(addend as u64)
+    } else {
+        base.checked_sub(addend.unsigned_abs())
+    }
+}
+
+fn assert_no_undefined_symbols(elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
+    if let Some(name) = file.symbols().find_map(|symbol| {
+        symbol
+            .is_undefined()
+            .then(|| symbol.name().ok())
+            .flatten()
+            .filter(|name| !name.is_empty())
+    }) {
+        return Err(BuildError::Tool(format!(
+            "SMM blob has undefined symbol {name} in {}",
+            elf.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn find_unsafe_reloc(relocs: &[(u64, RelocationKind)]) -> Option<(u64, RelocationKind)> {
+    relocs
+        .iter()
+        .copied()
+        .find(|(_, kind)| !matches!(kind, RelocationKind::Relative | RelocationKind::PltRelative))
+}
+
 const PANIC_SYMBOL_MARKERS: &[&str] = &[
     "rust_begin_unwind",
     "panic_is_possible",
@@ -451,28 +562,23 @@ const PANIC_SYMBOL_MARKERS: &[&str] = &[
     "len_mismatch_fail",
     "handle_alloc_error",
 ];
-
-/// Reject Rust panic machinery linked into the SMM blob.
 fn assert_no_panic_symbols(_elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
-    let names: Vec<&str> = file.symbols().filter_map(|s| s.name().ok()).collect();
-    if let Some(hit) = find_panic_symbol(names.iter().copied()) {
+    let names = file.symbols().filter_map(|symbol| symbol.name().ok());
+    if let Some(hit) = find_panic_symbol(names) {
         return Err(BuildError::Tool(format!(
-            "SMM blob links Rust panic symbol {hit}; SMM code must handle errors \
-             without panicking (format strings live in unshipped .rodata)",
+            "SMM blob links Rust panic symbol {hit}"
         )));
     }
     Ok(())
 }
-
-/// First panic-machinery symbol name, if any.
-/// Pure over symbol names; see [`assert_no_panic_symbols`].
 fn find_panic_symbol<'a>(mut names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
-    names.find(|name| PANIC_SYMBOL_MARKERS.iter().any(|m| name.contains(m)))
+    names.find(|name| {
+        PANIC_SYMBOL_MARKERS
+            .iter()
+            .any(|marker| name.contains(marker))
+    })
 }
 
-/// Scan `.text` bytes for RIP-relative indirect calls/jumps whose slot lives
-/// in a data section. Returns the first hit as (text offset, slot address).
-/// Pure to stay unit-testable; see [`assert_no_got_indirects`].
 fn find_got_indirect(
     text_vma: u64,
     bytes: &[u8],
@@ -480,34 +586,26 @@ fn find_got_indirect(
 ) -> Option<(usize, u64)> {
     let mut i = 0usize;
     while i + 6 <= bytes.len() {
-        // Optional REX prefix, then FF /2 (call) or FF /4 (jmp) with
-        // ModRM mod=00 rm=101 (RIP-relative).
-        let (modrm_off, insn_len) =
-            if bytes[i] == 0xFF && (bytes[i + 1] == 0x15 || bytes[i + 1] == 0x25) {
-                (i + 1, 6u64)
-            } else if (0x40..0x50).contains(&bytes[i])
-                && i + 7 <= bytes.len()
-                && bytes[i + 1] == 0xFF
-                && (bytes[i + 2] == 0x15 || bytes[i + 2] == 0x25)
-            {
-                (i + 2, 7u64)
-            } else {
-                i += 1;
-                continue;
-            };
-        let disp = i32::from_le_bytes([
-            bytes[modrm_off + 1],
-            bytes[modrm_off + 2],
-            bytes[modrm_off + 3],
-            bytes[modrm_off + 4],
-        ]) as i64;
+        let (modrm_off, insn_len) = if bytes[i] == 0xff && matches!(bytes[i + 1], 0x15 | 0x25) {
+            (i + 1, 6u64)
+        } else if (0x40..0x50).contains(&bytes[i])
+            && i + 7 <= bytes.len()
+            && bytes[i + 1] == 0xff
+            && matches!(bytes[i + 2], 0x15 | 0x25)
+        {
+            (i + 2, 7u64)
+        } else {
+            i += 1;
+            continue;
+        };
+        let disp = i32::from_le_bytes(bytes[modrm_off + 1..modrm_off + 5].try_into().ok()?) as i64;
         let slot = text_vma
             .wrapping_add(i as u64)
             .wrapping_add(insn_len)
             .wrapping_add(disp as u64);
         if data_ranges
             .iter()
-            .any(|&(base, end)| slot >= base && slot < end)
+            .any(|&(start, end)| slot >= start && slot < end)
         {
             return Some((i, slot));
         }
@@ -517,17 +615,14 @@ fn find_got_indirect(
 }
 
 fn rlibs_in(dir: &Path) -> Result<Vec<PathBuf>, BuildError> {
-    let mut paths = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.extension().is_some_and(|ext| ext == "rlib") {
-            paths.push(path);
-        }
-    }
+    let mut paths = std::fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rlib"))
+        .collect::<Vec<_>>();
     paths.sort();
     Ok(paths)
 }
-
 fn sysroot_rlibs() -> Result<Vec<PathBuf>, BuildError> {
     let output = Command::new("rustc")
         .arg("--print")
@@ -539,40 +634,25 @@ fn sysroot_rlibs() -> Result<Vec<PathBuf>, BuildError> {
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    let sysroot = String::from_utf8_lossy(&output.stdout);
-    let lib_dir = Path::new(sysroot.trim()).join("lib/rustlib/x86_64-unknown-none/lib");
-    let mut paths = Vec::new();
-    for entry in std::fs::read_dir(&lib_dir)? {
-        let path = entry?.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if path.extension().is_some_and(|ext| ext == "rlib")
-            && (name.starts_with("libcore-")
-                || name.starts_with("liballoc-")
-                || name.starts_with("libcompiler_builtins-"))
-        {
-            paths.push(path);
-        }
-    }
+    let root = String::from_utf8_lossy(&output.stdout);
+    let dir = Path::new(root.trim()).join("lib/rustlib/x86_64-unknown-none/lib");
+    let mut paths = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            path.extension().is_some_and(|ext| ext == "rlib")
+                && (name.starts_with("libcore-")
+                    || name.starts_with("liballoc-")
+                    || name.starts_with("libcompiler_builtins-"))
+        })
+        .collect::<Vec<_>>();
     paths.sort();
     Ok(paths)
 }
-
-fn write_text_section(elf: &Path, bin: &Path) -> Result<(), BuildError> {
-    let data = std::fs::read(elf)?;
-    let file = object::File::parse(data.as_slice())
-        .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
-    let section = file
-        .section_by_name(".text")
-        .ok_or_else(|| BuildError::Tool(format!(".text section not found in {}", elf.display())))?;
-    let text = section.data().map_err(|e| {
-        BuildError::Tool(format!("failed to read .text from {}: {e}", elf.display()))
-    })?;
-    std::fs::write(bin, text)?;
-    Ok(())
-}
-
 fn find_symbol_offset(elf: &Path, symbol: &str) -> Result<usize, BuildError> {
     let output = Command::new("nm")
         .arg("--defined-only")
@@ -580,19 +660,13 @@ fn find_symbol_offset(elf: &Path, symbol: &str) -> Result<usize, BuildError> {
         .arg(elf)
         .output()?;
     if !output.status.success() {
-        return Err(BuildError::Tool(format!(
-            "nm failed for {}: {}",
-            elf.display(),
-            String::from_utf8_lossy(&output.stderr)
-        )));
+        return Err(BuildError::Tool(format!("nm failed for {}", elf.display())));
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        let parts: Vec<_> = line.split_whitespace().collect();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let parts = line.split_whitespace().collect::<Vec<_>>();
         if parts.len() >= 3 && parts[2] == symbol {
             return usize::from_str_radix(parts[0], 16)
-                .map_err(|e| BuildError::Tool(format!("bad nm address for {symbol}: {e}")));
+                .map_err(|e| BuildError::Tool(format!("bad nm address: {e}")));
         }
     }
     Err(BuildError::Tool(format!(
@@ -600,75 +674,33 @@ fn find_symbol_offset(elf: &Path, symbol: &str) -> Result<usize, BuildError> {
         elf.display()
     )))
 }
-
 fn run_tool(cmd: &mut Command) -> Result<(), BuildError> {
     let output = cmd.output()?;
     if output.status.success() {
         Ok(())
     } else {
         Err(BuildError::Tool(format!(
-            "command failed: {:?}\nstdout:\n{}\nstderr:\n{}",
-            cmd,
+            "command failed: {cmd:?}\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         )))
     }
 }
-
 fn validate_options(options: ImageOptions) -> Result<(), BuildError> {
     if options.entry_count == 0 {
         return Err(BuildError::NoEntries);
-    }
-    if options.entry_count as usize > MAX_SMM_CPUS {
-        return Err(BuildError::TooManyEntries);
     }
     if options.stack_size == 0 {
         return Err(BuildError::BadStackSize);
     }
     Ok(())
 }
-
-fn put_header(image: &mut [u8], off: usize, h: &SmmImageHeader) {
-    put_u32(image, off, h.magic);
-    put_u16(image, off + 4, h.version);
-    put_u16(image, off + 6, h.header_size);
-    put_u32(image, off + 8, h.flags);
-    put_u32(image, off + 12, h.image_size);
-    put_u16(image, off + 16, h.entry_count);
-    put_u16(image, off + 18, h.entry_desc_size);
-    put_u32(image, off + 20, h.entries_offset);
-    put_u32(image, off + 24, h.common_offset);
-    put_u32(image, off + 28, h.common_size);
-    put_u32(image, off + 32, h.common_entry_offset);
-    put_u32(image, off + 36, h.runtime_offset);
-    put_u32(image, off + 40, h.module_args_offset);
-    put_u32(image, off + 44, h.module_args_size);
-    put_u32(image, off + 48, h.stack_size);
-}
-
-fn put_entry_descriptor(image: &mut [u8], off: usize, d: &EntryDescriptor) {
-    put_u32(image, off, d.stub_offset);
-    put_u32(image, off + 4, d.stub_size);
-    put_u32(image, off + 8, d.entry_offset);
-    put_u32(image, off + 12, d.params_offset);
-}
-
-fn put_u16(image: &mut [u8], off: usize, v: u16) {
-    image[off..off + 2].copy_from_slice(&v.to_le_bytes());
-}
-
-fn put_u32(image: &mut [u8], off: usize, v: u32) {
-    image[off..off + 4].copy_from_slice(&v.to_le_bytes());
-}
-
 fn align_up(value: usize, align: usize) -> Result<usize, BuildError> {
-    debug_assert!(align.is_power_of_two());
     value
         .checked_add(align - 1)
         .map(|v| v & !(align - 1))
         .ok_or(BuildError::Overflow)
 }
-
 fn as_u32(value: usize) -> Result<u32, BuildError> {
     u32::try_from(value).map_err(|_| BuildError::Overflow)
 }
@@ -676,91 +708,78 @@ fn as_u32(value: usize) -> Result<u32, BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_smm::header::{HeaderError, SmmImageHeader};
+    use fstart_smm::header::{HeaderError, SMM_IMAGE_MAGIC};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[test]
-    fn got_indirect_scan_finds_rip_relative_calls() {
-        // call *0x100(%rip) at offset 0 with .text at 0: slot = 6 + 0x100.
-        let bytes = [0xff, 0x15, 0x00, 0x01, 0x00, 0x00, 0x90];
-        assert_eq!(
-            find_got_indirect(0, &bytes, &[(0x100, 0x200)]),
-            Some((0, 0x106)),
-        );
-        // Direct relative call is not an indirect.
-        let direct = [0xe8, 0x00, 0x01, 0x00, 0x00, 0x90];
-        assert_eq!(find_got_indirect(0, &direct, &[(0x100, 0x200)]), None);
-        // REX-prefixed jmp through GOT is caught too.
-        let jmp = [0x48, 0xff, 0x25, 0xf9, 0x00, 0x00, 0x00];
-        assert_eq!(
-            find_got_indirect(0, &jmp, &[(0x100, 0x200)]),
-            Some((0, 0x100)),
-        );
-        // Indirect through a slot inside .text (jump table) is fine.
-        let table = [0xff, 0x15, 0x00, 0x01, 0x00, 0x00, 0x90];
-        assert_eq!(find_got_indirect(0, &table, &[(0x1000, 0x1100)]), None);
-    }
+    static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
-    #[test]
-    fn shipped_sections_only_permits_text_and_keep_marker() {
-        // Exact .text ships; the keep marker is assembler-consumed.
-        assert!(!forbidden_section(".text", true, true, 100));
-        assert!(!forbidden_section(".fstart.keep", true, false, 8));
-        // Unshipped data with content fails, empty sections pass.
-        assert!(forbidden_section(".rodata", true, false, 10));
-        assert!(forbidden_section(".data.rel.ro", true, false, 8));
-        assert!(forbidden_section(".got", true, false, 8));
-        assert!(!forbidden_section(".data", true, false, 0));
-        // Non-allocated sections (debug info) never ship.
-        assert!(!forbidden_section(".debug_info", false, false, 100));
-        // Unmerged .text.foo would be silently dropped by extraction.
-        assert!(forbidden_section(".text.unlikely", true, true, 16));
-    }
-
-    #[test]
-    fn absolute_reloc_scan_rejects_got_and_address_kinds() {
-        use object::RelocationKind;
-        assert_eq!(
-            find_absolute_reloc(&[
-                (0x10, RelocationKind::Relative),
-                (0x20, RelocationKind::PltRelative),
-            ]),
-            None,
+    fn relocation_fixture(
+        linker_prefix: &str,
+        allow_undefined: bool,
+        target_prelude: &str,
+        target_addend: &str,
+        target_definition: &str,
+        data_section_attributes: &str,
+    ) -> PathBuf {
+        let id = FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("fstart-smm-reloc-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("fixture.S");
+        let object = dir.join("fixture.o");
+        let script = dir.join("fixture.ld");
+        let elf = dir.join("fixture.elf");
+        std::fs::write(
+            &source,
+            format!(
+                ".text\n{target_prelude}\n.globl fstart_smm_handler\nfstart_smm_handler:\n call target{target_addend}\n ret\n{target_definition}"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &script,
+            format!(
+                "{linker_prefix}\nSECTIONS {{ . = 0; .text : {{ *(.text*) }} .rodata : {{ *(.rodata*) }} .data {data_section_attributes} : {{ *(.data*) }} .bss : {{ *(.bss*) }} /DISCARD/ : {{ *(*) }} }}\n"
+            ),
+        )
+        .unwrap();
+        assert!(
+            Command::new("cc")
+                .args([
+                    "-c",
+                    source.to_str().unwrap(),
+                    "-o",
+                    object.to_str().unwrap()
+                ])
+                .status()
+                .unwrap()
+                .success()
         );
-        assert_eq!(
-            find_absolute_reloc(&[(0x30, RelocationKind::Absolute)]),
-            Some((0x30, RelocationKind::Absolute)),
+        let mut link = Command::new("ld");
+        link.args(["-nostdlib", "--emit-relocs"]);
+        if allow_undefined {
+            link.arg("--unresolved-symbols=ignore-all");
+        }
+        assert!(
+            link.args(["-T", script.to_str().unwrap(), "-o", elf.to_str().unwrap()])
+                .arg(&object)
+                .status()
+                .unwrap()
+                .success()
         );
-        assert_eq!(
-            find_absolute_reloc(&[(0x40, RelocationKind::GotRelative)]),
-            Some((0x40, RelocationKind::GotRelative)),
-        );
-    }
-
-    #[test]
-    fn panic_symbol_scan_matches_machinery_not_handler() {
-        assert_eq!(
-            find_panic_symbol(["fstart_smm_handler", "FSTART_SMM_KEEP", "main"].into_iter()),
-            None,
-        );
-        assert_eq!(
-            find_panic_symbol(["core::panicking::panic_fmt"].into_iter()),
-            Some("core::panicking::panic_fmt"),
-        );
-        assert_eq!(
-            find_panic_symbol(["my_unwrap_failed_helper"].into_iter()),
-            Some("my_unwrap_failed_helper"),
-        );
+        elf
     }
 
     fn test_handler() -> SmmHandlerImage {
         SmmHandlerImage {
-            code: vec![0xcc],
+            initialized: vec![0xcc, 0x11, 0x22],
+            memory_size: 0x40,
             entry_offset: 0,
         }
     }
 
     #[test]
-    fn builds_parseable_image_with_four_entries() {
+    fn builds_unversioned_image_with_bss_runtime_and_capacity() {
         let built = build_image(
             ImageOptions {
                 entry_count: 4,
@@ -771,67 +790,236 @@ mod tests {
             &test_handler(),
         )
         .unwrap();
-
         let header = SmmImageHeader::parse(&built.image).unwrap();
-        assert_eq!(header.entry_count, 4);
-        assert_eq!(header.stack_size, 0x400);
+        assert_eq!(header.runtime_offset as usize % HANDLER_CONFIG_ALIGNMENT, 0);
+        assert_eq!(header.magic, SMM_IMAGE_MAGIC);
+        assert_eq!(header.handler_load_size, 3);
+        assert!(header.handler_mem_size > 0x40);
+        assert_eq!(header.runtime_size as usize, size_of::<SmmRuntime>());
         assert_ne!(header.module_args_offset, 0);
-        assert_ne!(header.runtime_offset, 0);
-
         for i in 0..4 {
             let entry = header.entry(&built.image, i).unwrap();
-            assert_ne!(entry.params_offset, 0);
             assert!(
                 entry.stub_size as usize
                     >= entry.params_offset as usize + size_of::<SmmEntryParams>()
             );
         }
-
-        let c_header = built.coreboot_header.unwrap();
-        assert!(c_header.contains("FSTART_SMM_ENTRY_COUNT 4u"));
-        assert!(c_header.contains("FSTART_SMM_MODULE_ARGS_OFFSET"));
+        let generated = built.coreboot_header.unwrap();
+        assert!(generated.contains("FSTART_SMM_HANDLER_LOAD_SIZE 3u"));
+        assert!(generated.contains("FSTART_SMM_ENTRY_COUNT 4u"));
     }
 
     #[test]
-    fn rejects_zero_entries() {
-        let err = build_image(
+    fn aligns_runtime_relative_config_when_handler_memory_ends_on_eight_bytes() {
+        let mut handler = test_handler();
+        handler.memory_size = 0x48;
+        let built = build_image(
             ImageOptions {
-                entry_count: 0,
+                entry_count: 1,
+                stack_size: 0x400,
+                coreboot_module_args: false,
+                coreboot_header: false,
+            },
+            &handler,
+        )
+        .unwrap();
+        let header = SmmImageHeader::parse(&built.image).unwrap();
+        assert_eq!(header.runtime_offset as usize % HANDLER_CONFIG_ALIGNMENT, 0);
+        assert_eq!(
+            (header.handler_config_offset - header.runtime_offset) as usize
+                % HANDLER_CONFIG_ALIGNMENT,
+            0
+        );
+    }
+
+    #[test]
+    fn rejects_zero_entries_and_bad_handler() {
+        assert!(matches!(
+            build_image(
+                ImageOptions {
+                    entry_count: 0,
+                    stack_size: 1,
+                    coreboot_module_args: false,
+                    coreboot_header: false
+                },
+                &test_handler()
+            ),
+            Err(BuildError::NoEntries)
+        ));
+        let bad = SmmHandlerImage {
+            initialized: vec![1],
+            memory_size: 0,
+            entry_offset: 0,
+        };
+        assert!(matches!(
+            build_image(
+                ImageOptions {
+                    entry_count: 1,
+                    stack_size: 1,
+                    coreboot_module_args: false,
+                    coreboot_header: false
+                },
+                &bad
+            ),
+            Err(BuildError::BadHandler)
+        ));
+    }
+
+    #[test]
+    fn relocation_filter_accepts_only_pc_relative() {
+        assert_eq!(
+            find_unsafe_reloc(&[
+                (0, RelocationKind::Relative),
+                (4, RelocationKind::PltRelative)
+            ]),
+            None
+        );
+        assert_eq!(
+            find_unsafe_reloc(&[(8, RelocationKind::Absolute)]),
+            Some((8, RelocationKind::Absolute))
+        );
+        assert_eq!(
+            find_unsafe_reloc(&[(8, RelocationKind::GotRelative)]),
+            Some((8, RelocationKind::GotRelative))
+        );
+    }
+
+    #[test]
+    fn relocation_audit_rejects_undefined_target() {
+        let elf = relocation_fixture("", true, "", "", "", "");
+        let error = audit_smm_blob(&elf).unwrap_err().to_string();
+        assert!(error.contains("undefined or uncopied"), "{error}");
+        std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn relocation_audit_rejects_defined_target_outside_copied_image() {
+        let elf = relocation_fixture("target = 0x100000;", false, "", "", "", "");
+        let error = audit_smm_blob(&elf).unwrap_err().to_string();
+        assert!(error.contains("undefined or uncopied"), "{error}");
+        std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn relocation_audit_accounts_for_x86_pc_relative_bias() {
+        let elf = relocation_fixture("", false, ".globl target\ntarget:\n ret", "", "", "");
+        let data = std::fs::read(&elf).unwrap();
+        let file = object::File::parse(data.as_slice()).unwrap();
+        let text = file.section_by_name(".text").unwrap();
+        let (_, relocation) = text.relocations().next().unwrap();
+        let RelocationTarget::Symbol(index) = relocation.target() else {
+            panic!("expected symbol-target relocation");
+        };
+        let symbol = file.symbol_by_index(index).unwrap();
+        assert_eq!(relocation.addend(), -4);
+        assert_eq!(relocation.size(), 32);
+        assert_eq!(
+            effective_relative_target(symbol.address(), &relocation),
+            Some(symbol.address())
+        );
+        audit_smm_blob(&elf).unwrap();
+        std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+
+        let elf = relocation_fixture(
+            "",
+            false,
+            ".section .text.target,\"ax\"\n.globl section_target_marker\nsection_target_marker:\ntarget:\n ret\n.text",
+            "",
+            "",
+            "",
+        );
+        let data = std::fs::read(&elf).unwrap();
+        let file = object::File::parse(data.as_slice()).unwrap();
+        let text = file.section_by_name(".text").unwrap();
+        let (_, relocation) = text.relocations().next().unwrap();
+        let RelocationTarget::Symbol(index) = relocation.target() else {
+            panic!("expected ELF section-symbol relocation");
+        };
+        let section_symbol = file.symbol_by_index(index).unwrap();
+        assert_eq!(section_symbol.kind(), object::SymbolKind::Section);
+        let marker = file
+            .symbols()
+            .find(|symbol| symbol.name().ok() == Some("section_target_marker"))
+            .unwrap();
+        assert_eq!(
+            effective_relative_target(section_symbol.address(), &relocation),
+            Some(marker.address())
+        );
+        audit_smm_blob(&elf).unwrap();
+        std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn relocation_audit_rejects_symbol_addends_outside_copied_image() {
+        for addend in ["+0x100000", "-0x100000"] {
+            let elf =
+                relocation_fixture("", false, "", addend, ".globl target\ntarget:\n ret\n", "");
+            let error = audit_smm_blob(&elf).unwrap_err().to_string();
+            assert!(error.contains("undefined or uncopied"), "{error}");
+            std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn relocation_audit_rejects_target_in_nonallocated_handler_section() {
+        let elf = relocation_fixture(
+            "",
+            false,
+            "",
+            "",
+            ".section .data,\"\",@progbits\n.globl target\ntarget:\n .byte 0\n",
+            "(INFO)",
+        );
+        let error = audit_smm_blob(&elf).unwrap_err().to_string();
+        assert!(error.contains("undefined or uncopied"), "{error}");
+        std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn section_filter_allows_complete_memory_image_only() {
+        for name in [".text", ".rodata", ".data", ".bss"] {
+            assert!(!forbidden_section(name, true, 8));
+        }
+        for name in [".got", ".plt", ".dynamic", ".tdata"] {
+            assert!(forbidden_section(name, true, 8));
+        }
+        assert!(!forbidden_section(".debug_info", false, 8));
+    }
+
+    #[test]
+    fn got_indirect_scanner_still_rejects_data_calls() {
+        let bytes = [0xff, 0x15, 0, 1, 0, 0, 0x90];
+        assert_eq!(
+            find_got_indirect(0, &bytes, &[(0x100, 0x200)]),
+            Some((0, 0x106))
+        );
+    }
+
+    #[test]
+    fn panic_symbol_scan_is_precise() {
+        assert_eq!(find_panic_symbol(["fstart_smm_handler"].into_iter()), None);
+        assert_eq!(
+            find_panic_symbol(["core::panicking::panic_fmt"].into_iter()),
+            Some("core::panicking::panic_fmt")
+        );
+    }
+
+    #[test]
+    fn descriptor_bounds_are_checked() {
+        let built = build_image(
+            ImageOptions {
+                entry_count: 1,
                 stack_size: 0x400,
                 coreboot_module_args: false,
                 coreboot_header: false,
             },
             &test_handler(),
         )
-        .unwrap_err();
-        assert!(matches!(err, BuildError::NoEntries));
-    }
-
-    #[test]
-    fn generated_header_matches_blob_offsets() {
-        let built = build_image(
-            ImageOptions {
-                entry_count: 2,
-                stack_size: 0x800,
-                coreboot_module_args: false,
-                coreboot_header: true,
-            },
-            &test_handler(),
-        )
         .unwrap();
         let header = SmmImageHeader::parse(&built.image).unwrap();
         assert_eq!(
-            header.entry(&built.image, 2).unwrap_err(),
-            HeaderError::NotEnoughEntries
+            header.entry(&built.image, 1),
+            Err(HeaderError::NotEnoughEntries)
         );
-        let c_header = built.coreboot_header.unwrap();
-        assert!(c_header.contains(&format!(
-            "FSTART_SMM_ENTRIES_OFFSET {}u",
-            header.entries_offset
-        )));
-        assert!(c_header.contains(&format!(
-            "FSTART_SMM_RUNTIME_OFFSET {}u",
-            header.runtime_offset
-        )));
     }
 }

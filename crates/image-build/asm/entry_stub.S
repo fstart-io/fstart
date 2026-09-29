@@ -40,21 +40,11 @@ fstart_smm_stub_start:
 	movl %cs:(SMM_ENTRY_ORIGIN + fstart_smm_stub_params - fstart_smm_stub_start + PARAM_ENTRY_BASE), %ebx
 
 	/*
-	 * Per-CPU stack. Every CPU shares the architectural default SMBASE until it
-	 * has relocated itself, and an SMI reaches every CPU, so two CPUs can be
-	 * inside this stub at once. A single shared stack corrupts both frames;
-	 * derive one 4 KiB slot per APIC ID from the configured stack top and keep
-	 * it in ESI (EBX must survive for entry_base).
+	 * The installer gives every permanent entry a private SMRAM stack. The
+	 * temporary default-SMBASE callback is serialized, so it can use one shared
+	 * stack. Keep the configured top in ESI across the mode switches.
 	 */
-	movl %ebx, %edi
 	movl %cs:(SMM_ENTRY_ORIGIN + fstart_smm_stub_params - fstart_smm_stub_start + PARAM_STACK_TOP), %esi
-	movl $1, %eax
-	cpuid
-	shrl $24, %ebx
-	andl $0xF, %ebx
-	shll $12, %ebx
-	subl %ebx, %esi
-	movl %edi, %ebx
 
 	/* Runtime-patch the GDT base and protected-mode far pointer. */
 	movl %ebx, %eax

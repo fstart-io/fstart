@@ -6,8 +6,6 @@
 //! downward.  fstart differs by copying one of several precompiled PIC entry
 //! stubs per CPU rather than loading one relocatable stub and duplicating it.
 
-use crate::runtime::MAX_SMM_CPUS;
-
 /// Architectural SMM entry offset from SMBASE.
 pub const SMM_ENTRY_OFFSET: u64 = 0x8000;
 /// Architectural default/per-CPU SMM window size.
@@ -18,7 +16,7 @@ pub const SMM_CODE_SEGMENT_SIZE: u64 = 0x1_0000;
 pub enum LayoutError {
     /// `entry_count` is zero.
     NoEntries,
-    /// The requested entry count exceeds the fixed ABI cap.
+    /// The caller-provided output buffer is too small.
     TooManyEntries,
     /// A size argument is zero or otherwise unusable.
     BadSize,
@@ -45,8 +43,8 @@ pub struct SmramLayout {
     pub stack_size: u32,
     /// Maximum copied stub size.
     pub entry_stub_size: u32,
-    /// Common handler/data blob size.
-    pub common_size: u32,
+    /// Complete handler memory size, including BSS and loader-owned blocks.
+    pub handler_mem_size: u32,
     /// Optional page-table bytes below the handler/data region for long mode.
     pub page_table_size: u32,
 }
@@ -77,7 +75,7 @@ pub fn compute_common_base(layout: &SmramLayout) -> Result<u64, LayoutError> {
         .smram_base
         .checked_add(layout.smram_size)
         .ok_or(LayoutError::Overflow)?;
-    let top_reserved = align_up(layout.common_size as u64, 16)?
+    let top_reserved = align_up(layout.handler_mem_size as u64, 16)?
         .checked_add(align_up(layout.page_table_size as u64, 4096)?)
         .ok_or(LayoutError::Overflow)?;
     smram_top
@@ -97,7 +95,7 @@ pub fn compute_cpu_layout<'a>(
     if count == 0 {
         return Err(LayoutError::NoEntries);
     }
-    if count > MAX_SMM_CPUS || count > out.len() {
+    if count > out.len() {
         return Err(LayoutError::TooManyEntries);
     }
     if layout.smram_size == 0
@@ -196,46 +194,42 @@ fn align_up(value: u64, align: u64) -> Result<u64, LayoutError> {
         .ok_or(LayoutError::Overflow)
 }
 
+/// Return the page-table base reserved immediately above the handler image.
+pub fn compute_page_table_base(layout: &SmramLayout) -> Result<u64, LayoutError> {
+    compute_common_base(layout)?
+        .checked_add(align_up(layout.handler_mem_size as u64, 16)?)
+        .ok_or(LayoutError::Overflow)
+}
+
 /// Physical base of the identity page tables the default relocation stub loads
-/// into CR3. They live above the entry stub in the architectural default SMBASE
-/// region, because everything below the stub belongs to the stub's stack (`top`
-/// at SMBASE + 0x7000) and the save state occupies the top of the region.
+/// into CR3.
 pub const SMM_RELOCATION_TABLE_OFFSET: u64 = 0x9000;
 
-/// Size in bytes of the identity page tables: PML4, one PDPT and four page
-/// directories mapping the low 4 GiB with 2 MiB pages.
-pub const SMM_RELOCATION_TABLE_SIZE: u64 = 6 * 4096;
+/// PML4, one PDPT and four page directories mapping the low 4 GiB.
+pub const SMM_IDENTITY_TABLE_SIZE: u32 = 6 * 4096;
+pub const SMM_RELOCATION_TABLE_SIZE: u64 = SMM_IDENTITY_TABLE_SIZE as u64;
 
-/// Build a 4 GiB identity map with 2 MiB pages in the default SMBASE region and
-/// return the PML4 physical address to load into CR3.
-///
-/// The relocation stub runs before any SMM page tables exist, and firmware
-/// stages run unpaged (CR0.PG clear), so the stub cannot inherit a usable CR3
-/// from the interrupted context: without these tables, enabling paging in the
-/// stub faults immediately.
+/// Build a 4 GiB identity map with 2 MiB pages at an explicitly reserved base.
 ///
 /// # Safety
 ///
-/// `default_smbase` must address writable low memory that is not in use for the
-/// duration of the relocation, and the CPU must not be using live page tables
-/// that these writes would disturb.
-pub unsafe fn build_relocation_identity_tables(default_smbase: u64) -> u64 {
+/// `base..base + SMM_IDENTITY_TABLE_SIZE` must be writable and exclusively
+/// owned by the caller.
+pub unsafe fn build_identity_tables(base: u64) -> u64 {
     const PTE_PRESENT: u64 = 1 << 0;
     const PTE_WRITABLE: u64 = 1 << 1;
     const PTE_PAGE_SIZE: u64 = 1 << 7;
     const ENTRIES: usize = 512;
 
-    let base = default_smbase + SMM_RELOCATION_TABLE_OFFSET;
     let pml4 = base as *mut u64;
     let pdpt = (base + 4096) as *mut u64;
     let pds = (base + 2 * 4096) as *mut u64;
 
     // SAFETY: caller guarantees the region is writable; all offsets stay within
-    // SMM_RELOCATION_TABLE_SIZE.
+    // SMM_IDENTITY_TABLE_SIZE. Zero every unused PML4/PDPT entry so stale
+    // SMRAM contents cannot create unintended translations.
     unsafe {
-        for i in 0..ENTRIES {
-            pml4.add(i).write(0);
-        }
+        core::ptr::write_bytes(base as *mut u8, 0, SMM_IDENTITY_TABLE_SIZE as usize);
         pml4.write((pdpt as u64) | PTE_PRESENT | PTE_WRITABLE);
         for i in 0..4 {
             pdpt.add(i)
@@ -252,12 +246,85 @@ pub unsafe fn build_relocation_identity_tables(default_smbase: u64) -> u64 {
     base
 }
 
+/// Build the temporary default-SMBASE identity tables.
+///
+/// # Safety
+///
+/// The default SMBASE window must be writable and reserved for relocation.
+pub unsafe fn build_relocation_identity_tables(default_smbase: u64) -> u64 {
+    unsafe { build_identity_tables(default_smbase + SMM_RELOCATION_TABLE_OFFSET) }
+}
+
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
 
+    const ZERO_CPU: CpuSmmLayout = CpuSmmLayout {
+        smbase: 0,
+        entry_addr: 0,
+        save_state_base: 0,
+        save_state_top: 0,
+        stack_bottom: 0,
+        stack_top: 0,
+    };
+
+    fn overlaps(a: (u64, u64), b: (u64, u64)) -> bool {
+        a.0 < b.1 && b.0 < a.1
+    }
+
+    fn assert_complete_layout(layout: &SmramLayout, cpus: &[CpuSmmLayout]) {
+        let smram = (layout.smram_base, layout.smram_base + layout.smram_size);
+        let common_base = compute_common_base(layout).unwrap();
+        let page_table_base = compute_page_table_base(layout).unwrap();
+        let common = (
+            common_base,
+            common_base + u64::from(layout.handler_mem_size),
+        );
+        let page_tables = (
+            page_table_base,
+            page_table_base + u64::from(layout.page_table_size),
+        );
+        assert!(!overlaps(common, page_tables));
+        assert!(common.0 >= smram.0 && common.1 <= smram.1);
+        assert!(page_tables.0 >= smram.0 && page_tables.1 <= smram.1);
+
+        for (i, cpu) in cpus.iter().enumerate() {
+            let stack = (cpu.stack_bottom, cpu.stack_top);
+            let stub = (
+                cpu.entry_addr,
+                cpu.entry_addr + u64::from(layout.entry_stub_size),
+            );
+            let save_state = (cpu.save_state_base, cpu.save_state_top);
+            assert_eq!(cpu.entry_addr, cpu.smbase + SMM_ENTRY_OFFSET);
+            for range in [stack, stub, save_state] {
+                assert!(range.0 >= smram.0 && range.1 <= smram.1);
+                assert!(!overlaps(range, common));
+                assert!(!overlaps(range, page_tables));
+            }
+            assert!(!overlaps(stack, stub));
+            assert!(!overlaps(stack, save_state));
+            assert!(!overlaps(stub, save_state));
+
+            for other in &cpus[..i] {
+                assert!(!overlaps(stack, (other.stack_bottom, other.stack_top)));
+                assert!(!overlaps(
+                    stub,
+                    (
+                        other.entry_addr,
+                        other.entry_addr + u64::from(layout.entry_stub_size),
+                    ),
+                ));
+                assert!(!overlaps(
+                    save_state,
+                    (other.save_state_base, other.save_state_top),
+                ));
+            }
+        }
+    }
+
     #[test]
-    fn lays_out_four_q35_entries() {
+    fn lays_out_and_contains_four_q35_entries() {
         let layout = SmramLayout {
             smram_base: 0x7f00_0000,
             smram_size: 0x80_0000,
@@ -265,22 +332,59 @@ mod tests {
             save_state_size: 0x400,
             stack_size: 0x400,
             entry_stub_size: 0x600,
-            common_size: 0x4000,
-            page_table_size: 0x3000,
+            handler_mem_size: 0x4000,
+            page_table_size: SMM_IDENTITY_TABLE_SIZE,
         };
-        let mut cpus = [CpuSmmLayout {
-            smbase: 0,
-            entry_addr: 0,
-            save_state_base: 0,
-            save_state_top: 0,
-            stack_bottom: 0,
-            stack_top: 0,
-        }; 4];
+        let mut cpus = [ZERO_CPU; 4];
         let out = compute_cpu_layout(&layout, &mut cpus).unwrap();
-        assert_eq!(out.len(), 4);
-        assert_eq!(out[0].entry_addr, out[0].smbase + SMM_ENTRY_OFFSET);
-        assert!(out[0].save_state_base > out[0].entry_addr);
-        assert!(out[3].smbase < layout.smram_base + layout.smram_size);
+        assert_complete_layout(&layout, out);
+    }
+
+    #[test]
+    fn lays_out_multiple_smbase_segments_without_region_overlap() {
+        let layout = SmramLayout {
+            smram_base: 0x7e00_0000,
+            smram_size: 0x100_0000,
+            entry_count: 70,
+            save_state_size: 0x400,
+            stack_size: 0x800,
+            entry_stub_size: 0x600,
+            handler_mem_size: 0x8000,
+            page_table_size: SMM_IDENTITY_TABLE_SIZE,
+        };
+        let mut cpus = std::vec![ZERO_CPU; layout.entry_count as usize];
+        let out = compute_cpu_layout(&layout, &mut cpus).unwrap();
+        assert_complete_layout(&layout, out);
+        assert!(out.iter().any(|cpu| cpu.smbase < out[0].smbase - 0x8000));
+    }
+
+    #[test]
+    fn rejects_layout_when_stacks_collide_with_smm_windows() {
+        let layout = SmramLayout {
+            smram_base: 0x100000,
+            smram_size: 0x2_0000,
+            entry_count: 4,
+            save_state_size: 0x400,
+            stack_size: 0x4000,
+            entry_stub_size: 0x600,
+            handler_mem_size: 0x4000,
+            page_table_size: SMM_IDENTITY_TABLE_SIZE,
+        };
+        let mut cpus = [ZERO_CPU; 4];
+        assert_eq!(
+            compute_cpu_layout(&layout, &mut cpus),
+            Err(LayoutError::SmramTooSmall)
+        );
+    }
+
+    #[test]
+    fn identity_tables_clear_unused_entries() {
+        let mut tables = std::vec![0xffu8; SMM_IDENTITY_TABLE_SIZE as usize];
+        let base = tables.as_mut_ptr() as u64;
+        unsafe { build_identity_tables(base) };
+
+        assert!(tables[8..4096].iter().all(|&byte| byte == 0));
+        assert!(tables[4096 + 4 * 8..8192].iter().all(|&byte| byte == 0));
     }
 
     #[test]
@@ -292,7 +396,7 @@ mod tests {
             save_state_size: 0x400,
             stack_size: 0x400,
             entry_stub_size: 0x8000,
-            common_size: 0,
+            handler_mem_size: 0,
             page_table_size: 0,
         };
         let mut cpus = [CpuSmmLayout {

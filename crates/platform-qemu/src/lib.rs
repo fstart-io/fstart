@@ -321,10 +321,6 @@ mod stage {
             Ok(())
         }
 
-        /// Maximum SMM entry stubs baked into the SMM image (see the `smm`
-        /// unit in `host.rs`). QEMU `-smp` above this is clamped.
-        const SMM_ENTRY_COUNT: u16 = 8;
-
         /// Plan-time reservation at the top of low RAM for TSEG. Must cover
         /// any TSEG QEMU may report; see the `ram` span in `host.rs`.
         const TSEG_RESERVE: u64 = 0x0100_0000;
@@ -359,15 +355,7 @@ mod stage {
         fn init_mp_smm(&self) -> Result<(), ServiceError> {
             let cpu = fstart_arch::x86::mp::GenericX86CpuDriver;
             let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
-            let smi = crate::q35_smm::ich9_smi();
-            let smm_flow = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
-                "Q35",
-                &self.hostbridge,
-                &smi,
-                false,
-            );
-            let smm = SMM_IMAGE.map(|_| &smm_flow as &dyn fstart_arch::x86::mp::SmmOps);
-            if smm.is_some() {
+            if SMM_IMAGE.is_some() {
                 // Locking SMM hides TSEG from non-SMM access. Firmware
                 // statics live below the plan-time reservation by
                 // construction; halt loudly instead of corrupting the
@@ -390,18 +378,37 @@ mod stage {
                     return Err(ServiceError::InvalidParam);
                 }
             }
-            // QEMU `-smp` may exceed the baked entry count; clamp so the
-            // installer never addresses stubs that do not exist.
-            let max_cpus = self.fw_cfg.max_cpus().min(Self::SMM_ENTRY_COUNT).max(1);
+            // Only an embedded SMM image constrains MP bring-up by its entry
+            // count. Do not impose an SMM-specific limit on non-SMM builds.
+            let reported_max_cpus = self.fw_cfg.max_cpus().max(1);
+            let max_cpus = if let Some(image) = SMM_IMAGE {
+                let header = fstart_smm::header::SmmImageHeader::parse(image)
+                    .map_err(|_| ServiceError::InvalidParam)?;
+                reported_max_cpus.min(header.entry_count)
+            } else {
+                reported_max_cpus
+            };
             fstart_log::info!("qemu-q35: MP init with {} CPUs", max_cpus);
-            fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
+            let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
                 cpu_drivers: &drivers,
-                smm,
-                smm_image: SMM_IMAGE,
                 max_cpus,
             })
-            .map(|_| ())
-            .map_err(|_| ServiceError::HardwareError)
+            .map_err(|_| ServiceError::HardwareError)?;
+            if let Some(image) = SMM_IMAGE {
+                let smi = crate::q35_smm::ich9_smi();
+                let smm = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
+                    "Q35",
+                    &self.hostbridge,
+                    &smi,
+                    &crate::q35_smm::QemuSmmCpu,
+                    false,
+                );
+                if let Err(error) = smm.install(&mp, image) {
+                    fstart_log::error!("Q35 SMM installation failed: {}", error.name());
+                    return Err(ServiceError::HardwareError);
+                }
+            }
+            Ok(())
         }
 
         fn mount_boot_media(&self) -> Result<(), ServiceError> {

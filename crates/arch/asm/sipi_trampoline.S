@@ -29,6 +29,7 @@
 .global fstart_sipi_entry
 .global fstart_sipi_stack_base
 .global fstart_sipi_stack_size
+.global fstart_sipi_ap_limit
 .global fstart_sipi_ap_counter
 
 .code16
@@ -67,6 +68,13 @@ prot32:
 	lock xaddl %eax, SIPI_BASE + fstart_sipi_ap_counter - fstart_sipi_start
 	movl %eax, %esi
 
+	/* Broadcast SIPIs wake every AP, including CPUs beyond firmware's static
+	 * capacity. Reset on an excess responder before it indexes the stack
+	 * arena: it would never be SMBASE-relocated, so it must not outlive MP
+	 * bring-up. */
+	cmpl SIPI_BASE + fstart_sipi_ap_limit - fstart_sipi_start, %eax
+	jae excess_ap
+
 	/* ESP = stack_base + (index + 1) * stack_size. */
 	movl %eax, %ebx
 	incl %ebx
@@ -104,6 +112,16 @@ prot32:
 
 	ljmpl $CODE64_SEL, $(SIPI_BASE + long64 - fstart_sipi_start)
 
+excess_ap:
+	/* Hard reset through the ICH/Q35 reset control register. A halted CPU
+	 * still services SMI at the default SMBASE, so halting is not safe. */
+	cli
+	movw $0x0cf9, %dx
+	movb $0x06, %al
+	outb %al, %dx
+1:	hlt
+	jmp 1b
+
 .balign 16
 .code64
 long64:
@@ -138,6 +156,8 @@ fstart_sipi_entry:
 fstart_sipi_stack_base:
 	.quad 0
 fstart_sipi_stack_size:
+	.long 0
+fstart_sipi_ap_limit:
 	.long 0
 fstart_sipi_ap_counter:
 	.long 0

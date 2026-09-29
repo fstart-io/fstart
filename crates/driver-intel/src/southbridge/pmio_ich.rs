@@ -117,6 +117,10 @@ pub const INTEL_USB2_EN: u32 = 1 << 18;
 pub const SLP_SMI_STS: u32 = 1 << 4;
 /// APM command port SMI status (a write to `APM_CNT`).
 pub const APM_STS: u32 = 1 << 5;
+/// PM1 status summary (an enabled PM1 event routed to SMI, i.e. `SCI_EN` clear).
+pub const PM1_SMI_STS: u32 = 1 << 8;
+/// GPE0 status summary (an enabled GPE routed to SMI, i.e. `SCI_EN` clear).
+pub const GPE0_SMI_STS: u32 = 1 << 9;
 /// TCO SMI status.
 pub const TCO_STS: u32 = 1 << 13;
 

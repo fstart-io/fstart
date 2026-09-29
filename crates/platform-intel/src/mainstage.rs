@@ -122,6 +122,18 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     // Leave the legacy keyboard controller quiet before the payload/OS probes it.
     fstart_driver_superio::quiesce_i8042_for_os();
 
+    // mp_init leaves APs polling firmware mailboxes. Stop that activity before
+    // either payload or S3-resume ownership is transferred to the OS.
+    #[cfg(feature = "mp")]
+    if !fstart_arch::x86::mp::park_aps_for_payload() {
+        fstart_log::error!(
+            "{}: failed to quiesce APs for OS handoff; resetting",
+            platform
+        );
+        fstart_log::flush();
+        mainstage.southbridge().system_reset(true);
+    }
+
     #[cfg(feature = "acpi")]
     if resume {
         match wake_vector {
@@ -149,17 +161,6 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         mainstage.southbridge().system_reset(true);
     }
 
-    // mp_init leaves APs polling firmware mailboxes so mainstage can dispatch
-    // scoped work. Stop that firmware activity before transferring ownership
-    // to a payload; an OS expects every AP to remain quiescent until its own
-    // INIT/SIPI sequence.
-    #[cfg(feature = "mp")]
-    if !fstart_arch::x86::mp::park_aps_for_payload() {
-        fstart_log::error!("{}: failed to quiesce APs for payload handoff", platform);
-        fstart_log::flush();
-        fstart_arch::x86_64::halt();
-    }
-
     B::Payload::boot(mainstage)
 }
 
@@ -171,25 +172,31 @@ fn init_mp<P: IntelEarlyPlatform>(
     northbridge: &P::Northbridge,
     southbridge: &P::Southbridge,
     max_cpus: u16,
+    resume: bool,
 ) -> Result<(), ServiceError> {
     // APs must run the same updated microcode as the BSP, whose update
     // happens in pre-CAR assembly; the blob sits in boot flash.
     let cpu = P::cpu_driver(crate::intel_microcode_blob());
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
-    let smm = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
-        P::NAME,
-        northbridge,
-        southbridge,
-        P::SMM_BSP_ONLY_DISPATCH,
-    );
-    fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
+    let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
         cpu_drivers: &drivers,
-        smm: crate::SMM_IMAGE.map(|_| &smm as &dyn fstart_arch::x86::mp::SmmOps),
-        smm_image: crate::SMM_IMAGE,
         max_cpus,
     })
-    .map(|_| ())
-    .map_err(|_| ServiceError::HardwareError)
+    .map_err(|_| ServiceError::HardwareError)?;
+    if let Some(image) = crate::SMM_IMAGE {
+        let smm = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
+            P::NAME,
+            northbridge,
+            southbridge,
+            &cpu,
+            resume,
+        );
+        if let Err(error) = smm.install(&mp, image) {
+            fstart_log::error!("{} SMM installation failed: {}", P::NAME, error.name());
+            return Err(ServiceError::HardwareError);
+        }
+    }
+    Ok(())
 }
 
 pub struct IntelMainstage<P, Hooks, C>
@@ -347,7 +354,12 @@ where
         self.hooks
             .after_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
         #[cfg(feature = "mp")]
-        init_mp::<P>(&self.northbridge, &self.southbridge, self.max_cpus)?;
+        init_mp::<P>(
+            &self.northbridge,
+            &self.southbridge,
+            self.max_cpus,
+            self.resume,
+        )?;
         Ok(())
     }
 

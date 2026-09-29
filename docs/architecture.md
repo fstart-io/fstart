@@ -266,7 +266,8 @@ and the chipset module supplies only types and constants (`IntelEarlyPlatform`:
 northbridge, southbridge, CPU driver, ACPI context). The bootblock, postcar and
 mainstage flows are written once in `platform-intel`; SMM installation and
 relocation are likewise written once in `fstart_arch::x86::cpu::intel::smm`, composed
-from the northbridge's `SmramControl` and the southbridge's `SmiControl`.
+from the northbridge's `SmramControl`, the southbridge's `SmiControl` and the CPU
+model driver's `SmmCpu`.
 The board no longer relays `stage`, `runtime`, `smm` or payload Cargo features.
 Platform `bundle-bootblock`, `bundle-postcar`, `bundle-ramstage`, `bundle-smm`
 features activate real shared dependencies. The ramstage bundle includes ACPI,

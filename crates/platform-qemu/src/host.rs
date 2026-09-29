@@ -1089,6 +1089,11 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     // the board crate binds its handler via `smm_bin!` and the monolithic
     // stage embeds the image through `FSTART_SMM_IMAGE`.
     let mut units = vec![];
+    // The emulator can be started with an arbitrary -smp count; reserve a
+    // deliberate build-time MP budget, independent of the SMM image's stubs.
+    const Q35_MP_MAX_CPUS: u16 = 256;
+    let mp_capacity =
+        || BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), Q35_MP_MAX_CPUS.to_string())]);
     if matches!(machine, VirtMachine::Q35) {
         units.push(CompilationUnit {
             name: "smm".into(),
@@ -1105,9 +1110,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             rustflags: [
                 "-Cpanic=abort",
                 "-Copt-level=s",
-                // Static relocation, matching the Intel SMM unit: the image
-                // ships .text-only linked at -Ttext=0 with no loader, so
-                // calls must be relative direct calls, not GOT-indirect.
+                // Direct relative calls; absolute cross-section references are audited.
                 "-Crelocation-model=static",
                 "-Cno-redzone=yes",
                 "-Clinker-plugin-lto=no",
@@ -1117,7 +1120,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             .into_iter()
             .map(Into::into)
             .collect(),
-            environment_values: BTreeMap::new(),
+            environment_values: mp_capacity(),
             bindings: vec![],
             output: UnitOutput::SmmImage {
                 entry_count: 8,
@@ -1153,7 +1156,11 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         rustflags,
         release_only: false,
         linker_script: Some(linker_script),
-        environment_values: BTreeMap::new(),
+        environment_values: if matches!(machine, VirtMachine::Q35) {
+            mp_capacity()
+        } else {
+            BTreeMap::new()
+        },
         bindings: stage_bindings,
         output: UnitOutput::Executable {
             expectations,
@@ -1339,6 +1346,12 @@ mod tests {
             assert_eq!(stack.base + stack.size, writable.base + writable.size);
             assert_eq!(heap.base + heap.size, stack.base);
             if matches!(machine, VirtMachine::Q35) {
+                assert!(plan.units.iter().all(|unit| {
+                    unit.environment_values
+                        .get("FSTART_MP_MAX_CPUS")
+                        .map(String::as_str)
+                        == Some("256")
+                }));
                 // Top 16 MiB of low RAM is reserved for TSEG: firmware
                 // statics must end below it so locking SMRAM cannot hide
                 // the stack (see the `ram` span in `qemu_policy`).

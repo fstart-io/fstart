@@ -77,10 +77,9 @@ pub fn timestamp_us() -> u64 {
     rdtsc() / (tsc_frequency_hz() / 1_000_000).max(1)
 }
 
-// SMM builds substitute a call-free POST-port delay below: the TSC path's
-// frequency table lives in unshipped .rodata and its discovery calls cannot
-// survive the SMRAM blob audit. Selected per build unit, so all other stages
-// keep the precise TSC implementation with no call-site changes.
+// SMM builds substitute a call-free POST-port delay below so the handler does
+// not retain the broad TSC-discovery call graph. Selected per build unit, so
+// all other stages keep the precise TSC implementation unchanged.
 #[cfg(all(target_arch = "x86_64", not(fstart_stage_env = "smm")))]
 pub fn udelay(us: u32) {
     // Compute the TSC frequency once per delay.  `tsc_frequency_hz()` may use

@@ -9,83 +9,10 @@
 //!
 //! This matches coreboot's `cpu/intel/model_106cx/model_106cx_init.c`.
 
+use crate::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
+use crate::x86::cpu::intel::{common_power, feature_control};
 use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuVendor};
-use crate::x86::msr::{rdmsr, wrmsr};
 use crate::x86::mtrr;
-
-// ---------------------------------------------------------------------------
-// MSR indices
-// ---------------------------------------------------------------------------
-
-/// Package C-state configuration control.
-const MSR_PKG_CST_CONFIG_CONTROL: u32 = 0xE2;
-/// Processor MWAIT IO base address.
-const MSR_PMG_IO_BASE_ADDR: u32 = 0xE4;
-/// C-state latency control (IO capture address).
-const MSR_PMG_IO_CAPTURE_ADDR: u32 = 0xE7;
-/// Miscellaneous feature enable.
-const IA32_MISC_ENABLE: u32 = 0x1A0;
-
-/// Maximum supported C-state level.
-const HIGHEST_CLEVEL: u32 = 3;
-
-// ---------------------------------------------------------------------------
-// Per-CPU configuration functions
-// ---------------------------------------------------------------------------
-
-/// Configure C-state support.
-///
-/// Sets up `MSR_PKG_CST_CONFIG_CONTROL` for C3 support with I/O-based
-/// C-state transitions redirected to MWAIT, and configures the MWAIT
-/// I/O base/capture addresses.
-///
-/// Matches coreboot `configure_c_states()` in model_106cx_init.c.
-fn configure_c_states(pmbase: u32) {
-    // SAFETY: these MSRs are architecturally defined for Atom Pineview.
-    unsafe {
-        let mut cst = rdmsr(MSR_PKG_CST_CONFIG_CONTROL);
-
-        cst |= 1 << 15; // Lock configuration
-        cst |= 1 << 10; // Redirect IO-based CState transitions to MWAIT
-        cst &= !(1 << 9); // Single stop grant cycle on stpclk
-        cst = (cst & !7) | (HIGHEST_CLEVEL as u64); // Support C3
-
-        wrmsr(MSR_PKG_CST_CONFIG_CONTROL, cst);
-
-        // MWAIT IO base address (P_BLK = PMBASE + 4).
-        let io_base = ((pmbase + 4) & 0xFFFF) as u64;
-        wrmsr(MSR_PMG_IO_BASE_ADDR, io_base);
-
-        // C-level controls: IO port + (highest_clevel - 2) in bits [18:16].
-        let io_capture = ((pmbase + 4) as u64) | (((HIGHEST_CLEVEL - 2) as u64) << 16);
-        wrmsr(MSR_PMG_IO_CAPTURE_ADDR, io_capture);
-    }
-}
-
-/// Configure Enhanced SpeedStep and thermal monitoring.
-///
-/// Enables TM1, TM2, bidirectional PROCHOT#, FERR# multiplexing,
-/// and Enhanced SpeedStep (EIST).  Locks EIST enable.
-///
-/// Matches coreboot `configure_misc()` in model_106cx_init.c.
-fn configure_misc() {
-    // SAFETY: IA32_MISC_ENABLE is architecturally defined for this CPU.
-    unsafe {
-        let mut misc = rdmsr(IA32_MISC_ENABLE);
-
-        misc |= 1 << 3; // TM1 enable
-        misc |= 1 << 13; // TM2 enable
-        misc |= 1 << 17; // Bidirectional PROCHOT#
-        misc |= 1 << 10; // FERR# multiplexing
-        misc |= 1 << 16; // Enhanced SpeedStep enable
-
-        wrmsr(IA32_MISC_ENABLE, misc);
-
-        // Lock EIST enable.
-        misc |= 1 << 20;
-        wrmsr(IA32_MISC_ENABLE, misc);
-    }
-}
 
 fn mtrr_type_name(ty: u64) -> &'static str {
     match ty {
@@ -177,6 +104,17 @@ impl PineviewCpuDriver {
     }
 }
 
+impl SmmCpu for PineviewCpuDriver {
+    fn smm_save_state_format(&self) -> X86SaveStateFormat {
+        X86SaveStateFormat::IntelEm64t
+    }
+
+    /// Model 1Ch Atoms use the alternative SMRR pair (coreboot `model_106cx`).
+    fn smrr_pair(&self) -> Option<SmrrPair> {
+        Some(SmrrPair::Core2Alternative)
+    }
+}
+
 impl CpuDriver for PineviewCpuDriver {
     fn name(&self) -> &'static str {
         "Intel Atom Pineview (106cx)"
@@ -204,8 +142,15 @@ impl CpuDriver for PineviewCpuDriver {
         // receive the same low-DRAM WB MTRR layout before OS handoff.
         unsafe { mtrr::setup_ram_wb() };
         log_mtrr_solution("per-CPU ramstage layout");
-        configure_c_states(self.pmbase);
-        configure_misc();
+        // SAFETY: Pineview implements these MSRs; no Core 2-only bits are set.
+        unsafe {
+            common_power::configure_c_states(self.pmbase, 0);
+            common_power::configure_misc(0);
+        }
+        let smrr = SmrrPair::Core2Alternative.feature_control_bits();
+        // SAFETY: model 1Ch Atoms implement IA32_FEATURE_CONTROL, and
+        // `feature_control_bits` only names bits this model has.
+        unsafe { feature_control::enable_and_lock(smrr) };
         fstart_log::info!("cpu: Pineview MSR configuration complete");
     }
 

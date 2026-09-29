@@ -1052,20 +1052,20 @@ impl FirmwareImageProvider for IntelIch7 {
 }
 
 impl crate::southbridge::smi::SmiControl for IntelIch7 {
-    fn pm_base(&self) -> u16 {
-        self.smi().pm_base()
+    type EnableState = crate::southbridge::smi::SmiEnableState;
+    type HandlerConfig = crate::southbridge::smi::IchSmmConfig;
+
+    fn smm_handler_config(&self) -> Self::HandlerConfig {
+        self.smi().smm_handler_config()
     }
-    fn gpe0(&self) -> crate::southbridge::smi::Gpe0Block {
-        self.smi().gpe0()
+    fn set_acpi_mode(&self, enabled: bool) {
+        self.smi().set_acpi_mode(enabled);
     }
-    fn disable_acpi_mode(&self) {
-        self.smi().disable_acpi_mode();
+    fn quiesce_for_relocation(&self) -> crate::southbridge::smi::SmiEnableState {
+        self.smi().quiesce_for_relocation()
     }
-    fn enable_relocation_smi(&self) {
-        self.smi().enable_relocation_smi();
-    }
-    fn enable_permanent_smi(&self) {
-        self.smi().enable_permanent_smi();
+    fn enable_permanent_smi(&self, previous: crate::southbridge::smi::SmiEnableState) {
+        self.smi().enable_permanent_smi(previous);
     }
 }
 
