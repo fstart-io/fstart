@@ -496,7 +496,7 @@ fn test_tampered_signature_fails_verification() {
     let tamper_offset = {
         let reader = FfsReader::new(&image);
         let anchor = reader.read_anchor(anchor_off).unwrap();
-        anchor.manifest_offset as usize + 10 // somewhere in the manifest
+        anchor.manifest_offset.get() as usize + 10 // somewhere in the manifest
     };
     image[tamper_offset] ^= 0xFF; // flip bits
 
@@ -667,7 +667,7 @@ fn test_external_bootblock_digest_valid_after_xip_anchor_patch() {
     let bootblock = FfsReader::find_entry(region, "bootblock").expect("find bootblock");
 
     let mut xip_anchor = anchor;
-    xip_anchor.anchor_offset = bootblock_offset as u32;
+    xip_anchor.anchor_offset.set(bootblock_offset as u32);
     xip_anchor.write_to(&mut external_bootblock[..ANCHOR_SIZE]);
 
     let mut full_image = vec![0xff; 0x2000];

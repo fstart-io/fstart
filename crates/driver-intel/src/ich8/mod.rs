@@ -20,7 +20,7 @@ use fstart_pci::{
     PciType1Config, pci_type0_config,
 };
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use tock_registers::{register_bitfields, register_structs};
+use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
 
 pub use crate::southbridge::gpio_ich::{
     GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, GpioReset,
@@ -267,6 +267,22 @@ register_bitfields! [u32,
         USB_TRANSIENT_DISCONNECT OFFSET(8) NUMBITS(2) [],
         CF9GR OFFSET(20) NUMBITS(1) []
     ],
+    /// SPI flash descriptor map and component density words.
+    SPI_FLMAP0 [
+        COMPONENTS OFFSET(8) NUMBITS(2) []
+    ],
+    SPI_FLCOMP [
+        DENSITY0 OFFSET(0) NUMBITS(3) [],
+        DENSITY1 OFFSET(3) NUMBITS(3) []
+    ],
+    /// SPI hardware status and flash-region bounds (4 KiB granularity).
+    SPI_HSFS [
+        DESCRIPTOR_VALID OFFSET(14) NUMBITS(1) []
+    ],
+    SPI_FREG [
+        BASE OFFSET(0) NUMBITS(13) [],
+        LIMIT OFFSET(16) NUMBITS(13) []
+    ],
     /// I/O trap register low dword.
     IOTR_LO [
         TRAP_SMI_ENABLE OFFSET(0) NUMBITS(1) [],
@@ -506,10 +522,6 @@ const SPIBAR_HSFS: usize = 0x04;
 const SPIBAR_FREG0: usize = 0x54;
 const SPIBAR_FDOC: usize = 0xb0;
 const SPIBAR_FDOD: usize = 0xb4;
-const HSFS_FDV: u32 = 1 << 14;
-const SPI_FREG_BASE_MASK: u32 = 0x1fff;
-const SPI_FREG_LIMIT_MASK: u32 = 0x1fff;
-const SPI_FREG_LIMIT_SHIFT: u32 = 16;
 const SPI_FREG_SHIFT: u32 = 12;
 const GPE0_STS_ICH8: u16 = 0x20;
 const GPE0_EN_ICH8: u16 = 0x28;
@@ -1024,19 +1036,23 @@ impl IntelIch8 {
     fn spi_flash_component_size(&self) -> u32 {
         // Match coreboot southbridge/intel/common/spi.c: observe descriptor
         // component section 0 (FDOC=0x1000) and decode density fields.
-        let flmap0 = self.spi_descriptor_word(4);
-        let flcomp = self.spi_descriptor_word(0x1000);
-        let mut size = 1u32 << (19 + (flcomp & 0x7));
-        if (flmap0 >> 8) & 0x3 != 0 {
-            size = size.saturating_add(1u32 << (19 + ((flcomp >> 3) & 0x7)));
+        let flmap0 =
+            LocalRegisterCopy::<u32, SPI_FLMAP0::Register>::new(self.spi_descriptor_word(4));
+        let flcomp =
+            LocalRegisterCopy::<u32, SPI_FLCOMP::Register>::new(self.spi_descriptor_word(0x1000));
+        let mut size = 1u32 << (19 + flcomp.read(SPI_FLCOMP::DENSITY0));
+        if flmap0.read(SPI_FLMAP0::COMPONENTS) != 0 {
+            size = size.saturating_add(1u32 << (19 + flcomp.read(SPI_FLCOMP::DENSITY1)));
         }
         size
     }
 
     fn spi_ifd_region(&self, index: usize) -> (u32, u32) {
-        let reg = self.spi_read32(SPIBAR_FREG0 + index * core::mem::size_of::<u32>());
-        let base = (reg & SPI_FREG_BASE_MASK) << SPI_FREG_SHIFT;
-        let limit = ((reg >> SPI_FREG_LIMIT_SHIFT) & SPI_FREG_LIMIT_MASK) << SPI_FREG_SHIFT;
+        let reg = LocalRegisterCopy::<u32, SPI_FREG::Register>::new(
+            self.spi_read32(SPIBAR_FREG0 + index * core::mem::size_of::<u32>()),
+        );
+        let base = reg.read(SPI_FREG::BASE) << SPI_FREG_SHIFT;
+        let limit = reg.read(SPI_FREG::LIMIT) << SPI_FREG_SHIFT;
         if limit < base {
             return (0, 0);
         }
@@ -1044,8 +1060,8 @@ impl IntelIch8 {
     }
 
     fn verify_ifd_flash_layout(&self, expected: &IntelIfdFlashLayout) -> Result<(), ServiceError> {
-        let hsfs = self.spi_read32(SPIBAR_HSFS) & 0xffff;
-        if hsfs & HSFS_FDV == 0 {
+        let hsfs = LocalRegisterCopy::<u32, SPI_HSFS::Register>::new(self.spi_read32(SPIBAR_HSFS));
+        if !hsfs.is_set(SPI_HSFS::DESCRIPTOR_VALID) {
             fstart_log::error!("intel-ich8: SPI descriptor valid bit is clear");
             return Err(ServiceError::HardwareError);
         }
@@ -2217,8 +2233,8 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
 
 impl FirmwareImageProvider for IntelIch8 {
     fn firmware_image(&self) -> Result<FirmwareImage, ServiceError> {
-        let hsfs = self.spi_read32(SPIBAR_HSFS) & 0xffff;
-        if hsfs & HSFS_FDV == 0 {
+        let hsfs = LocalRegisterCopy::<u32, SPI_HSFS::Register>::new(self.spi_read32(SPIBAR_HSFS));
+        if !hsfs.is_set(SPI_HSFS::DESCRIPTOR_VALID) {
             fstart_log::error!("intel-ich8: SPI descriptor valid bit is clear");
             return Err(ServiceError::HardwareError);
         }
