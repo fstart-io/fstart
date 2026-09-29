@@ -268,8 +268,8 @@ pub const ICH7_PINEVIEW_ROUTING: PirqRouting = PirqRouting {
                 Some(PciPin::A),
                 Some(PciPin::B),
                 Some(PciPin::B),
-                None,
                 Some(PciPin::D),
+                None,
                 None,
                 None,
             ],
@@ -706,7 +706,7 @@ mod tests {
         assert_eq!(ROUTING.ir_value(0x1e), 0x0146);
         // DxxIP: pin per function, four bits each.
         assert_eq!(ROUTING.ip_value(0x1d), 0x1000_4321);
-        assert_eq!(ROUTING.ip_value(0x1f), 0x0040_2210);
+        assert_eq!(ROUTING.ip_value(0x1f), 0x0004_2210);
     }
 
     #[test]

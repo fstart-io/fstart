@@ -287,9 +287,9 @@ impl IntelPineview {
     #[cfg(target_arch = "x86_64")]
     fn enable_ecam(&self) {
         // PCIEXBAR value: base address | length encoding | enable.
-        // Length encoding: 0 = 256 buses, 1 = 128, 2 = 64.
-        // Pineview uses 64 buses → encoding = 2.
-        let pciexbar_val = (self.config.ecam_base as u32) | (2 << 1) | 1;
+        // Length encoding 0 selects 256 buses, matching PCI_BUS_END and the
+        // 256 MiB ECAM resource published to later stages.
+        let pciexbar_val = (self.config.ecam_base as u32) | 1;
         // SAFETY: one-time legacy PCI config write to the host bridge
         // to enable ECAM. After this, ECAM MMIO is live.
         unsafe {
@@ -911,18 +911,10 @@ impl IntelPineview {
     /// Returns 0 if T_EN (bit 0) is not set.
     pub fn tseg_size(&self) -> u32 {
         let esmramc = self.hostbridge_regs().esmramc.get();
-        if esmramc & 1 == 0 {
-            return 0;
-        }
-        match (esmramc >> 1) & 3 {
-            0 => 1024 * 1024,     // 1 MiB
-            1 => 2 * 1024 * 1024, // 2 MiB
-            2 => 8 * 1024 * 1024, // 8 MiB
-            _ => {
-                fstart_log::error!("pineview: bad TSEG size encoding");
-                0
-            }
-        }
+        super::gmch::tseg_size_bytes(esmramc).unwrap_or_else(|| {
+            fstart_log::error!("pineview: bad TSEG size encoding");
+            0
+        })
     }
 
     /// Read the TSEG base address.

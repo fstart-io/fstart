@@ -9,6 +9,10 @@ use fstart_core::services::{ServiceError, SmBus};
 
 /// Maximum DDR2 SPD payload size used by coreboot's common DDR2 decoder.
 pub const SPD_SIZE_MAX_DDR2: usize = 128;
+/// SPD byte 0: number of bytes written by the SPD manufacturer.
+pub const SPD_BYTES_WRITTEN: u8 = 0;
+/// SPD byte 1: log2 of the EEPROM size in bytes.
+pub const SPD_EEPROM_SIZE: u8 = 1;
 /// SPD byte 3: number of row address bits.
 pub const SPD_NUM_ROWS: u8 = 3;
 /// SPD byte 4: number of column address bits.
@@ -19,6 +23,8 @@ pub const SPD_NUM_DIMM_BANKS: u8 = 5;
 pub const SPD_MODULE_DATA_WIDTH_LSB: u8 = 6;
 /// SPD byte 7: module data width (MSB).
 pub const SPD_MODULE_DATA_WIDTH_MSB: u8 = 7;
+/// SPD byte 8: nominal module voltage interface level.
+pub const SPD_MODULE_VOLTAGE: u8 = 8;
 /// SPD byte 9: minimum cycle time at maximum supported CAS latency.
 pub const SPD_MIN_CYCLE_TIME_AT_CAS_MAX: u8 = 9;
 /// SPD byte 10: access time from clock.
@@ -66,6 +72,8 @@ pub const SPD_TRC_TRFC_EXT: u8 = 40;
 pub const SPD_TRFC_LO: u8 = 42;
 /// SPD byte 62: DDR2 SPD revision.
 pub const SPD_REVISION: u8 = 62;
+/// SPD byte 63: checksum of bytes 0 through 62.
+pub const SPD_CHECKSUM: u8 = 63;
 
 /// DDR2 memory type identifier (SPD byte 2).
 pub const DDR2: u8 = 0x08;
@@ -173,6 +181,24 @@ fn rank_density_mb(spd_data: &[u8; 256]) -> u32 {
     }
 }
 
+fn checksum_valid(spd_data: &[u8; 256]) -> bool {
+    spd_data[..SPD_CHECKSUM as usize]
+        .iter()
+        .copied()
+        .fold(0u8, u8::wrapping_add)
+        == spd_data[SPD_CHECKSUM as usize]
+}
+
+fn sizes_valid(spd_data: &[u8; 256]) -> bool {
+    let spd_size = usize::from(spd_data[SPD_BYTES_WRITTEN as usize]).min(SPD_SIZE_MAX_DDR2);
+    let eeprom_size = match spd_data[SPD_EEPROM_SIZE as usize] {
+        0 => 0,
+        exponent @ 1..=0x0e => 1usize << exponent,
+        _ => 0x3fff,
+    };
+    spd_size >= 64 && eeprom_size >= 64
+}
+
 /// Decode DDR2 raw SPD data into a [`DimmInfo`].
 ///
 /// Returns `None` if the memory type is not DDR2 or the data looks
@@ -180,18 +206,22 @@ fn rank_density_mb(spd_data: &[u8; 256]) -> u32 {
 /// as coreboot's common DDR2 SPD library.
 pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
     let mem_type = spd_data[super::SPD_MEMORY_TYPE as usize];
-    if mem_type != DDR2 {
+    if mem_type != DDR2 || !sizes_valid(spd_data) {
         return None;
     }
 
     let revision = spd_data[SPD_REVISION as usize];
-    if revision == 0 {
+    if revision & 0xf0 != 0x10 || !checksum_valid(spd_data) {
         return None;
     }
 
-    let rows = spd_data[SPD_NUM_ROWS as usize] & 0x1F;
-    let cols = spd_data[SPD_NUM_COLUMNS as usize] & 0x0F;
-    if rows == 0 || cols == 0 {
+    if spd_data[SPD_MODULE_VOLTAGE as usize] > 0x05 {
+        return None;
+    }
+
+    let rows = spd_data[SPD_NUM_ROWS as usize];
+    let cols = spd_data[SPD_NUM_COLUMNS as usize];
+    if rows == 0 || rows > 31 || (revision < 0x13 && rows > 15) || cols == 0 || cols > 15 {
         return None;
     }
 
@@ -238,42 +268,40 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
     // by Intel DDR2 controllers for page-width timing/address-decode choices.
     let page_size = (1u32 << cols as u32) * ((primary_width as u32).max(8) / 8);
 
-    let rank_capacity_mb = match rank_density_mb(spd_data) {
-        0 => {
-            ((1u64 << rows as u64)
-                .saturating_mul(1u64 << cols as u64)
-                .saturating_mul(banks as u64)
-                .saturating_mul(module_width as u64)
-                / 8
-                / 1024
-                / 1024) as u32
-        }
-        mb => mb,
-    };
+    let rank_capacity_mb = rank_density_mb(spd_data);
+    if rank_capacity_mb == 0 {
+        return None;
+    }
 
     let cas_latencies = spd_data[SPD_SUPPORTED_CAS_LATENCIES as usize];
+    if cas_latencies == 0
+        || cas_latencies & 0x03 != 0
+        || (revision < 0x13 && cas_latencies & 0x80 != 0)
+        || (revision < 0x12 && cas_latencies & 0x40 != 0)
+    {
+        return None;
+    }
+
     let mut cycle_time_256ns = [0u32; 8];
     let mut access_time_256ns = [0u32; 8];
     if let Some(max_cas) = msb_index(cas_latencies) {
         cycle_time_256ns[max_cas as usize] =
-            decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MAX as usize]).unwrap_or(0);
+            decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MAX as usize])?;
         access_time_256ns[max_cas as usize] =
-            decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK as usize]).unwrap_or(0);
+            decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK as usize])?;
 
         if max_cas >= 1 && (cas_latencies & (1 << (max_cas - 1))) != 0 {
             cycle_time_256ns[(max_cas - 1) as usize] =
-                decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MINUS_1 as usize]).unwrap_or(0);
+                decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MINUS_1 as usize])?;
             access_time_256ns[(max_cas - 1) as usize] =
-                decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK_CAS_MINUS_1 as usize])
-                    .unwrap_or(0);
+                decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK_CAS_MINUS_1 as usize])?;
         }
 
         if max_cas >= 2 && (cas_latencies & (1 << (max_cas - 2))) != 0 {
             cycle_time_256ns[(max_cas - 2) as usize] =
-                decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MINUS_2 as usize]).unwrap_or(0);
+                decode_tck_256ns(spd_data[SPD_MIN_CYCLE_TIME_AT_CAS_MINUS_2 as usize])?;
             access_time_256ns[(max_cas - 2) as usize] =
-                decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK_CAS_MINUS_2 as usize])
-                    .unwrap_or(0);
+                decode_bcd_256ns(spd_data[SPD_ACCESS_TIME_FROM_CLOCK_CAS_MINUS_2 as usize])?;
         }
     }
 
@@ -282,7 +310,7 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
         | (((spd_data[SPD_TRC_TRFC_EXT as usize] & 0x01) as u16) << 8);
 
     Some(DimmInfo {
-        card_type: revision,
+        card_type: spd_data[SPD_DIMM_TYPE as usize],
         mem_type,
         width,
         chip_capacity,
@@ -314,10 +342,73 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
         trrd_256ns: decode_quarter_256ns(spd_data[SPD_MIN_RAS_TO_RAS_DELAY as usize]),
         trtp_256ns: decode_quarter_256ns(spd_data[SPD_MIN_READ_TO_PRECHARGE as usize]),
         rank_capacity_mb,
-        is_ecc: spd_data[SPD_DIMM_CONFIG_TYPE as usize] & 0x3 != 0,
+        is_ecc: spd_data[SPD_DIMM_CONFIG_TYPE as usize] & 0x02 != 0,
         is_registered: is_registered_ddr2(spd_data[SPD_DIMM_TYPE as usize]),
         is_stacked: spd_data[SPD_NUM_DIMM_BANKS as usize] & 0x10 != 0,
         supports_bl8: spd_data[SPD_BURST_LENGTHS as usize] & 0x08 != 0,
         spd_data: *spd_data,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_spd() -> [u8; 256] {
+        let mut spd = [0u8; 256];
+        spd[SPD_BYTES_WRITTEN as usize] = 128;
+        spd[SPD_EEPROM_SIZE as usize] = 8;
+        spd[super::super::SPD_MEMORY_TYPE as usize] = DDR2;
+        spd[SPD_NUM_ROWS as usize] = 13;
+        spd[SPD_NUM_COLUMNS as usize] = 10;
+        spd[SPD_MODULE_DATA_WIDTH_LSB as usize] = 64;
+        spd[SPD_MODULE_VOLTAGE as usize] = 5;
+        spd[SPD_MIN_CYCLE_TIME_AT_CAS_MAX as usize] = 0x30;
+        spd[SPD_ACCESS_TIME_FROM_CLOCK as usize] = 0x45;
+        spd[SPD_PRIMARY_SDRAM_WIDTH as usize] = 8;
+        spd[SPD_NUM_BANKS_PER_SDRAM as usize] = 8;
+        spd[SPD_SUPPORTED_CAS_LATENCIES as usize] = 1 << 5;
+        spd[SPD_DIMM_TYPE as usize] = 2;
+        spd[SPD_RANK_DENSITY as usize] = 1;
+        spd[SPD_REVISION as usize] = 0x12;
+        update_checksum(&mut spd);
+        spd
+    }
+
+    fn update_checksum(spd: &mut [u8; 256]) {
+        spd[SPD_CHECKSUM as usize] = spd[..SPD_CHECKSUM as usize]
+            .iter()
+            .copied()
+            .fold(0u8, u8::wrapping_add);
+    }
+
+    #[test]
+    fn rejects_malformed_spd_geometry_and_sizes() {
+        let mut spd = valid_spd();
+        spd[SPD_BYTES_WRITTEN as usize] = 0;
+        update_checksum(&mut spd);
+        assert!(decode_dimm(&spd).is_none());
+
+        let mut spd = valid_spd();
+        spd[SPD_NUM_COLUMNS as usize] = 0x1c;
+        update_checksum(&mut spd);
+        assert!(decode_dimm(&spd).is_none());
+
+        let mut spd = valid_spd();
+        spd[SPD_RANK_DENSITY as usize] = 0;
+        update_checksum(&mut spd);
+        assert!(decode_dimm(&spd).is_none());
+    }
+
+    #[test]
+    fn rejects_bad_checksum_and_timing_encoding() {
+        let mut spd = valid_spd();
+        spd[SPD_CHECKSUM as usize] ^= 1;
+        assert!(decode_dimm(&spd).is_none());
+
+        let mut spd = valid_spd();
+        spd[SPD_MIN_CYCLE_TIME_AT_CAS_MAX as usize] = 0x2e;
+        update_checksum(&mut spd);
+        assert!(decode_dimm(&spd).is_none());
+    }
 }

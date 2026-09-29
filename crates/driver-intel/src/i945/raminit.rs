@@ -975,8 +975,7 @@ fn gather_common_timing(
         saved.min_twr = saved.min_twr.max(dimm.twr_256ns);
         saved.min_trfc = saved.min_trfc.max(dimm.trfc_256ns);
         if let Some(trr) = decode_trr_us(raw[12]) {
-            // tRR is 1/256 us; common timings use 1/256 ns.
-            saved.max_trr = saved.max_trr.min(trr * 1000);
+            saved.max_trr = saved.max_trr.min(trr);
         }
         saved.cas_mask &= dimm.cas_latencies;
         for cas in 0..8 {

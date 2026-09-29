@@ -254,7 +254,7 @@ register_bitfields! [u32,
         FIELD_19_16 OFFSET(16) NUMBITS(4) []
     ],
     CIR10_REG [
-        FIELD_17_16 OFFSET(16) NUMBITS(2) []
+        BIT17 OFFSET(17) NUMBITS(1) []
     ],
     BIOS_CNTL_REG [
         EXTENDED_CMOS_ENABLE OFFSET(2) NUMBITS(1) []
@@ -285,10 +285,10 @@ register_bitfields! [u32,
 register_bitfields! [u16,
     /// LPC GEN_PMCON_1 register.
     GEN_PMCON_1_REG [
-        AFTERG3_EN OFFSET(0) NUMBITS(2) [],
-        SLP_S4_ASST_EN OFFSET(2) NUMBITS(1) [],
-        SUS_PWR_FLR OFFSET(3) NUMBITS(1) [],
-        DIS_SLP_X_STRCH_SUS_UP OFFSET(5) NUMBITS(1) [],
+        SMI_RATE OFFSET(0) NUMBITS(2) [],
+        CLKRUN_EN OFFSET(2) NUMBITS(1) [],
+        SPEEDSTEP_EN OFFSET(3) NUMBITS(1) [],
+        CPUSLP_EN OFFSET(5) NUMBITS(1) [],
         C4_ON_C3_EN OFFSET(7) NUMBITS(1) [],
         BIOS_PCI_EXP_EN OFFSET(10) NUMBITS(1) [],
         C5_EN OFFSET(11) NUMBITS(1) []
@@ -322,8 +322,8 @@ register_bitfields! [u8,
         STATE_AFTER_G3 OFFSET(0) NUMBITS(1) [],
         RTC_POWER_FAILED OFFSET(1) NUMBITS(1) [],
         RTC_BATTERY_DEAD OFFSET(2) NUMBITS(1) [],
-        MIN_SLP_S4_ASSERT OFFSET(3) NUMBITS(1) [],
-        SLP_S3_STRETCH OFFSET(4) NUMBITS(2) []
+        SLP_S4_STRETCH OFFSET(3) NUMBITS(1) [],
+        SLP_S4_MAW OFFSET(4) NUMBITS(2) []
     ],
     /// LPC C-state configuration.
     CXSTATE_CNF_REG [
@@ -428,8 +428,8 @@ register_structs! {
         (0x01f8 => _reserved7),
         (0x01fc => pub cir3: MmioReadWrite<u16>),
         (0x01fe => _reserved8),
-        (0x0200 => pub cir4: MmioReadWrite<u32>),
-        (0x0204 => _reserved9),
+        (0x0200 => pub cir4: MmioReadWrite<u16>),
+        (0x0202 => _reserved9),
         (0x0220 => pub bcr: MmioReadWrite<u8>),
         (0x0221 => _reserved10),
         (0x0234 => pub dmic: MmioReadWrite<u32, DMIC::Register>),
@@ -868,7 +868,7 @@ impl IntelIch8Config {
             ide: None,
             sata: None,
             usb: None,
-            pcie_ports: [true, true, true, true, true, true],
+            pcie_ports: [false; 6],
             pcie_slots: [false; 6],
             pcie_power_limits: [PciePowerLimit { value: 0, scale: 0 }; 6],
             io_traps: ConstVec::new(empty_io_trap()),
@@ -876,7 +876,7 @@ impl IntelIch8Config {
             gpio: GpioConfig::new(),
             acpi_name: Some("LPCB"),
             c3_latency: 85,
-            power_on_after_fail: 0,
+            power_on_after_fail: 1,
             throttle_duty: 0,
             disable_lan: false,
             disable_sata2: true,
@@ -1178,6 +1178,7 @@ impl IntelIch8 {
             // Clear timeout status.
             tco.write16(pmio::TCO1_STS, 1 << 3);
             tco.write16(pmio::TCO2_STS, 1 << 1);
+            tco.write16(pmio::TCO_RLD, 0);
         }
     }
 
@@ -1224,7 +1225,10 @@ impl IntelIch8 {
         rcba.regs().cir2.set(0x8600_0040);
         rcba.regs().cir4.set(0x0000_2008);
         rcba.regs().bcr.set(0x45);
-        rcba.regs().cir6.modify(CIR6_REG::BIT7::CLEAR);
+        let cir6 = rcba.regs().cir6.get();
+        rcba.regs()
+            .cir6
+            .set((cir6 & !((1 << 7) | (0xff00 << 16))) | (0x0d00 << 16));
 
         rcba.regs().v1ctl.modify(VCTL::ID.val(1));
         rcba.regs().v1ctl.modify(VCTL::TC_MAP.val(0x40));
@@ -1292,14 +1296,14 @@ impl IntelIch8 {
                 1
             } else {
                 0
-            }) + GEN_PMCON_3_REG::SLP_S3_STRETCH.val(3)
-                + GEN_PMCON_3_REG::MIN_SLP_S4_ASSERT::CLEAR,
+            }) + GEN_PMCON_3_REG::SLP_S4_MAW.val(3)
+                + GEN_PMCON_3_REG::SLP_S4_STRETCH::CLEAR,
         );
 
-        let gen_pmcon_1 = GEN_PMCON_1_REG::AFTERG3_EN.val(0)
-            + GEN_PMCON_1_REG::SLP_S4_ASST_EN::SET
-            + GEN_PMCON_1_REG::SUS_PWR_FLR::SET
-            + GEN_PMCON_1_REG::DIS_SLP_X_STRCH_SUS_UP::SET
+        let gen_pmcon_1 = GEN_PMCON_1_REG::SMI_RATE.val(0)
+            + GEN_PMCON_1_REG::CLKRUN_EN::SET
+            + GEN_PMCON_1_REG::SPEEDSTEP_EN::SET
+            + GEN_PMCON_1_REG::CPUSLP_EN::SET
             + GEN_PMCON_1_REG::BIOS_PCI_EXP_EN::SET;
         let gen_pmcon_1 = match (self.config.c4_on_c3, self.config.c5_enable) {
             (true, true) => {
@@ -1343,7 +1347,7 @@ impl IntelIch8 {
             port61 &= !(1 << 3);
             port61 |= 1 << 2;
             fstart_core::pio::outb(0x61, port61);
-            let mut nmi = fstart_core::pio::inb(0x70);
+            let mut nmi = fstart_core::pio::inb(0x74);
             nmi |= 1 << 7;
             fstart_core::pio::outb(0x70, nmi);
         }
@@ -1399,7 +1403,7 @@ impl IntelIch8 {
     fn ramstage_lpc_init(&self) {
         let rcba = self.rcba();
         self.enable_ioapic();
-        self.lpc_regs().serirq_cntl.set(0xd0);
+        self.lpc_regs().serirq_cntl.set(0xc0);
         self.configure_power_options();
         self.configure_cstates();
         self.rtc_init();
@@ -1442,12 +1446,12 @@ impl IntelIch8 {
     fn early_chipset_settings(&self) {
         let rcba = self.rcba();
         rcba.regs().gcs.modify(GCS_REG::BOOT_SMI_EN::SET);
-        rcba.regs().cir8.modify(CIR8_REG::FIELD_1_0.val(2));
+        rcba.regs().cir8.modify(CIR8_REG::FIELD_1_0.val(1));
         rcba.regs().cir9.modify(CIR9_REG::FIELD_27_26.val(2));
         rcba.regs().cir7.modify(CIR7_REG::FIELD_19_16.val(5));
         rcba.regs().cir13.modify(CIR13_REG::FIELD_19_16.val(5));
         rcba.regs().cir5.modify(CIR5_REG::BIT0::SET);
-        rcba.regs().cir10.modify(CIR10_REG::FIELD_17_16.val(3));
+        rcba.regs().cir10.modify(CIR10_REG::BIT17::CLEAR);
     }
 
     fn configure_gpi_routing(&self) {
@@ -1821,22 +1825,19 @@ impl IntelIch8 {
             .modify(PCI_COMMAND_BITS::IO_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
         Self::prog_if_regs(ide).prog_if.set(0x8a);
 
-        let timing_base = ich8::IDE_SITRE
-            | ich8::IDE_ISP_3_CLOCKS
-            | ich8::IDE_RCT_1_CLOCKS
-            | ich8::IDE_IE0
-            | ich8::IDE_TIME0;
+        let timing_base =
+            ich8::IDE_ISP_3_CLOCKS | ich8::IDE_RCT_1_CLOCKS | ich8::IDE_IE0 | ich8::IDE_TIME0;
         let primary_timing = (ide.read16(ich8::IDE_TIM_PRI) & !ich8::IDE_DECODE_ENABLE)
-            | timing_base
+            | ich8::IDE_SITRE
             | if config.enable_primary {
-                ich8::IDE_DECODE_ENABLE
+                ich8::IDE_DECODE_ENABLE | timing_base
             } else {
                 0
             };
         let secondary_timing = (ide.read16(ich8::IDE_TIM_SEC) & !ich8::IDE_DECODE_ENABLE)
-            | timing_base
+            | ich8::IDE_SITRE
             | if config.enable_secondary {
-                ich8::IDE_DECODE_ENABLE
+                ich8::IDE_DECODE_ENABLE | timing_base
             } else {
                 0
             };
@@ -1898,7 +1899,7 @@ impl IntelIch8 {
             fstart_core::pio::outb(0xa1, 0x02);
             fstart_core::pio::outb(0x21, 0x01);
             fstart_core::pio::outb(0xa1, 0x01);
-            fstart_core::pio::outb(0x21, 0xff);
+            fstart_core::pio::outb(0x21, 0xfb);
             fstart_core::pio::outb(0xa1, 0xff);
             let elcr2 = fstart_core::pio::inb(0x4d1);
             fstart_core::pio::outb(0x4d1, elcr2 | (1 << 1));
