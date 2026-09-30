@@ -9,31 +9,18 @@
 
 #![allow(clippy::result_unit_err)]
 
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::ServiceError;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_platform_intel::gm965::Gm965Ich8;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(fstart_stage_env = "car")]
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
+#[cfg(fstart_stage_env = "ram")]
+use fstart_platform_intel::{IntelMainstageBoardCtx, IntelMainstageBoardHooks};
 
 /// Board-specific X61 hooks for the GM965/ICH8 flow.
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+#[derive(Default)]
 pub struct X61Mainboard;
 
 /// The mainboard contributes ACPI fragments through the same `AcpiDevice`
@@ -53,42 +40,47 @@ mod mainboard_acpi_device {
     }
 }
 
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
-impl X61Mainboard {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
-
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(fstart_stage_env = "car")]
 impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
     fn before_console(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
-        // Match coreboot's bootblock_mainboard_early_init(): DLPC init and
-        // dock connection failures are non-fatal before the console exists.
-        let _ = dock::dlpc_init();
-        if dock::dock_present(ctx.southbridge()) {
-            let _ = dock::dock_connect();
-            dock::early_superio_config();
-        }
+        setup_dock_console(ctx.southbridge());
         Ok(())
     }
 
     fn after_memory(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
         dock::post_raminit_setup(ctx.southbridge());
-        // EC/PMH7 initialization belongs to mainstage hardware bring-up,
-        // regardless of whether that stage emits ACPI tables.
-        #[cfg(fstart_stage_env = "ram")]
+        Ok(())
+    }
+}
+
+#[cfg(fstart_stage_env = "ram")]
+impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
+    fn before_console(
+        &mut self,
+        ctx: &mut IntelMainstageBoardCtx<Gm965Ich8>,
+    ) -> Result<(), ServiceError> {
+        setup_dock_console(ctx.southbridge());
+        Ok(())
+    }
+
+    fn after_devices(
+        &mut self,
+        ctx: &mut IntelMainstageBoardCtx<Gm965Ich8>,
+    ) -> Result<(), ServiceError> {
+        dock::post_raminit_setup(ctx.southbridge());
+        // EC/PMH7 hardware setup is independent of ACPI table emission.
         x61_ec_init();
         Ok(())
+    }
+}
+
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+fn setup_dock_console(southbridge: &mut fstart_driver_intel::ich8::IntelIch8) {
+    // X61-specific dock routing. Failures are non-fatal before console.
+    let _ = dock::dlpc_init();
+    if dock::dock_present(southbridge) {
+        let _ = dock::dock_connect();
+        dock::early_superio_config();
     }
 }
 

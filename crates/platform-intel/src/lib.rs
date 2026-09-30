@@ -1,7 +1,7 @@
-//! Shared Intel platform machinery and chipset-specific handwritten flows.
+//! Shared handwritten Intel flows and typed chipset pairings.
 //!
-//! Intel-common code lives here only when it is shared by multiple Intel
-//! chipsets. Ordering stays in each chipset module's handwritten flow.
+//! Pairings supply hardware types and constants; initialization order lives
+//! once in the family bootblock, postcar and mainstage flows.
 
 #![no_std]
 
@@ -19,6 +19,7 @@ extern crate ufmt;
 pub mod tables;
 
 pub mod facts;
+pub use facts::{IntelBoardFacts, IntelPlatform, IntelPlatformConfig};
 #[cfg(feature = "host")]
 pub mod host;
 #[cfg(feature = "bundle-smm")]
@@ -35,9 +36,12 @@ macro_rules! stage_bin {
     ($board:ty) => { $crate::stage_runtime::stage_bin!(program: $crate::Program<$board>); };
 }
 
+#[cfg(feature = "gm965-ich8")]
 pub mod gm965;
+#[cfg(feature = "i945-ich7")]
 pub mod i945;
 pub mod layout;
+#[cfg(feature = "pineview-ich7")]
 pub mod pineview;
 
 /// Shared IGD display bring-up types used by board display policy.
@@ -69,8 +73,6 @@ use fstart_core::services::{ConsoleDevice, ServiceError};
 pub use fstart_driver_intel::{
     BootPath, IntelEcamConfig, IntelNorthbridgeDriver, IntelSouthbridgeDriver,
 };
-#[cfg(feature = "stage")]
-pub use fstart_stage::payload::MainstagePayload;
 
 /// Native SMM handler image built by fbuild, embedded into stages whose build
 /// had `FSTART_SMM_IMAGE` set (the DRAM mainstage of SMM-capable boards).
@@ -112,17 +114,20 @@ pub fn intel_microcode_blob() -> Option<&'static [u8]> {
 /// by the shared flow below. Chipset modules implement this once; the flow
 /// itself is not duplicated per generation.
 #[cfg(feature = "stage")]
-pub trait IntelEarlyPlatform: Sized + 'static {
-    /// Log prefix, e.g. `"pineview/ich7"`.
-    const NAME: &'static str;
+pub trait IntelEarlyPlatform:
+    Sized
+    + IntelPlatform<
+        Config: IntelChipsetConfig<
+            Northbridge = Self::Northbridge,
+            Southbridge = Self::Southbridge,
+        >,
+    >
+{
     /// Re-run native display init (modeset + OpRegion) on the S3 resume path.
     /// Chipsets whose OS display driver restores the screen leave this false
     /// so resume skips the modeset flicker.
     #[cfg(feature = "acpi")]
     const RESUME_DISPLAY_INIT: bool;
-    /// Board-facing chipset policy, built in `.rodata` by the board.
-    type Config: IntelChipsetConfig<Northbridge = Self::Northbridge, Southbridge = Self::Southbridge>
-        + 'static;
     type Northbridge: IntelNorthbridgeDriver
         + fstart_arch::x86::cpu::intel::smm::SmramControl
         + NorthbridgeAcpi<Self::Northbridge>;
@@ -179,32 +184,24 @@ impl<SB, T> SouthbridgeAcpi<SB> for T {}
 
 /// Built chipset policy: the derived driver configs and the CPU population.
 #[cfg(feature = "stage")]
-pub trait IntelChipsetConfig {
+pub trait IntelChipsetConfig: IntelPlatformConfig {
     type Northbridge: IntelNorthbridgeDriver;
     type Southbridge: IntelSouthbridgeDriver;
     fn northbridge(&'static self)
     -> &'static <Self::Northbridge as IntelNorthbridgeDriver>::Config;
     fn southbridge(&'static self)
     -> &'static <Self::Southbridge as IntelSouthbridgeDriver>::Config;
-    /// Maximum logical CPU count (BSP + APs) the board populates.
-    fn max_cpus(&self) -> u16;
 }
 
 /// Board contract for the Intel flow.
 #[cfg(feature = "stage")]
-pub trait IntelBoard: Sized + 'static + crate::facts::IntelBoardFacts {
-    type Platform: IntelEarlyPlatform;
-    type Hooks: IntelEarlyBoardHooks<Self::Platform>;
-    type Console: ConsoleDevice;
-    /// Terminal payload launcher; only the DRAM mainstage links one.
+pub trait IntelBoard: Sized + 'static + IntelBoardFacts<Platform: IntelEarlyPlatform> {
+    #[cfg(fstart_stage_env = "car")]
+    type EarlyHooks: IntelEarlyBoardHooks<Self::Platform> + Default;
     #[cfg(fstart_stage_env = "ram")]
-    type Payload: MainstagePayload<Mainstage<Self>>;
+    type MainstageHooks: IntelMainstageBoardHooks<Self::Platform> + Default;
+    type Console: ConsoleDevice;
 
-    /// Board platform policy. Points at a board `static` so the config lives
-    /// in `.rodata`, never on the early-stage stack.
-    const CONFIG: &'static <Self::Platform as IntelEarlyPlatform>::Config;
-
-    fn hooks() -> Result<Self::Hooks, ServiceError>;
     fn console_config() -> <Self::Console as ConsoleDevice>::Config;
     fn console_node() -> &'static str;
     #[cfg(feature = "smbios")]
@@ -220,9 +217,7 @@ impl<B: IntelBoard> fstart_stage::StageProgram for Program<B> {
     fn run_stage(_handoff: usize) -> ! {
         #[cfg(fstart_stage_env = "car")]
         {
-            let Ok(mut hooks) = B::hooks() else {
-                fstart_arch::x86_64::halt();
-            };
+            let mut hooks = B::EarlyHooks::default();
             let flow = bootstrap_spec::<B>(0)
                 .and_then(|spec| bootblock::run_intel_bootblock::<B>(spec, &mut hooks));
             if flow.is_err() {
@@ -292,36 +287,35 @@ pub use fstart_core::stage::POSTCAR_STAGE_NAME;
 // Board hooks
 // ---------------------------------------------------------------------------
 
-/// Mainboard hooks contribute ACPI fragments through the same [`AcpiDevice`]
+/// Mainstage board hooks contribute ACPI fragments through the same [`AcpiDevice`]
 /// abstraction chipset drivers use. Vacuous when ACPI is disabled.
 ///
 /// [`AcpiDevice`]: fstart_acpi::device::AcpiDevice
-#[cfg(all(feature = "stage", feature = "acpi"))]
+#[cfg(all(feature = "stage", fstart_stage_env = "ram", feature = "acpi"))]
 pub trait MainboardAcpi<P: IntelEarlyPlatform>:
     fstart_acpi::device::AcpiDevice<Config = P::AcpiContext>
 {
 }
-#[cfg(all(feature = "stage", feature = "acpi"))]
+#[cfg(all(feature = "stage", fstart_stage_env = "ram", feature = "acpi"))]
 impl<P, T> MainboardAcpi<P> for T
 where
     P: IntelEarlyPlatform,
     T: fstart_acpi::device::AcpiDevice<Config = P::AcpiContext>,
 {
 }
-#[cfg(all(feature = "stage", not(feature = "acpi")))]
+#[cfg(all(feature = "stage", fstart_stage_env = "ram", not(feature = "acpi")))]
 pub trait MainboardAcpi<P> {}
-#[cfg(all(feature = "stage", not(feature = "acpi")))]
+#[cfg(all(feature = "stage", fstart_stage_env = "ram", not(feature = "acpi")))]
 impl<P, T> MainboardAcpi<P> for T {}
 
-/// Mutable context passed to board hooks.
-#[cfg(feature = "stage")]
+/// CAR-only context. LPC decode is active; no heap or PCI allocation exists.
+#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
 pub struct IntelEarlyCtx<'a, P: IntelEarlyPlatform> {
     southbridge: &'a mut P::Southbridge,
 }
 
-#[cfg(feature = "stage")]
+#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
 impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
-    #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
     pub(crate) fn new(southbridge: &'a mut P::Southbridge) -> Self {
         Self { southbridge }
     }
@@ -332,9 +326,12 @@ impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
     }
 }
 
-/// Board hooks at the fixed Intel early-flow seams.
-#[cfg(feature = "stage")]
-pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: MainboardAcpi<P> {
+/// Bootblock hooks, called on cold, warm and S3 boots. State is CAR-local
+/// and is not carried into mainstage. Before console, only chipset decode
+/// is ready; before memory, chipset early init is complete; after memory,
+/// DRAM training/recovery is complete. Handoff follows authentication/loading.
+#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
+pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform> {
     fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
         Ok(())
     }
@@ -348,6 +345,46 @@ pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: MainboardAcpi<P> {
     }
 
     fn before_handoff(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+/// Mainstage-only context. DRAM/heap exist throughout; the memory map is
+/// populated after console bring-up, and PCI resources are assigned before
+/// `after_devices`. `resume` identifies the S3 path, not an ordinary cold boot.
+#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
+pub struct IntelMainstageBoardCtx<'a, P: IntelEarlyPlatform> {
+    pub(crate) southbridge: &'a mut P::Southbridge,
+    pub(crate) memory: &'a MainstageCtx,
+    pub resume: bool,
+}
+
+#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
+impl<P: IntelEarlyPlatform> IntelMainstageBoardCtx<'_, P> {
+    pub fn southbridge(&mut self) -> &mut P::Southbridge {
+        self.southbridge
+    }
+
+    pub fn memory(&self) -> &MainstageCtx {
+        self.memory
+    }
+}
+
+/// Fresh mainstage board state, never reconstructed by replaying early hooks.
+/// Runs on cold/warm/S3 boots: establish board console routing after LPC decode,
+/// initialize board devices after chipset/PCI setup, then prepare OS handoff
+/// after tables. Hardware setup does not depend on ACPI emission.
+#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
+pub trait IntelMainstageBoardHooks<P: IntelEarlyPlatform>: MainboardAcpi<P> {
+    fn before_console(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    fn after_devices(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    fn before_handoff(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
         Ok(())
     }
 }

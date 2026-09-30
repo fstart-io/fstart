@@ -40,6 +40,52 @@ impl SuperIoChip for SmscLpc47m15xChip {
 /// LPC47M15x SuperIO driver.
 pub type SmscLpc47m15x = SuperIo<SmscLpc47m15xChip>;
 
+impl SmscLpc47m15x {
+    /// Enable the PME logical device at its board-selected runtime I/O base.
+    /// The platform must already decode the PnP ports and runtime window.
+    /// Call before `init()` when PME must precede serial/KBC bring-up.
+    pub fn enable_pme(
+        &mut self,
+        io_base: u16,
+    ) -> Result<(), fstart_core::services::device::DeviceError> {
+        let registers = pme_registers(io_base).ok_or(
+            fstart_core::services::device::DeviceError::MissingResource("PME I/O base"),
+        )?;
+        self.enter_config();
+        for (reg, value) in registers {
+            self.write_reg(reg, value);
+        }
+        self.exit_config();
+        // SAFETY: decoded config data port of this exclusively owned device.
+        let _ = unsafe { fstart_core::pio::inb(self.data_port()) };
+        Ok(())
+    }
+}
+
+fn pme_registers(io_base: u16) -> Option<[(u8, u8); 5]> {
+    (io_base != 0).then_some([
+        (0x07, 10), // PME LDN
+        (0x30, 0),  // Disable before moving the runtime window
+        (0x60, (io_base >> 8) as u8),
+        (0x61, io_base as u8),
+        (0x30, 1), // Activate at the new base
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pme_registers;
+
+    #[test]
+    fn pme_disables_before_relocating_and_enabling() {
+        assert_eq!(
+            pme_registers(0x680),
+            Some([(7, 10), (0x30, 0), (0x60, 6), (0x61, 0x80), (0x30, 1)])
+        );
+        assert_eq!(pme_registers(0), None);
+    }
+}
+
 /// Board-facing LPC47M15x config.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

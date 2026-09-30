@@ -20,7 +20,6 @@ use fstart_platform_intel::pineview::{
 /// back by the same name when the OpRegion is published.
 const D41S_VBT: &str = "data.vbt";
 
-
 const D41S_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
     outputs: &[OutputConfig {
         port: Port::Vga,
@@ -81,14 +80,11 @@ pub const FLASH_SIZE: u32 = 0x0100_0000;
 pub const FLASH: FlashLayout = FlashLayout::X86Legacy(X86LegacyFlashLayout { size: FLASH_SIZE });
 
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
+    type Platform = fstart_platform_intel::pineview::PineviewIch7;
+    const CONFIG: &'static PineviewIch7Platform = &D41S_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
-        fstart_platform_intel::facts::BoardFacts::new(
-            FLASH,
-            FLASH_SIZE,
-            D41S_PLATFORM.max_cpus,
-            fstart_platform_intel::facts::Chipset::PineviewIch7,
-        )
-        .with_data_assets(&[D41S_VBT]);
+        fstart_platform_intel::facts::BoardFacts::new(FLASH, FLASH_SIZE)
+            .with_data_assets(&[D41S_VBT]);
 }
 
 #[must_use]

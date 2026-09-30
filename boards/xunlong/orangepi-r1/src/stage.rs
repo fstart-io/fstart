@@ -2,10 +2,10 @@
 use crate::Board;
 use fstart_core::{mmio32, services::ServiceError};
 use fstart_driver_sunxi::h3_ccu::{H3_PIO_BASE, H3_UART0_BASE};
-use fstart_driver_sunxi::pio::{PioGen, Pull, SunxiPio, PORT_A};
+use fstart_driver_sunxi::pio::{PORT_A, PioGen, Pull, SunxiPio};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_sunxi::h3::{
-    H3Board, H3BuildSelectedPayload, SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx, H3,
+    H3, H3Board, SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx,
 };
 pub struct OrangePiR1Hooks;
 impl SunxiEarlyBoardHooks<H3> for OrangePiR1Hooks {
@@ -25,7 +25,6 @@ impl SunxiEarlyBoard for Board {
     }
 }
 impl H3Board for Board {
-    type Payload = H3BuildSelectedPayload;
     const CONFIG: &'static fstart_platform_sunxi::h3::H3Config = &crate::ORANGEPI_R1_H3;
     const CONSOLE_CONFIG: Ns16550Config = Ns16550Config {
         regs: AccessMode::Mmio {

@@ -29,7 +29,6 @@ pub const SUPERIO_PNP_BASE: u16 = 0x2e;
 /// SMSC LPC47M15x PME logical device with its runtime register base.
 /// coreboot enables it in `bootblock_mainboard_early_init()` so the ICH7
 /// generic decode window at 0x680 has a live target.
-pub const SUPERIO_PME_LDN: u8 = 10;
 pub const SUPERIO_PME_BASE: u16 = 0x0680;
 
 /// D945GCLF drives its analog VGA output; the OS takes over from the VBT.
@@ -99,20 +98,16 @@ pub const FLASH_SIZE: u32 = 0x0008_0000;
 pub const FLASH: FlashLayout = FlashLayout::X86Legacy(X86LegacyFlashLayout { size: FLASH_SIZE });
 
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
+    type Platform = fstart_platform_intel::i945::I945Ich7;
+    const CONFIG: &'static I945Ich7Platform = &D945GCLF_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
-        fstart_platform_intel::facts::BoardFacts::new(
-            FLASH,
-            FLASH_SIZE,
-            D945GCLF_PLATFORM.max_cpus,
-            fstart_platform_intel::facts::Chipset::I945Ich7,
-        );
+        fstart_platform_intel::facts::BoardFacts::new(FLASH, FLASH_SIZE);
 }
 
 #[must_use]
 pub const fn board_name() -> &'static str {
     BOARD_NAME
 }
-
 
 pub fn d945gclf_superio_config() -> smsc_lpc47m15x::SmscLpc47m15xConfig {
     smsc_lpc47m15x::SmscLpc47m15xConfig(smsc_lpc47m15x::SuperIoConfig {

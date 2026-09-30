@@ -323,8 +323,24 @@ impl Gm965Ich8AcpiContext {
     }
 }
 
-#[cfg(feature = "stage")]
-pub use stage::Gm965Ich8;
+/// GM965/ICH8 identity shared by host planning and the runtime flow.
+pub struct Gm965Ich8;
+
+impl crate::IntelPlatform for Gm965Ich8 {
+    type Config = Gm965Ich8Platform;
+    const NAME: &'static str = "gm965/ich8";
+    const CAR_BASE: u64 = 0xfef00000;
+    const CAR_SIZE: u64 = 0x80000;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = &[
+        "06-0f-02", "06-0f-06", "06-0f-07", "06-0f-0a", "06-0f-0b", "06-0f-0d", "06-16-01",
+    ];
+}
+
+impl crate::IntelPlatformConfig for Gm965Ich8Platform {
+    fn max_cpus(&self) -> u16 {
+        self.max_cpus
+    }
+}
 
 #[cfg(feature = "stage")]
 mod stage {
@@ -335,14 +351,9 @@ mod stage {
     use fstart_driver_intel::gm965::IntelGm965;
     use fstart_driver_intel::ich8::IntelIch8;
 
-    /// GM965/ICH8 chipset pair for the shared Intel flow.
-    pub struct Gm965Ich8;
-
     impl IntelEarlyPlatform for Gm965Ich8 {
-        const NAME: &'static str = "gm965/ich8";
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
-        type Config = Gm965Ich8Platform;
         type Northbridge = IntelGm965;
         type Southbridge = IntelIch8;
         #[cfg(feature = "mp")]
@@ -363,9 +374,6 @@ mod stage {
         }
         fn southbridge(&'static self) -> &'static IntelIch8Config {
             &self.southbridge
-        }
-        fn max_cpus(&self) -> u16 {
-            self.max_cpus
         }
     }
 }
