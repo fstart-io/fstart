@@ -198,12 +198,14 @@ defaults: VMX outside SMX is enabled when CPUID reports VMX, the alternative
 SMRR enable bit is set when the pair needs it and `IA32_MTRR_CAP` reports
 SMRR, and the register is locked. A register already locked is left alone.
 
-Physical CPU drivers require their configured SMRR pair on **every online CPU**.
-Unlike coreboot's legacy warning-and-continue paths, installation is boot-fatal
-if TSEG cannot be represented, any CPU lacks SMRR, an alternative pair was not
-enabled before `IA32_FEATURE_CONTROL` was locked, or register readback fails.
-There is no automatic downgrade to unprotected SMM. Older physical CPU revisions
-without SMRR therefore cannot boot an SMM-enabled image under this policy.
+SMRR is optional hardware protection. Older physical CPU revisions that do not
+advertise SMRR continue booting, with a warning reporting how many CPUs received
+SMRR protection. No SMRR registers are accessed on an unsupported CPU. Chipset
+SMRAM/SMI locks and save-state validation still apply without SMRR.
+
+When SMRR is supported, an invalid TSEG range, an alternative pair locked without
+its enable bit, or a programming/readback failure remains boot-fatal; lack of
+hardware support is distinct from failure to configure supported hardware.
 QEMU explicitly supplies no SMRR pair because its memory model implements SMRAM
 isolation separately; passing an emulated boot says nothing about physical
 SMRR/cache isolation.
@@ -241,7 +243,8 @@ For each SMM-capable platform:
 5. Use `MpHandle::scope().scatter()` to relocate every online CPU through the
    shared default SMBASE, serialized across trigger and callback completion.
    The callback runs on the relocating CPU, checks its full LAPIC ID against
-   the published one, writes SMBASE, and programs and verifies required SMRR.
+   the published one, writes SMBASE, and programs and verifies SMRR on supported
+   CPUs. Unsupported CPUs still relocate and continue without SMRR protection.
 6. Abort on lock timeout, callback timeout, unexpected CPU, save-state
    revision mismatch, or SMRR read-back mismatch. A timeout or callback
    mismatch leaves the persistent relocation bridge locked so a late callback
