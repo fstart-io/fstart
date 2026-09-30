@@ -89,15 +89,20 @@ The linker lays out one contiguous memory image at VMA zero:
 The builder preserves VMA alignment gaps in the initialized byte range. The
 installer zeros the complete `handler_mem_size`, copies `handler_load_size`,
 and then writes the runtime block, the handler configuration, and optional
-module arguments. One load delta therefore applies to every
+module arguments. Like coreboot's rmodule loader, the handler is loaded on a
+4 KiB boundary. Every allocated ELF section must have a power-of-two alignment
+no greater than 4 KiB and an aligned VMA; unsupported alignment is rejected.
+One load delta therefore preserves section alignment and every
 compiler-generated cross-section reference.
 
 The final ELF retains relocation records for auditing. Allocated sections other
 than `.text`, `.rodata`, `.data`, and `.bss` are rejected. GOT/PLT-indirect
 calls, absolute/GOT/TLS/dynamic relocations, undefined symbols, and Rust panic
 machinery are also rejected. A PC-relative relocation is accepted only when its
-target resolves inside the copied image. No loader applies relocations to the
-shipped bytes.
+target resolves inside the copied image. The host audit decodes x86 instructions
+to account for next-RIP bias, including immediates after a RIP-relative
+displacement. Data PC-relative fields use their own address as the base.
+No loader applies relocations to the shipped bytes.
 
 ## Entry and runtime ABI
 
@@ -193,13 +198,15 @@ defaults: VMX outside SMX is enabled when CPUID reports VMX, the alternative
 SMRR enable bit is set when the pair needs it and `IA32_MTRR_CAP` reports
 SMRR, and the register is locked. A register already locked is left alone.
 
-SMRR is best effort, as in coreboot:
-
-- if TSEG is not a naturally aligned power of two below 4 GiB, SMRR is
-  disabled with a warning;
-- a CPU whose `IA32_MTRR_CAP` lacks SMRR, or whose alternative pair was not
-  enabled before `IA32_FEATURE_CONTROL` was locked, skips SMRR and is counted
-  in a warning.
+Physical CPU drivers require their configured SMRR pair on **every online CPU**.
+Unlike coreboot's legacy warning-and-continue paths, installation is boot-fatal
+if TSEG cannot be represented, any CPU lacks SMRR, an alternative pair was not
+enabled before `IA32_FEATURE_CONTROL` was locked, or register readback fails.
+There is no automatic downgrade to unprotected SMM. Older physical CPU revisions
+without SMRR therefore cannot boot an SMM-enabled image under this policy.
+QEMU explicitly supplies no SMRR pair because its memory model implements SMRAM
+isolation separately; passing an emulated boot says nothing about physical
+SMRR/cache isolation.
 
 Once SMRR is valid, normal-mode reads of TSEG return a fixed value, so nothing
 reads SMRAM from normal mode after relocation.
@@ -209,9 +216,12 @@ reads SMRAM from normal mode after relocation.
 For each SMM-capable platform:
 
 1. Run CPU-only `mp_init()` and retain its `MpHandle`. CPU model drivers set
-   `IA32_FEATURE_CONTROL` here. MP rejects a CPUID CPU count above its total
-   capacity; the broadcast-SIPI trampoline hard-resets the machine on a
-   responder beyond the AP limit before stack selection, since such a CPU
+   `IA32_FEATURE_CONTROL` here. Like coreboot's `get_cpu_count`, the platform
+   supplies the system-wide online count separately from storage/image capacity.
+   Q35 uses `FW_CFG_NB_CPUS`, not package-local CPUID or unpopulated hotplug slots;
+   supported single-socket Intel platforms use package-local CPUID. MP rejects
+   an online count above capacity before broadcasting SIPI; the broadcast-SIPI
+   trampoline hard-resets the machine on a responder beyond the AP limit before stack selection, since such a CPU
    would never be SMBASE-relocated. Partial AP check-in is boot-fatal before
    any flight-plan barrier opens, so a late AP cannot outlive borrowed MP
    data (coreboot's `start_aps()` reports the same condition as an MP error
@@ -220,7 +230,9 @@ For each SMM-capable platform:
    Intel board plans pass their `max_cpus`, and Q35 reserves 256 slots. A
    standalone arch build defaults to 64. This is a build-time resource budget,
    not an architectural 64-CPU limit; SMM's per-CPU layout uses the same bound.
-2. Discover and open TSEG.
+2. Discover and open TSEG. Verify the open/unlocked state before writing,
+   including on S3 resume; if locks survived and reopening fails, stop boot
+   rather than silently reusing an unverified surviving handler.
 3. Install initialized handler bytes, zero BSS, write the runtime block and
    handler configuration, and build permanent SMRAM page tables.
 4. Quiesce PM1, GPE, alternate-GPI, and chipset SMI sources without changing
@@ -229,21 +241,23 @@ For each SMM-capable platform:
 5. Use `MpHandle::scope().scatter()` to relocate every online CPU through the
    shared default SMBASE, serialized across trigger and callback completion.
    The callback runs on the relocating CPU, checks its full LAPIC ID against
-   the published one, writes SMBASE, and programs SMRR when usable.
+   the published one, writes SMBASE, and programs and verifies required SMRR.
 6. Abort on lock timeout, callback timeout, unexpected CPU, save-state
    revision mismatch, or SMRR read-back mismatch. A timeout or callback
    mismatch leaves the persistent relocation bridge locked so a late callback
    cannot consume a newer CPU's target.
-7. Preserve `SCI_EN` on S3 resume or clear it on cold boot, then close SMRAM,
-   enable permanent SMI sources, and lock SMRAM. Any earlier failure closes
-   SMRAM and is boot-fatal.
+7. Preserve `SCI_EN` on S3 resume or clear it on cold boot, then close and lock
+   SMRAM. Verify `D_LCK`, `D_OPEN=0`, and enabled TSEG; only then enable permanent
+   SMI sources and take ICH's `SMI_LOCK`. Verify the lock and `GBL_SMI_EN` readback
+   before reporting success. Any failure closes SMRAM and is boot-fatal.
 8. Send one self-SMI on every CPU. This exercises each permanent entry stub
    and handler; a broken entry stops the boot here rather than at the first OS
    SMI. It proves only that the SMI returned.
 
 Q35 logs the selected AMD64 revision and the relocation count. CI requires
-revision `0x00020064`, four relocations, SMRAM lock, and the permanent SMI
-round trip in the SMP4 boot.
+revision `0x00020064`, four relocations, verified SMRAM/global SMI locks, the
+permanent SMI round trip, and payload handoff in SMP4 boots with one socket,
+two sockets, and extra unpopulated hotplug slots.
 
 ## coreboot compatibility output
 
@@ -252,6 +266,8 @@ with the image-relative offsets (`FLAG_COREBOOT_MODULE_ARGS`,
 `FLAG_COREBOOT_HEADER`). This lets a coreboot SMM loader copy fstart's entry
 stubs and handler without treating the image as an rmodule. It is not used by
 fstart's own installer beyond filling the module-args block when present.
+The generated `FSTART_SMM_HANDLER_ALIGNMENT` macro publishes the same 4 KiB
+handler-load contract to external loaders.
 
 ## Validation targets
 

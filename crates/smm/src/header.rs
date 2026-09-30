@@ -242,6 +242,10 @@ pub fn render_coreboot_header(
         ("ENTRY_DESC_SIZE", u32::from(entry_desc_size)),
         ("ENTRIES_OFFSET", offsets.entries),
         ("HANDLER_OFFSET", offsets.handler),
+        (
+            "HANDLER_ALIGNMENT",
+            crate::layout::SMM_HANDLER_ALIGNMENT as u32,
+        ),
         ("HANDLER_ENTRY_OFFSET", offsets.handler_entry),
         ("HANDLER_LOAD_SIZE", offsets.handler_load_size),
         ("HANDLER_MEM_SIZE", offsets.handler_mem_size),
