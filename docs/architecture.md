@@ -77,6 +77,9 @@ fbuild + image-build (host)    discover, resolve, link, assemble, explain
 
 `fstart-stage` owns entry/runtime glue and stage-local layout access. Payload
 launch belongs in `fstart-boot`; image loading stays in existing image facilities.
+See [board and platform composition](board-composition.md) for the current Intel
+binding and stage contracts, driver availability, and multi-board build model.
+
 The layout wire definition belongs in a small `fstart-core::layout` module, not a
 new crate. Host plan transport and reservation types belong in image-build, not core.
 Platform-specific calculations stay in the platform, not in fbuild.
@@ -96,14 +99,19 @@ ambiguous identities. Never compile boards to discover them. Use Cargo metadata
 to resolve the selected package's actual dependency graph and platform package.
 Cache discovery by manifest contents when needed, not by compiling all boards.
 
-Intel/X61 and D945GCLF use `build-profile = { dependency = "fstart-platform-intel", name = "rust" }`.
+Intel/X61, D945GCLF and D41S use `build-profile = { dependency = "fstart-platform-intel", name = "rust" }`.
 The dependency is resolved through Cargo's actual graph (including renames), not
 through a chipset registry in fbuild. The selected board exposes `Board` and
-implements the platform's small host-clean facts trait. X61's `const` IFD value
-calls `IntelIfdFlashLayout::new`; D945GCLF declares a genuine 512-KiB
-`X86Legacy` layout, not a synthetic descriptor. The facts constructor checks
-the separately declared physical chip capacity and CPU population. VBT and hardware config
-remain typed board source, active in both firmware and editor graphs.
+implements the platform's small host-clean facts trait. For Intel,
+`IntelBoardFacts` selects `type Platform` and `const CONFIG` once, unconditionally.
+The same platform marker supplies CAR/microcode policy to the host and driver
+associations to firmware; `BoardFacts` contains only physical flash and data
+assets. CPU population comes from the shared config, not a second host declaration.
+X61's `const` IFD value calls `IntelIfdFlashLayout::new`; D945GCLF declares a
+genuine 512-KiB `X86Legacy` layout, not a synthetic descriptor. The facts
+constructor checks physical chip capacity; the platform config builder checks
+CPU population, and host resolution also rejects zero CPUs. VBT and hardware
+config remain typed board source, active in both firmware and editor graphs.
 
 The platform's optional host module exports the conventional `Plan<B>::emit(selection_json)`.
 The generated adapter passes an explicit serialized `BuildSelection` argument
@@ -135,9 +143,10 @@ QEMU virt boards select `VirtMachine::{Riscv64, Armv7, Aarch64}` in unconditiona
 Rust source. The platform owns invariant flash banks, fixed reservations and
 compiler bundles, sharing one image projection while keeping explicit XIP,
 direct ARM Linux and AArch64 relocation differences. AArch64 no longer repeats
-an artificial fixed flash-capacity fact in board source. Other board-host builds
-remain legacy; there is no claim that all fbuild paths are generic. Imported IFD/host transport and
-selected reservations retain checked validation; const authoring is not a reason
+an artificial fixed flash-capacity fact in board source. All current discovered
+boards select a platform Rust export through this common executor; the former
+board host callbacks are retired. Imported IFD/host transport and selected
+reservations retain checked validation; const authoring is not a reason
 to skip ELF and assembly validation. See the [common-plan boundary and acceptance](architecture-common-plan.md).
 
 ### One immutable resolved build, three projections
@@ -227,8 +236,10 @@ Early stages need not compile payload backends. Do not mirror cfgs into env vars
 Feature selections refer to the board's actual direct dependency keys and
 existing features. Shared propagation stays inside platform crates; boards only
 own variant features, not forwarding features for every shared capability.
-Multiple payload backends may coexist with one selection. Do not require global
-`--all-features` across incompatible architectures or board variants.
+Multiple payload backends may coexist with one selection. Platform flows invoke
+the selected launcher directly; board contracts do not forward a `type Payload`.
+Do not require global `--all-features` across incompatible architectures or
+board variants.
 
 Key output directories by board/variant, stage, target, profile, selections and
 resolved-layout digest. A digest-specific `-T` path forces layout-only changes to
@@ -250,9 +261,9 @@ boards/<vendor>/<board>/
   data/           board blobs
 ```
 
-Intel/X61 and D945GCLF have no board host feature or executable. Its generated host adapter
-only calls the shared platform export; the legacy `host`/`BoardConfig` path
-remains solely on unmigrated boards.
+Intel/X61, D945GCLF and D41S have no board host feature or executable. Their
+generated host adapters only call the shared platform export. All current boards
+use platform Rust plans rather than board-owned host executables.
 
 Current X61 entry uses a platform-owned adapter and hygienic macro:
 
@@ -261,8 +272,9 @@ fstart_platform_intel::stage_bin!(fstart_board_lenovo_x61::Board);
 ```
 
 One `Program<B: IntelBoard>` implements `fstart_stage::StageProgram` for every
-Intel chipset pair: the board names its chipset (`type Platform = PineviewIch7`)
-and the chipset module supplies only types and constants (`IntelEarlyPlatform`:
+Intel chipset pair: the board names its chipset in the unconditional facts binding
+(`type Platform = PineviewIch7`) and the chipset module supplies only types and
+constants (`IntelPlatform` for host-clean policy, `IntelEarlyPlatform` for runtime:
 northbridge, southbridge, CPU driver, ACPI context). The bootblock, postcar and
 mainstage flows are written once in `platform-intel`; SMM installation and
 relocation are likewise written once in `fstart_arch::x86::cpu::intel::smm`, composed
@@ -273,6 +285,12 @@ Platform `bundle-bootblock`, `bundle-postcar`, `bundle-ramstage`, `bundle-smm`
 features activate real shared dependencies. The ramstage bundle includes ACPI,
 MP and SMBIOS; UEFI selects the direct platform dependency's `payload-uefi`.
 Board-imported Lenovo/UART/ACPI-macro drivers remain ordinary direct dependencies.
+Each Intel board enables one additive platform availability feature (`gm965-ich8`,
+`i945-ich7` or `pineview-ich7`) on its direct platform dependency. These activate
+and gate the actual platform and driver modules. There are no per-board relays
+for shared stage/payload capabilities and no exactly-one chipset feature rule:
+independent Cargo builds select boards, while tooling/tests may enable several
+hardware implementations together.
 SMM uses the platform's shared SMM export and `fstart_stage_env="smm"`; its
 current-artifact-only producer still runs before ramstage and embeds exact bytes.
 
@@ -285,11 +303,17 @@ and simple QEMU direct flows. The current Intel flow can cover GM965, i945 and
 Pineview; split it only for demonstrated sequencing differences, not hypothetical
 future generations. No generic early-device lifecycle or ordering DSL.
 
-Bootblock and ramstage hooks are distinct traits; Sunxi SRAM/DRAM hooks likewise.
-Document prerequisites, available memory/console/buses and cold/warm/resume
-execution points. Never reuse an early hook accidentally to reconstruct mainstage
-state. Mainstage owns the real memory map, PCI/resource and table state. Heap
-and dynamic plug-in drivers are acceptable after DRAM, not prerequisites for
+Intel bootblock and ramstage hooks are distinct traits with fresh `Default`
+state. CAR hooks cover console, training and authenticated handoff; mainstage
+hooks cover console routing, board device setup after PCI allocation, and OS
+handoff. Mainstage context exposes the memory map and S3-resume flag; early state
+is never carried across stages or reconstructed by replaying early hooks.
+Shared board-specific operations may be called explicitly at both seams.
+Sunxi SRAM/DRAM hooks should likewise remain stage-specific when split flows are
+introduced. Document prerequisites, available memory/console/buses and
+cold/warm/resume execution points. Mainstage owns the real memory map,
+PCI/resource and table state. Heap and dynamic plug-in drivers are acceptable
+after DRAM, not prerequisites for
 fixed hardware. ACPI/FDT contributions live near drivers; board fragments and
 SMBIOS policy stay in board Rust.
 
@@ -299,8 +323,8 @@ Cargo dependency activation needed to compile them is not a board policy
 selector. Hardware initialization (including Lenovo EC/PMH7 bring-up) is
 independent of table emission. A future explicit bring-up profile may omit
 ACPI without omitting that hardware initialization; do not add such a profile
-until needed. The legacy board Cargo forwarding feature disappears with that
-board's metadata cutover, not through a second interim selection mechanism.
+until needed. Board variant features own local choices; shared capability
+propagation belongs to platform dependencies, not board Cargo forwarding features.
 
 Variants share one package only when hardware structure and flow are shared.
 Use explicit exactly-one variant selection with `--no-default-features`; reject
@@ -319,8 +343,12 @@ not firmware selection. Divergent flows indicate separate boards.
   differences before sharing IP algorithms. Use typed variant enums/validated
   constants or narrowly named variant operations, not a boolean matrix allowing
   impossible combinations. Similar DRAMC files do not prove reusable algorithms.
-- **Board devices:** datasheet register sequences for Super I/O, EC, clock/dock
-  devices belong in drivers. Board hooks own wiring, policy and actual quirks.
+- **Board devices:** reusable register mechanisms for Super I/O, EC and clock
+  devices belong in drivers. For example, the SMSC driver owns PME LDN programming;
+  D945GCLF supplies its runtime base and orders it before serial/KBC setup.
+  Board hooks own wiring, policy and actual quirks. X61's device-specific dock/DLPC
+  routing and sequencing remain board-owned; do not extract them merely because
+  they program registers.
 - **SiFive:** reusable FU740 hardware code moves out of the board into the
   appropriate platform/driver owner.
 
@@ -414,12 +442,13 @@ multistage, RISC-V/ARMv7 XIP and AArch64 relocation require no family branches i
 common build/check/IDE tools. The former virt Cargo geometry profiles and their
 metadata resolver have been deleted; independent captured output fixtures retain
 the behavior proof. D945GCLF and its postcar-debug variant now also use that executor, with explicit
-legacy-flash transport and the same actual-size linker/packer. Other boards
-still use BoardConfig host callbacks. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
+legacy-flash transport and the same actual-size linker/packer. Subsequent family
+cutovers moved every current discovered board to platform Rust exports; board
+host callbacks are retired. Fresh halt/UEFI X61 assembly, exact descriptors/SMM/microcode,
 AArch64 halt assembly/boot, and live car → postcar → ram → SMM → AArch64 editor
 switching with original-source invalid-fact diagnostics pass. Hardware boot and
 stack high-water measurements remain outstanding. Workspace ownership has not
-cut over, and explicit legacy routes remain for other boards. See
+cut over. See
 [common-plan acceptance and scope](architecture-common-plan.md) and the earlier
 [Intel typed-facts acceptance](architecture-intel-typed-facts.md).
 

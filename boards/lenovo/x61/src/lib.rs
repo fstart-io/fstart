@@ -22,11 +22,7 @@ pub struct Board;
 pub use config::*;
 #[cfg(fstart_stage_env = "ram")]
 pub use mainboard::X61_SMBIOS_IDENTITY;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 pub use mainboard::X61Mainboard;
 #[cfg(fstart_stage_env = "ram")]
 pub use mainboard::x61_mainboard_dsdt_aml;

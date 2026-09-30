@@ -8,12 +8,18 @@ extern crate alloc;
 mod cpu;
 
 pub mod generic;
+#[cfg(feature = "gm965")]
 pub mod gm965;
+#[cfg(any(feature = "gm965", feature = "i945", feature = "pineview"))]
 pub mod gmch;
+#[cfg(feature = "i945")]
 pub mod i945;
+#[cfg(feature = "ich7")]
 pub mod ich7;
+#[cfg(feature = "ich8")]
 pub mod ich8;
 pub mod igd;
+#[cfg(feature = "pineview")]
 pub mod pineview;
 pub use fstart_arch::x86::cpu::intel::microcode;
 pub mod southbridge;

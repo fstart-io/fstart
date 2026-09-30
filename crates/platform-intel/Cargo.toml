@@ -7,6 +7,10 @@ publish = false
 
 [features]
 default = []
+# Additive hardware availability; each board enables its chipset pair once.
+gm965-ich8 = ["fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
+i945-ich7 = ["fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
+pineview-ich7 = ["fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:raw-cpuid"]
 bundle-bootblock = ["stage", "fstart-stage/x86_64", "fstart-stage/x86-static-page-tables", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest"]
 bundle-postcar = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/lz4"]
@@ -42,7 +46,11 @@ smbios = ["stage", "dep:fstart-acpi", "dep:fstart-arch", "dep:raw-cpuid"]
 # The DSDT render test disassembles both Intel southbridges' namespaces, so it
 # needs the driver's ACPI builders and the DSDT table writer on the host.
 fstart-acpi = { workspace = true, features = ["x86"] }
-fstart-driver-intel = { workspace = true, features = ["acpi"] }
+fstart-driver-intel = { workspace = true, features = ["acpi", "ich7", "ich8"] }
+
+[[test]]
+name = "southbridge_dsdt"
+required-features = ["acpi"]
 
 [dependencies]
 fstart-image-build = { workspace = true, optional = true }

@@ -70,7 +70,6 @@ mod stage {
     compile_error!("SBSA selects the halt payload only");
 
     pub trait QemuSbsaBoard: 'static {
-        type Payload: MainstagePayload<QemuSbsaMainstage>;
         const CONFIG: &'static QemuSbsaConfig;
     }
 
@@ -154,7 +153,7 @@ mod stage {
                 fstart_arch::aarch64::halt()
             }
             fstart_log::info!("qemu-sbsa ramstage: ready for payload");
-            B::Payload::boot(mainstage)
+            fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
         }
     }
 }

@@ -11,10 +11,10 @@ use fstart_driver_intel::{BootPath, IntelNorthbridgeDriver, IntelSouthbridgeDriv
 
 pub(crate) fn run_intel_bootblock<B: IntelBoard>(
     spec: FfsLoadSpec<B::Console>,
-    hooks: &mut B::Hooks,
+    hooks: &mut B::EarlyHooks,
 ) -> Result<(), ServiceError> {
-    type Nb<B> = <<B as IntelBoard>::Platform as IntelEarlyPlatform>::Northbridge;
-    type Sb<B> = <<B as IntelBoard>::Platform as IntelEarlyPlatform>::Southbridge;
+    type Nb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Northbridge;
+    type Sb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Southbridge;
     let mut northbridge = Nb::<B>::new_from_config(B::CONFIG.northbridge())?;
     let mut southbridge = Sb::<B>::new_from_config(B::CONFIG.southbridge())?;
     use fstart_core::layout::RegionKind;

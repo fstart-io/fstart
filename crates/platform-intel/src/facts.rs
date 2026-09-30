@@ -1,31 +1,33 @@
-//! Host-clean hardware facts for Intel board families.
-//! No payload policy, stage budgets, linker addresses or Cargo relays.
+//! Host-clean board facts and chipset identity shared by build and firmware.
 use fstart_core::FlashLayout;
 
-/// Real chipset differences; common stage placement belongs to the family.
-#[derive(Debug, Clone, Copy)]
-pub enum Chipset {
-    Gm965Ich8,
-    I945Ich7,
-    PineviewIch7,
+/// A supported chipset pair. Its marker is selected once in board Rust;
+/// the same type supplies host geometry and the runtime driver associations.
+pub trait IntelPlatform: 'static {
+    type Config: IntelPlatformConfig + 'static;
+    const NAME: &'static str;
+    const CAR_BASE: u64;
+    const CAR_SIZE: u64;
+    const MICROCODE_SIGNATURES: &'static [&'static str];
 }
 
+/// Hardware population needed by both host planning and runtime bring-up.
+pub trait IntelPlatformConfig {
+    fn max_cpus(&self) -> u16;
+}
+
+/// Board-owned physical flash and attached-device assets, not build policy.
 #[derive(Debug, Clone, Copy)]
 pub struct BoardFacts {
     pub flash: FlashLayout,
     /// Physical chip capacity, not inferred from populated partitions.
     pub flash_size: u32,
-    pub max_cpus: u16,
-    pub chipset: Chipset,
     /// Board-owned files packaged into the FFS as verified data assets.
-    ///
-    /// These describe hardware, such as a board VBT. Payload inputs are selected
-    /// by fbuild and do not belong here.
     pub data_assets: &'static [&'static str],
 }
 
 impl BoardFacts {
-    pub const fn new(flash: FlashLayout, flash_size: u32, max_cpus: u16, chipset: Chipset) -> Self {
+    pub const fn new(flash: FlashLayout, flash_size: u32) -> Self {
         flash.validate();
         assert!(
             flash_size.is_power_of_two(),
@@ -39,17 +41,13 @@ impl BoardFacts {
             layout_size == flash_size,
             "layout must cover declared chip capacity"
         );
-        assert!(max_cpus != 0, "CPU population must be nonzero");
         Self {
             flash,
             flash_size,
-            max_cpus,
-            chipset,
             data_assets: &[],
         }
     }
 
-    /// Declare board-owned FFS data assets (see [`Self::data_assets`]).
     #[must_use]
     pub const fn with_data_assets(mut self, assets: &'static [&'static str]) -> Self {
         self.data_assets = assets;
@@ -57,6 +55,10 @@ impl BoardFacts {
     }
 }
 
+/// Unconditional original-source binding, consumed by host and firmware alike.
 pub trait IntelBoardFacts {
+    type Platform: IntelPlatform;
+    /// Config lives in `.rodata`, never reconstructed on the CAR stack.
+    const CONFIG: &'static <Self::Platform as IntelPlatform>::Config;
     const FACTS: BoardFacts;
 }

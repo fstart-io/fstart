@@ -8,7 +8,7 @@ pub trait MainstagePayload<D> {
     fn boot(devices: D) -> !;
 }
 
-/// Payload launcher used when no payload backend is linked.
+/// Payload launcher used when the build selects no payload.
 pub struct HaltPayload;
 
 impl<D> MainstagePayload<D> for HaltPayload {
@@ -508,33 +508,60 @@ fn halt_x86_linux(reason: &str) -> ! {
     fstart_arch::x86_64::halt()
 }
 
-/// Payload launcher selected by fbuild features.
-#[cfg(all(feature = "crabefi-basic", feature = "aarch64"))]
-pub type BuildSelectedPayload = Aarch64UefiPayload;
-
-/// Payload launcher selected by fbuild features.
-#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
-pub type BuildSelectedPayload = Riscv64UefiPayload;
-
-/// Payload launcher selected by fbuild features.
-#[cfg(all(feature = "crabefi-basic", feature = "x86_64"))]
-pub type BuildSelectedPayload = X86UefiPayload;
-
-/// Payload launcher selected by fbuild features.
-#[cfg(all(not(feature = "crabefi-basic"), feature = "linux", feature = "x86_64"))]
-pub type BuildSelectedPayload = X86LinuxPayload;
-
-/// Payload launcher selected by fbuild features.
-#[cfg(all(
-    not(feature = "crabefi-basic"),
-    feature = "linux",
-    not(feature = "x86_64")
+#[cfg(any(
+    all(fstart_payload = "halt", fstart_payload = "linux"),
+    all(fstart_payload = "halt", fstart_payload = "crabefi"),
+    all(fstart_payload = "linux", fstart_payload = "crabefi")
 ))]
-pub type BuildSelectedPayload = LinuxPayload;
+compile_error!("select exactly one payload launcher");
+#[cfg(all(fstart_payload = "linux", not(feature = "linux")))]
+compile_error!("selected Linux backend is not enabled");
+#[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi-basic")))]
+compile_error!("selected CrabEFI backend is not enabled");
 
-/// Payload launcher used when fbuild selected no payload backend.
-#[cfg(all(not(feature = "crabefi-basic"), not(feature = "linux")))]
+/// Build selection, independent of the set of available payload backends.
+#[cfg(all(fstart_payload = "crabefi", feature = "aarch64"))]
+pub type BuildSelectedPayload = Aarch64UefiPayload;
+#[cfg(all(fstart_payload = "crabefi", feature = "riscv64"))]
+pub type BuildSelectedPayload = Riscv64UefiPayload;
+#[cfg(all(fstart_payload = "crabefi", feature = "x86_64"))]
+pub type BuildSelectedPayload = X86UefiPayload;
+#[cfg(all(fstart_payload = "linux", feature = "x86_64"))]
+pub type BuildSelectedPayload = X86LinuxPayload;
+#[cfg(all(fstart_payload = "linux", not(feature = "x86_64")))]
+pub type BuildSelectedPayload = LinuxPayload;
+#[cfg(fstart_payload = "halt")]
 pub type BuildSelectedPayload = HaltPayload;
+
+#[cfg(all(
+    test,
+    feature = "x86_64",
+    feature = "linux",
+    feature = "crabefi-basic",
+    any(
+        fstart_payload = "halt",
+        fstart_payload = "linux",
+        fstart_payload = "crabefi"
+    )
+))]
+mod selection_tests {
+    use super::*;
+
+    // Run once for each selection with BOTH backends enabled.
+    #[test]
+    fn selection_is_independent_of_available_backends() {
+        #[cfg(fstart_payload = "halt")]
+        type Expected = HaltPayload;
+        #[cfg(fstart_payload = "linux")]
+        type Expected = X86LinuxPayload;
+        #[cfg(fstart_payload = "crabefi")]
+        type Expected = X86UefiPayload;
+        assert_eq!(
+            core::any::TypeId::of::<BuildSelectedPayload>(),
+            core::any::TypeId::of::<Expected>()
+        );
+    }
+}
 
 /// Device context needed by the common x86 CrabEFI launcher.
 pub trait X86UefiPayloadContext {

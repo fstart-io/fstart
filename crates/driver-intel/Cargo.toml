@@ -16,8 +16,9 @@ acpi = [
   "dep:fstart-acpi-macros",
 ]
 gm965 = []
+i945 = ["ich7"]
 ich8 = []
-pineview = []
+pineview = ["ich7"]
 ich7 = []
 
 [dependencies]

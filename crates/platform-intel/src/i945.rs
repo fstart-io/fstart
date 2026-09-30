@@ -320,8 +320,22 @@ impl I945Ich7AcpiContext {
     }
 }
 
-#[cfg(feature = "stage")]
-pub use stage::I945Ich7;
+/// i945/ICH7 identity shared by host planning and the runtime flow.
+pub struct I945Ich7;
+
+impl crate::IntelPlatform for I945Ich7 {
+    type Config = I945Ich7Platform;
+    const NAME: &'static str = "i945/ich7";
+    const CAR_BASE: u64 = I945_CAR_BASE;
+    const CAR_SIZE: u64 = I945_CAR_SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-1c-02", "06-1c-0a"];
+}
+
+impl crate::IntelPlatformConfig for I945Ich7Platform {
+    fn max_cpus(&self) -> u16 {
+        self.max_cpus
+    }
+}
 
 #[cfg(feature = "stage")]
 mod stage {
@@ -332,14 +346,9 @@ mod stage {
     use fstart_driver_intel::i945::IntelI945;
     use fstart_driver_intel::ich7::IntelIch7;
 
-    /// i945/ICH7 chipset pair for the shared Intel flow.
-    pub struct I945Ich7;
-
     impl IntelEarlyPlatform for I945Ich7 {
-        const NAME: &'static str = "i945/ich7";
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
-        type Config = I945Ich7Platform;
         type Northbridge = IntelI945;
         type Southbridge = IntelIch7;
         #[cfg(feature = "mp")]
@@ -360,9 +369,6 @@ mod stage {
         }
         fn southbridge(&'static self) -> &'static IntelIch7Config {
             &self.southbridge
-        }
-        fn max_cpus(&self) -> u16 {
-            self.max_cpus
         }
     }
 }

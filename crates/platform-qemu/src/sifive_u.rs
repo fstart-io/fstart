@@ -125,7 +125,6 @@ mod stage {
     /// Static QEMU `sifive_u` board contract.
     pub trait QemuSifiveUBoard: 'static {
         type Hooks: QemuSifiveUHooks + Default;
-        type Payload: MainstagePayload<QemuSifiveUMainstage>;
 
         const CONFIG: &'static QemuSifiveUConfig;
         const CONSOLE_CONFIG: &'static SifiveUartConfig;
@@ -175,7 +174,7 @@ mod stage {
                     "boot_integrity",
                     crate::boot::from_dtb(
                         fstart_arch::riscv64::boot_dtb_addr(),
-                        cfg!(any(feature = "linux", feature = "crabefi"))
+                        cfg!(any(fstart_payload = "linux", fstart_payload = "crabefi"))
                             .then_some(B::CONFIG.dtb_addr),
                         B::CONFIG.ram_base,
                         B::CONFIG.firmware_base,
@@ -187,7 +186,7 @@ mod stage {
                 fstart_arch::riscv64::halt();
             }
             fstart_log::info!("sifive-u ramstage: ready for payload");
-            B::Payload::boot(QemuSifiveUMainstage {
+            QemuSifiveUBuildSelectedPayload::boot(QemuSifiveUMainstage {
                 config: B::CONFIG,
                 console,
             })
@@ -275,12 +274,7 @@ mod stage {
         }
     }
 
-    #[cfg(feature = "linux")]
-    pub type QemuSifiveUBuildSelectedPayload = fstart_stage::payload::LinuxPayload;
-    #[cfg(all(not(feature = "linux"), feature = "crabefi"))]
-    pub type QemuSifiveUBuildSelectedPayload = fstart_stage::payload::Riscv64UefiPayload;
-    #[cfg(all(not(feature = "linux"), not(feature = "crabefi")))]
-    pub type QemuSifiveUBuildSelectedPayload = fstart_stage::payload::HaltPayload;
+    pub type QemuSifiveUBuildSelectedPayload = fstart_stage::payload::BuildSelectedPayload;
 }
 
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]

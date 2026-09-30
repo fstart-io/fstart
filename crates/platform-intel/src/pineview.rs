@@ -253,8 +253,22 @@ impl PineviewIch7AcpiContext {
     }
 }
 
-#[cfg(feature = "stage")]
-pub use stage::PineviewIch7;
+/// Pineview/ICH7 identity shared by host planning and the runtime flow.
+pub struct PineviewIch7;
+
+impl crate::IntelPlatform for PineviewIch7 {
+    type Config = PineviewIch7Platform;
+    const NAME: &'static str = "pineview/ich7";
+    const CAR_BASE: u64 = PINEVIEW_CAR_BASE;
+    const CAR_SIZE: u64 = PINEVIEW_CAR_SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-1c-02", "06-1c-0a"];
+}
+
+impl crate::IntelPlatformConfig for PineviewIch7Platform {
+    fn max_cpus(&self) -> u16 {
+        self.max_cpus
+    }
+}
 
 #[cfg(feature = "stage")]
 mod stage {
@@ -265,14 +279,9 @@ mod stage {
     use fstart_driver_intel::ich7::IntelIch7;
     use fstart_driver_intel::pineview::IntelPineview;
 
-    /// Pineview/ICH7 chipset pair for the shared Intel flow.
-    pub struct PineviewIch7;
-
     impl IntelEarlyPlatform for PineviewIch7 {
-        const NAME: &'static str = "pineview/ich7";
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
-        type Config = PineviewIch7Platform;
         type Northbridge = IntelPineview;
         type Southbridge = IntelIch7;
         #[cfg(feature = "mp")]
@@ -293,9 +302,6 @@ mod stage {
         }
         fn southbridge(&'static self) -> &'static IntelIch7Config {
             &self.southbridge
-        }
-        fn max_cpus(&self) -> u16 {
-            self.max_cpus
         }
     }
 }

@@ -214,8 +214,6 @@ mod stage {
     }
 
     pub trait QemuQ35Board: 'static {
-        type Payload: MainstagePayload<QemuQ35Mainstage>;
-
         const CONFIG: &'static QemuQ35Config;
 
         fn console_config() -> Ns16550Config;
@@ -527,7 +525,7 @@ mod stage {
             fstart_log::info!("qemu-q35 ramstage: ready for payload");
             Ok(())
         });
-        B::Payload::boot(mainstage)
+        fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
     }
 
     impl QemuQ35 {

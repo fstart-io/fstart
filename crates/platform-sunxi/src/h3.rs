@@ -313,8 +313,6 @@ fstart_sunxi_fel_stash:
 
     /// Board facts required by the fixed H3 flow.
     pub trait H3Board: SunxiEarlyBoard<Platform = H3> {
-        type Payload: fstart_stage::payload::MainstagePayload<H3Mainstage>;
-
         /// Board policy stored in `.rodata`; no pre-DRAM config transforms.
         const CONFIG: &'static H3Config;
         /// Board-selected console device policy, materialized in `.rodata`.
@@ -534,14 +532,12 @@ fstart_sunxi_fel_stash:
         }
     }
 
-    /// Payload launcher selected by fbuild features for H3/H5 boards.
-    #[cfg(all(feature = "linux", target_arch = "arm"))]
+    /// Launcher selected independently of additive backend availability.
+    #[cfg(all(fstart_payload = "linux", target_arch = "arm"))]
     pub type H3BuildSelectedPayload = H3LinuxPayload;
-    #[cfg(all(feature = "linux", target_arch = "aarch64"))]
+    #[cfg(all(fstart_payload = "linux", target_arch = "aarch64"))]
     pub type H3BuildSelectedPayload = H5LinuxPayload;
-
-    /// Payload launcher used when fbuild selected no payload backend.
-    #[cfg(not(feature = "linux"))]
+    #[cfg(fstart_payload = "halt")]
     pub type H3BuildSelectedPayload = fstart_stage::payload::HaltPayload;
 
     impl H3 {
@@ -689,7 +685,7 @@ fstart_sunxi_fel_stash:
             config: B::CONFIG,
         };
         fstart_log::info!("h3 mainstage: {} MiB DRAM", mainstage.dram_size() >> 20);
-        #[cfg(feature = "linux")]
+        #[cfg(fstart_payload = "linux")]
         if crate::boot::install_mainstage_policy(
             H3_DRAM_BASE,
             mainstage.dram_size,
@@ -701,7 +697,7 @@ fstart_sunxi_fel_stash:
             fstart_log::error!("sunxi: invalid mainstage memory policy");
             fstart_arch::halt();
         }
-        B::Payload::boot(mainstage)
+        H3BuildSelectedPayload::boot(mainstage)
     }
 }
 

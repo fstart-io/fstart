@@ -293,8 +293,6 @@ fstart_sunxi_fel_stash:
 
     /// Board facts required by the fixed A20 flow.
     pub trait A20Board: SunxiEarlyBoard<Platform = A20> {
-        type Payload: fstart_stage::payload::MainstagePayload<A20Mainstage>;
-
         /// Board policy stored in `.rodata`; no pre-DRAM config transforms.
         const CONFIG: &'static A20Config;
         /// Board-selected console device policy, materialized in `.rodata`.
@@ -445,12 +443,10 @@ fstart_sunxi_fel_stash:
         }
     }
 
-    /// Payload launcher selected by fbuild features for A20 boards.
-    #[cfg(feature = "linux")]
+    /// Launcher selected independently of additive backend availability.
+    #[cfg(fstart_payload = "linux")]
     pub type A20BuildSelectedPayload = A20LinuxPayload;
-
-    /// Payload launcher used when fbuild selected no payload backend.
-    #[cfg(not(feature = "linux"))]
+    #[cfg(fstart_payload = "halt")]
     pub type A20BuildSelectedPayload = fstart_stage::payload::HaltPayload;
 
     impl A20 {
@@ -594,7 +590,7 @@ fstart_sunxi_fel_stash:
             config: B::CONFIG,
         };
         fstart_log::info!("a20 mainstage: {} MiB DRAM", mainstage.dram_size() >> 20);
-        B::Payload::boot(mainstage)
+        A20BuildSelectedPayload::boot(mainstage)
     }
 }
 
