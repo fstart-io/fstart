@@ -224,12 +224,18 @@ impl CpuDriver for GenericX86CpuDriver {
 /// ordinary post-MP platform code using the returned [`MpHandle`].
 pub struct MpConfig<'a> {
     pub cpu_drivers: &'a [&'a dyn CpuDriver],
+    /// System-wide number of online CPUs, including the BSP. The platform
+    /// supplies discovery, like coreboot's `mp_ops.get_cpu_count`.
+    pub num_cpus: u16,
+    /// Capacity of the platform's per-CPU storage and embedded SMM image.
     pub max_cpus: u16,
 }
 
 /// Errors from MP initialization.
 #[derive(Debug)]
 pub enum MpError {
+    /// A system CPU count or capacity must include at least the BSP.
+    NoCpus,
     /// The requested total CPU capacity exceeds the static MP limit.
     TooManyCpus { requested: u16, supported: u16 },
     /// Hardware reports or starts more CPUs than the configured storage can hold.
@@ -647,7 +653,7 @@ fn complete_ap_bringup(final_count: u16, max_aps: u16) -> Result<u16, MpError> {
 /// scoped-work mailbox loop. Chipset SMM setup is deliberately post-MP code.
 pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     validate_cpu_capacity(config.max_cpus)?;
-    let num_cpus = discovered_logical_cpus(config.max_cpus)?;
+    let num_cpus = checked_logical_cpu_count(config.num_cpus, config.max_cpus)?;
     let max_aps = num_cpus.saturating_sub(1);
 
     fstart_log::info!(
@@ -1116,7 +1122,9 @@ fn trampoline_indexed<F: Fn(u32)>(data: *const (), cpu: u32) {
 // ---------------------------------------------------------------------------
 
 fn validate_cpu_capacity(max_cpus: u16) -> Result<(), MpError> {
-    if usize::from(max_cpus) > MAX_CPUS {
+    if max_cpus == 0 {
+        Err(MpError::NoCpus)
+    } else if usize::from(max_cpus) > MAX_CPUS {
         Err(MpError::TooManyCpus {
             requested: max_cpus,
             supported: MAX_CPUS as u16,
@@ -1126,21 +1134,10 @@ fn validate_cpu_capacity(max_cpus: u16) -> Result<(), MpError> {
     }
 }
 
-/// Logical processors this package reports, checked against `max_cpus`.
-///
-/// `CPUID.1.EBX[23:16]` is the maximum number of addressable logical
-/// processors in the package, which is what a hyper-threaded Atom reports:
-/// two for a D410, four for a D510. A package with fewer logical CPUs than the
-/// bound simply leaves the rest idle; a larger package is rejected because the
-/// bound sizes all per-CPU storage.
-fn discovered_logical_cpus(max_cpus: u16) -> Result<u16, MpError> {
-    let (_, ebx, _, _) = crate::x86::cpuid(1);
-    checked_logical_cpu_count(((ebx >> 16) & 0xff) as u16, max_cpus)
-}
-
-fn checked_logical_cpu_count(reported: u16, max_cpus: u16) -> Result<u16, MpError> {
-    let count = reported.max(1);
-    if count > max_cpus {
+fn checked_logical_cpu_count(count: u16, max_cpus: u16) -> Result<u16, MpError> {
+    if count == 0 {
+        Err(MpError::NoCpus)
+    } else if count > max_cpus {
         Err(MpError::HardwareCpuCountExceedsCapacity {
             reported: u32::from(count),
             capacity: u32::from(max_cpus),
@@ -1170,7 +1167,11 @@ mod tests {
         }
         assert_eq!(MAX_APS + 1, MAX_CPUS);
 
-        assert_eq!(checked_logical_cpu_count(0, 4).unwrap(), 1);
+        assert!(matches!(validate_cpu_capacity(0), Err(MpError::NoCpus)));
+        assert!(matches!(
+            checked_logical_cpu_count(0, 4),
+            Err(MpError::NoCpus)
+        ));
         assert_eq!(checked_logical_cpu_count(4, 4).unwrap(), 4);
         assert!(matches!(
             checked_logical_cpu_count(5, 4),

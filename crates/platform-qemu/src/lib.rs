@@ -385,17 +385,18 @@ mod stage {
             }
             // Only an embedded SMM image constrains MP bring-up by its entry
             // count. Do not impose an SMM-specific limit on non-SMM builds.
-            let reported_max_cpus = self.fw_cfg.max_cpus().max(1);
+            let num_cpus = self.fw_cfg.cpu_count();
             let max_cpus = if let Some(image) = SMM_IMAGE {
                 let header = fstart_smm::header::SmmImageHeader::parse(image)
                     .map_err(|_| ServiceError::InvalidParam)?;
-                reported_max_cpus.min(header.entry_count)
+                header.entry_count
             } else {
-                reported_max_cpus
+                num_cpus
             };
-            fstart_log::info!("qemu-q35: MP init with {} CPUs", max_cpus);
+            fstart_log::info!("qemu-q35: MP init with {} CPUs", num_cpus);
             let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
                 cpu_drivers: &drivers,
+                num_cpus,
                 max_cpus,
             })
             .map_err(|_| ServiceError::HardwareError)?;

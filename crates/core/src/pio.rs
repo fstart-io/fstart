@@ -116,6 +116,35 @@ pub unsafe fn pci_cfg_write32(bus: u8, dev: u8, func: u8, reg: u8, val: u32) {
     }
 }
 
+/// Read an aligned 16-bit PCI config register via legacy CF8/CFC I/O ports.
+///
+/// # Safety
+/// Must only be called on x86 systems with legacy PCI config access; the
+/// caller must serialize CF8/CFC transactions against other CPUs/interrupts.
+#[inline]
+pub unsafe fn pci_cfg_read16(bus: u8, dev: u8, func: u8, reg: u8) -> u16 {
+    assert!(reg & 1 == 0);
+    unsafe {
+        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
+        inw(PCI_CFC + u16::from(reg & 2))
+    }
+}
+
+/// Write an aligned 16-bit PCI config register via legacy CF8/CFC I/O ports.
+/// Unlike a dword RMW, this does not replay adjacent W1C status registers.
+///
+/// # Safety
+/// Must only be called on x86 systems with legacy PCI config access; the
+/// caller must serialize CF8/CFC transactions against other CPUs/interrupts.
+#[inline]
+pub unsafe fn pci_cfg_write16(bus: u8, dev: u8, func: u8, reg: u8, val: u16) {
+    assert!(reg & 1 == 0);
+    unsafe {
+        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
+        outw(PCI_CFC + u16::from(reg & 2), val);
+    }
+}
+
 /// Tiny I/O delay via a dummy write to port 0x80 (POST code port).
 ///
 /// This is the standard Linux/coreboot technique for I/O delay on x86.

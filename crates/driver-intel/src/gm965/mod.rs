@@ -1648,14 +1648,16 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm965 {
         let (base, size) = self.smm_region();
         (size != 0).then_some((u64::from(base), size))
     }
-    fn smram_open(&self) {
+    fn smram_open(&self) -> bool {
         self.write_smram(crate::gmch::smram::open());
+        crate::gmch::smram::is_open(self.hostbridge_regs().smram.get())
     }
     fn smram_close(&self) {
         self.write_smram(crate::gmch::smram::closed());
     }
-    fn smram_lock(&self) {
+    fn smram_lock(&self) -> bool {
         self.write_smram(crate::gmch::smram::locked());
+        crate::gmch::smram::is_locked(self.hostbridge_regs().smram.get()) && self.tseg().is_some()
     }
 }
 

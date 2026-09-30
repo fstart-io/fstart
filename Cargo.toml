@@ -68,6 +68,7 @@ object = { version = "0.37", default-features = false, features = [
 ] }
 
 # fbuild / host-side
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder"] }
 clap = { version = "4", features = ["derive"] }
 
 # Internal workspace crates

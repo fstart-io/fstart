@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 const FW_CFG_SIGNATURE: u16 = 0x0000;
 const FW_CFG_ID: u16 = 0x0001;
-const FW_CFG_MAX_CPUS: u16 = 0x0005;
+const FW_CFG_NB_CPUS: u16 = 0x0005;
 const FW_CFG_FILE_DIR: u16 = 0x0019;
 
 const COMMAND_ALLOCATE: u32 = 1;
@@ -258,10 +258,11 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
         Ok(count)
     }
 
-    /// QEMU's configured CPU count (`-smp`), mirroring coreboot's
-    /// `fw_cfg_max_cpus()`. Returns 1 when the selector is unavailable.
-    pub fn max_cpus(&self) -> u16 {
-        self.select(FW_CFG_MAX_CPUS);
+    /// System-wide online CPU count, independent of socket topology.
+    /// `FW_CFG_NB_CPUS` is not `FW_CFG_MAX_CPUS` (0x000f), which includes
+    /// unpopulated hotplug slots. Returns 1 when the selector is unavailable.
+    pub fn cpu_count(&self) -> u16 {
+        self.select(FW_CFG_NB_CPUS);
         let mut buf = [0u8; 2];
         self.read_bytes(&mut buf);
         let count = u16::from_le_bytes(buf);
