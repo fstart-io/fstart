@@ -15,7 +15,7 @@ build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
-fstart-platform-intel = { path = "../../../crates/platform-intel" }
+fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["gm965-ich8"] }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-acpi-macros = { path = "../../../crates/acpi-macros" }
 fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }

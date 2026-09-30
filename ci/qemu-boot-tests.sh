@@ -81,6 +81,19 @@ require_boot_marker() {
 	fi
 }
 
+reject_boot_marker() {
+	local board="$1" payload="$2" marker="$3"
+	matches_filter "$board" "${board_filters[@]}" || return 0
+	matches_filter "$payload" "${payload_filters[@]}" || return 0
+	local log="$LOG_DIR/${board}-${payload}.log"
+	if grep -Fq "$marker" "$log"; then
+		printf 'FAIL %-14s %-6s unexpected %s (%s)\n' "$board" "$payload" "$marker" "$log"
+		failures=$((failures + 1))
+	else
+		printf 'PASS %-14s %-6s no %s\n' "$board" "$payload" "$marker"
+	fi
+}
+
 run_boot() {
 	local board="$1"
 	local payload="$2"
@@ -183,6 +196,10 @@ fi
 
 # Orange Pi R1 (H2+) eGON SD boot on the QEMU orangepi-pc H3 machine.
 run_boot orangepi-r1 halt 'h3 mainstage: 1024 MiB DRAM'
+# The main bundle enables Linux availability even for halt. Selection must
+# still halt rather than trying to load absent Linux payload files.
+reject_boot_marker orangepi-r1 halt 'FFS payload'
+reject_boot_marker orangepi-r1 halt 'invalid mainstage memory policy'
 if [[ -f "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" ]]; then
 	cp "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" boards/xunlong/orangepi-r1/
 	run_boot orangepi-r1 linux FSTART_CI_BOOT_SUCCESS \

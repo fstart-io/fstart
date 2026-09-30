@@ -24,10 +24,7 @@ mod stage {
     use fstart_platform_qemu::stage_runtime as fstart_stage;
     use fstart_stage::{StageEnvironment, StageProgram, payload::MainstagePayload};
 
-    #[cfg(not(all(
-        fstart_stage_env = "monolithic",
-        fstart_entry = "riscv64"
-    )))]
+    #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
     compile_error!("FU740 requires monolithic/riscv64 stage and entry selections");
     #[cfg(any(
         not(any(
@@ -81,7 +78,6 @@ mod stage {
     /// Board contract for the FU740 flow.
     pub trait Fu740Board: 'static {
         type Hooks: Fu740Hooks + Default;
-        type Payload: MainstagePayload<Fu740Mainstage>;
 
         /// ROM-resident platform policy; never copied onto the early stack.
         const CONFIG: &'static Fu740Config;
@@ -169,7 +165,7 @@ mod stage {
                 ddr.detected_size_bytes() >> 20
             );
             fstart_log::info!("fu740 ramstage: ready for payload");
-            B::Payload::boot(Fu740Mainstage {
+            Fu740BuildSelectedPayload::boot(Fu740Mainstage {
                 config: B::CONFIG,
                 console,
             })

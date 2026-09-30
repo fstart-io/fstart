@@ -354,12 +354,12 @@ impl<C: SuperIoChip> SuperIo<C> {
 
     /// Data port (reads/writes the currently-selected register).
     #[inline]
-    fn data_port(&self) -> u16 {
+    pub(crate) fn data_port(&self) -> u16 {
         self.base_port + 1
     }
 
     /// Enter configuration mode by writing the chip-specific sequence.
-    fn enter_config(&self) {
+    pub(crate) fn enter_config(&self) {
         for b in C::ENTER_SEQ {
             // SAFETY: base_port is from the board metadata, `b` is a chip constant.
             unsafe { fstart_core::pio::outb(self.idx_port(), *b) };
@@ -371,7 +371,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 
     /// Exit configuration mode.
-    fn exit_config(&self) {
+    pub(crate) fn exit_config(&self) {
         // SAFETY: chip-provided constants; base_port validated in new_on_bus.
         unsafe {
             if let Some(byte) = C::EXIT_RAW {
@@ -384,7 +384,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 
     /// Write an 8-bit value to a config register at `reg`.
-    fn write_reg(&self, reg: u8, val: u8) {
+    pub(crate) fn write_reg(&self, reg: u8, val: u8) {
         // SAFETY: callers always bracket writes with enter_config/exit_config.
         unsafe {
             fstart_core::pio::outb(self.idx_port(), reg);
