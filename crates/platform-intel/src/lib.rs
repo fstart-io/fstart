@@ -41,6 +41,7 @@ pub mod gm965;
 #[cfg(feature = "i945-ich7")]
 pub mod i945;
 pub mod layout;
+pub mod legacy_cpu;
 #[cfg(feature = "pineview-ich7")]
 pub mod pineview;
 
@@ -110,9 +111,9 @@ pub fn intel_microcode_blob() -> Option<&'static [u8]> {
 // Chipset and board contracts
 // ---------------------------------------------------------------------------
 
-/// A fixed Intel chipset pair (northbridge + southbridge + CPU family) driven
-/// by the shared flow below. Chipset modules implement this once; the flow
-/// itself is not duplicated per generation.
+/// An Intel hardware binding driven by the shared flow below. Legacy chipset
+/// pairs take a board-selected CPU-package parameter; newer platforms can
+/// supply their CPU family directly. The family flow is not duplicated.
 #[cfg(feature = "stage")]
 pub trait IntelEarlyPlatform:
     Sized

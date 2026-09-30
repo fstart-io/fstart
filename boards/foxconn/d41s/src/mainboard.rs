@@ -1,6 +1,8 @@
 //! Foxconn D41S mainboard hooks.
 
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+use crate::config::Hardware as PineviewIch7;
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::ServiceError;
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::device::BusDevice;
@@ -8,8 +10,6 @@ use fstart_core::services::device::BusDevice;
 use fstart_driver_intel::generic::ck505::I2cCk505;
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_driver_superio::ite8721f::Ite8721f;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-use fstart_platform_intel::pineview::PineviewIch7;
 #[cfg(fstart_stage_env = "car")]
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 #[cfg(fstart_stage_env = "ram")]

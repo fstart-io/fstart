@@ -6,13 +6,13 @@
 //! COM1/COM2/KBC setup handled by the generic SuperIO driver.
 
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+use crate::config::Hardware as I945Ich7;
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::ServiceError;
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::device::BusDevice;
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_driver_superio::smsc_lpc47m15x::SmscLpc47m15x;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-use fstart_platform_intel::i945::I945Ich7;
 #[cfg(fstart_stage_env = "car")]
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 #[cfg(fstart_stage_env = "ram")]

@@ -163,7 +163,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
 }
 
-/// Bring up BSP + APs with the chipset's CPU driver and, when fbuild embedded
+/// Bring up BSP + APs with the hardware binding's CPU driver and, when fbuild embedded
 /// an SMM image into this stage ([`SMM_IMAGE`]), relocate SMBASE, install the
 /// handler in TSEG and lock SMRAM through the shared gen1 flow.
 #[cfg(feature = "mp")]
