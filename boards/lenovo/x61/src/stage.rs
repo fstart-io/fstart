@@ -1,26 +1,18 @@
 //! Lenovo ThinkPad X61 binding for the GM965/ICH8 Intel early flow.
 
-use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_intel::IntelBoard;
-use fstart_platform_intel::gm965::{Gm965Ich8, Gm965Ich8Platform};
-#[cfg(fstart_stage_env = "ram")]
-use fstart_platform_intel::stage_runtime::payload::BuildSelectedPayload;
 
-use crate::{Board, X61Mainboard};
+use crate::Board;
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+use crate::X61Mainboard;
 
 impl IntelBoard for Board {
-    type Platform = Gm965Ich8;
-    type Hooks = X61Mainboard;
-    type Console = fstart_driver_uart::ns16550::Ns16550;
+    #[cfg(fstart_stage_env = "car")]
+    type EarlyHooks = X61Mainboard;
     #[cfg(fstart_stage_env = "ram")]
-    type Payload = BuildSelectedPayload;
-
-    const CONFIG: &'static Gm965Ich8Platform = &crate::X61_PLATFORM;
-
-    fn hooks() -> Result<Self::Hooks, ServiceError> {
-        Ok(X61Mainboard::new())
-    }
+    type MainstageHooks = X61Mainboard;
+    type Console = fstart_driver_uart::ns16550::Ns16550;
 
     fn console_config() -> Ns16550Config {
         Ns16550Config {

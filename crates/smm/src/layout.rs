@@ -10,6 +10,9 @@
 pub const SMM_ENTRY_OFFSET: u64 = 0x8000;
 /// Architectural default/per-CPU SMM window size.
 pub const SMM_CODE_SEGMENT_SIZE: u64 = 0x1_0000;
+/// Load alignment for the VMA-zero handler, matching coreboot rmodules.
+/// The image builder rejects sections requiring a greater alignment.
+pub const SMM_HANDLER_ALIGNMENT: u64 = 4096;
 
 /// Errors from SMRAM layout computation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,12 +78,17 @@ pub fn compute_common_base(layout: &SmramLayout) -> Result<u64, LayoutError> {
         .smram_base
         .checked_add(layout.smram_size)
         .ok_or(LayoutError::Overflow)?;
-    let top_reserved = align_up(layout.handler_mem_size as u64, 16)?
+    let top_reserved = align_up(layout.handler_mem_size as u64, SMM_HANDLER_ALIGNMENT)?
         .checked_add(align_up(layout.page_table_size as u64, 4096)?)
         .ok_or(LayoutError::Overflow)?;
-    smram_top
+    let base = smram_top
         .checked_sub(top_reserved)
-        .ok_or(LayoutError::SmramTooSmall)
+        .ok_or(LayoutError::SmramTooSmall)?
+        & !(SMM_HANDLER_ALIGNMENT - 1);
+    if base < layout.smram_base {
+        return Err(LayoutError::SmramTooSmall);
+    }
+    Ok(base)
 }
 
 /// Compute the per-CPU SMM layout.
@@ -197,7 +205,10 @@ fn align_up(value: u64, align: u64) -> Result<u64, LayoutError> {
 /// Return the page-table base reserved immediately above the handler image.
 pub fn compute_page_table_base(layout: &SmramLayout) -> Result<u64, LayoutError> {
     compute_common_base(layout)?
-        .checked_add(align_up(layout.handler_mem_size as u64, 16)?)
+        .checked_add(align_up(
+            layout.handler_mem_size as u64,
+            SMM_HANDLER_ALIGNMENT,
+        )?)
         .ok_or(LayoutError::Overflow)
 }
 
@@ -277,6 +288,8 @@ mod tests {
         let smram = (layout.smram_base, layout.smram_base + layout.smram_size);
         let common_base = compute_common_base(layout).unwrap();
         let page_table_base = compute_page_table_base(layout).unwrap();
+        assert_eq!(common_base % SMM_HANDLER_ALIGNMENT, 0);
+        assert_eq!(page_table_base % 4096, 0);
         let common = (
             common_base,
             common_base + u64::from(layout.handler_mem_size),
@@ -338,6 +351,24 @@ mod tests {
         let mut cpus = [ZERO_CPU; 4];
         let out = compute_cpu_layout(&layout, &mut cpus).unwrap();
         assert_complete_layout(&layout, out);
+    }
+
+    #[test]
+    fn preserves_handler_alignment_with_unaligned_memory_extent() {
+        let layout = SmramLayout {
+            smram_base: 0x0100_0000,
+            smram_size: 0x0100_0000,
+            entry_count: 4,
+            save_state_size: 0x400,
+            stack_size: 0x400,
+            entry_stub_size: 0x600,
+            handler_mem_size: 432,
+            page_table_size: SMM_IDENTITY_TABLE_SIZE,
+        };
+        let mut cpus = [ZERO_CPU; 4];
+        let out = compute_cpu_layout(&layout, &mut cpus).unwrap();
+        assert_complete_layout(&layout, out);
+        assert_eq!((compute_common_base(&layout).unwrap() + 0x40) % 64, 0);
     }
 
     #[test]

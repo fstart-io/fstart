@@ -2,7 +2,8 @@
 
 use crate::boot::{import_intel_directory, install_intel_load_policy};
 use crate::{
-    IntelBoard, IntelChipsetConfig, IntelEarlyBoardHooks, IntelEarlyCtx, IntelEarlyPlatform, layout,
+    IntelBoard, IntelChipsetConfig, IntelEarlyPlatform, IntelMainstageBoardCtx,
+    IntelMainstageBoardHooks, IntelPlatform, IntelPlatformConfig, layout,
 };
 use fstart_core::services::memory_detect::{E820Entry, MemoryDetector};
 use fstart_core::services::{ConsoleDevice, ServiceError};
@@ -11,8 +12,8 @@ use fstart_stage::payload::MainstagePayload;
 
 /// Mainstage type for a board.
 pub type Mainstage<B> = IntelMainstage<
-    <B as IntelBoard>::Platform,
-    <B as IntelBoard>::Hooks,
+    <B as crate::IntelBoardFacts>::Platform,
+    <B as IntelBoard>::MainstageHooks,
     <B as IntelBoard>::Console,
 >;
 
@@ -31,9 +32,7 @@ fn run_mainstage_phase(
 /// Handwritten fixed Intel mainstage flow. Ordering is this function.
 pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     let platform = B::Platform::NAME;
-    let Ok(hooks) = B::hooks() else {
-        fstart_arch::x86_64::halt();
-    };
+    let hooks = B::MainstageHooks::default();
     let Ok(layout) = layout::IntelBootLayout::current(2) else {
         fstart_arch::x86_64::halt()
     };
@@ -161,10 +160,10 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         mainstage.southbridge().system_reset(true);
     }
 
-    B::Payload::boot(mainstage)
+    fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
 }
 
-/// Bring up BSP + APs with the chipset's CPU driver and, when fbuild embedded
+/// Bring up BSP + APs with the hardware binding's CPU driver and, when fbuild embedded
 /// an SMM image into this stage ([`SMM_IMAGE`]), relocate SMBASE, install the
 /// handler in TSEG and lock SMRAM through the shared gen1 flow.
 #[cfg(feature = "mp")]
@@ -178,8 +177,14 @@ fn init_mp<P: IntelEarlyPlatform>(
     // happens in pre-CAR assembly; the blob sits in boot flash.
     let cpu = P::cpu_driver(crate::intel_microcode_blob());
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
+    // The supported Core 2 / Pineview platforms are single-socket, as in
+    // coreboot's model_1067x get_cpu_count(). CPUID is package-local; future
+    // multi-socket platforms must provide system-wide discovery instead.
+    let (_, ebx, _, _) = fstart_arch::x86::cpuid(1);
+    let num_cpus = (((ebx >> 16) & 0xff) as u16).max(1);
     let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
         cpu_drivers: &drivers,
+        num_cpus,
         max_cpus,
     })
     .map_err(|_| ServiceError::HardwareError)?;
@@ -202,7 +207,7 @@ fn init_mp<P: IntelEarlyPlatform>(
 pub struct IntelMainstage<P, Hooks, C>
 where
     P: IntelEarlyPlatform,
-    Hooks: IntelEarlyBoardHooks<P>,
+    Hooks: IntelMainstageBoardHooks<P>,
     C: ConsoleDevice,
 {
     northbridge: P::Northbridge,
@@ -226,7 +231,7 @@ where
 impl<P, Hooks, C> IntelMainstage<P, Hooks, C>
 where
     P: IntelEarlyPlatform,
-    Hooks: IntelEarlyBoardHooks<P>,
+    Hooks: IntelMainstageBoardHooks<P>,
     C: ConsoleDevice,
 {
     fn bind<B>(
@@ -234,7 +239,7 @@ where
         hooks: Hooks,
     ) -> Result<Self, ServiceError>
     where
-        B: IntelBoard<Platform = P, Hooks = Hooks, Console = C>,
+        B: IntelBoard<Platform = P, MainstageHooks = Hooks, Console = C>,
     {
         let (firmware_base, firmware_size) = geometry.firmware()?;
         Ok(Self {
@@ -282,8 +287,11 @@ where
     fn pre_bus_scan(&mut self) -> Result<(), ServiceError> {
         self.northbridge.pre_console_init()?;
         self.southbridge.pre_console_init()?;
-        self.hooks
-            .before_console(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
+        self.hooks.before_console(&mut IntelMainstageBoardCtx {
+            southbridge: &mut self.southbridge,
+            memory: &self.ctx,
+            resume: self.resume,
+        })?;
 
         self.console.init()?;
         // SAFETY: the mainstage owns the console until it hands control to the payload.
@@ -294,8 +302,6 @@ where
         self.northbridge.early_init()?;
         self.southbridge.early_init()?;
 
-        self.hooks
-            .before_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
         let count = self
             .northbridge
             .detect_memory(self.ctx.e820_state_mut().entries_mut())?;
@@ -351,8 +357,11 @@ where
     fn init_devices(&mut self) -> Result<(), ServiceError> {
         self.northbridge.post_dram_init()?;
         self.southbridge.post_dram_init()?;
-        self.hooks
-            .after_memory(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
+        self.hooks.after_devices(&mut IntelMainstageBoardCtx {
+            southbridge: &mut self.southbridge,
+            memory: &self.ctx,
+            resume: self.resume,
+        })?;
         #[cfg(feature = "mp")]
         init_mp::<P>(
             &self.northbridge,
@@ -375,8 +384,11 @@ where
     }
 
     fn finalize(&mut self) -> Result<(), ServiceError> {
-        self.hooks
-            .before_handoff(&mut IntelEarlyCtx::new(&mut self.southbridge))?;
+        self.hooks.before_handoff(&mut IntelMainstageBoardCtx {
+            southbridge: &mut self.southbridge,
+            memory: &self.ctx,
+            resume: self.resume,
+        })?;
         self.southbridge.finalize_init()
     }
 }
@@ -385,7 +397,7 @@ where
 impl<P, Hooks, C> IntelMainstage<P, Hooks, C>
 where
     P: IntelEarlyPlatform,
-    Hooks: IntelEarlyBoardHooks<P>,
+    Hooks: IntelMainstageBoardHooks<P>,
     C: ConsoleDevice,
 {
     fn emit_acpi(&mut self) -> Result<(), ServiceError> {
@@ -416,7 +428,7 @@ where
 impl<P, Hooks, C> IntelMainstage<P, Hooks, C>
 where
     P: IntelEarlyPlatform,
-    Hooks: IntelEarlyBoardHooks<P>,
+    Hooks: IntelMainstageBoardHooks<P>,
     C: ConsoleDevice,
 {
     fn emit_acpi(&mut self) -> Result<(), ServiceError> {
@@ -428,7 +440,7 @@ where
 impl<P, Hooks, C> fstart_stage::payload::X86LinuxPayloadContext for IntelMainstage<P, Hooks, C>
 where
     P: IntelEarlyPlatform,
-    Hooks: IntelEarlyBoardHooks<P>,
+    Hooks: IntelMainstageBoardHooks<P>,
     C: ConsoleDevice,
 {
     fn e820(&self) -> &[E820Entry] {
@@ -443,7 +455,7 @@ where
 impl<P, Hooks, C> fstart_stage::payload::X86UefiPayloadContext for IntelMainstage<P, Hooks, C>
 where
     P: IntelEarlyPlatform,
-    Hooks: IntelEarlyBoardHooks<P>,
+    Hooks: IntelMainstageBoardHooks<P>,
     C: ConsoleDevice,
 {
     fn console(&self) -> Option<&dyn fstart_core::services::Console> {

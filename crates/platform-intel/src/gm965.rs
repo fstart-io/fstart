@@ -323,33 +323,40 @@ impl Gm965Ich8AcpiContext {
     }
 }
 
-#[cfg(feature = "stage")]
-pub use stage::Gm965Ich8;
+/// GM965/ICH8 identity shared by host planning and the runtime flow.
+pub struct Gm965Ich8<C>(core::marker::PhantomData<C>);
+
+impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm965Ich8<C> {
+    type Config = Gm965Ich8Platform;
+    const NAME: &'static str = "gm965/ich8";
+    const CAR_BASE: u64 = C::CAR_BASE;
+    const CAR_SIZE: u64 = C::CAR_SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = C::MICROCODE_SIGNATURES;
+}
+
+impl crate::IntelPlatformConfig for Gm965Ich8Platform {
+    fn max_cpus(&self) -> u16 {
+        self.max_cpus
+    }
+}
 
 #[cfg(feature = "stage")]
 mod stage {
     use super::*;
     use crate::{IntelChipsetConfig, IntelEarlyPlatform};
-    #[cfg(feature = "mp")]
-    use fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
     use fstart_driver_intel::gm965::IntelGm965;
     use fstart_driver_intel::ich8::IntelIch8;
 
-    /// GM965/ICH8 chipset pair for the shared Intel flow.
-    pub struct Gm965Ich8;
-
-    impl IntelEarlyPlatform for Gm965Ich8 {
-        const NAME: &'static str = "gm965/ich8";
+    impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for Gm965Ich8<C> {
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
-        type Config = Gm965Ich8Platform;
         type Northbridge = IntelGm965;
         type Southbridge = IntelIch8;
         #[cfg(feature = "mp")]
-        type Cpu = Core2CpuDriver;
+        type Cpu = C::Driver;
         #[cfg(feature = "mp")]
         fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
-            Core2CpuDriver::new(ICH8_PMBASE, microcode)
+            C::cpu_driver(ICH8_PMBASE, microcode)
         }
         #[cfg(feature = "acpi")]
         type AcpiContext = Gm965Ich8AcpiContext;
@@ -363,9 +370,6 @@ mod stage {
         }
         fn southbridge(&'static self) -> &'static IntelIch8Config {
             &self.southbridge
-        }
-        fn max_cpus(&self) -> u16 {
-            self.max_cpus
         }
     }
 }

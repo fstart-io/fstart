@@ -1065,6 +1065,9 @@ impl crate::southbridge::smi::SmiControl for IntelIch7 {
     fn enable_permanent_smi(&self, previous: crate::southbridge::smi::SmiEnableState) {
         self.smi().enable_permanent_smi(previous);
     }
+    fn lock_permanent_smi(&self) -> bool {
+        self.smi().lock_permanent_smi()
+    }
 }
 
 impl crate::IntelSouthbridgeDriver for IntelIch7 {
@@ -1892,9 +1895,9 @@ impl IntelIch7 {
         rcba.regs().gcs.modify(GCS_REG::BILD::SET);
 
         // Global SMI/TCO locks must not be taken before permanent SMM has
-        // enabled the final SMI sources.  Coreboot does global_smi_enable()
-        // before final lockdown; fstart currently runs this finalize hook
-        // before MpInit(smm), so skip these locks until GBL_SMI_EN is live.
+        // enabled the final SMI sources. The shared SMM installer now takes
+        // and verifies SMI_LOCK; finalize also locks TCO once GBL_SMI_EN is
+        // live. A non-SMM image leaves these gates available to its payload.
         #[cfg(target_arch = "x86_64")]
         if self.pm().read32(pmio::SMI_EN) & pmio::GBL_SMI_EN != 0 {
             // Global SMI Lock.

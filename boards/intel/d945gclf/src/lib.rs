@@ -19,11 +19,7 @@ pub struct Board;
 pub use config::*;
 #[cfg(fstart_stage_env = "ram")]
 pub use mainboard::D945GCLF_SMBIOS_IDENTITY;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 pub use mainboard::D945GclfMainboard;
 #[cfg(fstart_stage_env = "ram")]
 pub use mainboard::d945gclf_mainboard_dsdt_aml;

@@ -20,7 +20,6 @@ use fstart_platform_intel::pineview::{
 /// back by the same name when the OpRegion is published.
 const D41S_VBT: &str = "data.vbt";
 
-
 const D41S_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
     outputs: &[OutputConfig {
         port: Port::Vga,
@@ -34,6 +33,10 @@ const D41S_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
         refresh_hz: 60,
     }),
 };
+
+/// Pineview northbridge paired with the board's FCBGA559 CPU package.
+pub type Hardware =
+    fstart_platform_intel::pineview::PineviewIch7<fstart_platform_intel::legacy_cpu::Fcbga559>;
 
 pub const BOARD_NAME: &str = "foxconn-d41s";
 pub const BOARD_PACKAGE: &str = "fstart-board-foxconn-d41s";
@@ -81,14 +84,11 @@ pub const FLASH_SIZE: u32 = 0x0100_0000;
 pub const FLASH: FlashLayout = FlashLayout::X86Legacy(X86LegacyFlashLayout { size: FLASH_SIZE });
 
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
+    type Platform = Hardware;
+    const CONFIG: &'static PineviewIch7Platform = &D41S_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
-        fstart_platform_intel::facts::BoardFacts::new(
-            FLASH,
-            FLASH_SIZE,
-            D41S_PLATFORM.max_cpus,
-            fstart_platform_intel::facts::Chipset::PineviewIch7,
-        )
-        .with_data_assets(&[D41S_VBT]);
+        fstart_platform_intel::facts::BoardFacts::new(FLASH, FLASH_SIZE)
+            .with_data_assets(&[D41S_VBT]);
 }
 
 #[must_use]

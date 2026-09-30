@@ -2,10 +2,10 @@
 
 use fstart_core::{mmio32, services::ServiceError};
 use fstart_driver_sunxi::a20_ccu::{A20_PIO_BASE, A20_UART0_BASE};
-use fstart_driver_sunxi::pio::{PioGen, Pull, SunxiPio, PORT_B};
+use fstart_driver_sunxi::pio::{PORT_B, PioGen, Pull, SunxiPio};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_sunxi::a20::{
-    A20Board, A20BuildSelectedPayload, SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx, A20,
+    A20, A20Board, SunxiEarlyBoard, SunxiEarlyBoardHooks, SunxiEarlyCtx,
 };
 
 use crate::Board;
@@ -33,8 +33,6 @@ impl SunxiEarlyBoard for Board {
 }
 
 impl A20Board for Board {
-    type Payload = A20BuildSelectedPayload;
-
     const CONFIG: &'static fstart_platform_sunxi::a20::A20Config = &crate::BANANAPI_M1_A20;
     const CONSOLE_CONFIG: Ns16550Config = Ns16550Config {
         regs: AccessMode::Mmio {

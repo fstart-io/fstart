@@ -81,6 +81,19 @@ require_boot_marker() {
 	fi
 }
 
+reject_boot_marker() {
+	local board="$1" payload="$2" marker="$3"
+	matches_filter "$board" "${board_filters[@]}" || return 0
+	matches_filter "$payload" "${payload_filters[@]}" || return 0
+	local log="$LOG_DIR/${board}-${payload}.log"
+	if grep -Fq "$marker" "$log"; then
+		printf 'FAIL %-14s %-6s unexpected %s (%s)\n' "$board" "$payload" "$marker" "$log"
+		failures=$((failures + 1))
+	else
+		printf 'PASS %-14s %-6s no %s\n' "$board" "$payload" "$marker"
+	fi
+}
+
 run_boot() {
 	local board="$1"
 	local payload="$2"
@@ -93,11 +106,16 @@ run_boot() {
 
 	# The matrix label may carry a variant suffix (uefi-disk, halt-smp4);
 	# fbuild only sees the payload kind before the first dash. An `smpN`
-	# suffix boots with N vCPUs to exercise AP bring-up and SMM relocation.
+	# label boots with N vCPUs to exercise AP bring-up and SMM relocation.
 	local payload_arg="${payload%%-*}"
 	local smp=1
 	if [[ $payload =~ -smp([0-9]+) ]]; then
 		smp="${BASH_REMATCH[1]}"
+	fi
+	if [[ $payload == *-multisocket ]]; then
+		smp="${smp},sockets=2,cores=2,threads=1"
+	elif [[ $payload == *-hotplug ]]; then
+		smp="${smp},maxcpus=8"
 	fi
 	local log="$LOG_DIR/${board}-${payload}.log"
 	local -a command=(
@@ -125,10 +143,14 @@ run_boot() {
 run_boot qemu-q35 halt 'ramstage: ready for payload'
 require_boot_marker qemu-q35 halt 'PCI root ready ('
 # Multi-processor bring-up with SMM relocation on every CPU.
-run_boot qemu-q35 halt-smp4 'mp: initialization complete (4 CPUs)'
-require_boot_marker qemu-q35 halt-smp4 'SMM: selected AMD64 revision 0x00020064; 4 CPUs relocated'
-require_boot_marker qemu-q35 halt-smp4 'SMM: permanent SMI enabled and SMRAM locked'
-require_boot_marker qemu-q35 halt-smp4 'SMM: permanent SMI returned on all 4 CPUs'
+for variant in halt-smp4 halt-smp4-multisocket halt-smp4-hotplug; do
+	run_boot qemu-q35 "$variant" 'mp: initialization complete (4 CPUs)'
+	require_boot_marker qemu-q35 "$variant" 'SMM: selected AMD64 revision 0x00020064; 4 CPUs relocated'
+	require_boot_marker qemu-q35 "$variant" 'SMM: permanent SMI enabled and SMRAM locked'
+	require_boot_marker qemu-q35 "$variant" 'SMM: global SMI enable locked and verified'
+	require_boot_marker qemu-q35 "$variant" 'SMM: permanent SMI returned on all 4 CPUs'
+	require_boot_marker qemu-q35 "$variant" 'ramstage: ready for payload'
+done
 run_boot qemu-q35 uefi 'Boot manager finished'
 # Full boot chain: fstart -> CrabEFI -> GRUB (ESP) -> Linux -> u-root init.
 if [[ -f "$X86_ASSET_DIR/disk.img" ]]; then
@@ -174,6 +196,10 @@ fi
 
 # Orange Pi R1 (H2+) eGON SD boot on the QEMU orangepi-pc H3 machine.
 run_boot orangepi-r1 halt 'h3 mainstage: 1024 MiB DRAM'
+# The main bundle enables Linux availability even for halt. Selection must
+# still halt rather than trying to load absent Linux payload files.
+reject_boot_marker orangepi-r1 halt 'FFS payload'
+reject_boot_marker orangepi-r1 halt 'invalid mainstage memory policy'
 if [[ -f "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" ]]; then
 	cp "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" boards/xunlong/orangepi-r1/
 	run_boot orangepi-r1 linux FSTART_CI_BOOT_SUCCESS \

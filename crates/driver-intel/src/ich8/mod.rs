@@ -2109,6 +2109,9 @@ impl crate::southbridge::smi::SmiControl for IntelIch8 {
     fn enable_permanent_smi(&self, previous: crate::southbridge::smi::SmiEnableState) {
         self.smi().enable_permanent_smi(previous);
     }
+    fn lock_permanent_smi(&self) -> bool {
+        self.smi().lock_permanent_smi()
+    }
 }
 
 impl crate::IntelSouthbridgeDriver for IntelIch8 {

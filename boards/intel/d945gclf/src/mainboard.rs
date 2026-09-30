@@ -5,43 +5,22 @@
 //! (runtime registers at 0x680, the ICH7 generic decode target) plus the
 //! COM1/COM2/KBC setup handled by the generic SuperIO driver.
 
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+use crate::config::Hardware as I945Ich7;
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::ServiceError;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::device::BusDevice;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_driver_superio::smsc_lpc47m15x::SmscLpc47m15x;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
-use fstart_platform_intel::i945::I945Ich7;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(fstart_stage_env = "car")]
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
+#[cfg(fstart_stage_env = "ram")]
+use fstart_platform_intel::{IntelMainstageBoardCtx, IntelMainstageBoardHooks};
 
 /// Board-specific D945GCLF hooks for the i945/ICH7 flow.
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+#[derive(Default)]
 pub struct D945GclfMainboard {
     superio: Option<SmscLpc47m15x>,
 }
@@ -61,83 +40,39 @@ mod mainboard_acpi_device {
     }
 }
 
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 impl D945GclfMainboard {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { superio: None }
-    }
-}
-
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
-impl IntelEarlyBoardHooks<I945Ich7> for D945GclfMainboard {
-    fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<I945Ich7>) -> Result<(), ServiceError> {
-        // Match coreboot's bootblock_mainboard_early_init(): PME first so
-        // the 0x680 generic decode window has a live target, then COM/KBC.
-        // Verbose logging while first bring-up is still in flight.
+    fn setup_console(&mut self) -> Result<(), ServiceError> {
+        // PME first so the 0x680 decode window has a live target, then COM/KBC.
         unsafe { fstart_log::set_max_level(fstart_log::Level::Debug) };
-        pme_init();
         let mut superio =
             SmscLpc47m15x::new_at_base(crate::d945gclf_superio_config().0, crate::SUPERIO_PNP_BASE)
                 .map_err(ServiceError::from)?;
+        superio
+            .enable_pme(crate::SUPERIO_PME_BASE)
+            .map_err(ServiceError::from)?;
         superio.init().map_err(ServiceError::from)?;
         self.superio = Some(superio);
         Ok(())
     }
 }
 
-/// Enable the SMSC PME logical device at its runtime base.
-///
-/// Manual config-mode session mirroring coreboot
-/// `lpc47m15x_enable_serial(PME_DEV, 0x680)`; the generic SuperIO driver has
-/// no PME function slot, so the board owns these bytes.
-#[cfg(all(
-    any(
-        fstart_stage_env = "car",
-        fstart_stage_env = "postcar",
-        fstart_stage_env = "ram"
-    ),
-    target_arch = "x86_64"
-))]
-fn pme_init() {
-    // SAFETY: fixed board SuperIO PnP config ports decoded by ICH8 LPC setup.
-    unsafe {
-        use fstart_core::pio::{inb, outb};
-        const IDX: u16 = crate::SUPERIO_PNP_BASE;
-        const DATA: u16 = crate::SUPERIO_PNP_BASE + 1;
-        outb(IDX, 0x55);
-        outb(IDX, 0x07);
-        outb(DATA, crate::SUPERIO_PME_LDN);
-        outb(IDX, 0x30);
-        outb(DATA, 0x00);
-        outb(IDX, 0x60);
-        outb(DATA, (crate::SUPERIO_PME_BASE >> 8) as u8);
-        outb(IDX, 0x61);
-        outb(DATA, (crate::SUPERIO_PME_BASE & 0xff) as u8);
-        outb(IDX, 0x30);
-        outb(DATA, 0x01);
-        outb(IDX, 0xaa);
-        let _ = inb(DATA);
+#[cfg(fstart_stage_env = "car")]
+impl IntelEarlyBoardHooks<I945Ich7> for D945GclfMainboard {
+    fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<I945Ich7>) -> Result<(), ServiceError> {
+        self.setup_console()
     }
 }
 
-#[cfg(all(
-    any(
-        fstart_stage_env = "car",
-        fstart_stage_env = "postcar",
-        fstart_stage_env = "ram"
-    ),
-    not(target_arch = "x86_64")
-))]
-fn pme_init() {}
+#[cfg(fstart_stage_env = "ram")]
+impl IntelMainstageBoardHooks<I945Ich7> for D945GclfMainboard {
+    fn before_console(
+        &mut self,
+        _ctx: &mut IntelMainstageBoardCtx<I945Ich7>,
+    ) -> Result<(), ServiceError> {
+        self.setup_console()
+    }
+}
 
 static D945GCLF_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket 441"];
 

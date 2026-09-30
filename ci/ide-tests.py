@@ -12,9 +12,9 @@ import json
 import pathlib
 import queue
 import subprocess
+import tempfile
 import threading
 import time
-import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -273,14 +273,87 @@ def inventory_probe(count, evidence):
             client.close(directory)
 
 
+def intel_probe(audit_lock):
+    """Prove one board binding and bounded driver availability across stages."""
+    cases = [("lenovo-x61", "bootblock", "halt"),
+             ("lenovo-x61", "postcar", "halt"),
+             ("lenovo-x61", "ramstage", "uefi"),
+             ("lenovo-x61", "smm", "halt"),
+             ("intel-d945gclf", "bootblock", "halt"),
+             ("intel-d945gclf", "ramstage", "linux"),
+             ("foxconn-d41s", "bootblock", "halt"),
+             ("foxconn-d41s", "ramstage", "uefi"),
+             ("lenovo-x61", "ramstage", "halt")]
+    bindings = {
+        "lenovo-x61": ("lenovo/x61", "gm965", "Gm965Ich8", {"gm965", "ich8"}),
+        "intel-d945gclf": ("intel/d945gclf", "i945", "I945Ich7", {"i945", "ich7"}),
+        "foxconn-d41s": ("foxconn/d41s", "pineview", "PineviewIch7", {"pineview", "ich7"}),
+    }
+    hardware_features = {"gm965", "i945", "pineview", "ich7", "ich8"}
+    views = []
+    for board, stage, payload in cases:
+        command = ["cargo", "fbuild", "ide", board, "--release", "--stage", stage, "--payload", payload]
+        if audit_lock:
+            command.append("--audit-lock")
+        subprocess.run(command, cwd=ROOT, check=True)
+        view = ROOT / "target/fstart-ide" / board / "release" / payload / stage
+        graph = load_json(view / "rust-project.json")
+        driver = [crate for crate in graph["crates"]
+                  if crate["root_module"] == str(ROOT / "crates/driver-intel/src/lib.rs")]
+        assert len(driver) == 1, driver
+        enabled = {cfg.removeprefix("feature=").strip('"') for cfg in driver[0]["cfg"] if cfg.startswith("feature=")}
+        assert enabled & hardware_features == bindings[board][3], enabled
+        views.append(view)
+    evidence = ROOT / "target/fstart-ide/proof/intel-composition"
+    evidence.mkdir(parents=True, exist_ok=True)
+    client = Client(configuration(views[0] / "rust-analyzer.json"), evidence)
+    try:
+        for index, ((board, stage, payload), view) in enumerate(zip(cases, views, strict=True)):
+            if index == 0:
+                client.initialize()
+            else:
+                client.config = configuration(view / "rust-analyzer.json")
+                client.notify("workspace/didChangeConfiguration", {"settings": None})
+                client.ready()
+            source, module, marker, _ = bindings[board]
+            text, uri = client.open(ROOT / "boards" / source / "src/config.rs")
+            for word, target in [("IntelBoardFacts", "facts"), (marker + "<", module)]:
+                definitions = client.at("textDocument/definition", uri, text, word)
+                assert len(definitions) == 1 and definitions[0]["uri"] == (ROOT / f"crates/platform-intel/src/{target}.rs").as_uri(), definitions
+            for other in {"gm965", "i945", "pineview"} - {module}:
+                symbol = {"gm965": "IntelGm965Config", "i945": "IntelI945Config", "pineview": "IntelPineviewConfig"}[other]
+                assert client.request("workspace/symbol", {"query": symbol}) == [], (board, symbol)
+            environment = {"bootblock": "car", "postcar": "postcar", "ramstage": "ram", "smm": "smm"}[stage]
+            selected = "crabefi" if payload == "uefi" else payload
+            condition = f'fstart_stage_env="{environment}", fstart_payload="{selected}", target_arch="x86_64", not(test)'
+            addition = (f"\n#[cfg(all({condition}))]\nconst FSTART_INTEL_CFG: u8 = 1;\n"
+                        f"#[cfg(not(all({condition})))]\nconst FSTART_INTEL_CFG: u8 = 2;\n"
+                        "fn fstart_intel_cfg_probe() -> u8 { FSTART_INTEL_CFG }\n")
+            try:
+                client.change(uri, text + addition)
+                hover = client.at("textDocument/hover", uri, text + addition, "FSTART_INTEL_CFG", last=True)
+                assert hover and "= 1" in hover["contents"]["value"], hover
+            finally:
+                client.change(uri, text)
+            print(f"PASS {board} {stage} {payload}: original binding, stage cfgs, isolated chipset modules", flush=True)
+    finally:
+        client.close(evidence)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--intel", action="store_true", help="probe Intel board/stage switching instead of QEMU virt")
     parser.add_argument("--edit-check", action="store_true")
     parser.add_argument("--audit-lock", action="store_true")
     parser.add_argument("--inventory-noise", type=int, default=0)
     args = parser.parse_args()
     if args.inventory_noise < 0:
         parser.error("--inventory-noise must be nonnegative")
+    if args.intel:
+        if args.edit_check or args.inventory_noise:
+            parser.error("--edit-check and --inventory-noise apply to the QEMU virt probe")
+        intel_probe(args.audit_lock)
+        return
     cases = [("riscv64", "halt", True), ("riscv64", "linux", True),
              ("riscv64", "uefi", True), ("riscv64", "halt", False),
              ("armv7", "halt", True), ("armv7", "linux", True),
@@ -306,7 +379,7 @@ def main():
     evidence.mkdir(parents=True, exist_ok=True)
     client = Client(configuration(paths[0]), evidence)
     try:
-        for index, ((board, payload, release), config_path) in enumerate(zip(cases, paths)):
+        for index, ((board, payload, release), config_path) in enumerate(zip(cases, paths, strict=True)):
             started = time.monotonic()
             if index == 0:
                 status = client.initialize()

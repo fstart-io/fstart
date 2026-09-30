@@ -3,8 +3,8 @@
 <!-- markdownlint-disable MD013 -->
 
 `fbuild ide` generates an opt-in rust-analyzer view for a migrated board. It
-supports QEMU RISC-V, ARMv7 and AArch64 monolithic flows and the Lenovo X61
-Intel multistage flow. It does not modify the source
+supports QEMU RISC-V, ARMv7 and AArch64 monolithic flows and Intel multistage
+flows including Lenovo X61, Intel D945GCLF and Foxconn D41S. It does not modify the source
 workspace, editor settings in the source tree, or committed/per-board locks.
 
 ## Use
@@ -23,7 +23,8 @@ AArch64's sole `stage` unit is selected by default. No family-specific selection
 logic lives in IDE generation; see [the common-plan boundary](architecture-common-plan.md).
 
 Open the printed `fstart.code-workspace` in VS Code. The generated files live in
-`target/fstart-ide/<board>/<debug|release>/<payload>/`:
+`target/fstart-ide/<board>/<debug|release>/<payload>/` (with a compiler-unit
+subdirectory for multistage boards):
 
 - `fstart.code-workspace`: repository folder plus selection-specific settings.
 - `rust-analyzer.json`: the same flat `rust-analyzer.*` settings for other clients.
@@ -38,7 +39,9 @@ Use the project's pinned Rust toolchain with `rust-src` and a compatible
 rust-analyzer. The live protocol probes use rust-analyzer 1.100.0-nightly
 (`e457a7b`, 2026-08-27) and the pinned nightly-2026-08-28 toolchain's proc-macro
 server. This is not an assertion that arbitrary older rust-analyzer versions
-understand these configuration keys.
+understand these configuration keys. Put a real compatible rust-analyzer binary
+on `PATH`; a rustup proxy requires its toolchain's rust-analyzer component to be
+installed and is not itself the language server.
 
 One active selection per editor session is supported. Generate another view and
 open its workspace, or replace your client's settings with the newly generated
@@ -119,6 +122,7 @@ claim of byte-identical binaries across differently located workspaces.
 ```sh
 cargo test --locked -p fbuild --lib
 python ci/ide-tests.py --audit-lock --edit-check --inventory-noise 100
+python ci/ide-tests.py --intel --audit-lock
 ```
 
 `--edit-check` temporarily appends a deliberate type error to
@@ -127,7 +131,15 @@ file URI, and restores the source in a `finally` block. Do not run it with anoth
 writer to that file. `--inventory-noise` temporarily creates owned test boards
 under a fresh vendor directory and removes that directory afterward.
 
-The probes verify:
+`--intel` runs a separate nine-view sequence through X61 CAR/postcar/RAM/SMM,
+D945GCLF CAR/Linux RAM, D41S CAR/UEFI RAM and back to X61 halt RAM. It checks
+original-source facts/platform navigation, stage/payload cfgs, exact selected
+chipset features and absence of unrelated chipset symbols in one live LSP
+session. The optional lock audit compares each selection against the all-board
+prototype. Evidence lives under `target/fstart-ide/proof/intel-composition/`.
+The source-edit and inventory-growth options apply only to the QEMU virt probe.
+
+The QEMU virt probes verify:
 
 - Definitions lead to original board/platform files, not workspace aliases.
 - Live target/payload/profile/test cfgs and the selected launcher agree.

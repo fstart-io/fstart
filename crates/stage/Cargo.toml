@@ -40,7 +40,7 @@ sha3-digest = [
 lz4 = ["bootstrap"]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
 fdt = ["bootstrap"]
-# ARM Linux payload selected by fbuild's payload choice.
+# Additive Linux backend availability; fstart_payload selects the launcher.
 linux = []
 # FIT image parsing at runtime
 fit = ["ffs", "dep:fstart-boot", "fstart-boot/fit"]
@@ -75,3 +75,6 @@ fstart-boot = { workspace = true, optional = true }
 postcard = { workspace = true, optional = true }
 
 # CrabEFI adapter lives in fstart-boot behind the crabefi feature.
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_payload, values("halt", "linux", "crabefi"))'] }

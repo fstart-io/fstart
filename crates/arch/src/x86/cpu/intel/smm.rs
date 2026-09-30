@@ -26,12 +26,14 @@ const RELOCATION_DONE_SPINS: u32 = 200_000_000;
 pub trait SmramControl {
     /// Permanent SMRAM (TSEG) base and size, or `None` when disabled.
     fn tseg(&self) -> Option<(u64, u32)>;
-    /// Make SMRAM accessible from normal mode for installation.
-    fn smram_open(&self);
+    /// Make SMRAM accessible from normal mode for installation. Return true
+    /// only after confirming it is open and not locked (also on S3 resume).
+    fn smram_open(&self) -> bool;
     /// Hide SMRAM from normal mode.
     fn smram_close(&self);
-    /// Lock the SMRAM configuration until the next reset.
-    fn smram_lock(&self);
+    /// Lock the SMRAM configuration until the next reset. Return true only
+    /// after confirming it is closed, locked, and TSEG remains enabled.
+    fn smram_lock(&self) -> bool;
 }
 
 /// Southbridge SMI control.
@@ -51,13 +53,17 @@ pub trait SmiControl {
     fn quiesce_for_relocation(&self) -> Self::EnableState;
     /// Enable the permanent SMI sources.
     fn enable_permanent_smi(&self, previous: Self::EnableState);
+    /// Lock the global SMI enable after programming permanent sources.
+    /// Confirm both the lock and the global enable by readback.
+    fn lock_permanent_smi(&self) -> bool;
 }
 
 /// CPU-model facts needed to install SMM, supplied by the CPU model driver.
 pub trait SmmCpu {
     /// State-save layout this CPU writes on SMI entry.
     fn smm_save_state_format(&self) -> X86SaveStateFormat;
-    /// SMRR register pair of this CPU model, or `None` when it has none.
+    /// SMRR register pair to use when this CPU supports it, or `None` for
+    /// models without a pair. Older revisions lacking SMRR still boot.
     fn smrr_pair(&self) -> Option<SmrrPair>;
 }
 
@@ -71,6 +77,9 @@ pub enum IntelSmmError {
     UnexpectedCpu,
     SaveStateMismatch,
     SmrrSetupFailed,
+    SmramOpenFailed,
+    SmramLockFailed,
+    SmiLockFailed,
 }
 
 impl IntelSmmError {
@@ -85,6 +94,9 @@ impl IntelSmmError {
             Self::UnexpectedCpu => "UnexpectedCpu",
             Self::SaveStateMismatch => "SaveStateMismatch",
             Self::SmrrSetupFailed => "SmrrSetupFailed",
+            Self::SmramOpenFailed => "SmramOpenFailed",
+            Self::SmramLockFailed => "SmramLockFailed",
+            Self::SmiLockFailed => "SmiLockFailed",
         }
     }
 }
@@ -145,7 +157,10 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         );
 
         let mut layouts = [ZERO_CPU_LAYOUT; MAX_CPUS];
-        self.smram.smram_open();
+        if !self.smram.smram_open() {
+            self.smram.smram_close();
+            return Err(IntelSmmError::SmramOpenFailed);
+        }
         let result = self.install_open(mp, image, smram_base, smram_size, num_cpus, &mut layouts);
         if result.is_err() {
             self.smram.smram_close();
@@ -174,6 +189,11 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         layouts: &mut [fstart_smm::CpuSmmLayout; MAX_CPUS],
     ) -> Result<(), IntelSmmError> {
         let format = self.cpu.smm_save_state_format();
+        // SMRR is optional hardware, not a prerequisite for legacy CPUs to
+        // boot. Do not validate or access SMRR registers when absent.
+        let model_pair = self.cpu.smrr_pair();
+        let supported = model_pair.is_some_and(|pair| pair.supported_on_current_cpu());
+        let smrr = configured_smrr(model_pair, supported, smram_base, smram_size)?;
         let handler_config = self.smi.smm_handler_config();
         let installed = unsafe {
             fstart_smm::install_pic_image(
@@ -190,18 +210,6 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         }
         .map_err(|_| IntelSmmError::InstallFailed)?;
 
-        // Like coreboot, a TSEG that SMRR cannot describe only disables SMRR.
-        let smrr = self.cpu.smrr_pair().and_then(|pair| {
-            SmrrRange::new(smram_base, smram_size)
-                .map(|range| (pair, range))
-                .map_err(|_| {
-                    fstart_log::warn!(
-                        "{} SMM: TSEG is not a naturally aligned power of two; SMRR disabled",
-                        self.name
-                    )
-                })
-                .ok()
-        });
         RELOCATION_BRIDGE.prepare(format, smrr.map(|(_, range)| range))?;
         let relocation = &RELOCATION_BRIDGE;
         let relocation_cr3 =
@@ -245,8 +253,13 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
                 let target = installed.cpus[cpu as usize].smbase;
                 let pair = smrr
                     .map(|(pair, _)| pair)
-                    .filter(|pair| pair.usable_on_current_cpu());
-                match relocate_one(relocation, target, pair) {
+                    .filter(|pair| pair.supported_on_current_cpu());
+                let result = if pair.is_some_and(|pair| !pair.usable_on_current_cpu()) {
+                    Err(IntelSmmError::SmrrSetupFailed)
+                } else {
+                    relocate_one(relocation, target, pair)
+                };
+                match result {
                     Ok(()) if pair.is_some() => {
                         smrr_programmed.fetch_add(1, Ordering::AcqRel);
                     }
@@ -276,15 +289,14 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
             relocation.done.load(Ordering::Acquire)
         );
         let programmed = smrr_programmed.load(Ordering::Acquire);
-        if smrr.is_some() && programmed != u32::from(num_cpus) {
+        if model_pair.is_some() && programmed != u32::from(num_cpus) {
             fstart_log::warn!(
-                "{} SMM: SMRR programmed on {}/{} CPUs (IA32_FEATURE_CONTROL locked without SMRR?)",
+                "{} SMM: SMRR programmed on {}/{} CPUs; continuing without SMRR protection on the others",
                 self.name,
                 programmed,
                 num_cpus
             );
         }
-
         // Every CPU now runs from its permanent SMBASE. Erase the temporary
         // stub, its identity tables and the callback argument from the default
         // window so nothing executable or CR3-shaped stays behind in RAM the
@@ -299,11 +311,32 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         // payload the legacy-mode state.
         self.smi.set_acpi_mode(self.resume);
         self.smram.smram_close();
+        if !self.smram.smram_lock() {
+            return Err(IntelSmmError::SmramLockFailed);
+        }
         self.smi.enable_permanent_smi(previous_smi_enables);
-        self.smram.smram_lock();
+        if !self.smi.lock_permanent_smi() {
+            return Err(IntelSmmError::SmiLockFailed);
+        }
         fstart_log::info!("{} SMM: permanent SMI enabled and SMRAM locked", self.name);
+        fstart_log::info!("{} SMM: global SMI enable locked and verified", self.name);
         Ok(())
     }
+}
+
+fn configured_smrr(
+    pair: Option<SmrrPair>,
+    supported: bool,
+    base: u64,
+    size: u32,
+) -> Result<Option<(SmrrPair, SmrrRange)>, IntelSmmError> {
+    pair.filter(|_| supported)
+        .map(|pair| {
+            SmrrRange::new(base, size)
+                .map(|range| (pair, range))
+                .map_err(|_| IntelSmmError::SmrrSetupFailed)
+        })
+        .transpose()
 }
 
 /// Persistent bridge between ramstage and the default-SMBASE callback.
@@ -529,6 +562,31 @@ pub unsafe extern "C" fn default_smm_relocation_handler(params: *mut fstart_smm:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smrr_is_optional_when_hardware_support_is_absent() {
+        for pair in [SmrrPair::Core2Alternative, SmrrPair::Architectural] {
+            assert!(
+                configured_smrr(Some(pair), true, 0x7f80_0000, 0x0080_0000)
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                configured_smrr(Some(pair), true, 0x7f90_0000, 0x0080_0000),
+                Err(IntelSmmError::SmrrSetupFailed)
+            );
+            for base in [0x7f80_0000, 0x7f90_0000] {
+                assert_eq!(
+                    configured_smrr(Some(pair), false, base, 0x0080_0000),
+                    Ok(None)
+                );
+            }
+        }
+        assert_eq!(
+            configured_smrr(None, false, 0x7f90_0000, 0x0080_0000),
+            Ok(None)
+        );
+    }
 
     #[test]
     fn waiter_timeout_poison_prevents_owner_unlock() {
