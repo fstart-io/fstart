@@ -62,9 +62,8 @@ pub trait SmiControl {
 pub trait SmmCpu {
     /// State-save layout this CPU writes on SMI entry.
     fn smm_save_state_format(&self) -> X86SaveStateFormat;
-    /// SMRR register pair required for isolation on this CPU model. `None`
-    /// is only for platforms with independent isolation, such as QEMU's
-    /// emulated SMRAM. It is not a fallback for unavailable physical SMRR.
+    /// SMRR register pair to use when this CPU supports it, or `None` for
+    /// models without a pair. Older revisions lacking SMRR still boot.
     fn smrr_pair(&self) -> Option<SmrrPair>;
 }
 
@@ -190,9 +189,11 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         layouts: &mut [fstart_smm::CpuSmmLayout; MAX_CPUS],
     ) -> Result<(), IntelSmmError> {
         let format = self.cpu.smm_save_state_format();
-        // Coreboot tolerates some legacy SMRR failures. Here the physical
-        // CPU's configured pair is mandatory: never hand off unprotected SMM.
-        let smrr = required_smrr(self.cpu.smrr_pair(), smram_base, smram_size)?;
+        // SMRR is optional hardware, not a prerequisite for legacy CPUs to
+        // boot. Do not validate or access SMRR registers when absent.
+        let model_pair = self.cpu.smrr_pair();
+        let supported = model_pair.is_some_and(|pair| pair.supported_on_current_cpu());
+        let smrr = configured_smrr(model_pair, supported, smram_base, smram_size)?;
         let handler_config = self.smi.smm_handler_config();
         let installed = unsafe {
             fstart_smm::install_pic_image(
@@ -246,22 +247,31 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
             format.name()
         );
 
+        let smrr_programmed = AtomicU32::new(0);
         mp.scope(|scope| {
             scope.scatter(&|cpu| {
                 let target = installed.cpus[cpu as usize].smbase;
-                let pair = smrr.map(|(pair, _)| pair);
+                let pair = smrr
+                    .map(|(pair, _)| pair)
+                    .filter(|pair| pair.supported_on_current_cpu());
                 let result = if pair.is_some_and(|pair| !pair.usable_on_current_cpu()) {
                     Err(IntelSmmError::SmrrSetupFailed)
                 } else {
                     relocate_one(relocation, target, pair)
                 };
-                if let Err(error) = result {
-                    let _ = relocation.last_error.compare_exchange(
-                        0,
-                        error as u32 + 1,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    );
+                match result {
+                    Ok(()) if pair.is_some() => {
+                        smrr_programmed.fetch_add(1, Ordering::AcqRel);
+                    }
+                    Ok(()) => {}
+                    Err(error) => {
+                        let _ = relocation.last_error.compare_exchange(
+                            0,
+                            error as u32 + 1,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        );
+                    }
                 }
             });
         });
@@ -278,6 +288,15 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
             relocation.revision.load(Ordering::Acquire),
             relocation.done.load(Ordering::Acquire)
         );
+        let programmed = smrr_programmed.load(Ordering::Acquire);
+        if model_pair.is_some() && programmed != u32::from(num_cpus) {
+            fstart_log::warn!(
+                "{} SMM: SMRR programmed on {}/{} CPUs; continuing without SMRR protection on the others",
+                self.name,
+                programmed,
+                num_cpus
+            );
+        }
         // Every CPU now runs from its permanent SMBASE. Erase the temporary
         // stub, its identity tables and the callback argument from the default
         // window so nothing executable or CR3-shaped stays behind in RAM the
@@ -305,17 +324,19 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
     }
 }
 
-fn required_smrr(
+fn configured_smrr(
     pair: Option<SmrrPair>,
+    supported: bool,
     base: u64,
     size: u32,
 ) -> Result<Option<(SmrrPair, SmrrRange)>, IntelSmmError> {
-    pair.map(|pair| {
-        SmrrRange::new(base, size)
-            .map(|range| (pair, range))
-            .map_err(|_| IntelSmmError::SmrrSetupFailed)
-    })
-    .transpose()
+    pair.filter(|_| supported)
+        .map(|pair| {
+            SmrrRange::new(base, size)
+                .map(|range| (pair, range))
+                .map_err(|_| IntelSmmError::SmrrSetupFailed)
+        })
+        .transpose()
 }
 
 /// Persistent bridge between ramstage and the default-SMBASE callback.
@@ -543,19 +564,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn configured_smrr_never_falls_back_to_unprotected_smm() {
+    fn smrr_is_optional_when_hardware_support_is_absent() {
         for pair in [SmrrPair::Core2Alternative, SmrrPair::Architectural] {
             assert!(
-                required_smrr(Some(pair), 0x7f80_0000, 0x0080_0000)
+                configured_smrr(Some(pair), true, 0x7f80_0000, 0x0080_0000)
                     .unwrap()
                     .is_some()
             );
             assert_eq!(
-                required_smrr(Some(pair), 0x7f90_0000, 0x0080_0000),
+                configured_smrr(Some(pair), true, 0x7f90_0000, 0x0080_0000),
                 Err(IntelSmmError::SmrrSetupFailed)
             );
+            for base in [0x7f80_0000, 0x7f90_0000] {
+                assert_eq!(
+                    configured_smrr(Some(pair), false, base, 0x0080_0000),
+                    Ok(None)
+                );
+            }
         }
-        assert_eq!(required_smrr(None, 0x7f90_0000, 0x0080_0000), Ok(None));
+        assert_eq!(
+            configured_smrr(None, false, 0x7f90_0000, 0x0080_0000),
+            Ok(None)
+        );
     }
 
     #[test]
