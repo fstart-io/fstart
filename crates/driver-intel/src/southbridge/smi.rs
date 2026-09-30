@@ -7,6 +7,10 @@ use super::pmio_ich::{self as pmio, PmIo};
 pub use fstart_arch::x86::cpu::intel::smm::SmiControl;
 
 const APM_CNT: u16 = 0x00b2;
+const GEN_PMCON_1: u8 = 0xa0;
+tock_registers::register_bitfields![u16,
+    GEN_PMCON_1_REG [ SMI_LOCK OFFSET(4) NUMBITS(1) [] ]
+];
 
 /// Configuration the installer writes into SMRAM for [`IchSmmHandler`].
 ///
@@ -133,6 +137,24 @@ impl SmiControl for IchSmi {
         // global gate and EOS set while the shared relocation stub is live.
         self.pm.write32(pmio::SMI_EN, pmio::GBL_SMI_EN | pmio::EOS);
         previous
+    }
+
+    fn lock_permanent_smi(&self) -> bool {
+        use tock_registers::LocalRegisterCopy;
+        // ICH7 through ICH10 share the LPC BDF and SMI_LOCK register.
+        // CF8/CFC also works on Q35, which has no global ECAM accessor.
+        // SAFETY: the installer calls this on the BSP after AP relocation;
+        // neither APs nor the permanent handler access PCI config ports.
+        let mut value = LocalRegisterCopy::<u16, GEN_PMCON_1_REG::Register>::new(unsafe {
+            fstart_core::pio::pci_cfg_read16(0, 0x1f, 0, GEN_PMCON_1)
+        });
+        value.modify(GEN_PMCON_1_REG::SMI_LOCK::SET);
+        unsafe { fstart_core::pio::pci_cfg_write16(0, 0x1f, 0, GEN_PMCON_1, value.get()) };
+        let observed = LocalRegisterCopy::<u16, GEN_PMCON_1_REG::Register>::new(unsafe {
+            fstart_core::pio::pci_cfg_read16(0, 0x1f, 0, GEN_PMCON_1)
+        });
+        observed.is_set(GEN_PMCON_1_REG::SMI_LOCK)
+            && self.pm.read32(pmio::SMI_EN) & pmio::GBL_SMI_EN != 0
     }
 
     fn enable_permanent_smi(&self, previous: SmiEnableState) {

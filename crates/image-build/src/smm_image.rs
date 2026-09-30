@@ -2,6 +2,7 @@ use std::mem::{align_of, size_of};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use iced_x86::{Decoder, DecoderOptions, OpKind};
 use object::{
     Object, ObjectSection, ObjectSymbol, RelocationKind, RelocationTarget, SectionFlags,
     SectionKind,
@@ -13,6 +14,7 @@ use fstart_smm::header::{
     CorebootOffsets, EntryDescriptor, FLAG_COREBOOT_HEADER, FLAG_COREBOOT_MODULE_ARGS,
     SmmImageHeader, render_coreboot_header,
 };
+use fstart_smm::layout::SMM_HANDLER_ALIGNMENT;
 #[cfg(test)]
 use fstart_smm::runtime::SmmEntryParams;
 use fstart_smm::runtime::{
@@ -401,6 +403,19 @@ fn forbidden_section(name: &str, is_alloc: bool, size: u64) -> bool {
 fn assert_alloc_sections(elf: &Path, file: &object::File<'_>) -> Result<(), BuildError> {
     for section in file.sections() {
         let name = section.name().unwrap_or("");
+        if is_allocated(&section) && section.size() != 0 {
+            let alignment = section.align().max(1);
+            if !alignment.is_power_of_two()
+                || alignment > SMM_HANDLER_ALIGNMENT
+                || section.address() % alignment != 0
+            {
+                return Err(BuildError::Tool(format!(
+                    "SMM section {name} requires unsupported alignment {alignment} at {:#x} in {}",
+                    section.address(),
+                    elf.display()
+                )));
+            }
+        }
         if forbidden_section(name, is_allocated(&section), section.size()) {
             return Err(BuildError::Tool(format!(
                 "SMM blob contains unsupported allocated section {name} ({} bytes) in {}",
@@ -449,6 +464,7 @@ fn assert_relative_relocations_only(elf: &Path, file: &object::File<'_>) -> Resu
                     elf.display()
                 )));
             }
+            let bias = relative_pc_bias(&section, offset, &relocation);
             let target_ok = match relocation.target() {
                 RelocationTarget::Symbol(index) => file
                     .symbol_by_index(index)
@@ -464,7 +480,10 @@ fn assert_relative_relocations_only(elf: &Path, file: &object::File<'_>) -> Resu
                         is_allocated(&section)
                             && is_handler_section(section.name().unwrap_or(""))
                             && address_in_section(symbol.address(), &section)
-                            && effective_relative_target(symbol.address(), &relocation)
+                            && bias
+                                .and_then(|bias| {
+                                    effective_relative_target(symbol.address(), &relocation, bias)
+                                })
                                 .is_some_and(|address| address_in_copied_image(file, address))
                     }),
                 RelocationTarget::Section(index) => file
@@ -474,8 +493,10 @@ fn assert_relative_relocations_only(elf: &Path, file: &object::File<'_>) -> Resu
                         is_allocated(section) && is_handler_section(section.name().unwrap_or(""))
                     })
                     .and_then(|section| {
-                        effective_relative_target(section.address(), &relocation)
-                            .map(|address| (address, section))
+                        bias.and_then(|bias| {
+                            effective_relative_target(section.address(), &relocation, bias)
+                        })
+                        .map(|address| (address, section))
                     })
                     .is_some_and(|(address, _)| address_in_copied_image(file, address)),
                 _ => false,
@@ -506,16 +527,56 @@ fn address_in_copied_image(file: &object::File<'_>, address: u64) -> bool {
     })
 }
 
-fn effective_relative_target(base: u64, relocation: &object::Relocation) -> Option<u64> {
+/// ELF uses the relocation field's address as P. x86 instructions instead
+/// use next RIP, which may follow an immediate as well as the displacement.
+fn relative_pc_bias<'data>(
+    section: &impl ObjectSection<'data>,
+    offset: u64,
+    relocation: &object::Relocation,
+) -> Option<i64> {
     let size = relocation.size();
     if size == 0 || !size.is_multiple_of(8) {
         return None;
     }
-    // x86 PC-relative fields are interpreted from the end of the encoded
-    // displacement. ELF addends normally include the corresponding negative
-    // bias (for example -4 for R_X86_64_PC32/PLT32).
-    let adjusted_addend = relocation.addend().checked_add(i64::from(size / 8))?;
-    add_signed(base, adjusted_addend)
+    // Data PC-relative fields are relative to their own address, not next RIP.
+    if section.kind() != SectionKind::Text {
+        return Some(0);
+    }
+    let bytes = section.data().ok()?;
+    let mut decoder = Decoder::with_ip(64, bytes, section.address(), DecoderOptions::NONE);
+    while decoder.can_decode() {
+        let instruction = decoder.decode();
+        let start = instruction.ip().checked_sub(section.address())?;
+        if start > offset {
+            break;
+        }
+        let constants = decoder.get_constant_offsets(&instruction);
+        let (field_offset, field_size) = if instruction.is_ip_rel_memory_operand() {
+            (
+                constants.displacement_offset(),
+                constants.displacement_size(),
+            )
+        } else if matches!(
+            instruction.op0_kind(),
+            OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+        ) {
+            (constants.immediate_offset(), constants.immediate_size())
+        } else {
+            continue;
+        };
+        if !instruction.is_invalid()
+            && field_size == usize::from(size / 8)
+            && start.checked_add(field_offset as u64)? == offset
+        {
+            let place = section.address().checked_add(offset)?;
+            return i64::try_from(instruction.next_ip().checked_sub(place)?).ok();
+        }
+    }
+    None
+}
+
+fn effective_relative_target(base: u64, relocation: &object::Relocation, bias: i64) -> Option<u64> {
+    add_signed(base, relocation.addend().checked_add(bias)?)
 }
 
 fn add_signed(base: u64, addend: i64) -> Option<u64> {
@@ -721,6 +782,22 @@ mod tests {
         target_definition: &str,
         data_section_attributes: &str,
     ) -> PathBuf {
+        assemble_fixture(
+            linker_prefix,
+            allow_undefined,
+            &format!(
+                ".text\n{target_prelude}\n.globl fstart_smm_handler\nfstart_smm_handler:\n call target{target_addend}\n ret\n{target_definition}"
+            ),
+            data_section_attributes,
+        )
+    }
+
+    fn assemble_fixture(
+        linker_prefix: &str,
+        allow_undefined: bool,
+        assembly: &str,
+        data_section_attributes: &str,
+    ) -> PathBuf {
         let id = FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
         let dir =
             std::env::temp_dir().join(format!("fstart-smm-reloc-{}-{id}", std::process::id()));
@@ -729,13 +806,7 @@ mod tests {
         let object = dir.join("fixture.o");
         let script = dir.join("fixture.ld");
         let elf = dir.join("fixture.elf");
-        std::fs::write(
-            &source,
-            format!(
-                ".text\n{target_prelude}\n.globl fstart_smm_handler\nfstart_smm_handler:\n call target{target_addend}\n ret\n{target_definition}"
-            ),
-        )
-        .unwrap();
+        std::fs::write(&source, assembly).unwrap();
         std::fs::write(
             &script,
             format!(
@@ -806,6 +877,7 @@ mod tests {
         }
         let generated = built.coreboot_header.unwrap();
         assert!(generated.contains("FSTART_SMM_HANDLER_LOAD_SIZE 3u"));
+        assert!(generated.contains("FSTART_SMM_HANDLER_ALIGNMENT 4096u"));
         assert!(generated.contains("FSTART_SMM_ENTRY_COUNT 4u"));
     }
 
@@ -914,7 +986,7 @@ mod tests {
         assert_eq!(relocation.addend(), -4);
         assert_eq!(relocation.size(), 32);
         assert_eq!(
-            effective_relative_target(symbol.address(), &relocation),
+            effective_relative_target(symbol.address(), &relocation, 4),
             Some(symbol.address())
         );
         audit_smm_blob(&elf).unwrap();
@@ -942,11 +1014,59 @@ mod tests {
             .find(|symbol| symbol.name().ok() == Some("section_target_marker"))
             .unwrap();
         assert_eq!(
-            effective_relative_target(section_symbol.address(), &relocation),
+            effective_relative_target(section_symbol.address(), &relocation, 4),
             Some(marker.address())
         );
         audit_smm_blob(&elf).unwrap();
         std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn relocation_audit_handles_immediates_after_rip_displacements() {
+        for (store, bias) in [("movb $1,target(%rip)", 5), ("movl $1,target(%rip)", 8)] {
+            let elf = assemble_fixture(
+                "",
+                false,
+                &format!(
+                    ".text\n.globl fstart_smm_handler\nfstart_smm_handler:\n {store}\n ret\n.bss\n.globl target\ntarget:\n .zero 4\n"
+                ),
+                "",
+            );
+            let data = std::fs::read(&elf).unwrap();
+            let file = object::File::parse(data.as_slice()).unwrap();
+            let text = file.section_by_name(".text").unwrap();
+            let (offset, relocation) = text.relocations().next().unwrap();
+            assert_eq!(relocation.addend(), -bias);
+            assert_eq!(relative_pc_bias(&text, offset, &relocation), Some(bias));
+            handler_from_elf(&elf, elf.parent().unwrap()).unwrap();
+            std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn handler_alignment_is_bounded_by_the_loader_contract() {
+        for alignment in [64, 4096, 8192] {
+            let elf = assemble_fixture(
+                "",
+                false,
+                &format!(
+                    ".text\n.globl fstart_smm_handler\nfstart_smm_handler:\n ret\n.bss\n.balign {alignment}\n .zero 64\n"
+                ),
+                "",
+            );
+            let result = handler_from_elf(&elf, elf.parent().unwrap());
+            if alignment <= SMM_HANDLER_ALIGNMENT {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("unsupported alignment")
+                );
+            }
+            std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+        }
     }
 
     #[test]

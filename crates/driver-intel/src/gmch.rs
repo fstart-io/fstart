@@ -21,7 +21,7 @@ pub const fn tseg_size_bytes(esmramc: u8) -> Option<u32> {
 /// `SMRAM` (host bridge config 0x9d) fields; bits match coreboot's
 /// `cpu/intel/smm/gen1/smmrelocate.c`.
 pub mod smram {
-    use tock_registers::register_bitfields;
+    use tock_registers::{LocalRegisterCopy, register_bitfields};
 
     register_bitfields![u8,
         pub SMRAM [
@@ -33,6 +33,18 @@ pub mod smram {
             D_OPEN OFFSET(6) NUMBITS(1) []
         ]
     ];
+
+    /// Readback confirms writes from normal mode can reach SMRAM.
+    pub fn is_open(value: u8) -> bool {
+        LocalRegisterCopy::<u8, SMRAM::Register>::new(value)
+            .matches_all(SMRAM::D_OPEN::SET + SMRAM::D_LCK::CLEAR + SMRAM::G_SMRAME::SET)
+    }
+
+    /// Readback confirms SMRAM is hidden and its configuration locked.
+    pub fn is_locked(value: u8) -> bool {
+        LocalRegisterCopy::<u8, SMRAM::Register>::new(value)
+            .matches_all(SMRAM::D_OPEN::CLEAR + SMRAM::D_LCK::SET + SMRAM::G_SMRAME::SET)
+    }
 
     /// SMRAM visible outside SMM during installation.
     #[must_use]
@@ -56,6 +68,18 @@ pub mod smram {
 #[cfg(test)]
 mod tests {
     use super::tseg_size_bytes;
+
+    #[test]
+    fn smram_readback_requires_open_or_closed_locked_state() {
+        use super::smram;
+        assert!(smram::is_open(smram::open()));
+        assert!(!smram::is_open(smram::locked()));
+        assert!(smram::is_locked(smram::locked()));
+        assert!(!smram::is_locked(smram::open()));
+        assert!(!smram::is_locked(smram::closed()));
+        assert!(!smram::is_locked(smram::locked() | (1 << 6)));
+        assert!(!smram::is_locked(smram::locked() & !(1 << 3)));
+    }
 
     #[test]
     fn tseg_size_decode_rejects_reserved_encoding() {

@@ -126,10 +126,11 @@ impl SmramControl for Q35HostBridge {
         (size != 0 && self.tseg_base() != 0).then(|| (self.tseg_base(), size as u32))
     }
 
-    fn smram_open(&self) {
+    fn smram_open(&self) -> bool {
         pci_write_host8(SMRAMC, D_OPEN | G_SMRAME | C_BASE_SEG);
         let esmramc = pci_read_host8(ESMRAMC);
         pci_write_host8(ESMRAMC, esmramc & !T_EN);
+        pci_read_host8(SMRAMC) & (D_OPEN | D_LCK | G_SMRAME) == D_OPEN | G_SMRAME
     }
 
     fn smram_close(&self) {
@@ -138,7 +139,9 @@ impl SmramControl for Q35HostBridge {
         pci_write_host8(ESMRAMC, esmramc | T_EN);
     }
 
-    fn smram_lock(&self) {
+    fn smram_lock(&self) -> bool {
         pci_write_host8(SMRAMC, D_LCK | G_SMRAME | C_BASE_SEG);
+        pci_read_host8(SMRAMC) & (D_OPEN | D_LCK | G_SMRAME) == D_LCK | G_SMRAME
+            && pci_read_host8(ESMRAMC) & T_EN != 0
     }
 }

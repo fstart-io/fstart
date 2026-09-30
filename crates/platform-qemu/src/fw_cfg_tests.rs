@@ -6,6 +6,10 @@ use super::*;
 use std::cell::Cell;
 use std::vec::Vec;
 
+// load_acpi_tables uses static scratch buffers to avoid a large firmware
+// stack allocation. Serialize mock invocations, including future loader tests.
+static FW_CFG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Clone, Copy)]
 struct Mock<'data, 'state> {
     dir: &'data [u8],
@@ -27,7 +31,7 @@ impl FwCfgTransport for Mock<'_, '_> {
             FW_CFG_FILE_DIR => self.dir,
             0x20 => self.e820,
             0x21 => self.loader,
-            0x22 => self.blob,
+            0x22 | FW_CFG_NB_CPUS => self.blob,
             _ => panic!("unknown test selector"),
         };
         let pos = self.position.get();
@@ -57,6 +61,7 @@ fn run<'a>(
     blob: &'a [u8],
     f: impl FnOnce(QemuFwCfg<Mock<'a, '_>>),
 ) {
+    let _guard = FW_CFG_TEST_LOCK.lock().unwrap();
     let selector = Cell::new(0);
     let position = Cell::new(0);
     f(QemuFwCfg::new(Mock {
@@ -67,6 +72,15 @@ fn run<'a>(
         selector: &selector,
         position: &position,
     }));
+}
+
+#[test]
+fn cpu_count_reads_online_cpus_not_hotplug_capacity() {
+    for count in [0u16, 1, 4, 256] {
+        run(&[], &[], &[], &count.to_le_bytes(), |cfg| {
+            assert_eq!(cfg.cpu_count(), count.max(1));
+        });
+    }
 }
 
 #[test]
