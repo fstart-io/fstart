@@ -10,9 +10,9 @@
 #![allow(clippy::result_unit_err)]
 
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-use fstart_core::services::ServiceError;
+use crate::config::Hardware as Gm965Ich8;
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-use fstart_platform_intel::gm965::Gm965Ich8;
+use fstart_core::services::ServiceError;
 #[cfg(fstart_stage_env = "car")]
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 #[cfg(fstart_stage_env = "ram")]

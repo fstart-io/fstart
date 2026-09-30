@@ -12,7 +12,9 @@ An unconditional board source module implements the host-clean facts contract:
 
 ```rust
 impl fstart_platform_intel::IntelBoardFacts for Board {
-    type Platform = fstart_platform_intel::i945::I945Ich7;
+    type Platform = fstart_platform_intel::i945::I945Ich7<
+        fstart_platform_intel::legacy_cpu::Socket441,
+    >;
     const CONFIG: &'static fstart_platform_intel::i945::I945Ich7Platform =
         &D945GCLF_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
@@ -21,10 +23,25 @@ impl fstart_platform_intel::IntelBoardFacts for Board {
 ```
 
 The config is a board `static` built with the platform's const builder. The
-associated platform marker supplies CAR geometry and microcode policy on the
-host, and northbridge/southbridge/CPU associations in firmware. CPU population
-comes from that same config. There is no second chipset enum or host CPU count
-for the board to keep synchronized.
+associated hardware marker supplies host policy and runtime driver associations.
+CPU population comes from that same config. There is no second chipset enum or
+host CPU count for the board to keep synchronized.
+
+For legacy discrete-northbridge systems, CPU selection is independent of the
+chipset: `I945Ich7<Socket441>` selects Diamondville Atom, whereas
+`I945Ich7<SocketM>` selects the mobile Core/Core 2 package profile. D41S uses
+`PineviewIch7<Fcbga559>`. These follow coreboot's board-to-socket-to-model policy,
+not a rule that i945 implies Atom. Profiles own microcode coverage, CAR geometry,
+and the model driver; runtime microcode matching still checks CPUID/platform ID.
+`SocketM` includes the 6EX/6FX microcode families, but runtime initialization
+currently supports the Core 2 subset, not Yonah; unsupported CPUIDs are rejected.
+No Penryn or NetBurst runtime support is implied by this change.
+
+Socket M defaults to coreboot's 32-KiB CAR window. X61 explicitly retains its
+existing layout with `Gm965Ich8<SocketM<0xfef0_0000, 0x80000>>`; this work does
+not shrink its boot-time memory budget. Board hooks refer to the board's
+`Hardware` alias so they do not repeat the package selection. Newer integrated
+platforms can keep CPU policy platform-owned; they do not need socket profiles.
 
 Flash capacity, partitioning and attached-device assets remain board facts.
 Stage budgets, load addresses, target policy and microcode defaults do not.

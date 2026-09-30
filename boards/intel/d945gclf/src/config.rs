@@ -17,6 +17,10 @@ use fstart_platform_intel::i945::{
 };
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 
+/// i945 is independent of the soldered Socket 441 Atom CPU.
+pub type Hardware =
+    fstart_platform_intel::i945::I945Ich7<fstart_platform_intel::legacy_cpu::Socket441>;
+
 pub const BOARD_NAME: &str = "intel-d945gclf";
 pub const BOARD_PACKAGE: &str = "fstart-board-intel-d945gclf";
 pub const PLATFORM: Platform = Platform::X86_64;
@@ -98,7 +102,7 @@ pub const FLASH_SIZE: u32 = 0x0008_0000;
 pub const FLASH: FlashLayout = FlashLayout::X86Legacy(X86LegacyFlashLayout { size: FLASH_SIZE });
 
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
-    type Platform = fstart_platform_intel::i945::I945Ich7;
+    type Platform = Hardware;
     const CONFIG: &'static I945Ich7Platform = &D945GCLF_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(FLASH, FLASH_SIZE);

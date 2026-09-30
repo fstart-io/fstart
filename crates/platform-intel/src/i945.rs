@@ -18,9 +18,6 @@ pub const I945_ECAM_BUSES: u16 = 64;
 pub const ICH7_RCBA: u64 = 0xFED1_C000;
 pub const ICH7_PMBASE: u32 = 0x0500;
 pub const ICH7_SMBUS_BASE: u16 = 0x0400;
-/// Socket 441 CAR window (matches coreboot `DCACHE_RAM_BASE/SIZE`).
-pub const I945_CAR_BASE: u64 = 0xFEFC_0000;
-pub const I945_CAR_SIZE: u64 = 0x8000;
 
 /// Closed i945/ICH7 chipset policy consumed by fixed stage code.
 ///
@@ -321,14 +318,14 @@ impl I945Ich7AcpiContext {
 }
 
 /// i945/ICH7 identity shared by host planning and the runtime flow.
-pub struct I945Ich7;
+pub struct I945Ich7<C>(core::marker::PhantomData<C>);
 
-impl crate::IntelPlatform for I945Ich7 {
+impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for I945Ich7<C> {
     type Config = I945Ich7Platform;
     const NAME: &'static str = "i945/ich7";
-    const CAR_BASE: u64 = I945_CAR_BASE;
-    const CAR_SIZE: u64 = I945_CAR_SIZE;
-    const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-1c-02", "06-1c-0a"];
+    const CAR_BASE: u64 = C::CAR_BASE;
+    const CAR_SIZE: u64 = C::CAR_SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = C::MICROCODE_SIGNATURES;
 }
 
 impl crate::IntelPlatformConfig for I945Ich7Platform {
@@ -341,21 +338,19 @@ impl crate::IntelPlatformConfig for I945Ich7Platform {
 mod stage {
     use super::*;
     use crate::{IntelChipsetConfig, IntelEarlyPlatform};
-    #[cfg(feature = "mp")]
-    use fstart_arch::x86::cpu::intel::pineview::PineviewCpuDriver;
     use fstart_driver_intel::i945::IntelI945;
     use fstart_driver_intel::ich7::IntelIch7;
 
-    impl IntelEarlyPlatform for I945Ich7 {
+    impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for I945Ich7<C> {
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelI945;
         type Southbridge = IntelIch7;
         #[cfg(feature = "mp")]
-        type Cpu = PineviewCpuDriver;
+        type Cpu = C::Driver;
         #[cfg(feature = "mp")]
         fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
-            PineviewCpuDriver::new(ICH7_PMBASE, microcode)
+            C::cpu_driver(ICH7_PMBASE, microcode)
         }
         #[cfg(feature = "acpi")]
         type AcpiContext = I945Ich7AcpiContext;

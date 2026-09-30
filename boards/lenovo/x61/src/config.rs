@@ -64,8 +64,13 @@ pub const FLASH: fstart_core::IntelIfdFlashLayout = {
     )
 };
 
+/// Socket M CPU policy, retaining X61's existing budgeted CAR window.
+pub type Hardware = fstart_platform_intel::gm965::Gm965Ich8<
+    fstart_platform_intel::legacy_cpu::SocketM<0xfef0_0000, 0x80000>,
+>;
+
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
-    type Platform = fstart_platform_intel::gm965::Gm965Ich8;
+    type Platform = Hardware;
     const CONFIG: &'static Gm965Ich8Platform = &X61_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(

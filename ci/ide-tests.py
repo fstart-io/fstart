@@ -317,7 +317,7 @@ def intel_probe(audit_lock):
                 client.ready()
             source, module, marker, _ = bindings[board]
             text, uri = client.open(ROOT / "boards" / source / "src/config.rs")
-            for word, target in [("IntelBoardFacts", "facts"), (marker + ";", module)]:
+            for word, target in [("IntelBoardFacts", "facts"), (marker + "<", module)]:
                 definitions = client.at("textDocument/definition", uri, text, word)
                 assert len(definitions) == 1 and definitions[0]["uri"] == (ROOT / f"crates/platform-intel/src/{target}.rs").as_uri(), definitions
             for other in {"gm965", "i945", "pineview"} - {module}:

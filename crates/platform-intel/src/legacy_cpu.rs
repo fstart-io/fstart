@@ -1,0 +1,76 @@
+//! CPU-package policy for the legacy, discrete-northbridge Intel flows.
+//!
+//! These systems can pair one chipset with different CPU packages. Newer
+//! integrated platforms keep their CPU selection in their platform binding.
+//! Package profiles choose microcode coverage and CAR geometry; the existing
+//! model driver still rejects CPUIDs it cannot initialize.
+
+/// Host-clean CPU-package policy, with model operations available in firmware.
+pub trait LegacyCpu: 'static {
+    const CAR_BASE: u64;
+    const CAR_SIZE: u64;
+    const MICROCODE_SIGNATURES: &'static [&'static str];
+
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    type Driver: fstart_arch::x86::mp::CpuDriver + fstart_arch::x86::cpu::intel::smm::SmmCpu;
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver;
+}
+
+const ATOM_MICROCODE: &[&str] = &["06-1c-02", "06-1c-0a"];
+
+/// Diamondville Atom package used by D945GCLF (coreboot socket_441).
+pub struct Socket441;
+
+impl LegacyCpu for Socket441 {
+    const CAR_BASE: u64 = 0xfefc_0000;
+    const CAR_SIZE: u64 = 0x8000;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = ATOM_MICROCODE;
+
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    type Driver = fstart_arch::x86::cpu::intel::pineview::PineviewCpuDriver;
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+        Self::Driver::new(pmbase, microcode)
+    }
+}
+
+/// Pineview Atom package used by D41S (coreboot socket_FCBGA559).
+pub struct Fcbga559;
+
+impl LegacyCpu for Fcbga559 {
+    const CAR_BASE: u64 = 0xfefc_0000;
+    const CAR_SIZE: u64 = 0x8000;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = ATOM_MICROCODE;
+
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    type Driver = fstart_arch::x86::cpu::intel::pineview::PineviewCpuDriver;
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+        Self::Driver::new(pmbase, microcode)
+    }
+}
+
+/// Core/Core 2 package profile used by coreboot's X60 and X61 bindings.
+///
+/// The default CAR window follows socket_m. Const parameters allow a board
+/// to retain an explicitly budgeted window, independently of its chipset.
+/// Microcode covers models 6EX/6FX; runtime init currently supports the
+/// Core 2 subset through Core2CpuDriver, not Yonah initialization.
+pub struct SocketM<const BASE: u64 = 0xfefc_0000, const SIZE: u64 = 0x8000>;
+
+impl<const BASE: u64, const SIZE: u64> LegacyCpu for SocketM<BASE, SIZE> {
+    const CAR_BASE: u64 = BASE;
+    const CAR_SIZE: u64 = SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = &[
+        "06-0e-08", "06-0e-0c", "06-0f-02", "06-0f-06", "06-0f-07", "06-0f-0a", "06-0f-0b",
+        "06-0f-0d", "06-16-01",
+    ];
+
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    type Driver = fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+        Self::Driver::new(pmbase, microcode)
+    }
+}

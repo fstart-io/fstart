@@ -324,16 +324,14 @@ impl Gm965Ich8AcpiContext {
 }
 
 /// GM965/ICH8 identity shared by host planning and the runtime flow.
-pub struct Gm965Ich8;
+pub struct Gm965Ich8<C>(core::marker::PhantomData<C>);
 
-impl crate::IntelPlatform for Gm965Ich8 {
+impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm965Ich8<C> {
     type Config = Gm965Ich8Platform;
     const NAME: &'static str = "gm965/ich8";
-    const CAR_BASE: u64 = 0xfef00000;
-    const CAR_SIZE: u64 = 0x80000;
-    const MICROCODE_SIGNATURES: &'static [&'static str] = &[
-        "06-0f-02", "06-0f-06", "06-0f-07", "06-0f-0a", "06-0f-0b", "06-0f-0d", "06-16-01",
-    ];
+    const CAR_BASE: u64 = C::CAR_BASE;
+    const CAR_SIZE: u64 = C::CAR_SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = C::MICROCODE_SIGNATURES;
 }
 
 impl crate::IntelPlatformConfig for Gm965Ich8Platform {
@@ -346,21 +344,19 @@ impl crate::IntelPlatformConfig for Gm965Ich8Platform {
 mod stage {
     use super::*;
     use crate::{IntelChipsetConfig, IntelEarlyPlatform};
-    #[cfg(feature = "mp")]
-    use fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
     use fstart_driver_intel::gm965::IntelGm965;
     use fstart_driver_intel::ich8::IntelIch8;
 
-    impl IntelEarlyPlatform for Gm965Ich8 {
+    impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for Gm965Ich8<C> {
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelGm965;
         type Southbridge = IntelIch8;
         #[cfg(feature = "mp")]
-        type Cpu = Core2CpuDriver;
+        type Cpu = C::Driver;
         #[cfg(feature = "mp")]
         fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
-            Core2CpuDriver::new(ICH8_PMBASE, microcode)
+            C::cpu_driver(ICH8_PMBASE, microcode)
         }
         #[cfg(feature = "acpi")]
         type AcpiContext = Gm965Ich8AcpiContext;
