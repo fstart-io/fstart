@@ -1,8 +1,9 @@
 //! Host-clean board facts and chipset identity shared by build and firmware.
 use fstart_core::FlashLayout;
 
-/// A supported chipset pair. Its marker is selected once in board Rust;
-/// the same type supplies host geometry and the runtime driver associations.
+/// A supported hardware binding, selected once in board Rust. Legacy chipset
+/// markers carry an independent CPU-package parameter; integrated platforms
+/// can own CPU policy directly. Both supply host and runtime associations.
 pub trait IntelPlatform: 'static {
     type Config: IntelPlatformConfig + 'static;
     const NAME: &'static str;

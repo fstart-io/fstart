@@ -297,9 +297,15 @@ fn resolve_for<P: IntelPlatform>(
 ))]
 mod tests {
     use super::*;
+    use crate::legacy_cpu::{Fcbga559, LegacyCpu, Socket441, SocketM};
     use fstart_core::{
         ConstVec, IntelIfdFlashLayout, IntelIfdRegion as Kind, IntelIfdRegionConfig as Region,
     };
+
+    type Gm965 = crate::gm965::Gm965Ich8<SocketM<0xfef0_0000, 0x80000>>;
+    type I945 = crate::i945::I945Ich7<Socket441>;
+    type Pineview = crate::pineview::PineviewIch7<Fcbga559>;
+
     const DESCRIPTOR: Region = Region {
         kind: Kind::Descriptor,
         offset: 0,
@@ -317,7 +323,7 @@ mod tests {
         facts: BoardFacts,
         selection: BuildSelection,
     ) -> Result<IntelPlan, std::string::String> {
-        resolve_for::<crate::gm965::Gm965Ich8>(facts, 2, selection)
+        resolve_for::<Gm965>(facts, 2, selection)
     }
 
     #[test]
@@ -326,7 +332,7 @@ mod tests {
         static CONFIG: crate::i945::I945Ich7Platform =
             crate::i945::I945Ich7Config::new().max_cpus(4).build();
         impl IntelBoardFacts for Board {
-            type Platform = crate::i945::I945Ich7;
+            type Platform = I945;
             const CONFIG: &'static crate::i945::I945Ich7Platform = &CONFIG;
             const FACTS: BoardFacts = FACTS;
         }
@@ -335,10 +341,10 @@ mod tests {
         assert_eq!(plan.smm.entry_points, Some(4));
         assert_eq!(
             plan.reservations.bootblock.writable.base,
-            <crate::i945::I945Ich7 as IntelPlatform>::CAR_BASE
+            <Socket441 as LegacyCpu>::CAR_BASE
         );
         assert_eq!(plan.microcode.len(), 2);
-        assert!(resolve_for::<crate::i945::I945Ich7>(FACTS, 0, BuildSelection::default()).is_err());
+        assert!(resolve_for::<I945>(FACTS, 0, BuildSelection::default()).is_err());
     }
     #[test]
     fn platform_selects_target_payload_stage_bundles_and_smm() {
@@ -469,6 +475,53 @@ mod tests {
         );
     }
     #[test]
+    fn legacy_cpu_packages_are_independent_of_the_chipset() {
+        type MobileI945 = crate::i945::I945Ich7<SocketM>;
+        type MobileGm965 = crate::gm965::Gm965Ich8<SocketM>;
+        let atom = resolve_for::<I945>(FACTS, 2, BuildSelection::default()).unwrap();
+        let mobile = resolve_for::<MobileI945>(FACTS, 2, BuildSelection::default()).unwrap();
+        let gm = resolve_for::<MobileGm965>(FACTS, 2, BuildSelection::default()).unwrap();
+        assert!(atom.microcode.iter().all(|file| file.contains("06-1c-")));
+        assert!(mobile.microcode.iter().any(|file| file.contains("06-0e-")));
+        assert!(mobile.microcode.iter().any(|file| file.contains("06-0f-")));
+        assert!(!mobile.microcode.iter().any(|file| file.contains("06-1c-")));
+        assert_eq!(mobile.microcode, gm.microcode);
+        assert_eq!(
+            mobile.reservations.bootblock.writable,
+            gm.reservations.bootblock.writable
+        );
+        assert_eq!(mobile.reservations.bootblock.writable.size, 0x8000);
+
+        // X61's larger existing window is explicit CPU/CAR policy, not GM965 identity.
+        let x61 = resolve(FACTS, BuildSelection::default()).unwrap();
+        assert_eq!(x61.microcode, gm.microcode);
+        assert_eq!(x61.reservations.bootblock.writable.base, 0xfef0_0000);
+        assert_eq!(x61.reservations.bootblock.writable.size, 0x80000);
+        assert_eq!(
+            x61.reservations.ramstage.image,
+            gm.reservations.ramstage.image
+        );
+        assert_eq!(
+            x61.reservations.ramstage.writable,
+            gm.reservations.ramstage.writable
+        );
+    }
+
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[test]
+    fn i945_runtime_cpu_driver_follows_the_package() {
+        use crate::IntelEarlyPlatform;
+        use fstart_arch::x86::cpu::intel::{
+            core2_cpu::Core2CpuDriver, pineview::PineviewCpuDriver,
+        };
+        // Type-check both runtime factories without executing MSR/I/O operations.
+        let _: fn(Option<&'static [u8]>) -> Core2CpuDriver =
+            <crate::i945::I945Ich7<SocketM> as IntelEarlyPlatform>::cpu_driver;
+        let _: fn(Option<&'static [u8]>) -> PineviewCpuDriver =
+            <I945 as IntelEarlyPlatform>::cpu_driver;
+    }
+
+    #[test]
     fn i945_payload_ecam_matches_the_config_used_by_pciexbar_setup() {
         use fstart_driver_intel::IntelEcamConfig;
         let mut config = crate::i945::I945Ich7Config::new()
@@ -499,16 +552,14 @@ mod tests {
 
     #[test]
     fn pineview_pairing_reuses_family_reservations_with_real_car_delta() {
-        let gm = reservations::<crate::gm965::Gm965Ich8>(FACTS).unwrap();
+        let gm = reservations::<Gm965>(FACTS).unwrap();
         let facts = BoardFacts::new(
             fstart_core::FlashLayout::X86Legacy(fstart_core::X86LegacyFlashLayout {
                 size: 0x1000000,
             }),
             0x1000000,
         );
-        let plan =
-            resolve_for::<crate::pineview::PineviewIch7>(facts, 4, BuildSelection::default())
-                .unwrap();
+        let plan = resolve_for::<Pineview>(facts, 4, BuildSelection::default()).unwrap();
         let pineview = &plan.reservations;
         assert_eq!(
             pineview.flash,
@@ -527,11 +578,11 @@ mod tests {
         );
         assert_eq!(
             pineview.bootblock.writable.base,
-            crate::pineview::PINEVIEW_CAR_BASE
+            <Fcbga559 as LegacyCpu>::CAR_BASE
         );
         assert_eq!(
             pineview.bootblock.writable.size,
-            crate::pineview::PINEVIEW_CAR_SIZE
+            <Fcbga559 as LegacyCpu>::CAR_SIZE
         );
         for role in [
             fstart_image_build::intel_plan::IntelStage::Postcar,
@@ -553,15 +604,14 @@ mod tests {
 
     #[test]
     fn i945_pairing_reuses_family_reservations_with_real_car_delta() {
-        let gm = reservations::<crate::gm965::Gm965Ich8>(FACTS).unwrap();
+        let gm = reservations::<Gm965>(FACTS).unwrap();
         let facts = BoardFacts::new(
             fstart_core::FlashLayout::X86Legacy(fstart_core::X86LegacyFlashLayout {
                 size: 0x80000,
             }),
             0x80000,
         );
-        let plan =
-            resolve_for::<crate::i945::I945Ich7>(facts, 2, BuildSelection::default()).unwrap();
+        let plan = resolve_for::<I945>(facts, 2, BuildSelection::default()).unwrap();
         let i945 = &plan.reservations;
         assert_eq!(
             i945.flash,
@@ -589,8 +639,14 @@ mod tests {
                 fstart_core::X86LegacyFlashLayout { size: 0x80000 }
             ))
         ));
-        assert_eq!(i945.bootblock.writable.base, crate::i945::I945_CAR_BASE);
-        assert_eq!(i945.bootblock.writable.size, crate::i945::I945_CAR_SIZE);
+        assert_eq!(
+            i945.bootblock.writable.base,
+            <Socket441 as LegacyCpu>::CAR_BASE
+        );
+        assert_eq!(
+            i945.bootblock.writable.size,
+            <Socket441 as LegacyCpu>::CAR_SIZE
+        );
         for role in [
             fstart_image_build::intel_plan::IntelStage::Postcar,
             fstart_image_build::intel_plan::IntelStage::Ramstage,

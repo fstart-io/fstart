@@ -10,9 +10,6 @@ use fstart_driver_intel::pineview;
 pub use fstart_driver_intel::pineview::{IntelPineviewConfig, PineviewIgdConfig};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 
-/// Pineview 32 KiB CAR window.
-pub const PINEVIEW_CAR_BASE: u64 = 0xFEFC_0000;
-pub const PINEVIEW_CAR_SIZE: u64 = 0x8000;
 pub const PINEVIEW_MCHBAR: u64 = 0xFED1_0000;
 pub const PINEVIEW_DMIBAR: u64 = 0xFED1_8000;
 pub const PINEVIEW_EPBAR: u64 = 0xFED1_9000;
@@ -254,14 +251,14 @@ impl PineviewIch7AcpiContext {
 }
 
 /// Pineview/ICH7 identity shared by host planning and the runtime flow.
-pub struct PineviewIch7;
+pub struct PineviewIch7<C>(core::marker::PhantomData<C>);
 
-impl crate::IntelPlatform for PineviewIch7 {
+impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for PineviewIch7<C> {
     type Config = PineviewIch7Platform;
     const NAME: &'static str = "pineview/ich7";
-    const CAR_BASE: u64 = PINEVIEW_CAR_BASE;
-    const CAR_SIZE: u64 = PINEVIEW_CAR_SIZE;
-    const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-1c-02", "06-1c-0a"];
+    const CAR_BASE: u64 = C::CAR_BASE;
+    const CAR_SIZE: u64 = C::CAR_SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = C::MICROCODE_SIGNATURES;
 }
 
 impl crate::IntelPlatformConfig for PineviewIch7Platform {
@@ -274,21 +271,19 @@ impl crate::IntelPlatformConfig for PineviewIch7Platform {
 mod stage {
     use super::*;
     use crate::{IntelChipsetConfig, IntelEarlyPlatform};
-    #[cfg(feature = "mp")]
-    use fstart_arch::x86::cpu::intel::pineview::PineviewCpuDriver;
     use fstart_driver_intel::ich7::IntelIch7;
     use fstart_driver_intel::pineview::IntelPineview;
 
-    impl IntelEarlyPlatform for PineviewIch7 {
+    impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for PineviewIch7<C> {
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelPineview;
         type Southbridge = IntelIch7;
         #[cfg(feature = "mp")]
-        type Cpu = PineviewCpuDriver;
+        type Cpu = C::Driver;
         #[cfg(feature = "mp")]
         fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
-            PineviewCpuDriver::new(ICH7_PMBASE, microcode)
+            C::cpu_driver(ICH7_PMBASE, microcode)
         }
         #[cfg(feature = "acpi")]
         type AcpiContext = PineviewIch7AcpiContext;
