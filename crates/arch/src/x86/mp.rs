@@ -14,7 +14,7 @@
 //!                                │
 //!            ┌───────────────────┼───────────────────┐
 //!            │                   │                   │
-//!     pre_mp_init()       copy SIPI trampoline     mirror MTRRs
+//!     pre_mp_init()       copy SIPI trampoline     publish MP state
 //!            │                   │                   │
 //!            └───────────────────┼───────────────────┘
 //!                                │
@@ -64,6 +64,10 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
 
 use crate::x86::lapic::Lapic;
+use zerocopy::IntoBytes;
+
+pub mod cache;
+mod exception;
 
 #[cfg(not(rust_analyzer))]
 mod sipi_blob {
@@ -79,6 +83,17 @@ mod sipi_blob {
     pub const STACK_SIZE_OFFSET: usize = 0;
     pub const AP_LIMIT_OFFSET: usize = 0;
     pub const AP_COUNTER_OFFSET: usize = 0;
+    pub const MSR_COUNT_OFFSET: usize = 0;
+    pub const MSR_TABLE_OFFSET: usize = 0;
+    pub const CACHE_READY_OFFSET: usize = 0;
+    pub const CACHE_DONE_OFFSET: usize = 0;
+    pub const CACHE_RELEASE_OFFSET: usize = 0;
+    pub const BSP_CACHE_OFF_OFFSET: usize = 0;
+    pub const CACHE_COORDINATED_OFFSET: usize = 0;
+    pub const IDTR32_OFFSET: usize = 0;
+    pub const IDTR64_OFFSET: usize = 0;
+    pub const FAULT32_OFFSET: usize = 0;
+    pub const FAULT64_OFFSET: usize = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +197,26 @@ pub trait CpuDriver: Send + Sync {
     /// BSP-only: called before SIPI, after LAPIC setup.
     fn pre_mp_init(&self) {}
 
+    /// BSP-only: install the final BSP cache policy and capture the MSR image
+    /// that SIPI replays on every AP before it enables caching.
+    ///
+    /// The default installs the architectural MTRR solution from the
+    /// published RAM ranges and mirrors MTRRs/PAT. Model drivers must not
+    /// recalculate MTRRs afterwards. AMD hardware drivers must override this
+    /// with their RdDram/WrDram gates, SYSCFG, TOM/TOM2 and PAT policy and
+    /// select `State::require_global_cache_off()` for physical shared-MSR
+    /// state; the platform then owns the complete CPU set and
+    /// asynchronous-event exclusion.
+    fn ap_cache_state(&self) -> Result<cache::State, cache::Error> {
+        // SAFETY: BSP-only, called by MP init before any AP starts.
+        let msrs = unsafe { crate::x86::mtrr::snapshot_for_sipi() }
+            .map_err(|_| cache::Error::Setup)?;
+        cache::State::from_writes(
+            msrs.iter()
+                .map(|m| cache::Write::new(m.index, u64::from(m.low) | (u64::from(m.high) << 32))),
+        )
+    }
+
     /// BSP-only: called after all CPUs are initialized and APs are parked.
     fn post_mp_init(&self) {}
 
@@ -191,8 +226,9 @@ pub trait CpuDriver: Send + Sync {
     }
 }
 
-/// Generic x86 CPU driver used by virtual boards until model-specific MSR
-/// programming is needed.
+/// Generic x86 CPU driver for emulated virtual-board CPUs, whose MTRRs carry
+/// ordinary architectural types regardless of the emulated CPUID vendor.
+/// Never use this as an AMD hardware/RdDram cache-policy fallback.
 pub struct GenericX86CpuDriver;
 
 impl CpuDriver for GenericX86CpuDriver {
@@ -209,6 +245,41 @@ impl CpuDriver for GenericX86CpuDriver {
     }
 
     fn init_cpu(&self) {}
+}
+
+/// Read-only proof of architectural bootstrap preparation/publication ordering.
+/// Only the MP engine constructs this before calling a platform launcher. It
+/// does not attest target mappings, reset state, CPU set or cache semantics.
+pub struct PreparedAps {
+    expected: u16,
+    coordinated_cache: bool,
+}
+impl PreparedAps {
+    pub fn expected_aps(&self) -> u16 {
+        self.expected
+    }
+    pub fn coordinated_cache(&self) -> bool {
+        self.coordinated_cache
+    }
+    pub fn entry_address(&self) -> u64 {
+        AP_BOOTSTRAP_ADDRESS
+    }
+}
+
+/// BSP-only, one-shot alternative to INIT/SIPI (e.g. SMU release from reset).
+/// # Safety
+/// Implementations must release only the complete validated intended CPU set
+/// into the already published resident bootstrap; no reset-image patching or
+/// premature release from pre-MP hooks. The platform owns reset/async/cache and
+/// residency contracts. No fallback/retry/rollback after partial submission.
+/// Errors must report failure, not partial success; the MP engine fail-stops.
+pub unsafe trait ApLauncher {
+    /// Validate the selected total count (including BSP), even for zero APs.
+    /// No hardware access, release, publication or reset: only cached facts and
+    /// local diagnostics. Called before MP ownership or hardware setup.
+    fn validate_cpu_count(&mut self, num_cpus: u16) -> Result<(), u32>;
+
+    fn launch(&mut self, prepared: &PreparedAps) -> Result<(), u32>;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +300,14 @@ pub struct MpConfig<'a> {
 /// Errors from MP initialization.
 #[derive(Debug)]
 pub enum MpError {
+    /// This boot already attempted MP initialization. Never overwrite resident
+    /// bootstrap/exception state or reset CPUs that could own live borrows.
+    AlreadyAttempted,
+    /// Selected platform rejected the count before MP hardware/publication.
+    PlatformValidationFailed(u32),
+    /// Platform release failed, possibly after some APs were released. The
+    /// diagnostic code belongs to the platform; no INIT/SIPI fallback occurs.
+    PlatformLaunchFailed(u32),
     /// A system CPU count or capacity must include at least the BSP.
     NoCpus,
     /// The requested total CPU capacity exceeds the static MP limit.
@@ -239,12 +318,50 @@ pub enum MpError {
     NoApsResponded,
     /// Fewer APs than expected checked in.
     PartialBringup { expected: u16, actual: u16 },
-    /// The complete BSP cacheability solution could not be installed/mirrored.
-    CacheabilitySetupFailed,
     /// SIPI trampoline placement failed.
     TrampolinePlacementFailed,
+    /// The CPU driver could not publish a complete compatible cache policy.
+    CacheBootstrap(cache::Error),
+    /// The all-CPU cache-off protocol did not complete. No cache-enable gate
+    /// is opened, and the BSP remains cache-off until terminal reset/halt.
+    CacheRendezvousTimeout {
+        expected: u16,
+        ready: u32,
+        restored: u32,
+    },
     /// No CPU driver matched one or more CPUs.
     UnsupportedCpu,
+    /// A flight step did not receive every AP. The preceding AP callback
+    /// may still own borrowed driver data; this is a non-returning failure.
+    FlightStepTimeout {
+        step: usize,
+        expected: u16,
+        arrived: usize,
+    },
+    /// Unwinding cannot expire configuration still borrowed by APs.
+    BspUnwind,
+}
+
+/// Platform-selected terminal MP failure handling.
+/// # Safety
+/// Implementations MUST NOT unwind or return. Borrowed CPU drivers may still
+/// be executing, so their configuration, stacks and mappings must survive
+/// until reset. The platform also owns safe SMI/reset handling on this path.
+pub unsafe trait MpFailStop {
+    fn fail_stop(&self, error: MpError) -> !;
+}
+struct HaltMp;
+// SAFETY: this handler never returns or unwinds. It preserves the caller's
+// stack/configuration and does not release any further AP barriers.
+unsafe impl MpFailStop for HaltMp {
+    fn fail_stop(&self, _error: MpError) -> ! {
+        // Do not call formatting/console code that could itself unwind.
+        loop {
+            unsafe {
+                core::arch::asm!("cli", "hlt", options(nomem, nostack));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +432,10 @@ static AP_COUNT: AtomicUsize = AtomicUsize::new(0);
 static AP_IN_MAILBOX_LOOP: AtomicU8 = AtomicU8::new(0);
 
 /// Total logical CPUs brought online by the most recent MP init.
-static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
+static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(0);
+// Zero-initialized resident storage, not initialized writable reset-image data.
+static MP_ATTEMPTED: AtomicU8 = AtomicU8::new(0);
+static mut AP_EXCEPTION_TABLES: exception::Tables = exception::Tables::ZERO;
 
 // ---------------------------------------------------------------------------
 // Flight plan (internal)
@@ -379,6 +499,20 @@ static STEP_SYNC: [StepSync; MAX_FLIGHT_STEPS] = [const {
 /// borrowed CPU drivers outlive every access through it.
 static MP_CONFIG: AtomicPtr<MpConfig<'static>> = AtomicPtr::new(core::ptr::null_mut());
 static CPU_INIT_ERRORS: AtomicUsize = AtomicUsize::new(0);
+
+/// Even a BSP callback panic must not unwind past the driver's lifetime while
+/// AP work is active. Firmware uses panic=abort; this also guards unwind hosts.
+struct MpBorrowGuard<'a, F: MpFailStop> {
+    failure: &'a F,
+    active: bool,
+}
+impl<F: MpFailStop> Drop for MpBorrowGuard<'_, F> {
+    fn drop(&mut self) {
+        if self.active {
+            self.failure.fail_stop(MpError::BspUnwind);
+        }
+    }
+}
 
 fn publish_config(config: &MpConfig<'_>) {
     MP_CONFIG.store(
@@ -523,7 +657,9 @@ pub fn current_cpu_index() -> u32 {
 /// Called from assembly with a valid stack and identity-mapped page tables.
 #[unsafe(no_mangle)]
 pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
-    // Enable the local APIC and set up virtual wire.
+    // Assembly installed resident protected/long-mode fatal IDTs on the AP's
+    // private stack before compiled code. Only now unmask virtual-wire NMI.
+    // This does not establish earlier platform NMI/SMI exclusion or IST stacks.
     let lapic = Lapic::from_msr();
     lapic.enable();
     lapic.setup_virtual_wire(false);
@@ -568,47 +704,76 @@ pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
 
 /// Return the number of logical CPUs brought online by the most recent MP init.
 pub fn online_cpus() -> u16 {
-    ONLINE_CPUS.load(Ordering::Acquire) as u16
+    ONLINE_CPUS.load(Ordering::Acquire).max(1) as u16
 }
 
-/// Copy the SIPI trampoline, send INIT + SIPI and wait for every expected AP
+/// Publish the resident bootstrap, submit the selected launch and wait for every expected AP
 /// to check in. Zero or partial check-in is boot-fatal before barriers open.
 /// The trampoline resets the machine on a responder beyond `max_aps` before it
 /// can index the stack arena, and this function rejects the machine if one
 /// claimed an ordinal before the count is read.
-fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
-    install_sipi_trampoline(max_aps, lapic)?;
+fn start_aps(
+    max_aps: u16,
+    lapic: &Lapic,
+    launcher: Option<&mut dyn ApLauncher>,
+) -> Result<u16, MpError> {
+    let coordinated = install_sipi_trampoline(max_aps, lapic)?;
+    // No Drop implementation may restore caching on a failed/partial launch.
+    // The borrowed-config guard and terminal policy retain all bootstrap state.
+    let cache_off = if coordinated {
+        let state = BspCacheOff::enter()?;
+        publish_sipi_flag(sipi_blob::BSP_CACHE_OFF_OFFSET);
+        Some(state)
+    } else {
+        None
+    };
+    let progress = || {
+        if coordinated {
+            read_sipi_u32(sipi_blob::CACHE_DONE_OFFSET)
+        } else {
+            AP_COUNT.load(Ordering::Acquire) as u32
+        }
+    };
 
-    fstart_log::info!("mp: sending INIT IPI");
-    lapic.send_init_all_but_self();
-
-    // Wait 10 ms after INIT (Intel SDM requirement).
-    delay_us(10_000);
-
-    // First SIPI.
-    fstart_log::info!("mp: sending SIPI (vector page {:#x})", SIPI_VECTOR_PAGE);
-    lapic.send_sipi_all_but_self(SIPI_VECTOR_PAGE as u8);
-    fstart_log::info!("mp: first SIPI sent, BSP alive");
-    delay_us(200);
-    fstart_log::info!(
-        "mp: after 200us, {} AP(s) checked in",
-        AP_COUNT.load(Ordering::Acquire) as u16
-    );
+    let platform_launch = submit_launch(launcher, max_aps, coordinated, || {
+        fstart_log::info!("mp: sending INIT IPI");
+        lapic.send_init_all_but_self();
+        // Intel SDM: 10 ms after INIT, then first SIPI and 200 us.
+        delay_us(10_000);
+        lapic.send_sipi_all_but_self(SIPI_VECTOR_PAGE as u8);
+        delay_us(200);
+    })?;
 
     // Check if all APs responded.
-    let checked_in = AP_COUNT.load(Ordering::Acquire) as u16;
-    if checked_in < max_aps {
-        // Second SIPI (per Intel SDM recommendation).
-        lapic.send_sipi_all_but_self(SIPI_VECTOR_PAGE as u8);
+    if progress() < u32::from(max_aps) {
+        // Only the architectural INIT/SIPI path permits a second SIPI. Never
+        // resubmit a platform release or fall back after a partial launch.
+        if !platform_launch {
+            lapic.send_sipi_all_but_self(SIPI_VECTOR_PAGE as u8);
+        }
         // Wait up to 50 ms per AP.
         let timeout_us = 50_000u64 * max_aps as u64;
         let mut elapsed = 0u64;
-        while (AP_COUNT.load(Ordering::Acquire) as u16) < max_aps && elapsed < timeout_us {
+        while progress() < u32::from(max_aps) && elapsed < timeout_us {
             delay_us(50);
             elapsed += 50;
         }
     }
 
+    if let Some(cache_off) = cache_off {
+        complete_cache_rendezvous(
+            read_sipi_u32(sipi_blob::CACHE_READY_OFFSET),
+            read_sipi_u32(sipi_blob::CACHE_DONE_OFFSET),
+            max_aps,
+            || cache_off.finish(),
+        )?;
+        // Restoration is not Rust check-in or CPU initialization completion.
+        let mut remaining = 1_000 * u32::from(max_aps);
+        while AP_COUNT.load(Ordering::Acquire) < usize::from(max_aps) && remaining != 0 {
+            delay_us(50);
+            remaining -= 1;
+        }
+    }
     let final_count = AP_COUNT.load(Ordering::Acquire) as u16;
 
     // Responders beyond `max_aps` reset the machine in the trampoline without
@@ -623,6 +788,26 @@ fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
     }
 
     complete_ap_bringup(final_count, max_aps)
+}
+
+fn submit_launch(
+    launcher: Option<&mut dyn ApLauncher>,
+    expected: u16,
+    coordinated_cache: bool,
+    init_sipi: impl FnOnce(),
+) -> Result<bool, MpError> {
+    if let Some(launcher) = launcher {
+        launcher
+            .launch(&PreparedAps {
+                expected,
+                coordinated_cache,
+            })
+            .map_err(MpError::PlatformLaunchFailed)?;
+        Ok(true)
+    } else {
+        init_sipi();
+        Ok(false)
+    }
 }
 
 fn complete_ap_bringup(final_count: u16, max_aps: u16) -> Result<u16, MpError> {
@@ -649,9 +834,40 @@ fn complete_ap_bringup(final_count: u16, max_aps: u16) -> Result<u16, MpError> {
 /// Initialize all CPUs, run CPU-model initialization, and leave APs in the
 /// scoped-work mailbox loop. Chipset SMM setup is deliberately post-MP code.
 pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
-    validate_cpu_capacity(config.max_cpus)?;
-    let num_cpus = checked_logical_cpu_count(config.num_cpus, config.max_cpus)?;
+    mp_init_with_fail_stop(config, &HaltMp)
+}
+
+/// As `mp_init`, with a platform reset/fail-stop policy. A failed launch or
+/// flight rendezvous cannot return and expire driver borrows still used by
+/// APs. Pre-launch validation and fully completed CPU errors may return.
+pub fn mp_init_with_fail_stop(
+    config: &MpConfig<'_>,
+    failure: &impl MpFailStop,
+) -> Result<MpHandle, MpError> {
+    mp_init_selected(config, failure, None)
+}
+
+/// As `mp_init_with_fail_stop`, but launch through a platform protocol only
+/// after generic preparation/publication (and selected BSP cache-off entry).
+/// Selected count validation includes BSP-only configurations and precedes all
+/// MP hardware setup. A failed/partial release invokes terminal handling, never
+/// another launcher.
+pub fn mp_init_with_ap_launcher(
+    config: &MpConfig<'_>,
+    failure: &impl MpFailStop,
+    launcher: &mut impl ApLauncher,
+) -> Result<MpHandle, MpError> {
+    mp_init_selected(config, failure, Some(launcher))
+}
+
+fn mp_init_selected(
+    config: &MpConfig<'_>,
+    failure: &impl MpFailStop,
+    mut launcher: Option<&mut dyn ApLauncher>,
+) -> Result<MpHandle, MpError> {
+    let num_cpus = validate_mp_configuration(config, &mut launcher)?;
     let max_aps = num_cpus.saturating_sub(1);
+    claim_mp_attempt(&MP_ATTEMPTED)?;
 
     fstart_log::info!(
         "mp: initializing {} CPUs (max_cpus bound {})",
@@ -666,19 +882,20 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
 
     fstart_log::info!("mp: BSP LAPIC ID = {}", lapic.id());
 
-    // The BSP solution is complete before any AP starts. Model drivers must
-    // not recalculate MTRRs; SIPI replays the exact BSP MSRs before caching.
-    // SAFETY: BSP-only RAM-stage initialization, before INIT/SIPI.
-    unsafe { crate::x86::mtrr::prepare_for_mp() }.map_err(|_| MpError::CacheabilitySetupFailed)?;
-
     // Pre-MP CPU-driver hooks (BSP only).
     pre_mp_cpu_drivers(config.cpu_drivers);
 
     // APs reach the drivers through the published config; it is
     // withdrawn before returning on every path.
+    let mut borrow_guard = MpBorrowGuard {
+        failure,
+        active: true,
+    };
     publish_config(config);
-    let flown = fly(config, max_aps, &lapic);
+    let flown = fly(max_aps, &lapic, failure, launcher);
+    // Only a completed flight can get here: no AP retains a driver callback.
     clear_mp_globals();
+    borrow_guard.active = false;
     let final_count = flown?;
 
     post_mp_cpu_drivers(config.cpu_drivers);
@@ -691,8 +908,28 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     })
 }
 
+/// Pure preflight, independent of whether this configuration needs AP release.
+fn validate_mp_configuration(
+    config: &MpConfig<'_>,
+    launcher: &mut Option<&mut dyn ApLauncher>,
+) -> Result<u16, MpError> {
+    validate_cpu_capacity(config.max_cpus)?;
+    let count = checked_logical_cpu_count(config.num_cpus, config.max_cpus)?;
+    if let Some(selected) = launcher {
+        selected
+            .validate_cpu_count(count)
+            .map_err(MpError::PlatformValidationFailed)?;
+    }
+    Ok(count)
+}
+
 /// Start the APs and walk the CPU-only flight plan on the BSP side.
-fn fly(_config: &MpConfig<'_>, max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
+fn fly(
+    max_aps: u16,
+    lapic: &Lapic,
+    failure: &impl MpFailStop,
+    launcher: Option<&mut dyn ApLauncher>,
+) -> Result<u16, MpError> {
     CPU_INIT_ERRORS.store(0, Ordering::Release);
     AP_COUNT.store(0, Ordering::Release);
     AP_IN_MAILBOX_LOOP.store(0, Ordering::Release);
@@ -707,31 +944,56 @@ fn fly(_config: &MpConfig<'_>, max_aps: u16, lapic: &Lapic) -> Result<u16, MpErr
     let final_count = if max_aps == 0 {
         0
     } else {
-        start_aps(max_aps, lapic)?
+        match start_aps(max_aps, lapic, launcher) {
+            Ok(count) => count,
+            Err(error) => failure.fail_stop(error),
+        }
     };
 
     // Walk the flight plan on the BSP side; APs walk it in `fstart_ap_entry`.
     for (i, (step, sync)) in plan.iter().zip(STEP_SYNC.iter()).enumerate() {
-        // Wait for all APs to reach this step.
-        let timeout_us = 1_000_000u64; // 1 second
-        let mut elapsed = 0u64;
-        while (sync.cpus_entered.load(Ordering::Acquire) as u16) < final_count {
-            delay_us(100);
-            elapsed += 100;
-            if elapsed >= timeout_us {
-                fstart_log::error!("mp: flight plan step {} timeout", i);
-                break;
-            }
+        if let Err(error) = rendezvous_step(*step, sync, i, final_count, delay_us) {
+            // Keep this and all later barriers closed. In particular, an AP
+            // can still be inside the preceding init_cpu callback: neither
+            // clear MP_CONFIG nor return/drop the borrowed driver.
+            failure.fail_stop(error);
         }
-        step.bsp();
-        // Release the barrier so APs can proceed.
-        sync.barrier.store(1, Ordering::Release);
     }
 
     if CPU_INIT_ERRORS.load(Ordering::Acquire) != 0 {
         return Err(MpError::UnsupportedCpu);
     }
     Ok(final_count)
+}
+
+/// Arrival at step N proves completion of each AP's step N-1 callback.
+/// Timeout is not that proof: no BSP work or barrier release may follow it.
+fn rendezvous_step(
+    step: &dyn FlightStep,
+    sync: &StepSync,
+    index: usize,
+    expected: u16,
+    mut delay: impl FnMut(u64),
+) -> Result<(), MpError> {
+    let mut remaining = 10_000;
+    loop {
+        let arrived = sync.cpus_entered.load(Ordering::Acquire);
+        if arrived >= usize::from(expected) {
+            break;
+        }
+        if remaining == 0 {
+            return Err(MpError::FlightStepTimeout {
+                step: index,
+                expected,
+                arrived,
+            });
+        }
+        delay(100);
+        remaining -= 1;
+    }
+    step.bsp();
+    sync.barrier.store(1, Ordering::Release);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +1008,9 @@ fn fly(_config: &MpConfig<'_>, max_aps: u16, lapic: &Lapic) -> Result<u16, MpErr
 const SIPI_VECTOR_PAGE: u32 = 0x08;
 /// Physical address of the SIPI trampoline.
 const SIPI_VECTOR_ADDR: usize = (SIPI_VECTOR_PAGE as usize) << 12;
+/// Resident entry address for platform reset dispatch as well as INIT/SIPI.
+/// This is an ABI address, not evidence that publication/reservation is ready.
+pub const AP_BOOTSTRAP_ADDRESS: u64 = SIPI_VECTOR_ADDR as u64;
 
 /// Install the SIPI trampoline at the vector address.
 ///
@@ -765,34 +1030,63 @@ fn sipi_claimed_ap_count() -> u32 {
 #[cfg(test)]
 mod sipi_tests;
 
-fn patch_msr_table(page: &mut [u8], msrs: &[crate::x86::mtrr::MsrEntry]) -> Result<(), MpError> {
-    use zerocopy::IntoBytes;
-    let bytes = msrs.as_bytes();
+/// Copy packed 12-byte MSR records (index, low, high) into the SIPI page.
+fn patch_msr_table(page: &mut [u8], records: &[u8]) -> Result<(), MpError> {
     let end = sipi_blob::MSR_TABLE_OFFSET
-        .checked_add(bytes.len())
+        .checked_add(records.len())
         .ok_or(MpError::TrampolinePlacementFailed)?;
     let count_end = sipi_blob::MSR_COUNT_OFFSET + core::mem::size_of::<u32>();
-    if end > page.len() || count_end > page.len() {
+    if records.len() % 12 != 0 || end > page.len() || count_end > page.len() {
         return Err(MpError::TrampolinePlacementFailed);
     }
-    page[sipi_blob::MSR_TABLE_OFFSET..end].copy_from_slice(bytes);
+    page[sipi_blob::MSR_TABLE_OFFSET..end].copy_from_slice(records);
     page[sipi_blob::MSR_COUNT_OFFSET..count_end]
-        .copy_from_slice(&(msrs.len() as u32).to_le_bytes());
+        .copy_from_slice(&((records.len() / 12) as u32).to_le_bytes());
     Ok(())
 }
 
-fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> {
+fn validate_bootstrap_addresses(cr3: u64, stack_base: u64, max_aps: u16) -> Result<(), MpError> {
+    // Protected-mode bootstrap uses 32-bit CR3/ESP. Reject truncation and
+    // arithmetic wrap, not only a nominally below-4-GiB arena base. The
+    // 32-bit target runs without paging, so CR3 is only meaningful for
+    // long mode.
+    let end = stack_base.checked_add(u64::from(max_aps) * AP_STACK_SIZE as u64);
+    if (cfg!(target_arch = "x86_64") && cr3 == 0)
+        || cr3 > u64::from(u32::MAX)
+        || cr3 & 0xfff != 0
+        || stack_base == 0
+        || stack_base & 15 != 0
+        || end.is_none_or(|end| end > u64::from(u32::MAX))
+    {
+        return Err(MpError::TrampolinePlacementFailed);
+    }
+    Ok(())
+}
+
+fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<bool, MpError> {
     if max_aps as usize > MAX_APS || sipi_blob::TRAMPOLINE.len() > 4096 {
         return Err(MpError::TrampolinePlacementFailed);
     }
 
-    // SAFETY: the BSP has installed its final solution, and APs are not running.
-    let msrs = unsafe { crate::x86::mtrr::snapshot_for_sipi() }
-        .map_err(|_| MpError::CacheabilitySetupFailed)?;
+    let driver = find_cpu_driver(CpuIdentity::current()).ok_or(MpError::UnsupportedCpu)?;
+    let cache = driver.ap_cache_state().map_err(MpError::CacheBootstrap)?;
     let dst = SIPI_VECTOR_ADDR as *mut u8;
     // SAFETY: we only expose the raw stack arena address to AP startup code;
     // Rust never creates references to individual AP stacks while they run.
     let stack_base = unsafe { core::ptr::addr_of_mut!(AP_STACKS.0) as u64 };
+    let cr3 = read_cr3();
+    validate_bootstrap_addresses(cr3, stack_base, max_aps)?;
+    // SAFETY: single-attempt ownership excludes live readers; tables remain
+    // resident until reset. Physical identity mapping/reservation are platform
+    // prerequisites, not consequences of the checked numerical geometry.
+    let (idtr32, idtr64) = unsafe {
+        exception::prepare(
+            core::ptr::addr_of_mut!(AP_EXCEPTION_TABLES),
+            (SIPI_VECTOR_ADDR + sipi_blob::FAULT32_OFFSET) as u64,
+            (SIPI_VECTOR_ADDR + sipi_blob::FAULT64_OFFSET) as u64,
+        )
+    }
+    .ok_or(MpError::TrampolinePlacementFailed)?;
     // SAFETY: SIPI_VECTOR_ADDR is a conventional-memory page reserved for AP
     // startup. The copied blob occupies one page and all patch offsets are
     // emitted by the build script from symbols inside that blob.
@@ -803,7 +1097,7 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
             sipi_blob::TRAMPOLINE.len(),
         );
 
-        patch_u64(dst, sipi_blob::CR3_OFFSET, read_cr3());
+        patch_u64(dst, sipi_blob::CR3_OFFSET, cr3);
         patch_u64(
             dst,
             sipi_blob::ENTRY_OFFSET,
@@ -813,9 +1107,24 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
         patch_u32(dst, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
         patch_u32(dst, sipi_blob::AP_LIMIT_OFFSET, u32::from(max_aps));
         patch_u32(dst, sipi_blob::AP_COUNTER_OFFSET, 0);
+        core::ptr::copy_nonoverlapping(
+            idtr32.as_bytes().as_ptr(),
+            dst.add(sipi_blob::IDTR32_OFFSET),
+            10,
+        );
+        core::ptr::copy_nonoverlapping(
+            idtr64.as_bytes().as_ptr(),
+            dst.add(sipi_blob::IDTR64_OFFSET),
+            10,
+        );
+        patch_u32(
+            dst,
+            sipi_blob::CACHE_COORDINATED_OFFSET,
+            u32::from(cache.global_cache_off()),
+        );
         patch_msr_table(
             core::slice::from_raw_parts_mut(dst, sipi_blob::TRAMPOLINE.len()),
-            msrs.as_slice(),
+            cache.bytes(),
         )?;
 
         // INIT leaves AP caches disabled. Write the complete copied and patched
@@ -835,8 +1144,9 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
     fstart_log::info!("mp: tramp[0]={:#010x} [4]={:#010x}", words[0], words[1]);
     fstart_log::info!("mp: tramp[8]={:#010x} [12]={:#010x}", words[2], words[3]);
     fstart_log::info!(
-        "mp: mirroring {} BSP MTRR/PAT MSRs before AP cache enable",
-        msrs.len()
+        "mp: mirroring {} BSP cache-policy MSRs before AP cache enable{}",
+        cache.writes().len(),
+        if cache.global_cache_off() { " (coordinated)" } else { "" }
     );
     fstart_log::info!("mp: patch cr3={:#x}", read_cr3());
     fstart_log::info!("mp: patch entry={:#x} base={:#x}", entry, stack_base);
@@ -847,7 +1157,7 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
         stack_base as usize,
         AP_STACK_SIZE
     );
-    Ok(())
+    Ok(cache.global_cache_off())
 }
 
 unsafe fn patch_u32(base: *mut u8, offset: usize, value: u32) {
@@ -860,6 +1170,94 @@ unsafe fn patch_u64(base: *mut u8, offset: usize, value: u64) {
     // SAFETY: caller guarantees that `base + offset..+8` is inside the copied
     // SIPI trampoline page.
     unsafe { core::ptr::write_unaligned(base.add(offset) as *mut u64, value) };
+}
+
+// All aligned fields here live in the copied resident trampoline, not the
+// immutable reset image. No Rust reference aliases the assembly atomic writers.
+fn read_sipi_u32(offset: usize) -> u32 {
+    let value = unsafe { core::ptr::read_volatile((SIPI_VECTOR_ADDR + offset) as *const u32) };
+    fence(Ordering::Acquire);
+    value
+}
+
+fn publish_sipi_flag(offset: usize) {
+    fence(Ordering::SeqCst);
+    unsafe { core::ptr::write_volatile((SIPI_VECTOR_ADDR + offset) as *mut u32, 1) };
+    fence(Ordering::SeqCst);
+}
+
+fn complete_cache_rendezvous(
+    ready: u32,
+    restored: u32,
+    expected: u16,
+    finish: impl FnOnce(),
+) -> Result<(), MpError> {
+    if ready != u32::from(expected) || restored != u32::from(expected) {
+        return Err(MpError::CacheRendezvousTimeout {
+            expected,
+            ready,
+            restored,
+        });
+    }
+    finish();
+    Ok(())
+}
+
+/// Explicit BSP participation, selected only by a coordinated image. Ordinary
+/// Intel/virtual paths retain their existing independent protocol: some Intel
+/// platforms cannot run WBINVD with CD=1 (see x86::disable_cache).
+/// No automatic cleanup/re-enable on failure or unwind.
+struct BspCacheOff {
+    cr0: usize,
+    cr4: usize,
+}
+impl BspCacheOff {
+    fn enter() -> Result<Self, MpError> {
+        let (cr0, cr4, flags): (usize, usize, usize);
+        unsafe {
+            core::arch::asm!(
+                "mov {cr0}, cr0", "mov {cr4}, cr4", "pushf", "pop {flags}",
+                cr0 = out(reg) cr0, cr4 = out(reg) cr4, flags = out(reg) flags,
+                options(preserves_flags),
+            );
+        }
+        // The caller owns NMI/SMI exclusion; CLI alone cannot establish it.
+        // PCID is not supported by this firmware bootstrap/TLB protocol.
+        if flags & (1 << 9) != 0 || cr4 & (1 << 17) != 0 || cr0 & ((1 << 29) | (1 << 30)) != 0 {
+            return Err(MpError::CacheBootstrap(cache::Error::Unsupported));
+        }
+        let disabled_cr0 = (cr0 | (1 << 30)) & !(1 << 29);
+        let disabled_cr4 = cr4 & !(1 << 7);
+        unsafe {
+            core::arch::asm!(
+                "mov cr0, {cr0}", "wbinvd", "mov cr4, {cr4}",
+                "mov {scratch}, cr3", "mov cr3, {scratch}",
+                cr0 = in(reg) disabled_cr0, cr4 = in(reg) disabled_cr4,
+                scratch = out(reg) _, options(nostack, preserves_flags),
+            );
+        }
+        Ok(Self { cr0, cr4 })
+    }
+
+    fn finish(self) {
+        // Every AP has restored the same final image and remains cache-off.
+        // PGE is still clear; invalidate cache/TLB state before opening the gate.
+        unsafe {
+            core::arch::asm!(
+                "wbinvd", "mov {scratch}, cr3", "mov cr3, {scratch}",
+                scratch = out(reg) _, options(nostack, preserves_flags),
+            );
+        }
+        // Publish while BSP writes are uncached, before any CPU enables cache.
+        publish_sipi_flag(sipi_blob::CACHE_RELEASE_OFFSET);
+        unsafe {
+            core::arch::asm!(
+                "mov cr0, {cr0}", "mov cr4, {cr4}",
+                cr0 = in(reg) self.cr0, cr4 = in(reg) self.cr4,
+                options(nostack, preserves_flags),
+            );
+        }
+    }
 }
 
 fn read_cr3() -> u64 {
@@ -1153,6 +1551,13 @@ fn trampoline_indexed<F: Fn(u32)>(data: *const (), cpu: u32) {
 // Delay helper
 // ---------------------------------------------------------------------------
 
+fn claim_mp_attempt(attempted: &AtomicU8) -> Result<(), MpError> {
+    attempted
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ())
+        .map_err(|_| MpError::AlreadyAttempted)
+}
+
 fn validate_cpu_capacity(max_cpus: u16) -> Result<(), MpError> {
     if max_cpus == 0 {
         Err(MpError::NoCpus)
@@ -1187,6 +1592,177 @@ fn delay_us(us: u64) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn platform_launch_is_one_shot_and_never_falls_back_to_init_sipi() {
+        struct Launcher {
+            calls: usize,
+            result: Result<(), u32>,
+        }
+        // SAFETY: pure test adapter releases no CPUs or hardware resources.
+        unsafe impl ApLauncher for Launcher {
+            fn validate_cpu_count(&mut self, count: u16) -> Result<(), u32> {
+                assert_eq!(count, 8);
+                Ok(())
+            }
+            fn launch(&mut self, prepared: &PreparedAps) -> Result<(), u32> {
+                assert_eq!(prepared.expected_aps(), 7);
+                assert!(prepared.coordinated_cache());
+                assert_eq!(prepared.entry_address(), 0x8000);
+                self.calls += 1;
+                self.result
+            }
+        }
+        for result in [Ok(()), Err(0x1234)] {
+            let mut launcher = Launcher { calls: 0, result };
+            let actual = submit_launch(Some(&mut launcher), 7, true, || {
+                panic!("unexpected INIT/SIPI")
+            });
+            assert_eq!(launcher.calls, 1);
+            if result.is_ok() {
+                assert!(matches!(actual, Ok(true)));
+            } else {
+                assert!(matches!(actual, Err(MpError::PlatformLaunchFailed(0x1234))));
+            }
+        }
+        let mut sent = false;
+        assert!(matches!(
+            submit_launch(None, 7, false, || sent = true),
+            Ok(false)
+        ));
+        assert!(sent);
+    }
+
+    #[test]
+    fn selected_platform_count_is_validated_even_without_aps() {
+        struct Launcher {
+            total: u16,
+            validations: usize,
+        }
+        // SAFETY: cached-only validation; test submission is never invoked.
+        unsafe impl ApLauncher for Launcher {
+            fn validate_cpu_count(&mut self, count: u16) -> Result<(), u32> {
+                self.validations += 1;
+                if count == self.total {
+                    Ok(())
+                } else {
+                    Err(0x90)
+                }
+            }
+            fn launch(&mut self, _: &PreparedAps) -> Result<(), u32> {
+                panic!("BSP-only count check must not submit APs")
+            }
+        }
+        let config = MpConfig {
+            cpu_drivers: &[],
+            num_cpus: 1,
+            max_cpus: 1,
+        };
+        let mut wrong = Launcher {
+            total: 8,
+            validations: 0,
+        };
+        // Exercise the real selected entry: rejection must precede privileged
+        // LAPIC/driver/publication work and the global attempt claim.
+        assert!(matches!(
+            mp_init_with_ap_launcher(&config, &HaltMp, &mut wrong),
+            Err(MpError::PlatformValidationFailed(0x90))
+        ));
+        assert_eq!(wrong.validations, 1);
+        let mut singleton = Launcher {
+            total: 1,
+            validations: 0,
+        };
+        assert_eq!(
+            validate_mp_configuration(&config, &mut Some(&mut singleton)).unwrap(),
+            1
+        );
+        assert_eq!(singleton.validations, 1);
+    }
+
+    #[test]
+    fn bootstrap_and_exception_storage_cannot_be_reused_this_boot() {
+        let attempted = AtomicU8::new(0);
+        assert!(claim_mp_attempt(&attempted).is_ok());
+        assert!(matches!(
+            claim_mp_attempt(&attempted),
+            Err(MpError::AlreadyAttempted)
+        ));
+        assert_eq!(attempted.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn global_cache_gate_requires_all_ready_and_all_restored() {
+        for (ready, restored) in [(0, 0), (6, 0), (7, 6), (6, 7), (8, 7), (7, 8)] {
+            let mut enabled = false;
+            assert!(matches!(
+                complete_cache_rendezvous(ready, restored, 7, || enabled = true),
+                Err(MpError::CacheRendezvousTimeout { .. })
+            ));
+            assert!(!enabled);
+        }
+        let mut enabled = false;
+        complete_cache_rendezvous(7, 7, 7, || enabled = true).unwrap();
+        assert!(enabled);
+    }
+
+    #[test]
+    fn bootstrap_rejects_32bit_truncation_and_arena_wrap() {
+        assert!(validate_bootstrap_addresses(0x20000, 0x100000, 7).is_ok());
+        for (cr3, base) in [
+            (0, 0x100000),
+            (0x1_0002_0000, 0x100000),
+            (0x20008, 0x100000),
+            (0x20000, 0x1_0010_0000),
+            (0x20000, 0xfffff000),
+            (0x20000, u64::MAX - 15),
+            (0x20000, 0x100001),
+        ] {
+            assert!(validate_bootstrap_addresses(cr3, base, 7).is_err());
+        }
+    }
+
+    #[test]
+    fn flight_timeout_keeps_barrier_closed_and_skips_bsp_work() {
+        struct Step(AtomicUsize);
+        impl FlightStep for Step {
+            fn bsp(&self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let step = Step(AtomicUsize::new(0));
+        // One AP has not finished its preceding CPU driver callback yet.
+        let sync = StepSync {
+            barrier: AtomicUsize::new(0),
+            cpus_entered: AtomicUsize::new(1),
+        };
+        let mut delays = 0;
+        assert!(matches!(
+            rendezvous_step(&step, &sync, 1, 2, |us| {
+                assert_eq!(us, 100);
+                delays += 1;
+            }),
+            Err(MpError::FlightStepTimeout {
+                step: 1,
+                expected: 2,
+                arrived: 1
+            })
+        ));
+        assert_eq!(delays, 10_000);
+        assert_eq!(sync.barrier.load(Ordering::Acquire), 0);
+        assert_eq!(step.0.load(Ordering::Relaxed), 0);
+        // A genuinely completed, delayed AP arrival permits the step.
+        let mut delays = 0;
+        rendezvous_step(&step, &sync, 1, 2, |_| {
+            delays += 1;
+            if delays == 3 {
+                sync.cpus_entered.store(2, Ordering::Release);
+            }
+        })
+        .unwrap();
+        assert_eq!(delays, 3);
+        assert_eq!(sync.barrier.load(Ordering::Acquire), 1);
+        assert_eq!(step.0.load(Ordering::Relaxed), 1);
+    }
     #[test]
     fn total_cpu_capacity_includes_the_bsp() {
         assert!(validate_cpu_capacity(MAX_CPUS as u16).is_ok());

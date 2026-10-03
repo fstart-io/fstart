@@ -8,4 +8,6 @@ pub mod memory;
 #[cfg(all(test, feature = "picasso"))]
 mod memory_tests;
 #[cfg(feature = "picasso")]
+pub mod mp;
+#[cfg(feature = "picasso")]
 pub mod picasso;

@@ -6,9 +6,10 @@ license.workspace = true
 
 [features]
 default = []
-picasso = ["fstart-driver-amd/picasso"]
+picasso = ["fstart-driver-amd/picasso", "dep:fstart-arch"]
 
 [dependencies]
 fstart-driver-amd.workspace = true
 fstart-core.workspace = true
 fstart-driver-uart.workspace = true
+fstart-arch = { workspace = true, optional = true, features = ["x86_64", "x86-platform-entry"] }

@@ -45,6 +45,7 @@ pub enum Error {
     Geometry,
     CannotEnableCores,
     ApCount,
+    Unavailable(u32),
     Smu(smu::Error),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +171,9 @@ pub unsafe fn launch(
     let mut released = Vec::new();
     for &bit in slots.iter().skip(1).take(ap_count) {
         let enabled = smn.read(THREAD_ENABLE);
+        if enabled == u32::MAX {
+            return Err(Error::Unavailable(THREAD_ENABLE));
+        }
         if enabled & (1 << bit) == 0 {
             smn.write(THREAD_ENABLE, enabled | (1 << bit));
             test(smn, delay_us)?;
@@ -202,6 +206,22 @@ mod tests {
             self.writes.push((address, value));
         }
     }
+    #[test]
+    fn unavailable_thread_enable_is_not_an_already_released_cpu_set() {
+        let mut registers = Registers::default();
+        registers.regs.insert(THREAD_ENABLE, u32::MAX);
+        let topology = Topology {
+            cores_per_complex: 4,
+            complexes: 1,
+            threads_per_core: 2,
+        };
+        assert_eq!(
+            unsafe { launch(&mut registers, topology, 7, &mut |_| {}) },
+            Err(Error::Unavailable(THREAD_ENABLE))
+        );
+        assert!(registers.writes.is_empty());
+    }
+
     #[test]
     fn masks_reset_requirement_and_complex_thread_stride() {
         let mut registers = Registers::default();

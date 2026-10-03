@@ -86,6 +86,24 @@ impl Plan {
     }
 }
 
+/// Read fixed-MTRR RdDram/WrDram bits through AMD's modification gate.
+/// BSP only before AP release, or with exclusive SMT-sibling access; local
+/// interrupts/SMI must be excluded. The callback must only read registers.
+/// Restore the exact original SYSCFG even when the callback returns an error.
+pub fn fixed_dram_view<M: Msr, T>(msr: &mut M, read: impl FnOnce(&mut M) -> T) -> Result<T, Error> {
+    let syscfg = msr.read(SYSCFG);
+    if syscfg & (1 << 23) != 0 {
+        return Err(Error::EncryptionEnabled);
+    }
+    if msr.read(0xfe) & (1 << 8) == 0 {
+        return Err(Error::FixedUnsupported);
+    }
+    msr.write(SYSCFG, syscfg | (1 << 19));
+    let result = read(msr);
+    msr.write(SYSCFG, syscfg);
+    Ok(result)
+}
+
 /// Current-CPU cache controls. All APs must install the same plan while their
 /// cache is disabled, before entering coherent firmware or the OS.
 pub trait CacheControl {

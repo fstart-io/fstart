@@ -152,6 +152,100 @@ No equality between these sources is assumed; crossed-value tests enforce it.
 These APIs are tested but not yet invoked by the
 checkpoint or a complete boot binary; eSPI decode/pads must be ready first.
 
+### Shared MP rendezvous work
+
+Native Picasso MP remains unwired and unsafe to activate without the target
+cache/reset/event/residency contracts. The architectural scaffold now supplies
+bounded exception state and a platform-selected launch seam, not a full port.
+Its flight-timeout path also previously opened barriers and could expire
+borrowed CPU drivers while AP initialization still ran. The current CPU-phase
+change keeps timed-out barriers closed and takes a non-returning failure path;
+a guard preserves driver borrows during BSP unwinding too. Platforms can supply
+an explicit non-unwinding reset/fail-stop handler. The default stops the BSP
+without claiming AP/SMM quiescence. Independent source review closed this
+lifetime defect; it does not implement native AP startup or close other gates.
+The AP trampoline additionally normalizes CR0.EM/TS/MP/NE and CR4 SSE flags,
+initializes x87 and loads reset MXCSR before entering compiled Rust. Emitted
+protected-mode instructions were independently reviewed, closing that defect.
+
+The next cache change captures an ordered, bounded LE MSR image into the resident
+trampoline: MTRRs disabled, vendor prefix, PAT/fixed/variable pairs, vendor suffix
+and final default type. Independent review accepted this bounded mechanism,
+not Picasso integration: an AP-writer mutex alone does not keep BSP/siblings
+cache-off during shared-MSR updates.
+
+A new opt-in coordinated image requires BSP CD=1/NW=0, cache writeback and
+PGE/TLB invalidation before launch. Every intended AP must announce actual
+cache-off readiness before any image writer runs; each stays cache-off after
+restoration. Only all-ready/all-restored completion permits the BSP's final
+cache/TLB cleanup and uncached release publication. Timeout keeps release
+closed and the BSP cache-off, with no Drop-based re-enable or retry. Restoration
+is separate from Rust check-in and flight completion. Picasso preparation
+selects this protocol; independent Intel/virtual paths remain unchanged (some
+Intel platforms cannot execute WBINVD with CD=1). The coordinated BSP requires
+interrupts disabled, PCID off, and an initially cache-enabled validated policy.
+
+Independent review accepted the bounded software protocol under its stated
+contracts; native cache P1 is not closed and no hardware execution is claimed.
+Target WBINVD/CD and MSR semantics, the complete intended CPU set, exclusion of
+SMI/NMI handlers, and subsequent shared-policy writes still require proof.
+Official AMD OSRR downloads failed. A mirror of vendor document56255 rev3.03
+(July2018, Models00h–2Fh) is now retained in full: it documents core-shared
+MTRRs/TOM/TOM2/SYSCFG, per-thread PAT, and the per-thread exception for SYSCFG19.
+This is newly read register-scope evidence, not cache-transition/reset/SMU or
+hardware acceptance; exact revision/errata applicability remains required.
+Search synthesis and the unrelated Models01h/08h PPR are not target authority. Architectural capture is Intel-only by default; AMD
+must explicitly supply its policy, never GenericX86CpuDriver's fixed bytes.
+Picasso preparation exposes RdDram/WrDram and preserves TOM/TOM2/SYSCFG/PAT;
+tests cover wire order, rejected geometry and restoration of the BSP read gate.
+This preparation is not yet wired to a native CPU driver/SMU launch. Cache/SMT
+scope, actual coherent mappings, exception handling and residency still require
+integration review. Bootstrap CR3/stack geometry now rejects 32-bit truncation
+and arena wrap. A platform-owned-entry feature prevents the generic Intel/XIP
+reset and ram entries from colliding with PSP DRAM startup; utilities remain
+available. None of this establishes actual AP execution or a stack budget.
+
+Independent review closed the bounded AP-IDT-before-LINT1 defect. The exception
+change supplies two zero-initialized resident tables:
+256 protected-mode gates and 256 long-mode gates (6144 bytes total). Both point
+to assembly-only terminal handlers in the copied trampoline, with no logging,
+Rust calls, unwind or return. Protected LIDT follows private-stack assignment
+and precedes SSE/MSR work; long-mode LIDT precedes compiled AP code and LAPIC
+LINT1/NMI unmasking. The gates use mode-specific selectors and the current AP
+stack (IST=0). They do not claim emergency stacks, TSS support, stack exhaustion
+protection, or SMM isolation. The pre-stack and paging/mode-switch windows still
+require platform asynchronous-event exclusion and valid mappings/control state.
+BSP exception handling is a separate obligation. MP initialization is now a
+single attempt per boot, so live tables/trampoline cannot be overwritten by a
+retry; initialized writable ONLINE_CPUS storage was replaced with zero BSS.
+The additional table residency/reservations and a fully linked native MP image
+remain integration gates; the checkpoint still does not invoke MP.
+
+The next launch change adds sealed `PreparedAps` ordering metadata and
+`mp_init_with_ap_launcher`: selected count validation uses cached platform facts
+before MP ownership/hardware/publication, even with zero APs. The prior zero-AP
+bypass was independently found; the correction rejects eight-thread/BSP-only
+mismatch without hardware effects and permits a genuine one-thread topology
+without SMU submission. Actual release still requires resident bootstrap/table/
+configuration publication and selected BSP cache-off entry. Custom submission
+is one-shot; neither a second custom submission nor INIT/SIPI fallback occurs
+on failure or timeout. The ordinary INIT/SIPI path retains its second SIPI.
+`platform-amd::mp::ColdRelease` adapts the existing SMU ThreadEn driver, requires
+a complete intended set and coordinated cache image, and preserves typed
+failure diagnostics. All-ones ThreadEn is now unavailable, not a claimed
+already-released set. Unsafe construction requires validated cold-reset/BSP-slot0,
+cache, timing, mapping and asynchronous-event facts; it establishes none of them.
+
+The PSP reset image now contains immutable APICBASE.BSP-bit dispatch before any
+BSP stack/BSS/page-table initialization. APs far-transfer to the architectural
+resident bootstrap address; the segment is derived from the shared ABI constant.
+No reset-image patch/restore is performed. The platform must publish/reserve
+that bootstrap before releasing APs, and verify the actual SMU reset entry/control
+state. This dispatcher and release adapter are not a native CPU driver or an
+invoked complete boot flow; S3/runtime image protection remain unimplemented.
+
+### AMD configuration-access instruction contract
+
 ### LPC/SPI/SMBus preinitialization
 
 `picasso::preinit` supplies source-backed LPC enable/decode clearing and SPI

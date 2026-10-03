@@ -2,12 +2,9 @@
 //! Picasso indirect register transports (SMN, Data Fabric).
 //! Index/data pairs are exclusively owned by the BSP during silicon init.
 use fstart_pci::{ConfigRegionAccess, PciAddress};
-use tock_registers::{
-    LocalRegisterCopy,
-    interfaces::{Readable, Writeable},
-    register_bitfields,
-    registers::ReadWrite,
-};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use tock_registers::interfaces::Writeable;
+use tock_registers::{LocalRegisterCopy, interfaces::Readable, register_bitfields};
 
 /// SMN is a chipset register network, not an x86 physical address space.
 pub trait Smn {
@@ -20,38 +17,95 @@ pub trait Smn {
     }
 }
 
-/// Native ECAM backend. Each access has the hardware-required dword width.
+/// Native ECAM backend, with naturally aligned dword/accumulator accesses.
+/// AMD OSRR56255 rev3.03 §2.1.4.1 requires AL/AX/EAX, not arbitrary compiler
+/// registers. Ordinary volatile loads/stores do not provide that guarantee.
 /// Unlike the global ECAM helper this needs no writable initialized static.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub struct Ecam {
     base: usize,
     buses: u16,
 }
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 impl Ecam {
     /// # Safety
     /// The supplied ECAM range is decoded, identity UC mapped, exclusively
     /// owned by the BSP, and remains valid for the lifetime of this object.
     pub unsafe fn new(base: usize, buses: u16) -> Self {
         assert!(base & 0xfffff == 0 && (1..=256).contains(&buses));
+        assert!(base.checked_add(usize::from(buses) << 20).is_some());
         Self { base, buses }
     }
-    fn register(&self, address: PciAddress, offset: u16) -> &ReadWrite<u32> {
+    fn register(&self, address: PciAddress, offset: u16) -> EcamDword {
         assert!(address.segment() == 0 && u16::from(address.bus()) < self.buses);
         assert!(offset < 4096 && offset & 3 == 0);
         let offset = (usize::from(address.bus()) << 20)
             | (usize::from(address.device()) << 15)
             | (usize::from(address.function()) << 12)
             | usize::from(offset);
-        // SAFETY: the constructor establishes the mapping; the checks above
-        // ensure an aligned, in-range PCI configuration dword.
-        unsafe { &*((self.base + offset) as *const ReadWrite<u32>) }
+        // Constructor establishes UC decoding/mapping and the whole extent;
+        // checks above ensure no access crosses a naturally aligned dword.
+        EcamDword(self.base + offset)
     }
 }
+
+// Keep the tock register interface/bitfield semantics, but implement the actual
+// instruction boundary explicitly. No Rust reference to device memory is made.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+struct EcamDword(usize);
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl Readable for EcamDword {
+    type T = u32;
+    type R = ();
+    #[inline(never)]
+    fn get(&self) -> u32 {
+        let value;
+        // SAFETY: only checked Ecam::register or a RAM-only test constructs
+        // this handle; the owner retains valid, aligned UC device mappings.
+        unsafe {
+            core::arch::asm!("mov eax, dword ptr [{address}]",
+                address = in(reg) self.0, lateout("eax") value,
+                options(nostack, preserves_flags));
+        }
+        value
+    }
+}
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl Writeable for EcamDword {
+    type T = u32;
+    type R = ();
+    #[inline(never)]
+    fn set(&self, value: u32) {
+        // SAFETY: same checked owner as get. Neither asm is pure/nomem; these
+        // are observable I/O and retain compiler memory-ordering effects.
+        unsafe {
+            core::arch::asm!("mov dword ptr [{address}], eax",
+                address = in(reg) self.0, in("eax") value,
+                options(nostack, preserves_flags));
+        }
+    }
+}
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 impl ConfigRegionAccess for Ecam {
     unsafe fn read(&self, address: PciAddress, offset: u16) -> u32 {
         self.register(address, offset).get()
     }
     unsafe fn write(&self, address: PciAddress, offset: u16, value: u32) {
         self.register(address, offset).set(value);
+    }
+}
+
+#[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64")))]
+mod ecam_tests {
+    use super::*;
+    #[test]
+    fn accumulator_backend_reads_and_writes_exactly_one_dword() {
+        // Ordinary RAM only, not a claim of actual ECAM/UC hardware execution.
+        let mut words = [0x12345678u32, 0xaabbccdd];
+        let register = EcamDword(words.as_mut_ptr() as usize);
+        assert_eq!(register.get(), 0x12345678);
+        register.set(0x87654321);
+        assert_eq!(words, [0x87654321, 0xaabbccdd]);
     }
 }
 

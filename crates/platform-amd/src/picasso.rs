@@ -8,7 +8,14 @@ use fstart_driver_amd::{
 };
 
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
-core::arch::global_asm!(include_str!("../asm/picasso.S"));
+core::arch::global_asm!(
+    include_str!("../asm/picasso.S"),
+    ap_reset_segment = const {
+        let address = fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS;
+        assert!(address & 15 == 0 && address <= 0xffff0);
+        address >> 4
+    },
+);
 
 pub const LINKER_SCRIPT: &str = include_str!("../linker/picasso.ld");
 pub const RESET_IMAGE_BASE: u64 = 0x0203_0000;

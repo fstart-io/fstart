@@ -137,7 +137,12 @@ macro_rules! enter_runtime {
 // Reset-vector entry only: postcar and ramstage enter via direct 64-bit
 // jumps (`_start_postcar` / `_start_ram`), so this block is compiled out of
 // those stages to keep postcar small.
-#[cfg(all(not(test), target_os = "none", not(fstart_stage_env = "postcar")))]
+#[cfg(all(
+    not(test),
+    target_os = "none",
+    not(fstart_stage_env = "postcar"),
+    not(feature = "x86-platform-entry")
+))]
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is
     // the natural syntax for 16-bit / mixed-mode x86 assembly.

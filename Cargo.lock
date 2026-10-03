@@ -789,6 +789,7 @@ dependencies = [
 name = "fstart-platform-amd"
 version = "0.1.0"
 dependencies = [
+ "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",
  "fstart-driver-uart",

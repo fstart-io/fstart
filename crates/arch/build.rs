@@ -69,7 +69,16 @@ fn main() {
              pub const AP_LIMIT_OFFSET: usize = {:#x};\n\
              pub const AP_COUNTER_OFFSET: usize = {:#x};\n\
              pub const MSR_COUNT_OFFSET: usize = {:#x};\n\
-             pub const MSR_TABLE_OFFSET: usize = {:#x};\n",
+             pub const MSR_TABLE_OFFSET: usize = {:#x};\n\
+             pub const CACHE_READY_OFFSET: usize = {:#x};\n\
+             pub const CACHE_DONE_OFFSET: usize = {:#x};\n\
+             pub const CACHE_RELEASE_OFFSET: usize = {:#x};\n\
+             pub const BSP_CACHE_OFF_OFFSET: usize = {:#x};\n\
+             pub const CACHE_COORDINATED_OFFSET: usize = {:#x};\n\
+             pub const IDTR32_OFFSET: usize = {:#x};\n\
+             pub const IDTR64_OFFSET: usize = {:#x};\n\
+             pub const FAULT32_OFFSET: usize = {:#x};\n\
+             pub const FAULT64_OFFSET: usize = {:#x};\n",
             bin.display(),
             find_symbol_offset(elf.as_path(), "fstart_sipi_cr3"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_entry"),
@@ -79,6 +88,15 @@ fn main() {
             find_symbol_offset(elf.as_path(), "fstart_sipi_ap_counter"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_msr_count"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_msr_table"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_cache_ready"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_cache_done"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_cache_release"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_bsp_cache_off"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_cache_coordinated"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_idtr32"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_idtr64"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_fault32"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_fault64"),
         ),
     )
     .unwrap();

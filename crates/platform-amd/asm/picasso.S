@@ -11,6 +11,25 @@ _start:
 _fstart_start16:
     cli
     cld
+    /* Architectural APICBASE.BSP identifies this logical CPU, not an arrival
+       ordinal. Decide before any stack/BSS/page-table initialization. Native
+       Picasso SMU release enters this PSP-copied reset vector; never patch it.
+       The platform may release APs ONLY after publishing/reserving the shared
+       architectural bootstrap at 0x8000 and excluding early NMI/SMI delivery. */
+.global _fstart_reset_dispatch
+_fstart_reset_dispatch:
+    mov ecx, 0x1b /* IA32_APIC_BASE */
+    rdmsr
+    test eax, 0x100 /* BSP bit 8 */
+    jnz _fstart_bsp_start16
+.global _fstart_ap_reset_jump
+_fstart_ap_reset_jump:
+    /* Real-mode CS:IP = 0800:0000, physical 0x8000. No stack or image writes. */
+    .byte 0xea
+    .word 0
+    .word {ap_reset_segment}
+.global _fstart_bsp_start16
+_fstart_bsp_start16:
     xor eax, eax
     mov cr3, eax
     /* The reset CS hidden base is redirected by PSP into this DRAM segment.
