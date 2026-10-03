@@ -153,6 +153,12 @@ fn validate_blobs(blobs: &[Blob], bios: bool) -> Result<()> {
         if key.instance > 15 || (bios && key.subprogram > 7) || (!bios && key.instance != 0) {
             return Err(format!("invalid AMD entry selector {key:?}"));
         }
+        // Gen1 APCB/backup selectors are instance-only. The source helper
+        // creates backup entries with subprogram zero; accepting nonzero APCB
+        // subprograms could create duplicate generated backup selectors.
+        if bios && matches!(key.kind, 0x60 | 0x68) && key.subprogram != 0 {
+            return Err(format!("unsupported Picasso APCB selector {key:?}"));
+        }
         let allowed = if bios {
             matches!(key.kind, 0x05 | 0x60 | 0x64..=0x66 | 0x68..=0x6a)
         } else {

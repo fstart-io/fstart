@@ -152,6 +152,7 @@ pub enum Error {
     InvalidPad,
     MissingEvent,
     EdgeSmi,
+    BothEdgesSci,
     DuplicatePad,
 }
 
@@ -174,6 +175,9 @@ pub fn configure(io: &mut impl Access, base: &[Pad], overrides: &[Pad]) -> Resul
             {
                 return Err(Error::MissingEvent);
             }
+            if matches!(pad.event, Event::Sci(Trigger::BothEdges)) {
+                return Err(Error::BothEdgesSci);
+            }
             if matches!(pad.event, Event::Smi(t) if !t.level()) {
                 return Err(Error::EdgeSmi);
             }
@@ -193,10 +197,10 @@ pub fn configure(io: &mut impl Access, base: &[Pad], overrides: &[Pad]) -> Resul
         // Clear the W1C status bits in a separate write.
         let value = io.read_control(pad.pin) | STATUS_MASK;
         io.write_control(pad.pin, value);
-        if let Some((_, event)) = GPIO_EVENTS.iter().find(|(p, _)| *p == pad.pin) {
-            if !matches!(pad.event, Event::None) {
-                io.route(*event, pad.event);
-            }
+        if let Some((_, event)) = GPIO_EVENTS.iter().find(|(p, _)| *p == pad.pin)
+            && !matches!(pad.event, Event::None)
+        {
+            io.route(*event, pad.event);
         }
     }
     // Do not restore MASK_STATUS: kernel debounce changes otherwise lose IRQs.

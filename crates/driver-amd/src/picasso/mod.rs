@@ -1,7 +1,37 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h Raven/Picasso/Pollock register geometry, not Intel-compatible IP.
+pub mod acp;
+pub mod apob;
+pub mod cache;
+pub mod cpu;
+#[cfg(test)]
+mod cpu_tests;
+pub mod dxio;
+mod dxio_hardware;
+pub mod emmc;
+pub mod espi;
+#[cfg(test)]
+mod espi_tests;
+pub mod fabric;
+pub mod legacy;
+#[cfg(test)]
+mod legacy_tests;
+#[cfg(test)]
+mod native_tests;
+pub mod nbio;
+pub mod nbio_late;
+mod nbio_tables;
 pub mod pinmux;
+pub mod power;
+pub mod preinit;
+pub mod registers;
+pub mod smu;
+pub mod southbridge;
+pub mod topology;
 pub mod tsc;
+pub mod usb;
+#[cfg(test)]
+mod usb_tests;
 pub const ACPI_MMIO: usize = 0xfed8_0000;
 pub const ECAM: u64 = 0xf800_0000;
 pub const ECAM_BUSES: u8 = 64;

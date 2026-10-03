@@ -14,6 +14,9 @@
 //!
 //! Compatible: `"pci-host-ecam-generic"`.
 
+// The production allocator uses bounded heapless storage. Only host tests
+// need alloc; importing it in firmware would unnecessarily require a heap.
+#[cfg(test)]
 extern crate alloc;
 
 use heapless::Vec as HVec;

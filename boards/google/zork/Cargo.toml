@@ -16,6 +16,7 @@ checkpoint = []
 [dependencies]
 fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["picasso"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["picasso"] }
+fstart-driver-chromeec = { path = "../../../crates/driver-chromeec" }
 
 [[bin]]
 name = "picasso-checkpoint"

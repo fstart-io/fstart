@@ -9,6 +9,10 @@ There is deliberately no production `fbuild` metadata for this board yet.
 The common build-plan/image executor needs an AMD packaging projection before
 this can become a supported board. The checkpoint is built explicitly below.
 
+The implementation is in jj workspace `../fstart-picasso`. Audited foundation
+`qtyqotpq` is a child of the user's `mpzspnrw`; continued native work is in its
+child `vsvkyzmk`. All three reference/original workspaces are untouched.
+
 ## Ownership
 
 - `crates/driver-amd`: register mechanisms, `tock-registers` MMIO, FCH banked
@@ -44,19 +48,75 @@ loads a 32-bit-base GDT (the DRAM address exceeds 16 MiB), builds identity page
 tables and enters 64-bit Rust on a DRAM stack. Cache remains disabled for this
 checkpoint, so FCH accesses cannot accidentally be write-back cached.
 
-The reset image is read-only throughout execution. Initialized writable `.data`
-is deliberately rejected by a linker assertion. BSS, stack and page tables
+The linker emits an RX reset-image segment, and entry code never mutates it.
+The current large-page identity mapping does not enforce per-image write
+protection; preserving its bytes is a firmware invariant. GDT descriptors
+pre-set Accessed so CPU segment loads do not implicitly modify reset-image
+bytes; this is verified in the linked ELF, not just assembly text. Initialized writable
+`.data` is deliberately rejected by a linker assertion. BSS, stack and page tables
 are separate from the image, APOB and PSP work buffer. This preserves the
 PSP reset-image integrity constraint; it does **not** implement S3 resume.
 The linker reserves the complete early window for a future OS memory map.
 
 ## Source coverage and remaining work
 
-**The opaque x86 FSP routines are a real completeness blocker.** Their parameter
-structures name policies but do not reveal the silicon register sequences they
-implement. Eliminating FSP requires documentation/reference implementations or
-reverse engineering, followed by hardware validation. PSP-trained DRAM alone
-is not proof that PCIe, graphics, security or power initialization is complete.
+**Complete native silicon integration is still required.** The original
+Picasso tree delegates it to opaque FSP routines, but the separate native
+Picasso checkout provides recovered implementations. Those are now being
+ported to Rust rather than accepting FSP as a permanent boundary. PSP-trained
+DRAM alone is not proof that PCIe, graphics, security or power initialization
+is complete.
+
+### Continued native implementation
+
+The new driver modules implement the SMN and DF indirect protocols, a bounded
+six-word SMU mailbox, checked APOB memory-map parsing, CPU/MCAX sequencing,
+AMD-specific fixed/variable MTRRs and all ordered NBIO base tables. The platform
+`early::initialize` composes these mechanisms with a native memory/resource
+contract; all APOB holes (including unknown kinds), PSP/early reservations,
+TSEG, UMA and alignment slack remain outside OS-allocatable RAM.
+
+Native DXIO now implements the engine/ancillary wire protocol, state-machine
+handshakes, PCIe remapping/equalization and pre/post-training register sequences.
+Its DMA buffers are a consumed static exclusive borrow: an error does not
+prove DMA quiescence, so their mapping/storage must survive until reset.
+The driver also implements ACP shutdown, eMMC modes/presets, FCH A-Link/clocks,
+USB controller/PHY/OC sequencing, late PCIe power/CLKREQ and persistent SMU
+policy/scratch pages. Board native typed data includes ASPM, USB tuning,
+EC-selected telemetry and correct clock-request wire codes (pin 0 is not
+Disabled). Topology APIs return cold-policy reset requirements and release
+AP ThreadEn slots; that is not an implemented AP rendezvous. Legacy mechanisms
+cover RTC/internal IRQ/LPC policy and byte-width ROM-sharing disable; exception
+handlers must exist before native RTC accesses enable NMI.
+
+Both power pages and DXIO buffers must remain coherent, mapped and permanently
+reserved from payload/allocator memory, including after errors. Late SMU
+nonstandard responses are surfaced diagnostically only in source-backed policy
+callers; early/DXIO/USB requests remain strict, and all-ones readiness fails
+before submission.
+
+These APIs are not yet connected to a complete boot binary. The console
+checkpoint remains deliberately limited while FCH/eSPI/EC integration,
+MP/SMM, graphics, tables, stage loading and supported packaging are completed. The independent
+foundation audit found two API bugs: unsupported both-edge SCI and nonzero
+APCB subprograms creating duplicate generated backup selectors. Both now fail
+before hardware/image writes, with focused negative tests. Continued source
+comparison also corrected PM_ACPI_CONF to byte offset 0x74 and made the FCH
+constructor exclusive/private. The independent native-early audit found a
+Raven2 late-DF mask error (bit 11 was cleared then re-set); it now sets 0x3300
+rather than 0x3b00 for Raven2, with both-variant regressions. The subsequent
+DXIO/ACP/eMMC audit initially found no further issues. A broader independent
+audit subsequently found and closed all-ones SMU readiness, odd SDHCI divider
+rounding and missing L1 permission for combined L0s/L1. The last two defects
+were inherited from native C: literal source matching was insufficient.
+Representable divider/rate tests now preserve the 400-kHz Vilboz preset while
+rounding 12 MHz and 300 kHz safely; an explicit Minimum variant represents
+Dalboz's slowest-clock sentinel. No bounded audit approves full-flow integration
+or hardware behavior. A follow-up independent audit verified legacy/eSPI
+mechanisms and whole power-transfer regression without new findings.
+The subsequent shared ChromeEC driver and distinct legacy board-ID correction
+also passed independent review. LPC/SPI/SMBus and AOAC changes passed review
+after correcting SPI busy preflight to STATUS0x4c.
 
 Specific board hazards that must survive the eventual native flow:
 
@@ -72,6 +132,43 @@ Specific board hazards that must survive the eventual native flow:
 - The WWAN external-clock/PHY quirk starts **after** board revision 2, not at 2.
 - APCB RAM-ID triples `[132,1,0], [90,1,0], [86,3,0], [69,1,0]` are **not** the
   same encoding as x86 GPIO IOMUX selectors. Do not substitute one for the other.
+
+### Shared ChromeEC transport
+
+`crates/driver-chromeec` implements no-alloc protocol-v3 packets over linear
+LPC/eSPI I/O, with explicit little-endian zerocopy headers, bounded waits and
+validated response lengths/version/reserved/checksum/result. Submitted timeout
+or malformed response poisons its owner rather than duplicating a command;
+IN_PROGRESS does not permit a silent retry. Caller output is published only
+after validation. This is not a MEC EMI or RTK backend: Zork's supplied Kconfig
+selects ordinary eSPI/LPC and does not select those variants.
+
+Board fact acquisition composes the CBI FW_CONFIG lower word with optional
+SSFC in the upper word, preserving valid zero and failure fallbacks. It is not
+a single 64-bit CBI read. Legacy GET_BOARD_VERSION (command6, two-byte LE)
+is acquired independently: Vilboz's external-audio-clock/eDP quirk uses this
+board_id()>2 and rejects unknown, while GPIO/WiFi predicates use CBI tag0.
+No equality between these sources is assumed; crossed-value tests enforce it.
+These APIs are tested but not yet invoked by the
+checkpoint or a complete boot binary; eSPI decode/pads must be ready first.
+
+### LPC/SPI/SMBus preinitialization
+
+`picasso::preinit` supplies source-backed LPC enable/decode clearing and SPI
+BAR setup before cold eSPI connection, and separate ROM-CS/prefetch/SPI100 mode
+and clock programming afterward. Validated EFS/board speed overrides lower
+other speed classes using hardware encoding order, not numeric enum order.
+The byte/word/dword access widths and repeated LPC write are preserved.
+SMBus/ASF initialization sets decode, native divider41 and W1C statuses; the
+native nominal400-kHz label is not a measured maximum-frequency guarantee.
+
+These are not flash transactions or arbitration. Host ownership against
+PSP/AP/SMM/EC and absence of ROM Armor are prerequisites. An active PSP/EC link
+must not be destroyed by calling cold LPC preparation. Busy/unavailable SPI
+rejects before writes. AOAC now also rejects all-ones control/state rather
+than treating inaccessible registers as power/clock readiness, and preflights
+all controls before power writes. Any partial programming failure requires
+stop/reset.
 
 ## Rust PSP tooling
 

@@ -88,6 +88,17 @@ fn bounds_and_duplicates_fail_closed() {
     assert!(i.pack().is_err());
 }
 #[test]
+fn apcb_subprograms_cannot_alias_generated_backup_selectors() {
+    let mut i = image();
+    i.bios.push(Blob {
+        key: Key::new(0x60, 1, 0),
+        bytes: vec![0x78; 0x1000],
+    });
+    assert!(i.pack().unwrap_err().contains("APCB selector"));
+    i.bios[1].key.kind = 0x68;
+    assert!(i.pack().unwrap_err().contains("APCB selector"));
+}
+#[test]
 fn nv_physical_addresses_and_reserved_bits() {
     let mut i = image();
     i.apob_nv = Some(FlashRegion {

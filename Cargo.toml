@@ -4,6 +4,7 @@ members = [
   "tools/fbuild",
   "tools/amdfw",
   "crates/driver-amd",
+  "crates/driver-chromeec",
   "crates/platform-amd",
   "crates/core",
   "crates/coreboot",
@@ -86,6 +87,7 @@ clap = { version = "4", features = ["derive", "env"] }
 fstart-core = { path = "crates/core" }
 fstart-coreboot = { path = "crates/coreboot" }
 fstart-driver-amd = { path = "crates/driver-amd" }
+fstart-driver-chromeec = { path = "crates/driver-chromeec" }
 fstart-platform-qemu = { path = "crates/platform-qemu" }
 fstart-pci = { path = "crates/pci" }
 fstart-ffs = { path = "crates/ffs" }
@@ -140,6 +142,8 @@ opt-level = "s"
 [profile.dev.package.fstart-platform-amd]
 opt-level = "s"
 [profile.dev.package.fstart-driver-amd]
+opt-level = "s"
+[profile.dev.package.fstart-driver-chromeec]
 opt-level = "s"
 [profile.dev.package.fstart-platform-sunxi]
 opt-level = "s"

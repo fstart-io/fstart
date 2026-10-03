@@ -69,6 +69,18 @@ fn validate_before_first_hardware_write() {
     assert_eq!(io.writes.len(), 0);
 }
 #[test]
+fn both_edge_sci_is_rejected_before_writes() {
+    let mut io = mock();
+    assert_eq!(
+        configure(&mut io, &[Pad::sci(9, Pull::Up, Trigger::BothEdges)], &[]),
+        Err(Error::BothEdgesSci)
+    );
+    assert_eq!(io.master, u32::MAX);
+    assert_eq!(io.muxes, 0);
+    assert!(io.writes.is_empty());
+    assert!(io.routed.is_none());
+}
+#[test]
 fn tsc_pstate_divisors() {
     use crate::picasso::tsc::pstate_mhz;
     assert_eq!(pstate_mhz((1 << 63) | 100 | (8 << 8)), Some(2500));

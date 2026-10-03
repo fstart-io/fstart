@@ -98,9 +98,11 @@ _fstart_start64:
 .balign 8
 _fstart_gdt:
     .quad 0
-    .quad 0x00cf9a000000ffff /* 32-bit code */
-    .quad 0x00cf92000000ffff /* flat data */
-    .quad 0x00af9a000000ffff /* 64-bit code */
+    /* Pre-set descriptor Accessed bits: segment loads must not modify
+       the PSP-copied reset image (same rule as the shared AP trampoline). */
+    .quad 0x00cf9b000000ffff /* 32-bit code, accessed */
+    .quad 0x00cf93000000ffff /* flat data, accessed */
+    .quad 0x00af9b000000ffff /* 64-bit code, accessed */
 .global _fstart_gdt_pointer
 _fstart_gdt_pointer:
     .word 4 * 8 - 1

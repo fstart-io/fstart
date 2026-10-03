@@ -3,6 +3,7 @@
 //! SKU differences come from EC CBI FW_CONFIG, not independent Rust board copies.
 #![no_std]
 pub mod dalboz;
+pub mod ec;
 pub mod policy;
 pub mod vilboz;
 use fstart_platform_amd::picasso::{BoardFacts, Config};

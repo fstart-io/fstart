@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! EC CBI decisions.
-//! Policy data only. FSP-owned power/display/PHY settings are retained here,
-//! but have no native programming implementation yet (see docs/amd-picasso.md).
+//! EC CBI decisions. Board data, not hardware sequences. Native driver APIs consume power/PHY
+//! policy; complete boot/display integration remains pending.
 #[derive(Debug, Clone, Copy)]
 pub struct Cbi {
     /// None means the EC read failed. Zero is a valid board version/config.
@@ -49,8 +48,10 @@ impl Cbi {
     pub const fn active_low_wifi_power(self) -> bool {
         matches!(self.board_version, Some(v) if v >= 2)
     }
-    pub const fn external_audio_clock(self) -> bool {
-        matches!(self.board_version, Some(v) if v > 2) && self.has_wwan()
+    /// This quirk uses legacy EC command6 board_id(), NOT CBI tag0 used
+    /// for schematic/WiFi revision. Unknown legacy ID must suppress it.
+    pub const fn external_audio_clock(self, legacy_board_version: Option<u16>) -> bool {
+        matches!(legacy_board_version, Some(v) if v > 2) && self.has_wwan()
     }
     pub const fn telemetry(self) -> Telemetry {
         if self.field(26, 1) != 0 {
@@ -67,6 +68,35 @@ impl Cbi {
                 soc_slope_ma: 26559,
                 soc_offset: 89,
             }
+        }
+    }
+    /// Dalboz voltage/thermal policy plus Vilboz PPT and EC-selected telemetry.
+    pub fn native_power(self) -> fstart_driver_amd::picasso::power::Config {
+        use fstart_driver_amd::picasso::power::{Config, Telemetry};
+        let telemetry = self.telemetry();
+        Config {
+            sustained_mw: POWER.sustained_mw,
+            fast_mw: POWER.fast_ppt_mw,
+            slow_mw: POWER.slow_ppt_mw,
+            slow_seconds: POWER.slow_ppt_seconds,
+            stapm_seconds: POWER.stapm_seconds,
+            system_config: POWER.system_config,
+            thermal_c: 100,
+            psi0_ma: 18000,
+            soc_psi0_ma: 12000,
+            prochot_ms: 20,
+            core_dldo_bypass: true,
+            telemetry: [
+                Telemetry {
+                    slope_ma: telemetry.vdd_slope_ma,
+                    offset: telemetry.vdd_offset,
+                },
+                Telemetry {
+                    slope_ma: telemetry.soc_slope_ma,
+                    offset: telemetry.soc_offset,
+                },
+            ],
+            ..Config::default()
         }
     }
     pub const fn sar_filename(self) -> Option<&'static str> {
@@ -104,34 +134,107 @@ pub const POWER: PowerPolicy = PowerPolicy {
     sustained_mw: 4800,
 };
 
-/// Dalboz PCIe routing. These descriptors are NOT a native link-training API.
-#[derive(Debug, Clone, Copy)]
-pub struct PciePort {
-    pub lanes: (u8, u8),
-    pub device: u8,
-    pub function: u8,
-    pub clock_request: u8,
+use fstart_driver_amd::picasso::{
+    dxio::{Aspm, ClockRequest, Descriptor},
+    emmc, usb,
+};
+
+/// Zork's non-EM100 SPI defaults. A validated runtime EFS may
+/// override fast speed/read mode via SpiConfig::with_fast_override().
+pub const SPI: fstart_driver_amd::picasso::preinit::SpiConfig = {
+    use fstart_driver_amd::picasso::preinit::{ReadMode, Speed, SpiConfig};
+    SpiConfig {
+        mode: ReadMode::Dual122,
+        normal: Speed::Mhz33,
+        fast: Speed::Mhz66,
+        alternate: Speed::Mhz66,
+        tpm: Speed::Mhz66,
+        burst_4dw: false,
+    }
+};
+
+/// Dalboz routing and ASPM/clock policy.
+/// Native descriptors, not an FSP ABI. Pin0 is clock-request pin zero (the
+/// wire code is one); it must not be confused with ClockRequest::Disabled.
+const fn pcie(first: u8, last: u8, function: u8, clock: ClockRequest) -> Descriptor {
+    let mut descriptor = Descriptor::pcie(first, last, 1, function);
+    descriptor.aspm = Aspm::L1;
+    descriptor.clock_request = clock;
+    descriptor.l1_1 = true;
+    descriptor.l1_2 = true;
+    descriptor.turn_off_unused_lanes = true;
+    descriptor
 }
-pub const PCIE: &[PciePort] = &[
-    PciePort {
-        lanes: (4, 5),
-        device: 1,
-        function: 7,
-        clock_request: 2,
-    },
-    PciePort {
-        lanes: (0, 0),
-        device: 1,
-        function: 2,
-        clock_request: 0,
-    },
-    PciePort {
-        lanes: (1, 1),
-        device: 1,
-        function: 3,
-        clock_request: 1,
-    },
+pub const PCIE: &[Descriptor] = &[
+    pcie(4, 5, 7, ClockRequest::Pin2), // NVMe
+    pcie(0, 0, 2, ClockRequest::Pin0), // WLAN
+    pcie(1, 1, 3, ClockRequest::Pin1), // Bayhub SD reader
 ];
+/// Dalboz eSPI resource wiring shared by all Vilboz variants.
+pub const ESPI: fstart_driver_amd::picasso::espi::Config = {
+    use fstart_driver_amd::picasso::espi::{Alert, Config, Frequency, IoRange, Mode};
+    Config {
+        io: [
+            Some(IoRange {
+                base: 0x62,
+                size: 5,
+            }),
+            Some(IoRange {
+                base: 0x800,
+                size: 256,
+            }),
+            Some(IoRange {
+                base: 0x900,
+                size: 255,
+            }),
+            Some(IoRange {
+                base: 0x200,
+                size: 8,
+            }),
+        ],
+        port80: true,
+        keyboard: true,
+        superio: false,
+        mode: Mode::Quad,
+        frequency: Frequency::Mhz33,
+        alert: Alert::PushPull,
+        crc: true,
+        peripheral: true,
+        virtual_wire: true,
+        oob: false,
+        flash: false,
+        subtractive: false,
+        irq_polarity: 0, // HIGH IRQ1/12 means incoming VW inversion enabled.
+    }
+};
+
+/// Vilboz supplies all six USB2 tuning records, overriding Dalboz defaults.
+/// Port 1 carries LTE rather than the second USB-C connector, so has no OC pin.
+pub const USB: usb::Config = usb::Config {
+    phy2: Some(
+        [usb::Phy2 {
+            com_pds: 7,
+            ..usb::Phy2::DEFAULT
+        }; 6],
+    ),
+    phy3_override: None,
+    overcurrent: [
+        usb::Overcurrent::Pin0,
+        usb::Overcurrent::None,
+        usb::Overcurrent::Pin0,
+        usb::Overcurrent::Pin1,
+        usb::Overcurrent::None,
+        usb::Overcurrent::None,
+    ],
+    force_gen1: 0,
+};
+pub const EMMC: emmc::Config = emmc::Config {
+    timing: emmc::Timing::Hs400,
+    init_clock: emmc::InitClock::Khz(400),
+    sdr50_drive: emmc::Drive::B,
+    sdr104_hs400_drive: emmc::Drive::A,
+    ddr50_drive: emmc::Drive::B,
+};
 #[derive(Debug, Clone, Copy)]
 pub enum Connector {
     Edp,
@@ -171,8 +274,10 @@ mod tests {
         assert!(missing.v3());
         assert!(!missing.v3_6());
         assert!(!missing.active_low_wifi_power());
-        assert!(!Cbi::new(Some(2), Some(1 << 29)).external_audio_clock());
-        assert!(Cbi::new(Some(3), Some(1 << 29)).external_audio_clock());
+        assert!(!Cbi::new(Some(3), Some(1 << 29)).external_audio_clock(Some(2)));
+        assert!(!Cbi::new(Some(3), Some(1 << 29)).external_audio_clock(None));
+        assert!(Cbi::new(Some(1), Some(1 << 29)).external_audio_clock(Some(3)));
+        assert!(!Cbi::new(Some(3), Some(0)).external_audio_clock(Some(3)));
         assert!(Cbi::new(Some(2), None).active_low_wifi_power());
         assert_eq!(Cbi::new(None, Some(1 << 26)).telemetry().soc_offset, -70);
         assert!(Cbi::new(None, Some(1 << 35)).audio_amp_auto()); // FW_CONFIG is 64-bit
