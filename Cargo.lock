@@ -549,6 +549,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-amdfw"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fstart-image-build",
+]
+
+[[package]]
 name = "fstart-arch"
 version = "0.1.0"
 dependencies = [
@@ -606,6 +614,13 @@ dependencies = [
  "p256",
  "sha2 0.10.9",
  "sha3",
+]
+
+[[package]]
+name = "fstart-driver-amd"
+version = "0.1.0"
+dependencies = [
+ "tock-registers",
 ]
 
 [[package]]
@@ -758,6 +773,15 @@ dependencies = [
  "serde",
  "tock-registers",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-platform-amd"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-amd",
+ "fstart-driver-uart",
 ]
 
 [[package]]

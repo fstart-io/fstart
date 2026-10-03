@@ -1,0 +1,29 @@
+[package]
+name = "fstart-board-google-vilboz"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# No fstart production build-profile metadata yet: this is an explicitly
+# non-bootable console checkpoint, not a complete native Picasso platform.
+[workspace]
+
+[features]
+default = []
+checkpoint = []
+
+[dependencies]
+fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["picasso"] }
+fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["picasso"] }
+
+[[bin]]
+name = "picasso-checkpoint"
+path = "src/main.rs"
+required-features = ["checkpoint"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"

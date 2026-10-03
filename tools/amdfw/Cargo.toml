@@ -1,0 +1,10 @@
+[package]
+name = "fstart-amdfw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fstart-image-build.workspace = true
+clap.workspace = true
