@@ -11,3 +11,7 @@ pub const MP_START: u64 = IMAGE_END;
 /// Fifteen 4KiB stacks + 6144-byte IDTs, rounded to a whole page. Reserve
 /// padding and unused slots too; parked APs retain this region through reset.
 pub const MP_END: u64 = 0x02061000;
+/// One selected 3200-byte vendor patch plus its permanent unused page tail.
+/// Allocation policy only: APOB/TOM must establish usable RAM before ownership.
+pub const MICROCODE_START: u64 = MP_END;
+pub const MICROCODE_END: u64 = 0x02062000;

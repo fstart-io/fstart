@@ -11,6 +11,8 @@ pub mod layout;
 pub mod memory;
 #[cfg(all(test, feature = "picasso"))]
 mod memory_tests;
+#[cfg(all(feature = "picasso", target_arch = "x86_64"))]
+pub mod microcode;
 #[cfg(feature = "picasso")]
 pub mod mp;
 #[cfg(feature = "picasso")]

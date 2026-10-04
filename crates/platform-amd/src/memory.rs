@@ -42,7 +42,7 @@ impl Memory {
         let top = apob.low_top().min(top_mem);
         let tseg_base =
             top.checked_sub(tseg_size).ok_or(Error::Boundary)? & !(tseg_size.max(0x800000) - 1);
-        if tseg_base <= layout::MP_END {
+        if tseg_base <= layout::MICROCODE_END {
             return Err(Error::Boundary);
         }
         let mut map = E820State::new();
@@ -60,9 +60,9 @@ impl Memory {
             map.reserve_range(hole.base, hole.size)
                 .map_err(|_| Error::Capacity)?;
         }
-        // The new arena must be actual usable APOB/TOM RAM, not merely an
-        // address absent from the payload map. Refuse a hole or truncated range
-        // before ever claiming or touching that storage.
+        // The MP arena and whole microcode page must be usable APOB/TOM RAM,
+        // not merely absent from the payload map. Refuse holes/truncation before
+        // ever claiming or touching either storage allocation.
         let trampoline = fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS;
         let usable = |base, end| {
             map.entries().iter().any(|entry| {
@@ -74,13 +74,18 @@ impl Memory {
                         .is_some_and(|top| top >= end)
             })
         };
-        if !usable(layout::MP_START, layout::MP_END) || !usable(trampoline, trampoline + 4096) {
+        if !usable(layout::MP_START, layout::MICROCODE_END)
+            || !usable(trampoline, trampoline + 4096)
+        {
             return Err(Error::Boundary);
         }
-        // Exclude PSP/early firmware AND the entire permanent MP region,
-        // including page padding and slots unused by this particular CPU.
-        map.reserve_range(layout::EARLY_START, layout::MP_END - layout::EARLY_START)
-            .map_err(|_| Error::Capacity)?;
+        // Exclude PSP/early firmware, permanent MP and the whole microcode page,
+        // including unused slots and both allocations' padding, until reset.
+        map.reserve_range(
+            layout::EARLY_START,
+            layout::MICROCODE_END - layout::EARLY_START,
+        )
+        .map_err(|_| Error::Capacity)?;
         // AP reset dispatch and exception handlers also retain the complete low
         // bootstrap page through reset; leaving it as RAM permits payload reuse.
         map.reserve_range(trampoline, 4096)
@@ -103,13 +108,20 @@ impl Memory {
     /// A reservation witness for the platform's fixed MP allocation. This is
     /// map bookkeeping only, not physical mapping/coherence or SMM isolation.
     pub(crate) fn mp_reserved(&self) -> bool {
+        self.reserved(layout::MP_START, layout::MP_END)
+    }
+    /// Numerical witness only; no physical ownership/authentication implication.
+    pub(crate) fn microcode_reserved(&self) -> bool {
+        self.reserved(layout::MICROCODE_START, layout::MICROCODE_END)
+    }
+    fn reserved(&self, base: u64, end: u64) -> bool {
         self.map.entries().iter().any(|entry| {
             entry.kind == E820Kind::Reserved as u32
-                && entry.addr <= layout::MP_START
+                && entry.addr <= base
                 && entry
                     .addr
                     .checked_add(entry.size)
-                    .is_some_and(|end| end >= layout::MP_END)
+                    .is_some_and(|top| top >= end)
         })
     }
     pub fn state(&self) -> &E820State {

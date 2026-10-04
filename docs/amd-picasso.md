@@ -287,8 +287,9 @@ assertions bind the actual section size and endpoints to the memory-map policy.
 
 `Memory::from_apob()` rejects holes or unavailable RAM anywhere in that window,
 including unused slots/page padding, and in the low bootstrap page. It then
-reserves both through reset; usable totals and the state passed to a later
-payload exclude them along with the existing PSP/image/TSEG reservations.
+reserves both through reset, along with the resident microcode page below;
+usable totals and the state passed to a later payload exclude these whole
+allocations and the existing PSP/image/TSEG reservations.
 Allocators must use this map, not just its `allocation_top` ceiling.
 
 `mp::initialize_resident()` validates the selected complete CPU count before
@@ -341,6 +342,35 @@ it is never executed/flashed, and proves neither physical execution nor peak
 stack use. The console checkpoint still invokes no native CPU/MP flow. BSP
 exceptions, SMM/reset isolation, target cache/reset semantics, trusted image
 integration and measured release stack budgets remain outstanding.
+
+### Permanent microcode staging
+
+`platform-amd::microcode` owns one const-MaybeUninit NOLOAD page at
+`02061000..02062000`. The selected 3200-byte patch and the entire 896-byte unused
+tail stay reserved through reset. This is firmware allocation policy, not PSP
+scratch discovery or physical placement approval. APOB/TOM validation rejects
+any hole/truncation/TSEG collision across the whole page before ownership; the
+handoff map and usable totals exclude it even if staging/preparation fails.
+Allocators must use the map, not just `allocation_top`.
+
+`NativeCpu::prepare_staged()` validates complete supplied CPU identities/count,
+BSP role, topology, patch, locked PSP BAR and routing/MCA policy before staging
+claims anything. The staging entry checks patch, CLFLUSH geometry, map witness,
+actual linker placement and whole-page source disjointness before its one-way
+claim. It copies directly into raw permanent storage, initializes every unused
+tail byte, writes back the whole page and only then publishes an immutable view.
+There is no initialized page-sized BSP-stack temporary, reclaim token, mutable
+view, failure unlock or retry. The original immutable reset image is untouched.
+
+The source may be temporary ordinary memory; it must be independently trusted,
+readable and immutable through copying. Parsing/copying is **not authentication**.
+The caller still establishes whole-page coherent identity WB RAM, physical
+ownership, asynchronous/reset/SMM/DMA exclusion and map retention through reset.
+No generic WBINVD fallback is accepted for staging. Neither staging nor preparing
+submits PATCH_LOADER; only the subsequent serialized native callback may do so.
+Link-only probes retain the real composition without invoking or flashing it.
+The checkpoint still halts; vendor/image input integration and native activation
+remain outstanding.
 
 ### AMD configuration-access instruction contract
 

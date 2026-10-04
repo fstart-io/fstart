@@ -43,6 +43,7 @@ pub enum Error {
     PspBar,
     Policy(thread::Error),
     Microcode(microcode::Error),
+    Staging(crate::microcode::Error),
     Cache(crate::mp::Error),
     LockTimeout,
     Poisoned,
@@ -134,6 +135,39 @@ impl CpuSet {
     }
 }
 
+struct Preparation {
+    facts: Facts,
+    set: CpuSet,
+    policy: thread::Policy,
+}
+impl Preparation {
+    fn read(
+        msr: &mut impl Msr,
+        smn: &mut impl Smn,
+        topology: Topology,
+        apic_ids: &[u32],
+        source: &[u8],
+    ) -> Result<Self, Error> {
+        let facts = Facts::read(msr)?;
+        topology.thread_slots().map_err(|_| Error::Topology)?;
+        if facts.total != u16::from(topology.logical_threads())
+            || facts.threads_per_core != topology.threads_per_core
+            || !facts.bsp
+        {
+            return Err(Error::Topology);
+        }
+        let set = CpuSet::new(apic_ids, facts.apic_id, facts.total)?;
+        Patch::parse(source, facts.signature).map_err(Error::Microcode)?;
+        // Only the BSP reads the already-installed/locked BAR; never reset a
+        // PSP link to discover it, and never expose the shared port to APs.
+        if smn.read(0x13b102e0) != 0xfd100101 || smn.read(0x13b102e4) != 0 {
+            return Err(Error::PspBar);
+        }
+        let policy = thread::Policy::capture(msr, 0xfd100000).map_err(Error::Policy)?;
+        Ok(Self { facts, set, policy })
+    }
+}
+
 struct Serial {
     locked: AtomicBool,
     poisoned: AtomicBool,
@@ -213,34 +247,50 @@ impl NativeCpu {
         apic_ids: &[u32],
         patch_bytes: &'static [u8],
     ) -> Result<Self, Error> {
-        let facts = Facts::read(msr)?;
-        topology.thread_slots().map_err(|_| Error::Topology)?;
-        if facts.total != u16::from(topology.logical_threads())
-            || facts.threads_per_core != topology.threads_per_core
-            || !facts.bsp
-        {
-            return Err(Error::Topology);
-        }
-        let set = CpuSet::new(apic_ids, facts.apic_id, facts.total)?;
-        let patch = Patch::parse(patch_bytes, facts.signature).map_err(Error::Microcode)?;
         Patch::validate_address(patch_bytes.as_ptr() as u64).map_err(Error::Microcode)?;
-        // Cache the already-installed/locked IOHC PSP BAR before AP callbacks.
-        // Never ask an AP to touch the shared SMN port or reset a PSP link.
-        if smn.read(0x13b102e0) != 0xfd100101 || smn.read(0x13b102e4) != 0 {
-            return Err(Error::PspBar);
-        }
-        let policy = thread::Policy::capture(msr, 0xfd100000).map_err(Error::Policy)?;
-        Ok(Self {
-            set,
-            signature: facts.signature,
-            threads_per_core: facts.threads_per_core,
-            policy,
+        let preparation = Preparation::read(msr, smn, topology, apic_ids, patch_bytes)?;
+        let patch =
+            Patch::parse(patch_bytes, preparation.facts.signature).map_err(Error::Microcode)?;
+        Ok(Self::from_preparation(preparation, patch))
+    }
+    /// Prepare from trusted temporary image bytes, copying only after complete
+    /// CPU/topology/patch/BAR/routing preflight into the platform's permanent page.
+    /// All results after its one-way claim retain that page until reset.
+    ///
+    /// # Safety
+    /// The same cold BSP/AP/map/event/cache/reset/SMM contracts as `prepare`, plus
+    /// `microcode::stage`'s entire-page physical and map-consumer contracts. The
+    /// source is trusted/authenticated, readable and immutable through copying;
+    /// it need not itself remain below4GiB or resident after this returns. It must
+    /// be disjoint from the whole destination allocation. No loader executes here.
+    pub unsafe fn prepare_staged(
+        msr: &mut impl Msr,
+        smn: &mut impl Smn,
+        topology: Topology,
+        apic_ids: &[u32],
+        source: &[u8],
+        memory: &crate::memory::Memory,
+    ) -> Result<Self, Error> {
+        let preparation = Preparation::read(msr, smn, topology, apic_ids, source)?;
+        let resident =
+            unsafe { crate::microcode::stage(source, preparation.facts.signature, memory) }
+                .map_err(Error::Staging)?;
+        let patch = Patch::parse(resident.bytes(), preparation.facts.signature)
+            .map_err(Error::Microcode)?;
+        Ok(Self::from_preparation(preparation, patch))
+    }
+    fn from_preparation(preparation: Preparation, patch: Patch<'static>) -> Self {
+        Self {
+            set: preparation.set,
+            signature: preparation.facts.signature,
+            threads_per_core: preparation.facts.threads_per_core,
+            policy: preparation.policy,
             patch,
             serial: Serial::new(),
             patched: AtomicU16::new(0),
             initialized: AtomicU16::new(0),
             finished: AtomicBool::new(false),
-        })
+        }
     }
     fn local(&self, msr: &mut impl Msr) -> Result<(usize, bool), Error> {
         let facts = Facts::read(msr)?;
