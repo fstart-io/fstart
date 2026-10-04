@@ -15,3 +15,7 @@ pub const MP_END: u64 = 0x02061000;
 /// Allocation policy only: APOB/TOM must establish usable RAM before ownership.
 pub const MICROCODE_START: u64 = MP_END;
 pub const MICROCODE_END: u64 = 0x02062000;
+/// Permanent Gen2 PSP command buffer plus the entire unused page tail.
+/// Never share with the distinct PSP-loaded transfer/scratch allocation.
+pub const PSP_START: u64 = MICROCODE_END;
+pub const PSP_END: u64 = 0x02063000;

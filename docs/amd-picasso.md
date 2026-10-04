@@ -28,6 +28,21 @@ DMA completion, geometry, delay, reset/event/NMI/SMI/SMM exclusion remain caller
 obligations; CLI is not that exclusion. The10,000×100µs poll budget is nominal,
 not a measured hard wall-time bound. No hardware transaction has been run.
 
+`platform-amd::psp::prepare()` owns a separate 4-KiB NOLOAD allocation at
+`02062000..02063000`: the 32-byte protocol buffer and all 4064 bytes of unused
+tail remain reserved through reset, including constructor/transaction errors.
+APOB/TOM preflight rejects holes anywhere in the page; E820, usable totals and
+payload-owned state exclude the entire page. The typed host ELF expectations
+and linker assertions bind the allocation and extended early reservation.
+Map/static placement checks precede reads of the existing enabled+locked BAR;
+BAR mismatch is rejected, never repaired or reset. Indirect SMN reads may write
+selectors, so this is not a zero-hardware-I/O preflight. One-way platform claim
+precedes full-page zeroing and the first mutable buffer reference; no 4-KiB
+initialized BSP-stack temporary is needed. The resident wrapper exposes no
+transport extraction or reclamation. Numerical map/BAR witnesses do not prove
+physical DMA/cache/isolation facts. The constructor remains unsafe and **not
+invoked by the checkpoint**; it establishes no SMM or boot-done prerequisites.
+
 ## Status: a foundation and cold-boot console checkpoint, NOT a complete port
 
 This change is **not hardware-booted, not OS-bootable and not flash-ready**.
@@ -69,6 +84,9 @@ child `vsvkyzmk`. All three reference/original workspaces are untouched.
 | Checkpoint stack (40 KiB) | `02026000..02030000` |
 | **Immutable x86 reset image** | **`02030000..02050000`** |
 | Permanent MP stacks/IDTs and page padding | `02050000..02061000` |
+| Resident microcode and unused page tail | `02061000..02062000` |
+| Native PSP mailbox and unused page tail | `02062000..02063000` |
+| **x86 reset vector** | **`0204fff0`** |
 
 The low AP bootstrap/handler page `00008000..00009000` is also permanently
 reserved. These firmware reservations must survive payload handoff until reset.
@@ -316,7 +334,8 @@ assertions bind the actual section size and endpoints to the memory-map policy.
 
 `Memory::from_apob()` rejects holes or unavailable RAM anywhere in that window,
 including unused slots/page padding, and in the low bootstrap page. It then
-reserves both through reset, along with the resident microcode page below;
+reserves both through reset, along with resident microcode and the whole native
+PSP mailbox page;
 usable totals and the state passed to a later payload exclude these whole
 allocations and the existing PSP/image/TSEG reservations.
 Allocators must use this map, not just its `allocation_top` ceiling.

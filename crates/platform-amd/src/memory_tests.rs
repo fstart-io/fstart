@@ -40,6 +40,7 @@ fn apob_holes_psp_window_and_native_tseg_are_never_handed_to_the_os() {
     let memory = Memory::from_apob(&apob, 0xd0000000, Some(16 << 30), 8 << 20).unwrap();
     assert!(memory.mp_reserved());
     assert!(memory.microcode_reserved());
+    assert!(memory.psp_reserved());
     assert_eq!(memory.tseg_base, 0xc7800000);
     assert_eq!(memory.allocation_top, 0xc7800000);
     let mut entries = [E820Entry::zeroed(); 128];
@@ -47,7 +48,7 @@ fn apob_holes_psp_window_and_native_tseg_are_never_handed_to_the_os() {
     for (base, size) in holes.iter().map(|&(base, size, _)| (base, size)).chain([
         (
             crate::layout::EARLY_START,
-            crate::layout::MICROCODE_END - crate::layout::EARLY_START,
+            crate::layout::PSP_END - crate::layout::EARLY_START,
         ),
         (memory.tseg_base, memory.tseg_size),
         (fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS, 4096),
@@ -73,7 +74,7 @@ fn apob_holes_psp_window_and_native_tseg_are_never_handed_to_the_os() {
     assert_eq!(memory.total_ram_bytes().unwrap(), total);
     assert!(memory.detect_memory(&mut entries[..1]).is_err());
     // The owned state passed to a later host/payload retains the exclusion and
-    // reduced usable total. Neither MP nor microcode is reclaimable/temporary.
+    // reduced usable total. MP, microcode and PSP mailbox pages stay permanent.
     let state = memory.into_state();
     assert_eq!(state.total_ram(), total);
     assert!(
@@ -82,13 +83,13 @@ fn apob_holes_psp_window_and_native_tseg_are_never_handed_to_the_os() {
             .iter()
             .any(|entry| entry.kind == E820Kind::Reserved as u32
                 && entry.addr <= crate::layout::MP_START
-                && entry.addr + entry.size >= crate::layout::MICROCODE_END)
+                && entry.addr + entry.size >= crate::layout::PSP_END)
     );
 }
 
 #[test]
 fn resident_holes_including_unused_slots_and_page_padding_reject_before_ownership() {
-    use crate::layout::{MICROCODE_END, MICROCODE_START, MP_END, MP_START};
+    use crate::layout::{MICROCODE_END, MICROCODE_START, MP_END, MP_START, PSP_END, PSP_START};
     for (base, size) in [
         (MP_START - 0x1000, 0x2000),
         (MP_START + 0xf000, 0x2000),
@@ -97,6 +98,9 @@ fn resident_holes_including_unused_slots_and_page_padding_reject_before_ownershi
         (MICROCODE_START, 1),
         (MICROCODE_START + 0xc80, 1),
         (MICROCODE_END - 1, 1),
+        (PSP_START, 1),
+        (PSP_START + 32, 1), // unused tail is still permanently reserved
+        (PSP_END - 1, 1),
         (fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS + 16, 1),
     ] {
         let bytes = apob_bytes(&[(base, size, 99)]);

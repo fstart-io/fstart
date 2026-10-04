@@ -21,3 +21,5 @@ pub mod microcode;
 pub mod mp;
 #[cfg(feature = "picasso")]
 pub mod picasso;
+#[cfg(all(feature = "picasso", target_arch = "x86_64"))]
+pub mod psp;

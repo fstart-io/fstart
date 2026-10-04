@@ -7,19 +7,20 @@
 OUTPUT_FORMAT(elf64-x86-64)
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(_start)
-PHDRS { image PT_LOAD FLAGS(5); writable PT_LOAD FLAGS(6); mp PT_LOAD FLAGS(6); microcode PT_LOAD FLAGS(6); }
+PHDRS { image PT_LOAD FLAGS(5); writable PT_LOAD FLAGS(6); mp PT_LOAD FLAGS(6); microcode PT_LOAD FLAGS(6); psp PT_LOAD FLAGS(6); }
 MEMORY {
     image (rx) : ORIGIN = 0x02030000, LENGTH = 0x20000
     writable (rw) : ORIGIN = 0x02019000, LENGTH = 0x17000
     mp (rw) : ORIGIN = 0x02050000, LENGTH = 0x11000
     microcode (rw) : ORIGIN = 0x02061000, LENGTH = 0x1000
+    psp (rw) : ORIGIN = 0x02062000, LENGTH = 0x1000
 }
 _fstart_apob_start = 0x02001000;
 _fstart_apob_end = 0x02011000;
 _fstart_psp_shared_start = 0x02011000;
 _fstart_psp_shared_end = 0x02019000;
 _fstart_early_reserved_start = 0x02000000;
-_fstart_early_reserved_end = 0x02062000;
+_fstart_early_reserved_end = 0x02063000;
 _fstart_page_tables = 0x02020000;
 _fstart_page_tables_end = 0x02026000;
 _fstart_stack_bottom = 0x02026000;
@@ -62,10 +63,18 @@ SECTIONS {
         KEEP(*(.picasso_microcode))
         _fstart_microcode_end = .;
     } > microcode :microcode
+    .picasso_psp ORIGIN(psp) (NOLOAD) : {
+        _fstart_psp_start = .;
+        KEEP(*(.picasso_psp))
+        _fstart_psp_end = .;
+    } > psp :psp
     /DISCARD/ : { *(.eh_frame*) *(.comment*) *(.note*) }
 }
 _fstart_gdt_offset = _fstart_gdt_pointer & 0xffff;
-ASSERT(_fstart_early_reserved_end == _fstart_microcode_end, "early firmware reservation must include resident microcode memory")
+ASSERT(_fstart_early_reserved_end == _fstart_psp_end, "early firmware reservation must include resident PSP mailbox memory")
+ASSERT(_fstart_psp_start == 0x02062000 && _fstart_psp_end == 0x02063000, "PSP mailbox layout must match platform reservation")
+ASSERT(SIZEOF(.picasso_psp) == 0x1000, "PSP mailbox storage capacity/layout mismatch")
+ASSERT(_fstart_microcode_end == _fstart_psp_start, "PSP mailbox must not overlap microcode")
 ASSERT(_fstart_microcode_start == 0x02061000 && _fstart_microcode_end == 0x02062000, "microcode layout must match platform reservation")
 ASSERT(_fstart_mp_end == _fstart_microcode_start, "resident regions must not overlap")
 ASSERT(SIZEOF(.picasso_microcode) == 0x1000, "microcode storage capacity/layout mismatch")
