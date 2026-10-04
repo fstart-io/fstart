@@ -2,12 +2,14 @@
 //! Picasso-specific bootstrap policy for the reusable architectural MP engine.
 //! Cache preparation and one-shot SMU launch adaptation, not completed MP integration.
 mod release;
+mod resident;
 use fstart_arch::x86::mp::cache::{State, Write};
 use fstart_driver_amd::picasso::{
     cache,
     cpu::{self, Msr},
 };
 pub use release::ColdRelease;
+pub use resident::{Error as ResidentError, initialize as initialize_resident};
 
 #[derive(Debug)]
 pub enum Error {

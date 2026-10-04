@@ -4,6 +4,8 @@
 #[cfg(feature = "picasso")]
 pub mod early;
 #[cfg(feature = "picasso")]
+pub mod layout;
+#[cfg(feature = "picasso")]
 pub mod memory;
 #[cfg(all(test, feature = "picasso"))]
 mod memory_tests;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native memory/resource contract. APOB and AMD TOP_MEM replace FSP HOBs.
+use crate::layout;
 use fstart_core::services::{
     ServiceError,
     memory_detect::{E820Entry, E820Kind, E820State, MemoryDetector, build_pc_compatible_e820},
@@ -41,7 +42,7 @@ impl Memory {
         let top = apob.low_top().min(top_mem);
         let tseg_base =
             top.checked_sub(tseg_size).ok_or(Error::Boundary)? & !(tseg_size.max(0x800000) - 1);
-        if tseg_base <= 0x02050000 {
+        if tseg_base <= layout::MP_END {
             return Err(Error::Boundary);
         }
         let mut map = E820State::new();
@@ -59,8 +60,30 @@ impl Memory {
             map.reserve_range(hole.base, hole.size)
                 .map_err(|_| Error::Capacity)?;
         }
-        // Exclude the entire PSP/early-firmware window, not just executable bytes.
-        map.reserve_range(0x02000000, 0x50000)
+        // The new arena must be actual usable APOB/TOM RAM, not merely an
+        // address absent from the payload map. Refuse a hole or truncated range
+        // before ever claiming or touching that storage.
+        let trampoline = fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS;
+        let usable = |base, end| {
+            map.entries().iter().any(|entry| {
+                entry.kind == E820Kind::Ram as u32
+                    && entry.addr <= base
+                    && entry
+                        .addr
+                        .checked_add(entry.size)
+                        .is_some_and(|top| top >= end)
+            })
+        };
+        if !usable(layout::MP_START, layout::MP_END) || !usable(trampoline, trampoline + 4096) {
+            return Err(Error::Boundary);
+        }
+        // Exclude PSP/early firmware AND the entire permanent MP region,
+        // including page padding and slots unused by this particular CPU.
+        map.reserve_range(layout::EARLY_START, layout::MP_END - layout::EARLY_START)
+            .map_err(|_| Error::Capacity)?;
+        // AP reset dispatch and exception handlers also retain the complete low
+        // bootstrap page through reset; leaving it as RAM permits payload reuse.
+        map.reserve_range(trampoline, 4096)
             .map_err(|_| Error::Capacity)?;
         let total = map
             .entries()
@@ -75,6 +98,18 @@ impl Memory {
             allocation_top: tseg_base,
             tseg_base,
             tseg_size,
+        })
+    }
+    /// A reservation witness for the platform's fixed MP allocation. This is
+    /// map bookkeeping only, not physical mapping/coherence or SMM isolation.
+    pub(crate) fn mp_reserved(&self) -> bool {
+        self.map.entries().iter().any(|entry| {
+            entry.kind == E820Kind::Reserved as u32
+                && entry.addr <= layout::MP_START
+                && entry
+                    .addr
+                    .checked_add(entry.size)
+                    .is_some_and(|end| end >= layout::MP_END)
         })
     }
     pub fn state(&self) -> &E820State {

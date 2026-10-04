@@ -944,8 +944,11 @@ fn mp_init_selected(
     })
 }
 
-/// Pure preflight, independent of whether this configuration needs AP release.
-fn validate_mp_configuration(
+/// Cached-only preflight, independent of whether this configuration needs AP
+/// release. Platforms may use this before claiming their permanent storage.
+/// This does not claim the MP attempt or attest physical CPU/resource facts.
+/// The actual MP entry revalidates immediately before its own ownership claim.
+pub fn validate_mp_configuration(
     config: &MpConfig<'_>,
     launcher: &mut Option<&mut dyn ApLauncher>,
 ) -> Result<u16, MpError> {

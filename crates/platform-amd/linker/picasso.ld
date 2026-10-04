@@ -7,17 +7,18 @@
 OUTPUT_FORMAT(elf64-x86-64)
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(_start)
-PHDRS { image PT_LOAD FLAGS(5); writable PT_LOAD FLAGS(6); }
+PHDRS { image PT_LOAD FLAGS(5); writable PT_LOAD FLAGS(6); mp PT_LOAD FLAGS(6); }
 MEMORY {
     image (rx) : ORIGIN = 0x02030000, LENGTH = 0x20000
     writable (rw) : ORIGIN = 0x02019000, LENGTH = 0x17000
+    mp (rw) : ORIGIN = 0x02050000, LENGTH = 0x11000
 }
 _fstart_apob_start = 0x02001000;
 _fstart_apob_end = 0x02011000;
 _fstart_psp_shared_start = 0x02011000;
 _fstart_psp_shared_end = 0x02019000;
 _fstart_early_reserved_start = 0x02000000;
-_fstart_early_reserved_end = 0x02050000;
+_fstart_early_reserved_end = 0x02061000;
 _fstart_page_tables = 0x02020000;
 _fstart_page_tables_end = 0x02026000;
 _fstart_stack_bottom = 0x02026000;
@@ -48,9 +49,19 @@ SECTIONS {
         . = ALIGN(16);
         _fstart_bss_end = .;
     } > writable :writable
+    .picasso_mp ORIGIN(mp) (NOLOAD) : {
+        _fstart_mp_start = .;
+        KEEP(*(.picasso_mp))
+        _fstart_mp_allocation_end = .;
+        . = ALIGN(0x1000);
+        _fstart_mp_end = .;
+    } > mp :mp
     /DISCARD/ : { *(.eh_frame*) *(.comment*) *(.note*) }
 }
 _fstart_gdt_offset = _fstart_gdt_pointer & 0xffff;
+ASSERT(_fstart_early_reserved_end == _fstart_mp_end, "early firmware reservation must include resident MP memory")
+ASSERT(_fstart_mp_start == 0x02050000 && _fstart_mp_end == 0x02061000, "MP layout must match platform reservation")
+ASSERT(_fstart_mp_allocation_end - _fstart_mp_start == 0x10800, "MP storage capacity/layout mismatch")
 ASSERT(SIZEOF(.data) == 0, "checkpoint must not mutate the PSP reset image: initialized data unsupported")
 ASSERT(SIZEOF(.unsupported_dynamic) + SIZEOF(.unsupported_rel) + SIZEOF(.unsupported_rela) + SIZEOF(.unsupported_relr) + SIZEOF(.unsupported_loader) == 0, "Picasso image cannot require runtime linking or IFUNC resolution")
 ASSERT(_fstart_text_end <= 0x0204e000, "Picasso reset code exceeds DRAM image budget")

@@ -39,7 +39,10 @@ child `vsvkyzmk`. All three reference/original workspaces are untouched.
 | Identity page tables | `02020000..02026000` |
 | Checkpoint stack (40 KiB) | `02026000..02030000` |
 | **Immutable x86 reset image** | **`02030000..02050000`** |
-| **x86 reset vector** | **`0204fff0`** |
+| Permanent MP stacks/IDTs and page padding | `02050000..02061000` |
+
+The low AP bootstrap/handler page `00008000..00009000` is also permanently
+reserved. These firmware reservations must survive payload handoff until reset.
 
 The linker explicitly uses these **DRAM VMAs/LMAs**, not `ff000000` flash VMAs.
 The PSP BIOS-directory entry type `62` copies an uncompressed 128-KiB image to
@@ -266,13 +269,36 @@ A never-executed release link harness retains the real generic MP path with
 seven external stacks: stage BSS is0x1030 bytes, external NOLOAD allocation
 is0x8800 bytes, and the default arena is absent. This is a generic-link budget
 check, not a complete native-driver binary, stack measurement, physical mapping
-or boot result. Native placement/E820 integration and activation remain unwired.
+or boot result. The separate platform integration below does not activate MP.
 
 Linking that path exposed16 bytes of static GOT pointers (`memcpy` and AP entry)
 previously classified as writable initial data. The linker now places only the
 host-resolved `.got` in the immutable RX LOAD. Runtime-link/IFUNC sections and
 all genuine writable initial data remain forbidden. LLD retains SHF_WRITE on
 the synthetic section; RX program-header placement is not runtime page WP.
+
+### Platform resident-memory integration
+
+`platform-amd::layout` and `linker/picasso.ld` allocate fifteen AP slots plus
+IDTs (`0x10800` bytes), rounded to a permanent `0x11000`-byte NOLOAD window at
+`02050000`. Sixteen total CPUs is a software capacity covering the topology
+decoder's maximum envelope, not discovery of sixteen threads on a board. Linker
+assertions bind the actual section size and endpoints to the memory-map policy.
+
+`Memory::from_apob()` rejects holes or unavailable RAM anywhere in that window,
+including unused slots/page padding, and in the low bootstrap page. It then
+reserves both through reset; usable totals and the state passed to a later
+payload exclude them along with the existing PSP/image/TSEG reservations.
+Allocators must use this map, not just its `allocation_top` ceiling.
+
+`mp::initialize_resident()` validates the selected complete CPU count before
+any storage ownership claim, verifies map reservation and actual static
+placement, then consumes the linker-owned allocation once. It never clears its
+claim or returns a reclaim token. Architectural entry repeats cached preflight
+before its own claim; physical mapping, coherence, event/cache/reset semantics
+and retention of all other AP resources remain unsafe integration obligations.
+The console checkpoint does **not** invoke this entry or a native CPU driver.
+No native AP/OS execution, measured stack budget, SMM isolation or S3 is claimed.
 
 ### AMD configuration-access instruction contract
 
