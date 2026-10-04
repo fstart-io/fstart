@@ -19,6 +19,8 @@ pub struct BuildPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Assembly {
     Ffs(Box<FfsAssembly>),
+    /// A PSP partition fragment, never a factory chip image or FFS directory.
+    PicassoPsp(Box<crate::amd::assembly::PicassoAssembly>),
     /// Compiler/check/editor support only. No image/flash/run contract supplied.
     Unassembled {
         platform: fstart_core::Platform,
@@ -28,19 +30,23 @@ impl Assembly {
     pub fn platform(&self) -> fstart_core::Platform {
         match self {
             Self::Ffs(image) => image.platform,
+            Self::PicassoPsp(_) => fstart_core::Platform::X86_64,
             Self::Unassembled { platform } => *platform,
         }
     }
     pub fn bootstrap(&self) -> &[(String, BootstrapRole)] {
         match self {
             Self::Ffs(image) => &image.bootstrap,
-            Self::Unassembled { .. } => &[],
+            Self::PicassoPsp(_) | Self::Unassembled { .. } => &[],
         }
     }
     pub fn ffs(&self) -> Result<&FfsAssembly, String> {
         match self {
             Self::Ffs(image) => Ok(image),
             Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
+            Self::PicassoPsp(_) => {
+                Err("PSP partition fragment has no runtime config/run/flash contract".into())
+            }
         }
     }
     pub fn resolve_workspace_inputs(
@@ -50,7 +56,7 @@ impl Assembly {
     ) -> Result<(), String> {
         match self {
             Self::Ffs(image) => image.resolve_workspace_inputs(root, board),
-            Self::Unassembled { .. } => Ok(()),
+            Self::PicassoPsp(_) | Self::Unassembled { .. } => Ok(()),
         }
     }
     pub fn config(&self, name: &str) -> Result<fstart_core::BoardConfig, String> {
@@ -352,6 +358,19 @@ impl BuildPlan {
         Ok(())
     }
 
+    pub fn validate_image_selection(
+        &self,
+        selection: &crate::plan::BuildSelection,
+    ) -> Result<(), String> {
+        match (&selection.image_config, &self.assembly) {
+            (Some(path), Assembly::PicassoPsp(image)) if *path == image.configuration.path => {
+                Ok(())
+            }
+            (None, Assembly::Ffs(_) | Assembly::Unassembled { .. }) => Ok(()),
+            _ => Err("image configuration was not bound unchanged by the platform".into()),
+        }
+    }
+
     pub fn unit(&self, name: &str) -> Result<&CompilationUnit, String> {
         self.units
             .iter()
@@ -487,6 +506,38 @@ impl BuildPlan {
             }
         }
         let mut bootstrap = BTreeSet::new();
+        if let Assembly::PicassoPsp(image) = &self.assembly {
+            image.validate()?;
+            let unit = self.unit(&image.reset_unit)?;
+            let UnitOutput::Executable {
+                expectations,
+                load_address,
+                flat_capacity,
+            } = &unit.output
+            else {
+                return Err("PSP reset producer is not executable".into());
+            };
+            if !self.stages.contains(&image.reset_unit)
+                || *load_address != image.reset_destination
+                || *flat_capacity != u64::from(image.reset_size)
+                || !matches!(expectations.architecture, crate::elf::Architecture::X86_64)
+                || !expectations.elf64
+                || !expectations.little_endian
+                || expectations.copy.is_some()
+                || expectations.stored.len() != 1
+                || expectations.stored[0].base != image.reset_destination
+                || expectations.stored[0].size != u64::from(image.reset_size)
+                || !expectations.identity_mapping
+                || expectations.entry
+                    != image
+                        .reset_destination
+                        .checked_add(u64::from(image.reset_size))
+                        .and_then(|end| end.checked_sub(16))
+                || expectations.stored_flags != Some(5)
+            {
+                return Err("PSP reset producer differs from image operation".into());
+            }
+        }
         for (name, _) in self.assembly.bootstrap() {
             if !self.stages.iter().skip(1).any(|s| s == name) || !bootstrap.insert(name) {
                 return Err(format!("unknown or duplicate bootstrap binding {name}"));

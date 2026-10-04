@@ -65,6 +65,11 @@ pub fn collect(root: &Path, bindings: &[FileBinding]) -> Result<Vec<Input>, Stri
         .collect()
 }
 impl Input {
+    /// Host image operations may consume the same bounded immutable bytes without
+    /// putting image-only namespaces into a firmware compiler environment.
+    pub fn bytes(&self) -> &[u8] {
+        &self.data
+    }
     /// Bind origin, namespace and actual bytes, not just a filename or mtime.
     pub fn hash(&self, hash: &mut Sha256) -> Result<(), String> {
         let source = self.source.to_str().ok_or("non-UTF8 compiler input path")?;

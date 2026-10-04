@@ -27,6 +27,83 @@ fn image() -> PicassoImage {
     }
 }
 #[test]
+fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
+    use crate::build_plan::FileBinding;
+    use assembly::{FileBlob, PicassoAssembly, PicassoFiles};
+    let raw = image();
+    let files = PicassoFiles {
+        flash_size: raw.flash_size,
+        efs_offset: raw.efs_offset,
+        partition_end: raw.partition_end,
+        spi_read_mode: raw.spi_read_mode,
+        spi_speed: raw.spi_speed,
+        micron: raw.micron,
+        soft_fuse: raw.soft_fuse,
+        psp: vec![FileBlob {
+            key: raw.psp[0].key,
+            path: "explicit/psp.bin".into(),
+        }],
+        bios: vec![FileBlob {
+            key: raw.bios[0].key,
+            path: "explicit/apcb.bin".into(),
+        }],
+        apob_nv: raw.apob_nv,
+        psp_nv: raw.psp_nv,
+    };
+    let operation = PicassoAssembly {
+        reset_unit: "reset".into(),
+        configuration: FileBinding {
+            environment: "IMAGE_CONFIG".into(),
+            path: "image.json".into(),
+            capacity: 65536,
+        },
+        files,
+        reset_destination: raw.reset_destination,
+        reset_size: raw.reset_image.len() as u32,
+        apob_destination: raw.apob_destination,
+        shared_memory: raw.shared_memory,
+    };
+    let json = serde_json::to_vec(&operation.files).unwrap();
+    let sources = [
+        json.as_slice(),
+        raw.psp[0].bytes.as_slice(),
+        raw.bios[0].bytes.as_slice(),
+    ];
+    let packed = operation.pack(&raw.reset_image, &sources).unwrap();
+    let expected = raw.pack().unwrap();
+    assert_eq!(packed.offset, 0xe20000);
+    assert_eq!(packed.bytes, expected.bytes);
+    assert_eq!(
+        operation
+            .bindings()
+            .unwrap()
+            .iter()
+            .map(|file| file.environment.as_str())
+            .collect::<Vec<_>>(),
+        ["IMAGE_CONFIG", "PSP_00_00_00", "BIOS_60_00_00"]
+    );
+    assert!(
+        operation
+            .pack(&raw.reset_image[..0x1ffff], &sources)
+            .is_err()
+    );
+    let mut changed = operation.clone();
+    changed.files.soft_fuse ^= 1;
+    assert!(
+        changed
+            .pack(&raw.reset_image, &sources)
+            .unwrap_err()
+            .contains("configuration changed")
+    );
+    let mut bad = operation.clone();
+    bad.files.bios.push(bad.files.bios[0].clone());
+    assert!(bad.bindings().is_err());
+    bad = operation.clone();
+    bad.files.bios[0].key.subprogram = 1;
+    assert!(bad.bindings().is_err());
+}
+
+#[test]
 fn directories_and_copy_to_dram() {
     let image = image();
     let packed = image.pack().unwrap();

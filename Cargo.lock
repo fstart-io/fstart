@@ -555,7 +555,7 @@ dependencies = [
  "clap",
  "fstart-driver-amd",
  "fstart-image-build",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -747,6 +747,7 @@ dependencies = [
  "object 0.37.3",
  "rand_core",
  "serde",
+ "serde_json",
  "zerocopy",
 ]
 

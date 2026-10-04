@@ -147,6 +147,9 @@ pub struct BuildSelection {
     /// A selected platform must bind every request, unchanged, to compiler units.
     #[serde(default)]
     pub compiler_files: Vec<CompilerFileSelection>,
+    /// Explicit platform-owned image configuration, not a compiler environment.
+    #[serde(default)]
+    pub image_config: Option<String>,
     /// SMBIOS Type 0 release date selected by fbuild, in MM/DD/YYYY form.
     #[serde(default)]
     pub smbios_release_date: Option<String>,
@@ -163,6 +166,13 @@ pub struct BuildSelection {
 
 impl BuildSelection {
     pub fn validate_compiler_files(&self) -> Result<(), String> {
+        if self
+            .image_config
+            .as_ref()
+            .is_some_and(|path| path.is_empty() || path.contains('\0'))
+        {
+            return Err("invalid image configuration path".into());
+        }
         let mut names = std::collections::BTreeSet::new();
         for input in &self.compiler_files {
             input.validate()?;

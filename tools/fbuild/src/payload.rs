@@ -64,6 +64,9 @@ pub struct BuildArgs {
     /// The selected platform must bind each request unchanged, without fallback.
     #[arg(long = "compiler-input", value_parser = CompilerFileSelection::parse)]
     pub compiler_inputs: Vec<CompilerFileSelection>,
+    /// Explicit image configuration interpreted by the selected platform.
+    #[arg(long)]
+    pub image_config: Option<String>,
     /// SMBIOS Type 0 release date in MM/DD/YYYY form.
     #[arg(long, value_parser = parse_smbios_date, default_value_t = current_smbios_date())]
     pub smbios_date: String,
@@ -91,6 +94,7 @@ impl Default for BuildArgs {
     fn default() -> Self {
         Self {
             compiler_inputs: Vec::new(),
+            image_config: None,
             smbios_date: current_smbios_date(),
             linux_kernel_load_addr: None,
             linux_bootargs: None,
@@ -106,6 +110,7 @@ impl BuildArgs {
         BuildSelection {
             payload: payload.map(|choice| choice.as_str().to_owned()),
             compiler_files: self.compiler_inputs.clone(),
+            image_config: self.image_config.clone(),
             smbios_release_date: Some(self.smbios_date.clone()),
             x86_linux_kernel_load_addr: self.linux_kernel_load_addr,
             x86_linux_bootargs: self.linux_bootargs.clone(),
@@ -120,6 +125,9 @@ impl BuildArgs {
                 "--compiler-input".into(),
                 format!("{}={}", input.environment, input.path),
             ]);
+        }
+        if let Some(path) = &self.image_config {
+            args.extend(["--image-config".into(), path.clone()]);
         }
         args.extend(["--smbios-date".into(), self.smbios_date.clone()]);
         if let Some(value) = self.linux_kernel_load_addr {
@@ -238,11 +246,17 @@ mod tests {
             "inputs",
             "--compiler-input",
             "FSTART_BYTES=a path/file=1.bin",
+            "--image-config",
+            "a path/image=2.json",
         ])
         .unwrap();
         let selected = cli.options.selection(None);
         selected.validate_compiler_files().unwrap();
         assert_eq!(selected.compiler_files[0].path, "a path/file=1.bin");
+        assert_eq!(
+            selected.image_config.as_deref(),
+            Some("a path/image=2.json")
+        );
         let mut forwarded = vec!["inputs".into()];
         cli.options.append_cli_args(&mut forwarded);
         let forwarded = InputCli::try_parse_from(forwarded)
@@ -253,6 +267,7 @@ mod tests {
             forwarded.compiler_files[0].path,
             selected.compiler_files[0].path
         );
+        assert_eq!(forwarded.image_config, selected.image_config);
         let duplicates = InputCli::try_parse_from([
             "inputs",
             "--compiler-input",

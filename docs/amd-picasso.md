@@ -6,8 +6,9 @@ This change is **not hardware-booted, not OS-bootable and not flash-ready**.
 It has no FSP-M/FSP-S dependency or hidden binary call. It also does **not**
 replace those binaries' work with no-ops and claim a successful native port.
 `fbuild` metadata now exports compiler/check/editor support for the checkpoint,
-not a production image contract. Assembly/run/flash fail explicitly: PSP directory
-packaging needs a distinct image operation, not a fictitious FFS projection.
+not a production image contract. With explicit `--image-config`, assembly now
+uses a distinct typed PSP partition operation, never FFS. Without it assembly
+fails explicitly; run/flash reject the fragment's missing runtime/chip contract.
 
 The implementation is in jj workspace `../fstart-picasso`. Audited foundation
 `qtyqotpq` is a child of the user's `mpzspnrw`; continued native work is in its
@@ -472,11 +473,50 @@ fbuild build --board google-vilboz --release \
   --compiler-input FSTART_AMD_MICROCODE_BUNDLE=/path/to/bundle.bin
 ```
 
-This emits a validated reset ELF and flat binary, **not** PSP directories or a
-flash image. The unit is release-only and uses the real Picasso linker script.
+This build command emits a validated reset ELF and flat binary, **not** PSP
+directories or a flash image. The unit is release-only and uses the real Picasso linker script.
 Its ELF expectations require the real DRAM entry/reservations and RX file-backed
 LOADs, without fabricating a layout descriptor. Existing FFS plans still require
 their descriptor. The checkpoint still halts and never installs the linked patch.
+
+Optional typed packaging uses a bounded JSON configuration (64 KiB), with explicit
+workspace-relative or absolute blob paths, no discovery and no payload bytes in
+JSON. Keys are `{kind, subprogram, instance}`; PSP/BIOS selectors follow the packer.
+
+```json
+{
+  "flash_size": 16777216, "efs_offset": 14811136, "partition_end": 16777216,
+  "spi_read_mode": 4, "spi_speed": 0, "micron": false, "soft_fuse": 805306368,
+  "psp": [{"key": {"kind": 0, "subprogram": 0, "instance": 0}, "path": "/explicit/vendor-file.bin"}],
+  "bios": [{"key": {"kind": 96, "subprogram": 0, "instance": 0}, "path": "/explicit/prepared-apcb.bin"}],
+  "apob_nv": null, "psp_nv": null
+}
+```
+
+This minimal schema example is **not a complete vendor manifest or bootable
+configuration**. Supply all exact required/trusted PSP/PMU/APCB inputs and correct
+flash/SPI/fuse/NV policy. Unknown JSON fields/selectors and duplicates are rejected.
+Platform policy supplies the reset/APOB/shared DRAM geometry, not JSON overrides.
+
+```sh
+fbuild assemble --board google-vilboz --release \
+  --compiler-input FSTART_AMD_MICROCODE_BUNDLE=/explicit/bundle.bin \
+  --image-config /explicit/picasso-image.json
+```
+
+The actual reset producer's flat bytes feed BIOS type62 (reset+copy, uncompressed).
+The result is `psp-fragment.bin` plus an offset/size/SHA/source/reset receipt, **not**
+a chip image. Image-only input namespaces never reach the firmware compiler.
+All blobs/configuration have bounded reads; the aggregate blob budget is the
+partition size. The format packer checks EFS/NV/alignment/directory/partition
+constraints before publication (some failures can occur after firmware compilation).
+Canonical origins and actual bytes select image artifact directories. Read-only
+snapshots fail closed on corrupt reuse; output publication uses `create_new`,
+never overwrites, and interrupted writes may leave partial files without repair.
+The owner must exclude filesystem mutation from host resolution through image
+packaging; snapshots/hashes/header checks are not hostile-filesystem isolation,
+authentication, freshness, physical placement or boot approval. No vendor bytes
+are redistributed; packaging does not activate native CPU/device/OS flows.
 
 Extract only immutable image sections with binutils `objcopy -O binary`,
 `--only-section` for `.text`, `.rodata`, `.init16`, `.reset`, `.last_byte`, and

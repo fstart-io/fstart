@@ -16,6 +16,7 @@ pub mod linker;
 pub mod payload;
 mod plan_executor;
 mod profile_source;
+mod psp_image;
 pub mod qemu;
 #[cfg(test)]
 mod qemu_golden_tests;

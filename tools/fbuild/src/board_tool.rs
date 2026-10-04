@@ -195,7 +195,33 @@ fn assemble(
     options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, options)?;
+    let resolved = crate::resolved_image::ResolvedImage::load(
+        &workspace_root,
+        manifest,
+        options.selection(payload),
+    )?;
+    if let fstart_image_build::build_plan::Assembly::PicassoPsp(operation) =
+        &resolved.build.plan.assembly
+    {
+        if kernel.is_some() || firmware.is_some() || fit.is_some() {
+            return Err("PSP image operation does not consume payload-file overrides".into());
+        }
+        return crate::psp_image::assemble(
+            &workspace_root,
+            manifest,
+            &resolved,
+            operation,
+            release,
+        )
+        .map(|image| image.image);
+    }
+    let config = resolved.assembler_config(&manifest.board)?;
+    let parsed = ParsedBoard {
+        config,
+        acpi_only_devices: Vec::new(),
+        resolved: Some(resolved),
+    };
+    let manifest = manifest.clone();
     assemble_loaded(
         &workspace_root,
         manifest,

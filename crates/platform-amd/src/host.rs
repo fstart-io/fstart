@@ -35,8 +35,9 @@ impl<B: BoardFacts> Plan<B> {
         );
     }
 }
-/// Compiler support only. The checkpoint still halts, without MP/patch loading.
-/// The build owner excludes source/cache mutation from resolution through compile.
+/// Compiler support and optional PSP partition packaging. The checkpoint still
+/// halts without MP/patch loading. Build owner excludes filesystem mutation from
+/// resolution through compilation AND image packaging; no trust is inferred.
 pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.validate_compiler_files()?;
     if B::CONFIG.console_uart() >= 4 {
@@ -114,13 +115,47 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
         ]),
     };
     expectations.validate()?;
+    let assembly = if let Some(path) = &selection.image_config {
+        let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 65536 {
+            return Err("image configuration is not a bounded nonempty regular file".into());
+        }
+        let mut bytes = std::vec::Vec::new();
+        std::fs::File::open(path)
+            .map_err(|e| e.to_string())?
+            .take(65537)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > 65536 {
+            return Err("image configuration exceeds budget".into());
+        }
+        let files = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("invalid Picasso image configuration: {e}"))?;
+        let operation = fstart_image_build::amd::assembly::PicassoAssembly {
+            reset_unit: "reset".into(),
+            configuration: FileBinding {
+                environment: "IMAGE_CONFIG".into(),
+                path: path.clone(),
+                capacity: 65536,
+            },
+            files,
+            reset_destination: image.base,
+            reset_size: picasso::RESET_IMAGE_SIZE,
+            apob_destination: picasso::APOB_BASE,
+            shared_memory: Some((picasso::SHARED_BASE, picasso::SHARED_SIZE)),
+        };
+        operation.validate()?;
+        Assembly::PicassoPsp(std::boxed::Box::new(operation))
+    } else {
+        Assembly::Unassembled {
+            platform: fstart_core::Platform::X86_64,
+        }
+    };
     let plan = BuildPlan {
         payload: "halt".into(),
         stages: vec!["reset".into()],
         inputs: vec![],
-        assembly: Assembly::Unassembled {
-            platform: fstart_core::Platform::X86_64,
-        },
+        assembly,
         units: vec![CompilationUnit {
             name: "reset".into(),
             cargo_target: CargoTarget::BoardBinary,
@@ -156,6 +191,7 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
         }],
     };
     plan.validate_compiler_selections(&selection)?;
+    plan.validate_image_selection(&selection)?;
     Ok(plan)
 }
 
@@ -218,6 +254,36 @@ mod tests {
         };
         assert!(expectations.descriptor.is_none());
         assert_eq!(expectations.stored_flags, Some(5));
+        let config_path = source.0.join("image = exact.json");
+        std::fs::write(&config_path, r#"{"flash_size":16777216,"efs_offset":14811136,"partition_end":16777216,"spi_read_mode":4,"spi_speed":0,"micron":false,"soft_fuse":805306368,"psp":[],"bios":[],"apob_nv":null,"psp_nv":null}"#).unwrap();
+        let mut image_selection = selected.clone();
+        image_selection.image_config = Some(config_path.to_str().unwrap().into());
+        let image_plan = resolve::<Board>(image_selection.clone()).unwrap();
+        assert!(image_plan.assembly.config("test").is_err());
+        let Assembly::PicassoPsp(operation) = &image_plan.assembly else {
+            unreachable!()
+        };
+        assert_eq!(
+            operation.configuration.path,
+            image_selection.image_config.clone().unwrap()
+        );
+        assert_eq!(operation.reset_destination, picasso::RESET_IMAGE_BASE);
+        image_plan
+            .validate_image_selection(&image_selection)
+            .unwrap();
+        assert!(plan.validate_image_selection(&image_selection).is_err());
+        let mut wrong = image_plan.clone();
+        let Assembly::PicassoPsp(operation) = &mut wrong.assembly else {
+            unreachable!()
+        };
+        operation.reset_destination += 0x10000;
+        assert!(wrong.order().is_err());
+        image_selection.image_config = Some("substituted.json".into());
+        assert!(
+            image_plan
+                .validate_image_selection(&image_selection)
+                .is_err()
+        );
         for change in [
             |s: &mut BuildSelection| s.payload = Some("uefi".into()),
             |s: &mut BuildSelection| s.compiler_files[0].environment = "UNSUPPORTED".into(),

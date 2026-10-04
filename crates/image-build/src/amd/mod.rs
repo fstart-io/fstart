@@ -4,6 +4,7 @@
 //! This deliberately does not pretend to support newer multi-level/ISH formats.
 //! Signed AMD blobs are copied unchanged; this is a packer, not a signing tool.
 pub mod apcb;
+pub mod assembly;
 pub mod config;
 mod wire;
 
@@ -13,7 +14,10 @@ use zerocopy::IntoBytes;
 pub type Result<T> = std::result::Result<T, String>;
 
 /// A file entry's identity. Instance/subprogram are not interchangeable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct Key {
     pub kind: u8,
     pub subprogram: u8,
@@ -36,7 +40,8 @@ pub struct Blob {
 }
 
 /// References describe existing flash allocations, never MMIO guesses.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FlashRegion {
     pub offset: u32,
     pub size: u32,
@@ -143,35 +148,38 @@ impl Writer {
     }
 }
 
-fn validate_blobs(blobs: &[Blob], bios: bool) -> Result<()> {
-    let mut keys = std::collections::BTreeSet::new();
-    for blob in blobs {
-        let key = blob.key;
-        if !keys.insert(key) {
-            return Err(format!("duplicate AMD entry {key:?}"));
-        }
-        if key.instance > 15 || (bios && key.subprogram > 7) || (!bios && key.instance != 0) {
-            return Err(format!("invalid AMD entry selector {key:?}"));
-        }
-        // Gen1 APCB/backup selectors are instance-only. The source helper
-        // creates backup entries with subprogram zero; accepting nonzero APCB
-        // subprograms could create duplicate generated backup selectors.
-        if bios && matches!(key.kind, 0x60 | 0x68) && key.subprogram != 0 {
-            return Err(format!("unsupported Picasso APCB selector {key:?}"));
-        }
-        let allowed = if bios {
-            matches!(key.kind, 0x05 | 0x60 | 0x64..=0x66 | 0x68..=0x6a)
-        } else {
-            matches!(key.kind, 0x00..=0x05 | 0x08..=0x0a | 0x0c..=0x0d | 0x12..=0x13 |
+fn validate_key(key: Key, bios: bool) -> Result<()> {
+    if key.instance > 15 || (bios && key.subprogram > 7) || (!bios && key.instance != 0) {
+        return Err(format!("invalid AMD entry selector {key:?}"));
+    }
+    // Gen1 APCB/backup selectors are instance-only. The source helper
+    // creates backup entries with subprogram zero; accepting nonzero APCB
+    // subprograms could create duplicate generated backup selectors.
+    if bios && matches!(key.kind, 0x60 | 0x68) && key.subprogram != 0 {
+        return Err(format!("unsupported Picasso APCB selector {key:?}"));
+    }
+    let allowed = if bios {
+        matches!(key.kind, 0x05 | 0x60 | 0x64..=0x66 | 0x68..=0x6a)
+    } else {
+        matches!(key.kind, 0x00..=0x05 | 0x08..=0x0a | 0x0c..=0x0d | 0x12..=0x13 |
                 0x15 | 0x1a..=0x1d | 0x1f..=0x21 | 0x24..=0x25 | 0x28 | 0x2d |
                 0x30..=0x3a | 0x3c | 0x42 | 0x44..=0x45 | 0x47 | 0x50..=0x55 |
                 0x58..=0x5a | 0x5c..=0x5f)
-        };
-        if !allowed {
-            return Err(format!("unsupported Picasso file type {key:?}"));
+    };
+    if !allowed {
+        return Err(format!("unsupported Picasso file type {key:?}"));
+    }
+    Ok(())
+}
+fn validate_blobs(blobs: &[Blob], bios: bool) -> Result<()> {
+    let mut keys = std::collections::BTreeSet::new();
+    for blob in blobs {
+        validate_key(blob.key, bios)?;
+        if !keys.insert(blob.key) {
+            return Err(format!("duplicate AMD entry {:?}", blob.key));
         }
         if blob.bytes.is_empty() {
-            return Err(format!("empty AMD entry {key:?}"));
+            return Err(format!("empty AMD entry {:?}", blob.key));
         }
     }
     Ok(())
