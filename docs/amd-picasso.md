@@ -244,8 +244,8 @@ BSP stack/BSS/page-table initialization. APs far-transfer to the architectural
 resident bootstrap address; the segment is derived from the shared ABI constant.
 No reset-image patch/restore is performed. The platform must publish/reserve
 that bootstrap before releasing APs, and verify the actual SMU reset entry/control
-state. This dispatcher and release adapter are not a native CPU driver or an
-invoked complete boot flow; S3/runtime image protection remain unimplemented.
+state. The dispatcher/release adapter and the native CPU driver below are not
+an invoked complete boot flow; S3/runtime image protection remain unimplemented.
 
 ### Explicit resident CPU bootstrap storage
 
@@ -299,6 +299,48 @@ before its own claim; physical mapping, coherence, event/cache/reset semantics
 and retention of all other AP resources remain unsafe integration obligations.
 The console checkpoint does **not** invoke this entry or a native CPU driver.
 No native AP/OS execution, measured stack budget, SMM isolation or S3 is claimed.
+
+### Native CPU callback adapter
+
+`platform-amd::cpu::NativeCpu` implements the architectural CPU-driver interface.
+Unsafe preparation requires an independently verified complete APIC-ID list with
+BSP first, cached SMU topology, held APs and the existing physical/cache/event
+contracts. CPUID counts and threads-per-core must agree; duplicate/unknown IDs
+are rejected. **ThreadEn slots are not inferred to be APIC IDs.** OSRR56255
+§2.1.8.2.1.3 explicitly permits noncontiguous assignments; Fn80000008.ECX defines
+NC+1 as package threads, Fn8000001E.EBX defines ThreadsPerCore+1, and the SMT
+APIC-ID layout places ThreadId in bit0. These scoped document facts do not
+establish the actual board's CPU set. Fn8000001E is reserved with APIC disabled:
+the adapter checks enabled xAPIC before reading it, rejects x2APIC and broadcast
+ID255, and verifies BSP role separately. The already installed, locked PSP BAR
+is read on the BSP and cached; APs never access SMN.
+
+All logical CPUs serialize microcode and CCX work through one bounded,
+poison-on-failure lock. Its iteration budget is not a measured-time guarantee.
+The native tail programs AMD MMCONFIG, PSP_ADDR, C-state I/O, MCAX and the existing
+per-core policy. It requires the restored BSP SYSCFG/TOM/TOM2/PAT/default policy
+to match and performs **no late shared cache-policy writes**. TOM2En/TOM2WB must
+already be established by early setup and coordinated pre-Rust restoration.
+This does not close the native cache applicability/errata gate.
+
+The driver parses a trusted, immutable flat vendor microcode patch using
+zerocopy, checks its exact CPU-equivalent revision and bounded 3200-byte format,
+and validates the entire aligned physical extent. This size is the observed
+PCO B0/B1 and RV2 A0 input format, not a general AMD-family bound. Wrappers and
+containers are not accepted. Parsing does not authenticate the vendor signature.
+The whole backing allocation must remain coherent, immutable, identity-mapped
+and reserved through reset. Loading verifies the installed MSR patch level,
+retains an already newer revision, and never retries a rejected submission.
+No vendor bytes are redistributed.
+
+Per-CPU work bits alone do not authorize CCX-done: only the BSP post-MP hook after
+the architectural callback-return barrier publishes completion. Failures halt
+without unlocking poisoned ownership or withdrawing live driver borrows. A
+strict production-linker probe retains actual native construction and callbacks;
+it is never executed/flashed, and proves neither physical execution nor peak
+stack use. The console checkpoint still invokes no native CPU/MP flow. BSP
+exceptions, SMM/reset isolation, target cache/reset semantics, trusted image
+integration and measured release stack budgets remain outstanding.
 
 ### AMD configuration-access instruction contract
 

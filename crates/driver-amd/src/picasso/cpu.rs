@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Zen/Zen+ CPU policy.
 //! AMD MCAX, SYSCFG and MMCONFIG must not use legacy Intel CPU programming.
+pub mod microcode;
+pub mod thread;
+
 pub const SYSCFG: u32 = 0xc0010010;
 pub const TOP_MEM: u32 = 0xc001001a;
 pub const TOP_MEM2: u32 = 0xc001001d;
@@ -156,6 +159,12 @@ pub fn bsp_init(msr: &mut impl Msr) {
 
 pub fn mca_init(msr: &mut impl Msr) -> Result<(), Error> {
     let cap = msr.read(0x179);
+    mca_init_with_cap(msr, cap)
+}
+
+// The per-thread adapter snapshots/preflights capability before reset writes.
+// Do not rediscover geometry halfway through that submitted CPU policy.
+fn mca_init_with_cap(msr: &mut impl Msr, cap: u64) -> Result<(), Error> {
     let banks = (cap & 0xff) as u8;
     // This native flow accesses MISC1 for banks 15/16. Reject a mismatched CPU
     // before touching any MCAX register, rather than faulting midway through.
