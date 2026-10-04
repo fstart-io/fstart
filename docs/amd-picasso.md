@@ -1,5 +1,22 @@
 # Native AMD Picasso / Google Vilboz port
 
+## Native CPU cold-flow composition (not activated)
+
+`platform-amd::cold::initialize_cpus()` composes permanent trusted-patch staging,
+`NativeCpu`, linker-owned MP storage, coordinated architectural startup and the
+one-shot SMU `ColdRelease`. Cached complete topology/count checks precede the
+flow claim. MP must return through its callback-return barrier, report the
+requested count, and satisfy `NativeCpu::complete()` before a private
+`CpusInitialized` result is produced. Any failure enters an unsafe, non-returning,
+non-unwinding platform fail-stop; no FSP, retry, rollback or resource reclamation.
+
+Neither entry is called by the checkpoint. Complete physical APIC IDs/BSP role,
+APs-held/reset/control applicability, target cache/CLFLUSH/shared-MSR/errata,
+coherent mappings, exclusion and measured stack budgets remain unsafe integration
+obligations. Link/test evidence is not physical CPU/patch/SMU/SMM/OS approval.
+Graphics, PCI enumeration, SMM setup, PSP boot-done and payload handoff remain
+unimplemented here; this CPU composition is **not a complete native boot flow**.
+
 ## Native PSP runtime mailbox (not activated)
 
 Supported cold/non-SMM commands are capability queries (`0x27`, fTPM `0x05`,

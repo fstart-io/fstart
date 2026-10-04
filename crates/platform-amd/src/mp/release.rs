@@ -3,7 +3,7 @@
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, ApLauncher, PreparedAps};
 use fstart_driver_amd::picasso::{registers::Smn, topology};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     AlreadySubmitted,
     Bootstrap,

@@ -6,6 +6,8 @@ pub mod host;
 #[cfg(feature = "host")]
 pub use host::Plan;
 #[cfg(all(feature = "picasso", target_arch = "x86_64"))]
+pub mod cold;
+#[cfg(all(feature = "picasso", target_arch = "x86_64"))]
 pub mod cpu;
 #[cfg(feature = "picasso")]
 pub mod early;

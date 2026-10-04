@@ -8,7 +8,7 @@ use fstart_driver_amd::picasso::{
     cache,
     cpu::{self, Msr},
 };
-pub use release::ColdRelease;
+pub use release::{ColdRelease, Error as ReleaseError};
 pub use resident::{Error as ResidentError, initialize as initialize_resident};
 
 #[derive(Debug)]
