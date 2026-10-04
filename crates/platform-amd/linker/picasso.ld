@@ -26,7 +26,7 @@ _fstart_stack_bottom = 0x02026000;
 _fstart_stack_top = 0x02030000;
 SECTIONS {
     .text 0x02030000 : { *(.text .text.*) } > image :image
-    .rodata : { *(.rodata .rodata.*) *(.srodata .srodata.*) } > image :image
+    .rodata : { *(.rodata .rodata.*) *(.srodata .srodata.*) KEEP(*(.picasso_microcode_input)) } > image :image
     /* LLD's static GOT has SHF_WRITE but is host-resolved pointer metadata:
      * no runtime loader/patching. Put it in the immutable RX LOAD, not BSS.
      * This is ELF placement, NOT runtime page write-protection. */

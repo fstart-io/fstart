@@ -5,9 +5,9 @@
 This change is **not hardware-booted, not OS-bootable and not flash-ready**.
 It has no FSP-M/FSP-S dependency or hidden binary call. It also does **not**
 replace those binaries' work with no-ops and claim a successful native port.
-There is deliberately no production `fbuild` metadata for this board yet.
-The common build-plan/image executor needs an AMD packaging projection before
-this can become a supported board. The checkpoint is built explicitly below.
+`fbuild` metadata now exports compiler/check/editor support for the checkpoint,
+not a production image contract. Assembly/run/flash fail explicitly: PSP directory
+packaging needs a distinct image operation, not a fictitious FFS projection.
 
 The implementation is in jj workspace `../fstart-picasso`. Audited foundation
 `qtyqotpq` is a child of the user's `mpzspnrw`; continued native work is in its
@@ -410,8 +410,14 @@ unbound input environment keys. Content changes invalidate the consuming unit.
 The build owner must exclude filesystem mutation through compiler execution;
 read-only permissions and hashes are not adversarial isolation or authentication.
 
-This is compiler-input plumbing, not a trusted build pipeline or supported AMD
-`fbuild` plan. The caller must preserve source integrity through compilation and
+The AMD host `Plan<Board>` accepts exactly `FSTART_AMD_MICROCODE_BUNDLE`, preflights
+the complete bounded flat bundle, and binds the unchanged requested path to the
+single reset unit (9600-byte budget). `bundle-checkpoint` enables the immutable
+linked source; the strict linker retains it even while native CPU activation is
+unwired. This is compilation support, not a trusted production image pipeline.
+The build owner excludes filesystem mutation from host resolution through firmware
+compilation. Hashes/header checks do not authenticate bytes or establish freshness.
+The caller must preserve source integrity through compilation and
 establish physical source decoding/coherence and authenticity/freshness before
 staging. Never give the reset-image source address to PATCH_LOADER; the existing
 permanent staging path remains mandatory. Neither selector nor tool activates
@@ -457,14 +463,20 @@ a locked retail Chromebook. Do not flash it over a factory backup.
 
 ## Build and reproduce
 
-From this workspace, build the checkpoint (no fbuild production integration):
+From this workspace, build the checkpoint with an explicitly supplied flat
+bundle produced by `fstart-ucode` (vendor bytes must be independently trusted):
 
 ```sh
-cargo rustc --manifest-path boards/google/zork/Cargo.toml --release \
-  --features checkpoint --bin picasso-checkpoint --target x86_64-unknown-none \
-  -- -C relocation-model=static -C no-redzone=yes \
-  -C link-arg=-T"$PWD/crates/platform-amd/linker/picasso.ld"
+fbuild explain google-vilboz --compiler-input FSTART_AMD_MICROCODE_BUNDLE=/path/to/bundle.bin
+fbuild build --board google-vilboz --release \
+  --compiler-input FSTART_AMD_MICROCODE_BUNDLE=/path/to/bundle.bin
 ```
+
+This emits a validated reset ELF and flat binary, **not** PSP directories or a
+flash image. The unit is release-only and uses the real Picasso linker script.
+Its ELF expectations require the real DRAM entry/reservations and RX file-backed
+LOADs, without fabricating a layout descriptor. Existing FFS plans still require
+their descriptor. The checkpoint still halts and never installs the linked patch.
 
 Extract only immutable image sections with binutils `objcopy -O binary`,
 `--only-section` for `.text`, `.rodata`, `.init16`, `.reset`, `.last_byte`, and

@@ -44,7 +44,7 @@ impl ResolvedImage {
     pub fn bootstrap_bindings(
         &self,
     ) -> Option<&[(String, fstart_image_build::build_plan::BootstrapRole)]> {
-        Some(&self.build.plan.assembly.bootstrap)
+        Some(self.build.plan.assembly.bootstrap())
     }
     pub fn assembler_config(&self, board: &str) -> Result<fstart_core::BoardConfig, String> {
         self.build.assembler_config(board)

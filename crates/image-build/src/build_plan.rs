@@ -10,14 +10,61 @@ pub struct BuildPlan {
     pub units: Vec<CompilationUnit>,
     /// Units contributing stage binaries, in image-directory order.
     pub stages: Vec<String>,
-    /// Temporary projection into the existing image-format assembler. It must
-    /// never be used to infer compiler selections or artifact dependencies.
+    /// Image operation or explicit lack of one. Never infer compiler selections
+    /// or artifact dependencies from the image projection.
     pub assembly: Assembly,
     pub inputs: Vec<InputFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Assembly {
+pub enum Assembly {
+    Ffs(Box<FfsAssembly>),
+    /// Compiler/check/editor support only. No image/flash/run contract supplied.
+    Unassembled {
+        platform: fstart_core::Platform,
+    },
+}
+impl Assembly {
+    pub fn platform(&self) -> fstart_core::Platform {
+        match self {
+            Self::Ffs(image) => image.platform,
+            Self::Unassembled { platform } => *platform,
+        }
+    }
+    pub fn bootstrap(&self) -> &[(String, BootstrapRole)] {
+        match self {
+            Self::Ffs(image) => &image.bootstrap,
+            Self::Unassembled { .. } => &[],
+        }
+    }
+    pub fn ffs(&self) -> Result<&FfsAssembly, String> {
+        match self {
+            Self::Ffs(image) => Ok(image),
+            Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
+        }
+    }
+    pub fn resolve_workspace_inputs(
+        &mut self,
+        root: &std::path::Path,
+        board: &std::path::Path,
+    ) -> Result<(), String> {
+        match self {
+            Self::Ffs(image) => image.resolve_workspace_inputs(root, board),
+            Self::Unassembled { .. } => Ok(()),
+        }
+    }
+    pub fn config(&self, name: &str) -> Result<fstart_core::BoardConfig, String> {
+        self.ffs()?.config(name)
+    }
+}
+impl From<FfsAssembly> for Assembly {
+    fn from(image: FfsAssembly) -> Self {
+        Self::Ffs(Box::new(image))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FfsAssembly {
     pub platform: fstart_core::Platform,
     pub memory: Vec<fstart_core::MemoryRegion>,
     pub flash: Option<crate::plan::FlashTransport>,
@@ -51,7 +98,7 @@ impl BootstrapRole {
     }
 }
 
-impl Assembly {
+impl FfsAssembly {
     /// Blob paths emitted by platform Rust are workspace-relative. Convert only
     /// for the legacy assembler's board-relative file API, without inferring policy.
     pub fn resolve_workspace_inputs(
@@ -358,6 +405,12 @@ impl BuildPlan {
                 }
             }
             unit.check_cfg_flags()?;
+            if matches!(&self.assembly, Assembly::Ffs(_))
+                && matches!(&unit.output,
+                UnitOutput::Executable { expectations, .. } if expectations.descriptor.is_none())
+            {
+                return Err("FFS executable needs its runtime layout descriptor".into());
+            }
             let mut bindings = BTreeSet::new();
             for binding in &unit.bindings {
                 if !environment_name(&binding.environment)
@@ -434,7 +487,7 @@ impl BuildPlan {
             }
         }
         let mut bootstrap = BTreeSet::new();
-        for (name, _) in &self.assembly.bootstrap {
+        for (name, _) in self.assembly.bootstrap() {
             if !self.stages.iter().skip(1).any(|s| s == name) || !bootstrap.insert(name) {
                 return Err(format!("unknown or duplicate bootstrap binding {name}"));
             }
@@ -484,6 +537,7 @@ impl BuildPlan {
 
 #[cfg(test)]
 mod tests {
+    use super::FfsAssembly as Assembly;
     use super::*;
     fn unit(name: &str, dependencies: &[&str]) -> CompilationUnit {
         CompilationUnit {
@@ -544,13 +598,14 @@ mod tests {
                 identity_mapping: true,
                 entry: Some(span.base),
                 copy: None,
-                descriptor: crate::elf::Descriptor {
+                descriptor: Some(crate::elf::Descriptor {
                     section: ".layout".into(),
                     start_symbol: "begin".into(),
                     end_symbol: "end".into(),
                     bytes: vec![],
                     reservation: span,
-                },
+                }),
+                stored_flags: None,
                 symbols: BTreeMap::new(),
             },
             load_address: span.base,
@@ -566,7 +621,7 @@ mod tests {
             ],
             stages: vec!["launch".into()],
             inputs: vec![],
-            assembly: Assembly {
+            assembly: FfsAssembly {
                 platform: Platform::Aarch64,
                 memory: vec![],
                 flash: None,
@@ -580,8 +635,29 @@ mod tests {
                 soc_image_format: SocImageFormat::None,
                 boot_hart_id: 0,
                 build: BoardBuildPolicy::default(),
-            },
+            }
+            .into(),
         }
+    }
+
+    #[test]
+    fn compiler_only_contract_cannot_launder_a_missing_ffs_descriptor() {
+        let mut plan = fixture();
+        let UnitOutput::Executable { expectations, .. } = &mut plan.units[0].output else {
+            unreachable!()
+        };
+        expectations.descriptor = None;
+        assert!(
+            plan.order()
+                .unwrap_err()
+                .contains("runtime layout descriptor")
+        );
+        plan.assembly = super::Assembly::Unassembled {
+            platform: fstart_core::Platform::Aarch64,
+        };
+        plan.order().unwrap();
+        assert!(plan.assembly.config("test").is_err());
+        assert!(plan.assembly.bootstrap().is_empty());
     }
 
     #[test]
@@ -742,7 +818,7 @@ mod tests {
             payload: "halt".into(),
             units,
             stages: vec![],
-            assembly: assembly.clone(),
+            assembly: assembly.clone().into(),
             inputs: vec![],
         };
         assert!(

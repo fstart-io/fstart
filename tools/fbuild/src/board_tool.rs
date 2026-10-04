@@ -179,9 +179,10 @@ fn build(
     payload: Option<PayloadChoice>,
     options: &BuildArgs,
 ) -> Result<crate::build_board::BuildResult, String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, options)?;
-    crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)
+    let root = crate::build_board::workspace_root_pub()?;
+    let resolved =
+        crate::resolved_image::ResolvedImage::load(&root, manifest, options.selection(payload))?;
+    resolved.build(&root, manifest, release)
 }
 
 fn assemble(

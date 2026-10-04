@@ -9,8 +9,14 @@ default = []
 picasso = ["fstart-driver-amd/picasso", "dep:fstart-arch"]
 # Explicit firmware-only immutable compiler input, not automatic vendor discovery.
 linked-microcode = ["picasso"]
+# Host policy only; never enabled by the emitted firmware unit.
+host = ["picasso", "dep:fstart-image-build", "dep:serde_json"]
+# Compiler/check/editor support; still a non-bootable console checkpoint.
+bundle-checkpoint = ["picasso", "linked-microcode"]
 
 [dependencies]
+fstart-image-build = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
 fstart-driver-amd.workspace = true
 fstart-core.workspace = true
 fstart-driver-uart.workspace = true

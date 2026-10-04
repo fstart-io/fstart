@@ -8,6 +8,9 @@ const _: () =
     assert!(BYTES > 0 && BYTES.is_multiple_of(PATCH_BYTES) && BYTES <= PATCH_BYTES * MAX_PATCHES);
 #[repr(align(16))]
 struct Input([u8; BYTES]);
+// Retained by the strict reset linker even before native CPU activation.
+#[used]
+#[unsafe(link_section = ".picasso_microcode_input")]
 static INPUT: Input = Input(*include_bytes!(env!("FSTART_AMD_MICROCODE_BUNDLE")));
 
 /// Select exactly the supplied CPUID stepping, after validating the entire

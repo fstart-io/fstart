@@ -795,6 +795,8 @@ dependencies = [
  "fstart-core",
  "fstart-driver-amd",
  "fstart-driver-uart",
+ "fstart-image-build",
+ "serde_json",
 ]
 
 [[package]]

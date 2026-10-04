@@ -51,7 +51,7 @@ impl Resolved {
         if board
             .platform
             .as_deref()
-            .is_some_and(|platform| platform != plan.assembly.platform.as_str())
+            .is_some_and(|platform| platform != plan.assembly.platform().as_str())
             || board
                 .target
                 .as_deref()
