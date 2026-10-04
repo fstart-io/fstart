@@ -24,6 +24,7 @@ mod nbio_tables;
 pub mod pinmux;
 pub mod power;
 pub mod preinit;
+pub mod psp;
 pub mod registers;
 pub mod smu;
 pub mod southbridge;

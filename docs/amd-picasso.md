@@ -1,5 +1,33 @@
 # Native AMD Picasso / Google Vilboz port
 
+## Native PSP runtime mailbox (not activated)
+
+Supported cold/non-SMM commands are capability queries (`0x27`, fTPM `0x05`,
+HSTI `0x14`) and unsafe, terminal boot-done notification (`0x06`). There are no
+Sx/S3/recovery/fusing/flash-write/abort/reset APIs. Queries return opaque bits,
+not authentication or established protection. Boot-done requires already
+completed native/architectural CPU initialization and protected SMM services;
+those prerequisites are **not implemented or activated by this driver**.
+
+A 32-byte aligned resident buffer is fully zero-padded before publication.
+Its complete allocation must remain coherent identity-mapped reserved DRAM
+below4GiB and excluded from all allocators/payload maps until reset, including
+on errors. The one-way global ownership claim follows complete placement
+validation. Pointer publication precedes command-last submission; the command
+write clears stale status/ready bits. Ready/zero-command completion, mailbox
+status, response size and buffer status are checked before private results
+are returned. Error/unwind poisons permanently, and successful boot-done closes
+all ordinary mailbox access. Neither Drop nor an error cancels/reclaims DMA.
+
+Native access assumes caller-verified enabled+locked PSP BAR `fd100101`/high0,
+identity UC decode and exclusive ownership. The source uses one qword pointer
+store at a four-byte aligned address: the private tock `Writeable` adapter uses
+one fixed-RAX MOV, not an unaligned `ReadWrite<u64>` Rust reference or guessed
+split writes. Raw pointer/trigger transport methods are unsafe. Cache coherence,
+DMA completion, geometry, delay, reset/event/NMI/SMI/SMM exclusion remain caller
+obligations; CLI is not that exclusion. The10,000×100µs poll budget is nominal,
+not a measured hard wall-time bound. No hardware transaction has been run.
+
 ## Status: a foundation and cold-boot console checkpoint, NOT a complete port
 
 This change is **not hardware-booted, not OS-bootable and not flash-ready**.
