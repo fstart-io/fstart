@@ -9,6 +9,8 @@ use zerocopy::{
 /// The three Picasso PCO B0/B1 and RV2 A0 vendor .bin inputs are 3200 bytes.
 /// This deliberately bounded format does not accept other families/wrappers.
 pub const PATCH_BYTES: usize = 3200;
+/// Firmware input budget for PCO B0/B1 plus RV2 A0, not silicon discovery.
+pub const MAX_PATCHES: usize = 3;
 const PATCH_LOADER: u32 = 0xc0010020;
 const PATCH_LEVEL: u32 = 0x8b;
 
@@ -42,6 +44,53 @@ pub enum Outcome {
     Installed(u32),
 }
 
+/// Concatenated unchanged flat inputs. No wrapper, implicit best-version choice,
+/// duplicate equivalent revisions or ignored malformed non-selected entries.
+/// Format validation and exact selection are NOT authentication/freshness proof.
+pub struct Bundle<'a> {
+    bytes: &'a [u8],
+}
+impl<'a> Bundle<'a> {
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        if bytes.is_empty()
+            || !bytes.len().is_multiple_of(PATCH_BYTES)
+            || bytes.len() / PATCH_BYTES > MAX_PATCHES
+        {
+            return Err(Error::Format);
+        }
+        let mut revisions = [0; MAX_PATCHES];
+        for (index, patch) in bytes.as_chunks::<PATCH_BYTES>().0.iter().enumerate() {
+            let revision = header(patch)?.processor_rev.get();
+            if revision == 0 || revisions[..index].contains(&revision) {
+                return Err(Error::Format);
+            }
+            revisions[index] = revision;
+        }
+        Ok(Self { bytes })
+    }
+    pub fn select(&self, signature: u32) -> Result<Patch<'a>, Error> {
+        for bytes in self.bytes.as_chunks::<PATCH_BYTES>().0 {
+            match Patch::parse(bytes, signature) {
+                Ok(patch) => return Ok(patch),
+                Err(Error::ProcessorRevision { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(Error::CpuIdentity)
+    }
+}
+
+fn header(bytes: &[u8]) -> Result<Header, Error> {
+    if bytes.len() != PATCH_BYTES {
+        return Err(Error::Format);
+    }
+    let (header, _) = Header::read_from_prefix(bytes).map_err(|_| Error::Format)?;
+    if header.patch_id.get() == 0 || header.chipset1.get() != 0 || header.chipset2.get() != 0 {
+        return Err(Error::Format);
+    }
+    Ok(header)
+}
+
 pub const fn equivalent_revision(signature: u32) -> u16 {
     ((signature & 0xff0000) >> 8 | (signature & 0xff)) as u16
 }
@@ -57,13 +106,7 @@ impl<'a> Patch<'a> {
         if !matches!(signature & !0xf, 0x00810f10 | 0x00810f80 | 0x00820f00) {
             return Err(Error::CpuIdentity);
         }
-        if bytes.len() != PATCH_BYTES {
-            return Err(Error::Format);
-        }
-        let (header, _) = Header::read_from_prefix(bytes).map_err(|_| Error::Format)?;
-        if header.patch_id.get() == 0 || header.chipset1.get() != 0 || header.chipset2.get() != 0 {
-            return Err(Error::Format);
-        }
+        let header = header(bytes)?;
         let expected = equivalent_revision(signature);
         let actual = header.processor_rev.get();
         if actual != expected {
@@ -158,6 +201,24 @@ mod tests {
         bytes[4..8].copy_from_slice(&revision.to_le_bytes());
         bytes[24..26].copy_from_slice(&equivalent_revision(signature).to_le_bytes());
         bytes
+    }
+    #[test]
+    fn bundle_preflights_every_entry_and_selects_without_fallback() {
+        let a = bytes(0x00810f80, 0x08108002);
+        let b = bytes(0x00820f01, 0x08200105);
+        let mut data = Vec::from(a);
+        data.extend_from_slice(&b);
+        let bundle = Bundle::parse(&data).unwrap();
+        assert_eq!(bundle.select(0x00820f01).unwrap().bytes(), b);
+        assert!(bundle.select(0x00810f81).is_err());
+        assert!(bundle.select(0x000106c2).is_err());
+        data[PATCH_BYTES + 16] = 1;
+        assert!(Bundle::parse(&data).is_err()); // even when selecting valid entry0
+        data[PATCH_BYTES..].copy_from_slice(&a);
+        assert!(Bundle::parse(&data).is_err()); // no ambiguous version choice
+        assert!(Bundle::parse(&[]).is_err());
+        assert!(Bundle::parse(&data[..data.len() - 1]).is_err());
+        assert!(Bundle::parse(&[0; PATCH_BYTES * (MAX_PATCHES + 1)]).is_err());
     }
     #[test]
     fn flat_patch_selection_rejects_wrong_cpu_length_and_chipset() {

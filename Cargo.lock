@@ -553,7 +553,9 @@ name = "fstart-amdfw"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "fstart-driver-amd",
  "fstart-image-build",
+ "sha2",
 ]
 
 [[package]]

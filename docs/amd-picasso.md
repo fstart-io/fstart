@@ -372,6 +372,33 @@ Link-only probes retain the real composition without invoking or flashing it.
 The checkpoint still halts; vendor/image input integration and native activation
 remain outstanding.
 
+### Explicit microcode compiler inputs
+
+`fstart-ucode` accepts one to three explicitly supplied `--patch HEX_CPUID:PATH`
+flat vendor files and `--output PATH`. It checks each exact stepping with the
+same driver parser, rejects duplicate equivalent revisions, sorts by CPUID and
+concatenates unchanged bytes. Reads are capped at 3201 bytes per input; existing
+outputs are never overwritten. Per-input and bundle SHA256/revision reports
+record bytes, **not authentication or freshness**. The owner must obtain and
+independently trust the vendor inputs; no vendor bytes are checked into fstart.
+
+With platform feature `linked-microcode`, bare-metal compilation requires
+`FSTART_AMD_MICROCODE_BUNDLE` to name that explicit immutable file. Its bounded
+3200-byte records are compiled into align16 reset-image rodata, not initialized
+writable state or flash-XIP references. `microcode::linked::selected_source()`
+validates the entire bundle before selecting the exact CPU stepping. Malformed
+non-selected entries, duplicate revisions, missing steppings and unsupported
+CPU identities fail; there is no best-version selection or alternate-source
+fallback. The whole reset image must still fit the production linker window.
+
+This is compiler-input plumbing, not a trusted build pipeline or supported AMD
+`fbuild` plan. The caller must preserve source integrity through compilation and
+establish physical source decoding/coherence and authenticity/freshness before
+staging. Never give the reset-image source address to PATCH_LOADER; the existing
+permanent staging path remains mandatory. Neither selector nor tool activates
+CPUs. Native boot/OS flow, cache/reset prerequisites and hardware validation
+remain outstanding.
+
 ### AMD configuration-access instruction contract
 
 ### LPC/SPI/SMBus preinitialization
