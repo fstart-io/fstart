@@ -244,6 +244,36 @@ that bootstrap before releasing APs, and verify the actual SMU reset entry/contr
 state. This dispatcher and release adapter are not a native CPU driver or an
 invoked complete boot flow; S3/runtime image protection remain unimplemented.
 
+### Explicit resident CPU bootstrap storage
+
+`arch::x86::mp::BootstrapStorage<N>` supplies N private AP stacks and both IDTs
+in platform-owned permanent RAM, rather than the default stage BSS allocation.
+Use its const constructor in a reserved NOLOAD static, not on the BSP stack.
+`mp_init_with_resident_storage()` consumes the static mutable owner on every
+result. Exclude the complete `allocation_range()` (including unused slots and
+padding) from allocators/payload maps until reset; parked APs retain this memory
+after callbacks finish. The IDTs are fully encoded before publication, without
+copying a large initialized arena value on the stage stack.
+
+Selected count checks remain unconditional and precede storage preflight.
+Configured capacity, whole low-4GiB extent, alignment and trampoline/default-SMRAM
+separation are checked before attempt claim, LAPIC, hooks or publication. These
+are numerical checks only, not residency, coherency, mapping or event proofs.
+The default wrappers retain their old storage budget; explicit users do not
+reference that default allocation. Seven 4-KiB stacks plus IDTs need34KiB,
+still larger than28KiB checkpoint BSS, so external placement is required.
+A never-executed release link harness retains the real generic MP path with
+seven external stacks: stage BSS is0x1030 bytes, external NOLOAD allocation
+is0x8800 bytes, and the default arena is absent. This is a generic-link budget
+check, not a complete native-driver binary, stack measurement, physical mapping
+or boot result. Native placement/E820 integration and activation remain unwired.
+
+Linking that path exposed16 bytes of static GOT pointers (`memcpy` and AP entry)
+previously classified as writable initial data. The linker now places only the
+host-resolved `.got` in the immutable RX LOAD. Runtime-link/IFUNC sections and
+all genuine writable initial data remain forbidden. LLD retains SHF_WRITE on
+the synthetic section; RX program-header placement is not runtime page WP.
+
 ### AMD configuration-access instruction contract
 
 ### LPC/SPI/SMBus preinitialization

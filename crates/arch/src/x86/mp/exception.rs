@@ -20,13 +20,6 @@ struct Gate32 {
     high: U16<LittleEndian>,
 }
 impl Gate32 {
-    const ZERO: Self = Self {
-        low: U16::ZERO,
-        selector: U16::ZERO,
-        reserved: 0,
-        attributes: 0,
-        high: U16::ZERO,
-    };
     fn fatal(handler: u32) -> Self {
         Self {
             low: U16::new(handler as u16),
@@ -50,15 +43,6 @@ struct Gate64 {
     reserved: U32<LittleEndian>,
 }
 impl Gate64 {
-    const ZERO: Self = Self {
-        low: U16::ZERO,
-        selector: U16::ZERO,
-        ist: 0,
-        attributes: 0,
-        middle: U16::ZERO,
-        high: U32::ZERO,
-        reserved: U32::ZERO,
-    };
     fn fatal(handler: u64) -> Self {
         Self {
             low: U16::new(handler as u16),
@@ -86,12 +70,6 @@ pub(super) struct Tables {
     protected: [Gate32; 256],
     long: [Gate64; 256],
 }
-impl Tables {
-    pub(super) const ZERO: Self = Self {
-        protected: [Gate32::ZERO; 256],
-        long: [Gate64::ZERO; 256],
-    };
-}
 const _: () = {
     assert!(core::mem::size_of::<Gate32>() == 8);
     assert!(core::mem::size_of::<Gate64>() == 16);
@@ -99,7 +77,7 @@ const _: () = {
     assert!(core::mem::size_of::<Tables>() == 6144);
 };
 
-fn pointers(base: u64, handler32: u64, handler64: u64) -> Option<(Pointer, Pointer)> {
+pub(super) fn pointers(base: u64, handler32: u64, handler64: u64) -> Option<(Pointer, Pointer)> {
     let end = base.checked_add(core::mem::size_of::<Tables>() as u64)?;
     if base == 0
         || base & 15 != 0

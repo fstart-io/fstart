@@ -25,12 +25,23 @@ _fstart_stack_top = 0x02030000;
 SECTIONS {
     .text 0x02030000 : { *(.text .text.*) } > image :image
     .rodata : { *(.rodata .rodata.*) *(.srodata .srodata.*) } > image :image
+    /* LLD's static GOT has SHF_WRITE but is host-resolved pointer metadata:
+     * no runtime loader/patching. Put it in the immutable RX LOAD, not BSS.
+     * This is ELF placement, NOT runtime page write-protection. */
+    .static_got : { *(.got) } > image :image
+    /* Keep unlike ELF section types separate, even when LLD synthesizes
+     * empty sections. No dynamic loader or runtime relocations are supported. */
+    .unsupported_dynamic : { *(.dynamic) } > image :image
+    .unsupported_rel : { *(.rel.*) } > image :image
+    .unsupported_rela : { *(.rela.*) } > image :image
+    .unsupported_relr : { *(.relr.*) } > image :image
+    .unsupported_loader : { *(.interp .plt .plt.* .iplt) } > image :image
     . = ALIGN(16);
     _fstart_text_end = .;
     .init16 0x0204e000 : { KEEP(*(.init16)) } > image :image
     .reset 0x0204fff0 : { KEEP(*(.reset)) } > image :image
     .last_byte 0x0204ffff : { BYTE(0xff); } > image :image
-    .data 0x02019000 : { *(.data .data.* .sdata .sdata.*) *(.got .got.*) } > writable :writable
+    .data 0x02019000 : { *(.data .data.* .sdata .sdata.*) *(.got.*) } > writable :writable
     .bss (NOLOAD) : {
         _fstart_bss_start = .;
         *(.bss .bss.* .sbss .sbss.*) *(COMMON)
@@ -41,6 +52,7 @@ SECTIONS {
 }
 _fstart_gdt_offset = _fstart_gdt_pointer & 0xffff;
 ASSERT(SIZEOF(.data) == 0, "checkpoint must not mutate the PSP reset image: initialized data unsupported")
+ASSERT(SIZEOF(.unsupported_dynamic) + SIZEOF(.unsupported_rel) + SIZEOF(.unsupported_rela) + SIZEOF(.unsupported_relr) + SIZEOF(.unsupported_loader) == 0, "Picasso image cannot require runtime linking or IFUNC resolution")
 ASSERT(_fstart_text_end <= 0x0204e000, "Picasso reset code exceeds DRAM image budget")
 ASSERT(ADDR(.init16) + SIZEOF(.init16) <= ADDR(.reset), "16-bit entry overflows reset vector")
 ASSERT(SIZEOF(.reset) <= 15, "reset vector too large")

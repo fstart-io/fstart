@@ -68,6 +68,8 @@ use zerocopy::IntoBytes;
 
 pub mod cache;
 mod exception;
+mod storage;
+pub use storage::BootstrapStorage;
 
 #[cfg(not(rust_analyzer))]
 mod sipi_blob {
@@ -318,6 +320,8 @@ pub enum MpError {
     NoApsResponded,
     /// Fewer APs than expected checked in.
     PartialBringup { expected: u16, actual: u16 },
+    /// Platform-provided bootstrap storage cannot hold its configured capacity.
+    ResidentStorageTooSmall { required: usize, available: usize },
     /// SIPI trampoline placement failed.
     TrampolinePlacementFailed,
     /// The CPU driver could not publish a complete compatible cache policy.
@@ -394,7 +398,8 @@ impl ApMailbox {
 }
 
 // Build-time CPU storage budget selected by the board/platform plan.
-// The SIPI stack arena and mailboxes use the same generated capacity.
+// Mailboxes/default arena use this capacity; explicit arenas are checked
+// against the caller's configured bound before ownership or hardware.
 include!(concat!(env!("OUT_DIR"), "/mp_capacity.rs"));
 const MAX_APS: usize = MAX_CPUS - 1;
 
@@ -420,10 +425,9 @@ static MAILBOXES: [ApMailbox; MAX_APS] = {
 
 const AP_STACK_SIZE: usize = 4 * 1024;
 
-#[repr(C, align(16))]
-struct ApStacks([[u8; AP_STACK_SIZE]; MAX_APS]);
-
-static mut AP_STACKS: ApStacks = ApStacks([[0; AP_STACK_SIZE]; MAX_APS]);
+// Only default entry wrappers reference this allocation. Platforms with a
+// small stage BSS use explicit reserved storage, so linker GC can discard it.
+static mut DEFAULT_BOOTSTRAP_STORAGE: BootstrapStorage<MAX_APS> = BootstrapStorage::new();
 
 /// Atomic counter: number of APs that have checked in.
 static AP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -435,7 +439,6 @@ static AP_IN_MAILBOX_LOOP: AtomicU8 = AtomicU8::new(0);
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(0);
 // Zero-initialized resident storage, not initialized writable reset-image data.
 static MP_ATTEMPTED: AtomicU8 = AtomicU8::new(0);
-static mut AP_EXCEPTION_TABLES: exception::Tables = exception::Tables::ZERO;
 
 // ---------------------------------------------------------------------------
 // Flight plan (internal)
@@ -716,8 +719,9 @@ fn start_aps(
     max_aps: u16,
     lapic: &Lapic,
     launcher: Option<&mut dyn ApLauncher>,
+    resident: storage::Resident,
 ) -> Result<u16, MpError> {
-    let coordinated = install_sipi_trampoline(max_aps, lapic)?;
+    let coordinated = install_sipi_trampoline(max_aps, lapic, resident)?;
     // No Drop implementation may restore caching on a failed/partial launch.
     // The borrowed-config guard and terminal policy retain all bootstrap state.
     let cache_off = if coordinated {
@@ -844,7 +848,12 @@ pub fn mp_init_with_fail_stop(
     config: &MpConfig<'_>,
     failure: &impl MpFailStop,
 ) -> Result<MpHandle, MpError> {
-    mp_init_selected(config, failure, None)
+    mp_init_selected(
+        config,
+        failure,
+        None,
+        storage::parts(core::ptr::addr_of_mut!(DEFAULT_BOOTSTRAP_STORAGE)),
+    )
 }
 
 /// As `mp_init_with_fail_stop`, but launch through a platform protocol only
@@ -857,16 +866,43 @@ pub fn mp_init_with_ap_launcher(
     failure: &impl MpFailStop,
     launcher: &mut impl ApLauncher,
 ) -> Result<MpHandle, MpError> {
-    mp_init_selected(config, failure, Some(launcher))
+    mp_init_selected(
+        config,
+        failure,
+        Some(launcher),
+        storage::parts(core::ptr::addr_of_mut!(DEFAULT_BOOTSTRAP_STORAGE)),
+    )
+}
+
+/// Initialize using platform-owned permanent RAM instead of the default BSS
+/// arena. Ownership of the entire allocation is consumed on every result;
+/// parked APs still use stacks/IDTs after driver callbacks have completed.
+/// An absent launcher selects the ordinary INIT/SIPI protocol.
+/// # Safety
+/// The complete storage allocation is resident, identity-mapped below 4GiB,
+/// coherent under the selected cache policy, excluded from every allocator and
+/// payload memory map through reset, and disjoint from code, PSP buffers, page
+/// tables, default SMRAM and all other live objects. The platform establishes
+/// event exclusion, valid stacks and CPU/release prerequisites as before.
+/// Numerical preflight does NOT establish any of these physical facts.
+pub unsafe fn mp_init_with_resident_storage<const N: usize>(
+    config: &MpConfig<'_>,
+    failure: &impl MpFailStop,
+    launcher: Option<&mut dyn ApLauncher>,
+    resident: &'static mut BootstrapStorage<N>,
+) -> Result<MpHandle, MpError> {
+    mp_init_selected(config, failure, launcher, storage::parts(resident))
 }
 
 fn mp_init_selected(
     config: &MpConfig<'_>,
     failure: &impl MpFailStop,
     mut launcher: Option<&mut dyn ApLauncher>,
+    resident: storage::Resident,
 ) -> Result<MpHandle, MpError> {
     let num_cpus = validate_mp_configuration(config, &mut launcher)?;
     let max_aps = num_cpus.saturating_sub(1);
+    resident.validate(config.max_cpus, max_aps)?;
     claim_mp_attempt(&MP_ATTEMPTED)?;
 
     fstart_log::info!(
@@ -892,7 +928,7 @@ fn mp_init_selected(
         active: true,
     };
     publish_config(config);
-    let flown = fly(max_aps, &lapic, failure, launcher);
+    let flown = fly(max_aps, &lapic, failure, launcher, resident);
     // Only a completed flight can get here: no AP retains a driver callback.
     clear_mp_globals();
     borrow_guard.active = false;
@@ -929,6 +965,7 @@ fn fly(
     lapic: &Lapic,
     failure: &impl MpFailStop,
     launcher: Option<&mut dyn ApLauncher>,
+    resident: storage::Resident,
 ) -> Result<u16, MpError> {
     CPU_INIT_ERRORS.store(0, Ordering::Release);
     AP_COUNT.store(0, Ordering::Release);
@@ -944,7 +981,7 @@ fn fly(
     let final_count = if max_aps == 0 {
         0
     } else {
-        match start_aps(max_aps, lapic, launcher) {
+        match start_aps(max_aps, lapic, launcher, resident) {
             Ok(count) => count,
             Err(error) => failure.fail_stop(error),
         }
@@ -1063,7 +1100,11 @@ fn validate_bootstrap_addresses(cr3: u64, stack_base: u64, max_aps: u16) -> Resu
     Ok(())
 }
 
-fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<bool, MpError> {
+fn install_sipi_trampoline(
+    max_aps: u16,
+    _lapic: &Lapic,
+    resident: storage::Resident,
+) -> Result<bool, MpError> {
     if max_aps as usize > MAX_APS || sipi_blob::TRAMPOLINE.len() > 4096 {
         return Err(MpError::TrampolinePlacementFailed);
     }
@@ -1071,9 +1112,9 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<bool, MpError
     let driver = find_cpu_driver(CpuIdentity::current()).ok_or(MpError::UnsupportedCpu)?;
     let cache = driver.ap_cache_state().map_err(MpError::CacheBootstrap)?;
     let dst = SIPI_VECTOR_ADDR as *mut u8;
-    // SAFETY: we only expose the raw stack arena address to AP startup code;
-    // Rust never creates references to individual AP stacks while they run.
-    let stack_base = unsafe { core::ptr::addr_of_mut!(AP_STACKS.0) as u64 };
+    // Numerical geometry/capacity passed before ownership/hardware. No Rust
+    // references to individual AP stacks exist while assembly/Rust APs run.
+    let stack_base = resident.stack_base;
     let cr3 = read_cr3();
     validate_bootstrap_addresses(cr3, stack_base, max_aps)?;
     // SAFETY: single-attempt ownership excludes live readers; tables remain
@@ -1081,7 +1122,7 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<bool, MpError
     // prerequisites, not consequences of the checked numerical geometry.
     let (idtr32, idtr64) = unsafe {
         exception::prepare(
-            core::ptr::addr_of_mut!(AP_EXCEPTION_TABLES),
+            resident.tables(),
             (SIPI_VECTOR_ADDR + sipi_blob::FAULT32_OFFSET) as u64,
             (SIPI_VECTOR_ADDR + sipi_blob::FAULT64_OFFSET) as u64,
         )
