@@ -235,6 +235,7 @@ fn unit(
         linker_script: Some(linker_script),
         environment_values: BTreeMap::new(),
         bindings: vec![],
+        file_bindings: vec![],
         output,
     }
 }

@@ -335,6 +335,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             linker_script: Some(fstart_image_build::linker::resolved_xip(&layout)?),
             environment_values: BTreeMap::new(),
             bindings: vec![],
+            file_bindings: vec![],
             output: UnitOutput::Executable {
                 expectations: layout.elf_expectations()?,
                 load_address: code.base,
@@ -1167,6 +1168,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             .collect(),
             environment_values: mp_capacity(),
             bindings: vec![],
+            file_bindings: vec![],
             output: UnitOutput::SmmImage {
                 entry_count: 8,
                 stack_size: 0x400,
@@ -1207,6 +1209,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             BTreeMap::new()
         },
         bindings: stage_bindings,
+        file_bindings: vec![],
         output: UnitOutput::Executable {
             expectations,
             load_address,

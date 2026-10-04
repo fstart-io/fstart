@@ -135,6 +135,16 @@ pub struct InputFile {
     pub capacity: u64,
 }
 
+/// An explicit compiler input, snapshotted and content-bound by the executor.
+/// Paths are workspace-relative or explicit absolute paths, never discovered.
+/// Size bounds/hashes record provenance; they do not authenticate vendor bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileBinding {
+    pub environment: String,
+    pub path: String,
+    pub capacity: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompilationUnit {
     pub name: String,
@@ -153,6 +163,7 @@ pub struct CompilationUnit {
     pub linker_script: Option<String>,
     pub environment_values: BTreeMap<String, String>,
     pub bindings: Vec<ArtifactBinding>,
+    pub file_bindings: Vec<FileBinding>,
     pub output: UnitOutput,
 }
 
@@ -334,6 +345,25 @@ impl BuildPlan {
                     ));
                 }
             }
+            for binding in &unit.file_bindings {
+                if !environment_name(&binding.environment)
+                    || !bindings.insert(binding.environment.as_str())
+                    || unit.environment_values.contains_key(&binding.environment)
+                    || binding.path.is_empty()
+                    || binding.path.contains('\0')
+                    || binding.capacity == 0
+                    || binding
+                        .capacity
+                        .checked_add(1)
+                        .and_then(|size| usize::try_from(size).ok())
+                        .is_none()
+                {
+                    return Err(format!(
+                        "invalid or duplicate compiler file {}",
+                        binding.environment
+                    ));
+                }
+            }
         }
         for unit in &self.units {
             for binding in &unit.bindings {
@@ -449,6 +479,7 @@ mod tests {
             release_only: false,
             linker_script: None,
             environment_values: BTreeMap::new(),
+            file_bindings: vec![],
             bindings: dependencies
                 .iter()
                 .map(|name| ArtifactBinding {
@@ -592,6 +623,47 @@ mod tests {
         let mut plan = fixture();
         plan.units[0].entry = "bad\"cfg".into();
         assert!(plan.order().unwrap_err().contains("cfg value"));
+    }
+
+    #[test]
+    fn compiler_file_names_paths_and_bounds_share_the_binding_namespace() {
+        let file = || FileBinding {
+            environment: "FSTART_BYTES".into(),
+            path: "input.bin".into(),
+            capacity: 9600,
+        };
+        let mut plan = fixture();
+        plan.units[0].file_bindings.push(file());
+        plan.order().unwrap();
+        plan.units[0].file_bindings.push(file());
+        assert!(plan.order().is_err());
+        let mut plan = fixture();
+        let mut collision = file();
+        collision.environment = plan.units[0].bindings[0].environment.clone();
+        plan.units[0].file_bindings.push(collision);
+        assert!(plan.order().is_err());
+        let mut plan = fixture();
+        plan.units[0]
+            .environment_values
+            .insert("FSTART_BYTES".into(), "scalar".into());
+        plan.units[0].file_bindings.push(file());
+        assert!(plan.order().is_err());
+        for (environment, path, capacity) in [
+            ("RUSTFLAGS", "input", 1),
+            ("1FILE", "input", 1),
+            ("FILE", "", 1),
+            ("FILE", "bad\0path", 1),
+            ("FILE", "input", 0),
+            ("FILE", "input", u64::MAX),
+        ] {
+            let mut plan = fixture();
+            plan.units[0].file_bindings.push(FileBinding {
+                environment: environment.into(),
+                path: path.into(),
+                capacity,
+            });
+            assert!(plan.order().is_err());
+        }
     }
 
     // Graph failures occur before image-stage validation; no firmware fixture is

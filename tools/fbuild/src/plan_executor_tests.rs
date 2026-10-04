@@ -133,6 +133,108 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
 }
 
 #[test]
+fn compiler_files_are_snapshotted_content_bound_and_namespace_isolated() {
+    use fstart_image_build::build_plan::FileBinding;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let board = crate::board_manifest::find(root, "qemu-aarch64").unwrap();
+    let scratch =
+        Scratch(std::env::temp_dir().join(format!("fstart compiler files {}", std::process::id())));
+    fs::create_dir_all(&scratch.0).unwrap();
+    let source = scratch.0.join("source.bin");
+    fs::write(&source, b"first").unwrap();
+    let mut plan = fstart_platform_qemu::host::resolve(
+        fstart_platform_qemu::facts::VirtMachine::Aarch64,
+        fstart_image_build::plan::BuildSelection {
+            payload: Some("halt".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut other = plan.units[0].clone();
+    other.name = "other".into();
+    plan.units[0].file_bindings.push(FileBinding {
+        environment: "FSTART_TEST_INPUT".into(),
+        path: source.display().to_string(),
+        capacity: 8,
+    });
+    plan.units.push(other);
+    plan.order().unwrap();
+    let resolved = Resolved { plan };
+    let unit = &resolved.plan.units[0];
+    let first = resolved
+        .prepare(&scratch.0, &board, unit, &BTreeMap::new(), true)
+        .unwrap();
+    let snapshot = PathBuf::from(&first.environment()["FSTART_TEST_INPUT"]);
+    assert_ne!(snapshot, source);
+    assert_eq!(fs::read(&snapshot).unwrap(), b"first");
+    assert!(fs::metadata(&snapshot).unwrap().permissions().readonly());
+    let records: serde_json::Value =
+        serde_json::from_slice(&fs::read(first.directory.join("compiler-inputs.json")).unwrap())
+            .unwrap();
+    assert_eq!(records[0]["bytes"], 5);
+    assert_eq!(
+        records[0]["sha256"],
+        format!("{:x}", Sha256::digest(b"first"))
+    );
+    let cached = resolved
+        .prepare(&scratch.0, &board, unit, &BTreeMap::new(), true)
+        .unwrap();
+    assert_eq!(first.directory, cached.directory);
+    fs::write(&source, b"second").unwrap();
+    let second = resolved
+        .prepare(&scratch.0, &board, unit, &BTreeMap::new(), true)
+        .unwrap();
+    assert_ne!(first.directory, second.directory);
+    assert_eq!(fs::read(&snapshot).unwrap(), b"first");
+    assert_eq!(
+        fs::read(&second.environment()["FSTART_TEST_INPUT"]).unwrap(),
+        b"second"
+    );
+    let isolated = resolved
+        .prepare(
+            &scratch.0,
+            &board,
+            &resolved.plan.units[1],
+            &BTreeMap::new(),
+            true,
+        )
+        .unwrap();
+    assert!(!isolated.environment().contains_key("FSTART_TEST_INPUT"));
+    assert!(isolated.check_command().starts_with(&[
+        "env".into(),
+        "-u".into(),
+        "FSTART_TEST_INPUT".into()
+    ]));
+    let current = PathBuf::from(&second.environment()["FSTART_TEST_INPUT"]);
+    // Deliberate local-cache corruption must not be silently overwritten/reused.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&current, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    fs::write(&current, b"corrupt").unwrap();
+    let mut permissions = fs::metadata(&current).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&current, permissions).unwrap();
+    assert!(
+        resolved
+            .prepare(&scratch.0, &board, unit, &BTreeMap::new(), true)
+            .is_err()
+    );
+    assert_eq!(fs::read(&current).unwrap(), b"corrupt");
+    fs::write(&source, b"too-large-for-bound").unwrap();
+    assert!(
+        resolved
+            .prepare(&scratch.0, &board, unit, &BTreeMap::new(), true)
+            .is_err()
+    );
+}
+
+#[test]
 fn unsupported_required_input_is_rejected_by_input_validation_itself() {
     let mut plan = fstart_platform_qemu::host::resolve(
         fstart_platform_qemu::facts::VirtMachine::Aarch64,

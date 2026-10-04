@@ -391,6 +391,17 @@ non-selected entries, duplicate revisions, missing steppings and unsupported
 CPU identities fail; there is no best-version selection or alternate-source
 fallback. The whole reset image must still fit the production linker window.
 
+The shared build-plan transport now supports explicit `FileBinding` inputs:
+workspace-relative or absolute paths, compiler environment names and byte limits.
+The generic executor reads each bounded regular file once, binds canonical origin,
+namespace and bytes into the consuming unit directory, and supplies a synchronized
+read-only snapshot to the compiler. `compiler-inputs.json` records source, snapshot,
+size and SHA256 without embedding payload bytes. Cached symlinks, writable files
+or byte corruption are rejected, never overwritten; other units cannot inherit
+unbound input environment keys. Content changes invalidate the consuming unit.
+The build owner must exclude filesystem mutation through compiler execution;
+read-only permissions and hashes are not adversarial isolation or authentication.
+
 This is compiler-input plumbing, not a trusted build pipeline or supported AMD
 `fbuild` plan. The caller must preserve source integrity through compilation and
 establish physical source decoding/coherence and authenticity/freshness before
