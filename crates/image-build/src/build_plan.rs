@@ -261,7 +261,7 @@ fn identifier(value: &str) -> bool {
 
 /// Portable environment identifiers; unlike unit names, neither a leading digit
 /// nor a dash is valid. Compiler flag overrides are separate recorded fields.
-fn environment_name(value: &str) -> bool {
+pub(crate) fn environment_name(value: &str) -> bool {
     value
         .bytes()
         .next()
@@ -280,6 +280,31 @@ fn cfg_value(value: &str) -> bool {
 }
 
 impl BuildPlan {
+    /// Fail closed if platform resolution drops or substitutes an explicit input.
+    /// Multiple consuming units may bind the same request, but none may replace it.
+    pub fn validate_compiler_selections(
+        &self,
+        selection: &crate::plan::BuildSelection,
+    ) -> Result<(), String> {
+        selection.validate_compiler_files()?;
+        self.order()?;
+        for input in &selection.compiler_files {
+            let bindings: Vec<_> = self
+                .units
+                .iter()
+                .flat_map(|unit| &unit.file_bindings)
+                .filter(|binding| binding.environment == input.environment)
+                .collect();
+            if bindings.is_empty() || bindings.iter().any(|binding| binding.path != input.path) {
+                return Err(format!(
+                    "compiler input {} was not bound unchanged by the platform",
+                    input.environment
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn unit(&self, name: &str) -> Result<&CompilationUnit, String> {
         self.units
             .iter()
@@ -664,6 +689,33 @@ mod tests {
             });
             assert!(plan.order().is_err());
         }
+    }
+
+    #[test]
+    fn explicit_file_requests_must_be_bound_without_substitution() {
+        use crate::plan::{BuildSelection, CompilerFileSelection};
+        let selected = BuildSelection {
+            compiler_files: vec![
+                CompilerFileSelection::parse("FSTART_BYTES=exact source.bin").unwrap(),
+            ],
+            ..Default::default()
+        };
+        let mut plan = fixture();
+        assert!(plan.validate_compiler_selections(&selected).is_err());
+        let binding = || FileBinding {
+            environment: "FSTART_BYTES".into(),
+            path: "exact source.bin".into(),
+            capacity: 9600,
+        };
+        plan.units[0].file_bindings.push(binding());
+        plan.validate_compiler_selections(&selected).unwrap();
+        plan.units[1].file_bindings.push(binding());
+        plan.validate_compiler_selections(&selected).unwrap();
+        plan.units[1].file_bindings[0].path = "alternate.bin".into();
+        assert!(plan.validate_compiler_selections(&selected).is_err());
+        let mut duplicate = selected.clone();
+        duplicate.compiler_files.extend(selected.compiler_files);
+        assert!(plan.validate_compiler_selections(&duplicate).is_err());
     }
 
     // Graph failures occur before image-stage validation; no firmware fixture is

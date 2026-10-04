@@ -391,6 +391,14 @@ non-selected entries, duplicate revisions, missing steppings and unsupported
 CPU identities fail; there is no best-version selection or alternate-source
 fallback. The whole reset image must still fit the production linker window.
 
+`fbuild` accepts repeated `--compiler-input ENV=PATH` selections, forwards them
+unchanged through its command adapter, and records them in the host selection.
+Invalid names/empty paths and duplicate namespaces fail before host resolution;
+every request must match at least one consuming unit's file binding with the
+unchanged path. Unknown requests and substituted paths fail before firmware
+compilation, including substitutions in other declared units. Platforms still
+own supported input namespaces and byte budgets; this is not a flag/env override.
+
 The shared build-plan transport now supports explicit `FileBinding` inputs:
 workspace-relative or absolute paths, compiler environment names and byte limits.
 The generic executor reads each bounded regular file once, binds canonical origin,

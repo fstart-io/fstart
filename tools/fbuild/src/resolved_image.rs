@@ -16,8 +16,10 @@ impl ResolvedImage {
         board: &BoardManifest,
         selection: BuildSelection,
     ) -> Result<Self, String> {
+        selection.validate_compiler_files()?;
         let source = crate::profile_source::load_profile(root, board)?;
         let mut plan = crate::host_plan::load(root, &source, &board.variant_features, &selection)?;
+        plan.validate_compiler_selections(&selection)?;
         let environment = [
             ("FSTART_SMBIOS_DATE", &selection.smbios_release_date),
             ("FSTART_LOG_LEVEL", &selection.log_level),

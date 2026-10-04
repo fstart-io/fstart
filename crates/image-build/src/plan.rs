@@ -44,6 +44,30 @@ impl Span {
 mod tests {
     use super::*;
     #[test]
+    fn explicit_compiler_selections_preserve_paths_and_reject_duplicates() {
+        let file = CompilerFileSelection::parse("FSTART_BYTES=/a path/bytes=1.bin").unwrap();
+        assert_eq!(file.path, "/a path/bytes=1.bin");
+        for invalid in [
+            "FILE",
+            "=file",
+            "FILE=",
+            "PATH=file",
+            "RUSTFLAGS=file",
+            "1FILE=file",
+            "FILE=bad\0path",
+        ] {
+            assert!(CompilerFileSelection::parse(invalid).is_err());
+        }
+        let mut selection = BuildSelection {
+            compiler_files: vec![file.clone()],
+            ..Default::default()
+        };
+        selection.validate_compiler_files().unwrap();
+        selection.compiler_files.push(file);
+        assert!(selection.validate_compiler_files().is_err());
+    }
+
+    #[test]
     fn imported_ifd_rejects_overlap_duplicate_overflow_and_bad_alignment() {
         let valid = || {
             IfdTransport(vec![
@@ -86,11 +110,43 @@ mod tests {
     }
 }
 
+/// Explicit consuming-compiler namespace and source path, not an ambient value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompilerFileSelection {
+    pub environment: String,
+    pub path: String,
+}
+impl CompilerFileSelection {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let (environment, path) = value
+            .split_once('=')
+            .ok_or("compiler input must use ENV=PATH")?;
+        let input = Self {
+            environment: environment.into(),
+            path: path.into(),
+        };
+        input.validate()?;
+        Ok(input)
+    }
+    fn validate(&self) -> Result<(), String> {
+        if !crate::build_plan::environment_name(&self.environment)
+            || self.path.is_empty()
+            || self.path.contains('\0')
+        {
+            return Err("invalid compiler input name or path".into());
+        }
+        Ok(())
+    }
+}
+
 /// Explicit invocation choices. Defaults and supported combinations belong to
 /// the selected platform, not the adapter or fbuild's family backend.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct BuildSelection {
     pub payload: Option<String>,
+    /// A selected platform must bind every request, unchanged, to compiler units.
+    #[serde(default)]
+    pub compiler_files: Vec<CompilerFileSelection>,
     /// SMBIOS Type 0 release date selected by fbuild, in MM/DD/YYYY form.
     #[serde(default)]
     pub smbios_release_date: Option<String>,
@@ -106,6 +162,17 @@ pub struct BuildSelection {
 }
 
 impl BuildSelection {
+    pub fn validate_compiler_files(&self) -> Result<(), String> {
+        let mut names = std::collections::BTreeSet::new();
+        for input in &self.compiler_files {
+            input.validate()?;
+            if !names.insert(&input.environment) {
+                return Err(format!("duplicate compiler input {}", input.environment));
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn has_x86_linux_overrides(&self) -> bool {
         self.x86_linux_kernel_load_addr.is_some()
