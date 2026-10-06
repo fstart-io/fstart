@@ -31,6 +31,8 @@ pub const SPD_MIN_CYCLE_TIME_AT_CAS_MAX: u8 = 9;
 pub const SPD_ACCESS_TIME_FROM_CLOCK: u8 = 10;
 /// SPD byte 11: DIMM configuration type (ECC, parity, etc.).
 pub const SPD_DIMM_CONFIG_TYPE: u8 = 11;
+/// SPD byte 12: refresh rate encoding, with self-refresh capability in bit 7.
+pub const SPD_REFRESH_RATE: u8 = 12;
 /// SPD byte 13: primary SDRAM width.
 pub const SPD_PRIMARY_SDRAM_WIDTH: u8 = 13;
 /// SPD byte 16: supported burst lengths (bit 3 = BL8).
@@ -219,6 +221,11 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
         return None;
     }
 
+    // Coreboot rejects reserved refresh encodings instead of assuming a rate.
+    if spd_data[SPD_REFRESH_RATE as usize] & 0x7f > 5 {
+        return None;
+    }
+
     let rows = spd_data[SPD_NUM_ROWS as usize];
     let cols = spd_data[SPD_NUM_COLUMNS as usize];
     if rows == 0 || rows > 31 || (revision < 0x13 && rows > 15) || cols == 0 || cols > 15 {
@@ -398,6 +405,20 @@ mod tests {
         spd[SPD_RANK_DENSITY as usize] = 0;
         update_checksum(&mut spd);
         assert!(decode_dimm(&spd).is_none());
+    }
+
+    #[test]
+    fn rejects_reserved_refresh_encodings() {
+        for refresh in 0..=u8::MAX {
+            let mut spd = valid_spd();
+            spd[SPD_REFRESH_RATE as usize] = refresh;
+            update_checksum(&mut spd);
+            assert_eq!(
+                decode_dimm(&spd).is_some(),
+                matches!(refresh, 0..=5 | 0x80..=0x85),
+                "refresh encoding {refresh:#04x}"
+            );
+        }
     }
 
     #[test]
