@@ -355,6 +355,11 @@ where
     }
 
     fn init_devices(&mut self) -> Result<(), ServiceError> {
+        self.hooks.before_devices(&mut IntelMainstageBoardCtx {
+            southbridge: &mut self.southbridge,
+            memory: &self.ctx,
+            resume: self.resume,
+        })?;
         self.northbridge.post_dram_init()?;
         self.southbridge.post_dram_init()?;
         self.hooks.after_devices(&mut IntelMainstageBoardCtx {

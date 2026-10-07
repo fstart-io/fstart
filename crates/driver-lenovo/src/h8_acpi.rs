@@ -29,6 +29,26 @@ use super::h8::H8Config;
 /// the canonical ThinkPad paths (`...\LPCB.EC__`, `...\LPCB.EC__.HKEY`).
 #[must_use]
 pub fn dsdt_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
+    dsdt_aml_with_brightness(
+        cfg,
+        lpc_scope,
+        &acpi_dsl! {
+            Scope("\\") {
+                Method("BRTU", 0, NotSerialized) { }
+                Method("BRTD", 0, NotSerialized) { }
+            }
+        },
+    )
+}
+
+/// Emit H8 with board-supplied root BRTU/BRTD methods. Boards without a
+/// graphics brightness interface retain the no-op hooks in [`dsdt_aml`].
+#[must_use]
+pub fn dsdt_aml_with_brightness(
+    cfg: &H8Config,
+    lpc_scope: &str,
+    brightness_hooks: &[u8],
+) -> Vec<u8> {
     let mut lpc = ec_device_aml(cfg);
     if cfg.bat_charge_behaviour {
         lpc.extend(hkey_charge_behaviour_aml());
@@ -38,6 +58,7 @@ pub fn dsdt_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
     }
 
     let mut out = root_helpers_aml(cfg);
+    out.extend_from_slice(brightness_hooks);
     out.extend(
         fstart_acpi::aml_linker::scope_vec(lpc_scope, &lpc)
             .expect("H8 required LPC scope emission failed"),
@@ -68,10 +89,6 @@ fn root_helpers_aml(cfg: &H8Config) -> Vec<u8> {
             // Processor notification; we have no \_PR processor objects yet.
             Method("PNOT", 0, Serialized) { }
 
-            // Brightness hooks: wired to the display pipeline once native
-            // graphics bring-up lands. The EC _Q14/_Q15 events call these.
-            Method("BRTU", 0, NotSerialized) { }
-            Method("BRTD", 0, NotSerialized) { }
         }
     }
     .into()

@@ -9,10 +9,14 @@ pub mod config;
 pub mod mainboard;
 #[cfg(fstart_stage_env = "smm")]
 pub mod smm;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
+// Host table/board-policy tests do not link firmware entry or its allocator.
+#[cfg(all(
+    not(test),
+    any(
+        fstart_stage_env = "car",
+        fstart_stage_env = "postcar",
+        fstart_stage_env = "ram"
+    )
 ))]
 mod stage;
 

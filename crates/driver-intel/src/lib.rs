@@ -186,8 +186,12 @@ pub trait IntelNorthbridgeDriver:
     fn early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
+    /// Complete post-DRAM PM/IGD programming after both DMI peers negotiated.
+    fn finish_early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
     /// Mainstage chipset init after the bus scan and before the southbridge
-    /// devices (coreboot `northbridge_init`): DMI/egress, PM, IOMMU windows.
+    /// devices (coreboot `northbridge_init`), including DMA-remap windows.
     fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
@@ -236,6 +240,11 @@ pub trait IntelSouthbridgeDriver: Sized {
     fn smbus_mut(&mut self) -> Option<&mut dyn fstart_core::services::SmBus> {
         None
     }
+    /// Enable the southbridge DMI peer before northbridge negotiation.
+    fn prepare_early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+    /// Poll the southbridge link after northbridge negotiation.
     fn early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }

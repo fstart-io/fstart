@@ -1269,18 +1269,6 @@ impl IntelGm965 {
         fstart_log::info!("intel-gm965: IGD non-display init complete");
     }
 
-    /// DRAM-backed chipset init: DMI/egress link, PM tuning and the IGD
-    /// clock/PEG setup (coreboot `northbridge_init`). The IGD's own device
-    /// init follows once its BARs are known, in `stage_local_init`.
-    fn mainstage_chipset_init(&self) -> Result<(), ServiceError> {
-        self.gm965_dmi_init()?;
-        self.init_dma_remap_bars();
-        self.gm965_pm_init();
-        self.gm965_igd_init();
-        self.write_coreboot_scratchpad_marker();
-        Ok(())
-    }
-
     /// Program the MCHBAR DMA-remap bars (coreboot `init_iommu()`).
     ///
     /// Without these, DMA from the ME, IGD, and other VC0 sources aborts on
@@ -1363,8 +1351,21 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         Ok(())
     }
 
+    fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
+        self.gm965_dmi_init()
+    }
+
+    fn finish_early_post_dram_init(&mut self) -> Result<(), ServiceError> {
+        self.gm965_pm_init();
+        self.gm965_igd_init();
+        self.write_coreboot_scratchpad_marker();
+        Ok(())
+    }
+
     fn post_dram_init(&mut self) -> Result<(), ServiceError> {
-        self.mainstage_chipset_init()
+        // PCI-facing DMA-remap setup stays in ramstage, not DMI/DRAM PM.
+        self.init_dma_remap_bars();
+        Ok(())
     }
 
     /// Ramstage: bring the IGD and, when the board asked for it, the display up.
@@ -1916,7 +1917,6 @@ mod acpi_impl {
                         PICM = Arg0;
                     }
                     Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
-                    Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
                     Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
                     Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
                     // CPU power-management objects are appended below using the
