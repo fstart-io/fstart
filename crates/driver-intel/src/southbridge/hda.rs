@@ -934,47 +934,6 @@ mod tests {
         assert_eq!(p.encode(), 0x02214c1f, "hp-out pin config mismatch");
     }
 
-    /// Internal beep: AZALIA_PIN_CFG(0, 0x1d, 0x4005c603)
-    #[test]
-    fn pin_desc_foxconn_beep() {
-        let _p = PinConfig {
-            nid: 0x1d,
-            nc: None,
-            conn: PinConn::Integrated,
-            loc: PinLoc::Internal,
-            geo: PinGeoLoc::NA,
-            device: PinDevice::DeviceOther,
-            connector: PinConnector::Unknown,
-            color: PinColor::ColorUnknown,
-            misc: 1,
-            group: 0,
-            seq: 3,
-        };
-        // 0x4005c603: conn=2(Integ)<<30, loc=0x10(Internal)<<24, dev=0xF(Other)<<20,
-        //   type=0(Unk)<<16, color=0(Unk)<<12, misc=1(NoPD)<<8|0x6=???
-        // Actually let me work through: 0x4005c603
-        // [31:30] = 01 = Nc?? Wait no, 0x40 >> 6 = 1... Let me re-derive
-        // 0x4005c603 in binary:
-        // 0100_0000_0000_0101_1100_0110_0000_0011
-        // [31:30] = 01 = Nc
-        // Hmm wait that's actually NC + specific encoding. Let me just pass the raw value.
-        // For the beep generator, it uses AZALIA_NC connectivity + internal location.
-        // 0x40 = 0100_0000 → conn=01=Nc, loc=0x00=External|NA
-        // That doesn't match Integrated+Internal...
-        //
-        // Actually the coreboot hex 0x4005c603 means:
-        // [31:30] = 01 = Nc (the pin is internally connected to the codec's beep gen)
-        // [29:24] = 00_0000 = External|NA
-        // [23:20] = 0000 = LineOut
-        // [19:16] = 0101 = OtherDigital... wait
-        //
-        // Let me just verify with the raw macro value from the C source.
-        // The BIOS set this as a raw config, not through AZALIA_PIN_DESC.
-        // 0x4005c603 is a board-specific magic value, not decomposable cleanly.
-        // Skip this test — it demonstrates that some pin configs are BIOS-specific
-        // magic and should use extra_verbs or a raw PinConfig field.
-    }
-
     /// Front mic: AZALIA_PIN_CFG(0, 0x19, 0x02a19c31)
     #[test]
     fn pin_desc_foxconn_front_mic() {
@@ -997,32 +956,7 @@ mod tests {
     /// SPDIF out: AZALIA_PIN_CFG(0, 0x1e, 0x99430120)
     #[test]
     fn pin_desc_foxconn_spdif() {
-        let _p = PinConfig {
-            nid: 0x1e,
-            nc: None,
-            conn: PinConn::Integrated,
-            loc: PinLoc::Internal,
-            geo: PinGeoLoc::Special9,
-            device: PinDevice::SpdifOut,
-            connector: PinConnector::OtherDigital,
-            color: PinColor::ColorUnknown,
-            misc: 1,
-            group: 2,
-            seq: 0,
-        };
-        // 0x99430120:
-        // [31:30] = 10 = Integrated
-        // [29:24] = 011001 = Internal(0x10) | Special9(0x9) = 0x19
-        // [23:20] = 0100 = SpdifOut
-        // [19:16] = 0011 = AtapiInternal... hmm, that's 3 not 6.
-        // Actually 0x99 = 1001_1001 → [31:30]=10=Integ, [29:24]=01_1001=0x19=Internal|Special9
-        // 0x43 = 0100_0011 → [23:20]=0100=SpdifOut, [19:16]=0011=AtapiInternal
-        // 0x01 = 0000_0001 → [15:12]=0000=ColorUnk, [11:8]=0001=NoPresenceDetect
-        // 0x20 = 0010_0000 → [7:4]=0010=group2, [3:0]=0000=seq0
-        //
-        // Connector is AtapiInternal(3), not OtherDigital(6).
-        // Let me fix the test.
-        let p2 = PinConfig {
+        let pin = PinConfig {
             nid: 0x1e,
             nc: None,
             conn: PinConn::Integrated,
@@ -1035,7 +969,7 @@ mod tests {
             group: 2,
             seq: 0,
         };
-        assert_eq!(p2.encode(), 0x99430120, "spdif pin config mismatch");
+        assert_eq!(pin.encode(), 0x99430120, "spdif pin config mismatch");
     }
 
     /// Line-in: AZALIA_PIN_CFG(0, 0x1a, 0x0181343f)
