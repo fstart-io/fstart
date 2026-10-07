@@ -47,32 +47,57 @@
 
 #![allow(clippy::derivable_impls, clippy::identity_op)]
 
-use core::ptr;
+use fstart_core::{
+    ConstVec,
+    mmio::{MmioReadOnly, MmioReadWrite},
+};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::{register_bitfields, register_structs};
 
-use fstart_core::ConstVec;
+register_bitfields![u32, GCTL [CRST OFFSET(0) NUMBITS(1) []]];
+register_bitfields![u16,
+    STATESTS [CODECS OFFSET(0) NUMBITS(15) []],
+    ICS [BUSY OFFSET(0) NUMBITS(1) [], VALID OFFSET(1) NUMBITS(1) []]
+];
 
-// ---------------------------------------------------------------------------
-// HDA standard register offsets (relative to BAR0)
-// ---------------------------------------------------------------------------
+register_structs! {
+    HdaRegs {
+        // GCAP is RO or R/WO depending on the controller generation.
+        (0x00 => capabilities: MmioReadWrite<u16>),
+        (0x02 => _reserved0),
+        (0x08 => control: MmioReadWrite<u32, GCTL::Register>),
+        (0x0c => _reserved1),
+        // W1C: acknowledge with exact writes, never modify().
+        (0x0e => codec_status: MmioReadWrite<u16, STATESTS::Register>),
+        (0x10 => _reserved2),
+        (0x60 => command: MmioReadWrite<u32>),
+        (0x64 => response: MmioReadOnly<u32>),
+        // BUSY is R/W and VALID is W1C; keep snapshot-write semantics.
+        (0x68 => command_status: MmioReadWrite<u16, ICS::Register>),
+        (0x6a => @END),
+    }
+}
 
-/// Global Capabilities register (16-bit, RO / R/WO on some PCHs).
-pub const REG_GCAP: usize = 0x00;
-/// Global Control register (32-bit).
-pub const REG_GCTL: usize = 0x08;
-/// Controller Reset bit in GCTL.
-pub const GCTL_CRST: u32 = 1 << 0;
-/// STATESTS — codec status/change bits (16-bit at offset 0x0E).
-pub const REG_STATESTS: usize = 0x0E;
-/// Immediate Command register (32-bit).
-pub const REG_IC: usize = 0x60;
-/// Immediate Response register (32-bit, RO).
-pub const REG_IR: usize = 0x64;
-/// Immediate Command Status register (16-bit).
-pub const REG_ICS: usize = 0x68;
-/// ICS: Immediate Command Busy.
-pub const ICS_BUSY: u16 = 1 << 0;
-/// ICS: Immediate Result Valid.
-pub const ICS_VALID: u16 = 1 << 1;
+/// Common ICH7/ICH8 ESD/link/virtual-channel programming, before codec reset.
+/// Clock detection and generation-specific R/WO writes stay in the chipset.
+#[cfg(any(feature = "ich7", feature = "ich8"))]
+pub(crate) fn setup_ich_link(device: fstart_pci::ecam::EcamDevice) {
+    const ESD: u16 = 0x134;
+    const LINK1_DESCRIPTION: u16 = 0x140;
+    const LINK_TYPE_MASK: u32 = 0xff << 16;
+    const AZALIA_LINK: u32 = 2 << 16;
+    const VC0_RESOURCE_CONTROL: u16 = 0x114;
+    const VC1_TRAFFIC_CLASS: u16 = 0x44;
+    const VC1_RESOURCE_CONTROL: u16 = 0x120;
+    const VC_ENABLE: u32 = 1 << 31;
+    const VC_ID_1: u32 = 1 << 24;
+    const TC7_MAPPING: u32 = 1 << 7;
+    device.modify32(ESD, !LINK_TYPE_MASK, AZALIA_LINK);
+    device.modify32(LINK1_DESCRIPTION, !LINK_TYPE_MASK, AZALIA_LINK);
+    device.modify32(VC0_RESOURCE_CONTROL, !0xff, 1);
+    device.or8(VC1_TRAFFIC_CLASS, 7);
+    device.or32(VC1_RESOURCE_CONTROL, VC_ENABLE | VC_ID_1 | TC7_MAPPING);
+}
 
 /// Maximum number of codec addresses (0..14, spec limit).
 pub const MAX_CODECS: u8 = 15;
@@ -610,8 +635,8 @@ pub const fn pin_not_connected(nid: u8, seq: u8) -> PinConfig {
 /// HDA controller register interface.
 ///
 /// Operates on any HDA-compliant controller through BAR0 MMIO.
-/// Chipset-specific PCI config programming (ESD, VC, clock detection)
-/// is NOT included — that belongs in the chipset driver.
+/// PCI configuration is separate: shared ICH link mechanisms are above,
+/// while generation-specific policy remains in the chipset drivers.
 pub struct HdaController {
     base: usize,
 }
@@ -631,36 +656,18 @@ impl HdaController {
         self.base
     }
 
-    // ---- Register access ----
-
-    #[inline]
-    fn read32(&self, offset: usize) -> u32 {
-        unsafe { ptr::read_volatile((self.base + offset) as *const u32) }
-    }
-
-    #[inline]
-    fn write32(&self, offset: usize, val: u32) {
-        unsafe { ptr::write_volatile((self.base + offset) as *mut u32, val) }
-    }
-
-    #[inline]
-    fn read16(&self, offset: usize) -> u16 {
-        unsafe { ptr::read_volatile((self.base + offset) as *const u16) }
-    }
-
-    #[inline]
-    fn write16(&self, offset: usize, val: u16) {
-        unsafe { ptr::write_volatile((self.base + offset) as *mut u16, val) }
+    fn regs(&self) -> &HdaRegs {
+        // SAFETY: constructor receives the mapped, aligned controller BAR0.
+        unsafe { &*(self.base as *const HdaRegs) }
     }
 
     // ---- Controller reset ----
 
     /// Enter reset (clear CRST, active-low).
     pub fn enter_reset(&self) -> bool {
-        let gctl = self.read32(REG_GCTL);
-        self.write32(REG_GCTL, gctl & !GCTL_CRST);
+        self.regs().control.modify(GCTL::CRST::CLEAR);
         for _ in 0..50_000 {
-            if self.read32(REG_GCTL) & GCTL_CRST == 0 {
+            if !self.regs().control.is_set(GCTL::CRST) {
                 return true;
             }
             core::hint::spin_loop();
@@ -670,10 +677,9 @@ impl HdaController {
 
     /// Exit reset (set CRST).
     pub fn exit_reset(&self) -> bool {
-        let gctl = self.read32(REG_GCTL);
-        self.write32(REG_GCTL, gctl | GCTL_CRST);
+        self.regs().control.modify(GCTL::CRST::SET);
         for _ in 0..50_000 {
-            if self.read32(REG_GCTL) & GCTL_CRST != 0 {
+            if self.regs().control.is_set(GCTL::CRST) {
                 return true;
             }
             core::hint::spin_loop();
@@ -688,9 +694,10 @@ impl HdaController {
     /// Performs a full reset cycle and returns a bitmask of detected
     /// codec addresses (bits [14:0]).
     pub fn detect_codecs(&self) -> u16 {
-        let gcap = self.read16(REG_GCAP);
-        self.write16(REG_GCAP, gcap);
-        self.write16(REG_STATESTS, 0x7FFF);
+        let regs = self.regs();
+        let gcap = regs.capabilities.get();
+        regs.capabilities.set(gcap);
+        regs.codec_status.write(STATESTS::CODECS.val(0x7fff));
 
         if !self.enter_reset() {
             fstart_log::error!("hda: enter reset timeout");
@@ -706,7 +713,7 @@ impl HdaController {
             core::hint::spin_loop();
         }
 
-        let mask = self.read16(REG_STATESTS) & 0x7FFF;
+        let mask = regs.codec_status.read(STATESTS::CODECS);
         if mask == 0 {
             self.enter_reset();
             fstart_log::info!("hda: no codecs detected");
@@ -718,27 +725,27 @@ impl HdaController {
 
     /// Send a single verb and return the response. Returns `None` on timeout.
     pub fn send_verb(&self, verb: u32) -> Option<u32> {
+        let regs = self.regs();
         for _ in 0..10_000 {
-            if self.read16(REG_ICS) & ICS_BUSY == 0 {
+            if !regs.command_status.is_set(ICS::BUSY) {
                 break;
             }
             core::hint::spin_loop();
         }
-        if self.read16(REG_ICS) & ICS_BUSY != 0 {
+        if regs.command_status.is_set(ICS::BUSY) {
             return None;
         }
 
-        self.write32(REG_IC, verb);
-        let ics = self.read16(REG_ICS);
-        self.write16(REG_ICS, ics | ICS_BUSY);
+        regs.command.set(verb);
+        let mut status = regs.command_status.extract();
+        // Preserve the existing VALID acknowledgement while starting BUSY.
+        status.modify(ICS::BUSY::SET);
+        regs.command_status.set(status.get());
 
         for _ in 0..10_000 {
-            let status = self.read16(REG_ICS);
-            if status & ICS_VALID != 0 {
-                return Some(self.read32(REG_IR));
-            }
-            if status & ICS_BUSY == 0 {
-                return Some(self.read32(REG_IR));
+            let status = regs.command_status.extract();
+            if status.is_set(ICS::VALID) || !status.is_set(ICS::BUSY) {
+                return Some(regs.response.get());
             }
             core::hint::spin_loop();
         }
@@ -830,6 +837,18 @@ impl HdaController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_preserves_other_control_bits_and_neighboring_registers() {
+        let mut backing = [0xa5a5_a5a5u32; 28];
+        let controller = HdaController::new(backing.as_mut_ptr() as usize);
+        let before = controller.regs().control.get();
+        assert!(controller.enter_reset());
+        assert_eq!(controller.regs().control.get(), before & !1);
+        assert!(controller.exit_reset());
+        assert_eq!(controller.regs().control.get(), before);
+        assert!(backing.iter().all(|&value| value == 0xa5a5_a5a5));
+    }
 
     #[test]
     fn pin_cfg_nc() {

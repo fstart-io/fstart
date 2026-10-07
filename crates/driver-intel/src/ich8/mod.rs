@@ -1704,11 +1704,7 @@ impl IntelIch8 {
         }
 
         // Coreboot i82801hx/azalia.c: ESD/link/VC setup before codec reset.
-        hda.modify32(0x134, !0x00ff_0000, 2 << 16);
-        hda.modify32(0x140, !0x00ff_0000, 2 << 16);
-        hda.modify32(0x114, !0x0000_00ff, 1);
-        hda.or8(0x44, 7);
-        hda.or32(0x120, (1 << 31) | (1 << 24) | 0x80);
+        crate::southbridge::hda::setup_ich_link(hda);
         hda.and8(0x4d, !(1 << 7));
         hda.write32(0x74, hda.read32(0x74));
 
