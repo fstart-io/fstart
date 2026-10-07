@@ -7,7 +7,13 @@ use fstart_core::pio::PioRegister;
 use fstart_core::typed::{Io8, IoAddr};
 use tock_registers::fields::FieldValue;
 use tock_registers::interfaces::{Readable, Writeable};
-use tock_registers::register_bitfields;
+use tock_registers::{LocalRegisterCopy, RegisterLongName, register_bitfields};
+
+/// Bind a controller's field namespace to its EC RAM byte index.
+/// This is distinct from the command/status port and PMH7 register namespaces.
+pub trait EcRegister: RegisterLongName {
+    const INDEX: u8;
+}
 
 register_bitfields![u8,
     pub EC_STATUS [
@@ -121,6 +127,34 @@ impl Ec {
 
     pub fn write(&self, addr: u8, data: u8) -> bool {
         self.command(EcCommand::Write) && self.send(addr) && self.send(data)
+    }
+
+    pub fn read_register<R: EcRegister>(&self) -> Option<LocalRegisterCopy<u8, R>> {
+        self.read(R::INDEX).map(LocalRegisterCopy::new)
+    }
+
+    /// Exact byte write; callers supply a full register value, including when
+    /// issuing commands that must never read the register first.
+    pub fn write_register<R: EcRegister>(&self, value: u8) -> bool {
+        self.write(R::INDEX, value)
+    }
+
+    /// Modify a field's own register, preserving unrelated bits and reporting
+    /// read or write handshake failure without fabricating a snapshot.
+    ///
+    /// Port status fields cannot be used as EC RAM fields:
+    /// ```compile_fail
+    /// use fstart_driver_lenovo::ec::{Ec, EC_STATUS};
+    /// fn wrong_address_space(ec: &Ec) {
+    ///     ec.modify_register(EC_STATUS::INPUT_FULL::SET);
+    /// }
+    /// ```
+    pub fn modify_register<R: EcRegister>(&self, fields: FieldValue<u8, R>) -> bool {
+        let Some(mut value) = self.read_register::<R>() else {
+            return false;
+        };
+        value.modify(fields);
+        self.write_register::<R>(value.get())
     }
 
     pub fn set_bit(&self, addr: u8, bit: u8) -> bool {

@@ -7,10 +7,9 @@
 //! `lid.asl`, `ac.asl`, `sleepbutton.asl`, `beep.asl`, `systemstatus.asl`,
 //! `thinkpad.asl`) using the [`fstart_acpi_macros::acpi_dsl!`] macro.
 
-use super::ec::{Ec, EcPorts};
+use super::ec::{Ec, EcPorts, EcRegister};
 use fstart_core::typed::{Io8, IoAddr};
-use tock_registers::fields::FieldValue;
-use tock_registers::{LocalRegisterCopy, RegisterLongName, register_bitfields};
+use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 register_bitfields![u8,
     pub CONFIG0 [
@@ -43,18 +42,38 @@ register_bitfields![u8,
         MODE OFFSET(5) NUMBITS(3) [Off = 0, On = 4, Pulse = 5, Blink = 6]
     ],
     pub TRACKPOINT_CONTROL [MODE OFFSET(0) NUMBITS(2) [Auto = 1, Off = 2, On = 3]],
-    pub FAN_CONTROL [AUTO OFFSET(7) NUMBITS(1) []],
+    // Speed levels and disengaged/automatic modes match Linux thinkpad_acpi.
+    pub FAN_CONTROL [
+        LEVEL OFFSET(0) NUMBITS(3) [
+            Stop = 0, Level1 = 1, Level2 = 2, Level3 = 3,
+            Level4 = 4, Level5 = 5, Level6 = 6, Level7 = 7
+        ],
+        DISENGAGED OFFSET(6) NUMBITS(1) [],
+        AUTO OFFSET(7) NUMBITS(1) []
+    ],
+    pub VOLUME_CONTROL [LEVEL OFFSET(0) NUMBITS(4) [], MUTE OFFSET(6) NUMBITS(1) []],
+    // Beep-enable bytes are board policy; only the low-battery event is
+    // documented by coreboot. Do not invent names for the other enable bits.
+    pub SOUND_ENABLE0 [EVENTS OFFSET(0) NUMBITS(8) [], LOW_BATTERY OFFSET(1) NUMBITS(1) []],
+    pub SOUND_ENABLE1 [EVENTS OFFSET(0) NUMBITS(8) []],
+    pub SOUND_COMMAND [TONE OFFSET(0) NUMBITS(8) [Silence = 0]],
+    pub SOUND_REPEAT [COUNT OFFSET(0) NUMBITS(8) []],
+    pub EVENT_ATTENTION [COMMAND OFFSET(0) NUMBITS(8) [DiscardAndEnable = 1]],
     pub RADIO_CONTROL [
         AUDIO_MUTE OFFSET(0) NUMBITS(1) [],
         BLUETOOTH_ENABLE OFFSET(4) NUMBITS(1) [],
         WLAN_ENABLE OFFSET(5) NUMBITS(1) [],
         WWAN_ENABLE OFFSET(6) NUMBITS(1) []
     ],
-    pub USB_CONTROL [POWER_ENABLE OFFSET(4) NUMBITS(1) []],
+    pub USB_CONTROL [
+        THINKLIGHT OFFSET(1) NUMBITS(1) [],
+        POWER_ENABLE OFFSET(4) NUMBITS(1) []
+    ],
     pub FN_CONTROL [SWAP_CTRL OFFSET(4) NUMBITS(1) []],
     pub ALWAYS_ON_CONTROL [
         ENABLE OFFSET(0) NUMBITS(1) [],
-        AC_ONLY OFFSET(2) NUMBITS(2) []
+        AC_ONLY OFFSET(2) NUMBITS(2) [AnyPower = 0, AcOnly = 3],
+        KEYBOARD_BACKLIGHT OFFSET(6) NUMBITS(2) [Off = 0, Low = 1, High = 2]
     ],
     pub STATUS1 [
         ULTRABAY_ABSENT OFFSET(0) NUMBITS(1) [],
@@ -66,38 +85,42 @@ register_bitfields![u8,
 // Register map (coreboot h8.h)
 // -----------------------------------------------------------------------
 
-pub const H8_CONFIG0: u8 = 0x00;
+// Like PMH7, the namespace owns the index: callers cannot independently
+// choose an address and a mismatched field value. The EC handshake stays in Ec.
+macro_rules! ec_registers {
+    ($($register:ident => $index:literal),* $(,)?) => {
+        $(impl EcRegister for $register::Register {
+            const INDEX: u8 = $index;
+        })*
+    };
+}
+
+ec_registers! {
+    CONFIG0 => 0x00,
+    CONFIG1 => 0x01,
+    CONFIG2 => 0x02,
+    CONFIG3 => 0x03,
+    SOUND_ENABLE0 => 0x04,
+    SOUND_ENABLE1 => 0x05,
+    SOUND_COMMAND => 0x06,
+    SOUND_REPEAT => 0x07,
+    TRACKPOINT_CONTROL => 0x0b,
+    LED_CONTROL => 0x0c,
+    ALWAYS_ON_CONTROL => 0x0d,
+    FAN_CONTROL => 0x2f,
+    VOLUME_CONTROL => 0x30,
+    RADIO_CONTROL => 0x3a,
+    USB_CONTROL => 0x3b,
+    STATUS1 => 0x47,
+    EVENT_ATTENTION => 0x80,
+    FN_CONTROL => 0xce,
+}
+
 pub const H8_CONFIG0_EVENTS_ENABLE: u8 = CONFIG0::EVENTS_ENABLE::SET.value;
 pub const H8_CONFIG0_HOTKEY_ENABLE: u8 = CONFIG0::HOTKEY_ENABLE::SET.value;
 pub const H8_CONFIG0_SMM_H8_ENABLE: u8 = CONFIG0::SMM_ENABLE::SET.value;
 pub const H8_CONFIG0_TC_ENABLE: u8 = CONFIG0::THERMAL_CONTROL::SET.value;
 
-pub const H8_CONFIG1: u8 = 0x01;
-pub const H8_CONFIG2: u8 = 0x02;
-pub const H8_CONFIG3: u8 = 0x03;
-
-pub const H8_SOUND_ENABLE0: u8 = 0x04;
-pub const H8_SOUND_ENABLE1: u8 = 0x05;
-pub const H8_SOUND_REG: u8 = 0x06;
-pub const H8_SOUND_REPEAT: u8 = 0x07;
-pub const H8_USB_ALWAYS_ON: u8 = 0x0d;
-pub const H8_USB_ALWAYS_ON_ENABLE: u8 = 0x01;
-pub const H8_USB_ALWAYS_ON_AC_ONLY: u8 = 0x0c;
-pub const H8_FAN_CONTROL: u8 = 0x2f;
-pub const H8_FAN_CONTROL_AUTO: u8 = FAN_CONTROL::AUTO::SET.value;
-pub const H8_VOLUME_CONTROL: u8 = 0x30;
-pub const H8_STATUS1: u8 = 0x47;
-pub const H8_RADIO_CONTROL: u8 = 0x3a;
-pub const H8_USB_CONTROL: u8 = 0x3b;
-pub const H8_FN_CONTROL: u8 = 0xce;
-
-pub const H8_TRACKPOINT_CTRL: u8 = 0x0b;
-pub const H8_TRACKPOINT_AUTO: u8 = TRACKPOINT_CONTROL::MODE::Auto.value;
-pub const H8_TRACKPOINT_OFF: u8 = TRACKPOINT_CONTROL::MODE::Off.value;
-pub const H8_TRACKPOINT_ON: u8 = TRACKPOINT_CONTROL::MODE::On.value;
-
-/// LED control register; high bit = on, low nibble selects the LED.
-pub const H8_LED_CONTROL: u8 = 0x0c;
 pub use LED_CONTROL::MODE::Value as H8LedMode;
 pub use LED_CONTROL::SELECTOR::Value as H8Led;
 
@@ -149,14 +172,6 @@ impl H8 {
         Self { channel }
     }
 
-    fn modify<R: RegisterLongName>(&self, register: u8, value: FieldValue<u8, R>) -> bool {
-        let Some(raw) = self.channel.read(register) else {
-            return false;
-        };
-        let mut copy = LocalRegisterCopy::<u8, R>::new(raw);
-        copy.modify(value);
-        self.channel.write(register, copy.get())
-    }
     /// Clear any stale EC output queue bytes.
     pub fn clear_out_queue(&self) {
         self.channel.clear_out_queue();
@@ -193,7 +208,7 @@ impl H8 {
     /// mirroring coreboot's `h8_enable()` CONFIG0 programming.
     pub fn init_config0(&self, board_config0: u8) -> bool {
         let reg8 = board_config0 | H8_CONFIG0_SMM_H8_ENABLE | H8_CONFIG0_TC_ENABLE;
-        self.channel.write(H8_CONFIG0, reg8) && self.enable_hotkey(true)
+        self.channel.write_register::<CONFIG0::Register>(reg8) && self.enable_hotkey(true)
     }
 
     /// Program CONFIG1 illumination, CONFIG2/3, reset power LED and beeper,
@@ -206,118 +221,130 @@ impl H8 {
     ) -> bool {
         let config1 = illumination.map_or(config[0], |mode| mode.config1(config[0]));
         [
-            self.channel.write(H8_CONFIG1, config1),
-            self.channel.write(H8_CONFIG2, config[1]),
-            self.channel.write(H8_CONFIG3, config[2]),
+            self.channel.write_register::<CONFIG1::Register>(config1),
+            self.channel.write_register::<CONFIG2::Register>(config[1]),
+            self.channel.write_register::<CONFIG3::Register>(config[2]),
             self.set_led(H8Led::Power, H8LedMode::On),
-            self.channel.write(H8_SOUND_ENABLE0, beep_masks[0]),
-            self.channel.write(H8_SOUND_ENABLE1, beep_masks[1]),
-            self.channel.write(H8_SOUND_REPEAT, 0),
-            self.channel.write(H8_SOUND_REG, 0),
-            self.channel.write(H8_FAN_CONTROL, H8_FAN_CONTROL_AUTO),
+            self.channel
+                .write_register::<SOUND_ENABLE0::Register>(beep_masks[0]),
+            self.channel
+                .write_register::<SOUND_ENABLE1::Register>(beep_masks[1]),
+            self.channel
+                .write_register::<SOUND_REPEAT::Register>(SOUND_REPEAT::COUNT.val(0).value),
+            self.channel
+                .write_register::<SOUND_COMMAND::Register>(SOUND_COMMAND::TONE::Silence.value),
+            self.channel
+                .write_register::<FAN_CONTROL::Register>(FAN_CONTROL::AUTO::SET.value),
         ]
         .into_iter()
         .all(core::convert::identity)
     }
 
     pub fn enable_hotkey(&self, on: bool) -> bool {
-        self.modify(H8_CONFIG0, CONFIG0::HOTKEY_ENABLE.val(on.into()))
+        self.channel
+            .modify_register(CONFIG0::HOTKEY_ENABLE.val(on.into()))
     }
 
     pub fn trackpoint_enable(&self, on: bool) -> bool {
-        self.channel.write(
-            H8_TRACKPOINT_CTRL,
+        self.channel.write_register::<TRACKPOINT_CONTROL::Register>(
             if on {
-                H8_TRACKPOINT_ON
+                TRACKPOINT_CONTROL::MODE::On
             } else {
-                H8_TRACKPOINT_OFF
-            },
+                TRACKPOINT_CONTROL::MODE::Off
+            }
+            .value,
         )
     }
 
     /// Controls the radio-off pin in the WLAN MiniPCIe slot.
     pub fn wlan_enable(&self, on: bool) -> bool {
-        self.modify(H8_RADIO_CONTROL, RADIO_CONTROL::WLAN_ENABLE.val(on.into()))
+        self.channel
+            .modify_register(RADIO_CONTROL::WLAN_ENABLE.val(on.into()))
     }
 
     /// Controls the radio-off pin of the Bluetooth module.
     pub fn bluetooth_enable(&self, on: bool) -> bool {
-        self.modify(
-            H8_RADIO_CONTROL,
-            RADIO_CONTROL::BLUETOOTH_ENABLE.val(on.into()),
-        )
+        self.channel
+            .modify_register(RADIO_CONTROL::BLUETOOTH_ENABLE.val(on.into()))
     }
 
     /// Controls the radio-off pin of the WWAN MiniPCIe slot.
     pub fn wwan_enable(&self, on: bool) -> bool {
-        self.modify(H8_RADIO_CONTROL, RADIO_CONTROL::WWAN_ENABLE.val(on.into()))
+        self.channel
+            .modify_register(RADIO_CONTROL::WWAN_ENABLE.val(on.into()))
     }
 
     pub fn audio_mute(&self, mute: bool) -> bool {
-        self.modify(H8_RADIO_CONTROL, RADIO_CONTROL::AUDIO_MUTE.val(mute.into()))
+        self.channel
+            .modify_register(RADIO_CONTROL::AUDIO_MUTE.val(mute.into()))
     }
 
     pub fn usb_power_enable(&self, on: bool) -> bool {
-        self.modify(H8_USB_CONTROL, USB_CONTROL::POWER_ENABLE.val(on.into()))
+        self.channel
+            .modify_register(USB_CONTROL::POWER_ENABLE.val(on.into()))
     }
 
     pub fn fn_ctrl_swap(&self, on: bool) -> bool {
-        self.modify(H8_FN_CONTROL, FN_CONTROL::SWAP_CTRL.val(on.into()))
+        self.channel
+            .modify_register(FN_CONTROL::SWAP_CTRL.val(on.into()))
     }
 
     /// Sticky Fn without a Fn-lock LED (older ThinkPads, including X61).
     pub fn sticky_fn(&self, on: bool) -> bool {
-        self.modify(H8_CONFIG0, CONFIG0::STICKY_FN.val(on.into()))
+        self.channel
+            .modify_register(CONFIG0::STICKY_FN.val(on.into()))
     }
 
     pub fn charge_primary_first(&self, primary: bool) -> bool {
-        self.modify(
-            H8_CONFIG0,
-            CONFIG0::SECONDARY_CHARGE_FIRST.val((!primary).into()),
-        )
+        self.channel
+            .modify_register(CONFIG0::SECONDARY_CHARGE_FIRST.val((!primary).into()))
     }
 
     /// Disable USB-always-on, preserving the unrelated EC policy bits.
     pub fn usb_always_on_disable(&self) -> bool {
-        self.modify(
-            H8_USB_ALWAYS_ON,
-            ALWAYS_ON_CONTROL::ENABLE::CLEAR + ALWAYS_ON_CONTROL::AC_ONLY.val(0),
-        )
+        self.channel
+            .modify_register(ALWAYS_ON_CONTROL::ENABLE::CLEAR + ALWAYS_ON_CONTROL::AC_ONLY.val(0))
     }
 
+    /// Set the volume level (0..=14) and optional mute bit in an exact write.
+    /// Unsupported level/flag encodings fail before touching the EC channel.
     pub fn volume(&self, volume: u8) -> bool {
-        self.channel.write(H8_VOLUME_CONTROL, volume)
+        let value = LocalRegisterCopy::<u8, VOLUME_CONTROL::Register>::new(volume);
+        let allowed = (VOLUME_CONTROL::LEVEL.val(u8::MAX) + VOLUME_CONTROL::MUTE::SET).value;
+        if volume & !allowed != 0 || value.read(VOLUME_CONTROL::LEVEL) > 14 {
+            return false;
+        }
+        self.channel
+            .write_register::<VOLUME_CONTROL::Register>(volume)
     }
 
     /// Program an exact LED command without reading a write-only control.
     pub fn set_led(&self, led: H8Led, mode: H8LedMode) -> bool {
-        self.channel.write(
-            H8_LED_CONTROL,
+        self.channel.write_register::<LED_CONTROL::Register>(
             (LED_CONTROL::SELECTOR.val(led as u8) + LED_CONTROL::MODE.val(mode as u8)).value,
         )
     }
 
     pub fn dock_latch(&self, connected: bool) -> bool {
-        self.modify(H8_CONFIG3, CONFIG3::DOCK_LATCH.val(connected.into()))
+        self.channel
+            .modify_register(CONFIG3::DOCK_LATCH.val(connected.into()))
     }
 
     /// H8's exact command discards queued events and enables channel attention.
     pub fn reset_event_attention(&self) -> bool {
-        const EVENT_CONTROL: u8 = 0x80;
-        const DISCARD_AND_ENABLE_ATTENTION: u8 = 0x01;
-        self.channel
-            .write(EVENT_CONTROL, DISCARD_AND_ENABLE_ATTENTION)
+        self.channel.write_register::<EVENT_ATTENTION::Register>(
+            EVENT_ATTENTION::COMMAND::DiscardAndEnable.value,
+        )
     }
 
-    /// Write a byte to the beeper sound register.
+    /// Issue a beeper command (0..=17, as exposed by thinkpad_acpi).
     pub fn beep(&self, tone: u8) -> bool {
-        self.channel.write(H8_SOUND_REG, tone)
+        tone <= 17 && self.channel.write_register::<SOUND_COMMAND::Register>(tone)
     }
 
-    /// True when an ultrabay device is present (H8_STATUS1 polarity).
+    /// True when an ultrabay device is present (active-low STATUS1 flags).
     pub fn ultrabay_device_present(&self) -> Option<bool> {
-        let status =
-            LocalRegisterCopy::<u8, STATUS1::Register>::new(self.channel.read(H8_STATUS1)?);
+        let status = self.channel.read_register::<STATUS1::Register>()?;
         Some(status.matches_all(STATUS1::ULTRABAY_ABSENT::CLEAR + STATUS1::ULTRABAY_OFF::CLEAR))
     }
 }
@@ -349,6 +376,17 @@ mod tests {
         assert_eq!(H8Illumination::Thinklight.config1(0x05), 0x09);
         assert_eq!(H8Illumination::Keyboard.config1(0xf3), 0xf7);
         assert_eq!(H8Illumination::None.config1(0x05), 0x0d);
+    }
+
+    #[test]
+    fn invalid_volume_and_sound_commands_do_not_touch_the_channel() {
+        // Undecoded ports must never be accessed for an invalid command.
+        let h8 = H8::new(Ec::new(EcPorts::new(0, 0)));
+        for volume in [0x0f, 0x10, 0x4f, 0x80, 0xff] {
+            assert!(!h8.volume(volume));
+        }
+        assert!(!h8.beep(18));
+        assert!(!h8.beep(u8::MAX));
     }
 }
 
