@@ -635,6 +635,7 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-log",
+ "tock-registers",
  "ufmt",
 ]
 
