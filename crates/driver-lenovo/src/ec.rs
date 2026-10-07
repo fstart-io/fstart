@@ -1,43 +1,84 @@
-//! Low-level ACPI EC handshake with explicit ports for SMM/OS ownership.
+//! ACPI EC command/data handshake on a board-supplied channel.
 //!
-//! Legacy firmware uses 0x62/0x66. H8 exposes a second channel at
-//! 0x1600/0x1604 so SMM need not race the OS on the legacy channel.
+//! The transport has no Lenovo-specific addresses. Callers serialize the
+//! selected channel; timed-out transactions remain explicitly fallible.
 
-use fstart_core::pio::{inb, outb};
+use fstart_core::pio::PioRegister;
+use fstart_core::typed::{Io8, IoAddr};
+use tock_registers::fields::FieldValue;
+use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::register_bitfields;
 
-const EC_OBF: u8 = 0x01;
-const EC_IBF: u8 = 0x02;
-const EC_SCI_EVT: u8 = 0x20;
-const RD_EC: u8 = 0x80;
-const WR_EC: u8 = 0x81;
-const QR_EC: u8 = 0x84;
+register_bitfields![u8,
+    pub EC_STATUS [
+        OUTPUT_FULL OFFSET(0) NUMBITS(1) [],
+        INPUT_FULL OFFSET(1) NUMBITS(1) [],
+        COMMAND OFFSET(3) NUMBITS(1) [],
+        BURST OFFSET(4) NUMBITS(1) [],
+        SCI_EVENT OFFSET(5) NUMBITS(1) [],
+        SMI_EVENT OFFSET(6) NUMBITS(1) []
+    ]
+];
+
+/// ACPI-defined EC command encodings, including optional burst mode.
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub enum EcCommand {
+    Read = 0x80,
+    Write = 0x81,
+    BurstEnable = 0x82,
+    BurstDisable = 0x83,
+    Query = 0x84,
+}
+
 const TIMEOUT_US: u32 = 10_000;
 
-/// A decoded EC command/data channel. Callers serialize transactions.
+/// Command/data port wiring shared by runtime and ACPI resource emission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EcPorts {
+    pub data: IoAddr<Io8>,
+    pub command: IoAddr<Io8>,
+}
+
+impl EcPorts {
+    pub const fn new(data: u16, command: u16) -> Self {
+        Self {
+            data: IoAddr::new(data),
+            command: IoAddr::new(command),
+        }
+    }
+}
+
+/// A decoded EC channel. Callers own transaction serialization.
 #[derive(Debug, Clone, Copy)]
 pub struct Ec {
-    data: u16,
-    status: u16,
+    ports: EcPorts,
 }
 
 impl Ec {
-    pub const LEGACY: Self = Self::new(0x62, 0x66);
-    pub const H8_SMM: Self = Self::new(0x1600, 0x1604);
+    pub const fn new(ports: EcPorts) -> Self {
+        Self { ports }
+    }
 
-    pub const fn new(data: u16, status: u16) -> Self {
-        Self { data, status }
+    #[inline(always)]
+    fn status_register(&self) -> PioRegister<u8, EC_STATUS::Register> {
+        PioRegister::new(self.ports.command.raw())
+    }
+
+    #[inline(always)]
+    fn data_register(&self) -> PioRegister<u8> {
+        PioRegister::new(self.ports.data.raw())
     }
 
     #[inline(always)]
     pub fn status(&self) -> u8 {
-        // SAFETY: caller selected a decoded EC channel.
-        unsafe { inb(self.status) }
+        self.status_register().get()
     }
 
     #[inline(always)]
-    fn wait(&self, mask: u8, value: u8) -> bool {
+    fn wait(&self, expected: FieldValue<u8, EC_STATUS::Register>) -> bool {
         for _ in 0..TIMEOUT_US {
-            if self.status() & mask == value {
+            if self.status_register().matches_all(expected) {
                 return true;
             }
             fstart_arch::udelay(1);
@@ -46,59 +87,61 @@ impl Ec {
     }
 
     #[inline(always)]
-    fn command(&self, command: u8) -> bool {
-        if !self.wait(EC_IBF, 0) {
+    fn command(&self, command: EcCommand) -> bool {
+        if !self.wait(EC_STATUS::INPUT_FULL::CLEAR) {
             return false;
         }
-        // SAFETY: decoded EC command port.
-        unsafe { outb(self.status, command) };
+        // Command and status share a port; commands are exact writes, not RMW.
+        self.status_register().set(command as u8);
         true
     }
 
     fn send(&self, data: u8) -> bool {
-        if !self.wait(EC_IBF, 0) {
+        if !self.wait(EC_STATUS::INPUT_FULL::CLEAR) {
             return false;
         }
-        // SAFETY: decoded EC data port.
-        unsafe { outb(self.data, data) };
+        self.data_register().set(data);
         true
     }
 
     #[inline(always)]
     fn receive(&self) -> Option<u8> {
-        if !self.wait(EC_OBF, EC_OBF) {
+        if !self.wait(EC_STATUS::OUTPUT_FULL::SET) {
             return None;
         }
-        // SAFETY: decoded EC data port.
-        Some(unsafe { inb(self.data) })
+        Some(self.data_register().get())
     }
 
     pub fn read(&self, addr: u8) -> Option<u8> {
-        if !self.command(RD_EC) || !self.send(addr) {
+        if !self.command(EcCommand::Read) || !self.send(addr) {
             return None;
         }
         self.receive()
     }
 
     pub fn write(&self, addr: u8, data: u8) -> bool {
-        self.command(WR_EC) && self.send(addr) && self.send(data)
+        self.command(EcCommand::Write) && self.send(addr) && self.send(data)
     }
 
     pub fn set_bit(&self, addr: u8, bit: u8) -> bool {
-        self.read(addr)
-            .is_some_and(|val| self.write(addr, val | (1 << bit)))
+        bit < 8
+            && self
+                .read(addr)
+                .is_some_and(|val| self.write(addr, val | (1 << bit)))
     }
 
     pub fn clear_bit(&self, addr: u8, bit: u8) -> bool {
-        self.read(addr)
-            .is_some_and(|val| self.write(addr, val & !(1 << bit)))
+        bit < 8
+            && self
+                .read(addr)
+                .is_some_and(|val| self.write(addr, val & !(1 << bit)))
     }
 
     /// Query only if attention is asserted; bounded handshake on all paths.
-    // Inline to avoid a promoted port-pair reference in the raw-copy SMM image.
+    // Inline to avoid promoted port-pair references in the raw-copy SMM image.
     #[inline(always)]
     pub fn query_event(&self) -> Option<u8> {
-        if self.status() & EC_SCI_EVT == 0 || !self.command(QR_EC) {
+        if !self.status_register().is_set(EC_STATUS::SCI_EVENT) || !self.command(EcCommand::Query) {
             return None;
         }
         self.receive()
@@ -106,28 +149,11 @@ impl Ec {
 
     pub fn clear_out_queue(&self) {
         for _ in 0..TIMEOUT_US {
-            if self.status() & EC_OBF == 0 {
+            if !self.status_register().is_set(EC_STATUS::OUTPUT_FULL) {
                 return;
             }
-            // SAFETY: drain the selected decoded EC channel.
-            unsafe { inb(self.data) };
+            let _ = self.data_register().get();
             fstart_arch::udelay(1);
         }
     }
-}
-
-pub fn ec_read(addr: u8) -> Option<u8> {
-    Ec::LEGACY.read(addr)
-}
-
-pub fn ec_write(addr: u8, data: u8) -> bool {
-    Ec::LEGACY.write(addr, data)
-}
-
-pub fn ec_set_bit(addr: u8, bit: u8) -> bool {
-    Ec::LEGACY.set_bit(addr, bit)
-}
-
-pub fn ec_clr_bit(addr: u8, bit: u8) -> bool {
-    Ec::LEGACY.clear_bit(addr, bit)
 }

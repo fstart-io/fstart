@@ -91,6 +91,27 @@ pub const UART0_NODE: &str = "dock_superio/com1";
 pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
+
+/// One source for EC transport, LPC windows, and AML resources/capabilities.
+pub const X61_H8: fstart_driver_lenovo::h8::H8Config = {
+    use fstart_driver_lenovo::{
+        ec::EcPorts,
+        h8::{H8Config, H8Resources},
+    };
+    H8Config {
+        has_bluetooth: true,
+        // No WWAN detection GPIO: the board assumes it is installed.
+        has_wwan: true,
+        has_thinklight: true,
+        second_thermal_zone: true,
+        ..H8Config::new(
+            H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+            0x12,
+            "IBM0068",
+        )
+    }
+};
+
 pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
     .max_cpus(2)
     .igd(x61_igd_config())
@@ -104,12 +125,12 @@ pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
     })
     .lpc_generic_io([
         LpcGenericIoDecode {
-            base: 0x1600,
-            size: 0x0080,
+            base: X61_H8.resources.auxiliary_base.raw(),
+            size: fstart_driver_lenovo::h8::H8Resources::AUXILIARY_SIZE,
         },
         LpcGenericIoDecode {
-            base: 0x15e0,
-            size: 0x0010,
+            base: X61_H8.resources.pmh7_base.raw(),
+            size: fstart_driver_lenovo::h8::H8Resources::PMH7_SIZE as u16,
         },
         LpcGenericIoDecode {
             base: 0x1680,

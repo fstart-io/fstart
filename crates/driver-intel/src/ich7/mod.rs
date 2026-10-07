@@ -2148,12 +2148,8 @@ mod acpi_impl {
     const SCI_IRQ: u8 = 9;
     const PMBASE: u16 = 0x0500;
     /// APM command port firmware and OSPM use to switch ACPI mode.
-    const APM_CNT: u32 = 0x00b2;
-    /// Command written to [`APM_CNT`] to enable ACPI mode (coreboot
-    /// `APM_CNT_ACPI_ENABLE`, handled by the ICH SMM handler).
-    const APM_CNT_ACPI_ENABLE: u8 = 0xe1;
-    /// Command written to [`APM_CNT`] to disable ACPI mode.
-    const APM_CNT_ACPI_DISABLE: u8 = 0x1e;
+    const APM_CNT: u32 = crate::southbridge::smi::APM_CNT as u32;
+    use crate::southbridge::smi::{APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE};
 
     static IOAPICS: [IoApicConfig; 1] = [IoApicConfig {
         id: 0,

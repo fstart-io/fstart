@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use fstart_core::services::Southbridge;
-use fstart_driver_lenovo::h8::{H8, H8_CONFIG0_EVENTS_ENABLE, H8Illumination};
+use fstart_driver_lenovo::h8::{H8, H8_CONFIG0_EVENTS_ENABLE, H8Illumination, H8Led, H8LedMode};
 use fstart_driver_lenovo::pmh7::Pmh7;
 
 const X61_H8_EVENT_MASKS: [u8; 16] = [
@@ -27,14 +27,15 @@ pub(super) fn detect_bluetooth(southbridge: &impl Southbridge) -> bool {
 pub fn x61_ec_init(southbridge: &impl Southbridge, resume: bool) {
     let bluetooth = detect_bluetooth(southbridge);
     BLUETOOTH_PRESENT.store(bluetooth, Ordering::Relaxed);
-    let pmh7 = Pmh7::new(0x15e0);
+    let pmh7 = Pmh7::new(crate::config::X61_H8.resources.pmh7_base.raw());
     pmh7.log_identity();
     pmh7.backlight_enable(true);
     pmh7.dock_event_enable(true);
     pmh7.touchpad_enable(true);
     pmh7.trackpoint_enable(true);
 
-    let h8 = H8;
+    let channel = fstart_driver_lenovo::ec::Ec::new(crate::config::X61_H8.resources.os);
+    let h8 = H8::new(channel);
     h8.clear_out_queue();
     // CONFIG0: events + hotkey enable (SMM H8 + thermal management are
     // set by init_config0 itself, matching coreboot).
@@ -58,9 +59,9 @@ pub fn x61_ec_init(southbridge: &impl Southbridge, resume: bool) {
     // X61 cmos.default sets volume=3; do not overwrite OS volume on resume.
     let volume_ok = resume || h8.volume(3);
     let audio_ok = h8.audio_mute(false);
-    let ec = fstart_driver_lenovo::ec::Ec::LEGACY;
-    let dock_ok = ec.clear_bit(0x03, 2)
-        && (!super::dock::connected() || (ec.set_bit(0x03, 2) && ec.write(0x0c, 0x88)));
+    let dock_ok = h8.dock_latch(false)
+        && (!super::dock::connected()
+            || (h8.dock_latch(true) && h8.set_led(H8Led::Dock1, H8LedMode::On)));
     if ![
         config_ok,
         controls_ok,

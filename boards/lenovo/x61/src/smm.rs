@@ -1,7 +1,10 @@
 //! Lenovo ThinkPad X61 mainboard SMM policy.
 
-use fstart_driver_intel::southbridge::smi::{ICH8_GPE0, IchBoardSmmHandler, IchSmi, IchSmmHandler};
+use fstart_driver_intel::southbridge::smi::{
+    APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH8_GPE0, IchBoardSmmHandler, IchSmi, IchSmmHandler,
+};
 use fstart_driver_lenovo::ec::Ec;
+use fstart_driver_lenovo::h8::{H8, H8Led, H8LedMode};
 use fstart_platform_intel::smm::SmmContext;
 
 use crate::{Board, mainboard::dock};
@@ -17,32 +20,33 @@ fn smi() -> IchSmi {
 
 fn ec_channel() -> Ec {
     if smi().acpi_enabled() {
-        Ec::H8_SMM
+        Ec::new(crate::config::X61_H8.resources.smm())
     } else {
-        Ec::LEGACY
+        Ec::new(crate::config::X61_H8.resources.os)
     }
 }
 
 fn dock_command(command: u8) -> Option<u8> {
     let ec = ec_channel();
+    let h8 = H8::new(ec);
     match command {
         SMI_DOCK_CONNECT => {
-            let handshake = ec.clear_bit(0x03, 2);
+            let handshake = h8.dock_latch(false);
             fstart_arch::udelay(250_000);
             let connected = handshake && dock::dock_connect_with_ec(ec).is_ok();
             if connected {
-                let state = ec.set_bit(0x03, 2);
-                let led_off = ec.write(0x0c, 0x09);
-                let led_on = ec.write(0x0c, 0x88);
+                let state = h8.dock_latch(true);
+                let led_off = h8.set_led(H8Led::Dock2, H8LedMode::Off);
+                let led_on = h8.set_led(H8Led::Dock1, H8LedMode::On);
                 Some(u8::from(state && led_off && led_on))
             } else {
-                let _ = ec.write(0x0c, 0x08);
-                let _ = ec.write(0x0c, 0xc9);
+                let _ = h8.set_led(H8Led::Dock1, H8LedMode::Off);
+                let _ = h8.set_led(H8Led::Dock2, H8LedMode::Blink);
                 Some(0)
             }
         }
         SMI_DOCK_DISCONNECT => {
-            let handshake = ec.clear_bit(0x03, 2);
+            let handshake = h8.dock_latch(false);
             dock::dock_disconnect_with_ec(ec);
             Some(u8::from(handshake))
         }
@@ -55,7 +59,7 @@ fn handle_ec_event() {
     if smi().acpi_enabled() {
         return;
     }
-    if let Some(event) = Ec::LEGACY.query_event() {
+    if let Some(event) = Ec::new(crate::config::X61_H8.resources.os).query_event() {
         if let Some(command) = dock::smm_event_command(event) {
             let _ = dock_command(command);
         }
@@ -67,15 +71,19 @@ pub struct LenovoX61SmmHandler;
 impl IchBoardSmmHandler for LenovoX61SmmHandler {
     unsafe fn on_apmc(_ctx: &mut SmmContext<'_>, command: u8) {
         let acpi = match command {
-            0xe1 => true,
-            0x1e => false,
+            APM_CNT_ACPI_ENABLE => true,
+            APM_CNT_ACPI_DISABLE => false,
             _ => return,
         };
         // SAFETY: SMM rendezvous owns PCI config and decoded PM registers.
         unsafe { smi().route_gpi(EC_GPIO, acpi) };
         // Discard pending events and enable attention on the SMM-owned channel.
-        let ec = if acpi { Ec::H8_SMM } else { Ec::LEGACY };
-        let _ = ec.write(0x80, 0x01);
+        let ports = if acpi {
+            crate::config::X61_H8.resources.smm()
+        } else {
+            crate::config::X61_H8.resources.os
+        };
+        let _ = H8::new(Ec::new(ports)).reset_event_attention();
     }
 
     unsafe fn on_gpi(_ctx: &mut SmmContext<'_>, status: u16) {
