@@ -116,6 +116,8 @@ fn setup_dock_console(southbridge: &mut fstart_driver_intel::ich8::IntelIch8) {
 pub mod dock {
     #[cfg(target_arch = "x86_64")]
     use fstart_core::pio::{inb, outb};
+    #[cfg(target_arch = "x86_64")]
+    use fstart_driver_superio::{IoResource, IrqResource, LogicalDevice};
 
     const DLPC_INDEX: u16 = 0x164e;
     const DLPC_DATA: u16 = 0x164f;
@@ -194,10 +196,9 @@ pub mod dock {
 
     #[cfg(target_arch = "x86_64")]
     fn dlpc_gpio_init() {
-        dlpc_write(0x07, 0x07);
-        dlpc_write(0x60, 0x16);
-        dlpc_write(0x61, 0x80);
-        dlpc_write(0x30, 0x01);
+        let mut gpio = LogicalDevice::select(0x07, dlpc_read, dlpc_write);
+        gpio.set_io_base(IoResource::Primary(DLPC_GPIO));
+        gpio.set_enabled(true);
         dlpc_gpio_set_mode(0x00, 3);
         dlpc_gpio_set_mode(0x01, 3);
         dlpc_gpio_set_mode(0x02, 0);
@@ -221,10 +222,9 @@ pub mod dock {
             return Err(());
         }
 
-        dlpc_write(0x07, 0x19);
-        dlpc_write(0x60, 0x16);
-        dlpc_write(0x61, 0x4c);
-        dlpc_write(0x30, 0x01);
+        let mut switch = LogicalDevice::select(0x19, dlpc_read, dlpc_write);
+        switch.set_io_base(IoResource::Primary(DLPC_SWITCH));
+        switch.set_enabled(true);
         dlpc_gpio_init();
         Ok(())
     }
@@ -279,8 +279,7 @@ pub mod dock {
         if timeout == 0 {
             // SAFETY: disable the DLPC switch on failure.
             unsafe { outb(DLPC_SWITCH, 0x00) };
-            dlpc_write(0x07, 0x19);
-            dlpc_write(0x30, 0x00);
+            LogicalDevice::select(0x19, dlpc_read, dlpc_write).set_enabled(false);
             return Err(());
         }
 
@@ -305,9 +304,8 @@ pub mod dock {
         dock_write(0x25, 0xa0);
         dock_write(0x26, 0x01);
         dock_write(0x28, 0x02);
-        dock_write(0x07, 0x07);
-        dock_write(0x60, 0x16);
-        dock_write(0x61, 0x20);
+        let mut gpio = LogicalDevice::select(0x07, dock_read, dock_write);
+        gpio.set_io_base(IoResource::Primary(DOCK_GPIO_BASE));
 
         dock_gpio_set_mode(
             0x00,
@@ -348,7 +346,7 @@ pub mod dock {
         );
         dock_gpio_set_mode(0x35, PC87392_GPIO_PIN_PULLUP | PC87392_GPIO_PIN_OE, 0x00);
 
-        dock_write(0x30, 0x01);
+        gpio.set_enabled(true);
         // SAFETY: dock GPIO block is configured at 0x1620.
         unsafe {
             set_ultrabay_power(ultrabay_present());
@@ -359,16 +357,11 @@ pub mod dock {
         if !set_usb_power(ec, true) {
             return Err(());
         }
-        dock_write(0x07, 0x01);
-        dock_write(0x60, 0x03);
-        dock_write(0x61, 0xbc);
-        dock_write(0x70, 7);
-        dock_write(0x30, 0x01);
-        dock_write(0x07, 0x03);
-        dock_write(0x60, 0x03);
-        dock_write(0x61, 0xf8);
-        dock_write(0x70, 4);
-        dock_write(0x30, 0x01);
+        let mut parallel = LogicalDevice::select(0x01, dock_read, dock_write);
+        parallel.set_io_base(IoResource::Primary(0x3bc));
+        parallel.set_irq(IrqResource::Primary(7));
+        parallel.set_enabled(true);
+        enable_dock_console();
         disable_dock_watchdog();
         Ok(())
     }
@@ -456,12 +449,16 @@ pub mod dock {
             timeout -= 1;
             delay_us(1000);
         }
-        dock_write(0x07, 0x03);
-        dock_write(0x60, 0x03);
-        dock_write(0x61, 0xf8);
-        dock_write(0x70, 4);
-        dock_write(0x30, 0x01);
+        enable_dock_console();
         disable_dock_watchdog();
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn enable_dock_console() {
+        let mut serial = LogicalDevice::select(0x03, dock_read, dock_write);
+        serial.set_io_base(IoResource::Primary(0x3f8));
+        serial.set_irq(IrqResource::Primary(4));
+        serial.set_enabled(true);
     }
 
     /// Enable the dock-side PC87392 COM1 at 0x3f8.
@@ -473,8 +470,7 @@ pub mod dock {
     #[cfg(target_arch = "x86_64")]
     fn disable_dock_watchdog() {
         const PC87392_WDT_LDN: u8 = 0x0a;
-        dock_write(0x07, PC87392_WDT_LDN);
-        dock_write(0x30, 0x00);
+        LogicalDevice::select(PC87392_WDT_LDN, dock_read, dock_write).set_enabled(false);
     }
 
     /// Legacy SMM EC query mapping, distinct from the OS AML hotkey policy.

@@ -32,6 +32,7 @@ use fstart_core::BusAddress;
 use fstart_core::services::device::{BusDevice, DeviceError};
 use serde::{Deserialize, Serialize};
 
+use crate::{IoResource, IrqResource, LogicalDevice};
 use core::marker::PhantomData;
 
 /// Standard PC/AT i8042 data port.
@@ -105,24 +106,10 @@ unsafe fn i8042_flush(data_port: u16, status_port: u16) -> bool {
 // Common SuperIO configuration register indices
 // ===================================================================
 
-/// Logical Device Number select register.
-const SIO_REG_LDN: u8 = 0x07;
 /// Device ID high byte.
 const SIO_REG_DEVID_HI: u8 = 0x20;
 /// Device ID low byte.
 const SIO_REG_DEVID_LO: u8 = 0x21;
-/// LDN activate/enable (bit 0 = enable).
-const SIO_REG_ENABLE: u8 = 0x30;
-/// I/O base address high byte.
-const SIO_REG_IO_BASE_HI: u8 = 0x60;
-/// I/O base address low byte.
-const SIO_REG_IO_BASE_LO: u8 = 0x61;
-/// Secondary I/O base address high byte.
-const SIO_REG_IO_BASE2_HI: u8 = 0x62;
-/// Secondary I/O base address low byte.
-const SIO_REG_IO_BASE2_LO: u8 = 0x63;
-/// IRQ select register 0 (primary).
-const SIO_REG_IRQ: u8 = 0x70;
 
 // ---------------------------------------------------------------------------
 // The SuperIoChip trait — per-chip specialization
@@ -401,9 +388,16 @@ impl<C: SuperIoChip> SuperIo<C> {
         }
     }
 
-    /// Select the given Logical Device Number.
-    fn select_ldn(&self, ldn: u8) {
-        self.write_reg(SIO_REG_LDN, ldn);
+    /// Select an LDN inside the caller-owned configuration session.
+    pub(crate) fn logical_device(
+        &self,
+        ldn: u8,
+    ) -> LogicalDevice<impl FnMut(u8) -> u8 + '_, impl FnMut(u8, u8) + '_> {
+        LogicalDevice::select(
+            ldn,
+            |reg| self.read_reg(reg),
+            |reg, value| self.write_reg(reg, value),
+        )
     }
 
     /// Read the 16-bit chip ID from config registers.
@@ -415,35 +409,29 @@ impl<C: SuperIoChip> SuperIo<C> {
 
     /// Program a COM-port LDN (io_base, IRQ, enable).
     fn program_com(&self, ldn: u8, cfg: &ComPortConfig) {
-        self.select_ldn(ldn);
-        // Match coreboot's `ite_enable_serial()`: disable the LDN before
-        // moving its decode window, then enable it after the new base is set.
-        self.write_reg(SIO_REG_ENABLE, 0x00);
-        self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
-        self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
-        self.write_reg(SIO_REG_IRQ, cfg.irq);
-        self.write_reg(SIO_REG_ENABLE, 0x01);
+        let mut device = self.logical_device(ldn);
+        // Match coreboot's ite_enable_serial() relocation order.
+        device.set_enabled(false);
+        device.set_io_base(IoResource::Primary(cfg.io_base));
+        device.set_irq(IrqResource::Primary(cfg.irq));
+        device.set_enabled(true);
     }
 
     /// Program an EC/env-controller LDN (two I/O bases).
     fn program_ec(&self, ldn: u8, cfg: &EcConfig) {
-        self.select_ldn(ldn);
-        self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
-        self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
-        self.write_reg(SIO_REG_IO_BASE2_HI, (cfg.io_ext >> 8) as u8);
-        self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_ext & 0xFF) as u8);
-        self.write_reg(SIO_REG_ENABLE, 0x01);
+        let mut device = self.logical_device(ldn);
+        device.set_io_base(IoResource::Primary(cfg.io_base));
+        device.set_io_base(IoResource::Secondary(cfg.io_ext));
+        device.set_enabled(true);
     }
 
     /// Program the keyboard controller LDN.
     fn program_kbc(&self, ldn: u8, cfg: &KbcConfig) {
-        self.select_ldn(ldn);
-        self.write_reg(SIO_REG_IO_BASE_HI, (cfg.io_base >> 8) as u8);
-        self.write_reg(SIO_REG_IO_BASE_LO, (cfg.io_base & 0xFF) as u8);
-        self.write_reg(SIO_REG_IO_BASE2_HI, (cfg.io_ext >> 8) as u8);
-        self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_ext & 0xFF) as u8);
-        self.write_reg(SIO_REG_IRQ, cfg.irq);
-        self.write_reg(SIO_REG_ENABLE, 0x01);
+        let mut device = self.logical_device(ldn);
+        device.set_io_base(IoResource::Primary(cfg.io_base));
+        device.set_io_base(IoResource::Secondary(cfg.io_ext));
+        device.set_irq(IrqResource::Primary(cfg.irq));
+        device.set_enabled(true);
         self.init_kbc_coreboot(cfg.io_base, cfg.io_ext, self.config.mouse.is_some());
     }
 
@@ -618,26 +606,24 @@ impl<C: SuperIoChip> SuperIo<C> {
     /// IT8721F exposes PS/2 mouse as its own LDN 0x06, and coreboot's
     /// D41S config programs IRQ register 0x70 on that LDN.
     fn program_mouse(&self, ldn: u8, cfg: &MouseConfig) {
-        self.select_ldn(ldn);
-        self.write_reg(SIO_REG_IRQ, cfg.irq);
-        self.write_reg(SIO_REG_ENABLE, 0x01);
+        let mut device = self.logical_device(ldn);
+        device.set_irq(IrqResource::Primary(cfg.irq));
+        device.set_enabled(true);
     }
 
     /// Program a simple single-base LDN (parallel, CIR).
     fn program_simple(&self, ldn: u8, io_base: u16, irq: u8) {
-        self.select_ldn(ldn);
-        self.write_reg(SIO_REG_IO_BASE_HI, (io_base >> 8) as u8);
-        self.write_reg(SIO_REG_IO_BASE_LO, (io_base & 0xFF) as u8);
-        self.write_reg(SIO_REG_IRQ, irq);
-        self.write_reg(SIO_REG_ENABLE, 0x01);
+        let mut device = self.logical_device(ldn);
+        device.set_io_base(IoResource::Primary(io_base));
+        device.set_irq(IrqResource::Primary(irq));
+        device.set_enabled(true);
     }
 
     /// Program the GPIO LDN (io_base, no IRQ).
     fn program_gpio(&self, ldn: u8, cfg: &GpioConfig) {
-        self.select_ldn(ldn);
-        self.write_reg(SIO_REG_IO_BASE2_HI, (cfg.io_base >> 8) as u8);
-        self.write_reg(SIO_REG_IO_BASE2_LO, (cfg.io_base & 0xFF) as u8);
-        self.write_reg(SIO_REG_ENABLE, 0x01);
+        let mut device = self.logical_device(ldn);
+        device.set_io_base(IoResource::Secondary(cfg.io_base));
+        device.set_enabled(true);
     }
 }
 
