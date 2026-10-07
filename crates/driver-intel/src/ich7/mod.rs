@@ -1793,23 +1793,7 @@ impl IntelIch7 {
             return;
         }
 
-        // ESD fix.
-        let esd = hda_dev.read32(0x134);
-        hda_dev.write32(0x134, (esd & !(0xFF << 16)) | (2 << 16));
-
-        // Link1 description.
-        let l1 = hda_dev.read32(0x140);
-        hda_dev.write32(0x140, (l1 & !(0xFF << 16)) | (2 << 16));
-
-        // VC0 resource control.
-        let vc0 = hda_dev.read32(0x114);
-        hda_dev.write32(0x114, (vc0 & !0xFF) | 1);
-
-        // VCi traffic class (TC7).
-        hda_dev.or8(0x44, 7);
-
-        // VCi resource control: enable, ID, TC mapping.
-        hda_dev.or32(0x120, (1 << 31) | (1 << 24) | 0x80);
+        crate::southbridge::hda::setup_ich_link(hda_dev);
 
         let hda_regs = Self::type0_regs(hda_dev);
 
