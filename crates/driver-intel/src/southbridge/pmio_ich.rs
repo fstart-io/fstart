@@ -18,6 +18,46 @@
 //! let tco1 = tco.read16(tco::TCO1_STS);
 //! ```
 
+use fstart_core::{pio::PioRegister, pio_register_structs};
+use tock_registers::{
+    interfaces::{ReadWriteable, Readable, Writeable},
+    register_bitfields,
+};
+
+register_bitfields![u32,
+    PM_CONTROL [
+        SCI_EN OFFSET(0) NUMBITS(1) [],
+        BM_RLD OFFSET(1) NUMBITS(1) [],
+        GBL_RLS OFFSET(2) NUMBITS(1) [],
+        SLEEP_TYPE OFFSET(10) NUMBITS(3) [S3 = 5, S5 = 7],
+        SLEEP_ENABLE OFFSET(13) NUMBITS(1) []
+    ],
+    SMI_ENABLE [GLOBAL OFFSET(0) NUMBITS(1) [], EOS OFFSET(1) NUMBITS(1) []],
+    TCO_STATUS [BOOT OFFSET(18) NUMBITS(1) []]
+];
+register_bitfields![u16,
+    PM_STATUS [WAKE OFFSET(15) NUMBITS(1) []],
+    TCO_CONTROL [HALT OFFSET(11) NUMBITS(1) [], LOCK OFFSET(12) NUMBITS(1) []],
+    TCO_STATUS1 [TIMEOUT OFFSET(3) NUMBITS(1) []],
+    TCO_STATUS2 [SECOND_TIMEOUT OFFSET(1) NUMBITS(1) []]
+];
+
+pio_register_structs! {
+    PmRegs {
+        (0x00 => status: PioRegister<u16, PM_STATUS::Register>),
+        (0x04 => control: PioRegister<u32, PM_CONTROL::Register>),
+        (0x30 => smi_enable: PioRegister<u32, SMI_ENABLE::Register>),
+    }
+}
+pio_register_structs! {
+    TcoRegs {
+        (0x04 => status: PioRegister<u32, TCO_STATUS::Register>),
+        (0x04 => status1: PioRegister<u16, TCO_STATUS1::Register>),
+        (0x06 => status2: PioRegister<u16, TCO_STATUS2::Register>),
+        (0x08 => control: PioRegister<u16, TCO_CONTROL::Register>),
+    }
+}
+
 // -----------------------------------------------------------------------
 // PM register offsets from PMBASE
 // -----------------------------------------------------------------------
@@ -56,7 +96,7 @@ pub const PM2_CNT: u16 = 0x50;
 // -----------------------------------------------------------------------
 // PM1_STS bits
 // -----------------------------------------------------------------------
-pub const WAK_STS: u16 = 1 << 15;
+pub const WAK_STS: u16 = PM_STATUS::WAKE::SET.value;
 pub const PCIEXPWAK_STS: u16 = 1 << 14;
 pub const PRBTNOR_STS: u16 = 1 << 11;
 pub const RTC_STS: u16 = 1 << 10;
@@ -78,23 +118,23 @@ pub const TMROF_EN: u16 = 1 << 0;
 // PM1_CNT bits
 // -----------------------------------------------------------------------
 /// Sleep Type field mask (bits 12:10).
-pub const SLP_TYP_MASK: u32 = 0x1C00;
+pub const SLP_TYP_MASK: u32 = PM_CONTROL::SLEEP_TYPE.val(7).value;
 /// Sleep Type shift.
 pub const SLP_TYP_SHIFT: u32 = 10;
 /// Sleep Enable bit (bit 13). Writing 1 enters the sleep state in SLP_TYP.
-pub const SLP_EN: u32 = 1 << 13;
+pub const SLP_EN: u32 = PM_CONTROL::SLEEP_ENABLE::SET.value;
 /// Global Release (bit 2).
-pub const GBL_RLS: u32 = 1 << 2;
+pub const GBL_RLS: u32 = PM_CONTROL::GBL_RLS::SET.value;
 /// Bus Master Reload (bit 1).
-pub const BM_RLD: u32 = 1 << 1;
+pub const BM_RLD: u32 = PM_CONTROL::BM_RLD::SET.value;
 /// SCI Enable (bit 0).
-pub const SCI_EN: u32 = 1 << 0;
+pub const SCI_EN: u32 = PM_CONTROL::SCI_EN::SET.value;
 
 // -----------------------------------------------------------------------
 // SMI_EN bits
 // -----------------------------------------------------------------------
-pub const GBL_SMI_EN: u32 = 1 << 0;
-pub const EOS: u32 = 1 << 1;
+pub const GBL_SMI_EN: u32 = SMI_ENABLE::GLOBAL::SET.value;
+pub const EOS: u32 = SMI_ENABLE::EOS::SET.value;
 pub const BIOS_EN: u32 = 1 << 2;
 pub const LEGACY_USB_EN: u32 = 1 << 3;
 pub const SLP_SMI_EN: u32 = 1 << 4;
@@ -159,7 +199,7 @@ pub const TCO1_CNT: u16 = 0x08;
 pub const TCO2_CNT: u16 = 0x0A;
 
 // TCO1_STS bits
-pub const TIMEOUT_STS: u32 = 1 << 3;
+pub const TIMEOUT_STS: u32 = TCO_STATUS1::TIMEOUT::SET.value as u32;
 pub const TCO_INT_STS: u32 = 1 << 2;
 pub const SW_TCO_STS: u32 = 1 << 1;
 /// Alias matching the ICH8 datasheet name for software TCO command SMIs.
@@ -167,12 +207,12 @@ pub const SW_TCO_SMI: u32 = SW_TCO_STS;
 pub const NMI2SMI_STS: u32 = 1 << 0;
 
 // TCO1_CNT bits
-/// Halt the TCO watchdog timer.
-pub const TCO_LOCK: u16 = 1 << 12;
+/// Lock the TCO watchdog control.
+pub const TCO_LOCK: u16 = TCO_CONTROL::LOCK::SET.value;
 
 // TCO combined (TCO1_STS + TCO2_STS as u32)
-pub const BOOT_STS: u32 = 1 << 18;
-pub const SECOND_TO_STS: u32 = 1 << 17;
+pub const BOOT_STS: u32 = TCO_STATUS::BOOT::SET.value;
+pub const SECOND_TO_STS: u32 = (TCO_STATUS2::SECOND_TIMEOUT::SET.value as u32) << 16;
 pub const DMISCI_STS: u32 = 1 << 9;
 
 /// Total PMBASE I/O region size (128 bytes).
@@ -299,8 +339,9 @@ impl PmIo {
 
     /// Read and clear PM1_STS (write-1-to-clear).
     pub fn reset_pm1_status(&self) -> u16 {
-        let sts = self.read16(PM1_STS);
-        self.write16(PM1_STS, sts);
+        let reg = PmRegs::new(self.base).status();
+        let sts = reg.get();
+        reg.set(sts); // W1C: acknowledge the observed bits only.
         sts
     }
 
@@ -327,7 +368,9 @@ impl PmIo {
 
     /// Open the global SMI gate without changing individual source enables.
     pub fn open_smi_gate(&self) {
-        self.setbits32(SMI_EN, GBL_SMI_EN | EOS);
+        PmRegs::new(self.base)
+            .smi_enable()
+            .modify(SMI_ENABLE::GLOBAL::SET + SMI_ENABLE::EOS::SET);
     }
 
     /// Mask ICH7 GPE0 events: clear `clr` bits, set `set` bits.
@@ -344,14 +387,15 @@ impl PmIo {
 
     /// Extract SLP_TYP from PM1_CNT.
     pub fn sleep_type(&self) -> u32 {
-        (self.read32(PM1_CNT) & SLP_TYP_MASK) >> SLP_TYP_SHIFT
+        PmRegs::new(self.base)
+            .control()
+            .read(PM_CONTROL::SLEEP_TYPE)
     }
 
     /// Check if the system is waking from S3 (PM1_STS.WAK_STS set and
     /// PM1_CNT.SLP_TYP == 5).
     pub fn is_s3_resume(&self) -> bool {
-        let sts = self.read16(PM1_STS);
-        if sts & WAK_STS == 0 {
+        if !PmRegs::new(self.base).status().is_set(PM_STATUS::WAKE) {
             return false;
         }
         self.sleep_type() == 5
@@ -359,14 +403,20 @@ impl PmIo {
 
     /// Enter S5 (soft-off).
     pub fn poweroff(&self) -> ! {
-        let mut pm1 = self.read32(PM1_CNT);
-        pm1 &= !SLP_TYP_MASK;
-        pm1 |= 7 << SLP_TYP_SHIFT; // S5
-        pm1 |= SLP_EN;
-        self.write32(PM1_CNT, pm1);
+        PmRegs::new(self.base)
+            .control()
+            .modify(PM_CONTROL::SLEEP_TYPE::S5 + PM_CONTROL::SLEEP_ENABLE::SET);
         loop {
             core::hint::spin_loop();
         }
+    }
+
+    /// Enable SCI and bus-master reload while clearing the old sleep type.
+    /// Retains the chipset initialization's 32-bit transaction width.
+    pub fn enable_acpi_pm1(&self) {
+        PmRegs::new(self.base).control().modify(
+            PM_CONTROL::SLEEP_TYPE.val(0) + PM_CONTROL::BM_RLD::SET + PM_CONTROL::SCI_EN::SET,
+        );
     }
 
     /// Get a [`TcoIo`] sub-accessor for the TCO register block.
@@ -455,20 +505,30 @@ impl TcoIo {
     /// loader, so no cross-crate PLT call may survive on the SMI path.
     #[inline(always)]
     pub fn reset_tco_status(&self) -> u32 {
-        let sts = self.read32(TCO1_STS);
-        // Clear everything except BOOT_STS first.
-        self.write32(TCO1_STS, sts & !BOOT_STS);
-        // Then clear BOOT_STS if set.
-        if sts & BOOT_STS != 0 {
-            self.write32(TCO1_STS, BOOT_STS);
+        let reg = TcoRegs::new(self.base).status();
+        let sts = reg.extract();
+        // W1C: clear observed bits except BOOT first, then BOOT.
+        // Keep the combined 32-bit access and SECOND_TIMEOUT ordering.
+        reg.set(sts.get() & !BOOT_STS);
+        if sts.is_set(TCO_STATUS::BOOT) {
+            reg.write(TCO_STATUS::BOOT::SET);
         }
-        sts
+        sts.get()
+    }
+
+    /// Halt the watchdog and acknowledge both timeout stages in order.
+    pub fn halt_and_clear_timeouts(&self) {
+        let regs = TcoRegs::new(self.base);
+        regs.control().modify(TCO_CONTROL::HALT::SET);
+        regs.status1().write(TCO_STATUS1::TIMEOUT::SET);
+        regs.status2().write(TCO_STATUS2::SECOND_TIMEOUT::SET);
     }
 
     /// Lock TCO registers (set TCO_LOCK in TCO1_CNT).
     pub fn lock(&self) {
-        let v = self.read16(TCO1_CNT);
-        self.write16(TCO1_CNT, v | TCO_LOCK);
+        TcoRegs::new(self.base)
+            .control()
+            .modify(TCO_CONTROL::LOCK::SET);
     }
 }
 

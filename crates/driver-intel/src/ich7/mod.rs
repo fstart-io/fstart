@@ -1126,11 +1126,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
 
         #[cfg(target_arch = "x86_64")]
         {
-            let tco = self.pm().tco();
-            let v = tco.read16(pmio::TCO1_CNT);
-            tco.write16(pmio::TCO1_CNT, v | (1 << 11));
-            tco.write16(pmio::TCO1_STS, 1 << 3);
-            tco.write16(pmio::TCO2_STS, 1 << 1);
+            self.pm().tco().halt_and_clear_timeouts();
         }
 
         // LPC setup: SERIRQ, fixed decode ranges, and board-specific
@@ -1719,10 +1715,7 @@ impl IntelIch7 {
         }
 
         // PM1_CNT: enable SCI, bus-master C3→C0 wakeup.
-        let mut pm1 = self.pm().read32(pmio::PM1_CNT);
-        pm1 &= !pmio::SLP_TYP_MASK;
-        pm1 |= pmio::BM_RLD | pmio::SCI_EN;
-        self.pm().write32(pmio::PM1_CNT, pm1);
+        self.pm().enable_acpi_pm1();
     }
 
     /// PCIe root port initialization.
@@ -2100,13 +2093,7 @@ impl IntelIch7 {
         lpc.command.modify(PCI_COMMAND_BITS::INT_DISABLE::SET);
 
         {
-            let tco = self.pm().tco();
-            // Halt TCO timer.
-            let cnt = tco.read16(pmio::TCO1_CNT);
-            tco.write16(pmio::TCO1_CNT, cnt | (1 << 11));
-            // Clear timeout status.
-            tco.write16(pmio::TCO1_STS, 1 << 3);
-            tco.write16(pmio::TCO2_STS, 1 << 1);
+            self.pm().tco().halt_and_clear_timeouts();
         }
     }
 
