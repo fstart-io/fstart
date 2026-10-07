@@ -96,7 +96,9 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
         if !resume && init_ck505(ctx.southbridge()).is_err() {
             fstart_log::error!("lenovo-x61: CK505 programming failed");
         }
-        ricoh_sd_write_protect();
+        if ricoh_sd_write_protect().is_err() {
+            fstart_log::error!("lenovo-x61: Ricoh SD policy programming failed");
+        }
         Ok(())
     }
 
@@ -584,43 +586,29 @@ fn init_ck505(
     })
 }
 
-/// Board quirk for the Ricoh SD controller behind the ICH PCI bridge. Byte
-/// accesses are essential: F9 is a write-protect key, not a dword RMW field.
+// Board-package and module selection exclude this peripheral implementation
+// from other boards and from X61's earlier firmware stages.
+#[cfg(any(test, fstart_stage_env = "ram"))]
+mod r5c822;
+
+/// The onboard SD function is device 0, function 2 behind ICH8's PCI bridge.
+/// Enumeration assigns the bus number; the board owns the location/polarity,
+/// and the R5C822 helper verifies the identity before touching vendor registers.
 #[cfg(all(not(test), fstart_stage_env = "ram"))]
-fn ricoh_sd_write_protect() {
+fn ricoh_sd_write_protect() -> Result<(), ServiceError> {
     use fstart_driver_intel::ich8::ich8::{PCI_BRIDGE_DEV, PCI_BRIDGE_FUNC};
     use fstart_pci::{EcamDevice, PciType1Config};
     use tock_registers::interfaces::Readable;
-    const RICOH_VENDOR: u16 = 0x1180;
-    const RICOH_R5C822: u16 = 0x0822;
-    const WRITE_PROTECT_KEY: u16 = 0xf9;
-    const SD_CONTROL: u16 = 0xfa;
-    const KEY_UNLOCK: u8 = 0xfc;
-    const KEY_LOCK: u8 = 0;
-    const SD_WRITE_PROTECT_POLARITY: u8 = 1 << 5;
+
     let bridge = EcamDevice::new(0, PCI_BRIDGE_DEV, PCI_BRIDGE_FUNC);
     // SAFETY: the enumerated ICH8 PCI bridge has a mapped Type 1 header.
     let bus = unsafe { bridge.regs::<PciType1Config>() }
         .secondary_bus
         .get();
     if bus == 0 || bus == 0xff {
-        return;
+        return Err(ServiceError::HardwareError);
     }
-    for dev in 0..32u8 {
-        for function in 0..8u8 {
-            let sd = EcamDevice::new(bus, dev, function);
-            if sd.vendor_id() != RICOH_VENDOR || sd.device_id() != RICOH_R5C822 {
-                continue;
-            }
-            if sd.read8(SD_CONTROL) != SD_WRITE_PROTECT_POLARITY {
-                sd.write8(WRITE_PROTECT_KEY, KEY_UNLOCK);
-                // Exact policy write: SDWPPol, no CLKRUNDis/SDPWRPol.
-                sd.write8(SD_CONTROL, SD_WRITE_PROTECT_POLARITY);
-                sd.write8(WRITE_PROTECT_KEY, KEY_LOCK);
-            }
-            return;
-        }
-    }
+    r5c822::configure_sd_write_protect(EcamDevice::new(bus, 0, 2), true)
 }
 
 static X61_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket M"];
