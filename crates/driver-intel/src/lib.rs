@@ -62,25 +62,48 @@ pub trait MmioBar: Copy {
     #[inline]
     fn read16(self, off: u32) -> u16 {
         // SAFETY: off is a register offset within this BAR.
-        unsafe { fstart_core::mmio::read16((self.base() + off as usize) as *const u16) }
+        let addr = (self.base() + off as usize) as *const u16;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if !addr.is_aligned() {
+            // Some Intel register windows deliberately expose unaligned words.
+            return unsafe { fstart_core::mmio::read16_unaligned(addr.cast()) };
+        }
+        unsafe { fstart_core::mmio::read16(addr) }
     }
 
     #[inline]
     fn write16(self, off: u32, val: u16) {
         // SAFETY: off is a register offset within this BAR.
-        unsafe { fstart_core::mmio::write16((self.base() + off as usize) as *mut u16, val) }
+        let addr = (self.base() + off as usize) as *mut u16;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if !addr.is_aligned() {
+            unsafe { fstart_core::mmio::write16_unaligned(addr.cast(), val) };
+            return;
+        }
+        unsafe { fstart_core::mmio::write16(addr, val) }
     }
 
     #[inline]
     fn read32(self, off: u32) -> u32 {
         // SAFETY: off is a register offset within this BAR.
-        unsafe { fstart_core::mmio::read32((self.base() + off as usize) as *const u32) }
+        let addr = (self.base() + off as usize) as *const u32;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if !addr.is_aligned() {
+            return unsafe { fstart_core::mmio::read32_unaligned(addr.cast()) };
+        }
+        unsafe { fstart_core::mmio::read32(addr) }
     }
 
     #[inline]
     fn write32(self, off: u32, val: u32) {
         // SAFETY: off is a register offset within this BAR.
-        unsafe { fstart_core::mmio::write32((self.base() + off as usize) as *mut u32, val) }
+        let addr = (self.base() + off as usize) as *mut u32;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if !addr.is_aligned() {
+            unsafe { fstart_core::mmio::write32_unaligned(addr.cast(), val) };
+            return;
+        }
+        unsafe { fstart_core::mmio::write32(addr, val) }
     }
 
     #[inline]

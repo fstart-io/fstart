@@ -184,6 +184,70 @@ pub unsafe fn write32(addr: *mut u32, val: u32) {
     }
 }
 
+/// Read a possibly unaligned 16-bit x86 MMIO register without changing the
+/// hardware access width. Unlike `read_unaligned`, this is a volatile access.
+///
+/// # Safety
+/// `addr` must name two mapped bytes of a device register supporting this access.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+pub unsafe fn read16_unaligned(addr: *const u8) -> u16 {
+    let value: u16;
+    unsafe {
+        core::arch::asm!("mov {value:x}, word ptr [{addr}]", addr = in(reg) addr,
+            value = out(reg) value, options(nostack, preserves_flags));
+        iomb();
+    }
+    value
+}
+
+/// Write a possibly unaligned 16-bit x86 MMIO register with barriers.
+///
+/// # Safety
+/// `addr` must name two mapped bytes of a device register supporting this access.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+pub unsafe fn write16_unaligned(addr: *mut u8, value: u16) {
+    unsafe {
+        iomb();
+        core::arch::asm!("mov word ptr [{addr}], {value:x}", addr = in(reg) addr,
+            value = in(reg) value, options(nostack, preserves_flags));
+        iomb();
+    }
+}
+
+/// Read a possibly unaligned 32-bit x86 MMIO register without changing the
+/// hardware access width. The assembly has memory side effects and is not pure.
+///
+/// # Safety
+/// `addr` must name four mapped bytes of a device register supporting this access.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+pub unsafe fn read32_unaligned(addr: *const u8) -> u32 {
+    let value: u32;
+    unsafe {
+        core::arch::asm!("mov {value:e}, dword ptr [{addr}]", addr = in(reg) addr,
+            value = out(reg) value, options(nostack, preserves_flags));
+        iomb();
+    }
+    value
+}
+
+/// Write a possibly unaligned 32-bit x86 MMIO register with barriers.
+///
+/// # Safety
+/// `addr` must name four mapped bytes of a device register supporting this access.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+pub unsafe fn write32_unaligned(addr: *mut u8, value: u32) {
+    unsafe {
+        iomb();
+        core::arch::asm!("mov dword ptr [{addr}], {value:e}", addr = in(reg) addr,
+            value = in(reg) value, options(nostack, preserves_flags));
+        iomb();
+    }
+}
+
 /// Read a `u64` from an MMIO register with a trailing barrier.
 ///
 /// # Safety
@@ -209,6 +273,31 @@ pub unsafe fn write64(addr: *mut u64, val: u64) {
         iomb();
         ptr::write_volatile(addr, val);
         iomb();
+    }
+}
+
+#[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64")))]
+mod unaligned_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_width_and_adjacent_bytes() {
+        let mut bytes = [0xa5u8; 16];
+        for offset in 1..4 {
+            bytes.fill(0xa5);
+            // SAFETY: ordinary RAM provides a mapped test backing for the access.
+            unsafe {
+                write32_unaligned(bytes.as_mut_ptr().add(offset), 0x1234_5678);
+                assert_eq!(read32_unaligned(bytes.as_ptr().add(offset)), 0x1234_5678);
+            }
+            assert_eq!(&bytes[offset..offset + 4], &[0x78, 0x56, 0x34, 0x12]);
+            assert!(bytes[..offset].iter().all(|&byte| byte == 0xa5));
+            assert!(bytes[offset + 4..].iter().all(|&byte| byte == 0xa5));
+        }
+        unsafe {
+            write16_unaligned(bytes.as_mut_ptr().add(1), 0xcdef);
+            assert_eq!(read16_unaligned(bytes.as_ptr().add(1)), 0xcdef);
+        }
     }
 }
 
