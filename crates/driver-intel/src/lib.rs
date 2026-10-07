@@ -46,22 +46,41 @@ pub trait MmioBar: Copy {
     /// MMIO base address of the BAR.
     fn base(self) -> usize;
 
+    /// Optional mapped-window bound for adapters with a fixed extent.
+    fn mapped_size(self) -> Option<u32> {
+        None
+    }
+
+    #[inline]
+    fn register_address(self, off: u32, width: u32) -> usize {
+        let end = off.checked_add(width).expect("MMIO offset overflow");
+        assert!(self.mapped_size().is_none_or(|size| end <= size));
+        let address = self
+            .base()
+            .checked_add(off as usize)
+            .expect("MMIO address overflow");
+        address
+            .checked_add(width as usize - 1)
+            .expect("MMIO access overflow");
+        address
+    }
+
     #[inline]
     fn read8(self, off: u32) -> u8 {
         // SAFETY: off is a register offset within this BAR.
-        unsafe { fstart_core::mmio::read8((self.base() + off as usize) as *const u8) }
+        unsafe { fstart_core::mmio::read8(self.register_address(off, 1) as *const u8) }
     }
 
     #[inline]
     fn write8(self, off: u32, val: u8) {
         // SAFETY: off is a register offset within this BAR.
-        unsafe { fstart_core::mmio::write8((self.base() + off as usize) as *mut u8, val) }
+        unsafe { fstart_core::mmio::write8(self.register_address(off, 1) as *mut u8, val) }
     }
 
     #[inline]
     fn read16(self, off: u32) -> u16 {
         // SAFETY: off is a register offset within this BAR.
-        let addr = (self.base() + off as usize) as *const u16;
+        let addr = self.register_address(off, 2) as *const u16;
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if !addr.is_aligned() {
             // Some Intel register windows deliberately expose unaligned words.
@@ -73,7 +92,7 @@ pub trait MmioBar: Copy {
     #[inline]
     fn write16(self, off: u32, val: u16) {
         // SAFETY: off is a register offset within this BAR.
-        let addr = (self.base() + off as usize) as *mut u16;
+        let addr = self.register_address(off, 2) as *mut u16;
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if !addr.is_aligned() {
             unsafe { fstart_core::mmio::write16_unaligned(addr.cast(), val) };
@@ -85,7 +104,7 @@ pub trait MmioBar: Copy {
     #[inline]
     fn read32(self, off: u32) -> u32 {
         // SAFETY: off is a register offset within this BAR.
-        let addr = (self.base() + off as usize) as *const u32;
+        let addr = self.register_address(off, 4) as *const u32;
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if !addr.is_aligned() {
             return unsafe { fstart_core::mmio::read32_unaligned(addr.cast()) };
@@ -96,7 +115,7 @@ pub trait MmioBar: Copy {
     #[inline]
     fn write32(self, off: u32, val: u32) {
         // SAFETY: off is a register offset within this BAR.
-        let addr = (self.base() + off as usize) as *mut u32;
+        let addr = self.register_address(off, 4) as *mut u32;
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if !addr.is_aligned() {
             unsafe { fstart_core::mmio::write32_unaligned(addr.cast(), val) };
@@ -176,6 +195,32 @@ pub trait IntelNorthbridgeDriver:
         false
     }
     fn set_boot_path(&mut self, _boot_path: BootPath) {}
+    /// Stable chipset/CPU/SPD-map and memory-policy identity, not boot status.
+    fn training_identity(&self) -> Option<[u8; 32]> {
+        None
+    }
+    /// Chipsets validate the payload against freshly probed SPD/timings before
+    /// replaying bounded calibration values. Capture follows successful tests.
+    fn dram_init_cached(
+        &mut self,
+        smbus: Option<&mut dyn fstart_core::services::SmBus>,
+        _cached: Option<&[u8]>,
+        _capture: &mut [u8],
+    ) -> Result<Option<usize>, fstart_core::services::ServiceError> {
+        self.dram_init_with_smbus(smbus)?;
+        Ok(None)
+    }
+    /// Advertise S3 only after both training persistence and retained stage
+    /// storage have been established by the platform.
+    fn set_s3_enabled(&mut self, _enabled: bool) {}
+    /// Cache replay alone is not a complete retained-memory resume sequence.
+    /// Families opt in only after a non-destructive sequence audit/validation.
+    fn supports_s3_replay(&self) -> bool {
+        false
+    }
+    /// Prepare retained DRAM for a clean reset; the southbridge then owns the
+    /// actual reset-controller sequence, including any sticky CF9 state.
+    fn prepare_resume_reset(&self) {}
     fn dram_init_with_smbus(
         &mut self,
         _smbus: Option<&mut dyn fstart_core::services::SmBus>,
@@ -233,9 +278,14 @@ pub trait IntelSouthbridgeDriver: Sized {
     fn fixed_pci_bars(&self) -> fstart_pci::PciFixedBars {
         fstart_pci::PciFixedBars::new()
     }
+    /// Stable southbridge identity for the platform's training-cache policy.
+    fn training_identity(&self) -> Option<[u8; 5]> {
+        None
+    }
     fn detect_s3_resume(&self) -> bool {
         false
     }
+    fn set_s3_enabled(&mut self, _enabled: bool) {}
     fn smbus_mut(&mut self) -> Option<&mut dyn fstart_core::services::SmBus> {
         None
     }
@@ -256,5 +306,46 @@ pub trait IntelSouthbridgeDriver: Sized {
     /// cache); never returns.
     fn system_reset(&self, hard: bool) -> ! {
         fstart_arch::x86_64::system_reset(hard)
+    }
+}
+
+#[cfg(test)]
+mod mmio_tests {
+    use super::MmioBar;
+
+    #[derive(Clone, Copy)]
+    struct Window(usize);
+    impl MmioBar for Window {
+        fn base(self) -> usize {
+            self.0
+        }
+        fn mapped_size(self) -> Option<u32> {
+            Some(8)
+        }
+    }
+
+    #[test]
+    fn window_preserves_unaligned_widths_and_neighboring_bytes() {
+        let mut registers = [0xa5a5_a5a5u32; 2];
+        let bar = Window(registers.as_mut_ptr() as usize);
+        bar.write16(1, 0x1234);
+        bar.write32(4, 0x56789abc);
+        assert_eq!(bar.read8(0), 0xa5);
+        assert_eq!(bar.read16(1), 0x1234);
+        assert_eq!(bar.read8(3), 0xa5);
+        assert_eq!(bar.read32(4), 0x56789abc);
+        assert_eq!(bar.register_address(7, 1), bar.base() + 7);
+    }
+
+    #[test]
+    #[should_panic]
+    fn window_rejects_access_crossing_its_end() {
+        Window(0).register_address(5, 4);
+    }
+
+    #[test]
+    #[should_panic]
+    fn window_rejects_offset_overflow() {
+        Window(0).register_address(u32::MAX, 4);
     }
 }

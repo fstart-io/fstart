@@ -83,7 +83,7 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
         let resume = ctx.resume;
         x61_ec_init(ctx.southbridge(), resume);
         dock::mainstage_power_policy();
-        if init_ck505(ctx.southbridge()).is_err() {
+        if !resume && init_ck505(ctx.southbridge()).is_err() {
             fstart_log::error!("lenovo-x61: CK505 programming failed");
         }
         ricoh_sd_write_protect();

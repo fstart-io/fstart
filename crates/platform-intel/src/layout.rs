@@ -80,13 +80,14 @@ impl<'a> IntelBootLayout<'a> {
     /// Regions the firmware rewrites on every boot, including S3 resume: the
     /// two bootstrap windows, the boot-media arena and the stage cache slots.
     /// Platforms exclude these from OS-visible RAM.
-    pub fn firmware_owned_regions(&self) -> Result<[Region; 5], ServiceError> {
+    pub fn firmware_owned_regions(&self) -> Result<[Region; 6], ServiceError> {
         Ok([
             self.region(RegionKind::BootstrapPostcar)?,
             self.region(RegionKind::BootstrapMainstage)?,
             self.region(RegionKind::BootMediaScratch)?,
             self.region(RegionKind::StageCachePostcar)?,
             self.region(RegionKind::StageCacheMainstage)?,
+            self.region(RegionKind::TrainingHandoff)?,
         ])
     }
 }

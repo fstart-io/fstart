@@ -57,6 +57,22 @@ impl VerifiedDirectory {
 
 static DIRECTORY: AtomicPtr<VerifiedDirectory> = AtomicPtr::new(core::ptr::null_mut());
 
+/// Cross-check a linked writable reservation against the authenticated,
+/// predecessor-imported directory. This never supplies a writer's bounds.
+pub fn matches_raw_reservation(name: &str, offset: u32, size: u32, fill: u8) -> bool {
+    let pointer = DIRECTORY.load(Ordering::Acquire);
+    // SAFETY: imported directories are immutable and live through OS handoff.
+    let Some(directory) = (unsafe { pointer.as_ref() }) else {
+        return false;
+    };
+    directory
+        .view()
+        .and_then(|view| view.raw_region(name))
+        .ok()
+        .flatten()
+        == Some((offset, size, fill))
+}
+
 /// Import a trusted predecessor's directory reference into stable mainstage RAM.
 /// No root signature or self-check is performed. Repeat installation is only
 /// accepted for the same image size/reference, and never rereads directory bytes.

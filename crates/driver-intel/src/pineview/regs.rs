@@ -46,6 +46,16 @@ register_bitfields! [u8,
 ];
 
 register_bitfields! [u32,
+    /// Clock straps and the DDR frequency programming latch (MCHBAR+0xc00).
+    pub CLKCFG_REG [
+        FSB OFFSET(0) NUMBITS(3) [Fsb800 = 2, Fsb667 = 3],
+        DDR OFFSET(4) NUMBITS(3) [Ddr667 = 2, Ddr800 = 3],
+        UPDATE OFFSET(10) NUMBITS(1) []
+    ],
+    pub PMSTS_REG [
+        INITIALIZATION_STARTED OFFSET(0) NUMBITS(1) [],
+        WARM_RESET OFFSET(8) NUMBITS(1) []
+    ],
     /// MCH_GCFGC — Graphics Clock Frequency & Gating Control (MCHBAR+0xC8C).
     pub MCH_GCFGC_REG [
         /// Core render clock frequency.
@@ -83,13 +93,17 @@ register_structs! {
         (0x044 => _pad2: [u8; 0xAC4]),
         /// DACGIOCTRL1 — DAC/GIO control 1.
         (0xB08 => pub dacgioctrl1: MmioReadWrite<u32, DACGIOCTRL1_REG::Register>),
-        (0xB0C => _pad3: [u8; 0x180]),
+        (0xB0C => _pad3),
+        (0xC00 => pub clkcfg: MmioReadWrite<u32, CLKCFG_REG::Register>),
+        (0xC04 => _pad_clkcfg),
         /// MCH_GCFGC — Graphics clock configuration.
         (0xC8C => pub gcfgc: MmioReadWrite<u32, MCH_GCFGC_REG::Register>),
         (0xC90 => _pad4: [u8; 0xA8]),
         /// HPLLVCO — Host PLL VCO.
         (0xD38 => _pad4b: [u8; 0x100]),
-        (0xE38 => _pad4c: [u8; 0x1BC]),
+        (0xE38 => _pad4c),
+        (0xF14 => pub pmsts: MmioReadWrite<u32, PMSTS_REG::Register>),
+        (0xF18 => _pad_pmsts),
         /// CICTRL register.
         (0xFF4 => pub cictrl: MmioReadWrite<u32>),
         /// CISDCTRL register.

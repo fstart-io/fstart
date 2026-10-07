@@ -76,7 +76,8 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             fstart_core::FlashLayout::IntelIfd(FLASH),
             0x400000,
         )
-        .with_data_assets(&[X61_VBT]);
+        .with_data_assets(&[X61_VBT])
+        .with_memory_cache();
 }
 
 pub const BOARD_NAME: &str = "lenovo-x61";

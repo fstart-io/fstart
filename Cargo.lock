@@ -621,6 +621,9 @@ dependencies = [
  "fstart-pci",
  "fstart-smm",
  "heapless 0.8.0",
+ "rflasher-core",
+ "rflasher-internal",
+ "sha2",
  "tock-registers",
  "ufmt",
  "zerocopy",
@@ -757,7 +760,9 @@ dependencies = [
  "konst",
  "raw-cpuid",
  "serde_json",
+ "sha2",
  "ufmt",
+ "zerocopy",
 ]
 
 [[package]]

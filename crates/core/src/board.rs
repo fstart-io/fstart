@@ -185,6 +185,10 @@ pub enum UefiBuildProfile {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoardBuildPolicy {
+    /// Intel mutable FFS prefix, disjoint from the RO container and reset code.
+    /// Zero disables it; the MRC journal currently uses two 64-KiB banks.
+    #[serde(default)]
+    pub mrc_cache_size: u32,
     /// QEMU machine selection for boards with non-default emulation.
     #[serde(default)]
     pub qemu_machine: Option<QemuMachine>,

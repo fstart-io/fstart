@@ -114,7 +114,99 @@ pub struct SysInfo {
     pub vref_value: u8,
 }
 
+#[derive(zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable, zerocopy::KnownLayout)]
+#[repr(C)]
+struct TrainingWire {
+    magic: [u8; 8],
+    spd: [[u8; 128]; 2],
+    timings: [u8; 11],
+    platform_type: u8,
+    spd_map: [u8; 4],
+    pi: [u8; 8],
+    coarsectrl: zerocopy::byteorder::U16<zerocopy::byteorder::LittleEndian>,
+    coarsedelay: zerocopy::byteorder::U16<zerocopy::byteorder::LittleEndian>,
+    mediumphase: zerocopy::byteorder::U16<zerocopy::byteorder::LittleEndian>,
+    readptrdelay: zerocopy::byteorder::U16<zerocopy::byteorder::LittleEndian>,
+    vref: u8,
+    reserved: u8,
+}
+fn timing_bytes(t: Timings) -> [u8; 11] {
+    [
+        t.cas,
+        t.fsb_clock,
+        t.mem_clock,
+        t.tras,
+        t.trp,
+        t.trcd,
+        t.twr,
+        t.trfc,
+        t.twtr,
+        t.trrd,
+        t.trtp,
+    ]
+}
+
 impl SysInfo {
+    fn raw_spd(&self) -> [[u8; 128]; 2] {
+        core::array::from_fn(|slot| {
+            let mut bytes = [0; 128];
+            if let Some(dimm) = &self.dimms[slot] {
+                bytes.copy_from_slice(&dimm.spd_data[..128]);
+            }
+            bytes
+        })
+    }
+    fn restore_training(&mut self, bytes: &[u8]) -> bool {
+        use zerocopy::FromBytes;
+        let Ok(wire) = TrainingWire::ref_from_bytes(bytes) else {
+            return false;
+        };
+        if wire.magic != *b"PVIEW001"
+            || wire.reserved != 0
+            || wire.spd != self.raw_spd()
+            || wire.timings != timing_bytes(self.selected_timings)
+            || wire.platform_type != self.platform_type
+            || wire.spd_map != self.spd_map
+            || wire.coarsectrl.get() > 15
+            || wire.vref > 0x3f
+            || wire
+                .pi
+                .iter()
+                .any(|&pi| pi > self.maxpi || (u16::from(pi) << self.pioffset) > 0x3f)
+        {
+            return false;
+        }
+        self.pi = wire.pi;
+        self.coarsectrl = wire.coarsectrl.get();
+        self.coarsedelay = wire.coarsedelay.get();
+        self.mediumphase = wire.mediumphase.get();
+        self.readptrdelay = wire.readptrdelay.get();
+        self.vref_value = wire.vref;
+        true
+    }
+    fn capture_training(&self, output: &mut [u8]) -> Result<usize, ServiceError> {
+        use zerocopy::IntoBytes;
+        let wire = TrainingWire {
+            magic: *b"PVIEW001",
+            spd: self.raw_spd(),
+            timings: timing_bytes(self.selected_timings),
+            platform_type: self.platform_type,
+            spd_map: self.spd_map,
+            pi: self.pi,
+            coarsectrl: self.coarsectrl.into(),
+            coarsedelay: self.coarsedelay.into(),
+            mediumphase: self.mediumphase.into(),
+            readptrdelay: self.readptrdelay.into(),
+            vref: self.vref_value,
+            reserved: 0,
+        };
+        let bytes = wire.as_bytes();
+        output
+            .get_mut(..bytes.len())
+            .ok_or(ServiceError::InvalidParam)?
+            .copy_from_slice(bytes);
+        Ok(bytes.len())
+    }
     pub fn new(boot_path: crate::BootPath, platform_type: u8, spd_map: [u8; 4]) -> Self {
         Self {
             boot_path,
@@ -172,6 +264,27 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     platform_type: u8,
     spd_addresses: &[u8; 4],
 ) -> Result<u64, ServiceError> {
+    sdram_initialize_cached(
+        mch,
+        smbus,
+        boot_path,
+        platform_type,
+        spd_addresses,
+        None,
+        &mut [],
+    )
+    .map(|(size, _)| size)
+}
+
+pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
+    mch: &MchBar,
+    smbus: &mut B,
+    boot_path: crate::BootPath,
+    platform_type: u8,
+    spd_addresses: &[u8; 4],
+    cached: Option<&[u8]>,
+    capture: &mut [u8],
+) -> Result<(u64, Option<usize>), ServiceError> {
     fstart_log::info!("raminit: starting DDR2 initialization");
 
     let mut si = SysInfo::new(boot_path, platform_type, *spd_addresses);
@@ -180,10 +293,19 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     spd::read_spds(&mut si, smbus)?;
 
     // 2. Detect RAM speed (common frequency).
-    timing::detect_ram_speed(&mut si, mch);
+    timing::detect_ram_speed(&mut si, mch)?;
 
     // 3. Detect smallest common timings.
     timing::detect_smallest_params(&mut si)?;
+    let replay = cached.is_some_and(|bytes| si.restore_training(bytes));
+    if boot_path == crate::BootPath::S3Resume && !replay {
+        fstart_log::error!("pineview: S3 requires matching SPD/timings and training cache");
+        return Err(ServiceError::HardwareError);
+    }
+    fstart_log::info!(
+        "pineview: training cache {}",
+        if replay { "hit" } else { "miss" }
+    );
 
     // 4. Enable HPET.
     // (Handled by platform code, not raminit.)
@@ -264,13 +386,13 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     mmap::sdram_dradrb(&mut si, mch);
 
     // 21. Receive enable calibration.
-    phy::sdram_rcven(&mut si, mch)?;
+    phy::sdram_rcven(&mut si, mch, replay)?;
 
     // Desktop UDIMMs use the vendor-derived Vref margining path. Pineview
     // coreboot has no equivalent pass; keep this separate from its SO-DIMM
     // fixed-Vref flow until the vendor provenance is documented.
     if !si.is_sodimm() {
-        if si.boot_path != crate::BootPath::S3Resume {
+        if !replay {
             phy::sdram_vref_margining(&mut si, mch)?;
         }
         phy::update_vref_value(si.vref_value, mch);
@@ -312,5 +434,10 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
         "raminit: DDR2 initialization complete, {} MiB detected",
         total_mb
     );
-    Ok(total_bytes)
+    let captured = if boot_path != crate::BootPath::S3Resume && !capture.is_empty() {
+        Some(si.capture_training(capture)?)
+    } else {
+        None
+    };
+    Ok((total_bytes, captured))
 }

@@ -19,6 +19,7 @@ extern crate ufmt;
 pub mod tables;
 
 pub mod facts;
+pub mod memory_cache;
 pub use facts::{IntelBoardFacts, IntelPlatform, IntelPlatformConfig};
 #[cfg(feature = "host")]
 pub mod host;
@@ -313,12 +314,25 @@ impl<P, T> MainboardAcpi<P> for T {}
 #[cfg(all(feature = "stage", fstart_stage_env = "car"))]
 pub struct IntelEarlyCtx<'a, P: IntelEarlyPlatform> {
     southbridge: &'a mut P::Southbridge,
+    pub boot_path: fstart_driver_intel::BootPath,
 }
 
 #[cfg(all(feature = "stage", fstart_stage_env = "car"))]
 impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
     pub(crate) fn new(southbridge: &'a mut P::Southbridge) -> Self {
-        Self { southbridge }
+        Self {
+            southbridge,
+            boot_path: fstart_driver_intel::BootPath::Normal,
+        }
+    }
+    pub(crate) fn with_boot_path(
+        southbridge: &'a mut P::Southbridge,
+        boot_path: fstart_driver_intel::BootPath,
+    ) -> Self {
+        Self {
+            southbridge,
+            boot_path,
+        }
     }
 
     #[must_use]

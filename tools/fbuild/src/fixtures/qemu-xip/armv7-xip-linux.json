@@ -16,6 +16,7 @@
           "size": 134217728
         }
       },
+      "mrc_cache_size": 0,
       "pci_root_feature": null,
       "qemu_machine": null
     },

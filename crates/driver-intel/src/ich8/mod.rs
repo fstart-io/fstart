@@ -39,8 +39,7 @@ pub mod ich8 {
     pub const PCIE_DEV: u8 = 0x1c;
     pub const PCI_BRIDGE_DEV: u8 = 0x1e;
     pub const PCI_BRIDGE_FUNC: u8 = 0;
-    pub const LPC_DEV: u8 = 0x1f;
-    pub const LPC_FUNC: u8 = 0;
+    pub use crate::southbridge::lpc::{LPC_DEV, LPC_FUNC};
     pub const IDE_DEV: u8 = 0x1f;
     pub const IDE_FUNC: u8 = 1;
     pub const SATA_DEV: u8 = 0x1f;
@@ -1129,11 +1128,9 @@ impl IntelIch8 {
     }
 
     fn enable_spi_prefetching_and_caching(&self) {
-        let lpc = self.lpc();
-        // Match coreboot i82801hx bootblock: enable SPI prefetch/cache before
-        // extended flash reads from the memory-mapped boot medium.
-        let value = lpc.read8(0xdc);
-        lpc.write8(0xdc, (value & !(3 << 2)) | (2 << 2));
+        // Match coreboot i82801hx bootblock before extended flash reads.
+        // SAFETY: northbridge pre-console init established ECAM first.
+        unsafe { crate::southbridge::lpc::flash_config() }.enable_prefetching_and_caching();
     }
 
     fn program_fixed_bars(&self) {
@@ -2184,6 +2181,16 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
 
     fn detect_s3_resume(&self) -> bool {
         IntelIch8::detect_s3_resume(self)
+    }
+
+    fn training_identity(&self) -> Option<[u8; 5]> {
+        // SAFETY: platform calls after ECAM/early chipset initialization.
+        let header = unsafe { self.lpc().regs() };
+        Some(crate::southbridge::lpc::training_identity(header))
+    }
+
+    fn smbus_mut(&mut self) -> Option<&mut dyn SmBus> {
+        self.smbus.as_mut().map(|bus| bus as &mut dyn SmBus)
     }
 
     fn prepare_early_post_dram_init(&mut self) -> Result<(), ServiceError> {

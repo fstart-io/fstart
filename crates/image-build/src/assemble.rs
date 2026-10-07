@@ -352,6 +352,14 @@ fn ffs_input_regions(
     config: &BoardConfig,
     ro_files: Vec<InputFile>,
 ) -> Result<Vec<InputRegion>, String> {
+    let cache_size = config.build.mrc_cache_size;
+    if cache_size != 0
+        && (cache_size != 0x20000
+            || !config.full_flash_image
+            || config.platform != Platform::X86_64)
+    {
+        return Err("MRC cache requires an Intel full-flash image and two 64-KiB banks".into());
+    }
     let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
         if config.full_flash_image {
             let flash_image = firmware_image_from_policy(config)?.ok_or_else(|| {
@@ -360,6 +368,9 @@ fn ffs_input_regions(
             let flash_size = flash_image.size;
             let flash_size_u32 = u32::try_from(flash_size)
                 .map_err(|_| format!("flash size {flash_size:#x} exceeds FFS u32 limits"))?;
+            if cache_size != 0 {
+                return cached_ro_regions(config, ro_files, flash_size_u32);
+            }
             let (files, external_files) =
                 externalize_xip_bootblock(config, ro_files, flash_size_u32)?;
             if !external_files.is_empty() {
@@ -400,6 +411,16 @@ fn ffs_input_regions(
             fill: 0xff,
         });
     }
+    if cache_size != 0 {
+        if bios.offset % 0x10000 != 0 {
+            return Err("MRC cache BIOS start must be 64-KiB erase aligned".into());
+        }
+        regions.extend(cached_ro_regions(config, ro_files, bios.size)?);
+        if regions.len() > 6 {
+            return Err("MRC cache exceeds FFS region capacity".into());
+        }
+        return Ok(regions);
+    }
     let (files, external_files) = externalize_xip_bootblock(config, ro_files, bios.size)?;
 
     regions.push(InputRegion::ContainerWithExternal {
@@ -410,6 +431,43 @@ fn ffs_input_regions(
     });
 
     Ok(regions)
+}
+
+/// Cache bytes physically prefix the BIOS image; RO offsets must be relative
+/// to its shortened container, while linked external load addresses stay fixed.
+fn cached_ro_regions(
+    config: &BoardConfig,
+    files: Vec<InputFile>,
+    bios_size: u32,
+) -> Result<Vec<InputRegion>, String> {
+    let prefix = config.build.mrc_cache_size;
+    let ro_size = bios_size
+        .checked_sub(prefix)
+        .filter(|&n| n > 4096)
+        .ok_or("MRC cache leaves no RO/reset capacity")?;
+    let (files, mut external_files) = externalize_xip_bootblock(config, files, bios_size)?;
+    if external_files.is_empty() {
+        return Err("MRC cache requires an external top-aligned XIP bootblock".into());
+    }
+    for file in &mut external_files {
+        file.offset = file
+            .offset
+            .checked_sub(prefix)
+            .ok_or("MRC cache overlaps bootblock")?;
+    }
+    Ok(vec![
+        InputRegion::Raw {
+            name: "mrc-cache".into(),
+            size: prefix,
+            fill: 0xff,
+        },
+        InputRegion::ContainerWithExternal {
+            name: "ro".into(),
+            files,
+            external_files,
+            size: Some(ro_size),
+        },
+    ])
 }
 
 fn externalize_xip_bootblock(

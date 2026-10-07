@@ -431,6 +431,21 @@ impl<'a> ManifestView<'a> {
         string_at(self.strings, offset)
     }
 
+    /// Bounded raw-region lookup without decoding the owned directory tree.
+    /// Duplicate names or a container masquerading as the reservation fail.
+    pub fn raw_region(&self, name: &str) -> Result<Option<(u32, u32, u8)>, ReaderError> {
+        let mut found = None;
+        for region in self.regions {
+            if self.string(region.name_offset.get())? == name {
+                if found.is_some() || region.kind != REGION_KIND_RAW {
+                    return Err(ReaderError::DeserializeError);
+                }
+                found = Some((region.offset.get(), region.size.get(), region.fill));
+            }
+        }
+        Ok(found)
+    }
+
     pub fn to_owned_manifest(&self) -> Result<ImageManifest, ReaderError> {
         let mut regions = heapless::Vec::new();
         for region in self.regions {

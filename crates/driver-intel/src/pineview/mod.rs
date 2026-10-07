@@ -233,7 +233,8 @@ pci_type0_config! {
         (0xb2 => _reserved_hb8),
         (0xdc => pub skpad: MmioReadWrite<u32>),
         (0xe0 => pub capid0: MmioReadWrite<u32>),
-        (0xe4 => @END),
+        (0xe4 => pub capid0_hi: MmioReadWrite<u32>),
+        (0xe8 => @END),
     }
 }
 
@@ -551,6 +552,56 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
 
     fn set_boot_path(&mut self, boot_path: crate::BootPath) {
         self.boot_path = boot_path;
+    }
+
+    fn training_identity(&self) -> Option<[u8; 32]> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let hb = self.hostbridge_regs();
+            Some(crate::generic::training::identity(
+                b"pineview-raminit-v1",
+                &self.config.spd_addresses,
+                hb.ggc.get(),
+                tock_registers::LocalRegisterCopy::<u32, regs::CLKCFG_REG::Register>::new(
+                    u32::from(self.mchbar().read8(mchbar::CLKCFG)),
+                )
+                .read(regs::CLKCFG_REG::FSB) as u8,
+                crate::generic::training::HardwareIdentity {
+                    vendor_id: hb.vendor_id.get(),
+                    device_id: hb.device_id.get(),
+                    revision_id: hb.revision_id.get(),
+                    capabilities: [hb.capid0.get(), hb.capid0_hi.get()],
+                    cpu_signature: core::arch::x86_64::__cpuid(1).eax,
+                },
+            ))
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            None
+        }
+    }
+
+    fn dram_init_cached(
+        &mut self,
+        smbus: Option<&mut dyn SmBus>,
+        cached: Option<&[u8]>,
+        output: &mut [u8],
+    ) -> Result<Option<usize>, ServiceError> {
+        let smbus = smbus.ok_or(ServiceError::NotInitialized)?;
+        let (size, captured) = raminit::sdram_initialize_cached(
+            &self.mchbar(),
+            smbus,
+            self.boot_path,
+            self.platform_type(),
+            &self.config.spd_addresses,
+            cached,
+            output,
+        )?;
+        self.detected_size = size;
+        if self.boot_path != crate::BootPath::S3Resume {
+            self.memory_test()?;
+        }
+        Ok(captured)
     }
 
     fn dram_init_with_smbus(&mut self, smbus: Option<&mut dyn SmBus>) -> Result<(), ServiceError> {

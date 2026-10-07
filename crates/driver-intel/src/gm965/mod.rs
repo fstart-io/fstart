@@ -292,6 +292,10 @@ pub mod epbar {
 }
 
 register_bitfields! [u32,
+    /// Active FSB strap in MCHBAR clock configuration.
+    pub CLKCFG_REG [
+        FSB OFFSET(0) NUMBITS(3) [Fsb533 = 1, Fsb800 = 2, Fsb667 = 3]
+    ],
     /// FSBPMC5 — Front Side Bus Power Management Control 5.
     pub FSBPMC5_REG [
         NON_ISOCH_DECODE OFFSET(19) NUMBITS(2) []
@@ -530,6 +534,8 @@ impl Default for IntelGm965Config {
 pub struct IntelGm965 {
     config: &'static IntelGm965Config,
     detected_size: u64,
+    boot_path: crate::BootPath,
+    s3_enabled: bool,
     /// PCI mmio32 window derived from the e820 map after memory detection.
     mmio32_window: Option<(u64, u64)>,
     /// Framebuffer programmed by the shared GMA layer, if the board asked for it.
@@ -572,7 +578,8 @@ pci_type0_config! {
         (0xb2 => _reserved_hb7),
         (0xdc => pub skpd: MmioReadWrite<u32>),
         (0xe0 => pub capid0: MmioReadWrite<u32>),
-        (0xe4 => @END),
+        (0xe4 => pub capid0_hi: MmioReadWrite<u32>),
+        (0xe8 => @END),
     }
 }
 
@@ -1329,6 +1336,8 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         Ok(Self {
             config,
             detected_size: 0,
+            boot_path: crate::BootPath::Normal,
+            s3_enabled: false,
             mmio32_window: None,
             display: super::igd::IgdDisplay::new(),
             igd_bars: None,
@@ -1349,6 +1358,70 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         self.early_mch_dmi_tweaks();
         fstart_log::info!("intel-gm965: early init complete");
         Ok(())
+    }
+
+    fn set_boot_path(&mut self, boot: crate::BootPath) {
+        self.boot_path = boot;
+    }
+    fn set_s3_enabled(&mut self, enabled: bool) {
+        self.s3_enabled = enabled;
+    }
+    fn prepare_resume_reset(&self) {
+        raminit::prepare_resume_reset(&self.mchbar());
+    }
+
+    fn training_identity(&self) -> Option<[u8; 32]> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let hb = self.hostbridge_regs();
+            Some(crate::generic::training::identity(
+                b"gm965-raminit-v1",
+                &self.config.spd_addresses,
+                self.igd_ggc(),
+                LocalRegisterCopy::<u32, CLKCFG_REG::Register>::new(u32::from(
+                    self.mchbar().read8(mchbar::CLKCFG),
+                ))
+                .read(CLKCFG_REG::FSB) as u8,
+                crate::generic::training::HardwareIdentity {
+                    vendor_id: hb.vendor_id.get(),
+                    device_id: hb.device_id.get(),
+                    revision_id: hb.revision_id.get(),
+                    capabilities: [hb.capid0.get(), hb.capid0_hi.get()],
+                    cpu_signature: core::arch::x86_64::__cpuid(1).eax,
+                },
+            ))
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            None
+        }
+    }
+
+    fn dram_init_cached(
+        &mut self,
+        smbus: Option<&mut dyn fstart_core::services::SmBus>,
+        cached: Option<&[u8]>,
+        output: &mut [u8],
+    ) -> Result<Option<usize>, ServiceError> {
+        let smbus = smbus.ok_or(ServiceError::NotInitialized)?;
+        let mut info = raminit::probe_dimms(smbus, &self.config.spd_addresses)?;
+        self.detected_size = info.total_bytes();
+        raminit::initialize(
+            &mut info,
+            &self.mchbar(),
+            self.igd_ggc(),
+            self.boot_path,
+            cached,
+        )?;
+        if self.boot_path == crate::BootPath::S3Resume {
+            return Ok(None);
+        }
+        self.memory_test()?;
+        self.thermal_sensor_init(
+            &info,
+            &mut crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base),
+        );
+        Ok(Some(info.capture_training(output)?))
     }
 
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
@@ -1923,6 +1996,12 @@ mod acpi_impl {
                     // coreboot-derived SpeedStep/C-state generator.
                 }
             });
+
+            if self.s3_enabled {
+                aml.extend_from_slice(&acpi_dsl! { Scope("\\") {
+                    Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
+                } });
+            }
 
             aml.extend_from_slice(
                 &fstart_acpi::aml_linker::scope_vec(

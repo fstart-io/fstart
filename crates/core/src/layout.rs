@@ -59,6 +59,8 @@ pub enum RegionKind {
     StageCachePostcar = 16,
     /// S3-resident compressed mainstage slot (header + body).
     StageCacheMainstage = 17,
+    /// Pending SPD/training record in OS-reserved RAM, committed from ramstage.
+    TrainingHandoff = 18,
 }
 
 impl RegionKind {
@@ -81,6 +83,7 @@ impl RegionKind {
             15 => Ok(Self::BootMediaScratch),
             16 => Ok(Self::StageCachePostcar),
             17 => Ok(Self::StageCacheMainstage),
+            18 => Ok(Self::TrainingHandoff),
             _ => Err(Error::UnknownRegionKind),
         }
     }
