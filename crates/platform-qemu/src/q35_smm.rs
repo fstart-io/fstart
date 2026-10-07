@@ -6,23 +6,91 @@
 //! `mainboard/emulation/qemu-q35/memmap.c`) and the ICH9 PM I/O block for
 //! [`IchSmi`] (`southbridge/intel/common/smi.c`).
 
-use fstart_arch::x86::cpu::intel::smm::{SmmCpu, SmramControl, SmrrPair, X86SaveStateFormat};
+#[cfg(feature = "stage")]
+use fstart_arch::x86::cpu::intel::smm::SmramControl;
+use fstart_arch::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
+use fstart_core::mmio::{MmioReadOnly, MmioReadWrite, tock_registers};
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
+use fstart_driver_intel::gmch::smram;
 use fstart_driver_intel::southbridge::smi::{ICH8_GPE0, IchSmi};
+use tock_registers::{
+    interfaces::{ReadWriteable, Readable, Writeable},
+    register_bitfields,
+};
 
 use crate::q35::Q35HostBridge;
+use fstart_pci::EcamDevice;
 
-// Q35 MCH (00:00.0) SMRAM registers. Matches coreboot's
-// `mainboard/emulation/qemu-q35/q35.h`.
-const EXT_TSEG_MBYTES: u8 = 0x50;
-const SMRAMC: u8 = 0x9d;
-const G_SMRAME: u8 = 1 << 3;
-const D_LCK: u8 = 1 << 4;
-const D_OPEN: u8 = 1 << 6;
-const C_BASE_SEG: u8 = 0b010;
-const ESMRAMC: u8 = 0x9e;
-const T_EN: u8 = 1 << 0;
-const TSEG_SZ_MASK: u8 = 3 << 1;
+register_bitfields![u8,
+    ESMRAMC [
+        T_EN OFFSET(0) NUMBITS(1) [],
+        TSEG_SIZE OFFSET(1) NUMBITS(2) [
+            OneMiB = 0,
+            TwoMiB = 1,
+            EightMiB = 2,
+            Extended = 3
+        ],
+        H_SMRAME OFFSET(7) NUMBITS(1) []
+    ]
+];
+
+fstart_pci::pci_type0_config! {
+    /// Q35 MCH SMRAM configuration, sharing the GMCH SMRAM field definitions.
+    struct Q35SmramConfig {
+        (0x40 => _q35_reserved0),
+        // Retain the existing low-byte then high-byte read sequence.
+        (0x50 => extended_tseg_mbytes: [MmioReadOnly<u8>; 2]),
+        (0x52 => _q35_reserved1),
+        (0x9d => smramc: MmioReadWrite<u8, smram::SMRAM::Register>),
+        (0x9e => esmramc: MmioReadWrite<u8, ESMRAMC::Register>),
+        (0x9f => _q35_reserved2),
+        (0xa0 => @END),
+    }
+}
+
+impl Q35SmramConfig {
+    fn tseg_size(&self) -> usize {
+        // Permanent SMRAM always uses TSEG: decode its configured size even
+        // while T_EN is clear, then enable it after installation in close().
+        match self
+            .esmramc
+            .read_as_enum(ESMRAMC::TSEG_SIZE)
+            .expect("all two-bit TSEG size encodings are defined")
+        {
+            ESMRAMC::TSEG_SIZE::Value::OneMiB => 1 << 20,
+            ESMRAMC::TSEG_SIZE::Value::TwoMiB => 2 << 20,
+            ESMRAMC::TSEG_SIZE::Value::EightMiB => 8 << 20,
+            ESMRAMC::TSEG_SIZE::Value::Extended => {
+                usize::from(u16::from_le_bytes([
+                    self.extended_tseg_mbytes[0].get(),
+                    self.extended_tseg_mbytes[1].get(),
+                ])) << 20
+            }
+        }
+    }
+
+    fn open(&self) -> bool {
+        self.smramc.set(smram::open());
+        self.esmramc.modify(ESMRAMC::T_EN::CLEAR);
+        smram::is_open(self.smramc.get())
+    }
+
+    fn close(&self) {
+        self.smramc.set(smram::closed());
+        self.esmramc.modify(ESMRAMC::T_EN::SET);
+    }
+
+    fn lock(&self) -> bool {
+        self.smramc.set(smram::locked());
+        smram::is_locked(self.smramc.get()) && self.esmramc.is_set(ESMRAMC::T_EN)
+    }
+}
+
+fn mch_config() -> &'static Q35SmramConfig {
+    // SAFETY: the verified Q35 host bridge owns 00:00.0; shared ECAM is
+    // initialized before TSEG discovery and remains mapped through SMM setup.
+    unsafe { EcamDevice::new(0, 0, 0).regs() }
+}
 
 /// ICH9 PMBASE programmed by [`Q35HostBridge::setup_ich9_pm_io`](crate::q35).
 pub const Q35_PMBASE: u16 = 0x0600;
@@ -52,40 +120,9 @@ impl SmmCpu for QemuSmmCpu {
 // TSEG geometry (coreboot q35 `memmap.c`)
 // ---------------------------------------------------------------------------
 
-fn pci_read_host8(reg: u8) -> u8 {
-    let aligned = reg & !3;
-    let shift = ((reg & 3) as u32) * 8;
-    // SAFETY: caller selects a valid Q35 MCH config register.
-    ((unsafe { fstart_core::pio::pci_cfg_read32(0, 0, 0, aligned) } >> shift) & 0xff) as u8
-}
-
-fn pci_write_host8(reg: u8, val: u8) {
-    let aligned = reg & !3;
-    let shift = ((reg & 3) as u32) * 8;
-    // SAFETY: caller selects a valid Q35 MCH config register.
-    let old = unsafe { fstart_core::pio::pci_cfg_read32(0, 0, 0, aligned) };
-    let new = (old & !(0xffu32 << shift)) | ((val as u32) << shift);
-    // SAFETY: caller selects a valid Q35 MCH config register.
-    unsafe { fstart_core::pio::pci_cfg_write32(0, 0, 0, aligned, new) };
-}
-
+// Called after Q35HostBridge enables and initializes the shared ECAM region.
 pub(crate) fn decode_tseg_size() -> usize {
-    let mut esmramc = pci_read_host8(ESMRAMC);
-    // fstart's Q35 path always uses TSEG for permanent SMRAM. If QEMU has
-    // not yet reflected T_EN, decode the configured size anyway and enable
-    // TSEG in `smm_close()` after installation (coreboot `memmap.c` fakes
-    // T_EN the same way under SMM_TSEG).
-    esmramc |= T_EN;
-    match (esmramc & TSEG_SZ_MASK) >> 1 {
-        0 => 1 << 20,
-        1 => 2 << 20,
-        2 => 8 << 20,
-        _ => {
-            let lo = pci_read_host8(EXT_TSEG_MBYTES);
-            let hi = pci_read_host8(EXT_TSEG_MBYTES + 1);
-            ((u16::from(lo) | (u16::from(hi) << 8)) as usize) << 20
-        }
-    }
+    mch_config().tseg_size()
 }
 
 /// TSEG base from the firmware memory map: prefer an explicit reserved region
@@ -120,6 +157,7 @@ pub(crate) fn tseg_base_from_e820(entries: &[E820Entry], size: usize) -> u64 {
 // SMRAM window control (coreboot q35 `memmap.c` open/close/lock)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "stage")]
 impl SmramControl for Q35HostBridge {
     fn tseg(&self) -> Option<(u64, u32)> {
         let size = decode_tseg_size();
@@ -127,21 +165,70 @@ impl SmramControl for Q35HostBridge {
     }
 
     fn smram_open(&self) -> bool {
-        pci_write_host8(SMRAMC, D_OPEN | G_SMRAME | C_BASE_SEG);
-        let esmramc = pci_read_host8(ESMRAMC);
-        pci_write_host8(ESMRAMC, esmramc & !T_EN);
-        pci_read_host8(SMRAMC) & (D_OPEN | D_LCK | G_SMRAME) == D_OPEN | G_SMRAME
+        mch_config().open()
     }
 
     fn smram_close(&self) {
-        pci_write_host8(SMRAMC, G_SMRAME | C_BASE_SEG);
-        let esmramc = pci_read_host8(ESMRAMC);
-        pci_write_host8(ESMRAMC, esmramc | T_EN);
+        mch_config().close();
     }
 
     fn smram_lock(&self) -> bool {
-        pci_write_host8(SMRAMC, D_LCK | G_SMRAME | C_BASE_SEG);
-        pci_read_host8(SMRAMC) & (D_OPEN | D_LCK | G_SMRAME) == D_LCK | G_SMRAME
-            && pci_read_host8(ESMRAMC) & T_EN != 0
+        mch_config().lock()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::cell::UnsafeCell;
+
+    #[repr(C, align(4))]
+    struct ConfigBytes(UnsafeCell<[u8; 0xa0]>);
+
+    impl ConfigBytes {
+        fn regs(&self) -> &Q35SmramConfig {
+            // SAFETY: aligned, initialized backing storage with interior
+            // mutability; the complete overlay fits and cannot outlive it.
+            unsafe { &*self.0.get().cast::<Q35SmramConfig>() }
+        }
+
+        fn byte(&self, offset: usize) -> u8 {
+            // SAFETY: tests access valid offsets in this owned storage.
+            unsafe { (*self.0.get())[offset] }
+        }
+    }
+
+    #[test]
+    fn window_control_preserves_tseg_configuration_and_neighbor_bytes() {
+        let image = ConfigBytes(UnsafeCell::new([0xa5; 0xa0]));
+        let regs = image.regs();
+        assert!(regs.open());
+        assert_eq!(image.byte(0x9d), 0x4a);
+        assert_eq!(image.byte(0x9e), 0xa4);
+        regs.close();
+        assert_eq!(image.byte(0x9d), 0x0a);
+        assert_eq!(image.byte(0x9e), 0xa5);
+        assert!(regs.lock());
+        assert_eq!(image.byte(0x9d), 0x1a);
+        assert_eq!(image.byte(0x9e), 0xa5);
+        assert_eq!(image.byte(0x9c), 0xa5);
+        assert_eq!(image.byte(0x9f), 0xa5);
+    }
+
+    #[test]
+    fn configured_size_is_decoded_while_tseg_is_disabled() {
+        let mut image = ConfigBytes(UnsafeCell::new([0; 0xa0]));
+        image.0.get_mut()[0x50..0x52].copy_from_slice(&0x0110u16.to_le_bytes());
+        let regs = image.regs();
+        for (size, mbytes) in [
+            (ESMRAMC::TSEG_SIZE::OneMiB, 1),
+            (ESMRAMC::TSEG_SIZE::TwoMiB, 2),
+            (ESMRAMC::TSEG_SIZE::EightMiB, 8),
+            (ESMRAMC::TSEG_SIZE::Extended, 0x0110),
+        ] {
+            regs.esmramc.write(size + ESMRAMC::T_EN::CLEAR);
+            assert_eq!(regs.tseg_size(), mbytes << 20);
+            assert!(!regs.esmramc.is_set(ESMRAMC::T_EN));
+        }
     }
 }

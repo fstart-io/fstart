@@ -75,7 +75,7 @@ pub use virt_riscv64::{
 pub mod q35;
 #[cfg(all(
     feature = "smm",
-    feature = "stage",
+    any(feature = "stage", test),
     any(target_arch = "x86", target_arch = "x86_64")
 ))]
 mod q35_smm;
@@ -333,6 +333,9 @@ mod stage {
         /// TSEG: it overlays the top of low RAM, so without this the
         /// overlay would be handed out as ordinary memory.
         fn reserve_tseg(&mut self) -> Result<(), ServiceError> {
+            // Geometry discovery precedes PCI allocation; enable the shared
+            // config accessor here instead of keeping an early CF8 copy.
+            self.hostbridge.enable_config_access()?;
             let size = crate::q35_smm::decode_tseg_size() as u64;
             if size == 0 {
                 return Ok(());

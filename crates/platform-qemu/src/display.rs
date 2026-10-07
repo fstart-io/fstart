@@ -21,7 +21,7 @@
 use fstart_core::mmio::{read16, write8, write16};
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::framebuffer::{Framebuffer, FramebufferInfo};
-use fstart_pci::{PCI_BAR0, PCI_BAR2, PCI_VENDOR_ID, PCI_VENDOR_INVALID, PciAddress, PciEcam};
+use fstart_pci::{EcamDevice, PCI_BAR0, PCI_BAR2, PciAddress, PciEcam};
 use serde::{Deserialize, Serialize};
 
 // -----------------------------------------------------------------------
@@ -99,16 +99,16 @@ impl BochsDisplay {
     /// Returns `Err` when the device is present but unusable
     /// (BARs not allocated).
     pub fn probe(ecam: &PciEcam, config: BochsDisplayConfig) -> Result<Option<Self>, DeviceError> {
-        let found = Self::find_device(ecam);
-        let Some(addr) = found else {
+        let Some(device) = Self::find_device(ecam)? else {
             return Ok(None);
         };
-        let fb_base = Self::read_bar(ecam, addr, PCI_BAR0);
-        let mmio_base = Self::read_bar(ecam, addr, PCI_BAR2);
-        if fb_base == 0 || mmio_base == 0 {
+        let (Some(fb_base), Some(mmio_base)) =
+            (device.memory_bar(PCI_BAR0), device.memory_bar(PCI_BAR2))
+        else {
             fstart_log::error!("bochs-display: BAR0 or BAR2 not allocated");
             return Err(DeviceError::InitFailed);
-        }
+        };
+        let addr = device.address();
         // Register access casts `mmio_base` to `usize`: reject an
         // unaddressable BAR instead of truncating it silently. Only
         // reachable on 32-bit targets with BAR2 allocated above 4 GiB.
@@ -189,45 +189,27 @@ impl BochsDisplay {
         Ok(Some(display.info()))
     }
 
-    fn find_device(ecam: &PciEcam) -> Option<PciAddress> {
+    fn find_device(ecam: &PciEcam) -> Result<Option<EcamDevice>, DeviceError> {
         for bus in ecam.bus_start()..=ecam.bus_end() {
             for dev in 0..32u8 {
-                // Function 0 decides whether the slot exists at all.
-                let f0 = PciAddress::new(0, bus, dev, 0);
-                if ecam.config_read32(f0, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
+                // Invalid mappings are errors, not absent hardware.
+                let f0 = ecam
+                    .device(PciAddress::new(0, bus, dev, 0))
+                    .ok_or(DeviceError::InitFailed)?;
+                if !f0.is_present() {
                     continue;
                 }
                 for func in 0..8u8 {
-                    let addr = PciAddress::new(0, bus, dev, func);
-                    let id = ecam.config_read32(addr, PCI_VENDOR_ID);
-                    if id == PCI_VENDOR_INVALID {
-                        continue;
-                    }
-                    if id as u16 == BOCHS_VID && (id >> 16) as u16 == BOCHS_DID {
-                        return Some(addr);
+                    let device = ecam
+                        .device(PciAddress::new(0, bus, dev, func))
+                        .ok_or(DeviceError::InitFailed)?;
+                    if device.vendor_id() == BOCHS_VID && device.device_id() == BOCHS_DID {
+                        return Ok(Some(device));
                     }
                 }
             }
         }
-        None
-    }
-
-    /// Read a BAR value from PCI config space (handles 64-bit BARs).
-    fn read_bar(ecam: &PciEcam, addr: PciAddress, bar_offset: u16) -> u64 {
-        let lo = ecam.config_read32(addr, bar_offset);
-        if lo & 1 != 0 {
-            // I/O BAR — not usable as a framebuffer.
-            return 0;
-        }
-        let mem_type = (lo >> 1) & 0x3;
-        let base_lo = (lo & 0xFFFF_FFF0) as u64;
-        if mem_type == 2 {
-            // 64-bit BAR: combine with the high half.
-            let hi = ecam.config_read32(addr, bar_offset + 4);
-            base_lo | ((hi as u64) << 32)
-        } else {
-            base_lo
-        }
+        Ok(None)
     }
 
     /// Write a 16-bit VBE DISPI register via MMIO.

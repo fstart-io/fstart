@@ -450,56 +450,49 @@ impl PciEcam {
 
     // -- ECAM helpers --
 
-    fn ecam_addr(&self, addr: PciAddress, reg: u16) -> Option<usize> {
+    /// Bind the existing device accessor to this root's validated mapping.
+    /// Invalid topology or an incomplete function mapping is not an absent device.
+    pub fn device(&self, addr: PciAddress) -> Option<crate::EcamDevice> {
         if addr.segment() != self.segment
             || addr.bus() < self.bus_start
             || addr.bus() > self.bus_end
         {
             return None;
         }
-        let offset = ((addr.bus() as usize) << 20)
-            | ((addr.device() as usize) << 15)
-            | ((addr.function() as usize) << 12)
-            | ((reg as usize) & 0xFFC);
-        if offset < self.ecam_size {
-            Some(self.ecam_base + offset)
-        } else {
-            None
+        let offset = crate::ecam::function_offset(addr);
+        if offset.checked_add(crate::ecam::FUNCTION_CONFIG_BYTES)? > self.ecam_size {
+            return None;
         }
+        Some(crate::EcamDevice::at_config_base(
+            addr,
+            self.ecam_base.checked_add(offset)?,
+        ))
     }
 
+    // Allocator paths construct BDFs within their validated root topology.
+    // A bad address is a programming error, not an all-ones hardware response.
     fn read32(&self, addr: PciAddress, reg: u16) -> u32 {
-        match self.ecam_addr(addr, reg) {
-            // SAFETY: ECAM region is memory-mapped PCI config space.
-            Some(a) => unsafe { fstart_core::mmio::read32(a as *const u32) },
-            None => 0xFFFF_FFFF,
-        }
+        self.device(addr)
+            .expect("PCI address outside ECAM")
+            .read32(reg)
     }
 
     fn write32(&self, addr: PciAddress, reg: u16, val: u32) {
-        if let Some(a) = self.ecam_addr(addr, reg) {
-            // SAFETY: ECAM region is memory-mapped PCI config space.
-            unsafe { fstart_core::mmio::write32(a as *mut u32, val) };
-        }
+        self.device(addr)
+            .expect("PCI address outside ECAM")
+            .write32(reg, val);
     }
 
     fn read16(&self, addr: PciAddress, reg: u16) -> u16 {
-        match self.ecam_addr(addr, reg) {
-            // SAFETY: the requested halfword is within the mapped config dword.
-            Some(a) => unsafe {
-                fstart_core::mmio::read16((a + usize::from(reg & 2)) as *const u16)
-            },
-            None => u16::MAX,
-        }
+        self.device(addr)
+            .expect("PCI address outside ECAM")
+            .read16(reg)
     }
 
     fn write16(&self, addr: PciAddress, reg: u16, val: u16) {
-        if let Some(a) = self.ecam_addr(addr, reg) {
-            // SAFETY: the requested halfword is within the mapped config dword.
-            unsafe {
-                fstart_core::mmio::write16((a + usize::from(reg & 2)) as *mut u16, val);
-            }
-        }
+        self.device(addr)
+            .expect("PCI address outside ECAM")
+            .write16(reg, val);
     }
 
     // -- BAR sizing --
@@ -646,8 +639,8 @@ impl PciEcam {
         if vendor_device == PCI_VENDOR_INVALID {
             return Ok(None);
         }
-        let hdr = self.read32(addr, PCI_HEADER_TYPE);
-        let header_type = (hdr >> 16) as u8 & 0x7F;
+        let device = self.device(addr).ok_or(PciEcamError::ConfigError)?;
+        let header_type = device.read8(PCI_HEADER_TYPE) & 0x7f;
         let base_class = (self.read32(addr, 0x08) >> 24) as u8;
 
         let max_bars = match header_type {
@@ -716,8 +709,8 @@ impl PciEcam {
             }
 
             // Check multi-function bit
-            let hdr = self.read32(addr, PCI_HEADER_TYPE);
-            let multi_func = (hdr >> 16) as u8 & PCI_HEADER_TYPE_MULTI_FUNC;
+            let device = self.device(addr).ok_or(PciEcamError::ConfigError)?;
+            let multi_func = device.read8(PCI_HEADER_TYPE) & PCI_HEADER_TYPE_MULTI_FUNC;
             let max_func = if multi_func != 0 { 8 } else { 1 };
 
             for func in 0..max_func {
@@ -1209,14 +1202,6 @@ impl PciEcam {
 }
 
 impl PciEcam {
-    pub fn config_read32(&self, addr: PciAddress, reg: u16) -> u32 {
-        self.read32(addr, reg)
-    }
-
-    pub fn config_write32(&self, addr: PciAddress, reg: u16, val: u32) {
-        self.write32(addr, reg, val);
-    }
-
     pub fn ecam_base(&self) -> u64 {
         self.ecam_base as u64
     }
@@ -1289,6 +1274,43 @@ mod tests {
             },
             config_space,
         )
+    }
+
+    #[test]
+    fn subwidth_accesses_preserve_neighboring_config_bytes() {
+        let (pci, _memory) = test_pci();
+        let device = pci.device(PciAddress::new(0, 0, 0, 0)).unwrap();
+        for lane in 0..4 {
+            device.write32(0x40, 0xaabb_ccdd);
+            device.write8(0x40 + lane, 0x12);
+            let shift = lane * 8;
+            assert_eq!(device.read8(0x40 + lane), 0x12);
+            assert_eq!(
+                device.read32(0x40),
+                (0xaabb_ccdd & !(0xff << shift)) | (0x12 << shift)
+            );
+        }
+        device.write32(0x40, 0xaabb_ccdd);
+        device.write16(0x42, 0x1234);
+        assert_eq!(device.read16(0x42), 0x1234);
+        assert_eq!(device.read32(0x40), 0x1234_ccdd);
+    }
+
+    #[test]
+    fn invalid_accesses_are_not_absent_device_responses() {
+        let (mut pci, _memory) = test_pci();
+        assert!(pci.device(PciAddress::new(1, 0, 0, 0)).is_none());
+        assert!(pci.device(PciAddress::new(0, 1, 0, 0)).is_none());
+        let device = pci.device(PciAddress::new(0, 0, 0, 0)).unwrap();
+        device.write32(0xffc, u32::MAX);
+        assert_eq!(device.try_read8(0xfff), Some(u8::MAX));
+        assert_eq!(device.try_read8(0x1000), None);
+        assert_eq!(device.try_read16(0xfff), None);
+        assert_eq!(device.try_write32(0xffe, 0), None);
+        assert_eq!(device.try_write8(0x1000, 0), None);
+        assert_eq!(device.read32(0xffc), u32::MAX);
+        pci.ecam_size = 0xfff; // A truncated function is not a mapped device.
+        assert!(pci.device(PciAddress::new(0, 0, 0, 0)).is_none());
     }
 
     fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) -> PciDev {
@@ -1410,7 +1432,7 @@ mod tests {
         let (mut pci, _config_space) = test_pci();
         let smbus = PciAddress::new(0, 0, 0x1f, 3);
         pci.write32(smbus, PCI_VENDOR_ID, 0x27da_8086);
-        pci.write32(smbus, PCI_HEADER_TYPE, 0);
+        pci.device(smbus).unwrap().write8(PCI_HEADER_TYPE, 0);
         pci.write16(smbus, PCI_COMMAND, PCI_CMD_IO);
         pci.write32(smbus, PCI_BAR0 + 4 * 4, 0x401);
         pci.add_fixed_bars(&[PciFixedBar {
@@ -1458,7 +1480,7 @@ mod tests {
         let host = PciAddress::new(0, 0, 0, 0);
         pci.write32(host, PCI_VENDOR_ID, 0xa000_8086);
         pci.write32(host, 0x08, 0x0600_0000);
-        pci.write32(host, PCI_HEADER_TYPE, 0);
+        pci.device(host).unwrap().write8(PCI_HEADER_TYPE, 0);
         pci.write16(host, PCI_COMMAND, PCI_CMD_MEMORY);
         pci.write32(host, PCI_BAR0, 0xdead_beef);
 
@@ -1474,7 +1496,7 @@ mod tests {
         let (mut pci, _config_space) = test_pci();
         let smbus = PciAddress::new(0, 0, 0x1f, 3);
         pci.write32(smbus, PCI_VENDOR_ID, 0x27da_8086);
-        pci.write32(smbus, PCI_HEADER_TYPE, 0);
+        pci.device(smbus).unwrap().write8(PCI_HEADER_TYPE, 0);
         pci.write32(smbus, PCI_BAR0 + 4 * 4, 0x421);
         pci.add_fixed_bars(&[PciFixedBar {
             address: smbus,

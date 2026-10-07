@@ -3,8 +3,8 @@
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_pci::{
-    PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN,
-    PCI_VENDOR_ID, PciAddress, PciEcam, PciEcamConfig,
+    PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PciAddress,
+    PciEcam, PciEcamConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -67,10 +67,9 @@ impl Q35HostBridge {
     }
 
     pub fn init_with_e820(&mut self, entries: &[E820Entry]) -> Result<(), ServiceError> {
-        self.verify_machine_type()?;
-        self.enable_ecam();
-        self.program_pam();
-        self.setup_ich9_pm_io();
+        self.enable_config_access()?;
+        self.program_pam()?;
+        self.setup_ich9_pm_io()?;
         self.setup_legacy_pc_timers();
 
         let (tolud, touud) = Self::ram_tops_from_e820(entries);
@@ -101,9 +100,9 @@ impl Q35HostBridge {
         self.ecam
             .enumerate_and_allocate()
             .map_err(|_| ServiceError::HardwareError)?;
-        self.assign_irqs();
+        self.assign_irqs()?;
         // Capture the TSEG window for the SMM flow while the firmware map is
-        // at hand. Decode is a pure MCH config-space read, valid any time.
+        // at hand. ECAM is enabled before decoding the MCH geometry.
         #[cfg(all(feature = "smm", feature = "stage"))]
         {
             let size = crate::q35_smm::decode_tseg_size();
@@ -133,6 +132,14 @@ impl Q35HostBridge {
         self.tseg_base
     }
 
+    /// Make configuration space available before TSEG discovery or PCI setup.
+    /// This does not allocate resources or change the memory map.
+    pub fn enable_config_access(&self) -> Result<(), ServiceError> {
+        self.verify_machine_type()?;
+        self.enable_ecam();
+        Ok(())
+    }
+
     fn enable_ecam(&self) {
         const PCIEXBAR_LO: u8 = 0x60;
         const PCIEXBAR_HI: u8 = 0x64;
@@ -149,6 +156,7 @@ impl Q35HostBridge {
             fstart_core::pio::pci_cfg_write32(0, 0, 0, PCIEXBAR_HI, 0);
             fstart_core::pio::pci_cfg_write32(0, 0, 0, PCIEXBAR_LO, pciexbar);
         }
+        fstart_pci::ecam::init(self.config.ecam_base as usize);
         fstart_log::info!(
             "Q35: PCIEXBAR enabled at {:#x} ({} buses)",
             self.config.ecam_base,
@@ -156,14 +164,17 @@ impl Q35HostBridge {
         );
     }
 
-    fn program_pam(&self) {
-        let mch = PciAddress::new(0, 0, 0, 0);
-        let pam0 = self.ecam_read8(mch, PAM0);
-        self.ecam_write8(mch, PAM0, pam0 | 0x30);
+    fn program_pam(&self) -> Result<(), ServiceError> {
+        let mch = self
+            .ecam
+            .device(PciAddress::new(0, 0, 0, 0))
+            .ok_or(ServiceError::InvalidParam)?;
+        mch.or8(PAM0, 0x30);
         for idx in 1u16..=6 {
-            self.ecam_write8(mch, PAM0 + idx, 0x33);
+            mch.write8(PAM0 + idx, 0x33);
         }
         fstart_log::info!("Q35: PAM0-6 programmed (legacy region -> DRAM)");
+        Ok(())
     }
 
     fn verify_machine_type(&self) -> Result<(), ServiceError> {
@@ -202,83 +213,50 @@ impl Q35HostBridge {
         (tolud, touud)
     }
 
-    fn ecam_read8(&self, addr: PciAddress, reg: u16) -> u8 {
-        let val = self.ecam.config_read32(addr, reg & !0x3);
-        let shift = ((reg & 0x3) * 8) as u32;
-        ((val >> shift) & 0xff) as u8
-    }
-
-    fn ecam_read16(&self, addr: PciAddress, reg: u16) -> u16 {
-        let val = self.ecam.config_read32(addr, reg & !0x3);
-        let shift = ((reg & 0x2) * 8) as u32;
-        ((val >> shift) & 0xffff) as u16
-    }
-
-    fn ecam_write8(&self, addr: PciAddress, reg: u16, val: u8) {
-        let aligned = reg & !0x3;
-        let shift = ((reg & 0x3) * 8) as u32;
-        let mut dword = self.ecam.config_read32(addr, aligned);
-        dword &= !(0xff << shift);
-        dword |= (val as u32) << shift;
-        self.ecam.config_write32(addr, aligned, dword);
-    }
-
-    fn assign_irqs(&self) {
+    fn assign_irqs(&self) -> Result<(), ServiceError> {
         let bus = self.ecam.bus_start();
         for slot in 0u8..32 {
             let addr = PciAddress::new(0, bus, slot, 0);
-            let vendor = self.ecam_read16(addr, PCI_VENDOR_ID);
-            if vendor == 0xffff {
+            let device = self.ecam.device(addr).ok_or(ServiceError::InvalidParam)?;
+            if !device.is_present() {
                 continue;
             }
             let offset = if slot < 25 { slot as usize % 4 } else { 0 };
-            let max_func = if self.is_multifunction(addr) { 8 } else { 1 };
+            let max_func = if device.read8(PCI_HEADER_TYPE) & PCI_HEADER_TYPE_MULTI_FUNC != 0 {
+                8
+            } else {
+                1
+            };
             for func in 0..max_func {
                 let faddr = PciAddress::new(0, bus, slot, func);
-                if func > 0 && self.ecam_read16(faddr, PCI_VENDOR_ID) == 0xffff {
+                let function = self.ecam.device(faddr).ok_or(ServiceError::InvalidParam)?;
+                if func > 0 && !function.is_present() {
                     continue;
                 }
-                let pin = self.ecam_read8(faddr, PCI_INTERRUPT_PIN);
+                let pin = function.read8(PCI_INTERRUPT_PIN);
                 if !(1..=4).contains(&pin) {
                     continue;
                 }
                 let irq = Q35_IRQS[(offset + pin as usize - 1) % Q35_IRQS.len()];
-                self.ecam_write8(faddr, PCI_INTERRUPT_LINE, irq);
+                function.write8(PCI_INTERRUPT_LINE, irq);
             }
         }
         fstart_log::info!("Q35: PCI IRQ routing assigned");
+        Ok(())
     }
 
-    fn is_multifunction(&self, addr: PciAddress) -> bool {
-        self.ecam_read8(addr, PCI_HEADER_TYPE) & PCI_HEADER_TYPE_MULTI_FUNC != 0
-    }
-
-    fn pci_write8(bus: u8, dev: u8, func: u8, reg: u8, val: u8) {
-        let aligned = reg & !3;
-        let shift = ((reg & 3) as u32) * 8;
-        // SAFETY: caller selects Q35 PCI config registers.
-        let old = unsafe { fstart_core::pio::pci_cfg_read32(bus, dev, func, aligned) };
-        let new = (old & !(0xffu32 << shift)) | ((val as u32) << shift);
-        // SAFETY: caller selects Q35 PCI config registers.
-        unsafe { fstart_core::pio::pci_cfg_write32(bus, dev, func, aligned, new) };
-    }
-
-    fn pci_write_lpc32(reg: u8, val: u32) {
-        // SAFETY: bus 0/device 31/function 0 is the ICH9 LPC bridge on Q35.
-        unsafe { fstart_core::pio::pci_cfg_write32(0, ICH9_LPC_DEV, ICH9_LPC_FUNC, reg, val) }
-    }
-
-    fn pci_write_lpc8(reg: u8, val: u8) {
-        Self::pci_write8(0, ICH9_LPC_DEV, ICH9_LPC_FUNC, reg, val);
-    }
-
-    fn setup_ich9_pm_io(&self) {
-        Self::pci_write_lpc32(ICH9_PMBASE_REG, Q35_PMBASE as u32 | 1);
-        Self::pci_write_lpc8(ICH9_ACPI_CNTL, 0x80);
+    fn setup_ich9_pm_io(&self) -> Result<(), ServiceError> {
+        let lpc = self
+            .ecam
+            .device(PciAddress::new(0, 0, ICH9_LPC_DEV, ICH9_LPC_FUNC))
+            .ok_or(ServiceError::InvalidParam)?;
+        lpc.write32(ICH9_PMBASE_REG as u16, Q35_PMBASE as u32 | 1);
+        lpc.write8(ICH9_ACPI_CNTL as u16, 0x80);
         // SAFETY: Q35 PM timer lives at PMBASE+8 after programming above.
         let pmt = unsafe { fstart_core::pio::inl(Q35_PMBASE + 8) };
         fstart_log::info!("Q35: ICH9 PMBASE programmed");
         fstart_log::info!("Q35: ACPI PM timer initial value={:#x}", pmt);
+        Ok(())
     }
 
     fn setup_legacy_pc_timers(&self) {
