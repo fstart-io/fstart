@@ -134,9 +134,11 @@ fn setup_dock_console(southbridge: &mut fstart_driver_intel::ich8::IntelIch8) {
 /// X61 dock and DLPC helpers ported from coreboot `mainboard/lenovo/x61/dock.c`.
 pub mod dock {
     #[cfg(target_arch = "x86_64")]
-    use fstart_core::pio::{inb, outb};
+    use fstart_core::pio::{PioRegister, inb, outb};
     #[cfg(target_arch = "x86_64")]
     use fstart_driver_superio::{IoResource, IrqResource, LogicalDevice};
+    #[cfg(target_arch = "x86_64")]
+    use tock_registers::interfaces::{ReadWriteable, Readable};
 
     const DLPC_INDEX: u16 = 0x164e;
     const DLPC_DATA: u16 = 0x164f;
@@ -145,6 +147,36 @@ pub mod dock {
     const DOCK_INDEX: u16 = 0x002e;
     const DOCK_DATA: u16 = 0x002f;
     const DOCK_GPIO_BASE: u16 = 0x1620;
+
+    // These names describe X61 wiring, not a universal PC87382/PC87392 pin map.
+    #[cfg(target_arch = "x86_64")]
+    tock_registers::register_bitfields![u8,
+        DLPC_OUTPUT [
+            D_PLTRST_N OFFSET(0) NUMBITS(1) [],
+            DLPC_POWER_ENABLE OFFSET(1) NUMBITS(1) []
+        ],
+        DLPC_STATUS [CONNECTED OFFSET(3) NUMBITS(1) []],
+        DOCK_INPUT [ULTRABAY_ABSENT OFFSET(1) NUMBITS(1) []],
+        DOCK_POWER [
+            ULTRABAY_ENABLE OFFSET(0) NUMBITS(1) [],
+            USB_ENABLE OFFSET(1) NUMBITS(1) []
+        ]
+    ];
+
+    #[cfg(target_arch = "x86_64")]
+    const DLPC_OUTPUT: PioRegister<u8, DLPC_OUTPUT::Register> = PioRegister::new(DLPC_GPIO);
+    #[cfg(target_arch = "x86_64")]
+    const DLPC_STATUS: PioRegister<u8, DLPC_STATUS::Register> = PioRegister::new(DLPC_SWITCH);
+    #[cfg(target_arch = "x86_64")]
+    const DOCK_INPUT: PioRegister<u8, DOCK_INPUT::Register> = PioRegister::new(DOCK_GPIO_BASE + 1);
+    #[cfg(target_arch = "x86_64")]
+    const DOCK_POWER: PioRegister<u8, DOCK_POWER::Register> = PioRegister::new(DOCK_GPIO_BASE + 8);
+
+    /// Assert dock reset and remove laptop-side DLPC power, preserving siblings.
+    #[cfg(target_arch = "x86_64")]
+    fn reset_dlpc(output: &impl ReadWriteable<T = u8, R = DLPC_OUTPUT::Register>) {
+        output.modify(DLPC_OUTPUT::D_PLTRST_N::CLEAR + DLPC_OUTPUT::DLPC_POWER_ENABLE::CLEAR);
+    }
 
     const PC87392_GPIO_PIN_OE: u8 = 0x01;
     const PC87392_GPIO_PIN_TYPE_PUSH_PULL: u8 = 0x02;
@@ -264,9 +296,8 @@ pub mod dock {
     /// Whether the laptop-side LPC switch reports a connected dock.
     pub fn connected() -> bool {
         #[cfg(target_arch = "x86_64")]
-        // SAFETY: fixed decoded DLPC switch.
-        unsafe {
-            inb(DLPC_SWITCH) & 8 != 0
+        {
+            DLPC_STATUS.is_set(DLPC_STATUS::CONNECTED)
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
@@ -289,11 +320,11 @@ pub mod dock {
         // powered down, preserving unrelated GPIO bits in the DLPC GPIO data
         // register.  The dock UART is behind this LPC switch, so marginal
         // reset/power sequencing shows up later as serial corruption.
-        unsafe { outb(DLPC_GPIO, inb(DLPC_GPIO) & 0xfc) };
+        reset_dlpc(&DLPC_OUTPUT);
 
         // SAFETY: DLPC switch I/O base was activated by dlpc_init().
         unsafe { outb(DLPC_SWITCH, 0x07) };
-        while unsafe { inb(DLPC_SWITCH) } & 8 == 0 && timeout != 0 {
+        while !connected() && timeout != 0 {
             timeout -= 1;
             delay_us(1000);
         }
@@ -306,9 +337,9 @@ pub mod dock {
 
         // Power up DLPC while keeping D_PLTRST# asserted, then deassert
         // D_PLTRST#.  Match coreboot's read-modify-write sequence exactly.
-        unsafe { outb(DLPC_GPIO, (inb(DLPC_GPIO) & 0xfe) | 0x02) };
+        DLPC_OUTPUT.modify(DLPC_OUTPUT::D_PLTRST_N::CLEAR + DLPC_OUTPUT::DLPC_POWER_ENABLE::SET);
         delay_ms(100);
-        unsafe { outb(DLPC_GPIO, inb(DLPC_GPIO) | 0x03) };
+        DLPC_OUTPUT.modify(DLPC_OUTPUT::D_PLTRST_N::SET + DLPC_OUTPUT::DLPC_POWER_ENABLE::SET);
         delay_ms(100);
 
         dock_write(0x29, 0x06);
@@ -370,7 +401,7 @@ pub mod dock {
         gpio.set_enabled(true);
         // SAFETY: dock GPIO block is configured at 0x1620.
         unsafe {
-            set_ultrabay_power(ultrabay_present());
+            set_ultrabay_power(&DOCK_POWER, ultrabay_present());
             outb(DOCK_GPIO_BASE + 0x03, 0x00);
             outb(DOCK_GPIO_BASE + 0x02, 0x82);
             outb(DOCK_GPIO_BASE + 0x04, inb(DOCK_GPIO_BASE + 0x04) | 0x40);
@@ -396,37 +427,18 @@ pub mod dock {
     /// UltraBay presence for board IDE/power policy; never sample an absent dock.
     #[cfg(target_arch = "x86_64")]
     pub fn ultrabay_present() -> bool {
-        // SAFETY: dock GPIO input is decoded while connected.
-        connected() && unsafe { inb(DOCK_GPIO_BASE + 1) & 2 == 0 }
+        connected() && !DOCK_INPUT.is_set(DOCK_INPUT::ULTRABAY_ABSENT)
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn set_ultrabay_power(on: bool) {
-        // SAFETY: decoded dock power register; preserve USB and other rails.
-        unsafe {
-            let previous = inb(DOCK_GPIO_BASE + 8);
-            outb(
-                DOCK_GPIO_BASE + 8,
-                if on { previous | 1 } else { previous & !1 },
-            );
-        }
+    fn set_ultrabay_power(power: &impl ReadWriteable<T = u8, R = DOCK_POWER::Register>, on: bool) {
+        power.modify(DOCK_POWER::ULTRABAY_ENABLE.val(on.into()));
     }
 
     #[cfg(target_arch = "x86_64")]
     fn set_usb_power(ec: fstart_driver_lenovo::ec::Ec, on: bool) -> bool {
-        // SAFETY: decoded dock power register; preserve UltraBay/other rails.
-        unsafe {
-            let previous = inb(DOCK_GPIO_BASE + 8);
-            outb(
-                DOCK_GPIO_BASE + 8,
-                if on { previous | 2 } else { previous & !2 },
-            );
-        }
-        if on {
-            ec.set_bit(0x02, 0)
-        } else {
-            ec.clear_bit(0x02, 0)
-        }
+        DOCK_POWER.modify(DOCK_POWER::USB_ENABLE.val(on.into()));
+        ec.modify_register(fstart_driver_lenovo::h8::CONFIG2::DOCK_USB_POWER.val(on.into()))
     }
 
     /// Mainboard UltraBay power/LED policy after the H8 configuration reset.
@@ -434,7 +446,7 @@ pub mod dock {
     pub fn mainstage_power_policy() {
         let present = ultrabay_present();
         if connected() {
-            set_ultrabay_power(present);
+            set_ultrabay_power(&DOCK_POWER, present);
             let _ = set_usb_power(
                 fstart_driver_lenovo::ec::Ec::new(crate::config::X61_H8.resources.os),
                 true,
@@ -458,10 +470,10 @@ pub mod dock {
     #[cfg(target_arch = "x86_64")]
     pub fn dock_disconnect_with_ec(ec: fstart_driver_lenovo::ec::Ec) {
         // Assert D_PLTRST# and DLPCPD before removing power/LPC.
-        unsafe { outb(DLPC_GPIO, inb(DLPC_GPIO) & 0xfc) };
+        reset_dlpc(&DLPC_OUTPUT);
         delay_ms(10);
         let _ = set_usb_power(ec, false);
-        set_ultrabay_power(false);
+        set_ultrabay_power(&DOCK_POWER, false);
         delay_us(10_000);
         // SAFETY: fixed DLPC switch, disconnected only after power removal.
         unsafe { outb(DLPC_SWITCH, 0x00) };
@@ -525,6 +537,22 @@ pub mod dock {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[cfg(target_arch = "x86_64")]
+        #[test]
+        fn dock_power_and_reset_preserve_other_outputs() {
+            use tock_registers::registers::InMemoryRegister;
+
+            let power = InMemoryRegister::<u8, DOCK_POWER::Register>::new(0xfe);
+            set_ultrabay_power(&power, true);
+            assert_eq!(power.get(), 0xff);
+            set_ultrabay_power(&power, false);
+            assert_eq!(power.get(), 0xfe);
+
+            let output = InMemoryRegister::<u8, DLPC_OUTPUT::Register>::new(0xff);
+            reset_dlpc(&output);
+            assert_eq!(output.get(), 0xfc);
+        }
 
         #[test]
         fn smm_ec_dock_event_mapping_matches_coreboot() {
