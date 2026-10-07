@@ -262,14 +262,7 @@ impl Q35HostBridge {
     fn setup_legacy_pc_timers(&self) {
         // SAFETY: standard PC-compatible PIC/PIT/CMOS ports on Q35.
         unsafe {
-            fstart_core::pio::outb(0x20, 0x11);
-            fstart_core::pio::outb(0xa0, 0x11);
-            fstart_core::pio::outb(0x21, 0x20);
-            fstart_core::pio::outb(0xa1, 0x28);
-            fstart_core::pio::outb(0x21, 0x04);
-            fstart_core::pio::outb(0xa1, 0x02);
-            fstart_core::pio::outb(0x21, 0x01);
-            fstart_core::pio::outb(0xa1, 0x01);
+            fstart_arch::x86::legacy_pc::initialize_pic(0x20, 0x28);
             fstart_core::pio::outb(0xa1, 0xff);
             fstart_core::pio::outb(0x21, 0xfb);
 

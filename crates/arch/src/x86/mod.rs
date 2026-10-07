@@ -9,6 +9,8 @@ pub use crate::x86_crate::*;
 
 pub mod cpu;
 pub mod lapic;
+#[cfg(target_arch = "x86_64")]
+pub mod legacy_pc;
 pub mod mp;
 
 /// Read the x86 Time Stamp Counter.
