@@ -10,7 +10,6 @@ mod cpu;
 pub mod generic;
 #[cfg(feature = "gm965")]
 pub mod gm965;
-#[cfg(any(feature = "gm965", feature = "i945", feature = "pineview"))]
 pub mod gmch;
 #[cfg(feature = "i945")]
 pub mod i945;

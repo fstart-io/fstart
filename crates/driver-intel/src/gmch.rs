@@ -30,6 +30,7 @@ pub mod smram {
             ],
             G_SMRAME OFFSET(3) NUMBITS(1) [],
             D_LCK OFFSET(4) NUMBITS(1) [],
+            D_CLS OFFSET(5) NUMBITS(1) [],
             D_OPEN OFFSET(6) NUMBITS(1) []
         ]
     ];

@@ -525,32 +525,37 @@ fn init_ck505(
 /// accesses are essential: F9 is a write-protect key, not a dword RMW field.
 #[cfg(all(not(test), fstart_stage_env = "ram"))]
 fn ricoh_sd_write_protect() {
-    use fstart_core::pio::{inb, outb, outl, pci_cfg_read32};
-    // SAFETY: mainstage PCI enumeration has assigned the bridge's bus number;
-    // only the X61's downstream PCI bus is scanned, without changing topology.
-    unsafe {
-        let bus = (pci_cfg_read32(0, 0x1e, 0, 0x18) >> 8) as u8;
-        if bus == 0 || bus == 0xff {
-            return;
-        }
-        for dev in 0..32u8 {
-            for function in 0..8u8 {
-                if pci_cfg_read32(bus, dev, function, 0) != 0x0822_1180 {
-                    continue;
-                }
-                let address = 0x8000_0000
-                    | (u32::from(bus) << 16)
-                    | (u32::from(dev) << 11)
-                    | (u32::from(function) << 8)
-                    | 0xf8;
-                outl(0xcf8, address);
-                if inb(0xcfe) != 0x20 {
-                    outb(0xcfd, 0xfc); // F9: unlock
-                    outb(0xcfe, 0x20); // FA: SDWPPol, no CLKRUNDis/SDPWRPol
-                    outb(0xcfd, 0x00); // F9: relock
-                }
-                return;
+    use fstart_driver_intel::ich8::ich8::{PCI_BRIDGE_DEV, PCI_BRIDGE_FUNC};
+    use fstart_pci::{EcamDevice, PciType1Config};
+    use tock_registers::interfaces::Readable;
+    const RICOH_VENDOR: u16 = 0x1180;
+    const RICOH_R5C822: u16 = 0x0822;
+    const WRITE_PROTECT_KEY: u16 = 0xf9;
+    const SD_CONTROL: u16 = 0xfa;
+    const KEY_UNLOCK: u8 = 0xfc;
+    const KEY_LOCK: u8 = 0;
+    const SD_WRITE_PROTECT_POLARITY: u8 = 1 << 5;
+    let bridge = EcamDevice::new(0, PCI_BRIDGE_DEV, PCI_BRIDGE_FUNC);
+    // SAFETY: the enumerated ICH8 PCI bridge has a mapped Type 1 header.
+    let bus = unsafe { bridge.regs::<PciType1Config>() }
+        .secondary_bus
+        .get();
+    if bus == 0 || bus == 0xff {
+        return;
+    }
+    for dev in 0..32u8 {
+        for function in 0..8u8 {
+            let sd = EcamDevice::new(bus, dev, function);
+            if sd.vendor_id() != RICOH_VENDOR || sd.device_id() != RICOH_R5C822 {
+                continue;
             }
+            if sd.read8(SD_CONTROL) != SD_WRITE_PROTECT_POLARITY {
+                sd.write8(WRITE_PROTECT_KEY, KEY_UNLOCK);
+                // Exact policy write: SDWPPol, no CLKRUNDis/SDPWRPol.
+                sd.write8(SD_CONTROL, SD_WRITE_PROTECT_POLARITY);
+                sd.write8(WRITE_PROTECT_KEY, KEY_LOCK);
+            }
+            return;
         }
     }
 }
