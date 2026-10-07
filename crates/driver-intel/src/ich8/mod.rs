@@ -1195,12 +1195,7 @@ impl IntelIch8 {
         #[cfg(target_arch = "x86_64")]
         {
             let tco = self.pm().tco();
-            // Halt TCO timer.
-            let cnt = tco.read16(pmio::TCO1_CNT);
-            tco.write16(pmio::TCO1_CNT, cnt | (1 << 11));
-            // Clear timeout status.
-            tco.write16(pmio::TCO1_STS, 1 << 3);
-            tco.write16(pmio::TCO2_STS, 1 << 1);
+            tco.halt_and_clear_timeouts();
             tco.write16(pmio::TCO_RLD, 0);
         }
     }
@@ -1908,9 +1903,7 @@ impl IntelIch8 {
     }
 
     fn enable_acpi_pm1(&self) {
-        let pm1 =
-            (self.pm().read32(pmio::PM1_CNT) & !pmio::SLP_TYP_MASK) | pmio::BM_RLD | pmio::SCI_EN;
-        self.pm().write32(pmio::PM1_CNT, pm1);
+        self.pm().enable_acpi_pm1();
     }
 
     fn function_disable_mask(&self) -> ich8::FunctionDisable {
