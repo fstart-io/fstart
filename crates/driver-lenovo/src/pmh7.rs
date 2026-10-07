@@ -8,6 +8,36 @@
 
 use fstart_core::pio::{inb, outb};
 use fstart_log::{Hex, info};
+use tock_registers::fields::FieldValue;
+use tock_registers::{LocalRegisterCopy, RegisterLongName, register_bitfields};
+
+register_bitfields![u8,
+    Display [BACKLIGHT_ENABLE OFFSET(5) NUMBITS(1) []],
+    InputPower [
+        TRACKPOINT_OFF OFFSET(0) NUMBITS(1) [],
+        TOUCHPAD_OFF OFFSET(2) NUMBITS(1) []
+    ],
+    DockEvents [SMI_ENABLE OFFSET(3) NUMBITS(1) []],
+    UltrabayPower [POWER_OFF OFFSET(0) NUMBITS(1) []]
+];
+
+/// Bind each field namespace to its indexed PMH7 register.
+trait Pmh7Register: RegisterLongName {
+    const INDEX: u8;
+}
+
+impl Pmh7Register for Display::Register {
+    const INDEX: u8 = 0x50;
+}
+impl Pmh7Register for InputPower::Register {
+    const INDEX: u8 = 0x51;
+}
+impl Pmh7Register for DockEvents::Register {
+    const INDEX: u8 = 0x60;
+}
+impl Pmh7Register for UltrabayPower::Register {
+    const INDEX: u8 = 0x62;
+}
 
 const PMH7_ADDR_L: u16 = 0x0c;
 const PMH7_ADDR_H: u16 = 0x0d;
@@ -47,14 +77,10 @@ impl Pmh7 {
         }
     }
 
-    fn set_bit(&self, reg: u8, bit: u8) {
-        let val = self.read_register(reg);
-        self.write_register(reg, val | (1 << bit));
-    }
-
-    fn clear_bit(&self, reg: u8, bit: u8) {
-        let val = self.read_register(reg);
-        self.write_register(reg, val & !(1 << bit));
+    fn modify<R: Pmh7Register>(&self, fields: FieldValue<u8, R>) {
+        let mut value = LocalRegisterCopy::<u8, R>::new(self.read_register(R::INDEX));
+        value.modify(fields);
+        self.write_register(R::INDEX, value.get());
     }
 
     /// Probe the hub by reading its ID register; returns `(id, revision)`.
@@ -67,44 +93,24 @@ impl Pmh7 {
     }
 
     pub fn backlight_enable(&self, on: bool) {
-        if on {
-            self.set_bit(0x50, 5);
-        } else {
-            self.clear_bit(0x50, 5);
-        }
+        self.modify(Display::BACKLIGHT_ENABLE.val(u8::from(on)));
     }
 
     pub fn dock_event_enable(&self, on: bool) {
-        if on {
-            self.set_bit(0x60, 3);
-        } else {
-            self.clear_bit(0x60, 3);
-        }
+        self.modify(DockEvents::SMI_ENABLE.val(u8::from(on)));
     }
 
-    /// Note: the touchpad/trackpoint bits are active-low (clear = powered).
+    /// Input power controls are active-low (clear = powered).
     pub fn touchpad_enable(&self, on: bool) {
-        if on {
-            self.clear_bit(0x51, 2);
-        } else {
-            self.set_bit(0x51, 2);
-        }
+        self.modify(InputPower::TOUCHPAD_OFF.val(u8::from(!on)));
     }
 
     pub fn trackpoint_enable(&self, on: bool) {
-        if on {
-            self.clear_bit(0x51, 0);
-        } else {
-            self.set_bit(0x51, 0);
-        }
+        self.modify(InputPower::TRACKPOINT_OFF.val(u8::from(!on)));
     }
 
     pub fn ultrabay_power_enable(&self, on: bool) {
-        if on {
-            self.clear_bit(0x62, 0);
-        } else {
-            self.set_bit(0x62, 0);
-        }
+        self.modify(UltrabayPower::POWER_OFF.val(u8::from(!on)));
     }
 
     pub fn log_identity(&self) {

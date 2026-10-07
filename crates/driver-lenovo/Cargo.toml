@@ -15,5 +15,6 @@ fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
+tock-registers = { workspace = true }
 fstart-acpi = { workspace = true, optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }
