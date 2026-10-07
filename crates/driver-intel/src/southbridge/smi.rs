@@ -6,7 +6,7 @@
 use super::pmio_ich::{self as pmio, PmIo};
 pub use fstart_arch::x86::cpu::intel::smm::SmiControl;
 
-const APM_CNT: u16 = 0x00b2;
+pub const APM_CNT: u16 = 0x00b2;
 const GEN_PMCON_1: u8 = 0xa0;
 tock_registers::register_bitfields![u16,
     GEN_PMCON_1_REG [ SMI_LOCK OFFSET(4) NUMBITS(1) [] ]
@@ -237,9 +237,9 @@ pub trait IchBoardSmmHandler {
 pub struct NoIchBoardSmmHandler;
 impl IchBoardSmmHandler for NoIchBoardSmmHandler {}
 
-const APM_CNT_ACPI_DISABLE: u8 = 0x1e;
-const APM_CNT_ACPI_ENABLE: u8 = 0xe1;
-const APM_CNT_FINALIZE: u8 = 0xcb;
+pub const APM_CNT_ACPI_DISABLE: u8 = 0x1e;
+pub const APM_CNT_ACPI_ENABLE: u8 = 0xe1;
+pub const APM_CNT_FINALIZE: u8 = 0xcb;
 // ICH7..10 alternate GPIO source: bit 10 in both SMI_EN and SMI_STS.
 const GPI_SMI: u32 = 1 << 10;
 

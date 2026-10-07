@@ -97,6 +97,16 @@ fn root_helpers_aml(cfg: &H8Config) -> Vec<u8> {
 /// The relative `EC__` device plus its sibling raw-resource devices.
 fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
     let ec_gpe = cfg.ec_gpe as u64;
+    let os_data = cfg.resources.os.data.raw();
+    let os_command = cfg.resources.os.command.raw();
+    let smm_data = cfg.resources.smm().data.raw();
+    let smm_command = cfg.resources.smm().command.raw();
+    let gravity_data = cfg.resources.gravity().data.raw();
+    let gravity_command = cfg.resources.gravity().command.raw();
+    let battery_base = cfg.resources.battery_base();
+    let battery_size = super::h8::H8Resources::BATTERY_SIZE;
+    let pmh7_base = cfg.resources.pmh7_base.raw();
+    let pmh7_size = super::h8::H8Resources::PMH7_SIZE;
     let hkey_eisaid = u64::from(fstart_acpi::eisa_id(cfg.hkey_eisaid));
     let hbdc: u8 = cfg.has_bluetooth as u8;
     let hwan: u8 = cfg.has_wwan as u8;
@@ -250,8 +260,8 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                 // Called on OperationRegion driver changes.
                 Method("_CRS", 0, Serialized) {
                     Name("ECMD", ResourceTemplate {
-                        IO(0x0062u16, 0x0062u16, 0x01u8, 0x01u8);
-                        IO(0x0066u16, 0x0066u16, 0x01u8, 0x01u8);
+                        IO(#{word os_data}, #{word os_data}, 0x01u8, 0x01u8);
+                        IO(#{word os_command}, #{word os_command}, 0x01u8, 0x01u8);
                     });
                     Return(ECMD);
                 }
@@ -776,8 +786,8 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                 Name("_HID", EisaId("PNP0C02"));
                 Name("_UID", 10u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(0x1600u16, 0x1600u16, 0x01u8, 0x01u8);
-                    IO(0x1604u16, 0x1604u16, 0x01u8, 0x01u8);
+                    IO(#{word smm_data}, #{word smm_data}, 0x01u8, 0x01u8);
+                    IO(#{word smm_command}, #{word smm_command}, 0x01u8, 0x01u8);
                 });
             }
 
@@ -786,8 +796,8 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                 Name("_HID", EisaId("PNP0C02"));
                 Name("_UID", 11u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(0x1602u16, 0x1602u16, 0x01u8, 0x01u8);
-                    IO(0x1606u16, 0x1606u16, 0x01u8, 0x01u8);
+                    IO(#{word gravity_data}, #{word gravity_data}, 0x01u8, 0x01u8);
+                    IO(#{word gravity_command}, #{word gravity_command}, 0x01u8, 0x01u8);
                 });
             }
 
@@ -796,7 +806,7 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                 Name("_HID", EisaId("PNP0C02"));
                 Name("_UID", 12u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(0x1610u16, 0x1610u16, 0x10u8, 0x10u8);
+                    IO(#{word battery_base}, #{word battery_base}, #{byte battery_size}, #{byte battery_size});
                 });
             }
 
@@ -805,7 +815,7 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                 Name("_HID", EisaId("PNP0C02"));
                 Name("_UID", 13u32);
                 Name("_CRS", ResourceTemplate {
-                    IO(0x15E0u16, 0x15E0u16, 0x10u8, 0x10u8);
+                    IO(#{word pmh7_base}, #{word pmh7_base}, #{byte pmh7_size}, #{byte pmh7_size});
                 });
             }
     }
@@ -1112,10 +1122,44 @@ mod tests {
 
     #[test]
     fn dsdt_assembles_and_contains_key_objects() {
-        let cfg = H8Config::x61();
+        use crate::{ec::EcPorts, h8::H8Resources};
+        let cfg = H8Config {
+            second_thermal_zone: true,
+            ..H8Config::new(
+                H8Resources::new(EcPorts::new(0x72, 0x76), 0x2600, 0x25e0),
+                0x12,
+                "IBM0068",
+            )
+        };
         let lpc = "\\_SB_.PCI0.LPCB";
         let aml = dsdt_aml(&cfg, lpc);
-        assert!(aml.len() > 2000);
+        // Relocating the supplied resources must relocate every emitted window.
+        for (base, alignment, length) in [
+            (cfg.resources.os.data.raw(), 1, 1),
+            (cfg.resources.os.command.raw(), 1, 1),
+            (cfg.resources.smm().data.raw(), 1, 1),
+            (cfg.resources.smm().command.raw(), 1, 1),
+            (cfg.resources.gravity().data.raw(), 1, 1),
+            (cfg.resources.gravity().command.raw(), 1, 1),
+            (
+                cfg.resources.battery_base(),
+                H8Resources::BATTERY_SIZE,
+                H8Resources::BATTERY_SIZE,
+            ),
+            (
+                cfg.resources.pmh7_base.raw(),
+                H8Resources::PMH7_SIZE,
+                H8Resources::PMH7_SIZE,
+            ),
+        ] {
+            let [low, high] = base.to_le_bytes();
+            let descriptor = [0x47, 1, low, high, low, high, alignment, length];
+            assert!(
+                aml.windows(descriptor.len())
+                    .any(|bytes| bytes == descriptor),
+                "missing relocated I/O window at {base:#x}"
+            );
+        }
         for name in [
             "EC__", "HKEY", "BAT0", "BAT1", "THM0", "THM1", "FPWR", "ECMM", "PMH7",
         ] {

@@ -97,7 +97,16 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
         // The shared installer sets SCI_EN directly, without an APMC. Once
         // permanent SMM is installed, initialize board EC routing via its
         // existing ACPI command handler (keep ACPI ownership on resume).
-        unsafe { fstart_core::pio::outb(0xb2, if ctx.resume { 0xe1 } else { 0x1e }) };
+        use fstart_driver_intel::southbridge::smi::{
+            APM_CNT, APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE,
+        };
+        let command = if ctx.resume {
+            APM_CNT_ACPI_ENABLE
+        } else {
+            APM_CNT_ACPI_DISABLE
+        };
+        // SAFETY: permanent SMM is installed and owns this command port.
+        unsafe { fstart_core::pio::outb(APM_CNT, command) };
         Ok(())
     }
 }
@@ -257,7 +266,9 @@ pub mod dock {
 
     /// Connect using the firmware's legacy EC channel.
     pub fn dock_connect() -> Result<(), ()> {
-        dock_connect_with_ec(fstart_driver_lenovo::ec::Ec::LEGACY)
+        dock_connect_with_ec(fstart_driver_lenovo::ec::Ec::new(
+            crate::config::X61_H8.resources.os,
+        ))
     }
 
     /// Connect the dock-side LPC bus and initialize dock GPIO/power.
@@ -414,9 +425,23 @@ pub mod dock {
         let present = ultrabay_present();
         if connected() {
             set_ultrabay_power(present);
-            let _ = set_usb_power(fstart_driver_lenovo::ec::Ec::LEGACY, true);
+            let _ = set_usb_power(
+                fstart_driver_lenovo::ec::Ec::new(crate::config::X61_H8.resources.os),
+                true,
+            );
         }
-        let _ = fstart_driver_lenovo::h8::H8.led_control(if present { 0x84 } else { 0x04 });
+        let h8 = fstart_driver_lenovo::h8::H8::new(fstart_driver_lenovo::ec::Ec::new(
+            crate::config::X61_H8.resources.os,
+        ));
+        use fstart_driver_lenovo::h8::{H8Led, H8LedMode};
+        let _ = h8.set_led(
+            H8Led::Ultrabay,
+            if present {
+                H8LedMode::On
+            } else {
+                H8LedMode::Off
+            },
+        );
     }
 
     /// Disconnect the dock-side LPC bus and power rails, in vendor order.
@@ -433,7 +458,9 @@ pub mod dock {
     }
 
     pub fn dock_disconnect() {
-        dock_disconnect_with_ec(fstart_driver_lenovo::ec::Ec::LEGACY);
+        dock_disconnect_with_ec(fstart_driver_lenovo::ec::Ec::new(
+            crate::config::X61_H8.resources.os,
+        ));
     }
 
     /// Disconnect the dock-side LPC bus and power rails.
@@ -475,10 +502,13 @@ pub mod dock {
 
     /// Legacy SMM EC query mapping, distinct from the OS AML hotkey policy.
     pub const fn smm_event_command(event: u8) -> Option<u8> {
-        match event {
-            0x18 | 0x27 | 0x50 => Some(2),
-            0x37 | 0x58 => Some(1),
-            _ => None,
+        use fstart_driver_lenovo::h8::H8DockEvent;
+        match H8DockEvent::from_query(event) {
+            Some(H8DockEvent::FnF9 | H8DockEvent::AcLost | H8DockEvent::DockDisconnected) => {
+                Some(2)
+            }
+            Some(H8DockEvent::DockConnected | H8DockEvent::DockConnectedAlternate) => Some(1),
+            None => None,
         }
     }
 
@@ -584,7 +614,6 @@ mod acpi_impl {
 
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
-    use fstart_driver_lenovo::h8::H8Config;
     use fstart_platform_intel::gm965::Gm965Ich8AcpiContext;
 
     /// Assemble the X61 DSDT: board glue (TCO dock commands, sleep/wake hooks,
@@ -672,7 +701,7 @@ mod acpi_impl {
         // The complete H8 EC surface (EC device, batteries, thermal zones
         // with fan power resource, lid, AC, sleep button, HKEY hub, and the
         // PMH7/ECMM/ECGS/TWRI resource devices).
-        let mut h8 = H8Config::x61();
+        let mut h8 = crate::config::X61_H8;
         h8.has_bluetooth = super::ec::bluetooth_present();
         let brightness = acpi_dsl! {
             Scope("\\") {
