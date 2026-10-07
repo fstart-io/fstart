@@ -9,7 +9,7 @@
 //! Logical device numbers follow `lpc47m15x.h`: FDC=0, PP=3, SP1=4,
 //! SP2=5, KBC=7, GAME=9, PME=10, MPU=11.
 
-use crate::{SuperIo, SuperIoChip};
+use crate::{IoResource, SuperIo, SuperIoChip};
 
 pub use crate::{
     CirConfig, ComPortConfig, EcConfig, GpioConfig, KbcConfig, LpcBaseProvider, MouseConfig,
@@ -48,41 +48,22 @@ impl SmscLpc47m15x {
         &mut self,
         io_base: u16,
     ) -> Result<(), fstart_core::services::device::DeviceError> {
-        let registers = pme_registers(io_base).ok_or(
-            fstart_core::services::device::DeviceError::MissingResource("PME I/O base"),
-        )?;
+        if io_base == 0 {
+            return Err(fstart_core::services::device::DeviceError::MissingResource(
+                "PME I/O base",
+            ));
+        }
         self.enter_config();
-        for (reg, value) in registers {
-            self.write_reg(reg, value);
+        {
+            let mut device = self.logical_device(10);
+            device.set_enabled(false);
+            device.set_io_base(IoResource::Primary(io_base));
+            device.set_enabled(true);
         }
         self.exit_config();
         // SAFETY: decoded config data port of this exclusively owned device.
         let _ = unsafe { fstart_core::pio::inb(self.data_port()) };
         Ok(())
-    }
-}
-
-fn pme_registers(io_base: u16) -> Option<[(u8, u8); 5]> {
-    (io_base != 0).then_some([
-        (0x07, 10), // PME LDN
-        (0x30, 0),  // Disable before moving the runtime window
-        (0x60, (io_base >> 8) as u8),
-        (0x61, io_base as u8),
-        (0x30, 1), // Activate at the new base
-    ])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::pme_registers;
-
-    #[test]
-    fn pme_disables_before_relocating_and_enabling() {
-        assert_eq!(
-            pme_registers(0x680),
-            Some([(7, 10), (0x30, 0), (0x60, 6), (0x61, 0x80), (0x30, 1)])
-        );
-        assert_eq!(pme_registers(0), None);
     }
 }
 
