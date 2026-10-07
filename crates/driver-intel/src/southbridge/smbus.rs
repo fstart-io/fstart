@@ -12,7 +12,8 @@ use fstart_core::pio::PioRegister;
 use fstart_core::pio_register_structs;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam;
-use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::fields::FieldValue;
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
 register_bitfields![u8,
@@ -27,8 +28,15 @@ register_bitfields![u8,
         BYTE_DONE OFFSET(7) NUMBITS(1) []
     ],
     HSTCTL [
-        TYPE OFFSET(2) NUMBITS(3) [],
-        START OFFSET(6) NUMBITS(1) []
+        INTREN OFFSET(0) NUMBITS(1) [],
+        KILL OFFSET(1) NUMBITS(1) [],
+        TYPE OFFSET(2) NUMBITS(3) [
+            Quick = 0, Byte = 1, ByteData = 2, WordData = 3,
+            ProcessCall = 4, BlockData = 5, I2cBlockData = 6
+        ],
+        LAST_BYTE OFFSET(5) NUMBITS(1) [],
+        START OFFSET(6) NUMBITS(1) [],
+        PEC_EN OFFSET(7) NUMBITS(1) []
     ]
 ];
 
@@ -45,39 +53,12 @@ pio_register_structs! {
     }
 }
 
-// ---------------------------------------------------------------------------
-// I801 command types (written to SMBHSTCTL bits [4:2])
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-const I801_QUICK: u8 = 0 << 2;
-#[allow(dead_code)]
-const I801_BYTE: u8 = 1 << 2;
-const I801_BYTE_DATA: u8 = 2 << 2;
-const I801_WORD_DATA: u8 = 3 << 2;
-const I801_BLOCK_DATA: u8 = 5 << 2;
-// ---------------------------------------------------------------------------
-// Host status register bits
-// ---------------------------------------------------------------------------
-
-const SMBHSTSTS_HOST_BUSY: u8 = 1 << 0;
-const SMBHSTSTS_INTR: u8 = 1 << 1;
-const SMBHSTSTS_DEV_ERR: u8 = 1 << 2;
-const SMBHSTSTS_BUS_ERR: u8 = 1 << 3;
-const SMBHSTSTS_FAILED: u8 = 1 << 4;
-const SMBHSTSTS_SMBALERT_STS: u8 = 1 << 5;
-const SMBHSTSTS_INUSE_STS: u8 = 1 << 6;
-const SMBHSTSTS_BYTE_DONE: u8 = 1 << 7;
-
-const SMBHSTSTS_ERROR: u8 = SMBHSTSTS_DEV_ERR | SMBHSTSTS_BUS_ERR | SMBHSTSTS_FAILED;
-const SMBHSTSTS_NON_COMPLETION: u8 =
-    SMBHSTSTS_BYTE_DONE | SMBHSTSTS_INUSE_STS | SMBHSTSTS_SMBALERT_STS;
-
-// ---------------------------------------------------------------------------
-// Host control register bits
-// ---------------------------------------------------------------------------
-
-const SMBHSTCNT_START: u8 = 1 << 6;
+// Semantic status groups derive from the register fields, not another bit map.
+const STATUS_ERROR: u8 =
+    HSTSTAT::DEV_ERR::SET.value | HSTSTAT::BUS_ERR::SET.value | HSTSTAT::FAILED::SET.value;
+const STATUS_NON_COMPLETION: u8 = HSTSTAT::BYTE_DONE::SET.value
+    | HSTSTAT::INUSE_STS::SET.value
+    | HSTSTAT::SMBALERT_STS::SET.value;
 
 // ---------------------------------------------------------------------------
 // Timeout (spin-loop iterations)
@@ -201,8 +182,7 @@ impl I801SmBus {
         {
             let mut loops = SMBUS_TIMEOUT;
             loop {
-                let stat = self.regs().status().get();
-                if stat & SMBHSTSTS_HOST_BUSY == 0 {
+                if !self.regs().status().is_set(HSTSTAT::HOST_BUSY) {
                     return Ok(());
                 }
                 loops -= 1;
@@ -216,7 +196,7 @@ impl I801SmBus {
                     );
                     self.log_pci_state("busy controller");
                     self.host_reset();
-                    if self.regs().status().get() & SMBHSTSTS_HOST_BUSY == 0 {
+                    if !self.regs().status().is_set(HSTSTAT::HOST_BUSY) {
                         return Ok(());
                     }
                     fstart_log::error!("i801-smbus: timeout waiting for not-busy");
@@ -231,14 +211,18 @@ impl I801SmBus {
 
     /// Set up the command, wait for not-busy, clear status, write
     /// the control and address registers.
-    fn setup_command(&self, ctrl: u8, xmitadd: u8) -> Result<(), ServiceError> {
+    fn setup_command(
+        &self,
+        ctrl: FieldValue<u8, HSTCTL::Register>,
+        xmitadd: u8,
+    ) -> Result<(), ServiceError> {
         self.wait_not_busy()?;
         #[cfg(target_arch = "x86_64")]
         {
             let regs = self.regs();
             let stat = regs.status().get();
             regs.status().set(stat);
-            regs.control().set(ctrl);
+            regs.control().write(ctrl);
             regs.xmit_addr().set(xmitadd);
         }
         Ok(())
@@ -249,15 +233,15 @@ impl I801SmBus {
         #[cfg(target_arch = "x86_64")]
         {
             let regs = self.regs();
-            let ctl = regs.control().get();
-            regs.control().set(ctl | SMBHSTCNT_START);
+            regs.control().modify(HSTCTL::START::SET);
             // Wait for the controller to signal activity.
             let mut loops = SMBUS_TIMEOUT;
             loop {
-                let stat = regs.status().get();
-                let completion = stat & !(SMBHSTSTS_HOST_BUSY | SMBHSTSTS_NON_COMPLETION);
-                if completion != 0 && stat & SMBHSTSTS_HOST_BUSY == 0 {
-                    if completion & SMBHSTSTS_ERROR == 0 && completion & SMBHSTSTS_INTR != 0 {
+                let snapshot = regs.status().extract();
+                let stat = snapshot.get();
+                let completion = stat & !(HSTSTAT::HOST_BUSY::SET.value | STATUS_NON_COMPLETION);
+                if completion != 0 && !snapshot.is_set(HSTSTAT::HOST_BUSY) {
+                    if completion & STATUS_ERROR == 0 && snapshot.is_set(HSTSTAT::INTR) {
                         regs.status().set(stat);
                         return Ok(());
                     }
@@ -266,7 +250,7 @@ impl I801SmBus {
                     // result (an empty DIMM slot, an absent clock generator),
                     // not a host-controller failure. Report it distinctly and
                     // let the caller decide what an absent device means.
-                    if stat & SMBHSTSTS_ERROR == SMBHSTSTS_DEV_ERR {
+                    if stat & STATUS_ERROR == HSTSTAT::DEV_ERR::SET.value {
                         fstart_log::debug!(
                             "i801-smbus: no device at {:#x}",
                             regs.xmit_addr().get() >> 1
@@ -290,7 +274,7 @@ impl I801SmBus {
 
     /// Read a byte via I801_BYTE_DATA command.
     pub fn read_byte_data(&self, addr: u8, cmd: u8) -> Result<u8, ServiceError> {
-        self.setup_command(I801_BYTE_DATA, xmit_read(addr))?;
+        self.setup_command(HSTCTL::TYPE::ByteData, xmit_read(addr))?;
         #[cfg(target_arch = "x86_64")]
         {
             let regs = self.regs();
@@ -309,7 +293,7 @@ impl I801SmBus {
 
     /// Write a byte via I801_BYTE_DATA command.
     pub fn write_byte_data(&self, addr: u8, cmd: u8, val: u8) -> Result<(), ServiceError> {
-        self.setup_command(I801_BYTE_DATA, xmit_write(addr))?;
+        self.setup_command(HSTCTL::TYPE::ByteData, xmit_write(addr))?;
         #[cfg(target_arch = "x86_64")]
         {
             let regs = self.regs();
@@ -321,7 +305,7 @@ impl I801SmBus {
 
     /// Read a 16-bit word via I801_WORD_DATA command.
     pub fn read_word_data(&self, addr: u8, cmd: u8) -> Result<u16, ServiceError> {
-        self.setup_command(I801_WORD_DATA, xmit_read(addr))?;
+        self.setup_command(HSTCTL::TYPE::WordData, xmit_read(addr))?;
         #[cfg(target_arch = "x86_64")]
         {
             let regs = self.regs();
@@ -365,14 +349,14 @@ impl I801SmBus {
             if write {
                 regs.block_data().set(buf[0]);
             }
-            let ctl = regs.control().get();
-            regs.control().set(ctl | SMBHSTCNT_START);
+            regs.control().modify(HSTCTL::START::SET);
 
             let mut bytes = 0usize;
             let mut loops = SMBUS_TIMEOUT;
             loop {
-                let status = regs.status().get();
-                if status & SMBHSTSTS_BYTE_DONE != 0 {
+                let snapshot = regs.status().extract();
+                let status = snapshot.get();
+                if snapshot.is_set(HSTSTAT::BYTE_DONE) {
                     if write {
                         bytes += 1;
                         if bytes < max_bytes {
@@ -386,12 +370,13 @@ impl I801SmBus {
                     }
                     // Acknowledge the byte so the engine fetches the next one.
                     // Only this bit is written, as the controller expects.
-                    regs.status().set(SMBHSTSTS_BYTE_DONE);
+                    regs.status().write(HSTSTAT::BYTE_DONE::SET);
                 }
-                let completion = status & !SMBHSTSTS_NON_COMPLETION;
-                if completion != 0 && status & SMBHSTSTS_HOST_BUSY == 0 {
+                let completion = status & !STATUS_NON_COMPLETION;
+                if completion != 0 && !snapshot.is_set(HSTSTAT::HOST_BUSY) {
+                    // W1C: acknowledge the observed snapshot, never modify().
                     regs.status().set(status);
-                    if completion & SMBHSTSTS_ERROR != 0 {
+                    if completion & STATUS_ERROR != 0 {
                         fstart_log::error!("i801-smbus: block error, status={:#x}", status);
                         return Err(ServiceError::HardwareError);
                     }
@@ -431,7 +416,7 @@ impl I801SmBus {
         }
         #[cfg(target_arch = "x86_64")]
         {
-            self.setup_command(I801_BLOCK_DATA, xmit_read(addr))?;
+            self.setup_command(HSTCTL::TYPE::BlockData, xmit_read(addr))?;
             self.regs().command().set(cmd);
             let moved = self.block_cmd_loop(&mut buf[..max_bytes], max_bytes, false)?;
             // The device announces its length; a short read is a failed
@@ -463,7 +448,7 @@ impl I801SmBus {
         {
             let mut scratch = [0u8; SMBUS_BLOCK_MAXLEN];
             scratch[..data.len()].copy_from_slice(data);
-            self.setup_command(I801_BLOCK_DATA, xmit_write(addr))?;
+            self.setup_command(HSTCTL::TYPE::BlockData, xmit_write(addr))?;
             self.regs().command().set(cmd);
             let moved = self.block_cmd_loop(&mut scratch[..data.len()], data.len(), true)?;
             if moved < data.len() {
@@ -480,7 +465,7 @@ impl I801SmBus {
 
     /// Write a 16-bit word via I801_WORD_DATA command.
     pub fn write_word_data(&self, addr: u8, cmd: u8, val: u16) -> Result<(), ServiceError> {
-        self.setup_command(I801_WORD_DATA, xmit_write(addr))?;
+        self.setup_command(HSTCTL::TYPE::WordData, xmit_write(addr))?;
         #[cfg(target_arch = "x86_64")]
         {
             let regs = self.regs();
