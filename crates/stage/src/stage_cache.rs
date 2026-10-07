@@ -134,7 +134,32 @@ pub fn store(
     slot[..STAGE_CACHE_HEADER_LEN].copy_from_slice(header.as_bytes());
     // Magic last: a valid header implies a complete body.
     slot[..core::mem::size_of::<u32>()].copy_from_slice(&STAGE_CACHE_MAGIC.to_le_bytes());
+    // A chipset's cold memory test can enable WB before this copy. Explicitly
+    // write back the slot so CAR teardown's INVD cannot discard the body.
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    unsafe {
+        core::arch::asm!("mfence", options(nostack, preserves_flags));
+        for offset in (0..required).step_by(64) {
+            core::arch::x86_64::_mm_clflush(slot.as_ptr().add(offset));
+        }
+        core::arch::asm!("mfence", options(nostack, preserves_flags));
+    }
     Ok(())
+}
+
+/// A complete cold-boot publication, used only to gate S3 advertisement. The
+/// resume loader still authenticates the full cached body against the root.
+pub fn has_complete_slot(slot: &impl BootMedia, stage: CachedStage) -> bool {
+    let mut bytes = [0; STAGE_CACHE_HEADER_LEN];
+    if slot.read_at(0, &mut bytes).ok() != Some(bytes.len()) {
+        return false;
+    }
+    let Some(header) = valid_header(&bytes, stage) else {
+        return false;
+    };
+    (STAGE_CACHE_HEADER_LEN as u64)
+        .checked_add(header.stored_size.get())
+        .is_some_and(|end| end <= slot.size() as u64)
 }
 
 /// Load a stage from a validated slot through the standard verified loader.

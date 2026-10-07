@@ -25,6 +25,9 @@ pub struct BoardFacts {
     pub flash_size: u32,
     /// Board-owned files packaged into the FFS as verified data assets.
     pub data_assets: &'static [&'static str],
+    /// Reserve two 64-KiB erase banks at the beginning of the BIOS mapping.
+    /// Training payloads and flash writes are owned by the shared Intel flow.
+    pub memory_cache: bool,
 }
 
 impl BoardFacts {
@@ -46,7 +49,14 @@ impl BoardFacts {
             flash,
             flash_size,
             data_assets: &[],
+            memory_cache: false,
         }
+    }
+
+    #[must_use]
+    pub const fn with_memory_cache(mut self) -> Self {
+        self.memory_cache = true;
+        self
     }
 
     #[must_use]

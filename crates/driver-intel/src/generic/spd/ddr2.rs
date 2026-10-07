@@ -91,7 +91,8 @@ pub const fn is_registered_ddr2(dimm_type: u8) -> bool {
 ///
 /// DDR2 SPD data is 128 bytes. The returned buffer is zero-filled above byte
 /// 127 so callers can keep using the project-wide [`DimmInfo::spd_data`] shape.
-/// A failure on byte 0 is treated as an unpopulated slot.
+/// Only a device NAK on byte 0 denotes an unpopulated slot; bus/controller
+/// failures must never be cached as a topology change.
 pub fn read_spd<B: SmBus + ?Sized>(
     smbus: &mut B,
     addr: u8,
@@ -100,7 +101,7 @@ pub fn read_spd<B: SmBus + ?Sized>(
     for byte in 0..SPD_SIZE_MAX_DDR2 as u8 {
         match smbus.read_byte(addr, byte) {
             Ok(v) => spd[byte as usize] = v,
-            Err(_) if byte == 0 => return Ok(None),
+            Err(ServiceError::NoDevice) if byte == 0 => return Ok(None),
             Err(e) => return Err(e),
         }
     }

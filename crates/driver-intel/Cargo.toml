@@ -20,8 +20,12 @@ i945 = ["ich7"]
 ich8 = []
 pineview = ["ich7"]
 ich7 = []
+spi = ["dep:rflasher-core", "dep:rflasher-internal"]
 
 [dependencies]
+sha2 = { workspace = true }
+rflasher-core = { workspace = true, optional = true }
+rflasher-internal = { workspace = true, optional = true }
 bitflags = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }

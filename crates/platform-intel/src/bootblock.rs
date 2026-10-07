@@ -1,10 +1,11 @@
-//! Fixed Intel bootblock flow (CAR): console, DRAM training, authentication
-//! and load of postcar.
+//! Fixed Intel CAR flow: console, memory training/recovery, DMI/PM,
+//! authenticated bootstrap and retained stage publication.
 
 use crate::{
     FfsLoadSpec, IntelBoard, IntelChipsetConfig, IntelEarlyBoardHooks, IntelEarlyCtx,
     IntelEarlyPlatform,
 };
+use fstart_core::layout::RegionKind;
 use fstart_core::services::memory_detect::MemoryDetector;
 use fstart_core::services::{ConsoleDevice, ServiceError};
 use fstart_driver_intel::{BootPath, IntelNorthbridgeDriver, IntelSouthbridgeDriver};
@@ -17,7 +18,6 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
     type Sb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Southbridge;
     let mut northbridge = Nb::<B>::new_from_config(B::CONFIG.northbridge())?;
     let mut southbridge = Sb::<B>::new_from_config(B::CONFIG.southbridge())?;
-    use fstart_core::layout::RegionKind;
     let FfsLoadSpec {
         platform,
         geometry,
@@ -25,35 +25,25 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         console_node,
     } = spec;
     let (firmware_base, firmware_size) = geometry.firmware()?;
-    // Trusted preferred addresses, independent of the signed images' requests.
     let postcar_load_addr = geometry.region(RegionKind::BootstrapPostcar)?.base;
     let ramstage_load_addr = geometry.region(RegionKind::BootstrapMainstage)?.base;
-    // End of the linked low-DRAM envelope; the trained limit itself travels in
-    // the postcar MTRR stash.
     let dram_end = geometry
         .region(RegionKind::BootstrapRam)?
         .end()
         .ok_or(ServiceError::InvalidParam)?;
-
     northbridge.pre_console_init()?;
     southbridge.pre_console_init()?;
     hooks.before_console(&mut IntelEarlyCtx::new(&mut southbridge))?;
-
     let mut console = B::Console::new(console_config)?;
     console.init()?;
-    // SAFETY: this function never returns after installing the stack-owned console.
+    // SAFETY: successful stage handoff never returns past this console's lifetime.
     unsafe { fstart_log::init(&console) };
     fstart_log::info!("{}: {} console ready", console_node, B::Console::NAME);
     fstart_log::info!("{} bootblock console ready", platform);
-
-    // Complete the pre-RAM chipset flow before touching the postcar load
-    // address. The bootblock itself executes from ROM with its writable state
-    // in CAR, but the next stage is loaded into ordinary DRAM.
     northbridge.early_init()?;
     southbridge.early_init()?;
-    hooks.before_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
-
-    fstart_log::info!("{}: initializing DRAM", platform);
+    // Consume the southbridge indication exactly once, before board clock
+    // programming. Resume hooks must not perturb retained DRAM frequency.
     let boot_path = if southbridge.detect_s3_resume() {
         BootPath::S3Resume
     } else if northbridge.detect_warm_reset() {
@@ -62,100 +52,186 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         BootPath::Normal
     };
     northbridge.set_boot_path(boot_path);
-    northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
-    // DMI is a two-peer handshake: enable SB, negotiate NB, poll SB, then
-    // complete memory-controller PM/IGD programming before loading any stage.
-    southbridge.prepare_early_post_dram_init()?;
-    northbridge.early_post_dram_init()?;
-    southbridge.early_post_dram_init()?;
-    northbridge.finish_early_post_dram_init()?;
-    hooks.after_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
-    fstart_log::info!("{}: DRAM ready", platform);
+    let result = (|| {
+        if boot_path == BootPath::S3Resume
+            && (!B::FACTS.memory_cache || !northbridge.supports_s3_replay())
+        {
+            return Err(ServiceError::NotSupported);
+        }
+        hooks.before_memory(&mut IntelEarlyCtx::with_boot_path(
+            &mut southbridge,
+            boot_path,
+        ))?;
+        fstart_log::info!("{}: initializing DRAM", platform);
 
-    fstart_log::info!(
-        "boot trust: development-integrity; RO root and rollback enforcement not established"
-    );
-    fstart_arch::x86_64::enable_boot_media_rom_cache();
-    // SAFETY: the firmware window comes from trusted linked/platform geometry.
-    let media = unsafe {
-        fstart_core::services::boot_media::MemoryMapped::from_raw_addr(firmware_base, firmware_size)
-    };
-    // Snapshot locator fields once. The same bounded bytes drive root lookup
-    // and the retained handoff; AP vendor microcode does not gain directory auth.
-    let locator = unsafe {
-        fstart_core::ffs::locator::LocatorRef::read_volatile(fstart_stage::fstart_anchor_bytes())
-    }
-    .ok_or(ServiceError::InvalidParam)?
-    .value();
-    if locator.image_offset != 0 || !locator.media().validate(firmware_size as u64) {
-        return Err(ServiceError::InvalidParam);
-    }
-    let mut locator_bytes = [0; fstart_core::ffs::locator::LOCATOR_SIZE];
-    locator.write_to(&mut locator_bytes);
-    let root = fstart_stage::root::authenticate_boot_root(&locator_bytes, &media)
-        .map_err(|_| ServiceError::HardwareError)?;
-    let [Some(postcar), Some(ramstage)] = root.descriptors() else {
-        return Err(ServiceError::InvalidParam);
-    };
-    // Only trained low memory may be used, regardless of the signed request.
-    let ram_end = dram_end.min(northbridge.total_ram_bytes()?);
-    let postcar_window = crate::boot::bootstrap_window(
-        postcar,
-        fstart_ffs::root::BootstrapRole::Postcar,
-        postcar_load_addr,
-        ram_end,
-        geometry,
-    )?;
-    let _ = crate::boot::bootstrap_window(
-        ramstage,
-        fstart_ffs::root::BootstrapRole::Mainstage,
-        ramstage_load_addr,
-        ram_end,
-        geometry,
-    )?;
-    let reserved = crate::boot::running_reservations(geometry)?;
-    let postcar_slot = geometry.region(RegionKind::StageCachePostcar)?;
-    let verified = crate::boot::load_stage_with_cache(
-        &media,
-        fstart_stage::stage_cache::CachedStage::Postcar,
-        postcar,
-        postcar_window,
-        &reserved,
-        postcar_slot,
-        boot_path == BootPath::S3Resume,
-    )?;
+        #[cfg(feature = "memory-cache")]
+        let key = if B::FACTS.memory_cache {
+            Some(crate::memory_cache::runtime_key::<B>(
+                &northbridge,
+                &southbridge,
+                geometry,
+            )?)
+        } else {
+            None
+        };
+        #[cfg(feature = "memory-cache")]
+        let mut capture = [0; crate::memory_cache::MAX_PAYLOAD];
+        #[cfg(feature = "memory-cache")]
+        let captured = if let Some(key) = key {
+            use crate::memory_cache::{BANK_SIZE, EXTENT_SIZE, Journal, MappedRead};
+            if firmware_size < EXTENT_SIZE as usize + 4096 {
+                return Err(ServiceError::InvalidParam);
+            }
+            // The extent comes from linked board policy, not an unverified directory.
+            let mut flash =
+                unsafe { MappedRead::new(firmware_base as usize, EXTENT_SIZE as usize) };
+            let cached = Journal::new(BANK_SIZE, EXTENT_SIZE)?
+                .load(&mut flash)?
+                .map(|(_, record)| record)
+                .filter(|record| record.key == key);
+            northbridge.dram_init_cached(
+                southbridge.smbus_mut(),
+                cached.as_ref().map(|record| record.payload()),
+                &mut capture,
+            )?
+        } else {
+            if boot_path == BootPath::S3Resume {
+                return Err(ServiceError::NotSupported);
+            }
+            northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
+            None
+        };
+        #[cfg(not(feature = "memory-cache"))]
+        {
+            if boot_path == BootPath::S3Resume {
+                return Err(ServiceError::NotSupported);
+            }
+            northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
+        }
 
-    // Explicit wire bytes avoid coupling the assembly MTRR ABI to Rust types.
-    // The low handoff page is disjoint from both family bootstrap windows.
-    let boot_flags = if boot_path == BootPath::S3Resume {
-        fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME
-    } else {
-        0
-    };
-    let published = unsafe {
-        fstart_arch::x86_64::car_teardown::write_postcar_stash(
+        // SB DMI enable -> NB negotiation -> SB polling -> NB PM/IGD.
+        southbridge.prepare_early_post_dram_init()?;
+        northbridge.early_post_dram_init()?;
+        southbridge.early_post_dram_init()?;
+        northbridge.finish_early_post_dram_init()?;
+        hooks.after_memory(&mut IntelEarlyCtx::with_boot_path(
+            &mut southbridge,
+            boot_path,
+        ))?;
+        fstart_log::info!("{}: DRAM ready", platform);
+        let ram_end = dram_end.min(northbridge.total_ram_bytes()?);
+        #[cfg(feature = "memory-cache")]
+        if let (Some(key), Some(length)) = (key, captured) {
+            let pending = geometry.region(RegionKind::TrainingHandoff)?;
+            if pending.end().is_none_or(|end| end > ram_end) {
+                return Err(ServiceError::InvalidParam);
+            }
+            // Only cold/warm initialization captures, after the driver's RAM test.
+            unsafe {
+                crate::memory_cache::publish_pending(pending, key, &capture[..length])?;
+            }
+        }
+
+        fstart_log::info!(
+            "boot trust: development-integrity; RO root and rollback enforcement not established"
+        );
+        fstart_arch::x86_64::enable_boot_media_rom_cache();
+        let media = unsafe {
+            fstart_core::services::boot_media::MemoryMapped::from_raw_addr(
+                firmware_base,
+                firmware_size,
+            )
+        };
+        let locator =
+            unsafe {
+                fstart_core::ffs::locator::LocatorRef::read_volatile(
+                    fstart_stage::fstart_anchor_bytes(),
+                )
+            }
+            .ok_or(ServiceError::InvalidParam)?
+            .value();
+        if locator.image_offset != 0 || !locator.media().validate(firmware_size as u64) {
+            return Err(ServiceError::InvalidParam);
+        }
+        let mut locator_bytes = [0; fstart_core::ffs::locator::LOCATOR_SIZE];
+        locator.write_to(&mut locator_bytes);
+        let root = fstart_stage::root::authenticate_boot_root(&locator_bytes, &media)
+            .map_err(|_| ServiceError::HardwareError)?;
+        #[cfg(feature = "memory-cache")]
+        if let Some(key) = key {
+            if crate::memory_cache::runtime_key::<B>(&northbridge, &southbridge, geometry)? != key {
+                return Err(ServiceError::HardwareError);
+            }
+        }
+        let [Some(postcar), Some(ramstage)] = root.descriptors() else {
+            return Err(ServiceError::InvalidParam);
+        };
+        let postcar_window = crate::boot::bootstrap_window(
+            postcar,
+            fstart_ffs::root::BootstrapRole::Postcar,
+            postcar_load_addr,
             ram_end,
-            firmware_base,
-            firmware_size as u64,
-            fstart_arch::x86_64::car_teardown::PostcarBootContext {
-                descriptor: ramstage.encode(),
-                directory: root.directory().encode(),
-                image_family: root.root().image_family,
-                security_version: root.root().security_version,
-                locator: locator_bytes,
-                boot_flags,
-            },
-        )
-    };
-    if !published {
-        return Err(ServiceError::HardwareError);
+            geometry,
+        )?;
+        crate::boot::bootstrap_window(
+            ramstage,
+            fstart_ffs::root::BootstrapRole::Mainstage,
+            ramstage_load_addr,
+            ram_end,
+            geometry,
+        )?;
+        let reserved = crate::boot::running_reservations(geometry)?;
+        let postcar_slot = geometry.region(RegionKind::StageCachePostcar)?;
+        let verified = crate::boot::load_stage_with_cache(
+            &media,
+            fstart_stage::stage_cache::CachedStage::Postcar,
+            postcar,
+            postcar_window,
+            &reserved,
+            postcar_slot,
+            boot_path == BootPath::S3Resume,
+        )?;
+        let boot_flags = if boot_path == BootPath::S3Resume {
+            fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME
+        } else {
+            0
+        };
+        let published = unsafe {
+            fstart_arch::x86_64::car_teardown::write_postcar_stash(
+                ram_end,
+                firmware_base,
+                firmware_size as u64,
+                fstart_arch::x86_64::car_teardown::PostcarBootContext {
+                    descriptor: ramstage.encode(),
+                    directory: root.directory().encode(),
+                    image_family: root.root().image_family,
+                    security_version: root.root().security_version,
+                    locator: locator_bytes,
+                    boot_flags,
+                },
+            )
+        };
+        if !published {
+            return Err(ServiceError::HardwareError);
+        }
+        hooks.before_handoff(&mut IntelEarlyCtx::with_boot_path(
+            &mut southbridge,
+            boot_path,
+        ))?;
+        fstart_log::info!(
+            "jumping to {} at {:#x}",
+            crate::POSTCAR_STAGE_NAME,
+            verified.entry()
+        );
+        fstart_arch::x86_64::jump_to(verified.entry())
+    })();
+    if result.is_err() && boot_path == BootPath::S3Resume {
+        fstart_log::error!(
+            "{}: invalid retained boot state; resetting cleanly",
+            platform
+        );
+        northbridge.prepare_resume_reset();
+        southbridge.system_reset(true);
     }
-
-    hooks.before_handoff(&mut IntelEarlyCtx::new(&mut southbridge))?;
-    fstart_log::info!(
-        "jumping to {} at {:#x}",
-        crate::POSTCAR_STAGE_NAME,
-        verified.entry()
-    );
-    fstart_arch::x86_64::jump_to(verified.entry())
+    result
 }

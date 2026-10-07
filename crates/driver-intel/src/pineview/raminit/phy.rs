@@ -813,7 +813,7 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
 ///
 /// Ported from coreboot `sdram_rcven()`. Trains the DQS receive enable
 /// timing for each byte lane by sweeping coarse + medium + PI delay.
-pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
+fn calibrate_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     let v = mch.read8(mchbar::C0RSTCTL);
     mch.write8(mchbar::C0RSTCTL, v & !(3 << 2));
     let v = mch.read8(mchbar::CMNDQFIFORST);
@@ -831,18 +831,13 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
         let mut medium: u8 = 0;
 
         // Set initial coarse.
-        let v = mch.read32(mchbar::C0STATRDCTRL);
-        mch.write32(
-            mchbar::C0STATRDCTRL,
-            (v & !(0x0F << 16)) | ((coarse as u32) << 16),
-        );
+        program_receive_coarse(mch, coarse.into());
         let v = mch.read16(mchbar::C0RCVMISCCTL2);
         mch.write16(
             mchbar::C0RCVMISCCTL2,
             (v & !(3 << (lane * 2))) | ((medium as u16) << (lane * 2)),
         );
-        let v = mch.read8(mchbar::ly(0x560, lane as u32));
-        mch.write8(mchbar::ly(0x560, lane as u32), v & !0x3F);
+        program_receive_pi(mch, lane as usize, 0);
 
         let mut savecoarse: u8;
         let mut savemedium: u8;
@@ -875,11 +870,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
 
         coarse = savecoarse;
         medium = savemedium;
-        let v = mch.read32(mchbar::C0STATRDCTRL);
-        mch.write32(
-            mchbar::C0STATRDCTRL,
-            (v & !(0x0F << 16)) | ((coarse as u32) << 16),
-        );
+        program_receive_coarse(mch, coarse.into());
         let v = mch.read16(mchbar::C0RCVMISCCTL2);
         mch.write16(
             mchbar::C0RCVMISCCTL2,
@@ -898,19 +889,11 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
                 fstart_log::error!("raminit: RCVEN lane {} PI search failed", lane);
                 return Err(ServiceError::HardwareError);
             }
-            let v = mch.read8(mchbar::ly(0x560, lane as u32));
-            mch.write8(
-                mchbar::ly(0x560, lane as u32),
-                (v & !0x3F) | (pi << si.pioffset),
-            );
+            program_receive_pi(mch, lane as usize, pi << si.pioffset);
         }
 
         pi = savepi;
-        let v = mch.read8(mchbar::ly(0x560, lane as u32));
-        mch.write8(
-            mchbar::ly(0x560, lane as u32),
-            (v & !0x3F) | (pi << si.pioffset),
-        );
+        program_receive_pi(mch, lane as usize, pi << si.pioffset);
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
             fstart_log::error!("raminit: RCVEN lane {} failed after PI search", lane);
             return Err(ServiceError::HardwareError);
@@ -930,11 +913,7 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
                 return Err(ServiceError::HardwareError);
             }
             coarse -= 1;
-            let v = mch.read32(mchbar::C0STATRDCTRL);
-            mch.write32(
-                mchbar::C0STATRDCTRL,
-                (v & !(0x0F << 16)) | ((coarse as u32) << 16),
-            );
+            program_receive_coarse(mch, coarse.into());
         }
 
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
@@ -963,18 +942,51 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
             (v & !(3 << (lane * 2))) | ((offset as u16) << (lane * 2)),
         );
     }
-    let v = mch.read32(mchbar::C0STATRDCTRL);
-    mch.write32(
-        mchbar::C0STATRDCTRL,
-        (v & !(0x0F << 16)) | ((minlanecoarse as u32) << 16),
-    );
+    program_receive_coarse(mch, minlanecoarse.into());
 
     si.coarsectrl = minlanecoarse as u16;
     si.coarsedelay = mch.read16(mchbar::C0COARSEDLY0);
     si.mediumphase = mch.read16(mchbar::C0RCVMISCCTL2);
     si.readptrdelay = mch.read16(mchbar::C0RCVMISCCTL1);
 
-    // Reset sequence.
+    Ok(())
+}
+
+/// Train or restore bounded receive timing using the same register operations.
+/// Replay must never sample or write DRAM; only the cold path sweeps DQS edges.
+pub(super) fn sdram_rcven(
+    si: &mut SysInfo,
+    mch: &MchBar,
+    replay: bool,
+) -> Result<(), ServiceError> {
+    if replay {
+        program_receive_coarse(mch, si.coarsectrl);
+        mch.write16(mchbar::C0COARSEDLY0, si.coarsedelay);
+        mch.write16(mchbar::C0RCVMISCCTL2, si.mediumphase);
+        mch.write16(mchbar::C0RCVMISCCTL1, si.readptrdelay);
+        for (lane, pi) in si.pi.iter().copied().enumerate() {
+            program_receive_pi(mch, lane, pi << si.pioffset);
+        }
+    } else {
+        calibrate_rcven(si, mch)?;
+    }
+    reset_receive_fifos(mch);
+    fstart_log::info!(
+        "raminit: receive enable {}",
+        if replay { "replayed" } else { "calibrated" }
+    );
+    Ok(())
+}
+
+fn program_receive_coarse(mch: &MchBar, coarse: u16) {
+    mch.clrsetbits32(mchbar::C0STATRDCTRL, 0x0f << 16, u32::from(coarse) << 16);
+}
+
+fn program_receive_pi(mch: &MchBar, lane: usize, pi: u8) {
+    mch.clrsetbits8(mchbar::ly(mchbar::C0RXRCVYDLL_BASE, lane as u32), 0x3f, pi);
+}
+
+fn reset_receive_fifos(mch: &MchBar) {
     let v = mch.read8(mchbar::C0RSTCTL);
     mch.write8(mchbar::C0RSTCTL, v & !(7 << 1));
     mch.setbits8(mchbar::C0RSTCTL, 1 << 1);
@@ -984,9 +996,6 @@ pub fn sdram_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     mch.setbits8(mchbar::CMNDQFIFORST, 1 << 7);
     mch.clrbits8(mchbar::CMNDQFIFORST, 1 << 7);
     mch.setbits8(mchbar::CMNDQFIFORST, 1 << 7);
-
-    fstart_log::info!("raminit: receive enable calibration done");
-    Ok(())
 }
 
 const VREF_PATTERN_SIZE: usize = 1024;
@@ -1194,11 +1203,7 @@ fn rcven_clock(mch: &MchBar, coarse: &mut u8, medium: &mut u8, lane: u8) -> bool
             return false;
         }
         *coarse += 1;
-        let v = mch.read32(mchbar::C0STATRDCTRL);
-        mch.write32(
-            mchbar::C0STATRDCTRL,
-            (v & !(0x0F << 16)) | ((*coarse as u32) << 16),
-        );
+        program_receive_coarse(mch, u16::from(*coarse));
     }
     let v = mch.read16(mchbar::C0RCVMISCCTL2);
     mch.write16(
@@ -1824,4 +1829,40 @@ pub fn sdram_periodic_rcomp(si: &SysInfo, mch: &MchBar) {
     mch.setbits8(mchbar::COMPCTRL1, (1 << 7) | (1 << 1));
 
     fstart_log::info!("raminit: periodic RCOMP enabled");
+}
+
+#[cfg(test)]
+mod receive_tests {
+    use super::*;
+
+    #[test]
+    fn replay_preserves_shared_bits_and_restores_all_receive_lanes() {
+        let mut registers = [0u32; 0x1000 / 4];
+        let mch = MchBar::new(registers.as_mut_ptr() as usize);
+        mch.write32(mchbar::C0STATRDCTRL, 0xa5a5_5a5a);
+        for lane in 0..8 {
+            mch.write8(mchbar::ly(mchbar::C0RXRCVYDLL_BASE, lane), 0xc0);
+        }
+        let mut si = SysInfo::new(crate::BootPath::S3Resume, 0, [0; 4]);
+        si.coarsectrl = 9;
+        si.coarsedelay = 0x1357;
+        si.mediumphase = 0x2468;
+        si.readptrdelay = 0x369c;
+        si.pi = [0, 1, 2, 3, 4, 5, 6, 15];
+        si.pioffset = 1;
+        sdram_rcven(&mut si, &mch, true).unwrap();
+        assert_eq!(
+            mch.read32(mchbar::C0STATRDCTRL),
+            (0xa5a5_5a5a & !(0xf << 16)) | (9 << 16)
+        );
+        assert_eq!(mch.read16(mchbar::C0COARSEDLY0), si.coarsedelay);
+        assert_eq!(mch.read16(mchbar::C0RCVMISCCTL2), si.mediumphase);
+        assert_eq!(mch.read16(mchbar::C0RCVMISCCTL1), si.readptrdelay);
+        for (lane, pi) in si.pi.into_iter().enumerate() {
+            assert_eq!(
+                mch.read8(mchbar::ly(mchbar::C0RXRCVYDLL_BASE, lane as u32)),
+                0xc0 | (pi << 1)
+            );
+        }
+    }
 }

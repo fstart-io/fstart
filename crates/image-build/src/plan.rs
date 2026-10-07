@@ -124,6 +124,8 @@ pub type ResolvedPlan = crate::build_plan::BuildPlan;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IntelPlan {
+    #[serde(default)]
+    pub memory_cache: bool,
     pub reservations: crate::intel_plan::IntelReservations,
     pub target: String,
     pub payload: String,
@@ -236,6 +238,23 @@ impl IntelPlan {
         let (flash, firmware) = self.flash.windows()?;
         if flash != self.reservations.flash || firmware != self.reservations.firmware {
             return Err("physical layout differs from resolved flash/firmware windows".into());
+        }
+        let prefix = if self.memory_cache { 0x20000 } else { 0 };
+        let bios_offset = match &self.flash {
+            FlashTransport::IntelIfd(layout) => {
+                layout
+                    .decode()?
+                    .bios_region()
+                    .ok_or("missing BIOS region")?
+                    .offset
+            }
+            FlashTransport::X86Legacy(_) => 0,
+        };
+        if self.reservations.bootblock.image.base != firmware.base + prefix
+            || firmware.size.checked_sub(prefix) != Some(self.reservations.bootblock.image.size)
+            || (self.memory_cache && bios_offset % 0x10000 != 0)
+        {
+            return Err("mutable cache and reset image geometry differ".into());
         }
         if self.max_cpus == 0
             || self.smm.entry_points.is_some_and(|n| n < self.max_cpus)

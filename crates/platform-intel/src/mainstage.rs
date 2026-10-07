@@ -67,10 +67,50 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     run_mainstage_phase(platform, "load_memory_policy", || {
         mainstage.refresh_load_policy()
     });
+    #[cfg(feature = "memory-cache")]
+    if B::FACTS.memory_cache && !resume {
+        let persisted = crate::memory_cache::commit_pending::<B>(
+            &mainstage.northbridge,
+            &mainstage.southbridge,
+            layout,
+        );
+        let complete = |kind, role| {
+            layout.region(kind).ok().is_some_and(|slot| {
+                let media = unsafe {
+                    fstart_core::services::boot_media::MemoryMapped::from_raw_addr(
+                        slot.base,
+                        slot.size as usize,
+                    )
+                };
+                fstart_stage::stage_cache::has_complete_slot(&media, role)
+            })
+        };
+        let enabled = mainstage.northbridge.supports_s3_replay()
+            && persisted.is_ok()
+            && complete(
+                fstart_core::layout::RegionKind::StageCachePostcar,
+                fstart_stage::stage_cache::CachedStage::Postcar,
+            )
+            && complete(
+                fstart_core::layout::RegionKind::StageCacheMainstage,
+                fstart_stage::stage_cache::CachedStage::Mainstage,
+            );
+        if let Err(error) = persisted {
+            fstart_log::error!(
+                "memory cache: commit failed code {}; S3 withheld",
+                error as u8
+            );
+        }
+        mainstage.northbridge.set_s3_enabled(enabled);
+        mainstage.southbridge.set_s3_enabled(enabled);
+    }
     run_mainstage_phase(platform, "bus_scan", || mainstage.bus_scan());
     run_mainstage_phase(platform, "init_devices", || mainstage.init_devices());
     run_mainstage_phase(platform, "mount_boot_media", || {
         fstart_arch::x86_64::enable_boot_media_rom_cache();
+        if mainstage.resume {
+            return Ok(());
+        }
         mainstage.northbridge.stage_local_init()
     });
     run_mainstage_phase(platform, "verify_boot_media", || boot_media.verify());
@@ -84,9 +124,8 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         }
         mainstage.northbridge.post_verify_init()
     });
-    // The OS wake vector must be read from the *surviving* FACS before the
-    // table set is re-emitted: rebuild zeroes it (coreboot runs
-    // BS_OS_RESUME_CHECK before BS_WRITE_TABLES for the same reason).
+    // Recover the vector from the surviving FACS. Resume must preserve the
+    // whole table set rather than rebuilding it in memory the OS now owns.
     #[cfg(feature = "acpi")]
     let wake_vector = if resume {
         fstart_acpi::platform::x86::wake::find_wakeup_vector(|addr, size| {
@@ -111,7 +150,11 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     } else {
         None
     };
-    run_mainstage_phase(platform, "emit_tables", || mainstage.emit_tables());
+    // The suspended OS owns live ACPI/FACS/SMBIOS allocations. Re-emitting
+    // tables would allocate from OS RAM and overwrite pointers it still uses.
+    if !resume {
+        run_mainstage_phase(platform, "emit_tables", || mainstage.emit_tables());
+    }
     // Table allocation changes the memory map; payload loads must respect it.
     run_mainstage_phase(platform, "load_memory_policy", || {
         mainstage.refresh_load_policy()
@@ -130,7 +173,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
             platform
         );
         fstart_log::flush();
-        mainstage.southbridge().system_reset(true);
+        mainstage.reset_system();
     }
 
     #[cfg(feature = "acpi")]
@@ -147,7 +190,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
                 // suspended OS image.
                 fstart_log::error!("{}: S3 resume without a wake vector, resetting", platform);
                 fstart_log::flush();
-                mainstage.southbridge().system_reset(true);
+                mainstage.reset_system();
             }
         }
     }
@@ -157,7 +200,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         // to resume into.
         fstart_log::error!("{}: S3 resume without ACPI, resetting", platform);
         fstart_log::flush();
-        mainstage.southbridge().system_reset(true);
+        mainstage.reset_system();
     }
 
     fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
@@ -257,6 +300,13 @@ where
             #[cfg(feature = "smbios")]
             smbios_identity: B::smbios_identity(),
         })
+    }
+
+    fn reset_system(&self) -> ! {
+        if self.resume {
+            self.northbridge.prepare_resume_reset();
+        }
+        self.southbridge.system_reset(true)
     }
 
     #[must_use]

@@ -84,6 +84,9 @@ impl IntelEarlyBoardHooks<PineviewIch7> for D41SMainboard {
     }
 
     fn after_memory(&mut self, ctx: &mut IntelEarlyCtx<PineviewIch7>) -> Result<(), ServiceError> {
+        if ctx.boot_path == fstart_driver_intel::BootPath::S3Resume {
+            return Ok(());
+        }
         self.setup_clock(ctx.southbridge())
     }
 }

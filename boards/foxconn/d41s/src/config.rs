@@ -88,7 +88,8 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     const CONFIG: &'static PineviewIch7Platform = &D41S_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(FLASH, FLASH_SIZE)
-            .with_data_assets(&[D41S_VBT]);
+            .with_data_assets(&[D41S_VBT])
+            .with_memory_cache();
 }
 
 #[must_use]

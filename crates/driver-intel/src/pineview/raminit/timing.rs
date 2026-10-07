@@ -7,9 +7,10 @@
 use super::SysInfo;
 use crate::MmioBar;
 use crate::ich7::ich7;
-use crate::pineview::regs::{MchBar, mchbar};
+use crate::pineview::regs::{CLKCFG_REG, MchBar, PMSTS_REG, mchbar};
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam;
+use tock_registers::interfaces::{ReadWriteable, Readable};
 
 // ===================================================================
 // Helpers
@@ -45,14 +46,20 @@ fn div_round_up(a: u32, b: u32) -> u32 {
 /// then find the common CAS latency across all populated DIMMs.
 ///
 /// Ported from coreboot `sdram_detect_ram_speed()`.
-pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
+pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     // CLKCFG bits 2:0 report the active core/FSB frequency. CAPID only
     // describes capabilities and must not be used as the current strap.
-    let fsb = match mch.read8(mchbar::CLKCFG) & 0x07 {
-        0x02 => 1, // FSB 800 MHz
-        0x03 => 0, // FSB 667 MHz
-        raw => {
-            fstart_log::error!("raminit: unsupported CLKCFG FSB encoding {}", raw);
+    let strap = tock_registers::LocalRegisterCopy::<u32, CLKCFG_REG::Register>::new(u32::from(
+        mch.read8(mchbar::CLKCFG),
+    ));
+    let fsb = match strap.read_as_enum(CLKCFG_REG::FSB) {
+        Some(CLKCFG_REG::FSB::Value::Fsb800) => 1,
+        Some(CLKCFG_REG::FSB::Value::Fsb667) => 0,
+        None => {
+            fstart_log::error!(
+                "raminit: unsupported CLKCFG FSB encoding {}",
+                strap.read(CLKCFG_REG::FSB)
+            );
             0
         }
     };
@@ -167,15 +174,24 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
     si.selected_timings.fsb_clock = fsb;
 
     // --- Program the selected frequency into MCHBAR CLKCFG ---
-    if si.boot_path != crate::BootPath::WarmReset {
-        mch.setbits32(mchbar::PMSTS, 1 << 0);
+    // SAFETY: raminit owns the enabled MCHBAR mapping.
+    let clock = unsafe { mch.early_regs() };
+    let frequency = if freq == 1 {
+        CLKCFG_REG::DDR::Ddr800
+    } else {
+        CLKCFG_REG::DDR::Ddr667
+    };
+    if si.boot_path == crate::BootPath::S3Resume {
+        if !clock.clkcfg.matches_all(frequency) {
+            return Err(ServiceError::HardwareError);
+        }
+    }
+    if si.boot_path == crate::BootPath::Normal {
+        clock.pmsts.modify(PMSTS_REG::INITIALIZATION_STARTED::SET);
+        clock.clkcfg.modify(CLKCFG_REG::UPDATE::SET + frequency);
 
-        let clkcfg = mch.read32(mchbar::CLKCFG) & !0x70;
-        let freq_bits: u32 = if freq == 1 { 3 } else { 2 }; // 800→3, 667→2
-        mch.write32(mchbar::CLKCFG, clkcfg | (1 << 10) | (freq_bits << 4));
-
-        // Read back the MCH-validated frequency.
-        let validated = ((mch.read32(mchbar::CLKCFG) >> 4) & 0x07).wrapping_sub(2) as u8;
+        // Read back the MCH-validated frequency, preserving the dword cycle.
+        let validated = clock.clkcfg.read(CLKCFG_REG::DDR).wrapping_sub(2) as u8;
         si.selected_timings.mem_clock = validated.min(1);
 
         if si.selected_timings.mem_clock == 1 {
@@ -191,6 +207,10 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
         }
     }
 
+    si.nodll = u8::from(si.selected_timings.mem_clock == 0);
+    si.maxpi = if si.nodll != 0 { 15 } else { 63 };
+    si.pioffset = if si.nodll != 0 { 1 } else { 0 };
+
     fstart_log::info!(
         "raminit: DDR {}MHz, CAS={}, FSB={}",
         if si.selected_timings.mem_clock == 1 {
@@ -205,6 +225,7 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) {
             667
         }
     );
+    Ok(())
 }
 
 /// Detect the smallest common timing parameters across all DIMMs.
@@ -445,7 +466,7 @@ pub fn clkmode(si: &SysInfo, mch: &MchBar) {
         (1 << 8) | (1 << 5) // 800 MHz
     };
 
-    if si.boot_path != crate::BootPath::WarmReset {
+    if si.boot_path == crate::BootPath::Normal {
         let v = mch.read16(mchbar::MPLLCTL);
         mch.write16(mchbar::MPLLCTL, (v & !0x033F) | mpll_ctl);
     }

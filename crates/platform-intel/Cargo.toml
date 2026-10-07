@@ -7,6 +7,7 @@ publish = false
 
 [features]
 default = []
+memory-cache = ["fstart-driver-intel/spi"]
 # Additive hardware availability; each board enables its chipset pair once.
 gm965-ich8 = ["fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
 i945-ich7 = ["fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
@@ -53,6 +54,8 @@ name = "southbridge_dsdt"
 required-features = ["acpi"]
 
 [dependencies]
+sha2 = { workspace = true }
+zerocopy = { workspace = true }
 fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 fstart-smm = { workspace = true, optional = true }

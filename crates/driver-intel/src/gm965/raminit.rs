@@ -294,8 +294,10 @@ pub struct Timings {
 }
 
 /// SPD-derived GM965 memory topology and selected timings.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct RaminitInfo {
+    /// Full DDR2 payloads; zero denotes an absent/unwired slot.
+    pub raw_spd: [[u8; 128]; 4],
     /// Slot 0/1 are channel 0, slot 2/3 are channel 1. X61 uses 0 and 2.
     pub dimms: [DimmSlot; 4],
     /// Number of populated DIMMs.
@@ -318,7 +320,119 @@ pub struct RaminitInfo {
     pub timings: Timings,
 }
 
+impl Default for RaminitInfo {
+    fn default() -> Self {
+        Self {
+            raw_spd: [[0; 128]; 4],
+            dimms: [DimmSlot::default(); 4],
+            dimm_count: 0,
+            channels: 0,
+            total_mb: 0,
+            tolud_mb: 0,
+            tom_mb: 0,
+            rec_coarse: [0; 2],
+            rec_coarse_low: [0; 2],
+            rec_fine: [0; 2],
+            timings: Timings::default(),
+        }
+    }
+}
+
+#[derive(zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable, zerocopy::KnownLayout)]
+#[repr(C)]
+struct TrainingWire {
+    magic: [u8; 8],
+    spd: [[u8; 128]; 4],
+    timings: TimingWire,
+    coarse: [u8; 2],
+    coarse_low: [u8; 2],
+    fine: [u8; 2],
+    reserved: u8,
+}
+
+/// Byte-aligned wire representation of selected timings. Enum encodings stay
+/// bytes on disk; replay compares against freshly selected, typed timings.
+#[derive(
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    PartialEq,
+    Eq,
+)]
+#[repr(C)]
+struct TimingWire {
+    cas: u8,
+    tras: u8,
+    trp: u8,
+    trcd: u8,
+    trfc: u8,
+    twr: u8,
+    trrd: u8,
+    trtp: u8,
+    fsb_clock: u8,
+    mem_clock: u8,
+    channel_mode: u8,
+}
+
+impl From<Timings> for TimingWire {
+    fn from(t: Timings) -> Self {
+        Self {
+            cas: t.cas,
+            tras: t.tras,
+            trp: t.trp,
+            trcd: t.trcd,
+            trfc: t.trfc,
+            twr: t.twr,
+            trrd: t.trrd,
+            trtp: t.trtp,
+            fsb_clock: t.fsb_clock as u8,
+            mem_clock: t.mem_clock as u8,
+            channel_mode: t.channel_mode as u8,
+        }
+    }
+}
+
 impl RaminitInfo {
+    pub fn capture_training(&self, output: &mut [u8]) -> Result<usize, ServiceError> {
+        use zerocopy::IntoBytes;
+        let wire = TrainingWire {
+            magic: *b"GM965001",
+            spd: self.raw_spd,
+            timings: self.timings.into(),
+            coarse: self.rec_coarse,
+            coarse_low: self.rec_coarse_low,
+            fine: self.rec_fine,
+            reserved: 0,
+        };
+        let bytes = wire.as_bytes();
+        output
+            .get_mut(..bytes.len())
+            .ok_or(ServiceError::InvalidParam)?
+            .copy_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn restore_training(&mut self, bytes: &[u8]) -> bool {
+        use zerocopy::FromBytes;
+        let Ok(wire) = TrainingWire::ref_from_bytes(bytes) else {
+            return false;
+        };
+        if wire.magic != *b"GM965001"
+            || wire.reserved != 0
+            || wire.spd != self.raw_spd
+            || wire.timings != TimingWire::from(self.timings)
+            || wire.coarse.iter().any(|&n| n > 15)
+            || wire.coarse_low.iter().any(|&n| n > 3)
+            || wire.fine.iter().any(|&n| n > 15)
+        {
+            return false;
+        }
+        self.rec_coarse = wire.coarse;
+        self.rec_coarse_low = wire.coarse_low;
+        self.rec_fine = wire.fine;
+        true
+    }
     /// Total installed memory in bytes.
     pub const fn total_bytes(&self) -> u64 {
         (self.total_mb as u64) * 1024 * 1024
@@ -586,7 +700,13 @@ fn check_warm_boot(mch: &MchBar) -> Result<bool, ServiceError> {
 /// Ported from coreboot GM965 `gm45_early_reset()`. Without these steps a
 /// reset while DRAM is in power-down/self-refresh state powers the machine
 /// off instead of rebooting. Never returns.
-fn early_reset(mch: &MchBar) -> ! {
+pub(super) fn early_reset(mch: &MchBar) -> ! {
+    prepare_resume_reset(mch);
+    full_reset();
+}
+
+/// Leave retained DRAM in a state where the southbridge can reset safely.
+pub(super) fn prepare_resume_reset(mch: &MchBar) {
     const CX_DRC0_RANKEN_MASK: u32 = 0xf << 24;
     const CX_DRC1_NOTPOP_MASK: u32 = 0xf << 16;
     const CX_DRC2_NOTPOP_MASK: u32 = 0xf << 24;
@@ -629,8 +749,6 @@ fn early_reset(mch: &MchBar) -> ! {
 
     // Normally we would set this after successful raminit.
     mch.setbits32(mchbar::DCC, 1 << 19);
-
-    full_reset();
 }
 
 fn channel_populated(info: &RaminitInfo, ch: usize) -> bool {
@@ -1368,6 +1486,32 @@ fn receive_enable_training(info: &mut RaminitInfo, mch: &MchBar) -> Result<(), S
     Ok(())
 }
 
+/// Replay only calibrated fields, never a broad MCHBAR snapshot or DRAM probe.
+fn replay_receive_enable(info: &RaminitInfo, mch: &MchBar) {
+    for ch in 0..2 {
+        if channel_populated(info, ch) {
+            let timing = RecTiming {
+                coarse_high: info.rec_coarse[ch],
+                coarse_low: info.rec_coarse_low[ch],
+                fine: info.rec_fine[ch],
+            };
+            program_rec_timing(mch, ch, timing);
+            write_fine_delay(mch, ch, timing.fine);
+            mch.clrsetbits8(
+                mchbar::cx_drt5(ch),
+                0xf0,
+                timing.coarse_high.saturating_sub(1) << 4,
+            );
+        }
+        mch.setbits16(mchbar::rw_ptr_ctrl(ch), 0x0c00);
+        mch.clrbits32(mchbar::train_enable(ch), TRAIN_ENABLE_BIT);
+        mch.setbits8(mchbar::cx_drc1(ch), 0x40);
+        mch.clrbits8(mchbar::cx_drc1(ch), 0x40);
+        mch.clrbits16(mchbar::rw_ptr_ctrl(ch), 1 << 9);
+        mch.setbits16(mchbar::rw_ptr_ctrl(ch), 0x0600);
+    }
+}
+
 fn wait_rcomp(mch: &MchBar) -> Result<(), ServiceError> {
     if stepping() == 1 {
         return Ok(());
@@ -1575,7 +1719,7 @@ fn dram_power_mgmt(mch: &MchBar) {
 /// `spd_addresses` follows coreboot's GM965 slot mapping: index 0/1 are
 /// channel 0, index 2/3 are channel 1. A zero address means the slot is not
 /// wired. Lenovo X61 uses `[0x50, 0, 0x51, 0]`.
-pub fn probe_dimms<B: SmBus>(
+pub fn probe_dimms<B: SmBus + ?Sized>(
     bus: &mut B,
     spd_addresses: &[u8; 4],
 ) -> Result<RaminitInfo, ServiceError> {
@@ -1592,6 +1736,7 @@ pub fn probe_dimms<B: SmBus>(
             continue;
         };
 
+        info.raw_spd[slot].copy_from_slice(&spd[..128]);
         let Some(dimm) = crate::generic::spd::ddr2::decode_dimm(&spd) else {
             fstart_log::error!("gm965 raminit: invalid/non-DDR2 SPD at {:#x}", addr);
             return Err(ServiceError::HardwareError);
@@ -1643,9 +1788,28 @@ pub fn probe_dimms<B: SmBus>(
 /// programming, DDR2 JEDEC commands, final memory map, receive-enable
 /// calibration, guarded EPD channel population, and DRAM power-management setup.
 pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result<(), ServiceError> {
-    let warm = check_warm_boot(mch)?;
-    reset_on_stale_rcomp(mch);
-    init_pmcon();
+    initialize(info, mch, ggc, crate::BootPath::Normal, None)
+}
+
+pub(super) fn initialize(
+    info: &mut RaminitInfo,
+    mch: &MchBar,
+    ggc: u16,
+    boot: crate::BootPath,
+    cached: Option<&[u8]>,
+) -> Result<(), ServiceError> {
+    let warm = boot == crate::BootPath::S3Resume;
+    // Snapshot retained state before any initialization writes.
+    let epd_state = mch.read8(EPD_2E) & 0x1f;
+    if warm {
+        if mch.read16(mchbar::SSKPD) != 0xcafe && mch.read32(mchbar::PMSTS) & PMSTS_SELFREFRESH == 0
+        {
+            return Err(ServiceError::HardwareError);
+        }
+    } else {
+        check_warm_boot(mch)?;
+        reset_on_stale_rcomp(mch);
+    }
 
     let hb = fstart_pci::ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC);
     let fsb_clock = read_fsb_clock(mch);
@@ -1653,7 +1817,20 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result
 
     select_frequency_and_cas(info, fsb_clock, capid0)?;
     calculate_timings(info)?;
-
+    let replay = cached.is_some_and(|bytes| info.restore_training(bytes));
+    if warm
+        && (!replay
+            || mch.read32(mchbar::CLKCFG) & CLKCFG_MEMCLK_MASK
+                != ((info.timings.mem_clock as u32) + 2) << 4)
+    {
+        fstart_log::error!("gm965: retained memory without matching training/frequency");
+        return Err(ServiceError::HardwareError);
+    }
+    fstart_log::info!(
+        "gm965: training cache {}",
+        if replay { "hit" } else { "miss" }
+    );
+    init_pmcon();
     check_bad_warmboot(mch);
     mch.setbits32(mchbar::PMSTS, PMSTS_SELFREFRESH);
     program_clkcfg_lock(info, mch, warm);
@@ -1686,7 +1863,11 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result
         jedec_init_ddr2(info, mch);
     }
     post_jedec_and_final(info, mch, ggc);
-    receive_enable_training(info, mch)?;
+    if replay {
+        replay_receive_enable(info, mch);
+    } else {
+        receive_enable_training(info, mch)?;
+    }
 
     if stepping() != 0 {
         mch.setbits8(mchbar::RCOMP_CTRL, 2);
@@ -1697,7 +1878,7 @@ pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result
     // when EPD_2E[4:0] shows a prior successful initialization. On a first
     // cold boot these registers contain hardware defaults; programming the
     // partial EPD path too early can break otherwise-working DRB/DRA decode.
-    if (mch.read8(EPD_2E) & 0x1f) != 0 {
+    if epd_state != 0 {
         if !warm {
             program_epd(info, mch);
         }
@@ -1746,6 +1927,34 @@ mod tests {
             trtp_256ns: 8 * 256,
             ..DimmSlot::default()
         }
+    }
+
+    #[test]
+    fn training_record_matches_all_slots_timings_and_bounded_delays() {
+        let mut info = RaminitInfo::default();
+        info.raw_spd[0][0] = 128;
+        info.rec_coarse = [7, 8];
+        info.rec_coarse_low = [2, 3];
+        info.rec_fine = [4, 15];
+        let mut bytes = [0; 768];
+        let length = info.capture_training(&mut bytes).unwrap();
+        let mut fresh = info;
+        fresh.rec_coarse = [0; 2];
+        assert!(fresh.restore_training(&bytes[..length]));
+        assert_eq!(fresh.rec_coarse, info.rec_coarse);
+        // Added/removed DIMMs, not merely previously populated slots.
+        fresh.raw_spd[3][0] = 128;
+        assert!(!fresh.restore_training(&bytes[..length]));
+        fresh = info;
+        fresh.timings.cas += 1;
+        assert!(!fresh.restore_training(&bytes[..length]));
+        fresh = info;
+        for end in 0..length {
+            assert!(!fresh.restore_training(&bytes[..end]));
+        }
+        let coarse_offset = 8 + 4 * 128 + 11;
+        bytes[coarse_offset] = 16;
+        assert!(!fresh.restore_training(&bytes[..length]));
     }
 
     #[test]

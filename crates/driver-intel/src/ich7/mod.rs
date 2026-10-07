@@ -240,8 +240,7 @@ impl Rcba {
 /// ICH7 / NM10 PCI config and RCBA register constants.
 pub mod ich7 {
     /// LPC bridge: bus 0, dev 0x1f, func 0.
-    pub const LPC_DEV: u8 = 0x1f;
-    pub const LPC_FUNC: u8 = 0;
+    pub use crate::southbridge::lpc::{LPC_DEV, LPC_FUNC};
     /// RCBA register in LPC config.
     pub const RCBA_REG: u16 = 0xF0;
     /// SMBus: bus 0, dev 0x1f, func 3.
@@ -731,6 +730,7 @@ pub struct IntelIch7 {
     config: &'static IntelIch7Config,
     /// I801 SMBus controller, initialised during `early_init`.
     smbus: Option<I801SmBus>,
+    s3_enabled: bool,
     /// PM I/O accessor (PMBASE, initialised during `early_init`).
     pm: PmIo,
 }
@@ -1088,6 +1088,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         Ok(Self {
             config,
             smbus: None,
+            s3_enabled: false,
             pm: PmIo::new(DEFAULT_PMBASE as u16),
         })
     }
@@ -1105,11 +1106,9 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         // watchdog disable -> LPC setup. Keep this pre-console and
         // log-free: the SuperIO UART is not reachable yet.
 
-        // SPI prefetch/caching: LPC reg 0xDC bits [3:2] = 10. This register
-        // is not typed yet, so keep the exact raw sequence.
-        let lpc_raw = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
-        let spi = lpc_raw.read8(0xDC);
-        lpc_raw.write8(0xDC, (spi & !(3 << 2)) | (2 << 2));
+        // SAFETY: northbridge pre-console init established ECAM first.
+        unsafe { crate::southbridge::lpc::flash_config() }.enable_prefetching_and_caching();
+        let lpc_raw = crate::southbridge::lpc::device();
 
         // Fixed southbridge BARs.
         lpc_raw.write32(ich7::RCBA_REG, (self.config.rcba as u32 & 0xFFFF_C000) | 1);
@@ -1234,8 +1233,18 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         IntelIch7::ramstage_init(self)
     }
 
+    fn training_identity(&self) -> Option<[u8; 5]> {
+        // SAFETY: platform calls after ECAM/early chipset initialization.
+        let header = unsafe { crate::southbridge::lpc::device().regs() };
+        Some(crate::southbridge::lpc::training_identity(header))
+    }
+
     fn detect_s3_resume(&self) -> bool {
         IntelIch7::detect_s3_resume(self)
+    }
+
+    fn set_s3_enabled(&mut self, enabled: bool) {
+        self.s3_enabled = enabled;
     }
 
     fn smbus_mut(&mut self) -> Option<&mut dyn SmBus> {
@@ -2506,12 +2515,16 @@ mod acpi_impl {
             aml.extend_from_slice(&acpi_dsl! {
                 Scope("\\") {
                     Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
-                    Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
                     Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
                     Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
                 }
             });
 
+            if self.s3_enabled {
+                aml.extend_from_slice(&acpi_dsl! { Scope("\\") {
+                    Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
+                } });
+            }
             aml
         }
 

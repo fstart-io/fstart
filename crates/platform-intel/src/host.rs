@@ -143,6 +143,10 @@ pub fn reservations<P: IntelPlatform>(
     }
     let span = |base, size| Span { base, size };
     let car = span(P::CAR_BASE, P::CAR_SIZE);
+    let cache_prefix = if facts.memory_cache { 0x20000 } else { 0 };
+    if firmware.size <= cache_prefix + 4096 {
+        return Err("mutable cache leaves no reset image capacity".into());
+    }
     let reservations = IntelReservations {
         flash,
         firmware,
@@ -150,7 +154,7 @@ pub fn reservations<P: IntelPlatform>(
         bootblock: StageReservation {
             // This is the legal XIP address window, not a reserved media slot.
             // The linker places the actual initialized image at its upper end.
-            image: firmware,
+            image: span(firmware.base + cache_prefix, firmware.size - cache_prefix),
             writable: car,
             stack: 0x2000,
             heap: 0,
@@ -174,6 +178,7 @@ pub fn reservations<P: IntelPlatform>(
         // and leaves resume to reset.
         stage_cache_postcar: span(0x5000000, 0x8000),
         stage_cache_mainstage: span(0x5008000, 0x100000),
+        training_handoff: span(0x5108000, 0x1000),
     };
     reservations.validate()?;
     Ok(reservations)
@@ -219,6 +224,9 @@ fn resolve_for<P: IntelPlatform>(
             "halt"
         };
         let mut features = vec![bundle.into()];
+        if facts.memory_cache && role != IntelStage::Postcar {
+            features.push("memory-cache".into());
+        }
         if selected_payload == "uefi" {
             features.push(
                 match requested_payload.as_str() {
@@ -261,6 +269,7 @@ fn resolve_for<P: IntelPlatform>(
         _ => None,
     };
     let plan = IntelPlan {
+        memory_cache: facts.memory_cache,
         reservations,
         target: "x86_64-unknown-none".into(),
         payload,
