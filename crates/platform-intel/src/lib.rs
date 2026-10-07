@@ -20,7 +20,9 @@ pub mod tables;
 
 pub mod facts;
 pub mod memory_cache;
+pub mod smbus;
 pub use facts::{IntelBoardFacts, IntelPlatform, IntelPlatformConfig};
+pub use smbus::{IntelSmbusRouting, SmbusRoute};
 #[cfg(feature = "host")]
 pub mod host;
 #[cfg(feature = "bundle-smm")]
@@ -346,7 +348,7 @@ impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
 /// is ready; before memory, chipset early init is complete; after memory,
 /// DRAM training/recovery is complete. Handoff follows authentication/loading.
 #[cfg(all(feature = "stage", fstart_stage_env = "car"))]
-pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform> {
+pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: IntelSmbusRouting<P::Southbridge> {
     fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
         Ok(())
     }
@@ -390,7 +392,9 @@ impl<P: IntelEarlyPlatform> IntelMainstageBoardCtx<'_, P> {
 /// initialize board devices after chipset/PCI setup, then prepare OS handoff
 /// after tables. Hardware setup does not depend on ACPI emission.
 #[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
-pub trait IntelMainstageBoardHooks<P: IntelEarlyPlatform>: MainboardAcpi<P> {
+pub trait IntelMainstageBoardHooks<P: IntelEarlyPlatform>:
+    MainboardAcpi<P> + IntelSmbusRouting<P::Southbridge>
+{
     fn before_console(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
         Ok(())
     }

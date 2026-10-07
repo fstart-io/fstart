@@ -3,7 +3,7 @@
 
 use crate::{
     FfsLoadSpec, IntelBoard, IntelChipsetConfig, IntelEarlyBoardHooks, IntelEarlyCtx,
-    IntelEarlyPlatform,
+    IntelEarlyPlatform, IntelSmbusRouting, SmbusRoute,
 };
 use fstart_core::layout::RegionKind;
 use fstart_core::services::memory_detect::MemoryDetector;
@@ -58,6 +58,7 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         {
             return Err(ServiceError::NotSupported);
         }
+        B::EarlyHooks::select_smbus(&southbridge, SmbusRoute::Spd)?;
         hooks.before_memory(&mut IntelEarlyCtx::with_boot_path(
             &mut southbridge,
             boot_path,
@@ -114,6 +115,7 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         northbridge.early_post_dram_init()?;
         southbridge.early_post_dram_init()?;
         northbridge.finish_early_post_dram_init()?;
+        B::EarlyHooks::select_smbus(&southbridge, SmbusRoute::Eeprom)?;
         hooks.after_memory(&mut IntelEarlyCtx::with_boot_path(
             &mut southbridge,
             boot_path,

@@ -22,6 +22,9 @@ pub struct D41SMainboard {
     superio: Option<Ite8721f>,
 }
 
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+impl<S> fstart_platform_intel::IntelSmbusRouting<S> for D41SMainboard {}
+
 #[cfg(fstart_stage_env = "ram")]
 mod mainboard_acpi_device {
     extern crate alloc;

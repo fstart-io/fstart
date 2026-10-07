@@ -18,10 +18,26 @@ use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 #[cfg(all(not(test), fstart_stage_env = "ram"))]
 use fstart_platform_intel::{IntelMainstageBoardCtx, IntelMainstageBoardHooks};
 
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+use fstart_platform_intel::{IntelSmbusRouting, SmbusRoute};
+
 /// Board-specific X61 hooks for the GM965/ICH8 flow.
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 #[derive(Default)]
 pub struct X61Mainboard;
+
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+impl<S: fstart_core::services::Southbridge> IntelSmbusRouting<S> for X61Mainboard {
+    fn select_smbus(southbridge: &S, route: SmbusRoute) -> Result<(), ServiceError> {
+        use fstart_driver_intel::southbridge::gpio_ich::GpioLevel;
+        let spd_level = matches!(crate::config::X61_SMBUS_MUX.level, GpioLevel::High);
+        let level = match route {
+            SmbusRoute::Spd => spd_level,
+            SmbusRoute::Eeprom => !spd_level,
+        };
+        southbridge.gpio_set(crate::config::X61_SMBUS_MUX.pin as u32, level)
+    }
+}
 
 /// The mainboard contributes ACPI fragments through the same `AcpiDevice`
 /// abstraction the chipset drivers use.
@@ -44,11 +60,6 @@ mod mainboard_acpi_device {
 impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
     fn before_console(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
         setup_dock_console(ctx.southbridge());
-        Ok(())
-    }
-
-    fn after_memory(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
-        dock::post_raminit_setup(ctx.southbridge());
         Ok(())
     }
 }
@@ -78,7 +89,6 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
         &mut self,
         ctx: &mut IntelMainstageBoardCtx<Gm965Ich8>,
     ) -> Result<(), ServiceError> {
-        dock::post_raminit_setup(ctx.southbridge());
         // EC/PMH7 hardware setup is independent of ACPI table emission.
         let resume = ctx.resume;
         x61_ec_init(ctx.southbridge(), resume);
@@ -527,15 +537,10 @@ pub mod dock {
             assert_eq!(smm_event_command(0x14), None);
         }
     }
-
-    /// Switch the X61 SMBus mux back to the EEPROM side after SPD/raminit.
-    pub fn post_raminit_setup(southbridge: &impl fstart_core::services::Southbridge) {
-        let _ = southbridge.gpio_set(42, false);
-    }
 }
 
-/// CK505 shares the SPD side of GPIO42's SMBus mux. Always restore EEPROM
-/// routing, including a failed block transfer.
+/// CK505 shares the SPD branch. After selection, check EEPROM restoration
+/// even if programming fails; never hide selector errors in a destructor.
 #[cfg(fstart_stage_env = "ram")]
 fn init_ck505(
     southbridge: &mut (impl fstart_core::services::Southbridge + fstart_core::services::SmBus),
@@ -544,11 +549,11 @@ fn init_ck505(
 
     let mut clock = I2cCk505::new_at_address(crate::config::x61_ck505_config(), 0x69)
         .map_err(|_| ServiceError::HardwareError)?;
-    southbridge.gpio_set(42, true)?;
-    let programmed = clock.init_on_smbus(southbridge);
-    let restored = southbridge.gpio_set(42, false);
-    restored?;
-    programmed.map_err(|_| ServiceError::HardwareError)
+    X61Mainboard::with_spd(southbridge, |bus| {
+        clock
+            .init_on_smbus(bus)
+            .map_err(|_| ServiceError::HardwareError)
+    })
 }
 
 /// Board quirk for the Ricoh SD controller behind the ICH PCI bridge. Byte
@@ -743,18 +748,24 @@ mod acpi_impl {
             mux: std::sync::Mutex<std::vec::Vec<(u32, bool)>>,
             block: [u8; 4],
             fail_transfer: bool,
+            fail_level: Option<bool>,
+            transfers: usize,
         }
 
         impl fstart_core::services::Southbridge for ClockBus {
             fn gpio_set(&self, pin: u32, high: bool) -> Result<(), crate::mainboard::ServiceError> {
                 self.mux.lock().unwrap().push((pin, high));
-                Ok(())
+                if self.fail_level == Some(high) {
+                    Err(crate::mainboard::ServiceError::IoError)
+                } else {
+                    Ok(())
+                }
             }
         }
 
         impl fstart_core::services::SmBus for ClockBus {
             fn read_byte(&mut self, _: u8, _: u8) -> Result<u8, crate::mainboard::ServiceError> {
-                panic!("CK505 requires block transfers");
+                Err(crate::mainboard::ServiceError::NotSupported)
             }
             fn write_byte(
                 &mut self,
@@ -762,16 +773,16 @@ mod acpi_impl {
                 _: u8,
                 _: u8,
             ) -> Result<(), crate::mainboard::ServiceError> {
-                panic!("CK505 requires block transfers");
+                Err(crate::mainboard::ServiceError::NotSupported)
             }
             fn block_read(
                 &mut self,
-                addr: u8,
-                command: u8,
+                _: u8,
+                _: u8,
                 data: &mut [u8],
             ) -> Result<usize, crate::mainboard::ServiceError> {
-                assert_eq!((addr, command), (0x69, 0));
                 assert_eq!(self.mux.lock().unwrap().last(), Some(&(42, true)));
+                self.transfers += 1;
                 if self.fail_transfer {
                     return Err(crate::mainboard::ServiceError::IoError);
                 }
@@ -780,11 +791,10 @@ mod acpi_impl {
             }
             fn block_write(
                 &mut self,
-                addr: u8,
-                command: u8,
+                _: u8,
+                _: u8,
                 data: &[u8],
             ) -> Result<(), crate::mainboard::ServiceError> {
-                assert_eq!((addr, command), (0x69, 0));
                 assert_eq!(self.mux.lock().unwrap().last(), Some(&(42, true)));
                 self.block.copy_from_slice(data);
                 Ok(())
@@ -792,18 +802,34 @@ mod acpi_impl {
         }
 
         #[test]
-        fn clock_mux_is_restored_after_success_and_transfer_failure() {
+        fn clock_mux_transitions_are_checked_even_when_the_transfer_fails() {
+            use crate::mainboard::ServiceError;
             for fail_transfer in [false, true] {
-                let mut bus = ClockBus {
-                    mux: std::sync::Mutex::new(std::vec::Vec::new()),
-                    block: [0x04, 0xa5, 0x5a, 0xff],
-                    fail_transfer,
-                };
-                assert_eq!(
-                    crate::mainboard::init_ck505(&mut bus).is_err(),
-                    fail_transfer
-                );
-                assert_eq!(*bus.mux.lock().unwrap(), [(42, true), (42, false)]);
+                for fail_level in [None, Some(true), Some(false)] {
+                    let mut bus = ClockBus {
+                        mux: std::sync::Mutex::new(std::vec::Vec::new()),
+                        block: [0x04, 0xa5, 0x5a, 0xff],
+                        fail_transfer,
+                        fail_level,
+                        transfers: 0,
+                    };
+                    let expected = if fail_level.is_some() {
+                        Err(ServiceError::IoError)
+                    } else if fail_transfer {
+                        Err(ServiceError::HardwareError)
+                    } else {
+                        Ok(())
+                    };
+                    assert_eq!(crate::mainboard::init_ck505(&mut bus), expected);
+                    let selections = bus.mux.lock().unwrap();
+                    if fail_level == Some(true) {
+                        assert_eq!(*selections, [(42, true)]);
+                        assert_eq!(bus.transfers, 0);
+                    } else {
+                        assert_eq!(*selections, [(42, true), (42, false)]);
+                        assert!(bus.transfers > 0);
+                    }
+                }
             }
         }
 

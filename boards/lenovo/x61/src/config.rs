@@ -92,6 +92,17 @@ pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
 
+/// GPIO defaults select SPD/CK505; the opposite level selects board EEPROM.
+pub const X61_SMBUS_MUX: gpio::GpioPin = gpio::GpioPin {
+    pin: 42,
+    mode: gpio::GpioMode::Gpio,
+    dir: gpio::GpioDir::Output,
+    level: gpio::GpioLevel::High,
+    blink: false,
+    invert: false,
+    reset: gpio::GpioReset::Pwrok,
+};
+
 /// One source for EC transport, LPC windows, and AML resources/capabilities.
 pub const X61_H8: fstart_driver_lenovo::h8::H8Config = {
     use fstart_driver_lenovo::{
@@ -567,15 +578,7 @@ pub const fn x61_gpio_pins() -> [gpio::GpioPin; 35] {
             invert: false,
             reset: gpio::GpioReset::Pwrok,
         },
-        gpio::GpioPin {
-            pin: 42,
-            mode: gpio::GpioMode::Gpio,
-            dir: gpio::GpioDir::Output,
-            level: gpio::GpioLevel::High,
-            blink: false,
-            invert: false,
-            reset: gpio::GpioReset::Pwrok,
-        },
+        X61_SMBUS_MUX,
         gpio::GpioPin {
             pin: 43,
             mode: gpio::GpioMode::Gpio,
