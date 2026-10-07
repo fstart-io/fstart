@@ -1652,30 +1652,7 @@ impl IntelIch7 {
     /// controller is in a known operating mode.
     fn isa_dma_init(&self) {
         #[cfg(target_arch = "x86_64")]
-        unsafe {
-            use fstart_core::pio::{inb, outb};
-
-            // DMA controller 1 (channels 0-3)
-            outb(0x0D, 0x00); // Master clear
-            outb(0x0B, 0x40); // Channel 0: single, addr increment, demand
-            outb(0x0B, 0x41); // Channel 1
-            outb(0x0B, 0x42); // Channel 2
-            outb(0x0B, 0x43); // Channel 3
-
-            // DMA controller 2 (channels 4-7)
-            outb(0xDA, 0x00); // Master clear
-            outb(0xD6, 0xC0); // Channel 4: cascade mode
-            outb(0xD6, 0x41); // Channel 5
-            outb(0xD6, 0x42); // Channel 6
-            outb(0xD6, 0x43); // Channel 7
-
-            // Unmask DMA controller 2 channel 4 (cascade).
-            outb(0xD4, 0x00);
-            // Mask all DMA controller 1 channels.
-            outb(0x0F, 0x0F);
-
-            let _ = inb(0x80); // small delay
-        }
+        fstart_arch::x86::legacy_pc::initialize_isa_dma();
     }
 
     /// i8259 PIC initialization.
@@ -1688,18 +1665,7 @@ impl IntelIch7 {
         unsafe {
             use fstart_core::pio::outb;
 
-            // ICW1: begin init, ICW4 needed.
-            outb(0x20, 0x11); // Master PIC
-            outb(0xA0, 0x11); // Slave PIC
-            // ICW2: vector offset (master=0x08, slave=0x70).
-            outb(0x21, 0x08);
-            outb(0xA1, 0x70);
-            // ICW3: master has slave on IRQ2, slave ID=2.
-            outb(0x21, 0x04);
-            outb(0xA1, 0x02);
-            // ICW4: 8086 mode.
-            outb(0x21, 0x01);
-            outb(0xA1, 0x01);
+            fstart_arch::x86::legacy_pc::initialize_pic(0x08, 0x70);
             // Mask all slave IRQs and all master IRQs except IRQ2, so the
             // cascade stays alive, matching coreboot setup_i8259().
             outb(0x21, 0xFB);

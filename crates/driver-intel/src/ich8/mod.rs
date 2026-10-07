@@ -1897,34 +1897,13 @@ impl IntelIch8 {
 
     fn isa_dma_init(&self) {
         #[cfg(target_arch = "x86_64")]
-        unsafe {
-            fstart_core::pio::outb(0x0d, 0x00);
-            fstart_core::pio::outb(0x0b, 0x40);
-            fstart_core::pio::outb(0x0b, 0x41);
-            fstart_core::pio::outb(0x0b, 0x42);
-            fstart_core::pio::outb(0x0b, 0x43);
-            fstart_core::pio::outb(0xda, 0x00);
-            fstart_core::pio::outb(0xd6, 0xc0);
-            fstart_core::pio::outb(0xd6, 0x41);
-            fstart_core::pio::outb(0xd6, 0x42);
-            fstart_core::pio::outb(0xd6, 0x43);
-            fstart_core::pio::outb(0xd4, 0x00);
-            fstart_core::pio::outb(0x0f, 0x0f);
-            let _ = fstart_core::pio::inb(0x80);
-        }
+        fstart_arch::x86::legacy_pc::initialize_isa_dma();
     }
 
     fn i8259_init(&self) {
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            fstart_core::pio::outb(0x20, 0x11);
-            fstart_core::pio::outb(0xa0, 0x11);
-            fstart_core::pio::outb(0x21, 0x20);
-            fstart_core::pio::outb(0xa1, 0x28);
-            fstart_core::pio::outb(0x21, 0x04);
-            fstart_core::pio::outb(0xa1, 0x02);
-            fstart_core::pio::outb(0x21, 0x01);
-            fstart_core::pio::outb(0xa1, 0x01);
+            fstart_arch::x86::legacy_pc::initialize_pic(0x20, 0x28);
             fstart_core::pio::outb(0x21, 0xfb);
             fstart_core::pio::outb(0xa1, 0xff);
             let elcr2 = fstart_core::pio::inb(0x4d1);
