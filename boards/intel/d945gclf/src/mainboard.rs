@@ -25,6 +25,9 @@ pub struct D945GclfMainboard {
     superio: Option<SmscLpc47m15x>,
 }
 
+#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+impl<S> fstart_platform_intel::IntelSmbusRouting<S> for D945GclfMainboard {}
+
 #[cfg(fstart_stage_env = "ram")]
 mod mainboard_acpi_device {
     extern crate alloc;

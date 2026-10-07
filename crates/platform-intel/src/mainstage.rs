@@ -3,7 +3,8 @@
 use crate::boot::{import_intel_directory, install_intel_load_policy};
 use crate::{
     IntelBoard, IntelChipsetConfig, IntelEarlyPlatform, IntelMainstageBoardCtx,
-    IntelMainstageBoardHooks, IntelPlatform, IntelPlatformConfig, layout,
+    IntelMainstageBoardHooks, IntelPlatform, IntelPlatformConfig, IntelSmbusRouting, SmbusRoute,
+    layout,
 };
 use fstart_core::services::memory_detect::{E820Entry, MemoryDetector};
 use fstart_core::services::{ConsoleDevice, ServiceError};
@@ -412,6 +413,7 @@ where
         })?;
         self.northbridge.post_dram_init()?;
         self.southbridge.post_dram_init()?;
+        Hooks::select_smbus(&self.southbridge, SmbusRoute::Eeprom)?;
         self.hooks.after_devices(&mut IntelMainstageBoardCtx {
             southbridge: &mut self.southbridge,
             memory: &self.ctx,
