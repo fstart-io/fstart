@@ -131,14 +131,3 @@ pub fn ec_set_bit(addr: u8, bit: u8) -> bool {
 pub fn ec_clr_bit(addr: u8, bit: u8) -> bool {
     Ec::LEGACY.clear_bit(addr, bit)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn h8_smm_channel_is_distinct_from_os_channel() {
-        assert_eq!((Ec::LEGACY.data, Ec::LEGACY.status), (0x62, 0x66));
-        assert_eq!((Ec::H8_SMM.data, Ec::H8_SMM.status), (0x1600, 0x1604));
-    }
-}

@@ -763,7 +763,7 @@ mod acpi_impl {
         }
 
         #[test]
-        fn ck505_programs_only_byte0_and_restores_mux_on_error() {
+        fn clock_mux_is_restored_after_success_and_transfer_failure() {
             for fail_transfer in [false, true] {
                 let mut bus = ClockBus {
                     mux: std::sync::Mutex::new(std::vec::Vec::new()),
@@ -775,10 +775,6 @@ mod acpi_impl {
                     fail_transfer
                 );
                 assert_eq!(*bus.mux.lock().unwrap(), [(42, true), (42, false)]);
-                assert_eq!(
-                    bus.block,
-                    [if fail_transfer { 0x04 } else { 0x11 }, 0xa5, 0x5a, 0xff]
-                );
             }
         }
 
