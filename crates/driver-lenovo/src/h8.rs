@@ -23,7 +23,17 @@ pub const H8_CONFIG1: u8 = 0x01;
 pub const H8_CONFIG2: u8 = 0x02;
 pub const H8_CONFIG3: u8 = 0x03;
 
+pub const H8_SOUND_ENABLE0: u8 = 0x04;
+pub const H8_SOUND_ENABLE1: u8 = 0x05;
 pub const H8_SOUND_REG: u8 = 0x06;
+pub const H8_SOUND_REPEAT: u8 = 0x07;
+pub const H8_USB_ALWAYS_ON: u8 = 0x0d;
+pub const H8_USB_ALWAYS_ON_ENABLE: u8 = 0x01;
+pub const H8_USB_ALWAYS_ON_AC_ONLY: u8 = 0x0c;
+pub const H8_FAN_CONTROL: u8 = 0x2f;
+pub const H8_FAN_CONTROL_AUTO: u8 = 0x80;
+pub const H8_VOLUME_CONTROL: u8 = 0x30;
+pub const H8_STATUS1: u8 = 0x47;
 
 pub const H8_TRACKPOINT_CTRL: u8 = 0x0b;
 pub const H8_TRACKPOINT_AUTO: u8 = 0x01;
@@ -65,19 +75,7 @@ impl Default for H8 {
 impl H8 {
     /// Clear any stale EC output queue bytes.
     pub fn clear_out_queue(&self) {
-        let mut timeout_us = RECV_TIMEOUT_US;
-        while timeout_us > 0 {
-            // SAFETY: fixed EC status port.
-            let sc = unsafe { fstart_core::pio::inb(0x66) };
-            if sc & EC_OBF_FLAG == 0 {
-                return;
-            }
-            // SAFETY: fixed EC data port.
-            let _garbage = unsafe { fstart_core::pio::inb(0x62) };
-            fstart_arch::udelay(1);
-            timeout_us = timeout_us.saturating_sub(1);
-        }
-        fstart_log::info!("lenovo-h8: timeout clearing EC output queue");
+        super::ec::Ec::LEGACY.clear_out_queue();
     }
 
     /// Enable one EC event (1..=127) in the event mask registers.
@@ -110,6 +108,30 @@ impl H8 {
     pub fn init_config0(&self, board_config0: u8) -> bool {
         let reg8 = board_config0 | H8_CONFIG0_SMM_H8_ENABLE | H8_CONFIG0_TC_ENABLE;
         ec_write(H8_CONFIG0, reg8) && self.enable_hotkey(true)
+    }
+
+    /// Program CONFIG1 illumination, CONFIG2/3, reset power LED and beeper,
+    /// and return the fan to EC automatic control (coreboot `h8_enable`).
+    pub fn init_controls(
+        &self,
+        config: [u8; 3],
+        illumination: Option<H8Illumination>,
+        beep_masks: [u8; 2],
+    ) -> bool {
+        let config1 = illumination.map_or(config[0], |mode| mode.config1(config[0]));
+        [
+            ec_write(H8_CONFIG1, config1),
+            ec_write(H8_CONFIG2, config[1]),
+            ec_write(H8_CONFIG3, config[2]),
+            self.led_control(H8_LED_CONTROL_ON | H8_LED_CONTROL_POWER_LED),
+            ec_write(H8_SOUND_ENABLE0, beep_masks[0]),
+            ec_write(H8_SOUND_ENABLE1, beep_masks[1]),
+            ec_write(H8_SOUND_REPEAT, 0),
+            ec_write(H8_SOUND_REG, 0),
+            ec_write(H8_FAN_CONTROL, H8_FAN_CONTROL_AUTO),
+        ]
+        .into_iter()
+        .all(core::convert::identity)
     }
 
     pub fn enable_hotkey(&self, on: bool) -> bool {
@@ -177,6 +199,45 @@ impl H8 {
         }
     }
 
+    pub fn fn_ctrl_swap(&self, on: bool) -> bool {
+        if on {
+            ec_set_bit(0xce, 4)
+        } else {
+            ec_clr_bit(0xce, 4)
+        }
+    }
+
+    /// Sticky Fn without a Fn-lock LED (older ThinkPads, including X61).
+    pub fn sticky_fn(&self, on: bool) -> bool {
+        if on {
+            ec_set_bit(H8_CONFIG0, 3)
+        } else {
+            ec_clr_bit(H8_CONFIG0, 3)
+        }
+    }
+
+    pub fn charge_primary_first(&self, primary: bool) -> bool {
+        if primary {
+            ec_clr_bit(H8_CONFIG0, 4)
+        } else {
+            ec_set_bit(H8_CONFIG0, 4)
+        }
+    }
+
+    /// Disable USB-always-on, preserving the unrelated EC policy bits.
+    pub fn usb_always_on_disable(&self) -> bool {
+        ec_read(H8_USB_ALWAYS_ON).is_some_and(|value| {
+            ec_write(
+                H8_USB_ALWAYS_ON,
+                value & !(H8_USB_ALWAYS_ON_ENABLE | H8_USB_ALWAYS_ON_AC_ONLY),
+            )
+        })
+    }
+
+    pub fn volume(&self, volume: u8) -> bool {
+        ec_write(H8_VOLUME_CONTROL, volume)
+    }
+
     /// Program the LED control register (`mode` = ON/PULSE/BLINK plus LED id).
     pub fn led_control(&self, mode: u8) -> bool {
         ec_write(H8_LED_CONTROL, mode)
@@ -189,13 +250,38 @@ impl H8 {
 
     /// True when an ultrabay device is present (H8_STATUS1 polarity).
     pub fn ultrabay_device_present(&self) -> Option<bool> {
-        let status1 = ec_read(0x30)?;
+        let status1 = ec_read(H8_STATUS1)?;
         Some(status1 & 0x5 == 0)
     }
 }
 
-const EC_OBF_FLAG: u8 = 0x01;
-const RECV_TIMEOUT_US: u32 = 10_000;
+/// H8 CONFIG1 bits 2..3 select the active illumination hardware.
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum H8Illumination {
+    Both = 0,
+    Keyboard = 1,
+    Thinklight = 2,
+    None = 3,
+}
+
+impl H8Illumination {
+    pub const fn config1(self, config1: u8) -> u8 {
+        (config1 & 0xf3) | ((self as u8) << 2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn illumination_preserves_unrelated_config1_bits() {
+        assert_eq!(H8Illumination::Thinklight.config1(0x05), 0x09);
+        assert_eq!(H8Illumination::Keyboard.config1(0xf3), 0xf7);
+        assert_eq!(H8Illumination::None.config1(0x05), 0x0d);
+    }
+}
 
 // -----------------------------------------------------------------------
 // Board configuration
@@ -242,7 +328,8 @@ impl H8Config {
         Self {
             ec_gpe: 0x12,
             has_bluetooth: true,
-            has_wwan: false,
+            // No WWAN GPIO detection on X61: coreboot assumes it is installed.
+            has_wwan: true,
             has_uwb: false,
             has_thinklight: true,
             has_keyboard_backlight: false,

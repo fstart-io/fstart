@@ -63,8 +63,12 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
     };
     northbridge.set_boot_path(boot_path);
     northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
+    // DMI is a two-peer handshake: enable SB, negotiate NB, poll SB, then
+    // complete memory-controller PM/IGD programming before loading any stage.
+    southbridge.prepare_early_post_dram_init()?;
     northbridge.early_post_dram_init()?;
     southbridge.early_post_dram_init()?;
+    northbridge.finish_early_post_dram_init()?;
     hooks.after_memory(&mut IntelEarlyCtx::new(&mut southbridge))?;
     fstart_log::info!("{}: DRAM ready", platform);
 

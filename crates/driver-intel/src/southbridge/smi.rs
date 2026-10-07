@@ -82,6 +82,35 @@ impl IchSmi {
         }
     }
 
+    /// Switch one ICH GPI between OS SCI and firmware SMI, preserving all
+    /// other pins and enables (coreboot `gpi_route_interrupt`).
+    ///
+    /// # Safety
+    /// LPC config/PM decode must be active and PCI config access serialized.
+    pub unsafe fn route_gpi(&self, gpi: u8, acpi: bool) {
+        if gpi >= 16 {
+            return;
+        }
+        let gpe_enable = self.gpe0.enable_offset();
+        self.pm.clrbits16(pmio::ALT_GP_SMI_EN, 1 << gpi);
+        self.pm.clrbits32(gpe_enable, 1 << (gpi + 16));
+        unsafe {
+            let routing = fstart_core::pio::pci_cfg_read32(0, 0x1f, 0, 0xb8);
+            fstart_core::pio::pci_cfg_write32(0, 0x1f, 0, 0xb8, gpi_routing(routing, gpi, acpi));
+        }
+        if acpi {
+            self.pm.setbits32(gpe_enable, 1 << (gpi + 16));
+        } else {
+            self.pm.setbits16(pmio::ALT_GP_SMI_EN, 1 << gpi);
+            self.pm.setbits32(pmio::SMI_EN, GPI_SMI);
+        }
+    }
+
+    /// Whether the OS currently owns the legacy EC/SCI channel.
+    pub fn acpi_enabled(&self) -> bool {
+        self.pm.read16(pmio::PM1_CNT) & pmio::SCI_EN as u16 != 0
+    }
+
     /// coreboot `smm_southbridge_clear_state()`: clear every W1C status
     /// register so no stale event fires once SMIs are enabled.
     fn clear_status(&self) {
@@ -89,6 +118,7 @@ impl IchSmi {
         self.pm.reset_pm1_status();
         self.pm.tco().reset_tco_status();
         self.gpe0.clear_status(&self.pm);
+        self.pm.write16(pmio::ALT_GP_SMI_STS, u16::MAX);
     }
 }
 
@@ -193,6 +223,10 @@ pub trait IchBoardSmmHandler {
     /// # Safety
     /// Called only by [`IchSmmHandler`] while it owns the SMM rendezvous.
     unsafe fn on_gpe(_ctx: &mut SmmContext<'_>, _gpe_status: u64) {}
+    /// Enabled alternate GPI events, indexed by GPIO number (not GPE bit).
+    /// # Safety
+    /// Called only by [`IchSmmHandler`] while it owns the SMM rendezvous.
+    unsafe fn on_gpi(_ctx: &mut SmmContext<'_>, _gpi_status: u16) {}
     /// # Safety
     /// Called only by [`IchSmmHandler`] while it owns the SMM rendezvous.
     unsafe fn on_tco_command(_ctx: &mut SmmContext<'_>, _command: u8) -> Option<u8> {
@@ -206,6 +240,27 @@ impl IchBoardSmmHandler for NoIchBoardSmmHandler {}
 const APM_CNT_ACPI_DISABLE: u8 = 0x1e;
 const APM_CNT_ACPI_ENABLE: u8 = 0xe1;
 const APM_CNT_FINALIZE: u8 = 0xcb;
+// ICH7..10 alternate GPIO source: bit 10 in both SMI_EN and SMI_STS.
+const GPI_SMI: u32 = 1 << 10;
+
+const fn gpi_routing(previous: u32, gpi: u8, acpi: bool) -> u32 {
+    let shift = 2 * gpi;
+    (previous & !(3 << shift)) | ((if acpi { 2 } else { 1 }) << shift)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpi_route_preserves_other_pins() {
+        assert_eq!(
+            gpi_routing(0xa5a5_a5a5, 2, true),
+            0xa5a5_a5a5 & !0x30 | 0x20
+        );
+        assert_eq!(gpi_routing(0xffff_ffff, 2, false), 0xffff_ffdf);
+    }
+}
 
 /// SMI handler for every ICH PM I/O layout.
 ///
@@ -264,8 +319,12 @@ impl<B: IchBoardSmmHandler> SmmHandler for IchSmmHandler<B> {
                 B::on_gpe(ctx, gpe_status);
                 gpe0.clear_status(&pm);
             }
-            pm.write32(pmio::SMI_STS, 0xffff_ffff);
-            pm.write16(pmio::ALT_GP_SMI_STS, 0xffff);
+            if smi_sts & GPI_SMI != 0 {
+                let status = pm.read16(pmio::ALT_GP_SMI_STS);
+                pm.write16(pmio::ALT_GP_SMI_STS, status);
+                B::on_gpi(ctx, status & pm.read16(pmio::ALT_GP_SMI_EN));
+            }
+            pm.write32(pmio::SMI_STS, smi_sts);
             pm.setbits32(pmio::SMI_EN, pmio::EOS);
         }
     }

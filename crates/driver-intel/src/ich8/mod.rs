@@ -976,6 +976,7 @@ pub struct IntelIch8 {
     config: &'static IntelIch8Config,
     smbus: Option<I801SmBus>,
     pm: PmIo,
+    ide_primary: Option<bool>,
 }
 
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
@@ -984,6 +985,12 @@ unsafe impl Send for IntelIch8 {}
 unsafe impl Sync for IntelIch8 {}
 
 impl IntelIch8 {
+    /// Board population policy, sampled before mainstage IDE programming.
+    /// The primary channel can serve a detachable dock rather than a fixed disk.
+    pub fn set_ide_primary_enabled(&mut self, enabled: bool) {
+        self.ide_primary = Some(enabled);
+    }
+
     fn lpc(&self) -> ecam::EcamDevice {
         ecam::EcamDevice::new(0, ich8::LPC_DEV, ich8::LPC_FUNC)
     }
@@ -1273,7 +1280,7 @@ impl IntelIch8 {
         rcba.regs().lctl.modify(LCTL_REG::ASPM_CONTROL.val(3));
     }
 
-    fn poll_vc1(&self) {
+    fn poll_vc1(&self) -> Result<(), ServiceError> {
         let rcba = self.rcba();
         let mut timeout = 0x7ffff;
         while (rcba.regs().v1sts.get() & (1 << 1)) != 0 && timeout != 0 {
@@ -1282,6 +1289,7 @@ impl IntelIch8 {
         }
         if timeout == 0 {
             fstart_log::error!("intel-ich8: VC1 negotiation timeout");
+            return Err(ServiceError::Timeout);
         }
 
         if ((rcba.regs().lsts.get() >> 4) & 0x3f) == 2 {
@@ -1297,7 +1305,9 @@ impl IntelIch8 {
         }
         if timeout == 0 {
             fstart_log::error!("intel-ich8: VC1 arbitration-table update timeout");
+            return Err(ServiceError::Timeout);
         }
+        Ok(())
     }
 
     fn configure_power_options(&self) {
@@ -2014,6 +2024,10 @@ impl IntelIch8 {
         {
             return false;
         }
+        // Sleep type survives loss of DRAM power: require an actual wake.
+        if self.pm().read16(pmio::PM1_STS) & pmio::WAK_STS == 0 {
+            return false;
+        }
         let pm1_cnt = self.pm().read32(pmio::PM1_CNT);
         let slp_typ = pm1_cnt & pmio::SLP_TYP_MASK;
         if slp_typ == SLP_TYP_S3 {
@@ -2142,6 +2156,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
             config,
             smbus: None,
             pm: PmIo::new(ich8::DEFAULT_PMBASE),
+            ide_primary: None,
         })
     }
 
@@ -2160,7 +2175,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
     }
 
     /// Raminit-era southbridge init: SMBus, PIRQ routes, function disable,
-    /// early chipset settings, HPET, and DMI.
+    /// early chipset settings and HPET. DMI follows DRAM initialization.
     fn early_init(&mut self) -> Result<(), ServiceError> {
         // Bootblock-level SPI, fixed BAR, CMOS/watchdog, LPC decode, and GPIO
         // setup was already done by pre_console_init(). Avoid replaying those
@@ -2178,11 +2193,9 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         self.pm().write32(GPE0_STS_ICH8, 0xffff_ffff);
         self.pm().write32(GPE0_EN_ICH8, self.config.gpe0_en);
         self.enable_hpet();
-        self.setup_dmi();
         if let Some(sata) = self.config.sata.as_ref() {
             self.sata_enable(sata);
         }
-        let _ = self.detect_s3_resume();
         fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd.bits());
         Ok(())
     }
@@ -2201,16 +2214,31 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         bars
     }
 
+    fn detect_s3_resume(&self) -> bool {
+        IntelIch8::detect_s3_resume(self)
+    }
+
+    fn prepare_early_post_dram_init(&mut self) -> Result<(), ServiceError> {
+        self.setup_dmi();
+        Ok(())
+    }
+
+    fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
+        self.poll_vc1()
+    }
+
     /// DRAM-backed ramstage device init: PCIe/PCI bridge, USB, IDE/HDA/SATA,
     /// LPC ramstage setup, interrupt routing, and I/O traps.
     fn post_dram_init(&mut self) -> Result<(), ServiceError> {
-        self.poll_vc1();
         self.early_chipset_settings();
         self.pcie_init();
         self.pci_bridge_init();
         self.usb_init();
-        if let Some(ide) = self.config.ide.as_ref() {
-            self.ide_init(ide);
+        if let Some(ide) = self.config.ide {
+            self.ide_init(&IdeConfig {
+                enable_primary: self.ide_primary.unwrap_or(ide.enable_primary),
+                ..ide
+            });
         }
         if let Some(hda) = self.config.hda.as_ref() {
             self.hda_init(hda);

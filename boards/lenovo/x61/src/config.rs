@@ -9,9 +9,8 @@ use fstart_driver_superio::pc87392;
 use fstart_intel_gma::framebuffer::FramebufferConfig;
 use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::gm965::{
-    Gm965Ich8Config, Gm965Ich8Platform, Gm965IgdConfig, IdeConfig, IoTrapAccess, IoTrapConfig,
-    LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode,
-    UsbConfig,
+    Gm965Ich8Config, Gm965Ich8Platform, Gm965IgdConfig, IdeConfig, LpcFixedIoDecode,
+    LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
 };
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 
@@ -119,7 +118,8 @@ pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
     .gpe0_en(0x0104_0046)
     .gpi_routing([0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0])
     .ide(IdeConfig {
-        enable_primary: true,
+        // Enabled dynamically only for a populated, connected dock UltraBay.
+        enable_primary: false,
         enable_secondary: false,
     })
     .sata(SataConfig {
@@ -140,12 +140,6 @@ pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
         x61_hda_extra_verbs(),
     )
     .gpio_pins(x61_gpio_pins())
-    .io_traps([IoTrapConfig {
-        index: 3,
-        base: 0x0800,
-        size: 0x10,
-        access: IoTrapAccess::Any,
-    }])
     .build();
 
 // ---------------------------------------------------------------------------
@@ -158,12 +152,12 @@ pub const fn x61_igd_config() -> Gm965IgdConfig {
         enable_pipe_b: true,
         stolen_memory_mb: 32,
         vbt: VbtSource::ffs(X61_VBT),
-        panel_power_up_delay: 2000,
-        panel_power_down_delay: 2000,
-        panel_backlight_on_delay: 2000,
-        panel_backlight_off_delay: 2000,
-        panel_power_cycle_delay: 6,
-        default_pwm_freq: 0,
+        panel_power_up_delay: 250,
+        panel_power_down_delay: 250,
+        panel_backlight_on_delay: 2500,
+        panel_backlight_off_delay: 2500,
+        panel_power_cycle_delay: 3,
+        default_pwm_freq: 165,
         duty_cycle: 100,
         display: Some(X61_DISPLAY),
     }
@@ -615,7 +609,30 @@ pub fn x61_dock_superio_config() -> pc87392::Pc87392Config {
 
 pub fn x61_ck505_config() -> I2cCk505Config {
     I2cCk505Config {
-        mask: hvec([0xff, 0, 0, 0, 0]),
-        regs: hvec([0x11, 0, 0, 0, 0]),
+        mask: hvec([0xff]),
+        regs: hvec([0x11]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ide_channels_start_disabled_until_dock_population_is_sampled() {
+        let ide = X61_PLATFORM.southbridge.ide.unwrap();
+        assert!(!ide.enable_primary);
+        assert!(!ide.enable_secondary);
+    }
+
+    #[test]
+    fn panel_timing_and_pwm_match_x61_devicetree() {
+        let igd = x61_igd_config();
+        assert_eq!(igd.panel_power_up_delay, 250);
+        assert_eq!(igd.panel_power_down_delay, 250);
+        assert_eq!(igd.panel_backlight_on_delay, 2500);
+        assert_eq!(igd.panel_backlight_off_delay, 2500);
+        assert_eq!(igd.panel_power_cycle_delay, 3);
+        assert_eq!(igd.default_pwm_freq, 165);
     }
 }

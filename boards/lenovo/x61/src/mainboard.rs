@@ -9,13 +9,13 @@
 
 #![allow(clippy::result_unit_err)]
 
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+#[cfg(all(not(test), any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
 use crate::config::Hardware as Gm965Ich8;
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::ServiceError;
-#[cfg(fstart_stage_env = "car")]
+#[cfg(all(not(test), fstart_stage_env = "car"))]
 use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
-#[cfg(fstart_stage_env = "ram")]
+#[cfg(all(not(test), fstart_stage_env = "ram"))]
 use fstart_platform_intel::{IntelMainstageBoardCtx, IntelMainstageBoardHooks};
 
 /// Board-specific X61 hooks for the GM965/ICH8 flow.
@@ -40,7 +40,7 @@ mod mainboard_acpi_device {
     }
 }
 
-#[cfg(fstart_stage_env = "car")]
+#[cfg(all(not(test), fstart_stage_env = "car"))]
 impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
     fn before_console(&mut self, ctx: &mut IntelEarlyCtx<Gm965Ich8>) -> Result<(), ServiceError> {
         setup_dock_console(ctx.southbridge());
@@ -53,7 +53,7 @@ impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
     }
 }
 
-#[cfg(fstart_stage_env = "ram")]
+#[cfg(all(not(test), fstart_stage_env = "ram"))]
 impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
     fn before_console(
         &mut self,
@@ -63,18 +63,46 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
         Ok(())
     }
 
+    fn before_devices(
+        &mut self,
+        ctx: &mut IntelMainstageBoardCtx<Gm965Ich8>,
+    ) -> Result<(), ServiceError> {
+        // Sample the detachable UltraBay before ICH8 programs IDE timings.
+        // An absent or disconnected dock cannot supply a primary-channel disk.
+        let primary = dock::dock_present(ctx.southbridge()) && dock::ultrabay_present();
+        ctx.southbridge().set_ide_primary_enabled(primary);
+        Ok(())
+    }
+
     fn after_devices(
         &mut self,
         ctx: &mut IntelMainstageBoardCtx<Gm965Ich8>,
     ) -> Result<(), ServiceError> {
         dock::post_raminit_setup(ctx.southbridge());
         // EC/PMH7 hardware setup is independent of ACPI table emission.
-        x61_ec_init();
+        let resume = ctx.resume;
+        x61_ec_init(ctx.southbridge(), resume);
+        dock::mainstage_power_policy();
+        if init_ck505(ctx.southbridge()).is_err() {
+            fstart_log::error!("lenovo-x61: CK505 programming failed");
+        }
+        ricoh_sd_write_protect();
+        Ok(())
+    }
+
+    fn before_handoff(
+        &mut self,
+        ctx: &mut IntelMainstageBoardCtx<Gm965Ich8>,
+    ) -> Result<(), ServiceError> {
+        // The shared installer sets SCI_EN directly, without an APMC. Once
+        // permanent SMM is installed, initialize board EC routing via its
+        // existing ACPI command handler (keep ACPI ownership on resume).
+        unsafe { fstart_core::pio::outb(0xb2, if ctx.resume { 0xe1 } else { 0x1e }) };
         Ok(())
     }
 }
 
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+#[cfg(all(not(test), any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
 fn setup_dock_console(southbridge: &mut fstart_driver_intel::ich8::IntelIch8) {
     // X61-specific dock routing. Failures are non-fatal before console.
     let _ = dock::dlpc_init();
@@ -214,9 +242,27 @@ pub mod dock {
         southbridge.gpio_get(13).is_ok_and(|high| !high)
     }
 
+    /// Whether the laptop-side LPC switch reports a connected dock.
+    pub fn connected() -> bool {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: fixed decoded DLPC switch.
+        unsafe {
+            inb(DLPC_SWITCH) & 8 != 0
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            false
+        }
+    }
+
+    /// Connect using the firmware's legacy EC channel.
+    pub fn dock_connect() -> Result<(), ()> {
+        dock_connect_with_ec(fstart_driver_lenovo::ec::Ec::LEGACY)
+    }
+
     /// Connect the dock-side LPC bus and initialize dock GPIO/power.
     #[cfg(target_arch = "x86_64")]
-    pub fn dock_connect() -> Result<(), ()> {
+    pub fn dock_connect_with_ec(ec: fstart_driver_lenovo::ec::Ec) -> Result<(), ()> {
         let mut timeout = 1000;
         // Start from the vendor/coreboot state: dock reset asserted and DLPC
         // powered down, preserving unrelated GPIO bits in the DLPC GPIO data
@@ -233,6 +279,7 @@ pub mod dock {
         if timeout == 0 {
             // SAFETY: disable the DLPC switch on failure.
             unsafe { outb(DLPC_SWITCH, 0x00) };
+            dlpc_write(0x07, 0x19);
             dlpc_write(0x30, 0x00);
             return Err(());
         }
@@ -278,7 +325,11 @@ pub mod dock {
         ] {
             dock_gpio_set_mode(port, PC87392_GPIO_PIN_PULLUP, 0x00);
         }
-        dock_gpio_set_mode(0x07, PC87392_GPIO_PIN_PULLUP, 0x02);
+        dock_gpio_set_mode(
+            0x07,
+            PC87392_GPIO_PIN_PULLUP | PC87392_GPIO_PIN_DEBOUNCE,
+            PC87392_GPIO_PIN_TRIGGERS_SMI,
+        );
         dock_gpio_set_mode(
             0x10,
             PC87392_GPIO_PIN_DEBOUNCE | PC87392_GPIO_PIN_PULLUP,
@@ -300,13 +351,23 @@ pub mod dock {
         dock_write(0x30, 0x01);
         // SAFETY: dock GPIO block is configured at 0x1620.
         unsafe {
-            outb(DOCK_GPIO_BASE + 0x08, 0x00);
+            set_ultrabay_power(ultrabay_present());
             outb(DOCK_GPIO_BASE + 0x03, 0x00);
             outb(DOCK_GPIO_BASE + 0x02, 0x82);
-            outb(DOCK_GPIO_BASE + 0x04, 0xff);
-            outb(DOCK_GPIO_BASE + 0x08, 0x03);
+            outb(DOCK_GPIO_BASE + 0x04, inb(DOCK_GPIO_BASE + 0x04) | 0x40);
         }
+        if !set_usb_power(ec, true) {
+            return Err(());
+        }
+        dock_write(0x07, 0x01);
+        dock_write(0x60, 0x03);
+        dock_write(0x61, 0xbc);
+        dock_write(0x70, 7);
+        dock_write(0x30, 0x01);
         dock_write(0x07, 0x03);
+        dock_write(0x60, 0x03);
+        dock_write(0x61, 0xf8);
+        dock_write(0x70, 4);
         dock_write(0x30, 0x01);
         disable_dock_watchdog();
         Ok(())
@@ -314,27 +375,77 @@ pub mod dock {
 
     /// Connect the dock-side LPC bus and initialize dock GPIO/power.
     #[cfg(not(target_arch = "x86_64"))]
-    pub fn dock_connect() -> Result<(), ()> {
+    pub fn dock_connect_with_ec(_ec: fstart_driver_lenovo::ec::Ec) -> Result<(), ()> {
         Ok(())
     }
 
-    /// Disconnect the dock-side LPC bus and power rails.
+    /// UltraBay presence for board IDE/power policy; never sample an absent dock.
     #[cfg(target_arch = "x86_64")]
-    pub fn dock_disconnect() {
-        // SAFETY: DLPC and dock GPIO ports are fixed board resources.
-        unsafe { outb(DLPC_SWITCH, 0x00) };
+    pub fn ultrabay_present() -> bool {
+        // SAFETY: dock GPIO input is decoded while connected.
+        connected() && unsafe { inb(DOCK_GPIO_BASE + 1) & 2 == 0 }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_ultrabay_power(on: bool) {
+        // SAFETY: decoded dock power register; preserve USB and other rails.
+        unsafe {
+            let previous = inb(DOCK_GPIO_BASE + 8);
+            outb(
+                DOCK_GPIO_BASE + 8,
+                if on { previous | 1 } else { previous & !1 },
+            );
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_usb_power(ec: fstart_driver_lenovo::ec::Ec, on: bool) -> bool {
+        // SAFETY: decoded dock power register; preserve UltraBay/other rails.
+        unsafe {
+            let previous = inb(DOCK_GPIO_BASE + 8);
+            outb(
+                DOCK_GPIO_BASE + 8,
+                if on { previous | 2 } else { previous & !2 },
+            );
+        }
+        if on {
+            ec.set_bit(0x02, 0)
+        } else {
+            ec.clear_bit(0x02, 0)
+        }
+    }
+
+    /// Mainboard UltraBay power/LED policy after the H8 configuration reset.
+    #[cfg(target_arch = "x86_64")]
+    pub fn mainstage_power_policy() {
+        let present = ultrabay_present();
+        if connected() {
+            set_ultrabay_power(present);
+            let _ = set_usb_power(fstart_driver_lenovo::ec::Ec::LEGACY, true);
+        }
+        let _ = fstart_driver_lenovo::h8::H8.led_control(if present { 0x84 } else { 0x04 });
+    }
+
+    /// Disconnect the dock-side LPC bus and power rails, in vendor order.
+    #[cfg(target_arch = "x86_64")]
+    pub fn dock_disconnect_with_ec(ec: fstart_driver_lenovo::ec::Ec) {
+        // Assert D_PLTRST# and DLPCPD before removing power/LPC.
+        unsafe { outb(DLPC_GPIO, inb(DLPC_GPIO) & 0xfc) };
         delay_ms(10);
-        // SAFETY: dock GPIO base is active while connected.
-        unsafe { outb(DLPC_GPIO, 0xfc) };
-        delay_ms(10);
-        // SAFETY: dock GPIO block is configured at 0x1620.
-        unsafe { outb(DOCK_GPIO_BASE + 0x08, 0x00) };
+        let _ = set_usb_power(ec, false);
+        set_ultrabay_power(false);
         delay_us(10_000);
+        // SAFETY: fixed DLPC switch, disconnected only after power removal.
+        unsafe { outb(DLPC_SWITCH, 0x00) };
+    }
+
+    pub fn dock_disconnect() {
+        dock_disconnect_with_ec(fstart_driver_lenovo::ec::Ec::LEGACY);
     }
 
     /// Disconnect the dock-side LPC bus and power rails.
     #[cfg(not(target_arch = "x86_64"))]
-    pub fn dock_disconnect() {}
+    pub fn dock_disconnect_with_ec(_ec: fstart_driver_lenovo::ec::Ec) {}
 
     /// Enable the dock-side PC87392 COM1 at 0x3f8.
     #[cfg(target_arch = "x86_64")]
@@ -366,9 +477,85 @@ pub mod dock {
         dock_write(0x30, 0x00);
     }
 
+    /// Legacy SMM EC query mapping, distinct from the OS AML hotkey policy.
+    pub const fn smm_event_command(event: u8) -> Option<u8> {
+        match event {
+            0x18 | 0x27 | 0x50 => Some(2),
+            0x37 | 0x58 => Some(1),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn smm_ec_dock_event_mapping_matches_coreboot() {
+            for event in [0x18, 0x27, 0x50] {
+                assert_eq!(smm_event_command(event), Some(2));
+            }
+            for event in [0x37, 0x58] {
+                assert_eq!(smm_event_command(event), Some(1));
+            }
+            assert_eq!(smm_event_command(0x14), None);
+        }
+    }
+
     /// Switch the X61 SMBus mux back to the EEPROM side after SPD/raminit.
     pub fn post_raminit_setup(southbridge: &impl fstart_core::services::Southbridge) {
         let _ = southbridge.gpio_set(42, false);
+    }
+}
+
+/// CK505 shares the SPD side of GPIO42's SMBus mux. Always restore EEPROM
+/// routing, including a failed block transfer.
+#[cfg(fstart_stage_env = "ram")]
+fn init_ck505(
+    southbridge: &mut (impl fstart_core::services::Southbridge + fstart_core::services::SmBus),
+) -> Result<(), ServiceError> {
+    use fstart_driver_intel::generic::ck505::I2cCk505;
+
+    let mut clock = I2cCk505::new_at_address(crate::config::x61_ck505_config(), 0x69)
+        .map_err(|_| ServiceError::HardwareError)?;
+    southbridge.gpio_set(42, true)?;
+    let programmed = clock.init_on_smbus(southbridge);
+    let restored = southbridge.gpio_set(42, false);
+    restored?;
+    programmed.map_err(|_| ServiceError::HardwareError)
+}
+
+/// Board quirk for the Ricoh SD controller behind the ICH PCI bridge. Byte
+/// accesses are essential: F9 is a write-protect key, not a dword RMW field.
+#[cfg(all(not(test), fstart_stage_env = "ram"))]
+fn ricoh_sd_write_protect() {
+    use fstart_core::pio::{inb, outb, outl, pci_cfg_read32};
+    // SAFETY: mainstage PCI enumeration has assigned the bridge's bus number;
+    // only the X61's downstream PCI bus is scanned, without changing topology.
+    unsafe {
+        let bus = (pci_cfg_read32(0, 0x1e, 0, 0x18) >> 8) as u8;
+        if bus == 0 || bus == 0xff {
+            return;
+        }
+        for dev in 0..32u8 {
+            for function in 0..8u8 {
+                if pci_cfg_read32(bus, dev, function, 0) != 0x0822_1180 {
+                    continue;
+                }
+                let address = 0x8000_0000
+                    | (u32::from(bus) << 16)
+                    | (u32::from(dev) << 11)
+                    | (u32::from(function) << 8)
+                    | 0xf8;
+                outl(0xcf8, address);
+                if inb(0xcfe) != 0x20 {
+                    outb(0xcfd, 0xfc); // F9: unlock
+                    outb(0xcfe, 0x20); // FA: SDWPPol, no CLKRUNDis/SDPWRPol
+                    outb(0xcfd, 0x00); // F9: relock
+                }
+                return;
+            }
+        }
     }
 }
 
@@ -399,27 +586,16 @@ mod acpi_impl {
     use fstart_driver_lenovo::h8::H8Config;
     use fstart_platform_intel::gm965::Gm965Ich8AcpiContext;
 
-    /// Assemble the X61 DSDT: board glue (TRAP mechanism, sleep/wake hooks,
+    /// Assemble the X61 DSDT: board glue (TCO dock commands, sleep/wake hooks,
     /// dock, GPE routing) plus the complete H8 EC surface from the Lenovo
     /// driver.
     pub fn x61_mainboard_dsdt_aml(context: Gm965Ich8AcpiContext) -> Vec<u8> {
         let mut out = Vec::new();
 
-        // Root scope: ICH8 SMI trap + sleep/wake glue into the EC.
+        // Root sleep/wake glue. Dock commands use the existing TCO mailbox,
+        // not an unbacked AML SMIF variable or an I/O trap/GNVS channel.
         out.extend_from_slice(&acpi_dsl! {
             Scope("\\") {
-                Name("SMIF", 0u32);
-                OperationRegion("IOT_", SystemIO, 0x0800u32, 0x10u32);
-                Field("IOT_", ByteAcc, NoLock, Preserve) {
-                    Offset(0x08),
-                    TRP0, 8,
-                }
-                Method("TRAP", 1, Serialized) {
-                    SMIF = Arg0;
-                    TRP0 = 0u32;
-                    Return(SMIF);
-                }
-
                 Method("_PTS", 1, NotSerialized) {
                     #{const "\\_SB_.PCI0.LPCB.EC__.MUTE"}(1u32);
                     #{const "\\_SB_.PCI0.LPCB.EC__.USBP"}(0u32);
@@ -495,11 +671,30 @@ mod acpi_impl {
         // The complete H8 EC surface (EC device, batteries, thermal zones
         // with fan power resource, lid, AC, sleep button, HKEY hub, and the
         // PMH7/ECMM/ECGS/TWRI resource devices).
-        let h8 = H8Config::x61();
-        out.extend(fstart_driver_lenovo::h8_acpi::dsdt_aml(
+        let mut h8 = H8Config::x61();
+        h8.has_bluetooth = super::ec::bluetooth_present();
+        let brightness = acpi_dsl! {
+            Scope("\\") {
+                Method("BRTU", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.INCB"}(); }
+                Method("BRTD", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.DECB"}(); }
+            }
+        };
+        out.extend(fstart_driver_lenovo::h8_acpi::dsdt_aml_with_brightness(
             &h8,
             context.lpc_scope(),
+            &brightness,
         ));
+
+        // Open the EC scope only after its Device declaration. This also
+        // allows standalone ACPICA disassembly/recompilation without externals.
+        out.extend_from_slice(&acpi_dsl! {
+            Scope(#{const "\\_SB_.PCI0.LPCB.EC__"}) {
+                Method("_Q18", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x09u32); }
+                Method("_Q37", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 0u32); }
+                Method("_Q50", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }
+                Method("_Q58", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 0u32); }
+            }
+        });
 
         out
     }
@@ -513,6 +708,78 @@ mod acpi_impl {
         use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
         use std::fs;
         use std::process::Command;
+
+        struct ClockBus {
+            mux: std::sync::Mutex<std::vec::Vec<(u32, bool)>>,
+            block: [u8; 4],
+            fail_transfer: bool,
+        }
+
+        impl fstart_core::services::Southbridge for ClockBus {
+            fn gpio_set(&self, pin: u32, high: bool) -> Result<(), crate::mainboard::ServiceError> {
+                self.mux.lock().unwrap().push((pin, high));
+                Ok(())
+            }
+        }
+
+        impl fstart_core::services::SmBus for ClockBus {
+            fn read_byte(&mut self, _: u8, _: u8) -> Result<u8, crate::mainboard::ServiceError> {
+                panic!("CK505 requires block transfers");
+            }
+            fn write_byte(
+                &mut self,
+                _: u8,
+                _: u8,
+                _: u8,
+            ) -> Result<(), crate::mainboard::ServiceError> {
+                panic!("CK505 requires block transfers");
+            }
+            fn block_read(
+                &mut self,
+                addr: u8,
+                command: u8,
+                data: &mut [u8],
+            ) -> Result<usize, crate::mainboard::ServiceError> {
+                assert_eq!((addr, command), (0x69, 0));
+                assert_eq!(self.mux.lock().unwrap().last(), Some(&(42, true)));
+                if self.fail_transfer {
+                    return Err(crate::mainboard::ServiceError::IoError);
+                }
+                data[..4].copy_from_slice(&self.block);
+                Ok(4)
+            }
+            fn block_write(
+                &mut self,
+                addr: u8,
+                command: u8,
+                data: &[u8],
+            ) -> Result<(), crate::mainboard::ServiceError> {
+                assert_eq!((addr, command), (0x69, 0));
+                assert_eq!(self.mux.lock().unwrap().last(), Some(&(42, true)));
+                self.block.copy_from_slice(data);
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn ck505_programs_only_byte0_and_restores_mux_on_error() {
+            for fail_transfer in [false, true] {
+                let mut bus = ClockBus {
+                    mux: std::sync::Mutex::new(std::vec::Vec::new()),
+                    block: [0x04, 0xa5, 0x5a, 0xff],
+                    fail_transfer,
+                };
+                assert_eq!(
+                    crate::mainboard::init_ck505(&mut bus).is_err(),
+                    fail_transfer
+                );
+                assert_eq!(*bus.mux.lock().unwrap(), [(42, true), (42, false)]);
+                assert_eq!(
+                    bus.block,
+                    [if fail_transfer { 0x04 } else { 0x11 }, 0xa5, 0x5a, 0xff]
+                );
+            }
+        }
 
         #[test]
         fn complete_dsdt_iasl_round_trip() {
@@ -543,6 +810,25 @@ mod acpi_impl {
                 std::string::String::from_utf8_lossy(&disassemble.stdout),
                 std::string::String::from_utf8_lossy(&disassemble.stderr)
             );
+            let source = fs::read_to_string(dir.join("dsdt.dsl")).unwrap();
+            for method in ["_Q18", "_Q37", "_Q50", "_Q58", "BRTU", "BRTD"] {
+                assert!(source.contains(&std::format!("Method ({method},")));
+            }
+            for (method, event) in [("_Q37", "Zero"), ("_Q58", "Zero"), ("_Q50", "0x03")] {
+                let body = source
+                    .split(&std::format!("Method ({method},"))
+                    .nth(1)
+                    .unwrap()
+                    .split('}')
+                    .next()
+                    .unwrap();
+                assert!(body.contains(&std::format!("Notify (\\_SB.DOCK, {event})")));
+            }
+            assert!(source.contains("HKEY.RHK (0x09)"));
+            assert!(source.contains("GFX0.INCB ()"));
+            assert!(source.contains("GFX0.DECB ()"));
+            assert!(!source.contains("SMIF"));
+            assert!(!source.contains("Method (TRAP,"));
             fs::rename(dir.join("dsdt.aml"), dir.join("original.aml")).unwrap();
             let compile = Command::new("iasl")
                 .current_dir(&dir)
@@ -556,12 +842,26 @@ mod acpi_impl {
                 std::string::String::from_utf8_lossy(&compile.stderr)
             );
 
-            // With fixed board constants encoded canonically, a single
-            // disassemble/recompile must reproduce the linked table exactly.
+            // ACPICA narrows pre-existing shared Intel integer encodings on
+            // the first pass. Once canonicalized, require stable AML bytes.
+            let canonical = fs::read(dir.join("dsdt.aml")).unwrap();
+            fs::rename(dir.join("dsdt.dsl"), dir.join("original.dsl")).unwrap();
+            for arguments in [&["-d", "dsdt.aml"][..], &["-oa", "-tc", "dsdt.dsl"][..]] {
+                let output = Command::new("iasl")
+                    .current_dir(&dir)
+                    .args(arguments)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "canonical roundtrip failed: {}{}",
+                    std::string::String::from_utf8_lossy(&output.stdout),
+                    std::string::String::from_utf8_lossy(&output.stderr)
+                );
+            }
             let recompiled = fs::read(dir.join("dsdt.aml")).unwrap();
-            // ACPICA rewrites compiler-identification header fields; the AML
-            // payload itself must be byte-for-byte identical.
-            assert_eq!(&recompiled[36..], &dsdt[36..]);
+            // Ignore only compiler-identification fields in the table header.
+            assert_eq!(&recompiled[36..], &canonical[36..]);
             fs::remove_dir_all(dir).unwrap();
         }
     }

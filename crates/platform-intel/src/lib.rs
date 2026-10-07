@@ -381,6 +381,12 @@ pub trait IntelMainstageBoardHooks<P: IntelEarlyPlatform>: MainboardAcpi<P> {
         Ok(())
     }
 
+    /// Sample board population policy after PCI allocation but before chipset
+    /// device programming, e.g. a removable dock's primary IDE channel.
+    fn before_devices(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
     fn after_devices(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
         Ok(())
     }

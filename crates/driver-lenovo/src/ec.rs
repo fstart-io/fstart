@@ -1,103 +1,144 @@
-//! Low-level EC port-I/O handshake (data 0x62, command/status 0x66).
+//! Low-level ACPI EC handshake with explicit ports for SMM/OS ownership.
 //!
-//! Ported from coreboot `ec/acpi/ec.c`. All timeouts are simple spin loops
-//! over `udelay`, matching firmware constraints (no timers up yet in the
-//! hooks that talk to the EC).
+//! Legacy firmware uses 0x62/0x66. H8 exposes a second channel at
+//! 0x1600/0x1604 so SMM need not race the OS on the legacy channel.
 
 use fstart_core::pio::{inb, outb};
-use fstart_log::{Hex, info};
 
-const EC_DATA: u16 = 0x62;
-const EC_SC: u16 = 0x66;
-
-/// Status register: output buffer full.
 const EC_OBF: u8 = 0x01;
-/// Status register: input buffer full.
 const EC_IBF: u8 = 0x02;
-
+const EC_SCI_EVT: u8 = 0x20;
 const RD_EC: u8 = 0x80;
 const WR_EC: u8 = 0x81;
+const QR_EC: u8 = 0x84;
+const TIMEOUT_US: u32 = 10_000;
 
-const SEND_TIMEOUT_US: u32 = 10_000;
-const RECV_TIMEOUT_US: u32 = 10_000;
-const POLL_DELAY_US: u32 = 1;
+/// A decoded EC command/data channel. Callers serialize transactions.
+#[derive(Debug, Clone, Copy)]
+pub struct Ec {
+    data: u16,
+    status: u16,
+}
 
-fn wait_ec_sc(mask: u8, value: u8, timeout_us: u32) -> bool {
-    let mut timeout = timeout_us;
-    while timeout > 0 {
-        // SAFETY: fixed EC status port decoded by the southbridge LPC.
-        let sc = unsafe { inb(EC_SC) };
-        if (sc & mask) == value {
-            return true;
+impl Ec {
+    pub const LEGACY: Self = Self::new(0x62, 0x66);
+    pub const H8_SMM: Self = Self::new(0x1600, 0x1604);
+
+    pub const fn new(data: u16, status: u16) -> Self {
+        Self { data, status }
+    }
+
+    #[inline(always)]
+    pub fn status(&self) -> u8 {
+        // SAFETY: caller selected a decoded EC channel.
+        unsafe { inb(self.status) }
+    }
+
+    #[inline(always)]
+    fn wait(&self, mask: u8, value: u8) -> bool {
+        for _ in 0..TIMEOUT_US {
+            if self.status() & mask == value {
+                return true;
+            }
+            fstart_arch::udelay(1);
         }
-        #[cfg(feature = "x86_64")]
-        fstart_arch::x86::udelay(POLL_DELAY_US);
-        #[cfg(not(feature = "x86_64"))]
-        for _ in 0..200 {
-            core::hint::spin_loop();
+        false
+    }
+
+    #[inline(always)]
+    fn command(&self, command: u8) -> bool {
+        if !self.wait(EC_IBF, 0) {
+            return false;
         }
-        timeout = timeout.saturating_sub(POLL_DELAY_US);
+        // SAFETY: decoded EC command port.
+        unsafe { outb(self.status, command) };
+        true
     }
-    false
+
+    fn send(&self, data: u8) -> bool {
+        if !self.wait(EC_IBF, 0) {
+            return false;
+        }
+        // SAFETY: decoded EC data port.
+        unsafe { outb(self.data, data) };
+        true
+    }
+
+    #[inline(always)]
+    fn receive(&self) -> Option<u8> {
+        if !self.wait(EC_OBF, EC_OBF) {
+            return None;
+        }
+        // SAFETY: decoded EC data port.
+        Some(unsafe { inb(self.data) })
+    }
+
+    pub fn read(&self, addr: u8) -> Option<u8> {
+        if !self.command(RD_EC) || !self.send(addr) {
+            return None;
+        }
+        self.receive()
+    }
+
+    pub fn write(&self, addr: u8, data: u8) -> bool {
+        self.command(WR_EC) && self.send(addr) && self.send(data)
+    }
+
+    pub fn set_bit(&self, addr: u8, bit: u8) -> bool {
+        self.read(addr)
+            .is_some_and(|val| self.write(addr, val | (1 << bit)))
+    }
+
+    pub fn clear_bit(&self, addr: u8, bit: u8) -> bool {
+        self.read(addr)
+            .is_some_and(|val| self.write(addr, val & !(1 << bit)))
+    }
+
+    /// Query only if attention is asserted; bounded handshake on all paths.
+    // Inline to avoid a promoted port-pair reference in the raw-copy SMM image.
+    #[inline(always)]
+    pub fn query_event(&self) -> Option<u8> {
+        if self.status() & EC_SCI_EVT == 0 || !self.command(QR_EC) {
+            return None;
+        }
+        self.receive()
+    }
+
+    pub fn clear_out_queue(&self) {
+        for _ in 0..TIMEOUT_US {
+            if self.status() & EC_OBF == 0 {
+                return;
+            }
+            // SAFETY: drain the selected decoded EC channel.
+            unsafe { inb(self.data) };
+            fstart_arch::udelay(1);
+        }
+    }
 }
 
-fn send_ec_command(command: u8) -> bool {
-    if !wait_ec_sc(EC_IBF, 0, SEND_TIMEOUT_US) {
-        info!(
-            "lenovo-ec: timeout sending command {}",
-            Hex(u64::from(command))
-        );
-        return false;
-    }
-    // SAFETY: fixed EC command port decoded by the southbridge LPC.
-    unsafe { outb(EC_SC, command) };
-    true
-}
-
-fn send_ec_data(data: u8) -> bool {
-    if !wait_ec_sc(EC_IBF, 0, SEND_TIMEOUT_US) {
-        info!("lenovo-ec: timeout sending data {}", Hex(u64::from(data)));
-        return false;
-    }
-    // SAFETY: fixed EC data port decoded by the southbridge LPC.
-    unsafe { outb(EC_DATA, data) };
-    true
-}
-
-fn recv_ec_data() -> Option<u8> {
-    if !wait_ec_sc(EC_OBF, EC_OBF, RECV_TIMEOUT_US) {
-        info!("lenovo-ec: timeout receiving data");
-        return None;
-    }
-    // SAFETY: fixed EC data port decoded by the southbridge LPC.
-    Some(unsafe { inb(EC_DATA) })
-}
-
-/// Read one byte of EC RAM at `addr`.
 pub fn ec_read(addr: u8) -> Option<u8> {
-    if !send_ec_command(RD_EC) || !send_ec_data(addr) {
-        return None;
-    }
-    recv_ec_data()
+    Ec::LEGACY.read(addr)
 }
 
-/// Write one byte of EC RAM at `addr`.
 pub fn ec_write(addr: u8, data: u8) -> bool {
-    send_ec_command(WR_EC) && send_ec_data(addr) && send_ec_data(data)
+    Ec::LEGACY.write(addr, data)
 }
 
-/// Set a single bit in EC RAM.
 pub fn ec_set_bit(addr: u8, bit: u8) -> bool {
-    let Some(val) = ec_read(addr) else {
-        return false;
-    };
-    ec_write(addr, val | (1 << bit))
+    Ec::LEGACY.set_bit(addr, bit)
 }
 
-/// Clear a single bit in EC RAM.
 pub fn ec_clr_bit(addr: u8, bit: u8) -> bool {
-    let Some(val) = ec_read(addr) else {
-        return false;
-    };
-    ec_write(addr, val & !(1 << bit))
+    Ec::LEGACY.clear_bit(addr, bit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h8_smm_channel_is_distinct_from_os_channel() {
+        assert_eq!((Ec::LEGACY.data, Ec::LEGACY.status), (0x62, 0x66));
+        assert_eq!((Ec::H8_SMM.data, Ec::H8_SMM.status), (0x1600, 0x1604));
+    }
 }
