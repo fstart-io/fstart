@@ -33,10 +33,6 @@ pub fn prepare_image(data: &mut Vec<u8>) -> Result<(), String> {
     data[0x0C..0x10].copy_from_slice(&checksum.to_le_bytes());
     verify(data)?;
 
-    eprintln!(
-        "[fstart] Allwinner eGON patched: raw_size={raw_size:#x}, \
-         image_size={image_size:#x}, checksum={checksum:#010x}"
-    );
     Ok(())
 }
 
@@ -123,10 +119,6 @@ pub fn patch_ffs(ffs_image: &mut [u8], bootblock_size: u32) -> Result<(), String
     ffs_image[0x0C..0x10].copy_from_slice(&checksum.to_le_bytes());
     verify(&ffs_image[..bootblock_size as usize])?;
 
-    eprintln!(
-        "[fstart] eGON patched in FFS: bootblock_size={bootblock_size:#x}, \
-         checksum={checksum:#010x}"
-    );
     Ok(())
 }
 

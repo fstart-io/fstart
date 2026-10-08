@@ -1,3 +1,4 @@
+use crate::summary::{FlashArea, Placement};
 use fstart_core::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
@@ -27,8 +28,6 @@ pub fn assemble(
     fit_path: Option<&str>,
     bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
 ) -> Result<PathBuf, String> {
-    eprintln!("[fstart] assembling FFS image for: {}", config.name);
-
     let (signing_key, verification_key) = get_or_create_dev_keys(board_dir, config)?;
 
     let mut ro_files = Vec::new();
@@ -36,10 +35,6 @@ pub fn assemble(
     match &config.stages {
         StageLayout::Monolithic(mono) => {
             let stage = &stage_binaries[0];
-
-            if let Ok(segs) = parse_elf_segments(&stage.path, Compression::None) {
-                log_stage_segments("stage", &stage.path, &segs);
-            }
 
             let bin_data = fs::read(&stage.run_path)
                 .map_err(|e| format!("failed to read {}: {e}", stage.run_path.display()))?;
@@ -66,14 +61,6 @@ pub fn assemble(
                     })?;
                     if config.soc_image_format == SocImageFormat::AllwinnerEgon {
                         crate::image::egon::prepare_image(&mut bin_data)?;
-                    }
-                    match parse_elf_segments(&stage_bin.path, Compression::None) {
-                        Ok(segs) => log_stage_segments(&stage_bin.name, &stage_bin.path, &segs),
-                        Err(err) => eprintln!(
-                            "[fstart] warning: failed to parse ELF for diagnostics ({}): {}",
-                            stage_bin.path.display(),
-                            err,
-                        ),
                     }
                     ro_files.push(InputFile {
                         name: stage_bin.name.clone(),
@@ -107,13 +94,6 @@ pub fn assemble(
                     let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
                     })?;
-                    eprintln!(
-                        "[fstart] {}: flat binary, {} bytes, load_addr={:#x} (from {})",
-                        stage_bin.name,
-                        bin_data.len(),
-                        stage_bin.load_addr,
-                        stage_bin.run_path.display(),
-                    );
                     ro_files.push(InputFile {
                         name: stage_bin.name.clone(),
                         file_type: FileType::StageCode,
@@ -141,11 +121,6 @@ pub fn assemble(
     for name in &config.data_assets {
         let path = board_dir.join(name.as_str());
         let data = fs::read(&path).map_err(|e| format!("failed to read data asset {name}: {e}"))?;
-        eprintln!(
-            "[fstart] data asset: {name} ({} bytes, from {})",
-            data.len(),
-            path.display(),
-        );
         ro_files.push(InputFile {
             name: name.as_str().to_string(),
             file_type: FileType::Data,
@@ -180,13 +155,6 @@ pub fn assemble(
                 let dtb_data =
                     fs::read(&dtb_path).map_err(|e| format!("failed to read DTB: {e}"))?;
                 let dtb_load_addr = payload.dtb_addr.unwrap_or(0);
-
-                eprintln!(
-                    "[fstart] DTB: {} ({} bytes, load_addr={:#x})",
-                    dtb_path.display(),
-                    dtb_data.len(),
-                    dtb_load_addr,
-                );
 
                 ro_files.push(InputFile {
                     name: dtb_name.to_string(),
@@ -313,25 +281,7 @@ pub fn assemble(
     let image_path = output_dir.join(format!("{}.ffs", config.name));
     fs::write(&image_path, &image_bytes).map_err(|e| format!("failed to write FFS image: {e}"))?;
 
-    eprintln!(
-        "[fstart] FFS image: {} ({} bytes)",
-        image_path.display(),
-        image_bytes.len()
-    );
-    eprintln!(
-        "[fstart] anchor at offset {} ({} bytes)",
-        ffs_image.anchor_offset,
-        ffs_image.anchor_bytes.len(),
-    );
-
-    let stage_count = stage_binaries.len();
-    eprintln!(
-        "[fstart] {} stage{} packaged into FFS",
-        stage_count,
-        if stage_count == 1 { "" } else { "s" }
-    );
-
-    if config.full_flash_image {
+    let (out_path, placement) = if config.full_flash_image {
         let full_flash = FullFlashInput {
             config,
             board_dir,
@@ -342,10 +292,36 @@ pub fn assemble(
             ffs_anchor_offset: ffs_image.anchor_offset,
             ffs_path: &image_path,
         };
-        return create_full_flash_image(full_flash);
-    }
+        create_full_flash_image(full_flash)?
+    } else {
+        (image_path, Placement::bare())
+    };
 
-    Ok(image_path)
+    let manifest = {
+        let reader = fstart_ffs::FfsReader::new(&image_bytes);
+        let anchor = reader
+            .read_anchor(ffs_image.anchor_offset)
+            .map_err(|e| format!("failed to re-read FFS anchor: {e:?}"))?;
+        reader
+            .read_manifest(&anchor)
+            .map_err(|e| format!("failed to re-read FFS manifest: {e:?}"))?
+    };
+    let file_size = fs::metadata(&out_path)
+        .map_err(|e| format!("failed to stat {}: {e}", out_path.display()))?
+        .len();
+    let shown_path = out_path.strip_prefix(workspace_root).unwrap_or(&out_path);
+    eprint!(
+        "\n{}",
+        crate::summary::render(
+            &shown_path.display().to_string(),
+            file_size,
+            image_bytes.len() as u64,
+            &manifest,
+            &placement,
+        )
+    );
+
+    Ok(out_path)
 }
 
 fn ffs_input_regions(
@@ -578,7 +554,7 @@ fn create_xip_flash_image(
     trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
     ffs_anchor_offset: usize,
     ffs_path: &Path,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, Placement), String> {
     let flash_image = config
         .build
         .flash_image
@@ -658,7 +634,6 @@ fn create_xip_flash_image(
             ));
         }
         image[..stage.len()].copy_from_slice(&stage);
-        eprintln!("[fstart] XIP flash: placed RAM-linked stage at flash offset zero");
     }
 
     let ffs_end = ffs_start
@@ -681,13 +656,16 @@ fn create_xip_flash_image(
             out_path.display()
         )
     })?;
-    eprintln!(
-        "[fstart] XIP flash image: {} ({} bytes, FFS {} bytes at offset {ffs_start:#x})",
-        out_path.display(),
-        image.len(),
-        ffs_data.len(),
-    );
-    Ok(out_path)
+    Ok((
+        out_path,
+        Placement {
+            areas: vec![
+                FlashArea::new("stage", 0u64, ffs_start as u64),
+                FlashArea::new("ffs", ffs_start as u64, ffs_image.size),
+            ],
+            ffs_offset: ffs_start as u64,
+        },
+    ))
 }
 
 /// Patch only the uncompressed initial extent, with the identical constant
@@ -730,7 +708,6 @@ fn patch_stage_anchor(
         .position(|window| window == placeholder)
         .ok_or_else(|| "stage anchor placeholder not found in composite flash image".to_string())?;
     image[offset..offset + anchor_size].copy_from_slice(anchor);
-    eprintln!("[fstart] XIP flash: patched stage anchor at offset {offset:#x}");
     Ok(())
 }
 
@@ -745,7 +722,7 @@ fn policy_window(
     }
 }
 
-fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String> {
+fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placement), String> {
     let FullFlashInput {
         config,
         board_dir,
@@ -834,9 +811,6 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
             ));
         }
         first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
-        eprintln!(
-            "[fstart] full flash: bootblock segment paddr={paddr:#x} -> offset={off:#x} size={size:#x}"
-        );
     }
 
     let mut bootblock_data = fs::read(bootblock_bin).map_err(|e| {
@@ -868,10 +842,6 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
         ));
     }
     image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
-    eprintln!(
-        "[fstart] full flash: bootblock flat binary -> offset={xip_offset:#x} size={:#x}",
-        bootblock_data.len()
-    );
 
     patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, 0)?;
 
@@ -883,13 +853,16 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<PathBuf, String>
             out_path.display()
         )
     })?;
-    eprintln!(
-        "[fstart] full flash image: {} ({} bytes, FFS {} bytes at offset 0)",
-        out_path.display(),
-        flash_size,
-        ffs_data.len()
-    );
-    Ok(out_path)
+    Ok((
+        out_path,
+        Placement {
+            areas: vec![
+                FlashArea::new("ffs", 0u64, ffs_data.len() as u64),
+                FlashArea::new("bootblock", xip_offset as u64, bootblock_data.len() as u64),
+            ],
+            ffs_offset: 0,
+        },
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -903,7 +876,7 @@ fn create_intel_ifd_flash_image(
     trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
     ffs_anchor_offset: usize,
     ffs_path: &Path,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, Placement), String> {
     let bios = layout
         .bios_region()
         .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
@@ -957,9 +930,6 @@ fn create_intel_ifd_flash_image(
             ));
         }
         first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
-        eprintln!(
-            "[fstart] Intel IFD full flash: bootblock segment paddr={paddr:#x} -> offset={off:#x} size={size:#x}"
-        );
     }
 
     let mut bootblock_data = fs::read(bootblock_bin).map_err(|e| {
@@ -991,10 +961,6 @@ fn create_intel_ifd_flash_image(
         ));
     }
     image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
-    eprintln!(
-        "[fstart] Intel IFD full flash: bootblock flat binary -> offset={xip_offset:#x} size={:#x}",
-        bootblock_data.len()
-    );
 
     patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, bios.offset)?;
 
@@ -1006,14 +972,19 @@ fn create_intel_ifd_flash_image(
             out_path.display()
         )
     })?;
-    eprintln!(
-        "[fstart] Intel IFD full flash image: {} ({} bytes, BIOS FFS {} bytes at offset {:#x})",
-        out_path.display(),
-        image.len(),
-        ffs_data.len(),
-        bios.offset
-    );
-    Ok(out_path)
+    Ok((
+        out_path,
+        Placement {
+            areas: layout
+                .regions
+                .as_slice()
+                .iter()
+                .filter(|region| region.size != 0)
+                .map(|region| FlashArea::new(region.kind.as_str(), region.offset, region.size))
+                .collect(),
+            ffs_offset: bios.offset.into(),
+        },
+    ))
 }
 
 fn patch_xip_anchor(
@@ -1045,10 +1016,6 @@ fn patch_xip_anchor(
         .ok_or_else(|| "XIP anchor lies outside BIOS image".to_string())?;
     anchor.anchor_offset.set(offset);
     anchor.write_to(&mut image[xip_anchor..xip_anchor + anchor_size]);
-    eprintln!(
-        "[fstart] full flash: patched XIP anchor at offset {xip_anchor:#x} \
-         (image-relative {offset:#x}) from FFS offset {ffs_anchor_offset:#x}"
-    );
     Ok(())
 }
 
@@ -1070,11 +1037,6 @@ fn assemble_microcode(
                 let data = fs::read(&path).map_err(|e| {
                     format!("failed to read Intel microcode {}: {e}", path.display())
                 })?;
-                eprintln!(
-                    "[fstart] Intel microcode: {} ({} bytes)",
-                    path.display(),
-                    data.len()
-                );
                 blob.extend_from_slice(&data);
             }
 
@@ -1082,12 +1044,6 @@ fn assemble_microcode(
                 return Err("Intel microcode config did not include any bytes".to_string());
             }
 
-            eprintln!(
-                "[fstart] Intel microcode blob: {} bytes (early={}, mp={})",
-                blob.len(),
-                config.early,
-                config.mp
-            );
             ro_files.push(InputFile {
                 name: "cpu_microcode_blob.bin".to_string(),
                 file_type: FileType::CpuMicrocode,
@@ -1153,25 +1109,14 @@ fn assemble_fit_payload(
     }
 
     let fit_data = fs::read(&fit_path).map_err(|e| format!("failed to read FIT image: {e}"))?;
-    eprintln!(
-        "[fstart] FIT image: {} ({} bytes)",
-        fit_path.display(),
-        fit_data.len(),
-    );
 
     let fit = fstart_boot::fit::FitImage::parse(&fit_data)
         .map_err(|e| format!("failed to parse FIT image: {e:?}"))?;
-
-    if let Some(desc) = fit.description() {
-        eprintln!("[fstart] FIT description: {desc}");
-    }
 
     let config_name = payload.fit_config.as_ref().map(|s| s.as_str());
 
     match fit_parse {
         fstart_core::FitParseMode::Runtime => {
-            eprintln!("[fstart] FIT mode: runtime (embedding whole .itb in FFS)");
-
             ro_files.push(InputFile {
                 name: "fit_image".to_string(),
                 file_type: FileType::FitImage,
@@ -1187,16 +1132,9 @@ fn assemble_fit_payload(
             });
         }
         fstart_core::FitParseMode::Buildtime => {
-            eprintln!("[fstart] FIT mode: buildtime (extracting components)");
-
             let boot = fit
                 .resolve_boot_images(config_name)
                 .map_err(|e| format!("failed to resolve FIT config: {e:?}"))?;
-
-            eprintln!(
-                "[fstart] FIT config: {}",
-                boot.config.description().unwrap_or(boot.config.name())
-            );
 
             let kernel_data = boot
                 .kernel
@@ -1206,13 +1144,6 @@ fn assemble_fit_payload(
                 .kernel
                 .load_addr()
                 .unwrap_or(payload.kernel_load_addr.unwrap_or(0));
-
-            eprintln!(
-                "[fstart] FIT kernel: '{}' ({} bytes, load={:#x})",
-                boot.kernel.name(),
-                kernel_data.len(),
-                kernel_load,
-            );
 
             ro_files.push(InputFile {
                 name: boot.kernel.name().to_string(),
@@ -1232,12 +1163,6 @@ fn assemble_fit_payload(
                 && let Ok(rd_data) = rd.data()
             {
                 let rd_load = rd.load_addr().unwrap_or(0);
-                eprintln!(
-                    "[fstart] FIT ramdisk: '{}' ({} bytes, load={:#x})",
-                    rd.name(),
-                    rd_data.len(),
-                    rd_load,
-                );
 
                 ro_files.push(InputFile {
                     name: rd.name().to_string(),
@@ -1258,12 +1183,6 @@ fn assemble_fit_payload(
                 && let Ok(fdt_data) = fdt_img.data()
             {
                 let fdt_load = fdt_img.load_addr().unwrap_or(payload.dtb_addr.unwrap_or(0));
-                eprintln!(
-                    "[fstart] FIT fdt: '{}' ({} bytes, load={:#x})",
-                    fdt_img.name(),
-                    fdt_data.len(),
-                    fdt_load,
-                );
 
                 ro_files.push(InputFile {
                     name: fdt_img.name().to_string(),
@@ -1352,13 +1271,6 @@ fn assemble_linux_payload(
                 .map(|kf| kf.to_string())
                 .unwrap_or_else(|| "kernel".to_string());
 
-            eprintln!(
-                "[fstart] kernel blob: {} ({} bytes, load_addr={:#x})",
-                k_path.display(),
-                kernel_data.len(),
-                kernel_load_addr,
-            );
-
             ro_files.push(InputFile {
                 name: kernel_name,
                 file_type: FileType::Payload,
@@ -1408,13 +1320,6 @@ fn add_firmware_blob(
                 .map(|fw| fw.file.to_string())
                 .unwrap_or_else(|| "firmware".to_string());
 
-            eprintln!(
-                "[fstart] firmware blob: {} ({} bytes, load_addr={:#x})",
-                fw_path.display(),
-                fw_data.len(),
-                fw_load_addr,
-            );
-
             ro_files.push(InputFile {
                 name: fw_name,
                 file_type: FileType::Firmware,
@@ -1444,8 +1349,6 @@ struct ElfLoadSegment {
     offset: u64,
     paddr: u64,
     filesz: u64,
-    memsz: u64,
-    flags: u32,
 }
 
 fn elf_load_segments(elf_data: &[u8], elf_path: &Path) -> Result<Vec<ElfLoadSegment>, String> {
@@ -1480,116 +1383,8 @@ where
             offset: phdr.p_offset(endian).into(),
             paddr: phdr.p_paddr(endian).into(),
             filesz: phdr.p_filesz(endian).into(),
-            memsz: phdr.p_memsz(endian).into(),
-            flags: phdr.p_flags(endian),
         })
         .collect())
-}
-
-fn parse_elf_segments(
-    elf_path: &Path,
-    compression: Compression,
-) -> Result<Vec<InputSegment>, String> {
-    let elf_data =
-        fs::read(elf_path).map_err(|e| format!("failed to read {}: {e}", elf_path.display()))?;
-
-    let mut segments = Vec::new();
-
-    for phdr in elf_load_segments(&elf_data, elf_path)? {
-        if phdr.memsz == 0 {
-            continue;
-        }
-
-        let p_flags = phdr.flags;
-        let is_exec = p_flags & elf::PF_X != 0;
-        let is_write = p_flags & elf::PF_W != 0;
-
-        let (kind, name, flags) = if phdr.filesz == 0 {
-            (SegmentKind::Bss, ".bss", SegmentFlags::DATA)
-        } else if is_exec {
-            (SegmentKind::Code, ".text", SegmentFlags::CODE)
-        } else if is_write {
-            (SegmentKind::ReadWriteData, ".data", SegmentFlags::DATA)
-        } else {
-            (SegmentKind::ReadOnlyData, ".rodata", SegmentFlags::RODATA)
-        };
-
-        let data = if phdr.filesz > 0 {
-            let start = phdr.offset as usize;
-            let end = start + phdr.filesz as usize;
-            if end > elf_data.len() {
-                return Err(format!(
-                    "PT_LOAD at {:#x} extends past EOF in {}",
-                    phdr.paddr,
-                    elf_path.display(),
-                ));
-            }
-            elf_data[start..end].to_vec()
-        } else {
-            Vec::new()
-        };
-
-        let mem_size = if phdr.memsz != phdr.filesz {
-            Some(phdr.memsz)
-        } else {
-            None
-        };
-
-        let seg_compression = if phdr.filesz == 0 {
-            Compression::None
-        } else {
-            compression
-        };
-
-        segments.push(InputSegment {
-            name: name.to_string(),
-            kind,
-            data,
-            mem_size,
-            load_addr: phdr.paddr,
-            compression: seg_compression,
-            flags,
-        });
-    }
-
-    if segments.is_empty() {
-        return Err(format!(
-            "no PT_LOAD segments found in {}",
-            elf_path.display()
-        ));
-    }
-
-    Ok(segments)
-}
-
-fn log_stage_segments(stage_name: &str, elf_path: &Path, segments: &[InputSegment]) {
-    let total_file: usize = segments.iter().map(|s| s.data.len()).sum();
-    let total_mem: u64 = segments
-        .iter()
-        .map(|s| s.mem_size.unwrap_or(s.data.len() as u64))
-        .sum();
-    eprintln!(
-        "[fstart] {stage_name}: {} PT_LOAD segment{}, {} bytes stored, {} bytes memory (from {})",
-        segments.len(),
-        if segments.len() == 1 { "" } else { "s" },
-        total_file,
-        total_mem,
-        elf_path.display(),
-    );
-    for seg in segments {
-        let mem = seg.mem_size.unwrap_or(seg.data.len() as u64);
-        let comp = match seg.compression {
-            Compression::None => "",
-            Compression::Lz4 => " lz4",
-        };
-        eprintln!(
-            "[fstart]   {} load={:#x} file={} mem={}{comp}",
-            seg.name,
-            seg.load_addr,
-            seg.data.len(),
-            mem,
-        );
-    }
 }
 
 fn get_or_create_dev_keys(
@@ -1618,10 +1413,6 @@ fn get_or_create_dev_keys(
         let verifying_key = signing_key.verifying_key();
 
         let vk = VerificationKey::ed25519(0, verifying_key.to_bytes());
-        eprintln!(
-            "[fstart] loaded existing dev keys from {}",
-            keys_dir.display()
-        );
         return Ok((signing_key, vk));
     }
 
