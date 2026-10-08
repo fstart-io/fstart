@@ -89,6 +89,8 @@ const DCC_SET_EREG_MASK: u32 = DCC_CMD_MASK | (3 << 21);
 const DCC_CMD_CBR: u32 = 6 << 16;
 const CLKCFG_MEMCLK_MASK: u32 = 7 << 4;
 const CLKCFG_UPDATE: u32 = 1 << 12;
+/// SLFRCS "channels in self-refresh" (R/WC, reset by PWROK): describes warm
+/// resets only, since PWROK drops in S3. Writing 1 clears it.
 const PMSTS_SELFREFRESH: u32 = 1 << 0;
 const PMSTS_WARM_RESET: u32 = 1 << 1;
 const TRAIN_ENABLE_BIT: u32 = 1 << 31;
@@ -1806,12 +1808,9 @@ pub(super) fn initialize(
     let warm = boot == crate::BootPath::S3Resume;
     // Snapshot retained state before any initialization writes.
     let epd_state = mch.read8(EPD_2E) & 0x1f;
-    if warm {
-        if mch.read16(mchbar::SSKPD) != 0xcafe && mch.read32(mchbar::PMSTS) & PMSTS_SELFREFRESH == 0
-        {
-            return Err(ServiceError::HardwareError);
-        }
-    } else {
+    // SSKPD and SLFRCS are reset by PWROK, which drops in S3, so they cannot
+    // vouch for retained RAM. S3 is the southbridge's call (like coreboot GM45).
+    if !warm {
         check_warm_boot(mch)?;
         reset_on_stale_rcomp(mch);
     }
@@ -1823,11 +1822,10 @@ pub(super) fn initialize(
     select_frequency_and_cas(info, fsb_clock, capid0)?;
     calculate_timings(info)?;
     let replay = cached.is_some_and(|bytes| info.restore_training(bytes));
-    if warm
-        && (!replay
-            || mch.read32(mchbar::CLKCFG) & CLKCFG_MEMCLK_MASK
-                != ((info.timings.mem_clock as u32) + 2) << 4)
-    {
+    // Retained RAM must never be retrained. CLKCFG's memory frequency is a
+    // strap default after PWROK; the replayed record's timings (incl.
+    // mem_clock) match this boot's selection and program_clkcfg_lock relocks.
+    if warm && !replay {
         fstart_log::error!("gm965: retained memory without matching training/frequency");
         return Err(ServiceError::HardwareError);
     }
