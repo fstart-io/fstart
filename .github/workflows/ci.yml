@@ -166,6 +166,7 @@ jobs:
       matrix:
         board:
           - qemu-q35
+          - qemu-q35-i686
           - qemu-riscv64
           - qemu-sifive-u
           - qemu-aarch64

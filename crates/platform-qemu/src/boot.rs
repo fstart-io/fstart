@@ -10,7 +10,7 @@ type Windows = Vec<MemoryWindow, 32>;
 /// Fixed-layout install: mount only the image the locator describes instead
 /// of the whole firmware window, so trailing erased flash never enters the
 /// authenticated view.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub(crate) fn install_packed(
     writable: &[MemoryWindow],
     extra_reserved: &[MemoryWindow],
@@ -46,7 +46,11 @@ fn install_image(
     let policy = MemoryPolicy {
         writable,
         reserved: &reserved,
-        entry_alignment: if cfg!(target_arch = "x86_64") { 1 } else { 4 },
+        entry_alignment: if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
+            1
+        } else {
+            4
+        },
     };
     // SAFETY: platform-discovered RAM only, with the complete live stage and
     // allocator arena, source image and hardware reservations excluded. Devices

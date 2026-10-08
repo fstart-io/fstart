@@ -161,6 +161,13 @@ else
 		UROOT_BOOT_SUCCESS "$X86_ASSET_DIR/disk.img"
 fi
 
+# 32-bit protected-mode build on a CPU without long mode (-cpu coreduo).
+run_boot qemu-q35-i686 halt 'ramstage: ready for payload'
+run_boot qemu-q35-i686 halt-smp2 'mp: initialization complete (2 CPUs)'
+require_boot_marker qemu-q35-i686 halt-smp2 '2 CPUs relocated'
+require_boot_marker qemu-q35-i686 halt-smp2 'SMM: permanent SMI returned on all 2 CPUs'
+require_boot_marker qemu-q35-i686 halt-smp2 'ramstage: ready for payload'
+
 run_boot qemu-riscv64 halt 'ramstage: ready for payload'
 require_boot_marker qemu-riscv64 halt 'PCI root ready ('
 run_boot qemu-riscv64 linux FSTART_CI_BOOT_SUCCESS \

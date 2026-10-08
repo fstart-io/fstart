@@ -100,20 +100,32 @@ pub(crate) const fn ich9_smi() -> IchSmi {
     IchSmi::new(Q35_PMBASE, ICH8_GPE0)
 }
 
-/// SMM facts of QEMU's emulated x86_64 CPU, whatever `-cpu` model is chosen.
+/// SMM facts of QEMU's emulated CPU, whatever `-cpu` model is chosen.
 pub(crate) struct QemuSmmCpu;
 
 impl SmmCpu for QemuSmmCpu {
-    /// QEMU writes the AMD64 layout (revision `0x20064`) for every x86_64
-    /// CPU model, like coreboot's q35 `relocation_handler` expects.
+    /// QEMU writes the AMD64 layout (revision `0x20064`) for every CPU
+    /// model with long mode, like coreboot's q35 `relocation_handler`
+    /// expects. For one without, such as `-cpu coreduo`, QEMU 9.0 and newer
+    /// write the legacy 32-bit layout and older versions still AMD64.
     fn smm_save_state_format(&self) -> X86SaveStateFormat {
-        X86SaveStateFormat::Amd64
+        if long_mode() {
+            X86SaveStateFormat::Amd64
+        } else {
+            X86SaveStateFormat::Amd64OrIntelLegacy
+        }
     }
 
     /// QEMU does not emulate SMRR.
     fn smrr_pair(&self) -> Option<SmrrPair> {
         None
     }
+}
+
+fn long_mode() -> bool {
+    use fstart_arch::x86::cpuid;
+    const LM: u32 = 1 << 29;
+    cpuid(0x8000_0000).0 >= 0x8000_0001 && cpuid(0x8000_0001).3 & LM != 0
 }
 
 // ---------------------------------------------------------------------------

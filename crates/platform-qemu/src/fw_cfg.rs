@@ -455,7 +455,7 @@ fn e820_count(size: u32) -> Option<usize> {
 }
 
 fn publish_mtrr_wb_ranges(entries: &[E820Entry]) -> Result<(), ServiceError> {
-    #[cfg(all(target_arch = "x86_64", feature = "x86_64"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "x86_64"))]
     fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
         entries
             .iter()

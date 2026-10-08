@@ -69,7 +69,7 @@ impl VirtMachine {
             return Err("QEMU virt supports halt, Linux and (where available) UEFI".into());
         }
         Ok(match self {
-            Self::Q35 | Self::Sbsa | Self::SifiveU | Self::Unmatched => {
+            Self::Q35 | Self::Q35ProtectedMode | Self::Sbsa | Self::SifiveU | Self::Unmatched => {
                 return Err("QEMU machine is not a virt preset".into());
             }
             Self::Riscv64 => MachinePolicy {
@@ -149,9 +149,11 @@ pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildP
         VirtMachine::Riscv64 | VirtMachine::Armv7 | VirtMachine::Aarch64 => {
             resolve_virt(machine, selection)
         }
-        VirtMachine::Q35 | VirtMachine::Sbsa | VirtMachine::SifiveU | VirtMachine::Unmatched => {
-            resolve_qemu(machine, selection)
-        }
+        VirtMachine::Q35
+        | VirtMachine::Q35ProtectedMode
+        | VirtMachine::Sbsa
+        | VirtMachine::SifiveU
+        | VirtMachine::Unmatched => resolve_qemu(machine, selection),
     }
 }
 
@@ -423,14 +425,23 @@ impl VirtMachine {
             bootargs: "console=ttySIF0 earlycon=sbi",
         };
         Ok(match self {
-            Self::Q35 => QemuPolicy {
-                platform: Platform::X86_64,
-                target: "x86_64-unknown-none",
+            Self::Q35 | Self::Q35ProtectedMode => QemuPolicy {
+                platform: if matches!(self, Self::Q35) {
+                    Platform::X86_64
+                } else {
+                    Platform::X86
+                },
+                target: if matches!(self, Self::Q35) {
+                    "x86_64-unknown-none"
+                } else {
+                    "i686-unknown-none"
+                },
                 entry: "x86_64",
                 bundle: "bundle-q35",
                 boot_hart_id: 0,
                 default_payload: "halt",
-                uefi: true,
+                // CrabEFI is x86_64-only.
+                uefi: matches!(self, Self::Q35),
                 linux: None,
                 link: QemuLink::X86 {
                     flash: span(0xff00_0000, 0x0100_0000),
@@ -621,6 +632,7 @@ fn qemu_stack_heap(
 /// follow the retired BoardConfig x86 layout; only heap/stack placement and
 /// the descriptor are shared virt mechanics.
 fn qemu_q35_linker_script(
+    platform: Platform,
     flash: Span,
     ram: Span,
     heap: Span,
@@ -646,12 +658,20 @@ fn qemu_q35_linker_script(
     let mut out = String::new();
     writeln!(
         out,
-        "OUTPUT_ARCH(i386:x86-64)\nENTRY(_start)\n_boot_hart_id = {boot_hart_id};\nMEMORY {{\n \
+        "OUTPUT_ARCH({})\nENTRY(_start)\n_boot_hart_id = {boot_hart_id};\nMEMORY {{\n \
          ROM (rx) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
          RAM (rwx) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
          HEAP (rw) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
          STACK (rw) : ORIGIN = {:#x}, LENGTH = {:#x}\n}}",
-        flash.base, flash.size, ram.base, data_len, heap.base, heap.size, stack.base, stack.size
+        platform.linker_arch(),
+        flash.base,
+        flash.size,
+        ram.base,
+        data_len,
+        heap.base,
+        heap.size,
+        stack.base,
+        stack.size
     )
     .map_err(|e| e.to_string())?;
     let bootblock_top = flash.end()? - 0x1000;
@@ -667,11 +687,14 @@ fn qemu_q35_linker_script(
     ));
     writeln!(
         out,
-        "    .fstart.anchor : ALIGN(16) {{\n        _fstart_anchor_early = .;\n        *(.fstart.anchor)\n        _fstart_early_microcode_enabled = .;\n        LONG(0)\n        . = ALIGN(8);\n        _FSTART_HEAP_SIZE = .;\n        QUAD({:#x})\n    }} > ROM\n",
+        "    .fstart.anchor : ALIGN(16) {{\n        _fstart_anchor_early = .;\n        *(.fstart.anchor)\n        _fstart_early_microcode_enabled = .;\n        LONG(0)\n        . = ALIGN(8);\n        _FSTART_HEAP_SIZE = .;\n        {}({:#x})\n    }} > ROM\n",
+        if platform == Platform::X86 { "LONG" } else { "QUAD" },
         heap.size
     )
     .map_err(|e| e.to_string())?;
     out.push_str("    .rodata : ALIGN(16) {\n        _rodata_start = .;\n        *(.rodata .rodata.* .lrodata .lrodata.*)\n        _rodata_end = .;\n    } > ROM\n");
+    // Statically resolved GOT; i386 links always reserve a `.got.plt` header.
+    out.push_str("    .got : ALIGN(8) { *(.got) *(.got.plt) } > ROM\n");
     out.push_str("    .data : ALIGN(16) {\n        _data_start = .;\n        *(.data .data.* .ldata .ldata.*)\n        _data_end = .;\n    } > RAM AT > ROM\n    _data_load = LOADADDR(.data);\n");
     out.push_str("    .bss (NOLOAD) : ALIGN(16) {\n        _bss_start = .;\n        *(.bss .bss.* .lbss .lbss.*)\n        *(COMMON)\n        _bss_end = .;\n    } > RAM\n");
     writeln!(
@@ -872,6 +895,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             regions.push(policy.firmware_image.region(Kind::Firmware));
             let descriptor = EncodedLayout::encode(0, &regions).map_err(|e| e.to_string())?;
             let script = qemu_q35_linker_script(
+                policy.platform,
                 flash,
                 writable,
                 heap,
@@ -880,8 +904,12 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
                 &descriptor,
             )?;
             let expected = Expectations {
-                architecture: Architecture::X86_64,
-                elf64: true,
+                architecture: if policy.platform == Platform::X86 {
+                    Architecture::X86
+                } else {
+                    Architecture::X86_64
+                },
+                elf64: policy.platform != Platform::X86,
                 little_endian: true,
                 stored: vec![flash],
                 runtime: vec![flash, writable],
@@ -1110,7 +1138,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     const Q35_MP_MAX_CPUS: u16 = 256;
     let mp_capacity =
         || BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), Q35_MP_MAX_CPUS.to_string())]);
-    if matches!(machine, VirtMachine::Q35) {
+    if machine.is_q35() {
         units.push(CompilationUnit {
             name: "smm".into(),
             cargo_target: CargoTarget::BoardLibrary,
@@ -1120,7 +1148,8 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             environment: "smm".into(),
             payload: "halt".into(),
             features: vec!["smm".into(), "bundle-smm".into()],
-            build_std: None,
+            // Custom targets have no prebuilt core.
+            build_std: (policy.platform == Platform::X86).then(|| "core,alloc".into()),
             release_only: true,
             linker_script: None,
             rustflags: [
@@ -1146,7 +1175,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             },
         });
     }
-    let stage_bindings = if matches!(machine, VirtMachine::Q35) {
+    let stage_bindings = if machine.is_q35() {
         vec![ArtifactBinding {
             producer: "smm".into(),
             artifact: "image".into(),
@@ -1172,7 +1201,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         rustflags,
         release_only: false,
         linker_script: Some(linker_script),
-        environment_values: if matches!(machine, VirtMachine::Q35) {
+        environment_values: if machine.is_q35() {
             mp_capacity()
         } else {
             BTreeMap::new()
@@ -1374,6 +1403,32 @@ mod tests {
                 assert_eq!(stack.base + stack.size, 0x3f00_0000);
             }
         }
+    }
+
+    #[test]
+    fn q35_protected_mode_builds_i686_without_uefi() {
+        let plan = resolve(VirtMachine::Q35ProtectedMode, BuildSelection::default()).unwrap();
+        assert!(
+            plan.units
+                .iter()
+                .all(|unit| unit.target == "i686-unknown-none"
+                    && unit.build_std.as_deref() == Some("core,alloc"))
+        );
+        let stage = plan.units.iter().find(|u| u.name == "stage").unwrap();
+        let UnitOutput::Executable { expectations, .. } = &stage.output else {
+            panic!("not executable")
+        };
+        assert!(!expectations.elf64);
+        assert!(
+            resolve(
+                VirtMachine::Q35ProtectedMode,
+                BuildSelection {
+                    payload: Some("uefi".into()),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]
