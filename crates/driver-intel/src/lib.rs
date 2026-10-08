@@ -213,8 +213,9 @@ pub trait IntelNorthbridgeDriver:
     /// Advertise S3 only after both training persistence and retained stage
     /// storage have been established by the platform.
     fn set_s3_enabled(&mut self, _enabled: bool) {}
-    /// Cache replay alone is not a complete retained-memory resume sequence.
-    /// Families opt in only after a non-destructive sequence audit/validation.
+    /// Whether the family implements a retained-memory resume sequence.
+    /// This capability enables hardware testing; it is not a validation claim.
+    /// Training and retained-stage requirements remain platform policy.
     fn supports_s3_replay(&self) -> bool {
         false
     }

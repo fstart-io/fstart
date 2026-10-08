@@ -644,11 +644,14 @@ static X61_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket M"];
 pub static X61_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",
-        bios_version: "0.1.0",
+        // Linux thinkpad_acpi requires a Lenovo-shaped firmware ID before
+        // inspecting the product version. Use coreboot's non-OEM ID, retaining
+        // our real firmware identity rather than impersonating a Lenovo BIOS.
+        bios_version: "CBET4000 fstart 0.1.0",
         bios_release_date: fstart_platform_intel::SMBIOS_RELEASE_DATE,
         sys_manufacturer: "LENOVO",
         sys_product: "ThinkPad X61",
-        sys_version: "1.0",
+        sys_version: "ThinkPad X61",
         sys_serial: None,
         sys_uuid: None,
         bb_manufacturer: "LENOVO",
