@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 fstart-core = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }
 tock-registers = { workspace = true }
 heapless = { workspace = true }
 pci_types = { workspace = true }

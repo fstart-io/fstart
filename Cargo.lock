@@ -734,10 +734,12 @@ name = "fstart-pci"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
+ "fstart-log",
  "heapless 0.8.0",
  "pci_types",
  "serde",
  "tock-registers",
+ "ufmt",
 ]
 
 [[package]]
