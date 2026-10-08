@@ -386,17 +386,16 @@ pub(crate) fn init_candidate(
     };
 
     match caps_for(config.cpu).generation {
-        Generation::I945 => GmaController::<generation::i945::I945>::new(ctx).init(mode),
-        Generation::G45 => GmaController::<generation::g45::G45>::new(ctx).init(mode),
-        Generation::Ironlake => {
+        Generation::I945 if cfg!(feature = "i945") => {
+            GmaController::<generation::i945::I945>::new(ctx).init(mode)
+        }
+        Generation::G45 if cfg!(feature = "g45") => {
+            GmaController::<generation::g45::G45>::new(ctx).init(mode)
+        }
+        Generation::Ironlake if cfg!(feature = "ironlake") => {
             GmaController::<generation::ironlake::Ironlake>::new(ctx).init(mode)
         }
-        Generation::Haswell => GmaController::<generation::haswell::Haswell>::new(ctx).init(mode),
-        Generation::Broxton => GmaController::<generation::broxton::Broxton>::new(ctx).init(mode),
-        Generation::Skylake => GmaController::<generation::skylake::Skylake>::new(ctx).init(mode),
-        Generation::Tigerlake => {
-            GmaController::<generation::tigerlake::Tigerlake>::new(ctx).init(mode)
-        }
+        _ => Err(GmaError::UnsupportedPlatform),
     }
 }
 
@@ -438,9 +437,13 @@ pub(crate) fn disable_generation_output(
 ) {
     let mmio = mmio_from_validated_resources(resources);
     let _ = match caps_for(cpu).generation {
-        Generation::I945 => generation::i945::I945::disable_output(&mmio, cpu, pipe, port),
-        Generation::G45 => generation::g45::G45::disable_output(&mmio, cpu, pipe, port),
-        Generation::Ironlake => {
+        Generation::I945 if cfg!(feature = "i945") => {
+            generation::i945::I945::disable_output(&mmio, cpu, pipe, port)
+        }
+        Generation::G45 if cfg!(feature = "g45") => {
+            generation::g45::G45::disable_output(&mmio, cpu, pipe, port)
+        }
+        Generation::Ironlake if cfg!(feature = "ironlake") => {
             generation::ironlake::Ironlake::disable_output(&mmio, cpu, pipe, port)
         }
         _ => Ok(()),
@@ -455,9 +458,11 @@ pub(crate) fn disable_generation_output(
 pub(crate) fn clean_generation_state(resources: &GmaResources, cpu: Cpu) {
     let mmio = mmio_from_validated_resources(resources);
     match caps_for(cpu).generation {
-        Generation::I945 => generation::i945::I945::clean(&mmio, cpu),
-        Generation::G45 => generation::g45::G45::clean(&mmio, cpu),
-        Generation::Ironlake => generation::ironlake::Ironlake::clean(&mmio, cpu),
+        Generation::I945 if cfg!(feature = "i945") => generation::i945::I945::clean(&mmio, cpu),
+        Generation::G45 if cfg!(feature = "g45") => generation::g45::G45::clean(&mmio, cpu),
+        Generation::Ironlake if cfg!(feature = "ironlake") => {
+            generation::ironlake::Ironlake::clean(&mmio, cpu)
+        }
         _ => {}
     }
 }
@@ -472,6 +477,17 @@ pub(crate) fn mmio_from_validated_resources(resources: &GmaResources) -> mmio::M
     // top-level `init()` validation. The wrapper itself only performs volatile
     // access; typed register block offsets document their own layout invariants.
     unsafe { mmio::Mmio::new(resources.gtt_mmio_base) }
+}
+
+/// Reject an omitted modeset executor before touching display registers.
+pub(crate) fn validate_generation(cpu: Cpu) -> Result<(), GmaError> {
+    let enabled = match caps_for(cpu).generation {
+        Generation::I945 => cfg!(feature = "i945"),
+        Generation::G45 => cfg!(feature = "g45"),
+        Generation::Ironlake => cfg!(feature = "ironlake"),
+        _ => false,
+    };
+    enabled.then_some(()).ok_or(GmaError::UnsupportedPlatform)
 }
 
 pub(crate) fn validate_outputs(cpu: Cpu, outputs: &[OutputConfig]) -> Result<(), GmaError> {
@@ -685,6 +701,18 @@ mod tests {
             stolen_size: 0x800000,
             gtt_size: 0x10000,
             gcfgc: None,
+        }
+    }
+
+    #[test]
+    fn modeset_availability_follows_selected_generations() {
+        for (cpu, enabled) in [
+            (Cpu::Pineview, cfg!(feature = "i945")),
+            (Cpu::Gm965, cfg!(feature = "g45")),
+            (Cpu::Ironlake, cfg!(feature = "ironlake")),
+            (Cpu::Haswell, false),
+        ] {
+            assert_eq!(validate_generation(cpu).is_ok(), enabled);
         }
     }
 

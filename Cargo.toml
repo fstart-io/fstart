@@ -84,7 +84,7 @@ fstart-crypto = { path = "crates/crypto" }
 fstart-log = { path = "crates/log" }
 fstart-arch = { path = "crates/arch" }
 fstart-driver-intel = { path = "crates/driver-intel" }
-fstart-intel-gma = { path = "crates/intel-gma" }
+fstart-intel-gma = { path = "crates/intel-gma", default-features = false }
 fstart-driver-sunxi = { path = "crates/driver-sunxi" }
 fstart-driver-superio = { path = "crates/driver-superio" }
 fstart-driver-uart = { path = "crates/driver-uart" }

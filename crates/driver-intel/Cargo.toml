@@ -15,10 +15,10 @@ acpi = [
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
 ]
-gm965 = []
-i945 = ["ich7"]
+gm965 = ["fstart-intel-gma/g45"]
+i945 = ["ich7", "fstart-intel-gma/i945"]
 ich8 = []
-pineview = ["ich7"]
+pineview = ["ich7", "fstart-intel-gma/i945"]
 ich7 = []
 spi = ["dep:rflasher-core", "dep:rflasher-internal"]
 

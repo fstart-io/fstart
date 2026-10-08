@@ -17,7 +17,7 @@ build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
 fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["pineview-ich7"] }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
-fstart-intel-gma = { path = "../../../crates/intel-gma" }
+fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
