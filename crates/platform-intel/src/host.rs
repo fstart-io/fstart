@@ -78,6 +78,12 @@ pub fn compilation_plan(
         let ram = row.role == IntelStage::Ramstage;
         let boot = row.role == IntelStage::Bootblock;
         let reservation = plan.reservations.stage(row.role);
+        // RIP-relative XIP references span ROM and CAR without the large
+        // model's absolute calls. Link a fixed executable, not a dynamic PIE.
+        // DRAM stages also fit the small model, using static references.
+        // These legacy CPUs lack SHA/AVX2. Select SHA-2 0.11's compact scalar
+        // backend, matching 0.10's force-soft-compact workspace feature.
+        let relocation_model = if boot { "pic" } else { "static" };
         let mut bindings = vec![];
         if ram {
             bindings.push(ArtifactBinding {
@@ -98,7 +104,7 @@ pub fn compilation_plan(
             cfg_schema: compiler_cfg_schema(),
             environment: row.role.environment().into(), payload: if row.payload == "uefi" { "crabefi".into() } else { row.payload.clone() },
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
-            rustflags: flags("-Zub-checks=no -Crelocation-model=static -Ccode-model=large --cfg curve25519_dalek_backend=\"serial\""),
+            rustflags: flags(&format!("-Zub-checks=no -Crelocation-model={relocation_model} -Ccode-model=small -Clink-arg=-no-pie --cfg curve25519_dalek_backend=\"serial\" --cfg sha2_backend=\"soft\" --cfg sha2_backend_soft=\"compact\"")),
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true)?),
             environment_values: mp_capacity(),
             bindings,
@@ -407,6 +413,28 @@ mod tests {
         assert_eq!(payload.x86_zero_page_addr, Some(0x0009_0000));
         assert_eq!(payload.bootargs.as_deref(), Some("console=ttyS0"));
         assert!(payload.print_x86_mtrrs);
+    }
+
+    #[test]
+    fn stage_code_models_match_xip_and_dram_placement() {
+        let plan = compilation_plan(resolve(FACTS, BuildSelection::default()).unwrap()).unwrap();
+        for name in ["bootblock", "postcar", "ramstage"] {
+            let unit = plan.unit(name).unwrap();
+            assert!(unit.rustflags.contains(&"-Ccode-model=small".into()));
+            assert!(unit.rustflags.contains(&"-Clink-arg=-no-pie".into()));
+            let relocation = if name == "bootblock" { "pic" } else { "static" };
+            assert!(
+                unit.rustflags
+                    .contains(&format!("-Crelocation-model={relocation}"))
+            );
+            assert!(
+                unit.linker_script
+                    .as_ref()
+                    .unwrap()
+                    .contains("SIZEOF(.got)")
+                    || name != "bootblock"
+            );
+        }
     }
 
     #[test]

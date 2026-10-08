@@ -145,6 +145,7 @@ impl GmaDisplayState {
         config: &GmaInitConfig<'_>,
         now_us: u64,
     ) -> Result<UpdateOutputsResult, GmaError> {
+        crate::validate_generation(config.cpu)?;
         resources.validate()?;
         crate::validate_outputs(config.cpu, config.outputs)?;
         let mmio = legacy_mmio(resources, config.cpu);

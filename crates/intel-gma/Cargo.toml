@@ -5,6 +5,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Standalone users retain all implemented generations. Chipset drivers select
+# only their family so runtime dispatch cannot retain unrelated modeset code.
+default = ["i945", "g45", "ironlake"]
+i945 = []
+g45 = []
+ironlake = []
+
 [dependencies]
 bitflags = { workspace = true }
 fstart-arch = { workspace = true, features = ["x86_64"] }
