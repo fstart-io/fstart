@@ -1335,6 +1335,77 @@ mod tests {
         assert_eq!(device.read32(0x40), 0x1234_ccdd);
     }
 
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn unaligned_loads_and_stores_use_exact_byte_spans() {
+        let (pci, _memory) = test_pci();
+        let device = pci.device(PciAddress::new(0, 0, 0, 0)).unwrap();
+        for offset in 1..4u16 {
+            device.write32(0x40, 0xa5a5_a5a5);
+            device.write32(0x44, 0xa5a5_a5a5);
+            // SAFETY: the entire access is backed by ordinary test RAM.
+            unsafe {
+                assert_eq!(
+                    device.try_write32_unaligned(0x40 + offset, 0x1234_5678),
+                    Some(())
+                );
+                assert_eq!(
+                    device.try_read32_unaligned(0x40 + offset),
+                    Some(0x1234_5678)
+                );
+            }
+            let mut expected = [0xa5; 8];
+            let start = usize::from(offset);
+            expected[start..start + 4].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+            let observed: [u8; 8] = core::array::from_fn(|i| device.read8(0x40 + i as u16));
+            assert_eq!(observed, expected);
+            assert_eq!(device.try_read32(0x40 + offset), None);
+            assert_eq!(device.try_write32(0x40 + offset, 0), None);
+
+            device.write32(0x40, 0xa5a5_a5a5);
+            device.write32(0x44, 0xa5a5_a5a5);
+            // SAFETY: the entire access is backed by ordinary test RAM.
+            unsafe {
+                assert_eq!(
+                    device.try_write16_unaligned(0x40 + offset, 0xcdef),
+                    Some(())
+                );
+                assert_eq!(device.try_read16_unaligned(0x40 + offset), Some(0xcdef));
+            }
+            let mut expected = [0xa5; 8];
+            expected[start..start + 2].copy_from_slice(&0xcdefu16.to_le_bytes());
+            let observed: [u8; 8] = core::array::from_fn(|i| device.read8(0x40 + i as u16));
+            assert_eq!(observed, expected);
+        }
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn unaligned_config_spans_cannot_cross_function_boundary() {
+        let (pci, _memory) = test_pci();
+        let device = pci.device(PciAddress::new(0, 0, 0, 0)).unwrap();
+        device.write32(0xff8, 0xa5a5_a5a5);
+        device.write32(0xffc, 0xa5a5_a5a5);
+        // SAFETY: the valid span is test RAM; invalid spans must be rejected
+        // before any memory access, including the unmapped segment below.
+        unsafe {
+            assert_eq!(device.try_write32_unaligned(0xffb, 0x1234_5678), Some(()));
+            assert_eq!(device.try_read32_unaligned(0xffb), Some(0x1234_5678));
+            assert_eq!(device.try_read16_unaligned(0xfff), None);
+            assert_eq!(device.try_write16_unaligned(0xfff, 0), None);
+            assert_eq!(device.try_read32_unaligned(0xffd), None);
+            assert_eq!(device.try_write32_unaligned(0xffd, 0), None);
+            assert_eq!(device.try_read32_unaligned(u16::MAX), None);
+            let unmapped = crate::EcamDevice::new_address(PciAddress::new(1, 0, 0, 0));
+            assert_eq!(unmapped.try_read16_unaligned(1), None);
+            assert_eq!(unmapped.try_write16_unaligned(1, 0), None);
+            assert_eq!(unmapped.try_read32_unaligned(1), None);
+            assert_eq!(unmapped.try_write32_unaligned(1, 0), None);
+        }
+        assert_eq!(device.read32(0xff8), 0x78a5_a5a5);
+        assert_eq!(device.read32(0xffc), 0xa512_3456);
+    }
+
     #[test]
     fn invalid_accesses_are_not_absent_device_responses() {
         let (mut pci, _memory) = test_pci();
