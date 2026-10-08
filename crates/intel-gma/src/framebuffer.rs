@@ -287,7 +287,9 @@ pub struct FramebufferConfig {
 impl FramebufferConfig {
     /// Standard linear XRGB8888 framebuffer whose mode comes from monitor EDID.
     ///
-    /// `fallback` is used only when no valid EDID mode can be selected.
+    /// `fallback` seeds the layout; EDID failure skips the connector rather
+    /// than treating a stored mode as evidence that a display is present.
+    /// Use `PreferredMode::Fixed` explicitly to force a mode without probing.
     #[must_use]
     pub const fn edid(fallback: crate::mode::FallbackMode) -> Self {
         Self {

@@ -59,7 +59,7 @@ pub enum Cpu {
 }
 
 /// Logical display port requested by board policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ufmt::derive::uDebug)]
 pub enum Port {
     /// LVDS panel port.
     Lvds,

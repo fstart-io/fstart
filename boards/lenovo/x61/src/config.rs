@@ -14,22 +14,21 @@ use fstart_platform_intel::gm965::{
 };
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 
-/// X61 is a 12.1" 1024x768 XGA LVDS panel.
-///
-/// Only the internal panel is enabled: the shared GMA layer initializes the
-/// first enabled output, and the panel is the display that is always present.
-/// The VGA, DP and HDMI ports are left to the OS, which re-programs them from
-/// the VBT we publish in the OpRegion.
+/// Probe VGA and the internal LVDS panel, mirroring one shared framebuffer.
+/// A missing panel must not be inferred present just because the VBT lists it.
 const X61_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
-    outputs: &[OutputConfig {
-        port: Port::Lvds,
-        enabled: true,
-    }],
-    framebuffer: FramebufferConfig::vbt_panel(FallbackMode {
-        width: 1024,
-        height: 768,
-        refresh_hz: 60,
-    }),
+    outputs: &[
+        OutputConfig { port: Port::Vga, enabled: true },
+        OutputConfig { port: Port::Lvds, enabled: true },
+    ],
+    framebuffer: FramebufferConfig {
+        scaling: fstart_intel_gma::scaler::ScalingPolicy::PreserveAspect,
+        ..FramebufferConfig::edid(FallbackMode {
+            width: 1024,
+            height: 768,
+            refresh_hz: 60,
+        })
+    },
 };
 
 /// Factory 4-MiB SPI image map, const-validated in the real board source.

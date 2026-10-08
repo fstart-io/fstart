@@ -12,7 +12,7 @@ use crate::framebuffer::SurfaceConfig;
 use crate::mmio::Mmio;
 use crate::mode::Mode;
 use crate::pci::GmaResources;
-use crate::port;
+use crate::scaler::{self, ScalerPlan};
 use crate::types::{Cpu, Generation, Pipe, Port};
 use crate::{
     GmaInitConfig, GmaInitResult, caps_for, clean_generation_state, disable_generation_output,
@@ -145,21 +145,67 @@ impl GmaDisplayState {
         config: &GmaInitConfig<'_>,
         now_us: u64,
     ) -> Result<UpdateOutputsResult, GmaError> {
-        let detect = crate::initialize_port_detect(resources, config.cpu);
+        resources.validate()?;
+        crate::validate_outputs(config.cpu, config.outputs)?;
         let mmio = legacy_mmio(resources, config.cpu);
         let old_configs = self.current;
-        let mut new_configs = self.resolve_requested_configs(resources, config, detect.as_ref())?;
-
-        if let Some(mmio) = &mmio {
-            self.apply_hpd_filter(mmio, &mut new_configs, now_us);
-        }
-
-        // libgfxinit's `Initialize (Clean_State => true)` clears every pipe,
-        // port and PLL once before the first modeset. Doing it per output would
-        // tear down already-enabled outputs, which is the bug this replaces.
+        // Clean before probing: cleaning after Panel.On would undo the power
+        // state used for EDID. Never clean again when adding another output.
         if !self.clean {
             clean_generation_state(resources, config.cpu);
             self.clean = true;
+        }
+        let detect = crate::initialize_port_detect(resources, config.cpu);
+        let wants_lvds = config
+            .outputs
+            .iter()
+            .any(|output| output.enabled && output.port == Port::Lvds);
+        let panel_ready = if wants_lvds {
+            if let Some(mmio) = &mmio {
+                crate::generation::g45::prepare_panel_probe(mmio, config.vbt).is_ok()
+            } else {
+                true // Split-PCH panel sequencing remains generation-owned.
+            }
+        } else {
+            false
+        };
+        let resolved = self.resolve_requested_configs(resources, config, detect.as_ref(), |port| {
+            if port == Port::Lvds && !panel_ready {
+                return Err(GmaError::ModeUnavailable);
+            }
+            let outputs = [OutputConfig {
+                port,
+                enabled: true,
+            }];
+            let candidate = GmaInitConfig {
+                outputs: &outputs,
+                ..*config
+            };
+            let mode = crate::choose_mode(resources, &candidate)?;
+            fstart_log::info!(
+                "intel-gma: connector {:?} mode {}x{}@{}kHz",
+                port,
+                mode.hdisplay,
+                mode.vdisplay,
+                mode.pixel_clock_khz
+            );
+            Ok(crate::clamp_hdmi_dotclock(config.cpu, port, mode))
+        });
+        if wants_lvds
+            && !resolved.as_ref().is_ok_and(|outputs| {
+                outputs
+                    .iter()
+                    .flatten()
+                    .any(|output| output.port == Port::Lvds)
+            })
+            && let Some(mmio) = &mmio
+        {
+            crate::generation::g45::panel_backlight_off(mmio);
+            crate::generation::g45::panel_power_off(mmio);
+        }
+        let mut new_configs = resolved?;
+        if let Some(mmio) = &mmio {
+            self.apply_hpd_filter(mmio, &mut new_configs, now_us);
         }
 
         self.disable_changed_outputs(
@@ -169,6 +215,16 @@ impl GmaDisplayState {
             &new_configs,
             mmio.as_ref(),
         );
+
+        if let Some(output) = new_configs.iter().flatten().next()
+            && !self
+                .current
+                .iter()
+                .flatten()
+                .any(|current| current.surface == output.surface)
+        {
+            crate::prepare_framebuffer(resources, config.cpu, &output.surface)?;
+        }
 
         let mut primary = None;
         let mut enabled_outputs = 0usize;
@@ -200,7 +256,13 @@ impl GmaDisplayState {
                     if let Some(mmio) = &mmio {
                         let _ = crate::port_detect::clear_hotplug_detect(mmio, new_config.port);
                     }
-                    match init_candidate(resources, &candidate_config) {
+                    match init_candidate(
+                        resources,
+                        &candidate_config,
+                        new_config.pipe,
+                        new_config.mode,
+                        new_config.surface,
+                    ) {
                         Ok(result) => {
                             self.current[pipe_index] = Some(new_config);
                             self.clear_wait_for_hpd(new_config.port);
@@ -210,6 +272,11 @@ impl GmaDisplayState {
                             }
                         }
                         Err(err) => {
+                            fstart_log::warn!(
+                                "intel-gma: connector {:?} enable failed (code {})",
+                                new_config.port,
+                                err as u8
+                            );
                             last_error = err;
                             self.current[pipe_index] = None;
                             self.set_wait_for_hpd_at(new_config.port, now_us);
@@ -244,7 +311,9 @@ impl GmaDisplayState {
         resources: &GmaResources,
         config: &GmaInitConfig<'_>,
         detect: Option<&crate::port_detect::LegacyPortDetectState>,
+        mut probe: impl FnMut(Port) -> Result<Mode, GmaError>,
     ) -> Result<[Option<PipeOutputConfig>; PIPE_COUNT], GmaError> {
+        let mut modes = [None; PIPE_COUNT];
         let mut new_configs = [None; PIPE_COUNT];
         let mut saw_enabled = false;
         let mut last_error = GmaError::UnsupportedPort;
@@ -257,19 +326,107 @@ impl GmaDisplayState {
                 last_error = GmaError::ModeUnavailable;
                 continue;
             }
-            match resolve_pipe_config(resources, config, output.port) {
-                Ok(pipe_config) => {
-                    let index = PipeOutputConfig::pipe_index(pipe_config.pipe);
-                    if new_configs[index].is_none() {
-                        new_configs[index] = Some(pipe_config);
-                    }
+            if modes.iter().flatten().any(|(port, _)| *port == output.port) {
+                continue;
+            }
+            match probe(output.port).and_then(|mode| {
+                let available: heapless::Vec<_, PIPE_COUNT> = caps_for(config.cpu)
+                    .pipes
+                    .iter()
+                    .copied()
+                    .filter(|pipe| modes[PipeOutputConfig::pipe_index(*pipe)].is_none())
+                    .collect();
+                crate::generation::output_pipe(config.cpu, output.port, mode, &available)
+                    .map(|pipe| (pipe, mode))
+            }) {
+                Ok((pipe, mode)) => {
+                    modes[PipeOutputConfig::pipe_index(pipe)] = Some((output.port, mode))
                 }
-                Err(err) => last_error = err,
+                Err(err) => {
+                    fstart_log::info!(
+                        "intel-gma: connector {:?} not selected (code {})",
+                        output.port,
+                        err as u8
+                    );
+                    last_error = err;
+                }
             }
         }
 
         if !saw_enabled {
             return Err(GmaError::UnsupportedPort);
+        }
+        let (width, height) = modes
+            .iter()
+            .flatten()
+            .map(|(_, mode)| (u32::from(mode.hdisplay), u32::from(mode.vdisplay)))
+            .reduce(|(width, height), (w, h)| (width.min(w), height.min(h)))
+            .ok_or(last_error)?;
+        let mut framebuffer = config.framebuffer;
+        // Like coreboot's hires_fb glue: one minimum-sized framebuffer, not
+        // independent native-sized surfaces at the same physical address.
+        framebuffer.width = width;
+        framebuffer.height = height;
+        if framebuffer.preferred_mode == crate::PreferredMode::Fixed
+            && framebuffer.scaling != scaler::ScalingPolicy::None
+        {
+            framebuffer.width = config.framebuffer.width;
+            framebuffer.height = config.framebuffer.height;
+        }
+        framebuffer.stride = Some(
+            framebuffer
+                .width
+                .checked_add(framebuffer.start_x)
+                .and_then(|width| {
+                    width.checked_next_multiple_of(framebuffer.tiling.tile_width_units())
+                })
+                .ok_or(GmaError::InvalidConfig)?,
+        );
+        framebuffer.v_stride = Some(
+            framebuffer
+                .height
+                .checked_add(framebuffer.start_y)
+                .and_then(|height| height.checked_next_multiple_of(framebuffer.tiling.tile_rows()))
+                .ok_or(GmaError::InvalidConfig)?,
+        );
+        // Explicit pitches remain board policy; malformed or too-small
+        // pitches fail SurfaceConfig validation rather than being hidden.
+        framebuffer.stride = config.framebuffer.stride.or(framebuffer.stride);
+        framebuffer.v_stride = config.framebuffer.v_stride.or(framebuffer.v_stride);
+        let surface = crate::gtt::choose_framebuffer_surface(resources, &framebuffer)?;
+        let mut fitter_owner = None;
+        for (index, candidate) in modes.into_iter().enumerate() {
+            let Some((port, mode)) = candidate else {
+                continue;
+            };
+            let pipe = pipe_from_index(index)?;
+            let plan =
+                ScalerPlan::resolve(config.cpu, pipe, surface, mode, config.framebuffer.scaling);
+            if let Err(error) = plan.validate_future_enablement() {
+                last_error = error;
+                continue;
+            }
+            if plan.requires_scaling && scaler::caps_for(config.cpu).single_global_scaler {
+                // Gen3's fitter is physically wired to B; i965 can select its
+                // owner, but cannot scale both pipes simultaneously.
+                if (matches!(caps_for(config.cpu).generation, Generation::I945) && pipe != Pipe::B)
+                    || !plan.can_reserve_global(fitter_owner)
+                {
+                    fstart_log::warn!(
+                        "intel-gma: pipe {} cannot reserve the shared fitter",
+                        index as u8
+                    );
+                    last_error = GmaError::InvalidConfig;
+                    continue;
+                }
+                fitter_owner = Some(pipe);
+            }
+            new_configs[index] = Some(PipeOutputConfig {
+                pipe,
+                port,
+                mode,
+                surface,
+            });
         }
         if new_configs.iter().all(Option::is_none) {
             return Err(last_error);
@@ -393,37 +550,6 @@ impl GmaDisplayState {
     }
 }
 
-fn resolve_pipe_config(
-    resources: &GmaResources,
-    config: &GmaInitConfig<'_>,
-    port: Port,
-) -> Result<PipeOutputConfig, GmaError> {
-    let output = [OutputConfig {
-        port,
-        enabled: true,
-    }];
-    let candidate_config = GmaInitConfig {
-        cpu: config.cpu,
-        outputs: &output,
-        framebuffer: config.framebuffer,
-        vbt: config.vbt,
-    };
-    let mode = crate::choose_mode(resources, &candidate_config)?;
-    let surface = crate::gtt::choose_framebuffer_surface(resources, &config.framebuffer)?;
-    let pipeline = match caps_for(config.cpu).generation {
-        Generation::I945 | Generation::G45 => {
-            port::OutputPipeline::legacy_gmch(config.cpu, port, mode, surface)?
-        }
-        _ => return Err(GmaError::UnsupportedPlatform),
-    };
-    Ok(PipeOutputConfig {
-        pipe: pipeline.pipe.pipe,
-        port,
-        mode,
-        surface,
-    })
-}
-
 fn full_update(current: PipeOutputConfig, new_config: PipeOutputConfig) -> bool {
     current.port != new_config.port
         || current.mode != new_config.mode
@@ -516,7 +642,7 @@ mod tests {
         };
         let state = GmaDisplayState::new();
         let configs = state
-            .resolve_requested_configs(&resources(), &config, None)
+            .resolve_requested_configs(&resources(), &config, None, |_| Ok(Mode::XGA_1024X768_60))
             .unwrap();
         assert_eq!(
             configs[PipeOutputConfig::pipe_index(Pipe::A)].unwrap().port,
@@ -548,12 +674,206 @@ mod tests {
         };
         let state = GmaDisplayState::new();
         let configs = state
-            .resolve_requested_configs(&resources(), &config, None)
+            .resolve_requested_configs(&resources(), &config, None, |_| Ok(Mode::XGA_1024X768_60))
             .unwrap();
         assert_eq!(
             configs[PipeOutputConfig::pipe_index(Pipe::A)].unwrap().port,
             Port::Vga
         );
+    }
+
+    fn native_mode(width: u16, height: u16) -> Mode {
+        Mode {
+            hdisplay: width,
+            hsync_start: width + 24,
+            hsync_end: width + 160,
+            htotal: width + 320,
+            vdisplay: height,
+            vsync_start: height + 3,
+            vsync_end: height + 9,
+            vtotal: height + 40,
+            ..Mode::XGA_1024X768_60
+        }
+    }
+
+    fn edid_config<'a>(cpu: Cpu, outputs: &'a [OutputConfig]) -> GmaInitConfig<'a> {
+        GmaInitConfig {
+            cpu,
+            outputs,
+            framebuffer: FramebufferConfig {
+                preferred_mode: PreferredMode::Edid,
+                scaling: ScalingPolicy::PreserveAspect,
+                ..framebuffer()
+            },
+            vbt: None,
+        }
+    }
+
+    #[test]
+    fn mirror_planning_keeps_native_timings_and_one_surface_across_generations() {
+        let legacy = [
+            OutputConfig {
+                port: Port::Vga,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::Lvds,
+                enabled: true,
+            },
+        ];
+        let ddi = [
+            OutputConfig {
+                port: Port::HdmiA,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::HdmiB,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::Edp,
+                enabled: true,
+            },
+        ];
+        for cpu in [
+            Cpu::I945GM,
+            Cpu::PineviewM,
+            Cpu::Gm965,
+            Cpu::Haswell,
+            Cpu::Skylake,
+            Cpu::Tigerlake,
+        ] {
+            let legacy_cpu = matches!(caps_for(cpu).generation, Generation::I945 | Generation::G45);
+            let outputs = if legacy_cpu { &legacy[..] } else { &ddi[..] };
+            let config = edid_config(cpu, outputs);
+            let planned = GmaDisplayState::new()
+                .resolve_requested_configs(&resources(), &config, None, |port| {
+                    Ok(match port {
+                        Port::Vga | Port::HdmiA => native_mode(800, 600),
+                        Port::Lvds | Port::HdmiB => native_mode(1024, 768),
+                        _ => native_mode(1280, 720),
+                    })
+                })
+                .unwrap();
+            assert_eq!(planned.iter().flatten().count(), outputs.len(), "{cpu:?}");
+            let first = planned[0].unwrap();
+            assert_eq!((first.surface.width, first.surface.height), (800, 600));
+            for output in planned.iter().flatten() {
+                assert_eq!(output.surface, first.surface);
+            }
+            assert_eq!(planned[1].unwrap().mode, native_mode(1024, 768));
+            // Newer backends remain explicit about unimplemented scaling:
+            // successful common planning is not hardware enablement.
+            if !legacy_cpu {
+                assert_eq!(
+                    ScalerPlan::resolve(
+                        cpu,
+                        Pipe::B,
+                        first.surface,
+                        planned[1].unwrap().mode,
+                        ScalingPolicy::PreserveAspect
+                    )
+                    .validate_current(),
+                    Err(GmaError::UnsupportedPlatform)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn absent_connectors_leave_the_other_output_at_its_native_size() {
+        let outputs = [
+            OutputConfig {
+                port: Port::Vga,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::Lvds,
+                enabled: true,
+            },
+        ];
+        let config = edid_config(Cpu::Gm965, &outputs);
+        for absent in [Port::Lvds, Port::Vga] {
+            let planned = GmaDisplayState::new()
+                .resolve_requested_configs(&resources(), &config, None, |port| {
+                    if port == absent {
+                        Err(GmaError::ModeUnavailable)
+                    } else {
+                        Ok(native_mode(1280, 720))
+                    }
+                })
+                .unwrap();
+            assert_eq!(planned.iter().flatten().count(), 1);
+            let output = planned.iter().flatten().next().unwrap();
+            assert_ne!(output.port, absent);
+            assert_eq!((output.surface.width, output.surface.height), (1280, 720));
+        }
+        assert_eq!(
+            GmaDisplayState::new().resolve_requested_configs(&resources(), &config, None, |_| Err(
+                GmaError::ModeUnavailable
+            )),
+            Err(GmaError::ModeUnavailable)
+        );
+    }
+
+    #[test]
+    fn fixed_canvas_keeps_explicit_pitch_and_offsets() {
+        let outputs = [OutputConfig {
+            port: Port::Vga,
+            enabled: true,
+        }];
+        let config = GmaInitConfig {
+            cpu: Cpu::Gm965,
+            outputs: &outputs,
+            framebuffer: FramebufferConfig {
+                width: 320,
+                height: 200,
+                stride: Some(512),
+                v_stride: Some(256),
+                start_x: 16,
+                start_y: 8,
+                offset: 0x4000,
+                scaling: ScalingPolicy::Stretch,
+                ..framebuffer()
+            },
+            vbt: None,
+        };
+        let planned = GmaDisplayState::new()
+            .resolve_requested_configs(&resources(), &config, None, |_| Ok(Mode::XGA_1024X768_60))
+            .unwrap();
+        let surface = planned[0].unwrap().surface;
+        assert_eq!((surface.width, surface.height), (320, 200));
+        assert_eq!((surface.stride, surface.v_stride), (512, 256));
+        assert_eq!(
+            (surface.start_x, surface.start_y, surface.offset),
+            (16, 8, 0x4000)
+        );
+    }
+
+    #[test]
+    fn shared_fitter_conflict_is_explicit_instead_of_overwriting_the_first_owner() {
+        let outputs = [
+            OutputConfig {
+                port: Port::Vga,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::Lvds,
+                enabled: true,
+            },
+        ];
+        let config = edid_config(Cpu::Gm965, &outputs);
+        let planned = GmaDisplayState::new()
+            .resolve_requested_configs(&resources(), &config, None, |port| {
+                Ok(if port == Port::Vga {
+                    native_mode(1280, 720)
+                } else {
+                    native_mode(1024, 768)
+                })
+            })
+            .unwrap();
+        assert!(planned[0].is_some());
+        assert!(planned[1].is_none());
     }
 
     #[test]

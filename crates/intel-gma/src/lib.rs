@@ -315,6 +315,7 @@ pub(crate) struct GmaContext<'a> {
     resources: &'a GmaResources,
     config: &'a GmaInitConfig<'a>,
     surface: SurfaceConfig,
+    pipe: Pipe,
 }
 
 impl GmaContext<'_> {
@@ -359,17 +360,6 @@ pub fn init(
 ) -> Result<GmaInitResult, GmaError> {
     resources.validate()?;
     validate_outputs(config.cpu, config.outputs)?;
-    // libgfxinit programs the panel/display power sequencer in `Initialize`,
-    // before it probes DDC for the attached display. Do the same: on this
-    // platform the DDC transfer does not complete while that power is still
-    // off, and the probe would time out and fall back to a fixed mode.
-    if matches!(
-        caps_for(config.cpu).generation,
-        Generation::I945 | Generation::G45
-    ) {
-        let mmio = mmio_from_validated_resources(resources);
-        generation::g45::setup_gmch_panel_power_sequencer(&mmio);
-    }
     let mut state = GmaDisplayState::new();
     state
         .update_outputs(resources, config)?
@@ -380,39 +370,19 @@ pub fn init(
 pub(crate) fn init_candidate(
     resources: &GmaResources,
     config: &GmaInitConfig<'_>,
+    pipe: Pipe,
+    mode: Mode,
+    surface: SurfaceConfig,
 ) -> Result<GmaInitResult, GmaError> {
-    let port = selected_enabled_port(config.outputs)?;
-    let mode = clamp_hdmi_dotclock(config.cpu, port, choose_mode(resources, config)?);
-
-    // Without scaling the framebuffer *is* the mode: libgfxinit sizes its
-    // framebuffer to the selected mode, so a board that pins a fixed
-    // framebuffer size (for its fallback mode) must not force that size on a
-    // larger mode selected from the display's EDID.
-    let mut config = *config;
-    if config.framebuffer.scaling == scaler::ScalingPolicy::None
-        && (u32::from(mode.hdisplay) != config.framebuffer.width
-            || u32::from(mode.vdisplay) != config.framebuffer.height)
-    {
-        config.framebuffer.width = u32::from(mode.hdisplay);
-        config.framebuffer.height = u32::from(mode.vdisplay);
-        config.framebuffer.stride = None;
-        config.framebuffer.v_stride = None;
-    }
-    let config = &config;
-    let surface = gtt::choose_framebuffer_surface(resources, &config.framebuffer)?;
-    let scaler_pipe = port::pipe_for_legacy_gmch_port(selected_enabled_port(config.outputs)?)?;
-    scaler::ScalerPlan::resolve(
-        config.cpu,
-        scaler_pipe,
-        surface,
-        mode,
-        config.framebuffer.scaling,
-    )
-    .validate_current()?;
+    // Mode and surface were resolved once for the complete output set. Never
+    // re-probe or resize a pipe independently of the mirrored framebuffer.
+    scaler::ScalerPlan::resolve(config.cpu, pipe, surface, mode, config.framebuffer.scaling)
+        .validate_current()?;
     let ctx = GmaContext {
         resources,
         config,
         surface,
+        pipe,
     };
 
     match caps_for(config.cpu).generation {
@@ -428,6 +398,31 @@ pub(crate) fn init_candidate(
             GmaController::<generation::tigerlake::Tigerlake>::new(ctx).init(mode)
         }
     }
+}
+
+/// Map and clear the mirrored surface once, before enabling any pipe. Keeping
+/// this outside per-output init prevents a second output from erasing the first
+/// output's framebuffer, GTT guards or fence state.
+pub(crate) fn prepare_framebuffer(
+    resources: &GmaResources,
+    cpu: Cpu,
+    surface: &SurfaceConfig,
+) -> Result<(), GmaError> {
+    if !matches!(
+        caps_for(cpu).generation,
+        Generation::I945 | Generation::G45 | Generation::Ironlake
+    ) {
+        return Err(GmaError::UnsupportedPlatform);
+    }
+    gtt::map_surface_to_stolen(resources, cpu, surface)?;
+    let mmio = mmio_from_validated_resources(resources);
+    if matches!(caps_for(cpu).generation, Generation::I945 | Generation::G45) {
+        gtt::clear_legacy_fences(&mmio, cpu);
+        gtt::add_legacy_fence(&mmio, cpu, surface)?;
+    }
+    gtt::flush_gfx(&mmio);
+    // SAFETY: the validated aperture now maps the complete shared surface.
+    unsafe { surface.fill_opaque_black() }
 }
 
 /// Disable one pipe's display controller and its output port.
@@ -479,7 +474,7 @@ pub(crate) fn mmio_from_validated_resources(resources: &GmaResources) -> mmio::M
     unsafe { mmio::Mmio::new(resources.gtt_mmio_base) }
 }
 
-fn validate_outputs(cpu: Cpu, outputs: &[OutputConfig]) -> Result<(), GmaError> {
+pub(crate) fn validate_outputs(cpu: Cpu, outputs: &[OutputConfig]) -> Result<(), GmaError> {
     let caps = caps_for(cpu);
     let mut enabled_count = 0usize;
     for output in outputs.iter().filter(|output| output.enabled) {
@@ -514,7 +509,7 @@ const fn hdmi_max_dotclock_khz(cpu: Cpu) -> u32 {
 }
 
 /// Clamp an HDMI mode's dot clock to the platform maximum.
-fn clamp_hdmi_dotclock(cpu: Cpu, port: Port, mut mode: Mode) -> Mode {
+pub(crate) fn clamp_hdmi_dotclock(cpu: Cpu, port: Port, mut mode: Mode) -> Mode {
     if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC) {
         let max = hdmi_max_dotclock_khz(cpu);
         if mode.pixel_clock_khz > max {
@@ -549,18 +544,28 @@ pub(crate) fn choose_mode(
     resources: &GmaResources,
     config: &GmaInitConfig<'_>,
 ) -> Result<Mode, GmaError> {
+    let port = config
+        .outputs
+        .iter()
+        .find(|output| output.enabled)
+        .map(|output| output.port);
     match config.framebuffer.preferred_mode {
-        PreferredMode::VbtPanel => config
-            .vbt
-            .and_then(|bytes| vbt::Vbt::parse(bytes).ok())
-            .and_then(|vbt| vbt.lfp_fixed_mode().ok())
-            // No VBT, or a VBT without a panel mode (desktop boards with the
-            // monitor on the analog port): ask the attached display, exactly
-            // as libgfxinit's probing does, before falling back to the
-            // board's hardcoded mode.
-            .or_else(|| edid_mode(resources, config).ok())
-            .or_else(|| fallback_mode(&config.framebuffer).ok())
-            .ok_or(GmaError::ModeUnavailable),
+        // With no output this is a metadata-only query; actual initialization
+        // still requires an enabled, supported connector in validate_outputs.
+        PreferredMode::VbtPanel if matches!(port, None | Some(Port::Lvds | Port::Edp)) => {
+            config
+                .vbt
+                .and_then(|bytes| vbt::Vbt::parse(bytes).ok())
+                .and_then(|vbt| vbt.lfp_fixed_mode().ok())
+                // Panel policy explicitly permits VBT/static fallback.
+                // EDID-only policy below instead requires a present display.
+                .or_else(|| edid_mode(resources, config).ok())
+                .or_else(|| fallback_mode(&config.framebuffer).ok())
+                .ok_or(GmaError::ModeUnavailable)
+        }
+        PreferredMode::VbtPanel => {
+            edid_mode(resources, config).or_else(|_| fallback_mode(&config.framebuffer))
+        }
         PreferredMode::Fixed => fallback_mode(&config.framebuffer),
         PreferredMode::Edid => edid_mode(resources, config),
     }
@@ -568,9 +573,8 @@ pub(crate) fn choose_mode(
 
 /// Select a mode from the connector's EDID over DDC.
 ///
-/// Exposed so the chipset driver can report what the DDC/GMBUS path actually
-/// returned: with the bus misconfigured this fails quietly and mode selection
-/// falls back to the board's fixed mode, which looks identical on screen.
+/// Call after generation-specific panel/DDC preparation. Initialization uses
+/// this for each connector; failure does not establish display presence.
 pub fn edid_mode(resources: &GmaResources, config: &GmaInitConfig<'_>) -> Result<Mode, GmaError> {
     let port = selected_enabled_port(config.outputs)?;
     let caps = caps_for(config.cpu);

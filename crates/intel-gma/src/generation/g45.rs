@@ -44,17 +44,15 @@ impl GenerationOps for G45 {
     fn init_display(ctx: &mut GmaContext<'_>, mode: Mode) -> Result<(), GmaError> {
         let port = selected_port(ctx)?;
         let pipeline = OutputPipeline::legacy_gmch(ctx.config.cpu, port, mode, ctx.surface)?;
+        if pipeline.pipe.pipe != ctx.pipe {
+            return Err(GmaError::UnsupportedPort);
+        }
         let mmio = ctx.mmio();
         let clocks = power::initialize_legacy_gmch(&mmio, ctx.config.cpu, ctx.resources.gcfgc);
         if !clocks.allows_dotclock(mode.pixel_clock_khz) {
             return Err(GmaError::PllNoSolution);
         }
 
-        map_gtt(ctx)?;
-        // SAFETY: the framebuffer surface was selected from validated GMADR
-        // aperture/stolen-memory resources and mapped into the GTT immediately
-        // above, so the CPU-visible aperture covers this surface.
-        unsafe { ctx.surface.fill_opaque_black()? };
         // No global teardown here: `GmaDisplayState` disables only the outputs
         // whose configuration changed, so enabling a second output leaves the
         // first running. Boot-state cleanup happens once in `clean()`.
@@ -71,21 +69,23 @@ impl GenerationOps for G45 {
                     // libgfxinit allocates the PLL per link setting, so the
                     // fixed DP tuple must match the candidate being tried.
                     program_pll_for_dp_rate(ctx, pipeline.pll, pipeline.port, config.link_rate)?;
-                    Self::program_pipe(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
                     program_gmch_panel_fitter(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
+                    Self::program_pipe(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
                     Self::program_primary_plane(ctx, pipeline.plane.plane)?;
                     let _ = crate::port_detect::clear_hotplug_detect(&mmio, pipeline.port);
                     Ok(())
                 },
                 || {
-                    disable_legacy_display_state(&mmio, cpu);
+                    disable_pipe_state(&mmio, cpu, pipeline.pipe.pipe);
+                    disable_port(&mmio, pipeline.port);
+                    pll::disable_legacy_pll(&mmio, pipeline.pll);
                     let _ = crate::port_detect::clear_hotplug_detect(&mmio, pipeline.port);
                 },
             )?;
         } else {
             program_pll_for_port(ctx, &pipeline)?;
-            Self::program_pipe(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
             program_gmch_panel_fitter(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
+            Self::program_pipe(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
             Self::program_primary_plane(ctx, pipeline.plane.plane)?;
             let _ = crate::port_detect::clear_hotplug_detect(&mmio, pipeline.port);
             enable_port_with_mode_and_panel(
@@ -97,10 +97,6 @@ impl GenerationOps for G45 {
             )?;
         }
         if pipeline.port == Port::Lvds {
-            if let Some(panel) = panel {
-                program_vbt_panel_registers(&mmio, panel);
-            }
-            setup_gmch_panel_power_sequencer(&mmio);
             panel_power_on(&mmio)?;
             panel_backlight_on(&mmio, panel);
         }
@@ -136,7 +132,9 @@ impl GenerationOps for G45 {
         timing.vtotal.set(pipe_config.vtotal());
         timing.vblank.set(pipe_config.vblank());
         timing.vsync.set(pipe_config.vsync());
-        timing.pipesrc.set(pipe_config.pipesrc());
+        timing
+            .pipesrc
+            .set(crate::pipe::PipeConfig::surface_source(ctx.surface)?);
         pipeconf.set(PIPECONF::ENABLE::SET.value | crate::pipe::pipeconf_bpc_bits(port));
         let _ = pipeconf.get();
         // libgfxinit Transcoder.On does not wait for running status here.
@@ -282,15 +280,6 @@ pub(crate) fn apply_port_op(mmio: &Mmio, op: PortRegisterOp) {
     }
 }
 
-fn map_gtt(ctx: &GmaContext<'_>) -> Result<(), GmaError> {
-    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
-    let mmio = ctx.mmio();
-    gtt::clear_legacy_fences(&mmio, ctx.config.cpu);
-    gtt::add_legacy_fence(&mmio, ctx.config.cpu, &ctx.surface)?;
-    gtt::flush_gfx(&mmio);
-    Ok(())
-}
-
 pub(crate) fn program_gmch_panel_fitter(
     ctx: &GmaContext<'_>,
     pipe: Pipe,
@@ -305,9 +294,7 @@ pub(crate) fn program_gmch_panel_fitter(
     );
     if !plan.requires_scaling {
         let mmio = ctx.mmio();
-        let panel_regs = gmch_panel_regs(&mmio);
-        panel_regs.pfit_control.set(0);
-        panel_regs.pfit_pgm_ratios.set(0);
+        panel_fitter_off_for_pipe(&mmio, ctx.config.cpu, pipe);
         return Ok(());
     }
     plan.validate_current()?;
@@ -332,6 +319,12 @@ pub(crate) fn program_gmch_panel_fitter(
     };
     let mmio = ctx.mmio();
     let panel_regs = gmch_panel_regs(&mmio);
+    if panel_regs.pfit_control.is_set(PFIT_CONTROL::ENABLE)
+        && !matches!(crate::caps_for(ctx.config.cpu).generation, Generation::I945)
+        && panel_regs.pfit_control.read(PFIT_CONTROL::PIPE_SELECT) != pipe as u32
+    {
+        return Err(GmaError::InvalidConfig);
+    }
     panel_regs.pfit_pgm_ratios.set(encoding.pgm_ratios);
     panel_regs.pfit_control.set(encoding.control);
     Ok(())
@@ -371,6 +364,19 @@ const fn panel_lvds_dual_channel(panel: LfpPanelMetadata) -> Option<bool> {
         Some(bits) => Some((bits & (1 << panel.panel_type)) != 0),
         None => None,
     }
+}
+
+/// libgfxinit Scan_Ports powers the panel before reading its EDID. VBT delay
+/// registers are useful for sequencing, but VBT presence is not panel presence.
+pub(crate) fn prepare_panel_probe(mmio: &Mmio, vbt: Option<&[u8]>) -> Result<(), GmaError> {
+    if let Some(panel) = vbt
+        .and_then(|bytes| crate::vbt::Vbt::parse(bytes).ok())
+        .and_then(|vbt| vbt.lfp_panel_metadata().ok())
+    {
+        program_vbt_panel_registers(mmio, panel);
+    }
+    setup_gmch_panel_power_sequencer(mmio);
+    panel_power_on(mmio)
 }
 
 pub(crate) fn setup_gmch_panel_power_sequencer(mmio: &Mmio) {
@@ -415,7 +421,7 @@ pub(crate) fn program_vbt_panel_registers(mmio: &Mmio, panel: LfpPanelMetadata) 
     write_vbt_panel_register(mmio, timing.pp_on_reg, timing.pp_on_reg_val);
     write_vbt_panel_register(mmio, timing.pp_off_reg, timing.pp_off_reg_val);
     write_vbt_panel_register(mmio, timing.pp_cycle_reg, timing.pp_cycle_reg_val);
-    write_vbt_panel_register(mmio, timing.pfit_reg, timing.pfit_reg_val);
+    // Fitter state belongs to the resolved output set, not a VBT snapshot.
 }
 
 fn write_vbt_panel_register(mmio: &Mmio, register: u32, value: u32) {
@@ -430,7 +436,6 @@ const fn is_safe_vbt_panel_register(register: u32) -> bool {
         GmchPanelRegs::PP_ON_DELAYS_OFFSET
             | GmchPanelRegs::PP_OFF_DELAYS_OFFSET
             | GmchPanelRegs::PP_DIVISOR_OFFSET
-            | GmchPanelRegs::PFIT_CONTROL_OFFSET
     )
 }
 
@@ -650,6 +655,7 @@ pub(crate) fn panel_fitter_off_for_pipe(mmio: &Mmio, cpu: Cpu, pipe: Pipe) {
         // Clear every bit: clearing only ENABLE leaves stale Gen3 auto-scale
         // bits that confuse the hardware (libgfxinit `Panel_Fitter_Off`).
         panel_regs.pfit_control.set(0);
+        panel_regs.pfit_pgm_ratios.set(0);
         let _ = panel_regs.pfit_control.get();
     }
 }
@@ -961,6 +967,80 @@ mod tests {
     }
 
     #[test]
+    fn source_size_and_fitter_ownership_survive_initializing_another_pipe() {
+        use crate::framebuffer::{FramebufferConfig, PixelFormat};
+        use crate::{GmaInitConfig, GmaResources, OutputConfig};
+        use fstart_core::typed::mmio32;
+        use fstart_pci::PciAddress;
+
+        // Owned aligned backing for the register blocks only; no physical
+        // framebuffer or privileged clock/power operations run in this test.
+        let mut backing = std::vec![0u32; 0x80000 / 4];
+        let resources = GmaResources {
+            pci_bdf: PciAddress::new(0, 0, 2, 0),
+            gtt_mmio_base: mmio32(backing.as_mut_ptr() as u64),
+            gtt_mmio_size: 0x80000,
+            gtt_pte_base: None,
+            gmadr_base: Some(0x8000_0000),
+            gmadr_size: 0x1000_0000,
+            stolen_base: 0x7f00_0000,
+            stolen_size: 0x800000,
+            gtt_size: 0x10000,
+            gcfgc: None,
+        };
+        let outputs = [OutputConfig {
+            port: Port::Vga,
+            enabled: true,
+        }];
+        let config = GmaInitConfig {
+            cpu: Cpu::Gm965,
+            outputs: &outputs,
+            framebuffer: FramebufferConfig {
+                scaling: scaler::ScalingPolicy::PreserveAspect,
+                ..FramebufferConfig::vbt_panel(crate::FallbackMode {
+                    width: 1024,
+                    height: 768,
+                    refresh_hz: 60,
+                })
+            },
+            vbt: None,
+        };
+        let surface = SurfaceConfig::packed(0x8000_0000, 800, 600, PixelFormat::Xrgb8888);
+        let mut ctx = GmaContext {
+            resources: &resources,
+            config: &config,
+            surface,
+            pipe: Pipe::A,
+        };
+        program_gmch_panel_fitter(&ctx, Pipe::A, Mode::XGA_1024X768_60).unwrap();
+        G45::program_pipe(&mut ctx, Pipe::A, Mode::XGA_1024X768_60).unwrap();
+        let mmio = ctx.mmio();
+        let panel = gmch_panel_regs(&mmio);
+        let control = panel.pfit_control.get();
+        let ratios = panel.pfit_pgm_ratios.get();
+        assert!(panel.pfit_control.is_set(PFIT_CONTROL::ENABLE));
+        // Native XGA totals, but the fitter receives the shared 800x600 image.
+        assert_eq!(
+            mmio.read32(0x6001c),
+            crate::pipe::PipeConfig::encode_range(600, 800)
+        );
+        assert_eq!(
+            mmio.read32(0x60000),
+            crate::pipe::PipeConfig::new(Pipe::A, Mode::XGA_1024X768_60).htotal()
+        );
+        ctx.surface = SurfaceConfig::packed(0x8000_0000, 1024, 768, PixelFormat::Xrgb8888);
+        program_gmch_panel_fitter(&ctx, Pipe::B, Mode::XGA_1024X768_60).unwrap();
+        assert_eq!(panel.pfit_control.get(), control);
+        assert_eq!(panel.pfit_pgm_ratios.get(), ratios);
+        ctx.surface = surface;
+        assert_eq!(
+            program_gmch_panel_fitter(&ctx, Pipe::B, Mode::XGA_1024X768_60),
+            Err(GmaError::InvalidConfig)
+        );
+        assert_eq!(panel.pfit_control.get(), control);
+    }
+
+    #[test]
     fn vbt_panel_register_filter_accepts_only_panel_sequence_registers() {
         assert!(is_safe_vbt_panel_register(
             GmchPanelRegs::PP_ON_DELAYS_OFFSET as u32
@@ -971,7 +1051,7 @@ mod tests {
         assert!(is_safe_vbt_panel_register(
             GmchPanelRegs::PP_DIVISOR_OFFSET as u32
         ));
-        assert!(is_safe_vbt_panel_register(
+        assert!(!is_safe_vbt_panel_register(
             GmchPanelRegs::PFIT_CONTROL_OFFSET as u32
         ));
         assert!(!is_safe_vbt_panel_register(

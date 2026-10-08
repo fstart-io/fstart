@@ -39,18 +39,15 @@ impl GenerationOps for I945 {
     fn init_display(ctx: &mut GmaContext<'_>, mode: Mode) -> Result<(), GmaError> {
         let port = selected_port(ctx)?;
         let pipe = pipe_for_i945_port(port)?;
+        if pipe != ctx.pipe {
+            return Err(GmaError::UnsupportedPort);
+        }
         let pll = legacy_pll_for_pipe(pipe)?;
         let mmio = ctx.mmio();
         let clocks = power::initialize_i945(&mmio, ctx.config.cpu, ctx.resources.gcfgc);
         if !clocks.allows_dotclock(mode.pixel_clock_khz) {
             return Err(GmaError::PllNoSolution);
         }
-
-        map_gtt(ctx)?;
-        // SAFETY: the framebuffer surface was selected from validated GMADR
-        // aperture/stolen-memory resources and mapped into the GTT immediately
-        // above, so the CPU-visible aperture covers this surface.
-        unsafe { ctx.surface.fill_opaque_black()? };
 
         // libgfxinit's i945 `Connectors.Pre_On` is a no-op; the LVDS port
         // register is written by `Post_On` after the PLL and pipe are up.
@@ -60,16 +57,12 @@ impl GenerationOps for I945 {
         delay_us(150);
         pll::program_legacy_pll(&mmio, ctx.config.cpu, pll, port, clock);
 
-        program_pipe(&mmio, pipe, mode, port)?;
         g45::program_gmch_panel_fitter(ctx, pipe, mode)?;
+        program_pipe(&mmio, pipe, mode, port, ctx.surface)?;
         program_primary_plane(ctx, pipe, port)?;
         enable_port(&mmio, port, pipe, mode)?;
 
         if port == Port::Lvds {
-            if let Some(panel) = panel {
-                g45::program_vbt_panel_registers(&mmio, panel);
-            }
-            g45::setup_gmch_panel_power_sequencer(&mmio);
             g45::panel_power_on(&mmio)?;
             panel_backlight_on(&mmio, panel);
         }
@@ -92,7 +85,7 @@ impl GenerationOps for I945 {
 
     fn program_pipe(ctx: &mut GmaContext<'_>, pipe: Pipe, mode: Mode) -> Result<(), GmaError> {
         let port = selected_port(ctx)?;
-        program_pipe(&ctx.mmio(), pipe, mode, port)
+        program_pipe(&ctx.mmio(), pipe, mode, port, ctx.surface)
     }
 
     fn program_primary_plane(ctx: &mut GmaContext<'_>, plane: Plane) -> Result<(), GmaError> {
@@ -213,15 +206,6 @@ const fn dspcntr_pipe_select(pipe: Pipe) -> Result<u32, GmaError> {
     }
 }
 
-fn map_gtt(ctx: &GmaContext<'_>) -> Result<(), GmaError> {
-    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
-    let mmio = ctx.mmio();
-    gtt::clear_legacy_fences(&mmio, ctx.config.cpu);
-    gtt::add_legacy_fence(&mmio, ctx.config.cpu, &ctx.surface)?;
-    gtt::flush_gfx(&mmio);
-    Ok(())
-}
-
 fn selected_lfp_panel(ctx: &GmaContext<'_>) -> Option<LfpPanelMetadata> {
     ctx.config
         .vbt
@@ -229,7 +213,13 @@ fn selected_lfp_panel(ctx: &GmaContext<'_>) -> Option<LfpPanelMetadata> {
         .and_then(|vbt| vbt.lfp_panel_metadata().ok())
 }
 
-fn program_pipe(mmio: &Mmio, pipe: Pipe, mode: Mode, port: Port) -> Result<(), GmaError> {
+fn program_pipe(
+    mmio: &Mmio,
+    pipe: Pipe,
+    mode: Mode,
+    port: Port,
+    surface: crate::framebuffer::SurfaceConfig,
+) -> Result<(), GmaError> {
     let (timing_off, pipeconf_off) = pipe_regs(pipe)?;
     let pipe_config = crate::pipe::PipeConfig::new(pipe, mode);
     // SAFETY: `pipe_regs` returns legacy Gen3 pipe register offsets inside the
@@ -244,7 +234,9 @@ fn program_pipe(mmio: &Mmio, pipe: Pipe, mode: Mode, port: Port) -> Result<(), G
     timing.vtotal.set(pipe_config.vtotal());
     timing.vblank.set(pipe_config.vblank());
     timing.vsync.set(pipe_config.vsync());
-    timing.pipesrc.set(pipe_config.pipesrc());
+    timing
+        .pipesrc
+        .set(crate::pipe::PipeConfig::surface_source(surface)?);
     pipeconf.set(PIPECONF::ENABLE::SET.value | pipeconf_bpc_bits(port));
     // Gen3 has no i965-style active-status bit, but the programmed enable bit
     // must read back. A failure here means the decoded display MMIO window is

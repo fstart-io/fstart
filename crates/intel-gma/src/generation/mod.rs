@@ -4,6 +4,28 @@ use crate::error::GmaError;
 use crate::mode::Mode;
 use crate::types::{Cpu, Generation, Pipe, Plane, Port};
 
+/// Select a pipe within the existing generation's routing constraints. Modern
+/// DDI generations can allocate free pipes; implemented GMCH/FDI paths retain
+/// their concrete routing. Connector probing and framebuffer sizing do not
+/// need to know these hardware restrictions.
+pub(crate) fn output_pipe(
+    cpu: Cpu,
+    port: Port,
+    mode: Mode,
+    available: &[Pipe],
+) -> Result<Pipe, GmaError> {
+    let pipe = match crate::caps_for(cpu).generation {
+        Generation::I945 | Generation::G45 => crate::port::pipe_for_legacy_gmch_port(port)?,
+        Generation::Ironlake => ironlake::ironlake_pipeline_plan(cpu, port, mode)?.fdi_pipe(),
+        _ => *available.first().ok_or(GmaError::UnsupportedPort)?,
+    };
+    if available.contains(&pipe) {
+        Ok(pipe)
+    } else {
+        Err(GmaError::UnsupportedPort)
+    }
+}
+
 /// Internal generation operation table.
 #[allow(dead_code)]
 pub(crate) trait GenerationOps: sealed::Sealed {

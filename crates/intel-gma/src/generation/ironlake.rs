@@ -9,7 +9,6 @@
 
 use crate::error::GmaError;
 use crate::generation::{GenerationOps, sealed};
-use crate::gtt;
 use crate::mmio::Mmio;
 use crate::mode::{Mode, ModeFlags};
 use crate::plane::{PlaneAddressModel, PlaneConfig, primary_for_pipe};
@@ -35,12 +34,10 @@ impl GenerationOps for Ironlake {
     fn init_display(ctx: &mut crate::GmaContext<'_>, mode: Mode) -> Result<(), GmaError> {
         let port = selected_port(ctx)?;
         let plan = ironlake_init_sequence_for_mode(ctx.config.cpu, port, mode)?;
-        map_gtt(ctx)?;
-        // SAFETY: the framebuffer surface was selected from validated GMADR
-        // aperture/stolen-memory resources and mapped into the GTT immediately
-        // above, so the CPU-visible aperture covers this surface.
-        unsafe { ctx.surface.fill_opaque_black()? };
         let pipe = ironlake_pipeline_plan(ctx.config.cpu, port, mode)?.fdi_pipe();
+        if pipe != ctx.pipe {
+            return Err(GmaError::UnsupportedPort);
+        }
         let plane = primary_for_pipe(pipe);
         let mut mmio = ctx.mmio();
         execute_ironlake_init_plan_registers(&mut mmio, &plan, port, mode, ctx.surface, pipe, plane)
@@ -75,12 +72,6 @@ impl GenerationOps for Ironlake {
 
 fn selected_port(ctx: &crate::GmaContext<'_>) -> Result<Port, GmaError> {
     crate::selected_enabled_port(ctx.config.outputs)
-}
-
-fn map_gtt(ctx: &crate::GmaContext<'_>) -> Result<(), GmaError> {
-    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
-    gtt::flush_gfx(&ctx.mmio());
-    Ok(())
 }
 
 /// Split-PCH FDI/transcoder port.
