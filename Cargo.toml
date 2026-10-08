@@ -14,6 +14,7 @@ members = [
   "crates/arch",
   "crates/log",
   "crates/driver-lenovo",
+  "crates/driver-ricoh",
   "crates/driver-uart",
   "crates/driver-intel",
   "crates/driver-sunxi",

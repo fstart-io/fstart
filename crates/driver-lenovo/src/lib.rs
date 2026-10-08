@@ -8,8 +8,10 @@
 //! - [`pmh7`]: the PMH7 hub (IO 0x15e0) — backlight, dock-event, touchpad/
 //!   trackpoint and ultrabay power switching, plus its PNP0C02 resource
 //!   device.
+//! - [`x6`]: X60/X61 family policy: EC/PMH7 setup, DSDT glue and the X6
+//!   UltraBase dock (DLPC LPC switch and dock-side PC87392 SuperIO).
 //!
-//! Both drivers are chipset-independent: they only need the LPC decode of
+//! Both EC drivers are chipset-independent: they only need the LPC decode of
 //! their IO ranges, which the board's southbridge config already programs.
 
 #![no_std]
@@ -21,6 +23,7 @@ pub mod eeprom;
 
 pub mod h8;
 pub mod pmh7;
+pub mod x6;
 
 #[cfg(feature = "acpi")]
 pub mod h8_acpi;

@@ -4,13 +4,12 @@ use fstart_driver_intel::southbridge::smi::{
     APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH8_GPE0, IchBoardSmmHandler, IchSmi, IchSmmHandler,
 };
 use fstart_driver_lenovo::ec::Ec;
-use fstart_driver_lenovo::h8::{H8, H8Led, H8LedMode};
+use fstart_driver_lenovo::h8::H8;
+use fstart_driver_lenovo::x6::dock as x6_dock;
 use fstart_platform_intel::smm::SmmContext;
 
-use crate::{Board, mainboard::dock};
+use crate::Board;
 
-pub const SMI_DOCK_CONNECT: u8 = 0x01;
-pub const SMI_DOCK_DISCONNECT: u8 = 0x02;
 const EC_GPIO: u8 = 2;
 
 /// No mutable port globals: chipset ACPI ownership determines the SMM channel.
@@ -27,31 +26,7 @@ fn ec_channel() -> Ec {
 }
 
 fn dock_command(command: u8) -> Option<u8> {
-    let ec = ec_channel();
-    let h8 = H8::new(ec);
-    match command {
-        SMI_DOCK_CONNECT => {
-            let handshake = h8.dock_latch(false);
-            fstart_arch::udelay(250_000);
-            let connected = handshake && dock::dock_connect_with_ec(ec).is_ok();
-            if connected {
-                let state = h8.dock_latch(true);
-                let led_off = h8.set_led(H8Led::Dock2, H8LedMode::Off);
-                let led_on = h8.set_led(H8Led::Dock1, H8LedMode::On);
-                Some(u8::from(state && led_off && led_on))
-            } else {
-                let _ = h8.set_led(H8Led::Dock1, H8LedMode::Off);
-                let _ = h8.set_led(H8Led::Dock2, H8LedMode::Blink);
-                Some(0)
-            }
-        }
-        SMI_DOCK_DISCONNECT => {
-            let handshake = h8.dock_latch(false);
-            dock::dock_disconnect_with_ec(ec);
-            Some(u8::from(handshake))
-        }
-        _ => None,
-    }
+    x6_dock::smm_dock_command(ec_channel(), command)
 }
 
 fn handle_ec_event() {
@@ -60,7 +35,7 @@ fn handle_ec_event() {
         return;
     }
     if let Some(event) = Ec::new(crate::config::X61_H8.resources.os).query_event() {
-        if let Some(command) = dock::smm_event_command(event) {
+        if let Some(command) = x6_dock::smm_event_command(event) {
             let _ = dock_command(command);
         }
     }

@@ -640,9 +640,19 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
+ "fstart-driver-superio",
  "fstart-log",
  "tock-registers",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-ricoh"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-pci",
+ "tock-registers",
 ]
 
 [[package]]

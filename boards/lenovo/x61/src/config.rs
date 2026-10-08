@@ -18,8 +18,14 @@ use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 /// A missing panel must not be inferred present just because the VBT lists it.
 const X61_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
     outputs: &[
-        OutputConfig { port: Port::Vga, enabled: true },
-        OutputConfig { port: Port::Lvds, enabled: true },
+        OutputConfig {
+            port: Port::Vga,
+            enabled: true,
+        },
+        OutputConfig {
+            port: Port::Lvds,
+            enabled: true,
+        },
     ],
     framebuffer: FramebufferConfig {
         scaling: fstart_intel_gma::scaler::ScalingPolicy::PreserveAspect,
@@ -103,24 +109,8 @@ pub const X61_SMBUS_MUX: gpio::GpioPin = gpio::GpioPin {
 };
 
 /// One source for EC transport, LPC windows, and AML resources/capabilities.
-pub const X61_H8: fstart_driver_lenovo::h8::H8Config = {
-    use fstart_driver_lenovo::{
-        ec::EcPorts,
-        h8::{H8Config, H8Resources},
-    };
-    H8Config {
-        has_bluetooth: true,
-        // No WWAN detection GPIO: the board assumes it is installed.
-        has_wwan: true,
-        has_thinklight: true,
-        second_thermal_zone: true,
-        ..H8Config::new(
-            H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
-            0x12,
-            "IBM0068",
-        )
-    }
-};
+/// The EC SCI is ICH8 GPIO2, i.e. GPE 0x12.
+pub const X61_H8: fstart_driver_lenovo::h8::H8Config = fstart_driver_lenovo::x6::h8_config(0x12);
 
 pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
     .max_cpus(2)

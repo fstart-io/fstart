@@ -18,6 +18,8 @@ use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
 #[cfg(all(not(test), fstart_stage_env = "ram"))]
 use fstart_platform_intel::{IntelMainstageBoardCtx, IntelMainstageBoardHooks};
 
+#[cfg(all(not(test), any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
+use fstart_driver_lenovo::x6::dock as x6_dock;
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_platform_intel::{IntelSmbusRouting, SmbusRoute};
 
@@ -104,7 +106,7 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
     ) -> Result<(), ServiceError> {
         // Sample the detachable UltraBay before ICH8 programs IDE timings.
         // An absent or disconnected dock cannot supply a primary-channel disk.
-        let primary = dock::dock_present(ctx.southbridge()) && dock::ultrabay_present();
+        let primary = x6_dock::dock_present(ctx.southbridge()) && x6_dock::ultrabay_present();
         ctx.southbridge().set_ide_primary_enabled(primary);
         Ok(())
     }
@@ -115,11 +117,16 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
     ) -> Result<(), ServiceError> {
         // EC/PMH7 hardware setup is independent of ACPI table emission.
         let resume = ctx.resume;
-        x61_ec_init(ctx.southbridge(), resume);
-        if !resume {
-            self.ec_oem_string = x61_ec_oem_string();
+        if !fstart_driver_lenovo::x6::ec_init(ctx.southbridge(), &crate::config::X61_H8, resume) {
+            fstart_log::error!("lenovo-x61: H8 EC initialization incomplete");
         }
-        dock::mainstage_power_policy();
+        if !resume {
+            self.ec_oem_string = fstart_driver_lenovo::x6::ec_oem_string(&crate::config::X61_H8);
+            if self.ec_oem_string.is_none() {
+                fstart_log::error!("lenovo-x61: H8 EC firmware id unavailable");
+            }
+        }
+        x6_dock::mainstage_power_policy(os_ec());
         if !resume && init_ck505(ctx.southbridge()).is_err() {
             fstart_log::error!("lenovo-x61: CK505 programming failed");
         }
@@ -129,7 +136,10 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
             self.identity = match fstart_driver_lenovo::eeprom::Identity::read(ctx.southbridge()) {
                 Ok(identity) => Some(identity),
                 Err(error) => {
-                    fstart_log::error!("lenovo-x61: EEPROM identity unavailable, code {}", error as u8);
+                    fstart_log::error!(
+                        "lenovo-x61: EEPROM identity unavailable, code {}",
+                        error as u8
+                    );
                     None
                 }
             };
@@ -163,448 +173,13 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
 
 #[cfg(all(not(test), any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
 fn setup_dock_console(southbridge: &mut fstart_driver_intel::ich8::IntelIch8) {
-    // X61-specific dock routing. Failures are non-fatal before console.
-    let _ = dock::dlpc_init();
-    if dock::dock_present(southbridge) {
-        let _ = dock::dock_connect();
-        dock::early_superio_config();
-    }
+    x6_dock::setup_console(southbridge, os_ec());
 }
 
-/// X61 dock and DLPC helpers ported from coreboot `mainboard/lenovo/x61/dock.c`.
-pub mod dock {
-    #[cfg(target_arch = "x86_64")]
-    use fstart_core::pio::{PioRegister, inb, outb};
-    #[cfg(target_arch = "x86_64")]
-    use fstart_driver_superio::{IoResource, IrqResource, LogicalDevice};
-    #[cfg(target_arch = "x86_64")]
-    use tock_registers::interfaces::{ReadWriteable, Readable};
-
-    const DLPC_INDEX: u16 = 0x164e;
-    const DLPC_DATA: u16 = 0x164f;
-    const DLPC_SWITCH: u16 = 0x164c;
-    const DLPC_GPIO: u16 = 0x1680;
-    const DOCK_INDEX: u16 = 0x002e;
-    const DOCK_DATA: u16 = 0x002f;
-    const DOCK_GPIO_BASE: u16 = 0x1620;
-
-    // These names describe X61 wiring, not a universal PC87382/PC87392 pin map.
-    #[cfg(target_arch = "x86_64")]
-    tock_registers::register_bitfields![u8,
-        DLPC_OUTPUT [
-            D_PLTRST_N OFFSET(0) NUMBITS(1) [],
-            DLPC_POWER_ENABLE OFFSET(1) NUMBITS(1) []
-        ],
-        DLPC_STATUS [CONNECTED OFFSET(3) NUMBITS(1) []],
-        DOCK_INPUT [ULTRABAY_ABSENT OFFSET(1) NUMBITS(1) []],
-        DOCK_POWER [
-            ULTRABAY_ENABLE OFFSET(0) NUMBITS(1) [],
-            USB_ENABLE OFFSET(1) NUMBITS(1) []
-        ]
-    ];
-
-    #[cfg(target_arch = "x86_64")]
-    const DLPC_OUTPUT: PioRegister<u8, DLPC_OUTPUT::Register> = PioRegister::new(DLPC_GPIO);
-    #[cfg(target_arch = "x86_64")]
-    const DLPC_STATUS: PioRegister<u8, DLPC_STATUS::Register> = PioRegister::new(DLPC_SWITCH);
-    #[cfg(target_arch = "x86_64")]
-    const DOCK_INPUT: PioRegister<u8, DOCK_INPUT::Register> = PioRegister::new(DOCK_GPIO_BASE + 1);
-    #[cfg(target_arch = "x86_64")]
-    const DOCK_POWER: PioRegister<u8, DOCK_POWER::Register> = PioRegister::new(DOCK_GPIO_BASE + 8);
-
-    /// Assert dock reset and remove laptop-side DLPC power, preserving siblings.
-    #[cfg(target_arch = "x86_64")]
-    fn reset_dlpc(output: &impl ReadWriteable<T = u8, R = DLPC_OUTPUT::Register>) {
-        output.modify(DLPC_OUTPUT::D_PLTRST_N::CLEAR + DLPC_OUTPUT::DLPC_POWER_ENABLE::CLEAR);
-    }
-
-    const PC87392_GPIO_PIN_OE: u8 = 0x01;
-    const PC87392_GPIO_PIN_TYPE_PUSH_PULL: u8 = 0x02;
-    const PC87392_GPIO_PIN_PULLUP: u8 = 0x04;
-    const PC87392_GPIO_PIN_DEBOUNCE: u8 = 0x40;
-    const PC87392_GPIO_PIN_TRIGGERS_SMI: u8 = 0x02;
-
-    #[cfg(target_arch = "x86_64")]
-    fn delay_us(us: u32) {
-        fstart_arch::x86::udelay(us);
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn delay_ms(ms: u32) {
-        for _ in 0..ms {
-            delay_us(1000);
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn dlpc_write(reg: u8, value: u8) {
-        // SAFETY: fixed laptop-side NSC PC87382 PnP config ports decoded by ICH8 LPC setup.
-        unsafe {
-            outb(DLPC_INDEX, reg);
-            outb(DLPC_DATA, value);
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn dlpc_read(reg: u8) -> u8 {
-        // SAFETY: fixed laptop-side NSC PC87382 PnP config ports decoded by ICH8 LPC setup.
-        unsafe {
-            outb(DLPC_INDEX, reg);
-            inb(DLPC_DATA)
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn dock_write(reg: u8, value: u8) {
-        // SAFETY: fixed dock-side PC87392 PnP config ports decoded after DLPC connect.
-        unsafe {
-            outb(DOCK_INDEX, reg);
-            outb(DOCK_DATA, value);
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn dock_read(reg: u8) -> u8 {
-        // SAFETY: fixed dock-side PC87392 PnP config ports decoded after DLPC connect.
-        unsafe {
-            outb(DOCK_INDEX, reg);
-            inb(DOCK_DATA)
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn dlpc_gpio_set_mode(port: u8, mode: u8) {
-        dlpc_write(0xf0, port);
-        dlpc_write(0xf1, mode);
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn dock_gpio_set_mode(port: u8, mode: u8, irq: u8) {
-        dock_write(0xf0, port);
-        dock_write(0xf1, mode);
-        dock_write(0xf2, irq);
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn dlpc_gpio_init() {
-        let mut gpio = LogicalDevice::select(0x07, dlpc_read, dlpc_write);
-        gpio.set_io_base(IoResource::Primary(DLPC_GPIO));
-        gpio.set_enabled(true);
-        dlpc_gpio_set_mode(0x00, 3);
-        dlpc_gpio_set_mode(0x01, 3);
-        dlpc_gpio_set_mode(0x02, 0);
-        dlpc_gpio_set_mode(0x03, 3);
-        dlpc_gpio_set_mode(0x04, 4);
-        dlpc_gpio_set_mode(0x20, 4);
-        dlpc_gpio_set_mode(0x21, 4);
-        dlpc_gpio_set_mode(0x23, 4);
-    }
-
-    /// Initialize the laptop-side DLPC switch and its GPIO block.
-    #[cfg(target_arch = "x86_64")]
-    pub fn dlpc_init() -> Result<(), ()> {
-        let mut timeout = 1000;
-        dlpc_write(0x29, 0xa0);
-        while (dlpc_read(0x29) & 0x10) == 0 && timeout != 0 {
-            timeout -= 1;
-            delay_us(1000);
-        }
-        if timeout == 0 {
-            return Err(());
-        }
-
-        let mut switch = LogicalDevice::select(0x19, dlpc_read, dlpc_write);
-        switch.set_io_base(IoResource::Primary(DLPC_SWITCH));
-        switch.set_enabled(true);
-        dlpc_gpio_init();
-        Ok(())
-    }
-
-    /// Initialize the laptop-side DLPC switch and its GPIO block.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn dlpc_init() -> Result<(), ()> {
-        Ok(())
-    }
-
-    /// Return whether an X6 UltraBase dock is attached.
-    pub fn dock_present(southbridge: &impl fstart_core::services::Southbridge) -> bool {
-        // Coreboot samples ICH GPIO13 low for dock present.  Ask the reusable
-        // southbridge driver instead of duplicating its GPIOBASE in board config.
-        southbridge.gpio_get(13).is_ok_and(|high| !high)
-    }
-
-    /// Whether the laptop-side LPC switch reports a connected dock.
-    pub fn connected() -> bool {
-        #[cfg(target_arch = "x86_64")]
-        {
-            DLPC_STATUS.is_set(DLPC_STATUS::CONNECTED)
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            false
-        }
-    }
-
-    /// Connect using the firmware's legacy EC channel.
-    pub fn dock_connect() -> Result<(), ()> {
-        dock_connect_with_ec(fstart_driver_lenovo::ec::Ec::new(
-            crate::config::X61_H8.resources.os,
-        ))
-    }
-
-    /// Connect the dock-side LPC bus and initialize dock GPIO/power.
-    #[cfg(target_arch = "x86_64")]
-    pub fn dock_connect_with_ec(ec: fstart_driver_lenovo::ec::Ec) -> Result<(), ()> {
-        let mut timeout = 1000;
-        // Start from the vendor/coreboot state: dock reset asserted and DLPC
-        // powered down, preserving unrelated GPIO bits in the DLPC GPIO data
-        // register.  The dock UART is behind this LPC switch, so marginal
-        // reset/power sequencing shows up later as serial corruption.
-        reset_dlpc(&DLPC_OUTPUT);
-
-        // SAFETY: DLPC switch I/O base was activated by dlpc_init().
-        unsafe { outb(DLPC_SWITCH, 0x07) };
-        while !connected() && timeout != 0 {
-            timeout -= 1;
-            delay_us(1000);
-        }
-        if timeout == 0 {
-            // SAFETY: disable the DLPC switch on failure.
-            unsafe { outb(DLPC_SWITCH, 0x00) };
-            LogicalDevice::select(0x19, dlpc_read, dlpc_write).set_enabled(false);
-            return Err(());
-        }
-
-        // Power up DLPC while keeping D_PLTRST# asserted, then deassert
-        // D_PLTRST#.  Match coreboot's read-modify-write sequence exactly.
-        DLPC_OUTPUT.modify(DLPC_OUTPUT::D_PLTRST_N::CLEAR + DLPC_OUTPUT::DLPC_POWER_ENABLE::SET);
-        delay_ms(100);
-        DLPC_OUTPUT.modify(DLPC_OUTPUT::D_PLTRST_N::SET + DLPC_OUTPUT::DLPC_POWER_ENABLE::SET);
-        delay_ms(100);
-
-        dock_write(0x29, 0x06);
-        timeout = 1000;
-        while (dock_read(0x29) & 0x08) == 0 && timeout != 0 {
-            timeout -= 1;
-            delay_us(1000);
-        }
-        if timeout == 0 {
-            return Err(());
-        }
-
-        dock_write(0x24, 0x37);
-        dock_write(0x25, 0xa0);
-        dock_write(0x26, 0x01);
-        dock_write(0x28, 0x02);
-        let mut gpio = LogicalDevice::select(0x07, dock_read, dock_write);
-        gpio.set_io_base(IoResource::Primary(DOCK_GPIO_BASE));
-
-        dock_gpio_set_mode(
-            0x00,
-            PC87392_GPIO_PIN_DEBOUNCE | PC87392_GPIO_PIN_PULLUP,
-            0x00,
-        );
-        dock_gpio_set_mode(
-            0x01,
-            PC87392_GPIO_PIN_DEBOUNCE | PC87392_GPIO_PIN_PULLUP,
-            PC87392_GPIO_PIN_TRIGGERS_SMI,
-        );
-        for port in [
-            0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x14, 0x15, 0x17, 0x22, 0x23, 0x24,
-            0x25, 0x26, 0x27, 0x30, 0x31, 0x32, 0x33, 0x34, 0x36, 0x37,
-        ] {
-            dock_gpio_set_mode(port, PC87392_GPIO_PIN_PULLUP, 0x00);
-        }
-        dock_gpio_set_mode(
-            0x07,
-            PC87392_GPIO_PIN_PULLUP | PC87392_GPIO_PIN_DEBOUNCE,
-            PC87392_GPIO_PIN_TRIGGERS_SMI,
-        );
-        dock_gpio_set_mode(
-            0x10,
-            PC87392_GPIO_PIN_DEBOUNCE | PC87392_GPIO_PIN_PULLUP,
-            PC87392_GPIO_PIN_TRIGGERS_SMI,
-        );
-        dock_gpio_set_mode(0x16, PC87392_GPIO_PIN_PULLUP | PC87392_GPIO_PIN_OE, 0x00);
-        dock_gpio_set_mode(
-            0x20,
-            PC87392_GPIO_PIN_TYPE_PUSH_PULL | PC87392_GPIO_PIN_OE,
-            0x00,
-        );
-        dock_gpio_set_mode(
-            0x21,
-            PC87392_GPIO_PIN_TYPE_PUSH_PULL | PC87392_GPIO_PIN_OE,
-            0x00,
-        );
-        dock_gpio_set_mode(0x35, PC87392_GPIO_PIN_PULLUP | PC87392_GPIO_PIN_OE, 0x00);
-
-        gpio.set_enabled(true);
-        // SAFETY: dock GPIO block is configured at 0x1620.
-        unsafe {
-            set_ultrabay_power(&DOCK_POWER, ultrabay_present());
-            outb(DOCK_GPIO_BASE + 0x03, 0x00);
-            outb(DOCK_GPIO_BASE + 0x02, 0x82);
-            outb(DOCK_GPIO_BASE + 0x04, inb(DOCK_GPIO_BASE + 0x04) | 0x40);
-        }
-        if !set_usb_power(ec, true) {
-            return Err(());
-        }
-        let mut parallel = LogicalDevice::select(0x01, dock_read, dock_write);
-        parallel.set_io_base(IoResource::Primary(0x3bc));
-        parallel.set_irq(IrqResource::Primary(7));
-        parallel.set_enabled(true);
-        enable_dock_console();
-        disable_dock_watchdog();
-        Ok(())
-    }
-
-    /// Connect the dock-side LPC bus and initialize dock GPIO/power.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn dock_connect_with_ec(_ec: fstart_driver_lenovo::ec::Ec) -> Result<(), ()> {
-        Ok(())
-    }
-
-    /// UltraBay presence for board IDE/power policy; never sample an absent dock.
-    #[cfg(target_arch = "x86_64")]
-    pub fn ultrabay_present() -> bool {
-        connected() && !DOCK_INPUT.is_set(DOCK_INPUT::ULTRABAY_ABSENT)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn set_ultrabay_power(power: &impl ReadWriteable<T = u8, R = DOCK_POWER::Register>, on: bool) {
-        power.modify(DOCK_POWER::ULTRABAY_ENABLE.val(on.into()));
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn set_usb_power(ec: fstart_driver_lenovo::ec::Ec, on: bool) -> bool {
-        DOCK_POWER.modify(DOCK_POWER::USB_ENABLE.val(on.into()));
-        ec.modify_register(fstart_driver_lenovo::h8::CONFIG2::DOCK_USB_POWER.val(on.into()))
-    }
-
-    /// Mainboard UltraBay power/LED policy after the H8 configuration reset.
-    #[cfg(target_arch = "x86_64")]
-    pub fn mainstage_power_policy() {
-        let present = ultrabay_present();
-        if connected() {
-            set_ultrabay_power(&DOCK_POWER, present);
-            let _ = set_usb_power(
-                fstart_driver_lenovo::ec::Ec::new(crate::config::X61_H8.resources.os),
-                true,
-            );
-        }
-        let h8 = fstart_driver_lenovo::h8::H8::new(fstart_driver_lenovo::ec::Ec::new(
-            crate::config::X61_H8.resources.os,
-        ));
-        use fstart_driver_lenovo::h8::{H8Led, H8LedMode};
-        let _ = h8.set_led(
-            H8Led::Ultrabay,
-            if present {
-                H8LedMode::On
-            } else {
-                H8LedMode::Off
-            },
-        );
-    }
-
-    /// Disconnect the dock-side LPC bus and power rails, in vendor order.
-    #[cfg(target_arch = "x86_64")]
-    pub fn dock_disconnect_with_ec(ec: fstart_driver_lenovo::ec::Ec) {
-        // Assert D_PLTRST# and DLPCPD before removing power/LPC.
-        reset_dlpc(&DLPC_OUTPUT);
-        delay_ms(10);
-        let _ = set_usb_power(ec, false);
-        set_ultrabay_power(&DOCK_POWER, false);
-        delay_us(10_000);
-        // SAFETY: fixed DLPC switch, disconnected only after power removal.
-        unsafe { outb(DLPC_SWITCH, 0x00) };
-    }
-
-    pub fn dock_disconnect() {
-        dock_disconnect_with_ec(fstart_driver_lenovo::ec::Ec::new(
-            crate::config::X61_H8.resources.os,
-        ));
-    }
-
-    /// Disconnect the dock-side LPC bus and power rails.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn dock_disconnect_with_ec(_ec: fstart_driver_lenovo::ec::Ec) {}
-
-    /// Enable the dock-side PC87392 COM1 at 0x3f8.
-    #[cfg(target_arch = "x86_64")]
-    pub fn early_superio_config() {
-        let mut timeout = 100_000;
-        dock_write(0x29, 0x06);
-        while (dock_read(0x29) & 0x08) == 0 && timeout != 0 {
-            timeout -= 1;
-            delay_us(1000);
-        }
-        enable_dock_console();
-        disable_dock_watchdog();
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn enable_dock_console() {
-        let mut serial = LogicalDevice::select(0x03, dock_read, dock_write);
-        serial.set_io_base(IoResource::Primary(0x3f8));
-        serial.set_irq(IrqResource::Primary(4));
-        serial.set_enabled(true);
-    }
-
-    /// Enable the dock-side PC87392 COM1 at 0x3f8.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn early_superio_config() {}
-
-    /// Keep the dock-side PC87392 watchdog LDN disabled, matching coreboot's
-    /// `device pnp 2e.a off end # WDT` for the X61 dock SuperIO.
-    #[cfg(target_arch = "x86_64")]
-    fn disable_dock_watchdog() {
-        const PC87392_WDT_LDN: u8 = 0x0a;
-        LogicalDevice::select(PC87392_WDT_LDN, dock_read, dock_write).set_enabled(false);
-    }
-
-    /// Legacy SMM EC query mapping, distinct from the OS AML hotkey policy.
-    pub const fn smm_event_command(event: u8) -> Option<u8> {
-        use fstart_driver_lenovo::h8::H8DockEvent;
-        match H8DockEvent::from_query(event) {
-            Some(H8DockEvent::FnF9 | H8DockEvent::AcLost | H8DockEvent::DockDisconnected) => {
-                Some(2)
-            }
-            Some(H8DockEvent::DockConnected | H8DockEvent::DockConnectedAlternate) => Some(1),
-            None => None,
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[cfg(target_arch = "x86_64")]
-        #[test]
-        fn dock_power_and_reset_preserve_other_outputs() {
-            use tock_registers::registers::InMemoryRegister;
-
-            let power = InMemoryRegister::<u8, DOCK_POWER::Register>::new(0xfe);
-            set_ultrabay_power(&power, true);
-            assert_eq!(power.get(), 0xff);
-            set_ultrabay_power(&power, false);
-            assert_eq!(power.get(), 0xfe);
-
-            let output = InMemoryRegister::<u8, DLPC_OUTPUT::Register>::new(0xff);
-            reset_dlpc(&output);
-            assert_eq!(output.get(), 0xfc);
-        }
-
-        #[test]
-        fn smm_ec_dock_event_mapping_matches_coreboot() {
-            for event in [0x18, 0x27, 0x50] {
-                assert_eq!(smm_event_command(event), Some(2));
-            }
-            for event in [0x37, 0x58] {
-                assert_eq!(smm_event_command(event), Some(1));
-            }
-            assert_eq!(smm_event_command(0x14), None);
-        }
-    }
+/// The firmware's legacy EC channel (the OS owns it once ACPI is enabled).
+#[cfg(all(not(test), any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
+fn os_ec() -> fstart_driver_lenovo::ec::Ec {
+    fstart_driver_lenovo::ec::Ec::new(crate::config::X61_H8.resources.os)
 }
 
 /// CK505 shares the SPD branch. After selection, check EEPROM restoration
@@ -624,11 +199,6 @@ fn init_ck505(
     })
 }
 
-// Board-package and module selection exclude this peripheral implementation
-// from other boards and from X61's earlier firmware stages.
-#[cfg(any(test, fstart_stage_env = "ram"))]
-mod r5c822;
-
 /// The onboard SD function is device 0, function 2 behind ICH8's PCI bridge.
 /// Enumeration assigns the bus number; the board owns the location/polarity,
 /// and the R5C822 helper verifies the identity before touching vendor registers.
@@ -646,7 +216,7 @@ fn ricoh_sd_write_protect() -> Result<(), ServiceError> {
     if bus == 0 || bus == 0xff {
         return Err(ServiceError::HardwareError);
     }
-    r5c822::configure_sd_write_protect(EcamDevice::new(bus, 0, 2), true)
+    fstart_driver_ricoh::r5c822::configure_sd_write_protect(EcamDevice::new(bus, 0, 2), true)
 }
 
 static X61_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket M"];
@@ -679,120 +249,13 @@ mod acpi_impl {
     extern crate alloc;
 
     use alloc::vec::Vec;
-    use fstart_acpi_macros::acpi_dsl;
     use fstart_platform_intel::gm965::Gm965Ich8AcpiContext;
 
     /// Assemble the X61 DSDT: board glue (TCO dock commands, sleep/wake hooks,
     /// dock, GPE routing) plus the complete H8 EC surface from the Lenovo
     /// driver.
     pub fn x61_mainboard_dsdt_aml(context: Gm965Ich8AcpiContext) -> Vec<u8> {
-        let mut out = Vec::new();
-
-        // Root sleep/wake glue. Dock commands use the existing TCO mailbox,
-        // not an unbacked AML SMIF variable or an I/O trap/GNVS channel.
-        out.extend_from_slice(&acpi_dsl! {
-            Scope("\\") {
-                Method("_PTS", 1, NotSerialized) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.MUTE"}(1u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.USBP"}(0u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.RADI"}(0u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC"}(0u32);
-                }
-                Method("_WAK", 1, NotSerialized) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC"}(1u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.WAKE"}(Arg0);
-                    Return(Package(0u32, 0u32));
-                }
-            }
-        });
-
-        // Dock: DLPC presence + Toshiba dock registers under \_SB.
-        out.extend_from_slice(&acpi_dsl! {
-            Scope(#{const "\\_SB_"}) {
-                OperationRegion("DLPC", SystemIO, 0x164Cu32, 0x01u32);
-                Field("DLPC", ByteAcc, NoLock, Preserve) {
-                    , 3,
-                    DSTA, 1,
-                }
-                OperationRegion("TCOX", SystemIO, 0x0560u32, 0x20u32);
-                Field("TCOX", ByteAcc, NoLock, Preserve) {
-                    Offset(0x02),
-                    TDIN, 8,
-                    TDOT, 8,
-                }
-                Device("DOCK") {
-                    Name("_HID", "ACPI0003");
-                    Name("_UID", 0u32);
-                    Name("_PCL", Package(#{const "\\_SB_"}));
-                    Method("_DCK", 1, Serialized) {
-                        If (Arg0) {
-                            TDIN = 1u32;
-                        } Else {
-                            TDIN = 2u32;
-                        }
-                        Return(TDOT);
-                    }
-                    Method("_PSR", 0, NotSerialized) {
-                        Return(DSTA);
-                    }
-                    Method("_STA", 0, NotSerialized) {
-                        Return(DSTA);
-                    }
-                }
-            }
-        });
-
-        // GPE routing: EC wake events (level-triggered GPIO8 wake path).
-        out.extend_from_slice(&acpi_dsl! {
-            Scope(#{const "\\_GPE"}) {
-                Method("_L18", 0, NotSerialized) {
-                    Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.WAKE"};
-                    If (Local0 & 0x04u32) {
-                        Notify(#{const "\\_SB_.PCI0.LPCB.EC__.LID_"}, 0x02u32);
-                    }
-                    If (Local0 & 0x08u32) {
-                        Notify(#{const "\\_SB_.DOCK"}, 0x03u32);
-                        Notify(#{const "\\_SB_.PCI0.LPCB.EC__.SLPB"}, 0x02u32);
-                    }
-                    If (Local0 & 0x10u32) {
-                        Notify(#{const "\\_SB_.PCI0.LPCB.EC__.SLPB"}, 0x02u32);
-                    }
-                    If (Local0 & 0x80u32) {
-                        Notify(#{const "\\_SB_.PCI0.LPCB.EC__.SLPB"}, 0x02u32);
-                    }
-                }
-            }
-        });
-
-        // The complete H8 EC surface (EC device, batteries, thermal zones
-        // with fan power resource, lid, AC, sleep button, HKEY hub, and the
-        // PMH7/ECMM/ECGS/TWRI resource devices).
-        let mut h8 = crate::config::X61_H8;
-        h8.has_bluetooth = super::ec::bluetooth_present();
-        let brightness = acpi_dsl! {
-            Scope("\\") {
-                Method("BRTU", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.INCB"}(); }
-                Method("BRTD", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.DECB"}(); }
-            }
-        };
-        out.extend(fstart_driver_lenovo::h8_acpi::dsdt_aml_with_brightness(
-            &h8,
-            context.lpc_scope(),
-            &brightness,
-        ));
-
-        // Open the EC scope only after its Device declaration. This also
-        // allows standalone ACPICA disassembly/recompilation without externals.
-        out.extend_from_slice(&acpi_dsl! {
-            Scope(#{const "\\_SB_.PCI0.LPCB.EC__"}) {
-                Method("_Q18", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x09u32); }
-                Method("_Q37", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 0u32); }
-                Method("_Q50", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }
-                Method("_Q58", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 0u32); }
-            }
-        });
-
-        out
+        fstart_driver_lenovo::x6::acpi::dsdt_aml(&crate::config::X61_H8, context.lpc_scope())
     }
 
     #[cfg(test)]
@@ -982,22 +445,3 @@ mod acpi_impl {
 
 #[cfg(fstart_stage_env = "ram")]
 pub use acpi_impl::x61_mainboard_dsdt_aml;
-
-#[cfg(all(
-    any(
-        fstart_stage_env = "car",
-        fstart_stage_env = "postcar",
-        fstart_stage_env = "ram"
-    ),
-    fstart_stage_env = "ram"
-))]
-mod ec;
-#[cfg(all(
-    any(
-        fstart_stage_env = "car",
-        fstart_stage_env = "postcar",
-        fstart_stage_env = "ram"
-    ),
-    fstart_stage_env = "ram"
-))]
-pub use ec::{x61_ec_init, x61_ec_oem_string};

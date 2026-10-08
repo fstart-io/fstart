@@ -16,6 +16,7 @@ x86_64 = ["fstart-arch/x86_64"]
 [dependencies]
 fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
+fstart-driver-superio = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
 tock-registers = { workspace = true }
