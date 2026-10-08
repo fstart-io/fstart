@@ -409,8 +409,23 @@ impl Gm45Ich9AcpiContext {
     }
 }
 
-#[cfg(feature = "stage")]
-pub use stage::Gm45Ich9;
+/// Cantiga chipset pairing; CPU-package policy is independent of the MCH.
+pub struct Gm45Ich9<C = crate::legacy_cpu::Bga956>(core::marker::PhantomData<C>);
+
+impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm45Ich9<C> {
+    type Config = Gm45Ich9Platform;
+    const NAME: &'static str = "gm45/ich9";
+    const CAR_BASE: u64 = <crate::legacy_cpu::SocketPCore2 as crate::legacy_cpu::LegacyCpu>::CAR_BASE;
+    const CAR_SIZE: u64 = <crate::legacy_cpu::SocketPCore2 as crate::legacy_cpu::LegacyCpu>::CAR_SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] =
+        <crate::legacy_cpu::SocketPCore2 as crate::legacy_cpu::LegacyCpu>::MICROCODE_SIGNATURES;
+}
+
+impl crate::IntelPlatformConfig for Gm45Ich9Platform {
+    fn max_cpus(&self) -> u16 {
+        self.max_cpus
+    }
+}
 
 #[cfg(feature = "stage")]
 mod stage {
@@ -421,13 +436,9 @@ mod stage {
     use fstart_driver_intel::gm45::IntelGm45;
     use fstart_driver_intel::ich9::IntelIch9;
 
-    pub struct Gm45Ich9;
-
     impl IntelEarlyPlatform for Gm45Ich9 {
-        const NAME: &'static str = "gm45/ich9";
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
-        type Config = Gm45Ich9Platform;
         type Northbridge = IntelGm45;
         type Southbridge = IntelIch9;
         #[cfg(feature = "mp")]
@@ -448,9 +459,6 @@ mod stage {
         }
         fn southbridge(&'static self) -> &'static IntelIch9Config {
             &self.southbridge
-        }
-        fn max_cpus(&self) -> u16 {
-            self.max_cpus
         }
     }
 }

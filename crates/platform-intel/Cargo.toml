@@ -14,6 +14,7 @@ ehci-console = ["fstart-log?/debug-consoles"]
 # The SPI flash log in every stage.
 flash-console = ["fstart-driver-intel/spi", "dep:fstart-driver-flash-console", "fstart-log?/debug-consoles"]
 # Additive hardware availability; each board enables its chipset pair once.
+gm45-ich9 = ["dep:konst", "namespace", "fstart-driver-intel/gm45", "fstart-driver-intel/ich9"]
 gm965-ich8 = ["dep:konst", "namespace", "fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
 i945-ich7 = ["dep:konst", "namespace", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
 pineview-ich7 = ["dep:konst", "namespace", "fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]
