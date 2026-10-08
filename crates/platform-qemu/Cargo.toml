@@ -71,3 +71,7 @@ dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 ufmt = { workspace = true }
 zerocopy = { workspace = true }
+
+# The Q35 flow is compiled for every x86 target, host plan runners included.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+fstart-arch = { workspace = true, features = ["x86_64"] }

@@ -226,7 +226,11 @@ pub fn qemu_virt_security_config(pubkey_file: &str) -> SecurityConfig {
 /// Enumerate one generic QEMU ECAM root and allocate its device resources.
 #[cfg(all(
     feature = "stage",
-    any(target_arch = "aarch64", target_arch = "arm", target_arch = "riscv64")
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        all(feature = "virt-riscv64", target_arch = "riscv64")
+    )
 ))]
 pub(crate) fn enumerate_pci(
     config: &QemuPciRootConfig,

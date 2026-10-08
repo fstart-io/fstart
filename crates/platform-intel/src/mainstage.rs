@@ -5,8 +5,7 @@ extern crate alloc;
 use crate::boot::{import_intel_directory, install_intel_load_policy};
 use crate::{
     IntelBoard, IntelChipsetConfig, IntelEarlyPlatform, IntelMainstageBoardCtx,
-    IntelMainstageBoardHooks, IntelPlatform, IntelPlatformConfig, IntelSmbusRouting, SmbusRoute,
-    layout,
+    IntelMainstageBoardHooks, IntelPlatform, IntelPlatformConfig, SmbusRoute, layout,
 };
 use alloc::vec::Vec;
 use fstart_core::services::memory_detect::{E820Entry, MemoryDetector};

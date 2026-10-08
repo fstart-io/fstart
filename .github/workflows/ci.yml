@@ -14,6 +14,11 @@ env:
   # Host-side debug info (tests, fbuild, platform plan runners) is several GiB
   # across all boards; firmware is built with --release and is unaffected.
   CARGO_PROFILE_DEV_DEBUG: 0
+  # Fail on rustc warnings, including ones Cargo replays from cached units.
+  # Unlike RUSTFLAGS=-Dwarnings this leaves compiler flags, and with them
+  # fbuild's recorded firmware selections and the build cache, untouched.
+  CARGO_UNSTABLE_WARNINGS: true
+  CARGO_BUILD_WARNINGS: deny
 
 # Build caching: the whole target/ directory is cached, not just third-party
 # dependencies. Every firmware unit has its own Cargo target directory under

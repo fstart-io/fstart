@@ -901,10 +901,7 @@ mod acpi_impl {
 
     // PNP ACPI HIDs for standard SuperIO logical devices.
     const HID_COM: &str = "PNP0501"; // 16550A-compatible COM port
-    const HID_KBC: &str = "PNP0303"; // IBM enhanced keyboard (101/102-key)
-    const HID_MOUSE: &str = "PNP0F13"; // PS/2 port for PS/2-style mice
     const HID_LPT: &str = "PNP0400"; // Standard LPT parallel port
-    const HID_EC: &str = "PNP0C02"; // SuperIO environment-controller resources
 
     fn emit_named<const N: usize, const K: usize>(
         fragment: &fstart_acpi::BoundAmlFragment<N, K>,

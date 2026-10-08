@@ -368,8 +368,10 @@ fstart_sunxi_fel_stash:
         console: Ns16550,
         boot_media: A20BootMedia,
         /// Image base offset on the boot medium (8 KiB MMC, 0 SPI).
+        #[cfg(feature = "linux")]
         media_base: u64,
         dram_size: u64,
+        #[cfg(feature = "linux")]
         config: &'static super::A20Config,
     }
 
@@ -585,8 +587,10 @@ fstart_sunxi_fel_stash:
         let mainstage = A20Mainstage {
             console,
             boot_media,
+            #[cfg(feature = "linux")]
             media_base,
             dram_size: handoff.dram_size,
+            #[cfg(feature = "linux")]
             config: B::CONFIG,
         };
         fstart_log::info!("a20 mainstage: {} MiB DRAM", mainstage.dram_size() >> 20);
@@ -609,6 +613,13 @@ impl<B: stage::A20Board> fstart_stage::StageProgram for Program<B> {
     }
 }
 
+#[cfg(all(
+    feature = "stage",
+    feature = "a20",
+    feature = "linux",
+    target_arch = "arm"
+))]
+pub use stage::A20LinuxPayload;
 #[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
 pub use stage::{
     A20, A20Board, A20BootMedia, A20BuildSelectedPayload, A20Mainstage, FelStash, SunxiEarlyBoard,

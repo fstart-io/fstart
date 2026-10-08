@@ -11,8 +11,6 @@ impl VirtBoardFacts for crate::Board {
     const MACHINE: VirtMachine = VirtMachine::Unmatched;
 }
 
-const LIM_BASE: u64 = 0x0800_0000;
-const LIM_SIZE: u64 = 0x0020_0000;
 const SPI_XIP_BASE: u64 = 0x2000_0000;
 const SPI_XIP_SIZE: u64 = 0x0200_0000;
 const DRAM_BASE: u64 = 0x8000_0000;

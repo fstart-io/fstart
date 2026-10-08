@@ -1,5 +1,6 @@
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -157,6 +158,131 @@ fn selected_workspace_manifest(root_manifest: &str, board_rel_dir: &str) -> Resu
     Ok(manifest)
 }
 
+/// The selected workspace copies the root manifest, so it carries
+/// `[workspace.dependencies]` entries no selected member inherits and
+/// `[profile.*.package.<name>]` overrides for packages the board never
+/// resolves. Cargo warns about both on every invocation; drop them. Run once
+/// Cargo has written the selected lock, which holds exactly the workspace
+/// resolve Cargo checks profile overrides against.
+pub(crate) fn prune_unused_entries(
+    selected: &Path,
+    metadata: &serde_json::Value,
+) -> Result<(), String> {
+    let lock = fs::read_to_string(selected.join("Cargo.lock"))
+        .map_err(|e| format!("failed to read selected Cargo.lock: {e}"))?;
+    let lock: toml::Table = toml::from_str(&lock).map_err(|e| e.to_string())?;
+    let resolved: BTreeSet<&str> = lock
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .ok_or("selected Cargo.lock has no packages")?
+        .iter()
+        .filter_map(|package| package.get("name")?.as_str())
+        .collect();
+    let members = metadata["workspace_members"]
+        .as_array()
+        .ok_or("Cargo metadata has no workspace members")?;
+    let mut inherited = BTreeSet::new();
+    for package in metadata["packages"]
+        .as_array()
+        .ok_or("Cargo metadata has no packages")?
+        .iter()
+        .filter(|package| members.contains(&package["id"]))
+    {
+        let path = package["manifest_path"]
+            .as_str()
+            .ok_or("package without manifest path")?;
+        let manifest: toml::Table = toml::from_str(
+            &fs::read_to_string(path).map_err(|e| format!("failed to read {path}: {e}"))?,
+        )
+        .map_err(|e| format!("{path}: {e}"))?;
+        inherited.extend(inherited_dependencies(&manifest));
+    }
+    let manifest_path = selected.join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("failed to read selected workspace manifest: {e}"))?;
+    let pruned = without_entries(
+        &manifest,
+        |key| !inherited.contains(key),
+        |package| !resolved.contains(package),
+    );
+    if pruned != manifest {
+        fs::write(&manifest_path, pruned)
+            .map_err(|e| format!("failed to write selected workspace manifest: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Dependency keys a member manifest inherits with `workspace = true`, from
+/// every (target-specific) dependency table.
+fn inherited_dependencies(manifest: &toml::Table) -> Vec<String> {
+    let tables = |table: &toml::Table| -> Vec<toml::Table> {
+        ["dependencies", "dev-dependencies", "build-dependencies"]
+            .iter()
+            .filter_map(|kind| table.get(*kind)?.as_table().cloned())
+            .collect()
+    };
+    let targets = manifest
+        .get("target")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|targets| targets.values())
+        .filter_map(toml::Value::as_table)
+        .flat_map(tables);
+    tables(manifest)
+        .into_iter()
+        .chain(targets)
+        .flat_map(|dependencies| {
+            dependencies
+                .into_iter()
+                .filter(|(_, spec)| {
+                    spec.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+                })
+                .map(|(key, _)| key)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Remove `[workspace.dependencies]` entries whose key matches and whole
+/// `[profile.<profile>.package.<name>]` tables whose package name matches.
+fn without_entries(
+    manifest: &str,
+    drop_dependency: impl Fn(&str) -> bool,
+    drop_profile: impl Fn(&str) -> bool,
+) -> String {
+    let mut in_dependencies = false;
+    let mut skipping = false;
+    let mut out = manifest
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if let Some(header) = trimmed.strip_prefix('[') {
+                in_dependencies = trimmed == "[workspace.dependencies]";
+                skipping = header
+                    .strip_prefix("profile.")
+                    .and_then(|rest| rest.split_once(".package."))
+                    .and_then(|(_, name)| name.strip_suffix(']'))
+                    .is_some_and(|name| drop_profile(name.trim_matches('"')));
+            } else if in_dependencies && let Some((key, _)) = trimmed.split_once('=') {
+                let key = key.trim();
+                // Continuation lines of multi-line entries (`"elf",`, `] }`)
+                // have no bare key and keep the decision of their entry.
+                if !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    skipping = drop_dependency(key);
+                }
+            }
+            !skipping
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    out.push('\n');
+    out
+}
+
 pub fn workspace_root_pub() -> Result<PathBuf, String> {
     workspace_root()
 }
@@ -274,5 +400,43 @@ fn workspace_root() -> Result<PathBuf, String> {
         if !dir.pop() {
             return Err("could not find workspace root".to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unused_dependencies_and_unresolved_profile_overrides_are_dropped() {
+        let manifest = "[workspace.dependencies]\n\
+            fstart-core = { path = \"crates/core\" }\n\
+            fstart-platform-sunxi = { path = \"crates/platform-sunxi\" }\n\
+            object = { version = \"0.37\", features = [\n  \"elf\",\n] }\n\
+            [profile.dev.package.fstart-core]\nopt-level = \"s\"\n\
+            [profile.dev.package.fstart-platform-sunxi]\nopt-level = \"s\"\n\
+            [profile.release]\nlto = true\n";
+        assert_eq!(
+            super::without_entries(
+                manifest,
+                |key| key == "object",
+                |package| package == "fstart-platform-sunxi"
+            ),
+            "[workspace.dependencies]\nfstart-core = { path = \"crates/core\" }\n\
+             fstart-platform-sunxi = { path = \"crates/platform-sunxi\" }\n\
+             [profile.dev.package.fstart-core]\nopt-level = \"s\"\n\
+             [profile.release]\nlto = true\n"
+        );
+    }
+
+    #[test]
+    fn inherited_dependencies_cover_every_dependency_table() {
+        let manifest: toml::Table = toml::from_str(
+            "[dependencies]\na = { workspace = true }\nb = \"1\"\n\
+             [dev-dependencies]\nc.workspace = true\n\
+             [target.'cfg(unix)'.build-dependencies]\nd = { workspace = true, features = [] }\n",
+        )
+        .unwrap();
+        let mut keys = super::inherited_dependencies(&manifest);
+        keys.sort();
+        assert_eq!(keys, ["a", "c", "d"]);
     }
 }

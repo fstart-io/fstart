@@ -19,6 +19,10 @@ mod runtime;
 #[cfg(feature = "ffs")]
 extern crate alloc as heap;
 
+// Selected through features even when no payload calls into it: the arch
+// crate supplies entry code and the early FFS anchor.
+use fstart_arch as _;
+
 #[cfg(feature = "bootstrap")]
 pub mod boot;
 #[cfg(feature = "bootstrap")]
@@ -430,6 +434,10 @@ pub trait StageProgram {
 }
 
 /// Declare a platform-owned stage entry binary.
+///
+/// Platforms that offer the CrabEFI payload add `sbi_resume` so RISC-V
+/// stages export the SBI resume entry; the `fstart_payload` cfg it checks is
+/// only declared for such platforms.
 #[macro_export]
 macro_rules! stage_bin {
     (program: $program:ty) => {
@@ -440,6 +448,9 @@ macro_rules! stage_bin {
         #[used]
         #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
         static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+    };
+    (program: $program:ty, sbi_resume) => {
+        $crate::stage_bin!(program: $program);
         #[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
         #[unsafe(no_mangle)]
         pub extern "C" fn fstart_sbi_resume(hart_id: u64, dtb_addr: u64) -> ! {

@@ -827,7 +827,8 @@ mod tests {
                 .success()
         );
         let mut link = Command::new("ld");
-        link.args(["-nostdlib", "--emit-relocs"]);
+        // The fixture image is deliberately one flat RWX segment.
+        link.args(["-nostdlib", "--emit-relocs", "--no-warn-rwx-segments"]);
         if allow_undefined {
             link.arg("--unresolved-symbols=ignore-all");
         }
