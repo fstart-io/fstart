@@ -78,7 +78,10 @@ register_bitfields![u8,
     pub STATUS1 [
         ULTRABAY_ABSENT OFFSET(0) NUMBITS(1) [],
         ULTRABAY_OFF OFFSET(2) NUMBITS(1) []
-    ]
+    ],
+    // Lenovo EC firmware function specification version.
+    pub FUNC_SPEC_MINOR [VERSION OFFSET(0) NUMBITS(8) []],
+    pub FUNC_SPEC_MAJOR [VERSION OFFSET(0) NUMBITS(8) []]
 ];
 
 // -----------------------------------------------------------------------
@@ -114,7 +117,13 @@ ec_registers! {
     STATUS1 => 0x47,
     EVENT_ATTENTION => 0x80,
     FN_CONTROL => 0xce,
+    FUNC_SPEC_MINOR => 0xeb,
+    FUNC_SPEC_MAJOR => 0xef,
 }
+
+/// Eight ASCII bytes of EC firmware build id, e.g. "7MHT24WW".
+const BUILD_ID_BASE: u8 = 0xf0;
+const BUILD_ID_LEN: usize = 8;
 
 pub const H8_CONFIG0_EVENTS_ENABLE: u8 = CONFIG0::EVENTS_ENABLE::SET.value;
 pub const H8_CONFIG0_HOTKEY_ENABLE: u8 = CONFIG0::HOTKEY_ENABLE::SET.value;
@@ -342,10 +351,73 @@ impl H8 {
         tone <= 17 && self.channel.write_register::<SOUND_COMMAND::Register>(tone)
     }
 
+    /// The SMBIOS OEM string carrying the EC firmware id (coreboot
+    /// `h8_smbios_strings`); `None` if the EC does not answer sensibly.
+    pub fn smbios_oem_string(&self) -> Option<EcOemString> {
+        let mut build_id = [0; BUILD_ID_LEN];
+        for (byte, index) in build_id.iter_mut().zip(BUILD_ID_BASE..) {
+            *byte = self.channel.read(index)?;
+        }
+        let major = self.channel.read_register::<FUNC_SPEC_MAJOR::Register>()?;
+        let minor = self.channel.read_register::<FUNC_SPEC_MINOR::Register>()?;
+        EcOemString::new(
+            build_id,
+            major.read(FUNC_SPEC_MAJOR::VERSION),
+            minor.read(FUNC_SPEC_MINOR::VERSION),
+        )
+    }
+
     /// True when an ultrabay device is present (active-low STATUS1 flags).
     pub fn ultrabay_device_present(&self) -> Option<bool> {
         let status = self.channel.read_register::<STATUS1::Register>()?;
         Some(status.matches_all(STATUS1::ULTRABAY_ABSENT::CLEAR + STATUS1::ULTRABAY_OFF::CLEAR))
+    }
+}
+
+const OEM_PREFIX: &[u8] = b"IBM ThinkPad Embedded Controller -[";
+/// Bracketed field width; Linux `thinkpad_acpi` scans exactly this many bytes.
+const OEM_FIELD_LEN: usize = 17;
+const OEM_LEN: usize = OEM_PREFIX.len() + OEM_FIELD_LEN + 2;
+
+/// `IBM ThinkPad Embedded Controller -[<build id>-<major>.<minor>]-`, padded
+/// like coreboot. Linux `thinkpad_acpi` reads the EC firmware version from it
+/// and uses it for EC-version quirks and direct EC thermal-sensor access.
+#[derive(Debug, Clone, Copy)]
+pub struct EcOemString([u8; OEM_LEN]);
+
+impl EcOemString {
+    fn new(build_id: [u8; BUILD_ID_LEN], major: u8, minor: u8) -> Option<Self> {
+        if !build_id.iter().all(|byte| (0x21..0x7f).contains(byte)) {
+            return None;
+        }
+        let mut string = [b' '; OEM_LEN];
+        let (prefix, rest) = string.split_at_mut(OEM_PREFIX.len());
+        let (field, suffix) = rest.split_at_mut(OEM_FIELD_LEN);
+        prefix.copy_from_slice(OEM_PREFIX);
+        suffix.copy_from_slice(b"]-");
+        field[..BUILD_ID_LEN].copy_from_slice(&build_id);
+        let mut at = BUILD_ID_LEN;
+        for (separator, value) in [(b'-', major), (b'.', minor)] {
+            field[at] = separator;
+            at += 1;
+            let digits = [value / 100, value / 10 % 10, value % 10];
+            let skip = if value >= 100 {
+                0
+            } else if value >= 10 {
+                1
+            } else {
+                2
+            };
+            for digit in &digits[skip..] {
+                field[at] = b'0' + digit;
+                at += 1;
+            }
+        }
+        Some(Self(string))
+    }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.0).expect("ASCII by construction")
     }
 }
 
@@ -387,6 +459,17 @@ mod tests {
         }
         assert!(!h8.beep(18));
         assert!(!h8.beep(u8::MAX));
+    }
+
+    #[test]
+    fn oem_string_matches_coreboot_padding() {
+        let string = EcOemString::new(*b"7MHT24WW", 1, 101).unwrap();
+        assert_eq!(
+            string.as_str(),
+            "IBM ThinkPad Embedded Controller -[7MHT24WW-1.101   ]-"
+        );
+        assert!(EcOemString::new(*b"7MHT 4WW", 1, 1).is_none());
+        assert!(EcOemString::new([0xff; 8], 1, 1).is_none());
     }
 }
 

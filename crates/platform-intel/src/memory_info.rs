@@ -2,6 +2,7 @@
 
 use fstart_core::layout::Region;
 use fstart_core::memory_info::MemoryInfo;
+#[cfg(fstart_stage_env = "car")]
 use fstart_core::services::ServiceError;
 
 /// Publish the inventory, or clear a record left in DRAM by a previous boot.
@@ -9,6 +10,7 @@ use fstart_core::services::ServiceError;
 /// # Safety
 /// `region` must be the linked, firmware-owned `MemoryInfo` reservation and
 /// lie in trained DRAM.
+#[cfg(fstart_stage_env = "car")]
 pub(crate) unsafe fn publish(
     region: Region,
     info: Option<&MemoryInfo>,
@@ -36,4 +38,17 @@ pub(crate) unsafe fn publish(
         }
     }
     Ok(())
+}
+
+/// The inventory raminit published on this boot, if any.
+#[cfg(fstart_stage_env = "ram")]
+pub(crate) fn read(region: Region) -> Option<MemoryInfo> {
+    if region.size < size_of::<MemoryInfo>() as u64 {
+        return None;
+    }
+    // SAFETY: the linked reservation is firmware-owned DRAM that the CAR
+    // stage wrote (or cleared) before this stage was loaded.
+    let bytes =
+        unsafe { core::slice::from_raw_parts(region.base as *const u8, size_of::<MemoryInfo>()) };
+    MemoryInfo::from_bytes(bytes).copied()
 }

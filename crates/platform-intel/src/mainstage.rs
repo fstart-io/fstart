@@ -275,6 +275,9 @@ where
 
     #[cfg(feature = "smbios")]
     smbios_identity: &'static crate::tables::SmbiosIdentity<'static>,
+    /// Flash chip capacity, reported as the SMBIOS ROM size.
+    #[cfg(feature = "smbios")]
+    flash_size: u32,
 }
 
 impl<P, Hooks, C> IntelMainstage<P, Hooks, C>
@@ -305,6 +308,8 @@ where
 
             #[cfg(feature = "smbios")]
             smbios_identity: B::smbios_identity(),
+            #[cfg(feature = "smbios")]
+            flash_size: B::FACTS.flash_size,
         })
     }
 
@@ -485,7 +490,17 @@ where
         #[cfg(feature = "smbios")]
         {
             let identity = self.hooks.smbios_identity(self.smbios_identity);
-            let smbios = crate::tables::prepare_smbios(self.ctx.e820_state_mut(), &identity);
+            let memory = crate::memory_info::read(
+                self.geometry
+                    .region(fstart_core::layout::RegionKind::MemoryInfo)?,
+            );
+            let runtime = crate::tables::SmbiosRuntime {
+                rom_size: self.flash_size,
+                memory: memory.as_ref(),
+                pci: self.pci.as_ref(),
+            };
+            let smbios =
+                crate::tables::prepare_smbios(self.ctx.e820_state_mut(), &identity, &runtime);
             self.ctx.set_smbios(Some(smbios));
         }
         Ok(())

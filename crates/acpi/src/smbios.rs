@@ -12,17 +12,26 @@
 //! | 2    | Baseboard Information       |
 //! | 3    | System Enclosure            |
 //! | 4    | Processor Information       |
+//! | 7    | Cache Information           |
+//! | 11   | OEM Strings                 |
 //! | 16   | Physical Memory Array       |
 //! | 17   | Memory Device               |
 //! | 19   | Memory Array Mapped Address |
 //! | 32   | System Boot Information     |
+//! | 41   | Onboard Devices Extended    |
 //! | 127  | End-of-Table                |
 //!
 //! # Usage
 //!
 //! ```ignore
 //! let total = fstart_acpi::smbios::assemble_and_write(0x10000090000, |w| {
-//!     w.add_bios_info("fstart", "0.1.0", "03/10/2026");
+//!     w.add_bios_info(&BiosInfo {
+//!         vendor: "fstart",
+//!         version: "0.1.0",
+//!         release_date: "03/10/2026",
+//!         rom_size: 16 << 20,
+//!         uefi: true,
+//!     });
 //!     w.add_system_info("QEMU", "SBSA Reference", "1.0", None, None);
 //!     w.add_end_of_table();
 //! });
@@ -50,10 +59,12 @@ const TYPE_BASEBOARD_INFO: u8 = 2;
 const TYPE_ENCLOSURE: u8 = 3;
 const TYPE_PROCESSOR: u8 = 4;
 const TYPE_CACHE_INFO: u8 = 7;
+const TYPE_OEM_STRINGS: u8 = 11;
 const TYPE_PHYS_MEM_ARRAY: u8 = 16;
 const TYPE_MEMORY_DEVICE: u8 = 17;
 const TYPE_MEM_ARRAY_MAPPED_ADDR: u8 = 19;
 const TYPE_SYSTEM_BOOT: u8 = 32;
+const TYPE_ONBOARD_DEVICE: u8 = 41;
 const TYPE_END_OF_TABLE: u8 = 127;
 
 // ---------------------------------------------------------------------------
@@ -101,7 +112,76 @@ pub struct SmbiosIdentity<'a> {
     /// Type 4 socket labels. CPU vendor, family, topology and caches are
     /// discovered by the platform at runtime.
     pub processor_sockets: &'a [&'a str],
+
+    /// Type 11: OEM string, e.g. an embedded-controller firmware id.
+    pub oem_string: Option<&'a str>,
 }
+
+/// Type 0 contents.
+pub struct BiosInfo<'a> {
+    pub vendor: &'a str,
+    pub version: &'a str,
+    /// Release date (MM/DD/YYYY).
+    pub release_date: &'a str,
+    /// Firmware ROM size in bytes.
+    pub rom_size: u32,
+    /// Whether the payload provides UEFI boot services.
+    pub uefi: bool,
+}
+
+/// Type 4 contents. Unknown numeric fields are 0.
+pub struct ProcessorInfo<'a> {
+    pub socket: &'a str,
+    pub manufacturer: &'a str,
+    /// Brand string.
+    pub version: &'a str,
+    /// SMBIOS processor family ("Processor Family 2" encoding).
+    pub family: u16,
+    /// CPUID leaf 1 EAX (low dword) and EDX (high dword).
+    pub id: u64,
+    pub external_clock_mhz: u16,
+    pub max_speed_mhz: u16,
+    pub current_speed_mhz: u16,
+    /// SMBIOS processor upgrade (socket) encoding.
+    pub upgrade: u8,
+    pub core_count: u16,
+    pub core_enabled: u16,
+    pub thread_count: u16,
+    /// SMBIOS processor characteristics bits.
+    pub characteristics: u16,
+    /// Type 7 handles of the L1, L2 and L3 caches; 0xFFFF if absent.
+    pub caches: [u16; 3],
+}
+
+/// Type 17 contents. Empty slots have `size_mb == 0`.
+pub struct MemoryDeviceInfo<'a> {
+    pub locator: &'a str,
+    pub bank_locator: &'a str,
+    pub manufacturer: &'a str,
+    pub serial: &'a str,
+    pub part_number: &'a str,
+    pub size_mb: u32,
+    /// SMBIOS memory type, form factor and type-detail encodings.
+    pub memory_type: u8,
+    pub form_factor: u8,
+    pub type_detail: u16,
+    /// Module's maximum and controller-configured data rates, in MT/s.
+    pub speed_mts: u16,
+    pub configured_mts: u16,
+    pub voltage_mv: u16,
+    /// Data and total (data + ECC) width in bits; 0xFFFF if unknown.
+    pub data_width: u16,
+    pub total_width: u16,
+    pub ranks: u8,
+}
+
+/// Type 0 BIOS characteristics bits.
+const BIOS_CHAR_PCI: u64 = 1 << 7;
+const BIOS_CHAR_UPGRADEABLE: u64 = 1 << 11;
+const BIOS_CHAR_SELECTABLE_BOOT: u64 = 1 << 16;
+const BIOS_EXT1_ACPI: u8 = 1 << 0;
+const BIOS_EXT2_TARGETED_CONTENT: u8 = 1 << 2;
+const BIOS_EXT2_UEFI: u8 = 1 << 3;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -113,6 +193,19 @@ pub struct SmbiosIdentity<'a> {
 /// 2-byte extended field for values > 255 (e.g., core count, thread count).
 fn cap_u8(val: u16) -> u8 {
     if val > 255 { 0xFF } else { val as u8 }
+}
+
+/// 1-based string-set indices; empty strings are not written and get 0.
+fn string_indices<const N: usize>(strings: [&str; N]) -> [u8; N] {
+    let mut next = 0;
+    strings.map(|string| {
+        if string.is_empty() {
+            0
+        } else {
+            next += 1;
+            next
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +367,15 @@ struct RawType4 {
 }
 const _: () = assert!(size_of::<RawType4>() == 0x30);
 
+/// Type 11: OEM Strings (5 bytes).
+#[repr(C)]
+#[derive(IntoBytes, Immutable)]
+struct RawType11 {
+    header: RawHeader,
+    count: u8,
+}
+const _: () = assert!(size_of::<RawType11>() == 0x05);
+
 /// Type 16: Physical Memory Array (SMBIOS 2.7+, 23 bytes).
 #[repr(C)]
 #[derive(IntoBytes, Immutable)]
@@ -345,6 +447,20 @@ struct RawType19 {
     ext_end: U64,
 }
 const _: () = assert!(size_of::<RawType19>() == 0x1F);
+
+/// Type 41: Onboard Devices Extended Information (11 bytes).
+#[repr(C)]
+#[derive(IntoBytes, Immutable)]
+struct RawType41 {
+    header: RawHeader,
+    reference: u8,
+    device_type: u8,
+    instance: u8,
+    segment: U16,
+    bus: u8,
+    devfn: u8,
+}
+const _: () = assert!(size_of::<RawType41>() == 0x0B);
 
 /// Type 32: System Boot Information (11 bytes).
 #[repr(C)]
@@ -531,35 +647,47 @@ impl SmbiosWriter {
         self.write_raw(&[0]); // second null (or first if no strings)
     }
 
+    /// Write the strings of one structure in order and terminate the set.
+    fn write_strings(&mut self, strings: &[&str]) {
+        for string in strings {
+            self.write_string(string);
+        }
+        self.end_strings();
+    }
+
     // -----------------------------------------------------------------------
     // Type 0: BIOS Information
     // -----------------------------------------------------------------------
 
     /// Add a Type 0 (BIOS Information) structure.
-    pub fn add_bios_info(&mut self, vendor: &str, version: &str, release_date: &str) {
+    pub fn add_bios_info(&mut self, bios: &BiosInfo) {
+        let [vendor, version, release_date] =
+            string_indices([bios.vendor, bios.version, bios.release_date]);
+        // Legacy byte: 64 KiB * (n + 1), saturated at 16 MiB.
+        let rom_size = (bios.rom_size.clamp(64 * 1024, 16 * 1024 * 1024) / (64 * 1024) - 1) as u8;
+        // Extended field: bits 13:0 size, bits 15:14 unit (0 = MiB).
+        let ext_rom_size = bios.rom_size.div_ceil(1024 * 1024).min(0x3fff) as u16;
         let (header, _) = self.begin::<RawType0>(TYPE_BIOS_INFO);
         self.emplace(&RawType0 {
             header,
-            vendor: 1,                         // string 1
-            version: 2,                        // string 2
-            start_segment: U16::new(0),        // N/A for UEFI/firmware
-            release_date: 3,                   // string 3
-            rom_size: 0xFF,                    // use extended field
-            characteristics: U64::new(1 << 7), // PCI supported
-            characteristics_ext1: 0,
-            characteristics_ext2: 1 << 4, // is virtual machine
+            vendor,
+            version,
+            start_segment: U16::new(0), // N/A for UEFI/firmware
+            release_date,
+            rom_size,
+            characteristics: U64::new(
+                BIOS_CHAR_PCI | BIOS_CHAR_UPGRADEABLE | BIOS_CHAR_SELECTABLE_BOOT,
+            ),
+            characteristics_ext1: BIOS_EXT1_ACPI,
+            characteristics_ext2: BIOS_EXT2_TARGETED_CONTENT
+                | if bios.uefi { BIOS_EXT2_UEFI } else { 0 },
             bios_major: 0,
             bios_minor: 1,
-            ec_major: 0xFF,            // N/A
-            ec_minor: 0xFF,            // N/A
-            ext_rom_size: U16::new(0), // SMBIOS 3.1+
+            ec_major: 0xFF, // N/A
+            ec_minor: 0xFF, // N/A
+            ext_rom_size: U16::new(ext_rom_size),
         });
-
-        // Strings
-        self.write_string(vendor);
-        self.write_string(version);
-        self.write_string(release_date);
-        self.end_strings();
+        self.write_strings(&[bios.vendor, bios.version, bios.release_date]);
     }
 
     // -----------------------------------------------------------------------
@@ -575,74 +703,56 @@ impl SmbiosWriter {
         serial: Option<&str>,
         uuid: Option<[u8; 16]>,
     ) {
-        // Pre-compute serial string index (depends on whether it's present).
-        let has_serial = serial.is_some_and(|s| !s.is_empty());
+        let serial = serial.unwrap_or_default();
+        let strings = [manufacturer, product, version, serial];
+        let [manufacturer, product, version, serial] = string_indices(strings);
         let (header, _) = self.begin::<RawType1>(TYPE_SYSTEM_INFO);
         self.emplace(&RawType1 {
             header,
-            manufacturer: 1, // string 1
-            product: 2,      // string 2
-            version: 3,      // string 3
-            serial: if has_serial { 4 } else { 0 },
+            manufacturer,
+            product,
+            version,
+            serial,
             uuid: uuid.unwrap_or([0; 16]), // zero means not specified
             wake_up: 0x06,                 // power switch
             sku: 0,                        // no string
             family: 0,                     // no string
         });
-
-        // Strings
-        self.write_string(manufacturer);
-        self.write_string(product);
-        self.write_string(version);
-        if let Some(s) = serial {
-            self.write_string(s);
-        }
-        self.end_strings();
+        self.write_strings(&strings);
     }
 
     // -----------------------------------------------------------------------
     // Type 2: Baseboard Information
     // -----------------------------------------------------------------------
 
-    /// Add a Type 2 (Baseboard Information) structure.
+    /// Add a Type 2 (Baseboard Information) structure inside the Type 3
+    /// enclosure `chassis`.
     pub fn add_baseboard_info(
         &mut self,
         manufacturer: &str,
         product: &str,
         version: &str,
         serial: Option<&str>,
+        chassis: u16,
     ) {
-        let has_version = !version.is_empty();
-        let has_serial = serial.is_some_and(|s| !s.is_empty());
+        let serial = serial.unwrap_or_default();
+        let strings = [manufacturer, product, version, serial];
+        let [manufacturer, product, version, serial] = string_indices(strings);
         let (header, _) = self.begin::<RawType2>(TYPE_BASEBOARD_INFO);
         self.emplace(&RawType2 {
             header,
-            manufacturer: 1, // string 1
-            product: 2,      // string 2
-            version: if has_version { 3 } else { 0 },
-            serial: if has_serial {
-                3 + u8::from(has_version)
-            } else {
-                0
-            },
-            asset_tag: 0,         // no string
-            feature_flags: 0x09,  // hosting board, replaceable
-            location: 0,          // no string
-            chassis: U16::new(0), // unset
-            board_type: 0x0A,     // motherboard
+            manufacturer,
+            product,
+            version,
+            serial,
+            asset_tag: 0,        // no string
+            feature_flags: 0x09, // hosting board, replaceable
+            location: 0,         // no string
+            chassis: U16::new(chassis),
+            board_type: 0x0A, // motherboard
             contained_count: 0,
         });
-
-        // Strings
-        self.write_string(manufacturer);
-        self.write_string(product);
-        if has_version {
-            self.write_string(version);
-        }
-        if let Some(serial) = serial.filter(|serial| !serial.is_empty()) {
-            self.write_string(serial);
-        }
-        self.end_strings();
+        self.write_strings(&strings);
     }
 
     // -----------------------------------------------------------------------
@@ -650,11 +760,14 @@ impl SmbiosWriter {
     // -----------------------------------------------------------------------
 
     /// Add a Type 3 (System Enclosure / Chassis) structure.
-    pub fn add_enclosure(&mut self, chassis_type: u8, manufacturer: &str) {
-        let (header, _) = self.begin::<RawType3>(TYPE_ENCLOSURE);
+    ///
+    /// Returns the handle for the Type 2 chassis reference.
+    pub fn add_enclosure(&mut self, chassis_type: u8, manufacturer: &str) -> u16 {
+        let [manufacturer_index] = string_indices([manufacturer]);
+        let (header, handle) = self.begin::<RawType3>(TYPE_ENCLOSURE);
         self.emplace(&RawType3 {
             header,
-            manufacturer: 1, // string 1
+            manufacturer: manufacturer_index,
             kind: chassis_type,
             version: 0,          // no string
             serial: 0,           // no string
@@ -669,10 +782,8 @@ impl SmbiosWriter {
             contained_elements: 0,
             contained_record_len: 0,
         });
-
-        // Strings
-        self.write_string(manufacturer);
-        self.end_strings();
+        self.write_strings(&[manufacturer]);
+        handle
     }
 
     // -----------------------------------------------------------------------
@@ -689,10 +800,8 @@ impl SmbiosWriter {
     /// * `designation` — Cache socket designation (e.g., "L1 Data Cache").
     /// * `level` — Cache level: 1, 2, or 3.
     /// * `size_kb` — Cache size in KiB.
-    /// * `associativity` — SMBIOS associativity byte (use
-    ///   `CacheAssociativity::to_smbios_byte()`).
-    /// * `cache_type` — SMBIOS system cache type byte (use
-    ///   `CacheType::to_smbios_byte()`).
+    /// * `associativity` — SMBIOS associativity byte.
+    /// * `cache_type` — SMBIOS system cache type byte.
     pub fn add_cache_info(
         &mut self,
         designation: &str,
@@ -719,27 +828,24 @@ impl SmbiosWriter {
             0x8000 | ((size_kb / 64) as u16 & 0x7FFF)
         };
 
+        let [socket] = string_indices([designation]);
         let (header, handle) = self.begin::<RawType7>(TYPE_CACHE_INFO);
         self.emplace(&RawType7 {
             header,
-            socket: 1, // string 1
+            socket,
             config: U16::new(config),
             max_size_kb: U16::new(legacy_size),
             installed_size_kb: U16::new(legacy_size),
             supported_sram: U16::new(0x0002), // unknown
             current_sram: U16::new(0x0002),   // unknown
             speed_ns: 0,                      // unknown
-            ecc: 0,                           // unknown
+            ecc: 0x02,                        // unknown
             cache_type,
             associativity,
             max_size2_kb: U32::new(size_kb),
             installed_size2_kb: U32::new(size_kb),
         });
-
-        // Strings
-        self.write_string(designation);
-        self.end_strings();
-
+        self.write_strings(&[designation]);
         handle
     }
 
@@ -748,88 +854,56 @@ impl SmbiosWriter {
     // -----------------------------------------------------------------------
 
     /// Add a Type 4 (Processor Information) structure.
-    ///
-    /// `processor_family` is the SMBIOS "Processor Family 2" 16-bit value
-    /// (e.g., `0x0119` for AArch64, `0x28` for x86-64, `0x0135` for RISC-V).
-    /// Use [`fstart_core::smbios::ProcessorFamily::to_smbios_u16`] to
-    /// convert from the typed enum.
-    pub fn add_processor(
-        &mut self,
-        socket: &str,
-        manufacturer: &str,
-        processor_family: u16,
-        max_speed_mhz: u16,
-        core_count: u16,
-        core_enabled: u16,
-        thread_count: u16,
-    ) {
-        self.add_processor_with_caches(
-            socket,
-            manufacturer,
-            processor_family,
-            max_speed_mhz,
-            core_count,
-            core_enabled,
-            thread_count,
-            0xFFFF,
-            0xFFFF,
-            0xFFFF,
-        );
-    }
-
-    /// Add a Type 4 (Processor Information) structure with cache handles.
-    ///
-    /// Like [`add_processor`] but links to Type 7 cache entries.
-    /// Pass `0xFFFF` for cache handles that are not available.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_processor_with_caches(
-        &mut self,
-        socket: &str,
-        manufacturer: &str,
-        processor_family: u16,
-        max_speed_mhz: u16,
-        core_count: u16,
-        core_enabled: u16,
-        thread_count: u16,
-        l1_cache_handle: u16,
-        l2_cache_handle: u16,
-        l3_cache_handle: u16,
-    ) {
+    pub fn add_processor(&mut self, cpu: &ProcessorInfo) {
+        let strings = [cpu.socket, cpu.manufacturer, cpu.version];
+        let [socket, manufacturer, version] = string_indices(strings);
         let (header, _) = self.begin::<RawType4>(TYPE_PROCESSOR);
         self.emplace(&RawType4 {
             header,
-            socket: 1,       // string 1
+            socket,
             proc_type: 0x03, // central processor
-            family: 0xFE,    // see family2 field
-            manufacturer: 2, // string 2
-            processor_id: U64::new(0),
-            version: 0, // no string
+            // Families above 0xfd only fit Processor Family 2.
+            family: u8::try_from(cpu.family).map_or(0xFE, |family| family.min(0xFE)),
+            manufacturer,
+            processor_id: U64::new(cpu.id),
+            version,
             voltage: 0,
-            external_clock: U16::new(0), // unknown
-            max_speed: U16::new(max_speed_mhz),
-            current_speed: U16::new(max_speed_mhz),
+            external_clock: U16::new(cpu.external_clock_mhz),
+            max_speed: U16::new(cpu.max_speed_mhz),
+            current_speed: U16::new(cpu.current_speed_mhz),
             status: 0x41, // enabled, CPU socket populated
-            upgrade: 0,   // unknown
-            l1_handle: U16::new(l1_cache_handle),
-            l2_handle: U16::new(l2_cache_handle),
-            l3_handle: U16::new(l3_cache_handle),
+            upgrade: cpu.upgrade,
+            l1_handle: U16::new(cpu.caches[0]),
+            l2_handle: U16::new(cpu.caches[1]),
+            l3_handle: U16::new(cpu.caches[2]),
             serial: 0,      // no string
             asset_tag: 0,   // no string
             part_number: 0, // no string
-            core_count: cap_u8(core_count),
-            core_enabled: cap_u8(core_enabled),
-            thread_count: cap_u8(thread_count),
-            characteristics: U16::new(0),
-            family2: U16::new(processor_family),
-            core_count2: U16::new(core_count),
-            core_enabled2: U16::new(core_enabled),
-            thread_count2: U16::new(thread_count),
+            core_count: cap_u8(cpu.core_count),
+            core_enabled: cap_u8(cpu.core_enabled),
+            thread_count: cap_u8(cpu.thread_count),
+            characteristics: U16::new(cpu.characteristics),
+            family2: U16::new(cpu.family),
+            core_count2: U16::new(cpu.core_count),
+            core_enabled2: U16::new(cpu.core_enabled),
+            thread_count2: U16::new(cpu.thread_count),
         });
+        self.write_strings(&strings);
+    }
 
-        // Strings
-        self.write_string(socket);
-        self.write_string(manufacturer);
-        self.end_strings();
+    // -----------------------------------------------------------------------
+    // Type 11: OEM Strings
+    // -----------------------------------------------------------------------
+
+    /// Add a Type 11 (OEM Strings) structure. Empty strings are skipped.
+    pub fn add_oem_strings(&mut self, strings: &[&str]) {
+        let count = strings.iter().filter(|string| !string.is_empty()).count();
+        let (header, _) = self.begin::<RawType11>(TYPE_OEM_STRINGS);
+        self.emplace(&RawType11 {
+            header,
+            count: cap_u8(count as u16),
+        });
+        self.write_strings(strings);
     }
 
     // -----------------------------------------------------------------------
@@ -840,10 +914,15 @@ impl SmbiosWriter {
     ///
     /// `max_capacity_kb` is the maximum memory capacity in kilobytes.
     /// `num_devices` is the number of memory devices (Type 17) that
-    /// belong to this array.
+    /// belong to this array. `ecc` is the SMBIOS error-correction type.
     ///
     /// Returns the handle for use in Type 17/19 references.
-    pub fn add_physical_memory_array(&mut self, max_capacity_kb: u64, num_devices: u16) -> u16 {
+    pub fn add_physical_memory_array(
+        &mut self,
+        max_capacity_kb: u64,
+        num_devices: u16,
+        ecc: u8,
+    ) -> u16 {
         // Maximum capacity: if >2TB, set to 0x80000000 and use extended field.
         let max_cap_field = if max_capacity_kb > 0x7FFF_FFFF {
             0x8000_0000u32
@@ -856,7 +935,7 @@ impl SmbiosWriter {
             header,
             location: 0x03, // system board
             purpose: 0x03,  // system memory
-            ecc: 0x03,      // none
+            ecc,
             max_capacity_kb: U32::new(max_cap_field),
             error_handle: U16::new(0xFFFE), // not provided
             num_devices: U16::new(num_devices),
@@ -873,69 +952,69 @@ impl SmbiosWriter {
     // Type 17: Memory Device
     // -----------------------------------------------------------------------
 
-    /// Add a Type 17 (Memory Device) structure.
-    ///
-    /// `locator` is the device locator string (e.g., "DIMM0").
-    /// `size_mb` is the memory size in megabytes.
-    /// `speed_mhz` is the memory speed in MHz.
-    /// `memory_type` is the SMBIOS memory type byte.
-    pub fn add_memory_device(
-        &mut self,
-        locator: &str,
-        size_mb: u32,
-        speed_mhz: u16,
-        memory_type: u8,
-    ) {
+    /// Add a Type 17 (Memory Device) structure to the last Type 16 array.
+    pub fn add_memory_device(&mut self, dimm: &MemoryDeviceInfo) {
         // Size field: if size_mb fits in 15 bits, use directly.
         // Otherwise set 0x7FFF and use extended size.
-        let size_field = if size_mb <= 0x7FFF {
-            size_mb as u16
+        let size_field = if dimm.size_mb <= 0x7FFF {
+            dimm.size_mb as u16
         } else {
             0x7FFF // see extended size
         };
+        let strings = [
+            dimm.locator,
+            dimm.bank_locator,
+            dimm.manufacturer,
+            dimm.serial,
+            dimm.part_number,
+        ];
+        let [
+            device_locator,
+            bank_locator,
+            manufacturer,
+            serial,
+            part_number,
+        ] = string_indices(strings);
         let (header, _) = self.begin::<RawType17>(TYPE_MEMORY_DEVICE);
         self.emplace(&RawType17 {
             header,
             array_handle: U16::new(self.last_phys_mem_array_handle),
             error_handle: U16::new(0xFFFE), // not provided
-            total_width: U16::new(64),      // assume 64-bit
-            data_width: U16::new(64),
+            total_width: U16::new(dimm.total_width),
+            data_width: U16::new(dimm.data_width),
             size_mb: U16::new(size_field),
-            form_factor: 0x09, // DIMM
-            device_set: 0,     // none
-            device_locator: 1, // string 1
-            bank_locator: 0,   // no string
-            memory_type,
-            type_detail: U16::new(0), // unknown
-            speed_mts: U16::new(speed_mhz),
-            manufacturer: 0, // no string
-            serial: 0,       // no string
-            asset_tag: 0,    // no string
-            part_number: 0,  // no string
-            attributes: 0,   // unknown rank
-            extended_size_mb: U32::new(size_mb),
-            configured_clock_mts: U16::new(speed_mhz),
-            min_voltage_mv: U16::new(0),        // unknown
-            max_voltage_mv: U16::new(0),        // unknown
-            configured_voltage_mv: U16::new(0), // unknown
-            memory_technology: 0,               // unknown
-            operating_mode_cap: U16::new(0),
-            firmware_version: 0, // no string
+            form_factor: dimm.form_factor,
+            device_set: 0, // none
+            device_locator,
+            bank_locator,
+            memory_type: dimm.memory_type,
+            type_detail: U16::new(dimm.type_detail),
+            speed_mts: U16::new(dimm.speed_mts),
+            manufacturer,
+            serial,
+            asset_tag: 0, // no string
+            part_number,
+            attributes: dimm.ranks & 0x0f,
+            extended_size_mb: U32::new(dimm.size_mb),
+            configured_clock_mts: U16::new(dimm.configured_mts),
+            min_voltage_mv: U16::new(dimm.voltage_mv),
+            max_voltage_mv: U16::new(dimm.voltage_mv),
+            configured_voltage_mv: U16::new(dimm.voltage_mv),
+            memory_technology: if dimm.size_mb == 0 { 0 } else { 0x03 }, // DRAM
+            operating_mode_cap: U16::new(if dimm.size_mb == 0 { 0 } else { 1 << 3 }), // volatile
+            firmware_version: 0,                                         // no string
             module_manufacturer: U16::new(0),
             module_product: U16::new(0),
             controller_manufacturer: U16::new(0),
             controller_product: U16::new(0),
             nonvolatile_bytes: U64::new(0), // none
-            volatile_bytes: U64::new(size_mb as u64 * 1024 * 1024),
+            volatile_bytes: U64::new(u64::from(dimm.size_mb) * 1024 * 1024),
             cache_bytes: U64::new(0),
             logical_bytes: U64::new(0),
-            extended_speed_mts: U32::new(speed_mhz as u32),
-            extended_configured_mts: U32::new(speed_mhz as u32),
+            extended_speed_mts: U32::new(0), // speed fits the 16-bit field
+            extended_configured_mts: U32::new(0),
         });
-
-        // Strings
-        self.write_string(locator);
-        self.end_strings();
+        self.write_strings(&strings);
     }
 
     // -----------------------------------------------------------------------
@@ -944,19 +1023,19 @@ impl SmbiosWriter {
 
     /// Add a Type 19 (Memory Array Mapped Address) structure.
     ///
-    /// `start_addr` and `end_addr` are physical byte addresses.
+    /// `start_addr` and `end_addr` are physical byte addresses (end inclusive).
     pub fn add_memory_array_mapped_address(
         &mut self,
         start_addr: u64,
         end_addr: u64,
         partition_width: u8,
     ) {
-        // For addresses within 4 GiB, use KB-granularity fields.
-        // For larger addresses, set 0xFFFFFFFF and use extended fields.
-        let (start_kb, end_kb) = if end_addr > 0xFFFF_FFFF_u64 * 1024 {
-            (0xFFFF_FFFF, 0xFFFF_FFFF) // see extended fields
+        // KiB fields cover up to 4 TiB; beyond that they read 0xFFFFFFFF and
+        // the byte-granular extended fields apply.
+        let (start_kb, end_kb, ext_start, ext_end) = if end_addr / 1024 >= 0xFFFF_FFFF {
+            (0xFFFF_FFFF, 0xFFFF_FFFF, start_addr, end_addr)
         } else {
-            ((start_addr / 1024) as u32, (end_addr / 1024) as u32)
+            ((start_addr / 1024) as u32, (end_addr / 1024) as u32, 0, 0)
         };
         let (header, _) = self.begin::<RawType19>(TYPE_MEM_ARRAY_MAPPED_ADDR);
         self.emplace(&RawType19 {
@@ -965,12 +1044,42 @@ impl SmbiosWriter {
             end_kb: U32::new(end_kb),
             array_handle: U16::new(self.last_phys_mem_array_handle),
             partition_width,
-            ext_start: U64::new(start_addr),
-            ext_end: U64::new(end_addr),
+            ext_start: U64::new(ext_start),
+            ext_end: U64::new(ext_end),
         });
 
         // No strings
         self.end_strings();
+    }
+
+    // -----------------------------------------------------------------------
+    // Type 41: Onboard Devices Extended Information
+    // -----------------------------------------------------------------------
+
+    /// Add a Type 41 (Onboard Device) structure for an enabled PCI function.
+    ///
+    /// `instance` is 1-based and unique per `device_type`.
+    pub fn add_onboard_device(
+        &mut self,
+        designation: &str,
+        device_type: u8,
+        instance: u8,
+        segment: u16,
+        bus: u8,
+        devfn: u8,
+    ) {
+        let [reference] = string_indices([designation]);
+        let (header, _) = self.begin::<RawType41>(TYPE_ONBOARD_DEVICE);
+        self.emplace(&RawType41 {
+            header,
+            reference,
+            device_type: device_type | 0x80, // enabled
+            instance,
+            segment: U16::new(segment),
+            bus,
+            devfn,
+        });
+        self.write_strings(&[designation]);
     }
 
     // -----------------------------------------------------------------------
@@ -1093,6 +1202,64 @@ mod tests {
         (buf, total)
     }
 
+    fn bios(uefi: bool) -> BiosInfo<'static> {
+        BiosInfo {
+            vendor: "fstart",
+            version: "0.1.0",
+            release_date: "03/10/2026",
+            rom_size: 2 << 20,
+            uefi,
+        }
+    }
+
+    fn cpu(family: u16, max_speed_mhz: u16, cores: u16, threads: u16) -> ProcessorInfo<'static> {
+        ProcessorInfo {
+            socket: "CPU0",
+            manufacturer: "ARM",
+            version: "",
+            family,
+            id: 0x0000_0001_0006_06fb,
+            external_clock_mhz: 200,
+            max_speed_mhz,
+            current_speed_mhz: max_speed_mhz,
+            upgrade: 0x02,
+            core_count: cores,
+            core_enabled: cores,
+            thread_count: threads,
+            characteristics: 0,
+            caches: [0xFFFF; 3],
+        }
+    }
+
+    fn dimm(locator: &'static str, size_mb: u32) -> MemoryDeviceInfo<'static> {
+        MemoryDeviceInfo {
+            locator,
+            bank_locator: "",
+            manufacturer: "Samsung",
+            serial: "",
+            part_number: "M470T5663QZ3",
+            size_mb,
+            memory_type: 0x13,
+            form_factor: 0x0d,
+            type_detail: 0x4080,
+            speed_mts: 667,
+            configured_mts: 533,
+            voltage_mv: 1800,
+            data_width: 64,
+            total_width: 64,
+            ranks: 2,
+        }
+    }
+
+    /// Strings of the first structure in `table`.
+    fn strings(table: &[u8]) -> Vec<&str> {
+        table[table[1] as usize..]
+            .split(|byte| *byte == 0)
+            .take_while(|string| !string.is_empty())
+            .map(|string| core::str::from_utf8(string).unwrap())
+            .collect()
+    }
+
     #[test]
     fn test_entry_point_signature_and_checksum() {
         let (buf, total) = write_to_buffer(|w| {
@@ -1135,20 +1302,32 @@ mod tests {
     #[test]
     fn test_bios_info_strings() {
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_bios_info("fstart", "0.1.0", "03/10/2026");
+            w.add_bios_info(&bios(false));
             w.add_end_of_table();
         });
 
         let table = &buf[ENTRY_POINT_SIZE..];
-        // Type 0
         assert_eq!(table[0], TYPE_BIOS_INFO);
-        let struct_len = table[1] as usize;
-        // Strings start after the fixed structure
-        let string_area = &table[struct_len..];
-        let string_data =
-            core::str::from_utf8(&string_area[..string_area.iter().position(|&b| b == 0).unwrap()])
-                .unwrap();
-        assert_eq!(string_data, "fstart");
+        assert_eq!(strings(table), ["fstart", "0.1.0", "03/10/2026"]);
+    }
+
+    #[test]
+    fn bios_info_reports_rom_size_and_firmware_characteristics() {
+        for uefi in [false, true] {
+            let (buf, _) = write_to_buffer(|w| {
+                w.add_bios_info(&bios(uefi));
+                w.add_end_of_table();
+            });
+            let table = &buf[ENTRY_POINT_SIZE..];
+            // 2 MiB = 64 KiB * (31 + 1); extended field in MiB.
+            assert_eq!(table[0x09], 31);
+            assert_eq!(u16::from_le_bytes([table[0x18], table[0x19]]), 2);
+            let characteristics = u64::from_le_bytes(table[0x0a..0x12].try_into().unwrap());
+            assert_eq!(characteristics, (1 << 7) | (1 << 11) | (1 << 16));
+            assert_eq!(table[0x12], 1, "ACPI supported");
+            // Targeted content distribution, UEFI when present, never "VM".
+            assert_eq!(table[0x13], (1 << 2) | if uefi { 1 << 3 } else { 0 });
+        }
     }
 
     #[test]
@@ -1171,43 +1350,44 @@ mod tests {
     #[test]
     fn test_processor_info_structure() {
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_processor("CPU0", "ARM", 0x0119, 2000, 4, 4, 4);
+            w.add_processor(&cpu(0x0119, 2000, 4, 4));
             w.add_end_of_table();
         });
 
         let table = &buf[ENTRY_POINT_SIZE..];
         assert_eq!(table[0], TYPE_PROCESSOR);
         assert_eq!(table[1], 0x30); // 48 bytes
-        // max speed at offset 0x14 (20-21)
-        let max_speed = u16::from_le_bytes([table[0x14], table[0x15]]);
-        assert_eq!(max_speed, 2000);
-        // processor family 2 at offset 0x28 (40-41)
-        let family2 = u16::from_le_bytes([table[0x28], table[0x29]]);
-        assert_eq!(family2, 0x0119, "processor family 2 should be AArch64");
+        // Family 2 only: the legacy byte points at it.
+        assert_eq!(table[0x06], 0xFE);
+        assert_eq!(u16::from_le_bytes([table[0x28], table[0x29]]), 0x0119);
+        assert_eq!(
+            u64::from_le_bytes(table[0x08..0x10].try_into().unwrap()),
+            0x0000_0001_0006_06fb
+        );
+        assert_eq!(u16::from_le_bytes([table[0x12], table[0x13]]), 200);
+        assert_eq!(u16::from_le_bytes([table[0x14], table[0x15]]), 2000);
+        assert_eq!(table[0x19], 0x02, "upgrade: unknown");
+        // An empty version string is omitted, not an empty entry.
+        assert_eq!(table[0x10], 0);
+        assert_eq!(strings(table), ["CPU0", "ARM"]);
     }
 
     #[test]
-    fn test_processor_family_x86() {
+    fn processor_family_fits_the_legacy_byte_when_possible() {
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_processor("CPU0", "Intel", 0x28, 3600, 8, 8, 16);
+            w.add_processor(&cpu(0xBF, 2200, 2, 2)); // Core 2 Duo
             w.add_end_of_table();
         });
-
         let table = &buf[ENTRY_POINT_SIZE..];
-        // processor family 2 at offset 0x28 (40-41)
-        let family2 = u16::from_le_bytes([table[0x28], table[0x29]]);
-        assert_eq!(family2, 0x28, "processor family 2 should be x86-64");
-        // core count at offset 0x23 (35)
-        assert_eq!(table[0x23], 8);
-        // thread count at offset 0x25 (37)
-        assert_eq!(table[0x25], 16);
+        assert_eq!(table[0x06], 0xBF);
+        assert_eq!(u16::from_le_bytes([table[0x28], table[0x29]]), 0xBF);
     }
 
     #[test]
     fn test_memory_structures() {
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_physical_memory_array(1024 * 1024, 1); // 1 GB in KB
-            w.add_memory_device("DIMM0", 1024, 2400, 0x1A); // DDR4
+            w.add_physical_memory_array(1024 * 1024, 1, 0x03); // 1 GB in KB
+            w.add_memory_device(&dimm("DIMM0", 1024));
             w.add_memory_array_mapped_address(0x10000000000, 0x1003FFFFFFF, 1);
             w.add_end_of_table();
         });
@@ -1217,15 +1397,38 @@ mod tests {
     }
 
     #[test]
+    fn mapped_address_switches_to_extended_fields_above_4_tib() {
+        for (end, legacy, extended) in [
+            (0xBFFF_FFFF, 0xBFFF_FFFF / 1024, 0),
+            (0x400_0000_0000, 0xFFFF_FFFF, 0x400_0000_0000),
+        ] {
+            let (buf, _) = write_to_buffer(|w| {
+                w.add_memory_array_mapped_address(0, end, 1);
+                w.add_end_of_table();
+            });
+            let table = &buf[ENTRY_POINT_SIZE..];
+            assert_eq!(
+                u32::from_le_bytes(table[0x08..0x0c].try_into().unwrap()),
+                legacy
+            );
+            assert_eq!(
+                u64::from_le_bytes(table[0x17..0x1f].try_into().unwrap()),
+                extended
+            );
+        }
+    }
+
+    #[test]
     fn test_full_table_set() {
         let (buf, total) = write_to_buffer(|w| {
-            w.add_bios_info("fstart", "0.1.0", "03/10/2026");
+            w.add_bios_info(&bios(true));
             w.add_system_info("QEMU", "SBSA Reference", "1.0", None, None);
-            w.add_baseboard_info("QEMU", "sbsa-ref", "", None);
-            w.add_enclosure(0x17, "QEMU"); // rack mount
-            w.add_processor("CPU0", "ARM", 0x0119, 2000, 1, 1, 1);
-            w.add_physical_memory_array(1024 * 1024, 1);
-            w.add_memory_device("DIMM0", 1024, 2400, 0x1A);
+            let chassis = w.add_enclosure(0x17, "QEMU"); // rack mount
+            w.add_baseboard_info("QEMU", "sbsa-ref", "", None, chassis);
+            w.add_processor(&cpu(0x0119, 2000, 1, 1));
+            w.add_oem_strings(&["EC 1.0"]);
+            w.add_physical_memory_array(1024 * 1024, 1, 0x03);
+            w.add_memory_device(&dimm("DIMM0", 1024));
             w.add_memory_array_mapped_address(0x10000000000, 0x1003FFFFFFF, 1);
             w.add_system_boot_info();
             w.add_end_of_table();
@@ -1295,7 +1498,7 @@ mod tests {
             ),
         ] {
             let (buf, _) = write_to_buffer(|w| {
-                w.add_baseboard_info("LENOVO", "42W7651", version, serial);
+                w.add_baseboard_info("LENOVO", "42W7651", version, serial, 0x0004);
                 w.add_end_of_table();
             });
             let table = &buf[ENTRY_POINT_SIZE..];
@@ -1311,15 +1514,40 @@ mod tests {
         // the first manufacturer character: no contained-count byte was
         // written while 0x0F was declared).
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_baseboard_info("ACME", "Board", "", None);
+            let chassis = w.add_enclosure(0x0a, "ACME");
+            w.add_baseboard_info("ACME", "Board", "", None, chassis);
             w.add_end_of_table();
         });
 
         let table = &buf[ENTRY_POINT_SIZE..];
+        let enclosure_len = table[1] as usize + strings(table)[0].len() + 2;
+        let chassis = u16::from_le_bytes([table[2], table[3]]);
+        let table = &table[enclosure_len..];
         assert_eq!(table[0], TYPE_BASEBOARD_INFO);
         assert_eq!(table[1], 0x0F);
+        assert_eq!(u16::from_le_bytes([table[0x0b], table[0x0c]]), chassis);
         let len = table[1] as usize;
         assert_eq!(&table[len..len + 5], b"ACME\0");
+    }
+
+    #[test]
+    fn oem_strings_and_onboard_devices() {
+        let (buf, _) = write_to_buffer(|w| {
+            w.add_oem_strings(&["IBM ThinkPad Embedded Controller -[7MHT24WW-1.01]-"]);
+            w.add_onboard_device("Onboard LAN", 0x05, 1, 0, 0, 0xc8);
+            w.add_end_of_table();
+        });
+        let table = &buf[ENTRY_POINT_SIZE..];
+        assert_eq!((table[0], table[1], table[4]), (TYPE_OEM_STRINGS, 5, 1));
+        assert_eq!(
+            strings(table),
+            ["IBM ThinkPad Embedded Controller -[7MHT24WW-1.01]-"]
+        );
+        let table = &table[5 + strings(table)[0].len() + 2..];
+        assert_eq!(table[..2], [TYPE_ONBOARD_DEVICE, 0x0B]);
+        // Designation, enabled Ethernet, instance 1, segment 0, 00:19.0.
+        assert_eq!(table[4..11], [1, 0x85, 1, 0, 0, 0, 0xc8]);
+        assert_eq!(strings(table), ["Onboard LAN"]);
     }
 
     #[test]
@@ -1327,24 +1555,21 @@ mod tests {
         // SMBIOS 3.3 extended-speed dwords require length 0x5C; the old
         // 0x54 declaration pushed them into the string area.
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_memory_device("DIMM0", 1024, 2400, 0x1A);
+            w.add_memory_device(&dimm("DIMM0", 1024));
             w.add_end_of_table();
         });
 
         let table = &buf[ENTRY_POINT_SIZE..];
         assert_eq!(table[0], TYPE_MEMORY_DEVICE);
         assert_eq!(table[1], 0x5C);
-        // Extended speed / configured speed at offsets 0x54 / 0x58.
-        assert_eq!(
-            u32::from_le_bytes(table[0x54..0x58].try_into().unwrap()),
-            2400
-        );
-        assert_eq!(
-            u32::from_le_bytes(table[0x58..0x5C].try_into().unwrap()),
-            2400
-        );
-        // Locator string follows the formatted area intact.
-        assert_eq!(&table[0x5C..0x5C + 6], b"DIMM0\0");
+        // Max and configured speed at 0x15 / 0x20; empty bank locator and
+        // serial strings are skipped from the index sequence.
+        assert_eq!(u16::from_le_bytes([table[0x15], table[0x16]]), 667);
+        assert_eq!(u16::from_le_bytes([table[0x20], table[0x21]]), 533);
+        assert_eq!(table[0x10..0x12], [1, 0]);
+        assert_eq!(table[0x17..0x1b], [2, 0, 0, 3]);
+        assert_eq!(table[0x1b], 2, "rank attribute");
+        assert_eq!(strings(table), ["DIMM0", "Samsung", "M470T5663QZ3"]);
     }
 
     #[test]

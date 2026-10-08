@@ -148,4 +148,5 @@ pub static D41S_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
         chassis_type: 0x03,
         chassis_manufacturer: "Foxconn",
         processor_sockets: &D41S_SMBIOS_PROCESSOR_SOCKETS,
+oem_string: None,
     };

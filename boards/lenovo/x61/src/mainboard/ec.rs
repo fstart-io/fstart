@@ -86,6 +86,16 @@ pub fn x61_ec_init(southbridge: &impl Southbridge, resume: bool) {
     }
 }
 
+/// EC firmware id for the SMBIOS OEM string Linux `thinkpad_acpi` reads.
+pub fn x61_ec_oem_string() -> Option<fstart_driver_lenovo::h8::EcOemString> {
+    let channel = fstart_driver_lenovo::ec::Ec::new(crate::config::X61_H8.resources.os);
+    let oem = H8::new(channel).smbios_oem_string();
+    if oem.is_none() {
+        fstart_log::error!("lenovo-x61: H8 EC firmware id unavailable");
+    }
+    oem
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
