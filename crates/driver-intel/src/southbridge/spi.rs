@@ -287,12 +287,16 @@ impl CacheSpi {
     }
 }
 
-// W25Q16/32/64/128 and MX25L16/32/64/128 use 256-byte page programming
-// and both 4-KiB/64-KiB erases. Do not include SST AAI/byte-program parts.
+// W25Q16/32/64/128, MX25L16/32/64/128 and AT25DF321(A) use 256-byte
+// page programming and 4-KiB/64-KiB erases. Do not include SST AAI parts.
 fn supported_geometry(id: [u8; 3], chip_size: u32) -> bool {
-    matches!((id[0], id[1]), (0xef, 0x40) | (0xc2, 0x20))
-        && (0x15..=0x18).contains(&id[2])
-        && chip_size == 1u32 << id[2]
+    match id {
+        [0xef, 0x40, capacity] | [0xc2, 0x20, capacity] => {
+            (0x15..=0x18).contains(&capacity) && chip_size == 1u32 << capacity
+        }
+        [0x1f, 0x47, 0x00 | 0x01] => chip_size == 0x400000,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -301,6 +305,10 @@ mod tests {
     fn geometry_requires_known_program_protocol_and_exact_capacity() {
         assert!(super::supported_geometry([0xef, 0x40, 0x18], 0x1000000));
         assert!(super::supported_geometry([0xc2, 0x20, 0x16], 0x400000));
+        assert!(super::supported_geometry([0x1f, 0x47, 0x00], 0x400000));
+        assert!(super::supported_geometry([0x1f, 0x47, 0x01], 0x400000));
+        assert!(!super::supported_geometry([0x1f, 0x47, 0x00], 0x800000));
+        assert!(!super::supported_geometry([0x1f, 0x47, 0x02], 0x400000));
         assert!(!super::supported_geometry([0xef, 0x40, 0x18], 0x400000));
         assert!(!super::supported_geometry([0xbf, 0x25, 0x4a], 0x400000));
         assert!(!super::supported_geometry([0xef, 0x40, 0xff], 0));
