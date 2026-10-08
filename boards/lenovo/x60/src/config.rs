@@ -25,7 +25,7 @@ pub type Hardware = fstart_platform_intel::i945::I945Ich7<
 
 pub const BOARD_NAME: &str = "lenovo-x60";
 pub const BOARD_PACKAGE: &str = "fstart-board-lenovo-x60";
-pub const PLATFORM: Platform = Platform::X86_64;
+pub const PLATFORM: Platform = Platform::X86;
 pub const UART0_NODE: &str = "dock_superio/com1";
 pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
@@ -44,7 +44,9 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     const CONFIG: &'static I945Ich7Platform = &X60_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(FLASH, FLASH_SIZE)
-            .with_data_assets(&[X60_VBT]);
+            .with_data_assets(&[X60_VBT])
+            // Core Duo (Yonah) has no long mode: 32-bit protected-mode stages.
+            .with_protected_mode();
 }
 
 /// The H8 EC SCI is ICH7 GPIO12 (`H8SCI#`), i.e. GPE 0x1c.

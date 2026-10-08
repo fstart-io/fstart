@@ -8,8 +8,8 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "lenovo-x60"
-platform = "x86_64"
-target = "x86_64-unknown-none"
+platform = "x86"
+target = "i686-unknown-none"
 stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
