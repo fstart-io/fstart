@@ -160,19 +160,11 @@ impl GmaDisplayState {
             .outputs
             .iter()
             .any(|output| output.enabled && output.port == Port::Lvds);
-        let panel_ready = if wants_lvds {
-            if let Some(mmio) = &mmio {
-                crate::generation::g45::prepare_panel_probe(mmio, config.vbt).is_ok()
-            } else {
-                true // Split-PCH panel sequencing remains generation-owned.
-            }
-        } else {
-            false
-        };
+        // Split-PCH panel sequencing remains generation-owned.
+        if wants_lvds && let Some(mmio) = &mmio {
+            crate::generation::g45::prepare_panel_probe(mmio, config.vbt);
+        }
         let resolved = self.resolve_requested_configs(resources, config, detect.as_ref(), |port| {
-            if port == Port::Lvds && !panel_ready {
-                return Err(GmaError::ModeUnavailable);
-            }
             let outputs = [OutputConfig {
                 port,
                 enabled: true,

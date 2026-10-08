@@ -367,8 +367,9 @@ const fn panel_lvds_dual_channel(panel: LfpPanelMetadata) -> Option<bool> {
 }
 
 /// libgfxinit Scan_Ports powers the panel before reading its EDID. VBT delay
-/// registers are useful for sequencing, but VBT presence is not panel presence.
-pub(crate) fn prepare_panel_probe(mmio: &Mmio, vbt: Option<&[u8]>) -> Result<(), GmaError> {
+/// registers are useful for sequencing, but VBT presence is not panel presence:
+/// the EDID read decides whether a panel is attached.
+pub(crate) fn prepare_panel_probe(mmio: &Mmio, vbt: Option<&[u8]>) {
     if let Some(panel) = vbt
         .and_then(|bytes| crate::vbt::Vbt::parse(bytes).ok())
         .and_then(|vbt| vbt.lfp_panel_metadata().ok())
@@ -376,7 +377,44 @@ pub(crate) fn prepare_panel_probe(mmio: &Mmio, vbt: Option<&[u8]>) -> Result<(),
         program_vbt_panel_registers(mmio, panel);
     }
     setup_gmch_panel_power_sequencer(mmio);
-    panel_power_on(mmio)
+    panel_probe_power_on(mmio);
+}
+
+/// Request panel power for the EDID probe (libgfxinit `Panel.On` without
+/// waiting, then `Panel.Wait_On`).
+///
+/// The GMCH sequencer does not start while the LVDS port is disabled, so
+/// `PP_STATUS.ON` is not expected here; only wait for the power-up delay and
+/// for any running sequence to finish. `panel_power_on` checks `ON` once the
+/// port is enabled.
+fn panel_probe_power_on(mmio: &Mmio) {
+    let panel_regs = gmch_panel_regs(mmio);
+    let was_on = panel_regs.pp_control.is_set(PP_CONTROL::TARGET_ON);
+    let control = panel_regs.pp_control.get();
+    panel_regs.pp_control.set(panel_control_unlocked(
+        control | PP_CONTROL::TARGET_ON::SET.value,
+    ));
+    let _ = panel_regs.pp_control.get();
+    if !was_on {
+        let delays = PanelPowerDelays::from_registers(
+            panel_regs.pp_on_delays.get(),
+            panel_regs.pp_off_delays.get(),
+            panel_regs.pp_divisor.get(),
+        )
+        .with_defaults();
+        delay_us(delays.power_up_us);
+    }
+    let deadline = fstart_arch::x86::timestamp_us().saturating_add(1_000_000);
+    while panel_regs.pp_status.read(PP_STATUS::SEQUENCE) != 0 {
+        if fstart_arch::x86::timestamp_us() >= deadline {
+            fstart_log::warn!(
+                "intel-gma: panel sequencer busy before EDID probe: status={:#x}",
+                panel_regs.pp_status.get()
+            );
+            return;
+        }
+        core::hint::spin_loop();
+    }
 }
 
 pub(crate) fn setup_gmch_panel_power_sequencer(mmio: &Mmio) {
