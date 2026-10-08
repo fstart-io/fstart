@@ -163,8 +163,9 @@ struct ResourceRange {
 /// Free-range allocator for one address type (MMIO32, MMIO64, or IO).
 ///
 /// Unlike a plain bump allocator, this preserves holes occupied by fixed
-/// chipset resources such as ECAM. This matches coreboot's domain allocator,
-/// which subtracts fixed resources before placing dynamic BARs.
+/// chipset resources such as ECAM, and alignment gaps between BARs. This
+/// matches coreboot's domain allocator, which subtracts fixed resources
+/// before placing dynamic BARs.
 #[derive(Debug, Clone, Copy)]
 struct ResourcePool {
     ranges: [ResourceRange; MAX_RESOURCE_RANGES],
@@ -262,13 +263,14 @@ impl ResourcePool {
             if end > range.end {
                 continue;
             }
-            self.ranges[idx].base = end;
-            if self.ranges[idx].base == self.ranges[idx].end {
-                for next in idx + 1..self.count {
-                    self.ranges[next - 1] = self.ranges[next];
-                }
-                self.count -= 1;
+            // Remove only the allocated interval, keeping its alignment
+            // prefix available for smaller BARs. Commit atomically: if the
+            // split exceeds the range capacity, try another candidate.
+            let mut remaining = *self;
+            if remaining.reserve_range(aligned, size).is_err() {
+                continue;
             }
+            *self = remaining;
             return Some(aligned);
         }
         None
@@ -1443,6 +1445,38 @@ mod tests {
             size_from_moving_bits(u64::from(ones ^ zeroes), 0x0000_fffc),
             Ok(0x20)
         );
+    }
+
+    #[test]
+    fn graphics_mmio_bar_reuses_gap_before_aligned_framebuffer() {
+        let (mut pci, _config_space) = test_pci();
+        // X61's aperture runs from TOLUD (3 GiB) to ECAM (3.5 GiB).
+        pci.configure_windows(0xc000_0000, 0x2000_0000, 0, 0, 0x1000, 0xf000)
+            .unwrap();
+        let igd = PciAddress::new(0, 0, 2, 0);
+        let hda = PciAddress::new(0, 0, 0x1b, 0);
+        assert!(
+            pci.devices
+                .push(endpoint(
+                    igd,
+                    &[
+                        (0, BarType::Memory64, 0x10_0000),
+                        (2, BarType::Memory64, 0x1000_0000),
+                    ],
+                ))
+                .is_ok()
+        );
+        assert!(
+            pci.devices
+                .push(endpoint(hda, &[(0, BarType::Memory32, 0x4000)]))
+                .is_ok()
+        );
+
+        pci.allocate_resources().unwrap();
+
+        assert_eq!(pci.read32(hda, PCI_BAR0) & !0xf, 0xc000_0000);
+        assert_eq!(pci.read32(igd, PCI_BAR0 + 8) & !0xf, 0xd000_0000);
+        assert_eq!(pci.read32(igd, PCI_BAR0) & !0xf, 0xc010_0000);
     }
 
     #[test]
