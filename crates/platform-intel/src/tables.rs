@@ -442,11 +442,17 @@ pub fn prepare_smbios(
             desc.sys_product,
             desc.sys_version,
             desc.sys_serial,
+            desc.sys_uuid,
         );
 
         // Type 2: Baseboard (optional)
         if !desc.bb_manufacturer.is_empty() || !desc.bb_product.is_empty() {
-            w.add_baseboard_info(desc.bb_manufacturer, desc.bb_product);
+            w.add_baseboard_info(
+                desc.bb_manufacturer,
+                desc.bb_product,
+                desc.bb_version,
+                desc.bb_serial,
+            );
         }
 
         // Type 3: Enclosure

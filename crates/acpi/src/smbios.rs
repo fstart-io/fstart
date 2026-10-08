@@ -23,7 +23,7 @@
 //! ```ignore
 //! let total = fstart_acpi::smbios::assemble_and_write(0x10000090000, |w| {
 //!     w.add_bios_info("fstart", "0.1.0", "03/10/2026");
-//!     w.add_system_info("QEMU", "SBSA Reference", "1.0", None);
+//!     w.add_system_info("QEMU", "SBSA Reference", "1.0", None, None);
 //!     w.add_end_of_table();
 //! });
 //! ```
@@ -64,6 +64,7 @@ const TYPE_END_OF_TABLE: u8 = 127;
 ///
 /// All strings are `&str` and slices so board crates can define a single
 /// const descriptor that is usable by both host metadata and no_std stage code.
+#[derive(Clone, Copy)]
 pub struct SmbiosIdentity<'a> {
     /// Type 0: BIOS vendor string.
     pub bios_vendor: &'a str,
@@ -80,11 +81,17 @@ pub struct SmbiosIdentity<'a> {
     pub sys_version: &'a str,
     /// Type 1: System serial number (None = omit).
     pub sys_serial: Option<&'a str>,
+    /// Type 1: UUID in SMBIOS wire order (None = not specified).
+    pub sys_uuid: Option<[u8; 16]>,
 
     /// Type 2: Baseboard manufacturer (empty = skip Type 2).
     pub bb_manufacturer: &'a str,
     /// Type 2: Baseboard product name.
     pub bb_product: &'a str,
+    /// Type 2: Baseboard version.
+    pub bb_version: &'a str,
+    /// Type 2: Baseboard serial number (None = omit).
+    pub bb_serial: Option<&'a str>,
 
     /// Type 3: Chassis type byte (SMBIOS encoding).
     pub chassis_type: u8,
@@ -566,6 +573,7 @@ impl SmbiosWriter {
         product: &str,
         version: &str,
         serial: Option<&str>,
+        uuid: Option<[u8; 16]>,
     ) {
         // Pre-compute serial string index (depends on whether it's present).
         let has_serial = serial.is_some_and(|s| !s.is_empty());
@@ -576,10 +584,10 @@ impl SmbiosWriter {
             product: 2,      // string 2
             version: 3,      // string 3
             serial: if has_serial { 4 } else { 0 },
-            uuid: [0; 16], // not specified
-            wake_up: 0x06, // power switch
-            sku: 0,        // no string
-            family: 0,     // no string
+            uuid: uuid.unwrap_or([0; 16]), // zero means not specified
+            wake_up: 0x06,                 // power switch
+            sku: 0,                        // no string
+            family: 0,                     // no string
         });
 
         // Strings
@@ -597,14 +605,26 @@ impl SmbiosWriter {
     // -----------------------------------------------------------------------
 
     /// Add a Type 2 (Baseboard Information) structure.
-    pub fn add_baseboard_info(&mut self, manufacturer: &str, product: &str) {
+    pub fn add_baseboard_info(
+        &mut self,
+        manufacturer: &str,
+        product: &str,
+        version: &str,
+        serial: Option<&str>,
+    ) {
+        let has_version = !version.is_empty();
+        let has_serial = serial.is_some_and(|s| !s.is_empty());
         let (header, _) = self.begin::<RawType2>(TYPE_BASEBOARD_INFO);
         self.emplace(&RawType2 {
             header,
-            manufacturer: 1,      // string 1
-            product: 2,           // string 2
-            version: 0,           // no string
-            serial: 0,            // no string
+            manufacturer: 1, // string 1
+            product: 2,      // string 2
+            version: if has_version { 3 } else { 0 },
+            serial: if has_serial {
+                3 + u8::from(has_version)
+            } else {
+                0
+            },
             asset_tag: 0,         // no string
             feature_flags: 0x09,  // hosting board, replaceable
             location: 0,          // no string
@@ -616,6 +636,12 @@ impl SmbiosWriter {
         // Strings
         self.write_string(manufacturer);
         self.write_string(product);
+        if has_version {
+            self.write_string(version);
+        }
+        if let Some(serial) = serial.filter(|serial| !serial.is_empty()) {
+            self.write_string(serial);
+        }
         self.end_strings();
     }
 
@@ -1128,7 +1154,7 @@ mod tests {
     #[test]
     fn test_system_info_structure() {
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_system_info("QEMU", "SBSA Reference", "1.0", Some("SN12345"));
+            w.add_system_info("QEMU", "SBSA Reference", "1.0", Some("SN12345"), None);
             w.add_end_of_table();
         });
 
@@ -1194,8 +1220,8 @@ mod tests {
     fn test_full_table_set() {
         let (buf, total) = write_to_buffer(|w| {
             w.add_bios_info("fstart", "0.1.0", "03/10/2026");
-            w.add_system_info("QEMU", "SBSA Reference", "1.0", None);
-            w.add_baseboard_info("QEMU", "sbsa-ref");
+            w.add_system_info("QEMU", "SBSA Reference", "1.0", None, None);
+            w.add_baseboard_info("QEMU", "sbsa-ref", "", None);
             w.add_enclosure(0x17, "QEMU"); // rack mount
             w.add_processor("CPU0", "ARM", 0x0119, 2000, 1, 1, 1);
             w.add_physical_memory_array(1024 * 1024, 1);
@@ -1223,7 +1249,7 @@ mod tests {
     fn test_string_count_tracking() {
         // Verify that the automatic string counter produces correct indices.
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_system_info("Mfr", "Prod", "Ver", Some("Serial"));
+            w.add_system_info("Mfr", "Prod", "Ver", Some("Serial"), None);
             w.add_end_of_table();
         });
 
@@ -1246,13 +1272,46 @@ mod tests {
     }
 
     #[test]
+    fn runtime_identity_preserves_uuid_bytes_and_baseboard_string_indices() {
+        let uuid = core::array::from_fn(|index| index as u8);
+        let (buf, _) = write_to_buffer(|w| {
+            w.add_system_info("LENOVO", "ThinkPad X61", "1.0", None, Some(uuid));
+            w.add_end_of_table();
+        });
+        assert_eq!(&buf[ENTRY_POINT_SIZE + 8..ENTRY_POINT_SIZE + 24], &uuid);
+
+        for (version, serial, indices, strings) in [
+            (
+                "ThinkPad X61",
+                Some("L3ABCDE"),
+                [3, 4],
+                b"LENOVO\0\x34\x32W7651\0ThinkPad X61\0L3ABCDE\0\0".as_slice(),
+            ),
+            (
+                "",
+                Some("L3ABCDE"),
+                [0, 3],
+                b"LENOVO\0\x34\x32W7651\0L3ABCDE\0\0".as_slice(),
+            ),
+        ] {
+            let (buf, _) = write_to_buffer(|w| {
+                w.add_baseboard_info("LENOVO", "42W7651", version, serial);
+                w.add_end_of_table();
+            });
+            let table = &buf[ENTRY_POINT_SIZE..];
+            assert_eq!(&table[6..8], &indices);
+            assert_eq!(&table[0x0f..0x0f + strings.len()], strings);
+        }
+    }
+
+    #[test]
     fn test_type2_string_area_alignment() {
         // The declared Length must cover the whole formatted area, or
         // parsers read the first string byte as a field (this used to eat
         // the first manufacturer character: no contained-count byte was
         // written while 0x0F was declared).
         let (buf, _total) = write_to_buffer(|w| {
-            w.add_baseboard_info("ACME", "Board");
+            w.add_baseboard_info("ACME", "Board", "", None);
             w.add_end_of_table();
         });
 

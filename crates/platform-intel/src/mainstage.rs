@@ -466,8 +466,8 @@ where
         self.emit_acpi()?;
         #[cfg(feature = "smbios")]
         {
-            let smbios =
-                crate::tables::prepare_smbios(self.ctx.e820_state_mut(), self.smbios_identity);
+            let identity = self.hooks.smbios_identity(self.smbios_identity);
+            let smbios = crate::tables::prepare_smbios(self.ctx.e820_state_mut(), &identity);
             self.ctx.set_smbios(Some(smbios));
         }
         Ok(())

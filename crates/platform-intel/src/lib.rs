@@ -395,6 +395,15 @@ impl<P: IntelEarlyPlatform> IntelMainstageBoardCtx<'_, P> {
 pub trait IntelMainstageBoardHooks<P: IntelEarlyPlatform>:
     MainboardAcpi<P> + IntelSmbusRouting<P::Southbridge>
 {
+    /// Override static board identity with data read from board-owned hardware.
+    #[cfg(feature = "smbios")]
+    fn smbios_identity<'a>(
+        &'a self,
+        configured: &crate::tables::SmbiosIdentity<'a>,
+    ) -> crate::tables::SmbiosIdentity<'a> {
+        *configured
+    }
+
     fn before_console(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
         Ok(())
     }
