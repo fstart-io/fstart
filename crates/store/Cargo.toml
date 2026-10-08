@@ -1,0 +1,8 @@
+[package]
+name = "fstart-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zerocopy = { workspace = true }
