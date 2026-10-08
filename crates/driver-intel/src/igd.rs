@@ -227,9 +227,11 @@ struct OpRegionMailbox1 {
 #[repr(C)]
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct OpRegionMailbox3 {
-    _reserved0: [u8; 16],
-    supported_events: U32<LE>,
+    _reserved0: [u8; 8],
+    technology_enabled: U32<LE>,
+    illuminance: U32<LE>,
     requested_brightness: U32<LE>,
+    panel_fitting: U32<LE>,
     current_brightness: U32<LE>,
     brightness_levels: [U16<LE>; 11],
     _reserved1: [u8; 136],
@@ -273,8 +275,10 @@ pub fn build_opregion(buffer: &mut [u8], vbt: &[u8]) {
     {
         let mailbox = OpRegionMailbox3::mut_from_bytes(&mut buffer[0x300..0x400])
             .expect("OpRegion mailbox 3 has its wire size");
-        mailbox.supported_events.set(0xff);
-        mailbox.requested_brightness.set((1 << 31) | 6);
+        // TCHE belongs to the graphics driver. BIOS initializes BCLP in
+        // 0..255 units and PFIT at their documented, distinct wire offsets.
+        mailbox.requested_brightness.set(0xff);
+        mailbox.panel_fitting.set((1 << 31) | 6);
         mailbox.current_brightness.set((1 << 31) | 0x64);
         for (entry, level) in mailbox
             .brightness_levels
@@ -667,6 +671,21 @@ mod tests {
         assert_eq!(&header.vbios_version, b"TEST");
         assert_eq!(header.supported_mailboxes.get(), 0x1d);
 
+        // Assert absolute ABI offsets, not only a roundtrip through our own
+        // struct: BCLP and PFIT were previously displaced by one dword.
+        assert_eq!(
+            core::mem::offset_of!(OpRegionMailbox3, technology_enabled),
+            8
+        );
+        assert_eq!(
+            core::mem::offset_of!(OpRegionMailbox3, requested_brightness),
+            16
+        );
+        assert_eq!(core::mem::offset_of!(OpRegionMailbox3, panel_fitting), 20);
+        assert_eq!(&opregion[0x308..0x310], &[0; 8]);
+        assert_eq!(&opregion[0x310..0x314], &0xffu32.to_le_bytes());
+        assert_eq!(&opregion[0x314..0x318], &0x8000_0006u32.to_le_bytes());
+        assert_eq!(&opregion[0x318..0x31c], &0x8000_0064u32.to_le_bytes());
         let mailbox = OpRegionMailbox3::ref_from_bytes(&opregion[0x300..0x400]).unwrap();
         assert_eq!(mailbox.vbt_address.get(), OPREGION_BASE_SIZE as u64);
         assert_eq!(mailbox.vbt_size.get(), 6656);

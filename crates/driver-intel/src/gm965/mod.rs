@@ -1366,6 +1366,11 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     fn set_s3_enabled(&mut self, enabled: bool) {
         self.s3_enabled = enabled;
     }
+    fn supports_s3_replay(&self) -> bool {
+        // Enable the implemented retained-memory path for hardware testing.
+        // Training identity/frequency and retained-stage checks still apply.
+        true
+    }
     fn prepare_resume_reset(&self) {
         raminit::prepare_resume_reset(&self.mchbar());
     }
@@ -1739,6 +1744,9 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm965 {
 // ACPI device implementation — GM965 host bridge / PCI0
 // ---------------------------------------------------------------------------
 
+#[cfg(all(test, feature = "acpi"))]
+mod acpi_tests;
+
 #[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
@@ -1929,14 +1937,12 @@ mod acpi_impl {
                         Name("BRLV", 100u32);
                         Name("BRVA", 0u32);
                         Name("BRIG", Package(100u32, 100u32, 0u32, 10u32, 20u32, 30u32, 40u32, 50u32, 60u32, 70u32, 80u32, 90u32, 100u32));
-                        Method("XBCM", 1, Serialized) {
-                            BRLV = Arg0;
-                            BRVA = 1u32;
-                            Local0 = Arg0;
-                            If (Local0 > 100u32) { Local0 = 100u32; }
+                        // ASLE uses an 8-bit level, not an ACPI percentage.
+                        // Separate the request so every failure reaches PWM fallback.
+                        Method("SBCM", 1, Serialized) {
                             If (ASLS == 0u32) { Return(Ones); }
                             If ((MBOX & 4u32) == 0u32) { Return(Ones); }
-                            BCLP = Local0 | 0x80000000u32;
+                            BCLP = (Arg0 * 255u32 / 100u32) | 0x80000000u32;
                             If (ARDY == 0u32) { Return(Ones); }
                             ASLC = 2u32;
                             ASLE = 1u32;
@@ -1949,10 +1955,29 @@ mod acpi_impl {
                                 }
                                 Local1--;
                             }
-                            If (BCLM != 0u32) { BCLV = Local0; }
                             Return(Ones);
                         }
-                        Method("XBQC", 0, NotSerialized) {
+                        Method("XBCM", 1, Serialized) {
+                            Local0 = Arg0;
+                            If (Local0 > 100u32) { Local0 = 100u32; }
+                            BRLV = Local0;
+                            BRVA = 1u32;
+                            If (SBCM(Local0) == Ones) {
+                                // Period and duty share a dword; preserve the period.
+                                // A zero period means PWM is not initialized yet.
+                                Local1 = BCLM;
+                                If (Local1 != 0u32) {
+                                    BCLV = (Local0 * Local1 + 50u32) / 100u32;
+                                }
+                            }
+                        }
+                        Method("XBQC", 0, Serialized) {
+                            Local0 = BCLM;
+                            If (Local0 != 0u32) {
+                                Local1 = (BCLV * 100u32 + Local0 / 2u32) / Local0;
+                                If (Local1 > 100u32) { Local1 = 100u32; }
+                                Return(Local1);
+                            }
                             If (BRVA != 0u32) { Return(BRLV); }
                             Return(100u32);
                         }
@@ -1965,13 +1990,15 @@ mod acpi_impl {
                         Method("_DOS", 1, NotSerialized) { }
                         Method("DECB", 0, NotSerialized) {
                             Local0 = XBQC();
-                            If (Local0 > 0u32) { Local0 = Local0 - 10u32; }
+                            If (Local0 > 10u32) { Local0 = Local0 - 10u32; }
+                            Else { Local0 = 0u32; }
                             XBCM(Local0);
                             Notify(LCD0, 0x87u32);
                         }
                         Method("INCB", 0, NotSerialized) {
                             Local0 = XBQC();
-                            If (Local0 < 100u32) { Local0 = Local0 + 10u32; }
+                            If (Local0 < 90u32) { Local0 = Local0 + 10u32; }
+                            Else { Local0 = 100u32; }
                             XBCM(Local0);
                             Notify(LCD0, 0x86u32);
                         }

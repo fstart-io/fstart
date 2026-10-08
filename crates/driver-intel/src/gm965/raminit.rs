@@ -834,7 +834,8 @@ fn program_gcfgc(info: &RaminitInfo, mch: &MchBar) {
     if vco == 7 {
         if stepping() == 0 {
             mch.setbits16(0x1190, 0x4000);
-            mch.clrsetbits16(0x119e, 0xe000, 0x9000);
+            mch.clrsetbits16(0x119e, 0xe000, 0x8000);
+            mch.setbits16(0x119e, 0x1000);
         }
         return;
     }
@@ -853,8 +854,12 @@ fn program_gcfgc(info: &RaminitInfo, mch: &MchBar) {
 
     let igd = fstart_pci::ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC);
     if igd.is_present() {
-        set_pci8(&igd, hostbridge::GCFGC, 0xd0, render);
-        set_pci8(&igd, hostbridge::GCFGC + 1, 0xe0, 2);
+        // Vendor/coreboot use keep-masks 0xd0/0xe0; set_pci8 takes
+        // clear-masks. Pulse bit 5 to latch render before selecting cdclk.
+        set_pci8(&igd, hostbridge::GCFGC, 0x2f, render);
+        igd.or8(hostbridge::GCFGC, 0x20);
+        set_pci8(&igd, hostbridge::GCFGC, 0x20, 0);
+        set_pci8(&igd, hostbridge::GCFGC + 1, 0x1f, 2);
     }
 }
 
