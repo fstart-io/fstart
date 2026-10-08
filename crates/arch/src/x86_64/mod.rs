@@ -77,18 +77,23 @@ use zerocopy::byteorder::{LE, U32, U64};
 /// MTRR must be installed after MP setup and only on the BSP when firmware is
 /// about to read memory-mapped flash. It is cleared before Linux handoff.
 pub fn enable_boot_media_rom_cache() {
-    fstart_log::info!("mtrr: enabling temporary BSP ROM WP for memory-mapped boot media");
     // SAFETY: selected stage code calls this on the BSP immediately before
     // memory-mapped boot-media reads. The MTRR is cleared before OS handoff.
-    unsafe { mtrr::set_boot_rom_wp(true) };
+    match unsafe { mtrr::set_boot_rom_wp(true) } {
+        Ok(()) => fstart_log::debug!("mtrr: temporary BSP ROM WP enabled"),
+        Err(_) => {
+            fstart_log::info!("mtrr: ROM WP optimization unavailable; cacheability unchanged")
+        }
+    }
 }
 
 /// Clear the BSP-local temporary ROM cacheability MTRR before payload/OS handoff.
 pub fn disable_boot_media_rom_cache_for_handoff() {
-    fstart_log::info!("mtrr: clearing temporary BSP ROM WP before payload handoff");
     // SAFETY: selected stage code calls this on the BSP immediately before
     // handing control to a payload/OS that expects coherent MTRR state.
-    unsafe { mtrr::set_boot_rom_wp(false) };
+    if unsafe { mtrr::set_boot_rom_wp(false) }.is_err() {
+        fstart_log::error!("mtrr: could not clear temporary BSP ROM WP");
+    }
 }
 
 // ---------------------------------------------------------------------------

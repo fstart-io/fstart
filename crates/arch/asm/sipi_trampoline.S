@@ -31,6 +31,8 @@
 .global fstart_sipi_stack_size
 .global fstart_sipi_ap_limit
 .global fstart_sipi_ap_counter
+.global fstart_sipi_msr_count
+.global fstart_sipi_msr_table
 
 .code16
 fstart_sipi_start:
@@ -88,6 +90,33 @@ prot32:
 	subl $8, %ebx
 	movl %ebx, %esp
 
+	/* Replay the BSP's fixed/variable MTRRs and PAT with caching disabled.
+	 * INIT can retain MSRs, so disable MTRRs explicitly before replay. The
+	 * final table record restores IA32_MTRR_DEF_TYPE (including enable).
+	 * ESI retains the AP ordinal; EDI/EBP are scratch until long64.
+	 */
+	movl %cr0, %eax
+	orl $CR0_CD, %eax
+	andl $~CR0_NW, %eax
+	movl %eax, %cr0
+	movl $0x2ff, %ecx
+	rdmsr
+	andl $~(1 << 11), %eax
+	wrmsr
+	movl $SIPI_BASE + fstart_sipi_msr_table - fstart_sipi_start, %edi
+	movl SIPI_BASE + fstart_sipi_msr_count - fstart_sipi_start, %ebp
+msr_replay:
+	testl %ebp, %ebp
+	jz msr_replay_done
+	movl 0(%edi), %ecx
+	movl 4(%edi), %eax
+	movl 8(%edi), %edx
+	wrmsr
+	addl $12, %edi
+	decl %ebp
+	jmp msr_replay
+msr_replay_done:
+
 	movl %cr4, %eax
 	orl $CR4_PAE, %eax
 	movl %eax, %cr4
@@ -104,8 +133,8 @@ prot32:
 	orl $CR0_PG, %eax
 	movl %eax, %cr0
 
-	/* INIT starts the AP with caching disabled. The page tables and trampoline
-	 * are now DRAM-visible, so join normal cache coherency before entering Rust.
+	/* The BSP's MTRRs/PAT and page tables are now installed. Only now join
+	 * normal cache coherency, before entering Rust or fetching microcode.
 	 */
 	andl $~(CR0_CD | CR0_NW), %eax
 	movl %eax, %cr0
@@ -161,5 +190,12 @@ fstart_sipi_ap_limit:
 	.long 0
 fstart_sipi_ap_counter:
 	.long 0
-
+fstart_sipi_msr_count:
+	.long 0
+.balign 4
+fstart_sipi_msr_table:
+	/* The remainder of the reserved SIPI page holds packed MSR records.
+	 * Rust checks the actual linked capacity before copying the snapshot.
+	 */
+	.space 4096 - (. - fstart_sipi_start)
 fstart_sipi_end:

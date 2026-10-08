@@ -309,7 +309,9 @@ pub fn prepare_acpi(
     // valid and the buffer persists (e820-reserved or leaked).
     let acpi_data = unsafe { core::slice::from_raw_parts(acpi_addr as *const u8, acpi_len) };
     install_rsdp_in_ebda(acpi_data);
-    print_acpi_tables_acpixtract(acpi_data);
+    if fstart_log::log_enabled(fstart_log::Level::Trace) {
+        print_acpi_tables_acpixtract(acpi_data);
+    }
 
     Ok(acpi_addr)
 }

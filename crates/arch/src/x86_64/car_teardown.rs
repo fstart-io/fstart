@@ -215,8 +215,9 @@ pub struct PostcarBootContext {
 /// Programs, as raw MSR values: one write-back MTRR covering low DRAM from
 /// 0 to the next power of two >= `ram_end`, plus write-protect MTRRs
 /// covering the memory-mapped firmware window (`rom_base`, `rom_size`).
-/// This mirrors the old `postcar_mtrr_setup` layout; the ramstage later
-/// refines MTRRs (fixed, per-CPU) via `setup_ram_wb`.
+/// This mirrors the old `postcar_mtrr_setup` layout. Ramstage restores bootstrap
+/// RAM caching, then installs the complete BSP solution after PCI allocation;
+/// SIPI replays that final state before enabling AP caches.
 ///
 /// `boot` carries the ramstage descriptor and mainstage directory reference.
 /// Postcar hashes the executable before entry without a directory parser or

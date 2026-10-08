@@ -36,16 +36,13 @@ use fstart_pci::{
 };
 use tock_registers::interfaces::{Readable, Writeable};
 
-fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
-    let mut ranges = [(0u64, 0u64); 8];
-    let mut count = 0usize;
-    for entry in entries {
-        if entry.kind == E820Kind::Ram as u32 && entry.size != 0 && count < ranges.len() {
-            ranges[count] = (entry.addr, entry.size);
-            count += 1;
-        }
-    }
-    mtrr::set_ram_wb_ranges(&ranges[..count]);
+fn publish_mtrr_wb_ranges(entries: &[E820Entry]) -> Result<(), ServiceError> {
+    mtrr::set_ram_wb_ranges_from(
+        entries
+            .iter()
+            .filter(|entry| entry.kind == E820Kind::Ram as u32)
+            .map(|entry| (entry.addr, entry.size)),
+    )
 }
 
 /// IGD PCI configuration offsets and command bits.
@@ -708,7 +705,7 @@ impl MemoryDetector for IntelPineview {
         }
 
         let count = self.build_e820_entries(entries, usable_top, touud, tolud)?;
-        publish_mtrr_wb_ranges(&entries[..count]);
+        publish_mtrr_wb_ranges(&entries[..count])?;
         fstart_log::info!(
             "pineview: detected memory map (usable top {:#x}, TOLUD {:#x}, TOM {:#x}, TOUUD {:#x})",
             usable_top,
@@ -740,7 +737,7 @@ impl MemoryController for IntelPineview {
         let usable_top = self.usable_low_memory_top();
         let mut entries = [E820Entry::zeroed(); 8];
         if let Ok(count) = self.build_e820_entries(&mut entries, usable_top, self.touud(), tolud) {
-            publish_mtrr_wb_ranges(&entries[..count]);
+            publish_mtrr_wb_ranges(&entries[..count])?;
         }
         fstart_log::info!(
             "pineview: dynamic WB MTRR ranges set (TOLUD {:#x}, usable top {:#x})",

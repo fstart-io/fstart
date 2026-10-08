@@ -27,6 +27,7 @@ early-ffs-anchor = []
 
 [dependencies]
 fstart-log = { workspace = true }
+heapless = { workspace = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-core = { workspace = true }
 ufmt = { workspace = true }

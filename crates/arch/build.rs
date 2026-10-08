@@ -63,7 +63,9 @@ fn main() {
              pub const STACK_BASE_OFFSET: usize = {:#x};\n\
              pub const STACK_SIZE_OFFSET: usize = {:#x};\n\
              pub const AP_LIMIT_OFFSET: usize = {:#x};\n\
-             pub const AP_COUNTER_OFFSET: usize = {:#x};\n",
+             pub const AP_COUNTER_OFFSET: usize = {:#x};\n\
+             pub const MSR_COUNT_OFFSET: usize = {:#x};\n\
+             pub const MSR_TABLE_OFFSET: usize = {:#x};\n",
             bin.display(),
             find_symbol_offset(elf.as_path(), "fstart_sipi_cr3"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_entry"),
@@ -71,6 +73,8 @@ fn main() {
             find_symbol_offset(elf.as_path(), "fstart_sipi_stack_size"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_ap_limit"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_ap_counter"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_msr_count"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_msr_table"),
         ),
     )
     .unwrap();
