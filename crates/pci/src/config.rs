@@ -65,6 +65,10 @@ pub const PCI_CMD_MEMORY: u16 = 0x0002;
 pub const PCI_CMD_BUS_MASTER: u16 = 0x0004;
 
 register_bitfields! [u16,
+    /// PCI Express Capabilities word, at offset 0x02 within the capability.
+    pub PCI_EXPRESS_CAPABILITIES [
+        SLOT_IMPLEMENTED OFFSET(8) NUMBITS(1) []
+    ],
     /// PCI command register bitfields.
     pub PCI_COMMAND_BITS [
         IO_SPACE OFFSET(0) NUMBITS(1) [],
