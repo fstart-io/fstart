@@ -267,6 +267,16 @@ pub fn max_level() -> Level {
 // Writer adapter
 // ---------------------------------------------------------------------------
 
+/// Run one console operation, accounting its time as console output in the
+/// boot timestamps (see `fstart-timestamp`).
+#[inline]
+fn timed<R>(write: impl FnOnce() -> R) -> R {
+    let start = fstart_timestamp::now();
+    let result = write();
+    fstart_timestamp::add_console_time(fstart_timestamp::now().wrapping_sub(start));
+    result
+}
+
 /// Zero-sized writer that routes [`ufmt::uWrite`] calls to the global
 /// console.
 ///
@@ -296,15 +306,15 @@ impl ufmt::uWrite for ConsoleWriter {
                         // SAFETY: slicing a valid UTF-8 string at ASCII
                         // byte boundaries always yields valid UTF-8.
                         let chunk = unsafe { core::str::from_utf8_unchecked(&bytes[start..i]) };
-                        c.write_str(chunk).map_err(|_| ())?;
+                        timed(|| c.write_str(chunk)).map_err(|_| ())?;
                     }
-                    c.write_str("\r\n").map_err(|_| ())?;
+                    timed(|| c.write_str("\r\n")).map_err(|_| ())?;
                     start = i + 1;
                 }
             }
             if start < bytes.len() {
                 let tail = unsafe { core::str::from_utf8_unchecked(&bytes[start..]) };
-                c.write_str(tail).map_err(|_| ())?;
+                timed(|| c.write_str(tail)).map_err(|_| ())?;
             }
             Ok(())
         } else {
@@ -396,7 +406,7 @@ pub fn raw_write_byte(b: u8) {
     // SAFETY: CONSOLE is written once during init, then only read.
     let console = unsafe { *CONSOLE.0.get() };
     if let Some(c) = console {
-        let _ = c.write_byte(b);
+        let _ = timed(|| c.write_byte(b));
     }
 }
 
@@ -406,7 +416,7 @@ pub fn flush() {
     // SAFETY: CONSOLE is written once during init, then only read.
     let console = unsafe { *CONSOLE.0.get() };
     if let Some(c) = console {
-        let _ = c.flush();
+        let _ = timed(|| c.flush());
     }
 }
 

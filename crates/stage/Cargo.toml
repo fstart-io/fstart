@@ -64,6 +64,7 @@ fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
+fstart-timestamp = { workspace = true }
 ufmt = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }

@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 ufmt = { workspace = true }
 fstart-core = { workspace = true }
+fstart-timestamp = { workspace = true }

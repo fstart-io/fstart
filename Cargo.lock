@@ -614,6 +614,7 @@ dependencies = [
  "fstart-log",
  "fstart-pci",
  "fstart-smm",
+ "fstart-timestamp",
  "heapless 0.8.0",
  "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=29ee7febf0354f57ddf44e5078d90ef2af5d48c4)",
  "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=29ee7febf0354f57ddf44e5078d90ef2af5d48c4)",
@@ -722,6 +723,7 @@ name = "fstart-log"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
+ "fstart-timestamp",
  "ufmt",
 ]
 
@@ -755,6 +757,7 @@ dependencies = [
  "fstart-smm",
  "fstart-stage",
  "fstart-store",
+ "fstart-timestamp",
  "heapless 0.8.0",
  "konst",
  "raw-cpuid",
@@ -820,6 +823,7 @@ dependencies = [
  "fstart-ffs",
  "fstart-log",
  "fstart-pci",
+ "fstart-timestamp",
  "heapless 0.8.0",
  "postcard",
  "ufmt",
@@ -832,6 +836,10 @@ version = "0.1.0"
 dependencies = [
  "zerocopy",
 ]
+
+[[package]]
+name = "fstart-timestamp"
+version = "0.1.0"
 
 [[package]]
 name = "generic-array"

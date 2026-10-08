@@ -16,6 +16,12 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
         console_config,
         console_node,
     } = spec;
+    let entry = fstart_timestamp::now();
+    let mut store = crate::store::open(geometry).ok();
+    if let Some(store) = &store {
+        crate::store::attach_timestamps(store);
+        fstart_timestamp::add_at(fstart_timestamp::id::POSTCAR_START, entry);
+    }
     let ramstage_name = crate::RAMSTAGE_NAME;
     let mut console = match C::new(console_config) {
         Ok(console) => console,
@@ -75,14 +81,15 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
             )
         };
         let resume = stash.boot_flags & fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME != 0;
-        let mut store = crate::store::open(geometry)?;
+        let store = store.as_mut().ok_or(ServiceError::NotInitialized)?;
+        fstart_timestamp::add(fstart_timestamp::id::LOAD_RAMSTAGE);
         let verified = crate::boot::load_stage_with_cache(
             &media,
             fstart_stage::stage_cache::CachedStage::Mainstage,
             &descriptor,
             window,
             &reserved,
-            &mut store,
+            store,
             resume,
         )?;
         Ok(verified.entry())

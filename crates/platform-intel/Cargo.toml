@@ -70,6 +70,7 @@ fstart-driver-uart = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
 fstart-log = { workspace = true, optional = true }
+fstart-timestamp = { workspace = true }
 fstart-stage = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
 raw-cpuid = { workspace = true, optional = true }

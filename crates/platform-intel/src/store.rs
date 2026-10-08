@@ -50,6 +50,31 @@ pub(crate) fn open(geometry: IntelBootLayout<'static>) -> Result<Store, ServiceE
     open_window(geometry.region(RegionKind::FirmwareStore)?, false)
 }
 
+/// Move the boot timestamps from CAR into the store, reusing the entry a
+/// resumed store already has. Timestamps are diagnostics: without room
+/// they stay in CAR and are lost with it.
+#[cfg(fstart_stage_env = "car")]
+pub(crate) fn move_timestamps(store: &mut Store, capacity: usize) {
+    let size = fstart_timestamp::table_size(capacity);
+    let entry = store
+        .find(fstart_store::tag::TIMESTAMPS)
+        .filter(|entry| entry.len() >= size)
+        .or_else(|| store.add(fstart_store::tag::TIMESTAMPS, size, 3).ok());
+    if let Some(entry) = entry {
+        // SAFETY: a store entry owned by the timestamp table from now on.
+        unsafe { fstart_timestamp::move_to(store.address(&entry) as *mut u8, entry.len()) };
+    }
+}
+
+/// Attach to the timestamp table the bootblock moved into the store.
+#[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
+pub(crate) fn attach_timestamps(store: &Store) {
+    if let Some(entry) = store.find(fstart_store::tag::TIMESTAMPS) {
+        // SAFETY: the store entry holds the bootblock's table.
+        unsafe { fstart_timestamp::attach(store.address(&entry) as *mut u8, entry.len()) };
+    }
+}
+
 /// Write the used store back from the cache. The bootblock writes DRAM
 /// before CAR teardown, whose INVD would discard dirty lines.
 #[cfg(fstart_stage_env = "car")]

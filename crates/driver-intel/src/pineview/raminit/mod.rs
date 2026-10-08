@@ -325,6 +325,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
     let mut si = SysInfo::new(boot_path, platform_type, *spd_addresses);
 
     // 1. Read SPD data from DIMMs.
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_SPD);
     spd::read_spds(&mut si, smbus)?;
 
     // 2. Detect RAM speed (common frequency).
@@ -342,6 +343,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
         if replay { "hit" } else { "miss" }
     );
 
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_PHY);
     // 4. Enable HPET.
     // (Handled by platform code, not raminit.)
 
@@ -400,6 +402,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
 
     mch.setbits32(mchbar::HIT4, 1 << 1);
 
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_JEDEC);
     // 16. JEDEC init (skip on S3 resume).
     if si.boot_path != crate::BootPath::S3Resume {
         mch.setbits32(mchbar::C0CKECTRL, 1 << 27);
@@ -420,6 +423,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
     // 20. DRA/DRB.
     mmap::sdram_dradrb(&mut si, mch);
 
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_TRAINING);
     // 21. Receive enable calibration.
     phy::sdram_rcven(&mut si, mch, replay)?;
 
@@ -433,6 +437,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
         phy::update_vref_value(si.vref_value, mch);
     }
 
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_FINALIZE);
     // 22. New tRD.
     phy::sdram_new_trd(&si, mch);
 

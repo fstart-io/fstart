@@ -610,6 +610,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         self.detected_size = initialized.total_bytes;
         self.memory_info = Some(initialized.memory_info);
         if self.boot_path != crate::BootPath::S3Resume {
+            fstart_timestamp::add(fstart_timestamp::id::RAMINIT_MEMORY_TEST);
             self.memory_test()?;
         }
         Ok(initialized.captured)

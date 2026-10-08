@@ -22,9 +22,11 @@ pub type Mainstage<B> = IntelMainstage<
 
 fn run_mainstage_phase(
     platform: &str,
-    name: &str,
+    id: fstart_timestamp::Id,
     phase: impl FnOnce() -> Result<(), ServiceError>,
 ) {
+    fstart_timestamp::add(id);
+    let name = fstart_timestamp::name(id);
     fstart_log::info!("{} mainstage: {}", platform, name);
     if phase().is_err() {
         fstart_log::error!("{} mainstage: {} failed", platform, name);
@@ -34,6 +36,7 @@ fn run_mainstage_phase(
 
 /// Handwritten fixed Intel mainstage flow. Ordering is this function.
 pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
+    let entry = fstart_timestamp::now();
     let platform = B::Platform::NAME;
     let hooks = B::MainstageHooks::default();
     let Ok(layout) = layout::IntelBootLayout::current(2) else {
@@ -42,6 +45,12 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     let Ok(mut mainstage) = Mainstage::<B>::bind::<B>(layout, hooks) else {
         fstart_arch::x86_64::halt();
     };
+    let Ok(store) = crate::store::open(layout) else {
+        fstart_arch::x86_64::halt();
+    };
+    crate::store::attach_timestamps(&store);
+    fstart_timestamp::add_at(fstart_timestamp::id::RAMSTAGE_START, entry);
+    mainstage.store = Some(store);
 
     let (firmware_base, firmware_size) = mainstage.ctx.firmware_region();
     let boot_media =
@@ -55,28 +64,31 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     // Postcar authenticated our initialized image before entry. Import only
     // the bounded directory reference, then retain its verified bytes in RAM.
     // Drivers use the published verified asset service, not a new signature.
-    run_mainstage_phase(platform, "import_boot_context", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::IMPORT_BOOT_CONTEXT, || {
         import_intel_directory(firmware_base, firmware_size)
     });
     // Import publishes the inherited locator; mounting before it must fail.
     // Neither metadata phase performs chipset/device initialization.
-    run_mainstage_phase(platform, "publish_boot_media", || boot_media.mount());
-    run_mainstage_phase(platform, "pre_bus_scan", || mainstage.pre_bus_scan());
-    run_mainstage_phase(platform, "open_store", || {
-        mainstage.store = Some(crate::store::open(layout)?);
-        Ok(())
+    run_mainstage_phase(platform, fstart_timestamp::id::PUBLISH_BOOT_MEDIA, || {
+        boot_media.mount()
+    });
+    run_mainstage_phase(platform, fstart_timestamp::id::PRE_BUS_SCAN, || {
+        mainstage.pre_bus_scan()
     });
     // Reserve the firmware's own windows before any loader policy or table
     // allocation reads the map: on resume the OS may not own the bytes the
     // next boot reloads postcar and the ramstage into.
-    run_mainstage_phase(platform, "reserve_firmware_memory", || {
-        mainstage.reserve_firmware_memory()
-    });
-    run_mainstage_phase(platform, "load_memory_policy", || {
+    run_mainstage_phase(
+        platform,
+        fstart_timestamp::id::RESERVE_FIRMWARE_MEMORY,
+        || mainstage.reserve_firmware_memory(),
+    );
+    run_mainstage_phase(platform, fstart_timestamp::id::LOAD_MEMORY_POLICY, || {
         mainstage.refresh_load_policy()
     });
     #[cfg(feature = "memory-cache")]
     if B::FACTS.memory_cache && !resume {
+        fstart_timestamp::add(fstart_timestamp::id::COMMIT_MEMORY_CACHE);
         let store = mainstage.store.as_ref().unwrap_or_else(|| unreachable!());
         let persisted = crate::memory_cache::commit_pending::<B>(
             &mainstage.northbridge,
@@ -114,23 +126,29 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         mainstage.northbridge.set_s3_enabled(enabled);
         mainstage.southbridge.set_s3_enabled(enabled);
     }
-    run_mainstage_phase(platform, "bus_scan", || mainstage.bus_scan());
-    run_mainstage_phase(platform, "install_page_tables", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::BUS_SCAN, || {
+        mainstage.bus_scan()
+    });
+    run_mainstage_phase(platform, fstart_timestamp::id::INSTALL_PAGE_TABLES, || {
         mainstage.install_page_tables()
     });
-    run_mainstage_phase(platform, "init_devices", || mainstage.init_devices());
-    run_mainstage_phase(platform, "mount_boot_media", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::INIT_DEVICES, || {
+        mainstage.init_devices()
+    });
+    run_mainstage_phase(platform, fstart_timestamp::id::MOUNT_BOOT_MEDIA, || {
         fstart_arch::x86_64::enable_boot_media_rom_cache();
         if mainstage.resume {
             return Ok(());
         }
         mainstage.northbridge.stage_local_init()
     });
-    run_mainstage_phase(platform, "verify_boot_media", || boot_media.verify());
+    run_mainstage_phase(platform, fstart_timestamp::id::VERIFY_BOOT_MEDIA, || {
+        boot_media.verify()
+    });
     // The graphics OpRegion and modeset read the VBT out of the verified boot
     // media, so they run only after verification. On S3 resume the platform
     // decides: Intel skips the modeset, the OS display driver restores it.
-    run_mainstage_phase(platform, "display_init", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::DISPLAY_INIT, || {
         if mainstage.resume && !B::Platform::RESUME_DISPLAY_INIT {
             fstart_log::info!("{} mainstage: display init skipped on S3 resume", platform);
             return Ok(());
@@ -166,15 +184,21 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     // The suspended OS owns live ACPI/FACS/SMBIOS allocations. Re-emitting
     // tables would allocate from OS RAM and overwrite pointers it still uses.
     if !resume {
-        run_mainstage_phase(platform, "emit_tables", || mainstage.emit_tables());
+        run_mainstage_phase(platform, fstart_timestamp::id::EMIT_TABLES, || {
+            mainstage.emit_tables()
+        });
         // Nothing is added to the store after the tables; a resume reuses it.
-        run_mainstage_phase(platform, "seal_store", || mainstage.seal_store());
+        run_mainstage_phase(platform, fstart_timestamp::id::SEAL_STORE, || {
+            mainstage.seal_store()
+        });
     }
     // Table allocation changes the memory map; payload loads must respect it.
-    run_mainstage_phase(platform, "load_memory_policy", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::LOAD_MEMORY_POLICY, || {
         mainstage.refresh_load_policy()
     });
-    run_mainstage_phase(platform, "finalize", || mainstage.finalize());
+    run_mainstage_phase(platform, fstart_timestamp::id::FINALIZE, || {
+        mainstage.finalize()
+    });
 
     // Leave the legacy keyboard controller quiet before the payload/OS probes it.
     fstart_driver_superio::quiesce_i8042_for_os();
@@ -218,6 +242,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         mainstage.reset_system();
     }
 
+    fstart_timestamp::add(fstart_timestamp::id::LOAD_PAYLOAD);
     fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
 }
 

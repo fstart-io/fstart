@@ -36,6 +36,7 @@ fstart-driver-superio = { workspace = true }
 fstart-intel-gma = { workspace = true }
 
 fstart-log = { workspace = true }
+fstart-timestamp = { workspace = true }
 
 fstart-core = { workspace = true, features = ["pci"] }
 

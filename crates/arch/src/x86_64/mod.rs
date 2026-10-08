@@ -162,6 +162,12 @@ core::arch::global_asm!(
     "_start16bit:",
     "cli",
     "movl %eax, %ebp",
+    // Keep the reset-vector TSC in MM0/MM1 for the first boot timestamp,
+    // like coreboot. Nothing before Rust uses MMX, and firmware Rust is
+    // built without it.
+    "rdtsc",
+    "movd %eax, %mm0",
+    "movd %edx, %mm1",
     // POST 0x01: reset vector reached the 16-bit entry.
     "movb $0x01, %al",
     "outb %al, $0x80",
@@ -1167,6 +1173,26 @@ pub extern "C" fn x86_exception_handler(
 // ---------------------------------------------------------------------------
 // Public API — consumed by selected stage code via fstart_platform:: alias
 // ---------------------------------------------------------------------------
+
+/// TSC value the reset vector saved in MM0/MM1.
+///
+/// Only meaningful in the bootblock, before anything else touches MMX
+/// state. Encoded as raw bytes: firmware Rust is built without MMX.
+#[cfg(target_os = "none")]
+pub fn reset_tsc() -> u64 {
+    let (low, high): (u32, u32);
+    // SAFETY: MOVD from MMX registers only reads them.
+    unsafe {
+        core::arch::asm!(
+            ".byte 0x0f, 0x7e, 0xc0", // movd eax, mm0
+            ".byte 0x0f, 0x7e, 0xca", // movd edx, mm1
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
 
 /// Halt the processor in a low-power wait state (never returns).
 pub fn halt() -> ! {
