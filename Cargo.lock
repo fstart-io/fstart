@@ -573,6 +573,7 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-crypto",
+ "fstart-log",
  "heapless 0.8.0",
 ]
 

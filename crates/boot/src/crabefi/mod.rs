@@ -196,6 +196,16 @@ fn launch_with_adapters(
             .iter()
             .for_each(|byte| crabefi::DebugOutput::write_byte(output, *byte));
     }
+    // A build-time fstart log level also sets CrabEFI's, which otherwise
+    // logs at debug. CrabEFI's own init is idempotent and keeps the level.
+    if let Some(verbosity) = fstart_log::BUILD_VERBOSITY {
+        crabefi::logger::init();
+        let index = match verbosity {
+            fstart_log::Verbosity::Off => 0,
+            fstart_log::Verbosity::Max(level) => level as usize + 1,
+        };
+        crabefi::logger::set_level(crabefi::logger::LEVEL_CHOICES[index]);
+    }
     init_platform_raw(PlatformConfig {
         memory_map,
         timer,

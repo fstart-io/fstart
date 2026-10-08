@@ -10,6 +10,31 @@ pub enum PayloadChoice {
     Halt,
 }
 
+/// Build-time log verbosity, compiled into every stage as `FSTART_LOG_LEVEL`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+}
+
 impl PayloadChoice {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -44,6 +69,11 @@ pub struct BuildArgs {
     /// Dump BSP MTRRs and control registers immediately before Linux handoff.
     #[arg(long, default_value_t = false)]
     pub linux_print_mtrrs: bool,
+    /// Log messages above this level are compiled out of every stage, and
+    /// it becomes their default runtime level. Default: all compiled in,
+    /// `info` at runtime.
+    #[arg(long, value_enum, env = "FSTART_LOG_LEVEL")]
+    pub log_level: Option<LogLevel>,
 }
 
 impl Default for BuildArgs {
@@ -53,6 +83,7 @@ impl Default for BuildArgs {
             linux_kernel_load_addr: None,
             linux_bootargs: None,
             linux_print_mtrrs: false,
+            log_level: None,
         }
     }
 }
@@ -65,6 +96,7 @@ impl BuildArgs {
             x86_linux_kernel_load_addr: self.linux_kernel_load_addr,
             x86_linux_bootargs: self.linux_bootargs.clone(),
             x86_linux_print_mtrrs: self.linux_print_mtrrs,
+            log_level: self.log_level.map(|level| level.as_str().to_owned()),
         }
     }
 
@@ -78,6 +110,9 @@ impl BuildArgs {
         }
         if self.linux_print_mtrrs {
             args.push("--linux-print-mtrrs".into());
+        }
+        if let Some(level) = self.log_level {
+            args.extend(["--log-level".into(), level.as_str().into()]);
         }
     }
 }

@@ -100,6 +100,9 @@ pub struct BuildSelection {
     pub x86_linux_bootargs: Option<String>,
     #[serde(default)]
     pub x86_linux_print_mtrrs: bool,
+    /// Build-time log verbosity (`FSTART_LOG_LEVEL`) for every unit.
+    #[serde(default)]
+    pub log_level: Option<String>,
 }
 
 impl BuildSelection {

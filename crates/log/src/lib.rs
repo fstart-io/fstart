@@ -21,6 +21,14 @@
 //! Messages below the current [`max_level`] are discarded at runtime.
 //! The default level is [`Level::Info`].
 //!
+//! ## Build-time verbosity
+//!
+//! `FSTART_LOG_LEVEL` (`off`, `error`, `warn`, `info`, `debug` or `trace`,
+//! set through `cargo fbuild --log-level`) caps the verbosity at build time:
+//! messages above it are compiled out, strings included, and it becomes the
+//! default runtime level. Unset, everything is compiled in and the runtime
+//! default stays `info`.
+//!
 //! ## Hex formatting
 //!
 //! Use the [`Hex`] wrapper to format integers as `0x`-prefixed hexadecimal:
@@ -68,6 +76,66 @@ pub enum Level {
 
 // (No methods — tag strings are hardcoded in macros for compile-time
 // constant folding.)
+
+/// Build-time verbosity selected by `FSTART_LOG_LEVEL`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verbosity {
+    /// No log output at all.
+    Off,
+    /// Messages up to and including this level.
+    Max(Level),
+}
+
+/// `FSTART_LOG_LEVEL` of this build, if it was set.
+pub const BUILD_VERBOSITY: Option<Verbosity> = match option_env!("FSTART_LOG_LEVEL") {
+    None => None,
+    Some(name) => Some(parse_verbosity(name)),
+};
+
+/// Levels below this `Level as u8` bound are compiled in.
+const BUILD_LIMIT: u8 = match BUILD_VERBOSITY {
+    None => Level::Trace as u8 + 1,
+    Some(Verbosity::Off) => 0,
+    Some(Verbosity::Max(level)) => level as u8 + 1,
+};
+
+const fn parse_verbosity(name: &str) -> Verbosity {
+    const fn is(name: &str, expected: &str) -> bool {
+        let (a, b) = (name.as_bytes(), expected.as_bytes());
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < a.len() {
+            if a[i] != b[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+    if is(name, "off") {
+        Verbosity::Off
+    } else if is(name, "error") {
+        Verbosity::Max(Level::Error)
+    } else if is(name, "warn") {
+        Verbosity::Max(Level::Warn)
+    } else if is(name, "info") {
+        Verbosity::Max(Level::Info)
+    } else if is(name, "debug") {
+        Verbosity::Max(Level::Debug)
+    } else if is(name, "trace") {
+        Verbosity::Max(Level::Trace)
+    } else {
+        panic!("FSTART_LOG_LEVEL must be off, error, warn, info, debug or trace")
+    }
+}
+
+/// Whether messages at `level` are compiled into this build.
+#[doc(hidden)]
+pub const fn build_enabled(level: Level) -> bool {
+    (level as u8) < BUILD_LIMIT
+}
 
 // ---------------------------------------------------------------------------
 // Global state
@@ -133,8 +201,12 @@ impl<T> SyncCell<T> {
 /// execution. Firmware boot is single-core, so there are no data races.
 static CONSOLE: SyncCell<Option<&'static dyn Console>> = SyncCell::new(None);
 
-/// Current maximum log level.
-static MAX_LEVEL: SyncCell<Level> = SyncCell::new(Level::Info);
+/// Current maximum log level; the build-time level when one was set.
+static MAX_LEVEL: SyncCell<Level> = SyncCell::new(match BUILD_VERBOSITY {
+    Some(Verbosity::Max(level)) => level,
+    Some(Verbosity::Off) => Level::Error,
+    None => Level::Info,
+});
 
 /// Register the global console backend for log macros.
 ///
@@ -267,10 +339,9 @@ pub fn panic_writer() -> ConsoleWriter {
 }
 
 /// Return `true` if messages at `level` would be emitted.
-#[doc(hidden)]
 #[inline]
 pub fn log_enabled(level: Level) -> bool {
-    (level as u8) <= (max_level() as u8)
+    build_enabled(level) && (level as u8) <= (max_level() as u8)
 }
 
 // ---------------------------------------------------------------------------
@@ -389,7 +460,9 @@ pub fn hex_dump(data: &[u8]) {
 #[macro_export]
 macro_rules! error {
     ($($args:tt)*) => {{
-        if $crate::log_enabled($crate::Level::Error) {
+        if const { $crate::build_enabled($crate::Level::Error) }
+            && $crate::log_enabled($crate::Level::Error)
+        {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[ERROR] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
@@ -406,7 +479,9 @@ macro_rules! error {
 #[macro_export]
 macro_rules! warn {
     ($($args:tt)*) => {{
-        if $crate::log_enabled($crate::Level::Warn) {
+        if const { $crate::build_enabled($crate::Level::Warn) }
+            && $crate::log_enabled($crate::Level::Warn)
+        {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[WARN ] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
@@ -423,7 +498,9 @@ macro_rules! warn {
 #[macro_export]
 macro_rules! info {
     ($($args:tt)*) => {{
-        if $crate::log_enabled($crate::Level::Info) {
+        if const { $crate::build_enabled($crate::Level::Info) }
+            && $crate::log_enabled($crate::Level::Info)
+        {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[INFO ] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
@@ -440,7 +517,9 @@ macro_rules! info {
 #[macro_export]
 macro_rules! debug {
     ($($args:tt)*) => {{
-        if $crate::log_enabled($crate::Level::Debug) {
+        if const { $crate::build_enabled($crate::Level::Debug) }
+            && $crate::log_enabled($crate::Level::Debug)
+        {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[DEBUG] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
@@ -457,7 +536,9 @@ macro_rules! debug {
 #[macro_export]
 macro_rules! trace {
     ($($args:tt)*) => {{
-        if $crate::log_enabled($crate::Level::Trace) {
+        if const { $crate::build_enabled($crate::Level::Trace) }
+            && $crate::log_enabled($crate::Level::Trace)
+        {
             let mut _w = $crate::writer();
             let _ = ::ufmt::uwrite!(_w, "[TRACE] ");
             let _ = ::ufmt::uwriteln!(_w, $($args)*);
