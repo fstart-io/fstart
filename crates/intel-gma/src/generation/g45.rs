@@ -139,15 +139,10 @@ impl GenerationOps for G45 {
         timing.pipesrc.set(pipe_config.pipesrc());
         pipeconf.set(PIPECONF::ENABLE::SET.value | crate::pipe::pipeconf_bpc_bits(port));
         let _ = pipeconf.get();
-        let mut timeout = 100_000u32;
-        while timeout != 0 {
-            if pipeconf.is_set(PIPECONF::ENABLED_STATUS) {
-                return Ok(());
-            }
-            timeout -= 1;
-            core::hint::spin_loop();
-        }
-        Err(GmaError::Timeout)
+        // libgfxinit Transcoder.On does not wait for running status here.
+        // LVDS panel power is sequenced later; waiting before that can stop
+        // initialization before the panel/clock path is ready to run.
+        Ok(())
     }
 
     fn program_primary_plane(ctx: &mut GmaContext<'_>, plane: Plane) -> Result<(), GmaError> {
@@ -670,26 +665,27 @@ pub(crate) fn panel_power_on(mmio: &Mmio) -> Result<(), GmaError> {
     if !was_on {
         delay_us(210_000);
     }
-    let mut timeout = 300_000u32;
-    while timeout != 0 {
-        if (panel_regs.pp_status.get() & PP_STATUS::SEQUENCE.mask) == 0 {
-            break;
-        }
-        timeout -= 1;
-        core::hint::spin_loop();
-    }
-    if timeout == 0 {
-        return Err(GmaError::Timeout);
-    }
-    timeout = 300_000;
-    while timeout != 0 {
-        if panel_regs.pp_status.is_set(PP_STATUS::ON) {
+    // libgfxinit Panel.Wait_On allows a full second for the sequencer. A
+    // CPU-speed-dependent iteration budget can expire during normal delays.
+    let deadline = fstart_arch::x86::timestamp_us().saturating_add(1_000_000);
+    loop {
+        let status = panel_regs.pp_status.extract();
+        if status.read(PP_STATUS::SEQUENCE) == 0 && status.is_set(PP_STATUS::ON) {
             return Ok(());
         }
-        timeout -= 1;
+        if fstart_arch::x86::timestamp_us() >= deadline {
+            fstart_log::error!(
+                "intel-gma: panel power timeout: status={:#x}, control={:#x}, on={:#x}, off={:#x}, divisor={:#x}",
+                status.get(),
+                panel_regs.pp_control.get(),
+                panel_regs.pp_on_delays.get(),
+                panel_regs.pp_off_delays.get(),
+                panel_regs.pp_divisor.get()
+            );
+            return Err(GmaError::Timeout);
+        }
         core::hint::spin_loop();
     }
-    Err(GmaError::Timeout)
 }
 
 fn panel_backlight_on(mmio: &Mmio, panel: Option<LfpPanelMetadata>) {
@@ -749,12 +745,10 @@ pub(crate) fn panel_power_off(mmio: &Mmio) {
         .with_defaults();
         delay_us(delays.power_down_us);
     }
-    let mut timeout = 300_000u32;
-    while timeout != 0 {
-        if (panel_regs.pp_status.get() & PP_STATUS::SEQUENCE.mask) == 0 {
-            break;
-        }
-        timeout -= 1;
+    let deadline = fstart_arch::x86::timestamp_us().saturating_add(600_000);
+    while panel_regs.pp_status.read(PP_STATUS::SEQUENCE) != 0
+        && fstart_arch::x86::timestamp_us() < deadline
+    {
         core::hint::spin_loop();
     }
 }
