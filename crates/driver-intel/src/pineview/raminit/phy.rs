@@ -7,11 +7,13 @@
 //! `sdram_programddr`, `sdram_programdqdqs`, `sdram_periodic_rcomp`.
 
 #![allow(clippy::needless_range_loop)]
-use super::{PllParam, SysInfo};
+use super::{FsbClock, PllParam, SysInfo};
 use crate::MmioBar;
-use crate::pineview::regs::{MchBar, mchbar};
+use crate::generic::spd::MemClock;
+use crate::pineview::regs::{MchBar, mchbar, rcomp as rcomp_regs};
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam;
+use tock_registers::LocalRegisterCopy;
 
 /// Microsecond delay for raminit sequences.
 ///
@@ -308,7 +310,7 @@ fn calibrate_hw_pll(si: &mut SysInfo, mch: &MchBar) {
 /// Ported from coreboot `sdram_dlltiming()`.
 pub fn dll_timing(si: &mut SysInfo, mch: &MchBar) {
     // Configure Master DLL.
-    let mstr = if si.selected_timings.mem_clock == 0 {
+    let mstr = if si.selected_timings.mem_clock == MemClock::Ddr667 {
         0x0801_4227u32
     } else {
         0x0001_4221u32
@@ -450,12 +452,12 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     static RCOMPSCOMP2: [u16; 7] = [0x0000, 0xE22E, 0xE22E, 0xE22E, 0x8228, 0xE22E, 0x8228];
     static RCOMPDELAY2: [u8; 7] = [0, 0, 0, 0, 2, 0, 2];
 
-    let rcomp1 = if si.selected_timings.mem_clock == 0 {
+    let rcomp1 = if si.selected_timings.mem_clock == MemClock::Ddr667 {
         0x0005_0431u32
     } else {
         0x0005_0542u32
     };
-    let rcomp2 = if si.selected_timings.fsb_clock == 0 {
+    let rcomp2 = if si.selected_timings.fsb_clock == FsbClock::Fsb667 {
         0x14C4_2827u32
     } else {
         0x1904_2827u32
@@ -496,9 +498,17 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
         }
 
         // Clear slew base / LUTs.
-        let v = mch.read16(base + 0x16);
-        mch.write16(base + 0x16, v & !0x7F7F);
-        for off in [0x18, 0x1A, 0x1C, 0x1E] {
+        let mut slew = LocalRegisterCopy::<u16, rcomp_regs::SLEW_BASE_REG::Register>::new(
+            mch.read16(base + rcomp_regs::SLEW_BASE),
+        );
+        slew.modify(rcomp_regs::SLEW_BASE_REG::P.val(0) + rcomp_regs::SLEW_BASE_REG::N.val(0));
+        mch.write16(base + rcomp_regs::SLEW_BASE, slew.get());
+        for off in [
+            rcomp_regs::P_LUT,
+            rcomp_regs::P_LUT + 2,
+            rcomp_regs::N_LUT,
+            rcomp_regs::N_LUT + 2,
+        ] {
             let v = mch.read16(base + off);
             mch.write16(base + off, v & !0x3F3F);
         }
@@ -517,8 +527,10 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
             continue;
         }
         let base = RCOMPCTL[i];
-        let v = mch.read8(base);
-        mch.write8(base, v & !(3 << 5));
+        let mut control =
+            LocalRegisterCopy::<u8, rcomp_regs::CONTROL::Register>::new(mch.read8(base));
+        control.modify(rcomp_regs::CONTROL::OVERRIDE.val(0));
+        mch.write8(base, control.get());
         let v = mch.read16(base + 2);
         mch.write16(base + 2, v & !0x0706);
         let v = mch.read16(base + 0x0A);
@@ -588,50 +600,60 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
         }
 
         // Read back RCOMP results and program slew base + LUTs.
-        let xcomp = mch.read32(mchbar::XCOMP);
-        let rcompp = ((xcomp & !((1u32) << 31)) >> 24) as u8;
-        let rcompn = ((xcomp & !(0xFF80_0000)) >> 16) as u8;
-        let mut last_srup = 0u8;
-        let mut last_srun = 0u8;
+        let xcomp = LocalRegisterCopy::<u32, rcomp_regs::XCOMP_REG::Register>::new(
+            mch.read32(mchbar::XCOMP),
+        );
+        let rcompp = xcomp.read(rcomp_regs::XCOMP_REG::P) as u8;
+        let rcompn = xcomp.read(rcomp_regs::XCOMP_REG::N) as u8;
 
-        for i in 0..7usize {
-            if i == 1 {
-                continue;
-            }
-            let srup = (mch.read8(RCOMPCTL[i] + 1) & 0xC0) >> 6;
-            let srun = (mch.read8(RCOMPCTL[i] + 1) & 0x30) >> 4;
-            last_srup = srup;
-            last_srun = srun;
+        let (last_srup, last_srun) = RCOMPCTL
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 1)
+            .try_fold((0, 0), |_, (i, &base)| {
+                // Keep the two byte reads used by the original calibration.
+                let srup = LocalRegisterCopy::<u8, rcomp_regs::GRANULARITY_REG::Register>::new(
+                    mch.read8(base + rcomp_regs::GRANULARITY),
+                )
+                .read(rcomp_regs::GRANULARITY_REG::P);
+                let srun = LocalRegisterCopy::<u8, rcomp_regs::GRANULARITY_REG::Register>::new(
+                    mch.read8(base + rcomp_regs::GRANULARITY),
+                )
+                .read(rcomp_regs::GRANULARITY_REG::N);
 
-            let p_step = 1u8 << (srup + 1);
-            let n_step = 1u8 << (srun + 1);
-            if rcompp < p_step {
-                fstart_log::error!(
-                    "raminit: RCOMP group {} P base underflow: raw={} granularity={}",
-                    i,
-                    rcompp,
-                    srup,
+                let p_step = 1u8 << (srup + 1);
+                let n_step = 1u8 << (srun + 1);
+                if rcompp < p_step {
+                    fstart_log::error!(
+                        "raminit: RCOMP group {} P base underflow: raw={} granularity={}",
+                        i,
+                        rcompp,
+                        srup,
+                    );
+                    return Err(ServiceError::HardwareError);
+                }
+                if rcompn < n_step {
+                    fstart_log::error!(
+                        "raminit: RCOMP group {} N base underflow: raw={} granularity={}",
+                        i,
+                        rcompn,
+                        srun,
+                    );
+                    return Err(ServiceError::HardwareError);
+                }
+                let base_p = rcompp - p_step;
+                let base_n = rcompn - n_step;
+
+                let mut slew = LocalRegisterCopy::<u16, rcomp_regs::SLEW_BASE_REG::Register>::new(
+                    mch.read16(base + rcomp_regs::SLEW_BASE),
                 );
-                return Err(ServiceError::HardwareError);
-            }
-            if rcompn < n_step {
-                fstart_log::error!(
-                    "raminit: RCOMP group {} N base underflow: raw={} granularity={}",
-                    i,
-                    rcompn,
-                    srun,
+                slew.modify(
+                    rcomp_regs::SLEW_BASE_REG::P.val(u16::from(base_p))
+                        + rcomp_regs::SLEW_BASE_REG::N.val(u16::from(base_n)),
                 );
-                return Err(ServiceError::HardwareError);
-            }
-            let base_p = rcompp - p_step;
-            let base_n = rcompn - n_step;
-
-            let v = mch.read16(RCOMPCTL[i] + 0x16);
-            mch.write16(
-                RCOMPCTL[i] + 0x16,
-                (v & !0x7F7F) | ((base_p as u16) << 8) | (base_n as u16),
-            );
-        }
+                mch.write16(base + rcomp_regs::SLEW_BASE, slew.get());
+                Ok((srup, srun))
+            })?;
 
         let lutpbase = rcompp - (1 << (last_srup + 1));
         let lutnbase = rcompn - (1 << (last_srun + 1));
@@ -647,7 +669,7 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
 
 fn program_lut_byte(mch: &MchBar, off: u32, value: u8) {
     let v = mch.read8(off);
-    mch.write8(off, (v & !0x3f) | (value & 0x3f));
+    mch.write8(off, rcomp_regs::LUT::VALUE.val(value).modify(v));
 }
 
 fn program_rcomp_luts(
@@ -666,16 +688,16 @@ fn program_rcomp_luts(
             fstart_log::error!("raminit: RCOMP P LUT index out of range: {}", j);
             return Err(ServiceError::HardwareError);
         }
-        program_lut_byte(mch, RCOMPCTL[0] + 0x18 + i, RCOMPLUT[j][0]);
+        program_lut_byte(mch, RCOMPCTL[0] + rcomp_regs::P_LUT + i, RCOMPLUT[j][0]);
         if !si.is_sodimm() {
-            program_lut_byte(mch, RCOMPCTL[2] + 0x18 + i, RCOMPLUT[j][4]);
+            program_lut_byte(mch, RCOMPCTL[2] + rcomp_regs::P_LUT + i, RCOMPLUT[j][4]);
         } else if si.dimm_config[0] < 3 || si.dimm_config[0] == 5 {
-            program_lut_byte(mch, RCOMPCTL[2] + 0x18 + i, RCOMPLUT[j][10]);
+            program_lut_byte(mch, RCOMPCTL[2] + rcomp_regs::P_LUT + i, RCOMPLUT[j][10]);
         }
-        program_lut_byte(mch, RCOMPCTL[3] + 0x18 + i, RCOMPLUT[j][6]);
-        program_lut_byte(mch, RCOMPCTL[4] + 0x18 + i, RCOMPLUT[j][6]);
-        program_lut_byte(mch, RCOMPCTL[5] + 0x18 + i, RCOMPLUT[j][8]);
-        program_lut_byte(mch, RCOMPCTL[6] + 0x18 + i, RCOMPLUT[j][8]);
+        program_lut_byte(mch, RCOMPCTL[3] + rcomp_regs::P_LUT + i, RCOMPLUT[j][6]);
+        program_lut_byte(mch, RCOMPCTL[4] + rcomp_regs::P_LUT + i, RCOMPLUT[j][6]);
+        program_lut_byte(mch, RCOMPCTL[5] + rcomp_regs::P_LUT + i, RCOMPLUT[j][8]);
+        program_lut_byte(mch, RCOMPCTL[6] + rcomp_regs::P_LUT + i, RCOMPLUT[j][8]);
     }
 
     for i in 0..4u32 {
@@ -684,16 +706,16 @@ fn program_rcomp_luts(
             fstart_log::error!("raminit: RCOMP N LUT index out of range: {}", j);
             return Err(ServiceError::HardwareError);
         }
-        program_lut_byte(mch, RCOMPCTL[0] + 0x1c + i, RCOMPLUT[j][1]);
+        program_lut_byte(mch, RCOMPCTL[0] + rcomp_regs::N_LUT + i, RCOMPLUT[j][1]);
         if !si.is_sodimm() {
-            program_lut_byte(mch, RCOMPCTL[2] + 0x1c + i, RCOMPLUT[j][5]);
+            program_lut_byte(mch, RCOMPCTL[2] + rcomp_regs::N_LUT + i, RCOMPLUT[j][5]);
         } else if si.dimm_config[0] < 3 || si.dimm_config[0] == 5 {
-            program_lut_byte(mch, RCOMPCTL[2] + 0x1c + i, RCOMPLUT[j][11]);
+            program_lut_byte(mch, RCOMPCTL[2] + rcomp_regs::N_LUT + i, RCOMPLUT[j][11]);
         }
-        program_lut_byte(mch, RCOMPCTL[3] + 0x1c + i, RCOMPLUT[j][7]);
-        program_lut_byte(mch, RCOMPCTL[4] + 0x1c + i, RCOMPLUT[j][7]);
-        program_lut_byte(mch, RCOMPCTL[5] + 0x1c + i, RCOMPLUT[j][9]);
-        program_lut_byte(mch, RCOMPCTL[6] + 0x1c + i, RCOMPLUT[j][9]);
+        program_lut_byte(mch, RCOMPCTL[3] + rcomp_regs::N_LUT + i, RCOMPLUT[j][7]);
+        program_lut_byte(mch, RCOMPCTL[4] + rcomp_regs::N_LUT + i, RCOMPLUT[j][7]);
+        program_lut_byte(mch, RCOMPCTL[5] + rcomp_regs::N_LUT + i, RCOMPLUT[j][9]);
+        program_lut_byte(mch, RCOMPCTL[6] + rcomp_regs::N_LUT + i, RCOMPLUT[j][9]);
     }
     Ok(())
 }
@@ -749,7 +771,7 @@ pub fn odt(si: &SysInfo, mch: &MchBar) {
             | (3 << 17)
             | (0x0f << 10),
     );
-    if si.selected_timings.mem_clock == 1 && si.selected_timings.cas == 6 {
+    if si.selected_timings.mem_clock == MemClock::Ddr800 && si.selected_timings.cas == 6 {
         mch.write8(mchbar::C0CKEDELAY, 0x89);
     } else {
         mch.write8(mchbar::C0CKEDELAY, 0x78);
@@ -832,10 +854,7 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
 // Receive enable calibration
 // ===================================================================
 
-/// DQS receive enable training — full port.
-///
-/// Ported from coreboot `sdram_rcven()`. Trains the DQS receive enable
-/// timing for each byte lane by sweeping coarse + medium + PI delay.
+/// Report the lane and delay settings at a failed receive-training step.
 fn rcven_fail(step: &str, lane: u8, coarse: u8, medium: u8, pi: u8) -> Result<(), ServiceError> {
     fstart_log::error!(
         "raminit: RCVEN lane {} failed {}: coarse={} medium={} pi={}",
@@ -848,6 +867,10 @@ fn rcven_fail(step: &str, lane: u8, coarse: u8, medium: u8, pi: u8) -> Result<()
     Err(ServiceError::HardwareError)
 }
 
+/// DQS receive enable training — full port.
+///
+/// Ported from coreboot `sdram_rcven()`. Trains the DQS receive enable
+/// timing for each byte lane by sweeping coarse + medium + PI delay.
 fn calibrate_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     let v = mch.read8(mchbar::C0RSTCTL);
     mch.write8(mchbar::C0RSTCTL, v & !(3 << 2));
@@ -1251,12 +1274,12 @@ fn rcven_clock(mch: &MchBar, coarse: &mut u8, medium: &mut u8, lane: u8) -> bool
 ///
 /// Ported from coreboot `sdram_new_trd()`.
 pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
-    let raw_tmclk: u32 = if si.selected_timings.mem_clock == 0 {
+    let raw_tmclk: u32 = if si.selected_timings.mem_clock == MemClock::Ddr667 {
         3000
     } else {
         2500
     };
-    let raw_thclk: u32 = if si.selected_timings.fsb_clock == 0 {
+    let raw_thclk: u32 = if si.selected_timings.fsb_clock == FsbClock::Fsb667 {
         6000
     } else {
         5000
@@ -1269,17 +1292,17 @@ pub fn sdram_new_trd(si: &SysInfo, mch: &MchBar) {
     } else {
         5000
     };
-    let postcalib: u32 = if si.selected_timings.mem_clock == 0 {
+    let postcalib: u32 = if si.selected_timings.mem_clock == MemClock::Ddr667 {
         1250
     } else {
         500
     };
-    let pidelay: u32 = if si.selected_timings.mem_clock == 0 {
+    let pidelay: u32 = if si.selected_timings.mem_clock == MemClock::Ddr667 {
         24
     } else {
         20
     };
-    let tio: u32 = if si.selected_timings.mem_clock == 0 {
+    let tio: u32 = if si.selected_timings.mem_clock == MemClock::Ddr667 {
         2700
     } else {
         3240
@@ -1460,8 +1483,8 @@ pub fn sdram_enhanced_mode(si: &SysInfo, mch: &MchBar) {
     mch.clrbits32(mchbar::NOACFGBUSCTL, 1 << 31);
 
     if si.platform_type == super::PLATFORM_DESKTOP
-        && si.selected_timings.fsb_clock == 1
-        && si.selected_timings.mem_clock == 0
+        && si.selected_timings.fsb_clock == FsbClock::Fsb800
+        && si.selected_timings.mem_clock == MemClock::Ddr667
     {
         mch.write32(mchbar::HTBONUS0, 0x0C);
     } else {
@@ -1581,7 +1604,7 @@ pub fn sdram_power_settings(si: &SysInfo, mch: &MchBar) {
     mch.write32(mchbar::PMDSLFRC, (v & !0x0001_BFF7) | pmdslfrc);
 
     let pmmspmres = if si.platform_type == super::PLATFORM_MOBILE {
-        if si.selected_timings.fsb_clock == 0 {
+        if si.selected_timings.fsb_clock == FsbClock::Fsb667 {
             0x00C8
         } else {
             0x0100
@@ -1743,7 +1766,7 @@ pub fn sdram_program_ddr(mch: &MchBar) {
 ///
 /// Ported from coreboot `sdram_programdqdqs()`.
 pub fn sdram_program_dqdqs(si: &SysInfo, mch: &MchBar) {
-    let mdclk: u32 = if si.selected_timings.mem_clock == 0 {
+    let mdclk: u32 = if si.selected_timings.mem_clock == MemClock::Ddr667 {
         3000
     } else {
         2500
