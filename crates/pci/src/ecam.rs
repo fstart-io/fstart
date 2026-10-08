@@ -34,6 +34,18 @@ pub fn base() -> usize {
 }
 
 /// A PCI device handle bound to a mapped function or the global ECAM region.
+///
+/// Regular word/dword accessors require alignment. The explicit unaligned
+/// x86 accessors require an unsafe block and a device-specific justification
+/// for the complete load/store span:
+///
+/// ```compile_fail,E0133
+/// let device = fstart_pci::EcamDevice::new(0, 0, 0);
+/// device.try_read16_unaligned(0x41);
+/// device.try_write16_unaligned(0x41, 0);
+/// device.try_read32_unaligned(0x42);
+/// device.try_write32_unaligned(0x42, 0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EcamDevice {
     address: PciAddress,
@@ -107,8 +119,15 @@ impl EcamDevice {
     }
 
     fn register_address(&self, reg: u16, width: usize) -> Option<usize> {
+        if usize::from(reg) % width != 0 {
+            return None;
+        }
+        self.span_address(reg, width)
+    }
+
+    fn span_address(&self, reg: u16, width: usize) -> Option<usize> {
         let offset = usize::from(reg);
-        if offset + width > FUNCTION_CONFIG_BYTES || offset % width != 0 {
+        if offset.checked_add(width)? > FUNCTION_CONFIG_BYTES {
             return None;
         }
         let base = match self.config_base {
@@ -121,7 +140,9 @@ impl EcamDevice {
                 base.checked_add(function_offset(self.address))?
             }
         };
-        base.checked_add(offset)
+        let address = base.checked_add(offset)?;
+        address.checked_add(width.checked_sub(1)?)?;
+        Some(address)
     }
 
     fn addr(&self, reg: u16, width: usize) -> usize {
@@ -223,6 +244,66 @@ impl EcamDevice {
         let addr = self.register_address(reg, 4)?;
         // SAFETY: mapped and aligned register within this function.
         unsafe { fstart_core::mmio::write32(addr as *mut u32, val) };
+        Some(())
+    }
+
+    /// Load a word at its exact byte offset using one x86 instruction.
+    /// Returns `None` for an unmapped or out-of-function span; does not round
+    /// the offset down. CPU/chipset splitting means this need not be atomic.
+    ///
+    /// # Safety
+    /// The mapping must remain live and the device must support the complete
+    /// possibly unaligned access, including any split bus transactions.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub unsafe fn try_read16_unaligned(&self, reg: u16) -> Option<u16> {
+        let addr = self.span_address(reg, 2)?;
+        // SAFETY: caller permits this exact access; the entire span is checked.
+        Some(unsafe { fstart_core::mmio::read16_unaligned(addr as *const u8) })
+    }
+
+    /// Store a word at its exact byte offset using one x86 instruction.
+    /// Returns `None` for an unmapped or out-of-function span; does not round
+    /// the offset down. CPU/chipset splitting means this need not be atomic.
+    ///
+    /// # Safety
+    /// The mapping must remain live and the device must support the complete
+    /// possibly unaligned write, including effects on neighboring registers
+    /// and any split bus transactions.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub unsafe fn try_write16_unaligned(&self, reg: u16, val: u16) -> Option<()> {
+        let addr = self.span_address(reg, 2)?;
+        // SAFETY: caller permits this exact access; the entire span is checked.
+        unsafe { fstart_core::mmio::write16_unaligned(addr as *mut u8, val) };
+        Some(())
+    }
+
+    /// Load a dword at its exact byte offset using one x86 instruction.
+    /// Returns `None` for an unmapped or out-of-function span; does not round
+    /// the offset down. CPU/chipset splitting means this need not be atomic.
+    ///
+    /// # Safety
+    /// The mapping must remain live and the device must support the complete
+    /// possibly unaligned access, including any split bus transactions.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub unsafe fn try_read32_unaligned(&self, reg: u16) -> Option<u32> {
+        let addr = self.span_address(reg, 4)?;
+        // SAFETY: caller permits this exact access; the entire span is checked.
+        Some(unsafe { fstart_core::mmio::read32_unaligned(addr as *const u8) })
+    }
+
+    /// Store a dword at its exact byte offset using one x86 instruction.
+    /// Returns `None` for an unmapped or out-of-function span; does not round
+    /// the offset down. CPU/chipset splitting means this need not be atomic.
+    ///
+    /// # Safety
+    /// The mapping must remain live and the device must support the complete
+    /// possibly unaligned write, including effects on neighboring registers
+    /// and any split bus transactions.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub unsafe fn try_write32_unaligned(&self, reg: u16, val: u32) -> Option<()> {
+        let addr = self.span_address(reg, 4)?;
+        // SAFETY: caller permits this exact access; the entire span is checked.
+        unsafe { fstart_core::mmio::write32_unaligned(addr as *mut u8, val) };
         Some(())
     }
 

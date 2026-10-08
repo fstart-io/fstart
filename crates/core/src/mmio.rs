@@ -184,8 +184,9 @@ pub unsafe fn write32(addr: *mut u32, val: u32) {
     }
 }
 
-/// Read a possibly unaligned 16-bit x86 MMIO register without changing the
-/// hardware access width. Unlike `read_unaligned`, this is a volatile access.
+/// Load a possibly unaligned MMIO word with one volatile x86 instruction.
+/// Unlike `read_unaligned`, this access has compiler-visible memory effects.
+/// The CPU/chipset may split the transaction; atomicity is not guaranteed.
 ///
 /// # Safety
 /// `addr` must name two mapped bytes of a device register supporting this access.
@@ -201,7 +202,9 @@ pub unsafe fn read16_unaligned(addr: *const u8) -> u16 {
     value
 }
 
-/// Write a possibly unaligned 16-bit x86 MMIO register with barriers.
+/// Store a possibly unaligned MMIO word with one volatile x86 instruction
+/// and the same barriers as aligned stores. The CPU/chipset may split the
+/// transaction; atomicity is not guaranteed.
 ///
 /// # Safety
 /// `addr` must name two mapped bytes of a device register supporting this access.
@@ -216,8 +219,9 @@ pub unsafe fn write16_unaligned(addr: *mut u8, value: u16) {
     }
 }
 
-/// Read a possibly unaligned 32-bit x86 MMIO register without changing the
-/// hardware access width. The assembly has memory side effects and is not pure.
+/// Load a possibly unaligned MMIO dword with one volatile x86 instruction.
+/// The assembly has compiler-visible memory effects and is not pure. The
+/// CPU/chipset may split the transaction; atomicity is not guaranteed.
 ///
 /// # Safety
 /// `addr` must name four mapped bytes of a device register supporting this access.
@@ -233,7 +237,9 @@ pub unsafe fn read32_unaligned(addr: *const u8) -> u32 {
     value
 }
 
-/// Write a possibly unaligned 32-bit x86 MMIO register with barriers.
+/// Store a possibly unaligned MMIO dword with one volatile x86 instruction
+/// and the same barriers as aligned stores. The CPU/chipset may split the
+/// transaction; atomicity is not guaranteed.
 ///
 /// # Safety
 /// `addr` must name four mapped bytes of a device register supporting this access.
