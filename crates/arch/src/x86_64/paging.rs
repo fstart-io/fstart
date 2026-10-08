@@ -14,8 +14,15 @@
 /// Space the tables need: one PML4, one PDPT and four page directories.
 pub const TABLE_BYTES: usize = 6 * 4096;
 
-use x86_64_crate::PhysAddr;
-use x86_64_crate::structures::paging::{PageTable, PageTableFlags};
+extern crate alloc;
+
+use alloc::{boxed::Box, vec::Vec};
+use fstart_core::services::ServiceError;
+use x86_64_crate::structures::paging::{
+    FrameAllocator, Mapper, OffsetPageTable, PageTable, PageTableFlags, PhysFrame, Size2MiB,
+    Size4KiB, mapper::MapToError,
+};
+use x86_64_crate::{PhysAddr, VirtAddr};
 
 /// Pages are present and writable; leaf entries map 2 MiB directly.
 const TABLE_FLAGS: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
@@ -73,6 +80,108 @@ pub unsafe fn install_identity_tables(tables_phys: u64) -> u64 {
     base
 }
 
+/// Final identity map, owned until installation. All backing pages are heap
+/// allocations, so the platform must reserve that heap through payload handoff.
+/// Dropping an uninstalled map frees it without changing the CPU's page tables.
+pub struct IdentityTables {
+    pages: Vec<Box<PageTable>>,
+}
+
+// SAFETY: each allocation is a distinct, aligned PageTable retained in `pages`.
+// Firmware's heap is identity mapped, so its pointer is its physical address.
+unsafe impl FrameAllocator<Size4KiB> for IdentityTables {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        let mut page = Box::new(PageTable::new());
+        let address = PhysAddr::try_new((&mut *page as *mut PageTable) as u64).ok()?;
+        let frame = PhysFrame::from_start_address(address).ok()?;
+        self.pages.push(page);
+        Some(frame)
+    }
+}
+
+impl IdentityTables {
+    /// Build a final map, retaining the bootstrap low-4-GiB coverage and adding
+    /// the supplied physical spans (RAM and allocated PCI memory BARs).
+    ///
+    /// Spans are covered by 2-MiB leaves; no 1-GiB-page CPU support is needed.
+    /// PTEs leave cacheability to platform MTRRs, like the bootstrap map.
+    ///
+    /// # Safety
+    ///
+    /// The allocator must supply identity-mapped DRAM that remains reserved
+    /// from the payload. The spans must be valid platform physical addresses.
+    pub unsafe fn build(spans: impl IntoIterator<Item = (u64, u64)>) -> Result<Self, ServiceError> {
+        let mut tables = Self { pages: Vec::new() };
+        let root = tables.allocate_frame().ok_or(ServiceError::HardwareError)?;
+        // SAFETY: the root is a new zeroed page owned by `tables`; subsequent
+        // frame allocation cannot move its boxed storage or alias its entries.
+        let mut mapper = unsafe {
+            OffsetPageTable::new(
+                &mut *(root.start_address().as_u64() as *mut PageTable),
+                VirtAddr::zero(),
+            )
+        };
+        for (base, size) in core::iter::once((0, 1u64 << 32)).chain(spans) {
+            if size == 0 {
+                continue;
+            }
+            let last = base
+                .checked_add(size - 1)
+                .ok_or(ServiceError::InvalidParam)?;
+            let start = PhysFrame::<Size2MiB>::containing_address(
+                PhysAddr::try_new(base).map_err(|_| ServiceError::InvalidParam)?,
+            );
+            let end = PhysFrame::<Size2MiB>::containing_address(
+                PhysAddr::try_new(last).map_err(|_| ServiceError::InvalidParam)?,
+            );
+            for frame in PhysFrame::range_inclusive(start, end) {
+                let address = VirtAddr::try_new(frame.start_address().as_u64())
+                    .map_err(|_| ServiceError::InvalidParam)?;
+                // SAFETY: this disconnected table maps each frame to itself;
+                // no active address space or live Rust references are changed.
+                match unsafe {
+                    mapper.map_to(
+                        x86_64_crate::structures::paging::Page::from_start_address(address)
+                            .map_err(|_| ServiceError::InvalidParam)?,
+                        frame,
+                        TABLE_FLAGS,
+                        &mut tables,
+                    )
+                } {
+                    Ok(flush) => flush.ignore(), // This CR3 is not active yet.
+                    Err(MapToError::PageAlreadyMapped(existing)) if existing == frame => {}
+                    Err(_) => return Err(ServiceError::HardwareError),
+                }
+            }
+        }
+        Ok(tables)
+    }
+
+    /// Publish the completed map and retain its storage for the boot lifetime.
+    ///
+    /// # Safety
+    ///
+    /// Called on the BSP before AP startup, with every live instruction, stack,
+    /// table and data address identity mapped. The heap holding these tables
+    /// must remain reserved until the payload replaces CR3 (including S3).
+    pub unsafe fn install(self) -> u64 {
+        let root = (&*self.pages[0] as *const PageTable) as u64;
+        for page in &self.pages {
+            // SAFETY: each page is a live, aligned allocation. APs initially
+            // walk the tables with caching disabled, so publish all entries.
+            unsafe {
+                crate::x86::writeback_cache_range(
+                    (&**page as *const PageTable).cast(),
+                    core::mem::size_of::<PageTable>(),
+                );
+            }
+        }
+        load_cr3(root);
+        core::mem::forget(self);
+        root
+    }
+}
+
 /// Load CR3.
 #[inline]
 pub fn load_cr3(value: u64) {
@@ -90,6 +199,37 @@ mod tests {
 
     #[repr(align(4096))]
     struct Storage([u8; TABLE_BYTES]);
+
+    #[test]
+    fn final_map_covers_remapped_ram_and_high_pci_bars() {
+        use x86_64_crate::structures::paging::Translate;
+        // SAFETY: host allocations have pointer-as-physical addressing for the
+        // software walk; these tables are never installed into the host CR3.
+        let mut tables = unsafe {
+            IdentityTables::build([
+                (0x100_000000, 0x3c00_0000),
+                (0x200_000000, 0x1000_0000),
+                (0x100_000001, 0x1000), // Overlapping spans are harmless.
+            ])
+        }
+        .unwrap();
+        let mapper = unsafe { OffsetPageTable::new(&mut tables.pages[0], VirtAddr::zero()) };
+        for address in [0, 0xfff_fffff, 0x13bc_00000, 0x13bff_ffff, 0x200_000000] {
+            assert_eq!(
+                mapper.translate_addr(VirtAddr::new(address)),
+                Some(PhysAddr::new(address))
+            );
+        }
+        assert_eq!(mapper.translate_addr(VirtAddr::new(0x13c00_0000)), None);
+        assert_eq!(mapper.translate_addr(VirtAddr::new(0x210_000000)), None);
+    }
+
+    #[test]
+    fn final_map_rejects_overflowing_or_noncanonical_spans() {
+        for span in [(u64::MAX, 2), (1 << 47, 1)] {
+            assert!(unsafe { IdentityTables::build([span]) }.is_err());
+        }
+    }
 
     #[test]
     fn builds_identity_entries_for_the_low_4gib() {
