@@ -48,6 +48,7 @@ pub struct Gm45Ich9Config {
     pub throttle_duty: u8,
     pub sata: Option<SataConfig>,
     pub usb: Option<UsbConfig>,
+    pub ehci_debug_bar: Option<fstart_pci::PciFixedBar>,
     pub hda: Option<HdaConfig>,
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     pub gpio: gpio::GpioConfig,
@@ -77,6 +78,7 @@ impl Gm45Ich9Config {
             throttle_duty: 0,
             sata: None,
             usb: None,
+            ehci_debug_bar: None,
             hda: None,
             io_traps: ConstVec::new(empty_io_trap()),
             gpio: gpio::GpioConfig::new(),
@@ -121,10 +123,17 @@ impl Gm45Ich9Config {
         config.throttle_duty = self.throttle_duty;
         config.sata = self.sata;
         config.usb = self.usb;
+        config.ehci_debug_bar = self.ehci_debug_bar;
         config.hda = self.hda;
         config.io_traps = self.io_traps;
         config.gpio = self.gpio;
         config
+    }
+
+    #[must_use]
+    pub const fn ehci_debug_bar(mut self, bar: fstart_pci::PciFixedBar) -> Self {
+        self.ehci_debug_bar = Some(bar);
+        self
     }
 
     #[must_use]

@@ -692,6 +692,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-usbdebug"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-core",
+ "fstart-pci",
+ "tock-registers",
+ "zerocopy",
+]
+
+[[package]]
 name = "fstart-ffs"
 version = "0.1.0"
 dependencies = [

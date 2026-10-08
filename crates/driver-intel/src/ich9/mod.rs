@@ -790,6 +790,8 @@ pub struct IntelIch9Config {
     pub sata: Option<SataConfig>,
     /// USB configuration.
     pub usb: Option<UsbConfig>,
+    /// Active early EHCI console BAR, excluded from PCI sizing/relocation.
+    pub ehci_debug_bar: Option<PciFixedBar>,
     /// PCIe root ports 1..6 enabled.
     pub pcie_ports: [bool; 6],
     /// PCIe root ports implemented as slots.
@@ -838,6 +840,7 @@ impl IntelIch9Config {
             hda: None,
             sata: None,
             usb: None,
+            ehci_debug_bar: None,
             pcie_ports: [true, true, true, true, true, true],
             pcie_slots: [false; 6],
             pcie_power_limits: [PciePowerLimit { value: 0, scale: 0 }; 6],
@@ -2090,6 +2093,42 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         if routing.slot_pins.is_empty() || routing.pin_routes.is_empty() {
             return Err(ServiceError::InvalidParam);
         }
+        if let Some(bar) = config.ehci_debug_bar {
+            let controller = match (
+                bar.address.bus(),
+                bar.address.device(),
+                bar.address.function(),
+            ) {
+                (0, ich9::EHCI1_DEV, ich9::EHCI1_FUNC) => 0,
+                (0, ich9::EHCI2_DEV, ich9::EHCI2_FUNC) => 1,
+                _ => return Err(ServiceError::InvalidParam),
+            };
+            if bar.address.segment() != 0
+                || bar.register != 0x10
+                || bar.kind != PciFixedBarType::Memory32
+                || bar.prefetchable
+                || bar.size != 0x1000
+                || bar.base == 0
+                || bar.base > 0xffff_f000
+                || bar.base & 0xfff != 0
+                || !config.usb.is_some_and(|usb| usb.ehci[controller])
+                || [
+                    (config.rcba, 0x4000),
+                    (config.dmibar, 0x1000),
+                    (HPET_BASE as u64, 0x400),
+                    (0xfec0_0000, 0x1000), // I/O APIC
+                    (0xfee0_0000, 0x1000), // local APIC
+                    (debug.ecam_base as u64, 256 << 20),
+                    (0xff00_0000, 16 << 20), // firmware flash decode
+                ]
+                .iter()
+                .any(|&(base, size)| {
+                    bar.base < base.saturating_add(size) && base < bar.base + bar.size
+                })
+            {
+                return Err(ServiceError::InvalidParam);
+            }
+        }
         if config.power_on_after_fail > 2
             || config.rcba > u32::MAX as u64
             || config.rcba & 0x3fff != 0
@@ -2221,6 +2260,10 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
             prefetchable: false,
         })
         .expect("ICH9 fixed PCI resource list capacity");
+        if let Some(debug) = self.config.ehci_debug_bar {
+            bars.push(debug)
+                .expect("ICH9 fixed PCI resource list capacity");
+        }
         bars
     }
 

@@ -80,8 +80,14 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
     };
     northbridge.set_boot_path(boot_path);
     northbridge.set_bootstrap_windows(
-        (postcar_region.base, postcar_region.end().ok_or(ServiceError::InvalidParam)?),
-        (mainstage_region.base, mainstage_region.end().ok_or(ServiceError::InvalidParam)?),
+        (
+            postcar_region.base,
+            postcar_region.end().ok_or(ServiceError::InvalidParam)?,
+        ),
+        (
+            mainstage_region.base,
+            mainstage_region.end().ok_or(ServiceError::InvalidParam)?,
+        ),
     )?;
     let result = (|| {
         if boot_path == BootPath::S3Resume
