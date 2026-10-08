@@ -269,11 +269,7 @@ fn execute(
     selection: &Selection,
     checking: bool,
 ) -> Result<Artifacts, String> {
-    eprintln!(
-        "[fstart] unit {}: {}",
-        unit.name,
-        selection.directory.display()
-    );
+    eprintln!("[fstart] building {} ({})", unit.name, unit.target);
     let output = selection
         .command(!checking)
         .current_dir(root)
