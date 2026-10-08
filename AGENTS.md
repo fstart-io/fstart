@@ -1,50 +1,10 @@
 # AGENTS.md — fstart firmware framework
 
-## Build profiles
+## Code I don't like
+- I don't like you reinventing helpers to access for example u32 in a .rs file. There is usually a helper for MMIO already
+- Quick solutions in the wrong dir. So we have drivers, platforms and mainboards. Think deeply about the reusability of the scope. See what is already out there as example first
+- Reinventing the wheel. I saw agents reinvent PCI ECAM in like 5 different locations or stupid traits that wrap around the original ECAM functions. If you need these boilerplate wrappers your code is wrong!
 
-Release builds (`fbuild --release`) are the reference configuration; all boards must link there, and boot-time stack budgets assume dependency crates compiled at opt-level "s" even in dev (see `[profile.dev.package.*]` in the root Cargo.toml).
-
-## Project Overview
-
-fstart is a next-generation firmware framework in Rust. The current architecture
-direction is Rust board crates with builder-pattern board metadata, fixed
-handwritten stage flow, and step-based hardware initialization. The old
-RON-driven generated-stage design is deprecated.
-
-For domain inspiration, reference codebases are available at `~/src/coreboot` (C,
-payload/stage architecture) and `~/src/u-boot` (C, device-tree-driven board defs).
-
-## Design Documents
-
-- **[fstart Architecture: Config as Data, Fixed Family Flows, Few Crates](docs/architecture.md)** — the plan of record. It supersedes the earlier board-builder/stage-flow and BSP/platform-recipe plans, and consolidates the fstart-new reboot sketch.
-
-## Environment
-
-This is a NixOS system. Tools not on `$PATH` (e.g., `qemu`, `file`, `objdump`) must
-be run via `nix-shell`:
-
-```bash
-nix-shell -p qemu file --run "qemu-system-riscv64 -M virt -bios firmware.bin"
-nix-shell -p binutils --run "objdump -d target/.../fstart-stage"
-```
-
-### Formatting
-
-Default `rustfmt` (no `rustfmt.toml`). 4-space indent. Edition 2021.
-
-## BREAKING changes
-
-This is a grassroots projects. Breaking changes are expected everywhere.
-We want no backwards compatibility or safe migrations to new architectural designs.
-
-## Scaling
-
-Where it put some code is very important.
-The goal of this project is to scale to 100's of platforms and 1000's of boards.
-Having the same boilerplate in each board dir is not an option.
-Make sure to have proper abstractions: we have driver code that implements actual hardware init parts.
-Then we have "platforms" that coordinates the driver code in both early simple flows and later ones.
-Some platform code and structure can be shared accross all for instance Intel platforms. Some is platform specific like gm965/ich8.
-Some code is board level specific.
-
-If you don't know where to put things or have some doubts on structure or reuse. ASK the user unless prompted otherwise.
+## Code I do like
+- I love Tock-register! Tock-register is a library to program registers and define per register bitfields. We're a hardware project and we should use this uquitously
+  This is not only for MMIO registers. If you have some port of a mailbox or staged offset + data writes (common in superio), the tock-register trait "Readable, Writeable, ReadWriteable" allow us to use the same register offset + bitfields for this.
