@@ -7,11 +7,10 @@ use heapless::Vec;
 
 type Windows = Vec<MemoryWindow, 32>;
 
-use crate::dtb_memory::memory_visibility;
-
 /// Fixed-layout install: mount only the image the locator describes instead
 /// of the whole firmware window, so trailing erased flash never enters the
 /// authenticated view.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn install_packed(
     writable: &[MemoryWindow],
     extra_reserved: &[MemoryWindow],
@@ -81,7 +80,14 @@ fn install_image(
 
 /// Payload consumers reuse the exact bounded image mounted and authenticated
 /// during boot setup, rather than reconstructing a bank-capacity-sized view.
-#[cfg(any(feature = "linux", feature = "crabefi"))]
+#[cfg(all(
+    any(feature = "linux", feature = "crabefi"),
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        all(feature = "virt-riscv64", target_arch = "riscv64")
+    )
+))]
 pub(crate) fn mounted_image() -> fstart_core::layout::Region {
     let mounted =
         fstart_core::services::ffs_context::memory_mapped().expect("QEMU boot image not mounted");
@@ -99,7 +105,7 @@ pub(crate) fn mounted_image() -> fstart_core::layout::Region {
 /// RAM geometry there is architectural (already in the board's closed
 /// config), so the whole DTB discovery phase is skipped and the fixed RAM
 /// window feeds the authenticated-load policy directly.
-#[cfg(any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(all(feature = "bundle-sbsa", target_arch = "aarch64"))]
 pub(crate) fn from_static_ram(
     ram_base: u64,
     ram_size: u64,
@@ -124,7 +130,10 @@ pub(crate) fn from_static_ram(
 /// QEMU's supplied DTB is machine configuration, not updatable FFS content.
 /// Reject unsupported dynamic reserved-memory allocations rather than treating
 /// them as free RAM. Bound the initial pointer read by the platform boot ABI.
-#[cfg(any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(
+    all(feature = "bundle-sbsa", target_arch = "aarch64"),
+    all(feature = "riscv64", target_arch = "riscv64")
+))]
 pub(crate) fn from_dtb(
     dtb_addr: u64,
     fdt_destination: Option<u64>,
@@ -153,6 +162,7 @@ pub(crate) fn from_dtb_with_layout(
     firmware_size: u64,
     layout: Option<fstart_core::layout::Layout<'_>>,
 ) -> Result<(), ServiceError> {
+    use crate::dtb_memory::memory_visibility;
     use dtoolkit::{Node, Property, fdt::Fdt};
     if dtb_addr < ram_base || dtb_addr & 3 != 0 || usize::try_from(dtb_addr).is_err() {
         return Err(ServiceError::InvalidParam);

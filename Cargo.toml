@@ -77,8 +77,6 @@ clap = { version = "4", features = ["derive"] }
 
 # Internal workspace crates
 fstart-core = { path = "crates/core" }
-fstart-platform-intel = { path = "crates/platform-intel" }
-fstart-platform-sunxi = { path = "crates/platform-sunxi" }
 fstart-platform-qemu = { path = "crates/platform-qemu" }
 fstart-pci = { path = "crates/pci" }
 fstart-ffs = { path = "crates/ffs" }

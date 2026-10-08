@@ -1,2 +1,8 @@
 [alias]
 fbuild = "run --package fbuild --"
+
+# -Zbuild-std of core for x86_64-unknown-none trips the `sse` target-feature
+# future-incompat lint inside core itself (rust-lang/rust#117938) on every
+# x86 stage. Nothing in this tree can act on that report.
+[future-incompat-report]
+frequency = "never"

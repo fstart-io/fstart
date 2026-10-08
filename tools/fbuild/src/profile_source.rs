@@ -37,6 +37,7 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
     }
     let metadata: serde_json::Value =
         serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    crate::build_board::prune_unused_entries(&workspace, &metadata)?;
     let packages = metadata["packages"]
         .as_array()
         .ok_or("Cargo metadata has no packages")?;

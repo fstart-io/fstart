@@ -196,10 +196,12 @@ impl Journal {
 }
 /// Volatile reads from linked flash or reserved RAM. This never provides a
 /// programming interface and never trusts a directory as an address authority.
+#[cfg(all(feature = "stage", feature = "memory-cache"))]
 pub(crate) struct MappedRead {
     base: usize,
     size: usize,
 }
+#[cfg(all(feature = "stage", feature = "memory-cache"))]
 impl MappedRead {
     /// # Safety
     /// The entire window must be mapped/readable and have a trusted extent.
@@ -207,6 +209,7 @@ impl MappedRead {
         Self { base, size }
     }
 }
+#[cfg(all(feature = "stage", feature = "memory-cache"))]
 impl Storage for MappedRead {
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
         let offset = offset as usize;

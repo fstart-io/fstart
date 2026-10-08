@@ -56,6 +56,7 @@ pub(crate) fn load_mainstage(
 
 /// Publish inherited location only after the existing MMC initialization has
 /// established the physical device size. No keys or root policy are imported.
+#[cfg(any(feature = "a20", feature = "h3"))]
 pub(crate) fn install_mainstage_locator(
     block: &impl BlockDevice,
     media_base: u64,
@@ -90,7 +91,7 @@ fn validate_dram(base: u64, size: u64, handoff: u64) -> Result<(), ServiceError>
 }
 
 /// Retain a DRAM policy before any block-backed FFS consumer can write memory.
-#[cfg(feature = "linux")]
+#[cfg(all(feature = "linux", any(feature = "a20", fstart_payload = "linux")))]
 pub(crate) fn install_mainstage_policy(
     dram_base: u64,
     dram_size: u64,

@@ -8,7 +8,13 @@ extern crate ufmt;
 
 #[cfg(feature = "stage")]
 mod boot;
-#[cfg(any(test, feature = "stage"))]
+#[cfg(any(
+    test,
+    all(
+        feature = "stage",
+        any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64")
+    )
+))]
 mod dtb_memory;
 
 /// QEMU bochs-display init. Platform-owned like coreboot's
@@ -29,7 +35,7 @@ pub use host::Plan;
 pub use fstart_stage as stage_runtime;
 #[macro_export]
 macro_rules! stage_bin {
-    ($program:ty) => { $crate::stage_runtime::stage_bin!(program: $program); };
+    ($program:ty) => { $crate::stage_runtime::stage_bin!(program: $program, sbi_resume); };
 }
 
 pub mod fw_cfg;

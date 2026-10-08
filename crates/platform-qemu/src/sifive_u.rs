@@ -132,6 +132,7 @@ mod stage {
 
     /// DRAM-resident state retained through selected payload launch.
     pub struct QemuSifiveUMainstage {
+        #[cfg(any(feature = "linux", feature = "crabefi"))]
         config: &'static QemuSifiveUConfig,
         console: SifiveUart,
     }
@@ -186,7 +187,8 @@ mod stage {
                 fstart_arch::riscv64::halt();
             }
             fstart_log::info!("sifive-u ramstage: ready for payload");
-            QemuSifiveUBuildSelectedPayload::boot(QemuSifiveUMainstage {
+            <QemuSifiveUBuildSelectedPayload as MainstagePayload<_>>::boot(QemuSifiveUMainstage {
+                #[cfg(any(feature = "linux", feature = "crabefi"))]
                 config: B::CONFIG,
                 console,
             })

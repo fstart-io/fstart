@@ -388,8 +388,10 @@ fstart_sunxi_fel_stash:
         console: Ns16550,
         boot_media: H3BootMedia,
         /// Image base offset on the boot medium (8 KiB MMC, 0 SPI).
+        #[cfg(feature = "linux")]
         media_base: u64,
         dram_size: u64,
+        #[cfg(feature = "linux")]
         config: &'static super::H3Config,
     }
 
@@ -680,8 +682,10 @@ fstart_sunxi_fel_stash:
         let mainstage = H3Mainstage {
             console,
             boot_media,
+            #[cfg(feature = "linux")]
             media_base,
             dram_size: handoff.dram_size,
+            #[cfg(feature = "linux")]
             config: B::CONFIG,
         };
         fstart_log::info!("h3 mainstage: {} MiB DRAM", mainstage.dram_size() >> 20);
@@ -732,6 +736,20 @@ impl<B: stage::H3Board> fstart_stage::StageProgram for Program<B> {
     }
 }
 
+#[cfg(all(
+    feature = "stage",
+    feature = "h3",
+    feature = "linux",
+    target_arch = "arm"
+))]
+pub use stage::H3LinuxPayload;
+#[cfg(all(
+    feature = "stage",
+    feature = "h3",
+    feature = "linux",
+    target_arch = "aarch64"
+))]
+pub use stage::H5LinuxPayload;
 #[cfg(all(
     feature = "stage",
     feature = "h3",

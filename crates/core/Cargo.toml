@@ -15,7 +15,6 @@ pci = []
 serde = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
-bitflags = { workspace = true }
 embedded-hal = { workspace = true }
 tock-registers = { workspace = true }
 

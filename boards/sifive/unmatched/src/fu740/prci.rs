@@ -23,7 +23,6 @@ const CLTX_PLLOUTDIV: usize = 0x34;
 const HFPCLK_PLLCFG: usize = 0x50;
 const HFPCLK_PLLOUTDIV: usize = 0x54;
 const HFPCLKPLLSEL: usize = 0x58;
-const HFPCLK_DIV_REG: usize = 0x5c;
 const PRCI_PLLS: usize = 0xe0;
 const GPIO_OUTPUT_EN: usize = 0x08;
 const GPIO_OUTPUT_VAL: usize = 0x0c;
@@ -78,11 +77,6 @@ impl PllSettings {
             | (self.range << PLLCFG_RANGE_SHIFT)
             | (1 << PLLCFG_FSE_SHIFT)
     }
-
-    const fn output_freq(self, reference_clock_hz: u64) -> u64 {
-        reference_clock_hz / (self.divr as u64 + 1) * (2 * (self.divf as u64 + 1))
-            / (1_u64 << self.divq)
-    }
 }
 
 // Keep these proven HiFive Unmatched programming values verbatim.
@@ -118,19 +112,14 @@ const CLTXPLL: PllSettings = PllSettings {
 };
 
 /// FU740 clock/reset driver.
-pub struct Fu740Prci {
-    config: &'static Fu740PrciConfig,
-}
-
-unsafe impl Send for Fu740Prci {}
-unsafe impl Sync for Fu740Prci {}
+pub struct Fu740Prci;
 
 impl Fu740Prci {
     pub fn new(config: &'static Fu740PrciConfig) -> Result<Self, DeviceError> {
         if config.reference_clock_hz == 0 {
             return Err(DeviceError::ConfigError);
         }
-        Ok(Self { config })
+        Ok(Self)
     }
 
     #[inline(always)]
@@ -292,19 +281,6 @@ impl Fu740Prci {
         self.init_ethernet()?;
         compiler_fence(Ordering::SeqCst);
         Ok(())
-    }
-
-    /// Peripheral clock after the PRCI divider.
-    #[must_use]
-    pub fn pclk_freq(&self) -> u32 {
-        let pll = if self.read(PRCI_PLLS) & PLLS_HFPCLKPLL != 0
-            && self.read(HFPCLK_PLLOUTDIV) & HFPCLK_PLLOUTDIV_EN != 0
-        {
-            HFPCLKPLL.output_freq(u64::from(self.config.reference_clock_hz))
-        } else {
-            u64::from(self.config.reference_clock_hz)
-        };
-        (pll / (u64::from(self.read(HFPCLK_DIV_REG)) + 2)) as u32
     }
 }
 

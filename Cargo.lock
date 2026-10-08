@@ -580,7 +580,6 @@ dependencies = [
 name = "fstart-core"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.10.0",
  "embedded-hal",
  "heapless 0.8.0",
  "serde",
