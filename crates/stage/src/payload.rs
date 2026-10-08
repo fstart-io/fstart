@@ -499,14 +499,14 @@ impl<D: X86LinuxPayloadContext> MainstagePayload<D> for X86LinuxPayload {
             halt_x86_linux("configured entry was not verified");
         };
         crate::timestamps::handoff();
-        fstart_arch::x86_64::boot_linux(&params)
+        fstart_arch::x86::boot::boot_linux(&params)
     }
 }
 
 #[cfg(all(feature = "linux", feature = "x86_64"))]
 fn halt_x86_linux(reason: &str) -> ! {
     fstart_log::error!("x86 Linux payload: {}", reason);
-    fstart_arch::x86_64::halt()
+    fstart_arch::x86::boot::halt()
 }
 
 #[cfg(any(

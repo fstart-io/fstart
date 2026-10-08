@@ -13,7 +13,7 @@ extern crate x86 as x86_crate;
 // ---------------------------------------------------------------------------
 
 #[cfg(all(
-    not(all(feature = "x86_64", target_arch = "x86_64")),
+    not(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64"))),
     any(feature = "armv7", feature = "aarch64", feature = "riscv64")
 ))]
 pub fn udelay(us: u32) {
@@ -22,9 +22,9 @@ pub fn udelay(us: u32) {
     }
 }
 
-#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
+#[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]
 pub use x86::udelay;
-#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
+#[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]
 pub use x86::wait_us;
 
 #[cfg(all(feature = "aarch64", target_arch = "aarch64"))]
@@ -33,10 +33,11 @@ pub mod aarch64;
 pub mod armv7;
 #[cfg(all(feature = "riscv64", target_arch = "riscv64"))]
 pub mod riscv64;
+/// x86 CPU primitives and the stage runtime ([`x86::boot`]), shared by the
+/// long-mode (`x86_64`) and 32-bit protected-mode (`x86`) targets. The
+/// `x86_64` feature name predates protected-mode support and covers both.
 #[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]
 pub mod x86;
-#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
-pub mod x86_64;
 // ---------------------------------------------------------------------------
 // mdelay — millisecond delay
 // ---------------------------------------------------------------------------
@@ -137,7 +138,7 @@ pub fn halt() -> ! {
     }
 }
 
-#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
+#[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]
 pub fn halt() -> ! {
     loop {
         // SAFETY: `hlt` puts the CPU in a low-power wait state until the
@@ -151,7 +152,7 @@ pub fn halt() -> ! {
     all(feature = "armv7", target_arch = "arm"),
     all(feature = "aarch64", target_arch = "aarch64"),
     all(feature = "riscv64", target_arch = "riscv64"),
-    all(feature = "x86_64", target_arch = "x86_64"),
+    all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")),
 )))]
 pub fn halt() -> ! {
     loop {

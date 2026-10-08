@@ -136,11 +136,11 @@ pub fn store(
     slot[..core::mem::size_of::<u32>()].copy_from_slice(&STAGE_CACHE_MAGIC.to_le_bytes());
     // A chipset's cold memory test can enable WB before this copy. Explicitly
     // write back the slot so CAR teardown's INVD cannot discard the body.
-    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_os = "none"))]
     unsafe {
         core::arch::asm!("mfence", options(nostack, preserves_flags));
         for offset in (0..required).step_by(64) {
-            core::arch::x86_64::_mm_clflush(slot.as_ptr().add(offset));
+            core::arch::asm!("clflush [{}]", in(reg) slot.as_ptr().add(offset), options(nostack, preserves_flags));
         }
         core::arch::asm!("mfence", options(nostack, preserves_flags));
     }

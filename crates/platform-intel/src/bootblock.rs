@@ -29,7 +29,7 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         fstart_timestamp::init(
             car.cast(),
             size_of::<CarTimestamps>(),
-            fstart_arch::x86_64::reset_tsc(),
+            fstart_arch::x86::boot::reset_tsc(),
         );
     }
     fstart_timestamp::add_at(fstart_timestamp::id::BOOTBLOCK_START, entry);
@@ -169,7 +169,7 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         fstart_log::info!(
             "boot trust: development-integrity; RO root and rollback enforcement not established"
         );
-        fstart_arch::x86_64::enable_boot_media_rom_cache();
+        fstart_arch::x86::boot::enable_boot_media_rom_cache();
         let media = unsafe {
             fstart_core::services::boot_media::MemoryMapped::from_raw_addr(
                 firmware_base,
@@ -227,16 +227,16 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
             boot_path == BootPath::S3Resume,
         )?;
         let boot_flags = if boot_path == BootPath::S3Resume {
-            fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME
+            fstart_arch::x86::boot::car_teardown::BOOT_FLAG_S3_RESUME
         } else {
             0
         };
         let published = unsafe {
-            fstart_arch::x86_64::car_teardown::write_postcar_stash(
+            fstart_arch::x86::boot::car_teardown::write_postcar_stash(
                 ram_end,
                 firmware_base,
                 firmware_size as u64,
-                fstart_arch::x86_64::car_teardown::PostcarBootContext {
+                fstart_arch::x86::boot::car_teardown::PostcarBootContext {
                     descriptor: ramstage.encode(),
                     directory: root.directory().encode(),
                     image_family: root.root().image_family,
@@ -259,7 +259,7 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
             verified.entry()
         );
         crate::store::write_back(&store);
-        fstart_arch::x86_64::jump_to(verified.entry())
+        fstart_arch::x86::boot::jump_to(verified.entry())
     })();
     if result.is_err() && boot_path == BootPath::S3Resume {
         fstart_log::error!(

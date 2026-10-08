@@ -50,7 +50,7 @@ pub fn find_wakeup_vector_with(read: impl Fn(u64, &mut [u8]) -> bool) -> Option<
 ///
 /// `readable` must approve only physical-memory spans that firmware may read;
 /// rejected or overflowing table pointers make the walk fail closed.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn find_wakeup_vector(readable: impl Fn(u64, usize) -> bool) -> Option<u32> {
     find_wakeup_vector_with(|addr, buf| {
         let Some(end) = addr.checked_add(buf.len() as u64) else {

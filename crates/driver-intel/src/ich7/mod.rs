@@ -971,7 +971,7 @@ impl IntelIch7 {
     /// suspend-well and survives G3, so SLP_TYP alone would "resume" from a
     /// power cut during S3 with dead RAM. Clears SLP_TYP so a later reset
     /// cold-boots instead of re-detecting resume.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn detect_s3_resume(&self) -> bool {
         let pm1_sts = self.pm().read16(pmio::PM1_STS);
         if pm1_sts & pmio::WAK_STS == 0 {
@@ -990,7 +990,7 @@ impl IntelIch7 {
         }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     fn detect_s3_resume(&self) -> bool {
         false
     }
@@ -1148,7 +1148,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         rcba.regs().bios_cntl.set(1 << 2);
         rcba.regs().gcs.modify(GCS_REG::NO_REBOOT::SET);
 
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             self.pm().tco().halt_and_clear_timeouts();
         }
@@ -1707,12 +1707,12 @@ impl IntelIch7 {
     /// decoding reads back as `0xff`, which the transaction code reports as a
     /// permanent `not-busy` timeout.
     fn smbus_status_probe(&self) -> u8 {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             // SAFETY: reads the SMBus host status register at the configured base.
             unsafe { fstart_core::pio::inb(self.config.smbus_base) }
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         {
             0
         }
@@ -1741,7 +1741,7 @@ impl IntelIch7 {
     /// x86 POST sequence — ensures DMA channels are masked and the
     /// controller is in a known operating mode.
     fn isa_dma_init(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         fstart_arch::x86::legacy_pc::initialize_isa_dma();
     }
 
@@ -1751,7 +1751,7 @@ impl IntelIch7 {
     /// PC/AT configuration.  IRQ 9 is configured as level-triggered
     /// for ACPI SCI.
     fn i8259_init(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             use fstart_core::pio::outb;
 
@@ -1776,7 +1776,7 @@ impl IntelIch7 {
     /// SCI_EN and bus-master C3->C0 wakeup, configures NMI source
     /// control.
     fn power_options_late(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             // Clear stale ACPI status before enabling SCI/GPE delivery.  The
             // registers are write-one-to-clear; leaving firmware-era status
@@ -1945,7 +1945,7 @@ impl IntelIch7 {
         // enabled the final SMI sources. The shared SMM installer now takes
         // and verifies SMI_LOCK; finalize also locks TCO once GBL_SMI_EN is
         // live. A non-SMM image leaves these gates available to its payload.
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if self.pm().read32(pmio::SMI_EN) & pmio::GBL_SMI_EN != 0 {
             // Global SMI Lock.
             self.lpc_regs()
@@ -2021,7 +2021,7 @@ impl IntelIch7 {
         let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
         let etr3 = lpc.read32(ETR3);
         lpc.write32(ETR3, (etr3 & !ETR3_CF9GR) & !ETR3_CWORWRE);
-        fstart_arch::x86_64::system_reset(hard)
+        fstart_arch::x86::boot::system_reset(hard)
     }
 
     /// Configure CF9 for global reset (ME reset).

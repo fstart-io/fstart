@@ -52,8 +52,8 @@ pub(crate) fn bootstrap_window(
 pub(crate) fn handoff(
     image_base: u64,
     image_size: usize,
-) -> Result<&'static fstart_arch::x86_64::car_teardown::PostcarMtrrStash, ServiceError> {
-    use fstart_arch::x86_64::car_teardown::{POSTCAR_STASH_ADDR, PostcarMtrrStash};
+) -> Result<&'static fstart_arch::x86::boot::car_teardown::PostcarMtrrStash, ServiceError> {
+    use fstart_arch::x86::boot::car_teardown::{POSTCAR_STASH_ADDR, PostcarMtrrStash};
     // SAFETY: Intel's fixed flow reserves this low-DRAM page across CAR teardown.
     let stash = unsafe { &*(POSTCAR_STASH_ADDR as *const PostcarMtrrStash) };
     if !stash.valid_header()
@@ -122,7 +122,7 @@ pub(crate) fn load_stage_with_cache(
                     stage.name()
                 );
                 fstart_log::flush();
-                fstart_arch::x86_64::system_reset(true)
+                fstart_arch::x86::boot::system_reset(true)
             }
         };
     }
@@ -236,8 +236,8 @@ pub(crate) fn reserve_firmware_memory(
     }
     // Postcar handoff stash, S3 wake trampoline and SIPI page.
     e820.reserve_range_as(
-        fstart_arch::x86_64::LOW_SCRATCH_START,
-        fstart_arch::x86_64::LOW_SCRATCH_END - fstart_arch::x86_64::LOW_SCRATCH_START,
+        fstart_arch::x86::boot::LOW_SCRATCH_START,
+        fstart_arch::x86::boot::LOW_SCRATCH_END - fstart_arch::x86::boot::LOW_SCRATCH_START,
         E820Kind::Reserved,
     )?;
     // Default-SMBASE ASEG: SMM relocation rewrites it during MP init, which

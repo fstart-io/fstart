@@ -699,22 +699,22 @@ impl Ctx<'_> {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn udelay(us: u32) {
     fstart_arch::x86::udelay(us);
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn udelay(_us: u32) {}
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn ram_read32(addr: u32) {
     // SAFETY: JEDEC/training strobe to a DRAM address; the read itself is
     // the command trigger. Mirrors coreboot `read32p()`.
     unsafe { fstart_arch::x86::read_phys32(addr as usize) };
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn ram_read32(_addr: u32) {}
 
 fn full_reset() -> ! {
@@ -1357,7 +1357,7 @@ fn enable_system_memory_io(ctx: &Ctx<'_>, sys: &SysInfo) {
     );
 
     // NOP-ish barrier: two no-ops before sampling DRTST.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
         core::arch::asm!("nop", "nop", options(nomem, nostack, preserves_flags));
     }
@@ -1770,7 +1770,7 @@ fn program_memory_frequency(ctx: &mut Ctx<'_>, sys: &SysInfo) -> Result<(), Serv
     ctx.mch.write32(mchbar::CLKCFG, clkcfg);
     clkcfg |= 1 << 10;
     ctx.mch.write32(mchbar::CLKCFG, clkcfg);
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     for _ in 0..0x100 {
         unsafe {
             core::arch::asm!(

@@ -30,7 +30,7 @@ fn run_mainstage_phase(
     fstart_log::info!("{} mainstage: {}", platform, name);
     if phase().is_err() {
         fstart_log::error!("{} mainstage: {} failed", platform, name);
-        fstart_arch::x86_64::halt();
+        fstart_arch::x86::boot::halt();
     }
 }
 
@@ -40,13 +40,13 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     let platform = B::Platform::NAME;
     let hooks = B::MainstageHooks::default();
     let Ok(layout) = layout::IntelBootLayout::current(2) else {
-        fstart_arch::x86_64::halt()
+        fstart_arch::x86::boot::halt()
     };
     let Ok(mut mainstage) = Mainstage::<B>::bind::<B>(layout, hooks) else {
-        fstart_arch::x86_64::halt();
+        fstart_arch::x86::boot::halt();
     };
     let Ok(store) = crate::store::open(layout) else {
-        fstart_arch::x86_64::halt();
+        fstart_arch::x86::boot::halt();
     };
     crate::store::attach_timestamps(&store);
     fstart_timestamp::add_at(fstart_timestamp::id::RAMSTAGE_START, entry);
@@ -57,7 +57,9 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         fstart_stage::fixed_helpers::MemoryMappedFfs::new(firmware_base, firmware_size);
     // S3 resume is bootblock policy transported through the postcar stash.
     let resume = crate::boot::handoff(firmware_base, firmware_size)
-        .map(|stash| stash.boot_flags & fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME != 0)
+        .map(|stash| {
+            stash.boot_flags & fstart_arch::x86::boot::car_teardown::BOOT_FLAG_S3_RESUME != 0
+        })
         .unwrap_or(false);
     mainstage.resume = resume;
     mainstage.southbridge.set_resume(resume);
@@ -136,7 +138,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         mainstage.init_devices()
     });
     run_mainstage_phase(platform, fstart_timestamp::id::MOUNT_BOOT_MEDIA, || {
-        fstart_arch::x86_64::enable_boot_media_rom_cache();
+        fstart_arch::x86::boot::enable_boot_media_rom_cache();
         if mainstage.resume {
             return Ok(());
         }
@@ -221,7 +223,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
             Some(vector) => {
                 fstart_log::info!("{}: resuming OS at wake vector {:#x}", platform, vector);
                 fstart_log::flush();
-                fstart_arch::x86_64::s3_wake::jump_to_wakeup_vector(vector);
+                fstart_arch::x86::boot::s3_wake::jump_to_wakeup_vector(vector);
             }
             None => {
                 // Decided policy: no valid vector means the surviving tables
@@ -480,10 +482,16 @@ where
         // SAFETY: firmware's low-DRAM heap is identity mapped by postcar and
         // reserved by reserve_firmware_memory. Preserve the complete low map,
         // add detected high RAM and assigned BARs, and switch before AP startup.
-        let tables =
-            unsafe { fstart_arch::x86_64::paging::IdentityTables::build(ram.chain(bars))? };
-        let base = unsafe { tables.install() };
-        fstart_log::info!("paging: final DRAM identity tables at {:#x}", base);
+        #[cfg(target_arch = "x86_64")]
+        {
+            let tables =
+                unsafe { fstart_arch::x86::boot::paging::IdentityTables::build(ram.chain(bars))? };
+            let base = unsafe { tables.install() };
+            fstart_log::info!("paging: final DRAM identity tables at {:#x}", base);
+        }
+        // Protected-mode stages run unpaged.
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = (ram, bars);
         let wc = pci
             .assigned_memory_bars()
             .filter(|(address, window)| {

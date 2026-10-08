@@ -21,6 +21,7 @@ use core::arch::global_asm;
 
 use crate::x86::mtrr;
 
+#[cfg(target_arch = "x86_64")]
 global_asm!(
     ".text",
     ".code64",
@@ -84,9 +85,53 @@ global_asm!(
     options(att_syntax),
 );
 
-unsafe extern "C" {
-    fn _car_teardown();
-}
+// 32-bit protected-mode variant. Only the postcar entry calls it, as the
+// noreturn transition: it may clobber every register except %esp.
+#[cfg(target_arch = "x86")]
+global_asm!(
+    ".text",
+    ".code32",
+    ".global _car_teardown",
+    "_car_teardown:",
+    // Consume the return address while CAR is still live.
+    "popl %ebp",
+    "movl %cr0, %eax",
+    "orl $0x40000000, %eax",
+    "movl %eax, %cr0",
+    "movl $0x2ff, %ecx",
+    "rdmsr",
+    "andl $0xfffff7ff, %eax",
+    "wrmsr",
+    "movl $1, %eax",
+    "cpuid",
+    "movl %eax, %edx",
+    "shrl $4, %edx",
+    "andl $0x0f, %edx",
+    "movl %eax, %ebx",
+    "shrl $12, %ebx",
+    "andl $0xf0, %ebx",
+    "orl %ebx, %edx",
+    "cmpl $0x1c, %edx",
+    "je 1f",
+    "cmpl $0x26, %edx",
+    "je 1f",
+    "cmpl $0x27, %edx",
+    "je 1f",
+    "cmpl $0x35, %edx",
+    "je 1f",
+    "cmpl $0x36, %edx",
+    "jne 2f",
+    "1:",
+    "movl $0x2e0, %ecx",
+    "rdmsr",
+    "andl $0xfffffffd, %eax",
+    "wrmsr",
+    "andl $0xfffffffe, %eax",
+    "wrmsr",
+    "2:",
+    "jmp *%ebp",
+    options(att_syntax),
+);
 
 /// Fixed physical address of the post-CAR MTRR stash in low DRAM.
 ///
@@ -185,17 +230,6 @@ impl PostcarMtrrStash {
             && self.image_base.checked_add(self.image_size).is_some()
             && self.ram_end != 0
     }
-}
-
-/// Tear down Cache-as-RAM non-evict mode.
-///
-/// # Safety
-///
-/// Caller must already be executing on a DRAM stack and must not return to
-/// CAR-backed data after this call — or, for the postcar entry, must treat
-/// this as the noreturn transition (fresh stack + `INVD` immediately after).
-pub unsafe fn car_teardown() {
-    unsafe { _car_teardown() }
 }
 
 /// Authenticated boot metadata encoded by the image-format layer.

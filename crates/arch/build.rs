@@ -38,7 +38,11 @@ fn main() {
     let elf = out_dir.join("sipi_trampoline.elf");
     let bin = out_dir.join("sipi_trampoline.bin");
 
-    run(Command::new("cc")
+    let mut assemble = Command::new("cc");
+    if target_arch == "x86" {
+        assemble.arg("-DFSTART_PROTECTED_MODE");
+    }
+    run(assemble
         .arg("-c")
         .arg("-x")
         .arg("assembler-with-cpp")

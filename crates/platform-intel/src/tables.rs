@@ -268,7 +268,7 @@ pub struct SmbiosRuntime<'a> {
 /// Resolve SMBIOS Type 4 counts from runtime CPU and MP state.
 #[cfg(feature = "smbios")]
 fn runtime_processor_counts() -> (u16, u16, u16) {
-    let (cores, threads) = fstart_arch::x86_64::cpuid::cpu_core_thread_counts();
+    let (cores, threads) = fstart_arch::x86::boot::cpuid::cpu_core_thread_counts();
     let online = fstart_arch::x86::mp::online_cpus();
     let enabled = cores.min(online.max(1));
     (cores.max(1), enabled.max(1), threads.max(enabled))
@@ -277,11 +277,7 @@ fn runtime_processor_counts() -> (u16, u16, u16) {
 #[cfg(feature = "smbios")]
 fn add_runtime_cache_info(w: &mut fstart_acpi::smbios::SmbiosWriter) -> [u16; 3] {
     let mut handles = [0xFFFFu16; 3];
-    for cache in raw_cpuid::CpuId::new()
-        .get_cache_parameters()
-        .into_iter()
-        .flatten()
-    {
+    for cache in cpuid_reader().get_cache_parameters().into_iter().flatten() {
         let level = cache.level();
         let cache_type = cache.cache_type();
         let size_kb = cache
@@ -375,7 +371,7 @@ fn processor_family(brand: &str) -> u16 {
 /// Type 4 for the executing CPU package, with its Type 7 caches.
 #[cfg(feature = "smbios")]
 fn add_processor(w: &mut fstart_acpi::smbios::SmbiosWriter, socket: &str) {
-    use fstart_arch::x86_64::cpuid::{cpuid, max_extended_leaf};
+    use fstart_arch::x86::boot::cpuid::{cpuid, max_extended_leaf};
     const SIXTY_FOUR_BIT: u16 = 1 << 2;
     const MULTI_CORE: u16 = 1 << 3;
     const HARDWARE_THREAD: u16 = 1 << 4;
@@ -383,7 +379,7 @@ fn add_processor(w: &mut fstart_acpi::smbios::SmbiosWriter, socket: &str) {
     const ENHANCED_VIRTUALIZATION: u16 = 1 << 6;
     const POWER_PERFORMANCE_CONTROL: u16 = 1 << 7;
 
-    let cpu = raw_cpuid::CpuId::new();
+    let cpu = cpuid_reader();
     let vendor = cpu.get_vendor_info();
     let brand = cpu.get_processor_brand_string();
     let brand = brand.as_ref().map_or("", |brand| brand.as_str().trim());
@@ -732,4 +728,14 @@ mod tests {
         assert_eq!(onboard_device(0x0380), None);
         assert_eq!(onboard_device(0x0c03), None);
     }
+}
+
+/// `raw_cpuid` reader over the arch CPUID wrapper. `CpuId::new()` needs SSE,
+/// which the 32-bit softfloat target disables.
+#[cfg(feature = "smbios")]
+fn cpuid_reader() -> raw_cpuid::CpuId {
+    raw_cpuid::CpuId::with_cpuid_fn(|leaf, subleaf| {
+        let (eax, ebx, ecx, edx) = fstart_arch::x86::cpuid_count(leaf, subleaf);
+        raw_cpuid::CpuIdResult { eax, ebx, ecx, edx }
+    })
 }

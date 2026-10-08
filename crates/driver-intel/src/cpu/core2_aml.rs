@@ -538,13 +538,13 @@ fn ia32_fsb_x3() -> Option<u32> {
 }
 
 fn cpu_model_id() -> u32 {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         let (eax, _, _, _) = fstart_arch::x86::cpuid(1);
         (eax >> 4) & 0xffff
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     {
         0x006f
     }

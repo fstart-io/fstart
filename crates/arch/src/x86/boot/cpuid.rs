@@ -15,14 +15,14 @@ pub struct CpuidResult {
 }
 
 /// Execute the `cpuid` instruction with leaf `eax` and sub-leaf `ecx`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
 pub fn cpuid(leaf: u32, subleaf: u32) -> CpuidResult {
     let (eax, ebx, ecx, edx) = crate::x86::cpuid_count(leaf, subleaf);
     CpuidResult { eax, ebx, ecx, edx }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 pub fn cpuid(_leaf: u32, _subleaf: u32) -> CpuidResult {
     CpuidResult::default()
 }

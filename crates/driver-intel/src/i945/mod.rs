@@ -474,14 +474,14 @@ pub struct IntelI945 {
 
 /// CF9 reset with `value` as the reset request (RST_CPU 0->1 edge).
 fn cf9(value: u8) -> ! {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     // SAFETY: I/O port 0xcf9 is the standard Intel reset control register.
     // Program the reset type first; the RST_CPU (bit 2) edge starts it.
     unsafe {
         fstart_core::pio::outb(0xcf9, value & !0x04);
         fstart_core::pio::outb(0xcf9, value);
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     let _ = value;
     loop {
         core::hint::spin_loop();
@@ -539,7 +539,7 @@ impl IntelI945 {
         Self::hb().read8(0x08)
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn enable_ecam(&self) {
         let value = (self.config.ecam_base as u32) | self.pciexbar_length_bits() | 1;
         // SAFETY: one-time legacy PCI config write to enable ECAM before the
@@ -557,7 +557,7 @@ impl IntelI945 {
         fstart_log::info!("i945: ECAM enabled at {:#x}", self.config.ecam_base);
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     fn enable_ecam(&self) {
         ecam::init(self.config.ecam_base as usize);
         fstart_log::info!("i945: ECAM enable (stub, non-x86)");

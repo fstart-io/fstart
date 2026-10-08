@@ -366,7 +366,7 @@ impl IchGpio {
     /// 3. Write IO_SEL (set direction)
     /// 4. Write level again (in case pins were gated)
     /// 5. Write RST_SEL, GPI_INV, GPO_BLINK
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn setup(&self, cfg: &GpioConfig) {
         let regs = GpioRegisters::from_config(cfg);
 
@@ -400,7 +400,7 @@ impl IchGpio {
         fstart_log::info!("ich-gpio: {} pins configured", cfg.pins.len());
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     pub fn setup(&self, cfg: &GpioConfig) {
         fstart_log::info!("ich-gpio: setup ({} pins, stub)", cfg.pins.len());
     }
@@ -413,7 +413,7 @@ impl IchGpio {
     ///
     /// Returns `true` for high, `false` for low. If the pin number
     /// is out of range (> 75), returns `false`.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn get(&self, pin: u8) -> bool {
         if pin > MAX_GPIO {
             return false;
@@ -424,7 +424,7 @@ impl IchGpio {
         val & (1 << bit) != 0
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     pub fn get(&self, _pin: u8) -> bool {
         false
     }
@@ -433,7 +433,7 @@ impl IchGpio {
     ///
     /// Writes to the GP_LVL register for the pin's set. The pin must
     /// be configured as GPIO mode + output for this to take effect.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn set(&self, pin: u8, high: bool) {
         if pin > MAX_GPIO {
             return;
@@ -451,13 +451,13 @@ impl IchGpio {
         }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     pub fn set(&self, _pin: u8, _high: bool) {}
 
     /// Check if a pin is in native mode (not GPIO).
     ///
     /// Returns `true` if the USE_SEL bit is 0 (native function).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn is_native(&self, pin: u8) -> bool {
         if pin > MAX_GPIO {
             return false;
@@ -468,7 +468,7 @@ impl IchGpio {
         val & (1 << bit) == 0
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     pub fn is_native(&self, _pin: u8) -> bool {
         false
     }
@@ -476,7 +476,7 @@ impl IchGpio {
     /// Configure a pin as GPIO mode.
     ///
     /// Sets the USE_SEL bit for the pin. Does not change direction or level.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn set_gpio_mode(&self, pin: u8) {
         if pin > MAX_GPIO {
             return;
@@ -491,14 +491,14 @@ impl IchGpio {
         }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     fn set_gpio_mode(&self, _pin: u8) {}
 
     /// Configure a pin as a GPIO input.
     ///
     /// Switches the pin to GPIO mode (if native) and sets the IO_SEL
     /// bit to input direction.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn input(&self, pin: u8) {
         if pin > MAX_GPIO {
             return;
@@ -514,7 +514,7 @@ impl IchGpio {
         }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     pub fn input(&self, _pin: u8) {}
 
     /// Configure a pin as a GPIO output with the given initial level.
@@ -523,7 +523,7 @@ impl IchGpio {
     /// level, then clears the IO_SEL bit for output direction.
     /// The level is set again after direction change in case the
     /// output register was gated.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn output(&self, pin: u8, high: bool) {
         if pin > MAX_GPIO {
             return;
@@ -542,14 +542,14 @@ impl IchGpio {
         self.set(pin, high);
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     pub fn output(&self, _pin: u8, _high: bool) {}
 
     /// Set or clear the GPI_INV bit for a pin (set 1 only, pins 0–31).
     ///
     /// When inverted, the input value is logically inverted before
     /// being read from the GP_LVL register.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn invert(&self, pin: u8, enable: bool) {
         if pin >= 32 {
             return; // GPI_INV only exists for set 1.
@@ -565,7 +565,7 @@ impl IchGpio {
         }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     pub fn invert(&self, _pin: u8, _enable: bool) {}
 }
 

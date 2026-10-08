@@ -25,10 +25,10 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
     let ramstage_name = crate::RAMSTAGE_NAME;
     let mut console = match C::new(console_config) {
         Ok(console) => console,
-        Err(_) => fstart_arch::x86_64::halt(),
+        Err(_) => fstart_arch::x86::boot::halt(),
     };
     if console.init().is_err() {
-        fstart_arch::x86_64::halt();
+        fstart_arch::x86::boot::halt();
     }
     // SAFETY: postcar owns this console until it jumps to the ramstage.
     unsafe { fstart_log::init(&console) };
@@ -45,18 +45,24 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
     // SAFETY: PAGE_TABLES_ADDR is reserved low scratch, identity mapped by the
     // current tables, and postcar executes from DRAM, which the new tables map
     // identically. The region stays reserved until the payload replaces CR3.
-    let tables = unsafe {
-        fstart_arch::x86_64::paging::install_identity_tables(fstart_arch::x86_64::PAGE_TABLES_ADDR)
-    };
-    fstart_log::info!(
-        "{} postcar: DRAM page tables at {:#x}, CR3 loaded",
-        platform,
-        tables
-    );
+    // Protected-mode stages run unpaged and need none of this.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let tables = unsafe {
+            fstart_arch::x86::boot::paging::install_identity_tables(
+                fstart_arch::x86::boot::PAGE_TABLES_ADDR,
+            )
+        };
+        fstart_log::info!(
+            "{} postcar: DRAM page tables at {:#x}, CR3 loaded",
+            platform,
+            tables
+        );
+    }
 
     let (firmware_base, firmware_size) = match geometry.firmware() {
         Ok(window) => window,
-        Err(_) => fstart_arch::x86_64::halt(),
+        Err(_) => fstart_arch::x86::boot::halt(),
     };
     let entry = (|| -> Result<u64, ServiceError> {
         let stash = crate::boot::handoff(firmware_base, firmware_size)?;
@@ -80,7 +86,8 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
                 firmware_size,
             )
         };
-        let resume = stash.boot_flags & fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME != 0;
+        let resume =
+            stash.boot_flags & fstart_arch::x86::boot::car_teardown::BOOT_FLAG_S3_RESUME != 0;
         let store = store.as_mut().ok_or(ServiceError::NotInitialized)?;
         fstart_timestamp::add(fstart_timestamp::id::LOAD_RAMSTAGE);
         let verified = crate::boot::load_stage_with_cache(
@@ -100,9 +107,9 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
             platform,
             ramstage_name
         );
-        fstart_arch::x86_64::halt();
+        fstart_arch::x86::boot::halt();
     };
 
     fstart_log::info!("jumping to {} at {:#x}", ramstage_name, entry);
-    fstart_arch::x86_64::jump_to(entry)
+    fstart_arch::x86::boot::jump_to(entry)
 }

@@ -313,7 +313,7 @@ pub trait IntelSouthbridgeDriver: Sized {
     /// Used on unrecoverable S3-resume paths (no wake vector, invalid stage
     /// cache); never returns.
     fn system_reset(&self, hard: bool) -> ! {
-        fstart_arch::x86_64::system_reset(hard)
+        fstart_arch::x86::boot::system_reset(hard)
     }
 }
 

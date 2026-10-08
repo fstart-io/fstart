@@ -427,7 +427,7 @@ mod stage {
         }
 
         fn mount_boot_media(&self) -> Result<(), ServiceError> {
-            fstart_arch::x86_64::enable_boot_media_rom_cache();
+            fstart_arch::x86::boot::enable_boot_media_rom_cache();
             use fstart_core::services::memory_detect::E820Kind;
             use fstart_stage::boot::MemoryWindow;
             let mut writable = heapless::Vec::<MemoryWindow, 32>::new();
@@ -580,7 +580,7 @@ mod stage {
         fstart_log::info!("qemu-q35 ramstage: {}", name);
         if f().is_err() {
             fstart_log::error!("qemu-q35 ramstage: {} failed", name);
-            fstart_arch::x86_64::halt();
+            fstart_arch::x86::boot::halt();
         }
     }
 
@@ -589,7 +589,7 @@ mod stage {
         B: QemuQ35Board,
     {
         let Ok(mut mainstage) = QemuQ35Mainstage::new::<B>() else {
-            fstart_arch::x86_64::halt();
+            fstart_arch::x86::boot::halt();
         };
         phase("console", || mainstage.init_console::<B>());
         phase("memory_detect", || mainstage.detect_memory_and_tables());

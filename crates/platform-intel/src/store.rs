@@ -80,11 +80,11 @@ pub(crate) fn attach_timestamps(store: &Store) {
 #[cfg(fstart_stage_env = "car")]
 pub(crate) fn write_back(store: &Store) {
     // SAFETY: the used store is mapped DRAM; CLFLUSH only writes it back.
-    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_os = "none"))]
     unsafe {
         core::arch::asm!("mfence", options(nostack, preserves_flags));
         for address in (store.base()..store.base() + store.used()).step_by(64) {
-            core::arch::x86_64::_mm_clflush(address as *const u8);
+            core::arch::asm!("clflush [{}]", in(reg) address as usize, options(nostack, preserves_flags));
         }
         core::arch::asm!("mfence", options(nostack, preserves_flags));
     }

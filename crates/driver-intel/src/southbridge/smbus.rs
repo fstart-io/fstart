@@ -158,7 +158,7 @@ impl I801SmBus {
     /// the write-one-to-clear status bits. KILL is not part of initialization;
     /// it is only meaningful while aborting a known active transaction.
     pub fn host_reset(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let regs = self.regs();
             regs.control().set(0);
@@ -170,7 +170,7 @@ impl I801SmBus {
     /// Log the controller's config-space state, so a controller that refuses
     /// to become idle can be told apart from an undecoded I/O BAR.
     fn log_pci_state(&self, why: &str) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if let Some((bus, dev, func)) = self.bdf {
             let pci = ecam::EcamDevice::new(bus, dev, func);
             fstart_log::warn!(
@@ -183,13 +183,13 @@ impl I801SmBus {
                 pci.read32(0x40)
             );
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         let _ = why;
     }
 
     /// Spin until the host controller is not busy.
     fn wait_not_busy(&self) -> Result<(), ServiceError> {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let mut loops = SMBUS_TIMEOUT;
             loop {
@@ -216,7 +216,7 @@ impl I801SmBus {
                 core::hint::spin_loop();
             }
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         Err(ServiceError::HardwareError)
     }
 
@@ -228,7 +228,7 @@ impl I801SmBus {
         xmitadd: u8,
     ) -> Result<(), ServiceError> {
         self.wait_not_busy()?;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let regs = self.regs();
             let stat = regs.status().get();
@@ -241,7 +241,7 @@ impl I801SmBus {
 
     /// Start the transaction and wait for completion.
     fn execute_and_complete(&self) -> Result<(), ServiceError> {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let regs = self.regs();
             regs.control().modify(HSTCTL::START::SET);
@@ -279,14 +279,14 @@ impl I801SmBus {
                 core::hint::spin_loop();
             }
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         Err(ServiceError::HardwareError)
     }
 
     /// Read a byte via I801_BYTE_DATA command.
     pub fn read_byte_data(&self, addr: u8, cmd: u8) -> Result<u8, ServiceError> {
         self.setup_command(HSTCTL::TYPE::ByteData, xmit_read(addr))?;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let regs = self.regs();
             regs.command().set(cmd);
@@ -294,18 +294,18 @@ impl I801SmBus {
             regs.data1().set(0);
         }
         self.execute_and_complete()?;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             Ok(self.regs().data0().get())
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         Err(ServiceError::HardwareError)
     }
 
     /// Write a byte via I801_BYTE_DATA command.
     pub fn write_byte_data(&self, addr: u8, cmd: u8, val: u8) -> Result<(), ServiceError> {
         self.setup_command(HSTCTL::TYPE::ByteData, xmit_write(addr))?;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let regs = self.regs();
             regs.command().set(cmd);
@@ -317,7 +317,7 @@ impl I801SmBus {
     /// Read a 16-bit word via I801_WORD_DATA command.
     pub fn read_word_data(&self, addr: u8, cmd: u8) -> Result<u16, ServiceError> {
         self.setup_command(HSTCTL::TYPE::WordData, xmit_read(addr))?;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let regs = self.regs();
             regs.command().set(cmd);
@@ -325,14 +325,14 @@ impl I801SmBus {
             regs.data1().set(0);
         }
         self.execute_and_complete()?;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let regs = self.regs();
             let lo = regs.data0().get();
             let hi = regs.data1().get();
             Ok((hi as u16) << 8 | lo as u16)
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         Err(ServiceError::HardwareError)
     }
 
@@ -349,7 +349,7 @@ impl I801SmBus {
         max_bytes: usize,
         mode: BlockMode,
     ) -> Result<usize, ServiceError> {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let regs = self.regs();
             let write = mode == BlockMode::Write;
@@ -431,7 +431,7 @@ impl I801SmBus {
                 core::hint::spin_loop();
             }
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         {
             let _ = (buf, max_bytes, mode);
             Err(ServiceError::HardwareError)
@@ -452,7 +452,7 @@ impl I801SmBus {
         if max_bytes == 0 {
             return Err(ServiceError::InvalidParam);
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             self.setup_command(HSTCTL::TYPE::BlockData, xmit_read(addr))?;
             self.regs().command().set(cmd);
@@ -470,7 +470,7 @@ impl I801SmBus {
             }
             Ok(moved)
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         Err(ServiceError::HardwareError)
     }
 
@@ -482,7 +482,7 @@ impl I801SmBus {
         if data.is_empty() || data.len() > SMBUS_BLOCK_MAXLEN {
             return Err(ServiceError::InvalidParam);
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let mut scratch = [0u8; SMBUS_BLOCK_MAXLEN];
             scratch[..data.len()].copy_from_slice(data);
@@ -514,7 +514,7 @@ impl I801SmBus {
         if buf.is_empty() || usize::from(offset) + buf.len() > 256 {
             return Err(ServiceError::InvalidParam);
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             self.setup_command(HSTCTL::TYPE::I2cBlockData, xmit_write(addr))?;
             self.regs().data1().set(offset);
@@ -526,14 +526,14 @@ impl I801SmBus {
             }
             Ok(())
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         Err(ServiceError::HardwareError)
     }
 
     /// Write a 16-bit word via I801_WORD_DATA command.
     pub fn write_word_data(&self, addr: u8, cmd: u8, val: u16) -> Result<(), ServiceError> {
         self.setup_command(HSTCTL::TYPE::WordData, xmit_write(addr))?;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let regs = self.regs();
             regs.command().set(cmd);

@@ -1183,7 +1183,7 @@ impl IntelIch8 {
         rcba.regs().bios_cntl.set(1 << 2);
         rcba.regs().gcs.modify(GCS_REG::NO_REBOOT::SET);
 
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let tco = self.pm().tco();
             tco.halt_and_clear_timeouts();
@@ -1351,7 +1351,7 @@ impl IntelIch8 {
         throttle |= (u32::from(self.config.throttle_duty & 7)) << 5;
         self.pm().write32(0x10, throttle);
 
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             // SAFETY: legacy NMI control ports on x86 PCs.
             let mut port61 = fstart_core::pio::inb(0x61);
@@ -1618,7 +1618,7 @@ impl IntelIch8 {
         let pcs = (sata.read16(ich8::SATA_PCS) & !0x3f) | (1 << 15) | pcs_ports as u16;
         sata.write16(ich8::SATA_PCS, pcs);
         let mut sclkcg = (((!config.ports as u32) & 0x3f) << 24) | 0x193;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if config.clock_request {
             // SAFETY: GPIOBASE is programmed before SATA init; GPIO35 is in the second bank.
             if unsafe { fstart_core::pio::inb(ich8::DEFAULT_GPIOBASE + 0x30) } & (1 << (35 - 32))
@@ -1847,12 +1847,12 @@ impl IntelIch8 {
     }
 
     fn isa_dma_init(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         fstart_arch::x86::legacy_pc::initialize_isa_dma();
     }
 
     fn i8259_init(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             fstart_arch::x86::legacy_pc::initialize_pic(0x20, 0x28);
             fstart_core::pio::outb(0x21, 0xfb);

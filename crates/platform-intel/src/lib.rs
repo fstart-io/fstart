@@ -111,7 +111,11 @@ pub const SMM_IMAGE: Option<&'static [u8]> = None;
 /// otherwise break the parse, and reading uncached flash is slow. The copy
 /// is 16-byte aligned as `IA32_BIOS_UPDT_TRIG` requires and lives for the
 /// stage. Returns `None` when no window is mounted or the image has no blob.
-#[cfg(all(feature = "stage", feature = "mp", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "stage",
+    feature = "mp",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 #[must_use]
 pub fn intel_microcode_blob() -> Option<&'static [u8]> {
     extern crate alloc;
@@ -257,13 +261,13 @@ impl<B: IntelBoard> fstart_stage::StageProgram for Program<B> {
             if flow.is_err() {
                 fstart_log::error!("{} bootblock failed", B::Platform::NAME);
             }
-            fstart_arch::x86_64::halt()
+            fstart_arch::x86::boot::halt()
         }
         #[cfg(fstart_stage_env = "postcar")]
         {
             // Teardown already done by the entry; load the ramstage cached.
             let Ok(spec) = bootstrap_spec::<B>(1) else {
-                fstart_arch::x86_64::halt()
+                fstart_arch::x86::boot::halt()
             };
             postcar::run_intel_postcar::<B::Console>(spec)
         }

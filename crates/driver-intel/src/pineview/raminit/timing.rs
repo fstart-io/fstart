@@ -482,7 +482,7 @@ pub fn check_reset(_si: &SysInfo) {
         fstart_log::info!("raminit: triggering full reset (PMCON2 bit 7 set)");
         // Match coreboot full_reset(): arm the reset controller before
         // requesting CPU + system + full reset.
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             fstart_core::pio::outb(0xCF9, 0x0A);
             fstart_core::pio::outb(0xCF9, 0x0E);
