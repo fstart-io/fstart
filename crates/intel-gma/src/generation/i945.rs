@@ -64,7 +64,7 @@ impl GenerationOps for I945 {
 
         if port == Port::Lvds {
             g45::panel_power_on(&mmio)?;
-            panel_backlight_on(&mmio, panel);
+            panel_backlight_on(&mmio, ctx.config.cpu, panel);
         }
         Ok(())
     }
@@ -302,11 +302,15 @@ fn disable_pipe_state(mmio: &Mmio, cpu: Cpu, pipe: Pipe) {
 
 const PNV_BLC_PWM_DUTY_MAX: u32 = 0x7fff;
 
-fn panel_backlight_on(mmio: &Mmio, panel: Option<LfpPanelMetadata>) {
-    if panel
-        .and_then(|panel| panel.backlight)
-        .map(|backlight| backlight.is_pwm())
-        .unwrap_or(false)
+/// Pineview gets a full PWM duty here. The i945 legacy combination mode
+/// keeps the chipset's duty (100% from `panel_setup`) scaled by LBB, which
+/// libgfxinit leaves alone.
+fn panel_backlight_on(mmio: &Mmio, cpu: Cpu, panel: Option<LfpPanelMetadata>) {
+    if matches!(cpu, Cpu::Pineview | Cpu::PineviewM)
+        && panel
+            .and_then(|panel| panel.backlight)
+            .map(|backlight| backlight.is_pwm())
+            .unwrap_or(false)
     {
         g45::apply_panel_op(
             mmio,

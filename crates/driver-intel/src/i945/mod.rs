@@ -99,6 +99,8 @@ pub mod hostbridge {
 /// IGD PCI configuration offsets, panel registers and command bits.
 const IGD_MSAC: u16 = 0x62;
 const IGD_GDRST: u16 = 0xc0;
+/// Legacy Backlight Brightness, in the 0:2.1 configuration space.
+const IGD_LBB: u16 = 0xf4;
 const PCI_COMMAND: u16 = 0x04;
 const PCI_CMD_MEMORY: u16 = 1 << 1;
 const PCI_CMD_MASTER: u16 = 1 << 2;
@@ -1220,6 +1222,18 @@ impl IntelI945 {
         );
     }
 
+    /// Full legacy backlight brightness (coreboot `gma_func1_init`): with
+    /// `BLM_LEGACY_MODE` the panel sees the PWM duty scaled by LBB, which
+    /// resets to 0, so a lit panel would otherwise stay dark.
+    fn igd_func1_init(&self) {
+        if Self::hostbridge_regs().deven.get() & hostbridge::DEVEN_D2F1 == 0 {
+            return;
+        }
+        let func1 = ecam::EcamDevice::new(0, hostbridge::IGD_DEV, 1);
+        func1.or16(PCI_COMMAND, PCI_CMD_MASTER);
+        func1.write8(IGD_LBB, 0xff);
+    }
+
     fn tolud(&self) -> u32 {
         u32::from(Self::hb().read8(hostbridge::TOLUD) & 0xf8) << 24
     }
@@ -1354,6 +1368,7 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
         if self.config.igd.display.is_some() {
             self.gma_display_init(vbt.as_deref());
         }
+        self.igd_func1_init();
         Ok(())
     }
 
