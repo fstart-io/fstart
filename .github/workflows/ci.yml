@@ -21,9 +21,8 @@ env:
   CARGO_BUILD_WARNINGS: deny
 
 # Build caching: the whole target/ directory is cached, not just third-party
-# dependencies. Every firmware unit has its own Cargo target directory under
-# target/fstart-build/ with its own -Zbuild-std core/alloc, which is where
-# most of the build time goes. Caches are only saved from master; pull
+# dependencies, so the -Zbuild-std core/alloc and firmware units under
+# target/fstart-build/ are kept too. Caches are only saved from master; pull
 # requests restore the most recent master cache for the same toolchain.
 
 jobs:

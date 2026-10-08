@@ -53,6 +53,7 @@ fn platform_cfg_schema_accepts_new_vocabulary_but_not_selected_typos() {
     let result = std::process::Command::new("rustc")
         .args(["--crate-type=lib", "--emit=metadata", "-Dunexpected_cfgs"])
         .args(&selection.flags)
+        .args(member_flags(&selection))
         .arg(&source)
         .arg("-o")
         .arg(scratch.0.join("probe.rmeta"))
@@ -161,4 +162,12 @@ fn ambient_artifact_environment_isolation() {
     bound.apply_environment(&mut command);
     let output = String::from_utf8(command.output().unwrap().stdout).unwrap();
     assert!(output.contains("FSTART_FIXTURE_IMAGE=recorded\n") && !output.contains("AUX_INPUT="));
+}
+
+/// Profile rustflags the unit applies to this workspace's own crates.
+pub(crate) fn member_flags(selection: &Selection) -> Vec<String> {
+    let recorded: serde_json::Value =
+        serde_json::from_slice(&fs::read(selection.directory.join("rustflags.json")).unwrap())
+            .unwrap();
+    serde_json::from_value(recorded["member_rustflags"].clone()).unwrap()
 }

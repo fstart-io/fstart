@@ -11,12 +11,13 @@ use crate::board_manifest::BoardManifest;
 
 #[cfg(test)]
 #[path = "selection_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) struct Selection {
     pub directory: PathBuf,
     pub manifest: PathBuf,
     pub cfgs: Vec<String>,
+    /// RUSTFLAGS for every crate in the unit, core and dependencies included.
     pub flags: Vec<String>,
     pub args: Vec<String>,
     producer_environment: BTreeMap<String, String>,
@@ -81,19 +82,46 @@ impl Selection {
             format!("fstart_entry=\"{}\"", unit.entry),
             format!("fstart_payload=\"{}\"", unit.payload),
         ];
-        let mut flags = unit.rustflags.clone();
-        for cfg in &cfgs {
-            flags.extend(["--cfg".into(), cfg.clone()]);
-        }
-        flags.extend(unit.check_cfg_flags()?);
+        let flags = unit.rustflags.clone();
+        // The stage selection and linker script only concern this workspace's
+        // crates. Passing them as profile rustflags rather than RUSTFLAGS keeps
+        // core, alloc and registry dependencies identical between units, so
+        // every unit shares one Cargo target directory and builds those once.
+        let mut member_flags: Vec<String> = cfgs
+            .iter()
+            .flat_map(|cfg| ["--cfg".into(), cfg.clone()])
+            .collect();
+        member_flags.extend(unit.check_cfg_flags()?);
         if let Some(script) = &unit.linker_script {
             let path = directory.join("link.ld");
             fs::write(&path, script).map_err(|e| e.to_string())?;
-            flags.push(format!("-Clink-arg=-T{}", path.display()));
+            member_flags.push(format!("-Clink-arg=-T{}", path.display()));
         }
         fs::write(
             directory.join("rustflags.json"),
-            serde_json::to_vec_pretty(&flags).map_err(|e| e.to_string())?,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "rustflags": flags,
+                "member_rustflags": member_flags,
+            }))
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let profile = if release || unit.release_only {
+            "release"
+        } else {
+            "dev"
+        };
+        // `"*"` matches every non-member package; build-override covers
+        // build scripts and proc macros, which run on the host.
+        let member_rustflags = directory.join("member-rustflags.toml");
+        fs::write(
+            &member_rustflags,
+            format!(
+                "[profile.{profile}]\nrustflags = {}\n\
+                 [profile.{profile}.package.\"*\"]\nrustflags = []\n\
+                 [profile.{profile}.build-override]\nrustflags = []\n",
+                serde_json::to_string(&member_flags).map_err(|e| e.to_string())?
+            ),
         )
         .map_err(|e| e.to_string())?;
         let manifest = root
@@ -119,7 +147,10 @@ impl Selection {
             "--target".into(),
             unit.target.clone(),
             "--target-dir".into(),
-            directory.join("cargo").display().to_string(),
+            shared_target_dir(root).display().to_string(),
+            "-Zprofile-rustflags".into(),
+            "--config".into(),
+            member_rustflags.display().to_string(),
             "--features".into(),
             unit.features.join(","),
         ]);
@@ -138,6 +169,11 @@ impl Selection {
             producer_environment: environment,
             removed_environment,
         })
+    }
+
+    /// Cargo target directory holding this unit's compiler outputs.
+    pub fn target_dir(&self, root: &Path) -> PathBuf {
+        shared_target_dir(root)
     }
 
     pub fn environment(&self) -> BTreeMap<String, String> {
@@ -191,4 +227,11 @@ impl Selection {
         self.apply_environment(&mut command);
         command
     }
+}
+
+/// One Cargo target directory for all firmware units of all boards. Cargo
+/// keys every artifact by its full configuration, so units only share what
+/// is really identical, such as core for one target.
+fn shared_target_dir(root: &Path) -> PathBuf {
+    root.join("target/fstart-build/cargo")
 }
