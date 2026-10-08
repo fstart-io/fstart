@@ -470,24 +470,30 @@ pub struct IntelI945 {
     memory_info: Option<fstart_core::memory_info::MemoryInfo>,
 }
 
-/// CF9 full reset, mirroring coreboot `full_reset()`.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn cf9_reset() -> ! {
+/// CF9 reset with `value` as the reset request (RST_CPU 0->1 edge).
+fn cf9(value: u8) -> ! {
+    #[cfg(target_arch = "x86_64")]
     // SAFETY: I/O port 0xcf9 is the standard Intel reset control register.
+    // Program the reset type first; the RST_CPU (bit 2) edge starts it.
     unsafe {
-        fstart_core::pio::outb(0xcf9, 0x06);
-        fstart_core::pio::outb(0xcf9, 0x0e);
+        fstart_core::pio::outb(0xcf9, value & !0x04);
+        fstart_core::pio::outb(0xcf9, value);
     }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = value;
     loop {
         core::hint::spin_loop();
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-fn cf9_reset() -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
+/// Hard reset, mirroring coreboot `system_reset()`.
+pub(crate) fn cf9_reset() -> ! {
+    cf9(0x06)
+}
+
+/// Full reset with a power cycle, mirroring coreboot `full_reset()`.
+pub(crate) fn cf9_full_reset() -> ! {
+    cf9(0x0e)
 }
 
 impl IntelI945 {
