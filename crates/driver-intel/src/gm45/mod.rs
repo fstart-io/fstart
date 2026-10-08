@@ -365,14 +365,10 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         Ok(())
     }
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
-        let (revision, fsb, mem) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
+        let (revision, _, _) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
         if self.graphics != Gm45GraphicsPolicy::Integrated {
             return Err(ServiceError::InvalidParam);
         }
-        // coreboot romstage.c: D4F0 must be hidden before PM setup.
-        let hb = self.hostbridge();
-        hb.deven.set(hb.deven.get() & !0x4000);
-        self.post_dram_pm(revision, fsb, mem)?;
         self.post_dram_pcie(revision)
     }
     fn finish_early_post_dram_init(&mut self) -> Result<(), ServiceError> {
@@ -498,6 +494,10 @@ impl MemoryController for IntelGm45 {
         // The final map and all post-map programming must complete before
         // touching DRAM. Failure keeps every public RAM API fail-closed.
         self.probe_low_memory()?;
+        // Coreboot romstage: hide D4F0 and finish PM before ICH9 DMI setup.
+        let hb = self.hostbridge();
+        hb.deven.set(hb.deven.get() & !0x4000);
+        self.post_dram_pm(revision, fsb_mhz, timing.clock.mhz())?;
         self.trained_mode = Some((revision, fsb_mhz, timing.clock.mhz()));
         self.dram_ready = true;
         Ok(())
