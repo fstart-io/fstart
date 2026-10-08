@@ -394,14 +394,21 @@ where
     fn bus_scan(&mut self) -> Result<(), ServiceError> {
         if self.pci.is_none() {
             let mut pci = fstart_pci::PciEcam::from_provider(&self.northbridge)
+                .inspect_err(|error| fstart_log::error!("pci: root setup failed: {:?}", error))
                 .map_err(|_| ServiceError::HardwareError)?;
             let fixed_bars = self.southbridge.fixed_pci_bars();
             pci.add_fixed_bars(fixed_bars.as_slice())
+                .inspect_err(|error| {
+                    fstart_log::error!("pci: fixed BAR reservation failed: {:?}", error);
+                })
                 .map_err(|_| ServiceError::HardwareError)?;
             self.pci = Some(pci);
         }
         let pci = self.pci.as_mut().ok_or(ServiceError::NotInitialized)?;
         pci.enumerate_and_allocate()
+            .inspect_err(|error| {
+                fstart_log::error!("pci: enumeration/allocation failed: {:?}", error);
+            })
             .map_err(|_| ServiceError::HardwareError)
     }
 

@@ -64,13 +64,28 @@ pub struct PciEcamConfig {
 // Internal types
 // -----------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ufmt::derive::uDebug)]
 pub enum PciEcamError {
     ConfigError,
     ResourceRangeLimit,
     FixedBarInvalid,
     FixedBarConflict,
     ResourceExhausted,
+}
+
+impl PciEcamError {
+    fn log_bar(self, operation: &str, address: PciAddress, register: u16) {
+        fstart_log::error!(
+            "pci: {} failed segment={:#x} bus={:#x} device={:#x} function={} BAR={:#x}: {:?}",
+            operation,
+            address.segment(),
+            address.bus(),
+            address.device(),
+            address.function(),
+            register,
+            self
+        );
+    }
 }
 
 /// Address-space type of a chipset-owned PCI BAR.
@@ -675,7 +690,9 @@ impl PciEcam {
         let sizing_result = (|| {
             let mut i = 0;
             while i < max_bars {
-                let (info, is_64) = self.size_bar(addr, i)?;
+                let (info, is_64) = self.size_bar(addr, i).inspect_err(|error| {
+                    error.log_bar("BAR probe", addr, PCI_BAR0 + i as u16 * 4);
+                })?;
                 bars[i] = info;
                 if is_64 {
                     i += 1; // skip upper half
@@ -864,7 +881,22 @@ impl PciEcam {
             BarType::None => None,
         };
 
-        let base = base.ok_or(PciEcamError::ResourceExhausted)?;
+        let base = base
+            .ok_or(PciEcamError::ResourceExhausted)
+            .inspect_err(|error| {
+                error.log_bar("BAR allocation", addr, bar.reg);
+                fstart_log::error!(
+                    "pci: requested BAR size={:#x} alignment={:#x} type={}",
+                    bar.size,
+                    align,
+                    match bar.bar_type {
+                        BarType::Memory32 => "memory32",
+                        BarType::Memory64 => "memory64",
+                        BarType::Io => "I/O",
+                        BarType::None => "none",
+                    }
+                );
+            })?;
         self.write16(
             addr,
             PCI_COMMAND,
@@ -1043,7 +1075,7 @@ impl PciEcam {
     pub fn enumerate_and_allocate(&mut self) -> Result<(), PciEcamError> {
         self.enumerate_bus(self.bus_start)?;
 
-        if self.fixed_bars.iter().any(|fixed| {
+        if let Some(fixed) = self.fixed_bars.iter().find(|fixed| {
             !self.devices.iter().any(|dev| {
                 dev.addr == fixed.address
                     && dev
@@ -1052,6 +1084,11 @@ impl PciEcam {
                         .any(|bar| bar.fixed && bar.reg == fixed.register)
             })
         }) {
+            PciEcamError::FixedBarInvalid.log_bar(
+                "fixed BAR discovery",
+                fixed.address,
+                fixed.register,
+            );
             return Err(PciEcamError::FixedBarInvalid);
         }
 
