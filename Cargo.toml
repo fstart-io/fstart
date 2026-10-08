@@ -32,6 +32,7 @@ members = [
   "crates/driver-ipmi",
   "crates/driver-tpm",
   "crates/tcg",
+  "crates/driver-usbdebug",
   "crates/driver-intel",
   "crates/driver-sunxi",
   "crates/driver-sifive",
@@ -122,6 +123,7 @@ fstart-driver-i2c = { path = "crates/driver-i2c" }
 fstart-driver-spd = { path = "crates/driver-spd" }
 fstart-driver-tpm = { path = "crates/driver-tpm" }
 fstart-tcg = { path = "crates/tcg" }
+fstart-driver-usbdebug = { path = "crates/driver-usbdebug" }
 fstart-stage = { path = "crates/stage" }
 fstart-acpi = { path = "crates/acpi" }
 fstart-smm = { path = "crates/smm" }
@@ -188,6 +190,8 @@ opt-level = "s"
 [profile.dev.package.fstart-driver-superio]
 opt-level = "s"
 [profile.dev.package.fstart-driver-uart]
+opt-level = "s"
+[profile.dev.package.fstart-driver-usbdebug]
 opt-level = "s"
 [profile.dev.package.lz4_flex]
 opt-level = 2

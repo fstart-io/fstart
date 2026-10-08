@@ -1,0 +1,14 @@
+[package]
+name = "fstart-driver-usbdebug"
+description = "Allocation-free EHCI debug-port console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fstart-core = { workspace = true }
+fstart-pci = { workspace = true }
+fstart-arch = { workspace = true, features = ["x86_64"] }
+tock-registers = { workspace = true }
+zerocopy = { workspace = true }
