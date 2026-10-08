@@ -56,8 +56,8 @@ x86_64_crate = { package = "x86_64", version = "0.15", default-features = false 
 raw-cpuid = { version = "10.7", default-features = false }
 
 # Firmware SPI controllers; use the allocation-free host/controller interface.
-rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0", default-features = false }
-rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "a06d37b6c45a59b68a3a01b7b8abee73a10ea8a0", default-features = false }
+rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "29ee7febf0354f57ddf44e5078d90ef2af5d48c4", default-features = false }
+rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "29ee7febf0354f57ddf44e5078d90ef2af5d48c4", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
