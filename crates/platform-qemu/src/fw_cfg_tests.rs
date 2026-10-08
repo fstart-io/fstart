@@ -86,7 +86,7 @@ fn cpu_count_reads_online_cpus_not_hotplug_capacity() {
 #[test]
 fn e820_rejects_partial_records_and_full_buffers() {
     let mut bytes = [0u8; 40];
-    bytes[..8].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+    bytes[..8].copy_from_slice(&0x1122_3344_5566_7000u64.to_le_bytes());
     bytes[8..16].copy_from_slice(&4096u64.to_le_bytes());
     bytes[16..20].copy_from_slice(&(E820Kind::Ram as u32).to_le_bytes());
     let dir = directory(&[("etc/e820", 20, 0x20)]);
@@ -95,7 +95,7 @@ fn e820_rejects_partial_records_and_full_buffers() {
         assert_eq!(cfg.detect_memory(&mut entries), Ok(1));
         let addr = entries[0].addr;
         let size = entries[0].size;
-        assert_eq!(addr, 0x1122_3344_5566_7788);
+        assert_eq!(addr, 0x1122_3344_5566_7000);
         assert_eq!(size, 4096);
         assert_eq!(cfg.total_ram_bytes(), Ok(4096));
     });

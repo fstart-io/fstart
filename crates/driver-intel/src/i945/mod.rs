@@ -1597,7 +1597,7 @@ impl MemoryDetector for IntelI945 {
                 .iter()
                 .filter(|entry| entry.kind == E820Kind::Ram as u32)
                 .map(|entry| (entry.addr, entry.size)),
-        );
+        )?;
         fstart_log::info!(
             "i945: detected memory map usable={:#x} TOLUD={:#x} TOM={:#x} TSEG={:#x}+{:#x}",
             usable_top,

@@ -1,11 +1,14 @@
 //! Fixed Intel DRAM mainstage flow and its state.
 
+extern crate alloc;
+
 use crate::boot::{import_intel_directory, install_intel_load_policy};
 use crate::{
     IntelBoard, IntelChipsetConfig, IntelEarlyPlatform, IntelMainstageBoardCtx,
     IntelMainstageBoardHooks, IntelPlatform, IntelPlatformConfig, IntelSmbusRouting, SmbusRoute,
     layout,
 };
+use alloc::vec::Vec;
 use fstart_core::services::memory_detect::{E820Entry, MemoryDetector};
 use fstart_core::services::{ConsoleDevice, ServiceError};
 use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
@@ -375,11 +378,11 @@ where
         // Cache is still off at this point: the RAM-stage entry tore down CAR
         // (CR0.CD=1, MTRRs disabled) and nothing re-enabled it yet. The ranges
         // the northbridge just published are enough to restore caching now,
-        // instead of leaving the whole mainstage uncached until MP init repeats
-        // the same MTRR program per CPU.
+        // instead of leaving the whole mainstage uncached. The complete final
+        // solution is selected after PCI allocation, before devices and MP.
         // SAFETY: BSP-only, after the memory map is published.
         unsafe {
-            fstart_arch::x86::mtrr::setup_ram_wb();
+            fstart_arch::x86::mtrr::setup_ram_wb()?;
         }
         Ok(())
     }
@@ -435,6 +438,22 @@ where
             unsafe { fstart_arch::x86_64::paging::IdentityTables::build(ram.chain(bars))? };
         let base = unsafe { tables.install() };
         fstart_log::info!("paging: final DRAM identity tables at {:#x}", base);
+        let wc = pci
+            .assigned_memory_bars()
+            .filter(|(address, window)| {
+                window.prefetchable
+                    && pci
+                        .device(*address)
+                        .is_some_and(|device| device.read32(0x08) >> 16 == 0x0300)
+            })
+            .map(|(_, window)| (window.base, window.size))
+            .collect::<Vec<_>>();
+        // SAFETY: BSP-only, after allocation, before device initialization/APs.
+        // Hardware RAM facts were published before e820 reservations; only
+        // assigned prefetchable VGA apertures are eligible for optional WC.
+        unsafe {
+            fstart_arch::x86::mtrr::install_final_solution(&wc)?;
+        }
         Ok(())
     }
 

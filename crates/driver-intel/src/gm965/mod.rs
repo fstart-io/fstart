@@ -1654,7 +1654,7 @@ impl MemoryDetector for IntelGm965 {
                 .iter()
                 .filter(|entry| entry.kind == E820Kind::Ram as u32)
                 .map(|entry| (entry.addr, entry.size)),
-        );
+        )?;
         fstart_log::info!(
             "gm965: detected memory map usable={:#x} TOLUD={:#x} TOM={:#x} TOUUD={:#x} TSEG={:#x}+{:#x}",
             usable_top,
@@ -1707,7 +1707,7 @@ impl MemoryController for IntelGm965 {
                 .iter()
                 .filter(|entry| entry.kind == E820Kind::Ram as u32)
                 .map(|entry| (entry.addr, entry.size)),
-        );
+        )?;
         fstart_log::info!(
             "gm965: dynamic WB MTRR ranges set (TOLUD {:#x}, usable top {:#x})",
             tolud,

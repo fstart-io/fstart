@@ -555,6 +555,7 @@ dependencies = [
  "fstart-core",
  "fstart-log",
  "fstart-smm",
+ "heapless 0.8.0",
  "object 0.37.3",
  "tock-registers",
  "ufmt",

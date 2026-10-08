@@ -208,12 +208,7 @@ impl CpuDriver for GenericX86CpuDriver {
         true
     }
 
-    fn init_cpu(&self) {
-        // SAFETY: MP init runs this on every active CPU after memory detection
-        // has published the WB RAM ranges.
-        unsafe { crate::x86::mtrr::setup_ram_wb() };
-        fstart_log::info!("cpu: generic x86 MTRR setup complete");
-    }
+    fn init_cpu(&self) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +239,8 @@ pub enum MpError {
     NoApsResponded,
     /// Fewer APs than expected checked in.
     PartialBringup { expected: u16, actual: u16 },
+    /// The complete BSP cacheability solution could not be installed/mirrored.
+    CacheabilitySetupFailed,
     /// SIPI trampoline placement failed.
     TrampolinePlacementFailed,
     /// No CPU driver matched one or more CPUs.
@@ -669,6 +666,11 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
 
     fstart_log::info!("mp: BSP LAPIC ID = {}", lapic.id());
 
+    // The BSP solution is complete before any AP starts. Model drivers must
+    // not recalculate MTRRs; SIPI replays the exact BSP MSRs before caching.
+    // SAFETY: BSP-only RAM-stage initialization, before INIT/SIPI.
+    unsafe { crate::x86::mtrr::prepare_for_mp() }.map_err(|_| MpError::CacheabilitySetupFailed)?;
+
     // Pre-MP CPU-driver hooks (BSP only).
     pre_mp_cpu_drivers(config.cpu_drivers);
 
@@ -760,17 +762,39 @@ fn sipi_claimed_ap_count() -> u32 {
     }
 }
 
+#[cfg(test)]
+mod sipi_tests;
+
+fn patch_msr_table(page: &mut [u8], msrs: &[crate::x86::mtrr::MsrEntry]) -> Result<(), MpError> {
+    use zerocopy::IntoBytes;
+    let bytes = msrs.as_bytes();
+    let end = sipi_blob::MSR_TABLE_OFFSET
+        .checked_add(bytes.len())
+        .ok_or(MpError::TrampolinePlacementFailed)?;
+    let count_end = sipi_blob::MSR_COUNT_OFFSET + core::mem::size_of::<u32>();
+    if end > page.len() || count_end > page.len() {
+        return Err(MpError::TrampolinePlacementFailed);
+    }
+    page[sipi_blob::MSR_TABLE_OFFSET..end].copy_from_slice(bytes);
+    page[sipi_blob::MSR_COUNT_OFFSET..count_end]
+        .copy_from_slice(&(msrs.len() as u32).to_le_bytes());
+    Ok(())
+}
+
 fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> {
     if max_aps as usize > MAX_APS || sipi_blob::TRAMPOLINE.len() > 4096 {
         return Err(MpError::TrampolinePlacementFailed);
     }
 
+    // SAFETY: the BSP has installed its final solution, and APs are not running.
+    let msrs = unsafe { crate::x86::mtrr::snapshot_for_sipi() }
+        .map_err(|_| MpError::CacheabilitySetupFailed)?;
     let dst = SIPI_VECTOR_ADDR as *mut u8;
     // SAFETY: we only expose the raw stack arena address to AP startup code;
     // Rust never creates references to individual AP stacks while they run.
     let stack_base = unsafe { core::ptr::addr_of_mut!(AP_STACKS.0) as u64 };
     // SAFETY: SIPI_VECTOR_ADDR is a conventional-memory page reserved for AP
-    // startup.  The copied blob is less than one page and all patch offsets are
+    // startup. The copied blob occupies one page and all patch offsets are
     // emitted by the build script from symbols inside that blob.
     unsafe {
         core::ptr::copy_nonoverlapping(
@@ -789,6 +813,10 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
         patch_u32(dst, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
         patch_u32(dst, sipi_blob::AP_LIMIT_OFFSET, u32::from(max_aps));
         patch_u32(dst, sipi_blob::AP_COUNTER_OFFSET, 0);
+        patch_msr_table(
+            core::slice::from_raw_parts_mut(dst, sipi_blob::TRAMPOLINE.len()),
+            msrs.as_slice(),
+        )?;
 
         // INIT leaves AP caches disabled. Write the complete copied and patched
         // trampoline back to DRAM before sending SIPI, as coreboot does for its
@@ -806,6 +834,10 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
     let entry = fstart_ap_entry as *const () as usize as u64;
     fstart_log::info!("mp: tramp[0]={:#010x} [4]={:#010x}", words[0], words[1]);
     fstart_log::info!("mp: tramp[8]={:#010x} [12]={:#010x}", words[2], words[3]);
+    fstart_log::info!(
+        "mp: mirroring {} BSP MTRR/PAT MSRs before AP cache enable",
+        msrs.len()
+    );
     fstart_log::info!("mp: patch cr3={:#x}", read_cr3());
     fstart_log::info!("mp: patch entry={:#x} base={:#x}", entry, stack_base);
 

@@ -1104,6 +1104,12 @@ impl PciEcam {
     /// Memory BAR spans actually assigned to discovered devices, including
     /// chipset-fixed BARs. I/O BARs and unassigned/probed slots are excluded.
     pub fn assigned_memory_windows(&self) -> impl Iterator<Item = PciWindow> + '_ {
+        self.assigned_memory_bars().map(|(_, window)| window)
+    }
+
+    /// Assigned memory BAR spans together with their owning PCI address.
+    /// Consumers can inspect the device without rediscovering BAR sizes.
+    pub fn assigned_memory_bars(&self) -> impl Iterator<Item = (PciAddress, PciWindow)> + '_ {
         self.devices.iter().flat_map(move |device| {
             device.bars.iter().filter_map(move |bar| {
                 if !bar.allocated || !matches!(bar.bar_type, BarType::Memory32 | BarType::Memory64)
@@ -1116,12 +1122,15 @@ impl PciEcam {
                 } else {
                     u64::from(low)
                 };
-                Some(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base,
-                    size: bar.size,
-                    prefetchable: bar.prefetchable,
-                })
+                Some((
+                    device.addr,
+                    PciWindow {
+                        kind: PciWindowKind::Mmio,
+                        base,
+                        size: bar.size,
+                        prefetchable: bar.prefetchable,
+                    },
+                ))
             })
         })
     }

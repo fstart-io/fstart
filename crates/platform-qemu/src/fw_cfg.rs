@@ -254,7 +254,7 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
                 kind,
             );
         }
-        publish_mtrr_wb_ranges(&entries[..count]);
+        publish_mtrr_wb_ranges(&entries[..count])?;
         Ok(count)
     }
 
@@ -454,19 +454,16 @@ fn e820_count(size: u32) -> Option<usize> {
         .then_some(size / core::mem::size_of::<E820Wire>())
 }
 
-fn publish_mtrr_wb_ranges(entries: &[E820Entry]) {
-    let mut ranges = [(0u64, 0u64); 8];
-    let mut count = 0usize;
-    for entry in entries {
-        let kind = entry.kind;
-        let size = entry.size;
-        if kind == E820Kind::Ram as u32 && size != 0 && count < ranges.len() {
-            ranges[count] = (entry.addr, size);
-            count += 1;
-        }
-    }
+fn publish_mtrr_wb_ranges(entries: &[E820Entry]) -> Result<(), ServiceError> {
     #[cfg(all(target_arch = "x86_64", feature = "x86_64"))]
-    fstart_arch::x86::mtrr::set_ram_wb_ranges(&ranges[..count]);
+    fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
+        entries
+            .iter()
+            .filter(|entry| entry.kind == E820Kind::Ram as u32)
+            .map(|entry| (entry.addr, entry.size)),
+    )?;
+    let _ = entries;
+    Ok(())
 }
 
 #[derive(Clone)]

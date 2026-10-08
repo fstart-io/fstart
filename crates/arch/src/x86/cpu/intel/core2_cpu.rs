@@ -7,7 +7,6 @@ use crate::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
 use crate::x86::cpu::intel::{common_power, feature_control};
 use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor};
 use crate::x86::msr::{rdmsr, wrmsr};
-use crate::x86::mtrr;
 
 const IA32_PECI_CTL: u32 = 0x5a0;
 const IA32_PLATFORM_ID: u32 = 0x17;
@@ -151,9 +150,6 @@ impl CpuDriver for Core2CpuDriver {
     }
 
     fn init_cpu(&self) {
-        // SAFETY: MP init runs this on every active logical CPU. All CPUs
-        // receive the same low-DRAM WB MTRR layout before OS handoff.
-        unsafe { mtrr::setup_ram_wb() };
         // SAFETY: this CPU model implements these power-management MSRs.
         unsafe {
             common_power::configure_c_states(
