@@ -51,8 +51,9 @@ pub enum FsbClock {
 }
 
 /// Memory clock frequency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum MemClock {
+    #[default]
     Ddr667 = 0,
     Ddr800 = 1,
 }

@@ -4,9 +4,9 @@
 //! `sdram_detect_smallest_params`, `sdram_clk_crossing`,
 //! `sdram_clkmode`, `sdram_timings`, `sdram_checkreset`.
 
-use super::SysInfo;
+use super::{FsbClock, SysInfo};
 use crate::MmioBar;
-use crate::generic::spd::ChipWidth;
+use crate::generic::spd::MemClock;
 use crate::ich7::ich7;
 use crate::pineview::regs::{CLKCFG_REG, MchBar, PMSTS_REG, mchbar};
 use fstart_core::services::ServiceError;
@@ -17,34 +17,51 @@ use tock_registers::interfaces::{ReadWriteable, Readable};
 // Helpers
 // ===================================================================
 
-fn lsbpos(val: u8) -> i8 {
-    for i in 0..8 {
-        if val & (1 << i) != 0 {
-            return i;
-        }
-    }
-    -1
-}
-
-fn msbpos(val: u8) -> i8 {
-    for i in (0..8).rev() {
-        if val & (1 << i) != 0 {
-            return i;
-        }
-    }
-    -1
-}
-
 fn div_round_up(a: u32, b: u32) -> u32 {
     a.div_ceil(b)
 }
 
-fn chip_width_code(width: ChipWidth) -> u8 {
-    match width {
-        ChipWidth::X8 => 0,
-        ChipWidth::X16 | ChipWidth::X32 => 1,
-        ChipWidth::X4 => 0,
+/// Select an advertised CAS using the shared decoder's per-CAS tCK/tAC.
+fn select_frequency_and_cas(
+    si: &SysInfo,
+    max_clock: MemClock,
+) -> Result<(MemClock, u8), ServiceError> {
+    let common_cas = si
+        .dimms
+        .iter()
+        .flatten()
+        .fold(0x78u8, |mask, dimm| mask & dimm.cas_latencies);
+    if common_cas == 0 || si.dimms.iter().all(Option::is_none) {
+        fstart_log::error!("raminit: no common controller-supported CAS latency");
+        return Err(ServiceError::HardwareError);
     }
+
+    [MemClock::Ddr800, MemClock::Ddr667]
+        .into_iter()
+        .filter(|&clock| clock == MemClock::Ddr667 || max_clock == MemClock::Ddr800)
+        .find_map(|clock| {
+            // Preserve coreboot's CAS5 floor at DDR800, but allow CAS3..6
+            // on the DDR667 retry. Times are in the decoder's 1/256 ns units.
+            let (min_cas, tck, tac) = match clock {
+                MemClock::Ddr800 => (5, 640, 102), // 2.5 ns / 0.40 ns
+                MemClock::Ddr667 => (3, 768, 115), // 3.0 ns / 0.45 ns
+            };
+            (min_cas..=6u8)
+                .rev()
+                .find(|&cas| {
+                    common_cas & (1 << cas) != 0
+                        && si.dimms.iter().flatten().all(|dimm| {
+                            let cycle = dimm.cycle_time_256ns[usize::from(cas)];
+                            let access = dimm.access_time_256ns[usize::from(cas)];
+                            cycle != 0 && cycle <= tck && access != 0 && access <= tac
+                        })
+                })
+                .map(|cas| (clock, cas))
+        })
+        .ok_or_else(|| {
+            fstart_log::error!("raminit: no valid frequency/CAS combination");
+            ServiceError::HardwareError
+        })
 }
 
 // ===================================================================
@@ -62,8 +79,8 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceErr
         mch.read8(mchbar::CLKCFG),
     ));
     let fsb = match strap.read_as_enum(CLKCFG_REG::FSB) {
-        Some(CLKCFG_REG::FSB::Value::Fsb800) => 1,
-        Some(CLKCFG_REG::FSB::Value::Fsb667) => 0,
+        Some(CLKCFG_REG::FSB::Value::Fsb800) => FsbClock::Fsb800,
+        Some(CLKCFG_REG::FSB::Value::Fsb667) => FsbClock::Fsb667,
         None => {
             fstart_log::error!(
                 "raminit: unsupported CLKCFG FSB encoding {}",
@@ -77,107 +94,66 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceErr
     let hb = ecam::EcamDevice::new(0, 0, 0);
     let e3 = hb.read8(0xE3);
     let freq_raw = ((e3 & 0x80) >> 7) | ((hb.read8(0xE4) & 0x03) << 1);
-    let mut freq: u8 = match freq_raw {
-        0 | 5 => 1, // DDR 800 MHz
-        6 => 0,     // DDR 667 MHz
+    let mut max_clock = match freq_raw {
+        0 | 5 => MemClock::Ddr800,
+        6 => MemClock::Ddr667,
         raw => {
             fstart_log::error!("raminit: unsupported CAPID DDR encoding {}", raw);
             return Err(ServiceError::HardwareError);
         }
     };
     if si.is_sodimm() {
-        freq = 0;
+        max_clock = MemClock::Ddr667;
     }
 
-    si.selected_timings.fsb_clock = fsb;
     fstart_log::info!(
         "raminit: HW strap: FSB={}MHz, DDR={}MHz",
-        if fsb == 1 { 800 } else { 667 },
-        if freq == 1 { 800 } else { 667 }
+        if fsb == FsbClock::Fsb800 { 800 } else { 667 },
+        if max_clock == MemClock::Ddr800 {
+            800
+        } else {
+            667
+        }
     );
 
-    // --- Detect common CAS latency (SPD byte 18) ---
-    let mut common_cas: u8 = 0xFF;
-    for i in 0..super::TOTAL_DIMMS {
-        if si.dimm_populated(i) {
-            let d = si.dimms[i].as_ref().expect("populated");
-            common_cas &= d.cas_latencies;
-        }
-    }
-    if common_cas == 0 {
-        fstart_log::error!("raminit: no common CAS latency among DIMMs");
-        common_cas = 7; // fallback
-    }
-
-    let msb = msbpos(common_cas);
-    let lsb = lsbpos(common_cas);
-    let mut highcas = msb as u8;
-    let mut lowcas = (lsb.max(5)) as u8;
-    let mut cas: u8 = 0;
-
-    // --- CAS / frequency negotiation loop ---
-    // For each populated DIMM, check if its tCK (SPD[9]) and
-    // tAA (SPD[10]) meet the current frequency's requirements.
-    while cas == 0 && highcas >= lowcas {
-        let mut all_ok = true;
-        for i in 0..super::TOTAL_DIMMS {
-            if !si.dimm_populated(i) {
-                continue;
-            }
-            let d = si.dimms[i].as_ref().expect("populated");
-            let (max_tck, max_taa) = if freq == 1 {
-                (0x25u8, 0x40u8) // 800 MHz: tCK ≤ 2.5 ns, tAA ≤ 10 ns
-            } else {
-                (0x30u8, 0x45u8) // 667 MHz: tCK ≤ 3.0 ns, tAA ≤ ~11 ns
-            };
-            if d.spd_data[9] > max_tck || d.spd_data[10] > max_taa {
-                all_ok = false;
-                break;
-            }
-        }
-        if all_ok {
-            cas = highcas;
-        } else {
-            if highcas == 0 {
-                break;
-            }
-            highcas -= 1;
-        }
-    }
-
-    // If no CAS works at 800 MHz, drop to 667 MHz and retry from the raw
-    // LSB (coreboot clears the CAS5 floor on the retry pass).
-    if cas == 0 && freq == 1 {
-        freq = 0;
+    let (mut freq, mut cas) = select_frequency_and_cas(si, max_clock)?;
+    if freq != max_clock {
         fstart_log::warn!("raminit: dropping to 667 MHz due to timing constraints");
-        highcas = msb as u8;
-        lowcas = lsb as u8;
-        while cas == 0 && highcas >= lowcas {
-            let mut all_ok = true;
-            for i in 0..super::TOTAL_DIMMS {
-                if !si.dimm_populated(i) {
-                    continue;
-                }
-                let d = si.dimms[i].as_ref().expect("populated");
-                if d.spd_data[9] > 0x30 || d.spd_data[10] > 0x45 {
-                    all_ok = false;
-                    break;
-                }
-            }
-            if all_ok {
-                cas = highcas;
-            } else if highcas == 0 {
-                fstart_log::error!("raminit: CAS retry underflow at DDR667");
-                return Err(ServiceError::HardwareError);
-            } else {
-                highcas -= 1;
-            }
-        }
     }
 
-    if cas == 0 {
-        fstart_log::error!("raminit: no valid CAS latency found");
+    // --- Program the selected frequency into MCHBAR CLKCFG ---
+    // SAFETY: raminit owns the enabled MCHBAR mapping.
+    let clock = unsafe { mch.early_regs() };
+    let frequency = match freq {
+        MemClock::Ddr800 => CLKCFG_REG::DDR::Ddr800,
+        MemClock::Ddr667 => CLKCFG_REG::DDR::Ddr667,
+    };
+    if si.boot_path == crate::BootPath::S3Resume && !clock.clkcfg.matches_all(frequency) {
         return Err(ServiceError::HardwareError);
+    }
+    if si.boot_path == crate::BootPath::Normal {
+        clock.pmsts.modify(PMSTS_REG::INITIALIZATION_STARTED::SET);
+        clock.clkcfg.modify(CLKCFG_REG::UPDATE::SET + frequency);
+
+        // Read back the MCH-validated frequency, preserving the dword cycle.
+        let validated = match clock.clkcfg.read_as_enum(CLKCFG_REG::DDR) {
+            Some(CLKCFG_REG::DDR::Value::Ddr800) => MemClock::Ddr800,
+            Some(CLKCFG_REG::DDR::Value::Ddr667) => MemClock::Ddr667,
+            None => {
+                fstart_log::error!(
+                    "raminit: MCH validated unknown DDR encoding {:#x}",
+                    clock.clkcfg.read(CLKCFG_REG::DDR)
+                );
+                return Err(ServiceError::HardwareError);
+            }
+        };
+        // A controller downgrade must still satisfy every DIMM's timings.
+        let (selected, validated_cas) = select_frequency_and_cas(si, validated)?;
+        if selected != validated {
+            return Err(ServiceError::HardwareError);
+        }
+        freq = validated;
+        cas = validated_cas;
     }
 
     si.selected_timings.cas = cas;
@@ -185,55 +161,11 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceErr
     si.selected_timings.fsb_clock = fsb;
     update_clock_dependent_vars(si);
 
-    // --- Program the selected frequency into MCHBAR CLKCFG ---
-    // SAFETY: raminit owns the enabled MCHBAR mapping.
-    let clock = unsafe { mch.early_regs() };
-    let frequency = if freq == 1 {
-        CLKCFG_REG::DDR::Ddr800
-    } else {
-        CLKCFG_REG::DDR::Ddr667
-    };
-    if si.boot_path == crate::BootPath::S3Resume {
-        if !clock.clkcfg.matches_all(frequency) {
-            return Err(ServiceError::HardwareError);
-        }
-    }
-    if si.boot_path == crate::BootPath::Normal {
-        clock.pmsts.modify(PMSTS_REG::INITIALIZATION_STARTED::SET);
-        clock.clkcfg.modify(CLKCFG_REG::UPDATE::SET + frequency);
-
-        // Read back the MCH-validated frequency, preserving the dword cycle.
-        let validated = clock.clkcfg.read(CLKCFG_REG::DDR).wrapping_sub(2) as u8;
-        si.selected_timings.mem_clock = validated;
-
-        if si.selected_timings.mem_clock == 1 {
-            fstart_log::info!("raminit: MCH validated at 800MHz");
-            update_clock_dependent_vars(si);
-        } else if si.selected_timings.mem_clock == 0 {
-            fstart_log::info!("raminit: MCH validated at 667MHz");
-            update_clock_dependent_vars(si);
-        } else {
-            fstart_log::error!(
-                "raminit: MCH validated unknown DDR frequency {:#x}",
-                si.selected_timings.mem_clock
-            );
-            return Err(ServiceError::HardwareError);
-        }
-    }
-
     fstart_log::info!(
         "raminit: DDR {}MHz, CAS={}, FSB={}",
-        if si.selected_timings.mem_clock == 1 {
-            800
-        } else {
-            667
-        },
+        if freq == MemClock::Ddr800 { 800 } else { 667 },
         cas,
-        if si.selected_timings.fsb_clock == 1 {
-            800
-        } else {
-            667
-        }
+        if fsb == FsbClock::Fsb800 { 800 } else { 667 }
     );
     Ok(())
 }
@@ -242,15 +174,10 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceErr
 ///
 /// Ported from coreboot `sdram_update_clock_dependent_vars()`.
 fn update_clock_dependent_vars(si: &mut SysInfo) {
-    if si.selected_timings.mem_clock == 1 {
-        si.nodll = 0;
-        si.maxpi = 63;
-        si.pioffset = 0;
-    } else {
-        si.nodll = 1;
-        si.maxpi = 15;
-        si.pioffset = 1;
-    }
+    (si.nodll, si.maxpi, si.pioffset) = match si.selected_timings.mem_clock {
+        MemClock::Ddr800 => (0, 63, 0),
+        MemClock::Ddr667 => (1, 15, 1),
+    };
 }
 
 /// Detect the smallest common timing parameters across all DIMMs.
@@ -485,7 +412,7 @@ pub fn clkmode(si: &SysInfo, mch: &MchBar) {
     let v = mch.read8(mchbar::CSHRMISCCTL1);
     mch.write8(mchbar::CSHRMISCCTL1, v & !0x3F);
 
-    let mpll_ctl: u16 = if si.selected_timings.mem_clock == 0 {
+    let mpll_ctl: u16 = if si.selected_timings.mem_clock == MemClock::Ddr667 {
         1 // 667 MHz
     } else {
         (1 << 8) | (1 << 5) // 800 MHz
@@ -578,7 +505,7 @@ pub fn check_reset(_si: &SysInfo) {
 pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     let t = &si.selected_timings;
     let wl = t.cas.saturating_sub(1);
-    let flag = if t.mem_clock == 0 { 0usize } else { 1usize };
+    let flag = t.mem_clock as usize;
 
     // Detect bank/page geometry for timing adjustments.
     let mut trp_adj: u8 = 0;
@@ -592,7 +519,7 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
                 trp_adj = 1;
                 bank = 0;
             }
-            if chip_width_code(d.width) + d.cols.saturating_sub(9) > 1 {
+            if d.page_size == 2048 {
                 page = 1;
             }
         }
@@ -663,8 +590,12 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     mch.write8(mchbar::C0ADDCSCTRL, (v & !0x1F) | 1);
 
     // C0STATRDCTRL: static read control.
-    let reg32_ddr = if t.mem_clock == 0 { 3000u32 } else { 2500 };
-    let reg32_fsb = if si.selected_timings.fsb_clock == 0 {
+    let reg32_ddr = if t.mem_clock == MemClock::Ddr667 {
+        3000u32
+    } else {
+        2500
+    };
+    let reg32_fsb = if si.selected_timings.fsb_clock == FsbClock::Fsb667 {
         6000u32
     } else {
         5000
@@ -692,7 +623,7 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     );
 
     // Refresh control.
-    let (refctrl16, refctrl32) = if t.mem_clock == 0 {
+    let (refctrl16, refctrl32) = if t.mem_clock == MemClock::Ddr667 {
         (0x0514u16, 0x0A28u32)
     } else {
         (0x0618u16, 0x0C30u32)
@@ -711,7 +642,9 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
 
     let v = mch.read32(mchbar::C0STATRDCTRL);
     mch.write32(mchbar::C0STATRDCTRL, (v & !(0x7F << 24)) | (0x0B << 25));
-    if si.selected_timings.mem_clock > si.selected_timings.fsb_clock {
+    if si.selected_timings.mem_clock == MemClock::Ddr800
+        && si.selected_timings.fsb_clock == FsbClock::Fsb667
+    {
         mch.setbits32(mchbar::C0STATRDCTRL, 1 << 24);
     }
 
@@ -796,14 +729,14 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     let v = mch.read8(mchbar::SHBONUSREG);
     mch.write8(mchbar::SHBONUSREG, v & !0x03);
     mch.setbits32(mchbar::C0BYPCTRL, 1 << 0);
-    if si.selected_timings.mem_clock == 0 {
+    if si.selected_timings.mem_clock == MemClock::Ddr667 {
         mch.setbits32(mchbar::CSHRMISCCTL1, 1 << 9);
     }
 
     // DLL receive control per lane.
     let rcvctl = if si.is_sodimm() {
         0x0C0C_0C0C
-    } else if si.selected_timings.mem_clock == 0 {
+    } else if si.selected_timings.mem_clock == MemClock::Ddr667 {
         0x1010_1010
     } else {
         0x1414_1414
@@ -842,4 +775,82 @@ pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     mch.setbits32(mchbar::C0CMDTX1, 1 << 31);
 
     fstart_log::info!("raminit: timing registers programmed (WL={})", wl);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generic::spd::{DimmInfo, ddr2};
+    use crate::pineview::raminit::PLATFORM_DESKTOP;
+
+    fn sysinfo(cas_masks: &[u8]) -> SysInfo {
+        let mut si = SysInfo::new(crate::BootPath::Normal, PLATFORM_DESKTOP, [0; 4]);
+        for (slot, &mask) in si.dimms.iter_mut().zip(cas_masks) {
+            *slot = Some(DimmInfo {
+                cas_latencies: mask,
+                cycle_time_256ns: [640; 8],
+                access_time_256ns: [102; 8],
+                ..ddr2::decode_dimm(&ddr2::tests::valid_spd()).unwrap()
+            });
+        }
+        si
+    }
+
+    #[test]
+    fn rejects_disjoint_or_unsupported_cas_and_empty_slots() {
+        for si in [sysinfo(&[1 << 3, 1 << 5]), sysinfo(&[1 << 2]), sysinfo(&[])] {
+            assert!(select_frequency_and_cas(&si, MemClock::Ddr800).is_err());
+        }
+    }
+
+    #[test]
+    fn obeys_clock_limit_and_uses_per_cas_timings() {
+        let mut si = sysinfo(&[0x78, 0x78]);
+        // CAS6 cannot run even at DDR667; CAS5 is valid at DDR800.
+        si.dimms[1].as_mut().unwrap().cycle_time_256ns[6] = 769;
+        assert_eq!(
+            select_frequency_and_cas(&si, MemClock::Ddr800).unwrap(),
+            (MemClock::Ddr800, 5)
+        );
+        assert_eq!(
+            select_frequency_and_cas(&si, MemClock::Ddr667).unwrap(),
+            (MemClock::Ddr667, 5)
+        );
+
+        // If CAS5 also misses the timing limits, retry at DDR667 CAS4.
+        si.dimms[1].as_mut().unwrap().access_time_256ns[5] = 116;
+        assert_eq!(
+            select_frequency_and_cas(&si, MemClock::Ddr800).unwrap(),
+            (MemClock::Ddr667, 4)
+        );
+        // Advertised but absent timings must not be treated as fast enough.
+        si.dimms[1].as_mut().unwrap().cycle_time_256ns[4] = 0;
+        si.dimms[1].as_mut().unwrap().access_time_256ns[3] = 0;
+        assert!(select_frequency_and_cas(&si, MemClock::Ddr800).is_err());
+    }
+
+    #[test]
+    fn accepts_ddr667_timing_boundary() {
+        let mut si = sysinfo(&[1 << 3]);
+        let dimm = si.dimms[0].as_mut().unwrap();
+        dimm.cycle_time_256ns[3] = 768;
+        dimm.access_time_256ns[3] = 115;
+        assert_eq!(
+            select_frequency_and_cas(&si, MemClock::Ddr800).unwrap(),
+            (MemClock::Ddr667, 3)
+        );
+    }
+
+    #[test]
+    fn clock_dependent_dll_parameters() {
+        let mut si = sysinfo(&[]);
+        for (clock, params) in [
+            (MemClock::Ddr800, (0, 63, 0)),
+            (MemClock::Ddr667, (1, 15, 1)),
+        ] {
+            si.selected_timings.mem_clock = clock;
+            update_clock_dependent_vars(&mut si);
+            assert_eq!((si.nodll, si.maxpi, si.pioffset), params);
+        }
+    }
 }

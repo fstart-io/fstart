@@ -247,7 +247,7 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
         8 => ChipWidth::X8,
         16 => ChipWidth::X16,
         32 => ChipWidth::X32,
-        _ => ChipWidth::X8,
+        _ => return None,
     };
 
     // Chip capacity in bits = 2^rows * 2^cols * banks * chip width.
@@ -359,10 +359,10 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn valid_spd() -> [u8; 256] {
+    pub(crate) fn valid_spd() -> [u8; 256] {
         let mut spd = [0u8; 256];
         spd[SPD_BYTES_WRITTEN as usize] = 128;
         spd[SPD_EEPROM_SIZE as usize] = 8;
@@ -406,6 +406,23 @@ mod tests {
         spd[SPD_RANK_DENSITY as usize] = 0;
         update_checksum(&mut spd);
         assert!(decode_dimm(&spd).is_none());
+    }
+
+    #[test]
+    fn decodes_only_defined_chip_widths() {
+        for raw in 0..=u8::MAX {
+            let mut spd = valid_spd();
+            spd[SPD_PRIMARY_SDRAM_WIDTH as usize] = raw;
+            update_checksum(&mut spd);
+            let expected = match raw {
+                4 => Some(ChipWidth::X4),
+                8 => Some(ChipWidth::X8),
+                16 => Some(ChipWidth::X16),
+                32 => Some(ChipWidth::X32),
+                _ => None,
+            };
+            assert_eq!(decode_dimm(&spd).map(|d| d.width), expected, "width {raw}");
+        }
     }
 
     #[test]

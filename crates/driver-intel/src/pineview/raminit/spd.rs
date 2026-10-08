@@ -39,7 +39,7 @@ pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
             spd_buf[3] as u32,
         );
 
-        let Some(mut info) = crate::generic::spd::ddr2::decode_dimm(&spd_buf) else {
+        let Some(info) = crate::generic::spd::ddr2::decode_dimm(&spd_buf) else {
             fstart_log::error!(
                 "raminit: DIMM {} is not valid DDR2 (bytes: [{:#x}, {:#x}, {:#x}, {:#x}], type={:#x}, rev={:#x})",
                 i,
@@ -59,14 +59,6 @@ pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
         validate_pineview_spd(&info, i)?;
 
         si.spd_type = crate::generic::spd::ddr2::DDR2;
-
-        // Preserve Pineview's coreboot CAS mask policy: only CAS3..CAS6 are
-        // considered, with a conservative CAS0..2 fallback if the advertised
-        // mask is unusable.
-        info.cas_latencies &= 0x78;
-        if info.cas_latencies == 0 {
-            info.cas_latencies = 7;
-        }
 
         si.dt0mode |= (info.spd_data[49] & 0x2) >> 1;
 
@@ -136,17 +128,14 @@ fn validate_pineview_spd(
     info: &crate::generic::spd::DimmInfo,
     idx: usize,
 ) -> Result<(), ServiceError> {
-    if info.spd_data[11] & 0x02 != 0 {
-        fstart_log::error!(
-            "raminit: DIMM {} uses unsupported DDR2 module configuration bits",
-            idx
-        );
+    if info.is_ecc {
+        fstart_log::error!("raminit: DIMM {} uses unsupported ECC DDR2", idx);
         return Err(ServiceError::HardwareError);
     }
     if !matches!(info.banks, 4 | 8)
         || !matches!(info.width, ChipWidth::X8 | ChipWidth::X16)
-        || info.ranks > 2
-        || info.sides > 2
+        || !matches!(info.ranks, 1 | 2)
+        || !matches!(info.sides, 1 | 2)
         || !(12..=15).contains(&info.rows)
         || !(9..=10).contains(&info.cols)
     {
@@ -168,8 +157,8 @@ fn validate_pineview_spd(
 /// Determine the DIMM configuration code for a channel.
 ///
 /// This implementation has two incompatible encodings. Desktop/UDIMM uses
-/// a vendor-derived 4-bit DIMMA/DIMMB matrix that is not present in Pineview
-/// coreboot. Mobile/SO-DIMM uses the coreboot-derived 0..6 encoding.
+/// the vendor-derived 4-bit DIMMA/DIMMB matrix. Mobile/SO-DIMM uses
+/// the vendor-derived 0..6 encoding, matching coreboot.
 fn find_ramconfig(si: &SysInfo, chan: usize) -> Result<u8, ServiceError> {
     let dimma = chan * 2;
     let dimmb = dimma + 1;
@@ -215,15 +204,57 @@ fn dimm_config_desktop(d: &crate::generic::spd::DimmInfo) -> Result<u8, ServiceE
     if d.card_type == 0 {
         return Ok(0);
     }
-    let x8 = d.width == ChipWidth::X8;
-    let x16 = matches!(d.width, ChipWidth::X16 | ChipWidth::X32);
-    match (d.ranks, x8, x16) {
-        (1, true, _) => Ok(1),
-        (2, true, _) => Ok(2),
-        (1, _, true) => Ok(3),
+    match (d.ranks, d.width) {
+        (1, ChipWidth::X8) => Ok(1),
+        (2, ChipWidth::X8) => Ok(2),
+        (1, ChipWidth::X16) => Ok(3),
         _ => {
             fstart_log::error!("raminit: unsupported UDIMM rank/width config");
             Err(ServiceError::HardwareError)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generic::spd::ddr2;
+
+    #[test]
+    fn desktop_configurations_match_rank_and_width() {
+        let mut info = ddr2::decode_dimm(&ddr2::tests::valid_spd()).unwrap();
+        for (ranks, width, config) in [
+            (1, ChipWidth::X8, Some(1)),
+            (2, ChipWidth::X8, Some(2)),
+            (1, ChipWidth::X16, Some(3)),
+            (2, ChipWidth::X16, None),
+            (1, ChipWidth::X4, None),
+        ] {
+            info.ranks = ranks;
+            info.width = width;
+            assert_eq!(dimm_config_desktop(&info).ok(), config);
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_pineview_geometry() {
+        let info = ddr2::decode_dimm(&ddr2::tests::valid_spd()).unwrap();
+        assert!(validate_pineview_spd(&info, 0).is_ok());
+        for invalid in [
+            crate::generic::spd::DimmInfo {
+                is_ecc: true,
+                ..info.clone()
+            },
+            crate::generic::spd::DimmInfo {
+                width: ChipWidth::X4,
+                ..info.clone()
+            },
+            crate::generic::spd::DimmInfo {
+                ranks: 3,
+                ..info.clone()
+            },
+        ] {
+            assert!(validate_pineview_spd(&invalid, 0).is_err());
         }
     }
 }

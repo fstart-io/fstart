@@ -74,6 +74,43 @@ register_bitfields! [u32,
     ]
 ];
 
+/// RCOMP group-relative offsets and fields. Byte and word views retain the
+/// access widths used by coreboot, including the separate control-byte clear.
+pub mod rcomp {
+    use super::mchbar;
+    use tock_registers::register_bitfields;
+
+    pub const GRANULARITY: u32 = 1;
+    pub const SLEW_BASE: u32 = mchbar::C0SLEWBASE0 - mchbar::C0RCOMPCTRL0;
+    pub const P_LUT: u32 = mchbar::C0SLEWPULUT0 - mchbar::C0RCOMPCTRL0;
+    pub const N_LUT: u32 = mchbar::C0SLEWPDLUT0 - mchbar::C0RCOMPCTRL0;
+
+    register_bitfields![u8,
+        pub CONTROL [
+            OVERRIDE OFFSET(5) NUMBITS(2) []
+        ],
+        pub GRANULARITY_REG [
+            N OFFSET(4) NUMBITS(2) [],
+            P OFFSET(6) NUMBITS(2) []
+        ],
+        pub LUT [
+            VALUE OFFSET(0) NUMBITS(6) []
+        ]
+    ];
+    register_bitfields![u16,
+        pub SLEW_BASE_REG [
+            N OFFSET(0) NUMBITS(7) [],
+            P OFFSET(8) NUMBITS(7) []
+        ]
+    ];
+    register_bitfields![u32,
+        pub XCOMP_REG [
+            N OFFSET(16) NUMBITS(7) [],
+            P OFFSET(24) NUMBITS(7) []
+        ]
+    ];
+}
+
 // ===================================================================
 // Early-init MCHBAR register struct (tock-registers overlay)
 // ===================================================================

@@ -24,7 +24,7 @@ mod spd;
 mod timing;
 
 use crate::MmioBar;
-use crate::generic::spd::DimmInfo;
+use crate::generic::spd::{DimmInfo, MemClock};
 use crate::pineview::regs::{MchBar, mchbar};
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam;
@@ -48,12 +48,20 @@ pub const PLATFORM_MOBILE: u8 = 1;
 // Sysinfo — raminit state
 // ===================================================================
 
+/// Pineview FSB clocks; discriminants retain the hardware-table encoding.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum FsbClock {
+    #[default]
+    Fsb667 = 0,
+    Fsb800 = 1,
+}
+
 /// Selected memory timings (in clock cycles).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Timings {
     pub cas: u8,
-    pub fsb_clock: u8,
-    pub mem_clock: u8,
+    pub fsb_clock: FsbClock,
+    pub mem_clock: MemClock,
     pub tras: u8,
     pub trp: u8,
     pub trcd: u8,
@@ -133,8 +141,8 @@ struct TrainingWire {
 fn timing_bytes(t: Timings) -> [u8; 11] {
     [
         t.cas,
-        t.fsb_clock,
-        t.mem_clock,
+        t.fsb_clock as u8,
+        t.mem_clock as u8,
         t.tras,
         t.trp,
         t.trcd,
