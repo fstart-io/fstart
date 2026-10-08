@@ -16,7 +16,7 @@ acpi = [
   "dep:fstart-acpi-macros",
 ]
 gm45 = ["fstart-intel-gma/g45"]
-ich9 = []
+ich9 = ["dep:fstart-driver-usbdebug"]
 gm965 = ["fstart-intel-gma/g45"]
 i945 = ["ich7", "fstart-intel-gma/i945"]
 ich8 = []
@@ -26,6 +26,7 @@ spi = ["dep:rflasher-core", "dep:rflasher-internal"]
 
 [dependencies]
 sha2 = { workspace = true }
+fstart-driver-usbdebug = { workspace = true, optional = true }
 rflasher-core = { workspace = true, optional = true }
 rflasher-internal = { workspace = true, optional = true }
 bitflags = { workspace = true }

@@ -75,14 +75,16 @@ const BAR_SIZE: u64 = 0x1000;
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub ecam_base: usize,
-    pub device: PciAddress,
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
     pub bar: u32,
 }
 
 impl Config {
-    pub const fn fixed_bar(self) -> PciFixedBar {
+    pub fn fixed_bar(self) -> PciFixedBar {
         PciFixedBar {
-            address: self.device,
+            address: PciAddress::new(0, self.bus, self.device, self.function),
             register: 0x10,
             kind: PciFixedBarType::Memory32,
             base: self.bar as u64,
@@ -390,7 +392,7 @@ impl EhciDebug {
         if ecam::base() != self.config.ecam_base {
             return Err(ServiceError::InvalidParam);
         }
-        let dev = ecam::EcamDevice::new_address(self.config.device);
+        let dev = ecam::EcamDevice::new(self.config.bus, self.config.device, self.config.function);
         if !dev.is_present() || dev.read32(8) >> 8 != 0x0c0320 {
             return Err(ServiceError::NoDevice);
         }
@@ -477,7 +479,8 @@ impl ConsoleDevice for EhciDebug {
             || config.bar & 0xfff != 0
             || config.ecam_base == 0
             || config.ecam_base & 0xfffff != 0
-            || config.device.segment() != 0
+            || config.device > 31
+            || config.function > 7
         {
             return Err(ServiceError::InvalidParam);
         }
