@@ -13,7 +13,7 @@ use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::i945::I945IgdConfig;
 use fstart_platform_intel::i945::{
     I945Ich7Config, I945Ich7Platform, I945Variant, LpcFixedIoDecode, LpcGenericIoDecode,
-    LpcSerialDecode, SataConfig, SataMode, UsbConfig,
+    LpcSerialDecode, PirqRouting, SataConfig, SataMode, UsbConfig,
 };
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 
@@ -57,6 +57,39 @@ pub const fn d945gclf_igd_config() -> I945IgdConfig {
     }
 }
 
+/// The RCBA router matches the Pineview/NM10 boards (coreboot
+/// `early_init.c`); the PCI slot and onboard devices behind 0:1e.0 are wired
+/// per coreboot `acpi/ich7_pci_irqs.asl`.
+pub const D945GCLF_PIRQ: PirqRouting = {
+    use fstart_driver_intel::southbridge::pirq::{PciPin as P, PinRoute as R, Pirq as L};
+    PirqRouting {
+        bridge_routes: &[
+            R::new(0x00, P::A, L::F),
+            R::new(0x00, P::B, L::G),
+            R::new(0x00, P::C, L::H),
+            R::new(0x00, P::D, L::E),
+            R::new(0x01, P::A, L::G),
+            R::new(0x01, P::B, L::F),
+            R::new(0x01, P::C, L::E),
+            R::new(0x01, P::D, L::H),
+            R::new(0x02, P::A, L::C),
+            R::new(0x02, P::B, L::D),
+            R::new(0x02, P::C, L::B),
+            R::new(0x02, P::D, L::A),
+            R::new(0x03, P::A, L::D),
+            R::new(0x03, P::B, L::C),
+            R::new(0x03, P::C, L::F),
+            R::new(0x03, P::D, L::G),
+            R::new(0x05, P::A, L::B),
+            R::new(0x05, P::B, L::E),
+            R::new(0x05, P::C, L::G),
+            R::new(0x05, P::D, L::F),
+            R::new(0x08, P::A, L::E),
+        ],
+        ..fstart_driver_intel::southbridge::pirq::ICH7_PINEVIEW_ROUTING
+    }
+};
+
 pub static D945GCLF_PLATFORM: I945Ich7Platform = I945Ich7Config::new()
     .variant(I945Variant::DesktopGc)
     .igd(d945gclf_igd_config())
@@ -72,6 +105,7 @@ pub static D945GCLF_PLATFORM: I945Ich7Platform = I945Ich7Config::new()
     .ac97_audio(false)
     .ac97_modem(false)
     .pirq_routing([0x05, 0x07, 0x05, 0x07, 0x80, 0x80, 0x80, 0x06])
+    .pirq(D945GCLF_PIRQ)
     .gpi_routing([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0])
     .lpc_fixed_io(LpcFixedIoDecode {
         com_a: LpcSerialDecode::Com1,

@@ -1461,6 +1461,74 @@ mod acpi_impl {
 
     use super::*;
 
+    /// Integrated graphics `GFX0`. With a panel, `LCD0` and the H8 hotkey
+    /// helpers `INCB`/`DECB` drive the legacy backlight brightness byte (LBB,
+    /// 0:2.1 config 0xf4) in coreboot's 16 steps (`igd.asl`, `common.asl`).
+    fn gfx_aml(panel: bool) -> Vec<u8> {
+        let mut gfx: Vec<u8> = acpi_dsl! { Name("_ADR", 0x00020000u32); }.into();
+        gfx.extend(crate::gmch::acpi::gfx_power_methods());
+        if !panel {
+            return fstart_acpi::aml_linker::device_vec("GFX0", &gfx)
+                .expect("GFX0 device emission");
+        }
+        gfx.extend_from_slice(&acpi_dsl! {
+            // _BCL has been read: the OS owns brightness and hotkeys only notify.
+            Name("BRCT", 0u32);
+            // AC and battery defaults, then the selectable levels.
+            Name("BRIG", Package(
+                15u32, 15u32, 0u32, 1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32, 9u32,
+                10u32, 11u32, 12u32, 13u32, 14u32, 15u32
+            ));
+            Method("XBCM", 1, NotSerialized) {
+                Store((Arg0 << 4u32) | 0x0fu32, #{const "\\_SB_.PCI0.DSPC.BRTC"});
+            }
+            Method("XBQC", 0, NotSerialized) {
+                Return(#{const "\\_SB_.PCI0.DSPC.BRTC"} >> 4u32);
+            }
+            Method("_DOS", 1, NotSerialized) { }
+            Device("LCD0") {
+                Name("_ADR", 0x0400u32);
+                Method("_BCL", 0, NotSerialized) {
+                    BRCT = 1u32;
+                    Return(BRIG);
+                }
+                Method("_BCM", 1, NotSerialized) { XBCM(Arg0); }
+                Method("_BQC", 0, NotSerialized) { Return(XBQC()); }
+            }
+            Method("DECB", 0, NotSerialized) {
+                If (BRCT) {
+                    Notify(LCD0, 0x87u32);
+                } Else {
+                    Local0 = XBQC();
+                    If (Local0 > 0u32) { Local0--; }
+                    XBCM(Local0);
+                }
+            }
+            Method("INCB", 0, NotSerialized) {
+                If (BRCT) {
+                    Notify(LCD0, 0x86u32);
+                } Else {
+                    Local0 = XBQC();
+                    If (Local0 < 15u32) { Local0++; }
+                    XBCM(Local0);
+                }
+            }
+        });
+        let mut aml =
+            fstart_acpi::aml_linker::device_vec("GFX0", &gfx).expect("GFX0 device emission");
+        aml.extend_from_slice(&acpi_dsl! {
+            Device("DSPC") {
+                Name("_ADR", 0x00020001u32);
+                OperationRegion("LBBR", PciConfig, 0x00u32, 0x100u32);
+                Field("LBBR", ByteAcc, NoLock, Preserve) {
+                    Offset(0xf4),
+                    BRTC, 8,
+                }
+            }
+        });
+        aml
+    }
+
     impl AcpiDevice for IntelI945 {
         type Config = IntelI945Config;
 
@@ -1480,10 +1548,13 @@ mod acpi_impl {
             let ecam_base = config.ecam_base as u32;
             let ecam_size =
                 (u64::from(config.ecam_buses) * 1024 * 1024).min(u64::from(u32::MAX)) as u32;
+            // TOLUD is live chipset state; host-side table tests have no ECAM.
+            #[cfg(target_os = "none")]
             let pci_mmio_base = self.tolud().max(0x8000_0000);
+            #[cfg(not(target_os = "none"))]
+            let pci_mmio_base = 0x8000_0000u32;
             let pci_mmio_limit = 0xfebf_ffffu32;
             let rcba = config.rcba as u32;
-            let mobile = config.variant == I945Variant::Mobile;
 
             let mut aml: Vec<u8> = acpi_dsl! {
                 Device("PCI0") {
@@ -1578,20 +1649,24 @@ mod acpi_impl {
                 }
             }.into();
 
-            if mobile {
-                aml.extend_from_slice(&acpi_dsl! {
-                    Scope("\\_SB_.PCI0") {
-                        Device("PEGP") {
-                            Name("_ADR", 0x00010000u32);
-                            Name("_PRT", Package(
-                                Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
-                                Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
-                                Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
-                                Package(0x0000FFFFu32, 3u32, 0u32, 19u32)
-                            ));
-                        }
-                    }
-                });
+            // PEGP and the IGD (coreboot `i945.asl`: `peg.asl`, `gfx.asl`
+            // and, with an LVDS panel, the `igd.asl` backlight methods).
+            let mut pci0 = crate::gmch::acpi::peg_node();
+            pci0.extend(gfx_aml(config.igd.panel.is_some()));
+            aml.extend(
+                fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &pci0)
+                    .expect("i945 PCI0 scope emission"),
+            );
+            // 945GM pairs with Socket M Core 2 CPUs: SpeedStep `_PSS` and
+            // MWAIT `_CST`, as the GM965 driver emits for the same CPUs.
+            if config.variant == I945Variant::Mobile {
+                aml.extend(
+                    fstart_acpi::aml_linker::scope_vec(
+                        "\\",
+                        &crate::cpu::core2_aml::cpu_devices_aml(2),
+                    )
+                    .expect("i945 CPU scope emission"),
+                );
             }
             aml
         }

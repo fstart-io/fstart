@@ -599,14 +599,7 @@ impl IoTrapConfig {
     }
 }
 
-/// ICH8-M PATA/IDE controller configuration.
-#[derive(Debug, Clone, Copy)]
-pub struct IdeConfig {
-    /// Enable the primary PATA channel.
-    pub enable_primary: bool,
-    /// Enable the secondary PATA channel.
-    pub enable_secondary: bool,
-}
+pub use crate::southbridge::ide::IdeConfig;
 
 /// PCIe slot power-limit fields.
 #[derive(Debug, Clone, Copy, Default)]
@@ -1839,47 +1832,6 @@ impl IntelIch8 {
         }
     }
 
-    fn ide_init(&self, config: &IdeConfig) {
-        let ide = ecam::EcamDevice::new(0, ich8::IDE_DEV, ich8::IDE_FUNC);
-        if ide.read16(0) == 0xffff {
-            return;
-        }
-        let ide_regs = Self::type0_regs(ide);
-        ide_regs
-            .command
-            .modify(PCI_COMMAND_BITS::IO_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
-        Self::prog_if_regs(ide).prog_if.set(0x8a);
-
-        let timing_base =
-            ich8::IDE_ISP_3_CLOCKS | ich8::IDE_RCT_1_CLOCKS | ich8::IDE_IE0 | ich8::IDE_TIME0;
-        let primary_timing = (ide.read16(ich8::IDE_TIM_PRI) & !ich8::IDE_DECODE_ENABLE)
-            | ich8::IDE_SITRE
-            | if config.enable_primary {
-                ich8::IDE_DECODE_ENABLE | timing_base
-            } else {
-                0
-            };
-        let secondary_timing = (ide.read16(ich8::IDE_TIM_SEC) & !ich8::IDE_DECODE_ENABLE)
-            | ich8::IDE_SITRE
-            | if config.enable_secondary {
-                ich8::IDE_DECODE_ENABLE | timing_base
-            } else {
-                0
-            };
-        ide.write16(ich8::IDE_TIM_PRI, primary_timing);
-        ide.write16(ich8::IDE_TIM_SEC, secondary_timing);
-
-        let mut ide_config = 0u32;
-        if config.enable_primary {
-            ide_config |= ich8::FAST_PCB0 | ich8::PCB0 | ich8::FAST_PCB1 | ich8::PCB1;
-        }
-        if config.enable_secondary {
-            ide_config |= ich8::FAST_SCB0 | ich8::SCB0 | ich8::FAST_SCB1 | ich8::SCB1;
-        }
-        ide.write32(ich8::IDE_CONFIG, ide_config);
-        ide_regs.interrupt_line.set(0xff);
-    }
-
     fn pci_bridge_init(&self) {
         let bridge = ecam::EcamDevice::new(0, ich8::PCI_BRIDGE_DEV, ich8::PCI_BRIDGE_FUNC);
         if bridge.read16(0) == 0xffff {
@@ -2226,7 +2178,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         self.pci_bridge_init();
         self.usb_init();
         if let Some(ide) = self.config.ide {
-            self.ide_init(&IdeConfig {
+            crate::southbridge::ide::init(&IdeConfig {
                 enable_primary: self.ide_primary.unwrap_or(ide.enable_primary),
                 ..ide
             });
@@ -2532,23 +2484,7 @@ mod acpi_impl {
             body.extend_from_slice(&acpi_fragments::smbus_node());
 
             // The downstream PCI bridge carries the board's own slot layout.
-            let pcib: Vec<u8> = acpi_dsl! {
-                Device("PCIB") {
-                    Name("_ADR", 0x001E0000u32);
-                    Name("_PRT", Package(
-                        Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
-                        Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
-                        Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
-                        Package(0x0000FFFFu32, 3u32, 0u32, 19u32),
-                        Package(0x0001FFFFu32, 0u32, 0u32, 16u32),
-                        Package(0x0002FFFFu32, 0u32, 0u32, 21u32),
-                        Package(0x0002FFFFu32, 1u32, 0u32, 22u32),
-                        Package(0x0008FFFFu32, 0u32, 0u32, 20u32)
-                    ));
-                }
-            }
-            .into();
-            body.extend_from_slice(&pcib);
+            body.extend_from_slice(&acpi_fragments::pci_bridge_node(&config.pirq));
 
             // The LPC bridge: its own register window, the shared ISA children
             // and PIRQ links, then this board's PS/2 nodes.

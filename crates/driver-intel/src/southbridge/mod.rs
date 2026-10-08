@@ -1,6 +1,7 @@
 pub mod acpi;
 pub mod gpio_ich;
 pub mod hda;
+pub mod ide;
 pub mod lpc;
 pub mod pirq;
 pub mod pmio_ich;

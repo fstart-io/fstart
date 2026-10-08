@@ -121,6 +121,13 @@ pub struct PinRoute {
     pub line: Pirq,
 }
 
+impl PinRoute {
+    #[must_use]
+    pub const fn new(slot: u8, pin: PciPin, line: Pirq) -> Self {
+        Self { slot, pin, line }
+    }
+}
+
 /// One RCBA `DxxIP` register: which interrupt pin each function asserts.
 #[derive(Clone, Copy, Debug)]
 pub struct SlotPins {
@@ -135,6 +142,9 @@ pub struct PirqRouting {
     pub slot_pins: &'static [SlotPins],
     /// `DxxIR`: PIRQ line per interrupt pin. One entry per `_PRT` route.
     pub pin_routes: &'static [PinRoute],
+    /// Board wiring behind the 0:1e.0 PCI bridge: the PIRQ line each device
+    /// pin on its secondary bus is connected to.
+    pub bridge_routes: &'static [PinRoute],
 }
 
 impl PirqRouting {
@@ -165,6 +175,13 @@ impl PirqRouting {
     /// `(slot, pin, gsi)` for every route the root bus `_PRT` must publish.
     pub fn root_bus_routes(&self) -> impl Iterator<Item = (u8, PciPin, u8)> + '_ {
         self.pin_routes
+            .iter()
+            .map(|route| (route.slot, route.pin, GSI_BASE + route.line.index()))
+    }
+
+    /// `(device, pin, gsi)` for the PCI bridge's secondary bus `_PRT`.
+    pub fn bridge_bus_routes(&self) -> impl Iterator<Item = (u8, PciPin, u8)> + '_ {
+        self.bridge_routes
             .iter()
             .map(|route| (route.slot, route.pin, GSI_BASE + route.line.index()))
     }
@@ -393,6 +410,14 @@ pub const ICH7_PINEVIEW_ROUTING: PirqRouting = PirqRouting {
             pin: PciPin::D,
             line: Pirq::A,
         },
+    ],
+    // D41S slot wiring behind the PCI bridge (coreboot `ich7_pci_irqs.asl`).
+    bridge_routes: &[
+        PinRoute::new(0x00, PciPin::A, Pirq::F),
+        PinRoute::new(0x00, PciPin::B, Pirq::G),
+        PinRoute::new(0x00, PciPin::C, Pirq::H),
+        PinRoute::new(0x00, PciPin::D, Pirq::E),
+        PinRoute::new(0x01, PciPin::A, Pirq::D),
     ],
 };
 
@@ -629,6 +654,18 @@ pub const ICH8_ROUTING: PirqRouting = PirqRouting {
             pin: PciPin::D,
             line: Pirq::B,
         },
+    ],
+    // X61 devices behind the PCI bridge: the Ricoh multifunction device and
+    // the UltraBase dock slots (coreboot `ich8_pci_irqs.asl`).
+    bridge_routes: &[
+        PinRoute::new(0x00, PciPin::A, Pirq::A),
+        PinRoute::new(0x00, PciPin::B, Pirq::B),
+        PinRoute::new(0x00, PciPin::C, Pirq::C),
+        PinRoute::new(0x00, PciPin::D, Pirq::D),
+        PinRoute::new(0x01, PciPin::A, Pirq::A),
+        PinRoute::new(0x02, PciPin::A, Pirq::F),
+        PinRoute::new(0x02, PciPin::B, Pirq::G),
+        PinRoute::new(0x08, PciPin::A, Pirq::E),
     ],
 };
 

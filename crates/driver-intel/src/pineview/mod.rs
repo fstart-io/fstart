@@ -1474,6 +1474,22 @@ mod acpi_impl {
                 }
             }));
 
+            // PEGP and the integrated graphics function (coreboot
+            // `pineview.asl`: `peg.asl` and `gfx.asl`).
+            let mut pci0 = crate::gmch::acpi::peg_node();
+            let mut gfx: Vec<u8> = fstart_acpi_macros::acpi_dsl! {
+                Name("_ADR", 0x00020000u32);
+            }
+            .into();
+            gfx.extend(crate::gmch::acpi::gfx_power_methods());
+            pci0.extend(
+                fstart_acpi::aml_linker::device_vec("GFX0", &gfx).expect("GFX0 device emission"),
+            );
+            aml.extend(
+                fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &pci0)
+                    .expect("Pineview PCI0 scope emission"),
+            );
+
             // ---------------------------------------------------------------
             // 4. Processor power-management devices (\._SB.CP00, CP01).
             //
