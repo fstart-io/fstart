@@ -791,7 +791,7 @@ pub struct IntelIch8Config {
     /// The driver programs `DxxIP`/`DxxIR` from this and generates the ACPI
     /// tables from it, so the GSIs an OS derives are the ones the router
     /// delivers on.
-    pub pirq: crate::southbridge::pirq::PirqRouting,
+    pub pirq: crate::southbridge::pirq::PirqRouting<'static>,
     /// Northbridge DMIBAR base address, used as the RCBA upstream RCRB target.
     pub dmibar: u64,
     /// PIRQ routing (A..H) for PIC mode.

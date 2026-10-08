@@ -137,17 +137,17 @@ pub struct SlotPins {
 
 /// Routing data for one chipset and board wiring.
 #[derive(Clone, Copy, Debug)]
-pub struct PirqRouting {
+pub struct PirqRouting<'a> {
     /// `DxxIP`: pin per function, per routed slot.
-    pub slot_pins: &'static [SlotPins],
+    pub slot_pins: &'a [SlotPins],
     /// `DxxIR`: PIRQ line per interrupt pin. One entry per `_PRT` route.
-    pub pin_routes: &'static [PinRoute],
+    pub pin_routes: &'a [PinRoute],
     /// Board wiring behind the 0:1e.0 PCI bridge: the PIRQ line each device
     /// pin on its secondary bus is connected to.
-    pub bridge_routes: &'static [PinRoute],
+    pub bridge_routes: &'a [PinRoute],
 }
 
-impl PirqRouting {
+impl PirqRouting<'_> {
     fn route(&self, slot: u8, pin: PciPin) -> Option<&PinRoute> {
         self.pin_routes
             .iter()
@@ -238,7 +238,7 @@ impl PirqRouting {
 /// `DxxIR` values are the effective 16-bit contents of `0x3140`/`0x3142`/
 /// `0x3144`/`0x3146`/`0x3148` after coreboot's overlapping stores; the `DxxIP`
 /// values are the pin each function asserts.
-pub const ICH7_PINEVIEW_ROUTING: PirqRouting = PirqRouting {
+pub const ICH7_PINEVIEW_ROUTING: PirqRouting<'static> = PirqRouting {
     slot_pins: &[
         SlotPins {
             slot: 0x1b,
@@ -427,7 +427,7 @@ pub const ICH7_PINEVIEW_ROUTING: PirqRouting = PirqRouting {
 /// same data drives both the registers and the `_PRT`. Slots the router does
 /// not cover (the integrated graphics and the PEG port) keep the 1:1 relation;
 /// listing them here is what tells an OS about them at all.
-pub const ICH8_ROUTING: PirqRouting = PirqRouting {
+pub const ICH8_ROUTING: PirqRouting<'static> = PirqRouting {
     slot_pins: &[
         SlotPins {
             slot: 0x19,
@@ -672,7 +672,7 @@ pub const ICH8_ROUTING: PirqRouting = PirqRouting {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const ROUTING: PirqRouting = ICH7_PINEVIEW_ROUTING;
+    const ROUTING: PirqRouting<'static> = ICH7_PINEVIEW_ROUTING;
 
     #[test]
     fn gsi_follows_the_programmed_pirq_not_the_pin_index() {

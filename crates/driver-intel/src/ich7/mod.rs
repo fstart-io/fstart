@@ -677,7 +677,7 @@ pub struct IntelIch7Config {
     /// The driver programs `DxxIP`/`DxxIR` from this and the ACPI tables are
     /// generated from it, so the GSIs the OS derives are the ones the router
     /// actually delivers.
-    pub pirq: crate::southbridge::pirq::PirqRouting,
+    pub pirq: crate::southbridge::pirq::PirqRouting<'static>,
     /// PIRQ routing (one byte per PIRQ A..H).
     pub pirq_routing: [u8; 8],
     /// PCIe root ports 0-3 present. Absent ports are hidden with the FD

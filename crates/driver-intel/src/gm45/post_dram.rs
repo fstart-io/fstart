@@ -1,5 +1,5 @@
 //! GM45 romstage work following DDR3 training (coreboot gm45/pm.c,
-//! pcie.c and iommu.c). The ICH9 side of DMI is programmed before training.
+//! pcie.c and iommu.c). ICH9 DMI setup follows training/PM and precedes this.
 
 use super::{Gm45GraphicsPolicy, IntelGm45};
 use fstart_core::mmio::MmioReadWrite;

@@ -10,7 +10,8 @@ use fstart_core::ConstVec;
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::{
-    FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus, Southbridge,
+    ConsoleDevice, FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus,
+    Southbridge,
 };
 use fstart_pci::ecam;
 use fstart_pci::{
@@ -765,7 +766,10 @@ pub struct IntelIch9Config {
     /// The driver programs `DxxIP`/`DxxIR` from this and generates the ACPI
     /// tables from it, so the GSIs an OS derives are the ones the router
     /// delivers on.
-    pub pirq: Option<crate::southbridge::pirq::PirqRouting>,
+    pub pirq: Option<crate::southbridge::pirq::PirqRouting<'static>>,
+    /// Keep reset/strap DxxIP/DxxIR values and derive ACPI routes by readback,
+    /// as coreboot i82801ix does. Mutually exclusive with an explicit map.
+    pub preserve_hardware_pirq: bool,
     /// Northbridge DMIBAR base address, used as the RCBA upstream RCRB target.
     pub dmibar: u64,
     /// PIRQ routing (A..H) for PIC mode.
@@ -828,6 +832,7 @@ impl IntelIch9Config {
         Self {
             rcba: 0xFED1_C000,
             pirq: None,
+            preserve_hardware_pirq: false,
             dmibar: 0xFED1_8000,
             pirq_routing: [0x0b, 0x0b, 0x0b, 0x0b, 0x80, 0x80, 0x80, 0x80],
             gpe0_en: 0,
@@ -2043,7 +2048,10 @@ impl IntelIch9 {
 
     fn configure_default_intmap(&self) {
         let rcba = self.rcba();
-        // Constructor requires an explicit board-verified routing map.
+        if self.config.preserve_hardware_pirq {
+            self.enable_ioapic();
+            return;
+        }
         let routing = self.config.pirq.as_ref().expect("ICH9 routing validated");
         rcba.regs().d31ip.set(routing.ip_value(0x1f));
         rcba.regs().d30ip.set(routing.ip_value(0x1e));
@@ -2089,8 +2097,10 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
     type Config = IntelIch9Config;
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
-        let routing = config.pirq.as_ref().ok_or(ServiceError::InvalidParam)?;
-        if routing.slot_pins.is_empty() || routing.pin_routes.is_empty() {
+        let routing = config.pirq.as_ref();
+        if config.preserve_hardware_pirq == routing.is_some()
+            || routing.is_some_and(|r| r.slot_pins.is_empty() || r.pin_routes.is_empty())
+        {
             return Err(ServiceError::InvalidParam);
         }
         if let Some(bar) = config.ehci_debug_bar {
@@ -2138,20 +2148,24 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
             return Err(ServiceError::InvalidParam);
         }
         if config.pcie_ports.iter().any(|enabled| *enabled)
-            && crate::southbridge::pirq::PciPin::ALL.iter().any(|pin| {
-                !routing
-                    .pin_routes
-                    .iter()
-                    .any(|route| route.slot == 0x1c && route.pin == *pin)
+            && routing.is_some_and(|routing| {
+                crate::southbridge::pirq::PciPin::ALL.iter().any(|pin| {
+                    !routing
+                        .pin_routes
+                        .iter()
+                        .any(|route| route.slot == 0x1c && route.pin == *pin)
+                })
             })
         {
             return Err(ServiceError::InvalidParam);
         }
-        if routing.assigned_pins().any(|(slot, pin)| {
-            !routing
-                .pin_routes
-                .iter()
-                .any(|route| route.slot == slot && route.pin == pin)
+        if routing.is_some_and(|routing| {
+            routing.assigned_pins().any(|(slot, pin)| {
+                !routing
+                    .pin_routes
+                    .iter()
+                    .any(|route| route.slot == slot && route.pin == pin)
+            })
         }) || config
             .pcie_hotplug
             .iter()
@@ -2209,7 +2223,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
     }
 
     /// Raminit-era southbridge init: SMBus, PIRQ routes, function disable,
-    /// early chipset settings, HPET, and DMI.
+    /// early chipset settings and HPET. DMI follows training/GM45 PM.
     fn early_init(&mut self) -> Result<(), ServiceError> {
         // Bootblock-level SPI, fixed BAR, CMOS/watchdog, LPC decode, and GPIO
         // setup was already done by pre_console_init(). Avoid replaying those
@@ -2232,7 +2246,6 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         self.pm().write32(GPE0_STS_ICH9, 0xffff_ffff);
         self.pm().write32(GPE0_EN_ICH9, self.config.gpe0_en);
         self.enable_hpet();
-        self.setup_dmi();
         if let Some(sata) = self.config.sata.as_ref() {
             self.sata_enable(sata);
         }
@@ -2267,9 +2280,14 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         bars
     }
 
+    fn prepare_early_post_dram_init(&mut self) -> Result<(), ServiceError> {
+        // Coreboot romstage: after init_pm, before gm45_late_init.
+        self.setup_dmi();
+        Ok(())
+    }
+
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
-        // ICH9 DMI setup ran in early_init. The MCH has now enabled VC1;
-        // poll only once both sides have finished negotiation.
+        // The MCH has now enabled VC1; poll after both peers are configured.
         self.poll_vc1()
     }
 
@@ -2413,7 +2431,7 @@ mod tests {
     use crate::IntelSouthbridgeDriver;
     use crate::southbridge::pirq::{PciPin, PinRoute, Pirq, PirqRouting, SlotPins};
 
-    pub(super) const ROUTING: PirqRouting = PirqRouting {
+    pub(super) const ROUTING: PirqRouting<'static> = PirqRouting {
         slot_pins: &[SlotPins {
             slot: 0x1a,
             functions: [Some(PciPin::A), None, None, None, None, None, None, None],
@@ -2445,6 +2463,7 @@ mod tests {
                 line: Pirq::D,
             },
         ],
+        bridge_routes: &[],
     };
 
     #[test]
@@ -2458,6 +2477,7 @@ mod tests {
             pirq: Some(PirqRouting {
                 slot_pins: ROUTING.slot_pins,
                 pin_routes: &[],
+                bridge_routes: &[],
             }),
             ..IntelIch9Config::new()
         };
@@ -2470,6 +2490,70 @@ mod tests {
             ..IntelIch9Config::new()
         };
         assert!(IntelIch9::new_from_config(&VALID).is_ok());
+    }
+
+    #[test]
+    fn ich9_strap_routing_is_exclusive_with_programmed_routing() {
+        static PRESERVED: IntelIch9Config = IntelIch9Config {
+            preserve_hardware_pirq: true,
+            ..IntelIch9Config::new()
+        };
+        static BOTH: IntelIch9Config = IntelIch9Config {
+            pirq: Some(ROUTING),
+            ..PRESERVED
+        };
+        assert!(IntelIch9::new_from_config(&PRESERVED).is_ok());
+        assert!(matches!(
+            IntelIch9::new_from_config(&BOTH),
+            Err(ServiceError::InvalidParam)
+        ));
+    }
+
+    #[test]
+    fn ich9_debug_bar_requires_enabled_ehci_and_nonoverlapping_mmio() {
+        let make_driver = |config| {
+            IntelIch9::new_from_config(alloc::boxed::Box::leak(alloc::boxed::Box::new(config)))
+        };
+        let mut config = IntelIch9Config {
+            preserve_hardware_pirq: true,
+            usb: Some(UsbConfig {
+                ehci: [false, true],
+                uhci: [false; 6],
+            }),
+            ehci_debug_bar: Some(EhciDebugConfig {
+                ecam_base: 0xe000_0000,
+                bus: 0,
+                device: 0x1a,
+                function: 7,
+                bar: 0xfed0_4000,
+            }),
+            ..IntelIch9Config::new()
+        };
+        let driver = make_driver(config).unwrap();
+        assert!(driver.fixed_pci_bars().iter().any(|bar| {
+            bar.address == PciAddress::new(0, 0, 0x1a, 7) && bar.base == 0xfed0_4000
+        }));
+        config.usb = None;
+        assert!(matches!(
+            make_driver(config),
+            Err(ServiceError::InvalidParam)
+        ));
+        config.usb = Some(UsbConfig {
+            ehci: [false, true],
+            uhci: [false; 6],
+        });
+        for bar in [HPET_BASE as u32, config.rcba as u32, 0xfed0_4001] {
+            config.ehci_debug_bar.as_mut().unwrap().bar = bar;
+            assert!(matches!(
+                make_driver(config),
+                Err(ServiceError::InvalidParam)
+            ));
+        }
+        config.ehci_debug_bar.as_mut().unwrap().device = 32;
+        assert!(matches!(
+            make_driver(config),
+            Err(ServiceError::InvalidParam)
+        ));
     }
 
     #[test]
@@ -2562,7 +2646,7 @@ mod acpi_impl {
         adr: u32,
         port: u8,
         hotplug: bool,
-        routing: &crate::southbridge::pirq::PirqRouting,
+        routing: &crate::southbridge::pirq::PirqRouting<'_>,
     ) -> Vec<u8> {
         use crate::southbridge::pirq::PciPin;
         let mut body: Vec<u8> = acpi_dsl! { Name("_ADR", #{dword adr}); }.into();
@@ -2660,6 +2744,44 @@ mod acpi_impl {
             // emitted AML method actually consumes them. Declaring unused
             // regions makes ACPI claim the native lpc_ich driver resources.
             let mut aml = Vec::new();
+            // When keeping strap routing, _PRT must describe the live router,
+            // not an assumed A-D map (coreboot intel/common/rcba_pirq.c).
+            let hardware_routes = if config.preserve_hardware_pirq {
+                use crate::southbridge::pirq::{PciPin, PinRoute, Pirq};
+                let r = self.rcba().regs();
+                // Devices 1..3 are outside the RCBA router: coreboot's
+                // map_pirq uses the hardwired pin-to-PIRQ A..D identity there.
+                let slots = [1, 2, 3, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f];
+                let ir = [
+                    0x3210,
+                    0x3210,
+                    0x3210,
+                    r.d25ir.get(),
+                    r.d26ir.get(),
+                    r.d27ir.get(),
+                    r.d28ir.get(),
+                    r.d29ir.get(),
+                    r.d30ir.get(),
+                    r.d31ir.get(),
+                ];
+                Some(core::array::from_fn::<_, 40, _>(|index| {
+                    let pin = PciPin::ALL[index % 4];
+                    PinRoute {
+                        slot: slots[index / 4],
+                        pin,
+                        line: Pirq::from_index(((ir[index / 4] >> (4 * pin.index())) & 7) as u8)
+                            .expect("three-bit PIRQ selector"),
+                    }
+                }))
+            } else {
+                None
+            };
+            let hardware_routing = crate::southbridge::pirq::PirqRouting {
+                slot_pins: &[],
+                pin_routes: hardware_routes.as_ref().map_or(&[], |r| &r[..]),
+                bridge_routes: &[],
+            };
+            let routing = config.pirq.as_ref().unwrap_or(&hardware_routing);
 
             // The PCI0 body: this chipset's RCRB window and downstream PCI
             // bridge, plus the fragments every ICH shares (coreboot's
@@ -2702,10 +2824,7 @@ mod acpi_impl {
             .into();
 
             body.extend_from_slice(&fstart_acpi::pirq::prt_name_aml(
-                config
-                    .pirq
-                    .as_ref()
-                    .expect("ICH9 routing validated")
+                routing
                     .root_bus_routes()
                     .map(|(slot, pin, gsi)| (slot, pin.index(), gsi)),
             ));
@@ -2731,7 +2850,7 @@ mod acpi_impl {
                     adr,
                     port,
                     config.pcie_hotplug[(port - 1) as usize],
-                    config.pirq.as_ref().expect("ICH9 routing validated"),
+                    routing,
                 ));
             }
             body.extend_from_slice(&acpi_fragments::sata_node());
