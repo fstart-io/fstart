@@ -128,14 +128,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selected_runtime_bundle_is_v2_and_reports_its_effective_profile() {
+    fn selected_runtime_bundle_reports_its_effective_profile() {
         let source = crabefi::BUNDLED_RUNTIME_IMAGE;
         assert_eq!(&source.bytes[..8], b"CRABRTI\0");
-        assert_eq!(
-            u16::from_le_bytes(source.bytes[8..10].try_into().unwrap()),
-            2
-        );
-        let bits = u64::from_le_bytes(source.bytes[48..56].try_into().unwrap());
+        // Upstream removed version fields: architecture is now at offset 8,
+        // and feature bits are at offset 32 in the normalized image header.
+        let bits = u64::from_le_bytes(source.bytes[32..40].try_into().unwrap());
         assert_eq!(bits & 15, 15);
         assert_eq!(bits & !31, 0);
         // The integration gate compares this with the effective Cargo graph,
