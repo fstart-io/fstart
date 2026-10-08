@@ -16,8 +16,8 @@ use fstart_core::services::{
 };
 use fstart_pci::ecam;
 use fstart_pci::{
-    PCI_COMMAND_BITS, PciAddress, PciFixedBar, PciFixedBarType, PciFixedBars, PciType0Config,
-    PciType1Config, pci_type0_config,
+    PCI_COMMAND_BITS, PCI_EXPRESS_CAPABILITIES, PciAddress, PciFixedBar, PciFixedBarType,
+    PciFixedBars, PciType0Config, PciType1Config, pci_type0_config,
 };
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
@@ -164,7 +164,6 @@ pub mod ich8 {
     pub const D30F0_SMLT: u16 = 0x1b;
 
     pub const D28FX_XCAP: u16 = 0x42;
-    pub const D28FX_XCAP_SLOT: u32 = 1 << 8;
     pub const D28FX_LCAP: u16 = 0x4c;
     pub const D28FX_LCTL: u16 = 0x50;
     pub const D28FX_SLCAP: u16 = 0x54;
@@ -1801,8 +1800,17 @@ impl IntelIch8 {
             if port.read16(0) == 0xffff {
                 continue;
             }
+            // XCAP is a word at 0x42. Coreboot's config32(0x42) rounds
+            // down to 0x40; copying it would modify the capability header.
+            let mut capabilities =
+                LocalRegisterCopy::<u16, PCI_EXPRESS_CAPABILITIES::Register>::new(
+                    port.read16(ich8::D28FX_XCAP),
+                );
+            capabilities.modify(
+                PCI_EXPRESS_CAPABILITIES::SLOT_IMPLEMENTED.val(self.config.pcie_slots[func].into()),
+            );
+            port.write16(ich8::D28FX_XCAP, capabilities.get());
             if self.config.pcie_slots[func] {
-                port.or32(ich8::D28FX_XCAP, ich8::D28FX_XCAP_SLOT);
                 let limit = self.config.pcie_power_limits[func];
                 let mut slcap = port.read32(ich8::D28FX_SLCAP);
                 slcap &= !(0x1fff << ich8::D28_SLCAP_SLOTNUM_SHIFT);
@@ -1813,8 +1821,6 @@ impl IntelIch8 {
                 slcap |= u32::from(limit.value) << ich8::D28_SLCAP_POWER_SHIFT;
                 port.write32(ich8::D28FX_SLCAP, slcap);
                 slot_number += 1;
-            } else {
-                port.and32(ich8::D28FX_XCAP, !ich8::D28FX_XCAP_SLOT);
             }
         }
     }
