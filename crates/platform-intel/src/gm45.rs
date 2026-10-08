@@ -35,7 +35,8 @@ pub struct Gm45Ich9Config {
     pub pcie_power_limits: [PciePowerLimit; 6],
     pub pcie_hotplug: [bool; 6],
     /// Board-verified RCBA interrupt routing; required by the ICH9 driver.
-    pub pirq: Option<PirqRouting>,
+    pub pirq: Option<PirqRouting<'static>>,
+    pub preserve_hardware_pirq: bool,
     pub pirq_routing: [u8; 8],
     pub lpc_decode: LpcDecodeConfig,
     pub gpe0_en: u32,
@@ -48,7 +49,7 @@ pub struct Gm45Ich9Config {
     pub throttle_duty: u8,
     pub sata: Option<SataConfig>,
     pub usb: Option<UsbConfig>,
-    pub ehci_debug_bar: Option<fstart_pci::PciFixedBar>,
+    pub ehci_debug_bar: Option<fstart_driver_intel::ich9::EhciDebugConfig>,
     pub hda: Option<HdaConfig>,
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     pub gpio: gpio::GpioConfig,
@@ -67,6 +68,7 @@ impl Gm45Ich9Config {
             pcie_power_limits: [PciePowerLimit { value: 0, scale: 0 }; 6],
             pcie_hotplug: [false; 6],
             pirq: None,
+            preserve_hardware_pirq: false,
             pirq_routing: [0x80; 8],
             lpc_decode: LpcDecodeConfig::new(),
             gpe0_en: 0,
@@ -108,6 +110,7 @@ impl Gm45Ich9Config {
         config.dmibar = GM45_DMIBAR;
         config.smbus_base = ICH9_SMBUS_BASE;
         config.pirq = self.pirq;
+        config.preserve_hardware_pirq = self.preserve_hardware_pirq;
         config.pirq_routing = self.pirq_routing;
         config.pcie_ports = self.pcie_ports;
         config.pcie_slots = self.pcie_slots;
@@ -131,7 +134,7 @@ impl Gm45Ich9Config {
     }
 
     #[must_use]
-    pub const fn ehci_debug_bar(mut self, bar: fstart_pci::PciFixedBar) -> Self {
+    pub const fn ehci_debug_bar(mut self, bar: fstart_driver_intel::ich9::EhciDebugConfig) -> Self {
         self.ehci_debug_bar = Some(bar);
         self
     }
@@ -149,8 +152,16 @@ impl Gm45Ich9Config {
     }
 
     #[must_use]
-    pub const fn pirq(mut self, routing: PirqRouting) -> Self {
+    pub const fn preserve_hardware_pirq(mut self) -> Self {
+        self.pirq = None;
+        self.preserve_hardware_pirq = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn pirq(mut self, routing: PirqRouting<'static>) -> Self {
         self.pirq = Some(routing);
+        self.preserve_hardware_pirq = false;
         self
     }
 
@@ -415,10 +426,9 @@ pub struct Gm45Ich9<C = crate::legacy_cpu::Bga956>(core::marker::PhantomData<C>)
 impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm45Ich9<C> {
     type Config = Gm45Ich9Platform;
     const NAME: &'static str = "gm45/ich9";
-    const CAR_BASE: u64 = <crate::legacy_cpu::SocketPCore2 as crate::legacy_cpu::LegacyCpu>::CAR_BASE;
-    const CAR_SIZE: u64 = <crate::legacy_cpu::SocketPCore2 as crate::legacy_cpu::LegacyCpu>::CAR_SIZE;
-    const MICROCODE_SIGNATURES: &'static [&'static str] =
-        <crate::legacy_cpu::SocketPCore2 as crate::legacy_cpu::LegacyCpu>::MICROCODE_SIGNATURES;
+    const CAR_BASE: u64 = C::CAR_BASE;
+    const CAR_SIZE: u64 = C::CAR_SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = C::MICROCODE_SIGNATURES;
 }
 
 impl crate::IntelPlatformConfig for Gm45Ich9Platform {
@@ -431,21 +441,19 @@ impl crate::IntelPlatformConfig for Gm45Ich9Platform {
 mod stage {
     use super::*;
     use crate::{IntelChipsetConfig, IntelEarlyPlatform};
-    #[cfg(feature = "mp")]
-    use fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
     use fstart_driver_intel::gm45::IntelGm45;
     use fstart_driver_intel::ich9::IntelIch9;
 
-    impl IntelEarlyPlatform for Gm45Ich9 {
+    impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for Gm45Ich9<C> {
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelGm45;
         type Southbridge = IntelIch9;
         #[cfg(feature = "mp")]
-        type Cpu = Core2CpuDriver;
+        type Cpu = C::Driver;
         #[cfg(feature = "mp")]
         fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
-            Core2CpuDriver::new(ICH9_PMBASE as u32, microcode)
+            C::cpu_driver(ICH9_PMBASE as u32, microcode)
         }
         #[cfg(feature = "acpi")]
         type AcpiContext = Gm45Ich9AcpiContext;
