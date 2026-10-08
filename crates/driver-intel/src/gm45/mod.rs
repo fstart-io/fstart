@@ -7,8 +7,9 @@ mod pm;
 mod post_dram;
 mod raminit;
 mod ramtest;
+mod reset;
 
-use fstart_core::mmio::MmioReadWrite;
+use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
@@ -20,6 +21,8 @@ use fstart_pci::{
 };
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
+
+register_bitfields![u8, TpmAccess [VALID OFFSET(7) NUMBITS(1) []]];
 
 const DEVEN_HOST: u32 = 1;
 const DEVEN_PEG: u32 = 1 << 1;
@@ -268,6 +271,23 @@ impl IntelGm45 {
         Some(reserved)
     }
 
+    fn wait_for_txt_clear(&self) -> Result<(), ServiceError> {
+        if self.hostbridge().capid_high.get() & (1 << 5) != 0 {
+            return Ok(()); // TXT fused off
+        }
+        // coreboot romstage waits for TPM_ACCESS_VALID after TXT clears RAM.
+        // SAFETY: fixed TPM locality-zero MMIO, read-only access.
+        let access =
+            unsafe { &*(0xfed4_0000usize as *const MmioReadOnly<u8, TpmAccess::Register>) };
+        for _ in 0..1000 {
+            if access.is_set(TpmAccess::VALID) {
+                return Ok(());
+            }
+            fstart_arch::udelay(1000);
+        }
+        Err(ServiceError::Timeout)
+    }
+
     fn checked_memory_map(
         tom: u64,
         tolud: u32,
@@ -358,11 +378,19 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         self.setup_early_decode();
-        Ok(())
+        self.recover_early_reset();
+        self.wait_for_txt_clear()
     }
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
+        // Mainstage is authenticated and reached only after bootblock's RAM
+        // probes. Recover decode from hardware, never retrain or test live RAM.
+        self.memory_map()?;
+        self.dram_ready = true;
         Ok(())
+    }
+    fn prepare_resume_reset(&self) {
+        self.prepare_reset_geometry();
     }
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         let (revision, _, _) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
@@ -481,6 +509,7 @@ impl MemoryController for IntelGm45 {
             timing.clock.mhz(),
             timing.cas
         );
+        self.enter_raminit();
         raminit::prepare_ddr3(
             self.config.mchbar,
             self.config.epbar,
@@ -500,6 +529,7 @@ impl MemoryController for IntelGm45 {
         self.post_dram_pm(revision, fsb_mhz, timing.clock.mhz())?;
         self.trained_mode = Some((revision, fsb_mhz, timing.clock.mhz()));
         self.dram_ready = true;
+        self.finish_raminit();
         Ok(())
     }
     fn detected_size_bytes(&self) -> u64 {

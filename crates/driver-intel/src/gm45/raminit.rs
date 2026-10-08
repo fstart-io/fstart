@@ -1621,11 +1621,18 @@ pub(super) fn prepare_ddr3(
         return Err(ServiceError::HardwareError);
     }
     let cores = ((core::arch::x86_64::__cpuid_count(4, 0).eax >> 26) & 0x3f) + 1;
+    if !matches!(cores, 2 | 4) {
+        return Err(ServiceError::HardwareError);
+    }
     // Check all derived values before beginning irreversible MMIO writes.
     crossing_values(fsb_mhz, timing.clock)?;
     let igd_enabled = graphics != crate::gm45::Gm45GraphicsPolicy::Discrete;
     let mch = Mchbar::new(base);
     let (kind, display_clock) = post_map::preflight(&mch, dimms, timing, graphics, capid_high)?;
+    // Reject unsupported geometry before training, not after JEDEC/calibration.
+    // ME presence is independent of the requested DEVEN policy.
+    let me_active = EcamDevice::new(0, 3, 0).read8(0x08) != 0xff;
+    let final_map = map::compute(dimms, igd_enabled, capid_high, me_active)?;
     let regs = mch.regs();
     regs.dram_ctrl.set(regs.dram_ctrl.get() | 3);
     set_memory_clock(&mch, timing.clock, fsb_mhz)?;
@@ -1656,11 +1663,6 @@ pub(super) fn prepare_ddr3(
     if timing.clock == MemClock::Mhz533 {
         training::read_write_training(&mch, dimms, &bases)?;
     }
-    // Validate the entire map before changing rank boundaries. ME may be
-    // present even if its function is hidden by the host-bridge DEVEN bits.
-    let me_active = EcamDevice::new(0, 3, 0).read8(0x08) != 0xff;
-    let capid_high = hb.capid_high.get();
-    let final_map = map::compute(dimms, igd_enabled, capid_high, me_active)?;
     map::program(&mch, hb, &final_map);
     post_map::program(
         &mch,
