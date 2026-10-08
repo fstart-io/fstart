@@ -40,13 +40,13 @@ fn select_frequency_and_cas(
         .into_iter()
         .filter(|&clock| clock == MemClock::Ddr667 || max_clock == MemClock::Ddr800)
         .find_map(|clock| {
-            // Preserve coreboot's CAS5 floor at DDR800, but allow CAS3..6
-            // on the DDR667 retry. Times are in the decoder's 1/256 ns units.
-            let (min_cas, tck, tac) = match clock {
-                MemClock::Ddr800 => (5, 640, 102), // 2.5 ns / 0.40 ns
-                MemClock::Ddr667 => (3, 768, 115), // 3.0 ns / 0.45 ns
+            // Preserve coreboot's CAS5 floor at DDR800. DDR667's launch
+            // settings support CAS3..5. Times use the decoder's 1/256 ns units.
+            let (min_cas, max_cas, tck, tac) = match clock {
+                MemClock::Ddr800 => (5, 6, 640, 102), // 2.5 ns / 0.40 ns
+                MemClock::Ddr667 => (3, 5, 768, 115), // 3.0 ns / 0.45 ns
             };
-            (min_cas..=6u8)
+            (min_cas..=max_cas)
                 .rev()
                 .find(|&cas| {
                     common_cas & (1 << cas) != 0
@@ -801,6 +801,20 @@ mod tests {
         for si in [sysinfo(&[1 << 3, 1 << 5]), sysinfo(&[1 << 2]), sysinfo(&[])] {
             assert!(select_frequency_and_cas(&si, MemClock::Ddr800).is_err());
         }
+    }
+
+    #[test]
+    fn limits_cas_to_clock_mode_settings() {
+        let si = sysinfo(&[0x70]);
+        assert_eq!(
+            select_frequency_and_cas(&si, MemClock::Ddr800).unwrap(),
+            (MemClock::Ddr800, 6)
+        );
+        assert_eq!(
+            select_frequency_and_cas(&si, MemClock::Ddr667).unwrap(),
+            (MemClock::Ddr667, 5)
+        );
+        assert!(select_frequency_and_cas(&sysinfo(&[1 << 6]), MemClock::Ddr667).is_err());
     }
 
     #[test]
