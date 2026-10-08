@@ -6,14 +6,14 @@
 //! spread-spectrum options, and output enables.
 //!
 //! The part exposes its register file as one SMBus **block** at command 0: the
-//! device returns a count byte followed by its registers, and the same shape
-//! is written back. It has no byte-addressable registers — byte reads all
-//! return the same junk value and byte writes are ignored — so the driver uses
-//! the block transfer coreboot's CK505 driver uses for this board. Board tables
-//! are written in that same shape, with entry 0 as the count byte.
+//! wire transfer contains a count byte followed by registers. The SMBus host
+//! handles that count separately: entry 0 in the returned data and board table
+//! is register 0, not the count. Like coreboot, program the complete returned
+//! register block rather than issuing byte-data transactions.
 //!
-//! After writing, the file is read back and compared, so a programming failure
-//! is reported instead of silently leaving a wrong clock tree behind.
+//! As in coreboot, successful programming means the block write completed.
+//! Register bytes may include read-only/status bits, so an exact readback echo
+//! is not required. SMBus transaction errors still propagate to the caller.
 
 use fstart_core::services::SmBus;
 use fstart_core::services::device::DeviceError;
@@ -56,8 +56,9 @@ impl I2cCk505 {
 
     /// Initialize through a concrete SMBus provider.
     ///
-    /// Reads the register file, applies `(old & !mask) | regs` to the
-    /// configured entries, writes the file back and verifies it.
+    /// Reads the register file, updates only configured mask bits and writes
+    /// the complete file back. A successful SMBus write is not an assurance
+    /// that every bit is writable or reads back as written.
     pub fn init_on_smbus<B: SmBus + ?Sized>(&mut self, bus: &mut B) -> Result<(), DeviceError> {
         const BLOCK_CMD: u8 = 0;
         const BLOCK_LEN: usize = 32;
@@ -71,7 +72,7 @@ impl I2cCk505 {
         let count = bus
             .block_read(self.addr, BLOCK_CMD, &mut block)
             .map_err(|_| DeviceError::BusError)?;
-        if count == 0 {
+        if !(configured..=BLOCK_LEN).contains(&count) {
             return Err(DeviceError::BusError);
         }
         fstart_log::info!(
@@ -90,26 +91,16 @@ impl I2cCk505 {
             fstart_log::info!("i2c-ck505: regs[{}..] = {:#010x}", (index * 4) as u32, word);
         }
 
-        let nregs = configured.min(count);
-        for idx in 0..nregs {
-            block[idx] = (block[idx] & !self.config.mask[idx]) | self.config.regs[idx];
+        let nregs = configured;
+        for (idx, register) in block[..nregs].iter_mut().enumerate() {
+            let mask = self.config.mask[idx];
+            *register = (*register & !mask) | (self.config.regs[idx] & mask);
         }
-        // The device keeps the same length it reported, count byte included.
+        // SMBus supplies the wire count; the slice contains only registers.
         bus.block_write(self.addr, BLOCK_CMD, &block[..count])
             .map_err(|_| DeviceError::BusError)?;
 
-        let mut verify = [0u8; BLOCK_LEN];
-        let back = bus
-            .block_read(self.addr, BLOCK_CMD, &mut verify)
-            .map_err(|_| DeviceError::BusError)?;
-        if back < nregs || verify[..nregs] != block[..nregs] {
-            fstart_log::error!("i2c-ck505: register file did not hold the written values");
-            return Err(DeviceError::BusError);
-        }
-        fstart_log::info!(
-            "i2c-ck505: {} registers programmed and verified",
-            nregs as u32
-        );
+        fstart_log::info!("i2c-ck505: {} registers programmed", nregs as u32);
         Ok(())
     }
 }
@@ -122,13 +113,16 @@ mod tests {
     use super::*;
     use fstart_core::services::ServiceError;
 
-    /// Block mock: a register file served at command 0, count byte first.
+    /// Block mock: register data at command 0, with a separate byte count.
     struct FakeBus {
         regs: [u8; 8],
         count: u8,
+        reads: u32,
         writes: u32,
-        /// Accept the write but keep the old values (silent chip failure).
-        drop_writes: bool,
+        /// Register-zero bits that retain their old value despite the write.
+        read_only: u8,
+        fail_read: bool,
+        fail_write: bool,
     }
 
     impl SmBus for FakeBus {
@@ -147,6 +141,11 @@ mod tests {
             buf: &mut [u8],
         ) -> Result<usize, ServiceError> {
             assert_eq!(cmd, 0, "the register file is only reachable at command 0");
+            assert_eq!(self.writes, 0, "programming must not require a readback");
+            self.reads += 1;
+            if self.fail_read {
+                return Err(ServiceError::IoError);
+            }
             let len = (self.count as usize).min(buf.len());
             buf[..len].copy_from_slice(&self.regs[..len]);
             Ok(len)
@@ -155,9 +154,12 @@ mod tests {
         fn block_write(&mut self, _addr: u8, cmd: u8, data: &[u8]) -> Result<(), ServiceError> {
             assert_eq!(cmd, 0, "the register file is only reachable at command 0");
             self.writes += 1;
-            if !self.drop_writes {
-                self.regs[..data.len()].copy_from_slice(data);
+            if self.fail_write {
+                return Err(ServiceError::IoError);
             }
+            let retained = self.regs[0] & self.read_only;
+            self.regs[..data.len()].copy_from_slice(data);
+            self.regs[0] = (self.regs[0] & !self.read_only) | retained;
             Ok(())
         }
     }
@@ -173,36 +175,68 @@ mod tests {
         FakeBus {
             regs,
             count,
+            reads: 0,
             writes: 0,
-            drop_writes: false,
+            read_only: 0,
+            fail_read: false,
+            fail_write: false,
         }
     }
 
-    /// Entry 0 is the count byte, so entry 1 is register 0.
     #[test]
-    fn programs_the_register_file_in_one_block() {
-        let mut bus = bus([0x05, 0xf0, 0x00, 0x11, 0x22, 0, 0, 0], 6);
-        let mut ck505 =
-            I2cCk505::new_at_address(config(&[0x00, 0x0f, 0xf0], &[0x00, 0x05, 0xa0]), 0x69)
-                .expect("CK505 should accept I2C/SMBus address");
+    fn programs_register_zero_and_preserves_unconfigured_data() {
+        let mut bus = bus([0x41, 0xff, 0xff, 0xfe, 0, 0, 0x65, 0x06], 8);
+        let mut ck505 = I2cCk505::new_at_address(config(&[0xff], &[0x11]), 0x69)
+            .expect("CK505 should accept I2C/SMBus address");
 
         ck505.init_on_smbus(&mut bus).unwrap();
 
-        assert_eq!(bus.regs[0], 0x05, "count byte preserved");
-        assert_eq!(bus.regs[1], 0xf5);
-        assert_eq!(bus.regs[2], 0xa0);
-        assert_eq!(bus.regs[3], 0x11, "unconfigured registers untouched");
+        assert_eq!(bus.regs, [0x11, 0xff, 0xff, 0xfe, 0, 0, 0x65, 0x06]);
+        assert_eq!(bus.count, 8, "register zero is not the transport count");
         assert_eq!(bus.writes, 1);
     }
 
     #[test]
-    fn init_fails_when_the_device_drops_the_block() {
-        let mut bus = bus([0x05, 0x00, 0, 0, 0, 0, 0, 0], 6);
-        bus.drop_writes = true;
-        let mut ck505 = I2cCk505::new_at_address(config(&[0x00, 0xff], &[0x00, 0x5a]), 0x69)
-            .expect("CK505 should accept I2C/SMBus address");
+    fn masks_input_values() {
+        let mut bus = bus([0xf0, 0, 0, 0, 0, 0, 0, 0], 8);
+        let mut ck505 = I2cCk505::new_at_address(config(&[0x0f], &[0xa5]), 0x69).unwrap();
+        ck505.init_on_smbus(&mut bus).unwrap();
+        assert_eq!(bus.regs[0], 0xf5);
+    }
 
+    #[test]
+    fn short_register_file_is_rejected_before_writing() {
+        let mut bus = bus([0; 8], 1);
+        let mut ck505 =
+            I2cCk505::new_at_address(config(&[0xff, 0xff], &[0x11, 0x22]), 0x69).unwrap();
         assert!(ck505.init_on_smbus(&mut bus).is_err());
+        assert_eq!(bus.writes, 0);
+    }
+
+    #[test]
+    fn successful_write_does_not_require_read_only_bits_to_change() {
+        let mut bus = bus([0x41, 0xff, 0xff, 0xfe, 0, 0, 0x65, 0x06], 8);
+        bus.read_only = 0x40;
+        let mut ck505 = I2cCk505::new_at_address(config(&[0xff], &[0x11]), 0x69).unwrap();
+        ck505.init_on_smbus(&mut bus).unwrap();
+        assert_eq!(bus.regs[0], 0x51);
+        assert_eq!(bus.reads, 1);
+        assert_eq!(bus.writes, 1);
+    }
+
+    #[test]
+    fn read_and_write_transaction_failures_are_reported() {
+        for fail_read in [true, false] {
+            let mut bus = bus([0x41, 0, 0, 0, 0, 0, 0, 0], 8);
+            bus.fail_read = fail_read;
+            bus.fail_write = !fail_read;
+            let mut ck505 = I2cCk505::new_at_address(config(&[0xff], &[0x11]), 0x69).unwrap();
+            assert!(matches!(
+                ck505.init_on_smbus(&mut bus),
+                Err(DeviceError::BusError)
+            ));
+            assert_eq!(bus.writes, u32::from(!fail_read));
+        }
     }
 
     #[test]
