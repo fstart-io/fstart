@@ -5,6 +5,8 @@
 //! writes legacy GMCH registers directly, but this module keeps the same
 //! intermediate shape explicit and testable.
 
+use crate::error::GmaError;
+use crate::framebuffer::SurfaceConfig;
 use crate::mode::Mode;
 use crate::regs::{PIPE_RANGE, PIPECONF};
 use crate::types::{Pipe, Port};
@@ -68,6 +70,17 @@ impl PipeConfig {
     /// generations with one use this to program the sync window.
     pub const fn vsync(self) -> u32 {
         Self::encode_range(self.mode.vsync_start, self.mode.vsync_end)
+    }
+
+    /// Encode the framebuffer source size independently of native scanout
+    /// timings. A panel fitter consumes this size, not the destination mode.
+    pub fn surface_source(surface: SurfaceConfig) -> Result<u32, GmaError> {
+        let width = u16::try_from(surface.width).map_err(|_| GmaError::InvalidConfig)?;
+        let height = u16::try_from(surface.height).map_err(|_| GmaError::InvalidConfig)?;
+        if width == 0 || height == 0 {
+            return Err(GmaError::InvalidConfig);
+        }
+        Ok(Self::encode_range(height, width))
     }
 
     /// Encoded pipe source register value.

@@ -1,10 +1,9 @@
 //! Panel-fitter/scaler planning helpers.
 //!
 //! libgfxinit decides whether a framebuffer requires scaling before reserving a
-//! panel fitter or pipe scaler. fstart does not program those hardware blocks
-//! yet, but keeping the decision as typed data makes the current exact-size
-//! restriction explicit and keeps future hardware enablement local to this
-//! module and the generation-specific pipe setup code.
+//! panel fitter or pipe scaler. Gen3 and GM965 program their shared GMCH
+//! fitter; newer generations expose per-pipe planning, with hardware
+//! enablement remaining explicit in their generation-specific backends.
 
 use crate::error::GmaError;
 use crate::framebuffer::SurfaceConfig;
