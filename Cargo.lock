@@ -715,9 +715,11 @@ dependencies = [
  "bitflags 2.10.0",
  "fstart-arch",
  "fstart-core",
+ "fstart-log",
  "fstart-pci",
  "heapless 0.8.0",
  "tock-registers",
+ "ufmt",
  "zerocopy",
 ]
 

@@ -9,6 +9,8 @@ license.workspace = true
 bitflags = { workspace = true }
 fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-core = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }
 fstart-pci = { workspace = true }
 heapless = { workspace = true }
 tock-registers = { workspace = true }
