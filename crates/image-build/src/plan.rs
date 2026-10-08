@@ -130,7 +130,8 @@ pub struct IntelPlan {
     #[serde(default)]
     pub memory_cache: bool,
     pub reservations: crate::intel_plan::IntelReservations,
-    pub target: String,
+    /// Long mode or 32-bit protected mode; selects the target triple.
+    pub platform: fstart_core::Platform,
     pub payload: String,
     pub stages: [IntelStagePlan; 3],
     pub smm_features: Vec<String>,
@@ -236,7 +237,18 @@ impl FlashTransport {
 }
 
 impl IntelPlan {
+    /// Rust target the stages and the SMM handler are compiled for.
+    pub fn target(&self) -> String {
+        self.platform.target_triple().into()
+    }
+
     pub fn validate(&self) -> Result<fstart_core::FlashLayout, String> {
+        if !self.platform.is_x86() {
+            return Err("Intel plans target x86".into());
+        }
+        if self.platform == fstart_core::Platform::X86 && self.payload == "uefi" {
+            return Err("the UEFI payload requires long mode".into());
+        }
         self.reservations.validate()?;
         let (flash, firmware) = self.flash.windows()?;
         if flash != self.reservations.flash || firmware != self.reservations.firmware {

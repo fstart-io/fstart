@@ -119,7 +119,11 @@ pub struct IntelReservations {
 
 impl IntelReservations {
     /// Family policy projects concrete checks; the ELF validator has no roles.
-    pub fn elf_expectations(&self, role: IntelStage) -> Result<crate::elf::Expectations, String> {
+    pub fn elf_expectations(
+        &self,
+        role: IntelStage,
+        platform: fstart_core::Platform,
+    ) -> Result<crate::elf::Expectations, String> {
         use crate::elf::{Architecture, Descriptor, Expectations};
         self.validate()?;
         let stage = self.stage(role);
@@ -132,8 +136,12 @@ impl IntelReservations {
             symbols.insert("_FSTART_HEAP".into(), heap.base);
         }
         Ok(Expectations {
-            architecture: Architecture::X86_64,
-            elf64: true,
+            architecture: if platform == fstart_core::Platform::X86 {
+                Architecture::X86
+            } else {
+                Architecture::X86_64
+            },
+            elf64: platform != fstart_core::Platform::X86,
             little_endian: true,
             stored: vec![stage.image],
             runtime: vec![stage.image, stage.writable],

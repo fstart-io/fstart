@@ -28,6 +28,9 @@ pub struct BoardFacts {
     /// Reserve two 64-KiB erase banks at the beginning of the BIOS mapping.
     /// Training payloads and flash writes are owned by the shared Intel flow.
     pub memory_cache: bool,
+    /// Build every stage for 32-bit protected mode instead of long mode, for
+    /// CPUs without AMD64 (Core Duo and older). No paging, no UEFI payload.
+    pub protected_mode: bool,
 }
 
 impl BoardFacts {
@@ -50,12 +53,20 @@ impl BoardFacts {
             flash_size,
             data_assets: &[],
             memory_cache: false,
+            protected_mode: false,
         }
     }
 
     #[must_use]
     pub const fn with_memory_cache(mut self) -> Self {
         self.memory_cache = true;
+        self
+    }
+
+    /// Opt in to 32-bit protected-mode stages (see [`Self::protected_mode`]).
+    #[must_use]
+    pub const fn with_protected_mode(mut self) -> Self {
+        self.protected_mode = true;
         self
     }
 

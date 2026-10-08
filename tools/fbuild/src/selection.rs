@@ -143,9 +143,17 @@ impl Selection {
             ]),
             CargoTarget::BoardLibrary => args.push("--lib".into()),
         }
+        // Targets rustc does not ship (32-bit bare-metal x86) are JSON specs
+        // in `targets/`; Cargo still names their output directory by the stem.
+        let target_spec = root.join("targets").join(format!("{}.json", unit.target));
+        let custom_target = target_spec.is_file();
         args.extend([
             "--target".into(),
-            unit.target.clone(),
+            if custom_target {
+                target_spec.display().to_string()
+            } else {
+                unit.target.clone()
+            },
             "--target-dir".into(),
             shared_target_dir(root).display().to_string(),
             "-Zprofile-rustflags".into(),
@@ -156,6 +164,9 @@ impl Selection {
         ]);
         if let Some(std) = &unit.build_std {
             args.extend(["-Z".into(), format!("build-std={std}")]);
+        }
+        if custom_target {
+            args.push("-Zjson-target-spec".into());
         }
         if release || unit.release_only {
             args.push("--release".into());
