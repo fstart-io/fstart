@@ -315,7 +315,10 @@ fn execute(
             let [path] = executables.as_slice() else {
                 return Err("expected exactly one current Cargo executable".into());
             };
-            let elf = PathBuf::from(path);
+            // The shared target directory reuses this path for every
+            // unit's stage binary; keep this unit's own copy.
+            let elf = selection.directory.join("stage.elf");
+            fs::copy(path, &elf).map_err(|e| format!("copy {path}: {e}"))?;
             fstart_image_build::elf::validate(
                 &fs::read(&elf).map_err(|e| e.to_string())?,
                 expectations,
@@ -339,7 +342,7 @@ fn execute(
                 fs::remove_dir_all(&rlibs).map_err(|e| e.to_string())?;
             }
             fs::create_dir_all(&rlibs).map_err(|e| e.to_string())?;
-            let target = selection.directory.join("cargo").join(&unit.target);
+            let target = selection.target_dir(root).join(&unit.target);
             for path in messages
                 .iter()
                 .filter(|v| v["reason"] == "compiler-artifact")

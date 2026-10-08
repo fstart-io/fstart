@@ -243,13 +243,13 @@ fn project(
                     return false;
                 }
                 let out = Path::new(o["out_dir"].as_str().unwrap_or(""));
-                let target_output = platform
-                    .is_some_and(|p| out.starts_with(selection.directory.join("cargo").join(p)));
+                let target_output =
+                    platform.is_some_and(|p| out.starts_with(selection.target_dir(root).join(p)));
                 if platform.is_some() {
                     target_output
                 } else {
-                    out.starts_with(selection.directory.join("cargo").join("release"))
-                        || out.starts_with(selection.directory.join("cargo").join("debug"))
+                    out.starts_with(selection.target_dir(root).join("release"))
+                        || out.starts_with(selection.target_dir(root).join("debug"))
                 }
             })
             .collect();

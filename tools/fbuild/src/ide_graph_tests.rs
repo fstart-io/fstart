@@ -42,8 +42,7 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
     let encoded = &selection.environment()["CARGO_ENCODED_RUSTFLAGS"];
     assert_eq!(encoded.split('\u{1f}').collect::<Vec<_>>(), selection.flags);
     assert!(
-        selection
-            .flags
+        crate::selection::tests::member_flags(&selection)
             .last()
             .unwrap()
             .contains("fstart ide projection ")
@@ -75,8 +74,8 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
         {"pkg_id":"app", "mode":"run-custom-build"}
     ]});
     let out = selection
-        .directory
-        .join("cargo/riscv64gc-unknown-none-elf/release/build/app/out");
+        .target_dir(&root)
+        .join("riscv64gc-unknown-none-elf/release/build/app/out");
     fs::create_dir_all(&out).unwrap();
     let dylib = root.join("macro.so");
     fs::write(&dylib, "not executed by this projection test").unwrap();

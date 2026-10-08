@@ -81,7 +81,11 @@ rust-analyzer; Cargo remains responsible for the actual `-Zbuild-std` check.
 
 `selection.rs` owns the target/profile/features/cfg flags for build, check and
 editor checks. Encoded Rust flags preserve whitespace in paths and override
-ambient Rust flags consistently. `rustflags.json` records their token boundaries; any `rustflags.txt` rendering
+ambient Rust flags consistently. The selection cfgs and linker script are
+profile rustflags (`member-rustflags.toml`) of the workspace's own crates only,
+so every unit shares one Cargo target directory (`target/fstart-build/cargo`)
+and core, alloc and registry crates are built once per target.
+`rustflags.json` records both token lists; any `rustflags.txt` rendering
 is diagnostic text, not shell-quoting instructions.
 
 The check command emits Cargo JSON diagnostics. It runs once from the opened

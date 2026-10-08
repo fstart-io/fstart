@@ -221,14 +221,26 @@ pub fn write_image(
     if let Some(parent) = image_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(image_path, &built.image)?;
+    write_if_changed(image_path, &built.image)?;
     if let Some(path) = header_path {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, built.coreboot_header.as_deref().unwrap_or(""))?;
+        write_if_changed(
+            path,
+            built.coreboot_header.as_deref().unwrap_or("").as_bytes(),
+        )?;
     }
     Ok(built)
+}
+
+/// Consumers track the image by mtime (`rerun-if-changed`); rewriting
+/// identical bytes would rebuild them on every build.
+fn write_if_changed(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    if std::fs::read(path).is_ok_and(|current| current == contents) {
+        return Ok(());
+    }
+    std::fs::write(path, contents)
 }
 
 const LINKER_SCRIPT: &str = r#"
