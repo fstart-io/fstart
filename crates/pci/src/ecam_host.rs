@@ -1101,6 +1101,31 @@ impl PciEcam {
         Ok(())
     }
 
+    /// Memory BAR spans actually assigned to discovered devices, including
+    /// chipset-fixed BARs. I/O BARs and unassigned/probed slots are excluded.
+    pub fn assigned_memory_windows(&self) -> impl Iterator<Item = PciWindow> + '_ {
+        self.devices.iter().flat_map(move |device| {
+            device.bars.iter().filter_map(move |bar| {
+                if !bar.allocated || !matches!(bar.bar_type, BarType::Memory32 | BarType::Memory64)
+                {
+                    return None;
+                }
+                let low = self.read32(device.addr, bar.reg) & 0xffff_fff0;
+                let base = if bar.bar_type == BarType::Memory64 {
+                    u64::from(low) | (u64::from(self.read32(device.addr, bar.reg + 4)) << 32)
+                } else {
+                    u64::from(low)
+                };
+                Some(PciWindow {
+                    kind: PciWindowKind::Mmio,
+                    base,
+                    size: bar.size,
+                    prefetchable: bar.prefetchable,
+                })
+            })
+        })
+    }
+
     /// Construct an ECAM root bridge from a runtime provider.
     ///
     /// The provider is queried once, after memory discovery, and the returned
@@ -1548,6 +1573,18 @@ mod tests {
         assert_eq!(pci.read32(hda, PCI_BAR0) & !0xf, 0xc000_0000);
         assert_eq!(pci.read32(igd, PCI_BAR0 + 8) & !0xf, 0xd000_0000);
         assert_eq!(pci.read32(igd, PCI_BAR0) & !0xf, 0xc010_0000);
+        let windows: HVec<_, 6> = pci
+            .assigned_memory_windows()
+            .map(|window| (window.base, window.size))
+            .collect();
+        assert_eq!(
+            windows.as_slice(),
+            &[
+                (0xc010_0000, 0x10_0000),
+                (0xd000_0000, 0x1000_0000),
+                (0xc000_0000, 0x4000),
+            ]
+        );
     }
 
     #[test]

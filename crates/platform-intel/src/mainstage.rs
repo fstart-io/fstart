@@ -106,6 +106,9 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         mainstage.southbridge.set_s3_enabled(enabled);
     }
     run_mainstage_phase(platform, "bus_scan", || mainstage.bus_scan());
+    run_mainstage_phase(platform, "install_page_tables", || {
+        mainstage.install_page_tables()
+    });
     run_mainstage_phase(platform, "init_devices", || mainstage.init_devices());
     run_mainstage_phase(platform, "mount_boot_media", || {
         fstart_arch::x86_64::enable_boot_media_rom_cache();
@@ -410,6 +413,29 @@ where
                 fstart_log::error!("pci: enumeration/allocation failed: {:?}", error);
             })
             .map_err(|_| ServiceError::HardwareError)
+    }
+
+    fn install_page_tables(&self) -> Result<(), ServiceError> {
+        let pci = self.pci.as_ref().ok_or(ServiceError::NotInitialized)?;
+        let ram = self
+            .ctx
+            .e820()
+            .iter()
+            .filter(|entry| {
+                entry.kind == fstart_core::services::memory_detect::E820Kind::Ram as u32
+            })
+            .map(|entry| (entry.addr, entry.size));
+        let bars = pci
+            .assigned_memory_windows()
+            .map(|window| (window.base, window.size));
+        // SAFETY: firmware's low-DRAM heap is identity mapped by postcar and
+        // reserved by reserve_firmware_memory. Preserve the complete low map,
+        // add detected high RAM and assigned BARs, and switch before AP startup.
+        let tables =
+            unsafe { fstart_arch::x86_64::paging::IdentityTables::build(ram.chain(bars))? };
+        let base = unsafe { tables.install() };
+        fstart_log::info!("paging: final DRAM identity tables at {:#x}", base);
+        Ok(())
     }
 
     fn init_devices(&mut self) -> Result<(), ServiceError> {
