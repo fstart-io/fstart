@@ -13,6 +13,7 @@ use fstart_core::services::{
     ConsoleDevice, FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus,
     Southbridge,
 };
+pub use fstart_driver_usbdebug::Config as EhciDebugConfig;
 use fstart_pci::ecam;
 use fstart_pci::{
     PCI_COMMAND_BITS, PciAddress, PciFixedBar, PciFixedBarType, PciFixedBars, PciType0Config,
@@ -795,7 +796,7 @@ pub struct IntelIch9Config {
     /// USB configuration.
     pub usb: Option<UsbConfig>,
     /// Active early EHCI console BAR, excluded from PCI sizing/relocation.
-    pub ehci_debug_bar: Option<PciFixedBar>,
+    pub ehci_debug_bar: Option<fstart_driver_usbdebug::Config>,
     /// PCIe root ports 1..6 enabled.
     pub pcie_ports: [bool; 6],
     /// PCIe root ports implemented as slots.
@@ -2103,7 +2104,9 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         {
             return Err(ServiceError::InvalidParam);
         }
-        if let Some(bar) = config.ehci_debug_bar {
+        if let Some(debug) = config.ehci_debug_bar {
+            fstart_driver_usbdebug::EhciDebug::new(debug)?;
+            let bar = debug.fixed_bar();
             let controller = match (
                 bar.address.bus(),
                 bar.address.device(),
@@ -2274,7 +2277,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         })
         .expect("ICH9 fixed PCI resource list capacity");
         if let Some(debug) = self.config.ehci_debug_bar {
-            bars.push(debug)
+            bars.push(debug.fixed_bar())
                 .expect("ICH9 fixed PCI resource list capacity");
         }
         bars

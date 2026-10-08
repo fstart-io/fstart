@@ -65,6 +65,7 @@ register_bitfields![u8,
         WLAN_ENABLE OFFSET(5) NUMBITS(1) [],
         WWAN_ENABLE OFFSET(6) NUMBITS(1) []
     ],
+    pub UWB_CONTROL [ENABLE OFFSET(2) NUMBITS(1) []],
     pub USB_CONTROL [
         THINKLIGHT OFFSET(1) NUMBITS(1) [],
         POWER_ENABLE OFFSET(4) NUMBITS(1) []
@@ -112,6 +113,7 @@ ec_registers! {
     ALWAYS_ON_CONTROL => 0x0d,
     FAN_CONTROL => 0x2f,
     VOLUME_CONTROL => 0x30,
+    UWB_CONTROL => 0x31,
     RADIO_CONTROL => 0x3a,
     USB_CONTROL => 0x3b,
     STATUS1 => 0x47,
@@ -281,6 +283,12 @@ impl H8 {
     pub fn wwan_enable(&self, on: bool) -> bool {
         self.channel
             .modify_register(RADIO_CONTROL::WWAN_ENABLE.val(on.into()))
+    }
+
+    /// Controls the radio-off pin in the UWB MiniPCIe slot (coreboot h8.c).
+    pub fn uwb_enable(&self, on: bool) -> bool {
+        self.channel
+            .modify_register(UWB_CONTROL::ENABLE.val(on.into()))
     }
 
     pub fn audio_mute(&self, mute: bool) -> bool {
