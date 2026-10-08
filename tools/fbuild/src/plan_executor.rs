@@ -360,6 +360,7 @@ fn execute(
             let handler = fstart_image_build::smm_image::handler_from_rlibs(
                 &rlibs,
                 &selection.directory.join("link"),
+                fstart_image_build::smm_image::SmmArch::from_target(&unit.target),
             )
             .map_err(|e| e.to_string())?;
             let image = selection.directory.join("image.bin");

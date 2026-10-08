@@ -15,6 +15,9 @@ pub const SMM_IMAGE_MAGIC: u32 = u32::from_le_bytes(*b"FSMM");
 pub const FLAG_COREBOOT_MODULE_ARGS: u32 = 1 << 0;
 /// `SmmImageHeader.flags`: image build requested coreboot C header output.
 pub const FLAG_COREBOOT_HEADER: u32 = 1 << 1;
+/// `SmmImageHeader.flags`: 32-bit protected-mode entry stubs and handler.
+/// Such a handler is linked at 0 and relocated through the fixup table.
+pub const FLAG_PROTECTED_MODE: u32 = 1 << 2;
 
 /// Errors returned while validating an SMM image header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +82,12 @@ pub struct SmmImageHeader {
     pub module_args_size: u32,
     /// Per-CPU SMM stack size expected by the stubs.
     pub stack_size: u32,
+    /// File offset of the fixup table, or 0.
+    pub fixups_offset: u32,
+    /// Number of `u32` handler-memory offsets in the fixup table. Each names
+    /// a 32-bit absolute address, linked at 0, to which the loader adds the
+    /// handler base. Long-mode handlers are position independent: always 0.
+    pub fixup_count: u32,
 }
 
 impl SmmImageHeader {
@@ -121,7 +130,36 @@ impl SmmImageHeader {
             module_args_offset,
             module_args_size,
             stack_size,
+            fixups_offset: 0,
+            fixup_count: 0,
         }
+    }
+
+    /// Record the fixup table of a protected-mode handler.
+    #[must_use]
+    pub const fn with_fixups(mut self, offset: u32, count: u32) -> Self {
+        self.fixups_offset = offset;
+        self.fixup_count = count;
+        self
+    }
+
+    /// The `index`th fixup: a handler-memory offset of an absolute address.
+    pub fn fixup(&self, image: &[u8], index: u32) -> Result<u32, HeaderError> {
+        if index >= self.fixup_count {
+            return Err(HeaderError::RangeOutOfBounds);
+        }
+        let off = self.fixups_offset as usize + index as usize * 4;
+        let bytes = image
+            .get(off..off + 4)
+            .ok_or(HeaderError::RangeOutOfBounds)?;
+        let offset = u32::from_le_bytes(bytes.try_into().expect("four bytes"));
+        if offset
+            .checked_add(4)
+            .is_none_or(|end| end > self.handler_load_size)
+        {
+            return Err(HeaderError::BadMemoryImage);
+        }
+        Ok(offset)
     }
 
     /// Parse and validate the fixed header from little-endian bytes.
@@ -153,6 +191,14 @@ impl SmmImageHeader {
         h.check_memory_range(h.handler_config_offset, h.handler_config_capacity)?;
         if h.module_args_offset != 0 || h.module_args_size != 0 {
             h.check_memory_range(h.module_args_offset, h.module_args_size)?;
+        }
+        if h.fixup_count != 0 {
+            h.check_file_range(
+                h.fixups_offset,
+                h.fixup_count
+                    .checked_mul(4)
+                    .ok_or(HeaderError::RangeOutOfBounds)?,
+            )?;
         }
         Ok(h)
     }
