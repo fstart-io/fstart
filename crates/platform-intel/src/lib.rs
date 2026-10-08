@@ -71,6 +71,15 @@ mod mainstage;
 mod memory_info;
 #[cfg(all(feature = "stage", fstart_stage_env = "postcar"))]
 mod postcar;
+#[cfg(all(
+    feature = "stage",
+    any(
+        fstart_stage_env = "car",
+        fstart_stage_env = "postcar",
+        fstart_stage_env = "ram"
+    )
+))]
+mod store;
 #[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
 pub use mainstage::{IntelMainstage, Mainstage, MainstageCtx};
 

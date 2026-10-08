@@ -753,6 +753,7 @@ dependencies = [
  "fstart-pci",
  "fstart-smm",
  "fstart-stage",
+ "fstart-store",
  "heapless 0.8.0",
  "konst",
  "raw-cpuid",

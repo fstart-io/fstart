@@ -109,6 +109,8 @@ pub mod tag {
     pub const ACPI: Tag = Tag::vendor(0x005);
     /// SMBIOS entry point and structure table.
     pub const SMBIOS: Tag = Tag::vendor(0x006);
+    /// Raminit's installed-DRAM inventory for SMBIOS.
+    pub const MEMORY_INFO: Tag = Tag::vendor(0x007);
 }
 
 /// Location of one entry's data within its store.

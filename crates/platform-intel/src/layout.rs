@@ -27,8 +27,7 @@ impl<'a> IntelBootLayout<'a> {
             RegionKind::BootstrapPostcar,
             RegionKind::BootstrapMainstage,
             RegionKind::BootMediaScratch,
-            RegionKind::StageCachePostcar,
-            RegionKind::StageCacheMainstage,
+            RegionKind::FirmwareStore,
         ] {
             this.region(kind)?;
         }
@@ -66,7 +65,9 @@ impl<'a> IntelBootLayout<'a> {
     ) -> Result<Region, ServiceError> {
         if !matches!(
             role,
-            RegionKind::BootstrapPostcar | RegionKind::BootstrapMainstage
+            RegionKind::BootstrapPostcar
+                | RegionKind::BootstrapMainstage
+                | RegionKind::FirmwareStore
         ) {
             return Err(ServiceError::InvalidParam);
         }
@@ -78,17 +79,15 @@ impl<'a> IntelBootLayout<'a> {
     }
 
     /// Regions the firmware rewrites on every boot, including S3 resume: the
-    /// two bootstrap windows, the boot-media arena, the stage cache slots and
-    /// the raminit handoffs. Platforms exclude these from OS-visible RAM.
-    pub fn firmware_owned_regions(&self) -> Result<[Region; 7], ServiceError> {
+    /// two bootstrap windows, the boot-media arena and the store window.
+    /// Platforms exclude these from OS-visible RAM; the unused part of the
+    /// store window is returned once the store is sealed.
+    pub fn firmware_owned_regions(&self) -> Result<[Region; 4], ServiceError> {
         Ok([
             self.region(RegionKind::BootstrapPostcar)?,
             self.region(RegionKind::BootstrapMainstage)?,
             self.region(RegionKind::BootMediaScratch)?,
-            self.region(RegionKind::StageCachePostcar)?,
-            self.region(RegionKind::StageCacheMainstage)?,
-            self.region(RegionKind::TrainingHandoff)?,
-            self.region(RegionKind::MemoryInfo)?,
+            self.region(RegionKind::FirmwareStore)?,
         ])
     }
 }

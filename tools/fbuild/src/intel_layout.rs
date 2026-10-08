@@ -37,10 +37,7 @@ pub(crate) mod tests {
             },
             low_memory: span(0, 0x100000),
             scratch: span(0x2000000, 0x1000000),
-            stage_cache_postcar: span(0x5000000, 0x8000),
-            stage_cache_mainstage: span(0x5008000, 0x100000),
-            training_handoff: span(0x5108000, 0x1000),
-            memory_info: span(0x5109000, 0x1000),
+            store: span(0x5000000, 0x400000),
         }
     }
 
@@ -75,9 +72,9 @@ pub(crate) mod tests {
                 layout.region(RegionKind::BootMediaScratch).unwrap().base,
                 config.scratch.base
             );
-            let handoff = layout.region(RegionKind::TrainingHandoff).unwrap();
-            assert_eq!(handoff.base, config.training_handoff.base);
-            assert_eq!(handoff.size, config.training_handoff.size);
+            let store = layout.region(RegionKind::FirmwareStore).unwrap();
+            assert_eq!(store.base, config.store.base);
+            assert_eq!(store.size, config.store.size);
         }
     }
 

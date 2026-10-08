@@ -27,6 +27,7 @@ stage = [
   "dep:fstart-driver-uart",
   "dep:fstart-log",
   "dep:fstart-stage",
+  "dep:fstart-store",
   "dep:fstart-ffs",
   "fstart-stage/ffs",
   "dep:fstart-arch",
@@ -35,6 +36,7 @@ stage = [
 ]
 acpi = [
   "dep:fstart-acpi",
+  "dep:fstart-store",
   "dep:fstart-arch",
   "dep:fstart-log",
   "dep:ufmt",
@@ -61,6 +63,7 @@ serde_json = { version = "1", optional = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
+fstart-store = { workspace = true, optional = true }
 fstart-driver-intel = { workspace = true }
 fstart-driver-superio = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }

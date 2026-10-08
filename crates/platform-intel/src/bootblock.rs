@@ -122,18 +122,19 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         ))?;
         fstart_log::info!("{}: DRAM ready", platform);
         let ram_end = dram_end.min(northbridge.total_ram_bytes()?);
-        let memory_info = geometry.region(RegionKind::MemoryInfo)?;
-        if memory_info.end().is_none_or(|end| end > ram_end) {
-            return Err(ServiceError::InvalidParam);
-        }
-        // SAFETY: linked firmware-owned reservation inside trained DRAM.
-        unsafe { crate::memory_info::publish(memory_info, northbridge.memory_info().as_ref())? };
+        let mut store =
+            crate::store::bootblock(geometry, ram_end, boot_path == BootPath::S3Resume)?;
+        crate::memory_info::publish(&mut store, northbridge.memory_info().as_ref())?;
         #[cfg(feature = "memory-cache")]
         if let (Some(key), Some(length)) = (key, captured) {
-            let pending = geometry.region(RegionKind::TrainingHandoff)?;
-            if pending.end().is_none_or(|end| end > ram_end) {
-                return Err(ServiceError::InvalidParam);
-            }
+            let entry = store
+                .add(fstart_store::tag::TRAINING, 0x1000, 3)
+                .map_err(|_| ServiceError::InvalidParam)?;
+            let pending = fstart_core::layout::Region {
+                kind: RegionKind::FirmwareStore,
+                base: store.address(&entry) as u64,
+                size: entry.len() as u64,
+            };
             // Only cold/warm initialization captures, after the driver's RAM test.
             unsafe {
                 crate::memory_cache::publish_pending(pending, key, &capture[..length])?;
@@ -189,14 +190,13 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
             geometry,
         )?;
         let reserved = crate::boot::running_reservations(geometry)?;
-        let postcar_slot = geometry.region(RegionKind::StageCachePostcar)?;
         let verified = crate::boot::load_stage_with_cache(
             &media,
             fstart_stage::stage_cache::CachedStage::Postcar,
             postcar,
             postcar_window,
             &reserved,
-            postcar_slot,
+            &mut store,
             boot_path == BootPath::S3Resume,
         )?;
         let boot_flags = if boot_path == BootPath::S3Resume {
@@ -226,6 +226,7 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
             &mut southbridge,
             boot_path,
         ))?;
+        crate::store::write_back(&store);
         fstart_log::info!(
             "jumping to {} at {:#x}",
             crate::POSTCAR_STAGE_NAME,

@@ -179,13 +179,10 @@ pub fn reservations<P: IntelPlatform>(
         },
         low_memory: span(0, 0x100000),
         scratch: span(0x2000000, 0x1000000),
-        // S3-resident stored stage bodies. Keep headroom for payload-enabled
-        // release ramstages; a store that cannot fit is logged on cold boot
-        // and leaves resume to reset.
-        stage_cache_postcar: span(0x5000000, 0x8000),
-        stage_cache_mainstage: span(0x5008000, 0x100000),
-        training_handoff: span(0x5108000, 0x1000),
-        memory_info: span(0x5109000, 0x1000),
+        // Firmware store: S3 stage caches (about 1 MiB for a payload-enabled
+        // release ramstage), the training record and ACPI/SMBIOS tables. Only
+        // the used part stays reserved.
+        store: span(0x5000000, 0x400000),
     };
     reservations.validate()?;
     Ok(reservations)
