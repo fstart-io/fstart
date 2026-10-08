@@ -64,6 +64,8 @@ mod boot;
 mod bootblock;
 #[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
 mod mainstage;
+#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
+mod memory_info;
 #[cfg(all(feature = "stage", fstart_stage_env = "postcar"))]
 mod postcar;
 #[cfg(all(feature = "stage", fstart_stage_env = "ram"))]

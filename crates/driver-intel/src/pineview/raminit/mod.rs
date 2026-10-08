@@ -249,6 +249,34 @@ impl SysInfo {
     pub fn is_sodimm(&self) -> bool {
         self.dimm_type == DIMM_TYPE_SODIMM
     }
+
+    /// SMBIOS inventory of every wired slot; Pineview addresses up to 4 GiB.
+    fn memory_info(&self) -> fstart_core::memory_info::MemoryInfo {
+        use fstart_core::memory_info::{MemoryDevice, MemoryInfo};
+        let mts = match self.selected_timings.mem_clock {
+            MemClock::Ddr667 => 667,
+            MemClock::Ddr800 => 800,
+        };
+        let mut info = MemoryInfo::new(4096);
+        for (slot, dimm) in self.dimms.iter().enumerate() {
+            if self.spd_map[slot] == 0 {
+                continue;
+            }
+            let slot = slot as u8;
+            info.push(dimm.as_ref().map_or(MemoryDevice::empty(0, slot), |dimm| {
+                crate::generic::spd::ddr2::memory_device(dimm, 0, slot, mts)
+            }));
+        }
+        info
+    }
+}
+
+/// Result of a successful DRAM initialization.
+pub struct Initialized {
+    pub total_bytes: u64,
+    /// Length of the training record written to `capture`, if any.
+    pub captured: Option<usize>,
+    pub memory_info: fstart_core::memory_info::MemoryInfo,
 }
 
 // ===================================================================
@@ -271,7 +299,7 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     boot_path: crate::BootPath,
     platform_type: u8,
     spd_addresses: &[u8; 4],
-) -> Result<u64, ServiceError> {
+) -> Result<Initialized, ServiceError> {
     sdram_initialize_cached(
         mch,
         smbus,
@@ -281,7 +309,6 @@ pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
         None,
         &mut [],
     )
-    .map(|(size, _)| size)
 }
 
 pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
@@ -292,7 +319,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
     spd_addresses: &[u8; 4],
     cached: Option<&[u8]>,
     capture: &mut [u8],
-) -> Result<(u64, Option<usize>), ServiceError> {
+) -> Result<Initialized, ServiceError> {
     fstart_log::info!("raminit: starting DDR2 initialization");
 
     let mut si = SysInfo::new(boot_path, platform_type, *spd_addresses);
@@ -447,5 +474,9 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
     } else {
         None
     };
-    Ok((total_bytes, captured))
+    Ok(Initialized {
+        total_bytes,
+        captured,
+        memory_info: si.memory_info(),
+    })
 }

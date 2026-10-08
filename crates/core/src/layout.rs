@@ -61,6 +61,8 @@ pub enum RegionKind {
     StageCacheMainstage = 17,
     /// Pending SPD/training record in OS-reserved RAM, committed from ramstage.
     TrainingHandoff = 18,
+    /// Installed-DRAM inventory published by raminit for the SMBIOS writer.
+    MemoryInfo = 19,
 }
 
 impl RegionKind {
@@ -84,6 +86,7 @@ impl RegionKind {
             16 => Ok(Self::StageCachePostcar),
             17 => Ok(Self::StageCacheMainstage),
             18 => Ok(Self::TrainingHandoff),
+            19 => Ok(Self::MemoryInfo),
             _ => Err(Error::UnknownRegionKind),
         }
     }

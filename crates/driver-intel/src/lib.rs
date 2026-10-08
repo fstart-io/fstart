@@ -210,6 +210,10 @@ pub trait IntelNorthbridgeDriver:
         self.dram_init_with_smbus(smbus)?;
         Ok(None)
     }
+    /// Installed-DRAM inventory from the last successful DRAM init, for SMBIOS.
+    fn memory_info(&self) -> Option<fstart_core::memory_info::MemoryInfo> {
+        None
+    }
     /// Advertise S3 only after both training persistence and retained stage
     /// storage have been established by the platform.
     fn set_s3_enabled(&mut self, _enabled: bool) {}

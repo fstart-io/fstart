@@ -145,6 +145,13 @@ impl MemClock {
             Self::Ddr2_667 => "DDR2-667",
         }
     }
+
+    const fn mts(self) -> u16 {
+        match self {
+            Self::Ddr2_533 => 533,
+            Self::Ddr2_667 => 667,
+        }
+    }
 }
 
 /// GM965 channel mode selected from populated channels.
@@ -435,6 +442,34 @@ impl RaminitInfo {
         self.rec_fine = wire.fine;
         true
     }
+    /// SMBIOS inventory of every wired slot; GM965 addresses up to 4 GiB.
+    pub fn memory_info(&self, spd_addresses: &[u8; 4]) -> fstart_core::memory_info::MemoryInfo {
+        use fstart_core::memory_info::{MemoryDevice, MemoryInfo};
+        let mut info = MemoryInfo::new(4096);
+        for (slot, raw) in self.raw_spd.iter().enumerate() {
+            if spd_addresses[slot] == 0 {
+                continue;
+            }
+            let (channel, index) = ((slot / 2) as u8, (slot % 2) as u8);
+            let mut spd = [0; 256];
+            spd[..128].copy_from_slice(raw);
+            let device = if self.dimms[slot].present {
+                crate::generic::spd::ddr2::decode_dimm(&spd).map(|dimm| {
+                    crate::generic::spd::ddr2::memory_device(
+                        &dimm,
+                        channel,
+                        index,
+                        self.timings.mem_clock.mts(),
+                    )
+                })
+            } else {
+                None
+            };
+            info.push(device.unwrap_or_else(|| MemoryDevice::empty(channel, index)));
+        }
+        info
+    }
+
     /// Total installed memory in bytes.
     pub const fn total_bytes(&self) -> u64 {
         (self.total_mb as u64) * 1024 * 1024

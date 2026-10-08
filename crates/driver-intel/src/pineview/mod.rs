@@ -193,6 +193,8 @@ pub struct IntelPineview {
     boot_path: crate::BootPath,
     /// Framebuffer programmed by the shared GMA layer, if the board asked for it.
     display: super::igd::IgdDisplay,
+    /// Slot inventory recorded by DRAM init for SMBIOS.
+    memory_info: Option<fstart_core::memory_info::MemoryInfo>,
 }
 
 // SAFETY: Driver holds no unsynchronized shared state; MMIO and PCI
@@ -528,6 +530,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             display: super::igd::IgdDisplay::new(),
+            memory_info: None,
         })
     }
 
@@ -549,6 +552,10 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
 
     fn set_boot_path(&mut self, boot_path: crate::BootPath) {
         self.boot_path = boot_path;
+    }
+
+    fn memory_info(&self) -> Option<fstart_core::memory_info::MemoryInfo> {
+        self.memory_info
     }
 
     fn training_identity(&self) -> Option<[u8; 32]> {
@@ -585,7 +592,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         output: &mut [u8],
     ) -> Result<Option<usize>, ServiceError> {
         let smbus = smbus.ok_or(ServiceError::NotInitialized)?;
-        let (size, captured) = raminit::sdram_initialize_cached(
+        let initialized = raminit::sdram_initialize_cached(
             &self.mchbar(),
             smbus,
             self.boot_path,
@@ -594,11 +601,12 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
             cached,
             output,
         )?;
-        self.detected_size = size;
+        self.detected_size = initialized.total_bytes;
+        self.memory_info = Some(initialized.memory_info);
         if self.boot_path != crate::BootPath::S3Resume {
             self.memory_test()?;
         }
-        Ok(captured)
+        Ok(initialized.captured)
     }
 
     fn dram_init_with_smbus(&mut self, smbus: Option<&mut dyn SmBus>) -> Result<(), ServiceError> {
@@ -757,14 +765,15 @@ impl IntelPineview {
         // driver before DRAM init (see the board's `before_memory` hook); the
         // northbridge does not carry a copy of a board's clock table.
         let platform_type = self.platform_type();
-        let size = raminit::sdram_initialize(
+        let initialized = raminit::sdram_initialize(
             &self.mchbar(),
             smbus,
             self.boot_path,
             platform_type,
             &self.config.spd_addresses,
         )?;
-        self.detected_size = size;
+        self.detected_size = initialized.total_bytes;
+        self.memory_info = Some(initialized.memory_info);
         if self.boot_path != crate::BootPath::S3Resume {
             self.memory_test()?;
         }

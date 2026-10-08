@@ -462,6 +462,8 @@ pub struct IntelI945 {
     mmio32_window: Option<(u64, u64)>,
     /// Framebuffer programmed by the shared GMA layer, if the board asked for it.
     display: super::igd::IgdDisplay,
+    /// Slot inventory recorded by DRAM init for SMBIOS.
+    memory_info: Option<fstart_core::memory_info::MemoryInfo>,
 }
 
 /// CF9 full reset, mirroring coreboot `full_reset()`.
@@ -1271,6 +1273,7 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
             boot_path: crate::BootPath::Normal,
             mmio32_window: None,
             display: super::igd::IgdDisplay::new(),
+            memory_info: None,
         })
     }
 
@@ -1295,6 +1298,10 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
 
     fn set_boot_path(&mut self, boot_path: crate::BootPath) {
         self.boot_path = boot_path;
+    }
+
+    fn memory_info(&self) -> Option<fstart_core::memory_info::MemoryInfo> {
+        self.memory_info
     }
 
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
@@ -1622,7 +1629,8 @@ impl MemoryController for IntelI945 {
         if let Ok(size) = self.total_ram_bytes() {
             self.detected_size = size;
         }
-        result
+        self.memory_info = Some(result?);
+        Ok(())
     }
 
     fn detected_size_bytes(&self) -> u64 {

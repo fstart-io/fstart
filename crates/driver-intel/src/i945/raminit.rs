@@ -603,6 +603,8 @@ struct SysInfo {
     cols: [u8; 4],
     banks: [u8; 4],
     banksize: [u32; 8],
+    /// SMBIOS description per slot; the configured speed is filled in last.
+    modules: [Option<fstart_core::memory_info::MemoryDevice>; 4],
 }
 
 impl SysInfo {
@@ -628,6 +630,7 @@ impl SysInfo {
             cols: [0; 4],
             banks: [0; 4],
             banksize: [0; 8],
+            modules: [None; 4],
         }
     }
 }
@@ -904,24 +907,16 @@ fn gather_common_timing(
             continue;
         }
 
-        // Prefer a block read; fall back to byte reads like coreboot.
         let mut raw = [0u8; 256];
-        let mut ok = matches!(ctx.smbus.block_read(device, 0, &mut raw[..64]), Ok(64));
-        if !ok {
-            ok = true;
-            for j in 0..64 {
-                match ctx.smbus.read_byte(device, j as u8) {
-                    Ok(v) => raw[j] = v,
-                    Err(_) => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-        }
-        if !ok {
+        if !read_spd_bytes(ctx.smbus, device, 0, &mut raw[..64]) {
             fstart_log::debug!("i945: SPD read failed at {:#04x}", device);
             continue;
+        }
+        // Module identity is only reported to SMBIOS; training does not need it.
+        let identity =
+            &mut raw[ddr2::SPD_MANUFACTURER_ID as usize..ddr2::SPD_IDENTITY_END as usize];
+        if !read_spd_bytes(ctx.smbus, device, ddr2::SPD_MANUFACTURER_ID, identity) {
+            fstart_log::debug!("i945: SPD identity unreadable at {:#04x}", device);
         }
 
         let Some(dimm) = ddr2::decode_dimm(&raw) else {
@@ -968,6 +963,7 @@ fn gather_common_timing(
         sys.rows[i] = dimm.rows;
         sys.cols[i] = dimm.cols;
         sys.banks[i] = dimm.banks;
+        sys.modules[i] = Some(ddr2::memory_device(&dimm, (i >> 1) as u8, (i & 1) as u8, 0));
 
         saved.min_tras = saved.min_tras.max(dimm.tras_256ns);
         saved.min_trp = saved.min_trp.max(dimm.trp_256ns);
@@ -995,6 +991,39 @@ fn gather_common_timing(
         fstart_log::info!("i945: channel 0 has no memory populated");
     }
     Ok(())
+}
+
+/// Read consecutive SPD bytes, preferring a block read and falling back to
+/// byte reads like coreboot.
+fn read_spd_bytes(smbus: &mut dyn SmBus, device: u8, start: u8, buf: &mut [u8]) -> bool {
+    matches!(smbus.block_read(device, start, buf), Ok(n) if n == buf.len())
+        || buf.iter_mut().zip(start..).all(|(byte, offset)| {
+            smbus
+                .read_byte(device, offset)
+                .map(|value| *byte = value)
+                .is_ok()
+        })
+}
+
+/// SMBIOS inventory of the slots this controller can address. The 945GC
+/// desktop variant addresses 2 GiB, the mobile 945GM/GME 4 GiB.
+fn memory_info(ctx: &Ctx<'_>, sys: &SysInfo) -> fstart_core::memory_info::MemoryInfo {
+    use fstart_core::memory_info::{MemoryDevice, MemoryInfo};
+    let mut info = MemoryInfo::new(if ctx.mobile { 4096 } else { 2048 });
+    let slots = if ctx.hw_dual_channel() { 4 } else { 2 };
+    for (slot, module) in sys.modules.iter().enumerate().take(slots) {
+        if ctx.spd_addresses[slot] == 0 {
+            continue;
+        }
+        let (channel, index) = ((slot >> 1) as u8, (slot & 1) as u8);
+        info.push(
+            module.map_or(MemoryDevice::empty(channel, index), |module| MemoryDevice {
+                configured_mts: sys.memory_frequency.into(),
+                ..module
+            }),
+        );
+    }
+    info
 }
 
 /// Pick tCK and CAS (`choose_tclk`).
@@ -2469,7 +2498,10 @@ fn program_receive_enable(ctx: &Ctx<'_>, sys: &SysInfo) {
 /// `boot_path` comes from the fixed platform flow. Anything but a cold
 /// normal boot reboots: without an MRC cache fstart cannot resume, matching
 /// the GM965 port's policy.
-pub fn sdram_initialize(nb: &IntelI945, smbus: &mut dyn SmBus) -> Result<(), ServiceError> {
+pub fn sdram_initialize(
+    nb: &IntelI945,
+    smbus: &mut dyn SmBus,
+) -> Result<fstart_core::memory_info::MemoryInfo, ServiceError> {
     use crate::BootPath;
 
     if nb.boot_path != BootPath::Normal {
@@ -2534,5 +2566,5 @@ pub fn sdram_initialize(nb: &IntelI945, smbus: &mut dyn SmBus) -> Result<(), Ser
 
     fstart_log::info!("i945: RAM initialization finished");
     setup_processor_side(&ctx);
-    Ok(())
+    Ok(memory_info(&ctx, &sys))
 }

@@ -16,6 +16,7 @@ pub mod ffs;
 pub mod handoff;
 pub mod layout;
 pub mod memory;
+pub mod memory_info;
 pub mod security;
 pub mod smbios;
 pub mod smm;

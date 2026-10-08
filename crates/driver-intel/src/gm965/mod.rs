@@ -542,6 +542,8 @@ pub struct IntelGm965 {
     display: super::igd::IgdDisplay,
     /// IGD windows as PCI enumeration assigned them; read in the mainstage.
     igd_bars: Option<super::igd::IgdBars>,
+    /// Slot inventory recorded by DRAM init for SMBIOS.
+    memory_info: Option<fstart_core::memory_info::MemoryInfo>,
 }
 
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
@@ -1341,6 +1343,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
             mmio32_window: None,
             display: super::igd::IgdDisplay::new(),
             igd_bars: None,
+            memory_info: None,
         })
     }
 
@@ -1365,6 +1368,9 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     }
     fn set_s3_enabled(&mut self, enabled: bool) {
         self.s3_enabled = enabled;
+    }
+    fn memory_info(&self) -> Option<fstart_core::memory_info::MemoryInfo> {
+        self.memory_info
     }
     fn supports_s3_replay(&self) -> bool {
         // Enable the implemented retained-memory path for hardware testing.
@@ -1418,6 +1424,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
             self.boot_path,
             cached,
         )?;
+        self.memory_info = Some(info.memory_info(&self.config.spd_addresses));
         if self.boot_path == crate::BootPath::S3Resume {
             return Ok(None);
         }
@@ -1684,6 +1691,7 @@ impl MemoryController for IntelGm965 {
         let mut info = raminit::probe_dimms(&mut smbus, &self.config.spd_addresses)?;
         self.detected_size = info.total_bytes();
         raminit::cold_boot_train(&mut info, &self.mchbar(), self.igd_ggc())?;
+        self.memory_info = Some(info.memory_info(&self.config.spd_addresses));
         self.memory_test()?;
         self.thermal_sensor_init(&info, &mut smbus);
         Ok(())

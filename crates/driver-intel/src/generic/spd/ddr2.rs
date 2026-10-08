@@ -76,6 +76,15 @@ pub const SPD_TRFC_LO: u8 = 42;
 pub const SPD_REVISION: u8 = 62;
 /// SPD byte 63: checksum of bytes 0 through 62.
 pub const SPD_CHECKSUM: u8 = 63;
+/// SPD bytes 64-71: JEP106 manufacturer id, 0x7f continuation codes first.
+pub const SPD_MANUFACTURER_ID: u8 = 64;
+/// SPD bytes 73-90: module part number, space padded.
+pub const SPD_PART_NUMBER: u8 = 73;
+pub const SPD_PART_NUMBER_LEN: usize = 18;
+/// SPD bytes 95-98: module serial number.
+pub const SPD_SERIAL_NUMBER: u8 = 95;
+/// End of the identity bytes SMBIOS needs (exclusive).
+pub const SPD_IDENTITY_END: u8 = SPD_SERIAL_NUMBER + 4;
 
 /// DDR2 memory type identifier (SPD byte 2).
 pub const DDR2: u8 = 0x08;
@@ -358,9 +367,102 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Option<DimmInfo> {
     })
 }
 
+/// Describe a decoded DDR2 module for the SMBIOS memory inventory.
+///
+/// `configured_mts` is the data rate raminit programmed. Identity fields come
+/// from SPD bytes 64-98, which the caller must have read.
+pub fn memory_device(
+    dimm: &DimmInfo,
+    channel: u8,
+    slot: u8,
+    configured_mts: u16,
+) -> fstart_core::memory_info::MemoryDevice {
+    use fstart_core::memory_info as mi;
+    let spd = &dimm.spd_data;
+    let manufacturer = &spd[SPD_MANUFACTURER_ID as usize..SPD_MANUFACTURER_ID as usize + 8];
+    let jedec_bank = manufacturer
+        .iter()
+        .take_while(|byte| **byte == 0x7f)
+        .count();
+    // DDR2 SPD byte 20 module type: RDIMM, UDIMM, SO-DIMM, Micro, Mini-R, Mini-U.
+    let (form_factor, buffering) = match spd[SPD_DIMM_TYPE as usize] & 0x3f {
+        0x01 | 0x10 => (mi::FORM_FACTOR_DIMM, mi::TYPE_DETAIL_REGISTERED),
+        0x02 | 0x20 => (mi::FORM_FACTOR_DIMM, mi::TYPE_DETAIL_UNBUFFERED),
+        0x04 => (mi::FORM_FACTOR_SODIMM, mi::TYPE_DETAIL_UNBUFFERED),
+        0x08 => (mi::FORM_FACTOR_DIMM, 0),
+        _ => (mi::FORM_FACTOR_UNKNOWN, 0),
+    };
+    let total_width = u16::from(spd[SPD_MODULE_DATA_WIDTH_LSB as usize])
+        | u16::from(spd[SPD_MODULE_DATA_WIDTH_MSB as usize]) << 8;
+    let max_mts = decode_tck_256ns(spd[SPD_MIN_CYCLE_TIME_AT_CAS_MAX as usize])
+        .filter(|tck| *tck != 0)
+        // Two transfers per clock: MT/s = 2 * 1000 / tCK[ns].
+        .map_or(0, |tck| ((512_000 + tck / 2) / tck) as u16);
+    let mut part_number = [b' '; 20];
+    part_number[..SPD_PART_NUMBER_LEN].copy_from_slice(
+        &spd[SPD_PART_NUMBER as usize..SPD_PART_NUMBER as usize + SPD_PART_NUMBER_LEN],
+    );
+    mi::MemoryDevice {
+        size_mib: dimm
+            .rank_capacity_mb
+            .saturating_mul(u32::from(dimm.ranks))
+            .into(),
+        configured_mts: configured_mts.into(),
+        max_mts: max_mts.into(),
+        // DDR2 modules run at 1.8 V (SSTL_18).
+        voltage_mv: 1800.into(),
+        data_width: total_width
+            .saturating_sub(if dimm.is_ecc { 8 } else { 0 })
+            .into(),
+        total_width: total_width.into(),
+        type_detail: (mi::TYPE_DETAIL_SYNCHRONOUS | buffering).into(),
+        jedec_bank: jedec_bank as u8,
+        jedec_id: manufacturer.get(jedec_bank).copied().unwrap_or(0),
+        memory_type: mi::MEMORY_TYPE_DDR2,
+        form_factor,
+        ranks: dimm.ranks,
+        channel,
+        slot,
+        serial: spd[SPD_SERIAL_NUMBER as usize..SPD_IDENTITY_END as usize]
+            .try_into()
+            .expect("four serial bytes"),
+        part_number,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn memory_device_decodes_identity_and_speed() {
+        let mut spd = valid_spd();
+        spd[SPD_DIMM_TYPE as usize] = 0x04;
+        spd[SPD_MANUFACTURER_ID as usize..SPD_MANUFACTURER_ID as usize + 2]
+            .copy_from_slice(&[0x7f, 0x98]);
+        spd[SPD_PART_NUMBER as usize..SPD_PART_NUMBER as usize + SPD_PART_NUMBER_LEN]
+            .copy_from_slice(b"KVR667D2S5/1G     ");
+        spd[SPD_SERIAL_NUMBER as usize..SPD_IDENTITY_END as usize].copy_from_slice(&[1, 2, 3, 4]);
+        update_checksum(&mut spd);
+        let dimm = decode_dimm(&spd).unwrap();
+        let device = memory_device(&dimm, 1, 0, 533);
+        assert_eq!(device.size_mib.get(), dimm.rank_capacity_mb);
+        assert_eq!(
+            (device.configured_mts.get(), device.max_mts.get()),
+            (533, 667)
+        );
+        assert_eq!(
+            device.form_factor,
+            fstart_core::memory_info::FORM_FACTOR_SODIMM
+        );
+        assert_eq!(device.manufacturer(), Some("Kingston"));
+        assert_eq!(device.part_number(), Some("KVR667D2S5/1G"));
+        assert_eq!(device.serial, [1, 2, 3, 4]);
+        assert_eq!(
+            (device.data_width.get(), device.total_width.get()),
+            (64, 64)
+        );
+    }
 
     pub(crate) fn valid_spd() -> [u8; 256] {
         let mut spd = [0u8; 256];
