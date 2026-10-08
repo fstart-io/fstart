@@ -36,7 +36,6 @@ pub(crate) mod tests {
                 heap: 0x200000,
             },
             low_memory: span(0, 0x100000),
-            scratch: span(0x2000000, 0x1000000),
             store: span(0x5000000, 0x400000),
         }
     }
@@ -68,10 +67,6 @@ pub(crate) mod tests {
                 assert_eq!(window.base, stage.image.base);
                 assert_eq!(window.end(), Some(stage.writable.end().unwrap()));
             }
-            assert_eq!(
-                layout.region(RegionKind::BootMediaScratch).unwrap().base,
-                config.scratch.base
-            );
             let store = layout.region(RegionKind::FirmwareStore).unwrap();
             assert_eq!(store.base, config.store.base);
             assert_eq!(store.size, config.store.size);
@@ -81,7 +76,7 @@ pub(crate) mod tests {
     #[test]
     fn rejects_colliding_lifetimes_bad_reset_mapping_and_exhausted_budgets() {
         let mut config = candidate();
-        config.scratch = config.postcar.writable;
+        config.store = config.postcar.writable;
         assert!(config.validate().unwrap_err().contains("overlaps"));
         let mut config = candidate();
         config.bootblock.image.base -= 4096;

@@ -16,10 +16,7 @@ impl IntelPlan {
                     name: hstr(row.role.name()),
                     build: StageBuildConfig {
                         firmware_image: (boot || ram).then_some(FirmwareImageConfig {
-                            temp_ram_buffer: ram.then_some(TempRamBuffer {
-                                base: self.reservations.scratch.base,
-                                size: self.reservations.scratch.size,
-                            }),
+                            temp_ram_buffer: None,
                         }),
                         verify_firmware: boot || ram,
                         load_next_stage: match row.role {

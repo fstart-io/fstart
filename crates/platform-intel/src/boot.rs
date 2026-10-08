@@ -257,8 +257,8 @@ pub(crate) fn install_intel_load_policy(
                 .map_err(|_| ServiceError::InvalidParam)?;
         }
     }
-    // Never grant generic file loads the IVT/BDA, trampoline, SMRAM or handoff
-    // page. Preserve the family-owned temporary boot-media arena as well.
+    // Never grant generic file loads the IVT/BDA, trampoline, SMRAM, handoff
+    // page or the firmware store window.
     for window in running_reservations(geometry)? {
         reserved
             .push(window)

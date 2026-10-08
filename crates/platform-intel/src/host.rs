@@ -178,7 +178,6 @@ pub fn reservations<P: IntelPlatform>(
             heap: 0x200000,
         },
         low_memory: span(0, 0x100000),
-        scratch: span(0x2000000, 0x1000000),
         // Firmware store: S3 stage caches (about 1 MiB for a payload-enabled
         // release ramstage), the training record and ACPI/SMBIOS tables. Only
         // the used part stays reserved.
