@@ -8,6 +8,7 @@ extern crate alloc;
 mod cpu;
 
 pub mod generic;
+#[cfg(feature = "gm45")]
 pub mod gm45;
 #[cfg(feature = "gm965")]
 pub mod gm965;
@@ -18,6 +19,7 @@ pub mod i945;
 pub mod ich7;
 #[cfg(feature = "ich8")]
 pub mod ich8;
+#[cfg(feature = "ich9")]
 pub mod ich9;
 pub mod igd;
 #[cfg(feature = "pineview")]

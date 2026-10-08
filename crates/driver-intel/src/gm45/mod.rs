@@ -375,7 +375,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         self.post_dram_pm(revision, fsb, mem)?;
         self.post_dram_pcie(revision)
     }
-    fn early_post_southbridge_init(&mut self) -> Result<(), ServiceError> {
+    fn finish_early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         let (revision, _, _) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
         self.mark_post_dram();
         self.post_dram_iommu(revision);
@@ -574,14 +574,16 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm45 {
         let (base, _, _) = self.memory_map().ok()?;
         (size != 0).then_some((u64::from(base), size))
     }
-    fn smram_open(&self) {
+    fn smram_open(&self) -> bool {
         self.hostbridge().smram.set(crate::gmch::smram::open());
+        crate::gmch::smram::is_open(self.hostbridge().smram.get())
     }
     fn smram_close(&self) {
         self.hostbridge().smram.set(crate::gmch::smram::closed());
     }
-    fn smram_lock(&self) {
+    fn smram_lock(&self) -> bool {
         self.hostbridge().smram.set(crate::gmch::smram::locked());
+        crate::gmch::smram::is_locked(self.hostbridge().smram.get()) && self.tseg().is_some()
     }
 }
 

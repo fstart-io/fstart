@@ -9,6 +9,7 @@ publish = false
 default = []
 memory-cache = ["fstart-driver-intel/spi"]
 # Additive hardware availability; each board enables its chipset pair once.
+gm45-ich9 = ["dep:konst", "fstart-driver-intel/gm45", "fstart-driver-intel/ich9"]
 gm965-ich8 = ["dep:konst", "fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
 i945-ich7 = ["dep:konst", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
 pineview-ich7 = ["dep:konst", "fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]

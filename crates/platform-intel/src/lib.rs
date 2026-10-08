@@ -66,6 +66,7 @@ macro_rules! entry {
     };
 }
 
+#[cfg(feature = "gm45-ich9")]
 pub mod gm45;
 #[cfg(feature = "gm965-ich8")]
 pub mod gm965;
