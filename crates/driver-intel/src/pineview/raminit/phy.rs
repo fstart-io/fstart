@@ -437,7 +437,7 @@ const RCOMPCTL: [u32; 7] = [
 /// Full RCOMP calibration.
 ///
 /// Ported from coreboot `sdram_rcomp()`.
-pub fn rcomp(si: &SysInfo, mch: &MchBar) {
+pub fn rcomp(si: &SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     let rcompslew: u8 = 0x0A;
 
     static RCOMPUPDATE: [u8; 7] = [0, 0, 0, 1, 1, 0, 0];
@@ -517,8 +517,8 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
             continue;
         }
         let base = RCOMPCTL[i];
-        let v = mch.read8(base + 2);
-        mch.write8(base + 2, v & !0x71);
+        let v = mch.read8(base);
+        mch.write8(base, v & !(3 << 5));
         let v = mch.read16(base + 2);
         mch.write16(base + 2, v & !0x0706);
         let v = mch.read16(base + 0x0A);
@@ -605,9 +605,23 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
 
             let p_step = 1u8 << (srup + 1);
             let n_step = 1u8 << (srun + 1);
-            if rcompp < p_step || rcompn < n_step {
-                fstart_log::error!("raminit: RCOMP base underflow for group {}", i);
-                continue;
+            if rcompp < p_step {
+                fstart_log::error!(
+                    "raminit: RCOMP group {} P base underflow: raw={} granularity={}",
+                    i,
+                    rcompp,
+                    srup,
+                );
+                return Err(ServiceError::HardwareError);
+            }
+            if rcompn < n_step {
+                fstart_log::error!(
+                    "raminit: RCOMP group {} N base underflow: raw={} granularity={}",
+                    i,
+                    rcompn,
+                    srun,
+                );
+                return Err(ServiceError::HardwareError);
             }
             let base_p = rcompp - p_step;
             let base_n = rcompn - n_step;
@@ -619,15 +633,16 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) {
             );
         }
 
-        let lutpbase = rcompp.saturating_sub(1 << (last_srup + 1));
-        let lutnbase = rcompn.saturating_sub(1 << (last_srun + 1));
-        program_rcomp_luts(si, mch, lutpbase, last_srup, lutnbase, last_srun);
+        let lutpbase = rcompp - (1 << (last_srup + 1));
+        let lutnbase = rcompn - (1 << (last_srun + 1));
+        program_rcomp_luts(si, mch, lutpbase, last_srup, lutnbase, last_srun)?;
     }
 
     // Start final RCOMP.
     mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
 
     fstart_log::info!("raminit: RCOMP calibration done");
+    Ok(())
 }
 
 fn program_lut_byte(mch: &MchBar, off: u32, value: u8) {
@@ -635,14 +650,21 @@ fn program_lut_byte(mch: &MchBar, off: u32, value: u8) {
     mch.write8(off, (v & !0x3f) | (value & 0x3f));
 }
 
-fn program_rcomp_luts(si: &SysInfo, mch: &MchBar, lutpbase: u8, srup: u8, lutnbase: u8, srun: u8) {
+fn program_rcomp_luts(
+    si: &SysInfo,
+    mch: &MchBar,
+    lutpbase: u8,
+    srup: u8,
+    lutnbase: u8,
+    srun: u8,
+) -> Result<(), ServiceError> {
     use super::rcomplut::RCOMPLUT;
 
     for i in 0..4u32 {
         let j = lutpbase as usize + ((i as usize) << srup);
         if j >= RCOMPLUT.len() {
-            fstart_log::error!("raminit: RCOMP P LUT index out of range");
-            return;
+            fstart_log::error!("raminit: RCOMP P LUT index out of range: {}", j);
+            return Err(ServiceError::HardwareError);
         }
         program_lut_byte(mch, RCOMPCTL[0] + 0x18 + i, RCOMPLUT[j][0]);
         if !si.is_sodimm() {
@@ -659,8 +681,8 @@ fn program_rcomp_luts(si: &SysInfo, mch: &MchBar, lutpbase: u8, srup: u8, lutnba
     for i in 0..4u32 {
         let j = lutnbase as usize + ((i as usize) << srun);
         if j >= RCOMPLUT.len() {
-            fstart_log::error!("raminit: RCOMP N LUT index out of range");
-            return;
+            fstart_log::error!("raminit: RCOMP N LUT index out of range: {}", j);
+            return Err(ServiceError::HardwareError);
         }
         program_lut_byte(mch, RCOMPCTL[0] + 0x1c + i, RCOMPLUT[j][1]);
         if !si.is_sodimm() {
@@ -673,6 +695,7 @@ fn program_rcomp_luts(si: &SysInfo, mch: &MchBar, lutpbase: u8, srup: u8, lutnba
         program_lut_byte(mch, RCOMPCTL[5] + 0x1c + i, RCOMPLUT[j][9]);
         program_lut_byte(mch, RCOMPCTL[6] + 0x1c + i, RCOMPLUT[j][9]);
     }
+    Ok(())
 }
 
 // ===================================================================
@@ -813,6 +836,18 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
 ///
 /// Ported from coreboot `sdram_rcven()`. Trains the DQS receive enable
 /// timing for each byte lane by sweeping coarse + medium + PI delay.
+fn rcven_fail(step: &str, lane: u8, coarse: u8, medium: u8, pi: u8) -> Result<(), ServiceError> {
+    fstart_log::error!(
+        "raminit: RCVEN lane {} failed {}: coarse={} medium={} pi={}",
+        lane,
+        step,
+        coarse,
+        medium,
+        pi,
+    );
+    Err(ServiceError::HardwareError)
+}
+
 fn calibrate_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     let v = mch.read8(mchbar::C0RSTCTL);
     mch.write8(mchbar::C0RSTCTL, v & !(3 << 2));
@@ -846,16 +881,14 @@ fn calibrate_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
         // Phase 1: sweep until DQS goes high.
         while !sample_dqs(mch, dqshighaddr, 0, 3) {
             if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-                fstart_log::error!("raminit: RCVEN lane {} failed before DQS-low search", lane);
-                return Err(ServiceError::HardwareError);
+                return rcven_fail("before DQS-low search", lane, coarse, medium, pi);
             }
         }
 
         savecoarse = coarse;
         savemedium = medium;
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-            fstart_log::error!("raminit: RCVEN lane {} failed before DQS-high search", lane);
-            return Err(ServiceError::HardwareError);
+            return rcven_fail("before DQS-high search", lane, coarse, medium, pi);
         }
 
         // Phase 2: continue until DQS stays high.
@@ -863,8 +896,7 @@ fn calibrate_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
             savecoarse = coarse;
             savemedium = medium;
             if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-                fstart_log::error!("raminit: RCVEN lane {} failed before PI search", lane);
-                return Err(ServiceError::HardwareError);
+                return rcven_fail("before PI search", lane, coarse, medium, pi);
             }
         }
 
@@ -886,8 +918,7 @@ fn calibrate_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
                     savepi = si.maxpi;
                     break;
                 }
-                fstart_log::error!("raminit: RCVEN lane {} PI search failed", lane);
-                return Err(ServiceError::HardwareError);
+                return rcven_fail("during PI search", lane, coarse, medium, savepi);
             }
             program_receive_pi(mch, lane as usize, pi << si.pioffset);
         }
@@ -895,30 +926,23 @@ fn calibrate_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
         pi = savepi;
         program_receive_pi(mch, lane as usize, pi << si.pioffset);
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-            fstart_log::error!("raminit: RCVEN lane {} failed after PI search", lane);
-            return Err(ServiceError::HardwareError);
+            return rcven_fail("after PI search", lane, coarse, medium, pi);
         }
         if !sample_dqs(mch, dqshighaddr, 1, 3) {
-            fstart_log::error!("raminit: RCVEN lane {} failed after centering", lane);
-            return Err(ServiceError::HardwareError);
+            return rcven_fail("after centering", lane, coarse, medium, pi);
         }
 
         // Phase 4: back off until DQS goes low.
         while !sample_dqs(mch, dqshighaddr, 0, 3) {
             if coarse == 0 {
-                fstart_log::error!(
-                    "raminit: RCVEN lane {} failed finding final DQS-low edge",
-                    lane
-                );
-                return Err(ServiceError::HardwareError);
+                return rcven_fail("finding final DQS-low edge", lane, coarse, medium, pi);
             }
             coarse -= 1;
             program_receive_coarse(mch, coarse.into());
         }
 
         if !rcven_clock(mch, &mut coarse, &mut medium, lane) {
-            fstart_log::error!("raminit: RCVEN lane {} failed at final clock step", lane);
-            return Err(ServiceError::HardwareError);
+            return rcven_fail("at final clock step", lane, coarse, medium, pi);
         }
         si.pi[lane as usize] = pi;
         lanecoarse[lane as usize] = coarse;
@@ -933,7 +957,13 @@ fn calibrate_rcven(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     for lane in (0..maxlane as usize).rev() {
         let offset = lanecoarse[lane].saturating_sub(minlanecoarse);
         if offset > 3 {
-            fstart_log::error!("raminit: RCVEN lane {} coarse offset too large", lane);
+            fstart_log::error!(
+                "raminit: RCVEN lane {} coarse offset too large: offset={} coarse={} min={}",
+                lane,
+                offset,
+                lanecoarse[lane],
+                minlanecoarse,
+            );
             return Err(ServiceError::HardwareError);
         }
         let v = mch.read16(mchbar::C0COARSEDLY0);

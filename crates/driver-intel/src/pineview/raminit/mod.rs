@@ -330,7 +330,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
 
     // 10. RCOMP (skip on reset path).
     if si.boot_path != crate::BootPath::WarmReset {
-        phy::rcomp(&si, mch);
+        phy::rcomp(&si, mch)?;
     }
 
     // 11. ODT.

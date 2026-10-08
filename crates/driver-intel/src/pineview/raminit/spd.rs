@@ -53,18 +53,10 @@ pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
             return Err(ServiceError::HardwareError);
         };
 
-        // The controller's DRA/DRB tables only describe 12-15 row and 9-10
-        // column parts (coreboot `decode_spd`); anything else would be
-        // silently folded onto a neighbouring geometry.
-        if !(12..=15).contains(&info.rows) || !(9..=10).contains(&info.cols) {
-            fstart_log::error!(
-                "raminit: DIMM {} has unsupported geometry rows={} cols={}",
-                i,
-                info.rows as u32,
-                info.cols as u32,
-            );
-            return Err(ServiceError::HardwareError);
-        }
+        // Pineview only supports a subset of DDR2 geometries (coreboot
+        // `decode_spd`); anything else would be silently folded onto a
+        // neighbouring DRA/DRB entry.
+        validate_pineview_spd(&info, i)?;
 
         si.spd_type = crate::generic::spd::ddr2::DDR2;
 
@@ -124,7 +116,7 @@ pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
 
     // Determine DIMM configuration per channel (coreboot find_ramconfig).
     for chan in 0..super::TOTAL_CHANNELS {
-        si.dimm_config[chan] = find_ramconfig(si, chan);
+        si.dimm_config[chan] = find_ramconfig(si, chan)?;
         fstart_log::info!("raminit: config[CH{}] = {}", chan, si.dimm_config[chan]);
     }
 
@@ -140,21 +132,54 @@ fn chip_width_bits(width: ChipWidth) -> u8 {
     }
 }
 
+fn validate_pineview_spd(
+    info: &crate::generic::spd::DimmInfo,
+    idx: usize,
+) -> Result<(), ServiceError> {
+    if info.spd_data[11] & 0x02 != 0 {
+        fstart_log::error!(
+            "raminit: DIMM {} uses unsupported DDR2 module configuration bits",
+            idx
+        );
+        return Err(ServiceError::HardwareError);
+    }
+    if !matches!(info.banks, 4 | 8)
+        || !matches!(info.width, ChipWidth::X8 | ChipWidth::X16)
+        || info.ranks > 2
+        || info.sides > 2
+        || !(12..=15).contains(&info.rows)
+        || !(9..=10).contains(&info.cols)
+    {
+        fstart_log::error!(
+            "raminit: DIMM {} unsupported geometry banks={} width=x{} ranks={} sides={} rows={} cols={}",
+            idx,
+            info.banks as u32,
+            chip_width_bits(info.width) as u32,
+            info.ranks as u32,
+            info.sides as u32,
+            info.rows as u32,
+            info.cols as u32,
+        );
+        return Err(ServiceError::HardwareError);
+    }
+    Ok(())
+}
+
 /// Determine the DIMM configuration code for a channel.
 ///
 /// This implementation has two incompatible encodings. Desktop/UDIMM uses
 /// a vendor-derived 4-bit DIMMA/DIMMB matrix that is not present in Pineview
 /// coreboot. Mobile/SO-DIMM uses the coreboot-derived 0..6 encoding.
-fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
+fn find_ramconfig(si: &SysInfo, chan: usize) -> Result<u8, ServiceError> {
     let dimma = chan * 2;
     let dimmb = dimma + 1;
     let a = &si.dimms[dimma];
     let b = &si.dimms[dimmb];
 
     if !si.is_sodimm() {
-        let a_cfg = a.as_ref().map_or(0, dimm_config_desktop);
-        let b_cfg = b.as_ref().map_or(0, dimm_config_desktop);
-        return a_cfg | (b_cfg << 2);
+        let a_cfg = a.as_ref().map_or(Ok(0), dimm_config_desktop)?;
+        let b_cfg = b.as_ref().map_or(Ok(0), dimm_config_desktop)?;
+        return Ok(a_cfg | (b_cfg << 2));
     }
 
     // Use the coreboot-derived mobile/SO-DIMM encoding, while normalizing a
@@ -162,7 +187,7 @@ fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
     // For two populated sockets DIMMA determines the dual-rank/x8 special
     // case.
     match (a.as_ref(), b.as_ref()) {
-        (None, None) => 0,
+        (None, None) => Ok(0),
         (Some(a), Some(_b)) => {
             let mut cfg = 3;
             if a.sides > 1 {
@@ -171,7 +196,7 @@ fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
                     cfg = 6;
                 }
             }
-            cfg
+            Ok(cfg)
         }
         (Some(a), None) | (None, Some(a)) => {
             let mut cfg = 1;
@@ -181,24 +206,24 @@ fn find_ramconfig(si: &SysInfo, chan: usize) -> u8 {
                     cfg = 5;
                 }
             }
-            cfg
+            Ok(cfg)
         }
     }
 }
 
-fn dimm_config_desktop(d: &crate::generic::spd::DimmInfo) -> u8 {
+fn dimm_config_desktop(d: &crate::generic::spd::DimmInfo) -> Result<u8, ServiceError> {
     if d.card_type == 0 {
-        return 0;
+        return Ok(0);
     }
     let x8 = d.width == ChipWidth::X8;
     let x16 = matches!(d.width, ChipWidth::X16 | ChipWidth::X32);
     match (d.ranks, x8, x16) {
-        (1, true, _) => 1,
-        (2, true, _) => 2,
-        (1, _, true) => 3,
+        (1, true, _) => Ok(1),
+        (2, true, _) => Ok(2),
+        (1, _, true) => Ok(3),
         _ => {
             fstart_log::error!("raminit: unsupported UDIMM rank/width config");
-            0
+            Err(ServiceError::HardwareError)
         }
     }
 }
