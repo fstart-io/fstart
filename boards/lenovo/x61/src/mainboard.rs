@@ -24,7 +24,10 @@ use fstart_platform_intel::{IntelSmbusRouting, SmbusRoute};
 /// Board-specific X61 hooks for the GM965/ICH8 flow.
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 #[derive(Default)]
-pub struct X61Mainboard;
+pub struct X61Mainboard {
+    #[cfg(fstart_stage_env = "ram")]
+    identity: Option<fstart_driver_lenovo::eeprom::Identity>,
+}
 
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 impl<S: fstart_core::services::Southbridge> IntelSmbusRouting<S> for X61Mainboard {
@@ -66,6 +69,20 @@ impl IntelEarlyBoardHooks<Gm965Ich8> for X61Mainboard {
 
 #[cfg(all(not(test), fstart_stage_env = "ram"))]
 impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
+    fn smbios_identity<'a>(
+        &'a self,
+        configured: &fstart_platform_intel::tables::SmbiosIdentity<'a>,
+    ) -> fstart_platform_intel::tables::SmbiosIdentity<'a> {
+        let mut identity = *configured;
+        if let Some(eeprom) = &self.identity {
+            identity.bb_product = eeprom.part_number();
+            identity.bb_version = eeprom.version();
+            identity.bb_serial = Some(eeprom.serial_number());
+            identity.sys_uuid = Some(eeprom.uuid);
+        }
+        identity
+    }
+
     fn before_console(
         &mut self,
         ctx: &mut IntelMainstageBoardCtx<Gm965Ich8>,
@@ -95,6 +112,17 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
         dock::mainstage_power_policy();
         if !resume && init_ck505(ctx.southbridge()).is_err() {
             fstart_log::error!("lenovo-x61: CK505 programming failed");
+        }
+        if !resume {
+            // init_ck505 explicitly restores the EEPROM mux branch. Read-only
+            // identity access must not modify EEPROM/RFID protection registers.
+            self.identity = match fstart_driver_lenovo::eeprom::Identity::read(ctx.southbridge()) {
+                Ok(identity) => Some(identity),
+                Err(error) => {
+                    fstart_log::error!("lenovo-x61: EEPROM identity unavailable, code {}", error as u8);
+                    None
+                }
+            };
         }
         if ricoh_sd_write_protect().is_err() {
             fstart_log::error!("lenovo-x61: Ricoh SD policy programming failed");
@@ -622,8 +650,11 @@ pub static X61_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
         sys_product: "ThinkPad X61",
         sys_version: "1.0",
         sys_serial: None,
+        sys_uuid: None,
         bb_manufacturer: "LENOVO",
         bb_product: "ThinkPad X61",
+        bb_version: "",
+        bb_serial: None,
         chassis_type: 0x0a,
         chassis_manufacturer: "LENOVO",
         processor_sockets: &X61_SMBIOS_PROCESSOR_SOCKETS,

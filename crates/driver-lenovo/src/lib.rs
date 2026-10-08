@@ -16,6 +16,9 @@
 
 pub mod ec;
 
+#[cfg(any(test, fstart_stage_env = "ram"))]
+pub mod eeprom;
+
 pub mod h8;
 pub mod pmh7;
 
