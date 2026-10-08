@@ -618,6 +618,7 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-driver-superio",
+ "fstart-driver-usbdebug",
  "fstart-intel-gma",
  "fstart-log",
  "fstart-pci",

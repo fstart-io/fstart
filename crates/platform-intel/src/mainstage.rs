@@ -221,11 +221,11 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     if resume {
         match wake_vector {
             Some(vector) => {
-                // The SMM installer cleared SCI_EN while relocating handlers.
-                // Restore the OS's ACPI mode only after all firmware SMI/MP work
-                // has finished and a valid wake vector is ready.
-                fstart_arch::x86::cpu::intel::smm::SmiControl::enable_acpi_mode(
+                // Keep the OS's ACPI mode at handoff, after all firmware SMI/MP
+                // work has finished and a valid wake vector is ready.
+                fstart_arch::x86::cpu::intel::smm::SmiControl::set_acpi_mode(
                     mainstage.southbridge(),
+                    true,
                 );
                 fstart_log::info!("{}: resuming OS at wake vector {:#x}", platform, vector);
                 fstart_log::flush();

@@ -17,6 +17,22 @@ pub trait LegacyCpu: 'static {
     fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver;
 }
 
+/// Penryn BGA956 package used by the X200 (coreboot socket_BGA956).
+pub struct Bga956;
+
+impl LegacyCpu for Bga956 {
+    const CAR_BASE: u64 = 0xfefc_0000;
+    const CAR_SIZE: u64 = 0x10000;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-17-06", "06-17-0a"];
+
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    type Driver = fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+        Self::Driver::new(pmbase, microcode)
+    }
+}
+
 const ATOM_MICROCODE: &[&str] = &["06-1c-02", "06-1c-0a"];
 
 /// Diamondville Atom package used by D945GCLF (coreboot socket_441).

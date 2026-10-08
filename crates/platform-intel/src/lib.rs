@@ -39,6 +39,7 @@ macro_rules! stage_bin {
     ($board:ty) => { $crate::stage_runtime::stage_bin!(program: $crate::Program<$board>); };
 }
 
+#[cfg(feature = "gm45-ich9")]
 pub mod gm45;
 #[cfg(feature = "gm965-ich8")]
 pub mod gm965;
