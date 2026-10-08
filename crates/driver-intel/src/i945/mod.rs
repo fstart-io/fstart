@@ -111,6 +111,10 @@ const BLC_PWM_CTL: u32 = 0x61254;
 const BLM_LEGACY_MODE: u32 = 1 << 16;
 /// Backlight PWM frequency coreboot uses when the board names none.
 const DEFAULT_BLC_PWM_FREQ: u16 = 180;
+/// TPM locality 0 `TPM_ACCESS`; bit 7 (`tpmRegValidSts`) reports it is ready.
+const TPM_ACCESS_0: usize = 0xfed4_0000;
+/// Temporary bus behind the PEG port while probing for a link partner.
+const PEG_PROBE_BUS: u8 = 0x0a;
 /// Gen3 GTT page table size, selected by `PGETBL_CTL` bit 1.
 const I945_GTT_SIZE: u32 = 256 * 1024;
 const I945_GTT_256_KIB_FLAG: u32 = 2;
@@ -578,9 +582,11 @@ impl IntelI945 {
             hb.write8(pam, 0x33);
         }
 
-        // Wait for MCHBAR to come up (CAPID0 bit 49 clear path).
+        // CAPID0 bit 49 clear: wait for the TPM interface behind LPC to report
+        // a valid access register, as coreboot does before raminit.
         if hb.read32(0xe4) & 0x0002_0000 == 0 {
-            while self.mchbar().read8(0) & 0x80 == 0 {
+            // SAFETY: the TPM locality 0 window is decoded by the ICH by default.
+            while unsafe { fstart_core::mmio::read8(TPM_ACCESS_0 as *const u8) } & 0x80 == 0 {
                 core::hint::spin_loop();
             }
         }
@@ -837,8 +843,14 @@ impl IntelI945 {
             return;
         }
         p2peg.write16(SLOTSTS, slotsts | (1 << 4) | (1 << 0));
-        // Temporary bus number for link probing.
-        p2peg.and8_or8(0x19, 0, 0x0a);
+        // Temporary bus number for link probing (`pci_s_bridge_set_secondary`):
+        // config cycles forward only up to the subordinate bus.
+        // SAFETY: D1:F0 was just enabled in DEVEN and has a Type 1 header.
+        let bridge = unsafe { p2peg.regs::<fstart_pci::PciType1Config>() };
+        bridge.secondary_bus.set(0);
+        bridge.subordinate_bus.set(0);
+        bridge.secondary_bus.set(PEG_PROBE_BUS);
+        bridge.subordinate_bus.set(PEG_PROBE_BUS);
         p2peg.and32(0x224, !(1 << 8));
         mch.clrbits16(mchbar::UPMC1, (1 << 5) | (1 << 0));
         p2peg.or16(PEG_CAP, 1 << 8);
@@ -851,7 +863,7 @@ impl IntelI945 {
         while (p2peg.read32(PEGSTS) >> 16) & 3 != 3 && timeout != 0 {
             timeout -= 1;
         }
-        let peg_plugin = ecam::EcamDevice::new(0x0a, 0, 0);
+        let peg_plugin = ecam::EcamDevice::new(PEG_PROBE_BUS, 0, 0);
         let mut id = peg_plugin.read32(0x00);
         if id == 0 || id == 0xffff_ffff {
             // Retry at x1 before giving up.
@@ -1020,6 +1032,11 @@ impl IntelI945 {
 
     /// Post-DRAM chipset init (`i945_late_initialization`).
     fn late_initialization(&self) {
+        // coreboot applies the GM errata right after raminit, ahead of the
+        // egress/DMI/PEG link setup.
+        if self.config.variant == I945Variant::Mobile {
+            self.fixup_mobile_errata();
+        }
         self.setup_egress_port();
         self.ich7_setup_root_complex_topology();
         self.ich7_setup_pci_express();
@@ -1028,7 +1045,6 @@ impl IntelI945 {
 
         if self.config.variant == I945Variant::Mobile {
             self.setup_pci_express_x16();
-            self.fixup_mobile_errata();
         }
         self.setup_root_complex_topology();
         raminit::dump_mchbar_registers(&self.mchbar());
