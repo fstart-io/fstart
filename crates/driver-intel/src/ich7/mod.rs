@@ -81,13 +81,20 @@ register_bitfields! [u16,
         C4ONC3_EN OFFSET(7) NUMBITS(1) [],
         BIOS_PCI_EXP_EN OFFSET(10) NUMBITS(1) []
     ],
-    /// SPI control register.
+    /// SPI status (SPIS).
     SPI_REG [
+        CYCLE_IN_PROGRESS OFFSET(0) NUMBITS(1) [],
+        CYCLE_DONE OFFSET(2) NUMBITS(1) [],
+        CYCLE_ERROR OFFSET(3) NUMBITS(1) [],
         LOCK OFFSET(15) NUMBITS(1) []
     ],
-    /// SPI access/request control register.
+    /// SPI control (SPIC).
     SPI_CTRL_REG [
-        ACCESS_REQUEST OFFSET(0) NUMBITS(1) []
+        ACCESS_REQUEST OFFSET(0) NUMBITS(1) [],
+        CYCLE_GO OFFSET(1) NUMBITS(1) [],
+        OPCODE_INDEX OFFSET(4) NUMBITS(3) [],
+        DATA_BYTES OFFSET(8) NUMBITS(6) [],
+        DATA_CYCLE OFFSET(14) NUMBITS(1) []
     ],
     PCIE_TUNING16 [
         BIT7 OFFSET(7) NUMBITS(1) []
@@ -184,7 +191,13 @@ register_structs! {
         (0x21a8 => _reserved10),
         (0x3020 => pub spi: MmioReadWrite<u16, SPI_REG::Register>),
         (0x3022 => pub spi_ctrl: MmioReadWrite<u16, SPI_CTRL_REG::Register>),
-        (0x3024 => _reserved_spi),
+        (0x3024 => pub spi_addr: MmioReadWrite<u32>),
+        (0x3028 => pub spi_data: [MmioReadWrite<u8>; 64]),
+        (0x3068 => _reserved_spi),
+        (0x3074 => pub spi_preop: [MmioReadWrite<u8>; 2]),
+        (0x3076 => pub spi_optype: MmioReadWrite<u16>),
+        (0x3078 => pub spi_opmenu: [MmioReadWrite<u8>; 8]),
+        (0x3080 => _reserved_spi2),
         (0x3100 => pub d31ip: MmioReadWrite<u32>),
         (0x3104 => pub d30ip: MmioReadWrite<u32>),
         (0x3108 => pub d29ip: MmioReadWrite<u32>),
@@ -1913,6 +1926,15 @@ impl IntelIch7 {
     pub fn lockdown(&self) {
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
 
+        // The lock freezes the opcode menu, so give the OS flasher one first.
+        if !rcba.regs().spi.is_set(SPI_REG::LOCK) {
+            spi_finalize_ops(rcba.regs(), &SPI_OPMENU);
+            // coreboot `spi_finalize_ops`: flashprog writes SST parts with
+            // AAI, and gives up when AAI or WRDI are missing.
+            if spi_read_jedec_id(rcba.regs()).is_some_and(spi_uses_aai) {
+                spi_finalize_ops(rcba.regs(), &SPI_OPMENU_SST_AAI);
+            }
+        }
         // Lock SPIBAR.
         rcba.regs().spi.modify(SPI_REG::LOCK::SET);
 
@@ -2495,5 +2517,123 @@ mod acpi_impl {
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
             Vec::new()
         }
+    }
+}
+
+/// Software-sequencing cycle type of one SPI opcode menu entry.
+#[derive(Clone, Copy)]
+enum SpiOpType {
+    ReadNoAddr = 0,
+    WriteNoAddr = 1,
+    ReadWithAddr = 2,
+    WriteWithAddr = 3,
+}
+
+/// coreboot `spi_finalize_ops` menus: everything flashprog needs to probe,
+/// read, erase and write a part behind a locked controller.
+const SPI_OPPREFIXES: [u8; 2] = [0x06, 0x50]; // WREN, EWSR
+/// Menu index of RDID, identical in both menus.
+const SPI_RDID_INDEX: u16 = 5;
+const SPI_OPMENU: [(u8, SpiOpType); 8] = [
+    (0x01, SpiOpType::WriteNoAddr),   // WRSR
+    (0x02, SpiOpType::WriteWithAddr), // Byte Program
+    (0x03, SpiOpType::ReadWithAddr),  // Read
+    (0x05, SpiOpType::ReadNoAddr),    // RDSR
+    (0x20, SpiOpType::WriteWithAddr), // 4 KiB Sector Erase
+    (0x9f, SpiOpType::ReadNoAddr),    // RDID
+    (0xd8, SpiOpType::WriteWithAddr), // 64 KiB Block Erase
+    (0x0b, SpiOpType::ReadWithAddr),  // Fast Read
+];
+/// SST parts are written with Auto Address Increment, which flashprog ends
+/// with WRDI; both replace the 64 KiB erase and Fast Read.
+const SPI_OPMENU_SST_AAI: [(u8, SpiOpType); 8] = [
+    (0x01, SpiOpType::WriteNoAddr),   // WRSR
+    (0x02, SpiOpType::WriteWithAddr), // Byte Program
+    (0x03, SpiOpType::ReadWithAddr),  // Read
+    (0x05, SpiOpType::ReadNoAddr),    // RDSR
+    (0x20, SpiOpType::WriteWithAddr), // 4 KiB Sector Erase
+    (0x9f, SpiOpType::ReadNoAddr),    // RDID
+    (0xad, SpiOpType::WriteNoAddr),   // AAI Word Program
+    (0x04, SpiOpType::WriteNoAddr),   // WRDI
+];
+
+/// SST parts other than the SST25VF064C (model 0x4b) take AAI writes
+/// (coreboot `spi_finalize_ops`).
+fn spi_uses_aai(id: [u8; 3]) -> bool {
+    const VENDOR_SST: u8 = 0xbf;
+    id[0] == VENDOR_SST && id[2] != 0x4b
+}
+
+/// Program the prefix/type/opcode menu that `SPIS.LOCK` freezes.
+fn spi_finalize_ops(rcba: &RcbaRegs, menu: &[(u8, SpiOpType); 8]) {
+    for (reg, prefix) in rcba.spi_preop.iter().zip(SPI_OPPREFIXES) {
+        reg.set(prefix);
+    }
+    for (reg, (opcode, _)) in rcba.spi_opmenu.iter().zip(menu) {
+        reg.set(*opcode);
+    }
+    rcba.spi_optype.set(spi_optype(menu));
+}
+
+/// Read the flash JEDEC ID with a software-sequencing RDID cycle from the
+/// programmed menu (flashprog `ich7_run_opcode`).
+fn spi_read_jedec_id(rcba: &RcbaRegs) -> Option<[u8; 3]> {
+    const TIMEOUT_US: u32 = 60_000;
+    if !fstart_arch::wait_us(TIMEOUT_US, || !rcba.spi.is_set(SPI_REG::CYCLE_IN_PROGRESS)) {
+        return None;
+    }
+    // Both status bits are write-1-to-clear.
+    rcba.spi
+        .modify(SPI_REG::CYCLE_DONE::SET + SPI_REG::CYCLE_ERROR::SET);
+    rcba.spi_addr.set(0);
+    rcba.spi_ctrl.write(
+        SPI_CTRL_REG::OPCODE_INDEX.val(SPI_RDID_INDEX)
+            + SPI_CTRL_REG::DATA_BYTES.val(2)
+            + SPI_CTRL_REG::DATA_CYCLE::SET
+            + SPI_CTRL_REG::CYCLE_GO::SET,
+    );
+    let done = fstart_arch::wait_us(TIMEOUT_US, || {
+        rcba.spi.is_set(SPI_REG::CYCLE_DONE) || rcba.spi.is_set(SPI_REG::CYCLE_ERROR)
+    });
+    let failed = rcba.spi.is_set(SPI_REG::CYCLE_ERROR);
+    rcba.spi
+        .modify(SPI_REG::CYCLE_DONE::SET + SPI_REG::CYCLE_ERROR::SET);
+    (done && !failed).then(|| core::array::from_fn(|i| rcba.spi_data[i].get()))
+}
+
+const fn spi_optype(menu: &[(u8, SpiOpType); 8]) -> u16 {
+    let mut optype = 0;
+    let mut i = 0;
+    while i < menu.len() {
+        optype |= (menu[i].1 as u16) << (2 * i);
+        i += 1;
+    }
+    optype
+}
+
+#[cfg(test)]
+mod spi_tests {
+    #[test]
+    fn opcode_menu_types_match_coreboot() {
+        // WRSR=1, BYPR=3, READ=2, RDSR=0, SE20=3, RDID=0, BED8=3, FAST=2.
+        assert_eq!(
+            super::spi_optype(&super::SPI_OPMENU),
+            0b10_11_00_11_00_10_11_01
+        );
+        // AAI=1 and WRDI=1 replace BED8 and FAST for SST.
+        assert_eq!(
+            super::spi_optype(&super::SPI_OPMENU_SST_AAI),
+            0b01_01_00_11_00_10_11_01
+        );
+        for menu in [super::SPI_OPMENU, super::SPI_OPMENU_SST_AAI] {
+            assert_eq!(menu[super::SPI_RDID_INDEX as usize].0, 0x9f);
+        }
+    }
+
+    #[test]
+    fn only_sst_parts_but_the_25vf064c_use_aai() {
+        assert!(super::spi_uses_aai([0xbf, 0x25, 0x41])); // SST25VF016B
+        assert!(!super::spi_uses_aai([0xbf, 0x25, 0x4b])); // SST25VF064C
+        assert!(!super::spi_uses_aai([0xef, 0x40, 0x15]));
     }
 }
