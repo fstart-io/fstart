@@ -291,7 +291,9 @@ impl Plan {
             self.caps.fixed
         );
         if self.caps.fixed {
-            fstart_log::info!("mtrr: fixed 0x0..0xa0000 WB, 0xa0000..0x100000 UC");
+            fstart_log::info!(
+                "mtrr: fixed 0x0..0xa0000 WB, 0xa0000..0xc0000 UC, 0xc0000..0x100000 WB"
+            );
         }
         for (index, range) in self.ranges.iter().enumerate() {
             fstart_log::info!(
@@ -578,23 +580,43 @@ pub unsafe fn enable_cache() {
         );
     }
 }
+/// Legacy VGA window, the only uncached part of the fixed-MTRR range.
+const VGA_WINDOW: core::ops::Range<u64> = 0xa0000..0xc0000;
+
+/// Fixed-MTRR policy for the first MiB, as coreboot programs it: everything
+/// is DRAM and write-back except the legacy VGA window. That includes the
+/// PAM-shadowed BIOS area (0xc0000..1 MiB), where option ROMs and BIOS
+/// payloads such as SeaBIOS run.
+fn fixed_type(address: u64) -> CacheType {
+    if VGA_WINDOW.contains(&address) {
+        CacheType::Uncacheable
+    } else {
+        CacheType::WriteBack
+    }
+}
+
+/// Value of the `index`th entry of [`FIXED_MSRS`]: eight ranges, one type
+/// byte each.
+fn fixed_msr_value(index: usize) -> u64 {
+    let (base, step) = match index {
+        0 => (0, 0x1_0000),
+        1 => (0x8_0000, 0x4000),
+        2 => (0xa_0000, 0x4000),
+        n => (0xc_0000 + (n as u64 - 3) * 0x8000, 0x1000),
+    };
+    (0..8).fold(0, |value, range| {
+        value | (fixed_type(base + range * step) as u64) << (range * 8)
+    })
+}
+
 /// # Safety
 /// CPU supports fixed MTRRs; all active CPUs must receive identical values.
 pub unsafe fn setup_fixed_low_memory() {
     if !unsafe { fixed_supported() } {
         return;
     }
-    unsafe {
-        for (index, msr) in FIXED_MSRS.into_iter().enumerate() {
-            wrmsr(
-                msr,
-                if index < 2 {
-                    u64::from_le_bytes([6; 8])
-                } else {
-                    0
-                },
-            );
-        }
+    for (index, msr) in FIXED_MSRS.into_iter().enumerate() {
+        unsafe { wrmsr(msr, fixed_msr_value(index)) };
     }
 }
 

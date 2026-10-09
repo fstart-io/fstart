@@ -11,11 +11,7 @@ fn caps(slots: usize) -> Capabilities {
 
 fn effective_type(plan: &Plan, address: u64) -> CacheType {
     if plan.caps.fixed && address < ONE_MIB {
-        return if address < 0xa0000 {
-            CacheType::WriteBack
-        } else {
-            CacheType::Uncacheable
-        };
+        return fixed_type(address);
     }
     let mut found = None;
     for range in plan
@@ -65,7 +61,15 @@ fn x61_covers_all_high_ram_and_keeps_mmio_uc_with_wc_framebuffer() {
     assert_span(&plan, 0xd0000000, 0xe0000000, CacheType::WriteCombining);
     assert_span(&plan, 0xe0000000, 0x100000000, CacheType::Uncacheable);
     assert_span(&plan, 0x13c000000, 1 << 36, CacheType::Uncacheable);
-    assert_span(&plan, 0xa0000, ONE_MIB, CacheType::Uncacheable);
+    assert_span(&plan, 0xa0000, 0xc0000, CacheType::Uncacheable);
+    assert_span(&plan, 0xc0000, ONE_MIB, CacheType::WriteBack);
+}
+
+#[test]
+fn fixed_mtrrs_uncache_only_the_vga_window() {
+    const WB: u64 = 0x0606_0606_0606_0606;
+    let values: [u64; 11] = core::array::from_fn(fixed_msr_value);
+    assert_eq!(values, [WB, WB, 0, WB, WB, WB, WB, WB, WB, WB, WB]);
 }
 
 #[test]
@@ -108,7 +112,8 @@ fn no_fixed_mtrrs_preserves_legacy_holes_with_variable_ranges() {
 fn fixed_policy_handles_sub_page_ebda_reservation() {
     let plan = Plan::build(caps(8), [(0, 0x9fc00), (ONE_MIB, 0x1ff00000)], []).unwrap();
     assert_span(&plan, 0, 0xa0000, CacheType::WriteBack);
-    assert_span(&plan, 0xa0000, ONE_MIB, CacheType::Uncacheable);
+    assert_span(&plan, 0xa0000, 0xc0000, CacheType::Uncacheable);
+    assert_span(&plan, 0xc0000, ONE_MIB, CacheType::WriteBack);
     assert_span(&plan, ONE_MIB, 0x20000000, CacheType::WriteBack);
 }
 
