@@ -122,6 +122,12 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         ))?;
         fstart_log::info!("{}: DRAM ready", platform);
         let ram_end = dram_end.min(northbridge.total_ram_bytes()?);
+        let memory_info = geometry.region(RegionKind::MemoryInfo)?;
+        if memory_info.end().is_none_or(|end| end > ram_end) {
+            return Err(ServiceError::InvalidParam);
+        }
+        // SAFETY: linked firmware-owned reservation inside trained DRAM.
+        unsafe { crate::memory_info::publish(memory_info, northbridge.memory_info().as_ref())? };
         #[cfg(feature = "memory-cache")]
         if let (Some(key), Some(length)) = (key, captured) {
             let pending = geometry.region(RegionKind::TrainingHandoff)?;

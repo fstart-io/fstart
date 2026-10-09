@@ -1101,6 +1101,11 @@ impl PciEcam {
         Ok(())
     }
 
+    /// Every function enumeration discovered, in scan order.
+    pub fn devices(&self) -> impl Iterator<Item = PciAddress> + '_ {
+        self.devices.iter().map(|device| device.addr)
+    }
+
     /// Memory BAR spans actually assigned to discovered devices, including
     /// chipset-fixed BARs. I/O BARs and unassigned/probed slots are excluded.
     pub fn assigned_memory_windows(&self) -> impl Iterator<Item = PciWindow> + '_ {

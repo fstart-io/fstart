@@ -96,6 +96,7 @@ pub static D945GCLF_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static
         chassis_type: 0x03,
         chassis_manufacturer: "Intel",
         processor_sockets: &D945GCLF_SMBIOS_PROCESSOR_SOCKETS,
+oem_string: None,
     };
 
 #[cfg(fstart_stage_env = "ram")]

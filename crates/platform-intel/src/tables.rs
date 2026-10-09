@@ -316,6 +316,17 @@ pub fn prepare_acpi(
     Ok(acpi_addr)
 }
 
+/// Facts the SMBIOS writer cannot derive from the board descriptor.
+#[cfg(feature = "smbios")]
+pub struct SmbiosRuntime<'a> {
+    /// Flash chip capacity in bytes.
+    pub rom_size: u32,
+    /// Raminit's DRAM inventory, when the chipset publishes one.
+    pub memory: Option<&'a fstart_core::memory_info::MemoryInfo>,
+    /// Enumerated PCI hierarchy; root-bus functions are onboard devices.
+    pub pci: Option<&'a fstart_pci::PciEcam>,
+}
+
 /// Resolve SMBIOS Type 4 counts from runtime CPU and MP state.
 #[cfg(feature = "smbios")]
 fn runtime_processor_counts() -> (u16, u16, u16) {
@@ -326,7 +337,7 @@ fn runtime_processor_counts() -> (u16, u16, u16) {
 }
 
 #[cfg(feature = "smbios")]
-fn add_runtime_cache_info(w: &mut fstart_acpi::smbios::SmbiosWriter) -> (u16, u16, u16) {
+fn add_runtime_cache_info(w: &mut fstart_acpi::smbios::SmbiosWriter) -> [u16; 3] {
     let mut handles = [0xFFFFu16; 3];
     for cache in raw_cpuid::CpuId::new()
         .get_cache_parameters()
@@ -355,7 +366,7 @@ fn add_runtime_cache_info(w: &mut fstart_acpi::smbios::SmbiosWriter) -> (u16, u1
             *slot = handle;
         }
     }
-    (handles[0], handles[1], handles[2])
+    handles
 }
 
 #[cfg(feature = "smbios")]
@@ -401,21 +412,253 @@ fn smbios_associativity(ways: usize, fully_associative: bool) -> u8 {
     }
 }
 
+/// SMBIOS processor family from the CPUID brand string; 0x02 is "Unknown".
+#[cfg(any(feature = "smbios", feature = "host"))]
+fn processor_family(brand: &str) -> u16 {
+    const FAMILIES: [(&str, u16); 11] = [
+        ("Core(TM)2 Duo", 0xBF),
+        ("Core(TM)2 Solo", 0xC0),
+        ("Core(TM)2 Extreme", 0xC1),
+        ("Core(TM)2 Quad", 0xC2),
+        ("Core(TM) Duo", 0x28),
+        ("Core(TM) Solo", 0xBD),
+        ("Atom", 0x2B),
+        ("Xeon", 0xB3),
+        ("Celeron", 0x0F),
+        ("Pentium(R) M", 0xB9),
+        ("Pentium(R) 4", 0xB2),
+    ];
+    FAMILIES
+        .iter()
+        .find(|(name, _)| brand.contains(name))
+        .map_or(0x02, |(_, family)| *family)
+}
+
+/// Type 4 for the executing CPU package, with its Type 7 caches.
+#[cfg(feature = "smbios")]
+fn add_processor(w: &mut fstart_acpi::smbios::SmbiosWriter, socket: &str) {
+    use fstart_arch::x86_64::cpuid::{cpuid, max_extended_leaf};
+    const SIXTY_FOUR_BIT: u16 = 1 << 2;
+    const MULTI_CORE: u16 = 1 << 3;
+    const HARDWARE_THREAD: u16 = 1 << 4;
+    const EXECUTE_PROTECTION: u16 = 1 << 5;
+    const ENHANCED_VIRTUALIZATION: u16 = 1 << 6;
+    const POWER_PERFORMANCE_CONTROL: u16 = 1 << 7;
+
+    let cpu = raw_cpuid::CpuId::new();
+    let vendor = cpu.get_vendor_info();
+    let brand = cpu.get_processor_brand_string();
+    let brand = brand.as_ref().map_or("", |brand| brand.as_str().trim());
+    let leaf1 = cpuid(1, 0);
+    let ext = (max_extended_leaf() >= 0x8000_0001).then(|| cpuid(0x8000_0001, 0).edx);
+    let (cores, enabled, threads) = runtime_processor_counts();
+    let characteristics = [
+        (ext.is_some_and(|edx| edx & (1 << 29) != 0), SIXTY_FOUR_BIT),
+        (cores > 1, MULTI_CORE),
+        (threads > cores, HARDWARE_THREAD),
+        (
+            ext.is_some_and(|edx| edx & (1 << 20) != 0),
+            EXECUTE_PROTECTION,
+        ),
+        (leaf1.ecx & (1 << 5) != 0, ENHANCED_VIRTUALIZATION),
+        (leaf1.ecx & (1 << 7) != 0, POWER_PERFORMANCE_CONTROL),
+    ]
+    .into_iter()
+    .filter(|(present, _)| *present)
+    .fold(0, |bits, (_, bit)| bits | bit);
+    let clock = fstart_arch::x86::bus_clock();
+    let max_speed_mhz = clock.map_or(0, |clock| clock.max_core_mhz() as u16);
+    let caches = add_runtime_cache_info(&mut *w);
+    w.add_processor(&fstart_acpi::smbios::ProcessorInfo {
+        socket,
+        manufacturer: vendor.as_ref().map_or("Unknown", |vendor| vendor.as_str()),
+        version: brand,
+        family: processor_family(brand),
+        id: u64::from(leaf1.eax) | u64::from(leaf1.edx) << 32,
+        external_clock_mhz: clock.map_or(0, |clock| clock.fsb_mhz as u16),
+        max_speed_mhz,
+        current_speed_mhz: max_speed_mhz,
+        upgrade: 0x02, // unknown
+        core_count: cores,
+        core_enabled: enabled,
+        thread_count: threads,
+        characteristics,
+        caches,
+    });
+}
+
+/// Physical ranges occupied by `total` bytes of DRAM: below TOLUD, plus the
+/// part the chipset remapped above 4 GiB (up to `high_end`).
+#[cfg(any(feature = "smbios", feature = "host"))]
+fn dram_ranges(total: u64, high_end: u64) -> impl Iterator<Item = (u64, u64)> {
+    const FOUR_GIB: u64 = 1 << 32;
+    let high = high_end.saturating_sub(FOUR_GIB).min(total);
+    [(0, total - high), (FOUR_GIB, FOUR_GIB + high)]
+        .into_iter()
+        .filter(|(start, end)| end > start)
+}
+
+/// Types 16, 17 and 19 from raminit's slot inventory.
+#[cfg(feature = "smbios")]
+fn add_memory(
+    w: &mut fstart_acpi::smbios::SmbiosWriter,
+    memory: &fstart_core::memory_info::MemoryInfo,
+    e820: &[fstart_core::services::memory_detect::E820Entry],
+) {
+    use alloc::{format, string::String};
+    use fstart_core::memory_info::FORM_FACTOR_UNKNOWN;
+    let devices = memory.devices();
+    w.add_physical_memory_array(
+        u64::from(memory.max_capacity_mib.get()) * 1024,
+        devices.len() as u16,
+        memory.ecc,
+    );
+    for device in devices {
+        let locator = format!("Channel-{}-DIMM-{}", device.channel, device.slot);
+        let bank_locator = format!("BANK {}", device.channel);
+        let populated = device.is_populated();
+        let manufacturer = match (populated, device.manufacturer()) {
+            (false, _) => String::new(),
+            (true, Some(name)) => name.into(),
+            (true, None) => format!(
+                "Unknown (bank {}, {:#04x})",
+                device.jedec_bank + 1,
+                device.jedec_id
+            ),
+        };
+        let serial = if populated {
+            device
+                .serial
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        } else {
+            String::new()
+        };
+        let part_number = match (populated, device.part_number()) {
+            (false, _) => "",
+            (true, Some("")) => "None",
+            (true, Some(part)) => part,
+            (true, None) => "Invalid",
+        };
+        w.add_memory_device(&fstart_acpi::smbios::MemoryDeviceInfo {
+            locator: &locator,
+            bank_locator: &bank_locator,
+            manufacturer: &manufacturer,
+            serial: &serial,
+            part_number,
+            size_mb: device.size_mib.get(),
+            memory_type: if populated { device.memory_type } else { 0x02 },
+            form_factor: if populated {
+                device.form_factor
+            } else {
+                FORM_FACTOR_UNKNOWN
+            },
+            type_detail: if populated {
+                device.type_detail.get()
+            } else {
+                0x02 // unknown
+            },
+            speed_mts: device.max_mts.get(),
+            configured_mts: device.configured_mts.get(),
+            voltage_mv: device.voltage_mv.get(),
+            data_width: if populated {
+                device.data_width.get()
+            } else {
+                0xFFFF
+            },
+            total_width: if populated {
+                device.total_width.get()
+            } else {
+                0xFFFF
+            },
+            ranks: device.ranks,
+        });
+    }
+
+    let total = devices
+        .iter()
+        .map(|device| u64::from(device.size_mib.get()) << 20)
+        .sum();
+    let high_end = e820
+        .iter()
+        .filter(|entry| entry.kind == E820Kind::Ram as u32)
+        .map(|entry| entry.addr.saturating_add(entry.size))
+        .max()
+        .unwrap_or(0);
+    let modules = devices
+        .iter()
+        .filter(|device| device.is_populated())
+        .count() as u8;
+    for (start, end) in dram_ranges(total, high_end) {
+        w.add_memory_array_mapped_address(start, end - 1, modules);
+    }
+}
+
+/// SMBIOS onboard device type and label for a PCI class, as coreboot's
+/// devicetree walk reports them.
+#[cfg(any(feature = "smbios", feature = "host"))]
+fn onboard_device(class: u16) -> Option<(u8, &'static str)> {
+    Some(match class {
+        0x0300 | 0x0302 => (0x03, "Onboard Video"),
+        0x0100 => (0x04, "Onboard SCSI"),
+        0x0200 => (0x05, "Onboard LAN"),
+        0x0401 | 0x0403 => (0x07, "Onboard Audio"),
+        0x0101 => (0x08, "Onboard IDE"),
+        0x0106 => (0x09, "Onboard SATA"),
+        0x0107 => (0x0a, "Onboard SAS"),
+        _ => return None,
+    })
+}
+
+/// Type 41 for each root-bus function: chipset devices are on the mainboard,
+/// add-in cards sit behind bridges.
+#[cfg(feature = "smbios")]
+fn add_onboard_devices(w: &mut fstart_acpi::smbios::SmbiosWriter, pci: &fstart_pci::PciEcam) {
+    let mut instances = [0u8; 16];
+    for address in pci
+        .devices()
+        .filter(|address| address.bus() == pci.bus_start())
+    {
+        let Some(class) = pci
+            .device(address)
+            .map(|device| (device.read32(0x08) >> 16) as u16)
+        else {
+            continue;
+        };
+        let Some((device_type, designation)) = onboard_device(class) else {
+            continue;
+        };
+        let instance = &mut instances[usize::from(device_type)];
+        *instance += 1;
+        w.add_onboard_device(
+            designation,
+            device_type,
+            *instance,
+            address.segment(),
+            address.bus(),
+            address.device() << 3 | address.function(),
+        );
+    }
+}
+
 /// Generate and write SMBIOS tables from a static descriptor plus runtime facts.
 ///
 /// Carves a top-of-RAM handoff buffer out of e820 (falling back to a leaked
-/// heap buffer), iterates the descriptor to emit all SMBIOS structures, and
-/// logs the result.
+/// heap buffer), emits all SMBIOS structures, and logs the result.
 ///
 /// Handles:
-/// - Type 0 (BIOS), Type 1 (System), Type 2 (Baseboard), Type 3 (Chassis)
-/// - Type 4 (Processor) with runtime Type 7 (Cache) detection when descriptors are empty
-/// - Type 16 (Physical Memory Array); Type 17/19 wait for exact SPD/range data
+/// - Type 0 (BIOS), Type 1 (System), Type 3 (Chassis), Type 2 (Baseboard)
+/// - Type 4 (Processor) with runtime Type 7 (Cache) detection
+/// - Type 11 (OEM Strings) when the board provides one
+/// - Type 16/17/19 from raminit's inventory, else Type 16 from e820 alone
+/// - Type 41 (Onboard Devices) for root-bus PCI functions
 /// - Type 32 (System Boot) and Type 127 (End of Table)
 #[cfg(feature = "smbios")]
 pub fn prepare_smbios(
     e820: &mut fstart_core::services::memory_detect::E820State,
     desc: &SmbiosIdentity,
+    runtime: &SmbiosRuntime,
 ) -> u64 {
     // 64 KiB table area + 32 bytes entry point header.
     // `assemble_and_write` writes ENTRY_POINT_SIZE bytes at `table_addr`
@@ -434,11 +677,15 @@ pub fn prepare_smbios(
         });
 
     let total_ram = e820.total_ram();
+    let entries = e820.entries();
     let smbios_len = fstart_acpi::smbios::assemble_and_write(smbios_addr, |w| {
-        // Type 0: BIOS Information
-        w.add_bios_info(desc.bios_vendor, desc.bios_version, desc.bios_release_date);
-
-        // Type 1: System Information
+        w.add_bios_info(&fstart_acpi::smbios::BiosInfo {
+            vendor: desc.bios_vendor,
+            version: desc.bios_version,
+            release_date: desc.bios_release_date,
+            rom_size: runtime.rom_size,
+            uefi: cfg!(feature = "payload-uefi-basic"),
+        });
         w.add_system_info(
             desc.sys_manufacturer,
             desc.sys_product,
@@ -446,47 +693,34 @@ pub fn prepare_smbios(
             desc.sys_serial,
             desc.sys_uuid,
         );
-
-        // Type 2: Baseboard (optional)
+        let chassis = w.add_enclosure(desc.chassis_type, desc.chassis_manufacturer);
         if !desc.bb_manufacturer.is_empty() || !desc.bb_product.is_empty() {
             w.add_baseboard_info(
                 desc.bb_manufacturer,
                 desc.bb_product,
                 desc.bb_version,
                 desc.bb_serial,
+                chassis,
             );
         }
-
-        // Type 3: Enclosure
-        w.add_enclosure(desc.chassis_type, desc.chassis_manufacturer);
-
-        // Type 4 + Type 7: board socket identity plus runtime CPU topology.
-        let cpuid = raw_cpuid::CpuId::new();
-        let vendor_info = cpuid.get_vendor_info();
-        let vendor = vendor_info
-            .as_ref()
-            .map(raw_cpuid::VendorInfo::as_str)
-            .unwrap_or("Unknown");
         for socket in desc.processor_sockets {
-            let (cores, enabled, threads) = runtime_processor_counts();
-            let (l1, l2, l3) = add_runtime_cache_info(&mut *w);
-            if l1 == 0xFFFF && l2 == 0xFFFF && l3 == 0xFFFF {
-                w.add_processor(socket, vendor, 0x28, 0, cores, enabled, threads);
-            } else {
-                w.add_processor_with_caches(
-                    socket, vendor, 0x28, 0, cores, enabled, threads, l1, l2, l3,
-                );
+            add_processor(&mut *w, socket);
+        }
+        if let Some(oem) = desc.oem_string {
+            w.add_oem_strings(&[oem]);
+        }
+        match runtime.memory {
+            Some(memory) => add_memory(&mut *w, memory, entries),
+            // Without an inventory only the capacity is known; e820 holes make
+            // `0..total_ram` no address map, so Types 17/19 are omitted.
+            None if total_ram != 0 => {
+                w.add_physical_memory_array(total_ram / 1024, 0, 0x02);
             }
+            None => {}
         }
-
-        // Type 16: runtime-detected installed capacity. Do not invent Type 17
-        // DIMMs or a Type 19 physical range: e820 contains legacy/PCI holes and
-        // may include remapped RAM above 4 GiB, so `0..total_ram` is not a map.
-        if total_ram != 0 {
-            w.add_physical_memory_array(total_ram / 1024, 0);
+        if let Some(pci) = runtime.pci {
+            add_onboard_devices(&mut *w, pci);
         }
-
-        // Type 32 + Type 127
         w.add_system_boot_info();
         w.add_end_of_table();
     });
@@ -530,5 +764,33 @@ mod tests {
         }
         assert_eq!(smbios_associativity(1, true), 0x06);
         assert_eq!(smbios_associativity(3, false), 0x02);
+    }
+
+    #[test]
+    fn processor_family_follows_the_brand_string() {
+        for (brand, family) in [
+            ("Intel(R) Core(TM)2 Duo CPU     T7300  @ 2.00GHz", 0xBF),
+            ("Intel(R) Atom(TM) CPU 230   @ 1.60GHz", 0x2B),
+            ("Genuine Intel(R) CPU           T2400  @ 1.83GHz", 0x02),
+        ] {
+            assert_eq!(processor_family(brand), family, "{brand}");
+        }
+    }
+
+    #[test]
+    fn dram_ranges_split_at_the_remapped_window() {
+        const GIB: u64 = 1 << 30;
+        let ranges = |total, high_end| dram_ranges(total, high_end).collect::<alloc::vec::Vec<_>>();
+        assert_eq!(ranges(2 * GIB, 2 * GIB), [(0, 2 * GIB)]);
+        // 4 GiB with TOLUD at 3 GiB, 1 GiB remapped above 4 GiB.
+        assert_eq!(ranges(4 * GIB, 5 * GIB), [(0, 3 * GIB), (4 * GIB, 5 * GIB)]);
+    }
+
+    #[test]
+    fn onboard_devices_cover_coreboot_classes() {
+        assert_eq!(onboard_device(0x0200), Some((0x05, "Onboard LAN")));
+        assert_eq!(onboard_device(0x0403), Some((0x07, "Onboard Audio")));
+        assert_eq!(onboard_device(0x0380), None);
+        assert_eq!(onboard_device(0x0c03), None);
     }
 }

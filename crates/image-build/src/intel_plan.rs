@@ -120,6 +120,8 @@ pub struct IntelReservations {
     /// S3-resident compressed mainstage slot (see `stage_cache_postcar`).
     pub stage_cache_mainstage: Span,
     pub training_handoff: Span,
+    /// Raminit's DRAM inventory, read by the ramstage SMBIOS writer.
+    pub memory_info: Span,
 }
 
 impl IntelReservations {
@@ -176,6 +178,7 @@ impl IntelReservations {
             ("stage cache postcar", self.stage_cache_postcar),
             ("stage cache mainstage", self.stage_cache_mainstage),
             ("training handoff", self.training_handoff),
+            ("memory info", self.memory_info),
         ];
         let regions: Vec<_> = [("bootblock image", self.bootblock.image)]
             .into_iter()
@@ -231,6 +234,7 @@ impl IntelReservations {
             self.ramstage.load_window()?,
             self.scratch,
             self.training_handoff,
+            self.memory_info,
         ] {
             if !self.bootstrap_ram.contains(span.base, span.size) {
                 return Err("complete stage/scratch reservation exceeds bootstrap RAM".into());
@@ -289,6 +293,8 @@ impl IntelReservations {
                 .region(RegionKind::StageCacheMainstage),
             self.training_handoff.region(RegionKind::TrainingHandoff),
             self.training_handoff.region(RegionKind::Reserved),
+            self.memory_info.region(RegionKind::MemoryInfo),
+            self.memory_info.region(RegionKind::Reserved),
         ];
         if let Some(heap) = stage.heap_span() {
             regions.push(heap.region(RegionKind::Heap));

@@ -185,6 +185,7 @@ pub fn reservations<P: IntelPlatform>(
         stage_cache_postcar: span(0x5000000, 0x8000),
         stage_cache_mainstage: span(0x5008000, 0x100000),
         training_handoff: span(0x5108000, 0x1000),
+        memory_info: span(0x5109000, 0x1000),
     };
     reservations.validate()?;
     Ok(reservations)

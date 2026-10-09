@@ -158,28 +158,61 @@ fn cpuid_tsc_frequency_hz() -> Option<u64> {
 
 #[cfg(target_arch = "x86_64")]
 fn core2_tsc_frequency_hz() -> Option<u64> {
+    let (_, model) = family_model();
+    if !(model == 0x0f || model == 0x17) {
+        return None;
+    }
+    bus_clock().map(|clock| u64::from(clock.max_core_mhz()) * 1_000_000)
+}
+
+/// Display family and model from CPUID leaf 1.
+#[cfg(target_arch = "x86_64")]
+fn family_model() -> (u32, u32) {
     let (eax, _, _, _) = cpuid(1);
     let family = ((eax >> 8) & 0x0f) + ((eax >> 20) & 0xff);
     let model = ((eax >> 4) & 0x0f) + ((eax >> 12) & 0xf0);
-    if family != 6 || !(model == 0x0f || model == 0x17) {
-        return None;
-    }
+    (family, model)
+}
 
+/// Front-side bus clock and maximum non-turbo bus ratio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BusClock {
+    pub fsb_mhz: u32,
+    pub max_ratio: u32,
+}
+
+impl BusClock {
+    /// Maximum core clock; coreboot: `100 * DIV_ROUND_CLOSEST(ratio * fsb, 100)`.
+    pub fn max_core_mhz(self) -> u32 {
+        (self.max_ratio.saturating_mul(self.fsb_mhz) + 50) / 100 * 100
+    }
+}
+
+/// FSB-era CPU clocks, mirroring coreboot `cpu/intel/common/fsb.c`. Newer
+/// families report their clocks through CPUID and return `None`.
+#[cfg(target_arch = "x86_64")]
+pub fn bus_clock() -> Option<BusClock> {
+    const CORE_FSB_MHZ: [u32; 8] = [0, 133, 0, 166, 0, 100, 0, 0];
     const CORE2_FSB_MHZ: [u32; 8] = [266, 133, 200, 166, 333, 100, 400, 0];
-    let fsb_idx = unsafe { (x86::msr::rdmsr(MSR_FSB_FREQ) & 7) as usize };
-    let fsb_mhz = CORE2_FSB_MHZ[fsb_idx];
-    if fsb_mhz == 0 {
-        return None;
-    }
-    let ratio = unsafe { ((x86::msr::rdmsr(IA32_PERF_STATUS) >> 40) & 0x1f) as u32 };
-    if ratio == 0 {
-        return None;
-    }
-
-    // coreboot: 100 * DIV_ROUND_CLOSEST(ratio * fsb, 100), in MHz.
-    let raw_mhz = ratio.saturating_mul(fsb_mhz);
-    let rounded_mhz = ((raw_mhz + 50) / 100) * 100;
-    Some(rounded_mhz as u64 * 1_000_000)
+    let table = match family_model() {
+        // Core Solo/Duo and Atom.
+        (6, 0x0e | 0x1c) => &CORE_FSB_MHZ,
+        // Core 2 and Enhanced Core.
+        (6, 0x0f | 0x17) => &CORE2_FSB_MHZ,
+        _ => return None,
+    };
+    // SAFETY: both MSRs exist on every model selected above.
+    let (fsb_freq, perf_status) = unsafe {
+        (
+            x86::msr::rdmsr(MSR_FSB_FREQ),
+            x86::msr::rdmsr(IA32_PERF_STATUS),
+        )
+    };
+    let clock = BusClock {
+        fsb_mhz: table[(fsb_freq & 7) as usize],
+        max_ratio: ((perf_status >> 40) & 0x1f) as u32,
+    };
+    (clock.fsb_mhz != 0 && clock.max_ratio != 0).then_some(clock)
 }
 
 /// Execute CPUID with ECX=0.

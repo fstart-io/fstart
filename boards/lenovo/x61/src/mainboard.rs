@@ -27,6 +27,8 @@ use fstart_platform_intel::{IntelSmbusRouting, SmbusRoute};
 pub struct X61Mainboard {
     #[cfg(fstart_stage_env = "ram")]
     identity: Option<fstart_driver_lenovo::eeprom::Identity>,
+    #[cfg(fstart_stage_env = "ram")]
+    ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
@@ -74,12 +76,17 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
         configured: &fstart_platform_intel::tables::SmbiosIdentity<'a>,
     ) -> fstart_platform_intel::tables::SmbiosIdentity<'a> {
         let mut identity = *configured;
+        // Like coreboot, the EEPROM fields describe both system and board.
         if let Some(eeprom) = &self.identity {
+            identity.sys_product = eeprom.part_number();
+            identity.sys_version = eeprom.version();
+            identity.sys_serial = Some(eeprom.serial_number());
+            identity.sys_uuid = Some(eeprom.uuid);
             identity.bb_product = eeprom.part_number();
             identity.bb_version = eeprom.version();
             identity.bb_serial = Some(eeprom.serial_number());
-            identity.sys_uuid = Some(eeprom.uuid);
         }
+        identity.oem_string = self.ec_oem_string.as_ref().map(|oem| oem.as_str());
         identity
     }
 
@@ -109,6 +116,9 @@ impl IntelMainstageBoardHooks<Gm965Ich8> for X61Mainboard {
         // EC/PMH7 hardware setup is independent of ACPI table emission.
         let resume = ctx.resume;
         x61_ec_init(ctx.southbridge(), resume);
+        if !resume {
+            self.ec_oem_string = x61_ec_oem_string();
+        }
         dock::mainstage_power_policy();
         if !resume && init_ck505(ctx.southbridge()).is_err() {
             fstart_log::error!("lenovo-x61: CK505 programming failed");
@@ -661,6 +671,7 @@ pub static X61_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
         chassis_type: 0x0a,
         chassis_manufacturer: "LENOVO",
         processor_sockets: &X61_SMBIOS_PROCESSOR_SOCKETS,
+oem_string: None,
     };
 
 #[cfg(fstart_stage_env = "ram")]
@@ -989,4 +1000,4 @@ mod ec;
     ),
     fstart_stage_env = "ram"
 ))]
-pub use ec::x61_ec_init;
+pub use ec::{x61_ec_init, x61_ec_oem_string};
