@@ -291,6 +291,9 @@ pub trait IntelSouthbridgeDriver: Sized {
         false
     }
     fn set_s3_enabled(&mut self, _enabled: bool) {}
+    /// Tell the mainstage driver that this boot resumes from S3, so it leaves
+    /// state the suspended OS still owns (such as its RTC wake alarm) alone.
+    fn set_resume(&mut self, _resume: bool) {}
     fn smbus_mut(&mut self) -> Option<&mut dyn fstart_core::services::SmBus> {
         None
     }

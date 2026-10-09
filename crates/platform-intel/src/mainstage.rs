@@ -51,6 +51,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         .map(|stash| stash.boot_flags & fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME != 0)
         .unwrap_or(false);
     mainstage.resume = resume;
+    mainstage.southbridge.set_resume(resume);
     // Postcar authenticated our initialized image before entry. Import only
     // the bounded directory reference, then retain its verified bytes in RAM.
     // Drivers use the published verified asset service, not a new signature.

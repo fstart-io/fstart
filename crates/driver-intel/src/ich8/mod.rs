@@ -975,6 +975,8 @@ pub struct IntelIch8 {
     smbus: Option<I801SmBus>,
     pm: PmIo,
     ide_primary: Option<bool>,
+    /// This boot resumes from S3; set by the mainstage.
+    resume: bool,
 }
 
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
@@ -1423,7 +1425,10 @@ impl IntelIch8 {
         self.lpc_regs().serirq_cntl.set(0xc0);
         self.configure_power_options();
         self.configure_cstates();
-        self.rtc_init();
+        // Like coreboot, not on resume: the OS owns the clock and its alarm.
+        if !self.resume {
+            self.rtc_init();
+        }
         self.isa_dma_init();
         self.i8259_init();
         self.enable_hpet();
@@ -2128,6 +2133,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
             smbus: None,
             pm: PmIo::new(ich8::DEFAULT_PMBASE),
             ide_primary: None,
+            resume: false,
         })
     }
 
@@ -2187,6 +2193,10 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
 
     fn detect_s3_resume(&self) -> bool {
         IntelIch8::detect_s3_resume(self)
+    }
+
+    fn set_resume(&mut self, resume: bool) {
+        self.resume = resume;
     }
 
     fn training_identity(&self) -> Option<[u8; 5]> {
