@@ -110,8 +110,68 @@ jobs:
           path: *rust-cache-paths
           key: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
 
-  qemu-boot-tests:
+  qemu-boot-assets:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        assets: [payloads, x86_64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Prepare each shared asset cache once, not in every board job.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.assets == 'payloads'
+        id: payload-cache
+        with:
+          path: boot-assets/payloads
+          key: ${{ runner.os }}-qemu-payloads-${{ hashFiles('ci/build-payloads.sh', 'ci/kernel-*.config') }}
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.assets == 'x86_64'
+        id: x86-boot-assets-cache
+        with:
+          path: boot-assets/x86_64
+          key: ${{ runner.os }}-x86-boot-assets-${{ hashFiles('ci/build-boot-assets.sh', 'ci/create-grub-linux-disk.sh') }}
+
+      - name: Install payload build dependencies
+        if: >-
+          (matrix.assets == 'payloads' && steps.payload-cache.outputs.cache-hit != 'true') ||
+          (matrix.assets == 'x86_64' && steps.x86-boot-assets-cache.outputs.cache-hit != 'true')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bison bc build-essential cpio curl flex libelf-dev libssl-dev \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-riscv64-linux-gnu \
+            golang-go grub-efi-amd64-bin grub-common mtools gdisk dosfstools
+
+      - name: Build QEMU payload assets
+        if: matrix.assets == 'payloads' && steps.payload-cache.outputs.cache-hit != 'true'
+        run: ci/build-payloads.sh boot-assets/payloads
+
+      - name: Build x86_64 GRUB/Linux boot assets
+        if: matrix.assets == 'x86_64' && steps.x86-boot-assets-cache.outputs.cache-hit != 'true'
+        run: |
+          ci/build-boot-assets.sh boot-assets/x86_64
+          ci/create-grub-linux-disk.sh boot-assets/x86_64/disk.img \
+            boot-assets/x86_64/grubx64.efi boot-assets/x86_64/vmlinuz \
+            boot-assets/x86_64/initramfs.cpio boot-assets/x86_64/grub.cfg
+
+  qemu-boot-matrix:
+    needs: qemu-boot-assets
+    runs-on: ubuntu-latest
+    strategy:
+      # Report failures from every board rather than cancelling sibling jobs.
+      fail-fast: false
+      matrix:
+        board:
+          - qemu-q35
+          - qemu-riscv64
+          - qemu-sifive-u
+          - qemu-aarch64
+          - qemu-armv7
+          - qemu-sbsa
+          - orangepi-r1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -119,50 +179,41 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install
 
-      - name: Install QEMU and payload build dependencies
+      - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bison bc build-essential cpio curl flex libelf-dev libssl-dev \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-riscv64-linux-gnu \
-            qemu-system-arm qemu-system-misc qemu-system-x86 \
-            golang-go grub-efi-amd64-bin grub-common mtools gdisk dosfstools
+          sudo apt-get install -y qemu-system-arm qemu-system-misc qemu-system-x86
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: payload-cache
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.board != 'qemu-q35'
         with:
           path: boot-assets/payloads
           key: ${{ runner.os }}-qemu-payloads-${{ hashFiles('ci/build-payloads.sh', 'ci/kernel-*.config') }}
+          # Missing assets must fail CI, not silently skip optional boots.
+          fail-on-cache-miss: true
 
-      - name: Build QEMU payload assets
-        if: steps.payload-cache.outputs.cache-hit != 'true'
-        run: ci/build-payloads.sh boot-assets/payloads
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: x86-boot-assets-cache
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.board == 'qemu-q35'
         with:
           path: boot-assets/x86_64
           key: ${{ runner.os }}-x86-boot-assets-${{ hashFiles('ci/build-boot-assets.sh', 'ci/create-grub-linux-disk.sh') }}
-
-      - name: Build x86_64 GRUB/Linux boot assets
-        if: steps.x86-boot-assets-cache.outputs.cache-hit != 'true'
-        run: |
-          ci/build-boot-assets.sh boot-assets/x86_64
-          ci/create-grub-linux-disk.sh boot-assets/x86_64/disk.img \
-            boot-assets/x86_64/grubx64.efi boot-assets/x86_64/vmlinuz \
-            boot-assets/x86_64/initramfs.cpio boot-assets/x86_64/grub.cfg
+          fail-on-cache-miss: true
 
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *rust-cache-paths
-          key: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml') }}-
+          # Each board owns its firmware cache; matrix jobs must not race to
+          # save different target/ contents under the same key.
+          key: rust-${{ github.job }}-${{ matrix.board }}-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: rust-${{ github.job }}-${{ matrix.board }}-${{ hashFiles('rust-toolchain.toml') }}-
 
       - name: Mark build start
         run: touch "$RUNNER_TEMP/build-start"
 
-      - name: Run QEMU boot matrix
-        run: ci/qemu-boot-tests.sh boot-assets/payloads
+      - name: Run QEMU boot tests
+        env:
+          BOARD: ${{ matrix.board }}
+        run: ci/qemu-boot-tests.sh boot-assets/payloads --board "$BOARD"
 
       - name: Prune stale firmware builds
         if: github.event_name == 'push'
@@ -172,4 +223,16 @@ jobs:
         if: github.event_name == 'push'
         with:
           path: *rust-cache-paths
-          key: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+          key: rust-${{ github.job }}-${{ matrix.board }}-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+
+  # Keep a single stable status check for branch protection.
+  qemu-boot-tests:
+    if: always()
+    needs: [qemu-boot-assets, qemu-boot-matrix]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all QEMU jobs to pass
+        env:
+          ASSETS_RESULT: ${{ needs.qemu-boot-assets.result }}
+          BOOT_RESULT: ${{ needs.qemu-boot-matrix.result }}
+        run: test "$ASSETS_RESULT" = success && test "$BOOT_RESULT" = success
