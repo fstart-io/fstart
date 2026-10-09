@@ -993,10 +993,10 @@ fn gather_common_timing(
     Ok(())
 }
 
-/// Read consecutive SPD bytes, preferring a block read and falling back to
+/// Read consecutive SPD bytes, preferring an I2C read and falling back to
 /// byte reads like coreboot.
 fn read_spd_bytes(smbus: &mut dyn SmBus, device: u8, start: u8, buf: &mut [u8]) -> bool {
-    matches!(smbus.block_read(device, start, buf), Ok(n) if n == buf.len())
+    smbus.i2c_eeprom_read(device, start, buf).is_ok()
         || buf.iter_mut().zip(start..).all(|(byte, offset)| {
             smbus
                 .read_byte(device, offset)

@@ -1415,7 +1415,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         output: &mut [u8],
     ) -> Result<Option<usize>, ServiceError> {
         let smbus = smbus.ok_or(ServiceError::NotInitialized)?;
-        let mut info = raminit::probe_dimms(smbus, &self.config.spd_addresses)?;
+        let mut info = raminit::probe_dimms(smbus, &self.config.spd_addresses, cached)?;
         self.detected_size = info.total_bytes();
         raminit::initialize(
             &mut info,
@@ -1688,7 +1688,7 @@ impl MemoryController for IntelGm965 {
     fn dram_init(&mut self) -> Result<(), ServiceError> {
         let mut smbus = crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base);
         smbus.host_reset();
-        let mut info = raminit::probe_dimms(&mut smbus, &self.config.spd_addresses)?;
+        let mut info = raminit::probe_dimms(&mut smbus, &self.config.spd_addresses, None)?;
         self.detected_size = info.total_bytes();
         raminit::cold_boot_train(&mut info, &self.mchbar(), self.igd_ggc())?;
         self.memory_info = Some(info.memory_info(&self.config.spd_addresses));

@@ -2360,6 +2360,18 @@ impl SmBus for IntelIch8 {
             None => Err(ServiceError::HardwareError),
         }
     }
+
+    fn i2c_eeprom_read(
+        &mut self,
+        addr: u8,
+        offset: u8,
+        buf: &mut [u8],
+    ) -> Result<(), ServiceError> {
+        match self.smbus.as_mut() {
+            Some(bus) => bus.i2c_eeprom_read(addr, offset, buf),
+            None => Err(ServiceError::HardwareError),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

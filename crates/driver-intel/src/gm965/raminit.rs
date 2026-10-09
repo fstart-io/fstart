@@ -422,6 +422,15 @@ impl RaminitInfo {
         Ok(bytes.len())
     }
 
+    /// The SPD a training record was captured with.
+    fn cached_spd(bytes: &[u8]) -> Option<[[u8; 128]; 4]> {
+        use zerocopy::FromBytes;
+        TrainingWire::ref_from_bytes(bytes)
+            .ok()
+            .filter(|wire| wire.magic == *b"GM965001")
+            .map(|wire| wire.spd)
+    }
+
     fn restore_training(&mut self, bytes: &[u8]) -> bool {
         use zerocopy::FromBytes;
         let Ok(wire) = TrainingWire::ref_from_bytes(bytes) else {
@@ -1760,11 +1769,14 @@ fn dram_power_mgmt(mch: &MchBar) {
 ///
 /// `spd_addresses` follows coreboot's GM965 slot mapping: index 0/1 are
 /// channel 0, index 2/3 are channel 1. A zero address means the slot is not
-/// wired. Lenovo X61 uses `[0x50, 0, 0x51, 0]`.
+/// wired. Lenovo X61 uses `[0x50, 0, 0x51, 0]`. `cached` is the training
+/// record, whose SPD copy spares rereading a DIMM that has not changed.
 pub fn probe_dimms<B: SmBus + ?Sized>(
     bus: &mut B,
     spd_addresses: &[u8; 4],
+    cached: Option<&[u8]>,
 ) -> Result<RaminitInfo, ServiceError> {
+    let cached_spd = cached.and_then(RaminitInfo::cached_spd);
     let mut info = RaminitInfo::default();
     let mut channel_populated = [false; 2];
 
@@ -1773,7 +1785,12 @@ pub fn probe_dimms<B: SmBus + ?Sized>(
             continue;
         }
 
-        let Some(spd) = crate::generic::spd::ddr2::read_spd(bus, addr)? else {
+        let Some(spd) = crate::generic::spd::ddr2::read_spd_cached(
+            bus,
+            addr,
+            cached_spd.as_ref().map(|spd| &spd[slot]),
+        )?
+        else {
             fstart_log::info!("gm965 raminit: no DIMM SPD at {:#x}", addr);
             continue;
         };
@@ -1976,6 +1993,12 @@ mod tests {
         info.rec_fine = [4, 15];
         let mut bytes = [0; 768];
         let length = info.capture_training(&mut bytes).unwrap();
+        // The record also serves as the SPD cache for the next probe.
+        assert_eq!(
+            RaminitInfo::cached_spd(&bytes[..length]),
+            Some(info.raw_spd)
+        );
+        assert_eq!(RaminitInfo::cached_spd(&bytes[..length - 1]), None);
         let mut fresh = info;
         fresh.rec_coarse = [0; 2];
         assert!(fresh.restore_training(&bytes[..length]));

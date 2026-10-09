@@ -164,6 +164,14 @@ impl SysInfo {
             bytes
         })
     }
+    /// The SPD a training record was captured with, to skip rereading it.
+    fn cached_spd(bytes: &[u8]) -> Option<[[u8; 128]; 2]> {
+        use zerocopy::FromBytes;
+        TrainingWire::ref_from_bytes(bytes)
+            .ok()
+            .filter(|wire| wire.magic == *b"PVIEW001")
+            .map(|wire| wire.spd)
+    }
     fn restore_training(&mut self, bytes: &[u8]) -> bool {
         use zerocopy::FromBytes;
         let Ok(wire) = TrainingWire::ref_from_bytes(bytes) else {
@@ -326,7 +334,8 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
 
     // 1. Read SPD data from DIMMs.
     fstart_timestamp::add(fstart_timestamp::id::RAMINIT_SPD);
-    spd::read_spds(&mut si, smbus)?;
+    let cached_spd = cached.and_then(SysInfo::cached_spd);
+    spd::read_spds(&mut si, smbus, cached_spd.as_ref())?;
 
     // 2. Detect RAM speed (common frequency).
     timing::detect_ram_speed(&mut si, mch)?;

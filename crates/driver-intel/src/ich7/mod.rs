@@ -1353,6 +1353,15 @@ impl SmBus for IntelIch7 {
     fn block_write(&mut self, addr: u8, cmd: u8, data: &[u8]) -> Result<(), ServiceError> {
         self.smbus_mut().block_write(addr, cmd, data)
     }
+
+    fn i2c_eeprom_read(
+        &mut self,
+        addr: u8,
+        offset: u8,
+        buf: &mut [u8],
+    ) -> Result<(), ServiceError> {
+        self.smbus_mut().i2c_eeprom_read(addr, offset, buf)
+    }
 }
 
 impl LpcBaseProvider for IntelIch7 {

@@ -100,26 +100,81 @@ pub const fn is_registered_ddr2(dimm_type: u8) -> bool {
 ///
 /// DDR2 SPD data is 128 bytes. The returned buffer is zero-filled above byte
 /// 127 so callers can keep using the project-wide [`DimmInfo::spd_data`] shape.
-/// Only a device NAK on byte 0 denotes an unpopulated slot; bus/controller
-/// failures must never be cached as a topology change.
+/// Only a device NAK denotes an unpopulated slot; bus/controller failures
+/// must never be cached as a topology change.
 pub fn read_spd<B: SmBus + ?Sized>(
     smbus: &mut B,
     addr: u8,
 ) -> Result<Option<[u8; 256]>, ServiceError> {
     let mut spd = [0u8; 256];
-    for byte in 0..SPD_SIZE_MAX_DDR2 as u8 {
-        match smbus.read_byte(addr, byte) {
-            Ok(v) => spd[byte as usize] = v,
-            Err(ServiceError::NoDevice) if byte == 0 => return Ok(None),
-            Err(e) => return Err(e),
-        }
+    if !read_eeprom(smbus, addr, 0, &mut spd[..SPD_SIZE_MAX_DDR2])? {
+        return Ok(None);
     }
-
     if spd[..SPD_SIZE_MAX_DDR2].iter().all(|b| *b == 0) {
         return Ok(None);
     }
-
     Ok(Some(spd))
+}
+
+/// SPD bytes that identify a DIMM: the checksum over the bytes before it,
+/// then the manufacturer, location, part number, revision, date and serial.
+const SPD_IDENTITY: core::ops::Range<usize> = SPD_CHECKSUM as usize..SPD_IDENTITY_END as usize;
+const SPD_IDENTITY_LEN: usize = SPD_IDENTITY.end - SPD_IDENTITY.start;
+
+/// Like [`read_spd`], but reuse `cached` (a copy of this slot's SPD kept by
+/// an earlier boot) when the DIMM still reports the same identity bytes (63..=98).
+///
+/// coreboot's `spd_cache` makes the same trade with the serial number alone:
+/// a few bytes on the bus instead of the whole EEPROM. An all-zero `cached`
+/// slot means no DIMM was there, and the SPD is read in full.
+pub fn read_spd_cached<B: SmBus + ?Sized>(
+    smbus: &mut B,
+    addr: u8,
+    cached: Option<&[u8; SPD_SIZE_MAX_DDR2]>,
+) -> Result<Option<[u8; 256]>, ServiceError> {
+    let Some(cached) = cached.filter(|spd| spd.iter().any(|b| *b != 0)) else {
+        return read_spd(smbus, addr);
+    };
+    let mut identity = [0u8; SPD_IDENTITY_LEN];
+    if !read_eeprom(smbus, addr, SPD_CHECKSUM, &mut identity)? {
+        return Ok(None);
+    }
+    if identity[..] != cached[SPD_IDENTITY] {
+        fstart_log::info!("spd: DIMM at {:#x} changed, reading its SPD", addr);
+        return read_spd(smbus, addr);
+    }
+    let mut spd = [0u8; 256];
+    spd[..SPD_SIZE_MAX_DDR2].copy_from_slice(cached);
+    Ok(Some(spd))
+}
+
+/// Fill `buf` from the EEPROM at `addr`; `false` when nothing answers.
+///
+/// Prefers the controller's I2C sequential read and, like coreboot, falls
+/// back to byte reads when that fails.
+fn read_eeprom<B: SmBus + ?Sized>(
+    smbus: &mut B,
+    addr: u8,
+    offset: u8,
+    buf: &mut [u8],
+) -> Result<bool, ServiceError> {
+    match smbus.i2c_eeprom_read(addr, offset, buf) {
+        Ok(()) => return Ok(true),
+        Err(ServiceError::NoDevice) => return Ok(false),
+        Err(error) => fstart_log::warn!(
+            "spd: I2C read at {:#x} failed (code {}), reading byte by byte",
+            addr,
+            error as u8
+        ),
+    }
+    for (byte, cmd) in buf.iter_mut().zip(offset..=u8::MAX) {
+        match smbus.read_byte(addr, cmd) {
+            Ok(value) => *byte = value,
+            Err(ServiceError::NoDevice) if cmd == offset => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(true)
 }
 
 /// Return the index of the most-significant set bit in `value`.
@@ -551,5 +606,65 @@ pub(crate) mod tests {
         spd[SPD_MIN_CYCLE_TIME_AT_CAS_MAX as usize] = 0x2e;
         update_checksum(&mut spd);
         assert!(decode_dimm(&spd).is_none());
+    }
+
+    /// One EEPROM behind a controller without an I2C read, counting the
+    /// bytes it hands out.
+    struct Eeprom {
+        addr: u8,
+        bytes: [u8; 128],
+        reads: usize,
+    }
+
+    impl SmBus for Eeprom {
+        fn read_byte(&mut self, addr: u8, cmd: u8) -> Result<u8, ServiceError> {
+            if addr != self.addr {
+                return Err(ServiceError::NoDevice);
+            }
+            self.reads += 1;
+            Ok(self.bytes[cmd as usize])
+        }
+        fn write_byte(&mut self, _: u8, _: u8, _: u8) -> Result<(), ServiceError> {
+            Err(ServiceError::HardwareError)
+        }
+    }
+
+    #[test]
+    fn cached_spd_is_reused_only_for_the_same_dimm() {
+        let mut bytes: [u8; 128] = core::array::from_fn(|i| i as u8 | 1);
+        let mut bus = Eeprom {
+            addr: 0x50,
+            bytes,
+            reads: 0,
+        };
+
+        let spd = read_spd_cached(&mut bus, 0x50, Some(&bytes))
+            .unwrap()
+            .unwrap();
+        assert_eq!(spd[..128], bytes);
+        assert_eq!(bus.reads, SPD_IDENTITY_LEN);
+
+        // A different serial number means another DIMM: read it in full.
+        bytes[98] ^= 0xff;
+        bus.reads = 0;
+        let spd = read_spd_cached(&mut bus, 0x50, Some(&bytes))
+            .unwrap()
+            .unwrap();
+        assert_eq!(spd[..128], bus.bytes);
+        assert_eq!(bus.reads, SPD_IDENTITY_LEN + 128);
+
+        // An empty cached slot reads the SPD; an empty slot reports nothing.
+        bus.reads = 0;
+        assert!(
+            read_spd_cached(&mut bus, 0x50, Some(&[0; 128]))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(bus.reads, 128);
+        assert!(
+            read_spd_cached(&mut bus, 0x51, Some(&bytes))
+                .unwrap()
+                .is_none()
+        );
     }
 }

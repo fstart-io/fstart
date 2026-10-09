@@ -11,9 +11,12 @@ use crate::pineview::raminit::{DIMM_TYPE_SODIMM, DIMM_TYPE_UBDIMM};
 /// Ported from coreboot `sdram_read_spds()` + `decode_spd()` +
 /// `find_ramconfig()`, with common DDR2 SPD parsing delegated to
 /// `crate::spd` so Pineview and GM965 share the same geometry/timing decode.
+/// `cached` holds the SPD of each slot from the training record, so a DIMM
+/// that still reports the same identity is not read again.
 pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
     si: &mut SysInfo,
     smbus: &mut B,
+    cached: Option<&[[u8; 128]; TOTAL_DIMMS]>,
 ) -> Result<(), ServiceError> {
     si.dt0mode = 0;
 
@@ -25,7 +28,9 @@ pub fn read_spds<B: fstart_core::services::SmBus + ?Sized>(
         }
 
         fstart_log::info!("raminit: probing DIMM {} SPD at {:#x}", i, addr);
-        let Some(spd_buf) = crate::generic::spd::ddr2::read_spd(smbus, addr)? else {
+        let Some(spd_buf) =
+            crate::generic::spd::ddr2::read_spd_cached(smbus, addr, cached.map(|spd| &spd[i]))?
+        else {
             fstart_log::info!("raminit: DIMM {} (addr {:#x}) not present", i, addr);
             si.dimms[i] = None;
             continue;
