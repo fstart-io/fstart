@@ -49,6 +49,7 @@ pub mod id {
     pub const RAMINIT_MEMORY_TEST: Id = Id(1007);
     pub const POST_DRAM_INIT: Id = Id(1008);
     pub const VERIFY_BOOT_ROOT: Id = Id(1009);
+    pub const STORE_STAGE_CACHE: Id = Id(1010);
 
     pub const IMPORT_BOOT_CONTEXT: Id = Id(1100);
     pub const PUBLISH_BOOT_MEDIA: Id = Id(1101);
@@ -89,6 +90,7 @@ pub fn name(id: Id) -> &'static str {
         id::RAMINIT_MEMORY_TEST => "raminit: memory test",
         id::POST_DRAM_INIT => "post-DRAM DMI/PM init",
         id::VERIFY_BOOT_ROOT => "verify boot root",
+        id::STORE_STAGE_CACHE => "store S3 stage cache",
         id::IMPORT_BOOT_CONTEXT => "import boot context",
         id::PUBLISH_BOOT_MEDIA => "publish boot media",
         id::PRE_BUS_SCAN => "pre bus scan",

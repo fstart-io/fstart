@@ -170,6 +170,23 @@ pub fn bootstrap_footprint(descriptor: &BootstrapDescriptor) -> Result<u64, Load
     }
 }
 
+/// Where [`load_bootstrap`] leaves the descriptor's verified stored bytes:
+/// the compressed input follows the output, an uncompressed image is its
+/// own input. They stay intact until the executable runs.
+pub fn stored_input(descriptor: &BootstrapDescriptor) -> Result<MemoryWindow, LoadError> {
+    let start = match descriptor.compression {
+        Compression::None => descriptor.load_addr,
+        Compression::Lz4 => descriptor
+            .load_addr
+            .checked_add(descriptor.loaded_size)
+            .ok_or(LoadError::Bounds)?,
+    };
+    Ok(MemoryWindow {
+        start,
+        size: descriptor.stored_size,
+    })
+}
+
 /// Load a trusted descriptor into a caller-owned, exclusive workspace. The
 /// workspace represents the descriptor's load address; the physical wrapper
 /// below checks that mapping. Useful also for block media and host tests.

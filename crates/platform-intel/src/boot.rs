@@ -133,13 +133,27 @@ pub(crate) fn load_stage_with_cache(
     let verified = unsafe { fstart_stage::boot::load_bootstrap(media, descriptor, &policy) }
         .map_err(|_| ServiceError::HardwareError)?;
     let stored = usize::try_from(descriptor.stored_size).map_err(|_| ServiceError::InvalidParam)?;
+    fstart_timestamp::add(fstart_timestamp::id::STORE_STAGE_CACHE);
+    // Copy the stored bytes the loader just verified in RAM rather than
+    // reading the flash a second time.
+    let input =
+        fstart_stage::boot::stored_input(descriptor).map_err(|_| ServiceError::InvalidParam)?;
+    // SAFETY: the loader filled this part of the exclusive destination window
+    // and nothing runs from it before entry.
+    let input = unsafe {
+        fstart_core::services::boot_media::MemoryMapped::from_raw_addr(input.start, stored)
+    };
+    let in_ram = BootstrapDescriptor {
+        offset: 0,
+        ..*descriptor
+    };
     let cached = store
         .add(tag, STAGE_CACHE_HEADER_LEN + stored, 3)
         .ok()
         .and_then(|entry| {
             // SAFETY: a fresh entry nothing else references.
             let slot = unsafe { store.bytes_mut(&entry) };
-            fstart_stage::stage_cache::store(slot, stage, media, descriptor).ok()
+            fstart_stage::stage_cache::store(slot, stage, &input, &in_ram).ok()
         });
     match cached {
         Some(()) => fstart_log::info!("stage cache: {} stored", stage.name()),
