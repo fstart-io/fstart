@@ -341,16 +341,20 @@ pub(crate) fn commit_pending<B: crate::IntelBoard>(
     northbridge: &<B::Platform as crate::IntelEarlyPlatform>::Northbridge,
     southbridge: &<B::Platform as crate::IntelEarlyPlatform>::Southbridge,
     geometry: crate::layout::IntelBootLayout<'static>,
+    store: &fstart_store::Store,
 ) -> Result<(), ServiceError> {
-    use fstart_core::layout::RegionKind;
     use fstart_driver_intel::southbridge::spi::{CacheSpi, FlashExtent};
     if !fstart_stage::directory::matches_raw_reservation("mrc-cache", 0, EXTENT_SIZE, 0xff) {
         return Err(ServiceError::InvalidParam);
     }
-    let pending = geometry.region(RegionKind::TrainingHandoff)?;
-    let mut ram = unsafe { MappedRead::new(pending.base as usize, pending.size as usize) };
+    // The bootblock publishes a record only after training; a replayed boot
+    // has nothing to commit.
+    let pending = store
+        .find(fstart_store::tag::TRAINING)
+        .ok_or(ServiceError::NotInitialized)?;
+    let mut ram = unsafe { MappedRead::new(store.address(&pending), pending.len()) };
     let record = Journal {
-        bank_size: pending.size as u32,
+        bank_size: pending.len() as u32,
     }
     .read_bank(&mut ram, 0, true)?
     .ok_or(ServiceError::HardwareError)?;

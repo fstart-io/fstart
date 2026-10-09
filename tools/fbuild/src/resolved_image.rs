@@ -18,10 +18,15 @@ impl ResolvedImage {
     ) -> Result<Self, String> {
         let source = crate::profile_source::load_profile(root, board)?;
         let mut plan = crate::host_plan::load(root, &source, &board.variant_features, &selection)?;
-        if let Some(date) = &selection.smbios_release_date {
-            for unit in &mut plan.units {
-                unit.environment_values
-                    .insert("FSTART_SMBIOS_DATE".into(), date.clone());
+        let environment = [
+            ("FSTART_SMBIOS_DATE", &selection.smbios_release_date),
+            ("FSTART_LOG_LEVEL", &selection.log_level),
+        ];
+        for (key, value) in environment {
+            if let Some(value) = value {
+                for unit in &mut plan.units {
+                    unit.environment_values.insert(key.into(), value.clone());
+                }
             }
         }
         Ok(Self {

@@ -558,6 +558,12 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         self.memory_info
     }
 
+    /// Raminit keeps DRAM in self-refresh on resume and replays the trained
+    /// values from the training cache, like coreboot's Pineview resume path.
+    fn supports_s3_replay(&self) -> bool {
+        true
+    }
+
     fn training_identity(&self) -> Option<[u8; 32]> {
         #[cfg(target_arch = "x86_64")]
         {
@@ -604,6 +610,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         self.detected_size = initialized.total_bytes;
         self.memory_info = Some(initialized.memory_info);
         if self.boot_path != crate::BootPath::S3Resume {
+            fstart_timestamp::add(fstart_timestamp::id::RAMINIT_MEMORY_TEST);
             self.memory_test()?;
         }
         Ok(initialized.captured)
@@ -713,7 +720,17 @@ impl MemoryDetector for IntelPineview {
         }
 
         let count = self.build_e820_entries(entries, usable_top, touud, tolud)?;
-        publish_mtrr_wb_ranges(&entries[..count])?;
+        // TSEG is cacheable, as in coreboot: the Atom has no SMRR, so SMM
+        // uses these types and cannot complete locked accesses to uncached
+        // TSEG.
+        let (tseg_base, tseg_size) = self.smm_region();
+        mtrr::set_ram_wb_ranges_from(
+            entries[..count]
+                .iter()
+                .filter(|entry| entry.kind == E820Kind::Ram as u32)
+                .map(|entry| (entry.addr, entry.size))
+                .chain([(u64::from(tseg_base), u64::from(tseg_size))]),
+        )?;
         fstart_log::info!(
             "pineview: detected memory map (usable top {:#x}, TOLUD {:#x}, TOM {:#x}, TOUUD {:#x})",
             usable_top,

@@ -22,9 +22,11 @@ pub type Mainstage<B> = IntelMainstage<
 
 fn run_mainstage_phase(
     platform: &str,
-    name: &str,
+    id: fstart_timestamp::Id,
     phase: impl FnOnce() -> Result<(), ServiceError>,
 ) {
+    fstart_timestamp::add(id);
+    let name = fstart_timestamp::name(id);
     fstart_log::info!("{} mainstage: {}", platform, name);
     if phase().is_err() {
         fstart_log::error!("{} mainstage: {} failed", platform, name);
@@ -34,6 +36,7 @@ fn run_mainstage_phase(
 
 /// Handwritten fixed Intel mainstage flow. Ordering is this function.
 pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
+    let entry = fstart_timestamp::now();
     let platform = B::Platform::NAME;
     let hooks = B::MainstageHooks::default();
     let Ok(layout) = layout::IntelBootLayout::current(2) else {
@@ -42,6 +45,12 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     let Ok(mut mainstage) = Mainstage::<B>::bind::<B>(layout, hooks) else {
         fstart_arch::x86_64::halt();
     };
+    let Ok(store) = crate::store::open(layout) else {
+        fstart_arch::x86_64::halt();
+    };
+    crate::store::attach_timestamps(&store);
+    fstart_timestamp::add_at(fstart_timestamp::id::RAMSTAGE_START, entry);
+    mainstage.store = Some(store);
 
     let (firmware_base, firmware_size) = mainstage.ctx.firmware_region();
     let boot_media =
@@ -51,38 +60,48 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         .map(|stash| stash.boot_flags & fstart_arch::x86_64::car_teardown::BOOT_FLAG_S3_RESUME != 0)
         .unwrap_or(false);
     mainstage.resume = resume;
+    mainstage.southbridge.set_resume(resume);
     // Postcar authenticated our initialized image before entry. Import only
     // the bounded directory reference, then retain its verified bytes in RAM.
     // Drivers use the published verified asset service, not a new signature.
-    run_mainstage_phase(platform, "import_boot_context", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::IMPORT_BOOT_CONTEXT, || {
         import_intel_directory(firmware_base, firmware_size)
     });
     // Import publishes the inherited locator; mounting before it must fail.
     // Neither metadata phase performs chipset/device initialization.
-    run_mainstage_phase(platform, "publish_boot_media", || boot_media.mount());
-    run_mainstage_phase(platform, "pre_bus_scan", || mainstage.pre_bus_scan());
+    run_mainstage_phase(platform, fstart_timestamp::id::PUBLISH_BOOT_MEDIA, || {
+        boot_media.mount()
+    });
+    run_mainstage_phase(platform, fstart_timestamp::id::PRE_BUS_SCAN, || {
+        mainstage.pre_bus_scan()
+    });
     // Reserve the firmware's own windows before any loader policy or table
     // allocation reads the map: on resume the OS may not own the bytes the
     // next boot reloads postcar and the ramstage into.
-    run_mainstage_phase(platform, "reserve_firmware_memory", || {
-        mainstage.reserve_firmware_memory()
-    });
-    run_mainstage_phase(platform, "load_memory_policy", || {
+    run_mainstage_phase(
+        platform,
+        fstart_timestamp::id::RESERVE_FIRMWARE_MEMORY,
+        || mainstage.reserve_firmware_memory(),
+    );
+    run_mainstage_phase(platform, fstart_timestamp::id::LOAD_MEMORY_POLICY, || {
         mainstage.refresh_load_policy()
     });
     #[cfg(feature = "memory-cache")]
     if B::FACTS.memory_cache && !resume {
+        fstart_timestamp::add(fstart_timestamp::id::COMMIT_MEMORY_CACHE);
+        let store = mainstage.store.as_ref().unwrap_or_else(|| unreachable!());
         let persisted = crate::memory_cache::commit_pending::<B>(
             &mainstage.northbridge,
             &mainstage.southbridge,
             layout,
+            store,
         );
-        let complete = |kind, role| {
-            layout.region(kind).ok().is_some_and(|slot| {
+        let complete = |tag, role| {
+            store.find(tag).is_some_and(|entry| {
                 let media = unsafe {
                     fstart_core::services::boot_media::MemoryMapped::from_raw_addr(
-                        slot.base,
-                        slot.size as usize,
+                        store.address(&entry) as u64,
+                        entry.len(),
                     )
                 };
                 fstart_stage::stage_cache::has_complete_slot(&media, role)
@@ -91,11 +110,11 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         let enabled = mainstage.northbridge.supports_s3_replay()
             && persisted.is_ok()
             && complete(
-                fstart_core::layout::RegionKind::StageCachePostcar,
+                fstart_store::tag::STAGE_CACHE_POSTCAR,
                 fstart_stage::stage_cache::CachedStage::Postcar,
             )
             && complete(
-                fstart_core::layout::RegionKind::StageCacheMainstage,
+                fstart_store::tag::STAGE_CACHE_RAMSTAGE,
                 fstart_stage::stage_cache::CachedStage::Mainstage,
             );
         if let Err(error) = persisted {
@@ -107,23 +126,29 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         mainstage.northbridge.set_s3_enabled(enabled);
         mainstage.southbridge.set_s3_enabled(enabled);
     }
-    run_mainstage_phase(platform, "bus_scan", || mainstage.bus_scan());
-    run_mainstage_phase(platform, "install_page_tables", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::BUS_SCAN, || {
+        mainstage.bus_scan()
+    });
+    run_mainstage_phase(platform, fstart_timestamp::id::INSTALL_PAGE_TABLES, || {
         mainstage.install_page_tables()
     });
-    run_mainstage_phase(platform, "init_devices", || mainstage.init_devices());
-    run_mainstage_phase(platform, "mount_boot_media", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::INIT_DEVICES, || {
+        mainstage.init_devices()
+    });
+    run_mainstage_phase(platform, fstart_timestamp::id::MOUNT_BOOT_MEDIA, || {
         fstart_arch::x86_64::enable_boot_media_rom_cache();
         if mainstage.resume {
             return Ok(());
         }
         mainstage.northbridge.stage_local_init()
     });
-    run_mainstage_phase(platform, "verify_boot_media", || boot_media.verify());
+    run_mainstage_phase(platform, fstart_timestamp::id::VERIFY_BOOT_MEDIA, || {
+        boot_media.verify()
+    });
     // The graphics OpRegion and modeset read the VBT out of the verified boot
     // media, so they run only after verification. On S3 resume the platform
     // decides: Intel skips the modeset, the OS display driver restores it.
-    run_mainstage_phase(platform, "display_init", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::DISPLAY_INIT, || {
         if mainstage.resume && !B::Platform::RESUME_DISPLAY_INIT {
             fstart_log::info!("{} mainstage: display init skipped on S3 resume", platform);
             return Ok(());
@@ -159,13 +184,21 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     // The suspended OS owns live ACPI/FACS/SMBIOS allocations. Re-emitting
     // tables would allocate from OS RAM and overwrite pointers it still uses.
     if !resume {
-        run_mainstage_phase(platform, "emit_tables", || mainstage.emit_tables());
+        run_mainstage_phase(platform, fstart_timestamp::id::EMIT_TABLES, || {
+            mainstage.emit_tables()
+        });
+        // Nothing is added to the store after the tables; a resume reuses it.
+        run_mainstage_phase(platform, fstart_timestamp::id::SEAL_STORE, || {
+            mainstage.seal_store()
+        });
     }
     // Table allocation changes the memory map; payload loads must respect it.
-    run_mainstage_phase(platform, "load_memory_policy", || {
+    run_mainstage_phase(platform, fstart_timestamp::id::LOAD_MEMORY_POLICY, || {
         mainstage.refresh_load_policy()
     });
-    run_mainstage_phase(platform, "finalize", || mainstage.finalize());
+    run_mainstage_phase(platform, fstart_timestamp::id::FINALIZE, || {
+        mainstage.finalize()
+    });
 
     // Leave the legacy keyboard controller quiet before the payload/OS probes it.
     fstart_driver_superio::quiesce_i8042_for_os();
@@ -209,6 +242,7 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
         mainstage.reset_system();
     }
 
+    fstart_timestamp::add(fstart_timestamp::id::LOAD_PAYLOAD);
     fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
 }
 
@@ -269,6 +303,8 @@ where
     geometry: layout::IntelBootLayout<'static>,
     console_node: &'static str,
     max_cpus: u16,
+    /// Firmware store, reopened once the console is up.
+    store: Option<fstart_store::Store>,
     /// S3 resume: the OS wake vector is where this boot ends, and hardware
     /// that survived in RAM must not be reinitialized blindly.
     pub resume: bool,
@@ -304,6 +340,7 @@ where
             geometry,
             console_node: B::console_node(),
             max_cpus: B::CONFIG.max_cpus(),
+            store: None,
             resume: false,
 
             #[cfg(feature = "smbios")]
@@ -395,8 +432,8 @@ where
         install_intel_load_policy(self.ctx.e820(), self.geometry)
     }
 
-    /// Mark the firmware's bootstrap windows, boot-media arena, stage cache
-    /// slots and low scratch as reserved for the OS and for later loads.
+    /// Mark the firmware's bootstrap windows, boot-media arena, store window
+    /// and low scratch as reserved for the OS and for later loads.
     fn reserve_firmware_memory(&mut self) -> Result<(), ServiceError> {
         crate::boot::reserve_firmware_memory(self.ctx.e820_state_mut(), self.geometry)
     }
@@ -490,18 +527,31 @@ where
         #[cfg(feature = "smbios")]
         {
             let identity = self.hooks.smbios_identity(self.smbios_identity);
-            let memory = crate::memory_info::read(
-                self.geometry
-                    .region(fstart_core::layout::RegionKind::MemoryInfo)?,
-            );
+            let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
+            let memory = crate::memory_info::read(store);
             let runtime = crate::tables::SmbiosRuntime {
                 rom_size: self.flash_size,
                 memory: memory.as_ref(),
                 pci: self.pci.as_ref(),
             };
             let smbios =
-                crate::tables::prepare_smbios(self.ctx.e820_state_mut(), &identity, &runtime);
+                crate::tables::prepare_smbios(store, self.ctx.e820_state(), &identity, &runtime)?;
             self.ctx.set_smbios(Some(smbios));
+        }
+        Ok(())
+    }
+
+    fn seal_store(&mut self) -> Result<(), ServiceError> {
+        let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
+        crate::store::seal(store, self.ctx.e820_state_mut(), self.geometry)?;
+        // ACPI tables, FACS included, must survive S3: keep them as NVS.
+        #[cfg(feature = "acpi")]
+        if let Some(acpi) = store.find(fstart_store::tag::ACPI) {
+            self.ctx.e820_state_mut().set_range_kind(
+                store.address(&acpi) as u64,
+                (acpi.len() as u64).next_multiple_of(0x1000),
+                fstart_core::services::memory_detect::E820Kind::Nvs,
+            )?;
         }
         Ok(())
     }
@@ -532,16 +582,16 @@ where
                 .x86_platform_config(u32::from(fstart_arch::x86::mp::online_cpus())),
         );
         let (northbridge, southbridge, hooks) = (&self.northbridge, &self.southbridge, &self.hooks);
-        let rsdp =
-            crate::tables::prepare_acpi(self.ctx.e820_state_mut(), &platform, |dsdt, extra| {
-                dsdt.extend(northbridge.dsdt_aml(northbridge.config()));
-                dsdt.extend(southbridge.dsdt_aml(southbridge.config()));
-                dsdt.extend(hooks.dsdt_aml(&acpi_ctx));
-                extra.extend(northbridge.extra_tables(northbridge.config()));
-                extra.extend(southbridge.extra_tables(southbridge.config()));
-                extra.extend(hooks.extra_tables(&acpi_ctx));
-            })
-            .map_err(|_| ServiceError::HardwareError)?;
+        let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
+        let rsdp = crate::tables::prepare_acpi(store, &platform, |dsdt, extra| {
+            dsdt.extend(northbridge.dsdt_aml(northbridge.config()));
+            dsdt.extend(southbridge.dsdt_aml(southbridge.config()));
+            dsdt.extend(hooks.dsdt_aml(&acpi_ctx));
+            extra.extend(northbridge.extra_tables(northbridge.config()));
+            extra.extend(southbridge.extra_tables(southbridge.config()));
+            extra.extend(hooks.extra_tables(&acpi_ctx));
+        })
+        .map_err(|_| ServiceError::HardwareError)?;
         self.ctx.set_acpi_rsdp(Some(rsdp));
         Ok(())
     }

@@ -197,6 +197,28 @@ impl E820State {
         size: u64,
         kind: E820Kind,
     ) -> Result<(), ServiceError> {
+        self.retype(base, size, kind, true)
+    }
+
+    /// Give `[base, base + size)` the e820 `kind`, whatever it was before.
+    /// Used for firmware-owned memory that changes role, such as returning
+    /// an unused firmware window to RAM.
+    pub fn set_range_kind(
+        &mut self,
+        base: u64,
+        size: u64,
+        kind: E820Kind,
+    ) -> Result<(), ServiceError> {
+        self.retype(base, size, kind, false)
+    }
+
+    fn retype(
+        &mut self,
+        base: u64,
+        size: u64,
+        kind: E820Kind,
+        ram_only: bool,
+    ) -> Result<(), ServiceError> {
         if size == 0 {
             return Ok(());
         }
@@ -206,7 +228,10 @@ impl E820State {
         let mut out_count = 0usize;
         for entry in self.entries().iter().copied() {
             let entry_end = entry.addr.saturating_add(entry.size);
-            if entry.kind != E820Kind::Ram as u32 || end <= entry.addr || base >= entry_end {
+            if (ram_only && entry.kind != E820Kind::Ram as u32)
+                || end <= entry.addr
+                || base >= entry_end
+            {
                 append_entry(&mut out, &mut out_count, entry)?;
                 continue;
             }
@@ -215,7 +240,10 @@ impl E820State {
                 append_entry(
                     &mut out,
                     &mut out_count,
-                    E820Entry::new(entry.addr, base - entry.addr, E820Kind::Ram),
+                    E820Entry {
+                        size: base - entry.addr,
+                        ..entry
+                    },
                 )?;
             }
 
@@ -233,7 +261,11 @@ impl E820State {
                 append_entry(
                     &mut out,
                     &mut out_count,
-                    E820Entry::new(end, entry_end - end, E820Kind::Ram),
+                    E820Entry {
+                        addr: end,
+                        size: entry_end - end,
+                        ..entry
+                    },
                 )?;
             }
         }
@@ -313,6 +345,32 @@ mod tests {
                 E820Kind::Ram as u32,
                 E820Kind::Nvs as u32,
                 E820Kind::Ram as u32
+            ]
+        );
+    }
+
+    #[test]
+    fn setting_a_range_kind_retypes_reserved_memory() {
+        let mut map = E820State::new();
+        map.entries_mut()[0] = E820Entry::new(0, 0x10_0000, E820Kind::Ram);
+        map.set_detected(1, 0x10_0000).unwrap();
+        // A firmware window: reserved, then mostly returned and partly NVS.
+        map.reserve_range(0x4_0000, 0x4_0000).unwrap();
+        map.set_range_kind(0x5_0000, 0x3_0000, E820Kind::Ram)
+            .unwrap();
+        map.set_range_kind(0x4_0000, 0x1000, E820Kind::Nvs).unwrap();
+        let ranges: heapless::Vec<_, 8> = map
+            .entries()
+            .iter()
+            .map(|e| (e.addr, e.size, e.kind))
+            .collect();
+        assert_eq!(
+            ranges[..],
+            [
+                (0, 0x4_0000, E820Kind::Ram as u32),
+                (0x4_0000, 0x1000, E820Kind::Nvs as u32),
+                (0x4_1000, 0xf000, E820Kind::Reserved as u32),
+                (0x5_0000, 0xb_0000, E820Kind::Ram as u32),
             ]
         );
     }

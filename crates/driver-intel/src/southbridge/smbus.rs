@@ -83,6 +83,17 @@ const fn xmit_write(addr: u8) -> u8 {
     addr << 1
 }
 
+/// How [`I801SmBus::block_cmd_loop`] drives the byte engine.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockMode {
+    /// SMBus block read: the device sends its byte count first.
+    Read,
+    /// SMBus block write: the host announces the byte count.
+    Write,
+    /// I2C read: no count byte; the host NAKs the last byte it wants.
+    I2cRead,
+}
+
 // ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
@@ -336,20 +347,33 @@ impl I801SmBus {
         &self,
         buf: &mut [u8],
         max_bytes: usize,
-        write: bool,
+        mode: BlockMode,
     ) -> Result<usize, ServiceError> {
         #[cfg(target_arch = "x86_64")]
         {
             let regs = self.regs();
-            // A write announces the byte count it will send; a read starts
-            // from the count byte the device sends.
-            regs.data0().set(if write { max_bytes as u8 } else { 0 });
+            let write = mode == BlockMode::Write;
+            match mode {
+                // A write announces the byte count it will send; a read
+                // starts from the count byte the device sends.
+                BlockMode::Write => regs.data0().set(max_bytes as u8),
+                BlockMode::Read => regs.data0().set(0),
+                // DATA1 carries the EEPROM offset; the caller has set it.
+                BlockMode::I2cRead => {}
+            }
             // BYTE_DONE is raised before the host can be serviced, so the
             // first byte is loaded before the command is started.
             if write {
                 regs.block_data().set(buf[0]);
             }
-            regs.control().modify(HSTCTL::START::SET);
+            // An I2C read ends with the byte the host NAKs; for a single
+            // byte that is the first one.
+            let last = if mode == BlockMode::I2cRead && max_bytes == 1 {
+                HSTCTL::LAST_BYTE::SET
+            } else {
+                HSTCTL::LAST_BYTE::CLEAR
+            };
+            regs.control().modify(HSTCTL::START::SET + last);
 
             let mut bytes = 0usize;
             let mut loops = SMBUS_TIMEOUT;
@@ -367,6 +391,11 @@ impl I801SmBus {
                             buf[bytes] = regs.block_data().get();
                         }
                         bytes += 1;
+                        // Mark the next byte as the last one before
+                        // releasing the engine to fetch it.
+                        if mode == BlockMode::I2cRead && bytes + 1 >= max_bytes {
+                            regs.control().modify(HSTCTL::LAST_BYTE::SET);
+                        }
                     }
                     // Acknowledge the byte so the engine fetches the next one.
                     // Only this bit is written, as the controller expects.
@@ -376,6 +405,15 @@ impl I801SmBus {
                 if completion != 0 && !snapshot.is_set(HSTSTAT::HOST_BUSY) {
                     // W1C: acknowledge the observed snapshot, never modify().
                     regs.status().set(status);
+                    // As for byte transactions, an unanswered address is a
+                    // probe result (an empty slot), not a controller failure.
+                    if completion & STATUS_ERROR == HSTSTAT::DEV_ERR::SET.value {
+                        fstart_log::debug!(
+                            "i801-smbus: no device at {:#x}",
+                            regs.xmit_addr().get() >> 1
+                        );
+                        return Err(ServiceError::NoDevice);
+                    }
                     if completion & STATUS_ERROR != 0 {
                         fstart_log::error!("i801-smbus: block error, status={:#x}", status);
                         return Err(ServiceError::HardwareError);
@@ -395,7 +433,7 @@ impl I801SmBus {
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
-            let _ = (buf, max_bytes, write);
+            let _ = (buf, max_bytes, mode);
             Err(ServiceError::HardwareError)
         }
     }
@@ -418,7 +456,7 @@ impl I801SmBus {
         {
             self.setup_command(HSTCTL::TYPE::BlockData, xmit_read(addr))?;
             self.regs().command().set(cmd);
-            let moved = self.block_cmd_loop(&mut buf[..max_bytes], max_bytes, false)?;
+            let moved = self.block_cmd_loop(&mut buf[..max_bytes], max_bytes, BlockMode::Read)?;
             // The device announces its length; a short read is a failed
             // transaction rather than a short block.
             let announced = self.regs().data0().get() as usize;
@@ -450,7 +488,8 @@ impl I801SmBus {
             scratch[..data.len()].copy_from_slice(data);
             self.setup_command(HSTCTL::TYPE::BlockData, xmit_write(addr))?;
             self.regs().command().set(cmd);
-            let moved = self.block_cmd_loop(&mut scratch[..data.len()], data.len(), true)?;
+            let moved =
+                self.block_cmd_loop(&mut scratch[..data.len()], data.len(), BlockMode::Write)?;
             if moved < data.len() {
                 fstart_log::error!(
                     "i801-smbus: block write sent {} of {} bytes",
@@ -461,6 +500,34 @@ impl I801SmBus {
             }
         }
         Ok(())
+    }
+
+    /// Read `buf.len()` bytes from an I2C EEPROM starting at `offset`, in one
+    /// I2C block read (ICH5 and later).
+    ///
+    /// coreboot `do_i2c_eeprom_read()`: the offset goes in DATA1, the address
+    /// is sent with the write bit (the controller turns the direction around
+    /// itself) and software NAKs the final byte. HOSTC.I2C_EN must be clear,
+    /// which [`enable_on_i801`](Self::enable_on_i801) and the chipset
+    /// drivers leave it.
+    pub fn i2c_read(&self, addr: u8, offset: u8, buf: &mut [u8]) -> Result<(), ServiceError> {
+        if buf.is_empty() || usize::from(offset) + buf.len() > 256 {
+            return Err(ServiceError::InvalidParam);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.setup_command(HSTCTL::TYPE::I2cBlockData, xmit_write(addr))?;
+            self.regs().data1().set(offset);
+            let len = buf.len();
+            let moved = self.block_cmd_loop(buf, len, BlockMode::I2cRead)?;
+            if moved < len {
+                fstart_log::error!("i801-smbus: I2C read got {} of {} bytes", moved, len);
+                return Err(ServiceError::HardwareError);
+            }
+            Ok(())
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        Err(ServiceError::HardwareError)
     }
 
     /// Write a 16-bit word via I801_WORD_DATA command.
@@ -495,5 +562,13 @@ impl SmBus for I801SmBus {
     }
     fn block_write(&mut self, addr: u8, cmd: u8, data: &[u8]) -> Result<(), ServiceError> {
         self.write_block_data(addr, cmd, data)
+    }
+    fn i2c_eeprom_read(
+        &mut self,
+        addr: u8,
+        offset: u8,
+        buf: &mut [u8],
+    ) -> Result<(), ServiceError> {
+        self.i2c_read(addr, offset, buf)
     }
 }

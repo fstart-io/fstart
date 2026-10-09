@@ -112,16 +112,9 @@ pub struct IntelReservations {
     pub ramstage: StageReservation,
     /// Persistent low-memory exclusion including the architecture handoff page.
     pub low_memory: Span,
-    /// Boot-media arena, not the bootstrap decoder's appended compressed input.
-    pub scratch: Span,
-    /// S3-resident compressed postcar slot, written on cold boot and read on
-    /// resume. Sized above the stage's compressed body, asserted at assembly.
-    pub stage_cache_postcar: Span,
-    /// S3-resident compressed mainstage slot (see `stage_cache_postcar`).
-    pub stage_cache_mainstage: Span,
-    pub training_handoff: Span,
-    /// Raminit's DRAM inventory, read by the ramstage SMBIOS writer.
-    pub memory_info: Span,
+    /// Firmware store window. The bootblock creates the store at its base
+    /// once DRAM is up; the ramstage keeps only the used part reserved.
+    pub store: Span,
 }
 
 impl IntelReservations {
@@ -174,11 +167,7 @@ impl IntelReservations {
             ("ramstage image", self.ramstage.image),
             ("ramstage writable", self.ramstage.writable),
             ("low memory", self.low_memory),
-            ("scratch", self.scratch),
-            ("stage cache postcar", self.stage_cache_postcar),
-            ("stage cache mainstage", self.stage_cache_mainstage),
-            ("training handoff", self.training_handoff),
-            ("memory info", self.memory_info),
+            ("firmware store", self.store),
         ];
         let regions: Vec<_> = [("bootblock image", self.bootblock.image)]
             .into_iter()
@@ -232,12 +221,10 @@ impl IntelReservations {
         for span in [
             self.postcar.load_window()?,
             self.ramstage.load_window()?,
-            self.scratch,
-            self.training_handoff,
-            self.memory_info,
+            self.store,
         ] {
             if !self.bootstrap_ram.contains(span.base, span.size) {
-                return Err("complete stage/scratch reservation exceeds bootstrap RAM".into());
+                return Err("complete stage/store reservation exceeds bootstrap RAM".into());
             }
         }
         for span in [self.low_memory, self.bootblock.writable, self.flash] {
@@ -278,8 +265,6 @@ impl IntelReservations {
             self.flash.region(RegionKind::Flash),
             self.firmware.region(RegionKind::Firmware),
             self.low_memory.region(RegionKind::Reserved),
-            self.scratch.region(RegionKind::Reserved),
-            self.scratch.region(RegionKind::BootMediaScratch),
             self.bootstrap_ram.region(RegionKind::BootstrapRam),
             self.postcar
                 .load_window()?
@@ -287,14 +272,9 @@ impl IntelReservations {
             self.ramstage
                 .load_window()?
                 .region(RegionKind::BootstrapMainstage),
-            self.stage_cache_postcar
-                .region(RegionKind::StageCachePostcar),
-            self.stage_cache_mainstage
-                .region(RegionKind::StageCacheMainstage),
-            self.training_handoff.region(RegionKind::TrainingHandoff),
-            self.training_handoff.region(RegionKind::Reserved),
-            self.memory_info.region(RegionKind::MemoryInfo),
-            self.memory_info.region(RegionKind::Reserved),
+            self.store.region(RegionKind::FirmwareStore),
+            // Stage loads never overwrite the store, used or not.
+            self.store.region(RegionKind::Reserved),
         ];
         if let Some(heap) = stage.heap_span() {
             regions.push(heap.region(RegionKind::Heap));

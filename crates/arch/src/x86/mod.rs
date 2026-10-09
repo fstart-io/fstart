@@ -91,6 +91,40 @@ pub fn udelay(us: u32) {
     udelay_tsc(us, hz);
 }
 
+/// Poll `done` until it holds or `timeout_us` microseconds have passed, and
+/// report whether it held: coreboot's `wait_us()`.
+///
+/// The timeout is measured on the TSC, so slow condition checks (MMIO or I/O
+/// reads of a device) do not stretch it the way a count of `udelay(1)` calls
+/// would. The condition is checked once more after the deadline, so a
+/// condition met right at the end is not reported as a timeout.
+#[cfg(all(target_arch = "x86_64", not(fstart_stage_env = "smm")))]
+pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
+    let hz = sanitize_tsc_frequency_hz(tsc_frequency_hz());
+    let ticks = (hz / 1_000_000).saturating_mul(u64::from(timeout_us));
+    let start = rdtsc();
+    loop {
+        if done() {
+            return true;
+        }
+        if rdtsc().wrapping_sub(start) >= ticks {
+            return done();
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// [`wait_us`] for SMM, which has no TSC frequency: counts POST-port delays.
+#[cfg(all(target_arch = "x86_64", fstart_stage_env = "smm"))]
+pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
+    (0..=timeout_us).any(|elapsed| {
+        if elapsed != 0 {
+            udelay(1);
+        }
+        done()
+    })
+}
+
 /// SMM microsecond delay via POST-port writes (see above).
 #[cfg(all(target_arch = "x86_64", fstart_stage_env = "smm"))]
 #[inline(always)]
@@ -130,17 +164,18 @@ const IA32_PERF_STATUS: u32 = 0x0198;
 
 /// Best-effort TSC frequency for pre-Skylake firmware delays.
 ///
-/// Core 2-era CPUs (GM965/X61) do not report CPUID.15h, so mirror coreboot's
-/// `cpu/intel/common/fsb.c`: derive FSB MHz from `MSR_FSB_FREQ`, multiply by
-/// the maximum bus ratio from `IA32_PERF_STATUS`, then round to the nearest
-/// 100 MHz. Fall back to the old conservative 1 GHz default only for
-/// unsupported CPUs.
+/// Core, Core 2 and Atom CPUs do not report CPUID.15h, so mirror coreboot's
+/// `cpu/intel/common/fsb.c`: derive the TSC from the FSB clock and maximum
+/// bus ratio, rounded to the nearest 100 MHz. Fall back to the old
+/// conservative 1 GHz default only for unsupported CPUs.
 #[cfg(target_arch = "x86_64")]
 pub fn tsc_frequency_hz() -> u64 {
     if let Some(freq) = cpuid_tsc_frequency_hz() {
         return freq;
     }
-    core2_tsc_frequency_hz().unwrap_or(1_000_000_000)
+    bus_clock().map_or(1_000_000_000, |clock| {
+        u64::from(clock.max_core_mhz()) * 1_000_000
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -154,15 +189,6 @@ fn cpuid_tsc_frequency_hz() -> Option<u64> {
         return None;
     }
     Some((crystal as u64).saturating_mul(numer as u64) / denom as u64)
-}
-
-#[cfg(target_arch = "x86_64")]
-fn core2_tsc_frequency_hz() -> Option<u64> {
-    let (_, model) = family_model();
-    if !(model == 0x0f || model == 0x17) {
-        return None;
-    }
-    bus_clock().map(|clock| u64::from(clock.max_core_mhz()) * 1_000_000)
 }
 
 /// Display family and model from CPUID leaf 1.

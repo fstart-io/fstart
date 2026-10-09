@@ -162,6 +162,12 @@ core::arch::global_asm!(
     "_start16bit:",
     "cli",
     "movl %eax, %ebp",
+    // Keep the reset-vector TSC in MM0/MM1 for the first boot timestamp,
+    // like coreboot. Nothing before Rust uses MMX, and firmware Rust is
+    // built without it.
+    "rdtsc",
+    "movd %eax, %mm0",
+    "movd %edx, %mm1",
     // POST 0x01: reset vector reached the 16-bit entry.
     "movb $0x01, %al",
     "outb %al, $0x80",
@@ -1168,6 +1174,26 @@ pub extern "C" fn x86_exception_handler(
 // Public API — consumed by selected stage code via fstart_platform:: alias
 // ---------------------------------------------------------------------------
 
+/// TSC value the reset vector saved in MM0/MM1.
+///
+/// Only meaningful in the bootblock, before anything else touches MMX
+/// state. Encoded as raw bytes: firmware Rust is built without MMX.
+#[cfg(target_os = "none")]
+pub fn reset_tsc() -> u64 {
+    let (low, high): (u32, u32);
+    // SAFETY: MOVD from MMX registers only reads them.
+    unsafe {
+        core::arch::asm!(
+            ".byte 0x0f, 0x7e, 0xc0", // movd eax, mm0
+            ".byte 0x0f, 0x7e, 0xca", // movd edx, mm1
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
+
 /// Halt the processor in a low-power wait state (never returns).
 pub fn halt() -> ! {
     loop {
@@ -1395,59 +1421,6 @@ pub fn boot_linux_direct(
     params.loadflags |= 0x01 | 0x80; // LOADED_HIGH | CAN_USE_HEAP
     params.heap_end_ptr.set(0xFE00);
 
-    // Relocate the protected-mode kernel to pref_address.
-    //
-    // pref_address (offset 0x258) is where the kernel prefers to be
-    // loaded, typically 0x1000000, aligned to kernel_alignment (2 MiB).
-    // The PM kernel sits at kernel_addr + pm_kernel_offset within the
-    // loaded bzImage. Move it to pref_address so the decompressor's
-    // alignment requirements are satisfied.
-    //
-    // startup_64 uses RIP-relative addressing (leaq startup_32(%rip))
-    // to discover its own address. The PM kernel must be at an aligned
-    // address so the kernel's relocation calculation works correctly.
-    let pref_address = image_params.pref_address.get();
-    let pm_kernel_src = kernel_addr + pm_kernel_offset;
-
-    // syssize (offset 0x1F4): protected-mode code size in 16-byte
-    // paragraphs. This is the exact amount to copy.
-    let syssize = image_params.syssize.get() as u64 * 16;
-    let copy_len = syssize;
-
-    let pm_kernel_addr = if pref_address != 0 && pref_address != pm_kernel_src {
-        // SAFETY: pref_address (0x1000000) is below pm_kernel_src
-        // (kernel_load_addr + setup_size), so a forward copy is safe
-        // (no overlap corruption). Both addresses are in identity-mapped
-        // RAM covered by our page tables.
-        unsafe {
-            core::ptr::copy(
-                pm_kernel_src as *const u8,
-                pref_address as *mut u8,
-                copy_len as usize,
-            );
-        }
-        pref_address
-    } else {
-        pm_kernel_src
-    };
-
-    // code32_start (offset 0x214): tell the kernel where the PM code is.
-    params.code32_start.set(pm_kernel_addr as u32);
-
-    // vid_mode (offset 0x1FA) — 0xFFFF = "normal" (no video mode change)
-    params.vid_mode.set(0xFFFF);
-
-    // cmd_line_ptr (offset 0x228)
-    let cmdline = unsafe { &mut *(cmd_line as *mut [u8; 4096]) };
-    let args_bytes = bootargs.as_bytes();
-    let copy_len = args_bytes.len().min(4095); // leave room for NUL
-    cmdline[..copy_len].copy_from_slice(&args_bytes[..copy_len]);
-    cmdline[copy_len] = 0; // NUL terminator
-    params.cmd_line_ptr.set(cmd_line as u32);
-
-    // ACPI RSDP address (offset 0x070, protocol 2.14+)
-    params.acpi_rsdp_addr.set(rsdp_addr);
-
     // e820 map: count at 0x1E8, entries at 0x2D0 (20 bytes each).
     // Real-hardware boards may not have a MemoryDetect provider yet; provide
     // a conservative fallback map so Linux can choose a decompression area.
@@ -1483,6 +1456,60 @@ pub fn boot_linux_direct(
     } else {
         e820_entries
     };
+    // Move the protected-mode kernel to where it will run. Linux prefers
+    // `pref_address` (16 MiB), but only memory the e820 map hands over as RAM
+    // is the kernel's: firmware keeps reserved windows there and rewrites them
+    // on S3 resume. A relocatable kernel runs at any `kernel_alignment`-aligned
+    // base, so take the lowest one whose `init_size` footprint is all RAM.
+    let pref_address = image_params.pref_address.get();
+    let pm_kernel_src = kernel_addr + pm_kernel_offset;
+    // syssize (offset 0x1F4): protected-mode code size in 16-byte paragraphs.
+    let syssize = image_params.syssize.get() as u64 * 16;
+    let footprint = u64::from(image_params.init_size.get()).max(syssize);
+    let Some(pm_kernel_addr) = linux_boot_params::place_kernel(
+        e820,
+        pref_address,
+        u64::from(image_params.kernel_alignment.get()),
+        footprint,
+        image_params.relocatable_kernel != 0,
+    ) else {
+        fstart_log::error!(
+            "linux: no e820 RAM for the kernel ({:#x} bytes from {:#x})",
+            footprint,
+            pref_address
+        );
+        halt();
+    };
+    if pm_kernel_addr != pm_kernel_src {
+        // SAFETY: the destination is e820 RAM inside the identity map and
+        // nothing else lives there yet; `copy` tolerates overlap with the
+        // loaded bzImage.
+        unsafe {
+            core::ptr::copy(
+                pm_kernel_src as *const u8,
+                pm_kernel_addr as *mut u8,
+                syssize as usize,
+            );
+        }
+    }
+
+    // code32_start (offset 0x214): tell the kernel where the PM code is.
+    params.code32_start.set(pm_kernel_addr as u32);
+
+    // vid_mode (offset 0x1FA) — 0xFFFF = "normal" (no video mode change)
+    params.vid_mode.set(0xFFFF);
+
+    // cmd_line_ptr (offset 0x228)
+    let cmdline = unsafe { &mut *(cmd_line as *mut [u8; 4096]) };
+    let args_bytes = bootargs.as_bytes();
+    let copy_len = args_bytes.len().min(4095); // leave room for NUL
+    cmdline[..copy_len].copy_from_slice(&args_bytes[..copy_len]);
+    cmdline[copy_len] = 0; // NUL terminator
+    params.cmd_line_ptr.set(cmd_line as u32);
+
+    // ACPI RSDP address (offset 0x070, protocol 2.14+)
+    params.acpi_rsdp_addr.set(rsdp_addr);
+
     assert!(
         e820.len() <= E820_CAPACITY,
         "e820 map exceeds Linux boot_params capacity"

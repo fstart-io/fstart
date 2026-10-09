@@ -1,7 +1,7 @@
 //! Shared Intel/x86 ACPI and SMBIOS table handoff helpers.
 //!
-//! Direct helpers over `fstart-acpi`/`fstart-acpi::smbios`: heap/e820 buffer
-//! allocation, table assembly, RSDP EBDA install, and the acpixtract
+//! Direct helpers over `fstart-acpi`/`fstart-acpi::smbios`: firmware-store
+//! entries, table assembly, RSDP EBDA install, and the acpixtract
 //! hex dump. Chipset flows call these in `emit_tables`; drivers and the
 //! mainboard contribute fragments through the shared `AcpiDevice`
 //! abstraction. There is no capability layer in between.
@@ -9,13 +9,7 @@
 extern crate alloc;
 
 #[cfg(feature = "acpi")]
-use alloc::alloc::{Layout, alloc_zeroed};
-#[cfg(feature = "smbios")]
-use alloc::vec;
-#[cfg(feature = "acpi")]
 use alloc::vec::Vec;
-
-use fstart_core::services::memory_detect::E820Kind;
 
 #[cfg(feature = "smbios")]
 pub use fstart_acpi::smbios::SmbiosIdentity;
@@ -36,40 +30,6 @@ const EBDA_BASE: usize = 0x0009_f000;
 const EBDA_SIZE: usize = 0x1000;
 #[cfg(feature = "acpi")]
 const EBDA_RSDP_OFFSET: usize = 0;
-
-/// Carve a page-aligned handoff region out of the top of e820 RAM.
-fn allocate_x86_handoff_region(
-    e820: &mut fstart_core::services::memory_detect::E820State,
-    size: usize,
-    align: u64,
-    kind: E820Kind,
-) -> Option<u64> {
-    let size = ((size as u64) + 0xfff) & !0xfff;
-    let align_mask = align.saturating_sub(1);
-    let mut selected = 0u64;
-
-    for entry in e820.entries() {
-        if entry.kind != E820Kind::Ram as u32 || entry.size < size || entry.addr >= 0x1_0000_0000 {
-            continue;
-        }
-        // Postcar installs an identity map for the low 4 GiB only. Reclaimed
-        // RAM may exist above it, but firmware table buffers must remain mapped.
-        let top = entry.addr.saturating_add(entry.size).min(0x1_0000_0000);
-        let base = top.saturating_sub(size) & !align_mask;
-        if base >= entry.addr && base > selected {
-            selected = base;
-        }
-    }
-
-    if selected == 0 {
-        return None;
-    }
-
-    // A full map cannot represent the reservation; report no region rather
-    // than handing out one the OS would still see as RAM.
-    e820.reserve_range_as(selected, size, kind).ok()?;
-    Some(selected)
-}
 
 #[cfg(feature = "acpi")]
 fn read_le_u64(bytes: &[u8], offset: usize) -> Option<u64> {
@@ -236,17 +196,17 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
     fstart_log::info!("Done printing ACPI tables in ACPICA compatible format");
 }
 
-/// Prepare ACPI tables and write them to a top-of-RAM handoff buffer.
+/// Prepare ACPI tables in a firmware-store entry.
 ///
-/// Carves a dedicated allocation out of e820 RAM (marked ACPI reclaim) —
-/// falling back to a leaked heap buffer — collects per-device DSDT AML and
-/// extra tables via `collect_devices`, assembles the final table set via
-/// [`fstart_acpi::platform::assemble_into`], installs a legacy RSDP
-/// copy in the EBDA, and hex-dumps the tables. Returns the RSDP address only
-/// after bounded assembly succeeds. Errors must abort required-table handoff.
+/// Collects per-device DSDT AML and extra tables via `collect_devices`,
+/// assembles the final table set via [`fstart_acpi::platform::assemble_into`]
+/// into a page-aligned [`fstart_store::tag::ACPI`] entry trimmed to the
+/// assembled size, installs a legacy RSDP copy in the EBDA, and hex-dumps
+/// the tables. Returns the RSDP address only after bounded assembly
+/// succeeds. Errors must abort required-table handoff.
 #[cfg(feature = "acpi")]
 pub fn prepare_acpi(
-    e820: &mut fstart_core::services::memory_detect::E820State,
+    store: &mut fstart_store::Store,
     platform: &fstart_acpi::platform::PlatformConfig,
     collect_devices: impl FnOnce(&mut Vec<u8>, &mut Vec<Vec<u8>>),
 ) -> Result<u64, fstart_acpi::AmlError> {
@@ -255,41 +215,16 @@ pub fn prepare_acpi(
 
     collect_devices(&mut dsdt_aml, &mut extra_tables);
 
-    // Prefer a dedicated top-of-RAM handoff allocation carved into the e820
-    // map as ACPI reclaim memory. This avoids placing ACPI tables inside
-    // fstart/CrabEFI's linker runtime-data range, which would fragment EFI
-    // RuntimeServicesData descriptors.
-    //
-    // 128 KiB provides headroom for boards with large ACPI namespaces
-    // (dozens of devices, IORT with many ID mappings). Increase if a
-    // board exceeds this limit.
+    // Room for boards with large ACPI namespaces (dozens of devices, IORT
+    // with many ID mappings); the entry is trimmed to the assembled size.
     const BUF_SIZE: usize = 128 * 1024;
-    // FACS shares this contiguous allocation and must survive S3, so keep the
-    // complete table set in ACPI NVS rather than reclaimable ACPI memory.
-    let acpi_addr = allocate_x86_handoff_region(e820, BUF_SIZE, 0x1000, E820Kind::Nvs)
-        .inspect(|addr| unsafe {
-            core::ptr::write_bytes(*addr as *mut u8, 0, BUF_SIZE);
-        })
-        .unwrap_or_else(|| {
-            let layout = Layout::from_size_align(BUF_SIZE, 16)
-                .unwrap_or_else(|_| panic!("invalid ACPI buffer layout"));
-            // SAFETY: `layout` has non-zero size and a valid 16-byte
-            // alignment. The allocation is intentionally leaked so ACPI
-            // tables remain available to the OS after handoff.
-            let acpi_ptr = unsafe { alloc_zeroed(layout) };
-            if acpi_ptr.is_null() {
-                panic!("failed to allocate ACPI table buffer");
-            }
-            acpi_ptr as u64
-        });
-
-    let address = usize::try_from(acpi_addr).map_err(|_| fstart_acpi::AmlError::LengthOverflow)?;
-    address
-        .checked_add(BUF_SIZE)
-        .ok_or(fstart_acpi::AmlError::LengthOverflow)?;
-    // SAFETY: this complete BUF_SIZE range was just reserved or allocated.
-    // The bounded assembler validates capacity before copying any table bytes.
-    let storage = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, BUF_SIZE) };
+    let entry = store
+        .add(fstart_store::tag::ACPI, BUF_SIZE, 12)
+        .map_err(|_| fstart_acpi::AmlError::LengthOverflow)?;
+    let acpi_addr = store.address(&entry) as u64;
+    // SAFETY: a fresh store entry nothing else references.
+    let storage = unsafe { store.bytes_mut(&entry) };
+    storage.fill(0);
     let acpi_len = fstart_acpi::platform::assemble_into(
         storage,
         acpi_addr,
@@ -297,6 +232,9 @@ pub fn prepare_acpi(
         &dsdt_aml,
         &extra_tables,
     )?;
+    store
+        .resize_last(entry, acpi_len)
+        .map_err(|_| fstart_acpi::AmlError::LengthOverflow)?;
 
     fstart_log::info!(
         "ACPI: {} bytes written to {}",
@@ -582,7 +520,7 @@ fn add_memory(
         .sum();
     let high_end = e820
         .iter()
-        .filter(|entry| entry.kind == E820Kind::Ram as u32)
+        .filter(|entry| entry.kind == fstart_core::services::memory_detect::E820Kind::Ram as u32)
         .map(|entry| entry.addr.saturating_add(entry.size))
         .max()
         .unwrap_or(0);
@@ -644,8 +582,8 @@ fn add_onboard_devices(w: &mut fstart_acpi::smbios::SmbiosWriter, pci: &fstart_p
 
 /// Generate and write SMBIOS tables from a static descriptor plus runtime facts.
 ///
-/// Carves a top-of-RAM handoff buffer out of e820 (falling back to a leaked
-/// heap buffer), emits all SMBIOS structures, and logs the result.
+/// Writes into a [`fstart_store::tag::SMBIOS`] entry trimmed to the
+/// assembled size, emits all SMBIOS structures, and logs the result.
 ///
 /// Handles:
 /// - Type 0 (BIOS), Type 1 (System), Type 3 (Chassis), Type 2 (Baseboard)
@@ -656,25 +594,22 @@ fn add_onboard_devices(w: &mut fstart_acpi::smbios::SmbiosWriter, pci: &fstart_p
 /// - Type 32 (System Boot) and Type 127 (End of Table)
 #[cfg(feature = "smbios")]
 pub fn prepare_smbios(
-    e820: &mut fstart_core::services::memory_detect::E820State,
+    store: &mut fstart_store::Store,
+    e820: &fstart_core::services::memory_detect::E820State,
     desc: &SmbiosIdentity,
     runtime: &SmbiosRuntime,
-) -> u64 {
+) -> Result<u64, fstart_core::services::ServiceError> {
     // 64 KiB table area + 32 bytes entry point header.
     // `assemble_and_write` writes ENTRY_POINT_SIZE bytes at `table_addr`
     // then up to MAX_TABLE_AREA bytes starting at `table_addr + 24`.
     const BUF_SIZE: usize = 64 * 1024 + 32;
-    let smbios_addr = allocate_x86_handoff_region(e820, BUF_SIZE, 0x1000, E820Kind::Reserved)
-        .inspect(|addr| unsafe {
-            core::ptr::write_bytes(*addr as *mut u8, 0, BUF_SIZE);
-        })
-        .unwrap_or_else(|| {
-            let smbios_buf = vec![0u8; BUF_SIZE];
-            let smbios_addr = smbios_buf.as_ptr() as u64;
-            // Keep the buffer alive -- tables must persist for the OS.
-            core::mem::forget(smbios_buf);
-            smbios_addr
-        });
+    // Page-aligned so the ACPI NVS range before it ends on a page boundary.
+    let entry = store
+        .add(fstart_store::tag::SMBIOS, BUF_SIZE, 12)
+        .map_err(|_| fstart_core::services::ServiceError::InvalidParam)?;
+    // SAFETY: a fresh store entry nothing else references.
+    unsafe { store.bytes_mut(&entry) }.fill(0);
+    let smbios_addr = store.address(&entry) as u64;
 
     let total_ram = e820.total_ram();
     let entries = e820.entries();
@@ -725,12 +660,16 @@ pub fn prepare_smbios(
         w.add_end_of_table();
     });
 
+    store
+        .resize_last(entry, smbios_len)
+        .map_err(|_| fstart_core::services::ServiceError::InvalidParam)?;
+
     fstart_log::info!(
         "SMBIOS: {} bytes written to {}",
         smbios_len as u32,
         fstart_log::Hex(smbios_addr),
     );
-    smbios_addr
+    Ok(smbios_addr)
 }
 
 #[cfg(all(test, feature = "host"))]

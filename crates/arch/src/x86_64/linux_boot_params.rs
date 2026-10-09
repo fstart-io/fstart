@@ -1,6 +1,7 @@
 //! The 4096-byte Linux x86 boot_params (zero-page) wire layout.
 //! Offsets follow Linux `arch/x86/include/uapi/asm/bootparam.h`.
 
+use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use zerocopy::byteorder::{LE, U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -46,7 +47,8 @@ pub(super) struct LinuxBootParams {
     pub cmd_line_ptr: U32<LE>,
     _before_kernel_alignment: [u8; 0x230 - 0x22c],
     pub kernel_alignment: U32<LE>,
-    _before_xloadflags: [u8; 0x236 - 0x234],
+    pub relocatable_kernel: u8,
+    _min_alignment: u8,
     pub xloadflags: U16<LE>,
     _before_pref_address: [u8; 0x258 - 0x238],
     pub pref_address: U64<LE>,
@@ -71,6 +73,7 @@ const _: () = {
     assert!(core::mem::offset_of!(LinuxBootParams, heap_end_ptr) == 0x224);
     assert!(core::mem::offset_of!(LinuxBootParams, cmd_line_ptr) == 0x228);
     assert!(core::mem::offset_of!(LinuxBootParams, kernel_alignment) == 0x230);
+    assert!(core::mem::offset_of!(LinuxBootParams, relocatable_kernel) == 0x234);
     assert!(core::mem::offset_of!(LinuxBootParams, xloadflags) == 0x236);
     assert!(core::mem::offset_of!(LinuxBootParams, pref_address) == 0x258);
     assert!(core::mem::offset_of!(LinuxBootParams, init_size) == 0x260);
@@ -78,9 +81,68 @@ const _: () = {
     assert!(core::mem::size_of::<LinuxE820Entry>() == 20);
 };
 
+const KERNEL_LIMIT: u64 = 1 << 32;
+
+/// Where to put the protected-mode kernel: the lowest `align`-aligned base
+/// at or above `pref` whose whole `[base, base + init_size)` footprint is e820
+/// RAM below 4 GiB. A kernel that is not relocatable only runs at `pref`.
+///
+/// The footprint must avoid firmware reservations: memory the firmware keeps
+/// (for example the stage windows it reloads on S3 resume) is not the
+/// kernel's to run from, even when it is the kernel's preferred address.
+/// Nothing below `pref` qualifies: a relocatable kernel loaded there moves
+/// itself up to `pref` before decompressing. The 4 GiB limit is the reach of
+/// `code32_start` and of the firmware's identity map.
+pub(super) fn place_kernel(
+    e820: &[E820Entry],
+    pref: u64,
+    align: u64,
+    init_size: u64,
+    relocatable: bool,
+) -> Option<u64> {
+    let align = align.max(1);
+    e820.iter()
+        .filter(|entry| ({ entry.kind }) == E820Kind::Ram as u32)
+        .filter_map(|entry| {
+            let start = if relocatable {
+                entry.addr.max(pref).checked_next_multiple_of(align)?
+            } else {
+                pref
+            };
+            let end = start.checked_add(init_size)?;
+            (start >= entry.addr
+                && end <= entry.addr.checked_add(entry.size)?
+                && end <= KERNEL_LIMIT)
+                .then_some(start)
+        })
+        .min()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_avoids_reserved_preferred_address() {
+        let e820 = [
+            E820Entry::new(0x10_0000, 0xf0_0000, E820Kind::Ram),
+            E820Entry::new(0x100_0000, 0x2_0000, E820Kind::Reserved),
+            E820Entry::new(0x102_0000, 0x2fe_0000, E820Kind::Ram),
+            E820Entry::new(0x503_b000, 0x7000_0000, E820Kind::Ram),
+        ];
+        let place =
+            |size, relocatable| place_kernel(&e820, 0x100_0000, 0x20_0000, size, relocatable);
+        assert_eq!(place(0x13a_d000, true), Some(0x120_0000));
+        // Too big for the gap below 64 MiB: next RAM range, aligned.
+        assert_eq!(place(0x3000_0000, true), Some(0x520_0000));
+        assert_eq!(place(0x13a_d000, false), None);
+        // RAM above 4 GiB is out of reach.
+        let high = [E820Entry::new(0x1_0000_0000, 0x1_0000_0000, E820Kind::Ram)];
+        assert_eq!(
+            place_kernel(&high, 0x100_0000, 0x20_0000, 0x100_0000, true),
+            None
+        );
+    }
 
     #[test]
     fn zero_page_fields_encode_at_protocol_offsets() {

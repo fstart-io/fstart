@@ -23,6 +23,8 @@ members = [
   "crates/acpi-macros",
   "crates/smm",
   "crates/boot",
+  "crates/store",
+  "crates/timestamp",
 ]
 exclude = ["boards"]
 
@@ -73,7 +75,7 @@ object = { version = "0.37", default-features = false, features = [
 
 # fbuild / host-side
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Internal workspace crates
 fstart-core = { path = "crates/core" }
@@ -93,6 +95,8 @@ fstart-acpi = { path = "crates/acpi" }
 fstart-smm = { path = "crates/smm" }
 fstart-image-build = { path = "crates/image-build" }
 fstart-boot = { path = "crates/boot" }
+fstart-store = { path = "crates/store" }
+fstart-timestamp = { path = "crates/timestamp" }
 
 [profile.dev]
 panic = "abort"
@@ -145,6 +149,10 @@ opt-level = 2
 # Optimise fstart-stage for size even in dev builds.  SRAM/CAR-constrained
 # bootblocks overflow at opt-level 0; "s" keeps debug info while fitting.
 [profile.dev.package.fstart-stage]
+opt-level = "s"
+[profile.dev.package.fstart-store]
+opt-level = "s"
+[profile.dev.package.fstart-timestamp]
 opt-level = "s"
 
 # Crypto crates are unusably slow at opt-level 0 (minutes for a single

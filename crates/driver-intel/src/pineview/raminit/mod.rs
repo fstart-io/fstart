@@ -164,6 +164,14 @@ impl SysInfo {
             bytes
         })
     }
+    /// The SPD a training record was captured with, to skip rereading it.
+    fn cached_spd(bytes: &[u8]) -> Option<[[u8; 128]; 2]> {
+        use zerocopy::FromBytes;
+        TrainingWire::ref_from_bytes(bytes)
+            .ok()
+            .filter(|wire| wire.magic == *b"PVIEW001")
+            .map(|wire| wire.spd)
+    }
     fn restore_training(&mut self, bytes: &[u8]) -> bool {
         use zerocopy::FromBytes;
         let Ok(wire) = TrainingWire::ref_from_bytes(bytes) else {
@@ -325,7 +333,9 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
     let mut si = SysInfo::new(boot_path, platform_type, *spd_addresses);
 
     // 1. Read SPD data from DIMMs.
-    spd::read_spds(&mut si, smbus)?;
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_SPD);
+    let cached_spd = cached.and_then(SysInfo::cached_spd);
+    spd::read_spds(&mut si, smbus, cached_spd.as_ref())?;
 
     // 2. Detect RAM speed (common frequency).
     timing::detect_ram_speed(&mut si, mch)?;
@@ -342,6 +352,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
         if replay { "hit" } else { "miss" }
     );
 
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_PHY);
     // 4. Enable HPET.
     // (Handled by platform code, not raminit.)
 
@@ -400,6 +411,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
 
     mch.setbits32(mchbar::HIT4, 1 << 1);
 
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_JEDEC);
     // 16. JEDEC init (skip on S3 resume).
     if si.boot_path != crate::BootPath::S3Resume {
         mch.setbits32(mchbar::C0CKECTRL, 1 << 27);
@@ -420,6 +432,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
     // 20. DRA/DRB.
     mmap::sdram_dradrb(&mut si, mch);
 
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_TRAINING);
     // 21. Receive enable calibration.
     phy::sdram_rcven(&mut si, mch, replay)?;
 
@@ -433,6 +446,7 @@ pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
         phy::update_vref_value(si.vref_value, mch);
     }
 
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_FINALIZE);
     // 22. New tRD.
     phy::sdram_new_trd(&si, mch);
 

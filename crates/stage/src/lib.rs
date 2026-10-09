@@ -46,6 +46,7 @@ pub use fstart_boot::crabefi;
 pub mod fixed_helpers;
 pub mod layout;
 pub mod payload;
+pub mod timestamps;
 
 // Fixed-flow stage helpers moved here so stage build metadata is not a
 // separate capability model.

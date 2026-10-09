@@ -11,7 +11,7 @@ fit = ["dep:dtoolkit", "dep:heapless"]
 # basic still selects the full runtime bundle.
 crabefi = ["crabefi-basic", "crabefi/full"]
 crabefi-ui = ["crabefi", "crabefi/ui"]
-crabefi-basic = ["dep:crabefi", "dep:fstart-arch", "dep:fstart-core"]
+crabefi-basic = ["dep:crabefi", "dep:fstart-arch", "dep:fstart-core", "dep:fstart-log"]
 std = ["fit", "fstart-crypto?/all"]
 sha2-digest = ["fit", "fstart-crypto/sha2-digest"]
 sha3-digest = ["fit", "fstart-crypto?/sha3-digest"]
@@ -19,6 +19,7 @@ sha3-digest = ["fit", "fstart-crypto?/sha3-digest"]
 [dependencies]
 fstart-core = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 # Upstream split into a workspace; package `crabefi-core` keeps lib name `crabefi`.

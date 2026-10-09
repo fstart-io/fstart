@@ -498,6 +498,7 @@ impl<D: X86LinuxPayloadContext> MainstagePayload<D> for X86LinuxPayload {
         ) else {
             halt_x86_linux("configured entry was not verified");
         };
+        crate::timestamps::handoff();
         fstart_arch::x86_64::boot_linux(&params)
     }
 }
@@ -614,6 +615,7 @@ where
         ];
 
         let ecam = uefi_ecam(devices.pci_root());
+        crate::timestamps::handoff();
         crate::crabefi::launch_x86_uefi(
             UefiLaunchConfig {
                 console: devices.console(),

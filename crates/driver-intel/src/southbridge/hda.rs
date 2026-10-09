@@ -666,25 +666,13 @@ impl HdaController {
     /// Enter reset (clear CRST, active-low).
     pub fn enter_reset(&self) -> bool {
         self.regs().control.modify(GCTL::CRST::CLEAR);
-        for _ in 0..50_000 {
-            if !self.regs().control.is_set(GCTL::CRST) {
-                return true;
-            }
-            core::hint::spin_loop();
-        }
-        false
+        fstart_arch::wait_us(50_000, || !self.regs().control.is_set(GCTL::CRST))
     }
 
     /// Exit reset (set CRST).
     pub fn exit_reset(&self) -> bool {
         self.regs().control.modify(GCTL::CRST::SET);
-        for _ in 0..50_000 {
-            if self.regs().control.is_set(GCTL::CRST) {
-                return true;
-            }
-            core::hint::spin_loop();
-        }
-        false
+        fstart_arch::wait_us(50_000, || self.regs().control.is_set(GCTL::CRST))
     }
 
     // ---- Codec detection ----
@@ -709,9 +697,9 @@ impl HdaController {
             return 0;
         }
 
-        for _ in 0..600 {
-            core::hint::spin_loop();
-        }
+        // Codecs have up to 25 frames at 48 kHz to request an address
+        // (HDA 1.0a, 4.3 "Codec Discovery").
+        fstart_arch::x86::udelay(521);
 
         let mask = regs.codec_status.read(STATESTS::CODECS);
         if mask == 0 {
@@ -726,13 +714,8 @@ impl HdaController {
     /// Send a single verb and return the response. Returns `None` on timeout.
     pub fn send_verb(&self, verb: u32) -> Option<u32> {
         let regs = self.regs();
-        for _ in 0..10_000 {
-            if !regs.command_status.is_set(ICS::BUSY) {
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        if regs.command_status.is_set(ICS::BUSY) {
+        // 50 us, like Linux and coreboot.
+        if !fstart_arch::wait_us(50, || !regs.command_status.is_set(ICS::BUSY)) {
             return None;
         }
 
@@ -742,14 +725,12 @@ impl HdaController {
         status.modify(ICS::BUSY::SET);
         regs.command_status.set(status.get());
 
-        for _ in 0..10_000 {
+        // A working codec answers well within coreboot's 1 ms.
+        fstart_arch::wait_us(1000, || {
             let status = regs.command_status.extract();
-            if status.is_set(ICS::VALID) || !status.is_set(ICS::BUSY) {
-                return Some(regs.response.get());
-            }
-            core::hint::spin_loop();
-        }
-        None
+            status.is_set(ICS::VALID) || !status.is_set(ICS::BUSY)
+        })
+        .then(|| regs.response.get())
     }
 
     /// Read a codec's vendor/device ID.

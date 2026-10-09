@@ -731,6 +731,8 @@ pub struct IntelIch7 {
     /// I801 SMBus controller, initialised during `early_init`.
     smbus: Option<I801SmBus>,
     s3_enabled: bool,
+    /// This boot resumes from S3; set by the mainstage.
+    resume: bool,
     /// PM I/O accessor (PMBASE, initialised during `early_init`).
     pm: PmIo,
 }
@@ -1089,6 +1091,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
             config,
             smbus: None,
             s3_enabled: false,
+            resume: false,
             pm: PmIo::new(DEFAULT_PMBASE as u16),
         })
     }
@@ -1247,6 +1250,10 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         self.s3_enabled = enabled;
     }
 
+    fn set_resume(&mut self, resume: bool) {
+        self.resume = resume;
+    }
+
     fn smbus_mut(&mut self) -> Option<&mut dyn SmBus> {
         Some(IntelIch7::smbus_mut(self))
     }
@@ -1346,6 +1353,15 @@ impl SmBus for IntelIch7 {
     fn block_write(&mut self, addr: u8, cmd: u8, data: &[u8]) -> Result<(), ServiceError> {
         self.smbus_mut().block_write(addr, cmd, data)
     }
+
+    fn i2c_eeprom_read(
+        &mut self,
+        addr: u8,
+        offset: u8,
+        buf: &mut [u8],
+    ) -> Result<(), ServiceError> {
+        self.smbus_mut().i2c_eeprom_read(addr, offset, buf)
+    }
 }
 
 impl LpcBaseProvider for IntelIch7 {
@@ -1441,7 +1457,10 @@ impl IntelIch7 {
         }
 
         // ---- RTC / CMOS init (coreboot i82801gx_rtc_init + cmos_init) ----
-        self.rtc_init();
+        // Like coreboot, not on resume: the OS owns the clock and its alarm.
+        if !self.resume {
+            self.rtc_init();
+        }
 
         // ---- USB Transient Disconnect Detect (fixup) ----
         lpc.write8(0xAD, 0x03);

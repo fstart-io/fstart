@@ -39,4 +39,25 @@ pub trait SmBus: Send + Sync {
         let _ = (addr, cmd, data);
         Err(ServiceError::HardwareError)
     }
+    /// Fill `buf` from an I2C EEPROM (such as an SPD) starting at `offset`.
+    ///
+    /// Controllers with an I2C block read override this with one sequential
+    /// read; the default falls back to one byte-data read per byte. A device
+    /// that does not answer reports [`ServiceError::NoDevice`].
+    fn i2c_eeprom_read(
+        &mut self,
+        addr: u8,
+        offset: u8,
+        buf: &mut [u8],
+    ) -> Result<(), ServiceError> {
+        if usize::from(offset) + buf.len() > 256 {
+            return Err(ServiceError::InvalidParam);
+        }
+        buf.iter_mut()
+            .zip(offset..=u8::MAX)
+            .try_for_each(|(byte, cmd)| {
+                *byte = self.read_byte(addr, cmd)?;
+                Ok(())
+            })
+    }
 }

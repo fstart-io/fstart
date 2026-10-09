@@ -24,6 +24,8 @@ pub fn udelay(us: u32) {
 
 #[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
 pub use x86::udelay;
+#[cfg(all(feature = "x86_64", target_arch = "x86_64"))]
+pub use x86::wait_us;
 
 #[cfg(all(feature = "aarch64", target_arch = "aarch64"))]
 pub mod aarch64;

@@ -53,16 +53,10 @@ pub enum RegionKind {
     BootstrapMainstage = 13,
     /// Platform bootstrap RAM envelope; actual trained RAM must also bound it.
     BootstrapRam = 14,
-    /// Temporary boot-media arena, distinct from the bootstrap decoder's input.
-    BootMediaScratch = 15,
-    /// S3-resident compressed postcar slot (header + body).
-    StageCachePostcar = 16,
-    /// S3-resident compressed mainstage slot (header + body).
-    StageCacheMainstage = 17,
-    /// Pending SPD/training record in OS-reserved RAM, committed from ramstage.
-    TrainingHandoff = 18,
-    /// Installed-DRAM inventory published by raminit for the SMBIOS writer.
-    MemoryInfo = 19,
+    /// Window of the firmware store (`fstart-store`): stage caches, the
+    /// training record and firmware tables. Only its used part stays
+    /// reserved for the OS. Kinds 15-19 were fixed slots it replaced.
+    FirmwareStore = 20,
 }
 
 impl RegionKind {
@@ -82,11 +76,7 @@ impl RegionKind {
             12 => Ok(Self::BootstrapPostcar),
             13 => Ok(Self::BootstrapMainstage),
             14 => Ok(Self::BootstrapRam),
-            15 => Ok(Self::BootMediaScratch),
-            16 => Ok(Self::StageCachePostcar),
-            17 => Ok(Self::StageCacheMainstage),
-            18 => Ok(Self::TrainingHandoff),
-            19 => Ok(Self::MemoryInfo),
+            20 => Ok(Self::FirmwareStore),
             _ => Err(Error::UnknownRegionKind),
         }
     }
