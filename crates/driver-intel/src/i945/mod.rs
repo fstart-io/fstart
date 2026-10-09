@@ -1599,11 +1599,16 @@ impl MemoryDetector for IntelI945 {
         }
 
         let count = build_pc_compatible_e820(entries, usable_top, tom, tolud)?;
+        // TSEG is cacheable, as in coreboot: Atom CPUs have no SMRR, so SMM
+        // uses these types and cannot complete locked accesses to uncached
+        // TSEG. Core 2 SMRR still keeps it uncached outside SMM.
+        let (tseg_base, tseg_size) = self.smm_region();
         fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
             entries[..count]
                 .iter()
                 .filter(|entry| entry.kind == E820Kind::Ram as u32)
-                .map(|entry| (entry.addr, entry.size)),
+                .map(|entry| (entry.addr, entry.size))
+                .chain([(u64::from(tseg_base), u64::from(tseg_size))]),
         )?;
         fstart_log::info!(
             "i945: detected memory map usable={:#x} TOLUD={:#x} TOM={:#x} TSEG={:#x}+{:#x}",

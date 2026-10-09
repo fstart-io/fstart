@@ -59,9 +59,13 @@ impl SmmCpu for PineviewCpuDriver {
         X86SaveStateFormat::IntelEm64t
     }
 
-    /// Model 1Ch Atoms use the alternative SMRR pair (coreboot `model_106cx`).
+    /// Model 1Ch Atoms have no usable SMRR, even though MTRRCAP advertises
+    /// one: the SDM lists its SMRR MSRs as unavailable and EDK2 refuses to
+    /// enable SMRR on 06_1CH. Coreboot's `model_106cx` programs the Core 2
+    /// pair anyway; on the D41S that left SMM unable to complete locked
+    /// accesses to TSEG whenever their lines were not already cached.
     fn smrr_pair(&self) -> Option<SmrrPair> {
-        Some(SmrrPair::Core2Alternative)
+        None
     }
 }
 
@@ -93,10 +97,8 @@ impl CpuDriver for PineviewCpuDriver {
             common_power::configure_c_states(self.pmbase, 0);
             common_power::configure_misc(0);
         }
-        let smrr = SmrrPair::Core2Alternative.feature_control_bits();
-        // SAFETY: model 1Ch Atoms implement IA32_FEATURE_CONTROL, and
-        // `feature_control_bits` only names bits this model has.
-        unsafe { feature_control::enable_and_lock(smrr) };
+        // SAFETY: model 1Ch Atoms implement IA32_FEATURE_CONTROL.
+        unsafe { feature_control::enable_and_lock(0) };
         fstart_log::info!("cpu: Pineview MSR configuration complete");
     }
 

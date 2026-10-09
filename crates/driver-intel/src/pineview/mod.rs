@@ -713,7 +713,17 @@ impl MemoryDetector for IntelPineview {
         }
 
         let count = self.build_e820_entries(entries, usable_top, touud, tolud)?;
-        publish_mtrr_wb_ranges(&entries[..count])?;
+        // TSEG is cacheable, as in coreboot: the Atom has no SMRR, so SMM
+        // uses these types and cannot complete locked accesses to uncached
+        // TSEG.
+        let (tseg_base, tseg_size) = self.smm_region();
+        mtrr::set_ram_wb_ranges_from(
+            entries[..count]
+                .iter()
+                .filter(|entry| entry.kind == E820Kind::Ram as u32)
+                .map(|entry| (entry.addr, entry.size))
+                .chain([(u64::from(tseg_base), u64::from(tseg_size))]),
+        )?;
         fstart_log::info!(
             "pineview: detected memory map (usable top {:#x}, TOLUD {:#x}, TOM {:#x}, TOUUD {:#x})",
             usable_top,
