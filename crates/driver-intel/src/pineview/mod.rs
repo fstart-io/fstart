@@ -558,6 +558,12 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         self.memory_info
     }
 
+    /// Raminit keeps DRAM in self-refresh on resume and replays the trained
+    /// values from the training cache, like coreboot's Pineview resume path.
+    fn supports_s3_replay(&self) -> bool {
+        true
+    }
+
     fn training_identity(&self) -> Option<[u8; 32]> {
         #[cfg(target_arch = "x86_64")]
         {

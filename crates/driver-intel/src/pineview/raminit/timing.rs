@@ -128,10 +128,9 @@ pub fn detect_ram_speed(si: &mut SysInfo, mch: &MchBar) -> Result<(), ServiceErr
         MemClock::Ddr800 => CLKCFG_REG::DDR::Ddr800,
         MemClock::Ddr667 => CLKCFG_REG::DDR::Ddr667,
     };
-    if si.boot_path == crate::BootPath::S3Resume && !clock.clkcfg.matches_all(frequency) {
-        return Err(ServiceError::HardwareError);
-    }
-    if si.boot_path == crate::BootPath::Normal {
+    // CLKCFG returns to its strap default when PWROK drops in S3, so a
+    // resume programs the frequency again; only a warm reset keeps it.
+    if si.boot_path != crate::BootPath::WarmReset {
         clock.pmsts.modify(PMSTS_REG::INITIALIZATION_STARTED::SET);
         clock.clkcfg.modify(CLKCFG_REG::UPDATE::SET + frequency);
 
