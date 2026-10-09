@@ -1133,8 +1133,9 @@ impl IntelI945 {
     ///
     /// The Video BIOS places the 256 KiB GTT page table below the top of low
     /// memory, and the display engine cannot translate framebuffer addresses
-    /// until `PGETBL_CTL` enables it.
-    fn gtt_setup(&self, gtt_mmio: u64) -> bool {
+    /// until `PGETBL_CTL` enables it. The table sits in stolen memory, which
+    /// the CPU cannot address directly; GTTADR (BAR3) is its CPU window.
+    fn gtt_setup(&self, gtt_mmio: u64, gtt_pte: u64) -> bool {
         let tolud = self.tolud();
         if tolud < I945_GTT_SIZE {
             fstart_log::error!("intel-i945: TOLUD too low for a GTT page table");
@@ -1152,9 +1153,7 @@ impl IntelI945 {
             fstart_log::error!("intel-i945: GTT page table did not enable");
             return false;
         }
-        // Gen3 keeps the page table in stolen memory, which the CPU addresses
-        // directly, so PTEs are written at the physical base.
-        super::igd::clear_gtt_table(u64::from(gtt_base), I945_GTT_SIZE);
+        super::igd::clear_gtt_table(gtt_pte, I945_GTT_SIZE);
         true
     }
 
@@ -1175,7 +1174,7 @@ impl IntelI945 {
             return;
         }
         // Consume the windows PCI enumeration assigned; never re-program them.
-        let Some(bars) = super::igd::assigned_bars(&igd, false) else {
+        let Some(bars) = super::igd::assigned_bars(&igd, true) else {
             fstart_log::error!("intel-i945: IGD windows unassigned, skipping display");
             return;
         };
@@ -1196,21 +1195,27 @@ impl IntelI945 {
             return;
         }
 
+        let Some(gtt_pte) = bars.gtt_pte else {
+            return;
+        };
         self.igd_panel_setup(bars.gtt_mmio);
-        if !self.gtt_setup(bars.gtt_mmio) {
+        if !self.gtt_setup(bars.gtt_mmio, gtt_pte) {
             return;
         }
 
+        // The GTT occupies the top of stolen memory; the framebuffer gets
+        // what lies below it.
         let stolen_base = self.igd_stolen_base();
+        let gtt_base = self.tolud().saturating_sub(I945_GTT_SIZE);
         let addresses = super::igd::IgdAddresses {
             pci_bdf: PciAddress::new(0, 0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC),
             gtt_mmio_base: bars.gtt_mmio,
             gtt_mmio_size: 512 * 1024,
-            gtt_pte_base: Some(u64::from(self.tolud().saturating_sub(I945_GTT_SIZE))),
+            gtt_pte_base: Some(gtt_pte),
             gmadr_base: Some(bars.gmadr),
             gmadr_size: super::igd::gmadr_size_from_msac(igd.read8(IGD_MSAC)),
             stolen_base: u64::from(stolen_base),
-            stolen_size: self.tolud().saturating_sub(stolen_base),
+            stolen_size: gtt_base.saturating_sub(stolen_base),
             gtt_size: I945_GTT_SIZE,
             gcfgc: Some(igd.read16(hostbridge::IGD_GCFC)),
         };
