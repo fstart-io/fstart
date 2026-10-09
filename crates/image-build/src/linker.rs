@@ -317,7 +317,7 @@ pub fn resolved_intel(
     out.push_str("}\nSECTIONS {\n");
     if bootblock {
         writeln!(out, " _bootblock_top = {:#x};", stage.image.end()? - 4096).unwrap();
-        out.push_str(" _bootblock_program_size = SIZEOF(.text) + SIZEOF(.fstart.layout) + SIZEOF(.fstart.anchor) + SIZEOF(.rodata) + SIZEOF(.fstart.keep) + SIZEOF(.got) + SIZEOF(.eh_frame_hdr) + SIZEOF(.eh_frame) + SIZEOF(.data);\n");
+        out.push_str(" _bootblock_program_size = SIZEOF(.text) + SIZEOF(.fstart.layout) + SIZEOF(.fstart.anchor) + SIZEOF(.rodata) + SIZEOF(.data.rel.ro) + SIZEOF(.fstart.keep) + SIZEOF(.got) + SIZEOF(.eh_frame_hdr) + SIZEOF(.eh_frame) + SIZEOF(.data);\n");
         out.push_str(
             " _bootblock_base = ((_bootblock_top - _bootblock_program_size) & ~0xfff) - 0x1000;\n",
         );
@@ -331,6 +331,10 @@ pub fn resolved_intel(
     write_heap_size_constant(&mut out, Platform::X86_64, stage.heap);
     out.push_str(" } > IMAGE\n");
     write_rodata_section(&mut out, "IMAGE");
+    // PIC code puts statics holding pointers in .data.rel.ro. The static
+    // link resolves them, so they are read-only: keep them in the image,
+    // not in the scarce CAR, where DRAM training can evict them.
+    out.push_str(" .data.rel.ro : ALIGN(8) { *(.data.rel.ro .data.rel.ro.*) } > IMAGE\n");
     // PIC code uses a statically resolved GOT. Keep it in the image, not CAR.
     for section in [".fstart.keep", ".got", ".eh_frame_hdr", ".eh_frame"] {
         writeln!(out, " {section} : ALIGN(8) {{ *({section}) }} > IMAGE").unwrap();
