@@ -91,6 +91,40 @@ pub fn udelay(us: u32) {
     udelay_tsc(us, hz);
 }
 
+/// Poll `done` until it holds or `timeout_us` microseconds have passed, and
+/// report whether it held: coreboot's `wait_us()`.
+///
+/// The timeout is measured on the TSC, so slow condition checks (MMIO or I/O
+/// reads of a device) do not stretch it the way a count of `udelay(1)` calls
+/// would. The condition is checked once more after the deadline, so a
+/// condition met right at the end is not reported as a timeout.
+#[cfg(all(target_arch = "x86_64", not(fstart_stage_env = "smm")))]
+pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
+    let hz = sanitize_tsc_frequency_hz(tsc_frequency_hz());
+    let ticks = (hz / 1_000_000).saturating_mul(u64::from(timeout_us));
+    let start = rdtsc();
+    loop {
+        if done() {
+            return true;
+        }
+        if rdtsc().wrapping_sub(start) >= ticks {
+            return done();
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// [`wait_us`] for SMM, which has no TSC frequency: counts POST-port delays.
+#[cfg(all(target_arch = "x86_64", fstart_stage_env = "smm"))]
+pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
+    (0..=timeout_us).any(|elapsed| {
+        if elapsed != 0 {
+            udelay(1);
+        }
+        done()
+    })
+}
+
 /// SMM microsecond delay via POST-port writes (see above).
 #[cfg(all(target_arch = "x86_64", fstart_stage_env = "smm"))]
 #[inline(always)]
