@@ -1402,8 +1402,9 @@ impl PciRootProvider for IntelI945 {
         windows
             .push(PciWindow {
                 kind: PciWindowKind::Io,
-                base: 0,
-                size: 0x10000,
+                // Below 0x1000 is legacy ISA and chipset I/O (PIC, PIT, KBC).
+                base: 0x1000,
+                size: 0xf000,
                 prefetchable: false,
             })
             .map_err(|_| PciRootError::TooManyWindows)?;
