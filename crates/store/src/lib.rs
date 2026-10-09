@@ -111,6 +111,8 @@ pub mod tag {
     pub const SMBIOS: Tag = Tag::vendor(0x006);
     /// Raminit's installed-DRAM inventory for SMBIOS.
     pub const MEMORY_INFO: Tag = Tag::vendor(0x007);
+    /// coreboot table and the files handed to a coreboot payload.
+    pub const COREBOOT: Tag = Tag::vendor(0x008);
 }
 
 /// Location of one entry's data within its store.

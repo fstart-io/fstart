@@ -21,6 +21,7 @@ payload-uefi = ["payload-uefi-basic", "fstart-stage/crabefi"]
 payload-uefi-ui = ["payload-uefi", "fstart-stage/crabefi-ui"]
 payload-uefi-basic = ["fstart-stage/crabefi-basic"]
 payload-linux = ["fstart-stage/linux"]
+payload-coreboot = ["fstart-stage/coreboot", "dep:fstart-coreboot"]
 
 stage = [
   "dep:fstart-driver-superio",
@@ -72,6 +73,7 @@ fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
 fstart-log = { workspace = true, optional = true }
 fstart-timestamp = { workspace = true }
 fstart-stage = { workspace = true, optional = true }
+fstart-coreboot = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
 raw-cpuid = { workspace = true, optional = true }
 heapless = { workspace = true }

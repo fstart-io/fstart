@@ -512,9 +512,17 @@ fn halt_x86_linux(reason: &str) -> ! {
 #[cfg(any(
     all(fstart_payload = "halt", fstart_payload = "linux"),
     all(fstart_payload = "halt", fstart_payload = "crabefi"),
-    all(fstart_payload = "linux", fstart_payload = "crabefi")
+    all(fstart_payload = "halt", fstart_payload = "coreboot"),
+    all(fstart_payload = "linux", fstart_payload = "crabefi"),
+    all(fstart_payload = "linux", fstart_payload = "coreboot"),
+    all(fstart_payload = "crabefi", fstart_payload = "coreboot")
 ))]
 compile_error!("select exactly one payload launcher");
+#[cfg(all(
+    fstart_payload = "coreboot",
+    not(all(feature = "coreboot", feature = "x86_64"))
+))]
+compile_error!("selected coreboot backend is not enabled");
 #[cfg(all(fstart_payload = "linux", not(feature = "linux")))]
 compile_error!("selected Linux backend is not enabled");
 #[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi-basic")))]
@@ -531,6 +539,8 @@ pub type BuildSelectedPayload = X86UefiPayload;
 pub type BuildSelectedPayload = X86LinuxPayload;
 #[cfg(all(fstart_payload = "linux", not(feature = "x86_64")))]
 pub type BuildSelectedPayload = LinuxPayload;
+#[cfg(fstart_payload = "coreboot")]
+pub type BuildSelectedPayload = crate::coreboot::X86CorebootPayload;
 #[cfg(fstart_payload = "halt")]
 pub type BuildSelectedPayload = HaltPayload;
 

@@ -201,10 +201,11 @@ mod stage {
 
     #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "x86_64")))]
     compile_error!("QEMU q35 requires monolithic/x86_64 stage and entry selections");
-    #[cfg(any(
-        not(any(fstart_payload = "halt", fstart_payload = "crabefi")),
-        all(fstart_payload = "halt", fstart_payload = "crabefi")
-    ))]
+    #[cfg(not(any(
+        fstart_payload = "halt",
+        fstart_payload = "crabefi",
+        fstart_payload = "coreboot"
+    )))]
     compile_error!("select exactly one q35 payload");
     #[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi")))]
     compile_error!("selected CrabEFI backend is not enabled");
@@ -233,6 +234,13 @@ mod stage {
     pub const SMM_IMAGE: Option<&'static [u8]> = Some(include_bytes!(env!("FSTART_SMM_IMAGE")));
     #[cfg(not(fstart_qemu_has_smm_image))]
     pub const SMM_IMAGE: Option<&'static [u8]> = None;
+
+    // The table loader's ALLOCATE alignments (64 for the tables blob, 16 for
+    // the RSDP) are applied to offsets in this buffer, so the buffer itself
+    // must be at least as aligned as any request.
+    #[repr(C, align(4096))]
+    struct AcpiBuffer([u8; QEMU_Q35_ACPI_BUFFER_SIZE]);
+    static mut ACPI_BUFFER: AcpiBuffer = AcpiBuffer([0; QEMU_Q35_ACPI_BUFFER_SIZE]);
 
     pub struct QemuQ35Mainstage {
         config: &'static QemuQ35Config,
@@ -282,12 +290,6 @@ mod stage {
                 QEMU_Q35_PLATFORM_NODE,
             );
 
-            // The table loader's ALLOCATE alignments (64 for the tables blob,
-            // 16 for the RSDP) are applied to offsets in this buffer, so the
-            // buffer itself must be at least as aligned as any request.
-            #[repr(C, align(4096))]
-            struct AcpiBuffer([u8; QEMU_Q35_ACPI_BUFFER_SIZE]);
-            static mut ACPI_BUFFER: AcpiBuffer = AcpiBuffer([0; QEMU_Q35_ACPI_BUFFER_SIZE]);
             // SAFETY: firmware init is single-threaded; this buffer is written once.
             let acpi = unsafe { &mut (*core::ptr::addr_of_mut!(ACPI_BUFFER)).0 };
             self.acpi_rsdp = Some(self.fw_cfg.load_acpi_tables(acpi)?);
@@ -506,6 +508,71 @@ mod stage {
                     blue_mask_pos: info.blue_pos,
                     blue_mask_size: info.blue_size,
                 })
+        }
+    }
+
+    /// RAM for the coreboot table and the files handed to the payload.
+    #[cfg(fstart_payload = "coreboot")]
+    const COREBOOT_WINDOW_SIZE: usize = 0x4_0000;
+    #[cfg(fstart_payload = "coreboot")]
+    #[repr(C, align(4096))]
+    struct CorebootWindow([u8; COREBOOT_WINDOW_SIZE]);
+    #[cfg(fstart_payload = "coreboot")]
+    static mut COREBOOT_WINDOW: CorebootWindow = CorebootWindow([0; COREBOOT_WINDOW_SIZE]);
+
+    // SAFETY: fstart programs PAM0-6 to DRAM during PCI init and keeps nothing
+    // in the legacy shadow; the window is a firmware static that only the
+    // launcher touches, reported to the payload as table memory.
+    #[cfg(fstart_payload = "coreboot")]
+    unsafe impl fstart_stage::coreboot::X86CorebootPayloadContext for QemuQ35Mainstage {
+        fn e820(&self) -> &[E820Entry] {
+            self.e820.entries()
+        }
+
+        fn acpi_rsdp(&self) -> Option<u64> {
+            self.acpi_rsdp
+        }
+
+        fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
+            self.framebuffer
+        }
+
+        fn serial(&self) -> Option<fstart_coreboot::Serial> {
+            use fstart_core::services::ConsoleDevice;
+            self.console
+                .uart_port()
+                .map(|port| fstart_coreboot::Serial {
+                    kind: fstart_coreboot::SERIAL_IO_MAPPED.into(),
+                    base: (port.base as u32).into(),
+                    baud: port.baud.into(),
+                    regwidth: port.reg_stride.into(),
+                    input_hertz: port.clock_hz.into(),
+                })
+        }
+
+        fn mainboard(&self) -> (&str, &str) {
+            ("QEMU", "Q35")
+        }
+
+        fn table_window(&self) -> Option<(u64, usize)> {
+            Some((
+                core::ptr::addr_of!(COREBOOT_WINDOW) as u64,
+                COREBOOT_WINDOW_SIZE,
+            ))
+        }
+
+        fn table_ranges(&self) -> heapless::Vec<(u64, u64), 4> {
+            heapless::Vec::from_slice(&[
+                (
+                    core::ptr::addr_of!(ACPI_BUFFER) as u64,
+                    QEMU_Q35_ACPI_BUFFER_SIZE as u64,
+                ),
+                (
+                    core::ptr::addr_of!(COREBOOT_WINDOW) as u64,
+                    COREBOOT_WINDOW_SIZE as u64,
+                ),
+            ])
+            .unwrap_or_default()
         }
     }
 

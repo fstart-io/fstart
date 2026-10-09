@@ -382,6 +382,9 @@ pub enum PayloadKind {
     /// handles hardware init (console, PCI BAR allocation, etc.) and
     /// injects drivers as trait objects.
     UefiPayload,
+    /// coreboot payload: an ELF entered in 32-bit protected mode with the
+    /// coreboot table, plus named files handed over in RAM through it.
+    Coreboot,
 }
 
 /// When to parse a FIT image.

@@ -53,6 +53,7 @@ bundle-unmatched = [
 ]
 linux = ["fstart-stage?/linux"]
 crabefi = ["fstart-stage?/crabefi"]
+coreboot = ["fstart-stage?/coreboot", "dep:fstart-coreboot"]
 smbios = ["fstart-stage?/smbios"]
 
 [dependencies]
@@ -63,6 +64,7 @@ fstart-arch = { workspace = true }
 fstart-log = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-stage = { workspace = true, optional = true }
+fstart-coreboot = { workspace = true, optional = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-driver-intel = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }

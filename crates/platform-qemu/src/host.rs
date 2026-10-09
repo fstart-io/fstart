@@ -23,7 +23,7 @@ fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     fstart_image_build::build_plan::CompilerCfgSchema {
         entries: strings(&["riscv64", "armv7", "aarch64-relocate", "x86_64"]),
         environments: strings(&["monolithic", "smm"]),
-        payloads: strings(&["halt", "linux", "crabefi"]),
+        payloads: strings(&["halt", "linux", "crabefi", "coreboot"]),
     }
 }
 
@@ -778,8 +778,14 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     let payload = selection
         .payload
         .unwrap_or_else(|| policy.default_payload.into());
-    if payload != "halt" && payload != "linux" && payload != "uefi" {
-        return Err("QEMU machine supports halt, Linux and (where available) UEFI".into());
+    if !matches!(payload.as_str(), "halt" | "linux" | "uefi" | "coreboot") {
+        return Err(
+            "QEMU machine supports halt, Linux, (where available) UEFI and coreboot".into(),
+        );
+    }
+    let coreboot = payload == "coreboot";
+    if coreboot && policy.platform != Platform::X86_64 {
+        return Err("coreboot payloads are x86 only".into());
     }
     if payload == "linux" && policy.linux.is_none() {
         return Err(std::format!(
@@ -949,6 +955,8 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         features.push("linux".into());
     } else if payload == "uefi" {
         features.push("crabefi".into());
+    } else if coreboot {
+        features.push("coreboot".into());
     }
     let security = if policy.dev_security {
         fstart_core::dev_security_config("keys/dev-signing.pub")
@@ -957,6 +965,8 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     };
     let assembly_payload = if payload == "halt" {
         None
+    } else if coreboot {
+        Some(fstart_core::x86_coreboot_payload())
     } else if let Some(p) = linux {
         Some(PayloadConfig {
             kind: PayloadKind::LinuxBoot,
@@ -1054,6 +1064,12 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         },
     };
     let inputs = match (keep_firmware, &policy.linux) {
+        // The payload ELF; the assembler enforces what actually fits.
+        _ if coreboot => vec![InputFile {
+            name: "kernel".into(),
+            default: None,
+            capacity: policy.firmware_image.size,
+        }],
         (true, Some(p)) => {
             let mut inputs = vec![];
             if linux.is_some() {

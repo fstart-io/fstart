@@ -393,6 +393,21 @@ impl fstart_core::services::ConsoleDevice for Ns16550 {
     fn init(&mut self) -> Result<(), ServiceError> {
         Self::init(self).map_err(Into::into)
     }
+
+    fn uart_port(&self) -> Option<fstart_core::services::UartPort> {
+        let (base, io_port, reg_stride) = match self.regs {
+            #[cfg(feature = "pio")]
+            ResolvedRegs::Pio { base } => (u64::from(base), true, 1),
+            ResolvedRegs::Mmio { base, shift, .. } => (base as u64, false, 1 << shift),
+        };
+        Some(fstart_core::services::UartPort {
+            base,
+            io_port,
+            reg_stride,
+            baud: self.baud_rate,
+            clock_hz: self.clock_freq,
+        })
+    }
 }
 
 impl Console for Ns16550 {

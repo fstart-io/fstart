@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "tools/fbuild",
   "crates/core",
+  "crates/coreboot",
   "crates/platform-intel",
   "crates/platform-sunxi",
   "crates/platform-qemu",
@@ -79,6 +80,7 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # Internal workspace crates
 fstart-core = { path = "crates/core" }
+fstart-coreboot = { path = "crates/coreboot" }
 fstart-platform-qemu = { path = "crates/platform-qemu" }
 fstart-pci = { path = "crates/pci" }
 fstart-ffs = { path = "crates/ffs" }

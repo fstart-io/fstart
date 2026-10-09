@@ -43,6 +43,8 @@ pub mod root;
 #[cfg(feature = "crabefi-basic")]
 pub use fstart_boot::crabefi;
 
+#[cfg(all(feature = "coreboot", feature = "x86_64"))]
+pub mod coreboot;
 pub mod fixed_helpers;
 pub mod layout;
 pub mod payload;

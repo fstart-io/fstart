@@ -39,7 +39,7 @@ pub use boot_media::{
     TempRamArena,
 };
 pub use clock::ClockController;
-pub use console::{Console, ConsoleDevice};
+pub use console::{Console, ConsoleDevice, UartPort};
 pub use device::{BusDevice, DeviceError};
 pub use firmware::{FirmwareImage, FirmwareImageProvider, FirmwareWindow};
 pub use flash_layout::FlashLayoutVerifier;

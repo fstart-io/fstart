@@ -1,5 +1,6 @@
 pub mod assemble;
 pub mod build_plan;
+mod coreboot_payload;
 pub mod elf;
 pub mod image;
 pub mod inspect;

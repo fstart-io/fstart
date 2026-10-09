@@ -90,6 +90,15 @@ pub fn x86_uefi_payload() -> PayloadConfig {
     }
 }
 
+/// Default x86 coreboot payload policy used by PC-compatible boards.
+#[must_use]
+pub fn x86_coreboot_payload() -> PayloadConfig {
+    PayloadConfig {
+        kind: PayloadKind::Coreboot,
+        ..x86_uefi_payload()
+    }
+}
+
 /// Common development signing policy for board metadata.
 #[must_use]
 pub fn dev_security_config(pubkey_file: &str) -> SecurityConfig {
