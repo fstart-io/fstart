@@ -590,6 +590,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-coreboot"
+version = "0.1.0"
+dependencies = [
+ "heapless 0.8.0",
+ "zerocopy",
+]
+
+[[package]]
 name = "fstart-crypto"
 version = "0.1.0"
 dependencies = [
@@ -692,6 +700,7 @@ dependencies = [
  "ed25519-dalek",
  "fstart-boot",
  "fstart-core",
+ "fstart-coreboot",
  "fstart-crypto",
  "fstart-ffs",
  "fstart-smm",
@@ -747,6 +756,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-arch",
  "fstart-core",
+ "fstart-coreboot",
  "fstart-driver-intel",
  "fstart-driver-superio",
  "fstart-driver-uart",
@@ -774,6 +784,7 @@ dependencies = [
  "dtoolkit",
  "fstart-arch",
  "fstart-core",
+ "fstart-coreboot",
  "fstart-driver-intel",
  "fstart-driver-uart",
  "fstart-image-build",
@@ -819,6 +830,7 @@ dependencies = [
  "fstart-arch",
  "fstart-boot",
  "fstart-core",
+ "fstart-coreboot",
  "fstart-crypto",
  "fstart-ffs",
  "fstart-log",

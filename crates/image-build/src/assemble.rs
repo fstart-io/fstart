@@ -26,6 +26,7 @@ pub fn assemble(
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
     fit_path: Option<&str>,
+    payload_files: &[(String, String)],
     bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
 ) -> Result<PathBuf, String> {
     let (signing_key, verification_key) = get_or_create_dev_keys(board_dir, config)?;
@@ -136,9 +137,24 @@ pub fn assemble(
         });
     }
 
+    let coreboot = config
+        .payload
+        .as_ref()
+        .is_some_and(|payload| payload.kind == fstart_core::PayloadKind::Coreboot);
+    if !payload_files.is_empty() && !coreboot {
+        return Err("--payload-file is only for coreboot payloads".into());
+    }
     if let Some(ref payload) = config.payload {
         if payload.kind == fstart_core::PayloadKind::FitImage {
             assemble_fit_payload(payload, board_dir, fit_path.or(kernel_path), &mut ro_files)?;
+        } else if coreboot {
+            crate::coreboot_payload::add(
+                payload,
+                board_dir,
+                kernel_path,
+                payload_files,
+                &mut ro_files,
+            )?;
         } else {
             assemble_linux_payload(
                 payload,

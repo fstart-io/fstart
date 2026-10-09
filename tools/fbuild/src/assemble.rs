@@ -8,6 +8,7 @@ pub struct AssembledImage {
     pub stages: Vec<fstart_image_build::StageBinary>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_with_parsed(
     workspace_root: &Path,
     board_manifest: crate::board_manifest::BoardManifest,
@@ -16,6 +17,7 @@ pub fn assemble_with_parsed(
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
     fit_path: Option<&str>,
+    payload_files: &[(String, String)],
 ) -> Result<AssembledImage, String> {
     let output_dir = if let Some(resolved) = &parsed.resolved {
         resolved.validate_inputs(&board_manifest.dir, kernel_path, firmware_path, fit_path)?;
@@ -38,6 +40,7 @@ pub fn assemble_with_parsed(
         kernel_path,
         firmware_path,
         fit_path,
+        payload_files,
         parsed
             .resolved
             .as_ref()

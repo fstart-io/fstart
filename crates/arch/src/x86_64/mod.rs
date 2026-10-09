@@ -43,6 +43,7 @@ pub mod car_teardown;
 pub mod cpuid;
 mod linux_boot_params;
 pub mod paging;
+pub mod protected_mode;
 pub mod s3_wake;
 
 /// Conventional-memory window the x86 stages use across an S3 resume and AP

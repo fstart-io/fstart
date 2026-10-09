@@ -102,26 +102,42 @@ pub const SMM_IMAGE: Option<&'static [u8]> = Some(include_bytes!(env!("FSTART_SM
 #[cfg(all(feature = "stage", not(fstart_intel_has_smm_image)))]
 pub const SMM_IMAGE: Option<&'static [u8]> = None;
 
-/// Locate the concatenated Intel microcode blob in the mounted memory-mapped
-/// FFS window.
+/// The concatenated Intel microcode blob, as a verified copy in RAM.
 ///
 /// The bootblock applies BSP microcode before CAR setup; MP init calls this
-/// so every AP gets the same update. The blob's location is recorded in the
-/// image anchor, so this goes through the published FFS context and the FFS
-/// reader rather than open-coded flash mappings. Returns `None` when no
-/// window is mounted or the anchor records no blob.
+/// so every AP gets the same update. Each CPU parses the blob and hands the
+/// selected record to the update MSR, so they read a copy authenticated
+/// against its FFS digest instead of flash: a flash read glitch would
+/// otherwise break the parse, and reading uncached flash is slow. The copy
+/// is 16-byte aligned as `IA32_BIOS_UPDT_TRIG` requires and lives for the
+/// stage. Returns `None` when no window is mounted or the image has no blob.
 #[cfg(all(feature = "stage", feature = "mp", target_arch = "x86_64"))]
 #[must_use]
 pub fn intel_microcode_blob() -> Option<&'static [u8]> {
-    use fstart_ffs::FfsReader;
+    extern crate alloc;
+    use alloc::alloc::{Layout, alloc};
+    use fstart_core::services::boot_media::MemoryMapped;
 
     let ctx = fstart_core::services::ffs_context::memory_mapped()?;
-    // SAFETY: both accessors are documented as valid for the whole stage
-    // execution once the boot-media provider published them.
-    let (image, anchor_bytes) = unsafe { (ctx.image_bytes(), ctx.anchor_bytes()) };
-    // SAFETY: the anchor bytes are the stage's aligned `.fstart.anchor` static.
-    let anchor = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }.ok()?;
-    FfsReader::new(image).intel_microcode(anchor)
+    let size = usize::try_from(ctx.image_size).ok()?;
+    // SAFETY: the boot-media provider published this window for the stage.
+    let media = unsafe { MemoryMapped::from_raw_addr(ctx.image_base, size) };
+    // SAFETY: documented valid for the whole stage once published.
+    let anchor = unsafe { ctx.anchor_bytes() };
+    let verified =
+        fstart_stage::find_ffs_file_data(anchor, &media, fstart_core::ffs::FileType::CpuMicrocode)
+            .filter(|blob| !blob.is_empty())?;
+    let layout = Layout::from_size_align(verified.len(), 16).ok()?;
+    // SAFETY: nonzero size; never freed.
+    let copy = unsafe { alloc(layout) };
+    if copy.is_null() {
+        return None;
+    }
+    // SAFETY: fresh allocation of exactly this size.
+    unsafe {
+        core::ptr::copy_nonoverlapping(verified.as_ptr(), copy, verified.len());
+        Some(core::slice::from_raw_parts(copy, verified.len()))
+    }
 }
 
 // ---------------------------------------------------------------------------

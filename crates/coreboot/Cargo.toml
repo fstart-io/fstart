@@ -1,0 +1,11 @@
+[package]
+name = "fstart-coreboot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+heapless = { workspace = true }

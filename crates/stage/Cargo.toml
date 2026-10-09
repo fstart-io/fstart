@@ -42,6 +42,8 @@ lz4 = ["bootstrap"]
 fdt = ["bootstrap"]
 # Additive Linux backend availability; fstart_payload selects the launcher.
 linux = []
+# x86 coreboot payloads (SeaBIOS, ...): coreboot table plus 32-bit entry.
+coreboot = ["ffs", "dep:fstart-coreboot"]
 # FIT image parsing at runtime
 fit = ["ffs", "dep:fstart-boot", "fstart-boot/fit"]
 # Inter-stage handoff serialization (postcard, for multi-stage boards)
@@ -73,9 +75,10 @@ zerocopy = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
 fstart-boot = { workspace = true, optional = true }
+fstart-coreboot = { workspace = true, optional = true }
 postcard = { workspace = true, optional = true }
 
 # CrabEFI adapter lives in fstart-boot behind the crabefi feature.
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_payload, values("halt", "linux", "crabefi"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_payload, values("halt", "linux", "crabefi", "coreboot"))'] }

@@ -203,10 +203,12 @@ fn assemble(
         kernel,
         firmware,
         fit,
+        &options.payload_files,
     )
     .map(|assembled| assembled.image)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assemble_loaded(
     workspace_root: &std::path::Path,
     manifest: crate::board_manifest::BoardManifest,
@@ -215,6 +217,7 @@ fn assemble_loaded(
     kernel: Option<&str>,
     firmware: Option<&str>,
     fit: Option<&str>,
+    payload_files: &[(String, String)],
 ) -> Result<crate::assemble::AssembledImage, String> {
     crate::assemble::assemble_with_parsed(
         workspace_root,
@@ -224,6 +227,7 @@ fn assemble_loaded(
         kernel,
         firmware,
         fit,
+        payload_files,
     )
 }
 
@@ -271,6 +275,7 @@ fn flash(
             None,
             None,
             None,
+            &options.payload_files,
         )?
         .image;
 
@@ -388,6 +393,7 @@ fn run(
             kernel,
             firmware,
             fit,
+            &options.payload_files,
         )?;
         // The x86 pflash combines the assembled FFS with the linked stage
         // ELF (reset vector, anchor). The plan layout hashes unit dirs, so

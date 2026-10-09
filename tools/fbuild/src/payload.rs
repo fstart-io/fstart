@@ -7,6 +7,8 @@ pub enum PayloadChoice {
     UefiUi,
     UefiBasic,
     Linux,
+    /// coreboot payload ELF from `--kernel`, e.g. SeaBIOS.
+    Coreboot,
     Halt,
 }
 
@@ -43,6 +45,7 @@ impl PayloadChoice {
             Self::UefiUi => "uefi-ui",
             Self::UefiBasic => "uefi-basic",
             Self::Linux => "linux",
+            Self::Coreboot => "coreboot",
             Self::Halt => "halt",
         }
     }
@@ -74,6 +77,10 @@ pub struct BuildArgs {
     /// `info` at runtime.
     #[arg(long, value_enum, env = "FSTART_LOG_LEVEL")]
     pub log_level: Option<LogLevel>,
+    /// File handed to a coreboot payload, as NAME=PATH; repeatable. The
+    /// payload finds it by NAME, e.g. `vgaroms/seavgabios.bin` for SeaBIOS.
+    #[arg(long = "payload-file", value_parser = parse_payload_file)]
+    pub payload_files: Vec<(String, String)>,
 }
 
 impl Default for BuildArgs {
@@ -84,6 +91,7 @@ impl Default for BuildArgs {
             linux_bootargs: None,
             linux_print_mtrrs: false,
             log_level: None,
+            payload_files: Vec::new(),
         }
     }
 }
@@ -113,6 +121,9 @@ impl BuildArgs {
         }
         if let Some(level) = self.log_level {
             args.extend(["--log-level".into(), level.as_str().into()]);
+        }
+        for (name, path) in &self.payload_files {
+            args.extend(["--payload-file".into(), format!("{name}={path}")]);
         }
     }
 }
@@ -174,6 +185,15 @@ fn parse_smbios_date(value: &str) -> Result<String, String> {
         return Err("SMBIOS date is not a valid calendar date".into());
     }
     Ok(value.to_owned())
+}
+
+fn parse_payload_file(value: &str) -> Result<(String, String), String> {
+    match value.split_once('=') {
+        Some((name, path)) if !name.is_empty() && !path.is_empty() => {
+            Ok((name.to_owned(), path.to_owned()))
+        }
+        _ => Err("payload file must be NAME=PATH".into()),
+    }
 }
 
 fn parse_u64(value: &str) -> Result<u64, String> {

@@ -13,7 +13,7 @@ fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     fstart_image_build::build_plan::CompilerCfgSchema {
         entries: strings(&["riscv64", "armv7", "aarch64-relocate", "x86_64"]),
         environments: strings(&["monolithic", "car", "postcar", "ram", "smm"]),
-        payloads: strings(&["halt", "linux", "crabefi"]),
+        payloads: strings(&["halt", "linux", "crabefi", "coreboot"]),
     }
 }
 
@@ -120,7 +120,12 @@ pub fn compilation_plan(
     let inputs = plan
         .payload_config
         .as_ref()
-        .filter(|payload| payload.kind == fstart_core::PayloadKind::LinuxBoot)
+        .filter(|payload| {
+            matches!(
+                payload.kind,
+                fstart_core::PayloadKind::LinuxBoot | fstart_core::PayloadKind::Coreboot
+            )
+        })
         .map(|payload| InputFile {
             name: "kernel".into(),
             default: payload.kernel_file.as_ref().map(ToString::to_string),
@@ -206,9 +211,9 @@ fn resolve_for<P: IntelPlatform>(
     let x86_linux_bootargs = selection.x86_linux_bootargs.unwrap_or_default();
     if !matches!(
         requested_payload.as_str(),
-        "halt" | "linux" | "uefi" | "uefi-ui" | "uefi-basic"
+        "halt" | "linux" | "uefi" | "uefi-ui" | "uefi-basic" | "coreboot"
     ) {
-        return Err("Intel supports halt, direct Linux, and UEFI payloads".into());
+        return Err("Intel supports halt, direct Linux, UEFI and coreboot payloads".into());
     }
     let payload = if requested_payload.starts_with("uefi") {
         "uefi".to_string()
@@ -242,6 +247,8 @@ fn resolve_for<P: IntelPlatform>(
             );
         } else if selected_payload == "linux" {
             features.push("payload-linux".into());
+        } else if selected_payload == "coreboot" {
+            features.push("payload-coreboot".into());
         }
         IntelStagePlan {
             role,
@@ -255,6 +262,7 @@ fn resolve_for<P: IntelPlatform>(
     let reservations = reservations::<P>(facts)?;
     let payload_config = match payload.as_str() {
         "uefi" => Some(fstart_core::x86_uefi_payload()),
+        "coreboot" => Some(fstart_core::x86_coreboot_payload()),
         // Empty bootargs default to no command line: there is deliberately no
         // implicit serial-console policy, so direct Linux stays silent unless
         // the caller passes `--linux-bootargs` explicitly.

@@ -208,6 +208,62 @@ pub unsafe fn set_load_policy(policy: &MemoryPolicy<'_>) -> Result<(), LoadError
     Ok(())
 }
 
+/// Add `window` to the installed load policy, removing it from any reserved
+/// range it cuts (keeping their parts outside it). Writable windows that
+/// touch it merge with it, so a load may span the seam.
+///
+/// # Safety
+/// As [`set_load_policy`]: `window` must be RAM the caller may hand to loads,
+/// overlapping nothing that is still live.
+pub unsafe fn grant_load_window(window: MemoryWindow) -> Result<(), LoadError> {
+    let policy = load_policy().ok_or(LoadError::MemoryPolicy)?;
+    let end = window
+        .start
+        .checked_add(window.size)
+        .ok_or(LoadError::MemoryPolicy)?;
+    let mut all = Vec::new();
+    all.extend_from_slice(policy.writable);
+    all.push(window);
+    all.sort_unstable_by_key(|w| w.start);
+    let mut writable: Vec<MemoryWindow> = Vec::new();
+    for w in all {
+        match writable.last_mut() {
+            Some(last) if w.start <= last.start.saturating_add(last.size) => {
+                let end = last
+                    .start
+                    .saturating_add(last.size)
+                    .max(w.start.saturating_add(w.size));
+                last.size = end - last.start;
+            }
+            _ => writable.push(w),
+        }
+    }
+    let reserved: Vec<MemoryWindow> = policy
+        .reserved
+        .iter()
+        .flat_map(|r| {
+            let r_end = r.start.saturating_add(r.size);
+            [
+                (r.start, r_end.min(window.start)),
+                (r.start.max(end), r_end),
+            ]
+        })
+        .filter(|&(start, stop)| stop > start)
+        .map(|(start, stop)| MemoryWindow {
+            start,
+            size: stop - start,
+        })
+        .collect();
+    // SAFETY: the existing policy plus the caller's window contract.
+    unsafe {
+        set_load_policy(&MemoryPolicy {
+            writable: &writable,
+            reserved: &reserved,
+            entry_alignment: policy.entry_alignment,
+        })
+    }
+}
+
 /// Platform-published writable RAM windows before exclusions. This is a
 /// read-only topology view, not permission to load: callers must still apply
 /// the reserved ranges through the normal load policy.

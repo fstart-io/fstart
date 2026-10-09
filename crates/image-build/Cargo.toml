@@ -11,6 +11,7 @@ object = { workspace = true }
 iced-x86 = { workspace = true }
 zerocopy = { workspace = true }
 fstart-core = { workspace = true }
+fstart-coreboot = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-boot = { workspace = true, features = ["std"] }
 fstart-crypto = { workspace = true, features = ["all"] }

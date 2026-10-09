@@ -18,6 +18,24 @@ pub trait ConsoleDevice: Console + Sized {
 
     /// Initialize the console hardware.
     fn init(&mut self) -> Result<(), ServiceError>;
+
+    /// Where the console UART sits, for payloads that keep using it.
+    fn uart_port(&self) -> Option<UartPort> {
+        None
+    }
+}
+
+/// A console UART as payloads and OSes need to find it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UartPort {
+    /// I/O port when [`io_port`](Self::io_port), else MMIO address.
+    pub base: u64,
+    pub io_port: bool,
+    /// Bytes between registers.
+    pub reg_stride: u32,
+    pub baud: u32,
+    /// UART input clock.
+    pub clock_hz: u32,
 }
 
 /// A console device for debug output and (optionally) input.

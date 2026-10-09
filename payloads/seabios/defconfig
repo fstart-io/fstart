@@ -1,0 +1,9 @@
+# SeaBIOS as an fstart coreboot payload; needs the fstart-romfiles fork,
+# which reads payload files from the coreboot table instead of CBFS.
+CONFIG_COREBOOT=y
+# CONFIG_COREBOOT_FLASH is not set
+CONFIG_DEBUG_LEVEL=1
+CONFIG_DEBUG_SERIAL=y
+CONFIG_DEBUG_SERIAL_PORT=0x3f8
+# SeaVGABIOS on the framebuffer from the coreboot table.
+CONFIG_VGA_COREBOOT=y

@@ -305,6 +305,9 @@ where
     max_cpus: u16,
     /// Firmware store, reopened once the console is up.
     store: Option<fstart_store::Store>,
+    /// Store entry for the coreboot table and the payload's files.
+    #[cfg(feature = "payload-coreboot")]
+    coreboot_window: Option<(u64, usize)>,
     /// S3 resume: the OS wake vector is where this boot ends, and hardware
     /// that survived in RAM must not be reinitialized blindly.
     pub resume: bool,
@@ -341,6 +344,8 @@ where
             console_node: B::console_node(),
             max_cpus: B::CONFIG.max_cpus(),
             store: None,
+            #[cfg(feature = "payload-coreboot")]
+            coreboot_window: None,
             resume: false,
 
             #[cfg(feature = "smbios")]
@@ -538,6 +543,16 @@ where
                 crate::tables::prepare_smbios(store, self.ctx.e820_state(), &identity, &runtime)?;
             self.ctx.set_smbios(Some(smbios));
         }
+        // Filled at payload launch; sized and reserved now, before sealing.
+        #[cfg(feature = "payload-coreboot")]
+        {
+            let size = fstart_stage::coreboot::window_size().ok_or(ServiceError::NotInitialized)?;
+            let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
+            let entry = store
+                .add(fstart_store::tag::COREBOOT, size, 12)
+                .map_err(|_| ServiceError::InvalidParam)?;
+            self.coreboot_window = Some((store.address(&entry) as u64, size));
+        }
         Ok(())
     }
 
@@ -673,6 +688,65 @@ where
                 blue_mask_pos: info.blue_pos,
                 blue_mask_size: info.blue_size,
             })
+    }
+}
+
+// SAFETY: the northbridge opened the PAM shadow at early init and nothing of
+// the firmware lives in it; the window is a sealed, reserved store entry.
+#[cfg(feature = "payload-coreboot")]
+unsafe impl<P, Hooks, C> fstart_stage::coreboot::X86CorebootPayloadContext
+    for IntelMainstage<P, Hooks, C>
+where
+    P: IntelEarlyPlatform,
+    Hooks: IntelMainstageBoardHooks<P>,
+    C: ConsoleDevice,
+{
+    fn e820(&self) -> &[E820Entry] {
+        self.e820()
+    }
+
+    fn acpi_rsdp(&self) -> Option<u64> {
+        self.acpi_rsdp()
+    }
+
+    fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
+        self.northbridge.framebuffer_info()
+    }
+
+    fn serial(&self) -> Option<fstart_coreboot::Serial> {
+        self.console
+            .uart_port()
+            .map(|port| fstart_coreboot::Serial {
+                kind: if port.io_port {
+                    fstart_coreboot::SERIAL_IO_MAPPED
+                } else {
+                    fstart_coreboot::SERIAL_MEMORY_MAPPED
+                }
+                .into(),
+                base: (port.base as u32).into(),
+                baud: port.baud.into(),
+                regwidth: port.reg_stride.into(),
+                input_hertz: port.clock_hz.into(),
+            })
+    }
+
+    fn mainboard(&self) -> (&str, &str) {
+        (
+            self.smbios_identity.bb_manufacturer,
+            self.smbios_identity.bb_product,
+        )
+    }
+
+    fn table_window(&self) -> Option<(u64, usize)> {
+        self.coreboot_window
+    }
+
+    fn table_ranges(&self) -> heapless::Vec<(u64, u64), 4> {
+        // ACPI, SMBIOS and the coreboot window all live in the store.
+        self.store
+            .iter()
+            .map(|store| (store.base() as u64, store.used() as u64))
+            .collect()
     }
 }
 
