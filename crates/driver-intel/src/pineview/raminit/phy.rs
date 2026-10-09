@@ -1054,6 +1054,12 @@ fn reset_receive_fifos(mch: &MchBar) {
 const VREF_PATTERN_SIZE: usize = 1024;
 const VREF_TEST_RANGE_SIZE: u64 = 0x2000;
 const VREF_MTRR_INDEX: u32 = 3;
+/// Vref test range. The read passes cache it write-protect while Cache-as-RAM
+/// is live, and Atom D4xx/D5xx L2 (512 KiB, 8-way: 64 KiB per way) keeps the
+/// 32 KiB CAR at 0xfefc0000 in the first half of every way. Coreboot's
+/// physical address 0 shares those sets: its fills evicted CAR lines and
+/// silently corrupted bootblock data and statics. Offset 0x8000 does not.
+const VREF_ADDR: usize = 0x8000;
 
 fn vref_pattern(addr: usize, inverse: bool) -> u8 {
     let mut pattern_a = 0xffu8;
@@ -1075,8 +1081,8 @@ fn vref_pattern(addr: usize, inverse: bool) -> u8 {
 fn vref_write_pattern(addr: usize) {
     for offset in 0..VREF_PATTERN_SIZE {
         let value = vref_pattern(addr + offset, true);
-        // Coreboot deliberately tests physical address zero. Use an explicit
-        // machine access because constructing a null Rust pointer would be UB.
+        // Explicit machine access: the range starts at a fixed physical
+        // address, not at a Rust allocation.
         unsafe {
             core::arch::asm!(
                 "mov byte ptr [{addr}], {value}",
@@ -1120,7 +1126,7 @@ fn vref_read_aligned(addr: usize, vref: u8, mch: &MchBar) -> bool {
         for offset in 0..VREF_PATTERN_SIZE {
             let expected = vref_pattern(addr + offset, true);
             let actual: u8;
-            // See vref_write_pattern(): physical address zero is intentional.
+            // See vref_write_pattern().
             unsafe {
                 core::arch::asm!(
                     "mov {value}, byte ptr [{addr}]",
@@ -1187,11 +1193,11 @@ pub fn sdram_vref_margining(si: &mut SysInfo, mch: &MchBar) -> Result<(), Servic
         mchbar::CSHRMISCCTL1,
         mch.read16(mchbar::CSHRMISCCTL1) & !(1 << 8),
     );
-    vref_write_pattern(0);
+    vref_write_pattern(VREF_ADDR);
 
     let mut pos_pass = 0usize;
     for vref in POSITIVE {
-        if !vref_read_aligned(0, vref, mch) {
+        if !vref_read_aligned(VREF_ADDR, vref, mch) {
             break;
         }
         pos_pass += 1;
@@ -1199,7 +1205,7 @@ pub fn sdram_vref_margining(si: &mut SysInfo, mch: &MchBar) -> Result<(), Servic
 
     let mut neg_pass = 0usize;
     for vref in NEGATIVE {
-        if !vref_read_aligned(0, vref, mch) {
+        if !vref_read_aligned(VREF_ADDR, vref, mch) {
             break;
         }
         neg_pass += 1;
