@@ -678,6 +678,7 @@ dependencies = [
  "fstart-log",
  "heapless 0.8.0",
  "serde",
+ "tock-registers",
  "ufmt",
 ]
 

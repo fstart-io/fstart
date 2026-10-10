@@ -135,6 +135,10 @@ pub trait SuperIoChip: Send + Sync + 'static {
     /// `0x20` is the high byte, `0x21` the low byte. Driver init fails
     /// with [`DeviceError::InitFailed`] if the read value does not match.
     const CHIP_ID: u16;
+    /// Mask off revision bits embedded in the ID on some Winbond parts.
+    const CHIP_ID_MASK: u16 = 0xffff;
+    /// Combined keyboard/mouse LDNs store the mouse IRQ in slot 1 (0x72).
+    const MOUSE_IRQ_SECONDARY: bool = false;
 
     /// LDN for COM1, if supported.
     const COM1_LDN: Option<u8>;
@@ -370,22 +374,24 @@ impl<C: SuperIoChip> SuperIo<C> {
         }
     }
 
-    /// Write an 8-bit value to a config register at `reg`.
-    pub(crate) fn write_reg(&self, reg: u8, val: u8) {
-        // SAFETY: callers always bracket writes with enter_config/exit_config.
-        unsafe {
-            fstart_core::pio::outb(self.idx_port(), reg);
-            fstart_core::pio::outb(self.data_port(), val);
-        }
+    /// Typed config register; callers bracket accesses with enter/exit_config.
+    pub(crate) fn register<R: tock_registers::RegisterLongName>(
+        &self,
+        reg: u8,
+    ) -> fstart_core::pio::IndexedPioRegister<R> {
+        fstart_core::pio::IndexedPioRegister::new(self.idx_port(), self.data_port(), reg)
     }
 
-    /// Read an 8-bit value from a config register at `reg`.
+    /// Write an 8-bit value inside the caller-owned configuration session.
+    pub(crate) fn write_reg(&self, reg: u8, val: u8) {
+        use tock_registers::interfaces::Writeable;
+        self.register::<()>(reg).set(val);
+    }
+
+    /// Read an 8-bit value inside the caller-owned configuration session.
     fn read_reg(&self, reg: u8) -> u8 {
-        // SAFETY: callers always bracket reads with enter_config/exit_config.
-        unsafe {
-            fstart_core::pio::outb(self.idx_port(), reg);
-            fstart_core::pio::inb(self.data_port())
-        }
+        use tock_registers::interfaces::Readable;
+        self.register::<()>(reg).get()
     }
 
     /// Select an LDN inside the caller-owned configuration session.
@@ -607,7 +613,11 @@ impl<C: SuperIoChip> SuperIo<C> {
     /// D41S config programs IRQ register 0x70 on that LDN.
     fn program_mouse(&self, ldn: u8, cfg: &MouseConfig) {
         let mut device = self.logical_device(ldn);
-        device.set_irq(IrqResource::Primary(cfg.irq));
+        device.set_irq(if C::MOUSE_IRQ_SECONDARY {
+            IrqResource::Secondary(cfg.irq)
+        } else {
+            IrqResource::Primary(cfg.irq)
+        });
         device.set_enabled(true);
     }
 
@@ -691,7 +701,7 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
         // Chip ID sanity check.  A CHIP_ID of 0 means the board uses a fixed
         // PnP resource where the chip ID registers are not reliable/available.
         let id = self.read_chip_id();
-        if C::CHIP_ID != 0 && id != C::CHIP_ID {
+        if C::CHIP_ID != 0 && id & C::CHIP_ID_MASK != C::CHIP_ID {
             self.exit_config();
             fstart_log::error!("superio: chip ID mismatch: read {:#06x}", id);
             return Err(DeviceError::InitFailed);

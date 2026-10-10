@@ -9,6 +9,8 @@ pub use fstart_driver_intel::ich7::{
 use fstart_driver_intel::pineview;
 pub use fstart_driver_intel::pineview::{IntelPineviewConfig, PineviewIgdConfig};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
+pub use fstart_driver_intel::southbridge::pirq::PirqRouting;
+pub use fstart_driver_intel::southbridge::pmio_ich::Ich7Gpe;
 
 pub const PINEVIEW_MCHBAR: u64 = 0xFED1_0000;
 pub const PINEVIEW_DMIBAR: u64 = 0xFED1_8000;
@@ -28,6 +30,9 @@ pub struct PineviewIch7Config {
     pub igd: pineview::PineviewIgdConfig,
     pub pcie_ports: [bool; 4],
     pub pirq_routing: [u8; 8],
+    pub pirq: PirqRouting,
+    pub lan: bool,
+    pub early_serial_irq: bool,
     pub lpc_decode: LpcDecodeConfig,
     pub gpe0_en: u32,
     pub sata: Option<SataConfig>,
@@ -45,6 +50,9 @@ impl PineviewIch7Config {
             igd: pineview::PineviewIgdConfig::new(),
             pcie_ports: [false; 4],
             pirq_routing: [0; 8],
+            pirq: ich7::IntelIch7Config::new().pirq,
+            lan: true,
+            early_serial_irq: true,
             lpc_decode: LpcDecodeConfig::new(),
             gpe0_en: 0,
             sata: None,
@@ -71,6 +79,9 @@ impl PineviewIch7Config {
         let mut config = ich7::IntelIch7Config::new();
         config.rcba = ICH7_RCBA;
         config.pirq_routing = self.pirq_routing;
+        config.pirq = self.pirq;
+        config.lan = self.lan;
+        config.early_serial_irq = self.early_serial_irq;
         config.pcie_ports = self.pcie_ports;
         config.gpe0_en = self.gpe0_en;
         config.lpc_decode = self.lpc_decode;
@@ -108,6 +119,21 @@ impl PineviewIch7Config {
         self
     }
     #[must_use]
+    pub const fn pirq(mut self, routing: PirqRouting) -> Self {
+        self.pirq = routing;
+        self
+    }
+    #[must_use]
+    pub const fn lan(mut self, present: bool) -> Self {
+        self.lan = present;
+        self
+    }
+    #[must_use]
+    pub const fn early_serial_irq(mut self, enabled: bool) -> Self {
+        self.early_serial_irq = enabled;
+        self
+    }
+    #[must_use]
     pub const fn lpc_fixed_io(mut self, fixed_io: LpcFixedIoDecode) -> Self {
         self.lpc_decode.fixed_io = fixed_io;
         self
@@ -124,6 +150,17 @@ impl PineviewIch7Config {
     #[must_use]
     pub const fn gpe0_en(mut self, value: u32) -> Self {
         self.gpe0_en = value;
+        self
+    }
+    /// Enable named ACPI events; GPIO events use physical pin numbers.
+    #[must_use]
+    pub const fn gpe_events<const N: usize>(mut self, events: [Ich7Gpe; N]) -> Self {
+        self.gpe0_en = 0;
+        let mut index = 0;
+        while index < N {
+            self.gpe0_en |= events[index].encode();
+            index += 1;
+        }
         self
     }
     #[must_use]

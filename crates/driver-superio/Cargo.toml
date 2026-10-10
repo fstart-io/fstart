@@ -18,3 +18,4 @@ fstart-core = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }
 ufmt = { workspace = true }
+tock-registers = { workspace = true }
