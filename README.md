@@ -31,3 +31,4 @@ cargo fbuild assemble --board qemu-riscv64
 
 - **[fstart Architecture: Config as Data, Fixed Family Flows, Few Crates](docs/architecture.md)** — the plan of record.
 - **[Pineview boards](docs/pineview-boards.md)** — build selections, driver policy and hardware-validation limits.
+- **[i945 boards](docs/i945-boards.md)** — CPU-package coverage, experimental board selections and BSEL sequencing.
