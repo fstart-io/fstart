@@ -169,6 +169,7 @@ fn framebuffer(info: &FramebufferInfo) -> Framebuffer {
         blue_mask_size: info.blue_size,
         ..Default::default()
     }
+    .with_reserved_mask()
 }
 
 /// Load the verified payload image; returns its load address.

@@ -139,6 +139,31 @@ pub struct Framebuffer {
     pub pad: u8,
 }
 
+impl Framebuffer {
+    /// Describe the pixel bits above the colour channels as the reserved
+    /// mask, as coreboot does for 32 bpp XRGB. SeaVGABIOS takes the sum of
+    /// all mask sizes as the pixel depth, so 8:8:8 without it reads as 24 bpp.
+    #[must_use]
+    pub fn with_reserved_mask(mut self) -> Self {
+        let channels = [
+            (self.red_mask_pos, self.red_mask_size),
+            (self.green_mask_pos, self.green_mask_size),
+            (self.blue_mask_pos, self.blue_mask_size),
+        ];
+        let used: u8 = channels.iter().map(|(_, size)| size).sum();
+        let top = channels
+            .iter()
+            .map(|(pos, size)| pos + size)
+            .max()
+            .unwrap_or(0);
+        if self.bits_per_pixel > used && top + (self.bits_per_pixel - used) <= self.bits_per_pixel {
+            self.reserved_mask_pos = top;
+            self.reserved_mask_size = self.bits_per_pixel - used;
+        }
+        self
+    }
+}
+
 /// Body of the [`tag::FSTART_FILE`] record, followed by the NUL-terminated
 /// file name.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
