@@ -26,6 +26,12 @@ build, not proof that a larger UEFI payload fits the stock flash.
 * The Pineview builder exposes integrated-LAN disable policy and early serial
   IRQ admission. D510MO keeps serial IRQs disabled until mainstage, then the
   common ICH7 driver enables continuous framing.
+* D41S uses the shared named-device Super I/O configuration directly, with
+  separate keyboard/mouse logical devices and the two ITE monitoring windows.
+  IT8721F operations explicitly disconnect the monitoring IRQ, disable parallel
+  ECP decoding, and deactivate the unused floppy logical device. GPIO
+  configuration is untouched: the reference has no GPIO mux script and its
+  GPIO-off declaration does not establish an IT8721F activation-register write.
 * The W83627THG descriptor masks the chip-ID revision nibble, uses two IRQ
   slots in the combined KBC/mouse LDN, and treats HWMBASE as a single resource,
   rather than misusing the ITE environment-controller layout. KBC clock and

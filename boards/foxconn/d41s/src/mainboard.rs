@@ -44,9 +44,12 @@ mod mainboard_acpi_device {
 impl D41SMainboard {
     fn setup_console(&mut self) -> Result<(), ServiceError> {
         let mut superio =
-            Ite8721f::new_at_base(crate::d41s_superio_config().0, crate::SUPERIO_PNP_BASE)
+            Ite8721f::new_at_base(crate::d41s_superio_config(), crate::SUPERIO_PNP_BASE)
                 .map_err(ServiceError::from)?;
         superio.init().map_err(ServiceError::from)?;
+        superio.disconnect_hwmon_irq();
+        superio.disable_parallel_ecp_decode();
+        superio.disable_floppy();
         self.superio = Some(superio);
         Ok(())
     }
@@ -148,5 +151,5 @@ pub static D41S_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
         chassis_type: 0x03,
         chassis_manufacturer: "Foxconn",
         processor_sockets: &D41S_SMBIOS_PROCESSOR_SOCKETS,
-oem_string: None,
+        oem_string: None,
     };

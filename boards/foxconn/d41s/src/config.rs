@@ -9,8 +9,8 @@ use fstart_intel_gma::framebuffer::FramebufferConfig;
 use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 use fstart_platform_intel::pineview::{
-    LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PineviewIch7Config,
-    PineviewIch7Platform, PineviewIgdConfig, SataConfig, SataMode, UsbConfig,
+    Ich7Gpe, LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode,
+    PineviewIch7Config, PineviewIch7Platform, PineviewIgdConfig, SataConfig, SataMode, UsbConfig,
 };
 
 /// D41S is a desktop board: the shared GMA layer lights the analog CRT port,
@@ -54,7 +54,7 @@ pub static D41S_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
     .igd(d41s_igd_config())
     .pcie_port(0, true)
     .pcie_port(1, true)
-    .pirq_routing([0x0b; 8])
+    .pirq_routing([11; 8])
     .lpc_fixed_io(LpcFixedIoDecode {
         com_a: LpcSerialDecode::Com1,
         com_b: LpcSerialDecode::Com2,
@@ -65,17 +65,14 @@ pub static D41S_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
         base: 0x0a00,
         size: 0x0100,
     }])
-    .sata(SataConfig {
-        mode: SataMode::Ahci,
-        ports: 0x03,
-    })
+    .sata(SataConfig::new(SataMode::Ahci, [0, 1]))
     .usb(UsbConfig {
         ehci: true,
         uhci: [true, true, true, true],
     })
     .hda(d41s_hda_config())
     .gpio_pins(d41s_gpio_pins())
-    .gpe0_en(0x0441)
+    .gpe_events([Ich7Gpe::Thermal, Ich7Gpe::TcoSci, Ich7Gpe::BatteryLow])
     .build();
 
 /// 16-MiB (128-Mbit) SPI flash, contiguous legacy mapping (no IFD).
@@ -224,7 +221,7 @@ pub const fn d41s_gpio_pins() -> [gpio::GpioPin; 19] {
 }
 
 pub fn d41s_superio_config() -> ite8721f::Ite8721fConfig {
-    ite8721f::Ite8721fConfig(ite8721f::SuperIoConfig {
+    ite8721f::SuperIoConfig {
         com1: Some(ite8721f::ComPortConfig {
             io_base: UART0_PIO_BASE,
             irq: 4,
@@ -256,7 +253,30 @@ pub fn d41s_superio_config() -> ite8721f::Ite8721fConfig {
         gpio: None,
         acpi_name: Some(hstr("SIO0")),
         console_port: Some(hstr("com1")),
-    })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn superio_resources_match_board_wiring() {
+        let sio = d41s_superio_config();
+        let ec = sio.env_controller.unwrap();
+        assert_eq!((ec.io_base, ec.io_ext), (0xa10, 0xa00));
+        let keyboard = sio.keyboard.unwrap();
+        assert_eq!(
+            (keyboard.io_base, keyboard.io_ext, keyboard.irq),
+            (0x60, 0x64, 1)
+        );
+        assert_eq!(sio.mouse.unwrap().irq, 12);
+        assert_eq!(sio.com1.unwrap().irq, 4);
+        assert_eq!(sio.com2.unwrap().irq, 3);
+        assert!(sio.gpio.is_none());
+        assert_eq!(D41S_PLATFORM.southbridge.gpe0_en, 0x441);
+        assert_eq!(D41S_PLATFORM.southbridge.sata.unwrap().ports, 3);
+    }
 }
 
 pub fn d41s_ck505_config() -> I2cCk505Config {
