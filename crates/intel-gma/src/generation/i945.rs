@@ -21,7 +21,6 @@ use crate::gtt;
 use crate::mmio::{Mmio, delay_us};
 use crate::mode::Mode;
 use crate::panel::{LfpPanelMetadata, set_pnv_backlight_op};
-use crate::pipe::pipeconf_bpc_bits;
 use crate::pll::{self, LegacyPll};
 use crate::port::{self, LegacyPortPlan};
 use crate::power;
@@ -49,16 +48,20 @@ impl GenerationOps for I945 {
             return Err(GmaError::PllNoSolution);
         }
 
-        // libgfxinit's i945 `Connectors.Pre_On` is a no-op; the LVDS port
-        // register is written by `Post_On` after the PLL and pipe are up.
         let panel = selected_lfp_panel(ctx);
-        let clock = pll::find_legacy_clock(ctx.config.cpu, port, mode)?;
+        let clock = pll::find_legacy_clock_with_ref(ctx.config.cpu, port, mode, refclk(ctx, port))?;
         pll::disable_legacy_pll(&mmio, pll);
         delay_us(150);
+        // Linux `intel_pre_enable_lvds`: the LVDS pin pairs must be powered
+        // before the DPLL is enabled on pre-PCH hardware. libgfxinit's i945
+        // `Pre_On` skips this, which leaves the panel dark.
+        if port == Port::Lvds {
+            enable_port(&mmio, port, pipe, mode)?;
+        }
         pll::program_legacy_pll(&mmio, ctx.config.cpu, pll, port, clock);
 
         g45::program_gmch_panel_fitter(ctx, pipe, mode)?;
-        program_pipe(&mmio, pipe, mode, port, ctx.surface)?;
+        program_pipe(&mmio, pipe, mode, ctx.surface)?;
         program_primary_plane(ctx, pipe, port)?;
         enable_port(&mmio, port, pipe, mode)?;
 
@@ -76,7 +79,7 @@ impl GenerationOps for I945 {
         }
         let pll = legacy_pll_for_pipe(pipe)?;
         let mmio = ctx.mmio();
-        let clock = pll::find_legacy_clock(ctx.config.cpu, port, mode)?;
+        let clock = pll::find_legacy_clock_with_ref(ctx.config.cpu, port, mode, refclk(ctx, port))?;
         pll::disable_legacy_pll(&mmio, pll);
         delay_us(150);
         pll::program_legacy_pll(&mmio, ctx.config.cpu, pll, port, clock);
@@ -84,8 +87,7 @@ impl GenerationOps for I945 {
     }
 
     fn program_pipe(ctx: &mut GmaContext<'_>, pipe: Pipe, mode: Mode) -> Result<(), GmaError> {
-        let port = selected_port(ctx)?;
-        program_pipe(&ctx.mmio(), pipe, mode, port, ctx.surface)
+        program_pipe(&ctx.mmio(), pipe, mode, ctx.surface)
     }
 
     fn program_primary_plane(ctx: &mut GmaContext<'_>, plane: Plane) -> Result<(), GmaError> {
@@ -206,6 +208,16 @@ const fn dspcntr_pipe_select(pipe: Pipe) -> Result<u32, GmaError> {
     }
 }
 
+/// DPLL reference for `port`, following the VBT's spread-spectrum policy.
+fn refclk(ctx: &GmaContext<'_>, port: Port) -> pll::RefClock {
+    let ssc = ctx
+        .config
+        .vbt
+        .and_then(|bytes| crate::vbt::Vbt::parse(bytes).ok())
+        .and_then(|vbt| vbt.lvds_ssc());
+    pll::RefClock::for_port(port, ssc)
+}
+
 fn selected_lfp_panel(ctx: &GmaContext<'_>) -> Option<LfpPanelMetadata> {
     ctx.config
         .vbt
@@ -217,7 +229,6 @@ fn program_pipe(
     mmio: &Mmio,
     pipe: Pipe,
     mode: Mode,
-    port: Port,
     surface: crate::framebuffer::SurfaceConfig,
 ) -> Result<(), GmaError> {
     let (timing_off, pipeconf_off) = pipe_regs(pipe)?;
@@ -237,7 +248,9 @@ fn program_pipe(
     timing
         .pipesrc
         .set(crate::pipe::PipeConfig::surface_source(surface)?);
-    pipeconf.set(PIPECONF::ENABLE::SET.value | pipeconf_bpc_bits(port));
+    // The PIPECONF bpc and dither fields are Gen4+ only (Linux
+    // `i9xx_set_pipeconf`); Gen3 takes no pipe bit depth.
+    pipeconf.set(PIPECONF::ENABLE::SET.value);
     // Gen3 has no i965-style active-status bit, but the programmed enable bit
     // must read back. A failure here means the decoded display MMIO window is
     // not accepting the modeset.
@@ -260,7 +273,21 @@ fn program_primary_plane(ctx: &GmaContext<'_>, pipe: Pipe, _port: Port) -> Resul
 
 fn enable_port(mmio: &Mmio, port: Port, pipe: Pipe, mode: Mode) -> Result<(), GmaError> {
     match port {
-        Port::Lvds | Port::Vga => {
+        // The LVDS dither bit is Gen4+ (Linux sets it for DISPLAY_VER 4 only).
+        Port::Lvds => {
+            let value = port::lvds_port_value_with_config(
+                pipe,
+                mode,
+                port::LvdsPortConfig {
+                    enable_dither: false,
+                    ..port::LvdsPortConfig::DEFAULT
+                },
+            )?;
+            mmio.write32(port::GMCH_LVDS, value);
+            let _ = mmio.read32(port::GMCH_LVDS);
+            Ok(())
+        }
+        Port::Vga => {
             g45::apply_port_op(mmio, LegacyPortPlan::for_port(port, pipe, mode)?.enable);
             Ok(())
         }

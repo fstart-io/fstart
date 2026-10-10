@@ -16,6 +16,7 @@ use crate::panel::{
 
 const VBT_SIGNATURE: &[u8; 4] = b"$VBT";
 const BDB_SIGNATURE: &[u8; 4] = b"BIOS";
+const BDB_GENERAL_FEATURES: u8 = 1;
 const BDB_GENERAL_DEFINITIONS: u8 = 2;
 const BDB_LVDS_OPTIONS: u8 = 40;
 const BDB_LVDS_LFP_DATA_PTRS: u8 = 41;
@@ -154,6 +155,16 @@ pub struct BdbBlock<'a> {
 }
 
 /// Data-only metadata from VBT block 2 (`BDB_GENERAL_DEFINITIONS`).
+/// VBT spread-spectrum clock policy for the panel PLL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LvdsSsc {
+    /// Run the panel PLL from the non-spread reference clock.
+    Disabled,
+    /// Use the SSC input; `alternate` selects the platform's second
+    /// frequency (100 MHz instead of 96 MHz on Gen3/4).
+    Enabled { alternate: bool },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GeneralDefinitionsMetadata {
     /// Raw `crt_ddc_gmbus_pin` byte from the VBT.
@@ -279,6 +290,22 @@ impl<'a> Vbt<'a> {
     pub fn general_definitions_metadata(&self) -> Option<GeneralDefinitionsMetadata> {
         self.block(BDB_GENERAL_DEFINITIONS)
             .and_then(parse_general_definitions)
+    }
+
+    /// Spread-spectrum clock the panel PLL should use, from the general
+    /// features block (Linux `parse_general_features`). `None` when the
+    /// block is absent.
+    pub fn lvds_ssc(&self) -> Option<LvdsSsc> {
+        const ENABLE_SSC: u8 = 1 << 1;
+        const SSC_FREQ_ALTERNATE: u8 = 1 << 2;
+        let flags = *self.block(BDB_GENERAL_FEATURES)?.data.get(1)?;
+        Some(if flags & ENABLE_SSC == 0 {
+            LvdsSsc::Disabled
+        } else {
+            LvdsSsc::Enabled {
+                alternate: flags & SSC_FREQ_ALTERNATE != 0,
+            }
+        })
     }
 
     /// Return true when VBT indicates an LVDS/LFP child device or LFP options block.
