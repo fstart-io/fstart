@@ -9,6 +9,7 @@ pub mod ite8721f;
 pub mod pc87382;
 pub mod pc87392;
 pub mod smsc_lpc47m15x;
+pub mod w83627dhg;
 pub mod w83627thg;
 
 pub use generic::*;

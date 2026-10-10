@@ -2,7 +2,7 @@
 //!
 //! Foxconn D41S exposes the IT8721F at LPC PnP config port `0x2e`.
 
-use crate::{SuperIo, SuperIoChip};
+use crate::{IoResource, IrqResource, SuperIo, SuperIoChip};
 
 pub use crate::{
     CirConfig, ComPortConfig, EcConfig, GpioConfig, KbcConfig, LpcBaseProvider, MouseConfig,
@@ -34,27 +34,27 @@ impl SuperIoChip for Ite8721fChip {
 /// IT8721F SuperIO driver.
 pub type Ite8721f = SuperIo<Ite8721fChip>;
 
-/// Board-facing IT8721F config.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Ite8721fConfig(pub SuperIoConfig);
+/// IT8721F uses the shared named-device resource configuration directly.
+pub type Ite8721fConfig = SuperIoConfig;
 
-impl core::ops::Deref for Ite8721fConfig {
-    type Target = SuperIoConfig;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl Ite8721f {
+    /// Leave monitoring polled rather than routing it onto an ISA IRQ.
+    pub fn disconnect_hwmon_irq(&mut self) {
+        self.enter_config();
+        self.logical_device(4).set_irq(IrqResource::Primary(0));
+        self.exit_config();
     }
-}
 
-impl core::ops::DerefMut for Ite8721fConfig {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+    /// Disable the parallel port's secondary ECP address window.
+    pub fn disable_parallel_ecp_decode(&mut self) {
+        self.enter_config();
+        self.logical_device(3).set_io_base(IoResource::Secondary(0));
+        self.exit_config();
     }
-}
 
-impl From<SuperIoConfig> for Ite8721fConfig {
-    fn from(config: SuperIoConfig) -> Self {
-        Self(config)
+    pub fn disable_floppy(&mut self) {
+        self.enter_config();
+        self.logical_device(0).set_enabled(false);
+        self.exit_config();
     }
 }
