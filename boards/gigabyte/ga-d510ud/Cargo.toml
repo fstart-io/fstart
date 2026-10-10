@@ -1,0 +1,29 @@
+[package]
+name = "fstart-board-gigabyte-ga-d510ud"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "gigabyte-ga-d510ud"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-intel", name = "rust" }
+
+[dependencies]
+fstart-core = { path = "../../../crates/core", features = ["pci"] }
+fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["pineview-ich7"] }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
+fstart-driver-intel = { path = "../../../crates/driver-intel" }
+fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-log = { path = "../../../crates/log" }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

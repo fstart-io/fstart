@@ -102,6 +102,15 @@ register_bitfields! [u16,
 ];
 
 register_bitfields! [u8,
+    /// SATA PCS port-enable bits (the low nibble).
+    SATA_PORT_ENABLE [ PORTS OFFSET(0) NUMBITS(4) [] ],
+    /// LPC SIRQ_CNTL. The frame-size field is read-only (21 frames).
+    SERIRQ_REG [
+        ENABLE OFFSET(7) NUMBITS(1) [],
+        MODE OFFSET(6) NUMBITS(1) [Quiet = 0, Continuous = 1],
+        FRAME_SIZE OFFSET(2) NUMBITS(4) [],
+        START_PULSE OFFSET(0) NUMBITS(2) [Clocks4 = 0, Clocks6 = 1, Clocks8 = 2],
+    ],
     /// LPC ACPI control register.
     ACPI_CNTL_REG [
         ACPI_EN OFFSET(7) NUMBITS(1) []
@@ -370,7 +379,7 @@ pci_type0_config! {
         (0x4c => pub gpio_cntl: MmioReadWrite<u8>),
         (0x4d => _reserved_lpc1),
         (0x60 => pub pirqa_rout: MmioReadWrite<u32>),
-        (0x64 => pub serirq_cntl: MmioReadWrite<u8>),
+        (0x64 => pub serirq_cntl: MmioReadWrite<u8, SERIRQ_REG::Register>),
         (0x65 => _reserved_lpc2),
         (0x68 => pub pirqe_rout: MmioReadWrite<u32>),
         (0x6c => _reserved_lpc8),
@@ -404,6 +413,28 @@ const SLP_TYP_S3: u32 = 0x1400;
 pub struct SataConfig {
     pub mode: SataMode,
     pub ports: u8,
+}
+
+impl SataConfig {
+    /// Enable the listed physical SATA ports, numbered 0..3, without requiring
+    /// the board to know the PCS register's port-enable bitmap.
+    #[must_use]
+    pub const fn new<const N: usize>(mode: SataMode, ports: [u8; N]) -> Self {
+        let mut mask = 0;
+        let mut index = 0;
+        while index < N {
+            let port = ports[index];
+            assert!(port < 4);
+            mask |= tock_registers::fields::Field::<u8, SATA_PORT_ENABLE::Register>::new(
+                1,
+                port as usize,
+            )
+            .val(1)
+            .value;
+            index += 1;
+        }
+        Self { mode, ports: mask }
+    }
 }
 
 /// SATA controller operating mode.
@@ -628,6 +659,8 @@ pub struct IntelIch7Config {
     pub gpi_routing: [u8; 16],
     /// GPE0 enable bits.
     pub gpe0_en: u32,
+    /// Admit LPC serial IRQs before DRAM. D510MO keeps them off until ramstage.
+    pub early_serial_irq: bool,
     /// LPC fixed and generic I/O decode policy.
     pub lpc_decode: LpcDecodeConfig,
     /// HD Audio (Azalia) configuration with verb tables.
@@ -677,6 +710,7 @@ impl IntelIch7Config {
             ac97_modem: true,
             gpi_routing: [0; 16],
             gpe0_en: 0,
+            early_serial_irq: true,
             lpc_decode: LpcDecodeConfig::new(),
             hda: None,
             sata: None,
@@ -1157,7 +1191,13 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         // generic decode windows. This makes SuperIO config ports and
         // COM1/COM2 I/O decode live before ConsoleInit.
         let generic = self.lpc_generic_decode_regs();
-        lpc.serirq_cntl.set(0xD0);
+        lpc.serirq_cntl.modify(
+            (if self.config.early_serial_irq {
+                SERIRQ_REG::ENABLE::SET + SERIRQ_REG::MODE::Continuous
+            } else {
+                SERIRQ_REG::ENABLE::CLEAR + SERIRQ_REG::MODE::Quiet
+            }) + SERIRQ_REG::START_PULSE::Clocks4,
+        );
         lpc.lpc_io_dec.set(self.config.lpc_decode.fixed_io.encode());
         lpc.lpc_en.set(LPC_EN_ALL);
         for (idx, value) in generic.iter().copied().enumerate() {
@@ -1466,6 +1506,14 @@ impl IntelIch7 {
                 self.usb_ehci_init();
             }
         }
+
+        // Like coreboot lpc_init(), enable serial IRQs even on boards that
+        // suppress them during their pre-console/DRAM sequence.
+        self.lpc_regs().serirq_cntl.modify(
+            SERIRQ_REG::ENABLE::SET
+                + SERIRQ_REG::MODE::Continuous
+                + SERIRQ_REG::START_PULSE::Clocks4,
+        );
 
         // ---- Power management ----
         self.power_management_init();
@@ -2609,6 +2657,25 @@ const fn spi_optype(menu: &[(u8, SpiOpType); 8]) -> u16 {
         i += 1;
     }
     optype
+}
+
+#[cfg(test)]
+mod sata_tests {
+    use super::{SataConfig, SataMode};
+
+    #[test]
+    fn physical_sata_ports_encode_to_pcs_enables() {
+        const CONFIG: SataConfig = SataConfig::new(SataMode::Ahci, [0, 2]);
+        assert_eq!(CONFIG.mode, SataMode::Ahci);
+        assert_eq!(CONFIG.ports, 5);
+        assert_eq!(SataConfig::new(SataMode::Ide, [3]).ports, 8);
+    }
+
+    #[test]
+    #[should_panic]
+    fn nonexistent_sata_port_is_rejected() {
+        let _ = SataConfig::new(SataMode::Ahci, [4]);
+    }
 }
 
 #[cfg(test)]

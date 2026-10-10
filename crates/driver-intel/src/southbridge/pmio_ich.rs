@@ -33,7 +33,16 @@ register_bitfields![u32,
         SLEEP_ENABLE OFFSET(13) NUMBITS(1) []
     ],
     SMI_ENABLE [GLOBAL OFFSET(0) NUMBITS(1) [], EOS OFFSET(1) NUMBITS(1) []],
-    TCO_STATUS [BOOT OFFSET(18) NUMBITS(1) []]
+    TCO_STATUS [BOOT OFFSET(18) NUMBITS(1) []],
+    /// ICH7/NM10 GPE0 enable layout (later generations differ).
+    ICH7_GPE_ENABLE [
+        THERMAL OFFSET(0) NUMBITS(1) [], HOT_PLUG OFFSET(1) NUMBITS(1) [],
+        SOFTWARE OFFSET(2) NUMBITS(1) [], TCO_SCI OFFSET(6) NUMBITS(1) [],
+        SMBUS_WAKE OFFSET(7) NUMBITS(1) [], RING_INDICATOR OFFSET(8) NUMBITS(1) [],
+        PCI_EXPRESS OFFSET(9) NUMBITS(1) [], BATTERY_LOW OFFSET(10) NUMBITS(1) [],
+        PME OFFSET(11) NUMBITS(1) [], INTERNAL_PME OFFSET(13) NUMBITS(1) [],
+        USB4 OFFSET(14) NUMBITS(1) [], GPIO OFFSET(16) NUMBITS(16) [],
+    ]
 ];
 register_bitfields![u16,
     PM_STATUS [WAKE OFFSET(15) NUMBITS(1) []],
@@ -161,20 +170,66 @@ pub const GPE0_SMI_STS: u32 = 1 << 9;
 /// TCO SMI status.
 pub const TCO_STS: u32 = 1 << 13;
 
+/// An ICH7/NM10 general-purpose ACPI event, rather than a GPE0 bit mask.
+#[derive(Debug, Clone, Copy)]
+pub enum Ich7Gpe {
+    Thermal,
+    HotPlug,
+    Software,
+    TcoSci,
+    SmbusWake,
+    RingIndicator,
+    PciExpress,
+    BatteryLow,
+    Pme,
+    InternalPme,
+    Usb4,
+    /// Physical ICH7 GPIO number, 0..15 (not the shifted GPE number).
+    Gpio(u8),
+}
+
+impl Ich7Gpe {
+    #[must_use]
+    pub const fn encode(self) -> u32 {
+        match self {
+            Self::Thermal => ICH7_GPE_ENABLE::THERMAL::SET.value,
+            Self::HotPlug => ICH7_GPE_ENABLE::HOT_PLUG::SET.value,
+            Self::Software => ICH7_GPE_ENABLE::SOFTWARE::SET.value,
+            Self::TcoSci => ICH7_GPE_ENABLE::TCO_SCI::SET.value,
+            Self::SmbusWake => ICH7_GPE_ENABLE::SMBUS_WAKE::SET.value,
+            Self::RingIndicator => ICH7_GPE_ENABLE::RING_INDICATOR::SET.value,
+            Self::PciExpress => ICH7_GPE_ENABLE::PCI_EXPRESS::SET.value,
+            Self::BatteryLow => ICH7_GPE_ENABLE::BATTERY_LOW::SET.value,
+            Self::Pme => ICH7_GPE_ENABLE::PME::SET.value,
+            Self::InternalPme => ICH7_GPE_ENABLE::INTERNAL_PME::SET.value,
+            Self::Usb4 => ICH7_GPE_ENABLE::USB4::SET.value,
+            Self::Gpio(pin) => {
+                assert!(pin < 16);
+                tock_registers::fields::Field::<u32, ICH7_GPE_ENABLE::Register>::new(
+                    1,
+                    16 + pin as usize,
+                )
+                .val(1)
+                .value
+            }
+        }
+    }
+}
+
 // -----------------------------------------------------------------------
 // GPE0_STS bits (ICH7 32-bit layout)
 // -----------------------------------------------------------------------
-pub const THRM_STS: u32 = 1 << 0;
-pub const HOT_PLUG_STS: u32 = 1 << 1;
-pub const SWGPE_STS: u32 = 1 << 2;
-pub const TCOSCI_STS: u32 = 1 << 6;
-pub const SMB_WAK_STS: u32 = 1 << 7;
-pub const RI_STS: u32 = 1 << 8;
-pub const PCI_EXP_STS: u32 = 1 << 9;
-pub const BATLOW_STS: u32 = 1 << 10;
-pub const PME_STS: u32 = 1 << 11;
-pub const PME_B0_STS: u32 = 1 << 13;
-pub const USB4_STS: u32 = 1 << 14;
+pub const THRM_STS: u32 = Ich7Gpe::Thermal.encode();
+pub const HOT_PLUG_STS: u32 = Ich7Gpe::HotPlug.encode();
+pub const SWGPE_STS: u32 = Ich7Gpe::Software.encode();
+pub const TCOSCI_STS: u32 = Ich7Gpe::TcoSci.encode();
+pub const SMB_WAK_STS: u32 = Ich7Gpe::SmbusWake.encode();
+pub const RI_STS: u32 = Ich7Gpe::RingIndicator.encode();
+pub const PCI_EXP_STS: u32 = Ich7Gpe::PciExpress.encode();
+pub const BATLOW_STS: u32 = Ich7Gpe::BatteryLow.encode();
+pub const PME_STS: u32 = Ich7Gpe::Pme.encode();
+pub const PME_B0_STS: u32 = Ich7Gpe::InternalPme.encode();
+pub const USB4_STS: u32 = Ich7Gpe::Usb4.encode();
 
 // -----------------------------------------------------------------------
 // TCO register offsets (from PMBASE + 0x60)
@@ -537,3 +592,36 @@ unsafe impl Send for PmIo {}
 unsafe impl Sync for PmIo {}
 unsafe impl Send for TcoIo {}
 unsafe impl Sync for TcoIo {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_ich7_events_and_gpio_pins_encode_to_gpe0() {
+        for (event, expected) in [
+            (Ich7Gpe::Thermal, 0x0001),
+            (Ich7Gpe::HotPlug, 0x0002),
+            (Ich7Gpe::Software, 0x0004),
+            (Ich7Gpe::TcoSci, 0x0040),
+            (Ich7Gpe::SmbusWake, 0x0080),
+            (Ich7Gpe::RingIndicator, 0x0100),
+            (Ich7Gpe::PciExpress, 0x0200),
+            (Ich7Gpe::BatteryLow, 0x0400),
+            (Ich7Gpe::Pme, 0x0800),
+            (Ich7Gpe::InternalPme, 0x2000),
+            (Ich7Gpe::Usb4, 0x4000),
+            (Ich7Gpe::Gpio(0), 0x0001_0000),
+            (Ich7Gpe::Gpio(13), 0x2000_0000),
+            (Ich7Gpe::Gpio(15), 0x8000_0000),
+        ] {
+            assert_eq!(event.encode(), expected);
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn gpio_outside_ich7_gpe_range_is_rejected() {
+        let _ = Ich7Gpe::Gpio(16).encode();
+    }
+}
