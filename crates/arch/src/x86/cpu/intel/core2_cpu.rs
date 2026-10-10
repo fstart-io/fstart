@@ -1,7 +1,8 @@
-//! Intel Core/Core 2 CPU operations for GM965-era systems.
+//! Intel Core/Core 2 CPU operations for socket M/P systems.
 //!
-//! Mirrors the per-CPU MSR setup in coreboot's `cpu/intel/model_6fx` driver
-//! and optionally supplies an Intel microcode blob to [`crate::x86::mp`].
+//! Mirrors the per-CPU MSR setup in coreboot's `cpu/intel/model_6ex` (Core
+//! Solo/Duo, Yonah) and `model_6fx` (Core 2) drivers and optionally supplies
+//! an Intel microcode blob to [`crate::x86::mp`].
 
 use crate::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
 use crate::x86::cpu::intel::{common_power, feature_control};
@@ -14,14 +15,25 @@ const IA32_PERF_STATUS: u32 = 0x198;
 const IA32_PERF_CTL: u32 = 0x199;
 const PIC_SENS_CFG: u32 = 0x1aa;
 
-fn configure_misc() {
+/// Core Solo/Duo (Yonah, model 0Eh) lacks Deeper Sleep, EMTTM, PECI, SMRR
+/// and the VMX feature-control lock that model 0Fh/16h receive.
+fn is_yonah(identity: CpuIdentity) -> bool {
+    identity.model() == 0x0e
+}
+
+fn configure_misc(yonah: bool) {
+    let emttm = if yonah {
+        0
+    } else {
+        common_power::MISC_ENABLE::EMTTM::SET.value
+    };
     // SAFETY: these MSRs are defined for Intel Core/Core 2 CPUs.
     unsafe {
         common_power::configure_misc(
             common_power::MISC_ENABLE::C2E::SET.value
                 | common_power::MISC_ENABLE::C4E::SET.value
                 | common_power::MISC_ENABLE::HARD_C4E::SET.value
-                | common_power::MISC_ENABLE::EMTTM::SET.value,
+                | emttm,
         );
 
         let status = rdmsr(IA32_PERF_STATUS);
@@ -33,6 +45,9 @@ fn configure_misc() {
         perf_ctl |= vid_max;
         wrmsr(IA32_PERF_CTL, perf_ctl);
 
+        if yonah {
+            return;
+        }
         let mut peci = rdmsr(IA32_PECI_CTL);
         peci |= 1;
         wrmsr(IA32_PECI_CTL, peci);
@@ -50,6 +65,21 @@ fn configure_pic_thermal_sensors() {
 }
 
 static CORE2_IDS: &[CpuIdMatch] = &[
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06e0,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06e8,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
+    CpuIdMatch {
+        vendor: CpuVendor::Intel,
+        signature: 0x06ec,
+        mask: CpuIdMatch::EXACT_MASK,
+    },
     CpuIdMatch {
         vendor: CpuVendor::Intel,
         signature: 0x06f0,
@@ -92,7 +122,7 @@ static CORE2_IDS: &[CpuIdMatch] = &[
     },
 ];
 
-/// CPU driver for Intel Core/Core 2 family 6 model f/16h systems.
+/// CPU driver for Intel Core/Core 2 family 6 model e/f/16h systems.
 pub struct Core2CpuDriver {
     pmbase: u32,
     microcode: Option<&'static [u8]>,
@@ -116,14 +146,20 @@ fn smrr_pair_for(identity: CpuIdentity) -> SmrrPair {
     }
 }
 
+// Both assume every package in the system is the same model as the BSP.
 impl SmmCpu for Core2CpuDriver {
+    /// Yonah has no EM64T and writes the legacy 32-bit save state.
     fn smm_save_state_format(&self) -> X86SaveStateFormat {
-        X86SaveStateFormat::IntelEm64t
+        if is_yonah(CpuIdentity::current()) {
+            X86SaveStateFormat::IntelLegacy
+        } else {
+            X86SaveStateFormat::IntelEm64t
+        }
     }
 
-    /// Assumes every package in the system is the same model as the BSP.
     fn smrr_pair(&self) -> Option<SmrrPair> {
-        Some(smrr_pair_for(CpuIdentity::current()))
+        let identity = CpuIdentity::current();
+        (!is_yonah(identity)).then(|| smrr_pair_for(identity))
     }
 }
 
@@ -150,20 +186,28 @@ impl CpuDriver for Core2CpuDriver {
     }
 
     fn init_cpu(&self) {
+        let identity = CpuIdentity::current();
+        let yonah = is_yonah(identity);
+        let deeper_sleep = if yonah {
+            0
+        } else {
+            common_power::CST::DEEPER_SLEEP::SET.value
+        };
         // SAFETY: this CPU model implements these power-management MSRs.
         unsafe {
             common_power::configure_c_states(
                 self.pmbase,
-                common_power::CST::DEEPER_SLEEP::SET.value
-                    | common_power::CST::DYNAMIC_L2::SET.value,
+                deeper_sleep | common_power::CST::DYNAMIC_L2::SET.value,
             );
         }
-        configure_misc();
+        configure_misc(yonah);
         configure_pic_thermal_sensors();
-        let smrr = smrr_pair_for(CpuIdentity::current()).feature_control_bits();
-        // SAFETY: Core/Core 2 CPUs implement IA32_FEATURE_CONTROL, and
-        // `feature_control_bits` only names bits this model has.
-        unsafe { feature_control::enable_and_lock(smrr) };
-        fstart_log::info!("cpu: Core 2 MSR configuration complete");
+        if !yonah {
+            let smrr = smrr_pair_for(identity).feature_control_bits();
+            // SAFETY: Core 2 CPUs implement IA32_FEATURE_CONTROL, and
+            // `feature_control_bits` only names bits this model has.
+            unsafe { feature_control::enable_and_lock(smrr) };
+        }
+        fstart_log::info!("cpu: Core/Core 2 MSR configuration complete");
     }
 }

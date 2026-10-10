@@ -151,7 +151,12 @@ pub fn now() -> u64 {
         // SAFETY: RDTSC has no side effects; firmware runs at CPL0.
         unsafe { core::arch::x86_64::_rdtsc() }
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "x86")]
+    {
+        // SAFETY: RDTSC has no side effects; firmware runs at CPL0.
+        unsafe { core::arch::x86::_rdtsc() }
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     {
         0
     }

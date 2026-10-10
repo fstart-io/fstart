@@ -368,6 +368,19 @@ pub fn smbus_node() -> Vec<u8> {
     .into()
 }
 
+/// The 0:1e.0 PCI bridge with an APIC-mode `_PRT` for the board's devices
+/// behind it (coreboot `pci.asl` plus the mainboard `ich*_pci_irqs.asl`).
+#[must_use]
+pub fn pci_bridge_node(routing: &super::pirq::PirqRouting) -> Vec<u8> {
+    let mut body: Vec<u8> = acpi_dsl! { Name("_ADR", 0x001E0000u32); }.into();
+    body.extend(fstart_acpi::pirq::prt_name_aml(
+        routing
+            .bridge_bus_routes()
+            .map(|(slot, pin, gsi)| (slot, pin.index(), gsi)),
+    ));
+    fstart_acpi::aml_linker::device_vec("PCIB", &body).expect("PCIB device emission")
+}
+
 /// One PCIe root port with its APIC-mode `_PRT`.
 ///
 /// INTx is rotated by port number, matching coreboot's `pcie.asl` interrupt

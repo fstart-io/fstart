@@ -66,6 +66,45 @@ pub mod smram {
     }
 }
 
+/// DSDT nodes the GMCH northbridges contribute under `\_SB.PCI0`.
+#[cfg(feature = "acpi")]
+pub mod acpi {
+    extern crate alloc;
+
+    use alloc::vec::Vec;
+    use fstart_acpi_macros::acpi_dsl;
+
+    /// PCIe graphics port 0:1.0 with its 1:1 APIC `_PRT` (coreboot `peg.asl`).
+    #[must_use]
+    pub fn peg_node() -> Vec<u8> {
+        acpi_dsl! {
+            Device("PEGP") {
+                Name("_ADR", 0x00010000u32);
+                Name("_PRT", Package(
+                    Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
+                    Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
+                    Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
+                    Package(0x0000FFFFu32, 3u32, 0u32, 19u32)
+                ));
+            }
+        }
+        .into()
+    }
+
+    /// Power-state methods of the integrated graphics device 0:2.0
+    /// (coreboot `drivers/intel/gma/acpi/gfx.asl`), to embed in `GFX0`.
+    #[must_use]
+    pub fn gfx_power_methods() -> Vec<u8> {
+        acpi_dsl! {
+            Method("_PS0", 0, NotSerialized) { }
+            Method("_PS3", 0, NotSerialized) { }
+            Method("_S0W", 0, NotSerialized) { Return(3u32); }
+            Method("_S3D", 0, NotSerialized) { Return(3u32); }
+        }
+        .into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::tseg_size_bytes;

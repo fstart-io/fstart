@@ -19,7 +19,7 @@
 //!
 //! ## Decision tree (all determined by CPUID at runtime)
 //!
-//! | Feature | P3 (Fam6 <0F) | Core2 (Fam6 0F+) | Atom/NEM | Netburst (FamF) |
+//! | Feature | P3 (Fam6 <0E) | Core2 (Fam6 0E+) | Atom/NEM | Netburst (FamF) |
 //! |---|---|---|---|---|
 //! | PHYSMASK high | PAE check | leaf 0x80000008 | leaf 0x80000008 | PAE fallback |
 //! | INIT IPI | no | yes | yes | yes + SIPI |
@@ -96,8 +96,8 @@ core::arch::global_asm!(
     "je _car_nem",
     "cmpl $0x36, %eax",
     "je _car_nem",
-    // Core2: model >= 0x0F
-    "cmpl $0x0F, %eax",
+    // Core/Core2 (coreboot's socket_m car/core2): model >= 0x0E
+    "cmpl $0x0E, %eax",
     "jge _car_core2",
     // Fall through to P3 for older family 6.
     "jmp _car_p3",
@@ -409,7 +409,7 @@ core::arch::global_asm!(
     "outb %al, $0x80",
     "jmp *%ebp",
     // ==================================================================
-    // Path: Core2 (family 6, model >= 0x0F)
+    // Path: Core2 (family 6, model >= 0x0E)
     // ==================================================================
     "_car_core2:",
     // POST 0x65: Core2-style CAR path selected.
@@ -465,7 +465,7 @@ core::arch::global_asm!(
     "andl $0xFFFFFFF0, %esp",
     "jmp _car_done",
     // ==================================================================
-    // Path: P3 (family 6, model < 0x0F)
+    // Path: P3 (family 6, model < 0x0E)
     // ==================================================================
     "_car_p3:",
     // POST 0x66: P6/P3-style CAR path selected.

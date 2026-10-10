@@ -55,8 +55,8 @@ impl LegacyCpu for Fcbga559 {
 ///
 /// The default CAR window follows socket_m. Const parameters allow a board
 /// to retain an explicitly budgeted window, independently of its chipset.
-/// Microcode covers models 6EX/6FX; runtime init currently supports the
-/// Core 2 subset through Core2CpuDriver, not Yonah initialization.
+/// Microcode and Core2CpuDriver cover models 6EX (Yonah) and 6FX. Yonah
+/// has no long mode, so boards fitted with it must opt in to protected mode.
 pub struct SocketM<const BASE: u64 = 0xfefc_0000, const SIZE: u64 = 0x8000>;
 
 impl<const BASE: u64, const SIZE: u64> LegacyCpu for SocketM<BASE, SIZE> {

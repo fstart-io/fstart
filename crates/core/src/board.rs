@@ -23,6 +23,9 @@ pub enum Platform {
     Armv7,
     /// x86-64 / AMD64 (x86_64-unknown-none)
     X86_64,
+    /// 32-bit x86 in protected mode, for CPUs without long mode
+    /// (i686-unknown-none, a JSON target in `targets/`)
+    X86,
 }
 
 impl Platform {
@@ -33,6 +36,7 @@ impl Platform {
             Platform::Aarch64 => "aarch64-unknown-none",
             Platform::Armv7 => "armv7a-none-eabi",
             Platform::X86_64 => "x86_64-unknown-none",
+            Platform::X86 => "i686-unknown-none",
         }
     }
 
@@ -43,6 +47,7 @@ impl Platform {
             Platform::Aarch64 => "aarch64",
             Platform::Armv7 => "arm",
             Platform::X86_64 => "i386:x86-64",
+            Platform::X86 => "i386",
         }
     }
 
@@ -53,7 +58,14 @@ impl Platform {
             Platform::Aarch64 => "aarch64",
             Platform::Armv7 => "armv7",
             Platform::X86_64 => "x86_64",
+            Platform::X86 => "x86",
         }
+    }
+
+    /// Either x86 flavour: the same firmware flow, entered in long mode or
+    /// staying in 32-bit protected mode.
+    pub const fn is_x86(&self) -> bool {
+        matches!(self, Platform::X86_64 | Platform::X86)
     }
 }
 

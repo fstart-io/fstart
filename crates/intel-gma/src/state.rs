@@ -307,6 +307,9 @@ impl GmaDisplayState {
         mut probe: impl FnMut(Port) -> Result<Mode, GmaError>,
     ) -> Result<[Option<PipeOutputConfig>; PIPE_COUNT], GmaError> {
         let mut modes = [None; PIPE_COUNT];
+        // Pipe of the first output that got a mode: coreboot's default
+        // framebuffer pipe.
+        let mut fb_pipe = None;
         let mut new_configs = [None; PIPE_COUNT];
         let mut saw_enabled = false;
         let mut last_error = GmaError::UnsupportedPort;
@@ -333,7 +336,8 @@ impl GmaDisplayState {
                     .map(|pipe| (pipe, mode))
             }) {
                 Ok((pipe, mode)) => {
-                    modes[PipeOutputConfig::pipe_index(pipe)] = Some((output.port, mode))
+                    modes[PipeOutputConfig::pipe_index(pipe)] = Some((output.port, mode));
+                    fb_pipe.get_or_insert(pipe);
                 }
                 Err(err) => {
                     fstart_log::info!(
@@ -355,11 +359,38 @@ impl GmaDisplayState {
             .map(|(_, mode)| (u32::from(mode.hdisplay), u32::from(mode.vdisplay)))
             .reduce(|(width, height), (w, h)| (width.min(w), height.min(h)))
             .ok_or(last_error)?;
+        // A pipe without a scaler shows the framebuffer only at its own size.
+        // An analog monitor takes the standard timing of that size instead,
+        // which mirrors it with the panel; coreboot's text mode does the same
+        // with 640x400 on an unscalable VGA output.
+        for (index, entry) in modes.iter_mut().enumerate() {
+            if let Some((Port::Vga, mode)) = entry
+                && !scaler::pipe_can_scale(config.cpu, pipe_from_index(index)?)
+                && (u32::from(mode.hdisplay), u32::from(mode.vdisplay)) != (width, height)
+                && let (Ok(w), Ok(h)) = (u16::try_from(width), u16::try_from(height))
+                && let Some(dmt) = crate::edid::dmt_mode(w, h, 60)
+            {
+                *mode = dmt;
+            }
+        }
         let mut framebuffer = config.framebuffer;
         // Like coreboot's hires_fb glue: one minimum-sized framebuffer, not
         // independent native-sized surfaces at the same physical address.
         framebuffer.width = width;
         framebuffer.height = height;
+        // Keep the default pipe usable: one that still cannot scale needs a
+        // framebuffer of exactly its mode. Outputs that would then have to
+        // downscale are dropped below, as in coreboot.
+        if let Some(pipe) = fb_pipe.filter(|pipe| !scaler::pipe_can_scale(config.cpu, *pipe))
+            && let Some((_, mode)) = modes[PipeOutputConfig::pipe_index(pipe)]
+        {
+            let mut native = framebuffer;
+            native.width = u32::from(mode.hdisplay);
+            native.height = u32::from(mode.vdisplay);
+            if crate::gtt::choose_framebuffer_surface(resources, &native).is_ok() {
+                framebuffer = native;
+            }
+        }
         if framebuffer.preferred_mode == crate::PreferredMode::Fixed
             && framebuffer.scaling != scaler::ScalingPolicy::None
         {
@@ -867,6 +898,68 @@ mod tests {
             .unwrap();
         assert!(planned[0].is_some());
         assert!(planned[1].is_none());
+    }
+
+    #[test]
+    fn unscalable_vga_mirrors_the_panel_at_a_standard_timing() {
+        // i945 pipe A has no fitter: a larger VGA monitor runs the DMT
+        // timing of the panel's size instead of dropping the panel.
+        let outputs = [
+            OutputConfig {
+                port: Port::Vga,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::Lvds,
+                enabled: true,
+            },
+        ];
+        let config = edid_config(Cpu::I945GM, &outputs);
+        let planned = GmaDisplayState::new()
+            .resolve_requested_configs(&resources(), &config, None, |port| {
+                Ok(if port == Port::Vga {
+                    native_mode(1280, 1024)
+                } else {
+                    native_mode(1024, 768)
+                })
+            })
+            .unwrap();
+        let vga = planned[PipeOutputConfig::pipe_index(Pipe::A)].unwrap();
+        let lvds = planned[PipeOutputConfig::pipe_index(Pipe::B)].unwrap();
+        assert_eq!((vga.surface.width, vga.surface.height), (1024, 768));
+        assert_eq!(vga.mode, crate::edid::dmt_mode(1024, 768, 60).unwrap());
+        assert_eq!(lvds.mode, native_mode(1024, 768));
+        assert_eq!(vga.surface, lvds.surface);
+    }
+
+    #[test]
+    fn default_pipe_without_fitter_keeps_its_native_framebuffer() {
+        // Without a standard timing of the panel's size, coreboot's rule
+        // applies: the unscalable VGA pipe keeps its mode, and the panel,
+        // which would have to downscale, is dropped.
+        let outputs = [
+            OutputConfig {
+                port: Port::Vga,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::Lvds,
+                enabled: true,
+            },
+        ];
+        let config = edid_config(Cpu::I945GM, &outputs);
+        let planned = GmaDisplayState::new()
+            .resolve_requested_configs(&resources(), &config, None, |port| {
+                Ok(if port == Port::Vga {
+                    native_mode(1280, 720)
+                } else {
+                    native_mode(1000, 700)
+                })
+            })
+            .unwrap();
+        let vga = planned[PipeOutputConfig::pipe_index(Pipe::A)].unwrap();
+        assert_eq!((vga.surface.width, vga.surface.height), (1280, 720));
+        assert!(planned[PipeOutputConfig::pipe_index(Pipe::B)].is_none());
     }
 
     #[test]

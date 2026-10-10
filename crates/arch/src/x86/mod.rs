@@ -7,14 +7,15 @@
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub use crate::x86_crate::*;
 
+pub mod boot;
 pub mod cpu;
 pub mod lapic;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod legacy_pc;
 pub mod mp;
 
 /// Read the x86 Time Stamp Counter.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub fn rdtsc() -> u64 {
     // SAFETY: firmware runs at CPL0 and uses RDTSC only for delay loops.
@@ -22,7 +23,7 @@ pub fn rdtsc() -> u64 {
 }
 
 /// Delay for approximately `us` microseconds using the x86 TSC.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn udelay_tsc(us: u32, tsc_hz: u64) {
     let ticks = ((tsc_hz / 1_000_000).max(1)).saturating_mul(us as u64);
     let start = rdtsc();
@@ -34,7 +35,7 @@ pub fn udelay_tsc(us: u32, tsc_hz: u64) {
 /// Issue a 32-bit physical memory read without constructing a fabricated
 /// Rust pointer. Pineview uses this as a DRAM command/read-training strobe
 /// while memory is only partially initialized.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub unsafe fn read_phys32(addr: usize) {
     let value: u32;
@@ -55,7 +56,7 @@ pub unsafe fn read_phys32(addr: usize) {
 /// The Pineview/ICH7 platform enables HPET before entering raminit. The
 /// chipset's coreboot implementation uses 15 counter ticks per microsecond;
 /// retain its wraparound-safe comparison here.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn hpet_udelay(us: u32) {
     const HPET_BASE: usize = 0xFED0_0000;
     const MAIN_COUNTER: usize = 0xF0;
@@ -74,7 +75,7 @@ pub fn hpet_udelay(us: u32) {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn timestamp_us() -> u64 {
     rdtsc() / (tsc_frequency_hz() / 1_000_000).max(1)
 }
@@ -82,7 +83,10 @@ pub fn timestamp_us() -> u64 {
 // SMM builds substitute a call-free POST-port delay below so the handler does
 // not retain the broad TSC-discovery call graph. Selected per build unit, so
 // all other stages keep the precise TSC implementation unchanged.
-#[cfg(all(target_arch = "x86_64", not(fstart_stage_env = "smm")))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    not(fstart_stage_env = "smm")
+))]
 pub fn udelay(us: u32) {
     // Compute the TSC frequency once per delay.  `tsc_frequency_hz()` may use
     // CPUID/MSR reads on Core 2-era CPUs; doing that inside the polling loop is
@@ -98,7 +102,10 @@ pub fn udelay(us: u32) {
 /// reads of a device) do not stretch it the way a count of `udelay(1)` calls
 /// would. The condition is checked once more after the deadline, so a
 /// condition met right at the end is not reported as a timeout.
-#[cfg(all(target_arch = "x86_64", not(fstart_stage_env = "smm")))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    not(fstart_stage_env = "smm")
+))]
 pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
     let hz = sanitize_tsc_frequency_hz(tsc_frequency_hz());
     let ticks = (hz / 1_000_000).saturating_mul(u64::from(timeout_us));
@@ -115,7 +122,10 @@ pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
 }
 
 /// [`wait_us`] for SMM, which has no TSC frequency: counts POST-port delays.
-#[cfg(all(target_arch = "x86_64", fstart_stage_env = "smm"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    fstart_stage_env = "smm"
+))]
 pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
     (0..=timeout_us).any(|elapsed| {
         if elapsed != 0 {
@@ -126,7 +136,10 @@ pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
 }
 
 /// SMM microsecond delay via POST-port writes (see above).
-#[cfg(all(target_arch = "x86_64", fstart_stage_env = "smm"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    fstart_stage_env = "smm"
+))]
 #[inline(always)]
 pub fn udelay(us: u32) {
     for _ in 0..us {
@@ -143,7 +156,10 @@ pub fn udelay(us: u32) {
     }
 }
 
-#[cfg(all(target_arch = "x86_64", not(fstart_stage_env = "smm")))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    not(fstart_stage_env = "smm")
+))]
 fn sanitize_tsc_frequency_hz(hz: u64) -> u64 {
     // Firmware delay loops must never turn into effectively infinite waits if
     // early CPU frequency discovery sees a bogus MSR/CPUID value.  Core 2 / X61
@@ -157,9 +173,9 @@ fn sanitize_tsc_frequency_hz(hz: u64) -> u64 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 const MSR_FSB_FREQ: u32 = 0x00cd;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 const IA32_PERF_STATUS: u32 = 0x0198;
 
 /// Best-effort TSC frequency for pre-Skylake firmware delays.
@@ -168,7 +184,7 @@ const IA32_PERF_STATUS: u32 = 0x0198;
 /// `cpu/intel/common/fsb.c`: derive the TSC from the FSB clock and maximum
 /// bus ratio, rounded to the nearest 100 MHz. Fall back to the old
 /// conservative 1 GHz default only for unsupported CPUs.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn tsc_frequency_hz() -> u64 {
     if let Some(freq) = cpuid_tsc_frequency_hz() {
         return freq;
@@ -178,7 +194,7 @@ pub fn tsc_frequency_hz() -> u64 {
     })
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn cpuid_tsc_frequency_hz() -> Option<u64> {
     let (max_leaf, _, _, _) = cpuid(0);
     if max_leaf < 0x15 {
@@ -192,7 +208,7 @@ fn cpuid_tsc_frequency_hz() -> Option<u64> {
 }
 
 /// Display family and model from CPUID leaf 1.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn family_model() -> (u32, u32) {
     let (eax, _, _, _) = cpuid(1);
     let family = ((eax >> 8) & 0x0f) + ((eax >> 20) & 0xff);
@@ -216,7 +232,7 @@ impl BusClock {
 
 /// FSB-era CPU clocks, mirroring coreboot `cpu/intel/common/fsb.c`. Newer
 /// families report their clocks through CPUID and return `None`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn bus_clock() -> Option<BusClock> {
     const CORE_FSB_MHZ: [u32; 8] = [0, 133, 0, 166, 0, 100, 0, 0];
     const CORE2_FSB_MHZ: [u32; 8] = [266, 133, 200, 166, 333, 100, 400, 0];
@@ -242,24 +258,28 @@ pub fn bus_clock() -> Option<BusClock> {
 }
 
 /// Execute CPUID with ECX=0.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
 pub fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
     cpuid_count(leaf, 0)
 }
 
 /// Execute CPUID with an explicit ECX subleaf.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
 pub fn cpuid_count(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
-    // CPUID is architectural on x86_64. The stdarch wrapper preserves RBX
-    // correctly for LLVM's x86_64 code model.
-    let result = core::arch::x86_64::__cpuid_count(leaf, subleaf);
+    // CPUID is architectural on every CPU fstart supports. The stdarch
+    // wrapper preserves (R/E)BX for LLVM.
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::__cpuid_count;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::__cpuid_count;
+    let result = __cpuid_count(leaf, subleaf);
     (result.eax, result.ebx, result.ecx, result.edx)
 }
 
 /// Return the CPU physical address width, falling back to 36 bits.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn physical_address_bits() -> u32 {
     let (max_ext_leaf, _, _, _) = cpuid(0x8000_0000);
     if max_ext_leaf < 0x8000_0008 {
@@ -271,7 +291,7 @@ pub fn physical_address_bits() -> u32 {
 }
 
 /// Return the architectural MTRR physical address mask for this CPU.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn physical_address_mask() -> u64 {
     let bits = physical_address_bits();
     if bits >= 64 {
@@ -282,7 +302,7 @@ pub fn physical_address_mask() -> u64 {
 }
 
 /// Return the exclusive physical-address limit for this CPU.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn physical_address_limit() -> u64 {
     physical_address_mask().saturating_add(0x1000)
 }
@@ -297,7 +317,7 @@ pub fn physical_address_limit() -> u64 {
 ///
 /// The range must be readable for `len` bytes. The caller must ensure no other
 /// CPU concurrently mutates it until the returned writeback fence completes.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub unsafe fn writeback_cache_range(addr: *const u8, len: usize) {
     if len == 0 {
         return;
@@ -336,7 +356,7 @@ pub unsafe fn writeback_cache_range(addr: *const u8, len: usize) {
 /// # Safety
 /// CPL0, never CAR, and CR0.CD must be clear. Supported i945/Atom hardware can
 /// hang on WBINVD with caching disabled; callers must not use it under CD=1.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub unsafe fn writeback_invalidate_caches() {
     unsafe { core::arch::asm!("wbinvd", options(nostack, preserves_flags)) };
 }

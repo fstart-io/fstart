@@ -7,6 +7,9 @@
  * protected mode, claims a 0-based AP index with an atomic xadd, enables
  * long mode using the BSP-provided CR3, sets a per-AP stack, and tail-calls
  * fstart_ap_entry(index).
+ *
+ * With FSTART_PROTECTED_MODE (the 32-bit target) the AP stays in flat
+ * protected mode without paging and tail-calls the cdecl entry instead.
  */
 
 .set SIPI_BASE, 0x8000
@@ -83,12 +86,23 @@ prot32:
 	movl SIPI_BASE + fstart_sipi_stack_size - fstart_sipi_start, %ecx
 	imull %ecx, %ebx
 	addl SIPI_BASE + fstart_sipi_stack_base - fstart_sipi_start, %ebx
+#ifdef FSTART_PROTECTED_MODE
+	/* cdecl tail call: the index argument plus a null return address, with
+	 * ESP % 16 == 12 at entry as if called with an aligned stack.
+	 */
+	andl $-16, %ebx
+	subl $12, %ebx
+	movl %ebx, %esp
+	pushl %esi
+	pushl $0
+#else
 	/* A tail jump into the Rust entry must present the SysV function-entry
 	 * alignment (RSP % 16 == 8), as if a return address had been pushed.
 	 */
 	andl $-16, %ebx
 	subl $8, %ebx
 	movl %ebx, %esp
+#endif
 
 	/* Replay the BSP's fixed/variable MTRRs and PAT with caching disabled.
 	 * INIT can retain MSRs, so disable MTRRs explicitly before replay. The
@@ -117,6 +131,17 @@ msr_replay:
 	jmp msr_replay
 msr_replay_done:
 
+#ifdef FSTART_PROTECTED_MODE
+	/* No paging: join cache coherency now that the BSP's MTRRs/PAT are in
+	 * place, then enter Rust.
+	 */
+	movl %cr0, %eax
+	andl $~(CR0_CD | CR0_NW), %eax
+	movl %eax, %cr0
+	xorl %ebp, %ebp
+	movl SIPI_BASE + fstart_sipi_entry - fstart_sipi_start, %eax
+	jmp *%eax
+#else
 	movl %cr4, %eax
 	orl $CR4_PAE, %eax
 	movl %eax, %cr4
@@ -140,6 +165,7 @@ msr_replay_done:
 	movl %eax, %cr0
 
 	ljmpl $CODE64_SEL, $(SIPI_BASE + long64 - fstart_sipi_start)
+#endif
 
 excess_ap:
 	/* Hard reset through the ICH/Q35 reset control register. A halted CPU
@@ -151,6 +177,7 @@ excess_ap:
 1:	hlt
 	jmp 1b
 
+#ifndef FSTART_PROTECTED_MODE
 .balign 16
 .code64
 long64:
@@ -162,6 +189,7 @@ long64:
 	movl %esi, %edi
 	movq fstart_sipi_entry(%rip), %rax
 	jmp *%rax
+#endif
 
 .balign 8
 gdtr:

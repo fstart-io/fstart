@@ -8,6 +8,9 @@
  * the visible selector may be truncated for high TSEG placements, so this
  * code loads the absolute copied-entry address from entry_base instead of
  * deriving it from CS.
+ *
+ * With FSTART_PROTECTED_MODE (32-bit target) the stub stays in flat
+ * protected mode without paging and calls the cdecl handler entry.
  */
 
 .set SMM_ENTRY_ORIGIN, 0x8000
@@ -75,6 +78,24 @@ prot32:
 	movw %ax, %fs
 	movw %ax, %gs
 
+#ifdef FSTART_PROTECTED_MODE
+	movl %esi, %esp
+	andl $-16, %esp
+	xorl %ebp, %ebp
+
+	leal (fstart_smm_stub_params - fstart_smm_stub_start)(%ebx), %eax
+	movl (fstart_smm_stub_params - fstart_smm_stub_start + PARAM_COMMON_ENTRY)(%ebx), %ecx
+	testl %ecx, %ecx
+	jz 1f
+	/* cdecl: params pointer on an otherwise 16-byte aligned stack. */
+	subl $12, %esp
+	pushl %eax
+	call *%ecx
+1:
+	rsm
+	hlt
+	jmp . - 1
+#else
 	movl %cr4, %eax
 	orl $CR4_PAE, %eax
 	movl %eax, %cr4
@@ -116,6 +137,7 @@ long64:
 	rsm
 	hlt
 	jmp . - 1
+#endif
 
 .balign 8
 gdtr:

@@ -87,7 +87,7 @@ fn iomb() {
         core::arch::asm!("fence iorw, iorw", options(nostack, preserves_flags));
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     // SAFETY: `mfence` is a full serializing fence for loads and stores.
     // On x86 MMIO (mapped as UC/WC), this ensures all prior writes are
     // visible to the device before subsequent reads/writes.

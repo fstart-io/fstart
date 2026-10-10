@@ -319,6 +319,18 @@ pub struct IronlakePfitEncoding {
     pub win_size: u32,
 }
 
+/// Whether `pipe` can scale a framebuffer onto its mode (libgfxinit
+/// `Can_Scale`). The pre-i965 fitter is wired to pipe B only.
+pub const fn pipe_can_scale(cpu: Cpu, pipe: Pipe) -> bool {
+    let caps = caps_for(cpu);
+    caps.implemented
+        && match caps.kind {
+            Some(ScalerKind::GmchPanelFitterPreI965) => matches!(pipe, Pipe::B),
+            Some(_) => true,
+            None => false,
+        }
+}
+
 /// Return scaler capabilities for a CPU/platform.
 pub const fn caps_for(cpu: Cpu) -> ScalerCaps {
     match cpu {

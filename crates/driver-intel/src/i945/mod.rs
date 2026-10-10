@@ -99,6 +99,8 @@ pub mod hostbridge {
 /// IGD PCI configuration offsets, panel registers and command bits.
 const IGD_MSAC: u16 = 0x62;
 const IGD_GDRST: u16 = 0xc0;
+/// Legacy Backlight Brightness, in the 0:2.1 configuration space.
+const IGD_LBB: u16 = 0xf4;
 const PCI_COMMAND: u16 = 0x04;
 const PCI_CMD_MEMORY: u16 = 1 << 1;
 const PCI_CMD_MASTER: u16 = 1 << 2;
@@ -111,6 +113,10 @@ const BLC_PWM_CTL: u32 = 0x61254;
 const BLM_LEGACY_MODE: u32 = 1 << 16;
 /// Backlight PWM frequency coreboot uses when the board names none.
 const DEFAULT_BLC_PWM_FREQ: u16 = 180;
+/// TPM locality 0 `TPM_ACCESS`; bit 7 (`tpmRegValidSts`) reports it is ready.
+const TPM_ACCESS_0: usize = 0xfed4_0000;
+/// Temporary bus behind the PEG port while probing for a link partner.
+const PEG_PROBE_BUS: u8 = 0x0a;
 /// Gen3 GTT page table size, selected by `PGETBL_CTL` bit 1.
 const I945_GTT_SIZE: u32 = 256 * 1024;
 const I945_GTT_256_KIB_FLAG: u32 = 2;
@@ -466,24 +472,30 @@ pub struct IntelI945 {
     memory_info: Option<fstart_core::memory_info::MemoryInfo>,
 }
 
-/// CF9 full reset, mirroring coreboot `full_reset()`.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn cf9_reset() -> ! {
+/// CF9 reset with `value` as the reset request (RST_CPU 0->1 edge).
+fn cf9(value: u8) -> ! {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     // SAFETY: I/O port 0xcf9 is the standard Intel reset control register.
+    // Program the reset type first; the RST_CPU (bit 2) edge starts it.
     unsafe {
-        fstart_core::pio::outb(0xcf9, 0x06);
-        fstart_core::pio::outb(0xcf9, 0x0e);
+        fstart_core::pio::outb(0xcf9, value & !0x04);
+        fstart_core::pio::outb(0xcf9, value);
     }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let _ = value;
     loop {
         core::hint::spin_loop();
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-fn cf9_reset() -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
+/// Hard reset, mirroring coreboot `system_reset()`.
+pub(crate) fn cf9_reset() -> ! {
+    cf9(0x06)
+}
+
+/// Full reset with a power cycle, mirroring coreboot `full_reset()`.
+pub(crate) fn cf9_full_reset() -> ! {
+    cf9(0x0e)
 }
 
 impl IntelI945 {
@@ -527,7 +539,7 @@ impl IntelI945 {
         Self::hb().read8(0x08)
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn enable_ecam(&self) {
         let value = (self.config.ecam_base as u32) | self.pciexbar_length_bits() | 1;
         // SAFETY: one-time legacy PCI config write to enable ECAM before the
@@ -545,7 +557,7 @@ impl IntelI945 {
         fstart_log::info!("i945: ECAM enabled at {:#x}", self.config.ecam_base);
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     fn enable_ecam(&self) {
         ecam::init(self.config.ecam_base as usize);
         fstart_log::info!("i945: ECAM enable (stub, non-x86)");
@@ -578,9 +590,11 @@ impl IntelI945 {
             hb.write8(pam, 0x33);
         }
 
-        // Wait for MCHBAR to come up (CAPID0 bit 49 clear path).
+        // CAPID0 bit 49 clear: wait for the TPM interface behind LPC to report
+        // a valid access register, as coreboot does before raminit.
         if hb.read32(0xe4) & 0x0002_0000 == 0 {
-            while self.mchbar().read8(0) & 0x80 == 0 {
+            // SAFETY: the TPM locality 0 window is decoded by the ICH by default.
+            while unsafe { fstart_core::mmio::read8(TPM_ACCESS_0 as *const u8) } & 0x80 == 0 {
                 core::hint::spin_loop();
             }
         }
@@ -837,8 +851,14 @@ impl IntelI945 {
             return;
         }
         p2peg.write16(SLOTSTS, slotsts | (1 << 4) | (1 << 0));
-        // Temporary bus number for link probing.
-        p2peg.and8_or8(0x19, 0, 0x0a);
+        // Temporary bus number for link probing (`pci_s_bridge_set_secondary`):
+        // config cycles forward only up to the subordinate bus.
+        // SAFETY: D1:F0 was just enabled in DEVEN and has a Type 1 header.
+        let bridge = unsafe { p2peg.regs::<fstart_pci::PciType1Config>() };
+        bridge.secondary_bus.set(0);
+        bridge.subordinate_bus.set(0);
+        bridge.secondary_bus.set(PEG_PROBE_BUS);
+        bridge.subordinate_bus.set(PEG_PROBE_BUS);
         p2peg.and32(0x224, !(1 << 8));
         mch.clrbits16(mchbar::UPMC1, (1 << 5) | (1 << 0));
         p2peg.or16(PEG_CAP, 1 << 8);
@@ -851,7 +871,7 @@ impl IntelI945 {
         while (p2peg.read32(PEGSTS) >> 16) & 3 != 3 && timeout != 0 {
             timeout -= 1;
         }
-        let peg_plugin = ecam::EcamDevice::new(0x0a, 0, 0);
+        let peg_plugin = ecam::EcamDevice::new(PEG_PROBE_BUS, 0, 0);
         let mut id = peg_plugin.read32(0x00);
         if id == 0 || id == 0xffff_ffff {
             // Retry at x1 before giving up.
@@ -1020,6 +1040,11 @@ impl IntelI945 {
 
     /// Post-DRAM chipset init (`i945_late_initialization`).
     fn late_initialization(&self) {
+        // coreboot applies the GM errata right after raminit, ahead of the
+        // egress/DMI/PEG link setup.
+        if self.config.variant == I945Variant::Mobile {
+            self.fixup_mobile_errata();
+        }
         self.setup_egress_port();
         self.ich7_setup_root_complex_topology();
         self.ich7_setup_pci_express();
@@ -1028,7 +1053,6 @@ impl IntelI945 {
 
         if self.config.variant == I945Variant::Mobile {
             self.setup_pci_express_x16();
-            self.fixup_mobile_errata();
         }
         self.setup_root_complex_topology();
         raminit::dump_mchbar_registers(&self.mchbar());
@@ -1109,8 +1133,9 @@ impl IntelI945 {
     ///
     /// The Video BIOS places the 256 KiB GTT page table below the top of low
     /// memory, and the display engine cannot translate framebuffer addresses
-    /// until `PGETBL_CTL` enables it.
-    fn gtt_setup(&self, gtt_mmio: u64) -> bool {
+    /// until `PGETBL_CTL` enables it. The table sits in stolen memory, which
+    /// the CPU cannot address directly; GTTADR (BAR3) is its CPU window.
+    fn gtt_setup(&self, gtt_mmio: u64, gtt_pte: u64) -> bool {
         let tolud = self.tolud();
         if tolud < I945_GTT_SIZE {
             fstart_log::error!("intel-i945: TOLUD too low for a GTT page table");
@@ -1128,9 +1153,7 @@ impl IntelI945 {
             fstart_log::error!("intel-i945: GTT page table did not enable");
             return false;
         }
-        // Gen3 keeps the page table in stolen memory, which the CPU addresses
-        // directly, so PTEs are written at the physical base.
-        super::igd::clear_gtt_table(u64::from(gtt_base), I945_GTT_SIZE);
+        super::igd::clear_gtt_table(gtt_pte, I945_GTT_SIZE);
         true
     }
 
@@ -1151,7 +1174,7 @@ impl IntelI945 {
             return;
         }
         // Consume the windows PCI enumeration assigned; never re-program them.
-        let Some(bars) = super::igd::assigned_bars(&igd, false) else {
+        let Some(bars) = super::igd::assigned_bars(&igd, true) else {
             fstart_log::error!("intel-i945: IGD windows unassigned, skipping display");
             return;
         };
@@ -1172,21 +1195,27 @@ impl IntelI945 {
             return;
         }
 
+        let Some(gtt_pte) = bars.gtt_pte else {
+            return;
+        };
         self.igd_panel_setup(bars.gtt_mmio);
-        if !self.gtt_setup(bars.gtt_mmio) {
+        if !self.gtt_setup(bars.gtt_mmio, gtt_pte) {
             return;
         }
 
+        // The GTT occupies the top of stolen memory; the framebuffer gets
+        // what lies below it.
         let stolen_base = self.igd_stolen_base();
+        let gtt_base = self.tolud().saturating_sub(I945_GTT_SIZE);
         let addresses = super::igd::IgdAddresses {
             pci_bdf: PciAddress::new(0, 0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC),
             gtt_mmio_base: bars.gtt_mmio,
             gtt_mmio_size: 512 * 1024,
-            gtt_pte_base: Some(u64::from(self.tolud().saturating_sub(I945_GTT_SIZE))),
+            gtt_pte_base: Some(gtt_pte),
             gmadr_base: Some(bars.gmadr),
             gmadr_size: super::igd::gmadr_size_from_msac(igd.read8(IGD_MSAC)),
             stolen_base: u64::from(stolen_base),
-            stolen_size: self.tolud().saturating_sub(stolen_base),
+            stolen_size: gtt_base.saturating_sub(stolen_base),
             gtt_size: I945_GTT_SIZE,
             gcfgc: Some(igd.read16(hostbridge::IGD_GCFC)),
         };
@@ -1196,6 +1225,18 @@ impl IntelI945 {
             &addresses,
             vbt,
         );
+    }
+
+    /// Full legacy backlight brightness (coreboot `gma_func1_init`): with
+    /// `BLM_LEGACY_MODE` the panel sees the PWM duty scaled by LBB, which
+    /// resets to 0, so a lit panel would otherwise stay dark.
+    fn igd_func1_init(&self) {
+        if Self::hostbridge_regs().deven.get() & hostbridge::DEVEN_D2F1 == 0 {
+            return;
+        }
+        let func1 = ecam::EcamDevice::new(0, hostbridge::IGD_DEV, 1);
+        func1.or16(PCI_COMMAND, PCI_CMD_MASTER);
+        func1.write8(IGD_LBB, 0xff);
     }
 
     fn tolud(&self) -> u32 {
@@ -1332,6 +1373,7 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
         if self.config.igd.display.is_some() {
             self.gma_display_init(vbt.as_deref());
         }
+        self.igd_func1_init();
         Ok(())
     }
 
@@ -1445,6 +1487,74 @@ mod acpi_impl {
 
     use super::*;
 
+    /// Integrated graphics `GFX0`. With a panel, `LCD0` and the H8 hotkey
+    /// helpers `INCB`/`DECB` drive the legacy backlight brightness byte (LBB,
+    /// 0:2.1 config 0xf4) in coreboot's 16 steps (`igd.asl`, `common.asl`).
+    fn gfx_aml(panel: bool) -> Vec<u8> {
+        let mut gfx: Vec<u8> = acpi_dsl! { Name("_ADR", 0x00020000u32); }.into();
+        gfx.extend(crate::gmch::acpi::gfx_power_methods());
+        if !panel {
+            return fstart_acpi::aml_linker::device_vec("GFX0", &gfx)
+                .expect("GFX0 device emission");
+        }
+        gfx.extend_from_slice(&acpi_dsl! {
+            // _BCL has been read: the OS owns brightness and hotkeys only notify.
+            Name("BRCT", 0u32);
+            // AC and battery defaults, then the selectable levels.
+            Name("BRIG", Package(
+                15u32, 15u32, 0u32, 1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32, 9u32,
+                10u32, 11u32, 12u32, 13u32, 14u32, 15u32
+            ));
+            Method("XBCM", 1, NotSerialized) {
+                Store((Arg0 << 4u32) | 0x0fu32, #{const "\\_SB_.PCI0.DSPC.BRTC"});
+            }
+            Method("XBQC", 0, NotSerialized) {
+                Return(#{const "\\_SB_.PCI0.DSPC.BRTC"} >> 4u32);
+            }
+            Method("_DOS", 1, NotSerialized) { }
+            Device("LCD0") {
+                Name("_ADR", 0x0400u32);
+                Method("_BCL", 0, NotSerialized) {
+                    BRCT = 1u32;
+                    Return(BRIG);
+                }
+                Method("_BCM", 1, NotSerialized) { XBCM(Arg0); }
+                Method("_BQC", 0, NotSerialized) { Return(XBQC()); }
+            }
+            Method("DECB", 0, NotSerialized) {
+                If (BRCT) {
+                    Notify(LCD0, 0x87u32);
+                } Else {
+                    Local0 = XBQC();
+                    If (Local0 > 0u32) { Local0--; }
+                    XBCM(Local0);
+                }
+            }
+            Method("INCB", 0, NotSerialized) {
+                If (BRCT) {
+                    Notify(LCD0, 0x86u32);
+                } Else {
+                    Local0 = XBQC();
+                    If (Local0 < 15u32) { Local0++; }
+                    XBCM(Local0);
+                }
+            }
+        });
+        let mut aml =
+            fstart_acpi::aml_linker::device_vec("GFX0", &gfx).expect("GFX0 device emission");
+        aml.extend_from_slice(&acpi_dsl! {
+            Device("DSPC") {
+                Name("_ADR", 0x00020001u32);
+                OperationRegion("LBBR", PciConfig, 0x00u32, 0x100u32);
+                Field("LBBR", ByteAcc, NoLock, Preserve) {
+                    Offset(0xf4),
+                    BRTC, 8,
+                }
+            }
+        });
+        aml
+    }
+
     impl AcpiDevice for IntelI945 {
         type Config = IntelI945Config;
 
@@ -1464,10 +1574,13 @@ mod acpi_impl {
             let ecam_base = config.ecam_base as u32;
             let ecam_size =
                 (u64::from(config.ecam_buses) * 1024 * 1024).min(u64::from(u32::MAX)) as u32;
+            // TOLUD is live chipset state; host-side table tests have no ECAM.
+            #[cfg(target_os = "none")]
             let pci_mmio_base = self.tolud().max(0x8000_0000);
+            #[cfg(not(target_os = "none"))]
+            let pci_mmio_base = 0x8000_0000u32;
             let pci_mmio_limit = 0xfebf_ffffu32;
             let rcba = config.rcba as u32;
-            let mobile = config.variant == I945Variant::Mobile;
 
             let mut aml: Vec<u8> = acpi_dsl! {
                 Device("PCI0") {
@@ -1562,20 +1675,24 @@ mod acpi_impl {
                 }
             }.into();
 
-            if mobile {
-                aml.extend_from_slice(&acpi_dsl! {
-                    Scope("\\_SB_.PCI0") {
-                        Device("PEGP") {
-                            Name("_ADR", 0x00010000u32);
-                            Name("_PRT", Package(
-                                Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
-                                Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
-                                Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
-                                Package(0x0000FFFFu32, 3u32, 0u32, 19u32)
-                            ));
-                        }
-                    }
-                });
+            // PEGP and the IGD (coreboot `i945.asl`: `peg.asl`, `gfx.asl`
+            // and, with an LVDS panel, the `igd.asl` backlight methods).
+            let mut pci0 = crate::gmch::acpi::peg_node();
+            pci0.extend(gfx_aml(config.igd.panel.is_some()));
+            aml.extend(
+                fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &pci0)
+                    .expect("i945 PCI0 scope emission"),
+            );
+            // 945GM pairs with Socket M Core 2 CPUs: SpeedStep `_PSS` and
+            // MWAIT `_CST`, as the GM965 driver emits for the same CPUs.
+            if config.variant == I945Variant::Mobile {
+                aml.extend(
+                    fstart_acpi::aml_linker::scope_vec(
+                        "\\",
+                        &crate::cpu::core2_aml::cpu_devices_aml(2),
+                    )
+                    .expect("i945 CPU scope emission"),
+                );
             }
             aml
         }

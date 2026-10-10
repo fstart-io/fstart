@@ -367,7 +367,7 @@ fn run(
     let build_policy = config.build.clone();
     let platform = config.platform;
     let is_multi_stage = matches!(config.stages, StageLayout::MultiStage(_));
-    let needs_x86_pflash = matches!(config.platform, fstart_core::Platform::X86_64);
+    let needs_x86_pflash = config.platform.is_x86();
     // Even a halt-only monolithic stage must receive its signed root and
     // directory when its fixed flow verifies boot media. Running the bare ELF
     // would leave its build-patched anchor and firmware window empty.

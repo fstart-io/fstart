@@ -1,0 +1,12 @@
+[package]
+name = "fstart-driver-ricoh"
+description = "Ricoh PCI card-reader controller policy"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+fstart-core = { workspace = true }
+fstart-pci = { workspace = true }
+tock-registers = { workspace = true }

@@ -66,7 +66,7 @@ impl IntelPlan {
                 .map_err(|_| "too many microcode files")?;
         }
         Ok(crate::build_plan::Assembly {
-            platform: Platform::X86_64,
+            platform: self.platform,
             memory: vec![MemoryRegion {
                 name: hstr("bootstrap-ram"),
                 base: self.reservations.bootstrap_ram.base,

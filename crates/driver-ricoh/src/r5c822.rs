@@ -1,4 +1,5 @@
-//! R5C822 SD policy used by the X61, not the different RCE822/RCE823 register map.
+//! R5C822 SD host write-protect policy (coreboot `mainboard/lenovo/x6*/mainboard.c`),
+//! not the different RCE822/RCE823 register map.
 //!
 //! Keep the PCI-byte erratum sequence explicit; a config overlay RMW would
 //! preserve controls that the board's exact policy deliberately clears.
@@ -20,10 +21,7 @@ register_bitfields![u8,
 
 /// Program the board-selected SDWPPol value, keeping CLKRUNDis/SDPWRPol clear.
 /// Identity verification must precede any vendor-specific register access.
-pub(super) fn configure_sd_write_protect(
-    sd: EcamDevice,
-    sdwp_pol: bool,
-) -> Result<(), ServiceError> {
+pub fn configure_sd_write_protect(sd: EcamDevice, sdwp_pol: bool) -> Result<(), ServiceError> {
     let vendor = sd
         .try_read16(PCI_VENDOR_ID)
         .ok_or(ServiceError::HardwareError)?;
@@ -63,8 +61,6 @@ fn program_sd_policy(
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
-
     use super::*;
     use core::cell::RefCell;
     use std::vec::Vec;

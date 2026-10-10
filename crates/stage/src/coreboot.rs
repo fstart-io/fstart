@@ -74,12 +74,7 @@ impl<D: X86CorebootPayloadContext> MainstagePayload<D> for X86CorebootPayload {
         // SAFETY: the verified image is loaded at its linked address and the
         // mainstage stack lies in the identity-mapped low 4 GiB. Nothing of
         // the firmware runs after this.
-        unsafe {
-            fstart_arch::x86_64::protected_mode::protected_mode_call(
-                manifest.entry as u32,
-                table as u32,
-            )
-        }
+        unsafe { fstart_arch::x86::boot::protected_mode_call(manifest.entry as u32, table as u32) }
     }
 }
 
@@ -174,6 +169,7 @@ fn framebuffer(info: &FramebufferInfo) -> Framebuffer {
         blue_mask_size: info.blue_size,
         ..Default::default()
     }
+    .with_reserved_mask()
 }
 
 /// Load the verified payload image; returns its load address.
@@ -193,5 +189,5 @@ fn load_payload() -> Result<u64, &'static str> {
 
 fn halt(reason: &str) -> ! {
     fstart_log::error!("coreboot payload: {}", reason);
-    fstart_arch::x86_64::halt()
+    fstart_arch::x86::boot::halt()
 }

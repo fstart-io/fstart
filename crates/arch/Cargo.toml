@@ -36,6 +36,8 @@ zerocopy = { workspace = true }
 
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
 x86 = { workspace = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_64_crate = { workspace = true }
 
 [build-dependencies]

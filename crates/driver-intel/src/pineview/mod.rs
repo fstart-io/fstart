@@ -284,7 +284,7 @@ impl IntelPineview {
     ///
     /// This is the **only** place legacy PIO is used. After this, all
     /// PCI config access goes through [`EcamPci`].
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn enable_ecam(&self) {
         // PCIEXBAR value: base address | length encoding | enable.
         // Length encoding 0 selects 256 buses, matching PCI_BUS_END and the
@@ -299,7 +299,7 @@ impl IntelPineview {
         fstart_log::info!("pineview: ECAM enabled at {:#x}", self.config.ecam_base);
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     fn enable_ecam(&self) {
         ecam::init(self.config.ecam_base as usize);
         fstart_log::info!("pineview: ECAM enable (stub, non-x86)");
@@ -565,7 +565,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
     }
 
     fn training_identity(&self) -> Option<[u8; 32]> {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let hb = self.hostbridge_regs();
             Some(crate::generic::training::identity(
@@ -581,11 +581,11 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
                     device_id: hb.device_id.get(),
                     revision_id: hb.revision_id.get(),
                     capabilities: [hb.capid0.get(), hb.capid0_hi.get()],
-                    cpu_signature: core::arch::x86_64::__cpuid(1).eax,
+                    cpu_signature: fstart_arch::x86::cpuid(1).0,
                 },
             ))
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         {
             None
         }
@@ -1473,6 +1473,22 @@ mod acpi_impl {
                 }
                 }
             }));
+
+            // PEGP and the integrated graphics function (coreboot
+            // `pineview.asl`: `peg.asl` and `gfx.asl`).
+            let mut pci0 = crate::gmch::acpi::peg_node();
+            let mut gfx: Vec<u8> = fstart_acpi_macros::acpi_dsl! {
+                Name("_ADR", 0x00020000u32);
+            }
+            .into();
+            gfx.extend(crate::gmch::acpi::gfx_power_methods());
+            pci0.extend(
+                fstart_acpi::aml_linker::device_vec("GFX0", &gfx).expect("GFX0 device emission"),
+            );
+            aml.extend(
+                fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &pci0)
+                    .expect("Pineview PCI0 scope emission"),
+            );
 
             // ---------------------------------------------------------------
             // 4. Processor power-management devices (\._SB.CP00, CP01).

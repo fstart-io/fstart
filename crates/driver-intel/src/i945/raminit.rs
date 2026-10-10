@@ -16,7 +16,7 @@
 //!   stacked / burst-length checks read the raw SPD bytes directly.
 //! - `die()` becomes `Err(ServiceError::...)`; the fixed platform flow
 //!   halts the boot on error. `full_reset()` cases call
-//!   [`super::cf9_reset`].
+//!   [`super::cf9_full_reset`].
 //! - S3 resume and warm reset reboot instead of resuming: fstart has no
 //!   MRC cache, so the CMOS receive-enable save/restore pair is omitted
 //!   (same policy as the GM965 port).
@@ -699,34 +699,26 @@ impl Ctx<'_> {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn udelay(us: u32) {
     fstart_arch::x86::udelay(us);
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn udelay(_us: u32) {}
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn ram_read32(addr: u32) {
     // SAFETY: JEDEC/training strobe to a DRAM address; the read itself is
     // the command trigger. Mirrors coreboot `read32p()`.
     unsafe { fstart_arch::x86::read_phys32(addr as usize) };
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn ram_read32(_addr: u32) {}
 
-#[cfg(target_arch = "x86_64")]
 fn full_reset() -> ! {
-    super::cf9_reset();
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn full_reset() -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
+    super::cf9_full_reset();
 }
 
 /// Issue a DRAM command through DCC.
@@ -900,7 +892,11 @@ fn gather_common_timing(
             continue;
         }
 
+        // Address 0 marks a slot the board does not wire up.
         let device = spd_address(ctx, i);
+        if device == 0 {
+            continue;
+        }
         let mem_type = ctx.smbus.read_byte(device, 2).unwrap_or(0xff);
         if mem_type != ddr2::DDR2 {
             fstart_log::debug!("i945: DDR2 ch{} slot{}: N/A", i >> 1, i & 1);
@@ -1275,14 +1271,13 @@ fn program_dll_timings(ctx: &Ctx<'_>, sys: &SysInfo) {
         }
     };
     for i in 0..4u32 {
-        for (base, wl) in [
-            (r::C0R0B00DQST, r::C0WL0REOST),
-            (r::C0R0B00DQST + r::C1_BASE, r::C0WL0REOST + r::C1_BASE),
-        ] {
+        for base in [r::C0R0B00DQST, r::C0R0B00DQST + r::C1_BASE] {
             ctx.mch.write32(base + i * 0x10, channeldll);
             ctx.mch.write32(base + i * 0x10 + 4, channeldll);
+            // GC parts also have the ninth byte lane of each rank.
             if !ctx.mobile {
-                ctx.mch.write8(wl + i * 0x10 + 8, (channeldll & 0xff) as u8);
+                ctx.mch
+                    .write8(base + i * 0x10 + 8, (channeldll & 0xff) as u8);
             }
         }
     }
@@ -1362,7 +1357,7 @@ fn enable_system_memory_io(ctx: &Ctx<'_>, sys: &SysInfo) {
     );
 
     // NOP-ish barrier: two no-ops before sampling DRTST.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
         core::arch::asm!("nop", "nop", options(nomem, nostack, preserves_flags));
     }
@@ -1689,7 +1684,8 @@ fn program_graphics_frequency(ctx: &mut Ctx<'_>, sys: &mut SysInfo) {
 
     let voltage_1_50 = ctx.mch.read32(mchbar::DFT_STRAP1) & (1 << 20) != 0;
     // Gate graphics hardware for the frequency change.
-    ctx.igd.or8(hostbridge::IGD_GCFC + 1, (1 << 3) | (1 << 1));
+    ctx.igd
+        .write8(hostbridge::IGD_GCFC + 1, (1 << 3) | (1 << 1));
 
     let caps = (ctx.hb.read8(0xe5) >> 1) & 7;
     let mut freq = CRCLK_250MHZ;
@@ -1732,7 +1728,8 @@ fn program_graphics_frequency(ctx: &mut Ctx<'_>, sys: &mut SysInfo) {
         CDCLK_200MHZ
     };
     ctx.igd.write8(hostbridge::IGD_GCFC, reg);
-    ctx.igd.or8(hostbridge::IGD_GCFC + 1, (1 << 3) | (1 << 1));
+    ctx.igd
+        .write8(hostbridge::IGD_GCFC + 1, (1 << 3) | (1 << 1));
     ctx.igd.or8(hostbridge::IGD_GCFC + 1, 0x0f);
     // Ungate core render and display clocks.
     ctx.igd.and8(hostbridge::IGD_GCFC + 1, 0xf0);
@@ -1764,19 +1761,16 @@ fn program_memory_frequency(ctx: &mut Ctx<'_>, sys: &SysInfo) -> Result<(), Serv
     }
     ctx.mch.write32(mchbar::CLKCFG, clkcfg);
 
-    // VCO update: prefetch the update path into cache (CAR/XIP), clear the
-    // DRAM-init-interrupted latch, then toggle the update bit with a delay.
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("jmp 2f", options(nomem, nostack));
-        core::arch::asm!("3:", options(nomem, nostack));
-    }
+    // VCO update: clear the DRAM-init-interrupted latch, then toggle the
+    // update bit with a delay. coreboot's jump-around cache prefetch is not
+    // reproduced: jumps between separate `asm!` blocks are undefined, and
+    // coreboot notes the i945GM works without it.
     ctx.lpc.and8(GEN_PMCON_2, !(1 << 7));
     let mut clkcfg = clkcfg & !(1 << 10);
     ctx.mch.write32(mchbar::CLKCFG, clkcfg);
     clkcfg |= 1 << 10;
     ctx.mch.write32(mchbar::CLKCFG, clkcfg);
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     for _ in 0..0x100 {
         unsafe {
             core::arch::asm!(
@@ -1789,10 +1783,6 @@ fn program_memory_frequency(ctx: &mut Ctx<'_>, sys: &SysInfo) -> Result<(), Serv
         }
     }
     ctx.mch.write32(mchbar::CLKCFG, clkcfg & !(1 << 10));
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("jmp 4f", "2:", "jmp 3b", "4:", options(nomem, nostack));
-    }
     Ok(())
 }
 
@@ -1986,37 +1976,25 @@ fn power_management(ctx: &Ctx<'_>, sys: &SysInfo) {
             .clrsetbits16(r::CPCTL, 7 << 11, CPCTL_REG::PM_DIV.val(4).value);
     }
 
-    if IntelI945::silicon_revision() != 0 {
-        ctx.mch.write32(
-            r::HGIPMC2,
-            match sys.fsb_frequency {
-                667 => 0x0d59_0d59,
-                533 => 0x155b_155b,
-                _ => 0,
-            },
-        );
-    } else {
-        ctx.mch.write32(
-            r::HGIPMC2,
-            match sys.fsb_frequency {
-                667 => 0x09c4_09c4,
-                533 => 0x0fa0_0fa0,
-                _ => 0,
-            },
-        );
+    // Unknown FSB values leave HGIPMC2 and the C-state timer fields alone.
+    let hgipmc2 = match (IntelI945::silicon_revision() != 0, sys.fsb_frequency) {
+        (true, 667) => Some(0x0d59_0d59),
+        (true, 533) => Some(0x155b_155b),
+        (false, 667) => Some(0x09c4_09c4),
+        (false, 533) => Some(0x0fa0_0fa0),
+        _ => None,
+    };
+    if let Some(value) = hgipmc2 {
+        ctx.mch.write32(r::HGIPMC2, value);
     }
-    // Only program defined FSB cases; other values keep reset state.
-    if matches!(sys.fsb_frequency, 533 | 667) {
-        ctx.mch.write32(r::FSBPMC1, 0x8000_000c);
-        let (c2c3, c3c4) = match sys.fsb_frequency {
-            667 => (0x0600, 0x0b80),
-            _ => (0x0480, 0x0980),
-        };
-        ctx.mch.clrsetbits32(r::C2C3TT, !0xffff_0000, c2c3);
-        ctx.mch.clrsetbits32(r::C3C4TT, !0xffff_0000, c3c4);
-    } else {
-        ctx.mch.write32(r::FSBPMC1, 0x8000_000c);
-    }
+    ctx.mch.write32(r::FSBPMC1, 0x8000_000c);
+    let (c2c3, c3c4) = match sys.fsb_frequency {
+        667 => (0x0600, 0x0b80),
+        533 => (0x0480, 0x0980),
+        _ => (0, 0),
+    };
+    ctx.mch.clrsetbits32(r::C2C3TT, 0xffff, c2c3);
+    ctx.mch.clrsetbits32(r::C3C4TT, 0xffff, c3c4);
 
     if IntelI945::silicon_revision() == 0 {
         ctx.mch.clrbits32(r::ECO, ECO_REG::ECO_BIT16::SET.value);
@@ -2463,11 +2441,17 @@ fn receive_enable_autoconfig(ctx: &Ctx<'_>, channel_offset: u32, sys: &SysInfo) 
 
 /// Train receive enable per populated channel (`receive_enable_adjust`).
 fn receive_enable_adjust(ctx: &Ctx<'_>, sys: &SysInfo) {
-    if sys.dimm[0] != DIMM_NOT_POPULATED || sys.dimm[1] != DIMM_NOT_POPULATED {
-        let _ = receive_enable_autoconfig(ctx, 0, sys);
+    // Like coreboot, a channel 0 failure stops training.
+    if (sys.dimm[0] != DIMM_NOT_POPULATED || sys.dimm[1] != DIMM_NOT_POPULATED)
+        && receive_enable_autoconfig(ctx, 0, sys).is_err()
+    {
+        fstart_log::error!("i945: channel 0 receive enable training failed");
+        return;
     }
-    if sys.dimm[2] != DIMM_NOT_POPULATED || sys.dimm[3] != DIMM_NOT_POPULATED {
-        let _ = receive_enable_autoconfig(ctx, 0x80, sys);
+    if (sys.dimm[2] != DIMM_NOT_POPULATED || sys.dimm[3] != DIMM_NOT_POPULATED)
+        && receive_enable_autoconfig(ctx, 0x80, sys).is_err()
+    {
+        fstart_log::error!("i945: channel 1 receive enable training failed");
     }
 }
 
@@ -2506,6 +2490,8 @@ pub fn sdram_initialize(
 
     if nb.boot_path != BootPath::Normal {
         fstart_log::info!("i945: non-cold boot path, issuing reset");
+        // The SSKPD marker survives a system reset; only a power cycle
+        // clears it, so anything less would land here again.
         full_reset();
     }
 

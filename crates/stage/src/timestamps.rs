@@ -3,7 +3,7 @@
 /// Record the payload jump and report the boot timestamps.
 pub fn handoff() {
     fstart_timestamp::add(fstart_timestamp::id::PAYLOAD_JUMP);
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     report(fstart_arch::x86::tsc_frequency_hz());
 }
 

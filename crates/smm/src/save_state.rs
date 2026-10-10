@@ -17,6 +17,15 @@ pub enum X86SaveStateFormat {
     IntelEm64t,
     /// AMD64 layout (revision `0x20064`), as exposed by QEMU.
     Amd64,
+    /// Legacy 32-bit Intel layout at `0x7e00` (Pentium M, Core Duo). Any
+    /// revision advertising SMBASE relocation (bit 17) is accepted, other
+    /// than the AMD64 one; SMBASE sits where the EM64T layout keeps it.
+    IntelLegacy,
+    /// Either [`Self::Amd64`] or [`Self::IntelLegacy`], told apart by the
+    /// revision. QEMU before 9.0 writes the AMD64 layout for every CPU model
+    /// in `qemu-system-x86_64`; newer versions the legacy one for CPUs
+    /// without long mode.
+    Amd64OrIntelLegacy,
 }
 
 impl X86SaveStateFormat {
@@ -26,6 +35,8 @@ impl X86SaveStateFormat {
         match self {
             Self::IntelEm64t => "Intel EM64T100/101",
             Self::Amd64 => "AMD64",
+            Self::IntelLegacy => "Intel legacy",
+            Self::Amd64OrIntelLegacy => "AMD64 or Intel legacy",
         }
     }
 
@@ -33,13 +44,20 @@ impl X86SaveStateFormat {
         match self {
             Self::IntelEm64t => matches!(revision, 0x0003_0100 | 0x0003_0101),
             Self::Amd64 => revision == 0x0002_0064,
+            Self::IntelLegacy => revision & (1 << 17) != 0 && !Self::Amd64.accepts(revision),
+            Self::Amd64OrIntelLegacy => {
+                Self::Amd64.accepts(revision) || Self::IntelLegacy.accepts(revision)
+            }
         }
     }
 
-    const fn smbase_offset(self) -> usize {
+    /// SMBASE offset below the top of the window for an accepted revision.
+    const fn smbase_offset(self, revision: u32) -> usize {
         match self {
-            Self::IntelEm64t => 0x108,
+            Self::IntelEm64t | Self::IntelLegacy => 0x108,
             Self::Amd64 => 0x100,
+            Self::Amd64OrIntelLegacy if Self::Amd64.accepts(revision) => 0x100,
+            Self::Amd64OrIntelLegacy => 0x108,
         }
     }
 }
@@ -93,9 +111,9 @@ impl X86SaveState {
     /// Exactly one field is modified.
     #[inline(always)]
     pub fn write_smbase(self, smbase: u32) -> Result<(), SaveStateError> {
-        self.revision()?;
+        let revision = self.revision()?;
         // SAFETY: `from_top` guarantees a live, writable save-state window.
-        unsafe { write_u32(self.top.sub(self.format.smbase_offset()), smbase) };
+        unsafe { write_u32(self.top.sub(self.format.smbase_offset(revision)), smbase) };
         Ok(())
     }
 }
@@ -152,6 +170,44 @@ mod tests {
             &0x5678_0000u32.to_le_bytes()
         );
         assert_eq!(&amd64[0x200 - 0x108..0x200 - 0x104], &[0xa5; 4]);
+    }
+
+    #[test]
+    fn legacy_requires_smbase_relocation() {
+        let mut memory = [0u8; 0x200];
+        let top = unsafe { memory.as_mut_ptr().add(0x200) };
+        let state = unsafe { X86SaveState::from_top(top, X86SaveStateFormat::IntelLegacy) };
+        put_u32(&mut memory, 0x200 - 0x104, 0x0001_0000);
+        assert!(state.write_smbase(0x1000).is_err());
+        put_u32(&mut memory, 0x200 - 0x104, 0x0003_0007);
+        state.write_smbase(0x1000).unwrap();
+        assert_eq!(
+            &memory[0x200 - 0x108..0x200 - 0x104],
+            &0x1000u32.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn qemu_format_follows_the_revision() {
+        let format = X86SaveStateFormat::Amd64OrIntelLegacy;
+        for (revision, offset) in [(0x0002_0064, 0x100), (0x0002_0000, 0x108)] {
+            let mut memory = [0u8; 0x200];
+            put_u32(&mut memory, 0x200 - 0x104, revision);
+            let top = unsafe { memory.as_mut_ptr().add(0x200) };
+            unsafe { X86SaveState::from_top(top, format) }
+                .write_smbase(0x1000)
+                .unwrap();
+            assert_eq!(
+                &memory[0x200 - offset..0x200 - offset + 4],
+                &0x1000u32.to_le_bytes()
+            );
+        }
+        // The plain legacy format refuses the AMD64 layout.
+        let mut memory = [0u8; 0x200];
+        put_u32(&mut memory, 0x200 - 0x104, 0x0002_0064);
+        let top = unsafe { memory.as_mut_ptr().add(0x200) };
+        let state = unsafe { X86SaveState::from_top(top, X86SaveStateFormat::IntelLegacy) };
+        assert!(state.write_smbase(0x1000).is_err());
     }
 
     #[test]

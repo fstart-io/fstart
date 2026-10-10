@@ -51,13 +51,14 @@ pub fn compilation_plan(
     let mut units = vec![CompilationUnit {
         name: "smm".into(),
         cargo_target: CargoTarget::BoardLibrary,
-        target: plan.target.clone(),
+        target: plan.target(),
         entry: "x86_64".into(),
         cfg_schema: compiler_cfg_schema(),
         environment: "smm".into(),
         payload: "halt".into(),
         features: plan.smm_features.clone(),
-        build_std: None,
+        // rustc ships no library for the 32-bit JSON target.
+        build_std: (plan.platform == fstart_core::Platform::X86).then(|| "core,alloc".into()),
         release_only: true,
         linker_script: None,
         rustflags: flags(
@@ -100,16 +101,16 @@ pub fn compilation_plan(
             }
         }
         units.push(CompilationUnit {
-            name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target.clone(), entry: "x86_64".into(),
+            name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target(), entry: "x86_64".into(),
             cfg_schema: compiler_cfg_schema(),
             environment: row.role.environment().into(), payload: if row.payload == "uefi" { "crabefi".into() } else { row.payload.clone() },
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
             rustflags: flags(&format!("-Zub-checks=no -Crelocation-model={relocation_model} -Ccode-model=small -Clink-arg=-no-pie --cfg curve25519_dalek_backend=\"serial\" --cfg sha2_backend=\"soft\" --cfg sha2_backend_soft=\"compact\"")),
-            linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true)?),
+            linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true, plan.platform)?),
             environment_values: mp_capacity(),
             bindings,
             output: UnitOutput::Executable {
-                expectations: plan.reservations.elf_expectations(row.role)?, load_address: reservation.image.base,
+                expectations: plan.reservations.elf_expectations(row.role, plan.platform)?, load_address: reservation.image.base,
                 flat_capacity: if boot { reservation.image.size } else { reservation.load_window()?.size },
             },
         });
@@ -282,7 +283,11 @@ fn resolve_for<P: IntelPlatform>(
     let plan = IntelPlan {
         memory_cache: facts.memory_cache,
         reservations,
-        target: "x86_64-unknown-none".into(),
+        platform: if facts.protected_mode {
+            fstart_core::Platform::X86
+        } else {
+            fstart_core::Platform::X86_64
+        },
         payload,
         stages,
         smm_features: vec!["bundle-smm".into()],
@@ -369,7 +374,7 @@ mod tests {
     #[test]
     fn platform_selects_target_payload_stage_bundles_and_smm() {
         let default = resolve(FACTS, BuildSelection::default()).unwrap();
-        assert_eq!(default.target, "x86_64-unknown-none");
+        assert_eq!(default.target(), "x86_64-unknown-none");
         assert_eq!(default.payload, "halt");
         assert!(default.stages.iter().all(|stage| stage.payload == "halt"));
         let uefi = resolve(

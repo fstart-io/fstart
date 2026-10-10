@@ -4,7 +4,7 @@ use fstart_core::ffs::{
 };
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout};
 use fstart_core::{
-    BoardConfig, FdtSource, FirmwareImagePolicy, Platform, RunsFrom, SocImageFormat, StageLayout,
+    BoardConfig, FdtSource, FirmwareImagePolicy, RunsFrom, SocImageFormat, StageLayout,
 };
 use fstart_ffs::builder::{
     BootRootConfig, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
@@ -346,9 +346,7 @@ fn ffs_input_regions(
 ) -> Result<Vec<InputRegion>, String> {
     let cache_size = config.build.mrc_cache_size;
     if cache_size != 0
-        && (cache_size != 0x20000
-            || !config.full_flash_image
-            || config.platform != Platform::X86_64)
+        && (cache_size != 0x20000 || !config.full_flash_image || !config.platform.is_x86())
     {
         return Err("MRC cache requires an Intel full-flash image and two 64-KiB banks".into());
     }
@@ -473,7 +471,7 @@ fn externalize_xip_bootblock(
             .is_some_and(|stage| stage.runs_from == RunsFrom::Rom),
         _ => false,
     };
-    if config.platform != Platform::X86_64 || !first_stage_is_xip || files.is_empty() {
+    if !config.platform.is_x86() || !first_stage_is_xip || files.is_empty() {
         return Ok((files, Vec::new()));
     }
 

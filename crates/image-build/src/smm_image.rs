@@ -12,7 +12,7 @@ use zerocopy::IntoBytes;
 
 use fstart_smm::header::{
     CorebootOffsets, EntryDescriptor, FLAG_COREBOOT_HEADER, FLAG_COREBOOT_MODULE_ARGS,
-    SmmImageHeader, render_coreboot_header,
+    FLAG_PROTECTED_MODE, SmmImageHeader, render_coreboot_header,
 };
 use fstart_smm::layout::SMM_HANDLER_ALIGNMENT;
 #[cfg(test)]
@@ -29,6 +29,8 @@ mod asm {
 mod asm {
     pub const ENTRY_STUB: &[u8] = &[];
     pub const ENTRY_PARAMS_OFFSET: usize = 0;
+    pub const ENTRY_STUB_32: &[u8] = &[];
+    pub const ENTRY_PARAMS_OFFSET_32: usize = 0;
 }
 
 #[derive(Debug)]
@@ -78,6 +80,38 @@ pub struct SmmHandlerImage {
     initialized: Vec<u8>,
     memory_size: usize,
     entry_offset: usize,
+    /// 32-bit protected-mode handler, linked at 0 and rebased by `fixups`.
+    protected_mode: bool,
+    /// Handler offsets of 32-bit absolute addresses (protected mode only).
+    fixups: Vec<u32>,
+}
+
+/// SMM handler execution mode, chosen by the stage's target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmmArch {
+    /// x86_64 handler: position independent, entered in long mode.
+    LongMode,
+    /// i686 handler: flat 32-bit protected mode without paging.
+    ProtectedMode,
+}
+
+impl SmmArch {
+    /// Mode for a Rust target triple or target-spec name.
+    #[must_use]
+    pub fn from_target(target: &str) -> Self {
+        if target.starts_with("x86_64") {
+            Self::LongMode
+        } else {
+            Self::ProtectedMode
+        }
+    }
+
+    const fn ld_emulation(self) -> &'static str {
+        match self {
+            Self::LongMode => "elf_x86_64",
+            Self::ProtectedMode => "elf_i386",
+        }
+    }
 }
 
 pub fn build_image(
@@ -91,6 +125,17 @@ pub fn build_image(
     {
         return Err(BuildError::BadHandler);
     }
+    // coreboot's loader neither rebases fixups nor enters 32-bit handlers.
+    if handler.protected_mode && (options.coreboot_header || options.coreboot_module_args) {
+        return Err(BuildError::Tool(
+            "coreboot SMM loading requires a long-mode handler".into(),
+        ));
+    }
+    let (stub, params_offset) = if handler.protected_mode {
+        (asm::ENTRY_STUB_32, asm::ENTRY_PARAMS_OFFSET_32)
+    } else {
+        (asm::ENTRY_STUB, asm::ENTRY_PARAMS_OFFSET)
+    };
 
     let header_size = size_of::<SmmImageHeader>();
     let desc_size = size_of::<EntryDescriptor>();
@@ -107,9 +152,12 @@ pub fn build_image(
             .ok_or(BuildError::Overflow)?,
         16,
     )?;
-    let stub_size = asm::ENTRY_STUB.len();
-    let image_size = stubs_offset
+    let stub_size = stub.len();
+    let fixups_offset = stubs_offset
         .checked_add(stub_size * options.entry_count as usize)
+        .ok_or(BuildError::Overflow)?;
+    let image_size = fixups_offset
+        .checked_add(4 * handler.fixups.len())
         .ok_or(BuildError::Overflow)?;
 
     let runtime_offset = align_up(
@@ -148,6 +196,9 @@ pub fn build_image(
     if options.coreboot_header {
         flags |= FLAG_COREBOOT_HEADER;
     }
+    if handler.protected_mode {
+        flags |= FLAG_PROTECTED_MODE;
+    }
     let header = SmmImageHeader::new(
         flags,
         as_u32(image_size)?,
@@ -168,6 +219,14 @@ pub fn build_image(
             0
         },
         options.stack_size,
+    )
+    .with_fixups(
+        if handler.fixups.is_empty() {
+            0
+        } else {
+            as_u32(fixups_offset)?
+        },
+        as_u32(handler.fixups.len())?,
     );
 
     let mut image = vec![0u8; image_size];
@@ -180,11 +239,15 @@ pub fn build_image(
             stub_offset: as_u32(stub_offset)?,
             stub_size: as_u32(stub_size)?,
             entry_offset: 0,
-            params_offset: as_u32(asm::ENTRY_PARAMS_OFFSET)?,
+            params_offset: as_u32(params_offset)?,
         }
         .write_to_prefix(&mut image[entries_offset + i * desc_size..])
         .expect("descriptor space reserved");
-        image[stub_offset..stub_offset + stub_size].copy_from_slice(asm::ENTRY_STUB);
+        image[stub_offset..stub_offset + stub_size].copy_from_slice(stub);
+    }
+    for (i, fixup) in handler.fixups.iter().enumerate() {
+        let at = fixups_offset + 4 * i;
+        image[at..at + 4].copy_from_slice(&fixup.to_le_bytes());
     }
     image[handler_offset..handler_offset + handler.initialized.len()]
         .copy_from_slice(&handler.initialized);
@@ -284,7 +347,8 @@ pub fn handler_from_archive(
             .arg("-Bsymbolic")
             .arg("-T")
             .arg(&script)
-            .arg("--oformat=elf64-x86-64")
+            .arg("-m")
+            .arg(SmmArch::LongMode.ld_emulation())
             .arg("-e")
             .arg("fstart_smm_handler")
             .arg("-u")
@@ -299,19 +363,30 @@ pub fn handler_from_archive(
 }
 
 pub fn handler_from_elf(elf: &Path, _work_dir: &Path) -> Result<SmmHandlerImage, BuildError> {
-    audit_smm_blob(elf)?;
+    let fixups = audit_smm_blob(elf)?;
     let data = std::fs::read(elf)?;
     let file = object::File::parse(data.as_slice())
         .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
-    extract_handler(elf, &file)
+    let mut handler = extract_handler(elf, &file)?;
+    handler.protected_mode = !file.is_64();
+    handler.fixups = fixups;
+    Ok(handler)
 }
 
-pub fn handler_from_rlibs(deps_dir: &Path, work_dir: &Path) -> Result<SmmHandlerImage, BuildError> {
+pub fn handler_from_rlibs(
+    deps_dir: &Path,
+    work_dir: &Path,
+    arch: SmmArch,
+) -> Result<SmmHandlerImage, BuildError> {
     std::fs::create_dir_all(work_dir)?;
     let elf = work_dir.join("smm_handler.elf");
     let script = write_linker_script(work_dir)?;
     let mut inputs = rlibs_in(deps_dir)?;
-    inputs.extend(sysroot_rlibs()?);
+    // A custom target builds core/alloc with -Zbuild-std; those rlibs are
+    // already among the deps.
+    if arch == SmmArch::LongMode {
+        inputs.extend(sysroot_rlibs()?);
+    }
     if inputs.is_empty() {
         return Err(BuildError::Tool(format!(
             "no rlibs found in {}",
@@ -327,7 +402,8 @@ pub fn handler_from_rlibs(deps_dir: &Path, work_dir: &Path) -> Result<SmmHandler
         .arg("-Bsymbolic")
         .arg("-T")
         .arg(&script)
-        .arg("--oformat=elf64-x86-64")
+        .arg("-m")
+        .arg(arch.ld_emulation())
         .arg("-e")
         .arg("fstart_smm_handler")
         .arg("-u")
@@ -388,19 +464,92 @@ fn extract_handler(elf: &Path, file: &object::File<'_>) -> Result<SmmHandlerImag
         initialized,
         memory_size: memory_end,
         entry_offset: find_symbol_offset(elf, "fstart_smm_handler")?,
+        protected_mode: false,
+        fixups: Vec::new(),
     })
 }
 
-fn audit_smm_blob(elf: &Path) -> Result<(), BuildError> {
+/// Audit a linked handler and return its absolute-address fixups.
+fn audit_smm_blob(elf: &Path) -> Result<Vec<u32>, BuildError> {
     let data = std::fs::read(elf)?;
     let file = object::File::parse(data.as_slice())
         .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
     assert_alloc_sections(elf, &file)?;
-    assert_no_got_indirects(elf, &file)?;
-    assert_relative_relocations_only(elf, &file)?;
+    let fixups = if file.is_64() {
+        assert_no_got_indirects(elf, &file)?;
+        assert_relative_relocations_only(elf, &file)?;
+        Vec::new()
+    } else {
+        absolute_fixups(elf, &file)?
+    };
     assert_no_undefined_symbols(elf, &file)?;
     assert_no_panic_symbols(elf, &file)?;
-    Ok(())
+    Ok(fixups)
+}
+
+/// i386 has no PC-relative data addressing, so a protected-mode handler is
+/// linked at 0 with absolute addresses. Return the offset of every 32-bit
+/// absolute field for the loader to rebase; PC-relative fields move with the
+/// image. Every reference must stay inside the copied image.
+fn absolute_fixups(elf: &Path, file: &object::File<'_>) -> Result<Vec<u32>, BuildError> {
+    let image_end = file
+        .sections()
+        .filter(|section| is_allocated(section) && is_handler_section(section.name().unwrap_or("")))
+        .map(|section| section.address() + section.size())
+        .max()
+        .unwrap_or(0);
+    let in_handler = |index| {
+        file.section_by_index(index).is_ok_and(|section| {
+            is_allocated(&section) && is_handler_section(section.name().unwrap_or(""))
+        })
+    };
+    let mut fixups = Vec::new();
+    for section in file.sections() {
+        let name = section.name().unwrap_or("");
+        if !is_handler_section(name) {
+            continue;
+        }
+        let data = section.data().unwrap_or(&[]);
+        // Linked-executable relocation offsets are virtual addresses.
+        for (address, relocation) in section.relocations() {
+            let offset = address.wrapping_sub(section.address());
+            let target_ok = match relocation.target() {
+                RelocationTarget::Symbol(index) => file
+                    .symbol_by_index(index)
+                    .ok()
+                    .and_then(|symbol| symbol.section_index())
+                    .is_some_and(in_handler),
+                RelocationTarget::Section(index) => in_handler(index),
+                _ => false,
+            };
+            let error = |what: &str| {
+                BuildError::Tool(format!(
+                    "SMM blob relocation {:?} at {name}+{offset:#x} {what} in {}",
+                    relocation.kind(),
+                    elf.display()
+                ))
+            };
+            if !target_ok {
+                return Err(error("targets an undefined or uncopied address"));
+            }
+            match (relocation.kind(), relocation.size()) {
+                (RelocationKind::Relative | RelocationKind::PltRelative, 32) => {}
+                (RelocationKind::Absolute, 32) => {
+                    let value = data
+                        .get(offset as usize..offset as usize + 4)
+                        .map(|b| u32::from_le_bytes(b.try_into().expect("four bytes")))
+                        .ok_or_else(|| error("is outside its section"))?;
+                    if u64::from(value) > image_end {
+                        return Err(error("resolves outside the copied image"));
+                    }
+                    fixups.push(u32::try_from(address).map_err(|_| BuildError::Overflow)?);
+                }
+                _ => return Err(error("is not supported")),
+            }
+        }
+    }
+    fixups.sort_unstable();
+    Ok(fixups)
 }
 
 fn is_allocated<'data>(section: &impl ObjectSection<'data>) -> bool {
@@ -859,6 +1008,8 @@ mod tests {
             initialized: vec![0xcc, 0x11, 0x22],
             memory_size: 0x40,
             entry_offset: 0,
+            protected_mode: false,
+            fixups: Vec::new(),
         }
     }
 
@@ -935,6 +1086,8 @@ mod tests {
             initialized: vec![1],
             memory_size: 0,
             entry_offset: 0,
+            protected_mode: false,
+            fixups: Vec::new(),
         };
         assert!(matches!(
             build_image(
@@ -1106,6 +1259,55 @@ mod tests {
         let error = audit_smm_blob(&elf).unwrap_err().to_string();
         assert!(error.contains("undefined or uncopied"), "{error}");
         std::fs::remove_dir_all(elf.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn protected_mode_handler_records_absolute_fixups() {
+        let id = FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("fstart-smm-i386-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (source, object, elf) = (dir.join("f.S"), dir.join("f.o"), dir.join("f.elf"));
+        std::fs::write(
+            &source,
+            ".text\n.globl fstart_smm_handler\nfstart_smm_handler:\n movl $table, %eax\n call target\ntarget:\n ret\n.data\n.balign 4\ntable:\n .long target\n",
+        )
+        .unwrap();
+        let script = write_linker_script(&dir).unwrap();
+        for cmd in [
+            Command::new("as")
+                .args(["--32", "-o"])
+                .arg(&object)
+                .arg(&source),
+            Command::new("ld")
+                .args(["-m", "elf_i386", "-nostdlib", "--emit-relocs", "-T"])
+                .arg(&script)
+                .arg("-o")
+                .arg(&elf)
+                .arg(&object),
+        ] {
+            assert!(cmd.status().unwrap().success());
+        }
+
+        let handler = handler_from_elf(&elf, &dir).unwrap();
+        assert!(handler.protected_mode);
+        // movl's imm32 at .text+1 and the pointer in .data.
+        assert_eq!(handler.fixups, [1, 0x10]);
+        let built = build_image(
+            ImageOptions {
+                entry_count: 1,
+                stack_size: 0x400,
+                coreboot_module_args: false,
+                coreboot_header: false,
+            },
+            &handler,
+        )
+        .unwrap();
+        let header = SmmImageHeader::parse(&built.image).unwrap();
+        assert_ne!(header.flags & FLAG_PROTECTED_MODE, 0);
+        assert_eq!(header.fixup(&built.image, 1), Ok(0x10));
+        let entry = header.entry(&built.image, 0).unwrap();
+        assert_eq!(entry.stub_size as usize, asm::ENTRY_STUB_32.len());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

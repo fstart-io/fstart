@@ -31,7 +31,7 @@ pub fn resolved_ram_stage(
     stage_name: &str,
     descriptor: &crate::layout::EncodedLayout,
 ) -> Result<ResolvedRamStage, String> {
-    if config.platform == Platform::X86_64 {
+    if config.platform.is_x86() {
         return Err("x86 stages keep their family resolver".into());
     }
     if config
@@ -67,7 +67,7 @@ pub fn resolved_ram_stage(
         Platform::Riscv64 => crate::elf::Architecture::Riscv64,
         _ => return Err("unsupported RAM stage ELF architecture".into()),
     };
-    let elf64 = config.platform != Platform::Armv7;
+    let elf64 = !matches!(config.platform, Platform::Armv7 | Platform::X86);
     let expectations = crate::elf::Expectations {
         architecture,
         elf64,
@@ -116,7 +116,11 @@ impl Xip {
             .chain(self.execution)
         {
             range.end()?;
-            crate::elf::address_extent(self.platform != Platform::Armv7, range.base, range.size)?;
+            crate::elf::address_extent(
+                !matches!(self.platform, Platform::Armv7 | Platform::X86),
+                range.base,
+                range.size,
+            )?;
             if range.base % 16 != 0 || range.size % 16 != 0 {
                 return Err("unaligned XIP reservation".into());
             }
@@ -136,7 +140,7 @@ impl Xip {
                     .into(),
             );
         }
-        let elf64 = self.platform != Platform::Armv7;
+        let elf64 = !matches!(self.platform, Platform::Armv7 | Platform::X86);
         // The stack top is emitted as an ELF symbol, not merely a range end.
         crate::elf::address_extent(elf64, self.stack.end()?, 0)?;
         let descriptor = fstart_core::layout::Layout::parse(self.descriptor.as_bytes())
@@ -160,7 +164,7 @@ impl Xip {
         };
         Ok(Expectations {
             architecture,
-            elf64: self.platform != Platform::Armv7,
+            elf64: !matches!(self.platform, Platform::Armv7 | Platform::X86),
             little_endian: true,
             stored: vec![self.image],
             runtime: vec![self.code_reservation(), self.writable],
@@ -284,6 +288,7 @@ pub fn resolved_intel(
     layout: &crate::intel_plan::IntelReservations,
     role: crate::intel_plan::IntelStage,
     early_microcode: bool,
+    platform: Platform,
 ) -> Result<String, String> {
     use crate::intel_plan::IntelStage;
     layout.validate()?;
@@ -296,7 +301,10 @@ pub fn resolved_intel(
     };
     let stack = stage.stack_span();
     let heap_base = stage.heap_span().map_or(stack.base, |heap| heap.base);
-    let mut out = format!("OUTPUT_ARCH(i386:x86-64)\nENTRY({entry})\nMEMORY {{\n");
+    let mut out = format!(
+        "OUTPUT_ARCH({})\nENTRY({entry})\nMEMORY {{\n",
+        platform.linker_arch()
+    );
     for (name, flags, base, size) in [
         ("IMAGE", "rx", stage.image.base, stage.image.size),
         (
@@ -328,7 +336,7 @@ pub fn resolved_intel(
     out.push_str(&layout_section(&layout.descriptor(role)?, "IMAGE"));
     out.push_str(" .fstart.anchor : ALIGN(16) { _fstart_anchor_early = .; *(.fstart.anchor) _fstart_early_microcode_enabled = .;\n");
     writeln!(out, " LONG({})", u8::from(bootblock && early_microcode)).unwrap();
-    write_heap_size_constant(&mut out, Platform::X86_64, stage.heap);
+    write_heap_size_constant(&mut out, platform, stage.heap);
     out.push_str(" } > IMAGE\n");
     write_rodata_section(&mut out, "IMAGE");
     // PIC code puts statics holding pointers in .data.rel.ro. The static
@@ -336,8 +344,14 @@ pub fn resolved_intel(
     // not in the scarce CAR, where DRAM training can evict them.
     out.push_str(" .data.rel.ro : ALIGN(8) { *(.data.rel.ro .data.rel.ro.*) } > IMAGE\n");
     // PIC code uses a statically resolved GOT. Keep it in the image, not CAR.
-    for section in [".fstart.keep", ".got", ".eh_frame_hdr", ".eh_frame"] {
-        writeln!(out, " {section} : ALIGN(8) {{ *({section}) }} > IMAGE").unwrap();
+    // i386 links always reserve a `.got.plt` header; fold it into `.got`.
+    for (section, inputs) in [
+        (".fstart.keep", "*(.fstart.keep)"),
+        (".got", "*(.got) *(.got.plt)"),
+        (".eh_frame_hdr", "*(.eh_frame_hdr)"),
+        (".eh_frame", "*(.eh_frame)"),
+    ] {
+        writeln!(out, " {section} : ALIGN(8) {{ {inputs} }} > IMAGE").unwrap();
     }
     // RAM-resident initialized data is writable in place. BSS remains in the
     // separate runtime reservation, without turning that gap into media bytes.
@@ -385,7 +399,7 @@ pub fn resolved_intel(
         writeln!(out, " _binary_end = {end:#x};").unwrap();
         out.push_str(" ASSERT(LOADADDR(.data) + SIZEOF(.data) <= _bootblock_top, \"bootblock overlaps reset page\")\n");
     } else {
-        write_x86_car_symbols(&mut out, Platform::X86_64, false);
+        write_x86_car_symbols(&mut out, platform, false);
     }
     out.push_str(" ASSERT(_bss_end <= ORIGIN(HEAP), \"data/BSS exceed fixed capacity\")\n}\n");
     Ok(out)
@@ -500,8 +514,7 @@ pub fn generate_linker_script_with_layout(
     let needs_egon_header =
         is_first_stage && matches!(config.soc_image_format, SocImageFormat::AllwinnerEgon);
 
-    let has_x86_car =
-        config.platform == Platform::X86_64 && config.memory.car.is_some() && is_first_stage;
+    let has_x86_car = config.platform.is_x86() && config.memory.car.is_some() && is_first_stage;
 
     writeln!(
         out,
@@ -513,7 +526,7 @@ pub fn generate_linker_script_with_layout(
 
     if needs_egon_header {
         writeln!(out, "ENTRY(_head_jump)\n").unwrap();
-    } else if config.platform == Platform::X86_64 && !is_first_stage {
+    } else if config.platform.is_x86() && !is_first_stage {
         // Intel Cut-B postcar runs its CAR-teardown entry; every other
         // non-first x86_64 stage enters with caching already on.
         if stage_name == Some(POSTCAR_STAGE_NAME) {
@@ -528,7 +541,7 @@ pub fn generate_linker_script_with_layout(
     writeln!(out, "_boot_hart_id = {};", config.boot_hart_id).unwrap();
 
     if let Some(rom) = rom_region {
-        let (x86_rom_mtrr_base, x86_rom_mtrr_size) = if config.platform == Platform::X86_64 {
+        let (x86_rom_mtrr_base, x86_rom_mtrr_size) = if config.platform.is_x86() {
             match &config.memory.flash_layout {
                 Some(FlashLayout::IntelIfd(layout)) => (layout.base(), u64::from(layout.size())),
                 Some(FlashLayout::X86Legacy(layout)) => (layout.base(), u64::from(layout.size())),
@@ -630,7 +643,7 @@ fn x86_early_microcode_enabled(config: &BoardConfig) -> bool {
 }
 
 fn write_x86_car_symbols(out: &mut String, platform: Platform, has_x86_car: bool) {
-    if platform != Platform::X86_64 {
+    if !platform.is_x86() {
         return;
     }
     writeln!(out).unwrap();
@@ -703,7 +716,7 @@ fn generate_xip_layout(
 
     writeln!(out, "SECTIONS\n{{").unwrap();
 
-    let x86_top_aligned_bootblock = platform == Platform::X86_64 && is_first_stage;
+    let x86_top_aligned_bootblock = platform.is_x86() && is_first_stage;
     if x86_top_aligned_bootblock {
         let bootblock_top = rom_origin + rom_length - 0x1000;
         writeln!(
@@ -736,11 +749,11 @@ fn generate_xip_layout(
     writeln!(out, "    }} > ROM\n").unwrap();
 
     writeln!(out, "    .fstart.anchor : ALIGN(16) {{").unwrap();
-    if platform == Platform::X86_64 {
+    if platform.is_x86() {
         writeln!(out, "        _fstart_anchor_early = .;").unwrap();
     }
     writeln!(out, "        *(.fstart.anchor)").unwrap();
-    if platform == Platform::X86_64 {
+    if platform.is_x86() {
         writeln!(out, "        _fstart_early_microcode_enabled = .;").unwrap();
         writeln!(
             out,
@@ -804,7 +817,7 @@ fn generate_xip_layout(
         writeln!(out, "    _rom_mtrr_mask = 0;").unwrap();
     }
 
-    if platform == Platform::X86_64 && is_first_stage {
+    if platform.is_x86() && is_first_stage {
         let boot_block_addr = rom_origin + rom_length - 0x1000; // last 4K
         let reset_addr = rom_origin + rom_length - 16;
         writeln!(out).unwrap();
@@ -927,11 +940,11 @@ fn write_text_section(out: &mut String, region: &str) {
 
 fn write_anchor_section(out: &mut String, region: &str, platform: Platform, heap_size: u64) {
     writeln!(out, "    .fstart.anchor : ALIGN(8) {{").unwrap();
-    if platform == Platform::X86_64 {
+    if platform.is_x86() {
         writeln!(out, "        _fstart_anchor_early = .;").unwrap();
     }
     writeln!(out, "        *(.fstart.anchor)").unwrap();
-    if platform == Platform::X86_64 {
+    if platform.is_x86() {
         writeln!(out, "        _fstart_early_microcode_enabled = .;").unwrap();
         writeln!(out, "        LONG(0)").unwrap();
     }
@@ -941,7 +954,7 @@ fn write_anchor_section(out: &mut String, region: &str, platform: Platform, heap
 
 fn write_heap_size_constant(out: &mut String, platform: Platform, heap_size: u64) {
     let word = match platform {
-        Platform::Armv7 => "LONG",
+        Platform::Armv7 | Platform::X86 => "LONG",
         _ => "QUAD",
     };
     writeln!(out, "        . = ALIGN(8);").unwrap();

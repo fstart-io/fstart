@@ -78,15 +78,23 @@ register_bitfields! [u16,
         SPEEDSTEP_EN OFFSET(3) NUMBITS(1) [],
         SMI_LOCK OFFSET(4) NUMBITS(1) [],
         CPUSLP_EN OFFSET(5) NUMBITS(1) [],
+        C4ONC3_EN OFFSET(7) NUMBITS(1) [],
         BIOS_PCI_EXP_EN OFFSET(10) NUMBITS(1) []
     ],
-    /// SPI control register.
+    /// SPI status (SPIS).
     SPI_REG [
+        CYCLE_IN_PROGRESS OFFSET(0) NUMBITS(1) [],
+        CYCLE_DONE OFFSET(2) NUMBITS(1) [],
+        CYCLE_ERROR OFFSET(3) NUMBITS(1) [],
         LOCK OFFSET(15) NUMBITS(1) []
     ],
-    /// SPI access/request control register.
+    /// SPI control (SPIC).
     SPI_CTRL_REG [
-        ACCESS_REQUEST OFFSET(0) NUMBITS(1) []
+        ACCESS_REQUEST OFFSET(0) NUMBITS(1) [],
+        CYCLE_GO OFFSET(1) NUMBITS(1) [],
+        OPCODE_INDEX OFFSET(4) NUMBITS(3) [],
+        DATA_BYTES OFFSET(8) NUMBITS(6) [],
+        DATA_CYCLE OFFSET(14) NUMBITS(1) []
     ],
     PCIE_TUNING16 [
         BIT7 OFFSET(7) NUMBITS(1) []
@@ -183,7 +191,13 @@ register_structs! {
         (0x21a8 => _reserved10),
         (0x3020 => pub spi: MmioReadWrite<u16, SPI_REG::Register>),
         (0x3022 => pub spi_ctrl: MmioReadWrite<u16, SPI_CTRL_REG::Register>),
-        (0x3024 => _reserved_spi),
+        (0x3024 => pub spi_addr: MmioReadWrite<u32>),
+        (0x3028 => pub spi_data: [MmioReadWrite<u8>; 64]),
+        (0x3068 => _reserved_spi),
+        (0x3074 => pub spi_preop: [MmioReadWrite<u8>; 2]),
+        (0x3076 => pub spi_optype: MmioReadWrite<u16>),
+        (0x3078 => pub spi_opmenu: [MmioReadWrite<u8>; 8]),
+        (0x3080 => _reserved_spi2),
         (0x3100 => pub d31ip: MmioReadWrite<u32>),
         (0x3104 => pub d30ip: MmioReadWrite<u32>),
         (0x3108 => pub d29ip: MmioReadWrite<u32>),
@@ -297,6 +311,7 @@ pub use crate::southbridge::hda::{
     HdaConfig, HdaController, HdaVerbTable, PinColor, PinConfig, PinConn, PinConnector, PinDevice,
     PinGeoLoc, PinLoc,
 };
+pub use crate::southbridge::ide::IdeConfig;
 
 // ---------------------------------------------------------------------------
 // ICH7 LPC PCI config register offsets (bus 0, dev 0x1f, func 0)
@@ -374,11 +389,6 @@ pci_type0_config! {
         (0x1000 => @END),
     }
 }
-
-// IDE timing registers
-const IDE_TIM_PRI: u16 = 0x40;
-const IDE_TIM_SEC: u16 = 0x42;
-const IDE_CONFIG: u16 = 0x54;
 
 /// S3 (STR) SLP_TYP value.
 const SLP_TYP_S3: u32 = 0x1400;
@@ -626,8 +636,10 @@ pub struct IntelIch7Config {
     pub sata: Option<SataConfig>,
     /// USB configuration.
     pub usb: Option<UsbConfig>,
-    /// Enable PATA (legacy IDE) function.
-    pub pata: bool,
+    /// PATA (legacy IDE) function; `None` hides it with `FD_PATA`.
+    pub ide: Option<IdeConfig>,
+    /// Allow C4 when the OS requests C3 (`GEN_PMCON_1` bit 7, mobile only).
+    pub c4_on_c3: bool,
     /// SMBus I/O base address.
     pub smbus_base: u16,
     /// GPIO pad configuration (sets 1/2/3, all 76 pins).
@@ -669,7 +681,8 @@ impl IntelIch7Config {
             hda: None,
             sata: None,
             usb: None,
-            pata: false,
+            ide: None,
+            c4_on_c3: false,
             smbus_base: ich7::DEFAULT_SMBUS_BASE,
             gpio: GpioConfig::new(),
             acpi_name: Some("LPCB"),
@@ -735,6 +748,8 @@ pub struct IntelIch7 {
     resume: bool,
     /// PM I/O accessor (PMBASE, initialised during `early_init`).
     pm: PmIo,
+    /// Board-sampled primary IDE channel population (e.g. a dock UltraBay).
+    ide_primary: Option<bool>,
 }
 
 // SAFETY: All state is CPU-exclusive during firmware phase.
@@ -742,6 +757,12 @@ unsafe impl Send for IntelIch7 {}
 unsafe impl Sync for IntelIch7 {}
 
 impl IntelIch7 {
+    /// Board population policy, sampled before mainstage IDE programming.
+    /// The primary channel can serve a detachable dock rather than a fixed disk.
+    pub fn set_ide_primary_enabled(&mut self, enabled: bool) {
+        self.ide_primary = Some(enabled);
+    }
+
     /// Runtime config used by this driver instance.
     #[must_use]
     pub const fn config(&self) -> &'static IntelIch7Config {
@@ -950,7 +971,7 @@ impl IntelIch7 {
     /// suspend-well and survives G3, so SLP_TYP alone would "resume" from a
     /// power cut during S3 with dead RAM. Clears SLP_TYP so a later reset
     /// cold-boots instead of re-detecting resume.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn detect_s3_resume(&self) -> bool {
         let pm1_sts = self.pm().read16(pmio::PM1_STS);
         if pm1_sts & pmio::WAK_STS == 0 {
@@ -969,7 +990,7 @@ impl IntelIch7 {
         }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     fn detect_s3_resume(&self) -> bool {
         false
     }
@@ -1031,7 +1052,7 @@ impl IntelIch7 {
         fd.set(FunctionDisable::ACAUD, !self.config.ac97_audio);
         fd.set(FunctionDisable::HDAUD, self.config.hda.is_none());
         fd.set(FunctionDisable::SATA, self.config.sata.is_none());
-        fd.set(FunctionDisable::PATA, !self.config.pata);
+        fd.set(FunctionDisable::PATA, self.config.ide.is_none());
         fd
     }
 }
@@ -1093,6 +1114,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
             s3_enabled: false,
             resume: false,
             pm: PmIo::new(DEFAULT_PMBASE as u16),
+            ide_primary: None,
         })
     }
 
@@ -1126,7 +1148,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         rcba.regs().bios_cntl.set(1 << 2);
         rcba.regs().gcs.modify(GCS_REG::NO_REBOOT::SET);
 
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             self.pm().tco().halt_and_clear_timeouts();
         }
@@ -1141,6 +1163,11 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         for (idx, value) in generic.iter().copied().enumerate() {
             lpc.gen_dec[idx].set(value);
         }
+
+        // GPIO pads, like coreboot's ICH7 laptops (`setup_pch_gpios` in the
+        // bootblock): board hooks sample them before the console, e.g. dock
+        // presence gating the dock-side SuperIO UART.
+        self.setup_gpios();
 
         Ok(())
     }
@@ -1198,11 +1225,8 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         // in the device-enable phase, before read_resources(), for the same
         // reason.
         if let Some(sata) = self.config.sata.as_ref() {
-            self.set_sata_mode(sata.mode);
+            self.set_sata_mode(self.sata_mode(sata.mode));
         }
-
-        // ---- 13. GPIO pad programming ----
-        self.setup_gpios();
 
         // ---- 13b. GPI routing (LPC GPIO_ROUT): SMI/SCI selection per GPI.
         let mut rout = 0u32;
@@ -1375,6 +1399,30 @@ impl LpcBaseProvider for IntelIch7 {
 // ---------------------------------------------------------------------------
 
 impl IntelIch7 {
+    /// Requested SATA personality, falling back to IDE where the ICH7 SKU
+    /// reports no AHCI support (coreboot `sata_enable`, FDVCT bit 3).
+    fn sata_mode(&self, requested: SataMode) -> SataMode {
+        const FDVCT: u16 = 0xe4;
+        const AHCI_UNSUPPORTED: u32 = 1 << 3;
+        let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        if requested == SataMode::Ahci && lpc.read32(FDVCT) & AHCI_UNSUPPORTED != 0 {
+            fstart_log::info!("intel-ich7: AHCI not supported, using IDE mode");
+            return SataMode::Ide;
+        }
+        requested
+    }
+
+    /// Ports the SKU implements (coreboot `get_ich7_sata_ports`): mobile
+    /// ICH7-M parts only have ports 0 and 2, NM10 ports 0 and 1.
+    fn chipset_sata_ports(&self) -> u8 {
+        let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+        match lpc.read16(0x02) {
+            0x27b9 | 0x27bd => 0x5,
+            0x27bc => 0x3,
+            _ => 0xf,
+        }
+    }
+
     fn set_sata_mode(&self, mode: SataMode) {
         let sata_dev = ecam::EcamDevice::new(0, ich7::SATA_DEV, ich7::SATA_FUNC);
         let map = sata_dev.read8(0x90);
@@ -1394,6 +1442,17 @@ impl IntelIch7 {
     /// `lpc_final`.
     pub fn ramstage_init(&self) -> Result<(), ServiceError> {
         let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
+
+        // ---- PCI bridge (coreboot pci.c) ----
+        self.pci_bridge_init();
+
+        // ---- PATA ----
+        if let Some(ide) = self.config.ide {
+            crate::southbridge::ide::init(&IdeConfig {
+                enable_primary: self.ide_primary.unwrap_or(ide.enable_primary),
+                ..ide
+            });
+        }
 
         // ---- SATA ----
         if let Some(ref sata) = self.config.sata {
@@ -1493,10 +1552,11 @@ impl IntelIch7 {
                 + PCI_COMMAND_BITS::BUS_MASTER::SET,
         );
 
-        match sata.mode {
+        let mode = self.sata_mode(sata.mode);
+        match mode {
             SataMode::Ahci => {
                 fstart_log::info!("intel-ich7: SATA in AHCI mode");
-                self.set_sata_mode(sata.mode);
+                self.set_sata_mode(mode);
                 // Native mode on both channels.
                 sata_dev.write8(0x09, 0x8F);
                 // Interrupt line.
@@ -1504,7 +1564,7 @@ impl IntelIch7 {
             }
             SataMode::Ide => {
                 fstart_log::info!("intel-ich7: SATA in IDE mode");
-                self.set_sata_mode(sata.mode);
+                self.set_sata_mode(mode);
                 sata_dev.write8(0x09, 0x8F);
                 Self::type0_regs(sata_dev).interrupt_line.set(0xFF);
                 // IDE timings.
@@ -1516,10 +1576,12 @@ impl IntelIch7 {
             }
         }
 
-        // Port control.
-        sata_dev.write8(0x92, sata.ports);
+        // Port control enables every port the SKU has; `sata.ports` is what
+        // the board advertises through AHCI PI (coreboot does the same).
+        let ports = self.chipset_sata_ports();
+        sata_dev.write8(0x92, ports);
 
-        if sata.mode == SataMode::Ahci {
+        if mode == SataMode::Ahci {
             // Coreboot writes AHCI GHC_PI (ABAR+0x0c) after PCI resource
             // assignment. If PI is left zero Linux guesses all 4 ports and
             // prints "forcing PORTS_IMPL", then probes disabled ports.
@@ -1542,7 +1604,6 @@ impl IntelIch7 {
 
         // Clock gating + init register. Match coreboot sata.h:
         // SIF1=0x180, SIF2=bit23, SIF3=(~ports & 0xf)<<24, SCRE=bit28.
-        let ports = sata.ports;
         let sif3 = ((!ports as u32) & 0x0f) << 24;
         sata_dev.write32(0x94, sif3 | 0x180 | (1 << 23) | (1 << 28));
 
@@ -1561,7 +1622,11 @@ impl IntelIch7 {
         sata_dev.write8(0x3C, 0x00);
         sata_dev.or32(0x94, 1 << 30); // SCRD due to bug
 
-        fstart_log::info!("intel-ich7: SATA init done (ports={:#x})", ports);
+        fstart_log::info!(
+            "intel-ich7: SATA init done (ports={:#x}, implemented={:#x})",
+            ports,
+            sata.ports
+        );
     }
 
     /// UHCI (USB 1.1) controller init.
@@ -1629,6 +1694,7 @@ impl IntelIch7 {
                 + GEN_PMCON_1_REG::CLKRUN_EN::SET
                 + GEN_PMCON_1_REG::SPEEDSTEP_EN::SET
                 + GEN_PMCON_1_REG::CPUSLP_EN::SET
+                + GEN_PMCON_1_REG::C4ONC3_EN.val(self.config.c4_on_c3.into())
                 + GEN_PMCON_1_REG::BIOS_PCI_EXP_EN::SET,
         );
 
@@ -1641,12 +1707,12 @@ impl IntelIch7 {
     /// decoding reads back as `0xff`, which the transaction code reports as a
     /// permanent `not-busy` timeout.
     fn smbus_status_probe(&self) -> u8 {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             // SAFETY: reads the SMBus host status register at the configured base.
             unsafe { fstart_core::pio::inb(self.config.smbus_base) }
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         {
             0
         }
@@ -1675,7 +1741,7 @@ impl IntelIch7 {
     /// x86 POST sequence — ensures DMA channels are masked and the
     /// controller is in a known operating mode.
     fn isa_dma_init(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         fstart_arch::x86::legacy_pc::initialize_isa_dma();
     }
 
@@ -1685,11 +1751,12 @@ impl IntelIch7 {
     /// PC/AT configuration.  IRQ 9 is configured as level-triggered
     /// for ACPI SCI.
     fn i8259_init(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             use fstart_core::pio::outb;
 
-            fstart_arch::x86::legacy_pc::initialize_pic(0x08, 0x70);
+            // coreboot `setup_i8259()` vectors, as on ICH8.
+            fstart_arch::x86::legacy_pc::initialize_pic(0x20, 0x28);
             // Mask all slave IRQs and all master IRQs except IRQ2, so the
             // cascade stays alive, matching coreboot setup_i8259().
             outb(0x21, 0xFB);
@@ -1709,7 +1776,7 @@ impl IntelIch7 {
     /// SCI_EN and bus-master C3->C0 wakeup, configures NMI source
     /// control.
     fn power_options_late(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             // Clear stale ACPI status before enabling SCI/GPE delivery.  The
             // registers are write-one-to-clear; leaving firmware-era status
@@ -1859,6 +1926,15 @@ impl IntelIch7 {
     pub fn lockdown(&self) {
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
 
+        // The lock freezes the opcode menu, so give the OS flasher one first.
+        if !rcba.regs().spi.is_set(SPI_REG::LOCK) {
+            spi_finalize_ops(rcba.regs(), &SPI_OPMENU);
+            // coreboot `spi_finalize_ops`: flashprog writes SST parts with
+            // AAI, and gives up when AAI or WRDI are missing.
+            if spi_read_jedec_id(rcba.regs()).is_some_and(spi_uses_aai) {
+                spi_finalize_ops(rcba.regs(), &SPI_OPMENU_SST_AAI);
+            }
+        }
         // Lock SPIBAR.
         rcba.regs().spi.modify(SPI_REG::LOCK::SET);
 
@@ -1869,7 +1945,7 @@ impl IntelIch7 {
         // enabled the final SMI sources. The shared SMM installer now takes
         // and verifies SMI_LOCK; finalize also locks TCO once GBL_SMI_EN is
         // live. A non-SMM image leaves these gates available to its payload.
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if self.pm().read32(pmio::SMI_EN) & pmio::GBL_SMI_EN != 0 {
             // Global SMI Lock.
             self.lpc_regs()
@@ -1945,7 +2021,7 @@ impl IntelIch7 {
         let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
         let etr3 = lpc.read32(ETR3);
         lpc.write32(ETR3, (etr3 & !ETR3_CF9GR) & !ETR3_CWORWRE);
-        fstart_arch::x86_64::system_reset(hard)
+        fstart_arch::x86::boot::system_reset(hard)
     }
 
     /// Configure CF9 for global reset (ME reset).
@@ -2029,80 +2105,13 @@ impl IntelIch7 {
         // Master Latency Timer = 0x04 << 3 (keep low bits).
         pci_bridge.and8_or8(SMLT, 0x07, 0x04 << 3);
 
+        // Clear latched primary and secondary status errors (write-1-to-clear).
+        bridge_regs.status_raw.set(bridge_regs.status_raw.get());
+        bridge_regs
+            .secondary_status_raw
+            .set(bridge_regs.secondary_status_raw.get());
+
         fstart_log::info!("intel-ich7: PCI bridge (1E.0) init");
-    }
-
-    // -----------------------------------------------------------------------
-    // IDE / PATA init (dev 0x1F func 1, from ide.c)
-    // -----------------------------------------------------------------------
-
-    /// Initialize the IDE (PATA) controller at dev 0x1F func 1.
-    ///
-    /// Configures primary and/or secondary channels with decode enable,
-    /// timing, and I/O configuration.  Ported from coreboot `ide.c`.
-    pub fn ide_init(&self, enable_primary: bool, enable_secondary: bool) {
-        let ide = ecam::EcamDevice::new(0, 0x1F, 1);
-
-        let vid = ide.read16(0x00);
-        if vid == 0xFFFF {
-            return;
-        }
-
-        let ide_regs = Self::type0_regs(ide);
-
-        // Enable IO + BusMaster.
-        ide_regs
-            .command
-            .modify(PCI_COMMAND_BITS::IO_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
-
-        // Native capable, not enabled. Prog IF is modeled read-only in the
-        // generic header overlay, so keep this exact raw programming write.
-        ide.write8(0x09, 0x8A);
-
-        // IDE timing bits.
-        const IDE_DECODE_ENABLE: u16 = 1 << 15;
-        const IDE_SITRE: u16 = 1 << 14;
-        const IDE_ISP_3: u16 = 0x2000; // ISP = 3 clocks
-        const IDE_RCT_1: u16 = 0x0300; // RCT = 1 clock
-        const IDE_IE0: u16 = 1 << 1;
-        const IDE_TIME0: u16 = 1 << 0;
-
-        // Primary channel.
-        let mut tim = ide.read16(IDE_TIM_PRI);
-        tim &= !IDE_DECODE_ENABLE;
-        tim |= IDE_SITRE;
-        if enable_primary {
-            tim |= IDE_DECODE_ENABLE | IDE_ISP_3 | IDE_RCT_1 | IDE_IE0 | IDE_TIME0;
-        }
-        ide.write16(IDE_TIM_PRI, tim);
-
-        // Secondary channel.
-        tim = ide.read16(IDE_TIM_SEC);
-        tim &= !IDE_DECODE_ENABLE;
-        tim |= IDE_SITRE;
-        if enable_secondary {
-            tim |= IDE_DECODE_ENABLE | IDE_ISP_3 | IDE_RCT_1 | IDE_IE0 | IDE_TIME0;
-        }
-        ide.write16(IDE_TIM_SEC, tim);
-
-        // IDE I/O configuration.
-        let mut cfg = 0u32;
-        if enable_primary {
-            cfg |= 0x0000_3003; // FAST_PCBx + PCBx
-        }
-        if enable_secondary {
-            cfg |= 0x0000_c00c; // FAST_SCBx + SCBx
-        }
-        ide.write32(IDE_CONFIG, cfg);
-
-        // Interrupt line = 0xFF (unused).
-        ide_regs.interrupt_line.set(0xFF);
-
-        fstart_log::info!(
-            "intel-ich7: IDE init (pri={} sec={})",
-            enable_primary,
-            enable_secondary
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -2413,22 +2422,9 @@ mod acpi_impl {
             pci0_aml
                 .extend_from_slice(&acpi_fragments::pcie_root_port("RP08", 0x001C0007, 8, true));
 
-            // PCIB — PCI-to-PCI bridge  0:1E.0
-            // _PRT for devices behind the bridge (APIC mode).
-            // Coreboot: pci.asl + mainboard ich7_pci_irqs.asl
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("PCIB") {
-                    Name("_ADR", 0x001E0000u32);
-
-                    Name("_PRT", Package(
-                        Package(0x0000FFFFu32, 0u32, 0u32, 0x15u32),
-                        Package(0x0000FFFFu32, 1u32, 0u32, 0x16u32),
-                        Package(0x0000FFFFu32, 2u32, 0u32, 0x17u32),
-                        Package(0x0000FFFFu32, 3u32, 0u32, 0x14u32),
-                        Package(0x0001FFFFu32, 0u32, 0u32, 0x13u32)
-                    ));
-                }
-            });
+            // PCIB — PCI-to-PCI bridge  0:1E.0, with the board's `_PRT`
+            // for the devices behind it.
+            pci0_aml.extend_from_slice(&acpi_fragments::pci_bridge_node(&config.pirq));
 
             // AC’97 — audio (0:1E.2) and modem (0:1E.3).
             // Legacy audio/modem on ICH7 — behind the PCI bridge.
@@ -2444,37 +2440,6 @@ mod acpi_impl {
                 Device("MODM") {
                     Name("_ADR", 0x001E0003u32);
                     Name("_PRW", Package(5u32, 4u32));
-                }
-            });
-
-            // PEGP — PCI Express Graphics port  0:1.0
-            // PCIe x16 slot for discrete GPU (Pineview).
-            // Coreboot: peg.asl
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("PEGP") {
-                    Name("_ADR", 0x00010000u32);
-                    Name("_PRT", Package(
-                        Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
-                        Package(0x0000FFFFu32, 1u32, 0u32, 17u32),
-                        Package(0x0000FFFFu32, 2u32, 0u32, 18u32),
-                        Package(0x0000FFFFu32, 3u32, 0u32, 19u32)
-                    ));
-                }
-            });
-
-            // GFX0 — Integrated Graphics Device  0:2.0
-            // Stub power management methods for the Intel GMA.
-            // Coreboot: drivers/intel/gma/acpi/gfx.asl
-            pci0_aml.extend_from_slice(&acpi_dsl! {
-                Device("GFX0") {
-                    Name("_ADR", 0x00020000u32);
-                    // Power state stubs.
-                    Method("_PS0", 0, NotSerialized) { }
-                    Method("_PS3", 0, NotSerialized) { }
-                    // Highest D-state from which device can wake in S0.
-                    Method("_S0W", 0, NotSerialized) { Return(3u32); }
-                    // Highest D-state in S3.
-                    Method("_S3D", 0, NotSerialized) { Return(3u32); }
                 }
             });
 
@@ -2552,5 +2517,123 @@ mod acpi_impl {
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
             Vec::new()
         }
+    }
+}
+
+/// Software-sequencing cycle type of one SPI opcode menu entry.
+#[derive(Clone, Copy)]
+enum SpiOpType {
+    ReadNoAddr = 0,
+    WriteNoAddr = 1,
+    ReadWithAddr = 2,
+    WriteWithAddr = 3,
+}
+
+/// coreboot `spi_finalize_ops` menus: everything flashprog needs to probe,
+/// read, erase and write a part behind a locked controller.
+const SPI_OPPREFIXES: [u8; 2] = [0x06, 0x50]; // WREN, EWSR
+/// Menu index of RDID, identical in both menus.
+const SPI_RDID_INDEX: u16 = 5;
+const SPI_OPMENU: [(u8, SpiOpType); 8] = [
+    (0x01, SpiOpType::WriteNoAddr),   // WRSR
+    (0x02, SpiOpType::WriteWithAddr), // Byte Program
+    (0x03, SpiOpType::ReadWithAddr),  // Read
+    (0x05, SpiOpType::ReadNoAddr),    // RDSR
+    (0x20, SpiOpType::WriteWithAddr), // 4 KiB Sector Erase
+    (0x9f, SpiOpType::ReadNoAddr),    // RDID
+    (0xd8, SpiOpType::WriteWithAddr), // 64 KiB Block Erase
+    (0x0b, SpiOpType::ReadWithAddr),  // Fast Read
+];
+/// SST parts are written with Auto Address Increment, which flashprog ends
+/// with WRDI; both replace the 64 KiB erase and Fast Read.
+const SPI_OPMENU_SST_AAI: [(u8, SpiOpType); 8] = [
+    (0x01, SpiOpType::WriteNoAddr),   // WRSR
+    (0x02, SpiOpType::WriteWithAddr), // Byte Program
+    (0x03, SpiOpType::ReadWithAddr),  // Read
+    (0x05, SpiOpType::ReadNoAddr),    // RDSR
+    (0x20, SpiOpType::WriteWithAddr), // 4 KiB Sector Erase
+    (0x9f, SpiOpType::ReadNoAddr),    // RDID
+    (0xad, SpiOpType::WriteNoAddr),   // AAI Word Program
+    (0x04, SpiOpType::WriteNoAddr),   // WRDI
+];
+
+/// SST parts other than the SST25VF064C (model 0x4b) take AAI writes
+/// (coreboot `spi_finalize_ops`).
+fn spi_uses_aai(id: [u8; 3]) -> bool {
+    const VENDOR_SST: u8 = 0xbf;
+    id[0] == VENDOR_SST && id[2] != 0x4b
+}
+
+/// Program the prefix/type/opcode menu that `SPIS.LOCK` freezes.
+fn spi_finalize_ops(rcba: &RcbaRegs, menu: &[(u8, SpiOpType); 8]) {
+    for (reg, prefix) in rcba.spi_preop.iter().zip(SPI_OPPREFIXES) {
+        reg.set(prefix);
+    }
+    for (reg, (opcode, _)) in rcba.spi_opmenu.iter().zip(menu) {
+        reg.set(*opcode);
+    }
+    rcba.spi_optype.set(spi_optype(menu));
+}
+
+/// Read the flash JEDEC ID with a software-sequencing RDID cycle from the
+/// programmed menu (flashprog `ich7_run_opcode`).
+fn spi_read_jedec_id(rcba: &RcbaRegs) -> Option<[u8; 3]> {
+    const TIMEOUT_US: u32 = 60_000;
+    if !fstart_arch::wait_us(TIMEOUT_US, || !rcba.spi.is_set(SPI_REG::CYCLE_IN_PROGRESS)) {
+        return None;
+    }
+    // Both status bits are write-1-to-clear.
+    rcba.spi
+        .modify(SPI_REG::CYCLE_DONE::SET + SPI_REG::CYCLE_ERROR::SET);
+    rcba.spi_addr.set(0);
+    rcba.spi_ctrl.write(
+        SPI_CTRL_REG::OPCODE_INDEX.val(SPI_RDID_INDEX)
+            + SPI_CTRL_REG::DATA_BYTES.val(2)
+            + SPI_CTRL_REG::DATA_CYCLE::SET
+            + SPI_CTRL_REG::CYCLE_GO::SET,
+    );
+    let done = fstart_arch::wait_us(TIMEOUT_US, || {
+        rcba.spi.is_set(SPI_REG::CYCLE_DONE) || rcba.spi.is_set(SPI_REG::CYCLE_ERROR)
+    });
+    let failed = rcba.spi.is_set(SPI_REG::CYCLE_ERROR);
+    rcba.spi
+        .modify(SPI_REG::CYCLE_DONE::SET + SPI_REG::CYCLE_ERROR::SET);
+    (done && !failed).then(|| core::array::from_fn(|i| rcba.spi_data[i].get()))
+}
+
+const fn spi_optype(menu: &[(u8, SpiOpType); 8]) -> u16 {
+    let mut optype = 0;
+    let mut i = 0;
+    while i < menu.len() {
+        optype |= (menu[i].1 as u16) << (2 * i);
+        i += 1;
+    }
+    optype
+}
+
+#[cfg(test)]
+mod spi_tests {
+    #[test]
+    fn opcode_menu_types_match_coreboot() {
+        // WRSR=1, BYPR=3, READ=2, RDSR=0, SE20=3, RDID=0, BED8=3, FAST=2.
+        assert_eq!(
+            super::spi_optype(&super::SPI_OPMENU),
+            0b10_11_00_11_00_10_11_01
+        );
+        // AAI=1 and WRDI=1 replace BED8 and FAST for SST.
+        assert_eq!(
+            super::spi_optype(&super::SPI_OPMENU_SST_AAI),
+            0b01_01_00_11_00_10_11_01
+        );
+        for menu in [super::SPI_OPMENU, super::SPI_OPMENU_SST_AAI] {
+            assert_eq!(menu[super::SPI_RDID_INDEX as usize].0, 0x9f);
+        }
+    }
+
+    #[test]
+    fn only_sst_parts_but_the_25vf064c_use_aai() {
+        assert!(super::spi_uses_aai([0xbf, 0x25, 0x41])); // SST25VF016B
+        assert!(!super::spi_uses_aai([0xbf, 0x25, 0x4b])); // SST25VF064C
+        assert!(!super::spi_uses_aai([0xef, 0x40, 0x15]));
     }
 }

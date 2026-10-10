@@ -4,11 +4,12 @@ use fstart_driver_intel::i945;
 pub use fstart_driver_intel::i945::{I945IgdConfig, I945Variant, IntelI945Config};
 use fstart_driver_intel::ich7;
 pub use fstart_driver_intel::ich7::{
-    HdaConfig, HdaVerbTable, IntelIch7Config, LpcDecodeConfig, LpcFixedIoDecode, LpcFloppyDecode,
-    LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PinColor, PinConfig, PinConn,
-    PinConnector, PinDevice, PinGeoLoc, PinLoc, SataConfig, SataMode, UsbConfig,
+    HdaConfig, HdaVerbTable, IdeConfig, IntelIch7Config, LpcDecodeConfig, LpcFixedIoDecode,
+    LpcFloppyDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PinColor, PinConfig,
+    PinConn, PinConnector, PinDevice, PinGeoLoc, PinLoc, SataConfig, SataMode, UsbConfig,
 };
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
+pub use fstart_driver_intel::southbridge::pirq::PirqRouting;
 
 pub const I945_MCHBAR: u64 = 0xFED1_4000;
 pub const I945_DMIBAR: u64 = 0xFED1_8000;
@@ -30,6 +31,8 @@ pub struct I945Ich7Config {
     pub pci_mmio_size: u32,
     pub pcie_ports: [bool; 4],
     pub pirq_routing: [u8; 8],
+    /// Board interrupt wiring through the RCBA router and behind 0:1e.0.
+    pub pirq: PirqRouting,
     pub gpi_routing: [u8; 16],
     /// Internal LAN function present (`FD_INTLAN` when false).
     pub lan: bool,
@@ -38,10 +41,15 @@ pub struct I945Ich7Config {
     pub ac97_modem: bool,
     pub lpc_decode: LpcDecodeConfig,
     pub gpe0_en: u32,
+    pub ide: Option<IdeConfig>,
     pub sata: Option<SataConfig>,
     pub usb: Option<UsbConfig>,
     pub hda: Option<HdaConfig>,
     pub gpio: gpio::GpioConfig,
+    /// Allow C4 on C3 requests (mobile ICH7-M boards).
+    pub c4_on_c3: bool,
+    /// SPD addresses in i945 slot order; 0 marks an unpopulated slot.
+    pub spd_addresses: [u8; 4],
     /// Maximum logical CPU count (BSP + APs) the board populates.
     pub max_cpus: u16,
     /// Integrated graphics configuration.
@@ -57,16 +65,20 @@ impl I945Ich7Config {
             pci_mmio_size: 768,
             pcie_ports: [false; 4],
             pirq_routing: [0; 8],
+            pirq: ich7::IntelIch7Config::new().pirq,
             gpi_routing: [0; 16],
             lan: true,
             ac97_audio: true,
             ac97_modem: true,
             lpc_decode: LpcDecodeConfig::new(),
             gpe0_en: 0,
+            ide: None,
             sata: None,
             usb: None,
             hda: None,
             gpio: gpio::GpioConfig::new(),
+            c4_on_c3: false,
+            spd_addresses: i945::IntelI945Config::new().spd_addresses,
             max_cpus: 1,
             igd: i945::I945IgdConfig::new(),
         }
@@ -85,6 +97,7 @@ impl I945Ich7Config {
         config.gfx_gms = self.gfx_gms;
         config.pci_mmio_size = self.pci_mmio_size;
         config.smbus_base = ICH7_SMBUS_BASE;
+        config.spd_addresses = self.spd_addresses;
         config.igd = self.igd;
         config
     }
@@ -100,6 +113,7 @@ impl I945Ich7Config {
         let mut config = ich7::IntelIch7Config::new();
         config.rcba = ICH7_RCBA;
         config.pirq_routing = self.pirq_routing;
+        config.pirq = self.pirq;
         config.gpi_routing = self.gpi_routing;
         config.pcie_ports = self.pcie_ports;
         config.lan = self.lan;
@@ -108,6 +122,8 @@ impl I945Ich7Config {
         config.gpe0_en = self.gpe0_en;
         config.lpc_decode = self.lpc_decode;
         config.hda = self.hda;
+        config.ide = self.ide;
+        config.c4_on_c3 = self.c4_on_c3;
         config.sata = self.sata;
         config.usb = self.usb;
         config.smbus_base = ICH7_SMBUS_BASE;
@@ -115,8 +131,7 @@ impl I945Ich7Config {
         config
     }
 
-    /// Date the RTC is reset to after a power loss; pass the board's SMBIOS
-    /// build date so both come from one constant.
+    /// Maximum logical CPU count (BSP + APs) the board populates.
     #[must_use]
     pub const fn max_cpus(mut self, max_cpus: u16) -> Self {
         self.max_cpus = max_cpus;
@@ -148,6 +163,26 @@ impl I945Ich7Config {
     #[must_use]
     pub const fn pirq_routing(mut self, routing: [u8; 8]) -> Self {
         self.pirq_routing = routing;
+        self
+    }
+    #[must_use]
+    pub const fn pirq(mut self, routing: PirqRouting) -> Self {
+        self.pirq = routing;
+        self
+    }
+    #[must_use]
+    pub const fn ide(mut self, ide: IdeConfig) -> Self {
+        self.ide = Some(ide);
+        self
+    }
+    #[must_use]
+    pub const fn c4_on_c3(mut self, enable: bool) -> Self {
+        self.c4_on_c3 = enable;
+        self
+    }
+    #[must_use]
+    pub const fn spd_addresses(mut self, addresses: [u8; 4]) -> Self {
+        self.spd_addresses = addresses;
         self
     }
     #[must_use]

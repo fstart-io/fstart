@@ -232,10 +232,7 @@ pub fn effective_stage_load_addr(
         return stage.load_addr;
     }
 
-    if config.platform == crate::board::Platform::X86_64
-        && stage_index == 0
-        && stage.runs_from == RunsFrom::Rom
-    {
+    if config.platform.is_x86() && stage_index == 0 && stage.runs_from == RunsFrom::Rom {
         return config
             .memory
             .regions

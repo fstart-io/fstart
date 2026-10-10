@@ -324,11 +324,11 @@ pub(crate) unsafe fn publish_pending(
         core::ptr::write_volatile(base.add(COMMIT_OFFSET).cast::<u32>(), 0);
         // Some chipset memory tests already enable WB MTRRs. INVD must not
         // discard this record with CAR, regardless of the current RAM type.
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             core::arch::asm!("mfence", options(nostack, preserves_flags));
             for offset in (0..HEADER_SIZE + payload.len()).step_by(64) {
-                core::arch::x86_64::_mm_clflush(base.add(offset));
+                core::arch::asm!("clflush [{}]", in(reg) base.add(offset), options(nostack, preserves_flags));
             }
             core::arch::asm!("mfence", options(nostack, preserves_flags));
         }
@@ -402,7 +402,10 @@ fn newer(candidate: u32, reference: u32) -> bool {
     (candidate.wrapping_sub(reference) as i32) > 0
 }
 
-#[cfg(all(feature = "memory-cache", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "memory-cache",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 impl Storage for fstart_driver_intel::southbridge::spi::CacheSpi {
     fn read(&mut self, o: u32, b: &mut [u8]) -> Result<(), ServiceError> {
         self.read(o, b)

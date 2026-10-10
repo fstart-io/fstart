@@ -42,6 +42,40 @@ pub(crate) struct LegacyClock {
     p1: u32,
     p2: u32,
     dotclock_hz: u64,
+    refclk: RefClock,
+}
+
+/// Reference input of a legacy DPLL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefClock {
+    /// The 96 MHz display reference.
+    Dref,
+    /// The spread-spectrum input at the given frequency.
+    Ssc(u64),
+}
+
+impl RefClock {
+    const DREF_HZ: u64 = 96_000_000;
+
+    const fn hz(self) -> u64 {
+        match self {
+            Self::Dref => Self::DREF_HZ,
+            Self::Ssc(hz) => hz,
+        }
+    }
+
+    /// Reference for `port`: LVDS follows the VBT's spread-spectrum policy
+    /// like Linux (`intel_panel_use_ssc`, Gen3/4 `intel_bios_ssc_frequency`);
+    /// without it, the libgfxinit default of SSC at 96 MHz.
+    pub(crate) fn for_port(port: Port, ssc: Option<crate::vbt::LvdsSsc>) -> Self {
+        use crate::vbt::LvdsSsc;
+        match (port, ssc) {
+            (Port::Lvds, Some(LvdsSsc::Disabled)) => Self::Dref,
+            (Port::Lvds, Some(LvdsSsc::Enabled { alternate: true })) => Self::Ssc(100_000_000),
+            (Port::Lvds, _) => Self::Ssc(Self::DREF_HZ),
+            _ => Self::Dref,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +280,16 @@ fn select_legacy_limits(cpu: Cpu, port: Port, target_hz: u64) -> Option<Limits> 
 
 /// Find the best legacy PLL tuple for a mode and port.
 pub(crate) fn find_legacy_clock(cpu: Cpu, port: Port, mode: Mode) -> Result<LegacyClock, GmaError> {
+    find_legacy_clock_with_ref(cpu, port, mode, RefClock::for_port(port, None))
+}
+
+/// [`find_legacy_clock`] from an explicit reference clock.
+pub(crate) fn find_legacy_clock_with_ref(
+    cpu: Cpu,
+    port: Port,
+    mode: Mode,
+    refclk: RefClock,
+) -> Result<LegacyClock, GmaError> {
     let target_hz = u64::from(mode.pixel_clock_khz) * 1000;
     let limits = select_legacy_limits(cpu, port, target_hz).ok_or(GmaError::UnsupportedPort)?;
     let max_dotclock = if is_i945_generation(cpu) {
@@ -256,10 +300,12 @@ pub(crate) fn find_legacy_clock(cpu: Cpu, port: Port, mode: Mode) -> Result<Lega
     if target_hz > max_dotclock {
         return Err(GmaError::PllNoSolution);
     }
-    if is_pineview(cpu) {
-        return calculate_pineview_clock(target_hz, 96_000_000, limits);
-    }
-    calculate_clock(target_hz, 96_000_000, limits)
+    let clock = if is_pineview(cpu) {
+        calculate_pineview_clock(target_hz, refclk.hz(), limits)
+    } else {
+        calculate_clock(target_hz, refclk.hz(), limits)
+    }?;
+    Ok(LegacyClock { refclk, ..clock })
 }
 
 /// Fixed DPLL tuples libgfxinit programs for GMCH DisplayPort links.
@@ -280,6 +326,7 @@ pub(crate) fn find_legacy_dp_clock(rate: DpLinkRate) -> Result<LegacyClock, GmaE
         p1,
         p2,
         dotclock_hz: 0,
+        refclk: RefClock::Ssc(RefClock::DREF_HZ),
     })
 }
 
@@ -314,6 +361,7 @@ fn calculate_pineview_clock(
                 }
                 let delta = dotclock_hz.abs_diff(target_hz);
                 let clock = LegacyClock {
+                    refclk: RefClock::Dref,
                     n,
                     m1: 0,
                     m2,
@@ -366,6 +414,7 @@ fn calculate_clock(
                     }
                     let delta = dotclock_hz.abs_diff(target_hz);
                     let clock = LegacyClock {
+                        refclk: RefClock::Dref,
                         n,
                         m1,
                         m2,
@@ -445,7 +494,13 @@ fn encode_legacy_dpll(cpu: Cpu, port: Port, clock: LegacyClock) -> u32 {
     // libgfxinit g45 `DPLL_Mode`: LVDS and DP use the SSC reference clock,
     // VGA uses DREF, and HDMI/DP enable the high-speed (DVO 2x) path.
     let mode_bits = match port {
-        Port::Lvds => DPLL_MODE_LVDS | DPLL_SSC,
+        Port::Lvds => {
+            DPLL_MODE_LVDS
+                | match clock.refclk {
+                    RefClock::Dref => DPLL_DREFCLK,
+                    RefClock::Ssc(_) => DPLL_SSC,
+                }
+        }
         Port::Vga => DPLL_MODE_DAC | DPLL_DREFCLK,
         Port::DpA | Port::DpB | Port::DpC | Port::DpD | Port::Edp => {
             DPLL_MODE_DAC | DPLL_SSC | DPLL_HIGH_SPEED
@@ -714,6 +769,30 @@ mod tests {
         assert_eq!(
             encode_legacy_fp(Cpu::I945GM, clock),
             ((clock.n - 2) << 16) | ((clock.m1 - 2) << 8) | (clock.m2 - 2)
+        );
+    }
+
+    #[test]
+    fn lvds_reference_follows_the_vbt_ssc_policy() {
+        use crate::vbt::LvdsSsc;
+        let mode = Mode::XGA_1024X768_60;
+        let ssc100 = RefClock::for_port(Port::Lvds, Some(LvdsSsc::Enabled { alternate: true }));
+        assert_eq!(ssc100, RefClock::Ssc(100_000_000));
+        let clock = find_legacy_clock_with_ref(Cpu::I945GM, Port::Lvds, mode, ssc100).unwrap();
+        assert!(clock.dotclock_hz.abs_diff(65_000_000) < 250_000);
+        let dpll = encode_legacy_dpll(Cpu::I945GM, Port::Lvds, clock);
+        assert_eq!(dpll & DPLL_SSC, DPLL_SSC);
+
+        let dref = RefClock::for_port(Port::Lvds, Some(LvdsSsc::Disabled));
+        let clock = find_legacy_clock_with_ref(Cpu::I945GM, Port::Lvds, mode, dref).unwrap();
+        assert_eq!(
+            encode_legacy_dpll(Cpu::I945GM, Port::Lvds, clock) & DPLL_SSC,
+            DPLL_DREFCLK
+        );
+        // No VBT keeps the libgfxinit default.
+        assert_eq!(
+            RefClock::for_port(Port::Lvds, None),
+            RefClock::Ssc(96_000_000)
         );
     }
 

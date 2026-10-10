@@ -3,7 +3,9 @@
 use core::mem::{align_of, size_of};
 use core::ptr;
 
-use crate::header::{EntryDescriptor, FLAG_COREBOOT_MODULE_ARGS, HeaderError, SmmImageHeader};
+use crate::header::{
+    EntryDescriptor, FLAG_COREBOOT_MODULE_ARGS, FLAG_PROTECTED_MODE, HeaderError, SmmImageHeader,
+};
 use crate::layout::{
     CpuSmmLayout, LayoutError, SMM_ENTRY_OFFSET, SMM_IDENTITY_TABLE_SIZE,
     SMM_RELOCATION_TABLE_OFFSET, SmramLayout, build_identity_tables, compute_common_base,
@@ -74,6 +76,8 @@ pub enum InstallError {
     BadAlignment,
     AddressAbove4G,
     Overflow,
+    /// The image's entry mode does not match this build (i686 vs x86_64).
+    ModeMismatch,
 }
 
 impl From<HeaderError> for InstallError {
@@ -99,10 +103,14 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
     cpu_layouts: &'a mut [CpuSmmLayout],
 ) -> Result<InstalledSmmImage<'a>, InstallError> {
     let header = SmmImageHeader::parse(image)?;
+    check_mode(&header)?;
     if header.entry_count < config.num_cpus || config.num_cpus as usize > cpu_layouts.len() {
         return Err(InstallError::NotEnoughEntries);
     }
     validate_memory_blocks(&header)?;
+    for i in 0..header.fixup_count {
+        header.fixup(image, i)?;
+    }
     if size_of::<T>() > header.handler_config_capacity as usize
         || align_of::<T>() > HANDLER_CONFIG_ALIGNMENT
     {
@@ -202,6 +210,12 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
             common_base as *mut u8,
             header.handler_load_size as usize,
         );
+        // A protected-mode handler is linked at 0: rebase its absolute
+        // addresses. The offsets were validated above.
+        for i in 0..header.fixup_count {
+            let at = (common_base + u64::from(header.fixup(image, i)?)) as *mut u32;
+            ptr::write_unaligned(at, ptr::read_unaligned(at).wrapping_add(common_base as u32));
+        }
         ptr::write(runtime_addr as *mut SmmRuntime, runtime);
         // Alignment was checked against HANDLER_CONFIG_ALIGNMENT above.
         ptr::write(config_addr as *mut T, *config.handler_config);
@@ -277,6 +291,7 @@ pub unsafe fn install_default_relocation_callback_stub(
     config: DefaultRelocationCallbackConfig,
 ) -> Result<(), InstallError> {
     let header = SmmImageHeader::parse(image)?;
+    check_mode(&header)?;
     if header.entry_count == 0 {
         return Err(InstallError::NotEnoughEntries);
     }
@@ -330,6 +345,17 @@ pub unsafe fn install_default_relocation_callback_stub(
             entry_base: entry_addr,
         },
     )
+}
+
+/// The stubs call the handler and the relocation callback in their own mode,
+/// so the image must match the installing stage.
+fn check_mode(header: &SmmImageHeader) -> Result<(), InstallError> {
+    let protected = header.flags & FLAG_PROTECTED_MODE != 0;
+    if protected == cfg!(target_arch = "x86") {
+        Ok(())
+    } else {
+        Err(InstallError::ModeMismatch)
+    }
 }
 
 fn validate_memory_blocks(header: &SmmImageHeader) -> Result<(), InstallError> {

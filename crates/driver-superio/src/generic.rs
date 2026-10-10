@@ -53,7 +53,7 @@ pub fn quiesce_i8042_for_os() {
 
 /// Leave an i8042 controller quiet for OS handoff using explicit ports.
 pub fn quiesce_i8042_for_os_at(data_port: u16, command_port: u16) {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         // SAFETY: callers select the legacy i8042 I/O ports decoded by the platform.
         unsafe {
@@ -70,13 +70,13 @@ pub fn quiesce_i8042_for_os_at(data_port: u16, command_port: u16) {
         }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     {
         let _ = (data_port, command_port);
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
     for _ in 0..100_000 {
         // SAFETY: caller selected a decoded i8042 status port.
@@ -88,7 +88,7 @@ unsafe fn i8042_wait_input_empty(status_port: u16) -> bool {
     false
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 unsafe fn i8042_flush(data_port: u16, status_port: u16) -> bool {
     for _ in 0..256 {
         // SAFETY: caller selected decoded i8042 data/status ports.
@@ -436,7 +436,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 
     fn init_kbc_coreboot(&self, data_port: u16, command_port: u16, mut enable_aux: bool) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             // Port the essential parts of coreboot pc_keyboard_init(): drain
             // stale bytes, self-test the 8042, then enable IRQs only after the
@@ -529,7 +529,7 @@ impl<C: SuperIoChip> SuperIo<C> {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe fn kbc_wait_input_empty(status_port: u16) -> bool {
         for _ in 0..100_000 {
             // SAFETY: caller selected a decoded i8042 status port.
@@ -540,7 +540,7 @@ impl<C: SuperIoChip> SuperIo<C> {
         false
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe fn kbc_wait_output_full(status_port: u16) -> bool {
         for _ in 0..100_000 {
             // SAFETY: caller selected a decoded i8042 status port.
@@ -551,7 +551,7 @@ impl<C: SuperIoChip> SuperIo<C> {
         false
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe fn kbc_flush(data_port: u16, status_port: u16) -> bool {
         for _ in 0..1024 {
             // SAFETY: caller selected decoded i8042 data/status ports.
@@ -567,7 +567,7 @@ impl<C: SuperIoChip> SuperIo<C> {
         false
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe fn kbc_write_command_byte(data_port: u16, command_port: u16, value: u8) -> bool {
         // SAFETY: caller selected decoded i8042 data/status ports.
         if !unsafe { Self::kbc_wait_input_empty(command_port) } {
@@ -585,7 +585,7 @@ impl<C: SuperIoChip> SuperIo<C> {
         unsafe { Self::kbc_wait_input_empty(command_port) }
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe fn kbc_send_keyboard(data_port: u16, status_port: u16, command: u8) -> Option<u8> {
         // SAFETY: caller selected decoded i8042 data/status ports.
         if !unsafe { Self::kbc_wait_input_empty(status_port) } {

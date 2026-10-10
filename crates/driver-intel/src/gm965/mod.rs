@@ -613,7 +613,7 @@ impl IntelGm965 {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn enable_ecam(&self) {
         let value = (self.config.ecam_base as u32) | self.pciexbar_length_bits() | 1;
         // SAFETY: one-time legacy PCI config write to enable ECAM before the
@@ -626,7 +626,7 @@ impl IntelGm965 {
         fstart_log::info!("gm965: ECAM enabled at {:#x}", self.config.ecam_base);
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     fn enable_ecam(&self) {
         ecam::init(self.config.ecam_base as usize);
         fstart_log::info!("gm965: ECAM enable (stub, non-x86)");
@@ -918,7 +918,7 @@ impl IntelGm965 {
         if raw <= 3 && raw != 0 { raw } else { 2 }
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn cpu_supports_slfm(&self) -> bool {
         // SAFETY: MSR 0xee is the Intel Core/Core2 extended config MSR used by
         // coreboot to detect SLFM support on this platform.
@@ -927,7 +927,7 @@ impl IntelGm965 {
             .is_set(IA32_EXT_CONFIG::SLFM_SUPPORTED)
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     fn cpu_supports_slfm(&self) -> bool {
         false
     }
@@ -1382,7 +1382,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     }
 
     fn training_identity(&self) -> Option<[u8; 32]> {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let hb = self.hostbridge_regs();
             Some(crate::generic::training::identity(
@@ -1398,11 +1398,11 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
                     device_id: hb.device_id.get(),
                     revision_id: hb.revision_id.get(),
                     capabilities: [hb.capid0.get(), hb.capid0_hi.get()],
-                    cpu_signature: core::arch::x86_64::__cpuid(1).eax,
+                    cpu_signature: fstart_arch::x86::cpuid(1).0,
                 },
             ))
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         {
             None
         }

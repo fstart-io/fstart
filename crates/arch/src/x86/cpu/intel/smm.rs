@@ -414,9 +414,14 @@ impl RelocationState {
 static RELOCATION_BRIDGE: RelocationState = RelocationState::new();
 
 fn format_from_raw(raw: u16) -> Option<X86SaveStateFormat> {
-    [X86SaveStateFormat::IntelEm64t, X86SaveStateFormat::Amd64]
-        .into_iter()
-        .find(|format| *format as u16 == raw)
+    [
+        X86SaveStateFormat::IntelEm64t,
+        X86SaveStateFormat::Amd64,
+        X86SaveStateFormat::IntelLegacy,
+        X86SaveStateFormat::Amd64OrIntelLegacy,
+    ]
+    .into_iter()
+    .find(|format| *format as u16 == raw)
 }
 
 fn error_from_raw(raw: u32) -> IntelSmmError {

@@ -675,7 +675,7 @@ fn lpc() -> fstart_pci::ecam::EcamDevice {
     fstart_pci::ecam::EcamDevice::new(0, LPC_DEV, LPC_FUNC)
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn full_reset() -> ! {
     // SAFETY: I/O port 0xcf9 is the standard Intel reset control register.
     unsafe {
@@ -687,7 +687,7 @@ fn full_reset() -> ! {
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn full_reset() -> ! {
     loop {
         core::hint::spin_loop();

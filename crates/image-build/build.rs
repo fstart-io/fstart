@@ -12,20 +12,33 @@ fn main() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"));
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
 
+    let source = manifest_dir.join("asm/entry_stub.S");
     let entry = build_asm_blob(
-        &manifest_dir.join("asm/entry_stub.S"),
+        &source,
         &out_dir,
         "entry_stub",
         "fstart_smm_stub_params",
+        &[],
+    );
+    let entry32 = build_asm_blob(
+        &source,
+        &out_dir,
+        "entry_stub32",
+        "fstart_smm_stub_params",
+        &["-DFSTART_PROTECTED_MODE"],
     );
 
     fs::write(
         out_dir.join("smm_image_asm.rs"),
         format!(
             "pub const ENTRY_STUB: &[u8] = include_bytes!(r#\"{}\"#);\n\
-             pub const ENTRY_PARAMS_OFFSET: usize = {:#x};\n",
+             pub const ENTRY_PARAMS_OFFSET: usize = {:#x};\n\
+             pub const ENTRY_STUB_32: &[u8] = include_bytes!(r#\"{}\"#);\n\
+             pub const ENTRY_PARAMS_OFFSET_32: usize = {:#x};\n",
             entry.bin.display(),
             entry.symbol_offset,
+            entry32.bin.display(),
+            entry32.symbol_offset,
         ),
     )
     .unwrap();
@@ -36,12 +49,19 @@ struct BuiltBlob {
     symbol_offset: usize,
 }
 
-fn build_asm_blob(source: &Path, out_dir: &Path, stem: &str, symbol: &str) -> BuiltBlob {
+fn build_asm_blob(
+    source: &Path,
+    out_dir: &Path,
+    stem: &str,
+    symbol: &str,
+    defines: &[&str],
+) -> BuiltBlob {
     let object = out_dir.join(format!("{stem}.o"));
     let elf = out_dir.join(format!("{stem}.elf"));
     let bin = out_dir.join(format!("{stem}.bin"));
 
     run(Command::new("cc")
+        .args(defines)
         .arg("-c")
         .arg("-x")
         .arg("assembler-with-cpp")

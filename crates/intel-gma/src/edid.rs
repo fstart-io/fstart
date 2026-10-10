@@ -399,6 +399,11 @@ fn monitor_range_descriptor(desc: &[u8], edid_revision: u8) -> Option<MonitorRan
     })
 }
 
+/// The built-in DMT timing of a size and refresh rate, if there is one.
+pub(crate) fn dmt_mode(width: u16, height: u16, refresh_hz: u16) -> Option<Mode> {
+    dmt_mode_for_standard_timing(width, height, refresh_hz)
+}
+
 fn dmt_mode_for_standard_timing(width: u16, height: u16, refresh_hz: u16) -> Option<Mode> {
     let mut first = None;
     for mode in all_dmt_modes().filter(|mode| {

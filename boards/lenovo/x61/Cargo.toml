@@ -24,6 +24,7 @@ fstart-pci = { path = "../../../crates/pci" }
 tock-registers = { workspace = true }
 fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
 fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
+fstart-driver-ricoh = { path = "../../../crates/driver-ricoh" }
 fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 fstart-log = { path = "../../../crates/log" }

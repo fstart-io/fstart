@@ -93,7 +93,9 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
             flags: object::SymbolFlags::None,
         });
         fs::write(&object_path, input.write().unwrap()).unwrap();
-        let original = crate::linker::resolved_intel(&config, role, true).unwrap();
+        let original =
+            crate::linker::resolved_intel(&config, role, true, fstart_core::Platform::X86_64)
+                .unwrap();
         fs::write(&script, &original).unwrap();
         let link = || {
             Command::new(&linker)
@@ -112,7 +114,13 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
             String::from_utf8_lossy(&result.stderr)
         );
         let bytes = fs::read(&elf).unwrap();
-        fstart_image_build::elf::validate(&bytes, &config.elf_expectations(role).unwrap()).unwrap();
+        fstart_image_build::elf::validate(
+            &bytes,
+            &config
+                .elf_expectations(role, fstart_core::Platform::X86_64)
+                .unwrap(),
+        )
+        .unwrap();
         let wrong_role = if role == IntelStage::Bootblock {
             IntelStage::Postcar
         } else {
@@ -121,7 +129,9 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
         assert!(
             fstart_image_build::elf::validate(
                 &bytes,
-                &config.elf_expectations(wrong_role).unwrap()
+                &config
+                    .elf_expectations(wrong_role, fstart_core::Platform::X86_64)
+                    .unwrap()
             )
             .is_err()
         );
@@ -210,7 +220,9 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
             );
             fstart_image_build::elf::validate(
                 &fs::read(&elf).unwrap(),
-                &config.elf_expectations(role).unwrap(),
+                &config
+                    .elf_expectations(role, fstart_core::Platform::X86_64)
+                    .unwrap(),
             )
             .unwrap();
             crate::build_board::write_flat_binary(&elf, &flat).unwrap();

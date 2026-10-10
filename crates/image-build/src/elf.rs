@@ -15,6 +15,7 @@ pub enum Architecture {
     Aarch64,
     Riscv64,
     X86_64,
+    X86,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyMapping {
@@ -138,6 +139,7 @@ pub fn validate(bytes: &[u8], expected: &Expectations) -> Result<(), String> {
         Architecture::Aarch64 => object::Architecture::Aarch64,
         Architecture::Riscv64 => object::Architecture::Riscv64,
         Architecture::X86_64 => object::Architecture::X86_64,
+        Architecture::X86 => object::Architecture::I386,
     };
     if file.architecture() != architecture || file.is_little_endian() != expected.little_endian {
         return Err("ELF architecture/endianness mismatch".into());

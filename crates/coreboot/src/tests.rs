@@ -88,3 +88,34 @@ fn manifest_round_trips_and_sizes_its_window() {
     );
     assert!(manifest::Manifest::decode(&bytes[..bytes.len() - 1]).is_none());
 }
+
+#[test]
+fn xrgb8888_reports_32_bpp_through_its_masks() {
+    let fb = Framebuffer {
+        bits_per_pixel: 32,
+        red_mask_pos: 16,
+        red_mask_size: 8,
+        green_mask_pos: 8,
+        green_mask_size: 8,
+        blue_mask_pos: 0,
+        blue_mask_size: 8,
+        ..Default::default()
+    }
+    .with_reserved_mask();
+    // coreboot `fb_add_framebuffer_info` for 32 bpp.
+    assert_eq!((fb.reserved_mask_pos, fb.reserved_mask_size), (24, 8));
+    let depth = fb.red_mask_size + fb.green_mask_size + fb.blue_mask_size + fb.reserved_mask_size;
+    assert_eq!(depth, 32);
+
+    let rgb565 = Framebuffer {
+        bits_per_pixel: 16,
+        red_mask_pos: 11,
+        red_mask_size: 5,
+        green_mask_pos: 5,
+        green_mask_size: 6,
+        blue_mask_size: 5,
+        ..Default::default()
+    }
+    .with_reserved_mask();
+    assert_eq!(rgb565.reserved_mask_size, 0);
+}
