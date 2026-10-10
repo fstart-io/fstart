@@ -1,13 +1,42 @@
-//! Intel Core/Core 2 CPU operations for socket M/P systems.
+//! Intel Core/Core 2 CPU operations for mobile and LGA775 systems.
 //!
 //! Mirrors the per-CPU MSR setup in coreboot's `cpu/intel/model_6ex` (Core
 //! Solo/Duo, Yonah) and `model_6fx` (Core 2) drivers and optionally supplies
 //! an Intel microcode blob to [`crate::x86::mp`].
 
+use super::msr_register::Msr;
 use crate::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
 use crate::x86::cpu::intel::{common_power, feature_control};
 use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor};
 use crate::x86::msr::{rdmsr, wrmsr};
+use tock_registers::{LocalRegisterCopy, register_bitfields};
+
+register_bitfields![u64,
+    FSB_SELECTION [
+        CODE OFFSET(0) NUMBITS(3) [],
+        BSEL0 OFFSET(0) NUMBITS(1) [],
+        BSEL1 OFFSET(1) NUMBITS(1) [],
+        BSEL2 OFFSET(2) NUMBITS(1) []
+    ],
+    PECI_CONTROL [ ENABLE OFFSET(0) NUMBITS(1) [] ]
+];
+
+/// CPU-requested front-side-bus strap levels, independent of board wiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FsbBusSelect {
+    pub bsel0_high: bool,
+    pub bsel1_high: bool,
+    pub bsel2_high: bool,
+}
+
+fn bus_select_from_msr(value: u64) -> Option<FsbBusSelect> {
+    let value = LocalRegisterCopy::<u64, FSB_SELECTION::Register>::new(value);
+    (value.read(FSB_SELECTION::CODE) != 7).then(|| FsbBusSelect {
+        bsel0_high: value.is_set(FSB_SELECTION::BSEL0),
+        bsel1_high: value.is_set(FSB_SELECTION::BSEL1),
+        bsel2_high: value.is_set(FSB_SELECTION::BSEL2),
+    })
+}
 
 const IA32_PECI_CTL: u32 = 0x5a0;
 const IA32_PLATFORM_ID: u32 = 0x17;
@@ -48,9 +77,17 @@ fn configure_misc(yonah: bool) {
         if yonah {
             return;
         }
-        let mut peci = rdmsr(IA32_PECI_CTL);
-        peci |= 1;
-        wrmsr(IA32_PECI_CTL, peci);
+        configure_peci();
+    }
+}
+
+fn configure_peci() {
+    let peci = Msr::<PECI_CONTROL::Register>::new(IA32_PECI_CTL);
+    // SAFETY: model-6FX implements IA32_PECI_CTL (coreboot model_6fx).
+    unsafe {
+        let mut value = peci.read();
+        value.modify(PECI_CONTROL::ENABLE::SET);
+        peci.write(value.get());
     }
 }
 
@@ -126,12 +163,41 @@ static CORE2_IDS: &[CpuIdMatch] = &[
 pub struct Core2CpuDriver {
     pmbase: u32,
     microcode: Option<&'static [u8]>,
+    desktop: bool,
 }
 
 impl Core2CpuDriver {
     /// Create Core 2 CPU ops with the southbridge PMBASE and optional ucode.
     pub fn new(pmbase: u32, microcode: Option<&'static [u8]>) -> Self {
-        Self { pmbase, microcode }
+        Self {
+            pmbase,
+            microcode,
+            desktop: false,
+        }
+    }
+
+    /// Desktop model-6FX initialization, without mobile C-state or VID policy.
+    pub fn new_desktop(pmbase: u32, microcode: Option<&'static [u8]>) -> Self {
+        Self {
+            pmbase,
+            microcode,
+            desktop: true,
+        }
+    }
+
+    /// Read BSEL only for supported Core 2 models; never probe a foreign MSR.
+    /// Netburst and Enhanced Core model 17h require their own CPU drivers.
+    pub fn bus_select() -> Option<FsbBusSelect> {
+        let identity = CpuIdentity::current();
+        if !matches!(identity.model(), 0x0f | 0x16)
+            || !CORE2_IDS.iter().any(|entry| entry.matches(identity))
+        {
+            return None;
+        }
+        // SAFETY: MSR_FSB_FREQ exists on the selected model-6FX CPUs.
+        bus_select_from_msr(
+            unsafe { Msr::<FSB_SELECTION::Register>::new(crate::x86::MSR_FSB_FREQ).read() }.get(),
+        )
     }
 }
 
@@ -169,7 +235,12 @@ impl CpuDriver for Core2CpuDriver {
     }
 
     fn id_table(&self) -> &'static [CpuIdMatch] {
-        CORE2_IDS
+        if self.desktop {
+            // The first three entries are Yonah, which cannot use LGA775.
+            &CORE2_IDS[3..]
+        } else {
+            CORE2_IDS
+        }
     }
 
     fn update_microcode(&self) {
@@ -193,21 +264,71 @@ impl CpuDriver for Core2CpuDriver {
         } else {
             common_power::CST::DEEPER_SLEEP::SET.value
         };
-        // SAFETY: this CPU model implements these power-management MSRs.
-        unsafe {
-            common_power::configure_c_states(
-                self.pmbase,
-                deeper_sleep | common_power::CST::DYNAMIC_L2::SET.value,
-            );
+        if self.desktop {
+            let (_, _, features, _) = crate::x86::cpuid(1);
+            // SAFETY: the desktop ID table contains only model-6FX CPUs.
+            // Do not request mobile C-states or overwrite CPU VID/ratio.
+            unsafe { common_power::configure_desktop_misc(features) };
+            configure_peci();
+        } else {
+            // SAFETY: these mobile models implement the power-management MSRs.
+            unsafe {
+                common_power::configure_c_states(
+                    self.pmbase,
+                    deeper_sleep | common_power::CST::DYNAMIC_L2::SET.value,
+                );
+            }
+            configure_misc(yonah);
         }
-        configure_misc(yonah);
         configure_pic_thermal_sensors();
         if !yonah {
             let smrr = smrr_pair_for(identity).feature_control_bits();
-            // SAFETY: Core 2 CPUs implement IA32_FEATURE_CONTROL, and
-            // `feature_control_bits` only names bits this model has.
+            // SAFETY: this is Intel; `feature_control_bits` checks SMRR
+            // capability. The helper gates the MSR read on VMX/SMX or SMRR.
             unsafe { feature_control::enable_and_lock(smrr) };
         }
         fstart_log::info!("cpu: Core/Core 2 MSR configuration complete");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fsb_selection_ignores_unrelated_msr_fields_and_rejects_reserved_code() {
+        for code in 0..7 {
+            assert_eq!(
+                bus_select_from_msr(0xffff_ffff_ffff_fff8 | code),
+                Some(FsbBusSelect {
+                    bsel0_high: code & 1 != 0,
+                    bsel1_high: code & 2 != 0,
+                    bsel2_high: code & 4 != 0,
+                })
+            );
+        }
+        assert_eq!(bus_select_from_msr(7), None);
+    }
+
+    #[test]
+    fn desktop_cpu_selection_excludes_mobile_yonah_and_unimplemented_families() {
+        let driver = Core2CpuDriver::new_desktop(0x500, None);
+        let accepts = |signature| {
+            driver.id_table().iter().any(|entry| {
+                entry.matches(CpuIdentity {
+                    vendor: CpuVendor::Intel,
+                    signature,
+                })
+            })
+        };
+        assert!(accepts(0x6f6));
+        assert!(accepts(0x10661));
+        assert!(!accepts(0x6e8));
+        assert!(!accepts(0xf41));
+        assert!(!accepts(0x10676));
+        assert!(driver.id_table().iter().all(|entry| matches!(CpuIdentity {
+            vendor: entry.vendor,
+            signature: entry.signature,
+        }.model(), 0x0f | 0x16)));
     }
 }

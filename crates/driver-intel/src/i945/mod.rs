@@ -494,7 +494,7 @@ pub(crate) fn cf9_reset() -> ! {
 }
 
 /// Full reset with a power cycle, mirroring coreboot `full_reset()`.
-pub(crate) fn cf9_full_reset() -> ! {
+pub fn cf9_full_reset() -> ! {
     cf9(0x0e)
 }
 

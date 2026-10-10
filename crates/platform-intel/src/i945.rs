@@ -10,6 +10,7 @@ pub use fstart_driver_intel::ich7::{
 };
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 pub use fstart_driver_intel::southbridge::pirq::PirqRouting;
+pub use fstart_driver_intel::southbridge::pmio_ich::Ich7Gpe;
 
 pub const I945_MCHBAR: u64 = 0xFED1_4000;
 pub const I945_DMIBAR: u64 = 0xFED1_8000;
@@ -224,6 +225,17 @@ impl I945Ich7Config {
         self.gpe0_en = value;
         self
     }
+    /// Enable named ACPI events; GPIO events use physical pin numbers.
+    #[must_use]
+    pub const fn gpe_events<const N: usize>(mut self, events: [Ich7Gpe; N]) -> Self {
+        self.gpe0_en = 0;
+        let mut index = 0;
+        while index < N {
+            self.gpe0_en |= events[index].encode();
+            index += 1;
+        }
+        self
+    }
     #[must_use]
     pub const fn sata(mut self, sata: SataConfig) -> Self {
         self.sata = Some(sata);
@@ -323,6 +335,29 @@ pub struct I945Ich7Platform {
     pub southbridge: IntelIch7Config,
     /// Maximum logical CPU count (BSP + APs) the board populates.
     pub max_cpus: u16,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_gpe_events_replace_raw_policy_and_encode_physical_gpio() {
+        let config = I945Ich7Config::new()
+            .gpe0_en(u32::MAX)
+            .gpe_events([Ich7Gpe::TcoSci, Ich7Gpe::Gpio(13)])
+            .build();
+        assert_eq!(config.southbridge.gpe0_en, 0x2000_0040);
+        assert_eq!(
+            I945Ich7Config::new()
+                .gpe0_en(0x441)
+                .gpe_events([])
+                .build()
+                .southbridge
+                .gpe0_en,
+            0
+        );
+    }
 }
 
 impl Default for I945Ich7Config {

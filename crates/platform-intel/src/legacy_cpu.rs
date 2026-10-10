@@ -51,6 +51,29 @@ impl LegacyCpu for Fcbga559 {
     }
 }
 
+/// LGA775 Core 2 / Celeron model-6FX package policy.
+///
+/// This is deliberately not a complete LGA775 CPU family: Netburst (F3X/F4X)
+/// and Enhanced Core (1067X) need separate model initialization. The default
+/// CAR window follows coreboot socket_LGA775; const parameters allow a board
+/// to select a larger explicitly budgeted window.
+pub struct Lga775Core2<const BASE: u64 = 0xfeff_8000, const SIZE: u64 = 0x8000>;
+
+impl<const BASE: u64, const SIZE: u64> LegacyCpu for Lga775Core2<BASE, SIZE> {
+    const CAR_BASE: u64 = BASE;
+    const CAR_SIZE: u64 = SIZE;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = &[
+        "06-0f-02", "06-0f-06", "06-0f-07", "06-0f-0a", "06-0f-0b", "06-0f-0d", "06-16-01",
+    ];
+
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    type Driver = fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+        Self::Driver::new_desktop(pmbase, microcode)
+    }
+}
+
 /// Core/Core 2 package profile used by coreboot's X60 and X61 bindings.
 ///
 /// The default CAR window follows socket_m. Const parameters allow a board

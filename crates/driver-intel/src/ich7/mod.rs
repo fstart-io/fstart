@@ -50,6 +50,7 @@ register_bitfields! [u32,
     ],
     /// Clock-gating control.
     CG_REG [
+        PCIE_ROOT_PORT_STATIC OFFSET(0) NUMBITS(1) [],
         RAW OFFSET(0) NUMBITS(32) []
     ],
     /// SATA prefetch/caching control.
@@ -1369,6 +1370,16 @@ impl IntelIch7 {
     fn smbus_mut(&mut self) -> &mut I801SmBus {
         self.smbus
             .get_or_insert_with(|| I801SmBus::new(self.config.smbus_base))
+    }
+
+    /// Select only PCIe-root-port static clock gating, clearing other gates.
+    ///
+    /// Legacy desktop boards such as P5GC-MX require this in post-training
+    /// board hooks. The mainstage driver applies its normal gating policy
+    /// later. RCBA must already be established.
+    pub fn use_pcie_root_port_clock_gating_only(&self) {
+        let rcba = Rcba::new((self.config.rcba & 0xffff_c000) as usize);
+        rcba.regs().cg.write(CG_REG::PCIE_ROOT_PORT_STATIC::SET);
     }
 
     /// Detect boot path: Normal, Reset (warm), or S3 Resume.
