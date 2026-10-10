@@ -327,7 +327,7 @@ pub struct SuperIo<C: SuperIoChip> {
     /// LPC config index port (e.g., `0x2e` or `0x4e`).
     base_port: u16,
     /// Saved config (used at `init()` time to actually program the chip).
-    config: SuperIoConfig,
+    pub(crate) config: SuperIoConfig,
     _phantom: PhantomData<C>,
 }
 
