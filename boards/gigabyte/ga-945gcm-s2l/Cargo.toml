@@ -1,0 +1,40 @@
+[package]
+name = "fstart-board-gigabyte-ga-945gcm-s2l"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "gigabyte-ga-945gcm-s2l"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-intel", name = "rust" }
+
+[package.metadata.fstart.variants.gigabyte-ga-945gcm-s2c]
+features = ["s2c"]
+
+[features]
+default = []
+s2c = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("car", "postcar", "ram", "smm"))'] }
+
+[dependencies]
+fstart-core = { path = "../../../crates/core", features = ["pci"] }
+fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["i945-ich7"] }
+fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-driver-intel = { path = "../../../crates/driver-intel" }
+fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
+fstart-log = { path = "../../../crates/log" }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

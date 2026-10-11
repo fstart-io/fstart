@@ -12,9 +12,9 @@ use fstart_driver_intel::southbridge::pirq::{PciPin as P, PinRoute as R, Pirq as
 use fstart_intel_gma::framebuffer::FramebufferConfig;
 use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::i945::{
-    HdaConfig, HdaVerbTable, I945Ich7Config, I945Ich7Platform, I945IgdConfig, I945Variant,
-    IdeConfig, LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode,
-    PirqRouting, SataConfig, SataMode, UsbConfig,
+    GpiRoute, HdaConfig, HdaVerbTable, I945Ich7Config, I945Ich7Platform, I945IgdConfig,
+    I945Variant, IdeConfig, LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode,
+    LpcSerialDecode, PirqRouting, SataConfig, SataMode, UsbConfig,
 };
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 
@@ -197,7 +197,24 @@ pub static X60_PLATFORM: I945Ich7Platform = I945Ich7Config::new()
     .pirq_routing([0x0b; 8])
     .pirq(X60_PIRQ)
     // GPIO8 H8_WAKE# and GPIO13 dock: SCI; GPIO12 H8SCI#: SMI until ACPI.
-    .gpi_routing([0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 1, 2, 0, 0])
+    .gpi_routing([
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Sci,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Smi,
+        GpiRoute::Sci,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+    ])
     .gpe0_en(0x1100_0006)
     .c4_on_c3(true)
     .lpc_fixed_io(LpcFixedIoDecode {

@@ -12,7 +12,7 @@ use fstart_intel_gma::framebuffer::FramebufferConfig;
 use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::i945::I945IgdConfig;
 use fstart_platform_intel::i945::{
-    I945Ich7Config, I945Ich7Platform, I945Variant, LpcFixedIoDecode, LpcGenericIoDecode,
+    GpiRoute, I945Ich7Config, I945Ich7Platform, I945Variant, LpcFixedIoDecode, LpcGenericIoDecode,
     LpcSerialDecode, PirqRouting, SataConfig, SataMode, UsbConfig,
 };
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
@@ -106,7 +106,24 @@ pub static D945GCLF_PLATFORM: I945Ich7Platform = I945Ich7Config::new()
     .ac97_modem(false)
     .pirq_routing([0x05, 0x07, 0x05, 0x07, 0x80, 0x80, 0x80, 0x06])
     .pirq(D945GCLF_PIRQ)
-    .gpi_routing([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0])
+    .gpi_routing([
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Smi,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+    ])
     .lpc_fixed_io(LpcFixedIoDecode {
         com_a: LpcSerialDecode::Com1,
         com_b: LpcSerialDecode::Com2,

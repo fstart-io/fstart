@@ -62,6 +62,50 @@ Keep a vendor ROM backup and external programmer before attempting a boot.
 This is **not hardware-validated firmware** or a completed port of every
 i945 board. Build and unit-test success do not establish hardware correctness.
 
+## Experimental Gigabyte GA-945GCM-S2L/S2C selections
+
+The shared crate in `boards/gigabyte/ga-945gcm-s2l` provides two selections:
+`gigabyte-ga-945gcm-s2l` and `gigabyte-ga-945gcm-s2c`. Both use 512 KiB flash,
+i945GC/ICH7, desktop model-6FX CPUs, the same VBT, and IT8718F resources.
+The S2C variant is selected by Cargo metadata, not by runtime board guessing;
+its SMBIOS product name differs from S2L.
+
+Before DRAM, the two populated fans are forced full-speed and the board's
+physical Super I/O pins are configured, after the framework detects the boot
+path. Pre-console setup touches only COM1. Mainstage enables PS/2 and standard
+LPT; after console registration it prepares analog monitoring with full-speed
+cooling, waits two seconds using ICH7's initialized HPET, checks sampling/channel
+readback and temperature plausibility, then releases both CPU-diode fan curves.
+Qualification failure logs a warning and leaves both fans full-speed. Clock gating runs immediately
+after memory training. GPIO event destinations are semantic SMI/SCI policy;
+they do not themselves enable event gates, and GPE0 remains disabled.
+
+The environmental-controller integration accepts only the verified IT8718F
+C-version code (1); other revision codes fail rather than assuming register
+compatibility. Reserved register writes and the undocumented vendor EF reboot
+write are omitted. Unlisted Super I/O pins/latches are preserved; unused
+UART2 pads are explicitly GPIO inputs. The 35–75°C, zero-start-duty curve uses
+a ceiling-quantized slope derived from its nominal endpoints, not the
+reference's raw slope or reserved full-temperature registers. Sampling,
+hysteresis and smoothing mean this is not an unconditional thermal deadline.
+Startup qualification requires readings strictly inside the configured alarm
+limits (here 0–127°C), excluding signed endpoints. This is conservative range
+checking, not proof of freshness or detection of every electrical fault: a
+plausible stuck reading or later sensor failure can escape it.
+
+Remaining limitations:
+
+- No hardware validation: DRAM, pin routing, sensor readings, polarity, fan
+  startup/response and peripherals require controlled bring-up. Keep an
+  external programmer, vendor ROM backup and independent temperature checks.
+- S3 is disabled; the early-hook S3 guard does not establish resume support.
+- Netburst/Enhanced Core CPUs remain unsupported.
+- S2L's RTL8168-specific reset/MAC initialization is missing; a warning is
+  emitted only for that variant. The reference does not request it for S2C.
+- PCI subsystem-ID overrides are not applied. Floppy and COM2 are disabled;
+  LPT is standard SPP with no ECP/DMA support.
+- Halt-image builds do not establish larger-payload fit or thermal safety.
+
 ## References
 
 - coreboot `cpu/intel/socket_LGA775`, `cpu/intel/model_6fx` and
@@ -71,3 +115,6 @@ i945 board. Build and unit-test success do not establish hardware correctness.
   IA32_MISC_ENABLE TM2 requires CPUID.1:ECX[8]; EIST uses CPUID.1:ECX[7].
 - Intel ICH7 Family Datasheet §7.1.57 (clock gating) and §10.7.5 (CF9 reset).
 - Winbond W83627DHG V1.4 §20 for GPIO, mux and activation semantics.
+- coreboot `mainboard/gigabyte/ga-945gcm-s2l`, including both variant selections.
+- ITE IT8718F V0.3 §§8.3, 8.11 and 9.6: physical pin functions, C-version
+  identification, analog monitoring and seven-bit SmartGuardian curves.
