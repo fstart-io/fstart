@@ -12,7 +12,9 @@ pub mod ite_gpio;
 pub mod pc87382;
 pub mod pc87392;
 pub mod smsc_lpc47m15x;
+mod w83627_gpio;
 pub mod w83627dhg;
+pub mod w83627ehg;
 pub mod w83627thg;
 
 pub use generic::*;
