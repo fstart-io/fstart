@@ -21,6 +21,11 @@ register_bitfields![u8,
         VID_VRM10 OFFSET(3) NUMBITS(1) [],
         UART_B_PINS OFFSET(0) NUMBITS(2) [Uart = 3],
     ],
+    UART_CLOCK [ SOURCE OFFSET(0) NUMBITS(2) [Standard = 0] ],
+    UART_B_MODE [
+        RX_INVERT OFFSET(0) NUMBITS(1) [], TX_INVERT OFFSET(1) NUMBITS(1) [],
+        INFRARED OFFSET(3) NUMBITS(3) [Disabled = 0],
+    ],
 ];
 
 pub struct W83627ehgChip;
@@ -78,6 +83,10 @@ fn drive_fields(
     }
 }
 
+fn uart_b_normal_fields() -> tock_registers::fields::FieldValue<u8, UART_B_MODE::Register> {
+    UART_B_MODE::INFRARED::Disabled + UART_B_MODE::RX_INVERT::CLEAR + UART_B_MODE::TX_INVERT::CLEAR
+}
+
 impl W83627ehg {
     /// GP10–17, GP32–34, GP40–47 and GP50–57 only. GPIO1 replaces the
     /// game-port bank, so all eight GPIO1 pads must be explicitly requested.
@@ -123,6 +132,18 @@ impl W83627ehg {
         self.enter_config();
         self.register::<MULTIFUNCTION::Register>(0x2c)
             .modify(MULTIFUNCTION::UART_B_PINS::Uart);
+        self.exit_config();
+    }
+    /// Normal non-inverted UART B, with infrared disabled and the standard
+    /// 1.8462 MHz UART clock (§7.5). IR location/duplex and reserved bits remain.
+    /// Call before exposing COM2; this is not glitch-free runtime mode switching.
+    pub fn configure_uart_b_normal(&mut self) {
+        self.enter_config();
+        self.logical_device(3);
+        self.register::<UART_CLOCK::Register>(0xf0)
+            .modify(UART_CLOCK::SOURCE::Standard);
+        self.register::<UART_B_MODE::Register>(0xf1)
+            .modify(uart_b_normal_fields());
         self.exit_config();
     }
     /// VID input threshold only: true selects VRM10, false selects TTL.
@@ -197,5 +218,8 @@ mod tests {
         assert_eq!(PIN_SELECTION::SECONDARY_CPU_FAN::Native.modify(0xff), 0xf9);
         assert_eq!(PIN_SELECTION::UART_A_GPIO6::Uart.modify(0xff), 0xf7);
         assert_eq!(MULTIFUNCTION::VID_VRM10::CLEAR.modify(0xff), 0xf7);
+        assert_eq!(UART_CLOCK::SOURCE::Standard.modify(0xff), 0xfc);
+        assert_eq!(uart_b_normal_fields().modify(0xff), 0xc4);
+        assert_eq!(uart_b_normal_fields().modify(0x04), 0x04);
     }
 }
