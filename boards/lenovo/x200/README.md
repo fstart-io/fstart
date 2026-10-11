@@ -48,6 +48,8 @@ to a connector. Do not assume every side or dock USB socket is usable.
 
 Each stage resets the controller and re-enumerates the gadget. Capture must
 survive these disconnects; a short `USB` greeting marks an enumeration.
+Descriptor discovery also tries reserved address 127 if address 0 fails,
+without reassigning an already-addressed gadget.
 Debug packets carry up to eight bytes. Polls/retries are bounded, and missing
 or incompatible gadgets leave the console offline without stopping boot.
 `EhciDebug::online()` can distinguish that condition. There is no alternate
@@ -82,12 +84,18 @@ Runtime descriptor verification rejects a layout mismatch.
    prepared cold reset, not run destructive training over a suspended OS.
 4. Exercise each admitted RAM topology and run extensive memory testing
    independently; the firmware's sparse probes are not RAM qualification.
-5. Validate EC fan/thermal behavior, radio and dock controls, display,
-   AHCI/HDA/USB/PCIe interrupts and emitted ACPI before attempting OS use.
+5. Validate EC fan/thermal behavior, PMH7 input power, radio and dock controls,
+   display clocks, AHCI/HDA/USB/PCIe interrupts and emitted ACPI before OS use.
+6. Check both Penryn cores initialize, microcode is updated before PECI,
+   and alternative SMRR is programmed/locked during SMM installation.
+7. Validate OS shutdown and passive-cooling processor references. Test charge
+   thresholds/readback using the X200 `0x24/0x25` backend; the reusable H8
+   driver retains the `0xb0` backend for later ThinkPads.
 
 Host validation commands:
 
 ```sh
+cargo test -p fstart-arch --features x86_64
 cargo test -p fstart-driver-intel --features gm45,ich9,acpi
 cargo test -p fstart-driver-usbdebug
 cargo test -p fstart-platform-intel --features gm45-ich9,host

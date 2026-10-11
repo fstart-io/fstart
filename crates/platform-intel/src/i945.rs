@@ -34,7 +34,7 @@ pub struct I945Ich7Config {
     pub pcie_ports: [bool; 4],
     pub pirq_routing: [u8; 8],
     /// Board interrupt wiring through the RCBA router and behind 0:1e.0.
-    pub pirq: PirqRouting,
+    pub pirq: PirqRouting<'static>,
     pub gpi_routing: [GpiRoute; 16],
     /// Internal LAN function present (`FD_INTLAN` when false).
     pub lan: bool,
@@ -168,7 +168,7 @@ impl I945Ich7Config {
         self
     }
     #[must_use]
-    pub const fn pirq(mut self, routing: PirqRouting) -> Self {
+    pub const fn pirq(mut self, routing: PirqRouting<'static>) -> Self {
         self.pirq = routing;
         self
     }
@@ -420,8 +420,16 @@ mod stage {
         #[cfg(feature = "mp")]
         type Cpu = C::Driver;
         #[cfg(feature = "mp")]
-        fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
-            C::cpu_driver(ICH7_PMBASE, microcode)
+        fn cpu_driver(
+            microcode: Option<&'static [u8]>,
+            _northbridge: &Self::Northbridge,
+            _southbridge: &Self::Southbridge,
+        ) -> Self::Cpu {
+            C::cpu_driver(
+                ICH7_PMBASE,
+                microcode,
+                crate::legacy_cpu::CpuPowerPolicy::default(),
+            )
         }
         #[cfg(feature = "acpi")]
         type AcpiContext = I945Ich7AcpiContext;

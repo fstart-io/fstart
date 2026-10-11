@@ -54,7 +54,11 @@ pub fn dsdt_aml_with_brightness(
         lpc.extend(hkey_charge_behaviour_aml());
     }
     if cfg.bat_thresholds {
-        lpc.extend(hkey_thresholds_aml());
+        lpc.extend(match cfg.bat_threshold_backend {
+            super::h8::H8BatteryThresholdBackend::RegistersB0 => hkey_thresholds_aml(),
+            super::h8::H8BatteryThresholdBackend::Registers24 { bit7 } => thresholds_24_aml(bit7),
+        });
+        lpc.extend(threshold_interface_aml());
     }
 
     let mut out = root_helpers_aml(cfg);
@@ -1061,6 +1065,145 @@ fn hkey_charge_behaviour_aml() -> Vec<u8> {
     .into()
 }
 
+/// Selector-based backend (coreboot `thinkpad_bat_thresholds_24.asl`).
+/// A shared mutex protects selector + data across both battery methods.
+fn thresholds_24_aml(bit7: bool) -> Vec<u8> {
+    let write_mask = if bit7 { 0u32 } else { 0x80u32 };
+    let read_mask = if bit7 { 0xffu32 } else { 0x7fu32 };
+    acpi_dsl! {
+        Scope("EC__") {
+            Mutex("BTMX", 0u8);
+            Field("ERAM", ByteAcc, NoLock, Preserve) {
+                Offset(0x03), , 2, BSTP, 1,
+                Offset(0x24), TSH0, 8, TSH1, 8,
+            }
+        }
+        Scope("EC__.BAT0") {
+            Method("SETT", 2, Serialized) {
+                If ((Arg0 <= 1u32) && (Arg1 <= 100u32)) {
+                    Acquire(BTMX, 0xffffu16);
+                    BSTP = Arg0;
+                    TSH0 = Arg1 | #{byte write_mask};
+                    Release(BTMX);
+                }
+            }
+            Method("GETT", 1, Serialized) {
+                If (Arg0 <= 1u32) {
+                    Acquire(BTMX, 0xffffu16);
+                    BSTP = Arg0;
+                    Local0 = TSH0 & #{byte read_mask};
+                    Release(BTMX);
+                    Return(Local0);
+                }
+                Return(0u32);
+            }
+        }
+        Scope("EC__.BAT1") {
+            Method("SETT", 2, Serialized) {
+                If ((Arg0 <= 1u32) && (Arg1 <= 100u32)) {
+                    Acquire(BTMX, 0xffffu16);
+                    BSTP = Arg0;
+                    TSH1 = Arg1 | #{byte write_mask};
+                    Release(BTMX);
+                }
+            }
+            Method("GETT", 1, Serialized) {
+                If (Arg0 <= 1u32) {
+                    Acquire(BTMX, 0xffffu16);
+                    BSTP = Arg0;
+                    Local0 = TSH1 & #{byte read_mask};
+                    Release(BTMX);
+                    Return(Local0);
+                }
+                Return(0u32);
+            }
+        }
+    }
+    .into()
+}
+
+/// ThinkPad public threshold API, shared by both register backends. References
+/// are relative to HKEY's EC parent, so relocated LPC namespaces keep working.
+fn threshold_interface_aml() -> Vec<u8> {
+    acpi_dsl! {
+        Scope("EC__.HKEY") {
+            Method("BCSS", 1, Serialized) {
+                Local0 = Arg0 & 0xffu32;
+                Local1 = (Arg0 >> 8u32) & 3u32;
+                If (Local0 > 100u32) { Return(0x80000000u32); }
+                If (Local1 == 0u32) {
+                    #{const "^^BAT0.SETT"}(1u32, Local0);
+                    #{const "^^BAT1.SETT"}(1u32, Local0);
+                    Local2 = ^^BAT0.GETT(1u32);
+                    Local3 = ^^BAT1.GETT(1u32);
+                    Local2 = Local0 != Local2;
+                    Local3 = Local0 != Local3;
+                    Return(((Local2 && Local3) & 1u32) << 31u32);
+                }
+                If (Local1 == 1u32) {
+                    #{const "^^BAT0.SETT"}(1u32, Local0);
+                    Local2 = ^^BAT0.GETT(1u32);
+                    Return(((Local0 != Local2) & 1u32) << 31u32);
+                }
+                If (Local1 == 2u32) {
+                    #{const "^^BAT1.SETT"}(1u32, Local0);
+                    Local2 = ^^BAT1.GETT(1u32);
+                    Return(((Local0 != Local2) & 1u32) << 31u32);
+                }
+                Return(0x80000000u32);
+            }
+            Method("BCCS", 1, Serialized) {
+                Local0 = Arg0 & 0xffu32;
+                Local1 = (Arg0 >> 8u32) & 3u32;
+                If (Local0 > 100u32) { Return(0x80000000u32); }
+                If (Local1 == 0u32) {
+                    #{const "^^BAT0.SETT"}(0u32, Local0);
+                    #{const "^^BAT1.SETT"}(0u32, Local0);
+                    Local2 = ^^BAT0.GETT(0u32);
+                    Local3 = ^^BAT1.GETT(0u32);
+                    Local2 = Local0 != Local2;
+                    Local3 = Local0 != Local3;
+                    Return(((Local2 && Local3) & 1u32) << 31u32);
+                }
+                If (Local1 == 1u32) {
+                    #{const "^^BAT0.SETT"}(0u32, Local0);
+                    Local2 = ^^BAT0.GETT(0u32);
+                    Return(((Local0 != Local2) & 1u32) << 31u32);
+                }
+                If (Local1 == 2u32) {
+                    #{const "^^BAT1.SETT"}(0u32, Local0);
+                    Local2 = ^^BAT1.GETT(0u32);
+                    Return(((Local0 != Local2) & 1u32) << 31u32);
+                }
+                Return(0x80000000u32);
+            }
+            Method("BCSG", 1, Serialized) {
+                If (Arg0 == 1u32) {
+                    Local0 = ^^BAT0.GETT(1u32);
+                    Return(0x300u32 | Local0);
+                }
+                If (Arg0 == 2u32) {
+                    Local0 = ^^BAT1.GETT(1u32);
+                    Return(0x300u32 | Local0);
+                }
+                Return(0x80000000u32);
+            }
+            Method("BCTG", 1, Serialized) {
+                If (Arg0 == 1u32) {
+                    Local0 = ^^BAT0.GETT(0u32);
+                    Return(0x300u32 | Local0);
+                }
+                If (Arg0 == 2u32) {
+                    Local0 = ^^BAT1.GETT(0u32);
+                    Return(0x300u32 | Local0);
+                }
+                Return(0x80000000u32);
+            }
+        }
+    }
+    .into()
+}
+
 /// HKEY battery-threshold extension (coreboot
 /// `thinkpad_bat_thresholds_b0.asl`), re-opening EC and battery scopes.
 fn hkey_thresholds_aml() -> Vec<u8> {
@@ -1119,6 +1262,146 @@ fn hkey_thresholds_aml() -> Vec<u8> {
 mod tests {
     use super::*;
     use std::{env, fs};
+
+    #[test]
+    fn both_threshold_backends_expose_the_public_interface() {
+        use crate::{
+            ec::EcPorts,
+            h8::{H8BatteryThresholdBackend, H8Resources},
+        };
+        for backend in [
+            H8BatteryThresholdBackend::RegistersB0,
+            H8BatteryThresholdBackend::Registers24 { bit7: false },
+            H8BatteryThresholdBackend::Registers24 { bit7: true },
+        ] {
+            let cfg = H8Config {
+                bat_thresholds: true,
+                bat_threshold_backend: backend,
+                ..H8Config::new(
+                    H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+                    0x11,
+                    "IBM0068",
+                )
+            };
+            let aml = dsdt_aml(&cfg, "\\_SB_.PCI0.LPCB");
+            for name in ["BCCS", "BCSS", "BCTG", "BCSG", "SETT", "GETT"] {
+                assert!(aml.windows(4).any(|bytes| bytes == name.as_bytes()));
+            }
+            assert_eq!(
+                aml.windows(4).any(|bytes| bytes == b"BSTP"),
+                matches!(backend, H8BatteryThresholdBackend::Registers24 { .. })
+            );
+            assert_eq!(
+                aml.windows(4).any(|bytes| bytes == b"TSL0"),
+                backend == H8BatteryThresholdBackend::RegistersB0
+            );
+        }
+    }
+
+    #[test]
+    fn threshold_methods_execute_for_both_register_layouts() {
+        use super::super::h8::H8BatteryThresholdBackend;
+        use std::process::Command;
+        for (index, backend) in [
+            H8BatteryThresholdBackend::RegistersB0,
+            H8BatteryThresholdBackend::Registers24 { bit7: false },
+            H8BatteryThresholdBackend::Registers24 { bit7: true },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Simulated memory stands in for EC RAM. It checks selector and
+            // encoding, not the real 0x24 firmware's multiplexed storage.
+            let mut aml: Vec<u8> = acpi_dsl! {
+                Device("PCI0") { Device("LPCB") { Device("EC__") {
+                    OperationRegion("ERAM", SystemMemory, 0x10000u32, 0x100u32);
+                    Device("BAT0") { }
+                    Device("BAT1") { }
+                    Device("HKEY") { }
+                } } }
+            }
+            .into();
+            let mut extension = match backend {
+                H8BatteryThresholdBackend::RegistersB0 => hkey_thresholds_aml(),
+                H8BatteryThresholdBackend::Registers24 { bit7 } => thresholds_24_aml(bit7),
+            };
+            extension.extend(threshold_interface_aml());
+            extension.extend_from_slice(&acpi_dsl! {
+                Scope("EC__.HKEY") {
+                    Method("TST0", 0, Serialized) {
+                        Local0 = BCCS(60u32);
+                        If (Local0 != 0u32) { Return(7u32); }
+                        Local0 = BCTG(2u32);
+                        If (Local0 != 0x33cu32) { Return(8u32); }
+                        Local0 = BCCS(0x150u32);
+                        If (Local0 != 0u32) { Return(1u32); }
+                        Local0 = BCTG(1u32);
+                        If (Local0 != 0x350u32) { Return(2u32); }
+                        Local0 = BCCS(0x1ffu32);
+                        If (Local0 != 0x80000000u32) { Return(9u32); }
+                        Local0 = BCSS(0x264u32);
+                        If (Local0 != 0u32) { Return(3u32); }
+                        Local0 = BCSG(2u32);
+                        If (Local0 != 0x364u32) { Return(4u32); }
+                        Local0 = BCSS(0x300u32);
+                        If (Local0 != 0x80000000u32) { Return(5u32); }
+                        Local0 = BCTG(3u32);
+                        If (Local0 != 0x80000000u32) { Return(6u32); }
+                        Return(0u32);
+                    }
+                }
+            });
+            aml.extend(fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0.LPCB", &extension).unwrap());
+            let dir = std::env::temp_dir().join(std::format!(
+                "fstart-h8-thresholds-{}-{index}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("dsdt.aml"),
+                fstart_acpi::platform::build_dsdt(&aml),
+            )
+            .unwrap();
+            let extra = if index == 0 {
+                ""
+            } else {
+                ";execute \\_SB.PCI0.LPCB.EC.BSTP;execute \\_SB.PCI0.LPCB.EC.TSH0;execute \\_SB.PCI0.LPCB.EC.TSH1"
+            };
+            let batch = std::format!("execute \\_SB.PCI0.LPCB.EC.HKEY.TST0{extra}");
+            let result = Command::new("acpiexec")
+                .current_dir(&dir)
+                .args(["-dt", "-fv", "0", "-b", &batch, "dsdt.aml"])
+                .output()
+                .unwrap();
+            let text = std::format!(
+                "{}{}",
+                std::string::String::from_utf8_lossy(&result.stdout),
+                std::string::String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(
+                result.status.success() && !text.contains("AE_") && !text.contains("ACPI Error"),
+                "{text}"
+            );
+            let first = text.split("Evaluating ").nth(1).unwrap();
+            assert!(first.contains("[Integer] = 0000000000000000"), "{text}");
+            if index != 0 {
+                assert!(
+                    text.contains("[Integer] = 0000000000000001"),
+                    "selector: {text}"
+                );
+                let (start, stop) = if index == 1 {
+                    ("00000000000000D0", "00000000000000E4")
+                } else {
+                    ("0000000000000050", "0000000000000064")
+                };
+                assert!(
+                    text.contains(start) && text.contains(stop),
+                    "encoding: {text}"
+                );
+            }
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
 
     #[test]
     fn dsdt_assembles_and_contains_key_objects() {

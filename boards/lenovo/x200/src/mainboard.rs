@@ -22,7 +22,7 @@ impl fstart_platform_intel::IntelEarlyBoardHooks<Gm45Ich9> for X200Mainboard {}
 const H8_CONFIG: fstart_driver_lenovo::h8::H8Config = {
     use fstart_driver_lenovo::{
         ec::EcPorts,
-        h8::{H8Config, H8Resources},
+        h8::{H8BatteryThresholdBackend, H8Config, H8Resources},
     };
     H8Config {
         has_bluetooth: true,
@@ -32,6 +32,7 @@ const H8_CONFIG: fstart_driver_lenovo::h8::H8Config = {
         second_thermal_zone: true,
         bat_info_extended: true,
         bat_thresholds: true,
+        bat_threshold_backend: H8BatteryThresholdBackend::Registers24 { bit7: false },
         ..H8Config::new(
             H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
             0x11,
@@ -84,6 +85,8 @@ impl fstart_platform_intel::IntelMainstageBoardHooks<Gm45Ich9> for X200Mainboard
         }
         let pmh7 = Pmh7::new(0x15e0);
         pmh7.backlight_enable(true);
+        pmh7.trackpoint_enable(true);
+        pmh7.touchpad_enable(true);
         let dock_id = [2, 3, 4].into_iter().try_fold(0, |id, pin| {
             Ok::<_, ServiceError>(id | (u8::from(sb.gpio_get(pin)?) << (pin - 2)))
         })?;

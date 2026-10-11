@@ -521,6 +521,17 @@ impl H8Resources {
     }
 }
 
+/// EC threshold register layouts used by different ThinkPad generations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum H8BatteryThresholdBackend {
+    /// Independent start/stop bytes at 0xb0..0xb3 (later ThinkPads).
+    RegistersB0,
+    /// Shared start/stop selector at 0x03 bit 2 and battery bytes 0x24/0x25.
+    /// `bit7` matches coreboot H8_BAT_THRESHOLDS_BIT7: true uses raw values,
+    /// false sets bit 7 on writes and masks it on reads (including X200).
+    Registers24 { bit7: bool },
+}
+
 /// Board-declared H8 capabilities and ACPI knobs (coreboot `chip.h` +
 /// Kconfig selections).
 #[derive(Debug, Clone, Copy)]
@@ -544,6 +555,7 @@ pub struct H8Config {
     pub bat_charge_behaviour: bool,
     /// Charge-threshold methods (`H8_HAS_BAT_THRESHOLDS_IMPL`).
     pub bat_thresholds: bool,
+    pub bat_threshold_backend: H8BatteryThresholdBackend,
     /// Alternative Fn-F2/Fn-F3 hotkey layout.
     pub alt_fn_f2f3_layout: bool,
     /// Hotkey hub EISAID ("IBM0068" on all models up to *61; "LEN0068" later).
@@ -573,6 +585,7 @@ impl H8Config {
             bat_info_extended: false,
             bat_charge_behaviour: false,
             bat_thresholds: false,
+            bat_threshold_backend: H8BatteryThresholdBackend::RegistersB0,
             alt_fn_f2f3_layout: false,
             hkey_eisaid,
             critical_temp_celsius: 0,

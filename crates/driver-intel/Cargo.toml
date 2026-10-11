@@ -49,3 +49,6 @@ heapless = { workspace = true }
 tock-registers = { workspace = true }
 ufmt = { workspace = true }
 zerocopy = { workspace = true }
+
+[dev-dependencies]
+fstart-driver-lenovo = { path = "../driver-lenovo", features = ["acpi"] }

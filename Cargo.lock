@@ -617,6 +617,7 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
+ "fstart-driver-lenovo",
  "fstart-driver-superio",
  "fstart-driver-usbdebug",
  "fstart-intel-gma",

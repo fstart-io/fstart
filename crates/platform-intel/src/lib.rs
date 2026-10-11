@@ -179,7 +179,11 @@ pub trait IntelEarlyPlatform:
     #[cfg(feature = "mp")]
     type Cpu: fstart_arch::x86::mp::CpuDriver + fstart_arch::x86::cpu::intel::smm::SmmCpu;
     #[cfg(feature = "mp")]
-    fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu;
+    fn cpu_driver(
+        microcode: Option<&'static [u8]>,
+        northbridge: &Self::Northbridge,
+        southbridge: &Self::Southbridge,
+    ) -> Self::Cpu;
     /// Platform-owned ACPI namespace context handed to `AcpiDevice` emitters.
     #[cfg(feature = "acpi")]
     type AcpiContext: Default;

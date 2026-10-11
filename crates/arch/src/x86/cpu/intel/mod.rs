@@ -8,6 +8,8 @@ pub mod core2_cpu;
 pub mod feature_control;
 pub mod microcode;
 mod msr_register;
+pub mod penryn;
 pub mod pineview;
 pub mod smm;
 pub mod smrr;
+pub mod speedstep;

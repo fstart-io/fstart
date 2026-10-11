@@ -31,6 +31,41 @@ restore the board binding.
 | RAM preflight | Moved final-map validation ahead of destructive controller programming/training. Unsupported asymmetric geometry now fails before JEDEC, rather than after calibration. | `gm45/raminit.c` memory-map calculations |
 | EC defaults | Restored GPIO42 SPD mux, Bluetooth GPIO7 detection, dock-ID GPIO2/3/4 and GPIO28 connection. Use existing H8/PMH7 drivers for EC setup, including radio/TrackPoint/USB/default policy. Added the missing reusable H8 UWB register operation using its typed EC access. | X200 `romstage.c`, `devicetree.cb`, `variants/x200/dock.c`, `ec/lenovo/h8/h8.c` |
 
+### Independent review follow-up
+
+The Opus/GPT source review found additional issues that are now addressed:
+
+* BGA956 selects a model-1067x Penryn driver, not the Merom-only driver.
+  It recognizes `10676/10677/1067a`, uses alternative SMRR and performs the
+  capability-gated C5/C6, Super-LFM, turbo, EMTTM and thermal MSR sequence.
+  CPU and AML consumers share one allocation-free SpeedStep table generator;
+  chipset policy supplies C5/C6/SLFM requests instead of hardcoding X200 flags.
+* IGD preflight derives the display clock from the selector it will program,
+  rather than caching GCFGC's previous value.
+* Read/write training retains coreboot's nonfatal upper-edge behavior
+  (clamped overflow or the initial narrow-eye bound). Missing lower edges
+  and invalid register encodings remain fatal; all searches remain bounded.
+* RCOMP cleanup issues one pulse without requiring capture status 4. DMI
+  configures VC1 before enabling it and sets clock/exit prerequisites before
+  write-once ASPM enable. CLKCFG PM writes retain coreboot's 16-bit sequencing.
+  Core counts 1/2/4 are admitted; this does not qualify a single-core X200 SKU.
+* ICH9 emits root `_S5` without advertising S3. GM45 emits CPU devices and
+  the root `PPKG` consumed by both H8 passive-cooling methods.
+* X200 restores the separate PMH7 TrackPoint and touchpad power gates.
+* H8 retains the `0xb0` threshold backend for later ThinkPads and adds an
+  explicit `0x24/0x25` selector-based backend, selected by X200. Both expose
+  `BCCS/BCSS/BCTG/BCSG`. A shared mutex protects selector + data, and the
+  `H8_BAT_THRESHOLDS_BIT7` encoding difference is explicit policy.
+* EHCI descriptor discovery retries at reserved address 127 after address 0
+  fails, and does not reassign an already-addressed gadget.
+* The common AML parser preserves literal/interpolation-leading return
+  operators and accepts parent-prefixed method-call expressions. Expanded
+  feature checks also repaired i945's static PIRQ-policy lifetime.
+
+These are source corrections, not claims of physical validation. SMM/SMRAM
+locking is not a claim of BIOS flash write protection: production BLE/SMM_BWP
+policy and BIOSWR handling remain separate development work.
+
 ## Detailed comparison
 
 ### GM45 RAM initialization
@@ -102,8 +137,9 @@ These are not claimed fixed by compiling the board:
    asymmetric dual channels, arbitrary early steppings, or FSB1067/DDR3-667
    special PLL sequence. Unsupported inputs fail closed. Cached cold-boot
    training is not implemented by this board binding.
-3. **ACPI/OS parity is incomplete.** CPU P/C-state AML, DMAR, full dock
-   hotplug/disconnect glue, Wacom handling, Lenovo EEPROM serial/UUID identity
+3. **ACPI/OS parity is incomplete.** Basic CPU P-state and C1/C2/C3 AML is
+   present; deeper C-state AML, DMAR, full dock hotplug/disconnect glue,
+   Wacom handling, Lenovo EEPROM serial/UUID identity
    and variant-specific display behavior need separate work. H8 brightness
    hooks remain no-ops. No successful OS sleep/resume claim is made.
 4. **Northbridge device policy is smaller.** The current GM45 binding does not
@@ -153,6 +189,19 @@ bytes, ramstage 127413 bytes compressed (183528 unpacked). Host tests passed:
 Intel 111, USB-debug 6, platform 14, Lenovo 9. Root and board formatting
 checks passed. Debug assembly was not re-run, and no hardware was tested.
 
+After the independent review corrections, host verification passed:
+architecture 26, combined Intel drivers 121 (+3 doctests), all four platform
+families 25 (+2 southbridge DSDT integration tests), USB debug 7,
+Lenovo 11 (+1 doctest), AML macros 12, and generated
+X200 board facts 1. The common ACPI crate passed 126 tests including doctests.
+The combined firmware `stage/mp/acpi` configuration also
+passes `cargo check` for `x86_64-unknown-none`. ACPICA resolves `_PSL` to both
+CPU devices and executes `_PSS/_PCT/_CST`, `_S5` and the threshold interface.
+Release halt assembly passes with existing layout guards: bootblock 147456
+bytes, postcar 26808, ramstage 135259 compressed / 194736 unpacked, in the
+8 MiB container. Generated host board tests retain the known
+`fstart_stage_env` check-cfg warnings. No hardware was tested.
+
 Assembly required populating the two microcode files from the already-present
 local checkout. The generated keys are ignored local development keys, not
 production signing material.
@@ -160,8 +209,12 @@ production signing material.
 Host coverage includes map/timing/training arithmetic, typed register layout,
 reset geometry, interrupt policy and fixed-BAR validation, USB setup/packet
 packing, capability-cycle rejection, offline behavior, lock contention and
-stuck-engine timeout. It does **not** emulate successful USB enumeration or
-DRAM training.
+stuck-engine timeout. The follow-up also covers reserved-address recovery at
+its control-request seam, Penryn matching/capability arithmetic and shared
+SpeedStep/EMTTM tables. ACPICA tests execute both threshold layouts (including
+both bit-7 policies), soft-off and the combined thermal/processor namespace.
+Simulated EC RAM checks selectors/encoding, not real EC firmware storage.
+None of these tests qualifies physical USB enumeration or DRAM training.
 
 LSP probes in the separate workspace returned inconclusive results; compiler
 and firmware-build results are the validation authority, not the absence of
