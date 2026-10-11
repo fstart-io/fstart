@@ -68,8 +68,8 @@ i945 board. Build and unit-test success do not establish hardware correctness.
 PS/2 and parallel resources plus typed clock, VID-threshold, fan-pad electrical
 mode and pin routing. Hardware-monitor allocation does not configure fan duty
 or start monitoring. The separate `winbond_hwm::WinbondEhgMonitor` implements
-EHG V1.3 polling sensors and manual full-speed output; MB899 still needs its
-board binding. Neither foundation is an MB899 selection or hardware validation.
+EHG V1.3 polling sensors and manual full-speed output. The experimental MB899
+binding below uses these foundations; neither driver has hardware validation.
 
 GPIO3/4/5 reuse the verified DHG mechanism, including direction-before-data,
 field preservation and strap-change classification. EHG GPIO1 uses LDN7,
@@ -81,7 +81,7 @@ bank-wide routes, are preserved. GPIO2/6 programming remains unsupported.
 The MB899 reference contains reserved-register writes and a `CR30=0x03`
 comment claiming GPIO3+4. EHG V1.3 §7.10 describes that value as GPIO2+3;
 GPIO4 is bit 2. These bytes/comments are not evidence of otherwise-unknown
-wiring and must not be blindly copied into the eventual binding.
+wiring and are not blindly copied into the board binding.
 
 ### EHG runtime monitor boundary
 
@@ -107,6 +107,55 @@ readings intentionally omit remote sensors' half-degree bit, avoiding a torn
 two-byte sample. The caller must allow conversion settling and cannot infer
 freshness or sensor health from a plausible value. This has no MB899 runtime or
 hardware validation yet.
+
+## Experimental IBASE MB899 selection
+
+`cargo fbuild build -b ibase-mb899 --release --payload halt` and
+`cargo fbuild assemble -b ibase-mb899 --release --payload halt` select Socket M,
+i945GM/ICH7-M and W83627EHG at PnP 4Eh, with a 512 KiB FWH image. Protected-mode
+stages include Core Duo/Yonah, not just long-mode-capable Core 2 CPUs. The board
+uses the reference's default SPD addresses 50h–53h and 768 MiB PCI MMIO window.
+
+Pre-console setup owns COM1 and the 48 MHz clock input. After boot-path detection,
+SYSFANOUT and CPUFANOUT0 are explicitly full-speed PWM/open-drain outputs,
+matching the reference's CR04=0 manual/PWM selection and CR24 pad controls.
+The runtime HWM window stays at 290h rather than temporarily using A00h. GPIO3
+uses only verified GP32–34: GP32 is low before RAM and high in mainstage; GP33/34
+are inputs. Their roles are unknown—no guessed reset/strap signal is assigned.
+COM2 and PS/2 resources are added in mainstage; GPIO4 remains UART B. The
+secondary CPU fan mux displaces MIDI, which is not advertised as supported.
+Unlisted GPIO controls, GPIO2 activation and reserved reference writes are not
+copied. Floppy, parallel, serial flash and watchdog outputs are disabled.
+
+Post-console monitoring selects the reference's analog diode types and signed
+offsets (-15/+25/-4°C), with battery sampling. Cooling stays manual full-speed;
+there are no automatic fan curves, sensor-based speed decisions or monitoring
+interrupts. Inherited PWM frequency and tachometer-divisor settings remain;
+this does not validate actual fan speed, polarity, calibration or sensor health.
+
+RCBA interrupt routing follows `early_init.c`; PCI-bridge _PRT follows the
+board's ACPI wiring. Old hand-written PIRQ/MP tables disagree in places and are
+not copied as competing sources. Shared PCI enumeration/table generation is
+used instead, but optional riser bridge discovery/swizzling remains unvalidated.
+The unexplained 300h LPC decode is omitted; 290h monitoring has its own window.
+
+Remaining limitations:
+
+- No hardware validation, including GPIO phase transition, cooling, DRAM,
+  CPU/interrupt/peripheral behavior or FWH boot. Keep an external programmer,
+  vendor ROM backup and independent temperature/fan observation.
+- S3 is disabled; no board training/stage cache is configured. The early cooling
+  hook guards the detected boot path, not the always-Normal pre-console context.
+- VGA-only native display fallback: no verified board VBT, OpRegion or LVDS
+  panel timings. The reference's LVDS INT15 hint is not enough to invent them.
+- Reference EC AML advertises 62h/66h/GPE23 without usable query/transport policy;
+  no fictional EC is emitted. MIDI/game-port, ACPI-controller and GPIO2/6 policy
+  remain incomplete. Generic AML covers only the configured UART/PS2 resources.
+- AC97 audio/modem functions are retained but not initialized or validated; no
+  HDA codec verbs are supplied. PEG disable policy is not yet represented by the
+  shared i945 config. Only the four supported ICH7-M PCIe ports are configured.
+- Optional risers, PCI subsystem-ID overrides and legacy OS table equivalence
+  are incomplete. Halt-image fit does not establish larger-payload fit.
 
 ## Experimental Gigabyte GA-945GCM-S2L/S2C selections
 
