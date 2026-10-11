@@ -45,6 +45,7 @@ pub struct Gm45Ich9Config {
     pub c4_on_c3: bool,
     pub c5_enable: bool,
     pub c6_enable: bool,
+    pub slfm: bool,
     /// ICH9 throttle duty encoding (coreboot THTL_75_0 is 2).
     pub throttle_duty: u8,
     pub sata: Option<SataConfig>,
@@ -77,6 +78,7 @@ impl Gm45Ich9Config {
             c4_on_c3: true,
             c5_enable: false,
             c6_enable: false,
+            slfm: false,
             throttle_duty: 0,
             sata: None,
             usb: None,
@@ -86,6 +88,12 @@ impl Gm45Ich9Config {
             gpio: gpio::GpioConfig::new(),
             max_cpus: 1,
         }
+    }
+
+    #[must_use]
+    pub const fn slfm(mut self, enabled: bool) -> Self {
+        self.slfm = enabled;
+        self
     }
 
     #[must_use]
@@ -100,6 +108,7 @@ impl Gm45Ich9Config {
         config.smbus_base = ICH9_SMBUS_BASE;
         config.graphics = self.graphics;
         config.spd_addresses = self.spd_addresses;
+        config.slfm = self.slfm;
         config
     }
 
@@ -441,6 +450,8 @@ impl crate::IntelPlatformConfig for Gm45Ich9Platform {
 mod stage {
     use super::*;
     use crate::{IntelChipsetConfig, IntelEarlyPlatform};
+    #[cfg(feature = "mp")]
+    use crate::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
     use fstart_driver_intel::gm45::IntelGm45;
     use fstart_driver_intel::ich9::IntelIch9;
 
@@ -452,8 +463,22 @@ mod stage {
         #[cfg(feature = "mp")]
         type Cpu = C::Driver;
         #[cfg(feature = "mp")]
-        fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
-            C::cpu_driver(ICH9_PMBASE as u32, microcode)
+        fn cpu_driver(
+            microcode: Option<&'static [u8]>,
+            northbridge: &Self::Northbridge,
+            southbridge: &Self::Southbridge,
+        ) -> Self::Cpu {
+            let nb = northbridge.config();
+            let sb = southbridge.config();
+            C::cpu_driver(
+                ICH9_PMBASE as u32,
+                microcode,
+                crate::legacy_cpu::CpuPowerPolicy {
+                    c5: sb.c5_enable,
+                    c6: sb.c6_enable,
+                    slfm: nb.slfm,
+                },
+            )
         }
         #[cfg(feature = "acpi")]
         type AcpiContext = Gm45Ich9AcpiContext;

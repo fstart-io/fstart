@@ -103,6 +103,8 @@ pub struct IntelGm45Config {
     pub spd_addresses: [u8; 4],
     /// ICH9 I801 SMBus I/O base used to read DIMM SPD before RAM is online.
     pub smbus_base: u16,
+    /// Board-requested Super-LFM; enabled only on capable CPUs.
+    pub slfm: bool,
     pub acpi_name: Option<&'static str>,
 }
 
@@ -119,6 +121,7 @@ impl IntelGm45Config {
             graphics: Gm45GraphicsPolicy::Integrated,
             spd_addresses: [0x50, 0, 0x51, 0],
             smbus_base: crate::ich9::ich9::DEFAULT_SMBUS_BASE,
+            slfm: false,
             acpi_name: Some("PCI0"),
         }
     }
@@ -632,7 +635,7 @@ mod acpi_impl {
             let epbar = config.epbar;
             let ecam_base = config.ecam_base;
             let ecam_size = u64::from(config.ecam_buses) << 20;
-            acpi_dsl! {
+            let mut aml: Vec<u8> = acpi_dsl! {
                 Device("PCI0") {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
@@ -650,10 +653,24 @@ mod acpi_impl {
                     }
                 }
             }
-            .into()
+            .into();
+            // Root PPKG is consumed by the ThinkPad thermal zones. Keep the
+            // CPU devices in the same root scope as the other Core 2 boards.
+            #[cfg(target_os = "none")]
+            let count = usize::from(fstart_arch::x86::mp::online_cpus());
+            #[cfg(not(target_os = "none"))]
+            let count = 2;
+            let cpus = crate::cpu::core2_aml::cpu_devices_aml(count);
+            aml.extend(
+                fstart_acpi::aml_linker::scope_vec("\\", &cpus).expect("required CPU AML scope"),
+            );
+            aml
         }
     }
 }
+
+#[cfg(all(test, feature = "acpi", feature = "ich9"))]
+mod acpi_tests;
 
 #[cfg(test)]
 mod tests {

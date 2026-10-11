@@ -27,7 +27,9 @@ register_structs! {
         (0xb00 => rb00: MmioReadWrite<u8>),
         (0xb01 => _pad7: [u8; 0xd7]),
         (0xbd8 => rbd8: MmioReadWrite<u8>),
-        (0xbd9 => _pad8: [u8; 0x3b]),
+        (0xbd9 => _pad8: [u8; 0x27]),
+        (0xc00 => clkcfg_low: MmioReadWrite<u16>),
+        (0xc02 => _pad_clkcfg: [u8; 0x12]),
         (0xc14 => rc14: MmioReadWrite<u16>),
         (0xc16 => rc16: MmioReadWrite<u16>),
         (0xc18 => _pad9: [u8; 4]),
@@ -101,7 +103,7 @@ impl IntelGm45 {
         };
         #[cfg(not(target_arch = "x86_64"))]
         let cores = return Err(ServiceError::HardwareError);
-        if !matches!(cores, 2 | 4) {
+        if !matches!(cores, 1 | 2 | 4) {
             return Err(ServiceError::HardwareError);
         }
         // SAFETY: MCHBAR is enabled by setup_early_decode and validated at construction.
@@ -206,18 +208,18 @@ impl IntelGm45 {
         let super_lfm = false;
         // SAFETY: fixed CLKCFG register within enabled MCHBAR.
         let clock = unsafe { &*(self.config.mchbar as *const super::Gm45MchClockRegs) };
-        let mut value = clock.clkcfg.get();
         if super_lfm {
-            value = (value & !(1 << 7)) | (1 << 14);
+            update16(&r.clkcfg_low, 1 << 7, 0);
+            update16(&r.clkcfg_low, 0, 1 << 14);
         } else {
-            value = (value & !(1 << 14)) | (1 << 7);
+            update16(&r.clkcfg_low, 1 << 14, 0);
+            update16(&r.clkcfg_low, 0, 1 << 7);
             update32(&r.r44, 1 << 31, 0);
         }
+        // Only this conditional last write touches the upper CLKCFG half.
         if fsb == 1067 && mem_mhz == 333 {
-            value &= !(1 << 17);
+            clock.clkcfg.set(clock.clkcfg.get() & !(1 << 17));
         }
-        // The last CLKCFG write is the memory-clock selection, per pm.c.
-        clock.clkcfg.set(value);
         Ok(())
     }
 

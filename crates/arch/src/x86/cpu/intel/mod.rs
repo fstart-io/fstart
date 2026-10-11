@@ -7,6 +7,8 @@ mod common_power;
 pub mod core2_cpu;
 pub mod feature_control;
 pub mod microcode;
+pub mod penryn;
 pub mod pineview;
 pub mod smm;
 pub mod smrr;
+pub mod speedstep;

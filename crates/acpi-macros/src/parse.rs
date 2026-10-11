@@ -1063,6 +1063,12 @@ impl Parser {
         } else {
             DslReturnValue::Legacy(args_parser.parse_value())
         };
+        if let Some(token) = args_parser.peek() {
+            return Err(Error::new(
+                token.span(),
+                "unexpected token after Return value",
+            ));
+        }
         self.expect_punct(';')?;
 
         Ok(DslItem::Return { value, span })
@@ -1072,7 +1078,14 @@ impl Parser {
     /// True if it contains Local/Arg references or is a bare identifier
     /// that isn't a known value-form keyword (EisaId, Package, etc.).
     fn looks_like_expr(&self) -> bool {
-        if matches!(self.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '^') {
+        // A literal followed by an operator is not a scalar return value.
+        // Otherwise Return(0x300 | Local0) silently discards the RHS.
+        if matches!(self.peek(), Some(TokenTree::Literal(_)))
+            && matches!(self.peek_at(1), Some(TokenTree::Punct(p)) if "+-*/%&|^<>=!".contains(p.as_char()))
+        {
+            return true;
+        }
+        if matches!(self.peek(), Some(TokenTree::Punct(p)) if matches!(p.as_char(), '^' | '#')) {
             return true;
         }
         if let Some(TokenTree::Ident(ident)) = self.peek() {
@@ -2081,6 +2094,10 @@ impl Parser {
                     };
                     path.push_str(&segment.to_string());
                 }
+                if matches!(self.peek(), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis)
+                {
+                    return self.parse_call_tail(&path);
+                }
                 Ok(DslExpr::Path(path))
             }
 
@@ -2336,6 +2353,36 @@ mod tests {
         for kind in ["byte", "word", "dword", "qword", "const"] {
             assert!(message.contains(kind), "missing `{kind}` in `{message}`");
         }
+    }
+
+    #[test]
+    fn return_keeps_literal_and_interpolation_leading_binary_expressions() {
+        for input in [
+            "Return(0x300u32 | Local0);",
+            "Return(#{const \"\\\\_SB_.PCI0.DSPC.BRTC\"} >> 4u32);",
+        ] {
+            let mut parser = Parser::new(input.parse().unwrap());
+            let item = parser.parse_return().unwrap();
+            assert!(matches!(
+                item,
+                DslItem::Return {
+                    value: DslReturnValue::Expr(_),
+                    ..
+                }
+            ));
+            assert!(parser.peek().is_none());
+        }
+    }
+
+    #[test]
+    fn parent_prefixed_paths_can_be_method_call_expressions() {
+        let mut parser = Parser::new("^^BAT0.GETT(1u32)".parse().unwrap());
+        let DslExpr::Call(name, args) = parser.parse_expr(0).unwrap() else {
+            panic!("expected parent-prefixed method invocation");
+        };
+        assert_eq!(name, "^^BAT0.GETT");
+        assert_eq!(args.len(), 1);
+        assert!(parser.peek().is_none());
     }
 
     #[test]

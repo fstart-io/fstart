@@ -2746,7 +2746,14 @@ mod acpi_impl {
             // PM/GPIO SystemIO OpRegions are intentionally omitted until an
             // emitted AML method actually consumes them. Declaring unused
             // regions makes ACPI claim the native lpc_ich driver resources.
-            let mut aml = Vec::new();
+            // S5 is supported independently of the unimplemented S3 replay.
+            let mut aml: Vec<u8> = acpi_dsl! {
+                Scope("\\") {
+                    Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
+                    Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
+                }
+            }
+            .into();
             // When keeping strap routing, _PRT must describe the live router,
             // not an assumed A-D map (coreboot intel/common/rcba_pirq.c).
             let hardware_routes = if config.preserve_hardware_pirq {

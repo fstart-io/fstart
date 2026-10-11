@@ -257,21 +257,11 @@ impl State {
     }
 
     fn enumerate(&mut self) -> Result<(), ServiceError> {
-        let mut desc = [0; 4];
-        if self.control(0, 0x80, 6, 10 << 8, &mut desc)? != 4
-            || desc[0..2] != [4, 10]
-            || desc[2] & 0x7f == 0
-            || desc[3] == 0
-            || desc[2] & 0x70 != 0
-            || desc[3] & 0xf0 != 0
-        {
-            return Err(ServiceError::NotSupported);
-        }
-        self.control(0, 0, 5, DEVICE.into(), &mut [])?;
-        fstart_arch::udelay(2000);
-        self.control(DEVICE, 0, 3, 6, &mut [])?; // DEVICE_DEBUG_MODE
-        self.input = desc[2] & 0x0f;
-        self.output = desc[3];
+        let (input, output) = debug_endpoints(|device, ty, request, value, data| {
+            self.control(device, ty, request, value, data)
+        })?;
+        self.input = input;
+        self.output = output;
         let mut pid = DATA0;
         let mut greeting = *b"USB\r\n";
         // Some FX2 gadgets also require SET_CONFIGURATION before bulk works.
@@ -292,6 +282,33 @@ impl State {
         self.online = true;
         Ok(())
     }
+}
+
+// Gadgets may retain the reserved debug address across a port reset. Keep
+// recovery bounded and skip SET_ADDRESS when already at that address.
+fn debug_endpoints(
+    mut control: impl FnMut(u8, u8, u8, u16, &mut [u8]) -> Result<usize, ServiceError>,
+) -> Result<(u8, u8), ServiceError> {
+    let mut desc = [0; 4];
+    let (device, length) = match control(0, 0x80, 6, 10 << 8, &mut desc) {
+        Ok(length) => (0, length),
+        Err(_) => (DEVICE, control(DEVICE, 0x80, 6, 10 << 8, &mut desc)?),
+    };
+    if length != 4
+        || desc[0..2] != [4, 10]
+        || desc[2] & 0x7f == 0
+        || desc[3] == 0
+        || desc[2] & 0x70 != 0
+        || desc[3] & 0xf0 != 0
+    {
+        return Err(ServiceError::NotSupported);
+    }
+    if device == 0 {
+        control(0, 0, 5, DEVICE.into(), &mut [])?;
+        fstart_arch::udelay(2000);
+    }
+    control(DEVICE, 0, 3, 6, &mut [])?; // DEVICE_DEBUG_MODE
+    Ok((desc[2] & 0x0f, desc[3]))
 }
 
 fn accepted(token: u8, pid: u8, reply: u8) -> bool {
@@ -660,6 +677,42 @@ mod tests {
             Err(ServiceError::InvalidParam)
         ));
     }
+    #[test]
+    fn enumeration_recovers_reserved_address_without_reassigning_it() {
+        for retained in [false, true] {
+            let mut descriptors = 0;
+            let mut assignments = 0;
+            let endpoints =
+                debug_endpoints(
+                    |device, ty, request, value, data| match (ty, request, value) {
+                        (0x80, 6, 0x0a00) => {
+                            descriptors += 1;
+                            if retained && device == 0 {
+                                return Err(ServiceError::Timeout);
+                            }
+                            assert_eq!(device, if retained { DEVICE } else { 0 });
+                            data.copy_from_slice(&[4, 10, 0x81, 2]);
+                            Ok(4)
+                        }
+                        (0, 5, 127) => {
+                            assert!(!retained);
+                            assignments += 1;
+                            Ok(0)
+                        }
+                        (0, 3, 6) => {
+                            assert_eq!(device, DEVICE);
+                            Ok(0)
+                        }
+                        _ => panic!("unexpected control request"),
+                    },
+                );
+            assert_eq!(endpoints, Ok((1, 2)));
+            assert_eq!(descriptors, if retained { 2 } else { 1 });
+            assert_eq!(assignments, usize::from(!retained));
+        }
+        assert!(debug_endpoints(|_, _, _, _, _| Err(ServiceError::Timeout)).is_err());
+    }
+
     #[test]
     fn debug_registers_and_setup_packet_match_spec() {
         assert_eq!(core::mem::offset_of!(DebugPort, address), 0x10);
