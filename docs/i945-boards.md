@@ -67,8 +67,9 @@ i945 board. Build and unit-test success do not establish hardware correctness.
 `driver-superio::w83627ehg` identifies only EHG IDs 886xh and provides UART,
 PS/2 and parallel resources plus typed clock, VID-threshold, fan-pad electrical
 mode and pin routing. Hardware-monitor allocation does not configure fan duty
-or start monitoring; MB899 still needs a separate runtime monitor/fan binding.
-This foundation is not an MB899 board selection or hardware validation.
+or start monitoring. The separate `winbond_hwm::WinbondEhgMonitor` implements
+EHG V1.3 polling sensors and manual full-speed output; MB899 still needs its
+board binding. Neither foundation is an MB899 selection or hardware validation.
 
 GPIO3/4/5 reuse the verified DHG mechanism, including direction-before-data,
 field preservation and strap-change classification. EHG GPIO1 uses LDN7,
@@ -81,6 +82,31 @@ The MB899 reference contains reserved-register writes and a `CR30=0x03`
 comment claiming GPIO3+4. EHG V1.3 §7.10 describes that value as GPIO2+3;
 GPIO4 is bit 2. These bytes/comments are not evidence of otherwise-unknown
 wiring and must not be blindly copied into the eventual binding.
+
+### EHG runtime monitor boundary
+
+The runtime driver uses the shared typed indexed-PIO register accessor and
+restores bank/vendor/beep selection after banked accesses, including failed
+identity checks. Documented must-zero bank bits are cleared; unrelated sensor
+divisors and output controls are preserved. PnP EHG identification is required
+before its runtime vendor/chip sanity check: these IDs do not establish model
+compatibility on their own.
+
+Named sensor inputs describe thermistor/diode selection and signed Celsius
+offsets. Full-speed outputs explicitly select PWM or DC voltage according to
+board wiring and use the documented maximum value; this does not prove actual
+fan speed or safe electrical wiring. Control mode precedes value programming,
+so takeover from inherited automatic control is not glitch-free. Unrequested
+outputs are unchanged. GPIO fan-pad mux/buffers, PWM frequencies and tachometer
+divisors remain separate policy; no thermal/speed cruise is enabled.
+
+Initialization programs cooling before sensors and starts conversions last.
+Monitoring is polling-only: SMI, OVT and global beep outputs are disabled, not
+claimed as an autonomous thermal shutdown mechanism. Whole-degree signed
+readings intentionally omit remote sensors' half-degree bit, avoiding a torn
+two-byte sample. The caller must allow conversion settling and cannot infer
+freshness or sensor health from a plausible value. This has no MB899 runtime or
+hardware validation yet.
 
 ## Experimental Gigabyte GA-945GCM-S2L/S2C selections
 

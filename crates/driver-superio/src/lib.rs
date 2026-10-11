@@ -16,5 +16,6 @@ mod w83627_gpio;
 pub mod w83627dhg;
 pub mod w83627ehg;
 pub mod w83627thg;
+pub mod winbond_hwm;
 
 pub use generic::*;
