@@ -936,7 +936,7 @@ mod acpi_impl {
             assert!(irq < 16, "Super I/O ISA IRQ exceeds 15");
             let descriptor = bytes
                 .windows(3)
-                .position(|window| window == [0x22, 0x01, 0x00])
+                .position(|window| window == [0x22, 0x01, 0x00] || window == [0x23, 0x01, 0x00])
                 .expect("Super I/O IRQ descriptor missing");
             bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
         }
@@ -952,12 +952,25 @@ mod acpi_impl {
         io_base: u16,
         io_size: u16,
         irq: Option<u8>,
+        shared_irq: bool,
     ) -> Vec<u8> {
         let uid = u64::from(uid);
         let io_base = u64::from(io_base);
         let io_size = u64::from(io_size);
         let hid = u64::from(fstart_acpi::eisa_id(hid));
-        if irq.is_some() {
+        if irq.is_some() && shared_irq {
+            let fragment = fstart_acpi_macros::acpi_dsl! {
+                Device("____") {
+                    Name("_HID", #{dword hid});
+                    Name("_UID", #{dword uid});
+                    Name("_CRS", ResourceTemplate {
+                        IO(#{word io_base}, #{word io_base}, 0x01u8, #{byte io_size});
+                        IRQ(Edge, ActiveHigh, Shared, 0u8);
+                    });
+                }
+            };
+            emit_named(&fragment, name, irq)
+        } else if irq.is_some() {
             let fragment = fstart_acpi_macros::acpi_dsl! {
                 Device("____") {
                     Name("_HID", #{dword hid});
@@ -1059,26 +1072,57 @@ mod acpi_impl {
 
     /// Produce unscoped DSDT AML for all enabled SuperIO logical devices.
     pub fn superio_dsdt_aml(config: &SuperIoConfig) -> Vec<u8> {
+        superio_dsdt_aml_with_uart_policy(
+            config,
+            UartAcpiPolicy {
+                numbers: [1, 2],
+                shared_irq: false,
+            },
+        )
+    }
+
+    /// Board-assigned UART identity and ISA interrupt-sharing policy.
+    #[derive(Debug, Clone, Copy)]
+    pub struct UartAcpiPolicy {
+        pub numbers: [u8; 2],
+        /// Both UART descriptors use shareable edge/high IRQs. This describes
+        /// OS resources, not electrical sharing or interrupt-controller setup.
+        pub shared_irq: bool,
+    }
+
+    /// Emit UART nodes with board-assigned COM numbers and unique PNP0501
+    /// UIDs. Multiple controllers may share an LPC scope: callers must choose
+    /// distinct numbers across controllers and emit nonserial resources once.
+    /// Numbers 1–9 fit an ACPI NameSeg. The default API retains COM1/2, UID0/1.
+    pub fn superio_dsdt_aml_with_uart_policy(
+        config: &SuperIoConfig,
+        policy: UartAcpiPolicy,
+    ) -> Vec<u8> {
+        let uart_numbers = policy.numbers;
+        assert!(uart_numbers.iter().all(|number| (1..=9).contains(number)));
+        assert_ne!(uart_numbers[0], uart_numbers[1]);
         let mut aml = Vec::new();
 
         if let Some(ref com) = config.com1 {
             aml.extend(ldn_device(
-                "COM1",
+                &alloc::format!("COM{}", uart_numbers[0]),
                 HID_COM,
-                0,
+                u32::from(uart_numbers[0] - 1),
                 com.io_base,
                 8,
                 Some(com.irq),
+                policy.shared_irq,
             ));
         }
         if let Some(ref com) = config.com2 {
             aml.extend(ldn_device(
-                "COM2",
+                &alloc::format!("COM{}", uart_numbers[1]),
                 HID_COM,
-                1,
+                u32::from(uart_numbers[1] - 1),
                 com.io_base,
                 8,
                 Some(com.irq),
+                policy.shared_irq,
             ));
         }
         if let Some(ref kbc) = config.keyboard {
@@ -1088,7 +1132,15 @@ mod acpi_impl {
             aml.extend(mouse_device(kbc, mouse));
         }
         if let Some(ref pp) = config.parallel {
-            aml.extend(ldn_device("LPT0", HID_LPT, 0, pp.io_base, 8, Some(pp.irq)));
+            aml.extend(ldn_device(
+                "LPT0",
+                HID_LPT,
+                0,
+                pp.io_base,
+                8,
+                Some(pp.irq),
+                false,
+            ));
         }
         if let Some(ref ec) = config.env_controller {
             aml.extend(ec_device(ec));
@@ -1101,6 +1153,7 @@ mod acpi_impl {
                 cir.io_base,
                 8,
                 Some(cir.irq),
+                false,
             ));
         }
 
@@ -1115,7 +1168,58 @@ mod acpi_impl {
             superio_dsdt_aml(config)
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn second_controller_has_distinct_uart_names_uids_and_resources() {
+            let config = SuperIoConfig {
+                com1: Some(ComPortConfig {
+                    io_base: 0x3e8,
+                    irq: 6,
+                    baud_rate: 115200,
+                }),
+                com2: Some(ComPortConfig {
+                    io_base: 0x2e8,
+                    irq: 6,
+                    baud_rate: 115200,
+                }),
+                ..SuperIoConfig::default()
+            };
+            let aml = superio_dsdt_aml_with_uart_policy(
+                &config,
+                UartAcpiPolicy {
+                    numbers: [3, 4],
+                    shared_irq: true,
+                },
+            );
+            for name in [b"COM3", b"COM4"] {
+                assert!(aml.windows(4).any(|bytes| bytes == name));
+            }
+            for uid in [2, 3] {
+                assert!(
+                    aml.windows(10)
+                        .any(|bytes| bytes == [8, b'_', b'U', b'I', b'D', 12, uid, 0, 0, 0])
+                );
+            }
+            for base in [0x3e8u16, 0x2e8] {
+                let [low, high] = base.to_le_bytes();
+                assert!(
+                    aml.windows(8)
+                        .any(|bytes| bytes == [0x47, 1, low, high, low, high, 1, 8])
+                );
+            }
+            assert_eq!(
+                aml.windows(4)
+                    .filter(|bytes| *bytes == [0x23, 0x40, 0, 0x11])
+                    .count(),
+                2
+            );
+        }
+    }
 }
 
 #[cfg(feature = "acpi")]
-pub use acpi_impl::superio_dsdt_aml;
+pub use acpi_impl::{UartAcpiPolicy, superio_dsdt_aml, superio_dsdt_aml_with_uart_policy};
