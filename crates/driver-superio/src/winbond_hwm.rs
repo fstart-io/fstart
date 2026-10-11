@@ -1,6 +1,6 @@
-//! W83627EHG V1.3 §6 runtime hardware monitor.
+//! Verified W83627EHG V1.3 §6 and W83627THF/THG V1.22 §§5/14 monitors.
 //!
-//! This profile is not assumed compatible with other Winbond/Nuvoton chips.
+//! Profiles are explicit, not inferred from shared runtime identity registers.
 //! It supports polling sensors and manual full-speed cooling, not cruise control.
 use fstart_core::{pio::IndexedPioRegister, services::device::DeviceError};
 use tock_registers::{
@@ -14,6 +14,7 @@ register_bitfields![u8,
     BYTE [ VALUE OFFSET(0) NUMBITS(8) [] ],
     BANK_SELECT [
         BANK OFFSET(0) NUMBITS(3) [], ZERO3 OFFSET(3) NUMBITS(1) [],
+        THG_ZERO45 OFFSET(4) NUMBITS(2) [],
         ZERO6 OFFSET(6) NUMBITS(1) [], VENDOR_HIGH OFFSET(7) NUMBITS(1) [],
     ],
     CONFIGURATION [
@@ -26,7 +27,7 @@ register_bitfields![u8,
     ],
     FAN_CONFIG2 [ DC OFFSET(0) NUMBITS(1) [], MODE OFFSET(1) NUMBITS(2) [Manual = 0] ],
     FAN_CONFIG3 [ MODE OFFSET(4) NUMBITS(2) [Manual = 0], DC OFFSET(6) NUMBITS(1) [] ],
-    DC_OUTPUT [ VALUE OFFSET(2) NUMBITS(6) [] ],
+    DC_OUTPUT [ EHG_VALUE OFFSET(2) NUMBITS(6) [], THG_VALUE OFFSET(4) NUMBITS(4) [] ],
     SENSOR_TYPE [ BATTERY OFFSET(0) NUMBITS(1) [], DIODE OFFSET(1) NUMBITS(3) [] ],
     DIODE_TYPE [ PENTIUM_II OFFSET(4) NUMBITS(3) [] ],
     SENSOR_CONTROL [ STOP OFFSET(0) NUMBITS(1) [] ],
@@ -34,6 +35,32 @@ register_bitfields![u8,
     CPU_AUX_OVT [ CPU_DISABLE OFFSET(3) NUMBITS(1) [], AUX_DISABLE OFFSET(4) NUMBITS(1) [] ],
     BEEP [ ENABLE OFFSET(7) NUMBITS(1) [] ],
 ];
+
+/// Caller-verified PnP model/revision, not runtime-ID auto-detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinbondMonitorProfile {
+    Ehg,
+    /// E-version (PnP ID 8285h) only. Runtime ID 90h also occurs on older
+    /// silicon and does not establish the revised PWM/DC controls.
+    ThgE,
+}
+impl WinbondMonitorProfile {
+    fn accepts_identity(self, chip: u8, vendor: u16) -> bool {
+        vendor == 0x5ca3
+            && chip
+                == match self {
+                    Self::Ehg => 0xa1,
+                    Self::ThgE => 0x90,
+                }
+    }
+    fn validate_cooling(self, cooling: &FullSpeedCooling) -> Result<(), DeviceError> {
+        if self == Self::ThgE && cooling.cpu_secondary.is_some() {
+            Err(DeviceError::ConfigError)
+        } else {
+            Ok(())
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemperatureSensor {
@@ -116,8 +143,18 @@ pub enum TemperatureInput {
     Auxiliary,
 }
 
-fn reserved_bank_fields() -> FieldValue<u8, BANK_SELECT::Register> {
-    BANK_SELECT::ZERO3::CLEAR + BANK_SELECT::ZERO6::CLEAR
+fn reserved_bank_fields(profile: WinbondMonitorProfile) -> FieldValue<u8, BANK_SELECT::Register> {
+    let fields = BANK_SELECT::ZERO3::CLEAR + BANK_SELECT::ZERO6::CLEAR;
+    match profile {
+        WinbondMonitorProfile::Ehg => fields,
+        WinbondMonitorProfile::ThgE => fields + BANK_SELECT::THG_ZERO45.val(0),
+    }
+}
+fn full_dc_fields(profile: WinbondMonitorProfile) -> FieldValue<u8, DC_OUTPUT::Register> {
+    match profile {
+        WinbondMonitorProfile::Ehg => DC_OUTPUT::EHG_VALUE.val(63),
+        WinbondMonitorProfile::ThgE => DC_OUTPUT::THG_VALUE.val(15),
+    }
 }
 fn monitoring_fields(start: bool) -> FieldValue<u8, CONFIGURATION::Register> {
     CONFIGURATION::INITIALIZE::CLEAR
@@ -125,40 +162,64 @@ fn monitoring_fields(start: bool) -> FieldValue<u8, CONFIGURATION::Register> {
         + CONFIGURATION::SMI_ENABLE::CLEAR
         + CONFIGURATION::START.val(u8::from(start))
 }
-fn primary_fan_fields(system: bool, mode: FanOutputMode) -> FieldValue<u8, FAN_CONFIG1::Register> {
-    if system {
-        FAN_CONFIG1::SYSTEM_MODE::Manual + FAN_CONFIG1::SYSTEM_DC.val(mode.dc())
+fn primary_fan_fields(
+    profile: WinbondMonitorProfile,
+    system: bool,
+    mode: FanOutputMode,
+) -> FieldValue<u8, FAN_CONFIG1::Register> {
+    let manual = if system {
+        FAN_CONFIG1::SYSTEM_MODE::Manual
     } else {
-        FAN_CONFIG1::CPU_MODE::Manual + FAN_CONFIG1::CPU_DC.val(mode.dc())
+        FAN_CONFIG1::CPU_MODE::Manual
+    };
+    if profile == WinbondMonitorProfile::ThgE {
+        manual // Bits 1:0 are reserved; pin mode is Super I/O LDNB CRF0.
+    } else if system {
+        manual + FAN_CONFIG1::SYSTEM_DC.val(mode.dc())
+    } else {
+        manual + FAN_CONFIG1::CPU_DC.val(mode.dc())
+    }
+}
+fn auxiliary_fan_fields(
+    profile: WinbondMonitorProfile,
+    mode: FanOutputMode,
+) -> FieldValue<u8, FAN_CONFIG2::Register> {
+    let manual = FAN_CONFIG2::MODE::Manual;
+    match profile {
+        WinbondMonitorProfile::Ehg => manual + FAN_CONFIG2::DC.val(mode.dc()),
+        WinbondMonitorProfile::ThgE => manual, // Bit 0 is reserved.
     }
 }
 
-/// Caller must first identify/activate W83627EHG and decode its eight-byte HWM
-/// window, then serialize the index/data pair against CPUs, interrupts and any
-/// SMBus client. Construction performs no I/O. Runtime IDs are only a sanity
-/// check, not a substitute for PnP model identification.
-pub struct WinbondEhgMonitor {
+/// Caller must first identify the selected PnP model/revision, activate and
+/// decode its eight-byte HWM window, then serialize against CPUs, interrupts
+/// and any SMBus client. Construction performs no I/O; runtime IDs are only
+/// sanity checks. THG-E callers must first use `configure_fan_output_modes`
+/// with the same cooling policy: runtime accesses cannot select its PWM/DC pads.
+/// Fan buffers/muxes/frequencies and settling remain separate caller policy.
+pub struct WinbondMonitor {
     base: u16,
+    profile: WinbondMonitorProfile,
 }
-impl WinbondEhgMonitor {
-    pub fn new(base: u16) -> Result<Self, DeviceError> {
+impl WinbondMonitor {
+    pub fn new(base: u16, profile: WinbondMonitorProfile) -> Result<Self, DeviceError> {
         if !(0x100..0x1000).contains(&base) || base & 7 != 0 {
             return Err(DeviceError::ConfigError);
         }
-        Ok(Self { base })
+        Ok(Self { base, profile })
     }
     fn register<R: RegisterLongName>(&self, index: u8) -> IndexedPioRegister<R> {
         IndexedPioRegister::new(self.base + 5, self.base + 6, index)
     }
-    // Bank selection affects 50h..5Fh only. Restore defined bank/vendor/beep
-    // fields after every operation, including a failed probe; §6.8.46 requires
-    // reserved bits 3 and 6 to be zero rather than replayed.
+    // Bank selection affects 50h..5Fh only. Restore defined fields even on a
+    // failed probe. EHG §6.8.46 clears reserved bits 3/6 but retains beep fields;
+    // THG §5.8.16 requires all bits 6:3 zero.
     fn with_bank<T>(&mut self, bank: u8, operation: impl FnOnce(&Self) -> T) -> T {
         let selector = self.register::<BANK_SELECT::Register>(0x4e);
         let saved = selector.get();
-        selector.modify(BANK_SELECT::BANK.val(bank) + reserved_bank_fields());
+        selector.modify(BANK_SELECT::BANK.val(bank) + reserved_bank_fields(self.profile));
         let result = operation(self);
-        selector.set(reserved_bank_fields().modify(saved));
+        selector.set(reserved_bank_fields(self.profile).modify(saved));
         result
     }
     pub fn probe(&mut self) -> Result<(), DeviceError> {
@@ -169,7 +230,10 @@ impl WinbondEhgMonitor {
             let low = this.register::<BYTE::Register>(0x4f).get();
             selector.modify(BANK_SELECT::VENDOR_HIGH::SET);
             let high = this.register::<BYTE::Register>(0x4f).get();
-            if chip == 0xa1 && u16::from_be_bytes([high, low]) == 0x5ca3 {
+            if this
+                .profile
+                .accepts_identity(chip, u16::from_be_bytes([high, low]))
+            {
                 Ok(())
             } else {
                 Err(DeviceError::InitFailed)
@@ -181,16 +245,19 @@ impl WinbondEhgMonitor {
             FanOutputMode::Pwm => self
                 .register::<BYTE::Register>(index)
                 .write(BYTE::VALUE.val(255)),
-            // DC values occupy bits 7:2; preserve reserved low bits.
+            // EHG DC values occupy 7:2, THG-E 7:4. Preserve reserved low bits.
             FanOutputMode::DcVoltage => self
                 .register::<DC_OUTPUT::Register>(index)
-                .modify(DC_OUTPUT::VALUE.val(63)),
+                .modify(full_dc_fields(self.profile)),
         }
     }
-    /// Select manual control before writing the maximum output value, as
-    /// required by §6.5.3. Does not need a running conversion loop or sensors.
-    /// A probe failure makes no fan-control writes.
+    /// Select manual control before writing the documented maximum output.
+    /// Does not need a running conversion loop or sensors. THG-E DC maximum
+    /// is 15/16 of AVCC, not full rail voltage; no actual fan-speed guarantee.
+    /// Invalid output policy is rejected before I/O; a probe failure makes no
+    /// fan-control writes. Takeover from inherited control is not glitch-free.
     pub fn force_full_speed(&mut self, cooling: &FullSpeedCooling) -> Result<(), DeviceError> {
+        self.profile.validate_cooling(cooling)?;
         self.probe()?;
         self.program_cooling(cooling);
         Ok(())
@@ -202,13 +269,13 @@ impl WinbondEhgMonitor {
         ] {
             if let Some(mode) = mode {
                 self.register::<FAN_CONFIG1::Register>(0x04)
-                    .modify(primary_fan_fields(system, mode));
+                    .modify(primary_fan_fields(self.profile, system, mode));
                 self.full_output(index, mode);
             }
         }
         if let Some(mode) = cooling.auxiliary {
             self.register::<FAN_CONFIG2::Register>(0x12)
-                .modify(FAN_CONFIG2::MODE::Manual + FAN_CONFIG2::DC.val(mode.dc()));
+                .modify(auxiliary_fan_fields(self.profile, mode));
             self.full_output(0x11, mode);
         }
         if let Some(mode) = cooling.cpu_secondary {
@@ -218,6 +285,7 @@ impl WinbondEhgMonitor {
         }
     }
     pub fn init(&mut self, config: &MonitorConfig) -> Result<(), DeviceError> {
+        self.profile.validate_cooling(&config.cooling)?;
         self.probe()?;
         // Cooling does not depend on sensor configuration/conversion startup.
         self.program_cooling(&config.cooling);
@@ -273,14 +341,16 @@ mod tests {
     use super::*;
     #[test]
     fn valid_windows_and_no_io_on_construction() {
-        for base in [0x100, 0x290, 0xa00, 0xff8] {
-            assert!(WinbondEhgMonitor::new(base).is_ok());
-        }
-        for base in [0, 0x008, 0x0f8, 0x291, 0x1000, 0xfff8] {
-            assert!(matches!(
-                WinbondEhgMonitor::new(base),
-                Err(DeviceError::ConfigError)
-            ));
+        for profile in [WinbondMonitorProfile::Ehg, WinbondMonitorProfile::ThgE] {
+            for base in [0x100, 0x290, 0xa00, 0xff8] {
+                assert!(WinbondMonitor::new(base, profile).is_ok());
+            }
+            for base in [0, 0x008, 0x0f8, 0x291, 0x1000, 0xfff8] {
+                assert!(matches!(
+                    WinbondMonitor::new(base, profile),
+                    Err(DeviceError::ConfigError)
+                ));
+            }
         }
     }
     #[test]
@@ -329,21 +399,90 @@ mod tests {
     #[test]
     fn full_speed_and_monitoring_preserve_unrelated_fields() {
         assert_eq!(
-            primary_fan_fields(true, FanOutputMode::DcVoltage).modify(0xff),
+            primary_fan_fields(WinbondMonitorProfile::Ehg, true, FanOutputMode::DcVoltage)
+                .modify(0xff),
             0xf3
         );
         assert_eq!(
-            primary_fan_fields(false, FanOutputMode::Pwm).modify(0xff),
+            primary_fan_fields(WinbondMonitorProfile::Ehg, false, FanOutputMode::Pwm).modify(0xff),
             0xcd
         );
-        assert_eq!(DC_OUTPUT::VALUE.val(63).modify(3), 0xff);
+        assert_eq!(full_dc_fields(WinbondMonitorProfile::Ehg).modify(3), 0xff);
         assert_eq!(monitoring_fields(true).modify(0xff), 0x75);
         assert_eq!(monitoring_fields(false).modify(0xff), 0x74);
         // Bank changes must not disable beep sources or change vendor byte.
         assert_eq!(
-            (BANK_SELECT::BANK.val(4) + reserved_bank_fields()).modify(0xff),
+            (BANK_SELECT::BANK.val(4) + reserved_bank_fields(WinbondMonitorProfile::Ehg))
+                .modify(0xff),
             0xb4
         );
-        assert_eq!(reserved_bank_fields().modify(0xff), 0xb7);
+        assert_eq!(
+            reserved_bank_fields(WinbondMonitorProfile::Ehg).modify(0xff),
+            0xb7
+        );
+    }
+
+    #[test]
+    fn thg_e_preserves_reserved_fan_fields_and_uses_four_bit_dc_values() {
+        let profile = WinbondMonitorProfile::ThgE;
+        assert_eq!(
+            primary_fan_fields(profile, true, FanOutputMode::Pwm).modify(0xff),
+            0xf3
+        );
+        assert_eq!(
+            primary_fan_fields(profile, false, FanOutputMode::DcVoltage).modify(0xff),
+            0xcf
+        );
+        assert_eq!(
+            auxiliary_fan_fields(profile, FanOutputMode::Pwm).modify(0xff),
+            0xf9
+        );
+        assert_eq!(full_dc_fields(profile).modify(0x05), 0xf5);
+        assert_eq!(
+            full_dc_fields(WinbondMonitorProfile::Ehg).modify(0x05),
+            0xfd
+        );
+        assert_eq!(reserved_bank_fields(profile).modify(0xff), 0x87);
+        assert_eq!(
+            (BANK_SELECT::BANK.val(4) + reserved_bank_fields(profile)).modify(0xff),
+            0x84
+        );
+        assert!(profile.accepts_identity(0x90, 0x5ca3));
+        assert!(!profile.accepts_identity(0xa1, 0x5ca3));
+        assert!(!profile.accepts_identity(0x90, 0xa35c));
+        assert!(WinbondMonitorProfile::Ehg.accepts_identity(0xa1, 0x5ca3));
+        assert!(!WinbondMonitorProfile::Ehg.accepts_identity(0x90, 0x5ca3));
+    }
+
+    #[test]
+    fn thg_secondary_cpu_fan_policy_fails_before_io() {
+        let cooling = FullSpeedCooling {
+            cpu_secondary: Some(FanOutputMode::Pwm),
+            ..FullSpeedCooling::default()
+        };
+        let mut monitor = WinbondMonitor::new(0xa00, WinbondMonitorProfile::ThgE).unwrap();
+        // Running this in an unprivileged host test would fault if probe/port
+        // access preceded policy validation.
+        assert_eq!(
+            monitor.force_full_speed(&cooling),
+            Err(DeviceError::ConfigError)
+        );
+        assert!(
+            WinbondMonitorProfile::Ehg
+                .validate_cooling(&cooling)
+                .is_ok()
+        );
+        let temperature = TemperatureConfig {
+            sensor: TemperatureSensor::Thermistor,
+            offset_c: 0,
+        };
+        let config = MonitorConfig {
+            system: temperature,
+            cpu: temperature,
+            auxiliary: temperature,
+            battery_voltage: false,
+            cooling,
+        };
+        assert_eq!(monitor.init(&config), Err(DeviceError::ConfigError));
     }
 }

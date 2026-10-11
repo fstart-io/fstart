@@ -79,17 +79,35 @@ The existing UART/KBC defaults now preserve unlisted fields.
 PWM/DC pin selection is accepted only on verified E-version ID 8285h (§§13–14).
 It does not establish full-speed cooling or disable inherited automatic control.
 THG DC output values have four bits, and mode selection lives in Super I/O
-LDNB CRF0; the EHG runtime monitor is **not** a compatible THG driver.
-Kontron 986LCD-M board and runtime-monitor integration remain pending. No
-new controller operation has hardware validation.
+LDNB CRF0; EHG register encodings are **not** interchangeable with THG.
+Kontron 986LCD-M board integration remains pending. No new controller operation
+has hardware validation.
+
+### Explicit THG-E runtime monitor profile
+
+`winbond_hwm::WinbondMonitor` shares verified bank/sensor operations through an
+explicit `WinbondMonitorProfile::{Ehg, ThgE}` selection. The caller must establish
+PnP identity/revision and HWM decoding/serialization first. THG-E callers also
+select fan pads with `configure_fan_output_modes` using the same cooling policy;
+shared runtime ID 90h cannot prove E-version silicon or PWM/DC pin settings.
+The runtime driver selects manual control and maximum output, not cruise modes.
+THG-E DC maximum is 15/16 of AVCC, not full rail voltage or proof of fan speed.
+
+THG-E rejects the nonexistent secondary CPU output before I/O, preserves the
+reserved low fan-control bits, and clears bank-selector reserved bits 6:3.
+EHG instead preserves its individual-beep fields and retains six-bit DC output
+and the secondary CPU fan. Both profiles restore defined bank/vendor state,
+provide polling-only signed whole-degree readings and signed sensor offsets,
+and retain the existing conversion-settling and sensor-health limitations.
+This is not a reviewed Kontron thermal integration or hardware validation.
 
 ## W83627EHG foundation for MB899
 
 `driver-superio::w83627ehg` identifies only EHG IDs 886xh and provides UART,
 PS/2 and parallel resources plus typed clock, VID-threshold, fan-pad electrical
 mode and pin routing. Hardware-monitor allocation does not configure fan duty
-or start monitoring. The separate `winbond_hwm::WinbondEhgMonitor` implements
-EHG V1.3 polling sensors and manual full-speed output. The experimental MB899
+or start monitoring. `winbond_hwm::WinbondMonitor` with the explicit `Ehg`
+profile implements EHG V1.3 polling sensors and manual full-speed output. The experimental MB899
 binding below uses these foundations; neither driver has hardware validation.
 
 GPIO3/4/5 reuse the verified DHG mechanism, including direction-before-data,
