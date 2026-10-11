@@ -62,6 +62,27 @@ Keep a vendor ROM backup and external programmer before attempting a boot.
 This is **not hardware-validated firmware** or a completed port of every
 i945 board. Build and unit-test success do not establish hardware correctness.
 
+## W83627THG foundation for dual-controller boards
+
+The THF/THG V1.22 profile adds physical GP32–34, clock input selection,
+watchdog stop and UART-only secondary-controller policy. GPIO3 uses LDN9
+activation bit 0 and global CR2B muxes, not the DHG/EHG SMBus/reset muxes.
+Normal COM2 can coexist; initialize the chip first to disable infrared.
+Other THG GPIO banks remain unsupported. Unrequested controls are preserved,
+and direction precedes data; neither GPIO nor fan-mode switching is glitch-free.
+
+A secondary controller can deactivate overlapping legacy resources and virtual
+GPIO/game/MIDI functions without changing its UART resources. This is not
+proof of electrical isolation; native pad muxes and wiring still matter.
+The existing UART/KBC defaults now preserve unlisted fields.
+
+PWM/DC pin selection is accepted only on verified E-version ID 8285h (§§13–14).
+It does not establish full-speed cooling or disable inherited automatic control.
+THG DC output values have four bits, and mode selection lives in Super I/O
+LDNB CRF0; the EHG runtime monitor is **not** a compatible THG driver.
+Kontron 986LCD-M board and runtime-monitor integration remain pending. No
+new controller operation has hardware validation.
+
 ## W83627EHG foundation for MB899
 
 `driver-superio::w83627ehg` identifies only EHG IDs 886xh and provides UART,
