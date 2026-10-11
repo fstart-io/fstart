@@ -1,8 +1,9 @@
-//! Verified W83627DHG/EHG GPIO1/3/4/5 indexed-register machinery.
+//! Verified Winbond GPIO indexed-register machinery.
 //!
 //! GPIO1 is verified only for EHG. GPIO3/4/5 share the register layout in
 //! DHG V1.4 §20.10 and EHG V1.3 §§7.8/7.10. Preserve unrequested controls;
-//! bank-wide pin muxes still affect every pad in their bank.
+//! bank-wide pin muxes still affect every pad in their bank. THF/THG V1.22
+//! §7.1.8 shares GPIO3 controls, but has different muxes and activation bits.
 use crate::{SuperIo, SuperIoChip};
 use tock_registers::{
     fields::{Field, FieldValue},
@@ -19,12 +20,18 @@ register_bitfields![u8,
     ],
     SMBUS [ ENABLE OFFSET(1) NUMBITS(1) [] ],
     GPIO1_MUX [ GPIO OFFSET(0) NUMBITS(1) [] ],
+    THG_GPIO3_MUX [
+        GP32 OFFSET(0) NUMBITS(2) [Gpio = 0],
+        GP33 OFFSET(2) NUMBITS(2) [Gpio = 0],
+        GP34 OFFSET(4) NUMBITS(2) [Gpio = 1],
+    ],
 ];
 
 #[derive(Clone, Copy)]
 pub(crate) enum Profile {
     Dhg,
     Ehg,
+    Thg,
 }
 
 /// Requested logical value. Selected inversion also inverts the wire.
@@ -34,9 +41,9 @@ pub enum GpioDirection {
     Output(bool),
 }
 
-/// GP32–34, GP40–47 and GP50–57 are verified on both chips; GP10–17
-/// are EHG-only. Chip-specific validation happens before configuration I/O.
-/// GPIO4 shares a bank-wide mux with UART B and cannot coexist with COM2.
+/// DHG/EHG support GP32–34, GP40–47 and GP50–57; GP10–17 are EHG-only.
+/// THG supports only GP32–34 here. Chip-specific validation precedes I/O.
+/// DHG/EHG GPIO4 shares a bank-wide mux with UART B and cannot coexist with COM2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpioPinConfig {
     pin: u8,
@@ -66,7 +73,10 @@ impl GpioPinConfig {
         self
     }
 
-    fn bank(self) -> (u8, u8) {
+    fn bank(self, profile: Profile) -> (u8, u8) {
+        if matches!(profile, Profile::Thg) {
+            return (9, 0); // Validation restricts THG to GPIO3.
+        }
         match self.pin / 10 {
             1 => (7, 0),
             group @ 3..=5 => (9, group - 2),
@@ -124,12 +134,26 @@ fn valid(pins: &[GpioPinConfig], profile: Profile, com2: bool) -> bool {
         .enumerate()
         .any(|(i, pin)| pins[i + 1..].iter().any(|other| pin.pin == other.pin));
     let gpio1 = pins.iter().filter(|pin| pin.pin / 10 == 1).count();
+    if matches!(profile, Profile::Thg) {
+        return unique && pins.iter().all(|pin| matches!(pin.pin, 32..=34));
+    }
     unique
         && (gpio1 == 0 || (matches!(profile, Profile::Ehg) && gpio1 == 8))
         && (!com2 || !pins.iter().any(|pin| pin.pin / 10 == 4))
 }
 
-// Private to the two chip drivers: no arbitrary Super I/O can opt into this
+fn thg_mux_fields(pins: &[GpioPinConfig]) -> Option<FieldValue<u8, THG_GPIO3_MUX::Register>> {
+    pins.iter()
+        .filter_map(|pin| match pin.pin {
+            32 => Some(THG_GPIO3_MUX::GP32::Gpio),
+            33 => Some(THG_GPIO3_MUX::GP33::Gpio),
+            34 => Some(THG_GPIO3_MUX::GP34::Gpio),
+            _ => None,
+        })
+        .reduce(|fields, field| fields + field)
+}
+
+// Private to the chip drivers: no arbitrary Super I/O can opt into this
 // verified profile through the public API.
 pub(crate) fn configure<C: SuperIoChip>(
     sio: &mut SuperIo<C>,
@@ -153,7 +177,7 @@ pub(crate) fn configure<C: SuperIoChip>(
     }
     let mut changed = GpioUpdate::default();
     for pin in pins {
-        sio.logical_device(pin.bank().0);
+        sio.logical_device(pin.bank(profile).0);
         for (index, fields) in pin.settings() {
             let register = sio.register::<PIN_BITS::Register>(index);
             let old = register.get();
@@ -162,32 +186,41 @@ pub(crate) fn configure<C: SuperIoChip>(
             register.set(new);
         }
     }
-    if pins.iter().any(|pin| matches!(pin.pin, 32 | 33)) {
+    if !matches!(profile, Profile::Thg) && pins.iter().any(|pin| matches!(pin.pin, 32 | 33)) {
         let register = sio.register::<SMBUS::Register>(0x2a);
         changed.output_or_routing_changed |= register.is_set(SMBUS::ENABLE);
         register.modify(SMBUS::ENABLE::CLEAR);
     }
-    let mux = pins
-        .iter()
-        .filter_map(|pin| match pin.pin {
-            32 => Some(MULTIFUNCTION::GP32_RESET::CLEAR),
-            33 => Some(MULTIFUNCTION::GP33_RESET::CLEAR),
-            34 => Some(MULTIFUNCTION::GP34_RESET::CLEAR),
-            _ => None,
-        })
-        .reduce(|fields, field| fields + field);
-    let mux = if gpio4 {
-        Some(mux.map_or(MULTIFUNCTION::UART_B_PINS::Gpio, |fields| {
-            fields + MULTIFUNCTION::UART_B_PINS::Gpio
-        }))
+    if matches!(profile, Profile::Thg) {
+        if let Some(fields) = thg_mux_fields(pins) {
+            let register = sio.register::<THG_GPIO3_MUX::Register>(0x2b);
+            let old = register.get();
+            changed.output_or_routing_changed |= fields.modify(old) != old;
+            register.modify(fields);
+        }
     } else {
-        mux
-    };
-    if let Some(fields) = mux {
-        let register = sio.register::<MULTIFUNCTION::Register>(0x2c);
-        let old = register.get();
-        changed.output_or_routing_changed |= fields.modify(old) != old;
-        register.modify(fields);
+        let mux = pins
+            .iter()
+            .filter_map(|pin| match pin.pin {
+                32 => Some(MULTIFUNCTION::GP32_RESET::CLEAR),
+                33 => Some(MULTIFUNCTION::GP33_RESET::CLEAR),
+                34 => Some(MULTIFUNCTION::GP34_RESET::CLEAR),
+                _ => None,
+            })
+            .reduce(|fields, field| fields + field);
+        let mux = if gpio4 {
+            Some(mux.map_or(MULTIFUNCTION::UART_B_PINS::Gpio, |fields| {
+                fields + MULTIFUNCTION::UART_B_PINS::Gpio
+            }))
+        } else {
+            mux
+        };
+        if let Some(fields) = mux {
+            let register = sio.register::<MULTIFUNCTION::Register>(0x2c);
+            let old = register.get();
+            changed.output_or_routing_changed |= fields.modify(old) != old;
+            register.modify(fields);
+        }
     }
     if gpio1 {
         let register = sio.register::<GPIO1_MUX::Register>(0x29);
@@ -197,7 +230,7 @@ pub(crate) fn configure<C: SuperIoChip>(
     // Select the LDN explicitly: GPIO1 and GPIO3 use the same register indices.
     for group in [1, 3, 4, 5] {
         if let Some(pin) = pins.iter().find(|pin| pin.pin / 10 == group) {
-            let (ldn, bit) = pin.bank();
+            let (ldn, bit) = pin.bank(profile);
             sio.logical_device(ldn);
             let field = Field::<u8, PIN_BITS::Register>::new(1, bit as usize);
             changed.direction_or_activation_changed |=
@@ -284,15 +317,32 @@ mod tests {
         assert!(!valid(&pins, Profile::Dhg, false));
         assert!(!valid(&[GpioPinConfig::input(42)], Profile::Ehg, true));
         assert!(!valid(&[pins[0], pins[0]], Profile::Ehg, false));
-        assert_eq!(pins[0].bank(), (7, 0));
-        assert_eq!(GpioPinConfig::input(32).bank(), (9, 1));
-        assert_eq!(GpioPinConfig::input(55).bank(), (9, 3));
+        assert_eq!(pins[0].bank(Profile::Ehg), (7, 0));
+        assert_eq!(GpioPinConfig::input(32).bank(Profile::Ehg), (9, 1));
+        assert_eq!(GpioPinConfig::input(55).bank(Profile::Dhg), (9, 3));
         let settings: Vec<_> = pins[6].settings().collect();
         assert_eq!(
             settings.iter().map(|s| s.0).collect::<Vec<_>>(),
             [0xf0, 0xf2, 0xf3]
         );
         assert_eq!(settings.last().unwrap().1.modify(0xff), 0xbf);
+    }
+
+    #[test]
+    fn thg_gpio3_uses_its_own_mux_and_virtual_activation() {
+        let pins = [
+            GpioPinConfig::output(32, false),
+            GpioPinConfig::input(33),
+            GpioPinConfig::input(34),
+        ];
+        assert!(valid(&pins, Profile::Thg, true));
+        assert_eq!(pins[0].bank(Profile::Thg), (9, 0));
+        assert_eq!(thg_mux_fields(&pins).unwrap().modify(0xff), 0xd0);
+        assert_eq!(thg_mux_fields(&pins[..1]).unwrap().modify(0xff), 0xfc);
+        assert!(!valid(&[GpioPinConfig::input(10)], Profile::Thg, false));
+        assert!(!valid(&[GpioPinConfig::input(40)], Profile::Thg, false));
+        assert!(!valid(&[GpioPinConfig::input(55)], Profile::Thg, false));
+        assert!(!valid(&[pins[0], pins[0]], Profile::Thg, false));
     }
 
     #[test]
