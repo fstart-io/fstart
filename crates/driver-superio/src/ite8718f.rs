@@ -2,8 +2,9 @@
 //! GPIO has no documented CR30 activation bit. Undocumented EF writes and
 //! reserved bits from vendor whole-register scripts are deliberately omitted.
 use crate::{DmaResource, IoResource, IrqResource, SuperIo, SuperIoChip};
+use fstart_core::services::device::DeviceError;
 use tock_registers::{
-    interfaces::{ReadWriteable, Writeable},
+    interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
 };
 
@@ -11,6 +12,7 @@ pub use crate::ite_gpio::{GpioDirection, GpioFunction, PullUp};
 pub type GpioPinConfig = crate::ite_gpio::GpioPinConfig<Ite8718fChip>;
 
 register_bitfields![u8,
+    CHIP_VERSION [ VERSION OFFSET(0) NUMBITS(4) [C = 1] ],
     EXT_MUX [
         VIN6_GPIO OFFSET(7) NUMBITS(1) [],
         FAN_TAC5 OFFSET(4) NUMBITS(1) [], FAN_TAC4 OFFSET(3) NUMBITS(1) [],
@@ -74,6 +76,21 @@ fn beep_fields(pin: Option<u8>) -> tock_registers::fields::FieldValue<u8, PIN_MA
 }
 
 impl Ite8718f {
+    /// Verify the documented C-version code before using the V0.3 EC profile.
+    /// Other version codes need verification; do not infer their ordering.
+    pub fn verify_environment_revision(&mut self) -> Result<(), DeviceError> {
+        self.enter_config();
+        let supported = self
+            .register::<CHIP_VERSION::Register>(0x22)
+            .matches_all(CHIP_VERSION::VERSION::C);
+        self.exit_config();
+        if supported {
+            Ok(())
+        } else {
+            Err(DeviceError::InitFailed)
+        }
+    }
+
     /// Select external VIN3/VIN7 rather than the internal 5 V dividers.
     /// This also disables the coupled ATXPG/PCIRSTIN pad functions (§8.3.15).
     /// Preserve tachometer selection, strap/reserved bits and VIN6 routing.
@@ -82,6 +99,25 @@ impl Ite8718f {
         self.logical_device(7);
         self.register::<EXT_MUX::Register>(0x2c)
             .modify(EXT_MUX::PCIRSTIN_VCCH_DIVIDER::CLEAR + EXT_MUX::ATXPG_VCC_DIVIDER::CLEAR);
+        self.exit_config();
+    }
+
+    /// Select the monitor's VIN6 pad rather than its GPIO function.
+    pub fn use_voltage_input6(&mut self) {
+        self.enter_config();
+        self.logical_device(7);
+        self.register::<EXT_MUX::Register>(0x2c)
+            .modify(EXT_MUX::VIN6_GPIO::CLEAR);
+        self.exit_config();
+    }
+
+    /// Route the VIDO2/VIDO3 pads to auxiliary tachometer inputs 5/4.
+    /// Counter enables remain the environmental controller's policy.
+    pub fn use_auxiliary_fan_tachometers(&mut self) {
+        self.enter_config();
+        self.logical_device(7);
+        self.register::<EXT_MUX::Register>(0x2c)
+            .modify(EXT_MUX::FAN_TAC4::SET + EXT_MUX::FAN_TAC5::SET);
         self.exit_config();
     }
 
@@ -187,6 +223,9 @@ mod tests {
     #[test]
     fn descriptor_and_pin_mapping_match_the_chip() {
         assert_eq!(Ite8718fChip::CHIP_ID, 0x8718);
+        assert!(CHIP_VERSION::VERSION::C.matches_all(0x81));
+        assert!(!CHIP_VERSION::VERSION::C.matches_all(0x80));
+        assert!(!CHIP_VERSION::VERSION::C.matches_all(0x82));
         assert_eq!(Ite8718fChip::GPIO_LDN, None);
         assert_eq!(Ite8718fChip::enter_last_byte(0x2e), Some(0x55));
         assert_eq!(Ite8718fChip::enter_last_byte(0x4e), Some(0xaa));

@@ -72,7 +72,9 @@ pub enum TemperatureMode {
 pub struct TemperatureConfig {
     pub mode: TemperatureMode,
     pub offset_c: i8,
+    /// Low alarm threshold; automatic startup requires a reading above it.
     pub low_c: i8,
+    /// High alarm threshold; automatic startup requires a reading below it.
     pub high_c: i8,
 }
 impl TemperatureConfig {
@@ -260,7 +262,12 @@ impl IteEnvironmentController {
         Ok(())
     }
 
-    pub fn init(&mut self, config: &EnvironmentConfig) -> Result<(), DeviceError> {
+    /// Configure monitoring and curves without releasing any configured fan
+    /// from full speed. Dropping the returned token leaves that safe state.
+    pub fn prepare<'a>(
+        &'a mut self,
+        config: &'a EnvironmentConfig,
+    ) -> Result<PreparedEnvironment<'a>, DeviceError> {
         if !config.valid() {
             return Err(DeviceError::ConfigError);
         }
@@ -307,25 +314,19 @@ impl IteEnvironmentController {
             });
         self.register::<BYTE::Register>(0x50)
             .write(BYTE::VALUE.val(voltage_mask));
-        // INT_Clear must be zero for conversion (§9.6.3.2, §9.6.3.6).
-        // Keep IRQ/SMI disabled without stopping the monitoring loop or
-        // replaying reset/COPEN strobes.
-        self.register::<CONFIGURATION::Register>(0x00)
-            .modify(monitoring_fields());
         self.register::<SMOOTHING::Register>(0x0b)
             .modify(SMOOTHING::FREQUENCY::Khz1);
         for (i, fan) in config.fans.iter().enumerate() {
             let Some(fan) = fan else {
                 continue;
             };
-            let field = tock_registers::fields::Field::<u8, FAN_MAIN::Register>::new(1, i);
             let tach = tock_registers::fields::Field::<u8, FAN_MAIN::Register>::new(1, i + 4);
             let counter = tock_registers::fields::Field::<u8, FAN_COUNTER::Register>::new(1, i);
             self.register::<FAN_COUNTER::Register>(0x0c)
                 .modify(counter.val(1));
             self.register::<FAN_MAIN::Register>(0x13)
                 .modify(tach.val(1));
-            if let FanPolicy::Automatic { input, curve } = fan {
+            if let FanPolicy::Automatic { curve, .. } = fan {
                 let base = 0x60 + i as u8 * 8;
                 self.register::<BYTE::Register>(base)
                     .write(BYTE::VALUE.val(curve.off_c as u8));
@@ -340,13 +341,107 @@ impl IteEnvironmentController {
                     PWM_HYSTERESIS::DIRECT_DECREASE::CLEAR
                         + PWM_HYSTERESIS::CELSIUS.val(curve.hysteresis_c),
                 );
-                self.register::<PWM::Register>(0x15 + i as u8)
-                    .write(PWM::AUTOMATIC::SET + PWM::PAYLOAD.val(input.index() as u8));
-                self.register::<FAN_MAIN::Register>(0x13)
-                    .modify(field.val(1));
             }
         }
-        Ok(())
+        // Start conversion only after channels/counters are configured.
+        // INT_Clear=0 keeps sampling active without IRQ/SMI or reset/COPEN.
+        self.register::<CONFIGURATION::Register>(0x00)
+            .modify(monitoring_fields());
+        Ok(PreparedEnvironment {
+            controller: self,
+            config,
+        })
+    }
+}
+
+/// Prepared analog monitoring, with all configured fans still at full speed.
+#[must_use = "fans remain full-speed until automatic control is qualified"]
+pub struct PreparedEnvironment<'a> {
+    controller: &'a mut IteEnvironmentController,
+    config: &'a EnvironmentConfig,
+}
+
+// §9.6.3.6 gives approximately 1.5 seconds for safely updated readings.
+// Use a conservative two-second interval after starting analog conversion.
+const CONVERSION_SETTLE_US: u32 = 2_000_000;
+
+fn automatic_sources_plausible(config: &EnvironmentConfig, temperatures: &[i8; 3]) -> bool {
+    config.fans.iter().flatten().all(|fan| match fan {
+        FanPolicy::FullSpeed => true,
+        FanPolicy::Automatic { input, .. } => {
+            let source = config.temperatures[input.index()];
+            let reading = temperatures[input.index()];
+            // Conservative qualification: require a reading strictly inside
+            // its alarm limits. Reject signed endpoints even with wide limits.
+            reading != i8::MIN
+                && reading != i8::MAX
+                && reading > source.low_c
+                && reading < source.high_c
+        }
+    })
+}
+
+fn release_automatic(
+    config: &EnvironmentConfig,
+    delay_us: impl FnOnce(u32),
+    qualified: impl FnOnce() -> bool,
+    mut enable: impl FnMut(usize, TemperatureInput),
+) -> Result<(), DeviceError> {
+    if !config
+        .fans
+        .iter()
+        .flatten()
+        .any(|fan| matches!(fan, FanPolicy::Automatic { .. }))
+    {
+        return Ok(());
+    }
+    delay_us(CONVERSION_SETTLE_US);
+    // Qualify all sources before enabling any output; failure keeps them full.
+    if !qualified() {
+        return Err(DeviceError::InitFailed);
+    }
+    for (i, fan) in config.fans.iter().enumerate() {
+        if let Some(FanPolicy::Automatic { input, .. }) = fan {
+            enable(i, *input);
+        }
+    }
+    Ok(())
+}
+
+impl PreparedEnvironment<'_> {
+    /// The caller must provide a blocking microsecond delay backed by an
+    /// initialized timer. Wait with full-speed cooling, then check monitoring
+    /// readback and automatic-source plausibility before releasing any fan.
+    /// This cannot detect a plausible stuck reading or later sensor failure.
+    pub fn enable_automatic(self, delay_us: impl FnOnce(u32)) -> Result<(), DeviceError> {
+        let controller = &*self.controller;
+        release_automatic(
+            self.config,
+            delay_us,
+            || {
+                controller
+                    .register::<CONFIGURATION::Register>(0x00)
+                    .matches_all(CONFIGURATION::START::SET + CONFIGURATION::INT_CLEAR::CLEAR)
+                    && controller
+                        .register::<TEMPERATURE_INPUTS::Register>(0x51)
+                        .matches_all(self.config.temperature_fields())
+                    && automatic_sources_plausible(
+                        self.config,
+                        &core::array::from_fn(|i| {
+                            controller.register::<BYTE::Register>(0x29 + i as u8).get() as i8
+                        }),
+                    )
+            },
+            |i, input| {
+                controller
+                    .register::<PWM::Register>(0x15 + i as u8)
+                    .write(PWM::AUTOMATIC::SET + PWM::PAYLOAD.val(input.index() as u8));
+                let field = tock_registers::fields::Field::<u8, FAN_MAIN::Register>::new(1, i);
+                controller
+                    .register::<FAN_MAIN::Register>(0x13)
+                    .modify(field.val(1));
+            },
+        )
     }
 }
 
@@ -414,6 +509,81 @@ mod tests {
         );
         // Target None leaves the extra vector's source and hysteresis intact.
         assert_eq!(EXTRA_VECTOR::TARGET::None.modify(0xff), 0x9f);
+    }
+
+    fn startup_config() -> EnvironmentConfig {
+        EnvironmentConfig {
+            temperatures: [TemperatureConfig::new(TemperatureMode::Diode); 3],
+            voltage_inputs: [true; 8],
+            fans: [
+                Some(FanPolicy::Automatic {
+                    input: TemperatureInput::One,
+                    curve: FanCurve::new(30, 35, 75, 0),
+                }),
+                Some(FanPolicy::Automatic {
+                    input: TemperatureInput::Two,
+                    curve: FanCurve::new(30, 35, 75, 0),
+                }),
+                None,
+            ],
+            fan_polarity: FanPolarity::ActiveHigh,
+        }
+    }
+
+    #[test]
+    fn automatic_startup_waits_and_qualifies_before_any_release() {
+        let config = startup_config();
+        let phase = core::cell::Cell::new(0);
+        release_automatic(
+            &config,
+            |us| {
+                assert_eq!(us, 2_000_000);
+                phase.set(1);
+            },
+            || {
+                assert_eq!(phase.get(), 1);
+                phase.set(2);
+                automatic_sources_plausible(&config, &[40, 50, i8::MIN])
+            },
+            |i, input| {
+                assert_eq!(input.index(), i);
+                assert_eq!(phase.get(), 2 + i);
+                phase.set(3 + i);
+            },
+        )
+        .unwrap();
+        assert_eq!(phase.get(), 4);
+        for bad in [i8::MIN, -1, 0, 127] {
+            let failed = release_automatic(
+                &config,
+                |_| {},
+                || automatic_sources_plausible(&config, &[40, bad, 40]),
+                |_, _| panic!("no fan may leave full speed on a bad source"),
+            );
+            assert!(failed.is_err());
+        }
+        let failed = release_automatic(
+            &config,
+            |_| {},
+            || false,
+            |_, _| panic!("failed monitoring readback must retain full speed"),
+        );
+        assert!(failed.is_err());
+    }
+
+    #[test]
+    fn full_speed_policy_needs_no_automatic_handoff() {
+        let config = EnvironmentConfig {
+            fans: [Some(FanPolicy::FullSpeed); 3],
+            ..startup_config()
+        };
+        release_automatic(
+            &config,
+            |_| panic!("no automatic settling needed"),
+            || panic!("no automatic source needed"),
+            |_, _| panic!("full speed must remain selected"),
+        )
+        .unwrap();
     }
 
     #[test]

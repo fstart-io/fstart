@@ -575,6 +575,48 @@ impl LpcFixedIoDecode {
     }
 }
 
+/// Destination for an ICH7 GPIO event; its enable gate is separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpiRoute {
+    Disabled,
+    Smi,
+    Sci,
+}
+impl GpiRoute {
+    const fn encode(self) -> u32 {
+        match self {
+            Self::Disabled => 0,
+            Self::Smi => 1,
+            Self::Sci => 2,
+        }
+    }
+}
+
+fn encode_gpi_routes(routes: &[GpiRoute; 16]) -> u32 {
+    routes
+        .iter()
+        .enumerate()
+        .fold(0, |value, (pin, route)| value | route.encode() << (2 * pin))
+}
+
+#[cfg(test)]
+mod gpi_tests {
+    use super::*;
+    #[test]
+    fn destinations_encode_without_enabling_their_event_gates() {
+        let mut routes = [GpiRoute::Smi; 16];
+        routes[13] = GpiRoute::Sci;
+        assert_eq!(encode_gpi_routes(&routes), 0x5955_5555);
+        let mut routes = [GpiRoute::Disabled; 16];
+        routes[13] = GpiRoute::Smi;
+        assert_eq!(encode_gpi_routes(&routes), 0x0400_0000);
+        routes[8] = GpiRoute::Sci;
+        routes[12] = GpiRoute::Smi;
+        routes[13] = GpiRoute::Sci;
+        assert_eq!(encode_gpi_routes(&routes), 0x0902_0000);
+    }
+}
+
 /// One LPC generic I/O decode window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcGenericIoDecode {
@@ -657,7 +699,7 @@ pub struct IntelIch7Config {
     pub ac97_modem: bool,
     /// GPI routing (2 bits per GPI 0..15): 0 = none, 1 = SMI, 2 = SCI.
     /// Programmed into LPC `GPIO_ROUT` (0xb8). Defaults to all-none.
-    pub gpi_routing: [u8; 16],
+    pub gpi_routing: [GpiRoute; 16],
     /// GPE0 enable bits.
     pub gpe0_en: u32,
     /// Admit LPC serial IRQs before DRAM. D510MO keeps them off until ramstage.
@@ -709,7 +751,7 @@ impl IntelIch7Config {
             lan: true,
             ac97_audio: true,
             ac97_modem: true,
-            gpi_routing: [0; 16],
+            gpi_routing: [GpiRoute::Disabled; 16],
             gpe0_en: 0,
             early_serial_irq: true,
             lpc_decode: LpcDecodeConfig::new(),
@@ -1270,11 +1312,8 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         }
 
         // ---- 13b. GPI routing (LPC GPIO_ROUT): SMI/SCI selection per GPI.
-        let mut rout = 0u32;
-        for (idx, route) in self.config.gpi_routing.iter().copied().enumerate() {
-            rout |= u32::from(route & 0x03) << (2 * idx);
-        }
-        ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC).write32(0xb8, rout);
+        ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC)
+            .write32(0xb8, encode_gpi_routes(&self.config.gpi_routing));
 
         // ---- 14. Enable HPET (needed by raminit for hpet_udelay) ----
         self.enable_hpet(&rcba);

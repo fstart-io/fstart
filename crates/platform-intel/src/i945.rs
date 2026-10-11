@@ -4,9 +4,10 @@ use fstart_driver_intel::i945;
 pub use fstart_driver_intel::i945::{I945IgdConfig, I945Variant, IntelI945Config};
 use fstart_driver_intel::ich7;
 pub use fstart_driver_intel::ich7::{
-    HdaConfig, HdaVerbTable, IdeConfig, IntelIch7Config, LpcDecodeConfig, LpcFixedIoDecode,
-    LpcFloppyDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, PinColor, PinConfig,
-    PinConn, PinConnector, PinDevice, PinGeoLoc, PinLoc, SataConfig, SataMode, UsbConfig,
+    GpiRoute, HdaConfig, HdaVerbTable, IdeConfig, IntelIch7Config, LpcDecodeConfig,
+    LpcFixedIoDecode, LpcFloppyDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode,
+    PinColor, PinConfig, PinConn, PinConnector, PinDevice, PinGeoLoc, PinLoc, SataConfig, SataMode,
+    UsbConfig,
 };
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 pub use fstart_driver_intel::southbridge::pirq::PirqRouting;
@@ -34,7 +35,7 @@ pub struct I945Ich7Config {
     pub pirq_routing: [u8; 8],
     /// Board interrupt wiring through the RCBA router and behind 0:1e.0.
     pub pirq: PirqRouting,
-    pub gpi_routing: [u8; 16],
+    pub gpi_routing: [GpiRoute; 16],
     /// Internal LAN function present (`FD_INTLAN` when false).
     pub lan: bool,
     /// AC97 audio/modem functions present (`FD_ACAUD`/`FD_ACMOD` when false).
@@ -67,7 +68,7 @@ impl I945Ich7Config {
             pcie_ports: [false; 4],
             pirq_routing: [0; 8],
             pirq: ich7::IntelIch7Config::new().pirq,
-            gpi_routing: [0; 16],
+            gpi_routing: [GpiRoute::Disabled; 16],
             lan: true,
             ac97_audio: true,
             ac97_modem: true,
@@ -187,7 +188,7 @@ impl I945Ich7Config {
         self
     }
     #[must_use]
-    pub const fn gpi_routing(mut self, routing: [u8; 16]) -> Self {
+    pub const fn gpi_routing(mut self, routing: [GpiRoute; 16]) -> Self {
         self.gpi_routing = routing;
         self
     }
