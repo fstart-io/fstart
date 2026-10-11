@@ -7,6 +7,7 @@ pub use ldn::{DmaResource, IoResource, IrqResource, LogicalDevice};
 pub mod ite8718f;
 pub mod ite8720f;
 pub mod ite8721f;
+pub mod ite_env;
 pub mod ite_gpio;
 pub mod pc87382;
 pub mod pc87392;
