@@ -4,7 +4,10 @@ use fstart_core::services::{ServiceError, device::BusDevice};
 #[cfg(fstart_stage_env = "car")]
 use fstart_driver_superio::w83627ehg::{ClockInput, FanOutput, OutputDriver};
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-use fstart_driver_superio::{w83627ehg::W83627ehg, winbond_hwm::WinbondEhgMonitor};
+use fstart_driver_superio::{
+    w83627ehg::W83627ehg,
+    winbond_hwm::{WinbondMonitor, WinbondMonitorProfile},
+};
 
 #[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 #[derive(Default)]
@@ -38,7 +41,8 @@ impl fstart_platform_intel::IntelEarlyBoardHooks<crate::Hardware> for Mb899Mainb
         sio.set_fan_output_driver(FanOutput::System, OutputDriver::OpenDrain);
         sio.set_fan_output_driver(FanOutput::CpuPrimary, OutputDriver::OpenDrain);
         sio.enable_hwmon(crate::HWM_BASE);
-        WinbondEhgMonitor::new(crate::HWM_BASE)?.force_full_speed(&crate::COOLING)?;
+        WinbondMonitor::new(crate::HWM_BASE, WinbondMonitorProfile::Ehg)?
+            .force_full_speed(&crate::COOLING)?;
         sio.disable_watchdog();
         sio.disable_floppy();
         sio.disable_parallel();
@@ -69,7 +73,7 @@ impl fstart_platform_intel::IntelMainstageBoardHooks<crate::Hardware> for Mb899M
         &mut self,
         _: &mut fstart_platform_intel::IntelMainstageBoardCtx<crate::Hardware>,
     ) -> Result<(), ServiceError> {
-        WinbondEhgMonitor::new(crate::HWM_BASE)?.init(&crate::MONITOR)?;
+        WinbondMonitor::new(crate::HWM_BASE, WinbondMonitorProfile::Ehg)?.init(&crate::MONITOR)?;
         fstart_log::warn!(
             "mb899: experimental VGA-only firmware; LVDS/VBT, EC and riser support incomplete"
         );
