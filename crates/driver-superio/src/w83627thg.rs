@@ -36,6 +36,7 @@ register_bitfields![u8,
         A20_SPEEDUP OFFSET(1) NUMBITS(1) [],
         RESET_SPEEDUP OFFSET(0) NUMBITS(1) [],
     ],
+    UART_CLOCK [ CLOCK OFFSET(0) NUMBITS(2) [Standard = 0] ],
     SERIAL_CONFIG [
         IR_LOCATION OFFSET(6) NUMBITS(1) [UartPins = 0, IrPins = 1],
         IR_MODE OFFSET(3) NUMBITS(3) [Disabled = 0],
@@ -155,6 +156,30 @@ impl W83627thg {
         self.exit_config();
     }
 
+    /// Select the standard 24 MHz / 13 UART clock on both ports. Call before
+    /// UART initialization, after matching the physical oscillator with
+    /// `set_clock_input`. Preserve UART B's IR delays and unrelated controls.
+    pub fn configure_standard_uart_clocks(&mut self) {
+        self.enter_config();
+        for ldn in [2, 3] {
+            self.logical_device(ldn);
+            self.register::<UART_CLOCK::Register>(0xf0)
+                .modify(UART_CLOCK::CLOCK::Standard);
+        }
+        self.exit_config();
+    }
+
+    /// Select keyboard-controller A20 acceleration without changing the KBC
+    /// clock, Port 92 or keyboard-reset acceleration. Call after `init()`,
+    /// which establishes the default software-controlled keyboard policy.
+    pub fn set_keyboard_a20_acceleration(&mut self, enabled: bool) {
+        self.enter_config();
+        self.logical_device(5);
+        self.register::<KBC_CONFIG::Register>(0xf0)
+            .modify(KBC_CONFIG::A20_SPEEDUP.val(enabled as u8));
+        self.exit_config();
+    }
+
     /// Select PWM/DC pin output on verified E-version silicon only. This
     /// neither programs duty/voltage nor disables autonomous fan control.
     /// Call before runtime fan programming; mode takeover is not glitch-free.
@@ -264,6 +289,14 @@ mod tests {
         assert_eq!(serial_only_ldn9_fields().modify(0xff), 0xfc);
         assert_eq!(clock_fields(ClockInput::Mhz48).modify(0x34), 0x76);
         assert_eq!(clock_fields(ClockInput::Mhz24).modify(0xff), 0xbf);
+    }
+
+    #[test]
+    fn uart_clock_and_keyboard_a20_policy_preserve_other_controls() {
+        assert_eq!(UART_CLOCK::CLOCK::Standard.modify(0xff), 0xfc);
+        assert_eq!(UART_CLOCK::CLOCK::Standard.modify(0x0c), 0x0c);
+        assert_eq!(KBC_CONFIG::A20_SPEEDUP::SET.modify(0x80), 0x82);
+        assert_eq!(KBC_CONFIG::A20_SPEEDUP::CLEAR.modify(0xff), 0xfd);
     }
 
     #[test]

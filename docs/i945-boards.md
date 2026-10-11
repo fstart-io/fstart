@@ -74,7 +74,16 @@ and direction precedes data; neither GPIO nor fan-mode switching is glitch-free.
 A secondary controller can deactivate overlapping legacy resources and virtual
 GPIO/game/MIDI functions without changing its UART resources. This is not
 proof of electrical isolation; native pad muxes and wiring still matter.
-The existing UART/KBC defaults now preserve unlisted fields.
+The existing UART/KBC defaults now preserve unlisted fields. Explicit standard
+UART clock selection and keyboard A20 acceleration preserve neighboring IR,
+clock, Port 92 and reset controls. UART clocks are selected before UART setup;
+keyboard A20 policy is applied after chip initialization.
+
+Dual-controller AML can assign distinct COM numbers/PNP0501 UIDs through
+`superio_dsdt_aml_with_uart_policy`, including shareable edge/high IRQ descriptors
+when the board requests them. Nonserial nodes still need a single owner; this
+helper does not establish hardware isolation, electrical sharing or interrupt
+controller setup.
 
 PWM/DC pin selection is accepted only on verified E-version ID 8285h (§§13–14).
 It does not establish full-speed cooling or disable inherited automatic control.
