@@ -604,15 +604,20 @@ fn rcomp_words(conversion_a1: bool, index: u8, col: usize) -> Option<[u32; 4]> {
     Some(words)
 }
 
+fn rcomp_pulse_once(mch: &Mchbar) {
+    let ctrl = &mch.regs().rcomp_ctrl;
+    ctrl.set(ctrl.get() | (1 << 3));
+    fstart_arch::x86::udelay(10);
+    ctrl.set(ctrl.get() & !(1 << 3));
+}
+
 fn rcomp_pulse(mch: &Mchbar) -> Result<(), ServiceError> {
     let regs = mch.regs();
     // Coreboot reissues the 10-us pulse until the calibration status is 4.
     // Bound *pulse attempts*, not just status reads, so a stuck controller
     // fails closed without losing the required retry sequence.
     for _ in 0..10_000 {
-        regs.rcomp_ctrl.set(regs.rcomp_ctrl.get() | (1 << 3));
-        fstart_arch::x86::udelay(10);
-        regs.rcomp_ctrl.set(regs.rcomp_ctrl.get() & !(1 << 3));
+        rcomp_pulse_once(mch);
         if regs.rcomp_status.get() & 7 == 4 {
             return Ok(());
         }
@@ -670,7 +675,10 @@ fn initialize_rcomp(mch: &Mchbar, revision: u8) -> Result<(), ServiceError> {
                 Some(((index >> 16) & 0x7f) as u8),
             ];
         }
-        rcomp_pulse(mch)
+        // Cleanup advances the engine once; unlike capture, it has no
+        // status-4 completion requirement (coreboot RCOMP calibration).
+        rcomp_pulse_once(mch);
+        Ok::<_, ServiceError>(())
     })();
     // Coreboot stops calibration before validating and writing lookup tables.
     // Also clear the enable bit when a bounded pulse times out.
@@ -1621,7 +1629,7 @@ pub(super) fn prepare_ddr3(
         return Err(ServiceError::HardwareError);
     }
     let cores = ((core::arch::x86_64::__cpuid_count(4, 0).eax >> 26) & 0x3f) + 1;
-    if !matches!(cores, 2 | 4) {
+    if !matches!(cores, 1 | 2 | 4) {
         return Err(ServiceError::HardwareError);
     }
     // Check all derived values before beginning irreversible MMIO writes.

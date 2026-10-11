@@ -207,6 +207,11 @@ fn thermal(
         .set((regs.fsb_thermal_control.get() & !0x1f) | 4);
 }
 
+fn planned_display_clock(vco: u8, capid_high: u32) -> Result<u16, ServiceError> {
+    let (_, _, select) = super::igd_frequency_codes(vco, super::igd_variant(capid_high)?)?;
+    display_clock(vco, select << 12)
+}
+
 fn display_clock(vco: u8, f0: u16) -> Result<u16, ServiceError> {
     let index = match vco & 7 {
         4 => 0,
@@ -304,9 +309,11 @@ pub(super) fn preflight(
         if igd.vendor.get() != 0x8086 {
             return Err(ServiceError::HardwareError);
         }
-        Some(display_clock(
+        // Preflight precedes GCFGC programming. Derive the clock from the
+        // selector we will write, never its reset/previous-boot value.
+        Some(planned_display_clock(
             mch.regs().hpll_vco.get(),
-            igd.clock_fuse.get(),
+            capid_high,
         )?)
     };
     Ok((kind, clock))
@@ -386,5 +393,9 @@ mod tests {
         assert_eq!(display_clock(1, 0), Ok(222));
         assert_eq!(display_clock(2, 1 << 12), Ok(333));
         assert!(display_clock(7, 0).is_err());
+        for (vco, clock) in [(0, 320), (1, 333), (2, 333), (4, 333)] {
+            assert_eq!(planned_display_clock(vco, 1 << 10), Ok(clock));
+            assert_ne!(planned_display_clock(vco, 1 << 10), display_clock(vco, 0));
+        }
     }
 }

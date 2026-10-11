@@ -160,7 +160,8 @@ impl IntelGm45 {
         dmi.vc0.set(dmi.vc0.get() & !0xfe);
         dmi.port_cap.set((dmi.port_cap.get() & !7) | 1);
         dmi.vc1
-            .set((dmi.vc1.get() & !((7 << 24) | 0xfe)) | (1 << 24) | 0x80 | (1 << 31));
+            .set((dmi.vc1.get() & !((7 << 24) | 0xfe)) | (1 << 24) | 0x80);
+        dmi.vc1.set(dmi.vc1.get() | (1 << 31));
         wait_clear(&dmi.status, 2)?;
         dmi.ctl
             .set((dmi.ctl.get() | (3 << 13)) & !(1 << 21 | 3 << 26) | (2 << 26));
@@ -179,18 +180,18 @@ impl IntelGm45 {
         ] {
             lock.set(lock.get());
         }
-        // The host and southbridge must advertise matching L0s/L1 support.
-        dmi.link_ctl.set(dmi.link_ctl.get() | aspm);
         // Coreboot setup_aspm: DMI prerequisites, then write-once LCTL.
-        dmi.link_cap
-            .set((dmi.link_cap.get() & !(63 << 12)) | (2 << 12) | (2 << 15));
-        dmi.cap2.set(dmi.cap2.get() & !(3 << 20 | 0xff00_0000));
         // DMI clock gating and L0s/L1 exit timing (gm45/pcie.c).
         dmi.f00.set(dmi.f00.get() | (3 << 8) | (7 << 3));
         dmi.f14.set(dmi.f14.get() & !(1 << 17));
         dmi.e1c.set((dmi.e1c.get() | 1) & !(1 << 8));
         dmi.e2c.set((dmi.e2c.get() & !(15 << 20)) | (13 << 20));
         dmi.e2c.set(0x88d0_7333);
+        // The host and southbridge must advertise matching L0s/L1 support.
+        dmi.link_ctl.set(dmi.link_ctl.get() | aspm);
+        dmi.link_cap
+            .set((dmi.link_cap.get() & !(63 << 12)) | (2 << 12) | (2 << 15));
+        dmi.cap2.set(dmi.cap2.get() & !(3 << 20 | 0xff00_0000));
         dmi.esd.set((dmi.esd.get() & !0x00ff_0000) | (1 << 16));
         dmi.link1.set((2 << 16) | 1);
         dmi.link1_addr.set(rcba);

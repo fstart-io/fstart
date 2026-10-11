@@ -186,15 +186,19 @@ fn find_eye(
             }
         }
     }
-    let mut upper = lower + upper_offset;
+    // Coreboot treats an unobserved upper edge as non-fatal: retain the
+    // starting value for a narrow eye, or clamp overflow to the last code.
+    let mut upper = (lower + upper_offset).min(limit - 1);
     program(upper)?;
     if !good() {
-        return Err(ServiceError::HardwareError);
+        fstart_log::warn!("gm45: training upper search starts outside eye");
+        return Ok((lower + upper) / 2);
     }
     loop {
         upper += stride;
         if upper >= limit {
-            return Err(ServiceError::HardwareError);
+            fstart_log::warn!("gm45: training upper edge clamped");
+            return Ok((lower + limit - 1) / 2);
         }
         program(upper)?;
         if !good() {
@@ -209,7 +213,8 @@ fn find_eye(
         }
         upper += 1;
         if upper >= limit {
-            return Err(ServiceError::HardwareError);
+            fstart_log::warn!("gm45: training upper edge clamped");
+            return Ok((lower + limit - 1) / 2);
         }
     }
     Ok((lower + upper) / 2)
@@ -408,7 +413,7 @@ mod tests {
         );
     }
     #[test]
-    fn gm45_training_math_and_missing_edges_fail_closed() {
+    fn gm45_training_math_and_lower_edges_fail_closed() {
         assert_eq!(read_parts(13 * 8 + 7), Ok((13, 7)));
         assert!(read_parts(14 * 8).is_err());
         assert!(read_parts(-1).is_err());
@@ -429,7 +434,7 @@ mod tests {
         );
         assert_eq!(eye, Ok(28)); // lower 11, upper 46
         let at = core::cell::Cell::new(0);
-        assert!(
+        assert_eq!(
             find_eye(
                 0,
                 8,
@@ -439,9 +444,39 @@ mod tests {
                     at.set(s);
                     Ok(())
                 },
-                || at.get() >= 11
-            )
-            .is_err()
+                || at.get() >= 11,
+            ),
+            Ok((11 + 111) / 2),
+        );
+        assert_eq!(
+            find_eye(
+                0,
+                8,
+                8,
+                112,
+                |s| {
+                    at.set(s);
+                    Ok(())
+                },
+                || (11..=18).contains(&at.get()),
+            ),
+            Ok((11 + 19) / 2),
+        );
+        // The initial upper code may itself exceed the register's range.
+        assert_eq!(
+            find_eye(
+                108,
+                8,
+                8,
+                112,
+                |s| {
+                    assert!(s < 112);
+                    at.set(s);
+                    Ok(())
+                },
+                || at.get() >= 108,
+            ),
+            Ok((108 + 111) / 2),
         );
         assert!(find_eye(0, 8, 8, 112, |_| Ok(()), || false).is_err());
     }

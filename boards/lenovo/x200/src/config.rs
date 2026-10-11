@@ -77,6 +77,7 @@ pub static X200_PLATFORM: Gm45Ich9Platform = Gm45Ich9Config::new()
     .gpe0_en(0x0100_0000)
     .gpi_routing([0, 2, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0])
     .c_states(true, true, true)
+    .slfm(true)
     .throttle_duty(2)
     .lpc_fixed_io(LpcFixedIoDecode {
         com_a: LpcSerialDecode::Com1,
