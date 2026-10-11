@@ -62,6 +62,26 @@ Keep a vendor ROM backup and external programmer before attempting a boot.
 This is **not hardware-validated firmware** or a completed port of every
 i945 board. Build and unit-test success do not establish hardware correctness.
 
+## W83627EHG foundation for MB899
+
+`driver-superio::w83627ehg` identifies only EHG IDs 886xh and provides UART,
+PS/2 and parallel resources plus typed clock, VID-threshold, fan-pad electrical
+mode and pin routing. Hardware-monitor allocation does not configure fan duty
+or start monitoring; MB899 still needs a separate runtime monitor/fan binding.
+This foundation is not an MB899 board selection or hardware validation.
+
+GPIO3/4/5 reuse the verified DHG mechanism, including direction-before-data,
+field preservation and strap-change classification. EHG GPIO1 uses LDN7,
+requires all eight pads explicitly configured before its game-port mux changes,
+and preserves MIDI/GPIO6 activation. DHG rejects GPIO1 requests before I/O.
+GPIO4's bank-wide UART-B conflict is unchanged; unrequested controls, not all
+bank-wide routes, are preserved. GPIO2/6 programming remains unsupported.
+
+The MB899 reference contains reserved-register writes and a `CR30=0x03`
+comment claiming GPIO3+4. EHG V1.3 §7.10 describes that value as GPIO2+3;
+GPIO4 is bit 2. These bytes/comments are not evidence of otherwise-unknown
+wiring and must not be blindly copied into the eventual binding.
+
 ## Experimental Gigabyte GA-945GCM-S2L/S2C selections
 
 The shared crate in `boards/gigabyte/ga-945gcm-s2l` provides two selections:
