@@ -379,8 +379,9 @@ impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
 
 /// Bootblock hooks, called on cold, warm and S3 boots. State is CAR-local
 /// and is not carried into mainstage. Before console, only chipset decode
-/// is ready; before memory, chipset early init is complete; after memory,
-/// DRAM training/recovery is complete. Handoff follows authentication/loading.
+/// is ready; before memory, chipset early init is complete. After training,
+/// RAM is recovered but post-DRAM DMI/chipset setup has not run; after memory,
+/// both are complete. Handoff follows authentication/loading.
 #[cfg(all(feature = "stage", fstart_stage_env = "car"))]
 pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: IntelSmbusRouting<P::Southbridge> {
     fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
@@ -388,6 +389,11 @@ pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: IntelSmbusRouting<P::Sout
     }
 
     fn before_memory(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// Trained/recovered RAM is available, before DMI/post-DRAM chipset setup.
+    fn after_memory_training(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
         Ok(())
     }
 

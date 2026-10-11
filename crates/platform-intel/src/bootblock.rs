@@ -132,6 +132,10 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
             northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
         }
 
+        hooks.after_memory_training(&mut IntelEarlyCtx::with_boot_path(
+            &mut southbridge,
+            boot_path,
+        ))?;
         // SB DMI enable -> NB negotiation -> SB polling -> NB PM/IGD.
         fstart_timestamp::add(fstart_timestamp::id::POST_DRAM_INIT);
         southbridge.prepare_early_post_dram_init()?;

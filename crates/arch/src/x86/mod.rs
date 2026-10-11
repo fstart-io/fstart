@@ -240,7 +240,7 @@ pub fn bus_clock() -> Option<BusClock> {
         // Core Solo/Duo and Atom.
         (6, 0x0e | 0x1c) => &CORE_FSB_MHZ,
         // Core 2 and Enhanced Core.
-        (6, 0x0f | 0x17) => &CORE2_FSB_MHZ,
+        (6, 0x0f | 0x16 | 0x17) => &CORE2_FSB_MHZ,
         _ => return None,
     };
     // SAFETY: both MSRs exist on every model selected above.

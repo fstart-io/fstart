@@ -93,9 +93,63 @@ pub(super) unsafe fn configure_misc(extra: u64) {
     }
 }
 
+/// Desktop parts do not necessarily implement mobile C-state/EMTTM controls.
+/// CPUID.1:ECX advertises TM2 (bit 8) and EIST (bit 7).
+fn desktop_misc_enable_bits(current: u64, features: u32) -> u64 {
+    current
+        | MISC_ENABLE::TM1::SET.value
+        | MISC_ENABLE::FERR_MUX::SET.value
+        | if features & (1 << 8) != 0 {
+            MISC_ENABLE::TM2::SET.value
+        } else {
+            0
+        }
+        | if features & (1 << 7) != 0 {
+            MISC_ENABLE::EIST::SET.value
+        } else {
+            0
+        }
+}
+
+/// Configure desktop thermal/EIST capabilities, leaving mobile-only fields alone.
+///
+/// # Safety
+///
+/// The current CPU must implement Core 2 IA32_MISC_ENABLE; `features` is its
+/// CPUID.1:ECX. Performance-state selection remains unchanged.
+pub(super) unsafe fn configure_desktop_misc(features: u32) {
+    let misc = Msr::<MISC_ENABLE::Register>::new(IA32_MISC_ENABLE);
+    let current = unsafe { misc.read() }.get();
+    let enabled = desktop_misc_enable_bits(current, features);
+    unsafe {
+        misc.write(enabled);
+        if features & (1 << 7) != 0 {
+            misc.write(enabled | MISC_ENABLE::EIST_LOCK::SET.value);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_power_only_enables_advertised_capabilities() {
+        let original = 1 << 9;
+        assert_eq!(desktop_misc_enable_bits(original, 0), original | 0x408);
+        assert_eq!(
+            desktop_misc_enable_bits(original, 1 << 8),
+            original | 0x2408
+        );
+        assert_eq!(
+            desktop_misc_enable_bits(original, 1 << 7),
+            original | 0x10408
+        );
+        assert_eq!(
+            desktop_misc_enable_bits(original, (1 << 8) | (1 << 7)),
+            original | 0x12408
+        );
+    }
 
     #[test]
     fn model_specific_power_bits_preserve_the_original_register_values() {

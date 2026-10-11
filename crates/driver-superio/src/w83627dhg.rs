@@ -50,7 +50,7 @@ impl SuperIoChip for W83627dhgChip {
 pub type W83627dhg = SuperIo<W83627dhgChip>;
 
 /// Requested logical value. Inversion, if selected, also inverts the wire.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpioDirection {
     Input,
     Output(bool),
@@ -58,7 +58,7 @@ pub enum GpioDirection {
 
 /// GPIOs with directly verified mux support: GP32–34, GP40–47, GP50–57.
 /// GPIO4 shares a bank-wide mux with UART B; it cannot coexist with COM2.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpioPinConfig {
     pin: u8,
     direction: GpioDirection,
@@ -118,15 +118,33 @@ impl GpioPinConfig {
     }
 }
 
+/// Separate strap-affecting data/mux updates from ordinary GPIO initialization.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GpioUpdate {
+    pub output_or_routing_changed: bool,
+    pub direction_or_activation_changed: bool,
+}
+
+impl GpioUpdate {
+    fn record_setting(&mut self, index: u8, changed: bool) {
+        if matches!(index, 0xf0 | 0xf4 | 0xe0) {
+            self.direction_or_activation_changed |= changed;
+        } else {
+            self.output_or_routing_changed |= changed;
+        }
+    }
+}
+
 impl W83627dhg {
     /// Configure simple GPIOs without replacing unlisted pins or strap bits.
-    /// Returns whether any requested field differed before programming.
+    /// Return data/inversion/mux changes separately from direction/activation.
+    /// Strap callers can avoid resetting merely to repeat bank initialization.
     ///
     /// GPIO4 selects its entire bank instead of UART B, so COM2 must be absent.
     /// This is initialization, not a glitch-free runtime output transition:
     /// direction must precede data on DHG. Strap users must run on cold boot
-    /// and reset after a change, never reprogram CPU straps on S3 resume.
-    pub fn configure_gpio(&mut self, pins: &[GpioPinConfig]) -> bool {
+    /// and reset after data/routing changes, never reprogram CPU straps on S3 resume.
+    pub fn configure_gpio(&mut self, pins: &[GpioPinConfig]) -> GpioUpdate {
         assert!(
             !pins
                 .iter()
@@ -136,26 +154,26 @@ impl W83627dhg {
         let gpio4 = pins.iter().any(|pin| pin.pin / 10 == 4);
         assert!(!gpio4 || self.config.com2.is_none());
         if pins.is_empty() {
-            return false;
+            return GpioUpdate::default();
         }
         self.enter_config();
         if gpio4 {
             self.logical_device(3).set_enabled(false);
         }
         self.logical_device(9);
-        let mut changed = false;
+        let mut changed = GpioUpdate::default();
         for pin in pins {
             for (index, value) in pin.settings() {
                 let register = self.register::<PIN_BITS::Register>(index);
                 let old = register.get();
                 let new = value.modify(old);
-                changed |= new != old;
+                changed.record_setting(index, new != old);
                 register.set(new);
             }
         }
         if pins.iter().any(|pin| matches!(pin.pin, 32 | 33)) {
             let register = self.register::<SPI_CONFIG::Register>(0x2a);
-            changed |= register.is_set(SPI_CONFIG::HWM_SMBUS);
+            changed.output_or_routing_changed |= register.is_set(SPI_CONFIG::HWM_SMBUS);
             register.modify(SPI_CONFIG::HWM_SMBUS::CLEAR);
         }
         let mux = pins
@@ -177,7 +195,7 @@ impl W83627dhg {
         if let Some(fields) = mux {
             let register = self.register::<MULTIFUNCTION::Register>(0x2c);
             let old = register.get();
-            changed |= fields.modify(old) != old;
+            changed.output_or_routing_changed |= fields.modify(old) != old;
             register.modify(fields);
         }
         // Activate only the requested GPIO banks, preserving other functions.
@@ -185,7 +203,7 @@ impl W83627dhg {
             if pins.iter().any(|pin| pin.pin / 10 == group) {
                 let field = Field::<u8, PIN_BITS::Register>::new(1, (group - 2) as usize);
                 let register = self.register::<PIN_BITS::Register>(0x30);
-                changed |= register.read(field) == 0;
+                changed.direction_or_activation_changed |= register.read(field) == 0;
                 self.logical_device(9).set_activation_bit(group - 2, true);
             }
         }
@@ -231,6 +249,21 @@ impl W83627dhg {
         self.exit_config();
     }
 
+    /// Set the parallel controller's ECP DMA channel without changing its mode.
+    pub fn set_parallel_dma(&mut self, channel: u8) {
+        self.enter_config();
+        self.logical_device(1)
+            .set_dma(DmaResource::Primary(channel));
+        self.exit_config();
+    }
+
+    /// Disable the unconnected SPI logical device, not the GPIO mux registers.
+    pub fn disable_spi(&mut self) {
+        self.enter_config();
+        self.logical_device(6).set_enabled(false);
+        self.exit_config();
+    }
+
     /// GPIO6 has a virtual activation bit; retain its strapped pin directions.
     pub fn enable_gpio6(&mut self) {
         self.enter_config();
@@ -269,6 +302,21 @@ mod tests {
     extern crate std;
     use super::*;
     use std::vec::Vec;
+
+    #[test]
+    fn direction_initialization_alone_is_not_a_strap_reset_request() {
+        let mut changes = GpioUpdate::default();
+        changes.record_setting(0xf0, true);
+        changes.record_setting(0xe0, true);
+        assert!(changes.direction_or_activation_changed);
+        assert!(!changes.output_or_routing_changed);
+        changes.record_setting(0xf2, true);
+        assert!(changes.output_or_routing_changed);
+        let mut data = GpioUpdate::default();
+        data.record_setting(0xe1, true);
+        assert!(data.output_or_routing_changed);
+        assert!(!data.direction_or_activation_changed);
+    }
 
     #[test]
     fn dhg_revision_and_shared_keyboard_mouse_resources() {
