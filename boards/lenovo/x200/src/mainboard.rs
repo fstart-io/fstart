@@ -7,6 +7,8 @@ use fstart_platform_intel::{IntelSmbusRouting, SmbusRoute};
 pub struct X200Mainboard {
     #[cfg(fstart_stage_env = "ram")]
     bluetooth_present: bool,
+    #[cfg(fstart_stage_env = "ram")]
+    ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 
 impl<S: Southbridge> IntelSmbusRouting<S> for X200Mainboard {
@@ -30,6 +32,8 @@ const H8_CONFIG: fstart_driver_lenovo::h8::H8Config = {
         has_uwb: true,
         has_thinklight: true,
         second_thermal_zone: true,
+        critical_temp_celsius: 100,
+        passive_temp_celsius: 90,
         bat_info_extended: true,
         bat_thresholds: true,
         bat_threshold_backend: H8BatteryThresholdBackend::Registers24 { bit7: false },
@@ -43,6 +47,16 @@ const H8_CONFIG: fstart_driver_lenovo::h8::H8Config = {
 
 #[cfg(fstart_stage_env = "ram")]
 impl fstart_platform_intel::IntelMainstageBoardHooks<Gm45Ich9> for X200Mainboard {
+    fn smbios_identity<'a>(
+        &'a self,
+        configured: &fstart_platform_intel::tables::SmbiosIdentity<'a>,
+    ) -> fstart_platform_intel::tables::SmbiosIdentity<'a> {
+        fstart_platform_intel::tables::SmbiosIdentity {
+            oem_string: self.ec_oem_string.as_ref().map(|oem| oem.as_str()),
+            ..*configured
+        }
+    }
+
     fn after_devices(
         &mut self,
         ctx: &mut fstart_platform_intel::IntelMainstageBoardCtx<Gm45Ich9>,
@@ -83,6 +97,10 @@ impl fstart_platform_intel::IntelMainstageBoardHooks<Gm45Ich9> for X200Mainboard
         if !controls.into_iter().all(core::convert::identity) {
             fstart_log::error!("x200: EC configuration failed");
         }
+        self.ec_oem_string = h8.smbios_oem_string();
+        if self.ec_oem_string.is_none() {
+            fstart_log::error!("x200: H8 EC firmware id unavailable");
+        }
         let pmh7 = Pmh7::new(0x15e0);
         pmh7.backlight_enable(true);
         pmh7.trackpoint_enable(true);
@@ -105,11 +123,13 @@ impl fstart_platform_intel::IntelMainstageBoardHooks<Gm45Ich9> for X200Mainboard
 pub static IDENTITY: fstart_platform_intel::tables::SmbiosIdentity<'static> =
     fstart_platform_intel::tables::SmbiosIdentity {
         bios_vendor: "fstart",
-        bios_version: "0.1.0",
+        // Non-OEM firmware ID, following coreboot and the X61 binding;
+        // Linux thinkpad_acpi validates this before the ThinkPad model string.
+        bios_version: "CBET4000 fstart 0.1.0",
         bios_release_date: fstart_platform_intel::SMBIOS_RELEASE_DATE,
         sys_manufacturer: "LENOVO",
         sys_product: "ThinkPad X200",
-        sys_version: "1.0",
+        sys_version: "ThinkPad X200",
         sys_serial: None,
         sys_uuid: None,
         oem_string: None,
