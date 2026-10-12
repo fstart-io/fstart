@@ -104,7 +104,11 @@ impl<const BASE: u64, const SIZE: u64> LegacyCpu for Lga775Core2<BASE, SIZE> {
     #[cfg(all(feature = "stage", feature = "mp"))]
     type Driver = fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
     #[cfg(all(feature = "stage", feature = "mp"))]
-    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+    fn cpu_driver(
+        pmbase: u32,
+        microcode: Option<&'static [u8]>,
+        _power: CpuPowerPolicy,
+    ) -> Self::Driver {
         Self::Driver::new_desktop(pmbase, microcode)
     }
 }
