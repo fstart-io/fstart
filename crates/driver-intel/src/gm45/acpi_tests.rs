@@ -52,15 +52,14 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
         "\\_SB_.PCI0.LPCB",
     ));
     assert!(!aml.windows(4).any(|bytes| bytes == b"_S3_"));
-    let dir = std::env::temp_dir().join(std::format!("fstart-x200-acpi-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
+    let dir = tempfile::tempdir().unwrap();
     fs::write(
-        dir.join("dsdt.aml"),
+        dir.path().join("dsdt.aml"),
         fstart_acpi::platform::build_dsdt(&aml),
     )
     .unwrap();
-    let result = Command::new("acpiexec")
-        .current_dir(&dir)
+    let result = match Command::new("acpiexec")
+        .current_dir(dir.path())
         .args([
             "-dt",
             "-b",
@@ -73,7 +72,14 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
             "dsdt.aml",
         ])
         .output()
-        .unwrap();
+    {
+        Ok(result) => result,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::eprintln!("skipping: acpiexec not installed");
+            return;
+        }
+        Err(error) => panic!("acpiexec: {error}"),
+    };
     let text = std::format!(
         "{}{}",
         std::string::String::from_utf8_lossy(&result.stdout),
@@ -94,5 +100,4 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
     for decikelvin in ["0000000000000E94", "0000000000000E30", "0000000000000DCC"] {
         assert!(text.contains(decikelvin), "thermal trip: {text}");
     }
-    fs::remove_dir_all(dir).unwrap();
 }
