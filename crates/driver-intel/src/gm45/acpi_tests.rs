@@ -37,6 +37,8 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
     aml.extend(sb.dsdt_aml(&SB));
     let h8 = H8Config {
         second_thermal_zone: true,
+        critical_temp_celsius: 100,
+        passive_temp_celsius: 90,
         bat_thresholds: true,
         bat_threshold_backend: H8BatteryThresholdBackend::Registers24 { bit7: false },
         ..H8Config::new(
@@ -64,6 +66,7 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
             "-b",
             concat!(
                 "execute \\_S5;execute \\_TZ.THM0._PSL;execute \\_TZ.THM1._PSL;",
+                "execute \\_TZ.THM0._CRT;execute \\_TZ.THM0._PSV;execute \\_TZ.THM0._AC0;",
                 "execute \\CP00._UID;execute \\CP01._UID;",
                 "execute \\CP00._PSS;execute \\CP00._PCT;execute \\CP00._CST"
             ),
@@ -88,5 +91,8 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
     );
     assert!(text.contains("CP00") && text.contains("CP01"), "{text}");
     assert!(text.contains("[Integer] = 0000000000000A12"), "{text}");
+    for decikelvin in ["0000000000000E94", "0000000000000E30", "0000000000000DCC"] {
+        assert!(text.contains(decikelvin), "thermal trip: {text}");
+    }
     fs::remove_dir_all(dir).unwrap();
 }

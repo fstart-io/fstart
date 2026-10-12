@@ -117,7 +117,10 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
     let hklt: u8 = cfg.has_thinklight as u8;
     let hkbl: u8 = cfg.has_keyboard_backlight as u8;
     let huwb: u8 = cfg.has_uwb as u8;
-    acpi_dsl! {
+    let extended: u8 = cfg.bat_info_extended as u8;
+    let fn_f2: u8 = if cfg.alt_fn_f2f3_layout { 0 } else { 2 };
+    let fn_f3: u8 = if cfg.alt_fn_f2f3_layout { 2 } else { 3 };
+    let mut aml: Vec<u8> = acpi_dsl! {
             Device("EC__") {
                 Name("_HID", EisaId("PNP0C09"));
                 Name("_UID", 0u32);
@@ -234,6 +237,8 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                 Field("ERAM", ByteAcc, NoLock, Preserve) {
                     Offset(0xA0),
                     BAMA, 16,
+                    Offset(0xA4),
+                    BACC, 16,
                 }
 
                 Field("ERAM", ByteAcc, NoLock, Preserve) {
@@ -640,6 +645,10 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                 }
 
                 Method("_Q10", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x01u32); }
+                Method("_Q11", 0, NotSerialized) {
+                    If (#{byte fn_f2}) { #{const "^HKEY.RHK_"}(#{byte fn_f2}); }
+                }
+                Method("_Q12", 0, NotSerialized) { #{const "^HKEY.RHK_"}(#{byte fn_f3}); }
                 Method("_Q64", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x05u32); }
                 Method("_Q65", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x06u32); }
                 Method("_Q17", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x08u32); }
@@ -731,6 +740,7 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                     BPAG(Arg1 | 1u32);
                     Local0 = BAMA;
                     Local0 = Local0 >> 0x0Fu32;
+                    If (#{byte extended}) { Local5 = BACC; }
                     BPAG(Arg1);
                     Local2 = BAFC;
                     BPAG(Arg1 | 2u32);
@@ -749,10 +759,9 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                     Arg0[2] = Local1;
                     Arg0[3] = Local2;
                     Arg0[5] = Local3;
-                    Local5 = Local2;
-                    Local5 /= 20u32;
-                    Arg0[6] = Local5;
+                    Arg0[6] = Local2 / 20u32;
                     Arg0[7] = Local4;
+                    If (#{byte extended}) { Arg0[8] = Local5; }
                     Local0 = BASN;
                     Name("SERN", Buffer(
                         0x20u8, 0x20u8, 0x20u8, 0x20u8, 0x20u8, 0x00u8
@@ -823,7 +832,18 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                 });
             }
     }
-    .into()
+    .into();
+    if cfg.bat_info_extended {
+        aml.extend_from_slice(&acpi_dsl! {
+            Scope("EC__.BAT0") {
+                Method("_BIX", 0, NotSerialized) { Return(BINX(BATX, 0x00u32)); }
+            }
+            Scope("EC__.BAT1") {
+                Method("_BIX", 0, NotSerialized) { Return(BINX(BATX, 0x10u32)); }
+            }
+        });
+    }
+    aml
 }
 
 /// The `\_TZ` thermal zones (coreboot `thermal.asl`). `X61` selects both
@@ -1399,6 +1419,110 @@ mod tests {
                     "encoding: {text}"
                 );
             }
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn hotkeys_and_extended_battery_information_execute() {
+        use crate::{ec::EcPorts, h8::H8Resources};
+        use std::process::Command;
+
+        for (index, (extended, alternative)) in
+            [(false, false), (false, true), (true, false), (true, true)]
+                .into_iter()
+                .enumerate()
+        {
+            let cfg = H8Config {
+                bat_info_extended: extended,
+                alt_fn_f2f3_layout: alternative,
+                ..H8Config::new(
+                    H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+                    0x11,
+                    "IBM0068",
+                )
+            };
+            let mut aml: Vec<u8> = acpi_dsl! {
+                Scope("\\_SB_") { Device("PCI0") { Device("LPCB") { } } }
+            }
+            .into();
+            let h8 = dsdt_aml(&cfg, "\\_SB_.PCI0.LPCB");
+            assert_eq!(
+                h8.windows(4).filter(|bytes| *bytes == b"_BIX").count(),
+                if extended { 2 } else { 0 }
+            );
+            aml.extend(h8);
+            let f2: u32 = if alternative { 0 } else { 0x1002 };
+            let f3: u32 = if alternative { 0x1002 } else { 0x1003 };
+            let has_extended: u8 = extended as u8;
+            // ACPICA simulates EC address space, not the PAGE-banked firmware.
+            // Set a distinct cycle count before each battery's _BIX call.
+            let check: Vec<u8> = acpi_dsl! {
+                Scope("\\_SB_.PCI0.LPCB.EC__") {
+                    Method("TEST", 0, Serialized) {
+                        Store(0xFFFFFFFFu32, #{const "^HKEY.EMSK"});
+                        _Q11();
+                        Local0 = ^HKEY.MHKP();
+                        If (Local0 != #{dword f2}) { Return(1u32); }
+                        _Q12();
+                        Local0 = ^HKEY.MHKP();
+                        If (Local0 != #{dword f3}) { Return(2u32); }
+                        Local0 = ^BAT0._BIF();
+                        If (SizeOf(Local0) != 13u32) { Return(3u32); }
+                        Local0 = ^BAT1._BIF();
+                        If (SizeOf(Local0) != 13u32) { Return(4u32); }
+                        If (#{byte has_extended}) {
+                            BACC = 321u32;
+                            Local0 = ^BAT0._BIX();
+                            If (SizeOf(Local0) != 20u32) { Return(5u32); }
+                            Local1 = DeRefOf(Index(Local0, 8u32));
+                            If (Local1 != 321u32) { Return(6u32); }
+                            If (PAGE != 6u32) { Return(7u32); }
+                            BACC = 654u32;
+                            Local0 = ^BAT1._BIX();
+                            If (SizeOf(Local0) != 20u32) { Return(8u32); }
+                            Local1 = DeRefOf(Index(Local0, 8u32));
+                            If (Local1 != 654u32) { Return(9u32); }
+                            If (PAGE != 0x16u32) { Return(10u32); }
+                        }
+                        Return(0u32);
+                    }
+                }
+            }
+            .into();
+            aml.extend(check);
+            let dir = env::temp_dir().join(std::format!(
+                "fstart-h8-battery-hotkeys-{}-{index}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("dsdt.aml"),
+                fstart_acpi::platform::build_dsdt(&aml),
+            )
+            .unwrap();
+            let result = Command::new("acpiexec")
+                .current_dir(&dir)
+                .args([
+                    "-dt",
+                    "-fv",
+                    "0",
+                    "-b",
+                    "execute \\_SB.PCI0.LPCB.EC.TEST",
+                    "dsdt.aml",
+                ])
+                .output()
+                .unwrap();
+            let text = std::format!(
+                "{}{}",
+                std::string::String::from_utf8_lossy(&result.stdout),
+                std::string::String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(
+                result.status.success() && !text.contains("AE_") && !text.contains("ACPI Error"),
+                "{text}"
+            );
+            assert!(text.contains("[Integer] = 0000000000000000"), "{text}");
             fs::remove_dir_all(dir).unwrap();
         }
     }

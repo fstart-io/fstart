@@ -248,9 +248,28 @@ const fn gpi_routing(previous: u32, gpi: u8, acpi: bool) -> u32 {
     (previous & !(3 << shift)) | ((if acpi { 2 } else { 1 }) << shift)
 }
 
+#[inline(always)]
+const fn legacy_pm1_smi(smi_status: u32, pm1_control: u16) -> bool {
+    smi_status & pmio::PM1_SMI_STS != 0 && pm1_control & pmio::SCI_EN as u16 == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pm1_events_are_owned_only_for_a_legacy_pm1_smi() {
+        for source in [
+            0,
+            pmio::APM_STS,
+            pmio::TCO_STS,
+            pmio::PM1_SMI_STS,
+            pmio::PM1_SMI_STS | pmio::APM_STS,
+        ] {
+            assert_eq!(legacy_pm1_smi(source, 0), source & pmio::PM1_SMI_STS != 0);
+            assert!(!legacy_pm1_smi(source, pmio::SCI_EN as u16));
+        }
+    }
 
     #[test]
     fn gpi_route_preserves_other_pins() {
@@ -308,8 +327,13 @@ impl<B: IchBoardSmmHandler> SmmHandler for IchSmmHandler<B> {
             if smi_sts & pmio::TCO_STS != 0 {
                 handle_tco::<B>(ctx, &pm);
             }
-            if smi_sts & pmio::PM1_SMI_STS != 0 {
-                pm.write16(pmio::PM1_STS, 0xffff);
+            if legacy_pm1_smi(smi_sts, pm.read16(pmio::PM1_CNT)) {
+                let status = pm.reset_pm1_status();
+                // Before OSPM owns PM1 events, a short power-button press
+                // must enter S5. With SCI_EN set, leave status for the OS.
+                if status & pmio::PWRBTN_STS != 0 {
+                    pm.poweroff();
+                }
             }
             if smi_sts & pmio::GPE0_SMI_STS != 0 {
                 let mut gpe_status = u64::from(pm.read32(gpe0.sts_offset));

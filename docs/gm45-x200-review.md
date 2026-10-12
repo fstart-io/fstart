@@ -62,6 +62,24 @@ The Opus/GPT source review found additional issues that are now addressed:
   operators and accepts parent-prefixed method-call expressions. Expanded
   feature checks also repaired i945's static PIRQ-policy lifetime.
 
+A second discrepancy pass addressed the remaining supported-path findings:
+
+* X200 declares its own 100°C critical / 90°C passive thermal trips, matching
+  coreboot's GNVS policy (initial active-cooling trip 80°C), rather than using
+  the H8 fallback temperatures.
+* SMBIOS uses the non-OEM `CBET4000 fstart …` firmware ID and `ThinkPad X200`
+  product-version string required by Linux `thinkpad_acpi` identification.
+  The board reads the real EC OEM string through the existing H8 helper;
+  unavailable EC data is logged and omitted, not fabricated. EEPROM serial
+  and UUID provisioning remain separate work.
+* The shared ICH SMM handler acknowledges only observed legacy PM1 status and
+  enters S5 on a power-button event. With SCI enabled it leaves PM1 status
+  for OSPM, including on an unrelated SMI.
+* H8 emits Fn-F2/Fn-F3 EC query methods, honoring both default and alternative
+  layouts. Its existing extended-battery capability now emits `_BIX` for both
+  batteries and reads cycle count from management-page offset `0xa4` under
+  the same EC mutex. `_BIF` and both threshold backends remain available.
+
 These are source corrections, not claims of physical validation. SMM/SMRAM
 locking is not a claim of BIOS flash write protection: production BLE/SMM_BWP
 policy and BIOSWR handling remain separate development work.
@@ -201,6 +219,23 @@ Release halt assembly passes with existing layout guards: bootblock 147456
 bytes, postcar 26808, ramstage 135259 compressed / 194736 unpacked, in the
 8 MiB container. Generated host board tests retain the known
 `fstart_stage_env` check-cfg warnings. No hardware was tested.
+
+After the second discrepancy follow-up, Lenovo passed 12 unit tests and one
+doctest, combined Intel drivers 122 unit tests and three doctests, all four
+platform families 25 unit tests and two DSDT integration tests, and generated
+X200 board facts one test. The combined firmware `stage/mp/acpi` target check
+and root/board formatting checks passed. ACPICA executes both hotkey layouts,
+both extended-battery capability settings, each battery's `_BIF` and optional
+`_BIX` (including cycle count), and the X200 100/90/80°C thermal trips.
+The PM1 ownership test covers legacy versus SCI ownership and unrelated SMI
+sources. SMM disassembly confirms the source/SCI/status gates and inlined S5
+write; its ELF has no unresolved symbols, calls or relocations. This is not
+an executed power-button or Linux-driver probe test on hardware.
+
+Release halt assembly again passed without changing layout guards: bootblock
+147456 bytes, postcar 27144, ramstage 136272 compressed / 196640 unpacked,
+in the 8 MiB container. Generated host tests retain the known check-cfg warnings.
+No physical EC/USB/thermal/OS/SMM qualification occurred.
 
 Assembly required populating the two microcode files from the already-present
 local checkout. The generated keys are ignored local development keys, not

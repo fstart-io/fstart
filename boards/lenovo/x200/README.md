@@ -25,6 +25,21 @@ unoptimized/debug postcar currently exceeds its 64 KiB image budget. DDR3 single
 paired DIMMs are supported by the current implementation; S3 replay,
 DDR2 and asymmetric paired DIMMs are not.
 
+## EC and OS policy
+
+X200 advertises 100°C critical / 90°C passive thermal trips, with an initial
+80°C active-cooling trip. The shared H8 emitter handles Fn-F2/Fn-F3 and both
+batteries' `_BIF`/`_BIX`, including cycle count. Its X200 threshold backend
+uses selector-based `0x24/0x25`; the `0xb0` backend remains for later ThinkPads.
+
+SMBIOS supplies the non-OEM `CBET4000 fstart …` ID, ThinkPad product version,
+and the real EC firmware OEM string when readable, for Linux `thinkpad_acpi`
+identification. An EC read failure is logged and the OEM string is omitted.
+The shared SMM handler handles a short power-button press before OS ACPI
+ownership, while leaving SCI-owned PM1 events to the OS.
+
+These interfaces have not been qualified on physical hardware.
+
 ## EHCI console
 
 X200 has no onboard serial console. This binding uses the shared
@@ -88,9 +103,12 @@ Runtime descriptor verification rejects a layout mismatch.
    display clocks, AHCI/HDA/USB/PCIe interrupts and emitted ACPI before OS use.
 6. Check both Penryn cores initialize, microcode is updated before PECI,
    and alternative SMRR is programmed/locked during SMM installation.
-7. Validate OS shutdown and passive-cooling processor references. Test charge
-   thresholds/readback using the X200 `0x24/0x25` backend; the reusable H8
-   driver retains the `0xb0` backend for later ThinkPads.
+7. Test a short power-button press at the halt payload and OS shutdown after
+   ACPI ownership. Check the thermal trips/passive-cooling processor references.
+8. Confirm Linux `thinkpad_acpi` loads without `force_load`, Fn-F2/Fn-F3 events
+   arrive, and both batteries report cycle count. Test charge thresholds and
+   readback using the X200 `0x24/0x25` backend; the reusable H8 driver retains
+   the `0xb0` backend for later ThinkPads.
 
 Host validation commands:
 
