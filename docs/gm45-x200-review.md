@@ -4,14 +4,18 @@ Reference: local coreboot checkout at
 `59d5a8ea578716ed91a9b442e2fc56e46ce2573d`.
 Comparison is source-level, not a report of a successful boot on hardware.
 The `gm45-review` jj workspace was initially rebased onto local `master`
-(`c395de62`), then onto fetched `origin/master` (`368ff559`). It is now based
-on `8ea9901f`, the merge of PR #105. The rebases preserve the upstream
-early-init timestamp, board hook, SMBIOS OEM-string field and PCI-bridge
+(`c395de62`), then onto fetched `origin/master` (`368ff559`) and `8ea9901f`
+(the merge of PR #105). The PR #40 update is based on fetched `origin/master`
+`521e4aee` (PR #121): a copied stack preserves the prior review and chipset
+history. The rebases preserve the upstream early-init timestamp, board hook,
+SMBIOS OEM-string field and PCI-bridge
 routing representation. GM45 uses the shared `x86::boot` reset entry point;
 its runtime PIRQ view borrows route slices, including the new bridge field.
 The original workspaces are unchanged, and the 15 chipset commits remain
 separate. Additional changes adapt that port to the current framework and
-restore the board binding.
+restore the board binding. The latest rebase retains the newer early-hook
+ordering and typed ICH7 GPI policy, while adapting the new desktop CPU package
+and Pineview static PIRQ policy to this branch's shared contracts.
 
 ## Findings addressed
 
@@ -236,6 +240,13 @@ Release halt assembly again passed without changing layout guards: bootblock
 147456 bytes, postcar 27144, ramstage 136272 compressed / 196640 unpacked,
 in the 8 MiB container. Generated host tests retain the known check-cfg warnings.
 No physical EC/USB/thermal/OS/SMM qualification occurred.
+
+The copied PR #40 stack on `521e4aee` passed architecture 30, Intel drivers
+127 (+3 doctests), Lenovo 12 (+1 doctest), USB debug seven, Intel platforms
+26 (+2 DSDT integrations), and generated X200 board facts one. The combined
+firmware `stage/mp/acpi` check and formatting checks passed. Release halt
+assembly remained within the unchanged guards: bootblock 147456 bytes,
+postcar 27160, ramstage 136283 compressed / 196640 unpacked, 8 MiB container.
 
 Assembly required populating the two microcode files from the already-present
 local checkout. The generated keys are ignored local development keys, not
