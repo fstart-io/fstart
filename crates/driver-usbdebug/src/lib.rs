@@ -147,6 +147,25 @@ impl State {
         bytes: &mut [u8],
         attempts: usize,
     ) -> Result<Option<usize>, ServiceError> {
+        self.packet_with_delay(
+            (device, endpoint),
+            token,
+            pid,
+            bytes,
+            attempts,
+            fstart_arch::udelay,
+        )
+    }
+
+    fn packet_with_delay(
+        &self,
+        (device, endpoint): (u8, u8),
+        token: u8,
+        pid: &mut u8,
+        bytes: &mut [u8],
+        attempts: usize,
+        mut delay: impl FnMut(u32),
+    ) -> Result<Option<usize>, ServiceError> {
         if bytes.len() > 8 {
             return Err(ServiceError::InvalidParam);
         }
@@ -177,7 +196,7 @@ impl State {
                     complete = true;
                     break;
                 }
-                fstart_arch::udelay(1);
+                delay(1);
             }
             if !complete {
                 return Err(ServiceError::Timeout);
@@ -208,7 +227,7 @@ impl State {
             if !matches!(reply, NAK | NYET) && !(token == IN && reply == (*pid ^ (DATA0 ^ DATA1))) {
                 return Err(ServiceError::IoError);
             }
-            fstart_arch::udelay(10);
+            delay(10);
         }
         Ok(None)
     }
@@ -650,10 +669,15 @@ mod tests {
         let mut state = State::new();
         state.debug = words.as_mut_ptr() as usize;
         let mut pid = DATA0;
+        let mut delays = 0;
         assert!(matches!(
-            state.packet(127, 1, OUT, &mut pid, &mut [0], 32),
+            state.packet_with_delay((127, 1), OUT, &mut pid, &mut [0], 32, |us| {
+                assert_eq!(us, 1);
+                delays += 1;
+            }),
             Err(ServiceError::Timeout)
         ));
+        assert_eq!(delays, 1000);
         assert_eq!(pid, DATA0);
     }
 

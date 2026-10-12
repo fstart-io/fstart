@@ -4,10 +4,10 @@ use fstart_core::ConstVec;
 pub use fstart_driver_intel::gm45::{Gm45GraphicsPolicy, IntelGm45Config};
 use fstart_driver_intel::ich9;
 pub use fstart_driver_intel::ich9::{
-    HdaConfig, HdaVerbTable, IntelIch9Config, IoTrapAccess, IoTrapConfig, LpcDecodeConfig,
-    LpcFixedIoDecode, LpcFloppyDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode,
-    PciePowerLimit, PinColor, PinConfig, PinConn, PinConnector, PinDevice, PinGeoLoc, PinLoc,
-    SataConfig, SataMode, UsbConfig,
+    GpiRoute, HdaConfig, HdaVerbTable, IntelIch9Config, IoTrapAccess, IoTrapConfig,
+    LpcDecodeConfig, LpcFixedIoDecode, LpcFloppyDecode, LpcGenericIoDecode, LpcParallelDecode,
+    LpcSerialDecode, PciePowerLimit, PinColor, PinConfig, PinConn, PinConnector, PinDevice,
+    PinGeoLoc, PinLoc, SataConfig, SataMode, UsbConfig,
 };
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 pub use fstart_driver_intel::southbridge::pirq::PirqRouting;
@@ -40,7 +40,7 @@ pub struct Gm45Ich9Config {
     pub pirq_routing: [u8; 8],
     pub lpc_decode: LpcDecodeConfig,
     pub gpe0_en: u32,
-    pub gpi_routing: [u8; 16],
+    pub gpi_routing: [GpiRoute; 16],
     pub alt_gp_smi_en: u16,
     pub c4_on_c3: bool,
     pub c5_enable: bool,
@@ -73,7 +73,7 @@ impl Gm45Ich9Config {
             pirq_routing: [0x80; 8],
             lpc_decode: LpcDecodeConfig::new(),
             gpe0_en: 0,
-            gpi_routing: [0; 16],
+            gpi_routing: [GpiRoute::Disabled; 16],
             alt_gp_smi_en: 0,
             c4_on_c3: true,
             c5_enable: false,
@@ -228,7 +228,7 @@ impl Gm45Ich9Config {
     }
 
     #[must_use]
-    pub const fn gpi_routing(mut self, routing: [u8; 16]) -> Self {
+    pub const fn gpi_routing(mut self, routing: [GpiRoute; 16]) -> Self {
         self.gpi_routing = routing;
         self
     }
@@ -335,6 +335,12 @@ impl Gm45Ich9Config {
         }
         validate_lpc_generic_io_decodes(&self.lpc_decode.generic_io);
         validate_io_traps(&self.io_traps);
+        if konst::iter::eval!(
+            0..self.pirq_routing.len(),
+            any(|idx| { !ich9::valid_pirq_route(self.pirq_routing[idx]) })
+        ) {
+            panic!("ICH9 PIRQ route is invalid");
+        }
         if self.max_cpus == 0 {
             panic!("GM45 max_cpus must be non-zero");
         }
@@ -518,6 +524,12 @@ mod tests {
         assert!(CONFIG.southbridge.c6_enable);
         assert_eq!(CONFIG.southbridge.throttle_duty, 2);
         assert!(CONFIG.southbridge.pirq.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "ICH9 PIRQ route is invalid")]
+    fn gm45_ich9_rejects_reserved_pirq_encoding() {
+        let _ = Gm45Ich9Config::new().pirq_routing([8; 8]).build();
     }
 
     #[test]
