@@ -5,8 +5,8 @@ use fstart_core::{
 };
 use fstart_driver_intel::southbridge::{gpio_ich as gpio, hda};
 use fstart_platform_intel::gm45::{
-    Gm45Ich9Config, Gm45Ich9Platform, LpcFixedIoDecode, LpcFloppyDecode, LpcGenericIoDecode,
-    LpcSerialDecode, SataConfig, SataMode, UsbConfig,
+    Gm45Ich9Config, Gm45Ich9Platform, GpiRoute, LpcFixedIoDecode, LpcFloppyDecode,
+    LpcGenericIoDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
 };
 
 /// Verified from Lenovo's 6D BIOS stock update: `bcpvpd` unpacked FL1
@@ -75,7 +75,24 @@ pub static X200_PLATFORM: Gm45Ich9Platform = Gm45Ich9Config::new()
     .pcie_port(1, true)
     .pcie_port(2, true)
     .gpe0_en(0x0100_0000)
-    .gpi_routing([0, 2, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0])
+    .gpi_routing([
+        GpiRoute::Disabled,
+        GpiRoute::Sci,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Sci,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+        GpiRoute::Disabled,
+    ])
     .c_states(true, true, true)
     .slfm(true)
     .throttle_duty(2)

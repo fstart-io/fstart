@@ -356,7 +356,7 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Result<Ddr3DimmInfo, Ddr3SpdError> {
 
     let cols = (spd_data[SPD_ADDRESSING as usize] & 0x07) + 9;
     let rows = ((spd_data[SPD_ADDRESSING as usize] >> 3) & 0x07) + 12;
-    if !(9..=12).contains(&cols) || !(12..=18).contains(&rows) {
+    if !(9..=12).contains(&cols) || !(12..=16).contains(&rows) {
         return Err(Ddr3SpdError::InvalidGeometry);
     }
 
@@ -652,6 +652,23 @@ mod tests {
             validate_gm45(&info),
             Err(Ddr3SpdError::UnsupportedBanks(16))
         );
+    }
+
+    #[test]
+    fn ddr3_addressing_encodings_are_bounded_by_jedec_geometry() {
+        for row_code in 0..=7 {
+            for col_code in 0..=7 {
+                let mut spd = synthetic_ddr3_spd();
+                spd[SPD_ADDRESSING as usize] = (row_code << 3) | col_code;
+                if row_code <= 4 && col_code <= 3 {
+                    let info = decode_dimm(&spd).expect("valid DDR3 address bits");
+                    assert_eq!(info.rows, row_code + 12);
+                    assert_eq!(info.cols, col_code + 9);
+                } else {
+                    assert_eq!(decode_dimm(&spd), Err(Ddr3SpdError::InvalidGeometry));
+                }
+            }
+        }
     }
 
     #[test]

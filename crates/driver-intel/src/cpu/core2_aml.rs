@@ -6,11 +6,12 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
-use fstart_arch::x86::cpu::intel::speedstep::{
-    PState as SpeedstepState, current_pstates, fsb_x3, model_id,
-};
+#[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
+use fstart_arch::x86::cpu::intel::speedstep::model_id;
+use fstart_arch::x86::cpu::intel::speedstep::{PState as SpeedstepState, current_pstates, fsb_x3};
 
 const SW_ANY: u32 = 0xfd;
+#[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
 const HW_ALL: u32 = 0xfe;
 
 #[derive(Clone, Copy)]
@@ -26,6 +27,7 @@ struct CState {
 }
 
 /// Core 2 mobile MWAIT C1/C2/C3 and generic Intel SpeedStep devices.
+#[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
 pub fn cpu_devices_aml(logical_cpus: usize) -> Vec<u8> {
     const CSTATES: &[CState] = &[
         CState {

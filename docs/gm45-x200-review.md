@@ -88,6 +88,28 @@ These are source corrections, not claims of physical validation. SMM/SMRAM
 locking is not a claim of BIOS flash write protection: production BLE/SMM_BWP
 policy and BIOSWR handling remain separate development work.
 
+### CodeRabbit follow-up
+
+* DDR3 addressing rejects reserved row encodings (only 12–16 row bits and
+  9–12 column bits are valid), matching `device/dram/ddr3.c`. A test covers
+  every row/column encoding.
+* ICH7 and ICH9 share the existing GPI destination enum/encoder and legacy
+  PIRQ validator. GM45 checks PIRQ bytes during const construction; ICH9
+  also checks direct runtime configs. X200's GPIO1/GPIO8 SCI routes and IRQ
+  assignments are unchanged.
+* The GM45 ACPICA test uses an automatically cleaned temporary directory and
+  skips only a missing executable. Other launch errors and namespace failures
+  still fail. The EHCI timeout test injects its delay rather than discovering
+  clocks through potentially privileged host MSR reads; firmware still uses
+  the architecture delay.
+* Selector 0 retains Coreboot's "any battery" threshold policy: either
+  successful readback is sufficient. Selectors 1/2 verify that battery.
+  Changing this to an unconditional OR would reject an absent second battery;
+  both threshold backends remain unchanged.
+* CPU AML helpers are feature-gated to their consumers, including the
+  Pineview-only case, fixing the workspace CI dead-code failure without
+  suppressing warnings.
+
 ## Detailed comparison
 
 ### GM45 RAM initialization
@@ -247,6 +269,17 @@ The copied PR #40 stack on `521e4aee` passed architecture 30, Intel drivers
 firmware `stage/mp/acpi` check and formatting checks passed. Release halt
 assembly remained within the unchanged guards: bootblock 147456 bytes,
 postcar 27160, ramstage 136283 compressed / 196640 unpacked, 8 MiB container.
+
+The CodeRabbit follow-up passed `cargo test --locked --workspace` with Cargo
+warnings denied, Intel drivers 129 (+3 doctests), Intel platforms 27 (+2 DSDT
+integrations), the combined firmware target check, generated X200 board facts
+and formatting. The ACPICA harness was also exercised with a missing tool,
+an injected namespace failure and a non-executable tool: each retained the
+expected skip/failure result and removed its temporary directory. ACPI-only
+and Pineview-only feature checks passed; the former retains a pre-existing
+unused-dependency manifest warning. Release halt assembly passed the unchanged
+guards: bootblock 147456 bytes, postcar 27160, ramstage 136314 compressed /
+196704 unpacked, 8 MiB container. Hardware qualification remains outstanding.
 
 Assembly required populating the two microcode files from the already-present
 local checkout. The generated keys are ignored local development keys, not

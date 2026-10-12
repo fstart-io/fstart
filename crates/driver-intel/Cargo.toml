@@ -52,3 +52,4 @@ zerocopy = { workspace = true }
 
 [dev-dependencies]
 fstart-driver-lenovo = { path = "../driver-lenovo", features = ["acpi"] }
+tempfile = "3"

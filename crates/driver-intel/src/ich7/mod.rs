@@ -575,29 +575,9 @@ impl LpcFixedIoDecode {
     }
 }
 
-/// Destination for an ICH7 GPIO event; its enable gate is separate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpiRoute {
-    Disabled,
-    Smi,
-    Sci,
-}
-impl GpiRoute {
-    const fn encode(self) -> u32 {
-        match self {
-            Self::Disabled => 0,
-            Self::Smi => 1,
-            Self::Sci => 2,
-        }
-    }
-}
-
-fn encode_gpi_routes(routes: &[GpiRoute; 16]) -> u32 {
-    routes
-        .iter()
-        .enumerate()
-        .fold(0, |value, (pin, route)| value | route.encode() << (2 * pin))
-}
+pub use crate::southbridge::gpio_ich::GpiRoute;
+use crate::southbridge::gpio_ich::encode_gpi_routes;
+pub use crate::southbridge::pirq::valid_pirq_route;
 
 #[cfg(test)]
 mod gpi_tests {
@@ -779,16 +759,6 @@ pub const fn lpc_generic_io_overlaps(a: LpcGenericIoDecode, b: LpcGenericIoDecod
     let a_end = a.base as u32 + a.size as u32;
     let b_end = b.base as u32 + b.size as u32;
     (a.base as u32) < b_end && (b.base as u32) < a_end
-}
-
-#[must_use]
-pub const fn valid_pirq_route(route: u8) -> bool {
-    route == 0
-        || route == 0x80
-        || (route >= 3 && route <= 7)
-        || (route >= 9 && route <= 12)
-        || route == 14
-        || route == 15
 }
 
 #[must_use]

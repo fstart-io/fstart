@@ -1144,6 +1144,8 @@ fn thresholds_24_aml(bit7: bool) -> Vec<u8> {
 
 /// ThinkPad public threshold API, shared by both register backends. References
 /// are relative to HKEY's EC parent, so relocated LPC namespaces keep working.
+/// Selector 0 retains Coreboot's "any battery" policy: either successful
+/// readback is sufficient. Selectors 1/2 require that battery's readback.
 fn threshold_interface_aml() -> Vec<u8> {
     acpi_dsl! {
         Scope("EC__.HKEY") {

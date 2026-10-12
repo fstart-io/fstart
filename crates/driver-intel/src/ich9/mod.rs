@@ -3,7 +3,9 @@
 //! Supports the ICH9 and ICH9-M southbridge; board policy (including the
 //! X200/R400/R500 interrupt router and EC decode) is supplied by the caller.
 
-use crate::southbridge::gpio_ich::IchGpio;
+pub use crate::southbridge::gpio_ich::GpiRoute;
+use crate::southbridge::gpio_ich::{IchGpio, encode_gpi_routes};
+pub use crate::southbridge::pirq::valid_pirq_route;
 use crate::southbridge::pmio_ich::{self as pmio, PmIo};
 use crate::southbridge::smbus::I801SmBus;
 use fstart_core::ConstVec;
@@ -778,7 +780,7 @@ pub struct IntelIch9Config {
     /// GPE0 enable bits (ICH9 low dword at PMBASE+0x28).
     pub gpe0_en: u32,
     /// GPI routing selectors for GPIO0..15 (0=no route, 1=SMI, 2=SCI).
-    pub gpi_routing: [u8; 16],
+    pub gpi_routing: [GpiRoute; 16],
     /// Alternate GPI SMI enable bits.
     pub alt_gp_smi_en: u16,
     /// Enable C4-on-C3 in GEN_PMCON_1 for mobile board power policy.
@@ -837,7 +839,7 @@ impl IntelIch9Config {
             dmibar: 0xFED1_8000,
             pirq_routing: [0x0b, 0x0b, 0x0b, 0x0b, 0x80, 0x80, 0x80, 0x80],
             gpe0_en: 0,
-            gpi_routing: [0; 16],
+            gpi_routing: [GpiRoute::Disabled; 16],
             alt_gp_smi_en: 0,
             c4_on_c3: true,
             c5_enable: false,
@@ -1457,11 +1459,9 @@ impl IntelIch9 {
     }
 
     fn configure_gpi_routing(&self) {
-        let mut value = 0u32;
-        for (idx, route) in self.config.gpi_routing.iter().enumerate() {
-            value |= ((*route as u32) & 0x03) << (idx * 2);
-        }
-        self.lpc_regs().gpio_rout.set(value);
+        self.lpc_regs()
+            .gpio_rout
+            .set(encode_gpi_routes(&self.config.gpi_routing));
     }
 
     fn sata_indexed_write32(&self, idx: u8, val: u32) {
@@ -2099,6 +2099,13 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         let routing = config.pirq.as_ref();
+        if config
+            .pirq_routing
+            .iter()
+            .any(|route| !valid_pirq_route(*route))
+        {
+            return Err(ServiceError::InvalidParam);
+        }
         if config.preserve_hardware_pirq == routing.is_some()
             || routing.is_some_and(|r| r.slot_pins.is_empty() || r.pin_routes.is_empty())
         {
@@ -2510,6 +2517,20 @@ mod tests {
             IntelIch9::new_from_config(&BOTH),
             Err(ServiceError::InvalidParam)
         ));
+    }
+
+    #[test]
+    fn ich9_rejects_reserved_legacy_pirq_values() {
+        for route in 0..=u8::MAX {
+            let config = IntelIch9Config {
+                preserve_hardware_pirq: true,
+                pirq_routing: [route; 8],
+                ..IntelIch9Config::new()
+            };
+            let driver =
+                IntelIch9::new_from_config(alloc::boxed::Box::leak(alloc::boxed::Box::new(config)));
+            assert_eq!(driver.is_ok(), valid_pirq_route(route));
+        }
     }
 
     #[test]
