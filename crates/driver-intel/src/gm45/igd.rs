@@ -223,14 +223,28 @@ impl IntelGm45 {
         self.panel_power_and_backlight(gtt_mmio, pwm_hz);
     }
 
+    /// S3 resume: re-point ASLS at the cold boot's OpRegion.
+    pub(super) fn igd_restore_opregion(&self, opregion: Option<u32>) {
+        if self.igd_bars.is_none() {
+            return;
+        }
+        match opregion {
+            Some(address) => {
+                crate::igd::register_opregion(&self.igd(), crate::igd::OpRegionSci::Swsci, address)
+            }
+            None => fstart_log::error!("gm45: no OpRegion to restore on resume"),
+        }
+    }
+
     /// OpRegion (VBT chosen by backlight type) and the optional modeset.
-    pub(super) fn igd_publish_and_modeset(&mut self) {
+    pub(super) fn igd_publish_and_modeset(&mut self, opregion: crate::igd::OpRegionMemory<'_>) {
         let Some(bars) = self.igd_bars else {
             return;
         };
         let igd = self.igd();
         let source = (self.config.igd.vbt)(self.panel_pwm_hz);
-        let vbt = crate::igd::publish_opregion(&igd, crate::igd::OpRegionSci::Swsci, &source);
+        let vbt =
+            crate::igd::publish_opregion(&igd, crate::igd::OpRegionSci::Swsci, &source, opregion);
         if self.config.igd.display.is_none() {
             return;
         }
