@@ -103,6 +103,8 @@ impl fstart_platform_intel::IntelMainstageBoardHooks<Gm45Ich9> for X200Mainboard
         }
         let pmh7 = Pmh7::new(0x15e0);
         pmh7.backlight_enable(true);
+        // variants/x200/overridetree.cb: dock_event_enable.
+        pmh7.dock_event_enable(true);
         pmh7.trackpoint_enable(true);
         pmh7.touchpad_enable(true);
         let dock_id = [2, 3, 4].into_iter().try_fold(0, |id, pin| {
@@ -149,9 +151,29 @@ impl fstart_acpi::device::AcpiDevice for X200Mainboard {
         use fstart_acpi_macros::acpi_dsl;
         let mut config = H8_CONFIG;
         config.has_bluetooth = self.bluetooth_present;
-        let mut aml = fstart_driver_lenovo::h8_acpi::dsdt_aml(&config, context.lpc_scope());
+        // Coreboot x200 dsdt.asl: hotkey brightness goes through GFX0.
+        let brightness = acpi_dsl! {
+            Scope("\\") {
+                Method("BRTU", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.INCB"}(); }
+                Method("BRTD", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.DECB"}(); }
+            }
+        };
+        let mut aml = fstart_driver_lenovo::h8_acpi::dsdt_aml_with_brightness(
+            &config,
+            context.lpc_scope(),
+            &brightness,
+        );
         aml.extend_from_slice(&acpi_dsl! {
             Scope("\\") {
+                // ec/lenovo/h8/acpi/thinklight.asl, for thinkpad_acpi.
+                Method("UCMS", 1, Serialized) {
+                    If (Arg0 == 0x0Cu32) {
+                        #{const "\\_SB_.PCI0.LPCB.EC__.LGHT"}(1u32);
+                    }
+                    If (Arg0 == 0x0Du32) {
+                        #{const "\\_SB_.PCI0.LPCB.EC__.LGHT"}(0u32);
+                    }
+                }
                 Method("_PTS", 1, NotSerialized) {
                     #{const "\\_SB_.PCI0.LPCB.EC__.MUTE"}(1u32);
                     #{const "\\_SB_.PCI0.LPCB.EC__.USBP"}(0u32);
