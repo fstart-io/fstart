@@ -406,7 +406,7 @@ fn ffs_input_regions(
             return Err("MRC cache BIOS start must be 64-KiB erase aligned".into());
         }
         regions.extend(cached_ro_regions(config, ro_files, bios.size)?);
-        if regions.len() > 6 {
+        if regions.len() > fstart_core::ffs::MAX_IMAGE_REGIONS {
             return Err("MRC cache exceeds FFS region capacity".into());
         }
         return Ok(regions);
