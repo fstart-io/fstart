@@ -311,6 +311,7 @@ where
     geometry: layout::IntelBootLayout<'static>,
     console_node: &'static str,
     max_cpus: u16,
+    pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
     /// Firmware store, reopened once the console is up.
     store: Option<fstart_store::Store>,
     /// Store entry for the coreboot table and the payload's files.
@@ -351,6 +352,7 @@ where
             geometry,
             console_node: B::console_node(),
             max_cpus: B::CONFIG.max_cpus(),
+            pci_subsystem_ids: B::CONFIG.pci_subsystem_ids(),
             store: None,
             #[cfg(feature = "payload-coreboot")]
             coreboot_window: None,
@@ -523,6 +525,18 @@ where
             memory: &self.ctx,
             resume: self.resume,
         })?;
+        // Coreboot sets subsystem IDs while enabling resources, before init;
+        // the registers are commonly write-once.
+        for entry in self.pci_subsystem_ids {
+            let dev = fstart_pci::ecam::EcamDevice::new(0, entry.device, entry.function);
+            if dev.is_present() && !dev.set_subsystem(entry.id) {
+                fstart_log::error!(
+                    "pci: 00:{:02x}.{} has no subsystem ID register",
+                    entry.device,
+                    entry.function
+                );
+            }
+        }
         self.northbridge.post_dram_init()?;
         self.southbridge.post_dram_init()?;
         Hooks::select_smbus(&self.southbridge, SmbusRoute::Eeprom)?;
