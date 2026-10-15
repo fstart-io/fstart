@@ -424,7 +424,7 @@ fn ffs_input_regions(
             return Err("mutable flash regions need a 64-KiB erase aligned BIOS start".into());
         }
         regions.extend(cached_ro_regions(config, ro_files, bios.size)?);
-        if regions.len() > 6 {
+        if regions.len() > fstart_core::ffs::MAX_IMAGE_REGIONS {
             return Err("mutable flash regions exceed FFS region capacity".into());
         }
         return Ok(regions);

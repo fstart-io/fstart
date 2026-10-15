@@ -234,7 +234,8 @@ where
     let mut file_data: Vec<FileDataLocation> = Vec::new();
 
     // ---- Phase 1: Lay out all regions ----
-    let mut manifest_regions: heapless::Vec<Region, 6> = heapless::Vec::new();
+    let mut manifest_regions: heapless::Vec<Region, { fstart_core::ffs::MAX_IMAGE_REGIONS }> =
+        heapless::Vec::new();
 
     for input_region in &config.regions {
         match input_region {
@@ -280,7 +281,12 @@ where
                         size: region_size,
                         content: RegionContent::Container { children },
                     })
-                    .map_err(|_| "too many regions (max 6)".to_string())?;
+                    .map_err(|_| {
+                        format!(
+                            "too many regions (max {})",
+                            fstart_core::ffs::MAX_IMAGE_REGIONS
+                        )
+                    })?;
             }
             InputRegion::ContainerWithExternal {
                 name,
@@ -344,7 +350,12 @@ where
                         size: region_size,
                         content: RegionContent::Container { children },
                     })
-                    .map_err(|_| "too many regions (max 6)".to_string())?;
+                    .map_err(|_| {
+                        format!(
+                            "too many regions (max {})",
+                            fstart_core::ffs::MAX_IMAGE_REGIONS
+                        )
+                    })?;
             }
             InputRegion::Raw { name, size, fill } => {
                 let offset = image_len(&image)?;
@@ -363,7 +374,12 @@ where
                         size: *size,
                         content: RegionContent::Raw { fill: *fill },
                     })
-                    .map_err(|_| "too many regions (max 6)".to_string())?;
+                    .map_err(|_| {
+                        format!(
+                            "too many regions (max {})",
+                            fstart_core::ffs::MAX_IMAGE_REGIONS
+                        )
+                    })?;
             }
             InputRegion::ExternalRaw {
                 name,
@@ -381,7 +397,12 @@ where
                         size: *size,
                         content: RegionContent::Raw { fill: *fill },
                     })
-                    .map_err(|_| "too many regions (max 6)".to_string())?;
+                    .map_err(|_| {
+                        format!(
+                            "too many regions (max {})",
+                            fstart_core::ffs::MAX_IMAGE_REGIONS
+                        )
+                    })?;
             }
         }
     }
