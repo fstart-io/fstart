@@ -381,8 +381,10 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         self.setup_early_decode();
-        self.recover_early_reset();
-        self.wait_for_txt_clear()
+        // The mainstage repeats early_init after the bootblock trained RAM.
+        // Recover the published decode there; dram_init clears this again.
+        self.dram_ready = self.raminit_completed() && self.memory_map().is_ok();
+        Ok(())
     }
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
@@ -466,6 +468,9 @@ impl MemoryController for IntelGm45 {
         if self.boot_path == crate::BootPath::S3Resume || self.bootstrap_windows.is_none() {
             return Err(ServiceError::NotInitialized);
         }
+        // Coreboot romstage/raminit order: soft-reset recovery, then TXT.
+        self.recover_early_reset();
+        self.wait_for_txt_clear()?;
         // Coreboot gm45/get_gmch_info accepts B1/B2/B3 and conversion A1.
         // No supported stepping may skip its electrical calibration.
         let revision = ecam::EcamDevice::new(0, 0, 0).read8(0x08);
