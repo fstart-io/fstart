@@ -65,7 +65,8 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     const CONFIG: &'static Gm45Ich9Platform = &X200_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(FlashLayout::IntelIfd(FLASH), 0x800000)
-            .with_data_assets(&[LED_VBT, CCFL_VBT]);
+            .with_data_assets(&[LED_VBT, CCFL_VBT])
+            .with_memory_cache();
 }
 
 /// The X200 SPD mux is initially on the DIMM sockets; GPIO42 selects the
