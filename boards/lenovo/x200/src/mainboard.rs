@@ -9,7 +9,39 @@ pub struct X200Mainboard {
     bluetooth_present: bool,
     #[cfg(fstart_stage_env = "ram")]
     ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
+    #[cfg(fstart_stage_env = "ram")]
+    identity: Option<fstart_driver_lenovo::eeprom::Identity>,
+    #[cfg(fstart_stage_env = "ram")]
+    wacom_present: bool,
 }
+
+/// variants/x200/overridetree.cb: the PC87382 serves only the X200t
+/// digitizer (LDN 3); IR, GPIO and DLPC are not connected.
+#[cfg(fstart_stage_env = "ram")]
+const PC87382_BASE: u16 = 0x164e;
+#[cfg(fstart_stage_env = "ram")]
+const PC87382_DEVICES: &[fstart_driver_superio::pc87382::PnpDevice] = {
+    use fstart_driver_superio::pc87382::PnpDevice;
+    const fn off(ldn: u8) -> PnpDevice {
+        PnpDevice {
+            ldn,
+            enabled: false,
+            io: None,
+            registers: &[],
+        }
+    }
+    &[
+        PnpDevice {
+            ldn: 3,
+            enabled: true,
+            io: Some(0x200),
+            registers: &[(0x29, 0xb0), (0x70, 0x05), (0xf0, 0x82)],
+        },
+        off(2),
+        off(7),
+        off(0x19),
+    ]
+};
 
 impl<S: Southbridge> IntelSmbusRouting<S> for X200Mainboard {
     fn select_smbus(sb: &S, route: SmbusRoute) -> Result<(), ServiceError> {
@@ -51,10 +83,22 @@ impl fstart_platform_intel::IntelMainstageBoardHooks<Gm45Ich9> for X200Mainboard
         &'a self,
         configured: &fstart_platform_intel::tables::SmbiosIdentity<'a>,
     ) -> fstart_platform_intel::tables::SmbiosIdentity<'a> {
-        fstart_platform_intel::tables::SmbiosIdentity {
+        let mut identity = fstart_platform_intel::tables::SmbiosIdentity {
             oem_string: self.ec_oem_string.as_ref().map(|oem| oem.as_str()),
             ..*configured
+        };
+        // Coreboot at24rf08c/lenovo_serials.c: the EEPROM part number, version
+        // ("ThinkPad X200"), serial and UUID describe system and baseboard.
+        if let Some(eeprom) = &self.identity {
+            identity.sys_product = eeprom.part_number();
+            identity.sys_version = eeprom.version();
+            identity.sys_serial = Some(eeprom.serial_number());
+            identity.sys_uuid = Some(eeprom.uuid);
+            identity.bb_product = eeprom.part_number();
+            identity.bb_version = eeprom.version();
+            identity.bb_serial = Some(eeprom.serial_number());
         }
+        identity
     }
 
     fn after_devices(
@@ -66,6 +110,21 @@ impl fstart_platform_intel::IntelMainstageBoardHooks<Gm45Ich9> for X200Mainboard
             h8::{CONFIG2, H8, H8Illumination},
             pmh7::Pmh7,
         };
+        // The platform routed the SMBus mux to the EEPROM before this hook.
+        // Identity reads never touch EEPROM data or protection registers.
+        self.identity = fstart_driver_lenovo::eeprom::Identity::read(ctx.southbridge())
+            .inspect_err(|error| {
+                fstart_log::error!("x200: EEPROM identity unavailable, code {}", *error as u8)
+            })
+            .ok();
+        fstart_driver_superio::pc87382::configure(PC87382_BASE, PC87382_DEVICES);
+        // Coreboot drivers/lenovo/wacom.c: a responding SuperIO and a tablet
+        // machine type.
+        self.wacom_present = fstart_driver_superio::pc87382::sid(PC87382_BASE) != 0xff
+            && self
+                .identity
+                .as_ref()
+                .is_some_and(|eeprom| fstart_driver_lenovo::wacom::is_tablet(eeprom.part_number()));
         let sb = ctx.southbridge();
         self.bluetooth_present = !sb.gpio_get(7)?;
         let h8 = H8::new(Ec::new(H8_CONFIG.resources.os));
@@ -148,49 +207,14 @@ pub static IDENTITY: fstart_platform_intel::tables::SmbiosIdentity<'static> =
 impl fstart_acpi::device::AcpiDevice for X200Mainboard {
     type Config = fstart_platform_intel::gm45::Gm45Ich9AcpiContext;
     fn dsdt_aml(&self, context: &Self::Config) -> alloc::vec::Vec<u8> {
-        use fstart_acpi_macros::acpi_dsl;
         let mut config = H8_CONFIG;
         config.has_bluetooth = self.bluetooth_present;
-        // Coreboot x200 dsdt.asl: hotkey brightness goes through GFX0.
-        let brightness = acpi_dsl! {
-            Scope("\\") {
-                Method("BRTU", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.INCB"}(); }
-                Method("BRTD", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.DECB"}(); }
-            }
-        };
-        let mut aml = fstart_driver_lenovo::h8_acpi::dsdt_aml_with_brightness(
+        fstart_driver_lenovo::x200::dsdt_aml(
             &config,
             context.lpc_scope(),
-            &brightness,
-        );
-        aml.extend_from_slice(&acpi_dsl! {
-            Scope("\\") {
-                // ec/lenovo/h8/acpi/thinklight.asl, for thinkpad_acpi.
-                Method("UCMS", 1, Serialized) {
-                    If (Arg0 == 0x0Cu32) {
-                        #{const "\\_SB_.PCI0.LPCB.EC__.LGHT"}(1u32);
-                    }
-                    If (Arg0 == 0x0Du32) {
-                        #{const "\\_SB_.PCI0.LPCB.EC__.LGHT"}(0u32);
-                    }
-                }
-                Method("_PTS", 1, NotSerialized) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.MUTE"}(1u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.USBP"}(0u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.RADI"}(0u32);
-                }
-                Method("_WAK", 1, NotSerialized) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.WAKE"}(Arg0);
-                    Return(Package(0u32, 0u32));
-                }
-            }
-            Scope("\\_GPE") {
-                Method("_L18", 0, NotSerialized) {
-                    Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.WAKE"};
-                }
-            }
-        });
-        aml
+            fstart_driver_intel::ich9::ich9::DEFAULT_GPIOBASE,
+            self.wacom_present,
+        )
     }
 }
 #[cfg(fstart_stage_env = "ram")]
