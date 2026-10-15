@@ -26,6 +26,8 @@ pub const ACPI: SocAcpi = SocAcpi {
         p_lvl2_lat: 101,
         p_lvl3_lat: 1001,
         duty_offset: 0,
+        duty_width: 0,
+        pm2_cnt_offset: None,
     },
     bridge_routes: &ROUTES,
     fch_intx_gsi: [16, 17, 18, 19],
