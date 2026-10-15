@@ -15,6 +15,31 @@ pub trait IntelPlatform: 'static {
 /// Hardware population needed by both host planning and runtime bring-up.
 pub trait IntelPlatformConfig {
     fn max_cpus(&self) -> u16;
+    /// Board subsystem IDs for bus-0 functions (coreboot devicetree
+    /// `subsystemid`), programmed before device init.
+    fn pci_subsystem_ids(&self) -> &'static [PciSubsystemId] {
+        &[]
+    }
+}
+
+/// Subsystem ID for one bus-0 function: vendor in the low half, device in
+/// the high half, as the PCI subsystem dword stores them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciSubsystemId {
+    pub device: u8,
+    pub function: u8,
+    pub id: u32,
+}
+
+impl PciSubsystemId {
+    #[must_use]
+    pub const fn new(device: u8, function: u8, vendor: u16, subsystem: u16) -> Self {
+        Self {
+            device,
+            function,
+            id: (subsystem as u32) << 16 | vendor as u32,
+        }
+    }
 }
 
 /// Board-owned physical flash and attached-device assets, not build policy.
