@@ -90,8 +90,10 @@ Runtime descriptor verification rejects a layout mismatch.
 
 ## First hardware checks
 
-1. Verify the descriptor, CPU/DIMM topology, VBT/panel variant and debug-port
-   wiring against the actual machine. This binding uses `data_led.vbt`.
+1. Verify the descriptor, CPU/DIMM topology, panel and debug-port wiring
+   against the actual machine. As in coreboot, the LVDS EDID string selects
+   the backlight PWM frequency, and a known frequency of 200 Hz or less
+   selects `data_ccfl.vbt` instead of `data_led.vbt`.
 2. Capture a cold boot through RAM training, probes, DMI/VC1, PCI allocation,
    SMM installation, tables and halt. Confirm the EHCI BAR stays fixed.
 3. Repeat without a gadget and after an interrupted/warm boot. Confirm there
@@ -100,7 +102,10 @@ Runtime descriptor verification rejects a layout mismatch.
 4. Exercise each admitted RAM topology and run extensive memory testing
    independently; the firmware's sparse probes are not RAM qualification.
 5. Validate EC fan/thermal behavior, PMH7 input power, radio and dock controls,
-   display clocks, AHCI/HDA/USB/PCIe interrupts and emitted ACPI before OS use.
+   display clocks, the native modeset (LVDS, VGA, dock DP/HDMI), backlight
+   PWM, AHCI/HDA/USB/PCIe interrupts, the ExpressCard slot and emitted ACPI
+   before OS use. Confirm a cold boot reaches the payload in one pass: the
+   mainstage must not repeat the bootblock's soft-reset recovery.
 6. Check both Penryn cores initialize, microcode is updated before PECI,
    and alternative SMRR is programmed/locked during SMM installation.
 7. Test a short power-button press at the halt payload and OS shutdown after
@@ -114,7 +119,7 @@ Host validation commands:
 
 ```sh
 cargo test -p fstart-arch --features x86_64
-cargo test -p fstart-driver-intel --features gm45,ich9,acpi
+cargo test -p fstart-driver-intel --features gm45,ich9,acpi,display
 cargo test -p fstart-driver-usbdebug
 cargo test -p fstart-platform-intel --features gm45-ich9,host
 cargo test -p fstart-driver-lenovo --features fstart-arch/x86_64,acpi

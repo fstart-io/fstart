@@ -25,7 +25,7 @@ and Pineview static PIRQ policy to this branch's shared contracts.
 | Warm resets | The port lacked the scratchpad `0xcafe` / GEN_PMCON_3 check, interrupted-RAM-init marker, and PMSTS warm/self-refresh check. Added these guards and Cantiga's tiny rank-map/CLKCFG/DCC preparation before CF9. ICH9 prepares PMIR before these checks, in pre-console setup. | `gm45/early_reset.c`, `gm45/raminit.c` |
 | S3 rejection | Resume cannot replay this DDR3 training state. Before the common unsupported-resume reset, the northbridge now prepares the controller's reset geometry. This is cold-reset fallback, **not S3 support**. | `gm45/early_reset.c` |
 | TXT | Added the TXT-fuse-gated wait for TPM_ACCESS_VALID. Unlike coreboot's unbounded loop, it fails with a timeout after approximately one second. | `gm45/romstage.c` |
-| Stage boundaries | A fresh ramstage northbridge had no `dram_ready` state, making memory reporting and TSEG unavailable. Stage-local initialization now validates the live TOM/TOLUD/TOUUD/GGC/ESMRAMC decode without retraining or probing live RAM. | `gm45/northbridge.c` resource readback |
+| Stage boundaries | A fresh ramstage northbridge had no `dram_ready` state, making memory reporting and TSEG unavailable. The mainstage's `early_init` now validates the live TOM/TOLUD/TOUUD/GGC/ESMRAMC decode when the raminit-complete marker is present, without retraining or probing live RAM; soft-reset recovery runs only in the bootblock's `dram_init`. | `gm45/northbridge.c` resource readback, `gm45/romstage.c` |
 | Interrupts | An assumed X200 PIRQ table is not justified by coreboot, which retains the reset/strap router. Added an exclusive preserve/readback policy; `_PRT` uses actual DxxIR, including PCIe swizzling. PEG/IGD/ME slots outside the router use coreboot's hardwired pin-to-PIRQ identity. The shared routing view can now borrow runtime data. | `intel/common/rcba_pirq.c`, `i82801ix/lpc.c` |
 | LPC windows | Reused a common validator/encoder for naturally aligned power-of-two windows; invalid windows fail rather than creating a misleading decode. ICH7/8 use the same helper. | `intel/common/lpc.h` |
 | SMM contracts | Updated SMRAM readback verification, SMI quiesce/restore and global locking interfaces. Corrected the obsolete shared mainstage ACPI-mode call. | Current fstart master SMM contracts |
@@ -88,6 +88,48 @@ These are source corrections, not claims of physical validation. SMM/SMRAM
 locking is not a claim of BIOS flash write protection: production BLE/SMM_BWP
 policy and BIOSWR handling remain separate development work.
 
+### Third discrepancy pass
+
+A further comparison against coreboot `65d90e75` (no GM45/ICH9/X200, model
+1067x, SMM or H8 changes since the reference) found and corrected:
+
+* **Mainstage reset loop.** The mainstage reruns northbridge `early_init`
+  after the bootblock wrote the `0xcafe` raminit marker and acknowledged
+  GEN_RST_STS, which is exactly the soft-reset condition: every boot reset
+  before the bus scan. Recovery and the TXT wait moved into `dram_init`
+  (coreboot romstage only). The same fresh mainstage northbridge also failed
+  `detect_memory` before the late `stage_local_init`; `early_init` now
+  recovers the trained decode when the marker is present.
+* **Host bridge ACPI.** `PCI0` gains coreboot's `_CRS` (bus range, I/O, VGA,
+  option ROM, TOLUD..0xfebfffff, above-TOUUD and TPM windows), the
+  `i82801ix` `_OSC` handing PCIe features to the OS, and the complete `PDRC`
+  reservation including RCBA and the 0xfed2xxxx/0xfed4xxxx ranges.
+* **Graphics.** GM45 now runs `gma_func0_init()`: bus master, a cleared 2 MiB
+  GTT, devicetree panel power sequencing, and `BLC_PWM_CTL` from the panel's
+  EDID string through the board's `blc.c` table. The OpRegion is published
+  with the LED or CCFL VBT chosen as `mainboard_vbt_filename()` does, the
+  shared GMA library performs the native modeset on DP2/HDMI2/VGA/LVDS, and
+  the shared `GFX0` node (moved out of the GM965 driver) carries brightness;
+  H8 Fn brightness calls `GFX0.INCB/DECB` as in the X200 DSDT.
+* **Subsystem IDs.** Board devicetree subsystem IDs are programmed before
+  device init (type-0 headers, bridges through SSVID). Linux applies its X200
+  CX20561 pin fixup by HDA 17aa:20f2.
+* **ExpressCard.** Root port 4 is enabled; ports 1-4 are 10 W slots, port 4
+  hot-pluggable, per `variants/x200/overridetree.cb`.
+* **Board policy.** `power_on_after_fail` defaults off (`cmos.default`),
+  PMH7 dock events are enabled, LPT and both game-port decodes are on like
+  coreboot's `LPC_EN`, `_CST` uses the X200 table (C3 latency 55 us, C6 on
+  battery through `\PWRS`), and `\PNOT` notifies the CPUs through `\CNOT`.
+  The root `\UCMS` method lets `thinkpad_acpi` drive the ThinkLight.
+* **ICH9.** `PS2K`/`PS2M` are emitted (shared with ICH8). CF9GR is no longer
+  set: coreboot's bit-20 PMIR write is truncated to a byte, so CF9 resets stay
+  host resets. The TCO watchdog is acknowledged early and reloaded in the
+  mainstage instead of halted. `INTERRUPT_LINE` follows each function's
+  PIRQA-D route like `i82801ix_pirq_init()`; NMI masking reads port 0x74.
+* **FADT.** `TMR_VAL_EXT` is no longer advertised: ICH and QEMU PM timers are
+  24 bits. ICH9 reports PM2_CNT, a 57 us C3 latency, a 3-bit throttle duty
+  field and docking support; laptops use the mobile PM profile.
+
 ### CodeRabbit follow-up
 
 * DDR3 addressing rejects reserved row encodings (only 12–16 row bits and
@@ -136,9 +178,10 @@ training, final map, thermal programming and graphics setup against
   devicetree and coreboot's default. This was checked, not changed. The UMA,
   GTT/shadow-GTT, 2 MiB TSEG, ME reservation and 64 MiB reclaim arithmetic
   are represented in the existing map tests.
-* Contrary to a preliminary suspicion, unequal DIMMs are **rejected**, not
-  blindly interleaved. Coreboot implements dual-asymmetric mode; this port
-  only admits single-channel or equal-capacity dual-interleaved layouts.
+* As in coreboot `collect_dimm_config()`, both populated channels always use
+  dual-interleaved mode, including unequal capacities: each channel's rank
+  bounds start at zero and an active ME reserves 32 MiB instead of 64 MiB.
+  Coreboot's "dual asynchronous" mode is only the temporary pre-JEDEC map.
 
 Sparse destructive probes gate publication of RAM after initialization.
 They are not exhaustive DRAM qualification, and host arithmetic/MMIO tests
@@ -178,18 +221,17 @@ These are not claimed fixed by compiling the board:
    timing, VC negotiation, SMM relocation and debug-gadget enumeration need
    physical validation with recoverable SPI flashing.
 2. **RAM support is narrower than coreboot.** No DDR2, SFF, S3 training replay,
-   asymmetric dual channels, arbitrary early steppings, or FSB1067/DDR3-667
-   special PLL sequence. Unsupported inputs fail closed. Cached cold-boot
+   arbitrary early steppings, or FSB1067/DDR3-667 special PLL sequence. Unsupported inputs fail closed. Cached cold-boot
    training is not implemented by this board binding.
-3. **ACPI/OS parity is incomplete.** Basic CPU P-state and C1/C2/C3 AML is
-   present; deeper C-state AML, DMAR, full dock hotplug/disconnect glue,
-   Wacom handling, Lenovo EEPROM serial/UUID identity
-   and variant-specific display behavior need separate work. H8 brightness
-   hooks remain no-ops. No successful OS sleep/resume claim is made.
-4. **Northbridge device policy is smaller.** The current GM45 binding does not
-   reproduce every coreboot devicetree-driven ME/PEG function/subsystem-ID
-   policy or above-4G PCI-resource policy. X200 uses integrated graphics and
-   its bundled LED VBT; tablet/CCFL/X301 variants are not qualified.
+3. **ACPI/OS parity is incomplete.** CPU P-states and the board's AC/battery
+   `_CST` tables are present; DMAR, full dock hotplug/disconnect glue, dock
+   serial ports, Wacom handling, Lenovo EEPROM serial/UUID identity and
+   `gfx.asl`'s display-output (`_DOD`) devices need separate work. No
+   successful OS sleep/resume claim is made.
+4. **Northbridge device policy is smaller.** The GM45 binding does not hide
+   the ME functions 03.1-03.3 that coreboot's devicetree disables, and the
+   firmware allocator assigns no BARs above 4 GiB (the window is only
+   advertised to the OS). Tablet and X301 variants are not qualified.
 5. **EC policy is fixed.** Coreboot exposes CMOS options and additional
    presence detection. This binding uses explicit defaults; advertised WWAN
    and UWB capabilities still require testing on the particular board.
@@ -280,6 +322,20 @@ and Pineview-only feature checks passed; the former retains a pre-existing
 unused-dependency manifest warning. Release halt assembly passed the unchanged
 guards: bootblock 147456 bytes, postcar 27160, ramstage 136314 compressed /
 196704 unpacked, 8 MiB container. Hardware qualification remains outstanding.
+
+The third discrepancy pass passed `cargo test --workspace` with warnings
+denied, Intel drivers 121 with GM45/ICH9, GM965/ICH8, i945/ICH7, ACPI and
+display enabled (+3 doctests), the GM45/ICH9 set 107 including ACPICA
+execution of `PCI0._CRS/_OSC`, `PDRC`, `PS2K`, `GFX0.LCD0._BCL`, the battery
+`_CST` and `\PNOT`, Lenovo 12 (+1 doctest), common ACPI 104 (all features),
+the PCI subsystem-ID test, Intel platforms 11 (+2 DSDT integrations), host
+warning-denied feature checks (ACPI-only, Pineview, GM45 with and without
+ACPI, GM965 with display, i945, ICH8/ICH9) and `cargo fbuild check
+lenovo-x200`. X61, X60, D945GCLF and QEMU Q35 release builds still link.
+Release halt assembly passed the unchanged guards: bootblock 147456 bytes,
+postcar 27160, ramstage 180567 compressed / 251912 unpacked (the GMA library),
+8 MiB container. Native graphics, GMBUS EDID and the backlight are untested
+on hardware.
 
 Assembly required populating the two microcode files from the already-present
 local checkout. The generated keys are ignored local development keys, not

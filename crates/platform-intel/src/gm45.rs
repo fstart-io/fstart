@@ -1,7 +1,10 @@
 //! GM45/ICH9 chipset policy for the shared fixed Intel flow.
 
 use fstart_core::ConstVec;
-pub use fstart_driver_intel::gm45::{Gm45GraphicsPolicy, IntelGm45Config};
+pub use fstart_driver_intel::cpu::{CState, Core2Cstates};
+pub use fstart_driver_intel::gm45::{
+    BacklightPwm, Gm45GraphicsPolicy, Gm45IgdConfig, IntelGm45Config,
+};
 use fstart_driver_intel::ich9;
 pub use fstart_driver_intel::ich9::{
     GpiRoute, HdaConfig, HdaVerbTable, IntelIch9Config, IoTrapAccess, IoTrapConfig,
@@ -28,6 +31,8 @@ pub const ICH9_SMBUS_BASE: u16 = ich9::ich9::DEFAULT_SMBUS_BASE;
 #[derive(Debug, Clone, Copy)]
 pub struct Gm45Ich9Config {
     pub graphics: Gm45GraphicsPolicy,
+    pub igd: Gm45IgdConfig,
+    pub cstates: Core2Cstates,
     /// Channel 0 slot 0/1, then channel 1 slot 0/1; zero means absent.
     pub spd_addresses: [u8; 4],
     pub pcie_ports: [bool; 6],
@@ -48,6 +53,10 @@ pub struct Gm45Ich9Config {
     pub slfm: bool,
     /// ICH9 throttle duty encoding (coreboot THTL_75_0 is 2).
     pub throttle_duty: u8,
+    /// State after G3: 0 = stay off, 1 = power on, 2 = previous state.
+    pub power_on_after_fail: u8,
+    /// Laptop board (coreboot `SYSTEM_TYPE_LAPTOP`).
+    pub laptop: bool,
     pub sata: Option<SataConfig>,
     pub usb: Option<UsbConfig>,
     pub ehci_debug_bar: Option<fstart_driver_intel::ich9::EhciDebugConfig>,
@@ -56,6 +65,7 @@ pub struct Gm45Ich9Config {
     pub gpio: gpio::GpioConfig,
     /// Maximum logical CPU count (BSP + APs) populated by the board.
     pub max_cpus: u16,
+    pub pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
 }
 
 impl Gm45Ich9Config {
@@ -63,6 +73,8 @@ impl Gm45Ich9Config {
     pub const fn new() -> Self {
         Self {
             graphics: Gm45GraphicsPolicy::Integrated,
+            igd: Gm45IgdConfig::new(),
+            cstates: fstart_driver_intel::cpu::CORE2_MOBILE_CSTATES,
             spd_addresses: [0; 4],
             pcie_ports: [false; 6],
             pcie_slots: [false; 6],
@@ -80,6 +92,8 @@ impl Gm45Ich9Config {
             c6_enable: false,
             slfm: false,
             throttle_duty: 0,
+            power_on_after_fail: 1,
+            laptop: false,
             sata: None,
             usb: None,
             ehci_debug_bar: None,
@@ -87,6 +101,7 @@ impl Gm45Ich9Config {
             io_traps: ConstVec::new(empty_io_trap()),
             gpio: gpio::GpioConfig::new(),
             max_cpus: 1,
+            pci_subsystem_ids: &[],
         }
     }
 
@@ -107,6 +122,9 @@ impl Gm45Ich9Config {
         config.pmbase = ICH9_PMBASE;
         config.smbus_base = ICH9_SMBUS_BASE;
         config.graphics = self.graphics;
+        config.igd = self.igd;
+        config.cstates = self.cstates;
+        config.rcba = ICH9_RCBA;
         config.spd_addresses = self.spd_addresses;
         config.slfm = self.slfm;
         config
@@ -133,6 +151,8 @@ impl Gm45Ich9Config {
         config.c5_enable = self.c5_enable;
         config.c6_enable = self.c6_enable;
         config.throttle_duty = self.throttle_duty;
+        config.power_on_after_fail = self.power_on_after_fail;
+        config.laptop = self.laptop;
         config.sata = self.sata;
         config.usb = self.usb;
         config.ehci_debug_bar = self.ehci_debug_bar;
@@ -145,6 +165,22 @@ impl Gm45Ich9Config {
     #[must_use]
     pub const fn ehci_debug_bar(mut self, bar: fstart_driver_intel::ich9::EhciDebugConfig) -> Self {
         self.ehci_debug_bar = Some(bar);
+        self
+    }
+
+    #[must_use]
+    pub const fn igd(mut self, igd: Gm45IgdConfig) -> Self {
+        self.igd = igd;
+        self
+    }
+
+    /// Board `_CST` tables; battery states require a non-empty AC table.
+    #[must_use]
+    pub const fn cstates(mut self, cstates: Core2Cstates) -> Self {
+        if cstates.ac.is_empty() {
+            panic!("GM45 _CST needs AC C-states");
+        }
+        self.cstates = cstates;
         self
     }
 
@@ -260,6 +296,23 @@ impl Gm45Ich9Config {
         self
     }
 
+    /// Coreboot `SYSTEM_TYPE_LAPTOP`: mobile ACPI PM profile.
+    #[must_use]
+    pub const fn laptop(mut self) -> Self {
+        self.laptop = true;
+        self
+    }
+
+    /// Board default for coreboot's `power_on_after_fail` CMOS option.
+    #[must_use]
+    pub const fn power_on_after_fail(mut self, state: u8) -> Self {
+        if state > 2 {
+            panic!("ICH9 power_on_after_fail is off/on/keep");
+        }
+        self.power_on_after_fail = state;
+        self
+    }
+
     #[must_use]
     pub const fn sata(mut self, sata: SataConfig) -> Self {
         self.sata = Some(sata);
@@ -348,7 +401,14 @@ impl Gm45Ich9Config {
             northbridge: self.northbridge_config(),
             southbridge: self.southbridge_config(),
             max_cpus: self.max_cpus,
+            pci_subsystem_ids: self.pci_subsystem_ids,
         }
+    }
+
+    #[must_use]
+    pub const fn pci_subsystem_ids(mut self, ids: &'static [crate::facts::PciSubsystemId]) -> Self {
+        self.pci_subsystem_ids = ids;
+        self
     }
 
     #[must_use]
@@ -408,6 +468,7 @@ pub struct Gm45Ich9Platform {
     pub northbridge: IntelGm45Config,
     pub southbridge: IntelIch9Config,
     pub max_cpus: u16,
+    pub pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
 }
 
 impl Default for Gm45Ich9Config {
@@ -449,6 +510,9 @@ impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm45Ich9<C> {
 impl crate::IntelPlatformConfig for Gm45Ich9Platform {
     fn max_cpus(&self) -> u16 {
         self.max_cpus
+    }
+    fn pci_subsystem_ids(&self) -> &'static [crate::facts::PciSubsystemId] {
+        self.pci_subsystem_ids
     }
 }
 
