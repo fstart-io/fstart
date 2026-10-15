@@ -18,6 +18,7 @@ fstart-core = { path = "../../../crates/core", features = ["pci"] }
 fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["gm45-ich9"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-driver-usbdebug = { path = "../../../crates/driver-usbdebug" }
+fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
 fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
 fstart-pci = { path = "../../../crates/pci" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
