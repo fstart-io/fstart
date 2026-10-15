@@ -427,6 +427,7 @@ where
         );
         self.ctx.e820_state_mut().set_detected(count, total)?;
         self.northbridge.memory_detected(self.ctx.e820_state());
+        self.northbridge.chip_init()?;
 
         // DRAM was initialized by the bootblock. Mainstage only reconstructs the
         // memory map and must not retrain or issue JEDEC commands again.

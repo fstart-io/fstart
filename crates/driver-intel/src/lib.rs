@@ -274,6 +274,12 @@ pub trait IntelNorthbridgeDriver:
     /// Caches policy derived from the detected memory map.
     fn memory_detected(&mut self, _e820: &fstart_core::services::memory_detect::E820State) {}
 
+    /// Mainstage chip init before PCI enumeration (coreboot
+    /// `chip_operations.init`), e.g. hiding functions the board disables.
+    fn chip_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+
     /// Framebuffer programmed during [`Self::stage_local_init`], if the board
     /// asked for display bring-up. The platform hands this to the payload.
     fn framebuffer_info(&self) -> Option<fstart_core::services::FramebufferInfo> {

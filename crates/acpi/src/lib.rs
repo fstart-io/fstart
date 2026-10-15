@@ -44,6 +44,7 @@ pub mod dbg2;
 pub mod descriptors;
 pub mod device;
 pub mod devices;
+pub mod dmar;
 pub mod ext;
 pub mod gtdt;
 pub mod iort;

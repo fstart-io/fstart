@@ -114,6 +114,8 @@ pub struct IntelGm45Config {
     pub igd: Gm45IgdConfig,
     /// Board `_CST` tables (coreboot mainboard `cstates.c`).
     pub cstates: crate::cpu::Core2Cstates,
+    /// ME functions 03.0-03.3 the board disables (bit n hides 03.n).
+    pub disabled_me_functions: u8,
     pub acpi_name: Option<&'static str>,
 }
 
@@ -134,6 +136,7 @@ impl IntelGm45Config {
             slfm: false,
             igd: Gm45IgdConfig::new(),
             cstates: crate::cpu::CORE2_MOBILE_CSTATES,
+            disabled_me_functions: 0,
             acpi_name: Some("PCI0"),
         }
     }
@@ -424,6 +427,18 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         self.dram_ready = true;
         // Coreboot gma_func0_init() runs at device init, after allocation.
         self.igd_func0_init();
+        Ok(())
+    }
+    fn chip_init(&mut self) -> Result<(), ServiceError> {
+        // Coreboot gm45_init(): hide the ME functions disabled in devicetree
+        // (DEVEN bit 6 + n), then D4F0 once no ME function remains. Only the
+        // mainstage runs this, after raminit sized the ME memory from 03.0.
+        let hb = self.hostbridge();
+        let mut deven = hb.deven.get() & !(u32::from(self.config.disabled_me_functions & 0xf) << 6);
+        if deven & (0xf << 6) == 0 {
+            deven &= !(1 << 14);
+        }
+        hb.deven.set(deven);
         Ok(())
     }
     fn post_verify_init(&mut self) -> Result<(), ServiceError> {
@@ -757,6 +772,55 @@ mod acpi_impl {
                 fstart_acpi::aml_linker::scope_vec("\\", &cpus).expect("required CPU AML scope"),
             );
             aml
+        }
+
+        /// MCFG for the PCIEXBAR window and coreboot `gm45/acpi.c`'s DMAR, matching
+        /// the remapping bases `post_dram_iommu()` programmed.
+        fn extra_tables(&self, config: &Self::Config) -> Vec<Vec<u8>> {
+            let mut mcfg = fstart_acpi::mcfg::MCFG::new(
+                fstart_acpi::OEM_ID,
+                fstart_acpi::OEM_TABLE_ID,
+                fstart_acpi::OEM_REVISION,
+            );
+            mcfg.add_ecam(config.ecam_base, 0, 0, (config.ecam_buses - 1) as u8);
+            let mut mcfg_bytes = Vec::new();
+            fstart_acpi::Aml::to_aml_bytes(&mcfg, &mut mcfg_bytes);
+            if !self.dram_ready {
+                return alloc::vec![mcfg_bytes];
+            }
+            use fstart_acpi::dmar::{Drhd, dmar};
+            let revision = ecam::EcamDevice::new(0, 0, 0).read8(0x08);
+            let me_active = self.hostbridge().deven.get() & (1 << 6) != 0;
+            let units = [
+                Some(Drhd {
+                    include_pci_all: false,
+                    segment: 0,
+                    base: 0xfed9_0000,
+                    endpoints: &[(0, 0x1b, 0)],
+                }),
+                // B2 leaves the graphics unit disabled (post_dram_iommu).
+                (revision != 6 && self.igd_enabled()).then_some(Drhd {
+                    include_pci_all: false,
+                    segment: 0,
+                    base: 0xfed9_1000,
+                    endpoints: &[(0, 2, 0), (0, 2, 1)],
+                }),
+                me_active.then_some(Drhd {
+                    include_pci_all: false,
+                    segment: 0,
+                    base: 0xfed9_2000,
+                    endpoints: &[(0, 3, 0), (0, 3, 1), (0, 3, 2), (0, 3, 3)],
+                }),
+                Some(Drhd {
+                    include_pci_all: true,
+                    segment: 0,
+                    base: 0xfed9_3000,
+                    endpoints: &[],
+                }),
+            ];
+            let units: Vec<Drhd<'_>> = units.into_iter().flatten().collect();
+            let width = (phys_address_bits() - 1) as u8;
+            alloc::vec![mcfg_bytes, dmar(width, &units)]
         }
     }
 
