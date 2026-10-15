@@ -382,6 +382,20 @@ impl EcamDevice {
         None
     }
 
+    /// Program the subsystem vendor/device dword (vendor in the low half),
+    /// like coreboot `pci_dev_set_subsystem()`: type-0 headers at 0x2c,
+    /// bridges through their SSVID capability. Returns whether a register
+    /// was found; the registers are often write-once.
+    pub fn set_subsystem(&self, id: u32) -> bool {
+        const CAP_ID_SSVID: u8 = 0x0d;
+        let offset = match self.read8(0x0e) & 0x7f {
+            0 => Some(0x2c),
+            1 => self.find_capability(CAP_ID_SSVID).map(|cap| cap + 4),
+            _ => None,
+        };
+        offset.inspect(|offset| self.write32(*offset, id)).is_some()
+    }
+
     /// Physical base of the memory BAR at `reg` as PCI enumeration assigned
     /// it, or `None` when the window is unassigned or an I/O BAR.
     ///
@@ -526,6 +540,35 @@ impl ConfigRegionAccess for EcamDevice {
 mod tests {
     extern crate std;
     use super::*;
+
+    #[test]
+    fn subsystem_ids_use_header_type_and_bounded_ssvid_walk() {
+        use std::alloc::{Layout, alloc_zeroed, dealloc};
+        // Bus 0 needs 1 MiB of ECAM, 1 MiB aligned (init masks the base).
+        let layout = Layout::from_size_align(1 << 20, 1 << 20).unwrap();
+        let memory = unsafe { alloc_zeroed(layout) };
+        assert!(!memory.is_null());
+        init(memory as usize);
+        let endpoint = EcamDevice::new(0, 1, 0);
+        assert!(endpoint.set_subsystem(0x20f2_17aa));
+        assert_eq!(endpoint.read32(0x2c), 0x20f2_17aa);
+
+        let bridge = EcamDevice::new(0, 2, 0);
+        bridge.write8(0x0e, 0x81);
+        assert!(!bridge.set_subsystem(1)); // no capability list
+        bridge.write16(0x06, 1 << 4);
+        bridge.write8(0x34, 0x40);
+        bridge.write16(0x40, 0x9010); // PCIe -> SSVID
+        bridge.write16(0x90, 0x000d);
+        assert_eq!(bridge.find_capability(0x0d), Some(0x90));
+        assert!(bridge.set_subsystem(0x20f3_17aa));
+        assert_eq!(bridge.read32(0x94), 0x20f3_17aa);
+        bridge.write8(0x91, 0x40); // cycle without SSVID
+        bridge.write8(0x90, 0x05);
+        assert_eq!(bridge.find_capability(0x0d), None);
+        init(0);
+        unsafe { dealloc(memory, layout) };
+    }
 
     #[test]
     fn capability_walk_is_bounded() {
