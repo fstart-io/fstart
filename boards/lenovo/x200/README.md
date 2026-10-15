@@ -21,9 +21,19 @@ protection, not production signing policy.
 
 The halt payload is for bring-up, not an OS boot test. The binding includes
 bootblock, postcar, ramstage and SMM. Release assembly has been checked;
-unoptimized/debug postcar currently exceeds its 64 KiB image budget. DDR3 single-channel or equal-capacity
-paired DIMMs are supported by the current implementation; S3 replay,
-DDR2 and asymmetric paired DIMMs are not.
+unoptimized/debug postcar currently exceeds its 64 KiB image budget. DDR3 single-channel or paired DIMMs (interleaved
+like coreboot) are supported; DDR2 is not.
+
+S3 resume follows coreboot's `raminit(s3resume)`. It skips the DDR3 reset
+and JEDEC init, and replays DDR3-1067 read/write training instead of
+retraining. The record (SPD bytes, clock, CAS and trained fields) lives in
+the 128 KiB `mrc-cache` at the start of the BIOS region. The mainstage
+writes it over ICH9 SPI after a cold boot whose probes pass, and only
+when it changed. `_S3_` is advertised only once that record and the stage
+caches persisted. Flash writes need a W25Q/W25X/MX25L part; SST parts stay
+read-only. Resume restores ASLS to the OpRegion kept in the firmware store
+and re-runs panel power and backlight setup; the OS restores the display
+mode.
 
 ## EC and OS policy
 
@@ -97,23 +107,28 @@ Runtime descriptor verification rejects a layout mismatch.
 2. Capture a cold boot through RAM training, probes, DMI/VC1, PCI allocation,
    SMM installation, tables and halt. Confirm the EHCI BAR stays fixed.
 3. Repeat without a gadget and after an interrupted/warm boot. Confirm there
-   is no reset loop or unintended power-off. S3 requests must fall back to a
-   prepared cold reset, not run destructive training over a suspended OS.
-4. Exercise each admitted RAM topology and run extensive memory testing
+   is no reset loop or unintended power-off.
+4. Check the log reports `memory cache: committed and verified`, then
+   `already current` on later cold boots at DDR3-800 (DDR3-1067 retrains, so
+   its record can change). Suspend from Linux and resume: no retraining, no
+   memory probe, ASLS restored, backlight and display back, and no memory
+   corruption across repeated cycles. A resume without a matching record
+   (swapped DIMM, cleared cache) must take a prepared cold reset.
+5. Exercise each admitted RAM topology and run extensive memory testing
    independently; the firmware's sparse probes are not RAM qualification.
-5. Validate EC fan/thermal behavior, PMH7 input power, radio and dock controls,
+6. Validate EC fan/thermal behavior, PMH7 input power, radio and dock controls,
    display clocks, the native modeset (LVDS, VGA, dock DP/HDMI), backlight
    PWM, AHCI/HDA/USB/PCIe interrupts, the ExpressCard slot and emitted ACPI
    before OS use. Confirm a cold boot reaches the payload in one pass: the
    mainstage must not repeat the bootblock's soft-reset recovery.
-6. Check both Penryn cores initialize, microcode is updated before PECI,
+7. Check both Penryn cores initialize, microcode is updated before PECI,
    and alternative SMRR is programmed/locked during SMM installation.
-7. Test a short power-button press at the halt payload and OS shutdown after
+8. Test a short power-button press at the halt payload and OS shutdown after
    ACPI ownership. Check the thermal trips/passive-cooling processor references.
-8. Check SMBIOS shows the EEPROM part number, serial and UUID, docking and
+9. Check SMBIOS shows the EEPROM part number, serial and UUID, docking and
    undocking (button and power-loss paths), VT-d with the emitted DMAR, and
    on an X200t that the `WACF004` digitizer appears.
-9. Confirm Linux `thinkpad_acpi` loads without `force_load`, Fn-F2/Fn-F3 events
+10. Confirm Linux `thinkpad_acpi` loads without `force_load`, Fn-F2/Fn-F3 events
    arrive, and both batteries report cycle count. Test charge thresholds and
    readback using the X200 `0x24/0x25` backend; the reusable H8 driver retains
    the `0xb0` backend for later ThinkPads.

@@ -2,6 +2,8 @@
 //! The temporary sequential 128 MiB/rank map remains active throughout.
 
 use super::*;
+use zerocopy::byteorder::{LE, U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 const READ_PATTERN: [u32; 40] = [
     0xfefefefe, 0x7f7f7f7f, 0xbebebebe, 0xdfdfdfdf, 0xeeeeeeee, 0xf7f7f7f7, 0xfafafafa, 0xfdfdfdfd,
@@ -358,7 +360,7 @@ fn reset_pointers(mch: &Mchbar) {
     }
 }
 
-pub(super) fn read_write_training(
+fn read_write_training(
     mch: &Mchbar,
     dimms: &Ddr3Channels,
     bases: &[[Option<usize>; 2]; 2],
@@ -386,6 +388,117 @@ pub(super) fn read_write_training(
         }
     }
     reset_pointers(mch);
+    Ok(())
+}
+
+/// Trained read/write timing fields, replayed on S3 resume. Coreboot keeps
+/// the same CxRDTy T/P and CxWRTy F/T/P fields in CMOS; fstart journals them
+/// with the SPD they were trained on through the shared memory cache.
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TrainingRecord {
+    magic: [u8; 8],
+    spd: [[u8; 128]; 2],
+    clock_mhz: U16<LE>,
+    cas: u8,
+    /// 1 when DDR3-1067 read/write training ran; lower clocks train nothing.
+    trained: u8,
+    read: [U32<LE>; 16],
+    write: [U32<LE>; 8],
+}
+
+const RECORD_MAGIC: [u8; 8] = *b"GM45DDR1";
+/// CxRDTy: T, P and the trained-lane enables (3 << 25).
+const READ_FIELDS: u32 = (3 << 25) | (0xf << 20) | (7 << 16);
+/// CxWRTy: T, P, F and the derived delay select D.
+const WRITE_FIELDS: u32 = (0xf << 28) | (7 << 24) | (3 << 18) | (3 << 16);
+
+impl TrainingRecord {
+    pub(crate) fn new(dimms: &Ddr3Channels, timing: &Ddr3Timing) -> Self {
+        Self {
+            magic: RECORD_MAGIC,
+            spd: dimms.spd,
+            clock_mhz: (timing.clock.mhz() as u16).into(),
+            cas: timing.cas,
+            trained: 0,
+            read: [0.into(); 16],
+            write: [0.into(); 8],
+        }
+    }
+
+    /// Validate a journaled record against this boot's modules and timing.
+    pub(crate) fn parse(bytes: &[u8], dimms: &Ddr3Channels, timing: &Ddr3Timing) -> Option<Self> {
+        let record = Self::read_from_bytes(bytes).ok()?;
+        let expected = Self::new(dimms, timing);
+        (record.magic == RECORD_MAGIC
+            && record.spd == expected.spd
+            && record.clock_mhz == expected.clock_mhz
+            && record.cas == expected.cas
+            && record.trained == u8::from(timing.clock == MemClock::Mhz533)
+            && record
+                .read
+                .iter()
+                .all(|value| value.get() & !READ_FIELDS == 0)
+            && record
+                .write
+                .iter()
+                .all(|value| value.get() & !WRITE_FIELDS == 0))
+        .then_some(record)
+    }
+
+    fn capture(&mut self, mch: &Mchbar) {
+        for ch in 0..2 {
+            for lane in 0..8 {
+                self.read[ch * 8 + lane] = (mch.read32(read_offset(ch, lane)) & READ_FIELDS).into();
+            }
+            for group in 0..4 {
+                self.write[ch * 4 + group] =
+                    (mch.read32(write_offset(ch, group)) & WRITE_FIELDS).into();
+            }
+        }
+        self.trained = 1;
+    }
+
+    /// Coreboot `read/write_training_restore_results()`, then pointer reset.
+    fn restore(&self, mch: &Mchbar) {
+        for ch in 0..2 {
+            for lane in 0..8 {
+                mch.update32(
+                    read_offset(ch, lane),
+                    READ_FIELDS,
+                    self.read[ch * 8 + lane].get(),
+                );
+            }
+        }
+        reset_pointers(mch);
+        for ch in 0..2 {
+            for group in 0..4 {
+                mch.update32(
+                    write_offset(ch, group),
+                    WRITE_FIELDS,
+                    self.write[ch * 4 + group].get(),
+                );
+            }
+        }
+        reset_pointers(mch);
+    }
+}
+
+/// DDR3-1067 training on cold boots; on S3 resume replay the record instead
+/// of writing test patterns over the suspended OS's memory.
+pub(super) fn train_or_replay(
+    mch: &Mchbar,
+    dimms: &Ddr3Channels,
+    bases: &[[Option<usize>; 2]; 2],
+    record: &mut TrainingRecord,
+    replay: bool,
+) -> Result<(), ServiceError> {
+    if replay {
+        record.restore(mch);
+    } else {
+        read_write_training(mch, dimms, bases)?;
+        record.capture(mch);
+    }
     Ok(())
 }
 
@@ -481,9 +594,54 @@ mod tests {
         assert!(find_eye(0, 8, 8, 112, |_| Ok(()), || false).is_err());
     }
     #[test]
+    fn gm45_training_record_replays_only_onto_the_trained_modules() {
+        let timing = Ddr3Timing {
+            clock: MemClock::Mhz533,
+            cas: 7,
+            tck_256ns: 0,
+            tras: 0,
+            trp: 0,
+            trcd: 0,
+            twr: 0,
+            trfc: 0,
+            trd: 0,
+            trrd: 0,
+            tfaw: 0,
+            twl: 0,
+        };
+        let dimms = Ddr3Channels {
+            dimms: [None, None],
+            spd: [[0x11; 128], [0x22; 128]],
+        };
+        let mut record = TrainingRecord::new(&dimms, &timing);
+        record.trained = 1;
+        record.read[3] = ((3 << 25) | (5 << 20) | (2 << 16)).into();
+        record.write[7] = ((9 << 28) | (4 << 24) | (1 << 18)).into();
+        let bytes = record.as_bytes();
+        assert!(TrainingRecord::parse(bytes, &dimms, &timing) == Some(record));
+        // Swapped module, other clock or CAS, or an untrained 1067 record.
+        let mut swapped = dimms;
+        swapped.spd[1][120] ^= 1;
+        assert!(TrainingRecord::parse(bytes, &swapped, &timing).is_none());
+        let slower = Ddr3Timing {
+            clock: MemClock::Mhz400,
+            ..timing
+        };
+        assert!(TrainingRecord::parse(bytes, &dimms, &slower).is_none());
+        assert!(TrainingRecord::parse(bytes, &dimms, &Ddr3Timing { cas: 8, ..timing }).is_none());
+        let untrained = TrainingRecord::new(&dimms, &timing);
+        assert!(TrainingRecord::parse(untrained.as_bytes(), &dimms, &timing).is_none());
+        // Bits outside the restored fields and truncated payloads are rejected.
+        let mut stray = record;
+        stray.read[0] = (1 << 31).into();
+        assert!(TrainingRecord::parse(stray.as_bytes(), &dimms, &timing).is_none());
+        assert!(TrainingRecord::parse(&bytes[1..], &dimms, &timing).is_none());
+    }
+    #[test]
     fn gm45_training_rank_bunch_rejects_invalid_topology() {
         let dimms = Ddr3Channels {
             dimms: [None, None],
+            spd: [[0; 128]; 2],
         };
         assert!(rank_addresses(&dimms, &[[None; 2]; 2]).is_err());
     }

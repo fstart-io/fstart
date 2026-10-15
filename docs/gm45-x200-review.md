@@ -23,7 +23,7 @@ and Pineview static PIRQ policy to this branch's shared contracts.
 | --- | --- | --- |
 | Boot ordering | ICH9 DMI setup was run before RAM training, while GM45 PM ran too late. Now: DDR3 initialization and probes → GM45 PM → ICH9 DMI → GM45 egress/DMI/IOMMU → ICH9 VC1 completion. | `gm45/romstage.c`, `i82801ix/dmi_setup.c` |
 | Warm resets | The port lacked the scratchpad `0xcafe` / GEN_PMCON_3 check, interrupted-RAM-init marker, and PMSTS warm/self-refresh check. Added these guards and Cantiga's tiny rank-map/CLKCFG/DCC preparation before CF9. ICH9 prepares PMIR before these checks, in pre-console setup. | `gm45/early_reset.c`, `gm45/raminit.c` |
-| S3 rejection | Resume cannot replay this DDR3 training state. Before the common unsupported-resume reset, the northbridge now prepares the controller's reset geometry. This is cold-reset fallback, **not S3 support**. | `gm45/early_reset.c` |
+| S3 rejection | Before the common unsupported-resume reset, the northbridge prepares the controller's reset geometry. Superseded by S3 resume (see "S3 resume" below); this remains the fallback when no matching training record exists. | `gm45/early_reset.c` |
 | TXT | Added the TXT-fuse-gated wait for TPM_ACCESS_VALID. Unlike coreboot's unbounded loop, it fails with a timeout after approximately one second. | `gm45/romstage.c` |
 | Stage boundaries | A fresh ramstage northbridge had no `dram_ready` state, making memory reporting and TSEG unavailable. The mainstage's `early_init` now validates the live TOM/TOLUD/TOUUD/GGC/ESMRAMC decode when the raminit-complete marker is present, without retraining or probing live RAM; soft-reset recovery runs only in the bootblock's `dram_init`. | `gm45/northbridge.c` resource readback, `gm45/romstage.c` |
 | Interrupts | An assumed X200 PIRQ table is not justified by coreboot, which retains the reset/strap router. Added an exclusive preserve/readback policy; `_PRT` uses actual DxxIR, including PCIe swizzling. PEG/IGD/ME slots outside the router use coreboot's hardwired pin-to-PIRQ identity. The shared routing view can now borrow runtime data. | `intel/common/rcba_pirq.c`, `i82801ix/lpc.c` |
@@ -53,7 +53,7 @@ The Opus/GPT source review found additional issues that are now addressed:
   configures VC1 before enabling it and sets clock/exit prerequisites before
   write-once ASPM enable. CLKCFG PM writes retain coreboot's 16-bit sequencing.
   Core counts 1/2/4 are admitted; this does not qualify a single-core X200 SKU.
-* ICH9 emits root `_S5` without advertising S3. GM45 emits CPU devices and
+* ICH9 emits root `_S5`, and `_S3` once S3 state persisted. GM45 emits CPU devices and
   the root `PPKG` consumed by both H8 passive-cooling methods.
 * X200 restores the separate PMH7 TrackPoint and touchpad power gates.
 * H8 retains the `0xb0` threshold backend for later ThinkPads and adds an
@@ -158,6 +158,43 @@ The gaps the third pass left documented are now ported:
 * The X200 DSDT glue moved into `fstart-driver-lenovo::x200`, next to the
   X6 family glue, so ACPICA executes the dock, `\UCMS` and digitizer paths.
 
+### S3 resume
+
+GM45/ICH9 now use the shared Intel S3 flow that GM965/ICH8 already had:
+bootblock detection, a flash training journal, cached postcar/ramstage,
+SMM reinstall, the FACS wake vector and the ACPI-mode handoff.
+
+* **Raminit** (`raminit.c`, `raminit_read_write_training.c`). On resume
+  `dram_powerup()` asserts only CKE, without the DDR3 reset, and
+  `jedec_init()` is skipped. Receive-enable calibration still runs (it
+  only reads DRAM). At DDR3-1067 the CxRDTy T/P and CxWRTy F/T/P/D fields
+  are restored rather than trained, with the read/write pointer reset after
+  each. The destructive post-map memory probe never runs on resume.
+* **Record.** Coreboot keeps the training bytes in CMOS. fstart journals
+  them in the 128 KiB `mrc-cache` with the SPD bytes 0-127 of both
+  channels, clock and CAS. Resume refuses a record from other modules and
+  takes the prepared cold reset instead. The key covers host-bridge
+  IDs/CAPIDs, CPUID, FSB strap, SPD map and graphics policy. Cold boots
+  always train, as in coreboot; the flash is rewritten only when the record
+  changes.
+* **ICH9.** Resume detection requires `WAK_STS` (coreboot
+  `platform_is_resuming()`). `_S3` is advertised only after the record and
+  stage caches persisted. The RTC is not reinitialized on resume, and
+  `GPE0_STS` is no longer cleared, so the OS still sees its wake source
+  (coreboot only writes `GPE0_EN`). The SPI
+  cache writer now drives ICH9 (SPIBAR at RCBA+0x3800) and accepts W25X
+  parts. X200 SST25VF064C chips stay read-only: EWSR and power-up block
+  protection.
+* **Graphics.** Coreboot keeps the OpRegion in CBMEM and restores ASLS on
+  resume. fstart allocated it from the mainstage heap, which a resume
+  reloads, so it is now a firmware-store entry (`IGD_OPREGION`). A new
+  `resume_init` hook replaces `stage_local_init` on resume. On GM45 it
+  reruns `gma_func0_init()` minus the modeset (GTT clear, panel power,
+  backlight PWM) and re-registers ASLS/SWSCI; GM965 re-registers ASLS.
+* **Board.** As in `h8_enable()`, the EC volume is left alone on resume.
+* The FFS manifest holds eight regions so the five-region X200 descriptor
+  fits beside `mrc-cache` and `ro`.
+
 ### CodeRabbit follow-up
 
 * DDR3 addressing rejects reserved row encodings (only 12–16 row bits and
@@ -248,11 +285,11 @@ These are not claimed fixed by compiling the board:
 1. **No hardware boot result.** DDR3 electrical setup, reset behavior, TXT
    timing, VC negotiation, SMM relocation and debug-gadget enumeration need
    physical validation with recoverable SPI flashing.
-2. **RAM support is narrower than coreboot.** No DDR2, SFF, S3 training replay,
-   arbitrary early steppings, or FSB1067/DDR3-667 special PLL sequence. Unsupported inputs fail closed. Cached cold-boot
-   training is not implemented by this board binding.
-3. **No S3.** No successful OS sleep/resume claim is made; resume requests
-   fall back to a prepared cold reset.
+2. **RAM support is narrower than coreboot.** No DDR2, SFF,
+   arbitrary early steppings, or FSB1067/DDR3-667 special PLL sequence. Unsupported inputs fail closed.
+3. **S3 is implemented, not validated.** The training record lives in SPI
+   flash rather than CMOS, cold boots still always train, and the resume
+   path has never run on hardware.
 4. **Northbridge device policy is smaller.** The firmware allocator assigns no
    BARs above 4 GiB (the window is only advertised to the OS). The X200t
    digitizer and the X301 variant are not qualified on hardware.
@@ -369,6 +406,14 @@ including the DMAR wire-format test, the warning-denied feature checks and
 `cargo fbuild check lenovo-x200`. X61, X60, D945GCLF and Q35 still build.
 Release halt assembly passed the unchanged guards: bootblock 147456 bytes,
 postcar 27160, ramstage 186918 compressed / 260816 unpacked, 8 MiB container.
+
+After S3 resume support, `cargo test --workspace` with `-D warnings`,
+Intel drivers 133 with every legacy chipset plus `spi` (including the
+training-record validation test), Lenovo 14 and the platform families
+passed. `cargo fbuild check` passes for every x86 board. Release halt
+assembly with the `mrc-cache` prefix: bootblock 155648 bytes, postcar
+27160, ramstage 207959 compressed / 294776 unpacked. No suspend/resume
+cycle has been run.
 
 Assembly required populating the two microcode files from the already-present
 local checkout. The generated keys are ignored local development keys, not

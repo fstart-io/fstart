@@ -462,6 +462,47 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     fn prepare_resume_reset(&self) {
         self.prepare_reset_geometry();
     }
+    fn supports_s3_replay(&self) -> bool {
+        // Implemented after coreboot's resume raminit; not hardware-validated.
+        true
+    }
+    fn training_identity(&self) -> Option<[u8; 32]> {
+        // Straps, fuses and board policy only: the bootblock computes this
+        // before raminit and the mainstage again after it.
+        let hb = self.hostbridge();
+        Some(crate::generic::training::identity(
+            b"gm45-raminit-v1",
+            &self.config.spd_addresses,
+            self.graphics as u16,
+            (self.mch_clock().clkcfg.get() & 7) as u8,
+            crate::generic::training::HardwareIdentity {
+                vendor_id: hb.vendor_id.get(),
+                device_id: hb.device_id.get(),
+                revision_id: hb.revision_id.get(),
+                capabilities: [hb.capid0.get(), hb.capid_high.get()],
+                cpu_signature: fstart_arch::x86::cpuid(1).0,
+            },
+        ))
+    }
+    fn dram_init_cached(
+        &mut self,
+        _smbus: Option<&mut dyn fstart_core::services::SmBus>,
+        cached: Option<&[u8]>,
+        output: &mut [u8],
+    ) -> Result<Option<usize>, ServiceError> {
+        use zerocopy::IntoBytes;
+        let record = self.raminit(cached)?;
+        if self.boot_path == crate::BootPath::S3Resume {
+            return Ok(None);
+        }
+        // Published only after the cold-boot probe passed inside raminit.
+        let bytes = record.as_bytes();
+        output
+            .get_mut(..bytes.len())
+            .ok_or(ServiceError::InvalidParam)?
+            .copy_from_slice(bytes);
+        Ok(Some(bytes.len()))
+    }
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         let (revision, _, _) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
         if self.graphics != Gm45GraphicsPolicy::Integrated {
@@ -524,13 +565,16 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     }
 }
 
-impl MemoryController for IntelGm45 {
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
+impl IntelGm45 {
+    /// Coreboot gm45 `raminit(s3resume)`. The southbridge clears SLP_TYP
+    /// while detecting S3, so the boot path comes from the shared flow.
+    /// `cached` is the journaled [`raminit::TrainingRecord`]; only a resume
+    /// replays it, cold boots always train like coreboot.
+    fn raminit(&mut self, cached: Option<&[u8]>) -> Result<raminit::TrainingRecord, ServiceError> {
         self.dram_ready = false;
         self.trained_mode = None;
-        // The southbridge clears SLP_TYP while detecting S3. Use the boot
-        // path passed down by the shared flow, never re-read PM1_CNT here.
-        if self.boot_path == crate::BootPath::S3Resume || self.bootstrap_windows.is_none() {
+        let resume = self.boot_path == crate::BootPath::S3Resume;
+        if self.bootstrap_windows.is_none() {
             return Err(ServiceError::NotInitialized);
         }
         // Coreboot romstage/raminit order: soft-reset recovery, then TXT.
@@ -578,8 +622,22 @@ impl MemoryController for IntelGm45 {
             timing.clock.mhz(),
             timing.cas
         );
+        let replay = if resume {
+            // Retained RAM must never be retrained or tested: fail before
+            // touching the controller unless this boot's modules and timing
+            // match the record (coreboot keeps the same values in CMOS).
+            let record = cached
+                .and_then(|bytes| raminit::TrainingRecord::parse(bytes, &channels, &timing))
+                .ok_or_else(|| {
+                    fstart_log::error!("gm45: S3 resume without matching training record");
+                    ServiceError::HardwareError
+                })?;
+            Some(record)
+        } else {
+            None
+        };
         self.enter_raminit();
-        raminit::prepare_ddr3(
+        let record = raminit::prepare_ddr3(
             self.config.mchbar,
             self.config.epbar,
             revision,
@@ -588,10 +646,14 @@ impl MemoryController for IntelGm45 {
             self.graphics,
             &channels,
             &timing,
+            replay.as_ref(),
         )?;
         // The final map and all post-map programming must complete before
         // touching DRAM. Failure keeps every public RAM API fail-closed.
-        self.probe_low_memory()?;
+        // The probe is destructive: never on memory the suspended OS owns.
+        if !resume {
+            self.probe_low_memory()?;
+        }
         // Coreboot romstage: hide D4F0 and finish PM before ICH9 DMI setup.
         let hb = self.hostbridge();
         hb.deven.set(hb.deven.get() & !0x4000);
@@ -599,7 +661,18 @@ impl MemoryController for IntelGm45 {
         self.trained_mode = Some((revision, fsb_mhz, timing.clock.mhz()));
         self.dram_ready = true;
         self.finish_raminit();
-        Ok(())
+        Ok(record)
+    }
+}
+
+impl MemoryController for IntelGm45 {
+    fn dram_init(&mut self) -> Result<(), ServiceError> {
+        // Without a training record retained RAM cannot be resumed.
+        if self.boot_path == crate::BootPath::S3Resume {
+            self.dram_ready = false;
+            return Err(ServiceError::NotInitialized);
+        }
+        self.raminit(None).map(|_| ())
     }
     fn detected_size_bytes(&self) -> u64 {
         if self.dram_ready { self.tom() } else { 0 }

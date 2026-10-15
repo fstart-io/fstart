@@ -17,6 +17,8 @@ mod map;
 mod post_map;
 mod training;
 
+pub(crate) use training::TrainingRecord;
+
 /// Coreboot GM45 indexes memory clocks by their physical MHz, not transfer rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemClock {
@@ -57,6 +59,9 @@ pub struct Ddr3Timing {
 #[derive(Debug, Clone, Copy)]
 pub struct Ddr3Channels {
     pub dimms: [Option<ddr3::Ddr3DimmInfo>; 2],
+    /// SPD bytes 0..128 (CRC-covered data and serial), zero when absent;
+    /// an S3 training record only replays onto the same modules.
+    pub spd: [[u8; 128]; 2],
 }
 
 /// Read full SPD only for installed slots; reject unknown types and extra
@@ -66,6 +71,7 @@ pub fn probe_ddr3<B: SmBus>(
     addresses: &[u8; 4],
 ) -> Result<Ddr3Channels, ServiceError> {
     let mut dimms = [None; 2];
+    let mut raw = [[0; 128]; 2];
     for (slot, &addr) in addresses.iter().enumerate() {
         if addr == 0 {
             continue;
@@ -82,13 +88,14 @@ pub fn probe_ddr3<B: SmBus>(
             return Err(ServiceError::HardwareError);
         }
         let spd = ddr3::read_spd(bus, addr)?.ok_or(ServiceError::HardwareError)?;
+        raw[slot / 2].copy_from_slice(&spd[..128]);
         dimms[slot / 2] =
             Some(ddr3::decode_dimm_gm45(&spd).map_err(|_| ServiceError::HardwareError)?);
     }
     if dimms.iter().all(Option::is_none) {
         return Err(ServiceError::HardwareError);
     }
-    Ok(Ddr3Channels { dimms })
+    Ok(Ddr3Channels { dimms, spd: raw })
 }
 
 fn ceil_div(a: u32, b: u32) -> u32 {
@@ -942,18 +949,24 @@ fn vc1_program_timings(epbar: u64, fsb_mhz: u32) -> Result<(), ServiceError> {
     Ok(())
 }
 
-fn powerup_ddr3(mch: &Mchbar) {
+/// Coreboot `dram_powerup()`: retained DIMMs only get CKE (bit 6), not the
+/// DDR3 reset sequence around it.
+fn powerup_ddr3(mch: &Mchbar, resume: bool) {
     let regs = mch.regs();
     fstart_arch::x86::udelay(200);
     regs.clkcfg
         .set((regs.clkcfg.get() & !((3 << 21) | (1 << 3))) | (3 << 21));
-    regs.dram_ctrl.set(regs.dram_ctrl.get() | (1 << 10));
-    fstart_arch::x86::udelay(1);
+    if !resume {
+        regs.dram_ctrl.set(regs.dram_ctrl.get() | (1 << 10));
+        fstart_arch::x86::udelay(1);
+    }
     regs.dram_ctrl.set(regs.dram_ctrl.get() | (1 << 6));
-    fstart_arch::x86::udelay(1);
-    regs.dram_ctrl
-        .set((regs.dram_ctrl.get() | (1 << 9)) & !(1 << 10));
-    fstart_arch::x86::udelay(500);
+    if !resume {
+        fstart_arch::x86::udelay(1);
+        regs.dram_ctrl
+            .set((regs.dram_ctrl.get() | (1 << 9)) & !(1 << 10));
+        fstart_arch::x86::udelay(500);
+    }
 }
 
 // Coreboot gm45/raminit.c DDR3 memory-IO setup. The read/write lane and
@@ -1602,7 +1615,11 @@ fn receive_enable_calibration(
     Ok(())
 }
 
-/// Advance through DDR3 cold training, mapping and post-map register setup; fail closed.
+/// Advance through DDR3 initialization, mapping and post-map register setup;
+/// fail closed. `replay` is a validated S3 record: like coreboot's
+/// `raminit(s3resume)`, the self-refreshing DIMMs skip the power-up reset and
+/// JEDEC commands and get their read/write training restored, never retested.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_ddr3(
     base: u64,
     epbar: u64,
@@ -1612,8 +1629,9 @@ pub(super) fn prepare_ddr3(
     graphics: crate::gm45::Gm45GraphicsPolicy,
     dimms: &Ddr3Channels,
     timing: &Ddr3Timing,
-) -> Result<(), ServiceError> {
-    // This incomplete slice only implements non-SFF cold DDR3 initialization.
+    replay: Option<&TrainingRecord>,
+) -> Result<TrainingRecord, ServiceError> {
+    // Non-SFF DDR3 only, cold boot or S3 resume.
     if !matches!(revision, 5 | 6 | 7 | 9) || !matches!(fsb_mhz, 667 | 800 | 1067) {
         return Err(ServiceError::HardwareError);
     }
@@ -1649,7 +1667,11 @@ pub(super) fn prepare_ddr3(
     }
     configure_dram_control(&mch, dimms, timing.clock);
     initialize_rcomp(&mch, revision)?;
-    powerup_ddr3(&mch);
+    let resume = replay.is_some();
+    let mut record = replay
+        .copied()
+        .unwrap_or_else(|| TrainingRecord::new(dimms, timing));
+    powerup_ddr3(&mch, resume);
     program_timings(&mch, timing);
     program_banks(&mch, dimms);
     for (ch, dimm) in dimms.dimms.iter().enumerate() {
@@ -1665,11 +1687,13 @@ pub(super) fn prepare_ddr3(
     prejedec_memory_map(&mch, dimms);
     // SAFETY: ECAM was enabled by early host-bridge setup.
     let hb = unsafe { EcamDevice::new(0, 0, 0).regs::<super::Gm45HostBridgePciConfig>() };
-    jedec_ddr3(&mch, hb, &bases, &commands);
+    if !resume {
+        jedec_ddr3(&mch, hb, &bases, &commands);
+    }
     post_jedec_ddr3(&mch, hb, cores == 4);
     receive_enable_calibration(&mch, dimms, timing, &bases)?;
     if timing.clock == MemClock::Mhz533 {
-        training::read_write_training(&mch, dimms, &bases)?;
+        training::train_or_replay(&mch, dimms, &bases, &mut record, resume)?;
     }
     map::program(&mch, hb, &final_map);
     post_map::program(
@@ -1702,7 +1726,7 @@ pub(super) fn prepare_ddr3(
     {
         return Err(ServiceError::HardwareError);
     }
-    Ok(())
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -1995,6 +2019,7 @@ mod tests {
         );
         let second_only = Ddr3Channels {
             dimms: [None, both.dimms[1]],
+            spd: both.spd,
         };
         assert_eq!(
             dummy_rank_map(&second_only),

@@ -951,6 +951,10 @@ pub struct IntelIch9 {
     config: &'static IntelIch9Config,
     smbus: Option<I801SmBus>,
     pm: PmIo,
+    /// Advertise `_S3_`; set by the mainstage once resume state persisted.
+    s3_enabled: bool,
+    /// This boot resumes from S3; set by the mainstage.
+    resume: bool,
 }
 
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
@@ -1331,7 +1335,8 @@ impl IntelIch9 {
         }
 
         self.configure_gpi_routing();
-        self.pm().write32(GPE0_STS_ICH9, 0xffff_ffff);
+        // Like coreboot lpc.c, leave GPE0_STS: on resume it holds the wake
+        // source the OS reads.
         self.pm().write32(GPE0_EN_ICH9, self.config.gpe0_en);
         self.pm()
             .write16(pmio::ALT_GP_SMI_EN, self.config.alt_gp_smi_en);
@@ -1412,7 +1417,10 @@ impl IntelIch9 {
         if self.is_mobile() {
             self.configure_cstates();
         }
-        self.rtc_init();
+        // Like coreboot, not on resume: the OS owns the clock and its alarm.
+        if !self.resume {
+            self.rtc_init();
+        }
         self.isa_dma_init();
         self.i8259_init();
         self.enable_hpet();
@@ -1995,6 +2003,11 @@ impl IntelIch9 {
         {
             return false;
         }
+        // Coreboot platform_is_resuming(): SLP_TYP alone survives a power
+        // loss in S3, so require an actual wake.
+        if self.pm().read16(pmio::PM1_STS) & pmio::WAK_STS == 0 {
+            return false;
+        }
         let pm1_cnt = self.pm().read32(pmio::PM1_CNT);
         let slp_typ = pm1_cnt & pmio::SLP_TYP_MASK;
         if slp_typ == SLP_TYP_S3 {
@@ -2247,6 +2260,8 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
             config,
             smbus: None,
             pm: PmIo::new(ich9::DEFAULT_PMBASE),
+            s3_enabled: false,
+            resume: false,
         })
     }
 
@@ -2285,7 +2300,6 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         }
         self.early_chipset_settings();
         self.hide_disabled_root_ports();
-        self.pm().write32(GPE0_STS_ICH9, 0xffff_ffff);
         self.pm().write32(GPE0_EN_ICH9, self.config.gpe0_en);
         self.enable_hpet();
         if let Some(sata) = self.config.sata.as_ref() {
@@ -2298,6 +2312,20 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
 
     fn detect_s3_resume(&self) -> bool {
         IntelIch9::detect_s3_resume(self)
+    }
+
+    fn set_s3_enabled(&mut self, enabled: bool) {
+        self.s3_enabled = enabled;
+    }
+
+    fn set_resume(&mut self, resume: bool) {
+        self.resume = resume;
+    }
+
+    fn training_identity(&self) -> Option<[u8; 5]> {
+        Some(crate::southbridge::lpc::training_identity(
+            Self::type0_regs(self.lpc()),
+        ))
     }
 
     fn smbus_mut(&mut self) -> Option<&mut dyn SmBus> {
@@ -2810,7 +2838,8 @@ mod acpi_impl {
             // PM/GPIO SystemIO OpRegions are intentionally omitted until an
             // emitted AML method actually consumes them. Declaring unused
             // regions makes ACPI claim the native lpc_ich driver resources.
-            // S5 is supported independently of the unimplemented S3 replay.
+            // Coreboot sleepstates.asl; S3 only once the platform persisted
+            // training and stage caches for this image.
             let mut aml: Vec<u8> = acpi_dsl! {
                 Scope("\\") {
                     Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
@@ -2818,6 +2847,11 @@ mod acpi_impl {
                 }
             }
             .into();
+            if self.s3_enabled {
+                aml.extend_from_slice(&acpi_dsl! { Scope("\\") {
+                    Name("_S3_", Package(5u32, 0u32, 0u32, 0u32));
+                } });
+            }
             // When keeping strap routing, _PRT must describe the live router,
             // not an assumed A-D map (coreboot intel/common/rcba_pirq.c).
             let hardware_routes = if config.preserve_hardware_pirq {
