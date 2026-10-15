@@ -1,4 +1,4 @@
-//! Register subset shared by the ICH7/ICH8 LPC flash interfaces.
+//! Register subset shared by the ICH7/ICH8/ICH9 LPC flash interfaces.
 
 use fstart_core::mmio::MmioReadWrite;
 use fstart_pci::{ecam::EcamDevice, pci_type0_config};
@@ -52,7 +52,7 @@ pub fn device() -> EcamDevice {
 }
 
 /// # Safety
-/// The caller must have mapped and enabled ICH7/ICH8 ECAM.
+/// The caller must have mapped and enabled ICH7/ICH8/ICH9 ECAM.
 pub unsafe fn flash_config() -> &'static LpcFlashConfig {
     unsafe { device().regs() }
 }

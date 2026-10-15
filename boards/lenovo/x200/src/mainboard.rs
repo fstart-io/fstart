@@ -125,6 +125,7 @@ impl fstart_platform_intel::IntelMainstageBoardHooks<Gm45Ich9> for X200Mainboard
                 .identity
                 .as_ref()
                 .is_some_and(|eeprom| fstart_driver_lenovo::wacom::is_tablet(eeprom.part_number()));
+        let resume = ctx.resume;
         let sb = ctx.southbridge();
         self.bluetooth_present = !sb.gpio_get(7)?;
         let h8 = H8::new(Ec::new(H8_CONFIG.resources.os));
@@ -151,7 +152,8 @@ impl fstart_platform_intel::IntelMainstageBoardHooks<Gm45Ich9> for X200Mainboard
             h8.sticky_fn(false),
             h8.charge_primary_first(true),
             h8.audio_mute(false),
-            h8.volume(3),
+            // Coreboot h8_enable(): the OS restores its own volume on resume.
+            resume || h8.volume(3),
         ];
         if !controls.into_iter().all(core::convert::identity) {
             fstart_log::error!("x200: EC configuration failed");

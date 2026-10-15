@@ -1,4 +1,4 @@
-//! Allocation-free rflasher adapter for firmware ICH7/ICH8 SPI access.
+//! Allocation-free rflasher adapter for firmware ICH7/ICH8/ICH9 SPI access.
 //!
 //! The controller is not a general firmware flasher: all accesses are bounded
 //! to a caller-supplied, linked mutable extent. Construct/use it only from RAM;
@@ -17,8 +17,11 @@ use rflasher_internal::{
 };
 use tock_registers::interfaces::{ReadWriteable, Readable};
 
+/// SPIBAR is RCBA+0x3020 on ICH7/ICH8 and RCBA+0x3800 on ICH9.
 #[derive(Clone, Copy)]
-struct FirmwareHost;
+struct FirmwareHost {
+    spi_offset: u64,
+}
 
 impl FirmwareHost {
     fn device(address: PciAddress) -> EcamDevice {
@@ -99,7 +102,6 @@ impl MmioAccess for SpiRegisters {
         MmioBar::write32(*self, o.try_into().expect("MMIO offset overflow"), v)
     }
 }
-const SPI_OFFSET: u64 = 0x3020;
 const SPI_WINDOW_SIZE: u32 = 0x200;
 
 impl HostAccess for FirmwareHost {
@@ -107,12 +109,12 @@ impl HostAccess for FirmwareHost {
     unsafe fn map_mmio(&self, address: u64, size: usize) -> Result<SpiRegisters, InternalError> {
         // SAFETY: inherited from map_mmio's enabled ECAM/RCBA contract.
         let rcba = unsafe { lpc::flash_config() }.rcba.extract();
-        let expected = (u64::from(rcba.read(ROOT_COMPLEX_BASE::BASE)) << 14) + SPI_OFFSET;
+        let expected = (u64::from(rcba.read(ROOT_COMPLEX_BASE::BASE)) << 14) + self.spi_offset;
         if !rcba.is_set(ROOT_COMPLEX_BASE::ENABLE)
             || address != expected
             || size != SPI_WINDOW_SIZE as usize
         {
-            return Err(InternalError::Io("invalid ICH7/ICH8 SPI window"));
+            return Err(InternalError::Io("invalid ICH SPI window"));
         }
         Ok(SpiRegisters(address as usize))
     }
@@ -178,9 +180,13 @@ impl CacheSpi {
             Some(lpc.revision_id.get()),
         )
         .ok_or(ServiceError::NotSupported)?;
-        if !matches!(entry.chipset, IchChipset::Ich7 | IchChipset::Ich8) {
-            return Err(ServiceError::NotSupported);
-        }
+        let host = FirmwareHost {
+            spi_offset: match entry.chipset {
+                IchChipset::Ich7 | IchChipset::Ich8 => 0x3020,
+                IchChipset::Ich9 => 0x3800,
+                _ => return Err(ServiceError::NotSupported),
+            },
+        };
         let chipset = DetectedChipset {
             enable: entry,
             domain: 0,
@@ -190,13 +196,13 @@ impl CacheSpi {
             revision_id: lpc.revision_id.get(),
         };
         let mut controller =
-            IchSpiController::new_with_host(FirmwareHost, &chipset, SpiMode::SoftwareSequencing)
+            IchSpiController::new_with_host(host, &chipset, SpiMode::SoftwareSequencing)
                 .map_err(|_| ServiceError::HardwareError)?;
         if let Some((base, limit)) = controller.get_bios_region() {
             if extent.offset < base || extent.offset + extent.size - 1 > limit {
                 return Err(ServiceError::InvalidParam);
             }
-        } else if entry.chipset == IchChipset::Ich8 {
+        } else if entry.chipset != IchChipset::Ich7 {
             // Never infer an IFD-relative writable extent from a missing descriptor.
             return Err(ServiceError::HardwareError);
         }
@@ -287,10 +293,12 @@ impl CacheSpi {
     }
 }
 
-// W25Q16/32/64/128, MX25L16/32/64/128 and AT25DF321(A) use 256-byte
-// page programming and 4-KiB/64-KiB erases. Do not include SST AAI parts.
+// W25Q16/32/64/128, W25X16/32/64, MX25L16/32/64/128 and AT25DF321(A) use
+// 256-byte page programming and 4-KiB/64-KiB erases. Do not include SST
+// parts: AAI programming, EWSR and power-up block protection.
 fn supported_geometry(id: [u8; 3], chip_size: u32) -> bool {
     match id {
+        [0xef, 0x30, capacity @ 0x15..=0x17] => chip_size == 1u32 << capacity,
         [0xef, 0x40, capacity] | [0xc2, 0x20, capacity] => {
             (0x15..=0x18).contains(&capacity) && chip_size == 1u32 << capacity
         }
@@ -305,6 +313,9 @@ mod tests {
     fn geometry_requires_known_program_protocol_and_exact_capacity() {
         assert!(super::supported_geometry([0xef, 0x40, 0x18], 0x1000000));
         assert!(super::supported_geometry([0xc2, 0x20, 0x16], 0x400000));
+        assert!(super::supported_geometry([0xef, 0x30, 0x17], 0x800000));
+        assert!(!super::supported_geometry([0xef, 0x30, 0x18], 0x1000000));
+        assert!(!super::supported_geometry([0xbf, 0x25, 0x4b], 0x800000));
         assert!(super::supported_geometry([0x1f, 0x47, 0x00], 0x400000));
         assert!(super::supported_geometry([0x1f, 0x47, 0x01], 0x400000));
         assert!(!super::supported_geometry([0x1f, 0x47, 0x00], 0x800000));
