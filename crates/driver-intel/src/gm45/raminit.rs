@@ -2076,14 +2076,24 @@ mod tests {
     }
 
     #[test]
-    fn gm45_final_map_rejects_asymmetry_and_invalid_geometry() {
+    fn gm45_final_map_interleaves_unequal_channels_and_rejects_invalid_geometry() {
         let mut bus = FakeBus {
             spd: spd(),
             extra_slot: true,
         };
         let mut both = probe_ddr3(&mut bus, &[0x50, 0, 0x51, 0]).unwrap();
         both.dimms[1].as_mut().unwrap().ranks = 2;
-        assert!(map::compute(&both, false, 0, false).is_err());
+        // Coreboot: 1 GiB + 2 GiB stays interleaved, each channel from zero,
+        // and an active ME takes 32 MiB rather than 64 when sizes differ.
+        let map = map::compute(&both, false, 0, true).unwrap();
+        assert!(map.interleaved);
+        assert_eq!(map.bounds[0], [(1024 >> 5) | ((1024 >> 5) << 16); 2]);
+        assert_eq!(map.bounds[1][0], (1024 >> 5) | ((2048 >> 5) << 16));
+        assert_eq!(map.tom, 3072 >> 7);
+        assert_eq!(map.tolud, 2048 << 4);
+        assert_eq!(map.remap_base, 4096 >> 6);
+        // 3072 - 32 MiB ME, aligned down to 3008; 960 MiB reclaimed above 4G.
+        assert_eq!(map.touud, 4096 + (3008 - 2048));
         both.dimms[1].as_mut().unwrap().ranks = 1;
         both.dimms[0].as_mut().unwrap().rank_capacity_mb = 33;
         assert!(map::compute(&both, false, 0, false).is_err());

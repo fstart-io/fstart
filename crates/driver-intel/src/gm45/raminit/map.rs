@@ -90,9 +90,10 @@ pub(super) fn compute(
         }
     }
     let tom = totals[0].checked_add(totals[1]).ok_or(bad)?;
-    if tom == 0 || (interleaved && totals[0] != totals[1]) || !tom.is_multiple_of(128) {
-        // Unequal channels need an asymmetric decode implementation, not a
-        // fabricated full interleave across mismatched DIMMs.
+    // Coreboot collect_dimm_config() always selects dual interleaved mode when
+    // both channels are populated, including unequal capacities: both channels
+    // count rank bounds from zero and the MCH interleaves the common part.
+    if tom == 0 || !tom.is_multiple_of(128) {
         return Err(bad);
     }
     let used_me = if me_active {
