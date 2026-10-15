@@ -4,16 +4,13 @@
 
 extern crate alloc;
 
-#[cfg(all(
-    feature = "acpi",
-    any(
-        feature = "gm45",
-        feature = "gm965",
-        feature = "i945",
-        feature = "pineview"
-    )
+#[cfg(any(
+    feature = "gm45",
+    feature = "gm965",
+    feature = "i945",
+    feature = "pineview"
 ))]
-mod cpu;
+pub mod cpu;
 
 pub mod generic;
 #[cfg(feature = "gm45")]

@@ -1689,7 +1689,10 @@ mod acpi_impl {
                 aml.extend(
                     fstart_acpi::aml_linker::scope_vec(
                         "\\",
-                        &crate::cpu::core2_aml::cpu_devices_aml(2),
+                        &crate::cpu::core2_aml::cpu_devices_aml(
+                            2,
+                            &crate::cpu::CORE2_MOBILE_CSTATES,
+                        ),
                     )
                     .expect("i945 CPU scope emission"),
                 );

@@ -1911,112 +1911,16 @@ mod acpi_impl {
                             Package(0x0000FFFFu32, 3u32, 0u32, 19u32)
                         ));
                     }
-                    Device("GFX0") {
-                        Name("_ADR", 0x00020000u32);
-                        OperationRegion("GFXC", PciConfig, 0x00u32, 0x100u32);
-                        Field("GFXC", DWordAcc, NoLock, Preserve) {
-                            Offset(0x10),
-                            BAR0, 64,
-                            Offset(0xE4),
-                            ASLE, 32,
-                            Offset(0xFC),
-                            ASLS, 32,
-                        }
-                        OperationRegion("OPRG", SystemMemory, ASLS, 0x400u32);
-                        Field("OPRG", DWordAcc, NoLock, Preserve) {
-                            Offset(0x58),
-                            MBOX, 32,
-                            Offset(0x300),
-                            ARDY, 1,
-                            , 31,
-                            ASLC, 32,
-                            TCHE, 32,
-                            ALSI, 32,
-                            BCLP, 32,
-                            PFIT, 32,
-                            CBLV, 32,
-                        }
-                        OperationRegion("GFRG", SystemMemory, #{dword gttmmio}, 0x80000u32);
-                        Field("GFRG", DWordAcc, NoLock, Preserve) {
-                            Offset(0x61254),
-                            BCLV, 16,
-                            BCLM, 16,
-                        }
-                        Name("BRLV", 100u32);
-                        Name("BRVA", 0u32);
-                        Name("BRIG", Package(100u32, 100u32, 0u32, 10u32, 20u32, 30u32, 40u32, 50u32, 60u32, 70u32, 80u32, 90u32, 100u32));
-                        // ASLE uses an 8-bit level, not an ACPI percentage.
-                        // Separate the request so every failure reaches PWM fallback.
-                        Method("SBCM", 1, Serialized) {
-                            If (ASLS == 0u32) { Return(Ones); }
-                            If ((MBOX & 4u32) == 0u32) { Return(Ones); }
-                            BCLP = (Arg0 * 255u32 / 100u32) | 0x80000000u32;
-                            If (ARDY == 0u32) { Return(Ones); }
-                            ASLC = 2u32;
-                            ASLE = 1u32;
-                            Local1 = 32u32;
-                            While (Local1 > 0u32) {
-                                Sleep(1u32);
-                                If ((ASLC & 2u32) == 0u32) {
-                                    If (((ASLC >> 12u32) & 3u32) == 0u32) { Return(0u32); }
-                                    Return(Ones);
-                                }
-                                Local1--;
-                            }
-                            Return(Ones);
-                        }
-                        Method("XBCM", 1, Serialized) {
-                            Local0 = Arg0;
-                            If (Local0 > 100u32) { Local0 = 100u32; }
-                            BRLV = Local0;
-                            BRVA = 1u32;
-                            If (SBCM(Local0) == Ones) {
-                                // Period and duty share a dword; preserve the period.
-                                // A zero period means PWM is not initialized yet.
-                                Local1 = BCLM;
-                                If (Local1 != 0u32) {
-                                    BCLV = (Local0 * Local1 + 50u32) / 100u32;
-                                }
-                            }
-                        }
-                        Method("XBQC", 0, Serialized) {
-                            Local0 = BCLM;
-                            If (Local0 != 0u32) {
-                                Local1 = (BCLV * 100u32 + Local0 / 2u32) / Local0;
-                                If (Local1 > 100u32) { Local1 = 100u32; }
-                                Return(Local1);
-                            }
-                            If (BRVA != 0u32) { Return(BRLV); }
-                            Return(100u32);
-                        }
-                        Device("LCD0") {
-                            Name("_ADR", 0x0400u32);
-                            Method("_BCL", 0, NotSerialized) { Return(BRIG); }
-                            Method("_BCM", 1, NotSerialized) { XBCM(Arg0); }
-                            Method("_BQC", 0, NotSerialized) { Return(XBQC()); }
-                        }
-                        Method("_DOS", 1, NotSerialized) { }
-                        Method("DECB", 0, NotSerialized) {
-                            Local0 = XBQC();
-                            If (Local0 > 10u32) { Local0 = Local0 - 10u32; }
-                            Else { Local0 = 0u32; }
-                            XBCM(Local0);
-                            Notify(LCD0, 0x87u32);
-                        }
-                        Method("INCB", 0, NotSerialized) {
-                            Local0 = XBQC();
-                            If (Local0 < 90u32) { Local0 = Local0 + 10u32; }
-                            Else { Local0 = 100u32; }
-                            XBCM(Local0);
-                            Notify(LCD0, 0x86u32);
-                        }
-                        Method("_PS0", 0, NotSerialized) { }
-                        Method("_PS3", 0, NotSerialized) { }
-                        Method("_S0W", 0, NotSerialized) { Return(3u32); }
-                        Method("_S3D", 0, NotSerialized) { Return(3u32); }
-                    }
                 }
             }.into();
+
+            aml.extend(
+                fstart_acpi::aml_linker::scope_vec(
+                    "\\_SB_.PCI0",
+                    &crate::igd::gfx0_acpi_node(gttmmio),
+                )
+                .expect("GM965 GFX0 emission failed"),
+            );
 
             aml.extend_from_slice(&acpi_dsl! {
                 Scope("\\") {
@@ -2041,7 +1945,7 @@ mod acpi_impl {
             aml.extend_from_slice(
                 &fstart_acpi::aml_linker::scope_vec(
                     "\\",
-                    &crate::cpu::core2_aml::cpu_devices_aml(2),
+                    &crate::cpu::core2_aml::cpu_devices_aml(2, &crate::cpu::CORE2_MOBILE_CSTATES),
                 )
                 .expect("GM965 required CPU scope emission failed"),
             );

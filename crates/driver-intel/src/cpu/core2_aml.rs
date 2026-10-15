@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+use super::{CState, Core2Cstates};
 use alloc::vec;
 use alloc::vec::Vec;
 #[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
@@ -14,56 +15,12 @@ const SW_ANY: u32 = 0xfd;
 #[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
 const HW_ALL: u32 = 0xfe;
 
-#[derive(Clone, Copy)]
-struct CState {
-    ctype: u8,
-    latency: u16,
-    power: u32,
-    space_id: u8,
-    bit_width: u8,
-    bit_offset: u8,
-    access_size: u8,
-    address: u64,
-}
-
-/// Core 2 mobile MWAIT C1/C2/C3 and generic Intel SpeedStep devices.
+/// Core 2 mobile MWAIT C-states and generic Intel SpeedStep devices.
 #[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
-pub fn cpu_devices_aml(logical_cpus: usize) -> Vec<u8> {
-    const CSTATES: &[CState] = &[
-        CState {
-            ctype: 1,
-            latency: 1,
-            power: 1000,
-            space_id: 0x7f,
-            bit_width: 1,
-            bit_offset: 2,
-            access_size: 1,
-            address: 0x00,
-        },
-        CState {
-            ctype: 2,
-            latency: 1,
-            power: 500,
-            space_id: 0x7f,
-            bit_width: 1,
-            bit_offset: 2,
-            access_size: 1,
-            address: 0x10,
-        },
-        CState {
-            ctype: 3,
-            latency: 17,
-            power: 250,
-            space_id: 0x7f,
-            bit_width: 1,
-            bit_offset: 2,
-            access_size: 1,
-            address: 0x20,
-        },
-    ];
+pub fn cpu_devices_aml(logical_cpus: usize, cstates: &Core2Cstates) -> Vec<u8> {
     build_cpu_devices_aml(
         logical_cpus,
-        Some(CSTATES),
+        Some(cstates),
         if model_id() == 0x1067 { HW_ALL } else { SW_ANY },
     )
 }
@@ -75,7 +32,7 @@ pub(crate) fn pineview_cpu_devices_aml(logical_cpus: usize) -> Vec<u8> {
 
 fn build_cpu_devices_aml(
     logical_cpus: usize,
-    cstates: Option<&[CState]>,
+    cstates: Option<&Core2Cstates>,
     coordination: u32,
 ) -> Vec<u8> {
     assert!(
@@ -93,8 +50,8 @@ fn build_cpu_devices_aml(
         append_empty_pct(&mut body);
         append_psd(&mut body, 0, logical_cpus as u32, coordination);
         append_pss(&mut body, &states);
-        if let Some(entries) = cstates {
-            append_cst(&mut body, entries);
+        if let Some(cstates) = cstates {
+            append_cst(&mut body, cstates);
         }
         append_device(&mut out, cpu_name(cpu), &body);
     }
@@ -192,20 +149,13 @@ fn append_pss(out: &mut Vec<u8>, states: &[SpeedstepState]) {
     });
     name_integer(out, "_PPC", 0);
 }
-fn append_cst(out: &mut Vec<u8>, entries: &[CState]) {
+fn cst_package(entries: &[CState]) -> Vec<u8> {
     let mut elements = Vec::new();
     append_integer(&mut elements, entries.len() as u32);
     for entry in entries {
-        let mut descriptor = vec![
-            0x82,
-            0x0c,
-            0x00,
-            entry.space_id,
-            entry.bit_width,
-            entry.bit_offset,
-            entry.access_size,
-        ];
-        descriptor.extend_from_slice(&entry.address.to_le_bytes());
+        // FFixedHW Intel MWAIT: class 1, "bit offset" 2 (break on interrupt).
+        let mut descriptor = vec![0x82, 0x0c, 0x00, 0x7f, 0x01, 0x02, 0x01];
+        descriptor.extend_from_slice(&u64::from(entry.mwait_hint).to_le_bytes());
         descriptor.extend_from_slice(&[0x79, 0x00]);
         let mut values = Vec::new();
         append_buffer(&mut values, &descriptor);
@@ -214,13 +164,40 @@ fn append_cst(out: &mut Vec<u8>, entries: &[CState]) {
         append_integer(&mut values, entry.power);
         append_package(&mut elements, 4, &values);
     }
-    append_name(out, b"_CST", |out| {
-        append_package(
-            out,
-            u8::try_from(entries.len() + 1).expect("too many CPU C-states"),
-            &elements,
-        )
-    });
+    let mut package = Vec::new();
+    append_package(
+        &mut package,
+        u8::try_from(entries.len() + 1).expect("too many CPU C-states"),
+        &elements,
+    );
+    package
+}
+fn append_cst(out: &mut Vec<u8>, cstates: &Core2Cstates) {
+    if cstates.battery.is_empty() {
+        append_name(out, b"_CST", |out| out.extend(cst_package(cstates.ac)));
+        return;
+    }
+    // Coreboot write_cst_entries(): Method (_CST) { If (PWRS) { Return (AC) }
+    // Return (battery) }.
+    let mut if_body = b"PWRS".to_vec();
+    if_body.push(0xa4); // ReturnOp
+    if_body.extend(cst_package(cstates.ac));
+    let mut body = vec![0x00]; // zero arguments, NotSerialized
+    body.push(0xa0); // IfOp
+    append_pkg_length(&mut body, if_body.len());
+    body.extend(if_body);
+    body.push(0xa4);
+    body.extend(cst_package(cstates.battery));
+    let mut method = b"_CST".to_vec();
+    method.extend(body);
+    out.push(0x14); // MethodOp
+    append_pkg_length(out, method.len());
+    out.extend(method);
+}
+fn append_pkg_length(out: &mut Vec<u8>, payload: usize) {
+    let (length, width) = fstart_acpi::aml_linker::package_length(payload)
+        .expect("required CPU AML package exceeds length limit");
+    out.extend_from_slice(&length[..width]);
 }
 fn append_name(out: &mut Vec<u8>, name: &[u8; 4], value: impl FnOnce(&mut Vec<u8>)) {
     out.push(0x08);

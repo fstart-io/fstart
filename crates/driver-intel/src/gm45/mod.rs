@@ -3,6 +3,7 @@
 //! This module implements early host-bridge decode and cold-boot DDR3 initialization.
 //! Sparse destructive probes gate RAM availability; they are not exhaustive qualification.
 
+mod igd;
 mod pm;
 mod post_dram;
 mod raminit;
@@ -21,6 +22,8 @@ use fstart_pci::{
 };
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
+
+pub use igd::{BacklightPwm, Gm45IgdConfig};
 
 register_bitfields![u8, TpmAccess [VALID OFFSET(7) NUMBITS(1) []]];
 
@@ -103,8 +106,14 @@ pub struct IntelGm45Config {
     pub spd_addresses: [u8; 4],
     /// ICH9 I801 SMBus I/O base used to read DIMM SPD before RAM is online.
     pub smbus_base: u16,
+    /// ICH RCBA, reserved with the host bridge's MMIO (coreboot gm45.asl).
+    pub rcba: u64,
     /// Board-requested Super-LFM; enabled only on capable CPUs.
     pub slfm: bool,
+    /// Board IGD policy: panel sequencing, backlight and display bring-up.
+    pub igd: Gm45IgdConfig,
+    /// Board `_CST` tables (coreboot mainboard `cstates.c`).
+    pub cstates: crate::cpu::Core2Cstates,
     pub acpi_name: Option<&'static str>,
 }
 
@@ -121,7 +130,10 @@ impl IntelGm45Config {
             graphics: Gm45GraphicsPolicy::Integrated,
             spd_addresses: [0x50, 0, 0x51, 0],
             smbus_base: crate::ich9::ich9::DEFAULT_SMBUS_BASE,
+            rcba: 0xfed1_c000,
             slfm: false,
+            igd: Gm45IgdConfig::new(),
+            cstates: crate::cpu::CORE2_MOBILE_CSTATES,
             acpi_name: Some("PCI0"),
         }
     }
@@ -151,7 +163,9 @@ register_structs! {
     Gm45MchClockRegs {
         (0x0000 => _pad: [u8; 0xc00]),
         (0x0c00 => clkcfg: MmioReadWrite<u32>),
-        (0x0c04 => @END),
+        (0x0c04 => _pad1: [u8; 0x0b]),
+        (0x0c0f => hpll_vco: MmioReadWrite<u8>),
+        (0x0c10 => @END),
     }
 }
 
@@ -164,6 +178,10 @@ pub struct IntelGm45 {
     dram_ready: bool,
     boot_path: crate::BootPath,
     trained_mode: Option<(u8, u32, u32)>,
+    igd_bars: Option<crate::igd::IgdBars>,
+    /// Backlight PWM frequency of the panel table entry; 0 if unknown.
+    panel_pwm_hz: u16,
+    display: crate::igd::IgdDisplay,
 }
 
 impl IntelGm45 {
@@ -175,6 +193,15 @@ impl IntelGm45 {
 
     pub fn graphics_policy(&self) -> Gm45GraphicsPolicy {
         self.graphics
+    }
+
+    fn mch_clock(&self) -> &'static Gm45MchClockRegs {
+        // SAFETY: setup_early_decode enabled MCHBAR at this validated base.
+        unsafe { &*(self.config.mchbar as *const Gm45MchClockRegs) }
+    }
+
+    fn mch_vco(&self) -> u8 {
+        self.mch_clock().hpll_vco.get()
     }
 
     fn hostbridge(&self) -> &'static Gm45HostBridgePciConfig {
@@ -369,6 +396,9 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
             dram_ready: false,
             boot_path: crate::BootPath::Normal,
             trained_mode: None,
+            igd_bars: None,
+            panel_pwm_hz: 0,
+            display: crate::igd::IgdDisplay::new(),
         })
     }
     fn config(&self) -> &'static Self::Config {
@@ -392,7 +422,17 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         // probes. Recover decode from hardware, never retrain or test live RAM.
         self.memory_map()?;
         self.dram_ready = true;
+        // Coreboot gma_func0_init() runs at device init, after allocation.
+        self.igd_func0_init();
         Ok(())
+    }
+    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
+        // The OpRegion embeds the VBT out of verified boot media.
+        self.igd_publish_and_modeset();
+        Ok(())
+    }
+    fn framebuffer_info(&self) -> Option<fstart_core::services::FramebufferInfo> {
+        self.display.framebuffer_info()
     }
     fn prepare_resume_reset(&self) {
         self.prepare_reset_geometry();
@@ -477,11 +517,7 @@ impl MemoryController for IntelGm45 {
         if !matches!(revision, 5 | 6 | 7 | 9) {
             return Err(ServiceError::HardwareError);
         }
-        let clkcfg = {
-            // SAFETY: setup_early_decode enabled MCHBAR before dram_init.
-            let mch = unsafe { &*(self.config.mchbar as *const Gm45MchClockRegs) };
-            mch.clkcfg.get()
-        };
+        let clkcfg = self.mch_clock().clkcfg.get();
         let fsb_mhz = match clkcfg & 7 {
             6 => 1067,
             2 => 800,
@@ -634,43 +670,106 @@ mod acpi_impl {
 
     impl AcpiDevice for IntelGm45 {
         type Config = IntelGm45Config;
+        /// Coreboot `gm45.asl`/`hostbridge.asl` plus the `_OSC` from
+        /// `i82801ix/acpi/ich9.asl`: the host bridge's producer windows, the
+        /// chipset-reserved MMIO, and the IGD node.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
             let mchbar = config.mchbar;
             let dmibar = config.dmibar;
             let epbar = config.epbar;
+            let rcba = config.rcba;
             let ecam_base = config.ecam_base;
             let ecam_size = u64::from(config.ecam_buses) << 20;
+            let bus_max = config.ecam_buses - 1;
+            // PCI MMIO runs from TOLUD to the I/O APIC; above 4 GiB from
+            // TOUUD to the CPU's physical address limit (coreboot A4GB/A4GS).
+            let (tolud, touud) = self
+                .dram_ready
+                .then(|| self.memory_map().ok())
+                .flatten()
+                .map_or((0x8000_0000, 1 << 32), |(_, tolud, touud)| (tolud, touud));
+            let high_base = touud.max(1 << 32);
+            let high_limit = (1u64 << phys_address_bits()) - 1;
+            let gttmmio = self.igd_bars.map_or(0, |bars| bars.gtt_mmio);
             let mut aml: Vec<u8> = acpi_dsl! {
                 Device("PCI0") {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
                     Name("_SEG", 0u32);
                     Name("_BBN", 0u32);
+                    Name("_UID", 0u32);
                     Device("MCHC") { Name("_ADR", 0u32); }
                     Device("PDRC") {
                         Name("_HID", EisaId("PNP0C02"));
+                        Name("_UID", 1u32);
                         Name("_CRS", ResourceTemplate {
+                            Memory32Fixed(ReadWrite, #{dword rcba}, 0x4000u32);
                             Memory32Fixed(ReadWrite, #{dword mchbar}, 0x4000u32);
                             Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
                             Memory32Fixed(ReadWrite, #{dword epbar}, 0x1000u32);
                             Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
+                            Memory32Fixed(ReadWrite, 0xFED20000u32, 0x00020000u32);
+                            Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
+                            Memory32Fixed(ReadWrite, 0xFED45000u32, 0x0004B000u32);
                         });
+                    }
+                    Name("MCRS", ResourceTemplate {
+                        WordBusNumber(0x0000u16, #{word bus_max});
+                        DWordIO(0x0000u32, 0x0CF7u32);
+                        IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
+                        DWordIO(0x0D00u32, 0xFFFFu32);
+                        DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
+                        DWordMemory(Cacheable, ReadWrite, 0x000C0000u32, 0x000FFFFFu32);
+                        DWordMemory(Cacheable, ReadWrite, #{dword tolud}, 0xFEBFFFFFu32);
+                        QWordMemory(Cacheable, ReadWrite, #{qword high_base}, #{qword high_limit});
+                        DWordMemory(Cacheable, ReadWrite, 0xFED40000u32, 0xFED44FFFu32);
+                    });
+                    Method("_CRS", 0, Serialized) {
+                        Return(MCRS);
+                    }
+                    Method("_OSC", 4, NotSerialized) {
+                        If (Arg0 == ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766")) {
+                            // Let the OS control every PCIe feature.
+                            Return(Arg3);
+                        }
+                        CreateDwordField(Arg3, 0u32, "CDW1");
+                        CDW1 = CDW1 | 4u32;
+                        Return(Arg3);
                     }
                 }
             }
             .into();
+            aml.extend(
+                fstart_acpi::aml_linker::scope_vec(
+                    "\\_SB_.PCI0",
+                    &crate::igd::gfx0_acpi_node(gttmmio),
+                )
+                .expect("GM45 GFX0 emission failed"),
+            );
             // Root PPKG is consumed by the ThinkPad thermal zones. Keep the
             // CPU devices in the same root scope as the other Core 2 boards.
             #[cfg(target_os = "none")]
             let count = usize::from(fstart_arch::x86::mp::online_cpus());
             #[cfg(not(target_os = "none"))]
             let count = 2;
-            let cpus = crate::cpu::core2_aml::cpu_devices_aml(count);
+            let cpus = crate::cpu::core2_aml::cpu_devices_aml(count, &config.cstates);
             aml.extend(
                 fstart_acpi::aml_linker::scope_vec("\\", &cpus).expect("required CPU AML scope"),
             );
             aml
         }
+    }
+
+    /// CPUID physical address width; 36 bits (Penryn) on hosts.
+    fn phys_address_bits() -> u32 {
+        #[cfg(target_os = "none")]
+        {
+            let (max, _, _, _) = fstart_arch::x86::cpuid(0x8000_0000);
+            if max >= 0x8000_0008 {
+                return fstart_arch::x86::cpuid(0x8000_0008).0 & 0xff;
+            }
+        }
+        36
     }
 }
 
