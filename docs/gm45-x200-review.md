@@ -130,6 +130,34 @@ A further comparison against coreboot `65d90e75` (no GM45/ICH9/X200, model
   24 bits. ICH9 reports PM2_CNT, a 57 us C3 latency, a 3-bit throttle duty
   field and docking support; laptops use the mobile PM profile.
 
+### Fourth pass: remaining coreboot parity
+
+The gaps the third pass left documented are now ported:
+
+* **ME functions.** A new mainstage `chip_init` hook (coreboot
+  `gm45_init()`, before enumeration) hides the devicetree-disabled ME
+  functions 03.1-03.3 in DEVEN, after raminit sized the ME memory from 03.0.
+* **MCFG and DMAR.** GM45 had no MCFG at all, so the OS saw no ECAM window.
+  It now emits MCFG and coreboot `gm45/acpi.c`'s DMAR: the HDA unit, the
+  graphics unit unless B2 stepping or IGD absent, the ME unit when 03.0 is
+  enabled and the catch-all VC0 unit, at the bases `init_iommu()` programs.
+  A generic DMAR builder lives in `fstart-acpi`.
+* **`_DOD`.** The shared `GFX0` node reports coreboot's
+  `GMA_STATIC_DISPLAYS` (VGA0, TV0, LCD0 at 0x410) with the stub
+  `_DCS/_DGS/_DSS`, for GM965 and GM45 alike.
+* **Dock.** `acpi/dock.asl`: `\_SB.DOCK` with `_DCK/_STA`, the GPIO2-4 dock
+  ID (`GGID`), `\GP28` and EC `DKR1`, and EC queries `_Q18/_Q37/_Q45/_Q50/
+  _Q58/_Q5A`. Only the GPIO level bits the methods use are declared.
+* **EEPROM identity.** As on the X61, the AT24RF08C part number, version,
+  serial and UUID describe system and baseboard in SMBIOS; the static
+  identity is the fallback when the EEPROM cannot be read.
+* **X200t digitizer.** The PC87382 is programmed as the overridetree does
+  (LDN 3 at 0x200/IRQ 5 with 0x29/0xf0, LDN 2/7/0x19 off). As in
+  `drivers/lenovo/wacom.c`, a responding SuperIO plus a tablet machine type
+  adds the `WACF004` `DTR_` device; X200 has no dock serial port.
+* The X200 DSDT glue moved into `fstart-driver-lenovo::x200`, next to the
+  X6 family glue, so ACPICA executes the dock, `\UCMS` and digitizer paths.
+
 ### CodeRabbit follow-up
 
 * DDR3 addressing rejects reserved row encodings (only 12–16 row bits and
@@ -223,15 +251,11 @@ These are not claimed fixed by compiling the board:
 2. **RAM support is narrower than coreboot.** No DDR2, SFF, S3 training replay,
    arbitrary early steppings, or FSB1067/DDR3-667 special PLL sequence. Unsupported inputs fail closed. Cached cold-boot
    training is not implemented by this board binding.
-3. **ACPI/OS parity is incomplete.** CPU P-states and the board's AC/battery
-   `_CST` tables are present; DMAR, full dock hotplug/disconnect glue, dock
-   serial ports, Wacom handling, Lenovo EEPROM serial/UUID identity and
-   `gfx.asl`'s display-output (`_DOD`) devices need separate work. No
-   successful OS sleep/resume claim is made.
-4. **Northbridge device policy is smaller.** The GM45 binding does not hide
-   the ME functions 03.1-03.3 that coreboot's devicetree disables, and the
-   firmware allocator assigns no BARs above 4 GiB (the window is only
-   advertised to the OS). Tablet and X301 variants are not qualified.
+3. **No S3.** No successful OS sleep/resume claim is made; resume requests
+   fall back to a prepared cold reset.
+4. **Northbridge device policy is smaller.** The firmware allocator assigns no
+   BARs above 4 GiB (the window is only advertised to the OS). The X200t
+   digitizer and the X301 variant are not qualified on hardware.
 5. **EC policy is fixed.** Coreboot exposes CMOS options and additional
    presence detection. This binding uses explicit defaults; advertised WWAN
    and UWB capabilities still require testing on the particular board.
@@ -336,6 +360,15 @@ Release halt assembly passed the unchanged guards: bootblock 147456 bytes,
 postcar 27160, ramstage 180567 compressed / 251912 unpacked (the GMA library),
 8 MiB container. Native graphics, GMBUS EDID and the backlight are untested
 on hardware.
+
+The fourth pass passed `cargo test --workspace` with warnings denied, Intel
+drivers 121 (+3 doctests) with every legacy chipset, GM45/ICH9 107 (ACPICA now
+also runs `GFX0._DOD`), Lenovo 14 (+1 doctest, ACPICA runs `GGID`, `_DCK`,
+`_STA`, `_Q50`, `_Q5A`, `\UCMS` and the digitizer `_CRS`), common ACPI 105
+including the DMAR wire-format test, the warning-denied feature checks and
+`cargo fbuild check lenovo-x200`. X61, X60, D945GCLF and Q35 still build.
+Release halt assembly passed the unchanged guards: bootblock 147456 bytes,
+postcar 27160, ramstage 186918 compressed / 260816 unpacked, 8 MiB container.
 
 Assembly required populating the two microcode files from the already-present
 local checkout. The generated keys are ignored local development keys, not

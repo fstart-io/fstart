@@ -73,6 +73,8 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
 pub static X200_PLATFORM: Gm45Ich9Platform = Gm45Ich9Config::new()
     .laptop()
     .pci_subsystem_ids(X200_SUBSYSTEM_IDS)
+    // devicetree: 03.1, 03.2 and 03.3 off; HECI 03.0 stays.
+    .disabled_me_functions(0b1110)
     .max_cpus(2)
     .spd_addresses([0x50, 0, 0x51, 0])
     // coreboot i82801ix leaves DxxIP/DxxIR as found and reads DxxIR

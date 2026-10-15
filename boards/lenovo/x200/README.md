@@ -110,7 +110,10 @@ Runtime descriptor verification rejects a layout mismatch.
    and alternative SMRR is programmed/locked during SMM installation.
 7. Test a short power-button press at the halt payload and OS shutdown after
    ACPI ownership. Check the thermal trips/passive-cooling processor references.
-8. Confirm Linux `thinkpad_acpi` loads without `force_load`, Fn-F2/Fn-F3 events
+8. Check SMBIOS shows the EEPROM part number, serial and UUID, docking and
+   undocking (button and power-loss paths), VT-d with the emitted DMAR, and
+   on an X200t that the `WACF004` digitizer appears.
+9. Confirm Linux `thinkpad_acpi` loads without `force_load`, Fn-F2/Fn-F3 events
    arrive, and both batteries report cycle count. Test charge thresholds and
    readback using the X200 `0x24/0x25` backend; the reusable H8 driver retains
    the `0xb0` backend for later ThinkPads.

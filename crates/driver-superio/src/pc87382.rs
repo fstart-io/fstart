@@ -63,3 +63,48 @@ impl From<SuperIoConfig> for Pc87382Config {
 
 /// PC87382 DLPC logical-device number used by the X61 mainboard DLPC block.
 pub const PC87382_DLPC_LDN: u8 = 0x19;
+
+/// One logical device as a coreboot devicetree `pnp` entry describes it:
+/// optional primary I/O base, raw resource registers (IRQ selects and
+/// chip-specific bytes such as the X200 digitizer's 0x29/0xf0) and the
+/// activation state.
+#[derive(Debug, Clone, Copy)]
+pub struct PnpDevice {
+    pub ldn: u8,
+    pub enabled: bool,
+    pub io: Option<u16>,
+    pub registers: &'static [(u8, u8)],
+}
+
+/// Read the SuperIO ID register; an absent chip reads back 0xff.
+pub fn sid(base: u16) -> u8 {
+    // SAFETY: indexed PnP config access at the board-decoded LPC port.
+    unsafe {
+        fstart_core::pio::outb(base, 0x20);
+        fstart_core::pio::inb(base + 1)
+    }
+}
+
+/// Program logical devices in coreboot `pnp_enable_resources()` order:
+/// resources first, then the activation bit. The PC87382 needs no entry key.
+pub fn configure(base: u16, devices: &[PnpDevice]) {
+    // SAFETY: indexed PnP config access at the board-decoded LPC port.
+    let read = |reg: u8| unsafe {
+        fstart_core::pio::outb(base, reg);
+        fstart_core::pio::inb(base + 1)
+    };
+    let write = |reg: u8, value: u8| unsafe {
+        fstart_core::pio::outb(base, reg);
+        fstart_core::pio::outb(base + 1, value);
+    };
+    for device in devices {
+        let mut ldn = crate::LogicalDevice::select(device.ldn, read, write);
+        if let Some(io) = device.io {
+            ldn.set_io_base(crate::IoResource::Primary(io));
+        }
+        for &(reg, value) in device.registers {
+            ldn.write(reg, value);
+        }
+        ldn.set_enabled(device.enabled);
+    }
+}

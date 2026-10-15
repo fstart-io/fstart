@@ -20,6 +20,7 @@ fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-driver-usbdebug = { path = "../../../crates/driver-usbdebug" }
 fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
 fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
+fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-pci = { path = "../../../crates/pci" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-acpi-macros = { path = "../../../crates/acpi-macros" }

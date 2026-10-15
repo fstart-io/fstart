@@ -8,6 +8,8 @@
 //! - [`pmh7`]: the PMH7 hub (IO 0x15e0) — backlight, dock-event, touchpad/
 //!   trackpoint and ultrabay power switching, plus its PNP0C02 resource
 //!   device.
+//! - [`wacom`]: tablet digitizer detection and its ACPI device.
+//! - `x200`: ThinkPad X200 DSDT glue (dock, ThinkLight, sleep hooks).
 //! - [`x6`]: X60/X61 family policy: EC/PMH7 setup, DSDT glue and the X6
 //!   UltraBase dock (DLPC LPC switch and dock-side PC87392 SuperIO).
 //!
@@ -23,7 +25,11 @@ pub mod eeprom;
 
 pub mod h8;
 pub mod pmh7;
+pub mod wacom;
 pub mod x6;
+
+#[cfg(feature = "acpi")]
+pub mod x200;
 
 #[cfg(feature = "acpi")]
 pub mod h8_acpi;
