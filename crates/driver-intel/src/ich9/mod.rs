@@ -79,8 +79,6 @@ pub mod ich9 {
     pub const CXSTATE_CNF: u16 = 0xa9;
     pub const C4TIMING_CNT: u16 = 0xaa;
     pub const PMIR: u16 = 0xac;
-    pub const PMIR_USB_TRANSIENT_DISCONNECT: u32 = 3 << 8;
-    pub const PMIR_CF9GR: u32 = 1 << 20;
     pub const GPIO_ROUT: u16 = 0xb8;
     pub const RCBA: u16 = 0xf0;
 
@@ -249,8 +247,7 @@ register_bitfields! [u32,
     ],
     /// LPC PMIR register.
     PMIR_REG [
-        USB_TRANSIENT_DISCONNECT OFFSET(8) NUMBITS(2) [],
-        CF9GR OFFSET(20) NUMBITS(1) []
+        USB_TRANSIENT_DISCONNECT OFFSET(8) NUMBITS(2) []
     ],
     /// I/O trap register low dword.
     IOTR_LO [
@@ -503,12 +500,20 @@ const LPC_EN_CNF2: u16 = 1 << 13;
 const LPC_EN_CNF1: u16 = 1 << 12;
 const LPC_EN_MC: u16 = 1 << 11;
 const LPC_EN_KBC: u16 = 1 << 10;
+const LPC_EN_GAMEH: u16 = 1 << 9;
+const LPC_EN_GAMEL: u16 = 1 << 8;
 const LPC_EN_FDD: u16 = 1 << 3;
 const LPC_EN_LPT: u16 = 1 << 2;
 const LPC_EN_COMB: u16 = 1 << 1;
 const LPC_EN_COMA: u16 = 1 << 0;
-const LPC_EN_COREBOOT_BASE: u16 =
-    LPC_EN_CNF2 | LPC_EN_CNF1 | LPC_EN_MC | LPC_EN_KBC | LPC_EN_COMB | LPC_EN_COMA;
+const LPC_EN_COREBOOT_BASE: u16 = LPC_EN_CNF2
+    | LPC_EN_CNF1
+    | LPC_EN_MC
+    | LPC_EN_KBC
+    | LPC_EN_GAMEH
+    | LPC_EN_GAMEL
+    | LPC_EN_COMB
+    | LPC_EN_COMA;
 
 /// SATA configuration.
 #[derive(Debug, Clone, Copy)]
@@ -815,8 +820,8 @@ pub struct IntelIch9Config {
     pub gpio: GpioConfig,
     /// ACPI device name (reserved for future ACPI device generation).
     pub acpi_name: Option<&'static str>,
-    /// C3 latency in microseconds.
-    pub c3_latency: u16,
+    /// Board is a laptop (coreboot `SYSTEM_TYPE_LAPTOP`): mobile FADT profile.
+    pub laptop: bool,
     /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
     pub power_on_after_fail: u8,
     /// Hardware throttle duty cycle (PMBASE+0x10 bits [7:5]).
@@ -857,7 +862,7 @@ impl IntelIch9Config {
             smbus_base: ich9::DEFAULT_SMBUS_BASE,
             gpio: GpioConfig::new(),
             acpi_name: Some("LPCB"),
-            c3_latency: 85,
+            laptop: false,
             power_on_after_fail: 1,
             throttle_duty: 0,
             disable_lan: false,
@@ -1149,20 +1154,19 @@ impl IntelIch9 {
          * Bit 2 enables the extended CMOS range.
          */
         rcba.regs().bios_cntl.set(1 << 2);
-        // CF9 global reset must be active before any RAM-init recovery reset;
-        // preserve the PMIR policy while setting the ICH9 required bit 30.
+        // Coreboot lpc.c "BIOS must program" bits 30 and 9:8. CF9GR is left
+        // alone: coreboot's early bit-20 write is truncated to a byte, so CF9
+        // resets (raminit recovery, OS reboot) are host resets there too.
         self.lpc_regs()
             .pmir
-            .modify(PMIR_REG::USB_TRANSIENT_DISCONNECT.val(3) + PMIR_REG::CF9GR::SET);
+            .modify(PMIR_REG::USB_TRANSIENT_DISCONNECT.val(3));
         self.lpc().or32(ich9::PMIR, 1 << 30);
 
         #[cfg(target_arch = "x86_64")]
         {
+            // Coreboot early_init only acknowledges watchdog status; the TCO
+            // timer keeps running and ramstage reloads it.
             let tco = self.pm().tco();
-            // Halt TCO timer.
-            let cnt = tco.read16(pmio::TCO1_CNT);
-            tco.write16(pmio::TCO1_CNT, cnt | (1 << 11));
-            // Clear timeout status.
             tco.write16(pmio::TCO1_STS, 1 << 3);
             tco.write16(pmio::TCO2_STS, 1 << 1);
         }
@@ -1346,7 +1350,8 @@ impl IntelIch9 {
             port61 &= !(1 << 3);
             port61 |= 1 << 2;
             fstart_core::pio::outb(0x61, port61);
-            let mut nmi = fstart_core::pio::inb(0x70);
+            // Port 0x70 is write-only; 0x74 is its readable alias.
+            let mut nmi = fstart_core::pio::inb(0x74);
             nmi |= 1 << 7;
             fstart_core::pio::outb(0x70, nmi);
         }
@@ -2019,6 +2024,33 @@ impl IntelIch9 {
         lpc.pirqe_rout.set(pirq_high);
     }
 
+    /// Coreboot `i82801ix_pirq_init()`: every function's INTERRUPT_LINE takes
+    /// the PIC route of its own INTx pin (PIRQA..D, unswizzled), for legacy
+    /// PIC-mode payloads. APIC-mode OS routing comes from `_PRT`.
+    fn write_interrupt_lines(&self) {
+        let functions =
+            |bus: u8| (0u8..32).flat_map(move |dev| (0u8..8).map(move |func| (bus, dev, func)));
+        let present = |(bus, dev, func): (u8, u8, u8)| {
+            let pci = ecam::EcamDevice::new(bus, dev, func);
+            (pci.read16(0) != 0xffff).then_some(pci)
+        };
+        let last_bus = functions(0)
+            .filter_map(present)
+            .filter(|pci| pci.read8(0x0e) & 0x7f == 1)
+            .map(|bridge| bridge.read8(0x1a))
+            .max()
+            .unwrap_or(0);
+        for pci in (0..=last_bus).flat_map(functions).filter_map(present) {
+            let line = match pci.read8(0x3d) {
+                pin @ 1..=4 => self.config.pirq_routing[usize::from(pin - 1)],
+                _ => 0,
+            };
+            if line != 0 {
+                pci.write8(0x3c, line);
+            }
+        }
+    }
+
     fn configure_io_traps(&self) {
         let rcba = self.rcba();
         for trap in self.config.io_traps.as_slice().iter().copied() {
@@ -2316,7 +2348,11 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         }
         self.ramstage_lpc_init();
         self.configure_default_intmap();
+        self.write_interrupt_lines();
         self.configure_io_traps();
+        // Coreboot i82801ix_init(): reload the running TCO watchdog.
+        #[cfg(target_arch = "x86_64")]
+        self.pm().tco().write16(pmio::TCO_RLD, 0);
         fstart_log::info!("intel-ich9: ramstage init complete");
         Ok(())
     }
@@ -2731,7 +2767,6 @@ mod acpi_impl {
 
     impl X86PlatformProvider for IntelIch9 {
         fn x86_platform_config(&self, online_cpus: u32) -> X86Config {
-            let _ = self;
             X86Config {
                 num_cpus: online_cpus,
                 lapic_base: LAPIC_BASE,
@@ -2750,6 +2785,14 @@ mod acpi_impl {
                     acpi_enable: APM_CNT_ACPI_ENABLE,
                     acpi_disable: APM_CNT_ACPI_DISABLE,
                 }),
+                // Coreboot i82801ix/fadt.c.
+                fadt: fstart_acpi::platform::X86FadtPolicy {
+                    mobile: self.config.laptop,
+                    pm2_cnt_offset: Some(0x50),
+                    p_lvl3_lat: 0x39,
+                    duty_width: 3,
+                    docking: true,
+                },
             }
         }
     }
@@ -2817,7 +2860,8 @@ mod acpi_impl {
             // The PCI0 body: this chipset's RCRB window and downstream PCI
             // bridge, plus the fragments every ICH shares (coreboot's
             // `pcie.asl`, `usb.asl`, `azalia.asl` device nodes and the LPC
-            // bridge's ISA children, PIRQ links and root-bus `_PRT`).
+            // bridge's ISA children, PIRQ links, keyboard controller and
+            // root-bus `_PRT`).
             let rcba = config.rcba as u32;
             let mut body: Vec<u8> = acpi_dsl! {
                 OperationRegion("RCRB", SystemMemory, #{dword rcba}, 0x4000u32);
@@ -2897,7 +2941,7 @@ mod acpi_impl {
             body.extend_from_slice(&pcib);
 
             // The LPC bridge: its register window, common ISA children and
-            // PIRQ links. Board-specific PS/2 devices are supplied by the board.
+            // PIRQ links, plus the integrated keyboard controller (`lpc.asl`).
             let mut lpcb: Vec<u8> = acpi_dsl! {
                 Name("_ADR", 0x001F0000u32);
                 OperationRegion("LPC0", PciConfig, 0x00u32, 0x100u32);
@@ -2918,6 +2962,7 @@ mod acpi_impl {
                 ich9::DEFAULT_GPIOBASE,
             ));
             lpcb.extend_from_slice(&acpi_fragments::pci_irq_links(&config.pirq_routing));
+            lpcb.extend_from_slice(&acpi_fragments::ps2_controller_nodes());
 
             body.extend_from_slice(
                 &fstart_acpi::aml_linker::device_vec("LPCB", &lpcb)
