@@ -653,8 +653,9 @@ impl Framebuffer for IgdDisplay {
     }
 }
 
-/// GMCH IGD ACPI node (`GFX0`): OpRegion ASLE brightness requests with a
-/// direct `BLC_PWM_CTL` fallback, `_BCL`/`_BCM`/`_BQC` on `LCD0`, and the
+/// GMCH IGD ACPI node (`GFX0`): coreboot's static `_DOD` output list,
+/// OpRegion ASLE brightness requests with a direct `BLC_PWM_CTL` fallback,
+/// `_BCL`/`_BCM`/`_BQC` on `LCD0`, and the
 /// `INCB`/`DECB` hooks ThinkPad hotkeys call. `gttmmio` is the assigned
 /// GTTMMADR; zero while the IGD is absent.
 #[cfg(feature = "acpi")]
@@ -739,11 +740,31 @@ pub fn gfx0_acpi_node(gttmmio: u64) -> alloc::vec::Vec<u8> {
                 If (BRVA != 0u32) { Return(BRLV); }
                 Return(100u32);
             }
+            // Coreboot GMA_STATIC_DISPLAYS: VGA, TV and LFP output IDs, with
+            // the stubbed _DCS/_DGS/_DSS of drivers/intel/gma/acpi.c.
+            Method("_DOD", 0, NotSerialized) {
+                Return(Package(0x80010100u32, 0x80010240u32, 0x80010410u32));
+            }
+            Device("VGA0") {
+                Name("_ADR", 0x0100u32);
+                Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
+                Method("_DGS", 0, NotSerialized) { Return(0u32); }
+                Method("_DSS", 1, NotSerialized) { }
+            }
+            Device("TV0_") {
+                Name("_ADR", 0x0240u32);
+                Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
+                Method("_DGS", 0, NotSerialized) { Return(0u32); }
+                Method("_DSS", 1, NotSerialized) { }
+            }
             Device("LCD0") {
-                Name("_ADR", 0x0400u32);
+                Name("_ADR", 0x0410u32);
                 Method("_BCL", 0, NotSerialized) { Return(BRIG); }
                 Method("_BCM", 1, NotSerialized) { XBCM(Arg0); }
                 Method("_BQC", 0, NotSerialized) { Return(XBQC()); }
+                Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
+                Method("_DGS", 0, NotSerialized) { Return(0u32); }
+                Method("_DSS", 1, NotSerialized) { }
             }
             Method("_DOS", 1, NotSerialized) { }
             Method("DECB", 0, NotSerialized) {
