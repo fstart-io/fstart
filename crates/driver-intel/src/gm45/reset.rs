@@ -73,6 +73,15 @@ impl IntelGm45 {
         fstart_arch::x86::boot::system_reset(true)
     }
 
+    /// Bootblock raminit finished and left its scratchpad marker, with no RAM
+    /// initialization in progress. True in every later stage of the same boot.
+    pub(super) fn raminit_completed(&self) -> bool {
+        self.reset_regs().scratch.get() == 0xcafe
+            && EcamDevice::new(0, 0x1f, 0).read8(0xa2) & (1 << 7) == 0
+    }
+
+    /// Coreboot romstage soft-reset and interrupted-raminit checks. Bootblock
+    /// only: later stages see the same marker without GEN_RST_STS.
     pub(super) fn recover_early_reset(&self) {
         let lpc = EcamDevice::new(0, 0x1f, 0);
         let power = lpc.read16(0xa4);
