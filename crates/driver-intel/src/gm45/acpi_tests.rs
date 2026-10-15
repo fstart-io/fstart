@@ -94,7 +94,8 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
                 // PCIe _OSC UUID, revision 1, three dwords of control requests.
                 "execute \\_SB.PCI0._OSC (5B 4D DB 33 F7 1F 1C 40 96 57 74 41 C0 3D D7 66) ",
                 "1 3 (00 00 00 00 1F 00 00 00 1D 00 00 00);",
-                "execute \\_SB.PCI0.LPCB.PS2K._CRS;execute \\_SB.PCI0.GFX0.LCD0._BCL"
+                "execute \\_SB.PCI0.LPCB.PS2K._CRS;execute \\_SB.PCI0.GFX0.LCD0._BCL;",
+                "execute \\_SB.PCI0.GFX0._DOD"
             ),
             "dsdt.aml",
         ])
@@ -125,6 +126,10 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
     assert!(text.contains("CP00") && text.contains("CP01"), "{text}");
     // PWRS is 0 (battery) before the AC device runs: the C6 MWAIT hint.
     assert!(text.contains("01 02 01 50 00"), "battery _CST: {text}");
+    assert!(
+        text.contains("[Integer] = 0000000080010410"),
+        "_DOD: {text}"
+    );
     assert!(text.contains("Value 0x81"), "PNOT: {text}");
     assert!(text.contains("[Integer] = 0000000000000A12"), "{text}");
     for decikelvin in ["0000000000000E94", "0000000000000E30", "0000000000000DCC"] {
