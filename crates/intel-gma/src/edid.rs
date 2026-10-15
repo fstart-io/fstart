@@ -121,6 +121,21 @@ impl<'a> Edid<'a> {
         matches!(port, Port::Vga) == self.is_analog()
     }
 
+    /// The panel's alphanumeric data string (display descriptor 0xfe), up to
+    /// its newline terminator. Like coreboot `decode_edid()`, the last such
+    /// descriptor wins; boards key backlight tables on this panel part name.
+    pub fn ascii_string(&self) -> Option<&'a [u8]> {
+        (0..DESCRIPTOR_COUNT)
+            .map(|index| descriptor(self.raw, index))
+            .filter(|desc| desc[..3] == [0, 0, 0] && desc[3] == 0xfe)
+            .map(|desc| {
+                let text = &desc[5..];
+                let end = text.iter().position(|byte| *byte == b'\n');
+                &text[..end.unwrap_or(text.len())]
+            })
+            .last()
+    }
+
     /// Return true when descriptor 1 contains a usable detailed timing.
     pub fn has_preferred_mode(&self) -> bool {
         detailed_timing_present(descriptor(self.raw, 0))
@@ -910,6 +925,20 @@ mod tests {
         too_bad[1] = 0xbb;
         too_bad[2] = 0xcc;
         assert_eq!(sanitize(too_bad).err(), Some(GmaError::ModeUnavailable));
+    }
+
+    #[test]
+    fn ascii_string_uses_the_last_alphanumeric_descriptor() {
+        let mut raw = xga_edid(true);
+        let start = DESCRIPTOR_1 + 2 * DESCRIPTOR_LEN;
+        raw[start..start + 5].copy_from_slice(&[0, 0, 0, 0xfe, 0]);
+        raw[start + 5..start + 18].copy_from_slice(b"LTD121EWVB\n  ");
+        let start = DESCRIPTOR_1 + 3 * DESCRIPTOR_LEN;
+        raw[start..start + 5].copy_from_slice(&[0, 0, 0, 0xfe, 0]);
+        raw[start + 5..start + 18].copy_from_slice(b"B121EW03 V6 \n");
+        fix_checksum(&mut raw);
+        let edid = Edid::parse(&raw).unwrap();
+        assert_eq!(edid.ascii_string(), Some(&b"B121EW03 V6 "[..]));
     }
 
     #[test]

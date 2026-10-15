@@ -206,8 +206,7 @@ impl IntelGm45 {
         let super_lfm = unsafe { fstart_arch::x86::msr::rdmsr(0xee) } & (1 << 27) != 0;
         #[cfg(not(target_arch = "x86_64"))]
         let super_lfm = false;
-        // SAFETY: fixed CLKCFG register within enabled MCHBAR.
-        let clock = unsafe { &*(self.config.mchbar as *const super::Gm45MchClockRegs) };
+        let clock = self.mch_clock();
         if super_lfm {
             update16(&r.clkcfg_low, 1 << 7, 0);
             update16(&r.clkcfg_low, 0, 1 << 14);

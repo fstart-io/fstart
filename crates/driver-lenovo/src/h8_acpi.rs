@@ -90,8 +90,13 @@ fn root_helpers_aml(cfg: &H8Config) -> Vec<u8> {
             // Power state indicator updated by the AC device.
             Name("PWRS", 0u32);
 
-            // Processor notification; we have no \_PR processor objects yet.
-            Method("PNOT", 0, Serialized) { }
+            // Coreboot speedstep cpu.asl: re-evaluate _PPC, then _CST, on
+            // power-source changes. The Core 2 CPU AML defines \CNOT.
+            Method("PNOT", 0, Serialized) {
+                #{const "\\CNOT"}(0x80u32);
+                Sleep(100u32);
+                #{const "\\CNOT"}(0x81u32);
+            }
 
         }
     }
