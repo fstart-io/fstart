@@ -1457,6 +1457,15 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     ///
     /// coreboot runs the IGD device init here (`gma_func0_init`), and the
     /// OpRegion needs the mainstage heap, so neither belongs in the bootblock.
+    fn resume_init(&mut self, opregion: Option<u32>) -> Result<(), ServiceError> {
+        self.enable_ecam();
+        // Coreboot intel_gma_restore_opregion(); the OS restores the display.
+        if let Some(address) = opregion.filter(|_| self.igd_enabled()) {
+            super::igd::register_opregion(&self.igd(), super::igd::OpRegionSci::Swsci, address);
+        }
+        Ok(())
+    }
+
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         if self.config.igd.display.is_some() && self.igd_enabled() {
@@ -1473,7 +1482,10 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         Ok(())
     }
 
-    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
+    fn post_verify_init(
+        &mut self,
+        opregion: super::igd::OpRegionMemory<'_>,
+    ) -> Result<(), ServiceError> {
         // The OpRegion embeds the VBT out of the verified boot media, and the
         // modeset reads the same bytes for its panel and DDC policy.
         if !self.igd_enabled() {
@@ -1483,6 +1495,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
             &self.igd(),
             super::igd::OpRegionSci::Swsci,
             &self.config.igd.vbt,
+            opregion,
         );
         if self.config.igd.display.is_some() {
             self.gma_display_init(vbt.as_deref());

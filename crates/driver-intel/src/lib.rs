@@ -264,10 +264,23 @@ pub trait IntelNorthbridgeDriver:
     }
     fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
 
+    /// S3 resume in place of `stage_local_init` and `post_verify_init`:
+    /// restore device state the suspended OS expects, without allocating or
+    /// modesetting. `opregion` is the address the cold boot published.
+    fn resume_init(
+        &mut self,
+        _opregion: Option<u32>,
+    ) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+
     /// Chipset work that needs *verified* boot media: the graphics OpRegion and
     /// the modeset, which embed and read the VBT. Runs after the
     /// `verify_boot_media` phase; platforms without such work keep the default.
-    fn post_verify_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+    fn post_verify_init(
+        &mut self,
+        _opregion: igd::OpRegionMemory<'_>,
+    ) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
 

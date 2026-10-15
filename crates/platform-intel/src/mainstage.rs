@@ -140,7 +140,11 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     run_mainstage_phase(platform, fstart_timestamp::id::MOUNT_BOOT_MEDIA, || {
         fstart_arch::x86::boot::enable_boot_media_rom_cache();
         if mainstage.resume {
-            return Ok(());
+            let opregion = mainstage.store.as_ref().and_then(|store| {
+                let entry = store.find(fstart_store::tag::IGD_OPREGION)?;
+                u32::try_from(store.address(&entry)).ok()
+            });
+            return mainstage.northbridge.resume_init(opregion);
         }
         mainstage.northbridge.stage_local_init()
     });
@@ -155,7 +159,15 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
             fstart_log::info!("{} mainstage: display init skipped on S3 resume", platform);
             return Ok(());
         }
-        mainstage.northbridge.post_verify_init()
+        // The OpRegion lives in the store, which survives S3 (coreboot CBMEM).
+        let store = &mut mainstage.store;
+        mainstage.northbridge.post_verify_init(&mut |size| {
+            let store = store.as_mut()?;
+            let entry = store.add(fstart_store::tag::IGD_OPREGION, size, 12).ok()?;
+            // SAFETY: a fresh store entry of `size` bytes, identity mapped
+            // and owned by the OS once published; never handed out twice.
+            Some(unsafe { core::slice::from_raw_parts_mut(store.address(&entry) as *mut u8, size) })
+        })
     });
     // Recover the vector from the surviving FACS. Resume must preserve the
     // whole table set rather than rebuilding it in memory the OS now owns.

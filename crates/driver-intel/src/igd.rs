@@ -429,19 +429,11 @@ impl OpRegionSci {
 /// `ASLS`: OpRegion physical address the OS reads.
 const IGD_ASLS: u16 = 0xfc;
 
-/// Allocate the OpRegion once on the mainstage heap.
-///
-/// A `static` buffer would land in every stage's `.bss`, including the
-/// bootblock whose CAR is as small as 32 KiB on Pineview. The OS reads the
-/// region through ASLS for the machine's lifetime, so it is never freed.
-fn opregion_buf(size: usize) -> &'static mut [u8] {
-    let layout = core::alloc::Layout::from_size_align(size, 4096).expect("opregion layout");
-    // SAFETY: non-zero-sized layout; the allocation is intentionally leaked.
-    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    assert!(!ptr.is_null(), "IGD opregion allocation failed");
-    // SAFETY: fresh, exclusively owned, zeroed allocation of `size` bytes.
-    unsafe { core::slice::from_raw_parts_mut(ptr, size) }
-}
+/// Allocates page-aligned OpRegion memory that survives S3, like coreboot's
+/// `CBMEM_ID_IGD_OPREGION`. The OS uses the region for the machine's
+/// lifetime and a resume must find it again to restore `ASLS`, so it can't
+/// come from a stage heap that the resume path reloads.
+pub type OpRegionMemory<'a> = &'a mut dyn FnMut(usize) -> Option<&'static mut [u8]>;
 
 /// Locate the VBT, build the OpRegion around it and publish it through
 /// `ASLS` (coreboot's `intel_gma_init_igd_opregion`). Returns the VBT so the
@@ -453,27 +445,34 @@ pub fn publish_opregion(
     igd: &fstart_pci::ecam::EcamDevice,
     sci: OpRegionSci,
     source: &VbtSource,
+    memory: OpRegionMemory<'_>,
 ) -> Option<Vbt> {
     let Some(vbt) = locate_vbt(source) else {
         fstart_log::error!("intel-igd: no valid VBT found for the OpRegion");
         return None;
     };
-    publish_opregion_bytes(igd, sci, &vbt);
+    match memory(opregion_size(vbt.len())) {
+        Some(opregion) => {
+            build_opregion(opregion, &vbt);
+            register_opregion(igd, sci, opregion.as_ptr() as u32);
+            fstart_log::info!(
+                "intel-igd: OpRegion at {:#x}, VBT {} bytes",
+                opregion.as_ptr() as usize,
+                vbt.len()
+            );
+        }
+        None => fstart_log::error!("intel-igd: no memory for the OpRegion"),
+    }
     Some(vbt)
 }
 
-fn publish_opregion_bytes(igd: &fstart_pci::ecam::EcamDevice, sci: OpRegionSci, vbt: &[u8]) {
-    let opregion = opregion_buf(opregion_size(vbt.len()));
-    build_opregion(opregion, vbt);
-
-    igd.write32(IGD_ASLS, opregion.as_ptr() as u32);
+/// Coreboot `intel_gma_opregion_register`: publish ASLS and route the
+/// software SCI to SCI rather than SMI. S3 resume calls this again with the
+/// cold boot's OpRegion (coreboot `intel_gma_restore_opregion`).
+pub fn register_opregion(igd: &fstart_pci::ecam::EcamDevice, sci: OpRegionSci, address: u32) {
+    igd.write32(IGD_ASLS, address);
     let sci_reg = sci.offset();
     igd.write16(sci_reg, (igd.read16(sci_reg) & !1) | (1 << 15));
-    fstart_log::info!(
-        "intel-igd: OpRegion at {:#x}, VBT {} bytes",
-        opregion.as_ptr() as usize,
-        vbt.len()
-    );
 }
 
 const IGD_BAR0_GTTMMADR: u16 = 0x10;

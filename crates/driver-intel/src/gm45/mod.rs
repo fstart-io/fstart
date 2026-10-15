@@ -441,9 +441,19 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         hb.deven.set(deven);
         Ok(())
     }
-    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
+    fn post_verify_init(
+        &mut self,
+        opregion: crate::igd::OpRegionMemory<'_>,
+    ) -> Result<(), ServiceError> {
         // The OpRegion embeds the VBT out of verified boot media.
-        self.igd_publish_and_modeset();
+        self.igd_publish_and_modeset(opregion);
+        Ok(())
+    }
+    fn resume_init(&mut self, opregion: Option<u32>) -> Result<(), ServiceError> {
+        self.enable_ecam();
+        // Coreboot gma_func0_init() on resume: everything but the modeset.
+        self.igd_func0_init();
+        self.igd_restore_opregion(opregion);
         Ok(())
     }
     fn framebuffer_info(&self) -> Option<fstart_core::services::FramebufferInfo> {
