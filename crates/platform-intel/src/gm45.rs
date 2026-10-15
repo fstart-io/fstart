@@ -33,6 +33,8 @@ pub struct Gm45Ich9Config {
     pub graphics: Gm45GraphicsPolicy,
     pub igd: Gm45IgdConfig,
     pub cstates: Core2Cstates,
+    /// ME functions 03.0-03.3 the board disables (bit n hides 03.n).
+    pub disabled_me_functions: u8,
     /// Channel 0 slot 0/1, then channel 1 slot 0/1; zero means absent.
     pub spd_addresses: [u8; 4],
     pub pcie_ports: [bool; 6],
@@ -75,6 +77,7 @@ impl Gm45Ich9Config {
             graphics: Gm45GraphicsPolicy::Integrated,
             igd: Gm45IgdConfig::new(),
             cstates: fstart_driver_intel::cpu::CORE2_MOBILE_CSTATES,
+            disabled_me_functions: 0,
             spd_addresses: [0; 4],
             pcie_ports: [false; 6],
             pcie_slots: [false; 6],
@@ -124,6 +127,7 @@ impl Gm45Ich9Config {
         config.graphics = self.graphics;
         config.igd = self.igd;
         config.cstates = self.cstates;
+        config.disabled_me_functions = self.disabled_me_functions;
         config.rcba = ICH9_RCBA;
         config.spd_addresses = self.spd_addresses;
         config.slfm = self.slfm;
@@ -171,6 +175,17 @@ impl Gm45Ich9Config {
     #[must_use]
     pub const fn igd(mut self, igd: Gm45IgdConfig) -> Self {
         self.igd = igd;
+        self
+    }
+
+    /// Devicetree-disabled ME functions (bit n is 03.n), hidden in DEVEN
+    /// by the mainstage after raminit sized the ME memory.
+    #[must_use]
+    pub const fn disabled_me_functions(mut self, mask: u8) -> Self {
+        if mask & !0xf != 0 {
+            panic!("GM45 has ME functions 03.0-03.3 only");
+        }
+        self.disabled_me_functions = mask;
         self
     }
 
