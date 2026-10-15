@@ -2392,6 +2392,7 @@ mod acpi_impl {
                     acpi_enable: APM_CNT_ACPI_ENABLE,
                     acpi_disable: APM_CNT_ACPI_DISABLE,
                 }),
+                fadt: fstart_acpi::platform::X86FadtPolicy::default(),
             }
         }
     }
@@ -2502,28 +2503,7 @@ mod acpi_impl {
                 ich8::DEFAULT_GPIOBASE,
             ));
             lpcb.extend_from_slice(&acpi_fragments::pci_irq_links(&config.pirq_routing));
-            let ps2: Vec<u8> = acpi_dsl! {
-                Device("PS2K") {
-                    Name("_HID", EisaId("PNP0303"));
-                    Name("_CID", EisaId("PNP030B"));
-                    Name("_CRS", ResourceTemplate {
-                        IO(0x0060u16, 0x0060u16, 0x01u8, 0x01u8);
-                        IO(0x0064u16, 0x0064u16, 0x01u8, 0x01u8);
-                        IRQ(Edge, ActiveHigh, Exclusive, 1u32);
-                    });
-                    Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                }
-
-                Device("PS2M") {
-                    Name("_HID", EisaId("PNP0F13"));
-                    Name("_CRS", ResourceTemplate {
-                        IRQ(Edge, ActiveHigh, Exclusive, 12u32);
-                    });
-                    Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                }
-            }
-            .into();
-            lpcb.extend_from_slice(&ps2);
+            lpcb.extend_from_slice(&acpi_fragments::ps2_controller_nodes());
             body.extend_from_slice(
                 &fstart_acpi::aml_linker::device_vec("LPCB", &lpcb)
                     .expect("ICH8 LPCB device emission"),

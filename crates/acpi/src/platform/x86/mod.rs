@@ -64,6 +64,36 @@ pub struct X86Config {
     /// Leave as `None` unless the platform has installed an SMI handler
     /// that handles those commands.
     pub acpi_smi: Option<AcpiSmiConfig>,
+    /// Chipset/board FADT power-management details.
+    pub fadt: X86FadtPolicy,
+}
+
+/// FADT fields that differ between chipsets and between laptops and
+/// desktops (coreboot `acpi_fill_fadt()` and `SYSTEM_TYPE_LAPTOP`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct X86FadtPolicy {
+    /// Mobile preferred PM profile instead of desktop.
+    pub mobile: bool,
+    /// One-byte PM2 control block (`ARB_DIS`) at this PMBASE offset.
+    pub pm2_cnt_offset: Option<u16>,
+    /// Worst-case C3 latency in microseconds.
+    pub p_lvl3_lat: u16,
+    /// Width of the P_CNT throttling duty field at bit offset 1.
+    pub duty_width: u8,
+    /// Advertise docking support.
+    pub docking: bool,
+}
+
+impl Default for X86FadtPolicy {
+    fn default() -> Self {
+        Self {
+            mobile: false,
+            pm2_cnt_offset: None,
+            p_lvl3_lat: 85,
+            duty_width: 0,
+            docking: false,
+        }
+    }
 }
 
 /// Runtime provider for chipset/platform-owned x86 ACPI topology.
@@ -152,7 +182,18 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         hw_reduced: false,
         low_power_s0: false,
         arm_psci: false,
-        pm_profile: acpi_tables::fadt::PmProfile::Desktop,
+        pm_profile: if config.fadt.mobile {
+            acpi_tables::fadt::PmProfile::Mobile
+        } else {
+            acpi_tables::fadt::PmProfile::Desktop
+        },
+        pm2_cnt_blk: config
+            .fadt
+            .pm2_cnt_offset
+            .map_or(0, |offset| pmbase + u32::from(offset)),
+        p_lvl3_lat: config.fadt.p_lvl3_lat,
+        duty_width: config.fadt.duty_width,
+        docking: config.fadt.docking,
         pm1a_evt_blk: pmbase,
         pm1a_cnt_blk: pmbase + 0x04,
         pm_tmr_blk: pmbase + 0x08,
@@ -307,6 +348,7 @@ mod tests {
             gpe0_offset: 0x28,
             gpe0_length: 8,
             acpi_smi: None,
+            fadt: X86FadtPolicy::default(),
         }
     }
 

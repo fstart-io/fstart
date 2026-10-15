@@ -44,7 +44,7 @@ pub use arm::{ArmConfig, IortConfig, WatchdogConfig};
 
 // Re-export x86 types when available.
 #[cfg(feature = "x86")]
-pub use x86::{HpetConfig, IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
+pub use x86::{HpetConfig, IoApicConfig, IsoConfig, X86Config, X86FadtPolicy, X86PlatformProvider};
 
 /// Platform-specific ACPI configuration enum.
 ///
@@ -95,6 +95,14 @@ pub struct FadtConfig {
     pub acpi_disable: u8,
     /// ACPI reset register (I/O port, value) when the platform has one.
     pub reset_reg: Option<(u32, u8)>,
+    /// One-byte PM2 control block I/O port; zero when absent.
+    pub pm2_cnt_blk: u32,
+    /// Worst-case C3 latency in microseconds.
+    pub p_lvl3_lat: u16,
+    /// P_CNT throttling duty-cycle field width (offset fixed at bit 1).
+    pub duty_width: u8,
+    /// Docking supported (FADT `DCK_CAP`).
+    pub docking: bool,
 }
 
 impl Default for FadtConfig {
@@ -115,6 +123,10 @@ impl Default for FadtConfig {
             acpi_enable: 0,
             acpi_disable: 0,
             reset_reg: None,
+            pm2_cnt_blk: 0,
+            p_lvl3_lat: 85,
+            duty_width: 0,
+            docking: false,
         }
     }
 }
@@ -413,13 +425,18 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     b.pm1_cnt_len = 2;
     b.pm_tmr_len = 4;
     b.gpe0_blk_len = config.gpe0_blk_len;
+    if config.pm2_cnt_blk != 0 {
+        b.pm2_cnt_blk = config.pm2_cnt_blk.into();
+        b.pm2_cnt_len = 1;
+    }
 
     // C-state latencies.
     b.p_lvl2_lat = 1u16.into();
-    b.p_lvl3_lat = 85u16.into();
+    b.p_lvl3_lat = config.p_lvl3_lat.into();
 
     // Duty cycle.
     b.duty_offset = 1;
+    b.duty_width = config.duty_width;
 
     // RTC alarm register offsets (mc146818 on every PC-compatible platform).
     // The century register is deliberately not advertised: this chipset does
@@ -439,8 +456,11 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
         .flag(Flags::PLvl2Up)
         .flag(Flags::SlpButton)
         .flag(Flags::RtcS4)
-        .flag(Flags::TmrValExt)
         .flag(Flags::UsePlatformClock);
+    // TMR_VAL_EXT stays clear: the ICH and QEMU PM timers are 24 bits wide.
+    if config.docking {
+        b = b.flag(Flags::DckCap);
+    }
 
     // Platform reset register, when the chipset implements one.
     if let Some((port, value)) = config.reset_reg {
@@ -453,6 +473,9 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     b.x_pm1a_evt_blk = gas_io(config.pm1a_evt_blk, 32);
     b.x_pm1a_cnt_blk = gas_io(config.pm1a_cnt_blk, 16);
     b.x_pm_tmr_blk = gas_io(config.pm_tmr_blk, 32);
+    if config.pm2_cnt_blk != 0 {
+        b.x_pm2_cnt_blk = gas_io(config.pm2_cnt_blk, 8);
+    }
     b.x_gpe0_blk = gas_io(config.gpe0_blk, config.gpe0_blk_len.saturating_mul(8));
 
     let fadt = b.finalize();
@@ -500,6 +523,33 @@ mod tests {
         let bytes = build_x86_fadt(0x1000, 0x2000, &config);
         assert_eq!(bytes[core::mem::offset_of!(FADTBuilder, day_alrm)], 0x0d);
         assert_eq!(bytes[core::mem::offset_of!(FADTBuilder, mon_alrm)], 0);
+    }
+
+    #[test]
+    fn x86_fadt_carries_chipset_pm_policy_and_a_24_bit_timer() {
+        let config = FadtConfig {
+            pm2_cnt_blk: 0x550,
+            p_lvl3_lat: 0x39,
+            duty_width: 3,
+            docking: true,
+            ..Default::default()
+        };
+        let bytes = build_x86_fadt(0x1000, 0x2000, &config);
+        let at = |offset| bytes[offset];
+        let word = |offset| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        let dword =
+            |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        assert_eq!(
+            dword(core::mem::offset_of!(FADTBuilder, pm2_cnt_blk)),
+            0x550
+        );
+        assert_eq!(at(core::mem::offset_of!(FADTBuilder, pm2_cnt_len)), 1);
+        assert_eq!(word(core::mem::offset_of!(FADTBuilder, p_lvl3_lat)), 0x39);
+        assert_eq!(at(core::mem::offset_of!(FADTBuilder, duty_offset)), 1);
+        assert_eq!(at(core::mem::offset_of!(FADTBuilder, duty_width)), 3);
+        let flags = dword(core::mem::offset_of!(FADTBuilder, flags));
+        assert_eq!(flags & Flags::TmrValExt as u32, 0);
+        assert_ne!(flags & Flags::DckCap as u32, 0);
     }
 
     #[test]

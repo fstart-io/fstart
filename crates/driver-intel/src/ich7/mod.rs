@@ -2287,6 +2287,7 @@ mod acpi_impl {
                     acpi_enable: APM_CNT_ACPI_ENABLE,
                     acpi_disable: APM_CNT_ACPI_DISABLE,
                 }),
+                fadt: fstart_acpi::platform::X86FadtPolicy::default(),
             }
         }
     }
