@@ -183,8 +183,11 @@ SMM reinstall, the FACS wake vector and the ACPI-mode handoff.
   `GPE0_STS` is no longer cleared, so the OS still sees its wake source
   (coreboot only writes `GPE0_EN`). The SPI
   cache writer now drives ICH9 (SPIBAR at RCBA+0x3800) and accepts W25X
-  parts. X200 SST25VF064C chips stay read-only: EWSR and power-up block
-  protection.
+  and SST25VF064C parts. The SST powers up block-protected and only accepts
+  WRSR after EWSR: its BP0-3 are cleared around each cache write and
+  restored, as rflasher's `Unlock::Status` does. That requires the rflasher
+  change that sends EWSR as the WRSR preop on ICH; until fstart pins it, the
+  SST stays read-only.
 * **Graphics.** Coreboot keeps the OpRegion in CBMEM and restores ASLS on
   resume. fstart allocated it from the mainstage heap, which a resume
   reloads, so it is now a firmware-store entry (`IGD_OPREGION`). A new

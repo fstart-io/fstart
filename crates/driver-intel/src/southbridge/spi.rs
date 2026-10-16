@@ -157,7 +157,8 @@ impl FlashExtent {
 pub struct CacheSpi {
     controller: IchSpiController<FirmwareHost>,
     extent: FlashExtent,
-    write_geometry_verified: bool,
+    /// Block protection of the identified part; `None` keeps it read-only.
+    writable: Option<Protection>,
 }
 impl CacheSpi {
     /// # Safety
@@ -211,17 +212,21 @@ impl CacheSpi {
             .execute(&mut SpiCommand::read_reg(0x9f, &mut id))
             .is_ok();
         fstart_log::info!("spi-cache: JEDEC {:#x}:{:#x}:{:#x}", id[0], id[1], id[2]);
-        let write_geometry_verified = identified
-            && supported_geometry(id, extent.chip_size)
+        let writable = identified
+            .then(|| supported_geometry(id, extent.chip_size))
+            .flatten()
             // Require the known 4-KiB erase protocol so rflasher cannot select
             // a different menu opcode whose geometry this whitelist lacks.
-            && controller.probe_opcode(0x20)
-            && controller.probe_opcode(0x02)
-            && controller.probe_opcode(0x05);
+            .filter(|protection| {
+                [0x20, 0x02, 0x05]
+                    .into_iter()
+                    .chain(protection.opcodes().iter().copied())
+                    .all(|opcode| controller.probe_opcode(opcode))
+            });
         Ok(Self {
             controller,
             extent,
-            write_geometry_verified,
+            writable,
         })
     }
 
@@ -232,11 +237,67 @@ impl CacheSpi {
             .map_err(|_| ServiceError::HardwareError)
     }
 
+    fn read_status(&mut self) -> Result<u8, ServiceError> {
+        let mut status = [0];
+        self.controller
+            .execute(&mut SpiCommand::read_reg(0x05, &mut status))
+            .map_err(|_| ServiceError::HardwareError)?;
+        Ok(status[0])
+    }
+
+    /// rflasher `protection::write_status`: EWSR, WRSR, then WIP for up to
+    /// 100 ms (SST specifies 10 ms).
+    fn write_status(&mut self, value: u8) -> Result<(), ServiceError> {
+        self.controller
+            .execute(&mut SpiCommand::simple(0x50))
+            .and_then(|()| {
+                self.controller
+                    .execute(&mut SpiCommand::write_reg(0x01, &[value & !3]))
+            })
+            .map_err(|_| ServiceError::HardwareError)?;
+        for _ in 0..1000 {
+            if self.read_status()? & 1 == 0 {
+                return Ok(());
+            }
+            fstart_arch::x86::udelay(100);
+        }
+        Err(ServiceError::Timeout)
+    }
+
+    /// Run `operation` with the block-protect bits cleared, then restore them
+    /// (rflasher `Unlock::Status`). Returns early, untouched, when clear.
+    fn unprotected(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<(), ServiceError>,
+    ) -> Result<(), ServiceError> {
+        let Some(Protection::SstStatus) = self.writable else {
+            return operation(self);
+        };
+        let status = self.read_status()?;
+        if status & SST_BP == 0 {
+            return operation(self);
+        }
+        let result = self.write_status(status & !SST_BP).and_then(|()| {
+            if self.read_status()? & SST_BP != 0 {
+                // BPL with WP# asserted ignores WRSR.
+                return Err(ServiceError::HardwareError);
+            }
+            operation(self)
+        });
+        let restored = self.write_status(status).and_then(|()| {
+            if self.read_status()? & SST_BP != status & SST_BP {
+                return Err(ServiceError::HardwareError);
+            }
+            Ok(())
+        });
+        result.and(restored)
+    }
+
     fn with_write(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<(), ServiceError>,
     ) -> Result<(), ServiceError> {
-        if !self.write_geometry_verified {
+        if self.writable.is_none() {
             return Err(ServiceError::NotSupported);
         }
         // SAFETY: construction established the live mapping; operations run from RAM.
@@ -251,7 +312,7 @@ impl CacheSpi {
             .controller
             .enable_bios_write()
             .map_err(|_| ServiceError::HardwareError)
-            .and_then(|()| operation(self));
+            .and_then(|()| self.unprotected(operation));
         // Restore only BIOSWE; preserve unrelated and newly latched policy bits.
         control.modify(BIOS_CONTROL::WRITE_ENABLE.val(before.read(BIOS_CONTROL::WRITE_ENABLE)));
         if control.read(BIOS_CONTROL::WRITE_ENABLE) != before.read(BIOS_CONTROL::WRITE_ENABLE) {
@@ -293,36 +354,72 @@ impl CacheSpi {
     }
 }
 
-// W25Q16/32/64/128, W25X16/32/64, MX25L16/32/64/128 and AT25DF321(A) use
-// 256-byte page programming and 4-KiB/64-KiB erases. Do not include SST
-// parts: AAI programming, EWSR and power-up block protection.
-fn supported_geometry(id: [u8; 3], chip_size: u32) -> bool {
-    match id {
+/// Block-protection procedure of a whitelisted part (rflasher `Unlock`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Protection {
+    /// Writes need no unlock.
+    None,
+    /// SST25: BP0-3 in SR1, rewritten through EWSR + WRSR.
+    SstStatus,
+}
+
+/// SST25 SR1 BP0-BP3 (rflasher `Unlock::Status`).
+const SST_BP: u8 = 0x3c;
+
+impl Protection {
+    /// Opcodes the procedure needs beyond program/erase/RDSR.
+    fn opcodes(self) -> &'static [u8] {
+        match self {
+            Self::None => &[],
+            Self::SstStatus => &[0x50, 0x01],
+        }
+    }
+}
+
+// W25Q16/32/64/128, W25X16/32/64, MX25L16/32/64/128, AT25DF321(A) and
+// SST25VF064C use 256-byte page programming and 4-KiB/64-KiB erases.
+// Other SST25 parts program with AAI or single bytes and are excluded.
+fn supported_geometry(id: [u8; 3], chip_size: u32) -> Option<Protection> {
+    let supported = match id {
         [0xef, 0x30, capacity @ 0x15..=0x17] => chip_size == 1u32 << capacity,
         [0xef, 0x40, capacity] | [0xc2, 0x20, capacity] => {
             (0x15..=0x18).contains(&capacity) && chip_size == 1u32 << capacity
         }
         [0x1f, 0x47, 0x00 | 0x01] => chip_size == 0x400000,
+        // Ships in the ThinkPad X200; powers up block-protected.
+        [0xbf, 0x25, 0x4b] => return (chip_size == 0x800000).then_some(Protection::SstStatus),
         _ => false,
-    }
+    };
+    supported.then_some(Protection::None)
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn geometry_requires_known_program_protocol_and_exact_capacity() {
-        assert!(super::supported_geometry([0xef, 0x40, 0x18], 0x1000000));
-        assert!(super::supported_geometry([0xc2, 0x20, 0x16], 0x400000));
-        assert!(super::supported_geometry([0xef, 0x30, 0x17], 0x800000));
-        assert!(!super::supported_geometry([0xef, 0x30, 0x18], 0x1000000));
-        assert!(!super::supported_geometry([0xbf, 0x25, 0x4b], 0x800000));
-        assert!(super::supported_geometry([0x1f, 0x47, 0x00], 0x400000));
-        assert!(super::supported_geometry([0x1f, 0x47, 0x01], 0x400000));
-        assert!(!super::supported_geometry([0x1f, 0x47, 0x00], 0x800000));
-        assert!(!super::supported_geometry([0x1f, 0x47, 0x02], 0x400000));
-        assert!(!super::supported_geometry([0xef, 0x40, 0x18], 0x400000));
-        assert!(!super::supported_geometry([0xbf, 0x25, 0x4a], 0x400000));
-        assert!(!super::supported_geometry([0xef, 0x40, 0xff], 0));
+        use super::{Protection, supported_geometry};
+        let none = Some(Protection::None);
+        assert_eq!(supported_geometry([0xef, 0x40, 0x18], 0x1000000), none);
+        assert_eq!(supported_geometry([0xc2, 0x20, 0x16], 0x400000), none);
+        assert_eq!(supported_geometry([0xef, 0x30, 0x17], 0x800000), none);
+        assert_eq!(supported_geometry([0x1f, 0x47, 0x00], 0x400000), none);
+        assert_eq!(supported_geometry([0x1f, 0x47, 0x01], 0x400000), none);
+        assert_eq!(
+            supported_geometry([0xbf, 0x25, 0x4b], 0x800000),
+            Some(Protection::SstStatus)
+        );
+        // Wrong capacity, unknown parts, and AAI-only SST25VF032B.
+        for (id, size) in [
+            ([0xef, 0x30, 0x18], 0x1000000),
+            ([0x1f, 0x47, 0x00], 0x800000),
+            ([0x1f, 0x47, 0x02], 0x400000),
+            ([0xef, 0x40, 0x18], 0x400000),
+            ([0xbf, 0x25, 0x4b], 0x400000),
+            ([0xbf, 0x25, 0x4a], 0x400000),
+            ([0xef, 0x40, 0xff], 0),
+        ] {
+            assert_eq!(supported_geometry(id, size), None);
+        }
     }
     use super::*;
     #[test]

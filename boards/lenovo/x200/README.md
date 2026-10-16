@@ -30,8 +30,11 @@ retraining. The record (SPD bytes, clock, CAS and trained fields) lives in
 the 128 KiB `mrc-cache` at the start of the BIOS region. The mainstage
 writes it over ICH9 SPI after a cold boot whose probes pass, and only
 when it changed. `_S3_` is advertised only once that record and the stage
-caches persisted. Flash writes need a W25Q/W25X/MX25L part; SST parts stay
-read-only. Resume restores ASLS to the OpRegion kept in the firmware store
+caches persisted. Flash writes need a W25Q/W25X/MX25L part or the
+SST25VF064C; the SST's block protection is cleared through EWSR + WRSR
+around each write and then restored. That needs rflasher with EWSR preop
+support (`ich-ewsr-preop`); with the currently pinned rflasher the SST
+stays read-only and S3 is not advertised. Resume restores ASLS to the OpRegion kept in the firmware store
 and re-runs panel power and backlight setup; the OS restores the display
 mode.
 
