@@ -185,9 +185,8 @@ SMM reinstall, the FACS wake vector and the ACPI-mode handoff.
   cache writer now drives ICH9 (SPIBAR at RCBA+0x3800) and accepts W25X
   and SST25VF064C parts. The SST powers up block-protected and only accepts
   WRSR after EWSR: its BP0-3 are cleared around each cache write and
-  restored, as rflasher's `Unlock::Status` does. That requires the rflasher
-  change that sends EWSR as the WRSR preop on ICH; until fstart pins it, the
-  SST stays read-only.
+  restored, as rflasher's `Unlock::Status` does. rflasher sends EWSR as the
+  WRSR preop on ICH since rflasher PR #79 (`c8f01c84`).
 * **Graphics.** Coreboot keeps the OpRegion in CBMEM and restores ASLS on
   resume. fstart allocated it from the mainstage heap, which a resume
   reloads, so it is now a firmware-store entry (`IGD_OPREGION`). A new
