@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 zerocopy.workspace = true
+fstart-core.workspace = true

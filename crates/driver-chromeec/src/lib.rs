@@ -229,19 +229,15 @@ impl NativeIo {
         }
     }
 }
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 impl Io for NativeIo {
     fn read8(&mut self, port: u16) -> u8 {
-        let value: u8;
-        unsafe {
-            core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nostack));
-        }
-        value
+        // SAFETY: the constructor owns the EC port ranges.
+        unsafe { fstart_core::pio::inb(port) }
     }
     fn write8(&mut self, port: u16, value: u8) {
-        unsafe {
-            core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nostack));
-        }
+        // SAFETY: the constructor owns the EC port ranges.
+        unsafe { fstart_core::pio::outb(port, value) }
     }
 }
 

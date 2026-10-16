@@ -10,6 +10,7 @@ picasso = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless"]
 
 [dependencies]
 tock-registers.workspace = true
+fstart-core.workspace = true
 zerocopy = { workspace = true, optional = true }
 fstart-pci = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }

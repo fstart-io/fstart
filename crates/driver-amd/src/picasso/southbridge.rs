@@ -94,16 +94,12 @@ impl NativeAlink {
         }
     }
     fn read_port() -> u32 {
-        let value: u32;
-        unsafe {
-            core::arch::asm!("in eax, dx", in("dx") 0xcdcu16, out("eax") value, options(nostack));
-        }
-        value
+        // SAFETY: the constructor owns the CD8/CDC index/data pair.
+        unsafe { fstart_core::pio::inl(0xcdc) }
     }
     fn write_port(port: u16, value: u32) {
-        unsafe {
-            core::arch::asm!("out dx, eax", in("dx") port, in("eax") value, options(nostack));
-        }
+        // SAFETY: as for read_port.
+        unsafe { fstart_core::pio::outl(port, value) }
     }
     fn mmio(address: usize) -> &'static tock_registers::registers::ReadWrite<u32> {
         // SAFETY: only the two aligned fixed addresses below are passed;

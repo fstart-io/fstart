@@ -197,18 +197,17 @@ mod tests;
 /// # Safety
 /// Ring 0, exclusive access to CD6/CD7. MMIO remains UC during and after this.
 pub unsafe fn enable_acpimmio() {
+    use fstart_core::pio::{inb, outb};
     unsafe fn read(index: u8) -> u8 {
-        let value: u8;
         unsafe {
-            core::arch::asm!("out dx, al", in("dx") 0xcd6u16, in("al") index, options(nostack));
-            core::arch::asm!("in al, dx", in("dx") 0xcd7u16, out("al") value, options(nostack));
+            outb(0xcd6, index);
+            inb(0xcd7)
         }
-        value
     }
     unsafe fn write(index: u8, value: u8) {
         unsafe {
-            core::arch::asm!("out dx, al", in("dx") 0xcd6u16, in("al") index, options(nostack));
-            core::arch::asm!("out dx, al", in("dx") 0xcd7u16, in("al") value, options(nostack));
+            outb(0xcd6, index);
+            outb(0xcd7, value);
         }
     }
     let mut bytes = [0u8; 4];
