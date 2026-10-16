@@ -5,6 +5,8 @@ pub mod microcode;
 pub mod thread;
 
 pub const SYSCFG: u32 = 0xc0010010;
+/// SYSCFG.MtrrFixDramModEn: fixed-MTRR RdDram/WrDram bits are accessible.
+pub const SYSCFG_MTRR_FIX_DRAM_MOD_EN: u64 = 1 << 19;
 pub const TOP_MEM: u32 = 0xc001001a;
 pub const TOP_MEM2: u32 = 0xc001001d;
 pub const MMCONFIG: u32 = 0xc0010058;

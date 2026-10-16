@@ -1,45 +1,64 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Picasso-specific bootstrap policy for the reusable architectural MP engine.
-//! Cache preparation and one-shot SMU launch adaptation, not completed MP integration.
-mod release;
-mod resident;
-use fstart_arch::x86::mp::cache::{State, Write};
+//! Picasso policy for the architectural MP engine: the MSR image APs replay
+//! before enabling caches, and AP release through the SMU instead of INIT/SIPI.
+use fstart_arch::x86::mtrr::{self, MsrEntry, SipiMsrs};
 use fstart_driver_amd::picasso::{
     cache,
     cpu::{self, Msr},
+    registers::Smn,
+    topology::{self, Topology},
 };
-pub use release::{ColdRelease, Error as ReleaseError};
-pub use resident::{Error as ResidentError, initialize as initialize_resident};
 
 #[derive(Debug)]
 pub enum Error {
     Cpu(cpu::Error),
     AmdCache(cache::Error),
-    Image(fstart_arch::x86::mp::cache::Error),
+    Capacity,
 }
 
-/// BSP only after native early init has installed the validated AMD cache plan;
-/// before any AP release, with interrupts/SMI excluded and exclusive MSR access.
-/// Preserve the actual AMD fixed attributes, TOM/TOM2, SYSCFG and PAT. The AP
-/// assembly requires a BSP-inclusive, all-AP cache-off rendezvous and serializes
-/// the image writes. Target cache/update/SMI semantics remain integration gates.
-/// Returned state still needs resident publication by the MP engine; it is not
-/// proof of the platform's physical mapping/coherency or SMM policy.
-pub fn cache_state(msr: &mut impl Msr) -> Result<State, Error> {
+/// BSP only, after the AMD cache plan is installed and before AP release.
+///
+/// The fixed MTRRs are read with their
+/// RdDram/WrDram routing exposed (SYSCFG.MtrrFixDramModEn). APs replay
+/// SYSCFG with that gate open, TOP_MEM/TOM2, the MTRRs and PAT, then the
+/// BSP's SYSCFG and finally MTRR_DEF_TYPE.
+pub fn sipi_msrs(msr: &mut impl Msr) -> Result<SipiMsrs, Error> {
     cpu::memory_limits(msr).map_err(Error::Cpu)?;
     let syscfg = msr.read(cpu::SYSCFG);
-    let prefix = [
-        Write::new(cpu::SYSCFG, syscfg | (1 << 19)),
-        Write::new(cpu::TOP_MEM, msr.read(cpu::TOP_MEM)),
-        Write::new(cpu::TOP_MEM2, msr.read(cpu::TOP_MEM2)),
-    ];
-    let suffix = [Write::new(cpu::SYSCFG, syscfg)];
-    cache::fixed_dram_view(msr, |msr| {
-        State::capture(|index| msr.read(index), &prefix, &suffix)
-    })
-    .map_err(Error::AmdCache)?
-    .map_err(Error::Image)
-    .map(State::require_global_cache_off)
+    let mut msrs = SipiMsrs::new();
+    for entry in [
+        MsrEntry::new(cpu::SYSCFG, syscfg | cpu::SYSCFG_MTRR_FIX_DRAM_MOD_EN),
+        MsrEntry::new(cpu::TOP_MEM, msr.read(cpu::TOP_MEM)),
+        MsrEntry::new(cpu::TOP_MEM2, msr.read(cpu::TOP_MEM2)),
+    ] {
+        msrs.push(entry).map_err(|_| Error::Capacity)?;
+    }
+    let mtrrs = cache::fixed_dram_view(msr, |msr| mtrr::snapshot_with(|index| msr.read(index)))
+        .map_err(Error::AmdCache)?
+        .map_err(|_| Error::Capacity)?;
+    let (def_type, mtrrs) = mtrrs.split_last().ok_or(Error::Capacity)?;
+    for entry in mtrrs
+        .iter()
+        .copied()
+        .chain([MsrEntry::new(cpu::SYSCFG, syscfg), *def_type])
+    {
+        msrs.push(entry).map_err(|_| Error::Capacity)?;
+    }
+    Ok(msrs)
+}
+
+/// Release `ap_count` APs through SMU ThreadEn. Released APs start at the
+/// reset vector, where `picasso.S` sends them to the SIPI trampoline.
+/// # Safety
+/// Cold boot, all APs still held, `topology` is the applied topology, and the
+/// SIPI trampoline is installed. Exclusive SMN access.
+pub unsafe fn release_aps(
+    smn: &mut impl Smn,
+    topology: Topology,
+    ap_count: u16,
+    delay_us: &mut impl FnMut(u32),
+) -> Result<(), topology::Error> {
+    unsafe { topology::launch(smn, topology, usize::from(ap_count), delay_us) }.map(|_| ())
 }
 
 #[cfg(test)]
@@ -78,29 +97,19 @@ mod tests {
         }
     }
     #[test]
-    fn captures_amd_routing_and_restores_original_bsp_gate() {
+    fn replays_amd_routing_around_mtrrs_and_restores_bsp_gate() {
         let original = (1 << 18) | (1 << 20) | (1 << 21) | (1 << 22);
         let mut cpu = Cpu {
             syscfg: original,
             writes: std::vec::Vec::new(),
             cap: 0x108,
         };
-        let state = cache_state(&mut cpu).unwrap();
-        assert!(state.global_cache_off());
+        let msrs = sipi_msrs(&mut cpu).unwrap();
         assert_eq!(cpu.syscfg, original);
+        let writes: std::vec::Vec<_> = msrs.iter().map(|w| (w.index, w.value())).collect();
         assert_eq!(
-            cpu.writes.as_slice(),
-            &[(cpu::SYSCFG, original | (1 << 19)), (cpu::SYSCFG, original)]
-        );
-        let writes: std::vec::Vec<_> = state
-            .writes()
-            .iter()
-            .map(|w| (w.index(), w.value()))
-            .collect();
-        assert_eq!(
-            &writes[..4],
+            &writes[..3],
             &[
-                (0x2ff, 0),
                 (cpu::SYSCFG, original | (1 << 19)),
                 (cpu::TOP_MEM, 0x80000000),
                 (cpu::TOP_MEM2, 0x140000000)
@@ -112,10 +121,6 @@ mod tests {
             &writes[writes.len() - 2..],
             &[(cpu::SYSCFG, original), (0x2ff, 0xc00)]
         );
-        // Even a bounded-image rejection closes the BSP's temporary gate.
-        cpu.cap = 0x1ff;
-        assert!(matches!(cache_state(&mut cpu), Err(Error::Image(_))));
-        assert_eq!(cpu.syscfg, original);
     }
     #[test]
     fn encrypted_or_missing_fixed_state_has_no_bsp_writes() {
@@ -125,7 +130,7 @@ mod tests {
                 cap,
                 writes: std::vec::Vec::new(),
             };
-            assert!(matches!(cache_state(&mut cpu), Err(Error::AmdCache(_))));
+            assert!(matches!(sipi_msrs(&mut cpu), Err(Error::AmdCache(_))));
             assert!(cpu.writes.is_empty());
         }
     }

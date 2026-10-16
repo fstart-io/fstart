@@ -462,11 +462,11 @@ core::arch::global_asm!(
 // postcar's jump targets).
 //
 // Compiled out of the postcar stage (which carries `_start_postcar` in
-// `.text.entry` instead) and when a platform owns startup (e.g. PSP DRAM).
+// `.text.entry` instead) so the flat image always starts at its own entry.
 #[cfg(all(
     target_os = "none",
     not(fstart_stage_env = "postcar"),
-    not(feature = "x86-platform-entry")
+    not(fstart_entry = "picasso-reset")
 ))]
 core::arch::global_asm!(
     ".section .text.entry, \"ax\"",
@@ -542,11 +542,7 @@ core::arch::global_asm!(
 // These are compile-time strings rather than a callable helper: the first
 // checkpoint runs on the inherited CAR stack, so a call would violate the
 // transition's no-CAR-stack rule.
-#[cfg(all(
-    target_os = "none",
-    fstart_stage_env = "postcar",
-    not(feature = "x86-platform-entry")
-))]
+#[cfg(all(target_os = "none", fstart_stage_env = "postcar"))]
 core::arch::global_asm!(
     ".section .text.entry, \"ax\"",
     ".code64",

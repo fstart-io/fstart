@@ -18,8 +18,8 @@ riscv64 = []
 riscv64-sunxi-entry = []
 riscv64-sbi-resume = []
 x86_64 = ["dep:fstart-smm"]
-# The platform supplies its own reset/ram entry (e.g. AMD PSP DRAM startup).
-x86-platform-entry = []
+# Heap-built identity page tables for payload handoff (needs `alloc`).
+x86-identity-paging = ["x86_64"]
 x86-1g-pages = []
 x86-writable-page-tables = []
 x86-static-page-tables = []

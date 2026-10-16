@@ -1,6 +1,6 @@
 use super::*;
 use crate::x86::mtrr::MsrEntry;
-use zerocopy::{FromBytes, IntoBytes};
+use zerocopy::FromBytes;
 
 #[test]
 fn linked_sipi_page_holds_exact_msr_records_without_changing_neighbors() {
@@ -19,7 +19,7 @@ fn linked_sipi_page_holds_exact_msr_records_without_changing_neighbors() {
     let mut page = [0x55; 4096];
     assert_eq!(sipi_blob::TRAMPOLINE.len(), page.len());
     assert!(sipi_blob::MSR_COUNT_OFFSET + 4 <= sipi_blob::MSR_TABLE_OFFSET);
-    patch_msr_table(&mut page, entries.as_bytes()).unwrap();
+    patch_msr_table(&mut page, &entries).unwrap();
     assert_eq!(
         u32::from_le_bytes(
             page[sipi_blob::MSR_COUNT_OFFSET..sipi_blob::MSR_COUNT_OFFSET + 4]
@@ -50,6 +50,6 @@ fn linked_sipi_page_holds_exact_msr_records_without_changing_neighbors() {
 
     let mut short = [0x55; 4096];
     let end = sipi_blob::MSR_TABLE_OFFSET + 23;
-    assert!(patch_msr_table(&mut short[..end], entries.as_bytes()).is_err());
+    assert!(patch_msr_table(&mut short[..end], &entries).is_err());
     assert!(short.iter().all(|byte| *byte == 0x55));
 }

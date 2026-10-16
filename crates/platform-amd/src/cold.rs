@@ -1,29 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native CPU cold-flow composition. Not SMM setup or a complete silicon flow.
+//! Native CPU cold flow: microcode staging, SMU AP release and per-CPU init
+//! through the architectural MP engine, then the later CCX-done notification.
 use crate::{
     cpu::{self, NativeCpu},
     layout,
     memory::Memory,
     mp,
 };
-use core::sync::atomic::{AtomicBool, Ordering};
-use fstart_arch::x86::mp::{
-    ApLauncher, CpuDriver, MpConfig, MpError, MpFailStop, MpHandle, PreparedAps,
-};
+use fstart_arch::x86::mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle};
 use fstart_driver_amd::picasso::{
     cpu::Msr,
     nbio_late, power,
     registers::Smn,
     topology::{self, Topology},
 };
-static ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 pub struct Inputs<'a> {
     /// Already applied topology: no policy reset/reconfiguration here.
     pub topology: Topology,
-    /// Caller-verified complete physical APIC IDs, BSP first, NOT ThreadEn slots.
+    /// Complete physical APIC IDs, BSP first. Not ThreadEn slots.
     pub apic_ids: &'a [u32],
-    /// One exact, independently trusted patch selected for this CPU signature.
+    /// The vendor patch selected for this CPU signature.
     pub patch: &'a [u8],
     pub memory: &'a Memory,
 }
@@ -32,7 +29,7 @@ pub struct LateResponse {
     pub command: u32,
     pub status: u32,
 }
-/// Bounded source-backed late-policy diagnostics, never proof features activated.
+/// SMU replies to the late notifications, kept for diagnostics.
 #[derive(Debug)]
 pub struct LateResponses {
     entries: [LateResponse; 8],
@@ -67,72 +64,17 @@ pub enum Error {
         expected: usize,
         actual: usize,
     },
-    AlreadyAttempted,
     Cpu(cpu::Error),
-    Mp(mp::ResidentError),
-    ArchitecturalMp(MpError),
-    ApRelease {
-        code: u32,
-        cause: Option<mp::ReleaseError>,
-    },
+    Mp(MpError),
+    ApRelease(topology::Error),
     IncompleteCpu,
     Smu {
         cause: power::Error,
         responses: LateResponses,
     },
-    DiagnosticsOverflow {
-        response: LateResponse,
-        prefix: LateResponses,
-    },
+    DiagnosticsOverflow,
 }
-/// Terminal cold-flow failure, including uncertain submission/partial hardware.
-/// # Safety
-/// NEVER return or unwind. Preserve BSP stack/borrowed driver/configuration/code,
-/// mappings and all permanent resources until reset, including live AP borrows.
-/// Retain/emit reported diagnostics. Do not retry, roll back, reset links or reclaim.
-/// Own safe reset/SMI/fault policy;
-/// halting alone is not cancellation/global quiescence or SMM/DMA isolation.
-pub unsafe trait FailStop {
-    fn fail_stop(&self, error: Error) -> !;
-}
-struct MpFailure<'a, F>(&'a F);
-// SAFETY: the enclosing unsafe FailStop contract includes the MP lifetime and
-// terminal handling contract; this adapter preserves the actual typed error.
-unsafe impl<F: FailStop> MpFailStop for MpFailure<'_, F> {
-    fn fail_stop(&self, error: MpError) -> ! {
-        self.0.fail_stop(Error::ArchitecturalMp(error))
-    }
-}
-fn release_error(code: u32, cause: Option<mp::ReleaseError>) -> Error {
-    Error::ApRelease { code, cause }
-}
-struct TerminalRelease<'a, S, D, F> {
-    inner: mp::ColdRelease<'a, S, D>,
-    failure: &'a F,
-}
-// SAFETY: the inner unsafe ColdRelease owns native publication/reset/cache
-// obligations. Failure is terminal before code-only architectural mapping;
-// retaining all live MP borrows is part of FailStop's unsafe contract.
-unsafe impl<S: Smn, D: FnMut(u32), F: FailStop> ApLauncher for TerminalRelease<'_, S, D, F> {
-    fn validate_cpu_count(&mut self, count: u16) -> Result<(), u32> {
-        match self.inner.validate_cpu_count(count) {
-            Ok(()) => Ok(()),
-            Err(code) => self
-                .failure
-                .fail_stop(release_error(code, self.inner.failure().copied())),
-        }
-    }
-    fn launch(&mut self, prepared: &PreparedAps) -> Result<(), u32> {
-        match self.inner.launch(prepared) {
-            Ok(()) => Ok(()),
-            Err(code) => self
-                .failure
-                .fail_stop(release_error(code, self.inner.failure().copied())),
-        }
-    }
-}
-/// Architectural CPU initialization and callback return completed. This permits
-/// later platform work, NOT immediate CCX-done/SMM/graphics/general completion.
+/// Architectural CPU initialization completed. CCX-done is a later phase.
 #[must_use]
 pub struct CpusInitialized {
     mp: MpHandle,
@@ -141,37 +83,22 @@ impl CpusInitialized {
     pub fn mp(&self) -> &MpHandle {
         &self.mp
     }
-    /// Consume the CPU-completion result at the correct later native phase.
-    /// # Safety
-    /// Complete ALL CCX-notification prerequisites in native silicon/pre-
-    /// enumeration/power-policy and CPU/SMM flows at their proper phase first.
-    /// CPU completion alone does not establish protected SMM services or these
-    /// other prerequisites. Do not forge them with a no-op hook/boolean promise.
-    /// Own SMN exclusively, retain all mappings/resources and establish actual
-    /// cache/event/reset/NMI/SMI/SMM/DMA exclusions. Delay is calibrated/non-
-    /// unwinding; fail-stop cannot return/unwind/retry/reclaim. Graphics is actual
-    /// earlier discovery, not synthetic enablement. Retain/emit every returned
-    /// nonstandard response; a completed request need not activate its features.
-    pub unsafe fn finish_ccx(
+    /// Send CCX-done and the late SMU power notifications.
+    /// Run after native silicon/pre-enumeration/SMM setup.
+    pub fn finish_ccx(
         self,
         graphics: bool,
         smn: &mut impl Smn,
         delay_us: &mut impl FnMut(u32),
-        failure: &impl FailStop,
-    ) -> CcxNotified {
-        // Private consumed token, obtainable only after actual MP return plus
-        // NativeCpu::complete(), not a public fabricated completion boolean.
-        let responses = notify(true, graphics, smn, delay_us, failure)
-            .unwrap_or_else(|error| failure.fail_stop(error));
-        CcxNotified {
+    ) -> Result<CcxNotified, Error> {
+        let responses = notify(true, graphics, smn, delay_us)?;
+        Ok(CcxNotified {
             cpus: self,
             responses,
-        }
+        })
     }
 }
-/// CPU completion plus transport-completed late notifications, not SMM/security
-/// or successful nonstandard SMU feature activation. No second notification API.
-#[must_use = "retain or emit every nonstandard late response before discarding the result"]
+#[must_use]
 pub struct CcxNotified {
     cpus: CpusInitialized,
     responses: LateResponses,
@@ -192,67 +119,41 @@ fn count(topology: Topology, ids: &[u32]) -> Result<u16, Error> {
             actual: ids.len(),
         });
     }
-    // NativeCpu repeats complete-set uniqueness/BSP/CPUID agreement before staging.
     Ok(expected as u16)
-}
-fn claim(flag: &AtomicBool) -> Result<(), Error> {
-    flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
-        .map_err(|_| Error::AlreadyAttempted)
 }
 fn notify(
     complete: bool,
     graphics: bool,
     smn: &mut impl Smn,
     delay_us: &mut impl FnMut(u32),
-    failure: &impl FailStop,
 ) -> Result<LateResponses, Error> {
     if !complete {
         return Err(Error::IncompleteCpu);
     }
     let mut responses = LateResponses::new();
+    let mut overflow = false;
     let result = nbio_late::ccx_done(smn, graphics, delay_us, &mut |command, status| {
-        if !responses.push(command, status) {
-            let prefix = core::mem::replace(&mut responses, LateResponses::new());
-            failure.fail_stop(Error::DiagnosticsOverflow {
-                response: LateResponse { command, status },
-                prefix,
-            });
-        }
+        overflow |= !responses.push(command, status);
     });
+    if overflow {
+        return Err(Error::DiagnosticsOverflow);
+    }
     match result {
         Ok(()) => Ok(responses),
         Err(cause) => Err(Error::Smu { cause, responses }),
     }
 }
-/// One attempt: cached complete count -> trusted resident patch preparation ->
-/// resident coordinated MP publication/SMU release -> callback-return completion
-/// -> NativeCpu completion check. Returns a private CPU-phase result; CCX-done
-/// is a separately consumed later phase so SMM/other prerequisites can be met.
-/// No PSP boot-done, SMM, graphics, PCI enumeration, payload or OS handoff here.
+/// Stage microcode, release the APs through the SMU and run per-CPU init.
 /// # Safety
-/// ALL NativeCpu::prepare_staged, microcode::stage, ColdRelease::new and
-/// initialize_resident contracts hold for the exact CPU/reset revision, complete
-/// physical CPU set, APs-held/BSP role, cache/MSR/CLFLUSH/errata semantics, stable
-/// WB/UC mappings/coherent resources, event/reset/NMI/SMI/SMM/DMA exclusions and
-/// measured BSP/AP stack budgets. Numerical checks do not establish those facts.
-/// Native early initialization and topology policy already completed correctly.
-/// Patch source independently trusted/immutable/disjoint through copy; map and
-/// ALL reservations persist in every allocator/payload until reset, also errors.
-/// Own MSR/SMN exclusively; do not use the BSP MSR owner while MP callbacks hold
-/// local access. Delay is real/calibrated and non-unwinding. Failure cannot return
-/// or unwind. An unknown/active prior boot flow may not be reconstructed/reset.
-/// Return does not establish the SMM/silicon prerequisites of finish_ccx.
+/// Cold boot after native early init and topology policy, all APs held, the
+/// early firmware region reserved in `input.memory`. Exclusive MSR/SMN access.
 pub unsafe fn initialize_cpus(
     input: Inputs<'_>,
     msr: &mut impl Msr,
     smn: &mut impl Smn,
     delay_us: &mut impl FnMut(u32),
-    failure: &impl FailStop,
-) -> CpusInitialized {
-    let total =
-        count(input.topology, input.apic_ids).unwrap_or_else(|error| failure.fail_stop(error));
-    claim(&ATTEMPTED).unwrap_or_else(|error| failure.fail_stop(error));
+) -> Result<CpusInitialized, Error> {
+    let total = count(input.topology, input.apic_ids)?;
     let cpu = unsafe {
         NativeCpu::prepare_staged(
             msr,
@@ -263,33 +164,39 @@ pub unsafe fn initialize_cpus(
             input.memory,
         )
     }
-    .unwrap_or_else(|error| failure.fail_stop(Error::Cpu(error)));
+    .map_err(Error::Cpu)?;
     let drivers: &[&dyn CpuDriver] = &[&cpu];
     let config = MpConfig {
         cpu_drivers: drivers,
         num_cpus: total,
         max_cpus: layout::MP_CPU_CAPACITY,
     };
-    let mp = {
-        let mut launcher = TerminalRelease {
-            inner: unsafe { mp::ColdRelease::new(smn, input.topology, delay_us) },
-            failure,
-        };
-        unsafe {
-            mp::initialize_resident(&config, &MpFailure(failure), &mut launcher, input.memory)
+    let mut release_error = None;
+    let mut launch = |aps: u16| {
+        unsafe { mp::release_aps(smn, input.topology, aps, delay_us) }.map_err(|error| {
+            release_error = Some(error);
+            0
+        })
+    };
+    let mp = match arch_mp::mp_init_with_launcher(&config, &mut launch) {
+        Ok(mp) => mp,
+        Err(MpError::PlatformLaunchFailed(_)) => {
+            return Err(Error::ApRelease(
+                release_error.unwrap_or(topology::Error::ApCount),
+            ));
         }
-        .unwrap_or_else(|error| failure.fail_stop(Error::Mp(error)))
+        Err(error) => return Err(Error::Mp(error)),
     };
     if mp.num_cpus() != total {
-        failure.fail_stop(Error::CpuCount {
+        return Err(Error::CpuCount {
             expected: usize::from(total),
             actual: usize::from(mp.num_cpus()),
         });
     }
     if !cpu.complete() {
-        failure.fail_stop(Error::IncompleteCpu);
+        return Err(Error::IncompleteCpu);
     }
-    CpusInitialized { mp }
+    Ok(CpusInitialized { mp })
 }
 
 #[cfg(test)]
@@ -298,16 +205,6 @@ mod tests {
     use super::*;
     use fstart_driver_amd::picasso::smu;
     use std::{collections::BTreeMap, vec::Vec};
-    struct Stop;
-    // SAFETY: terminal host abort; never a panic/unwind/retry surrogate.
-    unsafe impl FailStop for Stop {
-        fn fail_stop(&self, error: Error) -> ! {
-            // Host-only retention through terminal process abort; never called
-            // by these pure-gate/immediate synchronous mock success cases.
-            std::mem::forget(std::boxed::Box::new(error));
-            std::process::abort()
-        }
-    }
     struct Deny;
     impl Smn for Deny {
         fn read(&mut self, _: u32) -> u32 {
@@ -349,18 +246,11 @@ mod tests {
             .is_err()
         );
         assert!(matches!(
-            notify(
-                false,
-                false,
-                &mut Deny,
-                &mut |_| panic!("no delay before CPU completion"),
-                &Stop
-            ),
+            notify(false, false, &mut Deny, &mut |_| panic!(
+                "no delay before CPU completion"
+            ),),
             Err(Error::IncompleteCpu)
         ));
-        let flag = AtomicBool::new(false);
-        assert!(claim(&flag).is_ok());
-        assert!(matches!(claim(&flag), Err(Error::AlreadyAttempted)));
     }
     struct Mailbox {
         registers: BTreeMap<u32, u32>,
@@ -400,85 +290,11 @@ mod tests {
         }
     }
     #[test]
-    fn release_diagnostics_distinguish_unavailable_thread_enable_from_smu_timeout() {
-        struct ReleaseMock {
-            unavailable: bool,
-            submitted: bool,
-            writes: usize,
-        }
-        impl Smn for ReleaseMock {
-            fn read(&mut self, address: u32) -> u32 {
-                match address {
-                    0x0005a818 if self.unavailable => u32::MAX,
-                    smu::RESPONSE if !self.submitted => 1,
-                    _ => 0,
-                }
-            }
-            fn write(&mut self, address: u32, _: u32) {
-                self.writes += 1;
-                if address == smu::MESSAGE {
-                    self.submitted = true;
-                }
-            }
-        }
-        let topology = Topology {
-            cores_per_complex: 1,
-            complexes: 1,
-            threads_per_core: 2,
-        };
-        let mut unavailable = ReleaseMock {
-            unavailable: true,
-            submitted: false,
-            writes: 0,
-        };
-        // RAM-only mock transport: no real AP reset, PreparedAps fabrication or
-        // bootstrap publication. These are driver cause/forwarding witnesses.
-        let cause = unsafe {
-            topology::launch(&mut unavailable, topology, 1, &mut |_| {
-                panic!("no delay on unavailable ThreadEn")
-            })
-        }
-        .unwrap_err();
-        assert_eq!(unavailable.writes, 0);
-        assert!(matches!(
-            release_error(3, Some(mp::ReleaseError::Topology(cause))),
-            Error::ApRelease {
-                code: 3,
-                cause: Some(mp::ReleaseError::Topology(topology::Error::Unavailable(
-                    0x0005a818
-                )))
-            }
-        ));
-        let mut timeout = ReleaseMock {
-            unavailable: false,
-            submitted: false,
-            writes: 0,
-        };
-        let mut delays = 0;
-        let cause = unsafe { topology::launch(&mut timeout, topology, 1, &mut |_| delays += 1) }
-            .unwrap_err();
-        assert!(timeout.submitted);
-        assert_eq!(delays, 100_000); // mock iterations, not a physical deadline
-        assert!(matches!(
-            release_error(3, Some(mp::ReleaseError::Topology(cause))),
-            Error::ApRelease {
-                code: 3,
-                cause: Some(mp::ReleaseError::Topology(topology::Error::Smu(
-                    smu::Error::CompletionTimeout
-                )))
-            }
-        ));
-    }
-    #[test]
     fn source_order_retains_all_nonstandard_responses_and_failure_prefix() {
         let mut transport = mailbox(usize::MAX);
-        let records = notify(
-            true,
-            false,
-            &mut transport,
-            &mut |_| panic!("immediate fake needs no delay"),
-            &Stop,
-        )
+        let records = notify(true, false, &mut transport, &mut |_| {
+            panic!("immediate fake needs no delay")
+        })
         .unwrap();
         let commands: Vec<_> = transport.frames.iter().map(|frame| frame.0).collect();
         assert_eq!(commands, [0x35, 5, 0x0e, 0x53, 0x3a, 0x42, 0x32, 5]);
@@ -491,13 +307,9 @@ mod tests {
                 .all(|(entry, command)| entry.command == command && entry.status == 2)
         );
         let mut transport = mailbox(1);
-        let error = notify(
-            true,
-            false,
-            &mut transport,
-            &mut |_| panic!("unavailable fake must not delay"),
-            &Stop,
-        )
+        let error = notify(true, false, &mut transport, &mut |_| {
+            panic!("unavailable fake must not delay")
+        })
         .unwrap_err();
         assert!(
             matches!(error,Error::Smu { cause: power::Error::Smu(smu::Error::Unavailable),responses } if responses.entries()==[LateResponse { command: 0x35, status: 2 }])
@@ -507,7 +319,7 @@ mod tests {
         for i in 0..8 {
             assert!(full.push(i, 2));
         }
-        assert!(!full.push(99, 2)); // caller must terminal-stop rather than drop diagnostics
+        assert!(!full.push(99, 2));
         assert_eq!(full.entries().len(), 8);
     }
 }

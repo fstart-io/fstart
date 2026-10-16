@@ -74,8 +74,8 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
         .map_err(|e| e.to_string())?;
     Bundle::parse(&bytes).map_err(|e| format!("invalid flat microcode bundle: {e:?}"))?;
     let image = Span {
-        base: picasso::RESET_IMAGE_BASE,
-        size: u64::from(picasso::RESET_IMAGE_SIZE),
+        base: layout::IMAGE_BASE,
+        size: u64::from(layout::IMAGE_SIZE),
     };
     let expectations = Expectations {
         architecture: Architecture::X86_64,
@@ -85,12 +85,8 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
         runtime: vec![
             image,
             Span {
-                base: 0x02019000,
-                size: 0x17000,
-            },
-            Span {
-                base: layout::MP_START,
-                size: layout::MP_END - layout::MP_START,
+                base: layout::BSS_START,
+                size: layout::STACK_TOP - layout::BSS_START,
             },
             Span {
                 base: layout::MICROCODE_START,
@@ -102,22 +98,21 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
             },
         ],
         identity_mapping: true,
-        entry: Some(0x0204fff0),
+        entry: Some(layout::RESET_VECTOR),
         copy: None,
         descriptor: None,
         stored_flags: Some(5),
         symbols: BTreeMap::from([
-            ("_start".into(), 0x0204fff0),
+            ("_start".into(), layout::RESET_VECTOR),
             ("_fstart_early_reserved_start".into(), layout::EARLY_START),
-            ("_fstart_early_reserved_end".into(), layout::PSP_END),
-            ("_fstart_mp_start".into(), layout::MP_START),
-            ("_fstart_mp_end".into(), layout::MP_END),
+            ("_fstart_early_reserved_end".into(), layout::EARLY_END),
+            ("_fstart_page_tables".into(), layout::PAGE_TABLES),
             ("_fstart_microcode_start".into(), layout::MICROCODE_START),
             ("_fstart_microcode_end".into(), layout::MICROCODE_END),
             ("_fstart_psp_start".into(), layout::PSP_START),
             ("_fstart_psp_end".into(), layout::PSP_END),
-            ("_fstart_stack_bottom".into(), 0x02026000),
-            ("_fstart_stack_top".into(), image.base),
+            ("_fstart_stack_bottom".into(), layout::STACK_BOTTOM),
+            ("_fstart_stack_top".into(), layout::STACK_TOP),
         ]),
     };
     expectations.validate()?;
@@ -146,9 +141,10 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
             },
             files,
             reset_destination: image.base,
-            reset_size: picasso::RESET_IMAGE_SIZE,
-            apob_destination: picasso::APOB_BASE,
-            shared_memory: Some((picasso::SHARED_BASE, picasso::SHARED_SIZE)),
+            reset_size: layout::IMAGE_SIZE,
+            apob_destination: layout::APOB_BASE,
+            // Entry 0x6B is only for a PSP verstage.
+            shared_memory: None,
         };
         operation.validate()?;
         Assembly::PicassoPsp(std::boxed::Box::new(operation))
@@ -273,7 +269,7 @@ mod tests {
             operation.configuration.path,
             image_selection.image_config.clone().unwrap()
         );
-        assert_eq!(operation.reset_destination, picasso::RESET_IMAGE_BASE);
+        assert_eq!(operation.reset_destination, layout::IMAGE_BASE);
         image_plan
             .validate_image_selection(&image_selection)
             .unwrap();

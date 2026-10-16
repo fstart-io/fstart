@@ -3,7 +3,8 @@
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use fstart_arch::x86::{
     cpuid,
-    mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, cache},
+    mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError},
+    mtrr::SipiMsrs,
 };
 use fstart_driver_amd::picasso::{
     cpu::{
@@ -340,7 +341,7 @@ impl CpuDriver for NativeCpu {
     fn id_table(&self) -> &'static [CpuIdMatch] {
         IDS
     }
-    fn ap_cache_state(&self) -> Result<cache::State, cache::Error> {
+    fn sipi_msrs(&self) -> Result<SipiMsrs, MpError> {
         self.serial
             .run(|| {
                 let mut msr = unsafe { NativeMsr::new() };
@@ -348,12 +349,9 @@ impl CpuDriver for NativeCpu {
                     return Err(Error::Topology);
                 }
                 self.policy.validate(&mut msr).map_err(Error::Policy)?;
-                crate::mp::cache_state(&mut msr).map_err(Error::Cache)
+                crate::mp::sipi_msrs(&mut msr).map_err(Error::Cache)
             })
-            .map_err(|error| match error {
-                Error::Cache(crate::mp::Error::Image(error)) => error,
-                _ => cache::Error::Unsupported,
-            })
+            .map_err(|_| MpError::CacheabilitySetupFailed)
     }
     fn update_microcode(&self) {
         if self

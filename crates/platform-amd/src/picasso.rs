@@ -18,12 +18,6 @@ core::arch::global_asm!(
 );
 
 pub const LINKER_SCRIPT: &str = include_str!("../linker/picasso.ld");
-pub const RESET_IMAGE_BASE: u64 = 0x0203_0000;
-pub const RESET_IMAGE_SIZE: u32 = 0x0002_0000;
-pub const APOB_BASE: u64 = 0x0200_1000;
-pub const APOB_SIZE: u32 = 0x10000;
-pub const SHARED_BASE: u64 = 0x0201_1000;
-pub const SHARED_SIZE: u32 = 0x8000;
 
 #[derive(Debug)]
 pub struct Config {

@@ -44,7 +44,7 @@ pub mod car;
 pub mod car_teardown;
 pub mod cpuid;
 mod linux_boot_params;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "x86-identity-paging"))]
 pub mod paging;
 pub mod s3_wake;
 
@@ -141,7 +141,7 @@ macro_rules! enter_runtime {
     not(test),
     target_os = "none",
     not(fstart_stage_env = "postcar"),
-    not(feature = "x86-platform-entry")
+    not(fstart_entry = "picasso-reset")
 ))]
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is

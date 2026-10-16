@@ -42,7 +42,7 @@ impl Memory {
         let top = apob.low_top().min(top_mem);
         let tseg_base =
             top.checked_sub(tseg_size).ok_or(Error::Boundary)? & !(tseg_size.max(0x800000) - 1);
-        if tseg_base <= layout::PSP_END {
+        if tseg_base <= layout::EARLY_END {
             return Err(Error::Boundary);
         }
         let mut map = E820State::new();
@@ -60,9 +60,8 @@ impl Memory {
             map.reserve_range(hole.base, hole.size)
                 .map_err(|_| Error::Capacity)?;
         }
-        // MP, microcode and the whole PSP mailbox page must be usable APOB/TOM
-        // RAM, not merely absent from the payload map. Refuse holes/truncation
-        // before claiming or touching any of these permanent allocations.
+        // The whole early firmware region (image, data, stacks, microcode and
+        // PSP mailbox pages) and the AP bootstrap page must be APOB/TOM RAM.
         let trampoline = fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS;
         let usable = |base, end| {
             map.entries().iter().any(|entry| {
@@ -74,12 +73,12 @@ impl Memory {
                         .is_some_and(|top| top >= end)
             })
         };
-        if !usable(layout::MP_START, layout::PSP_END) || !usable(trampoline, trampoline + 4096) {
+        if !usable(layout::EARLY_START, layout::EARLY_END) || !usable(trampoline, trampoline + 4096)
+        {
             return Err(Error::Boundary);
         }
-        // Exclude early firmware, MP, microcode and the entire PSP mailbox page,
-        // including unused slots/allocation padding, until reset even on error.
-        map.reserve_range(layout::EARLY_START, layout::PSP_END - layout::EARLY_START)
+        // Firmware keeps all of it (parked APs, PSP mailbox, microcode) to reset.
+        map.reserve_range(layout::EARLY_START, layout::EARLY_END - layout::EARLY_START)
             .map_err(|_| Error::Capacity)?;
         // AP reset dispatch and exception handlers also retain the complete low
         // bootstrap page through reset; leaving it as RAM permits payload reuse.
@@ -99,11 +98,6 @@ impl Memory {
             tseg_base,
             tseg_size,
         })
-    }
-    /// A reservation witness for the platform's fixed MP allocation. This is
-    /// map bookkeeping only, not physical mapping/coherence or SMM isolation.
-    pub(crate) fn mp_reserved(&self) -> bool {
-        self.reserved(layout::MP_START, layout::MP_END)
     }
     /// Numerical witness only; no physical ownership/authentication implication.
     pub(crate) fn microcode_reserved(&self) -> bool {

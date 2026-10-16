@@ -38,7 +38,6 @@ fn apob_holes_psp_window_and_native_tseg_are_never_handed_to_the_os() {
     assert!(Memory::from_apob(&apob, 0xd0000000, None, 8 << 20).is_err());
     assert!(Memory::from_apob(&apob, 0xd0000000, Some(8 << 30), 8 << 20).is_err());
     let memory = Memory::from_apob(&apob, 0xd0000000, Some(16 << 30), 8 << 20).unwrap();
-    assert!(memory.mp_reserved());
     assert!(memory.microcode_reserved());
     assert!(memory.psp_reserved());
     assert_eq!(memory.tseg_base, 0xc7800000);
@@ -48,7 +47,7 @@ fn apob_holes_psp_window_and_native_tseg_are_never_handed_to_the_os() {
     for (base, size) in holes.iter().map(|&(base, size, _)| (base, size)).chain([
         (
             crate::layout::EARLY_START,
-            crate::layout::PSP_END - crate::layout::EARLY_START,
+            crate::layout::EARLY_END - crate::layout::EARLY_START,
         ),
         (memory.tseg_base, memory.tseg_size),
         (fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS, 4096),
@@ -74,7 +73,7 @@ fn apob_holes_psp_window_and_native_tseg_are_never_handed_to_the_os() {
     assert_eq!(memory.total_ram_bytes().unwrap(), total);
     assert!(memory.detect_memory(&mut entries[..1]).is_err());
     // The owned state passed to a later host/payload retains the exclusion and
-    // reduced usable total. MP, microcode and PSP mailbox pages stay permanent.
+    // reduced usable total. The early firmware region stays permanent.
     let state = memory.into_state();
     assert_eq!(state.total_ram(), total);
     assert!(
@@ -82,25 +81,20 @@ fn apob_holes_psp_window_and_native_tseg_are_never_handed_to_the_os() {
             .entries()
             .iter()
             .any(|entry| entry.kind == E820Kind::Reserved as u32
-                && entry.addr <= crate::layout::MP_START
-                && entry.addr + entry.size >= crate::layout::PSP_END)
+                && entry.addr <= crate::layout::EARLY_START
+                && entry.addr + entry.size >= crate::layout::EARLY_END)
     );
 }
 
 #[test]
-fn resident_holes_including_unused_slots_and_page_padding_reject_before_ownership() {
-    use crate::layout::{MICROCODE_END, MICROCODE_START, MP_END, MP_START, PSP_END, PSP_START};
+fn holes_in_the_early_firmware_region_are_rejected() {
+    use crate::layout::{EARLY_END, EARLY_START, IMAGE_BASE, MICROCODE_START, PSP_START};
     for (base, size) in [
-        (MP_START - 0x1000, 0x2000),
-        (MP_START + 0xf000, 0x2000),
-        (MP_START + 0x10800, 1),
-        (MP_END - 1, 1),
+        (EARLY_START, 1),
         (MICROCODE_START, 1),
-        (MICROCODE_START + 0xc80, 1),
-        (MICROCODE_END - 1, 1),
-        (PSP_START, 1),
-        (PSP_START + 32, 1), // unused tail is still permanently reserved
-        (PSP_END - 1, 1),
+        (PSP_START + 32, 1),
+        (IMAGE_BASE, 0x1000),
+        (EARLY_END - 1, 1),
         (fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS + 16, 1),
     ] {
         let bytes = apob_bytes(&[(base, size, 99)]);
@@ -110,45 +104,4 @@ fn resident_holes_including_unused_slots_and_page_padding_reject_before_ownershi
             Err(super::memory::Error::Boundary)
         ));
     }
-}
-
-#[test]
-fn platform_entry_rejects_selected_singleton_before_storage_or_hardware() {
-    use fstart_arch::x86::mp::{ApLauncher, MpConfig, MpError, MpFailStop, PreparedAps};
-    struct Abort;
-    // SAFETY: abort cannot unwind/return; it should never be reached here.
-    unsafe impl MpFailStop for Abort {
-        fn fail_stop(&self, _: MpError) -> ! {
-            std::process::abort()
-        }
-    }
-    struct Launcher(usize);
-    // SAFETY: cached-only rejection; submission must never be reached.
-    unsafe impl ApLauncher for Launcher {
-        fn validate_cpu_count(&mut self, count: u16) -> Result<(), u32> {
-            self.0 += 1;
-            if count == 8 { Ok(()) } else { Err(0x90) }
-        }
-        fn launch(&mut self, _: &PreparedAps) -> Result<(), u32> {
-            panic!("count rejection must not reach launch");
-        }
-    }
-    let bytes = apob_bytes(&[]);
-    let apob = Apob::parse(&bytes).unwrap().memory_map().unwrap();
-    let memory = Memory::from_apob(&apob, 0xd0000000, Some(16 << 30), 8 << 20).unwrap();
-    let config = MpConfig {
-        cpu_drivers: &[],
-        num_cpus: 1,
-        max_cpus: 16,
-    };
-    let mut launcher = Launcher(0);
-    // Cached rejection is before native address checks, claims, references or
-    // hardware: the host deliberately supplies no usable physical MP arena.
-    assert!(matches!(
-        unsafe { super::mp::initialize_resident(&config, &Abort, &mut launcher, &memory) },
-        Err(super::mp::ResidentError::Mp(
-            MpError::PlatformValidationFailed(0x90)
-        ))
-    ));
-    assert_eq!(launcher.0, 1);
 }
