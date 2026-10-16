@@ -20,4 +20,7 @@ serde_json = { version = "1", optional = true }
 fstart-driver-amd.workspace = true
 fstart-core.workspace = true
 fstart-driver-uart.workspace = true
+fstart-log.workspace = true
+ufmt.workspace = true
+fstart-pci.workspace = true
 fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }

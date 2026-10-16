@@ -797,7 +797,10 @@ dependencies = [
  "fstart-driver-amd",
  "fstart-driver-uart",
  "fstart-image-build",
+ "fstart-log",
+ "fstart-pci",
  "serde_json",
+ "ufmt",
 ]
 
 [[package]]

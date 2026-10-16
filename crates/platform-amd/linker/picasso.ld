@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 /* The PSP trains DRAM and copies this image to IMAGE_BASE before releasing
  * x86 at its last 16 bytes. All VMAs are DRAM, not the SPI window.
- * Keep in sync with src/layout.rs. The image has no initialized writable
- * data so the PSP-copied image stays unmodified (S3 integrity). */
+ * Keep in sync with src/layout.rs. There is no initialized writable data, so
+ * the PSP-copied image is never written (the PSP checks it on S3 resume). */
 OUTPUT_FORMAT(elf64-x86-64)
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(_start)
@@ -62,8 +62,8 @@ _fstart_gdt_offset = _fstart_gdt_pointer & 0xffff;
 ASSERT(SIZEOF(.picasso_psp) == 0x1000, "PSP mailbox storage capacity/layout mismatch")
 ASSERT(SIZEOF(.picasso_microcode) == 0x1000, "microcode storage capacity/layout mismatch")
 ASSERT(_fstart_microcode_start >= _fstart_psp_shared_end, "microcode page overlaps PSP shared memory")
-ASSERT(SIZEOF(.data) == 0, "initialized writable data would modify the PSP-copied image")
 ASSERT(SIZEOF(.unsupported_dynamic) + SIZEOF(.unsupported_rel) + SIZEOF(.unsupported_rela) + SIZEOF(.unsupported_relr) + SIZEOF(.unsupported_loader) == 0, "Picasso image cannot require runtime linking or IFUNC resolution")
+ASSERT(SIZEOF(.data) == 0, "initialized writable data would modify the PSP-copied image")
 ASSERT(_fstart_text_end <= ADDR(.init16), "Picasso code exceeds the DRAM image")
 ASSERT(ADDR(.init16) + SIZEOF(.init16) <= ADDR(.reset), "16-bit entry overflows reset vector")
 ASSERT(SIZEOF(.reset) <= 15, "reset vector too large")

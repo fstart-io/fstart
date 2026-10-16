@@ -387,6 +387,21 @@ impl EcamDevice {
     }
 }
 
+/// Config access to any segment-0 function through the global ECAM base
+/// (see [`init`]), for chipset code that addresses several functions.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GlobalEcam;
+
+impl ConfigRegionAccess for GlobalEcam {
+    unsafe fn read(&self, address: PciAddress, offset: u16) -> u32 {
+        EcamDevice::new_address(address).read32(offset)
+    }
+
+    unsafe fn write(&self, address: PciAddress, offset: u16, value: u32) {
+        EcamDevice::new_address(address).write32(offset, value)
+    }
+}
+
 /// Config-space accesses.
 ///
 /// AMD requires MMIO configuration accesses to use AL/AX/EAX (OSRR 56255
