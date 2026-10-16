@@ -575,29 +575,9 @@ impl LpcFixedIoDecode {
     }
 }
 
-/// Destination for an ICH7 GPIO event; its enable gate is separate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpiRoute {
-    Disabled,
-    Smi,
-    Sci,
-}
-impl GpiRoute {
-    const fn encode(self) -> u32 {
-        match self {
-            Self::Disabled => 0,
-            Self::Smi => 1,
-            Self::Sci => 2,
-        }
-    }
-}
-
-fn encode_gpi_routes(routes: &[GpiRoute; 16]) -> u32 {
-    routes
-        .iter()
-        .enumerate()
-        .fold(0, |value, (pin, route)| value | route.encode() << (2 * pin))
-}
+pub use crate::southbridge::gpio_ich::GpiRoute;
+use crate::southbridge::gpio_ich::encode_gpi_routes;
+pub use crate::southbridge::pirq::valid_pirq_route;
 
 #[cfg(test)]
 mod gpi_tests {
@@ -622,19 +602,13 @@ mod gpi_tests {
 pub struct LpcGenericIoDecode {
     /// I/O base address. Must be 4-byte aligned.
     pub base: u16,
-    /// Window size in bytes. Must be a non-zero multiple of 4 up to 256.
+    /// Window size in bytes. Must be a power of two from 4 through 256.
     pub size: u16,
 }
 
 impl LpcGenericIoDecode {
     fn encode(self) -> Option<u32> {
-        if self.base & 0x0003 != 0 || self.size == 0 || self.size > 0x0100 {
-            return None;
-        }
-        if self.size & 0x0003 != 0 {
-            return None;
-        }
-        Some(((u32::from(self.size) - 4) << 16) | u32::from(self.base & 0xfffc) | 1)
+        crate::southbridge::lpc::encode_generic_io_window(self.base, self.size)
     }
 }
 
@@ -683,7 +657,7 @@ pub struct IntelIch7Config {
     /// The driver programs `DxxIP`/`DxxIR` from this and the ACPI tables are
     /// generated from it, so the GSIs the OS derives are the ones the router
     /// actually delivers.
-    pub pirq: crate::southbridge::pirq::PirqRouting,
+    pub pirq: crate::southbridge::pirq::PirqRouting<'static>,
     /// PIRQ routing (one byte per PIRQ A..H).
     pub pirq_routing: [u8; 8],
     /// PCIe root ports 0-3 present. Absent ports are hidden with the FD
@@ -777,7 +751,7 @@ impl Default for IntelIch7Config {
 
 #[must_use]
 pub const fn valid_lpc_generic_io(range: LpcGenericIoDecode) -> bool {
-    range.base & 0x0003 == 0 && range.size != 0 && range.size <= 0x0100 && range.size & 0x0003 == 0
+    crate::southbridge::lpc::valid_generic_io_window(range.base, range.size)
 }
 
 #[must_use]
@@ -785,16 +759,6 @@ pub const fn lpc_generic_io_overlaps(a: LpcGenericIoDecode, b: LpcGenericIoDecod
     let a_end = a.base as u32 + a.size as u32;
     let b_end = b.base as u32 + b.size as u32;
     (a.base as u32) < b_end && (b.base as u32) < a_end
-}
-
-#[must_use]
-pub const fn valid_pirq_route(route: u8) -> bool {
-    route == 0
-        || route == 0x80
-        || (route >= 3 && route <= 7)
-        || (route >= 9 && route <= 12)
-        || route == 14
-        || route == 15
 }
 
 #[must_use]
@@ -2323,6 +2287,7 @@ mod acpi_impl {
                     acpi_enable: APM_CNT_ACPI_ENABLE,
                     acpi_disable: APM_CNT_ACPI_DISABLE,
                 }),
+                fadt: fstart_acpi::platform::X86FadtPolicy::default(),
             }
         }
     }

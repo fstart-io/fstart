@@ -38,6 +38,33 @@
 
 use fstart_core::ConstVec;
 
+/// Destination for an ICH GPIO event; its enable gate is separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpiRoute {
+    Disabled,
+    Smi,
+    Sci,
+}
+
+impl GpiRoute {
+    /// Two-bit GPIO_ROUT encoding.
+    pub const fn encode(self) -> u32 {
+        match self {
+            Self::Disabled => 0,
+            Self::Smi => 1,
+            Self::Sci => 2,
+        }
+    }
+}
+
+#[cfg(any(feature = "ich7", feature = "ich9"))]
+pub(crate) fn encode_gpi_routes(routes: &[GpiRoute; 16]) -> u32 {
+    routes
+        .iter()
+        .enumerate()
+        .fold(0, |value, (pin, route)| value | route.encode() << (2 * pin))
+}
+
 // ---------------------------------------------------------------------------
 // GPIOBASE register offsets
 // ---------------------------------------------------------------------------

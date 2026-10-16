@@ -635,7 +635,10 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         Ok(())
     }
 
-    fn post_verify_init(&mut self) -> Result<(), ServiceError> {
+    fn post_verify_init(
+        &mut self,
+        opregion: super::igd::OpRegionMemory<'_>,
+    ) -> Result<(), ServiceError> {
         // The OpRegion embeds the VBT out of the verified boot media, and the
         // modeset reads the same bytes for its panel and DDC policy.
         if !self.igd_present() {
@@ -645,6 +648,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
             &self.igd(),
             super::igd::OpRegionSci::Swsmisci,
             &self.config.igd.vbt,
+            opregion,
         );
         if self.config.igd.display.is_some() {
             self.gma_display_init(vbt.as_deref());

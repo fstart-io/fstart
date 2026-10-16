@@ -393,6 +393,7 @@ impl PmIo {
     // -------------------------------------------------------------------
 
     /// Read and clear PM1_STS (write-1-to-clear).
+    #[inline(always)]
     pub fn reset_pm1_status(&self) -> u16 {
         let reg = PmRegs::new(self.base).status();
         let sts = reg.get();
@@ -457,6 +458,7 @@ impl PmIo {
     }
 
     /// Enter S5 (soft-off).
+    #[inline(always)]
     pub fn poweroff(&self) -> ! {
         PmRegs::new(self.base)
             .control()

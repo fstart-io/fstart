@@ -30,7 +30,7 @@ pub struct PineviewIch7Config {
     pub igd: pineview::PineviewIgdConfig,
     pub pcie_ports: [bool; 4],
     pub pirq_routing: [u8; 8],
-    pub pirq: PirqRouting,
+    pub pirq: PirqRouting<'static>,
     pub lan: bool,
     pub early_serial_irq: bool,
     pub lpc_decode: LpcDecodeConfig,
@@ -119,7 +119,7 @@ impl PineviewIch7Config {
         self
     }
     #[must_use]
-    pub const fn pirq(mut self, routing: PirqRouting) -> Self {
+    pub const fn pirq(mut self, routing: PirqRouting<'static>) -> Self {
         self.pirq = routing;
         self
     }
@@ -319,8 +319,16 @@ mod stage {
         #[cfg(feature = "mp")]
         type Cpu = C::Driver;
         #[cfg(feature = "mp")]
-        fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
-            C::cpu_driver(ICH7_PMBASE, microcode)
+        fn cpu_driver(
+            microcode: Option<&'static [u8]>,
+            _northbridge: &Self::Northbridge,
+            _southbridge: &Self::Southbridge,
+        ) -> Self::Cpu {
+            C::cpu_driver(
+                ICH7_PMBASE,
+                microcode,
+                crate::legacy_cpu::CpuPowerPolicy::default(),
+            )
         }
         #[cfg(feature = "acpi")]
         type AcpiContext = PineviewIch7AcpiContext;

@@ -355,8 +355,16 @@ mod stage {
         #[cfg(feature = "mp")]
         type Cpu = C::Driver;
         #[cfg(feature = "mp")]
-        fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
-            C::cpu_driver(ICH8_PMBASE, microcode)
+        fn cpu_driver(
+            microcode: Option<&'static [u8]>,
+            _northbridge: &Self::Northbridge,
+            _southbridge: &Self::Southbridge,
+        ) -> Self::Cpu {
+            C::cpu_driver(
+                ICH8_PMBASE,
+                microcode,
+                crate::legacy_cpu::CpuPowerPolicy::default(),
+            )
         }
         #[cfg(feature = "acpi")]
         type AcpiContext = Gm965Ich8AcpiContext;

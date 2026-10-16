@@ -2,8 +2,8 @@
 //! authenticated bootstrap and retained stage publication.
 
 use crate::{
-    FfsLoadSpec, IntelBoard, IntelChipsetConfig, IntelEarlyBoardHooks, IntelEarlyCtx,
-    IntelEarlyPlatform, IntelSmbusRouting, SmbusRoute,
+    FfsLoadSpec, IntelBeforeNorthbridgeCtx, IntelBoard, IntelChipsetConfig, IntelEarlyBoardHooks,
+    IntelEarlyCtx, IntelEarlyPlatform, IntelSmbusRouting, SmbusRoute,
 };
 use fstart_core::layout::RegionKind;
 use fstart_core::services::memory_detect::MemoryDetector;
@@ -44,8 +44,10 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         console_node,
     } = spec;
     let (firmware_base, firmware_size) = geometry.firmware()?;
-    let postcar_load_addr = geometry.region(RegionKind::BootstrapPostcar)?.base;
-    let ramstage_load_addr = geometry.region(RegionKind::BootstrapMainstage)?.base;
+    let postcar_region = geometry.region(RegionKind::BootstrapPostcar)?;
+    let mainstage_region = geometry.region(RegionKind::BootstrapMainstage)?;
+    let postcar_load_addr = postcar_region.base;
+    let ramstage_load_addr = mainstage_region.base;
     let dram_end = geometry
         .region(RegionKind::BootstrapRam)?
         .end()
@@ -61,6 +63,10 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
     fstart_log::info!("{}: {} console ready", console_node, B::Console::NAME);
     fstart_log::info!("{} bootblock console ready", platform);
     fstart_timestamp::add(fstart_timestamp::id::EARLY_INIT);
+    hooks.before_northbridge(&mut IntelBeforeNorthbridgeCtx::new(
+        &mut northbridge,
+        &mut southbridge,
+    ))?;
     northbridge.early_init()?;
     southbridge.early_init()?;
     // Consume the southbridge indication exactly once, before board clock
@@ -73,6 +79,16 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         BootPath::Normal
     };
     northbridge.set_boot_path(boot_path);
+    northbridge.set_bootstrap_windows(
+        (
+            postcar_region.base,
+            postcar_region.end().ok_or(ServiceError::InvalidParam)?,
+        ),
+        (
+            mainstage_region.base,
+            mainstage_region.end().ok_or(ServiceError::InvalidParam)?,
+        ),
+    )?;
     let result = (|| {
         if boot_path == BootPath::S3Resume
             && (!B::FACTS.memory_cache || !northbridge.supports_s3_replay())

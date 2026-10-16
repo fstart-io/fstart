@@ -7,6 +7,7 @@
 use fstart_core::services::{ServiceError, SmBus};
 
 pub mod ddr2;
+pub mod ddr3;
 
 // ===================================================================
 // Shared SPD constants

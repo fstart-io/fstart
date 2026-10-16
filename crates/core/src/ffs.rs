@@ -186,10 +186,14 @@ pub struct ImageManifest {
     /// optionally Raw "nvs". Descriptor-based x86 images may also list
     /// descriptor/GbE/ME raw regions that are outside the BIOS image.
     ///
-    /// Keep the bound modest: this type is used in firmware without `alloc`,
-    /// and larger `heapless` capacities directly increase stack/BSS pressure.
-    pub regions: heapless::Vec<Region, 6>,
+    /// Keep the bound modest: larger `heapless` capacities directly increase
+    /// stack pressure. Firmware reads the zero-copy view instead.
+    pub regions: heapless::Vec<Region, MAX_IMAGE_REGIONS>,
 }
+
+/// Five descriptor regions (FD, ME, GbE, PDR, BIOS) plus the BIOS-region
+/// split into the memory-training cache and the RO container.
+pub const MAX_IMAGE_REGIONS: usize = 8;
 
 // ============================================================================
 // Regions — the unified abstraction
