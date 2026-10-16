@@ -119,22 +119,23 @@ register_structs! {
         (0xd3 => sd_control: ReadWrite<u8>), (0xd4 => _reserved2),
         (0xe8 => sd_enable: ReadWrite<u8>), (0xe9 => @END),
     },
-    Smi { (0 => status: ReadOnly<u32>), (4 => enable: ReadOnly<u32>), (8 => @END), },
-    Lpc {
-        (0 => _reserved0), (0x40 => control: ReadWrite<u8>), (0x41 => _reserved1),
-        (0xa4 => a4: ReadWrite<u32>), (0xa8 => _reserved2),
-        (0xd0 => clock: ReadWrite<u32>), (0xd4 => @END),
-    }
+    Smi { (0 => status: ReadOnly<u32>), (4 => enable: ReadOnly<u32>), (8 => @END), }
 }
+/// LPC bridge (D14F3) config registers. These go through ECAM, so they use
+/// the accumulator-only `EcamDevice` accessors, never a tock overlay.
+const LPC_CONTROL: u16 = 0x40;
+const LPC_A4: u16 = 0xa4;
+const LPC_CLOCK: u16 = 0xd0;
 pub struct NativeRegisters {
-    lpc: *const Lpc,
+    lpc: fstart_pci::EcamDevice,
 }
 impl NativeRegisters {
     /// # Safety
-    /// ECAM/ACPIMMIO decoded UC, live D14F3 mapping, exclusive BSP ownership.
-    pub unsafe fn new(ecam_base: usize) -> Self {
+    /// ECAM is decoded and published through `fstart_pci::ecam::init`,
+    /// ACPIMMIO decoded UC, exclusive BSP ownership.
+    pub unsafe fn new() -> Self {
         Self {
-            lpc: (ecam_base + (0x14 << 15) + (3 << 12)) as *const Lpc,
+            lpc: fstart_pci::EcamDevice::new(0, 0x14, 3),
         }
     }
     fn pm(&self) -> &Pm {
@@ -142,9 +143,6 @@ impl NativeRegisters {
     }
     fn smi(&self) -> &Smi {
         unsafe { &*((super::ACPI_MMIO + 0x200) as *const Smi) }
-    }
-    fn lpc(&self) -> &Lpc {
-        unsafe { &*self.lpc }
     }
     fn sd_power(&self) -> &ReadWrite<u8> {
         unsafe { &*((super::ACPI_MMIO + 0x1e40 + 25 * 2) as *const ReadWrite<u8>) }
@@ -157,9 +155,9 @@ impl Registers for NativeRegisters {
             Register::SdControl => u32::from(self.pm().sd_control.get()),
             Register::SdEnable => u32::from(self.pm().sd_enable.get()),
             Register::SdPower => u32::from(self.sd_power().get()),
-            Register::LpcControl => u32::from(self.lpc().control.get()),
-            Register::LpcA4 => self.lpc().a4.get(),
-            Register::LpcClock => self.lpc().clock.get(),
+            Register::LpcControl => u32::from(self.lpc.read8(LPC_CONTROL)),
+            Register::LpcA4 => self.lpc.read32(LPC_A4),
+            Register::LpcClock => self.lpc.read32(LPC_CLOCK),
         }
     }
     fn write(&mut self, register: Register, value: u32) {
@@ -168,9 +166,9 @@ impl Registers for NativeRegisters {
             Register::SdControl => self.pm().sd_control.set(value as u8),
             Register::SdEnable => self.pm().sd_enable.set(value as u8),
             Register::SdPower => self.sd_power().set(value as u8),
-            Register::LpcControl => self.lpc().control.set(value as u8),
-            Register::LpcA4 => self.lpc().a4.set(value),
-            Register::LpcClock => self.lpc().clock.set(value),
+            Register::LpcControl => self.lpc.write8(LPC_CONTROL, value as u8),
+            Register::LpcA4 => self.lpc.write32(LPC_A4, value),
+            Register::LpcClock => self.lpc.write32(LPC_CLOCK, value),
         }
     }
     fn status(&mut self, register: Status) -> u32 {
