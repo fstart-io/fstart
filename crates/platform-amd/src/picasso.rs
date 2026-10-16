@@ -4,7 +4,7 @@
 use fstart_driver_amd::{
     fch::{self, Fch},
     gpio::{self, Mmio, Pad, Pull},
-    picasso::{EARLY_AOAC, UART_AOAC},
+    picasso::{EARLY_AOAC, UART_AOAC, espi, preinit::SpiConfig},
 };
 
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
@@ -45,9 +45,26 @@ impl Default for Config {
     }
 }
 
-/// Unconditional, host-clean board identity and hardware facts.
+/// Monotonic microsecond time for board code.
+pub trait Timer {
+    fn now_us(&mut self) -> u64;
+    fn delay_us(&mut self, us: u32);
+}
+
+/// Board wiring and the mainboard hook. The platform owns the order; boards
+/// supply data.
 pub trait BoardFacts {
     const CONFIG: &'static Config;
+    /// SPI ROM read mode and speeds.
+    const SPI: SpiConfig;
+    /// eSPI link to the EC and its pads.
+    const ESPI: Option<(espi::Config, &'static [Pad])> = None;
+    /// GPIO tables programmed once the FCH is up, in order.
+    const EARLY_GPIOS: &'static [&'static [Pad]] = &[];
+    /// `DISABLE_SPI_FLASH_ROM_SHARING`: done before `mainboard_init`.
+    const DISABLE_ROM_SHARING: bool = false;
+    /// Mainboard init once the FCH, eSPI and early GPIOs are up: read board facts, program the remaining GPIOs.
+    fn mainboard_init(_gpio: &mut impl gpio::Access, _timer: &mut impl Timer) {}
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -108,7 +125,6 @@ pub const TSEG_SIZE: u64 = 8 << 20;
 /// silicon init from the APOB, running cached from here on.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub fn run<B: BoardFacts>() -> ! {
-    use fstart_core::services::Console;
     use fstart_driver_amd::picasso::{UART_BASES, tsc};
     use fstart_driver_uart::ns16550::{AccessMode, Ns16550, Ns16550Config};
     // SAFETY: only entered by the BSP cold-reset assembly, cache disabled.
@@ -134,12 +150,69 @@ pub fn run<B: BoardFacts>() -> ! {
     // SAFETY: `console` lives until this never-returning function halts.
     unsafe { fstart_log::init(&console) };
     fstart_log::info!("fstart: AMD Picasso cold boot, TSC {} MHz", mhz);
-    match unsafe { cold_boot(&mut |us| tsc::delay_us(mhz, us)) } {
-        Ok(state) => report(&state),
+    let mut timer = Tsc { mhz };
+    let result = unsafe { cold_boot(&mut |us| tsc::delay_us(mhz, us)) }.and_then(|state| {
+        report(&state);
+        unsafe { fch_init::<B>(&mut timer) }
+    });
+    match result {
+        Ok(()) => fstart_log::info!("picasso: early init checkpoint reached, halting"),
         Err(step) => fstart_log::error!("picasso: {} failed", step),
     }
-    fstart_log::info!("picasso: early init checkpoint reached, halting");
     halt()
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+struct Tsc {
+    mhz: u32,
+}
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+impl Timer for Tsc {
+    fn now_us(&mut self) -> u64 {
+        // SAFETY: RDTSC has no side effects.
+        unsafe { core::arch::x86_64::_rdtsc() / u64::from(self.mhz) }
+    }
+    fn delay_us(&mut self, us: u32) {
+        fstart_driver_amd::picasso::tsc::delay_us(self.mhz, us)
+    }
+}
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+impl espi::Clock for Tsc {
+    fn now_us(&mut self) -> u64 {
+        Timer::now_us(self)
+    }
+    fn pause_us(&mut self, us: u32) {
+        Timer::delay_us(self, us)
+    }
+}
+
+/// FCH bring-up and the board's early wiring:
+/// LPC/SPI aperture, eSPI, SPI ROM, SMBus, board GPIOs, ROM sharing, then
+/// the mainboard hook.
+/// # Safety
+/// BSP only after `cold_boot`, exclusive FCH access.
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
+    use fstart_driver_amd::picasso::{legacy, preinit};
+    let mut fch = unsafe { preinit::Native::new(fstart_pci::ecam::GlobalEcam) };
+    preinit::prepare_lpc(&mut fch).map_err(|_| "LPC setup")?;
+    let mut gpio = unsafe { Mmio::new() };
+    if let Some((config, pads)) = &B::ESPI {
+        gpio::configure(&mut gpio, pads, &[]).map_err(|_| "eSPI GPIOs")?;
+        let mut controller = unsafe { espi::Native::new(preinit::SPI_BASE as usize) };
+        espi::initialize(&mut controller, timer, config).map_err(|_| "eSPI link")?;
+        fstart_log::info!("picasso: eSPI link up");
+    }
+    preinit::configure_spi(&mut fch, B::SPI).map_err(|_| "SPI setup")?;
+    preinit::initialize_smbus(&mut fch).map_err(|_| "SMBus setup")?;
+    for table in B::EARLY_GPIOS {
+        gpio::configure(&mut gpio, table, &[]).map_err(|_| "board GPIOs")?;
+    }
+    if B::DISABLE_ROM_SHARING {
+        legacy::disable_rom_sharing(&mut unsafe { legacy::NativeRegisters::new() });
+    }
+    B::mainboard_init(&mut gpio, timer);
+    Ok(())
 }
 
 /// # Safety

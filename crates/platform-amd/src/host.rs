@@ -216,6 +216,17 @@ mod tests {
     struct Board;
     impl BoardFacts for Board {
         const CONFIG: &'static picasso::Config = &picasso::Config::new().build();
+        const SPI: fstart_driver_amd::picasso::preinit::SpiConfig = {
+            use fstart_driver_amd::picasso::preinit::{ReadMode, Speed, SpiConfig};
+            SpiConfig {
+                mode: ReadMode::Normal33,
+                normal: Speed::Mhz33,
+                fast: Speed::Mhz66,
+                alternate: Speed::Mhz66,
+                tpm: Speed::Mhz66,
+                burst_4dw: false,
+            }
+        };
     }
     struct Source(std::path::PathBuf);
     impl Drop for Source {
