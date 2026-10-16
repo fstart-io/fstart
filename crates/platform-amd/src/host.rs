@@ -53,26 +53,32 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
             "Picasso checkpoint is halt-only; native payload flow is not implemented".into(),
         );
     }
-    if selection.compiler_files.len() != 1
-        || selection.compiler_files[0].environment != MICROCODE_INPUT
-    {
-        return Err(format!(
-            "Picasso requires exactly --compiler-input {MICROCODE_INPUT}=PATH"
-        ));
-    }
-    let input = &selection.compiler_files[0];
+    // Microcode is optional: without it the image builds but cannot update
+    // CPU microcode. Build a bundle with `fstart-ucode`.
+    let input = match selection.compiler_files.as_slice() {
+        [] => None,
+        [input] if input.environment == MICROCODE_INPUT => Some(input),
+        _ => {
+            return Err(format!(
+                "Picasso accepts only --compiler-input {MICROCODE_INPUT}=PATH"
+            ));
+        }
+    };
     let capacity = (PATCH_BYTES * MAX_PATCHES) as u64;
-    let mut bytes = std::vec::Vec::new();
-    let metadata = std::fs::metadata(&input.path).map_err(|e| format!("{}: {e}", input.path))?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > capacity {
-        return Err("microcode input is not a nonempty bounded regular file".into());
+    if let Some(input) = input {
+        let mut bytes = std::vec::Vec::new();
+        let metadata =
+            std::fs::metadata(&input.path).map_err(|e| format!("{}: {e}", input.path))?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > capacity {
+            return Err("microcode input is not a nonempty bounded regular file".into());
+        }
+        std::fs::File::open(&input.path)
+            .map_err(|e| e.to_string())?
+            .take(capacity + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        Bundle::parse(&bytes).map_err(|e| format!("invalid flat microcode bundle: {e:?}"))?;
     }
-    std::fs::File::open(&input.path)
-        .map_err(|e| e.to_string())?
-        .take(capacity + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    Bundle::parse(&bytes).map_err(|e| format!("invalid flat microcode bundle: {e:?}"))?;
     let image = Span {
         base: layout::IMAGE_BASE,
         size: u64::from(layout::IMAGE_SIZE),
@@ -170,7 +176,10 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
                 environments: vec!["psp-dram".into()],
                 payloads: vec!["halt".into()],
             },
-            features: vec!["bundle-checkpoint".into()],
+            features: core::iter::once("bundle-checkpoint")
+                .chain(input.map(|_| "linked-microcode"))
+                .map(String::from)
+                .collect(),
             build_std: None,
             rustflags: vec![
                 "-Crelocation-model=static".into(),
@@ -180,11 +189,14 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
             linker_script: Some(picasso::LINKER_SCRIPT.into()),
             environment_values: BTreeMap::new(),
             bindings: vec![],
-            file_bindings: vec![FileBinding {
-                environment: input.environment.clone(),
-                path: input.path.clone(),
-                capacity,
-            }],
+            file_bindings: input
+                .map(|input| FileBinding {
+                    environment: input.environment.clone(),
+                    path: input.path.clone(),
+                    capacity,
+                })
+                .into_iter()
+                .collect(),
             output: UnitOutput::Executable {
                 expectations,
                 load_address: image.base,
@@ -248,7 +260,7 @@ mod tests {
         assert_eq!(plan.selection("reset").unwrap().len(), 1);
         let unit = &plan.units[0];
         assert!(unit.release_only);
-        assert_eq!(unit.features, ["bundle-checkpoint"]);
+        assert_eq!(unit.features, ["bundle-checkpoint", "linked-microcode"]);
         assert_eq!(unit.file_bindings[0].path, selected.compiler_files[0].path);
         assert_eq!(unit.file_bindings[0].capacity, 9600);
         let UnitOutput::Executable { expectations, .. } = &unit.output else {
@@ -289,13 +301,17 @@ mod tests {
         for change in [
             |s: &mut BuildSelection| s.payload = Some("uefi".into()),
             |s: &mut BuildSelection| s.compiler_files[0].environment = "UNSUPPORTED".into(),
-            |s: &mut BuildSelection| s.compiler_files.clear(),
             |s: &mut BuildSelection| s.compiler_files.push(s.compiler_files[0].clone()),
         ] {
             let mut invalid = selected.clone();
             change(&mut invalid);
             assert!(resolve::<Board>(invalid).is_err());
         }
+        let mut without = selected.clone();
+        without.compiler_files.clear();
+        let plain = resolve::<Board>(without).unwrap();
+        assert_eq!(plain.units[0].features, ["bundle-checkpoint"]);
+        assert!(plain.units[0].file_bindings.is_empty());
         // Rejected before a firmware compiler: trailing bytes and bad header.
         bytes.push(0);
         std::fs::write(source.0.join("source = exact.bin"), &bytes).unwrap();

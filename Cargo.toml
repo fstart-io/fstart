@@ -87,7 +87,6 @@ clap = { version = "4", features = ["derive", "env"] }
 fstart-core = { path = "crates/core" }
 fstart-coreboot = { path = "crates/coreboot" }
 fstart-driver-amd = { path = "crates/driver-amd" }
-fstart-driver-chromeec = { path = "crates/driver-chromeec" }
 fstart-platform-qemu = { path = "crates/platform-qemu" }
 fstart-pci = { path = "crates/pci" }
 fstart-ffs = { path = "crates/ffs" }
