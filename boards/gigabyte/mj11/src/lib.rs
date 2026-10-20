@@ -14,7 +14,6 @@ pub mod smm;
 mod variant;
 
 use fstart_driver_amd::{
-    dxio::Descriptor,
     fch::{
         self, ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status,
         gpio::Control,
@@ -32,7 +31,7 @@ use tock_registers::{
 use fstart_driver_superio::aspeed_ast2400::{self as ast, Ast2400, SuperIoConfig};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_pci::ConfigRegionAccess;
-use fstart_platform_amd::zeppelin::BoardCtx;
+use fstart_platform_amd::zeppelin::{BoardCtx, Config, DxioConfig, FchConfig};
 
 pub struct Board;
 
@@ -108,24 +107,26 @@ fn ast_vga_set_ssid(pci: &impl ConfigRegionAccess) {
             return;
         }
         pci.write(vga, 0x80, 0xaa1a_03aa);
-        pci.write(
-            vga,
-            0x2c,
-            <Board as fstart_platform_amd::zeppelin::Board>::SUBSYSTEM_ID,
-        );
+        pci.write(vga, 0x2c, CONFIG.subsystem_id);
         pci.write(vga, 0x80, 0);
     }
 }
 
-impl fstart_platform_amd::zeppelin::Board for Board {
-    /// Gigabyte.
-    const SUBSYSTEM_ID: u32 = 0x1000_1458;
-    const IRQ_ROUTES: &'static [Route] = IRQ_ROUTES;
-    const SMI_GEVENTS: u32 = 1 << NMI_BUTTON_GEVENT;
+const CONFIG: Config = Config {
+    // Gigabyte
+    subsystem_id: 0x1000_1458,
+    fch: FchConfig {
+        irq_routes: IRQ_ROUTES,
+        smi_gevents: 1 << NMI_BUTTON_GEVENT,
+        ..FchConfig::DEFAULT
+    },
+    dxio: DxioConfig {
+        descriptors: [dxio::DEFAULT, &[]],
+    },
+};
 
-    fn dxio_descriptors(_ctx: &mut BoardCtx<'_>, die: u8) -> &'static [Descriptor] {
-        if die == 0 { dxio::DEFAULT } else { &[] }
-    }
+impl fstart_platform_amd::zeppelin::Board for Board {
+    const CONFIG: &'static Config = &CONFIG;
 
     fn fch_reset_done(ctx: &mut BoardCtx<'_>) {
         let gpio = ctx.gpio();

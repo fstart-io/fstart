@@ -28,7 +28,7 @@ pub fn install<B: Board>(mp: &MpHandle, tseg_base: u64) -> Result<InstalledTseg,
     let image = IMAGE.ok_or("no SMM image")?;
     // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
     // decoded since the FCH init.
-    let smi = unsafe { FchSmi::new(taishan::ACPI_PORTS, B::SMI_GEVENTS) };
+    let smi = unsafe { FchSmi::new(taishan::ACPI_PORTS, B::CONFIG.fch.smi_gevents) };
     AmdSmm::new("zeppelin", &smi)
         .install(mp, image, tseg_base, TSEG_SIZE)
         .map_err(|error| error.name())

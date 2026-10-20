@@ -11,7 +11,7 @@ picasso = ["fstart-driver-amd/picasso", "dep:fstart-arch"]
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
 # Compiler/check/editor support; still a non-bootable console checkpoint.
 bundle-checkpoint = ["picasso"]
-zeppelin = ["fstart-driver-amd/zeppelin", "dep:fstart-arch", "dep:embedded-hal"]
+zeppelin = ["fstart-driver-amd/zeppelin", "dep:fstart-arch", "dep:embedded-hal", "dep:zerocopy"]
 # The Zeppelin ACPI tables.
 acpi = ["zeppelin", "dep:fstart-acpi", "dep:fstart-acpi-macros"]
 # The Zeppelin reset image: one DRAM stage from reset vector to payload.

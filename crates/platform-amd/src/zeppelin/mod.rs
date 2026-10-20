@@ -12,10 +12,13 @@ pub mod layout;
 mod memory;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod pci;
+pub mod silicon;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod smm;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod stage;
+#[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
+mod tests;
 
 extern crate alloc;
 
@@ -61,22 +64,54 @@ impl BoardCtx<'_> {
     }
 }
 
-/// Board wiring and hooks. The platform owns the order of calls.
-pub trait Board: 'static {
-    /// Subsystem ID for the FCH and PCIe devices.
-    const SUBSYSTEM_ID: u32;
+/// A board's Zeppelin configuration, by IP block.
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    /// Subsystem ID of the FCH, NBIO and PCIe functions.
+    pub subsystem_id: u32,
+    pub fch: FchConfig,
+    pub dxio: DxioConfig,
+}
+
+/// The Taishan FCH.
+#[derive(Debug, Clone, Copy)]
+pub struct FchConfig {
     /// AC power-loss policy.
-    const POWER_FAILURE: PowerFailure = PowerFailure::Previous;
+    pub power_failure: PowerFailure,
     /// FCH devices in use, per die.
-    const FCH_DEVICES: [Devices; MAX_DIES] = [Devices {
-        xhci: true,
-        sata: true,
-    }; MAX_DIES];
-    /// The FCH PCI interrupt router (0xc00/0xc01) table.
-    const IRQ_ROUTES: &'static [Route];
+    pub devices: [Devices; MAX_DIES],
+    /// The PCI interrupt router (0xc00/0xc01) table.
+    pub irq_routes: &'static [Route],
     /// GEVENT pins (bit n = GEVENTn) routed to the board's SMM handler,
     /// `fstart_driver_amd::fch::taishan::smm::SmmBoard::gevent`.
-    const SMI_GEVENTS: u32 = 0;
+    pub smi_gevents: u32,
+}
+impl FchConfig {
+    pub const DEFAULT: Self = Self {
+        power_failure: PowerFailure::Previous,
+        devices: [Devices {
+            xhci: true,
+            sata: true,
+        }; MAX_DIES],
+        irq_routes: &[],
+        smi_gevents: 0,
+    };
+}
+impl Default for FchConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// The DXIO engines (PCIe, SATA lanes) of each die.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DxioConfig {
+    pub descriptors: [&'static [Descriptor]; MAX_DIES],
+}
+
+/// Board wiring and hooks. The platform owns the order of calls.
+pub trait Board: 'static {
+    const CONFIG: &'static Config;
 
     /// LPC decodes and Super I/O routing for the console, before any
     /// output.
@@ -85,8 +120,6 @@ pub trait Board: 'static {
     fn console() -> Ns16550Config;
     /// After the FCH reset tasks, where the vendor board PEIMs run.
     fn fch_reset_done(_ctx: &mut BoardCtx<'_>) {}
-    /// DXIO engines of a die.
-    fn dxio_descriptors(ctx: &mut BoardCtx<'_>, die: u8) -> &'static [Descriptor];
     /// After DXIO link training, before PCI enumeration.
     fn dxio_training_done(_ctx: &mut BoardCtx<'_>) {}
     /// After PCI enumeration.
