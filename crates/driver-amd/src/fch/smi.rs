@@ -29,22 +29,7 @@ pub mod source {
     pub const SMI_COMMAND: u8 = 75;
 }
 
-/// What a source raises (2 bits per source in SMIxA0..SMIxC4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Disable = 0,
-    Smi = 1,
-}
-
-register_bitfields![u32,
-    /// SMIx98.
-    pub SmiTrigger0 [
-        PSP OFFSET(25) NUMBITS(1) [],
-        EOS OFFSET(28) NUMBITS(1) [],
-        /// SmiEnB: 1 stops SMI generation.
-        SMI_DISABLE OFFSET(31) NUMBITS(1) []
-    ]
-];
+pub use super::{SMI_TRIGGER0 as TRIGGER0, SmiMode as Mode, SmiTrigger0, smi_control as control};
 register_bitfields![u16,
     /// SMIx94: which status registers hold events.
     pub SmiPointer [SCI OFFSET(0) NUMBITS(1) [], STATUS OFFSET(1) NUMBITS(5) []],
@@ -64,12 +49,6 @@ pub const fn status(n: usize) -> AcpiReg<u32> {
 }
 const STATUS_COUNT: usize = 5;
 pub const POINTER: AcpiReg<u16, SmiPointer::Register> = smi::at(0x94);
-pub const TRIGGER0: AcpiReg<u32, SmiTrigger0::Register> = smi::at(0x98);
-/// SMIxA0 + 4 * n, n < 10: two bits per source.
-pub const fn control(n: usize) -> AcpiReg<u32> {
-    smi::at(0xa0 + 4 * n as u32)
-}
-const CONTROL_COUNT: usize = 10;
 
 /// Byte offset of SMIxA0 + n and the bit shift of `source` in it.
 const fn control_slot(source: u8) -> (usize, u32) {
@@ -104,13 +83,8 @@ impl<B: Bus> Smi<B> {
         self.fch.bus().reg(Reg::io(self.ports.gpe0))
     }
 
-    /// Route SMI source `source`.
     fn configure(&self, source: u8, mode: Mode) {
-        let (index, shift) = control_slot(source);
-        if index < CONTROL_COUNT {
-            let register = self.fch.reg(control(index));
-            register.set((register.get() & !(3 << shift)) | ((mode as u32) << shift));
-        }
+        super::smi_route(&self.fch, source, mode);
     }
 
     /// Clear every SMI status (no event status: GEVENT SCIs stay).

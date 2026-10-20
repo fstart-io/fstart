@@ -196,15 +196,17 @@ pub const GPIO_143_UART1_TXD: u8 = 0;
 pub const GPIO_143_GPIOxx: u8 = 1;
 pub const GPIO_144_UART1_INTR: u8 = 0;
 pub const GPIO_144_GPIOxx: u8 = 1;
-pub const fn gpio_function(pin: u8) -> u8 {
+/// The IOMUX function that makes `pin` a GPIO, `None` if the pin isn't
+/// bonded as a Picasso GPIO.
+pub const fn gpio_function(pin: u8) -> Option<u8> {
     match pin {
         3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 27 | 40 | 42 | 68 | 69 | 70 | 95 | 96 | 97 | 98
-        | 99 | 100 => 0,
+        | 99 | 100 => Some(0),
         0 | 1 | 2 | 12 | 13 | 14 | 16 | 17 | 18 | 24 | 26 | 29 | 67 | 76 | 84 | 85 | 86 | 91
-        | 115 | 116 | 120 | 121 | 129 | 130 | 136 | 138 | 139 | 141 | 143 | 144 => 1,
+        | 115 | 116 | 120 | 121 | 129 | 130 | 136 | 138 | 139 | 141 | 143 | 144 => Some(1),
         19 | 20 | 21 | 22 | 30 | 31 | 32 | 74 | 75 | 87 | 88 | 89 | 90 | 108 | 109 | 113 | 114
-        | 132 | 135 | 137 | 140 | 142 => 2,
-        23 | 92 | 104 | 105 | 106 | 107 | 131 => 3,
-        _ => panic!("pin is not bonded as a Picasso GPIO"),
+        | 132 | 135 | 137 | 140 | 142 => Some(2),
+        23 | 92 | 104 | 105 | 106 | 107 | 131 => Some(3),
+        _ => None,
     }
 }

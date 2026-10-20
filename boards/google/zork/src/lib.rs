@@ -27,7 +27,7 @@ impl BoardFacts for Board {
         dalboz::ROMSTAGE_GPIO_TABLE,
     ];
     const DISABLE_ROM_SHARING: bool = true;
-    fn mainboard_init(gpio: &mut impl gpio::Access, timer: &mut impl Timer) {
+    fn mainboard_init(gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, timer: &mut impl Timer) {
         mainboard::init(gpio, timer)
     }
 }
@@ -51,7 +51,7 @@ mod mainboard {
         }
     }
 
-    pub(super) fn init(gpio: &mut impl gpio::Access, timer: &mut impl Timer) {
+    pub(super) fn init(gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, timer: &mut impl Timer) {
         // SAFETY: the eSPI windows for the EC ports are up; the BSP owns them.
         let cbi = match Ec::discover(unsafe { NativeIo::new() }) {
             Ok(mut ec) => ec::read_cbi(&mut ec, &mut EcClock(timer), &mut |_, _| {
@@ -77,7 +77,7 @@ mod mainboard {
 mod mainboard {
     use fstart_driver_amd::gpio;
     use fstart_platform_amd::picasso::Timer;
-    pub(super) fn init(_: &mut impl gpio::Access, _: &mut impl Timer) {}
+    pub(super) fn init(_: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, _: &mut impl Timer) {}
 }
 
 pub const FLASH_SIZE: u32 = 0x1000000;

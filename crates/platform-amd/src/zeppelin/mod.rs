@@ -24,6 +24,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use fstart_driver_amd::{
     fch::{Acpimmio, Fch, NativeBus, early::PowerFailure},
+    gpio::Gpio,
     lpc::Lpc,
     zeppelin::{
         MAX_DIES,
@@ -78,9 +79,8 @@ impl BoardCtx<'_> {
     }
 
     /// The GPIO pads of die 0.
-    pub fn gpio(&mut self) -> fstart_driver_amd::gpio::Mmio {
-        // SAFETY: as for `fch`; the ACPI MMIO is decoded and UC.
-        unsafe { fstart_driver_amd::gpio::Mmio::new() }
+    pub fn gpio(&mut self) -> Gpio<NativeBus> {
+        Gpio::new(self.fch(), &fstart_driver_amd::zeppelin::GPIO_BANK)
     }
 }
 

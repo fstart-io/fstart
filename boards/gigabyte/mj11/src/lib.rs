@@ -141,9 +141,7 @@ impl fstart_platform_amd::zeppelin::Board for Board {
     }
 
     fn mainboard_final(ctx: &mut BoardCtx<'_>) {
-        if fstart_driver_amd::gpio::configure(&mut ctx.gpio(), &soc::GPIO_BANK, gpio::VENDOR, &[])
-            .is_err()
-        {
+        if ctx.gpio().configure(gpio::VENDOR, &[]).is_err() {
             fstart_log::error!("Vendor GPIO table rejected");
         }
         ast_vga_set_ssid(&ctx.dies[0].pci());

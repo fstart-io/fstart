@@ -397,6 +397,17 @@ register_bitfields![u32,
     /// MISCx40.
     pub MiscClkCntl1 [ALINK_GATE OFFSET(1) NUMBITS(1) []]
 ];
+register_bitfields![u32,
+    /// SMIx98.
+    pub SmiTrigger0 [
+        /// The GEVENT SMI trigger polarity, bit per GEVENT.
+        GEVENT_HIGH OFFSET(0) NUMBITS(24) [],
+        PSP OFFSET(25) NUMBITS(1) [],
+        EOS OFFSET(28) NUMBITS(1) [],
+        /// SmiEnB: 1 stops SMI generation.
+        SMI_DISABLE OFFSET(31) NUMBITS(1) []
+    ]
+];
 register_bitfields![u16,
     /// The legacy UART I/O decodes of the AL2AHB UARTs.
     pub LegacyUartDecode [RANGES OFFSET(0) NUMBITS(16) []]
@@ -443,6 +454,30 @@ pub use regs::*;
 
 /// AOAC devices.
 pub const AOAC_LEGACY_SD: u8 = 25;
+
+pub const SMI_TRIGGER0: AcpiReg<u32, SmiTrigger0::Register> = smi_bank::at(0x98);
+/// SMIxA0 + 4 * n, n < 10: two bits per SMI source.
+pub const fn smi_control(n: usize) -> AcpiReg<u32> {
+    smi_bank::at(0xa0 + 4 * n as u32)
+}
+pub const SMI_CONTROLS: usize = 10;
+
+/// What an SMI source raises (2 bits per source in SMIxA0..SMIxC4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmiMode {
+    Disable = 0,
+    Smi = 1,
+}
+
+/// Route SMI source `source` (GEVENT n is source
+/// n).
+pub fn smi_route(fch: &Fch<impl Bus>, source: u8, mode: SmiMode) {
+    let index = usize::from(source / 16);
+    if index < SMI_CONTROLS {
+        let field = tock_registers::fields::Field::<u32, ()>::new(3, usize::from(source % 16) * 2);
+        fch.reg(smi_control(index)).modify(field.val(mode as u32));
+    }
+}
 
 /// The ACPI fixed I/O blocks the FCH decodes (PMx60..PMx68).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
