@@ -30,6 +30,7 @@ fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] 
 fstart-pci = { path = "../../../crates/pci" }
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
+embedded-hal = { workspace = true }
 
 [[bin]]
 name = "fstart-stage"

@@ -6,12 +6,19 @@ extern crate alloc;
 
 mod acpi;
 mod dxio;
+mod i2c;
+mod variant;
 
 use fstart_driver_amd::{
+    fam17h::registers::Smn,
     lpc::{IoPortDecode, Lpc},
     zeppelin::{
+        self as soc,
         dxio::Descriptor,
-        fch::irq::{self, Route},
+        fch::{
+            Acpimmio, Bus,
+            irq::{self, Route},
+        },
     },
 };
 use fstart_platform_amd::zeppelin::BoardCtx;
@@ -44,6 +51,29 @@ impl fstart_platform_amd::zeppelin::Board for Board {
 
     fn dxio_descriptors(_ctx: &mut BoardCtx<'_>, die: u8) -> &'static [Descriptor] {
         if die == 0 { dxio::DEFAULT } else { &[] }
+    }
+
+    fn fch_reset_done(ctx: &mut BoardCtx<'_>) {
+        let mut fch = ctx.fch();
+        for pad in i2c::PADS {
+            fch.set(Acpimmio::DIE0.iomux::<u8, ()>(pad.into()), 1);
+        }
+        // SAFETY: nothing else uses I2C3.
+        match unsafe { soc::i2c::controller(i2c::BUS, ctx.clock) } {
+            Ok(mut bus) => {
+                i2c::program_vrs(&mut bus, ctx.clock, variant::VR_IMAGES);
+                i2c::program_redrivers(&mut bus, variant::REDRIVERS);
+            }
+            Err(_) => fstart_log::error!("I2C3 setup failed, VRs not programmed"),
+        }
+    }
+
+    /// The vendor's PCIe TX presets and USB2 PHY values after training.
+    fn dxio_training_done(ctx: &mut BoardCtx<'_>) {
+        let mut smn = ctx.dies[0].smn();
+        for &(register, value) in variant::POST_TRAINING_SMN {
+            smn.write(register, value);
+        }
     }
 
     fn early_init(lpc: &mut Lpc<impl ConfigRegionAccess>) {
