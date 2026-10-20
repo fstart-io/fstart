@@ -10,6 +10,7 @@ pub mod ccx;
 mod ccx_tables;
 pub mod dxio;
 pub mod fabric;
+pub mod fch;
 pub mod identity;
 pub mod microcode;
 pub mod nbio;
