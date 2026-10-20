@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The ACPI tables of the flow: what the dies and the enumeration report,
 //! built by [`crate::acpi`] into reserved firmware memory.
-use super::MAX_DIES;
+use super::{MAX_DIES, pci::Root};
 use crate::acpi::{self, BoardAcpi, Bridge, DieAcpi, Inputs, SocAcpi};
 use core::ops::RangeInclusive;
-use fstart_driver_amd::{df::Die, fch, nbio::iommu, soc::Soc};
+use fstart_driver_amd::{
+    df::Die,
+    fch,
+    nbio::iommu::{self, Iommu},
+    soc::Soc,
+};
 use fstart_log::Hex;
-use fstart_pci::{PciEcam, PciWindowKind, ecam::GlobalEcam};
+use fstart_pci::{MAX_PCI_ROOT_WINDOWS, PciEcam, ecam::GlobalEcam};
 use heapless::Vec;
 
 /// The ECAM window: its base and bus count.
@@ -15,13 +20,59 @@ pub struct Ecam {
     pub buses: u16,
 }
 
-/// Build the tables for `dies` with their NBIO IOAPICs at `ioapics` (by die)
-/// and the CPUs `apic_ids`; returns the RSDP.
+/// The ACPI host bridge of a root complex: its buses and windows and the
+/// bridges the enumeration found on its root bus.
+pub struct HostBridge {
+    buses: RangeInclusive<u8>,
+    io: Vec<RangeInclusive<u16>, MAX_PCI_ROOT_WINDOWS>,
+    mmio: Vec<RangeInclusive<u64>, MAX_PCI_ROOT_WINDOWS>,
+    bridges: Vec<Bridge, 32>,
+}
+impl HostBridge {
+    pub fn new(root: &Root, pci: &PciEcam) -> Self {
+        let buses = root.buses();
+        let bridges = pci
+            .devices()
+            .filter(|a| a.bus() == *buses.start())
+            .filter_map(|a| {
+                let device = pci.device(a)?;
+                (device.read32(8) >> 16 == 0x0604).then_some(Bridge {
+                    devfn: fstart_pci::devfn(a.device(), a.function()),
+                    pin: (device.read32(0x3c) >> 8) as u8,
+                })
+            })
+            .collect();
+        Self {
+            io: root.io().collect(),
+            mmio: root.mmio().collect(),
+            buses,
+            bridges,
+        }
+    }
+
+    /// The host bridge of die `die` with its NBIO IOAPIC at `ioapic_base`
+    /// (ID 1 + die) and its IOMMU.
+    pub fn acpi(&self, die: u8, ioapic_base: u32, iommu: Option<Iommu>) -> DieAcpi<'_> {
+        DieAcpi {
+            buses: self.buses.clone(),
+            ioapic_id: 1 + die,
+            ioapic_base,
+            io: &self.io,
+            mmio: &self.mmio,
+            vga: die == 0,
+            bridges: &self.bridges,
+            iommu,
+        }
+    }
+}
+
+/// Build the tables for `dies` with their host bridges `hosts`, their NBIO
+/// IOAPICs at `ioapics` (by die) and the CPUs `apic_ids`; returns the RSDP.
 pub fn install<S: Soc>(
     soc: &SocAcpi,
     dies: &[Die<S, GlobalEcam>],
+    hosts: &[HostBridge],
     ioapics: &[u32],
-    ecam: &PciEcam,
     window: Ecam,
     apic_ids: &[u32],
     board: &BoardAcpi,
@@ -30,46 +81,15 @@ pub fn install<S: Soc>(
     struct Tables([u8; 0x2_0000]);
     static mut TABLES: Tables = Tables([0; 0x2_0000]);
 
-    let io: Vec<RangeInclusive<u16>, 8> = ecam
-        .windows()
-        .iter()
-        .filter(|w| w.kind == PciWindowKind::Io && w.size != 0)
-        .map(|w| w.base as u16..=(w.end() - 1) as u16)
-        .collect();
-    let mmio: Vec<RangeInclusive<u64>, 8> = ecam
-        .windows()
-        .iter()
-        .filter(|w| w.kind == PciWindowKind::Mmio && w.size != 0)
-        .map(|w| w.base..=w.end() - 1)
-        .collect();
-    let bridges: Vec<Vec<Bridge, 32>, MAX_DIES> = dies
-        .iter()
-        .map(|die| {
-            ecam.devices()
-                .filter(|a| a.bus() == die.bus())
-                .filter_map(|a| {
-                    let device = ecam.device(a)?;
-                    (device.read32(8) >> 16 == 0x0604).then_some(Bridge {
-                        devfn: fstart_pci::devfn(a.device(), a.function()),
-                        pin: (device.read32(0x3c) >> 8) as u8,
-                    })
-                })
-                .collect()
-        })
-        .collect();
     let dies: Vec<DieAcpi<'_>, MAX_DIES> = dies
         .iter()
-        .zip(&bridges)
-        .map(|(die, bridges)| DieAcpi {
-            buses: die.bus()..=window.buses as u8 - 1,
-            ioapic_id: 1 + die.index(),
-            ioapic_base: ioapics[usize::from(die.index())],
-            io: &io,
-            mmio: &mmio,
-            vga: die.index() == 0,
-            bridges,
+        .zip(hosts)
+        .map(|(die, host)| {
+            let index = die.index();
             // SAFETY: the IOMMU MMIO is in the identity-mapped pool.
-            iommu: unsafe { iommu::read(die) },
+            host.acpi(index, ioapics[usize::from(index)], unsafe {
+                iommu::read(die)
+            })
         })
         .collect();
     // SAFETY: HPET general capabilities, decoded by the FCH.

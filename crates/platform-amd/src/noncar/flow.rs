@@ -13,7 +13,7 @@ use fstart_driver_amd::{
         cache, msr,
         tsc::{self, Tsc},
     },
-    df::{self, Die},
+    df::{self, Die, map},
     fch::{self, Acpimmio, Fch, NativeBus, lpc::Lpc},
 };
 use fstart_driver_uart::ns16550::Ns16550;
@@ -181,15 +181,19 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
         Err(why) => stop::<S>(why),
     };
 
-    let ecam = enumerate::<S>(&ctx, &silicon);
+    let (roots, ecam) = enumerate::<S>(&ctx, &silicon);
     S::after_resources::<B>(&mut silicon, &ctx);
     B::mainboard_final(&mut ctx.board());
     ioapics(&ctx, &silicon);
+    let hosts: Vec<acpi::HostBridge, { super::MAX_DIES }> = roots
+        .iter()
+        .map(|root| acpi::HostBridge::new(root, &ecam))
+        .collect();
     let rsdp = acpi::install(
         silicon.acpi,
         &dies,
+        &hosts,
         &silicon.ioapics,
-        &ecam,
         acpi::Ecam {
             base: S::ECAM,
             buses: S::ECAM_BUSES,
@@ -239,16 +243,25 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
     fstart_stage::payload::BuildSelectedPayload::boot(handoff)
 }
 
-/// PCI enumeration and resource allocation below die 0's root complex.
-fn enumerate<S: Soc>(ctx: &Ctx<'_, S>, silicon: &Silicon<S>) -> PciEcam {
-    let die = &ctx.dies[0];
-    let root = pci::Root::new(
-        die,
-        die.bus()..=S::ECAM_BUSES as u8 - 1,
-        Region::new(S::ECAM, u64::from(S::ECAM_BUSES) << 20),
-        silicon.reserved_mmio[0],
-    );
-    let mut ecam = match PciEcam::from_provider(&root) {
+/// PCI enumeration and resource allocation below the root complex of every
+/// die, each from what the DF routes to it.
+fn enumerate<S: Soc>(
+    ctx: &Ctx<'_, S>,
+    silicon: &Silicon<S>,
+) -> (Vec<pci::Root, { super::MAX_DIES }>, PciEcam) {
+    let ecam_region = Region::new(S::ECAM, u64::from(S::ECAM_BUSES) << 20);
+    let roots: Option<Vec<pci::Root, { super::MAX_DIES }>> = ctx
+        .dies
+        .iter()
+        .map(|die| {
+            let reserved = silicon.reserved_mmio[usize::from(die.index())];
+            pci::Root::new(&map::root_complex(die)?, ecam_region, reserved)
+        })
+        .collect();
+    let Some(roots) = roots else {
+        fail::<S>("PCI root")
+    };
+    let mut ecam = match PciEcam::from_providers(&roots) {
         Ok(ecam) => ecam,
         Err(_) => fail::<S>("PCI root"),
     };
@@ -269,7 +282,7 @@ fn enumerate<S: Soc>(ctx: &Ctx<'_, S>, silicon: &Silicon<S>) -> PciEcam {
             );
         }
     }
-    ecam
+    (roots, ecam)
 }
 
 /// The FCH's IOAPIC (GSI 0-23, ID 0) in virtual-wire mode, then one per
