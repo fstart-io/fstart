@@ -2,8 +2,8 @@
 //! The PSP (MP0). Its *Gen2 runtime mailbox* (distinct from Gen1 flash
 //! directories), the same C2P protocol on Raven/Picasso and Zeppelin at
 //! +0x10570 of the PSP BAR. Cold/non-SMM only; no recovery,
-//! Sx/resume, fusing, flash writes, abort or reset commands. The BIOS
-//! directory the PSP boots from is [`bios_directory`].
+//! Sx/resume, fusing, flash writes, abort or reset commands. The flash
+//! image format the PSP boots from is `fstart_amdfw`.
 //!
 //! Every die has a PSP; the platform maps its 1 MiB register window with
 //! [`crate::nbio::iohc::map_psp`]. The native flows only use die 0's
@@ -413,7 +413,6 @@ pub fn bars<S: Soc, P: ConfigRegionAccess + Copy, const N: usize>(
     bars
 }
 
-pub mod bios_directory;
 #[cfg(target_arch = "x86_64")]
 mod native;
 #[cfg(target_arch = "x86_64")]

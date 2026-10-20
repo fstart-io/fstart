@@ -55,7 +55,8 @@ pub fn start<S: Soc, E>(
     let cpu = unsafe {
         Fam17hCpu::<S, _>::new(
             S::CPU_NAME,
-            flash,
+            fstart_amdfw::Flash::new(flash),
+            S::BIOS_DIRECTORY,
             &mut *core::ptr::addr_of_mut!(MICROCODE),
             init,
         )

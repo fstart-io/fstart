@@ -7,21 +7,16 @@ use core::{
     mem::MaybeUninit,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
+use fstart_amdfw::{Flash, directory::bios::MICROCODE, efs::BiosDirectorySlot};
 use fstart_arch::x86::{
     cpu::msr::NativeMsr,
     mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError, SipiUnlock},
     mtrr::SipiMsrs,
 };
-use fstart_driver_amd::{
-    ccx::{
-        Thread,
-        microcode::{Family, PATCH_BYTES, Patch},
-    },
-    psp::bios_directory,
+use fstart_driver_amd::ccx::{
+    Thread,
+    microcode::{Family, PATCH_BYTES, Patch},
 };
-
-/// BIOS directory type of the vendor microcode patches.
-const MICROCODE: u8 = 0x66;
 
 /// DRAM for the selected patch, which the microcode loader reads.
 #[repr(C, align(16))]
@@ -41,22 +36,23 @@ pub struct Fam17hCpu<M, F> {
 }
 
 impl<M: Family, F> Fam17hCpu<M, F> {
-    /// Select the patch for this CPU from the BIOS directory in the mapped
-    /// boot flash and copy it to `page`.
+    /// Select the patch for this CPU from the BIOS directory the PSP of
+    /// `slot` booted from in the mapped boot flash and copy it to `page`.
     ///
     /// # Safety
     /// BSP only, before any AP runs. `flash` is the whole boot flash mapped
     /// below 4 GiB, `page` DRAM below 4 GiB the memory map reserves.
     pub unsafe fn new(
         name: &'static str,
-        flash: &[u8],
+        flash: Flash<'_>,
+        slot: BiosDirectorySlot,
         page: &'static mut MaybeUninit<PatchPage>,
         init: F,
     ) -> Self {
         let signature = fstart_arch::x86::cpuid(1).0;
-        let patch = bios_directory::entries(flash)
-            .filter(|entry| entry.kind == MICROCODE)
-            .find_map(|entry| Patch::<M>::parse(entry.data.get(..PATCH_BYTES)?, signature).ok())
+        let patch = flash
+            .bios_files(slot, MICROCODE)
+            .find_map(|data| Patch::<M>::parse(data.get(..PATCH_BYTES)?, signature).ok())
             .map(|patch| {
                 let page = page.write(PatchPage([0; PATCH_BYTES]));
                 page.0.copy_from_slice(patch.bytes());
