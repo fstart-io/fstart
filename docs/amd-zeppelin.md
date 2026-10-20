@@ -30,9 +30,12 @@ CrabEFI with an OS behind it, on an MJ11-EC1 (EPYC 3151, SP4r2, one die).
     (package, revision), non-PCI pool, ECAM and APOB location.
 
   The Zeppelin versions are gated by the `zeppelin` feature.
-- `crates/platform-amd/src/zeppelin`: the boot flow (`stage.rs`), DRAM
-  layout, CPU driver for the MP engine, SMM and PSP SMM info (`smm.rs`), PCI
-  root, e820, ACPI tables, payload handoff and the host build plan.
+- `crates/platform-amd/src/zeppelin`: Zeppelin on the shared noncar flow
+  ([amd-noncar.md](amd-noncar.md)): the `noncar::Soc` hooks, the silicon
+  init sequence (`silicon.rs`), the board `Config`, DRAM layout, ACPI data
+  and the host build plan. The flow, MP, SMM and PSP SMM info, PCI root,
+  e820, ACPI tables and payload handoff are the shared ones in
+  `crates/platform-amd/src/noncar` and `src/acpi.rs`.
 - SMM: `fstart_arch::x86::cpu::amd::smm` (TSEG/SMBASE MSRs), the FCH SMI
   control and handler in `crates/driver-amd/src/fch/smi.rs`, the Zeppelin
   sleep entry in `fch/taishan/smm.rs`.
@@ -65,7 +68,8 @@ vendor directories at runtime (`$BHD` → `$BL2`, type 0x66).
 The PSP trains DRAM, writes the APOB to `30000000` and releases the BSP at
 the end of the copied reset image. `asm/psp_reset.S` (shared with Picasso)
 sends every other CPU to the SIPI trampoline at `0x8000`, copies `.data`,
-clears BSS and enters long mode. Layout (`zeppelin/layout.rs`):
+clears BSS and enters long mode. Layout (`zeppelin/layout.rs`, a
+`noncar::layout::Layout`):
 
 | Use | Range |
 | --- | --- |
@@ -81,6 +85,9 @@ everything above it stay reserved in e820: parked APs and the ACPI tables live
 there.
 
 ## Boot flow
+
+Steps 1-4 are the SoC's TP1
+(`silicon_init`), 5 the flow with TP2, 6 TP3 and the flow:
 
 1. Console (LPC decode, AST2500 SUART1), FCH early init, DF MMIO/IO map,
    DF early/scrub init, FCH reset tasks, board VRs and re-drivers over I2C3,

@@ -12,9 +12,11 @@ Native (no FSP) port of AMD Picasso and the Google Zork "Vilboz" boards.
   clocks, legacy, LPC/SPI preinit, USB, pin functions), the ACP `acp` and
   the SoC itself, `soc::picasso`. eMMC and eSPI are common FCH controllers
   (`fch::emmc`, `fch::espi`).
-- `crates/platform-amd`: the Picasso flow, DRAM layout, reset entry
-  (`asm/psp_reset.S`, shared with Zeppelin), linker script, MP policy and
-  the host build plan.
+- `crates/platform-amd/src/picasso`: Picasso on the shared noncar flow
+  ([amd-noncar.md](amd-noncar.md)): its `noncar::Soc` hooks, the board
+  `Config`, DRAM layout and the host build plan. The reset entry
+  (`asm/psp_reset.S`), linker script, memory map, MP and the rest of the
+  flow are shared with Zeppelin.
 - `boards/google/zork`: Dalboz baseboard wiring and Vilboz policy. Vilboz,
   Vilboz14 and Vilboz360 differ only through EC CBI (board version,
   FW_CONFIG), so they share one board.
@@ -25,23 +27,23 @@ Native (no FSP) port of AMD Picasso and the Google Zork "Vilboz" boards.
 
 The PSP trains DRAM, writes the APOB and copies the BIOS reset image
 (directory entry 0x62) to DRAM before releasing the BSP at its last 16
-bytes. There is no cache-as-RAM. The layout lives in
-`crates/platform-amd/src/layout.rs` and `linker/picasso.ld`:
+bytes. There is no cache-as-RAM. The layout is `picasso::LAYOUT`:
 
 | Use | Range |
 | --- | --- |
 | APOB (PSP) | `02001000..02011000` |
 | PSP shared memory (verstage only) | `02011000..02019000` |
-| Microcode page, PSP mailbox page | `02019000..0201b000` |
-| BSS | `02020000..020d0000` |
-| Page tables | `020d0000..020d6000` |
-| BSP stack | `020e0000..02100000` |
+| Page tables | `02020000..02026000` |
+| Data, BSS | `02030000..02090000` |
+| Heap | `02090000..020d0000` |
+| BSP stack | `020d0000..02100000` |
 | Reset image (2 MiB) | `02100000..02300000` |
 | Reset vector | `022ffff0` |
 
 `02000000..02300000` and the AP bootstrap page at `0x8000` stay reserved
-through OS handoff. The Picasso image has no initialized writable data, so
-the PSP-copied bytes are never modified (the PSP checks them on S3 resume).
+through OS handoff. `.data` is initialized from the image into the data
+region, so the PSP-copied bytes are never modified (the PSP checks them on
+S3 resume).
 
 APs are released by the SMU (ThreadEn) and also enter the reset vector.
 `psp_reset.S` sends every non-BSP CPU to the shared SIPI trampoline at
@@ -49,27 +51,26 @@ APs are released by the SMU (ThreadEn) and also enter the reset vector.
 
 ## Boot flow
 
-`picasso::run` currently does, in order:
+The noncar flow runs, in order:
 
-1. Console: ACPIMMIO decode, legacy decode, AOAC power, UART pads, NS16550.
-2. MMCONF, APOB parse, `early::initialize`: AMD MTRRs (the BSP runs cached
-   from here), data fabric routes, NBIO early init, PSP BAR, BSP/MCA init.
-   Logs the memory map.
-3. The early FCH: LPC/SPI aperture, eSPI link to the EC,
-   SPI ROM mode and speed, SMBus, board early GPIO tables, ROM-sharing
-   disable.
-4. `BoardFacts::mainboard_init`: Vilboz reads CBI from the EC and programs
-   the RAM-stage GPIOs with its board-revision overrides.
-5. Halts.
+1. ECAM, then the FCH pre-init (`fch_pre_init`): ACPI MMIO decode, legacy
+   decode, AOAC power, UART pads; then the NS16550 console.
+2. CPU identification, the APOB memory map, TSEG and e820, the AMD MTRRs
+   (the BSP runs cached from here).
+3. TP1 (`silicon_init`): data fabric routes, NBIO early init, PSP BAR,
+   BSP/MCA init, DRAM routes; logs the memory map. Then the early FCH:
+   LPC/SPI aperture, eSPI link to the EC, SPI ROM
+   mode and speed, SMBus, board early GPIO tables, ROM-sharing disable.
+4. `Board::fch_reset_done`: Vilboz reads CBI
+   from the EC and programs the RAM-stage GPIOs with its board-revision
+   overrides.
+5. Halts at the checkpoint: Picasso's TP1 ends with `Stop::Checkpoint` and
+   its `State` is uninhabited, so no later phase runs.
 
-Implemented and tested, but not yet called:
-
-- MP: `cold::initialize_cpus` releases the APs through the SMU via
-  `mp_init_with_launcher`; the Family 17h CPU driver (`cpu::Fam17hCpu`) loads
-  the microcode and runs the CCX init on every CPU. APs replay the BSP's
-  MTRRs and PAT and keep their own SYSCFG/TOP_MEM/TOM2 (`mp::sipi_msrs`).
-- DXIO/PCIe training, USB, eMMC, NBIO late/CCX-done, SMU power policy, PSP
-  mailbox.
+Implemented and tested in `driver-amd`, but not yet called: the SMU AP
+release and the Picasso CCX init (`ccx::picasso::thread`), which the
+shared `noncar::mp::start` would run; DXIO/PCIe training, USB, eMMC, NBIO
+late/CCX-done, SMU power policy.
 
 Still missing: CPU topology policy, SMM (relocation, TSEG), PCI enumeration,
 ACPI/SMBIOS tables, graphics, payload handoff, S3 and APOB NV (MRC cache).
