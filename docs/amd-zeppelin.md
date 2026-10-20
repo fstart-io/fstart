@@ -103,6 +103,8 @@ cargo fbuild assemble --board gigabyte-mj11-ec1 --release \
 
 ## Not done
 
-- S3, APOB NV (MRC cache), multi-die and the EC0 variant on hardware.
-- Board extras of the vendor firmware: the BMC ready wait and the PM1
-  cleanup of AmdCpmOemInitPeim.
+- S3: the vendor DSDT has no `_S3` either, so the OS only sees S0 and S5.
+- APOB NV (the vendor's copy of the APOB in BIOS directory entry 0x63):
+  vendor x86 code reads it only on S3 resume and capsule boots. It lives in
+  the vendor flash prefix, which stays byte-identical.
+- Multi-die (SP4) and the EC0 variant are built but not tested on hardware.
