@@ -8,9 +8,14 @@
 //! The firmware runs on the SMU of each die and is reached through the SoC's
 //! DXIO service message ([`Soc::DXIO_SERVICE`]) with the operation in the
 //! first argument. The SoC owns the lane mapping, the PCIe core registers
-//! and the NBIF settings around the training ([`Training`]).
-use super::tsc::{Clock, DelayNs};
-use crate::{df::Die, smu, soc::Soc};
+//! and the NBIF settings around the training ([`Training`]): [`picasso`]
+//! and [`zeppelin`].
+use crate::{
+    df::Die,
+    fam17h::tsc::{Clock, DelayNs},
+    smu,
+    soc::Soc,
+};
 use core::{
     cell::UnsafeCell,
     sync::atomic::{Ordering, compiler_fence},
@@ -22,6 +27,11 @@ use zerocopy::{
     FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Unaligned,
     byteorder::{LittleEndian, U16, U32},
 };
+
+#[cfg(feature = "picasso")]
+pub mod picasso;
+#[cfg(feature = "zeppelin")]
+pub mod zeppelin;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

@@ -10,6 +10,7 @@ use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
     apob::{Apob, MemoryMap},
     df::{self, map},
+    dxio,
     fam17h::{
         cache,
         ccx::Thread,
@@ -24,9 +25,7 @@ use fstart_driver_amd::{
         threads::{self, Policy},
         v9 as smu,
     },
-    zeppelin::{
-        self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, dxio, fch,
-    },
+    zeppelin::{self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, fch},
 };
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::Hex;
@@ -80,7 +79,7 @@ static mut SMU_PAGES: SmuPages = SmuPages([[0; 4096]; 2 * MAX_DIES]);
 #[repr(C, align(64))]
 struct SmuPolicy([u8; 0x80]);
 static mut SMU_POLICY: SmuPolicy = SmuPolicy([0; 0x80]);
-static mut DXIO_BUFFERS: dxio::Buffers = dxio::Buffers::new();
+static mut DXIO_BUFFERS: dxio::zeppelin::Buffers = dxio::zeppelin::Buffers::new();
 /// The microcode patch the CPUs load: firmware BSS in the reserved region.
 static mut MICROCODE: core::mem::MaybeUninit<PatchPage> = core::mem::MaybeUninit::uninit();
 
@@ -312,7 +311,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     }
     // SAFETY: BSP-only; the DMA buffer is reserved firmware BSS below 4 GiB.
     let trained = unsafe {
-        dxio::init(
+        dxio::zeppelin::init(
             dies,
             &descriptors,
             B::SUBSYSTEM_ID,

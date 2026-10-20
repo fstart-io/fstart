@@ -4,7 +4,6 @@
 //! descriptors, microcode patches and the PSP mailbox.
 pub mod cache;
 pub mod ccx;
-pub mod dxio;
 pub mod microcode;
 pub mod msr;
 pub mod tsc;

@@ -14,13 +14,13 @@ pub mod smm;
 mod variant;
 
 use fstart_driver_amd::{
+    dxio::Descriptor,
     fch::{ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status, iomux},
     gpio::Control,
     lpc::{IoPortDecode, Lpc},
     smn::{apply, write},
     zeppelin::{
         self as soc,
-        dxio::Descriptor,
         fch::irq::{self, Route},
     },
 };

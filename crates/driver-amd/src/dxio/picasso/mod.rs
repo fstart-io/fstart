@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso DXIO board-to-engine mapping; the firmware client is
-//! [`crate::fam17h::dxio`].
-pub use super::dxio_hardware::{Buffers, Options, train};
-use super::acp;
-use crate::fam17h::dxio;
-pub use crate::fam17h::dxio::{
-    Aspm, ClockRequest, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed,
-    Operation, SataChannel,
+//! [`crate::dxio`].
+use super::{
+    self as dxio, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed, Operation,
 };
+use crate::picasso::acp;
+
+mod hardware;
+pub use hardware::{Buffers, Options, train};
 
 pub const PORTS: usize = 8;
 pub const REMAPPABLE_PORTS: usize = 7;
@@ -77,7 +77,7 @@ pub fn validate(descriptors: &[Descriptor]) -> Result<(), Error> {
     Ok(())
 }
 
-pub type EngineConfig = crate::fam17h::dxio::EngineConfig<PORTS>;
+pub type EngineConfig = dxio::EngineConfig<PORTS>;
 const _: () = assert!(size_of::<EngineConfig>() == 344);
 impl EngineConfig {
     pub fn build(descriptors: &[Descriptor], policy: PowerPolicy) -> Result<Self, Error> {

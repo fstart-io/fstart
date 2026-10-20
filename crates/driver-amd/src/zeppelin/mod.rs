@@ -8,7 +8,6 @@
 //! and FCH; SP4r2 has one die, SP4 two.
 pub mod ccx;
 mod ccx_tables;
-pub mod dxio;
 pub mod fch;
 pub mod i2c;
 pub mod identity;

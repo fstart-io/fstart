@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native cold-boot DXIO sequencing.
 use super::{
-    Die, acp,
-    dxio::{
-        Descriptor, EngineConfig, Error, Hotplug, LinkSpeed, Operation, PORTS, PowerPolicy,
-        Topology,
-    },
+    super::{self as dxio, Slot},
+    Descriptor, EngineConfig, Error, Hotplug, LinkSpeed, Operation, PORTS, PowerPolicy, Topology,
 };
-use crate::smu::v10 as smu;
+use crate::fam17h::tsc::{Clock, DelayNs};
+use crate::picasso::{Die, acp};
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
-use crate::fam17h::{
-    dxio::{self, Slot},
-    tsc::{Clock, DelayNs},
-};
+use crate::smu::v10 as smu;
 use crate::nbio::{
     iohc::{IohcBridgeCntl, NbProgDeviceRemap, iohc_bridge_cntl, nb_prog_device_remap},
     pcie,
@@ -85,7 +80,7 @@ impl Buffers {
             .as_chunks_mut::<4>()
             .0
             .iter_mut()
-            .zip(super::dxio::ANCILLARY_PSPP)
+            .zip(super::ANCILLARY_PSPP)
         {
             bytes.copy_from_slice(&word.to_le_bytes());
         }

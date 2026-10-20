@@ -134,9 +134,9 @@ pub const POWER: PowerPolicy = PowerPolicy {
     sustained_mw: 4800,
 };
 
-use fstart_driver_amd::picasso::{
+use fstart_driver_amd::{
     dxio::{Aspm, ClockRequest, Descriptor},
-    emmc, usb,
+    picasso::{emmc, usb},
 };
 
 /// Zork's non-EM100 SPI defaults. A validated runtime EFS may

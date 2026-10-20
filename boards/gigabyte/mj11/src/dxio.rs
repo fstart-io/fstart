@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! DXIO engines: the fixed onboard ports and the variant's vendor CPM
 //! template ($A26) for the x16 slot.
-use fstart_driver_amd::zeppelin::dxio::{Descriptor, SataChannel};
+use fstart_driver_amd::dxio::{Descriptor, SataChannel};
 
 const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
     Descriptor {

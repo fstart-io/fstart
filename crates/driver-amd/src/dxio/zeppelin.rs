@@ -3,7 +3,7 @@
 //! the default path of the vendor AmdNbioPcieZPPei (sp4r2 report
 //! NBIO_PCIE_SMU_ZP section 3).
 //!
-//! The DXIO firmware client is [`crate::fam17h::dxio`]; this is the Zeppelin
+//! The DXIO firmware client is [`crate::dxio`]; this is the Zeppelin
 //! lane mapping and the PCIe and NBIF setup around the training.
 //!
 //! Boards describe the engines of each die with [`Descriptor`]s in die
@@ -12,7 +12,7 @@
 //! MJ11-EC1 riser-less default x8/x8 split of its reversed x16 slot:
 //!
 //! ```
-//! use fstart_driver_amd::zeppelin::dxio::{Descriptor, SataChannel};
+//! use fstart_driver_amd::dxio::{Descriptor, SataChannel};
 //! const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
 //!     Descriptor {
 //!         turn_off_unused_lanes: true,
@@ -30,22 +30,18 @@
 //!     pcie(23, 16, 3, 3),
 //! ];
 //! ```
-use super::{Die, ECAM_BUSES, MAX_DIES};
+use super::{
+    self as dxio, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed, Operation,
+};
+use crate::fam17h::tsc::{Clock, DelayNs};
 use crate::nbio::{
     iohc::{self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NbProgDeviceRemap},
     pcie::{self, PCIE_PORTS_PER_CORE},
     zeppelin::{NBIF_COUNT, PCIE_CORE_COUNT, PCIE_PORT_COUNT, nbif_reg, strap},
 };
-use crate::smu::v9 as smu;
-pub use crate::fam17h::dxio::{
-    Aspm, ClockRequest, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed,
-    Operation, SataChannel,
-};
-use crate::fam17h::{
-    dxio,
-    tsc::{Clock, DelayNs},
-};
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
+use crate::smu::v9 as smu;
+use crate::zeppelin::{Die, ECAM_BUSES, MAX_DIES};
 use fstart_log::{debug, error, info};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress, devfn, devfn_parts};
 use tock_registers::{
@@ -56,7 +52,7 @@ use tock_registers::{
 
 /// Engine records of a die's platform descriptor.
 pub const ENGINES: usize = 16;
-pub type EngineConfig = crate::fam17h::dxio::EngineConfig<ENGINES>;
+pub type EngineConfig = dxio::EngineConfig<ENGINES>;
 
 /// Default devfn of the PCIe ports of a die, also the order of the bridge
 /// control registers.
@@ -486,8 +482,8 @@ fn pre_training(smn: &Smn<impl ConfigRegionAccess>) {
 
 /// Enable the SATA function of the NBIF.
 fn nbif_sata_enable(smn: &Smn<impl ConfigRegionAccess>) {
-    smn.reg(super::fch::sata::NBIF_STRAP)
-        .modify(super::fch::NbifStrap::ENABLE::SET);
+    smn.reg(crate::zeppelin::fch::sata::NBIF_STRAP)
+        .modify(crate::zeppelin::fch::NbifStrap::ENABLE::SET);
     smn.reg(NBIF1_FUNCTION_ENABLE)
         .modify(NbifFunctionEnable::SATA::SET);
 }
@@ -730,7 +726,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
 mod tests {
     extern crate std;
     use super::*;
-    use crate::smn::testing::SmnSpace;
+    use crate::{dxio::SataChannel, smn::testing::SmnSpace};
     use zerocopy::{IntoBytes, byteorder::U32};
 
     const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {

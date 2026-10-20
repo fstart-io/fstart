@@ -6,6 +6,8 @@ pub mod apob;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod df;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod dxio;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod fam17h;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod fch;

@@ -415,6 +415,7 @@ mod zeppelin {
     use super::*;
     use crate::{
         df::{self, map},
+        dxio::{self, Descriptor, SataChannel},
         fch::{Acpimmio, Fch},
         nbio::{
             self, iommu,
@@ -427,7 +428,6 @@ mod zeppelin {
         },
         zeppelin::{
             Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision,
-            dxio::{self, Descriptor, SataChannel},
             fch::{self, Devices},
         },
     };
@@ -534,9 +534,11 @@ mod zeppelin {
             .collect();
         assert_eq!(ioapics[0], nonpci[0] + (7 << 20));
         assert_eq!(psp::bars(&dies), [nonpci[0], nonpci[1]]);
-        let buffers = low(0x4000_0000, dxio::Buffers::new());
-        let topology =
-            unsafe { dxio::init(&dies, &[DIE0, DIE1], SUBSYSTEM_ID, buffers, &mut delay) }.unwrap();
+        let buffers = low(0x4000_0000, dxio::zeppelin::Buffers::new());
+        let topology = unsafe {
+            dxio::zeppelin::init(&dies, &[DIE0, DIE1], SUBSYSTEM_ID, buffers, &mut delay)
+        }
+        .unwrap();
         let trained = |die: usize| {
             topology[die]
                 .ports
@@ -601,14 +603,15 @@ mod picasso {
     use super::*;
     use crate::{
         df::{self, picasso as fabric},
+        dxio::{
+            self, Aspm, ClockRequest, Descriptor,
+            picasso::{Options, PowerPolicy},
+        },
         nbio::{
             iohc::{PSP_BAR, SMU_BAR},
             picasso as nbio,
         },
-        picasso::{
-            Die,
-            dxio::{self, Aspm, ClockRequest, Descriptor, Options, PowerPolicy},
-        },
+        picasso::Die,
         smu::{
             THREAD_CONFIG, THREAD_ENABLE,
             threads::{self, Downcore, Policy},
@@ -670,9 +673,9 @@ mod picasso {
             hda_enabled: false,
             acp_enabled: true,
         };
-        let buffers = low(0x4800_0000, dxio::Buffers::new());
+        let buffers = low(0x4800_0000, dxio::picasso::Buffers::new());
         let ports =
-            unsafe { dxio::train(&die, buffers, DALBOZ, options, &mut delay) }.unwrap();
+            unsafe { dxio::picasso::train(&die, buffers, DALBOZ, options, &mut delay) }.unwrap();
         assert_eq!(
             ports
                 .ports

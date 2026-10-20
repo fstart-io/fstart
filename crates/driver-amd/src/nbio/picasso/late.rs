@@ -5,10 +5,8 @@ use crate::nbio::{
     iohc::{IohcBridgeCntl, iohc_bridge_cntl},
     pcie,
 };
-use crate::picasso::{
-    cpu::{Identity, Silicon},
-    dxio::{Aspm, ClockRequest, Hotplug, Topology},
-};
+use crate::dxio::{Aspm, ClockRequest, Hotplug, picasso::Topology};
+use crate::picasso::cpu::{Identity, Silicon};
 use crate::smu::v10::{self as smu, power};
 use crate::smn::{Smn, SmnReg, apply, rmw, write};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
@@ -200,7 +198,7 @@ pub fn after_enumeration(
 mod tests {
     use super::*;
     use crate::smn::testing::SmnSpace;
-    use crate::picasso::dxio::Descriptor;
+    use crate::dxio::Descriptor;
     #[test]
     fn both_l1_modes_enable_gate_without_requiring_l1_substates() {
         for (aspm, gate) in [

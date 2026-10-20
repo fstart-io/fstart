@@ -5,8 +5,6 @@ pub use crate::fam17h::{cache, tsc};
 pub mod cpu;
 #[cfg(test)]
 mod cpu_tests;
-pub mod dxio;
-mod dxio_hardware;
 pub mod emmc;
 pub mod espi;
 #[cfg(test)]
