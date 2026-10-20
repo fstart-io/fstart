@@ -53,7 +53,13 @@ impl ChassisStatus {
     }
 }
 
-impl<D: embedded_hal::delay::DelayNs> kcs::Kcs<D> {
+impl<D, P, S> kcs::Kcs<D, P, S>
+where
+    D: embedded_hal::delay::DelayNs,
+    P: tock_registers::interfaces::Readable<T = u8> + tock_registers::interfaces::Writeable<T = u8>,
+    S: tock_registers::interfaces::Readable<T = u8, R = kcs::Status::Register>
+        + tock_registers::interfaces::Writeable<T = u8, R = kcs::Status::Register>,
+{
     pub fn chassis_status(&mut self) -> Result<ChassisStatus, Error> {
         let mut buffer = [0; 8];
         let data = self.request(NETFN_CHASSIS, GET_CHASSIS_STATUS, &[], &mut buffer)?;
