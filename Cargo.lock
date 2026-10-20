@@ -628,6 +628,7 @@ dependencies = [
  "fstart-pci",
  "fstart-smm",
  "heapless 0.8.0",
+ "libc",
  "tock-registers",
  "ufmt",
  "zerocopy",

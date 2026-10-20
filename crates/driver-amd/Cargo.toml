@@ -29,4 +29,5 @@ fstart-arch = { workspace = true, features = ["x86_64"], optional = true }
 fstart-smm = { workspace = true, optional = true }
 
 [dev-dependencies]
+libc = "0.2"
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
