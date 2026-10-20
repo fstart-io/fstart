@@ -41,15 +41,29 @@ pub struct SelRecord {
 }
 const _: () = assert!(size_of::<SelRecord>() == 16);
 
+/// What the BMC wants after AC power returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestorePolicy {
+    Off,
+    Previous,
+    On,
+    Unknown,
+}
+
 /// Get Chassis Status (IPMI 2.0 28.2): the current power state byte.
 #[derive(Debug, Clone, Copy)]
 pub struct ChassisStatus {
     pub power_state: u8,
 }
 impl ChassisStatus {
-    /// Power restore policy, bits 6:5: 0 off, 1 previous, 2 on, 3 unknown.
-    pub const fn restore_policy(self) -> u8 {
-        (self.power_state >> 5) & 3
+    /// Power restore policy, bits 6:5.
+    pub const fn restore_policy(self) -> RestorePolicy {
+        match (self.power_state >> 5) & 3 {
+            0 => RestorePolicy::Off,
+            1 => RestorePolicy::Previous,
+            2 => RestorePolicy::On,
+            _ => RestorePolicy::Unknown,
+        }
     }
 }
 

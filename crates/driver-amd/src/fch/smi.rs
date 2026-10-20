@@ -30,11 +30,10 @@ pub mod source {
 }
 
 pub use super::{SMI_TRIGGER0 as TRIGGER0, SmiMode as Mode, SmiTrigger0, smi_control as control};
+pub use super::{Pm1Enable, Pm1Status};
 register_bitfields![u16,
     /// SMIx94: which status registers hold events.
     pub SmiPointer [SCI OFFSET(0) NUMBITS(1) [], STATUS OFFSET(1) NUMBITS(5) []],
-    pub Pm1Status [PWRBTN OFFSET(8) NUMBITS(1) []],
-    pub Pm1Enable [PWRBTN OFFSET(8) NUMBITS(1) []],
     pub Pm1Control [
         SCI_EN OFFSET(0) NUMBITS(1) [],
         SLP_TYP OFFSET(10) NUMBITS(3) [S5 = 5],

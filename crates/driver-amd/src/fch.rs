@@ -409,6 +409,13 @@ register_bitfields![u32,
     ]
 ];
 register_bitfields![u16,
+    /// The PM1 status and enable registers of the ACPI block.
+    pub Pm1Status [
+        PWRBTN OFFSET(8) NUMBITS(1) [],
+        PCIEXP_WAKE OFFSET(14) NUMBITS(1) [],
+        WAK OFFSET(15) NUMBITS(1) []
+    ],
+    pub Pm1Enable [PWRBTN OFFSET(8) NUMBITS(1) [], PCIEXP_WAKE_DIS OFFSET(14) NUMBITS(1) []],
     /// The legacy UART I/O decodes of the AL2AHB UARTs.
     pub LegacyUartDecode [RANGES OFFSET(0) NUMBITS(16) []]
 ];
@@ -438,6 +445,9 @@ pub mod regs {
     pub const PM_SD_ENABLE: AcpiReg<u8, SdEnable::Register> = pm::at(0xe8);
     pub const PM_LPC_GATING: AcpiReg<u8, LpcGating::Register> = pm::at(0xec);
     pub const MISC_CLK_CNTL1: AcpiReg<u32, MiscClkCntl1::Register> = misc::at(0x40);
+    /// The PM1 block through the ACPI MMIO.
+    pub const ACPI_PM1_STATUS: AcpiReg<u16, Pm1Status::Register> = acpi::at(0x00);
+    pub const ACPI_PM1_ENABLE: AcpiReg<u16, Pm1Enable::Register> = acpi::at(0x02);
     pub const SMBUS_ASF_IO_BASE: u16 = 0xb00;
     /// The AOAC D3 control and state of a device.
     pub const fn aoac_control(device: u8) -> AcpiReg<u8, AoacControl::Register> {

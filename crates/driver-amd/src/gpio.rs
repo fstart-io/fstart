@@ -2,7 +2,9 @@
 //! Banked FCH GPIO. Configuration
 //! preserves reserved/drive-strength bits and clears W1C interrupt/wake
 //! status deliberately, not via an accidental RMW.
-use crate::fch::{AcpiReg, Bus, Fch, SMI_TRIGGER0, SmiMode, gpio, iomux, smi_bank, smi_route};
+use crate::fch::{
+    AcpiReg, Bus, BusRegister, Fch, SMI_TRIGGER0, SmiMode, gpio, iomux, smi_bank, smi_route,
+};
 use tock_registers::{
     LocalRegisterCopy,
     fields::{Field, FieldValue},
@@ -21,6 +23,7 @@ register_bitfields![u32,
         WAKE_S3 OFFSET(14) NUMBITS(1) [],
         WAKE_S4_S5 OFFSET(15) NUMBITS(1) [],
         PIN OFFSET(16) NUMBITS(1) [],
+        DRIVE_STRENGTH OFFSET(17) NUMBITS(2) [],
         PULL_UP OFFSET(20) NUMBITS(1) [],
         PULL_DOWN OFFSET(21) NUMBITS(1) [],
         OUTPUT OFFSET(22) NUMBITS(1) [],
@@ -357,6 +360,22 @@ impl<B: Bus> Gpio<B> {
         }
     }
 
+    /// Select IOMUX `function` for `pin`, nothing else.
+    pub fn set_function(&self, pin: u8, function: u8) -> Result<(), Error> {
+        if !self.bank.exists(pin) || function > 3 {
+            return Err(Error::InvalidPad);
+        }
+        self.fch.reg(iomux::at::<u8, ()>(pin.into())).set(function);
+        Ok(())
+    }
+    /// The control register of `pin`, for vendor sequences that program it
+    /// field by field.
+    pub fn control(&self, pin: u8) -> Result<BusRegister<'_, B, u32, Control::Register>, Error> {
+        if !self.bank.exists(pin) {
+            return Err(Error::InvalidPad);
+        }
+        Ok(self.fch.reg(control(pin)))
+    }
     /// The level of `pin`.
     pub fn get(&self, pin: u8) -> Result<bool, Error> {
         if !self.bank.exists(pin) {
