@@ -21,6 +21,7 @@ members = [
   "crates/driver-ricoh",
   "crates/driver-uart",
   "crates/driver-i2c",
+  "crates/driver-ipmi",
   "crates/driver-intel",
   "crates/driver-sunxi",
   "crates/driver-superio",

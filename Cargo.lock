@@ -674,6 +674,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-ipmi"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-core",
+ "tock-registers",
+ "zerocopy",
+]
+
+[[package]]
 name = "fstart-driver-lenovo"
 version = "0.1.0"
 dependencies = [
