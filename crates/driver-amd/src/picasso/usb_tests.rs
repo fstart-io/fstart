@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
-use super::{cpu::Identity, registers::Smn, smu, usb};
+use super::{
+    cpu::Identity,
+    registers::testing::{SmnModel, SmnTest},
+    smu, usb,
+};
 use std::{collections::BTreeMap, vec::Vec};
 struct Transport {
     regs: BTreeMap<u32, u32>,
@@ -20,9 +24,9 @@ impl Transport {
         }
     }
 }
-impl Smn for Transport {
+impl SmnModel for Transport {
     fn read(&mut self, address: u32) -> u32 {
-        if address == smu::RESPONSE {
+        if address == smu::RESPONSE.address() {
             self.response
         } else {
             self.regs.get(&address).copied().unwrap_or(0)
@@ -31,13 +35,13 @@ impl Smn for Transport {
     fn write(&mut self, address: u32, value: u32) {
         self.regs.insert(address, value);
         self.writes.push((address, value));
-        if address == smu::RESPONSE {
+        if address == smu::RESPONSE.address() {
             self.response = value;
         }
-        if address == smu::MESSAGE {
+        if address == smu::MESSAGE.address() {
             self.frames.push((
                 value,
-                core::array::from_fn(|i| self.regs[&(smu::ARGUMENTS + i as u32 * 4)]),
+                core::array::from_fn(|i| self.regs[&(smu::ARGUMENTS.address() + i as u32 * 4)]),
             ));
             self.response = if self.reject == Some(self.frames.len()) {
                 0xfe
@@ -87,10 +91,10 @@ fn config() -> usb::Config {
 fn cold_and_resume_transactions_use_exact_groups_then_completion() {
     let id = Identity::from_cpuid(0x820f00, 0, 1 << 30).unwrap();
     for resume in [false, true] {
-        let mut bus = Transport::new();
+        let test = SmnTest::new(Transport::new());
         let mut phy = Phy::new();
         usb::initialize(
-            &mut bus,
+            &test.smn(),
             &mut phy,
             &config(),
             id,
@@ -99,6 +103,7 @@ fn cold_and_resume_transactions_use_exact_groups_then_completion() {
             &mut |_| {},
         )
         .unwrap();
+        let bus = test.model();
         assert_eq!(
             &bus.writes[..3],
             &[(0x03100004, 0), (0x03100000, 0x81), (0x03100000, 0x881)]
@@ -135,12 +140,12 @@ fn cold_and_resume_transactions_use_exact_groups_then_completion() {
 #[test]
 fn rejected_disable_stops_before_phy_and_invalid_tuning_never_writes() {
     let id = Identity::from_cpuid(0x820f00, 0, 1 << 30).unwrap();
-    let mut bus = Transport::new();
-    bus.reject = Some(1);
+    let test = SmnTest::new(Transport::new());
+    test.model().reject = Some(1);
     let mut phy = Phy::new();
     assert_eq!(
         usb::initialize(
-            &mut bus,
+            &test.smn(),
             &mut phy,
             &config(),
             id,
@@ -150,9 +155,9 @@ fn rejected_disable_stops_before_phy_and_invalid_tuning_never_writes() {
         ),
         Err(usb::Error::Smu(smu::Error::Rejected(0xfe)))
     );
-    assert_eq!(bus.frames.len(), 1);
+    assert_eq!(test.model().frames.len(), 1);
     assert!(phy.writes.is_empty());
-    let mut bus = Transport::new();
+    let test = SmnTest::new(Transport::new());
     let mut invalid = config();
     invalid.phy2 = Some(
         [usb::Phy2 {
@@ -162,7 +167,7 @@ fn rejected_disable_stops_before_phy_and_invalid_tuning_never_writes() {
     );
     assert_eq!(
         usb::initialize(
-            &mut bus,
+            &test.smn(),
             &mut phy,
             &invalid,
             id,
@@ -172,6 +177,6 @@ fn rejected_disable_stops_before_phy_and_invalid_tuning_never_writes() {
         ),
         Err(usb::Error::Configuration)
     );
-    assert!(bus.writes.is_empty());
+    assert!(test.model().writes.is_empty());
     assert!(phy.writes.is_empty());
 }

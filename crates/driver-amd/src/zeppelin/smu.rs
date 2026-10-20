@@ -8,18 +8,21 @@
 //! every CPU ran [`super::ccx::cpu_init`].
 use super::{MAX_DIES, ccx::CacWeights, topology::Die};
 pub use crate::fam17h::smu::{ARGUMENT_COUNT, Error, Reply};
-use crate::fam17h::{registers::Smn, smu::Mailbox};
+use crate::fam17h::{
+    registers::{Smn, SmnReg},
+    smu::Mailbox,
+};
 use fstart_pci::ConfigRegionAccess;
-use tock_registers::{LocalRegisterCopy, register_bitfields};
+use tock_registers::interfaces::{Readable, Writeable};
 use zerocopy::{
     Immutable, IntoBytes, KnownLayout, Unaligned,
     byteorder::{LittleEndian, U32},
 };
 
 pub const MAILBOX: Mailbox = Mailbox {
-    message: 0x03b1_0528,
-    response: 0x03b1_0564,
-    arguments: 0x03b1_0598,
+    message: SmnReg::new(0x03b1_0528),
+    response: SmnReg::new(0x03b1_0564),
+    arguments: SmnReg::new(0x03b1_0598),
 };
 
 /// Argument 0xaa55aa55; also makes the SMU pick up the ThreadEn settings.
@@ -51,19 +54,7 @@ pub const MSG_3B: u32 = 0x3b;
 pub const MSG_3D: u32 = 0x3d;
 pub const CCX_DONE: u32 = 0x41;
 
-/// ThreadEn and the thread topology (SMN, per die).
-pub const THREAD_ENABLE: u32 = 0x0005_a818;
-pub const THREAD_CONFIG: u32 = 0x0005_a81c;
-
-register_bitfields![u32,
-    ThreadConfig [
-        /// Cores per complex - 1.
-        CORE_COUNT OFFSET(0) NUMBITS(4) [],
-        /// Complexes - 1.
-        COMPLEX_COUNT OFFSET(4) NUMBITS(4) [],
-        NOT_SMT OFFSET(8) NUMBITS(1) []
-    ]
-];
+pub use crate::fam17h::smu::{THREAD_CONFIG, THREAD_ENABLE, ThreadConfig};
 
 /// SMU features enabled on SP4 and SP4r2 (vendor PCD 0xbb).
 const FEATURES_SP4: u32 = 0xe73d;
@@ -118,8 +109,8 @@ pub struct CpuTopology {
     pub threads_per_core: u8,
 }
 impl CpuTopology {
-    pub fn read(smn: &mut impl Smn) -> Self {
-        let config = LocalRegisterCopy::<u32, ThreadConfig::Register>::new(smn.read(THREAD_CONFIG));
+    pub fn read(smn: &Smn<impl ConfigRegionAccess>) -> Self {
+        let config = smn.reg(THREAD_CONFIG).extract();
         Self {
             cores_per_complex: config.read(ThreadConfig::CORE_COUNT) as u8 + 1,
             complexes: config.read(ThreadConfig::COMPLEX_COUNT) as u8 + 1,
@@ -141,7 +132,7 @@ impl CpuTopology {
 /// Logical CPUs of all dies.
 pub fn thread_count<P: ConfigRegionAccess + Copy>(dies: &[Die<P>]) -> usize {
     dies.iter()
-        .map(|die| CpuTopology::read(&mut die.smn()).threads())
+        .map(|die| CpuTopology::read(&die.smn()).threads())
         .sum()
 }
 
@@ -161,7 +152,7 @@ pub unsafe fn launch_aps<P: ConfigRegionAccess + Copy>(
     delay_us: &mut impl FnMut(u32),
 ) -> Result<(), Failure> {
     let slots = dies.iter().flat_map(|die| {
-        let topology = CpuTopology::read(&mut die.smn());
+        let topology = CpuTopology::read(&die.smn());
         (0..topology.complexes).flat_map(move |complex| {
             (0..topology.threads_per_complex()).map(move |thread| (die, complex * 8 + thread))
         })
@@ -169,11 +160,12 @@ pub unsafe fn launch_aps<P: ConfigRegionAccess + Copy>(
     let mut started = 0;
     for (die, slot) in slots.skip(1).take(ap_count) {
         started += 1;
-        let mut smn = die.smn();
-        let enabled = smn.read(THREAD_ENABLE);
+        let smn = die.smn();
+        let thread_enable = smn.reg(THREAD_ENABLE);
+        let enabled = thread_enable.get();
         if enabled & (1 << slot) == 0 {
             fstart_log::debug!("SMU {}: ThreadEn bit {}", die.index(), slot);
-            smn.write(THREAD_ENABLE, enabled | (1 << slot));
+            thread_enable.set(enabled | (1 << slot));
             test_message(die, delay_us)?;
         }
     }
@@ -193,7 +185,7 @@ pub fn cpu_name<P: ConfigRegionAccess + Copy>(
     delay_us: &mut impl FnMut(u32),
 ) -> Result<[u8; 48], Failure> {
     MAILBOX
-        .cpu_name(&mut die.smn(), GET_NAME_STRING, delay_us)
+        .cpu_name(&die.smn(), GET_NAME_STRING, delay_us)
         .map_err(|error| Failure::Message {
             die: die.index(),
             message: GET_NAME_STRING,

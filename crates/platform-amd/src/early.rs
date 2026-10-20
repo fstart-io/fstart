@@ -7,7 +7,7 @@ use fstart_driver_amd::picasso::{
     cpu::{self, Identity, Msr},
     fabric,
     nbio::{self, Capabilities},
-    registers::{Fabric, Smn},
+    registers::{Df, Smn},
 };
 
 pub struct Inputs<'a> {
@@ -38,8 +38,8 @@ pub enum Error {
 pub fn initialize(
     input: Inputs<'_>,
     msr: &mut (impl Msr + CacheControl),
-    smn: &mut impl Smn,
-    df: &mut impl Fabric,
+    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
+    df: &Df<impl fstart_pci::ConfigRegionAccess>,
     delay_us: &mut impl FnMut(u32),
 ) -> Result<State, Error> {
     // Validate CPU, memory reservations and the full MTRR plan before writes.

@@ -8,16 +8,19 @@
 //! The loops take all dies (die 0 first, as [`crate::zeppelin::topology::dies`]
 //! yields them) and the board's [`Devices`] per die, indexed by die.
 use super::{
-    AB_INDEX, Acpimmio, Bus, Devices, PM_INDEX, abcfg_update, index_read, index_write,
-    legacy_sd_off, sata, smn_modify,
+    AB_INDEX, Acpimmio, Bus, Devices, NbifStrap, PM_INDEX, abcfg_update, index_read, index_write,
+    legacy_sd_off, sata,
     usb::{self, ResetControl},
 };
 use crate::{
-    fam17h::registers::{BROADCAST, Fabric, Smn},
+    fam17h::registers::{DfReg, Smn, SmnReg},
     zeppelin::{Die, Package},
 };
 use fstart_pci::{ConfigRegionAccess, PciAddress};
-use tock_registers::register_bitfields;
+use tock_registers::{
+    interfaces::{ReadWriteable, Readable, Writeable},
+    register_bitfields,
+};
 
 /// The vendor code allocates 8 KiB of the die's non-PCI pool; use the 64 KiB
 /// at +1 MiB.
@@ -39,14 +42,13 @@ const PM_ACPIMMIO_SELECT: u8 = 0xd5;
 /// PMxD6: 16 bits, base >> 16.
 const PM_ACPIMMIO_BASE: u8 = 0xd6;
 const PM_AB_REG_BAR: u8 = 0xe0;
-/// D18F0xC0/C4: DF I/O space base/limit 0.
-const DF_IO_BASE0: u16 = 0xc0;
-const DF_IO_LIMIT0: u16 = 0xc4;
-
 register_bitfields![u32,
     DfIoBase [READ_ENABLE OFFSET(0) NUMBITS(1) [], WRITE_ENABLE OFFSET(1) NUMBITS(1) []],
     DfIoLimit [DESTINATION OFFSET(0) NUMBITS(8) []]
 ];
+/// D18F0xC0/C4: DF I/O space base/limit 0.
+const DF_IO_BASE0: DfReg<DfIoBase::Register> = DfReg::new(0, 0xc0);
+const DF_IO_LIMIT0: DfReg<DfIoLimit::Register> = DfReg::new(0, 0xc4);
 
 /// Vendor ffdcb7de, run while die 0's DF sends I/O 0-0xfff to the die: move
 /// the die's ACPI MMIO block, then IOMUX, A-Link, clock generator and legacy
@@ -101,7 +103,7 @@ pub fn reset<P: ConfigRegionAccess + Copy>(
     delay_us: &mut impl FnMut(u32),
 ) {
     let Some(die0) = dies.first() else { return };
-    let mut df0 = die0.df();
+    let df0 = die0.df();
     for die in &dies[1..] {
         let mmio = acpimmio_base(die.index(), nonpci_mmio_base(die.index()));
         fstart_log::debug!(
@@ -111,48 +113,42 @@ pub fn reset<P: ConfigRegionAccess + Copy>(
         );
 
         // Route I/O 0-0xfff to the die's IOMS.
-        let io_base = df0.read(0, DF_IO_BASE0, BROADCAST);
-        let io_limit = df0.read(0, DF_IO_LIMIT0, BROADCAST);
-        let route = (DfIoBase::READ_ENABLE::SET + DfIoBase::WRITE_ENABLE::SET).value;
-        df0.write(0, DF_IO_BASE0, BROADCAST, route);
-        let target = DfIoLimit::DESTINATION
-            .val(die.ioms_fabric_id().into())
-            .value;
-        df0.write(0, DF_IO_LIMIT0, BROADCAST, target);
+        let (io_base, io_limit) = (df0.reg(DF_IO_BASE0), df0.reg(DF_IO_LIMIT0));
+        let saved = (io_base.get(), io_limit.get());
+        io_base.write(DfIoBase::READ_ENABLE::SET + DfIoBase::WRITE_ENABLE::SET);
+        io_limit.write(DfIoLimit::DESTINATION.val(die.ioms_fabric_id().into()));
         secondary_legacy(bus, mmio, package);
-        df0.write(0, DF_IO_BASE0, BROADCAST, io_base);
-        df0.write(0, DF_IO_LIMIT0, BROADCAST, io_limit);
+        io_base.set(saved.0);
+        io_limit.set(saved.1);
 
         // Vendor PCD 0x8d: SATA enabled on every die.
-        sata::reset(&mut die.smn(), delay_us);
+        sata::reset(&die.smn(), delay_us);
     }
 }
 
 register_bitfields![u32,
-    NbifStrap [ENABLE OFFSET(28) NUMBITS(1) []],
-    SataControl [BIT0 OFFSET(0) NUMBITS(1) [], BIT11 OFFSET(11) NUMBITS(1) []],
     XgbePort [DISABLE OFFSET(0) NUMBITS(1) []]
 ];
-const fn nbif_xgbe_strap(port: u32) -> u32 {
-    0x1023_4800 + 0x200 * port
+const fn nbif_xgbe_strap(port: u32) -> SmnReg<NbifStrap::Register> {
+    SmnReg::new(0x1023_4800 + 0x200 * port)
 }
-const fn xgbe_port_control(port: u32) -> u32 {
-    0x1631_f030 + 4 * port
+const fn xgbe_port_control(port: u32) -> SmnReg<XgbePort::Register> {
+    SmnReg::new(0x1631_f030 + 4 * port)
 }
-fn strap_enabled(smn: &mut impl Smn, strap: u32) -> bool {
-    tock_registers::LocalRegisterCopy::<u32, NbifStrap::Register>::new(smn.read(strap))
-        .is_set(NbifStrap::ENABLE)
+fn strap_enabled(smn: &Smn<impl ConfigRegionAccess>, strap: SmnReg<NbifStrap::Register>) -> bool {
+    smn.reg(strap).is_set(NbifStrap::ENABLE)
 }
-fn strap_off(smn: &mut impl Smn, strap: u32) {
-    smn_modify(smn, strap, NbifStrap::ENABLE::CLEAR);
+fn strap_off(smn: &Smn<impl ConfigRegionAccess>, strap: SmnReg<NbifStrap::Register>) {
+    smn.reg(strap).modify(NbifStrap::ENABLE::CLEAR);
 }
 
 /// af49 (FchTaishanDxe) and the xGbE part of FchMultiFchDxe: the xGbE ports
 /// without an NBIF strap are switched off. `smn` is the die's.
-pub fn xgbe_init(smn: &mut impl Smn) {
+pub fn xgbe_init(smn: &Smn<impl ConfigRegionAccess>) {
     for port in 0..4 {
         if !strap_enabled(smn, nbif_xgbe_strap(port)) {
-            smn_modify(smn, xgbe_port_control(port), XgbePort::DISABLE::SET);
+            smn.reg(xgbe_port_control(port))
+                .modify(XgbePort::DISABLE::SET);
         }
     }
 }
@@ -174,13 +170,11 @@ pub fn usb<P: ConfigRegionAccess + Copy>(
     delay_us: &mut impl FnMut(u32),
 ) {
     for die in dies.iter().skip(1) {
-        let smn = &mut die.smn();
-        smn.update(usb::R14C, 0, 1 << 31);
+        let smn = &die.smn();
+        smn.reg(usb::R14C).modify(usb::R14c::BIT31::SET);
         if die.index() & 2 != 0 {
             strap_off(smn, usb::NBIF_STRAP);
-            smn_modify(
-                smn,
-                usb::RESET_CONTROL,
+            smn.reg(usb::RESET_CONTROL).modify(
                 ResetControl::BIT0::SET + ResetControl::BIT1::SET + ResetControl::BIT2::SET,
             );
         } else if devices(board, die.index()).xhci {
@@ -204,7 +198,7 @@ pub fn env<P: ConfigRegionAccess + Copy>(
     delay_us: &mut impl FnMut(u32),
 ) {
     for die in dies.iter().skip(1) {
-        let smn = &mut die.smn();
+        let smn = &die.smn();
         let bridge = PciAddress::new(0, die.bus(), 8, 1);
         // SAFETY: a config read of a possibly absent function reads all ones.
         if unsafe { die.pci().read(bridge, 0) } & 0xffff != AMD_VENDOR {
@@ -215,8 +209,8 @@ pub fn env<P: ConfigRegionAccess + Copy>(
 
         if !strap_enabled(smn, sata::NBIF_STRAP) {
             // No SATA lanes on this die: switch the controller off.
-            smn_modify(smn, sata::CONTROL, SataControl::BIT0::SET);
-            smn_modify(smn, sata::CONTROL, SataControl::BIT11::SET);
+            smn.reg(sata::CONTROL).modify(sata::Control::BIT0::SET);
+            smn.reg(sata::CONTROL).modify(sata::Control::BIT11::SET);
         } else if !devices(board, die.index()).sata {
             strap_off(smn, sata::NBIF_STRAP);
         } else {
@@ -238,7 +232,7 @@ pub fn late<P: ConfigRegionAccess + Copy>(
 ) {
     for die in dies.iter().skip(1) {
         if let Some(sata) = sata_function(die.index()) {
-            sata::late(&mut die.smn(), die.index(), &die.pci(), sata);
+            sata::late(&die.smn(), die.index(), die.pci(), sata);
         }
     }
 }

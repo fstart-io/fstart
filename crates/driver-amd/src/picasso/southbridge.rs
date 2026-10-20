@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Picasso FCH A-Link and clock sequencing. The index-zero writes are hardware requirements.
-use super::registers::Smn;
+use super::registers::{Smn, apply, rmw};
 
 pub trait AlinkIo {
     fn decode(&mut self, base: u32);
@@ -58,8 +58,11 @@ pub fn alink_init(io: &mut impl AlinkIo) {
     }
     io.decode(0);
 }
-pub fn clock_init(smn: &mut impl Smn) {
-    for (offset, clear, set) in [
+/// The FCH clock generator through the SMN alias of the MISC bank: vendor
+/// values.
+pub fn clock_init(smn: &Smn<impl fstart_pci::ConfigRegionAccess>) {
+    const MISC: u32 = 0x02d0_1e00;
+    let table = [
         (0x10, 0x00000003, 0),
         (0x10, 0x00001ff0, 0),
         (0x34, 0xff800000, 0),
@@ -74,9 +77,11 @@ pub fn clock_init(smn: &mut impl Smn) {
         (0x10, 1 << 29, 1 << 29),
         (0x08, 1, 1),
         (0x40, 1 << 30, 1 << 30),
-    ] {
-        smn.update(0x02d01e00 + offset, clear, set);
-    }
+    ];
+    apply(
+        smn,
+        table.map(|(offset, clear, set)| rmw(MISC + offset, clear, set)),
+    );
 }
 
 #[cfg(target_arch = "x86_64")]

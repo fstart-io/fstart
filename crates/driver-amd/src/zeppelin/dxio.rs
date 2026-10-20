@@ -33,9 +33,8 @@
 use super::{
     ECAM_BUSES, MAX_DIES,
     nbio::{
-        self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NBIF_COUNT, PCIE_CORE_COUNT,
-        PCIE_PORT_COUNT, PCIE_PORTS_PER_CORE, nbif_reg, pcie, pcie_core_reg, pcie_port_cfg,
-        pcie_port_reg, strap_read, strap_write,
+        self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NBIF_COUNT, NbProgDeviceRemap,
+        PCIE_CORE_COUNT, PCIE_PORT_COUNT, PCIE_PORTS_PER_CORE, nbif_reg, pcie, rmw, strap,
     },
     smu,
     topology::Die,
@@ -44,13 +43,18 @@ pub use crate::fam17h::dxio::{
     Aspm, ClockRequest, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed,
     Operation, SataChannel,
 };
-use crate::fam17h::registers::Smn;
+use crate::fam17h::registers::{Smn, SmnReg};
 use core::{
     cell::UnsafeCell,
     sync::atomic::{Ordering, compiler_fence},
 };
 use fstart_log::{Hex, debug, error, info, warn};
-use fstart_pci::{ConfigRegionAccess, PciAddress, devfn, devfn_parts};
+use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress, devfn, devfn_parts};
+use tock_registers::{
+    LocalRegisterCopy,
+    interfaces::{ReadWriteable, Readable, Writeable},
+    register_bitfields,
+};
 use zerocopy::{FromBytes, IntoBytes};
 
 /// Engine records of a die's platform descriptor.
@@ -236,19 +240,55 @@ fn map_ports(
     Ok((topology, map))
 }
 
+register_bitfields![u16,
+    /// Lane Equalization Control of the secondary PCIe capability, per lane.
+    LaneEq [
+        DS_TX_PRESET OFFSET(0) NUMBITS(4) [],
+        DS_RX_HINT OFFSET(4) NUMBITS(3) [],
+        US_TX_PRESET OFFSET(8) NUMBITS(4) [],
+        US_RX_HINT OFFSET(12) NUMBITS(3) []
+    ]
+];
+/// Lanes 0 and 1; the registers of lanes 2-15 follow.
+const LANE_EQ_CONTROL: u16 = 0x27c;
+
+/// The value of every lane equalization dword: TX preset 7 and RX hint 2
+/// in both directions for both lanes, with the reserved bits of lane 0.
+fn lane_equalization(lane0: u16) -> u32 {
+    let mut lane = LocalRegisterCopy::<u16, LaneEq::Register>::new(lane0);
+    lane.modify(
+        LaneEq::DS_TX_PRESET.val(7)
+            + LaneEq::DS_RX_HINT.val(2)
+            + LaneEq::US_TX_PRESET.val(7)
+            + LaneEq::US_RX_HINT.val(2),
+    );
+    u32::from(lane.get()) * 0x10001
+}
+
+register_bitfields![u32,
+    /// Four IOMUX bytes accessed as one dword.
+    IomuxDword [PIN26 OFFSET(16) NUMBITS(8) []]
+];
+/// GPIO26 (PCIE_RST_L) control and the IOMUX dword of pins 24-27 of the
+/// die's FCH, through the SMN alias of its ACPI MMIO (0x02d01000).
+const FCH_GPIO26: SmnReg = SmnReg::new(0x02d0_2568);
+const FCH_IOMUX_24: SmnReg<IomuxDword::Register> = SmnReg::new(0x02d0_1d18);
+
 /// Link status of a port after the training (vendor ffde7de3).
-fn port_trained(smn: &mut impl Smn, p: usize) -> bool {
+fn port_trained(smn: &Smn<impl ConfigRegionAccess>, p: usize) -> bool {
     let i = p % PCIE_PORTS_PER_CORE;
     if i == 0 {
-        smn.read(pcie_port_reg(p, pcie::LC_PORT_2DC)) & 1 << 28 == 0
+        !smn.reg(pcie::lc_port_2dc(p))
+            .is_set(pcie::LcPort2dc::NOT_TRAINED)
     } else {
-        smn.read(pcie_core_reg(p / PCIE_PORTS_PER_CORE, pcie::LINK_STATUS)) & 1 << i == 0
+        let status = smn.reg(pcie::link_status(p / PCIE_PORTS_PER_CORE));
+        status.read(pcie::LinkStatus::NOT_TRAINED) & 1 << i == 0
     }
 }
 
 /// Training results of the final engine configuration.
 fn training_done(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     config: &EngineConfig,
     topology: &mut PcieTopology,
 ) -> Result<(), Error> {
@@ -409,9 +449,10 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
                 error!("DXIO: can't map lanes {}-{} (port {})", start, end, port);
             }
         })?;
-        let smn = &mut self.die.smn();
+        let smn = self.die.smn();
         for (p, devfn) in map.into_iter().enumerate() {
-            smn.update(nbio::nb_prog_device_remap(p), 0xff, devfn.into());
+            smn.reg(nbio::nb_prog_device_remap(p))
+                .modify(NbProgDeviceRemap::DEVFN.val(devfn.into()));
             let (device, function) = devfn_parts(devfn);
             debug!(
                 "DXIO {}: port {} -> {}.{}",
@@ -428,14 +469,15 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
     /// State 5: the ports are configured but not trained yet (vendor
     /// ffdeb04b/ffdeb296).
     fn ports_configured(&self) {
-        let smn = &mut self.die.smn();
-        let pci = self.die.pci();
+        let smn = self.die.smn();
         for (p, port) in self.topology.ports.iter().enumerate() {
             let Some(port) = port else { continue };
-            // LC_CNTL6 bit 0 = vendor PCD 0xe0 (0), bit 2 = PCD 0xe1 (1)
-            smn.update(pcie_port_reg(p, pcie::LC_CNTL6), 1 << 0 | 1 << 2, 1 << 2);
-            // LC_CNTL7 [20:13] = vendor PCD 0xe5 (0)
-            smn.update(pcie_port_reg(p, pcie::LC_CNTL7), 0x1f_e000, 0);
+            // Vendor PCDs 0xe0 (0), 0xe1 (1) and 0xe5 (0).
+            smn.reg(pcie::lc_cntl6(p)).modify(
+                pcie::LcCntl6::LC_SPC_MODE_2P5GT::CLEAR + pcie::LcCntl6::LC_SPC_MODE_5GT::SET,
+            );
+            smn.reg(pcie::lc_cntl7(p))
+                .modify(pcie::LcCntl7::LC_SCHEDULED_RXEQEVAL_INTERVAL.val(0));
 
             // Lane equalization control of the secondary PCIe capability for
             // ports that may train at gen 3: TX preset 7 and RX hint 2 in
@@ -444,13 +486,12 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
                 continue;
             }
             let address = PciAddress::new(0, self.die.bus(), port.device, port.function);
+            let pci = self.die.pci();
             // SAFETY: the mapped root port on the die's root bus.
-            unsafe {
-                let eq = pci.read(address, 0x27c) & 0xffff;
-                let value = ((eq & 0x8080) | 0x2727) * 0x10001;
-                for offset in (0x27c..0x29c).step_by(4) {
-                    pci.write(address, offset, value);
-                }
+            let control = |offset| unsafe { ConfigRegister::<_, ()>::new(pci, address, offset) };
+            let value = lane_equalization(control(LANE_EQ_CONTROL).get() as u16);
+            for offset in (LANE_EQ_CONTROL..LANE_EQ_CONTROL + 0x20).step_by(4) {
+                control(offset).set(value);
             }
         }
     }
@@ -460,9 +501,10 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
     /// function on the FCH of that die, through the SMN alias of the FCH ACPI
     /// MMIO (0x02d01000).
     fn perst(&self) {
-        let smn = &mut self.die.smn();
-        smn.write(0x02d0_2568, 0x00d2_0000); // GPIO26 control
-        smn.update(0x02d0_1d18, 0xff_0000, 0); // IOMUX pin 26
+        let smn = self.die.smn();
+        smn.reg(FCH_GPIO26).set(0x00d2_0000);
+        smn.reg(FCH_IOMUX_24)
+            .modify(IomuxDword::PIN26.val(0));
     }
 
     fn event_loop(
@@ -543,7 +585,7 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
 
         self.event_loop(now_us, delay_us)?;
         let config = self.engine_config(delay_us)?;
-        training_done(&mut self.die.smn(), &config, &mut self.topology)?;
+        training_done(&self.die.smn(), &config, &mut self.topology)?;
         for port in self.topology.ports.iter().flatten() {
             info!(
                 "PCIe {}:{}.{} lanes {}-{}: {}",
@@ -563,56 +605,84 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
     }
 }
 
-fn pre_training(smn: &mut impl Smn) {
-    // TX_CNTL bit 15
-    for p in 0..PCIE_PORT_COUNT {
-        smn.update(pcie_port_reg(p, pcie::TX_CNTL), 1 << 15, 0);
-    }
+/// PCIe straps of a core (see [`nbio::strap`]).
+mod straps {
+    /// ACS (vendor CBS "ACS Enable", default enabled), in the vendor order.
+    pub const ACS: [u32; 8] = [
+        0xfffe_0002,
+        0xfffe_0069,
+        0xfffe_006a,
+        0xfffe_006b,
+        0xfffe_006c,
+        0xfffe_006d,
+        0xfffe_006e,
+        0xfffe_0068,
+    ];
+    pub const SUBSYSTEM_VENDOR: u32 = 0xfffe_0082;
+    pub const SUBSYSTEM_DEVICE: u32 = 0xfffe_0083;
+    /// 0 or 5: the PLL may be off in L1.
+    pub const PLL_OFF_IN_L1: u32 = 0xfffe_0084;
+}
 
-    // ACS (vendor CBS "ACS Enable", default enabled)
+register_bitfields![u32,
+    /// NBIF function enables, bit n = function n.
+    NbifFunctionEnable [SATA OFFSET(2) NUMBITS(1) []],
+    /// The PCI Express capability header (the root ports' at 0x58).
+    PcieCapability [SLOT_IMPLEMENTED OFFSET(24) NUMBITS(1) []]
+];
+/// NBIF1 of a die: device 8.1 with SATA as function 2.
+const NBIF1_FUNCTION_ENABLE: SmnReg<NbifFunctionEnable::Register> = SmnReg::new(0x1023_a008);
+const PCIE_CAPABILITY: u16 = 0x58;
+const DEVICE_CONTROL2: u16 = PCIE_CAPABILITY + 0x28;
+
+/// ACS-related settings of the NBIFs: raw vendor values.
+fn nbif_acs() -> impl Iterator<Item = nbio::Reg> {
+    (0..NBIF_COUNT).flat_map(|n| {
+        let functions =
+            (0..8).map(move |function| rmw(nbif_reg(n, 0x34008 + 0x200 * function), 0x13_0000, 0x13_0000));
+        core::iter::once(rmw(nbif_reg(n, 0x31000), 0x1c, 0x1c)).chain(functions)
+    })
+}
+
+fn pre_training(smn: &Smn<impl ConfigRegionAccess>) {
+    for p in 0..PCIE_PORT_COUNT {
+        smn.reg(pcie::tx_cntl(p))
+            .modify(pcie::TxCntl::TX_FLUSH_TLP_DIS::CLEAR);
+    }
     for core in 0..PCIE_CORE_COUNT {
-        strap_write(smn, core, 0xfffe_0002, 1);
-        for index in 0xfffe_0069..=0xfffe_006e {
-            strap_write(smn, core, index, 1);
-        }
-        strap_write(smn, core, 0xfffe_0068, 1);
-    }
-    for n in 0..NBIF_COUNT {
-        smn.update(nbif_reg(n, 0x31000), 0x1c, 0x1c);
-        for function in 0..8 {
-            smn.update(
-                nbif_reg(n, 0x34008 + 0x200 * function),
-                0x13_0000,
-                0x13_0000,
-            );
+        for acs in straps::ACS {
+            strap(smn, core, acs).set(1);
         }
     }
+    nbio::apply(smn, nbif_acs());
 }
 
 /// Enable the SATA function of the NBIF.
-fn nbif_sata_enable(smn: &mut impl Smn) {
-    smn.update(0x1023_4400, 1 << 28, 1 << 28);
-    smn.update(0x1023_a008, 1 << 2, 1 << 2);
+fn nbif_sata_enable(smn: &Smn<impl ConfigRegionAccess>) {
+    smn.reg(super::fch::sata::NBIF_STRAP)
+        .modify(super::fch::NbifStrap::ENABLE::SET);
+    smn.reg(NBIF1_FUNCTION_ENABLE)
+        .modify(NbifFunctionEnable::SATA::SET);
 }
 
 /// Hide all bridges, then show the ones with a link or a hotplug slot.
-fn bridges(smn: &mut impl Smn, topology: &PcieTopology) {
-    let mask = (IohcBridgeCntl::BRIDGE_DIS::SET
-        + IohcBridgeCntl::CFG_DIS::SET
-        + IohcBridgeCntl::CRS_ENABLE::SET)
-        .value;
+fn bridges(smn: &Smn<impl ConfigRegionAccess>, topology: &PcieTopology) {
     for bridge in 0..PCIE_PORT_COUNT {
-        smn.update(nbio::iohc_bridge_cntl(bridge), mask, mask);
+        smn.reg(nbio::iohc_bridge_cntl(bridge)).modify(
+            IohcBridgeCntl::BRIDGE_DIS::SET
+                + IohcBridgeCntl::CFG_DIS::SET
+                + IohcBridgeCntl::CRS_ENABLE::SET,
+        );
     }
     for port in topology.ports.iter().flatten() {
         let Some(bridge) = bridge_index(port.devfn()) else {
             continue;
         };
         if port.trained || !matches!(port.hotplug, Hotplug::Disabled | Hotplug::Inboard) {
-            smn.update(
-                nbio::iohc_bridge_cntl(bridge),
-                mask,
-                IohcBridgeCntl::CRS_ENABLE::SET.value,
+            smn.reg(nbio::iohc_bridge_cntl(bridge)).modify(
+                IohcBridgeCntl::BRIDGE_DIS::CLEAR
+                    + IohcBridgeCntl::CFG_DIS::CLEAR
+                    + IohcBridgeCntl::CRS_ENABLE::SET,
             );
         }
     }
@@ -620,52 +690,70 @@ fn bridges(smn: &mut impl Smn, topology: &PcieTopology) {
 
 /// PcieInterfaceAfterDxioDoneSetting of the vendor code.
 fn interface_after_dxio<P: ConfigRegionAccess + Copy>(die: &Die<P>, topology: &PcieTopology) {
-    let smn = &mut die.smn();
+    let smn = die.smn();
     let pci = die.pci();
     for core in 0..PCIE_CORE_COUNT {
         let ports = core * PCIE_PORTS_PER_CORE..(core + 1) * PCIE_PORTS_PER_CORE;
-        // PLL off in L1, if the strap allows it
-        let pll = strap_read(smn, core, 0xfffe_0084);
+        let pll = strap(&smn, core, straps::PLL_OFF_IN_L1).get();
         for p in ports.clone() {
             if let Some(port) = &topology.ports[p] {
                 let address = PciAddress::new(0, die.bus(), port.device, port.function);
                 // SAFETY: a mapped root port on the die's root bus.
-                unsafe {
-                    // Completion timeout and "slot implemented"
-                    let value = pci.read(address, 0x80);
-                    pci.write(address, 0x80, (value & !0x9) | 0x6);
-                    let value = pci.read(address, 0x58);
-                    pci.write(address, 0x58, value | 1 << 24);
-                }
+                let (control2, capability) = unsafe {
+                    (
+                        ConfigRegister::<_, pcie::DeviceControl2::Register>::new(
+                            pci,
+                            address,
+                            DEVICE_CONTROL2,
+                        ),
+                        ConfigRegister::<_, PcieCapability::Register>::new(
+                            pci,
+                            address,
+                            PCIE_CAPABILITY,
+                        ),
+                    )
+                };
+                control2.modify(pcie::DeviceControl2::COMPLETION_TIMEOUT.val(6));
+                capability.modify(PcieCapability::SLOT_IMPLEMENTED::SET);
             }
             if pll == 0 || pll == 5 {
-                smn.update(pcie_port_reg(p, pcie::LC_CNTL6), 1 << 21, 1 << 21);
+                smn.reg(pcie::lc_cntl6(p))
+                    .modify(pcie::LcCntl6::LC_L1_POWERDOWN::SET);
             }
         }
 
-        // STRAP_F0 bit 18 = vendor PCD 0xd1/0xd2 (1), bits 14:13 = 3 (PCD 0xdf)
-        smn.update(pcie_core_reg(core, pcie::STRAP_F0), 1 << 18, 1 << 18);
-        smn.update(pcie_core_reg(core, pcie::STRAP_F0), 0x6000, 0x6000);
+        // Vendor PCDs 0xd1/0xd2 (1) and 0xdf (3).
+        let strap_f0 = smn.reg(pcie::strap_f0(core));
+        strap_f0.modify(pcie::StrapF0::PCD_D1::SET);
+        strap_f0.modify(pcie::StrapF0::PCD_DF.val(3));
 
         for p in ports {
-            smn.update(pcie_port_reg(p, pcie::PORT_304), 0x6, 0x6);
-            smn.update(pcie_port_cfg(p, 0x80), 0xf, 0x6);
-            smn.update(pcie_port_reg(p, pcie::LC_CNTL), 1 << 23, 1 << 23);
-            smn.update(pcie_port_reg(p, pcie::LC_LINK_WIDTH_CNTL), 1 << 19, 1 << 19);
-            smn.update(pcie_port_reg(p, pcie::LC_CNTL2), 0xc000, 0x4000);
-            smn.update(pcie_port_reg(p, pcie::PORT_008), 1 << 15, 1 << 15);
+            smn.reg(pcie::port_304(p))
+                .modify(pcie::Port304::BITS.val(3));
+            smn.reg(pcie::device_control2(p))
+                .modify(pcie::DeviceControl2::COMPLETION_TIMEOUT.val(6));
+            smn.reg(pcie::lc_cntl(p))
+                .modify(pcie::LcCntl::LC_L1_IMMEDIATE_ACK::SET);
+            smn.reg(pcie::lc_link_width_cntl(p))
+                .modify(pcie::LcLinkWidthCntl::LC_DUAL_END_RECONFIG_EN::SET);
+            smn.reg(pcie::lc_cntl2(p))
+                .modify(pcie::LcCntl2::LC_ELEC_IDLE_MODE.val(1));
+            smn.reg(pcie::port_008(p))
+                .modify(pcie::Port008::BIT15::SET);
         }
 
-        smn.update(pcie_core_reg(core, pcie::CNTL), 1 << 17, 0);
-        // P_CNTL bit 6 = !vendor PCD 0xde (0), bits 15:14 = 1
-        smn.update(pcie_core_reg(core, pcie::P_CNTL), 1 << 6, 1 << 6);
-        smn.update(pcie_core_reg(core, pcie::P_CNTL), 0xc000, 0x4000);
+        smn.reg(pcie::cntl(core))
+            .modify(pcie::Cntl::RX_RCB_INVALID_SIZE_DIS::CLEAR);
+        // P_IGNORE_EDB_ERR = !vendor PCD 0xde (0).
+        let p_cntl = smn.reg(pcie::p_cntl(core));
+        p_cntl.modify(pcie::PCntl::P_IGNORE_EDB_ERR::SET);
+        p_cntl.modify(pcie::PCntl::P_ELEC_IDLE_MODE.val(1));
     }
 }
 
 /// Subsystem ID (vendor in bits 15:0) of the NBIO functions and the PCIe
 /// ports, vendor PCDs.
-fn set_subsystem_ids(smn: &mut impl Smn, subsystem_id: u32) {
+fn set_subsystem_ids(smn: &Smn<impl ConfigRegionAccess>, subsystem_id: u32) {
     const REGISTERS: [u32; 17] = [
         0x13b0_0050,
         0x13f0_0078,
@@ -686,11 +774,11 @@ fn set_subsystem_ids(smn: &mut impl Smn, subsystem_id: u32) {
         0x1024_304c,
     ];
     for address in REGISTERS {
-        smn.write(address, subsystem_id);
+        smn.reg(SmnReg::<()>::new(address)).set(subsystem_id);
     }
     for core in 0..PCIE_CORE_COUNT {
-        strap_write(smn, core, 0xfffe_0083, subsystem_id >> 16);
-        strap_write(smn, core, 0xfffe_0082, subsystem_id & 0xffff);
+        strap(smn, core, straps::SUBSYSTEM_DEVICE).set(subsystem_id >> 16);
+        strap(smn, core, straps::SUBSYSTEM_VENDOR).set(subsystem_id & 0xffff);
     }
 }
 
@@ -700,29 +788,30 @@ fn post_training<P: ConfigRegionAccess + Copy>(
     subsystem_id: u32,
     delay_us: &mut impl FnMut(u32),
 ) {
-    bridges(&mut die.smn(), topology);
+    bridges(&die.smn(), topology);
     // Not on AM4: meaning unknown, the argument depends on the socket count
     // (0xf: one socket). The vendor code ignores the result.
     let _ = rpc(die, Operation::PostTraining, [0, 0, 0xf, 0, 0, 0], delay_us);
     interface_after_dxio(die, topology);
-    set_subsystem_ids(&mut die.smn(), subsystem_id);
+    set_subsystem_ids(&die.smn(), subsystem_id);
 }
 
 /// Each IOHC learns the bus range of every die: `buses` are the root buses
 /// of all dies in order.
-fn bus_routing(smn: &mut impl Smn, die: usize, buses: &[u8]) {
+fn bus_routing(smn: &Smn<impl ConfigRegionAccess>, die: usize, buses: &[u8]) {
     for (rb, &base) in buses.iter().enumerate() {
         let limit = buses
             .get(rb + 1)
             .map_or(ECAM_BUSES - 1, |&next| u16::from(next) - 1);
-        let route = IohcRbBusRoute::BASE.val(base.into())
-            + IohcRbBusRoute::LIMIT.val(limit.into())
-            + IohcRbBusRoute::REMOTE.val(u32::from(rb != die));
-        smn.write(nbio::iohc_rb_bus_route(rb), route.value);
+        smn.reg(nbio::iohc_rb_bus_route(rb)).write(
+            IohcRbBusRoute::BASE.val(base.into())
+                + IohcRbBusRoute::LIMIT.val(limit.into())
+                + IohcRbBusRoute::REMOTE.val(u32::from(rb != die)),
+        );
     }
     // Vendor PCD 0x1d (ARI support), default enabled
-    let ari = IohcFeatureCntl::ARI::SET.value;
-    smn.update(nbio::IOHC_FEATURE_CNTL, ari, ari);
+    smn.reg(nbio::IOHC_FEATURE_CNTL)
+        .modify(IohcFeatureCntl::ARI::SET);
 }
 
 /// Train the PCIe and SATA lanes of all dies (AmdNbioPcieZPPei) and set up
@@ -766,7 +855,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         .smu(smu::TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], delay_us)
         .map_err(Error::Smu)?;
     for die in dies {
-        pre_training(&mut die.smn());
+        pre_training(&die.smn());
     }
 
     let per_die = dies
@@ -781,7 +870,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         unsafe { (&mut *buffer.0.get()).copy_from_slice(config.as_bytes()) };
         compiler_fence(Ordering::SeqCst);
         if descriptors.iter().any(|d| d.engine == EngineType::Sata) {
-            nbif_sata_enable(&mut die.smn());
+            nbif_sata_enable(&die.smn());
         }
 
         let mut training = Training {
@@ -808,15 +897,16 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
     }
     let buses: heapless::Vec<u8, MAX_DIES> = dies.iter().map(Die::bus).collect();
     for (i, die) in dies.iter().enumerate() {
-        bus_routing(&mut die.smn(), i, &buses);
+        bus_routing(&die.smn(), i, &buses);
     }
     Ok(topologies)
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
-    use crate::zeppelin::nbio::tests::Registers;
+    use crate::fam17h::registers::testing::SmnSpace;
     use zerocopy::byteorder::U32;
 
     const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
@@ -925,14 +1015,15 @@ mod tests {
     fn training_result_needs_present_engine_and_link() {
         let mut config = mapped([0, 1, 2, 3, 4, 1, 0]);
         let (mut topology, _) = map_ports(&config, MJ11_EC1).unwrap();
-        let mut smn = Registers::default();
+        let space = SmnSpace::default();
+        let smn = space.smn();
         // Core 0: port 1 (M.2) has no link. Core 1: port 0 (3.3) has no link.
-        smn.0.insert(pcie_core_reg(0, pcie::LINK_STATUS), 1 << 1);
-        smn.0.insert(pcie_port_reg(8, pcie::LC_PORT_2DC), 1 << 28);
+        space.set(pcie::link_status(0), 1 << 1);
+        space.set(pcie::lc_port_2dc(8), 1 << 28);
         // The firmware dropped the AST2500.
         let flags = &mut config.engines[5].port_flags;
         *flags = U32::new(flags.get() & !1);
-        training_done(&mut smn, &config, &mut topology).unwrap();
+        training_done(&smn, &config, &mut topology).unwrap();
         let trained: [bool; 7] =
             core::array::from_fn(|i| topology.ports[[0, 1, 2, 3, 4, 9, 8][i]].unwrap().trained);
         assert_eq!(trained, [true, false, true, true, false, true, false]);
@@ -940,8 +1031,8 @@ mod tests {
         // Hide everything but trained links and hotplug slots.
         topology.ports[8].as_mut().unwrap().hotplug = Hotplug::Server;
         topology.ports[1].as_mut().unwrap().hotplug = Hotplug::Inboard;
-        bridges(&mut smn, &topology);
-        let bridge = |d, f| smn.0[&nbio::iohc_bridge_cntl(bridge_index(devfn(d, f)).unwrap())];
+        bridges(&smn, &topology);
+        let bridge = |d, f| space.get(nbio::iohc_bridge_cntl(bridge_index(devfn(d, f)).unwrap()));
         assert_eq!(bridge(3, 1), 1 << 18);
         assert_eq!(bridge(3, 3), 1 << 18);
         assert_eq!(bridge(1, 3), 0x40005);
@@ -963,12 +1054,69 @@ mod tests {
         assert_eq!(event([1, 2, 0x0d, 0, 0, 0]), Err(Error::Result(1)));
     }
 
+    /// The typed registers keep the vendor (clear, set) masks: every
+    /// register starts as a pattern and must end as (pattern & !clear) | set.
+    #[test]
+    fn port_setup_keeps_the_vendor_masks() {
+        const PATTERN: u32 = 0x5a5a_a5a5;
+        let pci = crate::zeppelin::test_pci::Pci::new(&[0], |_| [0; 6]);
+        let dies = pci.dies();
+        let core = |c: u32, offset: u32| 0x1118_0000 + c * 0x10_0000 + offset;
+        let port = |p: u32, offset: u32| 0x1114_0000 + (p / 8) * 0x10_0000 + (p % 8) * 0x1000 + offset;
+        let mut expected = std::vec::Vec::new();
+        for c in 0..2 {
+            expected.extend([
+                (core(c, 0x2c0), (1 << 18) | 0x6000, (1 << 18) | 0x6000),
+                (core(c, 0x040), 1 << 17, 0),
+                (core(c, 0x100), (1 << 6) | 0xc000, (1 << 6) | 0x4000),
+            ]);
+        }
+        for p in 0..16 {
+            expected.extend([
+                (port(p, 0x2ec), 1 << 21, 1 << 21),
+                (port(p, 0x304), 0x6, 0x6),
+                (0x1110_0080 + (p / 8) * 0x10_0000 + (p % 8) * 0x1000, 0xf, 0x6),
+                (port(p, 0x280), 1 << 23, 1 << 23),
+                (port(p, 0x288), 1 << 19, 1 << 19),
+                (port(p, 0x2c4), 0xc000, 0x4000),
+                (port(p, 0x008), 1 << 15, 1 << 15),
+            ]);
+        }
+        for &(address, ..) in &expected {
+            pci.set_smn(0, address, PATTERN);
+        }
+        // The PLL-off strap reads 0: the PLL may be off in L1.
+        interface_after_dxio(&dies[0], &PcieTopology::default());
+        for (address, clear, set) in expected {
+            assert_eq!(pci.smn(0, address), (PATTERN & !clear) | set, "{address:#x}");
+        }
+
+        let space = SmnSpace::default();
+        let controls = (0..16).map(|p| (port(p, 0x080), 1 << 15, 0));
+        let nbif = (0..3u32).flat_map(|n| {
+            let base = 0x1010_0000 + n * 0x10_0000;
+            core::iter::once((base + 0x31000, 0x1c, 0x1c))
+                .chain((0..8).map(move |f| (base + 0x34008 + 0x200 * f, 0x13_0000, 0x13_0000)))
+        });
+        let expected: std::vec::Vec<_> = controls.chain(nbif).collect();
+        for &(address, ..) in &expected {
+            space.set(address, PATTERN);
+        }
+        pre_training(&space.smn());
+        for (address, clear, set) in expected {
+            assert_eq!(space.get(address), (PATTERN & !clear) | set, "{address:#x}");
+        }
+        // The ACS straps, through the strap index/data pair of each core.
+        assert_eq!(space.get(0x0004_a3c8_u32), 0xfffe_0068);
+        assert_eq!(space.get(0x0004_a3cc_u32), 1);
+    }
+
     #[test]
     fn root_bridges_route_every_die_bus_range() {
-        let mut smn = Registers::default();
-        bus_routing(&mut smn, 1, &[0x00, 0x40]);
-        assert_eq!(smn.0[&nbio::iohc_rb_bus_route(0)], 0x8000_3f00);
-        assert_eq!(smn.0[&nbio::iohc_rb_bus_route(1)], 0x0000_7f40);
-        assert_eq!(smn.0[&nbio::IOHC_FEATURE_CNTL], 1 << 22);
+        let space = SmnSpace::default();
+        bus_routing(&space.smn(), 1, &[0x00, 0x40]);
+        assert_eq!(space.get(nbio::iohc_rb_bus_route(0)), 0x8000_3f00);
+        assert_eq!(space.get(nbio::iohc_rb_bus_route(1)), 0x0000_7f40);
+        assert_eq!(space.get(nbio::IOHC_FEATURE_CNTL), 1 << 22);
     }
 }

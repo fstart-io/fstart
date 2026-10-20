@@ -5,9 +5,11 @@
 pub mod apob;
 pub mod bios_directory;
 pub mod cache;
+pub mod df;
 pub mod dxio;
 pub mod microcode;
 pub mod msr;
+pub mod nbio;
 pub mod psp;
 pub mod registers;
 pub mod smu;

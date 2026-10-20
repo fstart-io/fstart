@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::*;
-use crate::zeppelin::{Die, Package, Revision, topology};
+use crate::{
+    fam17h::registers::testing::{SmnModel, SmnTest},
+    zeppelin::{Die, Package, Revision, topology},
+};
 use core::cell::RefCell;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{collections::BTreeMap, vec, vec::Vec};
@@ -121,7 +124,7 @@ struct SmnMock {
     regs: BTreeMap<u32, u32>,
     script: BTreeMap<u32, Vec<u32>>,
 }
-impl Smn for SmnMock {
+impl SmnModel for SmnMock {
     fn read(&mut self, address: u32) -> u32 {
         match self.script.get_mut(&address) {
             Some(values) if !values.is_empty() => values.remove(0),
@@ -247,39 +250,48 @@ fn sata_late_reports_only_ports_with_a_device() {
         .borrow_mut()
         .config
         .insert((function, 0xa0), (3 << 17) | 0x0080_7005);
-    let mut smn = SmnMock::default();
-    smn.regs.insert(SATA_PI, 0xff);
-    smn.regs.insert(SATA_CAP, 0x1f | 0xc000_0000);
-    smn.regs.insert(SATA_MSI, 0x0700_0001);
-    smn.regs.insert(ssts(1), 0x123);
-    smn.regs.insert(ssts(3), 0x113);
-    smn.regs.insert(ssts(5), 0x101); // device, no PHY communication
+    let smn = SmnTest::new(SmnMock::default());
+    {
+        let mut model = smn.model();
+        model.regs.insert(SATA_PI, 0xff);
+        model.regs.insert(SATA_CAP, 0x1f | 0xc000_0000);
+        model.regs.insert(SATA_MSI, 0x0700_0001);
+        model.regs.insert(ssts(1), 0x123);
+        model.regs.insert(ssts(3), 0x113);
+        model.regs.insert(ssts(5), 0x101); // device, no PHY communication
+    }
 
-    assert_eq!(sata::late(&mut smn, 0, &Hw(&world), function), 0b1010);
-    assert_eq!(smn.regs[&SATA_PI], 0b1010);
-    assert_eq!(smn.regs[&SATA_CAP], 1 | 0xc000_0000);
-    assert_eq!(smn.regs[&SATA_MSI], 0x0300_0001);
-    assert_eq!(smn.regs[&SATA_MISC], 0b1111_0101 << 16);
+    assert_eq!(sata::late(&smn.smn(), 0, Hw(&world), function), 0b1010);
+    let model = smn.model();
+    assert_eq!(model.regs[&SATA_PI], 0b1010);
+    assert_eq!(model.regs[&SATA_CAP], 1 | 0xc000_0000);
+    assert_eq!(model.regs[&SATA_MSI], 0x0300_0001);
+    assert_eq!(model.regs[&SATA_MISC], 0b1111_0101 << 16);
+    drop(model);
 
-    let mut smn = SmnMock::default();
-    smn.regs.insert(SATA_PI, 0xff);
-    assert_eq!(sata::late(&mut smn, 0, &Hw(&world), function), 1);
-    assert_eq!(smn.regs[&SATA_CAP], 0);
+    let smn = SmnTest::new(SmnMock::default());
+    smn.model().regs.insert(SATA_PI, 0xff);
+    assert_eq!(sata::late(&smn.smn(), 0, Hw(&world), function), 1);
+    assert_eq!(smn.model().regs[&SATA_CAP], 0);
 }
 
 #[test]
 fn sata_reset_waits_for_each_phy_but_never_longer_than_1ms() {
-    let mut smn = SmnMock::default();
-    (0..sata::PORTS).for_each(|port| {
-        smn.regs.insert(ssts(port), 4);
-    });
-    smn.script.insert(ssts(0), vec![0, 1]);
-    smn.regs.insert(ssts(6), 3); // stays online
+    let smn = SmnTest::new(SmnMock::default());
+    {
+        let mut model = smn.model();
+        (0..sata::PORTS).for_each(|port| {
+            model.regs.insert(ssts(port), 4);
+        });
+        model.script.insert(ssts(0), vec![0, 1]);
+        model.regs.insert(ssts(6), 3); // stays online
+    }
     let mut waited = 0;
-    sata::reset(&mut smn, &mut |us| waited += us);
+    sata::reset(&smn.smn(), &mut |us| waited += us);
     assert_eq!(waited, 2 * 10 + 1000);
     // DET = offline requested on every port.
-    assert!((0..sata::PORTS).all(|port| smn.regs[&(0x0310_112c + port * 0x80)] & 0xf == 4));
+    let model = smn.model();
+    assert!((0..sata::PORTS).all(|port| model.regs[&(0x0310_112c + port * 0x80)] & 0xf == 4));
 }
 
 #[test]

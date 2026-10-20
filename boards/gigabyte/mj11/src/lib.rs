@@ -14,7 +14,7 @@ pub mod smm;
 mod variant;
 
 use fstart_driver_amd::{
-    fam17h::registers::Smn,
+    fam17h::registers::{apply, write},
     lpc::{IoPortDecode, Lpc},
     zeppelin::{
         self as soc,
@@ -133,10 +133,10 @@ impl fstart_platform_amd::zeppelin::Board for Board {
 
     /// The vendor's PCIe TX presets and USB2 PHY values after training.
     fn dxio_training_done(ctx: &mut BoardCtx<'_>) {
-        let mut smn = ctx.dies[0].smn();
-        for &(register, value) in variant::POST_TRAINING_SMN {
-            smn.write(register, value);
-        }
+        let records = variant::POST_TRAINING_SMN
+            .iter()
+            .map(|&(register, value)| write(register, value));
+        apply(&ctx.dies[0].smn(), records);
         gpio::wait_for_bmc(ctx);
     }
 

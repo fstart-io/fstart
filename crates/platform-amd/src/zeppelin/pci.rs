@@ -24,7 +24,7 @@ impl Root {
     /// pool. Only 32-bit windows: the 64-bit DF window starts at 1 TiB,
     /// beyond what firmware maps, and the OS can still use it.
     pub fn new(die: &Die<GlobalEcam>, bus_end: u8, nonpci: u32) -> Self {
-        let mut df0 = die.df();
+        let df0 = die.df();
         let pool = (u64::from(nonpci), u64::from(nonpci) + u64::from(NONPCI_MMIO_SIZE));
         let ecam = (ECAM, ECAM + (u64::from(ECAM_BUSES) << 20));
         let mut windows = PciRootWindows::new();
@@ -34,7 +34,7 @@ impl Root {
             size: PCI_IO.1,
             prefetchable: false,
         });
-        for (base, size) in fabric::mmio_windows(&mut df0, die.index()) {
+        for (base, size) in fabric::mmio_windows(&df0, die.index()) {
             let end = base + size;
             if end > 1 << 32 {
                 continue;

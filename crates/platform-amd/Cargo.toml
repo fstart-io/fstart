@@ -50,6 +50,7 @@ fstart-driver-uart.workspace = true
 fstart-log.workspace = true
 ufmt.workspace = true
 fstart-pci.workspace = true
+tock-registers.workspace = true
 fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
 fstart-stage = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
@@ -58,3 +59,6 @@ fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 embedded-hal = { workspace = true, optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }
 fstart-smm = { workspace = true, optional = true }
+
+[dev-dependencies]
+fstart-driver-amd = { workspace = true, features = ["testing"] }

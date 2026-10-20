@@ -2,10 +2,17 @@
 //! The Zeppelin parts of the FCH SMM handler, and SMN access
 //! from SMM.
 use super::{Acpimmio, Bus, Reg, Space};
-use crate::fam17h::registers::Smn;
+use crate::fam17h::registers::SmnReg;
 use crate::fch::smi::{FchSmmHandler, FchSmmHooks};
 use core::marker::PhantomData;
-use fstart_core::pio;
+use fstart_core::{
+    indexed::Indexed,
+    pio::{self, PioRegister},
+};
+use tock_registers::{
+    RegisterLongName,
+    interfaces::{Readable, Writeable},
+};
 
 /// Board parts of the Zeppelin SMM handler.
 pub trait SmmBoard {
@@ -95,54 +102,50 @@ unsafe fn sleep_entry(bus: &mut impl Bus, slp_typ: u8) {
     ioapic.mask_all();
 }
 
-/// SMN of die 0 from SMM, through D0F0 0xb8/0xbc in CF8/CFC config space.
-/// The CF8 address and SMN index of the interrupted code are restored on
-/// drop, as the vendor SMI dispatcher does.
+/// A dword of D0F0 behind the legacy CF8/CFC pair.
+type D0f0Register = Indexed<PioRegister<u32>, PioRegister<u32>>;
+const fn d0f0(offset: u8) -> D0f0Register {
+    Indexed::new(
+        PioRegister::new(pio::PCI_CF8),
+        PioRegister::new(pio::PCI_CFC),
+        pio::cf8_addr(0, 0, 0, offset),
+    )
+}
+const SMN_INDEX: D0f0Register = d0f0(0xb8);
+const SMN_DATA: D0f0Register = d0f0(0xbc);
+
+/// SMN of die 0 from SMM: its index/data pair in D0F0 config space, itself
+/// behind the CF8/CFC pair. The CF8 address and SMN index of the
+/// interrupted code are restored on drop, as the vendor SMI dispatcher does.
 pub struct SmmSmn {
     cf8: u32,
     index: u32,
 }
-const CF8: u16 = 0xcf8;
-const SMN_INDEX: u8 = 0xb8;
-const SMN_DATA: u8 = 0xbc;
 impl SmmSmn {
     /// # Safety
     /// In SMM, owning the SMM rendezvous.
     #[inline(always)]
     pub unsafe fn new() -> Self {
         // SAFETY: SMM owns CF8/CFC and D0F0 for the SMI's duration.
-        unsafe {
-            let cf8 = pio::inl(CF8);
-            let index = pio::pci_cfg_read32(0, 0, 0, SMN_INDEX);
-            Self { cf8, index }
-        }
-    }
-}
-impl Smn for SmmSmn {
-    #[inline(always)]
-    fn read(&mut self, address: u32) -> u32 {
-        // SAFETY: as in new.
-        unsafe {
-            pio::pci_cfg_write32(0, 0, 0, SMN_INDEX, address);
-            pio::pci_cfg_read32(0, 0, 0, SMN_DATA)
+        let cf8 = unsafe { pio::inl(pio::PCI_CF8) };
+        Self {
+            cf8,
+            index: SMN_INDEX.get(),
         }
     }
     #[inline(always)]
-    fn write(&mut self, address: u32, value: u32) {
-        // SAFETY: as in new.
-        unsafe {
-            pio::pci_cfg_write32(0, 0, 0, SMN_INDEX, address);
-            pio::pci_cfg_write32(0, 0, 0, SMN_DATA, value);
-        }
+    pub fn reg<R: RegisterLongName>(
+        &self,
+        reg: SmnReg<R>,
+    ) -> Indexed<D0f0Register, D0f0Register, R> {
+        Indexed::new(SMN_INDEX, SMN_DATA, reg.address())
     }
 }
 impl Drop for SmmSmn {
     #[inline(always)]
     fn drop(&mut self) {
+        SMN_INDEX.set(self.index);
         // SAFETY: as in new.
-        unsafe {
-            pio::pci_cfg_write32(0, 0, 0, SMN_INDEX, self.index);
-            pio::outl(CF8, self.cf8);
-        }
+        unsafe { pio::outl(pio::PCI_CF8, self.cf8) };
     }
 }

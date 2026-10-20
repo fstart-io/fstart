@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! SMU policy v0x13 and persistent DMA pages.
 use super::{registers::Smn, smu};
+use fstart_pci::ConfigRegionAccess;
 use core::{
     cell::UnsafeCell,
     sync::atomic::{Ordering, compiler_fence},
@@ -167,7 +168,7 @@ pub enum Error {
 /// rather than equating them with timeouts. Report EVERY such status to the
 /// caller; this exception never applies to early/DXIO/USB strict requests.
 pub(crate) fn command(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     message: u32,
     args: [u32; 6],
     delay_us: &mut impl FnMut(u32),
@@ -186,7 +187,7 @@ pub(crate) fn command(
 /// on any error. The consumed static borrow permits neither reclamation nor
 /// retry. A nonstandard-response observer must emit/retain diagnostics.
 pub unsafe fn install(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     pages: &'static mut Pages,
     config: Config,
     delay_us: &mut impl FnMut(u32),
@@ -199,7 +200,7 @@ pub unsafe fn install(
 // Only install supplies this address in production, after DMA preflight and
 // publication. Separating submission permits CPU-only mailbox transaction tests.
 fn transfer(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     base: u32,
     delay_us: &mut impl FnMut(u32),
     notice: &mut impl FnMut(u32, u32),
@@ -220,6 +221,7 @@ fn transfer(
 mod tests {
     use super::*;
     extern crate std;
+    use crate::fam17h::registers::testing::{SmnModel, SmnTest};
     use std::{collections::BTreeMap, vec::Vec};
     struct Mailbox {
         regs: BTreeMap<u32, u32>,
@@ -237,9 +239,9 @@ mod tests {
             }
         }
     }
-    impl Smn for Mailbox {
+    impl SmnModel for Mailbox {
         fn read(&mut self, address: u32) -> u32 {
-            if address == smu::RESPONSE {
+            if address == smu::RESPONSE.address() {
                 self.response
             } else {
                 self.regs.get(&address).copied().unwrap_or(0)
@@ -247,13 +249,15 @@ mod tests {
         }
         fn write(&mut self, address: u32, value: u32) {
             self.regs.insert(address, value);
-            if address == smu::RESPONSE {
+            if address == smu::RESPONSE.address() {
                 self.response = value;
             }
-            if address == smu::MESSAGE {
+            if address == smu::MESSAGE.address() {
                 self.frames.push((
                     value,
-                    core::array::from_fn(|i| self.regs[&(smu::ARGUMENTS + i as u32 * 4)]),
+                    core::array::from_fn(|i| {
+                        self.regs[&smu::ARGUMENTS.offset(i as u32 * 4).address()]
+                    }),
                 ));
                 self.response = if self.unavailable == Some(value) {
                     u32::MAX
@@ -267,7 +271,8 @@ mod tests {
                         .into_iter()
                         .enumerate()
                     {
-                        self.regs.insert(smu::ARGUMENTS + i as u32 * 4, word);
+                        self.regs
+                            .insert(smu::ARGUMENTS.offset(i as u32 * 4).address(), word);
                     }
                 }
             }
@@ -275,17 +280,17 @@ mod tests {
     }
     #[test]
     fn transfer_reuses_set_address_context_and_surfaces_nonstandard_status() {
-        let mut mailbox = Mailbox::new();
+        let mailbox = SmnTest::new(Mailbox::new());
         let mut notices = Vec::new();
         transfer(
-            &mut mailbox,
+            &mailbox.smn(),
             0x02019000,
             &mut |_| {},
             &mut |message, status| notices.push((message, status)),
         )
         .unwrap();
         assert_eq!(
-            mailbox.frames.as_slice(),
+            mailbox.model().frames.as_slice(),
             &[
                 (3, [0x13, 0, 0, 0, 0, 0]),
                 (0x13, [0x0201a000, 0, 0, 0, 0, 0]),
@@ -296,14 +301,15 @@ mod tests {
             ]
         );
         assert_eq!(notices.as_slice(), &[(0x13, 0xfe)]);
-        let mut mailbox = Mailbox::new();
-        mailbox.unavailable = Some(0x12);
+        let mailbox = SmnTest::new(Mailbox::new());
+        mailbox.model().unavailable = Some(0x12);
         assert_eq!(
-            transfer(&mut mailbox, 0x02019000, &mut |_| {}, &mut |_, _| {}),
+            transfer(&mailbox.smn(), 0x02019000, &mut |_| {}, &mut |_, _| {}),
             Err(Error::Smu(smu::Error::Unavailable))
         );
         assert_eq!(
             mailbox
+                .model()
                 .frames
                 .iter()
                 .map(|frame| frame.0)

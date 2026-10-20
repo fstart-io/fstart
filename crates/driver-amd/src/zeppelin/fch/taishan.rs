@@ -7,14 +7,14 @@ use super::{
     index_write, irq, legacy_sd_off,
 };
 use crate::{
-    fam17h::registers::Smn,
+    fam17h::registers::{Smn, SmnReg},
     fch::{
         Decode,
         early::{self, Registers},
     },
     zeppelin::{Revision, acpi_io},
 };
-use tock_registers::register_bitfields;
+use tock_registers::{interfaces::Writeable, register_bitfields};
 
 /// Pre-console FCH setup, after
 /// [`crate::fch::enable_acpimmio`]: LPC decodes off and the SPI BAR, port 80
@@ -336,12 +336,16 @@ fn ab_init(bus: &mut impl Bus) {
 }
 
 /// The xHCI subsystem ID strap of die 0 (NBIF).
-const NBIF_XHCI_SSID: u32 = 0x1014_304c;
+const NBIF_XHCI_SSID: SmnReg = SmnReg::new(0x1014_304c);
 
 /// The FchTaishanDxe env tasks of die 0's FCH. `smn` is die 0's;
 /// `subsystem_id` (subsystem vendor in the low, device in the high half) is the
 /// board's for the xHCI (vendor PCD 0x163).
-pub fn env_init(bus: &mut impl Bus, smn: &mut impl Smn, subsystem_id: u32) {
+pub fn env_init(
+    bus: &mut impl Bus,
+    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
+    subsystem_id: u32,
+) {
     clock_init(bus);
     apply(bus, ENV_MISC);
 
@@ -365,7 +369,7 @@ pub fn env_init(bus: &mut impl Bus, smn: &mut impl Smn, subsystem_id: u32) {
 
     legacy_sd_off(bus, DIE0);
 
-    smn.write(NBIF_XHCI_SSID, subsystem_id);
+    smn.reg(NBIF_XHCI_SSID).set(subsystem_id);
 
     ab_init(bus);
 }

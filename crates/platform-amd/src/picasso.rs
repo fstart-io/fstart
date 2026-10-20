@@ -248,15 +248,15 @@ unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::Stat
         ECAM,
         apob::Apob,
         cpu::{self, NativeMsr},
-        registers::{FabricPort, SmnPort},
+        registers::{Df, Smn},
     };
     let mut msr = unsafe { NativeMsr::new() };
     // MMCONF first, everything else uses it.
     cpu::enable_ecam(&mut msr);
     fstart_pci::ecam::init(ECAM as usize);
     let pci = fstart_pci::ecam::GlobalEcam;
-    let mut smn = unsafe { SmnPort::new(pci) };
-    let mut df = unsafe { FabricPort::new(pci) };
+    let smn = unsafe { Smn::new(pci) };
+    let df = unsafe { Df::new(pci) };
     // SAFETY: the PSP wrote the APOB here before releasing the BSP; the
     // early reservation keeps it.
     let apob = unsafe {
@@ -282,8 +282,8 @@ unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::Stat
             tseg_size: TSEG_SIZE,
         },
         &mut msr,
-        &mut smn,
-        &mut df,
+        &smn,
+        &df,
         delay_us,
     )
     .map_err(|error| match error {

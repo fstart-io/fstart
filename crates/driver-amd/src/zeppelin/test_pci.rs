@@ -35,13 +35,14 @@ impl Pci {
             reply,
         };
         // Every SMU is ready.
-        (0..buses.len() as u8).for_each(|die| pci.set_smn(die, MAILBOX.response, 1));
+        (0..buses.len() as u8).for_each(|die| pci.set_smn(die, MAILBOX.response.address(), 1));
         pci
     }
     pub fn dies(&self) -> Vec<Die<&Self>> {
         unsafe { dies(self) }.collect()
     }
-    pub fn smn(&self, die: u8, address: u32) -> u32 {
+    pub fn smn(&self, die: u8, address: impl Into<u32>) -> u32 {
+        let address = address.into();
         self.state
             .borrow()
             .smn
@@ -49,8 +50,8 @@ impl Pci {
             .copied()
             .unwrap_or(0)
     }
-    pub fn set_smn(&self, die: u8, address: u32, value: u32) {
-        self.state.borrow_mut().smn.insert((die, address), value);
+    pub fn set_smn(&self, die: u8, address: impl Into<u32>, value: u32) {
+        self.state.borrow_mut().smn.insert((die, address.into()), value);
     }
     pub fn messages(&self) -> Vec<Message> {
         self.state.borrow().messages.clone()
@@ -83,18 +84,18 @@ impl ConfigRegionAccess for &Pci {
                 let die = self.die_of(bus);
                 let index = self.state.borrow().index[&bus];
                 self.set_smn(die, index, value);
-                if index == MAILBOX.message {
+                if index == MAILBOX.message.address() {
                     let message = Message {
                         die,
                         message: value,
                         arguments: core::array::from_fn(|i| {
-                            self.smn(die, MAILBOX.arguments + 4 * i as u32)
+                            self.smn(die, MAILBOX.argument(i).address())
                         }),
                     };
                     for (i, word) in (self.reply)(&message).into_iter().enumerate() {
-                        self.set_smn(die, MAILBOX.arguments + 4 * i as u32, word);
+                        self.set_smn(die, MAILBOX.argument(i).address(), word);
                     }
-                    self.set_smn(die, MAILBOX.response, 1);
+                    self.set_smn(die, MAILBOX.response.address(), 1);
                     self.state.borrow_mut().messages.push(message);
                 }
             }

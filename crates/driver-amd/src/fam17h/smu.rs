@@ -1,7 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Six-dword SMU (MP1) mailbox protocol. The register
 //! addresses differ per SoC; the protocol does not.
-use super::registers::Smn;
+use super::registers::{Smn, SmnReg};
+use fstart_pci::ConfigRegionAccess;
+use tock_registers::{
+    interfaces::{Readable, Writeable},
+    register_bitfields,
+};
+
+register_bitfields![u32,
+    pub ThreadConfig [
+        /// Cores per complex - 1.
+        CORE_COUNT OFFSET(0) NUMBITS(4) [],
+        /// Complexes - 1.
+        COMPLEX_COUNT OFFSET(4) NUMBITS(4) [],
+        NOT_SMT OFFSET(8) NUMBITS(1) [],
+        /// Request SMT off; takes effect after a reset.
+        DISABLE_SMT OFFSET(9) NUMBITS(1) []
+    ]
+];
+/// ThreadEn, bit complex * 8 + thread of the complex, the thread topology
+/// and the core disable mask the SMU reads at a reset (per die).
+pub const THREAD_ENABLE: SmnReg = SmnReg::new(0x0005_a818);
+pub const THREAD_CONFIG: SmnReg<ThreadConfig::Register> = SmnReg::new(0x0005_a81c);
+pub const DOWNCORE: SmnReg = SmnReg::new(0x0005_a860);
 
 const TIMEOUT_POLLS: usize = 100_000; // 10 seconds, 100 us per poll.
 pub const ARGUMENT_COUNT: usize = 6;
@@ -23,17 +45,21 @@ pub struct Reply {
     pub arguments: [u32; ARGUMENT_COUNT],
 }
 
-/// SMN addresses of one SoC's SMU mailbox.
-#[derive(Debug, Clone, Copy)]
+/// The SMN registers of one SoC's SMU mailbox; the arguments are
+/// consecutive registers.
+#[derive(Clone, Copy)]
 pub struct Mailbox {
-    pub message: u32,
-    pub response: u32,
-    pub arguments: u32,
+    pub message: SmnReg,
+    pub response: SmnReg,
+    pub arguments: SmnReg,
 }
 impl Mailbox {
-    fn poll(&self, smn: &mut impl Smn, delay_us: &mut impl FnMut(u32)) -> Result<Option<u32>, Error> {
+    pub const fn argument(&self, i: usize) -> SmnReg {
+        self.arguments.offset(4 * i as u32)
+    }
+    fn poll(&self, smn: &Smn<impl ConfigRegionAccess>, delay_us: &mut impl FnMut(u32)) -> Result<Option<u32>, Error> {
         for _ in 0..TIMEOUT_POLLS {
-            let response = smn.read(self.response);
+            let response = smn.reg(self.response).get();
             // All-ones is an unavailable aperture, never previous readiness or
             // a completed nonstandard response. Native common timeout is zero.
             if response == u32::MAX {
@@ -52,27 +78,27 @@ impl Mailbox {
     /// readiness. Clear the response BEFORE the arguments, submit the command LAST.
     pub fn request_raw(
         &self,
-        smn: &mut impl Smn,
+        smn: &Smn<impl ConfigRegionAccess>,
         message: u32,
         arguments: [u32; ARGUMENT_COUNT],
         delay_us: &mut impl FnMut(u32),
     ) -> Result<Reply, Error> {
         self.poll(smn, delay_us)?.ok_or(Error::BusyTimeout)?;
-        smn.write(self.response, 0);
+        smn.reg(self.response).set(0);
         for (i, value) in arguments.into_iter().enumerate() {
-            smn.write(self.arguments + i as u32 * 4, value);
+            smn.reg(self.argument(i)).set(value);
         }
-        smn.write(self.message, message);
+        smn.reg(self.message).set(message);
         let response = self.poll(smn, delay_us)?.ok_or(Error::CompletionTimeout)?;
         Ok(Reply {
             status: response,
-            arguments: core::array::from_fn(|i| smn.read(self.arguments + i as u32 * 4)),
+            arguments: core::array::from_fn(|i| smn.reg(self.argument(i)).get()),
         })
     }
 
     pub fn request(
         &self,
-        smn: &mut impl Smn,
+        smn: &Smn<impl ConfigRegionAccess>,
         message: u32,
         arguments: [u32; ARGUMENT_COUNT],
         delay_us: &mut impl FnMut(u32),
@@ -87,7 +113,7 @@ impl Mailbox {
     /// The 47-character CPU name string, `get_name` being the SoC's message.
     pub fn cpu_name(
         &self,
-        smn: &mut impl Smn,
+        smn: &Smn<impl ConfigRegionAccess>,
         get_name: u32,
         delay_us: &mut impl FnMut(u32),
     ) -> Result<[u8; 48], Error> {

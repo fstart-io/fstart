@@ -833,6 +833,7 @@ dependencies = [
  "heapless 0.8.0",
  "serde_json",
  "sha2 0.10.9",
+ "tock-registers",
  "ufmt",
  "zerocopy",
 ]

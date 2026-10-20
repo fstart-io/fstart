@@ -2,6 +2,7 @@
 //! Picasso DXIO firmware wire protocol and board-to-engine mapping.
 pub use super::dxio_hardware::{Buffers, Options, train};
 use super::{acp, registers::Smn, smu};
+use fstart_pci::ConfigRegionAccess;
 pub use crate::fam17h::dxio::{
     Aspm, ClockRequest, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed,
     Operation, SataChannel,
@@ -220,7 +221,7 @@ impl Topology {
 }
 
 pub fn rpc(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     operation: Operation,
     mut arguments: [u32; 6],
     delay_us: &mut impl FnMut(u32),

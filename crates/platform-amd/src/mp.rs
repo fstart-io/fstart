@@ -57,7 +57,7 @@ pub fn sipi_msrs(msr: &mut impl Msr) -> Result<SipiMsrs, Error> {
 /// Cold boot, all APs still held, `topology` is the applied topology, and the
 /// SIPI trampoline is installed. Exclusive SMN access.
 pub unsafe fn release_aps(
-    smn: &mut impl Smn,
+    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
     topology: Topology,
     ap_count: u16,
     delay_us: &mut impl FnMut(u32),

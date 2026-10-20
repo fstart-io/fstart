@@ -214,24 +214,22 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
         );
     }
     {
-        let mut ports: Vec<_, MAX_DIES> = dies.iter().map(|d| d.df()).collect();
-        let mut dfs: Vec<&mut dyn fstart_driver_amd::fam17h::registers::Fabric, MAX_DIES> =
-            ports.iter_mut().map(|p| p as _).collect();
-        fabric::program(&plan, &mut dfs);
+        let dfs: Vec<_, MAX_DIES> = dies.iter().map(|d| d.df()).collect();
+        fabric::program(&plan, &dfs);
     }
     for die in dies {
-        match fabric::nonpci_mmio_base(&mut dies[0].df(), die.index()) {
+        match fabric::nonpci_mmio_base(&dies[0].df(), die.index()) {
             Ok(base) => s.nonpci[usize::from(die.index())] = base,
             Err(_) => fail("non-PCI MMIO pool"),
         }
     }
     let apob = Apob::parse_with_capacity(apob_bytes(), soc::APOB_SIZE).ok();
     for die in dies {
-        fabric::early_init(&mut die.df(), count, s.revision);
+        fabric::early_init(&die.df(), count, s.revision);
     }
     if let Some(apob) = &apob {
         for die in dies {
-            if let Some((rate, size)) = fabric::scrub_init(&mut die.df(), die.index(), apob) {
+            if let Some((rate, size)) = fabric::scrub_init(&die.df(), die.index(), apob) {
                 fstart_log::debug!("DF {}: scrub rate {} for {}", die.index(), rate, Hex(size));
             }
         }
@@ -242,7 +240,7 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
     // SAFETY: BSP-only FCH programming.
     let mut bus = unsafe { fch::NativeBus::new() };
     fch::reset_init(&mut bus, s.revision);
-    fch::sata::reset(&mut dies[0].smn(), &mut delay);
+    fch::sata::reset(&dies[0].smn(), &mut delay);
     let nonpci = s.nonpci;
     fch::multi::reset(&mut bus, dies, s.package, |die| nonpci[usize::from(die)], &mut delay);
     B::fch_reset_done(&mut BoardCtx {
@@ -323,7 +321,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     });
 
     // FchTaishanPei USB, then the DXE drivers.
-    fch::usb::init(&mut dies[0].smn(), 0, s.package, &mut delay);
+    fch::usb::init(&dies[0].smn(), 0, s.package, &mut delay);
     fch::multi::usb(dies, &B::FCH_DEVICES, s.package, &mut delay);
     // SAFETY: the pages and the policy are reserved firmware BSS.
     let smu_ok = unsafe {
@@ -345,12 +343,12 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     }
     let cac_weights = smu::cac_weights(&dies[0], &mut delay).ok();
     let apob = Apob::parse_with_capacity(apob_bytes(), soc::APOB_SIZE).ok();
-    let sockets = fabric::sockets(&mut dies[0].df());
+    let sockets = fabric::sockets(&dies[0].df());
     for die in dies {
         if let Some(apob) = &apob {
-            fabric::late_init(&mut die.df(), dies.len() as u8, sockets, s.revision, apob);
+            fabric::late_init(&die.df(), dies.len() as u8, sockets, s.revision, apob);
         }
-        fabric::route_vga(&mut die.df(), 0);
+        fabric::route_vga(&die.df(), 0);
     }
     for die in dies {
         nbio::pre_enumeration_init(die);
@@ -359,18 +357,18 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     let mut bus = unsafe { fch::NativeBus::new() };
     let mut pm = unsafe { common_fch::Fch::new() };
     pm.acpi_decode(fch::ACPI_PORTS);
-    fch::env_init(&mut bus, &mut dies[0].smn(), B::SUBSYSTEM_ID);
+    fch::env_init(&mut bus, &dies[0].smn(), B::SUBSYSTEM_ID);
     if B::FCH_DEVICES[0].sata {
         fch::sata::init(
             &mut bus,
             0,
-            &mut dies[0].smn(),
+            &dies[0].smn(),
             fch::Acpimmio::DIE0,
             B::SUBSYSTEM_ID,
             &mut delay,
         );
     }
-    fch::multi::xgbe_init(&mut dies[0].smn());
+    fch::multi::xgbe_init(&dies[0].smn());
     let nonpci = s.nonpci;
     fch::multi::env(
         &mut bus,
@@ -530,7 +528,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
         ecam.device(*a)
             .is_some_and(|d| d.read32(0) == 0x7901_1022)
     }) {
-        fch::sata::late(&mut dies[0].smn(), 0, &pci_access(), sata);
+        fch::sata::late(&dies[0].smn(), 0, pci_access(), sata);
     }
     fch::multi::late(dies, |_| None);
     fch::late_init(&mut bus);
@@ -539,7 +537,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
         clock,
     });
     for die in dies {
-        fabric::disable_ext_cfg(&mut die.df());
+        fabric::disable_ext_cfg(&die.df());
     }
     // After the last DF write; it needs the SMM info the PSP got after MP.
     if let Some(psp) = psp.as_mut() {

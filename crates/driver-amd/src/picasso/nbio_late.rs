@@ -4,13 +4,16 @@ use super::{
     cpu::{Identity, Silicon},
     dxio::{Aspm, ClockRequest, Hotplug, Topology},
     power,
-    registers::Smn,
+    registers::{Smn, SmnReg, apply, rmw, write},
     smu,
 };
+use crate::fam17h::nbio::{IohcBridgeCntl, iohc_bridge_cntl, pcie};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
-fn port(i: usize, offset: u32) -> u32 {
-    0x11140000 + i as u32 * 0x1000 + offset
-}
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+
+/// IOHC internal bridge 29.
+const INTERNAL_BRIDGE: usize = 29;
+const CHIP_ID: [SmnReg; 2] = [SmnReg::new(0x0005_d5bc), SmnReg::new(0x0005_d5b8)];
 
 /// Return a permutation of eight physical CLKREQ pins. Trained L1-substate
 /// ports request pins; if shared, the lower hardware port wins, as in native C.
@@ -44,22 +47,32 @@ pub fn clock_map(topology: &Topology) -> u32 {
         .enumerate()
         .fold(0, |map, (i, pin)| map | u32::from(pin) << (i * 4))
 }
-pub fn port_power_management(smn: &mut impl Smn, topology: &Topology) {
-    smn.update(
-        0x11180460,
-        (1 << 16) | (3 << 9) | (3 << 12),
-        1 | (1 << 9) | 2 | 4 | (1 << 6) | (1 << 12) | (1 << 14) | (1 << 24) | (1 << 25),
-    );
-    smn.update(0x11180044, 15 << 20, (1 << 20) | (1 << 21));
-    smn.update(0x1118018c, 0, 0x4060);
-    for i in 0..7 {
-        smn.update(port(i, 0x1a8), 0, 1);
-    }
+/// The vendor clock gating values of the core: raw.
+fn core_gating() -> impl Iterator<Item = super::registers::Reg> {
+    [
+        rmw(
+            pcie::cpm_control(0),
+            (1 << 16) | (3 << 9) | (3 << 12),
+            1 | (1 << 9) | 2 | 4 | (1 << 6) | (1 << 12) | (1 << 14) | (1 << 24) | (1 << 25),
+        ),
+        rmw(pcie::core_raw(0, 0x044), 15 << 20, (1 << 20) | (1 << 21)),
+        rmw(pcie::core_raw(0, 0x18c), 0, 0x4060),
+    ]
+    .into_iter()
+    .chain((0..7).map(|i| rmw(pcie::port_raw(i, 0x1a8), 0, 1)))
+}
+
+pub fn port_power_management(smn: &Smn<impl ConfigRegionAccess>, topology: &Topology) {
+    apply(smn, core_gating());
+    let pll_off_in_l1 = |i| {
+        smn.reg(pcie::lc_cntl6(i))
+            .modify(pcie::LcCntl6::LC_L1_POWERDOWN::SET)
+    };
     for (i, p) in topology.ports.iter().enumerate().rev() {
         if p.descriptor
             .is_some_and(|d| matches!(d.aspm, Aspm::L1 | Aspm::L0sL1))
         {
-            smn.update(port(i, 0x2ec), 0, 1 << 21);
+            pll_off_in_l1(i);
         }
     }
     for (i, p) in topology.ports.iter().enumerate().rev() {
@@ -70,33 +83,34 @@ pub fn port_power_management(smn: &mut impl Smn, topology: &Topology) {
             continue;
         }
         if p.trained {
-            smn.update(port(i, 0x2ec), 0, 1 << 21);
+            pll_off_in_l1(i);
             if d.l1_2 {
-                for j in 0..8 {
-                    smn.update(port(j, 0x304), 0, 1 << 5);
-                }
+                apply(smn, (0..8).map(|j| rmw(pcie::port_raw(j, 0x304), 0, 1 << 5)));
             }
         } else if d.hotplug == Hotplug::Disabled {
-            smn.update(0x11100378 + i as u32 * 0x1000, 15, 15);
-            smn.update(port(i, 0x2ec), 0, 1 << 21);
+            apply(smn, [rmw(0x1110_0378 + i as u32 * 0x1000, 15, 15)]);
+            pll_off_in_l1(i);
         }
     }
-    smn.write(0x111800f4, clock_map(topology));
-    for (address, bit) in [
-        (0x02d01eb0, 8),
-        (0x02d01eb0, 24),
-        (0x02d01eb4, 25),
-        (0x02d01eb4, 24),
-    ] {
-        smn.update(address, 1 << bit, 0);
-    }
+    // The CLKREQ pin of each port, and the FCH MISC clock settings of the
+    // vendor code through the SMN alias of the ACPI MMIO.
+    apply(
+        smn,
+        [
+            write(pcie::core_raw(0, 0xf4), clock_map(topology)),
+            rmw(0x02d0_1eb0, 1 << 8, 0),
+            rmw(0x02d0_1eb0, 1 << 24, 0),
+            rmw(0x02d0_1eb4, 1 << 25, 0),
+            rmw(0x02d0_1eb4, 1 << 24, 0),
+        ],
+    );
 }
 /// # Safety
 /// Supply only topology returned by successful native training and permanently
 /// reserved DMA pages meeting power::install's contract. Hardware changes are
 /// fail-stop, not rollbackable; never call on a partially failed training flow.
 pub unsafe fn pre_enumeration(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     topology: &Topology,
     pages: &'static mut power::Pages,
     config: power::Config,
@@ -104,20 +118,19 @@ pub unsafe fn pre_enumeration(
     notice: &mut impl FnMut(u32, u32),
 ) -> Result<(), power::Error> {
     port_power_management(smn, topology);
-    smn.update(0x11a0b7c0, 3, 1);
+    apply(smn, [rmw(0x11a0_b7c0, 3, 1)]);
     unsafe { power::install(smn, pages, config, delay_us, notice) }
 }
 /// Notify SMU only after all requested CPUs reached native initialization.
 /// Caller must retain nonstandard-response diagnostics rather than claiming
 /// their requested features were verified active.
 pub fn ccx_done(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     graphics: bool,
     delay_us: &mut impl FnMut(u32),
     notice: &mut impl FnMut(u32, u32),
 ) -> Result<(), power::Error> {
-    let high = smn.read(0x0005d5bc);
-    let low = smn.read(0x0005d5b8);
+    let [high, low] = CHIP_ID.map(|reg| smn.reg(reg).get());
     let chip_id = ((high << 5) | (low >> 27)) & 0xffff;
     if chip_id == 0x62e {
         power::command(smn, 0x35, [14, 0, 0, 0, 0, 0], delay_us, notice)?;
@@ -139,14 +152,21 @@ pub fn ccx_done(
 /// Final step AFTER native graphics setup. The last RV2/PCO request is strict,
 /// unlike the specifically documented late-policy nonstandard responses.
 pub fn post_silicon(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     identity: Identity,
     delay_us: &mut impl FnMut(u32),
 ) -> Result<(), smu::Error> {
-    smn.update(0x13b38404, 0, 5); // IOHC internal bridge 29
-    smn.update(0x10135000, 1 << 28, 0);
-    smn.update(0x03100000, 0, 1);
-    smn.update(0x03100000, 0, 1 << 11);
+    smn.reg(iohc_bridge_cntl(INTERNAL_BRIDGE))
+        .modify(IohcBridgeCntl::BRIDGE_DIS::SET + IohcBridgeCntl::CFG_DIS::SET);
+    // NBIF0 function 8 strap off, SATA controller off.
+    apply(
+        smn,
+        [
+            rmw(0x1013_5000, 1 << 28, 0),
+            rmw(0x0310_0000, 0, 1),
+            rmw(0x0310_0000, 0, 1 << 11),
+        ],
+    );
     if matches!(identity.silicon, Silicon::Picasso | Silicon::Raven2) {
         smu::request(smn, 0x11, [0; 6], delay_us)?;
     }
@@ -155,7 +175,7 @@ pub fn post_silicon(
 /// `devices` must contain enabled enumerated PCI functions. Retains the native
 /// 1c5c quirk's function-number SMN index; do not substitute a devfn remap index.
 pub fn after_enumeration(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     pci: &impl ConfigRegionAccess,
     devices: &[PciAddress],
 ) {
@@ -165,31 +185,19 @@ pub fn after_enumeration(
         if id != 0x1c5c1022 {
             continue;
         }
-        let address = port(usize::from(device.function()), 0x280);
-        let value = smn.read(address);
-        smn.write(
-            address,
-            (value & 0x00ffffff) | (((value >> 24 & 0xe9) | 0x14) << 24),
-        );
+        let lc_cntl = smn.reg(SmnReg::<()>::new(pcie::port_raw(usize::from(device.function()), 0x280)));
+        let value = lc_cntl.get();
+        lc_cntl.set((value & 0x00ffffff) | (((value >> 24 & 0xe9) | 0x14) << 24));
     }
-    smn.update(0x11180040, 1, 0);
+    smn.reg(pcie::cntl(0))
+        .modify(pcie::Cntl::HWINIT_WR_LOCK::CLEAR);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fam17h::registers::testing::SmnSpace;
     use crate::picasso::dxio::Descriptor;
-    extern crate std;
-    #[derive(Default)]
-    struct Registers(std::collections::BTreeMap<u32, u32>);
-    impl Smn for Registers {
-        fn read(&mut self, address: u32) -> u32 {
-            self.0.get(&address).copied().unwrap_or(0)
-        }
-        fn write(&mut self, address: u32, value: u32) {
-            self.0.insert(address, value);
-        }
-    }
     #[test]
     fn both_l1_modes_enable_gate_without_requiring_l1_substates() {
         for (aspm, gate) in [
@@ -205,11 +213,11 @@ mod tests {
             descriptor.l1_2 = false;
             topology.ports[0].descriptor = Some(descriptor);
             topology.ports[0].trained = true;
-            let mut registers = Registers::default();
-            registers.0.insert(port(0, 0x2ec), 0x40);
-            port_power_management(&mut registers, &topology);
+            let space = SmnSpace::default();
+            space.set(pcie::lc_cntl6(0), 0x40);
+            port_power_management(&space.smn(), &topology);
             assert_eq!(
-                registers.0[&port(0, 0x2ec)],
+                space.get(pcie::lc_cntl6(0)),
                 0x40 | if gate { 1 << 21 } else { 0 }
             );
         }

@@ -33,6 +33,7 @@ ufmt = { workspace = true }
 embedded-hal = { workspace = true }
 fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
 zerocopy = { workspace = true }
+tock-registers = { workspace = true }
 
 [[bin]]
 name = "fstart-stage"

@@ -12,6 +12,8 @@ zeppelin = ["smi", "dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart
 smi = ["dep:fstart-arch"]
 # The FCH SMM handler, for SMM image builds.
 smm = ["smi", "dep:fstart-smm"]
+# Host models of the register spaces, for the tests of dependent crates.
+testing = []
 
 [dependencies]
 tock-registers.workspace = true

@@ -6,6 +6,8 @@ use fstart_arch::x86::{
     mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError},
     mtrr::SipiMsrs,
 };
+use fstart_driver_amd::fam17h::nbio::{PSP_BASE_ADDR_HI, PSP_BASE_ADDR_LO};
+use tock_registers::interfaces::Readable;
 use fstart_driver_amd::picasso::{
     cpu::{
         Msr, NativeMsr,
@@ -144,7 +146,7 @@ struct Preparation {
 impl Preparation {
     fn read(
         msr: &mut impl Msr,
-        smn: &mut impl Smn,
+        smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
         topology: Topology,
         apic_ids: &[u32],
         source: &[u8],
@@ -161,7 +163,7 @@ impl Preparation {
         Patch::parse(source, facts.signature).map_err(Error::Microcode)?;
         // Only the BSP reads the already-installed/locked BAR; never reset a
         // PSP link to discover it, and never expose the shared port to APs.
-        if smn.read(0x13b102e0) != 0xfd100101 || smn.read(0x13b102e4) != 0 {
+        if smn.reg(PSP_BASE_ADDR_LO).get() != 0xfd100101 || smn.reg(PSP_BASE_ADDR_HI).get() != 0 {
             return Err(Error::PspBar);
         }
         let policy = thread::Policy::capture(msr, 0xfd100000).map_err(Error::Policy)?;
@@ -243,7 +245,7 @@ impl NativeCpu {
     /// topology/reset-role applicability and stack budgets remain obligations.
     pub unsafe fn prepare(
         msr: &mut impl Msr,
-        smn: &mut impl Smn,
+        smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
         topology: Topology,
         apic_ids: &[u32],
         patch_bytes: &'static [u8],
@@ -266,7 +268,7 @@ impl NativeCpu {
     /// be disjoint from the whole destination allocation. No loader executes here.
     pub unsafe fn prepare_staged(
         msr: &mut impl Msr,
-        smn: &mut impl Smn,
+        smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
         topology: Topology,
         apic_ids: &[u32],
         source: &[u8],
