@@ -21,7 +21,7 @@ CrabEFI with an OS behind it, on an MJ11-EC1 (EPYC 3151, SP4r2, one die).
     (`dxio::zeppelin`).
   - `ccx`: per-CPU init, MSRs, cache plan, microcode and TSC; the reset MSR
     table (`ccx::zeppelin`).
-  - `psp` (mailbox, BIOS directory), `apob`, `table` (vendor register
+  - `psp` (mailbox), `apob`, `table` (vendor register
     tables).
   - `fch`: the register layer and controllers (LPC, SPI, eSPI, GPIO, I2C,
     SMI, ...); the Taishan FCH (`fch::taishan`: SATA, USB, IRQ routing, the
@@ -33,7 +33,7 @@ CrabEFI with an OS behind it, on an MJ11-EC1 (EPYC 3151, SP4r2, one die).
 - `crates/platform-amd/src/zeppelin`: Zeppelin on the shared noncar flow
   ([amd-noncar.md](amd-noncar.md)): the `noncar::Soc` hooks, the silicon
   init sequence (`silicon.rs`), the board `Config`, DRAM layout, ACPI data
-  and the host build plan. The flow, MP, SMM and PSP SMM info, PCI root,
+  and its host policy. The flow, MP, SMM and PSP SMM info, PCI root,
   e820, ACPI tables and payload handoff are the shared ones in
   `crates/platform-amd/src/noncar` and `src/acpi.rs`.
 - SMM: `fstart_arch::x86::cpu::amd::smm` (TSEG/SMBASE MSRs), the FCH SMI
@@ -60,8 +60,10 @@ microcode) stay byte-identical. fstart replaces BIOS directory entry 0x62:
 | `db0000..1000000` | reset image (PSP copies it to `76db0000`) |
 
 `fbuild assemble --image-config <vendor flash dump>` composes the image
-(`crates/image-build/src/amd/vendor_flash.rs`). The microcode comes from the
-vendor directories at runtime (`$BHD` → `$BL2`, type 0x66).
+(`crates/image-build/src/amd/assembly.rs`). The vendor image's BIOS
+directory, the level 2 the PSP boots from (`EFS` → `$BHD` → `$BL2`), must
+describe this reset image and APOB and lie within the prefix. The microcode
+comes from the same directory at runtime (type 0x66).
 
 ## x86 starts in DRAM
 

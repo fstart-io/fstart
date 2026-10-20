@@ -14,14 +14,15 @@ Native (no FSP) port of AMD Picasso and the Google Zork "Vilboz" boards.
   (`fch::emmc`, `fch::espi`).
 - `crates/platform-amd/src/picasso`: Picasso on the shared noncar flow
   ([amd-noncar.md](amd-noncar.md)): its `noncar::Soc` hooks, the board
-  `Config`, DRAM layout and the host build plan. The reset entry
+  `Config`, DRAM layout and its host policy. The reset entry
   (`asm/psp_reset.S`), linker script, memory map, MP and the rest of the
   flow are shared with Zeppelin.
 - `boards/google/zork`: Dalboz baseboard wiring and Vilboz policy. Vilboz,
   Vilboz14 and Vilboz360 differ only through EC CBI (board version,
   FW_CONFIG), so they share one board.
-- `crates/image-build/src/amd`, `tools/amdfw`: PSP/BIOS directory packing
-  (`fstart-amdfw`) and APCB SPD injection (`fstart-apcb`).
+- `crates/amdfw`: the PSP flash image format;
+  `crates/image-build/src/amd`, `tools/amdfw`: PSP/BIOS directory packing
+  (the `fstart-amdfw` tool) and APCB SPD injection (`fstart-apcb`).
 
 ## x86 starts in DRAM
 
@@ -86,7 +87,8 @@ like Zeppelin's; `fstart-amdfw --microcode` packs AMD's patch files there.
 
 This produces the reset image only. `fbuild assemble --image-config
 picasso-image.json` packs it with the PSP blobs listed in the JSON into a
-PSP/BIOS directory fragment at the EFS flash offset. It is not a complete
+PSP/BIOS directory fragment at the EFS flash offset
+(`google-vilboz-psp-fragment.bin`, with a `.json` receipt). It is not a complete
 flash image: a flashable image also needs the remaining Chromebook flash
 layout (FMAP, RO/RW sections, VPD, GBB, EC firmware), which must be taken
 from the board's existing firmware.

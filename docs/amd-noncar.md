@@ -70,6 +70,22 @@ the layout descriptor and the ELF expectations derive from it
 the image bytes the PSP copied are never written. The flow continues at the
 architectural `_start_ram`.
 
+`noncar::host` is also the one build plan of every noncar SoC: the stage
+unit `reset`, the board's SMM unit, the payloads and the FFS follow from the
+layout and the SoC's `host::Policy` (its stage feature, whether the flow
+reaches a payload, SMM, what `--image-config` is).
+
+The flash image format (the EFS, the PSP and BIOS directories and their
+level 2) is `crates/amdfw` (`fstart-amdfw`, `no_std`): the firmware looks the
+microcode up in it, the host packs and checks images with it. A SoC names the
+EFS field its PSP takes the BIOS directory from (`Soc::BIOS_DIRECTORY`); the
+lookup follows a level-2 directory as the PSP does.
+`crates/image-build/src/amd/assembly.rs` (`AmdAssembly`) composes the image
+with `--image-config`: the PSP firmware comes from a vendor flash image,
+whose prefix stays byte for byte (Zeppelin), or is packed from blobs
+(Picasso). Either way the result is read back as
+the PSP would before it is written, with a JSON receipt of its inputs.
+
 ## ACPI
 
 `crate::acpi` emits the tables (FADT, MADT, HPET, MCFG, IVRS, the DSDT with
