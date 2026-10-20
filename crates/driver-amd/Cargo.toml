@@ -29,5 +29,7 @@ fstart-arch = { workspace = true, features = ["x86_64"], optional = true }
 fstart-smm = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The unit tests cover every SoC, also in `cargo test --workspace`.
+fstart-driver-amd = { path = ".", features = ["picasso", "zeppelin", "smm"] }
 libc = "0.2"
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
