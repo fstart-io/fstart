@@ -10,6 +10,7 @@ use fstart_driver_amd::{
     fam17h::{
         apob::{Apob, MemoryMap},
         cache,
+        ccx::Thread,
         msr, tsc,
     },
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
@@ -260,12 +261,8 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
         nbio::early_init(die, s.revision);
         psp::init_bar(die, s.nonpci[usize::from(die.index())]);
     }
-    let thread = ccx::Thread::from_cpuid(
-        fstart_arch::x86::cpuid(1).1,
-        fstart_arch::x86::cpuid(0x8000_001e).1,
-    );
     // SAFETY: BSP-only MSR programming.
-    ccx::bsp_init(&unsafe { NativeMsr::new() }, s.revision, thread);
+    ccx::bsp_init(&unsafe { NativeMsr::new() }, s.revision, Thread::current());
     smu::print_name(&dies[0], &mut delay);
     for die in dies {
         nbio::tom_init(die, top_mem as u32, top_mem2);

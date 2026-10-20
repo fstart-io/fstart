@@ -4,16 +4,15 @@
 pub mod microcode;
 pub mod thread;
 
-use crate::fam17h::msr::{
-    BU_CFG, BU_CFG3, BuCfg, CSTATE_CONFIG, DC_CFG, DE_CFG, DPM_CFG, DPM_WAC_DATA, DPM_WAC_INDEX,
-    LS_CFG, MCA_INTR_CFG, McaConfig, McaIntrCfg, McaMisc, MsrUpdate, PSTATE_0, mca_config,
-    mca_ctl_mask, mca_misc0, mca_misc1,
+use crate::fam17h::{
+    ccx::{self, CAC_WEIGHT_COUNT, CacWeights, Ccx, L3Owner, Mca, Thread},
+    msr::{BU_CFG3, DC_CFG, DE_CFG, LS_CFG, MsrUpdate, mca_config},
 };
 use fstart_arch::x86::cpu::{
     amd::msr::{SYSCFG, Syscfg},
-    msr::{MCG_CAP, McgCap, MsrAccess},
+    msr::MsrAccess,
 };
-use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::interfaces::ReadWriteable;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Silicon {
@@ -77,7 +76,8 @@ const DEFERRED: u64 = (1 << 32) | (1 << 34) | (1 << 37);
 const fn deferred(bank: u32) -> MsrUpdate {
     MsrUpdate::new(mca_config(bank).index(), 1 << 33, DEFERRED)
 }
-const RESET: &[MsrUpdate] = &[
+/// The reset MSR table of the vendor CCX code, every thread.
+pub const RESET: &[MsrUpdate] = &[
     MsrUpdate::new(0x0000001b, 0, 1 << 11),
     MsrUpdate::new(0xc0010015, 0, 1 << 27),
     MsrUpdate::new(0xc0011005, (1 << 48) | (1 << 42), 0),
@@ -118,72 +118,37 @@ pub fn bsp_init(cpu: &impl MsrAccess) {
     cpu.reg(SYSCFG).modify(Syscfg::SMEE::CLEAR);
 }
 
-pub fn mca_init(cpu: &impl MsrAccess) -> Result<(), Error> {
-    let cap = cpu.reg(MCG_CAP).get();
-    mca_init_with_cap(cpu, cap)
-}
+/// The Picasso parameters of the Family 17h CCX init.
+pub const CCX: Ccx = Ccx {
+    mca: Mca {
+        // MISC1 of banks 15 and 16.
+        banks: 17..=32,
+        no_misc0: 15..=15,
+        // LS SystemReadDataErrorT0/T1, and FP.
+        ctl_masks: &[(0, (1 << 9) | (1 << 10)), (6, 1 << 6)],
+        l3_banks: 8..=15,
+        l3_owner: L3Owner::NoExtraBanks,
+    },
+    ecam: super::ECAM,
+    ecam_buses: super::ECAM_BUSES as u16,
+    // ACPI_IO_BASE=0x400, CSTATE_CONTROL=+0x10.
+    cstate_io_base: 0x410,
+    watchdog: None,
+    dpm_cfg: 0x9000_0000_0000_0000,
+    tail: &[
+        MsrUpdate::new(DE_CFG.index(), 0, 1 << 3),
+        MsrUpdate::new(LS_CFG.index(), 0, (1 << 13) | (1 << 15)),
+        MsrUpdate::new(BU_CFG3.index(), 1 << 2, 1 << 3),
+        MsrUpdate::new(DC_CFG.index(), 0, (1 << 13) | (1 << 15)),
+    ],
+};
 
-// The per-thread adapter snapshots/preflights capability before reset writes.
-// Do not rediscover geometry halfway through that submitted CPU policy.
-fn mca_init_with_cap(cpu: &impl MsrAccess, cap: u64) -> Result<(), Error> {
-    let banks = (cap & McgCap::COUNT.mask) as u8;
-    // This native flow accesses MISC1 for banks 15/16. Reject a mismatched CPU
-    // before touching any MCAX register, rather than faulting midway through.
-    if !(17..=32).contains(&banks) {
-        return Err(Error::McaBanks(banks));
-    }
-    for bank in 0..u32::from(banks) {
-        let config = cpu.reg(mca_config(bank)).extract();
-        let mut value = config;
-        value.modify(McaConfig::MCAX_ENABLE::CLEAR);
-        if config.is_set(McaConfig::TRANSPARENT_LOGGING_SUPPORTED) {
-            value.modify(McaConfig::TRANSPARENT_LOGGING_ENABLE::CLEAR);
-        }
-        value.modify(McaConfig::MCAX_ENABLE::SET);
-        if config.is_set(McaConfig::DEFERRED_LOGGING_SUPPORTED) {
-            value.modify(McaConfig::LOG_DEFERRED_IN_MCA_STAT::SET);
-        }
-        cpu.reg(mca_config(bank)).set(value.get());
-        if bank != 15 {
-            cpu.reg(mca_misc0(bank))
-                .modify(McaMisc::THRESHOLD_INT_TYPE::CLEAR);
-        }
-    }
-    cpu.reg(mca_misc1(15))
-        .modify(McaMisc::THRESHOLD_INT_TYPE::CLEAR);
-    cpu.reg(mca_misc1(16))
-        .modify(McaMisc::THRESHOLD_INT_TYPE::CLEAR);
-    cpu.reg(MCA_INTR_CFG)
-        .modify(McaIntrCfg::THRESHOLD_LVT_VALID::SET);
-    MsrUpdate::new(mca_ctl_mask(0).index(), 0, (1 << 9) | (1 << 10)).apply(cpu);
-    MsrUpdate::new(mca_ctl_mask(6).index(), 0, 1 << 6).apply(cpu);
-    if (cap >> 4) & 0xf == 0 {
-        for bank in 8..=15 {
-            MsrUpdate::new(mca_ctl_mask(bank).index(), 0, 1 << 7).apply(cpu);
-        }
-    }
-    Ok(())
-}
+/// Picasso clears the DPM weights.
+pub const CAC_WEIGHTS: CacWeights = [0; CAC_WEIGHT_COUNT];
 
-/// Native per-core tail. The platform serializes this across SMT siblings;
-/// it installs identical AMD cache routing before invoking this function.
-pub fn per_cpu_tail(cpu: &impl MsrAccess, primary_thread: bool) {
-    if primary_thread {
-        let value = cpu.reg(DPM_CFG).get();
-        cpu.reg(DPM_CFG).set(0);
-        for index in 0..21 {
-            cpu.reg(DPM_WAC_INDEX).set(index);
-            cpu.reg(DPM_WAC_DATA).set(0);
-        }
-        cpu.reg(DPM_CFG).set(value | 0x9000000000000000);
-    }
-    MsrUpdate::new(DE_CFG.index(), 0, 1 << 3).apply(cpu);
-    MsrUpdate::new(LS_CFG.index(), 0, (1 << 13) | (1 << 15)).apply(cpu);
-    cpu.reg(BU_CFG).modify(BuCfg::COMBINE_CR0_CD::SET);
-    cpu.reg(CSTATE_CONFIG).set(0x484848);
-    cpu.reg(PSTATE_0).set(cpu.reg(PSTATE_0).get());
-    MsrUpdate::new(BU_CFG3.index(), 1 << 2, 1 << 3).apply(cpu);
-    MsrUpdate::new(DC_CFG.index(), 0, (1 << 13) | (1 << 15)).apply(cpu);
+pub fn mca_init(cpu: &impl MsrAccess, thread: Thread) -> Result<(), Error> {
+    ccx::mca_init(cpu, &CCX.mca, thread)
+        .map_err(|ccx::Error::McaBanks(banks)| Error::McaBanks(banks))
 }
 
 /// Decode the PSP-established memory ceiling without narrowing high RAM to u32.

@@ -10,9 +10,9 @@ use fstart_arch::x86::{
     mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError, SipiUnlock},
 };
 use fstart_driver_amd::{
-    fam17h::bios_directory,
+    fam17h::{bios_directory, ccx::Thread},
     zeppelin::{
-        ccx::{self, CpuPolicy, Thread},
+        ccx::{self, CpuPolicy},
         microcode::{PATCH_BYTES, Patch},
     },
 };
@@ -114,10 +114,7 @@ impl CpuDriver for ZeppelinCpu {
     }
     fn init_cpu(&self) {
         locked(|| {
-            let thread = Thread::from_cpuid(
-                fstart_arch::x86::cpuid(1).1,
-                fstart_arch::x86::cpuid(0x8000_001e).1,
-            );
+            let thread = Thread::current();
             // SAFETY: serialized per-CPU MSR programming.
             let msr = unsafe { NativeMsr::new() };
             if ccx::cpu_init(&msr, &self.policy, thread).is_err() {

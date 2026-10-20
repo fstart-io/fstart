@@ -6,7 +6,8 @@
 //! MP init;
 //! [`launch_aps`] to release the APs; [`aps_ready`] then [`ccx_done`] after
 //! every CPU ran [`super::ccx::cpu_init`].
-use super::{MAX_DIES, ccx::CacWeights, topology::Die};
+use super::{MAX_DIES, topology::Die};
+use crate::fam17h::ccx::{CAC_WEIGHT_COUNT, CacWeights};
 pub use crate::fam17h::smu::{ARGUMENT_COUNT, Error, Reply};
 use crate::fam17h::{
     registers::{Smn, SmnReg},
@@ -310,7 +311,7 @@ pub fn cac_weights<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
     delay_us: &mut impl FnMut(u32),
 ) -> Result<CacWeights, Failure> {
-    let mut weights = [0; super::ccx::CAC_WEIGHT_COUNT];
+    let mut weights = [0; CAC_WEIGHT_COUNT];
     for (index, weight) in (0..).zip(&mut weights) {
         let reply = send(die, GET_CAC_WEIGHT, index, delay_us)?;
         *weight = (u64::from(reply[0]) << 32) | u64::from(reply[1]);

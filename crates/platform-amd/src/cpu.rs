@@ -7,7 +7,10 @@ use fstart_arch::x86::{
     mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError, SipiUnlock},
     mtrr::SipiMsrs,
 };
-use fstart_driver_amd::fam17h::nbio::{PSP_BASE_ADDR_HI, PSP_BASE_ADDR_LO};
+use fstart_driver_amd::fam17h::{
+    ccx::Thread,
+    nbio::{PSP_BASE_ADDR_HI, PSP_BASE_ADDR_LO},
+};
 use fstart_driver_amd::picasso::{
     cpu::{
         microcode::{self, Patch},
@@ -387,7 +390,7 @@ impl CpuDriver for NativeCpu {
             .serial
             .run(|| {
                 let msr = unsafe { NativeMsr::new() };
-                let (index, primary) = self.local(&msr)?;
+                let (index, _) = self.local(&msr)?;
                 let bit = 1u16 << index;
                 if self.patched.load(Ordering::Relaxed) & bit == 0
                     || self.initialized.load(Ordering::Relaxed) & bit != 0
@@ -395,7 +398,7 @@ impl CpuDriver for NativeCpu {
                     return Err(Error::CallbackOrder);
                 }
                 self.policy
-                    .initialize(&msr, index == 0, primary)
+                    .initialize(&msr, index == 0, Thread::current())
                     .map_err(Error::Policy)?;
                 crate::mp::hide_fixed_dram_routing(&msr);
                 self.initialized.fetch_or(bit, Ordering::Release);

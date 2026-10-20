@@ -4,7 +4,10 @@ use super::{
     cache::{self, Plan},
     cpu::{self, Silicon},
 };
-use crate::fam17h::cache::testing::{CACHE, DISABLE, ENABLE, FLUSH};
+use crate::fam17h::{
+    cache::testing::{CACHE, DISABLE, ENABLE, FLUSH},
+    ccx::Thread,
+};
 use core::cell::RefCell;
 use fstart_arch::x86::cpu::{
     amd::msr::SYSCFG,
@@ -23,6 +26,7 @@ fn get(cpu: &Cpu, index: u32) -> u64 {
     cpu.borrow().get(index)
 }
 type Log = Vec<(u32, u64)>;
+const BSP: Thread = Thread::from_cpuid(0, 1 << 8);
 /// The MSR writes and the cache operations.
 fn writes(cpu: &Cpu) -> (Log, Log) {
     cpu.borrow()
@@ -49,11 +53,11 @@ fn cpuid_silicon_and_reduced_io_are_not_conflated() {
 fn mca_invalid_geometry_fails_before_any_msr_write() {
     let cpu = Cpu::default();
     set(&cpu, MCG_CAP.index(), 16);
-    assert_eq!(cpu::mca_init(&cpu), Err(cpu::Error::McaBanks(16)));
+    assert_eq!(cpu::mca_init(&cpu, BSP), Err(cpu::Error::McaBanks(16)));
     assert!(cpu.borrow().writes.is_empty());
     set(&cpu, MCG_CAP.index(), 23);
     set(&cpu, 0xc0002004, 6 | (1 << 33));
-    cpu::mca_init(&cpu).unwrap();
+    cpu::mca_init(&cpu, BSP).unwrap();
     assert_eq!(get(&cpu, 0xc0002004), 6 | (1 << 32) | (1 << 34));
     assert_eq!(get(&cpu, 0xc0010400) & 0x600, 0x600);
 }
@@ -105,7 +109,7 @@ fn bsp_mca_and_cache_write_sequences_are_unchanged() {
         set(&cpu, 0xc0002003 + bank * 16, 0xff00_0001);
     }
     cpu::bsp_init(&cpu);
-    cpu::mca_init(&cpu).unwrap();
+    cpu::mca_init(&cpu, BSP).unwrap();
     let (msrs, _) = writes(&cpu);
     assert_eq!(msrs.len(), 79);
     assert_eq!(fingerprint(&msrs), 0x5636fcd0cfab9d07);

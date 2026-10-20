@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Per-thread CCX work after coordinated pre-Rust cache restoration.
 use super::Error as CpuError;
-use crate::fam17h::msr::{CSTATE_BASE_ADDRESS, PSP_ADDRESS};
+use crate::fam17h::{
+    cache::CacheControl,
+    ccx::{self, Inputs, Thread},
+};
 use fstart_arch::x86::cpu::{
     amd::msr::{SYSCFG, Syscfg},
     msr::{MCG_CAP, MTRR_DEF_TYPE, MsrAccess, PAT},
 };
-use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::interfaces::Readable;
 
 /// What the APs replay from the BSP. They keep their own SYSCFG, TOP_MEM
 /// and TOM2 from the ABL.
@@ -80,18 +83,20 @@ impl Policy {
     /// BSP early reset/MCA setup precedes MP; APs still need reset policy here.
     /// Asynchronous exclusion and applicability of shared non-cache MSRs are
     /// caller obligations. Errors are pre-write; a hardware fault is terminal.
-    pub fn initialize(&self, cpu: &impl MsrAccess, bsp: bool, primary: bool) -> Result<(), Error> {
-        let capability = self.validate(cpu)?;
-        if !bsp {
-            super::reset_registers(cpu);
-        }
-        super::enable_ecam(cpu);
-        cpu.reg(PSP_ADDRESS).set(self.psp_base);
-        // ACPI_IO_BASE=0x400, CSTATE_CONTROL=+0x10; not CSTATE_CONFIG.
-        cpu.reg(CSTATE_BASE_ADDRESS).set(0x410);
-        super::mca_init_with_cap(cpu, capability).map_err(Error::Cpu)?;
-        super::per_cpu_tail(cpu, primary);
-        Ok(())
+    pub fn initialize(
+        &self,
+        cpu: &(impl MsrAccess + CacheControl),
+        bsp: bool,
+        thread: Thread,
+    ) -> Result<(), Error> {
+        self.validate(cpu)?;
+        let table = if bsp { &[][..] } else { super::RESET };
+        let inputs = Inputs {
+            psp_bar: Some(self.psp_base),
+            cac_weights: Some(&super::CAC_WEIGHTS),
+        };
+        ccx::cpu_init(cpu, &super::CCX, thread, &inputs, table.iter().copied())
+            .map_err(|ccx::Error::McaBanks(banks)| Error::Cpu(CpuError::McaBanks(banks)))
     }
 }
 
@@ -121,6 +126,14 @@ mod tests {
             self.0.write(index, value)
         }
     }
+    impl CacheControl for RefCell<Cpu> {
+        fn disable(&self) {}
+        fn flush(&self) {}
+        fn enable(&self) {}
+    }
+    fn thread(primary: bool) -> Thread {
+        Thread::from_cpuid(u32::from(!primary) << 24, 1 << 8)
+    }
     fn cpu() -> RefCell<Cpu> {
         RefCell::new(Cpu(MsrSpace::new([
             (SYSCFG.index(), 0x1f << 18),
@@ -147,7 +160,7 @@ mod tests {
             let old = cpu.borrow().0.get(index);
             set(&cpu, index, old ^ 1);
             assert!(matches!(
-                policy.initialize(&cpu, false, true),
+                policy.initialize(&cpu, false, thread(true)),
                 Err(Error::Routing { .. })
             ));
             assert!(writes(&cpu).is_empty());
@@ -155,19 +168,19 @@ mod tests {
         }
         set(&cpu, MCG_CAP.index(), 16);
         assert_eq!(
-            policy.initialize(&cpu, false, true),
+            policy.initialize(&cpu, false, thread(true)),
             Err(Error::Cpu(CpuError::McaBanks(16)))
         );
         assert!(writes(&cpu).is_empty());
     }
     #[test]
     fn ap_tail_uses_cached_psp_ecam_and_cstate_without_cache_policy_writes() {
-        use crate::fam17h::msr::DPM_WAC_INDEX;
+        use crate::fam17h::msr::{CSTATE_BASE_ADDRESS, DPM_WAC_INDEX, PSP_ADDRESS};
         use fstart_arch::x86::cpu::amd::msr::MMIO_CFG_BASE;
         for primary in [false, true] {
             let cpu = cpu();
             let policy = Policy::capture(&cpu, 0xfd100000).unwrap();
-            policy.initialize(&cpu, false, primary).unwrap();
+            policy.initialize(&cpu, false, thread(primary)).unwrap();
             let writes = writes(&cpu);
             assert!(writes.contains(&(MMIO_CFG_BASE.index(), 0xf8000019)));
             assert!(writes.contains(&(PSP_ADDRESS.index(), 0xfd100000)));
@@ -183,7 +196,7 @@ mod tests {
         }
         let cpu = cpu();
         let policy = Policy::capture(&cpu, 0xfd100000).unwrap();
-        policy.initialize(&cpu, true, true).unwrap();
+        policy.initialize(&cpu, true, thread(true)).unwrap();
         assert!(!writes(&cpu).iter().any(|(index, _)| *index == 0xc0010074)); // BSP reset was early
     }
 }

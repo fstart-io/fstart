@@ -2,6 +2,7 @@
 //! Fixed native Picasso cold-boot silicon flow. No FSP calls or HOBs.
 use crate::memory::{self, Memory};
 use fstart_arch::x86::cpu::msr::{MCG_CAP, MTRR_CAP, McgCap, MsrAccess, MtrrCap};
+use fstart_driver_amd::fam17h::ccx::Thread;
 use fstart_driver_amd::picasso::{
     apob::MemoryMap,
     cache::{self, CacheControl, Plan},
@@ -70,7 +71,7 @@ pub fn initialize(
     .map_err(Error::Cpu)?;
     nbio::psp_bar(smn).map_err(Error::Nbio)?;
     cpu::bsp_init(msr);
-    cpu::mca_init(msr).map_err(Error::Cpu)?;
+    cpu::mca_init(msr, Thread::current()).map_err(Error::Cpu)?;
     // Default topology is retained here; the full flow applies the requested
     // board CPU topology before releasing any APs through the SMU.
     let (low, high) = cpu::memory_limits(msr).map_err(Error::Cpu)?;

@@ -9,26 +9,31 @@
 use super::{ECAM, ECAM_BUSES, MAX_DIES, Revision, ccx_tables::MSR_TABLE};
 use crate::fam17h::{
     cache::CacheControl,
-    msr::{
-        self, BU_CFG, BuCfg, CPU_WDT_CFG, CSTATE_BASE_ADDRESS, CSTATE_CONFIG, DPM_CFG,
-        DPM_WAC_DATA, DPM_WAC_INDEX, DpmCfg, MCA_INTR_CFG, McaConfig, McaIntrCfg, McaMisc,
-        MsrUpdate, PSP_ADDRESS, PSTATE_0, mca_config, mca_ctl_mask, mca_misc0, mca_misc1,
+    ccx::{self, CacWeights, Ccx, Error, Inputs, L3Owner, Mca, Thread},
+    msr::{DpmCfg, MsrUpdate},
+};
+use fstart_arch::x86::cpu::msr::MsrAccess;
+
+/// The Zeppelin parameters of the Family 17h CCX init.
+const CCX: Ccx = Ccx {
+    mca: Mca {
+        // MISC1 of banks 15 and 16.
+        banks: 17..=u8::MAX,
+        no_misc0: 15..=16,
+        // LS SystemReadDataErrorT0/T1.
+        ctl_masks: &[(0, (1 << 9) | (1 << 10))],
+        l3_banks: 7..=14,
+        l3_owner: L3Owner::DiePrimary,
     },
+    ecam: ECAM,
+    ecam_buses: ECAM_BUSES,
+    // ACPI C-state control I/O (vendor DXE PCD 0x14d).
+    cstate_io_base: 0x813,
+    // Enabled, 2047 * 1.31 ms.
+    watchdog: Some(0x9),
+    dpm_cfg: DpmCfg::CFG_WEIGHTS_VALID::SET.value,
+    tail: &[],
 };
-use fstart_arch::x86::cpu::{
-    amd::msr::{SYSCFG, Syscfg},
-    msr::{MCG_CAP, McgCap, MsrAccess},
-};
-use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-
-/// ACPI C-state control I/O (vendor DXE PCD 0x14d).
-const CSTATE_IO_BASE: u64 = 0x813;
-/// Enabled, 2047 * 1.31 ms.
-const CPU_WDT_2047_1_31MS: u64 = 0x9;
-const CSTATE_CONFIG_CC6: u64 = 0x48_4848;
-
-/// MCA banks [`cpu_init`] accesses: MISC1 of banks 15 and 16.
-const MIN_MCA_BANKS: u8 = 17;
 
 /// Which threads apply a reset table record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,67 +50,28 @@ pub enum Scope {
 #[derive(Debug, Clone, Copy)]
 pub struct MsrRecord {
     pub scope: Scope,
-    pub msr: u32,
-    pub clear: u64,
-    pub set: u64,
+    pub update: MsrUpdate,
     /// [`Revision::mask`] bits it applies to, 0: all.
     pub revisions: u8,
 }
 
-/// The executing thread's place in the topology. Initial APIC ID:
-/// socket << 6 | die << 4 | complex << 3 | core * threads + thread.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Thread {
-    apic_id: u8,
-    threads_per_core: u8,
-}
-impl Thread {
-    /// From CPUID(1).EBX and CPUID(8000_001E).EBX of the executing thread.
-    pub const fn from_cpuid(leaf1_ebx: u32, topology_ebx: u32) -> Self {
-        Self {
-            apic_id: (leaf1_ebx >> 24) as u8,
-            threads_per_core: ((topology_ebx >> 8) & 0xff) as u8 + 1,
-        }
-    }
-    pub const fn apic_id(self) -> u8 {
-        self.apic_id
-    }
-    /// The die (APIC ID [5:4]) the thread is on.
-    pub const fn die(self) -> u8 {
-        (self.apic_id >> 4) & 3
-    }
-    pub const fn core_primary(self) -> bool {
-        self.apic_id.is_multiple_of(self.threads_per_core)
-    }
-    pub const fn complex_primary(self) -> bool {
-        self.apic_id & 7 == 0
-    }
-    const fn die_primary(self) -> bool {
-        self.apic_id & 0xf == 0
-    }
-}
-
 /// The reset register table of the vendor CCX code, for this thread.
-pub fn apply_msr_table(cpu: &impl MsrAccess, revision: Revision, thread: Thread) {
+pub fn msr_table(revision: Revision, thread: Thread) -> impl Iterator<Item = MsrUpdate> {
     MSR_TABLE
         .iter()
-        .filter(|r| r.revisions == 0 || r.revisions & revision.mask() != 0)
-        .filter(|r| match r.scope {
+        .filter(move |r| r.revisions == 0 || r.revisions & revision.mask() != 0)
+        .filter(move |r| match r.scope {
             Scope::Thread => true,
             Scope::Core => thread.core_primary(),
             Scope::Complex => thread.complex_primary(),
         })
-        .for_each(|r| MsrUpdate::new(r.msr, r.clear, r.set).apply(cpu));
+        .map(|r| r.update)
 }
 
 /// The BSP, before MP init.
 pub fn bsp_init(cpu: &impl MsrAccess, revision: Revision, thread: Thread) {
-    apply_msr_table(cpu, revision, thread);
+    msr_table(revision, thread).for_each(|update| update.apply(cpu));
 }
-
-/// Number of CAC weights the SMU has and the DPM weight MSRs take.
-pub const CAC_WEIGHT_COUNT: usize = 21;
-pub type CacWeights = [u64; CAC_WEIGHT_COUNT];
 
 /// What every CPU needs that only the BSP can read through SMN.
 #[derive(Debug, Clone, Copy)]
@@ -117,12 +83,6 @@ pub struct CpuPolicy {
     pub cac_weights: Option<CacWeights>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Error {
-    /// Fewer MCA banks than the init accesses; nothing was written.
-    McaBanks(u8),
-}
-
 /// `zeppelin_native_cpu_init`: every CPU, BSP included, after its microcode
 /// update. The SMT siblings share some of the MSRs, so the platform must not
 /// run this in parallel on two CPUs.
@@ -131,110 +91,42 @@ pub fn cpu_init(
     policy: &CpuPolicy,
     thread: Thread,
 ) -> Result<(), Error> {
-    let banks = cpu.reg(MCG_CAP).read(McgCap::COUNT) as u8;
-    if banks < MIN_MCA_BANKS {
-        return Err(Error::McaBanks(banks));
-    }
-
-    apply_msr_table(cpu, policy.revision, thread);
-
-    // The APs start with the reset value of MMIO_CONF_BASE.
-    msr::enable_ecam(cpu, ECAM, ECAM_BUSES);
-
-    // RDRAND needs the PSP MMIO base of the core's own die.
-    if let Some(&bar) = policy.psp_bars.get(usize::from(thread.die()))
-        && bar != 0
-    {
-        cpu.reg(PSP_ADDRESS).set(bar.into());
-    }
-
-    // Memory above 4 GiB is write-back. The early cache plan usually set it
-    // already; only toggle the cache when there is something to change.
-    let syscfg = cpu.reg(SYSCFG).extract();
-    if syscfg.is_set(Syscfg::TOM2_EN) && !syscfg.is_set(Syscfg::TOM2_WB) {
-        cpu.disable();
-        cpu.flush();
-        cpu.reg(SYSCFG).modify(Syscfg::TOM2_WB::SET);
-        cpu.enable();
-    }
-
-    mca_init(cpu, banks, thread);
-
-    if thread.core_primary() {
-        if let Some(weights) = &policy.cac_weights {
-            load_cac_weights(cpu, weights);
-        }
-        cpu.reg(CSTATE_CONFIG).set(CSTATE_CONFIG_CC6);
-        cpu.reg(BU_CFG).modify(BuCfg::COMBINE_CR0_CD::SET);
-    }
-    cpu.reg(CSTATE_BASE_ADDRESS).set(CSTATE_IO_BASE);
-    cpu.reg(CPU_WDT_CFG).set(CPU_WDT_2047_1_31MS);
-    // Rewrite P0 so the new settings take effect.
-    cpu.reg(PSTATE_0).set(cpu.reg(PSTATE_0).get());
-
-    // Memory encryption isn't set up, so leave SME disabled. With SMEE set
-    // the MTRR setup would need to account for the encryption bit.
-    cpu.reg(SYSCFG).modify(Syscfg::SMEE::CLEAR);
-    Ok(())
-}
-
-fn mca_init(cpu: &impl MsrAccess, banks: u8, thread: Thread) {
-    for bank in 0..u32::from(banks) {
-        let config = cpu.reg(mca_config(bank)).extract();
-        let mut value = config;
-        value.modify(McaConfig::MCAX_ENABLE::CLEAR);
-        if config.is_set(McaConfig::TRANSPARENT_LOGGING_SUPPORTED) {
-            value.modify(McaConfig::TRANSPARENT_LOGGING_ENABLE::CLEAR);
-        }
-        if banks <= 32 {
-            value.modify(McaConfig::MCAX_ENABLE::SET);
-        }
-        if config.is_set(McaConfig::DEFERRED_LOGGING_SUPPORTED) {
-            value.modify(McaConfig::LOG_DEFERRED_IN_MCA_STAT::SET);
-        }
-        cpu.reg(mca_config(bank)).set(value.get());
-
-        if bank != 15 && bank != 16 {
-            cpu.reg(mca_misc0(bank))
-                .modify(McaMisc::THRESHOLD_INT_TYPE::CLEAR);
-        }
-    }
-
-    cpu.reg(mca_misc1(15))
-        .modify(McaMisc::THRESHOLD_INT_TYPE::CLEAR);
-    cpu.reg(mca_misc1(16))
-        .modify(McaMisc::THRESHOLD_INT_TYPE::CLEAR);
-    cpu.reg(MCA_INTR_CFG)
-        .modify(McaIntrCfg::THRESHOLD_LVT_VALID::SET);
-    // LS SystemReadDataErrorT0/T1.
-    MsrUpdate::new(mca_ctl_mask(0).index(), 0, (1 << 9) | (1 << 10)).apply(cpu);
-    // The L3 banks, once per die.
-    if thread.die_primary() {
-        (7..=14).for_each(|bank| MsrUpdate::new(mca_ctl_mask(bank).index(), 0, 1 << 7).apply(cpu));
-    }
-}
-
-fn load_cac_weights(cpu: &impl MsrAccess, weights: &CacWeights) {
-    let saved = cpu.reg(DPM_CFG).extract();
-    cpu.reg(DPM_CFG).set(0);
-    for (index, &weight) in (0..).zip(weights) {
-        cpu.reg(DPM_WAC_INDEX).set(index);
-        cpu.reg(DPM_WAC_DATA).set(weight);
-    }
-    let mut valid = saved;
-    valid.modify(DpmCfg::CFG_WEIGHTS_VALID::SET);
-    cpu.reg(DPM_CFG).set(valid.get());
+    let inputs = Inputs {
+        // RDRAND needs the PSP MMIO base of the core's own die.
+        psp_bar: policy
+            .psp_bars
+            .get(usize::from(thread.die()))
+            .filter(|&&bar| bar != 0)
+            .map(|&bar| bar.into()),
+        cac_weights: policy.cac_weights.as_ref(),
+    };
+    ccx::cpu_init(
+        cpu,
+        &CCX,
+        thread,
+        &inputs,
+        msr_table(policy.revision, thread),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     extern crate std;
     use super::*;
-    use crate::fam17h::cache::testing::{DISABLE, ENABLE, FLUSH};
+    use crate::fam17h::{
+        cache::testing::{DISABLE, ENABLE, FLUSH},
+        msr::{
+            CSTATE_BASE_ADDRESS, CSTATE_CONFIG, DPM_CFG, DPM_WAC_DATA, PSP_ADDRESS, PSTATE_0,
+            mca_config, mca_ctl_mask, mca_misc0, mca_misc1,
+        },
+    };
     use core::cell::RefCell;
     use fstart_arch::x86::cpu::{
-        amd::msr::MMIO_CFG_BASE,
-        msr::testing::{MsrSpace, fingerprint},
+        amd::msr::{MMIO_CFG_BASE, SYSCFG},
+        msr::{
+            MCG_CAP,
+            testing::{MsrSpace, fingerprint},
+        },
     };
     use std::vec::Vec;
 
@@ -253,13 +145,13 @@ mod tests {
     fn table_scope_and_revision_filtering() {
         // Thread 1 of core 0 on B2: only the per-thread records.
         let cpu = cpu([]);
-        apply_msr_table(&cpu, Revision::B2, Thread::from_cpuid(1 << 24, 1 << 8));
+        bsp_init(&cpu, Revision::B2, Thread::from_cpuid(1 << 24, 1 << 8));
         assert_eq!(cpu.borrow().writes.len(), 3);
         // The first thread of the second complex of die 1 gets every B2 record.
         let cpu = self::cpu([]);
         let thread = Thread::from_cpuid(0x18 << 24, 1 << 8);
         assert!(thread.complex_primary() && thread.core_primary() && thread.die() == 1);
-        apply_msr_table(&cpu, Revision::B2, thread);
+        bsp_init(&cpu, Revision::B2, thread);
         let applicable = MSR_TABLE
             .iter()
             .filter(|r| r.revisions == 0 || r.revisions & Revision::B2.mask() != 0)
