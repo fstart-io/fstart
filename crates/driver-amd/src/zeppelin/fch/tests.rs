@@ -3,7 +3,7 @@ extern crate std;
 use crate::fam17h::tsc::testing::Delay;
 use super::*;
 use crate::{
-    fam17h::registers::testing::{SmnModel, SmnTest},
+    smn::testing::{SmnModel, SmnTest},
     fch::{Acpimmio, Bus, Fch, Space},
     fam17h::topology::{self, Soc},
     zeppelin::{Die, Package, Revision, Zeppelin},

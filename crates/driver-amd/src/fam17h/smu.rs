@@ -2,7 +2,7 @@
 //! Six-dword SMU (MP1) mailbox protocol. The register
 //! addresses differ per SoC; the protocol does not.
 use crate::fam17h::tsc::DelayNs;
-use super::registers::{Smn, SmnReg};
+use crate::smn::{Smn, SmnReg};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     interfaces::{Readable, Writeable},

@@ -3,9 +3,9 @@ extern crate std;
 use crate::fam17h::tsc::testing::Delay;
 use super::{
     cpu::Identity,
-    registers::testing::{SmnModel, SmnTest},
     smu, usb,
 };
+use crate::smn::testing::{SmnModel, SmnTest};
 use std::{collections::BTreeMap, vec::Vec};
 struct Transport {
     regs: BTreeMap<u32, u32>,

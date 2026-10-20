@@ -5,7 +5,7 @@
 //! report FCH_TAISHAN, cold path, vendor defaults).
 use crate::fam17h::tsc::DelayNs;
 use crate::{
-    fam17h::registers::{Smn, SmnReg},
+    smn::{Smn, SmnReg},
     zeppelin::Package,
 };
 use fstart_pci::ConfigRegionAccess;

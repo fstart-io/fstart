@@ -3,10 +3,8 @@
 //! MMIO and I/O base/limit pairs and the VGA route of D18F0. What AGESA
 //! calls a broadcast access is a direct
 //! access repeated on every die's DF: every die routes the whole map.
-use super::{
-    registers::{Df, DfReg},
-    topology::{Die, Soc},
-};
+use super::topology::{Die, Soc};
+use crate::df::{Df, DfReg};
 use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
 use tock_registers::{

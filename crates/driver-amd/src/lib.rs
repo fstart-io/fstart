@@ -2,6 +2,8 @@
 //! AMD hardware mechanisms. No board discovery, stage loading or FSP calls.
 #![no_std]
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod df;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod fam17h;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod fch;
@@ -15,5 +17,9 @@ pub mod lpc;
 pub mod picasso;
 #[cfg(all(test, any(feature = "picasso", feature = "zeppelin")))]
 mod silicon_tests;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod smn;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod table;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;

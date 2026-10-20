@@ -7,7 +7,7 @@
 use crate::fam17h::tsc::DelayNs;
 use super::{NbifStrap, irq};
 use crate::fch::{Bus, Fch, iomux};
-use crate::fam17h::registers::{Smn, SmnReg};
+use crate::smn::{Smn, SmnReg};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},

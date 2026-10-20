@@ -2,7 +2,7 @@
 //! Native ACP shutdown before DXIO. Register names from
 //! Linux's ACP 3.x driver.
 use crate::fam17h::tsc::DelayNs;
-use super::registers::{Smn, SmnReg};
+use crate::smn::{Smn, SmnReg};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     fields::FieldValue,

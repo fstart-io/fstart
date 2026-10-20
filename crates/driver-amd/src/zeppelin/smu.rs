@@ -10,7 +10,8 @@ use crate::fam17h::tsc::DelayNs;
 use super::{Die, MAX_DIES};
 use crate::fam17h::ccx::{CAC_WEIGHT_COUNT, CacWeights};
 pub use crate::fam17h::smu::{ARGUMENT_COUNT, Error, Reply};
-use crate::fam17h::{registers::SmnReg, smu::Mailbox};
+use crate::fam17h::smu::Mailbox;
+use crate::smn::SmnReg;
 use fstart_pci::ConfigRegionAccess;
 use zerocopy::{
     Immutable, IntoBytes, KnownLayout, Unaligned,

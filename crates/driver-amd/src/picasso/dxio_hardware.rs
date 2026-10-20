@@ -6,9 +6,9 @@ use super::{
         Descriptor, EngineConfig, Error, Hotplug, LinkSpeed, Operation, PORTS, PowerPolicy,
         Topology,
     },
-    registers::{Reg, Smn, SmnReg, apply, rmw},
     smu,
 };
+use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::fam17h::{
     dxio::{self, Slot},
     nbio::{IohcBridgeCntl, NbProgDeviceRemap, iohc_bridge_cntl, nb_prog_device_remap, pcie},

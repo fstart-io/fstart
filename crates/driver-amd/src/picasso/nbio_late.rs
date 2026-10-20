@@ -5,9 +5,9 @@ use super::{
     cpu::{Identity, Silicon},
     dxio::{Aspm, ClockRequest, Hotplug, Topology},
     power,
-    registers::{Smn, SmnReg, apply, rmw, write},
     smu,
 };
+use crate::smn::{Smn, SmnReg, apply, rmw, write};
 use crate::fam17h::nbio::{IohcBridgeCntl, iohc_bridge_cntl, pcie};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -49,7 +49,7 @@ pub fn clock_map(topology: &Topology) -> u32 {
         .fold(0, |map, (i, pin)| map | u32::from(pin) << (i * 4))
 }
 /// The vendor clock gating values of the core: raw.
-fn core_gating() -> impl Iterator<Item = super::registers::Reg> {
+fn core_gating() -> impl Iterator<Item = crate::smn::Reg> {
     [
         rmw(
             pcie::cpm_control(0),
@@ -197,7 +197,7 @@ pub fn after_enumeration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fam17h::registers::testing::SmnSpace;
+    use crate::smn::testing::SmnSpace;
     use crate::picasso::dxio::Descriptor;
     #[test]
     fn both_l1_modes_enable_gate_without_requiring_l1_substates() {

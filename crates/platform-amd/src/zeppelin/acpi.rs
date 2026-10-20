@@ -703,7 +703,7 @@ fn lpc_bridge(board_aml: &[u8]) -> Result<Vec<u8>, Error> {
 mod tests {
     extern crate std;
     use super::*;
-    use fstart_driver_amd::{fam17h::table::Op, zeppelin::nbio::BASE};
+    use fstart_driver_amd::{table::Op, zeppelin::nbio::BASE};
 
     /// The ACPI routing is the one the NBIO base table programs.
     #[test]

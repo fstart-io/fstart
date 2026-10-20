@@ -8,9 +8,9 @@ use super::{NONPCI_MMIO_SIZE, Revision, Zeppelin};
 use crate::fam17h::{
     apob::{self, Apob},
     df::{self, DramBase},
-    registers::{Df, DfReg},
     topology::Soc,
 };
+use crate::df::{Df, DfReg};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},

@@ -4,9 +4,9 @@
 use crate::fam17h::tsc::DelayNs;
 use super::{
     cpu::{Identity, Silicon},
-    registers::{Smn, apply, rmw, write},
     smu,
 };
+use crate::smn::{Smn, apply, rmw, write};
 use heapless::Vec;
 use tock_registers::{
     interfaces::{Readable, Writeable},

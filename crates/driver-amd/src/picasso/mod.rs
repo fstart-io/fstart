@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h Raven/Picasso/Pollock register geometry, not Intel-compatible IP.
 pub mod acp;
-pub use crate::fam17h::{apob, cache, registers, tsc};
+pub use crate::fam17h::{apob, cache, tsc};
 pub mod cpu;
 #[cfg(test)]
 mod cpu_tests;

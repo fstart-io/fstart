@@ -2,7 +2,7 @@
 //! A-Link (AB) configuration through the index/data pair at 0xcd8/0xcdc.
 //! The PMxE0 decode of the pair is the caller's.
 use super::{Bus, Reg};
-use crate::fam17h::table::{self, Record};
+use crate::table::{self, Record};
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_bitfields,
@@ -17,7 +17,7 @@ register_bitfields![u32,
     AbIndex [ADDRESS OFFSET(0) NUMBITS(29) [], SPACE OFFSET(29) NUMBITS(3) [Abcfg = 6]]
 ];
 
-/// A record of an ABCFG table ([`crate::fam17h::table`]); the tables are
+/// A record of an ABCFG table ([`crate::table`]); the tables are
 /// vendor values.
 pub type Rmw = Record<u32, u32>;
 

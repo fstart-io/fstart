@@ -3,7 +3,7 @@
 //! registers of the IOHC (its DRAM map and BARs are in [`super::iohc`]) and
 //! the PCIe core and port registers, all in SMN. A Zeppelin die has two PCIe
 //! cores, Picasso one.
-use super::registers::SmnReg;
+use crate::smn::SmnReg;
 use tock_registers::register_bitfields;
 
 register_bitfields![u32,
@@ -62,7 +62,7 @@ const PCIE_CORE_STRIDE: u32 = 0x10_0000;
 
 pub mod pcie {
     use super::{PCIE_CORE_STRIDE, PCIE_PORTS_PER_CORE};
-    use crate::fam17h::registers::SmnReg;
+    use crate::smn::SmnReg;
     use tock_registers::register_bitfields;
 
     register_bitfields![u32,

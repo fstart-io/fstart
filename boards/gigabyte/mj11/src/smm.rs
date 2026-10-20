@@ -2,7 +2,7 @@
 //! MJ11 SMM: the BMC's diagnostic interrupt button on GEVENT11 (vendor
 //! GbtNmiBtn, without its POST code and SEL logging).
 use fstart_driver_amd::{
-    fam17h::registers::SmnReg,
+    smn::SmnReg,
     zeppelin::fch::smm::{Handler, SmmBoard, SmmSmn},
 };
 use tock_registers::{

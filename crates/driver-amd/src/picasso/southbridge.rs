@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Picasso FCH A-Link and clock sequencing. The index-zero writes are hardware requirements.
-use super::registers::{Smn, apply, rmw};
+use crate::smn::{Smn, apply, rmw};
 use crate::{
-    fam17h::table,
+    table,
     fch::{AbRegBar, Bus, Fch, MISC_CLK_CNTL1, MiscClkCntl1, PM_AB_REG_BAR, alink},
 };
 use tock_registers::interfaces::{ReadWriteable, Writeable};

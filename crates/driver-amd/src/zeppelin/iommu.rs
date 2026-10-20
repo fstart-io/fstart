@@ -9,7 +9,8 @@
 //! NbDxe programs the base at SMN 0x13f00044/48 (D0F2 0x44/0x48),
 //! [`IOMMU_BAR`].
 use super::Die;
-use crate::fam17h::{iohc::IOMMU_BAR, registers::SmnReg};
+use crate::fam17h::iohc::IOMMU_BAR;
+use crate::smn::SmnReg;
 use fstart_core::mmio::MmioReadOnly;
 use fstart_log::Hex;
 use fstart_pci::ConfigRegionAccess;

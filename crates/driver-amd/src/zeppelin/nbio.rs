@@ -3,7 +3,7 @@
 //! settings of AmdNbioBaseZPDxe/AmdNbioPcieZPDxe, per die (sp4r2 report
 //! NBIO_BASE_ZP and nbio-base-contracts.json).
 use super::{Die, Revision};
-use crate::fam17h::registers::{Smn, SmnReg};
+use crate::smn::{Smn, SmnReg};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     interfaces::{ReadWriteable, Writeable},
@@ -12,7 +12,7 @@ use tock_registers::{
 
 pub use super::nbio_tables::{BASE, IOMMU};
 
-pub use crate::fam17h::registers::{Reg, apply, copy, rmw, write};
+pub use crate::smn::{Reg, apply, copy, rmw, write};
 pub(super) use crate::fam17h::nbio::*;
 
 register_bitfields![u32,
@@ -36,8 +36,8 @@ pub(super) fn strap<P: ConfigRegionAccess>(
     core: usize,
     strap: u32,
 ) -> fstart_core::indexed::Indexed<
-    crate::fam17h::registers::SmnRegister<'_, P, ()>,
-    crate::fam17h::registers::SmnRegister<'_, P, ()>,
+    crate::smn::SmnRegister<'_, P, ()>,
+    crate::smn::SmnRegister<'_, P, ()>,
 > {
     fstart_core::indexed::Indexed::new(
         smn.reg(pcie::strap_index(core)),
@@ -130,7 +130,7 @@ pub fn pre_enumeration_init<P: ConfigRegionAccess + Copy>(die: &Die<P>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fam17h::registers::testing::SmnSpace;
+    use crate::smn::testing::SmnSpace;
 
     #[test]
     fn tables_copy_write_and_update_in_order() {

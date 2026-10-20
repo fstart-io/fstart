@@ -3,10 +3,8 @@
 //! NBIO blocks behind it (PSP, SMU, IOAPIC, IOMMU), all in SMN. The same IP
 //! at the same addresses on Raven/Picasso and Zeppelin; the SoC picks the
 //! base addresses.
-use super::{
-    registers::{Smn, SmnReg},
-    topology::{Die, Soc},
-};
+use super::topology::{Die, Soc};
+use crate::smn::{Smn, SmnReg};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{
     RegisterLongName,
@@ -176,7 +174,7 @@ pub fn dram_map<S: Soc, P: ConfigRegionAccess + Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fam17h::registers::testing::SmnSpace;
+    use crate::smn::testing::SmnSpace;
 
     #[test]
     fn tom2_below_and_above_the_hypertransport_hole() {

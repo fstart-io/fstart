@@ -4,12 +4,10 @@ use crate::fam17h::tsc::testing::Delay;
 use super::{
     apob::{self, Apob},
     fabric,
-    registers::{
-        Df, DfReg, Smn, SmnReg,
-        testing::{DfSpace, SmnModel, SmnTest},
-    },
     smu,
 };
+use crate::df::{Df, DfReg, testing::DfSpace};
+use crate::smn::{Smn, SmnReg, testing::{SmnModel, SmnTest}};
 use tock_registers::interfaces::{Readable, Writeable};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{

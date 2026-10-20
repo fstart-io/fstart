@@ -5,10 +5,8 @@ use core::{mem::MaybeUninit, ptr::addr_of_mut};
 use fstart_core::once::TakeOnce;
 use fstart_driver_amd::{
     fam17h::{iohc::PSP_BAR, tsc::DelayNs},
-    picasso::{
-        psp::{self, Buffer, Mailbox, Native},
-        registers::Smn,
-    },
+    picasso::psp::{self, Buffer, Mailbox, Native},
+    smn::Smn,
 };
 use tock_registers::interfaces::Readable;
 const PAGE_BYTES: usize = (layout::PSP_END - layout::PSP_START) as usize;
@@ -128,7 +126,7 @@ mod tests {
     extern crate std;
     use super::*;
     use std::{boxed::Box, vec::Vec};
-    use fstart_driver_amd::fam17h::registers::testing::{SmnModel, SmnTest};
+    use fstart_driver_amd::smn::testing::{SmnModel, SmnTest};
     struct Mock {
         low: u32,
         high: u32,

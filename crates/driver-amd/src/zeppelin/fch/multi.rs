@@ -16,9 +16,9 @@ use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
     fam17h::{
         df::{self, IoBase, IoLimit},
-        registers::{Smn, SmnReg},
-        table,
     },
+    smn::{Smn, SmnReg},
+    table,
     zeppelin::{Die, Package},
 };
 use fstart_pci::{ConfigRegionAccess, PciAddress};

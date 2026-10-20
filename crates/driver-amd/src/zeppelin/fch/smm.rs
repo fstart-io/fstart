@@ -2,7 +2,7 @@
 //! The Zeppelin parts of the FCH SMM handler, and SMN access
 //! from SMM.
 use super::taishan::{AOAC_94, Aoac94};
-use crate::fam17h::registers::SmnReg;
+use crate::smn::SmnReg;
 use crate::fch::{AcpiReg, Acpimmio, Bus, Fch, IOAPIC, Reg, SmmBus, pm};
 use crate::fch::smi::{FchSmmHandler, FchSmmHooks};
 use core::marker::PhantomData;

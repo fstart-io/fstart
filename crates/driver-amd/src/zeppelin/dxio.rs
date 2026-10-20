@@ -44,9 +44,9 @@ pub use crate::fam17h::dxio::{
 };
 use crate::fam17h::{
     dxio,
-    registers::{Smn, SmnReg},
     tsc::{Clock, DelayNs},
 };
+use crate::smn::{Smn, SmnReg};
 use fstart_log::{debug, error, info};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress, devfn, devfn_parts};
 use tock_registers::{
@@ -731,7 +731,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
 mod tests {
     extern crate std;
     use super::*;
-    use crate::fam17h::registers::testing::SmnSpace;
+    use crate::smn::testing::SmnSpace;
     use zerocopy::{IntoBytes, byteorder::U32};
 
     const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {

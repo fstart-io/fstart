@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Picasso Data Fabric sequencing.
-use super::{
-    Die,
-    registers::{Df, DfReg, DfRecord, apply_df, df_rmw, df_write},
-};
+use super::Die;
+use crate::df::{Df, DfReg, DfRecord, apply_df, df_rmw, df_write};
 use crate::fam17h::df::{
     self, DramBase, IO_PAIRS, MMIO_PAIRS, Plan, Window, dram_base, io_route, mmio_route,
 };

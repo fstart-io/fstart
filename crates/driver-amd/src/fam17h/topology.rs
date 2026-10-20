@@ -11,8 +11,9 @@
 //! The SMU of each die holds its threads in reset until software sets their
 //! ThreadEn bit ([`launch`]); its ThreadConfig is the thread topology, which
 //! a [`Policy`] can reduce for the next reset ([`apply`]).
+use crate::df::{Df, DfReg};
+use crate::smn::Smn;
 use super::{
-    registers::{Df, DfReg, Smn},
     smu::{self, DOWNCORE, Mailbox, THREAD_CONFIG, THREAD_ENABLE, ThreadConfig},
     tsc::DelayNs,
 };
@@ -373,12 +374,10 @@ pub unsafe fn launch<S: Soc, P: ConfigRegionAccess + Copy>(
 mod tests {
     extern crate std;
     use super::*;
-    use crate::fam17h::{
-        registers::{
-            SmnReg,
-            testing::{SmnModel, SmnTest},
-        },
-        tsc::testing::none,
+    use crate::fam17h::tsc::testing::none;
+    use crate::smn::{
+        SmnReg,
+        testing::{SmnModel, SmnTest},
     };
     use std::{collections::BTreeMap, vec::Vec};
 

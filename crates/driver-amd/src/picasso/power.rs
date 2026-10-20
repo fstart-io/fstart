@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! SMU policy v0x13 and persistent DMA pages.
 use crate::fam17h::tsc::DelayNs;
-use super::{registers::Smn, smu};
+use super::smu;
+use crate::smn::Smn;
 use fstart_pci::ConfigRegionAccess;
 use core::{
     cell::UnsafeCell,
@@ -222,7 +223,7 @@ fn transfer(
 mod tests {
     use super::*;
     extern crate std;
-    use crate::fam17h::registers::testing::{SmnModel, SmnTest};
+    use crate::smn::testing::{SmnModel, SmnTest};
     use std::{collections::BTreeMap, vec::Vec};
     struct Mailbox {
         regs: BTreeMap<u32, u32>,

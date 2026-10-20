@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso SMU mailbox.
 use crate::fam17h::tsc::DelayNs;
-use super::registers::{Smn, SmnReg};
+use crate::smn::{Smn, SmnReg};
 pub use crate::fam17h::smu::{Error, Reply};
 use crate::fam17h::smu::Mailbox;
 use fstart_pci::ConfigRegionAccess;

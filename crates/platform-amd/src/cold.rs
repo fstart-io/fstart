@@ -21,8 +21,8 @@ use fstart_driver_amd::{
         cpu::thread,
         nbio::{self, PSP_MMIO_BASE},
         nbio_late, power,
-        registers::Smn,
     },
+    smn::Smn,
 };
 use tock_registers::interfaces::Readable;
 
@@ -246,8 +246,8 @@ mod tests {
     use super::*;
     use fstart_driver_amd::fam17h::tsc::testing::Delay;
     use fstart_driver_amd::{
-        fam17h::registers::testing::{SmnModel, SmnTest},
         picasso::smu,
+        smn::testing::{SmnModel, SmnTest},
     };
     use std::{collections::BTreeMap, vec::Vec};
     struct Deny;

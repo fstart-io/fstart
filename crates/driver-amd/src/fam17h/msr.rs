@@ -2,7 +2,7 @@
 //! Family 17h MSRs, and the memory/configuration MSRs every Zen generation
 //! programs the same way. The AMD64 ones (SYSCFG, TOP_MEM, ...) and the MSR
 //! access itself are `fstart_arch::x86::cpu`'s.
-use super::table;
+use crate::table;
 use fstart_arch::x86::cpu::{
     amd::msr::{MMIO_CFG_BASE, MmioCfgBase, SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem, TopMem2},
     msr::{Msr, MsrAccess},
@@ -82,7 +82,7 @@ pub const fn mca_ctl_mask(bank: u32) -> Msr {
     Msr::new(0xc001_0400 + bank)
 }
 
-/// One record of a vendor MSR table ([`super::table`]); the meaning of
+/// One record of a vendor MSR table ([`crate::table`]); the meaning of
 /// most of the bits isn't known. `C` is its condition, if any.
 pub type MsrUpdate<C = ()> = table::Record<Msr, u64, C>;
 /// `msr = (msr & !clear) | set`

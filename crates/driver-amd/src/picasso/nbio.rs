@@ -5,9 +5,9 @@ use crate::fam17h::tsc::DelayNs;
 use super::{
     Die,
     nbio_tables as tables,
-    registers::{Reg, Smn, SmnReg, copy, rmw, write},
     smu,
 };
+use crate::smn::{Reg, Smn, SmnReg, copy, rmw, write};
 use crate::fam17h::{
     iohc::{self, IOAPIC_BAR, PSP_BAR, SMU_BAR},
     nbio::{IOAPIC_FEATURES_ENABLE, IoapicFeatures, NB_BUS_NUM_CNTL, NbBusNumCntl},
@@ -44,7 +44,7 @@ fn record(&(address, clear, set): &(u32, u32, u32)) -> Reg {
     }
 }
 fn apply(smn: &Smn<impl ConfigRegionAccess>, table: &[(u32, u32, u32)]) {
-    super::registers::apply(smn, table.iter().map(record));
+    crate::smn::apply(smn, table.iter().map(record));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,22 +117,22 @@ pub fn early_init(
     // ACP owns its audio pins later; start with all pins unconfigured.
     smn.reg(ACP_I2S_PIN_CONFIG)
         .modify(AcpPinConfig::CONFIG.val(7));
-    super::registers::apply(
+    crate::smn::apply(
         smn,
         IOMMU_RAS
             .into_iter()
             .chain([rmw(0x13b2_0400, 0x0017_1700, 0x0011_1100)]),
     );
     apply(smn, tables::IOMMU_LATE);
-    super::registers::apply(smn, [write(0x1570_00f8, 0x800)]);
+    crate::smn::apply(smn, [write(0x1570_00f8, 0x800)]);
     apply(smn, tables::IOHC_LATE);
     smu_bar(smn)?;
-    super::registers::apply(smn, [rmw(0x0141_1000, 0, 1 << 19)]);
+    crate::smn::apply(smn, [rmw(0x0141_1000, 0, 1 << 19)]);
     if smn.reg(FUSE_D5C0).get() >> 30 == 3 || raven2_cpuid {
-        super::registers::apply(smn, [rmw(0x0141_1000, 0, 1 << 18)]);
+        crate::smn::apply(smn, [rmw(0x0141_1000, 0, 1 << 18)]);
     }
     if am4 {
-        super::registers::apply(smn, [rmw(0x0141_0000, 0, 1 << 20)]);
+        crate::smn::apply(smn, [rmw(0x0141_0000, 0, 1 << 20)]);
     }
     Ok(Capabilities {
         silicon_id,
