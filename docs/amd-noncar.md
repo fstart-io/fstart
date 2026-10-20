@@ -24,7 +24,7 @@ openSIL: enumeration, resources, ACPI, the memory map, SMM and MP.
 | CPU identification, early FCH | `Soc::identify` |
 | TOP_MEM, APOB memory map, TSEG, e820, cache plan | flow (`memory`) |
 | TP1: the silicon before PCI enumeration | `Soc::silicon_init` |
-| PCI enumeration and resource allocation below die 0 | flow (`pci`) |
+| PCI enumeration and resource allocation below every die | flow (`pci`) |
 | TP2 | `Soc::after_resources`, then `Board::mainboard_final` |
 | FCH and NBIO IOAPICs | flow |
 | ACPI tables | flow and `crate::acpi`, `Board::acpi` |
@@ -78,8 +78,18 @@ the SoC's `SocAcpi` (FCH ACPI ports, FADT fields, the NBIO's bridge
 interrupt routing, the FCH INTx GSIs), what the flow found (CPUs, dies,
 IOAPICs, IOMMUs, bridges, windows) and the board's `BoardAcpi`.
 
-## Multi-die
+## PCI root bridges
 
-The interfaces take every die (`Silicon` has per-die IOAPICs and reserved
-MMIO, ACPI a root bridge per die), but the flow enumerates PCI below die 0
-only, as before.
+Every die's root complex is a PCI root bridge. What the DF routes to the
+die's IOMS is its one source of truth: `df::map::root_complex` reads its
+bus map and its MMIO and I/O windows, the ones the SoC programmed
+(`df::map::program` on Zeppelin) or the PSP left. `noncar::pci::Root`
+turns that into the root bridge: the buses clamped to the ECAM, the I/O
+above the legacy 4 KiB and the MMIO below 4 GiB without the ECAM, the
+fixed MMIO from the IOAPIC up and the die's reserved MMIO. The 64-bit DF
+windows start at 1 TiB, beyond what the firmware maps, and aren't part of
+the root bridges yet.
+
+One `PciEcam` enumerates and allocates below all root bridges, each from
+its own buses and windows, and the ACPI host bridge of each die (`PCIn`
+with `_BBN` and `_CRS`) describes the same root.
