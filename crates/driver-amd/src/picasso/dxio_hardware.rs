@@ -6,8 +6,8 @@ use super::{
         Descriptor, EngineConfig, Error, Hotplug, LinkSpeed, Operation, PORTS, PowerPolicy,
         Topology,
     },
-    smu,
 };
+use crate::smu::v10 as smu;
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::fam17h::{
     dxio::{self, Slot},

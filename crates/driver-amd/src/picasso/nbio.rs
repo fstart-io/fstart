@@ -5,8 +5,8 @@ use crate::fam17h::tsc::DelayNs;
 use super::{
     Die,
     nbio_tables as tables,
-    smu,
 };
+use crate::smu::v10 as smu;
 use crate::smn::{Reg, Smn, SmnReg, copy, rmw, write};
 use crate::fam17h::{
     iohc::{self, IOAPIC_BAR, PSP_BAR, SMU_BAR},

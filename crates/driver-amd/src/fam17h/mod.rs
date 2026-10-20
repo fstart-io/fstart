@@ -13,6 +13,5 @@ pub mod microcode;
 pub mod msr;
 pub mod nbio;
 pub mod psp;
-pub mod smu;
 pub mod topology;
 pub mod tsc;

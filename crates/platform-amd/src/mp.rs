@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h policy for the architectural MP engine: the MSR image APs
 //! replay before enabling caches. The SMU releases the APs
-//! ([`fstart_driver_amd::fam17h::topology::launch`]).
+//! ([`fstart_driver_amd::smu::threads::launch`]).
 use fstart_arch::x86::{
     cpu::{
         amd::msr::{SYSCFG, Syscfg},

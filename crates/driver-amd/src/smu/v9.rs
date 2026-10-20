@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Zeppelin SMU V9 mailbox and the messages
+//! The SMU V9 mailbox of Zeppelin (AGESA AmdNbioSmuV9) and the messages
 //! the native init sends. The same SMN addresses on every die.
 //!
 //! Call order: [`print_name`] early; [`init`] and [`cac_weights`] before
 //! MP init;
-//! [`crate::fam17h::topology::launch`] to release the APs; [`aps_ready`]
-//! then [`ccx_done`] after every CPU ran [`super::ccx::cpu_init`].
+//! [`crate::smu::threads::launch`] to release the APs; [`aps_ready`]
+//! then [`ccx_done`] after every CPU ran [`crate::zeppelin::ccx::cpu_init`].
 use crate::fam17h::tsc::DelayNs;
-use super::{Die, MAX_DIES};
+use crate::zeppelin::{Die, MAX_DIES};
 use crate::fam17h::ccx::{CAC_WEIGHT_COUNT, CacWeights};
-pub use crate::fam17h::smu::{ARGUMENT_COUNT, Error, Reply};
-use crate::fam17h::smu::Mailbox;
+pub use crate::smu::{ARGUMENT_COUNT, Error, Reply};
+use crate::smu::Mailbox;
 use crate::smn::SmnReg;
 use fstart_pci::ConfigRegionAccess;
 use zerocopy::{
@@ -24,7 +24,7 @@ pub const MAILBOX: Mailbox = Mailbox {
     arguments: SmnReg::new(0x03b1_0598),
 };
 
-pub use crate::fam17h::smu::TEST;
+pub use crate::smu::TEST;
 /// Argument: the expected interface version.
 pub const GET_VERSION: u32 = 0x03;
 /// Argument: feature mask.
@@ -267,10 +267,8 @@ pub fn ccx_done<P: ConfigRegionAccess + Copy>(
 mod tests {
     extern crate std;
     use crate::fam17h::tsc::testing::Delay;
-    use super::{
-        super::test_pci::{Message, Pci},
-        *,
-    };
+    use super::*;
+    use crate::zeppelin::test_pci::{Message, Pci};
     use std::vec::Vec;
 
     fn sent(pci: &Pci) -> Vec<(u8, u32, u32)> {
@@ -282,17 +280,17 @@ mod tests {
 
     #[test]
     fn launches_aps_across_dies_with_the_complex_stride() {
-        use crate::fam17h::{
-            smu::{THREAD_CONFIG, THREAD_ENABLE},
-            topology::{self, Policy},
+        use crate::smu::{
+            THREAD_CONFIG, THREAD_ENABLE,
+            threads::{self, Policy},
         };
         let pci = Pci::new(&[0, 0x40], |_| [0; 6]);
         pci.set_smn(0, THREAD_CONFIG, 0x013); // 4 cores, 2 complexes, SMT
         pci.set_smn(1, THREAD_CONFIG, 0x103); // 4 cores, 1 complex, no SMT
         pci.set_smn(0, THREAD_ENABLE, 0b11); // BSP and thread 1 already run
         let dies = pci.dies();
-        assert_eq!(topology::thread_count(&dies, Policy::DEFAULT), Ok(20));
-        unsafe { topology::launch(&dies, Policy::DEFAULT, 17, &mut Delay(|_| {})) }.unwrap();
+        assert_eq!(threads::thread_count(&dies, Policy::DEFAULT), Ok(20));
+        unsafe { threads::launch(&dies, Policy::DEFAULT, 17, &mut Delay(|_| {})) }.unwrap();
         assert_eq!(pci.smn(0, THREAD_ENABLE), 0xffff);
         assert_eq!(pci.smn(1, THREAD_ENABLE), 0b11);
         let tests: Vec<_> = sent(&pci).iter().map(|&(die, ..)| die).collect();
@@ -305,8 +303,8 @@ mod tests {
         );
 
         assert_eq!(
-            unsafe { topology::launch(&dies, Policy::DEFAULT, 20, &mut Delay(|_| {})) },
-            Err(topology::Error::ApCount {
+            unsafe { threads::launch(&dies, Policy::DEFAULT, 20, &mut Delay(|_| {})) },
+            Err(threads::Error::ApCount {
                 started: 19,
                 requested: 20
             })

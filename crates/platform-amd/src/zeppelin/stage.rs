@@ -12,15 +12,18 @@ use fstart_driver_amd::{
         apob::{Apob, MemoryMap},
         cache,
         ccx::Thread,
-        df, iohc, msr,
-        topology::{self, Policy},
+        df, iohc, msr, topology,
         tsc::{self, Tsc},
     },
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
+    smu::{
+        threads::{self, Policy},
+        v9 as smu,
+    },
     zeppelin::{
         self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, dxio, fabric, fch, iommu,
-        nbio, psp, smu,
+        nbio, psp,
     },
 };
 use fstart_driver_uart::ns16550::Ns16550;
@@ -387,7 +390,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     post(0x41);
 
     // MP: microcode and the CCX init on every CPU, the SMU releases the APs.
-    let Ok(threads) = topology::thread_count(dies, Policy::DEFAULT) else {
+    let Ok(threads) = threads::thread_count(dies, Policy::DEFAULT) else {
         fail("CPU topology")
     };
     let flash = unsafe {
@@ -411,9 +414,9 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     let mut launch = |aps: u16| {
         // SAFETY: the reset vector sends APs to the SIPI trampoline the MP
         // engine installed before calling this.
-        unsafe { topology::launch(dies, Policy::DEFAULT, usize::from(aps), &mut { clock }) }
+        unsafe { threads::launch(dies, Policy::DEFAULT, usize::from(aps), &mut { clock }) }
             .map_err(|error| {
-                if let topology::Error::ApCount { started, requested } = error {
+                if let threads::Error::ApCount { started, requested } = error {
                     fstart_log::error!("zeppelin: started {} of {} APs", started, requested);
                 }
                 1

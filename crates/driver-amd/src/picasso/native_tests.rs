@@ -4,8 +4,8 @@ use crate::fam17h::tsc::testing::Delay;
 use super::{
     apob::{self, Apob},
     fabric,
-    smu,
 };
+use crate::smu::v10 as smu;
 use crate::df::{Df, DfReg, testing::DfSpace};
 use crate::smn::{Smn, SmnReg, testing::{SmnModel, SmnTest}};
 use tock_registers::interfaces::{Readable, Writeable};

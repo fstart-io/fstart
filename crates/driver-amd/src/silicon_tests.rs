@@ -417,15 +417,19 @@ mod zeppelin {
         fam17h::{
             df,
             iohc::{self, IOAPIC_BAR},
-            topology::{self, Policy},
+            topology,
         },
         fch::{Acpimmio, Fch},
+        smu::{
+            threads::{self, Policy},
+            v9 as smu,
+        },
         zeppelin::{
             Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision,
             dxio::{self, Descriptor, SataChannel},
             fabric,
             fch::{self, Devices},
-            iommu, nbio, psp, smu,
+            iommu, nbio, psp,
         },
     };
 
@@ -469,10 +473,10 @@ mod zeppelin {
         hw.set_config(df(0, 1), 0x204, 2);
         hw.set_config(df(0, 0), 0x84, 0);
         hw.set_config(df(1, 0), 0x84, 0x40);
-        hw.set_smn(0, crate::fam17h::smu::THREAD_CONFIG, 0x013);
-        hw.set_smn(1, crate::fam17h::smu::THREAD_CONFIG, 0x103);
-        hw.set_smn(0, crate::fam17h::smu::THREAD_ENABLE, 1);
-        hw.set_smn(1, crate::fam17h::smu::THREAD_ENABLE, 0);
+        hw.set_smn(0, crate::smu::THREAD_CONFIG, 0x013);
+        hw.set_smn(1, crate::smu::THREAD_CONFIG, 0x103);
+        hw.set_smn(0, crate::smu::THREAD_ENABLE, 1);
+        hw.set_smn(1, crate::smu::THREAD_ENABLE, 0);
         hw.set_smn(0, 0x13f0_0040_u32, 0x1964_000f);
         // Die 1's internal bridge 8.1 exists.
         hw.set_config(PciAddress::new(0, 0x40, 8, 1), 0, 0x1452_1022);
@@ -574,9 +578,9 @@ mod zeppelin {
         );
 
         // MP
-        let threads = topology::thread_count(&dies, Policy::DEFAULT).unwrap();
+        let threads = threads::thread_count(&dies, Policy::DEFAULT).unwrap();
         assert_eq!(threads, 20);
-        unsafe { topology::launch(&dies, Policy::DEFAULT, threads - 1, &mut delay) }.unwrap();
+        unsafe { threads::launch(&dies, Policy::DEFAULT, threads - 1, &mut delay) }.unwrap();
         smu::aps_ready(&dies, &mut delay).unwrap();
         smu::ccx_done(&dies, &mut delay).unwrap();
 
@@ -599,15 +603,18 @@ mod picasso {
     use crate::{
         fam17h::{
             iohc::{PSP_BAR, SMU_BAR},
-            smu::{THREAD_CONFIG, THREAD_ENABLE},
-            topology::{self, Downcore, Policy},
+            topology,
         },
         picasso::{
             Die,
             dxio::{self, Aspm, ClockRequest, Descriptor, Options, PowerPolicy},
             fabric,
             nbio::{self},
-            smu,
+        },
+        smu::{
+            THREAD_CONFIG, THREAD_ENABLE,
+            threads::{self, Downcore, Policy},
+            v10 as smu,
         },
     };
 
@@ -652,10 +659,10 @@ mod picasso {
             disable_smt: true,
         };
         assert_eq!(
-            topology::apply(&die, policy, &mut delay).unwrap(),
-            topology::Effect::ResetRequired
+            threads::apply(&die, policy, &mut delay).unwrap(),
+            threads::Effect::ResetRequired
         );
-        unsafe { topology::launch(&[die], policy, 3, &mut delay) }.unwrap();
+        unsafe { threads::launch(&[die], policy, 3, &mut delay) }.unwrap();
 
         let options = Options {
             power: PowerPolicy::Performance,

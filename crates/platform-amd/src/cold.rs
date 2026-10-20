@@ -12,17 +12,18 @@ use fstart_arch::x86::{
     mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle},
 };
 use fstart_driver_amd::{
-    fam17h::{
-        topology::{self, Policy},
-        tsc::DelayNs,
-    },
+    fam17h::tsc::DelayNs,
     picasso::{
         Die, Picasso,
         cpu::thread,
         nbio::{self, PSP_MMIO_BASE},
-        nbio_late, power,
+        nbio_late,
     },
     smn::Smn,
+    smu::{
+        threads::{self, Policy},
+        v10::power,
+    },
 };
 use tock_registers::interfaces::Readable;
 
@@ -79,7 +80,7 @@ impl LateResponses {
 }
 #[derive(Debug)]
 pub enum Error {
-    Topology(topology::Error),
+    Topology(threads::Error),
     CpuCount {
         expected: usize,
         actual: usize,
@@ -88,7 +89,7 @@ pub enum Error {
     PspBar,
     Policy(thread::Error),
     Mp(MpError),
-    ApRelease(topology::Error),
+    ApRelease(threads::Error),
     IncompleteCpu,
     Smu {
         cause: power::Error,
@@ -175,7 +176,7 @@ pub unsafe fn initialize_cpus(
     delay: &mut impl DelayNs,
 ) -> Result<CpusInitialized, Error> {
     let dies = core::slice::from_ref(die);
-    let threads = topology::thread_count(dies, input.policy).map_err(Error::Topology)?;
+    let threads = threads::thread_count(dies, input.policy).map_err(Error::Topology)?;
     let total = count(threads, input.apic_ids)?;
     let smn = &die.smn();
     if !input.memory.microcode_reserved() {
@@ -211,7 +212,7 @@ pub unsafe fn initialize_cpus(
         // SAFETY: the SIPI trampoline is installed; released APs start at
         // the reset vector, where `picasso.S` sends them to it.
         let aps = usize::from(aps);
-        unsafe { topology::launch(dies, input.policy, aps, delay) }.map_err(|error| {
+        unsafe { threads::launch(dies, input.policy, aps, delay) }.map_err(|error| {
             release_error = Some(error);
             0
         })
@@ -220,7 +221,7 @@ pub unsafe fn initialize_cpus(
         Ok(mp) => mp,
         Err(MpError::PlatformLaunchFailed(_)) => {
             return Err(Error::ApRelease(release_error.unwrap_or(
-                topology::Error::ApCount {
+                threads::Error::ApCount {
                     started: 0,
                     requested: usize::from(total) - 1,
                 },
@@ -246,7 +247,7 @@ mod tests {
     use super::*;
     use fstart_driver_amd::fam17h::tsc::testing::Delay;
     use fstart_driver_amd::{
-        picasso::smu,
+        smu::v10 as smu,
         smn::testing::{SmnModel, SmnTest},
     };
     use std::{collections::BTreeMap, vec::Vec};

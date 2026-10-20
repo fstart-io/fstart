@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! SMU policy v0x13 and persistent DMA pages.
 use crate::fam17h::tsc::DelayNs;
-use super::smu;
+use crate::smu::v10 as smu;
 use crate::smn::Smn;
 use fstart_pci::ConfigRegionAccess;
 use core::{

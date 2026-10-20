@@ -2,10 +2,8 @@
 //! Native USB controller/PHY sequencing.
 //! SMU performs PHY programming; no FSP or opaque x86 initialization call.
 use crate::fam17h::tsc::DelayNs;
-use super::{
-    cpu::{Identity, Silicon},
-    smu,
-};
+use super::cpu::{Identity, Silicon};
+use crate::smu::v10 as smu;
 use crate::smn::{Smn, apply, rmw, write};
 use heapless::Vec;
 use tock_registers::{

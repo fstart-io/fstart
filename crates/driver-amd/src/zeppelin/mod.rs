@@ -18,9 +18,8 @@ pub mod microcode;
 pub mod nbio;
 mod nbio_tables;
 pub mod psp;
-pub mod smu;
 #[cfg(test)]
-mod test_pci;
+pub(crate) mod test_pci;
 
 use crate::fam17h::topology::Soc;
 pub use identity::{Package, Revision};
@@ -39,8 +38,8 @@ pub enum Zeppelin {}
 impl Soc for Zeppelin {
     /// Two dies on SP4, one on SP4r2.
     const MAX_DIES: usize = 2;
-    const SMU: crate::fam17h::smu::Mailbox = smu::MAILBOX;
-    const DXIO_SERVICE: u32 = smu::DXIO_SERVICE;
+    const SMU: crate::smu::Mailbox = crate::smu::v9::MAILBOX;
+    const DXIO_SERVICE: u32 = crate::smu::v9::DXIO_SERVICE;
     fn ioms_fabric_id(die: u8) -> u8 {
         (die << 5) | 4
     }

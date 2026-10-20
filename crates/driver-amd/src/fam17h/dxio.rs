@@ -10,10 +10,10 @@
 //! first argument. The SoC owns the lane mapping, the PCIe core registers
 //! and the NBIF settings around the training ([`Training`]).
 use super::{
-    smu,
     topology::{Die, Soc},
     tsc::{Clock, DelayNs},
 };
+use crate::smu;
 use core::{
     cell::UnsafeCell,
     sync::atomic::{Ordering, compiler_fence},

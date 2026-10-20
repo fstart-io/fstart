@@ -4,9 +4,8 @@ use crate::fam17h::tsc::DelayNs;
 use super::{
     cpu::{Identity, Silicon},
     dxio::{Aspm, ClockRequest, Hotplug, Topology},
-    power,
-    smu,
 };
+use crate::smu::v10::{self as smu, power};
 use crate::smn::{Smn, SmnReg, apply, rmw, write};
 use crate::fam17h::nbio::{IohcBridgeCntl, iohc_bridge_cntl, pcie};
 use fstart_pci::{ConfigRegionAccess, PciAddress};

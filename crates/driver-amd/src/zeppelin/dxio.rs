@@ -36,8 +36,8 @@ use super::{
         self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NBIF_COUNT, NbProgDeviceRemap,
         PCIE_CORE_COUNT, PCIE_PORT_COUNT, PCIE_PORTS_PER_CORE, nbif_reg, pcie, rmw, strap,
     },
-    smu,
 };
+use crate::smu::v9 as smu;
 pub use crate::fam17h::dxio::{
     Aspm, ClockRequest, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed,
     Operation, SataChannel,

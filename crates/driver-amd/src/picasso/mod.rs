@@ -21,10 +21,8 @@ pub mod nbio;
 pub mod nbio_late;
 mod nbio_tables;
 pub mod pinmux;
-pub mod power;
 pub mod preinit;
 pub mod psp;
-pub mod smu;
 pub mod southbridge;
 pub mod usb;
 #[cfg(test)]
@@ -35,8 +33,8 @@ pub use crate::fch::ACPI_MMIO;
 pub enum Picasso {}
 impl crate::fam17h::topology::Soc for Picasso {
     const MAX_DIES: usize = 1;
-    const SMU: crate::fam17h::smu::Mailbox = smu::MAILBOX;
-    const DXIO_SERVICE: u32 = smu::DXIO_SERVICE;
+    const SMU: crate::smu::Mailbox = crate::smu::v10::MAILBOX;
+    const DXIO_SERVICE: u32 = crate::smu::v10::DXIO_SERVICE;
     fn ioms_fabric_id(_: u8) -> u8 {
         9
     }

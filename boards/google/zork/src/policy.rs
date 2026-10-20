@@ -71,8 +71,8 @@ impl Cbi {
         }
     }
     /// Dalboz voltage/thermal policy plus Vilboz PPT and EC-selected telemetry.
-    pub fn native_power(self) -> fstart_driver_amd::picasso::power::Config {
-        use fstart_driver_amd::picasso::power::{Config, Telemetry};
+    pub fn native_power(self) -> fstart_driver_amd::smu::v10::power::Config {
+        use fstart_driver_amd::smu::v10::power::{Config, Telemetry};
         let telemetry = self.telemetry();
         Config {
             sustained_mw: POWER.sustained_mw,
