@@ -19,6 +19,8 @@ fstart-ffs = { workspace = true, features = ["std"] }
 fstart-boot = { workspace = true, features = ["std"] }
 fstart-crypto = { workspace = true, features = ["all"] }
 fstart-smm = { workspace = true, features = ["std", "coreboot"] }
+# SP3 EFS/PSP directory reader for sp3_flash (MIT OR Apache-2.0, no_std).
+fstart-driver-zen = { path = "../driver-zen" }
 ed25519-dalek = { workspace = true, features = ["std", "rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 

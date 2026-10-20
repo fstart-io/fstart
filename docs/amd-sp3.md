@@ -27,5 +27,42 @@ and replaces the reset image (BIOS directory entry 0x62). The PSP boot ROM
 picks the half by the EFS generation word: Rome must be the lower half,
 Milan the upper.
 
+```text
+[0, prefix end)             vendor bytes, byte-identical
+[prefix end, 0x600000)      erased
+[0x600000, 0x62 offset)     fstart FFS (the runtime firmware window)
+[0x62 offset, 16 MiB)       reset image (Rome 0xdb0000, Milan 0xce0000)
+```
+
+Put the vendor ROM (S8030 v4.04, 32 MiB) at
+`boards/tyan/s8030/vendor/8030V404.ROM` and build each half:
+
+```sh
+cargo fbuild build --board tyan-s8030-rome            # compile only
+cargo fbuild assemble --board tyan-s8030-rome         # lower half
+cargo fbuild assemble --board tyan-s8030-milan        # upper half
+cargo fbuild assemble --board tyan-s8030-rome --payload linux \
+    --kernel bzImage --linux-bootargs "console=ttyS0,115200"
+cargo fbuild assemble --board tyan-s8030-milan --payload uefi
+cargo fbuild assemble --board tyan-s8030-rome --image-config /path/to/other.rom
+```
+
+`assemble` writes, next to the FFS in
+`target/fstart-build/<board>/<profile>/<hash>/image/`, `<board>.rom` (the
+16 MiB half) and, for a 32 MiB vendor ROM, `<board>-32m.rom`: the vendor
+ROM with only this variant's half replaced, the other half byte-identical
+and the boot order checked. Flashing `tyan-s8030-milan-32m.rom` keeps the
+vendor AMI firmware for Rome CPUs (and vice versa); assembling with
+`--image-config` pointing at the other variant's `-32m.rom` combines both
+fstart halves. `--image-config` paths are workspace-relative or absolute.
+
+The assembler refuses a vendor half of the wrong generation, a vendor
+`0x62` geometry different from the build's (unless the board sets
+`REWRITE_RESET_GEOMETRY`, which rewrites the L1/L2 entries and their
+checksums), a prefix reaching into the FFS and an FFS larger than its
+window. The FFS holds the payload and a copy of the reset image, whose
+trust policy and FFS locator are patched into the `0x62` copy.
+Composition lives in `fstart_image_build::sp3_flash`.
+
 The reverse engineering behind each block is in the `sp3` analysis
 workspace (`reports/*_SP3.md`, `reports/NATIVE_PORT_PLAN.md`).

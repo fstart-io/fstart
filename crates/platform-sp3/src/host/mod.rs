@@ -4,27 +4,35 @@
 //! (which implements [`Sp3BoardFacts`]) and the JSON [`BuildSelection`];
 //! the platform answers with the concrete [`BuildPlan`]: one firmware unit,
 //! `reset`, linked at the generation's `0x62` destination with
-//! `linker/reset.ld.in` and `fstart_entry = "amd-psp-reset"`.
+//! `linker/reset.ld.in` and `fstart_entry = "amd-psp-reset"`, and an
+//! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
+//! ROM's half (and the 32 MiB dual image) with
+//! [`fstart_image_build::sp3_flash`].
 //!
-//! Composition of the flash half and the 32 MiB dual image lives in
-//! [`image`]. Until image-build has an SP3 assembly variant the plan is
-//! compile-only (`Assembly::Unassembled`) and [`image_plan`] carries what the
-//! assembler needs.
+//! The FFS holds the payload and a copy of the reset unit: the FFS builder
+//! finalizes the unit's trust policy only in FFS-resident files, and the
+//! composer copies it (and the FFS locator) into the PSP-copied `0x62`
+//! image.
 
-pub mod image;
-
+use std::boxed::Box;
 use std::collections::BTreeMap;
 use std::string::{String, ToString};
 use std::{format, vec};
 
 use fstart_core::layout::{Region, RegionKind};
+use fstart_core::{
+    BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
+    PayloadConfig, SocImageFormat, StageBuildConfig, StageLayout, hstr,
+};
 use fstart_driver_zen::soc::Generation;
 use fstart_image_build::build_plan::{
-    Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema, UnitOutput,
+    Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema, FfsAssembly, InputFile,
+    UnitOutput,
 };
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
+use fstart_image_build::sp3_flash::{self, HalfPlan, ResetSlot, Sp3FlashAssembly, VendorLayout};
 
 use crate::layout::{
     self, DATA, EARLY_REGION, FLASH_MMIO, FlashHalf, HEAP, PAGE_TABLES, STACK, STORE,
@@ -169,11 +177,168 @@ pub fn expectations(generation: Generation) -> Result<Expectations, String> {
     Ok(expectations)
 }
 
+/// Stage environment of the reset unit: an initial image (no predecessor)
+/// that does everything, so `fstart-stage` links the FFS locator patch site
+/// (`FSTART_ANCHOR`) the composer fills.
+pub const RESET_ENVIRONMENT: &str = "monolithic";
+
 fn cfg_schema() -> CompilerCfgSchema {
     CompilerCfgSchema {
         entries: vec![crate::entry::ENTRY.into()],
-        environments: vec!["ram".into()],
-        payloads: vec!["halt".into()],
+        environments: vec![RESET_ENVIRONMENT.into()],
+        payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
+    }
+}
+
+/// The payload a build selects (`--payload`, default halt).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Payload {
+    Halt,
+    /// Direct x86 Linux (bzImage from `--kernel`, stored in the FFS).
+    Linux,
+    /// CrabEFI linked into the reset unit.
+    Uefi,
+}
+
+impl Payload {
+    pub fn select(selection: &BuildSelection) -> Result<Self, String> {
+        let payload = match selection.payload.as_deref() {
+            None | Some("halt") => Self::Halt,
+            Some("linux") => Self::Linux,
+            Some("uefi") => Self::Uefi,
+            Some(other) => {
+                return Err(format!(
+                    "SP3 supports the halt, linux and uefi payloads, not {other}"
+                ));
+            }
+        };
+        if selection.has_x86_linux_overrides() && payload != Self::Linux {
+            return Err("x86 Linux options require '--payload linux'".into());
+        }
+        Ok(payload)
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Halt => "halt",
+            Self::Linux => "linux",
+            Self::Uefi => "uefi",
+        }
+    }
+
+    /// `fstart_payload` cfg value of the reset unit.
+    pub const fn cfg(self) -> &'static str {
+        match self {
+            Self::Halt => "halt",
+            Self::Linux => "linux",
+            Self::Uefi => "crabefi",
+        }
+    }
+
+    /// Platform features the reset unit needs for this payload.
+    pub const fn features(self) -> &'static [&'static str] {
+        match self {
+            Self::Halt => &[],
+            Self::Linux => &["payload-linux"],
+            Self::Uefi => &["payload-uefi"],
+        }
+    }
+
+    fn config(self, selection: &BuildSelection) -> Result<Option<PayloadConfig>, String> {
+        use fstart_core::payload_manifest::{
+            X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR, X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
+        };
+        Ok(match self {
+            Self::Halt => None,
+            Self::Uefi => Some(fstart_core::x86_uefi_payload()),
+            Self::Linux => Some(fstart_core::x86_linux_payload(
+                selection
+                    .x86_linux_kernel_load_addr
+                    .unwrap_or(X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
+                X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
+                selection.x86_linux_bootargs.as_deref().unwrap_or_default(),
+                selection.x86_linux_print_mtrrs,
+            )?),
+        })
+    }
+}
+
+/// The image-build view of a flash half.
+pub const fn flash_half(half: FlashHalf) -> sp3_flash::FlashHalf {
+    match half {
+        FlashHalf::Lower => sp3_flash::FlashHalf::Lower,
+        FlashHalf::Upper => sp3_flash::FlashHalf::Upper,
+    }
+}
+
+/// How the board's half is composed: the generation's `0x62` slot and FFS
+/// offset, and the board's rewrite opt-in.
+pub fn half_plan<B: Sp3BoardFacts>() -> HalfPlan {
+    let reset = layout::reset_geometry(B::GENERATION);
+    HalfPlan {
+        generation: B::GENERATION,
+        reset: ResetSlot {
+            flash_offset: reset.flash_offset,
+            size: reset.size,
+            destination: reset.destination,
+        },
+        ffs_offset: layout::ffs_offset(B::GENERATION),
+        rewrite_reset_geometry: B::REWRITE_RESET_GEOMETRY,
+    }
+}
+
+/// The assembler's view of the reset unit and its FFS: the FFS fills the
+/// firmware window of the booted half, the unit is monolithic and stored
+/// in the FFS (see the module docs) besides its `0x62` slot.
+fn ffs_assembly(
+    generation: Generation,
+    payload: Payload,
+    config: Option<PayloadConfig>,
+) -> FfsAssembly {
+    let reset = layout::reset_geometry(generation);
+    let ffs = layout::ffs_window(generation);
+    let region = |name: &str, span: Span, kind| MemoryRegion {
+        name: hstr(name),
+        base: span.base,
+        size: span.size,
+        kind,
+    };
+    FfsAssembly {
+        platform: fstart_core::Platform::X86_64,
+        memory: vec![
+            region("flash", FLASH_MMIO, fstart_core::memory::RegionKind::Rom),
+            region("early", EARLY_REGION, fstart_core::memory::RegionKind::Ram),
+        ],
+        flash: None,
+        bootstrap: vec![],
+        stages: StageLayout::Monolithic(MonolithicConfig {
+            build: StageBuildConfig {
+                firmware_image: Some(FirmwareImageConfig::default()),
+                verify_firmware: true,
+                payload: payload != Payload::Halt,
+                pci: true,
+                acpi: true,
+                ..Default::default()
+            },
+            load_addr: reset.destination,
+            stack_size: STACK.size as u32,
+            heap_size: Some(HEAP.size as u32),
+            data_addr: Some(DATA.base),
+            page_table_addr: Some((PAGE_TABLES.base, PAGE_TABLES.size)),
+            page_size: fstart_core::stage::PageSize::Size1GiB,
+            external: false,
+        }),
+        security: fstart_core::dev_security_config("keys/dev-signing.pub"),
+        payload: config,
+        microcode: None,
+        data_assets: vec![],
+        full_flash_image: false,
+        soc_image_format: SocImageFormat::None,
+        boot_hart_id: 0,
+        build: BoardBuildPolicy {
+            firmware_image: FirmwareImagePolicy::memory_mapped(ffs.base, ffs.size),
+            ..Default::default()
+        },
     }
 }
 
@@ -189,16 +354,9 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             compiled.name()
         ));
     }
-    if selection.payload.as_deref().is_some_and(|p| p != "halt")
-        || selection.has_x86_linux_overrides()
-    {
-        // Payloads come from the FFS, which needs the SP3 assembly.
-        return Err(
-            "SP3 builds support only the halt payload until image assembly is wired".into(),
-        );
-    }
-    if selection.image_config.is_some() || !selection.compiler_files.is_empty() {
-        return Err("SP3 takes its vendor image from the board facts".into());
+    let payload = Payload::select(selection)?;
+    if !selection.compiler_files.is_empty() {
+        return Err("SP3 takes no compiler file inputs".into());
     }
     if B::MAX_CPUS == 0 {
         return Err("CPU population must be nonzero".into());
@@ -210,9 +368,12 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         target: "x86_64-unknown-none".into(),
         entry: crate::entry::ENTRY.into(),
         cfg_schema: cfg_schema(),
-        environment: "ram".into(),
-        payload: "halt".into(),
-        features: vec![RESET_FEATURE.into()],
+        environment: RESET_ENVIRONMENT.into(),
+        payload: payload.cfg().into(),
+        features: core::iter::once(RESET_FEATURE)
+            .chain(payload.features().iter().copied())
+            .map(String::from)
+            .collect(),
         build_std: Some("core,alloc".into()),
         release_only: false,
         // DRAM below 4 GiB: small code model, static relocations.
@@ -237,82 +398,46 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             flat_capacity: u64::from(reset.size),
         },
     };
+    // The kernel is the one file a caller supplies (`--kernel`); the
+    // assembler enforces what actually fits next to the reset unit copy.
+    let inputs = match payload {
+        Payload::Linux => vec![InputFile {
+            name: "kernel".into(),
+            default: None,
+            capacity: layout::ffs_window(generation).size,
+        }],
+        Payload::Halt | Payload::Uefi => vec![],
+    };
     let plan = BuildPlan {
-        payload: "halt".into(),
+        payload: payload.name().into(),
         units: vec![unit],
         stages: vec![RESET_UNIT.into()],
-        assembly: Assembly::Unassembled {
-            platform: fstart_core::Platform::X86_64,
-        },
-        inputs: vec![],
+        assembly: Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
+            ffs: ffs_assembly(generation, payload, payload.config(selection)?),
+            // `--image-config` replaces the board's vendor ROM (same
+            // workspace-relative or absolute path rules).
+            vendor_image: selection
+                .image_config
+                .clone()
+                .unwrap_or_else(|| B::VENDOR_IMAGE.into()),
+            half: flash_half(B::FLASH_HALF),
+            reset_unit: RESET_UNIT.into(),
+            compose: half_plan::<B>(),
+        })),
+        inputs,
     };
     plan.order()?;
     Ok(plan)
 }
 
-/// What composing this board's flash half needs (for the image assembler).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImagePlan {
-    /// Workspace-relative vendor ROM.
-    pub vendor_image: String,
-    pub half: FlashHalf,
-    /// Unit whose flat output is the `0x62` image.
-    pub reset_unit: &'static str,
-    pub compose: image::HalfPlan,
-}
-
-pub fn image_plan<B: Sp3BoardFacts>() -> ImagePlan {
-    ImagePlan {
-        vendor_image: B::VENDOR_IMAGE.into(),
-        half: B::FLASH_HALF,
-        reset_unit: RESET_UNIT,
-        compose: image::HalfPlan {
-            generation: B::GENERATION,
-            reset: layout::reset_geometry(B::GENERATION),
-            ffs_offset: layout::ffs_offset(B::GENERATION) as usize,
-            rewrite_reset_geometry: B::REWRITE_RESET_GEOMETRY,
-        },
-    }
-}
-
 /// Check the board's vendor ROM against the build: generation of the
 /// selected half, `0x62` geometry (or the rewrite opt-in) and room for the
 /// FFS above the vendor prefix. `root` is the workspace root.
-pub fn check_vendor<B: Sp3BoardFacts>(
-    root: &std::path::Path,
-) -> Result<image::VendorLayout, String> {
-    let plan = image_plan::<B>();
-    let path = root.join(&plan.vendor_image);
+pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<VendorLayout, String> {
+    let path = root.join(B::VENDOR_IMAGE);
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let half = image::select_half(&bytes, plan.half).map_err(|e| e.to_string())?;
-    let vendor = image::VendorLayout::parse(half).map_err(|e| e.to_string())?;
-    let compose = plan.compose;
-    if vendor.generation != compose.generation {
-        return Err(format!(
-            "{} half of {} is {}, the variant is {}",
-            if plan.half == FlashHalf::Lower {
-                "lower"
-            } else {
-                "upper"
-            },
-            plan.vendor_image,
-            vendor.generation.name(),
-            compose.generation.name()
-        ));
-    }
-    if vendor.reset != compose.reset && !compose.rewrite_reset_geometry {
-        return Err(format!(
-            "vendor 0x62 geometry {:x?} differs from the build's {:x?}",
-            vendor.reset, compose.reset
-        ));
-    }
-    if vendor.prefix_end > compose.ffs_offset {
-        return Err(format!(
-            "vendor prefix ends at {:#x}, above the FFS at {:#x}",
-            vendor.prefix_end, compose.ffs_offset
-        ));
-    }
-    Ok(vendor)
+    let half = sp3_flash::select_half(&bytes, flash_half(B::FLASH_HALF))?;
+    Ok(half_plan::<B>().check_vendor(half)?)
 }
 
 #[cfg(test)]
@@ -335,6 +460,13 @@ mod tests {
         const MAX_CPUS: u16 = 256;
     }
 
+    fn sp3(plan: &BuildPlan) -> &Sp3FlashAssembly {
+        let Assembly::Sp3Flash(image) = &plan.assembly else {
+            panic!("not an SP3 flash assembly")
+        };
+        image
+    }
+
     #[test]
     fn plan_has_one_reset_unit_linked_at_the_0x62_slot() {
         let milan = resolve::<Milan>(&BuildSelection::default());
@@ -347,6 +479,7 @@ mod tests {
         assert_eq!(plan.stages, [RESET_UNIT]);
         let unit = plan.unit(RESET_UNIT).unwrap();
         assert_eq!(unit.entry, "amd-psp-reset");
+        assert_eq!(unit.environment, RESET_ENVIRONMENT);
         assert_eq!(unit.features, [RESET_FEATURE]);
         assert_eq!(unit.environment_values["FSTART_MP_MAX_CPUS"], "256");
         let UnitOutput::Executable {
@@ -369,14 +502,79 @@ mod tests {
         ] {
             assert!(script.contains(needle), "{needle}");
         }
+    }
 
-        for payload in ["linux", "uefi"] {
-            let selection = BuildSelection {
-                payload: Some(payload.into()),
+    #[test]
+    fn plan_assembles_the_vendor_half_with_the_ffs_in_the_firmware_window() {
+        let Ok(plan) = resolve::<Rome>(&BuildSelection::default()) else {
+            assert!(compiled_generation().is_some_and(|g| g != Generation::Rome));
+            return;
+        };
+        let image = sp3(&plan);
+        assert_eq!(image.vendor_image, Rome::VENDOR_IMAGE);
+        assert_eq!(image.half, sp3_flash::FlashHalf::Lower);
+        assert_eq!(image.reset_unit, RESET_UNIT);
+        assert_eq!(
+            image.compose.reset,
+            ResetSlot {
+                flash_offset: 0xdb_0000,
+                size: 0x25_0000,
+                destination: 0x75db_0000
+            }
+        );
+        assert_eq!(image.compose.ffs_offset, 0x60_0000);
+        assert!(!image.compose.rewrite_reset_geometry);
+        let config = plan.assembly.config("tyan-s8030-rome").unwrap();
+        assert_eq!(
+            config.build.firmware_image,
+            FirmwareImagePolicy::memory_mapped(0xff60_0000, 0x7b_0000)
+        );
+        let StageLayout::Monolithic(stage) = &config.stages else {
+            panic!("not monolithic")
+        };
+        assert!(!stage.external && stage.load_addr == 0x75db_0000);
+        assert!(config.payload.is_none() && plan.inputs.is_empty());
+
+        // Payloads, the vendor ROM override and what is refused.
+        let select = |payload: &str| BuildSelection {
+            payload: Some(payload.into()),
+            ..Default::default()
+        };
+        let linux = resolve::<Rome>(&BuildSelection {
+            x86_linux_bootargs: Some("console=ttyS0,115200".into()),
+            ..select("linux")
+        })
+        .unwrap();
+        let unit = linux.unit(RESET_UNIT).unwrap();
+        assert_eq!(
+            (unit.payload.as_str(), &unit.features[1][..]),
+            ("linux", "payload-linux")
+        );
+        assert_eq!(linux.inputs[0].name, "kernel");
+        let payload = sp3(&linux).ffs.payload.as_ref().unwrap();
+        assert_eq!(payload.bootargs.as_deref(), Some("console=ttyS0,115200"));
+        let uefi = resolve::<Rome>(&select("uefi")).unwrap();
+        assert_eq!(uefi.unit(RESET_UNIT).unwrap().payload, "crabefi");
+        assert!(resolve::<Rome>(&select("coreboot")).is_err());
+        assert!(
+            resolve::<Rome>(&BuildSelection {
+                x86_linux_print_mtrrs: true,
                 ..Default::default()
-            };
-            assert!(resolve::<Rome>(&selection).is_err());
-        }
+            })
+            .is_err()
+        );
+        let custom = BuildSelection {
+            image_config: Some("/tmp/dump.rom".into()),
+            ..Default::default()
+        };
+        let plan = resolve::<Rome>(&custom).unwrap();
+        assert_eq!(sp3(&plan).vendor_image, "/tmp/dump.rom");
+        plan.validate_image_selection(&custom).unwrap();
+        // The plan round-trips through fbuild's JSON transport.
+        let json = serde_json::to_string(&plan).unwrap();
+        let back: BuildPlan = serde_json::from_str(&json).unwrap();
+        back.order().unwrap();
+        assert_eq!(sp3(&back).compose, sp3(&plan).compose);
     }
 
     #[test]

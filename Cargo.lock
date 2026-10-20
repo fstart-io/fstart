@@ -806,6 +806,7 @@ dependencies = [
  "fstart-core",
  "fstart-coreboot",
  "fstart-crypto",
+ "fstart-driver-zen",
  "fstart-ffs",
  "fstart-smm",
  "heapless 0.8.0",

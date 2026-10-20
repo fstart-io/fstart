@@ -224,6 +224,10 @@ fn assemble(
         );
     }
     let config = resolved.assembler_config(&manifest.board)?;
+    let sp3_flash = match &resolved.build.plan.assembly {
+        fstart_image_build::build_plan::Assembly::Sp3Flash(image) => Some(image.clone()),
+        _ => None,
+    };
     let parsed = ParsedBoard {
         config,
         acpi_only_devices: Vec::new(),
@@ -239,6 +243,9 @@ fn assemble(
         fit,
         &options.payload_files,
     )?;
+    if let Some(image) = sp3_flash {
+        return compose_sp3_flash(&workspace_root, &image, &assembled);
+    }
     match amd {
         Some(image) => crate::amd_image::compose(
             &workspace_root,
@@ -253,6 +260,68 @@ fn assemble(
         ),
         None => Ok(assembled.image),
     }
+}
+
+/// Put the assembled FFS and the reset unit into the SP3 vendor ROM's half;
+/// a 32 MiB vendor ROM also yields the dual image with only this half
+/// replaced. Relative vendor paths are workspace-relative. Returns the
+/// dual image when there is one, else the half.
+fn compose_sp3_flash(
+    workspace_root: &std::path::Path,
+    image: &fstart_image_build::sp3_flash::Sp3FlashAssembly,
+    assembled: &crate::assemble::AssembledImage,
+) -> Result<std::path::PathBuf, String> {
+    let read = |path: &std::path::Path| {
+        std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let write = |path: &std::path::Path, bytes: &[u8]| {
+        std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let vendor = read(&workspace_root.join(&image.vendor_image))?;
+    let ffs = read(&assembled.image)?;
+    let reset = assembled
+        .stages
+        .iter()
+        .find(|stage| stage.name == image.reset_unit)
+        .ok_or("SP3 reset unit was not built")?;
+    let flash = fstart_image_build::sp3_flash::compose(
+        &vendor,
+        image.half,
+        &image.compose,
+        &read(&reset.run_path)?,
+        &ffs,
+    )?;
+    if !flash.patched.locator {
+        eprintln!(
+            "[fstart] warning: the SP3 reset unit links no FFS locator; it cannot read its FFS"
+        );
+    }
+    let half = assembled.image.with_extension("rom");
+    write(&half, &flash.half)?;
+    eprintln!(
+        "[fstart] SP3 {:?} half: {} (FFS {:#x} bytes at {:#x}, reset image {:#x} bytes at {:#x})",
+        image.half,
+        half.display(),
+        ffs.len(),
+        image.compose.ffs_offset,
+        image.compose.reset.size,
+        image.compose.reset.flash_offset,
+    );
+    let Some(dual) = flash.dual else {
+        return Ok(half);
+    };
+    let stem = half
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("non-UTF8 image name")?;
+    let out = half.with_file_name(format!("{stem}-32m.rom"));
+    write(&out, &dual)?;
+    eprintln!(
+        "[fstart] SP3 32 MiB image: {} (other half kept from {})",
+        out.display(),
+        image.vendor_image
+    );
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
