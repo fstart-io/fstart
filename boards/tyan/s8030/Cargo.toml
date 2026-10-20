@@ -15,6 +15,7 @@ schema = 1
 board = "tyan-s8030"
 platform = "x86_64"
 target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
 
 [package.metadata.fstart.variants.tyan-s8030-rome]
@@ -42,3 +43,11 @@ fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] 
 embedded-hal = { version = "1", default-features = false }
 heapless = { version = "0.8", default-features = false }
 tock-registers = "0.10"
+
+# The reset image; fbuild builds it with fstart-platform-sp3/bundle-reset.
+# Board unit tests (`cargo test --features rome`) only build the library.
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+test = false
+bench = false

@@ -10,6 +10,7 @@
 //! | [`gpio`] | the CPM `$A10` pad table, the M.2 detect pads, Rome GPIO4/5 |
 //! | [`policy`] | silicon policy from the S8030 setup defaults |
 //! | [`bmc`] | AST2500 LPC decodes, Super I/O and SCU, COM1 console, IPMI KCS, ACPI |
+//! | `platform` | the `fstart_platform_sp3::board::Board` implementation over the above |
 //!
 //! One build serves one generation: the `rome` or `milan` feature, selected
 //! by the `tyan-s8030-rome` / `tyan-s8030-milan` variant.
@@ -37,6 +38,7 @@ compile_error!("the rome and milan variants are separate builds");
 pub mod bmc;
 pub mod dxio;
 pub mod gpio;
+mod platform;
 pub mod policy;
 
 use fstart_driver_zen::soc::Generation;
