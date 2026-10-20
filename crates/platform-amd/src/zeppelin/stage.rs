@@ -619,7 +619,7 @@ fn acpi_tables<B: Board>(
                 .filter_map(|a| {
                     let device = ecam.device(a)?;
                     (device.read32(8) >> 16 == 0x0604).then_some(acpi::Bridge {
-                        devfn: (a.device() << 3) | a.function(),
+                        devfn: fstart_pci::devfn(a.device(), a.function()),
                         pin: (device.read32(0x3c) >> 8) as u8,
                     })
                 })

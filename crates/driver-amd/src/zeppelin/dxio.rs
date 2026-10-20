@@ -50,7 +50,7 @@ use core::{
     sync::atomic::{Ordering, compiler_fence},
 };
 use fstart_log::{Hex, debug, error, info, warn};
-use fstart_pci::{ConfigRegionAccess, PciAddress};
+use fstart_pci::{ConfigRegionAccess, PciAddress, devfn, devfn_parts};
 use zerocopy::{FromBytes, IntoBytes};
 
 /// Engine records of a die's platform descriptor.
@@ -77,9 +77,6 @@ pub const DEFAULT_DEVFNS: [u8; PCIE_PORT_COUNT] = [
     devfn(3, 7),
     devfn(4, 1),
 ];
-const fn devfn(device: u8, function: u8) -> u8 {
-    device << 3 | function
-}
 fn bridge_index(devfn: u8) -> Option<usize> {
     DEFAULT_DEVFNS.iter().position(|&d| d == devfn)
 }
@@ -415,12 +412,13 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
         let smn = &mut self.die.smn();
         for (p, devfn) in map.into_iter().enumerate() {
             smn.update(nbio::nb_prog_device_remap(p), 0xff, devfn.into());
+            let (device, function) = devfn_parts(devfn);
             debug!(
                 "DXIO {}: port {} -> {}.{}",
                 self.die.index(),
                 p,
-                devfn >> 3,
-                devfn & 7
+                device,
+                function
             );
         }
         self.topology = topology;

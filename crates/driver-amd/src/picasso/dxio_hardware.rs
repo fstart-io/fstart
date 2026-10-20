@@ -167,7 +167,8 @@ fn configured(smn: &mut impl Smn, pci: &impl ConfigRegionAccess, topology: &Topo
         } else {
             0
         };
-        let address = PciAddress::new(0, 0, p.devfn >> 3, p.devfn & 7);
+        let (device, function) = fstart_pci::devfn_parts(p.devfn);
+        let address = PciAddress::new(0, 0, device, function);
         // SAFETY: live mapped root-port config space, aligned valid offsets.
         let mut eq = unsafe { pci.read(address, 0x27c) } & 0x8080;
         eq |= preset & 0x7f;

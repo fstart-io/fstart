@@ -125,7 +125,7 @@ impl Descriptor {
         }
     }
     pub const fn devfn(&self) -> u8 {
-        self.device << 3 | self.function
+        fstart_pci::devfn(self.device, self.function)
     }
 }
 
