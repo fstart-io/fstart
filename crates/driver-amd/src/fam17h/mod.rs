@@ -3,6 +3,7 @@
 //! the DRAM-first cache plan, the TSC, the APOB, the DXIO descriptors, the
 //! SMN/Data Fabric register transports, microcode patches and the PSP mailbox.
 pub mod apob;
+pub mod bios_directory;
 pub mod cache;
 pub mod dxio;
 pub mod microcode;
