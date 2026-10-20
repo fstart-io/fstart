@@ -8,7 +8,9 @@
 //! platform validates its directory geometry before planning; this module
 //! re-checks the geometry against the bytes it composes.
 use crate::build_plan::{FfsAssembly, FileBinding};
+use fstart_amdfw::{Flash, directory::bios, efs::BiosDirectorySlot, efs::Efs};
 use serde::{Deserialize, Serialize};
+use zerocopy::IntoBytes;
 
 /// Flash offsets of the composite image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +28,8 @@ pub struct VendorFlashLayout {
     pub reset_destination: u64,
     /// The PSP output block destination (BIOS directory entry 0x61).
     pub apob_destination: u64,
+    /// Where the SoC's PSP finds the BIOS directory.
+    pub bios_directory: BiosDirectorySlot,
 }
 impl VendorFlashLayout {
     pub fn validate(&self) -> Result<(), String> {
@@ -55,64 +59,72 @@ pub struct VendorFlashAssembly {
 /// BIOS directory entries the composition relies on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BiosDirectoryFacts {
+    /// The flash offset of the EFS.
+    pub efs: usize,
     pub reset_offset: u32,
     pub reset_size: u32,
     pub reset_destination: u64,
     pub apob_destination: u64,
 }
 
-/// Find the (first-level) BIOS directory in `image` and read the reset
-/// image (type 0x62) and APOB (type 0x61) entries. Every other entry with
-/// flash contents must lie within `prefix_size`, so composing can't cut off
-/// vendor data.
-pub fn read_bios_directory(image: &[u8], prefix_size: u32) -> Result<BiosDirectoryFacts, String> {
-    const COOKIE: &[u8; 4] = b"$BHD";
-    let flash_base = 0x1_0000_0000u64
-        .checked_sub(image.len() as u64)
-        .ok_or("vendor image larger than 4 GiB")?;
-    let u32_at = |o: usize| u32::from_le_bytes(image[o..o + 4].try_into().unwrap());
-    let u64_at = |o: usize| u64::from_le_bytes(image[o..o + 8].try_into().unwrap());
-    let directory = (0..prefix_size as usize)
-        .step_by(0x1000)
-        .find(|&o| o + 16 <= image.len() && &image[o..o + 4] == COOKIE)
-        .ok_or("no BIOS directory in the vendor prefix")?;
-    let count = u32_at(directory + 8) as usize;
-    if count == 0 || count > 64 || directory + 16 + count * 24 > prefix_size as usize {
-        return Err("BIOS directory entry count is out of range".into());
-    }
-    let mut reset = None;
-    let mut apob = None;
-    for entry in (0..count).map(|i| directory + 16 + i * 24) {
-        let kind = image[entry];
-        let size = u32_at(entry + 4);
-        let source = u64_at(entry + 8);
-        let destination = u64_at(entry + 16);
-        // Sources are either flash offsets or memory-mapped flash addresses.
-        let offset = source.checked_sub(flash_base).unwrap_or(source);
-        match kind {
-            0x61 => apob = Some(destination),
-            0x62 => {
-                reset = Some((
-                    u32::try_from(offset).map_err(|_| "reset image source out of range")?,
-                    size,
-                    destination,
-                ))
-            }
-            _ if size != 0 && source != 0 && offset + u64::from(size) > u64::from(prefix_size) => {
+/// Read the reset image (type 0x62) and APOB (type 0x61) entries of the
+/// BIOS directory the PSP of `slot` boots from in `image`: the EFS's, or the
+/// level 2 it points to. The EFS, the directories and every file but the
+/// reset image must lie within `prefix_size`, so composing can't cut off
+/// vendor data, and every level must agree on the reset image.
+pub fn read_bios_directory(
+    image: &[u8],
+    prefix_size: u32,
+    slot: BiosDirectorySlot,
+) -> Result<BiosDirectoryFacts, String> {
+    let flash = Flash::new(image);
+    let prefix = u64::from(prefix_size);
+    let within = |offset: usize, size: usize| offset as u64 + size as u64 <= prefix;
+    let (efs, _) = flash
+        .efs()
+        .filter(|&(offset, _)| within(offset, size_of::<Efs>()))
+        .ok_or("no EFS in the vendor prefix")?;
+    let levels = flash
+        .bios_directories(slot)
+        .ok_or("no valid BIOS directory for the SoC in the vendor image")?;
+    let boot = levels.boot();
+    let find = |kind| boot.entries.iter().find(|e| e.kind == kind);
+    let reset = find(bios::RESET_IMAGE).ok_or("BIOS directory has no reset image (type 0x62)")?;
+    let apob = find(bios::APOB).ok_or("BIOS directory has no APOB entry (type 0x61)")?;
+    for directory in levels.iter() {
+        if !within(directory.offset, directory.table().len()) {
+            return Err("BIOS directory is outside the vendor prefix".into());
+        }
+        for entry in directory.entries {
+            let (kind, size, source) = (entry.kind, entry.size.get(), entry.source.get());
+            // Sources are either flash offsets or memory-mapped flash addresses.
+            let offset = flash.offset(source).map_or(u64::MAX, |o| o as u64);
+            if kind == bios::RESET_IMAGE {
+                if entry.as_bytes() != reset.as_bytes() {
+                    return Err("the BIOS directory levels disagree on the reset image".into());
+                }
+            } else if size != 0
+                && source != 0
+                && offset
+                    .checked_add(u64::from(size))
+                    .is_none_or(|end| end > prefix)
+            {
                 return Err(format!(
                     "BIOS directory entry {kind:#x} at {offset:#x} is outside the vendor prefix"
                 ));
             }
-            _ => {}
         }
     }
-    let (reset_offset, reset_size, reset_destination) =
-        reset.ok_or("BIOS directory has no reset image (type 0x62)")?;
+    let reset_offset = flash
+        .offset(reset.source.get())
+        .and_then(|o| u32::try_from(o).ok())
+        .ok_or("reset image source out of range")?;
     Ok(BiosDirectoryFacts {
+        efs,
         reset_offset,
-        reset_size,
-        reset_destination,
-        apob_destination: apob.ok_or("BIOS directory has no APOB entry (type 0x61)")?,
+        reset_size: reset.size.get(),
+        reset_destination: reset.destination.get(),
+        apob_destination: apob.destination.get(),
     })
 }
 
@@ -130,7 +142,7 @@ pub fn compose(
     if vendor.len() != layout.flash_size as usize {
         return Err("vendor image size doesn't match the flash size".into());
     }
-    let facts = read_bios_directory(vendor, layout.prefix_size)?;
+    let facts = read_bios_directory(vendor, layout.prefix_size, layout.bios_directory)?;
     if (
         facts.reset_offset,
         facts.reset_size,
@@ -196,6 +208,10 @@ pub fn compose(
 
     let reset_offset = layout.reset_offset as usize;
     image[reset_offset..reset_offset + stage.len()].copy_from_slice(&stage);
+    // The PSP must still find the vendor's EFS, not one in fstart's bytes.
+    if read_bios_directory(&image, layout.prefix_size, layout.bios_directory)? != facts {
+        return Err("the composed image has another BIOS directory".into());
+    }
     Ok(image)
 }
 
@@ -210,40 +226,47 @@ fn find_unique(haystack: &[u8], needle: &[u8], step: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fstart_amdfw::directory::fletcher32;
 
-    fn vendor() -> Vec<u8> {
-        let mut image = vec![0xffu8; 0x100_0000];
-        let dir = 0xf7000;
-        image[dir..dir + 4].copy_from_slice(b"$BHD");
-        image[dir + 8..dir + 12].copy_from_slice(&3u32.to_le_bytes());
-        let mut entry = |i: usize, kind: u8, size: u32, source: u64, dest: u64| {
-            let e = dir + 16 + i * 24;
-            image[e..e + 24].fill(0);
-            image[e] = kind;
-            image[e + 4..e + 8].copy_from_slice(&size.to_le_bytes());
-            image[e + 8..e + 16].copy_from_slice(&source.to_le_bytes());
-            image[e + 16..e + 24].copy_from_slice(&dest.to_le_bytes());
-        };
-        entry(0, 0x60, 0x4000, 0xff0f_8000, u64::MAX);
-        entry(1, 0x61, 0, 0, 0x3000_0000);
-        entry(2, 0x62, 0x25_0000, 0xffdb_0000, 0x76db_0000);
-        image
-    }
+    const SLOT: BiosDirectorySlot = BiosDirectorySlot::Family17hModel00;
 
     #[test]
     fn reads_the_mj11_reset_image_entry() {
-        let facts = read_bios_directory(&vendor(), 0x29_4000).unwrap();
+        let facts = read_bios_directory(&two_level_vendor(), 0x29_4000, SLOT).unwrap();
         assert_eq!(
             facts,
             BiosDirectoryFacts {
+                efs: 0x2_0000,
                 reset_offset: 0xdb_0000,
                 reset_size: 0x25_0000,
                 reset_destination: 0x76db_0000,
                 apob_destination: 0x3000_0000,
             }
         );
-        // The APCB backup at 0xf8000 would be cut off by a smaller prefix.
-        assert!(read_bios_directory(&vendor(), 0xf8000).is_err());
+        // The level-2 microcode at 0x25f800 would be cut off by a smaller
+        // prefix.
+        assert!(read_bios_directory(&two_level_vendor(), 0x26_0000, SLOT).is_err());
+        assert!(read_bios_directory(&two_level_vendor(), 0x26_0480, SLOT).is_ok());
+    }
+
+    /// Point level 2's entry `index` to `destination` and fix its checksum.
+    fn set_level2_destination(image: &mut [u8], index: usize, destination: u64) {
+        let entry = 0x22_9010 + index * 24;
+        image[entry + 16..entry + 24].copy_from_slice(&destination.to_le_bytes());
+        let checksum = fletcher32(&image[0x22_9008..0x22_9010 + 5 * 24]);
+        image[0x22_9004..0x22_9008].copy_from_slice(&checksum.to_le_bytes());
+    }
+
+    #[test]
+    fn the_psp_boots_from_level_2() {
+        let mut image = two_level_vendor();
+        // The APOB of level 2, not level 1's.
+        set_level2_destination(&mut image, 1, 0x3100_0000);
+        let facts = read_bios_directory(&image, 0x29_4000, SLOT).unwrap();
+        assert_eq!(facts.apob_destination, 0x3100_0000);
+        // The levels must agree on the reset image.
+        set_level2_destination(&mut image, 2, 0x7600_0000);
+        assert!(read_bios_directory(&image, 0x29_4000, SLOT).is_err());
     }
 
     fn hex(bytes: &[u8]) -> String {
@@ -277,7 +300,7 @@ mod tests {
                     table.extend(source.to_le_bytes());
                     table.extend(destination.to_le_bytes());
                 }
-                let checksum = crate::amd::fletcher32(&table[8..]);
+                let checksum = fletcher32(&table[8..]);
                 table[4..8].copy_from_slice(&checksum.to_le_bytes());
                 put(offset, &table);
             };
@@ -337,6 +360,7 @@ mod tests {
             reset_size: 0x25_0000,
             reset_destination: 0x76db_0000,
             apob_destination: 0x3000_0000,
+            bios_directory: SLOT,
         };
         let (ffs, stage) = ffs_and_stage(0x25_0000);
         let vendor = two_level_vendor();

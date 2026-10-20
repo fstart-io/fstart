@@ -110,7 +110,7 @@ fn directories_and_copy_to_dram() {
     assert_eq!(packed.psp_directory, 0xe30000); // initial 64-KiB quirk
     let start = (packed.psp_directory - packed.offset) as usize;
     let h = Header::read_from_bytes(&packed.bytes[start..start + 16]).unwrap();
-    assert_eq!(h.cookie.get(), PSP_COOKIE);
+    assert_eq!(h.cookie, PSP_COOKIE);
     assert_eq!(h.count.get(), 2);
     assert_eq!(
         h.checksum.get(),
@@ -131,7 +131,7 @@ fn directories_and_copy_to_dram() {
     let bin = entries.iter().find(|e| e.kind == 0x62).unwrap();
     assert_eq!(bin.destination.get(), 0x2030000);
     assert_eq!(bin.size.get(), 0x20000);
-    assert_eq!(bin.flags_instance, 3);
+    assert_eq!(bin.flags, 3);
     let src = (bin.source.get() - 0xff000000 - u64::from(packed.offset)) as usize;
     assert_eq!(&packed.bytes[src..src + 0x20000], &image.reset_image);
     let apcb = entries.iter().find(|e| e.kind == 0x60).unwrap();
@@ -191,7 +191,7 @@ fn nv_physical_addresses_and_reserved_bits() {
     let e = PspEntry::read_from_bytes(&p.bytes[s + 32..s + 48]).unwrap();
     assert_eq!(e.kind, 4);
     assert_eq!(e.address.get(), 0xff202000);
-    assert_eq!(e.reserved, [0; 2]); // no Gen2 ROM Armor attributes
+    assert_eq!(e.attributes, [0; 2]); // no Gen2 ROM Armor attributes
 }
 #[test]
 fn config_is_strict_and_optional_files_are_not_read() {
@@ -221,12 +221,6 @@ fn config_is_strict_and_optional_files_are_not_read() {
         )
         .is_err()
     );
-}
-#[test]
-fn fletcher_reference_vectors() {
-    assert_eq!(fletcher32(&[0; 8]), 0xffffffff);
-    assert_eq!(fletcher32(&[1, 0, 2, 0, 3, 0, 4, 0]), 0x0014000a);
-    assert_eq!(fletcher32(&vec![0xff; 1024]), 0xffffffff);
 }
 #[test]
 fn packs_the_pinned_image() {

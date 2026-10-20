@@ -7,9 +7,11 @@ pub mod apcb;
 pub mod assembly;
 pub mod config;
 pub mod vendor_flash;
-mod wire;
 
-use wire::*;
+use fstart_amdfw::{
+    directory::{BIOS_COOKIE, BiosEntry, Header, PSP_COOKIE, PspEntry, bios, fletcher32, psp},
+    efs::{BiosDirectorySlot, Efs},
+};
 use zerocopy::IntoBytes;
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -31,6 +33,20 @@ impl Key {
             subprogram,
             instance,
         }
+    }
+    fn psp_entry(self, size: u32, address: u64) -> PspEntry {
+        PspEntry::new(self.kind, self.subprogram, self.instance, size, address)
+    }
+    fn bios_entry(self, flags: u8, size: u32, source: u64, destination: u64) -> BiosEntry {
+        BiosEntry::new(
+            self.kind,
+            self.subprogram,
+            self.instance,
+            flags,
+            size,
+            source,
+            destination,
+        )
     }
 }
 
@@ -123,7 +139,7 @@ impl Writer {
     fn directory<T: IntoBytes + zerocopy::Immutable>(
         &mut self,
         start: u32,
-        cookie: u32,
+        cookie: [u8; 4],
         entries: &[T],
     ) -> Result<()> {
         self.align(0x1000)?;
@@ -132,7 +148,7 @@ impl Writer {
             return Err("Picasso directory exceeds 10-bit extent".into());
         }
         let mut header = Header {
-            cookie: cookie.into(),
+            cookie,
             checksum: 0.into(),
             count: (entries.len() as u32).into(),
             // Header v0, physical addresses, SPI block size 1, base_addr=0.
@@ -156,7 +172,7 @@ fn validate_key(key: Key, bios: bool) -> Result<()> {
     // Gen1 APCB/backup selectors are instance-only. The source helper
     // creates backup entries with subprogram zero; accepting nonzero APCB
     // subprograms could create duplicate generated backup selectors.
-    if bios && matches!(key.kind, 0x60 | 0x68) && key.subprogram != 0 {
+    if bios && matches!(key.kind, bios::APCB | bios::APCB_BACKUP) && key.subprogram != 0 {
         return Err(format!("unsupported Picasso APCB selector {key:?}"));
     }
     let allowed = if bios {
@@ -187,6 +203,9 @@ fn validate_blobs(blobs: &[Blob], bios: bool) -> Result<()> {
 }
 
 impl PicassoImage {
+    /// The EFS field Picasso's PSP takes the BIOS directory from.
+    pub const BIOS_DIRECTORY: BiosDirectorySlot = BiosDirectorySlot::Family17hModel10;
+
     pub fn pack(&self) -> Result<PackedImage> {
         if !(0x40000..=0x1000000).contains(&self.flash_size) || !self.flash_size.is_power_of_two() {
             return Err("Picasso flash must be a power of two, 256 KiB..16 MiB".into());
@@ -243,7 +262,7 @@ impl PicassoImage {
                 return Err("overlapping NV ranges".into());
             }
         }
-        if self.psp.iter().any(|b| b.key.kind == 4) && self.psp_nv.is_some() {
+        if self.psp.iter().any(|b| b.key.kind == psp::NVRAM) && self.psp_nv.is_some() {
             return Err("PSP NVRAM has both a file and an external allocation".into());
         }
         let mut writer = Writer {
@@ -260,30 +279,30 @@ impl PicassoImage {
         let mut psp: Vec<_> = self.psp.iter().collect();
         psp.sort_by_key(|b| b.key);
         let mut psp_entries = Vec::new();
-        let fuse = PspEntry::new(Key::new(0x0b, 0, 0), u32::MAX, self.soft_fuse);
+        let fuse = Key::new(psp::SOFT_FUSE, 0, 0).psp_entry(u32::MAX, self.soft_fuse);
         for blob in psp {
-            if psp_entries.last().is_some_and(|e: &PspEntry| e.kind < 0x0b) && blob.key.kind > 0x0b
+            if psp_entries
+                .last()
+                .is_some_and(|e: &PspEntry| e.kind < psp::SOFT_FUSE)
+                && blob.key.kind > psp::SOFT_FUSE
             {
                 psp_entries.push(fuse);
             }
-            let nv = matches!(blob.key.kind, 4 | 0x38 | 0x54);
+            let nv = matches!(blob.key.kind, psp::NVRAM | psp::SEV_DATA | psp::RPMC_NVRAM);
             let (source, size) = writer.blob(&blob.bytes, if nv { 0x1000 } else { 0x100 })?;
             let size = if nv {
                 size.checked_add(0xfff).ok_or("NV size overflow")? & !0xfff
             } else {
                 size
             };
-            psp_entries.push(PspEntry::new(blob.key, size, physical(source)));
+            psp_entries.push(blob.key.psp_entry(size, physical(source)));
         }
-        if !psp_entries.iter().any(|e| e.kind == 0x0b) {
+        if !psp_entries.iter().any(|e| e.kind == psp::SOFT_FUSE) {
             psp_entries.push(fuse);
         }
         if let Some(region) = self.psp_nv {
-            psp_entries.push(PspEntry::new(
-                Key::new(4, 0, 0),
-                region.size,
-                physical(region.offset),
-            ));
+            psp_entries
+                .push(Key::new(psp::NVRAM, 0, 0).psp_entry(region.size, physical(region.offset)));
         }
         psp_entries.sort_by_key(|e| (e.kind, e.subprogram));
         if psp_entries.len() > 255 {
@@ -298,32 +317,34 @@ impl PicassoImage {
         // PMU instruction/data entries are interleaved per selector.
         bios.sort_by_key(|b| {
             (
-                if b.key.kind == 0x65 { 0x64 } else { b.key.kind },
+                if b.key.kind == bios::PMU_DATA {
+                    bios::PMU_INSTRUCTIONS
+                } else {
+                    b.key.kind
+                },
                 b.key.subprogram,
                 b.key.instance,
                 b.key.kind,
             )
         });
-        for blob in bios.iter().filter(|b| b.key.kind == 5) {
+        for blob in bios.iter().filter(|b| b.key.kind == bios::RTM_PUBKEY) {
             let (src, size) = writer.blob(&blob.bytes, 0x100)?;
-            bios_entries.push(BiosEntry::new(blob.key, 0, size, physical(src), u64::MAX));
+            bios_entries.push(blob.key.bios_entry(0, size, physical(src), u64::MAX));
         }
         // Picasso PSB signature reservation. All erased; no fake signature.
         let signature = writer.reserve(0x100)?;
-        bios_entries.push(BiosEntry::new(
-            Key::new(7, 0, 0),
+        bios_entries.push(Key::new(bios::SIGNATURE, 0, 0).bios_entry(
             0,
             0x100,
             physical(signature),
             u64::MAX,
         ));
-        for blob in bios.iter().filter(|b| b.key.kind == 0x60) {
+        for blob in bios.iter().filter(|b| b.key.kind == bios::APCB) {
             let (src, raw_size) = writer.blob(&blob.bytes, 0x1000)?;
             let size = raw_size.checked_add(0xfff).ok_or("APCB size overflow")? & !0xfff;
-            bios_entries.push(BiosEntry::new(blob.key, 0, size, physical(src), u64::MAX));
-            if !bios.iter().any(|b| b.key.kind == 0x68) {
-                let mut backup = BiosEntry::new(
-                    Key::new(0x68, 0, blob.key.instance),
+            bios_entries.push(blob.key.bios_entry(0, size, physical(src), u64::MAX));
+            if !bios.iter().any(|b| b.key.kind == bios::APCB_BACKUP) {
+                let mut backup = Key::new(bios::APCB_BACKUP, 0, blob.key.instance).bios_entry(
                     0,
                     size,
                     physical(src),
@@ -331,58 +352,56 @@ impl PicassoImage {
                 );
                 // add_bios_apcb_bk_entry leaves romid/writable/reserved erased.
                 // Preserve those Gen1 bytes for reference-image equivalence.
-                backup.subprogram_rom = 0xf8;
+                backup.subprogram = 0xf8;
                 bios_entries.push(backup);
             }
         }
         // APOB size/source deliberately zero: only the destination is set.
-        bios_entries.push(BiosEntry::new(
-            Key::new(0x61, 0, 0),
-            0,
-            0,
-            0,
-            self.apob_destination,
-        ));
+        bios_entries.push(Key::new(bios::APOB, 0, 0).bios_entry(0, 0, 0, self.apob_destination));
         let (src, size) = writer.blob(&self.reset_image, 0x100)?;
-        // reset=1, copy=1, compressed=0. Size is the uncompressed DRAM extent.
-        bios_entries.push(BiosEntry::new(
-            Key::new(0x62, 0, 0),
-            3,
+        // Not compressed: the size is the DRAM extent.
+        bios_entries.push(Key::new(bios::RESET_IMAGE, 0, 0).bios_entry(
+            BiosEntry::RESET | BiosEntry::COPY,
             size,
             physical(src),
             self.reset_destination,
         ));
         if let Some(region) = self.apob_nv {
-            let mut entry = BiosEntry::new(
-                Key::new(0x63, 0, 0),
+            let mut entry = Key::new(bios::APOB_NV, 0, 0).bios_entry(
                 0,
                 region.size,
                 // Picasso's APOB NV quirk uses the fixed 16-MiB window base.
                 0xff000000 + u64::from(region.offset),
                 u64::MAX,
             );
-            entry.subprogram_rom = 1 << 5;
+            entry.subprogram = 1 << 5;
             bios_entries.push(entry);
         }
-        for blob in bios.iter().filter(|b| !matches!(b.key.kind, 5 | 0x60)) {
+        for blob in bios
+            .iter()
+            .filter(|b| !matches!(b.key.kind, bios::RTM_PUBKEY | bios::APCB))
+        {
             let (src, size) = writer.blob(
                 &blob.bytes,
-                if blob.key.kind == 0x68 { 0x1000 } else { 0x100 },
+                if blob.key.kind == bios::APCB_BACKUP {
+                    0x1000
+                } else {
+                    0x100
+                },
             )?;
-            let size = if blob.key.kind == 0x68 {
+            let size = if blob.key.kind == bios::APCB_BACKUP {
                 (size + 0xfff) & !0xfff
             } else {
                 size
             };
-            bios_entries.push(BiosEntry::new(blob.key, 0, size, physical(src), u64::MAX));
+            bios_entries.push(blob.key.bios_entry(0, size, physical(src), u64::MAX));
         }
         if let Some((destination, size)) = self.shared_memory {
             if destination == 0 || size == 0 || destination.checked_add(u64::from(size)).is_none() {
                 return Err("invalid PSP shared DRAM extent".into());
             }
             // The shared-memory source bytes stay erased.
-            bios_entries.push(BiosEntry::new(
-                Key::new(0x6b, 0, 0),
+            bios_entries.push(Key::new(bios::SHARED_MEMORY, 0, 0).bios_entry(
                 0,
                 size,
                 u64::MAX,
@@ -393,15 +412,18 @@ impl PicassoImage {
             return Err("too many BIOS entries".into());
         }
         writer.directory(bios_start, BIOS_COOKIE, &bios_entries)?;
-        let mut efs = [0xffu8; 0x60];
-        efs[..4].copy_from_slice(&0x55aa55aau32.to_le_bytes());
-        efs[4..16].fill(0); // IMC/GEC/xHCI not present
-        efs[0x14..0x18].copy_from_slice(&(physical(psp_start) as u32).to_le_bytes());
-        efs[0x1c..0x20].copy_from_slice(&(physical(bios_start) as u32).to_le_bytes());
-        efs[0x43] = self.spi_read_mode;
-        efs[0x44] = self.spi_speed;
-        efs[0x45] = if self.micron { 0x0a } else { 0xff };
-        writer.write(self.efs_offset, &efs);
+        let mut efs = Efs::erased();
+        // IMC, GEC and xHCI firmware not present.
+        for pointer in [&mut efs.imc, &mut efs.gec, &mut efs.xhci] {
+            pointer.set(0);
+        }
+        efs.new_psp_directory.set(physical(psp_start) as u32);
+        efs.bios_directory_mut(PicassoImage::BIOS_DIRECTORY)
+            .set(physical(bios_start) as u32);
+        efs.spi_read_mode = self.spi_read_mode;
+        efs.spi_speed = self.spi_speed;
+        efs.qpr_dummy_cycle = if self.micron { 0x0a } else { 0xff };
+        writer.write(self.efs_offset, efs.as_bytes());
         Ok(PackedImage {
             offset: self.efs_offset,
             bytes: writer.bytes,
@@ -409,23 +431,6 @@ impl PicassoImage {
             bios_directory: bios_start,
         })
     }
-}
-
-/// The folded Fletcher-32, little-endian 16-bit words, 359-word chunks.
-pub fn fletcher32(bytes: &[u8]) -> u32 {
-    assert!(bytes.len().is_multiple_of(2));
-    let (mut c0, mut c1) = (0xffffu32, 0xffffu32);
-    for chunk in bytes.chunks(359 * 2) {
-        for word in chunk.chunks_exact(2) {
-            c0 += u32::from(u16::from_le_bytes([word[0], word[1]]));
-            c1 += c0;
-        }
-        c0 = (c0 & 0xffff) + (c0 >> 16);
-        c1 = (c1 & 0xffff) + (c1 >> 16);
-    }
-    c0 = (c0 & 0xffff) + (c0 >> 16);
-    c1 = (c1 & 0xffff) + (c1 >> 16);
-    (c1 << 16) | c0
 }
 
 #[cfg(test)]

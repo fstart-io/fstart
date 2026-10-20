@@ -8,7 +8,7 @@
 //! APOB destination this layout was linked for.
 extern crate std;
 use super::layout::{LAYOUT as L, RESET_FLASH_OFFSET, VENDOR_PREFIX};
-use crate::noncar::{Board, host as noncar};
+use crate::noncar::{Board, Soc, host as noncar};
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, Platform, SocImageFormat, StageBuildConfig, StageLayout, hstr,
@@ -114,7 +114,7 @@ fn vendor_layout(path: &str) -> Result<(FileBinding, VendorFlashLayout), String>
             FLASH_SIZE
         ));
     }
-    let facts = read_bios_directory(&bytes, VENDOR_PREFIX)?;
+    let facts = read_bios_directory(&bytes, VENDOR_PREFIX, Zeppelin::BIOS_DIRECTORY)?;
     let layout = VendorFlashLayout {
         flash_size: FLASH_SIZE,
         prefix_size: VENDOR_PREFIX,
@@ -124,6 +124,7 @@ fn vendor_layout(path: &str) -> Result<(FileBinding, VendorFlashLayout), String>
         reset_size: L.image.size as u32,
         reset_destination: L.image.base,
         apob_destination: fstart_driver_amd::soc::zeppelin::APOB_BASE,
+        bios_directory: Zeppelin::BIOS_DIRECTORY,
     };
     layout.validate()?;
     if (

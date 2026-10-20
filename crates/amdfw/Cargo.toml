@@ -1,0 +1,13 @@
+[package]
+name = "fstart-amdfw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+zerocopy.workspace = true
+serde = { workspace = true, optional = true }
