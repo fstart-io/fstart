@@ -3,13 +3,11 @@
 //! the PSP-released reset vector to the payload.
 #[cfg(feature = "acpi")]
 pub mod acpi;
+#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
+mod boot;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod boot;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod cpu;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod memory;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
@@ -83,7 +81,6 @@ impl BoardCtx<'_> {
         Gpio::new(self.fch(), &fstart_driver_amd::zeppelin::GPIO_BANK)
     }
 }
-
 
 /// Board wiring and hooks. The platform owns the order of calls.
 pub trait Board: 'static {

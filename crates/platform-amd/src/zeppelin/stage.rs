@@ -3,7 +3,8 @@
 //! the image it copied to DRAM. `psp_reset.S` enters long mode and continues
 //! at the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
 //! board's `fstart_main`.
-use super::{Board, BoardCtx, Clock, acpi, boot, cpu::ZeppelinCpu, layout, memory, pci, smm};
+use super::{Board, BoardCtx, Clock, acpi, boot, layout, memory, pci, smm};
+use crate::cpu::{Fam17hCpu, PatchPage};
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
@@ -16,7 +17,9 @@ use fstart_driver_amd::{
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
     zeppelin::{
-        self as soc, MAX_DIES, Package, Revision, ccx, dxio, fabric, fch, iommu, nbio, psp, smu,
+        self as soc, MAX_DIES, Package, Revision, ccx, dxio, fabric, fch, iommu,
+        microcode::Zeppelin,
+        nbio, psp, smu,
         topology::{self, Die},
     },
 };
@@ -73,6 +76,8 @@ static mut SMU_PAGES: SmuPages = SmuPages([[0; 4096]; 2 * MAX_DIES]);
 struct SmuPolicy([u8; 0x80]);
 static mut SMU_POLICY: SmuPolicy = SmuPolicy([0; 0x80]);
 static mut DXIO_BUFFERS: dxio::Buffers = dxio::Buffers::new();
+/// The microcode patch the CPUs load: firmware BSS in the reserved region.
+static mut MICROCODE: core::mem::MaybeUninit<PatchPage> = core::mem::MaybeUninit::uninit();
 
 fn console<B: Board>() {
     let Ok(console) = Ns16550::new(B::console()) else { halt() };
@@ -386,8 +391,15 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
         psp_bars,
         cac_weights,
     };
-    // SAFETY: BSP only, before the APs start.
-    let cpu = unsafe { ZeppelinCpu::new(policy, flash, fstart_arch::x86::cpuid(1).0) };
+    // SAFETY: BSP only, before the APs start; the page is reserved BSS.
+    let cpu = unsafe {
+        Fam17hCpu::<Zeppelin, _>::new(
+            "AMD Zeppelin",
+            flash,
+            &mut *core::ptr::addr_of_mut!(MICROCODE),
+            move |msr: &NativeMsr, thread| ccx::cpu_init(msr, &policy, thread),
+        )
+    };
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
     let mut launch = |aps: u16| {
         // SAFETY: the reset vector sends APs to the SIPI trampoline the MP
@@ -415,7 +427,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
             fstart_log::info!(
                 "zeppelin: {} CPUs up, {} CPU init errors",
                 mp.num_cpus(),
-                ZeppelinCpu::errors()
+                cpu.errors()
             );
             mp
         }

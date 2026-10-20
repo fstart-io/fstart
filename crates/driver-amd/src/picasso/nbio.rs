@@ -72,12 +72,22 @@ fn smu_bar(smn: &Smn<impl ConfigRegionAccess>) -> Result<(), Error> {
     Ok(())
 }
 
+fn installed_psp_bar() -> tock_registers::fields::FieldValue<u32, Bar::Register> {
+    Bar::BASE.val(PSP_MMIO_BASE >> 20) + Bar::LOCK::SET + Bar::ENABLE::SET
+}
+
+/// Whether the PSP BAR is the one [`psp_bar`] installs. Read-only.
+pub fn psp_bar_installed(smn: &Smn<impl ConfigRegionAccess>) -> bool {
+    smn.reg(PSP_BASE_ADDR_LO).get() == installed_psp_bar().value
+        && smn.reg(PSP_BASE_ADDR_HI).get() == 0
+}
+
 pub fn psp_bar(smn: &Smn<impl ConfigRegionAccess>) -> Result<(), Error> {
     let (low, high) = (smn.reg(PSP_BASE_ADDR_LO), smn.reg(PSP_BASE_ADDR_HI));
     let current = low.extract();
     let upper = high.get();
     let bar = (u64::from(upper) << 32) | u64::from(current.get());
-    let want = Bar::BASE.val(PSP_MMIO_BASE >> 20) + Bar::LOCK::SET + Bar::ENABLE::SET;
+    let want = installed_psp_bar();
     if current.is_set(Bar::LOCK) {
         if upper == 0 && current.matches_all(want) {
             return Ok(());
@@ -90,7 +100,10 @@ pub fn psp_bar(smn: &Smn<impl ConfigRegionAccess>) -> Result<(), Error> {
 }
 
 /// The IOMMU RAS copies and the late IOHC settings: raw vendor values.
-const IOMMU_RAS: [Reg; 2] = [copy(0x1570_4330, 0x13f0_0080), copy(0x1570_401c, 0x0240_001c)];
+const IOMMU_RAS: [Reg; 2] = [
+    copy(0x1570_4330, 0x13f0_0080),
+    copy(0x1570_401c, 0x0240_001c),
+];
 
 /// BSP-only native NBIO base sequence, no FSP state/HOB dependency.
 /// `raven2_cpuid` is specifically the CPUID predicate used by these tables;

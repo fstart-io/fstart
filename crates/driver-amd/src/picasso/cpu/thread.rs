@@ -7,7 +7,7 @@ use crate::fam17h::{
 };
 use fstart_arch::x86::cpu::{
     amd::msr::{SYSCFG, Syscfg},
-    msr::{MCG_CAP, MTRR_DEF_TYPE, MsrAccess, PAT},
+    msr::{MCG_CAP, MTRR_DEF_TYPE, McgCap, MsrAccess, PAT},
 };
 use tock_registers::interfaces::Readable;
 
@@ -56,10 +56,10 @@ impl Policy {
         Ok(result)
     }
 
-    /// Read-only check of the intended routing after AP restoration. This does
-    /// not authenticate the complete MTRR image or physical cache semantics.
-    /// Return the validated MCA capability snapshot for the later write phase.
-    pub fn validate(&self, cpu: &impl MsrAccess) -> Result<u64, Error> {
+    /// Read-only check of the intended routing after AP restoration and of
+    /// the MCA geometry. This does not authenticate the complete MTRR image
+    /// or physical cache semantics.
+    pub fn validate(&self, cpu: &impl MsrAccess) -> Result<(), Error> {
         for (index, expected) in ROUTING_MSRS.into_iter().zip(self.routing) {
             let actual = cpu.read(index);
             if actual != expected {
@@ -70,12 +70,11 @@ impl Policy {
                 });
             }
         }
-        let capability = cpu.reg(MCG_CAP).get();
-        let banks = (capability & 0xff) as u8;
-        if !(17..=32).contains(&banks) {
+        let banks = cpu.reg(MCG_CAP).read(McgCap::COUNT) as u8;
+        if !super::CCX.mca.banks.contains(&banks) {
             return Err(Error::Cpu(CpuError::McaBanks(banks)));
         }
-        Ok(capability)
+        Ok(())
     }
 
     /// All logical CPUs, serialized by the platform (including SMT siblings).

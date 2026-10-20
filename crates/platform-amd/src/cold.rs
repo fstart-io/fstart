@@ -1,31 +1,44 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native CPU cold flow: microcode staging, SMU AP release and per-CPU init
-//! through the architectural MP engine, then the later CCX-done notification.
+//! Native CPU cold flow: SMU AP release, microcode and per-CPU init through
+//! the architectural MP engine, then the later CCX-done notification.
 use crate::{
-    cpu::{self, NativeCpu},
+    cpu::{Fam17hCpu, PatchPage},
     layout,
     memory::Memory,
     mp,
 };
+use core::mem::MaybeUninit;
 use fstart_arch::x86::{
-    cpu::msr::MsrAccess,
+    cpu::msr::{APIC_BASE, ApicBase, MsrAccess, NativeMsr},
     mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle},
 };
 use fstart_driver_amd::picasso::{
+    cpu::{microcode::Picasso, thread},
+    nbio::{self, PSP_MMIO_BASE},
     nbio_late, power,
     registers::Smn,
     topology::{self, Topology},
 };
+use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {
     /// Already applied topology: no policy reset/reconfiguration here.
     pub topology: Topology,
     /// Complete physical APIC IDs, BSP first. Not ThreadEn slots.
     pub apic_ids: &'a [u32],
-    /// The vendor patch selected for this CPU signature.
-    pub patch: &'a [u8],
+    /// The whole boot flash mapped below 4 GiB, with the microcode patches
+    /// in its BIOS directory.
+    pub flash: &'a [u8],
     pub memory: &'a Memory,
 }
+
+/// The microcode patch the CPUs load, in the permanent page the linker
+/// script reserves.
+#[repr(C, align(4096))]
+struct MicrocodePage(MaybeUninit<PatchPage>);
+#[used]
+#[unsafe(link_section = ".picasso_microcode")]
+static mut MICROCODE: MicrocodePage = MicrocodePage(MaybeUninit::uninit());
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LateResponse {
     pub command: u32,
@@ -66,7 +79,9 @@ pub enum Error {
         expected: usize,
         actual: usize,
     },
-    Cpu(cpu::Error),
+    MicrocodeNotReserved,
+    PspBar,
+    Policy(thread::Error),
     Mp(MpError),
     ApRelease(topology::Error),
     IncompleteCpu,
@@ -145,7 +160,7 @@ fn notify(
         Err(cause) => Err(Error::Smu { cause, responses }),
     }
 }
-/// Stage microcode, release the APs through the SMU and run per-CPU init.
+/// Release the APs through the SMU and run microcode and per-CPU init.
 /// # Safety
 /// Cold boot after native early init and topology policy, all APs held, the
 /// early firmware region reserved in `input.memory`. Exclusive MSR/SMN access.
@@ -156,17 +171,28 @@ pub unsafe fn initialize_cpus(
     delay_us: &mut impl FnMut(u32),
 ) -> Result<CpusInitialized, Error> {
     let total = count(input.topology, input.apic_ids)?;
-    let cpu = unsafe {
-        NativeCpu::prepare_staged(
-            msr,
-            smn,
-            input.topology,
-            input.apic_ids,
-            input.patch,
-            input.memory,
-        )
+    if !input.memory.microcode_reserved() {
+        return Err(Error::MicrocodeNotReserved);
     }
-    .map_err(Error::Cpu)?;
+    // Only the BSP reads the already-installed/locked BAR; never reset a
+    // PSP link to discover it, and never expose the shared port to APs.
+    if !nbio::psp_bar_installed(smn) {
+        return Err(Error::PspBar);
+    }
+    let policy = thread::Policy::capture(msr, PSP_MMIO_BASE.into()).map_err(Error::Policy)?;
+    // SAFETY: BSP before AP release; the linker reserves the page and the
+    // memory map keeps it.
+    let cpu = unsafe {
+        Fam17hCpu::<Picasso, _>::new(
+            "native-picasso",
+            input.flash,
+            &mut (*core::ptr::addr_of_mut!(MICROCODE)).0,
+            move |msr: &NativeMsr, thread| {
+                let bsp = msr.reg(APIC_BASE).is_set(ApicBase::BSP);
+                policy.initialize(msr, bsp, thread)
+            },
+        )
+    };
     let drivers: &[&dyn CpuDriver] = &[&cpu];
     let config = MpConfig {
         cpu_drivers: drivers,
@@ -195,7 +221,7 @@ pub unsafe fn initialize_cpus(
             actual: usize::from(mp.num_cpus()),
         });
     }
-    if !cpu.complete() {
+    if cpu.errors() != 0 {
         return Err(Error::IncompleteCpu);
     }
     Ok(CpusInitialized { mp })

@@ -60,9 +60,10 @@ APs are released by the SMU (ThreadEn) and also enter the reset vector.
 
 Implemented and tested, but not yet called:
 
-- MP: `cold::initialize_cpus` stages microcode and releases the APs through
-  the SMU via `mp_init_with_launcher`. APs replay the BSP's MTRRs plus
-  SYSCFG/TOP_MEM/TOM2 (`mp::sipi_msrs`).
+- MP: `cold::initialize_cpus` releases the APs through the SMU via
+  `mp_init_with_launcher`; the Family 17h CPU driver (`cpu::Fam17hCpu`) loads
+  the microcode and runs the CCX init on every CPU. APs replay the BSP's
+  MTRRs and PAT and keep their own SYSCFG/TOP_MEM/TOM2 (`mp::sipi_msrs`).
 - DXIO/PCIe training, USB, eMMC, NBIO late/CCX-done, SMU power policy, PSP
   mailbox.
 
