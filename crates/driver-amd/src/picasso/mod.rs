@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h Raven/Picasso/Pollock register geometry, not Intel-compatible IP.
 pub mod acp;
-pub use crate::fam17h::{cache, tsc};
-pub mod cpu;
-#[cfg(test)]
-mod cpu_tests;
 pub mod emmc;
 pub mod espi;
 #[cfg(test)]
@@ -31,6 +27,11 @@ impl crate::soc::Soc for Picasso {
     fn ioms_fabric_id(_: u8) -> u8 {
         9
     }
+}
+/// Microcode for PCO B0/B1 and RV2 A0, the three vendor .bin inputs.
+impl crate::ccx::microcode::Family for Picasso {
+    const SIGNATURES: &'static [u32] = &[0x00810f10, 0x00810f80, 0x00820f00];
+    const MAX_PATCHES: usize = 3;
 }
 pub type Die<P> = crate::df::Die<Picasso, P>;
 pub const ECAM: u64 = 0xf800_0000;

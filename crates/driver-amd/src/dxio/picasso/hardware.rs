@@ -4,7 +4,7 @@ use super::{
     super::{self as dxio, Slot},
     Descriptor, EngineConfig, Error, Hotplug, LinkSpeed, Operation, PORTS, PowerPolicy, Topology,
 };
-use crate::fam17h::tsc::{Clock, DelayNs};
+use crate::ccx::tsc::{Clock, DelayNs};
 use crate::picasso::{Die, acp};
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v10 as smu;

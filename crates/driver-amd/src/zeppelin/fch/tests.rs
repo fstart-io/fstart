@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
-use crate::fam17h::tsc::testing::Delay;
+use crate::ccx::tsc::testing::Delay;
 use super::*;
 use crate::{
     df,

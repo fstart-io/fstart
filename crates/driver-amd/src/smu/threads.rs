@@ -4,7 +4,7 @@
 //! which a [`Policy`] can reduce for the next reset ([`apply`]).
 use crate::{
     df::Die,
-    fam17h::tsc::DelayNs,
+    ccx::tsc::DelayNs,
     smn::Smn,
     smu::{self, DOWNCORE, THREAD_CONFIG, THREAD_ENABLE, ThreadConfig},
     soc::Soc,
@@ -250,7 +250,7 @@ pub unsafe fn launch<S: Soc, P: ConfigRegionAccess + Copy>(
 mod tests {
     extern crate std;
     use super::*;
-    use crate::{df::dies, fam17h::tsc::testing::none, smu::Mailbox};
+    use crate::{df::dies, ccx::tsc::testing::none, smu::Mailbox};
     use crate::smn::{
         SmnReg,
         testing::{SmnModel, SmnTest},

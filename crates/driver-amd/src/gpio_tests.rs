@@ -84,7 +84,7 @@ fn banks_without_a_gpio_function_need_native_pads() {
 }
 #[test]
 fn tsc_pstate_divisors() {
-    use crate::picasso::tsc::pstate_mhz;
+    use crate::ccx::tsc::pstate_mhz;
     assert_eq!(pstate_mhz((1 << 63) | 100 | (8 << 8)), Some(2500));
     assert_eq!(pstate_mhz((1 << 63) | 100 | (10 << 8)), Some(2000));
     assert_eq!(pstate_mhz((1 << 63) | 100), Some(4000));

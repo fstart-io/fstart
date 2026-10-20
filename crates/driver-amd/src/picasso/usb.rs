@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native USB controller/PHY sequencing.
 //! SMU performs PHY programming; no FSP or opaque x86 initialization call.
-use crate::fam17h::tsc::DelayNs;
-use super::cpu::{Identity, Silicon};
+use crate::ccx::tsc::DelayNs;
+use crate::ccx::picasso::{Identity, Silicon};
 use crate::smu::v10 as smu;
 use crate::smn::{Smn, apply, rmw, write};
 use heapless::Vec;

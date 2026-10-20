@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::{testing::World, *};
-use crate::fam17h::tsc::testing::{Delay, none};
+use crate::ccx::tsc::testing::{Delay, none};
 use std::{vec, vec::Vec};
 
 const AOAC: u32 = ACPI_MMIO + 0x1e00;

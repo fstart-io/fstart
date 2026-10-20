@@ -2,7 +2,7 @@
 extern crate std;
 use super::espi::*;
 use std::{collections::BTreeMap, vec::Vec};
-use crate::fam17h::tsc::testing::Elapsed as Timer;
+use crate::ccx::tsc::testing::Elapsed as Timer;
 struct Controller {
     regs: BTreeMap<u16, u32>,
     slave: BTreeMap<u16, u32>,

@@ -12,9 +12,9 @@ use fstart_arch::x86::{
     mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle},
 };
 use fstart_driver_amd::{
-    fam17h::tsc::DelayNs,
+    ccx::{picasso::thread, tsc::DelayNs},
     nbio::picasso::{self as nbio, PSP_MMIO_BASE},
-    picasso::{Die, Picasso, cpu::thread},
+    picasso::{Die, Picasso},
     smn::Smn,
     smu::{
         threads::{self, Policy},
@@ -241,7 +241,7 @@ pub unsafe fn initialize_cpus(
 mod tests {
     extern crate std;
     use super::*;
-    use fstart_driver_amd::fam17h::tsc::testing::Delay;
+    use fstart_driver_amd::ccx::tsc::testing::Delay;
     use fstart_driver_amd::{
         smu::v10 as smu,
         smn::testing::{SmnModel, SmnTest},

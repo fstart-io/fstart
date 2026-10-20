@@ -22,7 +22,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use fstart_driver_amd::{
     dxio::Descriptor,
-    fam17h::tsc::Tsc,
+    ccx::tsc::Tsc,
     fch::{Acpimmio, Fch, NativeBus, early::PowerFailure},
     gpio::Gpio,
     lpc::Lpc,

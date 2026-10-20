@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native PCIe power/CLKREQ and late SMU notifications.
-use crate::fam17h::tsc::DelayNs;
+use crate::ccx::tsc::DelayNs;
 use crate::nbio::{
     iohc::{IohcBridgeCntl, iohc_bridge_cntl},
     pcie,
 };
 use crate::dxio::{Aspm, ClockRequest, Hotplug, picasso::Topology};
-use crate::picasso::cpu::{Identity, Silicon};
+use crate::ccx::picasso::{Identity, Silicon};
 use crate::smu::v10::{self as smu, power};
 use crate::smn::{Smn, SmnReg, apply, rmw, write};
 use fstart_pci::{ConfigRegionAccess, PciAddress};

@@ -3,7 +3,7 @@
 //! 3). The vendor FchTaishanPei reset task
 //! af48 programs it through SMN; Zeppelin has no SMU USB messages (sp4r2
 //! report FCH_TAISHAN, cold path, vendor defaults).
-use crate::fam17h::tsc::DelayNs;
+use crate::ccx::tsc::DelayNs;
 use crate::{
     smn::{Smn, SmnReg},
     zeppelin::Package,

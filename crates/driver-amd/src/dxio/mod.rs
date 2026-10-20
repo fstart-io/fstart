@@ -12,7 +12,7 @@
 //! and [`zeppelin`].
 use crate::{
     df::Die,
-    fam17h::tsc::{Clock, DelayNs},
+    ccx::tsc::{Clock, DelayNs},
     smu,
     soc::Soc,
 };

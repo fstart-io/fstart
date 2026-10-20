@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Per-thread CCX work after coordinated pre-Rust cache restoration.
-use super::Error as CpuError;
-use crate::fam17h::{
-    cache::CacheControl,
-    ccx::{self, Inputs, Thread},
+use super::{
+    super::{self as ccx, Inputs, Thread, cache::CacheControl},
+    Error as CpuError,
 };
 use fstart_arch::x86::cpu::{
     amd::msr::{SYSCFG, Syscfg},
@@ -174,7 +173,7 @@ mod tests {
     }
     #[test]
     fn ap_tail_uses_cached_psp_ecam_and_cstate_without_cache_policy_writes() {
-        use crate::fam17h::msr::{CSTATE_BASE_ADDRESS, DPM_WAC_INDEX, PSP_ADDRESS};
+        use crate::ccx::msr::{CSTATE_BASE_ADDRESS, DPM_WAC_INDEX, PSP_ADDRESS};
         use fstart_arch::x86::cpu::amd::msr::MMIO_CFG_BASE;
         for primary in [false, true] {
             let cpu = cpu();

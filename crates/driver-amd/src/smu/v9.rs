@@ -5,10 +5,10 @@
 //! Call order: [`print_name`] early; [`init`] and [`cac_weights`] before
 //! MP init;
 //! [`crate::smu::threads::launch`] to release the APs; [`aps_ready`]
-//! then [`ccx_done`] after every CPU ran [`crate::zeppelin::ccx::cpu_init`].
-use crate::fam17h::tsc::DelayNs;
+//! then [`ccx_done`] after every CPU ran [`crate::ccx::zeppelin::cpu_init`].
+use crate::ccx::tsc::DelayNs;
 use crate::zeppelin::{Die, MAX_DIES};
-use crate::fam17h::ccx::{CAC_WEIGHT_COUNT, CacWeights};
+use crate::ccx::{CAC_WEIGHT_COUNT, CacWeights};
 pub use crate::smu::{ARGUMENT_COUNT, Error, Reply};
 use crate::smu::Mailbox;
 use crate::smn::SmnReg;
@@ -266,7 +266,7 @@ pub fn ccx_done<P: ConfigRegionAccess + Copy>(
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use crate::fam17h::tsc::testing::Delay;
+    use crate::ccx::tsc::testing::Delay;
     use super::*;
     use crate::zeppelin::test_pci::{Message, Pci};
     use std::vec::Vec;

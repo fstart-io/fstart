@@ -9,7 +9,7 @@
 //! register ([`Df::reg`]). Single-die SoCs (Raven/Picasso) have die 0 on
 //! bus 0. The threads of the dies are [`crate::smu::threads`]'.
 use super::{Df, DfReg};
-use crate::{fam17h::tsc::DelayNs, smn::Smn, smu, soc::Soc};
+use crate::{ccx::tsc::DelayNs, smn::Smn, smu, soc::Soc};
 use core::marker::PhantomData;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{interfaces::Readable, register_bitfields};

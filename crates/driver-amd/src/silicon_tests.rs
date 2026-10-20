@@ -7,7 +7,7 @@
 //! sequences the hardware was tested with.
 extern crate std;
 use crate::{
-    fam17h::tsc::{Clock, DelayNs},
+    ccx::tsc::{Clock, DelayNs},
     fch::{Bus, Space},
 };
 use core::cell::RefCell;

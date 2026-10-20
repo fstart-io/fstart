@@ -10,7 +10,7 @@ use fstart_arch::x86::{
     mp::SipiUnlock,
     mtrr::{self, SipiMsrs},
 };
-use fstart_driver_amd::fam17h::cache;
+use fstart_driver_amd::ccx::cache;
 use tock_registers::interfaces::ReadWriteable;
 
 #[derive(Debug)]

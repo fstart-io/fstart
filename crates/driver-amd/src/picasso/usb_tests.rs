@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
-use crate::fam17h::tsc::testing::Delay;
-use super::{
-    cpu::Identity,
-    usb,
-};
+use crate::ccx::tsc::testing::Delay;
+use super::usb;
+use crate::ccx::picasso::Identity;
 use crate::smu::v10 as smu;
 use crate::smn::testing::{SmnModel, SmnTest};
 use std::{collections::BTreeMap, vec::Vec};

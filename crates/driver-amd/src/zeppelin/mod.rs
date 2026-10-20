@@ -6,12 +6,9 @@
 //! APOB; everything x86 does after that is native: Data Fabric, NBIO, SMU,
 //! DXIO (PCIe), CCX and the Taishan FCH. Every die has its own DF, NBIO, SMU
 //! and FCH; SP4r2 has one die, SP4 two.
-pub mod ccx;
-mod ccx_tables;
 pub mod fch;
 pub mod i2c;
 pub mod identity;
-pub mod microcode;
 #[cfg(test)]
 pub(crate) mod test_pci;
 
@@ -37,6 +34,12 @@ impl Soc for Zeppelin {
     fn ioms_fabric_id(die: u8) -> u8 {
         (die << 5) | 4
     }
+}
+impl crate::ccx::microcode::Family for Zeppelin {
+    /// ZP-A0 is model 0, ZP-B0/B1/B2 are model 1. The vendor ROM's BIOS
+    /// directory has a type 0x66 patch per equivalence ID 8000/8010/8011/8012.
+    const SIGNATURES: &'static [u32] = &[0x0080_0f00, 0x0080_0f10];
+    const MAX_PATCHES: usize = 4;
 }
 pub const MAX_DIES: usize = Zeppelin::MAX_DIES;
 pub type Die<P> = crate::df::Die<Zeppelin, P>;
@@ -65,4 +68,37 @@ pub mod acpi_io {
     pub const PM_TMR: u16 = BASE + 0x08;
     pub const CSTATE_CONTROL: u16 = BASE + 0x10;
     pub const GPE0: u16 = BASE + 0x20;
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::Zeppelin;
+    use crate::ccx::microcode::{Bundle, Error, PATCH_BYTES};
+    use std::vec::Vec;
+
+    #[test]
+    fn selects_the_vendor_patch_by_equivalence_id() {
+        // Header prefixes of the MJ11 vendor ROM's four 0x66 entries.
+        let patches: Vec<u8> = [
+            (0x0800_1250, 0x8012),
+            (0x0800_1129, 0x8011),
+            (0x0800_100c, 0x8010),
+            (0x0800_002a, 0x8000),
+        ]
+        .into_iter()
+        .flat_map(|(id, revision): (u32, u16)| {
+            let mut patch = [0; PATCH_BYTES];
+            patch[4..8].copy_from_slice(&id.to_le_bytes());
+            patch[24..26].copy_from_slice(&revision.to_le_bytes());
+            patch
+        })
+        .collect();
+        let bundle = Bundle::<Zeppelin>::parse(&patches).unwrap();
+        // EPYC 3151: ZP-B2.
+        assert_eq!(bundle.select(0x0080_0f12).unwrap().revision(), 0x0800_1250);
+        assert_eq!(bundle.select(0x0080_0f00).unwrap().revision(), 0x0800_002a);
+        assert_eq!(bundle.select(0x0080_0f13).err(), Some(Error::CpuIdentity));
+        assert_eq!(bundle.select(0x0081_0f10).err(), Some(Error::CpuIdentity));
+    }
 }

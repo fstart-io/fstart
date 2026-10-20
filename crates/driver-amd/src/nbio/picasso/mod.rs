@@ -6,7 +6,7 @@ use super::{
     ioapic::{IOAPIC_FEATURES_ENABLE, IoapicFeatures},
     iohc::{self, IOAPIC_BAR, NB_BUS_NUM_CNTL, NbBusNumCntl, PSP_BAR, SMU_BAR},
 };
-use crate::fam17h::tsc::DelayNs;
+use crate::ccx::tsc::DelayNs;
 use crate::picasso::Die;
 use crate::smu::v10 as smu;
 use crate::smn::{Reg, Smn, SmnReg, copy, rmw, write};

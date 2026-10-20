@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native Zen/Zen+ CPU policy.
+//! Native Zen/Zen+ CPU policy (AGESA AmdCcxZenRv).
 //! AMD MCAX, SYSCFG and MMCONFIG must not use legacy Intel CPU programming.
-pub mod microcode;
 pub mod thread;
+#[cfg(test)]
+mod tests;
 
-use crate::fam17h::{
-    ccx::{self, CAC_WEIGHT_COUNT, CacWeights, Ccx, L3Owner, Mca, Thread},
+use super::{
+    self as ccx, CAC_WEIGHT_COUNT, CacWeights, Ccx, L3Owner, Mca, Thread,
     msr::{self, BU_CFG3, DC_CFG, DE_CFG, LS_CFG, MsrUpdate, mca_config, update},
 };
+use crate::picasso::{ECAM, ECAM_BUSES};
 use fstart_arch::x86::cpu::{
     amd::msr::{SYSCFG, Syscfg},
     msr::MsrAccess,
@@ -129,8 +131,8 @@ pub const CCX: Ccx = Ccx {
         l3_banks: 8..=15,
         l3_owner: L3Owner::NoExtraBanks,
     },
-    ecam: super::ECAM,
-    ecam_buses: super::ECAM_BUSES as u16,
+    ecam: ECAM,
+    ecam_buses: ECAM_BUSES as u16,
     // ACPI_IO_BASE=0x400, CSTATE_CONTROL=+0x10.
     cstate_io_base: 0x410,
     watchdog: None,
@@ -153,10 +155,10 @@ pub fn mca_init(cpu: &impl MsrAccess, thread: Thread) -> Result<(), Error> {
 
 /// Decode the PSP-established memory ceiling without narrowing high RAM to u32.
 pub fn memory_limits(cpu: &impl MsrAccess) -> Result<(u64, Option<u64>), Error> {
-    crate::fam17h::msr::memory_limits(cpu).map_err(|_| Error::MemoryBoundary)
+    msr::memory_limits(cpu).map_err(|_| Error::MemoryBoundary)
 }
 
 pub fn enable_ecam(cpu: &impl MsrAccess) {
     // AMD MMIO_CONF_BASE: 64 buses (BusRange=6), enabled. Not PCIEXBAR.
-    crate::fam17h::msr::enable_ecam(cpu, super::ECAM, super::ECAM_BUSES.into());
+    msr::enable_ecam(cpu, ECAM, ECAM_BUSES.into());
 }

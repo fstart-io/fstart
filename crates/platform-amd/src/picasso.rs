@@ -2,7 +2,7 @@
 //! Native Picasso bring-up boundary. FSP calls are NOT silently skipped
 //! in a production boot flow; this checkpoint only establishes the debug UART.
 use fstart_driver_amd::{
-    fam17h::tsc::{Clock, DelayNs},
+    ccx::tsc::{Clock, DelayNs},
     fch::{self, Fch},
     gpio::{self, Gpio, Pad, Pull},
     picasso::{EARLY_AOAC, UART_AOAC, espi, preinit::SpiConfig},
@@ -132,7 +132,7 @@ pub const TSEG_SIZE: u64 = 8 << 20;
 /// silicon init from the APOB, running cached from here on.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub fn run<B: BoardFacts>() -> ! {
-    use fstart_driver_amd::picasso::{UART_BASES, tsc};
+    use fstart_driver_amd::{ccx::tsc, picasso::UART_BASES};
     use fstart_driver_uart::ns16550::{AccessMode, Ns16550, Ns16550Config};
     // SAFETY: only entered by the BSP cold-reset assembly, cache disabled.
     let Some(mhz) = (unsafe { tsc::frequency_mhz() }).filter(|&mhz| mhz != 0) else {
@@ -211,9 +211,10 @@ unsafe fn cold_boot(
     use crate::{early, layout};
     use fstart_arch::x86::cpu::msr::NativeMsr;
     use fstart_driver_amd::{
-        df,
         apob::Apob,
-        picasso::{ECAM, Picasso, cpu},
+        ccx::picasso as cpu,
+        df,
+        picasso::{ECAM, Picasso},
     };
     let msr = unsafe { NativeMsr::new() };
     // MMCONF first, everything else uses it.

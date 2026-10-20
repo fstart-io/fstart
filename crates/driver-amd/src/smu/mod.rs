@@ -4,7 +4,7 @@
 //! message numbers differ per SMU version; the protocol does not. The
 //! versions, by their AGESA names: [`v9`] (AmdNbioSmuV9, Zeppelin) and
 //! [`v10`] (AmdNbioSmuV10, Raven/Picasso).
-use crate::fam17h::tsc::DelayNs;
+use crate::ccx::tsc::DelayNs;
 use crate::smn::{Smn, SmnReg};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{

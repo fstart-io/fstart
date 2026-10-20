@@ -1,6 +1,6 @@
 use super::*;
 extern crate std;
-use crate::fam17h::tsc::testing::Delay;
+use crate::ccx::tsc::testing::Delay;
 use std::{boxed::Box, collections::VecDeque, vec, vec::Vec};
 const READY: u32 = 1 << 31;
 #[derive(Debug, PartialEq)]

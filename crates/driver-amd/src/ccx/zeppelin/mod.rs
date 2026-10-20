@@ -6,13 +6,16 @@
 //! init. Data that needs SMN (PSP BARs, CAC weights) is read by the BSP
 //! before MP init and handed to every CPU in a [`CpuPolicy`], since the
 //! APs can't use the SMN index/data pair in parallel.
-use super::{ECAM, ECAM_BUSES, MAX_DIES, Revision, ccx_tables::MSR_TABLE};
-use crate::fam17h::{
+use super::{
+    self as ccx, CacWeights, Ccx, Error, Inputs, L3Owner, Mca, Thread,
     cache::CacheControl,
-    ccx::{self, CacWeights, Ccx, Error, Inputs, L3Owner, Mca, Thread},
     msr::{self, DpmCfg, MsrUpdate},
 };
+use crate::zeppelin::{ECAM, ECAM_BUSES, MAX_DIES, Revision};
 use fstart_arch::x86::cpu::msr::MsrAccess;
+
+mod tables;
+use tables::MSR_TABLE;
 
 /// The Zeppelin parameters of the Family 17h CCX init.
 const CCX: Ccx = Ccx {
@@ -111,7 +114,7 @@ pub fn cpu_init(
 mod tests {
     extern crate std;
     use super::*;
-    use crate::fam17h::{
+    use crate::ccx::{
         cache::testing::{DISABLE, ENABLE, FLUSH},
         msr::{
             CSTATE_BASE_ADDRESS, CSTATE_CONFIG, DPM_CFG, DPM_WAC_DATA, PSP_ADDRESS, PSTATE_0,

@@ -4,8 +4,8 @@
 //! `revisions` is the logical
 //! revision mask a record needs (0: all revisions). The AM4-only record
 //! (platform flag) is left out.
-use super::ccx::{MsrRecord, Scope};
-use crate::fam17h::msr::update;
+use super::{MsrRecord, Scope};
+use crate::ccx::msr::update;
 
 const fn record(scope: Scope, msr: u32, clear: u64, set: u64, revisions: u8) -> MsrRecord {
     update(msr, clear, set).when((scope, revisions))

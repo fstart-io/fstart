@@ -7,7 +7,7 @@
 //!
 //! The loops take all dies (die 0 first, as [`crate::df::dies`]
 //! yields them) and the board's [`Devices`] per die, indexed by die.
-use crate::fam17h::tsc::DelayNs;
+use crate::ccx::tsc::DelayNs;
 use super::{
     Devices, NbifStrap, sata,
     usb::{self, ResetControl},

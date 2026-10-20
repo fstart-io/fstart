@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Four-window AMD eSPI controller.
 //! Picasso has none of the newer extended-window/ALERT_ENABLE register bits.
-pub use crate::fam17h::tsc::Clock;
+pub use crate::ccx::tsc::Clock;
 use heapless::Vec;
 use tock_registers::{
     interfaces::{Readable, Writeable},

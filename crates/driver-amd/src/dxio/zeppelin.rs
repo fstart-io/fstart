@@ -33,7 +33,7 @@
 use super::{
     self as dxio, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed, Operation,
 };
-use crate::fam17h::tsc::{Clock, DelayNs};
+use crate::ccx::tsc::{Clock, DelayNs};
 use crate::nbio::{
     iohc::{self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NbProgDeviceRemap},
     pcie::{self, PCIE_PORTS_PER_CORE},

@@ -2,11 +2,24 @@
 //! The CCX init every Family 17h CPU runs after its microcode update: the
 //! SoC's reset MSR table, MMCONFIG, the PSP base, TOM2 write-back, MCA, the DPM weights,
 //! C-states and the P0 rewrite. What the SoCs do differently is a [`Ccx`]
-//! parameter; their MSR tables stay theirs.
-use super::{
+//! parameter; their MSR tables stay theirs: [`picasso`] (AGESA
+//! AmdCcxZenRv) and [`zeppelin`] (AmdCcxZenZp).
+//!
+//! The MSRs, the DRAM-first cache plan, the microcode loader and the TSC
+//! are [`msr`], [`cache`], [`microcode`] and [`tsc`].
+pub mod cache;
+pub mod microcode;
+pub mod msr;
+#[cfg(feature = "picasso")]
+pub mod picasso;
+pub mod tsc;
+#[cfg(feature = "zeppelin")]
+pub mod zeppelin;
+
+use self::{
     cache::CacheControl,
     msr::{
-        self, BU_CFG, BuCfg, CPU_WDT_CFG, CSTATE_BASE_ADDRESS, CSTATE_CONFIG, DPM_CFG, DPM_WAC_DATA,
+        BU_CFG, BuCfg, CPU_WDT_CFG, CSTATE_BASE_ADDRESS, CSTATE_CONFIG, DPM_CFG, DPM_WAC_DATA,
         DPM_WAC_INDEX, MCA_INTR_CFG, McaConfig, McaIntrCfg, McaMisc, MsrUpdate, PSP_ADDRESS,
         PSTATE_0, enable_ecam, mca_config, mca_ctl_mask, mca_misc0, mca_misc1, update,
     },
@@ -254,7 +267,7 @@ fn load_cac_weights(cpu: &impl MsrAccess, weights: &CacWeights, dpm_cfg: u64) {
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use super::super::cache::testing::{DISABLE, ENABLE, FLUSH};
+    use super::cache::testing::{DISABLE, ENABLE, FLUSH};
     use super::*;
     use core::cell::RefCell;
     use fstart_arch::x86::cpu::msr::testing::MsrSpace;

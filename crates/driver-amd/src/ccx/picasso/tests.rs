@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
-use super::{
-    cache::{self, Plan},
-    cpu::{self, Silicon},
-};
-use crate::fam17h::{
-    cache::testing::{CACHE, DISABLE, ENABLE, FLUSH},
-    ccx::Thread,
+use super::{self as cpu, Silicon};
+use crate::ccx::{
+    Thread,
+    cache::{
+        self, Plan,
+        testing::{CACHE, DISABLE, ENABLE, FLUSH},
+    },
 };
 use core::cell::RefCell;
 use fstart_arch::x86::cpu::{

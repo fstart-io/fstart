@@ -9,14 +9,12 @@ use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
     apob::{Apob, MemoryMap},
-    df::{self, map},
-    dxio,
-    fam17h::{
-        cache,
-        ccx::Thread,
-        msr,
+    ccx::{
+        self, Thread, cache, msr,
         tsc::{self, Tsc},
     },
+    df::{self, map},
+    dxio,
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
     nbio::{self, iohc, iommu},
@@ -25,7 +23,7 @@ use fstart_driver_amd::{
         threads::{self, Policy},
         v9 as smu,
     },
-    zeppelin::{self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, fch},
+    zeppelin::{self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, fch},
 };
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::Hex;
@@ -272,7 +270,7 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
         }
     }
     // SAFETY: BSP-only MSR programming.
-    ccx::bsp_init(&unsafe { NativeMsr::new() }, s.revision, Thread::current());
+    ccx::zeppelin::bsp_init(&unsafe { NativeMsr::new() }, s.revision, Thread::current());
     smu::print_name(&dies[0], &mut delay);
     for die in dies {
         iohc::dram_map(die, top_mem as u32, top_mem2);
@@ -397,7 +395,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     let flash = unsafe {
         core::slice::from_raw_parts(layout::FLASH_BASE as *const u8, layout::FLASH_SIZE as usize)
     };
-    let policy = ccx::CpuPolicy {
+    let policy = ccx::zeppelin::CpuPolicy {
         revision: s.revision,
         psp_bars,
         cac_weights,
@@ -408,7 +406,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
             "AMD Zeppelin",
             flash,
             &mut *core::ptr::addr_of_mut!(MICROCODE),
-            move |msr: &NativeMsr, thread| ccx::cpu_init(msr, &policy, thread),
+            move |msr: &NativeMsr, thread| ccx::zeppelin::cpu_init(msr, &policy, thread),
         )
     };
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];

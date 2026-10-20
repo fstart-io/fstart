@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The SMU V10 mailbox of Raven/Picasso (AGESA AmdNbioSmuV10).
-use crate::fam17h::tsc::DelayNs;
+use crate::ccx::tsc::DelayNs;
 use crate::smn::{Smn, SmnReg};
 pub use crate::smu::{Error, Reply};
 use crate::smu::Mailbox;

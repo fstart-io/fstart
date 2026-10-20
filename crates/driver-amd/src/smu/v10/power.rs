@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! SMU policy v0x13 and persistent DMA pages.
-use crate::fam17h::tsc::DelayNs;
+use crate::ccx::tsc::DelayNs;
 use crate::smu::v10 as smu;
 use crate::smn::Smn;
 use fstart_pci::ConfigRegionAccess;
@@ -287,7 +287,7 @@ mod tests {
         transfer(
             &mailbox.smn(),
             0x02019000,
-            &mut crate::fam17h::tsc::testing::none(),
+            &mut crate::ccx::tsc::testing::none(),
             &mut |message, status| notices.push((message, status)),
         )
         .unwrap();
@@ -306,7 +306,7 @@ mod tests {
         let mailbox = SmnTest::new(Mailbox::new());
         mailbox.model().unavailable = Some(0x12);
         assert_eq!(
-            transfer(&mailbox.smn(), 0x02019000, &mut crate::fam17h::tsc::testing::none(), &mut |_, _| {}),
+            transfer(&mailbox.smn(), 0x02019000, &mut crate::ccx::tsc::testing::none(), &mut |_, _| {}),
             Err(Error::Smu(smu::Error::Unavailable))
         );
         assert_eq!(

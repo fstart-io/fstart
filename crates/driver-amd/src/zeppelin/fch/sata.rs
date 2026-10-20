@@ -4,7 +4,7 @@
 //! it through its SMN aperture at 0x03100000, with the AHCI registers at
 //! 0x03101000 (sp4r2 report FCH_TAISHAN, tasks af47, af57 and af77, with the
 //! vendor policy defaults).
-use crate::fam17h::tsc::DelayNs;
+use crate::ccx::tsc::DelayNs;
 use super::{NbifStrap, irq};
 use crate::fch::{Bus, Fch, iomux};
 use crate::smn::{Smn, SmnReg};

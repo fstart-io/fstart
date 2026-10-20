@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fixed native Picasso cold-boot silicon flow. No FSP calls or HOBs.
-use fstart_driver_amd::fam17h::tsc::DelayNs;
 use crate::memory::{self, Memory};
 use fstart_arch::x86::cpu::msr::{MCG_CAP, MTRR_CAP, McgCap, MsrAccess, MtrrCap};
 use fstart_driver_amd::apob::MemoryMap;
-use fstart_driver_amd::fam17h::ccx::Thread;
-use fstart_driver_amd::picasso::{
+use fstart_driver_amd::ccx::{
+    Thread,
     cache::{self, CacheControl, Plan},
-    cpu::{self, Identity},
-    Die,
+    picasso::{self as cpu, Identity},
+    tsc::DelayNs,
 };
 use fstart_driver_amd::df::picasso as fabric;
 use fstart_driver_amd::nbio::picasso::{self as nbio, Capabilities};
+use fstart_driver_amd::picasso::Die;
 use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {

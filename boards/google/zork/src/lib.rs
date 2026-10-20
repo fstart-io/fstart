@@ -7,7 +7,7 @@ pub mod ec;
 pub mod policy;
 pub mod vilboz;
 use fstart_driver_amd::{
-    fam17h::tsc::Clock,
+    ccx::tsc::Clock,
     gpio::{self, Pad},
     picasso::{espi, preinit::SpiConfig},
 };
@@ -37,7 +37,7 @@ impl BoardFacts for Board {
 mod mainboard {
     use super::{ec, vilboz};
     use crate::policy::Cbi;
-    use fstart_driver_amd::{fam17h::tsc, gpio};
+    use fstart_driver_amd::{ccx::tsc, gpio};
     use fstart_driver_chromeec::{Clock, Ec, NativeIo};
     use fstart_log::Hex;
 
@@ -78,7 +78,7 @@ mod mainboard {
 }
 #[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
 mod mainboard {
-    use fstart_driver_amd::{fam17h::tsc::Clock, gpio};
+    use fstart_driver_amd::{ccx::tsc::Clock, gpio};
     pub(super) fn init(_: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, _: &mut impl Clock) {}
 }
 
