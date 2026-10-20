@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Zeppelin memory map: the PSP's APOB and TOP_MEM/TOM2 replace FSP HOBs.
 use super::layout;
-use fstart_core::services::memory_detect::{E820Kind, E820State, build_pc_compatible_e820};
+use fstart_core::services::memory_detect::{
+    E820Entry, E820Kind, E820State, build_pc_compatible_e820,
+};
 use fstart_driver_amd::{fam17h::apob::MemoryMap, zeppelin as soc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +40,7 @@ pub fn e820(apob: &MemoryMap, top_mem: u64) -> Result<E820State, Error> {
     reserve(&mut map, layout::EARLY_START, layout::EARLY_END - layout::EARLY_START)?;
     reserve(&mut map, soc::APOB_BASE, soc::APOB_SIZE as u64)?;
     reserve(&mut map, fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS, 0x1000)?;
+    reserve_iommu_range(&mut map, apob.top)?;
     let total = map
         .entries()
         .iter()
@@ -46,4 +49,20 @@ pub fn e820(apob: &MemoryMap, top_mem: u64) -> Result<E820State, Error> {
         .sum();
     map.set_detected(map.count(), total).map_err(|_| Error::Capacity)?;
     Ok(map)
+}
+
+/// The fixed IOMMU range stays reserved: the old
+/// HyperTransport window below 1 TiB, where the IOMMU and the fabric decode
+/// interrupts and system management instead of DRAM or PCI MMIO.
+const IOMMU_RESERVED: (u64, u64) = (0xfd_0000_0000, 4 << 30);
+
+fn reserve_iommu_range(map: &mut E820State, dram_top: u64) -> Result<(), Error> {
+    let (base, size) = IOMMU_RESERVED;
+    if dram_top > base {
+        return map.reserve_range(base, size).map_err(|_| Error::Capacity);
+    }
+    let count = map.count();
+    *map.entries_mut().get_mut(count).ok_or(Error::Capacity)? =
+        E820Entry::new(base, size, E820Kind::Reserved);
+    map.set_detected(count + 1, 0).map_err(|_| Error::Capacity)
 }

@@ -16,9 +16,11 @@ use fstart_pci::{ConfigRegionAccess, PciAddress};
 pub const MAX_DIES: usize = 2;
 
 /// Non-PCI MMIO pool of a die, the top 8 MiB of its below-4G DF window: the
-/// PSP BAR at +0, the NBIO IOAPIC at +7 MiB.
+/// PSP BAR at +0, the FCH ACPI MMIO of dies >= 1 at +1 MiB, the IOMMU (512
+/// KiB) at +2 MiB, the NBIO IOAPIC at +7 MiB.
 pub const NONPCI_MMIO_SIZE: u32 = 8 << 20;
 pub const NONPCI_PSP: u32 = 0;
+pub const NONPCI_IOMMU: u32 = 2 << 20;
 pub const NONPCI_IOAPIC: u32 = 7 << 20;
 
 const DF_F0_BUS_BASE: u16 = 0x84;

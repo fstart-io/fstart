@@ -15,7 +15,7 @@ use fstart_driver_amd::{
     fch::{self as common_fch, early},
     lpc::Lpc,
     zeppelin::{
-        self as soc, MAX_DIES, Package, Revision, ccx, dxio, fabric, fch, nbio, psp, smu,
+        self as soc, MAX_DIES, Package, Revision, ccx, dxio, fabric, fch, iommu, nbio, psp, smu,
         topology::{self, Die},
     },
 };
@@ -273,6 +273,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     let mut ioapics = [0u32; MAX_DIES];
     for die in dies {
         ioapics[usize::from(die.index())] = nbio::ioapic_init(die, s.nonpci[usize::from(die.index())]);
+        iommu::init_bar(die, s.nonpci[usize::from(die.index())]);
     }
     let psp_bars = psp::bars(dies);
 

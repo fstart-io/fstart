@@ -13,6 +13,7 @@ pub mod fabric;
 pub mod fch;
 pub mod i2c;
 pub mod identity;
+pub mod iommu;
 pub mod microcode;
 pub mod nbio;
 mod nbio_tables;
