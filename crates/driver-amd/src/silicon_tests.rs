@@ -414,13 +414,14 @@ fn low<T>(address: usize, value: T) -> &'static mut T {
 mod zeppelin {
     use super::*;
     use crate::{
+        fam17h::topology,
         fch::{Acpimmio, Fch},
         zeppelin::{
             Die, Package, Revision,
             dxio::{self, Descriptor, SataChannel},
             fabric,
             fch::{self, Devices},
-            iommu, nbio, psp, smu, topology,
+            iommu, nbio, psp, smu,
         },
     };
 

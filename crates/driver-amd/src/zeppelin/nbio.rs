@@ -2,7 +2,7 @@
 //! NBIO base initialization of the vendor AmdNbioBaseZPPei and the late
 //! settings of AmdNbioBaseZPDxe/AmdNbioPcieZPDxe, per die (sp4r2 report
 //! NBIO_BASE_ZP and nbio-base-contracts.json).
-use super::{Revision, topology::Die, topology::NONPCI_IOAPIC};
+use super::{Die, NONPCI_IOAPIC, Revision};
 use crate::fam17h::registers::{Smn, SmnReg};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{

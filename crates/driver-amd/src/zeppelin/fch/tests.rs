@@ -5,7 +5,8 @@ use super::*;
 use crate::{
     fam17h::registers::testing::{SmnModel, SmnTest},
     fch::{Acpimmio, Bus, Fch, Space},
-    zeppelin::{Die, Package, Revision, topology},
+    fam17h::topology::{self, Soc},
+    zeppelin::{Die, Package, Revision, Zeppelin},
 };
 use core::cell::RefCell;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
@@ -360,7 +361,7 @@ fn multi_reset_moves_acpimmio_while_io_is_routed_to_the_die() {
     let routed = w.position(Event::Config(
         df0(),
         0xc4,
-        u32::from(topology::ioms_fabric_id(1)),
+        u32::from(Zeppelin::ioms_fabric_id(1)),
     ));
     let restored = w.position(Event::Config(df0(), 0xc4, 0x00ff_f004));
     let io = |e: &Event| matches!(e, Event::Bus(Space::Io, ..));

@@ -5,7 +5,7 @@
 //! ACPI PM or SMI setup; their xHCI, SATA and xGbE are reached through the
 //! SMN space of their die.
 //!
-//! The loops take all dies (die 0 first, as [`crate::zeppelin::topology::dies`]
+//! The loops take all dies (die 0 first, as [`crate::fam17h::topology::dies`]
 //! yields them) and the board's [`Devices`] per die, indexed by die.
 use crate::fam17h::tsc::DelayNs;
 use super::{
@@ -29,7 +29,7 @@ const ACPIMMIO_OFFSET: u32 = 1 << 20;
 
 /// The ACPI MMIO of die `die`'s FCH. Die 0's is at 0xfed80000, the others
 /// are moved into the die's non-PCI MMIO pool (DF window top - 8 MiB, see
-/// [`crate::zeppelin::topology::NONPCI_MMIO_SIZE`]), at `nonpci_mmio_base`.
+/// [`crate::zeppelin::NONPCI_MMIO_SIZE`]), at `nonpci_mmio_base`.
 pub const fn acpimmio_base(die: u8, nonpci_mmio_base: u32) -> Acpimmio {
     if die == 0 {
         Acpimmio::DIE0

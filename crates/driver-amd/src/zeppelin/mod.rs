@@ -21,8 +21,8 @@ pub mod psp;
 pub mod smu;
 #[cfg(test)]
 mod test_pci;
-pub mod topology;
 
+use crate::fam17h::topology::Soc;
 pub use identity::{Package, Revision};
 
 /// GPIO bank 0: 145 pins, but the vendor board tables also use 149-152. The Zeppelin
@@ -33,7 +33,27 @@ pub const GPIO_BANK: crate::gpio::Bank = crate::gpio::Bank {
     gpio_function: |_| None,
     events: crate::gpio::FAMILY17H_EVENTS,
 };
-pub use topology::{Die, MAX_DIES};
+
+/// The Zeppelin SoC.
+pub enum Zeppelin {}
+impl Soc for Zeppelin {
+    /// Two dies on SP4, one on SP4r2.
+    const MAX_DIES: usize = 2;
+    const SMU: crate::fam17h::smu::Mailbox = smu::MAILBOX;
+    fn ioms_fabric_id(die: u8) -> u8 {
+        (die << 5) | 4
+    }
+}
+pub const MAX_DIES: usize = Zeppelin::MAX_DIES;
+pub type Die<P> = crate::fam17h::topology::Die<Zeppelin, P>;
+
+/// Non-PCI MMIO pool of a die, the top 8 MiB of its below-4G DF window: the
+/// PSP BAR at +0, the FCH ACPI MMIO of dies >= 1 at +1 MiB, the IOMMU (512
+/// KiB) at +2 MiB, the NBIO IOAPIC at +7 MiB.
+pub const NONPCI_MMIO_SIZE: u32 = 8 << 20;
+pub const NONPCI_PSP: u32 = 0;
+pub const NONPCI_IOMMU: u32 = 2 << 20;
+pub const NONPCI_IOAPIC: u32 = 7 << 20;
 
 /// PCIe ECAM: 128 buses, as the vendor firmware.
 pub const ECAM: u64 = 0xf000_0000;

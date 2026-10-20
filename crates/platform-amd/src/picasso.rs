@@ -210,19 +210,19 @@ unsafe fn cold_boot(
 ) -> Result<crate::early::State, &'static str> {
     use crate::{early, layout};
     use fstart_arch::x86::cpu::msr::NativeMsr;
-    use fstart_driver_amd::picasso::{
-        ECAM,
-        apob::Apob,
-        cpu,
-        registers::{Df, Smn},
+    use fstart_driver_amd::{
+        fam17h::topology,
+        picasso::{ECAM, Picasso, apob::Apob, cpu},
     };
     let msr = unsafe { NativeMsr::new() };
     // MMCONF first, everything else uses it.
     cpu::enable_ecam(&msr);
     fstart_pci::ecam::init(ECAM as usize);
     let pci = fstart_pci::ecam::GlobalEcam;
-    let smn = unsafe { Smn::new(pci) };
-    let df = unsafe { Df::new(pci) };
+    // SAFETY: the BSP owns the die's SMN and DF index pairs.
+    let Some(die) = (unsafe { topology::dies::<Picasso, _>(pci) }).next() else {
+        return Err("no die");
+    };
     // SAFETY: the PSP wrote the APOB here before releasing the BSP; the
     // early reservation keeps it.
     let apob = unsafe {
@@ -248,8 +248,7 @@ unsafe fn cold_boot(
             tseg_size: TSEG_SIZE,
         },
         &msr,
-        &smn,
-        &df,
+        &die,
         delay,
     )
     .map_err(|error| match error {

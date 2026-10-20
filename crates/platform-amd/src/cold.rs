@@ -14,7 +14,8 @@ use fstart_arch::x86::{
     mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle},
 };
 use fstart_driver_amd::picasso::{
-    cpu::{microcode::Picasso, thread},
+    Picasso,
+    cpu::thread,
     nbio::{self, PSP_MMIO_BASE},
     nbio_late, power,
     registers::Smn,

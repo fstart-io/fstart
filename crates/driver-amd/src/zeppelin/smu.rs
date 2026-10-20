@@ -7,7 +7,7 @@
 //! [`launch_aps`] to release the APs; [`aps_ready`] then [`ccx_done`] after
 //! every CPU ran [`super::ccx::cpu_init`].
 use crate::fam17h::tsc::DelayNs;
-use super::{MAX_DIES, topology::Die};
+use super::{Die, MAX_DIES};
 use crate::fam17h::ccx::{CAC_WEIGHT_COUNT, CacWeights};
 pub use crate::fam17h::smu::{ARGUMENT_COUNT, Error, Reply};
 use crate::fam17h::{

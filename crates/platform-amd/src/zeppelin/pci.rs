@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! PCI root complex of a die: its bus range and the DF windows routed to it
 //! (with the Zeppelin non-PCI pool).
-use fstart_driver_amd::zeppelin::{
-    ECAM, ECAM_BUSES, fabric,
-    topology::{Die, NONPCI_MMIO_SIZE},
-};
+use fstart_driver_amd::zeppelin::{Die, ECAM, ECAM_BUSES, NONPCI_MMIO_SIZE, fabric};
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
     ecam::GlobalEcam,

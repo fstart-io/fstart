@@ -10,7 +10,7 @@ use fstart_driver_amd::picasso::{
     cpu::{self, Identity},
     fabric,
     nbio::{self, Capabilities},
-    registers::{Df, Smn},
+    Die,
 };
 use tock_registers::interfaces::Readable;
 
@@ -42,8 +42,7 @@ pub enum Error {
 pub fn initialize(
     input: Inputs<'_>,
     msr: &(impl MsrAccess + CacheControl),
-    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
-    df: &Df<impl fstart_pci::ConfigRegionAccess>,
+    die: &Die<impl fstart_pci::ConfigRegionAccess + Copy>,
     delay: &mut impl DelayNs,
 ) -> Result<State, Error> {
     // Validate CPU, memory reservations and the full MTRR plan before writes.
@@ -60,6 +59,7 @@ pub fn initialize(
     }
     cache::install(msr, &caches).map_err(Error::Cache)?;
     cpu::enable_ecam(msr);
+    let (smn, df) = (&die.smn(), &die.df());
     fabric::ensure_legacy_routes(df, low as u32).map_err(Error::Fabric)?;
     fabric::early_init(df);
     let capabilities = nbio::early_init(smn, initial_id.raven2_cpuid, initial_id.am4, delay)

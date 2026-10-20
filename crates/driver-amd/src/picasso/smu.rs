@@ -13,7 +13,7 @@ pub const TEST: u32 = 0x01;
 pub const GET_NAME: u32 = 0x04;
 pub const DXIO_SERVICE: u32 = 0x0a;
 pub const GET_SILICON_ID: u32 = 0x51;
-const MAILBOX: Mailbox = Mailbox {
+pub const MAILBOX: Mailbox = Mailbox {
     message: MESSAGE,
     response: RESPONSE,
     arguments: ARGUMENTS,

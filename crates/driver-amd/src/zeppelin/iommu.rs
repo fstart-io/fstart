@@ -7,7 +7,7 @@
 //! The IOMMU is function 2 of device 0 on the die's root bus. Its
 //! configuration space is aliased in SMN, with the IOMMU capability at 0x40:
 //! NbDxe programs the base at SMN 0x13f00044/48 (D0F2 0x44/0x48).
-use super::topology::{Die, NONPCI_IOMMU};
+use super::{Die, NONPCI_IOMMU};
 use crate::fam17h::registers::SmnReg;
 use fstart_core::mmio::MmioReadOnly;
 use fstart_log::Hex;

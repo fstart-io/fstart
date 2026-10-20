@@ -3,10 +3,7 @@
 //! AmdFabricZpPei/Dxe and the MMIO/IO distribution of AmdSocSp4ZpPei (sp4r2
 //! reports DF_ZP and SOC_DISPATCH). Each die has its own DF; what AGESA calls a
 //! broadcast access is a direct access repeated on every die.
-use super::{
-    Revision,
-    topology::{NONPCI_MMIO_SIZE, ioms_fabric_id},
-};
+use super::{NONPCI_MMIO_SIZE, Revision, Zeppelin};
 use crate::fam17h::{
     apob::Apob,
     df::{
@@ -15,6 +12,7 @@ use crate::fam17h::{
         mmio_limit as f0_mmio_limit,
     },
     registers::{Df, DfReg},
+    topology::Soc,
 };
 use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
@@ -303,7 +301,7 @@ pub fn program<P: ConfigRegionAccess>(plan: &Plan, dfs: &[Df<P>]) {
         let pair = u16::from(w.pair);
         let mut ctrl = df0.reg(f0_mmio_ctrl(pair)).extract();
         ctrl.modify(
-            MmioCtrl::DST_FABRIC_ID.val(ioms_fabric_id(w.die).into())
+            MmioCtrl::DST_FABRIC_ID.val(Zeppelin::ioms_fabric_id(w.die).into())
                 + MmioCtrl::RE::SET
                 + MmioCtrl::WE::SET,
         );
@@ -320,7 +318,7 @@ pub fn program<P: ConfigRegionAccess>(plan: &Plan, dfs: &[Df<P>]) {
         let end = (w.end() - 1) as u32;
         let mut limit = df0.reg(f0_io_limit(pair)).extract();
         limit.modify(
-            IoLimit::DST_FABRIC_ID.val(ioms_fabric_id(w.die).into())
+            IoLimit::DST_FABRIC_ID.val(Zeppelin::ioms_fabric_id(w.die).into())
                 + IoLimit::LIMIT.val(end >> 12),
         );
         let base = IoBase::RE::SET + IoBase::WE::SET + IoBase::BASE.val(w.base as u32 >> 12);
@@ -335,7 +333,7 @@ pub fn program<P: ConfigRegionAccess>(plan: &Plan, dfs: &[Df<P>]) {
 fn mmio_window(df0: &Df<impl ConfigRegionAccess>, pair: u16, die: u8) -> Option<(u64, u64)> {
     let ctrl = df0.reg(f0_mmio_ctrl(pair)).extract();
     if !ctrl.matches_all(MmioCtrl::RE::SET + MmioCtrl::WE::SET)
-        || ctrl.read(MmioCtrl::DST_FABRIC_ID) != u32::from(ioms_fabric_id(die))
+        || ctrl.read(MmioCtrl::DST_FABRIC_ID) != u32::from(Zeppelin::ioms_fabric_id(die))
     {
         return None;
     }
@@ -570,7 +568,7 @@ pub fn route_vga(df: &Df<impl ConfigRegionAccess>, target: u8) {
     df.reg(F0_VGA_EN).modify(
         VgaEn::ENABLE::SET
             + VgaEn::CPU_DIS::CLEAR
-            + VgaEn::DST_FABRIC_ID.val(ioms_fabric_id(target).into()),
+            + VgaEn::DST_FABRIC_ID.val(Zeppelin::ioms_fabric_id(target).into()),
     );
 }
 

@@ -13,15 +13,14 @@ use fstart_driver_amd::{
         cache,
         ccx::Thread,
         msr,
+        topology,
         tsc::{self, Tsc},
     },
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
     zeppelin::{
-        self as soc, MAX_DIES, Package, Revision, ccx, dxio, fabric, fch, iommu,
-        microcode::Zeppelin,
+        self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, dxio, fabric, fch, iommu,
         nbio, psp, smu,
-        topology::{self, Die},
     },
 };
 use fstart_driver_uart::ns16550::Ns16550;

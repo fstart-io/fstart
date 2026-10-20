@@ -26,10 +26,9 @@ use fstart_driver_amd::{
     gpio::Gpio,
     lpc::Lpc,
     zeppelin::{
-        MAX_DIES,
+        Die, MAX_DIES,
         dxio::Descriptor,
         fch::{Devices, irq::Route},
-        topology::Die,
     },
 };
 use fstart_driver_uart::ns16550::Ns16550Config;

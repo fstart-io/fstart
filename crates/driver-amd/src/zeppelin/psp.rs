@@ -6,7 +6,7 @@
 //! Gen2 one ([`crate::fam17h::psp`]); the native flow only uses die 0's, for
 //! the SMM info after MP init, [`Mailbox::lock_df_registers`] at
 //! ready-to-boot and BootDone before the payload.
-use super::{MAX_DIES, topology::Die, topology::NONPCI_PSP};
+use super::{Die, MAX_DIES, NONPCI_PSP};
 #[cfg(target_arch = "x86_64")]
 pub use crate::fam17h::psp::Native;
 pub use crate::fam17h::psp::{Buffer, Error as MailboxError, Mailbox};

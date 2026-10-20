@@ -3,7 +3,8 @@
 //! per-die SMN through D0F0 B8/BC of the die's root bus, and an SMU that
 //! completes every message.
 extern crate std;
-use super::{Die, smu::MAILBOX, topology::dies};
+use super::{Die, smu::MAILBOX};
+use crate::fam17h::topology::dies;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{cell::RefCell, collections::BTreeMap, vec::Vec};
 

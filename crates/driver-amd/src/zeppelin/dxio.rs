@@ -37,8 +37,7 @@ use super::{
         self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NBIF_COUNT, NbProgDeviceRemap,
         PCIE_CORE_COUNT, PCIE_PORT_COUNT, PCIE_PORTS_PER_CORE, nbif_reg, pcie, rmw, strap,
     },
-    smu,
-    topology::Die,
+    smu, Die,
 };
 pub use crate::fam17h::dxio::{
     Aspm, ClockRequest, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed,

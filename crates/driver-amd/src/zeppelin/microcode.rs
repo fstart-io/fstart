@@ -2,10 +2,10 @@
 //! Zeppelin microcode: the vendor ROM's BIOS directory type 0x66 entries
 //! (0xc80 bytes each, one per equivalence ID 8000/8010/8011/8012), loaded on
 //! every core. The platform packages them.
+use super::Zeppelin;
 use crate::fam17h::microcode::{self, Family};
 pub use crate::fam17h::microcode::{Error, Outcome, PATCH_BYTES, equivalent_revision};
 
-pub enum Zeppelin {}
 impl Family for Zeppelin {
     /// ZP-A0 is model 0, ZP-B0/B1/B2 are model 1.
     const SIGNATURES: &'static [u32] = &[0x0080_0f00, 0x0080_0f10];
