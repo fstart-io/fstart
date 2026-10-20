@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Boot media and payload handoff: the FFS in the boot flash between the
+//! vendor PSP prefix and the reset image, verified with the policy the image
+//! builder patched into this stage.
+use super::layout;
+use fstart_core::services::{
+    Console, ServiceError,
+    memory_detect::{E820Entry, E820Kind, E820State},
+};
+use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
+use heapless::Vec;
+
+/// Mount and authenticate the FFS; loads may only go to RAM outside the
+/// firmware's own windows.
+pub fn mount(e820: &E820State) -> Result<(), ServiceError> {
+    fstart_arch::x86::boot::enable_boot_media_rom_cache();
+    let mut writable = Vec::<MemoryWindow, 32>::new();
+    let mut reserved = Vec::<MemoryWindow, 32>::new();
+    for entry in e820.entries() {
+        let window = MemoryWindow {
+            start: entry.addr,
+            size: entry.size,
+        };
+        if entry.kind == E820Kind::Ram as u32 {
+            writable.push(window).map_err(|_| ServiceError::InvalidParam)?;
+        } else {
+            reserved.push(window).map_err(|_| ServiceError::InvalidParam)?;
+        }
+    }
+    for window in fstart_stage::boot::running_stage_windows()
+        .map_err(|_| ServiceError::InvalidParam)?
+        .into_iter()
+        .chain([MemoryWindow {
+            start: layout::FFS_BASE,
+            size: u64::from(layout::FFS_SIZE),
+        }])
+    {
+        reserved.push(window).map_err(|_| ServiceError::InvalidParam)?;
+    }
+    let policy = MemoryPolicy {
+        writable: &writable,
+        reserved: &reserved,
+        entry_alignment: 1,
+    };
+    // SAFETY: discovered RAM only, with the live stage, the firmware region
+    // and the media excluded; no device has DMA buffers outside the reserved
+    // early region.
+    unsafe { fstart_stage::directory::set_load_policy(&policy) }
+        .map_err(|_| ServiceError::InvalidParam)?;
+    let locator = fstart_stage::anchor::media_locator().ok_or(ServiceError::InvalidParam)?;
+    if locator.image_offset != 0 || !locator.validate(u64::from(layout::FFS_SIZE)) {
+        return Err(ServiceError::InvalidParam);
+    }
+    let media = fstart_stage::fixed_helpers::MemoryMappedFfs::new(
+        layout::FFS_BASE,
+        usize::try_from(locator.image_size).map_err(|_| ServiceError::InvalidParam)?,
+    );
+    media.mount()?;
+    media.verify()
+}
+
+/// What the payload launchers need.
+pub struct Handoff {
+    pub console: &'static dyn Console,
+    pub e820: E820State,
+    pub rsdp: Option<u64>,
+}
+
+impl fstart_stage::payload::X86UefiPayloadContext for Handoff {
+    fn console(&self) -> Option<&dyn Console> {
+        Some(self.console)
+    }
+    fn e820(&self) -> &[E820Entry] {
+        self.e820.entries()
+    }
+    fn firmware_region(&self) -> (u64, u64) {
+        (layout::FFS_BASE, u64::from(layout::FFS_SIZE))
+    }
+    fn acpi_rsdp(&self) -> Option<u64> {
+        self.rsdp
+    }
+    fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
+        Some(fstart_pci::PciRootInfo {
+            segment: 0,
+            ecam_base: fstart_driver_amd::zeppelin::ECAM,
+            bus_start: 0,
+            bus_end: (fstart_driver_amd::zeppelin::ECAM_BUSES - 1) as u8,
+        })
+    }
+}
+
+#[cfg(feature = "payload-linux")]
+impl fstart_stage::payload::X86LinuxPayloadContext for Handoff {
+    fn e820(&self) -> &[E820Entry] {
+        self.e820.entries()
+    }
+    fn acpi_rsdp(&self) -> Option<u64> {
+        self.rsdp
+    }
+}
+
+/// Identity map all RAM and the 4-GiB MMIO space before the payload: the
+/// reset entry only maps the low 4 GiB.
+pub fn map_ram(e820: &E820State) -> Result<(), ServiceError> {
+    let spans = e820
+        .entries()
+        .iter()
+        .map(|entry| (entry.addr, entry.size))
+        .chain([(0, 1 << 32)]);
+    // SAFETY: BSP only, before the payload; the tables come from the heap in
+    // the reserved early region.
+    let tables = unsafe { fstart_arch::x86::boot::paging::IdentityTables::build(spans)? };
+    let base = unsafe { tables.install() };
+    fstart_log::info!("paging: identity tables at {}", fstart_log::Hex(base));
+    Ok(())
+}

@@ -19,6 +19,7 @@ bundle-zeppelin = [
   "zeppelin",
   "dep:fstart-stage",
   "dep:heapless",
+  "dep:zerocopy",
   "fstart-arch/x86-identity-paging",
   "fstart-stage/x86_64",
   "fstart-stage/ffs",
@@ -44,3 +45,4 @@ fstart-pci.workspace = true
 fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
 fstart-stage = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
+zerocopy = { workspace = true, optional = true }

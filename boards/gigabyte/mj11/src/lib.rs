@@ -2,7 +2,16 @@
 //! Gigabyte MJ11-EC1 (G431-MM0) and MJ11-EC0: EPYC Embedded 3000 (SP4r2) with
 //! an AST2500 BMC.
 #![no_std]
-use fstart_driver_amd::lpc::{IoPortDecode, Lpc};
+mod dxio;
+
+use fstart_driver_amd::{
+    lpc::{IoPortDecode, Lpc},
+    zeppelin::{
+        dxio::Descriptor,
+        fch::irq::{self, Route},
+    },
+};
+use fstart_platform_amd::zeppelin::BoardCtx;
 use fstart_driver_superio::aspeed_ast2400::{self as ast, Ast2400, SuperIoConfig};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_pci::ConfigRegionAccess;
@@ -12,7 +21,27 @@ pub struct Board;
 const SIO_PORT: u16 = 0x2e;
 const COM1: u16 = 0x3f8;
 
+/// The IOAPIC side matches the vendor firmware; the vendor PIC values aren't
+/// known, so INTA-D are left for the OS to route through ACPI. MISC..MISC2
+/// keep their native values (the platform enforces that).
+const IRQ_ROUTES: &[Route] = &[
+    Route { source: irq::A, pic: irq::NC, apic: 16 },
+    Route { source: irq::B, pic: irq::NC, apic: 17 },
+    Route { source: irq::C, pic: irq::NC, apic: 18 },
+    Route { source: irq::D, pic: irq::NC, apic: 19 },
+    Route { source: irq::SCI, pic: 9, apic: 9 },
+    Route { source: irq::GPIO, pic: 7, apic: 7 },
+];
+
 impl fstart_platform_amd::zeppelin::Board for Board {
+    /// Gigabyte.
+    const SUBSYSTEM_ID: u32 = 0x1000_1458;
+    const IRQ_ROUTES: &'static [Route] = IRQ_ROUTES;
+
+    fn dxio_descriptors(_ctx: &mut BoardCtx<'_>, die: u8) -> &'static [Descriptor] {
+        if die == 0 { dxio::DEFAULT } else { &[] }
+    }
+
     fn early_init(lpc: &mut Lpc<impl ConfigRegionAccess>) {
         lpc.enable_sio_2e();
         lpc.enable_io_decode(IoPortDecode::SERIAL0::SET);

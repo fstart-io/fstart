@@ -5,22 +5,70 @@
 pub mod host;
 pub mod layout;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
+mod cpu;
+#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
+mod memory;
+#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
+mod pci;
+#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod stage;
 
-use fstart_driver_amd::lpc::Lpc;
+use fstart_driver_amd::{
+    fch::early::PowerFailure,
+    lpc::Lpc,
+    zeppelin::{
+        MAX_DIES,
+        dxio::Descriptor,
+        fch::{Devices, irq::Route},
+        topology::Die,
+    },
+};
 use fstart_driver_uart::ns16550::Ns16550Config;
-use fstart_pci::ConfigRegionAccess;
+use fstart_pci::{ConfigRegionAccess, ecam::GlobalEcam};
 
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 pub use stage::Program;
 
+/// What the board hooks get: the dies and a delay.
+pub struct BoardCtx<'a> {
+    pub dies: &'a [Die<GlobalEcam>],
+    pub delay_us: &'a mut dyn FnMut(u32),
+}
+impl BoardCtx<'_> {
+    pub fn delay_us(&mut self, us: u32) {
+        (self.delay_us)(us)
+    }
+}
+
 /// Board wiring and hooks. The platform owns the order of calls.
 pub trait Board: 'static {
+    /// Subsystem ID for the FCH and PCIe devices.
+    const SUBSYSTEM_ID: u32;
+    /// AC power-loss policy.
+    const POWER_FAILURE: PowerFailure = PowerFailure::Previous;
+    /// FCH devices in use, per die.
+    const FCH_DEVICES: [Devices; MAX_DIES] = [Devices {
+        xhci: true,
+        sata: true,
+    }; MAX_DIES];
+    /// The FCH PCI interrupt router (0xc00/0xc01) table.
+    const IRQ_ROUTES: &'static [Route];
+
     /// LPC decodes and Super I/O routing for the console, before any
     /// output.
     fn early_init(lpc: &mut Lpc<impl ConfigRegionAccess>);
     /// The board's console UART.
     fn console() -> Ns16550Config;
+    /// After the FCH reset tasks, where the vendor board PEIMs run.
+    fn fch_reset_done(_ctx: &mut BoardCtx<'_>) {}
+    /// DXIO engines of a die.
+    fn dxio_descriptors(ctx: &mut BoardCtx<'_>, die: u8) -> &'static [Descriptor];
+    /// After DXIO link training, before PCI enumeration.
+    fn dxio_training_done(_ctx: &mut BoardCtx<'_>) {}
+    /// After PCI enumeration.
+    fn mainboard_final(_ctx: &mut BoardCtx<'_>) {}
+    /// Right before the payload.
+    fn ready_to_boot(_ctx: &mut BoardCtx<'_>) {}
 }
 
 /// Declare the board binary: `fstart_platform_amd::zeppelin_stage_bin!(Board);`

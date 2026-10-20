@@ -172,6 +172,7 @@ pub unsafe fn launch_aps<P: ConfigRegionAccess + Copy>(
         let mut smn = die.smn();
         let enabled = smn.read(THREAD_ENABLE);
         if enabled & (1 << slot) == 0 {
+            fstart_log::debug!("SMU {}: ThreadEn bit {}", die.index(), slot);
             smn.write(THREAD_ENABLE, enabled | (1 << slot));
             test_message(die, delay_us)?;
         }

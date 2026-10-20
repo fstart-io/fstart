@@ -28,7 +28,7 @@ pub mod memory;
 mod memory_tests;
 #[cfg(all(feature = "picasso", target_arch = "x86_64"))]
 pub mod microcode;
-#[cfg(feature = "picasso")]
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod mp;
 #[cfg(feature = "picasso")]
 pub mod picasso;
