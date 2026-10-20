@@ -30,12 +30,11 @@
 //!     pcie(23, 16, 3, 3),
 //! ];
 //! ```
-use super::{
-    Die, ECAM_BUSES, MAX_DIES,
-    nbio::{
-        self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NBIF_COUNT, NbProgDeviceRemap,
-        PCIE_CORE_COUNT, PCIE_PORT_COUNT, PCIE_PORTS_PER_CORE, nbif_reg, pcie, rmw, strap,
-    },
+use super::{Die, ECAM_BUSES, MAX_DIES};
+use crate::nbio::{
+    iohc::{self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NbProgDeviceRemap},
+    pcie::{self, PCIE_PORTS_PER_CORE},
+    zeppelin::{NBIF_COUNT, PCIE_CORE_COUNT, PCIE_PORT_COUNT, nbif_reg, strap},
 };
 use crate::smu::v9 as smu;
 pub use crate::fam17h::dxio::{
@@ -46,7 +45,7 @@ use crate::fam17h::{
     dxio,
     tsc::{Clock, DelayNs},
 };
-use crate::smn::{Smn, SmnReg};
+use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use fstart_log::{debug, error, info};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress, devfn, devfn_parts};
 use tock_registers::{
@@ -336,7 +335,7 @@ impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
         })?;
         let smn = self.die.smn();
         for (p, devfn) in map.into_iter().enumerate() {
-            smn.reg(nbio::nb_prog_device_remap(p))
+            smn.reg(iohc::nb_prog_device_remap(p))
                 .modify(NbProgDeviceRemap::DEVFN.val(devfn.into()));
             let (device, function) = devfn_parts(devfn);
             debug!(
@@ -433,7 +432,7 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
     }
 }
 
-/// PCIe straps of a core (see [`nbio::strap`]).
+/// PCIe straps of a core (see [`strap`]).
 mod straps {
     /// ACS (vendor CBS "ACS Enable", default enabled), in the vendor order.
     pub const ACS: [u32; 8] = [
@@ -464,7 +463,7 @@ const PCIE_CAPABILITY: u16 = 0x58;
 const DEVICE_CONTROL2: u16 = PCIE_CAPABILITY + 0x28;
 
 /// ACS-related settings of the NBIFs: raw vendor values.
-fn nbif_acs() -> impl Iterator<Item = nbio::Reg> {
+fn nbif_acs() -> impl Iterator<Item = Reg> {
     (0..NBIF_COUNT).flat_map(|n| {
         let functions =
             (0..8).map(move |function| rmw(nbif_reg(n, 0x34008 + 0x200 * function), 0x13_0000, 0x13_0000));
@@ -482,7 +481,7 @@ fn pre_training(smn: &Smn<impl ConfigRegionAccess>) {
             strap(smn, core, acs).set(1);
         }
     }
-    nbio::apply(smn, nbif_acs());
+    apply(smn, nbif_acs());
 }
 
 /// Enable the SATA function of the NBIF.
@@ -496,7 +495,7 @@ fn nbif_sata_enable(smn: &Smn<impl ConfigRegionAccess>) {
 /// Hide all bridges, then show the ones with a link or a hotplug slot.
 fn bridges(smn: &Smn<impl ConfigRegionAccess>, topology: &PcieTopology) {
     for bridge in 0..PCIE_PORT_COUNT {
-        smn.reg(nbio::iohc_bridge_cntl(bridge)).modify(
+        smn.reg(iohc::iohc_bridge_cntl(bridge)).modify(
             IohcBridgeCntl::BRIDGE_DIS::SET
                 + IohcBridgeCntl::CFG_DIS::SET
                 + IohcBridgeCntl::CRS_ENABLE::SET,
@@ -507,7 +506,7 @@ fn bridges(smn: &Smn<impl ConfigRegionAccess>, topology: &PcieTopology) {
             continue;
         };
         if port.trained || !matches!(port.hotplug, Hotplug::Disabled | Hotplug::Inboard) {
-            smn.reg(nbio::iohc_bridge_cntl(bridge)).modify(
+            smn.reg(iohc::iohc_bridge_cntl(bridge)).modify(
                 IohcBridgeCntl::BRIDGE_DIS::CLEAR
                     + IohcBridgeCntl::CFG_DIS::CLEAR
                     + IohcBridgeCntl::CRS_ENABLE::SET,
@@ -631,14 +630,14 @@ fn bus_routing(smn: &Smn<impl ConfigRegionAccess>, die: usize, buses: &[u8]) {
         let limit = buses
             .get(rb + 1)
             .map_or(ECAM_BUSES - 1, |&next| u16::from(next) - 1);
-        smn.reg(nbio::iohc_rb_bus_route(rb)).write(
+        smn.reg(iohc::iohc_rb_bus_route(rb)).write(
             IohcRbBusRoute::BASE.val(base.into())
                 + IohcRbBusRoute::LIMIT.val(limit.into())
                 + IohcRbBusRoute::REMOTE.val(u32::from(rb != die)),
         );
     }
     // Vendor PCD 0x1d (ARI support), default enabled
-    smn.reg(nbio::IOHC_FEATURE_CNTL)
+    smn.reg(iohc::IOHC_FEATURE_CNTL)
         .modify(IohcFeatureCntl::ARI::SET);
 }
 
@@ -857,7 +856,7 @@ mod tests {
         topology.ports[8].as_mut().unwrap().hotplug = Hotplug::Server;
         topology.ports[1].as_mut().unwrap().hotplug = Hotplug::Inboard;
         bridges(&smn, &topology);
-        let bridge = |d, f| space.get(nbio::iohc_bridge_cntl(bridge_index(devfn(d, f)).unwrap()));
+        let bridge = |d, f| space.get(iohc::iohc_bridge_cntl(bridge_index(devfn(d, f)).unwrap()));
         assert_eq!(bridge(3, 1), 1 << 18);
         assert_eq!(bridge(3, 3), 1 << 18);
         assert_eq!(bridge(1, 3), 0x40005);
@@ -926,8 +925,8 @@ mod tests {
     fn root_bridges_route_every_die_bus_range() {
         let space = SmnSpace::default();
         bus_routing(&space.smn(), 1, &[0x00, 0x40]);
-        assert_eq!(space.get(nbio::iohc_rb_bus_route(0)), 0x8000_3f00);
-        assert_eq!(space.get(nbio::iohc_rb_bus_route(1)), 0x0000_7f40);
-        assert_eq!(space.get(nbio::IOHC_FEATURE_CNTL), 1 << 22);
+        assert_eq!(space.get(iohc::iohc_rb_bus_route(0)), 0x8000_3f00);
+        assert_eq!(space.get(iohc::iohc_rb_bus_route(1)), 0x0000_7f40);
+        assert_eq!(space.get(iohc::IOHC_FEATURE_CNTL), 1 << 22);
     }
 }

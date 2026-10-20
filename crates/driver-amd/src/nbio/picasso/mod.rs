@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native Picasso NBIO setup.
-//! Hardware order and repeated table writes are intentional.
-use crate::fam17h::tsc::DelayNs;
+//! Native Picasso NBIO setup (AGESA AmdNbioBaseRV). Hardware order and repeated
+//! table writes are intentional. The PCIe power management and the late SMU
+//! notifications are [`late`].
 use super::{
-    Die,
-    nbio_tables as tables,
+    ioapic::{IOAPIC_FEATURES_ENABLE, IoapicFeatures},
+    iohc::{self, IOAPIC_BAR, NB_BUS_NUM_CNTL, NbBusNumCntl, PSP_BAR, SMU_BAR},
 };
+use crate::fam17h::tsc::DelayNs;
+use crate::picasso::Die;
 use crate::smu::v10 as smu;
 use crate::smn::{Reg, Smn, SmnReg, copy, rmw, write};
-use crate::fam17h::{
-    iohc::{self, IOAPIC_BAR, PSP_BAR, SMU_BAR},
-    nbio::{IOAPIC_FEATURES_ENABLE, IoapicFeatures, NB_BUS_NUM_CNTL, NbBusNumCntl},
-};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -21,6 +19,9 @@ use tock_registers::{
 pub const SMU_MMIO_BASE: u32 = 0xfd00_0000;
 pub const PSP_MMIO_BASE: u32 = 0xfd10_0000;
 const IOAPIC_BASE: u32 = 0xfec0_1000;
+
+pub mod late;
+mod tables;
 
 register_bitfields![u32,
     /// ACP_I2S_PIN_CONFIG.

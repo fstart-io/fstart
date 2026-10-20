@@ -13,12 +13,8 @@ use fstart_arch::x86::{
 };
 use fstart_driver_amd::{
     fam17h::tsc::DelayNs,
-    picasso::{
-        Die, Picasso,
-        cpu::thread,
-        nbio::{self, PSP_MMIO_BASE},
-        nbio_late,
-    },
+    nbio::picasso::{self as nbio, PSP_MMIO_BASE},
+    picasso::{Die, Picasso, cpu::thread},
     smn::Smn,
     smu::{
         threads::{self, Policy},
@@ -154,7 +150,7 @@ fn notify(
     }
     let mut responses = LateResponses::new();
     let mut overflow = false;
-    let result = nbio_late::ccx_done(smn, graphics, delay, &mut |command, status| {
+    let result = nbio::late::ccx_done(smn, graphics, delay, &mut |command, status| {
         overflow |= !responses.push(command, status);
     });
     if overflow {

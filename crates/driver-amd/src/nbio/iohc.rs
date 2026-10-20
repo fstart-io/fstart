@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The IOHC of a die: the DRAM map it routes by and the MMIO BARs of the
-//! NBIO blocks behind it (PSP, SMU, IOAPIC, IOMMU), all in SMN. The same IP
-//! at the same addresses on Raven/Picasso and Zeppelin; the SoC picks the
-//! base addresses.
-use crate::{df::Die, soc::Soc};
-use crate::smn::{Smn, SmnReg};
+//! The IOHC of a die: the DRAM map it routes by, the MMIO BARs of the NBIO
+//! blocks behind it (PSP, SMU, IOAPIC, IOMMU) and its root complex
+//! registers, all in SMN. The same IP at the same addresses on Raven/Picasso
+//! and Zeppelin; the SoC picks the base addresses.
+use crate::{
+    df::Die,
+    smn::{Smn, SmnReg},
+    soc::Soc,
+};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{
     RegisterLongName,
@@ -27,7 +30,27 @@ register_bitfields![u32,
     ],
     /// The IOMMU capability's base address register; the base is 512 KiB
     /// aligned.
-    pub IommuBar [ENABLE OFFSET(0) NUMBITS(1) [], BASE OFFSET(19) NUMBITS(13) []]
+    pub IommuBar [ENABLE OFFSET(0) NUMBITS(1) [], BASE OFFSET(19) NUMBITS(13) []],
+    pub NbBusNumCntl [
+        BUS OFFSET(0) NUMBITS(8) [],
+        LAT_MODE OFFSET(8) NUMBITS(1) []
+    ],
+    pub IohcFeatureCntl [
+        /// Vendor PCD 0x1d (ARI support).
+        ARI OFFSET(22) NUMBITS(1) []
+    ],
+    pub NbProgDeviceRemap [DEVFN OFFSET(0) NUMBITS(8) []],
+    pub IohcBridgeCntl [
+        BRIDGE_DIS OFFSET(0) NUMBITS(1) [],
+        CFG_DIS OFFSET(2) NUMBITS(1) [],
+        CRS_ENABLE OFFSET(18) NUMBITS(1) []
+    ],
+    pub IohcRbBusRoute [
+        BASE OFFSET(0) NUMBITS(8) [],
+        LIMIT OFFSET(8) NUMBITS(8) [],
+        /// Set for the bus ranges of the other dies.
+        REMOTE OFFSET(31) NUMBITS(1) []
+    ]
 ];
 
 // NB configuration space (SMN), also D0F0 of the die.
@@ -41,6 +64,21 @@ pub const NB_MMIOLIMIT: SmnReg = SmnReg::new(IOHC_BASE + 0x060);
 pub const NB_LOWER_TOP_OF_DRAM2: SmnReg = SmnReg::new(IOHC_BASE + 0x064);
 pub const NB_UPPER_TOP_OF_DRAM2: SmnReg = SmnReg::new(IOHC_BASE + 0x068);
 pub const NB_TOP_OF_DRAM3: SmnReg = SmnReg::new(IOHC_BASE + 0x138);
+
+pub const NB_BUS_NUM_CNTL: SmnReg<NbBusNumCntl::Register> = SmnReg::new(IOHC_BASE + 0x044);
+pub const fn nb_prog_device_remap(port: usize) -> SmnReg<NbProgDeviceRemap::Register> {
+    SmnReg::new(IOHC_BASE + 0x0c0 + port as u32 * 4)
+}
+pub const IOHC_FEATURE_CNTL: SmnReg<IohcFeatureCntl::Register> =
+    SmnReg::new(IOHC_BASE + 0x118);
+/// Bus routing between the root bridges of the dies.
+pub const fn iohc_rb_bus_route(rb: usize) -> SmnReg<IohcRbBusRoute::Register> {
+    SmnReg::new(IOHC_BASE + 0x190 + rb as u32 * 0x14)
+}
+/// The 16 PCIe bridges of a die each have a bridge control register.
+pub const fn iohc_bridge_cntl(bridge: usize) -> SmnReg<IohcBridgeCntl::Register> {
+    SmnReg::new(0x13b3_1004 + bridge as u32 * 0x400)
+}
 
 /// A 64-bit MMIO BAR in SMN: the low half holds the enable bit and the
 /// address bits of `address`, the next register address bits 63:32.

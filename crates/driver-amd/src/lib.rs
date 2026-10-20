@@ -15,6 +15,8 @@ pub mod gpio;
 mod gpio_tests;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod lpc;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod nbio;
 #[cfg(feature = "picasso")]
 pub mod picasso;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]

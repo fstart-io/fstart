@@ -8,10 +8,10 @@ use fstart_driver_amd::fam17h::ccx::Thread;
 use fstart_driver_amd::picasso::{
     cache::{self, CacheControl, Plan},
     cpu::{self, Identity},
-    nbio::{self, Capabilities},
     Die,
 };
 use fstart_driver_amd::df::picasso as fabric;
+use fstart_driver_amd::nbio::picasso::{self as nbio, Capabilities};
 use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {

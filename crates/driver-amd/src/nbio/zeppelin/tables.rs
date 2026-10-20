@@ -3,7 +3,7 @@
 //! tools/emit_zp_tables.py from the Gigabyte MJ11-EC0 F02 image). Records
 //! whose predicate is false with the SP4/SP4r2 defaults are left out. Order
 //! and repeated writes are part of the sequence: do not coalesce.
-use super::nbio::{Reg, copy, rmw, write};
+use crate::smn::{Reg, copy, rmw, write};
 
 /// AmdNbioBaseZPPei table at 0xffde2848: 156 of 158 records.
 pub const BASE: &[Reg] = &[

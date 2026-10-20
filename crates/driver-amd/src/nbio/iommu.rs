@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The NBIO IOMMU of every die: its MMIO window and the registers the IVRS
 //! describes, after the vendor AMI NbDxe and AmdNbioIOMMUZPDxe (sp4r2 report
-//! NBIO_BASE_ZP 3.6 and 3.7). The IOMMU table of the NBIO early init already
+//! NBIO_BASE_ZP 3.6 and 3.7). The IOMMU tables of the NBIO early init already
 //! set up the L1s and the L2; translation stays off until the OS enables it.
 //!
 //! The IOMMU is function 2 of device 0 on the die's root bus. Its
 //! configuration space is aliased in SMN, with the IOMMU capability at 0x40:
 //! NbDxe programs the base at SMN 0x13f00044/48 (D0F2 0x44/0x48),
 //! [`IOMMU_BAR`].
-use super::Die;
-use crate::fam17h::iohc::IOMMU_BAR;
+use super::iohc::IOMMU_BAR;
+use crate::{df::Die, soc::Soc};
 use crate::smn::SmnReg;
 use fstart_core::mmio::MmioReadOnly;
 use fstart_log::Hex;
@@ -48,7 +48,7 @@ register_structs! {
 /// Map the 512 KiB of IOMMU registers of `die` at `base` (512 KiB aligned,
 /// outside the PCI windows so nothing moves it) and return it, `None`
 /// without an IOMMU.
-pub fn init_bar<P: ConfigRegionAccess + Copy>(die: &Die<P>, base: u32) -> Option<u32> {
+pub fn init_bar<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>, base: u32) -> Option<u32> {
     let smn = die.smn();
     if smn.reg(CAP_HEADER).read(CapHeader::ID) != CAPABILITY_ID {
         fstart_log::error!("IOMMU {}: no IOMMU capability", die.index());
@@ -79,7 +79,7 @@ pub struct Iommu {
 ///
 /// # Safety
 /// The IOMMU MMIO is identity mapped and uncached.
-pub unsafe fn read<P: ConfigRegionAccess + Copy>(die: &Die<P>) -> Option<Iommu> {
+pub unsafe fn read<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>) -> Option<Iommu> {
     let smn = die.smn();
     let base = IOMMU_BAR.base(&smn)?;
     // SAFETY: the enabled IOMMU register window, per the caller.
@@ -107,9 +107,10 @@ pub unsafe fn read<P: ConfigRegionAccess + Copy>(die: &Die<P>) -> Option<Iommu> 
     Some(iommu)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "zeppelin"))]
 mod tests {
-    use super::{super::test_pci::Pci, *};
+    use super::*;
+    use crate::zeppelin::test_pci::Pci;
 
     #[test]
     fn maps_each_die_with_an_iommu_in_its_pool() {

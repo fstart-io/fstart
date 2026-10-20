@@ -12,10 +12,7 @@ pub mod dxio;
 pub mod fch;
 pub mod i2c;
 pub mod identity;
-pub mod iommu;
 pub mod microcode;
-pub mod nbio;
-mod nbio_tables;
 #[cfg(test)]
 pub(crate) mod test_pci;
 

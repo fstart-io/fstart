@@ -11,8 +11,11 @@ use crate::smu::v10 as smu;
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::fam17h::{
     dxio::{self, Slot},
-    nbio::{IohcBridgeCntl, NbProgDeviceRemap, iohc_bridge_cntl, nb_prog_device_remap, pcie},
     tsc::{Clock, DelayNs},
+};
+use crate::nbio::{
+    iohc::{IohcBridgeCntl, NbProgDeviceRemap, iohc_bridge_cntl, nb_prog_device_remap},
+    pcie,
 };
 use core::{
     cell::UnsafeCell,

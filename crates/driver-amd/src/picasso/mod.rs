@@ -16,9 +16,6 @@ pub mod legacy;
 mod legacy_tests;
 #[cfg(test)]
 mod native_tests;
-pub mod nbio;
-pub mod nbio_late;
-mod nbio_tables;
 pub mod pinmux;
 pub mod preinit;
 pub mod southbridge;

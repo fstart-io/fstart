@@ -415,8 +415,11 @@ mod zeppelin {
     use super::*;
     use crate::{
         df::{self, map},
-        fam17h::iohc::{self, IOAPIC_BAR},
         fch::{Acpimmio, Fch},
+        nbio::{
+            self, iommu,
+            iohc::{self, IOAPIC_BAR},
+        },
         psp,
         smu::{
             threads::{self, Policy},
@@ -426,7 +429,6 @@ mod zeppelin {
             Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision,
             dxio::{self, Descriptor, SataChannel},
             fch::{self, Devices},
-            iommu, nbio,
         },
     };
 
@@ -512,7 +514,7 @@ mod zeppelin {
             &mut delay,
         );
         for die in &dies {
-            nbio::early_init(die, Revision::B2);
+            nbio::zeppelin::early_init(die, Revision::B2);
             let _ = iohc::map_psp(&die.smn(), nonpci[usize::from(die.index())] + NONPCI_PSP);
         }
         smu::print_name(&dies[0], &mut delay);
@@ -560,7 +562,7 @@ mod zeppelin {
             map::route_vga(&die.df(), dies[0].ioms_fabric_id());
         }
         for die in &dies {
-            nbio::pre_enumeration_init(die);
+            nbio::zeppelin::pre_enumeration_init(die);
         }
         fch::env_init(&fch0, &dies[0].smn(), SUBSYSTEM_ID);
         fch::sata::init(&fch0, 0, &dies[0].smn(), SUBSYSTEM_ID, &mut delay);
@@ -599,11 +601,13 @@ mod picasso {
     use super::*;
     use crate::{
         df::{self, picasso as fabric},
-        fam17h::iohc::{PSP_BAR, SMU_BAR},
+        nbio::{
+            iohc::{PSP_BAR, SMU_BAR},
+            picasso as nbio,
+        },
         picasso::{
             Die,
             dxio::{self, Aspm, ClockRequest, Descriptor, Options, PowerPolicy},
-            nbio::{self},
         },
         smu::{
             THREAD_CONFIG, THREAD_ENABLE,
@@ -633,7 +637,7 @@ mod picasso {
         hw.set_smn(0, SMU_BAR.low, 0);
         hw.set_smn(0, SMU_BAR.high, 0);
         hw.set_smn(0, PSP_BAR.low, 0);
-        hw.set_smn(0, crate::fam17h::nbio::pcie::link_status(0), 0);
+        hw.set_smn(0, crate::nbio::pcie::link_status(0), 0);
         // TOM2[40:32] bit 8 clear: below 1 TiB.
         hw.set_smn(0, 0x13b1_0068_u32, 0x1234_5600);
         let die: Die<&Hw> = unsafe { df::dies(&hw) }.next().unwrap();

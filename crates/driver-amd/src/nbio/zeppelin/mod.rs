@@ -2,18 +2,23 @@
 //! NBIO base initialization of the vendor AmdNbioBaseZPPei and the late
 //! settings of AmdNbioBaseZPDxe/AmdNbioPcieZPDxe, per die (sp4r2 report
 //! NBIO_BASE_ZP and nbio-base-contracts.json).
-use super::{Die, Revision};
-use crate::smn::{Smn, SmnReg};
+use super::{
+    ioapic::{IOAPIC_FEATURES_ENABLE, IoapicFeatures},
+    iohc::{NB_BUS_NUM_CNTL, NbBusNumCntl},
+    pcie::{self, PCIE_PORTS_PER_CORE},
+};
+use crate::{
+    smn::{Reg, Smn, SmnReg, apply, copy, rmw},
+    zeppelin::{Die, Revision},
+};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     interfaces::{ReadWriteable, Writeable},
     register_bitfields,
 };
 
-pub use super::nbio_tables::{BASE, IOMMU};
-
-pub use crate::smn::{Reg, apply, copy, rmw, write};
-pub(super) use crate::fam17h::nbio::*;
+mod tables;
+pub use tables::{BASE, IOMMU};
 
 register_bitfields![u32,
     NbifBusCfg [BUS OFFSET(24) NUMBITS(8) []],
@@ -31,7 +36,7 @@ pub const PCIE_PORT_COUNT: usize = PCIE_CORE_COUNT * PCIE_PORTS_PER_CORE;
 
 /// PCIe strap `strap` of core `core`, behind the core's strap index/data
 /// pair in SMN.
-pub(super) fn strap<P: ConfigRegionAccess>(
+pub(crate) fn strap<P: ConfigRegionAccess>(
     smn: &Smn<P>,
     core: usize,
     strap: u32,
@@ -47,8 +52,8 @@ pub(super) fn strap<P: ConfigRegionAccess>(
 }
 
 /// NBIF (SMN): three instances 0x101xxxxx, 0x102xxxxx, 0x103xxxxx.
-pub(super) const NBIF_COUNT: u32 = 3;
-pub(super) const fn nbif_reg(n: u32, offset: u32) -> u32 {
+pub(crate) const NBIF_COUNT: u32 = 3;
+pub(crate) const fn nbif_reg(n: u32, offset: u32) -> u32 {
     0x1010_0000 + n * 0x10_0000 + offset
 }
 /// Bits 31:24: root bus of the die.
@@ -130,7 +135,7 @@ pub fn pre_enumeration_init<P: ConfigRegionAccess + Copy>(die: &Die<P>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::smn::testing::SmnSpace;
+    use crate::smn::{testing::SmnSpace, write};
 
     #[test]
     fn tables_copy_write_and_update_in_order() {

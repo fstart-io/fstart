@@ -6,13 +6,9 @@
 //! directory the PSP boots from is [`bios_directory`].
 //!
 //! Every die has a PSP; the platform maps its 1 MiB register window with
-//! [`crate::fam17h::iohc::map_psp`]. The native flows only use die 0's
+//! [`crate::nbio::iohc::map_psp`]. The native flows only use die 0's
 //! mailbox.
-use crate::{
-    df::Die,
-    fam17h::{iohc::PSP_BAR, tsc::DelayNs},
-    soc::Soc,
-};
+use crate::{df::Die, fam17h::tsc::DelayNs, nbio::iohc::PSP_BAR, soc::Soc};
 use fstart_core::once::TakeOnce;
 use fstart_pci::ConfigRegionAccess;
 use core::{

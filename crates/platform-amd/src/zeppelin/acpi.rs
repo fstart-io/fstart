@@ -28,7 +28,8 @@ use fstart_acpi::{
 use fstart_acpi_macros::acpi_dsl;
 use fstart_driver_amd::{
     fch::SPI_BASE,
-    zeppelin::{MAX_DIES, acpi_io, iommu::{self, Iommu}},
+    nbio::iommu::{self, Iommu},
+    zeppelin::{MAX_DIES, acpi_io},
 };
 
 pub const LAPIC_BASE: u64 = 0xfee0_0000;
@@ -703,7 +704,7 @@ fn lpc_bridge(board_aml: &[u8]) -> Result<Vec<u8>, Error> {
 mod tests {
     extern crate std;
     use super::*;
-    use fstart_driver_amd::{table::Op, zeppelin::nbio::BASE};
+    use fstart_driver_amd::{nbio::zeppelin::BASE, table::Op};
 
     /// The ACPI routing is the one the NBIO base table programs.
     #[test]

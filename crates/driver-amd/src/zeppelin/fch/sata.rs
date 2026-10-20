@@ -150,13 +150,13 @@ pub fn init(
             + Control::BIT24::CLEAR,
     );
     let vendor = |(offset, clear, set): (u32, u32, u32)| {
-        super::super::nbio::rmw(BASE + offset, clear, set)
+        crate::smn::rmw(BASE + offset, clear, set)
     };
-    super::super::nbio::apply(smn, [vendor(VENDOR[0])]);
+    crate::smn::apply(smn, [vendor(VENDOR[0])]);
     smn.reg(R10F8)
         .modify(Sgpio10f8::BYTE3.val(0xff));
     smn.reg(R1024).modify(R1024::BIT0::CLEAR);
-    super::super::nbio::apply(smn, VENDOR[1..].iter().copied().map(vendor));
+    crate::smn::apply(smn, VENDOR[1..].iter().copied().map(vendor));
     misc.modify(Misc::BIT13::SET);
     smn.reg(NBIF_STRAP_0C)
         .modify(NbifStrap0c::BIT18::SET);

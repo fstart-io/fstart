@@ -13,18 +13,19 @@ use fstart_driver_amd::{
     fam17h::{
         cache,
         ccx::Thread,
-        iohc, msr,
+        msr,
         tsc::{self, Tsc},
     },
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
+    nbio::{self, iohc, iommu},
     psp,
     smu::{
         threads::{self, Policy},
         v9 as smu,
     },
     zeppelin::{
-        self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, dxio, fch, iommu, nbio,
+        self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, dxio, fch,
     },
 };
 use fstart_driver_uart::ns16550::Ns16550;
@@ -264,7 +265,7 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
 
     // AmdNbioBaseZPPei, AmdCcxZenZpPei.
     for die in dies {
-        nbio::early_init(die, s.revision);
+        nbio::zeppelin::early_init(die, s.revision);
         // A locked BAR gets reported as a fixed resource by the root complex.
         let psp = s.nonpci[usize::from(die.index())] + soc::NONPCI_PSP;
         if let Err(bar) = iohc::map_psp(&die.smn(), psp) {
@@ -369,7 +370,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
         map::route_vga(&die.df(), dies[0].ioms_fabric_id());
     }
     for die in dies {
-        nbio::pre_enumeration_init(die);
+        nbio::zeppelin::pre_enumeration_init(die);
     }
     // SAFETY: BSP-only FCH programming.
     let die0_fch = Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0);

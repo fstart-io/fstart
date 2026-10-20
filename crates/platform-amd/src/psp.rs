@@ -4,8 +4,8 @@ use crate::{layout, memory::Memory};
 use core::{mem::MaybeUninit, ptr::addr_of_mut};
 use fstart_core::once::TakeOnce;
 use fstart_driver_amd::{
-    fam17h::{iohc::PSP_BAR, tsc::DelayNs},
-    picasso::nbio::PSP_MMIO_BASE,
+    fam17h::tsc::DelayNs,
+    nbio::{iohc::PSP_BAR, picasso::PSP_MMIO_BASE},
     psp::{self, Buffer, Mailbox, Native},
     smn::Smn,
 };
