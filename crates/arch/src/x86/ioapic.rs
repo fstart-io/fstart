@@ -5,7 +5,7 @@ use tock_registers::{
     LocalRegisterCopy,
     interfaces::{Readable, Writeable},
     register_bitfields, register_structs,
-    registers::ReadWrite,
+    registers::{ReadWrite, WriteOnly},
 };
 
 register_structs! {
@@ -13,7 +13,9 @@ register_structs! {
         (0x00 => select: ReadWrite<u32>),
         (0x04 => _reserved),
         (0x10 => window: ReadWrite<u32>),
-        (0x14 => @END),
+        (0x14 => _reserved1),
+        (0x20 => pin_assertion: WriteOnly<u32>),
+        (0x24 => @END),
     }
 }
 
@@ -74,6 +76,12 @@ impl IoApic {
             self.write(redirection(pin), RedirectionLow::MASKED::SET.value);
             self.write(redirection(pin) + 1, 0);
         }
+    }
+
+    /// Assert `pin` through the IRQ pin assertion register (+0x20) of
+    /// chipset IOAPICs.
+    pub fn assert_pin(&self, pin: u8) {
+        self.regs.pin_assertion.set(pin.into());
     }
 
     /// Route the legacy 8259 output (pin 0) to `bsp_apic_id` as ExtINT, the

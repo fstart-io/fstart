@@ -31,6 +31,8 @@ use tock_registers::{LocalRegisterCopy, RegisterLongName, UIntLike, fields::Fiel
 pub mod irq;
 pub mod multi;
 pub mod sata;
+#[cfg(feature = "smm")]
+pub mod smm;
 mod taishan;
 pub mod usb;
 
