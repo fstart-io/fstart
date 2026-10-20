@@ -61,6 +61,12 @@ _fstart_start32:
     mov fs, ax
     mov gs, ax
     mov esp, offset _fstart_stack_top
+    /* .data is linked into the image and runs from the data region. */
+    mov esi, offset _data_load
+    mov edi, offset _data_start
+    mov ecx, offset _data_end
+    sub ecx, edi
+    rep movsb
     xor eax, eax
     mov edi, offset _fstart_bss_start
     mov ecx, offset _fstart_bss_end
