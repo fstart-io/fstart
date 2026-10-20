@@ -10,5 +10,7 @@ pub mod acpi;
 pub mod entry;
 #[cfg(feature = "host")]
 pub mod host;
+#[cfg(feature = "host")]
+pub use host::Plan;
 pub mod layout;
 pub mod memory;

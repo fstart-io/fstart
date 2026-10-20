@@ -36,7 +36,6 @@
 // fbuild passes `--check-cfg` for `fstart_entry` with each unit's schema;
 // plain cargo builds of this crate do not know the name yet (a build.rs
 // `rustc-check-cfg` line belongs to the crate's foundation files).
-#![allow(unexpected_cfgs)]
 
 // The reset-image bundle links the stage runtime (allocator, anchor, the
 // arch entry `_start_ram` jumps into) even before the flow calls into it.
