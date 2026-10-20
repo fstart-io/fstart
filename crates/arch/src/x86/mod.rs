@@ -9,6 +9,7 @@ pub use crate::x86_crate::*;
 
 pub mod boot;
 pub mod cpu;
+pub mod ioapic;
 pub mod lapic;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod legacy_pc;
