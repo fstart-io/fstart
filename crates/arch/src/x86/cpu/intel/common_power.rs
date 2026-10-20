@@ -3,7 +3,7 @@
 //! The two model drivers supply only their model-specific enable bits. Both
 //! use the same PMBASE-derived MWAIT I/O ports, C3 level and EIST lock order.
 
-use super::msr_register::Msr;
+use crate::x86::cpu::msr_register::Msr;
 use tock_registers::register_bitfields;
 
 const MSR_PKG_CST_CONFIG_CONTROL: u32 = 0xe2;

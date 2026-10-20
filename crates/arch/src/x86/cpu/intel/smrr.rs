@@ -4,7 +4,7 @@
 //! driver through [`SmmCpu`](super::smm::SmmCpu); this module only knows the
 //! two architectural layouts and how to test whether they are usable.
 
-use super::msr_register::Msr;
+use crate::x86::cpu::msr_register::Msr;
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 register_bitfields![u32,
