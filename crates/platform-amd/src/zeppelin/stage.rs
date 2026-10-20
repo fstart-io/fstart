@@ -603,25 +603,34 @@ fn acpi_tables<B: Board>(
         .filter(|w| w.kind == fstart_pci::PciWindowKind::Mmio && w.size != 0)
         .map(|w| w.base..=w.end() - 1)
         .collect();
-    let bridges: Vec<u8, 32> = ecam
-        .devices()
-        .filter(|a| a.bus() == 0)
-        .filter_map(|a| {
-            let device = ecam.device(a)?;
-            (device.read32(8) >> 16 == 0x0604).then_some((a.device() << 3) | a.function())
+    let bridges: Vec<Vec<acpi::Bridge, 32>, MAX_DIES> = s
+        .dies
+        .iter()
+        .map(|die| {
+            ecam.devices()
+                .filter(|a| a.bus() == die.bus())
+                .filter_map(|a| {
+                    let device = ecam.device(a)?;
+                    (device.read32(8) >> 16 == 0x0604).then_some(acpi::Bridge {
+                        devfn: (a.device() << 3) | a.function(),
+                        pin: (device.read32(0x3c) >> 8) as u8,
+                    })
+                })
+                .collect()
         })
         .collect();
     let dies: Vec<acpi::DieAcpi<'_>, MAX_DIES> = s
         .dies
         .iter()
-        .map(|die| acpi::DieAcpi {
+        .zip(&bridges)
+        .map(|(die, bridges)| acpi::DieAcpi {
             buses: die.bus()..=soc::ECAM_BUSES as u8 - 1,
             ioapic_id: 1 + die.index(),
             ioapic_base: ioapics[usize::from(die.index())],
             io: &io,
             mmio: &mmio,
             vga: die.index() == 0,
-            bridges: &bridges,
+            bridges,
         })
         .collect();
     let board = B::acpi();

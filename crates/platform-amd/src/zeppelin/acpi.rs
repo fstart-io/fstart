@@ -57,8 +57,15 @@ pub struct DieAcpi<'a> {
     pub mmio: &'a [RangeInclusive<u64>],
     /// The legacy VGA ranges are routed to this die.
     pub vga: bool,
-    /// devfn of the enabled PCIe and internal (7.1, 8.1) bridges.
-    pub bridges: &'a [u8],
+    /// The enabled PCIe and internal (7.1, 8.1) bridges on the root bus.
+    pub bridges: &'a [Bridge],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bridge {
+    pub devfn: u8,
+    /// The bridge's own interrupt pin register: 0 none, 1-4 INTA-INTD.
+    pub pin: u8,
 }
 
 pub struct Inputs<'a> {
@@ -116,12 +123,15 @@ struct Route {
     devfn: u8,
     group: u8,
     swizzle: u8,
+    /// IOAPIC pin of the bridge's own interrupt.
+    bridge_irq: u8,
 }
-const fn route(device: u8, function: u8, group: u8, swizzle: u8) -> Route {
+const fn route(device: u8, function: u8, group: u8, swizzle: u8, bridge_irq: u8) -> Route {
     Route {
         devfn: device << 3 | function,
         group,
         swizzle,
+        bridge_irq,
     }
 }
 impl Route {
@@ -135,25 +145,25 @@ impl Route {
 /// programs into SMN 0x14300040 + 4 * bridge (`irq << 16 | swizzle << 4 |
 /// group`; the hardware swizzle k is the ACPI swizzle (4 - k) % 4).
 const ROUTES: [Route; 18] = [
-    route(1, 1, 0, ABCD),
-    route(1, 2, 1, ABCD),
-    route(1, 3, 2, ABCD),
-    route(1, 4, 3, ABCD),
-    route(1, 5, 4, ABCD),
-    route(1, 6, 5, ABCD),
-    route(1, 7, 6, ABCD),
-    route(2, 1, 7, ABCD),
-    route(3, 1, 7, CDAB),
-    route(3, 2, 6, CDAB),
-    route(3, 3, 5, CDAB),
-    route(3, 4, 4, CDAB),
-    route(3, 5, 3, CDAB),
-    route(3, 6, 2, CDAB),
-    route(3, 7, 1, CDAB),
-    route(4, 1, 0, CDAB),
+    route(1, 1, 0, ABCD, 0x10),
+    route(1, 2, 1, ABCD, 0x11),
+    route(1, 3, 2, ABCD, 0x12),
+    route(1, 4, 3, ABCD, 0x13),
+    route(1, 5, 4, ABCD, 0x10),
+    route(1, 6, 5, ABCD, 0x11),
+    route(1, 7, 6, ABCD, 0x12),
+    route(2, 1, 7, ABCD, 0x13),
+    route(3, 1, 7, CDAB, 0x0c),
+    route(3, 2, 6, CDAB, 0x0d),
+    route(3, 3, 5, CDAB, 0x0e),
+    route(3, 4, 4, CDAB, 0x0f),
+    route(3, 5, 3, CDAB, 0x0c),
+    route(3, 6, 2, CDAB, 0x0d),
+    route(3, 7, 1, CDAB, 0x0e),
+    route(4, 1, 0, CDAB, 0x0f),
     // Internal bridges A (xHCI) and B (SATA, xGbE)
-    route(7, 1, 3, DABC),
-    route(8, 1, 4, BCDA),
+    route(7, 1, 3, DABC, 0x14),
+    route(8, 1, 4, BCDA, 0x08),
 ];
 
 /// Build the platform tables, DSDT content and extra tables.
@@ -344,11 +354,9 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
     }
     .emit(&mut body)?;
     body.extend(root_resources(die, index == 0));
-    if index == 0 {
-        body.extend(root_prt(inputs.fch_intx_gsi));
-    }
-    for &devfn in die.bridges {
-        body.extend(bridge(index, devfn)?);
+    body.extend(root_prt(index, die.bridges, inputs.fch_intx_gsi)?);
+    for bridge_device in die.bridges {
+        body.extend(bridge(index, bridge_device.devfn)?);
     }
     if index == 0 {
         body.extend(lpc_bridge(&inputs.board.lpc_aml)?);
@@ -425,16 +433,48 @@ fn root_resources(die: &DieAcpi, cfg_ports: bool) -> Vec<u8> {
     bytes
 }
 
-/// The root bus `_PRT`: the IOMMU (device 0) and the FCH SMBus/LPC (device
-/// 0x14) interrupt through FCH INTA-D, at their PCI_INTR IOAPIC values
-/// (IORA-IORD), one entry per pin.
-fn root_prt(fch_intx_gsi: [u8; 4]) -> Vec<u8> {
-    let pins = (0..4u8).map(move |pin| (pin, fch_intx_gsi[usize::from(pin)]));
-    prt_name_aml(
-        [0x00, 0x14]
-            .into_iter()
-            .flat_map(move |slot| pins.clone().map(move |(pin, gsi)| (slot, pin, gsi))),
-    )
+/// The root bus `_PRT`. On die 0 the IOMMU (device 0) and the FCH SMBus/LPC
+/// (device 0x14) interrupt through FCH INTA-D, at their PCI_INTR IOAPIC
+/// values (IORA-IORD). Bridges with an interrupt pin of their own (the
+/// internal bridges; the GPP bridges have none) interrupt at their bridge IRQ
+/// of the die's NBIO IOAPIC, as in the vendor DSDT.
+fn root_prt(die: u8, bridges: &[Bridge], fch_intx_gsi: [u8; 4]) -> Result<Vec<u8>, Error> {
+    let fch = (die == 0)
+        .then(|| {
+            [0x00, 0x14].into_iter().flat_map(move |slot| {
+                (0..4u8).map(move |pin| (slot, pin, fch_intx_gsi[usize::from(pin)]))
+            })
+        })
+        .into_iter()
+        .flatten();
+    let own = bridges
+        .iter()
+        .filter(|bridge| (1..=4).contains(&bridge.pin))
+        .map(|bridge| {
+            let route = ROUTES
+                .iter()
+                .find(|route| route.devfn == bridge.devfn)
+                .ok_or(Error::UnknownBridge {
+                    die,
+                    devfn: bridge.devfn,
+                })?;
+            // At most two dies: the highest GSI is 87.
+            let gsi = nbio_gsi_base(die) + u32::from(route.bridge_irq);
+            Ok((bridge.devfn >> 3, bridge.pin - 1, gsi as u8))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    // One entry per slot and pin: the first function wins.
+    let entries = fch.chain(own).fold(Vec::new(), |mut entries: Vec<(u8, u8, u8)>, entry| {
+        if !entries.iter().any(|e| (e.0, e.1) == (entry.0, entry.1)) {
+            entries.push(entry);
+        }
+        entries
+    });
+    Ok(if entries.is_empty() {
+        Vec::new()
+    } else {
+        prt_name_aml(entries.into_iter())
+    })
 }
 
 /// A bridge `GPxx` (xx: devfn in hex) with the `_PRT`
@@ -580,13 +620,19 @@ mod tests {
                 (4 - ((set >> 4) & 3)) % 4,
                 "bridge {bridge}"
             );
+            assert_eq!(u32::from(route.bridge_irq), (set >> 16) & 0x1f, "bridge {bridge}");
         }
     }
 
     static IO: RangeInclusive<u16> = 0..=0xffff;
     const MMIO: [RangeInclusive<u64>; 2] =
         [0xe000_0000..=0xefff_ffff, 0x100_0000_0000..=0x1ff_ffff_ffff];
-    const BRIDGES: [u8; 4] = [0x09, 0x19, 0x39, 0x41];
+    const BRIDGES: [Bridge; 4] = [
+        Bridge { devfn: 0x09, pin: 0 },
+        Bridge { devfn: 0x19, pin: 0 },
+        Bridge { devfn: 0x39, pin: 1 },
+        Bridge { devfn: 0x41, pin: 1 },
+    ];
 
     fn dies() -> [DieAcpi<'static>; 2] {
         let die = |index: u8| DieAcpi {
@@ -615,12 +661,10 @@ mod tests {
         .unwrap()
     }
 
-    /// The `_PRT` packages of a bridge: (pin, GSI).
-    fn prt_of(aml: &[u8], name: &[u8; 4]) -> std::vec::Vec<(u64, u64)> {
+    /// The `_PRT` packages after `name`: (address, pin, GSI).
+    fn prt_of(aml: &[u8], name: &[u8; 4]) -> std::vec::Vec<(u64, u64, u64)> {
         let start = aml.windows(4).position(|w| w == name).unwrap();
         let prt = start + aml[start..].windows(4).position(|w| w == b"_PRT").unwrap();
-        // Name(_PRT, Package(4) { Package(4) { address, pin, 0, gsi }, .. })
-        let mut at = prt + 4 + 3;
         let integer = |at: &mut usize| {
             let a = *at;
             let (value, len) = match aml[a] {
@@ -637,13 +681,47 @@ mod tests {
             *at += len;
             value
         };
-        (0..4)
+        // PackageOp, PkgLength (lead byte bits 7:6 count the extra bytes),
+        // NumElements; returns that count.
+        let package = |at: &mut usize| {
+            assert_eq!(aml[*at], 0x12);
+            *at += 2 + usize::from(aml[*at + 1] >> 6);
+            let count = aml[*at];
+            *at += 1;
+            count
+        };
+        let mut at = prt + 4;
+        (0..package(&mut at))
             .map(|_| {
-                at += 3;
-                let [_, pin, _, gsi] = [(); 4].map(|_| integer(&mut at));
-                (pin, gsi)
+                package(&mut at);
+                let [address, pin, _, gsi] = [(); 4].map(|_| integer(&mut at));
+                (address, pin, gsi)
             })
             .collect()
+    }
+
+    /// The (pin, GSI) of a bridge `_PRT`.
+    fn bridge_prt(aml: &[u8], name: &[u8; 4]) -> std::vec::Vec<(u64, u64)> {
+        prt_of(aml, name)
+            .into_iter()
+            .map(|(_, pin, gsi)| (pin, gsi))
+            .collect()
+    }
+
+    #[test]
+    fn root_prt_routes_the_internal_bridges_own_interrupts() {
+        let aml = tables(&BoardAcpi::default()).dsdt_aml;
+        let pci1 = aml.windows(4).position(|w| w == b"PCI1").unwrap();
+        let root0 = prt_of(&aml, b"PCI0");
+        // FCH INTA-D for the IOMMU and SMBus/LPC, then 7.1 and 8.1 on the
+        // NBIO IOAPIC: bridge IRQs 0x14 and 0x08 from GSI 24.
+        assert_eq!(root0[..4], [(0xffff, 0, 16), (0xffff, 1, 17), (0xffff, 2, 18), (0xffff, 3, 19)]);
+        assert_eq!(root0.len(), 10);
+        assert_eq!(root0[8..], [(0x7_ffff, 0, 44), (0x8_ffff, 0, 32)]);
+        assert_eq!(
+            prt_of(&aml[pci1..], b"PCI1"),
+            [(0x7_ffff, 0, 76), (0x8_ffff, 0, 64)]
+        );
     }
 
     #[test]
@@ -651,12 +729,12 @@ mod tests {
         let aml = tables(&BoardAcpi::default()).dsdt_aml;
         let pci1 = aml.windows(4).position(|w| w == b"PCI1").unwrap();
         // 3.1: group 7, CDAB on die 0: GSI 24 + 28 + 2, 3, 0, 1
-        assert_eq!(prt_of(&aml, b"GP19"), [(0, 54), (1, 55), (2, 52), (3, 53)]);
+        assert_eq!(bridge_prt(&aml, b"GP19"), [(0, 54), (1, 55), (2, 52), (3, 53)]);
         // 7.1 (xHCI): group 3, DABC
-        assert_eq!(prt_of(&aml, b"GP39"), [(0, 39), (1, 36), (2, 37), (3, 38)]);
+        assert_eq!(bridge_prt(&aml, b"GP39"), [(0, 39), (1, 36), (2, 37), (3, 38)]);
         // 8.1 on die 1: group 4, BCDA from GSI 56
         assert_eq!(
-            prt_of(&aml[pci1..], b"GP41"),
+            bridge_prt(&aml[pci1..], b"GP41"),
             [(0, 73), (1, 74), (2, 75), (3, 72)]
         );
     }
@@ -664,7 +742,7 @@ mod tests {
     #[test]
     fn unknown_bridges_are_rejected() {
         let mut dies = dies();
-        dies[1].bridges = &[0x0a, 0x29];
+        dies[1].bridges = &[Bridge { devfn: 0x0a, pin: 0 }, Bridge { devfn: 0x29, pin: 0 }];
         let error = build(&Inputs {
             apic_ids: &[0],
             dies: &dies,
