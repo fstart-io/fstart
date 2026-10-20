@@ -6,14 +6,15 @@
 //!
 //! The IOMMU is function 2 of device 0 on the die's root bus. Its
 //! configuration space is aliased in SMN, with the IOMMU capability at 0x40:
-//! NbDxe programs the base at SMN 0x13f00044/48 (D0F2 0x44/0x48).
-use super::{Die, NONPCI_IOMMU};
-use crate::fam17h::registers::SmnReg;
+//! NbDxe programs the base at SMN 0x13f00044/48 (D0F2 0x44/0x48),
+//! [`IOMMU_BAR`].
+use super::Die;
+use crate::fam17h::{iohc::IOMMU_BAR, registers::SmnReg};
 use fstart_core::mmio::MmioReadOnly;
 use fstart_log::Hex;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
-    interfaces::{Readable, Writeable},
+    interfaces::Readable,
     register_bitfields, register_structs,
 };
 
@@ -22,16 +23,10 @@ pub const CAPABILITY: u16 = 0x40;
 const CAPABILITY_ID: u32 = 0x0f;
 
 register_bitfields![u32,
-    CapHeader [ID OFFSET(0) NUMBITS(8) []],
-    /// The base is 512 KiB aligned.
-    BaseLow [
-        ENABLE OFFSET(0) NUMBITS(1) [],
-        BASE OFFSET(19) NUMBITS(13) []
-    ]
+    CapHeader [ID OFFSET(0) NUMBITS(8) []]
 ];
 const CAP_HEADER: SmnReg<CapHeader::Register> = SmnReg::new(0x13f0_0000 + CAPABILITY as u32);
-const BASE_LOW: SmnReg<BaseLow::Register> = SmnReg::new(CAP_HEADER.address() + 0x04);
-const BASE_HIGH: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x08);
+const _: () = assert!(IOMMU_BAR.low.address() == CAP_HEADER.address() + 0x04);
 const RANGE: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x0c);
 const MISC: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x10);
 
@@ -49,20 +44,16 @@ register_structs! {
     }
 }
 
-/// Map the 512 KiB of IOMMU registers of `die` at `nonpci_base` +
-/// [`NONPCI_IOMMU`] and return the base, `None` without an IOMMU. The pool
-/// is outside the PCI windows, so nothing moves it.
-pub fn init_bar<P: ConfigRegionAccess + Copy>(die: &Die<P>, nonpci_base: u32) -> Option<u32> {
+/// Map the 512 KiB of IOMMU registers of `die` at `base` (512 KiB aligned,
+/// outside the PCI windows so nothing moves it) and return it, `None`
+/// without an IOMMU.
+pub fn init_bar<P: ConfigRegionAccess + Copy>(die: &Die<P>, base: u32) -> Option<u32> {
     let smn = die.smn();
     if smn.reg(CAP_HEADER).read(CapHeader::ID) != CAPABILITY_ID {
         fstart_log::error!("IOMMU {}: no IOMMU capability", die.index());
         return None;
     }
-    let base = nonpci_base + NONPCI_IOMMU;
-    let low = BaseLow::BASE.val(base >> 19);
-    smn.reg(BASE_HIGH).set(0);
-    smn.reg(BASE_LOW).write(low);
-    smn.reg(BASE_LOW).write(low + BaseLow::ENABLE::SET);
+    IOMMU_BAR.map(&smn, base);
     fstart_log::info!("IOMMU {}: MMIO at {}", die.index(), Hex(base.into()));
     Some(base)
 }
@@ -89,11 +80,7 @@ pub struct Iommu {
 /// The IOMMU MMIO is identity mapped and uncached.
 pub unsafe fn read<P: ConfigRegionAccess + Copy>(die: &Die<P>) -> Option<Iommu> {
     let smn = die.smn();
-    let low = smn.reg(BASE_LOW).extract();
-    if !low.is_set(BaseLow::ENABLE) {
-        return None;
-    }
-    let base = u64::from(smn.reg(BASE_HIGH).get()) << 32 | u64::from(low.read(BaseLow::BASE) << 19);
+    let base = IOMMU_BAR.base(&smn)?;
     // SAFETY: the enabled IOMMU register window, per the caller.
     let mmio = unsafe { &*(base as usize as *const Mmio) };
     let iommu = Iommu {
@@ -128,13 +115,13 @@ mod tests {
         let pci = Pci::new(&[0, 0x40], |_| [0; 6]);
         let dies = pci.dies();
         pci.set_smn(0, CAP_HEADER, 0x1964_000f);
-        pci.set_smn(0, BASE_HIGH, 0xdead);
-        assert_eq!(init_bar(&dies[0], 0xfe40_0000), Some(0xfe60_0000));
-        assert_eq!(pci.smn(0, BASE_LOW), 0xfe60_0001);
-        assert_eq!(pci.smn(0, BASE_HIGH), 0);
+        pci.set_smn(0, IOMMU_BAR.high, 0xdead);
+        assert_eq!(init_bar(&dies[0], 0xfe60_0000), Some(0xfe60_0000));
+        assert_eq!(pci.smn(0, IOMMU_BAR.low), 0xfe60_0001);
+        assert_eq!(pci.smn(0, IOMMU_BAR.high), 0);
         // No IOMMU capability: left alone.
-        assert_eq!(init_bar(&dies[1], 0xbf80_0000), None);
-        assert_eq!(pci.smn(1, BASE_LOW), 0);
+        assert_eq!(init_bar(&dies[1], 0xc000_0000), None);
+        assert_eq!(pci.smn(1, IOMMU_BAR.low), 0);
         assert_eq!(unsafe { read(&dies[1]) }, None);
     }
 }

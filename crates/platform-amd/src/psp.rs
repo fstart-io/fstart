@@ -8,7 +8,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use fstart_driver_amd::{
-    fam17h::nbio::{PSP_BASE_ADDR_HI, PSP_BASE_ADDR_LO},
+    fam17h::iohc::PSP_BAR,
     picasso::{
         psp::{self, Buffer, Mailbox, Native},
         registers::Smn,
@@ -81,8 +81,8 @@ fn preflight(
     }
     // Read only existing enabled+locked aperture; never repair/reset/lock it.
     // SMN reads can program an indirect selector, so this is NOT zero hardware IO.
-    let low = smn.reg(PSP_BASE_ADDR_LO).get();
-    let high = smn.reg(PSP_BASE_ADDR_HI).get();
+    let low = smn.reg(PSP_BAR.low).get();
+    let high = smn.reg(PSP_BAR.high).get();
     if low != 0xfd100101 || high != 0 {
         return Err(Error::Bar { low, high });
     }

@@ -2,11 +2,11 @@
 //! NBIO base initialization of the vendor AmdNbioBaseZPPei and the late
 //! settings of AmdNbioBaseZPDxe/AmdNbioPcieZPDxe, per die (sp4r2 report
 //! NBIO_BASE_ZP and nbio-base-contracts.json).
-use super::{Die, NONPCI_IOAPIC, Revision};
+use super::{Die, Revision};
 use crate::fam17h::registers::{Smn, SmnReg};
-use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
+use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
-    interfaces::{ReadWriteable, Readable, Writeable},
+    interfaces::{ReadWriteable, Writeable},
     register_bitfields,
 };
 
@@ -108,72 +108,6 @@ fn die_init(smn: &Smn<impl ConfigRegionAccess>, die: u8, bus: u8, revision: Revi
     apply(smn, IOMMU_RAS.iter().copied());
 }
 
-/// IOHC TOM2/MMIO base registers for a TOP_MEM2 (0: disabled): (lower,
-/// upper, MMIO base).
-fn top_of_dram2(lower: u32, upper: u32, top_mem2: u64) -> (u32, u32, u32) {
-    if top_mem2 > 1 << 40 {
-        // TOM2 stops at the HyperTransport hole, the rest is above TOM3.
-        (
-            lower | 0xff80_0001,
-            upper | 0x1ff,
-            (((top_mem2 - 1) >> 16) + 1) as u32,
-        )
-    } else if top_mem2 != 0 {
-        (
-            (lower & 0x007f_fffe) | (top_mem2 as u32 & 0xff80_0000) | 1,
-            (upper & !0x1ff) | ((top_mem2 >> 32) as u32 & 0xff),
-            0x0100_0000,
-        )
-    } else {
-        (lower, upper, 0x0100_0000)
-    }
-}
-
-/// Tell the IOHC of a die about the DRAM map and the MMIO above 4 GiB.
-/// `top_mem` is TOP_MEM (MSR C001_001A), `top_mem2` TOP_MEM2 if SYSCFG
-/// enables it.
-pub fn tom_init<P: ConfigRegionAccess + Copy>(die: &Die<P>, top_mem: u32, top_mem2: Option<u64>) {
-    let root = PciAddress::new(0, die.bus(), 0, 0);
-    // SAFETY: D0F0 of the die's root bus; exclusivity is the `Die` contract.
-    let tom = unsafe {
-        ConfigRegister::<_, TopOfDram::Register>::new(die.pci(), root, NB_TOP_OF_DRAM_SLOT1)
-    };
-    tom.modify(TopOfDram::TOM.val(top_mem >> 23));
-    iohc_tom(&die.smn(), top_mem2.unwrap_or(0));
-    fstart_log::debug!(
-        "NBIO {}: TOM {} TOM2 {}",
-        die.index(),
-        fstart_log::Hex(top_mem.into()),
-        fstart_log::Hex(top_mem2.unwrap_or(0))
-    );
-}
-
-fn iohc_tom(smn: &Smn<impl ConfigRegionAccess>, top_mem2: u64) {
-    let lower = smn.reg(NB_LOWER_TOP_OF_DRAM2);
-    let upper = smn.reg(NB_UPPER_TOP_OF_DRAM2);
-    let (low, high, mmio_base) = top_of_dram2(lower.get(), upper.get(), top_mem2);
-    lower.set(low);
-    upper.set(high);
-    smn.reg(NB_TOP_OF_DRAM3).set(0x83ff_ffff);
-    smn.reg(NB_MMIOBASE).set(mmio_base);
-    smn.reg(NB_MMIOLIMIT).set(0x7fff_ffff);
-    smn.reg(NB_PCI_CTRL).modify(NbPciCtrl::MMIO_ENABLE::SET);
-}
-
-/// Decode the NBIO IOAPIC of a die 1 MiB below the top of its non-PCI MMIO
-/// pool (0xfeb00000 on die 0) and return its address. The vendor firmware
-/// sets its ID to 0x81 + die; the ACPI/MADT code assigns the IDs.
-pub fn ioapic_init<P: ConfigRegionAccess + Copy>(die: &Die<P>, nonpci_base: u32) -> u32 {
-    let base = nonpci_base + NONPCI_IOAPIC;
-    let smn = die.smn();
-    let address = IohcMmioBar::ADDRESS.val(base >> 8);
-    smn.reg(IOAPIC_BASE_ADDR_HI).set(0);
-    smn.reg(IOAPIC_BASE_ADDR_LO).write(address);
-    smn.reg(IOAPIC_BASE_ADDR_LO)
-        .write(address + IohcMmioBar::ENABLE::SET);
-    base
-}
-
 /// AmdNbioBaseZPDxe/AmdNbioPcieZPDxe before PCI enumeration: PCIe core clock
 /// gating, then lock the NBIF hardware init registers (straps, IDs).
 pub fn pre_enumeration_init<P: ConfigRegionAccess + Copy>(die: &Die<P>) {
@@ -234,24 +168,5 @@ mod tests {
         die_init(&space.smn(), 0, 0, Revision::B2);
         assert_eq!(space.get(NBIF_REV_STRAP), 1 << 20);
         assert_eq!(space.get(IOAPIC_FEATURES_ENABLE), 0x14);
-    }
-
-    #[test]
-    fn tom2_below_and_above_the_hypertransport_hole() {
-        // 32 GiB: TOM2 in the IOHC, MMIO from 16 MiB up.
-        assert_eq!(
-            top_of_dram2(0x0000_0002, 0x8000_0000, 0x8_0000_0000),
-            (0x0000_0003, 0x8000_0008, 0x0100_0000)
-        );
-        // TOM2 above 1 TiB: the IOHC stops at the hole, MMIO base above TOM2.
-        assert_eq!(
-            top_of_dram2(0, 0, 0x101_0000_0000),
-            (0xff80_0001, 0x1ff, 0x0101_0000)
-        );
-        assert_eq!(top_of_dram2(7, 9, 0), (7, 9, 0x0100_0000));
-        let space = SmnSpace::default();
-        iohc_tom(&space.smn(), 0);
-        assert_eq!(space.get(NB_PCI_CTRL), 1 << 23);
-        assert_eq!(space.get(NB_MMIOBASE), 0x0100_0000);
     }
 }

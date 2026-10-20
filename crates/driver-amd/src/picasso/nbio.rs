@@ -3,15 +3,14 @@
 //! Hardware order and repeated table writes are intentional.
 use crate::fam17h::tsc::DelayNs;
 use super::{
+    Die,
     nbio_tables as tables,
     registers::{Reg, Smn, SmnReg, copy, rmw, write},
     smu,
 };
-use crate::fam17h::nbio::{
-    Bar, IOAPIC_BASE_ADDR_HI, IOAPIC_BASE_ADDR_LO, IOAPIC_FEATURES_ENABLE, IoapicFeatures,
-    IohcMmioBar, NB_BUS_NUM_CNTL, NB_LOWER_TOP_OF_DRAM2, NB_MMIOBASE, NB_MMIOLIMIT, NB_PCI_CTRL,
-    NB_TOP_OF_DRAM_SLOT1_SMN, NB_TOP_OF_DRAM3, NB_UPPER_TOP_OF_DRAM2, NbBusNumCntl, NbPciCtrl,
-    PSP_BASE_ADDR_HI, PSP_BASE_ADDR_LO, SMU_BASE_ADDR_HI, SMU_BASE_ADDR_LO, TopOfDram,
+use crate::fam17h::{
+    iohc::{self, IOAPIC_BAR, PSP_BAR, SMU_BAR},
+    nbio::{IOAPIC_FEATURES_ENABLE, IoapicFeatures, NB_BUS_NUM_CNTL, NbBusNumCntl},
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -52,7 +51,8 @@ fn apply(smn: &Smn<impl ConfigRegionAccess>, table: &[(u32, u32, u32)]) {
 pub enum Error {
     Smu(smu::Error),
     SmuBar(u64),
-    LockedPspBar(u64),
+    /// The low half of a PSP BAR locked elsewhere.
+    LockedPspBar(u32),
     MemoryBoundary,
 }
 #[derive(Debug, Clone, Copy)]
@@ -62,7 +62,7 @@ pub struct Capabilities {
 }
 
 fn smu_bar(smn: &Smn<impl ConfigRegionAccess>) -> Result<(), Error> {
-    let (low, high) = (smn.reg(SMU_BASE_ADDR_LO), smn.reg(SMU_BASE_ADDR_HI));
+    let (low, high) = (smn.reg(SMU_BAR.low), smn.reg(SMU_BAR.high));
     let bar = (u64::from(high.get()) << 32) | u64::from(low.get());
     if bar & 3 == 0 {
         high.set(0);
@@ -73,31 +73,15 @@ fn smu_bar(smn: &Smn<impl ConfigRegionAccess>) -> Result<(), Error> {
     Ok(())
 }
 
-fn installed_psp_bar() -> tock_registers::fields::FieldValue<u32, Bar::Register> {
-    Bar::BASE.val(PSP_MMIO_BASE >> 20) + Bar::LOCK::SET + Bar::ENABLE::SET
-}
-
 /// Whether the PSP BAR is the one [`psp_bar`] installs. Read-only.
 pub fn psp_bar_installed(smn: &Smn<impl ConfigRegionAccess>) -> bool {
-    smn.reg(PSP_BASE_ADDR_LO).get() == installed_psp_bar().value
-        && smn.reg(PSP_BASE_ADDR_HI).get() == 0
+    smn.reg(PSP_BAR.low).get() == iohc::psp_bar(PSP_MMIO_BASE).value
+        && smn.reg(PSP_BAR.high).get() == 0
 }
 
+/// Map the PSP at [`PSP_MMIO_BASE`], enabled and locked.
 pub fn psp_bar(smn: &Smn<impl ConfigRegionAccess>) -> Result<(), Error> {
-    let (low, high) = (smn.reg(PSP_BASE_ADDR_LO), smn.reg(PSP_BASE_ADDR_HI));
-    let current = low.extract();
-    let upper = high.get();
-    let bar = (u64::from(upper) << 32) | u64::from(current.get());
-    let want = installed_psp_bar();
-    if current.is_set(Bar::LOCK) {
-        if upper == 0 && current.matches_all(want) {
-            return Ok(());
-        }
-        return Err(Error::LockedPspBar(bar));
-    }
-    low.write(want);
-    high.set(0);
-    Ok(())
+    iohc::map_psp(smn, PSP_MMIO_BASE).map_err(Error::LockedPspBar)
 }
 
 /// The IOMMU RAS copies and the late IOHC settings: raw vendor values.
@@ -160,38 +144,21 @@ pub fn early_init(
 /// TOP_MEM/TOP_MEM2 must be read from AMD MSRs, NOT derived from a guessed
 /// DIMM capacity or the number of populated channels.
 pub fn dram_routes(
-    smn: &Smn<impl ConfigRegionAccess>,
+    die: &Die<impl ConfigRegionAccess + Copy>,
     top_mem: u64,
     top_mem2: Option<u64>,
 ) -> Result<(), Error> {
     if top_mem == 0 || top_mem >= 1 << 32 || top_mem & 0x7fffff != 0 {
         return Err(Error::MemoryBoundary);
     }
-    let mut tom = smn.reg(NB_TOP_OF_DRAM_SLOT1_SMN).extract();
-    tom.modify(TopOfDram::TOM.val((top_mem >> 23) as u32));
-    let mut low = smn.reg(NB_LOWER_TOP_OF_DRAM2).get();
-    let mut high = smn.reg(NB_UPPER_TOP_OF_DRAM2).get();
-    if let Some(top) = top_mem2.filter(|&top| top != 0) {
-        let top = top & 0x0000_00ff_ffc0_0000;
-        low = (low & 0x007ffffe) | (top as u32 & 0xff800000) | 1;
-        high = (high & !0xff) | ((top >> 32) as u32 & 0xff);
-    }
-    smn.reg(NB_TOP_OF_DRAM_SLOT1_SMN).set(tom.get());
-    smn.reg(NB_LOWER_TOP_OF_DRAM2).set(low);
-    smn.reg(NB_UPPER_TOP_OF_DRAM2).set(high);
-    smn.reg(NB_TOP_OF_DRAM3).set(0x83ffffff);
-    smn.reg(NB_MMIOBASE).set(0x01000000);
-    smn.reg(NB_MMIOLIMIT).set(0x7fffffff);
-    smn.reg(NB_PCI_CTRL).modify(NbPciCtrl::MMIO_ENABLE::SET);
+    // Picasso's physical address space ends below 1 TiB.
+    let top_mem2 = top_mem2.map(|top| top & 0x0000_00ff_ffc0_0000);
+    iohc::dram_map(die, top_mem as u32, top_mem2);
     Ok(())
 }
 
 pub fn ioapic_decode(smn: &Smn<impl ConfigRegionAccess>) {
-    let address = IohcMmioBar::ADDRESS.val(IOAPIC_BASE >> 8);
-    smn.reg(IOAPIC_BASE_ADDR_HI).set(0);
-    smn.reg(IOAPIC_BASE_ADDR_LO).write(address);
-    smn.reg(IOAPIC_BASE_ADDR_LO)
-        .write(address + IohcMmioBar::ENABLE::SET);
+    IOAPIC_BAR.map(smn, IOAPIC_BASE);
     smn.reg(IOAPIC_FEATURES_ENABLE)
         .modify(IoapicFeatures::ID_EXT::SET + IoapicFeatures::FCH::SET);
     smn.reg(NB_BUS_NUM_CNTL)

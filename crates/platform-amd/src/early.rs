@@ -76,7 +76,7 @@ pub fn initialize(
     // Default topology is retained here; the full flow applies the requested
     // board CPU topology before releasing any APs through the SMU.
     let (low, high) = cpu::memory_limits(msr).map_err(Error::Cpu)?;
-    nbio::dram_routes(smn, low, high).map_err(Error::Nbio)?;
+    nbio::dram_routes(die, low, high).map_err(Error::Nbio)?;
     Ok(State {
         memory,
         caches,

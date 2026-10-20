@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The NBIO registers Raven/Picasso and Zeppelin share: the NB/IOHC
-//! registers of the root complex and the PCIe core and port registers, all
-//! in SMN. A Zeppelin die has two PCIe cores, Picasso one.
+//! The NBIO registers Raven/Picasso and Zeppelin share: the root complex
+//! registers of the IOHC (its DRAM map and BARs are in [`super::iohc`]) and
+//! the PCIe core and port registers, all in SMN. A Zeppelin die has two PCIe
+//! cores, Picasso one.
 use super::registers::SmnReg;
 use tock_registers::register_bitfields;
 
 register_bitfields![u32,
-    /// D0F0x90 (also SMN 0x13b00090).
-    pub TopOfDram [TOM OFFSET(23) NUMBITS(9) []],
-    pub NbPciCtrl [MMIO_ENABLE OFFSET(23) NUMBITS(1) []],
     pub NbBusNumCntl [
         BUS OFFSET(0) NUMBITS(8) [],
         LAT_MODE OFFSET(8) NUMBITS(1) []
     ],
-    pub IohcMmioBar [ENABLE OFFSET(0) NUMBITS(1) [], ADDRESS OFFSET(8) NUMBITS(24) []],
     pub IohcFeatureCntl [
         /// Vendor PCD 0x1d (ARI support).
         ARI OFFSET(22) NUMBITS(1) []
@@ -36,45 +33,21 @@ register_bitfields![u32,
         ID_EXT OFFSET(2) NUMBITS(1) [],
         FCH OFFSET(4) NUMBITS(1) [],
         SECONDARY OFFSET(5) NUMBITS(1) []
-    ],
-    /// The PSP and SMU BARs (low halves).
-    pub Bar [
-        ENABLE OFFSET(0) NUMBITS(1) [],
-        LOCK OFFSET(8) NUMBITS(1) [],
-        /// Address bits [31:20].
-        BASE OFFSET(20) NUMBITS(12) []
     ]
 ];
-
-// NB configuration space (SMN), also D0F0 of the die.
-pub const NB_PCI_CTRL: SmnReg<NbPciCtrl::Register> = SmnReg::new(0x13b0_004c);
-/// D0F0x90, in config space.
-pub const NB_TOP_OF_DRAM_SLOT1: u16 = 0x90;
-pub const NB_TOP_OF_DRAM_SLOT1_SMN: SmnReg<TopOfDram::Register> = SmnReg::new(0x13b0_0090);
 
 // IOHC (SMN)
 const IOHC_BASE: u32 = 0x13b1_0000;
 pub const NB_BUS_NUM_CNTL: SmnReg<NbBusNumCntl::Register> = SmnReg::new(IOHC_BASE + 0x044);
-pub const NB_MMIOBASE: SmnReg = SmnReg::new(IOHC_BASE + 0x05c);
-pub const NB_MMIOLIMIT: SmnReg = SmnReg::new(IOHC_BASE + 0x060);
-pub const NB_LOWER_TOP_OF_DRAM2: SmnReg = SmnReg::new(IOHC_BASE + 0x064);
-pub const NB_UPPER_TOP_OF_DRAM2: SmnReg = SmnReg::new(IOHC_BASE + 0x068);
 pub const fn nb_prog_device_remap(port: usize) -> SmnReg<NbProgDeviceRemap::Register> {
     SmnReg::new(IOHC_BASE + 0x0c0 + port as u32 * 4)
 }
 pub const IOHC_FEATURE_CNTL: SmnReg<IohcFeatureCntl::Register> =
     SmnReg::new(IOHC_BASE + 0x118);
-pub const NB_TOP_OF_DRAM3: SmnReg = SmnReg::new(IOHC_BASE + 0x138);
 /// Bus routing between the root bridges of the dies.
 pub const fn iohc_rb_bus_route(rb: usize) -> SmnReg<IohcRbBusRoute::Register> {
     SmnReg::new(IOHC_BASE + 0x190 + rb as u32 * 0x14)
 }
-pub const PSP_BASE_ADDR_LO: SmnReg<Bar::Register> = SmnReg::new(IOHC_BASE + 0x2e0);
-pub const PSP_BASE_ADDR_HI: SmnReg = SmnReg::new(IOHC_BASE + 0x2e4);
-pub const SMU_BASE_ADDR_LO: SmnReg<Bar::Register> = SmnReg::new(IOHC_BASE + 0x2e8);
-pub const SMU_BASE_ADDR_HI: SmnReg = SmnReg::new(IOHC_BASE + 0x2ec);
-pub const IOAPIC_BASE_ADDR_LO: SmnReg<IohcMmioBar::Register> = SmnReg::new(IOHC_BASE + 0x2f0);
-pub const IOAPIC_BASE_ADDR_HI: SmnReg = SmnReg::new(IOHC_BASE + 0x2f4);
 /// The 16 PCIe bridges of a die each have a bridge control register.
 pub const fn iohc_bridge_cntl(bridge: usize) -> SmnReg<IohcBridgeCntl::Register> {
     SmnReg::new(0x13b3_1004 + bridge as u32 * 0x400)

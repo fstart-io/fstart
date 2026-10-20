@@ -12,7 +12,7 @@ use fstart_driver_amd::{
         apob::{Apob, MemoryMap},
         cache,
         ccx::Thread,
-        msr,
+        iohc, msr,
         topology,
         tsc::{self, Tsc},
     },
@@ -264,13 +264,17 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
     // AmdNbioBaseZPPei, AmdCcxZenZpPei.
     for die in dies {
         nbio::early_init(die, s.revision);
-        psp::init_bar(die, s.nonpci[usize::from(die.index())]);
+        // A locked BAR gets reported as a fixed resource by the root complex.
+        let psp = s.nonpci[usize::from(die.index())] + soc::NONPCI_PSP;
+        if let Err(bar) = iohc::map_psp(&die.smn(), psp) {
+            fstart_log::error!("PSP BAR of die {} is locked at {}", die.index(), Hex(bar.into()));
+        }
     }
     // SAFETY: BSP-only MSR programming.
     ccx::bsp_init(&unsafe { NativeMsr::new() }, s.revision, Thread::current());
     smu::print_name(&dies[0], &mut delay);
     for die in dies {
-        nbio::tom_init(die, top_mem as u32, top_mem2);
+        iohc::dram_map(die, top_mem as u32, top_mem2);
     }
 }
 
@@ -281,8 +285,14 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     let dies = s.dies.as_slice();
     let mut ioapics = [0u32; MAX_DIES];
     for die in dies {
-        ioapics[usize::from(die.index())] = nbio::ioapic_init(die, s.nonpci[usize::from(die.index())]);
-        iommu::init_bar(die, s.nonpci[usize::from(die.index())]);
+        // The NBIO IOAPIC 1 MiB below the top of the pool (0xfeb00000 on
+        // die 0). The vendor firmware sets its ID to 0x81 + die; the ACPI
+        // code assigns the IDs.
+        let nonpci = s.nonpci[usize::from(die.index())];
+        let ioapic = nonpci + soc::NONPCI_IOAPIC;
+        iohc::IOAPIC_BAR.map(&die.smn(), ioapic);
+        ioapics[usize::from(die.index())] = ioapic;
+        iommu::init_bar(die, nonpci + soc::NONPCI_IOMMU);
     }
     let psp_bars = psp::bars(dies);
 

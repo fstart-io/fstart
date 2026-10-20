@@ -414,10 +414,13 @@ fn low<T>(address: usize, value: T) -> &'static mut T {
 mod zeppelin {
     use super::*;
     use crate::{
-        fam17h::topology,
+        fam17h::{
+            iohc::{self, IOAPIC_BAR},
+            topology,
+        },
         fch::{Acpimmio, Fch},
         zeppelin::{
-            Die, Package, Revision,
+            Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision,
             dxio::{self, Descriptor, SataChannel},
             fabric,
             fch::{self, Devices},
@@ -506,19 +509,21 @@ mod zeppelin {
         );
         for die in &dies {
             nbio::early_init(die, Revision::B2);
-            psp::init_bar(die, nonpci[usize::from(die.index())]);
+            let _ = iohc::map_psp(&die.smn(), nonpci[usize::from(die.index())] + NONPCI_PSP);
         }
         smu::print_name(&dies[0], &mut delay);
         for die in &dies {
-            nbio::tom_init(die, 0xe000_0000, Some(0x4_2000_0000));
+            iohc::dram_map(die, 0xe000_0000, Some(0x4_2000_0000));
         }
 
         // PCIe training and after
         let ioapics: Vec<u32> = dies
             .iter()
             .map(|die| {
-                iommu::init_bar(die, nonpci[usize::from(die.index())]);
-                nbio::ioapic_init(die, nonpci[usize::from(die.index())])
+                let nonpci = nonpci[usize::from(die.index())];
+                iommu::init_bar(die, nonpci + NONPCI_IOMMU);
+                IOAPIC_BAR.map(&die.smn(), nonpci + NONPCI_IOAPIC);
+                nonpci + NONPCI_IOAPIC
             })
             .collect();
         assert_eq!(ioapics[0], nonpci[0] + (7 << 20));
@@ -589,12 +594,15 @@ mod zeppelin {
 mod picasso {
     use super::*;
     use crate::{
-        fam17h::smu::{THREAD_CONFIG, THREAD_ENABLE},
+        fam17h::{
+            iohc::{PSP_BAR, SMU_BAR},
+            smu::{THREAD_CONFIG, THREAD_ENABLE},
+        },
         picasso::{
+            Die,
             dxio::{self, Aspm, ClockRequest, Descriptor, Options, PowerPolicy},
             fabric,
             nbio::{self},
-            registers::{Df, Smn},
             smu,
             topology::{self, Downcore, Policy},
         },
@@ -618,14 +626,16 @@ mod picasso {
         let hw = Hw::new(&[0], smu::ARGUMENTS.address(), smu::DXIO_SERVICE, &[]);
         hw.set_smn(0, THREAD_CONFIG, 0x13);
         hw.set_smn(0, THREAD_ENABLE, 1);
-        hw.set_smn(0, crate::fam17h::nbio::SMU_BASE_ADDR_LO, 0);
-        hw.set_smn(0, crate::fam17h::nbio::SMU_BASE_ADDR_HI, 0);
-        hw.set_smn(0, crate::fam17h::nbio::PSP_BASE_ADDR_LO, 0);
+        hw.set_smn(0, SMU_BAR.low, 0);
+        hw.set_smn(0, SMU_BAR.high, 0);
+        hw.set_smn(0, PSP_BAR.low, 0);
         hw.set_smn(0, crate::fam17h::nbio::pcie::link_status(0), 0);
         // TOM2[40:32] bit 8 clear: below 1 TiB.
         hw.set_smn(0, 0x13b1_0068_u32, 0x1234_5600);
-        let smn = unsafe { Smn::new(&hw) };
-        let df = unsafe { Df::new(&hw) };
+        let die: Die<&Hw> = unsafe { crate::fam17h::topology::dies(&hw) }
+            .next()
+            .unwrap();
+        let (smn, df) = (die.smn(), die.df());
         let mut delay = hw.clock();
 
         fabric::early_init(&df);
@@ -633,7 +643,7 @@ mod picasso {
         nbio::early_init(&smn, true, false, &mut delay).unwrap();
         nbio::psp_bar(&smn).unwrap();
         assert!(nbio::psp_bar_installed(&smn));
-        nbio::dram_routes(&smn, 0xd000_0000, Some(0x4_3000_0000)).unwrap();
+        nbio::dram_routes(&die, 0xd000_0000, Some(0x4_3000_0000)).unwrap();
         nbio::ioapic_decode(&smn);
 
         let policy = Policy {
@@ -667,7 +677,9 @@ mod picasso {
             3
         );
         assert_eq!(ports.ports.iter().filter(|p| p.trained).count(), 2);
-        assert_eq!(hw.fingerprint(), (3492, 0xbc80_eb5b_f435_f511));
+        // The final register state is what the hardware was tested with,
+        // the log follows the shared Family 17h sequences.
         assert_eq!(hw.state(), 0xc446_ef2a_df4d_6ca4);
+        assert_eq!(hw.fingerprint(), (3489, 0xe499_1a53_e5fd_a388));
     }
 }

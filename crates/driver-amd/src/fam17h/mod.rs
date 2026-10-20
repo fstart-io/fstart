@@ -9,6 +9,7 @@ pub mod cache;
 pub mod ccx;
 pub mod df;
 pub mod dxio;
+pub mod iohc;
 pub mod microcode;
 pub mod msr;
 pub mod nbio;
