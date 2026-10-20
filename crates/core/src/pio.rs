@@ -279,41 +279,12 @@ impl<T: PioValue, R: RegisterLongName> Writeable for PioRegister<T, R> {
 /// The caller owns configuration-mode entry and serializes the port pair.
 /// Bank/LDN selection must remain unchanged for the lifetime of each access.
 /// Uses the same tock field APIs as a directly addressed [`PioRegister`].
-pub struct IndexedPioRegister<R: RegisterLongName = ()> {
-    index: PioRegister<u8>,
-    data: PioRegister<u8>,
-    register: u8,
-    _reg: PhantomData<R>,
-}
+pub type IndexedPioRegister<R = ()> = crate::indexed::Indexed<PioRegister<u8>, PioRegister<u8>, R>;
 
 impl<R: RegisterLongName> IndexedPioRegister<R> {
-    pub const fn new(index: u16, data: u16, register: u8) -> Self {
-        Self {
-            index: PioRegister::new(index),
-            data: PioRegister::new(data),
-            register,
-            _reg: PhantomData,
-        }
-    }
-}
-
-impl<R: RegisterLongName> Readable for IndexedPioRegister<R> {
-    type T = u8;
-    type R = R;
-
-    fn get(&self) -> u8 {
-        self.index.set(self.register);
-        self.data.get()
-    }
-}
-
-impl<R: RegisterLongName> Writeable for IndexedPioRegister<R> {
-    type T = u8;
-    type R = R;
-
-    fn set(&self, value: u8) {
-        self.index.set(self.register);
-        self.data.set(value);
+    /// Register `register` behind the `index` and `data` ports.
+    pub const fn ports(index: u16, data: u16, register: u8) -> Self {
+        Self::new(PioRegister::new(index), PioRegister::new(data), register)
     }
 }
 
