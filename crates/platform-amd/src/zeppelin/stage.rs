@@ -619,6 +619,8 @@ fn acpi_tables<B: Board>(
             mmio: &mmio,
             vga: die.index() == 0,
             bridges,
+            // SAFETY: the IOMMU MMIO is in the identity-mapped pool.
+            iommu: unsafe { iommu::read(die) },
         })
         .collect();
     let board = B::acpi();

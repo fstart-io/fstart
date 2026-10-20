@@ -62,15 +62,16 @@ e820: parked APs and the ACPI tables live there.
 1. Console (LPC decode, AST2500 SUART1), FCH early init, DF MMIO/IO map,
    DF early/scrub init, FCH reset tasks, board VRs and re-drivers over I2C3,
    NBIO early init, PSP BAR, BSP CCX init, NBIO TOM.
-2. NBIO IOAPIC, DXIO training per die, board post-training SMN values, FCH
-   USB, SMU init, DF late init, NBIO pre-enumeration, FCH env/SATA/xGbE.
+2. NBIO IOAPIC and IOMMU MMIO, DXIO training per die, board post-training
+   SMN values, FCH USB, SMU init, DF late init, NBIO pre-enumeration, FCH
+   env/SATA/xGbE.
 3. MP: the SMU releases the APs (ThreadEn) into the trampoline. They load
    microcode and run the CCX init. SYSCFG.MtrrFixDramModEn is set during the
    MTRR replay and cleared afterwards.
-4. PCI enumeration, IOAPICs, ACPI (MADT, FADT, HPET, MCFG, SPMI, DSDT with
-   root bridges, `_PRT`s, SIO COM1, IPMI KCS), ACPI mode without SMM. The
-   internal bridges' own INTA goes to their NBIO IOAPIC pin, as in the
-   vendor DSDT.
+4. PCI enumeration, IOAPICs, ACPI (MADT, FADT, HPET, MCFG, IVRS, SPMI,
+   DSDT with root bridges, `_PRT`s, SIO COM1, IPMI KCS), ACPI mode without
+   SMM. The internal bridges' own INTA goes to their NBIO IOAPIC pin, as in
+   the vendor DSDT.
 5. Vendor ReadyToBoot steps, then the payload.
 
 ## Building
@@ -89,6 +90,6 @@ cargo fbuild assemble --board gigabyte-mj11-ec1 --release \
 - SMM. Because of it there is no PSP LockDFReg either: sent without the
   PSP's SMM info it breaks device DMA (the xHCI halts with a host system
   error).
-- IVRS, S3, APOB NV (MRC cache), multi-die and the EC0 variant on hardware.
+- S3, APOB NV (MRC cache), multi-die and the EC0 variant on hardware.
 - Board extras of the vendor firmware: the BMC ready wait and the PM1
   cleanup of AmdCpmOemInitPeim.

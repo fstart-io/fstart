@@ -17,6 +17,7 @@ use fstart_acpi::{
     aml::{AddressSpace, AddressSpaceCacheable, IO, Name, ResourceTemplate},
     aml_linker::{device_vec, scope_vec},
     fadt::{Flags, PmProfile},
+    ivrs::{self, DeviceEntry, Dte, Variety},
     mcfg::MCFG,
     pirq::prt_name_aml,
     platform::{
@@ -25,7 +26,7 @@ use fstart_acpi::{
     },
 };
 use fstart_acpi_macros::acpi_dsl;
-use fstart_driver_amd::zeppelin::{MAX_DIES, SPI_BASE, acpi_io};
+use fstart_driver_amd::zeppelin::{MAX_DIES, SPI_BASE, acpi_io, iommu::{self, Iommu}};
 
 pub const LAPIC_BASE: u64 = 0xfee0_0000;
 pub const FCH_IOAPIC_BASE: u32 = 0xfec0_0000;
@@ -59,6 +60,8 @@ pub struct DieAcpi<'a> {
     pub vga: bool,
     /// The enabled PCIe and internal (7.1, 8.1) bridges on the root bus.
     pub bridges: &'a [Bridge],
+    /// The IOMMU (00.2), if its MMIO is enabled.
+    pub iommu: Option<Iommu>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +186,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
         .flatten()
         .collect();
     let extra = core::iter::once(mcfg(inputs)?)
+        .chain(ivrs(inputs))
         .chain(inputs.board.tables.iter().cloned())
         .collect();
     Ok(Tables {
@@ -326,6 +330,101 @@ fn mcfg(inputs: &Inputs) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     mcfg.to_aml_bytes(&mut bytes);
     Ok(bytes)
+}
+
+/// PCI requester ID.
+const fn device_id(bus: u8, device: u8, function: u8) -> u16 {
+    (bus as u16) << 8 | (device as u16) << 3 | function as u16
+}
+
+/// The FCH IOAPIC and the HPET interrupt as the FCH SMBus device 0:14.0.
+const FCH_SMBUS: u16 = device_id(0, 0x14, 0);
+
+/// The IVRS (AmdNbioIOMMUZPDxe): one IVHD 10h and 11h per die IOMMU, none
+/// without die 0's, which owns the FCH IOAPIC and the HPET. No IVHD 40h:
+/// its only use would be ACPI HID devices, and Zeppelin has no eMMC.
+fn ivrs(inputs: &Inputs) -> Option<Vec<u8>> {
+    inputs.dies.first()?.iommu?;
+    let devices: Vec<Vec<DeviceEntry>> = (0..inputs.dies.len())
+        .map(|index| ivrs_devices(index, inputs))
+        .collect();
+    let iommus: Vec<ivrs::Iommu> = inputs
+        .dies
+        .iter()
+        .zip(&devices)
+        .filter_map(|(die, devices)| {
+            let iommu = die.iommu?;
+            Some(ivrs::Iommu {
+                device_id: device_id(*die.buses.start(), 0, 2),
+                capability_offset: iommu::CAPABILITY,
+                segment: 0,
+                base: iommu.base,
+                registers: ivrs::IommuRegisters {
+                    capability: iommu.capability,
+                    range: iommu.range,
+                    misc: iommu.misc,
+                    control: iommu.control,
+                    efr: iommu.efr,
+                    efr2: iommu.efr2,
+                    counter_config: iommu.counter_config,
+                },
+                devices,
+            })
+        })
+        .collect();
+    ivrs::build_ivrs(&ivrs::IvrsConfig {
+        iommus: &iommus,
+        acpi_hid: false,
+    })
+}
+
+/// The device entries of die `index`'s IOMMU: its buses from 00.3 (after
+/// the root complex, NBIO IOAPIC and IOMMU) up to the next die's, its NBIO
+/// IOAPIC and, on die 0, the HPET and the FCH IOAPIC. The handles are the
+/// MADT IOAPIC IDs and the HPET number.
+fn ivrs_devices(index: usize, inputs: &Inputs) -> Vec<DeviceEntry> {
+    let die = &inputs.dies[index];
+    let bus = *die.buses.start();
+    let last_bus = inputs.dies.get(index + 1).map_or_else(
+        || inputs.ecam_buses.saturating_sub(1) as u8,
+        |next| next.buses.start().saturating_sub(1),
+    );
+    let own = [
+        DeviceEntry::Range {
+            start: device_id(bus, 0, 3),
+            end: device_id(last_bus, 0x1f, 7),
+            dte: 0,
+        },
+        DeviceEntry::Special {
+            variety: Variety::IoApic,
+            handle: die.ioapic_id,
+            source: device_id(bus, 0, 1),
+            dte: 0,
+        },
+    ];
+    let fch_ioapic_dte = Dte::LINT1_PASS::SET
+        + Dte::LINT0_PASS::SET
+        + Dte::SYS_MGT::NoTranslate
+        + Dte::NMI_PASS::SET
+        + Dte::EXT_INT_PASS::SET
+        + Dte::INIT_PASS::SET;
+    let fch = [
+        DeviceEntry::Special {
+            variety: Variety::Hpet,
+            handle: 0,
+            source: FCH_SMBUS,
+            dte: 0,
+        },
+        DeviceEntry::Special {
+            variety: Variety::IoApic,
+            handle: FCH_IOAPIC_ID,
+            source: FCH_SMBUS,
+            dte: fch_ioapic_dte.value,
+        },
+    ];
+    own.into_iter()
+        .chain(fch.into_iter().filter(|_| index == 0))
+        .collect()
 }
 
 /// The host bridge `PCIn` of a die: `_HID`, `_UID`, `_SEG`, `_BBN`, `_OSC`,
@@ -643,9 +742,25 @@ mod tests {
             mmio: &MMIO,
             vga: index == 0,
             bridges: &BRIDGES,
+            iommu: Some(Iommu {
+                base: 0xfe60_0000 - u64::from(index) * 0x0800_0000,
+                ..IOMMU
+            }),
         };
         [die(0), die(1)]
     }
+
+    /// An IOMMU with an EFR.
+    const IOMMU: Iommu = Iommu {
+        base: 0,
+        capability: 1 << 27 | 0x0003_000f,
+        range: 0,
+        misc: 0,
+        control: 0,
+        efr: 0,
+        efr2: 0,
+        counter_config: 0,
+    };
 
     fn tables(board: &BoardAcpi) -> Tables {
         let dies = dies();
@@ -781,6 +896,70 @@ mod tests {
                 (2, 0xf6b0_0000, 56)
             ]
         );
+    }
+
+    #[test]
+    fn ivrs_has_both_dies_with_their_buses_and_the_madt_ioapic_ids() {
+        let dies = dies();
+        let board = BoardAcpi::default();
+        let inputs = Inputs {
+            apic_ids: &[0],
+            dies: &dies,
+            ecam_base: 0xf000_0000,
+            ecam_buses: 128,
+            hpet_id: 0,
+            fch_intx_gsi: [16, 17, 18, 19],
+            board: &board,
+        };
+        let special = |variety, handle, source, dte| DeviceEntry::Special {
+            variety,
+            handle,
+            source,
+            dte,
+        };
+        assert_eq!(
+            ivrs_devices(0, &inputs),
+            [
+                DeviceEntry::Range {
+                    start: 0x0003,
+                    end: 0x3fff,
+                    dte: 0
+                },
+                special(Variety::IoApic, 1, 0x0001, 0),
+                special(Variety::Hpet, 0, 0x00a0, 0),
+                special(Variety::IoApic, FCH_IOAPIC_ID, 0x00a0, 0xd7),
+            ]
+        );
+        assert_eq!(
+            ivrs_devices(1, &inputs),
+            [
+                DeviceEntry::Range {
+                    start: 0x4003,
+                    end: 0x7fff,
+                    dte: 0
+                },
+                special(Variety::IoApic, 2, 0x4001, 0),
+            ]
+        );
+
+        // IVHD 10h and 11h of the IOMMUs at 0:00.2 and 40:00.2.
+        let table = ivrs(&inputs).unwrap();
+        let mut at = 48;
+        let mut blocks = std::vec::Vec::new();
+        while at < table.len() {
+            blocks.push((table[at], u16::from_le_bytes([table[at + 4], table[at + 5]])));
+            at += usize::from(u16::from_le_bytes([table[at + 2], table[at + 3]]));
+        }
+        assert_eq!(
+            blocks,
+            [(0x10, 0x0002), (0x11, 0x0002), (0x10, 0x4002), (0x11, 0x4002)]
+        );
+        assert!(tables(&board).extra.iter().any(|table| table[..4] == *b"IVRS"));
+
+        // Die 0's IOMMU owns the FCH IOAPIC: no IVRS without it.
+        let mut without = dies.clone();
+        without[0].iommu = None;
+        assert_eq!(ivrs(&Inputs { dies: &without, ..inputs }), None);
     }
 
     #[test]
