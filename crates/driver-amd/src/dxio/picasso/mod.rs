@@ -4,7 +4,7 @@
 use super::{
     self as dxio, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed, Operation,
 };
-use crate::picasso::acp;
+use crate::acp;
 
 mod hardware;
 pub use hardware::{Buffers, Options, train};

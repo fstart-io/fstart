@@ -3,9 +3,12 @@
 //! in a production boot flow; this checkpoint only establishes the debug UART.
 use fstart_driver_amd::{
     ccx::tsc::{Clock, DelayNs},
-    fch::{self, Fch},
-    gpio::{self, Gpio, Pad, Pull},
-    picasso::{EARLY_AOAC, UART_AOAC, espi, preinit::SpiConfig},
+    fch::{
+        self, Fch, espi,
+        gpio::{self, Gpio, Pad, Pull},
+        sandstone::preinit::SpiConfig,
+    },
+    picasso::{EARLY_AOAC, UART_AOAC},
 };
 
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
@@ -176,7 +179,7 @@ pub fn run<B: BoardFacts>() -> ! {
 /// BSP only after `cold_boot`, exclusive FCH access.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 unsafe fn fch_init<B: BoardFacts>(timer: &mut impl Clock) -> Result<(), &'static str> {
-    use fstart_driver_amd::picasso::{legacy, preinit};
+    use fstart_driver_amd::fch::sandstone::{legacy, preinit};
     // SAFETY: exclusive FCH access, ECAM published by `cold_boot`.
     let fch = Fch::new(unsafe { fch::NativeBus::new() }, fch::Acpimmio::DIE0);
     preinit::prepare_lpc(&fch).map_err(|_| "LPC setup")?;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Zeppelin parts of the FCH SMM handler, and SMN access
 //! from SMM.
-use super::taishan::{AOAC_94, Aoac94};
+use super::init::{AOAC_94, Aoac94};
 use crate::smn::SmnReg;
 use crate::fch::{AcpiReg, Acpimmio, Bus, Fch, IOAPIC, Reg, SmmBus, pm};
 use crate::fch::smi::{FchSmmHandler, FchSmmHooks};

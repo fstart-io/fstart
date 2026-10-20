@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Vilboz wiring overrides and WiFi sequencing. Board revision is runtime CBI.
 use super::{dalboz, policy::Cbi};
-use fstart_driver_amd::{
-    fch::Bus,
+use fstart_driver_amd::fch::{
+    Bus,
     gpio::{self, Delivery, Gpio, Pad, Pull, Trigger},
 };
 const OLD: &[Pad] = &[Pad::nc(32), Pad::output(89, true), Pad::output(140, true)];

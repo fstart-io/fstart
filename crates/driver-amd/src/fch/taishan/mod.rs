@@ -28,18 +28,20 @@ pub mod multi;
 pub mod sata;
 #[cfg(feature = "smm")]
 pub mod smm;
-mod taishan;
+mod init;
 pub mod usb;
 
+pub use init::{env_init, late_init, pre_init, reset_init};
 pub use multi::{acpimmio_base, xgbe_init};
-pub use taishan::{env_init, late_init, pre_init, reset_init};
 
-/// The ACPI I/O blocks of [`super::acpi_io`] for [`crate::fch::Fch`].
+use crate::zeppelin::acpi_io;
+
+/// The ACPI I/O blocks of [`acpi_io`] for [`crate::fch::Fch`].
 pub const ACPI_PORTS: crate::fch::AcpiPorts = crate::fch::AcpiPorts {
-    event: super::acpi_io::PM1_EVT,
-    control: super::acpi_io::PM1_CNT,
-    timer: super::acpi_io::PM_TMR,
-    gpe: super::acpi_io::GPE0,
+    event: acpi_io::PM1_EVT,
+    control: acpi_io::PM1_CNT,
+    timer: acpi_io::PM_TMR,
+    gpe: acpi_io::GPE0,
 };
 
 /// Board choices for the FCH devices of a die. Die 0's xHCI is always set

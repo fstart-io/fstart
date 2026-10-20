@@ -4,8 +4,6 @@
 //! are in [`super::sata`] and [`super::usb`].
 use super::{ASF_IO, SMBUS_IO, irq};
 use crate::{
-    smn::{Smn, SmnReg},
-    table::{Record, rmw},
     fch::{
         AL2AHB, AbRegBar, Bus, Decode, Fch, LEGACY_UART_DECODE, MISC_CLK_CNTL1,
         MiscClkCntl1, PM_AB_REG_BAR, PM_ACPI_CPU_CNT, PM_ACPI_GPE0,
@@ -13,8 +11,10 @@ use crate::{
         AcpiReg, PM_0A, PM_ACPI_SMI_CMD, PM_C0, PM_DECODE, Pm0a, PmC0, RTC_INDEX, Reg, SPI_BASE, alink,
         early, indexed_io, misc, spi,
         aoac, pm, smbus, smi_bank as smi,
+        lpc::{self, Bits, PciControl, RomDmaControl, SpiBase},
     },
-    lpc::{self, Bits, PciControl, RomDmaControl, SpiBase},
+    smn::{Smn, SmnReg},
+    table::{Record, rmw},
     zeppelin::{Revision, acpi_io},
 };
 use tock_registers::{

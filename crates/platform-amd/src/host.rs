@@ -183,8 +183,8 @@ mod tests {
     struct Board;
     impl BoardFacts for Board {
         const CONFIG: &'static picasso::Config = &picasso::Config::new().build();
-        const SPI: fstart_driver_amd::picasso::preinit::SpiConfig = {
-            use fstart_driver_amd::picasso::preinit::{ReadMode, Speed, SpiConfig};
+        const SPI: fstart_driver_amd::fch::sandstone::preinit::SpiConfig = {
+            use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
             SpiConfig {
                 mode: ReadMode::Normal33,
                 normal: Speed::Mhz33,

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso LPC/SPI/SMBus pre-console mechanisms.
 //! This is not a flash transaction driver or a complete FCH boot flow.
-use crate::{
-    fch::{Bus, Fch, early::lpc_present, spi},
+use crate::fch::{
+    Bus, Fch,
+    early::lpc_present,
     lpc::{self, RomDmaEcHostControl, SpiBase},
+    spi,
 };
 pub use crate::fch::{
     SPI_BASE,

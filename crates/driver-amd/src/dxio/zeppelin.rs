@@ -482,8 +482,8 @@ fn pre_training(smn: &Smn<impl ConfigRegionAccess>) {
 
 /// Enable the SATA function of the NBIF.
 fn nbif_sata_enable(smn: &Smn<impl ConfigRegionAccess>) {
-    smn.reg(crate::zeppelin::fch::sata::NBIF_STRAP)
-        .modify(crate::zeppelin::fch::NbifStrap::ENABLE::SET);
+    smn.reg(crate::fch::taishan::sata::NBIF_STRAP)
+        .modify(crate::fch::taishan::NbifStrap::ENABLE::SET);
     smn.reg(NBIF1_FUNCTION_ENABLE)
         .modify(NbifFunctionEnable::SATA::SET);
 }

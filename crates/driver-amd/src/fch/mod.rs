@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The FCH register layer every Family 17h SoC shares (ACPI MMIO,
 //! PM, LPC, SMBus), and the
-//! operations both Picasso and Zeppelin use.
+//! operations both Picasso and Zeppelin use. The common controllers have
+//! their own modules: [`lpc`], [`spi`], [`espi`], [`emmc`], [`gpio`],
+//! [`alink`], [`smi`] and the pre-console setup [`early`]. What the FCH
+//! versions do differently is [`sandstone`] (Raven/Picasso, AGESA
+//! FchSandstone) and [`taishan`] (Zeppelin, FchTaishan).
 //!
 //! [`Reg`] describes a register of an FCH register space: the ACPI MMIO
 //! banks of any die's FCH ([`AcpiReg`] through [`Acpimmio`]), other MMIO
@@ -28,9 +32,21 @@ use tock_registers::{
 };
 pub mod alink;
 pub mod early;
+pub mod emmc;
+pub mod espi;
+#[cfg(all(test, feature = "picasso"))]
+mod espi_tests;
+pub mod gpio;
+#[cfg(all(test, feature = "picasso"))]
+mod gpio_tests;
+pub mod lpc;
+#[cfg(feature = "picasso")]
+pub mod sandstone;
 #[cfg(feature = "smi")]
 pub mod smi;
 pub mod spi;
+#[cfg(feature = "zeppelin")]
+pub mod taishan;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
@@ -350,7 +366,7 @@ bank!(
     misc, 0xe00);
 bank!(
     /// GPIO bank 0: the control register of pin n at 4 * n.
-    gpio, 0x1500);
+    gpio_bank, 0x1500);
 bank!(
     /// Always-on device power control.
     aoac, 0x1e00);

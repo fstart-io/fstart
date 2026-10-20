@@ -6,7 +6,6 @@
 //! APOB; everything x86 does after that is native: Data Fabric, NBIO, SMU,
 //! DXIO (PCIe), CCX and the Taishan FCH. Every die has its own DF, NBIO, SMU
 //! and FCH; SP4r2 has one die, SP4 two.
-pub mod fch;
 pub mod i2c;
 pub mod identity;
 #[cfg(test)]
@@ -17,11 +16,11 @@ pub use identity::{Package, Revision};
 
 /// GPIO bank 0: 145 pins, but the vendor board tables also use 149-152. The Zeppelin
 /// IOMUX assignments aren't known, so pads name their functions by number.
-pub const GPIO_BANK: crate::gpio::Bank = crate::gpio::Bank {
+pub const GPIO_BANK: crate::fch::gpio::Bank = crate::fch::gpio::Bank {
     pins: 153,
     reserved: &[],
     gpio_function: |_| None,
-    events: crate::gpio::FAMILY17H_EVENTS,
+    events: crate::fch::gpio::FAMILY17H_EVENTS,
 };
 
 /// The Zeppelin SoC.

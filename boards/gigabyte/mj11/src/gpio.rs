@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The vendor CPM GPIO table ($A10) and the BMC ready pin.
 use embedded_hal::delay::DelayNs;
-use fstart_driver_amd::gpio::{Control, Pad, Pull};
+use fstart_driver_amd::fch::gpio::{Control, Pad, Pull};
 use fstart_platform_amd::zeppelin::BoardCtx;
 
 /// The values are IOMUX functions, not named functions: the Zeppelin IOMUX

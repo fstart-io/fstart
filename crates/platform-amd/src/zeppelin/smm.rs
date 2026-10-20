@@ -11,9 +11,11 @@ use fstart_arch::x86::{
     mp::MpHandle,
 };
 use fstart_driver_amd::{
-    fch::smi::{self, FchSmi},
+    fch::{
+        smi::{self, FchSmi},
+        taishan,
+    },
     psp::{Buffer, Mailbox, Native, SmmInfo},
-    zeppelin::fch,
 };
 
 /// The board's SMM image that fbuild built from its `smm.rs`.
@@ -26,7 +28,7 @@ pub fn install<B: Board>(mp: &MpHandle, tseg_base: u64) -> Result<InstalledTseg,
     let image = IMAGE.ok_or("no SMM image")?;
     // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
     // decoded since the FCH init.
-    let smi = unsafe { FchSmi::new(fch::ACPI_PORTS, B::SMI_GEVENTS) };
+    let smi = unsafe { FchSmi::new(taishan::ACPI_PORTS, B::SMI_GEVENTS) };
     AmdSmm::new("zeppelin", &smi)
         .install(mp, image, tseg_base, TSEG_SIZE)
         .map_err(|error| error.name())

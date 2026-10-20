@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native FCH legacy/RTC/internal IRQ/LPC policy; no PCI enumeration or SMM.
-use crate::{
-    fch::{
-        Bus, Fch, PM_0A, PM_C0, PM_INDEX, Pm0a, PmC0, RTC_INDEX, Reg, SMBUS_ASF_IO_BASE,
-        indexed_io, pm, smi_bank,
-    },
+use crate::fch::{
+    Bus, Fch, PM_0A, PM_C0, PM_INDEX, Pm0a, PmC0, RTC_INDEX, Reg, SMBUS_ASF_IO_BASE, indexed_io,
     lpc::{self, ClockControl, LpcA4, PciControl},
+    pm, smi_bank,
 };
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},

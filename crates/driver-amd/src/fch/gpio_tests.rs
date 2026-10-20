@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use crate::{
-    fch::{ACPI_MMIO, Acpimmio, Fch, Space, testing::World},
-    gpio::*,
-};
+use crate::fch::{ACPI_MMIO, Acpimmio, Fch, Space, gpio::*, testing::World};
 extern crate std;
 use std::vec::Vec;
 

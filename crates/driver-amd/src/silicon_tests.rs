@@ -416,7 +416,10 @@ mod zeppelin {
     use crate::{
         df::{self, map},
         dxio::{self, Descriptor, SataChannel},
-        fch::{Acpimmio, Fch},
+        fch::{
+            Acpimmio, Fch,
+            taishan::{self, Devices},
+        },
         nbio::{
             self, iommu,
             iohc::{self, IOAPIC_BAR},
@@ -426,10 +429,7 @@ mod zeppelin {
             threads::{self, Policy},
             v9 as smu,
         },
-        zeppelin::{
-            Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision,
-            fch::{self, Devices},
-        },
+        zeppelin::{Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision},
     };
 
     const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
@@ -504,9 +504,9 @@ mod zeppelin {
             df::zeppelin::early_init(&die.df(), 2, Revision::B2);
         }
         let fch0 = Fch::new(pci, Acpimmio::DIE0);
-        fch::reset_init(&fch0, Revision::B2);
-        fch::sata::reset(&dies[0].smn(), &mut delay);
-        fch::multi::reset(
+        taishan::reset_init(&fch0, Revision::B2);
+        taishan::sata::reset(&dies[0].smn(), &mut delay);
+        taishan::multi::reset(
             pci,
             &dies,
             Package::Sp4,
@@ -550,8 +550,8 @@ mod zeppelin {
         assert_eq!(topology[0].ports.iter().flatten().count(), 7);
         assert!(trained(0) > 0 && trained(0) < 7);
         assert_eq!(topology[1].ports.iter().flatten().count(), 2);
-        fch::usb::init(&dies[0].smn(), 0, Package::Sp4, &mut delay);
-        fch::multi::usb(&dies, &DEVICES, Package::Sp4, &mut delay);
+        taishan::usb::init(&dies[0].smn(), 0, Package::Sp4, &mut delay);
+        taishan::multi::usb(&dies, &DEVICES, Package::Sp4, &mut delay);
         let buffers = smu::DmaBuffers {
             policy: 0x7000_0040,
             agm_log: [0x7000_1000, 0x7000_2000],
@@ -566,10 +566,10 @@ mod zeppelin {
         for die in &dies {
             nbio::zeppelin::pre_enumeration_init(die);
         }
-        fch::env_init(&fch0, &dies[0].smn(), SUBSYSTEM_ID);
-        fch::sata::init(&fch0, 0, &dies[0].smn(), SUBSYSTEM_ID, &mut delay);
-        fch::multi::xgbe_init(&dies[0].smn());
-        fch::multi::env(
+        taishan::env_init(&fch0, &dies[0].smn(), SUBSYSTEM_ID);
+        taishan::sata::init(&fch0, 0, &dies[0].smn(), SUBSYSTEM_ID, &mut delay);
+        taishan::multi::xgbe_init(&dies[0].smn());
+        taishan::multi::env(
             pci,
             &dies,
             &DEVICES,
@@ -586,10 +586,10 @@ mod zeppelin {
         smu::ccx_done(&dies, &mut delay).unwrap();
 
         // ReadyToBoot
-        fch::multi::late(&dies, |die| {
+        taishan::multi::late(&dies, |die| {
             (die == 1).then(|| PciAddress::new(0, 0x40, 8, 2))
         });
-        fch::late_init(&fch0);
+        taishan::late_init(&fch0);
         for die in &dies {
             df::zeppelin::disable_ext_cfg(&die.df());
         }

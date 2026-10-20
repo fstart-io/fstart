@@ -6,7 +6,7 @@ use super::{
     Bus, Decode, Fch, LpcGating, PM_DECODE, PM_LPC_GATING, PM_RTC_SHADOW, RtcShadow, SPI_BASE,
     asf, smbus,
 };
-use crate::lpc::{self, Id, IoMemDecode, SpiBase};
+use crate::fch::lpc::{self, Id, IoMemDecode, SpiBase};
 use tock_registers::{
     fields::FieldValue,
     interfaces::{ReadWriteable, Readable, Writeable},

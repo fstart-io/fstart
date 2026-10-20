@@ -21,15 +21,16 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use fstart_driver_amd::{
-    dxio::Descriptor,
     ccx::tsc::Tsc,
-    fch::{Acpimmio, Fch, NativeBus, early::PowerFailure},
-    gpio::Gpio,
-    lpc::Lpc,
-    zeppelin::{
-        Die, MAX_DIES,
-        fch::{Devices, irq::Route},
+    dxio::Descriptor,
+    fch::{
+        Acpimmio, Fch, NativeBus,
+        early::PowerFailure,
+        gpio::Gpio,
+        lpc::Lpc,
+        taishan::{Devices, irq::Route},
     },
+    zeppelin::{Die, MAX_DIES},
 };
 use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_pci::ecam::GlobalEcam;
@@ -71,7 +72,7 @@ pub trait Board: 'static {
     /// The FCH PCI interrupt router (0xc00/0xc01) table.
     const IRQ_ROUTES: &'static [Route];
     /// GEVENT pins (bit n = GEVENTn) routed to the board's SMM handler,
-    /// `fstart_driver_amd::zeppelin::fch::smm::SmmBoard::gevent`.
+    /// `fstart_driver_amd::fch::taishan::smm::SmmBoard::gevent`.
     const SMI_GEVENTS: u32 = 0;
 
     /// LPC decodes and Super I/O routing for the console, before any

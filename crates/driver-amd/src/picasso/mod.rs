@@ -1,22 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h Raven/Picasso/Pollock register geometry, not Intel-compatible IP.
-pub mod acp;
-pub mod emmc;
-pub mod espi;
-#[cfg(test)]
-mod espi_tests;
-pub mod legacy;
-#[cfg(test)]
-mod legacy_tests;
 #[cfg(test)]
 mod native_tests;
-pub mod pinmux;
-pub mod preinit;
-pub mod southbridge;
-pub mod usb;
-#[cfg(test)]
-mod usb_tests;
-pub use crate::fch::ACPI_MMIO;
 
 /// The Raven/Picasso SoC: one die.
 pub enum Picasso {}
@@ -40,9 +25,9 @@ pub const UART_BASES: [usize; 4] = [0xfedc9000, 0xfedca000, 0xfedce000, 0xfedcf0
 pub const UART_AOAC: [u8; 4] = [11, 12, 16, 26];
 pub const EARLY_AOAC: &[u8] = &[17, 7, 8, 9, 27];
 /// GPIO bank 0: pins 0-144, no pad 63.
-pub const GPIO_BANK: crate::gpio::Bank = crate::gpio::Bank {
+pub const GPIO_BANK: crate::fch::gpio::Bank = crate::fch::gpio::Bank {
     pins: 145,
     reserved: &[63],
-    gpio_function: pinmux::gpio_function,
-    events: crate::gpio::FAMILY17H_EVENTS,
+    gpio_function: crate::fch::sandstone::pinmux::gpio_function,
+    events: crate::fch::gpio::FAMILY17H_EVENTS,
 };

@@ -5,7 +5,7 @@ use super::{
     Descriptor, EngineConfig, Error, Hotplug, LinkSpeed, Operation, PORTS, PowerPolicy, Topology,
 };
 use crate::ccx::tsc::{Clock, DelayNs};
-use crate::picasso::{Die, acp};
+use crate::{acp, picasso::Die};
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v10 as smu;
 use crate::nbio::{

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native ACP shutdown before DXIO. Register names from
+//! The ACP (audio coprocessor) 3.x of Raven/Picasso: its native shutdown
+//! before DXIO. Register names from
 //! Linux's ACP 3.x driver.
 use crate::ccx::tsc::DelayNs;
 use crate::smn::{Smn, SmnReg};

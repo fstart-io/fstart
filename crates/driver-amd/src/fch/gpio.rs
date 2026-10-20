@@ -3,7 +3,7 @@
 //! preserves reserved/drive-strength bits and clears W1C interrupt/wake
 //! status deliberately, not via an accidental RMW.
 use crate::fch::{
-    AcpiReg, Bus, BusRegister, Fch, SMI_TRIGGER0, SmiMode, gpio, iomux, smi_bank, smi_route,
+    AcpiReg, Bus, BusRegister, Fch, SMI_TRIGGER0, SmiMode, gpio_bank, iomux, smi_bank, smi_route,
 };
 use tock_registers::{
     LocalRegisterCopy,
@@ -44,9 +44,9 @@ pub const CONFIG_MASK: u32 =
     0xff | (7 << 8) | (3 << 11) | (7 << 13) | (3 << 20) | (3 << 22) | STATUS_MASK;
 
 const fn control(pin: u8) -> AcpiReg<u32, Control::Register> {
-    gpio::at(4 * pin as u32)
+    gpio_bank::at(4 * pin as u32)
 }
-const MASTER: AcpiReg<u32, Master::Register> = gpio::at(0xfc);
+const MASTER: AcpiReg<u32, Master::Register> = gpio_bank::at(0xfc);
 const SCI_TRIGGER: AcpiReg<u32, SciTrigger::Register> = smi_bank::at(0x08);
 const SCI_LEVEL: AcpiReg<u32, SciLevel::Register> = smi_bank::at(0x0c);
 /// SMIx40 + n: the SCI a GEVENT raises.

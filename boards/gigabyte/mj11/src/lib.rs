@@ -15,14 +15,15 @@ mod variant;
 
 use fstart_driver_amd::{
     dxio::Descriptor,
-    fch::{ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status, iomux},
-    gpio::Control,
-    lpc::{IoPortDecode, Lpc},
-    smn::{apply, write},
-    zeppelin::{
-        self as soc,
-        fch::irq::{self, Route},
+    fch::{
+        ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status,
+        gpio::Control,
+        iomux,
+        lpc::{IoPortDecode, Lpc},
+        taishan::irq::{self, Route},
     },
+    smn::{apply, write},
+    zeppelin as soc,
 };
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},

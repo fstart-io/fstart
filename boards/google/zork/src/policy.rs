@@ -136,13 +136,13 @@ pub const POWER: PowerPolicy = PowerPolicy {
 
 use fstart_driver_amd::{
     dxio::{Aspm, ClockRequest, Descriptor},
-    picasso::{emmc, usb},
+    fch::{emmc, sandstone::usb},
 };
 
 /// Zork's non-EM100 SPI defaults. A validated runtime EFS may
 /// override fast speed/read mode via SpiConfig::with_fast_override().
-pub const SPI: fstart_driver_amd::picasso::preinit::SpiConfig = {
-    use fstart_driver_amd::picasso::preinit::{ReadMode, Speed, SpiConfig};
+pub const SPI: fstart_driver_amd::fch::sandstone::preinit::SpiConfig = {
+    use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
     SpiConfig {
         mode: ReadMode::Dual122,
         normal: Speed::Mhz33,
@@ -171,8 +171,8 @@ pub const PCIE: &[Descriptor] = &[
     pcie(1, 1, 3, ClockRequest::Pin1), // Bayhub SD reader
 ];
 /// Dalboz eSPI resource wiring shared by all Vilboz variants.
-pub const ESPI: fstart_driver_amd::picasso::espi::Config = {
-    use fstart_driver_amd::picasso::espi::{Alert, Config, Frequency, IoRange, Mode};
+pub const ESPI: fstart_driver_amd::fch::espi::Config = {
+    use fstart_driver_amd::fch::espi::{Alert, Config, Frequency, IoRange, Mode};
     Config {
         io: [
             Some(IoRange {
