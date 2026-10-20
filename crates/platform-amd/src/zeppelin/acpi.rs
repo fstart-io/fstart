@@ -1030,6 +1030,80 @@ mod tests {
         }
     }
 
+    /// The table set of an MJ11-EC1 (EPYC 3151, one die) as the stage builds
+    /// it, byte for byte: the bridges and windows the enumeration finds,
+    /// the board's IPMI KCS with its SPMI.
+    #[test]
+    fn mj11_ec1_tables_are_pinned() {
+        let io = 0x1000..=0xffff;
+        let mmio = [0xe000_0000..=0xe7ff_ffff, 0xf800_0000..=0xfe7f_ffff];
+        let bridges = [
+            Bridge { devfn: 0x09, pin: 0 },
+            Bridge { devfn: 0x0a, pin: 0 },
+            Bridge { devfn: 0x0b, pin: 0 },
+            Bridge { devfn: 0x0c, pin: 0 },
+            Bridge { devfn: 0x0d, pin: 0 },
+            Bridge { devfn: 0x19, pin: 0 },
+            Bridge { devfn: 0x1b, pin: 0 },
+            Bridge { devfn: 0x39, pin: 1 },
+            Bridge { devfn: 0x41, pin: 1 },
+        ];
+        let dies = [DieAcpi {
+            buses: 0..=127,
+            ioapic_id: 1,
+            ioapic_base: 0xfeb0_0000,
+            io: core::slice::from_ref(&io),
+            mmio: &mmio,
+            vga: true,
+            bridges: &bridges,
+            iommu: Some(Iommu {
+                base: 0xfe60_0000,
+                capability: 0x1909_0040,
+                range: 0x0000_ff00,
+                misc: 0x0000_1a0b,
+                control: 0,
+                efr: 0x0000_00a2_9ec4_a7a5,
+                efr2: 0,
+                counter_config: 0x0000_0000_0002_0402,
+            }),
+        }];
+        let kcs = fstart_acpi::devices::IpmiKcsAcpi {
+            port: 0xca2,
+            spacing: 1,
+            uid: 0,
+            spec_revision: 0x0200,
+        };
+        let board = BoardAcpi {
+            lpc_aml: kcs.dsdt_aml(),
+            tables: vec![kcs.spmi()],
+        };
+        let tables = build(&Inputs {
+            apic_ids: &[0, 1, 2, 3, 8, 9, 10, 11],
+            dies: &dies,
+            ecam_base: 0xf000_0000,
+            ecam_buses: 128,
+            hpet_id: 0x1022_8201,
+            fch_intx_gsi: [16, 17, 18, 19],
+            board: &board,
+        })
+        .unwrap();
+        let mut storage = vec![0; 0x2_0000];
+        let len = fstart_acpi::platform::assemble_into(
+            &mut storage,
+            0x7601_8000,
+            &tables.platform,
+            &tables.dsdt_aml,
+            &tables.extra,
+        )
+        .unwrap();
+        let hash = storage[..len]
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+                (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        assert_eq!((len, hash), (2784, 0xba3b_5c8e_f8ab_a62d));
+    }
+
     fn signature<'a>(tables: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
         let start = tables.windows(4).position(|w| w == signature).unwrap();
         let len = u32::from_le_bytes(tables[start + 4..start + 8].try_into().unwrap());
