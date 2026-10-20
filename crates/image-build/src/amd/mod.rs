@@ -6,6 +6,7 @@
 pub mod apcb;
 pub mod assembly;
 pub mod config;
+pub mod vendor_flash;
 mod wire;
 
 use wire::*;

@@ -1226,6 +1226,7 @@ mod tests {
                 car: None,
             },
             stages: StageLayout::Monolithic(MonolithicConfig {
+                external: false,
                 build: StageBuildConfig {
                     firmware_image: Some(FirmwareImageConfig {
                         temp_ram_buffer: None,

@@ -245,6 +245,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         flash: None,
         bootstrap: vec![],
         stages: StageLayout::Monolithic(MonolithicConfig {
+            external: false,
             build: StageBuildConfig {
                 firmware_image: Some(FirmwareImageConfig {
                     temp_ram_buffer: None,
@@ -1051,6 +1052,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         flash: None,
         bootstrap: vec![],
         stages: StageLayout::Monolithic(MonolithicConfig {
+            external: false,
             build: StageBuildConfig {
                 firmware_image: Some(FirmwareImageConfig {
                     temp_ram_buffer: None,
