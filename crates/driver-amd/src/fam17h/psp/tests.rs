@@ -65,6 +65,7 @@ fn query_commands_publish_zero_padded_buffer_pointer_before_command() {
     assert_eq!(mailbox.capabilities(&mut delay), Ok(0x1234));
     assert_eq!(mailbox.ftpm_capabilities(&mut delay), Ok(0x1234));
     assert_eq!(mailbox.hsti_state(&mut delay), Ok(0x1234));
+    assert_eq!(mailbox.lock_df_registers(&mut delay), Ok(()));
     assert_eq!(
         mailbox.io.writes,
         vec![
@@ -73,7 +74,9 @@ fn query_commands_publish_zero_padded_buffer_pointer_before_command() {
             Event::Pointer(0x02000000),
             Event::Submit(0x05 << 16),
             Event::Pointer(0x02000000),
-            Event::Submit(0x14 << 16)
+            Event::Submit(0x14 << 16),
+            Event::Pointer(0x02000000),
+            Event::Submit(0x1b << 16)
         ]
     );
     // Stale delivery status is cleared, not copied into the trigger register.

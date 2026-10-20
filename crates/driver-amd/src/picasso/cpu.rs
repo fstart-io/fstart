@@ -4,11 +4,12 @@
 pub mod microcode;
 pub mod thread;
 
+#[cfg(target_arch = "x86_64")]
+pub use crate::fam17h::msr::NativeMsr;
+use crate::fam17h::msr::mcax;
 pub use crate::fam17h::msr::{
     MMCONFIG, Msr, PSP_ADDRESS, SYSCFG, SYSCFG_MTRR_FIX_DRAM_MOD_EN, TOP_MEM, TOP_MEM2,
 };
-#[cfg(target_arch = "x86_64")]
-pub use crate::fam17h::msr::NativeMsr;
 const LS_CFG: u32 = 0xc0011020;
 const DE_CFG: u32 = 0xc0011029;
 
@@ -70,9 +71,6 @@ impl Identity {
     }
 }
 
-const fn mcax(bank: u32, offset: u32) -> u32 {
-    0xc0002000 + bank * 16 + offset
-}
 const DEFERRED: u64 = (1 << 32) | (1 << 34) | (1 << 37);
 const RESET: &[(u32, u64, u64)] = &[
     (0x0000001b, 0, 1 << 11),

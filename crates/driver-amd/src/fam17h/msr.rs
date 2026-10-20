@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h MSR access and the memory/configuration MSRs every Zen
 //! generation programs the same way.
+use tock_registers::register_bitfields;
+
 pub const SYSCFG: u32 = 0xc0010010;
 /// SYSCFG.MtrrFixDramModEn: fixed-MTRR RdDram/WrDram bits are accessible.
 pub const SYSCFG_MTRR_FIX_DRAM_MOD_EN: u64 = 1 << 19;
@@ -8,6 +10,38 @@ pub const TOP_MEM: u32 = 0xc001001a;
 pub const TOP_MEM2: u32 = 0xc001001d;
 pub const MMCONFIG: u32 = 0xc0010058;
 pub const PSP_ADDRESS: u32 = 0xc00110a2;
+pub const MCG_CAP: u32 = 0x179;
+
+register_bitfields![u64,
+    pub Syscfg [
+        MTRR_FIX_DRAM_MOD_EN OFFSET(19) NUMBITS(1) [],
+        TOM2_EN OFFSET(21) NUMBITS(1) [],
+        /// Memory between 4 GiB and TOM2 is write-back.
+        TOM2_WB OFFSET(22) NUMBITS(1) [],
+        /// Secure memory encryption enable.
+        SMEE OFFSET(23) NUMBITS(1) []
+    ],
+    pub McaConfig [
+        MCAX OFFSET(0) NUMBITS(1) [],
+        TRANSPARENT_LOGGING_SUPPORTED OFFSET(1) NUMBITS(1) [],
+        DEFERRED_LOGGING_SUPPORTED OFFSET(2) NUMBITS(1) [],
+        MCAX_ENABLE OFFSET(32) NUMBITS(1) [],
+        TRANSPARENT_LOGGING_ENABLE OFFSET(33) NUMBITS(1) [],
+        LOG_DEFERRED_IN_MCA_STAT OFFSET(34) NUMBITS(1) []
+    ]
+];
+
+/// MCAX register `offset` of MCA `bank` (MSRC000_2xxx).
+pub const fn mcax(bank: u32, offset: u32) -> u32 {
+    0xc0002000 + bank * 16 + offset
+}
+pub const MCA_MISC0: u32 = 3;
+pub const MCA_CONFIG: u32 = 4;
+pub const MCA_MISC1: u32 = 10;
+/// MCA_CTL_MASK of `bank`: errors whose bit is set are not reported.
+pub const fn mca_ctl_mask(bank: u32) -> u32 {
+    0xc0010400 + bank
+}
 
 pub trait Msr {
     fn read(&mut self, index: u32) -> u64;
