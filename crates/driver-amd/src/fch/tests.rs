@@ -125,7 +125,7 @@ fn early_smbus_and_power_failure_state() {
 fn abcfg_transactions_reset_index_after_read_and_write() {
     let world = World::default();
     world.set_indexed(alink::INDEX, 0xc000_0054, 0x1234_5678);
-    alink::abcfg(&world, (0x54, 0xff, 0x11));
+    alink::apply(&world, &[crate::fam17h::table::rmw(0x54, 0xff, 0x11)]);
     let index = 0xc000_0054;
     assert_eq!(
         world.0.borrow().log,

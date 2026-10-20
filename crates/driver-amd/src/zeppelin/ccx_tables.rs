@@ -5,14 +5,10 @@
 //! revision mask a record needs (0: all revisions). The AM4-only record
 //! (platform flag) is left out.
 use super::ccx::{MsrRecord, Scope};
-use crate::fam17h::msr::MsrUpdate;
+use crate::fam17h::msr::update;
 
 const fn record(scope: Scope, msr: u32, clear: u64, set: u64, revisions: u8) -> MsrRecord {
-    MsrRecord {
-        scope,
-        update: MsrUpdate::new(msr, clear, set),
-        revisions,
-    }
+    update(msr, clear, set).when((scope, revisions))
 }
 use Scope::{Complex, Core, Thread};
 

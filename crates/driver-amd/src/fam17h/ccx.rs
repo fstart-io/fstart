@@ -6,9 +6,9 @@
 use super::{
     cache::CacheControl,
     msr::{
-        BU_CFG, BuCfg, CPU_WDT_CFG, CSTATE_BASE_ADDRESS, CSTATE_CONFIG, DPM_CFG, DPM_WAC_DATA,
+        self, BU_CFG, BuCfg, CPU_WDT_CFG, CSTATE_BASE_ADDRESS, CSTATE_CONFIG, DPM_CFG, DPM_WAC_DATA,
         DPM_WAC_INDEX, MCA_INTR_CFG, McaConfig, McaIntrCfg, McaMisc, MsrUpdate, PSP_ADDRESS,
-        PSTATE_0, enable_ecam, mca_config, mca_ctl_mask, mca_misc0, mca_misc1,
+        PSTATE_0, enable_ecam, mca_config, mca_ctl_mask, mca_misc0, mca_misc1, update,
     },
 };
 use core::ops::RangeInclusive;
@@ -130,7 +130,7 @@ pub fn cpu_init(
     table: impl IntoIterator<Item = MsrUpdate>,
 ) -> Result<(), Error> {
     let cap = mca_cap(cpu, &soc.mca)?;
-    table.into_iter().for_each(|update| update.apply(cpu));
+    msr::apply(cpu, table);
 
     enable_ecam(cpu, soc.ecam, soc.ecam_buses);
     if let Some(bar) = inputs.psp_bar {
@@ -160,7 +160,7 @@ pub fn cpu_init(
     if let Some(watchdog) = soc.watchdog {
         cpu.reg(CPU_WDT_CFG).set(watchdog);
     }
-    soc.tail.iter().for_each(|update| update.apply(cpu));
+    msr::apply(cpu, soc.tail.iter().copied());
     // Rewrite P0 so the new settings take effect.
     cpu.reg(PSTATE_0).set(cpu.reg(PSTATE_0).get());
 
@@ -227,7 +227,7 @@ fn mca_setup(
     cpu.reg(MCA_INTR_CFG)
         .modify(McaIntrCfg::THRESHOLD_LVT_VALID::SET);
     for &(bank, bits) in mca.ctl_masks {
-        MsrUpdate::new(mca_ctl_mask(bank).index(), 0, bits).apply(cpu);
+        msr::apply(cpu, [update(mca_ctl_mask(bank).index(), 0, bits)]);
     }
     let l3 = match mca.l3_owner {
         // MCG_CAP[7:4]: with the bank count limited to 17..=32 never clear.
@@ -236,7 +236,7 @@ fn mca_setup(
     };
     if l3 {
         for bank in mca.l3_banks.clone() {
-            MsrUpdate::new(mca_ctl_mask(bank).index(), 0, 1 << 7).apply(cpu);
+            msr::apply(cpu, [update(mca_ctl_mask(bank).index(), 0, 1 << 7)]);
         }
     }
 }
@@ -272,7 +272,7 @@ mod tests {
         cstate_io_base: 0x813,
         watchdog: Some(9),
         dpm_cfg: 1 << 63,
-        tail: &[MsrUpdate::new(0xc001_1022, 0, 1 << 13)],
+        tail: &[update(0xc001_1022, 0, 1 << 13)],
     };
 
     fn cpu() -> RefCell<MsrSpace> {
@@ -291,7 +291,7 @@ mod tests {
             psp_bar: Some(0xd010_0000),
             cac_weights: Some(&weights),
         };
-        let table = [MsrUpdate::new(0xc001_1020, 0, 1)];
+        let table = [update(0xc001_1020, 0, 1)];
         let primary = cpu();
         cpu_init(
             &primary,

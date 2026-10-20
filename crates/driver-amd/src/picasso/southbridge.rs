@@ -1,38 +1,41 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Picasso FCH A-Link and clock sequencing. The index-zero writes are hardware requirements.
 use super::registers::{Smn, apply, rmw};
-use crate::fch::{AbRegBar, Bus, Fch, MISC_CLK_CNTL1, MiscClkCntl1, PM_AB_REG_BAR, alink};
+use crate::{
+    fam17h::table,
+    fch::{AbRegBar, Bus, Fch, MISC_CLK_CNTL1, MiscClkCntl1, PM_AB_REG_BAR, alink},
+};
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 
 const ABCFG: &[alink::Rmw] = &[
-    (0x00080, 0x00060000, 0x00060001),
-    (0x00090, 0x00200000, 0x00200000),
-    (0x00094, 0x00100000, 0x00100fee),
-    (0x10054, 0x00ffffff, 0x000007ff),
-    (0x10060, 0xfbffffff, 0x02000000),
-    (0x10090, 0x00010000, 0x00010000),
-    (0x10050, 0x00000004, 0x00000000),
-    (0x00054, 0x00ff0000, 0x00100000),
-    (0x10054, 0x00ff0000, 0x00100000),
-    (0x00054, 0x00000010, 0x00000010),
-    (0x00054, 0x01000000, 0x01000000),
-    (0x10054, 0x03000000, 0x03000000),
-    (0x00054, 0x00000001, 0x00000000),
-    (0x00054, 0x00000004, 0x00000004),
-    (0x00054, 0x00000001, 0x00000001),
-    (0x00054, 0x00000004, 0x00000000),
-    (0x000bc, 0x00000010, 0x00000010),
-    (0x00058, 0x20000000, 0x20000000),
-    (0x00058, 0x80000000, 0x80000000),
-    (0x00208, 0x00000280, 0x00000280),
-    (0x00208, 0x00408010, 0x00408010),
-    (0x00180, 0x00000001, 0x00000000),
-    (0x00184, 0x00000004, 0x00000000),
-    (0x00180, 0x00001f00, 0x00000000),
-    (0x00180, 0x00000020, 0x00000000),
-    (0x0022c, 0x00000800, 0x00000000),
-    (0x0022c, 0x00004000, 0x00000000),
-    (0x00228, 0x0000000a, 0x0000000a),
+    table::rmw(0x00080, 0x00060000, 0x00060001),
+    table::rmw(0x00090, 0x00200000, 0x00200000),
+    table::rmw(0x00094, 0x00100000, 0x00100fee),
+    table::rmw(0x10054, 0x00ffffff, 0x000007ff),
+    table::rmw(0x10060, 0xfbffffff, 0x02000000),
+    table::rmw(0x10090, 0x00010000, 0x00010000),
+    table::rmw(0x10050, 0x00000004, 0x00000000),
+    table::rmw(0x00054, 0x00ff0000, 0x00100000),
+    table::rmw(0x10054, 0x00ff0000, 0x00100000),
+    table::rmw(0x00054, 0x00000010, 0x00000010),
+    table::rmw(0x00054, 0x01000000, 0x01000000),
+    table::rmw(0x10054, 0x03000000, 0x03000000),
+    table::rmw(0x00054, 0x00000001, 0x00000000),
+    table::rmw(0x00054, 0x00000004, 0x00000004),
+    table::rmw(0x00054, 0x00000001, 0x00000001),
+    table::rmw(0x00054, 0x00000004, 0x00000000),
+    table::rmw(0x000bc, 0x00000010, 0x00000010),
+    table::rmw(0x00058, 0x20000000, 0x20000000),
+    table::rmw(0x00058, 0x80000000, 0x80000000),
+    table::rmw(0x00208, 0x00000280, 0x00000280),
+    table::rmw(0x00208, 0x00408010, 0x00408010),
+    table::rmw(0x00180, 0x00000001, 0x00000000),
+    table::rmw(0x00184, 0x00000004, 0x00000000),
+    table::rmw(0x00180, 0x00001f00, 0x00000000),
+    table::rmw(0x00180, 0x00000020, 0x00000000),
+    table::rmw(0x0022c, 0x00000800, 0x00000000),
+    table::rmw(0x0022c, 0x00004000, 0x00000000),
+    table::rmw(0x00228, 0x0000000a, 0x0000000a),
 ];
 /// The A-Link decode at 0xcd8 just for the ABCFG table.
 pub fn alink_init(fch: &Fch<impl Bus>) {
@@ -93,8 +96,11 @@ mod tests {
         );
         let mut registers = std::collections::BTreeMap::new();
         let transactions = log[3..log.len() - 1].as_chunks::<6>().0;
-        for (events, &(register, clear, set)) in transactions.iter().zip(ABCFG)
-        {
+        for (events, record) in transactions.iter().zip(ABCFG) {
+            let register = record.reg;
+            let table::Op::Update { clear, set } = record.op else {
+                unreachable!()
+            };
             let index = 0xc000_0000 | register;
             let old: u32 = registers.get(&register).copied().unwrap_or(0);
             let value = (old & !clear) | set;

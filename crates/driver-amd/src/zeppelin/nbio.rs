@@ -12,7 +12,7 @@ use tock_registers::{
 
 pub use super::nbio_tables::{BASE, IOMMU};
 
-pub use crate::fam17h::registers::{Op, Reg, apply, copy, rmw, write};
+pub use crate::fam17h::registers::{Reg, apply, copy, rmw, write};
 pub(super) use crate::fam17h::nbio::*;
 
 register_bitfields![u32,

@@ -2,6 +2,7 @@
 //! Family 17h MSRs, and the memory/configuration MSRs every Zen generation
 //! programs the same way. The AMD64 ones (SYSCFG, TOP_MEM, ...) and the MSR
 //! access itself are `fstart_arch::x86::cpu`'s.
+use super::table;
 use fstart_arch::x86::cpu::{
     amd::msr::{MMIO_CFG_BASE, MmioCfgBase, SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem, TopMem2},
     msr::{Msr, MsrAccess},
@@ -81,22 +82,16 @@ pub const fn mca_ctl_mask(bank: u32) -> Msr {
     Msr::new(0xc001_0400 + bank)
 }
 
-/// One record of a vendor MSR table: `msr = (msr & !clear) | set`. The
-/// meaning of most of the bits isn't known.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MsrUpdate {
-    pub msr: u32,
-    pub clear: u64,
-    pub set: u64,
+/// One record of a vendor MSR table ([`super::table`]); the meaning of
+/// most of the bits isn't known. `C` is its condition, if any.
+pub type MsrUpdate<C = ()> = table::Record<Msr, u64, C>;
+/// `msr = (msr & !clear) | set`
+pub const fn update(msr: u32, clear: u64, set: u64) -> MsrUpdate {
+    table::rmw(Msr::new(msr), clear, set)
 }
-impl MsrUpdate {
-    pub const fn new(msr: u32, clear: u64, set: u64) -> Self {
-        Self { msr, clear, set }
-    }
-    pub fn apply(&self, cpu: &impl MsrAccess) {
-        let reg = cpu.reg(Msr::<()>::new(self.msr));
-        reg.set((reg.get() & !self.clear) | self.set);
-    }
+/// Apply a vendor MSR table in order.
+pub fn apply(cpu: &impl MsrAccess, records: impl IntoIterator<Item = MsrUpdate>) {
+    table::apply(records, |msr| cpu.reg(msr));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

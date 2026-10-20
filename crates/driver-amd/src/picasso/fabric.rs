@@ -90,7 +90,7 @@ const EARLY_CS: [DfRecord; 4] = [
 ];
 const fn on(record: DfRecord, instance: u8) -> DfRecord {
     DfRecord {
-        instance: Some(instance),
+        reg: (record.reg.0, Some(instance)),
         ..record
     }
 }

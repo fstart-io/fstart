@@ -29,6 +29,11 @@ impl<R: RegisterLongName> Clone for Msr<R> {
     }
 }
 impl<R: RegisterLongName> Copy for Msr<R> {}
+impl<R: RegisterLongName> core::fmt::Debug for Msr<R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Msr({:#x})", self.index)
+    }
+}
 impl<R: RegisterLongName> Msr<R> {
     pub const fn new(index: u32) -> Self {
         Self {

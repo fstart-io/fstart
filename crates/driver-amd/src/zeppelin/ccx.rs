@@ -10,7 +10,7 @@ use super::{ECAM, ECAM_BUSES, MAX_DIES, Revision, ccx_tables::MSR_TABLE};
 use crate::fam17h::{
     cache::CacheControl,
     ccx::{self, CacWeights, Ccx, Error, Inputs, L3Owner, Mca, Thread},
-    msr::{DpmCfg, MsrUpdate},
+    msr::{self, DpmCfg, MsrUpdate},
 };
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
@@ -46,31 +46,29 @@ pub enum Scope {
     Complex,
 }
 
-/// One record of the vendor CCX reset register table.
-#[derive(Debug, Clone, Copy)]
-pub struct MsrRecord {
-    pub scope: Scope,
-    pub update: MsrUpdate,
-    /// [`Revision::mask`] bits it applies to, 0: all.
-    pub revisions: u8,
-}
+/// One record of the vendor CCX reset register table: the threads that
+/// apply it and the [`Revision::mask`] bits it applies to (0: all).
+pub type MsrRecord = MsrUpdate<(Scope, u8)>;
 
 /// The reset register table of the vendor CCX code, for this thread.
 pub fn msr_table(revision: Revision, thread: Thread) -> impl Iterator<Item = MsrUpdate> {
+    let applies = move |&(scope, revisions): &(Scope, u8)| {
+        (revisions == 0 || revisions & revision.mask() != 0)
+            && match scope {
+                Scope::Thread => true,
+                Scope::Core => thread.core_primary(),
+                Scope::Complex => thread.complex_primary(),
+            }
+    };
     MSR_TABLE
         .iter()
-        .filter(move |r| r.revisions == 0 || r.revisions & revision.mask() != 0)
-        .filter(move |r| match r.scope {
-            Scope::Thread => true,
-            Scope::Core => thread.core_primary(),
-            Scope::Complex => thread.complex_primary(),
-        })
-        .map(|r| r.update)
+        .filter(move |r| applies(&r.when))
+        .map(|r| r.unconditional())
 }
 
 /// The BSP, before MP init.
 pub fn bsp_init(cpu: &impl MsrAccess, revision: Revision, thread: Thread) {
-    msr_table(revision, thread).for_each(|update| update.apply(cpu));
+    msr::apply(cpu, msr_table(revision, thread));
 }
 
 /// What every CPU needs that only the BSP can read through SMN.
@@ -154,7 +152,7 @@ mod tests {
         bsp_init(&cpu, Revision::B2, thread);
         let applicable = MSR_TABLE
             .iter()
-            .filter(|r| r.revisions == 0 || r.revisions & Revision::B2.mask() != 0)
+            .filter(|r| r.when.1 == 0 || r.when.1 & Revision::B2.mask() != 0)
             .count();
         assert_eq!(cpu.borrow().writes.len(), applicable);
         assert_eq!(get(&cpu, 0xc0011093), 0x480060); // the B1/B2 variant

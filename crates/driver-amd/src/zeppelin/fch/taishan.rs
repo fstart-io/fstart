@@ -4,12 +4,15 @@
 //! are in [`super::sata`] and [`super::usb`].
 use super::{ASF_IO, SMBUS_IO, irq};
 use crate::{
-    fam17h::registers::{Smn, SmnReg},
+    fam17h::{
+        registers::{Smn, SmnReg},
+        table::{Record, rmw},
+    },
     fch::{
         AL2AHB, AbRegBar, Bus, Decode, Fch, LEGACY_UART_DECODE, MISC_CLK_CNTL1,
         MiscClkCntl1, PM_AB_REG_BAR, PM_ACPI_CPU_CNT, PM_ACPI_GPE0,
         PM_ACPI_PM_TMR, PM_ACPI_PM1_CNT, PM_ACPI_PM1_EVT, PM_ACPI_PM2_CNT, PM_ACPI_PMA_CNT,
-        PM_0A, PM_ACPI_SMI_CMD, PM_C0, PM_DECODE, Pm0a, PmC0, RTC_INDEX, Reg, SPI_BASE, alink,
+        AcpiReg, PM_0A, PM_ACPI_SMI_CMD, PM_C0, PM_DECODE, Pm0a, PmC0, RTC_INDEX, Reg, SPI_BASE, alink,
         early, indexed_io, misc, spi,
         aoac, pm, smbus, smi_bank as smi,
     },
@@ -37,58 +40,17 @@ pub fn pre_init(fch: &Fch<impl Bus>, port80: bool) -> Result<(), early::Error> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum Bank {
-    Pm,
-    Misc,
-    Smi,
-}
 /// A byte read-clear-set of an ACPI MMIO register: the vendor tables,
 /// whose bits mostly have no known meaning.
-#[derive(Clone, Copy)]
-struct Rmw {
-    bank: Bank,
-    register: u8,
-    clear: u8,
-    set: u8,
-}
+type Rmw = Record<AcpiReg<u8>, u8>;
 const fn pm(register: u8, clear: u8, set: u8) -> Rmw {
-    Rmw {
-        bank: Bank::Pm,
-        register,
-        clear,
-        set,
-    }
+    rmw(pm::at(register as u32), clear, set)
 }
 const fn misc(register: u8, clear: u8, set: u8) -> Rmw {
-    Rmw {
-        bank: Bank::Misc,
-        ..pm(register, clear, set)
-    }
+    rmw(misc::at(register as u32), clear, set)
 }
 const fn smi(register: u8, clear: u8, set: u8) -> Rmw {
-    Rmw {
-        bank: Bank::Smi,
-        ..pm(register, clear, set)
-    }
-}
-fn apply(fch: &Fch<impl Bus>, table: &[Rmw]) {
-    for rmw in table {
-        let offset = u32::from(rmw.register);
-        let reg = fch.reg(match rmw.bank {
-            Bank::Pm => pm::at::<u8, ()>(offset),
-            Bank::Misc => misc::at(offset),
-            Bank::Smi => smi::at(offset),
-        });
-        reg.set((reg.get() & !rmw.clear) | rmw.set);
-    }
-}
-/// The same for dword registers of the PM, MISC and AOAC banks.
-fn apply32(fch: &Fch<impl Bus>, table: &[(crate::fch::AcpiReg<u32>, u32, u32)]) {
-    for &(reg, clear, set) in table {
-        let reg = fch.reg(reg);
-        reg.set((reg.get() & !clear) | set);
-    }
+    rmw(smi::at(register as u32), clear, set)
 }
 
 // ---- PEI reset tasks ----
@@ -173,7 +135,7 @@ fn hwacpi_reset(fch: &Fch<impl Bus>) {
         .set(0);
     // SMBus offset 0x12 through the ACPI MMIO alias.
     fch.reg(smbus::at::<u8, ()>(0x12)).set(1);
-    apply(fch, PEI_ACPIMMIO_MAIN);
+    fch.apply(PEI_ACPIMMIO_MAIN.iter().copied());
     fch.reg(pm::at::<u8, Pm00::Register>(0))
         .modify(Pm00::PCD_A1::SET);
 
@@ -321,47 +283,44 @@ const ENV_HWACPI: &[Rmw] = &[
 
 /// Clock generator: the same values as Picasso, through the ACPI MMIO window.
 fn clock_init(fch: &Fch<impl Bus>) {
-    apply32(
-        fch,
-        &[
-            (misc::at(0x10), 0x0000_1ff3, 0),
-            (misc::at(0x34), 0xff80_0000, 0),
-            (misc::at(0x14), 0x00ff_ff00, 0),
-            (misc::at(0x18), 0xffff_0000, 0),
-            (
-                misc::at(0x1c),
-                0x0c1f_fe00,
-                (4 << 13) | (3 << 17) | (3 << 26) | (1 << 9),
-            ),
-            (misc::at(0x40), 0, (1 << 25) | (1 << 30)),
-            (misc::at(0x10), 0, 1 << 29),
-            (misc::at(0x08), 0, 1), // CG1PLL spread spectrum
-        ],
-    );
+    fch.apply::<u32>([
+        rmw(misc::at(0x10), 0x0000_1ff3, 0),
+        rmw(misc::at(0x34), 0xff80_0000, 0),
+        rmw(misc::at(0x14), 0x00ff_ff00, 0),
+        rmw(misc::at(0x18), 0xffff_0000, 0),
+        rmw(
+            misc::at(0x1c),
+            0x0c1f_fe00,
+            (4 << 13) | (3 << 17) | (3 << 26) | (1 << 9),
+        ),
+        rmw(misc::at(0x40), 0, (1 << 25) | (1 << 30)),
+        rmw(misc::at(0x10), 0, 1 << 29),
+        rmw(misc::at(0x08), 0, 1), // CG1PLL spread spectrum
+    ]);
 }
 
 /// A-Link: the six table rows, then the policy settings of the vendor code.
 const ABCFG: &[alink::Rmw] = &[
-    (0x00080, 0x0006_0000, 0x0006_0001),
-    (0x00090, 0x0020_0000, 0x0020_0000),
-    (0x00094, 0x0010_0000, 0x0010_0fee),
-    (0x10054, 0x00ff_ffff, 0x0000_07ff),
-    (0x10060, 0xfbff_ffff, 0x0200_0000),
-    (0x10090, 0x0001_0000, 0x0001_0000),
-    (0x10050, 0x0000_0004, 0x0000_0000),
-    (0x00054, 0x00ff_0000, 0x0010_0000),
-    (0x10054, 0x00ff_0000, 0x0010_0000),
-    (0x00054, 0x0000_0010, 0x0000_0010),
-    (0x00054, 0x0100_0000, 0x0100_0000),
-    (0x10054, 0x0300_0000, 0x0300_0000),
-    (0x00054, 0x0000_0005, 0x0000_0004),
-    (0x000bc, 0x0000_0010, 0x0000_0010),
-    (0x00058, 0xa000_0000, 0xa000_0000),
-    (0x00208, 0x0000_0280, 0x0000_0280),
-    (0x00208, 0x0040_8010, 0x0040_8010),
-    (0x00180, 0x0000_1f21, 0x0000_0000),
-    (0x00184, 0x0000_0004, 0x0000_0000),
-    (0x0022c, 0x0000_4800, 0x0000_0000),
+    rmw(0x00080, 0x0006_0000, 0x0006_0001),
+    rmw(0x00090, 0x0020_0000, 0x0020_0000),
+    rmw(0x00094, 0x0010_0000, 0x0010_0fee),
+    rmw(0x10054, 0x00ff_ffff, 0x0000_07ff),
+    rmw(0x10060, 0xfbff_ffff, 0x0200_0000),
+    rmw(0x10090, 0x0001_0000, 0x0001_0000),
+    rmw(0x10050, 0x0000_0004, 0x0000_0000),
+    rmw(0x00054, 0x00ff_0000, 0x0010_0000),
+    rmw(0x10054, 0x00ff_0000, 0x0010_0000),
+    rmw(0x00054, 0x0000_0010, 0x0000_0010),
+    rmw(0x00054, 0x0100_0000, 0x0100_0000),
+    rmw(0x10054, 0x0300_0000, 0x0300_0000),
+    rmw(0x00054, 0x0000_0005, 0x0000_0004),
+    rmw(0x000bc, 0x0000_0010, 0x0000_0010),
+    rmw(0x00058, 0xa000_0000, 0xa000_0000),
+    rmw(0x00208, 0x0000_0280, 0x0000_0280),
+    rmw(0x00208, 0x0040_8010, 0x0040_8010),
+    rmw(0x00180, 0x0000_1f21, 0x0000_0000),
+    rmw(0x00184, 0x0000_0004, 0x0000_0000),
+    rmw(0x0022c, 0x0000_4800, 0x0000_0000),
 ];
 
 fn ab_init(fch: &Fch<impl Bus>) {
@@ -396,12 +355,12 @@ pub fn env_init(
 ) {
     let bus = fch.bus();
     clock_init(fch);
-    apply(fch, ENV_MISC);
+    fch.apply(ENV_MISC.iter().copied());
 
     // HwAcpi
     bus.reg(Reg::<u8>::smbus(0x10)).set(0);
     bus.reg(Reg::<u8>::smbus(0x11)).set(0);
-    apply(fch, ENV_HWACPI);
+    fch.apply(ENV_HWACPI.iter().copied());
     fch.reg(PM_DECODE)
         .modify(Decode::HPET::SET + Decode::HPET_MSI::CLEAR);
     for offset in [0x10, 0x30] {
@@ -452,7 +411,7 @@ const INTERNAL_IRQ_ROUTING: &[(u8, u8)] = &[
 
 /// The FchTaishanDxe late (ReadyToBoot) tasks of die 0's FCH.
 pub fn late_init(fch: &Fch<impl Bus>) {
-    apply32(fch, &[(pm::at(0xa0), !0xc07f_00a0, 0)]);
+    fch.apply::<u32>([rmw(pm::at(0xa0), !0xc07f_00a0, 0)]);
     for &(index, apic) in INTERNAL_IRQ_ROUTING {
         irq::write(fch.bus(), index, irq::Mode::Apic, apic);
     }

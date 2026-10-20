@@ -703,7 +703,7 @@ fn lpc_bridge(board_aml: &[u8]) -> Result<Vec<u8>, Error> {
 mod tests {
     extern crate std;
     use super::*;
-    use fstart_driver_amd::zeppelin::nbio::{BASE, Op};
+    use fstart_driver_amd::{fam17h::table::Op, zeppelin::nbio::BASE};
 
     /// The ACPI routing is the one the NBIO base table programs.
     #[test]
@@ -713,7 +713,7 @@ mod tests {
             let set = BASE
                 .iter()
                 .find_map(|reg| match reg.op {
-                    Op::Update { set, .. } if reg.address == address => Some(set),
+                    Op::Update { set, .. } if reg.reg.address() == address => Some(set),
                     _ => None,
                 })
                 .unwrap();

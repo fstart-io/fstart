@@ -12,6 +12,7 @@
 //! smn.reg(IOAPIC_BASE_LO).write(IoapicBase::ADDRESS.val(base >> 8) + IoapicBase::ENABLE::SET);
 //! df.instance(F3_CCM_108, INST_CCM0).modify(Ccm108::BIT6::SET);
 //! ```
+use super::table;
 use core::marker::PhantomData;
 use fstart_core::indexed::Indexed;
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
@@ -96,60 +97,23 @@ impl<P: ConfigRegionAccess> Smn<P> {
     }
 }
 
-// ---- Vendor register tables ----
-//
-// Vendor sequences whose bits have no known meaning stay raw records, in
-// their original order: repeated writes are part of the sequence.
+// ---- Vendor register tables ([`super::table`]) ----
 
-/// One record of a vendor register table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Op {
-    /// `reg = (reg & !clear) | set`
-    Update {
-        clear: u32,
-        set: u32,
-    },
-    Write(u32),
-    /// `reg = SMN[from]`
-    Copy {
-        from: u32,
-    },
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Reg {
-    pub address: u32,
-    pub op: Op,
-}
+/// A vendor SMN table record.
+pub type Reg = table::Record<SmnReg, u32>;
 pub const fn rmw(address: u32, clear: u32, set: u32) -> Reg {
-    Reg {
-        address,
-        op: Op::Update { clear, set },
-    }
+    table::rmw(SmnReg::new(address), clear, set)
 }
 pub const fn write(address: u32, value: u32) -> Reg {
-    Reg {
-        address,
-        op: Op::Write(value),
-    }
+    table::write(SmnReg::new(address), value)
 }
+/// `SMN[address] = SMN[from]`
 pub const fn copy(address: u32, from: u32) -> Reg {
-    Reg {
-        address,
-        op: Op::Copy { from },
-    }
+    table::copy(SmnReg::new(address), SmnReg::new(from))
 }
-
-/// Apply a vendor register table in order. The records are raw: the
-/// meaning of most of their bits isn't known.
-pub fn apply(smn: &Smn<impl ConfigRegionAccess>, table: impl IntoIterator<Item = Reg>) {
-    for record in table {
-        let reg = smn.reg(SmnReg::<()>::new(record.address));
-        match record.op {
-            Op::Update { clear, set } => reg.set((reg.get() & !clear) | set),
-            Op::Write(value) => reg.set(value),
-            Op::Copy { from } => reg.set(smn.reg(SmnReg::<()>::new(from)).get()),
-        }
-    }
+/// Apply a vendor SMN table in order.
+pub fn apply(smn: &Smn<impl ConfigRegionAccess>, records: impl IntoIterator<Item = Reg>) {
+    table::apply(records, |reg| smn.reg(reg));
 }
 
 register_bitfields![u32,
@@ -264,41 +228,22 @@ impl<P: ConfigRegionAccess> Df<P> {
     }
 }
 
-/// One record of a vendor Data Fabric table: `reg = (reg & !clear) | set`
-/// on the node's own register (`instance: None`) or one fabric instance's.
-/// A clear mask of all ones writes `set` without reading.
-#[derive(Clone, Copy)]
-pub struct DfRecord {
-    pub reg: DfReg,
-    pub instance: Option<u8>,
-    pub clear: u32,
-    pub set: u32,
-}
+/// A vendor Data Fabric table record: the node's own register
+/// (`None`) or one fabric instance's.
+pub type DfRecord = table::Record<(DfReg, Option<u8>), u32>;
 pub const fn df_rmw(reg: DfReg, instance: Option<u8>, clear: u32, set: u32) -> DfRecord {
-    DfRecord {
-        reg,
-        instance,
-        clear,
-        set,
-    }
+    table::rmw((reg, instance), clear, set)
 }
 pub const fn df_write(reg: DfReg, instance: Option<u8>, value: u32) -> DfRecord {
-    df_rmw(reg, instance, u32::MAX, value)
+    table::write((reg, instance), value)
 }
 
 /// Apply a vendor Data Fabric table in order.
-pub fn apply_df(df: &Df<impl ConfigRegionAccess>, table: impl IntoIterator<Item = DfRecord>) {
-    for record in table {
-        let reg = match record.instance {
-            None => df.reg(record.reg),
-            Some(instance) => df.instance(record.reg, instance),
-        };
-        if record.clear == u32::MAX {
-            reg.set(record.set);
-        } else {
-            reg.set((reg.get() & !record.clear) | record.set);
-        }
-    }
+pub fn apply_df(df: &Df<impl ConfigRegionAccess>, records: impl IntoIterator<Item = DfRecord>) {
+    table::apply(records, |(reg, instance)| match instance {
+        None => df.reg(reg),
+        Some(instance) => df.instance(reg, instance),
+    });
 }
 
 #[cfg(any(test, feature = "testing"))]

@@ -17,6 +17,7 @@ use crate::{
     fam17h::{
         df::{self, IoBase, IoLimit},
         registers::{Smn, SmnReg},
+        table,
     },
     zeppelin::{Die, Package},
 };
@@ -73,26 +74,23 @@ fn secondary_legacy<B: Bus>(fch: &Fch<B>, package: Package) {
 
     // A-Link index at 0xcd8 just for this write (low PMxE0 word only).
     pm_word(PM_AB_REG_BAR, alink::INDEX);
-    alink::abcfg(bus, (0x10050, 1 << 2, 0));
+    alink::apply(bus, &[table::rmw(0x10050, 1 << 2, 0)]);
     pm_word(PM_AB_REG_BAR, 0);
 
     // Clock generator; these differ from die 0's values.
-    for (offset, clear, set) in [
-        (0x10, 0x3, 0x1),
-        (0x10, 0x1ff0, 0x40),
-        (0x34, 0xff80_0000, 0x1e00_0000),
-        (0x14, 0x00ff_ff00, 0x3d700),
-        (0x18, 0xffff_0000, 0x3e_0000),
-        (0x1c, 0x1e000, 0x2000),
-        (0x1c, 0x1e_0000, 0),
-        (0x1c, 0x0c00_0000, 0x0800_0000),
-        (0x1c, 0x1e00, 0x400),
-        (0x40, 1 << 25, 1 << 25),
-        (0x40, 1 << 30, 1 << 30),
-    ] {
-        let reg = fch.reg(misc::at::<u32, ()>(offset));
-        reg.set((reg.get() & !clear) | set);
-    }
+    fch.apply::<u32>([
+        table::rmw(misc::at(0x10), 0x3, 0x1),
+        table::rmw(misc::at(0x10), 0x1ff0, 0x40),
+        table::rmw(misc::at(0x34), 0xff80_0000, 0x1e00_0000),
+        table::rmw(misc::at(0x14), 0x00ff_ff00, 0x3d700),
+        table::rmw(misc::at(0x18), 0xffff_0000, 0x3e_0000),
+        table::rmw(misc::at(0x1c), 0x1e000, 0x2000),
+        table::rmw(misc::at(0x1c), 0x1e_0000, 0),
+        table::rmw(misc::at(0x1c), 0x0c00_0000, 0x0800_0000),
+        table::rmw(misc::at(0x1c), 0x1e00, 0x400),
+        table::rmw(misc::at(0x40), 1 << 25, 1 << 25),
+        table::rmw(misc::at(0x40), 1 << 30, 1 << 30),
+    ]);
 
     fch.legacy_sd_off();
 }

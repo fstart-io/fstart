@@ -16,5 +16,6 @@ pub mod nbio;
 pub mod psp;
 pub mod registers;
 pub mod smu;
+pub mod table;
 pub mod topology;
 pub mod tsc;

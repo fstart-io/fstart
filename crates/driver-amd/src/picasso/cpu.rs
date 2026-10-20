@@ -6,7 +6,7 @@ pub mod thread;
 
 use crate::fam17h::{
     ccx::{self, CAC_WEIGHT_COUNT, CacWeights, Ccx, L3Owner, Mca, Thread},
-    msr::{BU_CFG3, DC_CFG, DE_CFG, LS_CFG, MsrUpdate, mca_config},
+    msr::{self, BU_CFG3, DC_CFG, DE_CFG, LS_CFG, MsrUpdate, mca_config, update},
 };
 use fstart_arch::x86::cpu::{
     amd::msr::{SYSCFG, Syscfg},
@@ -74,42 +74,42 @@ impl Identity {
 
 const DEFERRED: u64 = (1 << 32) | (1 << 34) | (1 << 37);
 const fn deferred(bank: u32) -> MsrUpdate {
-    MsrUpdate::new(mca_config(bank).index(), 1 << 33, DEFERRED)
+    update(mca_config(bank).index(), 1 << 33, DEFERRED)
 }
 /// The reset MSR table of the vendor CCX code, every thread.
 pub const RESET: &[MsrUpdate] = &[
-    MsrUpdate::new(0x0000001b, 0, 1 << 11),
-    MsrUpdate::new(0xc0010015, 0, 1 << 27),
-    MsrUpdate::new(0xc0011005, (1 << 48) | (1 << 42), 0),
-    MsrUpdate::new(0xc00110dc, 0x28000, 0),
-    MsrUpdate::new(0xc0010074, 0, 9),
+    update(0x0000001b, 0, 1 << 11),
+    update(0xc0010015, 0, 1 << 27),
+    update(0xc0011005, (1 << 48) | (1 << 42), 0),
+    update(0xc00110dc, 0x28000, 0),
+    update(0xc0010074, 0, 9),
     deferred(0),
     deferred(1),
     deferred(2),
     deferred(3),
     deferred(5),
     deferred(6),
-    MsrUpdate::new(0xc0010401, 0, 1 << 13),
-    MsrUpdate::new(0xc0010406, 0, 1 << 6),
-    MsrUpdate::new(0xc0010402, 0, 1 << 3),
-    MsrUpdate::new(0xc0010407, 0, 1 << 7),
-    MsrUpdate::new(LS_CFG.index(), 0, 0x100),
-    MsrUpdate::new(0xc0011023, 0, 0x0000200000000000),
-    MsrUpdate::new(0xc0011028, 0, 0x14),
-    MsrUpdate::new(DE_CFG.index(), 0, 0x26000),
-    MsrUpdate::new(0xc001102a, 0, 0x0280000000008080),
-    MsrUpdate::new(0xc001102c, 0, 0x0168000000000000),
-    MsrUpdate::new(0xc001102b, 0, 0x80000),
-    MsrUpdate::new(0xc001102d, 0, 0x1000000100000000),
-    MsrUpdate::new(0xc001102e, 0, 1),
-    MsrUpdate::new(0xc0011093, 0x58d8c, 0x480003),
-    MsrUpdate::new(0xc0011097, 8, 0xc54),
-    MsrUpdate::new(DE_CFG.index(), 1 << 14, 0),
-    MsrUpdate::new(LS_CFG.index(), 1 << 28, 0),
+    update(0xc0010401, 0, 1 << 13),
+    update(0xc0010406, 0, 1 << 6),
+    update(0xc0010402, 0, 1 << 3),
+    update(0xc0010407, 0, 1 << 7),
+    update(LS_CFG.index(), 0, 0x100),
+    update(0xc0011023, 0, 0x0000200000000000),
+    update(0xc0011028, 0, 0x14),
+    update(DE_CFG.index(), 0, 0x26000),
+    update(0xc001102a, 0, 0x0280000000008080),
+    update(0xc001102c, 0, 0x0168000000000000),
+    update(0xc001102b, 0, 0x80000),
+    update(0xc001102d, 0, 0x1000000100000000),
+    update(0xc001102e, 0, 1),
+    update(0xc0011093, 0x58d8c, 0x480003),
+    update(0xc0011097, 8, 0xc54),
+    update(DE_CFG.index(), 1 << 14, 0),
+    update(LS_CFG.index(), 1 << 28, 0),
 ];
 
 pub fn reset_registers(cpu: &impl MsrAccess) {
-    RESET.iter().for_each(|update| update.apply(cpu));
+    msr::apply(cpu, RESET.iter().copied());
 }
 pub fn bsp_init(cpu: &impl MsrAccess) {
     reset_registers(cpu);
@@ -136,10 +136,10 @@ pub const CCX: Ccx = Ccx {
     watchdog: None,
     dpm_cfg: 0x9000_0000_0000_0000,
     tail: &[
-        MsrUpdate::new(DE_CFG.index(), 0, 1 << 3),
-        MsrUpdate::new(LS_CFG.index(), 0, (1 << 13) | (1 << 15)),
-        MsrUpdate::new(BU_CFG3.index(), 1 << 2, 1 << 3),
-        MsrUpdate::new(DC_CFG.index(), 0, (1 << 13) | (1 << 15)),
+        update(DE_CFG.index(), 0, 1 << 3),
+        update(LS_CFG.index(), 0, (1 << 13) | (1 << 15)),
+        update(BU_CFG3.index(), 1 << 2, 1 << 3),
+        update(DC_CFG.index(), 0, (1 << 13) | (1 << 15)),
     ],
 };
 
