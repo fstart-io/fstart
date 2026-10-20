@@ -60,7 +60,7 @@ pub fn initialize(
     cache::install(msr, &caches).map_err(Error::Cache)?;
     cpu::enable_ecam(msr);
     let (smn, df) = (&die.smn(), &die.df());
-    fabric::ensure_legacy_routes(df, low as u32).map_err(Error::Fabric)?;
+    fabric::ensure_legacy_routes(die, low as u32).map_err(Error::Fabric)?;
     fabric::early_init(df);
     let capabilities = nbio::early_init(smn, initial_id.raven2_cpuid, initial_id.am4, delay)
         .map_err(Error::Nbio)?;

@@ -12,7 +12,7 @@ use fstart_driver_amd::{
         apob::{Apob, MemoryMap},
         cache,
         ccx::Thread,
-        iohc, msr,
+        df, iohc, msr,
         topology,
         tsc::{self, Tsc},
     },
@@ -208,7 +208,7 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
     let count = dies.len() as u8;
     // DF MMIO/IO distribution, then the per-die DF init.
     let tom2 = top_mem2.unwrap_or(0);
-    let Ok(plan) = fabric::plan(top_mem, tom2, u64::from(soc::ECAM_BUSES) << 20, count) else {
+    let Ok(plan) = df::plan(top_mem, tom2, u64::from(soc::ECAM_BUSES) << 20, count) else {
         fail("DF MMIO plan")
     };
     for w in &plan.mmio {
@@ -220,14 +220,11 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
             w.die
         );
     }
-    {
-        let dfs: Vec<_, MAX_DIES> = dies.iter().map(|d| d.df()).collect();
-        fabric::program(&plan, &dfs);
-    }
+    df::program(&plan, dies);
     for die in dies {
         match fabric::nonpci_mmio_base(&dies[0].df(), die.index()) {
-            Ok(base) => s.nonpci[usize::from(die.index())] = base,
-            Err(_) => fail("non-PCI MMIO pool"),
+            Some(base) => s.nonpci[usize::from(die.index())] = base,
+            None => fail("non-PCI MMIO pool"),
         }
     }
     let apob = Apob::parse_with_capacity(apob_bytes(), soc::APOB_SIZE).ok();
@@ -365,7 +362,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
         if let Some(apob) = &apob {
             fabric::late_init(&die.df(), dies.len() as u8, sockets, s.revision, apob);
         }
-        fabric::route_vga(&die.df(), 0);
+        df::route_vga(&die.df(), dies[0].ioms_fabric_id());
     }
     for die in dies {
         nbio::pre_enumeration_init(die);

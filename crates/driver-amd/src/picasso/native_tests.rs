@@ -169,30 +169,38 @@ fn raven2_late_df_clears_bit11_after_setting_power_down_policy() {
 #[test]
 fn fabric_route_validation_is_atomic_and_programming_is_idempotent() {
     let df = DfSpace::default();
+    let die: super::Die<&DfSpace> = unsafe { crate::fam17h::topology::dies(&df) }
+        .next()
+        .unwrap();
     for i in 0..8 {
         df.regs.borrow_mut().insert((0, 0xc0 + i * 8, None), 3);
     }
     assert_eq!(
-        fabric::ensure_legacy_routes(&df.df(), 0xd0000000),
+        fabric::ensure_legacy_routes(&die, 0xd0000000),
         Err(fabric::Error::NoIoWindow)
     );
     assert!(df.writes.borrow().is_empty());
     df.regs.borrow_mut().clear();
-    fabric::ensure_legacy_routes(&df.df(), 0xd0000000).unwrap();
+    fabric::ensure_legacy_routes(&die, 0xd0000000).unwrap();
+    // MMIO pair 0: 0xd0000000-0xfebfffff, I/O pair 0: 0-0xffff, VGA: all
+    // to the IOMS (fabric ID 9).
+    let regs = df.regs.borrow().clone();
     assert_eq!(
-        *df.writes.borrow(),
+        regs.into_iter().collect::<Vec<_>>(),
         vec![
-            ((0, 0x208, None), 0),
+            ((0, 0x80, None), 0x91),
+            ((0, 0xc0, None), 3),
+            ((0, 0xc4, None), 0xf009),
             ((0, 0x200, None), 0xd000),
             ((0, 0x204, None), 0xfebf),
             ((0, 0x208, None), 0x93),
-            ((0, 0xc4, None), 0xf009),
-            ((0, 0xc0, None), 3),
-            ((0, 0x80, None), 0x91),
         ]
     );
+    // The control register is written last, the I/O base before its limit.
+    assert_eq!(df.writes.borrow()[2], ((0, 0x208, None), 0x93));
+    assert_eq!(df.writes.borrow()[3], ((0, 0xc0, None), 3));
     df.writes.borrow_mut().clear();
-    fabric::ensure_legacy_routes(&df.df(), 0xd0000000).unwrap();
+    fabric::ensure_legacy_routes(&die, 0xd0000000).unwrap();
     assert_eq!(*df.writes.borrow(), vec![((0, 0x80, None), 0x91)]);
 }
 

@@ -14,7 +14,10 @@ use super::{
 };
 use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
-    fam17h::registers::{DfReg, Smn, SmnReg},
+    fam17h::{
+        df::{self, IoBase, IoLimit},
+        registers::{Smn, SmnReg},
+    },
     zeppelin::{Die, Package},
 };
 use fstart_pci::{ConfigRegionAccess, PciAddress};
@@ -47,13 +50,6 @@ register_bitfields![u8,
 const PM_ACPIMMIO_SELECT: u8 = 0xd5;
 const PM_ACPIMMIO_BASE: u8 = 0xd6;
 const PM_AB_REG_BAR: u8 = 0xe0;
-register_bitfields![u32,
-    DfIoBase [READ_ENABLE OFFSET(0) NUMBITS(1) [], WRITE_ENABLE OFFSET(1) NUMBITS(1) []],
-    DfIoLimit [DESTINATION OFFSET(0) NUMBITS(8) []]
-];
-/// D18F0xC0/C4: DF I/O space base/limit 0.
-const DF_IO_BASE0: DfReg<DfIoBase::Register> = DfReg::new(0, 0xc0);
-const DF_IO_LIMIT0: DfReg<DfIoLimit::Register> = DfReg::new(0, 0xc4);
 
 /// Vendor ffdcb7de, run while die 0's DF sends I/O 0-0xfff to the die: move
 /// the die's ACPI MMIO block, then IOMUX, A-Link, clock generator and legacy
@@ -121,11 +117,11 @@ pub fn reset<P: ConfigRegionAccess + Copy>(
             fstart_log::Hex(mmio.0.into())
         );
 
-        // Route I/O 0-0xfff to the die's IOMS.
-        let (io_base, io_limit) = (df0.reg(DF_IO_BASE0), df0.reg(DF_IO_LIMIT0));
+        // Route I/O 0-0xfff (pair 0) to the die's IOMS.
+        let (io_base, io_limit) = (df0.reg(df::io_base(0)), df0.reg(df::io_limit(0)));
         let saved = (io_base.get(), io_limit.get());
-        io_base.write(DfIoBase::READ_ENABLE::SET + DfIoBase::WRITE_ENABLE::SET);
-        io_limit.write(DfIoLimit::DESTINATION.val(die.ioms_fabric_id().into()));
+        io_base.write(IoBase::RE::SET + IoBase::WE::SET);
+        io_limit.write(IoLimit::DST_FABRIC_ID.val(die.ioms_fabric_id().into()));
         secondary_legacy(&Fch::new(bus, mmio), package);
         io_base.set(saved.0);
         io_limit.set(saved.1);

@@ -415,6 +415,7 @@ mod zeppelin {
     use super::*;
     use crate::{
         fam17h::{
+            df,
             iohc::{self, IOAPIC_BAR},
             topology,
         },
@@ -486,14 +487,16 @@ mod zeppelin {
         let mut delay = hw.clock();
 
         // Before the PCIe training
-        let plan = fabric::plan(0xe000_0000, 0x4_2000_0000, 128 << 20, 2).unwrap();
-        let dfs: Vec<_> = dies.iter().map(Die::df).collect();
-        fabric::program(&plan, &dfs);
+        let plan = df::plan(0xe000_0000, 0x4_2000_0000, 128 << 20, 2).unwrap();
+        df::program(&plan, &dies);
         let nonpci: Vec<u32> = dies
             .iter()
             .map(|die| fabric::nonpci_mmio_base(&dies[0].df(), die.index()).unwrap())
             .collect();
-        assert_eq!(fabric::mmio_windows(&dies[0].df(), 1).len(), 2);
+        assert_eq!(
+            df::mmio_windows(&dies[0].df(), dies[1].ioms_fabric_id()).len(),
+            2
+        );
         for die in &dies {
             fabric::early_init(&die.df(), 2, Revision::B2);
         }
@@ -553,7 +556,7 @@ mod zeppelin {
         smu::cac_weights(&dies[0], &mut delay).unwrap();
         assert_eq!(fabric::sockets(&dies[0].df()), 2);
         for die in &dies {
-            fabric::route_vga(&die.df(), 0);
+            df::route_vga(&die.df(), dies[0].ioms_fabric_id());
         }
         for die in &dies {
             nbio::pre_enumeration_init(die);

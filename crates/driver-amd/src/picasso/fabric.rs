@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Picasso Data Fabric sequencing.
-use super::registers::{Df, DfReg, DfRecord, apply_df, df_rmw, df_write};
+use super::{
+    Die,
+    registers::{Df, DfReg, DfRecord, apply_df, df_rmw, df_write},
+};
 use crate::fam17h::df::{
-    IO_PAIRS, IoBase, IoLimit, MMIO_PAIRS, MmioCtrl, VGA_EN, VgaEn, io_base, io_limit, mmio_base,
-    mmio_ctrl, mmio_limit,
+    self, DramBase, IO_PAIRS, MMIO_PAIRS, Plan, Window, dram_base, io_route, mmio_route,
 };
 use fstart_pci::ConfigRegionAccess;
-use tock_registers::{
-    interfaces::{Readable, Writeable},
-    register_bitfields,
-};
+use heapless::Vec;
+use tock_registers::interfaces::Readable;
 
-const IOMS: u32 = 9;
-const IOAPIC: u32 = 0xfec0_0000;
+const IOAPIC: u64 = 0xfec0_0000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     MemoryBoundary,
@@ -20,81 +19,67 @@ pub enum Error {
     NoIoWindow,
 }
 
-/// Route peripheral MMIO and I/O to IOMS, preserving PSP-established windows.
-/// Discover and validate BOTH free windows before changing either of them.
-pub fn ensure_legacy_routes(fabric: &Df<impl ConfigRegionAccess>, low_top: u32) -> Result<(), Error> {
+/// The windows [`ensure_legacy_routes`] adds to the PSP-established ones:
+/// MMIO from `low_top` up to the IOAPIC and I/O 0-0xffff to the IOMS
+/// `ioms`, each on the first free pair, unless a window covers it already.
+/// Fails without a free pair for a missing window.
+pub fn legacy_routes(
+    fabric: &Df<impl ConfigRegionAccess>,
+    ioms: u8,
+    low_top: u32,
+) -> Result<Plan, Error> {
+    let low_top = u64::from(low_top);
     if low_top == 0 || low_top >= IOAPIC || low_top & 0xffff != 0 {
         return Err(Error::MemoryBoundary);
     }
-    let enabled = |base: u32| base & 3 == 3;
-    let (mut free_mmio, mut free_io) = (None, None);
-    let (mut have_mmio, mut have_io) = (false, false);
-    for i in 0..MMIO_PAIRS {
-        let control = fabric.reg(mmio_ctrl(i)).extract();
-        if control.get() & 3 == 0 && free_mmio.is_none() {
-            free_mmio = Some(i);
-        }
-        if !enabled(control.get())
-            || control.is_set(MmioCtrl::NON_POSTED)
-            || control.read(MmioCtrl::DST_FABRIC_ID) != IOMS
-        {
-            continue;
-        }
-        let base = u64::from(fabric.reg(mmio_base(i)).get()) << 16;
-        let end = (u64::from(fabric.reg(mmio_limit(i)).get()) + 1) << 16;
-        have_mmio |= base <= u64::from(low_top) && end >= u64::from(IOAPIC);
-    }
-    for i in 0..IO_PAIRS {
-        let base = fabric.reg(io_base(i)).extract();
-        let limit = fabric.reg(io_limit(i)).extract();
-        if base.get() & 3 == 0 && free_io.is_none() {
-            free_io = Some(i);
-        }
-        have_io |= enabled(base.get())
-            && base.read(IoBase::BASE) == 0
-            && limit.read(IoLimit::DST_FABRIC_ID) == IOMS
-            && limit.read(IoLimit::LIMIT) >= 0xf;
-    }
-    if !have_mmio && free_mmio.is_none() {
-        return Err(Error::NoMmioWindow);
-    }
-    if !have_io && free_io.is_none() {
-        return Err(Error::NoIoWindow);
-    }
+    let mmio: Vec<_, MMIO_PAIRS> = (0..MMIO_PAIRS as u8).map(|i| mmio_route(fabric, i)).collect();
+    let io: Vec<_, IO_PAIRS> = (0..IO_PAIRS as u8).map(|i| io_route(fabric, i)).collect();
+    let routed = |route: &df::Route| route.enabled() && route.destination == ioms;
+    let have_mmio = mmio
+        .iter()
+        .any(|r| routed(r) && !r.non_posted && r.base <= low_top && r.end() >= IOAPIC);
+    let have_io = io.iter().any(|r| routed(r) && r.base == 0 && r.end() >= 0x1_0000);
+    let free = |routes: &[df::Route]| routes.iter().position(df::Route::free).map(|i| i as u8);
+    let mut plan = Plan::default();
     if !have_mmio {
-        let i = free_mmio.ok_or(Error::NoMmioWindow)?;
-        fabric.reg(mmio_ctrl(i)).set(0);
-        fabric.reg(mmio_base(i)).set(low_top >> 16);
-        fabric.reg(mmio_limit(i)).set((IOAPIC - 1) >> 16);
-        fabric.reg(mmio_ctrl(i)).write(
-            MmioCtrl::RE::SET + MmioCtrl::WE::SET + MmioCtrl::DST_FABRIC_ID.val(IOMS),
-        );
+        let pair = free(&mmio).ok_or(Error::NoMmioWindow)?;
+        let window = Window {
+            pair,
+            base: low_top,
+            size: IOAPIC - low_top,
+            die: 0,
+        };
+        plan.mmio.push(window).map_err(|_| Error::NoMmioWindow)?;
     }
     if !have_io {
-        let i = free_io.ok_or(Error::NoIoWindow)?;
-        fabric.reg(io_limit(i))
-            .write(IoLimit::DST_FABRIC_ID.val(IOMS) + IoLimit::LIMIT.val(0xf));
-        fabric.reg(io_base(i))
-            .write(IoBase::RE::SET + IoBase::WE::SET);
+        let pair = free(&io).ok_or(Error::NoIoWindow)?;
+        let window = Window {
+            pair,
+            base: 0,
+            size: 0x1_0000,
+            die: 0,
+        };
+        plan.io.push(window).map_err(|_| Error::NoIoWindow)?;
     }
-    fabric.reg(VGA_EN)
-        .write(VgaEn::DST_FABRIC_ID.val(IOMS) + VgaEn::ENABLE::SET);
+    Ok(plan)
+}
+
+/// Route peripheral MMIO and I/O to IOMS, preserving PSP-established windows.
+/// Discover and validate BOTH free windows before changing either of them.
+pub fn ensure_legacy_routes(
+    die: &Die<impl ConfigRegionAccess + Copy>,
+    low_top: u32,
+) -> Result<(), Error> {
+    let plan = legacy_routes(&die.df(), die.ioms_fabric_id(), low_top)?;
+    df::program(&plan, core::slice::from_ref(die));
+    df::route_vga(&die.df(), die.ioms_fabric_id());
     Ok(())
 }
 
-register_bitfields![u32,
-    DramBase [VALID OFFSET(0) NUMBITS(1) []],
-    InstanceCount [COUNT OFFSET(0) NUMBITS(8) []]
-];
-const F0_INSTANCE_COUNT: DfReg<InstanceCount::Register> = DfReg::new(0, 0x040);
-const fn f0_dram_base(i: u16) -> DfReg<DramBase::Register> {
-    DfReg::new(0, 0x110 + 8 * i)
-}
 const F0_CLK_GATE: DfReg = DfReg::new(0, 0x3f0);
 const F0_RAS_CTRL: DfReg = DfReg::new(0, 0x3f8);
 const F2_048: DfReg = DfReg::new(2, 0x048);
 const F2_050: DfReg = DfReg::new(2, 0x050);
-const F6_ERR_STATUS: [DfReg; 2] = [DfReg::new(6, 0x1f0), DfReg::new(6, 0x1f4)];
 
 /// The vendor UMC coordination values: their meaning isn't known.
 const EARLY_CS: [DfRecord; 4] = [
@@ -125,7 +110,7 @@ pub fn early_init(fabric: &Df<impl ConfigRegionAccess>) {
         ],
     );
     for instance in 0..2 {
-        if !fabric.instance(f0_dram_base(0), instance).is_set(DramBase::VALID) {
+        if !fabric.instance(dram_base(0), instance).is_set(DramBase::VALID) {
             apply_df(fabric, [df_rmw(F2_048, Some(instance), 1 << 19, 0)]);
         }
     }
@@ -142,8 +127,8 @@ pub fn early_init(fabric: &Df<impl ConfigRegionAccess>) {
     );
     let channels = (0..2)
         .filter(|&instance| {
-            let first = fabric.instance(f0_dram_base(0), instance).get();
-            let second = fabric.instance(f0_dram_base(1), instance).get();
+            let first = fabric.instance(dram_base(0), instance).get();
+            let second = fabric.instance(dram_base(1), instance).get();
             (first | second) & 1 != 0
         })
         .count();
@@ -160,16 +145,7 @@ pub fn early_init(fabric: &Df<impl ConfigRegionAccess>) {
             df_rmw(DfReg::new(3, 0x300), Some(9), 0, 1 << 8),
         ],
     );
-    let instances = fabric.reg(F0_INSTANCE_COUNT).read(InstanceCount::COUNT);
-    for instance in 0..instances {
-        for status in F6_ERR_STATUS {
-            let status = fabric.instance(status, instance as u8);
-            if status.get() != 0 {
-                // DF error status uses a zero write, not GPIO-style W1C.
-                status.set(0);
-            }
-        }
-    }
+    df::clear_errors(fabric);
     apply_df(fabric, [df_rmw(F0_RAS_CTRL, None, 1 << 3, 0)]);
 }
 

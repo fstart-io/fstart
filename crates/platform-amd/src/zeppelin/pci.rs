@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! PCI root complex of a die: its bus range and the DF windows routed to it
 //! (with the Zeppelin non-PCI pool).
-use fstart_driver_amd::zeppelin::{Die, ECAM, ECAM_BUSES, NONPCI_MMIO_SIZE, fabric};
+use fstart_driver_amd::{
+    fam17h::df,
+    zeppelin::{Die, ECAM, ECAM_BUSES, NONPCI_MMIO_SIZE},
+};
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
     ecam::GlobalEcam,
@@ -31,7 +34,7 @@ impl Root {
             size: PCI_IO.1,
             prefetchable: false,
         });
-        for (base, size) in fabric::mmio_windows(&df0, die.index()) {
+        for (base, size) in df::mmio_windows(&df0, die.ioms_fabric_id()) {
             let end = base + size;
             if end > 1 << 32 {
                 continue;
