@@ -24,7 +24,7 @@ static mut STORAGE: Storage = Storage {
     padding: MaybeUninit::uninit(),
 };
 static CLAIMED: AtomicBool = AtomicBool::new(false);
-const _: () = assert!(PAGE_BYTES == 4096 && BUFFER_BYTES == 32);
+const _: () = assert!(PAGE_BYTES == 4096 && BUFFER_BYTES <= PAGE_BYTES);
 const _: () = assert!(size_of::<Storage>() == PAGE_BYTES);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

@@ -7,6 +7,8 @@
 #![allow(clippy::modulo_one)]
 use super::{AcpiConfigHigh, AcpiPorts, PciControl, Pm, ResetControl1, pm};
 use crate::ACPI_MMIO;
+use crate::fam17h::psp::{SmiRegisters, SmmRegister};
+use core::mem::offset_of;
 use fstart_core::{pio::PioRegister, pio_register_structs};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -252,6 +254,38 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for FchSmi {
     }
 }
 
+/// The SMI registers the PSP uses from its side of SMM: it raises SMIs with
+/// SMIx98[25] and expects SMIs enabled, EOS set and its own source routed to
+/// SMI. Its source isn't routed here, so the PSP can't raise SMIs.
+pub fn psp_registers() -> SmiRegisters {
+    let address = |offset: usize| (ACPI_MMIO + 0x200 + offset) as u64;
+    let trigger0 = address(offset_of!(SmiRegs, trigger0));
+    let bit = |field: tock_registers::fields::FieldValue<u32, SmiTrigger0::Register>| field.value;
+    let (index, shift) = control_slot(source::PSP);
+    SmiRegisters {
+        trigger: SmmRegister {
+            address: trigger0,
+            mask: bit(SmiTrigger0::PSP::SET),
+            value: bit(SmiTrigger0::PSP::SET),
+        },
+        smi_enable: SmmRegister {
+            address: trigger0,
+            mask: bit(SmiTrigger0::SMI_DISABLE::SET),
+            value: 0,
+        },
+        eos: SmmRegister {
+            address: trigger0,
+            mask: bit(SmiTrigger0::EOS::SET),
+            value: bit(SmiTrigger0::EOS::SET),
+        },
+        psp_smi_enable: SmmRegister {
+            address: address(offset_of!(SmiRegs, control) + 4 * index),
+            mask: 3 << shift,
+            value: (Mode::Smi as u32) << shift,
+        },
+    }
+}
+
 /// Configuration the installer writes into SMRAM for [`FchSmmHandler`]: the
 /// ACPI blocks of the FADT.
 #[repr(C)]
@@ -407,5 +441,19 @@ mod tests {
         assert_eq!(control_slot(source::POWER_BUTTON_UP), (3, 6));
         assert_eq!(control_slot(source::PSP), (2, 2));
         assert_eq!(control_slot(11), (0, 22));
+    }
+
+    #[test]
+    fn psp_registers_match_the_vendor_smm_info() {
+        let registers = psp_registers();
+        assert_eq!(registers.trigger.address, 0xfed8_0298);
+        assert_eq!(registers.trigger.mask, 1 << 25);
+        assert_eq!(registers.smi_enable.mask, 1 << 31);
+        assert_eq!(registers.eos.value, 1 << 28);
+        assert_eq!(registers.psp_smi_enable.address, 0xfed8_02a8);
+        assert_eq!(
+            (registers.psp_smi_enable.mask, registers.psp_smi_enable.value),
+            (0xc, 0x4)
+        );
     }
 }

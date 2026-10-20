@@ -464,10 +464,16 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     if smu::ccx_done(dies, &mut delay).is_err() {
         fstart_log::error!("zeppelin: SMU CCX-done messages failed");
     }
-    if let Err(error) = smm::install::<B>(&mp, s.tseg) {
-        fstart_log::error!("zeppelin: SMM: {}", error);
-        fail("SMM installation");
-    }
+    let tseg = match smm::install::<B>(&mp, s.tseg) {
+        Ok(tseg) => tseg,
+        Err(error) => {
+            fstart_log::error!("zeppelin: SMM: {}", error);
+            fail("SMM installation")
+        }
+    };
+    // The PSP gets the SMM info now, LockDFReg at ready-to-boot and BootDone
+    // right before the payload.
+    let mut psp = smm::psp_mailbox(psp_bars[0], &tseg, &mut delay);
     post(0x42);
 
     // PCI: the interrupt router first, then the bus.
@@ -535,9 +541,13 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     for die in dies {
         fabric::disable_ext_cfg(&mut die.df());
     }
-    // No PSP LockDFReg: sent here it breaks device DMA (the xHCI halts with
-    // a host system error on its first command). The vendor firmware sends
-    // it only after the PSP got its SMM info, and this port has no SMM yet.
+    // After the last DF write; it needs the SMM info the PSP got after MP.
+    if let Some(psp) = psp.as_mut() {
+        match psp.lock_df_registers(&mut delay) {
+            Ok(()) => fstart_log::info!("PSP: DF registers locked"),
+            Err(error) => fstart_log::error!("PSP: LockDFReg failed: {}", error.name()),
+        }
+    }
     post(0x43);
 
     if boot::mount(&s.e820).is_err() {
@@ -548,6 +558,14 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     }
     if !fstart_arch::x86::mp::park_aps_for_payload() {
         fail("parking the APs");
+    }
+    // Afterwards the PSP only takes commands with SMM buffers.
+    if let Some(psp) = psp.as_mut() {
+        // SAFETY: the firmware is done with the CPUs and SMM is locked.
+        match unsafe { psp.boot_done(&mut delay) } {
+            Ok(()) => fstart_log::info!("PSP: boot done"),
+            Err(error) => fstart_log::error!("PSP: BootDone failed: {}", error.name()),
+        }
     }
     // SAFETY: CONSOLE was initialized at entry and lives forever.
     let console = unsafe { (*core::ptr::addr_of!(CONSOLE)).assume_init_ref() };

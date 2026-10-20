@@ -11,7 +11,9 @@ struct Mock {
     reads: VecDeque<u32>,
     fallback: u32,
     writes: Vec<Event>,
-    wire: *mut Wire,
+    buffer: *mut u8,
+    /// The requests as published.
+    requests: Vec<Vec<u8>>,
     size: u32,
     status: u32,
 }
@@ -26,21 +28,31 @@ unsafe impl Transport for Mock {
     unsafe fn submit(&mut self, value: u32) {
         self.writes.push(Event::Submit(value));
         unsafe {
-            let mut wire = self.wire.read();
-            assert_eq!(wire.size.get(), 32);
-            assert_eq!(wire.status.get(), 0);
-            assert_eq!(wire.value.get(), 0);
-            assert_eq!(wire.reserved, [0; 20]);
-            wire.size = self.size.into();
-            wire.status = self.status.into();
-            wire.value = 0x1234.into();
-            self.wire.write(wire);
+            let header = self.buffer.cast::<Header>().read();
+            let request = std::slice::from_raw_parts(self.buffer, header.size.get() as usize);
+            assert_eq!(header.status.get(), 0);
+            self.requests.push(request.to_vec());
+            // A query reply: the PSP fills in the value.
+            let reply = Wire {
+                header: Header {
+                    size: self.size.into(),
+                    status: self.status.into(),
+                },
+                value: 0x1234.into(),
+                reserved: [0; 20],
+            };
+            let bytes = if header.size.get() == 32 {
+                reply.as_bytes()
+            } else {
+                &reply.as_bytes()[..8]
+            };
+            self.buffer.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
         }
     }
 }
 fn mailbox(reads: &[u32], fallback: u32, size: u32, status: u32) -> Mailbox<Mock> {
     let buffer = Box::leak(Box::new(Buffer::new()));
-    let wire = buffer.wire.get().cast::<Wire>();
+    let bytes = buffer.bytes.get().cast::<u8>();
     // Private protocol test construction bypasses real identity addresses and
     // global one-attempt claim. Public constructor never accepts this fake map.
     Mailbox {
@@ -48,7 +60,8 @@ fn mailbox(reads: &[u32], fallback: u32, size: u32, status: u32) -> Mailbox<Mock
             reads: reads.iter().copied().collect(),
             fallback,
             writes: Vec::new(),
-            wire,
+            buffer: bytes,
+            requests: Vec::new(),
             size,
             status,
         },
@@ -79,6 +92,8 @@ fn query_commands_publish_zero_padded_buffer_pointer_before_command() {
             Event::Submit(0x1b << 16)
         ]
     );
+    let query = [&32u32.to_le_bytes()[..], &[0; 28]].concat();
+    assert!(mailbox.io.requests.iter().all(|request| *request == query));
     // Stale delivery status is cleared, not copied into the trigger register.
     let mut mailbox = self::mailbox(&[READY | 7, READY], READY, 32, 0);
     assert_eq!(mailbox.capabilities(&mut delay), Ok(0x1234));
@@ -149,13 +164,61 @@ fn boot_done_is_a_terminal_non_smm_transition_not_a_boot_claim() {
     assert_eq!(mailbox.io.writes.len(), 2);
 }
 #[test]
+fn smm_info_has_the_vendor_gen2_layout() {
+    let register = |address, mask, value| SmmRegister {
+        address,
+        mask,
+        value,
+    };
+    let info = SmmInfo {
+        tseg_base: 0x7f80_0000,
+        tseg_mask: 0xffff_ff80_0000,
+        p2c_buffer: 0x7f81_0000,
+        p2c_size: 0x1000,
+        registers: SmiRegisters {
+            trigger: register(0xfed8_0298, 1 << 25, 1 << 25),
+            smi_enable: register(0xfed8_0298, 1 << 31, 0),
+            eos: register(0xfed8_0298, 1 << 28, 1 << 28),
+            psp_smi_enable: register(0xfed8_02a8, 0xc, 0x4),
+        },
+        c2p_buffer: 0x7f81_1000,
+        smm_flag: 0x7f81_1c00,
+    };
+    let mut mailbox = mailbox(&[], READY, 0x110, 0);
+    assert_eq!(mailbox.smm_info(&info, &mut |_| {}), Ok(()));
+    assert_eq!(mailbox.io.writes[1], Event::Submit(0x02 << 16));
+    let wire = &mailbox.io.requests[0];
+    let u32_at = |offset: usize| u32::from_le_bytes(wire[offset..offset + 4].try_into().unwrap());
+    let u64_at = |offset: usize| u64::from_le_bytes(wire[offset..offset + 8].try_into().unwrap());
+    assert_eq!((u32_at(0), u32_at(4)), (0x110, 0));
+    // Offsets of the request, which starts after the 8-byte header.
+    let req = |offset: usize| 8 + offset;
+    assert_eq!(u64_at(req(0x00)), 0x7f80_0000);
+    assert_eq!(u64_at(req(0x08)), 0xffff_ff80_0000);
+    assert_eq!((u64_at(req(0x10)), u64_at(req(0x18))), (0x7f81_0000, 0x1000));
+    // Trigger: memory dword, AND and OR masks.
+    assert_eq!(u64_at(req(0x20)), 0xfed8_0298);
+    assert_eq!(
+        [req(0x28), req(0x2c), req(0x30), req(0x34)].map(u32_at),
+        [1, 2, !(1 << 25), 1 << 25]
+    );
+    // SmiEnb, EOS and the PSP SMI enable: mask and expected value.
+    assert_eq!([req(0x48), req(0x4c)].map(u32_at), [1 << 31, 0]);
+    assert_eq!([req(0x60), req(0x64)].map(u32_at), [1 << 28, 1 << 28]);
+    assert_eq!(u64_at(req(0x68)), 0xfed8_02a8);
+    assert_eq!([req(0x78), req(0x7c)].map(u32_at), [0xc, 0x4]);
+    assert!(wire[req(0x80)..req(0xf8)].iter().all(|&byte| byte == 0));
+    assert_eq!((u64_at(req(0xf8)), u64_at(req(0x100))), (0x7f81_1000, 0x7f81_1c00));
+}
+#[test]
 fn complete_allocation_preflight_precedes_one_way_claim() {
-    assert_eq!(size_of::<Buffer>(), 32);
+    assert_eq!(size_of::<Buffer>(), 0x120);
     assert_eq!(core::mem::align_of::<Buffer>(), 32);
     for start in [0, 1, 0x02000001, u64::MAX, 0x1_0000_0000] {
         assert_eq!(placement(start), Err(Error::Placement));
     }
-    assert_eq!(placement(0xffffffe0), Ok(()));
+    assert_eq!(placement(0x1_0000_0000 - 0x120), Ok(()));
+    assert_eq!(placement(0xffffffe0), Err(Error::Placement));
     assert_eq!(placement(0x02000000), Ok(()));
     let flag = AtomicBool::new(false);
     assert_eq!(claim(&flag), Ok(()));
