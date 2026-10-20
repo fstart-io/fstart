@@ -10,6 +10,8 @@ pub use host::Plan;
 #[cfg(all(feature = "host", feature = "zeppelin"))]
 pub use zeppelin::host::Plan;
 #[cfg(feature = "zeppelin")]
+pub mod noncar;
+#[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 /// SMM image ABI and handler binding: a board's `smm.rs` binds its handler
 /// with `fstart_platform_amd::smm::smm_bin!`.

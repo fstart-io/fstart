@@ -3,18 +3,10 @@
 //! the PSP-released reset vector to the payload.
 #[cfg(feature = "acpi")]
 pub mod acpi;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod boot;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod memory;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod pci;
 pub mod silicon;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod smm;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod stage;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]

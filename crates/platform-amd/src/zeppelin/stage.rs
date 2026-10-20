@@ -4,10 +4,11 @@
 //! at the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
 //! board's `fstart_main`.
 use super::{
-    Board, BoardCtx, acpi, boot, layout, memory, pci,
+    Board, BoardCtx, acpi,
+    layout::LAYOUT,
     silicon::{self, Dma, Identity, SmuPages, SmuPolicy},
-    smm,
 };
+use crate::noncar::{boot, layout::Region, memory, pci, psp, smm};
 use crate::cpu::{Fam17hCpu, PatchPage};
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
@@ -18,7 +19,7 @@ use fstart_driver_amd::{
         tsc::{self, Tsc},
     },
     df, dxio,
-    fch::{self, Acpimmio, Fch, NativeBus, lpc::Lpc},
+    fch::{self, Acpimmio, Fch, NativeBus, lpc::Lpc, smi::FchSmi, taishan},
     nbio::iommu,
     smu::threads::{self, Policy},
     soc::zeppelin::{self as soc, Die, MAX_DIES, Package, Revision, Zeppelin},
@@ -59,6 +60,13 @@ fn fail(what: &str) -> ! {
     fstart_log::error!("zeppelin: {} failed, halting", what);
     halt()
 }
+
+/// 8 MiB of TSEG.
+const TSEG_SIZE: u32 = 8 << 20;
+const FFS: Region = match LAYOUT.ffs {
+    Some(ffs) => ffs,
+    None => panic!("Zeppelin images have an FFS"),
+};
 
 static mut CONSOLE: core::mem::MaybeUninit<Ns16550> = core::mem::MaybeUninit::uninit();
 
@@ -155,8 +163,9 @@ fn run<B: Board>() -> ! {
         Hex(top_mem2.unwrap_or(0)),
         Hex(map.top)
     );
-    let tseg = memory::tseg_base(&map, top_mem);
-    let e820 = match memory::e820(&map, top_mem) {
+    let tseg = memory::tseg_base(&map, top_mem, TSEG_SIZE.into());
+    let apob_region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
+    let e820 = match memory::e820(&map, top_mem, TSEG_SIZE.into(), &[LAYOUT.early, apob_region]) {
         Ok(e820) => e820,
         Err(_) => fail("memory map"),
     };
@@ -228,7 +237,7 @@ fn late_silicon<B: Board>(s: &mut Silicon, die0_fch: &Fch<NativeBus>) -> ! {
         fail("CPU topology")
     };
     let flash = unsafe {
-        core::slice::from_raw_parts(layout::FLASH_BASE as *const u8, layout::FLASH_SIZE as usize)
+        core::slice::from_raw_parts(LAYOUT.flash.base as *const u8, LAYOUT.flash.size as usize)
     };
     let policy = s.state.cpu_policy();
     // SAFETY: BSP only, before the APs start; the page is reserved BSS.
@@ -303,7 +312,10 @@ fn late_silicon<B: Board>(s: &mut Silicon, die0_fch: &Fch<NativeBus>) -> ! {
         .take(usize::from(mp.num_cpus()))
         .collect();
     silicon::cpus_up(dies, &mut delay);
-    let tseg = match smm::install::<B>(&mp, s.tseg) {
+    // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
+    // decoded since the FCH init.
+    let smi = unsafe { FchSmi::new(taishan::ACPI_PORTS, B::CONFIG.fch.smi_gevents) };
+    let tseg = match smm::install("zeppelin", &mp, &smi, s.tseg, TSEG_SIZE) {
         Ok(tseg) => tseg,
         Err(error) => {
             fstart_log::error!("zeppelin: SMM: {}", error);
@@ -312,14 +324,19 @@ fn late_silicon<B: Board>(s: &mut Silicon, die0_fch: &Fch<NativeBus>) -> ! {
     };
     // The PSP gets the SMM info now, LockDFReg at ready-to-boot and BootDone
     // right before the payload.
-    let mut psp = smm::psp_mailbox(s.state.psp_bars[0], &tseg, &mut delay);
+    let mut psp = psp::notify_smm(s.state.psp_bars[0], &tseg, &mut delay);
     silicon::post(die0_fch, 0x42);
 
     // PCI: the interrupt router first, then the bus.
     if let Err(what) = silicon::route_interrupts(die0_fch, B::CONFIG) {
         fail(what);
     }
-    let root = pci::Root::new(&dies[0], soc::ECAM_BUSES as u8 - 1, s.state.nonpci[0]);
+    let root = pci::Root::new(
+        &dies[0],
+        dies[0].bus()..=soc::ECAM_BUSES as u8 - 1,
+        Region::new(soc::ECAM, u64::from(soc::ECAM_BUSES) << 20),
+        Region::new(s.state.nonpci[0].into(), soc::NONPCI_MMIO_SIZE.into()),
+    );
     let mut ecam = match fstart_pci::PciEcam::from_provider(&root) {
         Ok(ecam) => ecam,
         Err(_) => fail("PCI root"),
@@ -374,15 +391,10 @@ fn late_silicon<B: Board>(s: &mut Silicon, die0_fch: &Fch<NativeBus>) -> ! {
         B::ready_to_boot(&mut BoardCtx { dies, clock })
     });
     // After the last DF write; it needs the SMM info the PSP got after MP.
-    if let Some(psp) = psp.as_mut() {
-        match psp.lock_df_registers(&mut delay) {
-            Ok(()) => fstart_log::info!("PSP: DF registers locked"),
-            Err(error) => fstart_log::error!("PSP: LockDFReg failed: {}", error.name()),
-        }
-    }
+    psp::lock_df_registers(psp.as_mut(), &mut delay);
     silicon::post(die0_fch, 0x43);
 
-    if boot::mount(&s.e820).is_err() {
+    if boot::mount(&s.e820, FFS).is_err() {
         fail("boot media");
     }
     if boot::map_ram(&s.e820).is_err() {
@@ -392,13 +404,8 @@ fn late_silicon<B: Board>(s: &mut Silicon, die0_fch: &Fch<NativeBus>) -> ! {
         fail("parking the APs");
     }
     // Afterwards the PSP only takes commands with SMM buffers.
-    if let Some(psp) = psp.as_mut() {
-        // SAFETY: the firmware is done with the CPUs and SMM is locked.
-        match unsafe { psp.boot_done(&mut delay) } {
-            Ok(()) => fstart_log::info!("PSP: boot done"),
-            Err(error) => fstart_log::error!("PSP: BootDone failed: {}", error.name()),
-        }
-    }
+    // SAFETY: the firmware is done with the CPUs and SMM is locked.
+    unsafe { psp::boot_done(psp.as_mut(), &mut delay) };
     // SAFETY: CONSOLE was initialized at entry and lives forever.
     let console = unsafe { (*core::ptr::addr_of!(CONSOLE)).assume_init_ref() };
     fstart_log::info!("zeppelin: starting the payload");
@@ -407,6 +414,13 @@ fn late_silicon<B: Board>(s: &mut Silicon, die0_fch: &Fch<NativeBus>) -> ! {
         console,
         e820: core::mem::replace(&mut s.e820, E820State::new()),
         rsdp,
+        ffs: FFS,
+        pci_root: fstart_pci::PciRootInfo {
+            segment: 0,
+            ecam_base: soc::ECAM,
+            bus_start: 0,
+            bus_end: (soc::ECAM_BUSES - 1) as u8,
+        },
     };
     use fstart_stage::payload::MainstagePayload;
     fstart_stage::payload::BuildSelectedPayload::boot(handoff)

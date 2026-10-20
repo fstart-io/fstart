@@ -1,32 +1,36 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! PCI root complex of a die: its bus range and the DF windows routed to it
-//! (with the Zeppelin non-PCI pool).
-use fstart_driver_amd::{
-    df::map,
-    soc::zeppelin::{Die, ECAM, ECAM_BUSES, NONPCI_MMIO_SIZE},
-};
+//! PCI root complex of a die: its bus range and the DF windows routed to it.
+use super::layout::Region;
+use fstart_driver_amd::{df::map, soc::Soc};
 use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-    ecam::GlobalEcam,
+    ConfigRegionAccess, PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow,
+    PciWindowKind,
 };
 
 /// Legacy LPC/FCH I/O stays below 0x1000; PCI gets the rest of the 64 KiB.
 const PCI_IO: (u64, u64) = (0x1000, 0xf000);
+/// The IOAPIC, HPET and FCH fixed MMIO and everything above.
+const FIXED_MMIO: u64 = 0xfec0_0000;
 
 pub struct Root {
-    bus_start: u8,
-    bus_end: u8,
+    info: PciRootInfo,
     windows: PciRootWindows,
 }
 
 impl Root {
-    /// The below-4G DF MMIO windows of `die`, minus the ECAM and its non-PCI
-    /// pool. Only 32-bit windows: the 64-bit DF window starts at 1 TiB,
-    /// beyond what firmware maps, and the OS can still use it.
-    pub fn new(die: &Die<GlobalEcam>, bus_end: u8, nonpci: u32) -> Self {
+    /// The below-4G DF MMIO windows of `die`, minus the ECAM and the
+    /// `reserved` MMIO (a non-PCI pool). Only 32-bit windows: the 64-bit DF
+    /// window starts at 1 TiB, beyond what firmware maps, and the OS can
+    /// still use it.
+    pub fn new<S: Soc, P: ConfigRegionAccess + Copy>(
+        die: &fstart_driver_amd::df::Die<S, P>,
+        buses: core::ops::RangeInclusive<u8>,
+        ecam: Region,
+        reserved: Region,
+    ) -> Self {
         let df0 = die.df();
-        let pool = (u64::from(nonpci), u64::from(nonpci) + u64::from(NONPCI_MMIO_SIZE));
-        let ecam = (ECAM, ECAM + (u64::from(ECAM_BUSES) << 20));
+        let pool = (reserved.base, reserved.end());
+        let ecam_range = (ecam.base, ecam.end());
         let mut windows = PciRootWindows::new();
         let _ = windows.push(PciWindow {
             kind: PciWindowKind::Io,
@@ -39,12 +43,10 @@ impl Root {
             if end > 1 << 32 {
                 continue;
             }
-            // Cut out the ECAM, the non-PCI pool and everything at and above
-            // the IOAPIC/HPET/FCH fixed MMIO (0xfec00000).
-            let end = end.min(0xfec0_0000);
+            let end = end.min(FIXED_MMIO);
             for (lo, hi) in [(base, end)]
                 .into_iter()
-                .flat_map(|r| cut(r, ecam))
+                .flat_map(|r| cut(r, ecam_range))
                 .flat_map(|r| cut(r, pool))
             {
                 if hi > lo {
@@ -58,8 +60,12 @@ impl Root {
             }
         }
         Self {
-            bus_start: die.bus(),
-            bus_end,
+            info: PciRootInfo {
+                segment: 0,
+                ecam_base: ecam.base,
+                bus_start: *buses.start(),
+                bus_end: *buses.end(),
+            },
             windows,
         }
     }
@@ -75,12 +81,7 @@ fn cut((lo, hi): (u64, u64), (hole_lo, hole_hi): (u64, u64)) -> [(u64, u64); 2] 
 
 impl PciRootProvider for Root {
     fn root_info(&self) -> PciRootInfo {
-        PciRootInfo {
-            segment: 0,
-            ecam_base: ECAM,
-            bus_start: self.bus_start,
-            bus_end: self.bus_end,
-        }
+        self.info
     }
     fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
         Ok(self.windows.clone())
