@@ -22,6 +22,9 @@ tock-registers = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
 ufmt = { workspace = true }
+# MSR access (MsrAccess, typed Msr registers) for the CCX block.
+fstart-arch = { workspace = true, features = ["x86_64"] }
 
 [dev-dependencies]
 fstart-pci = { workspace = true }
+fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

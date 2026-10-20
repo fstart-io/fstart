@@ -773,6 +773,7 @@ dependencies = [
 name = "fstart-driver-zen"
 version = "0.1.0"
 dependencies = [
+ "fstart-arch",
  "fstart-core",
  "fstart-log",
  "fstart-pci",
