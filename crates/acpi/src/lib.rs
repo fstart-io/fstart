@@ -49,23 +49,29 @@ pub mod ext;
 pub mod gtdt;
 pub mod iort;
 pub mod ivrs;
+pub mod msct;
 pub mod pirq;
 pub mod platform;
+pub mod processor;
 pub mod sbsa;
+pub mod slit;
 pub mod smbios;
 pub mod spcr;
+pub mod srat;
 pub mod tock_bridge;
 pub mod wake;
 
 // Re-export commonly used types from acpi_tables.
 pub use acpi_tables::aml;
 pub use acpi_tables::fadt;
+pub use acpi_tables::gas;
 pub use acpi_tables::madt;
 pub use acpi_tables::mcfg;
 pub use acpi_tables::rsdp;
 pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
+pub use fstart_acpi_macros::acpi_dsl;
 
 /// Failure while binding or emitting AML. Failed fragments append no bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
