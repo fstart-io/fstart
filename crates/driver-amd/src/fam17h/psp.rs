@@ -3,10 +3,11 @@
 //! the same C2P protocol on Raven/Picasso and Zeppelin at +0x10570 of the PSP
 //! BAR. Cold/non-SMM only; no recovery, Sx/resume, fusing, flash writes, abort or reset commands.
 use crate::fam17h::tsc::DelayNs;
+use fstart_core::once::TakeOnce;
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
-    sync::atomic::{AtomicBool, Ordering, compiler_fence},
+    sync::atomic::{Ordering, compiler_fence},
 };
 use tock_registers::{interfaces::Readable, register_bitfields, registers::InMemoryRegister};
 use zerocopy::{
@@ -21,7 +22,7 @@ const POLLS: usize = 10_000; // 100-us delays: nominal 1s, NOT a measured deadli
 const QUERY_BYTES: usize = 32;
 /// Room for the largest request, [`SmmInfoWire`], 32-byte aligned.
 const BUFFER_BYTES: usize = size_of::<SmmInfoWire>().next_multiple_of(32);
-static ATTEMPTED: AtomicBool = AtomicBool::new(false);
+static ATTEMPTED: TakeOnce = TakeOnce::new();
 register_bitfields![u32, Command [
     STATUS OFFSET(0) NUMBITS(16) [], CODE OFFSET(16) NUMBITS(8) [],
     RECOVERY OFFSET(30) NUMBITS(1) [], READY OFFSET(31) NUMBITS(1) []
@@ -265,11 +266,6 @@ fn placement(start: u64) -> Result<(), Error> {
     }
     Ok(())
 }
-fn claim(flag: &AtomicBool) -> Result<(), Error> {
-    flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
-        .map_err(|_| Error::AlreadyAttempted)
-}
 impl<T: Transport> Mailbox<T> {
     /// One owner/attempt per boot, even after ordinary errors or Drop.
     /// # Safety
@@ -282,7 +278,9 @@ impl<T: Transport> Mailbox<T> {
     pub unsafe fn new(io: T, buffer: &'static mut Buffer) -> Result<Self, Error> {
         let address = buffer.allocation_range().0;
         placement(address)?;
-        claim(&ATTEMPTED)?;
+        if !ATTEMPTED.take() {
+            return Err(Error::AlreadyAttempted);
+        }
         Ok(Self {
             io,
             buffer,

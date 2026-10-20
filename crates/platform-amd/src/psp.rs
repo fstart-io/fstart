@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Permanent native mailbox allocation/ordering, not SMM setup or OS handoff.
-use fstart_driver_amd::fam17h::tsc::DelayNs;
 use crate::{layout, memory::Memory};
-use core::{
-    mem::MaybeUninit,
-    ptr::addr_of_mut,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::{mem::MaybeUninit, ptr::addr_of_mut};
+use fstart_core::once::TakeOnce;
 use fstart_driver_amd::{
-    fam17h::iohc::PSP_BAR,
+    fam17h::{iohc::PSP_BAR, tsc::DelayNs},
     picasso::{
         psp::{self, Buffer, Mailbox, Native},
         registers::Smn,
@@ -28,7 +24,7 @@ static mut STORAGE: Storage = Storage {
     buffer: MaybeUninit::uninit(),
     padding: MaybeUninit::uninit(),
 };
-static CLAIMED: AtomicBool = AtomicBool::new(false);
+static CLAIMED: TakeOnce = TakeOnce::new();
 const _: () = assert!(PAGE_BYTES == 4096 && BUFFER_BYTES <= PAGE_BYTES);
 const _: () = assert!(size_of::<Storage>() == PAGE_BYTES);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,11 +84,6 @@ fn preflight(
     }
     Ok(())
 }
-fn claim(flag: &AtomicBool) -> Result<(), Error> {
-    flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
-        .map_err(|_| Error::AlreadyClaimed)
-}
 unsafe fn materialize(destination: *mut Storage) {
     // Initialize full page/padding without an initialized 4KiB stack temporary.
     // Zero is valid for MaybeUninit<Buffer>; driver prepares all protocol bytes
@@ -118,7 +109,9 @@ pub unsafe fn prepare(
 ) -> Result<ResidentMailbox, Error> {
     let pointer = addr_of_mut!(STORAGE);
     preflight(memory.psp_reserved(), pointer as usize as u64, smn)?;
-    claim(&CLAIMED)?;
+    if !CLAIMED.take() {
+        return Err(Error::AlreadyClaimed);
+    }
     unsafe {
         materialize(pointer);
         // Typed MaybeUninit<Buffer> field, initialized storage, first reference
@@ -181,9 +174,6 @@ mod tests {
         mock.model().low = 0xfd100101;
         mock.model().high = 0;
         assert_eq!(preflight(true, layout::PSP_START, &smn), Ok(()));
-        let flag = AtomicBool::new(false);
-        assert_eq!(claim(&flag), Ok(()));
-        assert_eq!(claim(&flag), Err(Error::AlreadyClaimed));
     }
     #[test]
     fn materialize_zeroes_protocol_storage_and_complete_page_tail() {

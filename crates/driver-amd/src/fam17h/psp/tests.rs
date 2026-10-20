@@ -221,7 +221,4 @@ fn complete_allocation_preflight_precedes_one_way_claim() {
     assert_eq!(placement(0x1_0000_0000 - 0x120), Ok(()));
     assert_eq!(placement(0xffffffe0), Err(Error::Placement));
     assert_eq!(placement(0x02000000), Ok(()));
-    let flag = AtomicBool::new(false);
-    assert_eq!(claim(&flag), Ok(()));
-    assert_eq!(claim(&flag), Err(Error::AlreadyAttempted));
 }
