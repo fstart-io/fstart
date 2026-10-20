@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD DRAM-first cache setup.
 //! Fixed MTRRs carry AMD RdDram/WrDram attributes; high RAM uses TOM2WB.
-use super::cpu::{Msr, SYSCFG};
+use super::msr::{Msr, SYSCFG};
 
 const MAX_RANGES: usize = 10;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -112,7 +112,7 @@ pub trait CacheControl {
     fn enable(&mut self);
 }
 #[cfg(target_arch = "x86_64")]
-impl CacheControl for super::cpu::NativeMsr {
+impl CacheControl for super::msr::NativeMsr {
     fn disable(&mut self) {
         let cr0: u64;
         unsafe {

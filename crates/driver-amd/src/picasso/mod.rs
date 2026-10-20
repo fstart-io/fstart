@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h Raven/Picasso/Pollock register geometry, not Intel-compatible IP.
 pub mod acp;
-pub mod apob;
-pub mod cache;
+pub use crate::fam17h::{apob, cache, registers, tsc};
 pub mod cpu;
 #[cfg(test)]
 mod cpu_tests;
@@ -25,15 +24,13 @@ pub mod pinmux;
 pub mod power;
 pub mod preinit;
 pub mod psp;
-pub mod registers;
 pub mod smu;
 pub mod southbridge;
 pub mod topology;
-pub mod tsc;
 pub mod usb;
 #[cfg(test)]
 mod usb_tests;
-pub const ACPI_MMIO: usize = 0xfed8_0000;
+pub use crate::ACPI_MMIO;
 pub const ECAM: u64 = 0xf800_0000;
 pub const ECAM_BUSES: u8 = 64;
 pub const UART_BASES: [usize; 4] = [0xfedc9000, 0xfedca000, 0xfedce000, 0xfedcf000];

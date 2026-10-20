@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Picasso indirect register transports (SMN, Data Fabric).
+//! Family 17h indirect register transports (SMN, Data Fabric).
 //! Index/data pairs are exclusively owned by the BSP during silicon init.
+//!
+//! Every die has its own SMN space, reached through D0F0 0xb8/0xbc of the
+//! die's root bus, and its own Data Fabric PCI device 0x18 + node on bus 0.
+//! Single-die parts (Raven/Picasso) use node 0 on bus 0.
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
@@ -15,31 +19,43 @@ pub trait Smn {
     }
 }
 
+const SMN_INDEX: u16 = 0xb8;
+const SMN_DATA: u16 = 0xbc;
+
 pub struct SmnPort<P> {
     pci: P,
+    root: PciAddress,
 }
 impl<P: ConfigRegionAccess> SmnPort<P> {
+    /// SMN of the die whose root complex is on bus 0.
     /// # Safety
     /// PCI D0F0 exists and its B8/BC SMN index/data pair is exclusively owned.
     pub unsafe fn new(pci: P) -> Self {
-        Self { pci }
+        unsafe { Self::on_bus(pci, 0) }
+    }
+    /// SMN of the die whose root complex is on `bus`.
+    /// # Safety
+    /// As [`Self::new`], for that root bus.
+    pub unsafe fn on_bus(pci: P, bus: u8) -> Self {
+        Self {
+            pci,
+            root: PciAddress::new(0, bus, 0, 0),
+        }
     }
 }
 impl<P: ConfigRegionAccess> Smn for SmnPort<P> {
     fn read(&mut self, address: u32) -> u32 {
         assert!(address & 3 == 0);
-        let gnb = PciAddress::new(0, 0, 0, 0);
         unsafe {
-            self.pci.write(gnb, 0xb8, address);
-            self.pci.read(gnb, 0xbc)
+            self.pci.write(self.root, SMN_INDEX, address);
+            self.pci.read(self.root, SMN_DATA)
         }
     }
     fn write(&mut self, address: u32, value: u32) {
         assert!(address & 3 == 0);
-        let gnb = PciAddress::new(0, 0, 0, 0);
         unsafe {
-            self.pci.write(gnb, 0xb8, address);
-            self.pci.write(gnb, 0xbc, value);
+            self.pci.write(self.root, SMN_INDEX, address);
+            self.pci.write(self.root, SMN_DATA, value);
         }
     }
 }
@@ -48,7 +64,8 @@ register_bitfields![u32,
     Ficaa [INSTANCE_ACCESS OFFSET(0) NUMBITS(1) [], REGISTER OFFSET(2) NUMBITS(9) [],
         FUNCTION OFFSET(11) NUMBITS(3) [], INSTANCE OFFSET(16) NUMBITS(8) []]
 ];
-/// The broadcast selector is special: never send 0xff through FICAA.
+/// The broadcast selector is special: never send 0xff through FICAA. It
+/// accesses the node's own register directly (what AGESA calls broadcast).
 pub const BROADCAST: u8 = 0xff;
 pub trait Fabric {
     fn read(&mut self, function: u8, offset: u16, instance: u8) -> u32;
@@ -60,17 +77,29 @@ pub trait Fabric {
 }
 pub struct FabricPort<P> {
     pci: P,
+    device: u8,
 }
 impl<P: ConfigRegionAccess> FabricPort<P> {
+    /// Data Fabric of node 0.
     /// # Safety
     /// D18F0..F7 exist; the FICAA/FICAD pair is exclusively owned by this caller.
     pub unsafe fn new(pci: P) -> Self {
-        Self { pci }
+        unsafe { Self::for_node(pci, 0) }
+    }
+    /// Data Fabric of `node` (PCI device 0x18 + node on bus 0).
+    /// # Safety
+    /// As [`Self::new`], for that node's device.
+    pub unsafe fn for_node(pci: P, node: u8) -> Self {
+        assert!(node < 8);
+        Self {
+            pci,
+            device: 0x18 + node,
+        }
     }
     fn target(&self, function: u8, offset: u16, instance: u8) -> (PciAddress, u16) {
         assert!(function < 8 && offset < 2048 && offset & 3 == 0);
         if instance == BROADCAST {
-            return (PciAddress::new(0, 0, 0x18, function), offset);
+            return (PciAddress::new(0, 0, self.device, function), offset);
         }
         let control = LocalRegisterCopy::<u32, Ficaa::Register>::new(0);
         let index = control.get()
@@ -79,7 +108,7 @@ impl<P: ConfigRegionAccess> FabricPort<P> {
                 + Ficaa::FUNCTION.val(u32::from(function))
                 + Ficaa::INSTANCE.val(u32::from(instance)))
             .value;
-        let df4 = PciAddress::new(0, 0, 0x18, 4);
+        let df4 = PciAddress::new(0, 0, self.device, 4);
         unsafe {
             self.pci.write(df4, 0x5c, index);
         }

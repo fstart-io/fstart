@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Banked FCH GPIO. Configuration preserves reserved/drive-strength bits and
 //! clears W1C interrupt/wake status deliberately, not via an accidental RMW.
-use crate::picasso::{ACPI_MMIO, GPIO_EVENTS, pinmux::gpio_function};
+use crate::{
+    ACPI_MMIO,
+    picasso::{GPIO_EVENTS, pinmux::gpio_function},
+};
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_bitfields,
