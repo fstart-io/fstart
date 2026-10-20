@@ -186,7 +186,7 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
     B::mainboard_final(&mut ctx.board());
     ioapics(&ctx, &silicon);
     let rsdp = acpi::install(
-        &S::ACPI,
+        silicon.acpi,
         &dies,
         &silicon.ioapics,
         &ecam,

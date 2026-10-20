@@ -6,11 +6,9 @@ license.workspace = true
 
 [features]
 default = []
-picasso = ["fstart-driver-amd/picasso", "dep:fstart-arch"]
+picasso = ["noncar", "fstart-driver-amd/picasso"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
-# Compiler/check/editor support; still a non-bootable console checkpoint.
-bundle-checkpoint = ["picasso"]
 zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zerocopy"]
 # The shared flow of the PSP-booted SoCs, with their ACPI tables.
 noncar = [
@@ -33,6 +31,8 @@ bundle = [
   "fstart-stage/lz4",
 ]
 bundle-zeppelin = ["zeppelin", "bundle"]
+# The Picasso reset image; it halts at its checkpoint.
+bundle-picasso = ["picasso", "bundle"]
 # The FCH SMM handler and `smm_bin!` for a board's SMM unit; the stage
 # embeds the image fbuild built from it (FSTART_SMM_IMAGE).
 smm = ["zeppelin", "fstart-driver-amd/smm", "dep:fstart-smm"]

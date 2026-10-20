@@ -78,7 +78,6 @@ impl noncar::Soc for Zeppelin {
     const TSEG_SIZE: u32 = 8 << 20;
     /// Two dies of eight SMT cores.
     const MAX_CPUS: u16 = 32;
-    const ACPI: crate::acpi::SocAcpi = acpi::ACPI;
     type Config = Config;
     type Identity = Identity;
     type State = silicon::State;
@@ -185,6 +184,7 @@ impl noncar::Soc for Zeppelin {
                     Region::new(base.into(), soc::NONPCI_MMIO_SIZE.into())
                 })
             }),
+            acpi: &acpi::ACPI,
             state,
         })
     }

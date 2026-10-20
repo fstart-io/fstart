@@ -6,33 +6,40 @@ pub mod dalboz;
 pub mod ec;
 pub mod policy;
 pub mod vilboz;
-use fstart_driver_amd::{
-    ccx::tsc::Clock,
-    fch::{
-        espi,
-        gpio::{self, Pad},
-        sandstone::preinit::SpiConfig,
+use fstart_driver_amd::soc::picasso::Picasso;
+use fstart_driver_uart::ns16550::Ns16550Config;
+use fstart_platform_amd::{
+    noncar::BoardCtx,
+    picasso::{self, Config, FchConfig},
+};
+static CONFIG: Config = Config {
+    fch: FchConfig {
+        console_uart: 0,
+        spi: policy::SPI,
+        espi: Some((policy::ESPI, dalboz::ESPI_GPIO_TABLE)),
+        // Without a PSP verstage the early and TPM tables are programmed
+        // first, then the PCIe and memory init tables.
+        early_gpios: &[
+            dalboz::EARLY_GPIO_TABLE,
+            dalboz::TPM_GPIO_TABLE,
+            dalboz::PCIE_GPIO_TABLE,
+            dalboz::ROMSTAGE_GPIO_TABLE,
+        ],
+        disable_rom_sharing: true,
     },
 };
-use fstart_platform_amd::picasso::{BoardFacts, Config};
-static CONFIG: Config = Config::new().uart(0).build();
 pub struct Board;
-impl BoardFacts for Board {
+impl fstart_platform_amd::noncar::Board for Board {
+    type Soc = Picasso;
     const CONFIG: &'static Config = &CONFIG;
-    const SPI: SpiConfig = policy::SPI;
-    const ESPI: Option<(espi::Config, &'static [Pad])> =
-        Some((policy::ESPI, dalboz::ESPI_GPIO_TABLE));
-    // Without a PSP verstage the early and TPM tables are programmed
-    // first, then the PCIe and memory init tables.
-    const EARLY_GPIOS: &'static [&'static [Pad]] = &[
-        dalboz::EARLY_GPIO_TABLE,
-        dalboz::TPM_GPIO_TABLE,
-        dalboz::PCIE_GPIO_TABLE,
-        dalboz::ROMSTAGE_GPIO_TABLE,
-    ];
-    const DISABLE_ROM_SHARING: bool = true;
-    fn mainboard_init(gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, clock: &mut impl Clock) {
-        mainboard::init(gpio, clock)
+    fn console() -> Ns16550Config {
+        picasso::console(CONFIG.fch.console_uart)
+    }
+    /// Read the board facts, program the
+    /// remaining GPIOs.
+    fn fch_reset_done(ctx: &mut BoardCtx<'_, Picasso>) {
+        let mut clock = ctx.clock;
+        mainboard::init(&ctx.gpio(), &mut clock)
     }
 }
 

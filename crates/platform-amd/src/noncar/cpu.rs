@@ -136,16 +136,16 @@ where
             // SAFETY: serialized MSR access on a CPU the driver matched.
             let msr = unsafe { NativeMsr::new() };
             let ok = (self.init)(&msr, Thread::current()).is_ok();
-            crate::mp::hide_fixed_dram_routing(&msr);
+            super::mp::hide_fixed_dram_routing(&msr);
             ok
         });
     }
     fn sipi_msrs(&self) -> Result<SipiMsrs, MpError> {
         // SAFETY: BSP only, before any AP starts.
-        crate::mp::sipi_msrs(&unsafe { NativeMsr::new() })
+        super::mp::sipi_msrs(&unsafe { NativeMsr::new() })
             .map_err(|_| MpError::CacheabilitySetupFailed)
     }
     fn sipi_unlock(&self) -> Option<SipiUnlock> {
-        Some(crate::mp::SIPI_UNLOCK)
+        Some(super::mp::SIPI_UNLOCK)
     }
 }

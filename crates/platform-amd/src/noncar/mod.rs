@@ -23,6 +23,7 @@
 pub mod acpi;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod boot;
+pub mod cpu;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 mod flow;
 #[cfg(feature = "host")]
@@ -90,7 +91,6 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     const TSEG_SIZE: u32;
     /// The most CPUs of the SoC's packages.
     const MAX_CPUS: u16;
-    const ACPI: SocAcpi;
 
     /// A board's configuration of the SoC, by IP block.
     type Config: 'static;
@@ -153,6 +153,8 @@ pub struct Silicon<S: Soc> {
     pub ioapics: [u32; MAX_DIES],
     /// The MMIO of each die PCI resources must avoid.
     pub reserved_mmio: [Region; MAX_DIES],
+    /// What the SoC's ACPI tables differ in.
+    pub acpi: &'static SocAcpi,
     pub state: S::State,
 }
 

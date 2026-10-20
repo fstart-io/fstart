@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso host compiler policy. No fictitious FFS/factory-image projection.
 extern crate std;
-use crate::{
-    layout,
-    picasso::{self, BoardFacts},
-};
+use super::LAYOUT as L;
+use crate::noncar::{Board, Soc, host as noncar};
+use fstart_driver_amd::soc::picasso::Picasso;
 use fstart_image_build::{
     build_plan::{
         Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema, FileBinding,
         UnitOutput,
     },
-    elf::{Architecture, Expectations},
-    plan::{BuildSelection, Span},
+    plan::BuildSelection,
 };
 use std::{
     collections::BTreeMap,
@@ -21,8 +19,10 @@ use std::{
     vec,
 };
 
+const ENTRY: &str = "amd-psp-reset";
+
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: BoardFacts> Plan<B> {
+impl<B: Board<Soc = Picasso>> Plan<B> {
     pub fn emit(selection_json: &str) {
         let selection: BuildSelection =
             serde_json::from_str(selection_json).expect("invalid build selection");
@@ -33,12 +33,12 @@ impl<B: BoardFacts> Plan<B> {
         );
     }
 }
-/// Compiler support and optional PSP partition packaging. The checkpoint still
-/// halts without MP/patch loading. Build owner excludes filesystem mutation from
+/// Compiler support and optional PSP partition packaging. The flow still
+/// halts at its checkpoint. Build owner excludes filesystem mutation from
 /// resolution through compilation AND image packaging; no trust is inferred.
-pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, String> {
+pub fn resolve<B: Board<Soc = Picasso>>(selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.validate_compiler_files()?;
-    if B::CONFIG.console_uart() >= 4 {
+    if B::CONFIG.fch.console_uart >= 4 {
         return Err("Picasso console UART index exceeds hardware table".into());
     }
     if selection
@@ -56,49 +56,10 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
     if !selection.compiler_files.is_empty() {
         return Err("Picasso takes no compiler inputs".into());
     }
-    let image = Span {
-        base: layout::IMAGE_BASE,
-        size: u64::from(layout::IMAGE_SIZE),
-    };
-    let expectations = Expectations {
-        architecture: Architecture::X86_64,
-        elf64: true,
-        little_endian: true,
-        stored: vec![image],
-        runtime: vec![
-            image,
-            Span {
-                base: layout::BSS_START,
-                size: layout::STACK_TOP - layout::BSS_START,
-            },
-            Span {
-                base: layout::MICROCODE_START,
-                size: layout::MICROCODE_END - layout::MICROCODE_START,
-            },
-            Span {
-                base: layout::PSP_START,
-                size: layout::PSP_END - layout::PSP_START,
-            },
-        ],
-        identity_mapping: true,
-        entry: Some(layout::RESET_VECTOR),
-        copy: None,
-        descriptor: None,
-        stored_flags: Some(5),
-        symbols: BTreeMap::from([
-            ("_start".into(), layout::RESET_VECTOR),
-            ("_fstart_early_reserved_start".into(), layout::EARLY_START),
-            ("_fstart_early_reserved_end".into(), layout::EARLY_END),
-            ("_fstart_page_tables".into(), layout::PAGE_TABLES),
-            ("_fstart_microcode_start".into(), layout::MICROCODE_START),
-            ("_fstart_microcode_end".into(), layout::MICROCODE_END),
-            ("_fstart_psp_start".into(), layout::PSP_START),
-            ("_fstart_psp_end".into(), layout::PSP_END),
-            ("_fstart_stack_bottom".into(), layout::STACK_BOTTOM),
-            ("_fstart_stack_top".into(), layout::STACK_TOP),
-        ]),
-    };
+    let descriptor = noncar::descriptor(&L)?;
+    let expectations = noncar::expectations(&L, &descriptor);
     expectations.validate()?;
+    let image = noncar::image(&L);
     let assembly = if let Some(path) = &selection.image_config {
         let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
         if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 65536 {
@@ -124,8 +85,8 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
             },
             files,
             reset_destination: image.base,
-            reset_size: layout::IMAGE_SIZE,
-            apob_destination: layout::APOB_BASE,
+            reset_size: image.size as u32,
+            apob_destination: Picasso::APOB.base,
             // Entry 0x6B is only for a PSP verstage.
             shared_memory: None,
         };
@@ -145,23 +106,29 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
             name: "reset".into(),
             cargo_target: CargoTarget::BoardBinary,
             target: "x86_64-unknown-none".into(),
-            entry: "picasso-reset".into(),
-            environment: "psp-dram".into(),
+            entry: ENTRY.into(),
+            environment: "monolithic".into(),
             payload: "halt".into(),
             cfg_schema: CompilerCfgSchema {
-                entries: vec!["picasso-reset".into()],
-                environments: vec!["psp-dram".into()],
+                entries: vec![ENTRY.into()],
+                environments: vec!["monolithic".into()],
                 payloads: vec!["halt".into()],
             },
-            features: vec!["bundle-checkpoint".into()],
+            features: vec!["bundle-picasso".into()],
             build_std: None,
             rustflags: vec![
+                "-Zub-checks=no".into(),
                 "-Crelocation-model=static".into(),
                 "-Cno-redzone=yes".into(),
+                "--cfg".into(),
+                "curve25519_dalek_backend=\"serial\"".into(),
             ],
             release_only: true,
-            linker_script: Some(picasso::LINKER_SCRIPT.into()),
-            environment_values: BTreeMap::new(),
+            linker_script: Some(noncar::linker_script("Picasso", &L, &descriptor)),
+            environment_values: BTreeMap::from([(
+                "FSTART_MP_MAX_CPUS".into(),
+                Picasso::MAX_CPUS.to_string(),
+            )]),
             bindings: vec![],
             file_bindings: vec![],
             output: UnitOutput::Executable {
@@ -179,21 +146,31 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::picasso::{Config, FchConfig};
+    use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
     use fstart_image_build::plan::CompilerFileSelection;
     struct Board;
-    impl BoardFacts for Board {
-        const CONFIG: &'static picasso::Config = &picasso::Config::new().build();
-        const SPI: fstart_driver_amd::fch::sandstone::preinit::SpiConfig = {
-            use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
-            SpiConfig {
-                mode: ReadMode::Normal33,
-                normal: Speed::Mhz33,
-                fast: Speed::Mhz66,
-                alternate: Speed::Mhz66,
-                tpm: Speed::Mhz66,
-                burst_4dw: false,
-            }
+    impl crate::noncar::Board for Board {
+        type Soc = Picasso;
+        const CONFIG: &'static Config = &Config {
+            fch: FchConfig {
+                console_uart: 0,
+                spi: SpiConfig {
+                    mode: ReadMode::Normal33,
+                    normal: Speed::Mhz33,
+                    fast: Speed::Mhz66,
+                    alternate: Speed::Mhz66,
+                    tpm: Speed::Mhz66,
+                    burst_4dw: false,
+                },
+                espi: None,
+                early_gpios: &[],
+                disable_rom_sharing: false,
+            },
         };
+        fn console() -> fstart_driver_uart::ns16550::Ns16550Config {
+            crate::picasso::console(0)
+        }
     }
     struct Source(std::path::PathBuf);
     impl Drop for Source {
@@ -221,13 +198,12 @@ mod tests {
         assert_eq!(plan.selection("reset").unwrap().len(), 1);
         let unit = &plan.units[0];
         assert!(unit.release_only);
-        assert_eq!(unit.features, ["bundle-checkpoint"]);
+        assert_eq!(unit.features, ["bundle-picasso"]);
         assert!(unit.file_bindings.is_empty());
         let UnitOutput::Executable { expectations, .. } = &unit.output else {
             unreachable!()
         };
-        assert!(expectations.descriptor.is_none());
-        assert_eq!(expectations.stored_flags, Some(5));
+        assert_eq!(expectations.entry, Some(0x022f_fff0));
         let config_path = source.0.join("image = exact.json");
         std::fs::write(&config_path, r#"{"flash_size":16777216,"efs_offset":14811136,"partition_end":16777216,"spi_read_mode":4,"spi_speed":0,"micron":false,"soft_fuse":805306368,"psp":[],"bios":[],"apob_nv":null,"psp_nv":null}"#).unwrap();
         let mut image_selection = selected.clone();
@@ -241,7 +217,7 @@ mod tests {
             operation.configuration.path,
             image_selection.image_config.clone().unwrap()
         );
-        assert_eq!(operation.reset_destination, layout::IMAGE_BASE);
+        assert_eq!(operation.reset_destination, L.image.base);
         image_plan
             .validate_image_selection(&image_selection)
             .unwrap();

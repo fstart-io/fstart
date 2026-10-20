@@ -11,7 +11,7 @@ schema = 1
 board = "google-vilboz"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-bin = "picasso-checkpoint"
+stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-amd", name = "rust" }
 
 [features]
@@ -21,9 +21,10 @@ default = []
 fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["picasso"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["picasso"] }
 fstart-driver-chromeec = { path = "../../../crates/driver-chromeec" }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 
 [[bin]]
-name = "picasso-checkpoint"
+name = "fstart-stage"
 path = "src/main.rs"
