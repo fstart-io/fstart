@@ -1,0 +1,44 @@
+[package]
+name = "fstart-board-tyan-s8030"
+description = "Tyan S8030 (S8030GM2NE, S8030GM4NE-2T): AMD SP3 1P, EPYC 7002/7003"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# One firmware build per generation, each in its own 16 MiB half of the
+# 32 MiB flash (docs/amd-sp3.md). The base id `tyan-s8030` selects no
+# generation and does not build. GM2NE and GM4NE-2T run the same image
+# (README.md), so they are not variants.
+[package.metadata.fstart]
+schema = 1
+board = "tyan-s8030"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
+
+[package.metadata.fstart.variants.tyan-s8030-rome]
+features = ["rome"]
+
+[package.metadata.fstart.variants.tyan-s8030-milan]
+features = ["milan"]
+
+[features]
+default = []
+rome = ["fstart-platform-sp3/rome", "fstart-driver-zen/rome"]
+milan = ["fstart-platform-sp3/milan", "fstart-driver-zen/milan"]
+
+# Versions are spelled out instead of inherited: boards are outside the
+# workspace (fbuild adds them to a generated one) and this crate also
+# builds on its own.
+[dependencies]
+fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["acpi"] }
+fstart-driver-zen = { path = "../../../crates/driver-zen" }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-core = { path = "../../../crates/core" }
+fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
+fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+embedded-hal = { version = "1", default-features = false }
+heapless = { version = "0.8", default-features = false }
+tock-registers = "0.10"
