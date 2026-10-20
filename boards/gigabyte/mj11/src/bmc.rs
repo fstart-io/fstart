@@ -3,7 +3,8 @@
 //! of POST.
 use fstart_driver_amd::fch::early::{self, PowerFailure};
 use fstart_driver_ipmi::{RestorePolicy, SelRecord, kcs::Kcs};
-use fstart_platform_amd::zeppelin::BoardCtx;
+use fstart_driver_amd::soc::zeppelin::Zeppelin;
+use fstart_platform_amd::noncar::BoardCtx;
 use zerocopy::little_endian::{U16, U32};
 
 /// Gigabyte OEM NetFn; the request starts with their IANA 0x003c0a.
@@ -13,7 +14,7 @@ const SET_ERP: u8 = 0x20;
 const ERP_OFF: [u8; 5] = [0x0a, 0x3c, 0x00, 0x0d, 0x1c];
 
 
-pub fn post_done(ctx: &mut BoardCtx<'_>) {
+pub fn post_done(ctx: &mut BoardCtx<'_, Zeppelin>) {
     // SAFETY: the KCS ports the board decodes in early_init; only used here.
     let mut kcs = unsafe { Kcs::new(crate::acpi::KCS_PORT, 1, ctx.clock) };
 

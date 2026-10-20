@@ -12,7 +12,7 @@ use fstart_driver_amd::{
     },
     df::{self, map},
     dxio,
-    fch::{self, Bus, Fch, early, taishan},
+    fch::{Bus, Fch, early, taishan},
     nbio::{self, iohc, iommu},
     psp,
     smu::v9 as smu,
@@ -20,7 +20,6 @@ use fstart_driver_amd::{
 };
 use fstart_log::Hex;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
-use tock_registers::interfaces::Writeable;
 use zerocopy::IntoBytes;
 
 /// What the CPU identification found.
@@ -67,10 +66,7 @@ pub struct Dma {
     pub dxio: &'static mut dxio::zeppelin::Buffers,
 }
 
-/// A POST code to the BMC's POST snoop.
-pub fn post(fch: &Fch<impl Bus>, code: u8) {
-    fch.bus().reg(fch::POST_CODE).set(code);
-}
+pub use crate::noncar::post;
 
 /// FCH setup before the console: ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O.
 pub fn fch_pre_init(fch: &Fch<impl Bus>) -> Result<(), early::Error> {

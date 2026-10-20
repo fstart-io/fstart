@@ -19,7 +19,7 @@ pub mod zeppelin;
 /// with `fstart_platform_amd::smm::smm_bin!`.
 #[cfg(feature = "smm")]
 pub use fstart_smm as smm;
-#[cfg(feature = "bundle-zeppelin")]
+#[cfg(feature = "bundle")]
 #[doc(hidden)]
 pub use fstart_stage as __stage;
 #[cfg(all(feature = "picasso", target_arch = "x86_64"))]

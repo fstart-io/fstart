@@ -8,7 +8,8 @@
 //! APOB destination this layout was linked for.
 extern crate std;
 use super::layout::{LAYOUT as L, RESET_FLASH_OFFSET, VENDOR_PREFIX};
-use crate::noncar::host as noncar;
+use crate::noncar::{Board, host as noncar};
+use fstart_driver_amd::soc::zeppelin::Zeppelin;
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, Platform, SocImageFormat, StageBuildConfig, StageLayout, hstr,
@@ -84,7 +85,7 @@ fn smm_unit() -> CompilationUnit {
 }
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: super::Board> Plan<B> {
+impl<B: Board<Soc = Zeppelin>> Plan<B> {
     pub fn emit(selection_json: &str) {
         let selection: BuildSelection =
             serde_json::from_str(selection_json).expect("invalid build selection");
@@ -147,7 +148,7 @@ fn vendor_layout(path: &str) -> Result<(FileBinding, VendorFlashLayout), String>
     ))
 }
 
-pub fn resolve<B: super::Board>(selection: BuildSelection) -> Result<BuildPlan, String> {
+pub fn resolve<B: Board<Soc = Zeppelin>>(selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.validate_compiler_files()?;
     if !selection.compiler_files.is_empty() {
         return Err("Zeppelin takes no compiler inputs".into());
