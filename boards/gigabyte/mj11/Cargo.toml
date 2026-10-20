@@ -31,6 +31,8 @@ fstart-pci = { path = "../../../crates/pci" }
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 embedded-hal = { workspace = true }
+fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
+zerocopy = { workspace = true }
 
 [[bin]]
 name = "fstart-stage"

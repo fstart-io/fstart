@@ -213,6 +213,14 @@ impl Acpimmio {
     pub const fn iomux<T: Value, R: RegisterLongName>(self, offset: u32) -> Reg<T, R> {
         self.bank(0xd00, offset)
     }
+    /// The ACPI registers (PM1 status/enable at 0/2).
+    pub const fn acpi<T: Value, R: RegisterLongName>(self, offset: u32) -> Reg<T, R> {
+        self.bank(0x800, offset)
+    }
+    /// GPIO bank 0: the control register of pin n at 4 * n.
+    pub const fn gpio<T: Value, R: RegisterLongName>(self, offset: u32) -> Reg<T, R> {
+        self.bank(0x1500, offset)
+    }
     pub const fn misc<T: Value, R: RegisterLongName>(self, offset: u32) -> Reg<T, R> {
         self.bank(0xe00, offset)
     }

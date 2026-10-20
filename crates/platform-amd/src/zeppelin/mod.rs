@@ -74,6 +74,12 @@ impl BoardCtx<'_> {
         // context keeps them sequential.
         unsafe { fch::NativeBus::new() }
     }
+
+    /// The GPIO pads of die 0.
+    pub fn gpio(&mut self) -> fstart_driver_amd::gpio::Mmio {
+        // SAFETY: as for `fch`; the ACPI MMIO is decoded and UC.
+        unsafe { fstart_driver_amd::gpio::Mmio::new() }
+    }
 }
 
 
