@@ -6,9 +6,6 @@
 //! board's `fch_reset_done`. It halts there:
 //! MP, SMM, PCI, ACPI and the payload aren't ported yet, so Picasso's
 //! [`noncar::Soc::State`] is uninhabited.
-#[cfg(feature = "host")]
-pub mod host;
-
 use crate::noncar::{
     self, Board, Ctx, Silicon, Stop, Tp1,
     layout::{Layout, Region},
@@ -88,6 +85,22 @@ pub const LAYOUT: Layout = Layout {
     ffs: None,
 }
 .check();
+
+#[cfg(feature = "host")]
+impl noncar::host::HostSoc for Picasso {
+    const POLICY: noncar::host::Policy = noncar::host::Policy {
+        feature: "bundle-picasso",
+        payloads: false,
+        smm: false,
+        release_only: true,
+        firmware: noncar::host::Firmware::Packed,
+    };
+    fn check(config: &Config) -> Result<(), &'static str> {
+        (config.fch.console_uart < UART_BASES.len() as u8)
+            .then_some(())
+            .ok_or("Picasso console UART index exceeds hardware table")
+    }
+}
 
 impl noncar::Soc for Picasso {
     const NAME: &'static str = "picasso";

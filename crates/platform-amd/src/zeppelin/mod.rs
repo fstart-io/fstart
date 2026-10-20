@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native AMD Zeppelin (EPYC Embedded 3000) on the noncar flow.
 pub mod acpi;
-#[cfg(feature = "host")]
-pub mod host;
 pub mod layout;
 pub mod silicon;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
@@ -65,6 +63,19 @@ impl Default for FchConfig {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DxioConfig {
     pub descriptors: [&'static [Descriptor]; MAX_DIES],
+}
+
+#[cfg(feature = "host")]
+impl noncar::host::HostSoc for Zeppelin {
+    const POLICY: noncar::host::Policy = noncar::host::Policy {
+        feature: "bundle-zeppelin",
+        payloads: true,
+        smm: true,
+        release_only: false,
+        firmware: noncar::host::Firmware::Vendor {
+            prefix: layout::VENDOR_PREFIX,
+        },
+    };
 }
 
 impl noncar::Soc for Zeppelin {
