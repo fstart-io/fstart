@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Banked FCH GPIO. Configuration preserves reserved/drive-strength bits and
 //! clears W1C interrupt/wake status deliberately, not via an accidental RMW.
-use crate::{
-    ACPI_MMIO,
-    picasso::{GPIO_EVENTS, pinmux::gpio_function},
-};
+use crate::ACPI_MMIO;
+#[cfg(feature = "picasso")]
+use crate::picasso::pinmux::gpio_function;
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_bitfields,
@@ -51,6 +50,7 @@ pub enum Trigger {
     BothEdges,
 }
 impl Trigger {
+    #[cfg(feature = "picasso")]
     const fn bits(self) -> u32 {
         match self {
             Self::EdgeHigh => 0,
@@ -86,6 +86,14 @@ pub struct Pad {
     pub event: Event,
 }
 impl Pad {
+    /// IOMUX `function` driven as an output: the form of the vendor CPM
+    /// tables, which name functions by number.
+    pub const fn driven(pin: u8, function: u8, high: bool, pull: Pull) -> Self {
+        Self {
+            control: pull.bits() | (1 << 23) | if high { 1 << 22 } else { 0 },
+            ..Self::native(pin, function, pull)
+        }
+    }
     pub const fn native(pin: u8, function: u8, pull: Pull) -> Self {
         assert!(function < 4);
         Self {
@@ -95,18 +103,22 @@ impl Pad {
             event: Event::None,
         }
     }
+    #[cfg(feature = "picasso")]
     pub const fn input(pin: u8, pull: Pull) -> Self {
         Self::native(pin, gpio_function(pin), pull)
     }
+    #[cfg(feature = "picasso")]
     pub const fn output(pin: u8, high: bool) -> Self {
         Self {
             control: (1 << 23) | if high { 1 << 22 } else { 0 },
             ..Self::input(pin, Pull::None)
         }
     }
+    #[cfg(feature = "picasso")]
     pub const fn nc(pin: u8) -> Self {
         Self::input(pin, Pull::Down)
     }
+    #[cfg(feature = "picasso")]
     pub const fn interrupt(pin: u8, pull: Pull, trigger: Trigger, delivery: Delivery) -> Self {
         Self {
             control: pull.bits()
@@ -120,6 +132,7 @@ impl Pad {
             ..Self::input(pin, pull)
         }
     }
+    #[cfg(feature = "picasso")]
     pub const fn sci(pin: u8, pull: Pull, trigger: Trigger) -> Self {
         // SCI trigger/polarity is in the SMI bank, not the pad's trigger bits.
         Self {
@@ -134,12 +147,23 @@ impl Pad {
             ..Self::native(pin, function, pull)
         }
     }
+    #[cfg(feature = "picasso")]
     pub const fn wake_s3(pin: u8, pull: Pull, trigger: Trigger) -> Self {
         Self {
             control: pull.bits() | trigger.bits() | (1 << 14),
             ..Self::input(pin, pull)
         }
     }
+}
+
+/// The pads of a SoC's GPIO bank 0 and the GEVENTs they can raise.
+#[derive(Debug)]
+pub struct Bank {
+    /// Pins `0..pins` exist, except `reserved`.
+    pub pins: u8,
+    pub reserved: &'static [u8],
+    /// (pin, GEVENT)
+    pub events: &'static [(u8, u8)],
 }
 
 /// Narrow access seam for sequencing tests; firmware uses tock register access.
@@ -161,11 +185,16 @@ pub enum Error {
 
 /// Validate the entire table before touching hardware. Overrides replace base
 /// entries only (never append).
-pub fn configure(io: &mut impl Access, base: &[Pad], overrides: &[Pad]) -> Result<(), Error> {
+pub fn configure(
+    io: &mut impl Access,
+    bank: &Bank,
+    base: &[Pad],
+    overrides: &[Pad],
+) -> Result<(), Error> {
     for table in [base, overrides] {
         for (index, pad) in table.iter().enumerate() {
-            if pad.pin >= 145
-                || pad.pin == 63
+            if pad.pin >= bank.pins
+                || bank.reserved.contains(&pad.pin)
                 || pad.function > 3
                 || pad.control & !CONFIG_MASK != 0
             {
@@ -174,7 +203,7 @@ pub fn configure(io: &mut impl Access, base: &[Pad], overrides: &[Pad]) -> Resul
             if table[..index].iter().any(|p| p.pin == pad.pin) {
                 return Err(Error::DuplicatePad);
             }
-            if !matches!(pad.event, Event::None) && !GPIO_EVENTS.iter().any(|(p, _)| *p == pad.pin)
+            if !matches!(pad.event, Event::None) && !bank.events.iter().any(|(p, _)| *p == pad.pin)
             {
                 return Err(Error::MissingEvent);
             }
@@ -200,7 +229,7 @@ pub fn configure(io: &mut impl Access, base: &[Pad], overrides: &[Pad]) -> Resul
         // Clear the W1C status bits in a separate write.
         let value = io.read_control(pad.pin) | STATUS_MASK;
         io.write_control(pad.pin, value);
-        if let Some((_, event)) = GPIO_EVENTS.iter().find(|(p, _)| *p == pad.pin)
+        if let Some((_, event)) = bank.events.iter().find(|(p, _)| *p == pad.pin)
             && !matches!(pad.event, Event::None)
         {
             io.route(*event, pad.event);
@@ -226,11 +255,13 @@ impl Mmio {
         unsafe { &*((self.base + offset) as *const ReadWrite<u32, R>) }
     }
     pub fn get(&mut self, pin: u8) -> bool {
+        #[cfg(feature = "picasso")]
         let _ = gpio_function(pin);
         self.reg32::<Control::Register>(0x1500 + usize::from(pin) * 4)
             .is_set(Control::PIN)
     }
     pub fn set(&mut self, pin: u8, high: bool) {
+        #[cfg(feature = "picasso")]
         let _ = gpio_function(pin);
         let register = self.reg32::<Control::Register>(0x1500 + usize::from(pin) * 4);
         let value = register.get() & !(STATUS_MASK | (1 << 22));

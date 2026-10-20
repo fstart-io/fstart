@@ -5,7 +5,7 @@
 pub mod fam17h;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod fch;
-#[cfg(feature = "picasso")]
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod gpio;
 #[cfg(all(test, feature = "picasso"))]
 mod gpio_tests;

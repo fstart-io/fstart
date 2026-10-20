@@ -126,7 +126,13 @@ pub unsafe fn console_checkpoint<B: BoardFacts>(
         ],
         _ => unreachable!(),
     };
-    gpio::configure(&mut gpio, &pins, &[]).map_err(Error::Gpio)
+    gpio::configure(
+        &mut gpio,
+        &fstart_driver_amd::picasso::GPIO_BANK,
+        &pins,
+        &[],
+    )
+    .map_err(Error::Gpio)
 }
 
 /// TSEG size.
@@ -209,7 +215,8 @@ unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
     preinit::prepare_lpc(&mut fch).map_err(|_| "LPC setup")?;
     let mut gpio = unsafe { Mmio::new() };
     if let Some((config, pads)) = &B::ESPI {
-        gpio::configure(&mut gpio, pads, &[]).map_err(|_| "eSPI GPIOs")?;
+        gpio::configure(&mut gpio, &fstart_driver_amd::picasso::GPIO_BANK, pads, &[])
+            .map_err(|_| "eSPI GPIOs")?;
         let mut controller = unsafe { espi::Native::new(preinit::SPI_BASE as usize) };
         espi::initialize(&mut controller, timer, config).map_err(|_| "eSPI link")?;
         fstart_log::info!("picasso: eSPI link up");
@@ -217,7 +224,13 @@ unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
     preinit::configure_spi(&mut fch, B::SPI).map_err(|_| "SPI setup")?;
     preinit::initialize_smbus(&mut fch).map_err(|_| "SMBus setup")?;
     for table in B::EARLY_GPIOS {
-        gpio::configure(&mut gpio, table, &[]).map_err(|_| "board GPIOs")?;
+        gpio::configure(
+            &mut gpio,
+            &fstart_driver_amd::picasso::GPIO_BANK,
+            table,
+            &[],
+        )
+        .map_err(|_| "board GPIOs")?;
     }
     if B::DISABLE_ROM_SHARING {
         legacy::disable_rom_sharing(&mut unsafe { legacy::NativeRegisters::new() });

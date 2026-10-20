@@ -23,7 +23,12 @@ pub const fn overrides(cbi: Cbi, chromeos: bool) -> &'static [Pad] {
 pub fn configure_ram(io: &mut impl Access, cbi: Cbi, chromeos: bool) -> Result<(), gpio::Error> {
     // Must disable SPI ROM sharing BEFORE configuring GPIO67 (DMIC_SEL).
     // This function does not guess the prerequisite; the platform owns it.
-    gpio::configure(io, dalboz::GPIO_SET_STAGE_RAM, overrides(cbi, chromeos))
+    gpio::configure(
+        io,
+        &fstart_driver_amd::picasso::GPIO_BANK,
+        dalboz::GPIO_SET_STAGE_RAM,
+        overrides(cbi, chromeos),
+    )
 }
 
 /// Small board-attached I/O seam. Delay uses calibrated time, not spin counts.
@@ -33,7 +38,12 @@ pub trait BoardIo: Access {
 }
 /// Vilboz always uses v3 WiFi reset wiring, even if EC CBI read fails.
 pub fn wifi_power_reset(io: &mut impl BoardIo, cbi: Cbi) -> Result<(), gpio::Error> {
-    gpio::configure(io, &[Pad::output(29, true), Pad::output(42, false)], &[])?;
+    gpio::configure(
+        io,
+        &fstart_driver_amd::picasso::GPIO_BANK,
+        &[Pad::output(29, true), Pad::output(42, false)],
+        &[],
+    )?;
     if !cbi.active_low_wifi_power() {
         io.delay_ms(10);
         io.set(42, true);

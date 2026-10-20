@@ -62,3 +62,9 @@ pub const GPIO_EVENTS: &[(u8, u8)] = &[
     (91, 6),
     (129, 17),
 ];
+/// GPIO bank 0: pins 0-144, no pad 63.
+pub const GPIO_BANK: crate::gpio::Bank = crate::gpio::Bank {
+    pins: 145,
+    reserved: &[63],
+    events: GPIO_EVENTS,
+};
