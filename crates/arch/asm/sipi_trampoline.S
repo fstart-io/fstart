@@ -35,6 +35,8 @@
 .global fstart_sipi_ap_limit
 .global fstart_sipi_ap_counter
 .global fstart_sipi_msr_count
+.global fstart_sipi_unlock_msr
+.global fstart_sipi_unlock_bits
 .global fstart_sipi_msr_table
 
 .code16
@@ -117,6 +119,16 @@ prot32:
 	rdmsr
 	andl $~(1 << 11), %eax
 	wrmsr
+	/* Some MSRs of the table are only writable with an unlock bit set in
+	 * another MSR (AMD: SYSCFG.MtrrFixDramModEn for the fixed MTRRs'
+	 * RdDram/WrDram). Set it on the AP's own value. */
+	movl SIPI_BASE + fstart_sipi_unlock_msr - fstart_sipi_start, %ecx
+	testl %ecx, %ecx
+	jz 1f
+	rdmsr
+	orl SIPI_BASE + fstart_sipi_unlock_bits - fstart_sipi_start, %eax
+	wrmsr
+1:
 	movl $SIPI_BASE + fstart_sipi_msr_table - fstart_sipi_start, %edi
 	movl SIPI_BASE + fstart_sipi_msr_count - fstart_sipi_start, %ebp
 msr_replay:
@@ -130,6 +142,15 @@ msr_replay:
 	decl %ebp
 	jmp msr_replay
 msr_replay_done:
+	movl SIPI_BASE + fstart_sipi_unlock_msr - fstart_sipi_start, %ecx
+	testl %ecx, %ecx
+	jz 1f
+	rdmsr
+	movl SIPI_BASE + fstart_sipi_unlock_bits - fstart_sipi_start, %ebx
+	notl %ebx
+	andl %ebx, %eax
+	wrmsr
+1:
 
 #ifdef FSTART_PROTECTED_MODE
 	/* No paging: join cache coherency now that the BSP's MTRRs/PAT are in
@@ -217,6 +238,10 @@ fstart_sipi_stack_size:
 fstart_sipi_ap_limit:
 	.long 0
 fstart_sipi_ap_counter:
+	.long 0
+fstart_sipi_unlock_msr:
+	.long 0
+fstart_sipi_unlock_bits:
 	.long 0
 fstart_sipi_msr_count:
 	.long 0

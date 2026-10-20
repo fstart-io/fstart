@@ -192,6 +192,13 @@ pub trait CpuDriver: Send + Sync {
         default_sipi_msrs()
     }
 
+    /// An MSR and bits every AP sets on its own value while it replays
+    /// [`Self::sipi_msrs`] and clears afterwards: AMD needs
+    /// SYSCFG.MtrrFixDramModEn to write the fixed MTRRs' RdDram/WrDram bits.
+    fn sipi_unlock(&self) -> Option<(u32, u32)> {
+        None
+    }
+
     /// BSP-only: called after all CPUs are initialized and APs are parked.
     fn post_mp_init(&self) {}
 
@@ -530,6 +537,10 @@ pub fn current_cpu_index() -> u32 {
 // AP entry point (called from SIPI trampoline)
 // ---------------------------------------------------------------------------
 
+/// The BSP's IDTR, loaded by every AP.
+#[cfg(target_arch = "x86_64")]
+static mut BSP_IDTR: [u16; 5] = [0; 5];
+
 /// C-callable AP entry point.  The SIPI trampoline jumps here after
 /// entering 64-bit long mode with a valid stack.
 ///
@@ -540,6 +551,13 @@ pub fn current_cpu_index() -> u32 {
 /// Called from assembly with a valid stack and identity-mapped page tables.
 #[unsafe(no_mangle)]
 pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
+    // Share the BSP's exception handlers: a faulting AP reports instead of
+    // triple-faulting the machine.
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: the BSP stored its live IDTR before releasing any AP.
+    unsafe {
+        core::arch::asm!("lidt [{}]", in(reg) core::ptr::addr_of!(BSP_IDTR), options(readonly, nostack));
+    }
     // Enable the local APIC and set up virtual wire.
     let lapic = Lapic::from_msr();
     lapic.enable();
@@ -597,9 +615,10 @@ fn start_aps(
     max_aps: u16,
     lapic: &Lapic,
     msrs: &[crate::x86::mtrr::MsrEntry],
+    unlock: Option<(u32, u32)>,
     launch: Option<&mut dyn FnMut(u16) -> Result<(), u32>>,
 ) -> Result<u16, MpError> {
-    install_sipi_trampoline(max_aps, lapic, msrs)?;
+    install_sipi_trampoline(max_aps, lapic, msrs, unlock)?;
 
     if let Some(launch) = launch {
         fstart_log::info!("mp: platform release of {} AP(s)", max_aps);
@@ -716,6 +735,12 @@ fn mp_init_inner(
         config.max_cpus
     );
 
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: SIDT only stores the current IDTR; no AP runs yet.
+    unsafe {
+        core::arch::asm!("sidt [{}]", in(reg) core::ptr::addr_of_mut!(BSP_IDTR), options(nostack));
+    }
+
     // --- Step 1: BSP LAPIC setup ---
     let lapic = Lapic::from_msr();
     lapic.enable();
@@ -725,14 +750,15 @@ fn mp_init_inner(
 
     // The BSP solution is complete before any AP starts. Model drivers must
     // not recalculate MTRRs; SIPI replays the exact BSP MSRs before caching.
-    let msrs = match config
+    let driver = config
         .cpu_drivers
         .iter()
-        .find(|driver| driver.matches(CpuIdentity::current()))
-    {
+        .find(|driver| driver.matches(CpuIdentity::current()));
+    let msrs = match driver {
         Some(driver) => driver.sipi_msrs()?,
         None => default_sipi_msrs()?,
     };
+    let unlock = driver.and_then(|driver| driver.sipi_unlock());
 
     // Pre-MP CPU-driver hooks (BSP only).
     pre_mp_cpu_drivers(config.cpu_drivers);
@@ -740,7 +766,7 @@ fn mp_init_inner(
     // APs reach the drivers through the published config; it is
     // withdrawn before returning on every path.
     publish_config(config);
-    let flown = fly(config, max_aps, &lapic, &msrs, launch);
+    let flown = fly(config, max_aps, &lapic, &msrs, unlock, launch);
     clear_mp_globals();
     let final_count = flown?;
 
@@ -760,6 +786,7 @@ fn fly(
     max_aps: u16,
     lapic: &Lapic,
     msrs: &[crate::x86::mtrr::MsrEntry],
+    unlock: Option<(u32, u32)>,
     launch: Option<&mut dyn FnMut(u16) -> Result<(), u32>>,
 ) -> Result<u16, MpError> {
     CPU_INIT_ERRORS.store(0, Ordering::Release);
@@ -776,7 +803,7 @@ fn fly(
     let final_count = if max_aps == 0 {
         0
     } else {
-        start_aps(max_aps, lapic, msrs, launch)?
+        start_aps(max_aps, lapic, msrs, unlock, launch)?
     };
 
     // Walk the flight plan on the BSP side; APs walk it in `fstart_ap_entry`.
@@ -857,6 +884,7 @@ fn install_sipi_trampoline(
     max_aps: u16,
     _lapic: &Lapic,
     msrs: &[crate::x86::mtrr::MsrEntry],
+    unlock: Option<(u32, u32)>,
 ) -> Result<(), MpError> {
     if max_aps as usize > MAX_APS || sipi_blob::TRAMPOLINE.len() > 4096 {
         return Err(MpError::TrampolinePlacementFailed);
@@ -885,6 +913,9 @@ fn install_sipi_trampoline(
         patch_u32(dst, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
         patch_u32(dst, sipi_blob::AP_LIMIT_OFFSET, u32::from(max_aps));
         patch_u32(dst, sipi_blob::AP_COUNTER_OFFSET, 0);
+        let (unlock_msr, unlock_bits) = unlock.unwrap_or((0, 0));
+        patch_u32(dst, sipi_blob::UNLOCK_MSR_OFFSET, unlock_msr);
+        patch_u32(dst, sipi_blob::UNLOCK_BITS_OFFSET, unlock_bits);
         patch_msr_table(
             core::slice::from_raw_parts_mut(dst, sipi_blob::TRAMPOLINE.len()),
             msrs,
