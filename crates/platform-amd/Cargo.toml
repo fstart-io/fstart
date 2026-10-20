@@ -13,7 +13,7 @@ linked-microcode = ["picasso"]
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
 # Compiler/check/editor support; still a non-bootable console checkpoint.
 bundle-checkpoint = ["picasso"]
-zeppelin = ["fstart-driver-amd/zeppelin", "dep:fstart-arch"]
+zeppelin = ["fstart-driver-amd/zeppelin", "dep:fstart-arch", "dep:embedded-hal"]
 # The Zeppelin ACPI tables.
 acpi = ["zeppelin", "dep:fstart-acpi", "dep:fstart-acpi-macros"]
 # The Zeppelin reset image: one DRAM stage from reset vector to payload.
@@ -50,4 +50,5 @@ fstart-stage = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 zerocopy = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+embedded-hal = { workspace = true, optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }

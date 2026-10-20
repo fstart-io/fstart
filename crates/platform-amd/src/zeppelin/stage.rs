@@ -3,7 +3,7 @@
 //! the image it copied to DRAM. `psp_reset.S` enters long mode and continues
 //! at the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
 //! board's `fstart_main`.
-use super::{Board, BoardCtx, acpi, boot, cpu::ZeppelinCpu, layout, memory, pci};
+use super::{Board, BoardCtx, Clock, acpi, boot, cpu::ZeppelinCpu, layout, memory, pci};
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
     fam17h::{
@@ -72,19 +72,6 @@ static mut SMU_PAGES: SmuPages = SmuPages([[0; 4096]; 2 * MAX_DIES]);
 struct SmuPolicy([u8; 0x80]);
 static mut SMU_POLICY: SmuPolicy = SmuPolicy([0; 0x80]);
 static mut DXIO_BUFFERS: dxio::Buffers = dxio::Buffers::new();
-
-struct Clock {
-    mhz: u32,
-}
-impl Clock {
-    fn delay_us(&self, us: u32) {
-        tsc::delay_us(self.mhz, us)
-    }
-    fn now_us(&self) -> u64 {
-        // SAFETY: RDTSC has no side effects.
-        unsafe { core::arch::x86_64::_rdtsc() / u64::from(self.mhz) }
-    }
-}
 
 fn console<B: Board>() {
     let Ok(console) = Ns16550::new(B::console()) else { halt() };
@@ -257,7 +244,7 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
     fch::multi::reset(&mut bus, dies, s.package, |die| nonpci[usize::from(die)], &mut delay);
     B::fch_reset_done(&mut BoardCtx {
         dies,
-        delay_us: &mut delay,
+        clock,
     });
 
     // AmdNbioBaseZPPei, AmdCcxZenZpPei.
@@ -295,7 +282,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
         let set = B::dxio_descriptors(
             &mut BoardCtx {
                 dies,
-                delay_us: &mut delay,
+                clock,
             },
             die.index(),
         );
@@ -328,7 +315,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     }
     B::dxio_training_done(&mut BoardCtx {
         dies,
-        delay_us: &mut delay,
+        clock,
     });
 
     // FchTaishanPei USB, then the DXE drivers.
@@ -504,7 +491,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     pm.acpi_ports_without_smm(fch::ACPI_PORTS);
     B::mainboard_final(&mut BoardCtx {
         dies,
-        delay_us: &mut delay,
+        clock,
     });
 
     // IOAPICs: the FCH's (GSI 0-23, ID 0) in virtual-wire mode, then one
@@ -541,7 +528,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     fch::late_init(&mut bus);
     B::ready_to_boot(&mut BoardCtx {
         dies,
-        delay_us: &mut delay,
+        clock,
     });
     for die in dies {
         fabric::disable_ext_cfg(&mut die.df());

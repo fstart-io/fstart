@@ -26,7 +26,7 @@ use fstart_driver_amd::{
     zeppelin::{
         MAX_DIES,
         dxio::Descriptor,
-        fch::{Devices, irq::Route},
+        fch::{self, Devices, irq::Route},
         topology::Die,
     },
 };
@@ -36,16 +36,46 @@ use fstart_pci::{ConfigRegionAccess, ecam::GlobalEcam};
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 pub use stage::Program;
 
-/// What the board hooks get: the dies and a delay.
-pub struct BoardCtx<'a> {
-    pub dies: &'a [Die<GlobalEcam>],
-    pub delay_us: &'a mut dyn FnMut(u32),
+/// The TSC as the time base, at its P0 frequency.
+#[derive(Debug, Clone, Copy)]
+pub struct Clock {
+    pub(crate) mhz: u32,
 }
-impl BoardCtx<'_> {
-    pub fn delay_us(&mut self, us: u32) {
-        (self.delay_us)(us)
+#[cfg(target_arch = "x86_64")]
+impl Clock {
+    pub fn delay_us(&self, us: u32) {
+        fstart_driver_amd::fam17h::tsc::delay_us(self.mhz, us)
+    }
+    pub fn now_us(&self) -> u64 {
+        // SAFETY: RDTSC has no side effects.
+        unsafe { core::arch::x86_64::_rdtsc() / u64::from(self.mhz) }
     }
 }
+#[cfg(target_arch = "x86_64")]
+impl embedded_hal::delay::DelayNs for Clock {
+    fn delay_ns(&mut self, ns: u32) {
+        Clock::delay_us(self, ns.div_ceil(1000))
+    }
+    fn delay_us(&mut self, us: u32) {
+        Clock::delay_us(self, us)
+    }
+}
+
+/// What the board hooks get: the dies and the clock.
+pub struct BoardCtx<'a> {
+    pub dies: &'a [Die<GlobalEcam>],
+    pub clock: Clock,
+}
+impl BoardCtx<'_> {
+    /// The FCH registers of die 0, for pad routing and the like.
+    pub fn fch(&mut self) -> fch::NativeBus {
+        // SAFETY: board hooks run on the BSP between the platform's own FCH
+        // accesses, with the ACPI MMIO and ECAM decoded; the borrow of the
+        // context keeps them sequential.
+        unsafe { fch::NativeBus::new() }
+    }
+}
+
 
 /// Board wiring and hooks. The platform owns the order of calls.
 pub trait Board: 'static {
