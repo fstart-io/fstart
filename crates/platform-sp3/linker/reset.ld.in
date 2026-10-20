@@ -1,0 +1,110 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0
+ *
+ * SP3 reset image (BIOS directory entry 0x62). Template filled by
+ * fstart_platform_sp3::host::linker_script, which substitutes the
+ * at-sign delimited names with layout values.
+ *
+ * IMAGE is exactly the PSP copy [destination, 0x76000000): text, rodata,
+ * the layout descriptor and .data all run in place (the PSP already put
+ * them in DRAM), the 16-bit entry sits in the last 64 KiB and the reset
+ * vector in the last 16 bytes, so the flat binary is the whole slot.
+ * Everything writable that has no initial value lives in the early region
+ * below the image (NOLOAD): page tables, BSS, heap, stack.
+ */
+OUTPUT_ARCH(i386:x86-64)
+ENTRY(_sp3_reset_vector)
+
+MEMORY {
+    IMAGE (rwx) : ORIGIN = @IMAGE_BASE@, LENGTH = @IMAGE_SIZE@
+    PAGES (rw)  : ORIGIN = @PT_BASE@, LENGTH = @PT_SIZE@
+    DATA (rw)   : ORIGIN = @DATA_BASE@, LENGTH = @DATA_SIZE@
+    HEAP (rw)   : ORIGIN = @HEAP_BASE@, LENGTH = @HEAP_SIZE@
+    STACK (rw)  : ORIGIN = @STACK_BASE@, LENGTH = @STACK_SIZE@
+}
+
+SECTIONS {
+    .text ORIGIN(IMAGE) : {
+        _text_start = .;
+        KEEP(*(.text.entry))
+        *(.text .text.* .ltext .ltext.*)
+        _text_end = .;
+    } > IMAGE
+
+@LAYOUT_SECTION@
+    .fstart.anchor : ALIGN(8) {
+        _fstart_anchor_early = .;
+        *(.fstart.anchor)
+        _fstart_early_microcode_enabled = .;
+        LONG(0)
+        . = ALIGN(8);
+        _FSTART_HEAP_SIZE = .;
+        QUAD(@HEAP_SIZE@)
+    } > IMAGE
+
+    .rodata : ALIGN(8) {
+        _rodata_start = .;
+        KEEP(*(.fstart.bootstrap_pin))
+        *(.rodata .rodata.* .lrodata .lrodata.*)
+    } > IMAGE
+    .data.rel.ro : ALIGN(8) { *(.data.rel.ro .data.rel.ro.*) } > IMAGE
+    .fstart.keep : ALIGN(8) { KEEP(*(.fstart.keep)) } > IMAGE
+    .got : ALIGN(8) { *(.got) *(.got.plt) } > IMAGE
+    .eh_frame_hdr : ALIGN(8) { *(.eh_frame_hdr) } > IMAGE
+    .eh_frame : ALIGN(8) { *(.eh_frame) } > IMAGE
+
+    /* Initialized data runs in place: _data_load == _data_start, so the
+     * arch entry's copy is a no-op. */
+    .data : ALIGN(8) {
+        _data_start = .;
+        *(.data .data.* .ldata .ldata.*)
+        _data_end = .;
+    } > IMAGE
+    _data_load = LOADADDR(.data);
+
+    /* Real-mode segment base = IMAGE end - 64 KiB; reset.S assumes the
+     * 16-bit entry at segment offset 0xf000. */
+    .sp3.entry16 (@IMAGE_END@ - 0x1000) : { KEEP(*(.sp3.entry16)) } > IMAGE
+    .sp3.reset_vector (@IMAGE_END@ - 0x10) : { KEEP(*(.sp3.reset_vector)) } > IMAGE
+
+    .sp3.page_tables (NOLOAD) : {
+        _sp3_page_tables = .;
+        . = . + @PT_SIZE@;
+        _sp3_page_tables_end = .;
+    } > PAGES
+
+    .bss (NOLOAD) : ALIGN(8) {
+        _bss_start = .;
+        *(.bss .bss.* .lbss .lbss.*)
+        *(COMMON)
+        . = ALIGN(8);
+        _bss_end = .;
+    } > DATA
+
+    .fstart.heap (NOLOAD) : ALIGN(16) {
+        _FSTART_HEAP = .;
+        . = . + @HEAP_SIZE@;
+    } > HEAP
+
+    .stack (NOLOAD) : ALIGN(16) {
+        _stack_bottom = .;
+        . = . + @STACK_SIZE@;
+        . = ALIGN(16);
+        _stack_top = .;
+        _writable_end = .;
+    } > STACK
+
+    /* No CAR on SP3: DRAM is trained before x86 runs. */
+    _has_car = 0;
+    _car_base = 0;
+    _car_size = 0;
+    _ecar_stack = _stack_top;
+    _rom_mtrr_base = 0;
+    _rom_mtrr_mask = 0;
+    _binary_end = @IMAGE_END@;
+
+    ASSERT(_sp3_page_tables == @PT_BASE@, "page tables moved")
+    ASSERT(_data_end <= @IMAGE_END@ - 0x1000, "reset image code/data overlap the 16-bit entry")
+    ASSERT(SIZEOF(.sp3.entry16) <= 0x1000 - 0x10, "16-bit entry overlaps the reset vector")
+    ASSERT(SIZEOF(.sp3.reset_vector) == 0x10, "reset vector is not 16 bytes")
+    ASSERT(_stack_top <= ORIGIN(STACK) + LENGTH(STACK), "insufficient stack space")
+}

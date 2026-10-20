@@ -7,6 +7,7 @@
 
 #[cfg(feature = "acpi")]
 pub mod acpi;
+pub mod entry;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;

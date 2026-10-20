@@ -13,6 +13,11 @@ naples = ["fstart-driver-zen/naples"]
 rome = ["fstart-driver-zen/rome"]
 milan = ["fstart-driver-zen/milan"]
 acpi = ["dep:fstart-acpi"]
+# The reset-image firmware unit (host::RESET_FEATURE): stage runtime for
+# `fstart_entry = "amd-psp-reset"` (asm/reset.S enters the arch crate's
+# `_start_ram`); `ffs` brings the stage allocator the arch identity paging
+# needs. The integrator adds the flow's own features here.
+bundle-reset = ["dep:fstart-stage", "fstart-stage/x86_64", "fstart-stage/ffs"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json"]
 
@@ -23,6 +28,7 @@ fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
 fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-stage = { workspace = true, optional = true }
 fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 heapless = { workspace = true }
