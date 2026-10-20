@@ -72,7 +72,7 @@ impl noncar::host::HostSoc for Zeppelin {
         payloads: true,
         smm: true,
         release_only: false,
-        firmware: noncar::host::Firmware::Vendor {
+        image_config: noncar::host::ImageConfig::Vendor {
             prefix: layout::VENDOR_PREFIX,
         },
     };

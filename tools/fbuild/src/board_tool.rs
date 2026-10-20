@@ -200,35 +200,38 @@ fn assemble(
         manifest,
         options.selection(payload),
     )?;
-    if let fstart_image_build::build_plan::Assembly::PicassoPsp(operation) =
-        &resolved.build.plan.assembly
-    {
+    let amd = match &resolved.build.plan.assembly {
+        fstart_image_build::build_plan::Assembly::Amd(image) => Some(image.clone()),
+        _ => None,
+    };
+    // A PSP partition without an FFS: just the stages.
+    if let Some(image) = amd.as_ref().filter(|image| image.ffs.is_none()) {
         if kernel.is_some() || firmware.is_some() || fit.is_some() {
             return Err("PSP image operation does not consume payload-file overrides".into());
         }
-        return crate::psp_image::assemble(
+        let build = resolved.build(&workspace_root, manifest, release)?;
+        let directory = resolved
+            .artifact_dir(&workspace_root, &manifest.board, release)?
+            .join("image");
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        return crate::amd_image::compose(
             &workspace_root,
-            manifest,
-            &resolved,
-            operation,
-            release,
-        )
-        .map(|image| image.image);
+            &manifest.board,
+            &directory,
+            image,
+            &build.stages,
+            None,
+        );
     }
     let config = resolved.assembler_config(&manifest.board)?;
-    let vendor_flash = match &resolved.build.plan.assembly {
-        fstart_image_build::build_plan::Assembly::VendorFlash(image) => Some(image.clone()),
-        _ => None,
-    };
     let parsed = ParsedBoard {
         config,
         acpi_only_devices: Vec::new(),
         resolved: Some(resolved),
     };
-    let manifest = manifest.clone();
     let assembled = assemble_loaded(
         &workspace_root,
-        manifest,
+        manifest.clone(),
         parsed,
         release,
         kernel,
@@ -236,43 +239,20 @@ fn assemble(
         fit,
         &options.payload_files,
     )?;
-    match vendor_flash {
-        Some(image) => compose_vendor_flash(&image, &assembled),
+    match amd {
+        Some(image) => crate::amd_image::compose(
+            &workspace_root,
+            &manifest.board,
+            assembled
+                .image
+                .parent()
+                .ok_or("FFS image has no directory")?,
+            &image,
+            &assembled.stages,
+            Some(&assembled.image),
+        ),
         None => Ok(assembled.image),
     }
-}
-
-/// Put the assembled FFS and the reset stage into the vendor flash image.
-fn compose_vendor_flash(
-    image: &fstart_image_build::amd::vendor_flash::VendorFlashAssembly,
-    assembled: &crate::assemble::AssembledImage,
-) -> Result<std::path::PathBuf, String> {
-    let read = |path: &std::path::Path| {
-        std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
-    };
-    let vendor = read(std::path::Path::new(&image.vendor.path))?;
-    let ffs = read(&assembled.image)?;
-    let reset = assembled
-        .stages
-        .iter()
-        .find(|stage| stage.name == image.reset_unit)
-        .ok_or("reset stage was not built")?;
-    let flash = fstart_image_build::amd::vendor_flash::compose(
-        &vendor,
-        &image.layout,
-        &ffs,
-        &read(&reset.run_path)?,
-    )?;
-    let out = assembled.image.with_extension("rom");
-    std::fs::write(&out, &flash).map_err(|e| format!("{}: {e}", out.display()))?;
-    eprintln!(
-        "[fstart] vendor flash image: {} (FFS {:#x} bytes at {:#x}, reset image at {:#x})",
-        out.display(),
-        ffs.len(),
-        image.layout.ffs_offset,
-        image.layout.reset_offset
-    );
-    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]

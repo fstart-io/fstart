@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Picasso's first-generation PSP image format.
+//! AMD PSP flash images, in the format of `fstart_amdfw`: [`assembly`]
+//! composes a stage's image from a vendor image or packed blobs;
+//! [`PicassoImage`] packs Picasso's first-generation PSP partition.
 //!
-//! This deliberately does not pretend to support newer multi-level/ISH formats.
-//! Signed AMD blobs are copied unchanged; this is a packer, not a signing tool.
+//! The packer deliberately does not pretend to support newer multi-level/ISH
+//! formats. Signed AMD blobs are copied unchanged; this is a packer, not a
+//! signing tool.
 pub mod apcb;
 pub mod assembly;
 pub mod config;
-pub mod vendor_flash;
 
 use fstart_amdfw::{
     directory::{BIOS_COOKIE, BiosEntry, Header, PSP_COOKIE, PspEntry, bios, fletcher32, psp},

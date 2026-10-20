@@ -5,7 +5,7 @@
 //! its manifest go into an FFS in the flash if the layout has one.
 //!
 //! With `--image-config` the plan also composes the flash image with the PSP
-//! firmware ([`Firmware`]).
+//! firmware ([`ImageConfig`]).
 extern crate std;
 use super::{Board, Soc, layout::Layout};
 use fstart_core::{
@@ -13,10 +13,7 @@ use fstart_core::{
     PayloadConfig, Platform, SocImageFormat, StageBuildConfig, StageLayout, layout::RegionKind,
 };
 use fstart_image_build::{
-    amd::{
-        assembly::PicassoAssembly,
-        vendor_flash::{VendorFlashAssembly, VendorFlashLayout, read_bios_directory},
-    },
+    amd::assembly::{AmdAssembly, FfsWindow, Firmware, PicassoFiles},
     build_plan::{
         ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema,
         FfsAssembly, FileBinding, InputFile, UnitOutput,
@@ -53,11 +50,11 @@ pub struct Policy {
     /// Debug builds don't fit the image.
     pub release_only: bool,
     /// Where the PSP firmware of a full image comes from.
-    pub firmware: Firmware,
+    pub image_config: ImageConfig,
 }
 
-/// The `--image-config` of a full image.
-pub enum Firmware {
+/// What the `--image-config` of a full image is.
+pub enum ImageConfig {
     /// A vendor flash image: its first `prefix` bytes (EFS, directories,
     /// signed blobs) stay, the stage replaces the reset image.
     Vendor { prefix: u32 },
@@ -418,52 +415,8 @@ fn ffs(layout: &Layout, ffs: Span, payload: Option<PayloadConfig>) -> FfsAssembl
     }
 }
 
-/// Check the explicit vendor image against the layout the stage is linked
-/// for: its BIOS directory must describe the reset image and the APOB.
-fn vendor_layout<S: Soc>(path: &str, prefix: u32, ffs: Span) -> Result<VendorFlashLayout, String> {
-    let layout = &S::LAYOUT;
-    let flash_size = layout.flash.size as u32;
-    let bytes = std::fs::read(path).map_err(|e| format!("vendor image {path}: {e}"))?;
-    if bytes.len() != flash_size as usize {
-        return Err(format!(
-            "vendor image {path} is {:#x} bytes, the flash {flash_size:#x}",
-            bytes.len(),
-        ));
-    }
-    let facts = read_bios_directory(&bytes, prefix, S::BIOS_DIRECTORY)?;
-    let vendor = VendorFlashLayout {
-        flash_size,
-        prefix_size: prefix,
-        ffs_offset: (ffs.base - layout.flash.base) as u32,
-        ffs_size: ffs.size as u32,
-        reset_offset: (layout.flash.size - layout.image.size) as u32,
-        reset_size: layout.image.size as u32,
-        reset_destination: layout.image.base,
-        apob_destination: S::APOB.base,
-        bios_directory: S::BIOS_DIRECTORY,
-    };
-    vendor.validate()?;
-    if (
-        facts.reset_offset,
-        facts.reset_size,
-        facts.reset_destination,
-        facts.apob_destination,
-    ) != (
-        vendor.reset_offset,
-        vendor.reset_size,
-        vendor.reset_destination,
-        vendor.apob_destination,
-    ) {
-        return Err(format!(
-            "vendor BIOS directory {facts:?} doesn't match the {} layout {vendor:?}",
-            S::NAME
-        ));
-    }
-    Ok(vendor)
-}
-
 /// The explicit, bounded JSON list of PSP blobs.
-fn packed_files(path: &str) -> Result<fstart_image_build::amd::assembly::PicassoFiles, String> {
+fn packed_files(path: &str) -> Result<PicassoFiles, String> {
     let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > IMAGE_CONFIG_SIZE {
         return Err("image configuration is not a bounded nonempty regular file".into());
@@ -485,7 +438,6 @@ fn assembly<S: HostSoc>(
     ffs: Option<FfsAssembly>,
 ) -> Result<Assembly, String> {
     let layout = &S::LAYOUT;
-    let image = image(layout);
     let Some(path) = &selection.image_config else {
         return Ok(match ffs {
             Some(ffs) => Assembly::Ffs(Box::new(ffs)),
@@ -494,40 +446,51 @@ fn assembly<S: HostSoc>(
             },
         });
     };
-    Ok(match (&S::POLICY.firmware, ffs, layout.ffs) {
-        (Firmware::Vendor { prefix }, Some(ffs), Some(window)) => {
-            let layout = vendor_layout::<S>(path, *prefix, span(window.base, window.size))?;
-            Assembly::VendorFlash(Box::new(VendorFlashAssembly {
-                ffs,
-                vendor: FileBinding {
-                    environment: "VENDOR_FLASH".into(),
-                    path: path.clone(),
-                    capacity: u64::from(layout.flash_size),
-                },
-                layout,
-                reset_unit: UNIT.into(),
-            }))
-        }
-        (Firmware::Packed, None, _) => {
-            let operation = PicassoAssembly {
-                reset_unit: UNIT.into(),
-                configuration: FileBinding {
-                    environment: "IMAGE_CONFIG".into(),
-                    path: path.clone(),
-                    capacity: IMAGE_CONFIG_SIZE,
-                },
-                files: packed_files(path)?,
-                reset_destination: image.base,
-                reset_size: image.size as u32,
-                apob_destination: S::APOB.base,
-                // Entry 0x6B is only for a PSP verstage.
-                shared_memory: None,
-            };
-            operation.validate()?;
-            Assembly::PicassoPsp(Box::new(operation))
-        }
-        _ => return Err("the SoC's image has no FFS for its firmware".into()),
-    })
+    let flash_size = layout.flash.size as u32;
+    let firmware = match S::POLICY.image_config {
+        ImageConfig::Vendor { prefix } => Firmware::Vendor {
+            image: FileBinding {
+                environment: "VENDOR_FLASH".into(),
+                path: path.clone(),
+                capacity: u64::from(flash_size),
+            },
+            prefix_size: prefix,
+        },
+        ImageConfig::Packed => Firmware::Packed {
+            configuration: FileBinding {
+                environment: "IMAGE_CONFIG".into(),
+                path: path.clone(),
+                capacity: IMAGE_CONFIG_SIZE,
+            },
+            files: packed_files(path)?,
+        },
+    };
+    let assembly = AmdAssembly {
+        firmware,
+        ffs: ffs.zip(layout.ffs).map(|(assembly, window)| FfsWindow {
+            assembly,
+            offset: (window.base - layout.flash.base) as u32,
+            size: window.size as u32,
+        }),
+        reset_unit: UNIT.into(),
+        flash_size,
+        bios_directory: S::BIOS_DIRECTORY,
+        reset_size: layout.image.size as u32,
+        reset_destination: layout.image.base,
+        apob_destination: S::APOB.base,
+        // Entry 0x6B is only for a PSP verstage.
+        shared_memory: None,
+    };
+    assembly.validate()?;
+    // Check the vendor image against the layout the stage is linked for
+    // before building.
+    if let Firmware::Vendor { .. } = assembly.firmware {
+        let vendor = std::fs::read(path).map_err(|e| format!("vendor image {path}: {e}"))?;
+        assembly
+            .check_vendor(&vendor)
+            .map_err(|e| format!("vendor image {path}: {e}"))?;
+    }
+    Ok(Assembly::Amd(Box::new(assembly)))
 }
 
 /// The build plan of board `B`.

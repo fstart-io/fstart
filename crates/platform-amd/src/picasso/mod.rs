@@ -93,7 +93,7 @@ impl noncar::host::HostSoc for Picasso {
         payloads: false,
         smm: false,
         release_only: true,
-        firmware: noncar::host::Firmware::Packed,
+        image_config: noncar::host::ImageConfig::Packed,
     };
     fn check(config: &Config) -> Result<(), &'static str> {
         (config.fch.console_uart < UART_BASES.len() as u8)

@@ -103,11 +103,12 @@ fn checkpoint_has_no_compiler_inputs_and_no_image_projection() {
     image_selection.image_config = Some(config_path.to_str().unwrap().into());
     let image_plan = resolve::<Vilboz>(image_selection.clone()).unwrap();
     assert!(image_plan.assembly.config("test").is_err());
-    let Assembly::PicassoPsp(operation) = &image_plan.assembly else {
+    let Assembly::Amd(operation) = &image_plan.assembly else {
         unreachable!()
     };
+    assert!(operation.ffs.is_none());
     assert_eq!(
-        operation.configuration.path,
+        operation.firmware.configuration().path,
         image_selection.image_config.clone().unwrap()
     );
     assert_eq!(operation.reset_destination, picasso::LAYOUT.image.base);
@@ -116,7 +117,7 @@ fn checkpoint_has_no_compiler_inputs_and_no_image_projection() {
         .unwrap();
     assert!(plan.validate_image_selection(&image_selection).is_err());
     let mut wrong = image_plan.clone();
-    let Assembly::PicassoPsp(operation) = &mut wrong.assembly else {
+    let Assembly::Amd(operation) = &mut wrong.assembly else {
         unreachable!()
     };
     operation.reset_destination += 0x10000;
@@ -209,13 +210,14 @@ fn zeppelin_composes_the_vendor_image() {
     };
     std::fs::write(&path, vendor_flash(0x76db_0000)).unwrap();
     let plan = resolve::<Mj11>(selection(&path)).unwrap();
-    let Assembly::VendorFlash(image) = &plan.assembly else {
+    let Assembly::Amd(image) = &plan.assembly else {
         unreachable!()
     };
-    assert_eq!(image.vendor.path, path.to_str().unwrap());
+    assert_eq!(image.firmware.configuration().path, path.to_str().unwrap());
+    let ffs = image.ffs.as_ref().unwrap();
     assert_eq!(
-        (image.layout.ffs_offset, image.layout.reset_offset),
-        (0x29_4000, 0xdb_0000)
+        (ffs.offset, ffs.size, image.reset_size),
+        (0x29_4000, 0xdb_0000 - 0x29_4000, 0x25_0000)
     );
     assert_eq!(plan.inputs[0].capacity, 0xdb_0000 - 0x29_4000);
     // The vendor's PSP copies the reset image elsewhere.
