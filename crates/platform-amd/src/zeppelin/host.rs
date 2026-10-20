@@ -16,8 +16,8 @@ use fstart_core::{
 use fstart_image_build::{
     amd::vendor_flash::{VendorFlashAssembly, VendorFlashLayout, read_bios_directory},
     build_plan::{
-        Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema, FfsAssembly,
-        FileBinding, InputFile, UnitOutput,
+        ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema,
+        FfsAssembly, FileBinding, InputFile, UnitOutput,
     },
     elf::{Architecture, Descriptor, Expectations},
     layout::EncodedLayout,
@@ -33,8 +33,57 @@ use std::{
 
 pub const ENTRY: &str = "amd-psp-reset";
 const UNIT: &str = "stage";
+const SMM_UNIT: &str = "smm";
 /// Up to 32 threads (two dies of eight SMT cores).
 const MAX_CPUS: u16 = 32;
+
+fn cfg_schema() -> CompilerCfgSchema {
+    CompilerCfgSchema {
+        entries: vec![ENTRY.into()],
+        environments: vec!["monolithic".into(), "smm".into()],
+        payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
+    }
+}
+
+/// The board's SMM handler as a standalone image, one entry per CPU, which
+/// the stage embeds (`FSTART_SMM_IMAGE`).
+fn smm_unit() -> CompilationUnit {
+    CompilationUnit {
+        name: SMM_UNIT.into(),
+        cargo_target: CargoTarget::BoardLibrary,
+        target: "x86_64-unknown-none".into(),
+        entry: ENTRY.into(),
+        cfg_schema: cfg_schema(),
+        environment: "smm".into(),
+        payload: "halt".into(),
+        features: vec!["smm".into(), "bundle-smm".into()],
+        build_std: None,
+        release_only: true,
+        linker_script: None,
+        rustflags: [
+            "-Cpanic=abort",
+            "-Copt-level=s",
+            // Direct relative calls; absolute cross-section references are audited.
+            "-Crelocation-model=static",
+            "-Cno-redzone=yes",
+            "-Clinker-plugin-lto=no",
+            "-Cembed-bitcode=no",
+            "-Zfunction-sections=yes",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect(),
+        environment_values: BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), MAX_CPUS.to_string())]),
+        bindings: vec![],
+        file_bindings: vec![],
+        output: UnitOutput::SmmImage {
+            entry_count: MAX_CPUS,
+            stack_size: 0x800,
+            coreboot_module_args: false,
+            coreboot_header: false,
+        },
+    }
+}
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: super::Board> Plan<B> {
@@ -373,18 +422,14 @@ pub fn resolve<B: super::Board>(selection: BuildSelection) -> Result<BuildPlan, 
         stages: vec![UNIT.into()],
         inputs,
         assembly,
-        units: vec![CompilationUnit {
+        units: vec![smm_unit(), CompilationUnit {
             name: UNIT.into(),
             cargo_target: CargoTarget::BoardBinary,
             target: "x86_64-unknown-none".into(),
             entry: ENTRY.into(),
             environment: "monolithic".into(),
             payload: payload.into(),
-            cfg_schema: CompilerCfgSchema {
-                entries: vec![ENTRY.into()],
-                environments: vec!["monolithic".into()],
-                payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
-            },
+            cfg_schema: cfg_schema(),
             features: core::iter::once("bundle-zeppelin")
                 .chain(feature)
                 .map(String::from)
@@ -403,7 +448,11 @@ pub fn resolve<B: super::Board>(selection: BuildSelection) -> Result<BuildPlan, 
                 "FSTART_MP_MAX_CPUS".into(),
                 MAX_CPUS.to_string(),
             )]),
-            bindings: vec![],
+            bindings: vec![ArtifactBinding {
+                producer: SMM_UNIT.into(),
+                artifact: "image".into(),
+                environment: "FSTART_SMM_IMAGE".into(),
+            }],
             file_bindings: vec![],
             output: UnitOutput::Executable {
                 expectations,

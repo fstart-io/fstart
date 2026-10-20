@@ -31,6 +31,11 @@ bundle-zeppelin = [
   "fstart-stage/sha2-digest",
   "fstart-stage/lz4",
 ]
+# The FCH SMM handler and `smm_bin!` for a board's SMM unit; the stage
+# embeds the image fbuild built from it (FSTART_SMM_IMAGE).
+smm = ["zeppelin", "fstart-driver-amd/smm", "dep:fstart-smm"]
+# SMM-unit builds only: adds the SMM panic handler, which a stage has itself.
+bundle-smm = ["smm", "fstart-smm/stage-bin"]
 payload-linux = ["fstart-stage?/linux"]
 payload-uefi = ["payload-uefi-basic", "fstart-stage?/crabefi"]
 payload-uefi-basic = ["fstart-stage?/crabefi-basic"]
@@ -52,3 +57,4 @@ zerocopy = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 embedded-hal = { workspace = true, optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }
+fstart-smm = { workspace = true, optional = true }

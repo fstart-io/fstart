@@ -828,6 +828,7 @@ dependencies = [
  "fstart-image-build",
  "fstart-log",
  "fstart-pci",
+ "fstart-smm",
  "fstart-stage",
  "heapless 0.8.0",
  "serde_json",

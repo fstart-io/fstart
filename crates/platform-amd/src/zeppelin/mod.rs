@@ -15,6 +15,8 @@ mod memory;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod pci;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
+mod smm;
+#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod stage;
 
 extern crate alloc;
@@ -96,6 +98,9 @@ pub trait Board: 'static {
     }; MAX_DIES];
     /// The FCH PCI interrupt router (0xc00/0xc01) table.
     const IRQ_ROUTES: &'static [Route];
+    /// GEVENT pins (bit n = GEVENTn) routed to the board's SMM handler,
+    /// `fstart_driver_amd::zeppelin::fch::smm::SmmBoard::gevent`.
+    const SMI_GEVENTS: u32 = 0;
 
     /// LPC decodes and Super I/O routing for the console, before any
     /// output.

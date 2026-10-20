@@ -196,12 +196,11 @@ impl Fch {
         pm.gpe.set(ports.gpe);
         pm.config.modify(AcpiConfig::DECODE_STD::SET);
     }
-    /// fch_init_acpi_ports without an SMI handler: no SMI command port, so no
-    /// SMI routing is enabled.
-    pub fn acpi_ports_without_smm(&mut self, ports: AcpiPorts) {
+    /// fch_init_acpi_ports: the ACPI blocks and the standard features. The SMI
+    /// command port belongs to [`smi::FchSmi`].
+    pub fn acpi_ports(&mut self, ports: AcpiPorts) {
         self.acpi_decode(ports);
         let pm = self.pm();
-        pm.command.set(0);
         pm.config.write(
             AcpiConfig::DECODE_STD::SET
                 + AcpiConfig::GLOBAL_EN::SET

@@ -3,7 +3,7 @@
 //! the image it copied to DRAM. `psp_reset.S` enters long mode and continues
 //! at the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
 //! board's `fstart_main`.
-use super::{Board, BoardCtx, Clock, acpi, boot, cpu::ZeppelinCpu, layout, memory, pci};
+use super::{Board, BoardCtx, Clock, acpi, boot, cpu::ZeppelinCpu, layout, memory, pci, smm};
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
     fam17h::{
@@ -105,6 +105,7 @@ struct Silicon {
     package: Package,
     clock: Clock,
     e820: E820State,
+    tseg: u64,
 }
 
 fn run<B: Board>() -> ! {
@@ -159,6 +160,7 @@ fn run<B: Board>() -> ! {
         Hex(top_mem2.unwrap_or(0)),
         Hex(map.top)
     );
+    let tseg = memory::tseg_base(&map, top_mem);
     let e820 = match memory::e820(&map, top_mem) {
         Ok(e820) => e820,
         Err(_) => fail("memory map"),
@@ -183,6 +185,7 @@ fn run<B: Board>() -> ! {
         package,
         clock,
         e820,
+        tseg,
     };
     early_silicon::<B>(&mut silicon, top_mem, top_mem2, &map);
     post(0x40);
@@ -461,6 +464,10 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     if smu::ccx_done(dies, &mut delay).is_err() {
         fstart_log::error!("zeppelin: SMU CCX-done messages failed");
     }
+    if let Err(error) = smm::install::<B>(&mp, s.tseg) {
+        fstart_log::error!("zeppelin: SMM: {}", error);
+        fail("SMM installation");
+    }
     post(0x42);
 
     // PCI: the interrupt router first, then the bus.
@@ -489,7 +496,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
             );
         }
     }
-    pm.acpi_ports_without_smm(fch::ACPI_PORTS);
+    pm.acpi_ports(fch::ACPI_PORTS);
     B::mainboard_final(&mut BoardCtx {
         dies,
         clock,
@@ -511,12 +518,6 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     }
 
     let rsdp = acpi_tables::<B>(s, &ecam, &apic_ids, &ioapics);
-    // ACPI mode without SMM: the firmware enables SCI itself.
-    // SAFETY: the PM1 control block the FCH decodes at this port.
-    unsafe {
-        let control = fstart_core::pio::inw(soc::acpi_io::PM1_CNT);
-        fstart_core::pio::outw(soc::acpi_io::PM1_CNT, control | 1);
-    }
 
     // ReadyToBoot of the vendor firmware.
     if let Some(sata) = ecam.devices().find(|a| {

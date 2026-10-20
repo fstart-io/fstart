@@ -18,11 +18,22 @@ pub fn low_top(apob: &MemoryMap, top_mem: u64) -> u64 {
     apob.low_top_above(1 << 30).min(top_mem)
 }
 
-/// The e820 map handed to the payload: APOB holes and the firmware's own
-/// DRAM (early region, APOB, AP bootstrap page) reserved.
+/// 8 MiB of TSEG.
+pub const TSEG_SIZE: u32 = 8 << 20;
+
+/// TSEG at the top of the DRAM below 4 GiB, aligned to its size.
+pub fn tseg_base(apob: &MemoryMap, top_mem: u64) -> u64 {
+    let size = u64::from(TSEG_SIZE);
+    low_top(apob, top_mem).saturating_sub(size) & !(size - 1)
+}
+
+/// The e820 map handed to the payload: APOB holes, TSEG and everything above
+/// it, and the firmware's own DRAM (early region, APOB, AP bootstrap page)
+/// reserved.
 pub fn e820(apob: &MemoryMap, top_mem: u64) -> Result<E820State, Error> {
     let low = low_top(apob, top_mem);
-    if low <= layout::EARLY_END || low > 1 << 32 {
+    let tseg = tseg_base(apob, top_mem);
+    if low > 1 << 32 || tseg < layout::EARLY_END {
         return Err(Error::Boundary);
     }
     let mut map = E820State::new();
@@ -36,6 +47,7 @@ pub fn e820(apob: &MemoryMap, top_mem: u64) -> Result<E820State, Error> {
         // Unknown APOB hole types are still not RAM.
         reserve(&mut map, hole.base, hole.size)?;
     }
+    reserve(&mut map, tseg, low - tseg)?;
     // Parked APs, firmware tables and DMA buffers live here until reset.
     reserve(&mut map, layout::EARLY_START, layout::EARLY_END - layout::EARLY_START)?;
     reserve(&mut map, soc::APOB_BASE, soc::APOB_SIZE as u64)?;

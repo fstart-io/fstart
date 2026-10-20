@@ -9,6 +9,8 @@ mod bmc;
 mod dxio;
 mod gpio;
 mod i2c;
+#[cfg(fstart_stage_env = "smm")]
+pub mod smm;
 mod variant;
 
 use fstart_driver_amd::{
@@ -29,6 +31,9 @@ use fstart_pci::ConfigRegionAccess;
 use fstart_platform_amd::zeppelin::BoardCtx;
 
 pub struct Board;
+
+/// The BMC's diagnostic interrupt button.
+const NMI_BUTTON_GEVENT: u8 = 11;
 
 const SIO_PORT: u16 = 0x2e;
 const COM1: u16 = 0x3f8;
@@ -104,6 +109,7 @@ impl fstart_platform_amd::zeppelin::Board for Board {
     /// Gigabyte.
     const SUBSYSTEM_ID: u32 = 0x1000_1458;
     const IRQ_ROUTES: &'static [Route] = IRQ_ROUTES;
+    const SMI_GEVENTS: u32 = 1 << NMI_BUTTON_GEVENT;
 
     fn dxio_descriptors(_ctx: &mut BoardCtx<'_>, die: u8) -> &'static [Descriptor] {
         if die == 0 { dxio::DEFAULT } else { &[] }

@@ -248,8 +248,12 @@ fn platform(inputs: &Inputs) -> X86Config {
         pmbase: acpi_io::BASE,
         gpe0_offset: acpi_io::GPE0 - acpi_io::BASE,
         gpe0_length: 8,
-        // No SMM: the platform enables SCI_EN itself.
-        acpi_smi: None,
+        // The OS enables SCI_EN through the FCH SMM handler.
+        acpi_smi: Some(fstart_core::acpi::AcpiSmiConfig {
+            smi_cmd: fstart_driver_amd::fch::smi::APM_CNT.into(),
+            acpi_enable: fstart_driver_amd::fch::smi::ACPI_ENABLE,
+            acpi_disable: fstart_driver_amd::fch::smi::ACPI_DISABLE,
+        }),
         fadt: X86Fadt {
             // The default SMBIOS enclosure is a desktop.
             pm_profile: PmProfile::Desktop,
@@ -1003,6 +1007,7 @@ mod tests {
         .unwrap();
         let fadt = signature(&storage[..len], b"FACP");
         assert_eq!(&fadt[46..48], &9u16.to_le_bytes()); // SCI_INT
+        assert_eq!(&fadt[48..54], &[0xb2, 0, 0, 0, 0xe1, 0x1e]); // SMI_CMD, ACPI_EN/DIS
         assert_eq!(&fadt[56..60], &0x800u32.to_le_bytes()); // PM1a_EVT
         assert_eq!(&fadt[80..84], &0x820u32.to_le_bytes()); // GPE0
         assert_eq!(&fadt[109..111], &1u16.to_le_bytes()); // IAPC_BOOT_ARCH

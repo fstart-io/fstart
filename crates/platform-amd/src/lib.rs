@@ -14,6 +14,10 @@ pub mod zeppelin;
 #[cfg(feature = "bundle-zeppelin")]
 #[doc(hidden)]
 pub use fstart_stage as __stage;
+/// SMM image ABI and handler binding: a board's `smm.rs` binds its handler
+/// with `fstart_platform_amd::smm::smm_bin!`.
+#[cfg(feature = "smm")]
+pub use fstart_smm as smm;
 #[cfg(all(feature = "picasso", target_arch = "x86_64"))]
 pub mod cold;
 #[cfg(all(feature = "picasso", target_arch = "x86_64"))]
