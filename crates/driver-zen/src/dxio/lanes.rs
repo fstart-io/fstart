@@ -200,10 +200,12 @@ impl Lanes {
     }
 }
 
-/// Naples global lane number: die `n` owns lanes `32n..32n+31`, socket 1
-/// adds 128. Inferred (single CPM complex, PCIE_DXIO §3.7, §7).
-pub const fn naples_global_lane(socket: u8, die: u8, lane: u8) -> u16 {
-    socket as u16 * 128 + die as u16 * 32 + lane as u16
+/// Naples board lane number: die `n` owns lanes `32n..32n+31` of its
+/// socket. Lanes are numbered per socket (0–127), with one DXIO complex per
+/// socket on 2P (ROOTBRIDGE_2P §2, decoded from the live `$A27` tables), so
+/// the socket is not part of the number.
+pub const fn naples_socket_lane(die: u8, lane: u8) -> u16 {
+    die as u16 * 32 + lane as u16
 }
 
 /// Link speed cap (board `+0xD` bits 5:3).
@@ -889,7 +891,7 @@ mod tests {
         let b = p(16, 16).unwrap();
         assert_eq!((b.core, b.wire.start, b.wire.end), (1, 20, 35));
         assert_eq!(p(12, 8), Err(LaneError::CrossesCore));
-        assert_eq!(naples_global_lane(1, 2, 5), 128 + 64 + 5);
+        assert_eq!(naples_socket_lane(2, 5), 64 + 5);
         let sp3 = Engine::pcie(0, Lanes::sp3(Group::P0, 0, 4), PcieEngine::new());
         assert_eq!(
             place(Generation::Naples, &sp3),

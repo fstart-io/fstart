@@ -21,8 +21,10 @@
 //! AMI's PciRootBridge rewrites one below-4G pair per die after its GCD
 //! allocation, with the primary limit fixed at 0xFED0 (0xFEC0 on A0/B0/B1)
 //! and an allocator whose die-0 pool is `[0xFE00_0000, +0xB0_0000)` and
-//! whose other dies split `[TOM, 0xF000_0000)` (SOC_DF §3.2). The AMI
-//! above-4G and I/O writes were not decoded. The planner instead gives every
+//! whose other dies split `[TOM, 0xF000_0000)` (SOC_DF §3.2). Above 4 GiB
+//! AMI splits top-down from 2 TiB in equal shares skipping the
+//! 0xFD_0000_0000 hole, into F0x280–2F8, and I/O into F0xC0/C4 + 8k; DF2
+//! has 16 MMIO rules (ROOTBRIDGE_2P §1). The planner instead gives every
 //! die a proportional share up front, like AGESA ZP; the windows differ from
 //! the donor's but route every root bridge.
 

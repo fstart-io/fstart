@@ -150,11 +150,11 @@ pub const fn fch_ioapic_id(generation: Generation) -> u8 {
     }
 }
 
-/// Default ID of the `n`-th NBIO IOAPIC in enumeration order (Naples
-/// 0x81 + n, Rome/Milan 0xF1 + n; ACPI_SMM `$APIDATA`). The Rome/Milan
-/// AMI root-bridge order is not decoded (NBIO_SMU §7.1): the MADT GSI order
-/// must match the `_PRT` windows, which on Rome/Milan run opposite to the
-/// root-bridge `_UID`s.
+/// Default ID of NBIO IOAPIC `n` (Naples 0x81 + n with `n` the die, Rome/
+/// Milan 0xF1 + n with `n = 4 · socket + physical NBIO`, not bus order;
+/// ROOTBRIDGE_2P §1). Sorting by ID then gives the donor GSI bases
+/// 24/56/88/120 (socket 0) and 152/184/216/248 (socket 1), which the
+/// `_PRT` windows use.
 pub const fn nbio_ioapic_id(generation: Generation, n: u8) -> u8 {
     fch_ioapic_id(generation) + 1 + n
 }
