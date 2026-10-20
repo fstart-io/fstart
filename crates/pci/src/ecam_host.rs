@@ -199,6 +199,10 @@ fn size_from_moving_bits(moving: u64, address_mask: u64) -> Result<u64, PciEcamE
     Ok(1u64 << address_bits.trailing_zeros())
 }
 
+/// Bus (lowest first), needs the low window, alignment: see
+/// [`PciEcam::bar_allocation_rank`].
+type BarRank = (core::cmp::Reverse<u8>, u8, u64);
+
 impl ResourcePool {
     const fn empty() -> Self {
         Self {
@@ -253,6 +257,13 @@ impl ResourcePool {
             }
         }
         Ok(())
+    }
+
+    fn free_bytes(&self) -> u64 {
+        self.ranges[..self.count]
+            .iter()
+            .map(|range| range.end - range.base)
+            .sum()
     }
 
     fn allocate_aligned(&mut self, size: u64, align: u64) -> Option<u64> {
@@ -832,7 +843,7 @@ impl PciEcam {
     }
 
     fn next_bar_to_allocate(&self, pass: usize) -> Option<(usize, usize)> {
-        let mut best: Option<(usize, usize, (u8, u64))> = None;
+        let mut best: Option<(usize, usize, BarRank)> = None;
         for dev_idx in 0..self.devices.len() {
             if !self.endpoint_in_pass(dev_idx, pass) {
                 continue;
@@ -853,19 +864,30 @@ impl PciEcam {
 
     /// Allocation rank, highest first.
     ///
-    /// The below-4-GiB window is the constrained resource: firmware drivers
-    /// reach a BAR through a mapping that does not cover above 4 GiB, and a
-    /// 32-bit BAR has no alternative home, while a 64-bit BAR can fall back
-    /// above 4 GiB. So BARs that only fit below 4 GiB are placed first, and
-    /// within each group the largest alignment goes first. Spending the low
-    /// window on alignment alone would let a large 64-bit BAR strand a 32-bit
-    /// BAR with nothing left to allocate from.
-    fn bar_allocation_rank(&self, dev_idx: usize, bar_idx: usize) -> (u8, u64) {
+    /// Bus by bus: bus numbers are assigned depth first, so every bridge's
+    /// subtree ends up in one contiguous span and the windows derived from
+    /// those spans can't overlap a sibling's. On a bus, BARs that only fit
+    /// below 4 GiB go first, then the largest alignment.
+    fn bar_allocation_rank(&self, dev_idx: usize, bar_idx: usize) -> BarRank {
         let needs_low_window = self.devices[dev_idx].bars[bar_idx].bar_type == BarType::Memory32;
         (
+            core::cmp::Reverse(self.devices[dev_idx].addr.bus()),
             u8::from(needs_low_window),
             self.bar_allocation_alignment(dev_idx, bar_idx),
         )
+    }
+
+    /// Below-4-GiB bytes the unallocated 32-bit memory BARs still need.
+    fn pending_low_bytes(&self) -> u64 {
+        (0..self.devices.len())
+            .filter(|&dev_idx| self.devices[dev_idx].header_type != PCI_HEADER_TYPE_BRIDGE)
+            .flat_map(|dev_idx| (0..6).map(move |bar_idx| (dev_idx, bar_idx)))
+            .filter(|&(dev_idx, bar_idx)| {
+                let bar = self.devices[dev_idx].bars[bar_idx];
+                bar.bar_type == BarType::Memory32 && !bar.fixed && !bar.allocated
+            })
+            .map(|(dev_idx, bar_idx)| self.bar_allocation_alignment(dev_idx, bar_idx))
+            .sum()
     }
 
     fn allocate_one_bar(&mut self, dev_idx: usize, bar_idx: usize) -> Result<(), PciEcamError> {
@@ -877,11 +899,16 @@ impl PciEcam {
             // The below-4-GiB window comes first: firmware drivers reach a BAR
             // through a mapping that does not cover above 4 GiB, and some
             // devices that declare a 64-bit BAR still do not decode that high.
-            // The above-4-GiB window is the fallback for what does not fit.
-            BarType::Memory64 => self
-                .mmio32
-                .allocate_aligned(bar.size, align)
-                .or_else(|| self.mmio64.allocate_aligned(bar.size, align)),
+            // The above-4-GiB window takes what does not fit, and what would
+            // strand a 32-bit BAR that has no other home.
+            BarType::Memory64 => {
+                let pending = self.pending_low_bytes();
+                let mut low = self.mmio32;
+                low.allocate_aligned(bar.size, align)
+                    .filter(|_| low.free_bytes() >= pending)
+                    .inspect(|_| self.mmio32 = low)
+                    .or_else(|| self.mmio64.allocate_aligned(bar.size, align))
+            }
             BarType::Io => self.io_pool.allocate_aligned(bar.size, align),
             BarType::None => None,
         };
@@ -1329,7 +1356,8 @@ mod tests {
     use alloc::vec::Vec;
 
     fn test_pci() -> (PciEcam, Vec<u32>) {
-        let mut config_space = vec![0u32; 1 << 18];
+        const BUSES: usize = 3;
+        let mut config_space = vec![0u32; BUSES << 18];
         let ecam_base = config_space.as_mut_ptr() as usize;
         let dummy = PciWindow {
             kind: PciWindowKind::Io,
@@ -1341,9 +1369,9 @@ mod tests {
             PciEcam {
                 segment: 0,
                 ecam_base,
-                ecam_size: 1 << 20,
+                ecam_size: BUSES << 20,
                 bus_start: 0,
-                bus_end: 0,
+                bus_end: BUSES as u8 - 1,
                 mmio32: ResourcePool::new(0x8000_0000, 0x1000_0000).unwrap(),
                 mmio64: ResourcePool::empty(),
                 io_pool: ResourcePool::new(0x1000, 0xf000).unwrap(),
@@ -1452,7 +1480,7 @@ mod tests {
     fn invalid_accesses_are_not_absent_device_responses() {
         let (mut pci, _memory) = test_pci();
         assert!(pci.device(PciAddress::new(1, 0, 0, 0)).is_none());
-        assert!(pci.device(PciAddress::new(0, 1, 0, 0)).is_none());
+        assert!(pci.device(PciAddress::new(0, 3, 0, 0)).is_none());
         let device = pci.device(PciAddress::new(0, 0, 0, 0)).unwrap();
         device.write32(0xffc, u32::MAX);
         assert_eq!(device.try_read8(0xfff), Some(u8::MAX));
@@ -1463,6 +1491,41 @@ mod tests {
         assert_eq!(device.read32(0xffc), u32::MAX);
         pci.ecam_size = 0xfff; // A truncated function is not a mapped device.
         assert!(pci.device(PciAddress::new(0, 0, 0, 0)).is_none());
+    }
+
+    #[test]
+    fn sibling_bridge_windows_do_not_interleave() {
+        let (mut pci, _config_space) = test_pci();
+        pci.configure_windows(0xf800_0000, 0x0700_0000, 0, 0, 0x1000, 0xf000)
+            .unwrap();
+        let bridge = |device, bus| PciDev {
+            header_type: PCI_HEADER_TYPE_BRIDGE,
+            secondary_bus: bus,
+            subordinate_bus: bus,
+            ..endpoint(PciAddress::new(0, 0, device, 1), &[])
+        };
+        // Zeppelin: xHCI's 64-bit BAR behind 7.1, SATA's 32-bit BAR behind 8.1.
+        let xhci = PciAddress::new(0, 1, 0, 3);
+        let sata = PciAddress::new(0, 2, 0, 2);
+        for device in [
+            bridge(7, 1),
+            bridge(8, 2),
+            endpoint(xhci, &[(0, BarType::Memory64, 0x10_0000)]),
+            endpoint(sata, &[(5, BarType::Memory32, 0x1000)]),
+        ] {
+            assert!(pci.devices.push(device).is_ok());
+        }
+
+        pci.allocate_resources().unwrap();
+
+        let window = |device| {
+            let value = pci.read32(PciAddress::new(0, 0, device, 1), PCI_MEMORY_BASE);
+            (value & 0xfff0) << 16..=(value | 0xf_ffff)
+        };
+        let (xhci_window, sata_window) = (window(7), window(8));
+        assert!(xhci_window.end() < sata_window.start());
+        assert!(xhci_window.contains(&(pci.read32(xhci, PCI_BAR0) & !0xf)));
+        assert!(sata_window.contains(&(pci.read32(sata, PCI_BAR0 + 20) & !0xf)));
     }
 
     fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) -> PciDev {
