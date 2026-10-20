@@ -770,6 +770,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-zen"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-log",
+ "fstart-pci",
+ "heapless 0.8.0",
+ "tock-registers",
+ "ufmt",
+ "zerocopy",
+]
+
+[[package]]
 name = "fstart-ffs"
 version = "0.1.0"
 dependencies = [
@@ -915,6 +928,16 @@ dependencies = [
  "serde_json",
  "ufmt",
  "zerocopy",
+]
+
+[[package]]
+name = "fstart-platform-sp3"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-zen",
+ "fstart-log",
+ "fstart-pci",
 ]
 
 [[package]]

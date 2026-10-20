@@ -1,0 +1,22 @@
+[package]
+name = "fstart-platform-sp3"
+description = "AMD SP3 platform (Naples, Rome, Milan): boot flows, memory, MP, SMM, ACPI, image"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish = false
+
+# A firmware build targets one generation (one 16 MiB flash half).
+[features]
+default = []
+naples = ["fstart-driver-zen/naples"]
+rome = ["fstart-driver-zen/rome"]
+milan = ["fstart-driver-zen/milan"]
+# Host policy only; never enabled by the emitted firmware unit.
+host = []
+
+[dependencies]
+fstart-driver-zen = { path = "../driver-zen" }
+fstart-core = { workspace = true }
+fstart-pci = { workspace = true }
+fstart-log = { workspace = true }
