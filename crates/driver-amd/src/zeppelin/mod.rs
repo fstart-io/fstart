@@ -8,8 +8,11 @@
 //! and FCH; SP4r2 has one die, SP4 two.
 pub mod ccx;
 mod ccx_tables;
+pub mod dxio;
 pub mod identity;
 pub mod microcode;
+pub mod nbio;
+mod nbio_tables;
 pub mod psp;
 pub mod smu;
 #[cfg(test)]
