@@ -7,11 +7,15 @@ CrabEFI with an OS behind it, on an MJ11-EC1 (EPYC 3151, SP4r2, one die).
 
 ## Code layout
 
-- `crates/driver-amd/src/fam17h`: what Zeppelin and Picasso share (SMN/DF
-  transports, SMU mailbox, PSP mailbox, microcode, APOB, BIOS directory, DXIO
-  descriptors, cache plan, MSRs).
-- `crates/driver-amd/src/zeppelin`: the SoC (topology, DF, NBIO, DXIO, CCX,
-  SMU, FCH incl. SATA/USB/multi-die). Gated by the `zeppelin` feature.
+- `crates/driver-amd/src/fam17h`: what Zeppelin and Picasso share: the
+  SMN/DF transports and the dies (`topology`: `Die`, the `Soc` trait, the AP
+  release), the IOHC DRAM map and BARs, the Data Fabric address map, the SMU
+  and PSP mailboxes, the DXIO firmware client, the vendor register table
+  interpreter, the TSC clock, microcode, APOB, BIOS directory, cache plan and
+  MSRs.
+- `crates/driver-amd/src/zeppelin`: the SoC (its `Soc` facts and non-PCI
+  pool, DF init, NBIO, the DXIO lane mapping and PCIe setup, CCX, SMU
+  messages, FCH incl. SATA/USB/multi-die). Gated by the `zeppelin` feature.
 - `crates/platform-amd/src/zeppelin`: the boot flow (`stage.rs`), DRAM
   layout, CPU driver for the MP engine, SMM and PSP SMM info (`smm.rs`), PCI
   root, e820, ACPI tables, payload handoff and the host build plan.
