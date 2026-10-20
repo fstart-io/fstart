@@ -11,13 +11,12 @@ picasso = ["fstart-driver-amd/picasso", "dep:fstart-arch"]
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
 # Compiler/check/editor support; still a non-bootable console checkpoint.
 bundle-checkpoint = ["picasso"]
-zeppelin = ["fstart-driver-amd/zeppelin", "dep:fstart-arch", "dep:embedded-hal", "dep:zerocopy"]
-# The Zeppelin ACPI tables.
-acpi = ["zeppelin", "dep:fstart-acpi", "dep:fstart-acpi-macros"]
+zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zerocopy"]
+# The shared flow of the PSP-booted SoCs, with their ACPI tables.
+noncar = ["dep:fstart-arch", "dep:fstart-acpi", "dep:fstart-acpi-macros"]
 # The Zeppelin reset image: one DRAM stage from reset vector to payload.
 bundle-zeppelin = [
   "zeppelin",
-  "acpi",
   "dep:fstart-stage",
   "dep:heapless",
   "dep:zerocopy",
@@ -60,6 +59,6 @@ fstart-smm = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The unit tests cover every SoC, also in `cargo test --workspace`.
-fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "acpi", "host", "smm"] }
+fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "host", "smm"] }
 fstart-driver-amd = { workspace = true, features = ["testing"] }
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

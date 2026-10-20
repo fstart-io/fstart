@@ -2,6 +2,8 @@
 //! AMD family flows. Picasso and Zeppelin start in PSP-trained DRAM, never
 //! Intel CAR.
 #![no_std]
+#[cfg(feature = "noncar")]
+pub mod acpi;
 #[cfg(all(feature = "host", feature = "picasso"))]
 pub mod host;
 // Each board's host adapter enables exactly one SoC.
@@ -9,7 +11,7 @@ pub mod host;
 pub use host::Plan;
 #[cfg(all(feature = "host", feature = "zeppelin"))]
 pub use zeppelin::host::Plan;
-#[cfg(feature = "zeppelin")]
+#[cfg(feature = "noncar")]
 pub mod noncar;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;

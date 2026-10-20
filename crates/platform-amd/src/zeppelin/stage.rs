@@ -4,7 +4,7 @@
 //! at the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
 //! board's `fstart_main`.
 use super::{
-    Board, BoardCtx, acpi,
+    Board, BoardCtx,
     layout::LAYOUT,
     silicon::{self, Dma, Identity, SmuPages, SmuPolicy},
 };
@@ -20,7 +20,6 @@ use fstart_driver_amd::{
     },
     df, dxio,
     fch::{self, Acpimmio, Fch, NativeBus, lpc::Lpc, smi::FchSmi, taishan},
-    nbio::iommu,
     smu::threads::{self, Policy},
     soc::zeppelin::{self as soc, Die, MAX_DIES, Package, Revision, Zeppelin},
 };
@@ -380,7 +379,18 @@ fn late_silicon<B: Board>(s: &mut Silicon, die0_fch: &Fch<NativeBus>) -> ! {
         ioapic.mask_all();
     }
 
-    let rsdp = acpi_tables::<B>(s, &ecam, &apic_ids, &ioapics);
+    let rsdp = crate::noncar::acpi::install(
+        &super::acpi::ACPI,
+        dies,
+        &ioapics,
+        &ecam,
+        crate::noncar::acpi::Ecam {
+            base: soc::ECAM,
+            buses: soc::ECAM_BUSES,
+        },
+        &apic_ids,
+        &B::acpi(),
+    );
 
     // ReadyToBoot of the vendor firmware.
     let sata = ecam.devices().find(|a| {
@@ -424,94 +434,4 @@ fn late_silicon<B: Board>(s: &mut Silicon, die0_fch: &Fch<NativeBus>) -> ! {
     };
     use fstart_stage::payload::MainstagePayload;
     fstart_stage::payload::BuildSelectedPayload::boot(handoff)
-}
-
-
-/// Build the ACPI tables in reserved firmware memory; returns the RSDP.
-fn acpi_tables<B: Board>(
-    s: &Silicon,
-    ecam: &fstart_pci::PciEcam,
-    apic_ids: &[u32],
-    ioapics: &[u32; MAX_DIES],
-) -> Option<u64> {
-    #[repr(C, align(4096))]
-    struct Tables([u8; 0x2_0000]);
-    static mut TABLES: Tables = Tables([0; 0x2_0000]);
-
-    let io: Vec<core::ops::RangeInclusive<u16>, 8> = ecam
-        .windows()
-        .iter()
-        .filter(|w| w.kind == fstart_pci::PciWindowKind::Io && w.size != 0)
-        .map(|w| w.base as u16..=(w.end() - 1) as u16)
-        .collect();
-    let mmio: Vec<core::ops::RangeInclusive<u64>, 8> = ecam
-        .windows()
-        .iter()
-        .filter(|w| w.kind == fstart_pci::PciWindowKind::Mmio && w.size != 0)
-        .map(|w| w.base..=w.end() - 1)
-        .collect();
-    let bridges: Vec<Vec<acpi::Bridge, 32>, MAX_DIES> = s
-        .dies
-        .iter()
-        .map(|die| {
-            ecam.devices()
-                .filter(|a| a.bus() == die.bus())
-                .filter_map(|a| {
-                    let device = ecam.device(a)?;
-                    (device.read32(8) >> 16 == 0x0604).then_some(acpi::Bridge {
-                        devfn: fstart_pci::devfn(a.device(), a.function()),
-                        pin: (device.read32(0x3c) >> 8) as u8,
-                    })
-                })
-                .collect()
-        })
-        .collect();
-    let dies: Vec<acpi::DieAcpi<'_>, MAX_DIES> = s
-        .dies
-        .iter()
-        .zip(&bridges)
-        .map(|(die, bridges)| acpi::DieAcpi {
-            buses: die.bus()..=soc::ECAM_BUSES as u8 - 1,
-            ioapic_id: 1 + die.index(),
-            ioapic_base: ioapics[usize::from(die.index())],
-            io: &io,
-            mmio: &mmio,
-            vga: die.index() == 0,
-            bridges,
-            // SAFETY: the IOMMU MMIO is in the identity-mapped pool.
-            iommu: unsafe { iommu::read(die) },
-        })
-        .collect();
-    let board = B::acpi();
-    // SAFETY: HPET general capabilities, decoded by the FCH.
-    let hpet_id = unsafe { fstart_core::mmio::read32(fch::HPET as usize as *const u32) };
-    let tables = acpi::build(&acpi::Inputs {
-        apic_ids,
-        dies: &dies,
-        ecam_base: soc::ECAM,
-        ecam_buses: soc::ECAM_BUSES,
-        hpet_id,
-        fch_intx_gsi: [16, 17, 18, 19],
-        board: &board,
-    })
-    .ok()?;
-    // SAFETY: firmware BSS in the reserved early region, written once.
-    let storage = unsafe { &mut (*core::ptr::addr_of_mut!(TABLES)).0 };
-    let address = storage.as_ptr() as u64;
-    match fstart_acpi::platform::assemble_into(
-        storage,
-        address,
-        &tables.platform,
-        &tables.dsdt_aml,
-        &tables.extra,
-    ) {
-        Ok(length) => {
-            fstart_log::info!("ACPI: {} bytes at {}", length as u32, Hex(address));
-            Some(address)
-        }
-        Err(_) => {
-            fstart_log::error!("ACPI: tables don't fit");
-            None
-        }
-    }
 }

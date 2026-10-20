@@ -5,7 +5,7 @@
 use alloc::vec;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
-use fstart_platform_amd::zeppelin::BoardAcpi;
+use fstart_platform_amd::acpi::BoardAcpi;
 
 /// The BMC KCS data port; status/command is the next one.
 pub const KCS_PORT: u16 = 0xca2;

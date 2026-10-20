@@ -217,7 +217,7 @@ impl fstart_platform_amd::zeppelin::Board for Board {
         sio.enable_uart(ast::SUART1, COM1, COM1_IRQ, 0);
     }
 
-    fn acpi() -> fstart_platform_amd::zeppelin::BoardAcpi {
+    fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
         acpi::tables()
     }
 
