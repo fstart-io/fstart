@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = []
 picasso = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless"]
-zeppelin = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log", "dep:ufmt"]
+zeppelin = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c", "dep:embedded-hal"]
 
 [dependencies]
 tock-registers.workspace = true
@@ -17,3 +17,5 @@ fstart-pci = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 fstart-log = { workspace = true, optional = true }
 ufmt = { workspace = true, optional = true }
+fstart-driver-i2c = { workspace = true, optional = true }
+embedded-hal = { workspace = true, optional = true }

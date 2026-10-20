@@ -11,6 +11,7 @@ mod ccx_tables;
 pub mod dxio;
 pub mod fabric;
 pub mod fch;
+pub mod i2c;
 pub mod identity;
 pub mod microcode;
 pub mod nbio;
