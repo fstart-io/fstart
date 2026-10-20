@@ -796,6 +796,8 @@ dependencies = [
 name = "fstart-platform-amd"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",

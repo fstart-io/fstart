@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native AMD Zeppelin (EPYC Embedded 3000) flow. One DRAM stage runs from
 //! the PSP-released reset vector to the payload.
+#[cfg(feature = "acpi")]
+pub mod acpi;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;
@@ -13,6 +15,9 @@ mod pci;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod stage;
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use fstart_driver_amd::{
     fch::early::PowerFailure,
     lpc::Lpc,
@@ -69,6 +74,19 @@ pub trait Board: 'static {
     fn mainboard_final(_ctx: &mut BoardCtx<'_>) {}
     /// Right before the payload.
     fn ready_to_boot(_ctx: &mut BoardCtx<'_>) {}
+    /// What the board adds to the ACPI tables.
+    fn acpi() -> BoardAcpi {
+        BoardAcpi::default()
+    }
+}
+
+/// Board ACPI content.
+#[derive(Debug, Default)]
+pub struct BoardAcpi {
+    /// AML for `\_SB.PCI0.LPCB`: Super I/O and BMC devices.
+    pub lpc_aml: Vec<u8>,
+    /// Standalone tables (SPMI, ...).
+    pub tables: Vec<Vec<u8>>,
 }
 
 /// Declare the board binary: `fstart_platform_amd::zeppelin_stage_bin!(Board);`

@@ -2,6 +2,9 @@
 //! Gigabyte MJ11-EC1 (G431-MM0) and MJ11-EC0: EPYC Embedded 3000 (SP4r2) with
 //! an AST2500 BMC.
 #![no_std]
+extern crate alloc;
+
+mod acpi;
 mod dxio;
 
 use fstart_driver_amd::{
@@ -20,6 +23,7 @@ pub struct Board;
 
 const SIO_PORT: u16 = 0x2e;
 const COM1: u16 = 0x3f8;
+const COM1_IRQ: u8 = 4;
 
 /// The IOAPIC side matches the vendor firmware; the vendor PIC values aren't
 /// known, so INTA-D are left for the OS to route through ACPI. MISC..MISC2
@@ -66,7 +70,11 @@ impl fstart_platform_amd::zeppelin::Board for Board {
             ast::SUART4,
             ast::MAILBOX,
         ]);
-        sio.enable_uart(ast::SUART1, COM1, 4, 0);
+        sio.enable_uart(ast::SUART1, COM1, COM1_IRQ, 0);
+    }
+
+    fn acpi() -> fstart_platform_amd::zeppelin::BoardAcpi {
+        acpi::tables()
     }
 
     fn console() -> Ns16550Config {
