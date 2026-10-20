@@ -39,6 +39,7 @@ mod espi_tests;
 pub mod gpio;
 #[cfg(all(test, feature = "picasso"))]
 mod gpio_tests;
+pub mod i2c;
 pub mod lpc;
 #[cfg(feature = "picasso")]
 pub mod sandstone;

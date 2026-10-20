@@ -15,7 +15,7 @@ use crate::{
     },
     smn::{Smn, SmnReg},
     table::{Record, rmw},
-    zeppelin::{Revision, acpi_io},
+    soc::zeppelin::{Revision, acpi_io},
 };
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},

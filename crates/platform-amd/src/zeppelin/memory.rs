@@ -4,7 +4,7 @@ use super::layout;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, E820State, build_pc_compatible_e820,
 };
-use fstart_driver_amd::{apob::MemoryMap, zeppelin as soc};
+use fstart_driver_amd::{apob::MemoryMap, soc::zeppelin as soc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

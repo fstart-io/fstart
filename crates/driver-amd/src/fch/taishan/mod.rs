@@ -34,7 +34,7 @@ pub mod usb;
 pub use init::{env_init, late_init, pre_init, reset_init};
 pub use multi::{acpimmio_base, xgbe_init};
 
-use crate::zeppelin::acpi_io;
+use crate::soc::zeppelin::acpi_io;
 
 /// The ACPI I/O blocks of [`acpi_io`] for [`crate::fch::Fch`].
 pub const ACPI_PORTS: crate::fch::AcpiPorts = crate::fch::AcpiPorts {

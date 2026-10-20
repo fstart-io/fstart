@@ -41,7 +41,7 @@ use crate::nbio::{
 };
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v9 as smu;
-use crate::zeppelin::{Die, ECAM_BUSES, MAX_DIES};
+use crate::soc::zeppelin::{Die, ECAM_BUSES, MAX_DIES};
 use fstart_log::{debug, error, info};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress, devfn, devfn_parts};
 use tock_registers::{
@@ -865,7 +865,7 @@ mod tests {
     #[test]
     fn port_setup_keeps_the_vendor_masks() {
         const PATTERN: u32 = 0x5a5a_a5a5;
-        let pci = crate::zeppelin::test_pci::Pci::new(&[0], |_| [0; 6]);
+        let pci = crate::soc::zeppelin::test_pci::Pci::new(&[0], |_| [0; 6]);
         let dies = pci.dies();
         let core = |c: u32, offset: u32| 0x1118_0000 + c * 0x10_0000 + offset;
         let port = |p: u32, offset: u32| 0x1114_0000 + (p / 8) * 0x10_0000 + (p % 8) * 0x1000 + offset;

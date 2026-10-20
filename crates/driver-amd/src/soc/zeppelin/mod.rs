@@ -6,30 +6,42 @@
 //! APOB; everything x86 does after that is native: Data Fabric, NBIO, SMU,
 //! DXIO (PCIe), CCX and the Taishan FCH. Every die has its own DF, NBIO, SMU
 //! and FCH; SP4r2 has one die, SP4 two.
-pub mod i2c;
 pub mod identity;
 #[cfg(test)]
 pub(crate) mod test_pci;
 
-use crate::soc::Soc;
+use super::Soc;
+use crate::fch::gpio::{Bank, FAMILY17H_EVENTS};
+use fstart_driver_i2c::designware::{Speed, Timing};
 pub use identity::{Package, Revision};
 
-/// GPIO bank 0: 145 pins, but the vendor board tables also use 149-152. The Zeppelin
-/// IOMUX assignments aren't known, so pads name their functions by number.
-pub const GPIO_BANK: crate::fch::gpio::Bank = crate::fch::gpio::Bank {
-    pins: 153,
-    reserved: &[],
-    gpio_function: |_| None,
-    events: crate::fch::gpio::FAMILY17H_EVENTS,
-};
-
-/// The Zeppelin SoC.
+/// The Zeppelin SoC: [`crate::ccx::zeppelin`], [`crate::df::zeppelin`],
+/// [`crate::nbio::zeppelin`], [`crate::dxio::zeppelin`], [`crate::smu::v9`]
+/// and the Taishan FCH [`crate::fch::taishan`].
 pub enum Zeppelin {}
 impl Soc for Zeppelin {
     /// Two dies on SP4, one on SP4r2.
     const MAX_DIES: usize = 2;
     const SMU: crate::smu::Mailbox = crate::smu::v9::MAILBOX;
     const DXIO_SERVICE: u32 = crate::smu::v9::DXIO_SERVICE;
+    /// GPIO bank 0: 145 pins, but the vendor board tables also use 149-152. The
+    /// Zeppelin IOMUX assignments aren't known, so pads name their functions
+    /// by number.
+    const GPIO_BANK: &'static Bank = &Bank {
+        pins: 153,
+        reserved: &[],
+        gpio_function: |_| None,
+        events: FAMILY17H_EVENTS,
+    };
+    /// I2C0-I2C5.
+    const I2C: &'static [usize] = &[
+        0xfedc_2000,
+        0xfedc_3000,
+        0xfedc_4000,
+        0xfedc_5000,
+        0xfedc_6000,
+        0xfedc_b000,
+    ];
     fn ioms_fabric_id(die: u8) -> u8 {
         (die << 5) | 4
     }
@@ -58,6 +70,17 @@ pub const ECAM_BUSES: u16 = 128;
 pub const APOB_BASE: u64 = 0x3000_0000;
 /// The vendor firmware's APOB_NV region is 128 KiB, so the APOB isn't larger.
 pub const APOB_SIZE: usize = 0x2_0000;
+
+/// The vendor code doesn't power the I2C controllers up through AOAC or
+/// touch the pads. It programs standard speed, these SCL counts (0x285 +
+/// 0x357 cycles per bit at 100 kHz: a 150 MHz controller clock) and
+/// IC_FS_SPKLEN 7.
+pub const I2C_TIMING: Timing = Timing {
+    speed: Speed::Standard,
+    scl_high: 0x285,
+    scl_low: 0x357,
+    spike_length: Some(7),
+};
 
 /// FCH ACPI fixed I/O, the same layout as the vendor firmware.
 pub mod acpi_io {

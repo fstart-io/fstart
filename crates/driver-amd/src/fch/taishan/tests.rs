@@ -7,7 +7,7 @@ use crate::{
     fch::{Acpimmio, Bus, Fch, Space},
     smn::testing::{SmnModel, SmnTest},
     soc::Soc,
-    zeppelin::{Die, Package, Revision, Zeppelin},
+    soc::zeppelin::{Die, Package, Revision, Zeppelin},
 };
 use core::cell::RefCell;
 use fstart_pci::{ConfigRegionAccess, PciAddress};

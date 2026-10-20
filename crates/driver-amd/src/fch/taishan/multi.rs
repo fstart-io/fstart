@@ -17,7 +17,7 @@ use crate::{
     df::map::{self, IoBase, IoLimit},
     smn::{Smn, SmnReg},
     table,
-    zeppelin::{Die, Package},
+    soc::zeppelin::{Die, Package},
 };
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::{
@@ -31,7 +31,7 @@ const ACPIMMIO_OFFSET: u32 = 1 << 20;
 
 /// The ACPI MMIO of die `die`'s FCH. Die 0's is at 0xfed80000, the others
 /// are moved into the die's non-PCI MMIO pool (DF window top - 8 MiB, see
-/// [`crate::zeppelin::NONPCI_MMIO_SIZE`]), at `nonpci_mmio_base`.
+/// [`crate::soc::zeppelin::NONPCI_MMIO_SIZE`]), at `nonpci_mmio_base`.
 pub const fn acpimmio_base(die: u8, nonpci_mmio_base: u32) -> Acpimmio {
     if die == 0 {
         Acpimmio::DIE0

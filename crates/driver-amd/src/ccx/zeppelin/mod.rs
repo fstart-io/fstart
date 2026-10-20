@@ -11,7 +11,7 @@ use super::{
     cache::CacheControl,
     msr::{self, DpmCfg, MsrUpdate},
 };
-use crate::zeppelin::{ECAM, ECAM_BUSES, MAX_DIES, Revision};
+use crate::soc::zeppelin::{ECAM, ECAM_BUSES, MAX_DIES, Revision};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
 mod tables;

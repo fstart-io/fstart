@@ -11,7 +11,7 @@ use fstart_driver_amd::ccx::{
 };
 use fstart_driver_amd::df::picasso as fabric;
 use fstart_driver_amd::nbio::picasso::{self as nbio, Capabilities};
-use fstart_driver_amd::picasso::Die;
+use fstart_driver_amd::soc::picasso::Die;
 use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {

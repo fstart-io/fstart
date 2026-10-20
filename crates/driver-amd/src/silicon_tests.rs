@@ -429,7 +429,7 @@ mod zeppelin {
             threads::{self, Policy},
             v9 as smu,
         },
-        zeppelin::{Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision},
+        soc::zeppelin::{Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision},
     };
 
     const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
@@ -611,7 +611,7 @@ mod picasso {
             iohc::{PSP_BAR, SMU_BAR},
             picasso as nbio,
         },
-        picasso::Die,
+        soc::picasso::Die,
         smu::{
             THREAD_CONFIG, THREAD_ENABLE,
             threads::{self, Downcore, Policy},

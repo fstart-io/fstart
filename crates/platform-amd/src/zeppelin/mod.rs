@@ -30,7 +30,10 @@ use fstart_driver_amd::{
         lpc::Lpc,
         taishan::{Devices, irq::Route},
     },
-    zeppelin::{Die, MAX_DIES},
+    soc::{
+        Soc,
+        zeppelin::{Die, MAX_DIES, Zeppelin},
+    },
 };
 use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_pci::ecam::GlobalEcam;
@@ -54,7 +57,7 @@ impl BoardCtx<'_> {
 
     /// The GPIO pads of die 0.
     pub fn gpio(&mut self) -> Gpio<NativeBus> {
-        Gpio::new(self.fch(), &fstart_driver_amd::zeppelin::GPIO_BANK)
+        Gpio::new(self.fch(), Zeppelin::GPIO_BANK)
     }
 }
 

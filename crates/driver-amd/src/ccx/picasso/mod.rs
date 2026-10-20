@@ -9,7 +9,7 @@ use super::{
     self as ccx, CAC_WEIGHT_COUNT, CacWeights, Ccx, L3Owner, Mca, Thread,
     msr::{self, BU_CFG3, DC_CFG, DE_CFG, LS_CFG, MsrUpdate, mca_config, update},
 };
-use crate::picasso::{ECAM, ECAM_BUSES};
+use crate::soc::picasso::{ECAM, ECAM_BUSES};
 use fstart_arch::x86::cpu::{
     amd::msr::{SYSCFG, Syscfg},
     msr::MsrAccess,

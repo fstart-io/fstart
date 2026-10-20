@@ -226,7 +226,7 @@ fn complete_allocation_preflight_precedes_one_way_claim() {
 #[cfg(feature = "zeppelin")]
 #[test]
 fn maps_each_die_enabled_and_locked_and_reads_back_bases() {
-    use crate::{nbio::iohc::map_psp, zeppelin::test_pci::Pci};
+    use crate::{nbio::iohc::map_psp, soc::zeppelin::test_pci::Pci};
     let pci = Pci::new(&[0, 0x40], |_| [0; 6]);
     let dies = pci.dies();
     // Die 1 is already right: no rewrite of its high half.

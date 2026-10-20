@@ -117,7 +117,7 @@ fn vendor_layout(path: &str) -> Result<(FileBinding, VendorFlashLayout), String>
         reset_offset: l::RESET_FLASH_OFFSET,
         reset_size: l::IMAGE_SIZE as u32,
         reset_destination: l::IMAGE_BASE,
-        apob_destination: fstart_driver_amd::zeppelin::APOB_BASE,
+        apob_destination: fstart_driver_amd::soc::zeppelin::APOB_BASE,
     };
     layout.validate()?;
     if (facts.reset_offset, facts.reset_size, facts.reset_destination, facts.apob_destination)

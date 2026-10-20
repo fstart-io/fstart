@@ -29,7 +29,7 @@ use fstart_acpi_macros::acpi_dsl;
 use fstart_driver_amd::{
     fch::SPI_BASE,
     nbio::iommu::{self, Iommu},
-    zeppelin::{MAX_DIES, acpi_io},
+    soc::zeppelin::{MAX_DIES, acpi_io},
 };
 
 pub const LAPIC_BASE: u64 = 0xfee0_0000;

@@ -7,7 +7,7 @@
 //! [`crate::smu::threads::launch`] to release the APs; [`aps_ready`]
 //! then [`ccx_done`] after every CPU ran [`crate::ccx::zeppelin::cpu_init`].
 use crate::ccx::tsc::DelayNs;
-use crate::zeppelin::{Die, MAX_DIES};
+use crate::soc::zeppelin::{Die, MAX_DIES};
 use crate::ccx::{CAC_WEIGHT_COUNT, CacWeights};
 pub use crate::smu::{ARGUMENT_COUNT, Error, Reply};
 use crate::smu::Mailbox;
@@ -268,7 +268,7 @@ mod tests {
     extern crate std;
     use crate::ccx::tsc::testing::Delay;
     use super::*;
-    use crate::zeppelin::test_pci::{Message, Pci};
+    use crate::soc::zeppelin::test_pci::{Message, Pci};
     use std::vec::Vec;
 
     fn sent(pci: &Pci) -> Vec<(u8, u32, u32)> {

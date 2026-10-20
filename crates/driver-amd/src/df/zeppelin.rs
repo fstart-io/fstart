@@ -11,7 +11,7 @@ use super::{
 use crate::{
     apob::{self, Apob},
     soc::Soc,
-    zeppelin::{NONPCI_MMIO_SIZE, Revision, Zeppelin},
+    soc::zeppelin::{NONPCI_MMIO_SIZE, Revision, Zeppelin},
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{

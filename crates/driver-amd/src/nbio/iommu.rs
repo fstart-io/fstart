@@ -110,7 +110,7 @@ pub unsafe fn read<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>) -> Opt
 #[cfg(all(test, feature = "zeppelin"))]
 mod tests {
     use super::*;
-    use crate::zeppelin::test_pci::Pci;
+    use crate::soc::zeppelin::test_pci::Pci;
 
     #[test]
     fn maps_each_die_with_an_iommu_in_its_pool() {

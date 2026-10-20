@@ -3,7 +3,7 @@
 //! (with the Zeppelin non-PCI pool).
 use fstart_driver_amd::{
     df::map,
-    zeppelin::{Die, ECAM, ECAM_BUSES, NONPCI_MMIO_SIZE},
+    soc::zeppelin::{Die, ECAM, ECAM_BUSES, NONPCI_MMIO_SIZE},
 };
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,

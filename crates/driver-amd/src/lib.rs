@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD hardware mechanisms. No board discovery, stage loading or FSP calls.
+//!
+//! The modules are IP blocks, each with its common code and a submodule
+//! per IP version where the code differs; [`soc`] says which versions a SoC
+//! is made of. The register transports are [`smn`] and [`df`].
 #![no_std]
 #[cfg(feature = "picasso")]
 pub mod acp;
@@ -15,8 +19,6 @@ pub mod dxio;
 pub mod fch;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod nbio;
-#[cfg(feature = "picasso")]
-pub mod picasso;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod psp;
 #[cfg(all(test, any(feature = "picasso", feature = "zeppelin")))]
@@ -29,5 +31,3 @@ pub mod smu;
 pub mod soc;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod table;
-#[cfg(feature = "zeppelin")]
-pub mod zeppelin;

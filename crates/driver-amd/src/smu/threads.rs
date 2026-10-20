@@ -251,6 +251,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::{df::dies, ccx::tsc::testing::none, smu::Mailbox};
+    use crate::fch::gpio::Bank;
     use crate::smn::{
         SmnReg,
         testing::{SmnModel, SmnTest},
@@ -266,6 +267,13 @@ mod tests {
             arguments: SmnReg::new(0x03b1_0998),
         };
         const DXIO_SERVICE: u32 = 0x0a;
+        const GPIO_BANK: &'static Bank = &Bank {
+            pins: 0,
+            reserved: &[],
+            gpio_function: |_| None,
+            events: &[],
+        };
+        const I2C: &'static [usize] = &[];
         fn ioms_fabric_id(_: u8) -> u8 {
             9
         }

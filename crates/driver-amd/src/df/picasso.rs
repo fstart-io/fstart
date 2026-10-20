@@ -6,7 +6,7 @@ use super::{
         self, DramBase, IO_PAIRS, MMIO_PAIRS, Plan, Window, dram_base, io_route, mmio_route,
     },
 };
-use crate::picasso::Die;
+use crate::soc::picasso::Die;
 use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
 use tock_registers::interfaces::Readable;

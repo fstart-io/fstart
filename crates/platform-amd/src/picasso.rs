@@ -8,7 +8,10 @@ use fstart_driver_amd::{
         gpio::{self, Gpio, Pad, Pull},
         sandstone::preinit::SpiConfig,
     },
-    picasso::{EARLY_AOAC, UART_AOAC},
+    soc::{
+        Soc,
+        picasso::{EARLY_AOAC, Picasso, UART_AOAC},
+    },
 };
 
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
@@ -123,7 +126,7 @@ pub unsafe fn console_checkpoint<B: BoardFacts>(
         ],
         _ => unreachable!(),
     };
-    Gpio::new(fch, &fstart_driver_amd::picasso::GPIO_BANK)
+    Gpio::new(fch, Picasso::GPIO_BANK)
         .configure(&pins, &[])
         .map_err(Error::Gpio)
 }
@@ -135,7 +138,7 @@ pub const TSEG_SIZE: u64 = 8 << 20;
 /// silicon init from the APOB, running cached from here on.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub fn run<B: BoardFacts>() -> ! {
-    use fstart_driver_amd::{ccx::tsc, picasso::UART_BASES};
+    use fstart_driver_amd::{ccx::tsc, soc::picasso::UART_BASES};
     use fstart_driver_uart::ns16550::{AccessMode, Ns16550, Ns16550Config};
     // SAFETY: only entered by the BSP cold-reset assembly, cache disabled.
     let Some(mhz) = (unsafe { tsc::frequency_mhz() }).filter(|&mhz| mhz != 0) else {
@@ -183,10 +186,7 @@ unsafe fn fch_init<B: BoardFacts>(timer: &mut impl Clock) -> Result<(), &'static
     // SAFETY: exclusive FCH access, ECAM published by `cold_boot`.
     let fch = Fch::new(unsafe { fch::NativeBus::new() }, fch::Acpimmio::DIE0);
     preinit::prepare_lpc(&fch).map_err(|_| "LPC setup")?;
-    let gpio = Gpio::new(
-        Fch::new(fch.bus(), fch.acpimmio()),
-        &fstart_driver_amd::picasso::GPIO_BANK,
-    );
+    let gpio = Gpio::new(Fch::new(fch.bus(), fch.acpimmio()), Picasso::GPIO_BANK);
     if let Some((config, pads)) = &B::ESPI {
         gpio.configure(pads, &[]).map_err(|_| "eSPI GPIOs")?;
         let mut controller = unsafe { espi::Native::new(preinit::SPI_BASE as usize) };
@@ -217,7 +217,7 @@ unsafe fn cold_boot(
         apob::Apob,
         ccx::picasso as cpu,
         df,
-        picasso::{ECAM, Picasso},
+        soc::picasso::{ECAM, Picasso},
     };
     let msr = unsafe { NativeMsr::new() };
     // MMCONF first, everything else uses it.

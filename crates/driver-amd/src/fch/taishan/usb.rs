@@ -6,7 +6,7 @@
 use crate::ccx::tsc::DelayNs;
 use crate::{
     smn::{Smn, SmnReg},
-    zeppelin::Package,
+    soc::zeppelin::Package,
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -55,7 +55,7 @@ const fn usb2_phy(phy: u32) -> SmnReg {
     SmnReg::new(0x16d0_c000 + phy * 0x400)
 }
 /// USB2 PHY parameter of the vendor template, per die.
-const USB2_PHY_PARAMETER: [u32; crate::zeppelin::MAX_DIES] = [0x01b3_c953, 0x01b3_cd56];
+const USB2_PHY_PARAMETER: [u32; crate::soc::zeppelin::MAX_DIES] = [0x01b3_c953, 0x01b3_cd56];
 
 /// Polls of the 0x108 busy wait, 1 us apart; the vendor code continues
 /// after 1 ms.

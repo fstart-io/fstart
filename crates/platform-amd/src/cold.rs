@@ -14,7 +14,7 @@ use fstart_arch::x86::{
 use fstart_driver_amd::{
     ccx::{picasso::thread, tsc::DelayNs},
     nbio::picasso::{self as nbio, PSP_MMIO_BASE},
-    picasso::{Die, Picasso},
+    soc::picasso::{Die, Picasso},
     smn::Smn,
     smu::{
         threads::{self, Policy},

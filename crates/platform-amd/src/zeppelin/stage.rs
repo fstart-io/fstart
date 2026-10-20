@@ -22,7 +22,7 @@ use fstart_driver_amd::{
         threads::{self, Policy},
         v9 as smu,
     },
-    zeppelin::{self as soc, Die, MAX_DIES, Package, Revision, Zeppelin},
+    soc::zeppelin::{self as soc, Die, MAX_DIES, Package, Revision, Zeppelin},
 };
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::Hex;

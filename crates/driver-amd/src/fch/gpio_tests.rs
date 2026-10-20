@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::fch::{ACPI_MMIO, Acpimmio, Fch, Space, gpio::*, testing::World};
+use crate::soc::{Soc, picasso::Picasso};
 extern crate std;
 use std::vec::Vec;
 
@@ -25,7 +26,7 @@ fn writes(world: &World, address: u32) -> Vec<u32> {
 #[test]
 fn override_preserves_strength_clears_status_and_routes_sci() {
     let world = world();
-    gpio(&world, &crate::picasso::GPIO_BANK)
+    gpio(&world, Picasso::GPIO_BANK)
         .configure(
             &[Pad::output(9, true)],
             &[Pad::sci(9, Pull::Up, Trigger::LevelLow)],
@@ -47,7 +48,7 @@ fn override_preserves_strength_clears_status_and_routes_sci() {
 #[test]
 fn validate_before_first_hardware_write() {
     let world = world();
-    let gpio = gpio(&world, &crate::picasso::GPIO_BANK);
+    let gpio = gpio(&world, Picasso::GPIO_BANK);
     for (pads, error) in [
         (
             [Pad::output(9, true), Pad::output(9, false)],
@@ -67,7 +68,7 @@ fn validate_before_first_hardware_write() {
 #[test]
 fn banks_without_a_gpio_function_need_native_pads() {
     let world = World::default();
-    let gpio = gpio(&world, &crate::zeppelin::GPIO_BANK);
+    let gpio = gpio(&world, crate::soc::zeppelin::Zeppelin::GPIO_BANK);
     assert_eq!(
         gpio.configure(&[Pad::input(149, Pull::None)], &[]),
         Err(Error::NoGpioFunction)

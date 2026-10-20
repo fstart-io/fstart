@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     smn::{Reg, Smn, SmnReg, apply, copy, rmw},
-    zeppelin::{Die, Revision},
+    soc::zeppelin::{Die, Revision},
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
