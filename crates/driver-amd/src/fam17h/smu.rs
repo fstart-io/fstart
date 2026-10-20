@@ -26,6 +26,9 @@ pub const THREAD_ENABLE: SmnReg = SmnReg::new(0x0005_a818);
 pub const THREAD_CONFIG: SmnReg<ThreadConfig::Register> = SmnReg::new(0x0005_a81c);
 pub const DOWNCORE: SmnReg = SmnReg::new(0x0005_a860);
 
+/// Argument 0xaa55aa55; also makes the SMU pick up the ThreadEn settings.
+pub const TEST: u32 = 0x01;
+
 const TIMEOUT_POLLS: usize = 100_000; // 10 seconds, 100 us per poll.
 pub const ARGUMENT_COUNT: usize = 6;
 /// Response of a successfully completed message.
@@ -109,6 +112,11 @@ impl Mailbox {
             return Err(Error::Rejected(reply.status));
         }
         Ok(reply.arguments)
+    }
+
+    /// [`TEST`].
+    pub fn test(&self, smn: &Smn<impl ConfigRegionAccess>, delay: &mut impl DelayNs) -> Result<(), Error> {
+        self.request(smn, TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], delay).map(drop)
     }
 
     /// The 47-character CPU name string, `get_name` being the SoC's message.

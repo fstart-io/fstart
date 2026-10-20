@@ -323,7 +323,7 @@ pub unsafe fn train(
     let dma = Buffers::address(buffers.engines.get().cast(), size)?;
     let ancillary = Buffers::address(buffers.ancillary.get().cast(), 16)?;
     buffers.prepare(&config);
-    smu::request(smn, smu::TEST, [0xaa55aa55, 0, 0, 0, 0, 0], clock).map_err(Error::Smu)?;
+    smu::MAILBOX.test(smn, clock).map_err(Error::Smu)?;
     pre_training(smn, options);
     acp::power_off(smn, options.acp_enabled, clock).map_err(Error::Acp)?;
     let version = dxio::rpc(smn, Operation::Version, [0; 6], clock)?;

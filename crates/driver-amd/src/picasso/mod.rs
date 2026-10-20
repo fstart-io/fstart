@@ -26,7 +26,6 @@ pub mod preinit;
 pub mod psp;
 pub mod smu;
 pub mod southbridge;
-pub mod topology;
 pub mod usb;
 #[cfg(test)]
 mod usb_tests;

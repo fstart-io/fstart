@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h policy for the architectural MP engine: the MSR image APs
-//! replay before enabling caches, and (Picasso) AP release through the SMU.
-#[cfg(feature = "picasso")]
-use fstart_driver_amd::fam17h::tsc::DelayNs;
+//! replay before enabling caches. The SMU releases the APs
+//! ([`fstart_driver_amd::fam17h::topology::launch`]).
 use fstart_arch::x86::{
     cpu::{
         amd::msr::{SYSCFG, Syscfg},
@@ -12,11 +11,6 @@ use fstart_arch::x86::{
     mtrr::{self, SipiMsrs},
 };
 use fstart_driver_amd::fam17h::cache;
-#[cfg(feature = "picasso")]
-use fstart_driver_amd::picasso::{
-    registers::Smn,
-    topology::{self, Topology},
-};
 use tock_registers::interfaces::ReadWriteable;
 
 #[derive(Debug)]
@@ -47,21 +41,6 @@ pub fn sipi_msrs(cpu: &impl MsrAccess) -> Result<SipiMsrs, Error> {
 /// expects them hidden.
 pub fn hide_fixed_dram_routing(cpu: &impl MsrAccess) {
     cpu.reg(SYSCFG).modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::CLEAR);
-}
-
-#[cfg(feature = "picasso")]
-/// Release `ap_count` APs through SMU ThreadEn. Released APs start at the
-/// reset vector, where `picasso.S` sends them to the SIPI trampoline.
-/// # Safety
-/// Cold boot, all APs still held, `topology` is the applied topology, and the
-/// SIPI trampoline is installed. Exclusive SMN access.
-pub unsafe fn release_aps(
-    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
-    topology: Topology,
-    ap_count: u16,
-    delay: &mut impl DelayNs,
-) -> Result<(), topology::Error> {
-    unsafe { topology::launch(smn, topology, usize::from(ap_count), delay) }.map(|_| ())
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use fstart_pci::ConfigRegionAccess;
 pub const MESSAGE: SmnReg = SmnReg::new(0x03b1_0528);
 pub const RESPONSE: SmnReg = SmnReg::new(0x03b1_0564);
 pub const ARGUMENTS: SmnReg = SmnReg::new(0x03b1_0998);
-pub const TEST: u32 = 0x01;
+pub use crate::fam17h::smu::TEST;
 pub const GET_NAME: u32 = 0x04;
 pub const DXIO_SERVICE: u32 = 0x0a;
 pub const GET_SILICON_ID: u32 = 0x51;

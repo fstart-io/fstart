@@ -847,9 +847,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
     let Some(first) = dies.first() else {
         return Ok(topologies);
     };
-    first
-        .smu(smu::TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], clock)
-        .map_err(Error::Smu)?;
+    smu::MAILBOX.test(&first.smn(), clock).map_err(Error::Smu)?;
     for die in dies {
         pre_training(&die.smn());
     }

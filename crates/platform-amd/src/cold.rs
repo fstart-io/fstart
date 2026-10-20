@@ -1,31 +1,34 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native CPU cold flow: SMU AP release, microcode and per-CPU init through
 //! the architectural MP engine, then the later CCX-done notification.
-use fstart_driver_amd::fam17h::tsc::DelayNs;
 use crate::{
     cpu::{Fam17hCpu, PatchPage},
     layout,
     memory::Memory,
-    mp,
 };
 use core::mem::MaybeUninit;
 use fstart_arch::x86::{
     cpu::msr::{APIC_BASE, ApicBase, MsrAccess, NativeMsr},
     mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle},
 };
-use fstart_driver_amd::picasso::{
-    Picasso,
-    cpu::thread,
-    nbio::{self, PSP_MMIO_BASE},
-    nbio_late, power,
-    registers::Smn,
-    topology::{self, Topology},
+use fstart_driver_amd::{
+    fam17h::{
+        topology::{self, Policy},
+        tsc::DelayNs,
+    },
+    picasso::{
+        Die, Picasso,
+        cpu::thread,
+        nbio::{self, PSP_MMIO_BASE},
+        nbio_late, power,
+        registers::Smn,
+    },
 };
 use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {
-    /// Already applied topology: no policy reset/reconfiguration here.
-    pub topology: Topology,
+    /// Already applied thread policy: no policy reset/reconfiguration here.
+    pub policy: Policy,
     /// Complete physical APIC IDs, BSP first. Not ThreadEn slots.
     pub apic_ids: &'a [u32],
     /// The whole boot flash mapped below 4 GiB, with the microcode patches
@@ -130,8 +133,7 @@ impl CcxNotified {
         self.responses.entries()
     }
 }
-fn count(topology: Topology, ids: &[u32]) -> Result<u16, Error> {
-    let expected = topology.thread_slots().map_err(Error::Topology)?.len();
+fn count(expected: usize, ids: &[u32]) -> Result<u16, Error> {
     if ids.len() != expected {
         return Err(Error::CpuCount {
             expected,
@@ -169,10 +171,13 @@ fn notify(
 pub unsafe fn initialize_cpus(
     input: Inputs<'_>,
     msr: &impl MsrAccess,
-    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
+    die: &Die<impl fstart_pci::ConfigRegionAccess + Copy>,
     delay: &mut impl DelayNs,
 ) -> Result<CpusInitialized, Error> {
-    let total = count(input.topology, input.apic_ids)?;
+    let dies = core::slice::from_ref(die);
+    let threads = topology::thread_count(dies, input.policy).map_err(Error::Topology)?;
+    let total = count(threads, input.apic_ids)?;
+    let smn = &die.smn();
     if !input.memory.microcode_reserved() {
         return Err(Error::MicrocodeNotReserved);
     }
@@ -203,7 +208,10 @@ pub unsafe fn initialize_cpus(
     };
     let mut release_error = None;
     let mut launch = |aps: u16| {
-        unsafe { mp::release_aps(smn, input.topology, aps, delay) }.map_err(|error| {
+        // SAFETY: the SIPI trampoline is installed; released APs start at
+        // the reset vector, where `picasso.S` sends them to it.
+        let aps = usize::from(aps);
+        unsafe { topology::launch(dies, input.policy, aps, delay) }.map_err(|error| {
             release_error = Some(error);
             0
         })
@@ -211,9 +219,12 @@ pub unsafe fn initialize_cpus(
     let mp = match arch_mp::mp_init_with_launcher(&config, &mut launch) {
         Ok(mp) => mp,
         Err(MpError::PlatformLaunchFailed(_)) => {
-            return Err(Error::ApRelease(
-                release_error.unwrap_or(topology::Error::ApCount),
-            ));
+            return Err(Error::ApRelease(release_error.unwrap_or(
+                topology::Error::ApCount {
+                    started: 0,
+                    requested: usize::from(total) - 1,
+                },
+            )));
         }
         Err(error) => return Err(Error::Mp(error)),
     };
@@ -232,8 +243,8 @@ pub unsafe fn initialize_cpus(
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use fstart_driver_amd::fam17h::tsc::testing::Delay;
     use super::*;
+    use fstart_driver_amd::fam17h::tsc::testing::Delay;
     use fstart_driver_amd::{
         fam17h::registers::testing::{SmnModel, SmnTest},
         picasso::smu,
@@ -250,35 +261,15 @@ mod tests {
     }
     #[test]
     fn cached_count_and_completion_gate_including_singleton() {
-        let eight = Topology {
-            cores_per_complex: 4,
-            complexes: 1,
-            threads_per_core: 2,
-        };
         assert!(matches!(
-            count(eight, &[0]),
+            count(8, &[0]),
             Err(Error::CpuCount {
                 expected: 8,
                 actual: 1
             })
         ));
-        assert_eq!(count(eight, &[0, 1, 4, 5, 8, 9, 12, 13]).unwrap(), 8);
-        let one = Topology {
-            cores_per_complex: 1,
-            complexes: 1,
-            threads_per_core: 1,
-        };
-        assert_eq!(count(one, &[42]).unwrap(), 1);
-        assert!(
-            count(
-                Topology {
-                    threads_per_core: 0,
-                    ..one
-                },
-                &[42]
-            )
-            .is_err()
-        );
+        assert_eq!(count(8, &[0, 1, 4, 5, 8, 9, 12, 13]).unwrap(), 8);
+        assert_eq!(count(1, &[42]).unwrap(), 1);
         assert!(matches!(
             notify(false, false, &SmnTest::new(Deny).smn(), &mut Delay(|_| panic!(
                 "no delay before CPU completion"

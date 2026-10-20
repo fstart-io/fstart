@@ -4,18 +4,14 @@
 //!
 //! Call order: [`print_name`] early; [`init`] and [`cac_weights`] before
 //! MP init;
-//! [`launch_aps`] to release the APs; [`aps_ready`] then [`ccx_done`] after
-//! every CPU ran [`super::ccx::cpu_init`].
+//! [`crate::fam17h::topology::launch`] to release the APs; [`aps_ready`]
+//! then [`ccx_done`] after every CPU ran [`super::ccx::cpu_init`].
 use crate::fam17h::tsc::DelayNs;
 use super::{Die, MAX_DIES};
 use crate::fam17h::ccx::{CAC_WEIGHT_COUNT, CacWeights};
 pub use crate::fam17h::smu::{ARGUMENT_COUNT, Error, Reply};
-use crate::fam17h::{
-    registers::{Smn, SmnReg},
-    smu::Mailbox,
-};
+use crate::fam17h::{registers::SmnReg, smu::Mailbox};
 use fstart_pci::ConfigRegionAccess;
-use tock_registers::interfaces::{Readable, Writeable};
 use zerocopy::{
     Immutable, IntoBytes, KnownLayout, Unaligned,
     byteorder::{LittleEndian, U32},
@@ -27,8 +23,7 @@ pub const MAILBOX: Mailbox = Mailbox {
     arguments: SmnReg::new(0x03b1_0598),
 };
 
-/// Argument 0xaa55aa55; also makes the SMU pick up the ThreadEn settings.
-pub const TEST: u32 = 0x01;
+pub use crate::fam17h::smu::TEST;
 /// Argument: the expected interface version.
 pub const GET_VERSION: u32 = 0x03;
 /// Argument: feature mask.
@@ -56,8 +51,6 @@ pub const MSG_3B: u32 = 0x3b;
 pub const MSG_3D: u32 = 0x3d;
 pub const CCX_DONE: u32 = 0x41;
 
-pub use crate::fam17h::smu::{THREAD_CONFIG, THREAD_ENABLE, ThreadConfig};
-
 /// SMU features enabled on SP4 and SP4r2 (vendor PCD 0xbb).
 const FEATURES_SP4: u32 = 0xe73d;
 const FEATURE_CORE_CSTATES: u32 = 1 << 8;
@@ -68,8 +61,6 @@ const INTERFACE_VERSION: u32 = 7;
 pub enum Failure {
     /// A message to a die's SMU didn't complete successfully.
     Message { die: u8, message: u32, error: Error },
-    /// Fewer threads exist than APs were requested.
-    ApCount { started: usize, requested: usize },
     /// A DMA buffer address is unaligned or missing.
     Buffer,
 }
@@ -93,92 +84,6 @@ fn send<P: ConfigRegionAccess + Copy>(
                 error,
             }
         })
-}
-
-/// [`TEST`], which also makes the SMU pick up the ThreadEn settings.
-pub fn test_message<P: ConfigRegionAccess + Copy>(
-    die: &Die<P>,
-    delay: &mut impl DelayNs,
-) -> Result<(), Failure> {
-    send(die, TEST, 0xaa55_aa55, delay).map(|_| ())
-}
-
-/// The thread topology of one die.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CpuTopology {
-    pub cores_per_complex: u8,
-    pub complexes: u8,
-    pub threads_per_core: u8,
-}
-impl CpuTopology {
-    pub fn read(smn: &Smn<impl ConfigRegionAccess>) -> Self {
-        let config = smn.reg(THREAD_CONFIG).extract();
-        Self {
-            cores_per_complex: config.read(ThreadConfig::CORE_COUNT) as u8 + 1,
-            complexes: config.read(ThreadConfig::COMPLEX_COUNT) as u8 + 1,
-            threads_per_core: if config.is_set(ThreadConfig::NOT_SMT) {
-                1
-            } else {
-                2
-            },
-        }
-    }
-    pub const fn threads_per_complex(self) -> u8 {
-        self.cores_per_complex * self.threads_per_core
-    }
-    pub const fn threads(self) -> usize {
-        self.complexes as usize * self.threads_per_complex() as usize
-    }
-}
-
-/// Logical CPUs of all dies.
-pub fn thread_count<P: ConfigRegionAccess + Copy>(dies: &[Die<P>]) -> usize {
-    dies.iter()
-        .map(|die| CpuTopology::read(&die.smn()).threads())
-        .sum()
-}
-
-/// Release `ap_count` APs from reset. The SMU releases a thread when its
-/// ThreadEn bit (complex * 8 + core * threads + thread) gets set and
-/// [`TEST`] is sent. Thread 0 of die 0 is the BSP. Software can only set
-/// ThreadEn bits, not clear them. The APs start at the reset vector of the
-/// PSP's copy of the BIOS image.
-///
-/// # Safety
-/// `dies` are all dies in order. The code at the AP reset vector and
-/// everything it needs to reach the platform's AP entry is in place and
-/// stays alive until all APs have joined.
-pub unsafe fn launch_aps<P: ConfigRegionAccess + Copy>(
-    dies: &[Die<P>],
-    ap_count: usize,
-    delay: &mut impl DelayNs,
-) -> Result<(), Failure> {
-    let slots = dies.iter().flat_map(|die| {
-        let topology = CpuTopology::read(&die.smn());
-        (0..topology.complexes).flat_map(move |complex| {
-            (0..topology.threads_per_complex()).map(move |thread| (die, complex * 8 + thread))
-        })
-    });
-    let mut started = 0;
-    for (die, slot) in slots.skip(1).take(ap_count) {
-        started += 1;
-        let smn = die.smn();
-        let thread_enable = smn.reg(THREAD_ENABLE);
-        let enabled = thread_enable.get();
-        if enabled & (1 << slot) == 0 {
-            fstart_log::debug!("SMU {}: ThreadEn bit {}", die.index(), slot);
-            thread_enable.set(enabled | (1 << slot));
-            test_message(die, delay)?;
-        }
-    }
-    if started != ap_count {
-        fstart_log::error!("Can only start {} of {} APs", started, ap_count);
-        return Err(Failure::ApCount {
-            started,
-            requested: ap_count,
-        });
-    }
-    Ok(())
 }
 
 /// The 47-character CPU name string from die 0's SMU.
@@ -376,13 +281,17 @@ mod tests {
 
     #[test]
     fn launches_aps_across_dies_with_the_complex_stride() {
+        use crate::fam17h::{
+            smu::{THREAD_CONFIG, THREAD_ENABLE},
+            topology::{self, Policy},
+        };
         let pci = Pci::new(&[0, 0x40], |_| [0; 6]);
         pci.set_smn(0, THREAD_CONFIG, 0x013); // 4 cores, 2 complexes, SMT
         pci.set_smn(1, THREAD_CONFIG, 0x103); // 4 cores, 1 complex, no SMT
         pci.set_smn(0, THREAD_ENABLE, 0b11); // BSP and thread 1 already run
         let dies = pci.dies();
-        assert_eq!(thread_count(&dies), 20);
-        unsafe { launch_aps(&dies, 17, &mut Delay(|_| {})) }.unwrap();
+        assert_eq!(topology::thread_count(&dies, Policy::DEFAULT), Ok(20));
+        unsafe { topology::launch(&dies, Policy::DEFAULT, 17, &mut Delay(|_| {})) }.unwrap();
         assert_eq!(pci.smn(0, THREAD_ENABLE), 0xffff);
         assert_eq!(pci.smn(1, THREAD_ENABLE), 0b11);
         let tests: Vec<_> = sent(&pci).iter().map(|&(die, ..)| die).collect();
@@ -395,8 +304,8 @@ mod tests {
         );
 
         assert_eq!(
-            unsafe { launch_aps(&dies, 20, &mut Delay(|_| {})) },
-            Err(Failure::ApCount {
+            unsafe { topology::launch(&dies, Policy::DEFAULT, 20, &mut Delay(|_| {})) },
+            Err(topology::Error::ApCount {
                 started: 19,
                 requested: 20
             })

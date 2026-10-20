@@ -417,7 +417,7 @@ mod zeppelin {
         fam17h::{
             df,
             iohc::{self, IOAPIC_BAR},
-            topology,
+            topology::{self, Policy},
         },
         fch::{Acpimmio, Fch},
         zeppelin::{
@@ -469,10 +469,10 @@ mod zeppelin {
         hw.set_config(df(0, 1), 0x204, 2);
         hw.set_config(df(0, 0), 0x84, 0);
         hw.set_config(df(1, 0), 0x84, 0x40);
-        hw.set_smn(0, smu::THREAD_CONFIG, 0x013);
-        hw.set_smn(1, smu::THREAD_CONFIG, 0x103);
-        hw.set_smn(0, smu::THREAD_ENABLE, 1);
-        hw.set_smn(1, smu::THREAD_ENABLE, 0);
+        hw.set_smn(0, crate::fam17h::smu::THREAD_CONFIG, 0x013);
+        hw.set_smn(1, crate::fam17h::smu::THREAD_CONFIG, 0x103);
+        hw.set_smn(0, crate::fam17h::smu::THREAD_ENABLE, 1);
+        hw.set_smn(1, crate::fam17h::smu::THREAD_ENABLE, 0);
         hw.set_smn(0, 0x13f0_0040_u32, 0x1964_000f);
         // Die 1's internal bridge 8.1 exists.
         hw.set_config(PciAddress::new(0, 0x40, 8, 1), 0, 0x1452_1022);
@@ -574,9 +574,9 @@ mod zeppelin {
         );
 
         // MP
-        let threads = smu::thread_count(&dies);
+        let threads = topology::thread_count(&dies, Policy::DEFAULT).unwrap();
         assert_eq!(threads, 20);
-        unsafe { smu::launch_aps(&dies, threads - 1, &mut delay) }.unwrap();
+        unsafe { topology::launch(&dies, Policy::DEFAULT, threads - 1, &mut delay) }.unwrap();
         smu::aps_ready(&dies, &mut delay).unwrap();
         smu::ccx_done(&dies, &mut delay).unwrap();
 
@@ -600,6 +600,7 @@ mod picasso {
         fam17h::{
             iohc::{PSP_BAR, SMU_BAR},
             smu::{THREAD_CONFIG, THREAD_ENABLE},
+            topology::{self, Downcore, Policy},
         },
         picasso::{
             Die,
@@ -607,7 +608,6 @@ mod picasso {
             fabric,
             nbio::{self},
             smu,
-            topology::{self, Downcore, Policy},
         },
     };
 
@@ -635,9 +635,7 @@ mod picasso {
         hw.set_smn(0, crate::fam17h::nbio::pcie::link_status(0), 0);
         // TOM2[40:32] bit 8 clear: below 1 TiB.
         hw.set_smn(0, 0x13b1_0068_u32, 0x1234_5600);
-        let die: Die<&Hw> = unsafe { crate::fam17h::topology::dies(&hw) }
-            .next()
-            .unwrap();
+        let die: Die<&Hw> = unsafe { topology::dies(&hw) }.next().unwrap();
         let (smn, df) = (die.smn(), die.df());
         let mut delay = hw.clock();
 
@@ -654,11 +652,10 @@ mod picasso {
             disable_smt: true,
         };
         assert_eq!(
-            topology::apply(&smn, policy, &mut delay).unwrap(),
+            topology::apply(&die, policy, &mut delay).unwrap(),
             topology::Effect::ResetRequired
         );
-        let topology = topology::query(&smn, policy).unwrap();
-        unsafe { topology::launch(&smn, topology, 3, &mut delay) }.unwrap();
+        unsafe { topology::launch(&[die], policy, 3, &mut delay) }.unwrap();
 
         let options = Options {
             power: PowerPolicy::Performance,

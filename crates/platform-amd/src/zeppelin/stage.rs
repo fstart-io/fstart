@@ -13,7 +13,7 @@ use fstart_driver_amd::{
         cache,
         ccx::Thread,
         df, iohc, msr,
-        topology,
+        topology::{self, Policy},
         tsc::{self, Tsc},
     },
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
@@ -387,7 +387,9 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     post(0x41);
 
     // MP: microcode and the CCX init on every CPU, the SMU releases the APs.
-    let threads = smu::thread_count(dies);
+    let Ok(threads) = topology::thread_count(dies, Policy::DEFAULT) else {
+        fail("CPU topology")
+    };
     let flash = unsafe {
         core::slice::from_raw_parts(layout::FLASH_BASE as *const u8, layout::FLASH_SIZE as usize)
     };
@@ -409,15 +411,13 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     let mut launch = |aps: u16| {
         // SAFETY: the reset vector sends APs to the SIPI trampoline the MP
         // engine installed before calling this.
-        unsafe { smu::launch_aps(dies, usize::from(aps), &mut { clock }) }
-        .map_err(
-            |error| {
-                if let smu::Failure::ApCount { started, requested } = error {
+        unsafe { topology::launch(dies, Policy::DEFAULT, usize::from(aps), &mut { clock }) }
+            .map_err(|error| {
+                if let topology::Error::ApCount { started, requested } = error {
                     fstart_log::error!("zeppelin: started {} of {} APs", started, requested);
                 }
                 1
-            },
-        )
+            })
     };
     let mp = fstart_arch::x86::mp::mp_init_with_launcher(
         &fstart_arch::x86::mp::MpConfig {
