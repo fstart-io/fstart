@@ -3,7 +3,8 @@
 //! Builds on the [`acpi_tables`] crate from rust-vmm, adding:
 //!
 //! - **Static tables**: GTDT (Generic Timer), SPCR (Serial Port Console),
-//!   DBG2 (Debug Port), IORT (IO Remapping), HPET (High Precision Timer).
+//!   DBG2 (Debug Port), IORT (IO Remapping), IVRS (AMD IOMMU), HPET (High
+//!   Precision Timer).
 //! - **AML extensions** ([`ext`]): `Sleep`, `Stall`, `ThermalZone`,
 //!   `CondRefOf`, `RefOf`, `Increment`, `Decrement`.
 //! - **Resource descriptors** ([`descriptors`]): GPIO Connection
@@ -47,6 +48,7 @@ pub mod devices;
 pub mod ext;
 pub mod gtdt;
 pub mod iort;
+pub mod ivrs;
 pub mod pirq;
 pub mod platform;
 pub mod sbsa;
