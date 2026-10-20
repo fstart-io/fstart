@@ -8,7 +8,8 @@ Native (no FSP) port of AMD Picasso and the Google Zork "Vilboz" boards.
   DXIO, USB, eMMC, eSPI, PSP mailbox, microcode, APOB parsing). Gated by the
   `picasso` feature.
 - `crates/platform-amd`: the Picasso flow, DRAM layout, reset entry
-  (`asm/picasso.S`), linker script, MP policy and the host build plan.
+  (`asm/psp_reset.S`, shared with Zeppelin), linker script, MP policy and
+  the host build plan.
 - `boards/google/zork`: Dalboz baseboard wiring and Vilboz policy. Vilboz,
   Vilboz14 and Vilboz360 differ only through EC CBI (board version,
   FW_CONFIG), so they share one board.
@@ -35,11 +36,11 @@ bytes. There is no cache-as-RAM. The layout lives in
 | Reset vector | `022ffff0` |
 
 `02000000..02300000` and the AP bootstrap page at `0x8000` stay reserved
-through OS handoff. The image has no initialized writable data, so the
-PSP-copied bytes are never modified (the PSP checks them on S3 resume).
+through OS handoff. The Picasso image has no initialized writable data, so
+the PSP-copied bytes are never modified (the PSP checks them on S3 resume).
 
 APs are released by the SMU (ThreadEn) and also enter the reset vector.
-`picasso.S` sends every non-BSP CPU to the shared SIPI trampoline at
+`psp_reset.S` sends every non-BSP CPU to the shared SIPI trampoline at
 `0x8000`, which the architectural MP code installs before the release.
 
 ## Boot flow
