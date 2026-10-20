@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
-/* Cold-boot PSP DRAM reset entry. No Intel CAR, no flash XIP, no FSP. */
+/* Cold-boot PSP DRAM reset entry. No Intel CAR, no flash XIP, no FSP.
+ * Shared by the AMD SoCs whose PSP copies the BIOS reset image to DRAM; the
+ * platform defines _fstart_amd_long_mode_entry, entered in long mode with the
+ * stack, BSS and the 4-GiB identity map set up. */
 .section .reset,"ax",@progbits
 .code16
 .global _start
@@ -13,7 +16,7 @@ _fstart_start16:
     cld
     /* Architectural APICBASE.BSP identifies this logical CPU, not an arrival
        ordinal. Decide before any stack/BSS/page-table initialization. Native
-       Picasso SMU release enters this PSP-copied reset vector; never patch it.
+       SMU release enters this PSP-copied reset vector; never patch it.
        The platform may release APs ONLY after publishing/reserving the shared
        architectural bootstrap at 0x8000 and excluding early NMI/SMI delivery. */
 .global _fstart_reset_dispatch
@@ -109,10 +112,7 @@ _fstart_start32:
 _fstart_start64:
     mov rsp, offset _fstart_stack_top
     xor rbp, rbp
-    call fstart_picasso_main
-3:  cli
-    hlt
-    jmp 3b
+    jmp _fstart_amd_long_mode_entry
 
 .balign 8
 _fstart_gdt:

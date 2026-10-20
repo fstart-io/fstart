@@ -10,13 +10,31 @@ picasso = ["fstart-driver-amd/picasso", "dep:fstart-arch"]
 # Explicit firmware-only immutable compiler input, not automatic vendor discovery.
 linked-microcode = ["picasso"]
 # Host policy only; never enabled by the emitted firmware unit.
-host = ["picasso", "dep:fstart-image-build", "dep:serde_json"]
+host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
 # Compiler/check/editor support; still a non-bootable console checkpoint.
 bundle-checkpoint = ["picasso"]
+zeppelin = ["fstart-driver-amd/zeppelin", "dep:fstart-arch"]
+# The Zeppelin reset image: one DRAM stage from reset vector to payload.
+bundle-zeppelin = [
+  "zeppelin",
+  "dep:fstart-stage",
+  "dep:heapless",
+  "fstart-arch/x86-identity-paging",
+  "fstart-stage/x86_64",
+  "fstart-stage/ffs",
+  "fstart-stage/ffs-signature",
+  "fstart-stage/ed25519",
+  "fstart-stage/sha2-digest",
+  "fstart-stage/lz4",
+]
+payload-linux = ["fstart-stage?/linux"]
+payload-uefi = ["payload-uefi-basic", "fstart-stage?/crabefi"]
+payload-uefi-basic = ["fstart-stage?/crabefi-basic"]
 
 [dependencies]
 fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
 fstart-driver-amd.workspace = true
 fstart-core.workspace = true
 fstart-driver-uart.workspace = true
@@ -24,3 +42,5 @@ fstart-log.workspace = true
 ufmt.workspace = true
 fstart-pci.workspace = true
 fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
+fstart-stage = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }

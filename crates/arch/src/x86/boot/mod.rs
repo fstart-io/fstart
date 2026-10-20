@@ -136,12 +136,15 @@ macro_rules! enter_runtime {
 //
 // Reset-vector entry only: postcar and ramstage enter via direct 64-bit
 // jumps (`_start_postcar` / `_start_ram`), so this block is compiled out of
-// those stages to keep postcar small.
+// those stages to keep postcar small. AMD PSP platforms own their reset entry
+// (the PSP copies the image to DRAM); `amd-psp-reset` stages then continue
+// at `_start_ram` once in long mode.
 #[cfg(all(
     not(test),
     target_os = "none",
     not(fstart_stage_env = "postcar"),
-    not(fstart_entry = "picasso-reset")
+    not(fstart_entry = "picasso-reset"),
+    not(fstart_entry = "amd-psp-reset")
 ))]
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is

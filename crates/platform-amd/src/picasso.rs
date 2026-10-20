@@ -9,12 +9,23 @@ use fstart_driver_amd::{
 
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 core::arch::global_asm!(
-    include_str!("../asm/picasso.S"),
+    include_str!("../asm/psp_reset.S"),
     ap_reset_segment = const {
         let address = fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS;
         assert!(address & 15 == 0 && address <= 0xffff0);
         address >> 4
     },
+);
+
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+core::arch::global_asm!(
+    ".code64",
+    ".global _fstart_amd_long_mode_entry",
+    "_fstart_amd_long_mode_entry:",
+    "call fstart_picasso_main",
+    "3: cli",
+    "hlt",
+    "jmp 3b",
 );
 
 pub const LINKER_SCRIPT: &str = include_str!("../linker/picasso.ld");
