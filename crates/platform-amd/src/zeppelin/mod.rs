@@ -7,6 +7,8 @@ pub mod acpi;
 pub mod host;
 pub mod layout;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
+mod boot;
+#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod cpu;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod memory;

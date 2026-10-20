@@ -3,7 +3,7 @@
 //! the image it copied to DRAM. `psp_reset.S` enters long mode and continues
 //! at the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
 //! board's `fstart_main`.
-use super::{Board, BoardCtx, cpu::ZeppelinCpu, layout, memory, pci};
+use super::{Board, BoardCtx, acpi, boot, cpu::ZeppelinCpu, layout, memory, pci};
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
     fam17h::{
@@ -199,10 +199,7 @@ fn run<B: Board>() -> ! {
     };
     early_silicon::<B>(&mut silicon, top_mem, top_mem2, &map);
     post(0x40);
-    late_silicon::<B>(&mut silicon);
-    post(0x4f);
-    fstart_log::info!("zeppelin: silicon init done, halting");
-    halt()
+    late_silicon::<B>(&mut silicon)
 }
 
 /// The silicon init before MP: AmdSocSp4ZpPei, AmdFabricZpPei, FchTaishanPei,
@@ -281,7 +278,7 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
 }
 
 /// The native silicon init, MP init and the devices.
-fn late_silicon<B: Board>(s: &mut Silicon) {
+fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     let clock = Clock { mhz: s.clock.mhz };
     let mut delay = |us| clock.delay_us(us);
     let mut now = || clock.now_us();
@@ -428,12 +425,15 @@ fn late_silicon<B: Board>(s: &mut Silicon) {
         },
         &mut launch,
     );
-    match mp {
-        Ok(mp) => fstart_log::info!(
-            "zeppelin: {} CPUs up, {} CPU init errors",
-            mp.num_cpus(),
-            ZeppelinCpu::errors()
-        ),
+    let mp = match mp {
+        Ok(mp) => {
+            fstart_log::info!(
+                "zeppelin: {} CPUs up, {} CPU init errors",
+                mp.num_cpus(),
+                ZeppelinCpu::errors()
+            );
+            mp
+        }
         Err(error) => {
             use fstart_arch::x86::mp::MpError;
             match error {
@@ -449,7 +449,24 @@ fn late_silicon<B: Board>(s: &mut Silicon) {
             }
             fail("MP init")
         }
-    }
+    };
+    let apic_ids: [core::sync::atomic::AtomicU32; 32] =
+        [const { core::sync::atomic::AtomicU32::new(u32::MAX) }; 32];
+    mp.scope(|scope| {
+        scope.scatter(&|cpu: u32| {
+            if let Some(slot) = apic_ids.get(cpu as usize) {
+                slot.store(
+                    fstart_arch::x86::cpuid(1).1 >> 24,
+                    core::sync::atomic::Ordering::Release,
+                );
+            }
+        })
+    });
+    let apic_ids: Vec<u32, 32> = apic_ids
+        .iter()
+        .map(|id| id.load(core::sync::atomic::Ordering::Acquire))
+        .take(usize::from(mp.num_cpus()))
+        .collect();
     if smu::aps_ready(dies, &mut delay).is_err() {
         fstart_log::error!("zeppelin: SMU messages after AP launch failed");
     }
@@ -489,5 +506,154 @@ fn late_silicon<B: Board>(s: &mut Silicon) {
         dies,
         delay_us: &mut delay,
     });
-    let _ = (&s.e820, ioapics);
+
+    // IOAPICs: the FCH's (GSI 0-23, ID 0) in virtual-wire mode, then one
+    // per die's NBIO (ID 1 + die), all masked.
+    pm.enable_hpet_ioapic();
+    // SAFETY: decoded IOAPIC MMIO, BSP only.
+    let fch_ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(FCH_IOAPIC as usize) };
+    fch_ioapic.set_id(0);
+    fch_ioapic.mask_all();
+    fch_ioapic.route_i8259(apic_ids.first().copied().unwrap_or(0) as u8);
+    for die in dies {
+        let ioapic =
+            unsafe { fstart_arch::x86::ioapic::IoApic::new(ioapics[usize::from(die.index())] as usize) };
+        ioapic.set_id(1 + die.index());
+        ioapic.mask_all();
+    }
+
+    let rsdp = acpi_tables::<B>(s, &ecam, &apic_ids, &ioapics);
+    // ACPI mode without SMM: the firmware enables SCI itself.
+    // SAFETY: the PM1 control block the FCH decodes at this port.
+    unsafe {
+        let control = fstart_core::pio::inw(soc::acpi_io::PM1_CNT);
+        fstart_core::pio::outw(soc::acpi_io::PM1_CNT, control | 1);
+    }
+
+    // ReadyToBoot of the vendor firmware.
+    if let Some(sata) = ecam.devices().find(|a| {
+        ecam.device(*a)
+            .is_some_and(|d| d.read32(0) == 0x7901_1022)
+    }) {
+        fch::sata::late(&mut dies[0].smn(), 0, &pci_access(), sata);
+    }
+    fch::multi::late(dies, |_| None);
+    fch::late_init(&mut bus);
+    B::ready_to_boot(&mut BoardCtx {
+        dies,
+        delay_us: &mut delay,
+    });
+    for die in dies {
+        fabric::disable_ext_cfg(&mut die.df());
+    }
+    // No PSP LockDFReg: sent here it breaks device DMA (the xHCI halts with
+    // a host system error on its first command). The vendor firmware sends
+    // it only after the PSP got its SMM info, and this port has no SMM yet.
+    post(0x43);
+
+    if boot::mount(&s.e820).is_err() {
+        fail("boot media");
+    }
+    if boot::map_ram(&s.e820).is_err() {
+        fail("page tables");
+    }
+    if !fstart_arch::x86::mp::park_aps_for_payload() {
+        fail("parking the APs");
+    }
+    // SAFETY: CONSOLE was initialized at entry and lives forever.
+    let console = unsafe { (*core::ptr::addr_of!(CONSOLE)).assume_init_ref() };
+    fstart_log::info!("zeppelin: starting the payload");
+    post(0x44);
+    let handoff = boot::Handoff {
+        console,
+        e820: core::mem::replace(&mut s.e820, E820State::new()),
+        rsdp,
+    };
+    use fstart_stage::payload::MainstagePayload;
+    fstart_stage::payload::BuildSelectedPayload::boot(handoff)
+}
+
+const FCH_IOAPIC: u32 = 0xfec0_0000;
+const HPET: usize = 0xfed0_0000;
+
+fn pci_access() -> GlobalEcam {
+    GlobalEcam
+}
+
+/// Build the ACPI tables in reserved firmware memory; returns the RSDP.
+fn acpi_tables<B: Board>(
+    s: &Silicon,
+    ecam: &fstart_pci::PciEcam,
+    apic_ids: &[u32],
+    ioapics: &[u32; MAX_DIES],
+) -> Option<u64> {
+    #[repr(C, align(4096))]
+    struct Tables([u8; 0x2_0000]);
+    static mut TABLES: Tables = Tables([0; 0x2_0000]);
+
+    let io: Vec<core::ops::RangeInclusive<u16>, 8> = ecam
+        .windows()
+        .iter()
+        .filter(|w| w.kind == fstart_pci::PciWindowKind::Io && w.size != 0)
+        .map(|w| w.base as u16..=(w.end() - 1) as u16)
+        .collect();
+    let mmio: Vec<core::ops::RangeInclusive<u64>, 8> = ecam
+        .windows()
+        .iter()
+        .filter(|w| w.kind == fstart_pci::PciWindowKind::Mmio && w.size != 0)
+        .map(|w| w.base..=w.end() - 1)
+        .collect();
+    let bridges: Vec<u8, 32> = ecam
+        .devices()
+        .filter(|a| a.bus() == 0)
+        .filter_map(|a| {
+            let device = ecam.device(a)?;
+            (device.read32(8) >> 16 == 0x0604).then_some((a.device() << 3) | a.function())
+        })
+        .collect();
+    let dies: Vec<acpi::DieAcpi<'_>, MAX_DIES> = s
+        .dies
+        .iter()
+        .map(|die| acpi::DieAcpi {
+            buses: die.bus()..=soc::ECAM_BUSES as u8 - 1,
+            ioapic_id: 1 + die.index(),
+            ioapic_base: ioapics[usize::from(die.index())],
+            io: &io,
+            mmio: &mmio,
+            vga: die.index() == 0,
+            bridges: &bridges,
+        })
+        .collect();
+    let board = B::acpi();
+    // SAFETY: HPET general capabilities, decoded by the FCH.
+    let hpet_id = unsafe { fstart_core::mmio::read32(HPET as *const u32) };
+    let tables = acpi::build(&acpi::Inputs {
+        apic_ids,
+        dies: &dies,
+        ecam_base: soc::ECAM,
+        ecam_buses: soc::ECAM_BUSES,
+        hpet_id,
+        fch_intx_gsi: [16, 17, 18, 19],
+        board: &board,
+    })
+    .ok()?;
+    // SAFETY: firmware BSS in the reserved early region, written once.
+    let storage = unsafe { &mut (*core::ptr::addr_of_mut!(TABLES)).0 };
+    let address = storage.as_ptr() as u64;
+    match fstart_acpi::platform::assemble_into(
+        storage,
+        address,
+        &tables.platform,
+        &tables.dsdt_aml,
+        &tables.extra,
+    ) {
+        Ok(length) => {
+            fstart_log::info!("ACPI: {} bytes at {}", length as u32, Hex(address));
+            Some(address)
+        }
+        Err(_) => {
+            fstart_log::error!("ACPI: tables don't fit");
+            None
+        }
+    }
 }

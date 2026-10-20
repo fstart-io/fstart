@@ -136,6 +136,7 @@ SECTIONS {{
     }} > data AT > image
     _data_load = LOADADDR(.data);
     _fstart_text_end = LOADADDR(.data) + SIZEOF(.data);
+    _binary_end = _fstart_text_end;
     .bss (NOLOAD) : ALIGN(16) {{
         _bss_start = .;
         _fstart_bss_start = .;
