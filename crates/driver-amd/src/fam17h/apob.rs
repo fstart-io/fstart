@@ -11,6 +11,16 @@ pub const MAX_SIZE: usize = 0x10000;
 pub const MAX_HOLES: usize = 18;
 const SIGNATURE: u32 = 0x424f5041;
 
+// Entry groups and types (AGESA APOB_GROUP and its types).
+pub const GROUP_MEMORY: u32 = 1;
+/// Memory: the general configuration (media, MEMCLK, populated channels).
+pub const TYPE_MEM_GENERAL_CONFIG: u32 = 2;
+/// Memory: the PIE power settings of the ABL.
+pub const TYPE_MEM_PIE_PWR: u32 = 0xf;
+pub const GROUP_FABRIC: u32 = 9;
+/// Fabric: the system memory map.
+pub const TYPE_FABRIC_MEMORY_MAP: u32 = 9;
+
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 struct Base {
@@ -172,12 +182,22 @@ impl<'a> Apob<'a> {
         .ok()?;
         found
     }
+    /// Byte `offset` of the first entry of a group, type and optionally
+    /// instance. Vendor offsets count from the entry header.
+    pub fn byte(&self, group: u32, kind: u32, instance: Option<u32>, offset: usize) -> Option<u8> {
+        self.find_instance(group, kind, instance)?
+            .get(offset.checked_sub(size_of::<Entry>())?)
+            .copied()
+    }
     pub fn memory_clock_mhz(&self) -> Option<u16> {
-        let (config, _) = MemoryConfig::ref_from_prefix(self.find(1, 2)?).ok()?;
+        let config = self.find(GROUP_MEMORY, TYPE_MEM_GENERAL_CONFIG)?;
+        let (config, _) = MemoryConfig::ref_from_prefix(config).ok()?;
         Some(config.memclk.get())
     }
     pub fn memory_map(&self) -> Result<MemoryMap, Error> {
-        let bytes = self.find(9, 9).ok_or(Error::MissingMap)?;
+        let bytes = self
+            .find(GROUP_FABRIC, TYPE_FABRIC_MEMORY_MAP)
+            .ok_or(Error::MissingMap)?;
         let (header, bytes) = MapHeader::ref_from_prefix(bytes).map_err(|_| Error::Map)?;
         let count = header.count.get() as usize;
         if count > MAX_HOLES {

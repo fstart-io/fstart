@@ -6,7 +6,7 @@
 //! distribution is [`crate::fam17h::df::plan`].
 use super::{NONPCI_MMIO_SIZE, Revision, Zeppelin};
 use crate::fam17h::{
-    apob::Apob,
+    apob::{self, Apob},
     df::{self, DramBase},
     registers::{Df, DfReg},
     topology::Soc,
@@ -74,12 +74,6 @@ const INST_IOMS: u8 = 4;
 const INST_CS_DRAM_MAP: u8 = 5;
 
 const GIB: u64 = 1 << 30;
-
-const APOB_GROUP_MEMORY: u32 = 1;
-const APOB_TYPE_MEM_CONFIG: u32 = 2;
-const APOB_TYPE_PIE_PWR: u32 = 0xf;
-/// Size of the APOB entry header the vendor offsets count from.
-const APOB_ENTRY_HEADER: usize = 48;
 
 /// The vendor code keeps the top 8 MiB of every die's below-4G window (pair
 /// 2 * die) as its non-PCI MMIO pool. On die 0 that's 0xfe400000-0xfebfffff.
@@ -208,9 +202,7 @@ fn apob_byte(apob: &Apob, kind: u32, instance: Option<u32>, offset: usize, min_v
     if apob.version() < min_version {
         return None;
     }
-    apob.find_instance(APOB_GROUP_MEMORY, kind, instance)?
-        .get(offset.checked_sub(APOB_ENTRY_HEADER)?)
-        .copied()
+    apob.byte(apob::GROUP_MEMORY, kind, instance, offset)
 }
 
 /// The DRAM scrubber of the vendor AmdFabricZpPei with its defaults: scrub
@@ -223,7 +215,7 @@ pub fn scrub_init(df: &Df<impl ConfigRegionAccess>, die: u8, apob: &Apob) -> Opt
     }
     // Inferred meaning: the two UMC channels are populated.
     let populated = [0x38, 0x39]
-        .map(|offset| apob_byte(apob, APOB_TYPE_MEM_CONFIG, Some(u32::from(die)), offset, 0));
+        .map(|offset| apob_byte(apob, apob::TYPE_MEM_GENERAL_CONFIG, Some(u32::from(die)), offset, 0));
     let [Some(a), Some(b)] = populated else {
         return None;
     };
@@ -252,7 +244,7 @@ pub fn late_init(
 ) {
     let multi_die = dies / sockets > 1;
     // APOB group 1 type 0xf, byte 0x130 (meaning unknown), APOB version 9 and up.
-    let apob_flag = apob_byte(apob, APOB_TYPE_PIE_PWR, None, 0x130, 9).is_some_and(|b| b != 0);
+    let apob_flag = apob_byte(apob, apob::TYPE_MEM_PIE_PWR, None, 0x130, 9).is_some_and(|b| b != 0);
     let bit = |cond: bool, mask: u32| if cond { mask } else { 0 };
 
     // Bit 5 stays clear with C6 enabled (vendor PCD 0x13 = 1).

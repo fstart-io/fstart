@@ -238,6 +238,10 @@ fn apob_memory_map_is_bounded_sorted_and_preserves_uma() {
     assert_eq!(map.holes()[0].kind, 0);
     assert_eq!(map.holes()[1].kind, 1);
     assert_eq!(map.holes()[0].end(), 0xcf800000);
+    // Vendor offsets count from the entry header: the top's bits 39:32.
+    assert_eq!(apob.byte(apob::GROUP_FABRIC, apob::TYPE_FABRIC_MEMORY_MAP, None, 52), Some(4));
+    assert_eq!(apob.byte(apob::GROUP_FABRIC, apob::TYPE_FABRIC_MEMORY_MAP, None, 47), None);
+    assert_eq!(apob.byte(apob::GROUP_MEMORY, apob::TYPE_MEM_GENERAL_CONFIG, None, 48), None);
 }
 #[test]
 fn apob_corruption_never_becomes_a_guessed_memory_map() {
