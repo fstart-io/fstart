@@ -12,11 +12,19 @@ default = []
 naples = ["fstart-driver-zen/naples"]
 rome = ["fstart-driver-zen/rome"]
 milan = ["fstart-driver-zen/milan"]
+acpi = ["dep:fstart-acpi"]
 # Host policy only; never enabled by the emitted firmware unit.
-host = []
+host = ["dep:fstart-image-build", "dep:serde_json"]
 
 [dependencies]
 fstart-driver-zen = { path = "../driver-zen" }
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
+fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-image-build = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
+heapless = { workspace = true }
+zerocopy = { workspace = true }
+ufmt = { workspace = true }

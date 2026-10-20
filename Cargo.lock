@@ -934,10 +934,17 @@ dependencies = [
 name = "fstart-platform-sp3"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
+ "fstart-arch",
  "fstart-core",
  "fstart-driver-zen",
+ "fstart-image-build",
  "fstart-log",
  "fstart-pci",
+ "heapless 0.8.0",
+ "serde_json",
+ "ufmt",
+ "zerocopy",
 ]
 
 [[package]]
