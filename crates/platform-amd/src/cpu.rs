@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use fstart_arch::x86::cpu::msr::{APIC_BASE, MsrAccess, NativeMsr};
 use fstart_arch::x86::{
     cpuid,
-    mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError},
+    mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError, SipiUnlock},
     mtrr::SipiMsrs,
 };
 use fstart_driver_amd::fam17h::nbio::{PSP_BASE_ADDR_HI, PSP_BASE_ADDR_LO};
@@ -355,6 +355,9 @@ impl CpuDriver for NativeCpu {
             })
             .map_err(|_| MpError::CacheabilitySetupFailed)
     }
+    fn sipi_unlock(&self) -> Option<SipiUnlock> {
+        Some(crate::mp::SIPI_UNLOCK)
+    }
     fn update_microcode(&self) {
         if self
             .serial
@@ -394,6 +397,7 @@ impl CpuDriver for NativeCpu {
                 self.policy
                     .initialize(&msr, index == 0, primary)
                     .map_err(Error::Policy)?;
+                crate::mp::hide_fixed_dram_routing(&msr);
                 self.initialized.fetch_or(bit, Ordering::Release);
                 Ok(())
             })

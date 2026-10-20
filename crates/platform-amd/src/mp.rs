@@ -3,58 +3,48 @@
 //! replay before enabling caches, and (Picasso) AP release through the SMU.
 use fstart_arch::x86::{
     cpu::{
-        amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2},
+        amd::msr::{SYSCFG, Syscfg},
         msr::MsrAccess,
     },
-    mtrr::{self, MsrEntry, SipiMsrs},
+    mp::SipiUnlock,
+    mtrr::{self, SipiMsrs},
 };
-use fstart_driver_amd::fam17h::{cache, msr as cpu};
+use fstart_driver_amd::fam17h::cache;
 #[cfg(feature = "picasso")]
 use fstart_driver_amd::picasso::{
     registers::Smn,
     topology::{self, Topology},
 };
-use tock_registers::interfaces::Readable;
+use tock_registers::interfaces::ReadWriteable;
 
 #[derive(Debug)]
 pub enum Error {
-    Cpu(cpu::MemoryBoundary),
     AmdCache(cache::Error),
     Capacity,
 }
 
-/// BSP only, after the AMD cache plan is installed and before AP release.
+/// SYSCFG.MtrrFixDramModEn while an AP replays [`sipi_msrs`]: the fixed
+/// MTRRs' RdDram/WrDram bits are only writable with it.
+pub const SIPI_UNLOCK: SipiUnlock = SipiUnlock::new(SYSCFG, Syscfg::MTRR_FIX_DRAM_MOD_EN::SET);
+
+/// BSP only, after the AMD cache plan is installed and before AP release:
+/// the MTRRs and PAT the APs replay, the fixed ones read with their
+/// RdDram/WrDram routing exposed.
 ///
-/// The fixed MTRRs are read with their
-/// RdDram/WrDram routing exposed (SYSCFG.MtrrFixDramModEn). APs replay
-/// SYSCFG with that gate open, TOP_MEM/TOM2, the MTRRs and PAT, then the
-/// BSP's SYSCFG and finally MTRR_DEF_TYPE.
-pub fn sipi_msrs(msr: &impl MsrAccess) -> Result<SipiMsrs, Error> {
-    cpu::memory_limits(msr).map_err(Error::Cpu)?;
-    let syscfg = msr.reg(SYSCFG).get();
-    let mut msrs = SipiMsrs::new();
-    for entry in [
-        MsrEntry::new(
-            SYSCFG.index(),
-            syscfg | Syscfg::MTRR_FIX_DRAM_MOD_EN::SET.value,
-        ),
-        MsrEntry::new(TOP_MEM.index(), msr.reg(TOP_MEM).get()),
-        MsrEntry::new(TOP_MEM2.index(), msr.reg(TOP_MEM2).get()),
-    ] {
-        msrs.push(entry).map_err(|_| Error::Capacity)?;
-    }
-    let mtrrs = cache::fixed_dram_view(msr, |msr| mtrr::snapshot_with(|index| msr.read(index)))
+/// The APs keep the SYSCFG, TOP_MEM and
+/// TOM2 the ABL programmed on every core: a fresh core faults on the BSP's
+/// SYSCFG. They replay with [`SIPI_UNLOCK`].
+pub fn sipi_msrs(cpu: &impl MsrAccess) -> Result<SipiMsrs, Error> {
+    cache::fixed_dram_view(cpu, |cpu| mtrr::snapshot_with(|index| cpu.read(index)))
         .map_err(Error::AmdCache)?
-        .map_err(|_| Error::Capacity)?;
-    let (def_type, mtrrs) = mtrrs.split_last().ok_or(Error::Capacity)?;
-    for entry in mtrrs
-        .iter()
-        .copied()
-        .chain([MsrEntry::new(SYSCFG.index(), syscfg), *def_type])
-    {
-        msrs.push(entry).map_err(|_| Error::Capacity)?;
-    }
-    Ok(msrs)
+        .map_err(|_| Error::Capacity)
+}
+
+/// Hide the fixed MTRRs' RdDram/WrDram bits again, on every CPU after its
+/// init: the ABL and the early cache setup leave them exposed, the OS
+/// expects them hidden.
+pub fn hide_fixed_dram_routing(cpu: &impl MsrAccess) {
+    cpu.reg(SYSCFG).modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::CLEAR);
 }
 
 #[cfg(feature = "picasso")]
@@ -79,8 +69,6 @@ mod tests {
     use core::cell::RefCell;
     use fstart_arch::x86::cpu::msr::testing::MsrModel;
     const SYSCFG: u32 = super::SYSCFG.index();
-    const TOP_MEM: u32 = super::TOP_MEM.index();
-    const TOP_MEM2: u32 = super::TOP_MEM2.index();
     struct Cpu {
         syscfg: u64,
         writes: std::vec::Vec<(u32, u64)>,
@@ -90,8 +78,6 @@ mod tests {
         fn read(&mut self, index: u32) -> u64 {
             match index {
                 SYSCFG => self.syscfg,
-                TOP_MEM => 0x80000000,
-                TOP_MEM2 => 0x140000000,
                 0xfe => self.cap,
                 0x2ff => 0xc00,
                 0x277 => 0x0007040600070406,
@@ -113,7 +99,7 @@ mod tests {
         }
     }
     #[test]
-    fn replays_amd_routing_around_mtrrs_and_restores_bsp_gate() {
+    fn replays_the_mtrrs_and_pat_read_with_the_amd_routing() {
         let original = (1 << 18) | (1 << 20) | (1 << 21) | (1 << 22);
         let cpu = RefCell::new(Cpu {
             syscfg: original,
@@ -123,19 +109,16 @@ mod tests {
         let msrs = sipi_msrs(&cpu).unwrap();
         assert_eq!(cpu.borrow().syscfg, original);
         let writes: std::vec::Vec<_> = msrs.iter().map(|w| (w.index, w.value())).collect();
-        assert_eq!(
-            &writes[..3],
-            &[
-                (SYSCFG, original | (1 << 19)),
-                (TOP_MEM, 0x80000000),
-                (TOP_MEM2, 0x140000000)
-            ]
-        );
-        assert!(writes.contains(&(0x250, 0x1e1e1e1e1e1e1e1e)));
+        assert_eq!(writes[0], (0x250, 0x1e1e1e1e1e1e1e1e));
         assert!(writes.contains(&(0x259, 0)));
+        assert!(!writes.iter().any(|&(index, _)| index == SYSCFG));
         assert_eq!(
             &writes[writes.len() - 2..],
-            &[(SYSCFG, original), (0x2ff, 0xc00)]
+            &[(0x277, 0x0007040600070406), (0x2ff, 0xc00)]
+        );
+        assert_eq!(
+            SIPI_UNLOCK,
+            SipiUnlock::new(super::SYSCFG, Syscfg::MTRR_FIX_DRAM_MOD_EN::SET)
         );
     }
     #[test]

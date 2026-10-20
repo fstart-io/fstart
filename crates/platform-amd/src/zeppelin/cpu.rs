@@ -6,11 +6,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use fstart_arch::x86::{
-    cpu::{
-        amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2},
-        msr::{MsrAccess, NativeMsr},
-    },
-    mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError},
+    cpu::msr::NativeMsr,
+    mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError, SipiUnlock},
 };
 use fstart_driver_amd::{
     fam17h::bios_directory,
@@ -19,7 +16,6 @@ use fstart_driver_amd::{
         microcode::{PATCH_BYTES, Patch},
     },
 };
-use tock_registers::interfaces::ReadWriteable;
 
 /// BIOS directory type of the vendor microcode patches.
 const MICROCODE: u8 = 0x66;
@@ -127,29 +123,15 @@ impl CpuDriver for ZeppelinCpu {
             if ccx::cpu_init(&msr, &self.policy, thread).is_err() {
                 ERRORS.fetch_add(1, Ordering::AcqRel);
             }
-            // The ABL leaves the fixed-MTRR DRAM routing exposed; the OS
-            // expects it hidden.
-            msr.reg(SYSCFG).modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::CLEAR);
+            crate::mp::hide_fixed_dram_routing(&msr);
         });
     }
-    fn sipi_unlock(&self) -> Option<(u32, u32)> {
-        Some((
-            SYSCFG.index(),
-            Syscfg::MTRR_FIX_DRAM_MOD_EN::SET.value as u32,
-        ))
+    fn sipi_unlock(&self) -> Option<SipiUnlock> {
+        Some(crate::mp::SIPI_UNLOCK)
     }
     fn sipi_msrs(&self) -> Result<fstart_arch::x86::mtrr::SipiMsrs, MpError> {
         // SAFETY: BSP only, before any AP starts.
-        let msr = unsafe { NativeMsr::new() };
-        // The APs keep the SYSCFG and
-        // TOP_MEM/TOM2 the ABL programmed on every core and only take the
-        // BSP's MTRRs: a fresh core faults on the BSP's SYSCFG.
-        let msrs = crate::mp::sipi_msrs(&msr).map_err(|_| MpError::CacheabilitySetupFailed)?;
-        Ok(msrs
-            .into_iter()
-            .filter(|entry| {
-                ![SYSCFG.index(), TOP_MEM.index(), TOP_MEM2.index()].contains(&entry.index)
-            })
-            .collect())
+        crate::mp::sipi_msrs(&unsafe { NativeMsr::new() })
+            .map_err(|_| MpError::CacheabilitySetupFailed)
     }
 }

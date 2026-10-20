@@ -461,8 +461,8 @@ impl MsrEntry {
         self.low as u64 | (self.high as u64) << 32
     }
 }
-/// MTRRs + PAT + DEF_TYPE, plus room for vendor routing MSRs (AMD SYSCFG,
-/// TOP_MEM, TOM2) that CPU drivers add around the architectural snapshot.
+/// MTRRs + PAT + DEF_TYPE, plus room for vendor MSRs CPU drivers add around
+/// the architectural snapshot.
 const MAX_SIPI_MSRS: usize = 2 * MAX_MTRRS + 11 + 2 + 8;
 /// Ordered MSR writes every AP replays with caching disabled.
 pub type SipiMsrs = Vec<MsrEntry, MAX_SIPI_MSRS>;
@@ -482,8 +482,8 @@ pub unsafe fn snapshot_for_sipi() -> Result<SipiMsrs, ServiceError> {
 }
 
 /// Snapshot the current CPU's MTRRs and PAT through `read`, ending with
-/// IA32_MTRR_DEF_TYPE. Vendor CPU drivers wrap this with routing MSRs that
-/// must be replayed around it (AMD SYSCFG/TOP_MEM/TOM2).
+/// IA32_MTRR_DEF_TYPE, for vendor CPU drivers that read the MTRRs their own
+/// way (AMD: with the fixed MTRRs' RdDram/WrDram bits exposed).
 pub fn snapshot_with(mut read: impl FnMut(u32) -> u64) -> Result<SipiMsrs, ServiceError> {
     let cap = read(IA32_MTRR_CAP);
     let caps = Capabilities {

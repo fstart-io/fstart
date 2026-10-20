@@ -3,19 +3,14 @@
 use super::Error as CpuError;
 use crate::fam17h::msr::{CSTATE_BASE_ADDRESS, PSP_ADDRESS};
 use fstart_arch::x86::cpu::{
-    amd::msr::{SYSCFG, TOP_MEM, TOP_MEM2},
+    amd::msr::{SYSCFG, Syscfg},
     msr::{MCG_CAP, MTRR_DEF_TYPE, MsrAccess, PAT},
 };
 use tock_registers::interfaces::{Readable, Writeable};
 
-const ROUTING_MSRS: [u32; 5] = [
-    SYSCFG.index(),
-    TOP_MEM.index(),
-    TOP_MEM2.index(),
-    PAT.index(),
-    MTRR_DEF_TYPE.index(),
-];
-const TOM2_WB: u64 = (1 << 21) | (1 << 22);
+/// What the APs replay from the BSP. They keep their own SYSCFG, TOP_MEM
+/// and TOM2 from the ABL.
+const ROUTING_MSRS: [u32; 2] = [PAT.index(), MTRR_DEF_TYPE.index()];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -32,7 +27,7 @@ pub enum Error {
 /// Cached BSP policy, not discovery of physical PSP/cache ownership.
 #[derive(Debug, Clone, Copy)]
 pub struct Policy {
-    routing: [u64; 5],
+    routing: [u64; 2],
     psp_base: u64,
 }
 impl Policy {
@@ -46,9 +41,10 @@ impl Policy {
         let routing = ROUTING_MSRS.map(|index| cpu.read(index));
         // Early setup already installs TOM2En/TOM2WB. Never copy the native C
         // tail's late disable-cache/SYSCFG update while other CPUs are running.
-        if routing[0] & TOM2_WB != TOM2_WB
-            || routing[0] & (1 << 23) != 0
-            || routing[4] & 0xcff != 0xc00
+        let syscfg = cpu.reg(SYSCFG).extract();
+        if !syscfg.matches_all(Syscfg::TOM2_EN::SET + Syscfg::TOM2_WB::SET)
+            || syscfg.is_set(Syscfg::SMEE)
+            || routing[1] & 0xcff != 0xc00
         {
             return Err(Error::CachePolicy);
         }
@@ -104,7 +100,10 @@ mod tests {
     extern crate std;
     use super::*;
     use core::cell::RefCell;
-    use fstart_arch::x86::cpu::msr::testing::{MsrModel, MsrSpace};
+    use fstart_arch::x86::cpu::{
+        amd::msr::{TOP_MEM, TOP_MEM2},
+        msr::testing::{MsrModel, MsrSpace},
+    };
 
     /// Plain registers that check the MCA capability is read before any write.
     struct Cpu(MsrSpace);
