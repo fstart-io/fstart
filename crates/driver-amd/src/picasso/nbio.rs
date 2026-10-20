@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Picasso NBIO setup.
 //! Hardware order and repeated table writes are intentional.
+use crate::fam17h::tsc::DelayNs;
 use super::{
     nbio_tables as tables,
     registers::{Reg, Smn, SmnReg, copy, rmw, write},
@@ -112,10 +113,10 @@ pub fn early_init(
     smn: &Smn<impl ConfigRegionAccess>,
     raven2_cpuid: bool,
     am4: bool,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<Capabilities, Error> {
     let silicon_id =
-        smu::request(smn, smu::GET_SILICON_ID, [0; 6], delay_us).map_err(Error::Smu)?[0];
+        smu::request(smn, smu::GET_SILICON_ID, [0; 6], delay).map_err(Error::Smu)?[0];
     let graphics = silicon_id & (1 << 16) == 0 && smn.reg(GFX_PRESENT).get() != 0;
     apply(smn, tables::BASE);
     if !graphics {

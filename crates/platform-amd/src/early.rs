@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fixed native Picasso cold-boot silicon flow. No FSP calls or HOBs.
+use fstart_driver_amd::fam17h::tsc::DelayNs;
 use crate::memory::{self, Memory};
 use fstart_arch::x86::cpu::msr::{MCG_CAP, MTRR_CAP, McgCap, MsrAccess, MtrrCap};
 use fstart_driver_amd::fam17h::ccx::Thread;
@@ -43,7 +44,7 @@ pub fn initialize(
     msr: &(impl MsrAccess + CacheControl),
     smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
     df: &Df<impl fstart_pci::ConfigRegionAccess>,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<State, Error> {
     // Validate CPU, memory reservations and the full MTRR plan before writes.
     let initial_id = Identity::from_cpuid(input.cpuid_signature, input.cpuid_extended_ebx, 0)
@@ -61,7 +62,7 @@ pub fn initialize(
     cpu::enable_ecam(msr);
     fabric::ensure_legacy_routes(df, low as u32).map_err(Error::Fabric)?;
     fabric::early_init(df);
-    let capabilities = nbio::early_init(smn, initial_id.raven2_cpuid, initial_id.am4, delay_us)
+    let capabilities = nbio::early_init(smn, initial_id.raven2_cpuid, initial_id.am4, delay)
         .map_err(Error::Nbio)?;
     let identity = Identity::from_cpuid(
         input.cpuid_signature,

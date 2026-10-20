@@ -30,6 +30,7 @@
 //!     pcie(23, 16, 3, 3),
 //! ];
 //! ```
+use crate::fam17h::tsc::{Clock, DelayNs};
 use super::{
     ECAM_BUSES, MAX_DIES,
     nbio::{
@@ -374,11 +375,11 @@ fn rpc<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
     operation: Operation,
     mut arguments: [u32; 6],
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<[u32; 6], Error> {
     arguments[0] = operation as u32;
     let reply = die
-        .smu(smu::DXIO_SERVICE, arguments, delay_us)
+        .smu(smu::DXIO_SERVICE, arguments, delay)
         .map_err(|e| {
             error!(
                 "DXIO operation {} on die {} failed",
@@ -412,12 +413,12 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
         &self,
         operation: Operation,
         arguments: [u32; 6],
-        delay_us: &mut impl FnMut(u32),
+        delay: &mut impl DelayNs,
     ) -> Result<[u32; 6], Error> {
-        rpc(self.die, operation, arguments, delay_us)
+        rpc(self.die, operation, arguments, delay)
     }
-    fn simple(&self, operation: Operation, delay_us: &mut impl FnMut(u32)) -> Result<(), Error> {
-        self.rpc(operation, [0; 6], delay_us).map(drop)
+    fn simple(&self, operation: Operation, delay: &mut impl DelayNs) -> Result<(), Error> {
+        self.rpc(operation, [0; 6], delay).map(drop)
     }
     fn address(&self) -> Result<u32, Error> {
         let start = self.buffer.0.get() as usize;
@@ -428,12 +429,12 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
         (self.size / 4) as u32
     }
 
-    fn engine_config(&self, delay_us: &mut impl FnMut(u32)) -> Result<EngineConfig, Error> {
+    fn engine_config(&self, delay: &mut impl DelayNs) -> Result<EngineConfig, Error> {
         // SAFETY: no DXIO request is in flight; the buffer is ours.
         unsafe { (&mut *self.buffer.0.get())[..self.size].fill(0) };
         compiler_fence(Ordering::SeqCst);
         let arguments = [0, 0, self.address()?, self.dwords(), 0, 0];
-        self.rpc(Operation::EngineConfig, arguments, delay_us)?;
+        self.rpc(Operation::EngineConfig, arguments, delay)?;
         compiler_fence(Ordering::SeqCst);
         // SAFETY: the synchronous request completed its DMA. DRAM, not MMIO.
         let bytes = unsafe { self.buffer.0.get().read_volatile() };
@@ -442,8 +443,8 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
         Ok(config)
     }
 
-    fn ports_mapped(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<(), Error> {
-        let config = self.engine_config(delay_us)?;
+    fn ports_mapped(&mut self, delay: &mut impl DelayNs) -> Result<(), Error> {
+        let config = self.engine_config(delay)?;
         let (topology, map) = map_ports(&config, self.descriptors).inspect_err(|e| {
             if let Error::Unmapped { start, end, port } = e {
                 error!("DXIO: can't map lanes {}-{} (port {})", start, end, port);
@@ -509,17 +510,16 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
 
     fn event_loop(
         &mut self,
-        now_us: &mut impl FnMut() -> u64,
-        delay_us: &mut impl FnMut(u32),
+        clock: &mut impl Clock,
     ) -> Result<(), Error> {
-        let started = now_us();
-        self.simple(Operation::Start, delay_us)?;
+        let started = clock.now_us();
+        self.simple(Operation::Start, clock)?;
         loop {
-            if now_us().wrapping_sub(started) >= TIMEOUT_US {
+            if clock.now_us().wrapping_sub(started) >= TIMEOUT_US {
                 error!("DXIO timeout");
                 return Err(Error::Timeout);
             }
-            let reply = self.rpc(Operation::State, [0; 6], delay_us)?;
+            let reply = self.rpc(Operation::State, [0; 6], clock)?;
             let event = event(reply).inspect_err(|e| match *e {
                 Error::StateMachine(state) => {
                     error!("DXIO state machine error, state {}", Hex(state.into()))
@@ -535,7 +535,7 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
                     debug!("DXIO {} state {}", self.die.index(), Hex(state.into()));
                     match state {
                         SM_CONFIGURED => self.ports_configured(),
-                        SM_MAPPED => self.ports_mapped(delay_us)?,
+                        SM_MAPPED => self.ports_mapped(clock)?,
                         _ => {}
                     }
                 }
@@ -551,17 +551,16 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
                 Event::Unknown(kind) => warn!("DXIO: unknown event {}", Hex(kind.into())),
                 Event::Resume => {}
             }
-            self.simple(Operation::Resume, delay_us)?;
+            self.simple(Operation::Resume, clock)?;
         }
     }
 
     fn train(
         &mut self,
-        now_us: &mut impl FnMut() -> u64,
-        delay_us: &mut impl FnMut(u32),
+        clock: &mut impl Clock,
     ) -> Result<(), Error> {
         let address = self.address()?;
-        let version = self.rpc(Operation::Version, [0; 6], delay_us)?;
+        let version = self.rpc(Operation::Version, [0; 6], clock)?;
         if version[0] as u8 != RESULT_OK {
             error!(
                 "DXIO {}: unexpected version response {}",
@@ -571,20 +570,20 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
             return Err(Error::Version(version[0]));
         }
 
-        self.simple(Operation::Init, delay_us)?;
+        self.simple(Operation::Init, clock)?;
         for variable in [VAR_RET_AFTER_MAP, VAR_RET_AFTER_CONF, VAR_ANCILLARY_V1] {
-            self.rpc(Operation::SetVariable, [0, variable, 1, 0, 0, 0], delay_us)?;
+            self.rpc(Operation::SetVariable, [0, variable, 1, 0, 0, 0], clock)?;
         }
-        self.simple(Operation::LoadCapabilities, delay_us)?;
+        self.simple(Operation::LoadCapabilities, clock)?;
         // No ancillary data: the descriptors have no tuning records.
         for kind in [DATA_MACPCS, DATA_GPIO] {
-            self.rpc(Operation::LoadData, [0, 0, 0, 0, 1, kind], delay_us)?;
+            self.rpc(Operation::LoadData, [0, 0, 0, 0, 1, kind], clock)?;
         }
         let load = [0, 0, address, self.dwords(), 0, DATA_ENGINE_CONFIG];
-        self.rpc(Operation::LoadData, load, delay_us)?;
+        self.rpc(Operation::LoadData, load, clock)?;
 
-        self.event_loop(now_us, delay_us)?;
-        let config = self.engine_config(delay_us)?;
+        self.event_loop(clock)?;
+        let config = self.engine_config(clock)?;
         training_done(&self.die.smn(), &config, &mut self.topology)?;
         for port in self.topology.ports.iter().flatten() {
             info!(
@@ -786,12 +785,12 @@ fn post_training<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
     topology: &PcieTopology,
     subsystem_id: u32,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) {
     bridges(&die.smn(), topology);
     // Not on AM4: meaning unknown, the argument depends on the socket count
     // (0xf: one socket). The vendor code ignores the result.
-    let _ = rpc(die, Operation::PostTraining, [0, 0, 0xf, 0, 0, 0], delay_us);
+    let _ = rpc(die, Operation::PostTraining, [0, 0, 0xf, 0, 0, 0], delay);
     interface_after_dxio(die, topology);
     set_subsystem_ids(&die.smn(), subsystem_id);
 }
@@ -823,15 +822,13 @@ fn bus_routing(smn: &Smn<impl ConfigRegionAccess>, die: usize, buses: &[u8]) {
 /// # Safety
 /// `buffers` is identity-mapped DRAM below 4 GiB that stays reserved: the
 /// DXIO firmware accesses it with DMA, and a failure does not establish DMA
-/// quiescence. `dies` are all dies in order. `now_us` is a monotonic
-/// microsecond clock.
+/// quiescence. `dies` are all dies in order.
 pub unsafe fn init<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
     descriptors: &[&[Descriptor]],
     subsystem_id: u32,
     buffers: &'static mut Buffers,
-    now_us: &mut impl FnMut() -> u64,
-    delay_us: &mut impl FnMut(u32),
+    clock: &mut impl Clock,
 ) -> Result<[PcieTopology; MAX_DIES], Error> {
     let mut topologies = [PcieTopology::default(); MAX_DIES];
     let board = |die: &Die<P>| -> &[Descriptor] {
@@ -852,7 +849,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         return Ok(topologies);
     };
     first
-        .smu(smu::TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], delay_us)
+        .smu(smu::TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], clock)
         .map_err(Error::Smu)?;
     for die in dies {
         pre_training(&die.smn());
@@ -882,18 +879,18 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         };
         // Vendor PCD 0xcd/0xce/0xcf select die 0 for the early init cleanup.
         if die.index() == 0 {
-            training.simple(Operation::CleanupEarly, delay_us)?;
+            training.simple(Operation::CleanupEarly, clock)?;
         }
         if descriptors.is_empty() {
             continue;
         }
         debug!("DXIO {}: {} engines", die.index(), descriptors.len());
-        training.train(now_us, delay_us)?;
+        training.train(clock)?;
         *topology = training.topology;
     }
 
     for (die, topology) in dies.iter().zip(&topologies) {
-        post_training(die, topology, subsystem_id, delay_us);
+        post_training(die, topology, subsystem_id, clock);
     }
     let buses: heapless::Vec<u8, MAX_DIES> = dies.iter().map(Die::bus).collect();
     for (i, die) in dies.iter().enumerate() {

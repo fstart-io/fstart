@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! SMU topology policy/AP release.
 //! Launching threads is not proof they reached the Rust AP rendezvous.
+use crate::fam17h::tsc::DelayNs;
 use super::{registers::Smn, smu};
 use crate::fam17h::smu::{DOWNCORE, THREAD_CONFIG, THREAD_ENABLE, ThreadConfig};
 use fstart_pci::ConfigRegionAccess;
@@ -92,8 +93,8 @@ impl Topology {
         Ok(slots)
     }
 }
-fn test(smn: &Smn<impl ConfigRegionAccess>, delay_us: &mut impl FnMut(u32)) -> Result<(), Error> {
-    smu::request(smn, smu::TEST, [0xaa55aa55, 0, 0, 0, 0, 0], delay_us)
+fn test(smn: &Smn<impl ConfigRegionAccess>, delay: &mut impl DelayNs) -> Result<(), Error> {
+    smu::request(smn, smu::TEST, [0xaa55aa55, 0, 0, 0, 0, 0], delay)
         .map(|_| ())
         .map_err(Error::Smu)
 }
@@ -112,7 +113,7 @@ pub fn query(smn: &Smn<impl ConfigRegionAccess>, policy: Policy) -> Result<Topol
 pub fn apply(
     smn: &Smn<impl ConfigRegionAccess>,
     policy: Policy,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<Effect, Error> {
     if policy == Policy::DEFAULT {
         return Ok(Effect::Unchanged);
@@ -127,12 +128,12 @@ pub fn apply(
     let disable_smt = policy.disable_smt && topology.threads_per_core > 1;
     if let Some((_, mask)) = downcore {
         smn.reg(DOWNCORE).set(mask);
-        test(smn, delay_us)?;
+        test(smn, delay)?;
     }
     if disable_smt {
         config.modify(ThreadConfig::DISABLE_SMT::SET);
         smn.reg(THREAD_CONFIG).set(config.get());
-        test(smn, delay_us)?;
+        test(smn, delay)?;
     }
     Ok(if downcore.is_some() || disable_smt {
         Effect::ResetRequired
@@ -145,16 +146,16 @@ pub fn apply(
 pub fn restore(
     smn: &Smn<impl ConfigRegionAccess>,
     policy: Policy,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Error> {
     if let Some((_, mask)) = policy.downcore.request() {
         smn.reg(DOWNCORE).set(mask);
-        test(smn, delay_us)?;
+        test(smn, delay)?;
     }
     if policy.disable_smt {
         smn.reg(THREAD_CONFIG)
             .modify(ThreadConfig::DISABLE_SMT::SET);
-        test(smn, delay_us)?;
+        test(smn, delay)?;
     }
     Ok(())
 }
@@ -167,7 +168,7 @@ pub unsafe fn launch(
     smn: &Smn<impl ConfigRegionAccess>,
     topology: Topology,
     ap_count: usize,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<Vec<u8, 16>, Error> {
     let slots = topology.thread_slots()?;
     if ap_count >= slots.len() {
@@ -182,7 +183,7 @@ pub unsafe fn launch(
         }
         if enabled & (1 << bit) == 0 {
             thread_enable.set(enabled | (1 << bit));
-            test(smn, delay_us)?;
+            test(smn, delay)?;
         }
         released.push(bit).map_err(|_| Error::ApCount)?;
     }
@@ -192,6 +193,7 @@ pub unsafe fn launch(
 #[cfg(test)]
 mod tests {
     extern crate std;
+    use crate::fam17h::tsc::testing::Delay;
     use super::*;
     use crate::fam17h::registers::testing::{SmnModel, SmnTest};
     use std::{collections::BTreeMap, vec::Vec};
@@ -223,7 +225,7 @@ mod tests {
             threads_per_core: 2,
         };
         assert_eq!(
-            unsafe { launch(&test.smn(), topology, 7, &mut |_| {}) },
+            unsafe { launch(&test.smn(), topology, 7, &mut Delay(|_| {})) },
             Err(Error::Unavailable(THREAD_ENABLE.address()))
         );
         assert!(test.model().writes.is_empty());
@@ -240,25 +242,25 @@ mod tests {
             disable_smt: true,
         };
         assert_eq!(
-            apply(&smn, policy, &mut |_| {}).unwrap(),
+            apply(&smn, policy, &mut Delay(|_| {})).unwrap(),
             Effect::ResetRequired
         );
         assert_eq!(reg(DOWNCORE.address()), 0xfc);
         assert_eq!(reg(THREAD_CONFIG.address()), 0x213);
         let topology = query(&smn, policy).unwrap();
         assert_eq!(topology.thread_slots().unwrap().as_slice(), &[0, 1, 8, 9]);
-        let released = unsafe { launch(&smn, topology, 3, &mut |_| {}) }.unwrap();
+        let released = unsafe { launch(&smn, topology, 3, &mut Delay(|_| {})) }.unwrap();
         assert_eq!(released.as_slice(), &[1, 8, 9]);
         assert_eq!(reg(THREAD_ENABLE.address()), 0x302);
         test.model().writes.clear();
         assert_eq!(
-            unsafe { launch(&smn, topology, 4, &mut |_| {}) },
+            unsafe { launch(&smn, topology, 4, &mut Delay(|_| {})) },
             Err(Error::ApCount)
         );
         assert!(test.model().writes.is_empty());
         test.model().regs.insert(THREAD_CONFIG.address(), 0);
         assert_eq!(
-            apply(&smn, policy, &mut |_| {}),
+            apply(&smn, policy, &mut Delay(|_| {})),
             Err(Error::CannotEnableCores)
         );
         assert!(test.model().writes.is_empty());

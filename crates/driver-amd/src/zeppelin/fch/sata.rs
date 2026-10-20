@@ -4,6 +4,7 @@
 //! it through its SMN aperture at 0x03100000, with the AHCI registers at
 //! 0x03101000 (sp4r2 report FCH_TAISHAN, tasks af47, af57 and af77, with the
 //! vendor policy defaults).
+use crate::fam17h::tsc::DelayNs;
 use super::{NbifStrap, irq};
 use crate::fch::{Bus, Fch, iomux};
 use crate::fam17h::registers::{Smn, SmnReg};
@@ -99,7 +100,7 @@ const AHCI_CLASS: u32 = 0x01_0601;
 const OFFLINE_POLLS: u32 = 100;
 
 /// Reset task: take the PHYs offline. `smn` is the die's.
-pub fn reset(smn: &Smn<impl ConfigRegionAccess>, delay_us: &mut impl FnMut(u32)) {
+pub fn reset(smn: &Smn<impl ConfigRegionAccess>, delay: &mut impl DelayNs) {
     let status = smn.reg(RESET_STATUS);
     for phy in 0..8 {
         let mut value = status.extract();
@@ -112,7 +113,7 @@ pub fn reset(smn: &Smn<impl ConfigRegionAccess>, delay_us: &mut impl FnMut(u32))
         let offline = || smn.reg(px_ssts(port)).matches_all(Det::DET::Offline);
         let mut polls = 0;
         while !offline() && polls < OFFLINE_POLLS {
-            delay_us(10);
+            delay.delay_us(10);
             polls += 1;
         }
     }
@@ -127,7 +128,7 @@ pub fn init(
     die: u8,
     smn: &Smn<impl ConfigRegionAccess>,
     subsystem_id: u32,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) {
     let misc = smn.reg(MISC);
     misc.modify(Misc::UNLOCK::SET);
@@ -138,7 +139,7 @@ pub fn init(
         value.modify(Misc::PORT_DISABLE.val(value.read(Misc::PORT_DISABLE) & !(1 << port)));
         misc.set(value.get());
         smn.reg(px_sctl(port)).modify(Det::DET::Comreset);
-        delay_us(1000);
+        delay.delay_us(1000);
         smn.reg(px_sctl(port)).modify(Det::DET::Idle);
     }
 

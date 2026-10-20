@@ -2,6 +2,7 @@
 //! Family 17h *Gen2 runtime mailbox* (distinct from Gen1 flash directories),
 //! the same C2P protocol on Raven/Picasso and Zeppelin at +0x10570 of the PSP
 //! BAR. Cold/non-SMM only; no recovery, Sx/resume, fusing, flash writes, abort or reset commands.
+use crate::fam17h::tsc::DelayNs;
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
@@ -290,7 +291,7 @@ impl<T: Transport> Mailbox<T> {
             not_send_sync: core::marker::PhantomData,
         })
     }
-    fn wait(&mut self, completion: bool, delay_us: &mut impl FnMut(u32)) -> Result<u32, Error> {
+    fn wait(&mut self, completion: bool, delay: &mut impl DelayNs) -> Result<u32, Error> {
         for _ in 0..POLLS {
             let value = self.io.command();
             if value == u32::MAX {
@@ -303,7 +304,7 @@ impl<T: Transport> Mailbox<T> {
             if register.is_set(Command::READY) && register.read(Command::CODE) == 0 {
                 return Ok(value);
             }
-            delay_us(100);
+            delay.delay_us(100);
         }
         Err(if completion {
             Error::CompletionTimeout
@@ -315,7 +316,7 @@ impl<T: Transport> Mailbox<T> {
         &mut self,
         code: u8,
         request: &W,
-        delay_us: &mut impl FnMut(u32),
+        delay: &mut impl DelayNs,
     ) -> Result<W, Error> {
         match self.state {
             State::Poisoned => return Err(Error::Poisoned),
@@ -325,7 +326,7 @@ impl<T: Transport> Mailbox<T> {
         // Sticky even if pre-submission wait fails or a transport/delay unwinds.
         // This is not global fail-stop; integration must stop after partial effects.
         self.state = State::Poisoned;
-        self.wait(false, delay_us)?;
+        self.wait(false, delay)?;
         self.buffer.prepare(request);
         // SAFETY: constructor/preparation/readiness retain the validated buffer;
         // only the private supported command wrappers can reach this trigger.
@@ -333,7 +334,7 @@ impl<T: Transport> Mailbox<T> {
             self.io.buffer_pointer(self.address);
             self.io.submit(Command::CODE.val(u32::from(code)).value);
         }
-        let response = self.wait(true, delay_us)?;
+        let response = self.wait(true, delay)?;
         let delivery =
             InMemoryRegister::<u32, Command::Register>::new(response).read(Command::STATUS) as u16;
         if delivery != 0 {
@@ -349,36 +350,36 @@ impl<T: Transport> Mailbox<T> {
         self.state = State::Ready;
         Ok(self.buffer.snapshot())
     }
-    fn query(&mut self, code: u8, delay_us: &mut impl FnMut(u32)) -> Result<u32, Error> {
+    fn query(&mut self, code: u8, delay: &mut impl DelayNs) -> Result<u32, Error> {
         let request = Wire {
             header: Header::of::<Wire>(),
             value: 0.into(),
             reserved: [0; 20],
         };
-        self.transact(code, &request, delay_us)
+        self.transact(code, &request, delay)
             .map(|reply| reply.value.get())
     }
     /// Opaque PSP capability bits, not authentication or a protection claim.
-    pub fn capabilities(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<u32, Error> {
-        self.query(0x27, delay_us)
+    pub fn capabilities(&mut self, delay: &mut impl DelayNs) -> Result<u32, Error> {
+        self.query(0x27, delay)
     }
-    pub fn ftpm_capabilities(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<u32, Error> {
-        self.query(0x05, delay_us)
+    pub fn ftpm_capabilities(&mut self, delay: &mut impl DelayNs) -> Result<u32, Error> {
+        self.query(0x05, delay)
     }
-    pub fn hsti_state(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<u32, Error> {
-        self.query(0x14, delay_us)
+    pub fn hsti_state(&mut self, delay: &mut impl DelayNs) -> Result<u32, Error> {
+        self.query(0x14, delay)
     }
     /// SmmInfo, sent from normal mode: the PSP
     /// takes TSEG from it, also for the DF protection LockDFReg sets up.
-    pub fn smm_info(&mut self, info: &SmmInfo, delay_us: &mut impl FnMut(u32)) -> Result<(), Error> {
-        self.transact(0x02, &SmmInfoWire::from(info), delay_us)
+    pub fn smm_info(&mut self, info: &SmmInfo, delay: &mut impl DelayNs) -> Result<(), Error> {
+        self.transact(0x02, &SmmInfoWire::from(info), delay)
             .map(|_| ())
     }
     /// LockDFReg of the vendor firmware: afterwards the Data Fabric registers
     /// can't be changed anymore. The last DF write must precede this, and
     /// [`Self::smm_info`] too: without it the lock breaks device DMA.
-    pub fn lock_df_registers(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<(), Error> {
-        self.query(0x1b, delay_us).map(|_| ())
+    pub fn lock_df_registers(&mut self, delay: &mut impl DelayNs) -> Result<(), Error> {
+        self.query(0x1b, delay).map(|_| ())
     }
     /// Irreversible transition: PSP afterwards only honors SMM-space buffers.
     /// # Safety
@@ -387,8 +388,8 @@ impl<T: Transport> Mailbox<T> {
     /// memory remains reserved to reset. No later ordinary mailbox query is allowed.
     /// Not a substitute for SMM/ROM-Armor setup or safe OS handoff. On error the
     /// transition may already have happened: fail-stop, never retry/cancel/reset.
-    pub unsafe fn boot_done(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<(), Error> {
-        self.query(0x06, delay_us)?;
+    pub unsafe fn boot_done(&mut self, delay: &mut impl DelayNs) -> Result<(), Error> {
+        self.query(0x06, delay)?;
         self.state = State::BootDone;
         Ok(())
     }

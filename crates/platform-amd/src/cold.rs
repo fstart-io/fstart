@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native CPU cold flow: SMU AP release, microcode and per-CPU init through
 //! the architectural MP engine, then the later CCX-done notification.
+use fstart_driver_amd::fam17h::tsc::DelayNs;
 use crate::{
     cpu::{Fam17hCpu, PatchPage},
     layout,
@@ -106,9 +107,9 @@ impl CpusInitialized {
         self,
         graphics: bool,
         smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
-        delay_us: &mut impl FnMut(u32),
+        delay: &mut impl DelayNs,
     ) -> Result<CcxNotified, Error> {
-        let responses = notify(true, graphics, smn, delay_us)?;
+        let responses = notify(true, graphics, smn, delay)?;
         Ok(CcxNotified {
             cpus: self,
             responses,
@@ -142,14 +143,14 @@ fn notify(
     complete: bool,
     graphics: bool,
     smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<LateResponses, Error> {
     if !complete {
         return Err(Error::IncompleteCpu);
     }
     let mut responses = LateResponses::new();
     let mut overflow = false;
-    let result = nbio_late::ccx_done(smn, graphics, delay_us, &mut |command, status| {
+    let result = nbio_late::ccx_done(smn, graphics, delay, &mut |command, status| {
         overflow |= !responses.push(command, status);
     });
     if overflow {
@@ -168,7 +169,7 @@ pub unsafe fn initialize_cpus(
     input: Inputs<'_>,
     msr: &impl MsrAccess,
     smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<CpusInitialized, Error> {
     let total = count(input.topology, input.apic_ids)?;
     if !input.memory.microcode_reserved() {
@@ -201,7 +202,7 @@ pub unsafe fn initialize_cpus(
     };
     let mut release_error = None;
     let mut launch = |aps: u16| {
-        unsafe { mp::release_aps(smn, input.topology, aps, delay_us) }.map_err(|error| {
+        unsafe { mp::release_aps(smn, input.topology, aps, delay) }.map_err(|error| {
             release_error = Some(error);
             0
         })
@@ -230,6 +231,7 @@ pub unsafe fn initialize_cpus(
 #[cfg(test)]
 mod tests {
     extern crate std;
+    use fstart_driver_amd::fam17h::tsc::testing::Delay;
     use super::*;
     use fstart_driver_amd::{
         fam17h::registers::testing::{SmnModel, SmnTest},
@@ -277,9 +279,9 @@ mod tests {
             .is_err()
         );
         assert!(matches!(
-            notify(false, false, &SmnTest::new(Deny).smn(), &mut |_| panic!(
+            notify(false, false, &SmnTest::new(Deny).smn(), &mut Delay(|_| panic!(
                 "no delay before CPU completion"
-            ),),
+            )),),
             Err(Error::IncompleteCpu)
         ));
     }
@@ -324,9 +326,9 @@ mod tests {
     #[test]
     fn source_order_retains_all_nonstandard_responses_and_failure_prefix() {
         let transport = SmnTest::new(mailbox(usize::MAX));
-        let records = notify(true, false, &transport.smn(), &mut |_| {
+        let records = notify(true, false, &transport.smn(), &mut Delay(|_| {
             panic!("immediate fake needs no delay")
-        })
+        }))
         .unwrap();
         let commands: Vec<_> = transport.model().frames.iter().map(|frame| frame.0).collect();
         assert_eq!(commands, [0x35, 5, 0x0e, 0x53, 0x3a, 0x42, 0x32, 5]);
@@ -339,9 +341,9 @@ mod tests {
                 .all(|(entry, command)| entry.command == command && entry.status == 2)
         );
         let transport = SmnTest::new(mailbox(1));
-        let error = notify(true, false, &transport.smn(), &mut |_| {
+        let error = notify(true, false, &transport.smn(), &mut Delay(|_| {
             panic!("unavailable fake must not delay")
-        })
+        }))
         .unwrap_err();
         assert!(
             matches!(error,Error::Smu { cause: power::Error::Smu(smu::Error::Unavailable),responses } if responses.entries()==[LateResponse { command: 0x35, status: 2 }])

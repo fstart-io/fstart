@@ -3,6 +3,7 @@
 //! handler in an 8 MiB TSEG at the top of the DRAM below 4 GiB, every CPU's
 //! SMBASE in it and SMM locked, then the FCH's SMI sources enabled. Then the
 //! PSP learns about it.
+use fstart_driver_amd::fam17h::tsc::DelayNs;
 use super::{Board, memory::TSEG_SIZE};
 use core::ptr::addr_of_mut;
 use fstart_arch::x86::{
@@ -61,7 +62,7 @@ fn psp_smm_info(tseg: &InstalledTseg) -> Option<SmmInfo> {
 pub fn psp_mailbox(
     bar: u32,
     tseg: &InstalledTseg,
-    delay: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Option<Mailbox<Native>> {
     static mut BUFFER: Buffer = Buffer::new();
     let Some(info) = psp_smm_info(tseg) else {

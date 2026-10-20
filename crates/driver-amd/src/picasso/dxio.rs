@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso DXIO firmware wire protocol and board-to-engine mapping.
+use crate::fam17h::tsc::DelayNs;
 pub use super::dxio_hardware::{Buffers, Options, train};
 use super::{acp, registers::Smn, smu};
 use fstart_pci::ConfigRegionAccess;
@@ -224,10 +225,10 @@ pub fn rpc(
     smn: &Smn<impl ConfigRegionAccess>,
     operation: Operation,
     mut arguments: [u32; 6],
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<[u32; 6], Error> {
     arguments[0] = operation as u32;
-    smu::request(smn, smu::DXIO_SERVICE, arguments, delay_us).map_err(Error::Smu)
+    smu::request(smn, smu::DXIO_SERVICE, arguments, delay).map_err(Error::Smu)
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {

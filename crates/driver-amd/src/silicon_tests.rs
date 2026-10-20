@@ -6,7 +6,10 @@
 //! a read-modify-write and a plain write differ. The fingerprints pin the
 //! sequences the hardware was tested with.
 extern crate std;
-use crate::fch::{Bus, Space};
+use crate::{
+    fam17h::tsc::{Clock, DelayNs},
+    fch::{Bus, Space},
+};
 use core::cell::RefCell;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{collections::BTreeMap, vec::Vec};
@@ -131,13 +134,9 @@ impl Hw {
             .copied()
             .unwrap_or_else(|| noise(&[2, die.into(), address.into()]))
     }
-    pub fn delay(&self, us: u32) {
-        self.state.borrow_mut().events.push(Event::Delay(us));
-    }
-    pub fn now(&self) -> u64 {
-        let mut state = self.state.borrow_mut();
-        state.clock += 1;
-        state.clock
+    /// The clock: delays are logged, time moves a microsecond per read.
+    pub fn clock(&self) -> Time<'_> {
+        Time(self)
     }
     /// (writes and delays, order-sensitive digest).
     pub fn fingerprint(&self) -> (usize, u64) {
@@ -372,6 +371,23 @@ impl Bus for Hw {
     }
 }
 
+pub struct Time<'a>(&'a Hw);
+impl DelayNs for Time<'_> {
+    fn delay_ns(&mut self, ns: u32) {
+        self.delay_us(ns.div_ceil(1000))
+    }
+    fn delay_us(&mut self, us: u32) {
+        self.0.state.borrow_mut().events.push(Event::Delay(us));
+    }
+}
+impl Clock for Time<'_> {
+    fn now_us(&mut self) -> u64 {
+        let mut state = self.0.state.borrow_mut();
+        state.clock += 1;
+        state.clock
+    }
+}
+
 /// `value` at `address` below 4 GiB, where the DXIO firmware can reach it.
 /// A fixed address keeps the DMA addresses in the log stable.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
@@ -463,8 +479,7 @@ mod zeppelin {
         let hw = sp4();
         let pci = &hw;
         let dies: Vec<Die<&Hw>> = unsafe { topology::dies(pci) }.collect();
-        let mut delay = |us| hw.delay(us);
-        let mut now = || hw.now();
+        let mut delay = hw.clock();
 
         // Before the PCIe training
         let plan = fabric::plan(0xe000_0000, 0x4_2000_0000, 128 << 20, 2).unwrap();
@@ -508,17 +523,8 @@ mod zeppelin {
         assert_eq!(ioapics[0], nonpci[0] + (7 << 20));
         assert_eq!(psp::bars(&dies), [nonpci[0], nonpci[1]]);
         let buffers = low(0x4000_0000, dxio::Buffers::new());
-        let topology = unsafe {
-            dxio::init(
-                &dies,
-                &[DIE0, DIE1],
-                SUBSYSTEM_ID,
-                buffers,
-                &mut now,
-                &mut delay,
-            )
-        }
-        .unwrap();
+        let topology =
+            unsafe { dxio::init(&dies, &[DIE0, DIE1], SUBSYSTEM_ID, buffers, &mut delay) }.unwrap();
         let trained = |die: usize| {
             topology[die]
                 .ports
@@ -619,8 +625,7 @@ mod picasso {
         hw.set_smn(0, 0x13b1_0068_u32, 0x1234_5600);
         let smn = unsafe { Smn::new(&hw) };
         let df = unsafe { Df::new(&hw) };
-        let mut delay = |us| hw.delay(us);
-        let mut now = || hw.now();
+        let mut delay = hw.clock();
 
         fabric::early_init(&df);
         fabric::late_init(&df, true);
@@ -651,8 +656,7 @@ mod picasso {
         };
         let buffers = low(0x4800_0000, dxio::Buffers::new());
         let ports =
-            unsafe { dxio::train(&smn, &hw, buffers, DALBOZ, options, &mut now, &mut delay) }
-                .unwrap();
+            unsafe { dxio::train(&smn, &hw, buffers, DALBOZ, options, &mut delay) }.unwrap();
         assert_eq!(
             ports
                 .ports

@@ -21,6 +21,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use fstart_driver_amd::{
+    fam17h::tsc::Tsc,
     fch::{Acpimmio, Fch, NativeBus, early::PowerFailure},
     gpio::Gpio,
     lpc::Lpc,
@@ -37,35 +38,10 @@ use fstart_pci::ecam::GlobalEcam;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 pub use stage::Program;
 
-/// The TSC as the time base, at its P0 frequency.
-#[derive(Debug, Clone, Copy)]
-pub struct Clock {
-    pub(crate) mhz: u32,
-}
-#[cfg(target_arch = "x86_64")]
-impl Clock {
-    pub fn delay_us(&self, us: u32) {
-        fstart_driver_amd::fam17h::tsc::delay_us(self.mhz, us)
-    }
-    pub fn now_us(&self) -> u64 {
-        // SAFETY: RDTSC has no side effects.
-        unsafe { core::arch::x86_64::_rdtsc() / u64::from(self.mhz) }
-    }
-}
-#[cfg(target_arch = "x86_64")]
-impl embedded_hal::delay::DelayNs for Clock {
-    fn delay_ns(&mut self, ns: u32) {
-        Clock::delay_us(self, ns.div_ceil(1000))
-    }
-    fn delay_us(&mut self, us: u32) {
-        Clock::delay_us(self, us)
-    }
-}
-
 /// What the board hooks get: the dies and the clock.
 pub struct BoardCtx<'a> {
     pub dies: &'a [Die<GlobalEcam>],
-    pub clock: Clock,
+    pub clock: Tsc,
 }
 impl BoardCtx<'_> {
     /// The FCH of die 0, for pad routing and the like.

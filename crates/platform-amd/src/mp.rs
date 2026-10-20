@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h policy for the architectural MP engine: the MSR image APs
 //! replay before enabling caches, and (Picasso) AP release through the SMU.
+#[cfg(feature = "picasso")]
+use fstart_driver_amd::fam17h::tsc::DelayNs;
 use fstart_arch::x86::{
     cpu::{
         amd::msr::{SYSCFG, Syscfg},
@@ -57,9 +59,9 @@ pub unsafe fn release_aps(
     smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
     topology: Topology,
     ap_count: u16,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), topology::Error> {
-    unsafe { topology::launch(smn, topology, usize::from(ap_count), delay_us) }.map(|_| ())
+    unsafe { topology::launch(smn, topology, usize::from(ap_count), delay) }.map(|_| ())
 }
 
 #[cfg(test)]

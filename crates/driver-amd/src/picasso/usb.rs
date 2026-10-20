@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native USB controller/PHY sequencing.
 //! SMU performs PHY programming; no FSP or opaque x86 initialization call.
+use crate::fam17h::tsc::DelayNs;
 use super::{
     cpu::{Identity, Silicon},
     registers::{Smn, apply, rmw, write},
@@ -345,7 +346,7 @@ pub fn initialize(
     identity: Identity,
     silicon_id: u32,
     resume: bool,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Error> {
     let plan = plan(config, identity, silicon_id)?;
     // The SATA controller off (vendor values).
@@ -357,7 +358,7 @@ pub fn initialize(
             rmw(0x0310_0000, 0, 1 << 11),
         ],
     );
-    smu::request(smn, 0x44, [0; 6], delay_us).map_err(Error::Smu)?;
+    smu::request(smn, 0x44, [0; 6], delay).map_err(Error::Smu)?;
     for (i, value) in [0x10100, 0x9393, 0x303, 0, 0x10100, 0x9393, 0x303, 0]
         .into_iter()
         .enumerate()
@@ -376,11 +377,11 @@ pub fn initialize(
             smn,
             0x38,
             [update.address, update.mask, update.data, update.group, 0, 0],
-            delay_us,
+            delay,
         )
         .map_err(Error::Smu)?;
     }
-    smu::request(smn, if resume { 0x2d } else { 0x2e }, [0; 6], delay_us).map_err(Error::Smu)?;
+    smu::request(smn, if resume { 0x2d } else { 0x2e }, [0; 6], delay).map_err(Error::Smu)?;
     Ok(())
 }
 

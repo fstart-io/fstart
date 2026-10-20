@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
+use crate::fam17h::tsc::testing::Delay;
 use super::{
     cpu::Identity,
     registers::testing::{SmnModel, SmnTest},
@@ -100,7 +101,7 @@ fn cold_and_resume_transactions_use_exact_groups_then_completion() {
             id,
             1 << 30,
             resume,
-            &mut |_| {},
+            &mut Delay(|_| {}),
         )
         .unwrap();
         let bus = test.model();
@@ -151,8 +152,8 @@ fn rejected_disable_stops_before_phy_and_invalid_tuning_never_writes() {
             id,
             1 << 30,
             false,
-            &mut |_| {}
-        ),
+            &mut Delay(|_| {}
+        )),
         Err(usb::Error::Smu(smu::Error::Rejected(0xfe)))
     );
     assert_eq!(test.model().frames.len(), 1);
@@ -173,8 +174,8 @@ fn rejected_disable_stops_before_phy_and_invalid_tuning_never_writes() {
             id,
             1 << 30,
             false,
-            &mut |_| {}
-        ),
+            &mut Delay(|_| {}
+        )),
         Err(usb::Error::Configuration)
     );
     assert!(test.model().writes.is_empty());

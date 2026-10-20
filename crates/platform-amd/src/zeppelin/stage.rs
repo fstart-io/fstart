@@ -3,7 +3,7 @@
 //! the image it copied to DRAM. `psp_reset.S` enters long mode and continues
 //! at the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
 //! board's `fstart_main`.
-use super::{Board, BoardCtx, Clock, acpi, boot, layout, memory, pci, smm};
+use super::{Board, BoardCtx, acpi, boot, layout, memory, pci, smm};
 use crate::cpu::{Fam17hCpu, PatchPage};
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
@@ -12,7 +12,8 @@ use fstart_driver_amd::{
         apob::{Apob, MemoryMap},
         cache,
         ccx::Thread,
-        msr, tsc,
+        msr,
+        tsc::{self, Tsc},
     },
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
@@ -109,7 +110,7 @@ struct Silicon {
     nonpci: [u32; MAX_DIES],
     revision: Revision,
     package: Package,
-    clock: Clock,
+    clock: Tsc,
     e820: E820State,
     tseg: u64,
 }
@@ -154,7 +155,7 @@ fn run<B: Board>() -> ! {
     let Some(revision) = revision.filter(|_| package.dies() == Some(dies) && mhz != 0) else {
         fail("CPU identification")
     };
-    let clock = Clock { mhz };
+    let clock = Tsc::new(mhz);
     let Ok((top_mem, top_mem2)) = msr::memory_limits(&msr) else {
         fail("TOP_MEM from the PSP")
     };
@@ -202,8 +203,8 @@ fn run<B: Board>() -> ! {
 /// The silicon init before MP: AmdSocSp4ZpPei, AmdFabricZpPei, FchTaishanPei,
 /// AmdNbioBaseZPPei, AmdCcxZenZpPei.
 fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>, map: &MemoryMap) {
-    let clock = Clock { mhz: s.clock.mhz };
-    let mut delay = |us| clock.delay_us(us);
+    let clock = s.clock;
+    let mut delay = clock;
     let dies = s.dies.as_slice();
     let count = dies.len() as u8;
     // DF MMIO/IO distribution, then the per-die DF init.
@@ -276,9 +277,8 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
 
 /// The native silicon init, MP init and the devices.
 fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
-    let clock = Clock { mhz: s.clock.mhz };
-    let mut delay = |us| clock.delay_us(us);
-    let mut now = || clock.now_us();
+    let clock = s.clock;
+    let mut delay = clock;
     let dies = s.dies.as_slice();
     let mut ioapics = [0u32; MAX_DIES];
     for die in dies {
@@ -306,7 +306,6 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
             &descriptors,
             B::SUBSYSTEM_ID,
             &mut *core::ptr::addr_of_mut!(DXIO_BUFFERS),
-            &mut now,
             &mut delay,
         )
     };
@@ -404,7 +403,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     let mut launch = |aps: u16| {
         // SAFETY: the reset vector sends APs to the SIPI trampoline the MP
         // engine installed before calling this.
-        unsafe { smu::launch_aps(dies, usize::from(aps), &mut |us| clock.delay_us(us)) }
+        unsafe { smu::launch_aps(dies, usize::from(aps), &mut { clock }) }
         .map_err(
             |error| {
                 if let smu::Failure::ApCount { started, requested } = error {

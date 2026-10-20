@@ -1,5 +1,6 @@
 use super::*;
 extern crate std;
+use crate::fam17h::tsc::testing::Delay;
 use std::{boxed::Box, collections::VecDeque, vec, vec::Vec};
 const READY: u32 = 1 << 31;
 #[derive(Debug, PartialEq)]
@@ -74,7 +75,7 @@ fn mailbox(reads: &[u32], fallback: u32, size: u32, status: u32) -> Mailbox<Mock
 #[test]
 fn query_commands_publish_zero_padded_buffer_pointer_before_command() {
     let mut mailbox = mailbox(&[], READY, 32, 0);
-    let mut delay = |_| panic!("no waiting expected");
+    let mut delay = Delay(|_| panic!("no waiting expected"));
     assert_eq!(mailbox.capabilities(&mut delay), Ok(0x1234));
     assert_eq!(mailbox.ftpm_capabilities(&mut delay), Ok(0x1234));
     assert_eq!(mailbox.hsti_state(&mut delay), Ok(0x1234));
@@ -109,16 +110,16 @@ fn pre_submission_unavailable_recovery_and_timeout_poison_without_writes() {
         let mut mailbox = mailbox(&[], value, 32, 0);
         let mut delays = 0;
         assert_eq!(
-            mailbox.capabilities(&mut |us| {
+            mailbox.capabilities(&mut Delay(|us| {
                 assert_eq!(us, 100);
                 delays += 1;
-            }),
+            })),
             Err(error)
         );
         assert_eq!(delays, expected_delays);
         assert!(mailbox.io.writes.is_empty());
         assert_eq!(
-            mailbox.capabilities(&mut |_| panic!("poisoned")),
+            mailbox.capabilities(&mut Delay(|_| panic!("poisoned"))),
             Err(Error::Poisoned)
         );
     }
@@ -134,14 +135,14 @@ fn submitted_failures_retain_storage_and_cannot_retry_or_boot_done() {
         (0, 32, 0, Error::CompletionTimeout),
     ] {
         let mut mailbox = mailbox(&[READY], response, size, status);
-        assert_eq!(mailbox.capabilities(&mut |_| {}), Err(error));
+        assert_eq!(mailbox.capabilities(&mut Delay(|_| {})), Err(error));
         assert_eq!(mailbox.io.writes.len(), 2);
         assert_eq!(
-            mailbox.ftpm_capabilities(&mut |_| panic!("poisoned")),
+            mailbox.ftpm_capabilities(&mut Delay(|_| panic!("poisoned"))),
             Err(Error::Poisoned)
         );
         assert_eq!(
-            unsafe { mailbox.boot_done(&mut |_| panic!("poisoned")) },
+            unsafe { mailbox.boot_done(&mut Delay(|_| panic!("poisoned"))) },
             Err(Error::Poisoned)
         );
         assert_eq!(mailbox.io.writes.len(), 2);
@@ -151,14 +152,14 @@ fn submitted_failures_retain_storage_and_cannot_retry_or_boot_done() {
 fn boot_done_is_a_terminal_non_smm_transition_not_a_boot_claim() {
     let mut mailbox = mailbox(&[], READY, 32, 0);
     // Host fake only: no PSP or SMM state changed by this test.
-    assert_eq!(unsafe { mailbox.boot_done(&mut |_| {}) }, Ok(()));
+    assert_eq!(unsafe { mailbox.boot_done(&mut Delay(|_| {})) }, Ok(()));
     assert_eq!(mailbox.io.writes[1], Event::Submit(0x06 << 16));
     assert_eq!(
-        mailbox.capabilities(&mut |_| panic!("closed")),
+        mailbox.capabilities(&mut Delay(|_| panic!("closed"))),
         Err(Error::BootDone)
     );
     assert_eq!(
-        unsafe { mailbox.boot_done(&mut |_| panic!("closed")) },
+        unsafe { mailbox.boot_done(&mut Delay(|_| panic!("closed"))) },
         Err(Error::BootDone)
     );
     assert_eq!(mailbox.io.writes.len(), 2);
@@ -185,7 +186,7 @@ fn smm_info_has_the_vendor_gen2_layout() {
         smm_flag: 0x7f81_1c00,
     };
     let mut mailbox = mailbox(&[], READY, 0x110, 0);
-    assert_eq!(mailbox.smm_info(&info, &mut |_| {}), Ok(()));
+    assert_eq!(mailbox.smm_info(&info, &mut Delay(|_| {})), Ok(()));
     assert_eq!(mailbox.io.writes[1], Event::Submit(0x02 << 16));
     let wire = &mailbox.io.requests[0];
     let u32_at = |offset: usize| u32::from_le_bytes(wire[offset..offset + 4].try_into().unwrap());

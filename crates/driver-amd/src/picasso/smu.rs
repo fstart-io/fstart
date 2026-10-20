@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso SMU mailbox.
+use crate::fam17h::tsc::DelayNs;
 use super::registers::{Smn, SmnReg};
 pub use crate::fam17h::smu::{Error, Reply};
 use crate::fam17h::smu::Mailbox;
@@ -24,20 +25,20 @@ pub fn request_raw(
     smn: &Smn<impl ConfigRegionAccess>,
     message: u32,
     arguments: [u32; 6],
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<Reply, Error> {
-    MAILBOX.request_raw(smn, message, arguments, delay_us)
+    MAILBOX.request_raw(smn, message, arguments, delay)
 }
 
 pub fn request(
     smn: &Smn<impl ConfigRegionAccess>,
     message: u32,
     arguments: [u32; 6],
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<[u32; 6], Error> {
-    MAILBOX.request(smn, message, arguments, delay_us)
+    MAILBOX.request(smn, message, arguments, delay)
 }
 
-pub fn cpu_name(smn: &Smn<impl ConfigRegionAccess>, delay_us: &mut impl FnMut(u32)) -> Result<[u8; 48], Error> {
-    MAILBOX.cpu_name(smn, GET_NAME, delay_us)
+pub fn cpu_name(smn: &Smn<impl ConfigRegionAccess>, delay: &mut impl DelayNs) -> Result<[u8; 48], Error> {
+    MAILBOX.cpu_name(smn, GET_NAME, delay)
 }

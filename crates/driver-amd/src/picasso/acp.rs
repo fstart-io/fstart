@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native ACP shutdown before DXIO. Register names from
 //! Linux's ACP 3.x driver.
+use crate::fam17h::tsc::DelayNs;
 use super::registers::{Smn, SmnReg};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -41,7 +42,7 @@ fn wait<R: tock_registers::RegisterLongName>(
     smn: &Smn<impl ConfigRegionAccess>,
     reg: SmnReg<R>,
     expected: FieldValue<u32, R>,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Error> {
     let (mask, expected) = (expected.mask(), expected.value);
     let mut value = 0;
@@ -53,7 +54,7 @@ fn wait<R: tock_registers::RegisterLongName>(
         if value & mask == expected {
             return Ok(());
         }
-        delay_us(1);
+        delay.delay_us(1);
     }
     Err(Error {
         register: reg.address(),
@@ -67,28 +68,28 @@ fn wait<R: tock_registers::RegisterLongName>(
 pub fn power_off(
     smn: &Smn<impl ConfigRegionAccess>,
     enabled: bool,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Error> {
     if enabled {
         return Ok(());
     }
     smn.reg(PGFSM_CONTROL).modify(PgfsmControl::POWER_ON::SET);
-    wait(smn, PGFSM_STATUS, PgfsmStatus::STATE::On, delay_us)?;
+    wait(smn, PGFSM_STATUS, PgfsmStatus::STATE::On, delay)?;
     smn.reg(CONTROL).modify(Control::CLK_EN::SET);
     smn.reg(SOFT_RESET).modify(SoftReset::AUDIO::SET);
-    wait(smn, SOFT_RESET, SoftReset::AUDIO_DONE::SET, delay_us)?;
+    wait(smn, SOFT_RESET, SoftReset::AUDIO_DONE::SET, delay)?;
     smn.reg(SOFT_RESET).set(0);
     wait(
         smn,
         SOFT_RESET,
         SoftReset::AUDIO::CLEAR + SoftReset::AUDIO_DONE::CLEAR,
-        delay_us,
+        delay,
     )?;
     smn.reg(DYNAMIC_CG_MASTER_CONTROL)
         .modify(DynamicCgMasterControl::ENABLE.val(0x1ff));
     smn.reg(PGMEM_CTRL)
         .modify(PgmemCtrl::SHUT_DOWN.val(0xfff));
-    wait(smn, MEM_PG_STS, MemPgStatus::SHUT_DOWN.val(0), delay_us)?;
+    wait(smn, MEM_PG_STS, MemPgStatus::SHUT_DOWN.val(0), delay)?;
     smn.reg(DYNAMIC_CG_MASTER_CONTROL).set(0);
     smn.reg(CONTROL).set(0);
     smn.reg(NBIF_STRAP).modify(NbifStrap::ENABLE::CLEAR);

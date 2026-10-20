@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native PCIe power/CLKREQ and late SMU notifications.
+use crate::fam17h::tsc::DelayNs;
 use super::{
     cpu::{Identity, Silicon},
     dxio::{Aspm, ClockRequest, Hotplug, Topology},
@@ -114,12 +115,12 @@ pub unsafe fn pre_enumeration(
     topology: &Topology,
     pages: &'static mut power::Pages,
     config: power::Config,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
     notice: &mut impl FnMut(u32, u32),
 ) -> Result<(), power::Error> {
     port_power_management(smn, topology);
     apply(smn, [rmw(0x11a0_b7c0, 3, 1)]);
-    unsafe { power::install(smn, pages, config, delay_us, notice) }
+    unsafe { power::install(smn, pages, config, delay, notice) }
 }
 /// Notify SMU only after all requested CPUs reached native initialization.
 /// Caller must retain nonstandard-response diagnostics rather than claiming
@@ -127,25 +128,25 @@ pub unsafe fn pre_enumeration(
 pub fn ccx_done(
     smn: &Smn<impl ConfigRegionAccess>,
     graphics: bool,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
     notice: &mut impl FnMut(u32, u32),
 ) -> Result<(), power::Error> {
     let [high, low] = CHIP_ID.map(|reg| smn.reg(reg).get());
     let chip_id = ((high << 5) | (low >> 27)) & 0xffff;
     if chip_id == 0x62e {
-        power::command(smn, 0x35, [14, 0, 0, 0, 0, 0], delay_us, notice)?;
+        power::command(smn, 0x35, [14, 0, 0, 0, 0, 0], delay, notice)?;
     }
     if chip_id == 0x633 {
-        power::command(smn, 0x35, [8, 0, 0, 0, 0, 0], delay_us, notice)?;
+        power::command(smn, 0x35, [8, 0, 0, 0, 0, 0], delay, notice)?;
     }
     let features = 0xf7fffffd & if graphics { u32::MAX } else { !(1 << 20) };
-    power::command(smn, 5, [features, 0x8f7, 0, 0, 0, 0], delay_us, notice)?;
-    power::command(smn, 0x0e, [0; 6], delay_us, notice)?;
+    power::command(smn, 5, [features, 0x8f7, 0, 0, 0, 0], delay, notice)?;
+    power::command(smn, 0x0e, [0; 6], delay, notice)?;
     if !graphics {
-        power::command(smn, 0x53, [0; 6], delay_us, notice)?;
+        power::command(smn, 0x53, [0; 6], delay, notice)?;
     }
     for (message, first, second) in [(0x3a, 184, 0), (0x42, 0, 0), (0x32, 0, 0), (5, 0, 1 << 8)] {
-        power::command(smn, message, [first, second, 0, 0, 0, 0], delay_us, notice)?;
+        power::command(smn, message, [first, second, 0, 0, 0, 0], delay, notice)?;
     }
     Ok(())
 }
@@ -154,7 +155,7 @@ pub fn ccx_done(
 pub fn post_silicon(
     smn: &Smn<impl ConfigRegionAccess>,
     identity: Identity,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), smu::Error> {
     smn.reg(iohc_bridge_cntl(INTERNAL_BRIDGE))
         .modify(IohcBridgeCntl::BRIDGE_DIS::SET + IohcBridgeCntl::CFG_DIS::SET);
@@ -168,7 +169,7 @@ pub fn post_silicon(
         ],
     );
     if matches!(identity.silicon, Silicon::Picasso | Silicon::Raven2) {
-        smu::request(smn, 0x11, [0; 6], delay_us)?;
+        smu::request(smn, 0x11, [0; 6], delay)?;
     }
     Ok(())
 }

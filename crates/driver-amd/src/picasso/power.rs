@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! SMU policy v0x13 and persistent DMA pages.
+use crate::fam17h::tsc::DelayNs;
 use super::{registers::Smn, smu};
 use fstart_pci::ConfigRegionAccess;
 use core::{
@@ -171,10 +172,10 @@ pub(crate) fn command(
     smn: &Smn<impl ConfigRegionAccess>,
     message: u32,
     args: [u32; 6],
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
     notice: &mut impl FnMut(u32, u32),
 ) -> Result<[u32; 6], Error> {
-    let reply = smu::request_raw(smn, message, args, delay_us).map_err(Error::Smu)?;
+    let reply = smu::request_raw(smn, message, args, delay).map_err(Error::Smu)?;
     if reply.status != 1 {
         notice(message, reply.status);
     }
@@ -190,11 +191,11 @@ pub unsafe fn install(
     smn: &Smn<impl ConfigRegionAccess>,
     pages: &'static mut Pages,
     config: Config,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
     notice: &mut impl FnMut(u32, u32),
 ) -> Result<(), Error> {
     let base = pages.prepare(&WirePolicy::build(config))?;
-    transfer(smn, base, delay_us, notice)
+    transfer(smn, base, delay, notice)
 }
 
 // Only install supplies this address in production, after DMA preflight and
@@ -202,18 +203,18 @@ pub unsafe fn install(
 fn transfer(
     smn: &Smn<impl ConfigRegionAccess>,
     base: u32,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
     notice: &mut impl FnMut(u32, u32),
 ) -> Result<(), Error> {
-    command(smn, 3, [0x13, 0, 0, 0, 0, 0], delay_us, notice)?;
-    let mut payload = command(smn, 0x13, [base + 4096, 0, 0, 0, 0, 0], delay_us, notice)?;
+    command(smn, 3, [0x13, 0, 0, 0, 0, 0], delay, notice)?;
+    let mut payload = command(smn, 0x13, [base + 4096, 0, 0, 0, 0, 0], delay, notice)?;
     // SET_POLICY_ADDRESS returns a context in the remaining five arguments.
     // TRANSFER_POLICY reuses those words; it is NOT a fresh zero payload.
     payload[0] = 0;
-    command(smn, 0x12, payload, delay_us, notice)?;
-    command(smn, 0x17, [0; 6], delay_us, notice)?;
-    command(smn, 0x15, [base, 0, 0, 0, 0, 0], delay_us, notice)?;
-    command(smn, 0x14, [0; 6], delay_us, notice)?;
+    command(smn, 0x12, payload, delay, notice)?;
+    command(smn, 0x17, [0; 6], delay, notice)?;
+    command(smn, 0x15, [base, 0, 0, 0, 0, 0], delay, notice)?;
+    command(smn, 0x14, [0; 6], delay, notice)?;
     Ok(())
 }
 
@@ -285,7 +286,7 @@ mod tests {
         transfer(
             &mailbox.smn(),
             0x02019000,
-            &mut |_| {},
+            &mut crate::fam17h::tsc::testing::none(),
             &mut |message, status| notices.push((message, status)),
         )
         .unwrap();
@@ -304,7 +305,7 @@ mod tests {
         let mailbox = SmnTest::new(Mailbox::new());
         mailbox.model().unavailable = Some(0x12);
         assert_eq!(
-            transfer(&mailbox.smn(), 0x02019000, &mut |_| {}, &mut |_, _| {}),
+            transfer(&mailbox.smn(), 0x02019000, &mut crate::fam17h::tsc::testing::none(), &mut |_, _| {}),
             Err(Error::Smu(smu::Error::Unavailable))
         );
         assert_eq!(

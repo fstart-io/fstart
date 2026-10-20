@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native cold-boot DXIO sequencing.
+use crate::fam17h::tsc::Clock;
 use super::{
     acp,
     dxio::{
@@ -312,8 +313,7 @@ pub unsafe fn train(
     buffers: &'static mut Buffers,
     descriptors: &[Descriptor],
     options: Options,
-    now_us: &mut impl FnMut() -> u64,
-    delay_us: &mut impl FnMut(u32),
+    clock: &mut impl Clock,
 ) -> Result<Topology, Error> {
     let config = EngineConfig::build(descriptors, options.power)?;
     if options.hda_enabled && !options.acp_enabled {
@@ -323,24 +323,24 @@ pub unsafe fn train(
     let dma = Buffers::address(buffers.engines.get().cast(), size)?;
     let ancillary = Buffers::address(buffers.ancillary.get().cast(), 16)?;
     buffers.prepare(&config);
-    smu::request(smn, smu::TEST, [0xaa55aa55, 0, 0, 0, 0, 0], delay_us).map_err(Error::Smu)?;
+    smu::request(smn, smu::TEST, [0xaa55aa55, 0, 0, 0, 0, 0], clock).map_err(Error::Smu)?;
     pre_training(smn, options);
-    acp::power_off(smn, options.acp_enabled, delay_us).map_err(Error::Acp)?;
-    let version = dxio::rpc(smn, Operation::Version, [0; 6], delay_us)?;
+    acp::power_off(smn, options.acp_enabled, clock).map_err(Error::Acp)?;
+    let version = dxio::rpc(smn, Operation::Version, [0; 6], clock)?;
     if version[0] & 0xff != 3 {
         return Err(Error::Result(version[0]));
     }
-    dxio::rpc(smn, Operation::Init, [0; 6], delay_us)?;
+    dxio::rpc(smn, Operation::Init, [0; 6], clock)?;
     for (variable, value) in [(0x0e, 1), (0x0f, 1), (0x10, 1)] {
         dxio::rpc(
             smn,
             Operation::SetVariable,
             [0, variable, value, 0, 0, 0],
-            delay_us,
+            clock,
         )?;
     }
     if options.am4 {
-        dxio::rpc(smn, Operation::SetVariable, [0, 0x0d, 0, 0, 0, 0], delay_us)?;
+        dxio::rpc(smn, Operation::SetVariable, [0, 0x0d, 0, 0, 0, 0], clock)?;
     }
     dxio::rpc(
         smn,
@@ -353,35 +353,35 @@ pub unsafe fn train(
             0,
             0,
         ],
-        delay_us,
+        clock,
     )?;
-    dxio::rpc(smn, Operation::LoadCapabilities, [0; 6], delay_us)?;
+    dxio::rpc(smn, Operation::LoadCapabilities, [0; 6], clock)?;
     if options.power != PowerPolicy::Disabled {
         dxio::rpc(
             smn,
             Operation::LoadData,
             [0, 0, ancillary, 4, 0, 6],
-            delay_us,
+            clock,
         )?;
     }
     for kind in [2, 5] {
-        dxio::rpc(smn, Operation::LoadData, [0, 0, 0, 0, 1, kind], delay_us)?;
+        dxio::rpc(smn, Operation::LoadData, [0, 0, 0, 0, 1, kind], clock)?;
     }
     dxio::rpc(
         smn,
         Operation::LoadData,
         [0, 0, dma, size as u32 / 4, 0, 3],
-        delay_us,
+        clock,
     )?;
-    let started = now_us();
-    dxio::rpc(smn, Operation::Start, [0; 6], delay_us)?;
+    let started = clock.now_us();
+    dxio::rpc(smn, Operation::Start, [0; 6], clock)?;
     let mut mapped = None;
     let mut configured_once = false;
     for _ in 0..60_000 {
-        if now_us().wrapping_sub(started) >= 60_000_000 {
+        if clock.now_us().wrapping_sub(started) >= 60_000_000 {
             return Err(Error::Timeout);
         }
-        let reply = dxio::rpc(smn, Operation::State, [0; 6], delay_us)?;
+        let reply = dxio::rpc(smn, Operation::State, [0; 6], clock)?;
         match dxio::event(reply)? {
             Event::Mapped => {
                 if mapped.is_some() {
@@ -392,7 +392,7 @@ pub unsafe fn train(
                     smn,
                     Operation::EngineConfig,
                     [0, 0, dma, size as u32 / 4, 0, 0],
-                    delay_us,
+                    clock,
                 )?;
                 let snapshot = buffers.snapshot(size)?;
                 let (topology, map) = Topology::mapped(&snapshot, descriptors)?;
@@ -417,12 +417,12 @@ pub unsafe fn train(
                     smn,
                     Operation::EngineConfig,
                     [0, 0, dma, size as u32 / 4, 0, 0],
-                    delay_us,
+                    clock,
                 )?;
                 let snapshot = buffers.snapshot(size)?;
                 let inhibit = smn.reg(pcie::link_status(0)).get();
                 topology.training_done(&snapshot, descriptors, inhibit)?;
-                if now_us().wrapping_sub(started) >= 60_000_000 {
+                if clock.now_us().wrapping_sub(started) >= 60_000_000 {
                     return Err(Error::Timeout);
                 }
                 post_training(smn, &topology);
@@ -430,9 +430,9 @@ pub unsafe fn train(
             }
             Event::Resume => {}
         }
-        dxio::rpc(smn, Operation::Resume, [0; 6], delay_us)?;
+        dxio::rpc(smn, Operation::Resume, [0; 6], clock)?;
         // Also bound attempts if the supplied clock malfunctions.
-        delay_us(1000);
+        clock.delay_us(1000);
     }
     Err(Error::Timeout)
 }

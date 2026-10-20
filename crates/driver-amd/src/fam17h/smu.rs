@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Six-dword SMU (MP1) mailbox protocol. The register
 //! addresses differ per SoC; the protocol does not.
+use crate::fam17h::tsc::DelayNs;
 use super::registers::{Smn, SmnReg};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -57,7 +58,7 @@ impl Mailbox {
     pub const fn argument(&self, i: usize) -> SmnReg {
         self.arguments.offset(4 * i as u32)
     }
-    fn poll(&self, smn: &Smn<impl ConfigRegionAccess>, delay_us: &mut impl FnMut(u32)) -> Result<Option<u32>, Error> {
+    fn poll(&self, smn: &Smn<impl ConfigRegionAccess>, delay: &mut impl DelayNs) -> Result<Option<u32>, Error> {
         for _ in 0..TIMEOUT_POLLS {
             let response = smn.reg(self.response).get();
             // All-ones is an unavailable aperture, never previous readiness or
@@ -68,7 +69,7 @@ impl Mailbox {
             if response != 0 {
                 return Ok(Some(response));
             }
-            delay_us(100);
+            delay.delay_us(100);
         }
         Ok(None)
     }
@@ -81,15 +82,15 @@ impl Mailbox {
         smn: &Smn<impl ConfigRegionAccess>,
         message: u32,
         arguments: [u32; ARGUMENT_COUNT],
-        delay_us: &mut impl FnMut(u32),
+        delay: &mut impl DelayNs,
     ) -> Result<Reply, Error> {
-        self.poll(smn, delay_us)?.ok_or(Error::BusyTimeout)?;
+        self.poll(smn, delay)?.ok_or(Error::BusyTimeout)?;
         smn.reg(self.response).set(0);
         for (i, value) in arguments.into_iter().enumerate() {
             smn.reg(self.argument(i)).set(value);
         }
         smn.reg(self.message).set(message);
-        let response = self.poll(smn, delay_us)?.ok_or(Error::CompletionTimeout)?;
+        let response = self.poll(smn, delay)?.ok_or(Error::CompletionTimeout)?;
         Ok(Reply {
             status: response,
             arguments: core::array::from_fn(|i| smn.reg(self.argument(i)).get()),
@@ -101,9 +102,9 @@ impl Mailbox {
         smn: &Smn<impl ConfigRegionAccess>,
         message: u32,
         arguments: [u32; ARGUMENT_COUNT],
-        delay_us: &mut impl FnMut(u32),
+        delay: &mut impl DelayNs,
     ) -> Result<[u32; ARGUMENT_COUNT], Error> {
-        let reply = self.request_raw(smn, message, arguments, delay_us)?;
+        let reply = self.request_raw(smn, message, arguments, delay)?;
         if reply.status != OK {
             return Err(Error::Rejected(reply.status));
         }
@@ -115,11 +116,11 @@ impl Mailbox {
         &self,
         smn: &Smn<impl ConfigRegionAccess>,
         get_name: u32,
-        delay_us: &mut impl FnMut(u32),
+        delay: &mut impl DelayNs,
     ) -> Result<[u8; 48], Error> {
         let mut name = [0; 48];
         for (i, word) in name.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let response = self.request(smn, get_name, [i as u32, 0, 0, 0, 0, 0], delay_us)?;
+            let response = self.request(smn, get_name, [i as u32, 0, 0, 0, 0, 0], delay)?;
             word.copy_from_slice(&response[0].to_le_bytes());
         }
         name[47] = 0;

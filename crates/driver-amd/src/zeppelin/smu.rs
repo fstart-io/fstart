@@ -6,6 +6,7 @@
 //! MP init;
 //! [`launch_aps`] to release the APs; [`aps_ready`] then [`ccx_done`] after
 //! every CPU ran [`super::ccx::cpu_init`].
+use crate::fam17h::tsc::DelayNs;
 use super::{MAX_DIES, topology::Die};
 use crate::fam17h::ccx::{CAC_WEIGHT_COUNT, CacWeights};
 pub use crate::fam17h::smu::{ARGUMENT_COUNT, Error, Reply};
@@ -77,9 +78,9 @@ fn send<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
     message: u32,
     argument: u32,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<[u32; ARGUMENT_COUNT], Failure> {
-    die.smu(message, [argument, 0, 0, 0, 0, 0], delay_us)
+    die.smu(message, [argument, 0, 0, 0, 0, 0], delay)
         .map_err(|error| {
             fstart_log::error!(
                 "SMU {} message {} failed",
@@ -97,9 +98,9 @@ fn send<P: ConfigRegionAccess + Copy>(
 /// [`TEST`], which also makes the SMU pick up the ThreadEn settings.
 pub fn test_message<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Failure> {
-    send(die, TEST, 0xaa55_aa55, delay_us).map(|_| ())
+    send(die, TEST, 0xaa55_aa55, delay).map(|_| ())
 }
 
 /// The thread topology of one die.
@@ -150,7 +151,7 @@ pub fn thread_count<P: ConfigRegionAccess + Copy>(dies: &[Die<P>]) -> usize {
 pub unsafe fn launch_aps<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
     ap_count: usize,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Failure> {
     let slots = dies.iter().flat_map(|die| {
         let topology = CpuTopology::read(&die.smn());
@@ -167,7 +168,7 @@ pub unsafe fn launch_aps<P: ConfigRegionAccess + Copy>(
         if enabled & (1 << slot) == 0 {
             fstart_log::debug!("SMU {}: ThreadEn bit {}", die.index(), slot);
             thread_enable.set(enabled | (1 << slot));
-            test_message(die, delay_us)?;
+            test_message(die, delay)?;
         }
     }
     if started != ap_count {
@@ -183,10 +184,10 @@ pub unsafe fn launch_aps<P: ConfigRegionAccess + Copy>(
 /// The 47-character CPU name string from die 0's SMU.
 pub fn cpu_name<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<[u8; 48], Failure> {
     MAILBOX
-        .cpu_name(&die.smn(), GET_NAME_STRING, delay_us)
+        .cpu_name(&die.smn(), GET_NAME_STRING, delay)
         .map_err(|error| Failure::Message {
             die: die.index(),
             message: GET_NAME_STRING,
@@ -195,8 +196,8 @@ pub fn cpu_name<P: ConfigRegionAccess + Copy>(
 }
 
 /// Log the CPU name, silently skipped if the SMU doesn't answer.
-pub fn print_name<P: ConfigRegionAccess + Copy>(die: &Die<P>, delay_us: &mut impl FnMut(u32)) {
-    if let Ok(name) = cpu_name(die, delay_us) {
+pub fn print_name<P: ConfigRegionAccess + Copy>(die: &Die<P>, delay: &mut impl DelayNs) {
+    if let Ok(name) = cpu_name(die, delay) {
         let length = name.iter().position(|&c| c == 0).unwrap_or(name.len());
         let name = core::str::from_utf8(&name[..length]).unwrap_or("?");
         fstart_log::info!("CPU: {}", name);
@@ -258,10 +259,10 @@ fn set_address<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
     (low, high): (u32, u32),
     address: u64,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Failure> {
-    send(die, low, address as u32, delay_us)?;
-    send(die, high, (address >> 32) as u32, delay_us).map(|_| ())
+    send(die, low, address as u32, delay)?;
+    send(die, high, (address >> 32) as u32, delay).map(|_| ())
 }
 
 /// `zeppelin_smu_init`, the SMU DXE driver of the vendor firmware
@@ -275,7 +276,7 @@ fn set_address<P: ConfigRegionAccess + Copy>(
 pub unsafe fn init<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
     buffers: &DmaBuffers,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Failure> {
     if !buffers.valid(dies.len()) {
         return Err(Failure::Buffer);
@@ -284,7 +285,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         let index = usize::from(die.index());
         let bus = u32::from(die.bus());
         // The vendor code asserts (AGESA event 0xa2411310) and goes on.
-        let version = send(die, GET_VERSION, INTERFACE_VERSION, delay_us)?[0];
+        let version = send(die, GET_VERSION, INTERFACE_VERSION, delay)?[0];
         if version != INTERFACE_VERSION {
             fstart_log::error!(
                 "SMU {}: interface version {}, expected {}",
@@ -296,12 +297,12 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         let policy = (SET_POLICY_ADDRESS_LO, SET_POLICY_ADDRESS_HI);
         let agm_log = (SET_AGM_LOG_ADDRESS_LO, SET_AGM_LOG_ADDRESS_HI);
         let perfmon = (SET_PERFMON_ADDRESS_LO, SET_PERFMON_ADDRESS_HI);
-        set_address(die, policy, buffers.policy, delay_us)?;
-        send(die, TRANSFER_POLICY, 0, delay_us)?;
-        set_address(die, agm_log, buffers.agm_log[index], delay_us)?;
-        set_address(die, perfmon, buffers.perfmon[index], delay_us)?;
-        send(die, MSG_3B, bus, delay_us)?;
-        send(die, MSG_3D, bus, delay_us).map(|_| ())
+        set_address(die, policy, buffers.policy, delay)?;
+        send(die, TRANSFER_POLICY, 0, delay)?;
+        set_address(die, agm_log, buffers.agm_log[index], delay)?;
+        set_address(die, perfmon, buffers.perfmon[index], delay)?;
+        send(die, MSG_3B, bus, delay)?;
+        send(die, MSG_3D, bus, delay).map(|_| ())
     })
 }
 
@@ -309,11 +310,11 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
 /// Before MP init: the APs can't talk to the SMU in parallel.
 pub fn cac_weights<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<CacWeights, Failure> {
     let mut weights = [0; CAC_WEIGHT_COUNT];
     for (index, weight) in (0..).zip(&mut weights) {
-        let reply = send(die, GET_CAC_WEIGHT, index, delay_us)?;
+        let reply = send(die, GET_CAC_WEIGHT, index, delay)?;
         *weight = (u64::from(reply[0]) << 32) | u64::from(reply[1]);
     }
     Ok(weights)
@@ -326,17 +327,17 @@ pub fn cac_weights<P: ConfigRegionAccess + Copy>(
 /// die 0. Then every die enables the CORE_CSTATES feature.
 pub fn aps_ready<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Failure> {
     if let Some(first) = dies.first() {
-        send(first, DC_BTC, 0, delay_us)?;
+        send(first, DC_BTC, 0, delay)?;
     }
     dies.iter().try_for_each(|die| {
         send(
             die,
             ENABLE_FEATURES,
             FEATURES_SP4 & FEATURE_CORE_CSTATES,
-            delay_us,
+            delay,
         )
         .map(|_| ())
     })
@@ -346,19 +347,20 @@ pub fn aps_ready<P: ConfigRegionAccess + Copy>(
 /// [`aps_ready`].
 pub fn ccx_done<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Failure> {
     dies.iter().try_for_each(|die| {
-        send(die, CCX_DONE, 0, delay_us)?;
-        send(die, ENABLE_FEATURES, FEATURES_SP4, delay_us)?;
-        send(die, MSG_38, 0, delay_us)?;
-        send(die, MSG_39, 0, delay_us).map(|_| ())
+        send(die, CCX_DONE, 0, delay)?;
+        send(die, ENABLE_FEATURES, FEATURES_SP4, delay)?;
+        send(die, MSG_38, 0, delay)?;
+        send(die, MSG_39, 0, delay).map(|_| ())
     })
 }
 
 #[cfg(test)]
 mod tests {
     extern crate std;
+    use crate::fam17h::tsc::testing::Delay;
     use super::{
         super::test_pci::{Message, Pci},
         *,
@@ -380,7 +382,7 @@ mod tests {
         pci.set_smn(0, THREAD_ENABLE, 0b11); // BSP and thread 1 already run
         let dies = pci.dies();
         assert_eq!(thread_count(&dies), 20);
-        unsafe { launch_aps(&dies, 17, &mut |_| {}) }.unwrap();
+        unsafe { launch_aps(&dies, 17, &mut Delay(|_| {})) }.unwrap();
         assert_eq!(pci.smn(0, THREAD_ENABLE), 0xffff);
         assert_eq!(pci.smn(1, THREAD_ENABLE), 0b11);
         let tests: Vec<_> = sent(&pci).iter().map(|&(die, ..)| die).collect();
@@ -393,7 +395,7 @@ mod tests {
         );
 
         assert_eq!(
-            unsafe { launch_aps(&dies, 20, &mut |_| {}) },
+            unsafe { launch_aps(&dies, 20, &mut Delay(|_| {})) },
             Err(Failure::ApCount {
                 started: 19,
                 requested: 20
@@ -414,12 +416,12 @@ mod tests {
             perfmon: [0x7000_2000, 0],
         };
         assert_eq!(
-            unsafe { init(&dies, &buffers, &mut |_| {}) },
+            unsafe { init(&dies, &buffers, &mut Delay(|_| {})) },
             Err(Failure::Buffer)
         );
         assert!(pci.messages().is_empty());
         buffers.perfmon[1] = 0x7000_3000;
-        unsafe { init(&dies, &buffers, &mut |_| {}) }.unwrap();
+        unsafe { init(&dies, &buffers, &mut Delay(|_| {})) }.unwrap();
         let die1: Vec<_> = sent(&pci)
             .into_iter()
             .filter(|&(die, ..)| die == 1)
@@ -450,7 +452,7 @@ mod tests {
             [0x100 + m.arguments[0], m.arguments[0], 0, 0, 0, 0]
         });
         let dies = pci.dies();
-        let weights = cac_weights(&dies[0], &mut |_| {}).unwrap();
+        let weights = cac_weights(&dies[0], &mut Delay(|_| {})).unwrap();
         assert_eq!(weights[20], 0x114_0000_0014);
         assert!(
             sent(&pci)
@@ -460,8 +462,8 @@ mod tests {
 
         let pci = Pci::new(&[0, 0x40], |_| [0; 6]);
         let dies = pci.dies();
-        aps_ready(&dies, &mut |_| {}).unwrap();
-        ccx_done(&dies, &mut |_| {}).unwrap();
+        aps_ready(&dies, &mut Delay(|_| {})).unwrap();
+        ccx_done(&dies, &mut Delay(|_| {})).unwrap();
         assert_eq!(
             sent(&pci),
             [

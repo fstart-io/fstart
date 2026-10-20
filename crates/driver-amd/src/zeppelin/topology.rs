@@ -6,6 +6,7 @@
 //! through D0F0 0xb8/0xbc of that die's root bus. A DF "broadcast" access in
 //! AGESA terms is a direct access to the die's own register
 //! ([`crate::fam17h::registers::Df::reg`]).
+use crate::fam17h::tsc::DelayNs;
 use crate::fam17h::{
     registers::{Df, DfReg, Smn},
     smu,
@@ -85,9 +86,9 @@ impl<P: ConfigRegionAccess + Copy> Die<P> {
         &self,
         message: u32,
         arguments: [u32; smu::ARGUMENT_COUNT],
-        delay_us: &mut impl FnMut(u32),
+        delay: &mut impl DelayNs,
     ) -> Result<[u32; smu::ARGUMENT_COUNT], smu::Error> {
-        super::smu::MAILBOX.request(&self.smn(), message, arguments, delay_us)
+        super::smu::MAILBOX.request(&self.smn(), message, arguments, delay)
     }
 }
 

@@ -7,10 +7,11 @@ pub mod ec;
 pub mod policy;
 pub mod vilboz;
 use fstart_driver_amd::{
+    fam17h::tsc::Clock,
     gpio::{self, Pad},
     picasso::{espi, preinit::SpiConfig},
 };
-use fstart_platform_amd::picasso::{BoardFacts, Config, Timer};
+use fstart_platform_amd::picasso::{BoardFacts, Config};
 static CONFIG: Config = Config::new().uart(0).build();
 pub struct Board;
 impl BoardFacts for Board {
@@ -27,8 +28,8 @@ impl BoardFacts for Board {
         dalboz::ROMSTAGE_GPIO_TABLE,
     ];
     const DISABLE_ROM_SHARING: bool = true;
-    fn mainboard_init(gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, timer: &mut impl Timer) {
-        mainboard::init(gpio, timer)
+    fn mainboard_init(gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, clock: &mut impl Clock) {
+        mainboard::init(gpio, clock)
     }
 }
 
@@ -36,13 +37,12 @@ impl BoardFacts for Board {
 mod mainboard {
     use super::{ec, vilboz};
     use crate::policy::Cbi;
-    use fstart_driver_amd::gpio;
+    use fstart_driver_amd::{fam17h::tsc, gpio};
     use fstart_driver_chromeec::{Clock, Ec, NativeIo};
     use fstart_log::Hex;
-    use fstart_platform_amd::picasso::Timer;
 
     struct EcClock<'a, T>(&'a mut T);
-    impl<T: Timer> Clock for EcClock<'_, T> {
+    impl<T: tsc::Clock> Clock for EcClock<'_, T> {
         fn now_us(&mut self) -> u64 {
             self.0.now_us()
         }
@@ -51,10 +51,13 @@ mod mainboard {
         }
     }
 
-    pub(super) fn init(gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, timer: &mut impl Timer) {
+    pub(super) fn init(
+        gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
+        clock: &mut impl tsc::Clock,
+    ) {
         // SAFETY: the eSPI windows for the EC ports are up; the BSP owns them.
         let cbi = match Ec::discover(unsafe { NativeIo::new() }) {
-            Ok(mut ec) => ec::read_cbi(&mut ec, &mut EcClock(timer), &mut |_, _| {
+            Ok(mut ec) => ec::read_cbi(&mut ec, &mut EcClock(clock), &mut |_, _| {
                 fstart_log::warn!("vilboz: CBI read failed")
             }),
             Err(_) => {
@@ -75,9 +78,8 @@ mod mainboard {
 }
 #[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
 mod mainboard {
-    use fstart_driver_amd::gpio;
-    use fstart_platform_amd::picasso::Timer;
-    pub(super) fn init(_: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, _: &mut impl Timer) {}
+    use fstart_driver_amd::{fam17h::tsc::Clock, gpio};
+    pub(super) fn init(_: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, _: &mut impl Clock) {}
 }
 
 pub const FLASH_SIZE: u32 = 0x1000000;

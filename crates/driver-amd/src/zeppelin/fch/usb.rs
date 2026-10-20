@@ -3,6 +3,7 @@
 //! 3). The vendor FchTaishanPei reset task
 //! af48 programs it through SMN; Zeppelin has no SMU USB messages (sp4r2
 //! report FCH_TAISHAN, cold path, vendor defaults).
+use crate::fam17h::tsc::DelayNs;
 use crate::{
     fam17h::registers::{Smn, SmnReg},
     zeppelin::Package,
@@ -60,10 +61,10 @@ const USB2_PHY_PARAMETER: [u32; super::super::MAX_DIES] = [0x01b3_c953, 0x01b3_c
 /// after 1 ms.
 const STATUS_POLLS: u32 = 1000;
 
-fn wait_108(smn: &Smn<impl ConfigRegionAccess>, delay_us: &mut impl FnMut(u32)) {
+fn wait_108(smn: &Smn<impl ConfigRegionAccess>, delay: &mut impl DelayNs) {
     let mut polls = 0;
     while smn.reg(STATUS_108).read(Status108::BUSY) != 0 && polls < STATUS_POLLS {
-        delay_us(1);
+        delay.delay_us(1);
         polls += 1;
     }
 }
@@ -114,16 +115,16 @@ pub fn init(
     smn: &Smn<impl ConfigRegionAccess>,
     die: u8,
     package: Package,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) {
     smn.reg(R14C).modify(R14c::BIT31::SET);
 
     smn.reg(R014).set(0);
-    wait_108(smn, delay_us);
+    wait_108(smn, delay);
     let reset = smn.reg(RESET_CONTROL);
     reset.modify(ResetControl::BIT0::SET);
     reset.modify(ResetControl::BIT1::SET + ResetControl::BIT2::SET);
-    delay_us(100);
+    delay.delay_us(100);
 
     // SP4 has only two of the four ports; SP4r2 keeps the reset values.
     if package == Package::Sp4 {
@@ -135,7 +136,7 @@ pub fn init(
 
     reset.modify(ResetControl::BIT0::CLEAR);
     reset.modify(ResetControl::BIT2::CLEAR);
-    delay_us(200);
+    delay.delay_us(200);
     reset.modify(ResetControl::BIT1::CLEAR);
 
     post_reset(smn);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
+use crate::fam17h::tsc::testing::Delay;
 use super::*;
 use crate::{
     fam17h::registers::testing::{SmnModel, SmnTest},
@@ -293,7 +294,7 @@ fn sata_reset_waits_for_each_phy_but_never_longer_than_1ms() {
         model.regs.insert(ssts(6), 3); // stays online
     }
     let mut waited = 0;
-    sata::reset(&smn.smn(), &mut |us| waited += us);
+    sata::reset(&smn.smn(), &mut Delay(|us| waited += us));
     assert_eq!(waited, 2 * 10 + 1000);
     // DET = offline requested on every port.
     let model = smn.model();
@@ -344,7 +345,7 @@ fn multi_reset_moves_acpimmio_while_io_is_routed_to_the_die() {
         &dies,
         Package::Sp4,
         |_| DIE1_NONPCI,
-        &mut |_| (),
+        &mut Delay(|_| ()),
     );
 
     let w = world.borrow();
@@ -403,14 +404,14 @@ fn multi_usb_and_env_follow_the_board_and_the_straps() {
             sata: false,
         },
     ];
-    multi::usb(&dies, &board, Package::Sp4, &mut |_| ());
+    multi::usb(&dies, &board, Package::Sp4, &mut Delay(|_| ()));
     multi::env(
         &Hw(&world),
         &dies,
         &board,
         |_| DIE1_NONPCI,
         0x1000_1458,
-        &mut |_| (),
+        &mut Delay(|_| ()),
     );
     {
         let w = world.borrow();
@@ -441,7 +442,7 @@ fn multi_usb_and_env_follow_the_board_and_the_straps() {
         &board,
         |_| DIE1_NONPCI,
         0,
-        &mut |_| (),
+        &mut Delay(|_| ()),
     );
     let w = world.borrow();
     for register in [NBIF_SATA, nbif_xgbe(0), nbif_xgbe(3)] {

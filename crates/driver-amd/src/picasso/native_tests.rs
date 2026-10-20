@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
+use crate::fam17h::tsc::testing::Delay;
 use super::{
     apob::{self, Apob},
     fabric,
@@ -89,7 +90,7 @@ fn smu_command_is_last_and_previous_error_does_not_block_readiness() {
         &mailbox.smn(),
         smu::GET_SILICON_ID,
         [1, 2, 3, 4, 5, 6],
-        &mut |us| elapsed += us,
+        &mut Delay(|us| elapsed += us),
     )
     .unwrap();
     assert_eq!(result, [0x100, 0x101, 0x102, 0x103, 0x104, 0x105]);
@@ -114,12 +115,12 @@ fn raw_smu_reply_retains_output_context_without_treating_status_as_success() {
         responses: [1, 0xfe].into(),
         ..Default::default()
     });
-    let reply = smu::request_raw(&mailbox.smn(), 0x13, [0; 6], &mut |_| {}).unwrap();
+    let reply = smu::request_raw(&mailbox.smn(), 0x13, [0; 6], &mut Delay(|_| {})).unwrap();
     assert_eq!(reply.status, 0xfe);
     assert_eq!(reply.arguments, [0x100, 0x101, 0x102, 0x103, 0x104, 0x105]);
     mailbox.model().responses = [1, u32::MAX].into();
     assert_eq!(
-        smu::request_raw(&mailbox.smn(), 0x13, [0; 6], &mut |_| {}),
+        smu::request_raw(&mailbox.smn(), 0x13, [0; 6], &mut Delay(|_| {})),
         Err(smu::Error::Unavailable)
     );
     let unavailable = SmnTest::new(Mailbox {
@@ -127,7 +128,7 @@ fn raw_smu_reply_retains_output_context_without_treating_status_as_success() {
         ..Default::default()
     });
     assert_eq!(
-        smu::request_raw(&unavailable.smn(), 0x13, [0; 6], &mut |_| {}),
+        smu::request_raw(&unavailable.smn(), 0x13, [0; 6], &mut Delay(|_| {})),
         Err(smu::Error::Unavailable)
     );
     assert!(unavailable.model().writes.is_empty());
@@ -138,14 +139,14 @@ fn smu_timeout_is_bounded_and_never_submits_when_busy() {
     let mailbox = SmnTest::new(Mailbox::default());
     let mut elapsed = 0;
     assert_eq!(
-        smu::request(&mailbox.smn(), 1, [0; 6], &mut |us| elapsed += us),
+        smu::request(&mailbox.smn(), 1, [0; 6], &mut Delay(|us| elapsed += us)),
         Err(smu::Error::BusyTimeout)
     );
     assert_eq!(elapsed, 10_000_000);
     assert!(mailbox.model().writes.is_empty());
     mailbox.model().responses = [1, 0xfe].into();
     assert_eq!(
-        smu::request(&mailbox.smn(), 1, [0; 6], &mut |_| {}),
+        smu::request(&mailbox.smn(), 1, [0; 6], &mut Delay(|_| {})),
         Err(smu::Error::Rejected(0xfe))
     );
 }

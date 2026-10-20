@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Permanent native mailbox allocation/ordering, not SMM setup or OS handoff.
+use fstart_driver_amd::fam17h::tsc::DelayNs;
 use crate::{layout, memory::Memory};
 use core::{
     mem::MaybeUninit,
@@ -47,20 +48,20 @@ impl ResidentMailbox {
     pub fn allocation_range(&self) -> core::ops::Range<u64> {
         layout::PSP_START..layout::PSP_END
     }
-    pub fn capabilities(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<u32, psp::Error> {
-        self.mailbox.capabilities(delay_us)
+    pub fn capabilities(&mut self, delay: &mut impl DelayNs) -> Result<u32, psp::Error> {
+        self.mailbox.capabilities(delay)
     }
-    pub fn ftpm_capabilities(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<u32, psp::Error> {
-        self.mailbox.ftpm_capabilities(delay_us)
+    pub fn ftpm_capabilities(&mut self, delay: &mut impl DelayNs) -> Result<u32, psp::Error> {
+        self.mailbox.ftpm_capabilities(delay)
     }
-    pub fn hsti_state(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<u32, psp::Error> {
-        self.mailbox.hsti_state(delay_us)
+    pub fn hsti_state(&mut self, delay: &mut impl DelayNs) -> Result<u32, psp::Error> {
+        self.mailbox.hsti_state(delay)
     }
     /// # Safety
     /// Driver boot-done CPU-completion/protected-SMM/phase contracts all hold.
     /// Error may follow irreversible effects: fail-stop, no retry/reset/reclaim.
-    pub unsafe fn boot_done(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<(), psp::Error> {
-        unsafe { self.mailbox.boot_done(delay_us) }
+    pub unsafe fn boot_done(&mut self, delay: &mut impl DelayNs) -> Result<(), psp::Error> {
+        unsafe { self.mailbox.boot_done(delay) }
     }
 }
 fn preflight(

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Four-window AMD eSPI controller.
 //! Picasso has none of the newer extended-window/ALERT_ENABLE register bits.
+pub use crate::fam17h::tsc::Clock;
 use heapless::Vec;
 use tock_registers::{
     interfaces::{Readable, Writeable},
@@ -58,10 +59,6 @@ pub enum Error {
     Capability,
     ChannelTimeout,
 }
-pub trait Clock {
-    fn now_us(&mut self) -> u64;
-    fn pause_us(&mut self, us: u32);
-}
 pub trait Registers {
     fn read32(&mut self, offset: u16) -> u32;
     fn write32(&mut self, offset: u16, value: u32);
@@ -91,7 +88,7 @@ fn ready(r: &mut impl Registers, clock: &mut impl Clock) -> Result<(), Error> {
         if clock.now_us().wrapping_sub(start) >= 100 {
             break;
         }
-        clock.pause_us(1);
+        clock.delay_us(1);
     }
     Err(Error::BusyTimeout)
 }
@@ -130,7 +127,7 @@ fn command(
         if clock.now_us().wrapping_sub(start) >= 100 {
             break;
         }
-        clock.pause_us(1);
+        clock.delay_us(1);
     }
     Err(Error::CompletionTimeout)
 }
@@ -232,7 +229,7 @@ fn channel(
         if clock.now_us().wrapping_sub(start) >= 10000 {
             break;
         }
-        clock.pause_us(1);
+        clock.delay_us(1);
     }
     Err(Error::ChannelTimeout)
 }

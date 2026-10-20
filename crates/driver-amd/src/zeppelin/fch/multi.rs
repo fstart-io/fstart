@@ -7,6 +7,7 @@
 //!
 //! The loops take all dies (die 0 first, as [`crate::zeppelin::topology::dies`]
 //! yields them) and the board's [`Devices`] per die, indexed by die.
+use crate::fam17h::tsc::DelayNs;
 use super::{
     Devices, NbifStrap, sata,
     usb::{self, ResetControl},
@@ -108,7 +109,7 @@ pub fn reset<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
     package: Package,
     nonpci_mmio_base: impl Fn(u8) -> u32,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) {
     let Some(die0) = dies.first() else { return };
     let df0 = die0.df();
@@ -130,7 +131,7 @@ pub fn reset<P: ConfigRegionAccess + Copy>(
         io_limit.set(saved.1);
 
         // Vendor PCD 0x8d: SATA enabled on every die.
-        sata::reset(&die.smn(), delay_us);
+        sata::reset(&die.smn(), delay);
     }
 }
 
@@ -175,7 +176,7 @@ pub fn usb<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
     board: &[Devices],
     package: Package,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) {
     for die in dies.iter().skip(1) {
         let smn = &die.smn();
@@ -186,7 +187,7 @@ pub fn usb<P: ConfigRegionAccess + Copy>(
                 ResetControl::BIT0::SET + ResetControl::BIT1::SET + ResetControl::BIT2::SET,
             );
         } else if devices(board, die.index()).xhci {
-            usb::init(smn, die.index(), package, delay_us);
+            usb::init(smn, die.index(), package, delay);
         } else {
             strap_off(smn, usb::NBIF_STRAP);
         }
@@ -203,7 +204,7 @@ pub fn env<P: ConfigRegionAccess + Copy>(
     board: &[Devices],
     nonpci_mmio_base: impl Fn(u8) -> u32,
     subsystem_id: u32,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) {
     for die in dies.iter().skip(1) {
         let smn = &die.smn();
@@ -223,7 +224,7 @@ pub fn env<P: ConfigRegionAccess + Copy>(
             strap_off(smn, sata::NBIF_STRAP);
         } else {
             let mmio = acpimmio_base(die.index(), nonpci_mmio_base(die.index()));
-            sata::init(&Fch::new(bus, mmio), die.index(), smn, subsystem_id, delay_us);
+            sata::init(&Fch::new(bus, mmio), die.index(), smn, subsystem_id, delay);
         }
 
         xgbe_init(smn);
