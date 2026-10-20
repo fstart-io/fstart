@@ -5,8 +5,11 @@
 //! instance's through the FICAA/FICAD pair, which the BSP owns exclusively
 //! during silicon init.
 //!
-//! Every die has its own Data Fabric PCI device 0x18 + node on bus 0.
-//! Single-die parts (Raven/Picasso) use node 0.
+//! Every die has its own Data Fabric PCI device 0x18 + node on bus 0
+//! ([`Die`]). Single-die parts (Raven/Picasso) use node 0. The address map
+//! and its resource split are [`map`]; the init sequences of the SoCs'
+//! fabrics are [`picasso`] (AGESA AmdFabricRv) and [`zeppelin`]
+//! (AmdFabricZp).
 //!
 //! ```ignore
 //! df.instance(F3_CCM_108, INST_CCM0).modify(Ccm108::BIT6::SET);
@@ -20,6 +23,15 @@ use tock_registers::{
     interfaces::{Readable, Writeable},
     register_bitfields,
 };
+
+mod die;
+pub mod map;
+#[cfg(feature = "picasso")]
+pub mod picasso;
+#[cfg(feature = "zeppelin")]
+pub mod zeppelin;
+
+pub use die::{Die, die_count, dies};
 
 register_bitfields![u32,
     Ficaa [INSTANCE_ACCESS OFFSET(0) NUMBITS(1) [], REGISTER OFFSET(2) NUMBITS(9) [],

@@ -5,7 +5,7 @@
 //! ACPI PM or SMI setup; their xHCI, SATA and xGbE are reached through the
 //! SMN space of their die.
 //!
-//! The loops take all dies (die 0 first, as [`crate::fam17h::topology::dies`]
+//! The loops take all dies (die 0 first, as [`crate::df::dies`]
 //! yields them) and the board's [`Devices`] per die, indexed by die.
 use crate::fam17h::tsc::DelayNs;
 use super::{
@@ -14,9 +14,7 @@ use super::{
 };
 use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
-    fam17h::{
-        df::{self, IoBase, IoLimit},
-    },
+    df::map::{self, IoBase, IoLimit},
     smn::{Smn, SmnReg},
     table,
     zeppelin::{Die, Package},
@@ -116,7 +114,7 @@ pub fn reset<P: ConfigRegionAccess + Copy>(
         );
 
         // Route I/O 0-0xfff (pair 0) to the die's IOMS.
-        let (io_base, io_limit) = (df0.reg(df::io_base(0)), df0.reg(df::io_limit(0)));
+        let (io_base, io_limit) = (df0.reg(map::io_base(0)), df0.reg(map::io_limit(0)));
         let saved = (io_base.get(), io_limit.get());
         io_base.write(IoBase::RE::SET + IoBase::WE::SET);
         io_limit.write(IoLimit::DST_FABRIC_ID.val(die.ioms_fabric_id().into()));

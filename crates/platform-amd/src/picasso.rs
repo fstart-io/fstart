@@ -211,7 +211,7 @@ unsafe fn cold_boot(
     use crate::{early, layout};
     use fstart_arch::x86::cpu::msr::NativeMsr;
     use fstart_driver_amd::{
-        fam17h::topology,
+        df,
         picasso::{ECAM, Picasso, apob::Apob, cpu},
     };
     let msr = unsafe { NativeMsr::new() };
@@ -220,7 +220,7 @@ unsafe fn cold_boot(
     fstart_pci::ecam::init(ECAM as usize);
     let pci = fstart_pci::ecam::GlobalEcam;
     // SAFETY: the BSP owns the die's SMN and DF index pairs.
-    let Some(die) = (unsafe { topology::dies::<Picasso, _>(pci) }).next() else {
+    let Some(die) = (unsafe { df::dies::<Picasso, _>(pci) }).next() else {
         return Err("no die");
     };
     // SAFETY: the PSP wrote the APOB here before releasing the BSP; the

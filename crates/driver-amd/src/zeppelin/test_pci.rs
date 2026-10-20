@@ -5,7 +5,7 @@
 extern crate std;
 use super::Die;
 use crate::smu::v9::MAILBOX;
-use crate::fam17h::topology::dies;
+use crate::df::dies;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{cell::RefCell, collections::BTreeMap, vec::Vec};
 

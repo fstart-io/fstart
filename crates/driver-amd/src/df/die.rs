@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The dies of a Family 17h SoC and their register transports.
+//! The dies of a SoC as its Data Fabric reports them, and their register
+//! transports.
 //!
 //! Every die has its own Data Fabric PCI device on bus 0 (0x18 + die), its
 //! own root bus and its own SMU. The SMN addresses are the same on every die
@@ -7,27 +8,11 @@
 //! "broadcast" access in AGESA terms is a direct access to the die's own
 //! register ([`Df::reg`]). Single-die SoCs (Raven/Picasso) have die 0 on
 //! bus 0. The threads of the dies are [`crate::smu::threads`]'.
-use super::tsc::DelayNs;
-use crate::{
-    df::{Df, DfReg},
-    smn::Smn,
-    smu::{self, Mailbox},
-};
+use super::{Df, DfReg};
+use crate::{fam17h::tsc::DelayNs, smn::Smn, smu, soc::Soc};
 use core::marker::PhantomData;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{interfaces::Readable, register_bitfields};
-
-/// What the dies of a SoC differ in.
-pub trait Soc: 'static {
-    /// Dies of the largest package.
-    const MAX_DIES: usize;
-    /// The SMU mailbox of every die.
-    const SMU: Mailbox;
-    /// The SMU message of the DXIO firmware ([`super::dxio`]).
-    const DXIO_SERVICE: u32;
-    /// Fabric ID of the IOMS (the PCIe root complex) of `die`.
-    fn ioms_fabric_id(die: u8) -> u8;
-}
 
 register_bitfields![u32,
     BusBase [BUS OFFSET(0) NUMBITS(8) []],

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native Picasso Data Fabric sequencing.
-use super::Die;
-use crate::df::{Df, DfReg, DfRecord, apply_df, df_rmw, df_write};
-use crate::fam17h::df::{
-    self, DramBase, IO_PAIRS, MMIO_PAIRS, Plan, Window, dram_base, io_route, mmio_route,
+//! Native Picasso Data Fabric sequencing (AGESA AmdFabricRv).
+use super::{
+    Df, DfReg, DfRecord, apply_df, df_rmw, df_write,
+    map::{
+        self, DramBase, IO_PAIRS, MMIO_PAIRS, Plan, Window, dram_base, io_route, mmio_route,
+    },
 };
+use crate::picasso::Die;
 use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
 use tock_registers::interfaces::Readable;
@@ -32,12 +34,12 @@ pub fn legacy_routes(
     }
     let mmio: Vec<_, MMIO_PAIRS> = (0..MMIO_PAIRS as u8).map(|i| mmio_route(fabric, i)).collect();
     let io: Vec<_, IO_PAIRS> = (0..IO_PAIRS as u8).map(|i| io_route(fabric, i)).collect();
-    let routed = |route: &df::Route| route.enabled() && route.destination == ioms;
+    let routed = |route: &map::Route| route.enabled() && route.destination == ioms;
     let have_mmio = mmio
         .iter()
         .any(|r| routed(r) && !r.non_posted && r.base <= low_top && r.end() >= IOAPIC);
     let have_io = io.iter().any(|r| routed(r) && r.base == 0 && r.end() >= 0x1_0000);
-    let free = |routes: &[df::Route]| routes.iter().position(df::Route::free).map(|i| i as u8);
+    let free = |routes: &[map::Route]| routes.iter().position(map::Route::free).map(|i| i as u8);
     let mut plan = Plan::default();
     if !have_mmio {
         let pair = free(&mmio).ok_or(Error::NoMmioWindow)?;
@@ -69,8 +71,8 @@ pub fn ensure_legacy_routes(
     low_top: u32,
 ) -> Result<(), Error> {
     let plan = legacy_routes(&die.df(), die.ioms_fabric_id(), low_top)?;
-    df::program(&plan, core::slice::from_ref(die));
-    df::route_vga(&die.df(), die.ioms_fabric_id());
+    map::program(&plan, core::slice::from_ref(die));
+    map::route_vga(&die.df(), die.ioms_fabric_id());
     Ok(())
 }
 
@@ -143,7 +145,7 @@ pub fn early_init(fabric: &Df<impl ConfigRegionAccess>) {
             df_rmw(DfReg::new(3, 0x300), Some(9), 0, 1 << 8),
         ],
     );
-    df::clear_errors(fabric);
+    map::clear_errors(fabric);
     apply_df(fabric, [df_rmw(F0_RAS_CTRL, None, 1 << 3, 0)]);
 }
 

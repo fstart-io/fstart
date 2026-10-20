@@ -22,6 +22,8 @@ pub mod smn;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod smu;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod soc;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod table;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;

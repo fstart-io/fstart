@@ -12,9 +12,10 @@ use fstart_driver_amd::{
         apob::{Apob, MemoryMap},
         cache,
         ccx::Thread,
-        df, iohc, msr, topology,
+        iohc, msr,
         tsc::{self, Tsc},
     },
+    df::{self, map},
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
     smu::{
@@ -22,8 +23,7 @@ use fstart_driver_amd::{
         v9 as smu,
     },
     zeppelin::{
-        self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, dxio, fabric, fch, iommu,
-        nbio, psp,
+        self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, dxio, fch, iommu, nbio, psp,
     },
 };
 use fstart_driver_uart::ns16550::Ns16550;
@@ -153,7 +153,7 @@ fn run<B: Board>() -> ! {
         package.name(),
         mhz
     );
-    let dies = topology::die_count(&pci);
+    let dies = df::die_count(&pci);
     let Some(revision) = revision.filter(|_| package.dies() == Some(dies) && mhz != 0) else {
         fail("CPU identification")
     };
@@ -187,7 +187,7 @@ fn run<B: Board>() -> ! {
     post(0x32);
 
     // SAFETY: BSP-only silicon init serializes all die register accesses.
-    let dies: Vec<Die<GlobalEcam>, MAX_DIES> = unsafe { topology::dies(pci) }.collect();
+    let dies: Vec<Die<GlobalEcam>, MAX_DIES> = unsafe { df::dies(pci) }.collect();
     let mut silicon = Silicon {
         nonpci: [0; MAX_DIES],
         dies,
@@ -211,7 +211,7 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
     let count = dies.len() as u8;
     // DF MMIO/IO distribution, then the per-die DF init.
     let tom2 = top_mem2.unwrap_or(0);
-    let Ok(plan) = df::plan(top_mem, tom2, u64::from(soc::ECAM_BUSES) << 20, count) else {
+    let Ok(plan) = map::plan(top_mem, tom2, u64::from(soc::ECAM_BUSES) << 20, count) else {
         fail("DF MMIO plan")
     };
     for w in &plan.mmio {
@@ -223,20 +223,20 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
             w.die
         );
     }
-    df::program(&plan, dies);
+    map::program(&plan, dies);
     for die in dies {
-        match fabric::nonpci_mmio_base(&dies[0].df(), die.index()) {
+        match df::zeppelin::nonpci_mmio_base(&dies[0].df(), die.index()) {
             Some(base) => s.nonpci[usize::from(die.index())] = base,
             None => fail("non-PCI MMIO pool"),
         }
     }
     let apob = Apob::parse_with_capacity(apob_bytes(), soc::APOB_SIZE).ok();
     for die in dies {
-        fabric::early_init(&die.df(), count, s.revision);
+        df::zeppelin::early_init(&die.df(), count, s.revision);
     }
     if let Some(apob) = &apob {
         for die in dies {
-            if let Some((rate, size)) = fabric::scrub_init(&die.df(), die.index(), apob) {
+            if let Some((rate, size)) = df::zeppelin::scrub_init(&die.df(), die.index(), apob) {
                 fstart_log::debug!("DF {}: scrub rate {} for {}", die.index(), rate, Hex(size));
             }
         }
@@ -360,12 +360,12 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     }
     let cac_weights = smu::cac_weights(&dies[0], &mut delay).ok();
     let apob = Apob::parse_with_capacity(apob_bytes(), soc::APOB_SIZE).ok();
-    let sockets = fabric::sockets(&dies[0].df());
+    let sockets = df::zeppelin::sockets(&dies[0].df());
     for die in dies {
         if let Some(apob) = &apob {
-            fabric::late_init(&die.df(), dies.len() as u8, sockets, s.revision, apob);
+            df::zeppelin::late_init(&die.df(), dies.len() as u8, sockets, s.revision, apob);
         }
-        df::route_vga(&die.df(), dies[0].ioms_fabric_id());
+        map::route_vga(&die.df(), dies[0].ioms_fabric_id());
     }
     for die in dies {
         nbio::pre_enumeration_init(die);
@@ -554,7 +554,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
         clock,
     });
     for die in dies {
-        fabric::disable_ext_cfg(&die.df());
+        df::zeppelin::disable_ext_cfg(&die.df());
     }
     // After the last DF write; it needs the SMM info the PSP got after MP.
     if let Some(psp) = psp.as_mut() {

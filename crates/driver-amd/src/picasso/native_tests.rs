@@ -3,8 +3,8 @@ extern crate std;
 use crate::fam17h::tsc::testing::Delay;
 use super::{
     apob::{self, Apob},
-    fabric,
 };
+use crate::df::picasso as fabric;
 use crate::smu::v10 as smu;
 use crate::df::{Df, DfReg, testing::DfSpace};
 use crate::smn::{Smn, SmnReg, testing::{SmnModel, SmnTest}};
@@ -167,7 +167,7 @@ fn raven2_late_df_clears_bit11_after_setting_power_down_policy() {
 #[test]
 fn fabric_route_validation_is_atomic_and_programming_is_idempotent() {
     let df = DfSpace::default();
-    let die: super::Die<&DfSpace> = unsafe { crate::fam17h::topology::dies(&df) }
+    let die: super::Die<&DfSpace> = unsafe { crate::df::dies(&df) }
         .next()
         .unwrap();
     for i in 0..8 {

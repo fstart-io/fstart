@@ -8,10 +8,10 @@ use fstart_driver_amd::picasso::{
     apob::MemoryMap,
     cache::{self, CacheControl, Plan},
     cpu::{self, Identity},
-    fabric,
     nbio::{self, Capabilities},
     Die,
 };
+use fstart_driver_amd::df::picasso as fabric;
 use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {

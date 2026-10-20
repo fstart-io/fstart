@@ -11,7 +11,6 @@ pub mod emmc;
 pub mod espi;
 #[cfg(test)]
 mod espi_tests;
-pub mod fabric;
 pub mod legacy;
 #[cfg(test)]
 mod legacy_tests;
@@ -31,7 +30,7 @@ pub use crate::fch::ACPI_MMIO;
 
 /// The Raven/Picasso SoC: one die.
 pub enum Picasso {}
-impl crate::fam17h::topology::Soc for Picasso {
+impl crate::soc::Soc for Picasso {
     const MAX_DIES: usize = 1;
     const SMU: crate::smu::Mailbox = crate::smu::v10::MAILBOX;
     const DXIO_SERVICE: u32 = crate::smu::v10::DXIO_SERVICE;
@@ -39,7 +38,7 @@ impl crate::fam17h::topology::Soc for Picasso {
         9
     }
 }
-pub type Die<P> = crate::fam17h::topology::Die<Picasso, P>;
+pub type Die<P> = crate::df::Die<Picasso, P>;
 pub const ECAM: u64 = 0xf800_0000;
 pub const ECAM_BUSES: u8 = 64;
 pub const UART_BASES: [usize; 4] = [0xfedc9000, 0xfedca000, 0xfedce000, 0xfedcf000];

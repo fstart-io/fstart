@@ -2,7 +2,7 @@
 //! PCI root complex of a die: its bus range and the DF windows routed to it
 //! (with the Zeppelin non-PCI pool).
 use fstart_driver_amd::{
-    fam17h::df,
+    df::map,
     zeppelin::{Die, ECAM, ECAM_BUSES, NONPCI_MMIO_SIZE},
 };
 use fstart_pci::{
@@ -34,7 +34,7 @@ impl Root {
             size: PCI_IO.1,
             prefetchable: false,
         });
-        for (base, size) in df::mmio_windows(&df0, die.ioms_fabric_id()) {
+        for (base, size) in map::mmio_windows(&df0, die.ioms_fabric_id()) {
             let end = base + size;
             if end > 1 << 32 {
                 continue;

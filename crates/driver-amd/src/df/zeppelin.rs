@@ -3,14 +3,16 @@
 //! AmdFabricZpPei/Dxe and the MMIO/IO distribution of AmdSocSp4ZpPei (sp4r2
 //! reports DF_ZP and SOC_DISPATCH). Each die has its own DF; what AGESA calls a
 //! broadcast access is a direct access repeated on every die. The MMIO/IO
-//! distribution is [`crate::fam17h::df::plan`].
-use super::{NONPCI_MMIO_SIZE, Revision, Zeppelin};
-use crate::fam17h::{
-    apob::{self, Apob},
-    df::{self, DramBase},
-    topology::Soc,
+//! distribution is [`super::map::plan`].
+use super::{
+    Df, DfReg,
+    map::{self, DramBase},
 };
-use crate::df::{Df, DfReg};
+use crate::{
+    fam17h::apob::{self, Apob},
+    soc::Soc,
+    zeppelin::{NONPCI_MMIO_SIZE, Revision, Zeppelin},
+};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -79,7 +81,7 @@ const GIB: u64 = 1 << 30;
 /// 2 * die) as its non-PCI MMIO pool. On die 0 that's 0xfe400000-0xfebfffff.
 /// `None` if the die has no such window.
 pub fn nonpci_mmio_base(df0: &Df<impl ConfigRegionAccess>, die: u8) -> Option<u32> {
-    let route = df::mmio_route(df0, 2 * die);
+    let route = map::mmio_route(df0, 2 * die);
     let usable = route.enabled()
         && route.destination == Zeppelin::ioms_fabric_id(die)
         && route.end() <= 4 * GIB
@@ -139,7 +141,7 @@ fn pie_ras_init(df: &Df<impl ConfigRegionAccess>) {
     // set it.
     df.reg(F5_PIE_CFG)
         .modify(PieCfg::DIS_SYNC_FLOOD_PROP::CLEAR + PieCfg::LINT_ERRATUM_1158::SET);
-    df::clear_errors(df);
+    map::clear_errors(df);
     for instance in 0..12 {
         df.instance(F0_RAS_CTRL, instance)
             .modify(RasCtrl::B3::CLEAR);
@@ -163,7 +165,7 @@ fn scrub_dram_size(df: &Df<impl ConfigRegionAccess>, die: u8) -> u64 {
     let limit = limit.read(ScrubLimit::LIMIT);
     let mut size = u64::from(limit.wrapping_sub(base).wrapping_add(1)) << 20;
     for i in 0..2 {
-        let dram_base = df.instance(df::dram_base(i), INST_CS_DRAM_MAP).extract();
+        let dram_base = df.instance(map::dram_base(i), INST_CS_DRAM_MAP).extract();
         let dram_limit = df.instance(f0_dram_limit(i), INST_CS_DRAM_MAP).extract();
         // Socket 0: the destination is the die number.
         if !dram_base.matches_all(DramBase::VALID::SET + DramBase::HOLE_EN::SET)

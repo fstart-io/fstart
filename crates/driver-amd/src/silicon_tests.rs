@@ -414,11 +414,8 @@ fn low<T>(address: usize, value: T) -> &'static mut T {
 mod zeppelin {
     use super::*;
     use crate::{
-        fam17h::{
-            df,
-            iohc::{self, IOAPIC_BAR},
-            topology,
-        },
+        df::{self, map},
+        fam17h::iohc::{self, IOAPIC_BAR},
         fch::{Acpimmio, Fch},
         smu::{
             threads::{self, Policy},
@@ -427,7 +424,6 @@ mod zeppelin {
         zeppelin::{
             Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision,
             dxio::{self, Descriptor, SataChannel},
-            fabric,
             fch::{self, Devices},
             iommu, nbio, psp,
         },
@@ -487,22 +483,22 @@ mod zeppelin {
     fn sp4_silicon_init_sequence() {
         let hw = sp4();
         let pci = &hw;
-        let dies: Vec<Die<&Hw>> = unsafe { topology::dies(pci) }.collect();
+        let dies: Vec<Die<&Hw>> = unsafe { df::dies(pci) }.collect();
         let mut delay = hw.clock();
 
         // Before the PCIe training
-        let plan = df::plan(0xe000_0000, 0x4_2000_0000, 128 << 20, 2).unwrap();
-        df::program(&plan, &dies);
+        let plan = map::plan(0xe000_0000, 0x4_2000_0000, 128 << 20, 2).unwrap();
+        map::program(&plan, &dies);
         let nonpci: Vec<u32> = dies
             .iter()
-            .map(|die| fabric::nonpci_mmio_base(&dies[0].df(), die.index()).unwrap())
+            .map(|die| df::zeppelin::nonpci_mmio_base(&dies[0].df(), die.index()).unwrap())
             .collect();
         assert_eq!(
-            df::mmio_windows(&dies[0].df(), dies[1].ioms_fabric_id()).len(),
+            map::mmio_windows(&dies[0].df(), dies[1].ioms_fabric_id()).len(),
             2
         );
         for die in &dies {
-            fabric::early_init(&die.df(), 2, Revision::B2);
+            df::zeppelin::early_init(&die.df(), 2, Revision::B2);
         }
         let fch0 = Fch::new(pci, Acpimmio::DIE0);
         fch::reset_init(&fch0, Revision::B2);
@@ -558,9 +554,9 @@ mod zeppelin {
         };
         unsafe { smu::init(&dies, &buffers, &mut delay) }.unwrap();
         smu::cac_weights(&dies[0], &mut delay).unwrap();
-        assert_eq!(fabric::sockets(&dies[0].df()), 2);
+        assert_eq!(df::zeppelin::sockets(&dies[0].df()), 2);
         for die in &dies {
-            df::route_vga(&die.df(), dies[0].ioms_fabric_id());
+            map::route_vga(&die.df(), dies[0].ioms_fabric_id());
         }
         for die in &dies {
             nbio::pre_enumeration_init(die);
@@ -590,7 +586,7 @@ mod zeppelin {
         });
         fch::late_init(&fch0);
         for die in &dies {
-            fabric::disable_ext_cfg(&die.df());
+            df::zeppelin::disable_ext_cfg(&die.df());
         }
         assert_eq!(hw.fingerprint(), (16906, 0x9dd1_7783_e797_1b5e));
         assert_eq!(hw.state(), 0xbc50_f84e_0701_a314);
@@ -601,14 +597,11 @@ mod zeppelin {
 mod picasso {
     use super::*;
     use crate::{
-        fam17h::{
-            iohc::{PSP_BAR, SMU_BAR},
-            topology,
-        },
+        df::{self, picasso as fabric},
+        fam17h::iohc::{PSP_BAR, SMU_BAR},
         picasso::{
             Die,
             dxio::{self, Aspm, ClockRequest, Descriptor, Options, PowerPolicy},
-            fabric,
             nbio::{self},
         },
         smu::{
@@ -642,7 +635,7 @@ mod picasso {
         hw.set_smn(0, crate::fam17h::nbio::pcie::link_status(0), 0);
         // TOM2[40:32] bit 8 clear: below 1 TiB.
         hw.set_smn(0, 0x13b1_0068_u32, 0x1234_5600);
-        let die: Die<&Hw> = unsafe { topology::dies(&hw) }.next().unwrap();
+        let die: Die<&Hw> = unsafe { df::dies(&hw) }.next().unwrap();
         let (smn, df) = (die.smn(), die.df());
         let mut delay = hw.clock();
 

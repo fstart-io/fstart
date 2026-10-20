@@ -3,12 +3,11 @@
 //! their ThreadEn bit ([`launch`]); its ThreadConfig is the thread topology,
 //! which a [`Policy`] can reduce for the next reset ([`apply`]).
 use crate::{
-    fam17h::{
-        topology::{Die, Soc},
-        tsc::DelayNs,
-    },
+    df::Die,
+    fam17h::tsc::DelayNs,
     smn::Smn,
     smu::{self, DOWNCORE, THREAD_CONFIG, THREAD_ENABLE, ThreadConfig},
+    soc::Soc,
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -251,7 +250,7 @@ pub unsafe fn launch<S: Soc, P: ConfigRegionAccess + Copy>(
 mod tests {
     extern crate std;
     use super::*;
-    use crate::{fam17h::{topology::dies, tsc::testing::none}, smu::Mailbox};
+    use crate::{df::dies, fam17h::tsc::testing::none, smu::Mailbox};
     use crate::smn::{
         SmnReg,
         testing::{SmnModel, SmnTest},

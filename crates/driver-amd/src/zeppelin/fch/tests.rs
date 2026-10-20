@@ -3,9 +3,10 @@ extern crate std;
 use crate::fam17h::tsc::testing::Delay;
 use super::*;
 use crate::{
-    smn::testing::{SmnModel, SmnTest},
+    df,
     fch::{Acpimmio, Bus, Fch, Space},
-    fam17h::topology::{self, Soc},
+    smn::testing::{SmnModel, SmnTest},
+    soc::Soc,
     zeppelin::{Die, Package, Revision, Zeppelin},
 };
 use core::cell::RefCell;
@@ -164,7 +165,7 @@ fn sp4() -> RefCell<World> {
 }
 fn dies(world: &RefCell<World>) -> Vec<Die<Hw<'_>>> {
     // SAFETY: the mock has no concurrent users.
-    unsafe { topology::dies(Hw(world)) }.collect()
+    unsafe { df::dies(Hw(world)) }.collect()
 }
 
 #[test]

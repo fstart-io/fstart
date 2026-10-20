@@ -9,11 +9,8 @@
 //! DXIO service message ([`Soc::DXIO_SERVICE`]) with the operation in the
 //! first argument. The SoC owns the lane mapping, the PCIe core registers
 //! and the NBIF settings around the training ([`Training`]).
-use super::{
-    topology::{Die, Soc},
-    tsc::{Clock, DelayNs},
-};
-use crate::smu;
+use super::tsc::{Clock, DelayNs};
+use crate::{df::Die, smu, soc::Soc};
 use core::{
     cell::UnsafeCell,
     sync::atomic::{Ordering, compiler_fence},

@@ -3,7 +3,7 @@
 //! NBIO blocks behind it (PSP, SMU, IOAPIC, IOMMU), all in SMN. The same IP
 //! at the same addresses on Raven/Picasso and Zeppelin; the SoC picks the
 //! base addresses.
-use super::topology::{Die, Soc};
+use crate::{df::Die, soc::Soc};
 use crate::smn::{Smn, SmnReg};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{

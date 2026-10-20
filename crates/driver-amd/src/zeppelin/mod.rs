@@ -9,7 +9,6 @@
 pub mod ccx;
 mod ccx_tables;
 pub mod dxio;
-pub mod fabric;
 pub mod fch;
 pub mod i2c;
 pub mod identity;
@@ -21,7 +20,7 @@ pub mod psp;
 #[cfg(test)]
 pub(crate) mod test_pci;
 
-use crate::fam17h::topology::Soc;
+use crate::soc::Soc;
 pub use identity::{Package, Revision};
 
 /// GPIO bank 0: 145 pins, but the vendor board tables also use 149-152. The Zeppelin
@@ -45,7 +44,7 @@ impl Soc for Zeppelin {
     }
 }
 pub const MAX_DIES: usize = Zeppelin::MAX_DIES;
-pub type Die<P> = crate::fam17h::topology::Die<Zeppelin, P>;
+pub type Die<P> = crate::df::Die<Zeppelin, P>;
 
 /// Non-PCI MMIO pool of a die, the top 8 MiB of its below-4G DF window: the
 /// PSP BAR at +0, the FCH ACPI MMIO of dies >= 1 at +1 MiB, the IOMMU (512
