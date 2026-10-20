@@ -26,13 +26,16 @@ use fstart_acpi::{
     },
 };
 use fstart_acpi_macros::acpi_dsl;
-use fstart_driver_amd::zeppelin::{MAX_DIES, SPI_BASE, acpi_io, iommu::{self, Iommu}};
+use fstart_driver_amd::{
+    fch::SPI_BASE,
+    zeppelin::{MAX_DIES, acpi_io, iommu::{self, Iommu}},
+};
 
 pub const LAPIC_BASE: u64 = 0xfee0_0000;
-pub const FCH_IOAPIC_BASE: u32 = 0xfec0_0000;
+pub const FCH_IOAPIC_BASE: u32 = fstart_driver_amd::fch::IOAPIC;
 /// The FCH IOAPIC has GSI 0; the NBIO IOAPICs follow from ID 1.
 pub const FCH_IOAPIC_ID: u8 = 0;
-pub const HPET_BASE: u64 = 0xfed0_0000;
+pub const HPET_BASE: u64 = fstart_driver_amd::fch::HPET as u64;
 const FCH_IOAPIC_PINS: u32 = 24;
 const NBIO_IOAPIC_PINS: u32 = 32;
 const SCI_IRQ: u8 = 9;

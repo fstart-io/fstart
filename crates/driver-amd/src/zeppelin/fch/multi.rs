@@ -8,10 +8,10 @@
 //! The loops take all dies (die 0 first, as [`crate::zeppelin::topology::dies`]
 //! yields them) and the board's [`Devices`] per die, indexed by die.
 use super::{
-    AB_INDEX, Acpimmio, Bus, Devices, NbifStrap, PM_INDEX, abcfg_update, index_read, index_write,
-    legacy_sd_off, sata,
+    Devices, NbifStrap, sata,
     usb::{self, ResetControl},
 };
+use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
     fam17h::registers::{DfReg, Smn, SmnReg},
     zeppelin::{Die, Package},
@@ -37,9 +37,13 @@ pub const fn acpimmio_base(die: u8, nonpci_mmio_base: u32) -> Acpimmio {
     }
 }
 
-/// PMxD5[1:0]: decode the ACPI MMIO base in PMxD6.
+register_bitfields![u8,
+    /// PMxD5: decode the ACPI MMIO base in PMxD6.
+    AcpimmioSelect [SELECT OFFSET(0) NUMBITS(2) [Base = 1]]
+];
+/// Through the PM index/data pair: PMxD5, PMxD6..D7 (base >> 16) and the
+/// A-Link I/O base PMxE0..E1.
 const PM_ACPIMMIO_SELECT: u8 = 0xd5;
-/// PMxD6: 16 bits, base >> 16.
 const PM_ACPIMMIO_BASE: u8 = 0xd6;
 const PM_AB_REG_BAR: u8 = 0xe0;
 register_bitfields![u32,
@@ -53,24 +57,27 @@ const DF_IO_LIMIT0: DfReg<DfIoLimit::Register> = DfReg::new(0, 0xc4);
 /// Vendor ffdcb7de, run while die 0's DF sends I/O 0-0xfff to the die: move
 /// the die's ACPI MMIO block, then IOMUX, A-Link, clock generator and legacy
 /// SD through it. Nothing may print here; the console is on die 0's LPC bus.
-fn secondary_legacy(bus: &mut impl Bus, mmio: Acpimmio, package: Package) {
-    let base = mmio.0 >> 16;
-    index_write(bus, PM_INDEX, PM_ACPIMMIO_BASE, base as u8);
-    index_write(bus, PM_INDEX, PM_ACPIMMIO_BASE + 1, (base >> 8) as u8);
-    let select = index_read(bus, PM_INDEX, PM_ACPIMMIO_SELECT);
-    index_write(bus, PM_INDEX, PM_ACPIMMIO_SELECT, (select & 0xfc) | 1);
+fn secondary_legacy<B: Bus>(fch: &Fch<B>, package: Package) {
+    let bus = fch.bus();
+    let pm = |register| indexed_io::<B, ()>(bus, PM_INDEX, register);
+    let pm_word = |register, value: u16| {
+        let [low, high] = value.to_le_bytes();
+        pm(register).set(low);
+        pm(register + 1).set(high);
+    };
+    pm_word(PM_ACPIMMIO_BASE, (fch.acpimmio().0 >> 16) as u16);
+    indexed_io::<B, AcpimmioSelect::Register>(bus, PM_INDEX, PM_ACPIMMIO_SELECT)
+        .modify(AcpimmioSelect::SELECT::Base);
 
     // SP4: IOMUX pin 2 function 1
     if package == Package::Sp4 {
-        bus.set(mmio.iomux::<u8, ()>(2), 1);
+        fch.reg(iomux::at::<u8, ()>(2)).set(1);
     }
 
     // A-Link index at 0xcd8 just for this write (low PMxE0 word only).
-    index_write(bus, PM_INDEX, PM_AB_REG_BAR, AB_INDEX as u8);
-    index_write(bus, PM_INDEX, PM_AB_REG_BAR + 1, (AB_INDEX >> 8) as u8);
-    abcfg_update(bus, 0x10050, 1 << 2, 0);
-    index_write(bus, PM_INDEX, PM_AB_REG_BAR, 0);
-    index_write(bus, PM_INDEX, PM_AB_REG_BAR + 1, 0);
+    pm_word(PM_AB_REG_BAR, alink::INDEX);
+    alink::abcfg(bus, (0x10050, 1 << 2, 0));
+    pm_word(PM_AB_REG_BAR, 0);
 
     // Clock generator; these differ from die 0's values.
     for (offset, clear, set) in [
@@ -86,17 +93,18 @@ fn secondary_legacy(bus: &mut impl Bus, mmio: Acpimmio, package: Package) {
         (0x40, 1 << 25, 1 << 25),
         (0x40, 1 << 30, 1 << 30),
     ] {
-        bus.update(mmio.misc::<u32, ()>(offset), clear, set);
+        let reg = fch.reg(misc::at::<u32, ()>(offset));
+        reg.set((reg.get() & !clear) | set);
     }
 
-    legacy_sd_off(bus, mmio);
+    fch.legacy_sd_off();
 }
 
 /// FchMultiFchPei: the legacy part through I/O routed to each other die,
 /// then the SATA reset task of the die. `nonpci_mmio_base` gives a die's
 /// non-PCI MMIO pool (DF code). Runs after [`super::reset_init`].
 pub fn reset<P: ConfigRegionAccess + Copy>(
-    bus: &mut impl Bus,
+    bus: &impl Bus,
     dies: &[Die<P>],
     package: Package,
     nonpci_mmio_base: impl Fn(u8) -> u32,
@@ -117,7 +125,7 @@ pub fn reset<P: ConfigRegionAccess + Copy>(
         let saved = (io_base.get(), io_limit.get());
         io_base.write(DfIoBase::READ_ENABLE::SET + DfIoBase::WRITE_ENABLE::SET);
         io_limit.write(DfIoLimit::DESTINATION.val(die.ioms_fabric_id().into()));
-        secondary_legacy(bus, mmio, package);
+        secondary_legacy(&Fch::new(bus, mmio), package);
         io_base.set(saved.0);
         io_limit.set(saved.1);
 
@@ -190,7 +198,7 @@ const AMD_VENDOR: u32 = 0x1022;
 /// FchMultiFchDxe: SATA and xGbE of the other dies whose internal bridge 8.1
 /// exists. Runs after [`super::env_init`] of die 0.
 pub fn env<P: ConfigRegionAccess + Copy>(
-    bus: &mut impl Bus,
+    bus: &impl Bus,
     dies: &[Die<P>],
     board: &[Devices],
     nonpci_mmio_base: impl Fn(u8) -> u32,
@@ -215,7 +223,7 @@ pub fn env<P: ConfigRegionAccess + Copy>(
             strap_off(smn, sata::NBIF_STRAP);
         } else {
             let mmio = acpimmio_base(die.index(), nonpci_mmio_base(die.index()));
-            sata::init(bus, die.index(), smn, mmio, subsystem_id, delay_us);
+            sata::init(&Fch::new(bus, mmio), die.index(), smn, subsystem_id, delay_us);
         }
 
         xgbe_init(smn);

@@ -15,6 +15,3 @@ pub mod lpc;
 pub mod picasso;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
-
-/// FCH ACPI MMIO window (PM, SMI, GPIO, IOMUX, MISC, AOAC).
-pub const ACPI_MMIO: usize = 0xfed8_0000;

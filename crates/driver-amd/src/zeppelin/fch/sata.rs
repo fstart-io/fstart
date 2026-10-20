@@ -4,7 +4,8 @@
 //! it through its SMN aperture at 0x03100000, with the AHCI registers at
 //! 0x03101000 (sp4r2 report FCH_TAISHAN, tasks af47, af57 and af77, with the
 //! vendor policy defaults).
-use super::{Acpimmio, Bus, NbifStrap, irq};
+use super::{NbifStrap, irq};
+use crate::fch::{Bus, Fch, iomux};
 use crate::fam17h::registers::{Smn, SmnReg};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{
@@ -119,13 +120,12 @@ pub fn reset(smn: &Smn<impl ConfigRegionAccess>, delay_us: &mut impl FnMut(u32))
 
 /// Env task: enable the ports and set the controller up as AHCI. `die`
 /// selects the die (the PCI IRQ router belongs to die 0's FCH), `smn` is its
-/// SMN and `acpimmio` its FCH's ACPI MMIO ([`super::acpimmio_base`]).
-/// `subsystem_id` is the board's (vendor PCD 0x15f).
+/// SMN and `fch` its FCH ([`super::acpimmio_base`]). `subsystem_id` is the
+/// board's (vendor PCD 0x15f).
 pub fn init(
-    bus: &mut impl Bus,
+    fch: &Fch<impl Bus>,
     die: u8,
     smn: &Smn<impl ConfigRegionAccess>,
-    acpimmio: Acpimmio,
     subsystem_id: u32,
     delay_us: &mut impl FnMut(u32),
 ) {
@@ -164,8 +164,8 @@ pub fn init(
 
     // No eSATA ports, no SGPIO: its pins (IOMUX 5 and 6 of the die's FCH)
     // are GPIOs.
-    bus.set(acpimmio.iomux::<u8, ()>(5), 0);
-    bus.set(acpimmio.iomux::<u8, ()>(6), 0);
+    fch.reg(iomux::at::<u8, ()>(5)).set(0);
+    fch.reg(iomux::at::<u8, ()>(6)).set(0);
     smn.reg(R10F8)
         .modify(Sgpio10f8::BYTE0.val(0) + Sgpio10f8::BYTE2.val(0));
     // The vendor code clears bit 20 again.
@@ -187,8 +187,8 @@ pub fn init(
     smn.reg(NBIF_SSID).set(subsystem_id);
 
     if die == 0 {
-        let misc = irq::read(bus, irq::MISC, irq::Mode::Pic);
-        irq::write(bus, irq::MISC, irq::Mode::Pic, (misc & 0xf) | 0xf0);
+        let misc = irq::read(fch.bus(), irq::MISC, irq::Mode::Pic);
+        irq::write(fch.bus(), irq::MISC, irq::Mode::Pic, (misc & 0xf) | 0xf0);
     }
 
     misc.modify(Misc::UNLOCK::CLEAR);

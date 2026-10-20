@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! What the vendor firmware tells the AST2500 BMC over IPMI KCS at the end
 //! of POST.
-use fstart_driver_amd::zeppelin::fch::{Acpimmio, Bus};
+use fstart_driver_amd::fch::pm;
+use tock_registers::interfaces::{Readable, Writeable};
 use fstart_driver_ipmi::{SelRecord, kcs::Kcs};
 use fstart_platform_amd::zeppelin::BoardCtx;
 use zerocopy::little_endian::{U16, U32};
@@ -43,8 +44,9 @@ pub fn post_done(ctx: &mut BoardCtx<'_>) {
         Ok(status) => {
             let policy = status.restore_policy();
             if let Some(&value) = RESTORE_POLICY.get(usize::from(policy)) {
-                ctx.fch()
-                    .update(Acpimmio::DIE0.pm::<u8, ()>(PM_RTC_SHADOW), 0x0f, value);
+                let fch = ctx.fch();
+                let shadow = fch.reg(pm::at::<u8, ()>(PM_RTC_SHADOW));
+                shadow.set((shadow.get() & !0x0f) | value);
                 fstart_log::info!("BMC power restore policy {}", policy);
             }
         }

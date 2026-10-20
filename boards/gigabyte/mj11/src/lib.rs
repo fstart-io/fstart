@@ -15,16 +15,15 @@ mod variant;
 
 use fstart_driver_amd::{
     fam17h::registers::{apply, write},
+    fch::{Bus, Fch, acpi as acpi_bank, gpio as gpio_bank, iomux},
     lpc::{IoPortDecode, Lpc},
     zeppelin::{
         self as soc,
         dxio::Descriptor,
-        fch::{
-            Acpimmio, Bus,
-            irq::{self, Route},
-        },
+        fch::irq::{self, Route},
     },
 };
+use tock_registers::interfaces::{Readable, Writeable};
 use fstart_driver_superio::aspeed_ast2400::{self as ast, Ast2400, SuperIoConfig};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_pci::ConfigRegionAccess;
@@ -78,10 +77,11 @@ const IRQ_ROUTES: &[Route] = &[
 /// The PM1 write of the vendor AmdCpmOemInitPeim and SMBusSwitch: write back
 /// the pending PM1 status plus bits 15:14 (all W1C) and clear
 /// PCIEXP_WAKE_DIS.
-fn clear_pm1(fch: &mut impl Bus) {
-    let acpi = Acpimmio::DIE0;
-    fch.update(acpi.acpi::<u16, ()>(0), 0, 0xc000);
-    fch.update(acpi.acpi::<u16, ()>(2), 1 << 14, 0);
+fn clear_pm1(fch: &Fch<impl Bus>) {
+    let status = fch.reg(acpi_bank::at::<u16, ()>(0));
+    status.set(status.get() | 0xc000);
+    let enable = fch.reg(acpi_bank::at::<u16, ()>(2));
+    enable.set(enable.get() & !(1 << 14));
 }
 
 /// GbtPreBootSvid: the AST2500 VGA on the last bus behind 00:01.1 gets the
@@ -116,9 +116,9 @@ impl fstart_platform_amd::zeppelin::Board for Board {
     }
 
     fn fch_reset_done(ctx: &mut BoardCtx<'_>) {
-        let mut fch = ctx.fch();
+        let fch = ctx.fch();
         for pad in i2c::PADS {
-            fch.set(Acpimmio::DIE0.iomux::<u8, ()>(pad.into()), 1);
+            fch.reg(iomux::at::<u8, ()>(pad.into())).set(1);
         }
         // SAFETY: nothing else uses I2C3.
         match unsafe { soc::i2c::controller(i2c::BUS, ctx.clock) } {
@@ -128,7 +128,7 @@ impl fstart_platform_amd::zeppelin::Board for Board {
             }
             Err(_) => fstart_log::error!("I2C3 setup failed, VRs not programmed"),
         }
-        clear_pm1(&mut fch);
+        clear_pm1(&fch);
     }
 
     /// The vendor's PCIe TX presets and USB2 PHY values after training.
@@ -154,20 +154,21 @@ impl fstart_platform_amd::zeppelin::Board for Board {
     /// OS. The vendor writes the IOMUX of pins 136-139 through SMN; it is
     /// the same register as the ACPI MMIO one.
     fn ready_to_boot(ctx: &mut BoardCtx<'_>) {
-        let mut fch = ctx.fch();
-        let iomux = Acpimmio::DIE0;
+        let fch = ctx.fch();
         // Bit 1 of the GPIO137 IOMUX byte set, bits 7:4 of pin 139 cleared.
-        fch.update(iomux.iomux::<u32, ()>(136), 0xf000_0200, 0x0000_0200);
+        let pins = fch.reg(iomux::at::<u32, ()>(136));
+        pins.set((pins.get() & !0xf000_0200) | 0x0000_0200);
         // GPIO137 driven low, keeping the drive strength and STS_EN bits.
-        fch.update(iomux.gpio::<u32, ()>(4 * 137), !0x0006_0800, 1 << 23);
-        clear_pm1(&mut fch);
+        let control = fch.reg(gpio_bank::at::<u32, ()>(4 * 137));
+        control.set((control.get() & 0x0006_0800) | 1 << 23);
+        clear_pm1(&fch);
         // Pins 113-117 back to function 0 (SMBus0): two unaligned dword
         // writes, as in the vendor code.
-        fch.set(iomux.iomux::<u32, ()>(113), 0);
-        fch.set(iomux.iomux::<u32, ()>(114), 0);
+        fch.reg(iomux::at::<u32, ()>(113)).set(0);
+        fch.reg(iomux::at::<u32, ()>(114)).set(0);
     }
 
-    fn early_init(lpc: &mut Lpc<impl ConfigRegionAccess>) {
+    fn early_init(lpc: &Lpc<impl Bus>) {
         lpc.enable_sio_2e();
         lpc.enable_io_decode(IoPortDecode::SERIAL0::SET);
         // AST2500 SIO runtime registers (0xa00-0xbff) and the IPMI KCS interface.

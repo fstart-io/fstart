@@ -96,7 +96,8 @@ pub unsafe fn console_checkpoint<B: BoardFacts>(
     mut delay_100us: impl FnMut(),
 ) -> Result<(), Error> {
     unsafe { fch::enable_acpimmio() };
-    let mut fch = unsafe { Fch::new() };
+    // SAFETY: exclusive FCH access; no config space before ECAM.
+    let fch = Fch::new(unsafe { fch::NativeBus::new() }, fch::Acpimmio::DIE0);
     fch.enable_legacy_decode();
     let mut gpio = unsafe { Mmio::new() };
     // Power all common early devices before waiting, then the selected UART.
@@ -211,8 +212,9 @@ impl espi::Clock for Tsc {
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
     use fstart_driver_amd::picasso::{legacy, preinit};
-    let mut fch = unsafe { preinit::Native::new(fstart_pci::ecam::GlobalEcam) };
-    preinit::prepare_lpc(&mut fch).map_err(|_| "LPC setup")?;
+    // SAFETY: exclusive FCH access, ECAM published by `cold_boot`.
+    let fch = Fch::new(unsafe { fch::NativeBus::new() }, fch::Acpimmio::DIE0);
+    preinit::prepare_lpc(&fch).map_err(|_| "LPC setup")?;
     let mut gpio = unsafe { Mmio::new() };
     if let Some((config, pads)) = &B::ESPI {
         gpio::configure(&mut gpio, &fstart_driver_amd::picasso::GPIO_BANK, pads, &[])
@@ -221,8 +223,8 @@ unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
         espi::initialize(&mut controller, timer, config).map_err(|_| "eSPI link")?;
         fstart_log::info!("picasso: eSPI link up");
     }
-    preinit::configure_spi(&mut fch, B::SPI).map_err(|_| "SPI setup")?;
-    preinit::initialize_smbus(&mut fch).map_err(|_| "SMBus setup")?;
+    preinit::configure_spi(&fch, B::SPI).map_err(|_| "SPI setup")?;
+    preinit::initialize_smbus(&fch).map_err(|_| "SMBus setup")?;
     for table in B::EARLY_GPIOS {
         gpio::configure(
             &mut gpio,
@@ -233,7 +235,7 @@ unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
         .map_err(|_| "board GPIOs")?;
     }
     if B::DISABLE_ROM_SHARING {
-        legacy::disable_rom_sharing(&mut unsafe { legacy::NativeRegisters::new() });
+        legacy::disable_rom_sharing(fch.bus());
     }
     B::mainboard_init(&mut gpio, timer);
     Ok(())

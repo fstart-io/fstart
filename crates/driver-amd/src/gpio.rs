@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Banked FCH GPIO. Configuration preserves reserved/drive-strength bits and
 //! clears W1C interrupt/wake status deliberately, not via an accidental RMW.
-use crate::ACPI_MMIO;
+use crate::fch::ACPI_MMIO;
 #[cfg(feature = "picasso")]
 use crate::picasso::pinmux::gpio_function;
 use tock_registers::{
@@ -248,7 +248,9 @@ impl Mmio {
     /// ACPIMMIO must be decoded and UC-mapped. Caller serializes all accesses
     /// to the GPIO/IOMUX/SMI banks (including SMM and other processors).
     pub unsafe fn new() -> Self {
-        Self { base: ACPI_MMIO }
+        Self {
+            base: ACPI_MMIO as usize,
+        }
     }
     fn reg32<R: tock_registers::RegisterLongName>(&self, offset: usize) -> &ReadWrite<u32, R> {
         // SAFETY: constructor contract and all offsets below are aligned registers.

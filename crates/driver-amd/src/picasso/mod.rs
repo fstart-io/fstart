@@ -30,7 +30,7 @@ pub mod topology;
 pub mod usb;
 #[cfg(test)]
 mod usb_tests;
-pub use crate::ACPI_MMIO;
+pub use crate::fch::ACPI_MMIO;
 pub const ECAM: u64 = 0xf800_0000;
 pub const ECAM_BUSES: u8 = 64;
 pub const UART_BASES: [usize; 4] = [0xfedc9000, 0xfedca000, 0xfedce000, 0xfedcf000];

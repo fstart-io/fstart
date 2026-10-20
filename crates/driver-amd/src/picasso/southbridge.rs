@@ -1,25 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Picasso FCH A-Link and clock sequencing. The index-zero writes are hardware requirements.
 use super::registers::{Smn, apply, rmw};
+use crate::fch::{AbRegBar, Bus, Fch, MISC_CLK_CNTL1, MiscClkCntl1, PM_AB_REG_BAR, alink};
+use tock_registers::interfaces::{ReadWriteable, Writeable};
 
-pub trait AlinkIo {
-    fn decode(&mut self, base: u32);
-    fn clock_control(&mut self) -> u32;
-    fn set_clock_control(&mut self, value: u32);
-    fn index(&mut self, value: u32);
-    fn read_data(&mut self) -> u32;
-    fn write_data(&mut self, value: u32);
-}
-fn abcfg(io: &mut impl AlinkIo, register: u32, clear: u32, set: u32) {
-    let index = (6 << 29) | register; // ABCFG register space, not AXCFG.
-    io.index(index);
-    let value = io.read_data();
-    io.index(0);
-    io.index(index);
-    io.write_data((value & !clear) | set);
-    io.index(0);
-}
-const ABCFG: &[(u32, u32, u32)] = &[
+const ABCFG: &[alink::Rmw] = &[
     (0x00080, 0x00060000, 0x00060001),
     (0x00090, 0x00200000, 0x00200000),
     (0x00094, 0x00100000, 0x00100fee),
@@ -49,14 +34,14 @@ const ABCFG: &[(u32, u32, u32)] = &[
     (0x0022c, 0x00004000, 0x00000000),
     (0x00228, 0x0000000a, 0x0000000a),
 ];
-pub fn alink_init(io: &mut impl AlinkIo) {
-    io.decode(0xcd8);
-    let clock = io.clock_control();
-    io.set_clock_control(clock & !(1 << 1));
-    for &(register, clear, set) in ABCFG {
-        abcfg(io, register, clear, set);
-    }
-    io.decode(0);
+/// The A-Link decode at 0xcd8 just for the ABCFG table.
+pub fn alink_init(fch: &Fch<impl Bus>) {
+    fch.reg(PM_AB_REG_BAR)
+        .write(AbRegBar::PORT.val(alink::INDEX.into()));
+    fch.reg(MISC_CLK_CNTL1)
+        .modify(MiscClkCntl1::ALINK_GATE::CLEAR);
+    alink::apply(fch.bus(), ABCFG);
+    fch.reg(PM_AB_REG_BAR).write(AbRegBar::PORT.val(0));
 }
 /// The FCH clock generator through the SMN alias of the MISC bank: vendor
 /// values.
@@ -84,110 +69,51 @@ pub fn clock_init(smn: &Smn<impl fstart_pci::ConfigRegionAccess>) {
     );
 }
 
-#[cfg(target_arch = "x86_64")]
-pub struct NativeAlink {
-    _exclusive: core::marker::PhantomData<*mut ()>,
-}
-#[cfg(target_arch = "x86_64")]
-impl NativeAlink {
-    /// # Safety
-    /// Ring0, interrupts disabled, ACPIMMIO decoded UC, exclusive CD8/CDC and
-    /// PM/MISC access. Not usable alongside another indirect-port owner.
-    pub unsafe fn new() -> Self {
-        Self {
-            _exclusive: core::marker::PhantomData,
-        }
-    }
-    fn read_port() -> u32 {
-        // SAFETY: the constructor owns the CD8/CDC index/data pair.
-        unsafe { fstart_core::pio::inl(0xcdc) }
-    }
-    fn write_port(port: u16, value: u32) {
-        // SAFETY: as for read_port.
-        unsafe { fstart_core::pio::outl(port, value) }
-    }
-    fn mmio(address: usize) -> &'static tock_registers::registers::ReadWrite<u32> {
-        // SAFETY: only the two aligned fixed addresses below are passed;
-        // constructor requires their UC decode and exclusive access.
-        unsafe { &*(address as *const tock_registers::registers::ReadWrite<u32>) }
-    }
-}
-#[cfg(target_arch = "x86_64")]
-impl AlinkIo for NativeAlink {
-    fn decode(&mut self, base: u32) {
-        use tock_registers::interfaces::Writeable;
-        Self::mmio(0xfed803e0).set(base);
-    }
-    fn clock_control(&mut self) -> u32 {
-        use tock_registers::interfaces::Readable;
-        Self::mmio(0xfed80e40).get()
-    }
-    fn set_clock_control(&mut self, value: u32) {
-        use tock_registers::interfaces::Writeable;
-        Self::mmio(0xfed80e40).set(value);
-    }
-    fn index(&mut self, value: u32) {
-        Self::write_port(0xcd8, value);
-    }
-    fn read_data(&mut self) -> u32 {
-        Self::read_port()
-    }
-    fn write_data(&mut self, value: u32) {
-        Self::write_port(0xcdc, value);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     extern crate std;
     use super::*;
-    use std::vec::Vec;
-    #[derive(Default)]
-    struct Io {
-        events: Vec<(u8, u32)>,
-    }
-    impl AlinkIo for Io {
-        fn decode(&mut self, value: u32) {
-            self.events.push((0, value));
-        }
-        fn clock_control(&mut self) -> u32 {
-            u32::MAX
-        }
-        fn set_clock_control(&mut self, value: u32) {
-            self.events.push((1, value));
-        }
-        fn index(&mut self, value: u32) {
-            self.events.push((2, value));
-        }
-        fn read_data(&mut self) -> u32 {
-            self.events.push((3, 0));
-            0x12345678
-        }
-        fn write_data(&mut self, value: u32) {
-            self.events.push((4, value));
-        }
-    }
+    use crate::fch::{
+        ACPI_MMIO, Acpimmio, Space,
+        testing::{Access, World},
+    };
     #[test]
     fn abcfg_transactions_reset_index_after_read_and_write_and_remove_decode() {
-        let mut io = Io::default();
-        alink_init(&mut io);
-        assert_eq!(io.events[0..2], [(0, 0xcd8), (1, u32::MAX & !2)]);
-        for (events, &(register, clear, set)) in
-            io.events[2..io.events.len() - 1].chunks_exact(6).zip(ABCFG)
+        let world = World::default();
+        world.set(Space::Mmio, ACPI_MMIO + 0xe40, 4, u32::MAX);
+        alink_init(&Fch::new(&world, Acpimmio::DIE0));
+        let log = world.0.borrow().log.clone();
+        assert_eq!(
+            log[..3],
+            [
+                Access::Write(Space::Mmio, ACPI_MMIO + 0x3e0, 4, 0xcd8),
+                Access::Read(Space::Mmio, ACPI_MMIO + 0xe40),
+                Access::Write(Space::Mmio, ACPI_MMIO + 0xe40, 4, !2)
+            ]
+        );
+        let mut registers = std::collections::BTreeMap::new();
+        let transactions = log[3..log.len() - 1].as_chunks::<6>().0;
+        for (events, &(register, clear, set)) in transactions.iter().zip(ABCFG)
         {
-            let index = 0xc0000000 | register;
+            let index = 0xc000_0000 | register;
+            let old: u32 = registers.get(&register).copied().unwrap_or(0);
+            let value = (old & !clear) | set;
+            registers.insert(register, value);
             assert_eq!(
-                events,
+                *events,
                 [
-                    (2, index),
-                    (3, 0),
-                    (2, 0),
-                    (2, index),
-                    (4, (0x12345678 & !clear) | set),
-                    (2, 0)
+                    Access::Write(Space::Io, 0xcd8, 4, index),
+                    Access::Read(Space::Io, 0xcdc),
+                    Access::Write(Space::Io, 0xcd8, 4, 0),
+                    Access::Write(Space::Io, 0xcd8, 4, index),
+                    Access::Write(Space::Io, 0xcdc, 4, value),
+                    Access::Write(Space::Io, 0xcd8, 4, 0)
                 ]
             );
         }
-        assert_eq!(io.events.last(), Some(&(0, 0)));
+        assert_eq!(
+            log.last(),
+            Some(&Access::Write(Space::Mmio, ACPI_MMIO + 0x3e0, 4, 0))
+        );
     }
 }

@@ -75,5 +75,3 @@ pub mod acpi_io {
     pub const CSTATE_CONTROL: u16 = BASE + 0x10;
     pub const GPE0: u16 = BASE + 0x20;
 }
-pub const SMBUS_IO: u16 = 0xb00;
-pub const SPI_BASE: u32 = 0xfec1_0000;

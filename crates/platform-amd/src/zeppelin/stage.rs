@@ -12,7 +12,7 @@ use fstart_driver_amd::{
         msr::{self, Msr, NativeMsr},
         tsc,
     },
-    fch::{self as common_fch, early},
+    fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
     zeppelin::{
         self as soc, MAX_DIES, Package, Revision, ccx, dxio, fabric, fch, iommu, nbio, psp, smu,
@@ -119,20 +119,20 @@ fn run<B: Board>() -> ! {
     // Before the console: ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O.
     // SAFETY: exclusive FCH programming before the console.
     unsafe { common_fch::enable_acpimmio() };
-    let mut early_fch = unsafe { early::Native::new(pci) };
-    let early_ok = fch::pre_init(&mut early_fch, true).is_ok();
+    // SAFETY: exclusive FCH programming; ECAM is up.
+    let die0_fch = Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0);
+    let early_ok = fch::pre_init(&die0_fch, true).is_ok();
     {
         // SAFETY: exclusive LPC decode programming before the console.
-        let mut lpc = unsafe { Lpc::new(pci) };
-        lpc.enable_port80();
-        B::early_init(&mut lpc);
+        let lpc = unsafe { Lpc::new(die0_fch.bus()) };
+        B::early_init(&lpc);
     }
     post(0x31);
     console::<B>();
     if !early_ok {
         fail("FCH pre-init");
     }
-    early::set_power_failure_state(&mut early_fch, B::POWER_FAILURE);
+    early::set_power_failure_state(&die0_fch, B::POWER_FAILURE);
 
     let mhz = unsafe { tsc::frequency_mhz() }.unwrap_or(0);
     let (ext_eax, ext_ebx, _, _) = fstart_arch::x86::cpuid(0x8000_0001);
@@ -238,11 +238,17 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
 
     // FchTaishanPei, then the board PEIMs that wait for its SMBus PPI.
     // SAFETY: BSP-only FCH programming.
-    let mut bus = unsafe { fch::NativeBus::new() };
-    fch::reset_init(&mut bus, s.revision);
+    let die0_fch = Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0);
+    fch::reset_init(&die0_fch, s.revision);
     fch::sata::reset(&dies[0].smn(), &mut delay);
     let nonpci = s.nonpci;
-    fch::multi::reset(&mut bus, dies, s.package, |die| nonpci[usize::from(die)], &mut delay);
+    fch::multi::reset(
+        die0_fch.bus(),
+        dies,
+        s.package,
+        |die| nonpci[usize::from(die)],
+        &mut delay,
+    );
     B::fch_reset_done(&mut BoardCtx {
         dies,
         clock,
@@ -354,24 +360,16 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
         nbio::pre_enumeration_init(die);
     }
     // SAFETY: BSP-only FCH programming.
-    let mut bus = unsafe { fch::NativeBus::new() };
-    let mut pm = unsafe { common_fch::Fch::new() };
-    pm.acpi_decode(fch::ACPI_PORTS);
-    fch::env_init(&mut bus, &dies[0].smn(), B::SUBSYSTEM_ID);
+    let die0_fch = Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0);
+    die0_fch.acpi_decode(fch::ACPI_PORTS);
+    fch::env_init(&die0_fch, &dies[0].smn(), B::SUBSYSTEM_ID);
     if B::FCH_DEVICES[0].sata {
-        fch::sata::init(
-            &mut bus,
-            0,
-            &dies[0].smn(),
-            fch::Acpimmio::DIE0,
-            B::SUBSYSTEM_ID,
-            &mut delay,
-        );
+        fch::sata::init(&die0_fch, 0, &dies[0].smn(), B::SUBSYSTEM_ID, &mut delay);
     }
     fch::multi::xgbe_init(&dies[0].smn());
     let nonpci = s.nonpci;
     fch::multi::env(
-        &mut bus,
+        die0_fch.bus(),
         dies,
         &B::FCH_DEVICES,
         |die| nonpci[usize::from(die)],
@@ -475,7 +473,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     post(0x42);
 
     // PCI: the interrupt router first, then the bus.
-    if fch::irq::write_routing(&mut bus, B::IRQ_ROUTES).is_err() {
+    if fch::irq::write_routing(die0_fch.bus(), B::IRQ_ROUTES).is_err() {
         fail("PCI interrupt routing");
     }
     let root = pci::Root::new(&dies[0], soc::ECAM_BUSES as u8 - 1, s.nonpci[0]);
@@ -500,7 +498,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
             );
         }
     }
-    pm.acpi_ports(fch::ACPI_PORTS);
+    die0_fch.acpi_ports(fch::ACPI_PORTS);
     B::mainboard_final(&mut BoardCtx {
         dies,
         clock,
@@ -508,9 +506,10 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
 
     // IOAPICs: the FCH's (GSI 0-23, ID 0) in virtual-wire mode, then one
     // per die's NBIO (ID 1 + die), all masked.
-    pm.enable_hpet_ioapic();
+    die0_fch.enable_hpet_ioapic();
     // SAFETY: decoded IOAPIC MMIO, BSP only.
-    let fch_ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(FCH_IOAPIC as usize) };
+    let fch_ioapic =
+        unsafe { fstart_arch::x86::ioapic::IoApic::new(common_fch::IOAPIC as usize) };
     fch_ioapic.set_id(0);
     fch_ioapic.mask_all();
     fch_ioapic.route_i8259(apic_ids.first().copied().unwrap_or(0) as u8);
@@ -531,7 +530,7 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
         fch::sata::late(&dies[0].smn(), 0, pci_access(), sata);
     }
     fch::multi::late(dies, |_| None);
-    fch::late_init(&mut bus);
+    fch::late_init(&die0_fch);
     B::ready_to_boot(&mut BoardCtx {
         dies,
         clock,
@@ -578,8 +577,6 @@ fn late_silicon<B: Board>(s: &mut Silicon) -> ! {
     fstart_stage::payload::BuildSelectedPayload::boot(handoff)
 }
 
-const FCH_IOAPIC: u32 = 0xfec0_0000;
-const HPET: usize = 0xfed0_0000;
 
 fn pci_access() -> GlobalEcam {
     GlobalEcam
@@ -642,7 +639,7 @@ fn acpi_tables<B: Board>(
         .collect();
     let board = B::acpi();
     // SAFETY: HPET general capabilities, decoded by the FCH.
-    let hpet_id = unsafe { fstart_core::mmio::read32(HPET as *const u32) };
+    let hpet_id = unsafe { fstart_core::mmio::read32(common_fch::HPET as usize as *const u32) };
     let tables = acpi::build(&acpi::Inputs {
         apic_ids,
         dies: &dies,
