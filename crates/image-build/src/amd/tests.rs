@@ -228,3 +228,46 @@ fn fletcher_reference_vectors() {
     assert_eq!(fletcher32(&[1, 0, 2, 0, 3, 0, 4, 0]), 0x0014000a);
     assert_eq!(fletcher32(&vec![0xff; 1024]), 0xffffffff);
 }
+#[test]
+fn packs_the_pinned_image() {
+    let blob = |kind, subprogram, instance, size: usize| Blob {
+        key: Key::new(kind, subprogram, instance),
+        bytes: (0..size).map(|i| (i as u8) ^ kind).collect(),
+    };
+    let mut i = image();
+    i.psp = vec![
+        blob(0, 0, 0, 0x240),
+        blob(1, 0, 0, 0x1234),
+        blob(4, 0, 0, 0x800),
+        blob(8, 1, 0, 0x300),
+        blob(0x30, 0, 0, 0x999),
+        blob(0x52, 0, 0, 0x101),
+    ];
+    i.bios = vec![
+        blob(5, 0, 0, 0x340),
+        blob(0x60, 0, 0, 0x1d00),
+        blob(0x60, 0, 1, 0x1100),
+        blob(0x64, 0, 1, 0x3c10),
+        blob(0x65, 0, 1, 0x330),
+        blob(0x66, 0, 0, 0xc80),
+        blob(0x6a, 0, 0, 0x20),
+    ];
+    i.apob_nv = Some(FlashRegion {
+        offset: 0x20_0000,
+        size: 0x1_0000,
+    });
+    let packed = i.pack().unwrap();
+    assert_eq!(
+        (packed.offset, packed.psp_directory, packed.bios_directory),
+        (0xe2_0000, 0xe3_0000, 0xe3_5000)
+    );
+    assert_eq!(packed.bytes.len(), 0x4_0000);
+    let hex: String = fstart_crypto::digest::hash_sha256(&packed.bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        hex,
+        "7bbb2d0868c36b3e1cc016dec3802261125d20f1965b7d7cfc4afe07f946979f"
+    );
+}

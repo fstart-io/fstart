@@ -131,14 +131,17 @@ pub fn compose(
         return Err("vendor image size doesn't match the flash size".into());
     }
     let facts = read_bios_directory(vendor, layout.prefix_size)?;
-    if (facts.reset_offset, facts.reset_size, facts.reset_destination, facts.apob_destination)
-        != (
-            layout.reset_offset,
-            layout.reset_size,
-            layout.reset_destination,
-            layout.apob_destination,
-        )
-    {
+    if (
+        facts.reset_offset,
+        facts.reset_size,
+        facts.reset_destination,
+        facts.apob_destination,
+    ) != (
+        layout.reset_offset,
+        layout.reset_size,
+        layout.reset_destination,
+        layout.apob_destination,
+    ) {
         return Err("vendor BIOS directory doesn't match the planned layout".into());
     }
     if ffs.len() > layout.ffs_size as usize {
@@ -176,7 +179,8 @@ pub fn compose(
         )
     };
     let site = find_unique(&stage, placeholder, 1).ok_or("no unique anchor site in the stage")?;
-    stage[site..site + anchor_size].copy_from_slice(&ffs[anchor_offset..anchor_offset + anchor_size]);
+    stage[site..site + anchor_size]
+        .copy_from_slice(&ffs[anchor_offset..anchor_offset + anchor_size]);
 
     // Verification policy: the stage's trust placeholder gets the FFS's.
     let mut trust_placeholder = [0; TRUST_SIZE];
@@ -186,7 +190,8 @@ pub fn compose(
         .filter(|&o| ffs[o..o + TRUST_SIZE] != trust_placeholder)
         .find_map(|o| TrustBlock::parse(&ffs[o..o + TRUST_SIZE]).filter(|b| b.key_count > 0))
         .ok_or("no finalized trust block in the FFS")?;
-    let site = find_unique(&stage, &trust_placeholder, 8).ok_or("no unique trust site in the stage")?;
+    let site =
+        find_unique(&stage, &trust_placeholder, 8).ok_or("no unique trust site in the stage")?;
     trust.write_to(&mut stage[site..site + TRUST_SIZE]);
 
     let reset_offset = layout.reset_offset as usize;
@@ -239,5 +244,110 @@ mod tests {
         );
         // The APCB backup at 0xf8000 would be cut off by a smaller prefix.
         assert!(read_bios_directory(&vendor(), 0xf8000).is_err());
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// An MJ11-like vendor image: the EFS, a level-1 BIOS directory that
+    /// points to a level 2 and contents up to the prefix end.
+    fn two_level_vendor() -> Vec<u8> {
+        let mut image = vec![0xffu8; 0x100_0000];
+        image[..0x29_4000]
+            .iter_mut()
+            .enumerate()
+            .for_each(|(i, b)| *b = ((i * 31) >> 8) as u8);
+        let mut put = |offset: usize, bytes: &[u8]| {
+            image[offset..offset + bytes.len()].copy_from_slice(bytes)
+        };
+        let efs: Vec<u8> = [0x55aa_55aa, 0, 0, 0, 0, 0xff05_7000, 0xff0f_7000]
+            .into_iter()
+            .chain([u32::MAX; 5])
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        put(0x2_0000, &efs);
+        let mut directory =
+            |offset: usize, cookie: &[u8; 4], entries: &[(u8, u8, u32, u64, u64)]| {
+                let count = (entries.len() as u32).to_le_bytes();
+                let mut table = [*cookie, [0; 4], count, [0; 4]].concat();
+                for &(kind, flags, size, source, destination) in entries {
+                    table.extend([kind, 0, flags, 0]);
+                    table.extend(size.to_le_bytes());
+                    table.extend(source.to_le_bytes());
+                    table.extend(destination.to_le_bytes());
+                }
+                let checksum = crate::amd::fletcher32(&table[8..]);
+                table[4..8].copy_from_slice(&checksum.to_le_bytes());
+                put(offset, &table);
+            };
+        directory(
+            0xf_7000,
+            b"$BHD",
+            &[
+                (0x60, 0, 0x4000, 0xff0f_8000, u64::MAX),
+                (0x61, 0, 0, 0, 0x3000_0000),
+                (0x62, 3, 0x25_0000, 0xffdb_0000, 0x76db_0000),
+                (0x70, 0, 0x400, 0xff22_9000, u64::MAX),
+            ],
+        );
+        directory(
+            0x22_9000,
+            b"$BL2",
+            &[
+                (0x60, 0, 0x1d00, 0xff22_a000, u64::MAX),
+                (0x61, 0, 0, 0, 0x3000_0000),
+                (0x62, 3, 0x25_0000, 0xffdb_0000, 0x76db_0000),
+                (0x63, 0, 0x2_0000, 0xff22_e000, u64::MAX),
+                (0x66, 0, 0xc80, 0xff25_f800, u64::MAX),
+            ],
+        );
+        image
+    }
+
+    /// An FFS with its locator and a finalized trust block, and a stage with
+    /// the placeholders of both.
+    fn ffs_and_stage(reset_size: usize) -> (Vec<u8>, Vec<u8>) {
+        use fstart_core::ffs::{AnchorBlock, trust::TrustBlock};
+        let pattern = |len: usize, seed: usize| -> Vec<u8> {
+            (0..len).map(|i| ((i * seed) >> 4) as u8).collect()
+        };
+        let mut ffs = pattern(0x2000, 7);
+        let mut locator = AnchorBlock::placeholder();
+        locator.manifest_offset.set(0x100);
+        locator.manifest_size.set(0x20);
+        locator.write_to(&mut ffs[0x40..]);
+        let mut trust = TrustBlock::placeholder();
+        trust.set_key_count(1);
+        trust.write_to(&mut ffs[0x400..]);
+        let mut stage = pattern(reset_size, 13);
+        AnchorBlock::placeholder().write_to(&mut stage[0x1000..]);
+        TrustBlock::placeholder().write_to(&mut stage[0x2000..]);
+        (ffs, stage)
+    }
+
+    #[test]
+    fn composes_the_pinned_image() {
+        let layout = VendorFlashLayout {
+            flash_size: 0x100_0000,
+            prefix_size: 0x29_4000,
+            ffs_offset: 0x29_4000,
+            ffs_size: 0xdb_0000 - 0x29_4000,
+            reset_offset: 0xdb_0000,
+            reset_size: 0x25_0000,
+            reset_destination: 0x76db_0000,
+            apob_destination: 0x3000_0000,
+        };
+        let (ffs, stage) = ffs_and_stage(0x25_0000);
+        let vendor = two_level_vendor();
+        let image = compose(&vendor, &layout, &ffs, &stage).unwrap();
+        assert_eq!(image[..0x29_4000], vendor[..0x29_4000]);
+        assert_eq!(image[0x29_4000..0x29_6000], ffs);
+        // The stage got the FFS's locator.
+        assert_eq!(image[0xdb_1000..0xdb_1028], ffs[0x40..0x68]);
+        assert_eq!(
+            hex(&fstart_crypto::digest::hash_sha256(&image)),
+            "021a94e0a1b68bfabee168c750b1e6c1dd48c5b607f8c77729a286d37a475488"
+        );
     }
 }

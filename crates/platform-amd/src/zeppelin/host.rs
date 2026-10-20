@@ -9,11 +9,11 @@
 extern crate std;
 use super::layout::{LAYOUT as L, RESET_FLASH_OFFSET, VENDOR_PREFIX};
 use crate::noncar::{Board, host as noncar};
-use fstart_driver_amd::soc::zeppelin::Zeppelin;
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, Platform, SocImageFormat, StageBuildConfig, StageLayout, hstr,
 };
+use fstart_driver_amd::soc::zeppelin::Zeppelin;
 use fstart_image_build::{
     amd::vendor_flash::{VendorFlashAssembly, VendorFlashLayout, read_bios_directory},
     build_plan::{
@@ -126,14 +126,17 @@ fn vendor_layout(path: &str) -> Result<(FileBinding, VendorFlashLayout), String>
         apob_destination: fstart_driver_amd::soc::zeppelin::APOB_BASE,
     };
     layout.validate()?;
-    if (facts.reset_offset, facts.reset_size, facts.reset_destination, facts.apob_destination)
-        != (
-            layout.reset_offset,
-            layout.reset_size,
-            layout.reset_destination,
-            layout.apob_destination,
-        )
-    {
+    if (
+        facts.reset_offset,
+        facts.reset_size,
+        facts.reset_destination,
+        facts.apob_destination,
+    ) != (
+        layout.reset_offset,
+        layout.reset_size,
+        layout.reset_destination,
+        layout.apob_destination,
+    ) {
         return Err(format!(
             "vendor BIOS directory {facts:?} doesn't match the Zeppelin layout {layout:?}"
         ));
@@ -165,9 +168,9 @@ pub fn resolve<B: Board<Soc = Zeppelin>>(selection: BuildSelection) -> Result<Bu
                 Some("payload-linux"),
                 Some(
                     fstart_core::x86_linux_payload(
-                        selection
-                            .x86_linux_kernel_load_addr
-                            .unwrap_or(fstart_core::payload_manifest::X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
+                        selection.x86_linux_kernel_load_addr.unwrap_or(
+                            fstart_core::payload_manifest::X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR,
+                        ),
                         fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                         selection.x86_linux_bootargs.as_deref().unwrap_or(""),
                         selection.x86_linux_print_mtrrs,
@@ -185,7 +188,11 @@ pub fn resolve<B: Board<Soc = Zeppelin>>(selection: BuildSelection) -> Result<Bu
                 Some("payload-uefi-basic"),
                 Some(fstart_core::x86_uefi_payload()),
             ),
-            other => return Err(format!("Zeppelin supports halt, linux and uefi, not {other}")),
+            other => {
+                return Err(format!(
+                    "Zeppelin supports halt, linux and uefi, not {other}"
+                ));
+            }
         };
 
     let descriptor = noncar::descriptor(&L)?;
@@ -267,47 +274,95 @@ pub fn resolve<B: Board<Soc = Zeppelin>>(selection: BuildSelection) -> Result<Bu
         stages: vec![UNIT.into()],
         inputs,
         assembly,
-        units: vec![smm_unit(), CompilationUnit {
-            name: UNIT.into(),
-            cargo_target: CargoTarget::BoardBinary,
-            target: "x86_64-unknown-none".into(),
-            entry: ENTRY.into(),
-            environment: "monolithic".into(),
-            payload: payload.into(),
-            cfg_schema: cfg_schema(),
-            features: core::iter::once("bundle-zeppelin")
-                .chain(feature)
-                .map(String::from)
-                .collect(),
-            build_std: None,
-            rustflags: vec![
-                "-Zub-checks=no".into(),
-                "-Crelocation-model=static".into(),
-                "-Cno-redzone=yes".into(),
-                "--cfg".into(),
-                "curve25519_dalek_backend=\"serial\"".into(),
-            ],
-            release_only: false,
-            linker_script: Some(noncar::linker_script("Zeppelin", &L, &descriptor)),
-            environment_values: BTreeMap::from([(
-                "FSTART_MP_MAX_CPUS".into(),
-                MAX_CPUS.to_string(),
-            )]),
-            bindings: vec![ArtifactBinding {
-                producer: SMM_UNIT.into(),
-                artifact: "image".into(),
-                environment: "FSTART_SMM_IMAGE".into(),
-            }],
-            file_bindings: vec![],
-            output: UnitOutput::Executable {
-                expectations,
-                load_address: image.base,
-                flat_capacity: image.size,
+        units: vec![
+            smm_unit(),
+            CompilationUnit {
+                name: UNIT.into(),
+                cargo_target: CargoTarget::BoardBinary,
+                target: "x86_64-unknown-none".into(),
+                entry: ENTRY.into(),
+                environment: "monolithic".into(),
+                payload: payload.into(),
+                cfg_schema: cfg_schema(),
+                features: core::iter::once("bundle-zeppelin")
+                    .chain(feature)
+                    .map(String::from)
+                    .collect(),
+                build_std: None,
+                rustflags: vec![
+                    "-Zub-checks=no".into(),
+                    "-Crelocation-model=static".into(),
+                    "-Cno-redzone=yes".into(),
+                    "--cfg".into(),
+                    "curve25519_dalek_backend=\"serial\"".into(),
+                ],
+                release_only: false,
+                linker_script: Some(noncar::linker_script("Zeppelin", &L, &descriptor)),
+                environment_values: BTreeMap::from([(
+                    "FSTART_MP_MAX_CPUS".into(),
+                    MAX_CPUS.to_string(),
+                )]),
+                bindings: vec![ArtifactBinding {
+                    producer: SMM_UNIT.into(),
+                    artifact: "image".into(),
+                    environment: "FSTART_SMM_IMAGE".into(),
+                }],
+                file_bindings: vec![],
+                output: UnitOutput::Executable {
+                    expectations,
+                    load_address: image.base,
+                    flat_capacity: image.size,
+                },
             },
-        }],
+        ],
     };
     plan.order()?;
     plan.validate_compiler_selections(&selection)?;
     plan.validate_image_selection(&selection)?;
     Ok(plan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zeppelin::{Config, DxioConfig, FchConfig};
+    use sha2::{Digest, Sha256};
+    struct Board;
+    impl crate::noncar::Board for Board {
+        type Soc = Zeppelin;
+        const CONFIG: &'static Config = &Config {
+            subsystem_id: 0,
+            fch: FchConfig::DEFAULT,
+            dxio: DxioConfig {
+                descriptors: [&[]; fstart_driver_amd::soc::zeppelin::MAX_DIES],
+            },
+        };
+        fn console() -> fstart_driver_uart::ns16550::Ns16550Config {
+            crate::picasso::console(0)
+        }
+    }
+
+    /// The compilation units, hence the stage binaries, stay as they are.
+    #[test]
+    fn units_are_pinned() {
+        let units = |payload: &str| {
+            let plan = resolve::<Board>(BuildSelection {
+                payload: Some(payload.into()),
+                ..Default::default()
+            })
+            .unwrap();
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&plan.units).unwrap())
+            )
+        };
+        assert_eq!(
+            ["halt", "linux", "uefi"].map(units),
+            [
+                "58ec8cbda4f8ffae319be0218a4828bf1985b7866ba7c71b16f97388f116a0b2",
+                "7b95efa1400a6bae9aaf5d2009a73119a012e5d368a19d2082a0348f2d25ea1d",
+                "fce4a81e8fedd6c40500f5f1dbcf7a663358c078c406b43d1420d5c4067f505c",
+            ]
+        );
+    }
 }

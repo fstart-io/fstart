@@ -194,6 +194,15 @@ mod tests {
         let selected = BuildSelection::default();
         let plan = resolve::<Board>(selected.clone()).unwrap();
         plan.validate_compiler_selections(&selected).unwrap();
+        // The compilation unit, hence the reset image, stays as it is.
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&plan.units).unwrap())
+            ),
+            "05a2647092cb10a57532a932199562d2e1d6054669e6cc0ab41841cd03aad19e"
+        );
         assert!(plan.assembly.ffs().is_err());
         assert_eq!(plan.selection("reset").unwrap().len(), 1);
         let unit = &plan.units[0];
