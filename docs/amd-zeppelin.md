@@ -13,8 +13,11 @@ CrabEFI with an OS behind it, on an MJ11-EC1 (EPYC 3151, SP4r2, one die).
 - `crates/driver-amd/src/zeppelin`: the SoC (topology, DF, NBIO, DXIO, CCX,
   SMU, FCH incl. SATA/USB/multi-die). Gated by the `zeppelin` feature.
 - `crates/platform-amd/src/zeppelin`: the boot flow (`stage.rs`), DRAM
-  layout, CPU driver for the MP engine, PCI root, e820, ACPI tables, payload
-  handoff and the host build plan.
+  layout, CPU driver for the MP engine, SMM and PSP SMM info (`smm.rs`), PCI
+  root, e820, ACPI tables, payload handoff and the host build plan.
+- SMM: `fstart_arch::x86::cpu::amd::smm` (TSEG/SMBASE MSRs), the FCH SMI
+  control and handler in `crates/driver-amd/src/fch/smi.rs`, the Zeppelin
+  sleep entry in `zeppelin/fch/smm.rs`.
 - `boards/gigabyte/mj11`: DXIO lanes (EC1 x8/x8, EC0 x16), interrupt routes,
   AST2500 SUART1 console, IPMI KCS and SPMI, and the vendor tables of each
   variant: VR register images, PCIe re-drivers (EC1) and post-training SMN
@@ -53,9 +56,11 @@ clears BSS and enters long mode. Layout (`zeppelin/layout.rs`):
 | Heap | `76200000..76a00000` |
 | BSP stack | `76d00000..76db0000` |
 | Reset image | `76db0000..77000000` |
+| TSEG | 8 MiB, size aligned, at the top of the DRAM below 4 GiB |
 
-`76000000..77000000`, the APOB and the AP bootstrap page stay reserved in
-e820: parked APs and the ACPI tables live there.
+`76000000..77000000`, the APOB, the AP bootstrap page and TSEG with
+everything above it stay reserved in e820: parked APs and the ACPI tables live
+there.
 
 ## Boot flow
 
@@ -68,11 +73,22 @@ e820: parked APs and the ACPI tables live there.
 3. MP: the SMU releases the APs (ThreadEn) into the trampoline. They load
    microcode and run the CCX init. SYSCFG.MtrrFixDramModEn is set during the
    MTRR replay and cleared afterwards.
-4. PCI enumeration, IOAPICs, ACPI (MADT, FADT, HPET, MCFG, IVRS, SPMI,
-   DSDT with root bridges, `_PRT`s, SIO COM1, IPMI KCS), ACPI mode without
-   SMM. The internal bridges' own INTA goes to their NBIO IOAPIC pin, as in
-   the vendor DSDT.
-5. Vendor ReadyToBoot steps, then the payload.
+4. SMM: the board's handler goes into TSEG,
+   every CPU gets its SMBASE and locks SMM, then the FCH routes the SMI
+   command port (0xb2), SLP_TYP, the power button and the board's GEVENTs
+   (MJ11: GEVENT11, the BMC's diagnostic interrupt button) to SMI. The PSP
+   gets the SMM info (mailbox command 2) right away.
+5. PCI enumeration, IOAPICs, ACPI (MADT, FADT, HPET, MCFG, IVRS, SPMI, DSDT
+   with root bridges, `_PRT`s, SIO COM1, IPMI KCS). The internal bridges' own INTA
+   goes to their NBIO IOAPIC pin, as in the vendor DSDT. SCI_EN stays clear:
+   the OS enables ACPI with 0xe1 to the FADT's SMI_CMD.
+6. Vendor ReadyToBoot steps, the DF extended config off, PSP LockDFReg, then
+   PSP BootDone right before the payload.
+
+The SMM handler does ACPI enable/disable, power button to S5 while the OS
+hasn't enabled ACPI, and S3-S5 entry on SLP_TYP with the Zeppelin steps.
+The sleep is entered as the vendor's power button path does (SlpTypeEn,
+then SLP_EN), not with an SMU message. S0/S1 requests are dropped.
 
 ## Building
 
@@ -87,9 +103,6 @@ cargo fbuild assemble --board gigabyte-mj11-ec1 --release \
 
 ## Not done
 
-- SMM. Because of it there is no PSP LockDFReg either: sent without the
-  PSP's SMM info it breaks device DMA (the xHCI halts with a host system
-  error).
 - S3, APOB NV (MRC cache), multi-die and the EC0 variant on hardware.
 - Board extras of the vendor firmware: the BMC ready wait and the PM1
   cleanup of AmdCpmOemInitPeim.
