@@ -623,10 +623,12 @@ name = "fstart-driver-amd"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-arch",
  "fstart-core",
  "fstart-driver-i2c",
  "fstart-log",
  "fstart-pci",
+ "fstart-smm",
  "heapless 0.8.0",
  "tock-registers",
  "ufmt",

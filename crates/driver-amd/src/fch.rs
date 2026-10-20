@@ -10,6 +10,8 @@ use tock_registers::{
     registers::{ReadOnly, ReadWrite},
 };
 pub mod early;
+#[cfg(feature = "smi")]
+pub mod smi;
 
 register_bitfields![u8,
     /// AOAC device D3 control (ACPIMMIO 0x1e40 + 2 * device).
@@ -17,7 +19,11 @@ register_bitfields![u8,
     pub AoacState [POWER_RESET OFFSET(0) NUMBITS(1) [], REFERENCE_CLOCK OFFSET(1) NUMBITS(1) []],
     /// PMx74.
     pub AcpiConfig [DECODE_STD OFFSET(0) NUMBITS(1) [], GLOBAL_EN OFFSET(1) NUMBITS(1) [],
-        RTC_EN_EN OFFSET(2) NUMBITS(1) [], TIMER_EN_EN OFFSET(4) NUMBITS(1) []]
+        RTC_EN_EN OFFSET(2) NUMBITS(1) [], TIMER_EN_EN OFFSET(4) NUMBITS(1) []],
+    /// PMx75: PMx74[15:8].
+    pub AcpiConfigHigh [PWRBTN_EN OFFSET(0) NUMBITS(1) []],
+    /// PMxBE.
+    pub ResetControl1 [KB_RESET_EN OFFSET(4) NUMBITS(1) [], SLP_TYPE_EN OFFSET(5) NUMBITS(1) []]
 ];
 register_bitfields![u32,
     /// PMx00 decode enables.
@@ -26,7 +32,10 @@ register_bitfields![u32,
         SMBUS_ASF_IO OFFSET(4) NUMBITS(1) [],
         IOAPIC OFFSET(5) NUMBITS(1) [], HPET OFFSET(6) NUMBITS(1) [],
         SMBUS_ASF_IO_BASE OFFSET(8) NUMBITS(8) [],
-        HPET64 OFFSET(28) NUMBITS(1) [], HPET_MSI OFFSET(29) NUMBITS(1) []]
+        HPET64 OFFSET(28) NUMBITS(1) [], HPET_MSI OFFSET(29) NUMBITS(1) []],
+    /// PMx08.
+    pub PciControl [FORCE_STPCLK_RETRY OFFSET(24) NUMBITS(1) [],
+        FORCE_SLPSTATE_RETRY OFFSET(25) NUMBITS(1) []]
 ];
 /// The ACPI fixed I/O blocks the FCH decodes (PMx60..PMx68).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,19 +46,22 @@ pub struct AcpiPorts {
     pub gpe: u16,
 }
 register_structs! {
-    Pm {
+    pub(crate) Pm {
         (0x00 => decode: ReadWrite<u32, Decode::Register>),
         (0x04 => _reserved0),
+        (0x08 => pub(crate) pci_control: ReadWrite<u32, PciControl::Register>),
+        (0x0c => _reserved4),
         (0x60 => event: ReadWrite<u16>),
         (0x62 => control: ReadWrite<u16>),
         (0x64 => timer: ReadWrite<u16>),
         (0x66 => _reserved1),
         (0x68 => gpe: ReadWrite<u16>),
-        (0x6a => command: ReadWrite<u16>),
+        (0x6a => pub(crate) command: ReadWrite<u16>),
         (0x6c => _reserved2),
         (0x74 => config: ReadWrite<u8, AcpiConfig::Register>),
-        (0x75 => _reserved3),
-        (0xbe => reset_control: ReadWrite<u8>),
+        (0x75 => pub(crate) config_high: ReadWrite<u8, AcpiConfigHigh::Register>),
+        (0x76 => _reserved3),
+        (0xbe => pub(crate) reset_control: ReadWrite<u8, ResetControl1::Register>),
         (0xbf => @END),
     },
     AoacDevice {
@@ -120,6 +132,12 @@ pub fn power_devices(
     Ok(())
 }
 
+/// The PM registers in ACPI MMIO. Callers own them as [`Fch::new`] says.
+pub(crate) fn pm() -> &'static Pm {
+    // SAFETY: a fixed, always-decoded MMIO block once ACPI MMIO is enabled.
+    unsafe { &*((ACPI_MMIO + 0x300) as *const Pm) }
+}
+
 pub struct Fch {
     _exclusive: core::marker::PhantomData<*mut ()>,
 }
@@ -132,7 +150,7 @@ impl Fch {
         }
     }
     fn pm(&self) -> &Pm {
-        unsafe { &*((ACPI_MMIO + 0x300) as *const Pm) }
+        pm()
     }
     fn device(&self, device: u8) -> Result<&AoacDevice, Error> {
         if !valid_device(device) {
@@ -192,8 +210,9 @@ impl Fch {
         );
     }
     pub fn disable_keyboard_reset(&mut self) {
-        let register = &self.pm().reset_control;
-        register.set(register.get() & !(1 << 4));
+        self.pm()
+            .reset_control
+            .modify(ResetControl1::KB_RESET_EN::CLEAR);
     }
 }
 
