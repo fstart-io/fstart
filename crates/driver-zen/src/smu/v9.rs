@@ -34,7 +34,9 @@ pub mod msg {
     pub const GET_CAC_WEIGHTS: u32 = 0x10;
     /// Last message at Sx entry (FCH_SP3 §Sx).
     pub const SLEEP_ENTRY: u32 = 0x13;
-    pub const HOTPLUG_POLL_INTERVAL: u32 = 0x14;
+    /// Hotplug enable: argument laid out like V11's 0x18 (PCIE_DXIO §3.10;
+    /// the donor's failure strings name 0x3E the poll interval).
+    pub const HOTPLUG_ENABLE: u32 = 0x14;
     pub const HOTPLUG_I2C_SWITCH_BASE: u32 = 0x17;
     pub const SET_POLICY_ADDR_HI: u32 = 0x1D;
     pub const SET_POLICY_ADDR_LO: u32 = 0x1E;
@@ -62,7 +64,8 @@ pub mod msg {
     pub const DIE_BUS_3B: u32 = 0x3B;
     /// Unnamed, per die with the die's root bus.
     pub const DIE_BUS_3D: u32 = 0x3D;
-    pub const HOTPLUG_ENABLE: u32 = 0x3E;
+    /// "EnableHotplugPollInterval", argument PCD32 0x181.
+    pub const HOTPLUG_POLL_INTERVAL: u32 = 0x3E;
     /// Hotplug setup step (unnamed, PCIE_DXIO §3.10).
     pub const HOTPLUG_45: u32 = 0x45;
     pub const CCX_DONE: u32 = 0x41;
