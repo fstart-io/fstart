@@ -2,8 +2,9 @@
 //! Flat Family 17h microcode patches (the vendor BIOS directory 0x66 entries
 //! and the Picasso .bin files), not AMD container or signed-wrapper parsing.
 //! Each SoC names its CPU signatures and patch budget with a [`Family`].
-use super::msr::Msr;
 use core::marker::PhantomData;
+use fstart_arch::x86::cpu::msr::{Msr, MsrAccess, PATCH_LEVEL};
+use tock_registers::interfaces::{Readable, Writeable};
 use zerocopy::{
     FromBytes, Immutable, KnownLayout,
     byteorder::{LittleEndian, U16, U32},
@@ -12,8 +13,8 @@ use zerocopy::{
 /// Every supported vendor patch is 0xc80 bytes. This deliberately bounded
 /// format does not accept other families/wrappers.
 pub const PATCH_BYTES: usize = 3200;
-const PATCH_LOADER: u32 = 0xc0010020;
-const PATCH_LEVEL: u32 = 0x8b;
+/// Writing a patch's physical address loads it.
+const PATCH_LOADER: Msr = Msr::new(0xc001_0020);
 
 /// The CPUs a SoC's patches are for.
 pub trait Family {
@@ -170,7 +171,7 @@ impl<'a, F: Family> Patch<'a, F> {
     /// A fault or rejected submitted load requires platform fail-stop/reset.
     pub unsafe fn apply(
         &self,
-        msr: &mut impl Msr,
+        cpu: &impl MsrAccess,
         address: u64,
         signature: u32,
     ) -> Result<Outcome, Error> {
@@ -178,12 +179,12 @@ impl<'a, F: Family> Patch<'a, F> {
             return Err(Error::CpuIdentity);
         }
         Self::validate_address(address)?;
-        let current = msr.read(PATCH_LEVEL) as u32;
+        let current = cpu.reg(PATCH_LEVEL).get() as u32;
         if current >= self.revision {
             return Ok(Outcome::AlreadyCurrent(current));
         }
-        msr.write(PATCH_LOADER, address);
-        let actual = msr.read(PATCH_LEVEL) as u32;
+        cpu.reg(PATCH_LOADER).set(address);
+        let actual = cpu.reg(PATCH_LEVEL).get() as u32;
         if actual != self.revision {
             return Err(Error::Rejected {
                 expected: self.revision,
@@ -198,6 +199,8 @@ impl<'a, F: Family> Patch<'a, F> {
 mod tests {
     extern crate std;
     use super::*;
+    use core::cell::RefCell;
+    use fstart_arch::x86::cpu::msr::testing::MsrModel;
     use std::vec::Vec;
     // The Picasso PCO B0/B1 and RV2 A0 inputs.
     enum Test {}
@@ -213,13 +216,13 @@ mod tests {
         loaded_level: u32,
         writes: Vec<(u32, u64)>,
     }
-    impl Msr for Cpu {
+    impl MsrModel for Cpu {
         fn read(&mut self, index: u32) -> u64 {
-            assert_eq!(index, PATCH_LEVEL);
+            assert_eq!(index, PATCH_LEVEL.index());
             u64::from(self.level)
         }
         fn write(&mut self, index: u32, value: u64) {
-            assert_eq!(index, PATCH_LOADER);
+            assert_eq!(index, PATCH_LOADER.index());
             self.writes.push((index, value));
             self.level = self.loaded_level;
         }
@@ -273,45 +276,44 @@ mod tests {
     fn loader_has_no_downgrade_retry_or_preflight_writes() {
         let bytes = bytes(0x00810f81, 0x0810810e);
         let patch = Patch::parse(&bytes, 0x00810f81).unwrap();
-        let mut cpu = Cpu {
+        let cpu = RefCell::new(Cpu {
             level: 1,
             loaded_level: patch.revision(),
             writes: Vec::new(),
-        };
+        });
+        let writes = || core::mem::take(&mut cpu.borrow_mut().writes);
         // Mock transport only: the numeric address is never dereferenced.
         assert_eq!(
-            unsafe { patch.apply(&mut cpu, 0x2070000, 0x00810f81) },
+            unsafe { patch.apply(&cpu, 0x2070000, 0x00810f81) },
             Ok(Outcome::Installed(patch.revision()))
         );
-        assert_eq!(cpu.writes, [(PATCH_LOADER, 0x2070000)]);
-        cpu.writes.clear();
-        cpu.level += 1;
+        assert_eq!(writes(), [(PATCH_LOADER.index(), 0x2070000)]);
+        cpu.borrow_mut().level += 1;
         assert_eq!(
-            unsafe { patch.apply(&mut cpu, 0x2070000, 0x00810f81) },
-            Ok(Outcome::AlreadyCurrent(cpu.level))
+            unsafe { patch.apply(&cpu, 0x2070000, 0x00810f81) },
+            Ok(Outcome::AlreadyCurrent(cpu.borrow().level))
         );
-        assert!(cpu.writes.is_empty());
-        cpu.level = 0;
-        cpu.loaded_level = 0;
+        assert!(writes().is_empty());
+        cpu.borrow_mut().level = 0;
+        cpu.borrow_mut().loaded_level = 0;
         assert_eq!(
-            unsafe { patch.apply(&mut cpu, 0x2070000, 0x00810f81) },
+            unsafe { patch.apply(&cpu, 0x2070000, 0x00810f81) },
             Err(Error::Rejected {
                 expected: patch.revision(),
                 actual: 0
             })
         );
-        assert_eq!(cpu.writes.len(), 1);
-        cpu.writes.clear();
+        assert_eq!(writes().len(), 1);
         for address in [0, 0x2070001, (1 << 32) - 16, u64::MAX - 15] {
             assert_eq!(
-                unsafe { patch.apply(&mut cpu, address, 0x00810f81) },
+                unsafe { patch.apply(&cpu, address, 0x00810f81) },
                 Err(Error::Address)
             );
         }
         assert_eq!(
-            unsafe { patch.apply(&mut cpu, 0x2070000, 0x00810f80) },
+            unsafe { patch.apply(&cpu, 0x2070000, 0x00810f80) },
             Err(Error::CpuIdentity)
         );
-        assert!(cpu.writes.is_empty());
+        assert!(writes().is_empty());
     }
 }

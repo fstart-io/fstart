@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Picasso CPU-driver adaptation. Construction is not AP-release approval.
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use fstart_arch::x86::cpu::msr::{APIC_BASE, MsrAccess, NativeMsr};
 use fstart_arch::x86::{
     cpuid,
     mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError},
     mtrr::SipiMsrs,
 };
 use fstart_driver_amd::fam17h::nbio::{PSP_BASE_ADDR_HI, PSP_BASE_ADDR_LO};
-use tock_registers::interfaces::Readable;
 use fstart_driver_amd::picasso::{
     cpu::{
-        Msr, NativeMsr,
         microcode::{self, Patch},
         thread,
     },
     registers::Smn,
     topology::Topology,
 };
+use tock_registers::interfaces::Readable;
 
 const IDS: &[CpuIdMatch] = &[
     CpuIdMatch {
@@ -70,7 +70,7 @@ struct Facts {
     threads_per_core: u8,
 }
 impl Facts {
-    fn read(msr: &mut impl Msr) -> Result<Self, Error> {
+    fn read(msr: &impl MsrAccess) -> Result<Self, Error> {
         let identity = CpuIdentity::current();
         if !IDS.iter().any(|id| id.matches(identity)) {
             return Err(Error::Identity);
@@ -83,7 +83,7 @@ impl Facts {
         if maximum < 0x8000001e || extensions & (1 << 22) == 0 || features & required != required {
             return Err(Error::Identity);
         }
-        let bsp = apic_role(msr.read(0x1b))?;
+        let bsp = apic_role(msr.reg(APIC_BASE).get())?;
         let (apic_id, topology, _, _) = cpuid(0x8000001e);
         let threads = ((topology >> 8) & 0xff) + 1;
         let (_, _, count, _) = cpuid(0x80000008);
@@ -145,7 +145,7 @@ struct Preparation {
 }
 impl Preparation {
     fn read(
-        msr: &mut impl Msr,
+        msr: &impl MsrAccess,
         smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
         topology: Topology,
         apic_ids: &[u32],
@@ -244,7 +244,7 @@ impl NativeCpu {
     /// change shared cache policy with other CPUs enabled. SMM/exception/reset,
     /// topology/reset-role applicability and stack budgets remain obligations.
     pub unsafe fn prepare(
-        msr: &mut impl Msr,
+        msr: &impl MsrAccess,
         smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
         topology: Topology,
         apic_ids: &[u32],
@@ -267,7 +267,7 @@ impl NativeCpu {
     /// it need not itself remain below4GiB or resident after this returns. It must
     /// be disjoint from the whole destination allocation. No loader executes here.
     pub unsafe fn prepare_staged(
-        msr: &mut impl Msr,
+        msr: &impl MsrAccess,
         smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
         topology: Topology,
         apic_ids: &[u32],
@@ -295,7 +295,7 @@ impl NativeCpu {
             finished: AtomicBool::new(false),
         }
     }
-    fn local(&self, msr: &mut impl Msr) -> Result<(usize, bool), Error> {
+    fn local(&self, msr: &impl MsrAccess) -> Result<(usize, bool), Error> {
         let facts = Facts::read(msr)?;
         if facts.signature != self.signature
             || facts.threads_per_core != self.threads_per_core
@@ -346,12 +346,12 @@ impl CpuDriver for NativeCpu {
     fn sipi_msrs(&self) -> Result<SipiMsrs, MpError> {
         self.serial
             .run(|| {
-                let mut msr = unsafe { NativeMsr::new() };
-                if self.local(&mut msr)?.0 != 0 {
+                let msr = unsafe { NativeMsr::new() };
+                if self.local(&msr)?.0 != 0 {
                     return Err(Error::Topology);
                 }
-                self.policy.validate(&mut msr).map_err(Error::Policy)?;
-                crate::mp::sipi_msrs(&mut msr).map_err(Error::Cache)
+                self.policy.validate(&msr).map_err(Error::Policy)?;
+                crate::mp::sipi_msrs(&msr).map_err(Error::Cache)
             })
             .map_err(|_| MpError::CacheabilitySetupFailed)
     }
@@ -359,8 +359,8 @@ impl CpuDriver for NativeCpu {
         if self
             .serial
             .run(|| {
-                let mut msr = unsafe { NativeMsr::new() };
-                let (index, _) = self.local(&mut msr)?;
+                let msr = unsafe { NativeMsr::new() };
+                let (index, _) = self.local(&msr)?;
                 let bit = 1u16 << index;
                 if self.patched.load(Ordering::Relaxed) & bit != 0 {
                     return Err(Error::CallbackOrder);
@@ -368,7 +368,7 @@ impl CpuDriver for NativeCpu {
                 // Constructor owns the permanent immutable physical patch contract.
                 unsafe {
                     self.patch
-                        .apply(&mut msr, self.patch.bytes().as_ptr() as u64, self.signature)
+                        .apply(&msr, self.patch.bytes().as_ptr() as u64, self.signature)
                 }
                 .map_err(Error::Microcode)?;
                 self.patched.fetch_or(bit, Ordering::Release);
@@ -383,8 +383,8 @@ impl CpuDriver for NativeCpu {
         if self
             .serial
             .run(|| {
-                let mut msr = unsafe { NativeMsr::new() };
-                let (index, primary) = self.local(&mut msr)?;
+                let msr = unsafe { NativeMsr::new() };
+                let (index, primary) = self.local(&msr)?;
                 let bit = 1u16 << index;
                 if self.patched.load(Ordering::Relaxed) & bit == 0
                     || self.initialized.load(Ordering::Relaxed) & bit != 0
@@ -392,7 +392,7 @@ impl CpuDriver for NativeCpu {
                     return Err(Error::CallbackOrder);
                 }
                 self.policy
-                    .initialize(&mut msr, index == 0, primary)
+                    .initialize(&msr, index == 0, primary)
                     .map_err(Error::Policy)?;
                 self.initialized.fetch_or(bit, Ordering::Release);
                 Ok(())
@@ -403,8 +403,8 @@ impl CpuDriver for NativeCpu {
         }
     }
     fn post_mp_init(&self) {
-        let mut msr = unsafe { NativeMsr::new() };
-        if !matches!(self.local(&mut msr), Ok((0, _)))
+        let msr = unsafe { NativeMsr::new() };
+        if !matches!(self.local(&msr), Ok((0, _)))
             || !self.work_complete()
             || self.finished.swap(true, Ordering::AcqRel)
         {

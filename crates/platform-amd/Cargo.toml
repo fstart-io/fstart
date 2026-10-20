@@ -62,3 +62,4 @@ fstart-smm = { workspace = true, optional = true }
 
 [dev-dependencies]
 fstart-driver-amd = { workspace = true, features = ["testing"] }
+fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

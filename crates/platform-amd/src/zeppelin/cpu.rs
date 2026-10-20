@@ -5,17 +5,21 @@ use core::{
     mem::MaybeUninit,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
-use fstart_arch::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError};
-use fstart_driver_amd::{
-    fam17h::{
-        bios_directory,
-        msr::{self, Msr, NativeMsr},
+use fstart_arch::x86::{
+    cpu::{
+        amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2},
+        msr::{MsrAccess, NativeMsr},
     },
+    mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError},
+};
+use fstart_driver_amd::{
+    fam17h::bios_directory,
     zeppelin::{
         ccx::{self, CpuPolicy, Thread},
         microcode::{PATCH_BYTES, Patch},
     },
 };
+use tock_registers::interfaces::ReadWriteable;
 
 /// BIOS directory type of the vendor microcode patches.
 const MICROCODE: u8 = 0x66;
@@ -56,7 +60,10 @@ impl ZeppelinCpu {
             });
         match patch {
             Some((_, revision)) => {
-                fstart_log::info!("zeppelin: microcode patch {}", fstart_log::Hex(revision.into()))
+                fstart_log::info!(
+                    "zeppelin: microcode patch {}",
+                    fstart_log::Hex(revision.into())
+                )
             }
             None => fstart_log::warn!("zeppelin: no microcode patch for this CPU"),
         }
@@ -101,9 +108,9 @@ impl CpuDriver for ZeppelinCpu {
             // SAFETY: the staged page is immutable and reserved; serialized.
             let page = unsafe { &*core::ptr::addr_of!(PATCH) };
             let bytes = unsafe { &page.assume_init_ref().0 };
-            let mut msr = unsafe { NativeMsr::new() };
+            let msr = unsafe { NativeMsr::new() };
             let applied = Patch::parse(bytes, signature())
-                .and_then(|patch| unsafe { patch.apply(&mut msr, address, signature()) });
+                .and_then(|patch| unsafe { patch.apply(&msr, address, signature()) });
             if applied.is_err() {
                 ERRORS.fetch_add(1, Ordering::AcqRel);
             }
@@ -116,29 +123,33 @@ impl CpuDriver for ZeppelinCpu {
                 fstart_arch::x86::cpuid(0x8000_001e).1,
             );
             // SAFETY: serialized per-CPU MSR programming.
-            let mut msr = unsafe { NativeMsr::new() };
-            if ccx::cpu_init(&mut msr, &self.policy, thread).is_err() {
+            let msr = unsafe { NativeMsr::new() };
+            if ccx::cpu_init(&msr, &self.policy, thread).is_err() {
                 ERRORS.fetch_add(1, Ordering::AcqRel);
             }
             // The ABL leaves the fixed-MTRR DRAM routing exposed; the OS
             // expects it hidden.
-            let syscfg = msr.read(msr::SYSCFG);
-            msr.write(msr::SYSCFG, syscfg & !msr::SYSCFG_MTRR_FIX_DRAM_MOD_EN);
+            msr.reg(SYSCFG).modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::CLEAR);
         });
     }
     fn sipi_unlock(&self) -> Option<(u32, u32)> {
-        Some((msr::SYSCFG, msr::SYSCFG_MTRR_FIX_DRAM_MOD_EN as u32))
+        Some((
+            SYSCFG.index(),
+            Syscfg::MTRR_FIX_DRAM_MOD_EN::SET.value as u32,
+        ))
     }
     fn sipi_msrs(&self) -> Result<fstart_arch::x86::mtrr::SipiMsrs, MpError> {
         // SAFETY: BSP only, before any AP starts.
-        let mut msr = unsafe { NativeMsr::new() };
+        let msr = unsafe { NativeMsr::new() };
         // The APs keep the SYSCFG and
         // TOP_MEM/TOM2 the ABL programmed on every core and only take the
         // BSP's MTRRs: a fresh core faults on the BSP's SYSCFG.
-        let msrs = crate::mp::sipi_msrs(&mut msr).map_err(|_| MpError::CacheabilitySetupFailed)?;
+        let msrs = crate::mp::sipi_msrs(&msr).map_err(|_| MpError::CacheabilitySetupFailed)?;
         Ok(msrs
             .into_iter()
-            .filter(|entry| ![msr::SYSCFG, msr::TOP_MEM, msr::TOP_MEM2].contains(&entry.index))
+            .filter(|entry| {
+                ![SYSCFG.index(), TOP_MEM.index(), TOP_MEM2.index()].contains(&entry.index)
+            })
             .collect())
     }
 }

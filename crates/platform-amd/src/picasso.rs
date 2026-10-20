@@ -237,15 +237,16 @@ unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::State, &'static str> {
     use crate::{early, layout};
+    use fstart_arch::x86::cpu::msr::NativeMsr;
     use fstart_driver_amd::picasso::{
         ECAM,
         apob::Apob,
-        cpu::{self, NativeMsr},
+        cpu,
         registers::{Df, Smn},
     };
-    let mut msr = unsafe { NativeMsr::new() };
+    let msr = unsafe { NativeMsr::new() };
     // MMCONF first, everything else uses it.
-    cpu::enable_ecam(&mut msr);
+    cpu::enable_ecam(&msr);
     fstart_pci::ecam::init(ECAM as usize);
     let pci = fstart_pci::ecam::GlobalEcam;
     let smn = unsafe { Smn::new(pci) };
@@ -265,7 +266,7 @@ unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::Stat
     );
     let (signature, _, _, _) = fstart_arch::x86::cpuid(1);
     let (_, extended_ebx, _, _) = fstart_arch::x86::cpuid(0x8000_0001);
-    let physical_address_bits = (fstart_arch::x86::cpuid(0x8000_0008).0 & 0xff) as u8;
+    let physical_address_bits = fstart_arch::x86::physical_address_bits() as u8;
     early::initialize(
         early::Inputs {
             apob: &apob,
@@ -274,7 +275,7 @@ unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::Stat
             physical_address_bits,
             tseg_size: TSEG_SIZE,
         },
-        &mut msr,
+        &msr,
         &smn,
         &df,
         delay_us,

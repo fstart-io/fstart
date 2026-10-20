@@ -4,13 +4,13 @@
 //! at the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
 //! board's `fstart_main`.
 use super::{Board, BoardCtx, Clock, acpi, boot, cpu::ZeppelinCpu, layout, memory, pci, smm};
+use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
     fam17h::{
         apob::{Apob, MemoryMap},
         cache,
-        msr::{self, Msr, NativeMsr},
-        tsc,
+        msr, tsc,
     },
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
@@ -111,9 +111,9 @@ struct Silicon {
 fn run<B: Board>() -> ! {
     post(0x30);
     // SAFETY: BSP only, single-threaded cold boot.
-    let mut msr = unsafe { NativeMsr::new() };
+    let msr = unsafe { NativeMsr::new() };
     // MMCONF first, everything else uses it.
-    msr::enable_ecam(&mut msr, soc::ECAM, soc::ECAM_BUSES);
+    msr::enable_ecam(&msr, soc::ECAM, soc::ECAM_BUSES);
     fstart_pci::ecam::init(soc::ECAM as usize);
     let pci = GlobalEcam;
     // Before the console: ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O.
@@ -149,7 +149,7 @@ fn run<B: Board>() -> ! {
         fail("CPU identification")
     };
     let clock = Clock { mhz };
-    let Ok((top_mem, top_mem2)) = msr::memory_limits(&mut msr) else {
+    let Ok((top_mem, top_mem2)) = msr::memory_limits(&msr) else {
         fail("TOP_MEM from the PSP")
     };
     let Ok(map) = apob() else { fail("APOB") };
@@ -167,10 +167,11 @@ fn run<B: Board>() -> ! {
     };
 
     // The early cache plan: WB DRAM, WP flash.
-    let address_bits = (fstart_arch::x86::cpuid(0x8000_0008).0 & 0xff) as u8;
-    let mtrrs = (msr.read(0xfe) & 0xff) as usize;
+    let address_bits = fstart_arch::x86::physical_address_bits() as u8;
+    // SAFETY: CPUID reported MTRRs; the cache plan rejects CPUs without.
+    let mtrrs = unsafe { fstart_arch::x86::mtrr::variable_count() } as usize;
     let installed = cache::Plan::new(memory::low_top(&map, top_mem), address_bits, mtrrs)
-        .and_then(|plan| cache::install(&mut msr, &plan));
+        .and_then(|plan| cache::install(&msr, &plan));
     if installed.is_err() {
         fail("MTRR setup");
     }
@@ -264,7 +265,7 @@ fn early_silicon<B: Board>(s: &mut Silicon, top_mem: u64, top_mem2: Option<u64>,
         fstart_arch::x86::cpuid(0x8000_001e).1,
     );
     // SAFETY: BSP-only MSR programming.
-    ccx::bsp_init(&mut unsafe { NativeMsr::new() }, s.revision, thread);
+    ccx::bsp_init(&unsafe { NativeMsr::new() }, s.revision, thread);
     smu::print_name(&dies[0], &mut delay);
     for die in dies {
         nbio::tom_init(die, top_mem as u32, top_mem2);

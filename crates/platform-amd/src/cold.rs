@@ -7,9 +7,11 @@ use crate::{
     memory::Memory,
     mp,
 };
-use fstart_arch::x86::mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle};
+use fstart_arch::x86::{
+    cpu::msr::MsrAccess,
+    mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle},
+};
 use fstart_driver_amd::picasso::{
-    cpu::Msr,
     nbio_late, power,
     registers::Smn,
     topology::{self, Topology},
@@ -149,7 +151,7 @@ fn notify(
 /// early firmware region reserved in `input.memory`. Exclusive MSR/SMN access.
 pub unsafe fn initialize_cpus(
     input: Inputs<'_>,
-    msr: &mut impl Msr,
+    msr: &impl MsrAccess,
     smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
     delay_us: &mut impl FnMut(u32),
 ) -> Result<CpusInitialized, Error> {

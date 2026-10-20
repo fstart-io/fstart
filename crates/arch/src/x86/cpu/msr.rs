@@ -126,6 +126,11 @@ register_bitfields![u64,
         WRITE_COMBINING OFFSET(10) NUMBITS(1) [],
         SMRR OFFSET(11) NUMBITS(1) []
     ],
+    pub MtrrDefType [
+        TYPE OFFSET(0) NUMBITS(8) [],
+        FIXED_ENABLE OFFSET(10) NUMBITS(1) [],
+        ENABLE OFFSET(11) NUMBITS(1) []
+    ],
     pub McgCap [
         COUNT OFFSET(0) NUMBITS(8) []
     ]
@@ -135,6 +140,9 @@ pub const APIC_BASE: Msr<ApicBase::Register> = Msr::new(0x1b);
 /// IA32_BIOS_SIGN_ID: the installed microcode patch level.
 pub const PATCH_LEVEL: Msr = Msr::new(0x8b);
 pub const MTRR_CAP: Msr<MtrrCap::Register> = Msr::new(crate::x86::mtrr::IA32_MTRR_CAP);
+pub const PAT: Msr = Msr::new(0x277);
+pub const MTRR_DEF_TYPE: Msr<MtrrDefType::Register> =
+    Msr::new(crate::x86::mtrr::IA32_MTRR_DEF_TYPE);
 pub const MCG_CAP: Msr<McgCap::Register> = Msr::new(0x179);
 
 #[cfg(any(test, feature = "testing"))]
@@ -179,6 +187,16 @@ pub mod testing {
         pub fn written(&self, index: u32) -> bool {
             self.writes.iter().any(|&(i, _)| i == index)
         }
+    }
+    /// An order-sensitive digest of a write log, for tests that pin a
+    /// whole register sequence.
+    pub fn fingerprint(writes: &[(u32, u64)]) -> u64 {
+        writes
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325, |hash, &(index, value)| {
+                (u64::from(index) ^ value.rotate_left(17) ^ hash)
+                    .wrapping_mul(0x0000_0100_0000_01b3)
+            })
     }
     impl MsrModel for MsrSpace {
         fn read(&mut self, index: u32) -> u64 {

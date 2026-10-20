@@ -524,7 +524,7 @@ fn snapshot_msrs(
         save(IA32_MTRR_PHYSMASK0 + index * 2)?;
     }
     if pat {
-        save(0x277)?;
+        save(crate::x86::cpu::msr::PAT.index())?;
     }
     // Enable/default type last, after all fixed/variable MTRRs and PAT.
     save(IA32_MTRR_DEF_TYPE)?;

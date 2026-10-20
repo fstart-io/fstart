@@ -6,8 +6,8 @@ license.workspace = true
 
 [features]
 default = []
-picasso = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless"]
-zeppelin = ["smi", "dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c", "dep:embedded-hal"]
+picasso = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-arch"]
+zeppelin = ["smi", "dep:fstart-arch", "dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c", "dep:embedded-hal"]
 # FCH SMI control for the AMD SMM owner of fstart-arch.
 smi = ["dep:fstart-arch"]
 # The FCH SMM handler, for SMM image builds.
@@ -27,3 +27,6 @@ fstart-driver-i2c = { workspace = true, optional = true }
 embedded-hal = { workspace = true, optional = true }
 fstart-arch = { workspace = true, features = ["x86_64"], optional = true }
 fstart-smm = { workspace = true, optional = true }
+
+[dev-dependencies]
+fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
