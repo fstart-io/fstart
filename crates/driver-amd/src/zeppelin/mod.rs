@@ -6,8 +6,14 @@
 //! APOB; everything x86 does after that is native: Data Fabric, NBIO, SMU,
 //! DXIO (PCIe), CCX and the Taishan FCH. Every die has its own DF, NBIO, SMU
 //! and FCH; SP4r2 has one die, SP4 two.
+pub mod ccx;
+mod ccx_tables;
 pub mod identity;
+pub mod microcode;
+pub mod psp;
 pub mod smu;
+#[cfg(test)]
+mod test_pci;
 pub mod topology;
 
 pub use identity::{Package, Revision};

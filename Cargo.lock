@@ -627,6 +627,7 @@ dependencies = [
  "fstart-pci",
  "heapless 0.8.0",
  "tock-registers",
+ "ufmt",
  "zerocopy",
 ]
 

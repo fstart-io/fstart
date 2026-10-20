@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = []
 picasso = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless"]
-zeppelin = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log"]
+zeppelin = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log", "dep:ufmt"]
 
 [dependencies]
 tock-registers.workspace = true
@@ -16,3 +16,4 @@ zerocopy = { workspace = true, optional = true }
 fstart-pci = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 fstart-log = { workspace = true, optional = true }
+ufmt = { workspace = true, optional = true }
