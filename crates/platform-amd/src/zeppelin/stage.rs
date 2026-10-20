@@ -8,22 +8,23 @@ use crate::cpu::{Fam17hCpu, PatchPage};
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
+    apob::{Apob, MemoryMap},
+    df::{self, map},
     fam17h::{
-        apob::{Apob, MemoryMap},
         cache,
         ccx::Thread,
         iohc, msr,
         tsc::{self, Tsc},
     },
-    df::{self, map},
     fch::{self as common_fch, Acpimmio, Fch, NativeBus, early},
     lpc::Lpc,
+    psp,
     smu::{
         threads::{self, Policy},
         v9 as smu,
     },
     zeppelin::{
-        self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, dxio, fch, iommu, nbio, psp,
+        self as soc, Die, MAX_DIES, Package, Revision, Zeppelin, ccx, dxio, fch, iommu, nbio,
     },
 };
 use fstart_driver_uart::ns16550::Ns16550;
@@ -96,7 +97,7 @@ fn console<B: Board>() {
     unsafe { fstart_log::init(console) };
 }
 
-fn apob() -> Result<MemoryMap, fstart_driver_amd::fam17h::apob::Error> {
+fn apob() -> Result<MemoryMap, fstart_driver_amd::apob::Error> {
     Apob::parse_with_capacity(apob_bytes(), soc::APOB_SIZE)?.memory_map()
 }
 

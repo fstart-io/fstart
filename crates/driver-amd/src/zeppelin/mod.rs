@@ -16,7 +16,6 @@ pub mod iommu;
 pub mod microcode;
 pub mod nbio;
 mod nbio_tables;
-pub mod psp;
 #[cfg(test)]
 pub(crate) mod test_pci;
 

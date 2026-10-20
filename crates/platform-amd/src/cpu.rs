@@ -12,8 +12,8 @@ use fstart_arch::x86::{
     mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError, SipiUnlock},
     mtrr::SipiMsrs,
 };
+use fstart_driver_amd::psp::bios_directory;
 use fstart_driver_amd::fam17h::{
-    bios_directory,
     ccx::Thread,
     microcode::{Family, PATCH_BYTES, Patch},
 };

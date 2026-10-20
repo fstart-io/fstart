@@ -1,9 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Family 17h *Gen2 runtime mailbox* (distinct from Gen1 flash directories),
-//! the same C2P protocol on Raven/Picasso and Zeppelin at +0x10570 of the PSP
-//! BAR. Cold/non-SMM only; no recovery, Sx/resume, fusing, flash writes, abort or reset commands.
-use crate::fam17h::tsc::DelayNs;
+//! The PSP (MP0). Its *Gen2 runtime mailbox* (distinct from Gen1 flash
+//! directories), the same C2P protocol on Raven/Picasso and Zeppelin at
+//! +0x10570 of the PSP BAR. Cold/non-SMM only; no recovery,
+//! Sx/resume, fusing, flash writes, abort or reset commands. The BIOS
+//! directory the PSP boots from is [`bios_directory`].
+//!
+//! Every die has a PSP; the platform maps its 1 MiB register window with
+//! [`crate::fam17h::iohc::map_psp`]. The native flows only use die 0's
+//! mailbox.
+use crate::{
+    df::Die,
+    fam17h::{iohc::PSP_BAR, tsc::DelayNs},
+    soc::Soc,
+};
 use fstart_core::once::TakeOnce;
+use fstart_pci::ConfigRegionAccess;
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
@@ -393,11 +404,23 @@ impl<T: Transport> Mailbox<T> {
     }
 }
 
+/// The PSP MMIO bases of all dies, 0 where the BAR isn't enabled, for the
+/// per-CPU init (Zeppelin's `CpuPolicy::psp_bars`).
+/// The APs can't use SMN in parallel, so the BSP reads them before MP init.
+pub fn bars<S: Soc, P: ConfigRegionAccess + Copy, const N: usize>(
+    dies: &[Die<S, P>],
+) -> [u32; N] {
+    let mut bars = [0; N];
+    bars.iter_mut().zip(dies).for_each(|(slot, die)| {
+        *slot = PSP_BAR.base_below_4g(&die.smn()).unwrap_or(0)
+    });
+    bars
+}
+
+pub mod bios_directory;
 #[cfg(target_arch = "x86_64")]
-#[path = "psp/native.rs"]
 mod native;
 #[cfg(target_arch = "x86_64")]
 pub use native::Native;
 #[cfg(test)]
-#[path = "psp/tests.rs"]
 mod tests;

@@ -2,7 +2,7 @@
 extern crate std;
 use super::memory::Memory;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
-use fstart_driver_amd::picasso::apob::Apob;
+use fstart_driver_amd::apob::Apob;
 use std::vec;
 
 fn apob_bytes(holes: &[(u64, u64, u32)]) -> std::vec::Vec<u8> {

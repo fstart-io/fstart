@@ -222,3 +222,21 @@ fn complete_allocation_preflight_precedes_one_way_claim() {
     assert_eq!(placement(0xffffffe0), Err(Error::Placement));
     assert_eq!(placement(0x02000000), Ok(()));
 }
+
+#[cfg(feature = "zeppelin")]
+#[test]
+fn maps_each_die_enabled_and_locked_and_reads_back_bases() {
+    use crate::{fam17h::iohc::map_psp, zeppelin::test_pci::Pci};
+    let pci = Pci::new(&[0, 0x40], |_| [0; 6]);
+    let dies = pci.dies();
+    // Die 1 is already right: no rewrite of its high half.
+    pci.set_smn(1, PSP_BAR.low, 0xd010_0101);
+    pci.set_smn(1, PSP_BAR.high, 0xdead);
+    assert_eq!(map_psp(&dies[0].smn(), 0xe780_0000), Ok(()));
+    assert_eq!(map_psp(&dies[1].smn(), 0xd010_0000), Ok(()));
+    assert_eq!(pci.smn(0, PSP_BAR.low), 0xe780_0101);
+    assert_eq!(pci.smn(1, PSP_BAR.high), 0xdead);
+    assert_eq!(bars(&dies), [0xe780_0000, 0xd010_0000]);
+    pci.set_smn(1, PSP_BAR.low, 0xd010_0100);
+    assert_eq!(bars::<_, _, 2>(&dies)[1], 0);
+}

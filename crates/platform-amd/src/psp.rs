@@ -5,7 +5,8 @@ use core::{mem::MaybeUninit, ptr::addr_of_mut};
 use fstart_core::once::TakeOnce;
 use fstart_driver_amd::{
     fam17h::{iohc::PSP_BAR, tsc::DelayNs},
-    picasso::psp::{self, Buffer, Mailbox, Native},
+    picasso::nbio::PSP_MMIO_BASE,
+    psp::{self, Buffer, Mailbox, Native},
     smn::Smn,
 };
 use tock_registers::interfaces::Readable;
@@ -115,7 +116,7 @@ pub unsafe fn prepare(
         // Typed MaybeUninit<Buffer> field, initialized storage, first reference
         // only after the one-way platform claim. Private static retained to reset.
         let buffer = &mut *addr_of_mut!((*pointer).buffer).cast::<Buffer>();
-        let io = Native::new();
+        let io = Native::at(PSP_MMIO_BASE as usize);
         let mailbox = Mailbox::new(io, buffer).map_err(Error::Mailbox)?;
         Ok(ResidentMailbox { mailbox })
     }

@@ -11,12 +11,9 @@ use fstart_arch::x86::{
     mp::MpHandle,
 };
 use fstart_driver_amd::{
-    fam17h::psp::SmmInfo,
     fch::smi::{self, FchSmi},
-    zeppelin::{
-        fch,
-        psp::{Buffer, Mailbox, Native},
-    },
+    psp::{Buffer, Mailbox, Native, SmmInfo},
+    zeppelin::fch,
 };
 
 /// The board's SMM image that fbuild built from its `smm.rs`.

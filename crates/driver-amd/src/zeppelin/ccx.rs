@@ -75,7 +75,7 @@ pub fn bsp_init(cpu: &impl MsrAccess, revision: Revision, thread: Thread) {
 #[derive(Debug, Clone, Copy)]
 pub struct CpuPolicy {
     pub revision: Revision,
-    /// PSP MMIO base of each die, 0 if not enabled ([`super::psp::bars`]).
+    /// PSP MMIO base of each die, 0 if not enabled ([`crate::psp::bars`]).
     pub psp_bars: [u32; MAX_DIES],
     /// From [`crate::smu::v9::cac_weights`]; `None` if reading them failed.
     pub cac_weights: Option<CacWeights>,

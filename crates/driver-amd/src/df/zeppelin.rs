@@ -9,7 +9,7 @@ use super::{
     map::{self, DramBase},
 };
 use crate::{
-    fam17h::apob::{self, Apob},
+    apob::{self, Apob},
     soc::Soc,
     zeppelin::{NONPCI_MMIO_SIZE, Revision, Zeppelin},
 };

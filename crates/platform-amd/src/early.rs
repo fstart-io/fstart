@@ -3,9 +3,9 @@
 use fstart_driver_amd::fam17h::tsc::DelayNs;
 use crate::memory::{self, Memory};
 use fstart_arch::x86::cpu::msr::{MCG_CAP, MTRR_CAP, McgCap, MsrAccess, MtrrCap};
+use fstart_driver_amd::apob::MemoryMap;
 use fstart_driver_amd::fam17h::ccx::Thread;
 use fstart_driver_amd::picasso::{
-    apob::MemoryMap,
     cache::{self, CacheControl, Plan},
     cpu::{self, Identity},
     nbio::{self, Capabilities},

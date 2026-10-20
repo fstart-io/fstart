@@ -212,7 +212,8 @@ unsafe fn cold_boot(
     use fstart_arch::x86::cpu::msr::NativeMsr;
     use fstart_driver_amd::{
         df,
-        picasso::{ECAM, Picasso, apob::Apob, cpu},
+        apob::Apob,
+        picasso::{ECAM, Picasso, cpu},
     };
     let msr = unsafe { NativeMsr::new() };
     // MMCONF first, everything else uses it.

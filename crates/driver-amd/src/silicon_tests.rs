@@ -417,6 +417,7 @@ mod zeppelin {
         df::{self, map},
         fam17h::iohc::{self, IOAPIC_BAR},
         fch::{Acpimmio, Fch},
+        psp,
         smu::{
             threads::{self, Policy},
             v9 as smu,
@@ -425,7 +426,7 @@ mod zeppelin {
             Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision,
             dxio::{self, Descriptor, SataChannel},
             fch::{self, Devices},
-            iommu, nbio, psp,
+            iommu, nbio,
         },
     };
 

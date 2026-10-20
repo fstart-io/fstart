@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use crate::fam17h::tsc::testing::Delay;
-use super::{
-    apob::{self, Apob},
-};
+use crate::apob::{self, Apob};
 use crate::df::picasso as fabric;
 use crate::smu::v10 as smu;
 use crate::df::{Df, DfReg, testing::DfSpace};
