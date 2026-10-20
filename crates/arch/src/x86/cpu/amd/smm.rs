@@ -8,9 +8,11 @@
 use core::ops::Range;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use tock_registers::{LocalRegisterCopy, register_bitfields};
+use tock_registers::LocalRegisterCopy;
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
-use crate::x86::cpu::msr_register::Msr;
+use crate::x86::cpu::amd::msr::{HWCR, Hwcr, SMM_ADDR, SMM_BASE, SMM_MASK, SmmMask};
+use crate::x86::cpu::msr::{MsrAccess, NativeMsr};
 use crate::x86::mp::{MAX_CPUS, MpHandle};
 
 /// Save-state bytes reserved at the top of every SMBASE window. The AMD64
@@ -18,21 +20,6 @@ use crate::x86::mp::{MAX_CPUS, MpHandle};
 const SAVE_STATE_SIZE: u32 = 0x400;
 /// Smallest TSEG the SMM_MASK granularity allows.
 const MIN_TSEG: u32 = 128 << 10;
-
-register_bitfields![u64,
-    Hwcr [SMM_LOCK OFFSET(0) NUMBITS(1) []],
-    SmmMask [
-        A_VALID OFFSET(0) NUMBITS(1) [],
-        T_VALID OFFSET(1) NUMBITS(1) [],
-        TM_TYPE_DRAM OFFSET(12) NUMBITS(3) [WriteBack = 6],
-        MASK OFFSET(17) NUMBITS(35) []
-    ]
-];
-
-const HWCR: Msr<Hwcr::Register> = Msr::new(0xc001_0015);
-const SMM_BASE: Msr<()> = Msr::new(0xc001_0111);
-const SMM_ADDR: Msr<()> = Msr::new(0xc001_0112);
-const SMM_MASK: Msr<SmmMask::Register> = Msr::new(0xc001_0113);
 
 /// Southbridge SMI control.
 pub trait SmiControl {
@@ -117,20 +104,18 @@ fn free_range(cpus: &[fstart_smm::CpuSmmLayout]) -> Range<u64> {
 /// AMD64 CPU in normal mode, with SMM not locked and nothing on this CPU
 /// accessing TSEG from normal mode afterwards.
 unsafe fn program_cpu(base: u64, mask: u64, smbase: u64) -> [u64; 4] {
-    unsafe {
-        SMM_ADDR.write(base);
-        SMM_MASK.write(mask);
-        SMM_BASE.write(smbase);
-        let mut hwcr = HWCR.read();
-        hwcr.modify(Hwcr::SMM_LOCK::SET);
-        HWCR.write(hwcr.get());
-        [
-            SMM_ADDR.read().get(),
-            SMM_MASK.read().get(),
-            SMM_BASE.read().get(),
-            HWCR.read().read(Hwcr::SMM_LOCK),
-        ]
-    }
+    // SAFETY: the caller's contract; these MSRs exist on every AMD64 CPU.
+    let cpu = unsafe { NativeMsr::new() };
+    cpu.reg(SMM_ADDR).set(base);
+    cpu.reg(SMM_MASK).set(mask);
+    cpu.reg(SMM_BASE).set(smbase);
+    cpu.reg(HWCR).modify(Hwcr::SMM_LOCK::SET);
+    [
+        cpu.reg(SMM_ADDR).get(),
+        cpu.reg(SMM_MASK).get(),
+        cpu.reg(SMM_BASE).get(),
+        cpu.reg(HWCR).read(Hwcr::SMM_LOCK),
+    ]
 }
 
 const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
@@ -171,7 +156,8 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
             return Err(AmdSmmError::TooManyCpus);
         }
         // SAFETY: HWCR and SMM_MASK exist on every AMD64 CPU.
-        if unsafe { HWCR.read() }.is_set(Hwcr::SMM_LOCK) {
+        let cpu = unsafe { NativeMsr::new() };
+        if cpu.reg(HWCR).is_set(Hwcr::SMM_LOCK) {
             return Err(AmdSmmError::Locked);
         }
         fstart_log::info!(
@@ -183,12 +169,9 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
         );
         self.smi.disable_smi();
         // TSEG is plain DRAM for this CPU until TValid.
-        // SAFETY: SMM isn't locked, so SMM_MASK is writable.
-        unsafe {
-            let mut mask = SMM_MASK.read();
-            mask.modify(SmmMask::T_VALID::CLEAR + SmmMask::A_VALID::CLEAR);
-            SMM_MASK.write(mask.get());
-        }
+        // SMM isn't locked, so SMM_MASK is writable.
+        cpu.reg(SMM_MASK)
+            .modify(SmmMask::T_VALID::CLEAR + SmmMask::A_VALID::CLEAR);
         // SAFETY: the caller's TSEG is reserved DRAM nothing else uses; the
         // installer validates every placement before writing.
         unsafe { core::ptr::write_bytes(base as *mut u8, 0, size as usize) };

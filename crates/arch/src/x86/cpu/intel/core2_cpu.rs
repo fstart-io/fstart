@@ -4,11 +4,12 @@
 //! Solo/Duo, Yonah) and `model_6fx` (Core 2) drivers and optionally supplies
 //! an Intel microcode blob to [`crate::x86::mp`].
 
-use crate::x86::cpu::msr_register::Msr;
 use crate::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
 use crate::x86::cpu::intel::{common_power, feature_control};
+use crate::x86::cpu::msr::{Msr, MsrAccess, NativeMsr};
 use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor};
 use crate::x86::msr::{rdmsr, wrmsr};
+use tock_registers::interfaces::{ReadWriteable, Readable};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 register_bitfields![u64,
@@ -82,13 +83,10 @@ fn configure_misc(yonah: bool) {
 }
 
 fn configure_peci() {
-    let peci = Msr::<PECI_CONTROL::Register>::new(IA32_PECI_CTL);
     // SAFETY: model-6FX implements IA32_PECI_CTL (coreboot model_6fx).
-    unsafe {
-        let mut value = peci.read();
-        value.modify(PECI_CONTROL::ENABLE::SET);
-        peci.write(value.get());
-    }
+    unsafe { NativeMsr::new() }
+        .reg(Msr::<PECI_CONTROL::Register>::new(IA32_PECI_CTL))
+        .modify(PECI_CONTROL::ENABLE::SET);
 }
 
 fn configure_pic_thermal_sensors() {
@@ -196,7 +194,11 @@ impl Core2CpuDriver {
         }
         // SAFETY: MSR_FSB_FREQ exists on the selected model-6FX CPUs.
         bus_select_from_msr(
-            unsafe { Msr::<FSB_SELECTION::Register>::new(crate::x86::MSR_FSB_FREQ).read() }.get(),
+            unsafe { NativeMsr::new() }
+                .reg(Msr::<FSB_SELECTION::Register>::new(
+                    crate::x86::MSR_FSB_FREQ,
+                ))
+                .get(),
         )
     }
 }
