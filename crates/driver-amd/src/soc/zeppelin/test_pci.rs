@@ -4,8 +4,8 @@
 //! completes every message.
 extern crate std;
 use super::Die;
-use crate::smu::v9::MAILBOX;
 use crate::df::dies;
+use crate::smu::v9::MAILBOX;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{cell::RefCell, collections::BTreeMap, vec::Vec};
 

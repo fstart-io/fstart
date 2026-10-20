@@ -6,12 +6,12 @@
 //! MP init;
 //! [`crate::smu::threads::launch`] to release the APs; [`aps_ready`]
 //! then [`ccx_done`] after every CPU ran [`crate::ccx::zeppelin::cpu_init`].
+use crate::ccx::{CAC_WEIGHT_COUNT, CacWeights};
 use crate::ccx::tsc::DelayNs;
 use crate::soc::zeppelin::{Die, MAX_DIES};
-use crate::ccx::{CAC_WEIGHT_COUNT, CacWeights};
 pub use crate::smu::{ARGUMENT_COUNT, Error, Reply};
-use crate::smu::Mailbox;
 use crate::smn::SmnReg;
+use crate::smu::Mailbox;
 use fstart_pci::ConfigRegionAccess;
 use zerocopy::{
     Immutable, IntoBytes, KnownLayout, Unaligned,

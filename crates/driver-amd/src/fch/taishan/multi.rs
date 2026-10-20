@@ -12,13 +12,13 @@ use super::{
     Devices, NbifStrap, sata,
     usb::{self, ResetControl},
 };
-use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
     df::map::{self, IoBase, IoLimit},
     smn::{Smn, SmnReg},
     table,
     soc::zeppelin::{Die, Package},
 };
+use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},

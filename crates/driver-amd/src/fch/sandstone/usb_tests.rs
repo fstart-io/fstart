@@ -3,8 +3,8 @@ extern crate std;
 use crate::ccx::tsc::testing::Delay;
 use super::usb;
 use crate::ccx::picasso::Identity;
-use crate::smu::v10 as smu;
 use crate::smn::testing::{SmnModel, SmnTest};
+use crate::smu::v10 as smu;
 use std::{collections::BTreeMap, vec::Vec};
 struct Transport {
     regs: BTreeMap<u32, u32>,

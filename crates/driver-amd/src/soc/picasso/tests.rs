@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
-use crate::ccx::tsc::testing::Delay;
 use crate::apob::{self, Apob};
-use crate::df::picasso as fabric;
-use crate::smu::v10 as smu;
+use crate::ccx::tsc::testing::Delay;
 use crate::df::{Df, DfReg, testing::DfSpace};
-use crate::smn::{Smn, SmnReg, testing::{SmnModel, SmnTest}};
+use crate::df::picasso as fabric;
+use crate::smn::{
+    Smn, SmnReg,
+    testing::{SmnModel, SmnTest},
+};
+use crate::smu::v10 as smu;
 use tock_registers::interfaces::{Readable, Writeable};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! SMU policy v0x13 and persistent DMA pages.
 use crate::ccx::tsc::DelayNs;
-use crate::smu::v10 as smu;
 use crate::smn::Smn;
+use crate::smu::v10 as smu;
 use fstart_pci::ConfigRegionAccess;
 use core::{
     cell::UnsafeCell,

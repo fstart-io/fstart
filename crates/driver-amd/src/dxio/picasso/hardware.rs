@@ -4,14 +4,14 @@ use super::{
     super::{self as dxio, Slot},
     Descriptor, EngineConfig, Error, Hotplug, LinkSpeed, Operation, PORTS, PowerPolicy, Topology,
 };
-use crate::ccx::tsc::{Clock, DelayNs};
 use crate::{acp, soc::picasso::Die};
-use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
-use crate::smu::v10 as smu;
+use crate::ccx::tsc::{Clock, DelayNs};
 use crate::nbio::{
     iohc::{IohcBridgeCntl, NbProgDeviceRemap, iohc_bridge_cntl, nb_prog_device_remap},
     pcie,
 };
+use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
+use crate::smu::v10 as smu;
 use core::{
     cell::UnsafeCell,
     sync::atomic::{Ordering, compiler_fence},

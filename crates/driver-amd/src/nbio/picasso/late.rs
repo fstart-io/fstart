@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native PCIe power/CLKREQ and late SMU notifications.
+use crate::ccx::picasso::{Identity, Silicon};
 use crate::ccx::tsc::DelayNs;
+use crate::dxio::{Aspm, ClockRequest, Hotplug, picasso::Topology};
 use crate::nbio::{
     iohc::{IohcBridgeCntl, iohc_bridge_cntl},
     pcie,
 };
-use crate::dxio::{Aspm, ClockRequest, Hotplug, picasso::Topology};
-use crate::ccx::picasso::{Identity, Silicon};
-use crate::smu::v10::{self as smu, power};
 use crate::smn::{Smn, SmnReg, apply, rmw, write};
+use crate::smu::v10::{self as smu, power};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -197,8 +197,8 @@ pub fn after_enumeration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::smn::testing::SmnSpace;
     use crate::dxio::Descriptor;
+    use crate::smn::testing::SmnSpace;
     #[test]
     fn both_l1_modes_enable_gate_without_requiring_l1_substates() {
         for (aspm, gate) in [
