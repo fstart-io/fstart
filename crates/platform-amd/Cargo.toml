@@ -7,8 +7,6 @@ license.workspace = true
 [features]
 default = []
 picasso = ["fstart-driver-amd/picasso", "dep:fstart-arch"]
-# Explicit firmware-only immutable compiler input, not automatic vendor discovery.
-linked-microcode = ["picasso"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
 # Compiler/check/editor support; still a non-bootable console checkpoint.

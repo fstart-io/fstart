@@ -14,8 +14,7 @@ Native (no FSP) port of AMD Picasso and the Google Zork "Vilboz" boards.
   Vilboz14 and Vilboz360 differ only through EC CBI (board version,
   FW_CONFIG), so they share one board.
 - `crates/image-build/src/amd`, `tools/amdfw`: PSP/BIOS directory packing
-  (`fstart-amdfw`), APCB SPD injection (`fstart-apcb`) and the microcode
-  bundle tool (`fstart-ucode`).
+  (`fstart-amdfw`) and APCB SPD injection (`fstart-apcb`).
 
 ## x86 starts in DRAM
 
@@ -74,10 +73,10 @@ ACPI/SMBIOS tables, graphics, payload handoff, S3 and APOB NV (MRC cache).
 
 ```sh
 cargo fbuild build --board google-vilboz --release
-# with CPU microcode (bundle made by fstart-ucode from AMD's patch files):
-cargo fbuild build --board google-vilboz --release \
-  --compiler-input FSTART_AMD_MICROCODE_BUNDLE=/path/to/bundle.bin
 ```
+
+The CPUs load their microcode patch from the BIOS directory (type 0x66),
+like Zeppelin's; `fstart-amdfw --microcode` packs AMD's patch files there.
 
 This produces the reset image only. `fbuild assemble --image-config
 picasso-image.json` packs it with the PSP blobs listed in the JSON into a

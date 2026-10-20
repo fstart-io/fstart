@@ -8,5 +8,3 @@ publish = false
 [dependencies]
 fstart-image-build.workspace = true
 clap.workspace = true
-fstart-driver-amd = { workspace = true, features = ["picasso"] }
-sha2.workspace = true
