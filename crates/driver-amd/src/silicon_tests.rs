@@ -667,7 +667,7 @@ mod picasso {
         };
         let buffers = low(0x4800_0000, dxio::Buffers::new());
         let ports =
-            unsafe { dxio::train(&smn, &hw, buffers, DALBOZ, options, &mut delay) }.unwrap();
+            unsafe { dxio::train(&die, buffers, DALBOZ, options, &mut delay) }.unwrap();
         assert_eq!(
             ports
                 .ports

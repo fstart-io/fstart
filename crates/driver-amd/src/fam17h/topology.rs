@@ -30,6 +30,8 @@ pub trait Soc: 'static {
     const MAX_DIES: usize;
     /// The SMU mailbox of every die.
     const SMU: Mailbox;
+    /// The SMU message of the DXIO firmware ([`super::dxio`]).
+    const DXIO_SERVICE: u32;
     /// Fabric ID of the IOMS (the PCIe root complex) of `die`.
     fn ioms_fabric_id(die: u8) -> u8;
 }
@@ -388,6 +390,7 @@ mod tests {
             response: SmnReg::new(0x03b1_0564),
             arguments: SmnReg::new(0x03b1_0998),
         };
+        const DXIO_SERVICE: u32 = 0x0a;
         fn ioms_fabric_id(_: u8) -> u8 {
             9
         }

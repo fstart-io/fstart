@@ -3,8 +3,8 @@
 //! the default path of the vendor AmdNbioPcieZPPei (sp4r2 report
 //! NBIO_PCIE_SMU_ZP section 3).
 //!
-//! The DXIO firmware runs on the SMU of each die and is reached through SMU
-//! message 0x0f with the DXIO operation in the first argument.
+//! The DXIO firmware client is [`crate::fam17h::dxio`]; this is the Zeppelin
+//! lane mapping and the PCIe and NBIF setup around the training.
 //!
 //! Boards describe the engines of each die with [`Descriptor`]s in die
 //! lanes: on every die lanes 0-15 belong to PCIe core 0 (devices 1.x and
@@ -30,32 +30,30 @@
 //!     pcie(23, 16, 3, 3),
 //! ];
 //! ```
-use crate::fam17h::tsc::{Clock, DelayNs};
 use super::{
-    ECAM_BUSES, MAX_DIES,
+    Die, ECAM_BUSES, MAX_DIES,
     nbio::{
         self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NBIF_COUNT, NbProgDeviceRemap,
         PCIE_CORE_COUNT, PCIE_PORT_COUNT, PCIE_PORTS_PER_CORE, nbif_reg, pcie, rmw, strap,
     },
-    smu, Die,
+    smu,
 };
 pub use crate::fam17h::dxio::{
     Aspm, ClockRequest, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed,
     Operation, SataChannel,
 };
-use crate::fam17h::registers::{Smn, SmnReg};
-use core::{
-    cell::UnsafeCell,
-    sync::atomic::{Ordering, compiler_fence},
+use crate::fam17h::{
+    dxio,
+    registers::{Smn, SmnReg},
+    tsc::{Clock, DelayNs},
 };
-use fstart_log::{Hex, debug, error, info, warn};
+use fstart_log::{debug, error, info};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress, devfn, devfn_parts};
 use tock_registers::{
     LocalRegisterCopy,
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
 };
-use zerocopy::{FromBytes, IntoBytes};
 
 /// Engine records of a die's platform descriptor.
 pub const ENGINES: usize = 16;
@@ -92,7 +90,6 @@ pub enum Error {
     Descriptors,
     /// More dies than [`MAX_DIES`].
     Dies,
-    EngineCount,
     /// The firmware placed an engine on lanes or a port no descriptor owns.
     Unmapped {
         start: u8,
@@ -100,19 +97,16 @@ pub enum Error {
         port: u8,
     },
     DuplicatePort,
-    Smu(smu::Error),
-    /// Unexpected DXIO version response.
-    Version(u32),
-    /// A DXIO request didn't return.
-    Result(u8),
-    StateMachine(u8),
-    Timeout,
-    /// The DMA buffer is not below 4 GiB.
-    DmaAddress,
+    Firmware(dxio::Error),
+}
+impl From<dxio::Error> for Error {
+    fn from(error: dxio::Error) -> Self {
+        Self::Firmware(error)
+    }
 }
 impl From<EngineCountError> for Error {
-    fn from(_: EngineCountError) -> Self {
-        Self::EngineCount
+    fn from(error: EngineCountError) -> Self {
+        Self::Firmware(error.into())
     }
 }
 
@@ -307,58 +301,9 @@ fn training_done(
     Ok(())
 }
 
-const RESULT_ERROR: u8 = 2;
-const RESULT_OK: u8 = 3;
-const EVENT_NONE: u8 = 0;
-const EVENT_RESUME: u8 = 1;
-const EVENT_SM: u8 = 2;
-const EVENT_PERST: u8 = 4;
-const SM_CONFIGURED: u8 = 0x05;
-const SM_DONE: u8 = 0x0d;
-const SM_MAPPED: u8 = 0x0f;
-const VAR_RET_AFTER_MAP: u32 = 0x0e;
-const VAR_RET_AFTER_CONF: u32 = 0x0f;
-const VAR_ANCILLARY_V1: u32 = 0x10;
-const DATA_MACPCS: u32 = 2;
-const DATA_ENGINE_CONFIG: u32 = 3;
-const DATA_GPIO: u32 = 5;
-const TIMEOUT_US: u64 = 60_000_000;
-
-/// A reply to the state request of the event loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Event {
-    Done,
-    State(u8),
-    Perst {
-        deassert: bool,
-    },
-    /// An error event the vendor code goes on after.
-    Error(u8),
-    Resume,
-    Unknown(u8),
-}
-fn event(reply: [u32; 6]) -> Result<Event, Error> {
-    let [result, kind, state] = [reply[0] as u8, reply[1] as u8, reply[2] as u8];
-    match (result, kind) {
-        (RESULT_ERROR, EVENT_SM) => Err(Error::StateMachine(state)),
-        (RESULT_ERROR, _) => Ok(Event::Error(kind)),
-        (RESULT_OK, EVENT_NONE) => Ok(Event::Done),
-        (RESULT_OK, EVENT_SM) if state == SM_DONE => Ok(Event::Done),
-        (RESULT_OK, EVENT_SM) => Ok(Event::State(state)),
-        (RESULT_OK, EVENT_PERST) => Ok(Event::Perst {
-            deassert: state != 0,
-        }),
-        (RESULT_OK, EVENT_RESUME) => Ok(Event::Resume),
-        (RESULT_OK, _) => Ok(Event::Unknown(kind)),
-        _ => Err(Error::Result(result)),
-    }
-}
-
 /// The DXIO firmware reads and writes the platform descriptor of each die
-/// with DMA. One slot per die, 16-byte aligned.
-#[repr(C, align(16))]
-struct Slot(UnsafeCell<[u8; size_of::<EngineConfig>()]>);
-pub struct Buffers([Slot; MAX_DIES]);
+/// with DMA: one slot per die.
+pub struct Buffers([dxio::Slot<ENGINES>; MAX_DIES]);
 impl Default for Buffers {
     fn default() -> Self {
         Self::new()
@@ -366,84 +311,24 @@ impl Default for Buffers {
 }
 impl Buffers {
     pub const fn new() -> Self {
-        Self([const { Slot(UnsafeCell::new([0; size_of::<EngineConfig>()])) }; MAX_DIES])
+        Self([const { dxio::Slot::new() }; MAX_DIES])
     }
-}
-
-fn rpc<P: ConfigRegionAccess + Copy>(
-    die: &Die<P>,
-    operation: Operation,
-    mut arguments: [u32; 6],
-    delay: &mut impl DelayNs,
-) -> Result<[u32; 6], Error> {
-    arguments[0] = operation as u32;
-    let reply = die
-        .smu(smu::DXIO_SERVICE, arguments, delay)
-        .map_err(|e| {
-            error!(
-                "DXIO operation {} on die {} failed",
-                Hex(operation as u64),
-                die.index()
-            );
-            Error::Smu(e)
-        })?;
-    fstart_log::trace!(
-        "DXIO {} op {}: {} {} {}",
-        die.index(),
-        Hex(operation as u64),
-        Hex(reply[0].into()),
-        Hex(reply[1].into()),
-        Hex(reply[2].into())
-    );
-    Ok(reply)
 }
 
 /// The DXIO training of one die.
 struct Training<'a, P> {
     die: &'a Die<P>,
     descriptors: &'a [Descriptor],
-    buffer: &'a Slot,
+    buffer: &'a dxio::Slot<ENGINES>,
     /// Transfer size of the platform descriptor.
     size: usize,
     topology: PcieTopology,
 }
-impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
-    fn rpc(
-        &self,
-        operation: Operation,
-        arguments: [u32; 6],
-        delay: &mut impl DelayNs,
-    ) -> Result<[u32; 6], Error> {
-        rpc(self.die, operation, arguments, delay)
-    }
-    fn simple(&self, operation: Operation, delay: &mut impl DelayNs) -> Result<(), Error> {
-        self.rpc(operation, [0; 6], delay).map(drop)
-    }
-    fn address(&self) -> Result<u32, Error> {
-        let start = self.buffer.0.get() as usize;
-        u32::try_from(start + self.size).map_err(|_| Error::DmaAddress)?;
-        Ok(start as u32)
-    }
-    fn dwords(&self) -> u32 {
-        (self.size / 4) as u32
-    }
+impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
+    type Error = Error;
 
-    fn engine_config(&self, delay: &mut impl DelayNs) -> Result<EngineConfig, Error> {
-        // SAFETY: no DXIO request is in flight; the buffer is ours.
-        unsafe { (&mut *self.buffer.0.get())[..self.size].fill(0) };
-        compiler_fence(Ordering::SeqCst);
-        let arguments = [0, 0, self.address()?, self.dwords(), 0, 0];
-        self.rpc(Operation::EngineConfig, arguments, delay)?;
-        compiler_fence(Ordering::SeqCst);
-        // SAFETY: the synchronous request completed its DMA. DRAM, not MMIO.
-        let bytes = unsafe { self.buffer.0.get().read_volatile() };
-        let config = EngineConfig::read_from_bytes(&bytes).map_err(|_| Error::EngineCount)?;
-        config.engines()?;
-        Ok(config)
-    }
-
-    fn ports_mapped(&mut self, delay: &mut impl DelayNs) -> Result<(), Error> {
-        let config = self.engine_config(delay)?;
+    fn mapped(&mut self, delay: &mut impl DelayNs) -> Result<(), Error> {
+        let config = self.buffer.read_back(self.die, self.size, delay)?;
         let (topology, map) = map_ports(&config, self.descriptors).inspect_err(|e| {
             if let Error::Unmapped { start, end, port } = e {
                 error!("DXIO: can't map lanes {}-{} (port {})", start, end, port);
@@ -466,9 +351,8 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
         Ok(())
     }
 
-    /// State 5: the ports are configured but not trained yet (vendor
-    /// ffdeb04b/ffdeb296).
-    fn ports_configured(&self) {
+    /// The vendor ffdeb04b/ffdeb296.
+    fn configured(&mut self) -> Result<(), Error> {
         let smn = self.die.smn();
         for (p, port) in self.topology.ports.iter().enumerate() {
             let Some(port) = port else { continue };
@@ -494,100 +378,46 @@ impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
                 control(offset).set(value);
             }
         }
+        Ok(())
     }
 
-    /// PERST request of the DXIO firmware. The vendor code answers both
-    /// assert and deassert by giving GPIO26 (PCIE_RST_L) back to its native
-    /// function on the FCH of that die, through the SMN alias of the FCH ACPI
-    /// MMIO (0x02d01000).
-    fn perst(&self) {
+    /// The vendor code answers both assert and deassert by giving GPIO26
+    /// (PCIE_RST_L) back to its native function on the FCH of that die,
+    /// through the SMN alias of the FCH ACPI MMIO (0x02d01000).
+    fn perst(&mut self, _deassert: bool) {
         let smn = self.die.smn();
         smn.reg(FCH_GPIO26).set(0x00d2_0000);
         smn.reg(FCH_IOMUX_24)
             .modify(IomuxDword::PIN26.val(0));
     }
-
-    fn event_loop(
-        &mut self,
-        clock: &mut impl Clock,
-    ) -> Result<(), Error> {
-        let started = clock.now_us();
-        self.simple(Operation::Start, clock)?;
-        loop {
-            if clock.now_us().wrapping_sub(started) >= TIMEOUT_US {
-                error!("DXIO timeout");
-                return Err(Error::Timeout);
-            }
-            let reply = self.rpc(Operation::State, [0; 6], clock)?;
-            let event = event(reply).inspect_err(|e| match *e {
-                Error::StateMachine(state) => {
-                    error!("DXIO state machine error, state {}", Hex(state.into()))
-                }
-                Error::Result(result) => {
-                    error!("DXIO request didn't return: {}", Hex(result.into()))
-                }
-                _ => {}
-            })?;
-            match event {
-                Event::Done => return Ok(()),
-                Event::State(state) => {
-                    debug!("DXIO {} state {}", self.die.index(), Hex(state.into()));
-                    match state {
-                        SM_CONFIGURED => self.ports_configured(),
-                        SM_MAPPED => self.ports_mapped(clock)?,
-                        _ => {}
-                    }
-                }
-                Event::Perst { deassert } => {
-                    debug!(
-                        "DXIO {}: PERST {}",
-                        self.die.index(),
-                        if deassert { "deassert" } else { "assert" }
-                    );
-                    self.perst();
-                }
-                Event::Error(kind) => warn!("DXIO error event {}", Hex(kind.into())),
-                Event::Unknown(kind) => warn!("DXIO: unknown event {}", Hex(kind.into())),
-                Event::Resume => {}
-            }
-            self.simple(Operation::Resume, clock)?;
+}
+impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
+    fn train(&mut self, clock: &mut impl Clock) -> Result<(), Error> {
+        let address = self.buffer.address()?;
+        let die = self.die;
+        dxio::init(die, clock)?;
+        for variable in [
+            dxio::VAR_RET_AFTER_MAP,
+            dxio::VAR_RET_AFTER_CONF,
+            dxio::VAR_ANCILLARY_V1,
+        ] {
+            dxio::set_variable(die, variable, 1, clock)?;
         }
-    }
-
-    fn train(
-        &mut self,
-        clock: &mut impl Clock,
-    ) -> Result<(), Error> {
-        let address = self.address()?;
-        let version = self.rpc(Operation::Version, [0; 6], clock)?;
-        if version[0] as u8 != RESULT_OK {
-            error!(
-                "DXIO {}: unexpected version response {}",
-                self.die.index(),
-                Hex(version[0].into())
-            );
-            return Err(Error::Version(version[0]));
-        }
-
-        self.simple(Operation::Init, clock)?;
-        for variable in [VAR_RET_AFTER_MAP, VAR_RET_AFTER_CONF, VAR_ANCILLARY_V1] {
-            self.rpc(Operation::SetVariable, [0, variable, 1, 0, 0, 0], clock)?;
-        }
-        self.simple(Operation::LoadCapabilities, clock)?;
+        dxio::rpc(die, Operation::LoadCapabilities, [0; 6], clock)?;
         // No ancillary data: the descriptors have no tuning records.
-        for kind in [DATA_MACPCS, DATA_GPIO] {
-            self.rpc(Operation::LoadData, [0, 0, 0, 0, 1, kind], clock)?;
+        for kind in [dxio::DATA_MACPCS, dxio::DATA_GPIO] {
+            dxio::load_data(die, kind, None, clock)?;
         }
-        let load = [0, 0, address, self.dwords(), 0, DATA_ENGINE_CONFIG];
-        self.rpc(Operation::LoadData, load, clock)?;
+        let dwords = (self.size / 4) as u32;
+        dxio::load_data(die, dxio::DATA_ENGINE_CONFIG, Some((address, dwords)), clock)?;
 
-        self.event_loop(clock)?;
-        let config = self.engine_config(clock)?;
-        training_done(&self.die.smn(), &config, &mut self.topology)?;
+        dxio::run(die, self, clock)?;
+        let config = self.buffer.read_back(die, self.size, clock)?;
+        training_done(&die.smn(), &config, &mut self.topology)?;
         for port in self.topology.ports.iter().flatten() {
             info!(
                 "PCIe {}:{}.{} lanes {}-{}: {}",
-                self.die.index(),
+                die.index(),
                 port.device,
                 port.function,
                 port.start_lane,
@@ -789,7 +619,7 @@ fn post_training<P: ConfigRegionAccess + Copy>(
     bridges(&die.smn(), topology);
     // Not on AM4: meaning unknown, the argument depends on the socket count
     // (0xf: one socket). The vendor code ignores the result.
-    let _ = rpc(die, Operation::PostTraining, [0, 0, 0xf, 0, 0, 0], delay);
+    let _ = dxio::rpc(die, Operation::PostTraining, [0, 0, 0xf, 0, 0, 0], delay);
     interface_after_dxio(die, topology);
     set_subsystem_ids(&die.smn(), subsystem_id);
 }
@@ -847,7 +677,9 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
     let Some(first) = dies.first() else {
         return Ok(topologies);
     };
-    smu::MAILBOX.test(&first.smn(), clock).map_err(Error::Smu)?;
+    smu::MAILBOX
+        .test(&first.smn(), clock)
+        .map_err(dxio::Error::Smu)?;
     for die in dies {
         pre_training(&die.smn());
     }
@@ -855,14 +687,13 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
     let per_die = dies
         .iter()
         .zip(&configs)
-        .zip(&buffers.0)
+        .zip(&mut buffers.0)
         .zip(&mut topologies);
     for (((die, config), buffer), topology) in per_die {
         let descriptors = board(die);
         let size = config.transfer_size()?;
-        // SAFETY: no DXIO request of this die is in flight yet.
-        unsafe { (&mut *buffer.0.get()).copy_from_slice(config.as_bytes()) };
-        compiler_fence(Ordering::SeqCst);
+        buffer.load(config);
+        let buffer = &*buffer;
         if descriptors.iter().any(|d| d.engine == EngineType::Sata) {
             nbif_sata_enable(&die.smn());
         }
@@ -876,7 +707,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         };
         // Vendor PCD 0xcd/0xce/0xcf select die 0 for the early init cleanup.
         if die.index() == 0 {
-            training.simple(Operation::CleanupEarly, clock)?;
+            dxio::rpc(die, Operation::CleanupEarly, [0; 6], clock)?;
         }
         if descriptors.is_empty() {
             continue;
@@ -901,7 +732,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::fam17h::registers::testing::SmnSpace;
-    use zerocopy::byteorder::U32;
+    use zerocopy::{IntoBytes, byteorder::U32};
 
     const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
         Descriptor {
@@ -1032,20 +863,6 @@ mod tests {
         assert_eq!(bridge(1, 3), 0x40005);
         assert_eq!(bridge(1, 1), 0x40005);
         assert_eq!(bridge(4, 1), 0x40005);
-    }
-
-    #[test]
-    fn state_events() {
-        assert_eq!(event([3, 2, 0x0f, 0, 0, 0]), Ok(Event::State(SM_MAPPED)));
-        assert_eq!(event([3, 2, 0x0d, 0, 0, 0]), Ok(Event::Done));
-        assert_eq!(event([3, 0, 0, 0, 0, 0]), Ok(Event::Done));
-        assert_eq!(
-            event([3, 4, 1, 0, 0, 0]),
-            Ok(Event::Perst { deassert: true })
-        );
-        assert_eq!(event([2, 4, 0, 0, 0, 0]), Ok(Event::Error(4)));
-        assert_eq!(event([2, 2, 7, 0, 0, 0]), Err(Error::StateMachine(7)));
-        assert_eq!(event([1, 2, 0x0d, 0, 0, 0]), Err(Error::Result(1)));
     }
 
     /// The typed registers keep the vendor (clear, set) masks: every

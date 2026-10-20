@@ -36,6 +36,7 @@ pub enum Picasso {}
 impl crate::fam17h::topology::Soc for Picasso {
     const MAX_DIES: usize = 1;
     const SMU: crate::fam17h::smu::Mailbox = smu::MAILBOX;
+    const DXIO_SERVICE: u32 = smu::DXIO_SERVICE;
     fn ioms_fabric_id(_: u8) -> u8 {
         9
     }

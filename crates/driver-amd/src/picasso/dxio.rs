@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Picasso DXIO firmware wire protocol and board-to-engine mapping.
-use crate::fam17h::tsc::DelayNs;
+//! Picasso DXIO board-to-engine mapping; the firmware client is
+//! [`crate::fam17h::dxio`].
 pub use super::dxio_hardware::{Buffers, Options, train};
-use super::{acp, registers::Smn, smu};
-use fstart_pci::ConfigRegionAccess;
+use super::acp;
+use crate::fam17h::dxio;
 pub use crate::fam17h::dxio::{
     Aspm, ClockRequest, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed,
     Operation, SataChannel,
@@ -28,18 +28,18 @@ pub enum Error {
     UnmatchedEngine,
     DuplicatePort,
     Remap,
-    Smu(smu::Error),
-    Result(u32),
-    StateMachine,
-    Timeout,
-    DmaAddress,
     AudioPolicy,
     Acp(acp::Error),
+    Firmware(dxio::Error),
 }
-
+impl From<dxio::Error> for Error {
+    fn from(error: dxio::Error) -> Self {
+        Self::Firmware(error)
+    }
+}
 impl From<EngineCountError> for Error {
-    fn from(_: EngineCountError) -> Self {
-        Self::EngineCount
+    fn from(error: EngineCountError) -> Self {
+        Self::Firmware(error.into())
     }
 }
 
@@ -221,36 +221,6 @@ impl Topology {
     }
 }
 
-pub fn rpc(
-    smn: &Smn<impl ConfigRegionAccess>,
-    operation: Operation,
-    mut arguments: [u32; 6],
-    delay: &mut impl DelayNs,
-) -> Result<[u32; 6], Error> {
-    arguments[0] = operation as u32;
-    smu::request(smn, smu::DXIO_SERVICE, arguments, delay).map_err(Error::Smu)
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Event {
-    Done,
-    Mapped,
-    Configured,
-    Resume,
-}
-pub fn event(reply: [u32; 6]) -> Result<Event, Error> {
-    let result = reply[0] & 0xff;
-    let kind = reply[1] & 0xff;
-    let state = reply[2] & 0xff;
-    match (result, kind, state) {
-        (2, 2, _) => Err(Error::StateMachine),
-        (3, 0, _) | (3, 2, 0x0d) => Ok(Event::Done),
-        (3, 2, 0x0f) => Ok(Event::Mapped),
-        (3, 2, 5) => Ok(Event::Configured),
-        (2 | 3, _, _) => Ok(Event::Resume),
-        _ => Err(Error::Result(result)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,15 +278,5 @@ mod tests {
         ));
         config.count = zerocopy::byteorder::U16::new(9);
         assert_eq!(config.transfer_size(), Err(EngineCountError));
-    }
-    #[test]
-    fn state_errors_and_success_are_distinct() {
-        assert_eq!(event([3, 2, 15, 0, 0, 0]), Ok(Event::Mapped));
-        assert_eq!(event([3, 2, 5, 0, 0, 0]), Ok(Event::Configured));
-        assert_eq!(event([3, 2, 13, 0, 0, 0]), Ok(Event::Done));
-        assert_eq!(event([3, 0, 0, 0, 0, 0]), Ok(Event::Done));
-        assert_eq!(event([2, 2, 0, 0, 0, 0]), Err(Error::StateMachine));
-        assert_eq!(event([2, 1, 0, 0, 0, 0]), Ok(Event::Resume));
-        assert_eq!(event([1, 2, 13, 0, 0, 0]), Err(Error::Result(1)));
     }
 }

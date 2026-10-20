@@ -40,6 +40,7 @@ impl Soc for Zeppelin {
     /// Two dies on SP4, one on SP4r2.
     const MAX_DIES: usize = 2;
     const SMU: crate::fam17h::smu::Mailbox = smu::MAILBOX;
+    const DXIO_SERVICE: u32 = smu::DXIO_SERVICE;
     fn ioms_fabric_id(die: u8) -> u8 {
         (die << 5) | 4
     }
