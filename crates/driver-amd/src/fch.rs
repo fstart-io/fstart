@@ -9,16 +9,33 @@ use tock_registers::{
     register_bitfields, register_structs,
     registers::{ReadOnly, ReadWrite},
 };
+pub mod early;
+
 register_bitfields![u8,
-    AoacControl [TARGET OFFSET(0) NUMBITS(2) [Initialized=1], POWER OFFSET(3) NUMBITS(1) []],
-    AoacState [POWER_RESET OFFSET(0) NUMBITS(1) [], REFERENCE_CLOCK OFFSET(1) NUMBITS(1) []]
+    /// AOAC device D3 control (ACPIMMIO 0x1e40 + 2 * device).
+    pub AoacControl [TARGET OFFSET(0) NUMBITS(2) [Initialized=1], POWER OFFSET(3) NUMBITS(1) []],
+    pub AoacState [POWER_RESET OFFSET(0) NUMBITS(1) [], REFERENCE_CLOCK OFFSET(1) NUMBITS(1) []],
+    /// PMx74.
+    pub AcpiConfig [DECODE_STD OFFSET(0) NUMBITS(1) [], GLOBAL_EN OFFSET(1) NUMBITS(1) [],
+        RTC_EN_EN OFFSET(2) NUMBITS(1) [], TIMER_EN_EN OFFSET(4) NUMBITS(1) []]
 ];
 register_bitfields![u32,
-    Decode [LEGACY OFFSET(0) NUMBITS(1) [], CF9 OFFSET(1) NUMBITS(1) [],
+    /// PMx00 decode enables.
+    pub Decode [LEGACY OFFSET(0) NUMBITS(1) [], CF9 OFFSET(1) NUMBITS(1) [],
         DMA OFFSET(2) NUMBITS(1) [], DMA80 OFFSET(3) NUMBITS(1) [],
+        SMBUS_ASF_IO OFFSET(4) NUMBITS(1) [],
         IOAPIC OFFSET(5) NUMBITS(1) [], HPET OFFSET(6) NUMBITS(1) [],
+        SMBUS_ASF_IO_BASE OFFSET(8) NUMBITS(8) [],
         HPET64 OFFSET(28) NUMBITS(1) [], HPET_MSI OFFSET(29) NUMBITS(1) []]
 ];
+/// The ACPI fixed I/O blocks the FCH decodes (PMx60..PMx68).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpiPorts {
+    pub event: u16,
+    pub control: u16,
+    pub timer: u16,
+    pub gpe: u16,
+}
 register_structs! {
     Pm {
         (0x00 => decode: ReadWrite<u32, Decode::Register>),
@@ -30,7 +47,7 @@ register_structs! {
         (0x68 => gpe: ReadWrite<u16>),
         (0x6a => command: ReadWrite<u16>),
         (0x6c => _reserved2),
-        (0x74 => config: ReadWrite<u8>),
+        (0x74 => config: ReadWrite<u8, AcpiConfig::Register>),
         (0x75 => _reserved3),
         (0xbe => reset_control: ReadWrite<u8>),
         (0xbf => @END),
@@ -152,15 +169,27 @@ impl Fch {
             Decode::IOAPIC::SET + Decode::HPET::SET + Decode::HPET_MSI::SET + Decode::HPET64::CLEAR,
         );
     }
-    /// ACPI standard decode only. No SMI routing is enabled without an installed handler.
-    pub fn acpi_ports_without_smm(&mut self) {
+    /// fch_init_acpi_decode: the ACPI blocks and their standard decode.
+    pub fn acpi_decode(&mut self, ports: AcpiPorts) {
         let pm = self.pm();
-        pm.event.set(0x400);
-        pm.control.set(0x404);
-        pm.timer.set(0x408);
-        pm.gpe.set(0x420);
+        pm.event.set(ports.event);
+        pm.control.set(ports.control);
+        pm.timer.set(ports.timer);
+        pm.gpe.set(ports.gpe);
+        pm.config.modify(AcpiConfig::DECODE_STD::SET);
+    }
+    /// fch_init_acpi_ports without an SMI handler: no SMI command port, so no
+    /// SMI routing is enabled.
+    pub fn acpi_ports_without_smm(&mut self, ports: AcpiPorts) {
+        self.acpi_decode(ports);
+        let pm = self.pm();
         pm.command.set(0);
-        pm.config.set(0x1 | 0x2 | 0x4 | 0x10);
+        pm.config.write(
+            AcpiConfig::DECODE_STD::SET
+                + AcpiConfig::GLOBAL_EN::SET
+                + AcpiConfig::RTC_EN_EN::SET
+                + AcpiConfig::TIMER_EN_EN::SET,
+        );
     }
     pub fn disable_keyboard_reset(&mut self) {
         let register = &self.pm().reset_control;
