@@ -6,7 +6,8 @@ edition.workspace = true
 license = "MIT OR Apache-2.0"
 publish = false
 
-# A firmware build targets one generation (one 16 MiB flash half).
+# Generation features are additive: a board enables every generation it
+# supports and one reset image serves them all (the CPU picks at runtime).
 [features]
 default = []
 naples = ["fstart-driver-zen/naples"]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! AMD SP3 (Naples, Rome, Milan) flash image: one 16 MiB half per
-//! generation, and the 32 MiB dual image (FIRMWARE_IMAGE §1.2, §2.1, §4, §7
-//! of the SP3 analysis).
+//! AMD SP3 (Naples, Rome, Milan) flash image: one build composed into
+//! every 16 MiB half of the vendor ROM whose generation the board supports
+//! (FIRMWARE_IMAGE §1.2, §2.1, §4, §7 of the SP3 analysis).
 //!
 //! Written from the SP3 reverse engineering.
 //!
@@ -10,19 +10,26 @@
 //!                                 PSP/BIOS directories, PSP blobs, APCB,
 //!                                 AMI NVRAM; everything the PSP/ABL read)
 //! [prefix_end, ffs_offset)        erased (0xff)
-//! [ffs_offset, reset offset)      fstart FFS, then erased
-//! [reset offset, 16 MiB)          fstart reset image (BIOS directory 0x62)
+//! [ffs_offset, ffs_end)           fstart FFS, then erased; same offsets and
+//!                                 bytes in every composed half
+//! [slot, 16 MiB - image)          erased: the front of the vendor 0x62 slot
+//! [16 MiB - image, 16 MiB)        fstart reset image, identical in every half
 //! ```
 //!
-//! The vendor AMI FV_DATA/FV_MAIN/FV_BB are dropped. The `0x62` geometry
-//! stays the vendor's unless the plan opts into rewriting it, in which case
-//! every `0x62` entry (L1 and L2) gets the build's geometry and the
-//! directory Fletcher-32 checksums are recomputed.
+//! The vendor `0x62` slots of all SP3 donors end at the top of the half and
+//! at the same DRAM address; only their start differs. The reset image is
+//! linked once for the smallest slot and put at the end of each half's
+//! vendor slot: the PSP copies the whole slot, so the image lands at its
+//! link address whatever the slot size, and the vendor directories stay
+//! byte-identical. `ffs_end` is the lowest slot start among the composed
+//! halves, so one FFS (and one locator patched into the reset image) fits
+//! every half.
 //!
-//! Two halves form the 32 MiB dual image. The PSP boot ROM of each
-//! generation searches the lower half first (Naples only the lower one) and
-//! takes the first EFS whose generation word it accepts, so the order is
-//! checked by simulating that rule for every half's generation.
+//! The PSP boot ROM of each generation searches the lower half first
+//! (Naples only the lower one) and takes the first EFS whose generation
+//! word it accepts, so a 32 MiB image is checked by simulating that rule
+//! for every half's generation. Halves of a generation the board does not
+//! support keep their vendor bytes.
 //!
 //! The PSP copies the reset image to DRAM; it is not loaded from the FFS.
 //! As an initial image it carries the stage's constant trust policy and the
@@ -35,7 +42,7 @@ use core::ops::Range;
 use fstart_core::ffs::locator::{LOCATOR_SIZE, LocatorBlock};
 use fstart_core::ffs::trust::{TRUST_SIZE, TrustBlock};
 use fstart_driver_zen::psp::directory::{
-    self, BiosEntry, DirError, Directories, Directory, Efs, Entry, PspEntry, bios, fletcher32, psp,
+    BiosEntry, DirError, Directories, Directory, Efs, Entry, PspEntry, bios, psp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -61,7 +68,8 @@ pub fn generation_of(word: u32) -> Result<Generation, ImageError> {
         .ok_or(ImageError::UnknownGeneration(word))
 }
 
-/// Which 16 MiB half of a 32 MiB dual-image flash a build occupies.
+/// One 16 MiB half of a 32 MiB dual-image flash (a 16 MiB flash is its
+/// lower half).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FlashHalf {
     Lower,
@@ -76,13 +84,13 @@ impl FlashHalf {
         }
     }
 
-    fn range(self) -> Range<usize> {
+    pub fn range(self) -> Range<usize> {
         self.offset()..self.offset() + HALF_SIZE
     }
 }
 
-/// The `0x62` slot: where the reset image sits in the half and where the
-/// PSP copies it.
+/// A `0x62` slot: where a reset image sits in the half and where the PSP
+/// copies it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetSlot {
     pub flash_offset: u32,
@@ -93,7 +101,7 @@ pub struct ResetSlot {
 impl ResetSlot {
     /// The image-side rules: a nonempty slot ending at the top of the half,
     /// because the vendor-style 16-bit entry may run from the flash copy
-    /// (FIRMWARE_IMAGE §5). DRAM placement is the platform's business.
+    /// (FIRMWARE_IMAGE §5). DRAM placement is checked by [`FlashPlan`].
     pub fn check(&self) -> Result<(), ImageError> {
         let end = self.flash_offset as usize + self.size as usize;
         if self.size < 0x1000 || end != HALF_SIZE {
@@ -102,14 +110,15 @@ impl ResetSlot {
         Ok(())
     }
 
-    fn range(&self) -> Range<usize> {
-        self.flash_offset as usize..HALF_SIZE
+    /// End of the DRAM copy (exclusive).
+    pub const fn dram_end(&self) -> u64 {
+        self.destination + self.size as u64
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageError {
-    /// A half must be exactly 16 MiB (a full image 32 MiB).
+    /// A half must be exactly 16 MiB, a full image 16 or 32 MiB.
     Size {
         expected: usize,
         actual: usize,
@@ -117,20 +126,19 @@ pub enum ImageError {
     Directory(DirError),
     /// The EFS generation word is none of the three.
     UnknownGeneration(u32),
-    /// The half is for another generation than the build.
-    WrongGeneration {
-        expected: Generation,
-        found: Generation,
-    },
+    /// No half of the vendor ROM has a generation the board supports.
+    NoSupportedHalf,
     /// The `0x62` entries are missing, inconsistent or not a copied reset
     /// image.
     ResetEntry(&'static str),
     InvalidSlot(ResetSlot),
-    /// The vendor's `0x62` geometry differs from the build's and the plan
-    /// did not allow rewriting it.
-    GeometryMismatch {
+    /// A vendor `0x62` slot cannot carry the reset image at its link
+    /// address.
+    Slot {
+        half: FlashHalf,
         vendor: ResetSlot,
-        build: ResetSlot,
+        image: ResetSlot,
+        reason: &'static str,
     },
     /// The vendor prefix reaches into the FFS or reset image.
     PrefixOverlap {
@@ -141,7 +149,7 @@ pub enum ImageError {
         size: usize,
         capacity: usize,
     },
-    /// The reset image is not a full slot or has no reset vector.
+    /// The reset image does not match its slot or has no reset vector.
     ResetImage(&'static str),
     /// Trust or locator patching of the reset image failed.
     Patch(&'static str),
@@ -151,6 +159,8 @@ pub enum ImageError {
         generation: Generation,
         booted: Option<FlashHalf>,
     },
+    /// The flash plan itself is inconsistent.
+    Plan(&'static str),
 }
 
 impl From<DirError> for ImageError {
@@ -241,22 +251,15 @@ fn prefix_end_of<E: Entry>(
     })
 }
 
-/// Every `0x62` entry with its byte offset in the half.
+/// Every `0x62` entry with its directory.
 fn reset_entries<'a>(
     dirs: &'a Directories<'a, BiosEntry>,
-) -> impl Iterator<Item = (usize, &'a Directory<'a, BiosEntry>, &'a BiosEntry)> + 'a {
+) -> impl Iterator<Item = (&'a Directory<'a, BiosEntry>, &'a BiosEntry)> + 'a {
     dirs.levels().flat_map(|dir| {
         dir.entries()
             .iter()
-            .enumerate()
-            .filter(|(_, e)| e.kind() == bios::RESET_IMAGE)
-            .map(move |(i, e)| {
-                (
-                    dir.offset() + 16 + i * core::mem::size_of::<BiosEntry>(),
-                    dir,
-                    e,
-                )
-            })
+            .filter(|e| e.kind() == bios::RESET_IMAGE)
+            .map(move |e| (dir, e))
     })
 }
 
@@ -272,7 +275,7 @@ impl VendorLayout {
         let psp_dirs = efs.psp_directories()?;
 
         let resets = reset_entries(&bios_dirs)
-            .map(|(_, dir, e)| {
+            .map(|(dir, e)| {
                 let range = dir.range(e)?;
                 Ok((
                     range,
@@ -324,50 +327,112 @@ impl VendorLayout {
     }
 }
 
-/// The vendor half a build uses: the image itself if it is one 16 MiB half,
-/// else `half` of a 32 MiB dual image.
-pub fn select_half(image: &[u8], half: FlashHalf) -> Result<&[u8], ImageError> {
-    match image.len() {
-        HALF_SIZE => Ok(image),
-        n if n == 2 * HALF_SIZE => Ok(&image[half.range()]),
-        actual => Err(ImageError::Size {
-            expected: 2 * HALF_SIZE,
-            actual,
-        }),
+/// The 16 MiB halves of a vendor ROM: one for a 16 MiB flash, two for a
+/// 32 MiB dual image.
+pub fn halves(image: &[u8]) -> Result<Vec<(FlashHalf, &[u8])>, ImageError> {
+    let halves: &[FlashHalf] = match image.len() {
+        HALF_SIZE => &[FlashHalf::Lower],
+        n if n == 2 * HALF_SIZE => &[FlashHalf::Lower, FlashHalf::Upper],
+        actual => {
+            return Err(ImageError::Size {
+                expected: 2 * HALF_SIZE,
+                actual,
+            });
+        }
+    };
+    Ok(halves.iter().map(|&h| (h, &image[h.range()])).collect())
+}
+
+/// The generation of a half's EFS, `None` without a recognized EFS.
+pub fn half_generation(half: &[u8]) -> Option<Generation> {
+    Efs::new(half)
+        .ok()
+        .and_then(|efs| generation_of(efs.generation_word()).ok())
+}
+
+/// How a build is composed into the vendor ROM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlashPlan {
+    /// Generations the board supports; halves of other generations keep
+    /// their vendor bytes.
+    #[serde(with = "generation_names")]
+    pub generations: Vec<Generation>,
+    /// The reset image as linked: its size, its DRAM link address and its
+    /// place at the top of a half (the smallest slot it fits).
+    pub reset: ResetSlot,
+    /// Flash offset of the FFS in every half (start of the runtime firmware
+    /// window).
+    pub ffs_offset: u32,
+    /// Lowest DRAM address a vendor slot may be copied to: the end of the
+    /// platform's early region, which the reset image needs intact.
+    pub dram_floor: u64,
+}
+
+/// What happens to one half of the vendor ROM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HalfAction {
+    /// Composed: vendor prefix, FFS, the reset image at the end of `slot`.
+    Compose(VendorLayout),
+    /// Kept byte-identical: no recognized EFS (`None`) or a generation the
+    /// board does not support.
+    Keep(Option<Generation>),
+}
+
+/// The plan applied to a vendor ROM, before any byte is written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Survey {
+    pub halves: Vec<(FlashHalf, HalfAction)>,
+    /// End of the common FFS window: the lowest composed slot start.
+    pub ffs_end: u32,
+}
+
+impl Survey {
+    /// FFS capacity of the common window.
+    pub fn ffs_capacity(&self, plan: &FlashPlan) -> usize {
+        (self.ffs_end as usize).saturating_sub(plan.ffs_offset as usize)
     }
 }
 
-/// How one half is composed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HalfPlan {
-    #[serde(with = "generation_name")]
-    pub generation: Generation,
-    /// The slot the reset image was linked for.
-    pub reset: ResetSlot,
-    /// Flash offset of the FFS (start of the runtime firmware window).
-    pub ffs_offset: u32,
-    /// Rewrite the vendor's `0x62` entries if their geometry differs.
-    pub rewrite_reset_geometry: bool,
-}
-
-impl HalfPlan {
-    /// Check a vendor half against the plan without composing: generation,
-    /// `0x62` geometry (or the rewrite opt-in) and room for the FFS above
-    /// the vendor prefix.
-    pub fn check_vendor(&self, vendor: &[u8]) -> Result<VendorLayout, ImageError> {
-        let layout = VendorLayout::parse(vendor)?;
-        if layout.generation != self.generation {
-            return Err(ImageError::WrongGeneration {
-                expected: self.generation,
-                found: layout.generation,
-            });
-        }
+impl FlashPlan {
+    /// The plan's own consistency: the image at the top of a half, above
+    /// the DRAM floor, and room for an FFS below it.
+    pub fn check(&self) -> Result<(), ImageError> {
         self.reset.check()?;
-        if layout.reset != self.reset && !self.rewrite_reset_geometry {
-            return Err(ImageError::GeometryMismatch {
-                vendor: layout.reset,
-                build: self.reset,
-            });
+        if self.generations.is_empty() {
+            return Err(ImageError::Plan("no supported generation"));
+        }
+        if self.reset.destination < self.dram_floor {
+            return Err(ImageError::Plan("reset image below the DRAM floor"));
+        }
+        if self.ffs_offset == 0 || self.ffs_offset >= self.reset.flash_offset {
+            return Err(ImageError::Plan("FFS offset outside the half"));
+        }
+        Ok(())
+    }
+
+    /// Check a supported vendor half: its slot can carry the image at the
+    /// image's link address (same top in flash and DRAM, large enough,
+    /// above the DRAM floor) and its prefix ends below the FFS.
+    pub fn check_half(&self, half: FlashHalf, vendor: &[u8]) -> Result<VendorLayout, ImageError> {
+        let layout = VendorLayout::parse(vendor)?;
+        let slot = layout.reset;
+        let fail = |reason| ImageError::Slot {
+            half,
+            vendor: slot,
+            image: self.reset,
+            reason,
+        };
+        if slot.dram_end() != self.reset.dram_end() {
+            return Err(fail("DRAM copy ends elsewhere"));
+        }
+        if slot.size < self.reset.size {
+            return Err(fail("slot smaller than the reset image"));
+        }
+        if slot.destination < self.dram_floor {
+            return Err(fail("slot reaches into the early region"));
+        }
+        if slot.flash_offset <= self.ffs_offset {
+            return Err(fail("slot starts below the FFS"));
         }
         if layout.prefix_end > self.ffs_offset as usize {
             return Err(ImageError::PrefixOverlap {
@@ -375,34 +440,40 @@ impl HalfPlan {
                 limit: self.ffs_offset as usize,
             });
         }
-        if self.ffs_offset > self.reset.flash_offset {
-            return Err(ImageError::PrefixOverlap {
-                prefix_end: self.ffs_offset as usize,
-                limit: self.reset.flash_offset as usize,
-            });
-        }
         Ok(layout)
     }
 
-    /// FFS capacity: from the FFS offset up to the reset image.
-    pub fn ffs_capacity(&self) -> usize {
-        (self.reset.flash_offset as usize).saturating_sub(self.ffs_offset as usize)
+    /// Decide every half of `vendor_rom` and the common FFS window.
+    pub fn survey(&self, vendor_rom: &[u8]) -> Result<Survey, ImageError> {
+        self.check()?;
+        let halves = halves(vendor_rom)?
+            .into_iter()
+            .map(|(half, bytes)| {
+                let action = match half_generation(bytes) {
+                    Some(g) if self.generations.contains(&g) => {
+                        HalfAction::Compose(self.check_half(half, bytes)?)
+                    }
+                    other => HalfAction::Keep(other),
+                };
+                Ok((half, action))
+            })
+            .collect::<Result<Vec<_>, ImageError>>()?;
+        let ffs_end = halves
+            .iter()
+            .filter_map(|(_, a)| match a {
+                HalfAction::Compose(layout) => Some(layout.reset.flash_offset),
+                HalfAction::Keep(_) => None,
+            })
+            .min()
+            .ok_or(ImageError::NoSupportedHalf)?;
+        Ok(Survey { halves, ffs_end })
     }
 }
 
-/// Compose one half: vendor prefix, FFS, reset image, `0x62` entries.
-/// `reset_image` must already be patched ([`patch_reset_image`]). The
-/// result is re-parsed: its directories verify and point at the new reset
-/// image.
-pub fn compose_half(
-    vendor: &[u8],
-    plan: &HalfPlan,
-    reset_image: &[u8],
-    ffs: &[u8],
-) -> Result<Vec<u8>, ImageError> {
-    let layout = plan.check_vendor(vendor)?;
+/// The reset image must be exactly the plan's image with a reset vector.
+fn check_reset_image(plan: &FlashPlan, reset_image: &[u8]) -> Result<(), ImageError> {
     if reset_image.len() != plan.reset.size as usize {
-        return Err(ImageError::ResetImage("not exactly the 0x62 slot"));
+        return Err(ImageError::ResetImage("not the linked image size"));
     }
     let vector = &reset_image[reset_image.len() - 16..];
     if vector.iter().all(|&b| b == 0) || vector.iter().all(|&b| b == 0xff) {
@@ -410,7 +481,26 @@ pub fn compose_half(
             "no reset vector in the last 16 bytes",
         ));
     }
-    let capacity = plan.ffs_capacity();
+    Ok(())
+}
+
+/// Compose one supported half: vendor prefix, FFS at the plan's offset
+/// (below this half's slot), the reset image at the end of the vendor
+/// slot with the slot's front erased. `reset_image` must already be
+/// patched ([`patch_reset_image`]). The directories are not touched; the
+/// result is re-parsed to prove they still describe it.
+pub fn compose_half(
+    half: FlashHalf,
+    vendor: &[u8],
+    plan: &FlashPlan,
+    reset_image: &[u8],
+    ffs: &[u8],
+) -> Result<Vec<u8>, ImageError> {
+    plan.check()?;
+    let layout = plan.check_half(half, vendor)?;
+    check_reset_image(plan, reset_image)?;
+    let ffs_offset = plan.ffs_offset as usize;
+    let capacity = layout.reset.flash_offset as usize - ffs_offset;
     if ffs.len() > capacity {
         return Err(ImageError::FfsTooLarge {
             size: ffs.len(),
@@ -418,55 +508,18 @@ pub fn compose_half(
         });
     }
 
-    let ffs_offset = plan.ffs_offset as usize;
     let mut out = vec![0xff; HALF_SIZE];
     out[..layout.prefix_end].copy_from_slice(&vendor[..layout.prefix_end]);
     out[ffs_offset..ffs_offset + ffs.len()].copy_from_slice(ffs);
-    out[plan.reset.range()].copy_from_slice(reset_image);
-    if layout.reset != plan.reset {
-        rewrite_reset_entries(&mut out, plan.reset)?;
-    }
+    out[HALF_SIZE - reset_image.len()..].copy_from_slice(reset_image);
 
     let composed = VendorLayout::parse(&out)?;
-    if composed.reset != plan.reset || composed.prefix_end != layout.prefix_end {
+    if composed != layout {
         return Err(ImageError::ResetEntry(
             "composed directories do not describe the image",
         ));
     }
     Ok(out)
-}
-
-/// Point every `0x62` entry at `slot` and fix the checksums of the
-/// directories that hold one. The source keeps the vendor's encoding: an
-/// MMIO address on gen1 (Naples), an offset with the entry's address-mode
-/// bits 63:62 on gen2.
-fn rewrite_reset_entries(half: &mut [u8], slot: ResetSlot) -> Result<(), ImageError> {
-    let (gen1, patches) = {
-        let efs = Efs::new(half)?;
-        let generation = generation_of(efs.generation_word())?;
-        let dirs = efs.bios_directories(generation)?;
-        let patches = reset_entries(&dirs)
-            .map(|(at, dir, e)| (at, dir.offset(), dir.entries().len(), e.source()))
-            .collect::<Vec<_>>();
-        (efs.is_gen1(), patches)
-    };
-    for &(at, _, _, source) in &patches {
-        let offset = u64::from(slot.flash_offset);
-        let source = if gen1 {
-            directory::MMIO_BASE + offset
-        } else {
-            source & (3 << 62) | offset
-        };
-        half[at + 4..at + 8].copy_from_slice(&slot.size.to_le_bytes());
-        half[at + 8..at + 16].copy_from_slice(&source.to_le_bytes());
-        half[at + 16..at + 24].copy_from_slice(&slot.destination.to_le_bytes());
-    }
-    for &(_, dir, count, _) in &patches {
-        let body = dir + 8..dir + 16 + count * core::mem::size_of::<BiosEntry>();
-        let sum = fletcher32(&half[body]);
-        half[dir + 4..dir + 8].copy_from_slice(&sum.to_le_bytes());
-    }
-    Ok(())
 }
 
 /// The half a generation's PSP boot ROM boots from a 32 MiB image: the
@@ -508,27 +561,6 @@ pub fn check_dual(image: &[u8]) -> Result<(), ImageError> {
                 })
             }
         })
-}
-
-/// The 32 MiB dual image of two composed halves.
-pub fn compose_dual(lower: &[u8], upper: &[u8]) -> Result<Vec<u8>, ImageError> {
-    exact_size(lower, HALF_SIZE)?;
-    exact_size(upper, HALF_SIZE)?;
-    let image = [lower, upper].concat();
-    check_dual(&image)?;
-    Ok(image)
-}
-
-/// Replace one half of a 32 MiB image (e.g. the vendor dual ROM) with a
-/// composed half, keeping the other byte-identical, and check the boot
-/// order.
-pub fn replace_half(image: &[u8], half: FlashHalf, composed: &[u8]) -> Result<Vec<u8>, ImageError> {
-    exact_size(image, 2 * HALF_SIZE)?;
-    exact_size(composed, HALF_SIZE)?;
-    let mut out = image.to_vec();
-    out[half.range()].copy_from_slice(composed);
-    check_dual(&out)?;
-    Ok(out)
 }
 
 /// What [`patch_reset_image`] filled in.
@@ -617,43 +649,55 @@ pub fn patch_reset_image(reset: &mut [u8], ffs: &[u8]) -> Result<Patched, ImageE
     Ok(Patched { trust, locator })
 }
 
-/// The flash images of one build.
+/// The flash image of one build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sp3Flash {
-    /// The composed 16 MiB half.
-    pub half: Vec<u8>,
-    /// The 32 MiB image: the vendor dual ROM with only this build's half
-    /// replaced (when the vendor ROM is 32 MiB).
-    pub dual: Option<Vec<u8>>,
+    /// The composed ROM, the vendor ROM's size (16 or 32 MiB).
+    pub image: Vec<u8>,
+    pub survey: Survey,
     pub patched: Patched,
 }
 
-/// Compose a build: patch the reset image from the FFS, compose the half
-/// from the vendor ROM's `half` and, for a 32 MiB vendor ROM, put it back
-/// into that ROM.
+/// Compose a build: patch the reset image from the FFS and put FFS and
+/// reset image into every supported half of the vendor ROM; other halves
+/// stay vendor bytes. A 32 MiB result is checked for the boot order.
 pub fn compose(
     vendor_rom: &[u8],
-    half: FlashHalf,
-    plan: &HalfPlan,
+    plan: &FlashPlan,
     reset_image: &[u8],
     ffs: &[u8],
 ) -> Result<Sp3Flash, ImageError> {
+    let survey = plan.survey(vendor_rom)?;
+    let capacity = survey.ffs_capacity(plan);
+    if ffs.len() > capacity {
+        return Err(ImageError::FfsTooLarge {
+            size: ffs.len(),
+            capacity,
+        });
+    }
+    check_reset_image(plan, reset_image)?;
     let mut reset = reset_image.to_vec();
     let patched = patch_reset_image(&mut reset, ffs)?;
-    let composed = compose_half(select_half(vendor_rom, half)?, plan, &reset, ffs)?;
-    let dual = (vendor_rom.len() == 2 * HALF_SIZE)
-        .then(|| replace_half(vendor_rom, half, &composed))
-        .transpose()?;
+    let mut image = vendor_rom.to_vec();
+    for (half, action) in &survey.halves {
+        if let HalfAction::Compose(_) = action {
+            let composed = compose_half(*half, &vendor_rom[half.range()], plan, &reset, ffs)?;
+            image[half.range()].copy_from_slice(&composed);
+        }
+    }
+    if image.len() == 2 * HALF_SIZE {
+        check_dual(&image)?;
+    }
     Ok(Sp3Flash {
-        half: composed,
-        dual,
+        image,
+        survey,
         patched,
     })
 }
 
 /// The SP3 image operation: an FFS (the payload and the reset unit's
-/// trust-finalized copy) plus the reset unit, composed into a vendor
-/// flash half.
+/// trust-finalized copy) plus the reset unit, composed into every
+/// supported half of the vendor ROM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sp3FlashAssembly {
     pub ffs: FfsAssembly,
@@ -661,25 +705,20 @@ pub struct Sp3FlashAssembly {
     /// relative or absolute. Its prefix (EFS, PSP/BIOS directories, blobs,
     /// APCB) is kept byte-identical.
     pub vendor_image: String,
-    /// Half this build occupies (and takes from a 32 MiB vendor ROM).
-    pub half: FlashHalf,
-    /// Unit whose flat output is the `0x62` image.
+    /// Unit whose flat output is the reset image.
     pub reset_unit: String,
-    pub compose: HalfPlan,
+    pub compose: FlashPlan,
 }
 
 impl Sp3FlashAssembly {
     /// The reset unit is the plan's first stage and is linked for exactly
-    /// the `0x62` slot: stored and run at the destination, entered at its
+    /// the plan's image: stored and run at its destination, entered at its
     /// last 16 bytes.
     pub fn validate(&self, plan: &BuildPlan) -> Result<(), String> {
+        self.compose.check()?;
         let slot = self.compose.reset;
-        slot.check()?;
         if self.vendor_image.is_empty() || self.vendor_image.contains('\0') {
             return Err("invalid SP3 vendor image path".into());
-        }
-        if self.compose.ffs_capacity() == 0 {
-            return Err("SP3 FFS window is empty".into());
         }
         if plan.stages.first() != Some(&self.reset_unit) {
             return Err("SP3 reset unit must be the first image stage".into());
@@ -700,28 +739,32 @@ impl Sp3FlashAssembly {
                 != Some((slot.destination, size))
             || expectations.entry != Some(slot.destination + size - 16)
         {
-            return Err("SP3 reset producer differs from the 0x62 slot".into());
+            return Err("SP3 reset producer differs from the reset image geometry".into());
         }
         Ok(())
     }
 }
 
-/// `Generation` as its lower-case name in plans.
-mod generation_name {
+/// `Generation`s as their lower-case names in plans.
+mod generation_names {
     use super::Generation;
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
 
     const ALL: [Generation; 3] = [Generation::Naples, Generation::Rome, Generation::Milan];
 
-    pub fn serialize<S: Serializer>(g: &Generation, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&g.name().to_ascii_lowercase())
+    pub fn serialize<S: Serializer>(gs: &[Generation], s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(gs.iter().map(|g| g.name().to_ascii_lowercase()))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Generation, D::Error> {
-        let name = String::deserialize(d)?;
-        ALL.into_iter()
-            .find(|g| g.name().eq_ignore_ascii_case(&name))
-            .ok_or_else(|| D::Error::custom(format!("unknown SP3 generation {name}")))
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Generation>, D::Error> {
+        Vec::<String>::deserialize(d)?
+            .iter()
+            .map(|name| {
+                ALL.into_iter()
+                    .find(|g| g.name().eq_ignore_ascii_case(name))
+                    .ok_or_else(|| D::Error::custom(format!("unknown SP3 generation {name}")))
+            })
+            .collect()
     }
 }
 

@@ -1,8 +1,10 @@
 //! AMD SP3 platform: the fixed boot flows of Naples, Rome and Milan, their
 //! memory map, MP, SMM, PCI root bridges, ACPI tables and flash image.
 //!
-//! One firmware build serves one generation (one flash half); the flow
-//! identifies the CPU at runtime and halts on anything else.
+//! One firmware build serves every generation the board supports (the
+//! platform's additive `naples`/`rome`/`milan` features) with one reset
+//! image in every flash half; the CPU picks the flow's silicon steps at
+//! runtime.
 //!
 //! A board crate implements [`board::Board`] (and
 //! [`layout::Sp3BoardFacts`]) and declares its binary with
@@ -37,15 +39,27 @@ pub use fstart_smm as smm_runtime;
 #[doc(hidden)]
 pub use fstart_stage as stage_runtime;
 
-/// The board's stage program: the reset image runs one fixed flow per
-/// generation, from the PSP's release of the BSP to the payload.
+/// The board's stage program: the reset image identifies the CPU and runs
+/// the fixed flow with that generation's silicon steps, from the PSP's
+/// release of the BSP to the payload.
 #[cfg(feature = "bundle-reset")]
 pub struct Program<B>(core::marker::PhantomData<B>);
 
 #[cfg(feature = "bundle-reset")]
 impl<B: board::Board> fstart_stage::StageProgram for Program<B> {
     fn run_stage(_handoff: usize) -> ! {
-        flow::run::<B>()
+        use fstart_driver_zen::soc::Generation;
+        let identity = flow::identify();
+        match identity.generation() {
+            #[cfg(feature = "naples")]
+            Generation::Naples => flow::run::<B, flow::naples::Silicon>(identity),
+            #[cfg(feature = "rome")]
+            Generation::Rome => flow::run::<B, flow::sp3::Silicon>(identity),
+            #[cfg(feature = "milan")]
+            Generation::Milan => flow::run::<B, flow::sp3::Silicon>(identity),
+            #[allow(unreachable_patterns)]
+            _ => flow::unsupported_cpu(),
+        }
     }
 }
 

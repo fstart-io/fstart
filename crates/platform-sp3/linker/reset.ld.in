@@ -4,10 +4,13 @@
  * fstart_platform_sp3::host::linker_script, which substitutes the
  * at-sign delimited names with layout values.
  *
- * IMAGE is exactly the PSP copy [destination, 0x76000000): text, rodata,
- * the layout descriptor and .data all run in place (the PSP already put
- * them in DRAM), the 16-bit entry sits in the last 64 KiB and the reset
- * vector in the last 16 bytes, so the flat binary is the whole slot.
+ * IMAGE is the common reset image [destination, 0x76000000), linked once
+ * for every generation at the smallest vendor 0x62 slot; the composer puts
+ * it at the end of each half's slot, so the PSP copy lands it here. Text,
+ * rodata, the layout descriptor and .data all run in place (the PSP
+ * already put them in DRAM), the 16-bit entry sits in the last 64 KiB and
+ * the reset vector in the last 16 bytes, so the flat binary is the whole
+ * image.
  * Everything writable that has no initial value lives in the early region
  * below the image (NOLOAD): page tables, BSS, heap, stack.
  */
@@ -103,7 +106,7 @@ SECTIONS {
     _binary_end = @IMAGE_END@;
 
     ASSERT(_sp3_page_tables == @PT_BASE@, "page tables moved")
-    ASSERT(_data_end <= @IMAGE_END@ - 0x1000, "reset image code/data overlap the 16-bit entry")
+    ASSERT(_data_end - ORIGIN(IMAGE) <= @IMAGE_SIZE@ - 0x1000, "reset image code/data exceed the common @IMAGE_SIZE@ image (below its 16-bit entry)")
     ASSERT(SIZEOF(.sp3.entry16) <= 0x1000 - 0x10, "16-bit entry overlaps the reset vector")
     ASSERT(SIZEOF(.sp3.reset_vector) == 0x10, "reset vector is not 16 bytes")
     ASSERT(_stack_top <= ORIGIN(STACK) + LENGTH(STACK), "insufficient stack space")

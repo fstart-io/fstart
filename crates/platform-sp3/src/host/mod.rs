@@ -3,11 +3,11 @@
 //! fbuild's plan runner calls [`Plan::emit`] with the board's `Board` type
 //! (which implements [`Sp3BoardFacts`]) and the JSON [`BuildSelection`];
 //! the platform answers with the concrete [`BuildPlan`]: one firmware unit,
-//! `reset`, linked at the generation's `0x62` destination with
+//! `reset`, built with every generation the board supports, linked at the
+//! common reset image address ([`layout::RESET`]) with
 //! `linker/reset.ld.in` and `fstart_entry = "amd-psp-reset"`, and an
-//! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
-//! ROM's half (and the 32 MiB dual image) with
-//! [`fstart_image_build::sp3_flash`].
+//! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into every
+//! supported half of the vendor ROM with [`fstart_image_build::sp3_flash`].
 //!
 //! The FFS holds the payload and a copy of the reset unit: the FFS builder
 //! finalizes the unit's trust policy only in FFS-resident files, and the
@@ -32,10 +32,10 @@ use fstart_image_build::build_plan::{
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
-use fstart_image_build::sp3_flash::{self, HalfPlan, ResetSlot, Sp3FlashAssembly, VendorLayout};
+use fstart_image_build::sp3_flash::{FlashPlan, ResetSlot, Sp3FlashAssembly, Survey};
 
 use crate::layout::{
-    self, DATA, EARLY_REGION, FLASH_MMIO, FlashHalf, HEAP, PAGE_TABLES, STACK, STORE,
+    self, DATA, EARLY_REGION, FFS_WINDOW, FLASH_MMIO, HEAP, PAGE_TABLES, RESET, STACK, STORE,
     Sp3BoardFacts, Span,
 };
 
@@ -60,18 +60,12 @@ impl<B: Sp3BoardFacts> Plan<B> {
     }
 }
 
-/// The generation selected by the platform's features, when exactly one is
-/// enabled (firmware builds; host tests may enable all three).
-pub fn compiled_generation() -> Option<Generation> {
-    match (
-        cfg!(feature = "naples"),
-        cfg!(feature = "rome"),
-        cfg!(feature = "milan"),
-    ) {
-        (true, false, false) => Some(Generation::Naples),
-        (false, true, false) => Some(Generation::Rome),
-        (false, false, true) => Some(Generation::Milan),
-        _ => None,
+/// The platform feature of a generation.
+pub const fn feature(generation: Generation) -> &'static str {
+    match generation {
+        Generation::Naples => "naples",
+        Generation::Rome => "rome",
+        Generation::Milan => "milan",
     }
 }
 
@@ -94,19 +88,17 @@ fn region(kind: RegionKind, span: Span) -> Region {
 /// `fstart_stage::layout::current()`): image, writable/stack/heap, the
 /// flash window and the FFS within it, the store, and the page tables as
 /// an exclusion.
-pub fn descriptor(generation: Generation) -> Result<EncodedLayout, String> {
-    let reset = layout::reset_geometry(generation);
-    reset.check().map_err(|e| format!("{e:?}"))?;
+pub fn descriptor() -> Result<EncodedLayout, String> {
     let writable = Span::new(DATA.base, STACK.end() - DATA.base);
     EncodedLayout::encode(
         0,
         &[
-            region(RegionKind::Image, reset.dram()),
+            region(RegionKind::Image, RESET.dram()),
             region(RegionKind::Writable, writable),
             region(RegionKind::Stack, STACK),
             region(RegionKind::Heap, HEAP),
             region(RegionKind::Flash, FLASH_MMIO),
-            region(RegionKind::Firmware, layout::ffs_window(generation)),
+            region(RegionKind::Firmware, FFS_WINDOW),
             region(RegionKind::FirmwareStore, STORE),
             region(RegionKind::Reserved, PAGE_TABLES),
         ],
@@ -114,11 +106,11 @@ pub fn descriptor(generation: Generation) -> Result<EncodedLayout, String> {
     .map_err(|e| format!("SP3 layout descriptor: {e:?}"))
 }
 
-/// The reset image linker script for `generation`.
-pub fn linker_script(generation: Generation) -> Result<String, String> {
-    let reset = layout::reset_geometry(generation);
+/// The reset image linker script (one for every generation).
+pub fn linker_script() -> Result<String, String> {
+    let reset = RESET;
     let hex = |v: u64| format!("{v:#x}");
-    let section = fstart_image_build::linker::layout_section(&descriptor(generation)?, "IMAGE");
+    let section = fstart_image_build::linker::layout_section(&descriptor()?, "IMAGE");
     let values = [
         ("@IMAGE_BASE@", hex(reset.destination)),
         ("@IMAGE_SIZE@", hex(u64::from(reset.size))),
@@ -145,10 +137,10 @@ pub fn linker_script(generation: Generation) -> Result<String, String> {
 }
 
 /// What the linked reset image must look like: one ELF64 x86-64, stored
-/// exactly in the `0x62` slot, running there and in the early region,
-/// entered at the reset vector.
-pub fn expectations(generation: Generation) -> Result<Expectations, String> {
-    let reset = layout::reset_geometry(generation);
+/// exactly as the common reset image, running there and in the early
+/// region, entered at the reset vector.
+pub fn expectations() -> Result<Expectations, String> {
+    let reset = RESET;
     let image = plan_span(reset.dram());
     let expectations = Expectations {
         architecture: Architecture::X86_64,
@@ -163,7 +155,7 @@ pub fn expectations(generation: Generation) -> Result<Expectations, String> {
             section: ".fstart.layout".into(),
             start_symbol: "_fstart_layout_start".into(),
             end_symbol: "_fstart_layout_end".into(),
-            bytes: descriptor(generation)?.as_bytes().to_vec(),
+            bytes: descriptor()?.as_bytes().to_vec(),
             reservation: image,
         }),
         stored_flags: None,
@@ -263,40 +255,28 @@ impl Payload {
     }
 }
 
-/// The image-build view of a flash half.
-pub const fn flash_half(half: FlashHalf) -> sp3_flash::FlashHalf {
-    match half {
-        FlashHalf::Lower => sp3_flash::FlashHalf::Lower,
-        FlashHalf::Upper => sp3_flash::FlashHalf::Upper,
-    }
-}
-
-/// How the board's half is composed: the generation's `0x62` slot and FFS
-/// offset, and the board's rewrite opt-in.
-pub fn half_plan<B: Sp3BoardFacts>() -> HalfPlan {
-    let reset = layout::reset_geometry(B::GENERATION);
-    HalfPlan {
-        generation: B::GENERATION,
+/// How the build is composed into the board's vendor ROM: every half of
+/// a supported generation gets the common reset image at the end of its
+/// `0x62` slot (above the early region) and the FFS at [`layout::FFS_OFFSET`].
+pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
+    FlashPlan {
+        generations: B::GENERATIONS.to_vec(),
         reset: ResetSlot {
-            flash_offset: reset.flash_offset,
-            size: reset.size,
-            destination: reset.destination,
+            flash_offset: RESET.flash_offset,
+            size: RESET.size,
+            destination: RESET.destination,
         },
-        ffs_offset: layout::ffs_offset(B::GENERATION),
-        rewrite_reset_geometry: B::REWRITE_RESET_GEOMETRY,
+        ffs_offset: layout::FFS_OFFSET,
+        dram_floor: EARLY_REGION.end(),
     }
 }
 
-/// The assembler's view of the reset unit and its FFS: the FFS fills the
-/// firmware window of the booted half, the unit is monolithic and stored
+/// The assembler's view of the reset unit and its FFS: the FFS lives in
+/// the common firmware window ([`FFS_WINDOW`], an upper bound; the composer
+/// enforces the vendor ROM's real one), the unit is monolithic and stored
 /// in the FFS (see the module docs) besides its `0x62` slot.
-fn ffs_assembly(
-    generation: Generation,
-    payload: Payload,
-    config: Option<PayloadConfig>,
-) -> FfsAssembly {
-    let reset = layout::reset_geometry(generation);
-    let ffs = layout::ffs_window(generation);
+fn ffs_assembly(payload: Payload, config: Option<PayloadConfig>) -> FfsAssembly {
+    let (reset, ffs) = (RESET, FFS_WINDOW);
     let region = |name: &str, span: Span, kind| MemoryRegion {
         name: hstr(name),
         base: span.base,
@@ -342,16 +322,18 @@ fn ffs_assembly(
     }
 }
 
-/// Resolve the board's plan for one generation build.
+/// Resolve the board's plan: one build for every generation it supports.
 pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan, String> {
-    let generation = B::GENERATION;
-    if let Some(compiled) = compiled_generation()
-        && compiled != generation
-    {
+    if B::GENERATIONS.is_empty() {
+        return Err("the board lists no SP3 generation".into());
+    }
+    // The board crate enables the generation features it lists; the host
+    // runner builds the platform with them, so this checks the board.
+    if let Some(g) = B::GENERATIONS.iter().find(|&&g| !layout::compiled(g)) {
         return Err(format!(
-            "board variant is {} but the platform is built for {}",
-            generation.name(),
-            compiled.name()
+            "board lists {} but does not enable fstart-platform-sp3/{}",
+            g.name(),
+            feature(*g)
         ));
     }
     let payload = Payload::select(selection)?;
@@ -361,7 +343,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     if B::MAX_CPUS == 0 {
         return Err("CPU population must be nonzero".into());
     }
-    let reset = layout::reset_geometry(generation);
+    let reset = RESET;
     let unit = CompilationUnit {
         name: RESET_UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
@@ -371,6 +353,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         environment: RESET_ENVIRONMENT.into(),
         payload: payload.cfg().into(),
         features: core::iter::once(RESET_FEATURE)
+            .chain(B::GENERATIONS.iter().map(|&g| feature(g)))
             .chain(payload.features().iter().copied())
             .map(String::from)
             .collect(),
@@ -385,7 +368,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         ]
         .map(String::from)
         .to_vec(),
-        linker_script: Some(linker_script(generation)?),
+        linker_script: Some(linker_script()?),
         environment_values: BTreeMap::from([(
             "FSTART_MP_MAX_CPUS".into(),
             B::MAX_CPUS.to_string(),
@@ -393,7 +376,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         bindings: vec![],
         file_bindings: vec![],
         output: UnitOutput::Executable {
-            expectations: expectations(generation)?,
+            expectations: expectations()?,
             load_address: reset.destination,
             flat_capacity: u64::from(reset.size),
         },
@@ -404,7 +387,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         Payload::Linux => vec![InputFile {
             name: "kernel".into(),
             default: None,
-            capacity: layout::ffs_window(generation).size,
+            capacity: FFS_WINDOW.size,
         }],
         Payload::Halt | Payload::Uefi => vec![],
     };
@@ -413,16 +396,15 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         units: vec![unit],
         stages: vec![RESET_UNIT.into()],
         assembly: Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
-            ffs: ffs_assembly(generation, payload, payload.config(selection)?),
+            ffs: ffs_assembly(payload, payload.config(selection)?),
             // `--image-config` replaces the board's vendor ROM (same
             // workspace-relative or absolute path rules).
             vendor_image: selection
                 .image_config
                 .clone()
                 .unwrap_or_else(|| B::VENDOR_IMAGE.into()),
-            half: flash_half(B::FLASH_HALF),
             reset_unit: RESET_UNIT.into(),
-            compose: half_plan::<B>(),
+            compose: flash_plan::<B>(),
         })),
         inputs,
     };
@@ -430,33 +412,25 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     Ok(plan)
 }
 
-/// Check the board's vendor ROM against the build: generation of the
-/// selected half, `0x62` geometry (or the rewrite opt-in) and room for the
-/// FFS above the vendor prefix. `root` is the workspace root.
-pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<VendorLayout, String> {
+/// Check the board's vendor ROM against the build without composing: the
+/// halves it would compose (slot geometry, prefix below the FFS) and keep,
+/// and the common FFS window. `root` is the workspace root.
+pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, String> {
     let path = root.join(B::VENDOR_IMAGE);
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let half = sp3_flash::select_half(&bytes, flash_half(B::FLASH_HALF))?;
-    Ok(half_plan::<B>().check_vendor(half)?)
+    Ok(flash_plan::<B>().survey(&bytes)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fstart_image_build::sp3_flash::{FlashHalf, HalfAction};
 
-    struct Rome;
-    impl Sp3BoardFacts for Rome {
-        const GENERATION: Generation = Generation::Rome;
+    struct S8030;
+    impl Sp3BoardFacts for S8030 {
+        const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
         const VENDOR_IMAGE: &'static str =
             "../sp3/firmware/tyan-s8030gm2ne/S8030GM2NE_BIOS_V4.04/8030V404.ROM";
-        const FLASH_HALF: FlashHalf = FlashHalf::Lower;
-        const MAX_CPUS: u16 = 128;
-    }
-    struct Milan;
-    impl Sp3BoardFacts for Milan {
-        const GENERATION: Generation = Generation::Milan;
-        const VENDOR_IMAGE: &'static str = Rome::VENDOR_IMAGE;
-        const FLASH_HALF: FlashHalf = FlashHalf::Upper;
         const MAX_CPUS: u16 = 256;
     }
 
@@ -468,19 +442,13 @@ mod tests {
     }
 
     #[test]
-    fn plan_has_one_reset_unit_linked_at_the_0x62_slot() {
-        let milan = resolve::<Milan>(&BuildSelection::default());
-        if compiled_generation().is_some_and(|g| g != Generation::Milan) {
-            // A Milan variant cannot use a platform built for another generation.
-            assert!(milan.is_err());
-            return;
-        }
-        let plan = milan.unwrap();
+    fn plan_has_one_reset_unit_for_every_board_generation() {
+        let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
         assert_eq!(plan.stages, [RESET_UNIT]);
         let unit = plan.unit(RESET_UNIT).unwrap();
         assert_eq!(unit.entry, "amd-psp-reset");
         assert_eq!(unit.environment, RESET_ENVIRONMENT);
-        assert_eq!(unit.features, [RESET_FEATURE]);
+        assert_eq!(unit.features, [RESET_FEATURE, "rome", "milan"]);
         assert_eq!(unit.environment_values["FSTART_MP_MAX_CPUS"], "256");
         let UnitOutput::Executable {
             expectations,
@@ -490,41 +458,48 @@ mod tests {
         else {
             panic!("not executable")
         };
-        assert_eq!((*load_address, *flat_capacity), (0x75ce_0000, 0x32_0000));
+        assert_eq!((*load_address, *flat_capacity), (0x75db_0000, 0x25_0000));
         assert_eq!(expectations.entry, Some(0x75ff_fff0));
         let script = unit.linker_script.as_deref().unwrap();
         for needle in [
-            "ORIGIN = 0x75ce0000, LENGTH = 0x320000",
+            "ORIGIN = 0x75db0000, LENGTH = 0x250000",
             ".sp3.entry16 (0x76000000 - 0x1000)",
             "ORIGIN = 0x75000000, LENGTH = 0x101000",
             "_fstart_layout_start = .;",
             "QUAD(0x400000)",
+            "the common 0x250000 image",
         ] {
             assert!(script.contains(needle), "{needle}");
         }
+        struct Nothing;
+        impl Sp3BoardFacts for Nothing {
+            const GENERATIONS: &'static [Generation] = &[];
+            const VENDOR_IMAGE: &'static str = S8030::VENDOR_IMAGE;
+            const MAX_CPUS: u16 = 1;
+        }
+        assert!(resolve::<Nothing>(&BuildSelection::default()).is_err());
     }
 
     #[test]
-    fn plan_assembles_the_vendor_half_with_the_ffs_in_the_firmware_window() {
-        let Ok(plan) = resolve::<Rome>(&BuildSelection::default()) else {
-            assert!(compiled_generation().is_some_and(|g| g != Generation::Rome));
-            return;
-        };
+    fn plan_composes_every_supported_half_with_the_ffs_in_the_common_window() {
+        let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
         let image = sp3(&plan);
-        assert_eq!(image.vendor_image, Rome::VENDOR_IMAGE);
-        assert_eq!(image.half, sp3_flash::FlashHalf::Lower);
+        assert_eq!(image.vendor_image, S8030::VENDOR_IMAGE);
         assert_eq!(image.reset_unit, RESET_UNIT);
         assert_eq!(
-            image.compose.reset,
-            ResetSlot {
-                flash_offset: 0xdb_0000,
-                size: 0x25_0000,
-                destination: 0x75db_0000
+            image.compose,
+            FlashPlan {
+                generations: vec![Generation::Rome, Generation::Milan],
+                reset: ResetSlot {
+                    flash_offset: 0xdb_0000,
+                    size: 0x25_0000,
+                    destination: 0x75db_0000
+                },
+                ffs_offset: 0x60_0000,
+                dram_floor: 0x75c0_0000,
             }
         );
-        assert_eq!(image.compose.ffs_offset, 0x60_0000);
-        assert!(!image.compose.rewrite_reset_geometry);
-        let config = plan.assembly.config("tyan-s8030-rome").unwrap();
+        let config = plan.assembly.config("tyan-s8030").unwrap();
         assert_eq!(
             config.build.firmware_image,
             FirmwareImagePolicy::memory_mapped(0xff60_0000, 0x7b_0000)
@@ -540,24 +515,27 @@ mod tests {
             payload: Some(payload.into()),
             ..Default::default()
         };
-        let linux = resolve::<Rome>(&BuildSelection {
+        let linux = resolve::<S8030>(&BuildSelection {
             x86_linux_bootargs: Some("console=ttyS0,115200".into()),
             ..select("linux")
         })
         .unwrap();
         let unit = linux.unit(RESET_UNIT).unwrap();
         assert_eq!(
-            (unit.payload.as_str(), &unit.features[1][..]),
+            (
+                unit.payload.as_str(),
+                unit.features.last().unwrap().as_str()
+            ),
             ("linux", "payload-linux")
         );
         assert_eq!(linux.inputs[0].name, "kernel");
         let payload = sp3(&linux).ffs.payload.as_ref().unwrap();
         assert_eq!(payload.bootargs.as_deref(), Some("console=ttyS0,115200"));
-        let uefi = resolve::<Rome>(&select("uefi")).unwrap();
+        let uefi = resolve::<S8030>(&select("uefi")).unwrap();
         assert_eq!(uefi.unit(RESET_UNIT).unwrap().payload, "crabefi");
-        assert!(resolve::<Rome>(&select("coreboot")).is_err());
+        assert!(resolve::<S8030>(&select("coreboot")).is_err());
         assert!(
-            resolve::<Rome>(&BuildSelection {
+            resolve::<S8030>(&BuildSelection {
                 x86_linux_print_mtrrs: true,
                 ..Default::default()
             })
@@ -567,7 +545,7 @@ mod tests {
             image_config: Some("/tmp/dump.rom".into()),
             ..Default::default()
         };
-        let plan = resolve::<Rome>(&custom).unwrap();
+        let plan = resolve::<S8030>(&custom).unwrap();
         assert_eq!(sp3(&plan).vendor_image, "/tmp/dump.rom");
         plan.validate_image_selection(&custom).unwrap();
         // The plan round-trips through fbuild's JSON transport.
@@ -579,7 +557,7 @@ mod tests {
 
     #[test]
     fn descriptor_decodes_with_the_layout_regions() {
-        let bytes = descriptor(Generation::Rome).unwrap();
+        let bytes = descriptor().unwrap();
         let layout = fstart_core::layout::Layout::parse(bytes.as_bytes()).unwrap();
         let find = |kind| layout.regions().find(|r| r.kind == kind).unwrap();
         assert_eq!(find(RegionKind::Image).base, 0x75db_0000);
@@ -591,25 +569,33 @@ mod tests {
     #[test]
     fn vendor_check_against_the_s8030_rom() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        if !root.join(Rome::VENDOR_IMAGE).exists() {
+        if !root.join(S8030::VENDOR_IMAGE).exists() {
             std::eprintln!("skipping: S8030 v4.04 ROM not present");
             return;
         }
+        let survey = check_vendor::<S8030>(&root).unwrap();
+        assert_eq!(survey.ffs_end, 0xce_0000);
+        let composed: std::vec::Vec<_> = survey
+            .halves
+            .iter()
+            .map(|(half, action)| match action {
+                HalfAction::Compose(layout) => (*half, layout.generation),
+                HalfAction::Keep(g) => panic!("{half:?} kept ({g:?})"),
+            })
+            .collect();
         assert_eq!(
-            check_vendor::<Rome>(&root).unwrap().generation,
-            Generation::Rome
+            composed,
+            [
+                (FlashHalf::Lower, Generation::Rome),
+                (FlashHalf::Upper, Generation::Milan)
+            ]
         );
-        assert_eq!(
-            check_vendor::<Milan>(&root).unwrap().generation,
-            Generation::Milan
-        );
-        struct Swapped;
-        impl Sp3BoardFacts for Swapped {
-            const GENERATION: Generation = Generation::Milan;
-            const VENDOR_IMAGE: &'static str = Rome::VENDOR_IMAGE;
-            const FLASH_HALF: FlashHalf = FlashHalf::Lower;
+        struct Naples;
+        impl Sp3BoardFacts for Naples {
+            const GENERATIONS: &'static [Generation] = &[Generation::Naples];
+            const VENDOR_IMAGE: &'static str = S8030::VENDOR_IMAGE;
             const MAX_CPUS: u16 = 1;
         }
-        assert!(check_vendor::<Swapped>(&root).is_err());
+        assert!(check_vendor::<Naples>(&root).is_err());
     }
 }

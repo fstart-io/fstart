@@ -262,20 +262,19 @@ fn assemble(
     }
 }
 
-/// Put the assembled FFS and the reset unit into the SP3 vendor ROM's half;
-/// a 32 MiB vendor ROM also yields the dual image with only this half
-/// replaced. Relative vendor paths are workspace-relative. Returns the
-/// dual image when there is one, else the half.
+/// Put the assembled FFS and the reset unit into every half of the SP3
+/// vendor ROM whose generation the board supports; other halves keep
+/// their vendor bytes. Relative vendor paths are workspace-relative.
+/// Writes and returns `<board>.rom`, the composed ROM (32 MiB for a dual
+/// vendor ROM).
 fn compose_sp3_flash(
     workspace_root: &std::path::Path,
     image: &fstart_image_build::sp3_flash::Sp3FlashAssembly,
     assembled: &crate::assemble::AssembledImage,
 ) -> Result<std::path::PathBuf, String> {
+    use fstart_image_build::sp3_flash::HalfAction;
     let read = |path: &std::path::Path| {
         std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
-    };
-    let write = |path: &std::path::Path, bytes: &[u8]| {
-        std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
     };
     let vendor = read(&workspace_root.join(&image.vendor_image))?;
     let ffs = read(&assembled.image)?;
@@ -286,7 +285,6 @@ fn compose_sp3_flash(
         .ok_or("SP3 reset unit was not built")?;
     let flash = fstart_image_build::sp3_flash::compose(
         &vendor,
-        image.half,
         &image.compose,
         &read(&reset.run_path)?,
         &ffs,
@@ -296,30 +294,32 @@ fn compose_sp3_flash(
             "[fstart] warning: the SP3 reset unit links no FFS locator; it cannot read its FFS"
         );
     }
-    let half = assembled.image.with_extension("rom");
-    write(&half, &flash.half)?;
+    for (half, action) in &flash.survey.halves {
+        match action {
+            HalfAction::Compose(layout) => eprintln!(
+                "[fstart] SP3 {half:?} half ({}): FFS {:#x} bytes at {:#x}, reset image {:#x} bytes at {:#x} (vendor slot {:#x})",
+                layout.generation.name(),
+                ffs.len(),
+                image.compose.ffs_offset,
+                image.compose.reset.size,
+                image.compose.reset.flash_offset,
+                layout.reset.flash_offset,
+            ),
+            HalfAction::Keep(generation) => eprintln!(
+                "[fstart] warning: SP3 {half:?} half kept from {} ({}: not supported by the board)",
+                image.vendor_image,
+                generation.map_or("no EFS", |g| g.name()),
+            ),
+        }
+    }
+    let out = assembled.image.with_extension("rom");
+    std::fs::write(&out, &flash.image).map_err(|e| format!("{}: {e}", out.display()))?;
     eprintln!(
-        "[fstart] SP3 {:?} half: {} (FFS {:#x} bytes at {:#x}, reset image {:#x} bytes at {:#x})",
-        image.half,
-        half.display(),
-        ffs.len(),
-        image.compose.ffs_offset,
-        image.compose.reset.size,
-        image.compose.reset.flash_offset,
-    );
-    let Some(dual) = flash.dual else {
-        return Ok(half);
-    };
-    let stem = half
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or("non-UTF8 image name")?;
-    let out = half.with_file_name(format!("{stem}-32m.rom"));
-    write(&out, &dual)?;
-    eprintln!(
-        "[fstart] SP3 32 MiB image: {} (other half kept from {})",
+        "[fstart] SP3 image: {} ({} MiB, FFS window {:#x}..{:#x} in every composed half)",
         out.display(),
-        image.vendor_image
+        flash.image.len() >> 20,
+        image.compose.ffs_offset,
+        flash.survey.ffs_end,
     );
     Ok(out)
 }

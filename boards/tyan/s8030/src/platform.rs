@@ -15,10 +15,13 @@ use fstart_platform_sp3::acpi::Board as AcpiBoard;
 use fstart_platform_sp3::board::{self, BoardError, Gpio, Policy};
 
 use crate::dxio::{Detected, M2Mode, Options};
-use crate::{Board, GENERATION, bmc, dxio, gpio, policy};
+use fstart_driver_zen::soc::Generation;
 
-/// The M.2 detect pads in the generation's OEM form (CN1, CN3).
-static DETECT: [Pad; 2] = gpio::m2_detect_pads(GENERATION);
+use crate::{Board, bmc, dxio, gpio, policy};
+
+/// The M.2 detect pads in each generation's OEM form (CN1, CN3).
+static DETECT_ROME: [Pad; 2] = gpio::m2_detect_pads(Generation::Rome);
+static DETECT_MILAN: [Pad; 2] = gpio::m2_detect_pads(Generation::Milan);
 
 /// Microsecond delays for the KCS transport on the flow's timer.
 struct TimerDelay<'a>(&'a dyn Timer);
@@ -33,14 +36,14 @@ impl board::Board for Board {
     const NAME: &'static str = "Tyan S8030";
     const CONSOLE: Ns16550Config = bmc::CONSOLE;
 
-    fn policy() -> Policy {
+    fn policy(generation: Generation) -> Policy {
         Policy {
             df: policy::df(),
             nbio: policy::nbio(),
             power: policy::power(),
             ccx: policy::ccx(),
             fch_env: policy::fch_env(),
-            dxio: policy::dxio(GENERATION),
+            dxio: policy::dxio(generation),
         }
     }
 
@@ -49,18 +52,22 @@ impl board::Board for Board {
         bmc::early_init().map(drop).map_err(|_| BoardError::Device)
     }
 
-    fn detect_pads() -> &'static [Pad] {
-        &DETECT
+    fn detect_pads(generation: Generation) -> &'static [Pad] {
+        match generation {
+            Generation::Milan => &DETECT_MILAN,
+            Generation::Rome | Generation::Naples => &DETECT_ROME,
+        }
     }
 
-    fn gpio() -> Gpio {
+    fn gpio(generation: Generation) -> Gpio {
         Gpio {
-            early: gpio::rome_oem_pads(GENERATION),
+            early: gpio::rome_oem_pads(generation),
             table: &gpio::CPM_GPIO,
         }
     }
 
     fn dxio_engines(
+        generation: Generation,
         levels: &[bool],
         timer: &dyn Timer,
     ) -> heapless::Vec<Engine<'static>, MAX_ENGINES> {
@@ -71,7 +78,7 @@ impl board::Board for Board {
             m2: [M2Mode::from_detect(level(0)), M2Mode::from_detect(level(1))],
             m2_gen3: bmc::m2_gen3_cap(&mut kcs),
         };
-        dxio::engines(GENERATION, &Options::default(), &detected)
+        dxio::engines(generation, &Options::default(), &detected)
     }
 
     fn acpi_lpc_aml() -> Vec<u8> {

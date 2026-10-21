@@ -8,14 +8,16 @@
 //! | Donor | flash | size | destination |
 //! |---|---|---|---|
 //! | Naples S8026 v2.02, Rome S8030 v4.04/v4.00, Rome S8026, Rome S8253 | `0xdb0000` | `0x250000` | `0x75db0000` |
-//! | Naples KNPP-D32 1801 | `0xde0000` | `0x220000` | `0x75de0000` |
+//! | Naples KNPP-D32 1801 (too small, refused) | `0xde0000` | `0x220000` | `0x75de0000` |
 //! | Milan S8030 v4.04, Milan S8253 v2.03 | `0xce0000` | `0x320000` | `0x75ce0000` |
 //! | Milan S8030 v4.00 | `0xd00000` | `0x300000` | `0x75d00000` |
 //!
-//! A build links the reset image for one [`ResetGeometry`] (the per
-//! generation constants below); the host checks it against the vendor
-//! directory and refuses a mismatch unless the board opts into rewriting the
-//! `0x62` entries ([`crate::host`]).
+//! Every slot ends at flash `0x100_0000` and DRAM `0x7600_0000`. One reset
+//! image serves every generation and slot: it is linked once at the
+//! smallest supported slot ([`RESET`]) and the host composer puts it at the end of each
+//! half's vendor slot ([`crate::host`]); the PSP copies the whole slot, so
+//! the image lands at its link address and the vendor directories stay
+//! byte-identical. The bytes in front of it in a larger slot are erased.
 //!
 //! Everything the reset image needs besides its own bytes lives in the
 //! **early region** `[0x7500_0000, 0x75c0_0000)`, below the lowest observed
@@ -122,48 +124,44 @@ impl ResetGeometry {
     }
 }
 
-/// Naples S8026 v2.02 (FIRMWARE_IMAGE §2.1).
-pub const NAPLES_RESET: ResetGeometry = ResetGeometry {
+impl ResetGeometry {
+    /// Whether this (vendor) slot carries `image` at the image's link
+    /// address: both valid, same top, large enough.
+    pub const fn carries(&self, image: &ResetGeometry) -> bool {
+        self.check().is_ok() && image.check().is_ok() && self.size >= image.size
+    }
+}
+
+/// The reset image of every build: linked for the smallest vendor slot
+/// (Naples S8026 v2.02, Rome S8030 v4.04/v4.00, S8026 v2.02, S8253 v2.03;
+/// FIRMWARE_IMAGE §2.1). Milan's larger slots (`0xce0000`/`0x320000`,
+/// v4.00 `0xd00000`/`0x300000`) carry it in their last `0x250000` bytes.
+/// The Naples KNPP-D32 slot (`0x220000`) is too small; that donor's ROM is
+/// refused.
+pub const RESET: ResetGeometry = ResetGeometry {
     flash_offset: 0xdb_0000,
     size: 0x25_0000,
     destination: 0x75db_0000,
 };
-/// Rome S8030 v4.04/v4.00, S8026 v2.02, S8253 v2.03.
-pub const ROME_RESET: ResetGeometry = NAPLES_RESET;
-/// Milan S8030 v4.04, S8253 v2.03 (v4.00 used `0xd00000`/`0x300000`).
-pub const MILAN_RESET: ResetGeometry = ResetGeometry {
-    flash_offset: 0xce_0000,
-    size: 0x32_0000,
-    destination: 0x75ce_0000,
-};
 
-/// The reset geometry a build of `generation` links for.
-pub const fn reset_geometry(generation: Generation) -> ResetGeometry {
-    match generation {
-        Generation::Naples => NAPLES_RESET,
-        Generation::Rome => ROME_RESET,
-        Generation::Milan => MILAN_RESET,
-    }
-}
+const _: () = assert!(RESET.check().is_ok());
 
-/// First flash offset of the fstart FFS. Above the vendor prefix of every
-/// donor of the generation (prefix ends: Naples `0x273000`/`0x4ba000`,
-/// Rome `0x50b000`/`0x54b000`, Milan `0x586000`; FIRMWARE_IMAGE §4) with
-/// room to spare for prefix growth in later vendor releases.
-pub const fn ffs_offset(generation: Generation) -> u32 {
-    match generation {
-        Generation::Naples => 0x50_0000,
-        Generation::Rome | Generation::Milan => 0x60_0000,
-    }
-}
+/// Flash offset of the fstart FFS in every half: above the vendor prefix of
+/// every donor (prefix ends: Naples `0x273000`/`0x4ba000`, Rome
+/// `0x50b000`/`0x54b000`, Milan `0x586000`; FIRMWARE_IMAGE §4) with room
+/// for prefix growth in later vendor releases. The host checks it against
+/// each composed half.
+pub const FFS_OFFSET: u32 = 0x60_0000;
 
-/// The FFS window of the booted half in the MMIO view: from
-/// [`ffs_offset`] up to the reset image.
-pub const fn ffs_window(generation: Generation) -> Span {
-    let offset = ffs_offset(generation) as u64;
-    let end = reset_geometry(generation).flash_offset as u64;
-    Span::new(FLASH_MMIO.base + offset, end - offset)
-}
+/// The FFS window of the booted half in the MMIO view, as linked into the
+/// reset image: from [`FFS_OFFSET`] up to the reset image. This is an upper
+/// bound valid in every half; the composer limits the FFS itself to the
+/// lowest vendor slot start of the composed halves (e.g. `0xce0000` with a
+/// Milan half), and the runtime reads only what the FFS locator describes.
+pub const FFS_WINDOW: Span = Span::new(
+    FLASH_MMIO.base + FFS_OFFSET as u64,
+    (RESET.flash_offset - FFS_OFFSET) as u64,
+);
 
 /// The 16 MiB write-back window opened before anything is written (the
 /// vendor's MTRR 7 window): early region plus reset image.
@@ -189,59 +187,13 @@ pub const STACK: Span = Span::new(0x75a0_0000, 0x4_0000);
 /// needs to stay reserved, but [`EARLY_REGION`] is reserved as a whole.
 pub const STORE: Span = Span::new(0x75b0_0000, 0x10_0000);
 
-/// The generation this firmware build serves (exactly one generation
-/// feature; host builds may enable several and pass the generation
-/// explicitly).
-#[cfg(all(feature = "naples", not(any(feature = "rome", feature = "milan"))))]
-pub const GENERATION: Generation = Generation::Naples;
-#[cfg(all(feature = "rome", not(any(feature = "naples", feature = "milan"))))]
-pub const GENERATION: Generation = Generation::Rome;
-#[cfg(all(feature = "milan", not(any(feature = "naples", feature = "rome"))))]
-pub const GENERATION: Generation = Generation::Milan;
-
-/// This build's reset geometry.
-#[cfg(any(
-    all(feature = "naples", not(any(feature = "rome", feature = "milan"))),
-    all(feature = "rome", not(any(feature = "naples", feature = "milan"))),
-    all(feature = "milan", not(any(feature = "naples", feature = "rome")))
-))]
-pub const RESET: ResetGeometry = reset_geometry(GENERATION);
-
-#[cfg(any(
-    all(feature = "naples", not(any(feature = "rome", feature = "milan"))),
-    all(feature = "rome", not(any(feature = "naples", feature = "milan"))),
-    all(feature = "milan", not(any(feature = "naples", feature = "rome")))
-))]
-const _: () = assert!(RESET.check().is_ok());
-
-/// Which 16 MiB half of a 32 MiB dual-image flash a board variant occupies.
-/// The PSP boot ROM tries the lower half first, so Rome must be below
-/// Milan (FIRMWARE_IMAGE §1.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlashHalf {
-    Lower,
-    Upper,
-}
-
-impl FlashHalf {
-    pub const fn offset(self) -> usize {
-        match self {
-            Self::Lower => 0,
-            Self::Upper => HALF_SIZE as usize,
-        }
-    }
-}
-
 /// Board facts the SP3 build plan and flash image need. A board crate
-/// implements this for its `Board` type once per variant; the variant's
-/// generation feature selects the impl, e.g. for the Tyan S8030:
+/// implements this for its `Board` type, e.g. for the Tyan S8030:
 ///
 /// ```ignore
-/// #[cfg(feature = "rome")]
 /// impl Sp3BoardFacts for Board {
-///     const GENERATION: Generation = Generation::Rome;
+///     const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
 ///     const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
-///     const FLASH_HALF: FlashHalf = FlashHalf::Lower;
 ///     const MAX_CPUS: u16 = 128;
 /// }
 /// ```
@@ -249,52 +201,58 @@ impl FlashHalf {
 /// It is a plain trait (not behind the `host` feature) because the host
 /// plan runner builds the board crate without its own `host` feature.
 pub trait Sp3BoardFacts {
-    /// Generation of this variant; must equal the platform's enabled
-    /// generation feature.
-    const GENERATION: Generation;
+    /// Generations the board supports. The platform must be built with
+    /// each one's feature; one firmware build serves all of them and is
+    /// composed into every vendor half of one of them.
+    const GENERATIONS: &'static [Generation];
     /// Workspace-relative vendor ROM: the 32 MiB dual image or one 16 MiB
     /// half. Its prefix (EFS, PSP/BIOS directories, blobs, APCB) is kept
     /// byte-identical.
     const VENDOR_IMAGE: &'static str;
-    /// Half of the 32 MiB flash this variant occupies (and, for a 32 MiB
-    /// vendor image, the half its prefix is taken from).
-    const FLASH_HALF: FlashHalf;
-    /// Logical CPU ceiling (all sockets); sizes the AP stacks and SMM.
+    /// Logical CPU ceiling over every supported generation (all sockets);
+    /// sizes the AP stacks and SMM.
     const MAX_CPUS: u16;
-    /// Accept a vendor `0x62` geometry different from [`reset_geometry`]
-    /// by rewriting the BIOS directory entries. Untested on hardware
-    /// (FIRMWARE_IMAGE §9); keep `false` unless proven.
-    const REWRITE_RESET_GEOMETRY: bool = false;
+}
+
+/// Whether this build carries `generation`'s silicon code (its platform
+/// feature).
+pub const fn compiled(generation: Generation) -> bool {
+    match generation {
+        Generation::Naples => cfg!(feature = "naples"),
+        Generation::Rome => cfg!(feature = "rome"),
+        Generation::Milan => cfg!(feature = "milan"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ALL: [Generation; 3] = [Generation::Naples, Generation::Rome, Generation::Milan];
-
     #[test]
-    fn every_generation_geometry_ends_at_both_tops_above_the_early_region() {
-        for g in ALL {
-            let r = reset_geometry(g);
-            assert_eq!(r.check(), Ok(()), "{g:?}");
-            assert_eq!(r.reset_vector(), 0x75ff_fff0);
-            assert!(CACHE_WINDOW.contains(&r.dram()));
-            let ffs = ffs_window(g);
-            assert!(ffs.size > 0x40_0000, "{g:?} FFS window {ffs:x?}");
-        }
-        // The other vendor geometries seen on donors are valid too.
+    fn every_vendor_slot_carries_the_common_image_above_the_early_region() {
+        assert_eq!(RESET.reset_vector(), 0x75ff_fff0);
+        assert!(CACHE_WINDOW.contains(&RESET.dram()));
+        assert!(FFS_WINDOW.size > 0x40_0000 && FFS_WINDOW.end() == 0xffdb_0000);
+        // The donor slots (FIRMWARE_IMAGE §2.1).
         for (flash, size, dest) in [
-            (0xde_0000, 0x22_0000, 0x75de_0000),
+            (0xdb_0000, 0x25_0000, 0x75db_0000),
+            (0xce_0000, 0x32_0000, 0x75ce_0000),
             (0xd0_0000, 0x30_0000, 0x75d0_0000),
         ] {
-            let r = ResetGeometry {
+            let slot = ResetGeometry {
                 flash_offset: flash,
                 size,
                 destination: dest,
             };
-            assert_eq!(r.check(), Ok(()));
+            assert!(slot.carries(&RESET), "{slot:x?}");
+            assert!(FFS_OFFSET < flash);
         }
+        let knpp = ResetGeometry {
+            flash_offset: 0xde_0000,
+            size: 0x22_0000,
+            destination: 0x75de_0000,
+        };
+        assert!(knpp.check().is_ok() && !knpp.carries(&RESET));
         let low = ResetGeometry {
             flash_offset: 0xb0_0000,
             size: 0x50_0000,

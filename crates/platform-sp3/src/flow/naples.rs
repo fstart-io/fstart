@@ -40,6 +40,8 @@ use crate::entry::ApRoute;
 use crate::hw::{Pci, Tsc, msr, secondary_fch};
 use crate::mp::{Sp3Cpu, release_all, this_thread};
 
+super::steps!();
+
 pub(crate) const MMIO_PAIRS: u8 = <Df2 as Version>::MMIO_PAIRS;
 
 /// SMU V9 mailbox of one die.

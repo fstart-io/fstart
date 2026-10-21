@@ -12,7 +12,7 @@ use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 use fstart_stage::payload::MainstagePayload;
 
 use super::{Ctx, OrHalt};
-use crate::layout::{self, GENERATION, Span};
+use crate::layout::{self, FFS_WINDOW, Span};
 
 #[cfg(any(
     fstart_payload = "halt",
@@ -29,10 +29,11 @@ type Payload = fstart_stage::payload::HaltPayload;
 
 /// Publish the load policy (RAM from e820 minus the running image) and
 /// mount + authenticate the FFS in the booted half at
-/// [`layout::ffs_window`]: the locator and trust block the composer put
-/// into the reset image (`fstart_anchor_bytes`) describe it.
+/// [`layout::FFS_WINDOW`] (the same offsets in every half): the locator and
+/// trust block the composer put into the reset image
+/// (`fstart_anchor_bytes`) describe it.
 pub(crate) fn mount_boot_media(ctx: &Ctx) {
-    let window = layout::ffs_window(GENERATION);
+    let window = FFS_WINDOW;
     let (writable, reserved): (Vec<MemoryWindow>, Vec<MemoryWindow>) = {
         let to_window = |e: &E820Entry| MemoryWindow {
             start: e.addr,
@@ -102,7 +103,7 @@ impl fstart_stage::payload::X86UefiPayloadContext for Handoff<'_> {
     }
 
     fn firmware_region(&self) -> (u64, u64) {
-        let w = layout::ffs_window(GENERATION);
+        let w = FFS_WINDOW;
         (w.base, w.size)
     }
 
@@ -149,7 +150,7 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
 /// RSDP address. The tables live in the stage heap, inside the reserved
 /// early region.
 #[cfg(feature = "acpi")]
-pub(crate) fn acpi<B: crate::board::Board>(ctx: &Ctx, si: &super::silicon::Silicon) -> u64 {
+pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -> u64 {
     use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi, Window};
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_zen::ccx::power;
@@ -161,9 +162,9 @@ pub(crate) fn acpi<B: crate::board::Board>(ctx: &Ctx, si: &super::silicon::Silic
         .iter()
         .map(|&apic_id| Cpu { apic_id, domain: 0 })
         .collect();
-    let ioapics: Vec<IoapicInfo> = si.nbios.iter().filter_map(|n| n.ioapic_info()).collect();
+    let ioapics: Vec<IoapicInfo> = si.nbios().iter().filter_map(|n| n.ioapic_info()).collect();
     let iommus: Vec<IommuAcpi> = si
-        .nbios
+        .nbios()
         .iter()
         .zip(&ctx.topology.root_bridges)
         .filter_map(|(n, rb)| {
@@ -205,7 +206,7 @@ pub(crate) fn acpi<B: crate::board::Board>(ctx: &Ctx, si: &super::silicon::Silic
         .root_bridges
         .iter()
         .zip(&windows)
-        .zip(&si.nbios)
+        .zip(si.nbios())
         .map(|((&bridge, (io, mmio)), n)| RootBridgeAcpi {
             bridge,
             io,

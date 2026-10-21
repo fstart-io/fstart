@@ -238,7 +238,7 @@ mod handler {
                 (v11::REGS, v11::id_limit(generation))
             }
             #[allow(unreachable_patterns)]
-            _ => unreachable!("a build serves its own generation"),
+            _ => unreachable!("the flow only installs SMM for a compiled-in generation"),
         };
         // SAFETY: SMM owns bus 0's SMN pair (saved by the caller).
         unsafe { Smu::new(smn, regs, timer, limit) }

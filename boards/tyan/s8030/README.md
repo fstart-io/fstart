@@ -3,14 +3,17 @@
 AMD SP3, one socket, EPYC 7002 (Rome) or 7003 (Milan). Status: board data
 and policy only; not booted.
 
-| Variant | Generation | Flash |
-|---|---|---|
-| `tyan-s8030-rome` | Rome (feature `rome`) | lower 16 MiB of the 32 MiB flash |
-| `tyan-s8030-milan` | Milan (feature `milan`) | upper 16 MiB |
+One board id, `tyan-s8030`, and one build for both generations: the
+platform's `rome` and `milan` features are enabled on its dependency, and
+the reset image picks the generation from the CPU at runtime. The same
+reset image and FFS go into both 16 MiB halves of the 32 MiB flash; the
+PSP boot ROM picks the half by the EFS generation word (Rome lower, Milan
+upper; docs/amd-sp3.md).
 
-The base id `tyan-s8030` selects no generation and does not build. The
-PSP boot ROM picks the half by the EFS generation word, so the Rome image
-must be in the lower half (docs/amd-sp3.md).
+```sh
+cargo fbuild build --board tyan-s8030 --release
+cargo fbuild assemble --board tyan-s8030 --release   # -> tyan-s8030.rom, 32 MiB
+```
 
 ## Vendor ROM
 
@@ -18,7 +21,9 @@ Each half keeps the vendor prefix (EFS, PSP/BIOS directories, PSP, ABL,
 SMU, PMU and DXIO firmware, APCB). Supply the Tyan v4.04 dual image
 (`8030V404.ROM`, 32 MiB, SHA-256 pinned in the sp3 workspace's
 `firmware/donors/SHA256SUMS`) as `vendor/8030V404.ROM`. It is not part of
-this repository.
+this repository. With v4.04 the FFS window is `[0x600000, 0xce0000)` in
+both halves (the Milan reset slot starts at `0xce0000`); the reset image
+sits at `0xdb0000` in both.
 
 ## SKUs: S8030GM2NE and S8030GM4NE-2T
 

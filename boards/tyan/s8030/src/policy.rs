@@ -20,7 +20,7 @@
 //! | ACS, ARI (`0x156`/`0x157`, `0x188`/`0x189`) | Disabled | no driver knob yet |
 //! | NUMA nodes per socket (`0xba` / `0xd1`) | NPS4 | vendor APCB; read back from the APOB |
 //! | CBS link speed, Early Link Speed, Preferred IO | Auto | [`dxio`]: driver default |
-//! | Clock Spread Spectrum (AMI `Setup 0x101` / `0xc0`) | Rome on, Milan off | [`SPREAD_SPECTRUM`] |
+//! | Clock Spread Spectrum (AMI `Setup 0x101` / `0xc0`) | Rome on, Milan off | [`spread_spectrum`] |
 //! | Restore AC Power Loss (`Setup 0x107`, Milan CBS `0x28f`) | Last State | [`fch_env`]: [`POWER_FAILURE`] |
 //!
 //! Slot, LAN, VGA and compliance knobs are [`crate::dxio::Options`].
@@ -47,7 +47,9 @@ pub const fn fch_env() -> EnvPolicy {
 
 /// FCH clock spread spectrum (Rome `Setup 0x101` = 1, Milan `Setup 0xc0`
 /// = 0: the images differ, §4).
-pub const SPREAD_SPECTRUM: bool = matches!(crate::GENERATION, Generation::Rome);
+pub const fn spread_spectrum(generation: Generation) -> bool {
+    matches!(generation, Generation::Rome)
+}
 
 /// I/O bytes per root bridge (logical order) and PCI buses per root
 /// bridge, from TyanInitFabricResource (Rome `0xffe81988`) /

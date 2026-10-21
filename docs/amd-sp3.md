@@ -13,56 +13,80 @@ systems, and the Tyan S8030 board. Status: **in development, not booted**.
 
 - `crates/driver-zen`: silicon IP blocks (`smn`, `soc`, `topology`, `df`,
   `nbio`, `smu`, `dxio`, `ccx`, `fch`, `psp`, `apob`), one implementation
-  per IP version, gated by the `naples`/`rome`/`milan` features.
-- `crates/platform-sp3`: the per-generation boot flow, memory map, MP, SMM,
-  PCI root bridges, ACPI and the host build plan / flash image.
-- `boards/tyan/s8030`: variants `tyan-s8030-rome` (lower 16 MiB of the
-  32 MiB flash) and `tyan-s8030-milan` (upper 16 MiB).
+  per IP version, gated by the additive `naples`/`rome`/`milan` features.
+- `crates/platform-sp3`: the boot flow, memory map, MP, SMM, PCI root
+  bridges, ACPI and the host build plan / flash image. A board enables
+  every generation it supports; the reset image identifies the CPU and runs
+  the flow with that generation's silicon steps (`flow::naples` or
+  `flow::sp3`). A CPU of a generation the build does not carry halts at
+  POST 13 before the console; one the board does not list halts after
+  logging.
+- `boards/tyan/s8030`: board `tyan-s8030`, Rome and Milan in one build.
+
+## One build per board
+
+A board lists its generations (`Sp3BoardFacts::GENERATIONS`) and enables
+their platform features; its `Board` hooks (policy, GPIO, detect pads,
+DXIO engines) take the running generation. One build produces one reset
+image and one FFS, and the assembler puts both into every half of the
+vendor ROM whose EFS generation the board supports. Halves of other
+generations keep their vendor bytes (with a warning).
 
 ## Flash image
 
 The PSP, ABL, SMU, PMU and DXIO firmware and the APCB stay vendor blobs.
-Each 16 MiB half keeps the vendor prefix (EFS, PSP and BIOS directories)
-and replaces the reset image (BIOS directory entry 0x62). The PSP boot ROM
-picks the half by the EFS generation word: Rome must be the lower half,
-Milan the upper.
+Each composed 16 MiB half keeps the vendor prefix (EFS, PSP and BIOS
+directories) byte-identical, directories included. The PSP boot ROM picks
+the half by the EFS generation word: Naples must be below Rome, Rome below
+Milan; the assembler checks that order on a 32 MiB image.
+
+Every vendor `0x62` (reset image) slot ends at flash `0x1000000` and DRAM
+`0x76000000`; only its start differs (Naples/Rome `0xdb0000`, Milan v4.04
+`0xce0000`, Milan v4.00 `0xd00000`). The reset image is linked once at
+the smallest slot, `[0x75db0000, 0x76000000)` (`0x250000` bytes, a linker
+`ASSERT` keeps it there), and placed at the end of each half's vendor
+slot. The PSP copies the whole slot, so the image lands at its link
+address in every half; the slot bytes in front of it are erased. A slot
+smaller than the image, ending elsewhere or reaching into the early region
+below `0x75c00000` is refused (e.g. the Naples KNPP-D32 `0x220000` slot).
 
 ```text
-[0, prefix end)             vendor bytes, byte-identical
-[prefix end, 0x600000)      erased
-[0x600000, 0x62 offset)     fstart FFS (the runtime firmware window)
-[0x62 offset, 16 MiB)       reset image (Rome 0xdb0000, Milan 0xce0000)
+[0, prefix end)               vendor bytes, byte-identical
+[prefix end, 0x600000)        erased
+[0x600000, FFS end)           fstart FFS, identical in every half
+[FFS end, 0xdb0000)           erased (front of a larger vendor slot)
+[0xdb0000, 16 MiB)            reset image, identical in every half
 ```
+
+The FFS end is the lowest slot start among the composed halves, read from
+the vendor ROM at assembly (`0xce0000` for the S8030 v4.04 dual image), so
+the FFS and the FFS locator patched into the reset image are valid in
+every half. The image links the upper bound `[0x600000, 0xdb0000)` as its
+firmware window and reads only what the locator describes.
 
 Put the vendor ROM (S8030 v4.04, 32 MiB) at
-`boards/tyan/s8030/vendor/8030V404.ROM` and build each half:
+`boards/tyan/s8030/vendor/8030V404.ROM` and build:
 
 ```sh
-cargo fbuild build --board tyan-s8030-rome            # compile only
-cargo fbuild assemble --board tyan-s8030-rome         # lower half
-cargo fbuild assemble --board tyan-s8030-milan        # upper half
-cargo fbuild assemble --board tyan-s8030-rome --payload linux \
+cargo fbuild build --board tyan-s8030              # compile only
+cargo fbuild assemble --board tyan-s8030           # both halves
+cargo fbuild assemble --board tyan-s8030 --payload linux \
     --kernel bzImage --linux-bootargs "console=ttyS0,115200"
-cargo fbuild assemble --board tyan-s8030-milan --payload uefi
-cargo fbuild assemble --board tyan-s8030-rome --image-config /path/to/other.rom
+cargo fbuild assemble --board tyan-s8030 --payload uefi
+cargo fbuild assemble --board tyan-s8030 --image-config /path/to/other.rom
 ```
 
-`assemble` writes, next to the FFS in
-`target/fstart-build/<board>/<profile>/<hash>/image/`, `<board>.rom` (the
-16 MiB half) and, for a 32 MiB vendor ROM, `<board>-32m.rom`: the vendor
-ROM with only this variant's half replaced, the other half byte-identical
-and the boot order checked. Flashing `tyan-s8030-milan-32m.rom` keeps the
-vendor AMI firmware for Rome CPUs (and vice versa); assembling with
-`--image-config` pointing at the other variant's `-32m.rom` combines both
-fstart halves. `--image-config` paths are workspace-relative or absolute.
+`assemble` writes `<board>.rom` next to the FFS in
+`target/fstart-build/<board>/<profile>/<hash>/image/`: the vendor ROM's
+size (32 MiB for the S8030) with every supported half composed.
+`--image-config` paths are workspace-relative or absolute.
 
-The assembler refuses a vendor half of the wrong generation, a vendor
-`0x62` geometry different from the build's (unless the board sets
-`REWRITE_RESET_GEOMETRY`, which rewrites the L1/L2 entries and their
-checksums), a prefix reaching into the FFS and an FFS larger than its
-window. The FFS holds the payload and a copy of the reset image, whose
-trust policy and FFS locator are patched into the `0x62` copy.
-Composition lives in `fstart_image_build::sp3_flash`.
+The assembler also refuses a vendor prefix reaching into the FFS
+(`0x600000`, above every donor's prefix: Naples `0x273000`, Rome
+`0x54b000`, Milan `0x586000`) and an FFS larger than its window. The FFS
+holds the payload and a copy of the reset image, whose trust policy and
+FFS locator are patched into the reset image before it goes into the
+halves. Composition lives in `fstart_image_build::sp3_flash`.
 
 The reverse engineering behind each block is in the `sp3` analysis
 workspace (`reports/*_SP3.md`, `reports/NATIVE_PORT_PLAN.md`).

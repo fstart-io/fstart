@@ -45,6 +45,8 @@ use crate::entry::ApRoute;
 use crate::hw::{Pci, Tsc, msr, secondary_fch};
 use crate::mp::{Sp3Cpu, release_all, this_thread};
 
+super::steps!();
+
 pub(crate) const MMIO_PAIRS: u8 = <Df3 as Version>::MMIO_PAIRS;
 
 /// SMU V11 mailbox of one socket.
