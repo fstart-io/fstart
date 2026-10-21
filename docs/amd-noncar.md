@@ -83,7 +83,9 @@ EFS field its PSP takes the BIOS directory from (`Soc::BIOS_DIRECTORY`); the
 lookup follows a level-2 directory as the PSP does.
 `crates/image-build/src/amd/assembly.rs` (`AmdAssembly`) composes the image
 with `--image-config`: the PSP firmware comes from a vendor flash image,
-whose prefix stays byte for byte (Zeppelin), or is packed from blobs
+whose prefix stays byte for byte apart from optional PSP settings (Zeppelin
+has the PSP inflate a compressed reset image and read the flash faster:
+`assembly::PspOptions`), or is packed from blobs
 (Picasso). Either way the result is read back as
 the PSP would before it is written, with a JSON receipt of its inputs.
 

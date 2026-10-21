@@ -15,7 +15,7 @@ use fstart_core::{
     layout::RegionKind,
 };
 use fstart_image_build::{
-    amd::assembly::{AmdAssembly, FfsWindow, Firmware, PicassoFiles},
+    amd::assembly::{AmdAssembly, FfsWindow, Firmware, PicassoFiles, PspOptions},
     build_plan::{
         ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema,
         FfsAssembly, FileBinding, InputFile, UnitOutput,
@@ -58,8 +58,9 @@ pub struct Policy {
 /// What the `--image-config` of a full image is.
 pub enum ImageConfig {
     /// A vendor flash image: its first `prefix` bytes (EFS, directories,
-    /// signed blobs) stay, the stage replaces the reset image.
-    Vendor { prefix: u32 },
+    /// signed blobs) stay apart from the `psp` fields, the stage replaces
+    /// the reset image.
+    Vendor { prefix: u32, psp: PspOptions },
     /// A JSON list of the PSP and BIOS directory files to pack.
     Packed,
 }
@@ -501,23 +502,29 @@ fn assembly<S: HostSoc>(
         });
     };
     let flash_size = layout.flash.size as u32;
-    let firmware = match S::POLICY.image_config {
-        ImageConfig::Vendor { prefix } => Firmware::Vendor {
-            image: FileBinding {
-                environment: "VENDOR_FLASH".into(),
-                path: path.clone(),
-                capacity: u64::from(flash_size),
+    let (firmware, psp) = match S::POLICY.image_config {
+        ImageConfig::Vendor { prefix, psp } => (
+            Firmware::Vendor {
+                image: FileBinding {
+                    environment: "VENDOR_FLASH".into(),
+                    path: path.clone(),
+                    capacity: u64::from(flash_size),
+                },
+                prefix_size: prefix,
             },
-            prefix_size: prefix,
-        },
-        ImageConfig::Packed => Firmware::Packed {
-            configuration: FileBinding {
-                environment: "IMAGE_CONFIG".into(),
-                path: path.clone(),
-                capacity: IMAGE_CONFIG_SIZE,
+            psp,
+        ),
+        ImageConfig::Packed => (
+            Firmware::Packed {
+                configuration: FileBinding {
+                    environment: "IMAGE_CONFIG".into(),
+                    path: path.clone(),
+                    capacity: IMAGE_CONFIG_SIZE,
+                },
+                files: packed_files(path)?,
             },
-            files: packed_files(path)?,
-        },
+            PspOptions::default(),
+        ),
     };
     let assembly = AmdAssembly {
         firmware,
@@ -534,6 +541,7 @@ fn assembly<S: HostSoc>(
         apob_destination: S::APOB.base,
         // Entry 0x6B is only for a PSP verstage.
         shared_memory: None,
+        psp,
     };
     assembly.validate()?;
     // Check the vendor image against the layout the stage is linked for

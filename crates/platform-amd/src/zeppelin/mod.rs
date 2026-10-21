@@ -72,8 +72,15 @@ impl noncar::host::HostSoc for Zeppelin {
         payloads: true,
         smm: true,
         release_only: false,
+        // The PSP inflates the stage instead of copying the whole 2.3 MiB
+        // reset region, and reads the flash with Fast Read at 33 MHz
+        // instead of its default: about 1.4 s faster to x86 on the MJ11.
         image_config: noncar::host::ImageConfig::Vendor {
             prefix: layout::VENDOR_PREFIX,
+            psp: fstart_image_build::amd::assembly::PspOptions {
+                compress_reset: true,
+                spi: Some((7, 1)),
+            },
         },
     };
 }

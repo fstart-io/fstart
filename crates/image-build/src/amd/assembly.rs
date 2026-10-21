@@ -3,18 +3,19 @@
 //! and BIOS directories, signed blobs), the stage as the BIOS reset image
 //! (BIOS directory entry 0x62) the PSP copies to DRAM, and the FFS with the
 //! payload, if the image has one. The PSP firmware either comes from a vendor
-//! flash image, whose prefix stays byte for byte, or is packed from blobs
-//! ([`super::PicassoImage`]). Paths are explicit
-//! build inputs, never discovered.
+//! flash image, whose prefix stays byte for byte except for the [`PspOptions`]
+//! fields, or is packed from blobs
+//! ([`super::PicassoImage`]). Paths are explicit build inputs, never
+//! discovered.
 use super::{Blob, FlashRegion, Key, PicassoImage};
 use crate::build_plan::{FfsAssembly, FileBinding};
 use fstart_amdfw::{
     Flash,
-    directory::bios,
+    directory::{BiosEntry, bios, modify_entries},
     efs::{BiosDirectorySlot, Efs},
 };
 use serde::{Deserialize, Serialize};
-use zerocopy::IntoBytes;
+use zerocopy::{FromBytes, IntoBytes};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +90,39 @@ pub struct AmdAssembly {
     pub apob_destination: u64,
     /// The PSP's shared DRAM (entry 0x6b), packed images only.
     pub shared_memory: Option<(u64, u32)>,
+    /// How the PSP loads the reset image and reads the flash.
+    #[serde(default)]
+    pub psp: PspOptions,
+}
+
+/// Faster PSP boot for vendor images. Both change the vendor prefix: the
+/// compressed flag of every BIOS directory level's reset image entry (and
+/// its checksum), and the EFS SPI fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PspOptions {
+    /// zlib-compress the reset image, which the PSP inflates to DRAM:
+    /// it then reads the compressed stage instead of the whole region.
+    pub compress_reset: bool,
+    /// The SPI read mode and speed of the SoC's PSP, encoded as in the FCH
+    /// SPI controller (e.g. 7, 1: Fast Read at 33 MHz).
+    pub spi: Option<(u8, u8)>,
+}
+
+/// The PSP's compressed image: a 256-byte header with the compressed size at
+/// 0x14, then the zlib stream.
+fn amd_compress(data: &[u8]) -> Vec<u8> {
+    let stream = miniz_oxide::deflate::compress_to_vec_zlib(data, 9);
+    let mut out = vec![0; 256];
+    out[0x14..0x18].copy_from_slice(&(stream.len() as u32).to_le_bytes());
+    out.extend(stream);
+    out
+}
+
+/// The data of an `amdcompress` file, inflated to at most `limit` bytes.
+pub(super) fn amd_decompress(file: &[u8], limit: usize) -> Option<Vec<u8>> {
+    let size = u32::read_from_bytes(file.get(0x14..0x18)?).ok()? as usize;
+    miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(file.get(256..256 + size)?, limit).ok()
 }
 
 /// A composed image.
@@ -203,6 +237,13 @@ impl AmdAssembly {
         {
             return Err("the reset image must end on a 64-KiB DRAM boundary below 4 GiB".into());
         }
+        if self
+            .psp
+            .spi
+            .is_some_and(|(mode, speed)| mode > 7 || mode == 1 || speed > 5)
+        {
+            return Err("invalid PSP SPI read mode or speed".into());
+        }
         match (&self.firmware, &self.ffs) {
             (Firmware::Vendor { image, prefix_size }, ffs) => {
                 let ffs_end = match ffs {
@@ -221,6 +262,9 @@ impl AmdAssembly {
                         "vendor flash layout is not prefix < FFS < top-aligned reset image".into(),
                     );
                 }
+            }
+            (Firmware::Packed { .. }, _) if self.psp != PspOptions::default() => {
+                return Err("PSP options are for vendor images; packed ones set the SPI in their configuration".into());
             }
             (
                 Firmware::Packed {
@@ -384,7 +428,8 @@ impl AmdAssembly {
                     let offset = window.offset as usize;
                     image[offset..offset + ffs.len()].copy_from_slice(ffs);
                 }
-                image[facts.reset_offset as usize..].copy_from_slice(&stage);
+                let reset = self.apply_psp_options(&mut image, &facts, &stage)?;
+                image[facts.reset_offset as usize..][..reset.len()].copy_from_slice(&reset);
                 (0, image, *prefix_size, facts.efs, Some(facts.reset_offset))
             }
             Firmware::Packed { files, .. } => {
@@ -400,7 +445,13 @@ impl AmdAssembly {
         let facts = read_bios_directory(&flash, kept, self.bios_directory)?;
         self.check_facts(&facts, reset_offset.unwrap_or(facts.reset_offset))?;
         let start = facts.reset_offset as usize;
-        if facts.efs != efs || flash.get(start..start + stage.len()) != Some(&stage[..]) {
+        let region = flash.get(start..start + stage.len()).unwrap_or_default();
+        let found = if self.psp.compress_reset {
+            amd_decompress(region, stage.len())
+        } else {
+            Some(region.to_vec())
+        };
+        if facts.efs != efs || found.as_deref() != Some(&stage[..]) {
             return Err("the PSP wouldn't find the stage in the composed image".into());
         }
         Ok(AmdImage {
@@ -408,6 +459,47 @@ impl AmdAssembly {
             bytes,
             facts,
         })
+    }
+
+    /// Set the EFS SPI fields and the compressed flag of the reset image in
+    /// every BIOS directory level of the PSP's slot in `image`, and return
+    /// the reset region's bytes: the stage, or its `amdcompress` file padded
+    /// with erased flash.
+    fn apply_psp_options(
+        &self,
+        image: &mut [u8],
+        facts: &BiosDirectoryFacts,
+        stage: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        if let Some((mode, speed)) = self.psp.spi {
+            Efs::mut_from_prefix(&mut image[facts.efs..])
+                .map_err(|_| "no EFS")?
+                .0
+                .set_spi(self.bios_directory, mode, speed);
+        }
+        if !self.psp.compress_reset {
+            return Ok(stage.to_vec());
+        }
+        let levels: Vec<usize> = Flash::new(image)
+            .bios_directories(self.bios_directory)
+            .ok_or("no BIOS directory")?
+            .iter()
+            .map(|directory| directory.offset)
+            .collect();
+        for offset in levels {
+            modify_entries::<BiosEntry>(image, offset, |entry| {
+                if entry.kind == bios::RESET_IMAGE {
+                    entry.flags |= BiosEntry::COMPRESSED;
+                }
+            })
+            .ok_or("BIOS directory changed under the PSP options")?;
+        }
+        let mut reset = amd_compress(stage);
+        if reset.len() > stage.len() {
+            return Err("the compressed reset image is larger than the stage".into());
+        }
+        reset.resize(stage.len(), 0xff);
+        Ok(reset)
     }
 
     /// Pack the PSP partition. The configuration witness must be the planned
