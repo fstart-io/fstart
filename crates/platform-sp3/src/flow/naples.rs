@@ -198,10 +198,7 @@ pub(crate) fn fch_env(ctx: &Ctx, si: &Silicon) {
     }
 }
 
-fn wbinvd() {
-    // SAFETY: cache write-back only.
-    unsafe { core::arch::asm!("wbinvd", options(nostack, preserves_flags)) }
-}
+use crate::hw::wbinvd;
 
 fn microcode_candidates(ctx: &Ctx) -> Vec<&'static [u8]> {
     let Ok(dirs) = Efs::new(ctx.flash).and_then(|e| e.bios_directories(ctx.generation)) else {

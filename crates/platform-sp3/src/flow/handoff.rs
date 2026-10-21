@@ -39,7 +39,14 @@ pub(crate) fn mount_boot_media(ctx: &Ctx) {
             size: e.size,
         };
         let ram = |e: &&E820Entry| e.kind == E820Kind::Ram as u32;
-        let stage = fstart_stage::boot::running_stage_windows().or_halt("stage windows");
+        // The running image (text, in-place data: `layout::RESET`) and its
+        // BSS, heap and stacks (`layout::EARLY_REGION`) are reserved by
+        // span: `running_stage_windows` assumes data and BSS are
+        // contiguous, which this layout does not keep.
+        let image = MemoryWindow {
+            start: layout::RESET.destination,
+            size: u64::from(layout::RESET.size),
+        };
         (
             ctx.e820
                 .entries()
@@ -52,8 +59,7 @@ pub(crate) fn mount_boot_media(ctx: &Ctx) {
                 .iter()
                 .filter(|e| !ram(e))
                 .map(to_window)
-                .chain(stage)
-                .chain([span_window(layout::EARLY_REGION), span_window(window)])
+                .chain([image, span_window(layout::EARLY_REGION), span_window(window)])
                 .collect(),
         )
     };

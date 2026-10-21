@@ -349,10 +349,7 @@ pub(crate) fn fch_env(ctx: &Ctx, _si: &Silicon) {
     }
 }
 
-fn wbinvd() {
-    // SAFETY: cache write-back only.
-    unsafe { core::arch::asm!("wbinvd", options(nostack, preserves_flags)) }
-}
+use crate::hw::wbinvd;
 
 /// Patches of BIOS directory entry 0x66, copied to RAM (the patch loader
 /// reads them at their address; flash is uncached).

@@ -115,3 +115,9 @@ pub fn secondary_fch(bus: u8, timer: Tsc) -> SecondaryFch {
         }
     }
 }
+
+/// Write back and invalidate the caches.
+pub fn wbinvd() {
+    // SAFETY: cache write-back and invalidate only; no memory is reordered.
+    unsafe { core::arch::asm!("wbinvd", options(nostack, preserves_flags)) }
+}

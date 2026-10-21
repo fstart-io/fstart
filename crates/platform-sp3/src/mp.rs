@@ -40,10 +40,7 @@ pub fn apic_id() -> u32 {
     fstart_arch::x86::cpuid(0x8000_001e).0
 }
 
-fn wbinvd() {
-    // SAFETY: write back and invalidate caches; no memory is reordered.
-    unsafe { core::arch::asm!("wbinvd", options(nostack, preserves_flags)) }
-}
+use crate::hw::wbinvd;
 
 /// The SP3 CPU driver handed to `mp_init_with_launcher`.
 pub struct Sp3Cpu<'a> {
@@ -99,10 +96,13 @@ impl CpuDriver for Sp3Cpu<'_> {
     fn init_cpu(&self) {
         let cpu = msr();
         let thread = this_thread(self.ccx.generation());
-        if let Some(bar) = self.psp_addr[usize::from(thread.location().socket & 1)] {
+        let bsp = thread.in_scope(ccx::topology::Scope::Bsp);
+        // APs only (PSP_APOB §3.2, threads ≠ 0): the BSP wrote its PSP_ADDR
+        // with the BAR, and a second write raises #GP.
+        if let (false, Some(bar)) = (bsp, self.psp_addr[usize::from(thread.location().socket & 1)]) {
             cpu.write(MSR_PSP_ADDR, bar);
         }
-        if !thread.in_scope(ccx::topology::Scope::Bsp) {
+        if !bsp {
             self.ccx.early(&cpu, &thread);
             if self
                 .ccx
@@ -126,18 +126,27 @@ impl CpuDriver for Sp3Cpu<'_> {
             .map_err(|_| MpError::CacheabilitySetupFailed)?;
         let syscfg = cpu.reg(SYSCFG);
         syscfg.modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::SET);
+        // Replayed with MtrrFixDramModEn still set: the fixed MTRRs that
+        // follow carry RdDram/WrDram bits, and writing those with the bit
+        // clear raises #GP (a triple fault this early). The trampoline
+        // clears it after the replay (`sipi_unlock`).
+        let syscfg_unlocked = syscfg.get();
         let mtrrs = fstart_arch::x86::mtrr::snapshot_with(|i| cpu.read(i));
         syscfg.modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::CLEAR);
         let mtrrs = mtrrs.map_err(|_| MpError::CacheabilitySetupFailed)?;
+        // Order matters on the AP: SYSCFG (MtrrFixDramEn) only after the
+        // fixed MTRRs hold their RdDram/WrDram bits, else the trampoline's
+        // own fetches below 1 MiB go to MMIO; IA32_MTRR_DEF_TYPE stays last.
+        let (def_type, mtrrs) = mtrrs.split_last().ok_or(MpError::CacheabilitySetupFailed)?;
         let routing = [
             MsrEntry::new(TOP_MEM.index(), cpu.reg(TOP_MEM).get()),
             MsrEntry::new(TOP_MEM2.index(), cpu.reg(TOP_MEM2).get()),
-            MsrEntry::new(SYSCFG.index(), syscfg.get()),
             MsrEntry::new(MMIO_CFG_BASE.index(), cpu.reg(MMIO_CFG_BASE).get()),
         ];
         routing
             .into_iter()
-            .chain(mtrrs)
+            .chain(mtrrs.iter().copied())
+            .chain([MsrEntry::new(SYSCFG.index(), syscfg_unlocked), *def_type])
             .try_fold(SipiMsrs::new(), |mut v, e| v.push(e).map(|_| v))
             .map_err(|_| MpError::CacheabilitySetupFailed)
     }
