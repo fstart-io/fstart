@@ -5,9 +5,11 @@
  * at-sign delimited names with layout values.
  *
  * IMAGE is the common reset image [destination, 0x76000000), linked once
- * for every generation at the smallest donor 0x62 slot (Naples KNPP-D32,
- * 0x220000 bytes at 0x75de0000); the composer puts
- * it at the end of each half's slot, so the PSP copy lands it here. Text,
+ * for every generation at the smallest donor 0x62 geometry (Naples
+ * KNPP-D32, 0x220000 bytes at 0x75de0000); the composer puts it at flash
+ * 0xde0000 (top of the lower half, and of the upper half in the dual
+ * layout) and points every 0x62 entry at it, so the PSP copy lands it
+ * here. Text,
  * rodata, the layout descriptor and .data all run in place (the PSP
  * already put them in DRAM), the 16-bit entry sits in the last 64 KiB and
  * the reset vector in the last 16 bytes, so the flat binary is the whole

@@ -1,34 +1,37 @@
-//! The DRAM layout of the reset image and the early region (FIRMWARE_IMAGE
-//! §2.1, §5; PSP_APOB §3.6, §3.7).
+//! The DRAM layout of the reset image and the early region, and where the
+//! firmware sits in the SPI flash (FIRMWARE_IMAGE §1.2a, §2.1, §5; PSP_APOB
+//! §3.6, §3.7).
 //!
-//! The PSP copies BIOS directory entry `0x62` from the top of the flash half
-//! to DRAM and releases the BSP at its last 16 bytes. On every SP3 donor the
-//! copy ends at `0x7600_0000`; only the start (and size) differs:
+//! The PSP copies BIOS directory entry `0x62` from flash to DRAM and
+//! releases the BSP at its last 16 bytes. On every SP3 donor the copy ends
+//! at `0x7600_0000`; only the start (and size) differs:
 //!
 //! | Donor | flash | size | destination |
 //! |---|---|---|---|
 //! | Naples S8026 v2.02, Rome S8030 v4.04/v4.00, Rome S8026, Rome S8253 | `0xdb0000` | `0x250000` | `0x75db0000` |
-//! | Naples KNPP-D32 1801 (smallest: the common image) | `0xde0000` | `0x220000` | `0x75de0000` |
+//! | Naples KNPP-D32 1801 (smallest) | `0xde0000` | `0x220000` | `0x75de0000` |
 //! | Milan S8030 v4.04, Milan S8253 v2.03 | `0xce0000` | `0x320000` | `0x75ce0000` |
 //! | Milan S8030 v4.00 | `0xd00000` | `0x300000` | `0x75d00000` |
 //!
-//! Every slot ends at flash `0x100_0000` and DRAM `0x7600_0000`. One reset
-//! image serves every generation and slot: it is linked once at the
-//! smallest donor slot ([`RESET`]) and the host composer puts it at the end of each
-//! half's vendor slot ([`crate::host`]); the PSP copies the whole slot, so
-//! the image lands at its link address and the vendor directories stay
-//! byte-identical. The bytes in front of it in a larger slot are erased.
+//! fstart links one reset image for every generation at the smallest
+//! geometry ([`RESET`]) and the image builder points every `0x62` entry of
+//! every composed generation at it: one copy at the top of the lower half
+//! (unified layout), or one per half (dual layout), see
+//! `fstart_image_build::sp3_flash`. The FFS is in the lower half only; the
+//! reset image finds it through the FCH ROM3 window by absolute flash
+//! offset (the flash anchor the builder patches), whichever half the ROM2
+//! window at `0xff00_0000` shows.
 //!
 //! Everything the reset image needs besides its own bytes lives in the
 //! **early region** `[0x7500_0000, 0x75c0_0000)`, below the lowest observed
 //! destination and inside the 16 MiB write-back window the vendor SEC opens
 //! with variable MTRR 7 (`0x7500_0006` / mask `0xffff_ff00_0800`,
 //! instruction-checked in all seven donors, e.g. Rome S8030 `0x75ffefe1`).
-//! The same layout therefore serves every generation and vendor geometry.
 //! That the PSP/ABL leave this DRAM alone is inference: the vendor caches it
 //! from its first instructions, and the only PSP-written x86-visible range is
 //! the APOB at `0x3000_0000` (PSP_APOB §3.5).
 
+use fstart_driver_zen::fch::rom3;
 use fstart_driver_zen::soc::Generation;
 
 /// A physical address range.
@@ -56,10 +59,13 @@ impl Span {
     }
 }
 
-/// One flash half (16 MiB), the unit the PSP boots from.
+/// One flash half (16 MiB), the unit an EFS describes in the dual layout.
 pub const HALF_SIZE: u64 = 16 << 20;
-/// The booted half as mapped below 4 GiB.
-pub const FLASH_MMIO: Span = Span::new(0xff00_0000, HALF_SIZE);
+/// ROM2: the 16 MiB flash page `SPIx5C` selects, below 4 GiB.
+pub const ROM2: Span = Span::new(rom3::ROM2_BASE, HALF_SIZE);
+/// ROM3: the whole flash (up to 64 MiB) above 4 GiB, in the 12 GiB hole
+/// below 1 TiB; identity-mapped by the reset image's page tables.
+pub const ROM3: Span = Span::new(rom3::BASE, rom3::SIZE);
 /// End of every SP3 reset image in DRAM (exclusive).
 pub const IMAGE_END: u64 = 0x7600_0000;
 /// Real-mode segment the PSP releases x86 in: CS base = image end − 64 KiB,
@@ -87,7 +93,7 @@ pub enum GeometryError {
     DramEnd,
     /// The flash copy must end at the top of the half: the vendor SEC jumps
     /// into the flash copy first (FIRMWARE_IMAGE §5), and our 16-bit entry
-    /// may be fetched from either copy.
+    /// may be fetched from either copy (ROM2 shows the top of the half).
     FlashEnd,
     /// Destination and size must be 64 KiB multiples and cover the 64 KiB
     /// real-mode segment.
@@ -124,19 +130,9 @@ impl ResetGeometry {
     }
 }
 
-impl ResetGeometry {
-    /// Whether this (vendor) slot carries `image` at the image's link
-    /// address: both valid, same top, large enough.
-    pub const fn carries(&self, image: &ResetGeometry) -> bool {
-        self.check().is_ok() && image.check().is_ok() && self.size >= image.size
-    }
-}
-
-/// The reset image of every build: linked for the smallest donor slot,
-/// Naples KNPP-D32 1801 (FIRMWARE_IMAGE §2.1). Every other slot carries it
-/// in its last `0x220000` bytes: Naples S8026 / Rome (`0xdb0000`,
-/// `0x250000`), Milan (`0xce0000`/`0x320000`, v4.00 `0xd00000`/
-/// `0x300000`). A release Naples+Rome+Milan image uses about `0x57000`.
+/// The reset image of every build, at the smallest donor geometry (Naples
+/// KNPP-D32 1801, FIRMWARE_IMAGE §2.1); every `0x62` entry is rewritten to
+/// it. A release Naples+Rome+Milan image uses about `0x57000`.
 pub const RESET: ResetGeometry = ResetGeometry {
     flash_offset: 0xde_0000,
     size: 0x22_0000,
@@ -145,20 +141,18 @@ pub const RESET: ResetGeometry = ResetGeometry {
 
 const _: () = assert!(RESET.check().is_ok());
 
-/// Flash offset of the fstart FFS in every half: above the vendor prefix of
-/// every donor (prefix ends: Naples `0x273000`/`0x4ba000`, Rome
+/// Lowest flash offset of the fstart FFS (lower half): above the vendor
+/// prefix of every donor (prefix ends: Naples `0x273000`/`0x4ba000`, Rome
 /// `0x50b000`/`0x54b000`, Milan `0x586000`; FIRMWARE_IMAGE §4) with room
-/// for prefix growth in later vendor releases. The host checks it against
-/// each composed half.
+/// for prefix growth and the combo directory. The image builder moves it up
+/// if a vendor prefix reaches further.
 pub const FFS_OFFSET: u32 = 0x60_0000;
 
-/// The FFS window of the booted half in the MMIO view, as linked into the
-/// reset image: from [`FFS_OFFSET`] up to the reset image. This is an upper
-/// bound valid in every half; the composer limits the FFS itself to the
-/// lowest vendor slot start of the composed halves (e.g. `0xce0000` with a
-/// Milan half), and the runtime reads only what the FFS locator describes.
+/// Upper bound of the FFS in the ROM3 view, the window the FFS is built
+/// for: `[FFS_OFFSET, RESET.flash_offset)` of the lower half. The runtime
+/// reads only what the flash anchor and FFS locator describe.
 pub const FFS_WINDOW: Span = Span::new(
-    FLASH_MMIO.base + FFS_OFFSET as u64,
+    ROM3.base + FFS_OFFSET as u64,
     (RESET.flash_offset - FFS_OFFSET) as u64,
 );
 
@@ -201,12 +195,10 @@ pub const STORE: Span = Span::new(0x75b0_0000, 0x10_0000);
 /// plan runner builds the board crate without its own `host` feature.
 pub trait Sp3BoardFacts {
     /// Generations the board supports. The platform must be built with
-    /// each one's feature; one firmware build serves all of them and is
-    /// composed into every vendor half of one of them.
+    /// each one's feature; one firmware build serves all of them.
     const GENERATIONS: &'static [Generation];
     /// Workspace-relative vendor ROM: the 32 MiB dual image or one 16 MiB
-    /// half. Its prefix (EFS, PSP/BIOS directories, blobs, APCB) is kept
-    /// byte-identical.
+    /// half. Its PSP/BIOS directories, blobs and APCB stay in place.
     const VENDOR_IMAGE: &'static str;
     /// Logical CPU ceiling over every supported generation (all sockets);
     /// sizes the AP stacks and SMM.
@@ -228,31 +220,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_vendor_slot_carries_the_common_image_above_the_early_region() {
+    fn reset_image_and_ffs_window() {
         assert_eq!(RESET.reset_vector(), 0x75ff_fff0);
         assert!(CACHE_WINDOW.contains(&RESET.dram()));
-        assert!(FFS_WINDOW.size > 0x40_0000 && FFS_WINDOW.end() == 0xffde_0000);
-        // The donor slots (FIRMWARE_IMAGE §2.1).
-        for (flash, size, dest) in [
-            (0xde_0000, 0x22_0000, 0x75de_0000),
-            (0xdb_0000, 0x25_0000, 0x75db_0000),
-            (0xce_0000, 0x32_0000, 0x75ce_0000),
-            (0xd0_0000, 0x30_0000, 0x75d0_0000),
-        ] {
-            let slot = ResetGeometry {
-                flash_offset: flash,
-                size,
-                destination: dest,
-            };
-            assert!(slot.carries(&RESET), "{slot:x?}");
-            assert!(FFS_OFFSET < flash);
-        }
-        let small = ResetGeometry {
-            flash_offset: 0xe0_0000,
-            size: 0x20_0000,
-            destination: 0x75e0_0000,
-        };
-        assert!(small.check().is_ok() && !small.carries(&RESET));
+        assert_eq!(FFS_WINDOW.base, 0xfd_0060_0000);
+        assert_eq!(FFS_WINDOW.end(), ROM3.base + u64::from(RESET.flash_offset));
         let low = ResetGeometry {
             flash_offset: 0xb0_0000,
             size: 0x50_0000,
@@ -265,6 +237,9 @@ mod tests {
             flash_offset: 0xda_8000,
         };
         assert_eq!(unaligned.check(), Err(GeometryError::Alignment));
+        // ROM3 lies in the hole below 1 TiB, inside the identity map.
+        assert!(ROM3.base >= 0xfd_0000_0000 && ROM3.end() <= 1 << 40);
+        assert!(ROM3.end() <= (PDPT_COUNT * 512) << 30);
     }
 
     #[test]

@@ -14,8 +14,8 @@
 //!   [`Ports`] (x86 I/O), [`ConfigWindow`] (one PCI function) and
 //!   [`acpimmio::PmIo`] (PM registers through `CD6h/CD7h`).
 //! - **Blocks.** [`acpimmio`] (offsets and PM/SMI/MISC/AOAC fields),
-//!   [`gpio`], [`lpc`], [`spi`], [`smbus`], [`irq`], [`uart`], [`smi`],
-//!   [`alink`].
+//!   [`gpio`], [`lpc`], [`spi`] (and the flash windows, [`rom3`]),
+//!   [`smbus`], [`irq`], [`uart`], [`smi`], [`alink`].
 //! - **Tasks.** [`common`] holds the tasks both FCHs run (the eight PEI
 //!   reset tasks, the DXE env and late tasks, FCH_SP3 §2.1–2.2);
 //!   [`taishan`] and [`huashan`] hold the per-IP SATA, USB, xGbE and SMM
@@ -34,6 +34,7 @@ pub mod huashan;
 pub mod irq;
 pub mod lpc;
 pub mod multi;
+pub mod rom3;
 pub mod smbus;
 pub mod smi;
 pub mod spi;

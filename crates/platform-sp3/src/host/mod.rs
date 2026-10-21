@@ -6,13 +6,14 @@
 //! `reset`, built with every generation the board supports, linked at the
 //! common reset image address ([`layout::RESET`]) with
 //! `linker/reset.ld.in` and `fstart_entry = "amd-psp-reset"`, and an
-//! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into every
-//! supported half of the vendor ROM with [`fstart_image_build::sp3_flash`].
+//! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
+//! ROM with [`fstart_image_build::sp3_flash`], in the unified layout by
+//! default (`FSTART_SP3_LAYOUT=dual` selects the per-half fallback).
 //!
 //! The FFS holds the payload and a copy of the reset unit: the FFS builder
 //! finalizes the unit's trust policy only in FFS-resident files, and the
-//! composer copies it (and the FFS locator) into the PSP-copied `0x62`
-//! image.
+//! composer copies it, the FFS locator and the flash anchor (FFS flash
+//! offset and size) into the PSP-copied `0x62` image.
 
 use std::boxed::Box;
 use std::collections::BTreeMap;
@@ -32,10 +33,10 @@ use fstart_image_build::build_plan::{
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
-use fstart_image_build::sp3_flash::{FlashPlan, ResetSlot, Sp3FlashAssembly, Survey};
+use fstart_image_build::sp3_flash::{FlashPlan, Layout, ResetSlot, Sp3FlashAssembly, Survey};
 
 use crate::layout::{
-    self, DATA, EARLY_REGION, FFS_WINDOW, FLASH_MMIO, HEAP, PAGE_TABLES, RESET, STACK, STORE,
+    self, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK, STORE,
     Sp3BoardFacts, Span,
 };
 
@@ -86,8 +87,8 @@ fn region(kind: RegionKind, span: Span) -> Region {
 
 /// Runtime layout descriptor of the reset image (read by
 /// `fstart_stage::layout::current()`): image, writable/stack/heap, the
-/// flash window and the FFS within it, the store, and the page tables as
-/// an exclusion.
+/// flash (ROM3) and the FFS window within it, the store, and the page
+/// tables as an exclusion.
 pub fn descriptor() -> Result<EncodedLayout, String> {
     let writable = Span::new(DATA.base, STACK.end() - DATA.base);
     EncodedLayout::encode(
@@ -97,7 +98,7 @@ pub fn descriptor() -> Result<EncodedLayout, String> {
             region(RegionKind::Writable, writable),
             region(RegionKind::Stack, STACK),
             region(RegionKind::Heap, HEAP),
-            region(RegionKind::Flash, FLASH_MMIO),
+            region(RegionKind::Flash, ROM3),
             region(RegionKind::Firmware, FFS_WINDOW),
             region(RegionKind::FirmwareStore, STORE),
             region(RegionKind::Reserved, PAGE_TABLES),
@@ -255,9 +256,11 @@ impl Payload {
     }
 }
 
-/// How the build is composed into the board's vendor ROM: every half of
-/// a supported generation gets the common reset image at the end of its
-/// `0x62` slot (above the early region) and the FFS at [`layout::FFS_OFFSET`].
+/// How the build is composed into the board's vendor ROM: every `0x62`
+/// entry of a supported generation names the reset image at the top of
+/// the lower half (above the early region), the FFS starts at
+/// [`layout::FFS_OFFSET`] or above, unified layout (the assembler may
+/// override the layout).
 pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
     FlashPlan {
         generations: B::GENERATIONS.to_vec(),
@@ -268,13 +271,14 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
         },
         ffs_offset: layout::FFS_OFFSET,
         dram_floor: EARLY_REGION.end(),
+        layout: Layout::Unified,
     }
 }
 
 /// The assembler's view of the reset unit and its FFS: the FFS lives in
-/// the common firmware window ([`FFS_WINDOW`], an upper bound; the composer
+/// the ROM3 firmware window ([`FFS_WINDOW`], an upper bound; the composer
 /// enforces the vendor ROM's real one), the unit is monolithic and stored
-/// in the FFS (see the module docs) besides its `0x62` slot.
+/// in the FFS (see the module docs) besides its `0x62` copy.
 fn ffs_assembly(payload: Payload, config: Option<PayloadConfig>) -> FfsAssembly {
     let (reset, ffs) = (RESET, FFS_WINDOW);
     let region = |name: &str, span: Span, kind| MemoryRegion {
@@ -286,7 +290,7 @@ fn ffs_assembly(payload: Payload, config: Option<PayloadConfig>) -> FfsAssembly 
     FfsAssembly {
         platform: fstart_core::Platform::X86_64,
         memory: vec![
-            region("flash", FLASH_MMIO, fstart_core::memory::RegionKind::Rom),
+            region("flash", ROM3, fstart_core::memory::RegionKind::Rom),
             region("early", EARLY_REGION, fstart_core::memory::RegionKind::Ram),
         ],
         flash: None,
@@ -413,8 +417,8 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
 }
 
 /// Check the board's vendor ROM against the build without composing: the
-/// halves it would compose (slot geometry, prefix below the FFS) and keep,
-/// and the common FFS window. `root` is the workspace root.
+/// halves it would compose and keep, the combo directory and the FFS
+/// window. `root` is the workspace root.
 pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, String> {
     let path = root.join(B::VENDOR_IMAGE);
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -497,12 +501,13 @@ mod tests {
                 },
                 ffs_offset: 0x60_0000,
                 dram_floor: 0x75c0_0000,
+                layout: Layout::Unified,
             }
         );
         let config = plan.assembly.config("tyan-s8030").unwrap();
         assert_eq!(
             config.build.firmware_image,
-            FirmwareImagePolicy::memory_mapped(0xff60_0000, 0x7e_0000)
+            FirmwareImagePolicy::memory_mapped(0xfd_0060_0000, 0x7e_0000)
         );
         let StageLayout::Monolithic(stage) = &config.stages else {
             panic!("not monolithic")
@@ -561,8 +566,9 @@ mod tests {
         let layout = fstart_core::layout::Layout::parse(bytes.as_bytes()).unwrap();
         let find = |kind| layout.regions().find(|r| r.kind == kind).unwrap();
         assert_eq!(find(RegionKind::Image).base, 0x75de_0000);
-        assert_eq!(find(RegionKind::Firmware).base, 0xff60_0000);
-        assert_eq!(find(RegionKind::Firmware).end(), Some(0xffde_0000));
+        assert_eq!(find(RegionKind::Firmware).base, 0xfd_0060_0000);
+        assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00de_0000));
+        assert_eq!(find(RegionKind::Flash).base, 0xfd_0000_0000);
         assert_eq!(find(RegionKind::Stack).end(), Some(STACK.end()));
     }
 
@@ -574,7 +580,8 @@ mod tests {
             return;
         }
         let survey = check_vendor::<S8030>(&root).unwrap();
-        assert_eq!(survey.ffs_end, 0xce_0000);
+        assert_eq!(survey.ffs, 0x60_0000..0xde_0000);
+        assert_eq!(survey.combo, Some(0x54_b000));
         let composed: std::vec::Vec<_> = survey
             .halves
             .iter()

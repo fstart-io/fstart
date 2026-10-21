@@ -1,14 +1,24 @@
-//! EFS and PSP/BIOS directories of one 16 MiB flash half (FIRMWARE_IMAGE
-//! §1–2).
+//! EFS and PSP/BIOS directories (FIRMWARE_IMAGE §1–2).
 //!
-//! The half is a byte slice: at run time the SPI window at `0xff00_0000`,
-//! on the host a file. Only the EFS at `0x20000` is populated on SP3.
+//! The image is a byte slice starting at the flash offset of the EFS's
+//! 16 MiB half: on the host a file, at run time the SPI flash as the FCH
+//! maps it (`fch::rom3`). Only the EFS at `0x20000` is populated on SP3.
+//! Offsets in the EFS and in mode 0/1 directories are relative to that
+//! start and may reach past 16 MiB (AMD #55758 rev 1.13 §4.1.7, "Single
+//! 32M in 32MB SPIROM").
 //!
 //! | | Naples | Rome | Milan |
 //! |---|---|---|---|
 //! | EFS generation word (`+0x24`) | `ffffffff` (gen1) | `fffffffe` | `fffffffc` |
 //! | BIOS directory pointer | `+0x18` | `+0x20` | `+0x28` |
 //! | pointers | MMIO (`0xff00_0000 + off`) | offsets, address mode 0 | offsets, address mode 1 |
+//!
+//! EFS `+0x14` points at a `$PSP` directory or at a `2PSP` combo directory
+//! whose entries name one PSP directory per generation (AMD #55758 §4.1.4.2);
+//! [`Efs::psp_directories`] picks the generation's entry by its PSP ID.
+//! A Naples tree keeps gen1 headers and MMIO pointers even under an EFS
+//! shared with a later generation, so "gen1" is a property of the tree's
+//! generation, not of the EFS word.
 //!
 //! Lookups go to the L2 directory first (BIOS `0x70` → `$BL2`, PSP `0x40` →
 //! `$PL2`), then L1, as AGESA's APOB lookup (`ffe17a2d`). Every directory
@@ -23,12 +33,35 @@ use crate::soc::Generation;
 
 /// EFS offset within a half.
 pub const EFS_OFFSET: usize = 0x2_0000;
+/// Every offset a Rome/Milan boot ROM checks for an EFS, in search order
+/// (AMD #55758 §4.1.7.1/§4.1.7.2); SP3 images only populate `0x20000`.
+pub const EFS_SEARCH: [usize; 6] = [
+    0xfa_0000, 0xf2_0000, 0xe2_0000, 0xc2_0000, 0x82_0000, EFS_OFFSET,
+];
 /// EFS signature.
 pub const EFS_SIGNATURE: u32 = 0x55aa_55aa;
 /// Size of one flash half.
 pub const HALF_SIZE: usize = 16 << 20;
 /// The half as memory-mapped below 4 GiB.
 pub const MMIO_BASE: u64 = 0xff00_0000;
+/// Cookie of the PSP combo directory (AMD #55758 Table 10).
+pub const PSP_COMBO_COOKIE: [u8; 4] = *b"2PSP";
+/// Combo directory header size (cookie, checksum, count, lookup mode, 16
+/// reserved bytes) and entry size (`id_sel`, `id`, directory address).
+pub const COMBO_HEADER_SIZE: usize = 0x20;
+pub const COMBO_ENTRY_SIZE: usize = 0x10;
+/// The PSP ID bits a combo entry is matched on: the low byte is free
+/// (AMD #55758 Table 12, `0xBC0B00xx`).
+pub const PSP_ID_MASK: u32 = 0xffff_ff00;
+
+/// A generation's PSP ID for combo directories (AMD #55758 Table 12).
+pub const fn psp_id(generation: Generation) -> u32 {
+    match generation {
+        Generation::Naples => 0xbc09_0000,
+        Generation::Rome => 0xbc0b_0000,
+        Generation::Milan => 0xbc0b_0d00,
+    }
+}
 
 /// BIOS directory entry types used by x86 (FIRMWARE_IMAGE §2).
 pub mod bios {
@@ -80,6 +113,8 @@ pub enum DirError {
     },
     /// The entry has no flash data (a value entry such as APOB).
     NoData,
+    /// The combo directory has no entry for this PSP ID.
+    NoComboEntry(u32),
 }
 
 #[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
@@ -121,29 +156,49 @@ impl<'a> Efs<'a> {
         self.raw.generations.get()
     }
 
-    /// Gen1 (Naples) EFS: bit 0 of the generation word set.
+    /// Gen1 (Naples-only) EFS: bit 0 of the generation word set.
     pub fn is_gen1(&self) -> bool {
         self.generation_word() & 1 != 0
     }
 
-    /// Whether this half is for `generation`. Rome's boot ROM requires bit 0
-    /// clear, Milan's (inference, from `fffffffc`) bit 1 clear, so a Milan
-    /// EFS also passes for Rome (FIRMWARE_IMAGE §1.2).
+    /// Whether `generation`'s boot ROM accepts this EFS. Rome's requires
+    /// bit 0 clear, Milan's bit 1 (`FUSE_MULTI_GEN_EFS_VALUE`, AMD #55758
+    /// §4.1.7.1/§4.1.7.2), so a Milan EFS also passes for Rome
+    /// (FIRMWARE_IMAGE §1.2). Naples' predates the check and takes the
+    /// first EFS of the lower half whatever its word (the AM4 precedent
+    /// boots ZP from a `fffffffe` EFS, FIRMWARE_IMAGE §1.2a).
     pub fn matches(&self, generation: Generation) -> bool {
         let word = self.generation_word();
         match generation {
-            Generation::Naples => word & 1 != 0,
+            Generation::Naples => true,
             Generation::Rome => word & 1 == 0,
             Generation::Milan => word & 3 == 0,
         }
     }
 
-    fn pointer(&self, value: u32) -> Result<usize, DirError> {
-        resolve(self.image.len(), u64::from(value), self.is_gen1())
+    /// The raw BIOS directory pointer of `generation`.
+    pub fn bios_pointer(&self, generation: Generation) -> u32 {
+        match generation {
+            Generation::Naples => self.raw.bios_f17_m00,
+            Generation::Rome => self.raw.bios_f17_m30,
+            Generation::Milan => self.raw.bios_f19,
+        }
+        .get()
     }
 
-    /// The BIOS directories of `generation` (fails if the half is for
-    /// another generation).
+    /// The raw PSP (or combo) directory pointer (`+0x14`).
+    pub fn psp_pointer(&self) -> u32 {
+        self.raw.psp.get()
+    }
+
+    /// Whether this EFS carries `generation`: its boot ROM accepts it and
+    /// the generation's BIOS directory pointer is populated.
+    pub fn serves(&self, generation: Generation) -> bool {
+        self.matches(generation) && !matches!(self.bios_pointer(generation), 0 | u32::MAX)
+    }
+
+    /// The BIOS directories of `generation` (fails if its boot ROM would
+    /// not take this EFS).
     pub fn bios_directories(
         &self,
         generation: Generation,
@@ -153,22 +208,114 @@ impl<'a> Efs<'a> {
                 word: self.generation_word(),
             });
         }
-        let pointer = match generation {
-            Generation::Naples => self.raw.bios_f17_m00,
-            Generation::Rome => self.raw.bios_f17_m30,
-            Generation::Milan => self.raw.bios_f19,
-        };
-        Directories::new(self.image, self.pointer(pointer.get())?, self.is_gen1())
+        let gen1 = generation == Generation::Naples;
+        let offset = resolve(self.image.len(), self.bios_pointer(generation).into(), gen1)?;
+        Directories::new(self.image, offset, gen1)
     }
 
-    /// The PSP directories (`+0x14`).
-    pub fn psp_directories(&self) -> Result<Directories<'a, PspEntry>, DirError> {
-        Directories::new(
-            self.image,
-            self.pointer(self.raw.psp.get())?,
-            self.is_gen1(),
-        )
+    /// The PSP directories of `generation`: `+0x14` itself, or the entry of
+    /// the `2PSP` combo directory there whose ID is the generation's (the
+    /// boot ROM's lookup mode 0 matches on the AMD root key instead, which
+    /// differs per generation, FIRMWARE_IMAGE §1.2a).
+    pub fn psp_directories(
+        &self,
+        generation: Generation,
+    ) -> Result<Directories<'a, PspEntry>, DirError> {
+        let gen1 = generation == Generation::Naples;
+        let len = self.image.len();
+        let offset = resolve(len, self.psp_pointer().into(), false)?;
+        let offset = match Combo::parse(self.image, offset)? {
+            None => offset,
+            Some(combo) => {
+                let wanted = psp_id(generation) & PSP_ID_MASK;
+                let entry = combo
+                    .entries()
+                    .find(|e| e.id & PSP_ID_MASK == wanted)
+                    .ok_or(DirError::NoComboEntry(wanted))?;
+                resolve(len, entry.directory, gen1)?
+            }
+        };
+        Directories::new(self.image, offset, gen1)
     }
+}
+
+/// One `2PSP` combo entry (AMD #55758 Table 11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComboEntry {
+    /// 0: compare the PSP ID, 1: the chip family ID.
+    pub id_select: u32,
+    pub id: u32,
+    /// The generation's L1 PSP directory, as a directory pointer.
+    pub directory: u64,
+}
+
+/// A checked `2PSP` combo directory.
+pub struct Combo<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> Combo<'a> {
+    /// The combo directory at `offset`, `None` if another cookie is there.
+    pub fn parse(image: &'a [u8], offset: usize) -> Result<Option<Self>, DirError> {
+        let truncated = DirError::Truncated { offset };
+        let header = image
+            .get(offset..offset + COMBO_HEADER_SIZE)
+            .ok_or(truncated)?;
+        if header[..4] != PSP_COMBO_COOKIE {
+            return Ok(None);
+        }
+        let count = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+        let bytes = count
+            .checked_mul(COMBO_ENTRY_SIZE)
+            .and_then(|n| image.get(offset..offset + COMBO_HEADER_SIZE + n))
+            .ok_or(truncated)?;
+        let stored = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        let computed = fletcher32(&bytes[8..]);
+        if stored != computed {
+            return Err(DirError::Checksum {
+                offset,
+                stored,
+                computed,
+            });
+        }
+        Ok(Some(Self { bytes }))
+    }
+
+    /// `LookUpMode`: 0 = try every entry against the AMD root key hash,
+    /// 1 = match the PSP/chip ID.
+    pub fn lookup_mode(&self) -> u32 {
+        u32::from_le_bytes(self.bytes[12..16].try_into().unwrap())
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = ComboEntry> + '_ {
+        self.bytes[COMBO_HEADER_SIZE..]
+            .as_chunks::<COMBO_ENTRY_SIZE>()
+            .0
+            .iter()
+            .map(|e| ComboEntry {
+                id_select: u32::from_le_bytes(e[0..4].try_into().unwrap()),
+                id: u32::from_le_bytes(e[4..8].try_into().unwrap()),
+                directory: u64::from_le_bytes(e[8..16].try_into().unwrap()),
+            })
+    }
+}
+
+/// The offset of the 16 MiB half whose EFS `generation`'s boot ROM takes
+/// from `flash` (the whole part from offset 0): the lower half, then the
+/// upper one; Naples searches only the lower half (FIRMWARE_IMAGE §1.2,
+/// AMD #55758 §4.1.7). Only `0x20000` is checked: the image builder
+/// refuses a signature at any other search offset.
+pub fn booted_half(flash: &[u8], generation: Generation) -> Option<usize> {
+    let halves: &[usize] = match generation {
+        Generation::Naples => &[0],
+        Generation::Rome | Generation::Milan => &[0, HALF_SIZE],
+    };
+    halves.iter().copied().find(|&half| {
+        flash
+            .get(half..)
+            .and_then(|image| Efs::new(image).ok())
+            .is_some_and(|efs| efs.matches(generation))
+    })
 }
 
 /// A pointer in the EFS or a mode 0/1 directory: an MMIO address in the
@@ -596,9 +743,13 @@ pub(crate) mod tests {
             efs.matches(Generation::Rome),
             "Milan EFS passes Rome's check"
         );
+        assert!(efs.serves(Generation::Milan) && !efs.serves(Generation::Rome));
+        assert!(!efs.serves(Generation::Naples), "no Naples BIOS directory");
+        let mut rome = img.clone();
+        rome[EFS_OFFSET + 0x24..][..4].copy_from_slice(&0xffff_fffe_u32.to_le_bytes());
         assert!(matches!(
-            efs.bios_directories(Generation::Naples),
-            Err(DirError::WrongGeneration { .. })
+            Efs::new(&rome).unwrap().bios_directories(Generation::Milan),
+            Err(DirError::WrongGeneration { word: 0xffff_fffe })
         ));
         let dirs = efs.bios_directories(Generation::Milan).unwrap();
         assert_eq!(dirs.l1.address_mode(), 1);
@@ -615,7 +766,71 @@ pub(crate) mod tests {
         assert!(dirs.find(bios::MICROCODE, Some(2), None).is_none());
         let (dir, apob) = dirs.find(bios::APOB, None, None).unwrap();
         assert_eq!(dir.range(apob), Err(DirError::NoData));
-        assert_eq!(efs.psp_directories().unwrap().l1.entries().len(), 0);
+        assert_eq!(
+            efs.psp_directories(Generation::Milan)
+                .unwrap()
+                .l1
+                .entries()
+                .len(),
+            0
+        );
+    }
+
+    /// A `2PSP` at `0x3f000` naming the `$PSP` at `0x30000` for Milan.
+    #[test]
+    fn combo_directory_selects_by_psp_id() {
+        let mut img = synthetic_milan();
+        let mut combo = PSP_COMBO_COOKIE.to_vec();
+        combo.extend([0; 4]);
+        combo.extend(2u32.to_le_bytes());
+        combo.extend([0; 20]);
+        for (id, dir) in [(0xbc0b_0000u32, 0x3e000u64), (0xbc0b_0d00, 0x30000)] {
+            combo.extend(0u32.to_le_bytes());
+            combo.extend(id.to_le_bytes());
+            combo.extend(dir.to_le_bytes());
+        }
+        let sum = fletcher32(&combo[8..]);
+        combo[4..8].copy_from_slice(&sum.to_le_bytes());
+        img[0x3f000..0x3f000 + combo.len()].copy_from_slice(&combo);
+        img[EFS_OFFSET + 0x14..][..4].copy_from_slice(&0x3f000u32.to_le_bytes());
+        let efs = Efs::new(&img).unwrap();
+        let parsed = Combo::parse(&img, 0x3f000).unwrap().unwrap();
+        assert_eq!(parsed.lookup_mode(), 0);
+        assert_eq!(parsed.entries().count(), 2);
+        assert_eq!(
+            efs.psp_directories(Generation::Milan).unwrap().l1.offset(),
+            0x30000
+        );
+        // Rome's entry points at erased flash.
+        assert!(matches!(
+            efs.psp_directories(Generation::Rome),
+            Err(DirError::Cookie { offset: 0x3e000 })
+        ));
+        assert!(matches!(
+            efs.psp_directories(Generation::Naples),
+            Err(DirError::NoComboEntry(0xbc09_0000))
+        ));
+        img[0x3f000 + 0x24] ^= 1;
+        assert!(matches!(
+            Efs::new(&img).unwrap().psp_directories(Generation::Milan),
+            Err(DirError::Checksum {
+                offset: 0x3f000,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn boot_rom_takes_the_first_accepted_half() {
+        let milan = synthetic_milan();
+        let mut flash = vec![0xff; 2 * HALF_SIZE];
+        flash[HALF_SIZE..HALF_SIZE + milan.len()].copy_from_slice(&milan);
+        assert_eq!(booted_half(&flash, Generation::Milan), Some(HALF_SIZE));
+        assert_eq!(booted_half(&flash, Generation::Naples), None);
+        flash[..milan.len()].copy_from_slice(&milan);
+        assert_eq!(booted_half(&flash, Generation::Rome), Some(0));
+        // Naples ignores the generation word.
+        assert_eq!(booted_half(&flash, Generation::Naples), Some(0));
     }
 
     #[test]
@@ -708,7 +923,7 @@ pub(crate) mod tests {
                 )
                 .is_some()
             );
-            let psp = efs.psp_directories().unwrap();
+            let psp = efs.psp_directories(generation).unwrap();
             assert!(psp.l2.is_some(), "{name}");
             assert!(psp.find(psp::SOFT_FUSE, None, None).is_some());
         }

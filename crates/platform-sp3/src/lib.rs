@@ -3,8 +3,8 @@
 //!
 //! One firmware build serves every generation the board supports (the
 //! platform's additive `naples`/`rome`/`milan` features) with one reset
-//! image in every flash half; the CPU picks the flow's silicon steps at
-//! runtime.
+//! image that every generation's `0x62` entry names; the CPU picks the
+//! flow's silicon steps at runtime.
 //!
 //! A board crate implements [`board::Board`] (and
 //! [`layout::Sp3BoardFacts`]) and declares its binary with

@@ -49,12 +49,14 @@ use fstart_driver_zen::df::topology::{self, Topology};
 use fstart_driver_zen::df::{BusRange, Df, program};
 use fstart_driver_zen::dxio::engine::MAX_ENGINES;
 use fstart_driver_zen::dxio::lanes::Engine;
+use fstart_driver_zen::fch::rom3::{self, FlashAnchor, FlashMap, Rom3};
 use fstart_driver_zen::fch::{self, FchHw};
 use fstart_driver_zen::nbio::Nbio;
 use fstart_driver_zen::psp::directory::Efs;
 use fstart_driver_zen::soc::{self, Generation, Identity};
 use fstart_driver_zen::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
+use zerocopy::IntoBytes;
 
 use crate::board::{Board, Policy};
 use crate::hw::{self, Pci, PrimaryFch, Tsc, msr, post};
@@ -212,8 +214,11 @@ pub(crate) struct Ctx {
     pub fch: PrimaryFch,
     pub resume: bool,
     pub policy: Policy,
-    /// The booted 16 MiB flash half (EFS, directories, microcode).
+    /// The flash from the start of the half whose EFS the boot ROM took
+    /// (EFS, directories, microcode; see [`flash`]).
     pub flash: &'static [u8],
+    /// The FFS in the CPU view (ROM3), from the flash anchor.
+    pub ffs: Span,
     pub apob: Apob<'static>,
     pub tops: TopOfMemory,
     pub tseg: Span,
@@ -277,7 +282,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     check_identity::<B>(&identity);
 
     step(0x14, "APOB");
-    let flash = flash_half();
+    let (flash, ffs) = flash(&fch, generation);
     let (apob, apob_span) = read_apob(flash, generation);
 
     step(0x15, "memory map");
@@ -303,6 +308,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
         resume: false,
         policy: B::policy(generation),
         flash,
+        ffs,
         apob,
         tops,
         tseg,
@@ -429,16 +435,83 @@ fn check_identity<B: Board>(identity: &Identity) {
     }
 }
 
-/// The booted flash half as the SPI ROM window maps it.
-fn flash_half() -> &'static [u8] {
-    // SAFETY: the FCH maps the booted 16 MiB half read-only at
-    // `0xff00_0000`; nothing writes flash during boot.
-    unsafe {
-        core::slice::from_raw_parts(
-            layout::FLASH_MMIO.base as *const u8,
-            layout::FLASH_MMIO.size as usize,
-        )
-    }
+/// The SP3 flash anchor patch site: FFS flash offset and size and the
+/// part size, filled by the image builder (`sp3_flash::patch_reset_image`).
+#[repr(transparent)]
+struct AnchorSite(core::cell::UnsafeCell<FlashAnchor>);
+
+// SAFETY: only the image builder writes it; the reset image only reads.
+unsafe impl Sync for AnchorSite {}
+
+#[used]
+static FLASH_ANCHOR: AnchorSite =
+    AnchorSite(core::cell::UnsafeCell::new(FlashAnchor::placeholder()));
+
+/// Physical memory the identity map covers, read byte-wise.
+fn read_phys(address: u64, buf: &mut [u8]) {
+    buf.iter_mut().zip(address..).for_each(|(b, a)| {
+        // SAFETY: flash windows (ROM2, ROM3) only: read-only device memory,
+        // identity-mapped by the reset image's page tables.
+        *b = unsafe { core::ptr::read_volatile(a as *const u8) }
+    });
+}
+
+/// `len` bytes of flash windows at `address` as a slice.
+fn flash_slice(address: u64, len: u32) -> &'static [u8] {
+    // SAFETY: a ROM2/ROM3 range `FlashMap::address` vouched for; nothing
+    // writes flash during boot.
+    unsafe { core::slice::from_raw_parts(address as *const u8, len as usize) }
+}
+
+/// The SPI flash as this boot sees it (`fch::rom3`): the EFS view (from
+/// the start of the half whose EFS the generation's boot ROM takes: the
+/// lower one under the unified layout, so its directories resolve across
+/// all of the part through ROM3) and the FFS window. Without a usable ROM3
+/// only the half ROM2 shows is visible; whatever lies outside it halts.
+fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
+    // SAFETY: the static is always readable; volatile so the linked
+    // placeholder is not folded into the code.
+    let anchor = unsafe { core::ptr::read_volatile(FLASH_ANCHOR.0.get()) };
+    let anchor = FlashAnchor::parse(anchor.as_bytes()).or_halt("flash anchor");
+    let page = rom3::rom_page(fch);
+    let map = FlashMap::probe(page, anchor.flash_size.get(), read_phys);
+    fstart_log::info!(
+        "sp3: flash {:#x} bytes, ROM2 page {}, ROM3 {}",
+        map.size,
+        page,
+        match map.rom3 {
+            Rom3::Linear => "linear",
+            Rom3::Paged => "paged",
+            Rom3::Absent => "absent",
+        }
+    );
+    let halves: &[u32] = match generation {
+        Generation::Naples => &[0],
+        Generation::Rome | Generation::Milan => &[0, rom3::PAGE_SIZE],
+    };
+    let efs = halves
+        .iter()
+        .filter(|&&half| half < map.size)
+        .find_map(|&half| {
+            let len = map.size - half;
+            let view = map
+                .address(half, len)
+                .map(|a| flash_slice(a, len))
+                .or_else(|| {
+                    Some(flash_slice(
+                        map.address(half, rom3::PAGE_SIZE)?,
+                        rom3::PAGE_SIZE,
+                    ))
+                })?;
+            Efs::new(view)
+                .is_ok_and(|efs| efs.matches(generation))
+                .then_some(view)
+        })
+        .or_halt("EFS");
+    let (offset, size) = (anchor.ffs_offset.get(), anchor.ffs_size.get());
+    let ffs = map.address(offset, size).or_halt("FFS window (ROM3)");
+    fstart_log::info!("sp3: FFS at flash {:#x}+{:#x}", offset, size);
+    (efs, Span::new(ffs, u64::from(size)))
 }
 
 /// The APOB from BIOS directory entry 0x61 (PSP_APOB §3.5); logs the ABL

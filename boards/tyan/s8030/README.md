@@ -5,26 +5,36 @@ and policy only; not booted.
 
 One board id, `tyan-s8030`, and one build for both generations: the
 platform's `rome` and `milan` features are enabled on its dependency, and
-the reset image picks the generation from the CPU at runtime. The same
-reset image and FFS go into both 16 MiB halves of the 32 MiB flash; the
-PSP boot ROM picks the half by the EFS generation word (Rome lower, Milan
-upper; docs/amd-sp3.md).
+the reset image picks the generation from the CPU at runtime. By default
+(unified layout) one EFS in the lower half serves Rome and Milan through a
+`2PSP` combo directory, and every `0x62` entry of both generations names
+the one reset image; `--sp3-layout dual` keeps the vendor's EFS per half
+instead (docs/amd-sp3.md, "Flash image").
 
 ```sh
 cargo fbuild build --board tyan-s8030 --release
-cargo fbuild assemble --board tyan-s8030 --release   # -> tyan-s8030.rom, 32 MiB
+cargo fbuild assemble --board tyan-s8030 --release                    # -> tyan-s8030.rom, 32 MiB
+cargo fbuild assemble --board tyan-s8030 --release --sp3-layout dual  # -> tyan-s8030-dual.rom
 ```
 
 ## Vendor ROM
 
-Each half keeps the vendor prefix (EFS, PSP/BIOS directories, PSP, ABL,
+Both halves keep their PSP/BIOS directories and blobs in place (PSP, ABL,
 SMU, PMU and DXIO firmware, APCB). Supply the Tyan v4.04 dual image
 (`8030V404.ROM`, 32 MiB, SHA-256 pinned in the sp3 workspace's
 `firmware/donors/SHA256SUMS`) as `vendor/8030V404.ROM`. It is not part of
-this repository. With v4.04 the FFS window is `[0x600000, 0xce0000)` in
-both halves (the Milan reset slot starts at `0xce0000`); the reset image
-(`0x220000` bytes, linked at `0x75de0000`) sits at `0xde0000` in both, at
-the end of the Rome (`0xdb0000`) and Milan (`0xce0000`) vendor slots.
+this repository. With v4.04:
+
+| | Unified (default) | Dual |
+|---|---|---|
+| Lower EFS | `+0x14` → `2PSP` at `0x54b000`, `+0x20` Rome `$BHD`, `+0x28` Milan `$BHD` at `0x11b6000`, word `fffffffc` | vendor (Rome) |
+| Upper half | Milan trees rebased (+16 MiB), EFS erased, free from `0x1586000` | vendor (Milan) EFS and trees |
+| Reset image (`0x220000` bytes, linked at `0x75de0000`) | `0xde0000` | `0xde0000` in each half |
+| FFS | `[0x600000, 0xde0000)`, `0x7e0000` bytes | same, lower half only |
+
+The reset image reads the FFS through the FCH ROM3 window (above 4 GiB)
+by flash offset, so it works whichever half the `0xff000000` window
+shows.
 
 ## SKUs: S8030GM2NE and S8030GM4NE-2T
 

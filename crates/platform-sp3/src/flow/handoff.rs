@@ -12,7 +12,7 @@ use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 use fstart_stage::payload::MainstagePayload;
 
 use super::{Ctx, OrHalt};
-use crate::layout::{self, FFS_WINDOW, Span};
+use crate::layout::{self, Span};
 
 #[cfg(any(
     fstart_payload = "halt",
@@ -28,12 +28,11 @@ type Payload = fstart_stage::payload::BuildSelectedPayload;
 type Payload = fstart_stage::payload::HaltPayload;
 
 /// Publish the load policy (RAM from e820 minus the running image) and
-/// mount + authenticate the FFS in the booted half at
-/// [`layout::FFS_WINDOW`] (the same offsets in every half): the locator and
-/// trust block the composer put into the reset image
-/// (`fstart_anchor_bytes`) describe it.
+/// mount + authenticate the FFS at `ctx.ffs` (ROM3, where the flash anchor
+/// says): the locator and trust block the composer put into the reset
+/// image (`fstart_anchor_bytes`) describe it.
 pub(crate) fn mount_boot_media(ctx: &Ctx) {
-    let window = FFS_WINDOW;
+    let window = ctx.ffs;
     let (writable, reserved): (Vec<MemoryWindow>, Vec<MemoryWindow>) = {
         let to_window = |e: &E820Entry| MemoryWindow {
             start: e.addr,
@@ -91,6 +90,7 @@ pub(crate) struct Handoff<'a> {
     rsdp: Option<u64>,
     console: &'a Ns16550,
     ecam: (u64, u64),
+    ffs: Span,
 }
 
 impl fstart_stage::payload::X86UefiPayloadContext for Handoff<'_> {
@@ -103,8 +103,7 @@ impl fstart_stage::payload::X86UefiPayloadContext for Handoff<'_> {
     }
 
     fn firmware_region(&self) -> (u64, u64) {
-        let w = FFS_WINDOW;
-        (w.base, w.size)
+        (self.ffs.base, self.ffs.size)
     }
 
     fn acpi_rsdp(&self) -> Option<u64> {
@@ -143,6 +142,7 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
         rsdp: ctx.rsdp,
         console,
         ecam: ctx.ecam,
+        ffs: ctx.ffs,
     })
 }
 
