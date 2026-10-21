@@ -139,6 +139,7 @@ impl noncar::Soc for Zeppelin {
             config,
             identity,
             memory,
+            microcode,
         } = tp1;
         let Ctx {
             dies,
@@ -172,6 +173,7 @@ impl noncar::Soc for Zeppelin {
         let policy = state.cpu_policy();
         let cpus = mp::start::<Self, _>(
             dies,
+            microcode,
             move |msr, thread| ccx::zeppelin::cpu_init(msr, &policy, thread),
             clock,
         )?;

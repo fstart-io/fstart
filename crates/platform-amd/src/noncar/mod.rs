@@ -135,6 +135,8 @@ pub struct Tp1<'a, S: Soc> {
     pub config: &'a S::Config,
     pub identity: S::Identity,
     pub memory: &'a Memory<'a>,
+    /// The verified microcode patches of the FFS, for MP init.
+    pub microcode: Option<&'static [u8]>,
 }
 
 /// The memory map from the APOB and the CPU's TOP_MEM/TOM2.

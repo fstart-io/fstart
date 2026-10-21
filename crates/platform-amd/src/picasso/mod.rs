@@ -178,6 +178,7 @@ impl noncar::Soc for Picasso {
             config,
             identity,
             memory,
+            ..
         } = tp1;
         let Ctx { dies, msr, .. } = ctx;
         let die = &dies[0];

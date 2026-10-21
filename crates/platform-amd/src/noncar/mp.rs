@@ -4,10 +4,7 @@
 //! CPU loads its microcode and runs the SoC's CCX init
 //! ([`super::cpu::Fam17hCpu`]). The APs replay the BSP's MTRRs and PAT
 //! before enabling caches.
-use super::{
-    Soc,
-    cpu::{Fam17hCpu, PatchPage},
-};
+use super::{Soc, cpu::Fam17hCpu};
 use core::sync::atomic::{AtomicU32, Ordering};
 use fstart_arch::x86::{
     cpu::{
@@ -26,9 +23,6 @@ use fstart_pci::ecam::GlobalEcam;
 use heapless::Vec;
 use tock_registers::interfaces::ReadWriteable;
 
-/// The microcode patch the CPUs load: firmware BSS in the reserved region.
-static mut MICROCODE: core::mem::MaybeUninit<PatchPage> = core::mem::MaybeUninit::uninit();
-
 /// The CPUs MP init brought up.
 pub struct Cpus {
     pub mp: MpHandle,
@@ -36,31 +30,16 @@ pub struct Cpus {
     pub apic_ids: Vec<u32, 32>,
 }
 
-/// Microcode and the CCX init `init` on every CPU, the SMU releases the
-/// APs of `dies`.
+/// The patch for these CPUs from `microcode` and the CCX init `init` on
+/// every CPU, the SMU releases the APs of `dies`.
 pub fn start<S: Soc, E>(
     dies: &[Die<S, GlobalEcam>],
+    microcode: Option<&'static [u8]>,
     init: impl Fn(&NativeMsr, Thread) -> Result<(), E> + Send + Sync,
     clock: Tsc,
 ) -> Result<Cpus, &'static str> {
     let threads = threads::thread_count(dies, Policy::DEFAULT).map_err(|_| "CPU topology")?;
-    // SAFETY: the boot flash is mapped below 4 GiB.
-    let flash = unsafe {
-        core::slice::from_raw_parts(
-            S::LAYOUT.flash.base as *const u8,
-            S::LAYOUT.flash.size as usize,
-        )
-    };
-    // SAFETY: BSP only, before the APs start; the page is reserved BSS.
-    let cpu = unsafe {
-        Fam17hCpu::<S, _>::new(
-            S::CPU_NAME,
-            fstart_amdfw::Flash::new(flash),
-            S::BIOS_DIRECTORY,
-            &mut *core::ptr::addr_of_mut!(MICROCODE),
-            init,
-        )
-    };
+    let cpu = Fam17hCpu::<S, _>::new(S::CPU_NAME, microcode, init);
     let drivers: [&dyn CpuDriver; 1] = [&cpu];
     let mut launch = |aps: u16| {
         // SAFETY: the reset vector sends APs to the SIPI trampoline the MP

@@ -155,6 +155,15 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
     }
     post(&fch, 0x32);
 
+    // The verified FFS, mounted before TP1: MP init loads the CPUs'
+    // microcode from it.
+    if let Some(ffs) = S::LAYOUT.ffs
+        && boot::mount(&e820, ffs).is_err()
+    {
+        fail::<S>("boot media");
+    }
+    let microcode = fstart_stage::microcode_blob();
+
     // SAFETY: BSP-only silicon init serializes all die register accesses.
     let dies: Vec<Die<S, GlobalEcam>, { super::MAX_DIES }> = unsafe { df::dies(pci) }.collect();
     let ctx = Ctx {
@@ -175,6 +184,7 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
         config: B::CONFIG,
         identity,
         memory: &memory,
+        microcode,
     };
     let mut silicon: Silicon<S> = match S::silicon_init::<B>(tp1) {
         Ok(silicon) => silicon,
@@ -209,9 +219,6 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
     let Some(ffs) = S::LAYOUT.ffs else {
         fail::<S>("boot media")
     };
-    if boot::mount(&e820, ffs).is_err() {
-        fail::<S>("boot media");
-    }
     if boot::map_ram(&e820).is_err() {
         fail::<S>("page tables");
     }

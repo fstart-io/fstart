@@ -598,6 +598,7 @@ name = "fstart-core"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-amdfw",
  "heapless 0.8.0",
  "serde",
  "tock-registers",

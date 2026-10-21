@@ -10,7 +10,9 @@ extern crate std;
 use super::{Board, Soc, layout::Layout};
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
-    PayloadConfig, Platform, SocImageFormat, StageBuildConfig, StageLayout, layout::RegionKind,
+    PayloadConfig, Platform, SocImageFormat, StageBuildConfig, StageLayout,
+    board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig},
+    layout::RegionKind,
 };
 use fstart_image_build::{
     amd::assembly::{AmdAssembly, FfsWindow, Firmware, PicassoFiles},
@@ -364,7 +366,12 @@ fn payload(policy: &Policy, selection: &BuildSelection) -> Result<Payload, Strin
 }
 
 /// The FFS of the payload, in the flash window `ffs`.
-fn ffs(layout: &Layout, ffs: Span, payload: Option<PayloadConfig>) -> FfsAssembly {
+fn ffs(
+    layout: &Layout,
+    ffs: Span,
+    payload: Option<PayloadConfig>,
+    microcode: Option<MicrocodeConfig>,
+) -> FfsAssembly {
     FfsAssembly {
         platform: Platform::X86_64,
         memory: vec![
@@ -403,7 +410,7 @@ fn ffs(layout: &Layout, ffs: Span, payload: Option<PayloadConfig>) -> FfsAssembl
         }),
         security: fstart_core::dev_security_config("keys/dev-signing.pub"),
         payload,
-        microcode: None,
+        microcode,
         data_assets: vec![],
         full_flash_image: false,
         soc_image_format: SocImageFormat::None,
@@ -413,6 +420,53 @@ fn ffs(layout: &Layout, ffs: Span, payload: Option<PayloadConfig>) -> FfsAssembl
             ..Default::default()
         },
     }
+}
+
+fn bounded<const N: usize>(path: &str) -> Result<heapless::String<N>, String> {
+    path.try_into()
+        .map_err(|_| format!("microcode path {path} is too long"))
+}
+
+/// The microcode patches the FFS carries for the CPU driver: the BIOS
+/// directory microcode of a vendor image, or the microcode files of a packed
+/// image configuration. None without an image configuration.
+fn microcode<S: HostSoc>(selection: &BuildSelection) -> Result<Option<MicrocodeConfig>, String> {
+    let Some(path) = &selection.image_config else {
+        return Ok(None);
+    };
+    let config = match S::POLICY.image_config {
+        ImageConfig::Vendor { .. } => {
+            let image =
+                std::fs::canonicalize(path).map_err(|e| format!("vendor image {path}: {e}"))?;
+            AmdMicrocodeConfig {
+                files: heapless::Vec::new(),
+                vendor_image: Some(AmdVendorMicrocode {
+                    image: bounded(&image.to_string_lossy())?,
+                    bios_directory: S::BIOS_DIRECTORY,
+                }),
+            }
+        }
+        ImageConfig::Packed => {
+            let mut files = heapless::Vec::new();
+            for blob in packed_files(path)?
+                .bios
+                .iter()
+                .filter(|blob| blob.key.kind == fstart_amdfw::directory::bios::MICROCODE)
+            {
+                files
+                    .push(bounded(&blob.path)?)
+                    .map_err(|_| "too many microcode files")?;
+            }
+            if files.is_empty() {
+                return Ok(None);
+            }
+            AmdMicrocodeConfig {
+                files,
+                vendor_image: None,
+            }
+        }
+    };
+    Ok(Some(MicrocodeConfig::Amd(config)))
 }
 
 /// The explicit, bounded JSON list of PSP blobs.
@@ -519,7 +573,8 @@ where
         }],
         _ => vec![],
     };
-    let ffs = ffs_window.map(|window| ffs(layout, window, payload_config));
+    let microcode = microcode::<B::Soc>(&selection)?;
+    let ffs = ffs_window.map(|window| ffs(layout, window, payload_config, microcode));
     let assembly = assembly::<B::Soc>(&selection, ffs)?;
     let stage = CompilationUnit {
         name: UNIT.into(),

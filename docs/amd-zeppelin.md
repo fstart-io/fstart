@@ -62,8 +62,8 @@ microcode) stay byte-identical. fstart replaces BIOS directory entry 0x62:
 `fbuild assemble --image-config <vendor flash dump>` composes the image
 (`crates/image-build/src/amd/assembly.rs`). The vendor image's BIOS
 directory, the level 2 the PSP boots from (`EFS` → `$BHD` → `$BL2`), must
-describe this reset image and APOB and lie within the prefix. The microcode
-comes from the same directory at runtime (type 0x66).
+describe this reset image and APOB and lie within the prefix. Its microcode
+entries (type 0x66) go into the FFS as `cpu_microcode.bin`.
 
 ## x86 starts in DRAM
 

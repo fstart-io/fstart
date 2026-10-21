@@ -479,3 +479,21 @@ fn composes_the_pinned_image() {
     );
     assert!(mj11().assemble(&[&vendor], &stage, None).is_err());
 }
+
+#[test]
+fn takes_the_vendor_microcode_from_level_2() {
+    use fstart_core::board::{AmdMicrocodeConfig, AmdVendorMicrocode};
+    let vendor = two_level_vendor();
+    let path = std::env::temp_dir().join(format!("fstart-amd-ucode-{}.bin", std::process::id()));
+    std::fs::write(&path, &vendor).unwrap();
+    let config = AmdMicrocodeConfig {
+        files: Default::default(),
+        vendor_image: Some(AmdVendorMicrocode {
+            image: path.to_str().unwrap().try_into().unwrap(),
+            bios_directory: SLOT,
+        }),
+    };
+    let blob = crate::assemble::amd_microcode(&config, std::path::Path::new("/"));
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(blob.unwrap(), vendor[0x25_f800..0x25_f800 + 0xc80]);
+}

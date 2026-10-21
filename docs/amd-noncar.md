@@ -23,13 +23,14 @@ openSIL: enumeration, resources, ACPI, the memory map, SMM and MP.
 | Console | flow, `Board::console` |
 | CPU identification, early FCH | `Soc::identify` |
 | TOP_MEM, APOB memory map, TSEG, e820, cache plan | flow (`memory`) |
+| Mount and verify the FFS, its microcode for MP init | flow (`boot`) |
 | TP1: the silicon before PCI enumeration | `Soc::silicon_init` |
 | PCI enumeration and resource allocation below every die | flow (`pci`) |
 | TP2 | `Soc::after_resources`, then `Board::mainboard_final` |
 | FCH and NBIO IOAPICs | flow |
 | ACPI tables | flow and `crate::acpi`, `Board::acpi` |
 | TP3: ready to boot | `Soc::ready_to_boot` |
-| PSP LockDFReg, FFS, page tables, AP parking, PSP BootDone, payload | flow (`psp`, `boot`) |
+| PSP LockDFReg, page tables, AP parking, PSP BootDone, payload | flow (`psp`, `boot`) |
 
 TP1 includes MP init and SMM where the SoC does them before PCI
 enumeration: it calls the shared `noncar::mp::start` (SMU AP release,
@@ -76,8 +77,8 @@ layout and the SoC's `host::Policy` (its stage feature, whether the flow
 reaches a payload, SMM, what `--image-config` is).
 
 The flash image format (the EFS, the PSP and BIOS directories and their
-level 2) is `crates/amdfw` (`fstart-amdfw`, `no_std`): the firmware looks the
-microcode up in it, the host packs and checks images with it. A SoC names the
+level 2) is `crates/amdfw` (`fstart-amdfw`, `no_std`): the host packs and
+checks images with it and takes the microcode from it. A SoC names the
 EFS field its PSP takes the BIOS directory from (`Soc::BIOS_DIRECTORY`); the
 lookup follows a level-2 directory as the PSP does.
 `crates/image-build/src/amd/assembly.rs` (`AmdAssembly`) composes the image
@@ -85,6 +86,13 @@ with `--image-config`: the PSP firmware comes from a vendor flash image,
 whose prefix stays byte for byte (Zeppelin), or is packed from blobs
 (Picasso). Either way the result is read back as
 the PSP would before it is written, with a JSON receipt of its inputs.
+
+The microcode travels in the FFS, like Intel's: the host concatenates the
+patches into `cpu_microcode.bin` (the BIOS directory type 0x66 entries of a
+vendor image, or the type 0x66 files of a packed configuration;
+`MicrocodeConfig::Amd`). The flow mounts and verifies the FFS before TP1, and
+MP init hands every CPU the verified copy (`fstart_stage::microcode_blob`),
+from which `Fam17hCpu` selects the patch for its signature.
 
 ## ACPI
 
