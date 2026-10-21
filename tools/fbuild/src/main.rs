@@ -72,9 +72,6 @@ enum Command {
         firmware: Option<String>,
         #[arg(long)]
         fit: Option<String>,
-        /// SP3 flash layout: `unified` (default) or `dual`.
-        #[arg(long)]
-        sp3_layout: Option<String>,
     },
     Inspect {
         #[arg(short, long)]
@@ -358,16 +355,12 @@ fn main() {
             kernel,
             firmware,
             fit,
-            sp3_layout,
-        } => dispatch_board(&board, &{
-            let mut args = board_tool_assemble_args(
+        } => dispatch_board(
+            &board,
+            &board_tool_assemble_args(
                 "assemble", release, payload, kernel, firmware, fit, &options,
-            );
-            if let Some(layout) = sp3_layout {
-                args.extend(["--sp3-layout".to_string(), layout]);
-            }
-            args
-        }),
+            ),
+        ),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
         Command::Explain {
             board,

@@ -463,18 +463,25 @@ fn flash_slice(address: u64, len: u32) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(address as *const u8, len as usize) }
 }
 
-/// The SPI flash as this boot sees it (`fch::rom3`): the EFS view (from
-/// the start of the half whose EFS the generation's boot ROM takes: the
-/// lower one under the unified layout, so its directories resolve across
-/// all of the part through ROM3) and the FFS window. Without a usable ROM3
-/// only the half ROM2 shows is visible; whatever lies outside it halts.
+/// The SPI flash as this boot sees it (`fch::rom3`): the EFS view (the
+/// half whose EFS the generation's boot ROM takes) and the FFS window.
+/// Both are read through ROM2 when they lie in the page it shows; ROM3 is
+/// probed only for an FFS outside it, and whatever neither shows halts.
 fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
     // SAFETY: the static is always readable; volatile so the linked
     // placeholder is not folded into the code.
     let anchor = unsafe { core::ptr::read_volatile(FLASH_ANCHOR.0.get()) };
     let anchor = FlashAnchor::parse(anchor.as_bytes()).or_halt("flash anchor");
     let page = rom3::rom_page(fch);
-    let map = FlashMap::probe(page, anchor.flash_size.get(), read_phys);
+    let (offset, size) = (anchor.ffs_offset.get(), anchor.ffs_size.get());
+    // ROM2 first: ROM3 is read only if the FFS is outside ROM2's page (the
+    // EFS of the booted half always is in it, AMD #55758 §4.1.7).
+    let rom2 = FlashMap::rom2(page, anchor.flash_size.get());
+    let map = if rom2.address(offset, size).is_some() {
+        rom2
+    } else {
+        FlashMap::probe(page, anchor.flash_size.get(), read_phys)
+    };
     fstart_log::info!(
         "sp3: flash {:#x} bytes, ROM2 page {}, ROM3 {}",
         map.size,
@@ -482,7 +489,7 @@ fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
         match map.rom3 {
             Rom3::Linear => "linear",
             Rom3::Paged => "paged",
-            Rom3::Absent => "absent",
+            Rom3::Absent => "not used",
         }
     );
     let halves: &[u32] = match generation {
@@ -508,8 +515,7 @@ fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
                 .then_some(view)
         })
         .or_halt("EFS");
-    let (offset, size) = (anchor.ffs_offset.get(), anchor.ffs_size.get());
-    let ffs = map.address(offset, size).or_halt("FFS window (ROM3)");
+    let ffs = map.address(offset, size).or_halt("FFS window");
     fstart_log::info!("sp3: FFS at flash {:#x}+{:#x}", offset, size);
     (efs, Span::new(ffs, u64::from(size)))
 }

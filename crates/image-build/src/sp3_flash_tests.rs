@@ -135,13 +135,12 @@ fn synthetic(generation: Generation) -> Vec<u8> {
     h
 }
 
-fn plan(generations: &[Generation], layout: Layout) -> FlashPlan {
+fn plan(generations: &[Generation]) -> FlashPlan {
     FlashPlan {
         generations: generations.to_vec(),
         reset: IMAGE,
         ffs_offset: FFS_OFFSET,
         dram_floor: DRAM_FLOOR,
-        layout,
     }
 }
 
@@ -268,58 +267,13 @@ fn check_payloads(image: &[u8], at: usize, ffs: &[u8], ffs_at: usize) {
 }
 
 #[test]
-fn unified_rome_milan_shares_one_efs() {
-    let (rome, milan) = (synthetic(Generation::Rome), synthetic(Generation::Milan));
-    let rom = [&rome[..], &milan[..]].concat();
-    let ffs = ffs(0x1_0000);
-    let both = plan(&[Generation::Rome, Generation::Milan], Layout::Unified);
-    let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
-    let image = &out.image;
-    // Prefix end: the $BL2's 64 KiB reservation.
-    assert_eq!(out.survey.combo, Some(0x21_1000));
-    assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
-    let efs = |off: usize| get32(image, EFS_OFFSET + off);
-    assert_eq!(
-        [efs(EFS_PSP), efs(0x20), efs(0x28), efs(EFS_WORD)],
-        [0x21_1000, BHD as u32, (HALF + BHD) as u32, 0xffff_fffc]
-    );
-    assert_eq!(
-        get32(image, HALF + EFS_OFFSET),
-        u32::MAX,
-        "upper EFS erased"
-    );
-    let combo = Combo::parse(image, 0x21_1000).unwrap().unwrap();
-    assert_eq!(combo.lookup_mode(), 0);
-    let entries: Vec<_> = combo
-        .entries()
-        .map(|e| (e.id_select, e.id, e.directory))
-        .collect();
-    assert_eq!(
-        entries,
-        [
-            (0, 0xbc0b_0000, PSP as u64),
-            (0, 0xbc0b_0d00, (HALF + PSP) as u64)
-        ]
-    );
-    for (generation, vendor) in [(Generation::Rome, &rome), (Generation::Milan, &milan)] {
-        assert_eq!(booted_half(image, generation), Some(FlashHalf::Lower));
-        check_trees(image, vendor, generation, 0xde_0000);
-    }
-    check_payloads(image, 0xde_0000, &ffs, 0x60_0000);
-    // Outside the prefixes, the 2PSP, the FFS and the reset image: erased.
-    assert!(image[0x21_2000..0x60_0000].iter().all(|&b| b == 0xff));
-    assert!(image[HALF + 0x21_1000..].iter().all(|&b| b == 0xff));
-}
-
-#[test]
 fn dual_keeps_each_vendor_efs_with_its_own_reset_copy() {
     let (rome, milan) = (synthetic(Generation::Rome), synthetic(Generation::Milan));
     let rom = [&rome[..], &milan[..]].concat();
     let ffs = ffs(0x1_0000);
-    let both = plan(&[Generation::Rome, Generation::Milan], Layout::Dual);
+    let both = plan(&[Generation::Rome, Generation::Milan]);
     let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
     let image = &out.image;
-    assert_eq!(out.survey.combo, None);
     assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
     check_dual(image).unwrap();
     // The EFS are the vendor's.
@@ -341,40 +295,6 @@ fn dual_keeps_each_vendor_efs_with_its_own_reset_copy() {
 }
 
 #[test]
-fn unified_naples_rome_keeps_naples_mmio_and_moves_rome_to_mode_1() {
-    let (naples, rome) = (synthetic(Generation::Naples), synthetic(Generation::Rome));
-    let rom = [&naples[..], &rome[..]].concat();
-    let ffs = ffs(0x1_0000);
-    let both = plan(&[Generation::Naples, Generation::Rome], Layout::Unified);
-    let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
-    let image = &out.image;
-    // Naples' prefix has no reserved directory area: 0x202c80.
-    let combo_at = 0x20_3000;
-    assert_eq!(out.survey.combo, Some(combo_at));
-    assert_eq!(get32(image, EFS_OFFSET + EFS_WORD), 0xffff_fffe);
-    assert_eq!(get32(image, EFS_OFFSET + 0x18), 0xff20_0000);
-    assert_eq!(get32(image, EFS_OFFSET + 0x20), (HALF + BHD) as u32);
-    let combo = Combo::parse(image, combo_at).unwrap().unwrap();
-    let dirs: Vec<_> = combo.entries().map(|e| (e.id, e.directory)).collect();
-    assert_eq!(
-        dirs,
-        [
-            (0xbc09_0000, 0xff10_0000),
-            (0xbc0b_0000, (HALF + PSP) as u64)
-        ]
-    );
-    // The rebased Rome directories hold 32 MiB offsets: address mode 1.
-    for dir in [PSP, PL2, BHD, BL2] {
-        assert_eq!(get32(image, HALF + dir + 12) >> 29 & 3, 1);
-    }
-    check_trees(image, &naples, Generation::Naples, 0xde_0000);
-    check_trees(image, &rome, Generation::Rome, 0xde_0000);
-    // Naples' 0x62 stays in MMIO form.
-    let naples_reset = BHD + 16 + 24;
-    assert_eq!(get64(image, naples_reset + 8), 0xffde_0000);
-}
-
-#[test]
 fn layouts_the_composer_refuses() {
     let (naples, rome, milan) = (
         synthetic(Generation::Naples),
@@ -385,17 +305,12 @@ fn layouts_the_composer_refuses() {
     let all = [Generation::Naples, Generation::Rome, Generation::Milan];
     let compose_with =
         |rom: &[u8], p: &FlashPlan, ffs: &[u8]| compose(rom, p, &linked_reset(), ffs);
-    // MMIO pointers only reach the lower half.
-    let rom = [&rome[..], &naples[..]].concat();
-    assert!(matches!(
-        compose_with(&rom, &plan(&all, Layout::Unified), &ffs),
-        Err(ImageError::UpperMmio { .. })
-    ));
+    let _ = naples;
     let rom = [&rome[..], &milan[..]].concat();
-    let unified = plan(&all, Layout::Unified);
+    let all = plan(&all);
     // The FFS may not reach the reset image.
     assert_eq!(
-        compose_with(&rom, &unified, &vec![0; 0x7e_0001]),
+        compose_with(&rom, &all, &vec![0; 0x7e_0001]),
         Err(ImageError::FfsTooLarge {
             size: 0x7e_0001,
             capacity: 0x7e_0000
@@ -407,7 +322,7 @@ fn layouts_the_composer_refuses() {
     let sum = fletcher32(&late[PL2 + 8..PL2 + 32]);
     put32(&mut late, PL2 + 4, sum);
     assert!(matches!(
-        compose_with(&[&late[..], &milan[..]].concat(), &unified, &ffs),
+        compose_with(&[&late[..], &milan[..]].concat(), &all, &ffs),
         Err(ImageError::PrefixOverlap {
             limit: 0xde_0000,
             ..
@@ -415,23 +330,23 @@ fn layouts_the_composer_refuses() {
     ));
     // The FFS lives in the lower half: its generation must be supported.
     assert!(matches!(
-        compose_with(&rom, &plan(&[Generation::Milan], Layout::Dual), &ffs),
+        compose_with(&rom, &plan(&[Generation::Milan]), &ffs),
         Err(ImageError::Layout(_))
     ));
     assert!(matches!(
-        compose_with(&[&rome[..], &rome[..]].concat(), &unified, &ffs),
+        compose_with(&[&rome[..], &rome[..]].concat(), &all, &ffs),
         Err(ImageError::Layout(_))
     ));
     // An EFS signature where a boot ROM searches before 0x20000.
     let mut stray = self::ffs(0x22_0004);
     put32(&mut stray, 0x82_0000 - 0x60_0000, EFS_SIGNATURE);
     assert_eq!(
-        compose_with(&rom, &unified, &stray),
+        compose_with(&rom, &all, &stray),
         Err(ImageError::StrayEfs { offset: 0x82_0000 })
     );
     let checksum = |mut half: Vec<u8>| {
         half[BL2 + 16] ^= 1;
-        compose_with(&[&rome[..], &half[..]].concat(), &unified, &ffs)
+        compose_with(&[&rome[..], &half[..]].concat(), &all, &ffs)
     };
     assert!(matches!(
         checksum(milan.clone()),
@@ -448,14 +363,7 @@ fn single_generation_and_kept_halves() {
     let rom = [&rome[..], &milan[..]].concat();
     let ffs = ffs(0x1_0000);
     // A Rome-only board keeps the Milan half: its EFS still boots Milan.
-    let out = compose(
-        &rom,
-        &plan(&[Generation::Rome], Layout::Unified),
-        &linked_reset(),
-        &ffs,
-    )
-    .unwrap();
-    assert_eq!(out.survey.combo, None);
+    let out = compose(&rom, &plan(&[Generation::Rome]), &linked_reset(), &ffs).unwrap();
     assert_eq!(
         out.survey.halves[1],
         (FlashHalf::Upper, HalfAction::Keep(Some(Generation::Milan)))
@@ -469,10 +377,10 @@ fn single_generation_and_kept_halves() {
         out.image[EFS_OFFSET..EFS_OFFSET + 0x40],
         rom[EFS_OFFSET..EFS_OFFSET + 0x40]
     );
-    // A 16 MiB vendor half: the vendor EFS, nothing combined.
+    // A 16 MiB vendor half.
     let half = compose(
         &rome,
-        &plan(&[Generation::Rome, Generation::Milan], Layout::Unified),
+        &plan(&[Generation::Rome, Generation::Milan]),
         &linked_reset(),
         &ffs,
     )
@@ -483,7 +391,7 @@ fn single_generation_and_kept_halves() {
     assert_eq!(
         compose(
             &rom,
-            &plan(&[Generation::Naples], Layout::Unified),
+            &plan(&[Generation::Naples]),
             &linked_reset(),
             &ffs
         ),
@@ -528,24 +436,16 @@ fn reset_image_gets_trust_locator_and_flash_anchor() {
 }
 
 #[test]
-fn flash_plan_serializes_generations_and_layout_by_name() {
-    let p = plan(&[Generation::Rome, Generation::Milan], Layout::Dual);
+fn flash_plan_serializes_generations_by_name() {
+    let p = plan(&[Generation::Rome, Generation::Milan]);
     let json = serde_json::to_string(&p).unwrap();
     assert!(
         json.contains("\"generations\":[\"rome\",\"milan\"]"),
         "{json}"
     );
-    assert!(json.contains("\"layout\":\"dual\""), "{json}");
     let back: FlashPlan = serde_json::from_str(&json).unwrap();
     assert_eq!(back, p);
     assert!(serde_json::from_str::<FlashPlan>(&json.replace("milan", "genoa")).is_err());
-    let old = json.replace(",\"layout\":\"dual\"", "");
-    assert_eq!(
-        serde_json::from_str::<FlashPlan>(&old).unwrap().layout,
-        Layout::Unified
-    );
-    assert_eq!(Layout::parse("dual"), Some(Layout::Dual));
-    assert_eq!(Layout::parse("2x16"), None);
 }
 
 // ---- donor ROMs (skipped when the analysis workspace is absent) ----
@@ -624,48 +524,12 @@ fn donor_halves_match_the_firmware_image_report() {
 const S8030: &str = "tyan-s8030gm2ne/S8030GM2NE_BIOS_V4.04/8030V404.ROM";
 
 #[test]
-fn donor_s8030_unified() {
-    let Some(rom) = donor(S8030) else {
-        return;
-    };
-    check_dual(&rom).unwrap();
-    let ffs = ffs(0x10_0000);
-    let both = plan(&[Generation::Rome, Generation::Milan], Layout::Unified);
-    let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
-    let image = &out.image;
-    assert_eq!(out.survey.combo, Some(0x54_b000));
-    assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
-    assert_eq!(get32(image, EFS_OFFSET + EFS_WORD), 0xffff_fffc);
-    assert_eq!(get32(image, EFS_OFFSET + 0x28), 0x11b_6000);
-    assert_eq!(get32(image, HALF + EFS_OFFSET), u32::MAX);
-    // The rest of the lower EFS (SPI/eSPI fields) is the vendor's.
-    assert_eq!(
-        image[EFS_OFFSET + 0x2c..EFS_OFFSET + 0x60],
-        rom[EFS_OFFSET + 0x2c..EFS_OFFSET + 0x60]
-    );
-    for (generation, half) in [
-        (Generation::Rome, FlashHalf::Lower),
-        (Generation::Milan, FlashHalf::Upper),
-    ] {
-        assert_eq!(booted_half(image, generation), Some(FlashHalf::Lower));
-        check_trees(image, &rom[half.range()], generation, 0xde_0000);
-    }
-    check_payloads(image, 0xde_0000, &ffs, 0x60_0000);
-    // The AMI multi-tank descriptor (Rome half, 0x21000) is in the prefix.
-    assert_eq!(image[0x2_1000..0x2_1058], rom[0x2_1000..0x2_1058]);
-    assert!(
-        image[HALF + 0x58_6000..].iter().all(|&b| b == 0xff),
-        "free upper tail"
-    );
-}
-
-#[test]
 fn donor_s8030_dual() {
     let Some(rom) = donor(S8030) else {
         return;
     };
     let ffs = ffs(0x10_0000);
-    let both = plan(&[Generation::Rome, Generation::Milan], Layout::Dual);
+    let both = plan(&[Generation::Rome, Generation::Milan]);
     let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
     let image = &out.image;
     check_dual(image).unwrap();
@@ -679,18 +543,12 @@ fn donor_s8030_dual() {
     assert_eq!(image[0xde_0000..HALF], image[HALF + 0xde_0000..]);
     // Milan v4.00 composes the same way.
     if let Some(v400) = donor("tyan-s8030gm2ne/S8030GM2NE_bios_v400/8030V400.ROM") {
-        for layout in [Layout::Unified, Layout::Dual] {
-            let p = FlashPlan {
-                layout,
-                ..both.clone()
-            };
-            compose(&v400, &p, &linked_reset(), &ffs).unwrap();
-        }
+        compose(&v400, &both, &linked_reset(), &ffs).unwrap();
     }
 }
 
 #[test]
-fn donor_s8026_naples_rome_unified() {
+fn donor_s8026_naples_rome() {
     let rom = donor("tyan-s8026/x/8026V202.ROM").or_else(|| {
         let naples = donor("donors/naples-s8026-v202.bin")?;
         Some([naples, donor("donors/rome-s8026-v202.bin")?].concat())
@@ -698,29 +556,41 @@ fn donor_s8026_naples_rome_unified() {
     let Some(rom) = rom else {
         return;
     };
-    check_dual(&rom).unwrap();
     let ffs = ffs(0x10_0000);
-    let both = plan(&[Generation::Naples, Generation::Rome], Layout::Unified);
+    let both = plan(&[Generation::Naples, Generation::Rome]);
     let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
     let image = &out.image;
-    assert_eq!(get32(image, EFS_OFFSET + EFS_WORD), 0xffff_fffe);
-    let combo = Combo::parse(image, out.survey.combo.unwrap())
-        .unwrap()
-        .unwrap();
-    let naples = combo.entries().next().unwrap();
-    assert_eq!((naples.id, naples.directory), (0xbc09_0000, 0xff07_7000));
-    for (generation, half) in [
-        (Generation::Naples, FlashHalf::Lower),
-        (Generation::Rome, FlashHalf::Upper),
-    ] {
-        assert_eq!(booted_half(image, generation), Some(FlashHalf::Lower));
-        check_trees(image, &rom[half.range()], generation, 0xde_0000);
-    }
+    check_dual(image).unwrap();
+    assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
+    check_trees(image, &rom[..HALF], Generation::Naples, 0xde_0000);
+    check_trees(image, &rom[HALF..], Generation::Rome, HALF + 0xde_0000);
     check_payloads(image, 0xde_0000, &ffs, 0x60_0000);
-    // Dual still works for the same pair.
-    let dual = FlashPlan {
-        layout: Layout::Dual,
-        ..both
+}
+
+/// The test bench's own flash (Tyan S8030GM2NE backup,
+/// `reports/HW_S8030_BENCH.md`): a Rome-only vendor build in the lower
+/// half, the upper half all zeros.
+#[test]
+fn bench_s8030_backup() {
+    let Some(rom) = donor("hw/s8030gm2ne-CCSF2AK45016/host-pnor.read1.bin") else {
+        return;
     };
-    check_dual(&compose(&rom, &dual, &linked_reset(), &ffs).unwrap().image).unwrap();
+    let ffs = ffs(0x10_0000);
+    let out = compose(
+        &rom,
+        &plan(&[Generation::Rome, Generation::Milan]),
+        &linked_reset(),
+        &ffs,
+    )
+    .unwrap();
+    let image = &out.image;
+    assert_eq!(out.survey.halves[1], (FlashHalf::Upper, HalfAction::Keep(None)));
+    assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
+    assert_eq!(image[HALF..], rom[HALF..]);
+    assert_eq!(booted_half(image, Generation::Rome), Some(FlashHalf::Lower));
+    // Everything below the first BIOS directory (0x246000: EFS, PSP
+    // directories, blobs) is the vendor's; check_trees covers the rest.
+    assert_eq!(image[..0x24_6000], rom[..0x24_6000]);
+    check_trees(image, &rom[..HALF], Generation::Rome, 0xde_0000);
+    check_payloads(image, 0xde_0000, &ffs, 0x60_0000);
 }

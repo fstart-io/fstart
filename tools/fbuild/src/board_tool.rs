@@ -59,11 +59,6 @@ enum Command {
         firmware: Option<String>,
         #[arg(long)]
         fit: Option<String>,
-        /// SP3 flash layout: `unified` (default, one multi-generation EFS)
-        /// or `dual` (one vendor EFS per 16 MiB half, the fallback if a
-        /// boot ROM refuses the unified EFS).
-        #[arg(long, value_parser = parse_sp3_layout)]
-        sp3_layout: Option<fstart_image_build::sp3_flash::Layout>,
     },
     Flash {
         #[arg(short, long, default_value_t = false)]
@@ -130,7 +125,6 @@ fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result
             kernel,
             firmware,
             fit,
-            sp3_layout,
         } => assemble(
             manifest,
             release,
@@ -138,7 +132,6 @@ fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result
             kernel.as_deref(),
             firmware.as_deref(),
             fit.as_deref(),
-            sp3_layout,
             &options,
         )
         .map(|_| ()),
@@ -200,7 +193,6 @@ fn assemble(
     kernel: Option<&str>,
     firmware: Option<&str>,
     fit: Option<&str>,
-    sp3_layout: Option<fstart_image_build::sp3_flash::Layout>,
     options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
@@ -253,7 +245,7 @@ fn assemble(
         &options.payload_files,
     )?;
     if let Some(image) = sp3_flash {
-        return compose_sp3_flash(&workspace_root, &image, &assembled, sp3_layout);
+        return compose_sp3_flash(&workspace_root, &image, &assembled);
     }
     match amd {
         Some(image) => crate::amd_image::compose(
@@ -271,29 +263,24 @@ fn assemble(
     }
 }
 
-fn parse_sp3_layout(name: &str) -> Result<fstart_image_build::sp3_flash::Layout, String> {
-    fstart_image_build::sp3_flash::Layout::parse(name)
-        .ok_or_else(|| format!("unknown SP3 layout {name}: expected unified or dual"))
-}
-
 /// Compose the assembled FFS and the reset unit into the SP3 vendor ROM
 /// (`fstart_image_build::sp3_flash`); relative vendor paths are
-/// workspace-relative; `layout` overrides the plan's (unified). Writes and
-/// returns `<board>.rom` (`<board>-dual.rom` for the dual layout), the
-/// vendor ROM's size (32 MiB for a dual-half vendor ROM).
+/// workspace-relative (`--image-config` replaces the board's vendor ROM).
+/// Writes and returns `<board>.rom`, the vendor ROM's size (32 MiB for a
+/// dual-half vendor ROM).
 fn compose_sp3_flash(
     workspace_root: &std::path::Path,
     image: &fstart_image_build::sp3_flash::Sp3FlashAssembly,
     assembled: &crate::assemble::AssembledImage,
-    layout: Option<fstart_image_build::sp3_flash::Layout>,
 ) -> Result<std::path::PathBuf, String> {
-    use fstart_image_build::sp3_flash::{FlashHalf, HALF_SIZE, HalfAction, Layout};
+    use fstart_image_build::sp3_flash::{HALF_SIZE, HalfAction};
     let read = |path: &std::path::Path| {
         std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
     };
-    let mut plan = image.compose.clone();
-    plan.layout = layout.unwrap_or(plan.layout);
-    let vendor = read(&workspace_root.join(&image.vendor_image))?;
+    let plan = &image.compose;
+    let vendor_path = workspace_root.join(&image.vendor_image);
+    let vendor = read(&vendor_path)?;
+    eprintln!("[fstart] SP3 vendor ROM {}", vendor_path.display());
     let ffs = read(&assembled.image)?;
     let reset = assembled
         .stages
@@ -301,7 +288,7 @@ fn compose_sp3_flash(
         .find(|stage| stage.name == image.reset_unit)
         .ok_or("SP3 reset unit was not built")?;
     let flash =
-        fstart_image_build::sp3_flash::compose(&vendor, &plan, &read(&reset.run_path)?, &ffs)?;
+        fstart_image_build::sp3_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
     if !flash.patched.locator || !flash.patched.flash {
         eprintln!(
             "[fstart] warning: the SP3 reset unit links no FFS locator or flash anchor; it cannot read its FFS"
@@ -311,45 +298,26 @@ fn compose_sp3_flash(
     for (half, action) in &survey.halves {
         match action {
             HalfAction::Compose(layout) => eprintln!(
-                "[fstart] SP3 {half:?} half ({}): directories kept to {:#x}{}",
+                "[fstart] SP3 {half:?} half ({}): vendor EFS and directories kept to {:#x}",
                 layout.generation.name(),
                 layout.prefix_end,
-                if survey.unified() && *half == FlashHalf::Upper {
-                    ", rebased to 32 MiB offsets, EFS erased"
-                } else {
-                    ""
-                },
             ),
             HalfAction::Keep(generation) => eprintln!(
                 "[fstart] warning: SP3 {half:?} half kept from {} ({}: not supported by the board)",
-                image.vendor_image,
+                vendor_path.display(),
                 generation.map_or("no EFS", |g| g.name()),
             ),
         }
     }
-    let reset_copies = if survey.unified() || flash.image.len() == HALF_SIZE {
-        "lower half"
+    let reset_copies = if survey.composed().count() == 1 || flash.image.len() == HALF_SIZE {
+        "one composed half"
     } else {
         "each half"
     };
-    let out = match plan.layout {
-        Layout::Unified => assembled.image.with_extension("rom"),
-        Layout::Dual => {
-            let stem = assembled
-                .image
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy();
-            assembled.image.with_file_name(format!("{stem}-dual.rom"))
-        }
-    };
+    let out = assembled.image.with_extension("rom");
     std::fs::write(&out, &flash.image).map_err(|e| format!("{}: {e}", out.display()))?;
     eprintln!(
-        "[fstart] SP3 image ({:?} layout{}): {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; reset image {:#x} bytes at {:#x} ({reset_copies})",
-        plan.layout,
-        survey
-            .combo
-            .map_or(String::new(), |at| format!(", 2PSP at {at:#x}")),
+        "[fstart] SP3 image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; reset image {:#x} bytes at {:#x} ({reset_copies})",
         out.display(),
         flash.image.len() >> 20,
         ffs.len(),

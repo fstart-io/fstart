@@ -7,8 +7,10 @@
 //! common reset image address ([`layout::RESET`]) with
 //! `linker/reset.ld.in` and `fstart_entry = "amd-psp-reset"`, and an
 //! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
-//! ROM with [`fstart_image_build::sp3_flash`], in the unified layout by
-//! default (`FSTART_SP3_LAYOUT=dual` selects the per-half fallback).
+//! ROM with [`fstart_image_build::sp3_flash`]: one vendor EFS per half,
+//! a reset image copy per composed half, one FFS in the lower half
+//! (`--image-config` composes into another vendor ROM, e.g. the target
+//! board's flash backup).
 //!
 //! The FFS holds the payload and a copy of the reset unit: the FFS builder
 //! finalizes the unit's trust policy only in FFS-resident files, and the
@@ -33,7 +35,7 @@ use fstart_image_build::build_plan::{
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
-use fstart_image_build::sp3_flash::{FlashPlan, Layout, ResetSlot, Sp3FlashAssembly, Survey};
+use fstart_image_build::sp3_flash::{FlashPlan, ResetSlot, Sp3FlashAssembly, Survey};
 
 use crate::layout::{
     self, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK, STORE,
@@ -259,8 +261,7 @@ impl Payload {
 /// How the build is composed into the board's vendor ROM: every `0x62`
 /// entry of a supported generation names the reset image at the top of
 /// the lower half (above the early region), the FFS starts at
-/// [`layout::FFS_OFFSET`] or above, unified layout (the assembler may
-/// override the layout).
+/// [`layout::FFS_OFFSET`] or above.
 pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
     FlashPlan {
         generations: B::GENERATIONS.to_vec(),
@@ -271,7 +272,6 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
         },
         ffs_offset: layout::FFS_OFFSET,
         dram_floor: EARLY_REGION.end(),
-        layout: Layout::Unified,
     }
 }
 
@@ -417,8 +417,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
 }
 
 /// Check the board's vendor ROM against the build without composing: the
-/// halves it would compose and keep, the combo directory and the FFS
-/// window. `root` is the workspace root.
+/// halves it would compose and keep and the FFS window. `root` is the workspace root.
 pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, String> {
     let path = root.join(B::VENDOR_IMAGE);
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -501,7 +500,6 @@ mod tests {
                 },
                 ffs_offset: 0x60_0000,
                 dram_floor: 0x75c0_0000,
-                layout: Layout::Unified,
             }
         );
         let config = plan.assembly.config("tyan-s8030").unwrap();
@@ -581,7 +579,6 @@ mod tests {
         }
         let survey = check_vendor::<S8030>(&root).unwrap();
         assert_eq!(survey.ffs, 0x60_0000..0xde_0000);
-        assert_eq!(survey.combo, Some(0x54_b000));
         let composed: std::vec::Vec<_> = survey
             .halves
             .iter()

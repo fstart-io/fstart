@@ -35,6 +35,10 @@
 //! [`FlashMap::probe`] answers the last two by comparing ROM3 with ROM2 at
 //! the EFS of the shown page; without a usable ROM3 only the shown page is
 //! readable (through ROM2) and everything else fails closed.
+//!
+//! ROM2 is the window the vendor's own x86 code starts from, so it is
+//! always preferred: [`FlashMap::rom2`] needs no ROM3 access at all, and a
+//! caller probes ROM3 only for flash outside the shown page.
 
 use tock_registers::interfaces::Readable;
 use tock_registers::register_bitfields;
@@ -98,6 +102,15 @@ pub struct FlashMap {
 }
 
 impl FlashMap {
+    /// ROM2 only: ROM3 not probed (and never read).
+    pub const fn rom2(page: u8, size: u32) -> Self {
+        Self {
+            page,
+            rom3: Rom3::Absent,
+            size,
+        }
+    }
+
     /// Find out how ROM3 maps the flash: compare the EFS ROM2 shows with
     /// ROM3 at that page's linear offset and at the XORed one. Exactly one
     /// must match; no EFS in ROM2, no match or two matches (identical
@@ -128,18 +141,20 @@ impl FlashMap {
     }
 
     /// The physical address of flash `[offset, offset + len)` as one
-    /// contiguous range: through ROM3 when it decodes, else through ROM2 if
-    /// the range lies in its page. `None` if the CPU cannot see it.
+    /// contiguous range: through ROM2 if the range lies in the page it
+    /// shows, else through ROM3 when it decodes. `None` if the CPU cannot
+    /// see it.
     pub fn address(&self, offset: u32, len: u32) -> Option<u64> {
         let end = offset.checked_add(len.max(1)).filter(|&e| e <= self.size)?;
         let same_page = offset / PAGE_SIZE == (end - 1) / PAGE_SIZE;
         let xor = self.rom2_offset();
+        if offset >= xor && end <= xor + PAGE_SIZE {
+            return Some(ROM2_BASE + u64::from(offset - xor));
+        }
         match self.rom3 {
             Rom3::Linear => Some(BASE + u64::from(offset)),
             Rom3::Paged if xor == 0 || same_page => Some(BASE + u64::from(offset ^ xor)),
-            Rom3::Paged => None,
-            Rom3::Absent => (offset >= xor && end <= xor + PAGE_SIZE)
-                .then(|| ROM2_BASE + u64::from(offset - xor)),
+            Rom3::Paged | Rom3::Absent => None,
         }
     }
 }
@@ -274,7 +289,7 @@ mod tests {
             size: 2 * HALF,
         };
         let ffs = (0x60_0000, 0x7e_0000);
-        // Linear ROM3 reaches everything, ROM2 page irrelevant.
+        // Linear ROM3 reaches everything outside ROM2's page.
         assert_eq!(
             map(1, Rom3::Linear).address(ffs.0, ffs.1),
             Some(BASE + 0x60_0000)
@@ -287,7 +302,12 @@ mod tests {
             paged.address(ffs.0, ffs.1),
             Some(BASE + u64::from(HALF) + 0x60_0000)
         );
-        assert_eq!(paged.address(HALF, HALF), Some(BASE));
+        // The shown page goes through ROM2 even when ROM3 decodes.
+        assert_eq!(paged.address(HALF, HALF), Some(ROM2_BASE));
+        assert_eq!(
+            map(0, Rom3::Linear).address(ffs.0, ffs.1),
+            Some(ROM2_BASE + 0x60_0000)
+        );
         assert_eq!(paged.address(0, 2 * HALF), None, "not contiguous");
         assert_eq!(map(0, Rom3::Paged).address(0, 2 * HALF), Some(BASE));
         // Without ROM3 only ROM2's page is visible.

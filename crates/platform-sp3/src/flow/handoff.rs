@@ -28,7 +28,7 @@ type Payload = fstart_stage::payload::BuildSelectedPayload;
 type Payload = fstart_stage::payload::HaltPayload;
 
 /// Publish the load policy (RAM from e820 minus the running image) and
-/// mount + authenticate the FFS at `ctx.ffs` (ROM3, where the flash anchor
+/// mount + authenticate the FFS at `ctx.ffs` (ROM2 or ROM3, where the flash anchor
 /// says): the locator and trust block the composer put into the reset
 /// image (`fstart_anchor_bytes`) describe it.
 pub(crate) fn mount_boot_media(ctx: &Ctx) {
