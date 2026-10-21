@@ -8,13 +8,13 @@
 //! | Donor | flash | size | destination |
 //! |---|---|---|---|
 //! | Naples S8026 v2.02, Rome S8030 v4.04/v4.00, Rome S8026, Rome S8253 | `0xdb0000` | `0x250000` | `0x75db0000` |
-//! | Naples KNPP-D32 1801 (too small, refused) | `0xde0000` | `0x220000` | `0x75de0000` |
+//! | Naples KNPP-D32 1801 (smallest: the common image) | `0xde0000` | `0x220000` | `0x75de0000` |
 //! | Milan S8030 v4.04, Milan S8253 v2.03 | `0xce0000` | `0x320000` | `0x75ce0000` |
 //! | Milan S8030 v4.00 | `0xd00000` | `0x300000` | `0x75d00000` |
 //!
 //! Every slot ends at flash `0x100_0000` and DRAM `0x7600_0000`. One reset
 //! image serves every generation and slot: it is linked once at the
-//! smallest supported slot ([`RESET`]) and the host composer puts it at the end of each
+//! smallest donor slot ([`RESET`]) and the host composer puts it at the end of each
 //! half's vendor slot ([`crate::host`]); the PSP copies the whole slot, so
 //! the image lands at its link address and the vendor directories stay
 //! byte-identical. The bytes in front of it in a larger slot are erased.
@@ -132,16 +132,15 @@ impl ResetGeometry {
     }
 }
 
-/// The reset image of every build: linked for the smallest vendor slot
-/// (Naples S8026 v2.02, Rome S8030 v4.04/v4.00, S8026 v2.02, S8253 v2.03;
-/// FIRMWARE_IMAGE §2.1). Milan's larger slots (`0xce0000`/`0x320000`,
-/// v4.00 `0xd00000`/`0x300000`) carry it in their last `0x250000` bytes.
-/// The Naples KNPP-D32 slot (`0x220000`) is too small; that donor's ROM is
-/// refused.
+/// The reset image of every build: linked for the smallest donor slot,
+/// Naples KNPP-D32 1801 (FIRMWARE_IMAGE §2.1). Every other slot carries it
+/// in its last `0x220000` bytes: Naples S8026 / Rome (`0xdb0000`,
+/// `0x250000`), Milan (`0xce0000`/`0x320000`, v4.00 `0xd00000`/
+/// `0x300000`). A release Naples+Rome+Milan image uses about `0x57000`.
 pub const RESET: ResetGeometry = ResetGeometry {
-    flash_offset: 0xdb_0000,
-    size: 0x25_0000,
-    destination: 0x75db_0000,
+    flash_offset: 0xde_0000,
+    size: 0x22_0000,
+    destination: 0x75de_0000,
 };
 
 const _: () = assert!(RESET.check().is_ok());
@@ -232,9 +231,10 @@ mod tests {
     fn every_vendor_slot_carries_the_common_image_above_the_early_region() {
         assert_eq!(RESET.reset_vector(), 0x75ff_fff0);
         assert!(CACHE_WINDOW.contains(&RESET.dram()));
-        assert!(FFS_WINDOW.size > 0x40_0000 && FFS_WINDOW.end() == 0xffdb_0000);
+        assert!(FFS_WINDOW.size > 0x40_0000 && FFS_WINDOW.end() == 0xffde_0000);
         // The donor slots (FIRMWARE_IMAGE §2.1).
         for (flash, size, dest) in [
+            (0xde_0000, 0x22_0000, 0x75de_0000),
             (0xdb_0000, 0x25_0000, 0x75db_0000),
             (0xce_0000, 0x32_0000, 0x75ce_0000),
             (0xd0_0000, 0x30_0000, 0x75d0_0000),
@@ -247,12 +247,12 @@ mod tests {
             assert!(slot.carries(&RESET), "{slot:x?}");
             assert!(FFS_OFFSET < flash);
         }
-        let knpp = ResetGeometry {
-            flash_offset: 0xde_0000,
-            size: 0x22_0000,
-            destination: 0x75de_0000,
+        let small = ResetGeometry {
+            flash_offset: 0xe0_0000,
+            size: 0x20_0000,
+            destination: 0x75e0_0000,
         };
-        assert!(knpp.check().is_ok() && !knpp.carries(&RESET));
+        assert!(small.check().is_ok() && !small.carries(&RESET));
         let low = ResetGeometry {
             flash_offset: 0xb0_0000,
             size: 0x50_0000,

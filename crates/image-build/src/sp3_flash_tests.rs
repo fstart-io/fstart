@@ -74,8 +74,12 @@ fn reset_image(slot: ResetSlot) -> Vec<u8> {
     r
 }
 
-/// The linked image: the smallest slot (Naples/Rome geometry).
-const IMAGE: ResetSlot = ROME;
+/// The linked image: the smallest donor slot (Naples KNPP-D32).
+const IMAGE: ResetSlot = ResetSlot {
+    flash_offset: 0xde_0000,
+    size: 0x22_0000,
+    destination: 0x75de_0000,
+};
 /// The platform's early region ends here.
 const DRAM_FLOOR: u64 = 0x75c0_0000;
 
@@ -137,7 +141,7 @@ fn half_gets_the_image_at_the_end_of_its_vendor_slot() {
     assert_eq!(out[..layout.prefix_end], vendor[..layout.prefix_end]);
     assert!(out[layout.prefix_end..0x60_0000].iter().all(|&b| b == 0xff));
     assert_eq!(out[0x60_0000..0x60_1000], ffs[..]);
-    // Slot front erased, the image in its last 0x250000 bytes.
+    // Slot front erased, the image in its last 0x220000 bytes.
     let (slot, at) = (MILAN.flash_offset as usize, IMAGE.flash_offset as usize);
     assert!(out[slot..at].iter().all(|&b| b == 0xff));
     assert_eq!(out[at..], image[..]);
@@ -183,11 +187,11 @@ fn vendor_slots_that_cannot_carry_the_image_are_refused() {
         Err(ImageError::Slot { reason, .. }) => reason,
         other => panic!("{other:x?}"),
     };
-    // Naples KNPP-D32 geometry: too small for the common image.
+    // Smaller than every donor slot, and so than the common image.
     let small = ResetSlot {
-        flash_offset: 0xde_0000,
-        size: 0x22_0000,
-        destination: 0x75de_0000,
+        flash_offset: 0xe0_0000,
+        size: 0x20_0000,
+        destination: 0x75e0_0000,
     };
     assert_eq!(reason(small, &p), "slot smaller than the reset image");
     let shifted = ResetSlot {
@@ -504,7 +508,7 @@ fn donor_s8026_naples_and_rome_halves() {
             .iter()
             .all(|(_, a)| matches!(a, HalfAction::Compose(_)))
     );
-    assert_eq!(out.survey.ffs_end, IMAGE.flash_offset);
+    assert_eq!(out.survey.ffs_end, ROME.flash_offset);
     check_dual(&out.image).unwrap();
     let at = IMAGE.flash_offset as usize;
     assert_eq!(out.image[at..HALF_SIZE], out.image[HALF_SIZE + at..]);
@@ -516,20 +520,26 @@ fn donor_s8026_naples_and_rome_halves() {
 }
 
 #[test]
-fn donor_knpp_naples_slot_is_too_small() {
+fn donor_knpp_naples_slot_is_exactly_the_image() {
     let Some(half) = donor("donors/naples2p-knppd32-1801.bin") else {
         return;
     };
-    assert!(matches!(
-        compose(
-            &half,
-            &plan(&[Generation::Naples]),
-            &linked_reset(IMAGE),
-            &ffs(0x1000)
-        ),
-        Err(ImageError::Slot {
-            reason: "slot smaller than the reset image",
-            ..
-        })
-    ));
+    let ffs = ffs(0x10_0000);
+    let out = compose(
+        &half,
+        &plan(&[Generation::Naples]),
+        &linked_reset(IMAGE),
+        &ffs,
+    )
+    .unwrap();
+    assert_eq!(out.image.len(), HALF_SIZE);
+    assert_eq!(out.survey.ffs_end, IMAGE.flash_offset);
+    let layout = VendorLayout::parse(&half).unwrap();
+    assert_eq!(layout.generation, Generation::Naples);
+    assert_eq!(layout.reset, IMAGE);
+    assert_eq!(out.image[..layout.prefix_end], half[..layout.prefix_end]);
+    assert_eq!(VendorLayout::parse(&out.image).unwrap(), layout);
+    assert_eq!(out.image[0x60_0000..0x70_0000], ffs[..]);
+    let at = IMAGE.flash_offset as usize;
+    assert_eq!(out.image[at + 0x1000..at + 0x1000 + TRUST_SIZE], trust());
 }

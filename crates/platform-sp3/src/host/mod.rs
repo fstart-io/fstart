@@ -458,16 +458,16 @@ mod tests {
         else {
             panic!("not executable")
         };
-        assert_eq!((*load_address, *flat_capacity), (0x75db_0000, 0x25_0000));
+        assert_eq!((*load_address, *flat_capacity), (0x75de_0000, 0x22_0000));
         assert_eq!(expectations.entry, Some(0x75ff_fff0));
         let script = unit.linker_script.as_deref().unwrap();
         for needle in [
-            "ORIGIN = 0x75db0000, LENGTH = 0x250000",
+            "ORIGIN = 0x75de0000, LENGTH = 0x220000",
             ".sp3.entry16 (0x76000000 - 0x1000)",
             "ORIGIN = 0x75000000, LENGTH = 0x101000",
             "_fstart_layout_start = .;",
             "QUAD(0x400000)",
-            "the common 0x250000 image",
+            "the common 0x220000 image",
         ] {
             assert!(script.contains(needle), "{needle}");
         }
@@ -491,9 +491,9 @@ mod tests {
             FlashPlan {
                 generations: vec![Generation::Rome, Generation::Milan],
                 reset: ResetSlot {
-                    flash_offset: 0xdb_0000,
-                    size: 0x25_0000,
-                    destination: 0x75db_0000
+                    flash_offset: 0xde_0000,
+                    size: 0x22_0000,
+                    destination: 0x75de_0000
                 },
                 ffs_offset: 0x60_0000,
                 dram_floor: 0x75c0_0000,
@@ -502,12 +502,12 @@ mod tests {
         let config = plan.assembly.config("tyan-s8030").unwrap();
         assert_eq!(
             config.build.firmware_image,
-            FirmwareImagePolicy::memory_mapped(0xff60_0000, 0x7b_0000)
+            FirmwareImagePolicy::memory_mapped(0xff60_0000, 0x7e_0000)
         );
         let StageLayout::Monolithic(stage) = &config.stages else {
             panic!("not monolithic")
         };
-        assert!(!stage.external && stage.load_addr == 0x75db_0000);
+        assert!(!stage.external && stage.load_addr == 0x75de_0000);
         assert!(config.payload.is_none() && plan.inputs.is_empty());
 
         // Payloads, the vendor ROM override and what is refused.
@@ -560,9 +560,9 @@ mod tests {
         let bytes = descriptor().unwrap();
         let layout = fstart_core::layout::Layout::parse(bytes.as_bytes()).unwrap();
         let find = |kind| layout.regions().find(|r| r.kind == kind).unwrap();
-        assert_eq!(find(RegionKind::Image).base, 0x75db_0000);
+        assert_eq!(find(RegionKind::Image).base, 0x75de_0000);
         assert_eq!(find(RegionKind::Firmware).base, 0xff60_0000);
-        assert_eq!(find(RegionKind::Firmware).end(), Some(0xffdb_0000));
+        assert_eq!(find(RegionKind::Firmware).end(), Some(0xffde_0000));
         assert_eq!(find(RegionKind::Stack).end(), Some(STACK.end()));
     }
 

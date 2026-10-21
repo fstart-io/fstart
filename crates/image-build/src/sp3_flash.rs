@@ -358,7 +358,7 @@ pub struct FlashPlan {
     #[serde(with = "generation_names")]
     pub generations: Vec<Generation>,
     /// The reset image as linked: its size, its DRAM link address and its
-    /// place at the top of a half (the smallest slot it fits).
+    /// place at the top of a half (the smallest vendor slot).
     pub reset: ResetSlot,
     /// Flash offset of the FFS in every half (start of the runtime firmware
     /// window).

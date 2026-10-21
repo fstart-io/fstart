@@ -23,7 +23,8 @@ SMU, PMU and DXIO firmware, APCB). Supply the Tyan v4.04 dual image
 `firmware/donors/SHA256SUMS`) as `vendor/8030V404.ROM`. It is not part of
 this repository. With v4.04 the FFS window is `[0x600000, 0xce0000)` in
 both halves (the Milan reset slot starts at `0xce0000`); the reset image
-sits at `0xdb0000` in both.
+(`0x220000` bytes, linked at `0x75de0000`) sits at `0xde0000` in both, at
+the end of the Rome (`0xdb0000`) and Milan (`0xce0000`) vendor slots.
 
 ## SKUs: S8030GM2NE and S8030GM4NE-2T
 

@@ -41,27 +41,28 @@ the half by the EFS generation word: Naples must be below Rome, Rome below
 Milan; the assembler checks that order on a 32 MiB image.
 
 Every vendor `0x62` (reset image) slot ends at flash `0x1000000` and DRAM
-`0x76000000`; only its start differs (Naples/Rome `0xdb0000`, Milan v4.04
-`0xce0000`, Milan v4.00 `0xd00000`). The reset image is linked once at
-the smallest slot, `[0x75db0000, 0x76000000)` (`0x250000` bytes, a linker
+`0x76000000`; only its start differs (Naples KNPP-D32 `0xde0000`,
+Naples S8026 and Rome `0xdb0000`, Milan v4.04 `0xce0000`, Milan v4.00
+`0xd00000`). The reset image is linked once at the smallest donor slot,
+KNPP-D32's `[0x75de0000, 0x76000000)` (`0x220000` bytes, a linker
 `ASSERT` keeps it there), and placed at the end of each half's vendor
 slot. The PSP copies the whole slot, so the image lands at its link
 address in every half; the slot bytes in front of it are erased. A slot
 smaller than the image, ending elsewhere or reaching into the early region
-below `0x75c00000` is refused (e.g. the Naples KNPP-D32 `0x220000` slot).
+below `0x75c00000` is refused.
 
 ```text
 [0, prefix end)               vendor bytes, byte-identical
 [prefix end, 0x600000)        erased
 [0x600000, FFS end)           fstart FFS, identical in every half
-[FFS end, 0xdb0000)           erased (front of a larger vendor slot)
-[0xdb0000, 16 MiB)            reset image, identical in every half
+[FFS end, 0xde0000)           erased (front of a larger vendor slot)
+[0xde0000, 16 MiB)            reset image, identical in every half
 ```
 
 The FFS end is the lowest slot start among the composed halves, read from
 the vendor ROM at assembly (`0xce0000` for the S8030 v4.04 dual image), so
 the FFS and the FFS locator patched into the reset image are valid in
-every half. The image links the upper bound `[0x600000, 0xdb0000)` as its
+every half. The image links the upper bound `[0x600000, 0xde0000)` as its
 firmware window and reads only what the locator describes.
 
 Put the vendor ROM (S8030 v4.04, 32 MiB) at
