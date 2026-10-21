@@ -115,7 +115,13 @@ impl<P: ConfigRegionAccess, T: Timer> SmuMessages for Mailbox<P, T> {
             .enumerate()
             .for_each(|(i, &a)| self.write(self.arg(i), a));
         self.write(self.regs.message, id);
-        match self.wait()? {
+        let start = self.timer.timestamp_us();
+        let response = self.wait();
+        let took = self.timer.timestamp_us().wrapping_sub(start);
+        if took > 100_000 {
+            fstart_log::info!("smu: message {:#x} took {} ms", id, took / 1000);
+        }
+        match response? {
             response::OK => {
                 args.iter_mut()
                     .enumerate()

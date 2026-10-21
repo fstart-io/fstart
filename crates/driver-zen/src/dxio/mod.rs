@@ -228,6 +228,25 @@ impl DmaBuffer {
     }
 }
 
+impl DxioError {
+    /// A name and up to two numbers, for logs without `Debug`.
+    pub fn parts(&self) -> (&'static str, u32, u32) {
+        match *self {
+            Self::Smu(SmuError::Timeout) => ("SMU mailbox timeout", 0, 0),
+            Self::Smu(SmuError::Status(status)) => ("SMU mailbox status", status, 0),
+            Self::Rpc { op, result } => ("RPC result", op, result),
+            Self::NoReturn(r) => ("GetSmState no return", r, 0),
+            Self::StateMachine { state } => ("state machine error", state, 0),
+            Self::Timeout => ("state machine timeout", 0, 0),
+            Self::Lanes(engine, _) => ("board engine rejected", engine as u32, 0),
+            Self::TooManyEngines => ("too many engines", 0, 0),
+            Self::Tuning(id) => ("unsupported tuning", id as u32, 0),
+            Self::Buffer => ("DMA buffer", 0, 0),
+            Self::Unsupported => ("generation not built", 0, 0),
+        }
+    }
+}
+
 /// The DXIO RPC of one SMU instance.
 pub struct Dxio<'s, M: ?Sized> {
     smu: &'s M,
@@ -244,7 +263,19 @@ impl<'s, M: SmuMessages + ?Sized> Dxio<'s, M> {
     /// without judging the result.
     pub fn raw(&self, op: u32, req: [u32; 5]) -> Result<[u32; SMU_ARGS], DxioError> {
         let mut args = [op, req[0], req[1], req[2], req[3], req[4]];
-        self.smu.send(self.msg, &mut args)?;
+        self.smu.send(self.msg, &mut args).inspect_err(|e| {
+            let (status, timeout) = match e {
+                SmuError::Status(s) => (*s, false),
+                SmuError::Timeout => (0, true),
+            };
+            fstart_log::error!(
+                "dxio: SMU message {:#x} op {:#x}: status {:#x} timeout {}",
+                self.msg,
+                op,
+                status,
+                timeout
+            );
+        })?;
         Ok(args)
     }
 
@@ -252,6 +283,21 @@ impl<'s, M: SmuMessages + ?Sized> Dxio<'s, M> {
     /// `(word & 0xFFFFFF00) == 0x300` to OK; the low byte carries the code.
     pub fn rpc(&self, op: u32, req: [u32; 5]) -> Result<[u32; SMU_ARGS], DxioError> {
         let r = self.raw(op, req)?;
+        fstart_log::info!(
+            "dxio: op {:#x} req {:x} {:x} {:x} {:x} {:x} -> {:x} {:x} {:x} {:x} {:x} {:x}",
+            op,
+            req[0],
+            req[1],
+            req[2],
+            req[3],
+            req[4],
+            r[0],
+            r[1],
+            r[2],
+            r[3],
+            r[4],
+            r[5]
+        );
         match result_of(r[0]) {
             result::OK => Ok(r),
             result => Err(DxioError::Rpc { op, result }),
@@ -644,12 +690,27 @@ where
 {
     let start = timer.timestamp_us();
     let mut delayed = false;
+    let mut last = None;
     loop {
         if timer.timestamp_us().wrapping_sub(start) >= timeout_us {
             return Err(DxioError::Timeout);
         }
         let r = unit.dxio.raw(op::GET_SM_STATE, [0; 5])?;
         let (res, kind, st) = (result_of(r[0]), r[1] & 0xFF, r[2]);
+        // Bring-up trace: every distinct state-machine reply.
+        if last != Some(r) {
+            fstart_log::info!(
+                "dxio: socket {} sm {:x} {:x} {:x} {:x} {:x} {:x}",
+                unit.socket,
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                r[4],
+                r[5]
+            );
+            last = Some(r);
+        }
         match (res, kind) {
             (result::ERROR, reply::SM) => return Err(DxioError::StateMachine { state: st }),
             // Error with another type: the donor logs (Naples event

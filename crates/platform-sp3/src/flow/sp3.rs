@@ -296,8 +296,20 @@ pub(crate) fn dxio(
 ) {
     let generation = ctx.generation;
     let policy = ctx.policy.dxio;
+    // DXIO requests (ReloadSm, the state machine) can take long; AGESA
+    // polls without a bound. Own mailboxes with a 30 s bound.
+    let dxio_smus: heapless::Vec<Smu, 2> = (0..ctx.topology.sockets)
+        .map(|s| {
+            let smn = Smn::new(ctx.pci, socket_bus(ctx, s));
+            // SAFETY: the socket's SMU mailbox; the BSP sends one message at
+            // a time and the step's other mailbox is idle meanwhile.
+            unsafe { Smu::new(smn, v11::REGS, ctx.timer, v11::id_limit(generation)) }
+                .with_timeout_us(30_000_000)
+        })
+        .collect();
+    let _ = &si.smus;
     let mut units: heapless::Vec<Unit<'_, Smu>, 2> = heapless::Vec::new();
-    for (s, smu) in si.smus.iter().enumerate() {
+    for (s, smu) in dxio_smus.iter().enumerate() {
         let buffer = dma_alloc(DMA_SIZE, 0x1000);
         // SAFETY: a firmware-owned, identity-mapped buffer for this unit only.
         let dma = unsafe { DmaBuffer::new(buffer.as_mut_ptr(), DMA_SIZE, buffer.as_ptr() as u64) }
@@ -315,7 +327,7 @@ pub(crate) fn dxio(
     // SAFETY: every socket's FCH is live; DXIO owns their PERST GPIOs.
     let perst = unsafe { FchPerst::new(generation, fchs, None) };
     let mut setup = PortSetup::new(generation, &si.nbios, engines, perst);
-    dxio::train(generation, &mut units, &mut setup, &ctx.timer, &policy).or_halt("DXIO training");
+    super::dxio_or_halt(dxio::train(generation, &mut units, &mut setup, &ctx.timer, &policy));
     setup.finish();
     setup.clear_early_buses();
     for p in setup.ports() {

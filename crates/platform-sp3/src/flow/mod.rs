@@ -178,6 +178,15 @@ impl<T, E> OrHalt<T> for Result<T, E> {
     }
 }
 
+/// DXIO training, halting with the error's details logged.
+pub(crate) fn dxio_or_halt(result: Result<(), fstart_driver_zen::dxio::DxioError>) {
+    if let Err(e) = result {
+        let (what, a, b) = e.parts();
+        fstart_log::error!("sp3: DXIO error {} ({:#x}, {:#x})", what, a, b);
+        fail("DXIO training");
+    }
+}
+
 impl<T> OrHalt<T> for Option<T> {
     fn or_halt(self, step: &str) -> T {
         self.unwrap_or_else(|| fail(step))

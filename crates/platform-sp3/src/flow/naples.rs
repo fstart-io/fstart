@@ -183,7 +183,7 @@ pub(crate) fn dxio(
     // SAFETY: live FCHs; DXIO owns their PERST GPIOs.
     let perst = unsafe { FchPerst::new(generation, fchs, also) };
     let mut setup = PortSetup::new(generation, &si.nbios, engines, perst);
-    dxio::train(generation, &mut units, &mut setup, &ctx.timer, &policy).or_halt("DXIO training");
+    super::dxio_or_halt(dxio::train(generation, &mut units, &mut setup, &ctx.timer, &policy));
     setup.finish();
     setup.clear_early_buses();
 }
