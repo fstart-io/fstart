@@ -2,7 +2,7 @@
 use super::*;
 use crate::{picasso, zeppelin};
 use fstart_amdfw::{
-    directory::{BIOS_COOKIE, BiosEntry, Header, bios, fletcher32},
+    directory::{BIOS_COOKIE, BiosEntry, Header, PSP_COOKIE, PspEntry, bios, fletcher32},
     efs::Efs,
 };
 use fstart_driver_amd::{
@@ -165,29 +165,12 @@ fn zeppelin_units_are_pinned() {
     );
 }
 
-/// A vendor flash with the BIOS directory of the MJ11 layout.
-fn vendor_flash(reset_destination: u64) -> Vec<u8> {
-    let mut flash = vec![0xffu8; 0x100_0000];
-    let mut efs = Efs::erased();
-    efs.bios_directory_mut(Zeppelin::BIOS_DIRECTORY)
-        .set(0xff0f_7000);
-    flash[0x2_0000..0x2_0060].copy_from_slice(efs.as_bytes());
-    let entries = [
-        BiosEntry::new(bios::APOB, 0, 0, 0, 0, 0, 0x3000_0000),
-        BiosEntry::new(
-            bios::RESET_IMAGE,
-            0,
-            0,
-            BiosEntry::RESET | BiosEntry::COPY,
-            0x25_0000,
-            0xffdb_0000,
-            reset_destination,
-        ),
-    ];
+/// A directory table: header with its checksum, then the entries.
+fn table<E: IntoBytes + zerocopy::Immutable>(cookie: [u8; 4], entries: &[E]) -> Vec<u8> {
     let mut table = Header {
-        cookie: BIOS_COOKIE,
+        cookie,
         checksum: 0.into(),
-        count: 2.into(),
+        count: (entries.len() as u32).into(),
         additional: 0.into(),
     }
     .as_bytes()
@@ -195,7 +178,35 @@ fn vendor_flash(reset_destination: u64) -> Vec<u8> {
     entries.iter().for_each(|e| table.extend(e.as_bytes()));
     let checksum = fletcher32(&table[8..]);
     table[4..8].copy_from_slice(&checksum.to_le_bytes());
-    flash[0xf_7000..0xf_7000 + table.len()].copy_from_slice(&table);
+    table
+}
+
+/// A vendor flash with the PSP and BIOS directories of the MJ11 layout.
+fn vendor_flash(reset_destination: u64) -> Vec<u8> {
+    let mut flash = vec![0xffu8; 0x100_0000];
+    let mut efs = Efs::erased();
+    efs.new_psp_directory.set(0xff05_7000);
+    efs.bios_directory_mut(Zeppelin::BIOS_DIRECTORY)
+        .set(0xff0f_7000);
+    flash[0x2_0000..0x2_0060].copy_from_slice(efs.as_bytes());
+    let psp = table(PSP_COOKIE, &[PspEntry::new(0, 0, 0, 0x240, 0xff05_7400)]);
+    flash[0x5_7000..0x5_7000 + psp.len()].copy_from_slice(&psp);
+    let bios = table(
+        BIOS_COOKIE,
+        &[
+            BiosEntry::new(bios::APOB, 0, 0, 0, 0, 0, 0x3000_0000),
+            BiosEntry::new(
+                bios::RESET_IMAGE,
+                0,
+                0,
+                BiosEntry::RESET | BiosEntry::COPY,
+                0x25_0000,
+                0xffdb_0000,
+                reset_destination,
+            ),
+        ],
+    );
+    flash[0xf_7000..0xf_7000 + bios.len()].copy_from_slice(&bios);
     flash
 }
 

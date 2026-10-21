@@ -558,7 +558,16 @@ dependencies = [
 name = "fstart-amdfw"
 version = "0.1.0"
 dependencies = [
+ "fstart-amdfw-format",
+ "zerocopy",
+]
+
+[[package]]
+name = "fstart-amdfw-format"
+version = "0.1.0"
+dependencies = [
  "serde",
+ "tock-registers",
  "zerocopy",
 ]
 
@@ -567,6 +576,7 @@ name = "fstart-amdfw-tools"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "fstart-amdfw-format",
  "fstart-image-build",
 ]
 
@@ -604,7 +614,7 @@ name = "fstart-core"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
- "fstart-amdfw",
+ "fstart-amdfw-format",
  "heapless 0.8.0",
  "serde",
  "tock-registers",

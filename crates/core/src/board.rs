@@ -287,7 +287,7 @@ pub struct AmdVendorMicrocode {
     /// Absolute path of the vendor flash image.
     pub image: HString<256>,
     /// The EFS field the SoC's PSP takes the BIOS directory from.
-    pub bios_directory: fstart_amdfw::efs::BiosDirectorySlot,
+    pub bios_directory: fstart_amdfw_format::efs::BiosDirectorySlot,
 }
 
 /// Intel microcode files to concatenate into `cpu_microcode_blob.bin`.

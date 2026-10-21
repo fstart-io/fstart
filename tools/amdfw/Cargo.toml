@@ -11,4 +11,5 @@ path = "src/main.rs"
 
 [dependencies]
 fstart-image-build.workspace = true
+fstart-amdfw-format.workspace = true
 clap.workspace = true

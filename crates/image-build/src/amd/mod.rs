@@ -3,9 +3,10 @@
 //! composes a stage's image from a vendor image or packed blobs;
 //! [`PicassoImage`] packs Picasso's first-generation PSP partition.
 //!
-//! The packer deliberately does not pretend to support newer multi-level/ISH
-//! formats. Signed AMD blobs are copied unchanged; this is a packer, not a
-//! signing tool.
+//! Format parsing and validation live in the generation-independent
+//! `fstart-amdfw-format` crate. This particular blob packer currently covers
+//! Picasso; multi-level/ISH assembly is a separate coverage increment, not a
+//! second parser. Signed AMD blobs are copied unchanged, never re-signed.
 pub mod apcb;
 pub mod assembly;
 pub mod config;

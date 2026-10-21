@@ -320,6 +320,29 @@ fn set_level2_destination(image: &mut [u8], index: usize, destination: u64) {
 }
 
 #[test]
+fn a_psp_blob_beyond_the_vendor_prefix_is_rejected() {
+    use zerocopy::IntoBytes;
+    let mut image = two_level_vendor();
+    let entry = PspEntry::new(1, 0, 0, 0x1000, 0xff30_0000);
+    let mut header = Header {
+        cookie: PSP_COOKIE,
+        checksum: 0.into(),
+        count: 1.into(),
+        additional: 0.into(),
+    };
+    let checksum =
+        fletcher32(&[header.as_bytes()[8..].to_vec(), entry.as_bytes().to_vec()].concat());
+    header.checksum.set(checksum);
+    image[0x5_7000..0x5_7010].copy_from_slice(header.as_bytes());
+    image[0x5_7010..0x5_7020].copy_from_slice(entry.as_bytes());
+    assert!(
+        read_bios_directory(&image, 0x29_4000, SLOT)
+            .unwrap_err()
+            .contains("OutsidePrefix")
+    );
+}
+
+#[test]
 fn the_psp_boots_from_level_2() {
     let mut image = two_level_vendor();
     // The APOB of level 2, not level 1's.
@@ -350,7 +373,13 @@ fn two_level_vendor() -> Vec<u8> {
         .chain([u32::MAX; 5])
         .flat_map(u32::to_le_bytes)
         .collect();
+    put(0x2_0000, &[0xff; 0x60]);
     put(0x2_0000, &efs);
+    // The EFS's PSP pointer is a reachable dependency too.
+    let mut psp = [*b"$PSP", [0; 4], [0; 4], [0; 4]].concat();
+    let checksum = fletcher32(&psp[8..]);
+    psp[4..8].copy_from_slice(&checksum.to_le_bytes());
+    put(0x5_7000, &psp);
     let mut directory = |offset: usize, cookie: &[u8; 4], entries: &[(u8, u8, u32, u64, u64)]| {
         let count = (entries.len() as u32).to_le_bytes();
         let mut table = [*cookie, [0; 4], count, [0; 4]].concat();
@@ -468,7 +497,7 @@ fn composes_the_pinned_image() {
     assert_eq!(image[0xdb_1000..0xdb_1028], ffs[0x40..0x68]);
     assert_eq!(
         hex(&fstart_crypto::digest::hash_sha256(&image)),
-        "021a94e0a1b68bfabee168c750b1e6c1dd48c5b607f8c77729a286d37a475488"
+        "f40ad114b05e11aaf06812c9fbcdac7193b8db0e215381ea75f0c3aaffb6dabb"
     );
     // The vendor image must describe the layout.
     let mut other = mj11();
@@ -536,4 +565,20 @@ fn the_psp_inflates_the_reset_image() {
     assert_eq!(image[0x29_4000..0xdb_0000], plain[0x29_4000..0xdb_0000]);
     let inflated = assembly::amd_decompress(&image[0xdb_0000..], 0x25_0000).unwrap();
     assert_eq!(inflated, plain[0xdb_0000..]);
+    // An uncompressed replacement must not inherit a compressed vendor flag.
+    let raw = mj11()
+        .assemble(&[&image], &stage, Some(&ffs))
+        .unwrap()
+        .bytes;
+    for directory in Flash::new(&raw).bios_directories(SLOT).unwrap().iter() {
+        assert!(
+            !directory
+                .entries
+                .iter()
+                .find(|e| e.kind == 0x62)
+                .unwrap()
+                .compressed()
+        );
+    }
+    assert_eq!(raw[0xdb_0000..], plain[0xdb_0000..]);
 }

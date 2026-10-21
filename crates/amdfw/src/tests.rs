@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::{
-    directory::{BIOS_COOKIE, BIOS_LEVEL2_COOKIE, Header, bios, fletcher32},
+    directory::{BIOS_COOKIE, BIOS_LEVEL2_COOKIE, BiosEntry, Header, bios, fletcher32},
+    efs::{BiosDirectorySlot, Efs},
     *,
 };
 use std::{vec, vec::Vec};
@@ -95,14 +96,15 @@ fn the_psp_boots_from_level_2() {
 }
 
 #[test]
-fn without_level_2_the_psp_boots_from_level_1() {
+fn corrupt_referenced_level_2_is_rejected() {
     let mut image = flash();
-    // A bad level-2 checksum: the PSP would reject it, so does the lookup.
     image[0x4_0004] ^= 1;
     let flash = Flash::new(&image);
-    let levels = flash.bios_directories(SLOT).unwrap();
-    assert!(levels.level2.is_none());
-    assert_eq!(flash.bios_files(SLOT, bios::MICROCODE).count(), 1);
+    assert!(matches!(
+        flash.bios_directories_checked(SLOT),
+        Err(Error::Checksum(0x4_0000))
+    ));
+    assert_eq!(flash.bios_files(SLOT, bios::MICROCODE).count(), 0);
 }
 
 #[test]

@@ -10,12 +10,12 @@
 use super::{Blob, FlashRegion, Key, PicassoImage};
 use crate::build_plan::{FfsAssembly, FileBinding};
 use fstart_amdfw::{
-    Flash,
+    Flash, Profile,
     directory::{BiosEntry, bios, modify_entries},
     efs::{BiosDirectorySlot, Efs},
 };
 use serde::{Deserialize, Serialize};
-use zerocopy::{FromBytes, IntoBytes};
+use zerocopy::FromBytes;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,58 +154,60 @@ pub struct BiosDirectoryFacts {
 
 /// Read the reset image (type 0x62) and APOB (type 0x61) entries of the
 /// BIOS directory the PSP of `slot` boots from in `image`: the EFS's, or the
-/// level 2 it points to. The EFS, the directories and every file but the
-/// reset image must lie within `kept`, the bytes the composition keeps, and
-/// every level must agree on the reset image.
+/// level 2 it points to. The EFS, all reachable PSP directories/blobs and
+/// non-reset BIOS files must lie within `kept`, the bytes composition keeps.
+/// Every selected BIOS level must agree on the reset image.
 pub fn read_bios_directory(
     image: &[u8],
     kept: u32,
     slot: BiosDirectorySlot,
 ) -> Result<BiosDirectoryFacts, String> {
-    let flash = Flash::new(image);
-    let kept = u64::from(kept);
-    let within = |offset: usize, size: usize| offset as u64 + size as u64 <= kept;
-    let (efs, _) = flash
-        .efs()
-        .filter(|&(offset, _)| within(offset, size_of::<Efs>()))
-        .ok_or("no EFS in the kept firmware")?;
+    let flash = Flash::new(image).with_profile(Profile::for_slot(slot));
+    let (efs, _) = flash.efs_checked().map_err(|e| format!("EFS: {e:?}"))?;
     let levels = flash
-        .bios_directories(slot)
-        .ok_or("no valid BIOS directory for the SoC in the image")?;
+        .bios_directories_checked(slot)
+        .map_err(|e| format!("BIOS directory: {e:?}"))?;
     let boot = levels.boot();
-    let find = |kind| boot.entries.iter().find(|e| e.kind == kind);
-    let reset = find(bios::RESET_IMAGE).ok_or("BIOS directory has no reset image (type 0x62)")?;
-    let apob = find(bios::APOB).ok_or("BIOS directory has no APOB entry (type 0x61)")?;
-    for directory in levels.iter() {
-        if !within(directory.offset, directory.table().len()) {
-            return Err("BIOS directory is outside the kept firmware".into());
+    let find = |kind| {
+        let mut entries = boot.entries.iter().filter(|e| e.kind == kind);
+        let first = entries.next().ok_or("missing BIOS reset/APOB entry")?;
+        if entries.next().is_some() {
+            return Err("ambiguous BIOS reset/APOB entry");
         }
-        for entry in directory.entries {
-            let (kind, size, source) = (entry.kind, entry.size.get(), entry.source.get());
-            // Sources are either flash offsets or memory-mapped flash
-            // addresses; 0 and erased ones have no contents.
-            let offset = flash.offset(source).map_or(u64::MAX, |o| o as u64);
-            if kind == bios::RESET_IMAGE {
-                if entry.as_bytes() != reset.as_bytes() {
-                    return Err("the BIOS directory levels disagree on the reset image".into());
-                }
-            } else if size != 0
-                && source != 0
-                && source != u64::MAX
-                && offset
-                    .checked_add(u64::from(size))
-                    .is_none_or(|end| end > kept)
+        Ok(first)
+    };
+    let reset = find(bios::RESET_IMAGE)?;
+    let apob = find(bios::APOB)?;
+    if !reset.reset() || !reset.copy() {
+        return Err("reset image must have reset and copy flags".into());
+    }
+    let reset_range = boot
+        .range(reset)
+        .map_err(|e| format!("reset image: {e:?}"))?;
+    for directory in levels.iter() {
+        for entry in directory
+            .entries
+            .iter()
+            .filter(|e| e.kind == bios::RESET_IMAGE)
+        {
+            let range = directory
+                .range(entry)
+                .map_err(|e| format!("reset image: {e:?}"))?;
+            if range != reset_range
+                || entry.flags != reset.flags
+                || entry.destination != reset.destination
+                || entry.subprogram != reset.subprogram
+                || entry.region != reset.region
             {
-                return Err(format!(
-                    "BIOS directory entry {kind:#x} at {offset:#x} is outside the kept firmware"
-                ));
+                return Err("the BIOS directory levels disagree on the reset image".into());
             }
         }
     }
-    let reset_offset = flash
-        .offset(reset.source.get())
-        .and_then(|o| u32::try_from(o).ok())
-        .ok_or("reset image source out of range")?;
+    flash
+        .validate_prefix(slot, kept as usize, Some(reset_range.clone()))
+        .map_err(|e| format!("firmware dependency would not survive composition: {e:?}"))?;
+    let reset_offset =
+        u32::try_from(reset_range.start).map_err(|_| "reset image source out of range")?;
     Ok(BiosDirectoryFacts {
         efs,
         reset_offset,
@@ -477,10 +479,8 @@ impl AmdAssembly {
                 .0
                 .set_spi(self.bios_directory, mode, speed);
         }
-        if !self.psp.compress_reset {
-            return Ok(stage.to_vec());
-        }
         let levels: Vec<usize> = Flash::new(image)
+            .with_profile(Profile::for_slot(self.bios_directory))
             .bios_directories(self.bios_directory)
             .ok_or("no BIOS directory")?
             .iter()
@@ -489,10 +489,17 @@ impl AmdAssembly {
         for offset in levels {
             modify_entries::<BiosEntry>(image, offset, |entry| {
                 if entry.kind == bios::RESET_IMAGE {
-                    entry.flags |= BiosEntry::COMPRESSED;
+                    if self.psp.compress_reset {
+                        entry.flags |= BiosEntry::COMPRESSED;
+                    } else {
+                        entry.flags &= !BiosEntry::COMPRESSED;
+                    }
                 }
             })
             .ok_or("BIOS directory changed under the PSP options")?;
+        }
+        if !self.psp.compress_reset {
+            return Ok(stage.to_vec());
         }
         let mut reset = amd_compress(stage);
         if reset.len() > stage.len() {
