@@ -41,7 +41,6 @@ pub struct Board;
 /// The BMC's diagnostic interrupt button.
 const NMI_BUTTON_GEVENT: u8 = 11;
 
-const SIO_PORT: u16 = 0x2e;
 const COM1: u16 = 0x3f8;
 const COM1_IRQ: u8 = 4;
 
@@ -200,14 +199,10 @@ impl fstart_platform_amd::noncar::Board for Board {
         // AST2500 SIO runtime registers (0xa00-0xbff) and the IPMI KCS interface.
         let _ = lpc.set_wideio_range(0xa00, 512);
         let _ = lpc.set_wideio_range(0xca0, 16);
-        let Ok(sio) = Ast2400::new_at_base(SuperIoConfig::default(), SIO_PORT) else {
+        let Ok(sio) = Ast2400::new_at_base(SuperIoConfig::default(), ast::CONFIG_PORT) else {
             return;
         };
-        // Route the BMC's UART1 pins (SCU84[23:16]: TXD1, RXD1 and the modem
-        // lines); the vendor firmware also clears SCU90[5:4].
-        sio.ahb_update32(ast::SCU_BASE, 0, ast::SCU_PROTECTION_KEY);
-        sio.ahb_update32(ast::SCU_BASE + 0x84, 0xff00_ffff, 0x00ff_0000);
-        sio.ahb_update32(ast::SCU_BASE + 0x90, 0xffff_ffcf, 0);
+        sio.route_uart1_pins();
         // SUART4 carries the BMC's IPMI SOL; the host must leave it alone.
         sio.disable(&[
             ast::SUART2,

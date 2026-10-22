@@ -2,8 +2,9 @@
 //! What the vendor firmware tells the AST2500 BMC over IPMI KCS at the end
 //! of POST.
 use fstart_driver_amd::fch::early::{self, PowerFailure};
-use fstart_driver_ipmi::{RestorePolicy, SelRecord, kcs::Kcs};
 use fstart_driver_amd::soc::zeppelin::Zeppelin;
+use fstart_driver_ipmi::kcs::{self, Kcs};
+use fstart_driver_ipmi::{RestorePolicy, SelRecord};
 use fstart_platform_amd::noncar::BoardCtx;
 use zerocopy::little_endian::{U16, U32};
 
@@ -13,10 +14,9 @@ const SET_ERP: u8 = 0x20;
 /// ErP off, the Setup default.
 const ERP_OFF: [u8; 5] = [0x0a, 0x3c, 0x00, 0x0d, 0x1c];
 
-
 pub fn post_done(ctx: &mut BoardCtx<'_, Zeppelin>) {
     // SAFETY: the KCS ports the board decodes in early_init; only used here.
-    let mut kcs = unsafe { Kcs::new(crate::acpi::KCS_PORT, 1, ctx.clock) };
+    let mut kcs = unsafe { Kcs::new(kcs::DEFAULT_PORT, kcs::DEFAULT_SPACING, ctx.clock) };
 
     // GbtSystemBootEvent: SEL "System Boot Initiated" (system event sensor).
     let boot = SelRecord {

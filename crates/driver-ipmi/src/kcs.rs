@@ -17,6 +17,11 @@ register_bitfields![u8,
     ]
 ];
 
+/// The default KCS data port (IPMI 2.0 appendix C1); status/command at
+/// `+ DEFAULT_SPACING`.
+pub const DEFAULT_PORT: u16 = 0xca2;
+pub const DEFAULT_SPACING: u16 = 1;
+
 const START_WRITE: u8 = 0x61;
 const END_WRITE: u8 = 0x62;
 const READ_BYTE: u8 = 0x68;

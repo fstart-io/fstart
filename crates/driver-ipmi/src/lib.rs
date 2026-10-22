@@ -8,6 +8,9 @@ use zerocopy::{
     little_endian::{U16, U32},
 };
 
+/// IPMI 2.0 as a BCD specification revision (ACPI SPMI, `_SRV`).
+pub const SPEC_REVISION_2_0: u16 = 0x0200;
+
 pub const NETFN_CHASSIS: u8 = 0x00;
 pub const NETFN_APP: u8 = 0x06;
 pub const NETFN_STORAGE: u8 = 0x0a;

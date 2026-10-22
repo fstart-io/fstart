@@ -6,7 +6,8 @@
 //! 1. FCH LPC decodes ([`open_lpc_decodes`]; the KCS window comes from
 //!    PeiIpmiBmcInitialize);
 //! 2. Super I/O at `0x2e`: SUART1 (LDN 2) at `0x3f8`, active ([`early_init`]);
-//! 3. SCU writes through iLPC2AHB ([`SCU_UPDATES`]): unlock, UART1 pins.
+//! 3. SCU writes through iLPC2AHB (`Ast2400::route_uart1_pins`): unlock,
+//!    UART1 pins.
 //!
 //! COM1 is the AST2500 SUART1 at `0x3f8`; the rear COM header reaches it
 //! with J15 at 2-3 (default; 1-2 routes the header to FCH UART0 instead)
@@ -23,8 +24,8 @@ use embedded_hal::delay::DelayNs;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_core::services::device::{BusDevice, DeviceError};
 use fstart_driver_ipmi::Error as IpmiError;
-use fstart_driver_ipmi::kcs::{Kcs, Status};
-use fstart_driver_superio::aspeed_ast2400::{Ast2400, SCU_BASE, SCU_PROTECTION_KEY};
+use fstart_driver_ipmi::kcs::{self, Kcs, Status};
+use fstart_driver_superio::aspeed_ast2400::{Ast2400, CONFIG_PORT};
 use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_driver_zen::fch::FchHw;
@@ -32,32 +33,17 @@ use fstart_driver_zen::fch::lpc::{self, WideIo};
 use fstart_platform_sp3::acpi::Board as AcpiBoard;
 use tock_registers::interfaces::{Readable, Writeable};
 
-/// Super I/O config port (unlock `a5 a5`, lock `aa`).
-pub const SIO_PORT: u16 = 0x2e;
 /// COM1 = SUART1.
 pub const COM1_PORT: u16 = 0x3f8;
 pub const COM1_IRQ: u8 = 4;
 pub const BAUD: u32 = 115_200;
-/// IPMI KCS data port; status/command at `+1` (AMI default, inferred from
-/// the decode window, [`WIDE_IO`]).
-pub const KCS_PORT: u16 = 0xca2;
-pub const KCS_SPACING: u16 = 1;
+/// IPMI KCS data port; status/command at `+1` (the IPMI default, which
+/// AMI uses; inferred from the decode window, [`WIDE_IO`]).
+pub const KCS_PORT: u16 = kcs::DEFAULT_PORT;
+pub const KCS_SPACING: u16 = kcs::DEFAULT_SPACING;
 
-/// One FCH wide I/O window: 512 bytes, or 16 with `small`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WideWindow {
-    pub which: WideIo,
-    pub base: u16,
-    pub small: bool,
-}
-
-impl WideWindow {
-    pub const fn size(&self) -> u16 {
-        if self.small { 0x10 } else { 0x200 }
-    }
-}
-
-/// The wide I/O windows the board opens for the BMC.
+/// The wide I/O windows the board opens for the BMC: `(window, base,
+/// 16 bytes instead of 512)`, as [`lpc::set_wide_io`] takes them.
 ///
 /// The vendor asks for SIO `0x2e`, COM1 `0x3f8` and the ranges `0xa00`
 /// (`0x60` bytes), `0x3e0` (16) and `0x2e0` (32) (AST2500PeiInit table
@@ -70,54 +56,15 @@ impl WideWindow {
 /// vendor, and wide 1 for `0xa00` (holds the AST2500 mailbox, LDN `0xe` at
 /// `0xa40`). `0x3e0`/`0x2e0` (purpose unknown; SUART3/4 default to
 /// `0x3e8`/`0x2e8`) are not opened.
-pub const WIDE_IO: [WideWindow; 2] = [
-    WideWindow {
-        which: WideIo::W1,
-        base: 0xa00,
-        small: false,
-    },
-    WideWindow {
-        which: WideIo::W2,
-        base: 0xca0,
-        small: true,
-    },
-];
+pub const WIDE_IO: [(WideIo, u16, bool); 2] =
+    [(WideIo::W1, 0xa00, false), (WideIo::W2, 0xca0, true)];
 
 /// Open the BMC decodes on socket 0's FCH, after the FCH reset tasks.
 pub fn open_lpc_decodes<H: FchHw>(hw: &H) {
     WIDE_IO
         .iter()
-        .for_each(|w| lpc::set_wide_io(hw, w.which, w.base, w.small));
+        .for_each(|&(which, base, small)| lpc::set_wide_io(hw, which, base, small));
 }
-
-/// One BMC SCU read-modify-write: `scu[offset] = scu[offset] & and | or`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScuUpdate {
-    pub offset: u32,
-    pub and: u32,
-    pub or: u32,
-}
-
-/// AST2500PeiInit table `0xffe6ab7c` (observed bytes; Milan `0xffdaf9bc`
-/// same SCU00 value): unlock, SCU84[23:16] = UART1 pin functions on,
-/// SCU90[5:4] cleared.
-pub const SCU_UPDATES: [ScuUpdate; 3] = [
-    ScuUpdate {
-        offset: 0x00,
-        and: 0,
-        or: SCU_PROTECTION_KEY,
-    },
-    ScuUpdate {
-        offset: 0x84,
-        and: 0xff00_ffff,
-        or: 0x00ff_0000,
-    },
-    ScuUpdate {
-        offset: 0x90,
-        and: 0xffff_ffcf,
-        or: 0,
-    },
-];
 
 /// The Super I/O configuration: COM1 only (AMI `$SIODATA` lists UAR1,
 /// iLPC2AHB and the mailbox; no keyboard controller).
@@ -141,14 +88,13 @@ pub const CONSOLE: Ns16550Config = Ns16550Config {
     baud_rate: BAUD,
 };
 
-/// Super I/O and SCU setup, after the LPC decodes are open. Port I/O;
-/// hardware only.
+/// Super I/O and SCU setup, after the LPC decodes are open: SUART1 first,
+/// then the SCU (AST2500PeiInit table `0xffe6ab7c`, observed bytes; Milan
+/// `0xffdaf9bc` writes the same values). Port I/O; hardware only.
 pub fn early_init() -> Result<Ast2400, DeviceError> {
-    let mut sio = Ast2400::new_at_base(sio_config(), SIO_PORT)?;
+    let mut sio = Ast2400::new_at_base(sio_config(), CONFIG_PORT)?;
     sio.init()?;
-    SCU_UPDATES
-        .iter()
-        .for_each(|u| sio.ahb_update32(SCU_BASE + u.offset, u.and, u.or));
+    sio.route_uart1_pins();
     Ok(sio)
 }
 
@@ -166,7 +112,7 @@ pub const IPMI_ACPI: IpmiKcsAcpi = IpmiKcsAcpi {
     port: KCS_PORT,
     spacing: KCS_SPACING as u8,
     uid: 0,
-    spec_revision: 0x0200,
+    spec_revision: fstart_driver_ipmi::SPEC_REVISION_2_0,
 };
 
 /// AML for `\_SB.PCI0.LPCB`: the COM1 device.
@@ -278,9 +224,9 @@ mod tests {
         assert_eq!(board.ipmi.map(|k| (k.port, k.spacing)), Some((0xca2, 1)));
         // The KCS ports sit in a decoded window; the mailbox too.
         let decoded = |port: u16| {
-            WIDE_IO
-                .iter()
-                .any(|w| (w.base..w.base + w.size()).contains(&port))
+            WIDE_IO.iter().any(|&(_, base, small)| {
+                (base..base + if small { 0x10 } else { 0x200 }).contains(&port)
+            })
         };
         assert!(decoded(KCS_PORT) && decoded(KCS_PORT + KCS_SPACING) && decoded(0xa5f));
     }

@@ -4,18 +4,16 @@
 //! isn't described.
 use alloc::vec;
 use fstart_acpi::devices::IpmiKcsAcpi;
+use fstart_driver_ipmi::kcs;
 use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
 use fstart_platform_amd::acpi::BoardAcpi;
 
-/// The BMC KCS data port; status/command is the next one.
-pub const KCS_PORT: u16 = 0xca2;
-
 const KCS: IpmiKcsAcpi = IpmiKcsAcpi {
-    port: KCS_PORT,
-    spacing: 1,
+    port: kcs::DEFAULT_PORT,
+    spacing: kcs::DEFAULT_SPACING as u8,
     uid: 0,
     // The AST2500 firmware implements IPMI 2.0.
-    spec_revision: 0x0200,
+    spec_revision: fstart_driver_ipmi::SPEC_REVISION_2_0,
 };
 
 pub fn tables() -> BoardAcpi {
