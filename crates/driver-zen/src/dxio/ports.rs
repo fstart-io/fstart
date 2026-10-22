@@ -754,7 +754,19 @@ impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R
         for i in 0..self.ports.len() {
             let p = self.ports[i];
             if let Some(n) = self.nbio(p.socket, p.nbio) {
-                self.ports[i].trained = PcieCore::new(n, p.core).trained(p.port);
+                let core = PcieCore::new(n, p.core);
+                self.ports[i].trained = core.trained(p.port);
+                fstart_log::info!(
+                    "dxio: engine {} -> {}.{} core {} port {} devfn {:#x} LC_STATE0 {:#x} trained {}",
+                    p.engine as u32,
+                    p.socket,
+                    p.nbio,
+                    p.core,
+                    p.port,
+                    p.devfn,
+                    core.port_reg::<LC_STATE0::Register>(p.port, port::LC_STATE0).get(),
+                    p.trained as u8 | self.ports[i].trained as u8
+                );
             }
         }
         self.nbios.iter().for_each(hide_bridges);

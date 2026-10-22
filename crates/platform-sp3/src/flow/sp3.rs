@@ -328,6 +328,22 @@ pub(crate) fn dxio(
     let perst = unsafe { FchPerst::new(generation, fchs, None) };
     let mut setup = PortSetup::new(generation, &si.nbios, engines, perst);
     super::dxio_or_halt(dxio::train(generation, &mut units, &mut setup, &ctx.timer, &policy));
+    for u in &units {
+        for (i, e) in u.engines().iter().enumerate() {
+            fstart_log::info!(
+                "dxio: fw engine {} kind {} lanes {}-{} mac {} port {} bdf {:#x} train {:#x} caps {:#x}",
+                i as u32,
+                e.kind,
+                e.start_lane,
+                e.end_lane,
+                e.mac_id,
+                e.mac_port_id,
+                e.bdf_num.get(),
+                e.train_state,
+                e.caps.get()
+            );
+        }
+    }
     setup.finish();
     setup.clear_early_buses();
     for p in setup.ports() {
