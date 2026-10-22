@@ -3,7 +3,7 @@
 //! vendor ROM (FIRMWARE_IMAGE §1.1–§2.1, §4, §7 of the SP3 analysis).
 //!
 //! Written from the SP3 reverse engineering and AMD #55758 rev 1.13 (facts
-//! only).
+//! only). It is to be folded into the shared AMD assembly ([`crate::amd`]).
 //!
 //! Every supported vendor half keeps its vendor EFS and its PSP/BIOS
 //! directories and blobs in place (`[0, prefix)` of the half, the vendor's

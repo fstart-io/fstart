@@ -1,7 +1,7 @@
 # Tyan S8030
 
-AMD SP3, one socket, EPYC 7002 (Rome) or 7003 (Milan). Status: board data
-and policy; not booted with fstart yet.
+AMD SP3, one socket, EPYC 7002 (Rome) or 7003 (Milan). Status: boots
+Linux with an EPYC 7502P (Rome) on the S8030GM2NE test bench.
 
 One board id, `tyan-s8030`, and one build for both generations: the
 platform's `rome` and `milan` features are enabled on its dependency, and

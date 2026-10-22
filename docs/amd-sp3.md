@@ -1,7 +1,8 @@
 # AMD SP3: Naples, Rome, Milan
 
 Native (no AGESA) support for the AMD SP3 socket in one and two socket
-systems, and the Tyan S8030 board. Status: **in development, not booted**.
+systems, and the Tyan S8030 board. Status: Rome boots Linux on the Tyan
+S8030 (EPYC 7502P test bench); Naples has no hardware yet.
 
 | Generation | Silicon | CPUID | Notes |
 |---|---|---|---|

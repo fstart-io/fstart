@@ -11,10 +11,12 @@
 //! | SRAT, MSCT, SLIT | only with more than one domain | [`numa`] |
 //! | IVRS | per IOMMU, types 10h/11h | [`ivrs`] |
 //! | SPMI | board IPMI KCS | `fstart_acpi::devices::IpmiKcsAcpi` |
+//! | PCCT, `_CPC` | SMU-served CPPC ([`Inputs::cppc`]) | `smu::v11::cppc` |
+//! | TPM2 | discrete TPM probe ([`Inputs::tpm`]) | `fstart_acpi::devices::tpm` |
+//! | WSMT | with SMM ([`Inputs::acpi_smi`]) | `fstart_acpi::wsmt` |
 //! | DSDT | root bridges, `_PRT`, FCH, CPUs, `_PIC`, `_S5`, board hook | [`dsdt`] |
 //!
-//! Not built (ACPI_SMM §5, OS-first): HEST/BERT/EINJ/ERST, PCCT/`_CPC`,
-//! CRAT/CDIT, WSMT.
+//! Not built (ACPI_SMM §5, OS-first): HEST/BERT/EINJ/ERST, CRAT/CDIT.
 
 extern crate alloc;
 
