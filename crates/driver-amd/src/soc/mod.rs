@@ -19,6 +19,8 @@ use crate::{fch::gpio::Bank, smu::Mailbox};
 
 #[cfg(feature = "picasso")]
 pub mod picasso;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 

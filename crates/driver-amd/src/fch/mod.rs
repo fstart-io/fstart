@@ -145,6 +145,10 @@ impl<T: Value, R: RegisterLongName> Reg<T, R> {
     }
 }
 
+/// The POST code port, which the FCH forwards to LPC/eSPI (a BMC's POST
+/// snoop, a debug card).
+pub const POST_CODE: Reg<u8> = Reg::io(0x80);
+
 /// Carries the accesses of the FCH register spaces.
 pub trait Bus {
     fn read(&self, space: Space, address: u32, bytes: u8) -> u32;

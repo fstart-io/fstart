@@ -513,6 +513,8 @@ impl BuildPlan {
             }
         }
         let mut bootstrap = BTreeSet::new();
+        // The reset unit's stored bytes are the image the PSP copies; its
+        // `.data` may run from a copy elsewhere, as in every noncar image.
         if let Assembly::PicassoPsp(image) = &self.assembly {
             image.validate()?;
             let unit = self.unit(&image.reset_unit)?;
@@ -534,13 +536,11 @@ impl BuildPlan {
                 || expectations.stored.len() != 1
                 || expectations.stored[0].base != image.reset_destination
                 || expectations.stored[0].size != u64::from(image.reset_size)
-                || !expectations.identity_mapping
                 || expectations.entry
                     != image
                         .reset_destination
                         .checked_add(u64::from(image.reset_size))
                         .and_then(|end| end.checked_sub(16))
-                || expectations.stored_flags != Some(5)
             {
                 return Err("PSP reset producer differs from image operation".into());
             }

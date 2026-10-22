@@ -14,7 +14,6 @@ pub mod smm;
 mod variant;
 
 use fstart_driver_amd::{
-    dxio::Descriptor,
     fch::{
         self, ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status,
         gpio::Control,
@@ -32,7 +31,10 @@ use tock_registers::{
 use fstart_driver_superio::aspeed_ast2400::{self as ast, Ast2400, SuperIoConfig};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_pci::ConfigRegionAccess;
-use fstart_platform_amd::zeppelin::BoardCtx;
+use fstart_platform_amd::{
+    noncar::BoardCtx,
+    zeppelin::{Config, DxioConfig, FchConfig},
+};
 
 pub struct Board;
 
@@ -108,26 +110,29 @@ fn ast_vga_set_ssid(pci: &impl ConfigRegionAccess) {
             return;
         }
         pci.write(vga, 0x80, 0xaa1a_03aa);
-        pci.write(
-            vga,
-            0x2c,
-            <Board as fstart_platform_amd::zeppelin::Board>::SUBSYSTEM_ID,
-        );
+        pci.write(vga, 0x2c, CONFIG.subsystem_id);
         pci.write(vga, 0x80, 0);
     }
 }
 
-impl fstart_platform_amd::zeppelin::Board for Board {
-    /// Gigabyte.
-    const SUBSYSTEM_ID: u32 = 0x1000_1458;
-    const IRQ_ROUTES: &'static [Route] = IRQ_ROUTES;
-    const SMI_GEVENTS: u32 = 1 << NMI_BUTTON_GEVENT;
+const CONFIG: Config = Config {
+    // Gigabyte
+    subsystem_id: 0x1000_1458,
+    fch: FchConfig {
+        irq_routes: IRQ_ROUTES,
+        smi_gevents: 1 << NMI_BUTTON_GEVENT,
+        ..FchConfig::DEFAULT
+    },
+    dxio: DxioConfig {
+        descriptors: [dxio::DEFAULT, &[]],
+    },
+};
 
-    fn dxio_descriptors(_ctx: &mut BoardCtx<'_>, die: u8) -> &'static [Descriptor] {
-        if die == 0 { dxio::DEFAULT } else { &[] }
-    }
+impl fstart_platform_amd::noncar::Board for Board {
+    type Soc = Zeppelin;
+    const CONFIG: &'static Config = &CONFIG;
 
-    fn fch_reset_done(ctx: &mut BoardCtx<'_>) {
+    fn fch_reset_done(ctx: &mut BoardCtx<'_, Zeppelin>) {
         let gpio = ctx.gpio();
         if i2c::PADS
             .iter()
@@ -149,7 +154,7 @@ impl fstart_platform_amd::zeppelin::Board for Board {
     }
 
     /// The vendor's PCIe TX presets and USB2 PHY values after training.
-    fn dxio_training_done(ctx: &mut BoardCtx<'_>) {
+    fn dxio_training_done(ctx: &mut BoardCtx<'_, Zeppelin>) {
         let records = variant::POST_TRAINING_SMN
             .iter()
             .map(|&(register, value)| write(register, value));
@@ -157,7 +162,7 @@ impl fstart_platform_amd::zeppelin::Board for Board {
         gpio::wait_for_bmc(ctx);
     }
 
-    fn mainboard_final(ctx: &mut BoardCtx<'_>) {
+    fn mainboard_final(ctx: &mut BoardCtx<'_, Zeppelin>) {
         if ctx.gpio().configure(gpio::VENDOR, &[]).is_err() {
             fstart_log::error!("Vendor GPIO table rejected");
         }
@@ -168,7 +173,7 @@ impl fstart_platform_amd::zeppelin::Board for Board {
     /// SMBusSwitch at ReadyToBoot. Inferred purpose: hand the SMBus to the
     /// OS. The vendor writes the IOMUX of pins 136-139 through SMN; it is
     /// the same register as the ACPI MMIO one.
-    fn ready_to_boot(ctx: &mut BoardCtx<'_>) {
+    fn ready_to_boot(ctx: &mut BoardCtx<'_, Zeppelin>) {
         let fch = ctx.fch();
         // Bit 1 of the GPIO137 IOMUX byte set, bits 7:4 of pin 139 cleared.
         fch.reg(iomux::at::<u32, Iomux136::Register>(136))
@@ -216,7 +221,7 @@ impl fstart_platform_amd::zeppelin::Board for Board {
         sio.enable_uart(ast::SUART1, COM1, COM1_IRQ, 0);
     }
 
-    fn acpi() -> fstart_platform_amd::zeppelin::BoardAcpi {
+    fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
         acpi::tables()
     }
 

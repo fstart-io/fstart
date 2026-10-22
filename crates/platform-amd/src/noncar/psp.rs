@@ -1,38 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! SMM on Zeppelin: the board's FCH SMM
-//! handler in an 8 MiB TSEG at the top of the DRAM below 4 GiB, every CPU's
-//! SMBASE in it and SMM locked, then the FCH's SMI sources enabled. Then the
-//! PSP learns about it.
-use fstart_driver_amd::ccx::tsc::DelayNs;
-use super::{Board, memory::TSEG_SIZE};
+//! The x86 side of the PSP's boot: the SMM info right after SMM is set up,
+//! LockDFReg after the last DF write and
+//! BootDone right before the payload.
 use core::ptr::addr_of_mut;
-use fstart_arch::x86::{
-    cpu::amd::smm::{AmdSmm, InstalledTseg},
-    mp::MpHandle,
-};
+use fstart_arch::x86::cpu::amd::smm::InstalledTseg;
 use fstart_driver_amd::{
-    fch::{
-        smi::{self, FchSmi},
-        taishan,
-    },
+    ccx::tsc::DelayNs,
+    fch::smi,
     psp::{Buffer, Mailbox, Native, SmmInfo},
 };
 
-/// The board's SMM image that fbuild built from its `smm.rs`.
-#[cfg(fstart_amd_has_smm_image)]
-const IMAGE: Option<&[u8]> = Some(include_bytes!(env!("FSTART_SMM_IMAGE")));
-#[cfg(not(fstart_amd_has_smm_image))]
-const IMAGE: Option<&[u8]> = None;
-
-pub fn install<B: Board>(mp: &MpHandle, tseg_base: u64) -> Result<InstalledTseg, &'static str> {
-    let image = IMAGE.ok_or("no SMM image")?;
-    // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
-    // decoded since the FCH init.
-    let smi = unsafe { FchSmi::new(taishan::ACPI_PORTS, B::SMI_GEVENTS) };
-    AmdSmm::new("zeppelin", &smi)
-        .install(mp, image, tseg_base, TSEG_SIZE)
-        .map_err(|error| error.name())
-}
+/// The PSP mailbox of die 0, the one owner of the boot.
+pub type Psp = Mailbox<Native>;
 
 /// PSP-to-core buffer, then the core-to-PSP buffer with the SMM flag at its
 /// +0xc00, as the vendor firmware lays them out in TSEG.
@@ -41,7 +20,7 @@ const C2P_SIZE: u64 = 0xc00;
 const PSP_REGION: u64 = 0x2000;
 
 /// The SMM info, its buffers in unused TSEG.
-fn psp_smm_info(tseg: &InstalledTseg) -> Option<SmmInfo> {
+fn smm_info(tseg: &InstalledTseg) -> Option<SmmInfo> {
     let p2c = tseg.free.start;
     (tseg.free.end - p2c >= PSP_REGION).then(|| SmmInfo {
         tseg_base: tseg.base,
@@ -55,16 +34,12 @@ fn psp_smm_info(tseg: &InstalledTseg) -> Option<SmmInfo> {
     })
 }
 
-/// The one PSP mailbox owner of the boot, die 0's, after it got the SMM
-/// info. `None` if that failed: the mailbox is unusable then, and LockDFReg
-/// without the SMM info would break device DMA anyway.
-pub fn psp_mailbox(
-    bar: u32,
-    tseg: &InstalledTseg,
-    delay: &mut impl DelayNs,
-) -> Option<Mailbox<Native>> {
+/// Die 0's PSP mailbox at `bar`, after it got the SMM info. `None` if that
+/// failed: the mailbox is unusable then, and LockDFReg without the SMM info
+/// would break device DMA anyway.
+pub fn notify_smm(bar: u32, tseg: &InstalledTseg, delay: &mut impl DelayNs) -> Option<Psp> {
     static mut BUFFER: Buffer = Buffer::new();
-    let Some(info) = psp_smm_info(tseg) else {
+    let Some(info) = smm_info(tseg) else {
         fstart_log::error!("PSP: no room for the SMM buffers in TSEG");
         return None;
     };
@@ -72,7 +47,7 @@ pub fn psp_mailbox(
         fstart_log::error!("PSP: BAR of die 0 isn't enabled");
         return None;
     }
-    // SAFETY: the BAR was mapped and locked by `psp::init_bar`; BSP only.
+    // SAFETY: the BAR was mapped and locked by the silicon init; BSP only.
     // The buffer is firmware BSS in the early region, reserved until reset.
     let mailbox = unsafe { Mailbox::new(Native::at(bar as usize), &mut *addr_of_mut!(BUFFER)) };
     let mut mailbox = match mailbox {
@@ -94,6 +69,30 @@ pub fn psp_mailbox(
         Err(error) => {
             fstart_log::error!("PSP: SMM info failed: {}", error.name());
             None
+        }
+    }
+}
+
+/// LockDFReg, after the last DF write; it needs the SMM info.
+pub fn lock_df_registers(psp: Option<&mut Psp>, delay: &mut impl DelayNs) {
+    if let Some(psp) = psp {
+        match psp.lock_df_registers(delay) {
+            Ok(()) => fstart_log::info!("PSP: DF registers locked"),
+            Err(error) => fstart_log::error!("PSP: LockDFReg failed: {}", error.name()),
+        }
+    }
+}
+
+/// BootDone: afterwards the PSP only takes commands with SMM buffers.
+///
+/// # Safety
+/// The firmware is done with the CPUs and SMM is locked.
+pub unsafe fn boot_done(psp: Option<&mut Psp>, delay: &mut impl DelayNs) {
+    if let Some(psp) = psp {
+        // SAFETY: as the caller guarantees.
+        match unsafe { psp.boot_done(delay) } {
+            Ok(()) => fstart_log::info!("PSP: boot done"),
+            Err(error) => fstart_log::error!("PSP: BootDone failed: {}", error.name()),
         }
     }
 }

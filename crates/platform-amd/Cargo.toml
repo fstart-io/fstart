@@ -6,21 +6,22 @@ license.workspace = true
 
 [features]
 default = []
-picasso = ["fstart-driver-amd/picasso", "dep:fstart-arch"]
+picasso = ["noncar", "fstart-driver-amd/picasso"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
-# Compiler/check/editor support; still a non-bootable console checkpoint.
-bundle-checkpoint = ["picasso"]
-zeppelin = ["fstart-driver-amd/zeppelin", "dep:fstart-arch", "dep:embedded-hal"]
-# The Zeppelin ACPI tables.
-acpi = ["zeppelin", "dep:fstart-acpi", "dep:fstart-acpi-macros"]
-# The Zeppelin reset image: one DRAM stage from reset vector to payload.
-bundle-zeppelin = [
-  "zeppelin",
-  "acpi",
-  "dep:fstart-stage",
+zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zerocopy"]
+# The shared flow of the PSP-booted SoCs, with their ACPI tables.
+noncar = [
+  "fstart-driver-amd/smi",
+  "dep:fstart-arch",
+  "dep:fstart-acpi",
+  "dep:fstart-acpi-macros",
   "dep:heapless",
-  "dep:zerocopy",
+]
+# A noncar reset image: one DRAM stage from reset vector to payload.
+bundle = [
+  "noncar",
+  "dep:fstart-stage",
   "fstart-arch/x86-identity-paging",
   "fstart-stage/x86_64",
   "fstart-stage/ffs",
@@ -29,6 +30,9 @@ bundle-zeppelin = [
   "fstart-stage/sha2-digest",
   "fstart-stage/lz4",
 ]
+bundle-zeppelin = ["zeppelin", "bundle"]
+# The Picasso reset image; it halts at its checkpoint.
+bundle-picasso = ["picasso", "bundle"]
 # The FCH SMM handler and `smm_bin!` for a board's SMM unit; the stage
 # embeds the image fbuild built from it (FSTART_SMM_IMAGE).
 smm = ["zeppelin", "fstart-driver-amd/smm", "dep:fstart-smm"]
@@ -60,6 +64,6 @@ fstart-smm = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The unit tests cover every SoC, also in `cargo test --workspace`.
-fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "acpi", "host", "smm"] }
+fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "host", "smm"] }
 fstart-driver-amd = { workspace = true, features = ["testing"] }
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

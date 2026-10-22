@@ -13,7 +13,7 @@ smi = ["dep:fstart-arch"]
 # The FCH SMM handler, for SMM image builds.
 smm = ["smi", "dep:fstart-smm"]
 # Host models of the register spaces, for the tests of dependent crates.
-testing = []
+testing = ["dep:libc"]
 
 [dependencies]
 tock-registers.workspace = true
@@ -27,6 +27,7 @@ fstart-driver-i2c = { workspace = true, optional = true }
 embedded-hal = { workspace = true, optional = true }
 fstart-arch = { workspace = true, features = ["x86_64"], optional = true }
 fstart-smm = { workspace = true, optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 # The unit tests cover every SoC, also in `cargo test --workspace`.

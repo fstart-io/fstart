@@ -196,6 +196,7 @@ pub fn after_enumeration(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     use crate::dxio::Descriptor;
     use crate::smn::testing::SmnSpace;
@@ -243,5 +244,72 @@ mod tests {
         assert_eq!(pins, [0, 1, 2, 3, 4, 5, 6, 7]);
         topology.ports[1].trained = false;
         assert_eq!(clock_map(&topology) >> 16 & 15, 0);
+    }
+
+    /// CCX-done in the vendor order, every nonstandard reply reported, and
+    /// nothing after the first failure.
+    #[test]
+    fn ccx_done_sends_the_late_messages_in_order() {
+        use crate::{
+            ccx::tsc::testing::Delay,
+            smn::testing::{SmnModel, SmnTest},
+            smu::v10 as smu,
+        };
+        use std::{collections::BTreeMap, vec::Vec};
+        struct Mailbox {
+            registers: BTreeMap<u32, u32>,
+            frames: Vec<u32>,
+            unavailable_after: usize,
+        }
+        impl SmnModel for Mailbox {
+            fn read(&mut self, address: u32) -> u32 {
+                *self.registers.get(&address).unwrap_or(&0)
+            }
+            fn write(&mut self, address: u32, value: u32) {
+                self.registers.insert(address, value);
+                if address == smu::MESSAGE.address() {
+                    self.frames.push(value);
+                    // A synchronous fake completion, not physical SMU evidence.
+                    let status = if self.frames.len() > self.unavailable_after {
+                        u32::MAX
+                    } else {
+                        2
+                    };
+                    self.registers.insert(smu::RESPONSE.address(), status);
+                }
+            }
+        }
+        let mailbox = |unavailable_after| Mailbox {
+            registers: BTreeMap::from([
+                (smu::RESPONSE.address(), 1),
+                (0x0005_d5bc, 0x62e >> 5),
+                (0x0005_d5b8, (0x62e & 31) << 27),
+            ]),
+            frames: Vec::new(),
+            unavailable_after,
+        };
+        let mut delay = Delay(|_| panic!("the immediate fake needs no delay"));
+
+        let transport = SmnTest::new(mailbox(usize::MAX));
+        let mut replies = Vec::new();
+        ccx_done(&transport.smn(), false, &mut delay, &mut |command, status| {
+            replies.push((command, status))
+        })
+        .unwrap();
+        let commands = transport.model().frames.clone();
+        assert_eq!(commands, [0x35, 5, 0x0e, 0x53, 0x3a, 0x42, 0x32, 5]);
+        assert_eq!(replies, commands.iter().map(|&c| (c, 2)).collect::<Vec<_>>());
+
+        let transport = SmnTest::new(mailbox(1));
+        let mut replies = Vec::new();
+        let error = ccx_done(&transport.smn(), false, &mut delay, &mut |command, status| {
+            replies.push((command, status))
+        });
+        assert_eq!(
+            error,
+            Err(power::Error::Smu(smu::Error::Unavailable))
+        );
+        assert_eq!(replies, [(0x35, 2)]);
+        assert_eq!(transport.model().frames.len(), 2);
     }
 }

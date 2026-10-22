@@ -143,7 +143,6 @@ macro_rules! enter_runtime {
     not(test),
     target_os = "none",
     not(fstart_stage_env = "postcar"),
-    not(fstart_entry = "picasso-reset"),
     not(fstart_entry = "amd-psp-reset")
 ))]
 core::arch::global_asm!(

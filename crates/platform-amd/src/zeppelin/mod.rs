@@ -1,117 +1,209 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native AMD Zeppelin (EPYC Embedded 3000) flow. One DRAM stage runs from
-//! the PSP-released reset vector to the payload.
-#[cfg(feature = "acpi")]
+//! Native AMD Zeppelin (EPYC Embedded 3000) on the noncar flow.
 pub mod acpi;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod boot;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod memory;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod pci;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod smm;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod stage;
+pub mod silicon;
+#[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
+mod tests;
 
-extern crate alloc;
-
-use alloc::vec::Vec;
+use crate::noncar::{self, Board, Ctx, Silicon, Stop, Tp1, layout::Region, mp, psp, smm};
 use fstart_driver_amd::{
-    ccx::tsc::Tsc,
-    dxio::Descriptor,
+    ccx,
+    dxio::{self, Descriptor},
     fch::{
-        Acpimmio, Fch, NativeBus,
+        Fch, NativeBus,
         early::PowerFailure,
-        gpio::Gpio,
-        lpc::Lpc,
-        taishan::{Devices, irq::Route},
+        smi::FchSmi,
+        taishan::{self, Devices, irq::Route},
     },
-    soc::{
-        Soc,
-        zeppelin::{Die, MAX_DIES, Zeppelin},
-    },
+    soc::zeppelin::{self as soc, MAX_DIES, Package, Revision, Zeppelin},
 };
-use fstart_driver_uart::ns16550::Ns16550Config;
-use fstart_pci::ecam::GlobalEcam;
+use silicon::{Dma, Identity, SmuPages, SmuPolicy};
 
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-pub use stage::Program;
-
-/// What the board hooks get: the dies and the clock.
-pub struct BoardCtx<'a> {
-    pub dies: &'a [Die<GlobalEcam>],
-    pub clock: Tsc,
-}
-impl BoardCtx<'_> {
-    /// The FCH of die 0, for pad routing and the like.
-    pub fn fch(&mut self) -> Fch<NativeBus> {
-        // SAFETY: board hooks run on the BSP between the platform's own FCH
-        // accesses, with the ACPI MMIO and ECAM decoded; the borrow of the
-        // context keeps them sequential.
-        Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0)
-    }
-
-    /// The GPIO pads of die 0.
-    pub fn gpio(&mut self) -> Gpio<NativeBus> {
-        Gpio::new(self.fch(), Zeppelin::GPIO_BANK)
-    }
+/// A board's Zeppelin configuration, by IP block.
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    /// Subsystem ID of the FCH, NBIO and PCIe functions.
+    pub subsystem_id: u32,
+    pub fch: FchConfig,
+    pub dxio: DxioConfig,
 }
 
-/// Board wiring and hooks. The platform owns the order of calls.
-pub trait Board: 'static {
-    /// Subsystem ID for the FCH and PCIe devices.
-    const SUBSYSTEM_ID: u32;
+/// The Taishan FCH.
+#[derive(Debug, Clone, Copy)]
+pub struct FchConfig {
     /// AC power-loss policy.
-    const POWER_FAILURE: PowerFailure = PowerFailure::Previous;
+    pub power_failure: PowerFailure,
     /// FCH devices in use, per die.
-    const FCH_DEVICES: [Devices; MAX_DIES] = [Devices {
-        xhci: true,
-        sata: true,
-    }; MAX_DIES];
-    /// The FCH PCI interrupt router (0xc00/0xc01) table.
-    const IRQ_ROUTES: &'static [Route];
+    pub devices: [Devices; MAX_DIES],
+    /// The PCI interrupt router (0xc00/0xc01) table.
+    pub irq_routes: &'static [Route],
     /// GEVENT pins (bit n = GEVENTn) routed to the board's SMM handler,
     /// `fstart_driver_amd::fch::taishan::smm::SmmBoard::gevent`.
-    const SMI_GEVENTS: u32 = 0;
-
-    /// LPC decodes and Super I/O routing for the console, before any
-    /// output.
-    fn early_init(lpc: &Lpc<impl fstart_driver_amd::fch::Bus>);
-    /// The board's console UART.
-    fn console() -> Ns16550Config;
-    /// After the FCH reset tasks, where the vendor board PEIMs run.
-    fn fch_reset_done(_ctx: &mut BoardCtx<'_>) {}
-    /// DXIO engines of a die.
-    fn dxio_descriptors(ctx: &mut BoardCtx<'_>, die: u8) -> &'static [Descriptor];
-    /// After DXIO link training, before PCI enumeration.
-    fn dxio_training_done(_ctx: &mut BoardCtx<'_>) {}
-    /// After PCI enumeration.
-    fn mainboard_final(_ctx: &mut BoardCtx<'_>) {}
-    /// Right before the payload.
-    fn ready_to_boot(_ctx: &mut BoardCtx<'_>) {}
-    /// What the board adds to the ACPI tables.
-    fn acpi() -> BoardAcpi {
-        BoardAcpi::default()
+    pub smi_gevents: u32,
+}
+impl FchConfig {
+    pub const DEFAULT: Self = Self {
+        power_failure: PowerFailure::Previous,
+        devices: [Devices {
+            xhci: true,
+            sata: true,
+        }; MAX_DIES],
+        irq_routes: &[],
+        smi_gevents: 0,
+    };
+}
+impl Default for FchConfig {
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 
-/// Board ACPI content.
-#[derive(Debug, Default)]
-pub struct BoardAcpi {
-    /// AML for `\_SB.PCI0.LPCB`: Super I/O and BMC devices.
-    pub lpc_aml: Vec<u8>,
-    /// Standalone tables (SPMI, ...).
-    pub tables: Vec<Vec<u8>>,
+/// The DXIO engines (PCIe, SATA lanes) of each die.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DxioConfig {
+    pub descriptors: [&'static [Descriptor]; MAX_DIES],
 }
 
-/// Declare the board binary: `fstart_platform_amd::zeppelin_stage_bin!(Board);`
-#[macro_export]
-macro_rules! zeppelin_stage_bin {
-    ($board:ty) => {
-        $crate::__stage::stage_bin!(program: $crate::zeppelin::Program<$board>);
-    };
+impl noncar::Soc for Zeppelin {
+    const NAME: &'static str = "zeppelin";
+    const CPU_NAME: &'static str = "AMD Zeppelin";
+    const LAYOUT: noncar::layout::Layout = layout::LAYOUT;
+    const ECAM: u64 = soc::ECAM;
+    const ECAM_BUSES: u16 = soc::ECAM_BUSES;
+    const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
+    /// 8 MiB of TSEG.
+    const TSEG_SIZE: u32 = 8 << 20;
+    /// Two dies of eight SMT cores.
+    const MAX_CPUS: u16 = 32;
+    type Config = Config;
+    type Identity = Identity;
+    type State = silicon::State;
+
+    fn fch_pre_init(
+        fch: &Fch<NativeBus>,
+        _: &Config,
+        _: Option<ccx::tsc::Tsc>,
+    ) -> Result<(), &'static str> {
+        silicon::fch_pre_init(fch).map_err(|_| "FCH pre-init")
+    }
+
+    fn identify(
+        fch: &Fch<NativeBus>,
+        config: &Config,
+        mhz: u32,
+        dies: u8,
+    ) -> Result<Identity, &'static str> {
+        silicon::fch_early_init(fch, config);
+        let (ext_eax, ext_ebx, _, _) = fstart_arch::x86::cpuid(0x8000_0001);
+        let package = Package::from_cpuid(ext_ebx);
+        let revision = Revision::from_cpuid(ext_eax);
+        fstart_log::info!(
+            "fstart: AMD Zeppelin {}, package {}, TSC {} MHz",
+            revision.map_or("unknown", Revision::name),
+            package.name(),
+            mhz
+        );
+        let revision = revision
+            .filter(|_| package.dies() == Some(dies) && mhz != 0)
+            .ok_or("CPU identification")?;
+        Ok(Identity { revision, package })
+    }
+
+    /// The silicon, MP init, SMM with the PSP's SMM info, the PCI interrupt
+    /// router.
+    fn silicon_init<B: Board<Soc = Self>>(tp1: Tp1<'_, Self>) -> Result<Silicon<Self>, Stop> {
+        /// DRAM the SMU and the DXIO firmware use with DMA: firmware BSS in
+        /// the reserved early region.
+        static mut SMU_PAGES: SmuPages = SmuPages([[0; 4096]; 2 * MAX_DIES]);
+        static mut SMU_POLICY: SmuPolicy = SmuPolicy([0; 0x80]);
+        static mut DXIO_BUFFERS: dxio::zeppelin::Buffers = dxio::zeppelin::Buffers::new();
+
+        let Tp1 {
+            ctx,
+            config,
+            identity,
+            memory,
+        } = tp1;
+        let Ctx {
+            dies,
+            fch,
+            msr,
+            mut clock,
+        } = ctx;
+        // SAFETY: the DMA memory is reserved firmware BSS below 4 GiB, handed
+        // out once here.
+        let dma = unsafe {
+            Dma {
+                smu_pages: &mut *core::ptr::addr_of_mut!(SMU_PAGES),
+                smu_policy: &mut *core::ptr::addr_of_mut!(SMU_POLICY),
+                dxio: &mut *core::ptr::addr_of_mut!(DXIO_BUFFERS),
+            }
+        };
+        let state = silicon::pre_mp(
+            dies,
+            fch,
+            msr,
+            config,
+            identity,
+            (memory.top_mem, memory.top_mem2),
+            memory.apob,
+            dma,
+            &mut clock,
+            || B::fch_reset_done(&mut ctx.board()),
+            || B::dxio_training_done(&mut ctx.board()),
+        )?;
+
+        let policy = state.cpu_policy();
+        let cpus = mp::start::<Self, _>(
+            dies,
+            move |msr, thread| ccx::zeppelin::cpu_init(msr, &policy, thread),
+            clock,
+        )?;
+        silicon::cpus_up(dies, &mut clock);
+        // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
+        // decoded since the FCH init.
+        let smi = unsafe { FchSmi::new(taishan::ACPI_PORTS, config.fch.smi_gevents) };
+        let tseg = smm::install(Self::NAME, &cpus.mp, &smi, memory.tseg, Self::TSEG_SIZE)?;
+        // The PSP gets the SMM info now, LockDFReg at ready-to-boot and
+        // BootDone right before the payload.
+        let psp = psp::notify_smm(state.psp_bars[0], &tseg, &mut clock);
+        silicon::post(fch, 0x42);
+        // PCI: the interrupt router first.
+        silicon::route_interrupts(fch, config)?;
+
+        Ok(Silicon {
+            cpus,
+            psp,
+            ioapics: core::array::from_fn(|die| state.ioapics.get(die).copied().unwrap_or(0)),
+            // The non-PCI MMIO pool.
+            reserved_mmio: core::array::from_fn(|die| {
+                state.nonpci.get(die).map_or(Region::new(0, 0), |&base| {
+                    Region::new(base.into(), soc::NONPCI_MMIO_SIZE.into())
+                })
+            }),
+            acpi: &acpi::ACPI,
+            state,
+        })
+    }
+
+    fn after_resources<B: Board<Soc = Self>>(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
+        silicon::after_resources(ctx.fch);
+    }
+
+    /// The vendor firmware's ReadyToBoot.
+    fn ready_to_boot<B: Board<Soc = Self>>(
+        _: &mut Silicon<Self>,
+        ctx: &Ctx<'_, Self>,
+        pci: &fstart_pci::PciEcam,
+    ) {
+        let sata = pci
+            .devices()
+            .find(|a| pci.device(*a).is_some_and(|d| d.read32(0) == 0x7901_1022));
+        silicon::ready_to_boot(ctx.dies, ctx.fch, sata, || {
+            B::ready_to_boot(&mut ctx.board())
+        });
+    }
 }
