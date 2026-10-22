@@ -494,6 +494,9 @@ pub fn build(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError
         out.extend(root_bridge(inputs, windows, *uid, rb)?);
     }
     out.extend(fstart_acpi::osc::platform_osc());
+    if let Some(family) = inputs.tpm {
+        out.extend(fstart_acpi::devices::tpm::TpmTisAcpi { family }.dsdt_aml());
+    }
     if let (Some(smi), Some(base)) = (inputs.acpi_smi, inputs.bmc_sx_notify) {
         let port = u16::try_from(smi.smi_cmd).map_err(|_| AmlError::InvalidOperand)?;
         out.extend(fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(

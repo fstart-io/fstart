@@ -176,6 +176,7 @@ fn inputs<'a>(
         }),
         fch: fch(),
         bmc_sx_notify: Some(0xC0),
+        tpm: Some(fstart_acpi::devices::tpm::TpmFamily::Tpm20),
         cppc: Some(CppcAcpi {
             info: CppcInfo::from_answer(0x007F_FFFF),
             base: 0x7FF0_0000,
@@ -200,6 +201,7 @@ fn inputs<'a>(
             i8042: true,
             lpc_aml: &[],
             sb_aml: &[],
+            discrete_tpm: true,
         },
     }
 }
@@ -372,7 +374,7 @@ fn dsdt_root_bridges_in_bus_order() {
     let d = &tables.dsdt;
     for name in [
         b"PCI0", b"PCI1", b"PCI2", b"PCI3", b"LPCB", b"SYSR", b"NAPE", b"GPIO", b"FUR0", b"COM1",
-        b"I2CA", b"_L0B", b"_PRW", b"XHC0", b"_CPC", b"_OSC", b"_PTS", b"_WAK", b"BSMC",
+        b"I2CA", b"_L0B", b"_PRW", b"XHC0", b"_CPC", b"_OSC", b"_PTS", b"_WAK", b"BSMC", b"TPM_",
     ] {
         assert!(d.windows(4).any(|w| w == name));
     }
@@ -427,6 +429,7 @@ fn cppc_builds_the_pcct() {
     let rb = root_bridges(&s);
     let t = assemble(&build(&inputs(Generation::Rome, &s, &rb, None)).unwrap());
     assert_eq!(get(&t, b"WSMT").expect("WSMT")[36], 3);
+    assert!(get(&t, b"TPM2").is_some());
     let pcct = get(&t, b"PCCT").expect("PCCT");
     assert_eq!(pcct.len(), 110);
     assert_eq!(&pcct[56..64], &0x7FF0_0000u64.to_le_bytes());

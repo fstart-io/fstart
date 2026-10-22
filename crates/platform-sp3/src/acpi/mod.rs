@@ -96,6 +96,9 @@ pub struct Board<'a> {
     pub lpc_aml: &'a [u8],
     /// AML inside `\_SB`.
     pub sb_aml: &'a [u8],
+    /// Probe for a discrete TPM on LPC (TIS at `0xFED4_0000`) and describe
+    /// it (AMI "Security Device Support").
+    pub discrete_tpm: bool,
 }
 
 /// Everything the SP3 tables are built from.
@@ -122,6 +125,8 @@ pub struct Inputs<'a> {
     /// SW SMI base of the BMC sleep-state notification
     /// (`crate::smm::BmcSxNotify`); needs [`Inputs::acpi_smi`].
     pub bmc_sx_notify: Option<u8>,
+    /// The discrete TPM found by the probe ([`Board::discrete_tpm`]).
+    pub tpm: Option<fstart_acpi::devices::tpm::TpmFamily>,
     /// SMU-served CPPC: `_CPC` per processor and the PCCT.
     pub cppc: Option<CppcAcpi<'a>>,
     pub board: Board<'a>,
@@ -202,6 +207,12 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
             inputs
                 .cppc
                 .map(|c| fstart_acpi::pcct::build_pcct(&[cppc::pcct_subspace(c.base, c.smu_bar)])),
+        )
+        .chain(
+            inputs
+                .tpm
+                .map(|family| fstart_acpi::devices::tpm::TpmTisAcpi { family }.tables())
+                .unwrap_or_default(),
         )
         // The handler takes no OS communication buffer (`crate::smm`); the
         // system-resource lock audit is open, so that bit stays clear.

@@ -183,6 +183,8 @@ pub fn acpi_board(lpc_aml: &[u8]) -> AcpiBoard<'_> {
         i8042: true,
         lpc_aml,
         sb_aml: &[],
+        // Vendor Setup "Security Device Support" defaults to Disabled.
+        discrete_tpm: false,
     }
 }
 
