@@ -204,6 +204,49 @@ fn name(prefix: &str, last: u8) -> alloc::string::String {
     s
 }
 
+/// FCH I/O ports that no device object claims, `(port, length)`: the
+/// legacy ranges, PCI_INTR, PMIO/SMBus index pairs, SMBus and ASF (donor
+/// `S900`, which lists the same set; 0x60/0x64 have length 0 there).
+pub const SYSTEM_IO: &[(u16, u8)] = &[
+    (0x10, 0x10),
+    (0x22, 0x1E),
+    (0x63, 1),
+    (0x65, 1),
+    (0x67, 9),
+    (0x72, 0x0E),
+    (0x80, 1),
+    (0x84, 3),
+    (0x88, 1),
+    (0x8C, 3),
+    (0x90, 0x10),
+    (0xA2, 0x1E),
+    (0xB1, 1),
+    (0xE0, 0x10),
+    (0x40B, 1),
+    (0x4D6, 1),
+    (0x900, 0x10),
+    (0x910, 0x10),
+    (irq::INDEX as u16, 2),
+    (0xC14, 1),
+    (0xC50, 3),
+    (0xC6C, 1),
+    (0xC6F, 1),
+    (0xCD0, 0x10),
+    (super::smbus::SMBUS_IO as u16, 0x10),
+    (super::smbus::ASF_IO as u16, 0x20),
+];
+
+/// FCH MMIO that no device object claims, `(base, length)`: the ACPI MMIO
+/// block around the GPIO bank the `GPIO` device owns, the `FEDC_0000h`
+/// block, the SPI controller and the flash window (donor `S900`).
+pub const SYSTEM_MMIO: &[(u32, u32)] = &[
+    (0xFED8_0000, GPIO_MMIO.0 - 0xFED8_0000),
+    (GPIO_MMIO.0 + 0x400, 0xFED9_0000 - (GPIO_MMIO.0 + 0x400)),
+    (0xFEDC_0000, 0x1000),
+    (super::spi::BASE, 0x1000),
+    (0xFF00_0000, 0x0100_0000),
+];
+
 /// ISA legacy devices for the LPC bridge scope: PIC, DMA, PIT, RTC (no
 /// IRQ 8: the HPET's legacy replacement owns it), speaker and the HPET.
 pub fn lpc_aml(hpet_base: u32) -> Result<Vec<u8>, AmlError> {
@@ -333,5 +376,18 @@ mod tests {
         let f = FchAcpi::read(&mmio, &io);
         assert!(f.uarts.is_empty() && f.i2c.is_empty() && f.legacy.is_empty());
         assert!(lpc_aml(0xFED0_0000).is_ok());
+    }
+
+    #[test]
+    fn system_mmio_leaves_the_gpio_bank_out() {
+        let gpio = u64::from(GPIO_MMIO.0)..u64::from(GPIO_MMIO.0 + GPIO_MMIO.1);
+        assert!(SYSTEM_MMIO.iter().all(|&(b, l)| {
+            let (b, l) = (u64::from(b), u64::from(l));
+            b + l <= gpio.start || b >= gpio.end
+        }));
+        assert_eq!(
+            SYSTEM_MMIO[..2],
+            [(0xFED8_0000, 0x1500), (0xFED8_1900, 0xE700)]
+        );
     }
 }

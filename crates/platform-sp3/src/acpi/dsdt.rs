@@ -30,6 +30,7 @@ use fstart_acpi::processor::{
     psd_aml, pss_aml,
 };
 use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl, gpe};
+use fstart_driver_zen::fch::acpi as fch_acpi;
 use fstart_driver_zen::soc::Generation;
 
 use super::fixed::{FCH_IOAPIC_BASE, GsiWindow, HPET_BASE, LAPIC_BASE, PM_BASE};
@@ -39,10 +40,6 @@ use super::{Inputs, Power, RootBridgeAcpi, Window, prt};
 const CONFIG_PORTS: (u16, u16) = (0xCF8, 0xCFF);
 /// Legacy VGA memory, routed to the primary root bridge.
 const VGA: (u32, u32) = (0xA_0000, 0xB_FFFF);
-/// FCH ACPI MMIO block (PM, SMI, GPIO, IOMUX, ...).
-const FCH_ACPI_MMIO: (u32, u32) = (0xFED8_0000, 0x1_0000);
-/// FCH MMIO the donor reserves at 0xFEDC0000 (`S900`).
-const FCH_FEDC: (u32, u32) = (0xFEDC_0000, 0x1000);
 
 fn serialize(aml: &dyn Aml) -> Vec<u8> {
     let mut v = Vec::new();
@@ -253,7 +250,7 @@ fn nbio(features_smn: u32) -> Result<Vec<u8>, AmlError> {
 /// The LPC bridge (00:14.3): the FCH's ISA devices and the board's.
 fn lpc(board_aml: &[u8]) -> Result<Vec<u8>, AmlError> {
     let adr = name("_ADR", &0x0014_0003u32);
-    let fch = fstart_driver_zen::fch::acpi::lpc_aml(HPET_BASE as u32)?;
+    let fch = fch_acpi::lpc_aml(HPET_BASE as u32)?;
     device_vec("LPCB", &[adr.as_slice(), &fch, board_aml].concat())
 }
 
@@ -267,41 +264,33 @@ fn system_resources(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, A
         Err(_) => mmio_descriptor(base, base + len - 1, d),
     };
     mem(ecam, u64::from(buses) << 20, &mut d);
-    [
-        (FCH_IOAPIC_BASE, 0x1000),
-        (FCH_ACPI_MMIO.0.into(), FCH_ACPI_MMIO.1.into()),
-        (FCH_FEDC.0.into(), FCH_FEDC.1.into()),
-        (LAPIC_BASE, 0x1000),
-    ]
-    .iter()
-    .copied()
-    .chain(
-        windows
-            .iter()
-            .filter(|w| w.nbio.is_some())
-            .map(|w| (w.base, 0x1000)),
-    )
-    .chain(
-        inputs
-            .iommus
-            .iter()
-            .map(|m| (m.info.base, fstart_driver_zen::nbio::iommu::MMIO_SIZE)),
-    )
-    .for_each(|(b, l)| mem(b, l, &mut d));
-    // ELCR is claimed by the PIC; PCI_INTR index/data, the PMIO index/data
-    // at 0xCD6, the SMI command port and the ACPI PM blocks.
-    [
-        (0xB2u16, 2u8),
-        (0xC00, 2),
-        (0xC14, 1),
-        (0xC50, 3),
-        (0xC6C, 1),
-        (0xC6F, 1),
-        (0xCD0, 0x10),
-        (PM_BASE, 0x30),
-    ]
-    .iter()
-    .for_each(|&(port, len)| IO::new(port, port, 1, len).to_aml_bytes(&mut d));
+    [(FCH_IOAPIC_BASE, 0x1000), (LAPIC_BASE, 0x1000)]
+        .iter()
+        .copied()
+        .chain(
+            fch_acpi::SYSTEM_MMIO
+                .iter()
+                .map(|&(b, l)| (u64::from(b), u64::from(l))),
+        )
+        .chain(
+            windows
+                .iter()
+                .filter(|w| w.nbio.is_some())
+                .map(|w| (w.base, 0x1000)),
+        )
+        .chain(
+            inputs
+                .iommus
+                .iter()
+                .map(|m| (m.info.base, fstart_driver_zen::nbio::iommu::MMIO_SIZE)),
+        )
+        .for_each(|(b, l)| mem(b, l, &mut d));
+    // The FCH's legacy and index ports (the SMI command port is in
+    // 0xA2..0xBF) and the ACPI PM blocks.
+    fch_acpi::SYSTEM_IO
+        .iter()
+        .chain(&[(PM_BASE, 0x30)])
+        .for_each(|&(port, len)| IO::new(port, port, 1, len).to_aml_bytes(&mut d));
     let body = [
         name("_HID", &EISAName::new("PNP0C02")),
         name("_UID", &0x5359u32),
