@@ -63,6 +63,9 @@ ASSERT(SIZEOF(.picasso_psp) == 0x1000, "PSP mailbox storage capacity/layout mism
 ASSERT(SIZEOF(.picasso_microcode) == 0x1000, "microcode storage capacity/layout mismatch")
 ASSERT(_fstart_microcode_start >= _fstart_psp_shared_end, "microcode page overlaps PSP shared memory")
 ASSERT(SIZEOF(.unsupported_dynamic) + SIZEOF(.unsupported_rel) + SIZEOF(.unsupported_rela) + SIZEOF(.unsupported_relr) + SIZEOF(.unsupported_loader) == 0, "Picasso image cannot require runtime linking or IFUNC resolution")
+_data_start = ADDR(.data);
+_data_end = ADDR(.data) + SIZEOF(.data);
+_data_load = LOADADDR(.data);
 ASSERT(SIZEOF(.data) == 0, "initialized writable data would modify the PSP-copied image")
 ASSERT(_fstart_text_end <= ADDR(.init16), "Picasso code exceeds the DRAM image")
 ASSERT(ADDR(.init16) + SIZEOF(.init16) <= ADDR(.reset), "16-bit entry overflows reset vector")

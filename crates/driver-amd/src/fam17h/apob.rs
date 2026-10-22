@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Bounded APOB reader.
+//! Bounded APOB reader (Picasso and Zeppelin).
 //! Reads PSP-trained memory results; never retrains or guesses UMC register data.
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
     byteorder::{LittleEndian, U16, U32, U64},
 };
 
+/// Raven/Picasso APOB capacity. Zeppelin's PSP copies up to 128 KiB.
 pub const MAX_SIZE: usize = 0x10000;
 pub const MAX_HOLES: usize = 18;
 const SIGNATURE: u32 = 0x424f5041;
@@ -88,10 +89,15 @@ impl MemoryMap {
     /// ceiling is not accidentally truncated to zero. Runtime TOP_MEM also
     /// constrains this boundary before any allocation.
     pub fn low_top(&self) -> u64 {
+        self.low_top_above(1 << 31)
+    }
+    /// The lowest hole below 4 GiB that ends above `floor` starts the
+    /// MMIO/reserved region (Zeppelin uses a 1-GiB floor).
+    pub fn low_top_above(&self, floor: u64) -> u64 {
         self.holes()
             .iter()
             .fold(self.top.min(1 << 32), |top, hole| {
-                if hole.end() <= top && hole.end() > 1 << 31 {
+                if hole.end() <= top && hole.end() > floor {
                     top.min(hole.base)
                 } else {
                     top
@@ -106,11 +112,15 @@ pub struct Apob<'a> {
 }
 impl<'a> Apob<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        Self::parse_with_capacity(bytes, MAX_SIZE)
+    }
+    /// Parse an APOB that the PSP may have made up to `capacity` bytes long.
+    pub fn parse_with_capacity(bytes: &'a [u8], capacity: usize) -> Result<Self, Error> {
         let (header, _) = Base::ref_from_prefix(bytes).map_err(|_| Error::Header)?;
         let size = header.size.get() as usize;
         let first = header.first.get() as usize;
         if header.signature.get() != SIGNATURE
-            || size > MAX_SIZE
+            || size > capacity
             || size > bytes.len()
             || first < size_of::<Base>()
             || first > size
@@ -148,9 +158,14 @@ impl<'a> Apob<'a> {
         Ok(())
     }
     fn find(&self, group: u32, kind: u32) -> Option<&'a [u8]> {
+        self.find_instance(group, kind, None)
+    }
+    /// Payload (after the entry header) of the first entry of a group, type
+    /// and optionally instance.
+    pub fn find_instance(&self, group: u32, kind: u32, instance: Option<u32>) -> Option<&'a [u8]> {
         let mut found = None;
-        self.visit(|g, k, _, payload| {
-            if found.is_none() && (g, k) == (group, kind) {
+        self.visit(|g, k, i, payload| {
+            if found.is_none() && (g, k) == (group, kind) && instance.is_none_or(|n| n == i) {
                 found = Some(payload);
             }
         })

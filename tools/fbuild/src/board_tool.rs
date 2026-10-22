@@ -216,13 +216,17 @@ fn assemble(
         .map(|image| image.image);
     }
     let config = resolved.assembler_config(&manifest.board)?;
+    let vendor_flash = match &resolved.build.plan.assembly {
+        fstart_image_build::build_plan::Assembly::VendorFlash(image) => Some(image.clone()),
+        _ => None,
+    };
     let parsed = ParsedBoard {
         config,
         acpi_only_devices: Vec::new(),
         resolved: Some(resolved),
     };
     let manifest = manifest.clone();
-    assemble_loaded(
+    let assembled = assemble_loaded(
         &workspace_root,
         manifest,
         parsed,
@@ -231,8 +235,44 @@ fn assemble(
         firmware,
         fit,
         &options.payload_files,
-    )
-    .map(|assembled| assembled.image)
+    )?;
+    match vendor_flash {
+        Some(image) => compose_vendor_flash(&image, &assembled),
+        None => Ok(assembled.image),
+    }
+}
+
+/// Put the assembled FFS and the reset stage into the vendor flash image.
+fn compose_vendor_flash(
+    image: &fstart_image_build::amd::vendor_flash::VendorFlashAssembly,
+    assembled: &crate::assemble::AssembledImage,
+) -> Result<std::path::PathBuf, String> {
+    let read = |path: &std::path::Path| {
+        std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let vendor = read(std::path::Path::new(&image.vendor.path))?;
+    let ffs = read(&assembled.image)?;
+    let reset = assembled
+        .stages
+        .iter()
+        .find(|stage| stage.name == image.reset_unit)
+        .ok_or("reset stage was not built")?;
+    let flash = fstart_image_build::amd::vendor_flash::compose(
+        &vendor,
+        &image.layout,
+        &ffs,
+        &read(&reset.run_path)?,
+    )?;
+    let out = assembled.image.with_extension("rom");
+    std::fs::write(&out, &flash).map_err(|e| format!("{}: {e}", out.display()))?;
+    eprintln!(
+        "[fstart] vendor flash image: {} (FFS {:#x} bytes at {:#x}, reset image at {:#x})",
+        out.display(),
+        ffs.len(),
+        image.layout.ffs_offset,
+        image.layout.reset_offset
+    );
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]

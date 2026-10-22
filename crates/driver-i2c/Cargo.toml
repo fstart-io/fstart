@@ -1,0 +1,10 @@
+[package]
+name = "fstart-driver-i2c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+embedded-hal = { workspace = true }
+tock-registers = { workspace = true }

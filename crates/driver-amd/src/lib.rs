@@ -1,11 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD hardware mechanisms. No board discovery, stage loading or FSP calls.
 #![no_std]
-#[cfg(feature = "picasso")]
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod fam17h;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod fch;
-#[cfg(feature = "picasso")]
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod gpio;
 #[cfg(all(test, feature = "picasso"))]
 mod gpio_tests;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod lpc;
 #[cfg(feature = "picasso")]
 pub mod picasso;
+#[cfg(feature = "zeppelin")]
+pub mod zeppelin;
+
+/// FCH ACPI MMIO window (PM, SMI, GPIO, IOMUX, MISC, AOAC).
+pub const ACPI_MMIO: usize = 0xfed8_0000;

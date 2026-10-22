@@ -4,55 +4,14 @@
 pub mod microcode;
 pub mod thread;
 
-pub const SYSCFG: u32 = 0xc0010010;
-/// SYSCFG.MtrrFixDramModEn: fixed-MTRR RdDram/WrDram bits are accessible.
-pub const SYSCFG_MTRR_FIX_DRAM_MOD_EN: u64 = 1 << 19;
-pub const TOP_MEM: u32 = 0xc001001a;
-pub const TOP_MEM2: u32 = 0xc001001d;
-pub const MMCONFIG: u32 = 0xc0010058;
-pub const PSP_ADDRESS: u32 = 0xc00110a2;
+#[cfg(target_arch = "x86_64")]
+pub use crate::fam17h::msr::NativeMsr;
+use crate::fam17h::msr::mcax;
+pub use crate::fam17h::msr::{
+    MMCONFIG, Msr, PSP_ADDRESS, SYSCFG, SYSCFG_MTRR_FIX_DRAM_MOD_EN, TOP_MEM, TOP_MEM2,
+};
 const LS_CFG: u32 = 0xc0011020;
 const DE_CFG: u32 = 0xc0011029;
-
-pub trait Msr {
-    fn read(&mut self, index: u32) -> u64;
-    fn write(&mut self, index: u32, value: u64);
-    fn update(&mut self, index: u32, clear: u64, set: u64) {
-        let value = self.read(index);
-        self.write(index, (value & !clear) | set);
-    }
-}
-#[cfg(target_arch = "x86_64")]
-pub struct NativeMsr {
-    _exclusive: core::marker::PhantomData<*mut ()>,
-}
-#[cfg(target_arch = "x86_64")]
-impl NativeMsr {
-    /// # Safety
-    /// Ring 0 on a supported Picasso-family CPU, with local interrupt and
-    /// SMT-sibling serialization appropriate to each MSR operation.
-    pub unsafe fn new() -> Self {
-        Self {
-            _exclusive: core::marker::PhantomData,
-        }
-    }
-}
-#[cfg(target_arch = "x86_64")]
-impl Msr for NativeMsr {
-    fn read(&mut self, index: u32) -> u64 {
-        let low: u32;
-        let high: u32;
-        unsafe {
-            core::arch::asm!("rdmsr", in("ecx") index, out("eax") low, out("edx") high, options(nomem, nostack));
-        }
-        (u64::from(high) << 32) | u64::from(low)
-    }
-    fn write(&mut self, index: u32, value: u64) {
-        unsafe {
-            core::arch::asm!("wrmsr", in("ecx") index, in("eax") value as u32, in("edx") (value >> 32) as u32, options(nostack));
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Silicon {
@@ -112,9 +71,6 @@ impl Identity {
     }
 }
 
-const fn mcax(bank: u32, offset: u32) -> u32 {
-    0xc0002000 + bank * 16 + offset
-}
 const DEFERRED: u64 = (1 << 32) | (1 << 34) | (1 << 37);
 const RESET: &[(u32, u64, u64)] = &[
     (0x0000001b, 0, 1 << 11),
@@ -225,19 +181,10 @@ pub fn per_cpu_tail(msr: &mut impl Msr, primary_thread: bool) {
 
 /// Decode the PSP-established memory ceiling without narrowing high RAM to u32.
 pub fn memory_limits(msr: &mut impl Msr) -> Result<(u64, Option<u64>), Error> {
-    let low = msr.read(TOP_MEM) & 0x000000ffff800000;
-    if low == 0 || low >= 1 << 32 {
-        return Err(Error::MemoryBoundary);
-    }
-    let high = if msr.read(SYSCFG) & (1 << 21) != 0 {
-        Some(msr.read(TOP_MEM2) & 0x000000ffffc00000)
-    } else {
-        None
-    };
-    Ok((low, high))
+    crate::fam17h::msr::memory_limits(msr).map_err(|_| Error::MemoryBoundary)
 }
 
 pub fn enable_ecam(msr: &mut impl Msr) {
     // AMD MMIO_CONF_BASE: 64 buses (BusRange=6), enabled. Not PCIEXBAR.
-    msr.write(MMCONFIG, super::ECAM | (6 << 2) | 1);
+    crate::fam17h::msr::enable_ecam(msr, super::ECAM, super::ECAM_BUSES.into());
 }

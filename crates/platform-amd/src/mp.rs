@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Picasso policy for the architectural MP engine: the MSR image APs replay
-//! before enabling caches, and AP release through the SMU instead of INIT/SIPI.
+//! Family 17h policy for the architectural MP engine: the MSR image APs
+//! replay before enabling caches, and (Picasso) AP release through the SMU.
 use fstart_arch::x86::mtrr::{self, MsrEntry, SipiMsrs};
-use fstart_driver_amd::picasso::{
+use fstart_driver_amd::fam17h::{
     cache,
-    cpu::{self, Msr},
+    msr::{self as cpu, Msr},
+};
+#[cfg(feature = "picasso")]
+use fstart_driver_amd::picasso::{
     registers::Smn,
     topology::{self, Topology},
 };
 
 #[derive(Debug)]
 pub enum Error {
-    Cpu(cpu::Error),
+    Cpu(cpu::MemoryBoundary),
     AmdCache(cache::Error),
     Capacity,
 }
@@ -47,6 +50,7 @@ pub fn sipi_msrs(msr: &mut impl Msr) -> Result<SipiMsrs, Error> {
     Ok(msrs)
 }
 
+#[cfg(feature = "picasso")]
 /// Release `ap_count` APs through SMU ThreadEn. Released APs start at the
 /// reset vector, where `picasso.S` sends them to the SIPI trampoline.
 /// # Safety

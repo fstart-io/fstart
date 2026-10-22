@@ -4,7 +4,7 @@
 //! Solo/Duo, Yonah) and `model_6fx` (Core 2) drivers and optionally supplies
 //! an Intel microcode blob to [`crate::x86::mp`].
 
-use super::msr_register::Msr;
+use crate::x86::cpu::msr_register::Msr;
 use crate::x86::cpu::intel::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
 use crate::x86::cpu::intel::{common_power, feature_control};
 use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor};

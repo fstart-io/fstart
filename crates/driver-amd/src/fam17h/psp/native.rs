@@ -25,18 +25,18 @@ pub struct Native {
     not_send_sync: core::marker::PhantomData<*mut ()>,
 }
 impl Native {
-    /// No SMN discovery, implicit locking, resetting or mailbox probing.
+    /// The mailbox of the PSP whose BAR is at `base`. No SMN discovery,
+    /// implicit locking, resetting or mailbox probing.
     /// # Safety
-    /// Caller verified Picasso PSP BAR low=fd100101/high=0, enabled+locked,
-    /// fd100000 aperture is correctly decoded/identity UC mapped, exact width
+    /// Caller verified that PSP BAR high=0 and low=`base`, enabled+locked, the
+    /// aperture is correctly decoded/identity UC mapped, exact width
     /// transactions supported. Exclusive cold BSP access through reset; exclude
     /// SMM/interrupt/reset/other bus owners and any competing mailbox transport.
     /// PSP's synchronous READY/zero-CODE acknowledgement must finish its DMA.
-    pub unsafe fn new() -> Self {
-        const BASE: usize = 0xfd10_0000;
+    pub unsafe fn at(base: usize) -> Self {
         Self {
-            command: (BASE + COMMAND_OFFSET) as *const ReadWrite<u32, Command::Register>,
-            pointer: Pointer(BASE + BUFFER_OFFSET),
+            command: (base + COMMAND_OFFSET) as *const ReadWrite<u32, Command::Register>,
+            pointer: Pointer(base + BUFFER_OFFSET),
             not_send_sync: core::marker::PhantomData,
         }
     }

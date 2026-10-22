@@ -136,12 +136,15 @@ macro_rules! enter_runtime {
 //
 // Reset-vector entry only: postcar and ramstage enter via direct 64-bit
 // jumps (`_start_postcar` / `_start_ram`), so this block is compiled out of
-// those stages to keep postcar small.
+// those stages to keep postcar small. AMD PSP platforms own their reset entry
+// (the PSP copies the image to DRAM); `amd-psp-reset` stages then continue
+// at `_start_ram` once in long mode.
 #[cfg(all(
     not(test),
     target_os = "none",
     not(fstart_stage_env = "postcar"),
-    not(fstart_entry = "picasso-reset")
+    not(fstart_entry = "picasso-reset"),
+    not(fstart_entry = "amd-psp-reset")
 ))]
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is
@@ -764,14 +767,13 @@ pub fn boot_linux_direct(
     let setup_size = (setup_sects + 1) * 512; // bytes of real-mode code + header
     let pm_kernel_offset = setup_size;
 
-    // Copy the entire real-mode setup area into boot_params.
-    // The setup area can be up to ~60 sectors (30 KiB) but boot_params
-    // is only 4 KiB. The setup_header fields that the kernel reads are
-    // all within the first 0x290 bytes (end of the header area, before
-    // the e820 table at 0x2D0). Copy up to 0x290 bytes from the bzImage
-    // to ensure ALL setup header fields are present.
-    let copy_end = (setup_size as usize).min(0x290).min(bzimage.len());
-    params[..copy_end].copy_from_slice(&bzimage[..copy_end]);
+    // Copy only the setup header into the cleared boot_params: it starts at
+    // 0x1f1 and ends at 0x202 plus the jump offset at 0x201. Copying the
+    // boot sector too sets `sentinel` (0x1ef), and the kernel then wipes
+    // every field the loader filled in, the RSDP pointer among them.
+    const SETUP_HEADER: usize = 0x1f1;
+    let header_end = (0x202 + usize::from(bzimage[0x201])).min(0x290);
+    params[SETUP_HEADER..header_end].copy_from_slice(&bzimage[SETUP_HEADER..header_end]);
 
     // View the copied setup header and the cleared remainder as one typed
     // zero-page. All fields are byte-aligned little-endian wire values.

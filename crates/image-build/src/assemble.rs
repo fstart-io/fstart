@@ -34,6 +34,7 @@ pub fn assemble(
     let mut ro_files = Vec::new();
 
     match &config.stages {
+        StageLayout::Monolithic(mono) if mono.external => {}
         StageLayout::Monolithic(mono) => {
             let stage = &stage_binaries[0];
 

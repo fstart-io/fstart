@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! The vendor CPM GPIO table ($A10) and the BMC ready pin.
+use fstart_driver_amd::gpio::{Pad, Pull};
+use fstart_platform_amd::zeppelin::BoardCtx;
+
+/// The values are IOMUX functions, not named functions: the Zeppelin IOMUX
+/// assignments are not known. Rows that only select a function leave the
+/// pad configuration at its default.
+pub const VENDOR: &[Pad] = &[
+    Pad::driven(5, 0, true, Pull::None),
+    Pad::driven(6, 0, true, Pull::None),
+    Pad::native(9, 1, Pull::None),
+    Pad::native(10, 2, Pull::None),
+    Pad::native(17, 1, Pull::None),
+    Pad::driven(23, 1, true, Pull::None),
+    Pad::native(28, 0, Pull::None),
+    Pad::native(40, 1, Pull::None),
+    Pad::driven(42, 1, true, Pull::None),
+    Pad::native(70, 0, Pull::None),
+    Pad::native(76, 1, Pull::None),
+    Pad::driven(88, 2, true, Pull::Up),
+    Pad::native(117, 0, Pull::None),
+    Pad::native(119, 2, Pull::None),
+    Pad::native(120, 0, Pull::None),
+    Pad::native(121, 0, Pull::None),
+    Pad::native(122, 0, Pull::None),
+    Pad::native(133, 0, Pull::None),
+    Pad::native(135, 2, Pull::None),
+    Pad::native(138, 0, Pull::None),
+    Pad::native(140, 2, Pull::None),
+    Pad::native(141, 1, Pull::None),
+    Pad::native(142, 2, Pull::None),
+    Pad::native(143, 1, Pull::None),
+    Pad::native(144, 1, Pull::None),
+    Pad::native(145, 2, Pull::None),
+    Pad::native(146, 2, Pull::None),
+    Pad::native(151, 1, Pull::None),
+    Pad::native(152, 1, Pull::None),
+];
+
+/// Low when the BMC is up.
+const BMC_READY: u8 = 149;
+/// 500 ms each: the vendor "2 minutes" default.
+const BMC_READY_POLLS: u32 = 240;
+
+/// GbtVgaInitial waits for the BMC before it uses the AST2500 VGA: GPIO149
+/// with debounce 5 on IOMUX function 1, then poll the pin.
+pub fn wait_for_bmc(ctx: &mut BoardCtx<'_>) {
+    let ready = Pad {
+        control: 5,
+        ..Pad::native(BMC_READY, 1, Pull::None)
+    };
+    let clock = ctx.clock;
+    let mut gpio = ctx.gpio();
+    if fstart_driver_amd::gpio::configure(
+        &mut gpio,
+        &fstart_driver_amd::zeppelin::GPIO_BANK,
+        &[ready],
+        &[],
+    )
+    .is_err()
+    {
+        return;
+    }
+    let waited = (0..BMC_READY_POLLS).find(|&poll| {
+        if !gpio.get(BMC_READY) {
+            return true;
+        }
+        if poll == 0 {
+            fstart_log::info!("Waiting for the BMC");
+        }
+        clock.delay_us(500_000);
+        false
+    });
+    if waited.is_none() {
+        fstart_log::warn!("BMC not ready after {} s", BMC_READY_POLLS / 2);
+    }
+}

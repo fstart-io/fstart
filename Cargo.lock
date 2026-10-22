@@ -622,10 +622,16 @@ dependencies = [
 name = "fstart-driver-amd"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal",
+ "fstart-arch",
  "fstart-core",
+ "fstart-driver-i2c",
+ "fstart-log",
  "fstart-pci",
+ "fstart-smm",
  "heapless 0.8.0",
  "tock-registers",
+ "ufmt",
  "zerocopy",
 ]
 
@@ -635,6 +641,14 @@ version = "0.1.0"
 dependencies = [
  "fstart-core",
  "zerocopy",
+]
+
+[[package]]
+name = "fstart-driver-i2c"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "tock-registers",
 ]
 
 [[package]]
@@ -658,6 +672,16 @@ dependencies = [
  "sha2 0.10.9",
  "tock-registers",
  "ufmt",
+ "zerocopy",
+]
+
+[[package]]
+name = "fstart-driver-ipmi"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-core",
+ "tock-registers",
  "zerocopy",
 ]
 
@@ -794,6 +818,9 @@ dependencies = [
 name = "fstart-platform-amd"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",
@@ -801,8 +828,13 @@ dependencies = [
  "fstart-image-build",
  "fstart-log",
  "fstart-pci",
+ "fstart-smm",
+ "fstart-stage",
+ "heapless 0.8.0",
  "serde_json",
+ "sha2 0.10.9",
  "ufmt",
+ "zerocopy",
 ]
 
 [[package]]

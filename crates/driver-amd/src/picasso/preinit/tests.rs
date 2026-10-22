@@ -20,7 +20,7 @@ impl Io {
         io
     }
 }
-impl Registers for Io {
+impl early::Registers for Io {
     fn lpc_read32(&mut self, offset: u16) -> u32 {
         self.lpc[usize::from(offset) / 4]
     }
@@ -44,6 +44,12 @@ impl Registers for Io {
         let offset = usize::from(offset);
         self.pm[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
+    fn smbus_write8(&mut self, asf: bool, offset: u16, value: u8) {
+        self.writes
+            .push((if asf { 4 } else { 3 }, offset, 1, u32::from(value)));
+    }
+}
+impl Registers for Io {
     fn spi_read16(&mut self, offset: u16) -> u16 {
         let offset = usize::from(offset);
         u16::from_le_bytes(self.spi[offset..offset + 2].try_into().unwrap())
@@ -61,10 +67,6 @@ impl Registers for Io {
         self.writes.push((2, offset, 4, value));
         let offset = usize::from(offset);
         self.spi[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-    }
-    fn smbus_write8(&mut self, asf: bool, offset: u16, value: u8) {
-        self.writes
-            .push((if asf { 4 } else { 3 }, offset, 1, u32::from(value)));
     }
 }
 const CONFIG: SpiConfig = SpiConfig {

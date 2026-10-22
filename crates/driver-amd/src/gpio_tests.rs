@@ -42,6 +42,7 @@ fn override_preserves_strength_clears_status_and_routes_sci() {
     let mut io = mock();
     configure(
         &mut io,
+        &crate::picasso::GPIO_BANK,
         &[Pad::output(9, true)],
         &[Pad::sci(9, Pull::Up, Trigger::LevelLow)],
     )
@@ -62,7 +63,12 @@ fn override_preserves_strength_clears_status_and_routes_sci() {
 fn validate_before_first_hardware_write() {
     let mut io = mock();
     assert_eq!(
-        configure(&mut io, &[Pad::output(9, true), Pad::output(9, false)], &[]),
+        configure(
+            &mut io,
+            &crate::picasso::GPIO_BANK,
+            &[Pad::output(9, true), Pad::output(9, false)],
+            &[]
+        ),
         Err(Error::DuplicatePad)
     );
     assert_eq!(io.muxes, 0);
@@ -72,7 +78,12 @@ fn validate_before_first_hardware_write() {
 fn both_edge_sci_is_rejected_before_writes() {
     let mut io = mock();
     assert_eq!(
-        configure(&mut io, &[Pad::sci(9, Pull::Up, Trigger::BothEdges)], &[]),
+        configure(
+            &mut io,
+            &crate::picasso::GPIO_BANK,
+            &[Pad::sci(9, Pull::Up, Trigger::BothEdges)],
+            &[]
+        ),
         Err(Error::BothEdgesSci)
     );
     assert_eq!(io.master, u32::MAX);

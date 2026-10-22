@@ -4,7 +4,7 @@
 //! enable VMX outside SMX when the CPU has it, then lock the register. A
 //! register that is already locked is left as found.
 
-use super::msr_register::Msr;
+use crate::x86::cpu::msr_register::Msr;
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 pub(super) const IA32_FEATURE_CONTROL: u32 = 0x03a;
