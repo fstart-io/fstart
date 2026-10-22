@@ -571,3 +571,54 @@ pub(crate) fn usb_buses(ctx: &Ctx, _si: &Silicon) -> [u8; 8] {
 pub(crate) fn usb_bus_count(_ctx: &Ctx) -> u8 {
     1
 }
+
+/// NUMA from the APOB NPS mode (ACPI_SMM §3.5): DRAM by the channel of
+/// each rule's CS, threads by their physical CCD (APOB 3/3 lists the
+/// present CCDs in logical order), root bridges by their IOMS quadrant.
+/// `None` with one domain (AmdAcpiDxe builds no SRAT then) or without
+/// NPS information.
+pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
+    use fstart_driver_zen::apob::nps;
+    use fstart_driver_zen::df::dram::{self, ccd_channel, df3_channel, domain_of, ioms_channel};
+    use fstart_driver_zen::df::{Target, v3};
+
+    let domains = dram::numa_domains(nps::nps(&ctx.apob).ok()?, ctx.topology.sockets);
+    if domains.len() <= 1 {
+        return None;
+    }
+    let memory = dram::read::<Df3, _>(&ctx.df, 0, Target::Instance(v3::PIE))
+        .ranges()
+        .filter_map(|(base, end, dst)| {
+            let (socket, channel) = df3_channel(dst)?;
+            Some((base, end, domain_of(&domains, socket, channel)?))
+        })
+        .collect();
+    let smt = (fstart_arch::x86::cpuid(0x8000_001e).1 >> 8) & 0xff != 0;
+    let layout = ApicLayout::new(ctx.generation, smt);
+    let cpus = ctx
+        .apic_ids
+        .iter()
+        .map(|&id| {
+            let at = layout.decode(id);
+            let ccd = si
+                .maps
+                .get(usize::from(at.socket))
+                .and_then(|m| m.ccds.get(usize::from(at.die)))
+                .map_or(at.die, |c| c.id);
+            domain_of(&domains, at.socket, ccd_channel(ccd)).unwrap_or(0)
+        })
+        .collect();
+    let root_bridges = ctx
+        .topology
+        .root_bridges
+        .iter()
+        .map(|rb| domain_of(&domains, rb.socket, ioms_channel(rb.index)).unwrap_or(0))
+        .collect();
+    let socket_of = |d: &dram::NumaDomain| (d.channels.trailing_zeros() / 16) as u8;
+    Some(super::NumaPlan {
+        domains: domains.iter().map(socket_of).collect(),
+        memory,
+        cpus,
+        root_bridges,
+    })
+}

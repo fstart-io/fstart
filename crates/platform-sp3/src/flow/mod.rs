@@ -94,8 +94,22 @@ pub(crate) trait Steps: Sized {
     fn fch_late(ctx: &Ctx, si: &Self);
     fn usb_buses(ctx: &Ctx, si: &Self) -> [u8; 8];
     fn usb_bus_count(ctx: &Ctx) -> u8;
+    /// NUMA domains for SRAT/SLIT/MSCT and `_PXM`; `None` with one domain.
+    fn numa(ctx: &Ctx, si: &Self) -> Option<NumaPlan>;
     /// Every present NBIO, physical order.
     fn nbios(&self) -> &[Nbio<Pci>];
+}
+
+/// NUMA domains as ACPI needs them.
+pub(crate) struct NumaPlan {
+    /// Socket of each proximity domain.
+    pub domains: Vec<u8>,
+    /// DRAM `(base, end, domain)`.
+    pub memory: Vec<(u64, u64, u32)>,
+    /// Domain of each thread, in [`Ctx::apic_ids`] order.
+    pub cpus: Vec<u32>,
+    /// Domain of each root bridge, in topology order.
+    pub root_bridges: Vec<u32>,
 }
 
 /// Implement [`Steps`] for a silicon module's `Silicon` with the module's
@@ -149,6 +163,9 @@ macro_rules! steps {
             }
             fn usb_bus_count(ctx: &Ctx) -> u8 {
                 usb_bus_count(ctx)
+            }
+            fn numa(ctx: &Ctx, si: &Self) -> Option<super::NumaPlan> {
+                numa(ctx, si)
             }
             fn nbios(&self) -> &[fstart_driver_zen::nbio::Nbio<Pci>] {
                 &self.nbios

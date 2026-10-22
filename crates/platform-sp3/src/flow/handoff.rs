@@ -167,10 +167,18 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
     use fstart_driver_zen::fch::smi;
     use fstart_driver_zen::nbio::ioapic::{FEATURES_ENABLE, IoapicInfo, fch_ioapic_id};
 
+    let numa_plan = S::numa(ctx, si);
     let cpus: Vec<Cpu> = ctx
         .apic_ids
         .iter()
-        .map(|&apic_id| Cpu { apic_id, domain: 0 })
+        .enumerate()
+        .map(|(i, &apic_id)| Cpu {
+            apic_id,
+            domain: numa_plan
+                .as_ref()
+                .and_then(|n| n.cpus.get(i).copied())
+                .unwrap_or(0),
+        })
         .collect();
     let ioapics: Vec<IoapicInfo> = si.nbios().iter().filter_map(|n| n.ioapic_info()).collect();
     let iommus: Vec<IommuAcpi> = si
@@ -217,18 +225,42 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
         .iter()
         .zip(&windows)
         .zip(si.nbios())
-        .map(|((&bridge, (io, mmio)), n)| RootBridgeAcpi {
+        .enumerate()
+        .map(|(i, ((&bridge, (io, mmio)), n))| RootBridgeAcpi {
             bridge,
             io,
             mmio,
-            // One proximity domain until SRAT is wired.
-            domain: None,
+            domain: numa_plan
+                .as_ref()
+                .and_then(|p| p.root_bridges.get(i).copied()),
             ioapic_features: n.at(FEATURES_ENABLE),
         })
         .collect();
     let cpu = crate::hw::msr();
     let pstates = power::pstates(&cpu);
     let threads_per_core = ((fstart_arch::x86::cpuid(0x8000_001e).1 >> 8) & 0xff) as u8 + 1;
+    let (domains, memory): (Vec<acpi::Domain>, Vec<acpi::MemoryAffinity>) = numa_plan
+        .as_ref()
+        .map(|p| {
+            (
+                p.domains
+                    .iter()
+                    .map(|&socket| acpi::Domain { socket })
+                    .collect(),
+                p.memory
+                    .iter()
+                    .map(|&(base, end, domain)| acpi::MemoryAffinity { base, end, domain })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    if let Some(p) = &numa_plan {
+        fstart_log::info!(
+            "acpi: {} NUMA domains, {} memory ranges",
+            p.domains.len() as u32,
+            p.memory.len() as u32
+        );
+    }
     let lpc_aml = B::acpi_lpc_aml();
     let fch = {
         use fstart_driver_zen::fch::FchHw;
@@ -244,9 +276,11 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
         hpet_block_id,
         root_bridges: &root_bridges,
         iommus: &iommus,
-        // TODO(numa): SRAT/SLIT from `df::dram` + `apob::nps` (NPS4 on the
-        // S8030 defaults); one domain is correct, only slower.
-        numa: None,
+        numa: numa_plan.as_ref().map(|_| acpi::Numa {
+            domains: &domains,
+            memory: &memory,
+            phys_addr_bits: ctx.phys_addr_bits,
+        }),
         power: Some(Power {
             pstates: &pstates,
             cstates: power::cstate_info(&ctx.policy.ccx.cstates),

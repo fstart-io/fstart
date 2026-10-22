@@ -6,6 +6,7 @@ use heapless::Vec;
 use tock_registers::interfaces::Readable;
 
 use super::{DRAM_HOLE, Df, DramRule, Reg, Target, Version, regs};
+pub use crate::apob::nps::Nps;
 
 /// The DRAM rules and MMIO hole as one node sees them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,30 +74,6 @@ pub fn read<V: Version, P: ConfigRegionAccess + Clone>(
     }
 }
 
-/// NUMA nodes per socket (APOB group 9 type 0x13 byte 0x31, SOC_DF §3.7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Nps {
-    /// One domain for the whole system (both sockets interleaved).
-    Nps0,
-    Nps1,
-    Nps2,
-    Nps4,
-}
-
-impl Nps {
-    /// The APOB value; anything else means "no domain information"
-    /// (AmdFabricSspDxe returns EFI_NOT_FOUND).
-    pub const fn from_apob(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Nps0),
-            1 => Some(Self::Nps1),
-            2 => Some(Self::Nps2),
-            3 => Some(Self::Nps4),
-            _ => None,
-        }
-    }
-}
-
 /// A NUMA domain as a set of memory channels: bit `16 · socket + channel`
 /// (8 UMCs per socket). The proximity domain is the index in the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +116,40 @@ pub fn numa_domains(nps: Nps, sockets: u8) -> Vec<NumaDomain, 8> {
     }
 }
 
+/// The domain (index into `domains`) owning `(socket, channel)`.
+pub fn domain_of(domains: &[NumaDomain], socket: u8, channel: u8) -> Option<u32> {
+    domains
+        .iter()
+        .position(|d| d.has_channel(socket, channel))
+        .map(|i| i as u32)
+}
+
+/// `(socket, channel)` of a DF3 DRAM rule destination: CS instances 0–7
+/// are the UMC channels (`fabric_id = socket << 5 | instance`).
+pub const fn df3_channel(dst: u16) -> Option<(u8, u8)> {
+    let instance = dst & 0x1F;
+    if instance < 8 {
+        Some(((dst >> 5) as u8, instance as u8))
+    } else {
+        None
+    }
+}
+
+/// The channel whose domain an IOMS (root bridge `ioms`, 0–3) belongs to:
+/// quadrant `i` holds channels `2i, 2i + 1` (AmdFabricSspDxe `0x2284`:
+/// NPS4 IOMS `i` → domain `i`, NPS2 IOMS 0/1 → 0 and 2/3 → 1).
+pub const fn ioms_channel(ioms: u8) -> u8 {
+    2 * ioms
+}
+
+/// The channel whose domain a CCD (physical index) belongs to: CCD `j` sits
+/// on channel `j`'s quadrant (AmdFabricSspDxe `0x163c` builds each domain's
+/// CCX mask as two CCX bits per channel of the domain, from the lowest
+/// channel up). Milan shares the IOD layout (inferred).
+pub const fn ccd_channel(ccd: u8) -> u8 {
+    ccd
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,7 +169,20 @@ mod tests {
             ]
         );
         assert!(numa_domains(Nps::Nps4, 1)[1].has_channel(0, 3));
-        assert_eq!(Nps::from_apob(4), None);
+    }
+
+    #[test]
+    fn quadrant_domains() {
+        let nps4 = numa_domains(Nps::Nps4, 2);
+        // IOMS i → domain i, CCD 2i/2i+1 → domain i, socket 1 → 4 + i.
+        assert_eq!(domain_of(&nps4, 0, ioms_channel(2)), Some(2));
+        assert_eq!(domain_of(&nps4, 0, ccd_channel(5)), Some(2));
+        assert_eq!(domain_of(&nps4, 1, ioms_channel(3)), Some(7));
+        let nps2 = numa_domains(Nps::Nps2, 1);
+        assert_eq!(domain_of(&nps2, 0, ioms_channel(1)), Some(0));
+        assert_eq!(domain_of(&nps2, 0, ioms_channel(2)), Some(1));
+        assert_eq!(df3_channel(0x20 | 6), Some((1, 6)));
+        assert_eq!(df3_channel(0x0A), None);
     }
 
     #[cfg(any(feature = "rome", feature = "milan"))]

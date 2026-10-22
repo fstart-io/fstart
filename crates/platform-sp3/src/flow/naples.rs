@@ -359,3 +359,9 @@ pub(crate) fn usb_buses(ctx: &Ctx, si: &Silicon) -> [u8; 8] {
 pub(crate) fn usb_bus_count(ctx: &Ctx) -> u8 {
     ctx.topology.root_bridges.len() as u8
 }
+
+/// Naples domains (one per die unless interleaved, ACPI_SMM §3.5) are not
+/// wired: one domain.
+pub(crate) fn numa(_ctx: &Ctx, _si: &Silicon) -> Option<super::NumaPlan> {
+    None
+}
