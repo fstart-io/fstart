@@ -4,6 +4,7 @@ pub mod board_tool;
 pub mod build_board;
 pub mod build_plan;
 mod cargo_features;
+mod compiler_inputs;
 mod host_plan;
 pub mod ide;
 mod ide_graph;
@@ -15,6 +16,7 @@ pub mod linker;
 pub mod payload;
 mod plan_executor;
 mod profile_source;
+mod psp_image;
 pub mod qemu;
 #[cfg(test)]
 mod qemu_golden_tests;

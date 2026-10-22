@@ -1,0 +1,16 @@
+[package]
+name = "fstart-driver-amd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+picasso = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless"]
+
+[dependencies]
+tock-registers.workspace = true
+fstart-core.workspace = true
+zerocopy = { workspace = true, optional = true }
+fstart-pci = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }

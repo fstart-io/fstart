@@ -51,7 +51,7 @@ impl Resolved {
         if board
             .platform
             .as_deref()
-            .is_some_and(|platform| platform != plan.assembly.platform.as_str())
+            .is_some_and(|platform| platform != plan.assembly.platform().as_str())
             || board
                 .target
                 .as_deref()
@@ -85,7 +85,11 @@ impl Resolved {
         release: bool,
     ) -> Result<Selection, String> {
         let mut environment = unit.environment_values.clone();
+        let files = crate::compiler_inputs::collect(root, &unit.file_bindings)?;
         let mut hash = Sha256::new();
+        for file in &files {
+            file.hash(&mut hash)?;
+        }
         for binding in &unit.bindings {
             let path = artifacts
                 .get(&binding.producer)
@@ -110,6 +114,26 @@ impl Resolved {
             .artifact_dir(root, &board.board, release)?
             .join(&unit.name)
             .join(format!("{:x}", hash.finalize()));
+        let records = files
+            .iter()
+            .map(|file| {
+                let (path, record) = file.publish(&directory)?;
+                environment.insert(
+                    file.environment.clone(),
+                    path.to_str()
+                        .ok_or("non-UTF8 compiler snapshot path")?
+                        .into(),
+                );
+                Ok(record)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if !records.is_empty() {
+            fs::write(
+                directory.join("compiler-inputs.json"),
+                serde_json::to_vec_pretty(&records).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
         Selection::prepare_unit(
             root,
             board,
@@ -121,7 +145,12 @@ impl Resolved {
                 .plan
                 .units
                 .iter()
-                .flat_map(|u| u.bindings.iter().map(|b| b.environment.clone()))
+                .flat_map(|u| {
+                    u.bindings
+                        .iter()
+                        .map(|b| b.environment.clone())
+                        .chain(u.file_bindings.iter().map(|b| b.environment.clone()))
+                })
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>(),

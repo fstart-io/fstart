@@ -549,6 +549,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-amdfw"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fstart-driver-amd",
+ "fstart-image-build",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "fstart-arch"
 version = "0.1.0"
 dependencies = [
@@ -606,6 +616,25 @@ dependencies = [
  "p256",
  "sha2 0.10.9",
  "sha3",
+]
+
+[[package]]
+name = "fstart-driver-amd"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-pci",
+ "heapless 0.8.0",
+ "tock-registers",
+ "zerocopy",
+]
+
+[[package]]
+name = "fstart-driver-chromeec"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "zerocopy",
 ]
 
 [[package]]
@@ -720,6 +749,7 @@ dependencies = [
  "object 0.37.3",
  "rand_core",
  "serde",
+ "serde_json",
  "zerocopy",
 ]
 
@@ -757,6 +787,21 @@ dependencies = [
  "pci_types",
  "serde",
  "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-platform-amd"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-amd",
+ "fstart-driver-uart",
+ "fstart-image-build",
+ "fstart-log",
+ "fstart-pci",
+ "serde_json",
  "ufmt",
 ]
 

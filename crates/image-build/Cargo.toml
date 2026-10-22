@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["std"] }
+serde_json = "1"
 heapless = { workspace = true }
 object = { workspace = true }
 iced-x86 = { workspace = true }

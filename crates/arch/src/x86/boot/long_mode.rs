@@ -463,7 +463,11 @@ core::arch::global_asm!(
 //
 // Compiled out of the postcar stage (which carries `_start_postcar` in
 // `.text.entry` instead) so the flat image always starts at its own entry.
-#[cfg(all(target_os = "none", not(fstart_stage_env = "postcar")))]
+#[cfg(all(
+    target_os = "none",
+    not(fstart_stage_env = "postcar"),
+    not(fstart_entry = "picasso-reset")
+))]
 core::arch::global_asm!(
     ".section .text.entry, \"ax\"",
     ".code64",

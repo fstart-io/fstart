@@ -10,14 +10,67 @@ pub struct BuildPlan {
     pub units: Vec<CompilationUnit>,
     /// Units contributing stage binaries, in image-directory order.
     pub stages: Vec<String>,
-    /// Temporary projection into the existing image-format assembler. It must
-    /// never be used to infer compiler selections or artifact dependencies.
+    /// Image operation or explicit lack of one. Never infer compiler selections
+    /// or artifact dependencies from the image projection.
     pub assembly: Assembly,
     pub inputs: Vec<InputFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Assembly {
+pub enum Assembly {
+    Ffs(Box<FfsAssembly>),
+    /// A PSP partition fragment, never a factory chip image or FFS directory.
+    PicassoPsp(Box<crate::amd::assembly::PicassoAssembly>),
+    /// Compiler/check/editor support only. No image/flash/run contract supplied.
+    Unassembled {
+        platform: fstart_core::Platform,
+    },
+}
+impl Assembly {
+    pub fn platform(&self) -> fstart_core::Platform {
+        match self {
+            Self::Ffs(image) => image.platform,
+            Self::PicassoPsp(_) => fstart_core::Platform::X86_64,
+            Self::Unassembled { platform } => *platform,
+        }
+    }
+    pub fn bootstrap(&self) -> &[(String, BootstrapRole)] {
+        match self {
+            Self::Ffs(image) => &image.bootstrap,
+            Self::PicassoPsp(_) | Self::Unassembled { .. } => &[],
+        }
+    }
+    pub fn ffs(&self) -> Result<&FfsAssembly, String> {
+        match self {
+            Self::Ffs(image) => Ok(image),
+            Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
+            Self::PicassoPsp(_) => {
+                Err("PSP partition fragment has no runtime config/run/flash contract".into())
+            }
+        }
+    }
+    pub fn resolve_workspace_inputs(
+        &mut self,
+        root: &std::path::Path,
+        board: &std::path::Path,
+    ) -> Result<(), String> {
+        match self {
+            Self::Ffs(image) => image.resolve_workspace_inputs(root, board),
+            Self::PicassoPsp(_) | Self::Unassembled { .. } => Ok(()),
+        }
+    }
+    pub fn config(&self, name: &str) -> Result<fstart_core::BoardConfig, String> {
+        self.ffs()?.config(name)
+    }
+}
+impl From<FfsAssembly> for Assembly {
+    fn from(image: FfsAssembly) -> Self {
+        Self::Ffs(Box::new(image))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FfsAssembly {
     pub platform: fstart_core::Platform,
     pub memory: Vec<fstart_core::MemoryRegion>,
     pub flash: Option<crate::plan::FlashTransport>,
@@ -51,7 +104,7 @@ impl BootstrapRole {
     }
 }
 
-impl Assembly {
+impl FfsAssembly {
     /// Blob paths emitted by platform Rust are workspace-relative. Convert only
     /// for the legacy assembler's board-relative file API, without inferring policy.
     pub fn resolve_workspace_inputs(
@@ -135,6 +188,16 @@ pub struct InputFile {
     pub capacity: u64,
 }
 
+/// An explicit compiler input, snapshotted and content-bound by the executor.
+/// Paths are workspace-relative or explicit absolute paths, never discovered.
+/// Size bounds/hashes record provenance; they do not authenticate vendor bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileBinding {
+    pub environment: String,
+    pub path: String,
+    pub capacity: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompilationUnit {
     pub name: String,
@@ -153,6 +216,7 @@ pub struct CompilationUnit {
     pub linker_script: Option<String>,
     pub environment_values: BTreeMap<String, String>,
     pub bindings: Vec<ArtifactBinding>,
+    pub file_bindings: Vec<FileBinding>,
     pub output: UnitOutput,
 }
 
@@ -250,7 +314,7 @@ fn identifier(value: &str) -> bool {
 
 /// Portable environment identifiers; unlike unit names, neither a leading digit
 /// nor a dash is valid. Compiler flag overrides are separate recorded fields.
-fn environment_name(value: &str) -> bool {
+pub(crate) fn environment_name(value: &str) -> bool {
     value
         .bytes()
         .next()
@@ -269,6 +333,44 @@ fn cfg_value(value: &str) -> bool {
 }
 
 impl BuildPlan {
+    /// Fail closed if platform resolution drops or substitutes an explicit input.
+    /// Multiple consuming units may bind the same request, but none may replace it.
+    pub fn validate_compiler_selections(
+        &self,
+        selection: &crate::plan::BuildSelection,
+    ) -> Result<(), String> {
+        selection.validate_compiler_files()?;
+        self.order()?;
+        for input in &selection.compiler_files {
+            let bindings: Vec<_> = self
+                .units
+                .iter()
+                .flat_map(|unit| &unit.file_bindings)
+                .filter(|binding| binding.environment == input.environment)
+                .collect();
+            if bindings.is_empty() || bindings.iter().any(|binding| binding.path != input.path) {
+                return Err(format!(
+                    "compiler input {} was not bound unchanged by the platform",
+                    input.environment
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_image_selection(
+        &self,
+        selection: &crate::plan::BuildSelection,
+    ) -> Result<(), String> {
+        match (&selection.image_config, &self.assembly) {
+            (Some(path), Assembly::PicassoPsp(image)) if *path == image.configuration.path => {
+                Ok(())
+            }
+            (None, Assembly::Ffs(_) | Assembly::Unassembled { .. }) => Ok(()),
+            _ => Err("image configuration was not bound unchanged by the platform".into()),
+        }
+    }
+
     pub fn unit(&self, name: &str) -> Result<&CompilationUnit, String> {
         self.units
             .iter()
@@ -322,6 +424,12 @@ impl BuildPlan {
                 }
             }
             unit.check_cfg_flags()?;
+            if matches!(&self.assembly, Assembly::Ffs(_))
+                && matches!(&unit.output,
+                UnitOutput::Executable { expectations, .. } if expectations.descriptor.is_none())
+            {
+                return Err("FFS executable needs its runtime layout descriptor".into());
+            }
             let mut bindings = BTreeSet::new();
             for binding in &unit.bindings {
                 if !environment_name(&binding.environment)
@@ -330,6 +438,25 @@ impl BuildPlan {
                 {
                     return Err(format!(
                         "invalid or duplicate binding {}",
+                        binding.environment
+                    ));
+                }
+            }
+            for binding in &unit.file_bindings {
+                if !environment_name(&binding.environment)
+                    || !bindings.insert(binding.environment.as_str())
+                    || unit.environment_values.contains_key(&binding.environment)
+                    || binding.path.is_empty()
+                    || binding.path.contains('\0')
+                    || binding.capacity == 0
+                    || binding
+                        .capacity
+                        .checked_add(1)
+                        .and_then(|size| usize::try_from(size).ok())
+                        .is_none()
+                {
+                    return Err(format!(
+                        "invalid or duplicate compiler file {}",
                         binding.environment
                     ));
                 }
@@ -379,7 +506,39 @@ impl BuildPlan {
             }
         }
         let mut bootstrap = BTreeSet::new();
-        for (name, _) in &self.assembly.bootstrap {
+        if let Assembly::PicassoPsp(image) = &self.assembly {
+            image.validate()?;
+            let unit = self.unit(&image.reset_unit)?;
+            let UnitOutput::Executable {
+                expectations,
+                load_address,
+                flat_capacity,
+            } = &unit.output
+            else {
+                return Err("PSP reset producer is not executable".into());
+            };
+            if !self.stages.contains(&image.reset_unit)
+                || *load_address != image.reset_destination
+                || *flat_capacity != u64::from(image.reset_size)
+                || !matches!(expectations.architecture, crate::elf::Architecture::X86_64)
+                || !expectations.elf64
+                || !expectations.little_endian
+                || expectations.copy.is_some()
+                || expectations.stored.len() != 1
+                || expectations.stored[0].base != image.reset_destination
+                || expectations.stored[0].size != u64::from(image.reset_size)
+                || !expectations.identity_mapping
+                || expectations.entry
+                    != image
+                        .reset_destination
+                        .checked_add(u64::from(image.reset_size))
+                        .and_then(|end| end.checked_sub(16))
+                || expectations.stored_flags != Some(5)
+            {
+                return Err("PSP reset producer differs from image operation".into());
+            }
+        }
+        for (name, _) in self.assembly.bootstrap() {
             if !self.stages.iter().skip(1).any(|s| s == name) || !bootstrap.insert(name) {
                 return Err(format!("unknown or duplicate bootstrap binding {name}"));
             }
@@ -429,6 +588,7 @@ impl BuildPlan {
 
 #[cfg(test)]
 mod tests {
+    use super::FfsAssembly as Assembly;
     use super::*;
     fn unit(name: &str, dependencies: &[&str]) -> CompilationUnit {
         CompilationUnit {
@@ -449,6 +609,7 @@ mod tests {
             release_only: false,
             linker_script: None,
             environment_values: BTreeMap::new(),
+            file_bindings: vec![],
             bindings: dependencies
                 .iter()
                 .map(|name| ArtifactBinding {
@@ -488,13 +649,14 @@ mod tests {
                 identity_mapping: true,
                 entry: Some(span.base),
                 copy: None,
-                descriptor: crate::elf::Descriptor {
+                descriptor: Some(crate::elf::Descriptor {
                     section: ".layout".into(),
                     start_symbol: "begin".into(),
                     end_symbol: "end".into(),
                     bytes: vec![],
                     reservation: span,
-                },
+                }),
+                stored_flags: None,
                 symbols: BTreeMap::new(),
             },
             load_address: span.base,
@@ -510,7 +672,7 @@ mod tests {
             ],
             stages: vec!["launch".into()],
             inputs: vec![],
-            assembly: Assembly {
+            assembly: FfsAssembly {
                 platform: Platform::Aarch64,
                 memory: vec![],
                 flash: None,
@@ -524,8 +686,29 @@ mod tests {
                 soc_image_format: SocImageFormat::None,
                 boot_hart_id: 0,
                 build: BoardBuildPolicy::default(),
-            },
+            }
+            .into(),
         }
+    }
+
+    #[test]
+    fn compiler_only_contract_cannot_launder_a_missing_ffs_descriptor() {
+        let mut plan = fixture();
+        let UnitOutput::Executable { expectations, .. } = &mut plan.units[0].output else {
+            unreachable!()
+        };
+        expectations.descriptor = None;
+        assert!(
+            plan.order()
+                .unwrap_err()
+                .contains("runtime layout descriptor")
+        );
+        plan.assembly = super::Assembly::Unassembled {
+            platform: fstart_core::Platform::Aarch64,
+        };
+        plan.order().unwrap();
+        assert!(plan.assembly.config("test").is_err());
+        assert!(plan.assembly.bootstrap().is_empty());
     }
 
     #[test]
@@ -594,6 +777,74 @@ mod tests {
         assert!(plan.order().unwrap_err().contains("cfg value"));
     }
 
+    #[test]
+    fn compiler_file_names_paths_and_bounds_share_the_binding_namespace() {
+        let file = || FileBinding {
+            environment: "FSTART_BYTES".into(),
+            path: "input.bin".into(),
+            capacity: 9600,
+        };
+        let mut plan = fixture();
+        plan.units[0].file_bindings.push(file());
+        plan.order().unwrap();
+        plan.units[0].file_bindings.push(file());
+        assert!(plan.order().is_err());
+        let mut plan = fixture();
+        let mut collision = file();
+        collision.environment = plan.units[0].bindings[0].environment.clone();
+        plan.units[0].file_bindings.push(collision);
+        assert!(plan.order().is_err());
+        let mut plan = fixture();
+        plan.units[0]
+            .environment_values
+            .insert("FSTART_BYTES".into(), "scalar".into());
+        plan.units[0].file_bindings.push(file());
+        assert!(plan.order().is_err());
+        for (environment, path, capacity) in [
+            ("RUSTFLAGS", "input", 1),
+            ("1FILE", "input", 1),
+            ("FILE", "", 1),
+            ("FILE", "bad\0path", 1),
+            ("FILE", "input", 0),
+            ("FILE", "input", u64::MAX),
+        ] {
+            let mut plan = fixture();
+            plan.units[0].file_bindings.push(FileBinding {
+                environment: environment.into(),
+                path: path.into(),
+                capacity,
+            });
+            assert!(plan.order().is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_file_requests_must_be_bound_without_substitution() {
+        use crate::plan::{BuildSelection, CompilerFileSelection};
+        let selected = BuildSelection {
+            compiler_files: vec![
+                CompilerFileSelection::parse("FSTART_BYTES=exact source.bin").unwrap(),
+            ],
+            ..Default::default()
+        };
+        let mut plan = fixture();
+        assert!(plan.validate_compiler_selections(&selected).is_err());
+        let binding = || FileBinding {
+            environment: "FSTART_BYTES".into(),
+            path: "exact source.bin".into(),
+            capacity: 9600,
+        };
+        plan.units[0].file_bindings.push(binding());
+        plan.validate_compiler_selections(&selected).unwrap();
+        plan.units[1].file_bindings.push(binding());
+        plan.validate_compiler_selections(&selected).unwrap();
+        plan.units[1].file_bindings[0].path = "alternate.bin".into();
+        assert!(plan.validate_compiler_selections(&selected).is_err());
+        let mut duplicate = selected.clone();
+        duplicate.compiler_files.extend(selected.compiler_files);
+        assert!(plan.validate_compiler_selections(&duplicate).is_err());
+    }
+
     // Graph failures occur before image-stage validation; no firmware fixture is
     // needed to prove missing, duplicate and cyclic producer rejection.
     #[test]
@@ -618,7 +869,7 @@ mod tests {
             payload: "halt".into(),
             units,
             stages: vec![],
-            assembly: assembly.clone(),
+            assembly: assembly.clone().into(),
             inputs: vec![],
         };
         assert!(

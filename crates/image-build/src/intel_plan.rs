@@ -148,13 +148,14 @@ impl IntelReservations {
             identity_mapping: !boot,
             entry: Some(if boot { 0xfffffff0 } else { stage.image.base }),
             copy: None,
-            descriptor: Descriptor {
+            descriptor: Some(Descriptor {
                 section: ".fstart.layout".into(),
                 start_symbol: "_fstart_layout_start".into(),
                 end_symbol: "_fstart_layout_end".into(),
                 bytes: self.descriptor(role)?.as_bytes().to_vec(),
                 reservation: stage.image,
-            },
+            }),
+            stored_flags: None,
             symbols,
         })
     }
