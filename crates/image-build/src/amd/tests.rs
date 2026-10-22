@@ -69,6 +69,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         reset_size: raw.reset_image.len() as u32,
         apob_destination: raw.apob_destination,
         shared_memory: raw.shared_memory,
+        psp: Default::default(),
     };
     let Firmware::Packed { files, .. } = &operation.firmware else {
         unreachable!()
@@ -450,6 +451,7 @@ fn mj11() -> AmdAssembly {
         reset_destination: 0x76db_0000,
         apob_destination: 0x3000_0000,
         shared_memory: None,
+        psp: Default::default(),
     }
 }
 
@@ -496,4 +498,42 @@ fn takes_the_vendor_microcode_from_level_2() {
     let blob = crate::assemble::amd_microcode(&config, std::path::Path::new("/"));
     std::fs::remove_file(&path).unwrap();
     assert_eq!(blob.unwrap(), vendor[0x25_f800..0x25_f800 + 0xc80]);
+}
+
+#[test]
+fn the_psp_inflates_the_reset_image() {
+    use fstart_amdfw::{Flash, directory::BiosEntry};
+    let (ffs, stage) = ffs_and_stage(0x25_0000);
+    let vendor = two_level_vendor();
+    let plain = mj11()
+        .assemble(&[&vendor], &stage, Some(&ffs))
+        .unwrap()
+        .bytes;
+    let mut operation = mj11();
+    operation.psp = assembly::PspOptions {
+        compress_reset: true,
+        spi: Some((7, 1)),
+    };
+    let image = operation
+        .assemble(&[&vendor], &stage, Some(&ffs))
+        .unwrap()
+        .bytes;
+    let levels = Flash::new(&image).bios_directories(SLOT).unwrap();
+    assert_eq!(levels.iter().count(), 2);
+    for directory in levels.iter() {
+        let reset = directory.entries.iter().find(|e| e.kind == 0x62).unwrap();
+        assert_eq!(reset.flags & BiosEntry::COMPRESSED, BiosEntry::COMPRESSED);
+    }
+    assert_eq!(image[0x2_0043..0x2_0045], [7, 1]);
+    // In the prefix only the EFS SPI fields and each directory's checksum
+    // and reset entry flags change.
+    let allowed = |i: usize| {
+        matches!(i, 0x2_0043 | 0x2_0044 | 0xf_7042 | 0x22_9042)
+            || (0xf_7004..0xf_7008).contains(&i)
+            || (0x22_9004..0x22_9008).contains(&i)
+    };
+    assert!((0..0x29_4000).all(|i| image[i] == vendor[i] || allowed(i)));
+    assert_eq!(image[0x29_4000..0xdb_0000], plain[0x29_4000..0xdb_0000]);
+    let inflated = assembly::amd_decompress(&image[0xdb_0000..], 0x25_0000).unwrap();
+    assert_eq!(inflated, plain[0xdb_0000..]);
 }

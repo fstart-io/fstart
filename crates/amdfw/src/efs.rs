@@ -82,6 +82,17 @@ impl Efs {
         }
     }
 
+    /// Set the SPI read mode and speed the PSP of `slot` uses, encoded as
+    /// in the FCH SPI controller.
+    pub fn set_spi(&mut self, slot: BiosDirectorySlot, mode: u8, speed: u8) {
+        match slot {
+            BiosDirectorySlot::Family17hModel00 | BiosDirectorySlot::Family17hModel10 => {
+                self.spi_read_mode = mode;
+                self.spi_speed = speed;
+            }
+        }
+    }
+
     /// The address of the BIOS directory the PSP of `slot` boots from.
     pub fn bios_directory(&self, slot: BiosDirectorySlot) -> Option<u64> {
         let pointer = match slot {

@@ -98,6 +98,8 @@ impl BiosEntry {
     pub const RESET: u8 = 1 << 0;
     /// The PSP copies the file to its destination.
     pub const COPY: u8 = 1 << 1;
+    /// The file is zlib-compressed with a 256-byte header; the PSP inflates it to its destination.
+    pub const COMPRESSED: u8 = 1 << 3;
 
     pub fn new(
         kind: u8,
@@ -241,6 +243,28 @@ impl<'a, E: Entry> Levels<'a, E> {
     pub fn iter(&self) -> impl Iterator<Item = Directory<'a, E>> + use<'a, E> {
         core::iter::once(self.level1).chain(self.level2)
     }
+}
+
+/// Change the entries of the directory at flash `offset` of `image` with
+/// `change` and fix its checksum. `None` if there is no such directory.
+pub fn modify_entries<E: Entry + IntoBytes>(
+    image: &mut [u8],
+    offset: usize,
+    mut change: impl FnMut(&mut E),
+) -> Option<()> {
+    let bytes = image.get_mut(offset..)?;
+    let (header, rest) = Header::mut_from_prefix(bytes).ok()?;
+    let count = usize::try_from(header.count.get()).ok()?;
+    let (entries, _) = <[E]>::mut_from_prefix_with_elems(rest, count).ok()?;
+    entries.iter_mut().for_each(&mut change);
+    let len = size_of::<Header>() + count * size_of::<E>();
+    let checksum = fletcher32(&bytes[8..len]);
+    Header::mut_from_prefix(bytes)
+        .ok()?
+        .0
+        .checksum
+        .set(checksum);
+    Some(())
 }
 
 /// The folded Fletcher-32 over little-endian 16-bit words, in chunks

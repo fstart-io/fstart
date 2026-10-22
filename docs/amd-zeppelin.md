@@ -51,7 +51,8 @@ CrabEFI with an OS behind it, on an MJ11-EC1 (EPYC 3151, SP4r2, one die).
 
 The image keeps the vendor PSP firmware: the first `0x294000` bytes of the
 vendor flash (EFS, PSP and BIOS directories, APCB, ABL, SMU firmware,
-microcode) stay byte-identical. fstart replaces BIOS directory entry 0x62:
+microcode) stay, with two changes that speed up the PSP. fstart replaces
+BIOS directory entry 0x62:
 
 | Flash | Use |
 | --- | --- |
@@ -64,6 +65,16 @@ microcode) stay byte-identical. fstart replaces BIOS directory entry 0x62:
 directory, the level 2 the PSP boots from (`EFS` → `$BHD` → `$BL2`), must
 describe this reset image and APOB and lie within the prefix. Its microcode
 entries (type 0x66) go into the FFS as `cpu_microcode.bin`.
+
+The reset image is zlib-compressed in the PSP's format (a
+256-byte header, then the stream; 2.3 MiB to about 150 KiB), and both BIOS
+directory levels mark entry 0x62 compressed, so the PSP inflates the stage
+instead of copying the whole region. The EFS sets the PSP's SPI reads to
+Fast Read at 33 MHz (it was left at the default). Only those bytes and the
+two directory checksums differ from the vendor prefix. On the MJ11 the
+first x86 instruction runs about 1.4 s earlier (3.9 s instead of 5.3 s
+after power-on). 66 MHz returns corrupt data on this board, and the dual
+read modes are no faster than Fast Read.
 
 ## x86 starts in DRAM
 
@@ -133,5 +144,5 @@ cargo fbuild assemble --board gigabyte-mj11-ec1 --release \
 - S3: the vendor DSDT has no `_S3` either, so the OS only sees S0 and S5.
 - APOB NV (the vendor's copy of the APOB in BIOS directory entry 0x63):
   vendor x86 code reads it only on S3 resume and capsule boots. It lives in
-  the vendor flash prefix, which stays byte-identical.
+  the vendor flash prefix.
 - Multi-die (SP4) and the EC0 variant are built but not tested on hardware.
