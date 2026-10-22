@@ -443,9 +443,8 @@ pub fn before_reconfig<P: ConfigRegionAccess + Clone>(
             + LC_CTL4::BIT11::CLEAR
             + LC_CTL4::EQ_8GT_MODE.val(pcie.extra.eq_search_mode.unwrap_or(0) as u32),
     );
-    c.port_reg::<LC_CTL8::Register>(port, port::LC_CTL8).modify(
-        LC_CTL8::BIT11::CLEAR + LC_CTL8::BIT8::CLEAR + LC_CTL8::EQ_16GT_MODE.val(0),
-    );
+    c.port_reg::<LC_CTL8::Register>(port, port::LC_CTL8)
+        .modify(LC_CTL8::BIT11::CLEAR + LC_CTL8::BIT8::CLEAR + LC_CTL8::EQ_16GT_MODE.val(0));
     // Rome PCD 0x13D (1): 8 GT/s SKP mode 2 on x1 and x4 links.
     if width == 1 || width == 4 {
         c.write_strap(strap::port(strap::P_SPC_MODE_8GT, port), 2);
@@ -804,8 +803,10 @@ impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R
                     p.port,
                     p.devfn,
                     p.bridge,
-                    core.port_reg::<LC_STATE0::Register>(p.port, port::LC_STATE0).get(),
-                    core.port_reg::<LC_CTL4::Register>(p.port, port::LC_CTL4).get(),
+                    core.port_reg::<LC_STATE0::Register>(p.port, port::LC_STATE0)
+                        .get(),
+                    core.port_reg::<LC_CTL4::Register>(p.port, port::LC_CTL4)
+                        .get(),
                     self.ports[i].trained as u8
                 );
             }

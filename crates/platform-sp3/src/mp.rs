@@ -99,7 +99,10 @@ impl CpuDriver for Sp3Cpu<'_> {
         let bsp = thread.in_scope(ccx::topology::Scope::Bsp);
         // APs only (PSP_APOB §3.2, threads ≠ 0): the BSP wrote its PSP_ADDR
         // with the BAR, and a second write raises #GP.
-        if let (false, Some(bar)) = (bsp, self.psp_addr[usize::from(thread.location().socket & 1)]) {
+        if let (false, Some(bar)) = (
+            bsp,
+            self.psp_addr[usize::from(thread.location().socket & 1)],
+        ) {
             cpu.write(MSR_PSP_ADDR, bar);
         }
         if !bsp {

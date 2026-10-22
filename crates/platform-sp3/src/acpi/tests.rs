@@ -356,7 +356,8 @@ fn dsdt_root_bridges_in_bus_order() {
     let tables = build(&inputs(Generation::Milan, &s, &rb, None)).unwrap();
     let d = &tables.dsdt;
     for name in [
-        b"PCI0", b"PCI1", b"PCI2", b"PCI3", b"LPCB", b"SYSR", b"NAPE", b"GPIO", b"FUR0", b"COM1", b"I2CA",
+        b"PCI0", b"PCI1", b"PCI2", b"PCI3", b"LPCB", b"SYSR", b"NAPE", b"GPIO", b"FUR0", b"COM1",
+        b"I2CA", b"_L0B", b"_PRW", b"XHC0",
     ] {
         assert!(d.windows(4).any(|w| w == name));
     }

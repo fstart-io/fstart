@@ -274,9 +274,17 @@ mod tests {
         let io = Mem::ports();
         // Rome routes (FCH_SP3 §3.3 af70); everything else unrouted.
         (0..=255u32).for_each(|i| io.set_at(irq::DATA, i, 0x1F));
-        [(0xE2, 7), (0xF0, 10), (0xF1, 11), (0xF4, 3), (0xF5, 4), (0xF8, 5), (0xF9, 12)]
-            .iter()
-            .for_each(|&(i, r)| io.set_at(irq::DATA, i, r));
+        [
+            (0xE2, 7),
+            (0xF0, 10),
+            (0xF1, 11),
+            (0xF4, 3),
+            (0xF5, 4),
+            (0xF8, 5),
+            (0xF9, 12),
+        ]
+        .iter()
+        .for_each(|&(i, r)| io.set_at(irq::DATA, i, r));
         (mmio, io)
     }
 

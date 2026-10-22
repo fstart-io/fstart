@@ -338,7 +338,9 @@ pub(crate) fn dxio(
     // SAFETY: every socket's FCH is live; DXIO owns their PERST GPIOs.
     let perst = unsafe { FchPerst::new(generation, fchs, None) };
     let mut setup = PortSetup::new(generation, &si.nbios, engines, perst);
-    super::dxio_or_halt(dxio::train(generation, &mut units, &mut setup, &ctx.timer, &policy));
+    super::dxio_or_halt(dxio::train(
+        generation, &mut units, &mut setup, &ctx.timer, &policy,
+    ));
     for u in &units {
         for (i, e) in u.engines().iter().enumerate() {
             fstart_log::info!(

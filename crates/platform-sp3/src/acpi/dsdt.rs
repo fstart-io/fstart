@@ -29,7 +29,7 @@ use fstart_acpi::processor::{
     Coordination, PerformanceState, PowerState, ProcessorName, cst_aml, pct_aml, processor_device,
     psd_aml, pss_aml,
 };
-use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl};
+use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl, gpe};
 use fstart_driver_zen::soc::Generation;
 
 use super::fixed::{FCH_IOAPIC_BASE, GsiWindow, HPET_BASE, LAPIC_BASE, PM_BASE};
@@ -139,6 +139,33 @@ fn prt_aml(entries: impl Iterator<Item = (u8, u8, u32)>) -> Vec<u8> {
     name("_PRT", &prt)
 }
 
+/// PME/wake GPE of the internal bridges (donor `GPRW(0x0B, 4)` on
+/// Rome/Milan 7.1 and 8.1 of every NBIO, notified by `\_GPE._L0B`).
+const WAKE_GPE: u8 = 0x0B;
+const WAKE_STATE: u8 = 4;
+
+/// Internal bridges with `_PRW`. The Naples donor ASL notifies other
+/// objects (CRB names); not modelled there.
+fn wake_bridges(generation: Generation) -> &'static [(u8, u8)] {
+    match generation {
+        Generation::Naples => &[],
+        Generation::Rome | Generation::Milan => &[(7, 1), (8, 1)],
+    }
+}
+
+/// The xHCI behind 8.1 (function 3, donor `XHC0`) on Rome/Milan.
+const XHCI: Option<((u8, u8), u32)> = Some(((8, 1), 3));
+
+fn bridge_name(device: u8, function: u8) -> [u8; 4] {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    [
+        b'R',
+        b'P',
+        HEX[usize::from(device & 0xf)],
+        HEX[usize::from(function & 7)],
+    ]
+}
+
 /// The root bus `_PRT` and one device per internal bridge with its own.
 fn routing(generation: Generation, gsi_base: u32) -> Result<Vec<u8>, AmlError> {
     let root = prt_aml(
@@ -147,21 +174,42 @@ fn routing(generation: Generation, gsi_base: u32) -> Result<Vec<u8>, AmlError> {
             .map(|(d, p, pin)| (d, p, gsi_base + u32::from(pin))),
     );
     prt::bridges(generation).try_fold(root, |mut out, b| {
-        const HEX: &[u8; 16] = b"0123456789ABCDEF";
-        let dev_name = [
-            b'R',
-            b'P',
-            HEX[usize::from(b.device & 0xf)],
-            HEX[usize::from(b.function & 7)],
-        ];
-        let body = [
+        let at = (b.device, b.function);
+        let mut body = [
             name("_ADR", &(u32::from(b.device) << 16 | u32::from(b.function))),
             prt_aml((0..4).map(|x| (0, x, gsi_base + u32::from(b.secondary_pin(x))))),
         ]
         .concat();
-        out.extend(device_vec(as_str(&dev_name), &body)?);
+        if wake_bridges(generation).contains(&at) {
+            body.extend(gpe::prw(WAKE_GPE, WAKE_STATE));
+        }
+        if let Some((_, adr)) = XHCI.filter(|(br, _)| *br == at && generation != Generation::Naples)
+        {
+            body.extend(device_vec("XHC0", &name("_ADR", &adr))?);
+        }
+        out.extend(device_vec(
+            as_str(&bridge_name(b.device, b.function)),
+            &body,
+        )?);
         Ok(out)
     })
+}
+
+/// `\_GPE._L0B` waking every root bridge's wake bridges.
+fn wake_gpe(generation: Generation, uids: usize) -> Vec<u8> {
+    let paths: Vec<alloc::string::String> = (0..uids)
+        .flat_map(|uid| {
+            wake_bridges(generation).iter().map(move |&(d, f)| {
+                alloc::format!(
+                    "\\_SB_.{}.{}",
+                    as_str(&pci_name(uid)),
+                    as_str(&bridge_name(d, f))
+                )
+            })
+        })
+        .collect();
+    let targets: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
+    gpe::notify_wake(WAKE_GPE, false, &targets)
 }
 
 /// `_OSC` for PCI host bridges: every requested control is granted
@@ -444,6 +492,7 @@ pub fn build(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError
         return Err(AmlError::InvalidOperand);
     }
     let mut out = root_objects(bridges.len())?;
+    out.extend(wake_gpe(inputs.generation, bridges.len()));
     for (uid, rb) in &bridges {
         out.extend(root_bridge(inputs, windows, *uid, rb)?);
     }

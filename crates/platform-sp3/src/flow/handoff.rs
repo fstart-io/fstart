@@ -59,7 +59,11 @@ pub(crate) fn mount_boot_media(ctx: &Ctx) {
                 .iter()
                 .filter(|e| !ram(e))
                 .map(to_window)
-                .chain([image, span_window(layout::EARLY_REGION), span_window(window)])
+                .chain([
+                    image,
+                    span_window(layout::EARLY_REGION),
+                    span_window(window),
+                ])
                 .collect(),
         )
     };

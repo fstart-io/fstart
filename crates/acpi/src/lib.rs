@@ -46,6 +46,7 @@ pub mod descriptors;
 pub mod device;
 pub mod devices;
 pub mod ext;
+pub mod gpe;
 pub mod gtdt;
 pub mod iort;
 pub mod ivrs;
