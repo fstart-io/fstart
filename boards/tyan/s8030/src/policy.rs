@@ -18,7 +18,7 @@
 //! | SEV-SNP (Milan `0x198`) | Disabled | [`ccx`]: `snp = None` (driver default) |
 //! | IOMMU (`0x154` / `0x184`) | Auto | [`nbio`]: driver default (on) |
 //! | ACS, ARI (`0x156`/`0x157`, `0x188`/`0x189`) | Disabled | no driver knob yet |
-//! | NUMA nodes per socket (`0xba` / `0xd1`) | NPS4 | vendor APCB; read back from the APOB |
+//! | NUMA nodes per socket (`0xba` / `0xd1`) | NPS4 (Setup) | ABL uses the flash APCB, read back from the APOB: NPS1 on the bench |
 //! | CBS link speed, Early Link Speed, Preferred IO | Auto | [`dxio`]: driver default |
 //! | Clock Spread Spectrum (AMI `Setup 0x101` / `0xc0`) | Rome on, Milan off | [`spread_spectrum`] |
 //! | Restore AC Power Loss (`Setup 0x107`, Milan CBS `0x28f`) | Last State | [`fch_env`]: [`POWER_FAILURE`] |

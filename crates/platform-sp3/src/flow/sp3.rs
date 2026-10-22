@@ -582,7 +582,22 @@ pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
     use fstart_driver_zen::df::dram::{self, ccd_channel, df3_channel, domain_of, ioms_channel};
     use fstart_driver_zen::df::{Target, v3};
 
-    let domains = dram::numa_domains(nps::nps(&ctx.apob).ok()?, ctx.topology.sockets);
+    let mode = match nps::nps(&ctx.apob) {
+        Ok(mode) => mode,
+        Err(e) => {
+            use fstart_driver_zen::apob::ApobError as E;
+            let (what, value) = match e {
+                E::NotFound { kind, .. } => ("missing", kind),
+                E::TooShort { kind, .. } => ("short", kind),
+                E::Value { value, .. } => ("value", value),
+                _ => ("unreadable", 0),
+            };
+            fstart_log::warn!("numa: APOB NPS {} {:#x}: one domain", what, value);
+            return None;
+        }
+    };
+    fstart_log::info!("numa: NPS{}", mode.domains_per_socket().unwrap_or(0));
+    let domains = dram::numa_domains(mode, ctx.topology.sockets);
     if domains.len() <= 1 {
         return None;
     }
