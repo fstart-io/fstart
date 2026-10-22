@@ -389,12 +389,7 @@ fn single_generation_and_kept_halves() {
     assert_eq!(half.image[..0xde_0000], out.image[..0xde_0000]);
     check_trees(&half.image, &rome, Generation::Rome, 0xde_0000);
     assert_eq!(
-        compose(
-            &rom,
-            &plan(&[Generation::Naples]),
-            &linked_reset(),
-            &ffs
-        ),
+        compose(&rom, &plan(&[Generation::Naples]), &linked_reset(), &ffs),
         Err(ImageError::NoSupportedHalf)
     );
 }
@@ -584,7 +579,10 @@ fn bench_s8030_backup() {
     )
     .unwrap();
     let image = &out.image;
-    assert_eq!(out.survey.halves[1], (FlashHalf::Upper, HalfAction::Keep(None)));
+    assert_eq!(
+        out.survey.halves[1],
+        (FlashHalf::Upper, HalfAction::Keep(None))
+    );
     assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
     assert_eq!(image[HALF..], rom[HALF..]);
     assert_eq!(booted_half(image, Generation::Rome), Some(FlashHalf::Lower));
@@ -593,4 +591,106 @@ fn bench_s8030_backup() {
     assert_eq!(image[..0x24_6000], rom[..0x24_6000]);
     check_trees(image, &rom[..HALF], Generation::Rome, 0xde_0000);
     check_payloads(image, 0xde_0000, &ffs, 0x60_0000);
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    fstart_crypto::digest::hash_sha256(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The composed images, byte for byte: the synthetic halves and every
+/// donor present.
+#[test]
+fn composes_the_pinned_images() {
+    use Generation::{Milan, Naples, Rome};
+    let ffs = ffs(0x10_0000);
+    let pinned = |rom: &[u8], generations: &[Generation]| {
+        sha256(
+            &compose(rom, &plan(generations), &linked_reset(), &ffs)
+                .unwrap()
+                .image,
+        )
+    };
+    let (naples, rome, milan) = (synthetic(Naples), synthetic(Rome), synthetic(Milan));
+    let synthetic = [
+        (
+            pinned(&[&rome[..], &milan[..]].concat(), &[Rome, Milan]),
+            "6517e9f70527b8a75ac4b714ad2cce39e43dbd2a68fcec3aa2893a04794a3e0f",
+        ),
+        (
+            pinned(&[&naples[..], &rome[..]].concat(), &[Naples, Rome]),
+            "09c6ff763b9f7e75b691b0569c3c27eba4db73ab2740a857a55e6a6a942a678b",
+        ),
+        (
+            pinned(&rome, &[Rome]),
+            "ae0d32d8e5b648ff68ba1a42257dbfc2ac30766f5486994cbb49cf40efbc63cb",
+        ),
+    ];
+    for (hash, expected) in synthetic {
+        assert_eq!(hash, expected);
+    }
+    let donors: [(&str, &[Generation], &str); 11] = [
+        (
+            "donors/naples-s8026-v202.bin",
+            &[Naples],
+            "d958a6740fbedc092e24c5abcb6f0b06d694cd52c0d71fa1b60aea292766f2b5",
+        ),
+        (
+            "donors/naples2p-knppd32-1801.bin",
+            &[Naples],
+            "e3883adf546aaf7e6788c2eaff05d1a8057035a23c7bb39aae65afdd5bcf45a2",
+        ),
+        (
+            "donors/rome-s8026-v202.bin",
+            &[Rome],
+            "5ddb79ff968612c380e9675c9066f1b8203b90b72b735401bea91ff74d838bbc",
+        ),
+        (
+            "donors/rome-s8030-v404.bin",
+            &[Rome],
+            "3e5ca588c41af4424f994cf06d1cc5be3806a76b87406f0bc0819b7fe2fa7dfe",
+        ),
+        (
+            "donors/rome2p-s8253-v203.bin",
+            &[Rome],
+            "d289b9f753946d4b920954371a0d7def7538b6d9bd8b3685376c64b186e5110e",
+        ),
+        (
+            "donors/milan-s8030-v404.bin",
+            &[Milan],
+            "2d8647843b607b8d2388e75cd5d52c5c9fa7309212837e2cc04c3dbc03dd4dcd",
+        ),
+        (
+            "donors/milan2p-s8253-v203.bin",
+            &[Milan],
+            "f17605f332c64a0c874d58602e7ed0a48f9181f69006de6a66f1a25dd800f9d1",
+        ),
+        (
+            S8030,
+            &[Rome, Milan],
+            "64a83561e74ab97483da32712b2ec33f85601a078aff206f8b55a5c2da93219e",
+        ),
+        (
+            "tyan-s8030gm2ne/S8030GM2NE_bios_v400/8030V400.ROM",
+            &[Rome, Milan],
+            "9901bd95a5dd9cc918b22ff9b9323d5ad37e9490adb59307d1b2a83bc812efdf",
+        ),
+        (
+            "tyan-s8026/x/8026V202.ROM",
+            &[Naples, Rome],
+            "a0ee05faf086cc66dd1af8841aa442e246e7c9a89c43c823639a541043c066d5",
+        ),
+        (
+            "hw/s8030gm2ne-CCSF2AK45016/host-pnor.read1.bin",
+            &[Rome, Milan],
+            "546e75fe601f9d7d9cec9d50836425e505890d8f9c7945df3df73e448236f26c",
+        ),
+    ];
+    for (path, generations, expected) in donors {
+        if let Some(rom) = donor(path) {
+            assert_eq!(pinned(&rom, generations), expected, "{path}");
+        }
+    }
 }
