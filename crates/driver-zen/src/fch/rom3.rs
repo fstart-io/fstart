@@ -89,7 +89,7 @@ pub enum Rom3 {
 /// half always has one).
 const PROBE_OFFSET: u32 = 0x2_0000;
 const PROBE_LEN: usize = 0x40;
-const EFS_SIGNATURE: [u8; 4] = 0x55aa_55aau32.to_le_bytes();
+const EFS_SIGNATURE: [u8; 4] = fstart_amdfw_format::efs::SIGNATURE.to_le_bytes();
 
 /// The CPU's view of an SPI flash of `size` bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

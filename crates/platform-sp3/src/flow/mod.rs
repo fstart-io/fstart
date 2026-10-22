@@ -37,6 +37,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use fstart_amdfw_format::directory::{BiosEntry, Entry, Levels, bios};
 use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem, TopMem2};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
@@ -52,7 +53,6 @@ use fstart_driver_zen::dxio::lanes::Engine;
 use fstart_driver_zen::fch::rom3::{self, FlashAnchor, FlashMap, Rom3};
 use fstart_driver_zen::fch::{self, FchHw};
 use fstart_driver_zen::nbio::Nbio;
-use fstart_driver_zen::psp::directory::Efs;
 use fstart_driver_zen::soc::{self, Generation, Identity};
 use fstart_driver_zen::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
@@ -551,9 +551,7 @@ fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
                         rom3::PAGE_SIZE,
                     ))
                 })?;
-            Efs::new(view)
-                .is_ok_and(|efs| efs.matches(generation))
-                .then_some(view)
+            generation.flash(view).efs_checked().is_ok().then_some(view)
         })
         .or_halt("EFS");
     let ffs = map.address(offset, size).or_halt("FFS window");
@@ -561,13 +559,41 @@ fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
     (efs, Span::new(ffs, u64::from(size)))
 }
 
+/// `generation`'s BIOS directories in the booted half `flash`.
+fn bios_directories(
+    flash: &'static [u8],
+    generation: Generation,
+) -> Option<Levels<'static, BiosEntry>> {
+    generation
+        .flash(flash)
+        .bios_directories_checked(generation.profile().bios)
+        .ok()
+}
+
+/// Patches of BIOS directory entry 0x66, copied to RAM (the patch loader
+/// reads them at their address; flash is uncached).
+pub(crate) fn microcode_candidates(ctx: &Ctx) -> Vec<&'static [u8]> {
+    let Some(dirs) = bios_directories(ctx.flash, ctx.generation) else {
+        return Vec::new();
+    };
+    dirs.all(bios::MICROCODE)
+        .filter(|(_, e)| e.has_data())
+        .filter_map(|(dir, e)| dir.data(e).ok())
+        .map(|patch| {
+            let copy = dma_alloc(patch.len(), 16);
+            copy.copy_from_slice(patch);
+            &*copy
+        })
+        .collect()
+}
+
 /// The APOB from BIOS directory entry 0x61 (PSP_APOB §3.5); logs the ABL
 /// event log and the APCB recovery flag.
 fn read_apob(flash: &'static [u8], generation: Generation) -> (Apob<'static>, Span) {
-    let address = Efs::new(flash)
-        .and_then(|efs| efs.bios_directories(generation))
-        .ok()
-        .and_then(|dirs| dirs.apob_address())
+    let address = bios_directories(flash, generation)
+        .and_then(|dirs| dirs.find(bios::APOB, None, None))
+        .map(|(_, entry)| entry.destination())
+        .filter(|&d| d != u64::MAX)
         .or_halt("APOB directory entry");
     // SAFETY: the PSP wrote the APOB there before releasing x86; it is
     // reserved in e820 and only read.

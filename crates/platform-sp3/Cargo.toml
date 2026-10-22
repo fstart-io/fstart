@@ -36,6 +36,7 @@ host = ["dep:fstart-image-build", "dep:serde_json"]
 
 [dependencies]
 fstart-driver-zen = { path = "../driver-zen" }
+fstart-amdfw-format = { workspace = true }
 # The TSC timer and the FCH POST code register; Naples is Zeppelin.
 fstart-driver-amd = { workspace = true, features = ["zeppelin"] }
 fstart-driver-ipmi = { path = "../driver-ipmi", optional = true }

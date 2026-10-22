@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Directory wire layouts and checked traversal (AMD #55758). Adapted from
-//! the independently sourced SP3 reader; packing policy lives in its caller.
+//! Directory wire layouts, checked traversal and the table writer (AMD
+//! #55758); packing policy lives in its caller.
 use crate::{Error, Flash};
 use core::ops::Range;
 use tock_registers::{LocalRegisterCopy, register_bitfields};
@@ -505,7 +505,8 @@ pub fn modify_entries<E: Entry + IntoBytes>(
     Some(())
 }
 
-/// Folded Fletcher-32 from the SP3 reader, over little-endian words.
+/// Fletcher-32 over little-endian 16-bit words, folded every 359 words
+/// (the directory checksum).
 pub fn fletcher32(bytes: &[u8]) -> u32 {
     let fold = |x: u32| (x & 0xffff) + (x >> 16);
     let (a, b) = bytes

@@ -5,6 +5,9 @@
 //! stepping, model, family or package is an error: each generation's code is
 //! only run on silicon it was recovered from.
 
+use fstart_amdfw_format::efs::BiosDirectorySlot;
+use fstart_amdfw_format::{Flash, HALF_SIZE, Profile};
+
 /// CPUID Fn8000_0001_EBX\[31:28\] package type of SP3 (all three generations).
 pub const PACKAGE_SP3: u8 = 4;
 
@@ -20,6 +23,32 @@ pub enum Generation {
 }
 
 impl Generation {
+    /// The flash format of this generation's boot ROM and BIOS directory
+    /// (EFS generation word, PSP ID, BIOS directory pointer).
+    pub const fn profile(self) -> Profile {
+        Profile::for_slot(match self {
+            Self::Naples => BiosDirectorySlot::Family17hModel00,
+            Self::Rome => BiosDirectorySlot::Family17hModel30,
+            Self::Milan => BiosDirectorySlot::Family19h,
+        })
+    }
+
+    /// The flash offsets of the 16 MiB halves the boot ROM searches for its
+    /// EFS, in order: Naples only the lower one (FIRMWARE_IMAGE §1.2, AMD
+    /// #55758 §4.1.7).
+    pub const fn boot_halves(self) -> &'static [usize] {
+        match self {
+            Self::Naples => &[0],
+            Self::Rome | Self::Milan => &[0, HALF_SIZE],
+        }
+    }
+
+    /// `bytes` from the start of a 16 MiB half, as the boot ROM maps the
+    /// half below 4 GiB.
+    pub const fn flash(self, bytes: &[u8]) -> Flash<'_> {
+        Flash::region(bytes, 0, crate::fch::rom3::ROM2_BASE, self.profile())
+    }
+
     /// Maximum sockets on SP3.
     pub const MAX_SOCKETS: usize = 2;
 

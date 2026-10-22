@@ -774,6 +774,7 @@ name = "fstart-driver-zen"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
+ "fstart-amdfw-format",
  "fstart-arch",
  "fstart-core",
  "fstart-log",
@@ -803,6 +804,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "fstart-amdfw",
+ "fstart-amdfw-format",
  "fstart-boot",
  "fstart-core",
  "fstart-coreboot",
@@ -938,6 +940,7 @@ name = "fstart-platform-sp3"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
+ "fstart-amdfw-format",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",

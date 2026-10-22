@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
-use fstart_amdfw::directory::{BiosEntry, PspEntry, modify_entries, write_table};
-use fstart_driver_zen::psp::directory::{Directories, Directory};
+use fstart_amdfw_format::directory::{
+    BiosEntry, Directory, Entry, Levels, PspEntry, modify_entries, write_table,
+};
 use std::path::Path;
 use zerocopy::Immutable;
 
@@ -68,7 +69,7 @@ fn synthetic(generation: Generation) -> Vec<u8> {
         Generation::Rome => 0x10,
         Generation::Milan => 0x10 | 1 << 29,
     };
-    put32(&mut h, EFS_OFFSET, EFS_SIGNATURE);
+    put32(&mut h, EFS_OFFSET, efs::SIGNATURE);
     put32(&mut h, EFS_OFFSET + EFS_PSP, ptr(PSP) as u32);
     put32(&mut h, EFS_OFFSET + EFS_WORD, generation_word(generation));
     put32(&mut h, EFS_OFFSET + bios_field(generation), ptr(BHD) as u32);
@@ -90,7 +91,7 @@ fn synthetic(generation: Generation) -> Vec<u8> {
         &[
             psp_entry(0x00, 0x8000, ptr(0x11_0000)),
             psp_entry(psp::SOFT_FUSE, u32::MAX, 1),
-            psp_entry(psp::L2, 0x400, ptr(PL2)),
+            psp_entry(psp::LEVEL2, 0x400, ptr(PL2)),
         ],
     );
     put_dir(
@@ -108,7 +109,7 @@ fn synthetic(generation: Generation) -> Vec<u8> {
         &[
             bios_entry(bios::APOB, 0, 0, 0, 0x3000_0000),
             reset(),
-            bios_entry(bios::L2, 0, 0x400, ptr(BL2), u64::MAX),
+            bios_entry(bios::LEVEL2, 0, 0x400, ptr(BL2), u64::MAX),
         ],
     );
     put_dir(
@@ -176,18 +177,18 @@ fn linked_reset() -> Vec<u8> {
 /// data (directories by cookie only, their pointers move); `reset` checks
 /// the `0x62` entries instead.
 fn same_tree<E: Entry>(
-    out: &Directories<'_, E>,
-    vendor: &Directories<'_, E>,
+    out: &Levels<'_, E>,
+    vendor: &Levels<'_, E>,
     mut reset: impl FnMut(&Directory<'_, E>, &E) -> bool,
 ) {
-    let (o, v): (Vec<_>, Vec<_>) = (out.levels().collect(), vendor.levels().collect());
+    let (o, v): (Vec<_>, Vec<_>) = (out.iter().collect(), vendor.iter().collect());
     assert_eq!(o.len(), v.len());
     for (od, vd) in o.into_iter().zip(v) {
-        assert_eq!(od.cookie(), vd.cookie());
-        assert_eq!(od.entries().len(), vd.entries().len());
-        for (oe, ve) in od.entries().iter().zip(vd.entries()) {
+        assert_eq!(od.header.cookie, vd.header.cookie);
+        assert_eq!(od.entries.len(), vd.entries.len());
+        for (oe, ve) in od.entries.iter().zip(vd.entries) {
             assert_eq!((oe.kind(), oe.instance()), (ve.kind(), ve.instance()));
-            if reset(od, oe) {
+            if reset(&od, oe) {
                 continue;
             }
             match (od.data(oe), vd.data(ve)) {
@@ -205,20 +206,21 @@ fn same_tree<E: Entry>(
 /// PSP and BIOS trees resolve to `vendor`'s bytes, and every `0x62` names
 /// the reset image at flash `reset_at`.
 fn check_trees(image: &[u8], vendor: &[u8], generation: Generation, reset_at: usize) {
-    let half = booted_half_offset(image, generation).unwrap();
-    let out = Efs::new(&image[half..]).unwrap();
-    let ven = Efs::new(vendor).unwrap();
+    let half = booted_half(image, generation).unwrap().offset();
+    let out = generation.flash(&image[half..]);
+    let ven = generation.flash(vendor);
     same_tree(
-        &out.psp_directories(generation).unwrap(),
-        &ven.psp_directories(generation).unwrap(),
+        &out.psp_directories().unwrap(),
+        &ven.psp_directories().unwrap(),
         |_, _| false,
     );
     let mut resets = 0;
+    let slot = generation.profile().bios;
     same_tree(
-        &out.bios_directories(generation).unwrap(),
-        &ven.bios_directories(generation).unwrap(),
+        &out.bios_directories_checked(slot).unwrap(),
+        &ven.bios_directories_checked(slot).unwrap(),
         |dir, e| {
-            if e.kind() != bios::RESET_IMAGE {
+            if e.kind != bios::RESET_IMAGE {
                 return false;
             }
             let range = dir.range(e).unwrap();
@@ -331,7 +333,7 @@ fn layouts_the_composer_refuses() {
     ));
     // An EFS signature where a boot ROM searches before 0x20000.
     let mut stray = self::ffs(0x22_0004);
-    put32(&mut stray, 0x82_0000 - 0x60_0000, EFS_SIGNATURE);
+    put32(&mut stray, 0x82_0000 - 0x60_0000, efs::SIGNATURE);
     assert_eq!(
         compose_with(&rom, &all, &stray),
         Err(ImageError::StrayEfs { offset: 0x82_0000 })
@@ -342,10 +344,7 @@ fn layouts_the_composer_refuses() {
     };
     assert!(matches!(
         checksum(milan.clone()),
-        Err(ImageError::Directory(DirError::Checksum {
-            offset: BL2,
-            ..
-        }))
+        Err(ImageError::Directory(DirError::Checksum(BL2)))
     ));
 }
 

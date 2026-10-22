@@ -4,8 +4,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
-
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
 use fstart_driver_zen::ccx::release::{self, Launch, SmuPwr};
@@ -26,7 +24,6 @@ use fstart_driver_zen::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_zen::nbio::iohc::DramTops;
 use fstart_driver_zen::nbio::{Nbio, naples as nbio_naples};
 use fstart_driver_zen::psp::bar::BAR_SIZE;
-use fstart_driver_zen::psp::directory::{Efs, bios};
 use fstart_driver_zen::smn::Smn;
 use fstart_driver_zen::smu::mailbox::Mailbox;
 use fstart_driver_zen::smu::v9;
@@ -34,7 +31,7 @@ use fstart_driver_zen::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
-use super::{Ctx, OrHalt, dma_alloc, fail};
+use super::{Ctx, OrHalt, dma_alloc, fail, microcode_candidates};
 use crate::board::Board;
 use crate::entry::ApRoute;
 use crate::hw::{Pci, Tsc, msr, secondary_fch};
@@ -201,20 +198,6 @@ pub(crate) fn fch_env(ctx: &Ctx, si: &Silicon) {
 }
 
 use fstart_arch::x86::writeback_invalidate_caches;
-
-fn microcode_candidates(ctx: &Ctx) -> Vec<&'static [u8]> {
-    let Ok(dirs) = Efs::new(ctx.flash).and_then(|e| e.bios_directories(ctx.generation)) else {
-        return Vec::new();
-    };
-    dirs.all(bios::MICROCODE)
-        .filter_map(|(dir, e)| dir.data(e).ok())
-        .map(|patch| {
-            let copy = dma_alloc(patch.len(), 16);
-            copy.copy_from_slice(patch);
-            &*copy
-        })
-        .collect()
-}
 
 fn route_aps(route: ApRoute) {
     #[cfg(all(target_os = "none", fstart_entry = "amd-psp-reset"))]

@@ -35,24 +35,25 @@
 //! reset + copy, uncompressed. The reset image carries the stage's trust
 //! policy, the FFS locator and the SP3 flash anchor (FFS flash offset and
 //! size) as patch sites, which [`patch_reset_image`] fills from the
-//! assembled FFS. A composed image is re-read with the runtime directory
-//! parser and the boot ROM's EFS rule before it is returned.
+//! assembled FFS. A composed image is re-read with `fstart-amdfw-format` (as
+//! the reset image reads it) and the boot ROM's EFS rule before it is
+//! returned.
 
 use core::fmt;
 use core::ops::Range;
 use std::collections::BTreeSet;
 
+use fstart_amdfw_format::directory::{Combo, bios, fletcher32, psp};
+use fstart_amdfw_format::efs::{self, Efs};
+use fstart_amdfw_format::{Error as DirError, Flash, Profile};
 use fstart_core::ffs::locator::{LOCATOR_SIZE, LocatorBlock};
 use fstart_core::ffs::trust::{TRUST_SIZE, TrustBlock};
+use fstart_driver_zen::fch::rom3::ROM2_BASE as MMIO_BASE;
 use fstart_driver_zen::fch::rom3::{ANCHOR_SIZE, FlashAnchor};
-use fstart_driver_zen::psp::directory::{
-    Combo, DirError, EFS_OFFSET, EFS_SEARCH, EFS_SIGNATURE, Efs, Entry, MMIO_BASE, bios,
-    booted_half as booted_half_offset, fletcher32, psp,
-};
 use serde::{Deserialize, Serialize};
 use zerocopy::IntoBytes;
 
-pub use fstart_driver_zen::psp::directory::HALF_SIZE;
+pub use fstart_amdfw_format::HALF_SIZE;
 pub use fstart_driver_zen::soc::Generation;
 
 use crate::build_plan::{BuildPlan, FfsAssembly, UnitOutput};
@@ -84,6 +85,8 @@ const fn bios_field(generation: Generation) -> usize {
         Generation::Milan => 0x28,
     }
 }
+/// Where the SP3 halves have their EFS.
+const EFS_OFFSET: usize = 0x2_0000;
 const EFS_PSP: usize = 0x14;
 const EFS_WORD: usize = 0x24;
 
@@ -350,7 +353,7 @@ impl Tree {
                 let start = match mode {
                     0 | 1 if (MMIO_BASE..1 << 32).contains(&address) => address - MMIO_BASE,
                     0 | 1 if !gen1 => address,
-                    0 | 1 => return Err(DirError::BadPointer(value).into()),
+                    0 | 1 => return Err(DirError::Address(value).into()),
                     2 => offset as u64 + address,
                     _ => return Err(ImageError::AddressMode { offset: at, mode }),
                 };
@@ -358,7 +361,7 @@ impl Tree {
                     .ok()
                     .and_then(|s| Some(s..s.checked_add(size as usize)?))
                     .filter(|r| r.end <= half.len())
-                    .ok_or(DirError::BadPointer(value))?;
+                    .ok_or(DirError::Address(value))?;
                 if half
                     .get(target.start..target.start + 4)
                     .and_then(Kind::of)
@@ -385,9 +388,9 @@ impl Tree {
     }
 
     fn directory(half: &[u8], offset: usize) -> Result<Dir, ImageError> {
-        let truncated = DirError::Truncated { offset };
+        let truncated = DirError::Truncated(offset);
         let header = half.get(offset..offset + 16).ok_or(truncated)?;
-        let kind = Kind::of(&header[..4]).ok_or(DirError::Cookie { offset })?;
+        let kind = Kind::of(&header[..4]).ok_or(DirError::Cookie(offset))?;
         let dir = Dir {
             offset,
             kind,
@@ -395,14 +398,8 @@ impl Tree {
             info: get32(header, 12),
         };
         let body = half.get(offset + 8..dir.table_end()).ok_or(truncated)?;
-        let (stored, computed) = (get32(header, 4), fletcher32(body));
-        if stored != computed {
-            return Err(DirError::Checksum {
-                offset,
-                stored,
-                computed,
-            }
-            .into());
+        if get32(header, 4) != fletcher32(body) {
+            return Err(DirError::Checksum(offset).into());
         }
         Ok(dir)
     }
@@ -443,24 +440,34 @@ pub struct VendorLayout {
     pub prefix_end: usize,
 }
 
+/// A half's EFS, wherever a boot ROM of any generation finds it.
+fn vendor_efs(half: &[u8]) -> Result<&Efs, ImageError> {
+    let any = Profile {
+        generation_mask: 0,
+        ..Generation::Naples.profile()
+    };
+    Ok(Flash::region(half, 0, MMIO_BASE, any).efs_checked()?.1)
+}
+
 /// A vendor half's PSP and BIOS directory trees.
 fn vendor_trees(half: &[u8]) -> Result<(Generation, Tree), ImageError> {
-    let efs = Efs::new(half)?;
-    let generation = generation_of(efs.generation_word())?;
+    let efs = vendor_efs(half)?;
+    let generation = generation_of(efs.generation.get())?;
     let gen1 = generation == Generation::Naples;
-    let pointer = |value: u32| {
-        let v = u64::from(value);
-        match v {
-            v if (MMIO_BASE..1 << 32).contains(&v) => Ok((v - MMIO_BASE) as usize),
-            v if !gen1 && (v as usize) < half.len() => Ok(v as usize),
-            v => Err(DirError::BadPointer(v)),
-        }
+    let pointer = |value: u64| match value {
+        v if (MMIO_BASE..1 << 32).contains(&v) => Ok((v - MMIO_BASE) as usize),
+        v if !gen1 && (v as usize) < half.len() => Ok(v as usize),
+        v => Err(DirError::Address(v)),
     };
-    let psp_root = pointer(efs.psp_pointer())?;
-    if Combo::parse(half, psp_root)?.is_some() {
+    let psp_root = pointer(efs.new_psp_directory.get().into())?;
+    let flash = generation.flash(half);
+    if Combo::read(flash, psp_root)?.is_some() {
         return Err(ImageError::Layout("vendor half with a combo directory"));
     }
-    let bios_root = pointer(efs.bios_pointer(generation))?;
+    let bios = efs
+        .bios_directory(generation.profile().bios)
+        .ok_or(DirError::MissingDirectory)?;
+    let bios_root = pointer(bios)?;
     Ok((generation, Tree::walk(half, &[psp_root, bios_root], gen1)?))
 }
 
@@ -512,9 +519,9 @@ pub fn halves(image: &[u8]) -> Result<Vec<(FlashHalf, &[u8])>, ImageError> {
 
 /// The generation of a half's vendor EFS, `None` without a recognized EFS.
 pub fn half_generation(half: &[u8]) -> Option<Generation> {
-    Efs::new(half)
+    vendor_efs(half)
         .ok()
-        .and_then(|efs| generation_of(efs.generation_word()).ok())
+        .and_then(|efs| generation_of(efs.generation.get()).ok())
 }
 
 /// How a build is composed into the vendor ROM.
@@ -711,14 +718,14 @@ fn verify(image: &[u8], plan: &FlashPlan, survey: &Survey) -> Result<(), ImageEr
                 booted,
             });
         }
-        let efs = Efs::new(&image[planned.offset()..])?;
-        efs.psp_directories(generation)?;
-        let dirs = efs.bios_directories(generation)?;
+        let flash = generation.flash(&image[planned.offset()..]);
+        flash.psp_directories()?;
+        let dirs = flash.bios_directories_checked(generation.profile().bios)?;
         let expected = planned.offset() + plan.reset.flash_offset as usize;
         let resets = dirs
-            .levels()
-            .flat_map(|d| d.entries().iter().map(move |e| (d, e)))
-            .filter(|(_, e)| e.kind() == bios::RESET_IMAGE);
+            .iter()
+            .flat_map(|d| d.entries.iter().map(move |e| (d, e)))
+            .filter(|(_, e)| e.kind == bios::RESET_IMAGE);
         for (dir, entry) in resets {
             let range = dir.range(entry)?;
             if planned.offset() + range.start != expected
@@ -729,9 +736,9 @@ fn verify(image: &[u8], plan: &FlashPlan, survey: &Survey) -> Result<(), ImageEr
                 return Err(ImageError::Verify("a 0x62 entry misses the reset image"));
             }
         }
-        for &offset in EFS_SEARCH.iter().filter(|&&o| o != EFS_OFFSET) {
-            let at = half.offset() + offset;
-            if get32(image, at) == EFS_SIGNATURE {
+        for &offset in efs::PROBES.iter().filter(|&&o| o as usize != EFS_OFFSET) {
+            let at = half.offset() + offset as usize;
+            if get32(image, at) == efs::SIGNATURE {
                 return Err(ImageError::StrayEfs { offset: at });
             }
         }
@@ -742,7 +749,8 @@ fn verify(image: &[u8], plan: &FlashPlan, survey: &Survey) -> Result<(), ImageEr
 /// The half a generation's PSP boot ROM boots from (lower, then upper;
 /// Naples only lower).
 pub fn booted_half(image: &[u8], generation: Generation) -> Option<FlashHalf> {
-    booted_half_offset(image, generation).map(|offset| {
+    let halves = generation.boot_halves();
+    fstart_amdfw_format::booted_half(image, MMIO_BASE, generation.profile(), halves).map(|offset| {
         if offset == 0 {
             FlashHalf::Lower
         } else {
@@ -759,9 +767,9 @@ pub fn check_dual(image: &[u8]) -> Result<(), ImageError> {
     [FlashHalf::Lower, FlashHalf::Upper]
         .into_iter()
         .filter_map(|half| {
-            Efs::new(&image[half.range()])
+            vendor_efs(&image[half.range()])
                 .ok()
-                .map(|efs| (half, efs.generation_word()))
+                .map(|efs| (half, efs.generation.get()))
         })
         .try_for_each(|(half, word)| {
             let generation = generation_of(word)?;

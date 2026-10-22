@@ -97,8 +97,8 @@ every supported half keeps its PSP/BIOS directories and blobs in place,
 `[0, prefix)` of the half (Naples `0x273000`, Rome `0x54b000`, Milan
 `0x586000`), byte-identical apart from the pointer fields named below.
 Composition lives in `fstart_image_build::sp3_flash` and is re-read with
-the runtime directory parser and the boot ROM's EFS rule before the image
-is written. References are AMD #55758 rev 1.13 (PSP BIOS Architecture
+`fstart-amdfw-format` (the reader the reset image uses too) and the boot
+ROM's EFS rule before the image is written. References are AMD #55758 rev 1.13 (PSP BIOS Architecture
 Design Guide, NDA; facts only) and the sp3 workspace's
 `reports/FIRMWARE_IMAGE_SP3.md` §1.2a.
 

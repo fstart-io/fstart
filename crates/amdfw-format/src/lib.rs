@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD firmware image inspection and validation, independent of silicon drivers
-//! and packing policy. Based on AMD #55758 and the independently sourced SP3
-//! directory reader in `driver-zen`.
+//! and packing policy. Based on AMD #55758 and the SP3 reverse engineering;
+//! the reader of the firmware (SP3) and of the host tools alike.
 //!
 //! A flash view has an explicit image origin, physical mapping and optional
 //! recovery-slot origin. Directory address modes are never inferred from an

@@ -18,6 +18,7 @@ acpi = ["dep:fstart-acpi"]
 
 [dependencies]
 fstart-core = { workspace = true }
+fstart-amdfw-format = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
 tock-registers = { workspace = true }
