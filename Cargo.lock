@@ -552,6 +552,14 @@ dependencies = [
 name = "fstart-amdfw"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "zerocopy",
+]
+
+[[package]]
+name = "fstart-amdfw-tools"
+version = "0.1.0"
+dependencies = [
  "clap",
  "fstart-image-build",
 ]
@@ -590,6 +598,7 @@ name = "fstart-core"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-amdfw",
  "heapless 0.8.0",
  "serde",
  "tock-registers",
@@ -762,6 +771,7 @@ name = "fstart-image-build"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "fstart-amdfw",
  "fstart-boot",
  "fstart-core",
  "fstart-coreboot",
@@ -821,6 +831,7 @@ dependencies = [
  "embedded-hal",
  "fstart-acpi",
  "fstart-acpi-macros",
+ "fstart-amdfw",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",

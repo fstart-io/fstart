@@ -11,11 +11,6 @@ pub mod noncar;
 pub mod picasso;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
-// Each board's host adapter enables exactly one SoC.
-#[cfg(all(feature = "host", feature = "picasso", not(feature = "zeppelin")))]
-pub use picasso::host::Plan;
-#[cfg(all(feature = "host", feature = "zeppelin"))]
-pub use zeppelin::host::Plan;
 /// SMM image ABI and handler binding: a board's `smm.rs` binds its handler
 /// with `fstart_platform_amd::smm::smm_bin!`.
 #[cfg(feature = "smm")]
@@ -23,3 +18,6 @@ pub use fstart_smm as smm;
 #[cfg(feature = "bundle")]
 #[doc(hidden)]
 pub use fstart_stage as __stage;
+/// A board's host adapter: `Plan::<Board>::emit`.
+#[cfg(all(feature = "host", feature = "noncar"))]
+pub use noncar::host::Plan;

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native AMD Zeppelin (EPYC Embedded 3000) on the noncar flow.
 pub mod acpi;
-#[cfg(feature = "host")]
-pub mod host;
 pub mod layout;
 pub mod silicon;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
@@ -67,6 +65,19 @@ pub struct DxioConfig {
     pub descriptors: [&'static [Descriptor]; MAX_DIES],
 }
 
+#[cfg(feature = "host")]
+impl noncar::host::HostSoc for Zeppelin {
+    const POLICY: noncar::host::Policy = noncar::host::Policy {
+        feature: "bundle-zeppelin",
+        payloads: true,
+        smm: true,
+        release_only: false,
+        image_config: noncar::host::ImageConfig::Vendor {
+            prefix: layout::VENDOR_PREFIX,
+        },
+    };
+}
+
 impl noncar::Soc for Zeppelin {
     const NAME: &'static str = "zeppelin";
     const CPU_NAME: &'static str = "AMD Zeppelin";
@@ -74,6 +85,8 @@ impl noncar::Soc for Zeppelin {
     const ECAM: u64 = soc::ECAM;
     const ECAM_BUSES: u16 = soc::ECAM_BUSES;
     const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
+    const BIOS_DIRECTORY: fstart_amdfw::efs::BiosDirectorySlot =
+        fstart_amdfw::efs::BiosDirectorySlot::Family17hModel00;
     /// 8 MiB of TSEG.
     const TSEG_SIZE: u32 = 8 << 20;
     /// Two dies of eight SMT cores.
@@ -126,6 +139,7 @@ impl noncar::Soc for Zeppelin {
             config,
             identity,
             memory,
+            microcode,
         } = tp1;
         let Ctx {
             dies,
@@ -159,6 +173,7 @@ impl noncar::Soc for Zeppelin {
         let policy = state.cpu_policy();
         let cpus = mp::start::<Self, _>(
             dies,
+            microcode,
             move |msr, thread| ccx::zeppelin::cpu_init(msr, &policy, thread),
             clock,
         )?;

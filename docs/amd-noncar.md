@@ -23,13 +23,14 @@ openSIL: enumeration, resources, ACPI, the memory map, SMM and MP.
 | Console | flow, `Board::console` |
 | CPU identification, early FCH | `Soc::identify` |
 | TOP_MEM, APOB memory map, TSEG, e820, cache plan | flow (`memory`) |
+| Mount and verify the FFS, its microcode for MP init | flow (`boot`) |
 | TP1: the silicon before PCI enumeration | `Soc::silicon_init` |
-| PCI enumeration and resource allocation below die 0 | flow (`pci`) |
+| PCI enumeration and resource allocation below every die | flow (`pci`) |
 | TP2 | `Soc::after_resources`, then `Board::mainboard_final` |
 | FCH and NBIO IOAPICs | flow |
 | ACPI tables | flow and `crate::acpi`, `Board::acpi` |
 | TP3: ready to boot | `Soc::ready_to_boot` |
-| PSP LockDFReg, FFS, page tables, AP parking, PSP BootDone, payload | flow (`psp`, `boot`) |
+| PSP LockDFReg, page tables, AP parking, PSP BootDone, payload | flow (`psp`, `boot`) |
 
 TP1 includes MP init and SMM where the SoC does them before PCI
 enumeration: it calls the shared `noncar::mp::start` (SMU AP release,
@@ -70,6 +71,29 @@ the layout descriptor and the ELF expectations derive from it
 the image bytes the PSP copied are never written. The flow continues at the
 architectural `_start_ram`.
 
+`noncar::host` is also the one build plan of every noncar SoC: the stage
+unit `reset`, the board's SMM unit, the payloads and the FFS follow from the
+layout and the SoC's `host::Policy` (its stage feature, whether the flow
+reaches a payload, SMM, what `--image-config` is).
+
+The flash image format (the EFS, the PSP and BIOS directories and their
+level 2) is `crates/amdfw` (`fstart-amdfw`, `no_std`): the host packs and
+checks images with it and takes the microcode from it. A SoC names the
+EFS field its PSP takes the BIOS directory from (`Soc::BIOS_DIRECTORY`); the
+lookup follows a level-2 directory as the PSP does.
+`crates/image-build/src/amd/assembly.rs` (`AmdAssembly`) composes the image
+with `--image-config`: the PSP firmware comes from a vendor flash image,
+whose prefix stays byte for byte (Zeppelin), or is packed from blobs
+(Picasso). Either way the result is read back as
+the PSP would before it is written, with a JSON receipt of its inputs.
+
+The microcode travels in the FFS, like Intel's: the host concatenates the
+patches into `cpu_microcode.bin` (the BIOS directory type 0x66 entries of a
+vendor image, or the type 0x66 files of a packed configuration;
+`MicrocodeConfig::Amd`). The flow mounts and verifies the FFS before TP1, and
+MP init hands every CPU the verified copy (`fstart_stage::microcode_blob`),
+from which `Fam17hCpu` selects the patch for its signature.
+
 ## ACPI
 
 `crate::acpi` emits the tables (FADT, MADT, HPET, MCFG, IVRS, the DSDT with
@@ -78,8 +102,18 @@ the SoC's `SocAcpi` (FCH ACPI ports, FADT fields, the NBIO's bridge
 interrupt routing, the FCH INTx GSIs), what the flow found (CPUs, dies,
 IOAPICs, IOMMUs, bridges, windows) and the board's `BoardAcpi`.
 
-## Multi-die
+## PCI root bridges
 
-The interfaces take every die (`Silicon` has per-die IOAPICs and reserved
-MMIO, ACPI a root bridge per die), but the flow enumerates PCI below die 0
-only, as before.
+Every die's root complex is a PCI root bridge. What the DF routes to the
+die's IOMS is its one source of truth: `df::map::root_complex` reads its
+bus map and its MMIO and I/O windows, the ones the SoC programmed
+(`df::map::program` on Zeppelin) or the PSP left. `noncar::pci::Root`
+turns that into the root bridge: the buses clamped to the ECAM, the I/O
+above the legacy 4 KiB and the MMIO below 4 GiB without the ECAM, the
+fixed MMIO from the IOAPIC up and the die's reserved MMIO. The 64-bit DF
+windows start at 1 TiB, beyond what the firmware maps, and aren't part of
+the root bridges yet.
+
+One `PciEcam` enumerates and allocates below all root bridges, each from
+its own buses and windows, and the ACPI host bridge of each die (`PCIn`
+with `_BBN` and `_CRS`) describes the same root.

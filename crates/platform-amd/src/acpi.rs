@@ -353,16 +353,12 @@ fn ivrs(inputs: &Inputs) -> Option<Vec<u8>> {
 }
 
 /// The device entries of die `index`'s IOMMU: its buses from 00.3 (after
-/// the root complex, NBIO IOAPIC and IOMMU) up to the next die's, its NBIO
-/// IOAPIC and, on die 0, the HPET and the FCH IOAPIC. The handles are the
-/// MADT IOAPIC IDs and the HPET number.
+/// the root complex, NBIO IOAPIC and IOMMU), its NBIO IOAPIC and, on die 0,
+/// the HPET and the FCH IOAPIC. The handles are the MADT IOAPIC IDs and the
+/// HPET number.
 fn ivrs_devices(index: usize, inputs: &Inputs) -> Vec<DeviceEntry> {
     let die = &inputs.dies[index];
-    let bus = *die.buses.start();
-    let last_bus = inputs.dies.get(index + 1).map_or_else(
-        || inputs.ecam_buses.saturating_sub(1) as u8,
-        |next| next.buses.start().saturating_sub(1),
-    );
+    let (bus, last_bus) = (*die.buses.start(), *die.buses.end());
     let own = [
         DeviceEntry::Range {
             start: fstart_pci::bdf(bus, 0, 3),

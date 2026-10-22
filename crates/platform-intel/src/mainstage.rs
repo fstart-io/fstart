@@ -260,7 +260,7 @@ fn init_mp<P: IntelEarlyPlatform>(
 ) -> Result<(), ServiceError> {
     // APs must run the same updated microcode as the BSP, whose update
     // happens in pre-CAR assembly; the blob sits in boot flash.
-    let cpu = P::cpu_driver(crate::intel_microcode_blob());
+    let cpu = P::cpu_driver(fstart_stage::microcode_blob());
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
     // The supported Core 2 / Pineview platforms are single-socket, as in
     // coreboot's model_1067x get_cpu_count(). CPUID is package-local; future

@@ -39,6 +39,7 @@ pub mod smm;
 pub use flow::Program;
 
 use crate::acpi::{BoardAcpi, SocAcpi};
+use fstart_amdfw::efs::BiosDirectorySlot;
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
@@ -87,6 +88,8 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     const ECAM_BUSES: u16;
     /// Where the PSP writes the APOB.
     const APOB: Region;
+    /// Where the PSP finds the BIOS directory.
+    const BIOS_DIRECTORY: BiosDirectorySlot;
     /// TSEG size, at the top of the DRAM below 4 GiB.
     const TSEG_SIZE: u32;
     /// The most CPUs of the SoC's packages.
@@ -132,6 +135,8 @@ pub struct Tp1<'a, S: Soc> {
     pub config: &'a S::Config,
     pub identity: S::Identity,
     pub memory: &'a Memory<'a>,
+    /// The verified microcode patches of the FFS, for MP init.
+    pub microcode: Option<&'static [u8]>,
 }
 
 /// The memory map from the APOB and the CPU's TOP_MEM/TOM2.

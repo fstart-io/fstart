@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Data Fabric (DF2) address maps Raven/Picasso and Zeppelin share: the
-//! MMIO and I/O base/limit pairs and the VGA route of D18F0. What AGESA
-//! calls a broadcast access is a direct
-//! access repeated on every die's DF: every die routes the whole map.
+//! PCI bus maps, the MMIO and I/O base/limit pairs and the VGA route of
+//! D18F0. What AGESA calls a broadcast access
+//! is a direct access repeated on every die's DF: every die routes the whole
+//! map. What the maps route to one root complex is its [`RootComplex`].
 //!
-//! The MMIO pairs are at D18F0x200 up to Cezanne and Mendocino; Phoenix,
-//! Glinda and Genoa moved them to 0xd80.
+//! The bus maps are at D18F0xa0 and the MMIO pairs at D18F0x200 up to
+//! Cezanne and Mendocino; Phoenix, Glinda and Genoa moved them to 0xc80 and
+//! 0xd80.
 use super::{Df, DfReg, Die};
 use crate::soc::Soc;
+use core::ops::RangeInclusive;
 use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
 use tock_registers::{
@@ -16,6 +19,13 @@ use tock_registers::{
 };
 
 register_bitfields![u32,
+    pub CfgMap [
+        RE OFFSET(0) NUMBITS(1) [],
+        WE OFFSET(1) NUMBITS(1) [],
+        DST_FABRIC_ID OFFSET(4) NUMBITS(8) [],
+        BUS_BASE OFFSET(16) NUMBITS(8) [],
+        BUS_LIMIT OFFSET(24) NUMBITS(8) []
+    ],
     pub MmioCtrl [
         RE OFFSET(0) NUMBITS(1) [],
         WE OFFSET(1) NUMBITS(1) [],
@@ -63,8 +73,14 @@ pub fn clear_errors(df: &Df<impl ConfigRegionAccess>) {
     }
 }
 
+pub const CFG_MAPS: usize = 8;
 pub const MMIO_PAIRS: usize = 8;
 pub const IO_PAIRS: usize = 8;
+
+/// PCI bus map `map`.
+pub const fn cfg_map(map: u8) -> DfReg<CfgMap::Register> {
+    DfReg::new(0, 0x0a0 + 4 * map as u16)
+}
 
 /// [31:0] base >> 16.
 pub const fn mmio_base(pair: u8) -> DfReg {
@@ -87,7 +103,8 @@ pub const VGA_EN: DfReg<VgaEn::Register> = DfReg::new(0, 0x080);
 
 // ---- The routes in place ----
 
-/// A DF MMIO or I/O base/limit pair as the hardware has it.
+/// A DF MMIO or I/O base/limit pair as the hardware has it; empty if the
+/// limit is below the base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Route {
     pub base: u64,
@@ -120,7 +137,7 @@ pub fn mmio_route(df: &Df<impl ConfigRegionAccess>, pair: u8) -> Route {
     let end = (u64::from(df.reg(mmio_limit(pair)).get()) + 1) << 16;
     Route {
         base,
-        size: end - base,
+        size: end.saturating_sub(base),
         destination: ctrl.read(MmioCtrl::DST_FABRIC_ID) as u8,
         read: ctrl.is_set(MmioCtrl::RE),
         write: ctrl.is_set(MmioCtrl::WE),
@@ -135,12 +152,37 @@ pub fn io_route(df: &Df<impl ConfigRegionAccess>, pair: u8) -> Route {
     let start = u64::from(base.read(IoBase::BASE)) << 12;
     Route {
         base: start,
-        size: ((u64::from(limit.read(IoLimit::LIMIT)) + 1) << 12) - start,
+        size: ((u64::from(limit.read(IoLimit::LIMIT)) + 1) << 12).saturating_sub(start),
         destination: limit.read(IoLimit::DST_FABRIC_ID) as u8,
         read: base.is_set(IoBase::RE),
         write: base.is_set(IoBase::WE),
         non_posted: false,
     }
+}
+
+/// The buses of the first enabled bus map of `df` to the fabric ID
+/// `destination`.
+pub fn buses(df: &Df<impl ConfigRegionAccess>, destination: u8) -> Option<RangeInclusive<u8>> {
+    (0..CFG_MAPS as u8)
+        .map(|map| df.reg(cfg_map(map)).extract())
+        .find(|map| {
+            map.is_set(CfgMap::RE)
+                && map.is_set(CfgMap::WE)
+                && map.read(CfgMap::DST_FABRIC_ID) == u32::from(destination)
+        })
+        .map(|map| map.read(CfgMap::BUS_BASE) as u8..=map.read(CfgMap::BUS_LIMIT) as u8)
+}
+
+/// The enabled windows of `routes` to the fabric ID `destination`, as
+/// (base, size).
+fn windows<const N: usize>(
+    routes: impl Iterator<Item = Route>,
+    destination: u8,
+) -> Vec<(u64, u64), N> {
+    routes
+        .filter(|route| route.enabled() && route.destination == destination)
+        .map(|route| (route.base, route.size))
+        .collect()
 }
 
 /// The enabled MMIO windows of `df` routed to the fabric ID `destination`,
@@ -149,11 +191,39 @@ pub fn mmio_windows(
     df: &Df<impl ConfigRegionAccess>,
     destination: u8,
 ) -> Vec<(u64, u64), MMIO_PAIRS> {
-    (0..MMIO_PAIRS as u8)
-        .map(|pair| mmio_route(df, pair))
-        .filter(|route| route.enabled() && route.destination == destination)
-        .map(|route| (route.base, route.size))
-        .collect()
+    windows(
+        (0..MMIO_PAIRS as u8).map(|pair| mmio_route(df, pair)),
+        destination,
+    )
+}
+
+/// The enabled I/O windows of `df` routed to the fabric ID `destination`,
+/// as (base, size).
+pub fn io_windows(df: &Df<impl ConfigRegionAccess>, destination: u8) -> Vec<(u64, u64), IO_PAIRS> {
+    windows(
+        (0..IO_PAIRS as u8).map(|pair| io_route(df, pair)),
+        destination,
+    )
+}
+
+/// What the DF routes to one root complex (the IOMS of a die), the
+/// PCI domain of its root bridge. The windows are (base, size) in pair
+/// order, the MMIO ones below and above 4 GiB.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootComplex {
+    pub buses: RangeInclusive<u8>,
+    pub mmio: Vec<(u64, u64), MMIO_PAIRS>,
+    pub io: Vec<(u64, u64), IO_PAIRS>,
+}
+
+/// The root complex of `die` as the DF routes it, `None` without a bus map.
+pub fn root_complex<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>) -> Option<RootComplex> {
+    let (df, ioms) = (die.df(), die.ioms_fabric_id());
+    Some(RootComplex {
+        buses: buses(&df, ioms)?,
+        mmio: mmio_windows(&df, ioms),
+        io: io_windows(&df, ioms),
+    })
 }
 
 /// Route the legacy VGA ranges to the fabric ID `destination`; call on every

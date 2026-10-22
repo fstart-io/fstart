@@ -115,7 +115,7 @@ pub fn assemble(
     }
 
     if let Some(ref microcode) = config.microcode {
-        assemble_microcode(microcode, board_dir, &mut ro_files)?;
+        assemble_microcode(microcode, workspace_root, board_dir, &mut ro_files)?;
     }
 
     // Board-shipped data assets. The name is the FFS file name the firmware
@@ -1034,46 +1034,97 @@ fn patch_xip_anchor(
     Ok(())
 }
 
+/// Concatenate `files`, relative paths taken from `base`.
+fn concat_files<'a>(
+    files: impl IntoIterator<Item = &'a str>,
+    base: &Path,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    files.into_iter().try_fold(Vec::new(), |mut blob, file| {
+        let path = base.join(file);
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read {what} {}: {e}", path.display()))?;
+        blob.extend_from_slice(&data);
+        Ok(blob)
+    })
+}
+
+/// The flat patches of `config`: its files, then the BIOS directory
+/// microcode entries of its vendor image as the PSP finds that directory.
+pub(crate) fn amd_microcode(
+    config: &fstart_core::board::AmdMicrocodeConfig,
+    workspace_root: &Path,
+) -> Result<Vec<u8>, String> {
+    let mut blob = concat_files(
+        config.files.iter().map(|f| f.as_str()),
+        workspace_root,
+        "AMD microcode",
+    )?;
+    if let Some(vendor) = &config.vendor_image {
+        let image = fs::read(vendor.image.as_str())
+            .map_err(|e| format!("failed to read vendor image {}: {e}", vendor.image))?;
+        let flash = fstart_amdfw::Flash::new(&image);
+        let before = blob.len();
+        flash
+            .bios_files(
+                vendor.bios_directory,
+                fstart_amdfw::directory::bios::MICROCODE,
+            )
+            .for_each(|patch| blob.extend_from_slice(patch));
+        if blob.len() == before {
+            return Err(format!("vendor image {} has no microcode", vendor.image));
+        }
+    }
+    if !blob.len().is_multiple_of(AMD_PATCH_BYTES) {
+        return Err(format!(
+            "AMD microcode is not a whole number of {AMD_PATCH_BYTES}-byte patches"
+        ));
+    }
+    Ok(blob)
+}
+
+/// Every supported AMD flat patch is 0xc80 bytes.
+const AMD_PATCH_BYTES: usize = 0xc80;
+
 fn assemble_microcode(
     microcode: &fstart_core::board::MicrocodeConfig,
+    workspace_root: &Path,
     board_dir: &Path,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
-    match microcode {
-        fstart_core::board::MicrocodeConfig::Intel(config) => {
-            let mut blob = Vec::new();
-            for file in &config.files {
-                let path = Path::new(file.as_str());
-                let path = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    board_dir.join(path)
-                };
-                let data = fs::read(&path).map_err(|e| {
-                    format!("failed to read Intel microcode {}: {e}", path.display())
-                })?;
-                blob.extend_from_slice(&data);
-            }
-
-            if blob.is_empty() {
-                return Err("Intel microcode config did not include any bytes".to_string());
-            }
-
-            ro_files.push(InputFile {
-                name: "cpu_microcode_blob.bin".to_string(),
-                file_type: FileType::CpuMicrocode,
-                segments: vec![InputSegment {
-                    name: ".microcode".to_string(),
-                    kind: SegmentKind::ReadOnlyData,
-                    data: blob,
-                    mem_size: None,
-                    load_addr: 0,
-                    compression: Compression::None,
-                    flags: SegmentFlags::RODATA,
-                }],
-            });
+    // The FFS builder records `cpu_microcode_blob.bin` in the anchor for
+    // Intel's pre-RAM BSP loader. AMD loads only in MP init and finds its
+    // blob by file type in the verified FFS, so it is not anchored (it may
+    // even be the first file, at offset 0, which the anchor cannot express).
+    let (name, blob) = match microcode {
+        fstart_core::board::MicrocodeConfig::Intel(config) => (
+            "cpu_microcode_blob.bin",
+            concat_files(
+                config.files.iter().map(|f| f.as_str()),
+                board_dir,
+                "Intel microcode",
+            )?,
+        ),
+        fstart_core::board::MicrocodeConfig::Amd(config) => {
+            ("cpu_microcode.bin", amd_microcode(config, workspace_root)?)
         }
+    };
+    if blob.is_empty() {
+        return Err("microcode config did not include any bytes".to_string());
     }
+    ro_files.push(InputFile {
+        name: name.to_string(),
+        file_type: FileType::CpuMicrocode,
+        segments: vec![InputSegment {
+            name: ".microcode".to_string(),
+            kind: SegmentKind::ReadOnlyData,
+            data: blob,
+            mem_size: None,
+            load_addr: 0,
+            compression: Compression::None,
+            flags: SegmentFlags::RODATA,
+        }],
+    });
 
     Ok(())
 }

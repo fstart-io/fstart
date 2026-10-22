@@ -19,10 +19,9 @@ pub struct BuildPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Assembly {
     Ffs(Box<FfsAssembly>),
-    /// A PSP partition fragment, never a factory chip image or FFS directory.
-    PicassoPsp(Box<crate::amd::assembly::PicassoAssembly>),
-    /// An FFS composed with a vendor image whose PSP loads the reset stage.
-    VendorFlash(Box<crate::amd::vendor_flash::VendorFlashAssembly>),
+    /// An AMD image: PSP firmware, the reset stage the PSP loads and an
+    /// optional FFS.
+    Amd(Box<crate::amd::assembly::AmdAssembly>),
     /// Compiler/check/editor support only. No image/flash/run contract supplied.
     Unassembled {
         platform: fstart_core::Platform,
@@ -32,26 +31,27 @@ impl Assembly {
     pub fn platform(&self) -> fstart_core::Platform {
         match self {
             Self::Ffs(image) => image.platform,
-            Self::VendorFlash(image) => image.ffs.platform,
-            Self::PicassoPsp(_) => fstart_core::Platform::X86_64,
+            Self::Amd(_) => fstart_core::Platform::X86_64,
             Self::Unassembled { platform } => *platform,
         }
     }
     pub fn bootstrap(&self) -> &[(String, BootstrapRole)] {
         match self {
             Self::Ffs(image) => &image.bootstrap,
-            Self::VendorFlash(image) => &image.ffs.bootstrap,
-            Self::PicassoPsp(_) | Self::Unassembled { .. } => &[],
+            Self::Amd(image) => image
+                .ffs
+                .as_ref()
+                .map_or(&[], |ffs| &ffs.assembly.bootstrap),
+            Self::Unassembled { .. } => &[],
         }
     }
     pub fn ffs(&self) -> Result<&FfsAssembly, String> {
         match self {
             Self::Ffs(image) => Ok(image),
-            Self::VendorFlash(image) => Ok(&image.ffs),
+            Self::Amd(image) => image.ffs.as_ref().map(|ffs| &ffs.assembly).ok_or_else(|| {
+                "PSP partition fragment has no runtime config/run/flash contract".into()
+            }),
             Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
-            Self::PicassoPsp(_) => {
-                Err("PSP partition fragment has no runtime config/run/flash contract".into())
-            }
         }
     }
     pub fn resolve_workspace_inputs(
@@ -61,8 +61,10 @@ impl Assembly {
     ) -> Result<(), String> {
         match self {
             Self::Ffs(image) => image.resolve_workspace_inputs(root, board),
-            Self::VendorFlash(image) => image.ffs.resolve_workspace_inputs(root, board),
-            Self::PicassoPsp(_) | Self::Unassembled { .. } => Ok(()),
+            Self::Amd(image) => image.ffs.as_mut().map_or(Ok(()), |ffs| {
+                ffs.assembly.resolve_workspace_inputs(root, board)
+            }),
+            Self::Unassembled { .. } => Ok(()),
         }
     }
     pub fn config(&self, name: &str) -> Result<fstart_core::BoardConfig, String> {
@@ -369,10 +371,9 @@ impl BuildPlan {
         selection: &crate::plan::BuildSelection,
     ) -> Result<(), String> {
         match (&selection.image_config, &self.assembly) {
-            (Some(path), Assembly::PicassoPsp(image)) if *path == image.configuration.path => {
+            (Some(path), Assembly::Amd(image)) if *path == image.firmware.configuration().path => {
                 Ok(())
             }
-            (Some(path), Assembly::VendorFlash(image)) if *path == image.vendor.path => Ok(()),
             (None, Assembly::Ffs(_) | Assembly::Unassembled { .. }) => Ok(()),
             _ => Err("image configuration was not bound unchanged by the platform".into()),
         }
@@ -515,7 +516,7 @@ impl BuildPlan {
         let mut bootstrap = BTreeSet::new();
         // The reset unit's stored bytes are the image the PSP copies; its
         // `.data` may run from a copy elsewhere, as in every noncar image.
-        if let Assembly::PicassoPsp(image) = &self.assembly {
+        if let Assembly::Amd(image) = &self.assembly {
             image.validate()?;
             let unit = self.unit(&image.reset_unit)?;
             let UnitOutput::Executable {

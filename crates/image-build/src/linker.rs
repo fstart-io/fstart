@@ -640,7 +640,7 @@ fn stage_build<'a>(
 fn x86_early_microcode_enabled(config: &BoardConfig) -> bool {
     match &config.microcode {
         Some(MicrocodeConfig::Intel(intel)) => intel.early,
-        None => false,
+        Some(MicrocodeConfig::Amd(_)) | None => false,
     }
 }
 

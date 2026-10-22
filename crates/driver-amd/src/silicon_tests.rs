@@ -194,6 +194,45 @@ mod zeppelin {
         assert_eq!(hw.fingerprint(), (16906, 0x9dd1_7783_e797_1b5e));
         assert_eq!(hw.state(), 0xbc50_f84e_0701_a314);
     }
+
+    /// The DF routes disjoint buses and windows to the two root complexes.
+    #[test]
+    fn sp4_root_complexes() {
+        let hw = sp4();
+        let dies: Vec<Die<&Hw>> = unsafe { df::dies(&hw) }.collect();
+        // The PSP's bus maps, the last one up to bus 0xff.
+        for node in 0..2 {
+            let df = PciAddress::new(0, 0, 0x18 + node, 0);
+            hw.set_config(df, 0xa0, 0x3f00_0043);
+            hw.set_config(df, 0xa4, 0xff40_0243);
+        }
+        let plan = map::plan(0xe000_0000, 0x4_2000_0000, 128 << 20, 2).unwrap();
+        map::program(&plan, &dies);
+
+        let [die0, die1] = [&dies[0], &dies[1]].map(|die| map::root_complex(die).unwrap());
+        let hpet = (0xfed0_0000, 0x1_0000);
+        let high = 0x100_0000_0000;
+        assert_eq!(die0.buses, 0..=0x3f);
+        assert_eq!(
+            die0.mmio,
+            [
+                (0xe800_0000, 0x0800_0000),
+                (high, 0x37e_8000_0000),
+                (0xf800_0000, 0x06c0_0000),
+                hpet
+            ]
+        );
+        assert_eq!(die0.io, [(0, 0x8000)]);
+        assert_eq!(die1.buses, 0x40..=0xff);
+        assert_eq!(
+            die1.mmio,
+            [
+                (0xe000_0000, 0x0800_0000),
+                (high + 0x37e_8000_0000, (1 << 48) - high - 0x37e_8000_0000)
+            ]
+        );
+        assert_eq!(die1.io, [(0x8000, 0x1ff_8000)]);
+    }
 }
 
 #[cfg(all(feature = "picasso", target_arch = "x86_64", target_os = "linux"))]
