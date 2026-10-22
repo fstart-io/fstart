@@ -59,5 +59,7 @@ fstart-acpi-macros = { path = "../acpi-macros", optional = true }
 fstart-smm = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The unit tests cover every SoC, also in `cargo test --workspace`.
+fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "acpi", "host", "smm"] }
 fstart-driver-amd = { workspace = true, features = ["testing"] }
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

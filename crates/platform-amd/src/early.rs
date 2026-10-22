@@ -2,15 +2,16 @@
 //! Fixed native Picasso cold-boot silicon flow. No FSP calls or HOBs.
 use crate::memory::{self, Memory};
 use fstart_arch::x86::cpu::msr::{MCG_CAP, MTRR_CAP, McgCap, MsrAccess, MtrrCap};
-use fstart_driver_amd::fam17h::ccx::Thread;
-use fstart_driver_amd::picasso::{
-    apob::MemoryMap,
+use fstart_driver_amd::apob::MemoryMap;
+use fstart_driver_amd::ccx::{
+    Thread,
     cache::{self, CacheControl, Plan},
-    cpu::{self, Identity},
-    fabric,
-    nbio::{self, Capabilities},
-    registers::{Df, Smn},
+    picasso::{self as cpu, Identity},
+    tsc::DelayNs,
 };
+use fstart_driver_amd::df::picasso as fabric;
+use fstart_driver_amd::nbio::picasso::{self as nbio, Capabilities};
+use fstart_driver_amd::soc::picasso::Die;
 use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {
@@ -41,9 +42,8 @@ pub enum Error {
 pub fn initialize(
     input: Inputs<'_>,
     msr: &(impl MsrAccess + CacheControl),
-    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
-    df: &Df<impl fstart_pci::ConfigRegionAccess>,
-    delay_us: &mut impl FnMut(u32),
+    die: &Die<impl fstart_pci::ConfigRegionAccess + Copy>,
+    delay: &mut impl DelayNs,
 ) -> Result<State, Error> {
     // Validate CPU, memory reservations and the full MTRR plan before writes.
     let initial_id = Identity::from_cpuid(input.cpuid_signature, input.cpuid_extended_ebx, 0)
@@ -59,9 +59,10 @@ pub fn initialize(
     }
     cache::install(msr, &caches).map_err(Error::Cache)?;
     cpu::enable_ecam(msr);
-    fabric::ensure_legacy_routes(df, low as u32).map_err(Error::Fabric)?;
+    let (smn, df) = (&die.smn(), &die.df());
+    fabric::ensure_legacy_routes(die, low as u32).map_err(Error::Fabric)?;
     fabric::early_init(df);
-    let capabilities = nbio::early_init(smn, initial_id.raven2_cpuid, initial_id.am4, delay_us)
+    let capabilities = nbio::early_init(smn, initial_id.raven2_cpuid, initial_id.am4, delay)
         .map_err(Error::Nbio)?;
     let identity = Identity::from_cpuid(
         input.cpuid_signature,
@@ -75,7 +76,7 @@ pub fn initialize(
     // Default topology is retained here; the full flow applies the requested
     // board CPU topology before releasing any APs through the SMU.
     let (low, high) = cpu::memory_limits(msr).map_err(Error::Cpu)?;
-    nbio::dram_routes(smn, low, high).map_err(Error::Nbio)?;
+    nbio::dram_routes(die, low, high).map_err(Error::Nbio)?;
     Ok(State {
         memory,
         caches,

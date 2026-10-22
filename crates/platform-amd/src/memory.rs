@@ -5,7 +5,7 @@ use fstart_core::services::{
     ServiceError,
     memory_detect::{E820Entry, E820Kind, E820State, MemoryDetector, build_pc_compatible_e820},
 };
-use fstart_driver_amd::picasso::apob::MemoryMap;
+use fstart_driver_amd::apob::MemoryMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

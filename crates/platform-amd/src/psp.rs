@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Permanent native mailbox allocation/ordering, not SMM setup or OS handoff.
 use crate::{layout, memory::Memory};
-use core::{
-    mem::MaybeUninit,
-    ptr::addr_of_mut,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::{mem::MaybeUninit, ptr::addr_of_mut};
+use fstart_core::once::TakeOnce;
 use fstart_driver_amd::{
-    fam17h::nbio::{PSP_BASE_ADDR_HI, PSP_BASE_ADDR_LO},
-    picasso::{
-        psp::{self, Buffer, Mailbox, Native},
-        registers::Smn,
-    },
+    ccx::tsc::DelayNs,
+    nbio::{iohc::PSP_BAR, picasso::PSP_MMIO_BASE},
+    psp::{self, Buffer, Mailbox, Native},
+    smn::Smn,
 };
 use tock_registers::interfaces::Readable;
 const PAGE_BYTES: usize = (layout::PSP_END - layout::PSP_START) as usize;
@@ -27,7 +23,7 @@ static mut STORAGE: Storage = Storage {
     buffer: MaybeUninit::uninit(),
     padding: MaybeUninit::uninit(),
 };
-static CLAIMED: AtomicBool = AtomicBool::new(false);
+static CLAIMED: TakeOnce = TakeOnce::new();
 const _: () = assert!(PAGE_BYTES == 4096 && BUFFER_BYTES <= PAGE_BYTES);
 const _: () = assert!(size_of::<Storage>() == PAGE_BYTES);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,20 +43,20 @@ impl ResidentMailbox {
     pub fn allocation_range(&self) -> core::ops::Range<u64> {
         layout::PSP_START..layout::PSP_END
     }
-    pub fn capabilities(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<u32, psp::Error> {
-        self.mailbox.capabilities(delay_us)
+    pub fn capabilities(&mut self, delay: &mut impl DelayNs) -> Result<u32, psp::Error> {
+        self.mailbox.capabilities(delay)
     }
-    pub fn ftpm_capabilities(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<u32, psp::Error> {
-        self.mailbox.ftpm_capabilities(delay_us)
+    pub fn ftpm_capabilities(&mut self, delay: &mut impl DelayNs) -> Result<u32, psp::Error> {
+        self.mailbox.ftpm_capabilities(delay)
     }
-    pub fn hsti_state(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<u32, psp::Error> {
-        self.mailbox.hsti_state(delay_us)
+    pub fn hsti_state(&mut self, delay: &mut impl DelayNs) -> Result<u32, psp::Error> {
+        self.mailbox.hsti_state(delay)
     }
     /// # Safety
     /// Driver boot-done CPU-completion/protected-SMM/phase contracts all hold.
     /// Error may follow irreversible effects: fail-stop, no retry/reset/reclaim.
-    pub unsafe fn boot_done(&mut self, delay_us: &mut impl FnMut(u32)) -> Result<(), psp::Error> {
-        unsafe { self.mailbox.boot_done(delay_us) }
+    pub unsafe fn boot_done(&mut self, delay: &mut impl DelayNs) -> Result<(), psp::Error> {
+        unsafe { self.mailbox.boot_done(delay) }
     }
 }
 fn preflight(
@@ -80,17 +76,12 @@ fn preflight(
     }
     // Read only existing enabled+locked aperture; never repair/reset/lock it.
     // SMN reads can program an indirect selector, so this is NOT zero hardware IO.
-    let low = smn.reg(PSP_BASE_ADDR_LO).get();
-    let high = smn.reg(PSP_BASE_ADDR_HI).get();
+    let low = smn.reg(PSP_BAR.low).get();
+    let high = smn.reg(PSP_BAR.high).get();
     if low != 0xfd100101 || high != 0 {
         return Err(Error::Bar { low, high });
     }
     Ok(())
-}
-fn claim(flag: &AtomicBool) -> Result<(), Error> {
-    flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
-        .map_err(|_| Error::AlreadyClaimed)
 }
 unsafe fn materialize(destination: *mut Storage) {
     // Initialize full page/padding without an initialized 4KiB stack temporary.
@@ -117,13 +108,15 @@ pub unsafe fn prepare(
 ) -> Result<ResidentMailbox, Error> {
     let pointer = addr_of_mut!(STORAGE);
     preflight(memory.psp_reserved(), pointer as usize as u64, smn)?;
-    claim(&CLAIMED)?;
+    if !CLAIMED.take() {
+        return Err(Error::AlreadyClaimed);
+    }
     unsafe {
         materialize(pointer);
         // Typed MaybeUninit<Buffer> field, initialized storage, first reference
         // only after the one-way platform claim. Private static retained to reset.
         let buffer = &mut *addr_of_mut!((*pointer).buffer).cast::<Buffer>();
-        let io = Native::new();
+        let io = Native::at(PSP_MMIO_BASE as usize);
         let mailbox = Mailbox::new(io, buffer).map_err(Error::Mailbox)?;
         Ok(ResidentMailbox { mailbox })
     }
@@ -134,7 +127,7 @@ mod tests {
     extern crate std;
     use super::*;
     use std::{boxed::Box, vec::Vec};
-    use fstart_driver_amd::fam17h::registers::testing::{SmnModel, SmnTest};
+    use fstart_driver_amd::smn::testing::{SmnModel, SmnTest};
     struct Mock {
         low: u32,
         high: u32,
@@ -180,9 +173,6 @@ mod tests {
         mock.model().low = 0xfd100101;
         mock.model().high = 0;
         assert_eq!(preflight(true, layout::PSP_START, &smn), Ok(()));
-        let flag = AtomicBool::new(false);
-        assert_eq!(claim(&flag), Ok(()));
-        assert_eq!(claim(&flag), Err(Error::AlreadyClaimed));
     }
     #[test]
     fn materialize_zeroes_protocol_storage_and_complete_page_tail() {

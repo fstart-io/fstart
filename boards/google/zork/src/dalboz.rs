@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Dalboz family wiring.
-use fstart_driver_amd::{
+use fstart_driver_amd::fch::{
     gpio::{Delivery, Pad, Pull, Trigger},
-    picasso::pinmux::*,
+    sandstone::pinmux::*,
 };
 
 pub const GPIO_SET_STAGE_RAM: &[Pad] = &[

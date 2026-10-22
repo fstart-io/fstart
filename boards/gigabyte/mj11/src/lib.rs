@@ -14,15 +14,16 @@ pub mod smm;
 mod variant;
 
 use fstart_driver_amd::{
-    fam17h::registers::{apply, write},
-    fch::{ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status, iomux},
-    gpio::Control,
-    lpc::{IoPortDecode, Lpc},
-    zeppelin::{
-        self as soc,
-        dxio::Descriptor,
-        fch::irq::{self, Route},
+    dxio::Descriptor,
+    fch::{
+        self, ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status,
+        gpio::Control,
+        iomux,
+        lpc::{IoPortDecode, Lpc},
+        taishan::irq::{self, Route},
     },
+    smn::{apply, write},
+    soc::zeppelin::{self as soc, Zeppelin},
 };
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -135,7 +136,9 @@ impl fstart_platform_amd::zeppelin::Board for Board {
             fstart_log::error!("I2C3 pads not routed");
         }
         // SAFETY: nothing else uses I2C3.
-        match unsafe { soc::i2c::controller(i2c::BUS, ctx.clock) } {
+        match unsafe {
+            fch::i2c::controller::<Zeppelin, _>(i2c::BUS, &soc::I2C_TIMING, ctx.clock)
+        } {
             Ok(mut bus) => {
                 i2c::program_vrs(&mut bus, ctx.clock, variant::VR_IMAGES);
                 i2c::program_redrivers(&mut bus, variant::REDRIVERS);

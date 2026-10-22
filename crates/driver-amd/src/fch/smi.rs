@@ -7,7 +7,7 @@ use super::{
     AcpiConfigHigh, AcpiPorts, AcpiReg, Acpimmio, Bus, Fch, NativeBus, PM_ACPI_CONFIG_HIGH,
     PM_ACPI_SMI_CMD, PM_PCI_CONTROL, PM_RESET_CONTROL1, PciControl, Reg, ResetControl1, smi_bank as smi,
 };
-use crate::fam17h::psp::{SmiRegisters, SmmRegister};
+use crate::psp::{SmiRegisters, SmmRegister};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,

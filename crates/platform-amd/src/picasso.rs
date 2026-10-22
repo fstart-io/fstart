@@ -2,9 +2,16 @@
 //! Native Picasso bring-up boundary. FSP calls are NOT silently skipped
 //! in a production boot flow; this checkpoint only establishes the debug UART.
 use fstart_driver_amd::{
-    fch::{self, Fch},
-    gpio::{self, Gpio, Pad, Pull},
-    picasso::{EARLY_AOAC, UART_AOAC, espi, preinit::SpiConfig},
+    ccx::tsc::{Clock, DelayNs},
+    fch::{
+        self, Fch, espi,
+        gpio::{self, Gpio, Pad, Pull},
+        sandstone::preinit::SpiConfig,
+    },
+    soc::{
+        Soc,
+        picasso::{EARLY_AOAC, Picasso, UART_AOAC},
+    },
 };
 
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
@@ -56,12 +63,6 @@ impl Default for Config {
     }
 }
 
-/// Monotonic microsecond time for board code.
-pub trait Timer {
-    fn now_us(&mut self) -> u64;
-    fn delay_us(&mut self, us: u32);
-}
-
 /// Board wiring and the mainboard hook. The platform owns the order; boards
 /// supply data.
 pub trait BoardFacts {
@@ -75,7 +76,7 @@ pub trait BoardFacts {
     /// `DISABLE_SPI_FLASH_ROM_SHARING`: done before `mainboard_init`.
     const DISABLE_ROM_SHARING: bool = false;
     /// Mainboard init once the FCH, eSPI and early GPIOs are up: read board facts, program the remaining GPIOs.
-    fn mainboard_init(_gpio: &Gpio<impl fch::Bus>, _timer: &mut impl Timer) {}
+    fn mainboard_init(_gpio: &Gpio<impl fch::Bus>, _clock: &mut impl Clock) {}
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -84,26 +85,25 @@ pub enum Error {
     Fch(fch::Error),
 }
 
-/// A PSP-trained DRAM checkpoint, before any PCI/OS handoff. The caller provides
-/// a 100-us delay independent of clock frequency. All MMIO is accessed with
-/// tock-registers. No memory training is performed by x86.
+/// A PSP-trained DRAM checkpoint, before any PCI/OS handoff. All MMIO is
+/// accessed with tock-registers. No memory training is performed by x86.
 /// # Safety
 /// BSP only, interrupts disabled, cache disabled or correct AMD MTRRs already
 /// installed, identity UC mappings for FCH. PSP has loaded the linker-defined
 /// DRAM image and initialized APOB. This is NOT an S3 resume entry.
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn console_checkpoint<B: BoardFacts>(
-    mut delay_100us: impl FnMut(),
+    delay: &mut impl DelayNs,
 ) -> Result<(), Error> {
     unsafe { fch::enable_acpimmio() };
     // SAFETY: exclusive FCH access; no config space before ECAM.
     let fch = Fch::new(unsafe { fch::NativeBus::new() }, fch::Acpimmio::DIE0);
     fch.enable_legacy_decode();
     // Power all common early devices before waiting, then the selected UART.
-    fch.power_devices(EARLY_AOAC, 10000, &mut delay_100us)
+    fch.power_devices(EARLY_AOAC, 10000, delay)
         .map_err(Error::Fch)?;
     let uart = B::CONFIG.console_uart();
-    fch.power_devices(&[UART_AOAC[usize::from(uart)]], 10000, &mut delay_100us)
+    fch.power_devices(&[UART_AOAC[usize::from(uart)]], 10000, delay)
         .map_err(Error::Fch)?;
     // Range_0 comes out of reset enabled; clear legacy UART aliases.
     fch.clear_legacy_uart_decode();
@@ -126,7 +126,7 @@ pub unsafe fn console_checkpoint<B: BoardFacts>(
         ],
         _ => unreachable!(),
     };
-    Gpio::new(fch, &fstart_driver_amd::picasso::GPIO_BANK)
+    Gpio::new(fch, Picasso::GPIO_BANK)
         .configure(&pins, &[])
         .map_err(Error::Gpio)
 }
@@ -138,13 +138,14 @@ pub const TSEG_SIZE: u64 = 8 << 20;
 /// silicon init from the APOB, running cached from here on.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub fn run<B: BoardFacts>() -> ! {
-    use fstart_driver_amd::picasso::{UART_BASES, tsc};
+    use fstart_driver_amd::{ccx::tsc, soc::picasso::UART_BASES};
     use fstart_driver_uart::ns16550::{AccessMode, Ns16550, Ns16550Config};
     // SAFETY: only entered by the BSP cold-reset assembly, cache disabled.
-    let Some(mhz) = (unsafe { tsc::frequency_mhz() }) else {
+    let Some(mhz) = (unsafe { tsc::frequency_mhz() }).filter(|&mhz| mhz != 0) else {
         halt()
     };
-    if unsafe { console_checkpoint::<B>(|| tsc::delay_us(mhz, 100)) }.is_err() {
+    let mut timer = tsc::Tsc::new(mhz);
+    if unsafe { console_checkpoint::<B>(&mut timer) }.is_err() {
         halt()
     }
     let mut console = Ns16550::new(Ns16550Config {
@@ -163,8 +164,7 @@ pub fn run<B: BoardFacts>() -> ! {
     // SAFETY: `console` lives until this never-returning function halts.
     unsafe { fstart_log::init(&console) };
     fstart_log::info!("fstart: AMD Picasso cold boot, TSC {} MHz", mhz);
-    let mut timer = Tsc { mhz };
-    let result = unsafe { cold_boot(&mut |us| tsc::delay_us(mhz, us)) }.and_then(|state| {
+    let result = unsafe { cold_boot(&mut timer) }.and_then(|state| {
         report(&state);
         unsafe { fch_init::<B>(&mut timer) }
     });
@@ -175,45 +175,18 @@ pub fn run<B: BoardFacts>() -> ! {
     halt()
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
-struct Tsc {
-    mhz: u32,
-}
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
-impl Timer for Tsc {
-    fn now_us(&mut self) -> u64 {
-        // SAFETY: RDTSC has no side effects.
-        unsafe { core::arch::x86_64::_rdtsc() / u64::from(self.mhz) }
-    }
-    fn delay_us(&mut self, us: u32) {
-        fstart_driver_amd::picasso::tsc::delay_us(self.mhz, us)
-    }
-}
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
-impl espi::Clock for Tsc {
-    fn now_us(&mut self) -> u64 {
-        Timer::now_us(self)
-    }
-    fn pause_us(&mut self, us: u32) {
-        Timer::delay_us(self, us)
-    }
-}
-
 /// FCH bring-up and the board's early wiring:
 /// LPC/SPI aperture, eSPI, SPI ROM, SMBus, board GPIOs, ROM sharing, then
 /// the mainboard hook.
 /// # Safety
 /// BSP only after `cold_boot`, exclusive FCH access.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
-unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
-    use fstart_driver_amd::picasso::{legacy, preinit};
+unsafe fn fch_init<B: BoardFacts>(timer: &mut impl Clock) -> Result<(), &'static str> {
+    use fstart_driver_amd::fch::sandstone::{legacy, preinit};
     // SAFETY: exclusive FCH access, ECAM published by `cold_boot`.
     let fch = Fch::new(unsafe { fch::NativeBus::new() }, fch::Acpimmio::DIE0);
     preinit::prepare_lpc(&fch).map_err(|_| "LPC setup")?;
-    let gpio = Gpio::new(
-        Fch::new(fch.bus(), fch.acpimmio()),
-        &fstart_driver_amd::picasso::GPIO_BANK,
-    );
+    let gpio = Gpio::new(Fch::new(fch.bus(), fch.acpimmio()), Picasso::GPIO_BANK);
     if let Some((config, pads)) = &B::ESPI {
         gpio.configure(pads, &[]).map_err(|_| "eSPI GPIOs")?;
         let mut controller = unsafe { espi::Native::new(preinit::SPI_BASE as usize) };
@@ -235,22 +208,26 @@ unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
 /// # Safety
 /// BSP only, cold boot, caches disabled, exclusive MSR/PCI access.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
-unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::State, &'static str> {
+unsafe fn cold_boot(
+    delay: &mut impl DelayNs,
+) -> Result<crate::early::State, &'static str> {
     use crate::{early, layout};
     use fstart_arch::x86::cpu::msr::NativeMsr;
-    use fstart_driver_amd::picasso::{
-        ECAM,
+    use fstart_driver_amd::{
         apob::Apob,
-        cpu,
-        registers::{Df, Smn},
+        ccx::picasso as cpu,
+        df,
+        soc::picasso::{ECAM, Picasso},
     };
     let msr = unsafe { NativeMsr::new() };
     // MMCONF first, everything else uses it.
     cpu::enable_ecam(&msr);
     fstart_pci::ecam::init(ECAM as usize);
     let pci = fstart_pci::ecam::GlobalEcam;
-    let smn = unsafe { Smn::new(pci) };
-    let df = unsafe { Df::new(pci) };
+    // SAFETY: the BSP owns the die's SMN and DF index pairs.
+    let Some(die) = (unsafe { df::dies::<Picasso, _>(pci) }).next() else {
+        return Err("no die");
+    };
     // SAFETY: the PSP wrote the APOB here before releasing the BSP; the
     // early reservation keeps it.
     let apob = unsafe {
@@ -276,9 +253,8 @@ unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::Stat
             tseg_size: TSEG_SIZE,
         },
         &msr,
-        &smn,
-        &df,
-        delay_us,
+        &die,
+        delay,
     )
     .map_err(|error| match error {
         early::Error::Cpu(_) => "CPU identification",

@@ -21,14 +21,18 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use fstart_driver_amd::{
-    fch::{Acpimmio, Fch, NativeBus, early::PowerFailure},
-    gpio::Gpio,
-    lpc::Lpc,
-    zeppelin::{
-        MAX_DIES,
-        dxio::Descriptor,
-        fch::{Devices, irq::Route},
-        topology::Die,
+    ccx::tsc::Tsc,
+    dxio::Descriptor,
+    fch::{
+        Acpimmio, Fch, NativeBus,
+        early::PowerFailure,
+        gpio::Gpio,
+        lpc::Lpc,
+        taishan::{Devices, irq::Route},
+    },
+    soc::{
+        Soc,
+        zeppelin::{Die, MAX_DIES, Zeppelin},
     },
 };
 use fstart_driver_uart::ns16550::Ns16550Config;
@@ -37,35 +41,10 @@ use fstart_pci::ecam::GlobalEcam;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 pub use stage::Program;
 
-/// The TSC as the time base, at its P0 frequency.
-#[derive(Debug, Clone, Copy)]
-pub struct Clock {
-    pub(crate) mhz: u32,
-}
-#[cfg(target_arch = "x86_64")]
-impl Clock {
-    pub fn delay_us(&self, us: u32) {
-        fstart_driver_amd::fam17h::tsc::delay_us(self.mhz, us)
-    }
-    pub fn now_us(&self) -> u64 {
-        // SAFETY: RDTSC has no side effects.
-        unsafe { core::arch::x86_64::_rdtsc() / u64::from(self.mhz) }
-    }
-}
-#[cfg(target_arch = "x86_64")]
-impl embedded_hal::delay::DelayNs for Clock {
-    fn delay_ns(&mut self, ns: u32) {
-        Clock::delay_us(self, ns.div_ceil(1000))
-    }
-    fn delay_us(&mut self, us: u32) {
-        Clock::delay_us(self, us)
-    }
-}
-
 /// What the board hooks get: the dies and the clock.
 pub struct BoardCtx<'a> {
     pub dies: &'a [Die<GlobalEcam>],
-    pub clock: Clock,
+    pub clock: Tsc,
 }
 impl BoardCtx<'_> {
     /// The FCH of die 0, for pad routing and the like.
@@ -78,7 +57,7 @@ impl BoardCtx<'_> {
 
     /// The GPIO pads of die 0.
     pub fn gpio(&mut self) -> Gpio<NativeBus> {
-        Gpio::new(self.fch(), &fstart_driver_amd::zeppelin::GPIO_BANK)
+        Gpio::new(self.fch(), Zeppelin::GPIO_BANK)
     }
 }
 
@@ -96,7 +75,7 @@ pub trait Board: 'static {
     /// The FCH PCI interrupt router (0xc00/0xc01) table.
     const IRQ_ROUTES: &'static [Route];
     /// GEVENT pins (bit n = GEVENTn) routed to the board's SMM handler,
-    /// `fstart_driver_amd::zeppelin::fch::smm::SmmBoard::gevent`.
+    /// `fstart_driver_amd::fch::taishan::smm::SmmBoard::gevent`.
     const SMI_GEVENTS: u32 = 0;
 
     /// LPC decodes and Super I/O routing for the console, before any

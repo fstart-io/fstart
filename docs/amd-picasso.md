@@ -4,9 +4,14 @@ Native (no FSP) port of AMD Picasso and the Google Zork "Vilboz" boards.
 
 ## Code layout
 
-- `crates/driver-amd`: register mechanisms (FCH, GPIO, SMN/DF, SMU, NBIO,
-  DXIO, USB, eMMC, eSPI, PSP mailbox, microcode, APOB parsing). Gated by the
-  `picasso` feature.
+- `crates/driver-amd`: the silicon, by IP block (see
+  [amd-zeppelin.md](amd-zeppelin.md#code-layout)). The Picasso versions,
+  gated by the `picasso` feature: `df::picasso`, `nbio::picasso` (with the
+  late PCIe power management), `dxio::picasso`, `ccx::picasso`, `smu::v10`
+  (with the policy table), the Sandstone FCH `fch::sandstone` (A-Link and
+  clocks, legacy, LPC/SPI preinit, USB, pin functions), the ACP `acp` and
+  the SoC itself, `soc::picasso`. eMMC and eSPI are common FCH controllers
+  (`fch::emmc`, `fch::espi`).
 - `crates/platform-amd`: the Picasso flow, DRAM layout, reset entry
   (`asm/psp_reset.S`, shared with Zeppelin), linker script, MP policy and
   the host build plan.

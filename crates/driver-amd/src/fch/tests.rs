@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::{testing::World, *};
+use crate::ccx::tsc::testing::{Delay, none};
 use std::{vec, vec::Vec};
 
 const AOAC: u32 = ACPI_MMIO + 0x1e00;
@@ -36,7 +37,7 @@ fn state_reads(world: &World) -> Vec<u32> {
 fn aoac_all_devices_started_before_wait_with_whole_preflight() {
     let world = world();
     fch(&world)
-        .power_devices(&[17, 7, 8, 9, 27], 0, || panic!("already ready"))
+        .power_devices(&[17, 7, 8, 9, 27], 0, &mut Delay(|_| panic!("already ready")))
         .unwrap();
     assert_eq!(
         control_writes(&world),
@@ -45,13 +46,13 @@ fn aoac_all_devices_started_before_wait_with_whole_preflight() {
     assert_eq!(state_reads(&world), [17, 7, 8, 9, 27]);
     let world = self::world();
     assert_eq!(
-        fch(&world).power_devices(&[17, 6], 1, || {}),
+        fch(&world).power_devices(&[17, 6], 1, &mut none()),
         Err(Error::InvalidDevice)
     );
     assert!(world.writes().is_empty());
     world.set(Space::Mmio, AOAC + 0x40 + 2 * 7, 1, 0xff);
     assert_eq!(
-        fch(&world).power_devices(&[17, 7], 1, || {}),
+        fch(&world).power_devices(&[17, 7], 1, &mut none()),
         Err(Error::Unavailable(7))
     );
     assert!(world.writes().is_empty());
@@ -61,7 +62,7 @@ fn aoac_all_ones_is_not_ready_and_failed_programming_never_continues_waiting() {
     let world = world();
     world.set(Space::Mmio, AOAC + 0x41 + 2 * 17, 1, 0xff);
     assert_eq!(
-        fch(&world).power_devices(&[17, 7], 1, || panic!("unavailable")),
+        fch(&world).power_devices(&[17, 7], 1, &mut Delay(|_| panic!("unavailable"))),
         Err(Error::Unavailable(17))
     );
     assert_eq!(world.writes().len(), 2);
@@ -70,7 +71,7 @@ fn aoac_all_ones_is_not_ready_and_failed_programming_never_continues_waiting() {
     world.set(Space::Mmio, AOAC + 0x41 + 2 * 17, 1, 0);
     let mut delays = 0;
     assert_eq!(
-        fch(&world).power_devices(&[17, 7], 2, || delays += 1),
+        fch(&world).power_devices(&[17, 7], 2, &mut Delay(|_| delays += 1)),
         Err(Error::PowerTimeout(17))
     );
     assert_eq!(delays, 2);
@@ -124,7 +125,7 @@ fn early_smbus_and_power_failure_state() {
 fn abcfg_transactions_reset_index_after_read_and_write() {
     let world = World::default();
     world.set_indexed(alink::INDEX, 0xc000_0054, 0x1234_5678);
-    alink::abcfg(&world, (0x54, 0xff, 0x11));
+    alink::apply(&world, &[crate::table::rmw(0x54, 0xff, 0x11)]);
     let index = 0xc000_0054;
     assert_eq!(
         world.0.borrow().log,

@@ -7,17 +7,35 @@ CrabEFI with an OS behind it, on an MJ11-EC1 (EPYC 3151, SP4r2, one die).
 
 ## Code layout
 
-- `crates/driver-amd/src/fam17h`: what Zeppelin and Picasso share (SMN/DF
-  transports, SMU mailbox, PSP mailbox, microcode, APOB, BIOS directory, DXIO
-  descriptors, cache plan, MSRs).
-- `crates/driver-amd/src/zeppelin`: the SoC (topology, DF, NBIO, DXIO, CCX,
-  SMU, FCH incl. SATA/USB/multi-die). Gated by the `zeppelin` feature.
+- `crates/driver-amd`: the silicon, by IP block. A block has its common
+  code and a submodule per IP version where the code differs, named by its
+  AGESA version or, without one, by the SoC (as openSIL's `xUSL/<IP>`):
+  - `smn`, `df`: the register transports. `df` also has the dies (`Die`,
+    `dies`), the address map and its resource split (`df::map`) and the
+    fabric init (`df::zeppelin`).
+  - `smu`: the mailbox, the AP release (`smu::threads`) and Zeppelin's SMU
+    V9 messages (`smu::v9`).
+  - `nbio`: `iohc` (DRAM map, BARs), `ioapic`, `iommu`, `pcie`; the NBIO
+    base init and tables (`nbio::zeppelin`).
+  - `dxio`: the DXIO firmware client; the lane mapping and PCIe setup
+    (`dxio::zeppelin`).
+  - `ccx`: per-CPU init, MSRs, cache plan, microcode and TSC; the reset MSR
+    table (`ccx::zeppelin`).
+  - `psp` (mailbox, BIOS directory), `apob`, `table` (vendor register
+    tables).
+  - `fch`: the register layer and controllers (LPC, SPI, eSPI, GPIO, I2C,
+    SMI, ...); the Taishan FCH (`fch::taishan`: SATA, USB, IRQ routing, the
+    multi-die FCH, the SMM parts).
+  - `soc::zeppelin`: the SoC itself: its `Soc` constants, identity
+    (package, revision), non-PCI pool, ECAM and APOB location.
+
+  The Zeppelin versions are gated by the `zeppelin` feature.
 - `crates/platform-amd/src/zeppelin`: the boot flow (`stage.rs`), DRAM
   layout, CPU driver for the MP engine, SMM and PSP SMM info (`smm.rs`), PCI
   root, e820, ACPI tables, payload handoff and the host build plan.
 - SMM: `fstart_arch::x86::cpu::amd::smm` (TSEG/SMBASE MSRs), the FCH SMI
   control and handler in `crates/driver-amd/src/fch/smi.rs`, the Zeppelin
-  sleep entry in `zeppelin/fch/smm.rs`.
+  sleep entry in `fch/taishan/smm.rs`.
 - `boards/gigabyte/mj11`: DXIO lanes (EC1 x8/x8, EC0 x16), interrupt routes,
   AST2500 SUART1 console, IPMI KCS and SPMI, and the vendor tables of each
   variant: VR register images, PCIe re-drivers (EC1) and post-training SMN

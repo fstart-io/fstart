@@ -5,25 +5,27 @@ use crate::{
     cpu::{Fam17hCpu, PatchPage},
     layout,
     memory::Memory,
-    mp,
 };
 use core::mem::MaybeUninit;
 use fstart_arch::x86::{
     cpu::msr::{APIC_BASE, ApicBase, MsrAccess, NativeMsr},
     mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle},
 };
-use fstart_driver_amd::picasso::{
-    cpu::{microcode::Picasso, thread},
-    nbio::{self, PSP_MMIO_BASE},
-    nbio_late, power,
-    registers::Smn,
-    topology::{self, Topology},
+use fstart_driver_amd::{
+    ccx::{picasso::thread, tsc::DelayNs},
+    nbio::picasso::{self as nbio, PSP_MMIO_BASE},
+    soc::picasso::{Die, Picasso},
+    smn::Smn,
+    smu::{
+        threads::{self, Policy},
+        v10::power,
+    },
 };
 use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {
-    /// Already applied topology: no policy reset/reconfiguration here.
-    pub topology: Topology,
+    /// Already applied thread policy: no policy reset/reconfiguration here.
+    pub policy: Policy,
     /// Complete physical APIC IDs, BSP first. Not ThreadEn slots.
     pub apic_ids: &'a [u32],
     /// The whole boot flash mapped below 4 GiB, with the microcode patches
@@ -74,7 +76,7 @@ impl LateResponses {
 }
 #[derive(Debug)]
 pub enum Error {
-    Topology(topology::Error),
+    Topology(threads::Error),
     CpuCount {
         expected: usize,
         actual: usize,
@@ -83,7 +85,7 @@ pub enum Error {
     PspBar,
     Policy(thread::Error),
     Mp(MpError),
-    ApRelease(topology::Error),
+    ApRelease(threads::Error),
     IncompleteCpu,
     Smu {
         cause: power::Error,
@@ -106,9 +108,9 @@ impl CpusInitialized {
         self,
         graphics: bool,
         smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
-        delay_us: &mut impl FnMut(u32),
+        delay: &mut impl DelayNs,
     ) -> Result<CcxNotified, Error> {
-        let responses = notify(true, graphics, smn, delay_us)?;
+        let responses = notify(true, graphics, smn, delay)?;
         Ok(CcxNotified {
             cpus: self,
             responses,
@@ -128,8 +130,7 @@ impl CcxNotified {
         self.responses.entries()
     }
 }
-fn count(topology: Topology, ids: &[u32]) -> Result<u16, Error> {
-    let expected = topology.thread_slots().map_err(Error::Topology)?.len();
+fn count(expected: usize, ids: &[u32]) -> Result<u16, Error> {
     if ids.len() != expected {
         return Err(Error::CpuCount {
             expected,
@@ -142,14 +143,14 @@ fn notify(
     complete: bool,
     graphics: bool,
     smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
-    delay_us: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Result<LateResponses, Error> {
     if !complete {
         return Err(Error::IncompleteCpu);
     }
     let mut responses = LateResponses::new();
     let mut overflow = false;
-    let result = nbio_late::ccx_done(smn, graphics, delay_us, &mut |command, status| {
+    let result = nbio::late::ccx_done(smn, graphics, delay, &mut |command, status| {
         overflow |= !responses.push(command, status);
     });
     if overflow {
@@ -167,10 +168,13 @@ fn notify(
 pub unsafe fn initialize_cpus(
     input: Inputs<'_>,
     msr: &impl MsrAccess,
-    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
-    delay_us: &mut impl FnMut(u32),
+    die: &Die<impl fstart_pci::ConfigRegionAccess + Copy>,
+    delay: &mut impl DelayNs,
 ) -> Result<CpusInitialized, Error> {
-    let total = count(input.topology, input.apic_ids)?;
+    let dies = core::slice::from_ref(die);
+    let threads = threads::thread_count(dies, input.policy).map_err(Error::Topology)?;
+    let total = count(threads, input.apic_ids)?;
+    let smn = &die.smn();
     if !input.memory.microcode_reserved() {
         return Err(Error::MicrocodeNotReserved);
     }
@@ -201,7 +205,10 @@ pub unsafe fn initialize_cpus(
     };
     let mut release_error = None;
     let mut launch = |aps: u16| {
-        unsafe { mp::release_aps(smn, input.topology, aps, delay_us) }.map_err(|error| {
+        // SAFETY: the SIPI trampoline is installed; released APs start at
+        // the reset vector, where `picasso.S` sends them to it.
+        let aps = usize::from(aps);
+        unsafe { threads::launch(dies, input.policy, aps, delay) }.map_err(|error| {
             release_error = Some(error);
             0
         })
@@ -209,9 +216,12 @@ pub unsafe fn initialize_cpus(
     let mp = match arch_mp::mp_init_with_launcher(&config, &mut launch) {
         Ok(mp) => mp,
         Err(MpError::PlatformLaunchFailed(_)) => {
-            return Err(Error::ApRelease(
-                release_error.unwrap_or(topology::Error::ApCount),
-            ));
+            return Err(Error::ApRelease(release_error.unwrap_or(
+                threads::Error::ApCount {
+                    started: 0,
+                    requested: usize::from(total) - 1,
+                },
+            )));
         }
         Err(error) => return Err(Error::Mp(error)),
     };
@@ -231,9 +241,10 @@ pub unsafe fn initialize_cpus(
 mod tests {
     extern crate std;
     use super::*;
+    use fstart_driver_amd::ccx::tsc::testing::Delay;
     use fstart_driver_amd::{
-        fam17h::registers::testing::{SmnModel, SmnTest},
-        picasso::smu,
+        smu::v10 as smu,
+        smn::testing::{SmnModel, SmnTest},
     };
     use std::{collections::BTreeMap, vec::Vec};
     struct Deny;
@@ -247,39 +258,19 @@ mod tests {
     }
     #[test]
     fn cached_count_and_completion_gate_including_singleton() {
-        let eight = Topology {
-            cores_per_complex: 4,
-            complexes: 1,
-            threads_per_core: 2,
-        };
         assert!(matches!(
-            count(eight, &[0]),
+            count(8, &[0]),
             Err(Error::CpuCount {
                 expected: 8,
                 actual: 1
             })
         ));
-        assert_eq!(count(eight, &[0, 1, 4, 5, 8, 9, 12, 13]).unwrap(), 8);
-        let one = Topology {
-            cores_per_complex: 1,
-            complexes: 1,
-            threads_per_core: 1,
-        };
-        assert_eq!(count(one, &[42]).unwrap(), 1);
-        assert!(
-            count(
-                Topology {
-                    threads_per_core: 0,
-                    ..one
-                },
-                &[42]
-            )
-            .is_err()
-        );
+        assert_eq!(count(8, &[0, 1, 4, 5, 8, 9, 12, 13]).unwrap(), 8);
+        assert_eq!(count(1, &[42]).unwrap(), 1);
         assert!(matches!(
-            notify(false, false, &SmnTest::new(Deny).smn(), &mut |_| panic!(
+            notify(false, false, &SmnTest::new(Deny).smn(), &mut Delay(|_| panic!(
                 "no delay before CPU completion"
-            ),),
+            )),),
             Err(Error::IncompleteCpu)
         ));
     }
@@ -324,9 +315,9 @@ mod tests {
     #[test]
     fn source_order_retains_all_nonstandard_responses_and_failure_prefix() {
         let transport = SmnTest::new(mailbox(usize::MAX));
-        let records = notify(true, false, &transport.smn(), &mut |_| {
+        let records = notify(true, false, &transport.smn(), &mut Delay(|_| {
             panic!("immediate fake needs no delay")
-        })
+        }))
         .unwrap();
         let commands: Vec<_> = transport.model().frames.iter().map(|frame| frame.0).collect();
         assert_eq!(commands, [0x35, 5, 0x0e, 0x53, 0x3a, 0x42, 0x32, 5]);
@@ -339,9 +330,9 @@ mod tests {
                 .all(|(entry, command)| entry.command == command && entry.status == 2)
         );
         let transport = SmnTest::new(mailbox(1));
-        let error = notify(true, false, &transport.smn(), &mut |_| {
+        let error = notify(true, false, &transport.smn(), &mut Delay(|_| {
             panic!("unavailable fake must not delay")
-        })
+        }))
         .unwrap_err();
         assert!(
             matches!(error,Error::Smu { cause: power::Error::Smu(smu::Error::Unavailable),responses } if responses.entries()==[LateResponse { command: 0x35, status: 2 }])

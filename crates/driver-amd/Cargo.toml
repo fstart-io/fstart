@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = []
-picasso = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-arch"]
+picasso = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-arch", "dep:embedded-hal", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c"]
 zeppelin = ["smi", "dep:fstart-arch", "dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c", "dep:embedded-hal"]
 # FCH SMI control for the AMD SMM owner of fstart-arch.
 smi = ["dep:fstart-arch"]
@@ -29,4 +29,7 @@ fstart-arch = { workspace = true, features = ["x86_64"], optional = true }
 fstart-smm = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The unit tests cover every SoC, also in `cargo test --workspace`.
+fstart-driver-amd = { path = ".", features = ["picasso", "zeppelin", "smm"] }
+libc = "0.2"
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

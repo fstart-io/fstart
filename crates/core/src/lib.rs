@@ -18,6 +18,7 @@ pub mod indexed;
 pub mod layout;
 pub mod memory;
 pub mod memory_info;
+pub mod once;
 pub mod security;
 pub mod smbios;
 pub mod smm;

@@ -82,9 +82,9 @@ impl fstart_stage::payload::X86UefiPayloadContext for Handoff {
     fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
         Some(fstart_pci::PciRootInfo {
             segment: 0,
-            ecam_base: fstart_driver_amd::zeppelin::ECAM,
+            ecam_base: fstart_driver_amd::soc::zeppelin::ECAM,
             bus_start: 0,
-            bus_end: (fstart_driver_amd::zeppelin::ECAM_BUSES - 1) as u8,
+            bus_end: (fstart_driver_amd::soc::zeppelin::ECAM_BUSES - 1) as u8,
         })
     }
 }

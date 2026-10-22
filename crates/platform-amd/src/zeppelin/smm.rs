@@ -3,6 +3,7 @@
 //! handler in an 8 MiB TSEG at the top of the DRAM below 4 GiB, every CPU's
 //! SMBASE in it and SMM locked, then the FCH's SMI sources enabled. Then the
 //! PSP learns about it.
+use fstart_driver_amd::ccx::tsc::DelayNs;
 use super::{Board, memory::TSEG_SIZE};
 use core::ptr::addr_of_mut;
 use fstart_arch::x86::{
@@ -10,12 +11,11 @@ use fstart_arch::x86::{
     mp::MpHandle,
 };
 use fstart_driver_amd::{
-    fam17h::psp::SmmInfo,
-    fch::smi::{self, FchSmi},
-    zeppelin::{
-        fch,
-        psp::{Buffer, Mailbox, Native},
+    fch::{
+        smi::{self, FchSmi},
+        taishan,
     },
+    psp::{Buffer, Mailbox, Native, SmmInfo},
 };
 
 /// The board's SMM image that fbuild built from its `smm.rs`.
@@ -28,7 +28,7 @@ pub fn install<B: Board>(mp: &MpHandle, tseg_base: u64) -> Result<InstalledTseg,
     let image = IMAGE.ok_or("no SMM image")?;
     // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
     // decoded since the FCH init.
-    let smi = unsafe { FchSmi::new(fch::ACPI_PORTS, B::SMI_GEVENTS) };
+    let smi = unsafe { FchSmi::new(taishan::ACPI_PORTS, B::SMI_GEVENTS) };
     AmdSmm::new("zeppelin", &smi)
         .install(mp, image, tseg_base, TSEG_SIZE)
         .map_err(|error| error.name())
@@ -61,7 +61,7 @@ fn psp_smm_info(tseg: &InstalledTseg) -> Option<SmmInfo> {
 pub fn psp_mailbox(
     bar: u32,
     tseg: &InstalledTseg,
-    delay: &mut impl FnMut(u32),
+    delay: &mut impl DelayNs,
 ) -> Option<Mailbox<Native>> {
     static mut BUFFER: Buffer = Buffer::new();
     let Some(info) = psp_smm_info(tseg) else {
