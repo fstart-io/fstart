@@ -471,7 +471,8 @@ fn processors(inputs: &Inputs) -> Result<Vec<u8>, AmlError> {
                 .and_then(|c| Some((c, c.slots.iter().position(|&a| a == cpu.apic_id)?)));
             if let Some((c, slot)) = slot {
                 let entries = cppc::cpc_entries(&c.info, slot as u32, c.lowest_mhz, c.nominal_mhz);
-                body.extend(cpc_aml(c.info.revision, &entries));
+                let n = cppc::cpc_entry_count(c.info.revision);
+                body.extend(cpc_aml(c.info.revision, &entries[..n]));
             }
             out.extend(processor_device(
                 ProcessorName::new(index),

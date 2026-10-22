@@ -85,6 +85,15 @@ pub fn cpc_entries(
     })
 }
 
+/// `_CPC` entries (after NumEntries and Revision) for `revision`: ACPI
+/// revision 2 has 19 (no frequencies), revision 3 has 21. AmdAcpiDxe
+/// always emits 21 with the SMU's revision, so a revision-2 SMU (the bench
+/// Rome) gets a package Linux rejects ("Mismatched _CPC revision and
+/// num_ent"); fstart emits the spec-valid count.
+pub const fn cpc_entry_count(revision: u8) -> usize {
+    if revision >= 3 { 21 } else { 19 }
+}
+
 /// The PCCT subspace for the region at `base` (doorbell in the SMU MMIO).
 pub fn pcct_subspace(base: u64, smu_bar: u64) -> GenericSubspace {
     GenericSubspace {
@@ -124,5 +133,6 @@ mod tests {
         assert_eq!(reg(16), (0, 0), "not implemented: null");
         assert!(matches!(e[19], CpcEntry::Integer(1500)));
         assert!(matches!(e[20], CpcEntry::Integer(2500)));
+        assert_eq!((cpc_entry_count(2), cpc_entry_count(3)), (19, 21));
     }
 }
