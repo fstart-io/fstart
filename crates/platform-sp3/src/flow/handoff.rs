@@ -292,6 +292,14 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),
         fch: &fch,
+        cppc: ctx.cppc.as_ref().map(|c| acpi::CppcAcpi {
+            info: c.info,
+            base: c.base,
+            smu_bar: c.smu_bar,
+            lowest_mhz: c.lowest_mhz,
+            nominal_mhz: c.nominal_mhz,
+            slots: &c.slots,
+        }),
         board: B::acpi_board(&lpc_aml),
     };
     let tables = acpi::build(&inputs).or_halt("ACPI tables");

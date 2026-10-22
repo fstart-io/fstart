@@ -175,6 +175,20 @@ fn inputs<'a>(
             acpi_disable: 0xA1,
         }),
         fch: fch(),
+        cppc: Some(CppcAcpi {
+            info: CppcInfo::from_answer(0x007F_FFFF),
+            base: 0x7FF0_0000,
+            smu_bar: 0xF110_0000,
+            lowest_mhz: 1500,
+            nominal_mhz: 2500,
+            slots: std::boxed::Box::leak(
+                s.cpus
+                    .iter()
+                    .map(|c| c.apic_id)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
+        }),
         board: Board {
             ipmi: Some(IpmiKcsAcpi {
                 port: 0xCA2,
@@ -404,4 +418,14 @@ fn dsdt_passes_iasl() {
             std::fs::remove_dir_all(dir).unwrap();
         }
     }
+}
+
+#[test]
+fn cppc_builds_the_pcct() {
+    let s = system(Generation::Rome, 1, 8);
+    let rb = root_bridges(&s);
+    let t = assemble(&build(&inputs(Generation::Rome, &s, &rb, None)).unwrap());
+    let pcct = get(&t, b"PCCT").expect("PCCT");
+    assert_eq!(pcct.len(), 110);
+    assert_eq!(&pcct[56..64], &0x7FF0_0000u64.to_le_bytes());
 }

@@ -526,7 +526,77 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
         )
         .or_halt("SMU CCX done");
     }
+    ctx.cppc = cppc(ctx, si, &mp);
     mp
+}
+
+/// CPPC as AmdAcpiDxe and the CCX PCCT service set it up after CCX done:
+/// ask socket 0's SMU (`CppcGetInfo`); when enabled, a 64 KiB region
+/// uncached on every thread by a free variable MTRR, the PCC signature,
+/// `CppcSetTable` and the two `_CPC` frequencies.
+fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Option<super::Cppc> {
+    use fstart_arch::x86::mtrr;
+    use fstart_driver_zen::smu::v11::cppc::{REGION_SIZE, SIGNATURE};
+
+    let generation = ctx.generation;
+    if !FeaturePolicy::default().cppc {
+        return None;
+    }
+    let smu = si.smus.first()?;
+    let info = v11::cppc_info(smu).ok()?;
+    if !info.enabled() {
+        fstart_log::info!(
+            "cppc: off (answer {:#x})",
+            info.supported << 2 | u32::from(info.revision)
+        );
+        return None;
+    }
+    let smu_bar = si.nbios.iter().find_map(|n| n.smu_bar())?;
+    // SAFETY (MTRR reads/writes): BSP and parked APs run nothing else; the
+    // region is fresh heap inside the reserved early region.
+    let index = (0..unsafe { mtrr::variable_count() })
+        .find(|&i| !mtrr::is_valid_mask(unsafe { mtrr::read_variable(i) }.1));
+    let Some(index) = index else {
+        fstart_log::warn!("cppc: no free variable MTRR");
+        return None;
+    };
+    let region = dma_alloc(REGION_SIZE as usize, REGION_SIZE as usize);
+    let base = region.as_ptr() as u64;
+    let uncached = || unsafe {
+        crate::hw::wbinvd();
+        mtrr::disable_cache();
+        mtrr::set_variable(index, base, REGION_SIZE, 0);
+        mtrr::enable_cache();
+    };
+    mp.scope(|s| s.broadcast(&uncached));
+    uncached();
+    // SAFETY: the region is ours and now uncached.
+    unsafe { core::ptr::write_volatile(base as *mut u32, SIGNATURE) };
+    v11::cppc_set_table(smu, base).ok()?;
+    let (lowest_mhz, nominal_mhz) = v11::cppc_frequencies(smu, generation).unwrap_or((0, 0));
+    let slots = si
+        .maps
+        .iter()
+        .enumerate()
+        .flat_map(|(s, map)| apic_ids(generation, s as u8, map).map(u32::from))
+        .collect();
+    fstart_log::info!(
+        "cppc: PCC {:#x} MTRR {} revision {} mask {:#x} {}-{} MHz",
+        base,
+        index,
+        info.revision,
+        info.supported,
+        lowest_mhz,
+        nominal_mhz
+    );
+    Some(super::Cppc {
+        base,
+        smu_bar,
+        info,
+        lowest_mhz,
+        nominal_mhz,
+        slots,
+    })
 }
 
 /// PCI enumeration prerequisites (NBIO_SMU §3.5 step 6): NBIO IOAPIC BAR

@@ -100,6 +100,17 @@ pub(crate) trait Steps: Sized {
     fn nbios(&self) -> &[Nbio<Pci>];
 }
 
+/// The SMU-served CPPC PCC region (`smu::v11::cppc`).
+pub(crate) struct Cppc {
+    pub base: u64,
+    pub smu_bar: u64,
+    pub info: fstart_driver_zen::smu::v11::CppcInfo,
+    pub lowest_mhz: u32,
+    pub nominal_mhz: u32,
+    /// APIC ID of each PCC slot (the PPTable CPPC map, sockets in order).
+    pub slots: Vec<u32>,
+}
+
 /// NUMA domains as ACPI needs them.
 pub(crate) struct NumaPlan {
     /// Socket of each proximity domain.
@@ -259,6 +270,8 @@ pub(crate) struct Ctx {
     pub psp_bar: u64,
     /// APIC IDs of every enabled thread, BSP first (MADT order).
     pub apic_ids: Vec<u32>,
+    /// CPPC through the SMU, when the SMU reports it enabled.
+    pub cppc: Option<Cppc>,
     pub smm: Option<crate::smm::SmmConfig>,
     pub rsdp: Option<u64>,
 }
@@ -358,6 +371,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
         phys_addr_bits: 0,
         psp_bar: 0,
         apic_ids: Vec::new(),
+        cppc: None,
         smm: None,
         rsdp: None,
     };

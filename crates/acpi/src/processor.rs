@@ -1,5 +1,5 @@
 //! Processor objects: `ACPI0007` processor devices and their power objects
-//! (`_PSS`, `_PCT`, `_PSD`, `_CST`; ACPI 6.5 §8.4).
+//! (`_PSS`, `_PCT`, `_PSD`, `_CST`, `_CPC`; ACPI 6.5 §8.4).
 //!
 //! Processor devices replace the deprecated `Processor()` term. Their
 //! `_UID` matches the ACPI processor UID of the MADT entry, which is what
@@ -152,10 +152,75 @@ pub fn cst_aml(states: &[PowerState]) -> Vec<u8> {
     crate::serialize(&Name::new("_CST".into(), &cst))
 }
 
+/// One `_CPC` entry (ACPI 6.5 §8.4.6.1, Table 8.24).
+#[derive(Debug, Clone, Copy)]
+pub enum CpcEntry {
+    Register(GAS),
+    Integer(u32),
+}
+
+impl CpcEntry {
+    /// An unimplemented optional register: a null SystemMemory register.
+    pub fn none() -> Self {
+        Self::Register(GAS::default())
+    }
+}
+
+/// `Name(_CPC, Package { NumEntries, Revision, entries... })`; NumEntries
+/// counts itself and the revision.
+pub fn cpc_aml(revision: u8, entries: &[CpcEntry]) -> Vec<u8> {
+    let registers: Vec<RegisterDescriptor> = entries
+        .iter()
+        .map(|e| match e {
+            CpcEntry::Register(g) => RegisterDescriptor(*g),
+            CpcEntry::Integer(_) => RegisterDescriptor(GAS::default()),
+        })
+        .collect();
+    let templates: Vec<ResourceTemplate> = registers
+        .iter()
+        .map(|r| ResourceTemplate::new(alloc::vec![r]))
+        .collect();
+    let mut cpc = PackageBuilder::new();
+    cpc.add_element(&(entries.len() as u32 + 2));
+    cpc.add_element(&revision);
+    entries.iter().zip(&templates).for_each(|(e, t)| match e {
+        CpcEntry::Register(_) => cpc.add_element(t),
+        CpcEntry::Integer(v) => cpc.add_element(v),
+    });
+    crate::serialize(&Name::new("_CPC".into(), &cpc))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use acpi_tables::gas::{AccessSize, AddressSpace};
+
+    #[test]
+    fn cpc_package() {
+        let pcc = GAS::new(
+            AddressSpace::PlatformCommunicationsChannel,
+            32,
+            0,
+            AccessSize::Undefined,
+            0x104,
+        );
+        let mut entries = [CpcEntry::Register(pcc); 21];
+        entries[16] = CpcEntry::none();
+        entries[19] = CpcEntry::Integer(1500);
+        entries[20] = CpcEntry::Integer(2500);
+        let b = cpc_aml(3, &entries);
+        assert_eq!(&b[..5], b"\x08_CPC");
+        // Package of 23 elements: NumEntries 23, Revision 3.
+        assert!(b.windows(5).any(|w| w == [0x17, 0x0a, 0x17, 0x0a, 0x03]));
+        // Register descriptors: 0x82, length 12, PCC (0x0a), 32 bits.
+        assert_eq!(
+            b.windows(5)
+                .filter(|w| *w == [0x82, 12, 0, 0x0a, 32])
+                .count(),
+            18
+        );
+        assert!(b.windows(3).any(|w| w == [0x0b, 0xdc, 0x05]), "1500");
+    }
 
     #[test]
     fn names() {

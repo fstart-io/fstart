@@ -6,6 +6,8 @@
 //! [`Mailbox`](super::mailbox::Mailbox) with [`REGS`] through any root bus
 //! of the socket.
 
+#[cfg(feature = "acpi")]
+pub mod cppc;
 pub mod pptable;
 
 use fstart_core::services::Timer;
@@ -284,6 +286,57 @@ pub fn nbif2_power_gate<M: SmuMessages + ?Sized>(
     smu.send(msg::SET_POWER_GATE, &mut args)
 }
 
+/// The SMU's CPPC answer (`CppcGetInfo`, message 0x17; Rome SmuV11Dxe
+/// `0x1cdc`, Milan `0x2170`, sent when the CPPC feature bit is on).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CppcInfo {
+    /// Answer bits 1:0.
+    pub revision: u8,
+    /// Answer bits 31:2: bit `k` = `_CPC` register `k` is implemented.
+    pub supported: u32,
+}
+
+impl CppcInfo {
+    pub const fn from_answer(answer: u32) -> Self {
+        Self {
+            revision: (answer & 3) as u8,
+            supported: answer >> 2,
+        }
+    }
+
+    /// CPPC is on (answer bit 16 = `_CPC` CPPCEnable). AmdAcpiDxe also
+    /// needs revision 2 or later before it builds `_CPC`.
+    pub const fn enabled(&self) -> bool {
+        self.supported & 1 << 14 != 0 && self.revision > 1
+    }
+
+    pub const fn implements(&self, register: u8) -> bool {
+        self.supported & 1 << register != 0
+    }
+}
+
+pub fn cppc_info<M: SmuMessages + ?Sized>(smu: &M) -> Result<CppcInfo, SmuError> {
+    send1(smu, msg::CPPC_INFO, 0).map(CppcInfo::from_answer)
+}
+
+/// Hand the PCC shared memory to the SMU (`CppcSetTable`, 0x16).
+pub fn cppc_set_table<M: SmuMessages + ?Sized>(smu: &M, base: u64) -> Result<(), SmuError> {
+    send_addr(smu, msg::CPPC_SET_TABLE, base)
+}
+
+/// `(lowest, nominal)` frequency in MHz for `_CPC` entries 19/20 (Rome
+/// `0x2130`: 0x3B, 0x3A; Milan: 0x3A, 0x39).
+pub fn cppc_frequencies<M: SmuMessages + ?Sized>(
+    smu: &M,
+    generation: Generation,
+) -> Result<(u32, u32), SmuError> {
+    let (lowest, nominal) = match generation {
+        Generation::Milan => (0x3A, 0x39),
+        _ => (0x3B, 0x3A),
+    };
+    Ok((send1(smu, lowest, 0)?, send1(smu, nominal, 0)?))
+}
+
 /// The PCD-CPPC doorbell: `(SMU BAR & !0xFF) + 0x10540`
 /// (`HarvestCppcDoorbellAddress`).
 pub const fn cppc_doorbell(smu_bar: u64) -> u64 {
@@ -515,5 +568,11 @@ mod tests {
         assert_eq!(sent[2].1[0], 0x3_0202);
         assert_eq!(sent[3].1[..3], [1, 2, 1]);
         assert_eq!(cppc_doorbell(0xF110_0001), 0xF111_0540);
+        let i = CppcInfo::from_answer(0x007F_FFFF);
+        assert!(i.enabled() && i.implements(20) && !i.implements(21));
+        assert!(
+            !CppcInfo::from_answer(0x007E_FFFF).enabled(),
+            "bit 16 clear"
+        );
     }
 }

@@ -26,11 +26,12 @@ use fstart_acpi::aml::{
 use fstart_acpi::aml_linker::{device_vec, scope_vec};
 use fstart_acpi::gas::{AccessSize, AddressSpace as GasSpace, GAS};
 use fstart_acpi::processor::{
-    Coordination, PerformanceState, PowerState, ProcessorName, cst_aml, pct_aml, processor_device,
-    psd_aml, pss_aml,
+    Coordination, PerformanceState, PowerState, ProcessorName, cpc_aml, cst_aml, pct_aml,
+    processor_device, psd_aml, pss_aml,
 };
 use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl, gpe};
 use fstart_driver_zen::fch::acpi as fch_acpi;
+use fstart_driver_zen::smu::v11::cppc;
 use fstart_driver_zen::soc::Generation;
 
 use super::fixed::{FCH_IOAPIC_BASE, GsiWindow, HPET_BASE, LAPIC_BASE, PM_BASE};
@@ -461,10 +462,17 @@ fn processors(inputs: &Inputs) -> Result<Vec<u8>, AmlError> {
         .enumerate()
         .try_fold(Vec::new(), |mut out, (uid, cpu)| {
             let index = u16::try_from(uid).map_err(|_| AmlError::InvalidOperand)?;
-            let body = power
+            let mut body = power
                 .as_ref()
                 .map(|p| p.for_cpu(cpu.apic_id))
                 .unwrap_or_default();
+            let slot = inputs
+                .cppc
+                .and_then(|c| Some((c, c.slots.iter().position(|&a| a == cpu.apic_id)?)));
+            if let Some((c, slot)) = slot {
+                let entries = cppc::cpc_entries(&c.info, slot as u32, c.lowest_mhz, c.nominal_mhz);
+                body.extend(cpc_aml(c.info.revision, &entries));
+            }
             out.extend(processor_device(
                 ProcessorName::new(index),
                 uid as u32,
@@ -485,6 +493,7 @@ pub fn build(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError
     for (uid, rb) in &bridges {
         out.extend(root_bridge(inputs, windows, *uid, rb)?);
     }
+    out.extend(fstart_acpi::osc::platform_osc());
     out.extend(processors(inputs)?);
     out.extend(inputs.fch.sb_aml()?);
     out.extend_from_slice(inputs.board.sb_aml);

@@ -27,6 +27,8 @@ use fstart_core::acpi::AcpiSmiConfig;
 use fstart_driver_zen::ccx::power::{CstateInfo, Pstate};
 pub use fstart_driver_zen::fch::acpi::FchAcpi;
 use fstart_driver_zen::nbio::ioapic::IoapicInfo;
+use fstart_driver_zen::smu::v11::CppcInfo;
+use fstart_driver_zen::smu::v11::cppc;
 use fstart_driver_zen::soc::Generation;
 use fstart_driver_zen::topology::RootBridge;
 
@@ -117,7 +119,22 @@ pub struct Inputs<'a> {
     pub acpi_smi: Option<AcpiSmiConfig>,
     /// FCH devices as the FCH tasks left them.
     pub fch: &'a FchAcpi,
+    /// SMU-served CPPC: `_CPC` per processor and the PCCT.
+    pub cppc: Option<CppcAcpi<'a>>,
     pub board: Board<'a>,
+}
+
+/// CPPC inputs (`smu::v11::cppc`).
+#[derive(Debug, Clone, Copy)]
+pub struct CppcAcpi<'a> {
+    pub info: CppcInfo,
+    /// PCC region.
+    pub base: u64,
+    pub smu_bar: u64,
+    pub lowest_mhz: u32,
+    pub nominal_mhz: u32,
+    /// APIC ID of each PCC slot.
+    pub slots: &'a [u32],
 }
 
 /// The built table set, ready for `fstart_acpi::platform::assemble_into`.
@@ -178,6 +195,11 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
         )
         .chain(ivrs::ivrs(inputs.iommus, &windows))
         .chain(inputs.board.ipmi.map(|k| k.spmi()))
+        .chain(
+            inputs
+                .cppc
+                .map(|c| fstart_acpi::pcct::build_pcct(&[cppc::pcct_subspace(c.base, c.smu_bar)])),
+        )
         .collect();
     Ok(Tables {
         platform: PlatformConfig::X86(fixed::x86_config(inputs, &windows)),
