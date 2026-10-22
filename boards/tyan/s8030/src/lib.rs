@@ -11,6 +11,7 @@
 //! | [`policy`] | silicon policy from the S8030 setup defaults |
 //! | [`bmc`] | AST2500 LPC decodes, Super I/O and SCU, COM1 console, IPMI KCS, ACPI |
 //! | `platform` | the `fstart_platform_sp3::board::Board` implementation over the above |
+//! | `smm` | the SMM image's handler binding (SMM unit only) |
 //!
 //! One build serves both generations: the reset image identifies the CPU
 //! and the [`fstart_platform_sp3::board::Board`] hooks take its generation.
@@ -36,6 +37,8 @@ pub mod dxio;
 pub mod gpio;
 mod platform;
 pub mod policy;
+#[cfg(fstart_stage_env = "smm")]
+mod smm;
 
 use fstart_driver_zen::soc::Generation;
 use fstart_platform_sp3::layout::Sp3BoardFacts;

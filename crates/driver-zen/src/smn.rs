@@ -22,6 +22,17 @@ pub const SMN_DATA: u16 = 0xBC;
 /// An SMN address (32-bit, dword aligned for register accesses).
 pub type SmnAddr = u32;
 
+/// 00.0 of `bus`, without `PciAddress::new`: its device/function range
+/// asserts are a panic path, which an SMM image (the SP3 handler reaches
+/// SMN) may not link, and 00.0 has nothing to check.
+fn host_bridge(bus: u8) -> PciAddress {
+    const { assert!(size_of::<PciAddress>() == size_of::<u32>()) };
+    // SAFETY: `PciAddress` is one `u32` packed segment:bus:device:function
+    // = 16:8:5:3 (pci_types docs; same size checked above, the test below
+    // pins the packing), and every `u32` is a valid address.
+    unsafe { core::mem::transmute::<u32, PciAddress>(u32::from(bus) << 8) }
+}
+
 /// SMN access through the host bridge of one root bus.
 #[derive(Clone, Copy)]
 pub struct Smn<P> {
@@ -34,7 +45,7 @@ impl<P: ConfigRegionAccess> Smn<P> {
     pub fn new(pci: P, bus: u8) -> Self {
         Self {
             pci,
-            host: PciAddress::new(0, bus, 0, 0),
+            host: host_bridge(bus),
         }
     }
 
@@ -186,6 +197,11 @@ mod tests {
     use tock_registers::register_bitfields;
 
     register_bitfields![u32, TEST [LOW OFFSET(0) NUMBITS(4) [], HIGH OFFSET(28) NUMBITS(4) []]];
+
+    #[test]
+    fn host_bridge_is_device_0_function_0_of_the_bus() {
+        assert!((0..=u8::MAX).all(|bus| host_bridge(bus) == PciAddress::new(0, bus, 0, 0)));
+    }
 
     #[test]
     fn index_data_round_trip() {

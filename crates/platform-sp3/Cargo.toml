@@ -50,3 +50,7 @@ serde_json = { version = "1", optional = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
 ufmt = { workspace = true }
+
+# build.rs lays the SMM image out as the installer will (TSEG fit check).
+[build-dependencies]
+fstart-smm = { workspace = true }

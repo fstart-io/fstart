@@ -16,6 +16,13 @@
 //! finalizes the unit's trust policy only in FFS-resident files, and the
 //! composer copies it, the FFS locator and the flash anchor (FFS flash
 //! offset and size) into the PSP-copied `0x62` image.
+//!
+//! A second unit, `smm`, builds the board crate's library with the FCH SMI
+//! handler (`smm::Sp3SmmHandler`, bound by the board's `smm_bin!`) into a
+//! position-independent SMM image with one entry stub per CPU the board
+//! allows; the reset unit embeds it through `FSTART_SMM_IMAGE` and its build
+//! script checks that it fits the TSEG ([`crate::smm::TSEG_SIZE`]), as the
+//! MIT Intel and QEMU q35 plans do.
 
 use std::boxed::Box;
 use std::collections::BTreeMap;
@@ -29,8 +36,8 @@ use fstart_core::{
 };
 use fstart_driver_zen::soc::Generation;
 use fstart_image_build::build_plan::{
-    Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema, FfsAssembly, InputFile,
-    UnitOutput,
+    ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema,
+    FfsAssembly, InputFile, UnitOutput,
 };
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
@@ -46,6 +53,25 @@ use crate::layout::{
 pub const RESET_UNIT: &str = "reset";
 /// Platform feature that bundles the reset-image stage runtime.
 pub const RESET_FEATURE: &str = "bundle-reset";
+/// The SMM image unit; the reset unit is its only consumer.
+pub const SMM_UNIT: &str = "smm";
+/// Platform features of the SMM unit: the handler and its binding macro
+/// with the SMM panic handler.
+pub const SMM_FEATURES: [&str; 2] = ["smm", "bundle-smm"];
+/// `fstart_stage_env` of the SMM unit (the arch crate's SMM delay path).
+pub const SMM_ENVIRONMENT: &str = "smm";
+/// `fstart_entry` of the SMM unit: the generic x86-64 one, so neither the
+/// platform's PSP reset entry nor anything else with a fixed address is
+/// compiled into the handler's crates (the Intel SMM unit's choice).
+pub const SMM_ENTRY: &str = "x86_64";
+/// Reset-unit environment carrying the SMM image path (`build.rs`).
+pub const SMM_IMAGE_ENV: &str = "FSTART_SMM_IMAGE";
+/// Reset-unit environment carrying the TSEG size the image must fit.
+pub const TSEG_SIZE_ENV: &str = "FSTART_SMM_TSEG_SIZE";
+/// Per-thread SMM stack: the linked handler's deepest static call path
+/// (it has no indirect calls) needs about 1 KiB; 128 threads take 1 MiB of
+/// the 8 MiB TSEG.
+pub const SMM_STACK_SIZE: u32 = 0x2000;
 const LINKER_TEMPLATE: &str = include_str!("../../linker/reset.ld.in");
 
 /// Conventional platform export consumed by the generic fbuild runner.
@@ -177,11 +203,74 @@ pub fn expectations() -> Result<Expectations, String> {
 /// (`FSTART_ANCHOR`) the composer fills.
 pub const RESET_ENVIRONMENT: &str = "monolithic";
 
+/// One cfg vocabulary for both units, so every crate checks the same names.
 fn cfg_schema() -> CompilerCfgSchema {
     CompilerCfgSchema {
-        entries: vec![crate::entry::ENTRY.into()],
-        environments: vec![RESET_ENVIRONMENT.into()],
+        entries: vec![crate::entry::ENTRY.into(), SMM_ENTRY.into()],
+        environments: vec![RESET_ENVIRONMENT.into(), SMM_ENVIRONMENT.into()],
         payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
+    }
+}
+
+/// `FSTART_MP_MAX_CPUS` for both units: the MP code's bound and the SMM
+/// image's entry count agree.
+fn mp_capacity<B: Sp3BoardFacts>() -> BTreeMap<String, String> {
+    BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), B::MAX_CPUS.to_string())])
+}
+
+/// The SMM image unit: the board library with the platform's FCH handler,
+/// built for every generation the board lists, linked position independent
+/// (the installer copies it to the top of TSEG) with one entry stub per
+/// CPU the board allows.
+fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
+    CompilationUnit {
+        name: SMM_UNIT.into(),
+        cargo_target: CargoTarget::BoardLibrary,
+        target: "x86_64-unknown-none".into(),
+        entry: SMM_ENTRY.into(),
+        cfg_schema: cfg_schema(),
+        environment: SMM_ENVIRONMENT.into(),
+        payload: "halt".into(),
+        features: SMM_FEATURES
+            .into_iter()
+            .chain(B::GENERATIONS.iter().map(|&g| feature(g)))
+            .map(String::from)
+            .collect(),
+        build_std: None,
+        release_only: true,
+        linker_script: None,
+        // The Intel/q35 SMM flags, but PIE instead of static: the handler
+        // takes the address of its SMRAM statics (P2C/C2P pages) and the
+        // drivers use jump tables, which static code addresses absolutely
+        // (`R_X86_64_32S`); PIE code reaches them RIP-relative, and PLT
+        // calls (`-Zplt=yes`, also for `memcpy`) link to direct ones. The
+        // image builder still rejects any load-base-dependent reference.
+        rustflags: [
+            "-Cpanic=abort",
+            "-Copt-level=s",
+            "-Crelocation-model=pie",
+            "-Zplt=yes",
+            "-Cno-redzone=yes",
+            "-Clinker-plugin-lto=no",
+            "-Cembed-bitcode=no",
+            "-Zfunction-sections=yes",
+        ]
+        .map(String::from)
+        .to_vec(),
+        // No console in SMM: the log macros compile out (and with them
+        // their formatting panics, which the image builder rejects).
+        environment_values: mp_capacity::<B>()
+            .into_iter()
+            .chain([("FSTART_LOG_LEVEL".into(), "off".into())])
+            .collect(),
+        bindings: vec![],
+        file_bindings: vec![],
+        output: UnitOutput::SmmImage {
+            entry_count: B::MAX_CPUS,
+            stack_size: SMM_STACK_SIZE,
+            coreboot_module_args: false,
+            coreboot_header: false,
+        },
     }
 }
 
@@ -373,11 +462,15 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         .map(String::from)
         .to_vec(),
         linker_script: Some(linker_script()?),
-        environment_values: BTreeMap::from([(
-            "FSTART_MP_MAX_CPUS".into(),
-            B::MAX_CPUS.to_string(),
-        )]),
-        bindings: vec![],
+        environment_values: mp_capacity::<B>()
+            .into_iter()
+            .chain([(TSEG_SIZE_ENV.into(), crate::smm::TSEG_SIZE.to_string())])
+            .collect(),
+        bindings: vec![ArtifactBinding {
+            producer: SMM_UNIT.into(),
+            artifact: "image".into(),
+            environment: SMM_IMAGE_ENV.into(),
+        }],
         file_bindings: vec![],
         output: UnitOutput::Executable {
             expectations: expectations()?,
@@ -397,7 +490,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     };
     let plan = BuildPlan {
         payload: payload.name().into(),
-        units: vec![unit],
+        units: vec![smm_unit::<B>(), unit],
         stages: vec![RESET_UNIT.into()],
         assembly: Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
             ffs: ffs_assembly(payload, payload.config(selection)?),
@@ -481,6 +574,65 @@ mod tests {
             const MAX_CPUS: u16 = 1;
         }
         assert!(resolve::<Nothing>(&BuildSelection::default()).is_err());
+    }
+
+    #[test]
+    fn smm_unit_feeds_its_image_to_the_reset_unit() {
+        let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
+        let order: std::vec::Vec<_> = plan
+            .order()
+            .unwrap()
+            .iter()
+            .map(|u| u.name.as_str())
+            .collect();
+        assert_eq!(order, [SMM_UNIT, RESET_UNIT]);
+        let smm = plan.unit(SMM_UNIT).unwrap();
+        assert!(matches!(smm.cargo_target, CargoTarget::BoardLibrary));
+        assert_eq!(
+            (
+                smm.entry.as_str(),
+                smm.environment.as_str(),
+                smm.payload.as_str()
+            ),
+            ("x86_64", "smm", "halt")
+        );
+        assert_eq!(smm.features, ["smm", "bundle-smm", "rome", "milan"]);
+        assert!(smm.release_only && smm.rustflags.iter().any(|f| f == "-Cpanic=abort"));
+        assert_eq!(smm.environment_values["FSTART_MP_MAX_CPUS"], "256");
+        let UnitOutput::SmmImage {
+            entry_count,
+            stack_size,
+            coreboot_module_args: false,
+            coreboot_header: false,
+        } = smm.output
+        else {
+            panic!("not a native SMM image")
+        };
+        // One entry stub per thread the MP code may bring up.
+        assert_eq!((entry_count, stack_size), (256, SMM_STACK_SIZE));
+
+        let reset = plan.unit(RESET_UNIT).unwrap();
+        let [binding] = reset.bindings.as_slice() else {
+            panic!("reset unit takes exactly the SMM image")
+        };
+        assert_eq!(
+            (
+                binding.producer.as_str(),
+                binding.artifact.as_str(),
+                binding.environment.as_str()
+            ),
+            (SMM_UNIT, "image", "FSTART_SMM_IMAGE")
+        );
+        assert_eq!(reset.environment_values[TSEG_SIZE_ENV], "8388608");
+        // Both units check the same cfg vocabulary.
+        for unit in [smm, reset] {
+            let flags = unit.check_cfg_flags().unwrap();
+            assert!(flags.contains(
+                &"--check-cfg=cfg(fstart_entry,values(\"amd-psp-reset\",\"x86_64\"))".into()
+            ));
+        }
+        // Only the reset unit is a stage.
+        assert_eq!(plan.stages, [RESET_UNIT]);
     }
 
     #[test]

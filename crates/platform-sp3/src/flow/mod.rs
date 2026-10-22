@@ -749,6 +749,15 @@ fn fch_env<B: Board>(ctx: &Ctx) {
 /// TSEG, SMBASE and lock on every thread with the FCH handler image, then
 /// the PSP SmmInfo registration from SMM (PSP_APOB §3.3). Without an SMM
 /// image in this build SMM stays unlocked; that is logged, not hidden.
+///
+/// Order (AMD PPR 55803 §2.1.12.1, MSRC001_0111..0113, C001_0015): FCH
+/// SMIs off; TValid/AValid cleared so TSEG is plain DRAM while the BSP
+/// copies the handler and flushes it; then every thread (APs first, BSP
+/// last) writes SMM_ADDR, SMM_MASK (TValid, WB), its own SMM_BASE and
+/// sets HWCR.SmmLock, which makes all of them read-only. SMM_ADDR and
+/// SMM_MASK are per core (both SMT threads write the same values), SMM_BASE
+/// and HWCR per thread. Then the FCH sources, one self-SMI per thread
+/// through the new entry, the PSP SMI route and SW SMI D0 (SmmInfo).
 fn install_smm<S: Steps>(ctx: &mut Ctx, si: &S, mp: &MpHandle) {
     let config = crate::smm::SmmConfig {
         generation: ctx.generation,
@@ -760,6 +769,11 @@ fn install_smm<S: Steps>(ctx: &mut Ctx, si: &S, mp: &MpHandle) {
     #[cfg(fstart_sp3_has_smm_image)]
     {
         const IMAGE: &[u8] = include_bytes!(env!("FSTART_SMM_IMAGE"));
+        // The handler's page tables map the low 4 GiB only; a PSP BAR
+        // above would fault in SMM at SmmInfo, after the lock.
+        if ctx.psp_bar == 0 || ctx.psp_bar >= crate::memory::FOUR_GIB {
+            fail("PSP BAR for SMM");
+        }
         let smi = crate::smm::Sp3Smi {
             fch: &ctx.fch,
             config,

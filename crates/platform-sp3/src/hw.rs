@@ -29,16 +29,19 @@ const PSTATE_DEF0: u32 = 0xc001_0064;
 
 /// Microsecond timer on the TSC, calibrated from the P0 definition. The
 /// arch crate's generic calibration has no AMD path and assumes 1 GHz.
+/// Nonzero by type, so the divisions have no panic path (the SMM image
+/// links this timer and may not contain one).
 #[derive(Debug, Clone, Copy)]
 pub struct Tsc {
-    mhz: u64,
+    mhz: core::num::NonZeroU64,
 }
 
 impl Tsc {
     pub fn new() -> Self {
         let p0 = fstart_driver_zen::ccx::power::decode_pstate(0, msr().read(PSTATE_DEF0));
+        let mhz = p0.map_or(1000, |p| u64::from(p.mhz));
         Self {
-            mhz: p0.map_or(1000, |p| u64::from(p.mhz)).max(1),
+            mhz: core::num::NonZeroU64::new(mhz).unwrap_or(core::num::NonZeroU64::MIN),
         }
     }
 }
@@ -51,7 +54,7 @@ impl Default for Tsc {
 
 impl Timer for Tsc {
     fn delay_us(&self, us: u64) {
-        let ticks = us.saturating_mul(self.mhz);
+        let ticks = us.saturating_mul(self.mhz.get());
         let start = fstart_arch::x86::rdtsc();
         while fstart_arch::x86::rdtsc().wrapping_sub(start) < ticks {
             core::hint::spin_loop();

@@ -34,6 +34,61 @@ supported generation (it holds the FFS); an upper half of another
 generation keeps its vendor bytes (with a warning) and still boots its
 vendor firmware.
 
+## SMM
+
+The build has two units: `smm` and `reset`. `smm` builds the board
+library (`boards/tyan/s8030/src/smm.rs`: `smm_bin!` with
+`fstart_platform_sp3::smm::Sp3SmmHandler`, platform features `smm` and
+`bundle-smm`, `fstart_stage_env = "smm"`, logging off) into a
+position-independent fstart SMM image with one entry stub per thread
+(`Sp3BoardFacts::MAX_CPUS`) and an 8 KiB stack each. The reset unit embeds
+it through `FSTART_SMM_IMAGE`, and the platform's build script lays it out
+as the installer will. A handler that does not fit the 8 MiB TSEG fails
+the build. The unit uses the Intel/q35 SMM flags with `-Crelocation-model=pie
+-Zplt=yes` instead of static, because the handler's SMRAM statics and the
+drivers' jump tables would otherwise be absolute (`R_X86_64_32S`). The image
+builder still rejects any load-base-dependent relocation, GOT and panic
+symbol. S8030: 128 entries, image 55 968 bytes (handler 0x6140 bytes in
+SMRAM). The layout is page tables plus handler at the top of TSEG, five
+64 KiB SMBASE segments and 1 MiB of stacks, with about 6.6 MiB of TSEG
+unused.
+
+At step `0x58`, after MP:
+
+1. TSEG: the highest 8 MiB-aligned 8 MiB of RAM below TOM, outside the
+   early region and the APOB (`smm::place_tseg`, reserved in e820).
+2. FCH SMIs off (SmiEnB). The BSP clears TValid/AValid, zeroes TSEG, copies
+   the handler, stubs and identity tables (low 4 GiB, 2 MiB pages), and
+   flushes it.
+3. Every thread writes SMM_ADDR, SMM_MASK (TSEG mask over all 48 address
+   bits, write-back, TValid), its own SMM_BASE and HWCR.SmmLock. The APs go
+   first and the BSP last, and every value is read back. SMM_ADDR/SMM_MASK
+   are per core (SMT siblings write the same values) and SMM_BASE/HWCR are
+   per thread (PPR 55803 MSRC001_0111..0113). After the lock they are
+   read-only: writes are ignored, not faulted.
+4. FCH sources: SW SMI, SLP_TYP and power button go to SMI, then EOS. Rome
+   also traps CF9. Each thread then SMIs itself once through its new entry.
+5. The PSP fake-SMI source (SmiStat1[1]) is routed, and SW SMI `D0` makes
+   the handler send SmmInfo (C2P `0x02`) with its own SMRAM P2C buffer and
+   C2P page, once per boot.
+6. Milan only: at ReadyToBoot, SW SMI `D2` sends LockFCHReg from SMM.
+
+The handler is OS-first. It handles ACPI enable/disable, Sx entry, the
+power button, the NBIO USB SMI, Rome's CF9 trap and the P2C mailbox. P2C
+answers `0x81`/`0x82` and gives "unsupported" (4) to SPI NV, RPMC and ARS
+requests. It then drops SmiTrig0[25] and clears the status, as
+AmdPspP2CmboxV2Ssp `0x944` does, so a PSP request cannot cause an SMI storm.
+Without an SMM image (a build outside fbuild), step `0x58` logs it and SMM
+stays unlocked.
+
+Open hardware questions: whether the PSP on these boards ever issues P2C
+requests, and what it does with "unsupported" (fTPM/PSP NV storage needs the
+SPI NV services, which are not implemented). Whether TSEG's 48-bit mask is
+right with SYSCFG.SMEE set (bit 47 is the C-bit). Whether FCH sources left
+routed by the ABL (none are known) could storm. Whether the shared
+`fstart_smm` debug trace to port `0x402` on every SMI is harmless on the SP3
+LPC bus.
+
 ## Flash image
 
 The PSP, ABL, SMU, PMU and DXIO firmware and the APCB stay vendor blobs:

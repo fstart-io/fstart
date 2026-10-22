@@ -34,6 +34,9 @@ pub enum SxError {
     Smu(SmuError),
     /// The Naples USB/SMU handshake did not complete (bounded poll).
     UsbHandshake,
+    /// The generation's support is not built (an error, not a panic: SMM
+    /// images may not link one).
+    NotBuilt,
 }
 
 impl From<SmuError> for SxError {
@@ -169,7 +172,7 @@ pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
             }
         }
         #[allow(unreachable_patterns)]
-        g => super::not_built(g),
+        _ => return Err(SxError::NotBuilt),
     }
     // Only the Naples arm uses the die list.
     let _ = usb_dies;

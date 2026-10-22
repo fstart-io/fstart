@@ -15,6 +15,17 @@
 //! driver too; doing it from the handler puts the P2C buffer and the C2P
 //! page in the handler's own SMRAM statics, whose addresses normal mode
 //! cannot know before the image is placed.
+//!
+//! SmmInfo routes the PSP's "fake SMI" (SmiStat1\[1\], raised by the PSP
+//! setting SmiTrig0\[25\]) to SMI, so the handler must answer every P2C
+//! request and re-arm that trigger, or the source stays asserted and the
+//! FCH raises SMIs forever. It answers like AGESA's P2C mailbox but
+//! implements none of the PSP's SPI NV/RPMC/ARS services (status
+//! "unsupported", as the donors answer RPMC).
+//!
+//! The image is built by the host plan's `smm` unit from the board crate
+//! (`smm_bin!`, feature `bundle-smm`); `build.rs` checks that it fits
+//! [`TSEG_SIZE`] for the board's thread count.
 
 use fstart_driver_zen::apob::sysmap::Region;
 use fstart_driver_zen::soc::Generation;
@@ -56,10 +67,13 @@ pub fn place_tseg(regions: &[Region], tom: u64, size: u64, avoid: &[Span]) -> Op
 }
 
 /// What the normal-mode installer writes into SMRAM for the handler.
+///
+/// At most 32 bytes: the handler copies it with at most four 8-byte moves
+/// (the target has no SSE; size-optimized code turns larger copies into a
+/// `memcpy` call through the GOT, which the SMM image builder rejects).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct SmmConfig {
-    pub generation: Generation,
     /// ECAM base for the handler's config accesses (SMN on bus 0).
     pub ecam_base: u64,
     /// Socket 0's PSP BAR (Naples: die 0), for SmmInfo and the FCH lock.
@@ -68,7 +82,10 @@ pub struct SmmConfig {
     /// socket 0 on Rome/Milan) and, on Naples, takes the S3 handshake.
     pub usb_buses: [u8; 8],
     pub usb_bus_count: u8,
+    pub generation: Generation,
 }
+
+const _: () = assert!(size_of::<SmmConfig>() <= 32);
 
 impl SmmConfig {
     pub fn usb_buses(&self) -> &[u8] {
@@ -135,19 +152,57 @@ mod handler {
     use fstart_arch::x86::cpu::amd::msr::{SMM_ADDR, SMM_MASK};
     use fstart_arch::x86::cpu::msr::MsrAccess;
     use fstart_driver_zen::fch::common::sx;
+    use fstart_driver_zen::fch::smi::Source;
     use fstart_driver_zen::fch::smi::{self, source};
-    use fstart_driver_zen::fch::{FchHw, Window, acpimmio};
+    use fstart_driver_zen::fch::{Fch, FchHw, Mmio, Ports, Window, acpimmio, update};
     use fstart_driver_zen::psp::command::{C2pBuffer, P2C_BUFFER_SIZE, SmmInfo};
     use fstart_driver_zen::psp::mailbox::{Mailbox, MmioTransport};
     use fstart_driver_zen::smn::Smn;
     use fstart_driver_zen::smu::mailbox::Mailbox as Smu;
     use fstart_driver_zen::soc::Generation;
-    use fstart_pci::{ConfigRegionAccess, PciAddress};
+    use fstart_pci::{ConfigRegionAccess, EcamDevice, PciAddress};
     use fstart_smm::{SmmContext, SmmHandler};
     use tock_registers::interfaces::Readable;
 
     use super::{SmmConfig, sw};
-    use crate::hw::{Pci, Tsc, msr, primary_fch};
+    use crate::hw::{Tsc, msr};
+
+    /// Config space in SMM: the global ECAM window (`ecam::init` with the
+    /// installer's base on every SMI) without `GlobalEcam`'s panic on an
+    /// unmapped register, which the SMM image builder rejects. Such an
+    /// access reads all ones and drops the write, like a master abort.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Ecam;
+
+    impl ConfigRegionAccess for Ecam {
+        unsafe fn read(&self, address: PciAddress, offset: u16) -> u32 {
+            EcamDevice::new_address(address)
+                .try_read32(offset)
+                .unwrap_or(u32::MAX)
+        }
+
+        unsafe fn write(&self, address: PciAddress, offset: u16, value: u32) {
+            let _ = EcamDevice::new_address(address).try_write32(offset, value);
+        }
+    }
+
+    /// Socket 0's FCH as `hw::primary_fch`, over [`Ecam`].
+    type SmmFch = Fch<Mmio, Mmio, Ports, Ecam, Tsc>;
+
+    fn primary_fch(timer: Tsc) -> SmmFch {
+        // SAFETY: SMM owns the CPU; the FCH ACPI-MMIO block, MMIO and
+        // ports are mapped by the handler's identity tables.
+        unsafe {
+            Fch {
+                acpi: Mmio::new(acpimmio::BASE as usize),
+                mmio: Mmio::new(0),
+                io: Ports::new(),
+                pci: Ecam,
+                bus: 0,
+                timer,
+            }
+        }
+    }
 
     #[repr(C, align(4096))]
     struct Page<const N: usize>(UnsafeCell<[u8; N]>);
@@ -160,6 +215,38 @@ mod handler {
         Page(UnsafeCell::new([0; P2C_BUFFER_SIZE as usize]));
     static C2P: Page<0x1000> = Page(UnsafeCell::new([0; 0x1000]));
 
+    /// The PSP's fake SMI: SmiStat1\[1\], routed by SmiControl `0xA8[3:2]`
+    /// (`prepare_psp_smi`), raised by the PSP setting SmiTrig0\[25\]
+    /// (SmmInfo `trigger`; AmdPspP2CmboxV2Ssp registers `{0x84, 2}` on
+    /// the FCH misc dispatcher, PSP_APOB §3.4).
+    const PSP_SMI: Source = Source::new(0x84, 1);
+    const PSP_TRIGGER: u32 = 1 << 25;
+
+    /// P2C buffer: dword 0 the PSP's command, dword 1 flags, then the
+    /// command buffer `{size, status, data}` (PSP_APOB §3.4; layout from
+    /// AmdPspP2CmboxV2Ssp `0x720`, Rome a9724bd1, instruction-checked).
+    mod p2c {
+        pub const COMMAND: usize = 0;
+        pub const FLAGS: usize = 1;
+        pub const SIZE: usize = 2;
+        pub const STATUS: usize = 3;
+        /// x86 ready for the next request. Every donor sets it with
+        /// COMMAND = 0 before SmmInfo (Naples d8a42c95 `0xbef`, Rome
+        /// a9724bd1 `0xcef`), clears it while it works and sets it again
+        /// when done.
+        pub const READY: u32 = 1 << 31;
+        /// The PSP asks for a byte-sum checksum in FLAGS\[7:0\].
+        pub const CHECKSUM: u32 = 1 << 8;
+        /// Largest command buffer that stays inside the P2C buffer (the
+        /// donor accepts 0x2000, 8 bytes more than it has).
+        pub const MAX_SIZE: u32 = super::P2C_BUFFER_SIZE as u32 - 8;
+        /// Statuses the donor writes: done, invalid request, and what its
+        /// RPMC services return ("unsupported").
+        pub const OK: u32 = 0;
+        pub const INVALID: u32 = 1;
+        pub const UNSUPPORTED: u32 = 4;
+    }
+
     /// The SP3 FCH SMI dispatcher.
     pub struct Sp3SmmHandler;
 
@@ -168,9 +255,10 @@ mod handler {
 
         unsafe fn handle(_ctx: &mut SmmContext<'_>, config: &SmmConfig) {
             fstart_pci::ecam::init(config.ecam_base as usize);
-            // The OS may be in the middle of an SMN access on bus 0.
-            let host = PciAddress::new(0, 0, 0, 0);
-            let pci = Pci::default();
+            // The OS may be in the middle of an SMN access on bus 0
+            // (00:00.0, `PciAddress::default`).
+            let host = PciAddress::default();
+            let pci = Ecam;
             // SAFETY: SMM owns the CPU; the index is restored below.
             let saved = unsafe { pci.read(host, fstart_driver_zen::smn::SMN_INDEX) };
             dispatch(config);
@@ -184,7 +272,11 @@ mod handler {
         let hw = primary_fch(timer);
         let acpi = hw.acpi();
         let generation = config.generation;
-        let smu = smu(generation, timer);
+        // The installer only writes a generation this image carries.
+        let Some(smu) = smu(generation, timer) else {
+            smi::eos(acpi);
+            return;
+        };
 
         if smi::is_pending(acpi, source::SMI_CMD) {
             let command = hw.io().read8(acpimmio::SMI_CMD);
@@ -212,6 +304,14 @@ mod handler {
             sx::usb_smi(&hw, generation, config.usb_buses());
             smi::clear(acpi, source::USB_NBIO);
         }
+        if smi::is_pending(acpi, PSP_SMI) {
+            p2c_answer();
+            // AmdPspP2CmboxV2Ssp `0x944` (instruction-checked): answer,
+            // then drop SmiTrig0[25]; its dispatcher then clears the status.
+            // A trigger left set keeps the source asserted.
+            update::<u32, _>(acpi, smi::TRIG0, PSP_TRIGGER, 0);
+            smi::clear(acpi, PSP_SMI);
+        }
         #[cfg(any(feature = "rome", feature = "milan"))]
         if generation == Generation::Rome
             && fstart_driver_zen::fch::huashan::smm::take_cf9_trap(&hw)
@@ -224,8 +324,8 @@ mod handler {
     }
 
     /// Socket 0's (Naples: die 0's) SMU mailbox through bus 0.
-    fn smu(generation: Generation, timer: Tsc) -> Smu<Pci, Tsc> {
-        let smn = Smn::new(Pci::default(), 0);
+    fn smu(generation: Generation, timer: Tsc) -> Option<Smu<Ecam, Tsc>> {
+        let smn = Smn::new(Ecam, 0);
         let (regs, limit) = match generation {
             #[cfg(feature = "naples")]
             Generation::Naples => (
@@ -238,10 +338,10 @@ mod handler {
                 (v11::REGS, v11::id_limit(generation))
             }
             #[allow(unreachable_patterns)]
-            _ => unreachable!("the flow only installs SMM for a compiled-in generation"),
+            _ => return None,
         };
         // SAFETY: SMM owns bus 0's SMN pair (saved by the caller).
-        unsafe { Smu::new(smn, regs, timer, limit) }
+        Some(unsafe { Smu::new(smn, regs, timer, limit) })
     }
 
     fn psp(config: &SmmConfig) -> Mailbox<MmioTransport> {
@@ -252,20 +352,68 @@ mod handler {
         )
     }
 
-    /// SmmInfo (PSP_APOB §3.3) with this handler's buffers.
+    /// The P2C buffer's dword `index`.
+    fn p2c_word(index: usize) -> *mut u32 {
+        // SAFETY: in bounds of the SMRAM static; the caller owns the
+        // rendezvous.
+        unsafe { P2C.0.get().cast::<u32>().add(index) }
+    }
+
+    /// SmmInfo (PSP_APOB §3.3) with this handler's buffers, the P2C
+    /// mailbox idle and ready first as on every donor (see [`p2c::READY`];
+    /// the driver's `P2C_HEADER1_MILAN` is the same bit). Once per boot, as
+    /// AGESA's driver entry: the OS can raise SW SMI D0 too.
     fn smm_info(config: &SmmConfig, timer: &Tsc) {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static SENT: AtomicBool = AtomicBool::new(false);
+        if SENT.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let cpu = msr();
         let p2c = P2C.0.get() as u64;
         let c2p = C2P.0.get() as u64;
-        if config.generation == Generation::Milan {
-            // SAFETY: SMRAM static, owned by the rendezvous owner.
-            unsafe {
-                (P2C.0.get().cast::<u32>().add(1))
-                    .write_volatile(fstart_driver_zen::psp::command::P2C_HEADER1_MILAN)
-            };
+        // SAFETY: SMRAM static, owned by the rendezvous owner.
+        unsafe {
+            p2c_word(p2c::COMMAND).write_volatile(0);
+            p2c_word(p2c::FLAGS).write_volatile(p2c::READY);
         }
         let info = SmmInfo::new(cpu.reg(SMM_ADDR).get(), cpu.reg(SMM_MASK).get(), p2c, c2p);
         let _ = psp(config).send(timer, &mut C2pBuffer::new(info));
+    }
+
+    /// Answer the PSP's P2C request the way AGESA's mailbox does
+    /// (AmdPspP2CmboxV2Ssp `0x720`): busy, status, checksum when asked,
+    /// write back, command 0, ready. 0x81/0x82 need nothing from x86; the
+    /// SPI NV (0x83–0x86), RPMC (0x88/0x89) and ARS (0x8a) services are
+    /// not implemented and get the donor's RPMC answer, anything else
+    /// "invalid".
+    fn p2c_answer() {
+        // SAFETY: the P2C static is SMRAM owned by the rendezvous owner;
+        // the PSP only writes it while READY is set.
+        unsafe {
+            let flags = p2c_word(p2c::FLAGS).read_volatile() & !p2c::READY;
+            p2c_word(p2c::FLAGS).write_volatile(flags);
+            let size = p2c_word(p2c::SIZE).read_volatile();
+            let status = match p2c_word(p2c::COMMAND).read_volatile() {
+                _ if size > p2c::MAX_SIZE => p2c::INVALID,
+                0x81 | 0x82 => p2c::OK,
+                0x83..=0x86 | 0x88..=0x8a => p2c::UNSUPPORTED,
+                _ => p2c::INVALID,
+            };
+            p2c_word(p2c::STATUS).write_volatile(status);
+            if status == p2c::OK && flags & p2c::CHECKSUM != 0 {
+                let bytes = P2C.0.get().cast::<u8>().add(4 * p2c::SIZE);
+                let sum = (0..size as usize)
+                    .map(|i| bytes.add(i).read_volatile())
+                    .fold(0u8, u8::wrapping_add);
+                p2c_word(p2c::FLAGS).write_volatile(flags & !0xff | u32::from(sum));
+            }
+            crate::hw::wbinvd();
+            p2c_word(p2c::COMMAND).write_volatile(0);
+            let flags = p2c_word(p2c::FLAGS).read_volatile();
+            p2c_word(p2c::FLAGS).write_volatile(flags | p2c::READY);
+            crate::hw::wbinvd();
+        }
     }
 
     /// SW SMI D2 (Milan ReadyToBoot): LockFCHReg through the C2P page.

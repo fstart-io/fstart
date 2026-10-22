@@ -35,6 +35,10 @@ embedded-hal = { version = "1", default-features = false }
 heapless = { version = "0.8", default-features = false }
 tock-registers = "0.10"
 
+# fbuild sets `fstart_stage_env` per unit; plain cargo builds do not.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("monolithic", "smm"))'] }
+
 # The reset image; fbuild builds it with fstart-platform-sp3/bundle-reset.
 # Board unit tests (`cargo test`) only build the library.
 [[bin]]
