@@ -203,6 +203,12 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
                 .cppc
                 .map(|c| fstart_acpi::pcct::build_pcct(&[cppc::pcct_subspace(c.base, c.smu_bar)])),
         )
+        // The handler takes no OS communication buffer (`crate::smm`); the
+        // system-resource lock audit is open, so that bit stays clear.
+        .chain(inputs.acpi_smi.map(|_| {
+            use fstart_acpi::wsmt;
+            wsmt::build_wsmt(wsmt::FIXED_COMM_BUFFERS | wsmt::COMM_BUFFER_NESTED_PTR_PROTECTION)
+        }))
         .collect();
     Ok(Tables {
         platform: PlatformConfig::X86(fixed::x86_config(inputs, &windows)),

@@ -426,6 +426,7 @@ fn cppc_builds_the_pcct() {
     let s = system(Generation::Rome, 1, 8);
     let rb = root_bridges(&s);
     let t = assemble(&build(&inputs(Generation::Rome, &s, &rb, None)).unwrap());
+    assert_eq!(get(&t, b"WSMT").expect("WSMT")[36], 3);
     let pcct = get(&t, b"PCCT").expect("PCCT");
     assert_eq!(pcct.len(), 110);
     assert_eq!(&pcct[56..64], &0x7FF0_0000u64.to_le_bytes());

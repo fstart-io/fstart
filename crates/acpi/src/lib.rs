@@ -63,6 +63,7 @@ pub mod spcr;
 pub mod srat;
 pub mod tock_bridge;
 pub mod wake;
+pub mod wsmt;
 
 // Re-export commonly used types from acpi_tables.
 pub use acpi_tables::aml;
