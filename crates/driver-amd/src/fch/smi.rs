@@ -364,7 +364,7 @@ mod handler {
             return;
         }
         unsafe {
-            core::arch::asm!("wbinvd", options(nostack, preserves_flags));
+            fstart_arch::x86::writeback_invalidate_caches();
             fch.clear_all_status();
             H::sleep_entry(slp_typ);
         }

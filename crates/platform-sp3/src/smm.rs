@@ -282,7 +282,7 @@ mod handler {
     }
 
     fn dispatch(config: &SmmConfig) {
-        let timer = Tsc::new();
+        let timer = crate::hw::tsc();
         let hw = primary_fch(timer);
         let acpi = hw.acpi();
         let generation = config.generation;
@@ -377,20 +377,6 @@ mod handler {
         unsafe { P2C.0.get().cast::<u32>().add(index) }
     }
 
-    /// SmmInfo (PSP_APOB §3.3) with this handler's buffers, the P2C
-    /// mailbox idle and ready first as on every donor (see [`p2c::READY`];
-    /// the driver's `P2C_HEADER1_MILAN` is the same bit). Once per boot, as
-    /// AGESA's driver entry: the OS can raise SW SMI D0 too.
-    /// Microsecond delays for the KCS transport on the TSC.
-    struct TscDelay(Tsc);
-
-    impl embedded_hal::delay::DelayNs for TscDelay {
-        fn delay_ns(&mut self, ns: u32) {
-            use fstart_core::services::Timer;
-            self.0.delay_us(u64::from(ns.div_ceil(1000)));
-        }
-    }
-
     /// Report sleep state `command - sw_smi_base` to the BMC. A KCS error
     /// is dropped: the OS's sleep goes on either way.
     fn bmc_notify(bmc: &super::BmcSxNotify, command: u8, timer: Tsc) {
@@ -402,11 +388,15 @@ mod handler {
         };
         // SAFETY: the board's KCS ports; SMM owns the CPU.
         let mut kcs = unsafe {
-            fstart_driver_ipmi::kcs::Kcs::new(bmc.kcs_port, bmc.kcs_spacing.into(), TscDelay(timer))
+            fstart_driver_ipmi::kcs::Kcs::new(bmc.kcs_port, bmc.kcs_spacing.into(), timer)
         };
         let _ = kcs.set_acpi_power_state(system, device);
     }
 
+    /// SmmInfo (PSP_APOB §3.3) with this handler's buffers, the P2C
+    /// mailbox idle and ready first as on every donor (see [`p2c::READY`];
+    /// the driver's `P2C_HEADER1_MILAN` is the same bit). Once per boot, as
+    /// AGESA's driver entry: the OS can raise SW SMI D0 too.
     fn smm_info(config: &SmmConfig, timer: &Tsc) {
         use core::sync::atomic::{AtomicBool, Ordering};
         static SENT: AtomicBool = AtomicBool::new(false);
@@ -452,11 +442,11 @@ mod handler {
                     .fold(0u8, u8::wrapping_add);
                 p2c_word(p2c::FLAGS).write_volatile(flags & !0xff | u32::from(sum));
             }
-            crate::hw::wbinvd();
+            fstart_arch::x86::writeback_invalidate_caches();
             p2c_word(p2c::COMMAND).write_volatile(0);
             let flags = p2c_word(p2c::FLAGS).read_volatile();
             p2c_word(p2c::FLAGS).write_volatile(flags | p2c::READY);
-            crate::hw::wbinvd();
+            fstart_arch::x86::writeback_invalidate_caches();
         }
     }
 

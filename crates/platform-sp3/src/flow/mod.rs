@@ -299,7 +299,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
 
     step(0x10, "ECAM");
     let ecam = hw::enable_ecam(generation);
-    let timer = Tsc::new();
+    let timer = hw::tsc();
     let fch = hw::primary_fch(timer);
 
     step(0x11, "FCH reset tasks");
@@ -652,44 +652,10 @@ fn cache_ram(regions: &[Region]) {
     fstart_arch::x86::mtrr::set_ram_wb_ranges_from(low).or_halt("MTRR ranges");
     // SAFETY: BSP only, before any AP runs.
     unsafe { fstart_arch::x86::mtrr::setup_ram_wb() }.or_halt("MTRRs");
-    fixed_mtrrs_to_dram();
+    // SAFETY: BSP only, caching enabled; SYSCFG.MtrrFixDramModEn is clear
+    // (reset.S), so the fixed MTRRs' DRAM routing is hidden again after.
+    unsafe { fstart_arch::x86::cpu::amd::mtrr::route_fixed_wb_to_dram(&msr()) };
     msr().reg(SYSCFG).modify(Syscfg::TOM2_WB::SET);
-}
-
-/// Fixed MTRRs: with SYSCFG.MtrrFixDramEn set (the reset image keeps the
-/// vendor's setting), an access in a fixed range goes to DRAM only if the
-/// range's RdDram/WrDram bits (4/3) are set, otherwise to MMIO (AMD APM
-/// vol. 2 §7.9). The generic MTRR code writes types only and those bits
-/// are write-protected while MtrrFixDramModEn is clear, so the values ABL
-/// left stay. Route every write-back fixed range to DRAM, as AGESA does.
-fn fixed_mtrrs_to_dram() {
-    use fstart_arch::x86::cpu::amd::msr::Syscfg;
-    use tock_registers::interfaces::ReadWriteable;
-    const FIXED: [u32; 11] = [
-        0x250, 0x258, 0x259, 0x268, 0x269, 0x26a, 0x26b, 0x26c, 0x26d, 0x26e, 0x26f,
-    ];
-    const RD_WR_DRAM: u8 = 0x18;
-    const WB: u8 = 6;
-    let cpu = msr();
-    let syscfg = cpu.reg(SYSCFG);
-    crate::hw::wbinvd();
-    syscfg.modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::SET);
-    for index in FIXED {
-        let old = cpu.read(index);
-        let new = u64::from_le_bytes(old.to_le_bytes().map(|b| {
-            if b & 7 == WB {
-                b | RD_WR_DRAM
-            } else {
-                b & !RD_WR_DRAM
-            }
-        }));
-        if new != old {
-            cpu.write(index, new);
-        }
-        fstart_log::info!("mtrr: fixed {:#x} {:#x} -> {:#x}", index, old, new);
-    }
-    syscfg.modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::CLEAR);
-    crate::hw::wbinvd();
 }
 
 /// DF topology, board bus counts, the MMIO/IO planner and its maps

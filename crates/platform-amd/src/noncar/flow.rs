@@ -101,7 +101,7 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
     unsafe { fch::enable_acpimmio() };
     // SAFETY: ring 0 on a Family 17h CPU; MSR reads only.
     let mhz = unsafe { tsc::frequency_mhz() }.unwrap_or(0);
-    let clock = (mhz != 0).then(|| Tsc::new(mhz));
+    let clock = core::num::NonZeroU32::new(mhz).map(Tsc::new);
     let pre_init = S::fch_pre_init(&fch, B::CONFIG, clock);
     {
         // SAFETY: exclusive LPC decode programming before the console.

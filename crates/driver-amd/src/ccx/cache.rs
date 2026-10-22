@@ -3,7 +3,10 @@
 //! Fixed MTRRs carry AMD RdDram/WrDram attributes; high RAM uses TOM2WB.
 use fstart_arch::x86::{
     cpu::{
-        amd::msr::{SYSCFG, Syscfg},
+        amd::{
+            msr::{SYSCFG, Syscfg},
+            mtrr::with_fixed_dram_mod,
+        },
         msr::{MTRR_CAP, MTRR_DEF_TYPE, MsrAccess, MtrrCap, MtrrDefType},
     },
     mtrr::{
@@ -108,11 +111,7 @@ pub fn fixed_dram_view<M: MsrAccess, T>(cpu: &M, read: impl FnOnce(&M) -> T) -> 
     if !cpu.reg(MTRR_CAP).is_set(MtrrCap::FIXED) {
         return Err(Error::FixedUnsupported);
     }
-    cpu.reg(SYSCFG)
-        .set(syscfg.get() | Syscfg::MTRR_FIX_DRAM_MOD_EN::SET.value);
-    let result = read(cpu);
-    cpu.reg(SYSCFG).set(syscfg.get());
-    Ok(result)
+    Ok(with_fixed_dram_mod(cpu, read))
 }
 
 /// Current-CPU cache controls. All APs must install the same plan while their

@@ -388,7 +388,7 @@ pub(crate) fn fch_env(ctx: &Ctx, _si: &Silicon) {
     }
 }
 
-use crate::hw::wbinvd;
+use fstart_arch::x86::writeback_invalidate_caches;
 
 /// Patches of BIOS directory entry 0x66, copied to RAM (the patch loader
 /// reads them at their address; flash is uncached).
@@ -439,7 +439,8 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
     );
     match &patch {
         Some(p) => {
-            ccx.load_microcode(&cpu, &bsp, p, wbinvd)
+            // SAFETY: ring 0 with caching enabled.
+            ccx.load_microcode(&cpu, &bsp, p, || unsafe { writeback_invalidate_caches() })
                 .or_halt("microcode");
             fstart_log::info!("sp3: microcode patch {:#x}", p.patch_id());
         }
@@ -563,7 +564,7 @@ fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Option<super::Cppc> {
     let region = dma_alloc(REGION_SIZE as usize, REGION_SIZE as usize);
     let base = region.as_ptr() as u64;
     let uncached = || unsafe {
-        crate::hw::wbinvd();
+        fstart_arch::x86::writeback_invalidate_caches();
         mtrr::disable_cache();
         mtrr::set_variable(index, base, REGION_SIZE, 0);
         mtrr::enable_cache();

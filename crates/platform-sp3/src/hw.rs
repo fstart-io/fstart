@@ -1,9 +1,11 @@
 //! Hardware handles the flow passes to the silicon drivers: config space,
 //! the TSC timer, POST codes, the ECAM MSR and the FCH views.
 
+use core::num::NonZeroU32;
 use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, MmioCfgBase};
 use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
-use fstart_core::services::Timer;
+
+use fstart_driver_amd::fch::{Bus, NativeBus};
 use fstart_driver_zen::fch::{Fch, Mmio, Ports, SmnWindow, acpimmio};
 use fstart_driver_zen::smn::Smn;
 use fstart_driver_zen::soc::Generation;
@@ -24,52 +26,24 @@ pub fn msr() -> NativeMsr {
     unsafe { NativeMsr::new() }
 }
 
-/// `PStateDef0`: the TSC runs at the P0 frequency on Zen (PPR "TSC").
-const PSTATE_DEF0: u32 = 0xc001_0064;
+/// Microsecond timer on the TSC.
+pub type Tsc = fstart_driver_amd::ccx::tsc::Tsc;
 
-/// Microsecond timer on the TSC, calibrated from the P0 definition. The
-/// arch crate's generic calibration has no AMD path and assumes 1 GHz.
-/// Nonzero by type, so the divisions have no panic path (the SMM image
-/// links this timer and may not contain one).
-#[derive(Debug, Clone, Copy)]
-pub struct Tsc {
-    mhz: core::num::NonZeroU64,
-}
-
-impl Tsc {
-    pub fn new() -> Self {
-        let p0 = fstart_driver_zen::ccx::power::decode_pstate(0, msr().read(PSTATE_DEF0));
-        let mhz = p0.map_or(1000, |p| u64::from(p.mhz));
-        Self {
-            mhz: core::num::NonZeroU64::new(mhz).unwrap_or(core::num::NonZeroU64::MIN),
-        }
-    }
-}
-
-impl Default for Tsc {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Timer for Tsc {
-    fn delay_us(&self, us: u64) {
-        let ticks = us.saturating_mul(self.mhz.get());
-        let start = fstart_arch::x86::rdtsc();
-        while fstart_arch::x86::rdtsc().wrapping_sub(start) < ticks {
-            core::hint::spin_loop();
-        }
-    }
-
-    fn timestamp_us(&self) -> u64 {
-        fstart_arch::x86::rdtsc() / self.mhz
-    }
+/// The TSC at the P0 frequency, 1 GHz if P0 is disabled. The arch crate's
+/// generic calibration has no AMD path and assumes 1 GHz.
+pub fn tsc() -> Tsc {
+    const GHZ: NonZeroU32 = NonZeroU32::new(1000).unwrap();
+    let mhz = fstart_driver_amd::ccx::tsc::p0_mhz(&msr()).and_then(NonZeroU32::new);
+    Tsc::new(mhz.unwrap_or(GHZ))
 }
 
 /// Write a POST code to port 80h (the BMC shows it).
 pub fn post(code: u8) {
-    // SAFETY: port 80h is the POST port on every SP3 board.
-    unsafe { fstart_core::pio::outb(0x80, code) }
+    // SAFETY: an I/O port write only; port 80h is the POST port on every
+    // SP3 board.
+    unsafe { NativeBus::<false>::without_config() }
+        .reg(fstart_driver_amd::fch::POST_CODE)
+        .set(code)
 }
 
 /// Program `MMIO_CFG_BASE` (C001_0058) for the generation's ECAM (SOC_DF
@@ -117,10 +91,4 @@ pub fn secondary_fch(bus: u8, timer: Tsc) -> SecondaryFch {
             timer,
         }
     }
-}
-
-/// Write back and invalidate the caches.
-pub fn wbinvd() {
-    // SAFETY: cache write-back and invalidate only; no memory is reordered.
-    unsafe { core::arch::asm!("wbinvd", options(nostack, preserves_flags)) }
 }

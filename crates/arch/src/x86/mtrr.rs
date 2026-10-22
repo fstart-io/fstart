@@ -29,7 +29,7 @@ const ONE_MIB: u64 = 0x100000;
 const MAX_MTRRS: usize = 32;
 const MAX_RANGES: usize = 64;
 const MAX_RAM_RANGES: usize = 16;
-const FIXED_MSRS: [u32; 11] = [
+pub(crate) const FIXED_MSRS: [u32; 11] = [
     0x250, 0x258, 0x259, 0x268, 0x269, 0x26a, 0x26b, 0x26c, 0x26d, 0x26e, 0x26f,
 ];
 

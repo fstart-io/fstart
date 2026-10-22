@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The TSC frequency from the hardware-selected highest P-state, and the
 //! TSC as the clock of the silicon init.
+use core::num::{NonZeroU32, NonZeroU64};
+
 use super::msr::{PSTATE_0, PSTATE_CURRENT_LIMIT, PstateCurLim, PstateDef};
 pub use embedded_hal::delay::DelayNs;
 use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
@@ -25,6 +27,9 @@ pub fn pstate_mhz(value: u64) -> Option<u32> {
         };
     Some(if mhz == 0 { 4000 } else { mhz })
 }
+/// The MHz of the highest P-state the hardware allows now
+/// (CurPstateLimit), the noncar flow's TSC frequency.
+///
 /// # Safety
 /// Must run in ring 0 on a supported Family 17h CPU with invariant TSC.
 pub unsafe fn frequency_mhz() -> Option<u32> {
@@ -34,25 +39,32 @@ pub unsafe fn frequency_mhz() -> Option<u32> {
         .read(PstateCurLim::CUR_PSTATE_LIMIT);
     pstate_mhz(cpu.reg(PSTATE_0.offset(highest as u32)).get())
 }
+
+/// The MHz of P-state 0, the TSC frequency (HWCR.TscFreqSel), as the SP3
+/// flow takes it.
+pub fn p0_mhz(cpu: &impl MsrAccess) -> Option<u32> {
+    pstate_mhz(cpu.reg(PSTATE_0).get())
+}
+
 /// A monotonic microsecond clock that can also wait: what the silicon
 /// init needs for its timeouts.
 pub trait Clock: DelayNs {
     fn now_us(&mut self) -> u64;
 }
 
-/// The invariant TSC as the time base, at the P0 frequency
-/// ([`frequency_mhz`]).
+/// The invariant TSC as the time base, at a nonzero frequency, so that its
+/// divisions have no panic path (SMM images link it and may not contain
+/// one).
 #[derive(Debug, Clone, Copy)]
 pub struct Tsc {
-    mhz: u32,
+    mhz: NonZeroU32,
 }
 impl Tsc {
-    pub const fn new(mhz: u32) -> Self {
-        assert!(mhz != 0);
+    pub const fn new(mhz: NonZeroU32) -> Self {
         Self { mhz }
     }
     pub const fn mhz(&self) -> u32 {
-        self.mhz
+        self.mhz.get()
     }
 }
 #[cfg(target_arch = "x86_64")]
@@ -67,6 +79,9 @@ impl Tsc {
             core::hint::spin_loop();
         }
     }
+    fn now(&self) -> u64 {
+        Self::ticks() / NonZeroU64::from(self.mhz)
+    }
 }
 #[cfg(target_arch = "x86_64")]
 impl DelayNs for Tsc {
@@ -75,13 +90,22 @@ impl DelayNs for Tsc {
         self.delay_us(ns.div_ceil(1000))
     }
     fn delay_us(&mut self, us: u32) {
-        self.wait(u64::from(self.mhz) * u64::from(us))
+        self.wait(u64::from(self.mhz.get()) * u64::from(us))
     }
 }
 #[cfg(target_arch = "x86_64")]
 impl Clock for Tsc {
     fn now_us(&mut self) -> u64 {
-        Self::ticks() / u64::from(self.mhz)
+        self.now()
+    }
+}
+#[cfg(target_arch = "x86_64")]
+impl fstart_core::services::Timer for Tsc {
+    fn delay_us(&self, us: u64) {
+        self.wait(us.saturating_mul(u64::from(self.mhz.get())))
+    }
+    fn timestamp_us(&self) -> u64 {
+        self.now()
     }
 }
 

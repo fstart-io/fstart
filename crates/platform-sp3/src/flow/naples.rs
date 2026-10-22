@@ -200,7 +200,7 @@ pub(crate) fn fch_env(ctx: &Ctx, si: &Silicon) {
     }
 }
 
-use crate::hw::wbinvd;
+use fstart_arch::x86::writeback_invalidate_caches;
 
 fn microcode_candidates(ctx: &Ctx) -> Vec<&'static [u8]> {
     let Ok(dirs) = Efs::new(ctx.flash).and_then(|e| e.bios_directories(ctx.generation)) else {
@@ -253,7 +253,8 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
         candidates.iter().copied(),
     );
     if let Some(p) = &patch {
-        ccx.load_microcode(&cpu, &bsp, p, wbinvd)
+        // SAFETY: ring 0 with caching enabled.
+        ccx.load_microcode(&cpu, &bsp, p, || unsafe { writeback_invalidate_caches() })
             .or_halt("microcode");
     }
     ccx.early(&cpu, &bsp);
