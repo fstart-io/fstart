@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::{
-    directory::{BIOS_COOKIE, BIOS_LEVEL2_COOKIE, BiosEntry, Header, bios, fletcher32},
+    directory::{BIOS_COOKIE, BIOS_LEVEL2_COOKIE, BiosEntry, bios, fletcher32, write_table},
     efs::{BiosDirectorySlot, Efs},
     *,
 };
@@ -11,18 +11,7 @@ use zerocopy::IntoBytes;
 const SLOT: BiosDirectorySlot = BiosDirectorySlot::Family17hModel00;
 
 fn put_directory(flash: &mut [u8], offset: usize, cookie: [u8; 4], entries: &[BiosEntry]) {
-    let mut table = Header {
-        cookie,
-        checksum: 0.into(),
-        count: (entries.len() as u32).into(),
-        additional: 0.into(),
-    }
-    .as_bytes()
-    .to_vec();
-    entries.iter().for_each(|e| table.extend(e.as_bytes()));
-    let checksum = fletcher32(&table[8..]);
-    table[4..8].copy_from_slice(&checksum.to_le_bytes());
-    flash[offset..offset + table.len()].copy_from_slice(&table);
+    write_table(&mut flash[offset..], cookie, 0, entries).unwrap();
 }
 
 fn file(kind: u8, instance: u8, size: u32, source: u64) -> BiosEntry {

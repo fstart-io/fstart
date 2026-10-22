@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
-use directory::{BiosEntry, Header, PspEntry, bios, fletcher32};
+use directory::{BiosEntry, PspEntry, bios, fletcher32};
 use efs::{BiosDirectorySlot as Slot, Efs};
 use std::{vec, vec::Vec};
 use zerocopy::{FromBytes, IntoBytes};
@@ -12,20 +12,7 @@ fn put<E: Entry + IntoBytes>(
     info: u32,
     entries: &[E],
 ) {
-    let mut bytes = Header {
-        cookie,
-        checksum: 0.into(),
-        count: (entries.len() as u32).into(),
-        additional: info.into(),
-    }
-    .as_bytes()
-    .to_vec();
-    for entry in entries {
-        bytes.extend(entry.as_bytes());
-    }
-    let sum = fletcher32(&bytes[8..]);
-    bytes[4..8].copy_from_slice(&sum.to_le_bytes());
-    image[offset..offset + bytes.len()].copy_from_slice(&bytes);
+    directory::write_table(&mut image[offset..], cookie, info, entries).unwrap();
 }
 fn image(slot: Slot) -> Vec<u8> {
     let mut image = vec![0xff; 0x80000];

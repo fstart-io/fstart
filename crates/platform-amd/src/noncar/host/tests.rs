@@ -2,7 +2,7 @@
 use super::*;
 use crate::{picasso, zeppelin};
 use fstart_amdfw::{
-    directory::{BIOS_COOKIE, BiosEntry, Header, PSP_COOKIE, PspEntry, bios, fletcher32},
+    directory::{BIOS_COOKIE, BiosEntry, PSP_COOKIE, PspEntry, bios, write_table},
     efs::Efs,
 };
 use fstart_driver_amd::{
@@ -165,22 +165,6 @@ fn zeppelin_units_are_pinned() {
     );
 }
 
-/// A directory table: header with its checksum, then the entries.
-fn table<E: IntoBytes + zerocopy::Immutable>(cookie: [u8; 4], entries: &[E]) -> Vec<u8> {
-    let mut table = Header {
-        cookie,
-        checksum: 0.into(),
-        count: (entries.len() as u32).into(),
-        additional: 0.into(),
-    }
-    .as_bytes()
-    .to_vec();
-    entries.iter().for_each(|e| table.extend(e.as_bytes()));
-    let checksum = fletcher32(&table[8..]);
-    table[4..8].copy_from_slice(&checksum.to_le_bytes());
-    table
-}
-
 /// A vendor flash with the PSP and BIOS directories of the MJ11 layout.
 fn vendor_flash(reset_destination: u64) -> Vec<u8> {
     let mut flash = vec![0xffu8; 0x100_0000];
@@ -189,10 +173,17 @@ fn vendor_flash(reset_destination: u64) -> Vec<u8> {
     efs.bios_directory_mut(Zeppelin::BIOS_DIRECTORY)
         .set(0xff0f_7000);
     flash[0x2_0000..0x2_0060].copy_from_slice(efs.as_bytes());
-    let psp = table(PSP_COOKIE, &[PspEntry::new(0, 0, 0, 0x240, 0xff05_7400)]);
-    flash[0x5_7000..0x5_7000 + psp.len()].copy_from_slice(&psp);
-    let bios = table(
+    write_table(
+        &mut flash[0x5_7000..],
+        PSP_COOKIE,
+        0,
+        &[PspEntry::new(0, 0, 0, 0x240, 0xff05_7400)],
+    )
+    .unwrap();
+    write_table(
+        &mut flash[0xf_7000..],
         BIOS_COOKIE,
+        0,
         &[
             BiosEntry::new(bios::APOB, 0, 0, 0, 0, 0, 0x3000_0000),
             BiosEntry::new(
@@ -205,8 +196,8 @@ fn vendor_flash(reset_destination: u64) -> Vec<u8> {
                 reset_destination,
             ),
         ],
-    );
-    flash[0xf_7000..0xf_7000 + bios.len()].copy_from_slice(&bios);
+    )
+    .unwrap();
     flash
 }
 

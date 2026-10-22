@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
+use fstart_amdfw::directory::{BiosEntry, PspEntry, modify_entries, write_table};
 use fstart_driver_zen::psp::directory::{Directories, Directory};
 use std::path::Path;
+use zerocopy::Immutable;
 
 /// The linked reset image (Naples KNPP-D32's slot, the smallest donor's).
 const IMAGE: ResetSlot = ResetSlot {
@@ -30,30 +32,22 @@ const fn vendor_slot(generation: Generation) -> ResetSlot {
     }
 }
 
-fn psp_entry(kind: u8, size: u32, location: u64) -> Vec<u8> {
-    let mut e = vec![kind, 0, 0, 0];
-    e.extend(size.to_le_bytes());
-    e.extend(location.to_le_bytes());
-    e
+fn psp_entry(kind: u8, size: u32, location: u64) -> PspEntry {
+    PspEntry::new(kind, 0, 0, size, location)
 }
 
-fn bios_entry(kind: u8, flags: u8, size: u32, location: u64, destination: u64) -> Vec<u8> {
-    let mut e = vec![kind, 0, flags, 0];
-    e.extend(size.to_le_bytes());
-    e.extend(location.to_le_bytes());
-    e.extend(destination.to_le_bytes());
-    e
+fn bios_entry(kind: u8, flags: u8, size: u32, location: u64, destination: u64) -> BiosEntry {
+    BiosEntry::new(kind, 0, 0, flags, size, location, destination)
 }
 
-fn put_dir(h: &mut [u8], at: usize, cookie: &[u8; 4], info: u32, entries: &[Vec<u8>]) {
-    let mut d = cookie.to_vec();
-    d.extend([0; 4]);
-    d.extend((entries.len() as u32).to_le_bytes());
-    d.extend(info.to_le_bytes());
-    entries.iter().for_each(|e| d.extend(e));
-    let sum = fletcher32(&d[8..]);
-    d[4..8].copy_from_slice(&sum.to_le_bytes());
-    h[at..at + d.len()].copy_from_slice(&d);
+fn put_dir<E: IntoBytes + Immutable>(
+    h: &mut [u8],
+    at: usize,
+    cookie: &[u8; 4],
+    info: u32,
+    entries: &[E],
+) {
+    write_table(&mut h[at..], *cookie, info, entries).unwrap();
 }
 
 const PSP: usize = 0x10_0000;
@@ -318,9 +312,7 @@ fn layouts_the_composer_refuses() {
     );
     // Nor may a vendor prefix (a blob moved up to 0xde8000).
     let mut late = rome.clone();
-    put64(&mut late, PL2 + 16 + 8, 0xde_8000);
-    let sum = fletcher32(&late[PL2 + 8..PL2 + 32]);
-    put32(&mut late, PL2 + 4, sum);
+    modify_entries::<PspEntry>(&mut late, PL2, |e| e.address.set(0xde_8000)).unwrap();
     assert!(matches!(
         compose_with(&[&late[..], &milan[..]].concat(), &all, &ffs),
         Err(ImageError::PrefixOverlap {

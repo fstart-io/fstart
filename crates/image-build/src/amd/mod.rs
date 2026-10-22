@@ -12,7 +12,7 @@ pub mod assembly;
 pub mod config;
 
 use fstart_amdfw::{
-    directory::{BIOS_COOKIE, BiosEntry, Header, PSP_COOKIE, PspEntry, bios, fletcher32, psp},
+    directory::{BIOS_COOKIE, BiosEntry, PSP_COOKIE, PspEntry, bios, psp, write_table},
     efs::{BiosDirectorySlot, Efs},
 };
 use zerocopy::IntoBytes;
@@ -150,20 +150,11 @@ impl Writer {
         if blocks > 0x3ff {
             return Err("Picasso directory exceeds 10-bit extent".into());
         }
-        let mut header = Header {
-            cookie,
-            checksum: 0.into(),
-            count: (entries.len() as u32).into(),
-            // Header v0, physical addresses, SPI block size 1, base_addr=0.
-            additional: (blocks | (1 << 10)).into(),
-        };
-        let mut table = header.as_bytes().to_vec();
-        for entry in entries {
-            table.extend_from_slice(entry.as_bytes());
-        }
-        header.checksum = fletcher32(&table[8..]).into();
-        table[..16].copy_from_slice(header.as_bytes());
-        self.write(start, &table);
+        // Header v0, physical addresses, SPI block size 1, base_addr=0.
+        let additional = blocks | (1 << 10);
+        let at = (start - self.base) as usize;
+        write_table(&mut self.bytes[at..], cookie, additional, entries)
+            .ok_or("AMD directory outside the image")?;
         Ok(())
     }
 }

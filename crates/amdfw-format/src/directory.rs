@@ -456,6 +456,35 @@ impl<'a> Combo<'a> {
     }
 }
 
+/// Write a directory table to the start of `out`: the header (`cookie`,
+/// the entry count, `additional`), `entries` and the Fletcher-32 over all
+/// but the cookie and the checksum. Returns the table's length, `None` if
+/// `out` is too short.
+pub fn write_table<E: IntoBytes + Immutable>(
+    out: &mut [u8],
+    cookie: [u8; 4],
+    additional: u32,
+    entries: &[E],
+) -> Option<usize> {
+    let table = out.get_mut(..size_of::<Header>() + size_of_val(entries))?;
+    let (header, rest) = Header::mut_from_prefix(table).ok()?;
+    *header = Header {
+        cookie,
+        checksum: 0.into(),
+        count: u32::try_from(entries.len()).ok()?.into(),
+        additional: additional.into(),
+    };
+    rest.copy_from_slice(entries.as_bytes());
+    seal(table);
+    Some(table.len())
+}
+
+/// Store the checksum of the table `table` (header and entries).
+fn seal(table: &mut [u8]) {
+    let sum = fletcher32(&table[8..]);
+    table[4..8].copy_from_slice(&sum.to_le_bytes());
+}
+
 /// Change a checked table, then recompute its checksum. Callers retain
 /// responsibility for the semantic validity of their modified entries.
 pub fn modify_entries<E: Entry + IntoBytes>(
@@ -472,8 +501,7 @@ pub fn modify_entries<E: Entry + IntoBytes>(
     let (header, rest) = Header::mut_from_prefix(bytes).ok()?;
     let (entries, _) = <[E]>::mut_from_prefix_with_elems(rest, header.count.get() as usize).ok()?;
     entries.iter_mut().for_each(&mut change);
-    let sum = fletcher32(&bytes[8..]);
-    Header::mut_from_prefix(bytes).ok()?.0.checksum.set(sum);
+    seal(bytes);
     Some(())
 }
 

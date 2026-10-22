@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
 use assembly::{AmdAssembly, BiosDirectoryFacts, Firmware, read_bios_directory};
-use fstart_amdfw::{directory::fletcher32, efs::BiosDirectorySlot};
+use fstart_amdfw::{
+    directory::{Header, fletcher32, modify_entries, write_table},
+    efs::BiosDirectorySlot,
+};
 use zerocopy::FromBytes;
 fn image() -> PicassoImage {
     PicassoImage {
@@ -313,28 +316,21 @@ fn reads_the_mj11_reset_image_entry() {
 
 /// Point level 2's entry `index` to `destination` and fix its checksum.
 fn set_level2_destination(image: &mut [u8], index: usize, destination: u64) {
-    let entry = 0x22_9010 + index * 24;
-    image[entry + 16..entry + 24].copy_from_slice(&destination.to_le_bytes());
-    let checksum = fletcher32(&image[0x22_9008..0x22_9010 + 5 * 24]);
-    image[0x22_9004..0x22_9008].copy_from_slice(&checksum.to_le_bytes());
+    let mut i = 0;
+    modify_entries::<BiosEntry>(image, 0x22_9000, |e| {
+        if i == index {
+            e.destination.set(destination);
+        }
+        i += 1;
+    })
+    .unwrap();
 }
 
 #[test]
 fn a_psp_blob_beyond_the_vendor_prefix_is_rejected() {
-    use zerocopy::IntoBytes;
     let mut image = two_level_vendor();
     let entry = PspEntry::new(1, 0, 0, 0x1000, 0xff30_0000);
-    let mut header = Header {
-        cookie: PSP_COOKIE,
-        checksum: 0.into(),
-        count: 1.into(),
-        additional: 0.into(),
-    };
-    let checksum =
-        fletcher32(&[header.as_bytes()[8..].to_vec(), entry.as_bytes().to_vec()].concat());
-    header.checksum.set(checksum);
-    image[0x5_7000..0x5_7010].copy_from_slice(header.as_bytes());
-    image[0x5_7010..0x5_7020].copy_from_slice(entry.as_bytes());
+    write_table(&mut image[0x5_7000..], PSP_COOKIE, 0, &[entry]).unwrap();
     assert!(
         read_bios_directory(&image, 0x29_4000, SLOT)
             .unwrap_err()
@@ -376,22 +372,15 @@ fn two_level_vendor() -> Vec<u8> {
     put(0x2_0000, &[0xff; 0x60]);
     put(0x2_0000, &efs);
     // The EFS's PSP pointer is a reachable dependency too.
-    let mut psp = [*b"$PSP", [0; 4], [0; 4], [0; 4]].concat();
-    let checksum = fletcher32(&psp[8..]);
-    psp[4..8].copy_from_slice(&checksum.to_le_bytes());
-    put(0x5_7000, &psp);
+    write_table::<PspEntry>(&mut image[0x5_7000..], PSP_COOKIE, 0, &[]).unwrap();
     let mut directory = |offset: usize, cookie: &[u8; 4], entries: &[(u8, u8, u32, u64, u64)]| {
-        let count = (entries.len() as u32).to_le_bytes();
-        let mut table = [*cookie, [0; 4], count, [0; 4]].concat();
-        for &(kind, flags, size, source, destination) in entries {
-            table.extend([kind, 0, flags, 0]);
-            table.extend(size.to_le_bytes());
-            table.extend(source.to_le_bytes());
-            table.extend(destination.to_le_bytes());
-        }
-        let checksum = fletcher32(&table[8..]);
-        table[4..8].copy_from_slice(&checksum.to_le_bytes());
-        put(offset, &table);
+        let entries: Vec<_> = entries
+            .iter()
+            .map(|&(kind, flags, size, source, destination)| {
+                BiosEntry::new(kind, 0, 0, flags, size, source, destination)
+            })
+            .collect();
+        write_table(&mut image[offset..], *cookie, 0, &entries).unwrap();
     };
     directory(
         0xf_7000,
