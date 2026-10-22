@@ -17,6 +17,22 @@ cargo fbuild assemble --board tyan-s8030 --release \
     --image-config /path/to/flash-backup.bin                # another vendor build
 ```
 
+## Slot bifurcation
+
+The vendor BIOS takes each x16 slot's bifurcation from its `Setup`
+variable (`Setup[0x194..0x198]`, set in BIOS Setup; the BMC is not
+involved). fstart has no settings store yet, so it is a build-time
+choice. `tyan-s8030` keeps the vendor default (every slot x16); the
+`tyan-s8030-pcie3-x4x4x4x4` variant bifurcates PCIE#3 x4x4x4x4 for an NVMe
+carrier (the test bench).
+
+```sh
+cargo fbuild assemble --board tyan-s8030-pcie3-x4x4x4x4 --release --image-config ...
+```
+
+This is temporary: per-machine settings move to an fstart settings
+record in flash, editable without a rebuild.
+
 ## Vendor ROM
 
 Every supported half keeps its PSP/BIOS directories and blobs in place

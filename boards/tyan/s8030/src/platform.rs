@@ -78,7 +78,7 @@ impl board::Board for Board {
             m2: [M2Mode::from_detect(level(0)), M2Mode::from_detect(level(1))],
             m2_gen3: bmc::m2_gen3_cap(&mut kcs),
         };
-        dxio::engines(generation, &Options::default(), &detected)
+        dxio::engines(generation, &Options::BUILD, &detected)
     }
 
     fn acpi_lpc_aml() -> Vec<u8> {

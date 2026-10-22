@@ -158,15 +158,46 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self {
-            slots: [SlotPolicy {
-                bifurcation: Bifurcation::X16,
-                max_speed: Speed::Auto,
-            }; 5],
-            compliance: false,
-            lan: [true; 2],
-            onboard_vga: true,
+        Self::DEFAULT
+    }
+}
+
+impl Options {
+    pub const DEFAULT: Self = Self {
+        slots: [SlotPolicy {
+            bifurcation: Bifurcation::X16,
+            max_speed: Speed::Auto,
+        }; 5],
+        compliance: false,
+        lan: [true; 2],
+        onboard_vga: true,
+    };
+
+    /// The options of this build: the Setup defaults, or the
+    /// `pcie3-x4x4x4x4` variant's PCIE#3 x4x4x4x4 (the bench's NVMe carrier; its vendor
+    /// NVRAM has `Setup[0x194..]` = `01 01 04 01 01`). Temporary:
+    /// per-machine settings move to an fstart settings record in flash.
+    pub const BUILD: Self = if cfg!(feature = "pcie3-x4x4x4x4") {
+        Self::DEFAULT.with_bifurcation("11411")
+    } else {
+        Self::DEFAULT
+    };
+
+    /// Slot bifurcation from five Setup values (`1`, `2` or `4`, in
+    /// `PCIE#1..5` order); anything else panics (fails const evaluation).
+    pub const fn with_bifurcation(self, setup: &str) -> Self {
+        let b = setup.as_bytes();
+        assert!(b.len() == 5, "five slot values, PCIE#1..5");
+        let mut s = self;
+        let mut i = 0;
+        while i < 5 {
+            s.slots[i].bifurcation = match Bifurcation::from_setup(b[i].wrapping_sub(b'0')) {
+                Some(x) => x,
+                None => panic!("slot bifurcation is 1, 2 or 4"),
+            };
+            i += 1;
         }
+        s
     }
 }
 
@@ -424,6 +455,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn bifurcation_from_setup_values() {
+        let o = Options::DEFAULT.with_bifurcation("11411");
+        let b: std::vec::Vec<_> = o.slots.iter().map(|s| s.bifurcation).collect();
+        use Bifurcation::*;
+        assert_eq!(b, [X16, X16, X4x4x4x4, X16, X16]);
+        assert_eq!(Options::DEFAULT.with_bifurcation("12111").slots[1].bifurcation, X8x8);
+    }
+
+    #[test]
+    fn build_options() {
+        let pcie3 = Options::BUILD.slots[Slot::Pcie3.index()].bifurcation;
+        let want = if cfg!(feature = "pcie3-x4x4x4x4") {
+            Bifurcation::X4x4x4x4
+        } else {
+            Bifurcation::X16
+        };
+        assert_eq!(pcie3, want);
     }
 
     #[test]

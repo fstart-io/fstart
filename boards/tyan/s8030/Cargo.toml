@@ -11,7 +11,9 @@ publish = false
 # the platform dependency below, so every build of this crate (the reset
 # unit and fbuild's host plan runner, which never sees bundle-reset) has
 # them. GM2NE and GM4NE-2T run the same image (README.md), so they are not
-# variants.
+# variants. `tyan-s8030-pcie3-x4x4x4x4` bifurcates PCIE#3 x4x4x4x4, for an
+# NVMe carrier (the test bench). A build-time stand-in
+# until fstart has a settings record in flash.
 [package.metadata.fstart]
 schema = 1
 board = "tyan-s8030"
@@ -19,6 +21,12 @@ platform = "x86_64"
 target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
+
+[package.metadata.fstart.variants.tyan-s8030-pcie3-x4x4x4x4]
+features = ["pcie3-x4x4x4x4"]
+
+[features]
+pcie3-x4x4x4x4 = []
 
 # Versions are spelled out instead of inherited: boards are outside the
 # workspace (fbuild adds them to a generated one) and this crate also
