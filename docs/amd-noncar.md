@@ -77,9 +77,9 @@ layout and the SoC's `host::Policy` (its stage feature, whether the flow
 reaches a payload, SMM, what `--image-config` is).
 
 The flash image format (the EFS, the PSP and BIOS directories and their
-level 2) is `crates/amdfw` (`fstart-amdfw`, `no_std`): the host packs and
-checks images with it and takes the microcode from it. A SoC names the
-EFS field its PSP takes the BIOS directory from (`Soc::BIOS_DIRECTORY`); the
+level 2) is `crates/amdfw-format` (`fstart-amdfw-format`, `no_std`): the
+host packs and checks images with it and takes the microcode from it. A
+SoC names the EFS field its PSP takes the BIOS directory from (`Soc::BIOS_DIRECTORY`); the
 lookup follows a level-2 directory as the PSP does.
 `crates/image-build/src/amd/assembly.rs` (`AmdAssembly`) composes the image
 with `--image-config`: the PSP firmware comes from a vendor flash image,

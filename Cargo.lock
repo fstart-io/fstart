@@ -555,14 +555,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fstart-amdfw"
-version = "0.1.0"
-dependencies = [
- "fstart-amdfw-format",
- "zerocopy",
-]
-
-[[package]]
 name = "fstart-amdfw-format"
 version = "0.1.0"
 dependencies = [
@@ -803,7 +795,6 @@ name = "fstart-image-build"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
- "fstart-amdfw",
  "fstart-amdfw-format",
  "fstart-boot",
  "fstart-core",
@@ -866,7 +857,7 @@ dependencies = [
  "embedded-hal",
  "fstart-acpi",
  "fstart-acpi-macros",
- "fstart-amdfw",
+ "fstart-amdfw-format",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",

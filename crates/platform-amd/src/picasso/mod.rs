@@ -110,8 +110,8 @@ impl noncar::Soc for Picasso {
     const ECAM_BUSES: u16 = soc::ECAM_BUSES as u16;
     /// BIOS directory entry 0x61.
     const APOB: Region = Region::new(0x0200_1000, 0x1_0000);
-    const BIOS_DIRECTORY: fstart_amdfw::efs::BiosDirectorySlot =
-        fstart_amdfw::efs::BiosDirectorySlot::Family17hModel10;
+    const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
+        fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel10;
     /// 8 MiB of TSEG.
     const TSEG_SIZE: u32 = 8 << 20;
     /// The topology decoder's envelope: 2 CCXs, 4 cores, 2 threads.

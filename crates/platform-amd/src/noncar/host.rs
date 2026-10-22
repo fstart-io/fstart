@@ -452,7 +452,7 @@ fn microcode<S: HostSoc>(selection: &BuildSelection) -> Result<Option<MicrocodeC
             for blob in packed_files(path)?
                 .bios
                 .iter()
-                .filter(|blob| blob.key.kind == fstart_amdfw::directory::bios::MICROCODE)
+                .filter(|blob| blob.key.kind == fstart_amdfw_format::directory::bios::MICROCODE)
             {
                 files
                     .push(bounded(&blob.path)?)

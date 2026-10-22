@@ -3,7 +3,6 @@ resolver = "3"
 members = [
   "tools/fbuild",
   "tools/amdfw",
-  "crates/amdfw",
   "crates/amdfw-format",
   "crates/driver-amd",
   "crates/driver-zen",
@@ -93,7 +92,6 @@ clap = { version = "4", features = ["derive", "env"] }
 fstart-core = { path = "crates/core" }
 fstart-coreboot = { path = "crates/coreboot" }
 fstart-driver-amd = { path = "crates/driver-amd" }
-fstart-amdfw = { path = "crates/amdfw" }
 fstart-amdfw-format = { path = "crates/amdfw-format" }
 fstart-platform-qemu = { path = "crates/platform-qemu" }
 fstart-pci = { path = "crates/pci" }
@@ -150,8 +148,6 @@ opt-level = "s"
 [profile.dev.package.fstart-platform-amd]
 opt-level = "s"
 [profile.dev.package.fstart-driver-amd]
-opt-level = "s"
-[profile.dev.package.fstart-amdfw]
 opt-level = "s"
 [profile.dev.package.fstart-amdfw-format]
 opt-level = "s"

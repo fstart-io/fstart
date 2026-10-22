@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
 use assembly::{AmdAssembly, BiosDirectoryFacts, Firmware, read_bios_directory};
-use fstart_amdfw::{
+use fstart_amdfw_format::{
     directory::{Header, fletcher32, modify_entries, write_table},
     efs::BiosDirectorySlot,
 };
@@ -520,7 +520,7 @@ fn takes_the_vendor_microcode_from_level_2() {
 
 #[test]
 fn the_psp_inflates_the_reset_image() {
-    use fstart_amdfw::{Flash, directory::BiosEntry};
+    use fstart_amdfw_format::{Flash, directory::BiosEntry};
     let (ffs, stage) = ffs_and_stage(0x25_0000);
     let vendor = two_level_vendor();
     let plain = mj11()

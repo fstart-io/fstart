@@ -13,7 +13,7 @@ zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zer
 # The shared flow of the PSP-booted SoCs, with their ACPI tables.
 noncar = [
   "fstart-driver-amd/smi",
-  "dep:fstart-amdfw",
+  "dep:fstart-amdfw-format",
   "dep:fstart-arch",
   "dep:fstart-acpi",
   "dep:fstart-acpi-macros",
@@ -48,7 +48,7 @@ fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
 fstart-driver-amd.workspace = true
-fstart-amdfw = { workspace = true, optional = true }
+fstart-amdfw-format = { workspace = true, optional = true }
 fstart-core.workspace = true
 fstart-driver-uart.workspace = true
 fstart-log.workspace = true

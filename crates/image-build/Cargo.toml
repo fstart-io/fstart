@@ -13,8 +13,7 @@ object = { workspace = true }
 iced-x86 = { workspace = true }
 zerocopy = { workspace = true }
 fstart-core = { workspace = true }
-fstart-amdfw = { workspace = true, features = ["serde"] }
-fstart-amdfw-format = { workspace = true }
+fstart-amdfw-format = { workspace = true, features = ["serde"] }
 fstart-coreboot = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-boot = { workspace = true, features = ["std"] }

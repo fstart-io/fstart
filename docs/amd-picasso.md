@@ -20,7 +20,7 @@ Native (no FSP) port of AMD Picasso and the Google Zork "Vilboz" boards.
 - `boards/google/zork`: Dalboz baseboard wiring and Vilboz policy. Vilboz,
   Vilboz14 and Vilboz360 differ only through EC CBI (board version,
   FW_CONFIG), so they share one board.
-- `crates/amdfw`: the PSP flash image format;
+- `crates/amdfw-format`: the PSP flash image format;
   `crates/image-build/src/amd`, `tools/amdfw`: PSP/BIOS directory packing
   (the `fstart-amdfw` tool) and APCB SPD injection (`fstart-apcb`).
 

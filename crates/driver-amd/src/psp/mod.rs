@@ -3,7 +3,7 @@
 //! directories), the same C2P protocol on Raven/Picasso and Zeppelin at
 //! +0x10570 of the PSP BAR. Cold/non-SMM only; no recovery,
 //! Sx/resume, fusing, flash writes, abort or reset commands. The flash
-//! image format the PSP boots from is `fstart_amdfw`.
+//! image format the PSP boots from is `fstart_amdfw_format`.
 //!
 //! Every die has a PSP; the platform maps its 1 MiB register window with
 //! [`crate::nbio::iohc::map_psp`]. The native flows only use die 0's

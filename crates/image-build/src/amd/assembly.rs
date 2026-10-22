@@ -9,7 +9,7 @@
 //! discovered.
 use super::{Blob, FlashRegion, Key, PicassoImage};
 use crate::build_plan::{FfsAssembly, FileBinding};
-use fstart_amdfw::{
+use fstart_amdfw_format::{
     Flash, Profile,
     directory::{BiosEntry, bios, modify_entries},
     efs::{BiosDirectorySlot, Efs},

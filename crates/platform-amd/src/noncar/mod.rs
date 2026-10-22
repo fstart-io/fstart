@@ -39,7 +39,7 @@ pub mod smm;
 pub use flow::Program;
 
 use crate::acpi::{BoardAcpi, SocAcpi};
-use fstart_amdfw::efs::BiosDirectorySlot;
+use fstart_amdfw_format::efs::BiosDirectorySlot;
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{

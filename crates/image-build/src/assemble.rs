@@ -1063,12 +1063,12 @@ pub(crate) fn amd_microcode(
     if let Some(vendor) = &config.vendor_image {
         let image = fs::read(vendor.image.as_str())
             .map_err(|e| format!("failed to read vendor image {}: {e}", vendor.image))?;
-        let flash = fstart_amdfw::Flash::new(&image);
+        let flash = fstart_amdfw_format::Flash::new(&image);
         let before = blob.len();
         flash
             .bios_files(
                 vendor.bios_directory,
-                fstart_amdfw::directory::bios::MICROCODE,
+                fstart_amdfw_format::directory::bios::MICROCODE,
             )
             .for_each(|patch| blob.extend_from_slice(patch));
         if blob.len() == before {

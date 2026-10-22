@@ -547,3 +547,96 @@ fn fletcher_known_values() {
     let data: Vec<u8> = (0..2000u32).map(|i| (i * 7) as u8).collect();
     assert_eq!(fletcher32(&data), 0xc496_b05b);
 }
+
+const SLOT: Slot = Slot::Family17hModel00;
+
+fn bios_file(kind: u8, instance: u8, size: u32, source: u64) -> BiosEntry {
+    BiosEntry::new(kind, 0, instance, 0, size, source, u64::MAX)
+}
+
+/// A 1-MiB flash: the EFS at 0x20000, level 1 at 0x30000 with a microcode
+/// and the pointer to level 2 at 0x40000 with two other microcodes.
+fn one_mib_flash() -> Vec<u8> {
+    let mut flash = vec![0xffu8; 0x10_0000];
+    let mut efs = Efs::erased();
+    efs.bios_directory_mut(SLOT).set(0xfff3_0000);
+    // The probe 0xfff20000.
+    flash[0x2_0000..0x2_0060].copy_from_slice(efs.as_bytes());
+    put(
+        &mut flash,
+        0x3_0000,
+        directory::BIOS_COOKIE,
+        0,
+        &[
+            bios_file(bios::MICROCODE, 0, 0x10, 0xfff5_0000),
+            bios_file(bios::LEVEL2, 0, 0x400, 0xfff4_0000),
+        ],
+    );
+    put(
+        &mut flash,
+        0x4_0000,
+        directory::BIOS_LEVEL2_COOKIE,
+        0,
+        &[
+            bios_file(bios::APOB, 0, 0, 0),
+            // A flash offset instead of a mapped address.
+            bios_file(bios::MICROCODE, 0, 0x10, 0x5_1000),
+            bios_file(bios::MICROCODE, 1, 0x10, 0xfff5_2000),
+        ],
+    );
+    flash
+}
+
+#[test]
+fn the_efs_is_at_a_probe_offset_of_the_window() {
+    let image = one_mib_flash();
+    let flash = Flash::new(&image);
+    // 0xff020000 is below the 1-MiB flash, 0xfff20000 0x20000 into it.
+    assert_eq!(flash.efs().map(|(offset, _)| offset), Some(0x2_0000));
+    assert_eq!(flash.address(0x2_0000), 0xfff2_0000);
+    assert_eq!(flash.offset(0xfff2_0000), Some(0x2_0000));
+    assert_eq!(flash.offset(0x2_0000), Some(0x2_0000));
+}
+
+#[test]
+fn the_psp_boots_from_level_2() {
+    let image = one_mib_flash();
+    let flash = Flash::new(&image);
+    let levels = flash.bios_directories(SLOT).unwrap();
+    assert_eq!(levels.level1.offset, 0x3_0000);
+    assert_eq!(levels.boot().offset, 0x4_0000);
+    assert_eq!(levels.iter().count(), 2);
+    let microcode: Vec<_> = flash
+        .bios_files(SLOT, bios::MICROCODE)
+        .map(|data| data.as_ptr())
+        .collect();
+    assert_eq!(
+        microcode,
+        [image[0x5_1000..].as_ptr(), image[0x5_2000..].as_ptr()]
+    );
+    // No directory for another SoC generation.
+    assert!(
+        flash
+            .bios_directories(Slot::Family17hModel10)
+            .is_none()
+    );
+}
+
+#[test]
+fn corrupt_referenced_level_2_is_rejected() {
+    let mut image = one_mib_flash();
+    image[0x4_0004] ^= 1;
+    let flash = Flash::new(&image);
+    assert!(matches!(
+        flash.bios_directories_checked(SLOT),
+        Err(Error::Checksum(0x4_0000))
+    ));
+    assert_eq!(flash.bios_files(SLOT, bios::MICROCODE).count(), 0);
+}
+
+#[test]
+fn fletcher_reference_vectors() {
+    assert_eq!(fletcher32(&[0; 8]), 0xffff_ffff);
+    assert_eq!(fletcher32(&[1, 0, 2, 0, 3, 0, 4, 0]), 0x0014_000a);
+    assert_eq!(fletcher32(&[0xff; 1024]), 0xffff_ffff);
+}

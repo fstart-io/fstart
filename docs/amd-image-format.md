@@ -6,13 +6,14 @@ board policy must remain separate from the start.
 ## Boundaries
 
 - `fstart-amdfw-format`: `no_std`, MIT/Apache-2.0 wire layouts, Fletcher-32,
-  address resolution, EFS selection, checked PSP/BIOS traversal and dependency
-  validation. It uses zerocopy and has no silicon-driver dependency.
-  The independent SP3 reader and AMD document #55758 are its foundations.
-  `fstart-core` takes its board-facing BIOS slot type directly from this crate,
-  without depending on the compatibility facade.
-- `fstart-amdfw`: compatibility facade for existing callers. It re-exports
-  the common reader rather than keeping a second set of layouts/parsers.
+  the directory table writer, address resolution, EFS and boot-half
+  selection, checked PSP/BIOS traversal, PSP-order file lookup (L2 first) and
+  dependency validation. It uses zerocopy and has no silicon-driver
+  dependency; AMD document #55758 and the SP3 reverse engineering are its
+  foundations. It is the one reader of the host tools and of the firmware
+  (the SP3 reset image reads its flash with it; a `Profile` per generation
+  comes from `fstart_driver_zen::soc::Generation::profile`). `fstart-core`
+  takes its board-facing BIOS slot type directly from this crate.
 - `fstart-image-build::amd`: assembly policy and the current Picasso blob
   configuration/packer. It consumes the same reader to check vendor inputs and
   read back assembled images. Signed blobs are not modified or re-signed.
@@ -20,8 +21,7 @@ board policy must remain separate from the start.
   old flag-only packing invocation remains supported; `pack` is the explicit
   equivalent.
 
-Keep packer/configuration code out of the format crate. The shared reader
-was adapted from the independently sourced SP3 work.
+Keep packer/configuration code out of the format crate.
 
 ## Platform and image selection
 

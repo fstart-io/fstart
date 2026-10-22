@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! AMD PSP flash images, in the format of `fstart_amdfw`: [`assembly`]
+//! AMD PSP flash images, in the format of `fstart_amdfw_format`: [`assembly`]
 //! composes a stage's image from a vendor image or packed blobs;
 //! [`PicassoImage`] packs Picasso's first-generation PSP partition.
 //!
@@ -11,7 +11,7 @@ pub mod apcb;
 pub mod assembly;
 pub mod config;
 
-use fstart_amdfw::{
+use fstart_amdfw_format::{
     directory::{BIOS_COOKIE, BiosEntry, PSP_COOKIE, PspEntry, bios, psp, write_table},
     efs::{BiosDirectorySlot, Efs},
 };

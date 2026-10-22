@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
 use crate::{picasso, zeppelin};
-use fstart_amdfw::{
+use fstart_amdfw_format::{
     directory::{BIOS_COOKIE, BiosEntry, PSP_COOKIE, PspEntry, bios, write_table},
     efs::Efs,
 };

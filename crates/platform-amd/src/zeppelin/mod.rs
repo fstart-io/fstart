@@ -92,8 +92,8 @@ impl noncar::Soc for Zeppelin {
     const ECAM: u64 = soc::ECAM;
     const ECAM_BUSES: u16 = soc::ECAM_BUSES;
     const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
-    const BIOS_DIRECTORY: fstart_amdfw::efs::BiosDirectorySlot =
-        fstart_amdfw::efs::BiosDirectorySlot::Family17hModel00;
+    const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
+        fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel00;
     /// 8 MiB of TSEG.
     const TSEG_SIZE: u32 = 8 << 20;
     /// Two dies of eight SMT cores.
