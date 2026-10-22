@@ -3,7 +3,7 @@
 //! SMU performs PHY programming; no FSP or opaque x86 initialization call.
 use super::{
     cpu::{Identity, Silicon},
-    registers::Smn,
+    registers::{Smn, apply, rmw, write},
     smu,
 };
 use heapless::Vec;
@@ -339,7 +339,7 @@ impl PhyRegisters for NativePhy {
 }
 #[allow(clippy::too_many_arguments)]
 pub fn initialize(
-    smn: &mut impl Smn,
+    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
     phy: &mut impl PhyRegisters,
     config: &Config,
     identity: Identity,
@@ -348,9 +348,15 @@ pub fn initialize(
     delay_us: &mut impl FnMut(u32),
 ) -> Result<(), Error> {
     let plan = plan(config, identity, silicon_id)?;
-    smn.write(0x03100004, 0);
-    smn.update(0x03100000, 0, 1);
-    smn.update(0x03100000, 0, 1 << 11);
+    // The SATA controller off (vendor values).
+    apply(
+        smn,
+        [
+            write(0x0310_0004, 0),
+            rmw(0x0310_0000, 0, 1),
+            rmw(0x0310_0000, 0, 1 << 11),
+        ],
+    );
     smu::request(smn, 0x44, [0; 6], delay_us).map_err(Error::Smu)?;
     for (i, value) in [0x10100, 0x9393, 0x303, 0, 0x10100, 0x9393, 0x303, 0]
         .into_iter()
@@ -360,14 +366,11 @@ pub fn initialize(
         let old = phy.read(i);
         phy.write(i, old & keep | value);
     }
-    if !resume {
-        smn.write(0x16d80104, 0x33);
+    // Both xHCI controllers (vendor values).
+    for controller in [0x16d8_0000, 0x16f8_0000] {
+        let start = (!resume).then_some(write(controller + 0x104, 0x33));
+        apply(smn, start.into_iter().chain([rmw(controller + 0x10c, 1 << 6, 0)]));
     }
-    smn.update(0x16d8010c, 1 << 6, 0);
-    if !resume {
-        smn.write(0x16f80104, 0x33);
-    }
-    smn.update(0x16f8010c, 1 << 6, 0);
     for update in plan.updates() {
         smu::request(
             smn,

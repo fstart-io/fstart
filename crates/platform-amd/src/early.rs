@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fixed native Picasso cold-boot silicon flow. No FSP calls or HOBs.
 use crate::memory::{self, Memory};
+use fstart_arch::x86::cpu::msr::{MCG_CAP, MTRR_CAP, McgCap, MsrAccess, MtrrCap};
+use fstart_driver_amd::fam17h::ccx::Thread;
 use fstart_driver_amd::picasso::{
     apob::MemoryMap,
     cache::{self, CacheControl, Plan},
-    cpu::{self, Identity, Msr},
+    cpu::{self, Identity},
     fabric,
     nbio::{self, Capabilities},
-    registers::{Fabric, Smn},
+    registers::{Df, Smn},
 };
+use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {
     pub apob: &'a MemoryMap,
@@ -37,9 +40,9 @@ pub enum Error {
 /// MP/SMM and payload handoff; returning this state is NOT a boot-success claim.
 pub fn initialize(
     input: Inputs<'_>,
-    msr: &mut (impl Msr + CacheControl),
-    smn: &mut impl Smn,
-    df: &mut impl Fabric,
+    msr: &(impl MsrAccess + CacheControl),
+    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
+    df: &Df<impl fstart_pci::ConfigRegionAccess>,
     delay_us: &mut impl FnMut(u32),
 ) -> Result<State, Error> {
     // Validate CPU, memory reservations and the full MTRR plan before writes.
@@ -48,10 +51,9 @@ pub fn initialize(
     let (low, high) = cpu::memory_limits(msr).map_err(Error::Cpu)?;
     let memory =
         Memory::from_apob(input.apob, low, high, input.tseg_size).map_err(Error::Memory)?;
-    let cap = msr.read(0xfe);
-    let caches =
-        Plan::new(low, input.physical_address_bits, (cap & 0xff) as usize).map_err(Error::Cache)?;
-    let banks = (msr.read(0x179) & 0xff) as u8;
+    let mtrrs = msr.reg(MTRR_CAP).read(MtrrCap::VARIABLE_COUNT) as usize;
+    let caches = Plan::new(low, input.physical_address_bits, mtrrs).map_err(Error::Cache)?;
+    let banks = msr.reg(MCG_CAP).read(McgCap::COUNT) as u8;
     if !(17..=32).contains(&banks) {
         return Err(Error::Cpu(cpu::Error::McaBanks(banks)));
     }
@@ -69,7 +71,7 @@ pub fn initialize(
     .map_err(Error::Cpu)?;
     nbio::psp_bar(smn).map_err(Error::Nbio)?;
     cpu::bsp_init(msr);
-    cpu::mca_init(msr).map_err(Error::Cpu)?;
+    cpu::mca_init(msr, Thread::current()).map_err(Error::Cpu)?;
     // Default topology is retained here; the full flow applies the requested
     // board CPU topology before releasing any APs through the SMU.
     let (low, high) = cpu::memory_limits(msr).map_err(Error::Cpu)?;

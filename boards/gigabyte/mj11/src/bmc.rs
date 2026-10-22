@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! What the vendor firmware tells the AST2500 BMC over IPMI KCS at the end
 //! of POST.
-use fstart_driver_amd::zeppelin::fch::{Acpimmio, Bus};
-use fstart_driver_ipmi::{SelRecord, kcs::Kcs};
+use fstart_driver_amd::fch::early::{self, PowerFailure};
+use fstart_driver_ipmi::{RestorePolicy, SelRecord, kcs::Kcs};
 use fstart_platform_amd::zeppelin::BoardCtx;
 use zerocopy::little_endian::{U16, U32};
 
@@ -12,10 +12,6 @@ const SET_ERP: u8 = 0x20;
 /// ErP off, the Setup default.
 const ERP_OFF: [u8; 5] = [0x0a, 0x3c, 0x00, 0x0d, 0x1c];
 
-/// PMx5B[3:0], the AC-loss policy, per IPMI restore policy: off, previous,
-/// on.
-const PM_RTC_SHADOW: u32 = 0x5b;
-const RESTORE_POLICY: [u8; 3] = [4, 7, 5];
 
 pub fn post_done(ctx: &mut BoardCtx<'_>) {
     // SAFETY: the KCS ports the board decodes in early_init; only used here.
@@ -42,10 +38,15 @@ pub fn post_done(ctx: &mut BoardCtx<'_>) {
     match kcs.chassis_status() {
         Ok(status) => {
             let policy = status.restore_policy();
-            if let Some(&value) = RESTORE_POLICY.get(usize::from(policy)) {
-                ctx.fch()
-                    .update(Acpimmio::DIE0.pm::<u8, ()>(PM_RTC_SHADOW), 0x0f, value);
-                fstart_log::info!("BMC power restore policy {}", policy);
+            let state = match policy {
+                RestorePolicy::Off => Some(PowerFailure::Off),
+                RestorePolicy::Previous => Some(PowerFailure::Previous),
+                RestorePolicy::On => Some(PowerFailure::On),
+                RestorePolicy::Unknown => None,
+            };
+            if let Some(state) = state {
+                early::set_power_failure_state(&ctx.fch(), state);
+                fstart_log::info!("BMC power restore policy {}", policy as u8);
             }
         }
         Err(_) => fstart_log::warn!("Get Chassis Status failed"),

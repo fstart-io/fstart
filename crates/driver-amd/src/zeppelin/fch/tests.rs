@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::*;
-use crate::zeppelin::{Die, Package, Revision, topology};
+use crate::{
+    fam17h::registers::testing::{SmnModel, SmnTest},
+    fch::{Acpimmio, Bus, Fch, Space},
+    zeppelin::{Die, Package, Revision, topology},
+};
 use core::cell::RefCell;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{collections::BTreeMap, vec, vec::Vec};
@@ -50,8 +54,13 @@ impl World {
 
 #[derive(Clone, Copy)]
 struct Hw<'a>(&'a RefCell<World>);
+impl Hw<'_> {
+    fn fch(&self) -> Fch<Self> {
+        Fch::new(*self, Acpimmio::DIE0)
+    }
+}
 impl Bus for Hw<'_> {
-    fn read(&mut self, space: Space, address: u32, bytes: u8) -> u32 {
+    fn read(&self, space: Space, address: u32, bytes: u8) -> u32 {
         let world = self.0.borrow();
         if space == Space::Io
             && let Some((index, false)) = pair(address)
@@ -64,7 +73,7 @@ impl Bus for Hw<'_> {
             (value << 8) | u32::from(byte.unwrap_or(0))
         })
     }
-    fn write(&mut self, space: Space, address: u32, bytes: u8, value: u32) {
+    fn write(&self, space: Space, address: u32, bytes: u8, value: u32) {
         let mut world = self.0.borrow_mut();
         world.events.push(Event::Bus(space, address, value));
         if space == Space::Io {
@@ -121,7 +130,7 @@ struct SmnMock {
     regs: BTreeMap<u32, u32>,
     script: BTreeMap<u32, Vec<u32>>,
 }
-impl Smn for SmnMock {
+impl SmnModel for SmnMock {
     fn read(&mut self, address: u32) -> u32 {
         match self.script.get_mut(&address) {
             Some(values) if !values.is_empty() => values.remove(0),
@@ -159,13 +168,13 @@ fn dies(world: &RefCell<World>) -> Vec<Die<Hw<'_>>> {
 #[test]
 fn irq_routing_keeps_misc_controls_and_disconnects_the_rest() {
     let world = RefCell::new(World::default());
-    let mut bus = Hw(&world);
+    let bus = Hw(&world);
     for source in irq::MISC..=irq::MISC2 {
-        irq::write(&mut bus, source, irq::Mode::Pic, 0xa0 | source);
-        irq::write(&mut bus, source, irq::Mode::Apic, 0xb0 | source);
+        irq::write(&bus, source, irq::Mode::Pic, 0xa0 | source);
+        irq::write(&bus, source, irq::Mode::Apic, 0xb0 | source);
     }
-    irq::write(&mut bus, irq::SIRQA, irq::Mode::Apic, 7);
-    irq::write(&mut bus, 0x13, irq::Mode::Pic, 0x42); // reserved index
+    irq::write(&bus, irq::SIRQA, irq::Mode::Apic, 7);
+    irq::write(&bus, 0x13, irq::Mode::Pic, 0x42); // reserved index
     // As the MJ11 lists them: the MISC entries come with zeros.
     let routes = [
         irq::Route {
@@ -189,7 +198,7 @@ fn irq_routing_keeps_misc_controls_and_disconnects_the_rest() {
             apic: 0,
         },
     ];
-    irq::write_routing(&mut bus, &routes).unwrap();
+    irq::write_routing(&bus, &routes).unwrap();
 
     let w = world.borrow();
     assert_eq!(
@@ -224,7 +233,7 @@ fn irq_routing_keeps_misc_controls_and_disconnects_the_rest() {
         },
     ];
     assert_eq!(
-        irq::write_routing(&mut bus, &bad),
+        irq::write_routing(&bus, &bad),
         Err(irq::Error::InvalidSource(1))
     );
     assert!(world.borrow().events.is_empty());
@@ -247,39 +256,48 @@ fn sata_late_reports_only_ports_with_a_device() {
         .borrow_mut()
         .config
         .insert((function, 0xa0), (3 << 17) | 0x0080_7005);
-    let mut smn = SmnMock::default();
-    smn.regs.insert(SATA_PI, 0xff);
-    smn.regs.insert(SATA_CAP, 0x1f | 0xc000_0000);
-    smn.regs.insert(SATA_MSI, 0x0700_0001);
-    smn.regs.insert(ssts(1), 0x123);
-    smn.regs.insert(ssts(3), 0x113);
-    smn.regs.insert(ssts(5), 0x101); // device, no PHY communication
+    let smn = SmnTest::new(SmnMock::default());
+    {
+        let mut model = smn.model();
+        model.regs.insert(SATA_PI, 0xff);
+        model.regs.insert(SATA_CAP, 0x1f | 0xc000_0000);
+        model.regs.insert(SATA_MSI, 0x0700_0001);
+        model.regs.insert(ssts(1), 0x123);
+        model.regs.insert(ssts(3), 0x113);
+        model.regs.insert(ssts(5), 0x101); // device, no PHY communication
+    }
 
-    assert_eq!(sata::late(&mut smn, 0, &Hw(&world), function), 0b1010);
-    assert_eq!(smn.regs[&SATA_PI], 0b1010);
-    assert_eq!(smn.regs[&SATA_CAP], 1 | 0xc000_0000);
-    assert_eq!(smn.regs[&SATA_MSI], 0x0300_0001);
-    assert_eq!(smn.regs[&SATA_MISC], 0b1111_0101 << 16);
+    assert_eq!(sata::late(&smn.smn(), 0, Hw(&world), function), 0b1010);
+    let model = smn.model();
+    assert_eq!(model.regs[&SATA_PI], 0b1010);
+    assert_eq!(model.regs[&SATA_CAP], 1 | 0xc000_0000);
+    assert_eq!(model.regs[&SATA_MSI], 0x0300_0001);
+    assert_eq!(model.regs[&SATA_MISC], 0b1111_0101 << 16);
+    drop(model);
 
-    let mut smn = SmnMock::default();
-    smn.regs.insert(SATA_PI, 0xff);
-    assert_eq!(sata::late(&mut smn, 0, &Hw(&world), function), 1);
-    assert_eq!(smn.regs[&SATA_CAP], 0);
+    let smn = SmnTest::new(SmnMock::default());
+    smn.model().regs.insert(SATA_PI, 0xff);
+    assert_eq!(sata::late(&smn.smn(), 0, Hw(&world), function), 1);
+    assert_eq!(smn.model().regs[&SATA_CAP], 0);
 }
 
 #[test]
 fn sata_reset_waits_for_each_phy_but_never_longer_than_1ms() {
-    let mut smn = SmnMock::default();
-    (0..sata::PORTS).for_each(|port| {
-        smn.regs.insert(ssts(port), 4);
-    });
-    smn.script.insert(ssts(0), vec![0, 1]);
-    smn.regs.insert(ssts(6), 3); // stays online
+    let smn = SmnTest::new(SmnMock::default());
+    {
+        let mut model = smn.model();
+        (0..sata::PORTS).for_each(|port| {
+            model.regs.insert(ssts(port), 4);
+        });
+        model.script.insert(ssts(0), vec![0, 1]);
+        model.regs.insert(ssts(6), 3); // stays online
+    }
     let mut waited = 0;
-    sata::reset(&mut smn, &mut |us| waited += us);
+    sata::reset(&smn.smn(), &mut |us| waited += us);
     assert_eq!(waited, 2 * 10 + 1000);
     // DET = offline requested on every port.
-    assert!((0..sata::PORTS).all(|port| smn.regs[&(0x0310_112c + port * 0x80)] & 0xf == 4));
+    let model = smn.model();
+    assert!((0..sata::PORTS).all(|port| model.regs[&(0x0310_112c + port * 0x80)] & 0xf == 4));
 }
 
 #[test]
@@ -293,7 +311,7 @@ fn reset_init_conditionals() {
         w.bytes.insert((Space::Mmio, 0xfed8_0200), 0x01);
         w.bytes.insert((Space::Mmio, 0xfed8_0204), 0x01);
     }
-    reset_init(&mut Hw(&world), Revision::A0);
+    reset_init(&Hw(&world).fch(), Revision::A0);
     let w = world.borrow();
     assert_eq!(w.indexed[&(0x70, 0x0d)], 0x80);
     assert_eq!(w.indexed[&(0xc00, 0x09)], 0x10);
@@ -303,7 +321,7 @@ fn reset_init_conditionals() {
 
     let world = RefCell::new(World::default());
     world.borrow_mut().indexed.insert((0x70, 0x0d), 0x9e);
-    reset_init(&mut Hw(&world), Revision::B2);
+    reset_init(&Hw(&world).fch(), Revision::B2);
     let w = world.borrow();
     assert_eq!(w.indexed[&(0x70, 0x0d)], 0x9e);
     assert!(!w.bytes.contains_key(&(Space::Io, 0x801)));
@@ -322,7 +340,7 @@ fn multi_reset_moves_acpimmio_while_io_is_routed_to_the_die() {
         world.borrow_mut().smn.insert((DIE1_BUS, ssts(port)), 4);
     });
     multi::reset(
-        &mut Hw(&world),
+        &Hw(&world),
         &dies,
         Package::Sp4,
         |_| DIE1_NONPCI,
@@ -387,7 +405,7 @@ fn multi_usb_and_env_follow_the_board_and_the_straps() {
     ];
     multi::usb(&dies, &board, Package::Sp4, &mut |_| ());
     multi::env(
-        &mut Hw(&world),
+        &Hw(&world),
         &dies,
         &board,
         |_| DIE1_NONPCI,
@@ -418,7 +436,7 @@ fn multi_usb_and_env_follow_the_board_and_the_straps() {
             .insert((DIE1_BUS, register), strap | 5);
     }
     multi::env(
-        &mut Hw(&world),
+        &Hw(&world),
         &dies,
         &board,
         |_| DIE1_NONPCI,

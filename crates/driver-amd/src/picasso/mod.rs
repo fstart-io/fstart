@@ -30,41 +30,16 @@ pub mod topology;
 pub mod usb;
 #[cfg(test)]
 mod usb_tests;
-pub use crate::ACPI_MMIO;
+pub use crate::fch::ACPI_MMIO;
 pub const ECAM: u64 = 0xf800_0000;
 pub const ECAM_BUSES: u8 = 64;
 pub const UART_BASES: [usize; 4] = [0xfedc9000, 0xfedca000, 0xfedce000, 0xfedcf000];
 pub const UART_AOAC: [u8; 4] = [11, 12, 16, 26];
 pub const EARLY_AOAC: &[u8] = &[17, 7, 8, 9, 27];
-pub const GPIO_EVENTS: &[(u8, u8)] = &[
-    (0, 21),
-    (1, 19),
-    (2, 8),
-    (3, 2),
-    (4, 4),
-    (5, 7),
-    (6, 10),
-    (7, 11),
-    (8, 23),
-    (9, 22),
-    (16, 12),
-    (17, 13),
-    (18, 14),
-    (21, 5),
-    (22, 3),
-    (23, 16),
-    (24, 15),
-    (40, 20),
-    (84, 18),
-    (86, 9),
-    (89, 0),
-    (90, 1),
-    (91, 6),
-    (129, 17),
-];
 /// GPIO bank 0: pins 0-144, no pad 63.
 pub const GPIO_BANK: crate::gpio::Bank = crate::gpio::Bank {
     pins: 145,
     reserved: &[63],
-    events: GPIO_EVENTS,
+    gpio_function: pinmux::gpio_function,
+    events: crate::gpio::FAMILY17H_EVENTS,
 };

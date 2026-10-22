@@ -6,8 +6,16 @@ use super::{
         self, Descriptor, EngineConfig, Error, Event, Hotplug, LinkSpeed, Operation, PowerPolicy,
         Topology,
     },
-    registers::Smn,
+    registers::{Reg, Smn, SmnReg, apply, rmw},
     smu,
+};
+use crate::fam17h::nbio::{
+    IohcBridgeCntl, NbProgDeviceRemap, iohc_bridge_cntl, nb_prog_device_remap, pcie,
+};
+use fstart_core::indexed::Indexed;
+use tock_registers::{
+    interfaces::{ReadWriteable, Readable, Writeable},
+    register_bitfields,
 };
 use core::{
     cell::UnsafeCell,
@@ -16,21 +24,30 @@ use core::{
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use zerocopy::{FromBytes, IntoBytes};
 
-const PHY_INDEX: u32 = 0x0004a34c;
-const PHY_DATA: u32 = 0x0004a350;
-fn port(i: usize, offset: u32) -> u32 {
-    0x11140000 + i as u32 * 0x1000 + offset
+const PHY_INDEX: SmnReg = SmnReg::new(0x0004_a34c);
+const PHY_DATA: SmnReg = SmnReg::new(0x0004_a350);
+/// PCIe strap `index` of the core, behind the PHY index/data pair.
+fn phy(smn: &Smn<impl ConfigRegionAccess>, index: u32, value: u32) {
+    Indexed::<_, _, ()>::new(smn.reg(PHY_INDEX), smn.reg(PHY_DATA), index).set(value);
 }
-fn core_reg(offset: u32) -> u32 {
-    0x11180000 + offset
+
+register_bitfields![u32,
+    /// NBIF function strap.
+    NbifStrap [ENABLE OFFSET(28) NUMBITS(1) []],
+    /// NBIF function enables, bit n = function n.
+    NbifFunctionEnable [
+        HDA OFFSET(6) NUMBITS(1) [],
+        F8 OFFSET(8) NUMBITS(1) [],
+        F9 OFFSET(9) NUMBITS(1) [],
+        F10 OFFSET(10) NUMBITS(1) []
+    ]
+];
+/// The NBIF straps of the functions of device 8.1 (NBIF0 function n).
+const fn nbif_strap(function: u32) -> SmnReg<NbifStrap::Register> {
+    SmnReg::new(0x1013_4000 + function * 0x200)
 }
-fn bridge(i: u8) -> u32 {
-    0x13b31004 + u32::from(i) * 0x400
-}
-fn phy(smn: &mut impl Smn, index: u32, value: u32) {
-    smn.write(PHY_INDEX, index);
-    smn.write(PHY_DATA, value);
-}
+const NBIF_FUNCTION_ENABLE: SmnReg<NbifFunctionEnable::Register> = SmnReg::new(0x1013_a008);
+const HDA: u32 = 6;
 
 /// Resident identity-mapped coherent DRAM, borrowed exclusively for the
 /// entire transaction. UnsafeCell permits firmware DMA without holding a
@@ -107,57 +124,72 @@ pub struct Options {
     pub acp_enabled: bool,
 }
 
-fn pre_training(smn: &mut impl Smn, options: Options) {
+/// Raw vendor records of the pre-training sequence.
+fn nbif_vendor(graphics: bool) -> impl Iterator<Item = Reg> {
+    let acs = core::iter::once(rmw(0x1013_1200, 0x1c, 0x1c))
+        .chain((8..=10).map(|function| rmw(0x1013_4008 + function * 0x200, 0x13_0000, 0x13_0000)));
+    let graphics = [rmw(0x1012_349c, 1 << 2, 1 << 2), rmw(0x1012_34c8, 1 << 17, 1 << 17)]
+        .into_iter()
+        .filter(move |_| graphics);
+    acs.chain(graphics)
+}
+
+fn pre_training(smn: &Smn<impl ConfigRegionAccess>, options: Options) {
     for function in [9, 10] {
-        smn.update(0x10134000 + function * 0x200, 1 << 28, 0);
-        smn.update(0x1013a008, 1 << function, 0);
+        smn.reg(nbif_strap(function))
+            .modify(NbifStrap::ENABLE::CLEAR);
+        let enable = smn.reg(NBIF_FUNCTION_ENABLE);
+        enable.modify(if function == 9 {
+            NbifFunctionEnable::F9::CLEAR
+        } else {
+            NbifFunctionEnable::F10::CLEAR
+        });
     }
-    smn.update(
-        0x10134c00,
-        1 << 28,
-        if options.hda_enabled { 1 << 28 } else { 0 },
-    );
-    smn.update(
-        0x1013a008,
-        1 << 6,
-        if options.hda_enabled { 1 << 6 } else { 0 },
-    );
-    for address in [0x10100004, 0x10101004] {
-        let value = smn.read(address);
-        smn.write(address, (value & 0xff) | 4);
+    smn.reg(nbif_strap(HDA))
+        .modify(NbifStrap::ENABLE.val(options.hda_enabled.into()));
+    smn.reg(NBIF_FUNCTION_ENABLE)
+        .modify(NbifFunctionEnable::HDA.val(options.hda_enabled.into()));
+    // [7:0] kept, the rest replaced by 4.
+    for address in [0x1010_0004, 0x1010_1004] {
+        let reg = smn.reg(SmnReg::<()>::new(address));
+        reg.set((reg.get() & 0xff) | 4);
     }
     for i in (0..8).rev() {
-        smn.update(port(i, 0x080), 1 << 15, 0);
-        smn.update(port(i, 0x288), 0, 0x600000);
+        smn.reg(pcie::tx_cntl(i))
+            .modify(pcie::TxCntl::TX_FLUSH_TLP_DIS::CLEAR);
+        smn.reg(pcie::lc_link_width_cntl(i))
+            .modify(pcie::LcLinkWidthCntl::LC_DYN_LANES_PWR_STATE.val(3));
     }
     phy(smn, 0xfffe0002, 1);
     for index in 0xfffe0069..0xfffe006f {
         phy(smn, index, 1);
     }
     phy(smn, 0xfffe0068, 1);
-    smn.update(0x10131200, 0x1c, 0x1c);
-    for function in 8..=10 {
-        smn.update(0x10134008 + function * 0x200, 0x130000, 0x130000);
-    }
-    if options.graphics {
-        smn.update(0x1012349c, 1 << 2, 1 << 2);
-        smn.update(0x101234c8, 1 << 17, 1 << 17);
-    }
+    apply(smn, nbif_vendor(options.graphics));
     for index in (0xfffe00c5..0xfffe02fc).step_by(0x51) {
         phy(smn, index, 7);
     }
-    smn.update(0x11a0b014, 0xf0, 0x40);
-    smn.update(0x10135000, 1 << 28, 0);
-    smn.update(0x1013a008, 1 << 8, 0);
+    apply(smn, [rmw(0x11a0_b014, 0xf0, 0x40)]);
+    smn.reg(nbif_strap(8)).modify(NbifStrap::ENABLE::CLEAR);
+    smn.reg(NBIF_FUNCTION_ENABLE)
+        .modify(NbifFunctionEnable::F8::CLEAR);
 }
-fn remap(smn: &mut impl Smn, map: [u8; 7]) {
+fn remap(smn: &Smn<impl ConfigRegionAccess>, map: [u8; 7]) {
     for (i, devfn) in map.into_iter().enumerate() {
-        smn.update(0x13b100c0 + i as u32 * 4, 0xff, u32::from(devfn));
-        smn.update(port(i, 0x084), 0xfff8, u32::from(devfn & 0xf8));
-        smn.update(port(i, 0x008), 7, u32::from(devfn & 7));
+        let (device, function) = fstart_pci::devfn_parts(devfn);
+        smn.reg(nb_prog_device_remap(i))
+            .modify(NbProgDeviceRemap::DEVFN.val(devfn.into()));
+        smn.reg(pcie::port_084(i))
+            .modify(pcie::Port084::DEVICE.val(device.into()));
+        smn.reg(pcie::port_008(i))
+            .modify(pcie::Port008::FUNCTION.val(function.into()));
     }
 }
-fn configured(smn: &mut impl Smn, pci: &impl ConfigRegionAccess, topology: &Topology) {
+fn configured(
+    smn: &Smn<impl ConfigRegionAccess>,
+    pci: &impl ConfigRegionAccess,
+    topology: &Topology,
+) {
     for p in topology.ports.iter().rev() {
         let Some(d) = p.descriptor else {
             continue;
@@ -167,7 +199,8 @@ fn configured(smn: &mut impl Smn, pci: &impl ConfigRegionAccess, topology: &Topo
         } else {
             0
         };
-        let address = PciAddress::new(0, 0, p.devfn >> 3, p.devfn & 7);
+        let (device, function) = fstart_pci::devfn_parts(p.devfn);
+        let address = PciAddress::new(0, 0, device, function);
         // SAFETY: live mapped root-port config space, aligned valid offsets.
         let mut eq = unsafe { pci.read(address, 0x27c) } & 0x8080;
         eq |= preset & 0x7f;
@@ -188,49 +221,75 @@ fn configured(smn: &mut impl Smn, pci: &impl ConfigRegionAccess, topology: &Topo
         );
     }
 }
-fn post_training(smn: &mut impl Smn, topology: &Topology) {
+fn post_training(smn: &Smn<impl ConfigRegionAccess>, topology: &Topology) {
+    let hidden =
+        IohcBridgeCntl::BRIDGE_DIS::SET + IohcBridgeCntl::CFG_DIS::SET + IohcBridgeCntl::CRS_ENABLE::SET;
     for i in 0..7 {
-        smn.update(bridge(i), 0x40005, 0x40005);
+        smn.reg(iohc_bridge_cntl(i)).modify(hidden);
     }
     for p in topology.ports.iter().rev() {
         let hotplug = p
             .descriptor
             .is_some_and(|d| !matches!(d.hotplug, Hotplug::Disabled | Hotplug::Inboard));
         if p.trained || hotplug {
-            smn.update(bridge(p.devfn_index), 0x40005, 1 << 18);
+            smn.reg(iohc_bridge_cntl(p.devfn_index.into())).modify(
+                IohcBridgeCntl::BRIDGE_DIS::CLEAR
+                    + IohcBridgeCntl::CFG_DIS::CLEAR
+                    + IohcBridgeCntl::CRS_ENABLE::SET,
+            );
         }
     }
-    smn.update(0x03101800, 1 << 3, 1 << 3);
-    smn.update(0x03101800, 1 << 3, 0);
+    apply(smn, [rmw(0x0310_1800, 1 << 3, 1 << 3), rmw(0x0310_1800, 1 << 3, 0)]);
     for i in (0..8).rev() {
-        smn.update(port(i, 0x080), 1 << 15, 0);
+        smn.reg(pcie::tx_cntl(i))
+            .modify(pcie::TxCntl::TX_FLUSH_TLP_DIS::CLEAR);
     }
     for i in (0..8).rev() {
-        smn.update(port(i, 0x280), 1 << 23, 0);
-        smn.update(port(i, 0x2d8), 0x10310, 0x100);
-        smn.update(port(i, 0x2f0), 0x07000000, 0);
-        smn.update(port(i, 0x2e0), 1 << 19, 1 << 19);
-        smn.update(port(i, 0x2ec), 0x15, 0x14);
-        smn.update(port(i, 0x2ec), 1 << 21, 0);
+        smn.reg(pcie::lc_cntl(i))
+            .modify(pcie::LcCntl::LC_L1_IMMEDIATE_ACK::CLEAR);
+        apply(
+            smn,
+            [
+                rmw(pcie::port_raw(i, 0x2d8), 0x10310, 0x100),
+                rmw(pcie::port_raw(i, 0x2f0), 0x0700_0000, 0),
+                rmw(pcie::port_raw(i, 0x2e0), 1 << 19, 1 << 19),
+            ],
+        );
+        let lc_cntl6 = smn.reg(pcie::lc_cntl6(i));
+        lc_cntl6.modify(
+            pcie::LcCntl6::LC_SPC_MODE_2P5GT::CLEAR
+                + pcie::LcCntl6::LC_SPC_MODE_5GT::SET
+                + pcie::LcCntl6::LC_SPC_MODE_8GT::SET,
+        );
+        lc_cntl6.modify(pcie::LcCntl6::LC_L1_POWERDOWN::CLEAR);
         if topology.ports[i]
             .descriptor
             .is_some_and(|d| d.hotplug == Hotplug::Enhanced)
         {
-            smn.update(port(i, 0x074), 0, 1 << 3);
+            apply(smn, [rmw(pcie::port_raw(i, 0x074), 0, 1 << 3)]);
         }
     }
-    smn.update(core_reg(0x2c0), 0, 1 << 18);
+    smn.reg(pcie::strap_f0(0))
+        .modify(pcie::StrapF0::PCD_D1::SET);
     for i in 0..7 {
-        smn.update(port(i, 0x304), 6, 6);
-        smn.update(0x11100080 + i as u32 * 0x1000, 0xf, 6);
-        smn.update(port(i, 0x280), 1 << 23, 1 << 23);
-        smn.update(port(i, 0x288), 1 << 19, 1 << 19);
-        smn.update(port(i, 0x2c4), 0xc000, 0x4000);
-        smn.update(port(i, 0x008), 1 << 15, 1 << 15);
+        smn.reg(pcie::port_304(i))
+            .modify(pcie::Port304::BITS.val(3));
+        smn.reg(pcie::device_control2(i))
+            .modify(pcie::DeviceControl2::COMPLETION_TIMEOUT.val(6));
+        smn.reg(pcie::lc_cntl(i))
+            .modify(pcie::LcCntl::LC_L1_IMMEDIATE_ACK::SET);
+        smn.reg(pcie::lc_link_width_cntl(i))
+            .modify(pcie::LcLinkWidthCntl::LC_DUAL_END_RECONFIG_EN::SET);
+        smn.reg(pcie::lc_cntl2(i))
+            .modify(pcie::LcCntl2::LC_ELEC_IDLE_MODE.val(1));
+        smn.reg(pcie::port_008(i))
+            .modify(pcie::Port008::BIT15::SET);
     }
-    smn.update(core_reg(0x040), 1 << 17, 0);
-    smn.update(core_reg(0x100), 0, 1 << 6);
-    smn.update(core_reg(0x100), 1 << 14, 1 << 14);
+    smn.reg(pcie::cntl(0))
+        .modify(pcie::Cntl::RX_RCB_INVALID_SIZE_DIS::CLEAR);
+    smn.reg(pcie::p_cntl(0))
+        .modify(pcie::PCntl::P_IGNORE_EDB_ERR::SET);
+    apply(smn, [rmw(pcie::core_raw(0, 0x100), 1 << 14, 1 << 14)]);
     phy(smn, 0xfffe0083, 0x1453);
     phy(smn, 0xfffe0082, 0x1022);
 }
@@ -248,7 +307,7 @@ fn post_training(smn: &mut impl Smn, topology: &Topology) {
 /// and power sequencing before training. Firmware must honor DMA completion.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn train(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     pci: &impl ConfigRegionAccess,
     buffers: &'static mut Buffers,
     descriptors: &[Descriptor],
@@ -361,7 +420,7 @@ pub unsafe fn train(
                     delay_us,
                 )?;
                 let snapshot = buffers.snapshot(size)?;
-                let inhibit = smn.read(core_reg(0x428));
+                let inhibit = smn.reg(pcie::link_status(0)).get();
                 topology.training_done(&snapshot, descriptors, inhibit)?;
                 if now_us().wrapping_sub(started) >= 60_000_000 {
                     return Err(Error::Timeout);

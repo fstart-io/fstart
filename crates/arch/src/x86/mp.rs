@@ -186,16 +186,14 @@ pub trait CpuDriver: Send + Sync {
     /// and return the MSR writes every AP replays with caching disabled.
     ///
     /// The default installs the architectural MTRR solution and mirrors the
-    /// MTRRs and PAT. AMD drivers keep their own fixed-MTRR DRAM routing and
-    /// add SYSCFG/TOP_MEM/TOM2.
+    /// MTRRs and PAT. AMD drivers keep their own fixed-MTRR DRAM routing.
     fn sipi_msrs(&self) -> Result<crate::x86::mtrr::SipiMsrs, MpError> {
         default_sipi_msrs()
     }
 
-    /// An MSR and bits every AP sets on its own value while it replays
-    /// [`Self::sipi_msrs`] and clears afterwards: AMD needs
-    /// SYSCFG.MtrrFixDramModEn to write the fixed MTRRs' RdDram/WrDram bits.
-    fn sipi_unlock(&self) -> Option<(u32, u32)> {
+    /// Bits every AP sets in its own MSR while it replays
+    /// [`Self::sipi_msrs`].
+    fn sipi_unlock(&self) -> Option<SipiUnlock> {
         None
     }
 
@@ -205,6 +203,30 @@ pub trait CpuDriver: Send + Sync {
     /// Return true if this driver supports `identity`.
     fn matches(&self, identity: CpuIdentity) -> bool {
         self.id_table().iter().any(|id| id.matches(identity))
+    }
+}
+
+/// Bits of an MSR that make others of [`CpuDriver::sipi_msrs`] writable: the
+/// SIPI trampoline sets them in the AP's own value before the replay and
+/// clears them afterwards, as for SYSCFG.MtrrFixDramModEn and the fixed
+/// MTRRs' RdDram/WrDram bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SipiUnlock {
+    msr: u32,
+    bits: u32,
+}
+impl SipiUnlock {
+    /// `field` of `msr`; the trampoline handles the low 32 bits only.
+    pub const fn new<R: tock_registers::RegisterLongName>(
+        msr: crate::x86::cpu::msr::Msr<R>,
+        field: tock_registers::fields::FieldValue<u64, R>,
+    ) -> Self {
+        let bits = field.value;
+        assert!(bits != 0 && bits >> 32 == 0);
+        Self {
+            msr: msr.index(),
+            bits: bits as u32,
+        }
     }
 }
 
@@ -615,7 +637,7 @@ fn start_aps(
     max_aps: u16,
     lapic: &Lapic,
     msrs: &[crate::x86::mtrr::MsrEntry],
-    unlock: Option<(u32, u32)>,
+    unlock: Option<SipiUnlock>,
     launch: Option<&mut dyn FnMut(u16) -> Result<(), u32>>,
 ) -> Result<u16, MpError> {
     install_sipi_trampoline(max_aps, lapic, msrs, unlock)?;
@@ -786,7 +808,7 @@ fn fly(
     max_aps: u16,
     lapic: &Lapic,
     msrs: &[crate::x86::mtrr::MsrEntry],
-    unlock: Option<(u32, u32)>,
+    unlock: Option<SipiUnlock>,
     launch: Option<&mut dyn FnMut(u16) -> Result<(), u32>>,
 ) -> Result<u16, MpError> {
     CPU_INIT_ERRORS.store(0, Ordering::Release);
@@ -884,7 +906,7 @@ fn install_sipi_trampoline(
     max_aps: u16,
     _lapic: &Lapic,
     msrs: &[crate::x86::mtrr::MsrEntry],
-    unlock: Option<(u32, u32)>,
+    unlock: Option<SipiUnlock>,
 ) -> Result<(), MpError> {
     if max_aps as usize > MAX_APS || sipi_blob::TRAMPOLINE.len() > 4096 {
         return Err(MpError::TrampolinePlacementFailed);
@@ -913,9 +935,9 @@ fn install_sipi_trampoline(
         patch_u32(dst, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
         patch_u32(dst, sipi_blob::AP_LIMIT_OFFSET, u32::from(max_aps));
         patch_u32(dst, sipi_blob::AP_COUNTER_OFFSET, 0);
-        let (unlock_msr, unlock_bits) = unlock.unwrap_or((0, 0));
-        patch_u32(dst, sipi_blob::UNLOCK_MSR_OFFSET, unlock_msr);
-        patch_u32(dst, sipi_blob::UNLOCK_BITS_OFFSET, unlock_bits);
+        let unlock = unlock.unwrap_or(SipiUnlock { msr: 0, bits: 0 });
+        patch_u32(dst, sipi_blob::UNLOCK_MSR_OFFSET, unlock.msr);
+        patch_u32(dst, sipi_blob::UNLOCK_BITS_OFFSET, unlock.bits);
         patch_msr_table(
             core::slice::from_raw_parts_mut(dst, sipi_blob::TRAMPOLINE.len()),
             msrs,

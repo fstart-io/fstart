@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso LPC/SPI/SMBus pre-console mechanisms.
 //! This is not a flash transaction driver or a complete FCH boot flow.
-use crate::fch::early::{self, lpc_present, rw32};
-pub use crate::fch::early::{Error, Native, SPI_BASE, initialize_smbus, prepare_lpc};
-use fstart_pci::ConfigRegionAccess;
-use tock_registers::{
-    interfaces::{Readable, Writeable},
-    registers::ReadWrite,
+use crate::{
+    fch::{Bus, Fch, early::lpc_present, spi},
+    lpc::{self, RomDmaEcHostControl, SpiBase},
 };
-/// The shared early FCH registers plus the SPI controller.
-pub trait Registers: early::Registers {
-    fn spi_read16(&mut self, offset: u16) -> u16;
-    fn spi_write16(&mut self, offset: u16, value: u16);
-    fn spi_read32(&mut self, offset: u16) -> u32;
-    fn spi_write32(&mut self, offset: u16, value: u32);
-}
+pub use crate::fch::{
+    SPI_BASE,
+    early::{Error, initialize_smbus, prepare_lpc},
+};
+use tock_registers::interfaces::{Readable, Writeable};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Speed {
@@ -96,67 +91,59 @@ impl SpiConfig {
             | ((self.alternate as u16) << 4)
             | self.tpm as u16
     }
-    const fn mode_bits(self) -> u32 {
-        let mode = self.mode as u32;
-        ((mode >> 1) << 29) | ((mode & 1) << 18)
-    }
 }
 /// Native ROM CS/prefetch/4DW/mode/SPI100 sequence. Caller must own SPI against
 /// PSP/AP/SMM/EC and establish that ROM Armor does not prohibit host access.
 /// An active transaction is rejected before any write, never aborted/retried.
-pub fn configure_spi(io: &mut impl Registers, config: SpiConfig) -> Result<(), Error> {
-    lpc_present(io)?;
-    let bar = io.lpc_read32(0xa0);
-    if bar == u32::MAX {
+pub fn configure_spi(fch: &Fch<impl Bus>, config: SpiConfig) -> Result<(), Error> {
+    lpc_present(fch)?;
+    let bus = fch.bus();
+    let mut bar = bus.reg(lpc::SPI_BASE_ADDRESS).extract();
+    if bar.get() == u32::MAX {
         return Err(Error::Unavailable);
     }
-    if bar & !0xff != SPI_BASE {
+    if bar.read(SpiBase::BASE) != SPI_BASE >> 8 {
         return Err(Error::WrongSpiBase);
     }
     // Picasso's compiled controller polls SPI_STATUS, not CNTRL0. The
     // shared header's placement of SPI_BUSY under CNTRL0 is misleading.
-    let status = io.spi_read32(0x4c);
-    if status == u32::MAX {
+    let status = bus.reg(spi::STATUS).extract();
+    if status.get() == u32::MAX {
         return Err(Error::Unavailable);
     }
-    if status & (1 << 31) != 0 {
+    if status.is_set(spi::Status::BUSY) {
         return Err(Error::SpiBusy);
     }
-    let control = io.spi_read32(0);
-    let prefetch = io.lpc_read32(0xb8);
-    let burst = io.spi_read16(0x2c);
-    let enable = io.spi_read16(0x20);
-    if control == u32::MAX || prefetch == u32::MAX || burst == u16::MAX || enable == u16::MAX {
+    let mut control = bus.reg(spi::CNTRL0).extract();
+    let mut prefetch = bus.reg(lpc::ROM_DMA_EC_HOST_CONTROL).extract();
+    let mut burst = bus.reg(spi::SPI100_HOST_PREFETCH).extract();
+    let mut enable = bus.reg(spi::SPI100_ENABLE).extract();
+    if control.get() == u32::MAX
+        || prefetch.get() == u32::MAX
+        || burst.get() == u16::MAX
+        || enable.get() == u16::MAX
+    {
         return Err(Error::Unavailable);
     }
-    io.lpc_write32(0xa0, (bar & !3) | 2);
-    io.lpc_write32(0xb8, prefetch | (1 << 24) | (1 << 23));
-    io.spi_write16(
-        0x2c,
-        (burst & !(1 << 15)) | if config.burst_4dw { 1 << 15 } else { 0 },
+    bar.modify(SpiBase::ROM_ALT_ENABLE::CLEAR + SpiBase::ROM_ENABLE::SET);
+    bus.reg(lpc::SPI_BASE_ADDRESS).set(bar.get());
+    prefetch.modify(
+        RomDmaEcHostControl::SPI_FROM_HOST_PREFETCH_EN::SET
+            + RomDmaEcHostControl::SPI_FROM_USB_PREFETCH_EN::SET,
     );
-    io.spi_write32(0, (control & !((3 << 29) | (1 << 18))) | config.mode_bits());
-    io.spi_write16(0x22, config.speed_word());
-    io.spi_write16(0x20, enable | 1);
+    bus.reg(lpc::ROM_DMA_EC_HOST_CONTROL)
+        .set(prefetch.get());
+    burst.modify(spi::Spi100HostPrefetch::RD4DW_EN_HOST.val(config.burst_4dw.into()));
+    bus.reg(spi::SPI100_HOST_PREFETCH).set(burst.get());
+    let mode = config.mode as u32;
+    control.modify(
+        spi::Cntrl0::READ_MODE_HIGH.val(mode >> 1) + spi::Cntrl0::READ_MODE_LOW.val(mode & 1),
+    );
+    bus.reg(spi::CNTRL0).set(control.get());
+    bus.reg(spi::SPI100_SPEED).set(config.speed_word());
+    enable.modify(spi::Spi100Enable::ENABLE::SET);
+    bus.reg(spi::SPI100_ENABLE).set(enable.get());
     Ok(())
-}
-fn rw16(base: usize, offset: u16) -> &'static ReadWrite<u16> {
-    assert!(offset < 256 && offset & 1 == 0);
-    unsafe { &*((base + usize::from(offset)) as *const ReadWrite<u16>) }
-}
-impl<P: ConfigRegionAccess> Registers for Native<P> {
-    fn spi_read16(&mut self, offset: u16) -> u16 {
-        rw16(SPI_BASE as usize, offset).get()
-    }
-    fn spi_write16(&mut self, offset: u16, value: u16) {
-        rw16(SPI_BASE as usize, offset).set(value);
-    }
-    fn spi_read32(&mut self, offset: u16) -> u32 {
-        rw32(SPI_BASE as usize, offset).get()
-    }
-    fn spi_write32(&mut self, offset: u16, value: u32) {
-        rw32(SPI_BASE as usize, offset).set(value);
-    }
 }
 #[cfg(test)]
 mod tests;

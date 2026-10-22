@@ -14,16 +14,19 @@ pub mod smm;
 mod variant;
 
 use fstart_driver_amd::{
-    fam17h::registers::Smn,
+    fam17h::registers::{apply, write},
+    fch::{ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status, iomux},
+    gpio::Control,
     lpc::{IoPortDecode, Lpc},
     zeppelin::{
         self as soc,
         dxio::Descriptor,
-        fch::{
-            Acpimmio, Bus,
-            irq::{self, Route},
-        },
+        fch::irq::{self, Route},
     },
+};
+use tock_registers::{
+    interfaces::{ReadWriteable, Readable, Writeable},
+    register_bitfields,
 };
 use fstart_driver_superio::aspeed_ast2400::{self as ast, Ast2400, SuperIoConfig};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
@@ -78,11 +81,19 @@ const IRQ_ROUTES: &[Route] = &[
 /// The PM1 write of the vendor AmdCpmOemInitPeim and SMBusSwitch: write back
 /// the pending PM1 status plus bits 15:14 (all W1C) and clear
 /// PCIEXP_WAKE_DIS.
-fn clear_pm1(fch: &mut impl Bus) {
-    let acpi = Acpimmio::DIE0;
-    fch.update(acpi.acpi::<u16, ()>(0), 0, 0xc000);
-    fch.update(acpi.acpi::<u16, ()>(2), 1 << 14, 0);
+fn clear_pm1(fch: &Fch<impl Bus>) {
+    fch.reg(ACPI_PM1_STATUS)
+        .modify(Pm1Status::WAK::SET + Pm1Status::PCIEXP_WAKE::SET);
+    fch.reg(ACPI_PM1_ENABLE)
+        .modify(Pm1Enable::PCIEXP_WAKE_DIS::CLEAR);
 }
+
+register_bitfields![u32,
+    /// The IOMUX bytes of pins 136-139 as one dword.
+    Iomux136 [PIN137_BIT1 OFFSET(9) NUMBITS(1) [], PIN139_HIGH OFFSET(28) NUMBITS(4) []]
+];
+/// SMBusSwitch's GPIO137 and IOMUX settings.
+const GPIO137: u8 = 137;
 
 /// GbtPreBootSvid: the AST2500 VGA on the last bus behind 00:01.1 gets the
 /// Gigabyte subsystem ID; config register 0x80 unlocks the write.
@@ -116,9 +127,12 @@ impl fstart_platform_amd::zeppelin::Board for Board {
     }
 
     fn fch_reset_done(ctx: &mut BoardCtx<'_>) {
-        let mut fch = ctx.fch();
-        for pad in i2c::PADS {
-            fch.set(Acpimmio::DIE0.iomux::<u8, ()>(pad.into()), 1);
+        let gpio = ctx.gpio();
+        if i2c::PADS
+            .iter()
+            .any(|&pad| gpio.set_function(pad, i2c::FUNCTION).is_err())
+        {
+            fstart_log::error!("I2C3 pads not routed");
         }
         // SAFETY: nothing else uses I2C3.
         match unsafe { soc::i2c::controller(i2c::BUS, ctx.clock) } {
@@ -128,22 +142,20 @@ impl fstart_platform_amd::zeppelin::Board for Board {
             }
             Err(_) => fstart_log::error!("I2C3 setup failed, VRs not programmed"),
         }
-        clear_pm1(&mut fch);
+        clear_pm1(&ctx.fch());
     }
 
     /// The vendor's PCIe TX presets and USB2 PHY values after training.
     fn dxio_training_done(ctx: &mut BoardCtx<'_>) {
-        let mut smn = ctx.dies[0].smn();
-        for &(register, value) in variant::POST_TRAINING_SMN {
-            smn.write(register, value);
-        }
+        let records = variant::POST_TRAINING_SMN
+            .iter()
+            .map(|&(register, value)| write(register, value));
+        apply(&ctx.dies[0].smn(), records);
         gpio::wait_for_bmc(ctx);
     }
 
     fn mainboard_final(ctx: &mut BoardCtx<'_>) {
-        if fstart_driver_amd::gpio::configure(&mut ctx.gpio(), &soc::GPIO_BANK, gpio::VENDOR, &[])
-            .is_err()
-        {
+        if ctx.gpio().configure(gpio::VENDOR, &[]).is_err() {
             fstart_log::error!("Vendor GPIO table rejected");
         }
         ast_vga_set_ssid(&ctx.dies[0].pci());
@@ -154,20 +166,27 @@ impl fstart_platform_amd::zeppelin::Board for Board {
     /// OS. The vendor writes the IOMUX of pins 136-139 through SMN; it is
     /// the same register as the ACPI MMIO one.
     fn ready_to_boot(ctx: &mut BoardCtx<'_>) {
-        let mut fch = ctx.fch();
-        let iomux = Acpimmio::DIE0;
+        let fch = ctx.fch();
         // Bit 1 of the GPIO137 IOMUX byte set, bits 7:4 of pin 139 cleared.
-        fch.update(iomux.iomux::<u32, ()>(136), 0xf000_0200, 0x0000_0200);
+        fch.reg(iomux::at::<u32, Iomux136::Register>(136))
+            .modify(Iomux136::PIN137_BIT1::SET + Iomux136::PIN139_HIGH.val(0));
         // GPIO137 driven low, keeping the drive strength and STS_EN bits.
-        fch.update(iomux.gpio::<u32, ()>(4 * 137), !0x0006_0800, 1 << 23);
-        clear_pm1(&mut fch);
+        if let Ok(control) = ctx.gpio().control(GPIO137) {
+            let old = control.extract();
+            control.write(
+                Control::DRIVE_STRENGTH.val(old.read(Control::DRIVE_STRENGTH))
+                    + Control::STATUS_ENABLE.val(old.read(Control::STATUS_ENABLE))
+                    + Control::OUTPUT_ENABLE::SET,
+            );
+        }
+        clear_pm1(&fch);
         // Pins 113-117 back to function 0 (SMBus0): two unaligned dword
         // writes, as in the vendor code.
-        fch.set(iomux.iomux::<u32, ()>(113), 0);
-        fch.set(iomux.iomux::<u32, ()>(114), 0);
+        fch.reg(iomux::at::<u32, ()>(113)).set(0);
+        fch.reg(iomux::at::<u32, ()>(114)).set(0);
     }
 
-    fn early_init(lpc: &mut Lpc<impl ConfigRegionAccess>) {
+    fn early_init(lpc: &Lpc<impl Bus>) {
         lpc.enable_sio_2e();
         lpc.enable_io_decode(IoPortDecode::SERIAL0::SET);
         // AST2500 SIO runtime registers (0xa00-0xbff) and the IPMI KCS interface.

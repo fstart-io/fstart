@@ -67,9 +67,9 @@ impl SuperIoChip for W83627thgChip {
 
     fn chip_init(base: u16) {
         use fstart_core::pio::IndexedPioRegister;
-        let ldn = IndexedPioRegister::<()>::new(base, base + 1, 7);
+        let ldn = IndexedPioRegister::<()>::ports(base, base + 1, 7);
         ldn.set(3);
-        IndexedPioRegister::<SERIAL_CONFIG::Register>::new(base, base + 1, 0xf1).modify(
+        IndexedPioRegister::<SERIAL_CONFIG::Register>::ports(base, base + 1, 0xf1).modify(
             SERIAL_CONFIG::IR_LOCATION::UartPins
                 + SERIAL_CONFIG::IR_MODE::Disabled
                 + SERIAL_CONFIG::HALF_DUPLEX::CLEAR
@@ -77,7 +77,7 @@ impl SuperIoChip for W83627thgChip {
                 + SERIAL_CONFIG::RX_INVERT::CLEAR,
         );
         ldn.set(5);
-        IndexedPioRegister::<KBC_CONFIG::Register>::new(base, base + 1, 0xf0).modify(
+        IndexedPioRegister::<KBC_CONFIG::Register>::ports(base, base + 1, 0xf0).modify(
             KBC_CONFIG::CLOCK::Mhz12
                 + KBC_CONFIG::PORT92::CLEAR
                 + KBC_CONFIG::A20_SPEEDUP::CLEAR

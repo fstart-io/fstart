@@ -5,7 +5,6 @@ use crate::{
     layout,
     picasso::{self, BoardFacts},
 };
-use fstart_driver_amd::picasso::cpu::microcode::{Bundle, MAX_PATCHES, PATCH_BYTES};
 use fstart_image_build::{
     build_plan::{
         Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema, FileBinding,
@@ -22,7 +21,6 @@ use std::{
     vec,
 };
 
-pub const MICROCODE_INPUT: &str = "FSTART_AMD_MICROCODE_BUNDLE";
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: BoardFacts> Plan<B> {
     pub fn emit(selection_json: &str) {
@@ -53,31 +51,10 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
             "Picasso checkpoint is halt-only; native payload flow is not implemented".into(),
         );
     }
-    // Microcode is optional: without it the image builds but cannot update
-    // CPU microcode. Build a bundle with `fstart-ucode`.
-    let input = match selection.compiler_files.as_slice() {
-        [] => None,
-        [input] if input.environment == MICROCODE_INPUT => Some(input),
-        _ => {
-            return Err(format!(
-                "Picasso accepts only --compiler-input {MICROCODE_INPUT}=PATH"
-            ));
-        }
-    };
-    let capacity = (PATCH_BYTES * MAX_PATCHES) as u64;
-    if let Some(input) = input {
-        let mut bytes = std::vec::Vec::new();
-        let metadata =
-            std::fs::metadata(&input.path).map_err(|e| format!("{}: {e}", input.path))?;
-        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > capacity {
-            return Err("microcode input is not a nonempty bounded regular file".into());
-        }
-        std::fs::File::open(&input.path)
-            .map_err(|e| e.to_string())?
-            .take(capacity + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        Bundle::parse(&bytes).map_err(|e| format!("invalid flat microcode bundle: {e:?}"))?;
+    // The CPUs load microcode from the BIOS directory (type 0x66), where the
+    // image packing puts it.
+    if !selection.compiler_files.is_empty() {
+        return Err("Picasso takes no compiler inputs".into());
     }
     let image = Span {
         base: layout::IMAGE_BASE,
@@ -176,10 +153,7 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
                 environments: vec!["psp-dram".into()],
                 payloads: vec!["halt".into()],
             },
-            features: core::iter::once("bundle-checkpoint")
-                .chain(input.map(|_| "linked-microcode"))
-                .map(String::from)
-                .collect(),
+            features: vec!["bundle-checkpoint".into()],
             build_std: None,
             rustflags: vec![
                 "-Crelocation-model=static".into(),
@@ -189,14 +163,7 @@ pub fn resolve<B: BoardFacts>(selection: BuildSelection) -> Result<BuildPlan, St
             linker_script: Some(picasso::LINKER_SCRIPT.into()),
             environment_values: BTreeMap::new(),
             bindings: vec![],
-            file_bindings: input
-                .map(|input| FileBinding {
-                    environment: input.environment.clone(),
-                    path: input.path.clone(),
-                    capacity,
-                })
-                .into_iter()
-                .collect(),
+            file_bindings: vec![],
             output: UnitOutput::Executable {
                 expectations,
                 load_address: image.base,
@@ -234,7 +201,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    fn source(bytes: &[u8]) -> Source {
+    fn source() -> Source {
         static SERIAL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "picasso-plan-{}-{}",
@@ -242,38 +209,20 @@ mod tests {
             SERIAL.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir(&dir).unwrap();
-        std::fs::write(dir.join("source = exact.bin"), bytes).unwrap();
         Source(dir)
     }
-    fn selection(source: &Source) -> BuildSelection {
-        BuildSelection {
-            compiler_files: vec![
-                CompilerFileSelection::parse(&format!(
-                    "{MICROCODE_INPUT}={}",
-                    source.0.join("source = exact.bin").display()
-                ))
-                .unwrap(),
-            ],
-            ..Default::default()
-        }
-    }
     #[test]
-    fn checkpoint_has_one_explicit_bounded_consumer_and_no_image_projection() {
-        // Format-only synthetic record, never installed or represented as trusted.
-        let mut bytes = vec![0; PATCH_BYTES];
-        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
-        bytes[24..26].copy_from_slice(&0x8180u16.to_le_bytes());
-        let source = source(&bytes);
-        let selected = selection(&source);
+    fn checkpoint_has_no_compiler_inputs_and_no_image_projection() {
+        let source = source();
+        let selected = BuildSelection::default();
         let plan = resolve::<Board>(selected.clone()).unwrap();
         plan.validate_compiler_selections(&selected).unwrap();
         assert!(plan.assembly.ffs().is_err());
         assert_eq!(plan.selection("reset").unwrap().len(), 1);
         let unit = &plan.units[0];
         assert!(unit.release_only);
-        assert_eq!(unit.features, ["bundle-checkpoint", "linked-microcode"]);
-        assert_eq!(unit.file_bindings[0].path, selected.compiler_files[0].path);
-        assert_eq!(unit.file_bindings[0].capacity, 9600);
+        assert_eq!(unit.features, ["bundle-checkpoint"]);
+        assert!(unit.file_bindings.is_empty());
         let UnitOutput::Executable { expectations, .. } = &unit.output else {
             unreachable!()
         };
@@ -309,26 +258,18 @@ mod tests {
                 .validate_image_selection(&image_selection)
                 .is_err()
         );
+        let microcode = source.0.join("microcode.bin");
+        std::fs::write(&microcode, [0; 16]).unwrap();
         for change in [
-            |s: &mut BuildSelection| s.payload = Some("uefi".into()),
-            |s: &mut BuildSelection| s.compiler_files[0].environment = "UNSUPPORTED".into(),
-            |s: &mut BuildSelection| s.compiler_files.push(s.compiler_files[0].clone()),
+            |s: &mut BuildSelection, _: &str| s.payload = Some("uefi".into()),
+            |s: &mut BuildSelection, path: &str| {
+                s.compiler_files
+                    .push(CompilerFileSelection::parse(&format!("MICROCODE={path}")).unwrap())
+            },
         ] {
             let mut invalid = selected.clone();
-            change(&mut invalid);
+            change(&mut invalid, microcode.to_str().unwrap());
             assert!(resolve::<Board>(invalid).is_err());
         }
-        let mut without = selected.clone();
-        without.compiler_files.clear();
-        let plain = resolve::<Board>(without).unwrap();
-        assert_eq!(plain.units[0].features, ["bundle-checkpoint"]);
-        assert!(plain.units[0].file_bindings.is_empty());
-        // Rejected before a firmware compiler: trailing bytes and bad header.
-        bytes.push(0);
-        std::fs::write(source.0.join("source = exact.bin"), &bytes).unwrap();
-        assert!(resolve::<Board>(selected.clone()).is_err());
-        bytes = vec![0; PATCH_BYTES];
-        std::fs::write(source.0.join("source = exact.bin"), bytes).unwrap();
-        assert!(resolve::<Board>(selected).is_err());
     }
 }

@@ -3,7 +3,7 @@
 //! in a production boot flow; this checkpoint only establishes the debug UART.
 use fstart_driver_amd::{
     fch::{self, Fch},
-    gpio::{self, Mmio, Pad, Pull},
+    gpio::{self, Gpio, Pad, Pull},
     picasso::{EARLY_AOAC, UART_AOAC, espi, preinit::SpiConfig},
 };
 
@@ -75,7 +75,7 @@ pub trait BoardFacts {
     /// `DISABLE_SPI_FLASH_ROM_SHARING`: done before `mainboard_init`.
     const DISABLE_ROM_SHARING: bool = false;
     /// Mainboard init once the FCH, eSPI and early GPIOs are up: read board facts, program the remaining GPIOs.
-    fn mainboard_init(_gpio: &mut impl gpio::Access, _timer: &mut impl Timer) {}
+    fn mainboard_init(_gpio: &Gpio<impl fch::Bus>, _timer: &mut impl Timer) {}
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -96,9 +96,9 @@ pub unsafe fn console_checkpoint<B: BoardFacts>(
     mut delay_100us: impl FnMut(),
 ) -> Result<(), Error> {
     unsafe { fch::enable_acpimmio() };
-    let mut fch = unsafe { Fch::new() };
+    // SAFETY: exclusive FCH access; no config space before ECAM.
+    let fch = Fch::new(unsafe { fch::NativeBus::new() }, fch::Acpimmio::DIE0);
     fch.enable_legacy_decode();
-    let mut gpio = unsafe { Mmio::new() };
     // Power all common early devices before waiting, then the selected UART.
     fch.power_devices(EARLY_AOAC, 10000, &mut delay_100us)
         .map_err(Error::Fch)?;
@@ -126,13 +126,9 @@ pub unsafe fn console_checkpoint<B: BoardFacts>(
         ],
         _ => unreachable!(),
     };
-    gpio::configure(
-        &mut gpio,
-        &fstart_driver_amd::picasso::GPIO_BANK,
-        &pins,
-        &[],
-    )
-    .map_err(Error::Gpio)
+    Gpio::new(fch, &fstart_driver_amd::picasso::GPIO_BANK)
+        .configure(&pins, &[])
+        .map_err(Error::Gpio)
 }
 
 /// TSEG size.
@@ -211,31 +207,28 @@ impl espi::Clock for Tsc {
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
     use fstart_driver_amd::picasso::{legacy, preinit};
-    let mut fch = unsafe { preinit::Native::new(fstart_pci::ecam::GlobalEcam) };
-    preinit::prepare_lpc(&mut fch).map_err(|_| "LPC setup")?;
-    let mut gpio = unsafe { Mmio::new() };
+    // SAFETY: exclusive FCH access, ECAM published by `cold_boot`.
+    let fch = Fch::new(unsafe { fch::NativeBus::new() }, fch::Acpimmio::DIE0);
+    preinit::prepare_lpc(&fch).map_err(|_| "LPC setup")?;
+    let gpio = Gpio::new(
+        Fch::new(fch.bus(), fch.acpimmio()),
+        &fstart_driver_amd::picasso::GPIO_BANK,
+    );
     if let Some((config, pads)) = &B::ESPI {
-        gpio::configure(&mut gpio, &fstart_driver_amd::picasso::GPIO_BANK, pads, &[])
-            .map_err(|_| "eSPI GPIOs")?;
+        gpio.configure(pads, &[]).map_err(|_| "eSPI GPIOs")?;
         let mut controller = unsafe { espi::Native::new(preinit::SPI_BASE as usize) };
         espi::initialize(&mut controller, timer, config).map_err(|_| "eSPI link")?;
         fstart_log::info!("picasso: eSPI link up");
     }
-    preinit::configure_spi(&mut fch, B::SPI).map_err(|_| "SPI setup")?;
-    preinit::initialize_smbus(&mut fch).map_err(|_| "SMBus setup")?;
+    preinit::configure_spi(&fch, B::SPI).map_err(|_| "SPI setup")?;
+    preinit::initialize_smbus(&fch).map_err(|_| "SMBus setup")?;
     for table in B::EARLY_GPIOS {
-        gpio::configure(
-            &mut gpio,
-            &fstart_driver_amd::picasso::GPIO_BANK,
-            table,
-            &[],
-        )
-        .map_err(|_| "board GPIOs")?;
+        gpio.configure(table, &[]).map_err(|_| "board GPIOs")?;
     }
     if B::DISABLE_ROM_SHARING {
-        legacy::disable_rom_sharing(&mut unsafe { legacy::NativeRegisters::new() });
+        legacy::disable_rom_sharing(fch.bus());
     }
-    B::mainboard_init(&mut gpio, timer);
+    B::mainboard_init(&gpio, timer);
     Ok(())
 }
 
@@ -244,19 +237,20 @@ unsafe fn fch_init<B: BoardFacts>(timer: &mut Tsc) -> Result<(), &'static str> {
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::State, &'static str> {
     use crate::{early, layout};
+    use fstart_arch::x86::cpu::msr::NativeMsr;
     use fstart_driver_amd::picasso::{
         ECAM,
         apob::Apob,
-        cpu::{self, NativeMsr},
-        registers::{FabricPort, SmnPort},
+        cpu,
+        registers::{Df, Smn},
     };
-    let mut msr = unsafe { NativeMsr::new() };
+    let msr = unsafe { NativeMsr::new() };
     // MMCONF first, everything else uses it.
-    cpu::enable_ecam(&mut msr);
+    cpu::enable_ecam(&msr);
     fstart_pci::ecam::init(ECAM as usize);
     let pci = fstart_pci::ecam::GlobalEcam;
-    let mut smn = unsafe { SmnPort::new(pci) };
-    let mut df = unsafe { FabricPort::new(pci) };
+    let smn = unsafe { Smn::new(pci) };
+    let df = unsafe { Df::new(pci) };
     // SAFETY: the PSP wrote the APOB here before releasing the BSP; the
     // early reservation keeps it.
     let apob = unsafe {
@@ -272,7 +266,7 @@ unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::Stat
     );
     let (signature, _, _, _) = fstart_arch::x86::cpuid(1);
     let (_, extended_ebx, _, _) = fstart_arch::x86::cpuid(0x8000_0001);
-    let physical_address_bits = (fstart_arch::x86::cpuid(0x8000_0008).0 & 0xff) as u8;
+    let physical_address_bits = fstart_arch::x86::physical_address_bits() as u8;
     early::initialize(
         early::Inputs {
             apob: &apob,
@@ -281,9 +275,9 @@ unsafe fn cold_boot(delay_us: &mut impl FnMut(u32)) -> Result<crate::early::Stat
             physical_address_bits,
             tseg_size: TSEG_SIZE,
         },
-        &mut msr,
-        &mut smn,
-        &mut df,
+        &msr,
+        &smn,
+        &df,
         delay_us,
     )
     .map_err(|error| match error {

@@ -1,29 +1,44 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native CPU cold flow: microcode staging, SMU AP release and per-CPU init
-//! through the architectural MP engine, then the later CCX-done notification.
+//! Native CPU cold flow: SMU AP release, microcode and per-CPU init through
+//! the architectural MP engine, then the later CCX-done notification.
 use crate::{
-    cpu::{self, NativeCpu},
+    cpu::{Fam17hCpu, PatchPage},
     layout,
     memory::Memory,
     mp,
 };
-use fstart_arch::x86::mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle};
+use core::mem::MaybeUninit;
+use fstart_arch::x86::{
+    cpu::msr::{APIC_BASE, ApicBase, MsrAccess, NativeMsr},
+    mp::{self as arch_mp, CpuDriver, MpConfig, MpError, MpHandle},
+};
 use fstart_driver_amd::picasso::{
-    cpu::Msr,
+    cpu::{microcode::Picasso, thread},
+    nbio::{self, PSP_MMIO_BASE},
     nbio_late, power,
     registers::Smn,
     topology::{self, Topology},
 };
+use tock_registers::interfaces::Readable;
 
 pub struct Inputs<'a> {
     /// Already applied topology: no policy reset/reconfiguration here.
     pub topology: Topology,
     /// Complete physical APIC IDs, BSP first. Not ThreadEn slots.
     pub apic_ids: &'a [u32],
-    /// The vendor patch selected for this CPU signature.
-    pub patch: &'a [u8],
+    /// The whole boot flash mapped below 4 GiB, with the microcode patches
+    /// in its BIOS directory.
+    pub flash: &'a [u8],
     pub memory: &'a Memory,
 }
+
+/// The microcode patch the CPUs load, in the permanent page the linker
+/// script reserves.
+#[repr(C, align(4096))]
+struct MicrocodePage(MaybeUninit<PatchPage>);
+#[used]
+#[unsafe(link_section = ".picasso_microcode")]
+static mut MICROCODE: MicrocodePage = MicrocodePage(MaybeUninit::uninit());
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LateResponse {
     pub command: u32,
@@ -64,7 +79,9 @@ pub enum Error {
         expected: usize,
         actual: usize,
     },
-    Cpu(cpu::Error),
+    MicrocodeNotReserved,
+    PspBar,
+    Policy(thread::Error),
     Mp(MpError),
     ApRelease(topology::Error),
     IncompleteCpu,
@@ -88,7 +105,7 @@ impl CpusInitialized {
     pub fn finish_ccx(
         self,
         graphics: bool,
-        smn: &mut impl Smn,
+        smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
         delay_us: &mut impl FnMut(u32),
     ) -> Result<CcxNotified, Error> {
         let responses = notify(true, graphics, smn, delay_us)?;
@@ -124,7 +141,7 @@ fn count(topology: Topology, ids: &[u32]) -> Result<u16, Error> {
 fn notify(
     complete: bool,
     graphics: bool,
-    smn: &mut impl Smn,
+    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
     delay_us: &mut impl FnMut(u32),
 ) -> Result<LateResponses, Error> {
     if !complete {
@@ -143,28 +160,39 @@ fn notify(
         Err(cause) => Err(Error::Smu { cause, responses }),
     }
 }
-/// Stage microcode, release the APs through the SMU and run per-CPU init.
+/// Release the APs through the SMU and run microcode and per-CPU init.
 /// # Safety
 /// Cold boot after native early init and topology policy, all APs held, the
 /// early firmware region reserved in `input.memory`. Exclusive MSR/SMN access.
 pub unsafe fn initialize_cpus(
     input: Inputs<'_>,
-    msr: &mut impl Msr,
-    smn: &mut impl Smn,
+    msr: &impl MsrAccess,
+    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
     delay_us: &mut impl FnMut(u32),
 ) -> Result<CpusInitialized, Error> {
     let total = count(input.topology, input.apic_ids)?;
-    let cpu = unsafe {
-        NativeCpu::prepare_staged(
-            msr,
-            smn,
-            input.topology,
-            input.apic_ids,
-            input.patch,
-            input.memory,
-        )
+    if !input.memory.microcode_reserved() {
+        return Err(Error::MicrocodeNotReserved);
     }
-    .map_err(Error::Cpu)?;
+    // Only the BSP reads the already-installed/locked BAR; never reset a
+    // PSP link to discover it, and never expose the shared port to APs.
+    if !nbio::psp_bar_installed(smn) {
+        return Err(Error::PspBar);
+    }
+    let policy = thread::Policy::capture(msr, PSP_MMIO_BASE.into()).map_err(Error::Policy)?;
+    // SAFETY: BSP before AP release; the linker reserves the page and the
+    // memory map keeps it.
+    let cpu = unsafe {
+        Fam17hCpu::<Picasso, _>::new(
+            "native-picasso",
+            input.flash,
+            &mut (*core::ptr::addr_of_mut!(MICROCODE)).0,
+            move |msr: &NativeMsr, thread| {
+                let bsp = msr.reg(APIC_BASE).is_set(ApicBase::BSP);
+                policy.initialize(msr, bsp, thread)
+            },
+        )
+    };
     let drivers: &[&dyn CpuDriver] = &[&cpu];
     let config = MpConfig {
         cpu_drivers: drivers,
@@ -193,7 +221,7 @@ pub unsafe fn initialize_cpus(
             actual: usize::from(mp.num_cpus()),
         });
     }
-    if !cpu.complete() {
+    if cpu.errors() != 0 {
         return Err(Error::IncompleteCpu);
     }
     Ok(CpusInitialized { mp })
@@ -203,10 +231,13 @@ pub unsafe fn initialize_cpus(
 mod tests {
     extern crate std;
     use super::*;
-    use fstart_driver_amd::picasso::smu;
+    use fstart_driver_amd::{
+        fam17h::registers::testing::{SmnModel, SmnTest},
+        picasso::smu,
+    };
     use std::{collections::BTreeMap, vec::Vec};
     struct Deny;
-    impl Smn for Deny {
+    impl SmnModel for Deny {
         fn read(&mut self, _: u32) -> u32 {
             panic!("incomplete CPUs must not read SMN");
         }
@@ -246,7 +277,7 @@ mod tests {
             .is_err()
         );
         assert!(matches!(
-            notify(false, false, &mut Deny, &mut |_| panic!(
+            notify(false, false, &SmnTest::new(Deny).smn(), &mut |_| panic!(
                 "no delay before CPU completion"
             ),),
             Err(Error::IncompleteCpu)
@@ -257,18 +288,19 @@ mod tests {
         frames: Vec<(u32, [u32; 6])>,
         unavailable_after: usize,
     }
-    impl Smn for Mailbox {
+    impl SmnModel for Mailbox {
         fn read(&mut self, address: u32) -> u32 {
             *self.registers.get(&address).unwrap_or(&0)
         }
         fn write(&mut self, address: u32, value: u32) {
             self.registers.insert(address, value);
-            if address == smu::MESSAGE {
-                let arguments = core::array::from_fn(|i| self.read(smu::ARGUMENTS + i as u32 * 4));
+            if address == smu::MESSAGE.address() {
+                let arguments =
+                    core::array::from_fn(|i| self.read(smu::ARGUMENTS.address() + i as u32 * 4));
                 self.frames.push((value, arguments));
                 // Immediate synchronous CPU-only fake completion, not physical PSP/SMU evidence.
                 self.registers.insert(
-                    smu::RESPONSE,
+                    smu::RESPONSE.address(),
                     if self.frames.len() > self.unavailable_after {
                         u32::MAX
                     } else {
@@ -281,7 +313,7 @@ mod tests {
     fn mailbox(unavailable_after: usize) -> Mailbox {
         Mailbox {
             registers: BTreeMap::from([
-                (smu::RESPONSE, 1),
+                (smu::RESPONSE.address(), 1),
                 (0x0005d5bc, 0x62e >> 5),
                 (0x0005d5b8, (0x62e & 31) << 27),
             ]),
@@ -291,12 +323,12 @@ mod tests {
     }
     #[test]
     fn source_order_retains_all_nonstandard_responses_and_failure_prefix() {
-        let mut transport = mailbox(usize::MAX);
-        let records = notify(true, false, &mut transport, &mut |_| {
+        let transport = SmnTest::new(mailbox(usize::MAX));
+        let records = notify(true, false, &transport.smn(), &mut |_| {
             panic!("immediate fake needs no delay")
         })
         .unwrap();
-        let commands: Vec<_> = transport.frames.iter().map(|frame| frame.0).collect();
+        let commands: Vec<_> = transport.model().frames.iter().map(|frame| frame.0).collect();
         assert_eq!(commands, [0x35, 5, 0x0e, 0x53, 0x3a, 0x42, 0x32, 5]);
         assert_eq!(records.entries().len(), 8);
         assert!(
@@ -306,15 +338,15 @@ mod tests {
                 .zip(commands)
                 .all(|(entry, command)| entry.command == command && entry.status == 2)
         );
-        let mut transport = mailbox(1);
-        let error = notify(true, false, &mut transport, &mut |_| {
+        let transport = SmnTest::new(mailbox(1));
+        let error = notify(true, false, &transport.smn(), &mut |_| {
             panic!("unavailable fake must not delay")
         })
         .unwrap_err();
         assert!(
             matches!(error,Error::Smu { cause: power::Error::Smu(smu::Error::Unavailable),responses } if responses.entries()==[LateResponse { command: 0x35, status: 2 }])
         );
-        assert_eq!(transport.frames.len(), 2);
+        assert_eq!(transport.model().frames.len(), 2);
         let mut full = LateResponses::new();
         for i in 0..8 {
             assert!(full.push(i, 2));

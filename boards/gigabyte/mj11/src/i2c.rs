@@ -7,6 +7,7 @@ use embedded_hal::{delay::DelayNs, i2c::I2c};
 /// I2C3, on GPIO19/20 (IOMUX function 1).
 pub const BUS: usize = 3;
 pub const PADS: [u8; 2] = [19, 20];
+pub const FUNCTION: u8 = 1;
 
 const VR_MUX_A: u8 = 0x73;
 const VR_MUX_B: u8 = 0x71;

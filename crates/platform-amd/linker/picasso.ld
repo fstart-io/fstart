@@ -25,7 +25,7 @@ _fstart_stack_bottom = 0x020e0000;
 _fstart_stack_top = 0x02100000;
 SECTIONS {
     .text 0x02100000 : { *(.text .text.*) } > image :image
-    .rodata : { *(.rodata .rodata.*) *(.srodata .srodata.*) KEEP(*(.picasso_microcode_input)) } > image :image
+    .rodata : { *(.rodata .rodata.*) *(.srodata .srodata.*) } > image :image
     /* LLD's static GOT holds link-time-resolved pointers: keep it in the
      * read-only image. No runtime loader or relocations are supported. */
     .static_got : { *(.got) } > image :image

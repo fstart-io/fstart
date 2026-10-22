@@ -7,8 +7,6 @@ license.workspace = true
 [features]
 default = []
 picasso = ["fstart-driver-amd/picasso", "dep:fstart-arch"]
-# Explicit firmware-only immutable compiler input, not automatic vendor discovery.
-linked-microcode = ["picasso"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
 # Compiler/check/editor support; still a non-bootable console checkpoint.
@@ -50,6 +48,7 @@ fstart-driver-uart.workspace = true
 fstart-log.workspace = true
 ufmt.workspace = true
 fstart-pci.workspace = true
+tock-registers.workspace = true
 fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
 fstart-stage = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
@@ -58,3 +57,7 @@ fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 embedded-hal = { workspace = true, optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }
 fstart-smm = { workspace = true, optional = true }
+
+[dev-dependencies]
+fstart-driver-amd = { workspace = true, features = ["testing"] }
+fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

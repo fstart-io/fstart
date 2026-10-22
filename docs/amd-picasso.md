@@ -14,8 +14,7 @@ Native (no FSP) port of AMD Picasso and the Google Zork "Vilboz" boards.
   Vilboz14 and Vilboz360 differ only through EC CBI (board version,
   FW_CONFIG), so they share one board.
 - `crates/image-build/src/amd`, `tools/amdfw`: PSP/BIOS directory packing
-  (`fstart-amdfw`), APCB SPD injection (`fstart-apcb`) and the microcode
-  bundle tool (`fstart-ucode`).
+  (`fstart-amdfw`) and APCB SPD injection (`fstart-apcb`).
 
 ## x86 starts in DRAM
 
@@ -60,9 +59,10 @@ APs are released by the SMU (ThreadEn) and also enter the reset vector.
 
 Implemented and tested, but not yet called:
 
-- MP: `cold::initialize_cpus` stages microcode and releases the APs through
-  the SMU via `mp_init_with_launcher`. APs replay the BSP's MTRRs plus
-  SYSCFG/TOP_MEM/TOM2 (`mp::sipi_msrs`).
+- MP: `cold::initialize_cpus` releases the APs through the SMU via
+  `mp_init_with_launcher`; the Family 17h CPU driver (`cpu::Fam17hCpu`) loads
+  the microcode and runs the CCX init on every CPU. APs replay the BSP's
+  MTRRs and PAT and keep their own SYSCFG/TOP_MEM/TOM2 (`mp::sipi_msrs`).
 - DXIO/PCIe training, USB, eMMC, NBIO late/CCX-done, SMU power policy, PSP
   mailbox.
 
@@ -73,10 +73,10 @@ ACPI/SMBIOS tables, graphics, payload handoff, S3 and APOB NV (MRC cache).
 
 ```sh
 cargo fbuild build --board google-vilboz --release
-# with CPU microcode (bundle made by fstart-ucode from AMD's patch files):
-cargo fbuild build --board google-vilboz --release \
-  --compiler-input FSTART_AMD_MICROCODE_BUNDLE=/path/to/bundle.bin
 ```
+
+The CPUs load their microcode patch from the BIOS directory (type 0x66),
+like Zeppelin's; `fstart-amdfw --microcode` packs AMD's patch files there.
 
 This produces the reset image only. `fbuild assemble --image-config
 picasso-image.json` packs it with the PSP blobs listed in the JSON into a

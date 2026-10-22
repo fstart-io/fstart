@@ -5,12 +5,13 @@
 //! own root bus. The SMN addresses are the same on every die and are reached
 //! through D0F0 0xb8/0xbc of that die's root bus. A DF "broadcast" access in
 //! AGESA terms is a direct access to the die's own register
-//! ([`crate::fam17h::registers::BROADCAST`]).
+//! ([`crate::fam17h::registers::Df::reg`]).
 use crate::fam17h::{
-    registers::{BROADCAST, Fabric, FabricPort, SmnPort},
+    registers::{Df, DfReg, Smn},
     smu,
 };
-use fstart_pci::{ConfigRegionAccess, PciAddress};
+use fstart_pci::ConfigRegionAccess;
+use tock_registers::{interfaces::Readable, register_bitfields};
 
 /// Two dies on SP4, one on SP4r2.
 pub const MAX_DIES: usize = 2;
@@ -23,12 +24,18 @@ pub const NONPCI_PSP: u32 = 0;
 pub const NONPCI_IOMMU: u32 = 2 << 20;
 pub const NONPCI_IOAPIC: u32 = 7 << 20;
 
-const DF_F0_BUS_BASE: u16 = 0x84;
-const DF_F1_SYSTEM_NODES: u16 = 0x204;
+register_bitfields![u32,
+    BusBase [BUS OFFSET(0) NUMBITS(8) []],
+    SystemNodes [COUNT OFFSET(0) NUMBITS(8) []]
+];
+const F0_BUS_BASE: DfReg<BusBase::Register> = DfReg::new(0, 0x84);
+const F1_SYSTEM_NODES: DfReg<SystemNodes::Register> = DfReg::new(1, 0x204);
 
 /// Number of dies from DF1x204 (live topology).
 pub fn die_count(pci: &impl ConfigRegionAccess) -> u8 {
-    (unsafe { pci.read(PciAddress::new(0, 0, 0x18, 1), DF_F1_SYSTEM_NODES) } & 0xff) as u8
+    // SAFETY: a read of node 0's own register.
+    let df = unsafe { Df::new(pci) };
+    df.reg(F1_SYSTEM_NODES).read(SystemNodes::COUNT) as u8
 }
 
 /// Fabric ID of the IOMS (the PCIe root) of a die.
@@ -48,8 +55,8 @@ impl<P: ConfigRegionAccess + Copy> Die<P> {
     /// `index` is below [`die_count`]. The caller serializes all SMN, FICAA
     /// and SMU mailbox accesses of this die (BSP only during silicon init).
     pub unsafe fn new(pci: P, index: u8) -> Self {
-        let bus = (unsafe { pci.read(PciAddress::new(0, 0, 0x18 + index, 0), DF_F0_BUS_BASE) }
-            & 0xff) as u8;
+        let df = unsafe { Df::for_node(pci, index) };
+        let bus = df.reg(F0_BUS_BASE).read(BusBase::BUS) as u8;
         Self { pci, index, bus }
     }
     pub const fn index(&self) -> u8 {
@@ -65,17 +72,13 @@ impl<P: ConfigRegionAccess + Copy> Die<P> {
     pub fn pci(&self) -> P {
         self.pci
     }
-    pub fn smn(&self) -> SmnPort<P> {
+    pub fn smn(&self) -> Smn<P> {
         // SAFETY: exclusivity is the caller's contract of `Die::new`.
-        unsafe { SmnPort::on_bus(self.pci, self.bus) }
+        unsafe { Smn::on_bus(self.pci, self.bus) }
     }
-    pub fn df(&self) -> FabricPort<P> {
+    pub fn df(&self) -> Df<P> {
         // SAFETY: as above.
-        unsafe { FabricPort::for_node(self.pci, self.index) }
-    }
-    /// Read the die's own DF register (no FICAA indirection).
-    pub fn df_direct(&self, function: u8, offset: u16) -> u32 {
-        self.df().read(function, offset, BROADCAST)
+        unsafe { Df::for_node(self.pci, self.index) }
     }
     /// Send a message to this die's SMU.
     pub fn smu(
@@ -84,7 +87,7 @@ impl<P: ConfigRegionAccess + Copy> Die<P> {
         arguments: [u32; smu::ARGUMENT_COUNT],
         delay_us: &mut impl FnMut(u32),
     ) -> Result<[u32; smu::ARGUMENT_COUNT], smu::Error> {
-        super::smu::MAILBOX.request(&mut self.smn(), message, arguments, delay_us)
+        super::smu::MAILBOX.request(&self.smn(), message, arguments, delay_us)
     }
 }
 

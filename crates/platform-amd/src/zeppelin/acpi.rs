@@ -26,13 +26,16 @@ use fstart_acpi::{
     },
 };
 use fstart_acpi_macros::acpi_dsl;
-use fstart_driver_amd::zeppelin::{MAX_DIES, SPI_BASE, acpi_io, iommu::{self, Iommu}};
+use fstart_driver_amd::{
+    fch::SPI_BASE,
+    zeppelin::{MAX_DIES, acpi_io, iommu::{self, Iommu}},
+};
 
 pub const LAPIC_BASE: u64 = 0xfee0_0000;
-pub const FCH_IOAPIC_BASE: u32 = 0xfec0_0000;
+pub const FCH_IOAPIC_BASE: u32 = fstart_driver_amd::fch::IOAPIC;
 /// The FCH IOAPIC has GSI 0; the NBIO IOAPICs follow from ID 1.
 pub const FCH_IOAPIC_ID: u8 = 0;
-pub const HPET_BASE: u64 = 0xfed0_0000;
+pub const HPET_BASE: u64 = fstart_driver_amd::fch::HPET as u64;
 const FCH_IOAPIC_PINS: u32 = 24;
 const NBIO_IOAPIC_PINS: u32 = 32;
 const SCI_IRQ: u8 = 9;
@@ -131,7 +134,7 @@ struct Route {
 }
 const fn route(device: u8, function: u8, group: u8, swizzle: u8, bridge_irq: u8) -> Route {
     Route {
-        devfn: device << 3 | function,
+        devfn: fstart_pci::devfn(device, function),
         group,
         swizzle,
         bridge_irq,
@@ -336,13 +339,9 @@ fn mcfg(inputs: &Inputs) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-/// PCI requester ID.
-const fn device_id(bus: u8, device: u8, function: u8) -> u16 {
-    (bus as u16) << 8 | (device as u16) << 3 | function as u16
-}
 
 /// The FCH IOAPIC and the HPET interrupt as the FCH SMBus device 0:14.0.
-const FCH_SMBUS: u16 = device_id(0, 0x14, 0);
+const FCH_SMBUS: u16 = fstart_pci::bdf(0, 0x14, 0);
 
 /// The IVRS (AmdNbioIOMMUZPDxe): one IVHD 10h and 11h per die IOMMU, none
 /// without die 0's, which owns the FCH IOAPIC and the HPET. No IVHD 40h:
@@ -359,7 +358,7 @@ fn ivrs(inputs: &Inputs) -> Option<Vec<u8>> {
         .filter_map(|(die, devices)| {
             let iommu = die.iommu?;
             Some(ivrs::Iommu {
-                device_id: device_id(*die.buses.start(), 0, 2),
+                device_id: fstart_pci::bdf(*die.buses.start(), 0, 2),
                 capability_offset: iommu::CAPABILITY,
                 segment: 0,
                 base: iommu.base,
@@ -395,14 +394,14 @@ fn ivrs_devices(index: usize, inputs: &Inputs) -> Vec<DeviceEntry> {
     );
     let own = [
         DeviceEntry::Range {
-            start: device_id(bus, 0, 3),
-            end: device_id(last_bus, 0x1f, 7),
+            start: fstart_pci::bdf(bus, 0, 3),
+            end: fstart_pci::bdf(last_bus, 0x1f, 7),
             dte: 0,
         },
         DeviceEntry::Special {
             variety: Variety::IoApic,
             handle: die.ioapic_id,
-            source: device_id(bus, 0, 1),
+            source: fstart_pci::bdf(bus, 0, 1),
             dte: 0,
         },
     ];
@@ -563,7 +562,7 @@ fn root_prt(die: u8, bridges: &[Bridge], fch_intx_gsi: [u8; 4]) -> Result<Vec<u8
                 })?;
             // At most two dies: the highest GSI is 87.
             let gsi = nbio_gsi_base(die) + u32::from(route.bridge_irq);
-            Ok((bridge.devfn >> 3, bridge.pin - 1, gsi as u8))
+            Ok((fstart_pci::devfn_parts(bridge.devfn).0, bridge.pin - 1, gsi as u8))
         })
         .collect::<Result<Vec<_>, Error>>()?;
     // One entry per slot and pin: the first function wins.
@@ -587,7 +586,8 @@ fn bridge(die: u8, devfn: u8) -> Result<Vec<u8>, Error> {
         .iter()
         .find(|route| route.devfn == devfn)
         .ok_or(Error::UnknownBridge { die, devfn })?;
-    let address = u64::from(devfn >> 3) << 16 | u64::from(devfn & 7);
+    let (device, function) = fstart_pci::devfn_parts(devfn);
+    let address = u64::from(device) << 16 | u64::from(function);
     let mut body = Vec::new();
     acpi_dsl! { Name("_ADR", #{dword address}); }.emit(&mut body)?;
     let gsi = |pin| nbio_gsi_base(die) + u32::from(route.irq(pin));

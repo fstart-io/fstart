@@ -3,7 +3,8 @@
 //! The two model drivers supply only their model-specific enable bits. Both
 //! use the same PMBASE-derived MWAIT I/O ports, C3 level and EIST lock order.
 
-use crate::x86::cpu::msr_register::Msr;
+use crate::x86::cpu::msr::{Msr, MsrAccess, NativeMsr};
+use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 
 const MSR_PKG_CST_CONFIG_CONTROL: u32 = 0xe2;
@@ -52,20 +53,20 @@ fn c_state_bits(current: u64, extra: u64) -> u64 {
 ///
 /// The current CPU must implement these MSRs and accept `extra`.
 pub(super) unsafe fn configure_c_states(pmbase: u32, extra: u64) {
-    let cst = Msr::<CST::Register>::new(MSR_PKG_CST_CONFIG_CONTROL);
     // SAFETY: guaranteed by the model driver.
-    let current = unsafe { cst.read() }.get();
-    unsafe {
-        cst.write(c_state_bits(current, extra));
-        Msr::<PMG_IO_BASE::Register>::new(MSR_PMG_IO_BASE_ADDR).write(
+    let cpu = unsafe { NativeMsr::new() };
+    let cst = cpu.reg(Msr::<CST::Register>::new(MSR_PKG_CST_CONFIG_CONTROL));
+    cst.set(c_state_bits(cst.get(), extra));
+    cpu.reg(Msr::<PMG_IO_BASE::Register>::new(MSR_PMG_IO_BASE_ADDR))
+        .set(
             PMG_IO_BASE::PORT
                 .val(u64::from((pmbase + 4) & 0xffff))
                 .value,
         );
-        Msr::<PMG_IO_CAPTURE::Register>::new(MSR_PMG_IO_CAPTURE_ADDR).write(
-            u64::from(pmbase + 4) | PMG_IO_CAPTURE::CSTATE_OFFSET.val(HIGHEST_CLEVEL - 2).value,
-        );
-    }
+    cpu.reg(Msr::<PMG_IO_CAPTURE::Register>::new(
+        MSR_PMG_IO_CAPTURE_ADDR,
+    ))
+    .set(u64::from(pmbase + 4) | PMG_IO_CAPTURE::CSTATE_OFFSET.val(HIGHEST_CLEVEL - 2).value);
 }
 
 fn misc_enable_bits(current: u64, extra: u64) -> u64 {
@@ -84,13 +85,12 @@ fn misc_enable_bits(current: u64, extra: u64) -> u64 {
 ///
 /// The current CPU must implement `IA32_MISC_ENABLE` and accept `extra`.
 pub(super) unsafe fn configure_misc(extra: u64) {
-    let misc = Msr::<MISC_ENABLE::Register>::new(IA32_MISC_ENABLE);
-    let current = unsafe { misc.read() }.get();
-    let enabled = misc_enable_bits(current, extra);
-    unsafe {
-        misc.write(enabled);
-        misc.write(enabled | MISC_ENABLE::EIST_LOCK::SET.value);
-    }
+    // SAFETY: guaranteed by the model driver.
+    let cpu = unsafe { NativeMsr::new() };
+    let misc = cpu.reg(Msr::<MISC_ENABLE::Register>::new(IA32_MISC_ENABLE));
+    let enabled = misc_enable_bits(misc.get(), extra);
+    misc.set(enabled);
+    misc.set(enabled | MISC_ENABLE::EIST_LOCK::SET.value);
 }
 
 /// Desktop parts do not necessarily implement mobile C-state/EMTTM controls.
@@ -118,14 +118,13 @@ fn desktop_misc_enable_bits(current: u64, features: u32) -> u64 {
 /// The current CPU must implement Core 2 IA32_MISC_ENABLE; `features` is its
 /// CPUID.1:ECX. Performance-state selection remains unchanged.
 pub(super) unsafe fn configure_desktop_misc(features: u32) {
-    let misc = Msr::<MISC_ENABLE::Register>::new(IA32_MISC_ENABLE);
-    let current = unsafe { misc.read() }.get();
-    let enabled = desktop_misc_enable_bits(current, features);
-    unsafe {
-        misc.write(enabled);
-        if features & (1 << 7) != 0 {
-            misc.write(enabled | MISC_ENABLE::EIST_LOCK::SET.value);
-        }
+    // SAFETY: guaranteed by the model driver.
+    let cpu = unsafe { NativeMsr::new() };
+    let misc = cpu.reg(Msr::<MISC_ENABLE::Register>::new(IA32_MISC_ENABLE));
+    let enabled = desktop_misc_enable_bits(misc.get(), features);
+    misc.set(enabled);
+    if features & (1 << 7) != 0 {
+        misc.set(enabled | MISC_ENABLE::EIST_LOCK::SET.value);
     }
 }
 

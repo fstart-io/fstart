@@ -379,7 +379,7 @@ impl<C: SuperIoChip> SuperIo<C> {
         &self,
         reg: u8,
     ) -> fstart_core::pio::IndexedPioRegister<R> {
-        fstart_core::pio::IndexedPioRegister::new(self.idx_port(), self.data_port(), reg)
+        fstart_core::pio::IndexedPioRegister::ports(self.idx_port(), self.data_port(), reg)
     }
 
     /// Write an 8-bit value inside the caller-owned configuration session.

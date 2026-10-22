@@ -4,7 +4,8 @@
 //! enable VMX outside SMX when the CPU has it, then lock the register. A
 //! register that is already locked is left as found.
 
-use crate::x86::cpu::msr_register::Msr;
+use crate::x86::cpu::msr::{Msr, MsrAccess, NativeMsr};
+use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 pub(super) const IA32_FEATURE_CONTROL: u32 = 0x03a;
@@ -43,8 +44,9 @@ pub unsafe fn enable_and_lock(extra: u64) {
     }
     // SAFETY: CPUID or the caller's capability-backed SMRR bit establishes
     // that IA32_FEATURE_CONTROL exists, before any attempt to read it.
-    let register = Msr::<FEATURE_CONTROL::Register>::new(IA32_FEATURE_CONTROL);
-    let current = unsafe { register.read() };
+    let cpu = unsafe { NativeMsr::new() };
+    let register = cpu.reg(Msr::<FEATURE_CONTROL::Register>::new(IA32_FEATURE_CONTROL));
+    let current = register.extract();
     if current.is_set(FEATURE_CONTROL::LOCK) {
         return;
     }
@@ -54,8 +56,8 @@ pub unsafe fn enable_and_lock(extra: u64) {
     } else {
         0
     };
-    // SAFETY: the register is unlocked and the caller vouches for `extra`.
-    unsafe { register.write(current.get() | vmx | extra | FEATURE_CONTROL::LOCK::SET.value) };
+    // The register is unlocked and the caller vouches for `extra`.
+    register.set(current.get() | vmx | extra | FEATURE_CONTROL::LOCK::SET.value);
 }
 
 #[cfg(test)]

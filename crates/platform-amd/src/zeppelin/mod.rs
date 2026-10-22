@@ -3,13 +3,11 @@
 //! the PSP-released reset vector to the payload.
 #[cfg(feature = "acpi")]
 pub mod acpi;
+#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
+mod boot;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod boot;
-#[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
-mod cpu;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 mod memory;
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
@@ -23,17 +21,18 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use fstart_driver_amd::{
-    fch::early::PowerFailure,
+    fch::{Acpimmio, Fch, NativeBus, early::PowerFailure},
+    gpio::Gpio,
     lpc::Lpc,
     zeppelin::{
         MAX_DIES,
         dxio::Descriptor,
-        fch::{self, Devices, irq::Route},
+        fch::{Devices, irq::Route},
         topology::Die,
     },
 };
 use fstart_driver_uart::ns16550::Ns16550Config;
-use fstart_pci::{ConfigRegionAccess, ecam::GlobalEcam};
+use fstart_pci::ecam::GlobalEcam;
 
 #[cfg(all(feature = "bundle-zeppelin", target_os = "none"))]
 pub use stage::Program;
@@ -69,21 +68,19 @@ pub struct BoardCtx<'a> {
     pub clock: Clock,
 }
 impl BoardCtx<'_> {
-    /// The FCH registers of die 0, for pad routing and the like.
-    pub fn fch(&mut self) -> fch::NativeBus {
+    /// The FCH of die 0, for pad routing and the like.
+    pub fn fch(&mut self) -> Fch<NativeBus> {
         // SAFETY: board hooks run on the BSP between the platform's own FCH
         // accesses, with the ACPI MMIO and ECAM decoded; the borrow of the
         // context keeps them sequential.
-        unsafe { fch::NativeBus::new() }
+        Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0)
     }
 
     /// The GPIO pads of die 0.
-    pub fn gpio(&mut self) -> fstart_driver_amd::gpio::Mmio {
-        // SAFETY: as for `fch`; the ACPI MMIO is decoded and UC.
-        unsafe { fstart_driver_amd::gpio::Mmio::new() }
+    pub fn gpio(&mut self) -> Gpio<NativeBus> {
+        Gpio::new(self.fch(), &fstart_driver_amd::zeppelin::GPIO_BANK)
     }
 }
-
 
 /// Board wiring and hooks. The platform owns the order of calls.
 pub trait Board: 'static {
@@ -104,7 +101,7 @@ pub trait Board: 'static {
 
     /// LPC decodes and Super I/O routing for the console, before any
     /// output.
-    fn early_init(lpc: &mut Lpc<impl ConfigRegionAccess>);
+    fn early_init(lpc: &Lpc<impl fstart_driver_amd::fch::Bus>);
     /// The board's console UART.
     fn console() -> Ns16550Config;
     /// After the FCH reset tasks, where the vendor board PEIMs run.

@@ -10,30 +10,18 @@ use super::{MAX_DIES, topology::Die, topology::NONPCI_PSP};
 #[cfg(target_arch = "x86_64")]
 pub use crate::fam17h::psp::Native;
 pub use crate::fam17h::psp::{Buffer, Error as MailboxError, Mailbox};
-use crate::fam17h::registers::Smn;
+use crate::fam17h::nbio::{Bar, PSP_BASE_ADDR_HI as BAR_HIGH, PSP_BASE_ADDR_LO as BAR_LOW};
 use fstart_pci::ConfigRegionAccess;
-use tock_registers::{LocalRegisterCopy, register_bitfields};
+use tock_registers::interfaces::{Readable, Writeable};
 
-/// IOHC::PSP_BASE_ADDR_LO/HI (SMN, per die).
-const BAR_LOW: u32 = 0x13b1_02e0;
-const BAR_HIGH: u32 = 0x13b1_02e4;
-
-register_bitfields![u32,
-    Bar [
-        ENABLE OFFSET(0) NUMBITS(1) [],
-        LOCK OFFSET(8) NUMBITS(1) [],
-        /// Address bits [31:20].
-        BASE OFFSET(20) NUMBITS(12) []
-    ]
-];
 
 /// Map the PSP register window of `die` at `nonpci_base` + [`NONPCI_PSP`],
 /// enabled and locked. The vendor firmware maps die 0's in PEI and the
 /// other dies' in DXE, the same way (|0x101). A locked BAR gets reported as
 /// a fixed resource by the root complex.
 pub fn init_bar<P: ConfigRegionAccess + Copy>(die: &Die<P>, nonpci_base: u32) {
-    let mut smn = die.smn();
-    let bar = LocalRegisterCopy::<u32, Bar::Register>::new(smn.read(BAR_LOW));
+    let smn = die.smn();
+    let bar = smn.reg(BAR_LOW).extract();
     let want = Bar::BASE.val((nonpci_base + NONPCI_PSP) >> 20) + Bar::LOCK::SET + Bar::ENABLE::SET;
     if want.matches_all(bar.get()) {
         return;
@@ -45,13 +33,13 @@ pub fn init_bar<P: ConfigRegionAccess + Copy>(die: &Die<P>, nonpci_base: u32) {
             fstart_log::Hex(u64::from(bar.get()))
         );
     }
-    smn.write(BAR_HIGH, 0);
-    smn.write(BAR_LOW, want.value);
+    smn.reg(BAR_HIGH).set(0);
+    smn.reg(BAR_LOW).write(want);
 }
 
 /// The PSP MMIO base of `die`, 0 if its BAR isn't enabled.
 pub fn bar<P: ConfigRegionAccess + Copy>(die: &Die<P>) -> u32 {
-    let bar = LocalRegisterCopy::<u32, Bar::Register>::new(die.smn().read(BAR_LOW));
+    let bar = die.smn().reg(BAR_LOW).extract();
     if bar.is_set(Bar::ENABLE) {
         bar.read(Bar::BASE) << 20
     } else {

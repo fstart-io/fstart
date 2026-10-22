@@ -25,36 +25,13 @@ pub mod topology;
 
 pub use identity::{Package, Revision};
 
-/// GPIO bank 0: 145 pins, but the vendor board tables also use 149-152.
+/// GPIO bank 0: 145 pins, but the vendor board tables also use 149-152. The Zeppelin
+/// IOMUX assignments aren't known, so pads name their functions by number.
 pub const GPIO_BANK: crate::gpio::Bank = crate::gpio::Bank {
     pins: 153,
     reserved: &[],
-    events: &[
-        (0, 21),
-        (1, 19),
-        (2, 8),
-        (3, 2),
-        (4, 4),
-        (5, 7),
-        (6, 10),
-        (7, 11),
-        (8, 23),
-        (9, 22),
-        (16, 12),
-        (17, 13),
-        (18, 14),
-        (21, 5),
-        (22, 3),
-        (23, 16),
-        (24, 15),
-        (40, 20),
-        (84, 18),
-        (86, 9),
-        (89, 0),
-        (90, 1),
-        (91, 6),
-        (129, 17),
-    ],
+    gpio_function: |_| None,
+    events: crate::gpio::FAMILY17H_EVENTS,
 };
 pub use topology::{Die, MAX_DIES};
 
@@ -75,5 +52,3 @@ pub mod acpi_io {
     pub const CSTATE_CONTROL: u16 = BASE + 0x10;
     pub const GPE0: u16 = BASE + 0x20;
 }
-pub const SMBUS_IO: u16 = 0xb00;
-pub const SPI_BASE: u32 = 0xfec1_0000;

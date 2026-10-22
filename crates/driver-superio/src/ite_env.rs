@@ -218,7 +218,7 @@ impl IteEnvironmentController {
         Ok(Self { base })
     }
     fn register<R: RegisterLongName>(&self, index: u8) -> IndexedPioRegister<R> {
-        IndexedPioRegister::new(self.base + 5, self.base + 6, index)
+        IndexedPioRegister::ports(self.base + 5, self.base + 6, index)
     }
     fn probe(&self) -> Result<(), DeviceError> {
         if self.register::<BYTE::Register>(0x58).get() != 0x90

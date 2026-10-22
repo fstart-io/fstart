@@ -11,16 +11,16 @@ pub use host::Plan;
 pub use zeppelin::host::Plan;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
-#[cfg(feature = "bundle-zeppelin")]
-#[doc(hidden)]
-pub use fstart_stage as __stage;
 /// SMM image ABI and handler binding: a board's `smm.rs` binds its handler
 /// with `fstart_platform_amd::smm::smm_bin!`.
 #[cfg(feature = "smm")]
 pub use fstart_smm as smm;
+#[cfg(feature = "bundle-zeppelin")]
+#[doc(hidden)]
+pub use fstart_stage as __stage;
 #[cfg(all(feature = "picasso", target_arch = "x86_64"))]
 pub mod cold;
-#[cfg(all(feature = "picasso", target_arch = "x86_64"))]
+#[cfg(all(any(feature = "picasso", feature = "zeppelin"), target_arch = "x86_64"))]
 pub mod cpu;
 #[cfg(feature = "picasso")]
 pub mod early;
@@ -30,8 +30,6 @@ pub mod layout;
 pub mod memory;
 #[cfg(all(test, feature = "picasso"))]
 mod memory_tests;
-#[cfg(all(feature = "picasso", target_arch = "x86_64"))]
-pub mod microcode;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod mp;
 #[cfg(feature = "picasso")]

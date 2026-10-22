@@ -6,10 +6,14 @@ use core::{
     ptr::addr_of_mut,
     sync::atomic::{AtomicBool, Ordering},
 };
-use fstart_driver_amd::picasso::{
-    psp::{self, Buffer, Mailbox, Native},
-    registers::Smn,
+use fstart_driver_amd::{
+    fam17h::nbio::{PSP_BASE_ADDR_HI, PSP_BASE_ADDR_LO},
+    picasso::{
+        psp::{self, Buffer, Mailbox, Native},
+        registers::Smn,
+    },
 };
+use tock_registers::interfaces::Readable;
 const PAGE_BYTES: usize = (layout::PSP_END - layout::PSP_START) as usize;
 const BUFFER_BYTES: usize = size_of::<Buffer>();
 #[repr(C, align(32))]
@@ -59,7 +63,11 @@ impl ResidentMailbox {
         unsafe { self.mailbox.boot_done(delay_us) }
     }
 }
-fn preflight(reserved: bool, storage: u64, smn: &mut impl Smn) -> Result<(), Error> {
+fn preflight(
+    reserved: bool,
+    storage: u64,
+    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
+) -> Result<(), Error> {
     if !reserved {
         return Err(Error::MemoryNotReserved);
     }
@@ -72,8 +80,8 @@ fn preflight(reserved: bool, storage: u64, smn: &mut impl Smn) -> Result<(), Err
     }
     // Read only existing enabled+locked aperture; never repair/reset/lock it.
     // SMN reads can program an indirect selector, so this is NOT zero hardware IO.
-    let low = smn.read(0x13b102e0);
-    let high = smn.read(0x13b102e4);
+    let low = smn.reg(PSP_BASE_ADDR_LO).get();
+    let high = smn.reg(PSP_BASE_ADDR_HI).get();
     if low != 0xfd100101 || high != 0 {
         return Err(Error::Bar { low, high });
     }
@@ -103,7 +111,10 @@ unsafe fn materialize(destination: *mut Storage) {
 /// ALL allocators/payloads consume it until reset, also on error. CLI not exclusion.
 /// Driver Transport/constructor completion/DMA/delay contracts hold throughout
 /// use; no mailbox state discovery/retry/reset or SMM activation is performed.
-pub unsafe fn prepare(smn: &mut impl Smn, memory: &Memory) -> Result<ResidentMailbox, Error> {
+pub unsafe fn prepare(
+    smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
+    memory: &Memory,
+) -> Result<ResidentMailbox, Error> {
     let pointer = addr_of_mut!(STORAGE);
     preflight(memory.psp_reserved(), pointer as usize as u64, smn)?;
     claim(&CLAIMED)?;
@@ -123,12 +134,13 @@ mod tests {
     extern crate std;
     use super::*;
     use std::{boxed::Box, vec::Vec};
+    use fstart_driver_amd::fam17h::registers::testing::{SmnModel, SmnTest};
     struct Mock {
         low: u32,
         high: u32,
         reads: Vec<u32>,
     }
-    impl Smn for Mock {
+    impl SmnModel for Mock {
         fn read(&mut self, address: u32) -> u32 {
             self.reads.push(address);
             match address {
@@ -143,30 +155,31 @@ mod tests {
     }
     #[test]
     fn whole_page_and_existing_locked_aperture_preflight_before_claim() {
-        let mut smn = Mock {
+        let mock = SmnTest::new(Mock {
             low: 0xfd100101,
             high: 0,
             reads: Vec::new(),
-        };
+        });
+        let smn = mock.smn();
         assert_eq!(
-            preflight(false, layout::PSP_START, &mut smn),
+            preflight(false, layout::PSP_START, &smn),
             Err(Error::MemoryNotReserved)
         );
         for start in [layout::PSP_START + 32, 0, u64::MAX] {
-            assert_eq!(preflight(true, start, &mut smn), Err(Error::Placement));
+            assert_eq!(preflight(true, start, &smn), Err(Error::Placement));
         }
-        assert!(smn.reads.is_empty());
+        assert!(mock.model().reads.is_empty());
         for (low, high) in [(0xfd100001, 0), (0xfd100101, 1), (u32::MAX, u32::MAX)] {
-            smn.low = low;
-            smn.high = high;
+            mock.model().low = low;
+            mock.model().high = high;
             assert_eq!(
-                preflight(true, layout::PSP_START, &mut smn),
+                preflight(true, layout::PSP_START, &smn),
                 Err(Error::Bar { low, high })
             );
         }
-        smn.low = 0xfd100101;
-        smn.high = 0;
-        assert_eq!(preflight(true, layout::PSP_START, &mut smn), Ok(()));
+        mock.model().low = 0xfd100101;
+        mock.model().high = 0;
+        assert_eq!(preflight(true, layout::PSP_START, &smn), Ok(()));
         let flag = AtomicBool::new(false);
         assert_eq!(claim(&flag), Ok(()));
         assert_eq!(claim(&flag), Err(Error::AlreadyClaimed));

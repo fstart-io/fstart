@@ -2,4 +2,4 @@
 
 pub mod amd;
 pub mod intel;
-mod msr_register;
+pub mod msr;

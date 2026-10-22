@@ -2,10 +2,13 @@
 //! SMU topology policy/AP release.
 //! Launching threads is not proof they reached the Rust AP rendezvous.
 use super::{registers::Smn, smu};
+use crate::fam17h::smu::{DOWNCORE, THREAD_CONFIG, THREAD_ENABLE, ThreadConfig};
+use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
-const THREAD_ENABLE: u32 = 0x0005a818;
-const THREAD_CONFIG: u32 = 0x0005a81c;
-const DOWNCORE: u32 = 0x0005a860;
+use tock_registers::{
+    LocalRegisterCopy,
+    interfaces::{ReadWriteable, Readable, Writeable},
+};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Downcore {
     Auto,
@@ -55,11 +58,11 @@ pub enum Effect {
     ResetRequired,
 }
 impl Topology {
-    fn decode(config: u32) -> Result<Self, Error> {
+    fn decode(config: LocalRegisterCopy<u32, ThreadConfig::Register>) -> Result<Self, Error> {
         let topology = Self {
-            cores_per_complex: (config & 15) as u8 + 1,
-            complexes: (config >> 4 & 15) as u8 + 1,
-            threads_per_core: if config & (1 << 8) != 0 { 1 } else { 2 },
+            cores_per_complex: config.read(ThreadConfig::CORE_COUNT) as u8 + 1,
+            complexes: config.read(ThreadConfig::COMPLEX_COUNT) as u8 + 1,
+            threads_per_core: if config.is_set(ThreadConfig::NOT_SMT) { 1 } else { 2 },
         };
         if topology.cores_per_complex > 4 || topology.complexes > 2 {
             return Err(Error::Geometry);
@@ -89,13 +92,13 @@ impl Topology {
         Ok(slots)
     }
 }
-fn test(smn: &mut impl Smn, delay_us: &mut impl FnMut(u32)) -> Result<(), Error> {
+fn test(smn: &Smn<impl ConfigRegionAccess>, delay_us: &mut impl FnMut(u32)) -> Result<(), Error> {
     smu::request(smn, smu::TEST, [0xaa55aa55, 0, 0, 0, 0, 0], delay_us)
         .map(|_| ())
         .map_err(Error::Smu)
 }
-pub fn query(smn: &mut impl Smn, policy: Policy) -> Result<Topology, Error> {
-    let mut topology = Topology::decode(smn.read(THREAD_CONFIG))?;
+pub fn query(smn: &Smn<impl ConfigRegionAccess>, policy: Policy) -> Result<Topology, Error> {
+    let mut topology = Topology::decode(smn.reg(THREAD_CONFIG).extract())?;
     if let Some((cores, _)) = policy.downcore.request() {
         topology.cores_per_complex = topology.cores_per_complex.min(cores);
     }
@@ -107,14 +110,14 @@ pub fn query(smn: &mut impl Smn, policy: Policy) -> Result<Topology, Error> {
 /// Cold policy changes only take effect after a reset. Return that requirement
 /// to the platform, which owns reset/failure handling; never proceed to APs.
 pub fn apply(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     policy: Policy,
     delay_us: &mut impl FnMut(u32),
 ) -> Result<Effect, Error> {
     if policy == Policy::DEFAULT {
         return Ok(Effect::Unchanged);
     }
-    let config = smn.read(THREAD_CONFIG);
+    let mut config = smn.reg(THREAD_CONFIG).extract();
     let topology = Topology::decode(config)?;
     let requested = policy.downcore.request();
     if requested.is_some_and(|(cores, _)| cores > topology.cores_per_complex) {
@@ -123,11 +126,12 @@ pub fn apply(
     let downcore = requested.filter(|&(cores, _)| cores < topology.cores_per_complex);
     let disable_smt = policy.disable_smt && topology.threads_per_core > 1;
     if let Some((_, mask)) = downcore {
-        smn.write(DOWNCORE, mask);
+        smn.reg(DOWNCORE).set(mask);
         test(smn, delay_us)?;
     }
     if disable_smt {
-        smn.write(THREAD_CONFIG, config | (1 << 9));
+        config.modify(ThreadConfig::DISABLE_SMT::SET);
+        smn.reg(THREAD_CONFIG).set(config.get());
         test(smn, delay_us)?;
     }
     Ok(if downcore.is_some() || disable_smt {
@@ -139,16 +143,17 @@ pub fn apply(
 /// S3 loses policy register programming; restoring it is a distinct operation,
 /// not an atomic/cold-boot retry. Caller must hold the retained topology state.
 pub fn restore(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     policy: Policy,
     delay_us: &mut impl FnMut(u32),
 ) -> Result<(), Error> {
     if let Some((_, mask)) = policy.downcore.request() {
-        smn.write(DOWNCORE, mask);
+        smn.reg(DOWNCORE).set(mask);
         test(smn, delay_us)?;
     }
     if policy.disable_smt {
-        smn.update(THREAD_CONFIG, 0, 1 << 9);
+        smn.reg(THREAD_CONFIG)
+            .modify(ThreadConfig::DISABLE_SMT::SET);
         test(smn, delay_us)?;
     }
     Ok(())
@@ -159,7 +164,7 @@ pub fn restore(
 /// entry available. Keep it and its memory mappings alive until all APs have
 /// joined; errors after a release require fail-stop/reset, not code reclamation.
 pub unsafe fn launch(
-    smn: &mut impl Smn,
+    smn: &Smn<impl ConfigRegionAccess>,
     topology: Topology,
     ap_count: usize,
     delay_us: &mut impl FnMut(u32),
@@ -170,12 +175,13 @@ pub unsafe fn launch(
     }
     let mut released = Vec::new();
     for &bit in slots.iter().skip(1).take(ap_count) {
-        let enabled = smn.read(THREAD_ENABLE);
+        let thread_enable = smn.reg(THREAD_ENABLE);
+        let enabled = thread_enable.get();
         if enabled == u32::MAX {
-            return Err(Error::Unavailable(THREAD_ENABLE));
+            return Err(Error::Unavailable(THREAD_ENABLE.address()));
         }
         if enabled & (1 << bit) == 0 {
-            smn.write(THREAD_ENABLE, enabled | (1 << bit));
+            thread_enable.set(enabled | (1 << bit));
             test(smn, delay_us)?;
         }
         released.push(bit).map_err(|_| Error::ApCount)?;
@@ -187,15 +193,16 @@ pub unsafe fn launch(
 mod tests {
     extern crate std;
     use super::*;
+    use crate::fam17h::registers::testing::{SmnModel, SmnTest};
     use std::{collections::BTreeMap, vec::Vec};
     #[derive(Default)]
     struct Registers {
         regs: BTreeMap<u32, u32>,
         writes: Vec<(u32, u32)>,
     }
-    impl Smn for Registers {
+    impl SmnModel for Registers {
         fn read(&mut self, address: u32) -> u32 {
-            if address == smu::RESPONSE {
+            if address == smu::RESPONSE.address() {
                 1
             } else {
                 *self.regs.get(&address).unwrap_or(&0)
@@ -208,50 +215,52 @@ mod tests {
     }
     #[test]
     fn unavailable_thread_enable_is_not_an_already_released_cpu_set() {
-        let mut registers = Registers::default();
-        registers.regs.insert(THREAD_ENABLE, u32::MAX);
+        let test = SmnTest::new(Registers::default());
+        test.model().regs.insert(THREAD_ENABLE.address(), u32::MAX);
         let topology = Topology {
             cores_per_complex: 4,
             complexes: 1,
             threads_per_core: 2,
         };
         assert_eq!(
-            unsafe { launch(&mut registers, topology, 7, &mut |_| {}) },
-            Err(Error::Unavailable(THREAD_ENABLE))
+            unsafe { launch(&test.smn(), topology, 7, &mut |_| {}) },
+            Err(Error::Unavailable(THREAD_ENABLE.address()))
         );
-        assert!(registers.writes.is_empty());
+        assert!(test.model().writes.is_empty());
     }
 
     #[test]
     fn masks_reset_requirement_and_complex_thread_stride() {
-        let mut registers = Registers::default();
-        registers.regs.insert(THREAD_CONFIG, 0x13); // 4 cores, 2 complexes, SMT
+        let test = SmnTest::new(Registers::default());
+        let smn = test.smn();
+        let reg = |r: u32| test.model().regs[&r];
+        test.model().regs.insert(THREAD_CONFIG.address(), 0x13); // 4 cores, 2 complexes, SMT
         let policy = Policy {
             downcore: Downcore::Two,
             disable_smt: true,
         };
         assert_eq!(
-            apply(&mut registers, policy, &mut |_| {}).unwrap(),
+            apply(&smn, policy, &mut |_| {}).unwrap(),
             Effect::ResetRequired
         );
-        assert_eq!(registers.regs[&DOWNCORE], 0xfc);
-        assert_eq!(registers.regs[&THREAD_CONFIG], 0x213);
-        let topology = query(&mut registers, policy).unwrap();
+        assert_eq!(reg(DOWNCORE.address()), 0xfc);
+        assert_eq!(reg(THREAD_CONFIG.address()), 0x213);
+        let topology = query(&smn, policy).unwrap();
         assert_eq!(topology.thread_slots().unwrap().as_slice(), &[0, 1, 8, 9]);
-        let released = unsafe { launch(&mut registers, topology, 3, &mut |_| {}) }.unwrap();
+        let released = unsafe { launch(&smn, topology, 3, &mut |_| {}) }.unwrap();
         assert_eq!(released.as_slice(), &[1, 8, 9]);
-        assert_eq!(registers.regs[&THREAD_ENABLE], 0x302);
-        registers.writes.clear();
+        assert_eq!(reg(THREAD_ENABLE.address()), 0x302);
+        test.model().writes.clear();
         assert_eq!(
-            unsafe { launch(&mut registers, topology, 4, &mut |_| {}) },
+            unsafe { launch(&smn, topology, 4, &mut |_| {}) },
             Err(Error::ApCount)
         );
-        assert!(registers.writes.is_empty());
-        registers.regs.insert(THREAD_CONFIG, 0);
+        assert!(test.model().writes.is_empty());
+        test.model().regs.insert(THREAD_CONFIG.address(), 0);
         assert_eq!(
-            apply(&mut registers, policy, &mut |_| {}),
+            apply(&smn, policy, &mut |_| {}),
             Err(Error::CannotEnableCores)
         );
-        assert!(registers.writes.is_empty());
+        assert!(test.model().writes.is_empty());
     }
 }

@@ -1,469 +1,149 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native Picasso CPU-driver adaptation. Construction is not AP-release approval.
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+//! The Family 17h CPU driver of the architectural MP engine: on every
+//! CPU the vendor microcode patch from the
+//! BIOS directory, then the SoC's CCX init, one CPU at a time.
+use core::{
+    marker::PhantomData,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+};
 use fstart_arch::x86::{
-    cpuid,
-    mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError},
+    cpu::msr::NativeMsr,
+    mp::{CpuDriver, CpuIdMatch, CpuIdentity, CpuVendor, MpError, SipiUnlock},
     mtrr::SipiMsrs,
 };
-use fstart_driver_amd::picasso::{
-    cpu::{
-        Msr, NativeMsr,
-        microcode::{self, Patch},
-        thread,
-    },
-    registers::Smn,
-    topology::Topology,
+use fstart_driver_amd::fam17h::{
+    bios_directory,
+    ccx::Thread,
+    microcode::{Family, PATCH_BYTES, Patch},
 };
 
-const IDS: &[CpuIdMatch] = &[
-    CpuIdMatch {
-        vendor: CpuVendor::Amd,
-        signature: 0x00810f10,
-        mask: CpuIdMatch::ALL_STEPPINGS_MASK,
-    },
-    CpuIdMatch {
-        vendor: CpuVendor::Amd,
-        signature: 0x00810f80,
-        mask: CpuIdMatch::ALL_STEPPINGS_MASK,
-    },
-    CpuIdMatch {
-        vendor: CpuVendor::Amd,
-        signature: 0x00820f00,
-        mask: CpuIdMatch::ALL_STEPPINGS_MASK,
-    },
-];
-const CAPACITY: usize = crate::layout::MP_CPU_CAPACITY as usize;
-const LOCK_SPINS: usize = 100_000;
-const _: () = assert!(CAPACITY > 0 && CAPACITY <= 16);
+/// BIOS directory type of the vendor microcode patches.
+const MICROCODE: u8 = 0x66;
 
-#[derive(Debug)]
-pub enum Error {
-    Identity,
-    Topology,
-    PspBar,
-    Policy(thread::Error),
-    Microcode(microcode::Error),
-    Staging(crate::microcode::Error),
-    Cache(crate::mp::Error),
-    LockTimeout,
-    Poisoned,
-    CallbackOrder,
+/// DRAM for the selected patch, which the microcode loader reads.
+#[repr(C, align(16))]
+pub struct PatchPage([u8; PATCH_BYTES]);
+
+/// The CPU driver of SoC family `M`, with the SoC's CCX init `init`.
+pub struct Fam17hCpu<M, F> {
+    name: &'static str,
+    /// The staged patch and its revision.
+    patch: Option<(&'static [u8], u32)>,
+    init: F,
+    /// The SMT siblings share MSRs, and so do the CPUs of a complex for some
+    /// of the SoC tables: one CPU at a time.
+    lock: AtomicBool,
+    errors: AtomicU32,
+    family: PhantomData<M>,
 }
 
-// OSRR56255: Fn8000001E is reserved with APIC_BAR.ApicEn clear.
-// This architectural backend is xAPIC, never x2APIC MMIO.
-fn apic_role(control: u64) -> Result<bool, Error> {
-    if control & ((1 << 10) | (1 << 11)) != 1 << 11 {
-        return Err(Error::Topology);
-    }
-    Ok(control & (1 << 8) != 0)
-}
-
-struct Facts {
-    bsp: bool,
-    signature: u32,
-    apic_id: u32,
-    total: u16,
-    threads_per_core: u8,
-}
-impl Facts {
-    fn read(msr: &mut impl Msr) -> Result<Self, Error> {
-        let identity = CpuIdentity::current();
-        if !IDS.iter().any(|id| id.matches(identity)) {
-            return Err(Error::Identity);
-        }
-        let (maximum, _, _, _) = cpuid(0x80000000);
-        let (_, _, extensions, _) = cpuid(0x80000001);
-        let (signature, ebx, _, features) = cpuid(1);
-        // TopologyExtensions, MSRs, APIC, MTRRs, PAT and CLFLUSH are prerequisites.
-        let required = (1 << 5) | (1 << 9) | (1 << 12) | (1 << 16) | (1 << 19);
-        if maximum < 0x8000001e || extensions & (1 << 22) == 0 || features & required != required {
-            return Err(Error::Identity);
-        }
-        let bsp = apic_role(msr.read(0x1b))?;
-        let (apic_id, topology, _, _) = cpuid(0x8000001e);
-        let threads = ((topology >> 8) & 0xff) + 1;
-        let (_, _, count, _) = cpuid(0x80000008);
-        if apic_id != ebx >> 24 || !(1..=2).contains(&threads) {
-            return Err(Error::Topology);
-        }
-        Ok(Self {
-            bsp,
-            signature,
-            apic_id,
-            total: (count & 0xff) as u16 + 1,
-            threads_per_core: threads as u8,
-        })
-    }
-}
-
-/// Complete caller-verified APIC set, with BSP first. SMU ThreadEn slot numbers
-/// are deliberately NOT treated as APIC IDs, even when the counts agree.
-struct CpuSet {
-    ids: [u32; CAPACITY],
-    count: usize,
-}
-impl CpuSet {
-    fn new(ids: &[u32], bsp: u32, total: u16) -> Result<Self, Error> {
-        if ids.is_empty()
-            || ids.len() > CAPACITY
-            || ids.len() != usize::from(total)
-            || ids[0] != bsp
-        {
-            return Err(Error::Topology);
-        }
-        let mut result = Self {
-            ids: [0; CAPACITY],
-            count: ids.len(),
-        };
-        for (index, &id) in ids.iter().enumerate() {
-            if id >= 255 || ids[..index].contains(&id) {
-                return Err(Error::Topology);
+impl<M: Family, F> Fam17hCpu<M, F> {
+    /// Select the patch for this CPU from the BIOS directory in the mapped
+    /// boot flash and copy it to `page`.
+    ///
+    /// # Safety
+    /// BSP only, before any AP runs. `flash` is the whole boot flash mapped
+    /// below 4 GiB, `page` DRAM below 4 GiB the memory map reserves.
+    pub unsafe fn new(
+        name: &'static str,
+        flash: &[u8],
+        page: &'static mut MaybeUninit<PatchPage>,
+        init: F,
+    ) -> Self {
+        let signature = fstart_arch::x86::cpuid(1).0;
+        let patch = bios_directory::entries(flash)
+            .filter(|entry| entry.kind == MICROCODE)
+            .find_map(|entry| Patch::<M>::parse(entry.data.get(..PATCH_BYTES)?, signature).ok())
+            .map(|patch| {
+                let page = page.write(PatchPage([0; PATCH_BYTES]));
+                page.0.copy_from_slice(patch.bytes());
+                (&page.0[..], patch.revision())
+            });
+        match patch {
+            Some((_, revision)) => {
+                fstart_log::info!(
+                    "{}: microcode patch {}",
+                    name,
+                    fstart_log::Hex(revision.into())
+                )
             }
-            result.ids[index] = id;
+            None => fstart_log::warn!("{}: no microcode patch for this CPU", name),
         }
-        Ok(result)
-    }
-    fn index(&self, id: u32) -> Result<usize, Error> {
-        self.ids[..self.count]
-            .iter()
-            .position(|&value| value == id)
-            .ok_or(Error::Topology)
-    }
-    fn mask(&self) -> u16 {
-        u16::MAX >> (16 - self.count)
-    }
-}
-
-struct Preparation {
-    facts: Facts,
-    set: CpuSet,
-    policy: thread::Policy,
-}
-impl Preparation {
-    fn read(
-        msr: &mut impl Msr,
-        smn: &mut impl Smn,
-        topology: Topology,
-        apic_ids: &[u32],
-        source: &[u8],
-    ) -> Result<Self, Error> {
-        let facts = Facts::read(msr)?;
-        topology.thread_slots().map_err(|_| Error::Topology)?;
-        if facts.total != u16::from(topology.logical_threads())
-            || facts.threads_per_core != topology.threads_per_core
-            || !facts.bsp
-        {
-            return Err(Error::Topology);
-        }
-        let set = CpuSet::new(apic_ids, facts.apic_id, facts.total)?;
-        Patch::parse(source, facts.signature).map_err(Error::Microcode)?;
-        // Only the BSP reads the already-installed/locked BAR; never reset a
-        // PSP link to discover it, and never expose the shared port to APs.
-        if smn.read(0x13b102e0) != 0xfd100101 || smn.read(0x13b102e4) != 0 {
-            return Err(Error::PspBar);
-        }
-        let policy = thread::Policy::capture(msr, 0xfd100000).map_err(Error::Policy)?;
-        Ok(Self { facts, set, policy })
-    }
-}
-
-struct Serial {
-    locked: AtomicBool,
-    poisoned: AtomicBool,
-}
-impl Serial {
-    const fn new() -> Self {
         Self {
-            locked: AtomicBool::new(false),
-            poisoned: AtomicBool::new(false),
+            name,
+            patch,
+            init,
+            lock: AtomicBool::new(false),
+            errors: AtomicU32::new(0),
+            family: PhantomData,
         }
     }
-    /// A bounded iteration budget, not an attested physical-time deadline.
-    /// No Drop unlock, poisoned-owner reuse or automatic retry after failure.
-    fn run<T>(&self, work: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
-        for _ in 0..LOCK_SPINS {
-            if self.poisoned.load(Ordering::Acquire) {
-                return Err(Error::Poisoned);
-            }
-            if self
-                .locked
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                if self.poisoned.load(Ordering::Acquire) {
-                    return Err(Error::Poisoned);
-                }
-                let result = work();
-                if result.is_err() {
-                    self.poisoned.store(true, Ordering::Release);
-                }
-                if self.poisoned.load(Ordering::Acquire) {
-                    return result.and(Err(Error::Poisoned));
-                }
-                self.locked.store(false, Ordering::Release);
-                return result;
-            }
+
+    /// CPUs whose microcode update or CCX init failed.
+    pub fn errors(&self) -> u32 {
+        self.errors.load(Ordering::Acquire)
+    }
+
+    fn locked(&self, work: impl FnOnce() -> bool) {
+        while self
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
-        self.poisoned.store(true, Ordering::Release);
-        Err(Error::LockTimeout)
+        if !work() {
+            self.errors.fetch_add(1, Ordering::AcqRel);
+        }
+        self.lock.store(false, Ordering::Release);
     }
 }
 
-/// Shared driver state is small and initialized outside the immutable image.
-/// The MP borrow guard must retain this owner through callback completion and
-/// terminal errors. Permanent patch bytes/code/mappings remain reserved to reset.
-pub struct NativeCpu {
-    set: CpuSet,
-    signature: u32,
-    threads_per_core: u8,
-    policy: thread::Policy,
-    patch: Patch<'static>,
-    serial: Serial,
-    patched: AtomicU16,
-    initialized: AtomicU16,
-    finished: AtomicBool,
-}
-impl NativeCpu {
-    /// Prepare on the cold BSP after early native setup/topology policy, before
-    /// releasing any AP. All checks precede CPU-policy writes.
-    ///
-    /// # Safety
-    /// Supported CPU at ring 0, exclusive BSP MSR/SMN access, all intended APs
-    /// held, valid asynchronous-event exclusion and physical cache semantics.
-    /// `apic_ids` is the verified complete physical set with BSP first, NOT a
-    /// dense count or ThreadEn-bit guess. It must agree with the SMU topology.
-    /// Vendor patch bytes must occupy coherent identity-mapped immutable DRAM
-    /// below4GiB, 16-byte aligned, with the WHOLE allocation reserved until reset.
-    /// Keep this driver borrowed through MP completion/fail-stop, and all code,
-    /// patch memory and AP resources mapped through reset. Later hooks must not
-    /// change shared cache policy with other CPUs enabled. SMM/exception/reset,
-    /// topology/reset-role applicability and stack budgets remain obligations.
-    pub unsafe fn prepare(
-        msr: &mut impl Msr,
-        smn: &mut impl Smn,
-        topology: Topology,
-        apic_ids: &[u32],
-        patch_bytes: &'static [u8],
-    ) -> Result<Self, Error> {
-        Patch::validate_address(patch_bytes.as_ptr() as u64).map_err(Error::Microcode)?;
-        let preparation = Preparation::read(msr, smn, topology, apic_ids, patch_bytes)?;
-        let patch =
-            Patch::parse(patch_bytes, preparation.facts.signature).map_err(Error::Microcode)?;
-        Ok(Self::from_preparation(preparation, patch))
-    }
-    /// Prepare from trusted temporary image bytes, copying only after complete
-    /// CPU/topology/patch/BAR/routing preflight into the platform's permanent page.
-    /// All results after its one-way claim retain that page until reset.
-    ///
-    /// # Safety
-    /// The same cold BSP/AP/map/event/cache/reset/SMM contracts as `prepare`, plus
-    /// `microcode::stage`'s entire-page physical and map-consumer contracts. The
-    /// source is trusted/authenticated, readable and immutable through copying;
-    /// it need not itself remain below4GiB or resident after this returns. It must
-    /// be disjoint from the whole destination allocation. No loader executes here.
-    pub unsafe fn prepare_staged(
-        msr: &mut impl Msr,
-        smn: &mut impl Smn,
-        topology: Topology,
-        apic_ids: &[u32],
-        source: &[u8],
-        memory: &crate::memory::Memory,
-    ) -> Result<Self, Error> {
-        let preparation = Preparation::read(msr, smn, topology, apic_ids, source)?;
-        let resident =
-            unsafe { crate::microcode::stage(source, preparation.facts.signature, memory) }
-                .map_err(Error::Staging)?;
-        let patch = Patch::parse(resident.bytes(), preparation.facts.signature)
-            .map_err(Error::Microcode)?;
-        Ok(Self::from_preparation(preparation, patch))
-    }
-    fn from_preparation(preparation: Preparation, patch: Patch<'static>) -> Self {
-        Self {
-            set: preparation.set,
-            signature: preparation.facts.signature,
-            threads_per_core: preparation.facts.threads_per_core,
-            policy: preparation.policy,
-            patch,
-            serial: Serial::new(),
-            patched: AtomicU16::new(0),
-            initialized: AtomicU16::new(0),
-            finished: AtomicBool::new(false),
-        }
-    }
-    fn local(&self, msr: &mut impl Msr) -> Result<(usize, bool), Error> {
-        let facts = Facts::read(msr)?;
-        if facts.signature != self.signature
-            || facts.threads_per_core != self.threads_per_core
-            || usize::from(facts.total) != self.set.count
-        {
-            return Err(Error::Identity);
-        }
-        let index = self.set.index(facts.apic_id)?;
-        if facts.bsp != (index == 0) {
-            return Err(Error::Topology);
-        }
-        Ok((
-            index,
-            facts
-                .apic_id
-                .is_multiple_of(u32::from(self.threads_per_core)),
-        ))
-    }
-    fn stop(&self) -> ! {
-        self.serial.poisoned.store(true, Ordering::Release);
-        loop {
-            unsafe {
-                core::arch::asm!("cli", "hlt", options(nomem, nostack));
-            }
-        }
-    }
-    fn work_complete(&self) -> bool {
-        !self.serial.poisoned.load(Ordering::Acquire)
-            && !self.serial.locked.load(Ordering::Acquire)
-            && self.patched.load(Ordering::Acquire) == self.set.mask()
-            && self.initialized.load(Ordering::Acquire) == self.set.mask()
-    }
-    /// Use after successful architectural MP completion. Only its BSP post-MP
-    /// hook, after the callback-return barrier, publishes this flag. Calling
-    /// CPU-driver hooks outside that protocol violates the constructor contract.
-    /// This does not establish SMM, graphics or general silicon completion.
-    pub fn complete(&self) -> bool {
-        self.finished.load(Ordering::Acquire) && self.work_complete()
-    }
-}
-impl CpuDriver for NativeCpu {
+impl<M, F, E> CpuDriver for Fam17hCpu<M, F>
+where
+    M: Family + Send + Sync,
+    F: Fn(&NativeMsr, Thread) -> Result<(), E> + Send + Sync,
+{
     fn name(&self) -> &'static str {
-        "native-picasso"
+        self.name
     }
     fn id_table(&self) -> &'static [CpuIdMatch] {
-        IDS
+        &[]
     }
-    fn sipi_msrs(&self) -> Result<SipiMsrs, MpError> {
-        self.serial
-            .run(|| {
-                let mut msr = unsafe { NativeMsr::new() };
-                if self.local(&mut msr)?.0 != 0 {
-                    return Err(Error::Topology);
-                }
-                self.policy.validate(&mut msr).map_err(Error::Policy)?;
-                crate::mp::sipi_msrs(&mut msr).map_err(Error::Cache)
-            })
-            .map_err(|_| MpError::CacheabilitySetupFailed)
+    /// The CPUs the SoC's microcode patches are for.
+    fn matches(&self, identity: CpuIdentity) -> bool {
+        identity.vendor == CpuVendor::Amd && M::SIGNATURES.contains(&(identity.signature & !0xf))
     }
     fn update_microcode(&self) {
-        if self
-            .serial
-            .run(|| {
-                let mut msr = unsafe { NativeMsr::new() };
-                let (index, _) = self.local(&mut msr)?;
-                let bit = 1u16 << index;
-                if self.patched.load(Ordering::Relaxed) & bit != 0 {
-                    return Err(Error::CallbackOrder);
-                }
-                // Constructor owns the permanent immutable physical patch contract.
-                unsafe {
-                    self.patch
-                        .apply(&mut msr, self.patch.bytes().as_ptr() as u64, self.signature)
-                }
-                .map_err(Error::Microcode)?;
-                self.patched.fetch_or(bit, Ordering::Release);
-                Ok(())
-            })
-            .is_err()
-        {
-            self.stop();
-        }
+        let Some((bytes, _)) = self.patch else {
+            return;
+        };
+        self.locked(|| {
+            let signature = fstart_arch::x86::cpuid(1).0;
+            // SAFETY: serialized MSR access on a CPU the driver matched.
+            let msr = unsafe { NativeMsr::new() };
+            // SAFETY: the staged page is immutable and reserved; serialized.
+            Patch::<M>::parse(bytes, signature)
+                .and_then(|patch| unsafe { patch.apply(&msr, bytes.as_ptr() as u64, signature) })
+                .is_ok()
+        });
     }
     fn init_cpu(&self) {
-        if self
-            .serial
-            .run(|| {
-                let mut msr = unsafe { NativeMsr::new() };
-                let (index, primary) = self.local(&mut msr)?;
-                let bit = 1u16 << index;
-                if self.patched.load(Ordering::Relaxed) & bit == 0
-                    || self.initialized.load(Ordering::Relaxed) & bit != 0
-                {
-                    return Err(Error::CallbackOrder);
-                }
-                self.policy
-                    .initialize(&mut msr, index == 0, primary)
-                    .map_err(Error::Policy)?;
-                self.initialized.fetch_or(bit, Ordering::Release);
-                Ok(())
-            })
-            .is_err()
-        {
-            self.stop();
-        }
+        self.locked(|| {
+            // SAFETY: serialized MSR access on a CPU the driver matched.
+            let msr = unsafe { NativeMsr::new() };
+            let ok = (self.init)(&msr, Thread::current()).is_ok();
+            crate::mp::hide_fixed_dram_routing(&msr);
+            ok
+        });
     }
-    fn post_mp_init(&self) {
-        let mut msr = unsafe { NativeMsr::new() };
-        if !matches!(self.local(&mut msr), Ok((0, _)))
-            || !self.work_complete()
-            || self.finished.swap(true, Ordering::AcqRel)
-        {
-            self.stop();
-        }
+    fn sipi_msrs(&self) -> Result<SipiMsrs, MpError> {
+        // SAFETY: BSP only, before any AP starts.
+        crate::mp::sipi_msrs(&unsafe { NativeMsr::new() })
+            .map_err(|_| MpError::CacheabilitySetupFailed)
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn topology_requires_enabled_xapic_before_extended_id_use() {
-        assert!(apic_role(0).is_err());
-        assert!(apic_role(1 << 8).is_err());
-        assert!(apic_role((1 << 10) | (1 << 11)).is_err());
-        assert!(!apic_role(1 << 11).unwrap());
-        assert!(apic_role((1 << 8) | (1 << 11)).unwrap());
-    }
-    #[test]
-    fn serial_success_unlocks_but_failure_and_timeout_are_terminal() {
-        let gate = Serial::new();
-        assert_eq!(gate.run(|| Ok::<_, Error>(7)).unwrap(), 7);
-        assert!(!gate.locked.load(Ordering::Acquire));
-        assert!(matches!(
-            gate.run(|| Err::<(), _>(Error::CallbackOrder)),
-            Err(Error::CallbackOrder)
-        ));
-        assert!(gate.locked.load(Ordering::Acquire));
-        assert!(matches!(
-            gate.run::<()>(|| panic!("poisoned owner must not execute")),
-            Err(Error::Poisoned)
-        ));
-        let busy = Serial::new();
-        busy.locked.store(true, Ordering::Release);
-        assert!(matches!(
-            busy.run::<()>(|| panic!("busy owner must not execute")),
-            Err(Error::LockTimeout)
-        ));
-        assert!(busy.locked.load(Ordering::Acquire));
-        assert!(matches!(
-            busy.run::<()>(|| panic!("timeout must not retry")),
-            Err(Error::Poisoned)
-        ));
-    }
-    #[test]
-    fn physical_cpu_set_is_not_inferred_from_count_or_smu_slots() {
-        let set = CpuSet::new(&[0, 2, 8, 10], 0, 4).unwrap();
-        assert_eq!(set.index(8).unwrap(), 2);
-        assert!(set.index(1).is_err());
-        assert_eq!(set.mask(), 15);
-        for ids in [
-            &[0, 0][..],
-            &[1, 2][..],
-            &[0, 255][..],
-            &[0, 256][..],
-            &[0][..],
-        ] {
-            assert!(CpuSet::new(ids, 0, 2).is_err());
-        }
-        let all: [u32; 16] = core::array::from_fn(|i| i as u32);
-        assert_eq!(CpuSet::new(&all, 0, 16).unwrap().mask(), u16::MAX);
+    fn sipi_unlock(&self) -> Option<SipiUnlock> {
+        Some(crate::mp::SIPI_UNLOCK)
     }
 }

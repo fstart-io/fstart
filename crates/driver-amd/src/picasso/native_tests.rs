@@ -3,13 +3,17 @@ extern crate std;
 use super::{
     apob::{self, Apob},
     fabric,
-    registers::{BROADCAST, Fabric, FabricPort, Smn, SmnPort},
+    registers::{
+        Df, DfReg, Smn, SmnReg,
+        testing::{DfSpace, SmnModel, SmnTest},
+    },
     smu,
 };
+use tock_registers::interfaces::{Readable, Writeable};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     vec,
     vec::Vec,
 };
@@ -35,11 +39,12 @@ impl ConfigRegionAccess for Pci {
 #[test]
 fn indirect_register_targets_and_broadcast_are_distinct() {
     let pci = Pci::default();
-    let mut smn = unsafe { SmnPort::new(&pci) };
-    assert_eq!(smn.read(0x3b10564), 0x12345678);
-    let mut df = unsafe { FabricPort::new(&pci) };
-    df.write(5, 0x348, 9, 0x14171710);
-    df.write(5, 0x348, BROADCAST, 0x14171710);
+    let smn = unsafe { Smn::new(&pci) };
+    assert_eq!(smn.reg(SmnReg::<()>::new(0x3b10564)).get(), 0x12345678);
+    let df = unsafe { Df::new(&pci) };
+    let reg = DfReg::<()>::new(5, 0x348);
+    df.instance(reg, 9).set(0x14171710);
+    df.reg(reg).set(0x14171710);
     assert_eq!(
         *pci.ops.borrow(),
         vec![
@@ -61,12 +66,12 @@ struct Mailbox {
     responses: VecDeque<u32>,
     writes: Vec<(u32, u32)>,
 }
-impl Smn for Mailbox {
+impl SmnModel for Mailbox {
     fn read(&mut self, address: u32) -> u32 {
-        if address == smu::RESPONSE {
+        if address == smu::RESPONSE.address() {
             self.responses.pop_front().unwrap_or(0)
         } else {
-            0x100 + (address - smu::ARGUMENTS) / 4
+            0x100 + (address - smu::ARGUMENTS.address()) / 4
         }
     }
     fn write(&mut self, address: u32, value: u32) {
@@ -75,13 +80,13 @@ impl Smn for Mailbox {
 }
 #[test]
 fn smu_command_is_last_and_previous_error_does_not_block_readiness() {
-    let mut mailbox = Mailbox {
+    let mailbox = SmnTest::new(Mailbox {
         responses: [0xff, 0, 1].into(),
         ..Default::default()
-    };
+    });
     let mut elapsed = 0;
     let result = smu::request(
-        &mut mailbox,
+        &mailbox.smn(),
         smu::GET_SILICON_ID,
         [1, 2, 3, 4, 5, 6],
         &mut |us| elapsed += us,
@@ -90,118 +95,104 @@ fn smu_command_is_last_and_previous_error_does_not_block_readiness() {
     assert_eq!(result, [0x100, 0x101, 0x102, 0x103, 0x104, 0x105]);
     assert_eq!(elapsed, 100);
     assert_eq!(
-        mailbox.writes,
+        mailbox.model().writes,
         vec![
-            (smu::RESPONSE, 0),
-            (smu::ARGUMENTS, 1),
-            (smu::ARGUMENTS + 4, 2),
-            (smu::ARGUMENTS + 8, 3),
-            (smu::ARGUMENTS + 12, 4),
-            (smu::ARGUMENTS + 16, 5),
-            (smu::ARGUMENTS + 20, 6),
-            (smu::MESSAGE, smu::GET_SILICON_ID),
+            (smu::RESPONSE.address(), 0),
+            (smu::ARGUMENTS.address(), 1),
+            (smu::ARGUMENTS.address() + 4, 2),
+            (smu::ARGUMENTS.address() + 8, 3),
+            (smu::ARGUMENTS.address() + 12, 4),
+            (smu::ARGUMENTS.address() + 16, 5),
+            (smu::ARGUMENTS.address() + 20, 6),
+            (smu::MESSAGE.address(), smu::GET_SILICON_ID),
         ]
     );
 }
 #[test]
 fn raw_smu_reply_retains_output_context_without_treating_status_as_success() {
-    let mut mailbox = Mailbox {
+    let mailbox = SmnTest::new(Mailbox {
         responses: [1, 0xfe].into(),
         ..Default::default()
-    };
-    let reply = smu::request_raw(&mut mailbox, 0x13, [0; 6], &mut |_| {}).unwrap();
+    });
+    let reply = smu::request_raw(&mailbox.smn(), 0x13, [0; 6], &mut |_| {}).unwrap();
     assert_eq!(reply.status, 0xfe);
     assert_eq!(reply.arguments, [0x100, 0x101, 0x102, 0x103, 0x104, 0x105]);
-    mailbox.responses = [1, u32::MAX].into();
+    mailbox.model().responses = [1, u32::MAX].into();
     assert_eq!(
-        smu::request_raw(&mut mailbox, 0x13, [0; 6], &mut |_| {}),
+        smu::request_raw(&mailbox.smn(), 0x13, [0; 6], &mut |_| {}),
         Err(smu::Error::Unavailable)
     );
-    let mut unavailable = Mailbox {
+    let unavailable = SmnTest::new(Mailbox {
         responses: [u32::MAX, 1].into(),
         ..Default::default()
-    };
+    });
     assert_eq!(
-        smu::request_raw(&mut unavailable, 0x13, [0; 6], &mut |_| {}),
+        smu::request_raw(&unavailable.smn(), 0x13, [0; 6], &mut |_| {}),
         Err(smu::Error::Unavailable)
     );
-    assert!(unavailable.writes.is_empty());
+    assert!(unavailable.model().writes.is_empty());
 }
 
 #[test]
 fn smu_timeout_is_bounded_and_never_submits_when_busy() {
-    let mut mailbox = Mailbox::default();
+    let mailbox = SmnTest::new(Mailbox::default());
     let mut elapsed = 0;
     assert_eq!(
-        smu::request(&mut mailbox, 1, [0; 6], &mut |us| elapsed += us),
+        smu::request(&mailbox.smn(), 1, [0; 6], &mut |us| elapsed += us),
         Err(smu::Error::BusyTimeout)
     );
     assert_eq!(elapsed, 10_000_000);
-    assert!(mailbox.writes.is_empty());
-    mailbox.responses = [1, 0xfe].into();
+    assert!(mailbox.model().writes.is_empty());
+    mailbox.model().responses = [1, 0xfe].into();
     assert_eq!(
-        smu::request(&mut mailbox, 1, [0; 6], &mut |_| {}),
+        smu::request(&mailbox.smn(), 1, [0; 6], &mut |_| {}),
         Err(smu::Error::Rejected(0xfe))
     );
 }
 
-#[derive(Default)]
-struct Df {
-    registers: BTreeMap<(u8, u16, u8), u32>,
-    writes: Vec<(u8, u16, u8, u32)>,
-}
-impl Fabric for Df {
-    fn read(&mut self, f: u8, o: u16, i: u8) -> u32 {
-        *self.registers.get(&(f, o, i)).unwrap_or(&0)
-    }
-    fn write(&mut self, f: u8, o: u16, i: u8, v: u32) {
-        self.registers.insert((f, o, i), v);
-        self.writes.push((f, o, i, v));
-    }
-}
 #[test]
 fn raven2_late_df_clears_bit11_after_setting_power_down_policy() {
     for raven2 in [false, true] {
         for old in [0, 0x80000020, 0x80000820] {
-            let mut df = Df::default();
-            df.registers.insert((5, 0x300, BROADCAST), old);
-            fabric::late_init(&mut df, raven2);
+            let df = DfSpace::default();
+            df.regs.borrow_mut().insert((5, 0x300, None), old);
+            fabric::late_init(&df.df(), raven2);
             let expected =
                 ((old & !(1 << 5)) | 0x3b00) & if raven2 { !(1 << 11) } else { u32::MAX };
-            assert_eq!(df.read(5, 0x300, BROADCAST), expected);
-            assert_eq!(df.writes[0], (5, 0x300, BROADCAST, expected));
+            assert_eq!(df.regs.borrow()[&(5, 0x300, None)], expected);
+            assert_eq!(df.writes.borrow()[0], ((5, 0x300, None), expected));
         }
     }
 }
 
 #[test]
 fn fabric_route_validation_is_atomic_and_programming_is_idempotent() {
-    let mut df = Df::default();
+    let df = DfSpace::default();
     for i in 0..8 {
-        df.registers.insert((0, 0xc0 + i * 8, BROADCAST), 3);
+        df.regs.borrow_mut().insert((0, 0xc0 + i * 8, None), 3);
     }
     assert_eq!(
-        fabric::ensure_legacy_routes(&mut df, 0xd0000000),
+        fabric::ensure_legacy_routes(&df.df(), 0xd0000000),
         Err(fabric::Error::NoIoWindow)
     );
-    assert!(df.writes.is_empty());
-    df.registers.clear();
-    fabric::ensure_legacy_routes(&mut df, 0xd0000000).unwrap();
+    assert!(df.writes.borrow().is_empty());
+    df.regs.borrow_mut().clear();
+    fabric::ensure_legacy_routes(&df.df(), 0xd0000000).unwrap();
     assert_eq!(
-        df.writes,
+        *df.writes.borrow(),
         vec![
-            (0, 0x208, BROADCAST, 0),
-            (0, 0x200, BROADCAST, 0xd000),
-            (0, 0x204, BROADCAST, 0xfebf),
-            (0, 0x208, BROADCAST, 0x93),
-            (0, 0xc4, BROADCAST, 0xf009),
-            (0, 0xc0, BROADCAST, 3),
-            (0, 0x80, BROADCAST, 0x91),
+            ((0, 0x208, None), 0),
+            ((0, 0x200, None), 0xd000),
+            ((0, 0x204, None), 0xfebf),
+            ((0, 0x208, None), 0x93),
+            ((0, 0xc4, None), 0xf009),
+            ((0, 0xc0, None), 3),
+            ((0, 0x80, None), 0x91),
         ]
     );
-    df.writes.clear();
-    fabric::ensure_legacy_routes(&mut df, 0xd0000000).unwrap();
-    assert_eq!(df.writes, vec![(0, 0x80, BROADCAST, 0x91)]);
+    df.writes.borrow_mut().clear();
+    fabric::ensure_legacy_routes(&df.df(), 0xd0000000).unwrap();
+    assert_eq!(*df.writes.borrow(), vec![((0, 0x80, None), 0x91)]);
 }
 
 fn apob_fixture() -> Vec<u8> {

@@ -8,16 +8,19 @@
 //! The loops take all dies (die 0 first, as [`crate::zeppelin::topology::dies`]
 //! yields them) and the board's [`Devices`] per die, indexed by die.
 use super::{
-    AB_INDEX, Acpimmio, Bus, Devices, PM_INDEX, abcfg_update, index_read, index_write,
-    legacy_sd_off, sata, smn_modify,
+    Devices, NbifStrap, sata,
     usb::{self, ResetControl},
 };
+use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
-    fam17h::registers::{BROADCAST, Fabric, Smn},
+    fam17h::registers::{DfReg, Smn, SmnReg},
     zeppelin::{Die, Package},
 };
 use fstart_pci::{ConfigRegionAccess, PciAddress};
-use tock_registers::register_bitfields;
+use tock_registers::{
+    interfaces::{ReadWriteable, Readable, Writeable},
+    register_bitfields,
+};
 
 /// The vendor code allocates 8 KiB of the die's non-PCI pool; use the 64 KiB
 /// at +1 MiB.
@@ -34,41 +37,47 @@ pub const fn acpimmio_base(die: u8, nonpci_mmio_base: u32) -> Acpimmio {
     }
 }
 
-/// PMxD5[1:0]: decode the ACPI MMIO base in PMxD6.
+register_bitfields![u8,
+    /// PMxD5: decode the ACPI MMIO base in PMxD6.
+    AcpimmioSelect [SELECT OFFSET(0) NUMBITS(2) [Base = 1]]
+];
+/// Through the PM index/data pair: PMxD5, PMxD6..D7 (base >> 16) and the
+/// A-Link I/O base PMxE0..E1.
 const PM_ACPIMMIO_SELECT: u8 = 0xd5;
-/// PMxD6: 16 bits, base >> 16.
 const PM_ACPIMMIO_BASE: u8 = 0xd6;
 const PM_AB_REG_BAR: u8 = 0xe0;
-/// D18F0xC0/C4: DF I/O space base/limit 0.
-const DF_IO_BASE0: u16 = 0xc0;
-const DF_IO_LIMIT0: u16 = 0xc4;
-
 register_bitfields![u32,
     DfIoBase [READ_ENABLE OFFSET(0) NUMBITS(1) [], WRITE_ENABLE OFFSET(1) NUMBITS(1) []],
     DfIoLimit [DESTINATION OFFSET(0) NUMBITS(8) []]
 ];
+/// D18F0xC0/C4: DF I/O space base/limit 0.
+const DF_IO_BASE0: DfReg<DfIoBase::Register> = DfReg::new(0, 0xc0);
+const DF_IO_LIMIT0: DfReg<DfIoLimit::Register> = DfReg::new(0, 0xc4);
 
 /// Vendor ffdcb7de, run while die 0's DF sends I/O 0-0xfff to the die: move
 /// the die's ACPI MMIO block, then IOMUX, A-Link, clock generator and legacy
 /// SD through it. Nothing may print here; the console is on die 0's LPC bus.
-fn secondary_legacy(bus: &mut impl Bus, mmio: Acpimmio, package: Package) {
-    let base = mmio.0 >> 16;
-    index_write(bus, PM_INDEX, PM_ACPIMMIO_BASE, base as u8);
-    index_write(bus, PM_INDEX, PM_ACPIMMIO_BASE + 1, (base >> 8) as u8);
-    let select = index_read(bus, PM_INDEX, PM_ACPIMMIO_SELECT);
-    index_write(bus, PM_INDEX, PM_ACPIMMIO_SELECT, (select & 0xfc) | 1);
+fn secondary_legacy<B: Bus>(fch: &Fch<B>, package: Package) {
+    let bus = fch.bus();
+    let pm = |register| indexed_io::<B, ()>(bus, PM_INDEX, register);
+    let pm_word = |register, value: u16| {
+        let [low, high] = value.to_le_bytes();
+        pm(register).set(low);
+        pm(register + 1).set(high);
+    };
+    pm_word(PM_ACPIMMIO_BASE, (fch.acpimmio().0 >> 16) as u16);
+    indexed_io::<B, AcpimmioSelect::Register>(bus, PM_INDEX, PM_ACPIMMIO_SELECT)
+        .modify(AcpimmioSelect::SELECT::Base);
 
     // SP4: IOMUX pin 2 function 1
     if package == Package::Sp4 {
-        bus.set(mmio.iomux::<u8, ()>(2), 1);
+        fch.reg(iomux::at::<u8, ()>(2)).set(1);
     }
 
     // A-Link index at 0xcd8 just for this write (low PMxE0 word only).
-    index_write(bus, PM_INDEX, PM_AB_REG_BAR, AB_INDEX as u8);
-    index_write(bus, PM_INDEX, PM_AB_REG_BAR + 1, (AB_INDEX >> 8) as u8);
-    abcfg_update(bus, 0x10050, 1 << 2, 0);
-    index_write(bus, PM_INDEX, PM_AB_REG_BAR, 0);
-    index_write(bus, PM_INDEX, PM_AB_REG_BAR + 1, 0);
+    pm_word(PM_AB_REG_BAR, alink::INDEX);
+    alink::abcfg(bus, (0x10050, 1 << 2, 0));
+    pm_word(PM_AB_REG_BAR, 0);
 
     // Clock generator; these differ from die 0's values.
     for (offset, clear, set) in [
@@ -84,24 +93,25 @@ fn secondary_legacy(bus: &mut impl Bus, mmio: Acpimmio, package: Package) {
         (0x40, 1 << 25, 1 << 25),
         (0x40, 1 << 30, 1 << 30),
     ] {
-        bus.update(mmio.misc::<u32, ()>(offset), clear, set);
+        let reg = fch.reg(misc::at::<u32, ()>(offset));
+        reg.set((reg.get() & !clear) | set);
     }
 
-    legacy_sd_off(bus, mmio);
+    fch.legacy_sd_off();
 }
 
 /// FchMultiFchPei: the legacy part through I/O routed to each other die,
 /// then the SATA reset task of the die. `nonpci_mmio_base` gives a die's
 /// non-PCI MMIO pool (DF code). Runs after [`super::reset_init`].
 pub fn reset<P: ConfigRegionAccess + Copy>(
-    bus: &mut impl Bus,
+    bus: &impl Bus,
     dies: &[Die<P>],
     package: Package,
     nonpci_mmio_base: impl Fn(u8) -> u32,
     delay_us: &mut impl FnMut(u32),
 ) {
     let Some(die0) = dies.first() else { return };
-    let mut df0 = die0.df();
+    let df0 = die0.df();
     for die in &dies[1..] {
         let mmio = acpimmio_base(die.index(), nonpci_mmio_base(die.index()));
         fstart_log::debug!(
@@ -111,48 +121,42 @@ pub fn reset<P: ConfigRegionAccess + Copy>(
         );
 
         // Route I/O 0-0xfff to the die's IOMS.
-        let io_base = df0.read(0, DF_IO_BASE0, BROADCAST);
-        let io_limit = df0.read(0, DF_IO_LIMIT0, BROADCAST);
-        let route = (DfIoBase::READ_ENABLE::SET + DfIoBase::WRITE_ENABLE::SET).value;
-        df0.write(0, DF_IO_BASE0, BROADCAST, route);
-        let target = DfIoLimit::DESTINATION
-            .val(die.ioms_fabric_id().into())
-            .value;
-        df0.write(0, DF_IO_LIMIT0, BROADCAST, target);
-        secondary_legacy(bus, mmio, package);
-        df0.write(0, DF_IO_BASE0, BROADCAST, io_base);
-        df0.write(0, DF_IO_LIMIT0, BROADCAST, io_limit);
+        let (io_base, io_limit) = (df0.reg(DF_IO_BASE0), df0.reg(DF_IO_LIMIT0));
+        let saved = (io_base.get(), io_limit.get());
+        io_base.write(DfIoBase::READ_ENABLE::SET + DfIoBase::WRITE_ENABLE::SET);
+        io_limit.write(DfIoLimit::DESTINATION.val(die.ioms_fabric_id().into()));
+        secondary_legacy(&Fch::new(bus, mmio), package);
+        io_base.set(saved.0);
+        io_limit.set(saved.1);
 
         // Vendor PCD 0x8d: SATA enabled on every die.
-        sata::reset(&mut die.smn(), delay_us);
+        sata::reset(&die.smn(), delay_us);
     }
 }
 
 register_bitfields![u32,
-    NbifStrap [ENABLE OFFSET(28) NUMBITS(1) []],
-    SataControl [BIT0 OFFSET(0) NUMBITS(1) [], BIT11 OFFSET(11) NUMBITS(1) []],
     XgbePort [DISABLE OFFSET(0) NUMBITS(1) []]
 ];
-const fn nbif_xgbe_strap(port: u32) -> u32 {
-    0x1023_4800 + 0x200 * port
+const fn nbif_xgbe_strap(port: u32) -> SmnReg<NbifStrap::Register> {
+    SmnReg::new(0x1023_4800 + 0x200 * port)
 }
-const fn xgbe_port_control(port: u32) -> u32 {
-    0x1631_f030 + 4 * port
+const fn xgbe_port_control(port: u32) -> SmnReg<XgbePort::Register> {
+    SmnReg::new(0x1631_f030 + 4 * port)
 }
-fn strap_enabled(smn: &mut impl Smn, strap: u32) -> bool {
-    tock_registers::LocalRegisterCopy::<u32, NbifStrap::Register>::new(smn.read(strap))
-        .is_set(NbifStrap::ENABLE)
+fn strap_enabled(smn: &Smn<impl ConfigRegionAccess>, strap: SmnReg<NbifStrap::Register>) -> bool {
+    smn.reg(strap).is_set(NbifStrap::ENABLE)
 }
-fn strap_off(smn: &mut impl Smn, strap: u32) {
-    smn_modify(smn, strap, NbifStrap::ENABLE::CLEAR);
+fn strap_off(smn: &Smn<impl ConfigRegionAccess>, strap: SmnReg<NbifStrap::Register>) {
+    smn.reg(strap).modify(NbifStrap::ENABLE::CLEAR);
 }
 
 /// af49 (FchTaishanDxe) and the xGbE part of FchMultiFchDxe: the xGbE ports
 /// without an NBIF strap are switched off. `smn` is the die's.
-pub fn xgbe_init(smn: &mut impl Smn) {
+pub fn xgbe_init(smn: &Smn<impl ConfigRegionAccess>) {
     for port in 0..4 {
         if !strap_enabled(smn, nbif_xgbe_strap(port)) {
-            smn_modify(smn, xgbe_port_control(port), XgbePort::DISABLE::SET);
+            smn.reg(xgbe_port_control(port))
+                .modify(XgbePort::DISABLE::SET);
         }
     }
 }
@@ -174,13 +178,11 @@ pub fn usb<P: ConfigRegionAccess + Copy>(
     delay_us: &mut impl FnMut(u32),
 ) {
     for die in dies.iter().skip(1) {
-        let smn = &mut die.smn();
-        smn.update(usb::R14C, 0, 1 << 31);
+        let smn = &die.smn();
+        smn.reg(usb::R14C).modify(usb::R14c::BIT31::SET);
         if die.index() & 2 != 0 {
             strap_off(smn, usb::NBIF_STRAP);
-            smn_modify(
-                smn,
-                usb::RESET_CONTROL,
+            smn.reg(usb::RESET_CONTROL).modify(
                 ResetControl::BIT0::SET + ResetControl::BIT1::SET + ResetControl::BIT2::SET,
             );
         } else if devices(board, die.index()).xhci {
@@ -196,7 +198,7 @@ const AMD_VENDOR: u32 = 0x1022;
 /// FchMultiFchDxe: SATA and xGbE of the other dies whose internal bridge 8.1
 /// exists. Runs after [`super::env_init`] of die 0.
 pub fn env<P: ConfigRegionAccess + Copy>(
-    bus: &mut impl Bus,
+    bus: &impl Bus,
     dies: &[Die<P>],
     board: &[Devices],
     nonpci_mmio_base: impl Fn(u8) -> u32,
@@ -204,7 +206,7 @@ pub fn env<P: ConfigRegionAccess + Copy>(
     delay_us: &mut impl FnMut(u32),
 ) {
     for die in dies.iter().skip(1) {
-        let smn = &mut die.smn();
+        let smn = &die.smn();
         let bridge = PciAddress::new(0, die.bus(), 8, 1);
         // SAFETY: a config read of a possibly absent function reads all ones.
         if unsafe { die.pci().read(bridge, 0) } & 0xffff != AMD_VENDOR {
@@ -215,13 +217,13 @@ pub fn env<P: ConfigRegionAccess + Copy>(
 
         if !strap_enabled(smn, sata::NBIF_STRAP) {
             // No SATA lanes on this die: switch the controller off.
-            smn_modify(smn, sata::CONTROL, SataControl::BIT0::SET);
-            smn_modify(smn, sata::CONTROL, SataControl::BIT11::SET);
+            smn.reg(sata::CONTROL).modify(sata::Control::BIT0::SET);
+            smn.reg(sata::CONTROL).modify(sata::Control::BIT11::SET);
         } else if !devices(board, die.index()).sata {
             strap_off(smn, sata::NBIF_STRAP);
         } else {
             let mmio = acpimmio_base(die.index(), nonpci_mmio_base(die.index()));
-            sata::init(bus, die.index(), smn, mmio, subsystem_id, delay_us);
+            sata::init(&Fch::new(bus, mmio), die.index(), smn, subsystem_id, delay_us);
         }
 
         xgbe_init(smn);
@@ -238,7 +240,7 @@ pub fn late<P: ConfigRegionAccess + Copy>(
 ) {
     for die in dies.iter().skip(1) {
         if let Some(sata) = sata_function(die.index()) {
-            sata::late(&mut die.smn(), die.index(), &die.pci(), sata);
+            sata::late(&die.smn(), die.index(), die.pci(), sata);
         }
     }
 }

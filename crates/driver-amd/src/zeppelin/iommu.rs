@@ -8,21 +8,17 @@
 //! configuration space is aliased in SMN, with the IOMMU capability at 0x40:
 //! NbDxe programs the base at SMN 0x13f00044/48 (D0F2 0x44/0x48).
 use super::topology::{Die, NONPCI_IOMMU};
-use crate::fam17h::registers::Smn;
+use crate::fam17h::registers::SmnReg;
 use fstart_core::mmio::MmioReadOnly;
 use fstart_log::Hex;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
-    LocalRegisterCopy, interfaces::Readable, register_bitfields, register_structs,
+    interfaces::{Readable, Writeable},
+    register_bitfields, register_structs,
 };
 
 /// Offset of the IOMMU capability in D0F2's configuration space.
 pub const CAPABILITY: u16 = 0x40;
-const CAP_HEADER: u32 = 0x13f0_0000 + CAPABILITY as u32;
-const BASE_LOW: u32 = CAP_HEADER + 0x04;
-const BASE_HIGH: u32 = CAP_HEADER + 0x08;
-const RANGE: u32 = CAP_HEADER + 0x0c;
-const MISC: u32 = CAP_HEADER + 0x10;
 const CAPABILITY_ID: u32 = 0x0f;
 
 register_bitfields![u32,
@@ -33,6 +29,11 @@ register_bitfields![u32,
         BASE OFFSET(19) NUMBITS(13) []
     ]
 ];
+const CAP_HEADER: SmnReg<CapHeader::Register> = SmnReg::new(0x13f0_0000 + CAPABILITY as u32);
+const BASE_LOW: SmnReg<BaseLow::Register> = SmnReg::new(CAP_HEADER.address() + 0x04);
+const BASE_HIGH: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x08);
+const RANGE: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x0c);
+const MISC: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x10);
 
 register_structs! {
     Mmio {
@@ -52,17 +53,16 @@ register_structs! {
 /// [`NONPCI_IOMMU`] and return the base, `None` without an IOMMU. The pool
 /// is outside the PCI windows, so nothing moves it.
 pub fn init_bar<P: ConfigRegionAccess + Copy>(die: &Die<P>, nonpci_base: u32) -> Option<u32> {
-    let mut smn = die.smn();
-    let header = LocalRegisterCopy::<u32, CapHeader::Register>::new(smn.read(CAP_HEADER));
-    if header.read(CapHeader::ID) != CAPABILITY_ID {
+    let smn = die.smn();
+    if smn.reg(CAP_HEADER).read(CapHeader::ID) != CAPABILITY_ID {
         fstart_log::error!("IOMMU {}: no IOMMU capability", die.index());
         return None;
     }
     let base = nonpci_base + NONPCI_IOMMU;
     let low = BaseLow::BASE.val(base >> 19);
-    smn.write(BASE_HIGH, 0);
-    smn.write(BASE_LOW, low.value);
-    smn.write(BASE_LOW, (low + BaseLow::ENABLE::SET).value);
+    smn.reg(BASE_HIGH).set(0);
+    smn.reg(BASE_LOW).write(low);
+    smn.reg(BASE_LOW).write(low + BaseLow::ENABLE::SET);
     fstart_log::info!("IOMMU {}: MMIO at {}", die.index(), Hex(base.into()));
     Some(base)
 }
@@ -88,19 +88,19 @@ pub struct Iommu {
 /// # Safety
 /// The IOMMU MMIO is identity mapped and uncached.
 pub unsafe fn read<P: ConfigRegionAccess + Copy>(die: &Die<P>) -> Option<Iommu> {
-    let mut smn = die.smn();
-    let low = LocalRegisterCopy::<u32, BaseLow::Register>::new(smn.read(BASE_LOW));
+    let smn = die.smn();
+    let low = smn.reg(BASE_LOW).extract();
     if !low.is_set(BaseLow::ENABLE) {
         return None;
     }
-    let base = u64::from(smn.read(BASE_HIGH)) << 32 | u64::from(low.read(BaseLow::BASE) << 19);
+    let base = u64::from(smn.reg(BASE_HIGH).get()) << 32 | u64::from(low.read(BaseLow::BASE) << 19);
     // SAFETY: the enabled IOMMU register window, per the caller.
     let mmio = unsafe { &*(base as usize as *const Mmio) };
     let iommu = Iommu {
         base,
-        capability: smn.read(CAP_HEADER),
-        range: smn.read(RANGE),
-        misc: smn.read(MISC),
+        capability: smn.reg(CAP_HEADER).get(),
+        range: smn.reg(RANGE).get(),
+        misc: smn.reg(MISC).get(),
         control: mmio.control.get(),
         efr: mmio.efr.get(),
         efr2: mmio.efr2.get(),
