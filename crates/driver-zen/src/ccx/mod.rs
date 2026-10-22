@@ -23,7 +23,7 @@
 //! 5. For each [`release::sp3_order`] / [`release::naples_order`] entry:
 //!    [`release::launch`], then wait (bounded) for the AP to check in. Each
 //!    AP runs [`Ccx::early`] then [`Ccx::ap_init`].
-//! 6. BSP: [`security::set_smee`], [`mca::init`], [`power::write_cac_weights`].
+//! 6. BSP: [`mca::init`], [`power::write_cac_weights`] ([`security::set_smee`] before the APs start).
 //! 7. Every thread (MP callback): [`Ccx::all_threads`].
 //!
 //! The scope of the steps (BSP, every thread, primary threads) is handled

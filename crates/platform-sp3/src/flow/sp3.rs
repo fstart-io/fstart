@@ -460,6 +460,9 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
     let smns: heapless::Vec<Smn<Pci>, 2> = (0..ctx.topology.sockets)
         .map(|s| Smn::new(ctx.pci, socket_bus(ctx, s)))
         .collect();
+    // SMEE on the BSP before the APs copy its SYSCFG (the donor's order):
+    // set afterwards, the APs disagree and the OS clears SME/SEV per CPU.
+    security::set_smee(&cpu, policy.smee);
     let route = ApRoute::to(AP_BOOTSTRAP_ADDRESS).or_halt("AP route");
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&driver];
     let mut launch = |aps: u16| {
@@ -485,7 +488,6 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
     if driver.failures() != 0 {
         fail("AP microcode");
     }
-    security::set_smee(&cpu, policy.smee);
     mca::init(&cpu, &bsp);
     power::write_cac_weights(&cpu, &cac);
 
