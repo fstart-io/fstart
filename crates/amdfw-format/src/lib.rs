@@ -201,18 +201,11 @@ impl<'a> Flash<'a> {
         slot: BiosDirectorySlot,
         kind: u8,
     ) -> impl Iterator<Item = &'a [u8]> + use<'a> {
-        let flash = *self;
         self.bios_directories(slot)
             .into_iter()
-            .flat_map(move |levels| {
-                let directory = levels
-                    .level2
-                    .filter(|d| d.entries.iter().any(|e| e.kind == kind))
-                    .unwrap_or(levels.level1);
-                directory.files(flash)
-            })
-            .filter(move |(entry, _)| entry.kind == kind)
-            .map(|(_, data)| data)
+            .flat_map(move |levels| levels.all(kind))
+            .filter(|(_, entry)| entry.has_data())
+            .filter_map(|(dir, entry)| dir.data(entry).ok())
     }
     pub fn psp_directories(&self) -> Result<Levels<'a, PspEntry>, Error> {
         let (_, efs) = self.efs_checked()?;
@@ -278,7 +271,9 @@ impl<'a> Flash<'a> {
             .filter_map(|slot| efs.bios_directory(slot)),
         )
         .map(|pointer| self.resolve(pointer, 0, 0))
-        .try_fold(usize::MAX, |lowest, offset| Ok::<_, Error>(lowest.min(offset?)))?;
+        .try_fold(usize::MAX, |lowest, offset| {
+            Ok::<_, Error>(lowest.min(offset?))
+        })?;
         for pointer in [
             efs.imc,
             efs.gec,
@@ -434,6 +429,27 @@ impl<'a> Flash<'a> {
             Ok(())
         }
     }
+}
+
+/// Size of one flash half of a "Two 16M in 32MB" image (AMD #55758
+/// §4.1.7).
+pub const HALF_SIZE: usize = 16 << 20;
+
+/// The flash half a boot ROM of `profile` boots: the first of `halves`
+/// (offsets into `bytes`, searched in that order, lower first) whose EFS
+/// it accepts, each half mapped below 4 GiB at `physical_base`.
+pub fn booted_half(
+    bytes: &[u8],
+    physical_base: u64,
+    profile: Profile,
+    halves: &[usize],
+) -> Option<usize> {
+    halves.iter().copied().find(|&half| {
+        half < bytes.len()
+            && Flash::region(bytes, half, physical_base, profile)
+                .efs_checked()
+                .is_ok()
+    })
 }
 
 #[cfg(test)]

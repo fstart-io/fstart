@@ -93,6 +93,13 @@ impl PspEntry {
             address: address.into(),
         }
     }
+    /// The SPI ROM the PSP reads the file from.
+    pub fn rom_id(&self) -> u8 {
+        self.attributes[0] & 3
+    }
+    pub fn writable(&self) -> bool {
+        self.attributes[0] & 4 != 0
+    }
 }
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
@@ -108,6 +115,7 @@ pub struct BiosEntry {
 impl BiosEntry {
     pub const RESET: u8 = 1;
     pub const COPY: u8 = 2;
+    pub const READ_ONLY: u8 = 4;
     pub const COMPRESSED: u8 = 8;
     pub fn new(
         kind: u8,
@@ -134,8 +142,20 @@ impl BiosEntry {
     pub fn copy(&self) -> bool {
         self.flags & Self::COPY != 0
     }
+    pub fn read_only(&self) -> bool {
+        self.flags & Self::READ_ONLY != 0
+    }
     pub fn compressed(&self) -> bool {
         self.flags & Self::COMPRESSED != 0
+    }
+    /// The SPI ROM the PSP reads the file from.
+    pub fn rom_id(&self) -> u8 {
+        self.subprogram >> 3 & 3
+    }
+    /// Where the PSP copies the file, `u64::MAX` for nowhere; the APOB
+    /// entry has only this.
+    pub fn destination(&self) -> u64 {
+        self.destination.get()
     }
 }
 const _: () = {
@@ -328,6 +348,42 @@ impl<'a, E: Entry> Levels<'a, E> {
     }
     pub fn iter(&self) -> impl Iterator<Item = Directory<'a, E>> + use<'a, E> {
         core::iter::once(self.level1).chain(self.level2)
+    }
+    /// L2 first, then L1: the order the PSP and AGESA look files up in.
+    fn lookup_order(&self) -> impl Iterator<Item = Directory<'a, E>> + use<'a, E> {
+        self.level2.into_iter().chain(core::iter::once(self.level1))
+    }
+    /// The first entry of `kind` matching `instance` and `subprogram` when
+    /// given, L2 first, with its directory.
+    pub fn find(
+        &self,
+        kind: u8,
+        instance: Option<u8>,
+        subprogram: Option<u8>,
+    ) -> Option<(Directory<'a, E>, &'a E)> {
+        self.lookup_order().find_map(|dir| {
+            dir.entries
+                .iter()
+                .find(|e| {
+                    e.kind() == kind
+                        && instance.is_none_or(|i| e.instance() == i)
+                        && subprogram.is_none_or(|s| e.subprogram() == s)
+                })
+                .map(|e| (dir, e))
+        })
+    }
+    /// Every entry of `kind` of the first level that has one, L2 first
+    /// (e.g. all microcode instances).
+    pub fn all(&self, kind: u8) -> impl Iterator<Item = (Directory<'a, E>, &'a E)> + use<'a, E> {
+        self.lookup_order()
+            .find(|d| d.entries.iter().any(|e| e.kind() == kind))
+            .into_iter()
+            .flat_map(move |d| {
+                d.entries
+                    .iter()
+                    .filter(move |e| e.kind() == kind)
+                    .map(move |e| (d, e))
+            })
     }
 }
 
