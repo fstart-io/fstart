@@ -83,6 +83,20 @@ pub struct SmmConfig {
     pub usb_buses: [u8; 8],
     pub usb_bus_count: u8,
     pub generation: Generation,
+    /// Sleep-state notification to the BMC, if the board has one.
+    pub bmc: Option<BmcSxNotify>,
+}
+
+/// A board's BMC sleep-state notification: the DSDT writes `sw_smi_base +
+/// Sx` to the SMI command port (`\_PTS`, `\_WAK`, `\_SB._INI`), and the
+/// handler sends Set ACPI Power State over the KCS interface (AMI
+/// BmcAcpi's SW SMIs 0xC0–0xC5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct BmcSxNotify {
+    pub kcs_port: u16,
+    pub kcs_spacing: u8,
+    pub sw_smi_base: u8,
 }
 
 const _: () = assert!(size_of::<SmmConfig>() <= 32);
@@ -287,7 +301,11 @@ mod handler {
                 sw::PSP_SMM_INFO => smm_info(config, &timer),
                 #[cfg(feature = "milan")]
                 smi::sw::FCH_LOCK if generation == Generation::Milan => fch_lock(config, &timer),
-                _ => {}
+                command => {
+                    if let Some(bmc) = config.bmc {
+                        bmc_notify(&bmc, command, timer);
+                    }
+                }
             }
         }
         if smi::is_pending(acpi, source::SLP_TYP) {
@@ -363,6 +381,32 @@ mod handler {
     /// mailbox idle and ready first as on every donor (see [`p2c::READY`];
     /// the driver's `P2C_HEADER1_MILAN` is the same bit). Once per boot, as
     /// AGESA's driver entry: the OS can raise SW SMI D0 too.
+    /// Microsecond delays for the KCS transport on the TSC.
+    struct TscDelay(Tsc);
+
+    impl embedded_hal::delay::DelayNs for TscDelay {
+        fn delay_ns(&mut self, ns: u32) {
+            use fstart_core::services::Timer;
+            self.0.delay_us(u64::from(ns.div_ceil(1000)));
+        }
+    }
+
+    /// Report sleep state `command - sw_smi_base` to the BMC. A KCS error
+    /// is dropped: the OS's sleep goes on either way.
+    fn bmc_notify(bmc: &super::BmcSxNotify, command: u8, timer: Tsc) {
+        let Some((system, device)) = command
+            .checked_sub(bmc.sw_smi_base)
+            .and_then(fstart_driver_ipmi::sleep_power_states)
+        else {
+            return;
+        };
+        // SAFETY: the board's KCS ports; SMM owns the CPU.
+        let mut kcs = unsafe {
+            fstart_driver_ipmi::kcs::Kcs::new(bmc.kcs_port, bmc.kcs_spacing.into(), TscDelay(timer))
+        };
+        let _ = kcs.set_acpi_power_state(system, device);
+    }
+
     fn smm_info(config: &SmmConfig, timer: &Tsc) {
         use core::sync::atomic::{AtomicBool, Ordering};
         static SENT: AtomicBool = AtomicBool::new(false);

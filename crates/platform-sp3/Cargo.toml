@@ -29,13 +29,15 @@ payload-linux = ["fstart-stage/linux"]
 payload-uefi = ["fstart-stage/crabefi"]
 # The FCH SMI handler (`smm::Sp3SmmHandler`) for an SMM image unit; the
 # image unit adds `bundle-smm` (handler binding macro, SMM panic handler).
-smm = ["dep:fstart-smm"]
+smm = ["dep:fstart-smm", "dep:fstart-driver-ipmi", "dep:embedded-hal"]
 bundle-smm = ["smm", "fstart-smm/stage-bin"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json"]
 
 [dependencies]
 fstart-driver-zen = { path = "../driver-zen" }
+fstart-driver-ipmi = { path = "../driver-ipmi", optional = true }
+embedded-hal = { workspace = true, optional = true }
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-log = { workspace = true }

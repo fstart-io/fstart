@@ -292,6 +292,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),
         fch: &fch,
+        bmc_sx_notify: B::BMC_SX_NOTIFY.map(|b| b.sw_smi_base),
         cppc: ctx.cppc.as_ref().map(|c| acpi::CppcAcpi {
             info: c.info,
             base: c.base,

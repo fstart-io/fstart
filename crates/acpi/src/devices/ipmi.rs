@@ -49,6 +49,40 @@ impl IpmiKcsAcpi {
     }
 
     /// The Service Processor Management Interface table.
+    /// `\_PTS`, `\_WAK` and `\_SB._INI` reporting the system sleep state
+    /// to the BMC through a software SMI: `sw_smi_base + Sx` on the SMI
+    /// command port `smi_cmd` before sleeping, `sw_smi_base` (S0) at boot
+    /// and on wake. The SMM handler turns them into Set ACPI Power State
+    /// (AMI's BmcAcpi convention; `fstart_driver_ipmi::sleep_power_states`).
+    /// These own `\_PTS`/`\_WAK`.
+    pub fn sleep_notify_aml(smi_cmd: u16, sw_smi_base: u8) -> Vec<u8> {
+        let port = u64::from(smi_cmd);
+        let base = u64::from(sw_smi_base);
+        fstart_acpi_macros::acpi_dsl! {
+            Scope("\\") {
+                OperationRegion("BSMP", SystemIO, #{word port}, 1u8);
+                Field("BSMP", ByteAcc, NoLock, Preserve) {
+                    BSMC, 8,
+                }
+                Method("_PTS", 1, NotSerialized) {
+                    If (Arg0 != 0u8) {
+                        BSMC = Arg0 + #{byte base};
+                    }
+                }
+                Method("_WAK", 1, NotSerialized) {
+                    BSMC = #{byte base};
+                    Return(Package(0u8, 0u8));
+                }
+            }
+            Scope("\\_SB_") {
+                Method("_INI", 0, NotSerialized) {
+                    BSMC = #{byte base};
+                }
+            }
+        }
+        .into()
+    }
+
     pub fn spmi(&self) -> Vec<u8> {
         let mut spmi = Sdt::new(
             *b"SPMI",

@@ -119,6 +119,9 @@ pub struct Inputs<'a> {
     pub acpi_smi: Option<AcpiSmiConfig>,
     /// FCH devices as the FCH tasks left them.
     pub fch: &'a FchAcpi,
+    /// SW SMI base of the BMC sleep-state notification
+    /// (`crate::smm::BmcSxNotify`); needs [`Inputs::acpi_smi`].
+    pub bmc_sx_notify: Option<u8>,
     /// SMU-served CPPC: `_CPC` per processor and the PCCT.
     pub cppc: Option<CppcAcpi<'a>>,
     pub board: Board<'a>,

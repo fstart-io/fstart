@@ -402,7 +402,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     let mp = S::mp::<B>(&mut ctx, &si);
 
     step(0x58, "SMM");
-    install_smm(&mut ctx, &si, &mp);
+    install_smm(&mut ctx, &si, &mp, B::BMC_SX_NOTIFY);
 
     step(0x60, "PCI enumeration");
     S::pci_pre(&mut ctx, &mut si);
@@ -796,13 +796,19 @@ fn board_gpio<B: Board>(fch: &PrimaryFch, generation: Generation) {
 /// SMM_MASK are per core (both SMT threads write the same values), SMM_BASE
 /// and HWCR per thread. Then the FCH sources, one self-SMI per thread
 /// through the new entry, the PSP SMI route and SW SMI D0 (SmmInfo).
-fn install_smm<S: Steps>(ctx: &mut Ctx, si: &S, mp: &MpHandle) {
+fn install_smm<S: Steps>(
+    ctx: &mut Ctx,
+    si: &S,
+    mp: &MpHandle,
+    bmc: Option<crate::smm::BmcSxNotify>,
+) {
     let config = crate::smm::SmmConfig {
         generation: ctx.generation,
         ecam_base: ctx.ecam.0,
         psp_bar: ctx.psp_bar,
         usb_buses: S::usb_buses(ctx, si),
         usb_bus_count: S::usb_bus_count(ctx),
+        bmc,
     };
     #[cfg(fstart_sp3_has_smm_image)]
     {

@@ -13,6 +13,7 @@ use fstart_driver_zen::fch::FchHw;
 use fstart_driver_zen::fch::gpio::Pad;
 use fstart_platform_sp3::acpi::Board as AcpiBoard;
 use fstart_platform_sp3::board::{self, BoardError, Gpio, Policy};
+use fstart_platform_sp3::smm::BmcSxNotify;
 
 use crate::dxio::{Detected, M2Mode, Options};
 use fstart_driver_zen::soc::Generation;
@@ -35,6 +36,12 @@ impl DelayNs for TimerDelay<'_> {
 impl board::Board for Board {
     const NAME: &'static str = "Tyan S8030";
     const CONSOLE: Ns16550Config = bmc::CONSOLE;
+    /// The vendor DSDT's `BSMI` = 0xC0 and BmcAcpi's SW SMIs 0xC0–0xC5.
+    const BMC_SX_NOTIFY: Option<BmcSxNotify> = Some(BmcSxNotify {
+        kcs_port: bmc::KCS_PORT,
+        kcs_spacing: bmc::KCS_SPACING as u8,
+        sw_smi_base: 0xC0,
+    });
 
     fn policy(generation: Generation) -> Policy {
         Policy {

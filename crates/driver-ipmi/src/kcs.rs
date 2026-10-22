@@ -161,9 +161,12 @@ where
     ) -> Result<&'a [u8], Error> {
         self.send(netfn, command, request)?;
         let length = self.receive(buffer)?;
-        match buffer[..length] {
-            [_, _, 0, ..] => Ok(&buffer[3..length]),
-            [_, _, code, ..] => Err(Error::Completion(code)),
+        // No indexing: this also runs in SMM images, which take no panic
+        // formatting code.
+        let buffer: &'a [u8] = buffer;
+        match buffer.get(..length).ok_or(Error::Short)? {
+            [_, _, 0, data @ ..] => Ok(data),
+            [_, _, code, ..] => Err(Error::Completion(*code)),
             _ => Err(Error::Short),
         }
     }
@@ -294,5 +297,18 @@ mod tests {
         assert_eq!(bmc.request, [0x00, 0x01]);
         let end = bmc.writes.iter().position(|&w| w == (true, END_WRITE)).unwrap();
         assert_eq!(bmc.writes[end + 1], (false, 0x01));
+    }
+
+    #[test]
+    fn set_acpi_power_state_sets_both_fields() {
+        let bmc = RefCell::new(Bmc {
+            answer: vec![0x07 << 2, 0x06, 0],
+            ..Bmc::default()
+        });
+        let (system, device) = crate::sleep_power_states(5).unwrap();
+        kcs(&bmc).set_acpi_power_state(system, device).unwrap();
+        assert_eq!(bmc.into_inner().request, [0x06 << 2, 0x06, 0x85, 0x83]);
+        assert_eq!(crate::sleep_power_states(0), Some((0, 0)));
+        assert_eq!(crate::sleep_power_states(2), None);
     }
 }

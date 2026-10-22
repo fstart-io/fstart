@@ -175,6 +175,7 @@ fn inputs<'a>(
             acpi_disable: 0xA1,
         }),
         fch: fch(),
+        bmc_sx_notify: Some(0xC0),
         cppc: Some(CppcAcpi {
             info: CppcInfo::from_answer(0x007F_FFFF),
             base: 0x7FF0_0000,
@@ -371,7 +372,7 @@ fn dsdt_root_bridges_in_bus_order() {
     let d = &tables.dsdt;
     for name in [
         b"PCI0", b"PCI1", b"PCI2", b"PCI3", b"LPCB", b"SYSR", b"NAPE", b"GPIO", b"FUR0", b"COM1",
-        b"I2CA", b"_L0B", b"_PRW", b"XHC0",
+        b"I2CA", b"_L0B", b"_PRW", b"XHC0", b"_CPC", b"_OSC", b"_PTS", b"_WAK", b"BSMC",
     ] {
         assert!(d.windows(4).any(|w| w == name));
     }

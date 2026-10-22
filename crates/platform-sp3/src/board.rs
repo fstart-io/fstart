@@ -96,6 +96,9 @@ pub trait Board: Sp3BoardFacts + 'static {
         timer: &dyn Timer,
     ) -> Vec<Engine<'static>, MAX_ENGINES>;
 
+    /// BMC sleep-state notification through SMM (ACPI and the handler).
+    const BMC_SX_NOTIFY: Option<crate::smm::BmcSxNotify> = None;
+
     /// AML inside `\_SB.PCI0.LPCB` (Super I/O devices).
     #[cfg(feature = "acpi")]
     fn acpi_lpc_aml() -> alloc::vec::Vec<u8>;

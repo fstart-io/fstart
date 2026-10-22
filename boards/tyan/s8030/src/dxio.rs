@@ -281,7 +281,10 @@ const fn lan(
     func: u8,
     speed: Speed,
 ) -> Row {
-    Row::Fixed(role, pcie(group, first, count, port(dev, func).max_speed(speed)))
+    Row::Fixed(
+        role,
+        pcie(group, first, count, port(dev, func).max_speed(speed)),
+    )
 }
 
 /// The `$A26` template (Rome `0xffe46fb8`, Milan `0xffd99094`; observed
@@ -426,7 +429,11 @@ mod tests {
             let speeds: std::vec::Vec<_> = e[11..15].iter().map(|e| pcie_of(e).max_speed).collect();
             assert_eq!(speeds, [Speed::Gen2, Speed::Gen1, Speed::Gen1, Speed::Gen3]);
             // MiscControls 0x82 is not early training (bit 2 is).
-            assert!(e.iter().filter_map(|e| e.pcie_config()).all(|p| !p.early_train));
+            assert!(
+                e.iter()
+                    .filter_map(|e| e.pcie_config())
+                    .all(|p| !p.early_train)
+            );
             assert!(
                 e.iter()
                     .filter_map(|e| e.pcie_config())
@@ -466,7 +473,10 @@ mod tests {
         let b: std::vec::Vec<_> = o.slots.iter().map(|s| s.bifurcation).collect();
         use Bifurcation::*;
         assert_eq!(b, [X16, X16, X4x4x4x4, X16, X16]);
-        assert_eq!(Options::DEFAULT.with_bifurcation("12111").slots[1].bifurcation, X8x8);
+        assert_eq!(
+            Options::DEFAULT.with_bifurcation("12111").slots[1].bifurcation,
+            X8x8
+        );
     }
 
     #[test]

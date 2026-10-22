@@ -937,9 +937,11 @@ dependencies = [
 name = "fstart-platform-sp3"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal",
  "fstart-acpi",
  "fstart-arch",
  "fstart-core",
+ "fstart-driver-ipmi",
  "fstart-driver-uart",
  "fstart-driver-zen",
  "fstart-image-build",
