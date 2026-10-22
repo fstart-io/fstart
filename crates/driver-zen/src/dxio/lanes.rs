@@ -286,7 +286,8 @@ pub struct PcieEngine {
     pub eq: Option<EqPresets>,
     /// MiscControls bit 7 (set on every S8030 PCIe engine).
     pub turn_off_unused: bool,
-    /// MiscControls bit 1 (S8030: i210 and X550 on lanes 74–79).
+    /// MiscControls bit 2 (openSIL `SbLink`): wire caps bit 1, Rome builder
+    /// `ffe02ae4`. Bit 1 is `LinkSafeMode`, not early training.
     pub early_train: bool,
     pub extra: PcieExtra,
 }

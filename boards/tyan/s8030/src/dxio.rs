@@ -24,8 +24,10 @@
 //! | 127–112 | PCIe x16 | auto | auto | PCIE#1 |
 //! | 111–96 | PCIe x16 | auto | auto | PCIE#4 |
 //!
-//! Every PCIe engine turns off unused lanes (MiscControls bit 7); the i210
-//! and X550 links train early (bit 1). No engine is hotpluggable (the
+//! Every PCIe engine turns off unused lanes (MiscControls bit 7). The i210
+//! and X550 rows also set bit 1, openSIL `LinkSafeMode` (Gen1 limit),
+//! which the Rome builder does not read; they are not early-train links
+//! (that is bit 2, `SbLink`, Rome `ffe02ae4`). No engine is hotpluggable (the
 //! ServerHotplugDxe table is an AMD sample that does not match the board)
 //! and none carries a slot number. All engines are socket 0; `$A27` is a
 //! single unused placeholder.
@@ -144,9 +146,9 @@ pub struct Options {
     /// "PCIe Compliance Mode" (Rome `Setup[0x19e]`, Milan
     /// `OemPciSlotConfigSetup[10]`; default off). Milan sets the compliance
     /// bit on every PCIe engine but the BMC's; Rome only on the slots, and
-    /// into MiscControls bit 0 where the Rome builder does not read
-    /// compliance (inferred no-op, §3.3). Here both set the compliance bit
-    /// with the vendor's scope.
+    /// into MiscControls bit 0, which the Rome builder copies to the wire
+    /// compliance bit. Here both set the compliance bit with the vendor's
+    /// scope.
     pub compliance: bool,
     /// i210 LAN1/LAN2 ports present (Rome `Setup[0x1b9/0x1ba]`, Milan
     /// `Setup[0x16a/0x16b]`; default on).
@@ -268,7 +270,9 @@ const fn fixed_pcie(role: Role, group: Group, first: u8, count: u8, dev: u8, fun
     Row::Fixed(role, pcie(group, first, count, port(dev, func)))
 }
 
-const fn early(
+/// The i210/X550 rows: MiscControls `0x82` (safe mode, turn off unused
+/// lanes), no early training.
+const fn lan(
     role: Role,
     group: Group,
     first: u8,
@@ -277,8 +281,7 @@ const fn early(
     func: u8,
     speed: Speed,
 ) -> Row {
-    let p = port(dev, func).max_speed(speed).early_train();
-    Row::Fixed(role, pcie(group, first, count, p))
+    Row::Fixed(role, pcie(group, first, count, port(dev, func).max_speed(speed)))
 }
 
 /// The `$A26` template (Rome `0xffe46fb8`, Milan `0xffd99094`; observed
@@ -299,9 +302,9 @@ static TEMPLATE: [Row; 17] = [
         Role::Bmc,
         pcie(Group::G2, 8, 1, port(3, 1).max_speed(Speed::Gen2)),
     ),
-    early(Role::Lan(0), Group::G2, 10, 1, 3, 5, Speed::Gen1),
-    early(Role::Lan(1), Group::G2, 11, 1, 3, 6, Speed::Gen1),
-    early(Role::Nic, Group::G2, 12, 4, 3, 4, Speed::Gen3),
+    lan(Role::Lan(0), Group::G2, 10, 1, 3, 5, Speed::Gen1),
+    lan(Role::Lan(1), Group::G2, 11, 1, 3, 6, Speed::Gen1),
+    lan(Role::Nic, Group::G2, 12, 4, 3, 4, Speed::Gen3),
     Row::Slot(Slot::Pcie1),
     Row::Slot(Slot::Pcie4),
 ];
@@ -422,8 +425,8 @@ mod tests {
             );
             let speeds: std::vec::Vec<_> = e[11..15].iter().map(|e| pcie_of(e).max_speed).collect();
             assert_eq!(speeds, [Speed::Gen2, Speed::Gen1, Speed::Gen1, Speed::Gen3]);
-            assert!(e[12..15].iter().all(|e| pcie_of(e).early_train));
-            assert!(!pcie_of(&e[11]).early_train);
+            // MiscControls 0x82 is not early training (bit 2 is).
+            assert!(e.iter().filter_map(|e| e.pcie_config()).all(|p| !p.early_train));
             assert!(
                 e.iter()
                     .filter_map(|e| e.pcie_config())

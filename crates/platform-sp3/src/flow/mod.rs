@@ -359,10 +359,11 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
 
     step(0x38, "DXIO");
     let levels = detect_levels::<B>(&ctx.fch, generation);
+    board_gpio::<B>(&ctx.fch, generation);
     let engines = B::dxio_engines(generation, &levels, &ctx.timer);
     S::dxio(&mut ctx, &si, &engines);
 
-    step(0x40, "FCH env, GPIO");
+    step(0x40, "FCH env");
     fch_env::<B>(&ctx);
     S::fch_env(&ctx, &si);
 
@@ -727,8 +728,7 @@ fn detect_levels<B: Board>(fch: &PrimaryFch, generation: Generation) -> heapless
         .collect()
 }
 
-/// FCH env (DXE) tasks on socket 0 and the board GPIO program (FCH_SP3
-/// §2.2, BOARD §2).
+/// FCH env (DXE) tasks on socket 0 (FCH_SP3 §2.2).
 fn fch_env<B: Board>(ctx: &Ctx) {
     use fch::common::env;
     let (fch, generation) = (&ctx.fch, ctx.generation);
@@ -741,6 +741,13 @@ fn fch_env<B: Board>(ctx: &Ctx) {
         generation,
         &fch::alink::AbPolicy::default_for(generation),
     );
+}
+
+/// The board GPIO program: the OEM pads, then the CPM table. The vendor
+/// applies both in PEI before the PCIe topology reaches DXIO
+/// (BOARD_S8030 §2 steps 3–5), so board enables and resets are in place
+/// when the links train.
+fn board_gpio<B: Board>(fch: &PrimaryFch, generation: Generation) {
     let gpio = B::gpio(generation);
     fch::gpio::configure_all(fch.acpi(), gpio.early);
     fch::gpio::configure_all(fch.acpi(), gpio.table);

@@ -481,7 +481,10 @@ pub struct DxioPolicy {
     /// The unit that gets ReloadSm (Platform `+0x14` / Milan `+5`):
     /// `(socket, die)`. AGESA sends it to socket/die 0 by default.
     pub early_train_unit: Option<(u8, u8)>,
-    /// Rome/Milan ReloadSm argument: Platform `+0x15 > 0x7F`.
+    /// Rome/Milan ReloadSm argument: Platform `+0x15 > 0x7F`. Rome copies
+    /// `+0x15` from PCD 0xBA ("BMC link location", build default 0x81 =
+    /// WAFL port 1, which Tyan keeps), so the donor sends 1 (`ffdfd156`,
+    /// `ffe01ce6`). The Milan source is not decoded.
     pub reload_sm_arg: bool,
     /// Naples PCD 0x1E (0): train all dies concurrently.
     pub naples_concurrent: bool,
@@ -496,7 +499,7 @@ impl DxioPolicy {
             perst: PerstPolicy::OnRequest,
             perst_deassert_delay_ms: 0,
             early_train_unit: Some((0, 0)),
-            reload_sm_arg: false,
+            reload_sm_arg: matches!(generation, Generation::Rome),
             naples_concurrent: false,
             encode: EncodePolicy {
                 pspp_policy: 0,
