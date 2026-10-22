@@ -12,6 +12,7 @@
 
 use fstart_core::services::Timer;
 
+use super::lanes::{Engine, EngineKind, Speed};
 use super::{
     DxioError, DxioPolicy, Hooks, LoopRules, PerstPolicy, Unit, finish_unit, prop, run, state, var,
 };
@@ -20,6 +21,35 @@ use crate::soc::Generation;
 
 /// The DXIO SMU message on Rome and Milan (`smu::v11::msg::DXIO`).
 pub const DXIO_MSG: u32 = 0x08;
+
+/// SMN register (socket 0) read by the PCIe speed workaround; parts with
+/// bits 10 and 12 both clear are capped at Gen2 ("early samples").
+pub const SPEED_FUSE: u32 = 0x0005_D698;
+const SPEED_FUSE_OK: u32 = 0x1400;
+
+/// Gen3 EQ search mode "preset" (LC_CNTL4[9:8] encoding).
+pub const EQ_SEARCH_PRESET: u8 = 3;
+
+/// The SP3 PCIe speed workaround, run on every board PCIe engine before
+/// the engine heap is built (Rome `ffdfca17` from `ffdfbe64`, Milan
+/// `ffd0daea`). Engines capped at Gen1/Gen2 are left alone; the others
+/// get Gen3 EQ search mode "preset", or a Gen2 cap when `fuse` has bits
+/// 10 and 12 clear. `fuse` is `None` when the test is skipped (Milan
+/// with PCD 0xAF = 0x40). The mode reaches the wire record (`caps_hi`
+/// EQ_OVERRIDE + EQ_MODE) and LC_CNTL4[9:8] at MAPPED.
+pub fn speed_fixup(engine: &mut Engine<'_>, fuse: Option<u32>) {
+    let EngineKind::Pcie(p) = &mut engine.kind else {
+        return;
+    };
+    if matches!(p.max_speed, Speed::Gen1 | Speed::Gen2) {
+        return;
+    }
+    if fuse.is_some_and(|f| f & SPEED_FUSE_OK == 0) {
+        p.max_speed = Speed::Gen2;
+    } else {
+        p.extra.eq_search_mode = Some(EQ_SEARCH_PRESET);
+    }
+}
 
 /// Everything up to and including SM_START for one socket.
 pub fn setup<M: SmuMessages + ?Sized>(
@@ -153,6 +183,33 @@ mod tests {
             ),
             Engine::pcie(1, Lanes::sp3(Group::G3, 0, 16), PcieEngine::new()),
         ]
+    }
+
+    #[test]
+    fn speed_fixup_preset_or_gen2() {
+        let pcie = |e: Engine<'static>| e.pcie_config().copied().unwrap();
+        let auto = || Engine::pcie(0, Lanes::sp3(Group::P0, 0, 4), PcieEngine::new());
+        let mut e = auto();
+        speed_fixup(&mut e, Some(0x400));
+        assert_eq!(pcie(e).extra.eq_search_mode, Some(EQ_SEARCH_PRESET));
+        assert_eq!(pcie(e).max_speed, Speed::Auto);
+        // Bits 10 and 12 clear: Gen2 cap, no EQ mode.
+        let mut e = auto();
+        speed_fixup(&mut e, Some(!0x1400));
+        assert_eq!(pcie(e).max_speed, Speed::Gen2);
+        assert_eq!(pcie(e).extra.eq_search_mode, None);
+        // Skipped fuse test (Milan PCD 0xAF = 0x40).
+        let mut e = auto();
+        speed_fixup(&mut e, None);
+        assert_eq!(pcie(e).extra.eq_search_mode, Some(EQ_SEARCH_PRESET));
+        // Gen1/Gen2 board caps are untouched.
+        let mut e = Engine::pcie(
+            0,
+            Lanes::sp3(Group::P0, 0, 4),
+            PcieEngine::new().max_speed(Speed::Gen1),
+        );
+        speed_fixup(&mut e, Some(0));
+        assert_eq!(pcie(e), PcieEngine::new().max_speed(Speed::Gen1));
     }
 
     const SM: [[u32; 3]; 4] = [

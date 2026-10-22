@@ -12,6 +12,7 @@ use tock_registers::register_bitfields;
 use super::Nbio;
 use crate::smn::SmnAddr;
 use crate::soc::Generation;
+use crate::topology::RootBridge;
 
 /// `NB_PCI_CTRL` (D0F0x4C alias).
 pub const NB_PCI_CTRL: SmnAddr = 0x13B0_004C;
@@ -29,6 +30,9 @@ pub const DRAM_TOM2_LOW: SmnAddr = 0x13B1_0064;
 pub const DRAM_TOM2_HI: SmnAddr = 0x13B1_0068;
 pub const SB_LOCATION: SmnAddr = 0x13B1_007C;
 pub const IOHC_FCTL: SmnAddr = 0x13B1_0118;
+/// Root-bridge bus routes (unnamed): one entry per root bridge of the
+/// system, `0x14` apart.
+pub const RB_BUS_ROUTE: SmnAddr = 0x13B1_0190;
 pub const DRAM_TOM3: SmnAddr = 0x13B1_0138;
 pub const PSP_ADDR_LO: SmnAddr = 0x13B1_02E0;
 pub const PSP_ADDR_HI: SmnAddr = 0x13B1_02E4;
@@ -56,6 +60,12 @@ register_bitfields![u32,
     pub BUS_NUM_CNTL [
         EN OFFSET(8) NUMBITS(1) [],
         BUS OFFSET(0) NUMBITS(8) []
+    ],
+    pub BUS_ROUTE [
+        BASE OFFSET(0) NUMBITS(8) [],
+        LIMIT OFFSET(8) NUMBITS(8) [],
+        /// The entry is another root bridge.
+        REMOTE OFFSET(31) NUMBITS(1) []
     ],
     pub TOM2_LOW [
         TOM2 OFFSET(23) NUMBITS(9) [],
@@ -180,6 +190,23 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
             .write(BUS_NUM_CNTL::EN::SET + BUS_NUM_CNTL::BUS.val(self.bus() as u32));
     }
 
+    /// The bus route table after DXIO (Rome `ffdff8c8` -> `ffdff045`,
+    /// Milan and Naples the same): entry `j` is the `j`-th root bridge in
+    /// physical order (the GNB handle InstanceId) with its bus range,
+    /// REMOTE unless it is this NBIO. The donor writes bits 30:16 from an
+    /// uninitialised stack word; they are 0 here.
+    pub fn set_bus_routes(&self, root_bridges: &[RootBridge]) {
+        root_bridges.iter().enumerate().for_each(|(j, rb)| {
+            let remote = (rb.socket, rb.index) != (self.socket, self.index);
+            self.reg::<BUS_ROUTE::Register>(self.at(RB_BUS_ROUTE + 0x14 * j as u32))
+                .write(
+                    BUS_ROUTE::BASE.val(rb.bus_base as u32)
+                        + BUS_ROUTE::LIMIT.val(rb.bus_limit as u32)
+                        + BUS_ROUTE::REMOTE.val(remote as u32),
+                );
+        });
+    }
+
     /// Clear the IOHC IOMMU enable (IOMMU disabled by policy).
     pub fn disable_iommu(&self) {
         self.reg::<IOMMU_CNTL_R::Register>(self.at(IOMMU_CNTL))
@@ -291,6 +318,25 @@ mod tests {
         assert_eq!(smn(&m, 0, DRAM_TOM2_LOW), 0xFF80_0001);
         assert_eq!(smn(&m, 0, DRAM_TOM2_HI), 0x1FF);
         assert_eq!(smn(&m, 0, DRAM_TOM3), 0x8000_0000 | 0x7_FFFF);
+    }
+
+    #[test]
+    fn bus_routes() {
+        // Bench order: IOMS 0..3 own buses c0, 80, 40, 00.
+        let rbs: [RootBridge; 4] = core::array::from_fn(|i| RootBridge {
+            socket: 0,
+            index: i as u8,
+            fabric_id: 0x18 + i as u16,
+            bus_base: 0xC0 - 0x40 * i as u8,
+            bus_limit: 0xFF - 0x40 * i as u8,
+            primary: i == 3,
+        });
+        let (m, n) = nbio(Generation::Rome, 1, 0x80);
+        n.set_bus_routes(&rbs);
+        let q = 1 << 20;
+        assert_eq!(smn(&m, 0x80, RB_BUS_ROUTE + q), 1 << 31 | 0xFFC0);
+        assert_eq!(smn(&m, 0x80, RB_BUS_ROUTE + q + 0x14), 0xBF80, "own entry");
+        assert_eq!(smn(&m, 0x80, RB_BUS_ROUTE + q + 0x3C), 1 << 31 | 0x3F00);
     }
 
     #[test]

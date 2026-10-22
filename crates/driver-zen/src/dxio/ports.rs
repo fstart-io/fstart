@@ -17,7 +17,7 @@ use tock_registers::{RegisterLongName, register_bitfields};
 
 use super::engine::FwEngine;
 use super::hotplug::HotplugKind;
-use super::lanes::{self, Engine, EngineKind, PcieEngine};
+use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine};
 use super::{Dxio, DxioError, Hooks, PcieReset, UnitView, op, prop};
 use crate::nbio::{Nbio, NbioReg, nbif};
 use crate::smn::{Smn, SmnAddr};
@@ -73,6 +73,20 @@ register_bitfields![u32,
     pub LC_CTL11 [
         /// Rome PCD 0x129 / Milan 0x182 (1).
         BIT13 OFFSET(13) NUMBITS(1) []
+    ],
+    /// `PCIE_LC_CNTL4`.
+    pub LC_CTL4 [
+        /// Gen3 EQ search mode (3 = preset).
+        EQ_8GT_MODE OFFSET(8) NUMBITS(2) [],
+        BIT11 OFFSET(11) NUMBITS(1) [],
+        BIT16 OFFSET(16) NUMBITS(1) []
+    ],
+    /// `PCIE_LC_CNTL8`.
+    pub LC_CTL8 [
+        /// Gen4 EQ search mode.
+        EQ_16GT_MODE OFFSET(0) NUMBITS(2) [],
+        BIT8 OFFSET(8) NUMBITS(1) [],
+        BIT11 OFFSET(11) NUMBITS(1) []
     ],
     pub STRAP_MISC [
         F2_1 OFFSET(1) NUMBITS(2) []
@@ -151,7 +165,9 @@ pub mod port {
     pub const LC_STATE0: u32 = 0x294;
     pub const LC_CTL2: u32 = 0x2C4;
     pub const LC_CTL6: u32 = 0x2EC;
+    pub const LC_CTL4: u32 = 0x2D8;
     pub const STRAP_MISC: u32 = 0x304;
+    pub const LC_CTL8: u32 = 0x374;
     pub const LC_CTL11: u32 = 0x390;
 }
 
@@ -297,14 +313,27 @@ pub struct MappedPort {
     pub port: u8,
     /// Assigned devfn after the remap.
     pub devfn: u8,
+    /// Logical bridge: the slot of `devfn` in the default devfn table
+    /// (Rome `ffe04e2c` template `+0x33`). IOHC_BRIDGE_CNTL and the SMU
+    /// hotplug map are indexed by it, not by the physical port.
+    pub bridge: u8,
     pub trained: bool,
 }
 
 impl MappedPort {
-    /// NB_PROG_DEVICE_REMAP / IOHC bridge index: `core * 8 + port`.
+    /// NB_PROG_DEVICE_REMAP index (physical port): `core * 8 + port`.
     pub const fn remap_index(&self) -> usize {
         self.core as usize * 8 + self.port as usize
     }
+}
+
+/// The logical bridge answering at `devfn`: its slot in the default
+/// devfn table (`ffe04e2c`).
+pub fn logical_bridge(generation: Generation, devfn: u8) -> Option<u8> {
+    lanes::default_devfns(generation)
+        .iter()
+        .position(|&d| d == devfn)
+        .map(|i| i as u8)
 }
 
 /// Map the returned PCIe engines to ports (`ffe0333d`): each wire engine
@@ -330,6 +359,7 @@ pub fn map_ports<'u>(
                 core: p.core,
                 port: e.mac_port_id,
                 devfn: 0,
+                bridge: 0,
                 trained: false,
             })
         })
@@ -392,20 +422,30 @@ pub fn before_reconfig<P: ConfigRegionAccess + Clone>(
         tx.modify(TX_CTL::BIT15::CLEAR);
         return;
     }
-    // The donor writes the EQ straps from its port template; without
-    // board presets fstart leaves the hardware defaults (open item).
-    if let Some(q) = pcie.eq {
-        [
-            (strap::EQ_DS_RX_PRESET_HINT, q.ds_rx_hint),
-            (strap::EQ_US_RX_PRESET_HINT, q.us_rx_hint),
-            (strap::EQ_DS_TX_PRESET, q.ds_tx),
-            (strap::EQ_US_TX_PRESET, q.us_tx),
-            (strap::EQ_16GT_DS_TX_PRESET, q.ds_tx_16gt),
-            (strap::EQ_16GT_US_TX_PRESET, q.us_tx_16gt),
-        ]
-        .iter()
-        .for_each(|&(s, v)| c.write_strap(s, v as u32));
-    }
+    // EQ straps from the port template, which defaults to
+    // `EqPresets::DONOR` (Rome `ffdfb789`, `ffdfd53c..d5c3`).
+    let q = pcie.eq.unwrap_or(EqPresets::DONOR);
+    [
+        (strap::EQ_DS_RX_PRESET_HINT, q.ds_rx_hint),
+        (strap::EQ_US_RX_PRESET_HINT, q.us_rx_hint),
+        (strap::EQ_DS_TX_PRESET, q.ds_tx),
+        (strap::EQ_US_TX_PRESET, q.us_tx),
+        (strap::EQ_16GT_DS_TX_PRESET, q.ds_tx_16gt),
+        (strap::EQ_16GT_US_TX_PRESET, q.us_tx_16gt),
+    ]
+    .iter()
+    .for_each(|&(s, v)| c.write_strap(s, v as u32));
+    // EQ search modes and the template fields that are zero on board rows
+    // without vetting/override bits (Rome `ffdfd803..d9ff`, Milan
+    // `ffd0f8af..fb91`). The 8 GT mode is preset after `speed_fixup`.
+    c.port_reg::<LC_CTL4::Register>(port, port::LC_CTL4).modify(
+        LC_CTL4::BIT16::CLEAR
+            + LC_CTL4::BIT11::CLEAR
+            + LC_CTL4::EQ_8GT_MODE.val(pcie.extra.eq_search_mode.unwrap_or(0) as u32),
+    );
+    c.port_reg::<LC_CTL8::Register>(port, port::LC_CTL8).modify(
+        LC_CTL8::BIT11::CLEAR + LC_CTL8::BIT8::CLEAR + LC_CTL8::EQ_16GT_MODE.val(0),
+    );
     // Rome PCD 0x13D (1): 8 GT/s SKP mode 2 on x1 and x4 links.
     if width == 1 || width == 4 {
         c.write_strap(strap::port(strap::P_SPC_MODE_8GT, port), 2);
@@ -436,7 +476,7 @@ pub fn after_reconfig<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: 
 
 /// State 5, per used core (Rome `ffdfe33b`, Milan `ffd10ace`): lane
 /// margining (Rome 0x12D / Milan 0x19B = 1), CI_CTL bit 29 (Rome 0x12E =
-/// 1, Milan 0x87 = 0) and bit 31 (0x134 / 0x86 = 1), Milan SDP port ID.
+/// 1, Milan 0x87 = 0) and bit 31 (0x134 / 0x86 = 1), SDP port ID.
 pub fn after_reconfig_core<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>) {
     let generation = c.nbio.generation;
     if generation == Generation::Naples {
@@ -452,15 +492,14 @@ pub fn after_reconfig_core<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>) {
     ci.modify(CORE_CI_CTL::BIT31::SET);
     if generation == Generation::Rome {
         ci.modify(CORE_CI_CTL::BIT29::SET);
+    }
+    // SDP_CTL[3:0] = core + 2; the WAFL core gets the raw pattern
+    // `& 0xF7FFFFF4 | 0x14000004` (Rome `ffdfe69c..e715`, Milan too).
+    let sdp = c.core_reg::<CORE_SDP_CTL::Register>(core_reg::SDP_CTL);
+    if c.core == 2 {
+        sdp.set(sdp.get() & 0xF7FF_FFF4 | 0x1400_0004);
     } else {
-        // SDP_CTL[3:0] = core + 2; the WAFL core gets the raw pattern
-        // `& 0xF7FFFFF4 | 0x14000004`.
-        let sdp = c.core_reg::<CORE_SDP_CTL::Register>(core_reg::SDP_CTL);
-        if c.core == 2 {
-            sdp.set(sdp.get() & 0xF7FF_FFF4 | 0x1400_0004);
-        } else {
-            sdp.modify(CORE_SDP_CTL::PORT_ID.val(c.core as u32 + 2));
-        }
+        sdp.modify(CORE_SDP_CTL::PORT_ID.val(c.core as u32 + 2));
     }
 }
 
@@ -757,15 +796,17 @@ impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R
                 let core = PcieCore::new(n, p.core);
                 self.ports[i].trained = core.trained(p.port);
                 fstart_log::info!(
-                    "dxio: engine {} -> {}.{} core {} port {} devfn {:#x} LC_STATE0 {:#x} trained {}",
+                    "dxio: engine {} -> {}.{} core {} port {} devfn {:#x} bridge {} LC_STATE0 {:#x} LC_CNTL4 {:#x} trained {}",
                     p.engine as u32,
                     p.socket,
                     p.nbio,
                     p.core,
                     p.port,
                     p.devfn,
+                    p.bridge,
                     core.port_reg::<LC_STATE0::Register>(p.port, port::LC_STATE0).get(),
-                    p.trained as u8 | self.ports[i].trained as u8
+                    core.port_reg::<LC_CTL4::Register>(p.port, port::LC_CTL4).get(),
+                    self.ports[i].trained as u8
                 );
             }
         }
@@ -779,7 +820,7 @@ impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R
             if !keep {
                 continue;
             }
-            show_bridge(n, p.remap_index());
+            show_bridge(n, p.bridge as usize);
             let c = PcieCore::new(n, p.core);
             post_training(&c, p, pcie);
             if hotplug.is_some() {
@@ -862,8 +903,10 @@ impl<P: ConfigRegionAccess + Clone, R: PcieReset> Hooks for PortSetup<'_, '_, P,
             let list = remap_devfns(&requested, defaults);
             write_remap(nbio, &list[..n]);
             for p in fresh.iter().filter(|p| p.nbio == nbio.index) {
+                let devfn = list[p.remap_index()];
                 let p = MappedPort {
-                    devfn: list[p.remap_index()],
+                    devfn,
+                    bridge: logical_bridge(generation, devfn).ok_or(DxioError::BadDevfn(devfn))?,
                     ..*p
                 };
                 if let Some(pcie) = self.pcie(&p) {
@@ -1008,6 +1051,8 @@ mod tests {
             (ports[1].core, ports[1].remap_index(), ports[1].devfn),
             (0, 0, 0x09)
         );
+        // 3.1 is default slot 8: the logical bridge, not physical 10.
+        assert_eq!((ports[0].bridge, ports[1].bridge), (8, 0));
         {
             let st = m.0.borrow();
             assert_eq!(st.smn[&(0, 0x13B1_00B8 + 4 * 10)], 0x19);
@@ -1022,12 +1067,21 @@ mod tests {
             );
             // LC_CTL11 bit 13 on NBIO0 core 1 port 2.
             assert_eq!(st.smn[&(0, 0x1154_2390)], 1 << 13);
+            // Default EQ straps without board presets: 0xA4 = 5 last.
+            assert!(
+                st.log
+                    .windows(2)
+                    .any(|w| w[0] == (0, rsmu, 0xFFFE_00A4) && w[1] == (0, rsmu + 4, 5))
+            );
         }
-        // Not trained (LC_STATE0 = 0): only the slot... no hotplug, so all
-        // bridges stay hidden; SATA enables NBIF1 functions.
+        // Port 0 (core 1 port 2) in L0, port 1 not: only logical bridge 8
+        // (devfn 3.1) is shown; SATA enables NBIF1 functions.
+        m.0.borrow_mut().smn.insert((0, 0x1154_2294), 0x10);
         s.finish();
         let st = m.0.borrow();
         assert_eq!(st.smn[&(0, 0x13B3_1004)], 0x40005);
+        assert_eq!(st.smn[&(0, 0x13B3_1004 + 0x400 * 8)], 0x40000);
+        assert_eq!(st.smn[&(0, 0x13B3_1004 + 0x400 * 10)], 0x40005);
         assert_eq!(st.smn[&(0, 0x1053_5000)], 1 << 28);
         assert_eq!(st.smn[&(0, 0x1053_6000)], 1 << 28);
         assert_eq!(st.smn[&(0, 0x1053_A008)], 1 << 8 | 1 << 16);

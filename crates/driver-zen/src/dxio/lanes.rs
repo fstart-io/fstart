@@ -231,6 +231,20 @@ pub struct EqPresets {
     pub us_tx_16gt: u8,
 }
 
+impl EqPresets {
+    /// The port template defaults used when the board gives none (Rome
+    /// `ffdfb789`: `+0x41 = 0x1BB7`, `+0x45 = 0x57`); openSIL
+    /// `PcieEngineConfigDefaults` and Oxide's Milan straps agree.
+    pub const DONOR: Self = Self {
+        ds_tx: 7,
+        ds_rx_hint: 3,
+        us_tx: 7,
+        us_rx_hint: 3,
+        ds_tx_16gt: 7,
+        us_tx_16gt: 5,
+    };
+}
+
 /// Rarely used PCIe engine fields; all off by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PcieExtra {

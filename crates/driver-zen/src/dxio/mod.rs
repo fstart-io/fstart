@@ -167,6 +167,8 @@ pub enum DxioError {
     Buffer,
     /// The generation is not built into this firmware.
     Unsupported,
+    /// A requested devfn is not in the default devfn table.
+    BadDevfn(u8),
 }
 
 impl From<SmuError> for DxioError {
@@ -243,6 +245,7 @@ impl DxioError {
             Self::Tuning(id) => ("unsupported tuning", id as u32, 0),
             Self::Buffer => ("DMA buffer", 0, 0),
             Self::Unsupported => ("generation not built", 0, 0),
+            Self::BadDevfn(d) => ("devfn not a root port", d as u32, 0),
         }
     }
 }

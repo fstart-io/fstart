@@ -296,6 +296,17 @@ pub(crate) fn dxio(
 ) {
     let generation = ctx.generation;
     let policy = ctx.policy.dxio;
+    // The vendor PCIe speed workaround reads its fuse on socket 0 (bus 0).
+    // Milan skips the fuse test when PCD 0xAF is 0x40; where that PCD
+    // comes from is not decoded, so Milan takes the test too.
+    // SAFETY: a read-only SMN register of socket 0.
+    let fuse = unsafe { Smn::new(ctx.pci, socket_bus(ctx, 0)).read32(dxio::sp3::SPEED_FUSE) };
+    fstart_log::info!("dxio: speed fuse {:#x}", fuse);
+    let mut engines = engines.clone();
+    engines
+        .iter_mut()
+        .for_each(|e| dxio::sp3::speed_fixup(e, Some(fuse)));
+    let engines = &engines;
     // DXIO requests (ReloadSm, the state machine) can take long; AGESA
     // polls without a bound. Own mailboxes with a 30 s bound.
     let dxio_smus: heapless::Vec<Smu, 2> = (0..ctx.topology.sockets)
@@ -346,8 +357,18 @@ pub(crate) fn dxio(
     }
     setup.finish();
     setup.clear_early_buses();
+    si.nbios
+        .iter()
+        .for_each(|n| n.set_bus_routes(&ctx.topology.root_bridges));
     for p in setup.ports() {
-        fstart_log::info!("dxio: port {}.{} mapped", p.socket, p.remap_index() as u32);
+        fstart_log::info!(
+            "dxio: port {}.{} devfn {:#x} bridge {} trained {}",
+            p.socket,
+            p.nbio,
+            p.devfn,
+            p.bridge,
+            p.trained as u8
+        );
     }
     // 2P xGMI (`dxio::ports::xgmi_init`) needs F1x330 and the CCD mask of
     // each socket; not wired until a 2P board exists.

@@ -322,7 +322,7 @@ impl HotplugTableV11 {
                     + MAP::DIE.val(p.socket as u32)
                     + MAP::PORT.val(p.port as u32)
                     + MAP::TILE.val((p.core as u32) << 2 | p.nbio as u32)
-                    + MAP::BRIDGE.val(p.remap_index() as u32),
+                    + MAP::BRIDGE.val(p.bridge as u32),
             );
             t.map[i].set(map.get());
             t.function[i].set(function_dword(&h.function).get());
@@ -357,7 +357,7 @@ impl HotplugTableV9 {
                     + MAP_V9::DIE.val(p.nbio as u32 & 1),
             );
             let mut f = function_dword(&h.function);
-            f.modify(FUNCTION::V9_BRIDGE.val(p.remap_index() as u32));
+            f.modify(FUNCTION::V9_BRIDGE.val(p.bridge as u32));
             t.map[i].set(map.get());
             t.function[i].set(f.get());
             t.reset[i].set(reset_dword(&h.reset));
@@ -512,6 +512,7 @@ mod tests {
             core: 1,
             port: 2,
             devfn: 0x1B,
+            bridge: 10,
             trained: false,
         }
     }
