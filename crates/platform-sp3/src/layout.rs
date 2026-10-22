@@ -142,7 +142,7 @@ pub const RESET: ResetGeometry = ResetGeometry {
 const _: () = assert!(RESET.check().is_ok());
 
 /// Lowest flash offset of the fstart FFS (lower half): above the vendor
-/// prefix of every donor (prefix ends: Naples `0x273000`/`0x4ba000`, Rome
+/// prefix of every donor (prefix ends: Naples `0x294000`/`0x4e0000`, Rome
 /// `0x50b000`/`0x54b000`, Milan `0x586000`; FIRMWARE_IMAGE §4) with room
 /// for prefix growth and the combo directory. The image builder moves it up
 /// if a vendor prefix reaches further.

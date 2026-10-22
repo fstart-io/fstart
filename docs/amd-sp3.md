@@ -94,7 +94,7 @@ LPC bus.
 
 The PSP, ABL, SMU, PMU and DXIO firmware and the APCB stay vendor blobs:
 every supported half keeps its PSP/BIOS directories and blobs in place,
-`[0, prefix)` of the half (Naples `0x273000`, Rome `0x54b000`, Milan
+`[0, prefix)` of the half (Naples `0x294000`, Rome `0x54b000`, Milan
 `0x586000`), byte-identical apart from the pointer fields named below.
 Composition lives in `fstart_image_build::sp3_flash` and is re-read with
 `fstart-amdfw-format` (the reader the reset image uses too) and the boot

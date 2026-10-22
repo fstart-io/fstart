@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
 use fstart_amdfw_format::directory::{
-    BiosEntry, Directory, Entry, Levels, PspEntry, modify_entries, write_table,
+    self, BiosEntry, Directory, Entry, Levels, PspEntry, modify_entries, write_table,
 };
 use std::path::Path;
 use zerocopy::Immutable;
@@ -69,10 +69,12 @@ fn synthetic(generation: Generation) -> Vec<u8> {
         Generation::Rome => 0x10,
         Generation::Milan => 0x10 | 1 << 29,
     };
-    put32(&mut h, EFS_OFFSET, efs::SIGNATURE);
-    put32(&mut h, EFS_OFFSET + EFS_PSP, ptr(PSP) as u32);
-    put32(&mut h, EFS_OFFSET + EFS_WORD, generation_word(generation));
-    put32(&mut h, EFS_OFFSET + bios_field(generation), ptr(BHD) as u32);
+    let profile = generation.profile();
+    let mut efs = Efs::erased();
+    efs.new_psp_directory.set(ptr(PSP) as u32);
+    efs.generation.set(!profile.generation_mask);
+    efs.bios_directory_mut(profile.bios).set(ptr(BHD) as u32);
+    h[EFS_OFFSET..][..size_of::<Efs>()].copy_from_slice(efs.as_bytes());
     let slot = vendor_slot(generation);
     let reset = || {
         bios_entry(
@@ -90,8 +92,8 @@ fn synthetic(generation: Generation) -> Vec<u8> {
         info,
         &[
             psp_entry(0x00, 0x8000, ptr(0x11_0000)),
-            psp_entry(psp::SOFT_FUSE, u32::MAX, 1),
-            psp_entry(psp::LEVEL2, 0x400, ptr(PL2)),
+            psp_entry(directory::psp::SOFT_FUSE, u32::MAX, 1),
+            psp_entry(directory::psp::LEVEL2, 0x400, ptr(PL2)),
         ],
     );
     put_dir(
@@ -173,6 +175,13 @@ fn linked_reset() -> Vec<u8> {
     r
 }
 
+const COOKIES: [[u8; 4]; 4] = [
+    directory::PSP_COOKIE,
+    directory::PSP_LEVEL2_COOKIE,
+    directory::BIOS_COOKIE,
+    directory::BIOS_LEVEL2_COOKIE,
+];
+
 /// Every level and entry of `out` against `vendor`: same entries, same
 /// data (directories by cookie only, their pointers move); `reset` checks
 /// the `0x62` entries instead.
@@ -192,7 +201,7 @@ fn same_tree<E: Entry>(
                 continue;
             }
             match (od.data(oe), vd.data(ve)) {
-                (Ok(a), Ok(b)) if Kind::of(&b[..4.min(b.len())]).is_some() => {
+                (Ok(a), Ok(b)) if COOKIES.iter().any(|c| b.starts_with(c)) => {
                     assert_eq!(a[..4], b[..4])
                 }
                 (Ok(a), Ok(b)) => assert!(a == b, "entry {:#x} differs", oe.kind()),
@@ -333,7 +342,7 @@ fn layouts_the_composer_refuses() {
     ));
     // An EFS signature where a boot ROM searches before 0x20000.
     let mut stray = self::ffs(0x22_0004);
-    put32(&mut stray, 0x82_0000 - 0x60_0000, efs::SIGNATURE);
+    stray[0x82_0000 - 0x60_0000..][..4].copy_from_slice(&efs::SIGNATURE.to_le_bytes());
     assert_eq!(
         compose_with(&rom, &all, &stray),
         Err(ImageError::StrayEfs { offset: 0x82_0000 })
@@ -456,13 +465,13 @@ fn donor_halves_match_the_firmware_image_report() {
             "naples-s8026-v202.bin",
             Generation::Naples,
             0xdb_0000,
-            0x27_3000,
+            0x29_4000,
         ),
         (
             "naples2p-knppd32-1801.bin",
             Generation::Naples,
             0xde_0000,
-            0x4b_a000,
+            0x4e_0000,
         ),
         (
             "rome-s8026-v202.bin",

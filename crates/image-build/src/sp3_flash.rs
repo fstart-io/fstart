@@ -41,9 +41,9 @@
 
 use core::fmt;
 use core::ops::Range;
-use std::collections::BTreeSet;
-
-use fstart_amdfw_format::directory::{Combo, bios, fletcher32, psp};
+use fstart_amdfw_format::directory::{
+    BiosEntry, Combo, Directory, Entry, Levels, PspEntry, bios, modify_entries,
+};
 use fstart_amdfw_format::efs::{self, Efs};
 use fstart_amdfw_format::{Error as DirError, Flash, Profile};
 use fstart_core::ffs::locator::{LOCATOR_SIZE, LocatorBlock};
@@ -58,37 +58,19 @@ pub use fstart_driver_zen::soc::Generation;
 
 use crate::build_plan::{BuildPlan, FfsAssembly, UnitOutput};
 
-/// EFS generation words of the three generations (FIRMWARE_IMAGE §1.1).
-pub const fn generation_word(generation: Generation) -> u32 {
-    match generation {
-        Generation::Naples => 0xffff_ffff,
-        Generation::Rome => 0xffff_fffe,
-        Generation::Milan => 0xffff_fffc,
-    }
-}
-
-/// The generation of a vendor EFS word (exact words only).
+/// The generation of a vendor EFS word: exactly the word whose bits a
+/// generation's boot ROM requires clear (FIRMWARE_IMAGE §1.1).
 pub fn generation_of(word: u32) -> Result<Generation, ImageError> {
     GENERATIONS
         .into_iter()
-        .find(|&g| generation_word(g) == word)
+        .find(|g| !g.profile().generation_mask == word)
         .ok_or(ImageError::UnknownGeneration(word))
 }
 
 const GENERATIONS: [Generation; 3] = [Generation::Naples, Generation::Rome, Generation::Milan];
 
-/// EFS field of a generation's BIOS directory (AMD #55758 Table 2).
-const fn bios_field(generation: Generation) -> usize {
-    match generation {
-        Generation::Naples => 0x18,
-        Generation::Rome => 0x20,
-        Generation::Milan => 0x28,
-    }
-}
 /// Where the SP3 halves have their EFS.
 const EFS_OFFSET: usize = 0x2_0000;
-const EFS_PSP: usize = 0x14;
-const EFS_WORD: usize = 0x24;
 
 /// One 16 MiB half of a 32 MiB flash (a 16 MiB flash is its lower half).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,12 +157,6 @@ pub enum ImageError {
     Plan(&'static str),
     /// The vendor ROM does not fit the layout.
     Layout(&'static str),
-    /// An address mode the composer does not implement (3, partition
-    /// relative), or a directory with a base address field.
-    AddressMode {
-        offset: usize,
-        mode: u8,
-    },
     /// An EFS signature at a boot ROM search offset other than the EFS.
     StrayEfs {
         offset: usize,
@@ -220,213 +196,8 @@ fn exact_size(bytes: &[u8], expected: usize) -> Result<(), ImageError> {
     }
 }
 
-fn get32(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
-fn get64(b: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
-}
-fn put32(b: &mut [u8], at: usize, v: u32) {
-    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
-}
-fn put64(b: &mut [u8], at: usize, v: u64) {
-    b[at..at + 8].copy_from_slice(&v.to_le_bytes());
-}
 const fn align_up(v: usize, a: usize) -> usize {
     v.div_ceil(a) * a
-}
-
-// ---- directory trees as raw bytes ----
-
-/// PSP or BIOS directory, by cookie.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Psp,
-    Bios,
-}
-
-impl Kind {
-    fn of(cookie: &[u8]) -> Option<Self> {
-        match cookie {
-            b"$PSP" | b"$PL2" => Some(Self::Psp),
-            b"$BHD" | b"$BL2" => Some(Self::Bios),
-            _ => None,
-        }
-    }
-
-    const fn entry_size(self) -> usize {
-        match self {
-            Self::Psp => 16,
-            Self::Bios => 24,
-        }
-    }
-}
-
-/// One directory of a tree, offsets within its half.
-#[derive(Debug, Clone, Copy)]
-struct Dir {
-    offset: usize,
-    kind: Kind,
-    count: usize,
-    info: u32,
-}
-
-impl Dir {
-    /// Gen2 address mode (AMD #55758 Table 4); gen1 headers have none.
-    fn mode(&self, gen1: bool) -> u8 {
-        if gen1 { 0 } else { (self.info >> 29 & 3) as u8 }
-    }
-
-    fn table_end(&self) -> usize {
-        self.offset + 16 + self.count * self.kind.entry_size()
-    }
-
-    /// The table, or its reserved area (gen2 Max Size, 4 KiB units).
-    fn end(&self, gen1: bool) -> usize {
-        let reserved = if gen1 {
-            0
-        } else {
-            self.offset + (self.info & 0x3ff) as usize * 0x1000
-        };
-        self.table_end().max(reserved)
-    }
-
-    fn entry(&self, index: usize) -> usize {
-        self.offset + 16 + index * self.kind.entry_size()
-    }
-}
-
-/// An entry that locates flash data (not a value entry).
-#[derive(Debug, Clone)]
-struct Located {
-    /// Offset of the entry in the half.
-    entry: usize,
-    dir: Kind,
-    kind: u8,
-    /// The raw location field (address mode bits included).
-    value: u64,
-    /// Effective address mode (the directory's or the entry's).
-    mode: u8,
-    /// Data range in the half.
-    target: Range<usize>,
-}
-
-impl Located {
-    fn is_reset(&self) -> bool {
-        self.dir == Kind::Bios && self.kind == bios::RESET_IMAGE
-    }
-
-    fn mmio(&self) -> bool {
-        (MMIO_BASE..1 << 32).contains(&(self.value & ADDRESS_MASK))
-    }
-}
-
-const ADDRESS_MASK: u64 = (1 << 62) - 1;
-
-/// Every directory reachable from the roots (L1, L2 and any entry pointing
-/// at a directory cookie) and every located entry, checksums verified.
-struct Tree {
-    gen1: bool,
-    dirs: Vec<Dir>,
-    located: Vec<Located>,
-}
-
-impl Tree {
-    fn walk(half: &[u8], roots: &[usize], gen1: bool) -> Result<Self, ImageError> {
-        let mut queue: Vec<usize> = roots.to_vec();
-        let mut seen = BTreeSet::new();
-        let (mut dirs, mut located) = (Vec::new(), Vec::new());
-        while let Some(offset) = queue.pop() {
-            if !seen.insert(offset) {
-                continue;
-            }
-            let dir = Self::directory(half, offset)?;
-            for index in 0..dir.count {
-                let at = dir.entry(index);
-                let (kind, size, value) = (half[at], get32(half, at + 4), get64(half, at + 8));
-                if matches!(size, 0 | u32::MAX) || (dir.kind == Kind::Psp && kind == psp::SOFT_FUSE)
-                {
-                    continue;
-                }
-                let mode = dir.mode(gen1).max((value >> 62) as u8);
-                let address = value & ADDRESS_MASK;
-                let start = match mode {
-                    0 | 1 if (MMIO_BASE..1 << 32).contains(&address) => address - MMIO_BASE,
-                    0 | 1 if !gen1 => address,
-                    0 | 1 => return Err(DirError::Address(value).into()),
-                    2 => offset as u64 + address,
-                    _ => return Err(ImageError::AddressMode { offset: at, mode }),
-                };
-                let target = usize::try_from(start)
-                    .ok()
-                    .and_then(|s| Some(s..s.checked_add(size as usize)?))
-                    .filter(|r| r.end <= half.len())
-                    .ok_or(DirError::Address(value))?;
-                if half
-                    .get(target.start..target.start + 4)
-                    .and_then(Kind::of)
-                    .is_some()
-                {
-                    queue.push(target.start);
-                }
-                located.push(Located {
-                    entry: at,
-                    dir: dir.kind,
-                    kind,
-                    value,
-                    mode,
-                    target,
-                });
-            }
-            dirs.push(dir);
-        }
-        Ok(Self {
-            gen1,
-            dirs,
-            located,
-        })
-    }
-
-    fn directory(half: &[u8], offset: usize) -> Result<Dir, ImageError> {
-        let truncated = DirError::Truncated(offset);
-        let header = half.get(offset..offset + 16).ok_or(truncated)?;
-        let kind = Kind::of(&header[..4]).ok_or(DirError::Cookie(offset))?;
-        let dir = Dir {
-            offset,
-            kind,
-            count: get32(header, 8) as usize,
-            info: get32(header, 12),
-        };
-        let body = half.get(offset + 8..dir.table_end()).ok_or(truncated)?;
-        if get32(header, 4) != fletcher32(body) {
-            return Err(DirError::Checksum(offset).into());
-        }
-        Ok(dir)
-    }
-
-    /// End of everything the PSP/ABL read: directories with their reserved
-    /// area and every located entry except the reset image.
-    fn prefix_end(&self) -> usize {
-        let dirs = self.dirs.iter().map(|d| d.end(self.gen1));
-        let data = self
-            .located
-            .iter()
-            .filter(|l| !l.is_reset())
-            .map(|l| l.target.end);
-        dirs.chain(data).max().unwrap_or(0)
-    }
-
-    fn resets(&self) -> impl Iterator<Item = &Located> {
-        self.located.iter().filter(|l| l.is_reset())
-    }
-
-    /// Recompute every directory checksum in `half`.
-    fn fix_checksums(&self, half: &mut [u8]) {
-        for dir in &self.dirs {
-            let sum = fletcher32(&half[dir.offset + 8..dir.table_end()]);
-            put32(half, dir.offset + 4, sum);
-        }
-    }
 }
 
 /// A parsed vendor half.
@@ -449,26 +220,59 @@ fn vendor_efs(half: &[u8]) -> Result<&Efs, ImageError> {
     Ok(Flash::region(half, 0, MMIO_BASE, any).efs_checked()?.1)
 }
 
-/// A vendor half's PSP and BIOS directory trees.
-fn vendor_trees(half: &[u8]) -> Result<(Generation, Tree), ImageError> {
-    let efs = vendor_efs(half)?;
-    let generation = generation_of(efs.generation.get())?;
-    let gen1 = generation == Generation::Naples;
-    let pointer = |value: u64| match value {
-        v if (MMIO_BASE..1 << 32).contains(&v) => Ok((v - MMIO_BASE) as usize),
-        v if !gen1 && (v as usize) < half.len() => Ok(v as usize),
-        v => Err(DirError::Address(v)),
-    };
-    let psp_root = pointer(efs.new_psp_directory.get().into())?;
-    let flash = generation.flash(half);
-    if Combo::read(flash, psp_root)?.is_some() {
-        return Err(ImageError::Layout("vendor half with a combo directory"));
+/// A vendor half's generation and its PSP and BIOS directories, checksums
+/// verified.
+struct Vendor<'a> {
+    generation: Generation,
+    psp: Levels<'a, PspEntry>,
+    bios: Levels<'a, BiosEntry>,
+}
+
+impl<'a> Vendor<'a> {
+    fn read(half: &'a [u8]) -> Result<Self, ImageError> {
+        let efs = vendor_efs(half)?;
+        let generation = generation_of(efs.generation.get())?;
+        let flash = generation.flash(half);
+        let psp_root = flash.resolve(efs.new_psp_directory.get().into(), 0, 0)?;
+        if Combo::read(flash, psp_root)?.is_some() {
+            return Err(ImageError::Layout("vendor half with a combo directory"));
+        }
+        Ok(Self {
+            generation,
+            psp: flash.psp_directories()?,
+            bios: flash.bios_directories_checked(generation.profile().bios)?,
+        })
     }
-    let bios = efs
-        .bios_directory(generation.profile().bios)
-        .ok_or(DirError::MissingDirectory)?;
-    let bios_root = pointer(bios)?;
-    Ok((generation, Tree::walk(half, &[psp_root, bios_root], gen1)?))
+
+    /// Every `0x62` entry: its data range and DRAM destination.
+    fn resets(&self) -> impl Iterator<Item = Result<(Range<usize>, u64), DirError>> + '_ {
+        self.bios.iter().flat_map(|dir| {
+            dir.entries
+                .iter()
+                .filter(|e| e.kind == bios::RESET_IMAGE && e.has_data())
+                .map(move |e| Ok((dir.range(e)?, e.destination())))
+        })
+    }
+
+    /// End of everything the PSP/ABL read: the directories with their
+    /// reserved size and every file except the reset image.
+    fn prefix_end(&self) -> Result<usize, DirError> {
+        fn end<E: Entry>(
+            dir: Directory<'_, E>,
+            kept: impl Fn(&E) -> bool,
+        ) -> Result<usize, DirError> {
+            dir.entries
+                .iter()
+                .filter(|e| e.has_data() && kept(e))
+                .try_fold(dir.extent()?.end, |end, e| Ok(end.max(dir.range(e)?.end)))
+        }
+        let psp = self.psp.iter().map(|dir| end(dir, |_| true));
+        let bios = self
+            .bios
+            .iter()
+            .map(|dir| end(dir, |e: &BiosEntry| e.kind != bios::RESET_IMAGE));
+        psp.chain(bios).try_fold(0, |max, end| Ok(max.max(end?)))
+    }
 }
 
 impl VendorLayout {
@@ -476,27 +280,24 @@ impl VendorLayout {
     /// (checksums verified), the `0x62` slot and the prefix end.
     pub fn parse(half: &[u8]) -> Result<Self, ImageError> {
         exact_size(half, HALF_SIZE)?;
-        let (generation, tree) = vendor_trees(half)?;
-        let resets: Vec<_> = tree.resets().collect();
-        let first = resets
+        let vendor = Vendor::read(half)?;
+        let resets = vendor.resets().collect::<Result<Vec<_>, _>>()?;
+        let (target, destination) = resets
             .first()
+            .cloned()
             .ok_or(ImageError::ResetEntry("no 0x62 entry"))?;
-        let destination = |l: &Located| get64(half, l.entry + 16);
-        if resets
-            .iter()
-            .any(|l| l.target != first.target || destination(l) != destination(first))
-        {
+        if resets.iter().any(|r| *r != (target.clone(), destination)) {
             return Err(ImageError::ResetEntry("L1 and L2 0x62 entries differ"));
         }
         let reset = ResetSlot {
-            flash_offset: first.target.start as u32,
-            size: first.target.len() as u32,
-            destination: destination(first),
+            flash_offset: target.start as u32,
+            size: target.len() as u32,
+            destination,
         };
         Ok(Self {
-            generation,
+            generation: vendor.generation,
             reset,
-            prefix_end: tree.prefix_end(),
+            prefix_end: vendor.prefix_end()?,
         })
     }
 }
@@ -665,20 +466,29 @@ fn check_reset_image(plan: &FlashPlan, reset_image: &[u8]) -> Result<(), ImageEr
     Ok(())
 }
 
-/// Point every `0x62` of one composed half in `out` (the whole image) at
-/// the reset image copy at the half's `plan.reset.flash_offset` (MMIO form
-/// for MMIO entries).
-fn rewrite_half(out: &mut [u8], half: FlashHalf, tree: &Tree, plan: &FlashPlan) {
-    let bytes = &mut out[half.range()];
-    for l in tree.resets() {
-        let source = u64::from(plan.reset.flash_offset) + if l.mmio() { MMIO_BASE } else { 0 };
-        put64(bytes, l.entry + 8, l.value & !ADDRESS_MASK | source);
-        put32(bytes, l.entry + 4, plan.reset.size);
-        put64(bytes, l.entry + 16, plan.reset.destination);
-        // Flags: reset + copy, not compressed; keep read-only/instance.
-        bytes[l.entry + 2] = bytes[l.entry + 2] & !0x0b | 0x03;
-    }
-    tree.fix_checksums(bytes);
+/// Point every `0x62` of one composed half (`bytes`, the vendor's
+/// directories at `tables`) at the reset image copy at the half's
+/// `plan.reset.flash_offset` (MMIO form for MMIO entries).
+fn rewrite_half(bytes: &mut [u8], tables: &[usize], plan: &FlashPlan) -> Result<(), ImageError> {
+    const MODE: u64 = 3 << 62;
+    let rewrite = |e: &mut BiosEntry| {
+        if e.kind != bios::RESET_IMAGE || !e.has_data() {
+            return;
+        }
+        let source = e.source.get();
+        let mmio = (MMIO_BASE..1 << 32).contains(&(source & !MODE));
+        let offset = u64::from(plan.reset.flash_offset) + if mmio { MMIO_BASE } else { 0 };
+        e.source.set(source & MODE | offset);
+        e.size.set(plan.reset.size);
+        e.destination.set(plan.reset.destination);
+        // Reset + copy, not compressed; keep read-only/instance.
+        e.flags = e.flags & !(BiosEntry::RESET | BiosEntry::COPY | BiosEntry::COMPRESSED)
+            | BiosEntry::RESET
+            | BiosEntry::COPY;
+    };
+    tables.iter().try_for_each(|&offset| {
+        modify_entries(bytes, offset, rewrite).ok_or(ImageError::Verify("a BIOS directory moved"))
+    })
 }
 
 /// Build the image from the survey. `reset` is already patched.
@@ -691,9 +501,11 @@ fn build(
 ) -> Result<Vec<u8>, ImageError> {
     let mut out = vendor_rom.to_vec();
     for (half, layout) in survey.composed() {
-        let (_, tree) = vendor_trees(&vendor_rom[half.range()])?;
-        out[half.range()][layout.prefix_end..].fill(0xff);
-        rewrite_half(&mut out, half, &tree, plan);
+        let vendor = Vendor::read(&vendor_rom[half.range()])?;
+        let tables: Vec<_> = vendor.bios.iter().map(|dir| dir.offset).collect();
+        let bytes = &mut out[half.range()];
+        bytes[layout.prefix_end..].fill(0xff);
+        rewrite_half(bytes, &tables, plan)?;
         let reset_at = half.offset() + plan.reset.flash_offset as usize;
         out[reset_at..reset_at + reset.len()].copy_from_slice(reset);
     }
@@ -738,7 +550,7 @@ fn verify(image: &[u8], plan: &FlashPlan, survey: &Survey) -> Result<(), ImageEr
         }
         for &offset in efs::PROBES.iter().filter(|&&o| o as usize != EFS_OFFSET) {
             let at = half.offset() + offset as usize;
-            if get32(image, at) == efs::SIGNATURE {
+            if image[at..at + 4] == efs::SIGNATURE.to_le_bytes() {
                 return Err(ImageError::StrayEfs { offset: at });
             }
         }
