@@ -126,6 +126,26 @@ const PSTATES: [Pstate; 2] = [
     },
 ];
 
+/// A Rome FCH with UART0, UART1 as COM1, I2C0 and GPIO (routes FCH_SP3
+/// §3.3).
+fn fch() -> &'static FchAcpi {
+    use fstart_driver_zen::fch::acpi::{I2c, LegacyCom, Uart};
+    let mut f = FchAcpi {
+        gpio_irq: Some(7),
+        ..FchAcpi::default()
+    };
+    f.uarts.push(Uart { index: 0, irq: 3 }).unwrap();
+    f.legacy
+        .push(LegacyCom {
+            com: 1,
+            port: 0x3F8,
+            irq: 4,
+        })
+        .unwrap();
+    f.i2c.push(I2c { index: 0, irq: 10 }).unwrap();
+    std::boxed::Box::leak(std::boxed::Box::new(f))
+}
+
 fn inputs<'a>(
     generation: Generation,
     s: &'a System,
@@ -154,6 +174,7 @@ fn inputs<'a>(
             acpi_enable: 0xA0,
             acpi_disable: 0xA1,
         }),
+        fch: fch(),
         board: Board {
             ipmi: Some(IpmiKcsAcpi {
                 port: 0xCA2,
@@ -335,7 +356,7 @@ fn dsdt_root_bridges_in_bus_order() {
     let tables = build(&inputs(Generation::Milan, &s, &rb, None)).unwrap();
     let d = &tables.dsdt;
     for name in [
-        b"PCI0", b"PCI1", b"PCI2", b"PCI3", b"LPCB", b"SYSR", b"NAPE",
+        b"PCI0", b"PCI1", b"PCI2", b"PCI3", b"LPCB", b"SYSR", b"NAPE", b"GPIO", b"FUR0", b"COM1", b"I2CA",
     ] {
         assert!(d.windows(4).any(|w| w == name));
     }

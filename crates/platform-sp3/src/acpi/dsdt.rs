@@ -202,60 +202,11 @@ fn nbio(features_smn: u32) -> Result<Vec<u8>, AmlError> {
     Ok(v)
 }
 
-/// FCH legacy devices under the LPC bridge (00:14.3). RTC without IRQ 8:
-/// the HPET's legacy replacement owns it (donor `RTC0` with HPET on).
+/// The LPC bridge (00:14.3): the FCH's ISA devices and the board's.
 fn lpc(board_aml: &[u8]) -> Result<Vec<u8>, AmlError> {
-    let fch: Vec<u8> = acpi_dsl! {
-        Name("_ADR", 0x00140003u32);
-        Device("PIC") {
-            Name("_HID", EisaId("PNP0000"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x20u16, 0x20u16, 0u8, 2u8);
-                IO(0xA0u16, 0xA0u16, 0u8, 2u8);
-                IO(0x4D0u16, 0x4D0u16, 0u8, 2u8);
-                IRQNoFlags(2u8);
-            });
-        }
-        Device("DMAC") {
-            Name("_HID", EisaId("PNP0200"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x00u16, 0x00u16, 0u8, 0x10u8);
-                IO(0x81u16, 0x81u16, 0u8, 3u8);
-                IO(0x87u16, 0x87u16, 0u8, 1u8);
-                IO(0x89u16, 0x89u16, 0u8, 3u8);
-                IO(0x8Fu16, 0x8Fu16, 0u8, 1u8);
-                IO(0xC0u16, 0xC0u16, 0u8, 0x20u8);
-            });
-        }
-        Device("TIMR") {
-            Name("_HID", EisaId("PNP0100"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x40u16, 0x40u16, 0u8, 4u8);
-                IRQNoFlags(0u8);
-            });
-        }
-        Device("RTC") {
-            Name("_HID", EisaId("PNP0B00"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x70u16, 0x70u16, 0u8, 2u8);
-            });
-        }
-        Device("SPKR") {
-            Name("_HID", EisaId("PNP0800"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x61u16, 0x61u16, 0u8, 1u8);
-            });
-        }
-        Device("HPET") {
-            Name("_HID", EisaId("PNP0103"));
-            Name("_UID", 0u8);
-            Name("_CRS", ResourceTemplate {
-                Memory32Fixed(ReadOnly, #{const dword HPET_BASE}, 0x400u32);
-            });
-        }
-    }
-    .into();
-    device_vec("LPCB", &[fch.as_slice(), board_aml].concat())
+    let adr = name("_ADR", &0x0014_0003u32);
+    let fch = fstart_driver_zen::fch::acpi::lpc_aml(HPET_BASE as u32)?;
+    device_vec("LPCB", &[adr.as_slice(), &fch, board_aml].concat())
 }
 
 /// Motherboard resources the root-bridge windows would otherwise offer:
@@ -497,6 +448,7 @@ pub fn build(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError
         out.extend(root_bridge(inputs, windows, *uid, rb)?);
     }
     out.extend(processors(inputs)?);
+    out.extend(inputs.fch.sb_aml()?);
     out.extend_from_slice(inputs.board.sb_aml);
     Ok(out)
 }

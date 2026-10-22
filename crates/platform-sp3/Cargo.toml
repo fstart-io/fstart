@@ -13,7 +13,7 @@ default = []
 naples = ["fstart-driver-zen/naples"]
 rome = ["fstart-driver-zen/rome"]
 milan = ["fstart-driver-zen/milan"]
-acpi = ["dep:fstart-acpi"]
+acpi = ["dep:fstart-acpi", "fstart-driver-zen/acpi"]
 # The reset-image firmware unit (host::RESET_FEATURE): stage runtime for
 # `fstart_entry = "amd-psp-reset"` (asm/reset.S enters the arch crate's
 # `_start_ram`); `ffs` brings the stage allocator the arch identity paging

@@ -25,6 +25,8 @@
 //! Task functions take the hardware as [`FchHw`] and typed policy whose
 //! `Default` is the donor default (FCH_SP3 §8).
 
+#[cfg(feature = "acpi")]
+pub mod acpi;
 pub mod acpimmio;
 pub mod alink;
 pub mod common;

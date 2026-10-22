@@ -226,6 +226,10 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
     let pstates = power::pstates(&cpu);
     let threads_per_core = ((fstart_arch::x86::cpuid(0x8000_001e).1 >> 8) & 0xff) as u8 + 1;
     let lpc_aml = B::acpi_lpc_aml();
+    let fch = {
+        use fstart_driver_zen::fch::FchHw;
+        acpi::FchAcpi::read(ctx.fch.mmio(), ctx.fch.io())
+    };
     // SAFETY: the HPET general capabilities register, read only.
     let hpet_block_id = unsafe { fstart_core::mmio::read32(0xfed0_0000 as *const u32) };
     let inputs = Inputs {
@@ -249,6 +253,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             acpi_enable: smi::sw::ACPI_ENABLE,
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),
+        fch: &fch,
         board: B::acpi_board(&lpc_aml),
     };
     let tables = acpi::build(&inputs).or_halt("ACPI tables");

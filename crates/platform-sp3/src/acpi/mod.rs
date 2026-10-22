@@ -25,6 +25,7 @@ use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_acpi::platform::PlatformConfig;
 use fstart_core::acpi::AcpiSmiConfig;
 use fstart_driver_zen::ccx::power::{CstateInfo, Pstate};
+pub use fstart_driver_zen::fch::acpi::FchAcpi;
 use fstart_driver_zen::nbio::ioapic::IoapicInfo;
 use fstart_driver_zen::soc::Generation;
 use fstart_driver_zen::topology::RootBridge;
@@ -114,6 +115,8 @@ pub struct Inputs<'a> {
     /// The SMI command port and ACPI enable/disable values the SMM handler
     /// implements; `None` when firmware hands over with SCI_EN already set.
     pub acpi_smi: Option<AcpiSmiConfig>,
+    /// FCH devices as the FCH tasks left them.
+    pub fch: &'a FchAcpi,
     pub board: Board<'a>,
 }
 

@@ -13,6 +13,8 @@ default = []
 naples = []
 rome = []
 milan = []
+# ACPI descriptions of the blocks (FCH devices).
+acpi = ["dep:fstart-acpi"]
 
 [dependencies]
 fstart-core = { workspace = true }
@@ -24,6 +26,7 @@ zerocopy = { workspace = true }
 ufmt = { workspace = true }
 # MSR access (MsrAccess, typed Msr registers) for the CCX block.
 fstart-arch = { workspace = true, features = ["x86_64"] }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 
 [dev-dependencies]
 fstart-pci = { workspace = true }
