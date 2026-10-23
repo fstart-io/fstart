@@ -1,5 +1,5 @@
 //! SMM: TSEG placement, the FCH SMI control the arch installer drives, and
-//! the OS-first FCH SMI handler (ACPI_SMM §4, FCH_SP3 §5, PSP_APOB §3.3).
+//! the native FCH SMI handler (ACPI_SMM §4, FCH_SP3 §5, PSP_APOB §3.3).
 //!
 //! Installation is the arch crate's AMD64 path
 //! (`fstart_arch::x86::cpu::amd::smm::AmdSmm`): every thread programs
@@ -8,10 +8,13 @@
 //! sources the donors leave routed (SW SMI, SLP_TYP, power button; Rome's
 //! CF9 trap).
 //!
-//! The handler ([`Sp3SmmHandler`], feature `smm`) is OS-first like the
-//! donors' SP3 dispatchers: ACPI enable/disable, Sx entry, power button,
+//! The handler ([`Sp3SmmHandler`], feature `smm`) handles ACPI enable/disable,
+//! Sx entry, power button,
 //! the NBIO USB SMI, Milan's PSP FCH lock (SW SMI D2) and the PSP SmmInfo
-//! registration ([`sw::PSP_SMM_INFO`]). AGESA sends SmmInfo from its SMM
+//! registration ([`sw::PSP_SMM_INFO`]). Boards can opt into [`ras`]'s MCA
+//! observer: CPU-local capture before native #MC, with OS-owned banks and
+//! optional bounded SEL delivery. There is no DXE or UEFI dependency.
+//! AGESA sends SmmInfo from its SMM
 //! driver too; doing it from the handler puts the P2C buffer and the C2P
 //! page in the handler's own SMRAM statics, whose addresses normal mode
 //! cannot know before the image is placed.
@@ -160,6 +163,9 @@ pub fn prepare_psp_smi(fch: &crate::hw::PrimaryFch) {
 pub use handler::Sp3SmmHandler;
 
 #[cfg(feature = "smm")]
+pub mod ras;
+
+#[cfg(feature = "smm")]
 mod handler {
     use core::cell::UnsafeCell;
 
@@ -262,10 +268,14 @@ mod handler {
     }
 
     /// The SP3 FCH SMI dispatcher.
-    pub struct Sp3SmmHandler;
+    pub struct Sp3SmmHandler<P = super::ras::OsFirst>(core::marker::PhantomData<P>);
 
-    impl SmmHandler for Sp3SmmHandler {
+    impl<P: super::ras::Policy> SmmHandler for Sp3SmmHandler<P> {
         type Config = SmmConfig;
+
+        unsafe fn enter_cpu(ctx: &mut SmmContext<'_>, config: &SmmConfig) {
+            super::ras::enter::<P>(ctx.cpu(), config.generation);
+        }
 
         unsafe fn handle(_ctx: &mut SmmContext<'_>, config: &SmmConfig) {
             fstart_pci::ecam::init(config.ecam_base as usize);
@@ -275,6 +285,7 @@ mod handler {
             let pci = Ecam;
             // SAFETY: SMM owns the CPU; the index is restored below.
             let saved = unsafe { pci.read(host, fstart_driver_zen::smn::SMN_INDEX) };
+            super::ras::flush::<P>(crate::hw::tsc());
             dispatch(config);
             // SAFETY: as above.
             unsafe { pci.write(host, fstart_driver_zen::smn::SMN_INDEX, saved) };
@@ -299,6 +310,9 @@ mod handler {
                 smi::sw::ACPI_ENABLE => sx::acpi_enable(&hw),
                 smi::sw::ACPI_DISABLE => sx::acpi_disable(&hw),
                 sw::PSP_SMM_INFO => smm_info(config, &timer),
+                // The local SMI status, not this forgeable command, authorizes
+                // MCA capture and native #MC handoff in `enter_cpu`.
+                super::ras::MCE_SMI_COMMAND => {}
                 #[cfg(feature = "milan")]
                 smi::sw::FCH_LOCK if generation == Generation::Milan => fch_lock(config, &timer),
                 command => {

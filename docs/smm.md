@@ -137,7 +137,12 @@ records its size. The SMM entry copies it out only if the recorded size is
 exactly `size_of::<Config>()` and the slot lies inside SMRAM, then passes it to
 the handler. There is no serialization format, magic, or schema version.
 
-Every permanent entry follows coreboot's rendezvous: one CPU atomically claims
+Every permanent entry first runs `SmmHandler::enter_cpu` with validated
+configuration. This bounded, CPU-local hook runs even on entrants that will
+only wait; it must not wait for all CPUs to arrive. SP3 uses it for local MCA
+capture and native handoff ([native RAS observer](amd-sp3-ras.md)).
+
+Shared dispatch follows coreboot's rendezvous: one CPU atomically claims
 ownership and runs chipset dispatch, all other entrants remain in SMM until
 the owner releases the lock, and waiters then return through RSM. The owner
 word lives in TSEG; locked access to it relies on SMRR giving TSEG a
@@ -179,8 +184,10 @@ resume.
 
 Save-state memory is hardware-owned. `X86SaveState` stores only a raw top
 address and the selected format; it uses volatile byte transfers and never
-creates a Rust reference or slice over the save-state area. The only
-operations are reading the revision and writing the relocated SMBASE.
+creates a Rust reference or slice over the save-state area. Operations validate
+the revision before writing relocated SMBASE or accessing AMD64 saved GPRs
+for hardware-authorized MSR emulation. Native Zen's revision 0x30064 places
+SMBASE at FE00; QEMU's older 0x20064 layout uses FF00.
 
 The CPU model driver selects the format through `SmmCpu`:
 

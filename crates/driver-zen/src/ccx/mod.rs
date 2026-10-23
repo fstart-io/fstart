@@ -36,6 +36,7 @@ pub mod logical;
 pub mod mca;
 pub mod microcode;
 pub mod power;
+pub mod ras;
 pub mod release;
 pub mod security;
 pub mod table;
