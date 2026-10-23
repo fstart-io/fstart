@@ -2,8 +2,8 @@
 //! checked: ZP `0x6074`, SSP `0x6bf4`, GN `0x7f40`).
 //!
 //! This only acknowledges MCAX and sets the error masks the donors set.
-//! Thresholds, deferred-error interrupts and platform-first error handling
-//! stay unprogrammed: errors are left to the OS (OS-first).
+//! Thresholds and deferred-error interrupts stay OS-owned. Optional SMM
+//! observation of #MC is armed separately by [`super::ras`] after SMM install.
 
 use fstart_arch::x86::cpu::msr::{MCG_CAP, McgCap, MsrAccess};
 use tock_registers::LocalRegisterCopy;
@@ -34,7 +34,7 @@ register_bitfields![u64,
     ]
 ];
 
-const fn config(bank: u32) -> u32 {
+pub(super) const fn config(bank: u32) -> u32 {
     0xc000_2004 + 16 * bank
 }
 const fn ipid(bank: u32) -> u32 {

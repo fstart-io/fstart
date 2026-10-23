@@ -46,6 +46,27 @@ pub struct SelRecord {
 }
 const _: () = assert!(size_of::<SelRecord>() == 16);
 
+/// OEM non-timestamped SEL record (IPMI 2.0 table 32-3). No SDR sensor or
+/// manufacturer ID is implied; the payload format belongs to its producer.
+#[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout)]
+#[repr(C, packed)]
+pub struct OemSelRecord {
+    record_id: U16,
+    record_type: u8,
+    pub data: [u8; 13],
+}
+
+impl OemSelRecord {
+    pub const fn new(data: [u8; 13]) -> Self {
+        Self {
+            record_id: U16::ZERO,
+            record_type: 0xe0,
+            data,
+        }
+    }
+}
+const _: () = assert!(size_of::<OemSelRecord>() == 16);
+
 /// What the BMC wants after AC power returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestorePolicy {
@@ -111,8 +132,18 @@ where
 
     /// Add a SEL entry; returns the record ID the BMC gave it.
     pub fn add_sel(&mut self, record: &SelRecord) -> Result<u16, Error> {
+        self.add_sel_bytes(record.as_bytes())
+    }
+
+    /// Add an OEM non-timestamped entry. Unsupported BMCs return a completion
+    /// error; the caller decides whether to disable or defer further logging.
+    pub fn add_oem_sel(&mut self, record: &OemSelRecord) -> Result<u16, Error> {
+        self.add_sel_bytes(record.as_bytes())
+    }
+
+    fn add_sel_bytes(&mut self, record: &[u8]) -> Result<u16, Error> {
         let mut buffer = [0; 8];
-        let data = self.request(NETFN_STORAGE, ADD_SEL_ENTRY, record.as_bytes(), &mut buffer)?;
+        let data = self.request(NETFN_STORAGE, ADD_SEL_ENTRY, record, &mut buffer)?;
         match *data {
             [low, high, ..] => Ok(u16::from_le_bytes([low, high])),
             _ => Err(Error::Short),

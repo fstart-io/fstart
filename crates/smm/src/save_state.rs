@@ -15,7 +15,8 @@ pub enum X86SaveStateFormat {
     /// Intel EM64T100/EM64T101 layout (revisions `0x30100`/`0x30101`). The
     /// SMBASE field is at the same offset in both.
     IntelEm64t,
-    /// AMD64 layout (revision `0x20064`), as exposed by QEMU.
+    /// AMD64 layout: QEMU revision `0x20064`, native Zen `0x30064`.
+    /// Native Zen stores SMBASE at FE00, QEMU's older layout at FF00.
     Amd64,
     /// Legacy 32-bit Intel layout at `0x7e00` (Pentium M, Core Duo). Any
     /// revision advertising SMBASE relocation (bit 17) is accepted, other
@@ -43,7 +44,7 @@ impl X86SaveStateFormat {
     const fn accepts(self, revision: u32) -> bool {
         match self {
             Self::IntelEm64t => matches!(revision, 0x0003_0100 | 0x0003_0101),
-            Self::Amd64 => revision == 0x0002_0064,
+            Self::Amd64 => matches!(revision, 0x0002_0064 | 0x0003_0064),
             Self::IntelLegacy => revision & (1 << 17) != 0 && !Self::Amd64.accepts(revision),
             Self::Amd64OrIntelLegacy => {
                 Self::Amd64.accepts(revision) || Self::IntelLegacy.accepts(revision)
@@ -55,11 +56,25 @@ impl X86SaveStateFormat {
     const fn smbase_offset(self, revision: u32) -> usize {
         match self {
             Self::IntelEm64t | Self::IntelLegacy => 0x108,
+            Self::Amd64 if revision == 0x0003_0064 => 0x200,
             Self::Amd64 => 0x100,
-            Self::Amd64OrIntelLegacy if Self::Amd64.accepts(revision) => 0x100,
+            Self::Amd64OrIntelLegacy if Self::Amd64.accepts(revision) => {
+                Self::Amd64.smbase_offset(revision)
+            }
             Self::Amd64OrIntelLegacy => 0x108,
         }
     }
+}
+
+/// AMD64 saved registers needed to replay a hardware-intercepted WRMSR.
+/// Values are offsets below the top of the SMBASE window (AMD #55570).
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+pub enum Amd64Register {
+    Rax = 0x08,
+    Rcx = 0x10,
+    Rdx = 0x18,
+    Rip = 0x88,
 }
 
 /// Save-state access failure.
@@ -107,6 +122,39 @@ impl X86SaveState {
         }
     }
 
+    fn amd64_revision(self) -> Result<(), SaveStateError> {
+        let actual = self.revision()?;
+        if matches!(
+            self.format,
+            X86SaveStateFormat::Amd64 | X86SaveStateFormat::Amd64OrIntelLegacy
+        ) && X86SaveStateFormat::Amd64.accepts(actual)
+        {
+            Ok(())
+        } else {
+            Err(SaveStateError::RevisionMismatch {
+                expected: X86SaveStateFormat::Amd64,
+                actual,
+            })
+        }
+    }
+
+    /// Read one AMD64 saved GPR, without borrowing hardware-owned memory.
+    #[inline(always)]
+    pub fn read_amd64(self, register: Amd64Register) -> Result<u64, SaveStateError> {
+        self.amd64_revision()?;
+        // SAFETY: validated AMD64 layout in the live window from `from_top`.
+        Ok(unsafe { read_u64(self.top.sub(register as usize)) })
+    }
+
+    /// Update one AMD64 saved GPR, for a hardware-authorized emulation path.
+    #[inline(always)]
+    pub fn write_amd64(self, register: Amd64Register, value: u64) -> Result<(), SaveStateError> {
+        self.amd64_revision()?;
+        // SAFETY: as above; no other field is changed.
+        unsafe { write_u64(self.top.sub(register as usize), value) };
+        Ok(())
+    }
+
     /// Write the relocated SMBASE after validating the hardware revision.
     /// Exactly one field is modified.
     #[inline(always)]
@@ -129,6 +177,22 @@ unsafe fn read_u32(ptr: *const u8) -> u32 {
 
 #[inline(always)]
 unsafe fn write_u32(ptr: *mut u8, value: u32) {
+    for (i, byte) in value.to_le_bytes().iter().enumerate() {
+        unsafe { core::ptr::write_volatile(ptr.add(i), *byte) };
+    }
+}
+
+#[inline(always)]
+unsafe fn read_u64(ptr: *const u8) -> u64 {
+    let mut bytes = [0u8; 8];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = unsafe { core::ptr::read_volatile(ptr.add(i)) };
+    }
+    u64::from_le_bytes(bytes)
+}
+
+#[inline(always)]
+unsafe fn write_u64(ptr: *mut u8, value: u64) {
     for (i, byte) in value.to_le_bytes().iter().enumerate() {
         unsafe { core::ptr::write_volatile(ptr.add(i), *byte) };
     }
@@ -170,6 +234,40 @@ mod tests {
             &0x5678_0000u32.to_le_bytes()
         );
         assert_eq!(&amd64[0x200 - 0x108..0x200 - 0x104], &[0xa5; 4]);
+    }
+
+    #[test]
+    fn native_zen_gprs_and_smbase_use_the_native_layout() {
+        let mut memory = [0x5a; 0x400];
+        put_u32(&mut memory, 0x400 - 0x104, 0x30064);
+        let state = unsafe {
+            X86SaveState::from_top(memory.as_mut_ptr().add(0x400), X86SaveStateFormat::Amd64)
+        };
+        state.write_smbase(0x7000_0000).unwrap();
+        assert_eq!(&memory[0x200..0x204], &0x7000_0000u32.to_le_bytes());
+        assert_eq!(
+            &memory[0x300..0x304],
+            &[0x5a; 4],
+            "QEMU-only SMBASE location untouched"
+        );
+        for (register, value) in [
+            (Amd64Register::Rcx, 0xc0002001),
+            (Amd64Register::Rax, 0xfeed),
+            (Amd64Register::Rdx, 0xbeef),
+            (Amd64Register::Rip, 0xffff_ffff_8000_1234),
+        ] {
+            state.write_amd64(register, value).unwrap();
+            assert_eq!(state.read_amd64(register).unwrap(), value);
+        }
+        let before = memory;
+        let intel = unsafe {
+            X86SaveState::from_top(
+                memory.as_mut_ptr().add(0x400),
+                X86SaveStateFormat::IntelEm64t,
+            )
+        };
+        assert!(intel.write_amd64(Amd64Register::Rip, 0).is_err());
+        assert_eq!(memory, before);
     }
 
     #[test]

@@ -25,8 +25,13 @@ build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
 [package.metadata.fstart.variants.tyan-s8030-pcie3-x4x4x4x4]
 features = ["pcie3-x4x4x4x4"]
 
+# Experimental native #MC observation; never enabled by the normal board.
+[package.metadata.fstart.variants.tyan-s8030-ras]
+features = ["ras-observer"]
+
 [features]
 pcie3-x4x4x4x4 = []
+ras-observer = []
 
 # Versions are spelled out instead of inherited: boards are outside the
 # workspace (fbuild adds them to a generated one) and this crate also

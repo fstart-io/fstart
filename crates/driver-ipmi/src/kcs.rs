@@ -26,7 +26,7 @@ const START_WRITE: u8 = 0x61;
 const END_WRITE: u8 = 0x62;
 const READ_BYTE: u8 = 0x68;
 
-/// 5 s, polled every 10 us.
+/// Transaction-wide budget, polled every 10 us (at most 5 s of delays).
 const TIMEOUT_POLLS: u32 = 500_000;
 
 /// A KCS interface: its data register and its status/command register.
@@ -34,6 +34,8 @@ pub struct Kcs<D, P = PioRegister<u8>, S = PioRegister<u8, Status::Register>> {
     data: P,
     status: S,
     delay: D,
+    poll_budget: u32,
+    remaining: u32,
 }
 
 impl<D: DelayNs> Kcs<D> {
@@ -63,14 +65,26 @@ where
             data,
             status,
             delay,
+            poll_budget: TIMEOUT_POLLS,
+            remaining: 0,
         }
+    }
+
+    /// Bound the *whole* request, including an endlessly streaming response.
+    /// Every readiness check consumes a poll, even if immediately ready; a
+    /// failed check additionally delays 10 us. Intended for latency-sensitive
+    /// callers such as SMM, not a fresh timeout for every byte.
+    pub fn with_poll_budget(mut self, polls: u32) -> Self {
+        self.poll_budget = polls;
+        self
     }
 
     fn wait(
         &mut self,
         done: impl Fn(LocalRegisterCopy<u8, Status::Register>) -> bool,
     ) -> Result<(), Error> {
-        for _ in 0..TIMEOUT_POLLS {
+        while self.remaining != 0 {
+            self.remaining -= 1;
             if done(self.status.extract()) {
                 return Ok(());
             }
@@ -168,6 +182,7 @@ where
         request: &[u8],
         buffer: &'a mut [u8],
     ) -> Result<&'a [u8], Error> {
+        self.remaining = self.poll_budget;
         self.send(netfn, command, request)?;
         let length = self.receive(buffer)?;
         // No indexing: this also runs in SMM images, which take no panic
@@ -197,6 +212,7 @@ mod tests {
         response: VecDeque<u8>,
         answer: Vec<u8>,
         output: Option<u8>,
+        busy: bool,
         /// (command port, value) of every write, in order.
         writes: Vec<(bool, u8)>,
     }
@@ -240,7 +256,7 @@ mod tests {
         type R = Status::Register;
         fn get(&self) -> u8 {
             let bmc = self.0.borrow();
-            bmc.state << 6 | u8::from(bmc.output.is_some())
+            bmc.state << 6 | u8::from(bmc.output.is_some()) | (u8::from(bmc.busy) << 1)
         }
     }
     impl Writeable for Command<'_> {
@@ -314,6 +330,48 @@ mod tests {
             .position(|&w| w == (true, END_WRITE))
             .unwrap();
         assert_eq!(bmc.writes[end + 1], (false, 0x01));
+    }
+
+    #[test]
+    fn transaction_budget_bounds_busy_and_progressing_bmcs() {
+        let busy = RefCell::new(Bmc {
+            busy: true,
+            ..Bmc::default()
+        });
+        let mut buffer = [0; 8];
+        assert_eq!(
+            kcs(&busy)
+                .with_poll_budget(4)
+                .request(0, 1, &[], &mut buffer),
+            Err(Error::Timeout)
+        );
+        assert!(busy.borrow().writes.is_empty());
+        // Readiness always succeeds, but the response exceeds both the
+        // buffer and the budget. Progress must not reset the timeout.
+        let streaming = RefCell::new(Bmc {
+            answer: vec![0; 1024],
+            ..Bmc::default()
+        });
+        assert_eq!(
+            kcs(&streaming)
+                .with_poll_budget(32)
+                .request(0, 1, &[], &mut buffer),
+            Err(Error::Timeout)
+        );
+        assert!(streaming.borrow().writes.len() <= 32);
+    }
+
+    #[test]
+    fn oem_sel_request_and_returned_record_id() {
+        let bmc = RefCell::new(Bmc {
+            answer: vec![0x2c, 0x44, 0, 0x34, 0x12],
+            ..Bmc::default()
+        });
+        let record = crate::OemSelRecord::new([0x5a; 13]);
+        assert_eq!(kcs(&bmc).add_oem_sel(&record), Ok(0x1234));
+        let bmc = bmc.into_inner();
+        assert_eq!(&bmc.request[..5], &[0x28, 0x44, 0, 0, 0xe0]);
+        assert_eq!(&bmc.request[5..], &[0x5a; 13]);
     }
 
     #[test]
