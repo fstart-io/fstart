@@ -89,8 +89,8 @@ PWM/DC pin selection is accepted only on verified E-version ID 8285h (§§13–1
 It does not establish full-speed cooling or disable inherited automatic control.
 THG DC output values have four bits, and mode selection lives in Super I/O
 LDNB CRF0; EHG register encodings are **not** interchangeable with THG.
-Kontron 986LCD-M board integration remains pending. No new controller operation
-has hardware validation.
+The experimental Kontron 986LCD-M binding below uses these foundations. No new
+controller operation has hardware validation.
 
 ### Explicit THG-E runtime monitor profile
 
@@ -108,7 +108,65 @@ EHG instead preserves its individual-beep fields and retains six-bit DC output
 and the secondary CPU fan. Both profiles restore defined bank/vendor state,
 provide polling-only signed whole-degree readings and signed sensor offsets,
 and retain the existing conversion-settling and sensor-health limitations.
-This is not a reviewed Kontron thermal integration or hardware validation.
+Foundation review does not approve a board thermal integration or establish
+hardware correctness.
+
+## Experimental Kontron 986LCD-M selection
+
+`cargo fbuild build -b kontron-986lcd-m --release --payload halt` and
+`cargo fbuild assemble -b kontron-986lcd-m --release --payload halt` select
+protected-mode Socket M stages, i945GM/ICH7 and a 1 MiB FWH image. The reference
+SPD map (50h–53h), 768 MiB PCI MMIO window, ICH GPIO policy, RCBA routing and
+PCI-bridge ACPI wiring are retained. All PIRQs use PIC IRQ11; GPI13 is an SMI
+destination without enabling its gate or GPE events. EHCI remains INTA.
+
+PnP 4Eh is verified, stripped of nonserial functions and its UARTs relocated
+before the primary 2Eh console is configured. COM1/2 use 3F8h/IRQ4 and
+2F8h/IRQ3; COM3/4 use 3E8h/2E8h and the reference's shared mainstage IRQ6,
+without the transient IRQ11/10 assignment. AML gives all four UARTs distinct
+names/UIDs and explicitly shareable IRQ6 descriptors. Only the primary owns
+PS/2 resources; its keyboard A20 acceleration matches the late reference.
+Primary and secondary standard UART clocks are explicit. The secondary's
+physical oscillator selection remains strapped, matching the reference.
+
+After boot-path detection, the primary monitor requires exact PnP 8285h and
+selects matching E-version reset pad modes: SYSFANOUT DC, CPUFANOUT PWM. Manual
+maximum output is then programmed through the explicit THG-E runtime profile
+at A00h. Primary HWM remains enabled across the RAM transition. Post-console
+sensor policy follows the reference's diode types and signed -15/+25/-4°C
+offsets, but no automatic thermal/speed cruise is enabled. Sensor settling,
+calibration, health, fan startup and actual speed are not established. Maximum
+DC output is 15/16 AVCC, not full rail voltage. PWM frequency and tachometer
+divisors remain inherited rather than copying unrelated reference masks.
+
+Only verified SIO GP32–34 are configured: GP32 low before RAM/high afterward,
+GP33/34 inputs, without guessing their roles. GPIO1/2/4/5 and game/MIDI remain
+inactive. The reference's GPIO1 activation also enables game/MIDI decoding;
+its F5h inversion write addresses GPIO5, not GPIO1. Those coupled resources and
+additional bank routing need a separate verified implementation.
+
+Remaining limitations:
+
+- Experimental and **not hardware validated**. Verify exact controller revision,
+  fan wiring/response, GPIO/reset retention, DRAM, interrupts and peripherals
+  with independent fan/temperature observation, a ROM backup and programmer.
+- S3 is disabled; no training/stage cache is configured. The detected-path
+  cooling guard does not establish resume support.
+- VGA fallback only: no verified VBT, OpRegion or LVDS panel timings. The INT15
+  LVDS hint is insufficient. The incomplete 62h/66h/GPE23 EC AML is not copied.
+- Legacy combined SATA/PATA mapping is not represented: this binding uses
+  standalone SATA IDE ports 0/2 and disables PATA, matching the reference's
+  disabled PCI 1f.1, not its contradictory IDE-channel booleans.
+- Three Ethernet root ports are enabled, MiniPCIe is off. PCIe ports 5/6 and
+  PEG disable policy are not represented by the shared four-port configuration.
+  NIC, FireWire and PCI interrupt/swizzle behavior remain unvalidated.
+- HDA is enabled with no codec verbs, like the reference's empty verb table;
+  audio behavior is unvalidated. AC97, floppy, LPT and SIO ACPI functions are off.
+  CMOS cruise/LPT/Ethernet options, reference C3/throttling policy and unverified
+  GPIO banks are not implemented. Shared edge IRQ6 requires OS driver support.
+- LPC monitoring is decoded as eight bytes rather than the reference's 256-byte
+  window; unexplained 300h decoding is omitted. Halt-image fit does not prove
+  larger-payload fit or hardware boot.
 
 ## W83627EHG foundation for MB899
 
