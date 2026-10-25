@@ -78,7 +78,7 @@ use zerocopy::byteorder::{LE, U32, U64};
 ///
 /// MP setup installs identical RAM MTRRs on all CPUs, so the temporary ROM WP
 /// MTRR must be installed after MP setup and only on the BSP when firmware is
-/// about to read memory-mapped flash. It is cleared before Linux handoff.
+/// about to read memory-mapped flash. It is cleared before payload handoff.
 pub fn enable_boot_media_rom_cache() {
     // SAFETY: selected stage code calls this on the BSP immediately before
     // memory-mapped boot-media reads. The MTRR is cleared before OS handoff.

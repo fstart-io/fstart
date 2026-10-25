@@ -121,6 +121,7 @@ pub fn launch_x86_uefi(
     e820: &[E820Entry],
     platform_entries: &[MemoryRegion],
 ) -> ! {
+    fstart_arch::x86::boot::disable_boot_media_rom_cache_for_handoff();
     let timer = TscTimer::new();
     let reset = X86Reset;
     let rng = X86Rng::new();
