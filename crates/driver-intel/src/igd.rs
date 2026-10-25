@@ -429,19 +429,11 @@ impl OpRegionSci {
 /// `ASLS`: OpRegion physical address the OS reads.
 const IGD_ASLS: u16 = 0xfc;
 
-/// Allocate the OpRegion once on the mainstage heap.
-///
-/// A `static` buffer would land in every stage's `.bss`, including the
-/// bootblock whose CAR is as small as 32 KiB on Pineview. The OS reads the
-/// region through ASLS for the machine's lifetime, so it is never freed.
-fn opregion_buf(size: usize) -> &'static mut [u8] {
-    let layout = core::alloc::Layout::from_size_align(size, 4096).expect("opregion layout");
-    // SAFETY: non-zero-sized layout; the allocation is intentionally leaked.
-    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    assert!(!ptr.is_null(), "IGD opregion allocation failed");
-    // SAFETY: fresh, exclusively owned, zeroed allocation of `size` bytes.
-    unsafe { core::slice::from_raw_parts_mut(ptr, size) }
-}
+/// Allocates page-aligned OpRegion memory that survives S3, like coreboot's
+/// `CBMEM_ID_IGD_OPREGION`. The OS uses the region for the machine's
+/// lifetime and a resume must find it again to restore `ASLS`, so it can't
+/// come from a stage heap that the resume path reloads.
+pub type OpRegionMemory<'a> = &'a mut dyn FnMut(usize) -> Option<&'static mut [u8]>;
 
 /// Locate the VBT, build the OpRegion around it and publish it through
 /// `ASLS` (coreboot's `intel_gma_init_igd_opregion`). Returns the VBT so the
@@ -453,27 +445,34 @@ pub fn publish_opregion(
     igd: &fstart_pci::ecam::EcamDevice,
     sci: OpRegionSci,
     source: &VbtSource,
+    memory: OpRegionMemory<'_>,
 ) -> Option<Vbt> {
     let Some(vbt) = locate_vbt(source) else {
         fstart_log::error!("intel-igd: no valid VBT found for the OpRegion");
         return None;
     };
-    publish_opregion_bytes(igd, sci, &vbt);
+    match memory(opregion_size(vbt.len())) {
+        Some(opregion) => {
+            build_opregion(opregion, &vbt);
+            register_opregion(igd, sci, opregion.as_ptr() as u32);
+            fstart_log::info!(
+                "intel-igd: OpRegion at {:#x}, VBT {} bytes",
+                opregion.as_ptr() as usize,
+                vbt.len()
+            );
+        }
+        None => fstart_log::error!("intel-igd: no memory for the OpRegion"),
+    }
     Some(vbt)
 }
 
-fn publish_opregion_bytes(igd: &fstart_pci::ecam::EcamDevice, sci: OpRegionSci, vbt: &[u8]) {
-    let opregion = opregion_buf(opregion_size(vbt.len()));
-    build_opregion(opregion, vbt);
-
-    igd.write32(IGD_ASLS, opregion.as_ptr() as u32);
+/// Coreboot `intel_gma_opregion_register`: publish ASLS and route the
+/// software SCI to SCI rather than SMI. S3 resume calls this again with the
+/// cold boot's OpRegion (coreboot `intel_gma_restore_opregion`).
+pub fn register_opregion(igd: &fstart_pci::ecam::EcamDevice, sci: OpRegionSci, address: u32) {
+    igd.write32(IGD_ASLS, address);
     let sci_reg = sci.offset();
     igd.write16(sci_reg, (igd.read16(sci_reg) & !1) | (1 << 15));
-    fstart_log::info!(
-        "intel-igd: OpRegion at {:#x}, VBT {} bytes",
-        opregion.as_ptr() as usize,
-        vbt.len()
-    );
 }
 
 const IGD_BAR0_GTTMMADR: u16 = 0x10;
@@ -651,6 +650,143 @@ impl Framebuffer for IgdDisplay {
     fn info(&self) -> FramebufferInfo {
         self.info.unwrap_or(NO_FRAMEBUFFER)
     }
+}
+
+/// GMCH IGD ACPI node (`GFX0`): coreboot's static `_DOD` output list,
+/// OpRegion ASLE brightness requests with a direct `BLC_PWM_CTL` fallback,
+/// `_BCL`/`_BCM`/`_BQC` on `LCD0`, and the
+/// `INCB`/`DECB` hooks ThinkPad hotkeys call. `gttmmio` is the assigned
+/// GTTMMADR; zero while the IGD is absent.
+#[cfg(feature = "acpi")]
+#[must_use]
+pub fn gfx0_acpi_node(gttmmio: u64) -> alloc::vec::Vec<u8> {
+    fstart_acpi_macros::acpi_dsl! {
+        Device("GFX0") {
+            Name("_ADR", 0x00020000u32);
+            OperationRegion("GFXC", PciConfig, 0x00u32, 0x100u32);
+            Field("GFXC", DWordAcc, NoLock, Preserve) {
+                Offset(0x10),
+                BAR0, 64,
+                Offset(0xE4),
+                ASLE, 32,
+                Offset(0xFC),
+                ASLS, 32,
+            }
+            OperationRegion("OPRG", SystemMemory, ASLS, 0x400u32);
+            Field("OPRG", DWordAcc, NoLock, Preserve) {
+                Offset(0x58),
+                MBOX, 32,
+                Offset(0x300),
+                ARDY, 1,
+                , 31,
+                ASLC, 32,
+                TCHE, 32,
+                ALSI, 32,
+                BCLP, 32,
+                PFIT, 32,
+                CBLV, 32,
+            }
+            OperationRegion("GFRG", SystemMemory, #{dword gttmmio}, 0x80000u32);
+            Field("GFRG", DWordAcc, NoLock, Preserve) {
+                Offset(0x61254),
+                BCLV, 16,
+                BCLM, 16,
+            }
+            Name("BRLV", 100u32);
+            Name("BRVA", 0u32);
+            Name("BRIG", Package(100u32, 100u32, 0u32, 10u32, 20u32, 30u32, 40u32, 50u32, 60u32, 70u32, 80u32, 90u32, 100u32));
+            // ASLE uses an 8-bit level, not an ACPI percentage.
+            // Separate the request so every failure reaches PWM fallback.
+            Method("SBCM", 1, Serialized) {
+                If (ASLS == 0u32) { Return(Ones); }
+                If ((MBOX & 4u32) == 0u32) { Return(Ones); }
+                BCLP = (Arg0 * 255u32 / 100u32) | 0x80000000u32;
+                If (ARDY == 0u32) { Return(Ones); }
+                ASLC = 2u32;
+                ASLE = 1u32;
+                Local1 = 32u32;
+                While (Local1 > 0u32) {
+                    Sleep(1u32);
+                    If ((ASLC & 2u32) == 0u32) {
+                        If (((ASLC >> 12u32) & 3u32) == 0u32) { Return(0u32); }
+                        Return(Ones);
+                    }
+                    Local1--;
+                }
+                Return(Ones);
+            }
+            Method("XBCM", 1, Serialized) {
+                Local0 = Arg0;
+                If (Local0 > 100u32) { Local0 = 100u32; }
+                BRLV = Local0;
+                BRVA = 1u32;
+                If (SBCM(Local0) == Ones) {
+                    // Period and duty share a dword; preserve the period.
+                    // A zero period means PWM is not initialized yet.
+                    Local1 = BCLM;
+                    If (Local1 != 0u32) {
+                        BCLV = (Local0 * Local1 + 50u32) / 100u32;
+                    }
+                }
+            }
+            Method("XBQC", 0, Serialized) {
+                Local0 = BCLM;
+                If (Local0 != 0u32) {
+                    Local1 = (BCLV * 100u32 + Local0 / 2u32) / Local0;
+                    If (Local1 > 100u32) { Local1 = 100u32; }
+                    Return(Local1);
+                }
+                If (BRVA != 0u32) { Return(BRLV); }
+                Return(100u32);
+            }
+            // Coreboot GMA_STATIC_DISPLAYS: VGA, TV and LFP output IDs, with
+            // the stubbed _DCS/_DGS/_DSS of drivers/intel/gma/acpi.c.
+            Method("_DOD", 0, NotSerialized) {
+                Return(Package(0x80010100u32, 0x80010240u32, 0x80010410u32));
+            }
+            Device("VGA0") {
+                Name("_ADR", 0x0100u32);
+                Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
+                Method("_DGS", 0, NotSerialized) { Return(0u32); }
+                Method("_DSS", 1, NotSerialized) { }
+            }
+            Device("TV0_") {
+                Name("_ADR", 0x0240u32);
+                Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
+                Method("_DGS", 0, NotSerialized) { Return(0u32); }
+                Method("_DSS", 1, NotSerialized) { }
+            }
+            Device("LCD0") {
+                Name("_ADR", 0x0410u32);
+                Method("_BCL", 0, NotSerialized) { Return(BRIG); }
+                Method("_BCM", 1, NotSerialized) { XBCM(Arg0); }
+                Method("_BQC", 0, NotSerialized) { Return(XBQC()); }
+                Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
+                Method("_DGS", 0, NotSerialized) { Return(0u32); }
+                Method("_DSS", 1, NotSerialized) { }
+            }
+            Method("_DOS", 1, NotSerialized) { }
+            Method("DECB", 0, NotSerialized) {
+                Local0 = XBQC();
+                If (Local0 > 10u32) { Local0 = Local0 - 10u32; }
+                Else { Local0 = 0u32; }
+                XBCM(Local0);
+                Notify(LCD0, 0x87u32);
+            }
+            Method("INCB", 0, NotSerialized) {
+                Local0 = XBQC();
+                If (Local0 < 90u32) { Local0 = Local0 + 10u32; }
+                Else { Local0 = 100u32; }
+                XBCM(Local0);
+                Notify(LCD0, 0x86u32);
+            }
+            Method("_PS0", 0, NotSerialized) { }
+            Method("_PS3", 0, NotSerialized) { }
+            Method("_S0W", 0, NotSerialized) { Return(3u32); }
+            Method("_S3D", 0, NotSerialized) { Return(3u32); }
+        }
+    }
+    .into()
 }
 
 #[cfg(test)]

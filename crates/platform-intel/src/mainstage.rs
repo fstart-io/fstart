@@ -140,7 +140,11 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     run_mainstage_phase(platform, fstart_timestamp::id::MOUNT_BOOT_MEDIA, || {
         fstart_arch::x86::boot::enable_boot_media_rom_cache();
         if mainstage.resume {
-            return Ok(());
+            let opregion = mainstage.store.as_ref().and_then(|store| {
+                let entry = store.find(fstart_store::tag::IGD_OPREGION)?;
+                u32::try_from(store.address(&entry)).ok()
+            });
+            return mainstage.northbridge.resume_init(opregion);
         }
         mainstage.northbridge.stage_local_init()
     });
@@ -155,7 +159,15 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
             fstart_log::info!("{} mainstage: display init skipped on S3 resume", platform);
             return Ok(());
         }
-        mainstage.northbridge.post_verify_init()
+        // The OpRegion lives in the store, which survives S3 (coreboot CBMEM).
+        let store = &mut mainstage.store;
+        mainstage.northbridge.post_verify_init(&mut |size| {
+            let store = store.as_mut()?;
+            let entry = store.add(fstart_store::tag::IGD_OPREGION, size, 12).ok()?;
+            // SAFETY: a fresh store entry of `size` bytes, identity mapped
+            // and owned by the OS once published; never handed out twice.
+            Some(unsafe { core::slice::from_raw_parts_mut(store.address(&entry) as *mut u8, size) })
+        })
     });
     // Recover the vector from the surviving FACS. Resume must preserve the
     // whole table set rather than rebuilding it in memory the OS now owns.
@@ -221,6 +233,12 @@ pub(crate) fn run_intel_mainstage<B: IntelBoard>() -> ! {
     if resume {
         match wake_vector {
             Some(vector) => {
+                // Keep the OS's ACPI mode at handoff, after all firmware SMI/MP
+                // work has finished and a valid wake vector is ready.
+                fstart_arch::x86::cpu::intel::smm::SmiControl::set_acpi_mode(
+                    mainstage.southbridge(),
+                    true,
+                );
                 fstart_log::info!("{}: resuming OS at wake vector {:#x}", platform, vector);
                 fstart_log::flush();
                 fstart_arch::x86::boot::s3_wake::jump_to_wakeup_vector(vector);
@@ -260,7 +278,7 @@ fn init_mp<P: IntelEarlyPlatform>(
 ) -> Result<(), ServiceError> {
     // APs must run the same updated microcode as the BSP, whose update
     // happens in pre-CAR assembly; the blob sits in boot flash.
-    let cpu = P::cpu_driver(crate::intel_microcode_blob());
+    let cpu = P::cpu_driver(crate::intel_microcode_blob(), northbridge, southbridge);
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
     // The supported Core 2 / Pineview platforms are single-socket, as in
     // coreboot's model_1067x get_cpu_count(). CPUID is package-local; future
@@ -305,6 +323,7 @@ where
     geometry: layout::IntelBootLayout<'static>,
     console_node: &'static str,
     max_cpus: u16,
+    pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
     /// Firmware store, reopened once the console is up.
     store: Option<fstart_store::Store>,
     /// Store entry for the coreboot table and the payload's files.
@@ -345,6 +364,7 @@ where
             geometry,
             console_node: B::console_node(),
             max_cpus: B::CONFIG.max_cpus(),
+            pci_subsystem_ids: B::CONFIG.pci_subsystem_ids(),
             store: None,
             #[cfg(feature = "payload-coreboot")]
             coreboot_window: None,
@@ -419,6 +439,7 @@ where
         );
         self.ctx.e820_state_mut().set_detected(count, total)?;
         self.northbridge.memory_detected(self.ctx.e820_state());
+        self.northbridge.chip_init()?;
 
         // DRAM was initialized by the bootblock. Mainstage only reconstructs the
         // memory map and must not retrain or issue JEDEC commands again.
@@ -517,6 +538,18 @@ where
             memory: &self.ctx,
             resume: self.resume,
         })?;
+        // Coreboot sets subsystem IDs while enabling resources, before init;
+        // the registers are commonly write-once.
+        for entry in self.pci_subsystem_ids {
+            let dev = fstart_pci::ecam::EcamDevice::new(0, entry.device, entry.function);
+            if dev.is_present() && !dev.set_subsystem(entry.id) {
+                fstart_log::error!(
+                    "pci: 00:{:02x}.{} has no subsystem ID register",
+                    entry.device,
+                    entry.function
+                );
+            }
+        }
         self.northbridge.post_dram_init()?;
         self.southbridge.post_dram_init()?;
         Hooks::select_smbus(&self.southbridge, SmbusRoute::Eeprom)?;

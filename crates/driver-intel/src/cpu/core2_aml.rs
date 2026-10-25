@@ -1,151 +1,48 @@
 //! Intel Core/Core 2 processor power-management AML helpers.
-//!
-//! Mirrors coreboot's legacy Intel SpeedStep ACPI generator for Merom/Penryn
-//! systems used with GM965/GM45/i945-era northbridges: `_PCT`, `_PSD`, `_PSS`,
-//! and MWAIT `_CST` under ACPI0007 CPU devices.
-
-#![allow(dead_code)]
+//! Shared SpeedStep probing/table generation lives in the CPU architecture
+//! module so AML and Penryn EMTTM use the same states.
 
 extern crate alloc;
 
+use super::{CState, Core2Cstates};
 use alloc::vec;
 use alloc::vec::Vec;
-
-const MSR_THERM2_CTL: u32 = 0x19d;
-const MSR_FSB_FREQ: u32 = 0xcd;
-const MSR_FSB_CLOCK_VCC: u32 = 0xce;
-const MSR_EXTENDED_CONFIG: u32 = 0xee;
-const IA32_PLATFORM_ID: u32 = 0x17;
-const IA32_PERF_STATUS: u32 = 0x198;
-const IA32_MISC_ENABLE: u32 = 0x1a0;
-
-const SPEEDSTEP_RATIO_SHIFT: u32 = 8;
-const SPEEDSTEP_RATIO_DYNFSB_SHIFT: u32 = 15;
-const SPEEDSTEP_RATIO_NONINT_SHIFT: u32 = 14;
-const SPEEDSTEP_RATIO_DYNFSB: u32 = 1 << SPEEDSTEP_RATIO_DYNFSB_SHIFT;
-const SPEEDSTEP_RATIO_NONINT: u32 = 1 << SPEEDSTEP_RATIO_NONINT_SHIFT;
-const SPEEDSTEP_RATIO_VALUE_MASK: u32 = 0x1f << SPEEDSTEP_RATIO_SHIFT;
-const SPEEDSTEP_VID_MASK: u32 = 0x3f;
-const SPEEDSTEP_MAX_NORMAL_STATES: usize = 5;
-
-const SPEEDSTEP_MAX_POWER_MEROM: u32 = 35_000;
-const SPEEDSTEP_MIN_POWER_MEROM: u32 = 25_000;
-const SPEEDSTEP_SLFM_POWER_MEROM: u32 = 12_000;
-const SPEEDSTEP_MAX_POWER_PENRYN: u32 = 35_000;
-const SPEEDSTEP_MIN_POWER_PENRYN: u32 = 15_000;
-const SPEEDSTEP_SLFM_POWER_PENRYN: u32 = 12_000;
+#[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
+use fstart_arch::x86::cpu::intel::speedstep::model_id;
+use fstart_arch::x86::cpu::intel::speedstep::{PState as SpeedstepState, current_pstates, fsb_x3};
 
 const SW_ANY: u32 = 0xfd;
+#[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
 const HW_ALL: u32 = 0xfe;
 
-#[derive(Clone, Copy, Default)]
-struct SpeedstepState {
-    dynfsb: bool,
-    nonint: bool,
-    ratio: u8,
-    vid: u8,
-    is_turbo: bool,
-    is_slfm: bool,
-    power: u32,
+/// Core 2 mobile MWAIT C-states and generic Intel SpeedStep devices.
+#[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
+pub fn cpu_devices_aml(logical_cpus: usize, cstates: &Core2Cstates) -> Vec<u8> {
+    build_cpu_devices_aml(
+        logical_cpus,
+        Some(cstates),
+        if model_id() == 0x1067 { HW_ALL } else { SW_ANY },
+    )
 }
 
-impl SpeedstepState {
-    fn encoded(self) -> u32 {
-        ((self.dynfsb as u32) << SPEEDSTEP_RATIO_DYNFSB_SHIFT)
-            | ((self.nonint as u32) << SPEEDSTEP_RATIO_NONINT_SHIFT)
-            | ((self.ratio as u32) << SPEEDSTEP_RATIO_SHIFT)
-            | ((self.vid as u32) & SPEEDSTEP_VID_MASK)
-    }
-
-    fn double_ratio(self) -> u32 {
-        (self.ratio as u32 * 2) + self.nonint as u32
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct SpeedstepParams {
-    slfm: SpeedstepState,
-    min: SpeedstepState,
-    max: SpeedstepState,
-    turbo: SpeedstepState,
-}
-
-#[derive(Clone, Copy)]
-struct CState {
-    ctype: u8,
-    latency: u16,
-    power: u32,
-    space_id: u8,
-    bit_width: u8,
-    bit_offset: u8,
-    access_size: u8,
-    address: u64,
-}
-
-/// Generate Core/Core 2 (GM965-era) CPU power-management devices for the DSDT.
-///
-/// Uses the same generic SpeedStep MSR probing as coreboot's
-/// `cpu/intel/speedstep` code and MWAIT C1/C2/C3 entries matching the Core 2
-/// mobile boards in coreboot.
-pub fn cpu_devices_aml(logical_cpus: usize) -> Vec<u8> {
-    const CSTATES: &[CState] = &[
-        CState {
-            ctype: 1,
-            latency: 1,
-            power: 1000,
-            space_id: 0x7f,
-            bit_width: 1,
-            bit_offset: 2,
-            access_size: 1,
-            address: 0x00,
-        },
-        CState {
-            ctype: 2,
-            latency: 1,
-            power: 500,
-            space_id: 0x7f,
-            bit_width: 1,
-            bit_offset: 2,
-            access_size: 1,
-            address: 0x10,
-        },
-        CState {
-            ctype: 3,
-            latency: 17,
-            power: 250,
-            space_id: 0x7f,
-            bit_width: 1,
-            bit_offset: 2,
-            access_size: 1,
-            address: 0x20,
-        },
-    ];
-
-    let coordination = if cpu_model_id() == 0x1067 {
-        HW_ALL
-    } else {
-        SW_ANY
-    };
-    build_cpu_devices_aml(logical_cpus, Some(CSTATES), coordination)
-}
-
-/// Generate the Pineview CPU namespace (SpeedStep without board C-states).
+#[cfg(feature = "pineview")]
 pub(crate) fn pineview_cpu_devices_aml(logical_cpus: usize) -> Vec<u8> {
     build_cpu_devices_aml(logical_cpus, None, SW_ANY)
 }
 
 fn build_cpu_devices_aml(
     logical_cpus: usize,
-    cstates: Option<&[CState]>,
+    cstates: Option<&Core2Cstates>,
     coordination: u32,
 ) -> Vec<u8> {
     assert!(
         logical_cpus <= 255,
         "CPU AML package exceeds 255 processors"
     );
-    let states = speedstep_pstates();
+    // SAFETY: these northbridges are paired with matched legacy Intel CPUs;
+    // host namespace tests use synthetic limits instead of privileged reads.
+    let states = unsafe { current_pstates() };
     let mut out = Vec::new();
-
     for cpu in 0..logical_cpus {
         let mut body = Vec::new();
         name_string(&mut body, "_HID", "ACPI0007");
@@ -153,34 +50,33 @@ fn build_cpu_devices_aml(
         append_empty_pct(&mut body);
         append_psd(&mut body, 0, logical_cpus as u32, coordination);
         append_pss(&mut body, &states);
-        if let Some(entries) = cstates {
-            append_cst(&mut body, entries);
+        if let Some(cstates) = cstates {
+            append_cst(&mut body, cstates);
         }
         append_device(&mut out, cpu_name(cpu), &body);
     }
-
     append_processor_package(&mut out, logical_cpus);
     append_cnot_method(&mut out, logical_cpus);
     out
 }
 
 fn cpu_name(cpu: usize) -> [u8; 4] {
-    let hi = ((cpu / 16) & 0xf) as u8;
-    let lo = (cpu & 0xf) as u8;
-    [b'C', b'P', hex_digit(hi), hex_digit(lo)]
+    [
+        b'C',
+        b'P',
+        hex_digit(((cpu / 16) & 0xf) as u8),
+        hex_digit((cpu & 0xf) as u8),
+    ]
 }
-
 fn hex_digit(n: u8) -> u8 {
-    if n < 10 { b'0' + n } else { b'A' + (n - 10) }
+    if n < 10 { b'0' + n } else { b'A' + n - 10 }
 }
-
 fn append_device(out: &mut Vec<u8>, name: [u8; 4], body: &[u8]) {
     let name = core::str::from_utf8(&name).expect("CPU AML names are ASCII");
     let device = fstart_acpi::aml_linker::device_vec(name, body)
         .expect("required CPU AML device exceeds length limit");
     out.extend_from_slice(&device);
 }
-
 fn append_processor_package(out: &mut Vec<u8>, logical_cpus: usize) {
     let mut elements = Vec::with_capacity(logical_cpus * 4);
     for cpu in 0..logical_cpus {
@@ -190,7 +86,6 @@ fn append_processor_package(out: &mut Vec<u8>, logical_cpus: usize) {
         append_package(out, logical_cpus as u8, &elements)
     });
 }
-
 fn append_cnot_method(out: &mut Vec<u8>, logical_cpus: usize) {
     let mut body = Vec::new();
     for cpu in 0..logical_cpus {
@@ -198,7 +93,6 @@ fn append_cnot_method(out: &mut Vec<u8>, logical_cpus: usize) {
         body.extend_from_slice(&cpu_name(cpu));
         body.push(0x68); // Arg0Op
     }
-
     out.push(0x14); // MethodOp
     let mut payload = Vec::new();
     payload.extend_from_slice(b"CNOT");
@@ -209,7 +103,6 @@ fn append_cnot_method(out: &mut Vec<u8>, logical_cpus: usize) {
     out.extend_from_slice(&length[..width]);
     out.extend_from_slice(&payload);
 }
-
 fn append_empty_pct(out: &mut Vec<u8>) {
     // Coreboot acpigen_write_empty_PCT(): two FFixedHW Register descriptors.
     out.extend_from_slice(&[
@@ -219,7 +112,6 @@ fn append_empty_pct(out: &mut Vec<u8>) {
         0x00, 0x00, 0x00, 0x79, 0x00,
     ]);
 }
-
 fn append_psd(out: &mut Vec<u8>, domain: u32, numprocs: u32, coordination: u32) {
     let mut inner = Vec::new();
     [5, 0, domain, coordination, numprocs]
@@ -229,9 +121,9 @@ fn append_psd(out: &mut Vec<u8>, domain: u32, numprocs: u32, coordination: u32) 
     append_package(&mut inner_package, 5, &inner);
     append_name(out, b"_PSD", |out| append_package(out, 1, &inner_package));
 }
-
 fn append_pss(out: &mut Vec<u8>, states: &[SpeedstepState]) {
-    let fsb3 = ia32_fsb_x3().unwrap_or(600);
+    // SAFETY: same legacy Intel platform contract as current_pstates above.
+    let fsb3 = unsafe { fsb_x3() }.unwrap_or(600);
     let mut entries = Vec::new();
     for (i, state) in states.iter().enumerate() {
         let freq = if state.is_turbo && i + 1 < states.len() {
@@ -257,21 +149,13 @@ fn append_pss(out: &mut Vec<u8>, states: &[SpeedstepState]) {
     });
     name_integer(out, "_PPC", 0);
 }
-
-fn append_cst(out: &mut Vec<u8>, entries: &[CState]) {
+fn cst_package(entries: &[CState]) -> Vec<u8> {
     let mut elements = Vec::new();
     append_integer(&mut elements, entries.len() as u32);
     for entry in entries {
-        let mut descriptor = vec![
-            0x82,
-            0x0c,
-            0x00,
-            entry.space_id,
-            entry.bit_width,
-            entry.bit_offset,
-            entry.access_size,
-        ];
-        descriptor.extend_from_slice(&entry.address.to_le_bytes());
+        // FFixedHW Intel MWAIT: class 1, "bit offset" 2 (break on interrupt).
+        let mut descriptor = vec![0x82, 0x0c, 0x00, 0x7f, 0x01, 0x02, 0x01];
+        descriptor.extend_from_slice(&u64::from(entry.mwait_hint).to_le_bytes());
         descriptor.extend_from_slice(&[0x79, 0x00]);
         let mut values = Vec::new();
         append_buffer(&mut values, &descriptor);
@@ -280,21 +164,46 @@ fn append_cst(out: &mut Vec<u8>, entries: &[CState]) {
         append_integer(&mut values, entry.power);
         append_package(&mut elements, 4, &values);
     }
-    append_name(out, b"_CST", |out| {
-        append_package(
-            out,
-            u8::try_from(entries.len() + 1).expect("too many CPU C-states"),
-            &elements,
-        )
-    });
+    let mut package = Vec::new();
+    append_package(
+        &mut package,
+        u8::try_from(entries.len() + 1).expect("too many CPU C-states"),
+        &elements,
+    );
+    package
 }
-
+fn append_cst(out: &mut Vec<u8>, cstates: &Core2Cstates) {
+    if cstates.battery.is_empty() {
+        append_name(out, b"_CST", |out| out.extend(cst_package(cstates.ac)));
+        return;
+    }
+    // Coreboot write_cst_entries(): Method (_CST) { If (PWRS) { Return (AC) }
+    // Return (battery) }.
+    let mut if_body = b"PWRS".to_vec();
+    if_body.push(0xa4); // ReturnOp
+    if_body.extend(cst_package(cstates.ac));
+    let mut body = vec![0x00]; // zero arguments, NotSerialized
+    body.push(0xa0); // IfOp
+    append_pkg_length(&mut body, if_body.len());
+    body.extend(if_body);
+    body.push(0xa4);
+    body.extend(cst_package(cstates.battery));
+    let mut method = b"_CST".to_vec();
+    method.extend(body);
+    out.push(0x14); // MethodOp
+    append_pkg_length(out, method.len());
+    out.extend(method);
+}
+fn append_pkg_length(out: &mut Vec<u8>, payload: usize) {
+    let (length, width) = fstart_acpi::aml_linker::package_length(payload)
+        .expect("required CPU AML package exceeds length limit");
+    out.extend_from_slice(&length[..width]);
+}
 fn append_name(out: &mut Vec<u8>, name: &[u8; 4], value: impl FnOnce(&mut Vec<u8>)) {
     out.push(0x08);
     out.extend_from_slice(name);
     value(out);
 }
-
 fn append_integer(out: &mut Vec<u8>, value: u32) {
     match value {
         0 => out.push(0x00),
@@ -311,7 +220,6 @@ fn append_integer(out: &mut Vec<u8>, value: u32) {
         }
     }
 }
-
 fn append_package(out: &mut Vec<u8>, count: u8, elements: &[u8]) {
     out.push(0x12);
     let (length, width) = fstart_acpi::aml_linker::package_length(elements.len() + 1)
@@ -320,7 +228,6 @@ fn append_package(out: &mut Vec<u8>, count: u8, elements: &[u8]) {
     out.push(count);
     out.extend_from_slice(elements);
 }
-
 fn append_buffer(out: &mut Vec<u8>, bytes: &[u8]) {
     let mut body = Vec::new();
     append_integer(&mut body, bytes.len() as u32);
@@ -331,7 +238,6 @@ fn append_buffer(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&length[..width]);
     out.extend_from_slice(&body);
 }
-
 fn name_integer(out: &mut Vec<u8>, name: &str, value: u32) {
     append_name(
         out,
@@ -339,7 +245,6 @@ fn name_integer(out: &mut Vec<u8>, name: &str, value: u32) {
         |out| append_integer(out, value),
     );
 }
-
 fn name_string(out: &mut Vec<u8>, name: &str, value: &str) {
     append_name(
         out,
@@ -350,202 +255,4 @@ fn name_string(out: &mut Vec<u8>, name: &str, value: &str) {
             out.push(0);
         },
     );
-}
-
-fn speedstep_pstates() -> Vec<SpeedstepState> {
-    let params = speedstep_limits();
-    let power_diff2 = params.max.power.saturating_sub(params.min.power) * 2;
-    let vid_diff2 = (params.max.vid.saturating_sub(params.min.vid) as u32) * 2;
-    let max_ratio2 = params.max.double_ratio();
-    let min_ratio2 = params.min.double_ratio();
-    let ratio_diff2 = max_ratio2.saturating_sub(min_ratio2);
-
-    let mut step2 = 0u32;
-    let mut normal_states;
-    loop {
-        step2 += 4;
-        normal_states = ratio_diff2 / step2 + 1;
-        if normal_states as usize <= SPEEDSTEP_MAX_NORMAL_STATES {
-            break;
-        }
-    }
-    if normal_states < 2 {
-        normal_states = 2;
-    }
-
-    let mut out = Vec::new();
-    if params.turbo.is_turbo {
-        out.push(params.turbo);
-    }
-
-    let mut max = params.max;
-    if params.max.dynfsb == params.min.dynfsb
-        && params.max.nonint == params.min.nonint
-        && params.max.ratio == params.min.ratio
-    {
-        max.vid = params.min.vid;
-    }
-    out.push(max);
-    normal_states -= 1;
-
-    let power_step = (power_diff2 / normal_states) / 2;
-    let vid_step = (vid_diff2 / normal_states) / 2;
-    let ratio_step = step2 / 2;
-    let mut power = params.min.power + (normal_states - 1) * power_step;
-    let mut vid = params.min.vid as u32 + (normal_states - 1) * vid_step;
-    let mut ratio = params.min.ratio as u32 + (normal_states - 1) * ratio_step;
-
-    while normal_states > 0 {
-        out.push(SpeedstepState {
-            ratio: ratio as u8,
-            vid: vid as u8,
-            power,
-            ..SpeedstepState::default()
-        });
-        power = power.saturating_sub(power_step);
-        vid = vid.saturating_sub(vid_step);
-        ratio = ratio.saturating_sub(ratio_step);
-        normal_states -= 1;
-    }
-
-    if params.slfm.is_slfm {
-        out.push(params.slfm);
-    }
-    out
-}
-
-fn speedstep_limits() -> SpeedstepParams {
-    #[cfg(target_os = "none")]
-    unsafe {
-        let cpu_id = cpu_model_id();
-        let state_mask = if cpu_id == 0x1067 {
-            SPEEDSTEP_RATIO_NONINT
-        } else {
-            0
-        } | SPEEDSTEP_RATIO_VALUE_MASK
-            | SPEEDSTEP_VID_MASK;
-        let mut params = SpeedstepParams::default();
-
-        if ((fstart_arch::x86::msr::rdmsr(MSR_EXTENDED_CONFIG) >> 27) & 3) == 3 {
-            let lo = fstart_arch::x86::msr::rdmsr(MSR_FSB_CLOCK_VCC) as u32;
-            params.slfm = state_from_msr(lo, state_mask);
-            params.slfm.dynfsb = true;
-            params.slfm.is_slfm = true;
-        }
-
-        params.min = state_from_msr(
-            fstart_arch::x86::msr::rdmsr(MSR_THERM2_CTL) as u32,
-            state_mask,
-        );
-        params.max = state_from_msr(
-            fstart_arch::x86::msr::rdmsr(IA32_PLATFORM_ID) as u32,
-            state_mask,
-        );
-        if cpu_id == 0x006e {
-            params.max.ratio =
-                ((fstart_arch::x86::msr::rdmsr(IA32_PERF_STATUS) >> 40) & 0x1f) as u8;
-        }
-
-        let fsb_clock_vcc = fstart_arch::x86::msr::rdmsr(MSR_FSB_CLOCK_VCC);
-        let misc = fstart_arch::x86::msr::rdmsr(IA32_MISC_ENABLE);
-        if (fsb_clock_vcc & (1u64 << 63)) != 0 && (misc & (1u64 << 38)) == 0 {
-            params.turbo = state_from_msr((fsb_clock_vcc >> 32) as u32, state_mask);
-            params.turbo.is_turbo = true;
-        }
-
-        match cpu_id {
-            0x1067 => {
-                params.slfm.power = SPEEDSTEP_SLFM_POWER_PENRYN;
-                params.min.power = SPEEDSTEP_MIN_POWER_PENRYN;
-                params.max.power = SPEEDSTEP_MAX_POWER_PENRYN;
-                params.turbo.power = SPEEDSTEP_MAX_POWER_PENRYN;
-            }
-            _ => {
-                params.slfm.power = SPEEDSTEP_SLFM_POWER_MEROM;
-                params.min.power = SPEEDSTEP_MIN_POWER_MEROM;
-                params.max.power = SPEEDSTEP_MAX_POWER_MEROM;
-                params.turbo.power = SPEEDSTEP_MAX_POWER_MEROM;
-            }
-        }
-        return params;
-    }
-
-    #[cfg(not(target_os = "none"))]
-    {
-        let _ = state_from_msr(0, 0);
-        SpeedstepParams {
-            min: SpeedstepState {
-                ratio: 6,
-                vid: 0x20,
-                power: SPEEDSTEP_MIN_POWER_MEROM,
-                ..SpeedstepState::default()
-            },
-            max: SpeedstepState {
-                ratio: 10,
-                vid: 0x12,
-                power: SPEEDSTEP_MAX_POWER_MEROM,
-                ..SpeedstepState::default()
-            },
-            ..SpeedstepParams::default()
-        }
-    }
-}
-
-fn state_from_msr(value: u32, mask: u32) -> SpeedstepState {
-    SpeedstepState {
-        nonint: ((value & mask) & SPEEDSTEP_RATIO_NONINT) != 0,
-        ratio: (((value & mask) & SPEEDSTEP_RATIO_VALUE_MASK) >> SPEEDSTEP_RATIO_SHIFT) as u8,
-        vid: ((value & mask) & SPEEDSTEP_VID_MASK) as u8,
-        ..SpeedstepState::default()
-    }
-}
-
-fn ia32_fsb_x3() -> Option<u32> {
-    #[cfg(target_os = "none")]
-    unsafe {
-        let cpu_id = cpu_model_id();
-        let idx = (fstart_arch::x86::msr::rdmsr(MSR_FSB_FREQ) & 7) as usize;
-        let fsb = match cpu_id {
-            0x006e | 0x106c => [
-                None,
-                Some(133),
-                None,
-                Some(166),
-                None,
-                Some(100),
-                None,
-                None,
-            ][idx],
-            0x006f | 0x1067 => [
-                Some(266),
-                Some(133),
-                Some(200),
-                Some(166),
-                Some(333),
-                Some(100),
-                Some(400),
-                None,
-            ][idx],
-            _ => None,
-        }?;
-        return Some(100 * ((3 * fsb + 50) / 100));
-    }
-
-    #[cfg(not(target_os = "none"))]
-    {
-        Some(600)
-    }
-}
-
-fn cpu_model_id() -> u32 {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    {
-        let (eax, _, _, _) = fstart_arch::x86::cpuid(1);
-        (eax >> 4) & 0xffff
-    }
-
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        0x006f
-    }
 }

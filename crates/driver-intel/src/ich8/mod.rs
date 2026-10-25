@@ -741,19 +741,13 @@ impl LpcFixedIoDecode {
 pub struct LpcGenericIoDecode {
     /// I/O base address. Must be 4-byte aligned.
     pub base: u16,
-    /// Window size in bytes. Must be a non-zero multiple of 4 up to 256.
+    /// Window size in bytes. Must be a power of two from 4 through 256.
     pub size: u16,
 }
 
 impl LpcGenericIoDecode {
     fn encode(self) -> Option<u32> {
-        if self.base & 0x0003 != 0 || self.size == 0 || self.size > 0x0100 {
-            return None;
-        }
-        if self.size & 0x0003 != 0 {
-            return None;
-        }
-        Some(((u32::from(self.size) - 4) << 16) | u32::from(self.base & 0xfffc) | 1)
+        crate::southbridge::lpc::encode_generic_io_window(self.base, self.size)
     }
 }
 
@@ -797,7 +791,7 @@ pub struct IntelIch8Config {
     /// The driver programs `DxxIP`/`DxxIR` from this and generates the ACPI
     /// tables from it, so the GSIs an OS derives are the ones the router
     /// delivers on.
-    pub pirq: crate::southbridge::pirq::PirqRouting,
+    pub pirq: crate::southbridge::pirq::PirqRouting<'static>,
     /// Northbridge DMIBAR base address, used as the RCBA upstream RCRB target.
     pub dmibar: u64,
     /// PIRQ routing (A..H) for PIC mode.
@@ -896,7 +890,7 @@ impl Default for IntelIch8Config {
 
 #[must_use]
 pub const fn valid_lpc_generic_io(range: LpcGenericIoDecode) -> bool {
-    range.base & 0x0003 == 0 && range.size != 0 && range.size <= 0x0100 && range.size & 0x0003 == 0
+    crate::southbridge::lpc::valid_generic_io_window(range.base, range.size)
 }
 
 #[must_use]
@@ -2398,6 +2392,7 @@ mod acpi_impl {
                     acpi_enable: APM_CNT_ACPI_ENABLE,
                     acpi_disable: APM_CNT_ACPI_DISABLE,
                 }),
+                fadt: fstart_acpi::platform::X86FadtPolicy::default(),
             }
         }
     }
@@ -2508,28 +2503,7 @@ mod acpi_impl {
                 ich8::DEFAULT_GPIOBASE,
             ));
             lpcb.extend_from_slice(&acpi_fragments::pci_irq_links(&config.pirq_routing));
-            let ps2: Vec<u8> = acpi_dsl! {
-                Device("PS2K") {
-                    Name("_HID", EisaId("PNP0303"));
-                    Name("_CID", EisaId("PNP030B"));
-                    Name("_CRS", ResourceTemplate {
-                        IO(0x0060u16, 0x0060u16, 0x01u8, 0x01u8);
-                        IO(0x0064u16, 0x0064u16, 0x01u8, 0x01u8);
-                        IRQ(Edge, ActiveHigh, Exclusive, 1u32);
-                    });
-                    Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                }
-
-                Device("PS2M") {
-                    Name("_HID", EisaId("PNP0F13"));
-                    Name("_CRS", ResourceTemplate {
-                        IRQ(Edge, ActiveHigh, Exclusive, 12u32);
-                    });
-                    Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-                }
-            }
-            .into();
-            lpcb.extend_from_slice(&ps2);
+            lpcb.extend_from_slice(&acpi_fragments::ps2_controller_nodes());
             body.extend_from_slice(
                 &fstart_acpi::aml_linker::device_vec("LPCB", &lpcb)
                     .expect("ICH8 LPCB device emission"),

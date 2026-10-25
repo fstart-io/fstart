@@ -5,6 +5,9 @@
 //! Package profiles choose microcode coverage and CAR geometry; the existing
 //! model driver still rejects CPUIDs it cannot initialize.
 
+#[cfg(all(feature = "stage", feature = "mp"))]
+pub use fstart_arch::x86::cpu::intel::penryn::PowerPolicy as CpuPowerPolicy;
+
 /// Host-clean CPU-package policy, with model operations available in firmware.
 pub trait LegacyCpu: 'static {
     const CAR_BASE: u64;
@@ -14,7 +17,31 @@ pub trait LegacyCpu: 'static {
     #[cfg(all(feature = "stage", feature = "mp"))]
     type Driver: fstart_arch::x86::mp::CpuDriver + fstart_arch::x86::cpu::intel::smm::SmmCpu;
     #[cfg(all(feature = "stage", feature = "mp"))]
-    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver;
+    fn cpu_driver(
+        pmbase: u32,
+        microcode: Option<&'static [u8]>,
+        power: CpuPowerPolicy,
+    ) -> Self::Driver;
+}
+
+/// Penryn BGA956 package used by the X200 (coreboot socket_BGA956).
+pub struct Bga956;
+
+impl LegacyCpu for Bga956 {
+    const CAR_BASE: u64 = 0xfefc_0000;
+    const CAR_SIZE: u64 = 0x10000;
+    const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-17-06", "06-17-0a"];
+
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    type Driver = fstart_arch::x86::cpu::intel::penryn::PenrynCpuDriver;
+    #[cfg(all(feature = "stage", feature = "mp"))]
+    fn cpu_driver(
+        pmbase: u32,
+        microcode: Option<&'static [u8]>,
+        power: CpuPowerPolicy,
+    ) -> Self::Driver {
+        Self::Driver::new(pmbase, microcode, power)
+    }
 }
 
 const ATOM_MICROCODE: &[&str] = &["06-1c-02", "06-1c-0a"];
@@ -30,7 +57,11 @@ impl LegacyCpu for Socket441 {
     #[cfg(all(feature = "stage", feature = "mp"))]
     type Driver = fstart_arch::x86::cpu::intel::pineview::PineviewCpuDriver;
     #[cfg(all(feature = "stage", feature = "mp"))]
-    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+    fn cpu_driver(
+        pmbase: u32,
+        microcode: Option<&'static [u8]>,
+        _power: CpuPowerPolicy,
+    ) -> Self::Driver {
         Self::Driver::new(pmbase, microcode)
     }
 }
@@ -46,7 +77,11 @@ impl LegacyCpu for Fcbga559 {
     #[cfg(all(feature = "stage", feature = "mp"))]
     type Driver = fstart_arch::x86::cpu::intel::pineview::PineviewCpuDriver;
     #[cfg(all(feature = "stage", feature = "mp"))]
-    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+    fn cpu_driver(
+        pmbase: u32,
+        microcode: Option<&'static [u8]>,
+        _power: CpuPowerPolicy,
+    ) -> Self::Driver {
         Self::Driver::new(pmbase, microcode)
     }
 }
@@ -69,7 +104,11 @@ impl<const BASE: u64, const SIZE: u64> LegacyCpu for Lga775Core2<BASE, SIZE> {
     #[cfg(all(feature = "stage", feature = "mp"))]
     type Driver = fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
     #[cfg(all(feature = "stage", feature = "mp"))]
-    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+    fn cpu_driver(
+        pmbase: u32,
+        microcode: Option<&'static [u8]>,
+        _power: CpuPowerPolicy,
+    ) -> Self::Driver {
         Self::Driver::new_desktop(pmbase, microcode)
     }
 }
@@ -93,7 +132,11 @@ impl<const BASE: u64, const SIZE: u64> LegacyCpu for SocketM<BASE, SIZE> {
     #[cfg(all(feature = "stage", feature = "mp"))]
     type Driver = fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
     #[cfg(all(feature = "stage", feature = "mp"))]
-    fn cpu_driver(pmbase: u32, microcode: Option<&'static [u8]>) -> Self::Driver {
+    fn cpu_driver(
+        pmbase: u32,
+        microcode: Option<&'static [u8]>,
+        _power: CpuPowerPolicy,
+    ) -> Self::Driver {
         Self::Driver::new(pmbase, microcode)
     }
 }

@@ -4,10 +4,17 @@
 
 extern crate alloc;
 
-#[cfg(feature = "acpi")]
-mod cpu;
+#[cfg(any(
+    feature = "gm45",
+    feature = "gm965",
+    feature = "i945",
+    feature = "pineview"
+))]
+pub mod cpu;
 
 pub mod generic;
+#[cfg(feature = "gm45")]
+pub mod gm45;
 #[cfg(feature = "gm965")]
 pub mod gm965;
 pub mod gmch;
@@ -17,6 +24,8 @@ pub mod i945;
 pub mod ich7;
 #[cfg(feature = "ich8")]
 pub mod ich8;
+#[cfg(feature = "ich9")]
+pub mod ich9;
 pub mod igd;
 #[cfg(feature = "pineview")]
 pub mod pineview;
@@ -195,6 +204,15 @@ pub trait IntelNorthbridgeDriver:
         false
     }
     fn set_boot_path(&mut self, _boot_path: BootPath) {}
+    /// Linked bootstrap DRAM windows as half-open physical address pairs.
+    /// Chipsets requiring pre-publication probes override this hook.
+    fn set_bootstrap_windows(
+        &mut self,
+        _postcar: (u64, u64),
+        _mainstage: (u64, u64),
+    ) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
     /// Stable chipset/CPU/SPD-map and memory-policy identity, not boot status.
     fn training_identity(&self) -> Option<[u8; 32]> {
         None
@@ -246,15 +264,34 @@ pub trait IntelNorthbridgeDriver:
     }
     fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
 
+    /// S3 resume in place of `stage_local_init` and `post_verify_init`:
+    /// restore device state the suspended OS expects, without allocating or
+    /// modesetting. `opregion` is the address the cold boot published.
+    fn resume_init(
+        &mut self,
+        _opregion: Option<u32>,
+    ) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+
     /// Chipset work that needs *verified* boot media: the graphics OpRegion and
     /// the modeset, which embed and read the VBT. Runs after the
     /// `verify_boot_media` phase; platforms without such work keep the default.
-    fn post_verify_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+    fn post_verify_init(
+        &mut self,
+        _opregion: igd::OpRegionMemory<'_>,
+    ) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
 
     /// Caches policy derived from the detected memory map.
     fn memory_detected(&mut self, _e820: &fstart_core::services::memory_detect::E820State) {}
+
+    /// Mainstage chip init before PCI enumeration (coreboot
+    /// `chip_operations.init`), e.g. hiding functions the board disables.
+    fn chip_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
 
     /// Framebuffer programmed during [`Self::stage_local_init`], if the board
     /// asked for display bring-up. The platform hands this to the payload.
