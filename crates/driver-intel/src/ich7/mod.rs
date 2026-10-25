@@ -1914,8 +1914,7 @@ impl IntelIch7 {
     /// PCIe root port initialization.
     ///
     /// Programs all enabled PCIe root ports (dev 0x1C, func 0..5)
-    /// with bus master, cache line size, clock gating, VC0 traffic
-    /// class, and common clock configuration.
+    /// with bus master, cache line size, clock gating, and VC0 traffic class.
     ///
     /// Ported from coreboot `pcie.c::pci_init()`.
     fn pcie_init(&self) {
@@ -1956,8 +1955,9 @@ impl IntelIch7 {
             // Mask completion timeouts.
             port.or32(0x148, 1 << 14);
 
-            // Enable common clock configuration.
-            port.or16(0x50, 1 << 6);
+            // Common-clock mode must be negotiated on both ends and followed
+            // by link retraining. Unlike coreboot's generic PCIe scan, we do
+            // not do that yet; leave it to the OS rather than set root-only CCC.
 
             fstart_log::info!("intel-ich7: PCIe port {} init", func);
         }

@@ -69,6 +69,7 @@ impl<D: X86CorebootPayloadContext> MainstagePayload<D> for X86CorebootPayload {
             base,
             manifest.entry
         );
+        fstart_arch::x86::boot::disable_boot_media_rom_cache_for_handoff();
         crate::timestamps::handoff();
         fstart_log::flush();
         // SAFETY: the verified image is loaded at its linked address and the

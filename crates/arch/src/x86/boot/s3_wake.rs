@@ -153,6 +153,7 @@ unsafe extern "C" {
 /// (`FACS.firmware_waking_vector`); must be below 1 MiB.
 pub fn jump_to_wakeup_vector(vector: u32) -> ! {
     assert!(vector != 0 && vector < 0x10_0000);
+    super::disable_boot_media_rom_cache_for_handoff();
     let start = core::ptr::addr_of!(_s3wake_blob_start) as usize;
     let end = core::ptr::addr_of!(_s3wake_blob_end) as usize;
     let size = end - start;

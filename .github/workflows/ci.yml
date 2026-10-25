@@ -63,7 +63,10 @@ jobs:
       - name: Tests
         env:
           RUST_MIN_STACK: 8388608
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace
+          cargo test -p fstart-driver-intel \
+            --features acpi,i945,gm965,ich8,pineview --lib
 
       - name: Add llvm-tools to PATH
         run: |

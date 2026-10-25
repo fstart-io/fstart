@@ -1574,11 +1574,12 @@ mod acpi_impl {
             let ecam_base = config.ecam_base as u32;
             let ecam_size =
                 (u64::from(config.ecam_buses) * 1024 * 1024).min(u64::from(u32::MAX)) as u32;
-            // TOLUD is live chipset state; host-side table tests have no ECAM.
-            #[cfg(target_os = "none")]
-            let pci_mmio_base = self.tolud().max(0x8000_0000);
-            #[cfg(not(target_os = "none"))]
-            let pci_mmio_base = 0x8000_0000u32;
+            // Use the same detected lower bound as the BAR allocator. A 2 GiB
+            // floor hides firmware-assigned BARs on machines with less RAM.
+            let pci_mmio_base = self
+                .mmio32_window
+                .map_or(0x8000_0000, |(base, _)| base as u32);
+            let pci_bus_end = u16::from(self.root_info().bus_end);
             let pci_mmio_limit = 0xfebf_ffffu32;
             let rcba = config.rcba as u32;
 
@@ -1645,7 +1646,7 @@ mod acpi_impl {
                     }
 
                     Name("MCRS", ResourceTemplate {
-                        WordBusNumber(0x0000u16, 0x003Fu16);
+                        WordBusNumber(0x0000u16, #{word pci_bus_end});
                         DWordIO(0x0000u32, 0x0CF7u32);
                         IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
                         DWordIO(0x0D00u32, 0xFFFFu32);
@@ -1695,6 +1696,10 @@ mod acpi_impl {
                 );
             }
             aml
+        }
+
+        fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
+            alloc::vec![crate::gmch::acpi::mcfg(self.root_info())]
         }
     }
 }
