@@ -1760,7 +1760,6 @@ mod acpi_impl {
     extern crate alloc;
 
     use alloc::vec::Vec;
-    use fstart_acpi::Aml;
     use fstart_acpi::device::AcpiDevice;
     use fstart_acpi_macros::acpi_dsl;
 
@@ -1783,10 +1782,12 @@ mod acpi_impl {
             let epbar = config.epbar;
             let ecam_base = config.ecam_base;
             let ecam_size = u64::from(config.ecam_buses) * 1024 * 1024;
-            #[cfg(target_os = "none")]
-            let pci_mmio_base = self.tolud().max(0x8000_0000);
-            #[cfg(not(target_os = "none"))]
-            let pci_mmio_base = 0x8000_0000u32;
+            // Keep the root window's lower bound identical to the BAR allocator,
+            // including machines with less than 2 GiB of DRAM.
+            let pci_mmio_base = self
+                .mmio32_window
+                .map_or(0x8000_0000, |(base, _)| base as u32);
+            let pci_bus_end = u16::from(self.root_info().bus_end);
             // Match coreboot GM45/GM965 hostbridge.asl: the PCI MMIO
             // producer window runs from TOLUD through 0xfebf_ffff.  ECAM,
             // MCHBAR/DMIBAR/EPBAR/RCBA, HPET, and TPM are also described as
@@ -1871,7 +1872,7 @@ mod acpi_impl {
                     }
 
                     Name("MCRS", ResourceTemplate {
-                        WordBusNumber(0x0000u16, 0x003Fu16);
+                        WordBusNumber(0x0000u16, #{word pci_bus_end});
                         DWordIO(0x0000u32, 0x0CF7u32);
                         IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
                         DWordIO(0x0D00u32, 0xFFFFu32);
@@ -2050,17 +2051,8 @@ mod acpi_impl {
         }
 
         /// Produce an MCFG table for the GM965 PCIEXBAR ECAM window.
-        fn extra_tables(&self, config: &Self::Config) -> Vec<Vec<u8>> {
-            let end_bus = config.ecam_buses.saturating_sub(1).min(255) as u8;
-            let mut mcfg = fstart_acpi::mcfg::MCFG::new(
-                fstart_acpi::OEM_ID,
-                fstart_acpi::OEM_TABLE_ID,
-                fstart_acpi::OEM_REVISION,
-            );
-            mcfg.add_ecam(config.ecam_base, 0, 0, end_bus);
-            let mut bytes = Vec::new();
-            mcfg.to_aml_bytes(&mut bytes);
-            alloc::vec![bytes]
+        fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
+            alloc::vec![crate::gmch::acpi::mcfg(self.root_info())]
         }
     }
 }

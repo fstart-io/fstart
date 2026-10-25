@@ -179,7 +179,6 @@ impl Default for IntelPineviewConfig {
 
 const PCI_ECAM_SIZE: u64 = 0x1000_0000;
 const PCI_MMIO32_LIMIT: u64 = 0xfec0_0000;
-const PCI_MMIO64_LIMIT: u64 = 0x0010_0000_0000_0000;
 const PCI_PIO_BASE: u64 = 0x1000;
 const PCI_PIO_SIZE: u64 = 0xf000;
 const PCI_BUS_START: u8 = 0;
@@ -833,7 +832,11 @@ impl PciRootProvider for IntelPineview {
         push_mmio(low_base.max(ecam_end), low_limit, false)?;
 
         let mmio64_base = self.touud().max(0x1_0000_0000);
-        push_mmio(mmio64_base, PCI_MMIO64_LIMIT, true)?;
+        push_mmio(
+            mmio64_base,
+            fstart_arch::x86::physical_address_limit(),
+            true,
+        )?;
         windows
             .push(PciWindow {
                 kind: PciWindowKind::Io,
@@ -1249,10 +1252,8 @@ mod acpi_impl {
         ///   reserving RCBA, MCHBAR, DMIBAR, EPBAR, and ICH misc MMIO.
         /// - **PCI0 `_HID`/`_CID`/`_BBN`**: PCIe host bridge identity.
         ///
-        /// The full PCI0 `_CRS` with dynamic TOLUD patching is not
-        /// emitted here — Linux falls back to e820/PCI BAR probing.
-        /// A future phase can add the `_CRS` Method with
-        /// `CreateDwordField` / `ShiftLeft` fixups.
+        /// PCI0 `_CRS` includes the low and high PCI MMIO apertures;
+        /// runtime bounds are read while generating the tables.
         ///
         /// Ported from coreboot `northbridge/intel/pineview/acpi/`.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
@@ -1375,18 +1376,18 @@ mod acpi_impl {
             //
             // _HID PNP0A08 (PCIe), _CID PNP0A03 (PCI), _BBN 0.
             // The _CRS declares bus numbers, I/O ports, VGA memory,
-            // and the PCI MMIO window.  The PCI MMIO base is patched
-            // at runtime from the MCHC TOLUD register.
+            // and the PCI MMIO windows, using the live chipset bounds.
             //
             // Coreboot: hostbridge.asl Names + MCRS + _CRS Method.
             // The PCI host-bridge MMIO aperture begins at the live chipset
             // TOLUD value programmed by raminit. This is evaluated while ACPI
             // tables are generated in ramstage, not baked into the board metadata.
             #[cfg(target_os = "none")]
-            let pci_mmio_base = self.tolud();
+            let (pci_mmio_base, pci_mmio64_base) = (self.tolud(), self.touud().max(0x1_0000_0000));
             #[cfg(not(target_os = "none"))]
-            let pci_mmio_base = 0x8000_0000u32;
+            let (pci_mmio_base, pci_mmio64_base) = (0x8000_0000u32, 0x1_0000_0000u64);
             let pci_mmio_limit = 0xFEBF_FFFFu32;
+            let pci_mmio64_limit = fstart_arch::x86::physical_address_limit() - 1;
 
             aml.extend(Vec::from(fstart_acpi_macros::acpi_dsl! {
                 Device("PCI0") {
@@ -1394,9 +1395,7 @@ mod acpi_impl {
                     Name("_CID", EisaId("PNP0A03"));
                     Name("_BBN", 0u32);
 
-                // Named resource template for PCI0.  The PCI memory
-                // region (PM01) base address is patched in _CRS to
-                // match the actual TOLUD value.
+                // Bounds are captured from hardware during table generation.
                 Name("MCRS", ResourceTemplate {
                     // Bus numbers 0x00-0xFF.
                     WordBusNumber(0x0000u16, 0x00FFu16);
@@ -1413,62 +1412,13 @@ mod acpi_impl {
                     // TOLUD is low DRAM; anything at/above TOLUD and below
                     // the fixed chipset MMIO blocks is available for PCI.
                     DWordMemory(NotCacheable, ReadWrite, #{dword pci_mmio_base}, #{dword pci_mmio_limit});
+                    QWordMemory(Prefetchable, ReadWrite, #{qword pci_mmio64_base}, #{qword pci_mmio64_limit});
                 });
 
-                // _CRS method: patch PCI MMIO base from TOLUD register.
-                //
-                // The TOLUD field (bits [15:4] of NB register 0xB0)
-                // gives the top of low usable DRAM in 16 MiB units.
-                // PCI MMIO starts at TOLUD and ends at 0xFEBFFFFF.
-                //
-                // PMIN = TLUD << 20  (TOLUD bits [15:4] are 12 bits at
-                //   bit position 4; shift left by 20 to get a 32-bit addr,
-                //   since the register value is in 1 MiB units in bits
-                //   [15:4] which needs << 16 after >> 4 extraction — the
-                //   Field already extracts the 12-bit value, so <<20 gives
-                //   the address.  However, the coreboot code does << 27
-                //   on the raw 5-bit TLUD field; we match that exactly.)
-                // PLEN = PMAX - PMIN + 1
                 Method("_OSC", 4, NotSerialized) {
                     Return(Arg3);
                 }
-
                 Method("_CRS", 0, Serialized) {
-                    // Byte offsets into MCRS for the last DWordMemory:
-                    //  _MIN is at a fixed offset within the resource
-                    //  template.  The exact offset depends on the
-                    //  preceding descriptors.  We use hardcoded offsets
-                    //  matching the template layout above.
-                    //
-                    // WordBusNumber:  2+2+2+2+2 = 10 bytes (+ 1 tag = 11? no —
-                    //   large resource: 3-byte header + body)
-                    // The offsets are template-internal and must match
-                    // the serialised resource descriptor positions.
-                    //
-                    // Rather than calculate exact offsets (which depend on
-                    // the AML resource encoding), we approximate with the
-                    // coreboot approach: patch via CreateDwordField at
-                    // known tag names.  Since our macro doesn’t support
-                    // named resource tags, we use numeric offsets.
-                    //
-                    // The last DWordMemory _MIN field is at byte offset
-                    // within the resource template buffer.  We’ll compute
-                    // it: each large resource descriptor has a 3-byte
-                    // header (type + 2-byte length).
-                    //
-                    // For a simpler approach that works: just return the
-                    // template with a fixed TOLUD value read from HW.
-                    //
-                    // Actually the cleanest approach: use ShiftLeft to
-                    // dynamically compute PMIN from the TLUD field.
-                    //
-                    // CreateDwordField with numeric offset into MCRS.
-                    // Offsets for the last DWordMemory descriptor:
-                    //   The _MIN field.
-
-                    // Simplified: return the static template.
-                    // The TOLUD value is baked in at firmware build time
-                    // if needed, or Linux uses e820 + PCI BAR probing.
                     Return(MCRS);
                 }
                 }
@@ -1503,16 +1453,8 @@ mod acpi_impl {
             aml
         }
 
-        fn extra_tables(&self, config: &Self::Config) -> Vec<Vec<u8>> {
-            let mut mcfg = fstart_acpi::mcfg::MCFG::new(
-                fstart_acpi::OEM_ID,
-                fstart_acpi::OEM_TABLE_ID,
-                fstart_acpi::OEM_REVISION,
-            );
-            mcfg.add_ecam(config.ecam_base, 0, 0, 0xff);
-            let mut bytes = Vec::new();
-            fstart_acpi::Aml::to_aml_bytes(&mcfg, &mut bytes);
-            alloc::vec![bytes]
+        fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
+            alloc::vec![crate::gmch::acpi::mcfg(self.root_info())]
         }
     }
 }

@@ -74,6 +74,20 @@ pub mod acpi {
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
 
+    /// Describe the same PCIEXBAR topology the northbridge uses for enumeration.
+    pub fn mcfg(root: fstart_pci::PciRootInfo) -> Vec<u8> {
+        use fstart_acpi::Aml;
+        let mut table = fstart_acpi::mcfg::MCFG::new(
+            fstart_acpi::OEM_ID,
+            fstart_acpi::OEM_TABLE_ID,
+            fstart_acpi::OEM_REVISION,
+        );
+        table.add_ecam(root.ecam_base, root.segment, root.bus_start, root.bus_end);
+        let mut bytes = Vec::new();
+        table.to_aml_bytes(&mut bytes);
+        bytes
+    }
+
     /// PCIe graphics port 0:1.0 with its 1:1 APIC `_PRT` (coreboot `peg.asl`).
     #[must_use]
     pub fn peg_node() -> Vec<u8> {
@@ -104,6 +118,13 @@ pub mod acpi {
         .into()
     }
 }
+
+#[cfg(all(
+    test,
+    feature = "acpi",
+    any(feature = "i945", feature = "gm965", feature = "pineview")
+))]
+mod acpi_tests;
 
 #[cfg(test)]
 mod tests {
