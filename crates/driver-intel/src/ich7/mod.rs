@@ -333,7 +333,8 @@ const RTC_BATTERY_DEAD: u8 = 1 << 2;
 const GPIO_EN: u8 = 0x10;
 
 const DEFAULT_PMBASE: u32 = 0x0500;
-const DEFAULT_GPIOBASE: u32 = 0x0480;
+/// Fixed GPIO window programmed by this driver, also used by board SMM policy.
+pub const DEFAULT_GPIOBASE: u32 = 0x0480;
 
 /// LPC_EN bits: enable all standard decode ranges.
 ///  CNF2 (0x4e) | CNF1 (0x2e) | MC (0x62) | KBC (0x60) |

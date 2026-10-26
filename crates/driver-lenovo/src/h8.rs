@@ -249,6 +249,35 @@ impl H8 {
         .all(core::convert::identity)
     }
 
+    /// Shared X6/T6 startup policy. Families supply their event masks and
+    /// Bluetooth presence; dock latches/LEDs remain family-specific. Execute
+    /// every operation even if an earlier EC transaction was not acknowledged.
+    pub fn init_legacy_thinkpad(&self, events: &[u8; 16], bluetooth: bool, resume: bool) -> bool {
+        self.clear_out_queue();
+        [
+            self.init_config0(H8_CONFIG0_EVENTS_ENABLE),
+            self.init_controls(
+                [0x05, 0xa0, 0x01],
+                Some(H8Illumination::Thinklight),
+                [0xfe, 0x96],
+            ),
+            self.program_event_masks(events),
+            self.trackpoint_enable(true),
+            self.usb_power_enable(true),
+            self.wlan_enable(true),
+            self.bluetooth_enable(bluetooth),
+            self.wwan_enable(true),
+            self.usb_always_on_disable(),
+            self.fn_ctrl_swap(false),
+            self.sticky_fn(false),
+            self.charge_primary_first(true),
+            resume || self.volume(3),
+            self.audio_mute(false),
+        ]
+        .into_iter()
+        .all(core::convert::identity)
+    }
+
     pub fn enable_hotkey(&self, on: bool) -> bool {
         self.channel
             .modify_register(CONFIG0::HOTKEY_ENABLE.val(on.into()))
@@ -510,6 +539,46 @@ impl H8Resources {
 
     pub const fn battery_base(self) -> u16 {
         self.auxiliary_base.raw() + 0x10
+    }
+
+    /// Fixed interfaces described by the shared H8 AML. Reserve these against
+    /// PCI allocation too; OS resource declarations alone cannot protect boot.
+    pub const fn io_resources(self) -> [fstart_core::acpi::AcpiResource; 8] {
+        use fstart_core::acpi::AcpiResource::Pio;
+        [
+            Pio {
+                base: self.os.data.raw(),
+                size: 1,
+            },
+            Pio {
+                base: self.os.command.raw(),
+                size: 1,
+            },
+            Pio {
+                base: self.smm().data.raw(),
+                size: 1,
+            },
+            Pio {
+                base: self.smm().command.raw(),
+                size: 1,
+            },
+            Pio {
+                base: self.gravity().data.raw(),
+                size: 1,
+            },
+            Pio {
+                base: self.gravity().command.raw(),
+                size: 1,
+            },
+            Pio {
+                base: self.battery_base(),
+                size: Self::BATTERY_SIZE as u16,
+            },
+            Pio {
+                base: self.pmh7_base.raw(),
+                size: Self::PMH7_SIZE as u16,
+            },
+        ]
     }
 }
 

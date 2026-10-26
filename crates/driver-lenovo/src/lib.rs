@@ -23,6 +23,7 @@ pub mod eeprom;
 
 pub mod h8;
 pub mod pmh7;
+pub mod t6;
 pub mod x6;
 
 #[cfg(feature = "acpi")]
