@@ -14,9 +14,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use fstart_core::services::Southbridge;
 
 use crate::ec::{Ec, EcPorts};
-use crate::h8::{
-    H8, H8_CONFIG0_EVENTS_ENABLE, H8Config, H8Illumination, H8Led, H8LedMode, H8Resources,
-};
+use crate::h8::{H8, H8Config, H8Led, H8LedMode, H8Resources};
 use crate::pmh7::Pmh7;
 
 /// coreboot `event2_enable`..`eventd_enable`; event 0/1 and e/f stay off.
@@ -76,34 +74,10 @@ pub fn ec_init(southbridge: &impl Southbridge, h8: &H8Config, resume: bool) -> b
     pmh7.trackpoint_enable(true);
 
     let h8 = H8::new(Ec::new(h8.resources.os));
-    h8.clear_out_queue();
-    // CONFIG0 0xa6: init_config0 adds the SMM-H8 and thermal enables.
-    [
-        h8.init_config0(H8_CONFIG0_EVENTS_ENABLE),
-        h8.init_controls(
-            [0x05, 0xa0, 0x01],
-            Some(H8Illumination::Thinklight),
-            [0xfe, 0x96],
-        ),
-        h8.program_event_masks(&EVENT_MASKS),
-        h8.trackpoint_enable(true),
-        h8.usb_power_enable(true),
-        h8.wlan_enable(true),
-        h8.bluetooth_enable(bluetooth),
-        h8.wwan_enable(true),
-        h8.usb_always_on_disable(),
-        h8.fn_ctrl_swap(false),
-        h8.sticky_fn(false),
-        h8.charge_primary_first(true),
-        // cmos.default sets volume=3; do not overwrite the OS volume on resume.
-        resume || h8.volume(3),
-        h8.audio_mute(false),
-        h8.dock_latch(false)
-            && (!dock::connected()
-                || (h8.dock_latch(true) && h8.set_led(H8Led::Dock1, H8LedMode::On))),
-    ]
-    .into_iter()
-    .all(core::convert::identity)
+    let initialized = h8.init_legacy_thinkpad(&EVENT_MASKS, bluetooth, resume);
+    let dock = h8.dock_latch(false)
+        && (!dock::connected() || (h8.dock_latch(true) && h8.set_led(H8Led::Dock1, H8LedMode::On)));
+    initialized && dock
 }
 
 /// EC firmware id for the SMBIOS OEM string Linux `thinkpad_acpi` reads.

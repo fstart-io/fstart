@@ -18,6 +18,7 @@ register_bitfields![u8,
         TOUCHPAD_OFF OFFSET(2) NUMBITS(1) []
     ],
     DockEvents [SMI_ENABLE OFFSET(3) NUMBITS(1) []],
+    DockStatus [PRESENT OFFSET(0) NUMBITS(1) []],
     UltrabayPower [POWER_OFF OFFSET(0) NUMBITS(1) []]
 ];
 
@@ -107,6 +108,12 @@ impl Pmh7 {
 
     pub fn trackpoint_enable(&self, on: bool) {
         self.modify(InputPower::TRACKPOINT_OFF.val(u8::from(!on)));
+    }
+
+    /// T6 dock-presence input at PMH7 register 61h (active high).
+    pub fn dock_present(&self) -> bool {
+        LocalRegisterCopy::<u8, DockStatus::Register>::new(self.read_register(0x61))
+            .is_set(DockStatus::PRESENT)
     }
 
     pub fn ultrabay_power_enable(&self, on: bool) {
