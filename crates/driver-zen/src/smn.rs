@@ -54,6 +54,19 @@ impl<P: ConfigRegionAccess> Smn<P> {
         self.host.bus()
     }
 
+    /// Run an owned access sequence and restore this endpoint's index.
+    /// Useful in SMM, where the interrupted OS may be between index/data
+    /// operations. Each socket has its own index to preserve.
+    ///
+    /// # Safety
+    /// The caller owns this index/data pair, and `access` must not unwind.
+    pub unsafe fn with_saved_index<T>(&self, access: impl FnOnce(&Self) -> T) -> T {
+        let saved = unsafe { self.pci.read(self.host, SMN_INDEX) };
+        let result = access(self);
+        unsafe { self.pci.write(self.host, SMN_INDEX, saved) };
+        result
+    }
+
     /// Read the dword at `addr`.
     ///
     /// # Safety
@@ -162,6 +175,9 @@ pub(crate) mod model {
     impl ConfigRegionAccess for Model {
         unsafe fn read(&self, a: PciAddress, offset: u16) -> u32 {
             let s = self.0.borrow();
+            if (a.device(), a.function(), offset) == (0, 0, SMN_INDEX) {
+                return s.index.get(&a.bus()).copied().unwrap_or(0);
+            }
             if (a.device(), a.function(), offset) == (0, 0, SMN_DATA) {
                 let index = s.index.get(&a.bus()).copied().unwrap_or(0);
                 return s.smn.get(&(a.bus(), index)).copied().unwrap_or(0);
@@ -213,6 +229,39 @@ mod tests {
             smn.modify32(0x13b1_02e0, 0x0f00, 0x8000_0000);
         }
         assert_eq!(model.0.borrow().smn[&(0x40, 0x13b1_02e0)], 0x8000_1034);
+    }
+
+    #[test]
+    fn preserves_each_socket_index_without_touching_the_other_socket() {
+        let model = Model::default();
+        model
+            .0
+            .borrow_mut()
+            .index
+            .extend([(0, 0x1110), (0xa0, 0x2220)]);
+        model.0.borrow_mut().smn.insert((0, 0x1d840), 0x1234);
+        let remote = Smn::new(model.clone(), 0xa0);
+        unsafe {
+            remote.with_saved_index(|s| {
+                s.write32(0x1d840, 0);
+                s.write32(0x1d848, 0xdead0000);
+                s.write32(0x1d84c, 0x42);
+                s.write32(0x1d840, 7);
+            });
+        }
+        let state = model.0.borrow();
+        assert_eq!(state.index[&0], 0x1110);
+        assert_eq!(state.index[&0xa0], 0x2220);
+        assert_eq!(state.smn[&(0, 0x1d840)], 0x1234);
+        assert_eq!(
+            state.log,
+            [
+                (0xa0, 0x1d840, 0),
+                (0xa0, 0x1d848, 0xdead0000),
+                (0xa0, 0x1d84c, 0x42),
+                (0xa0, 0x1d840, 7)
+            ]
+        );
     }
 
     #[test]

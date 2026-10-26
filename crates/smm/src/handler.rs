@@ -71,7 +71,8 @@ impl<'a> SmmContext<'a> {
         (self.params.runtime != 0).then_some(self.params.runtime as *mut SmmRuntime)
     }
 
-    /// Copy the installer-written handler configuration.
+    /// Borrow the immutable installer configuration directly from SMRAM.
+    /// Avoid copying larger configurations through compiler-generated memcpy.
     ///
     /// Returns `None` unless the runtime records exactly `size_of::<T>()`
     /// bytes at an aligned offset inside SMRAM.
@@ -79,10 +80,11 @@ impl<'a> SmmContext<'a> {
     /// # Safety
     ///
     /// `T` must be the type the installer wrote, and `params.runtime` must
-    /// point to the live runtime block inside locked SMRAM.
+    /// point to the live runtime block inside locked SMRAM. The configuration
+    /// must remain immutable and disjoint from entry parameters for `'a`.
     #[cfg(any(feature = "stage-bin", test))]
     #[inline(always)]
-    pub(crate) unsafe fn handler_config<T: Copy>(&self) -> Option<T> {
+    pub(crate) unsafe fn handler_config<T: Copy>(&self) -> Option<&'a T> {
         let runtime = self.runtime_ptr()?;
         // SAFETY: the runtime pointer was written by the installer and the
         // block lives in locked SMRAM for the whole SMI.
@@ -108,7 +110,7 @@ impl<'a> SmmContext<'a> {
         }
         // SAFETY: the range was validated above and holds a `T` written by
         // the installer.
-        Some(unsafe { core::ptr::read(start as *const T) })
+        Some(unsafe { &*(start as *const T) })
     }
 }
 
@@ -212,7 +214,7 @@ mod tests {
 
     #[repr(C, align(16))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct Config([u16; 4]);
+    struct Config([u64; 8]);
 
     #[repr(C)]
     struct Fixture {
@@ -225,7 +227,7 @@ mod tests {
     fn handler_config_requires_exact_size_inside_smram() {
         let mut fixture = Fixture {
             runtime: SmmRuntime::new(0, 0, 1, 0x400, 0, 0),
-            config: Config([0x600, 0x20, 2, 0]),
+            config: Config([0x600, 0x20, 2, 0, 4, 5, 6, 7]),
         };
         let base = core::ptr::addr_of!(fixture) as u64;
         let offset = core::mem::offset_of!(Fixture, config) as u32;
@@ -241,8 +243,12 @@ mod tests {
         let ctx = SmmContext { params: &mut entry };
         assert_eq!(
             unsafe { ctx.handler_config::<Config>() },
-            Some(Config([0x600, 0x20, 2, 0]))
+            Some(&Config([0x600, 0x20, 2, 0, 4, 5, 6, 7]))
         );
+        assert!(core::ptr::eq(
+            unsafe { ctx.handler_config::<Config>() }.unwrap(),
+            &fixture.config
+        ));
         assert_eq!(unsafe { ctx.handler_config::<[u16; 2]>() }, None);
 
         fixture.runtime.smram_size = 8;

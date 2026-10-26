@@ -17,7 +17,7 @@ struct State {
     active: bool,
     failed: bool,
     attempts: u8,
-    saved_nbio: Option<[u32; 3]>,
+    saved_nbio: Option<(u8, [u32; 3])>,
 }
 struct Shared(UnsafeCell<State>);
 // SAFETY: only the shared SMM dispatcher owner accesses STATE, never APs.
@@ -68,7 +68,7 @@ unsafe fn send<C: Command>(
     }
 }
 
-/// Once, after successful SmmInfo and single-socket Rome validation.
+/// Once, after successful SmmInfo and Rome endpoint validation.
 /// `supported` includes board opt-in, generation and topology. Match the
 /// donor ordering: enable the PSP first, then validate live map/ECC gates.
 pub unsafe fn init(
@@ -76,9 +76,15 @@ pub unsafe fn init(
     mailbox: &Mailbox<impl C2pTransport>,
     timer: &impl Timer,
     page: *mut u8,
+    sockets: u8,
+    targets: &[u64; 2],
     validate_target: impl FnOnce() -> bool,
 ) {
     write(SUPPORTED, 0);
+    write(SOCKET_COUNT, u64::from(sockets));
+    for (s, &address) in targets.iter().enumerate() {
+        write(TARGETS + s as u64 * 8, address);
+    }
     write(TRIGGER_POINTER, BASE + TRIGGER);
     write(BUSY, 0);
     write(STATUS, 1);
@@ -110,20 +116,28 @@ unsafe fn end(
     mailbox: &Mailbox<impl C2pTransport>,
     timer: &impl Timer,
     page: *mut u8,
-    smn: &Smn<impl ConfigRegionAccess>,
+    smns: &[Smn<impl ConfigRegionAccess>; 2],
 ) -> Result<(), PspError> {
     state.active = false;
     let result = unsafe { send(mailbox, timer, page, Control::END) };
     write(BACKEND_STATUS + 24, result.map_or_else(status, |_| 0));
     if result.is_ok() {
-        if let Some([control, low, high]) = state.saved_nbio.take() {
-            // SAFETY: socket 0 SMN pair is owned by dispatch. Exact donor
-            // ordering, also on invalid input after a prepared operation.
+        if let Some((socket, [control, low, high])) = state.saved_nbio.take() {
+            let Some(smn) = smns.get(usize::from(socket)) else {
+                return Err(PspError::Status {
+                    command: 0x22,
+                    status: 2,
+                });
+            };
+            // Restore the target socket, not the socket executing SMM.
+            // Exact donor ordering; preserve this endpoint's OS index.
             unsafe {
-                smn.write32(0x1d840, 0);
-                smn.write32(0x1d848, low);
-                smn.write32(0x1d84c, high);
-                smn.write32(0x1d840, control);
+                smn.with_saved_index(|s| {
+                    s.write32(0x1d840, 0);
+                    s.write32(0x1d848, low);
+                    s.write32(0x1d84c, high);
+                    s.write32(0x1d840, control);
+                });
             }
         }
     }
@@ -136,7 +150,8 @@ pub unsafe fn dispatch(
     timer: &impl Timer,
     page: *mut u8,
     target: impl Fn(u64) -> Option<MemoryTarget>,
-    smn: &Smn<impl ConfigRegionAccess>,
+    owned: &[u64; 2],
+    smns: &[Smn<impl ConfigRegionAccess>; 2],
 ) {
     // SAFETY: only the shared SMM dispatcher owner accesses the state.
     let s = unsafe { &mut *state() };
@@ -166,16 +181,17 @@ pub unsafe fn dispatch(
             let request = s
                 .saved_nbio
                 .is_none()
-                .then(|| p.target())
+                .then(|| p.target(owned))
                 .flatten()
-                .and_then(|addr| target(addr).map(|t| (addr, t)));
+                .and_then(|addr| target(addr).map(|t| (addr, t)))
+                .and_then(|(addr, t)| smns.get(usize::from(t.socket)).map(|smn| (addr, t, smn)));
             match request {
                 None => {
                     // Linux returns immediately on INVALID and does not
                     // execute END_OPERATION. Close the PSP operation here.
-                    unsafe { end(s, mailbox, timer, page, smn) }.map(|_| 2)
+                    unsafe { end(s, mailbox, timer, page, smns) }.map(|_| 2)
                 }
-                Some((address, target)) => {
+                Some((address, target, smn)) => {
                     // Patch only the trigger's fixed GAS address, never
                     // a pointer obtained from untrusted shared memory.
                     write(TRIGGER + 24, address);
@@ -183,13 +199,11 @@ pub unsafe fn dispatch(
                     // them after action 3 (1d54 / 1f38). Do not leave the
                     // NBIO address-match state changed by an experiment.
                     if s.saved_nbio.is_none() {
-                        s.saved_nbio = Some(unsafe {
-                            [
-                                smn.read32(0x1d840),
-                                smn.read32(0x1d848),
-                                smn.read32(0x1d84c),
-                            ]
-                        });
+                        s.saved_nbio = Some((target.socket, unsafe {
+                            smn.with_saved_index(|s| {
+                                [s.read32(0x1d840), s.read32(0x1d848), s.read32(0x1d84c)]
+                            })
+                        }));
                     }
                     // SAFETY: as above; no arbitrary address/type reaches PSP.
                     let result = unsafe {
@@ -205,7 +219,7 @@ pub unsafe fn dispatch(
                 }
             }
         }
-        SW_END if s.active => unsafe { end(s, mailbox, timer, page, smn) }.map(|_| 0),
+        SW_END if s.active => unsafe { end(s, mailbox, timer, page, smns) }.map(|_| 0),
         _ => Ok(2),
     };
     let acpi_status = match result {
@@ -214,7 +228,7 @@ pub unsafe fn dispatch(
             // A completed PSP rejection can be closed and restored. A
             // timeout cannot: the PSP may still be using the C2P page.
             if matches!(error, PspError::Status { .. }) && s.active {
-                let _ = unsafe { end(s, mailbox, timer, page, smn) };
+                let _ = unsafe { end(s, mailbox, timer, page, smns) };
             }
             s.failed = true;
             1

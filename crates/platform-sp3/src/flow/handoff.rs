@@ -332,7 +332,13 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
         board: board_acpi,
     };
     if inputs.einj {
-        let trigger = acpi::einj::trigger(crate::einj::SCRATCH);
+        let targets = ctx.smm.map(|s| s.einj.targets).unwrap_or([0; 2]);
+        let first = targets
+            .iter()
+            .copied()
+            .find(|&t| t != 0)
+            .unwrap_or(crate::einj::SCRATCH);
+        let trigger = acpi::einj::trigger(first);
         // SAFETY: the fixed communication page is in reserved early RAM,
         // disjoint from the heap and scratch page; no concurrent OS yet.
         unsafe {
@@ -342,10 +348,13 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
                 trigger.len(),
             );
         }
-        fstart_log::info!(
-            "einj: correctable memory only, scratch {:#x}",
-            crate::einj::SCRATCH
-        );
+        for (socket, &address) in targets.iter().enumerate().filter(|(_, t)| **t != 0) {
+            fstart_log::info!(
+                "einj: socket {} correctable scratch {:#x}",
+                socket as u32,
+                address
+            );
+        }
     }
     let tables = acpi::build(&inputs).or_halt("ACPI tables");
     const ACPI_SIZE: usize = 0x4_0000;

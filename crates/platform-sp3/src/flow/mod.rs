@@ -769,6 +769,78 @@ fn board_gpio<B: Board>(fch: &PrimaryFch, generation: Generation) {
     fch::gpio::configure_all(fch.acpi(), gpio.table);
 }
 
+/// Select and reserve scratch pages using the live routing map. This runs
+/// before payload loading and before the immutable SMM config is installed.
+fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
+    #[cfg(feature = "rome")]
+    if ctx.generation == Generation::Rome && (1..=2).contains(&ctx.topology.sockets) {
+        use fstart_driver_zen::{
+            df::{self, Target, v3},
+            psp::ras,
+            smn::Smn,
+        };
+        let mut config = crate::smm::EinjConfig {
+            sockets: ctx.topology.sockets,
+            ..Default::default()
+        };
+        for socket in 0..config.sockets {
+            config.df[usize::from(socket)] = Df::<Pci>::address(socket, 4);
+            config.buses[usize::from(socket)] = ctx
+                .topology
+                .root_bridges
+                .iter()
+                .find(|r| r.socket == socket && r.index == 0)?
+                .bus_base;
+        }
+        let map = df::dram::read::<v3::Df3, _>(&ctx.df, 0, Target::Instance(v3::CCM0));
+        config.targets =
+            crate::einj::plan_targets(config.sockets, ctx.e820.entries(), &map.rules, |address| {
+                ras::memory_target(
+                    address,
+                    config.sockets,
+                    |socket, instance, reg| unsafe {
+                        ctx.df
+                            .reg(
+                                socket,
+                                if instance == ras::BROADCAST {
+                                    Target::Node
+                                } else {
+                                    Target::Instance(instance)
+                                },
+                                reg,
+                            )
+                            .get()
+                    },
+                    |socket, address| unsafe {
+                        Smn::new(ctx.pci, config.buses[usize::from(socket)]).read32(address)
+                    },
+                )
+            });
+        for (i, &target) in config.targets.iter().enumerate().filter(|(_, t)| **t != 0) {
+            let page = target & !(crate::einj::SCRATCH_SIZE - 1);
+            if config.targets[..i]
+                .iter()
+                .any(|&t| t != 0 && t & !(crate::einj::SCRATCH_SIZE - 1) == page)
+            {
+                continue;
+            }
+            if page != crate::einj::SCRATCH {
+                ctx.e820
+                    .reserve_range(page, crate::einj::SCRATCH_SIZE)
+                    .or_halt("EINJ scratch reservation");
+            }
+            // SAFETY: legacy reserved scratch or a fresh page just removed
+            // from usable RAM; all DRAM is identity mapped by the reset image.
+            unsafe {
+                core::ptr::write_bytes(page as *mut u8, 0, crate::einj::SCRATCH_SIZE as usize)
+            };
+        }
+        return Some(config);
+    }
+    let _ = ctx;
+    None
+}
+
 /// TSEG, SMBASE and lock on every thread with the FCH handler image, then
 /// the PSP SmmInfo registration from SMM (PSP_APOB §3.3). Without an SMM
 /// image in this build SMM stays unlocked; that is logged, not hidden.
@@ -791,11 +863,7 @@ fn install_smm<S: Steps>(
         generation: ctx.generation,
         ecam_base: ctx.ecam.0,
         psp_bar: ctx.psp_bar as u32,
-        einj_df: if ctx.generation == Generation::Rome && ctx.topology.sockets == 1 {
-            Df::<Pci>::address(0, 4)
-        } else {
-            fstart_pci::PciAddress::default()
-        },
+        einj: plan_einj(ctx).unwrap_or_default(),
         usb_buses: S::usb_buses(ctx, si),
         usb_bus_count: S::usb_bus_count(ctx),
         bmc,
