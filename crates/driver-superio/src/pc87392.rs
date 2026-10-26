@@ -19,6 +19,7 @@ impl SuperIoChip for Pc87392Chip {
     const ENTER_SEQ: &'static [u8] = &[];
     const EXIT_REG: u8 = 0;
     const EXIT_VAL: u8 = 0;
+    const EXIT_NOOP: bool = true;
     // The dock-side chip is behind a board-controlled LPC switch and coreboot
     // configures it as a fixed PnP resource.  Skip the generic ID check.
     const CHIP_ID: u16 = 0;

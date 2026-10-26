@@ -175,6 +175,55 @@ impl GenericAcpi<'_> {
     }
 }
 
+/// Standard i8042 PnP nodes, independent of whether an EC or a SuperIO hosts
+/// the controller. The mouse shares the keyboard's ports and owns only IRQ12
+/// (or the explicitly supplied IRQ).
+pub fn i8042_aml(
+    data_port: u16,
+    command_port: u16,
+    keyboard_irq: u8,
+    mouse_irq: Option<u8>,
+) -> Vec<u8> {
+    fn with_irq(mut bytes: Vec<u8>, irq: u8) -> Vec<u8> {
+        assert!(irq < 16, "invalid ISA IRQ");
+        let descriptor = bytes
+            .windows(4)
+            .position(|w| w[0..3] == [0x23, 1, 0])
+            .expect("i8042 IRQ descriptor");
+        bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
+        bytes
+    }
+    let keyboard = fstart_acpi_macros::acpi_dsl! {
+        Device("PS2K") {
+            Name("_HID", EisaId("PNP0303"));
+            Name("_CID", EisaId("PNP030B"));
+            Name("_UID", 0u32);
+            Name("_CRS", ResourceTemplate {
+                IO(#{word data_port}, #{word data_port}, 0x01u8, 0x01u8);
+                IO(#{word command_port}, #{word command_port}, 0x01u8, 0x01u8);
+                IRQ(Edge, ActiveHigh, Exclusive, 0u8);
+            });
+            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+        }
+    };
+    let mut aml = with_irq(keyboard.into(), keyboard_irq);
+    if let Some(irq) = mouse_irq {
+        aml.extend(with_irq(
+            fstart_acpi_macros::acpi_dsl! {
+                Device("PS2M") {
+                    Name("_HID", EisaId("PNP0F13"));
+                    Name("_UID", 0u32);
+                    Name("_CRS", ResourceTemplate { IRQ(Edge, ActiveHigh, Exclusive, 0u8); });
+                    Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+                }
+            }
+            .into(),
+            irq,
+        ));
+    }
+    aml
+}
+
 // ---------------------------------------------------------------------------
 // AhciAcpi — AHCI SATA controller
 // ---------------------------------------------------------------------------
