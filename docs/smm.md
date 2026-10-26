@@ -186,8 +186,9 @@ Save-state memory is hardware-owned. `X86SaveState` stores only a raw top
 address and the selected format; it uses volatile byte transfers and never
 creates a Rust reference or slice over the save-state area. Operations validate
 the revision before writing relocated SMBASE or accessing AMD64 saved GPRs
-for hardware-authorized MSR emulation. Native Zen's revision 0x30064 places
-SMBASE at FE00; QEMU's older 0x20064 layout uses FF00.
+for hardware-authorized MSR emulation. Native Zen's revision 0x30064 and
+QEMU's older 0x20064 layout both use FF00 for the saved SMBASE field. FE00
+is the save-state block's base, not the field's address (Rome bench verified).
 
 The CPU model driver selects the format through `SmmCpu`:
 

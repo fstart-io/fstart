@@ -16,7 +16,8 @@ pub enum X86SaveStateFormat {
     /// SMBASE field is at the same offset in both.
     IntelEm64t,
     /// AMD64 layout: QEMU revision `0x20064`, native Zen `0x30064`.
-    /// Native Zen stores SMBASE at FE00, QEMU's older layout at FF00.
+    /// Both store SMBASE at FF00 (confirmed on the Rome bench); FE00 is
+    /// the base of the save-state block, not the saved SMBASE field.
     Amd64,
     /// Legacy 32-bit Intel layout at `0x7e00` (Pentium M, Core Duo). Any
     /// revision advertising SMBASE relocation (bit 17) is accepted, other
@@ -56,7 +57,6 @@ impl X86SaveStateFormat {
     const fn smbase_offset(self, revision: u32) -> usize {
         match self {
             Self::IntelEm64t | Self::IntelLegacy => 0x108,
-            Self::Amd64 if revision == 0x0003_0064 => 0x200,
             Self::Amd64 => 0x100,
             Self::Amd64OrIntelLegacy if Self::Amd64.accepts(revision) => {
                 Self::Amd64.smbase_offset(revision)
@@ -244,11 +244,11 @@ mod tests {
             X86SaveState::from_top(memory.as_mut_ptr().add(0x400), X86SaveStateFormat::Amd64)
         };
         state.write_smbase(0x7000_0000).unwrap();
-        assert_eq!(&memory[0x200..0x204], &0x7000_0000u32.to_le_bytes());
+        assert_eq!(&memory[0x300..0x304], &0x7000_0000u32.to_le_bytes());
         assert_eq!(
-            &memory[0x300..0x304],
+            &memory[0x200..0x204],
             &[0x5a; 4],
-            "QEMU-only SMBASE location untouched"
+            "save-state block base is not the saved SMBASE field"
         );
         for (register, value) in [
             (Amd64Register::Rcx, 0xc0002001),
