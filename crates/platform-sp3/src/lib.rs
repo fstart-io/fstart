@@ -24,6 +24,7 @@ mod flow;
 pub mod host;
 #[cfg(feature = "host")]
 pub use host::Plan;
+pub mod einj;
 #[cfg(target_arch = "x86_64")]
 pub mod hw;
 pub mod layout;

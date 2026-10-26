@@ -292,6 +292,14 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             acpi_enable: smi::sw::ACPI_ENABLE,
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),
+        einj: ctx.smm.is_some() && {
+            // The initialization SMI enabled the PSP backend and checked
+            // the live Rome/ECC map. Only the boot flow reads this flag;
+            // SMM authorization lives in SMRAM, not in this shared page.
+            unsafe {
+                ((crate::einj::BASE + crate::einj::SUPPORTED) as *const u64).read_volatile() == 8
+            }
+        },
         fch: &fch,
         tpm: board_acpi
             .discrete_tpm
@@ -323,6 +331,22 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
         }),
         board: board_acpi,
     };
+    if inputs.einj {
+        let trigger = acpi::einj::trigger(crate::einj::SCRATCH);
+        // SAFETY: the fixed communication page is in reserved early RAM,
+        // disjoint from the heap and scratch page; no concurrent OS yet.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                trigger.as_ptr(),
+                (crate::einj::BASE + crate::einj::TRIGGER) as *mut u8,
+                trigger.len(),
+            );
+        }
+        fstart_log::info!(
+            "einj: correctable memory only, scratch {:#x}",
+            crate::einj::SCRATCH
+        );
+    }
     let tables = acpi::build(&inputs).or_halt("ACPI tables");
     const ACPI_SIZE: usize = 0x4_0000;
     let bytes = super::dma_alloc(ACPI_SIZE, 0x1000);

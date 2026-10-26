@@ -16,7 +16,8 @@
 //! | WSMT | with SMM ([`Inputs::acpi_smi`]) | `fstart_acpi::wsmt` |
 //! | DSDT | root bridges, `_PRT`, FCH, CPUs, `_PIC`, `_S5`, board hook | [`dsdt`] |
 //!
-//! Not built (ACPI_SMM §5, OS-first): HEST/BERT/EINJ/ERST, CRAT/CDIT.
+//! Restricted correctable-memory EINJ is available with the native SMM
+//! backend. Not built (OS-first): HEST/BERT/ERST, CRAT/CDIT.
 
 extern crate alloc;
 
@@ -35,6 +36,7 @@ use fstart_driver_zen::soc::Generation;
 use fstart_driver_zen::topology::RootBridge;
 
 pub mod dsdt;
+pub mod einj;
 pub mod fixed;
 pub mod ivrs;
 pub mod numa;
@@ -122,6 +124,8 @@ pub struct Inputs<'a> {
     /// The SMI command port and ACPI enable/disable values the SMM handler
     /// implements; `None` when firmware hands over with SCI_EN already set.
     pub acpi_smi: Option<AcpiSmiConfig>,
+    /// The native SMM PSP backend enabled restricted memory injection.
+    pub einj: bool,
     /// FCH devices as the FCH tasks left them.
     pub fch: &'a FchAcpi,
     /// SW SMI base of the BMC sleep-state notification
@@ -205,6 +209,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
         )
         .chain(ivrs::ivrs(inputs.iommus, &windows))
         .chain(inputs.board.ipmi.map(|k| k.spmi()))
+        .chain((inputs.einj && inputs.acpi_smi.is_some()).then(einj::table))
         .chain(
             inputs
                 .cppc
@@ -216,8 +221,8 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
                 .map(|family| fstart_acpi::devices::tpm::TpmTisAcpi { family }.tables())
                 .unwrap_or_default(),
         )
-        // The handler takes no OS communication buffer (`crate::smm`); the
-        // system-resource lock audit is open, so that bit stays clear.
+        // EINJ uses a fixed, validated communication page and follows no
+        // input pointers. The system-resource lock audit remains open.
         .chain(inputs.acpi_smi.map(|_| {
             use fstart_acpi::wsmt;
             wsmt::build_wsmt(wsmt::FIXED_COMM_BUFFERS | wsmt::COMM_BUFFER_NESTED_PTR_PROTECTION)

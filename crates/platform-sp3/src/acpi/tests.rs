@@ -174,6 +174,7 @@ fn inputs<'a>(
             acpi_enable: 0xA0,
             acpi_disable: 0xA1,
         }),
+        einj: false,
         fch: fch(),
         bmc_sx_notify: Some(0xC0),
         tpm: Some(fstart_acpi::devices::tpm::TpmFamily::Tpm20),
