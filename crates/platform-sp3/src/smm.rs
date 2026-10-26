@@ -80,7 +80,10 @@ pub struct SmmConfig {
     /// ECAM base for the handler's config accesses (SMN on bus 0).
     pub ecam_base: u64,
     /// Socket 0's PSP BAR (Naples: die 0), for SmmInfo and the FCH lock.
-    pub psp_bar: u64,
+    pub psp_bar: u32,
+    /// Prebound DF0 function 4 for the Rome EINJ backend, or 00:00.0
+    /// (disabled). Constructed before entering the panic-free SMM image.
+    pub einj_df: fstart_pci::PciAddress,
     /// Root buses whose IOHC acknowledges the USB SMI (every die on Naples,
     /// socket 0 on Rome/Milan) and, on Naples, takes the S3 handshake.
     pub usb_buses: [u8; 8],
@@ -164,6 +167,9 @@ pub use handler::Sp3SmmHandler;
 
 #[cfg(feature = "smm")]
 pub mod ras;
+
+#[cfg(feature = "smm")]
+mod einj;
 
 #[cfg(feature = "smm")]
 mod handler {
@@ -286,13 +292,13 @@ mod handler {
             // SAFETY: SMM owns the CPU; the index is restored below.
             let saved = unsafe { pci.read(host, fstart_driver_zen::smn::SMN_INDEX) };
             super::ras::flush::<P>(crate::hw::tsc());
-            dispatch(config);
+            dispatch::<P>(config);
             // SAFETY: as above.
             unsafe { pci.write(host, fstart_driver_zen::smn::SMN_INDEX, saved) };
         }
     }
 
-    fn dispatch(config: &SmmConfig) {
+    fn dispatch<P: super::ras::Policy>(config: &SmmConfig) {
         let timer = crate::hw::tsc();
         let hw = primary_fch(timer);
         let acpi = hw.acpi();
@@ -309,7 +315,20 @@ mod handler {
             match command {
                 smi::sw::ACPI_ENABLE => sx::acpi_enable(&hw),
                 smi::sw::ACPI_DISABLE => sx::acpi_disable(&hw),
-                sw::PSP_SMM_INFO => smm_info(config, &timer),
+                sw::PSP_SMM_INFO => smm_info(config, &timer, P::MEMORY_EINJ),
+                crate::einj::SW_BEGIN | crate::einj::SW_END | crate::einj::SW_EXECUTE => {
+                    // SAFETY: shared dispatch owner; registered SMRAM page.
+                    unsafe {
+                        super::einj::dispatch(
+                            command,
+                            &psp(config).with_timeout(20_000),
+                            &timer,
+                            C2P.0.get().cast(),
+                            |address| einj_target(config, address),
+                            &Smn::new(Ecam, 0),
+                        );
+                    }
+                }
                 // The local SMI status, not this forgeable command, authorizes
                 // MCA capture and native #MC handoff in `enter_cpu`.
                 super::ras::MCE_SMI_COMMAND | super::ras::DIAG_COMMAND => {}
@@ -379,12 +398,13 @@ mod handler {
     fn psp(config: &SmmConfig) -> Mailbox<MmioTransport> {
         // SAFETY: the PSP BAR the boot flow programmed and left mapped.
         Mailbox::new(
-            unsafe { MmioTransport::new(config.psp_bar) },
+            unsafe { MmioTransport::new(u64::from(config.psp_bar)) },
             config.generation,
         )
     }
 
     /// The P2C buffer's dword `index`.
+    #[inline(never)]
     fn p2c_word(index: usize) -> *mut u32 {
         // SAFETY: in bounds of the SMRAM static; the caller owns the
         // rendezvous.
@@ -411,7 +431,8 @@ mod handler {
     /// mailbox idle and ready first as on every donor (see [`p2c::READY`];
     /// the driver's `P2C_HEADER1_MILAN` is the same bit). Once per boot, as
     /// AGESA's driver entry: the OS can raise SW SMI D0 too.
-    fn smm_info(config: &SmmConfig, timer: &Tsc) {
+    #[inline(never)]
+    fn smm_info(config: &SmmConfig, timer: &Tsc, memory_einj: bool) {
         use core::sync::atomic::{AtomicBool, Ordering};
         static SENT: AtomicBool = AtomicBool::new(false);
         if SENT.swap(true, Ordering::AcqRel) {
@@ -426,7 +447,87 @@ mod handler {
             p2c_word(p2c::FLAGS).write_volatile(p2c::READY);
         }
         let info = SmmInfo::new(cpu.reg(SMM_ADDR).get(), cpu.reg(SMM_MASK).get(), p2c, c2p);
-        let _ = psp(config).send(timer, &mut C2pBuffer::new(info));
+        let registration = psp(config).send(timer, &mut C2pBuffer::new(info));
+        // Bounded read-only backend diagnostics in the fixed comm page.
+        unsafe {
+            ((crate::einj::BASE + 224) as *mut u64)
+                .write_volatile(registration.map_or_else(super::einj::status, |_| 0));
+            ((crate::einj::BASE + 232) as *mut u64).write_volatile(0);
+            ((crate::einj::BASE + 240) as *mut u64).write_volatile(u64::from(memory_einj));
+        }
+        let supported = registration.is_ok()
+            && memory_einj
+            && config.generation == Generation::Rome
+            && config.einj_df.device() == 0x18
+            && config.einj_df.function() == 4;
+        // SAFETY: SmmInfo registered the static C2P page. Enabling PSP
+        // injection support does not inject; target validation follows it
+        // in vendor order and is mandatory before publishing EINJ.
+        unsafe {
+            super::einj::init(
+                supported,
+                &psp(config).with_timeout(20_000),
+                timer,
+                C2P.0.get().cast(),
+                || einj_target(config, crate::einj::SCRATCH).is_some(),
+            );
+        }
+    }
+
+    fn einj_target(
+        config: &SmmConfig,
+        address: u64,
+    ) -> Option<fstart_driver_zen::psp::ras::MemoryTarget> {
+        #[cfg(feature = "rome")]
+        if config.generation == Generation::Rome {
+            use fstart_driver_zen::df::{FICAA, regs};
+            use fstart_pci::ConfigRegister;
+            use tock_registers::interfaces::Writeable;
+            // The installer prebinds this only on a single-socket Rome.
+            // pci_types::PciAddress::new contains a panic, so construction
+            // belongs in normal mode, not the audited SMM image.
+            if config.einj_df.device() != 0x18 || config.einj_df.function() != 4 {
+                return None;
+            }
+            let index = unsafe {
+                ConfigRegister::<_, FICAA::Register>::new(Ecam, config.einj_df, regs::FICAA)
+            };
+            let data =
+                unsafe { ConfigRegister::<_, ()>::new(Ecam, config.einj_df, regs::FICAD_LO) };
+            let saved = index.get();
+            let smn = Smn::new(Ecam, 0);
+            let count = core::cell::Cell::new(0u64);
+            let trace = |tag: u32, value: u32| {
+                let n = count.get();
+                if n < 32 {
+                    // Fixed output-only trace, never used as input.
+                    unsafe {
+                        ((crate::einj::BASE + 256 + n * 8) as *mut u64)
+                            .write_volatile(u64::from(tag) | (u64::from(value) << 32));
+                        ((crate::einj::BASE + 232) as *mut u64).write_volatile(n + 1);
+                    }
+                    count.set(n + 1);
+                }
+                value
+            };
+            let result = fstart_driver_zen::psp::ras::memory_target(
+                address,
+                |instance, offset| {
+                    index.write(
+                        FICAA::TARGET_INST::SET
+                            + FICAA::FUNC.val(0)
+                            + FICAA::REG.val(u32::from(offset >> 2))
+                            + FICAA::INST.val(u32::from(instance)),
+                    );
+                    trace(u32::from(offset) | (u32::from(instance) << 24), data.get())
+                },
+                |address| trace(address | 0x8000_0000, unsafe { smn.read32(address) }),
+            );
+            index.set(saved);
+            return result;
+        }
+        let _ = (config, address);
+        None
     }
 
     /// Answer the PSP's P2C request the way AGESA's mailbox does

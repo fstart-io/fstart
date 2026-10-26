@@ -12,6 +12,7 @@
 pub mod bar;
 pub mod command;
 pub mod mailbox;
+pub mod ras;
 
 pub use command::{C2pBuffer, Command};
 pub use mailbox::{C2pTransport, Mailbox, MmioTransport, PspError, SmnTransport};

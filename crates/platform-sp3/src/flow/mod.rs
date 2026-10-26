@@ -797,7 +797,12 @@ fn install_smm<S: Steps>(
     let config = crate::smm::SmmConfig {
         generation: ctx.generation,
         ecam_base: ctx.ecam.0,
-        psp_bar: ctx.psp_bar,
+        psp_bar: ctx.psp_bar as u32,
+        einj_df: if ctx.generation == Generation::Rome && ctx.topology.sockets == 1 {
+            Df::<Pci>::address(0, 4)
+        } else {
+            fstart_pci::PciAddress::default()
+        },
         usb_buses: S::usb_buses(ctx, si),
         usb_bus_count: S::usb_bus_count(ctx),
         bmc,

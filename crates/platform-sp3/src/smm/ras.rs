@@ -27,6 +27,8 @@ pub struct SelTransport {
 /// Enabling this is experimental until native #MC handoff is hardware-tested.
 pub trait Policy {
     const OBSERVE_MCE: bool;
+    /// Restricted, correctable-memory EINJ in platform-owned scratch RAM.
+    const MEMORY_EINJ: bool = false;
     const SEL: Option<SelTransport> = None;
 }
 

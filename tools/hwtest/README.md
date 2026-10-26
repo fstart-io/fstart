@@ -37,14 +37,25 @@ They do **not** prove native #MC-on-exit or hardware #MC redirection. Linux
 MCE logging or writing synthetic MCA status must not be presented as proof of
 a physical error traversing PFEH/SMM.
 
-Real error injection needs a controlled, allocated target and a silicon/PSP
-injection backend. ACPI EINJ is one standard interface, but fstart does not
-currently expose it. See https://docs.kernel.org/firmware-guide/acpi/apei/einj.html.
-The Rome donor also contains a PSP RAS-EINJ backend (C2P command 22); its action
-semantics and target validation must be fully recovered before using it. There
-is no need to introduce DXE to implement such a backend. Never use arbitrary
-physical addresses, CPU-cache corruption or fatal injection on a host with
-valuable storage or workloads.
+## Real correctable-memory injection
+
+`sp3-einj.c` uses the [native ACPI/PSP backend](../../docs/amd-sp3-einj.md)
+on single-socket Rome. It is **not** part of the non-injecting `sp3-ras`
+check. Run it only with explicit hardware-test authorization, in the disposable
+initramfs. Enable `CONFIG_DEBUG_FS`, `CONFIG_ACPI_APEI`,
+`CONFIG_ACPI_APEI_EINJ`, `CONFIG_DEVMEM` and AMD64 EDAC. Set
+`/sys/devices/system/machinecheck/machinecheck0/check_interval` to 1 second.
+
+It requires exactly error type 8, injects once in firmware's reserved scratch
+page, requires an EDAC corrected-error count increase, and verifies rejection
+of a non-scratch target. Backend diagnostics read only the known fixed
+communication page. The SMM service refuses arbitrary addresses, masks wider
+than the scratch page, and all uncorrectable/fatal/processor/PCIe types.
+A corrected error still does not exercise the #MC-only SMM observer.
+
+See https://docs.kernel.org/firmware-guide/acpi/apei/einj.html. Never use
+arbitrary physical addresses, CPU-cache corruption or fatal injection on a
+host with valuable storage or workloads.
 
 BMC command success is not equivalent to persistent/indexed SEL delivery.
 The bench's BMC silently ignores OEM E0 records, while standard records create

@@ -122,9 +122,11 @@ Ordinary software SMI 80 still does not authorize MCA capture or #MC handoff.
 - `boards/tyan/s8030/src/smm.rs`: board policy and dedicated BMC endpoint.
 - `driver-ipmi`: OEM SEL framing and transaction-wide KCS budgets.
 
-No EINJ, GHES/SCI/NMI tables, ERST, BERT, flash error store, APCB repair queue,
-DIMM decoding or PCIe firmware-first handling is implemented here. These are
-separate ownership/persistence choices, not prerequisites for observing #MC.
+[Restricted native EINJ](amd-sp3-einj.md) provides correctable-memory
+injection in a reserved scratch page on single-socket Rome. It does not
+exercise this #MC-only observer. GHES/SCI/NMI tables, ERST, BERT, flash error
+storage, APCB repair queues, general DIMM decoding and PCIe firmware-first
+handling remain separate ownership/persistence choices.
 
 ## Evidence and verification
 
@@ -194,11 +196,12 @@ exits with one failure; this is not an all-green end-to-end RAS test. The
 BMC's legacy Get SEL Info cache did not reflect these unspecified-sensor
 logging entries. OEM E0 tests returned ID zero and created no logging entry.
 
-No actual machine check, memory corruption or fatal error was injected.
-Native #MC redirection, #MC-on-exit, the intercepted-write retry fallback,
-Milan and 2P remain unvalidated on hardware. See `tools/hwtest/README.md`
-for the distinction from Linux software injection and the real-injection
-backend work still required.
+These three observer boots injected no errors. Subsequent
+[native EINJ tests](amd-sp3-einj.md) produced real corrected DRAM errors,
+without exercising this #MC-only observer. Native #MC redirection,
+#MC-on-exit, the intercepted-write retry fallback, Milan and 2P remain
+unvalidated on hardware. See `tools/hwtest/README.md` for the distinction
+from Linux software injection.
 
 Final tested SMM SHA-256:
 `61999d5cecfb9d6be6a8f670e25b5288cc4e0144410789a785f0de240e1ee694`.
