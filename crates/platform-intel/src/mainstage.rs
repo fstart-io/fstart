@@ -456,6 +456,19 @@ where
                     fstart_log::error!("pci: fixed BAR reservation failed: {:?}", error);
                 })
                 .map_err(|_| ServiceError::HardwareError)?;
+            for resource in self.hooks.firmware_resources() {
+                use fstart_core::acpi::AcpiResource;
+                match resource {
+                    AcpiResource::Pio { base, size } => {
+                        pci.reserve_io_range(u64::from(base), u64::from(size))
+                    }
+                    AcpiResource::Mmio { base, size } => pci.reserve_mmio_range(base, size),
+                }
+                .inspect_err(|error| {
+                    fstart_log::error!("pci: board resource reservation failed: {:?}", error)
+                })
+                .map_err(|_| ServiceError::HardwareError)?;
+            }
             self.pci = Some(pci);
         }
         let pci = self.pci.as_mut().ok_or(ServiceError::NotInitialized)?;

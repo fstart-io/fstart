@@ -353,6 +353,19 @@ impl PciEcam {
         Ok(())
     }
 
+    /// Exclude firmware-owned port I/O from dynamic BAR allocation.
+    /// Like fixed BARs, these intervals remain in the root aperture; the board
+    /// must also describe them as consumed resources to the OS.
+    pub fn reserve_io_range(&mut self, base: u64, size: u64) -> Result<(), PciEcamError> {
+        if base.checked_add(size).is_none_or(|end| end > 0x1_0000) {
+            return Err(PciEcamError::ConfigError);
+        }
+        let mut pool = self.io_pool;
+        pool.reserve_range(base, size)?;
+        self.io_pool = pool;
+        Ok(())
+    }
+
     /// Register chipset-owned BARs before enumeration.
     ///
     /// Fixed BARs remain visible in the root aperture reported to the OS, but
@@ -1598,6 +1611,60 @@ mod tests {
                 (0xd000_0000, 0x1000_0000),
                 (0xc000_0000, 0x4000),
             ]
+        );
+    }
+
+    #[test]
+    fn firmware_io_reservations_exclude_dynamic_bars() {
+        let (mut pci, _memory) = test_pci();
+        pci.configure_windows(0x8000_0000, 0x1000_0000, 0, 0, 0x15c0, 0x200)
+            .unwrap();
+        // EC/PMH7, battery interface and both dock-controller windows.
+        let reserved = [
+            (0x15e0u64, 16u64),
+            (0x1600, 1),
+            (0x1602, 1),
+            (0x1604, 1),
+            (0x1606, 1),
+            (0x1610, 16),
+            (0x1620, 16),
+            (0x164c, 4),
+            (0x1680, 16),
+        ];
+        for (base, size) in reserved {
+            pci.reserve_io_range(base, size).unwrap();
+        }
+        assert!(pci.reserve_io_range(0xffff, 2).is_err());
+        for index in 0..28 {
+            let size = if index < 24 { 16 } else { 4 };
+            assert!(
+                pci.devices
+                    .push(endpoint(
+                        PciAddress::new(0, 0, index + 1, 0),
+                        &[(0, BarType::Io, size)]
+                    ))
+                    .is_ok()
+            );
+        }
+        pci.allocate_resources().unwrap();
+        for device in &pci.devices {
+            let base = io_bar_base(&pci, device.addr, 0);
+            let size = device.bars[0].size;
+            assert!(base >= 0x15c0 && base + size <= 0x17c0);
+            for (start, length) in reserved {
+                assert!(
+                    base + size <= start || start + length <= base,
+                    "BAR overlaps firmware I/O"
+                );
+            }
+        }
+        // Consumed child resources do not shrink the host's parent aperture.
+        assert!(
+            pci.windows()
+                .iter()
+                .any(|window| window.kind == PciWindowKind::Io
+                    && window.base == 0x15c0
+                    && window.size == 0x200)
         );
     }
 

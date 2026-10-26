@@ -166,6 +166,20 @@ pub trait SuperIoChip: Send + Sync + 'static {
     /// register/value behavior used by ITE/Winbond/NSC parts.
     const EXIT_RAW: Option<u8> = None;
 
+    /// Always-accessible controllers (NSC) have no configuration-exit command.
+    const EXIT_NOOP: bool = false;
+
+    /// GPIO address slot. Preserve historical Secondary-slot programming by
+    /// default; conventional single-base controllers override it to Primary.
+    fn gpio_io_resource(base: u16) -> IoResource {
+        IoResource::Secondary(base)
+    }
+
+    /// Pure chip-specific preflight, before construction or initialization I/O.
+    fn validate_config(_config: &SuperIoConfig) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     /// Optional chip-specific init hook, invoked inside config mode
     /// after the ID check and before any LDN is configured.
     fn chip_init(_base_port: u16) {}
@@ -339,7 +353,7 @@ unsafe impl<C: SuperIoChip> Sync for SuperIo<C> {}
 impl<C: SuperIoChip> SuperIo<C> {
     /// Index port (writes select the config register).
     #[inline]
-    fn idx_port(&self) -> u16 {
+    pub(crate) fn idx_port(&self) -> u16 {
         self.base_port
     }
 
@@ -363,6 +377,9 @@ impl<C: SuperIoChip> SuperIo<C> {
 
     /// Exit configuration mode.
     pub(crate) fn exit_config(&self) {
+        if C::EXIT_NOOP {
+            return;
+        }
         // SAFETY: chip-provided constants; base_port validated in new_on_bus.
         unsafe {
             if let Some(byte) = C::EXIT_RAW {
@@ -414,7 +431,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 
     /// Program a COM-port LDN (io_base, IRQ, enable).
-    fn program_com(&self, ldn: u8, cfg: &ComPortConfig) {
+    pub(crate) fn program_com(&self, ldn: u8, cfg: &ComPortConfig) {
         let mut device = self.logical_device(ldn);
         // Match coreboot's ite_enable_serial() relocation order.
         device.set_enabled(false);
@@ -622,7 +639,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 
     /// Program a simple single-base LDN (parallel, CIR).
-    fn program_simple(&self, ldn: u8, io_base: u16, irq: u8) {
+    pub(crate) fn program_simple(&self, ldn: u8, io_base: u16, irq: u8) {
         let mut device = self.logical_device(ldn);
         device.set_io_base(IoResource::Primary(io_base));
         device.set_irq(IrqResource::Primary(irq));
@@ -630,9 +647,9 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 
     /// Program the GPIO LDN (io_base, no IRQ).
-    fn program_gpio(&self, ldn: u8, cfg: &GpioConfig) {
+    pub(crate) fn program_gpio(&self, ldn: u8, cfg: &GpioConfig) {
         let mut device = self.logical_device(ldn);
-        device.set_io_base(IoResource::Secondary(cfg.io_base));
+        device.set_io_base(C::gpio_io_resource(cfg.io_base));
         device.set_enabled(true);
     }
 }
@@ -640,7 +657,8 @@ impl<C: SuperIoChip> SuperIo<C> {
 impl<C: SuperIoChip> SuperIo<C> {
     /// Construct a SuperIO at a fixed LPC PnP config port.
     pub fn new_at_base(config: SuperIoConfig, base_port: u16) -> Result<Self, DeviceError> {
-        if base_port == 0 {
+        C::validate_config(&config)?;
+        if base_port == 0 || base_port == u16::MAX {
             return Err(DeviceError::MissingResource("lpc_base"));
         }
         Ok(Self {
@@ -696,15 +714,18 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
     }
 
     fn init(&mut self) -> Result<(), DeviceError> {
+        C::validate_config(&self.config)?;
         self.enter_config();
 
         // Chip ID sanity check.  A CHIP_ID of 0 means the board uses a fixed
         // PnP resource where the chip ID registers are not reliable/available.
-        let id = self.read_chip_id();
-        if C::CHIP_ID != 0 && id & C::CHIP_ID_MASK != C::CHIP_ID {
-            self.exit_config();
-            fstart_log::error!("superio: chip ID mismatch: read {:#06x}", id);
-            return Err(DeviceError::InitFailed);
+        if C::CHIP_ID != 0 {
+            let id = self.read_chip_id();
+            if id & C::CHIP_ID_MASK != C::CHIP_ID {
+                self.exit_config();
+                fstart_log::error!("superio: chip ID mismatch: read {:#06x}", id);
+                return Err(DeviceError::InitFailed);
+            }
         }
 
         C::chip_init(self.base_port);
@@ -1006,54 +1027,6 @@ mod acpi_impl {
         bytes
     }
 
-    /// KBC needs two I/O ranges (0x60 and 0x64).
-    fn kbc_device(cfg: &KbcConfig) -> Vec<u8> {
-        let base1 = u64::from(cfg.io_base);
-        let base2 = u64::from(cfg.io_ext);
-        let irq = u64::from(cfg.irq);
-        let mut bytes = emit(&fstart_acpi_macros::acpi_dsl! {
-            Device("PS2K") {
-                Name("_HID", EisaId("PNP0303"));
-                Name("_CID", EisaId("PNP030B"));
-                Name("_UID", 0u32);
-                Name("_CRS", ResourceTemplate {
-                    IO(#{word base1}, #{word base1}, 0x01u8, 0x01u8);
-                    IO(#{word base2}, #{word base2}, 0x01u8, 0x01u8);
-                    IRQ(Edge, ActiveHigh, Exclusive, 0u8);
-                });
-                Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-            }
-        });
-        let descriptor = bytes
-            .windows(4)
-            .position(|w| w[0..3] == [0x23, 1, 0])
-            .unwrap();
-        bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
-        bytes
-    }
-
-    /// Mouse shares KBC ports but has its own IRQ.
-    fn mouse_device(_kbc: &KbcConfig, mouse: &MouseConfig) -> Vec<u8> {
-        let irq = u64::from(mouse.irq);
-        let fragment = fstart_acpi_macros::acpi_dsl! {
-            Device("PS2M") {
-                Name("_HID", EisaId("PNP0F13"));
-                Name("_UID", 0u32);
-                Name("_CRS", ResourceTemplate {
-                    IRQ(Edge, ActiveHigh, Exclusive, 0u8);
-                });
-                Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-            }
-        };
-        let mut bytes = fragment.as_bytes().to_vec();
-        let descriptor = bytes
-            .windows(4)
-            .position(|w| w[0..3] == [0x23, 1, 0])
-            .unwrap();
-        bytes[descriptor + 1..descriptor + 3].copy_from_slice(&(1u16 << irq).to_le_bytes());
-        bytes
-    }
-
     /// Environment controller resources.
     fn ec_device(cfg: &EcConfig) -> Vec<u8> {
         let base1 = u64::from(cfg.io_base);
@@ -1126,10 +1099,12 @@ mod acpi_impl {
             ));
         }
         if let Some(ref kbc) = config.keyboard {
-            aml.extend(kbc_device(kbc));
-        }
-        if let (Some(kbc), Some(mouse)) = (&config.keyboard, &config.mouse) {
-            aml.extend(mouse_device(kbc, mouse));
+            aml.extend(fstart_acpi::devices::i8042_aml(
+                kbc.io_base,
+                kbc.io_ext,
+                kbc.irq,
+                config.mouse.as_ref().map(|mouse| mouse.irq),
+            ));
         }
         if let Some(ref pp) = config.parallel {
             aml.extend(ldn_device(

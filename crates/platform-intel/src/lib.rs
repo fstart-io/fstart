@@ -448,6 +448,12 @@ pub trait IntelMainstageBoardHooks<P: IntelEarlyPlatform>:
         Ok(())
     }
 
+    /// Fixed non-PCI board resources to exclude from PCI BAR allocation.
+    /// Boards should use the same declarations for consumed ACPI resources.
+    fn firmware_resources(&self) -> impl Iterator<Item = fstart_core::acpi::AcpiResource> {
+        core::iter::empty()
+    }
+
     /// Sample board population policy after PCI allocation but before chipset
     /// device programming, e.g. a removable dock's primary IDE channel.
     fn before_devices(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
