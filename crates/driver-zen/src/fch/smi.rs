@@ -123,8 +123,10 @@ pub fn status<W: Window>(acpi: &W) -> [u32; 5] {
 
 /// End of SMI: re-arm SMI generation (SmiTrig0\[Eos\]).
 pub fn eos<W: Window>(acpi: &W) {
-    acpi.reg::<u32, TRIG0::Register>(TRIG0)
-        .modify(TRIG0::EOS::SET);
+    let trigger = acpi.reg::<u32, TRIG0::Register>(TRIG0);
+    trigger.modify(TRIG0::EOS::SET);
+    // Drain the posted MMIO write before RSM permits another SMI request.
+    let _ = trigger.get();
 }
 
 /// Dispatcher init (FCH_SP3 §5): SMIx98 = (x & 6FFFFFFF) | EOS, i.e. SMI

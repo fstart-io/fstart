@@ -312,7 +312,7 @@ mod handler {
                 sw::PSP_SMM_INFO => smm_info(config, &timer),
                 // The local SMI status, not this forgeable command, authorizes
                 // MCA capture and native #MC handoff in `enter_cpu`.
-                super::ras::MCE_SMI_COMMAND => {}
+                super::ras::MCE_SMI_COMMAND | super::ras::DIAG_COMMAND => {}
                 #[cfg(feature = "milan")]
                 smi::sw::FCH_LOCK if generation == Generation::Milan => fch_lock(config, &timer),
                 command => {
