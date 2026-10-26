@@ -71,9 +71,8 @@ pub fn place_tseg(regions: &[Region], tom: u64, size: u64, avoid: &[Span]) -> Op
 
 /// What the normal-mode installer writes into SMRAM for the handler.
 ///
-/// At most 32 bytes: the handler copies it with at most four 8-byte moves
-/// (the target has no SSE; size-optimized code turns larger copies into a
-/// `memcpy` call through the GOT, which the SMM image builder rejects).
+/// The SMM entry borrows this immutable block in locked SMRAM rather than
+/// copying it, including the per-socket EINJ endpoints and owned pages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct SmmConfig {
@@ -81,9 +80,7 @@ pub struct SmmConfig {
     pub ecam_base: u64,
     /// Socket 0's PSP BAR (Naples: die 0), for SmmInfo and the FCH lock.
     pub psp_bar: u32,
-    /// Prebound DF0 function 4 for the Rome EINJ backend, or 00:00.0
-    /// (disabled). Constructed before entering the panic-free SMM image.
-    pub einj_df: fstart_pci::PciAddress,
+    pub einj: EinjConfig,
     /// Root buses whose IOHC acknowledges the USB SMI (every die on Naples,
     /// socket 0 on Rome/Milan) and, on Naples, takes the S3 handshake.
     pub usb_buses: [u8; 8],
@@ -105,7 +102,16 @@ pub struct BmcSxNotify {
     pub sw_smi_base: u8,
 }
 
-const _: () = assert!(size_of::<SmmConfig>() <= 32);
+/// Endpoints and owned cache-line targets, frozen by the normal installer.
+/// Absent sockets have no target and are never accessed by SMM.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct EinjConfig {
+    pub df: [fstart_pci::PciAddress; 2],
+    pub buses: [u8; 2],
+    pub sockets: u8,
+    pub targets: [u64; 2],
+}
 
 impl SmmConfig {
     pub fn usb_buses(&self) -> &[u8] {
@@ -325,7 +331,8 @@ mod handler {
                             &timer,
                             C2P.0.get().cast(),
                             |address| einj_target(config, address),
-                            &Smn::new(Ecam, 0),
+                            &config.einj.targets,
+                            &config.einj.buses.map(|bus| Smn::new(Ecam, bus)),
                         );
                     }
                 }
@@ -458,8 +465,7 @@ mod handler {
         let supported = registration.is_ok()
             && memory_einj
             && config.generation == Generation::Rome
-            && config.einj_df.device() == 0x18
-            && config.einj_df.function() == 4;
+            && (1..=2).contains(&config.einj.sockets);
         // SAFETY: SmmInfo registered the static C2P page. Enabling PSP
         // injection support does not inject; target validation follows it
         // in vendor order and is mandatory before publishing EINJ.
@@ -469,7 +475,15 @@ mod handler {
                 &psp(config).with_timeout(20_000),
                 timer,
                 C2P.0.get().cast(),
-                || einj_target(config, crate::einj::SCRATCH).is_some(),
+                config.einj.sockets,
+                &config.einj.targets,
+                || {
+                    config.einj.targets.iter().enumerate().any(|(s, &address)| {
+                        address != 0
+                            && einj_target(config, address)
+                                .is_some_and(|t| usize::from(t.socket) == s)
+                    })
+                },
             );
         }
     }
@@ -483,19 +497,10 @@ mod handler {
             use fstart_driver_zen::df::{FICAA, regs};
             use fstart_pci::ConfigRegister;
             use tock_registers::interfaces::Writeable;
-            // The installer prebinds this only on a single-socket Rome.
-            // pci_types::PciAddress::new contains a panic, so construction
-            // belongs in normal mode, not the audited SMM image.
-            if config.einj_df.device() != 0x18 || config.einj_df.function() != 4 {
+            // PCI addresses and endpoint buses are bound by the installer.
+            if !(1..=2).contains(&config.einj.sockets) {
                 return None;
             }
-            let index = unsafe {
-                ConfigRegister::<_, FICAA::Register>::new(Ecam, config.einj_df, regs::FICAA)
-            };
-            let data =
-                unsafe { ConfigRegister::<_, ()>::new(Ecam, config.einj_df, regs::FICAD_LO) };
-            let saved = index.get();
-            let smn = Smn::new(Ecam, 0);
             let count = core::cell::Cell::new(0u64);
             let trace = |tag: u32, value: u32| {
                 let n = count.get();
@@ -512,18 +517,46 @@ mod handler {
             };
             let result = fstart_driver_zen::psp::ras::memory_target(
                 address,
-                |instance, offset| {
+                config.einj.sockets,
+                |socket, instance, reg| {
+                    let Some(&function) = config.einj.df.get(usize::from(socket)) else {
+                        return u32::MAX;
+                    };
+                    if function.device() != 0x18 + socket || function.function() != 4 {
+                        return u32::MAX;
+                    }
+                    let index = unsafe {
+                        ConfigRegister::<_, FICAA::Register>::new(Ecam, function, regs::FICAA)
+                    };
+                    let data =
+                        unsafe { ConfigRegister::<_, ()>::new(Ecam, function, regs::FICAD_LO) };
+                    let saved = index.get();
                     index.write(
-                        FICAA::TARGET_INST::SET
-                            + FICAA::FUNC.val(0)
-                            + FICAA::REG.val(u32::from(offset >> 2))
+                        FICAA::TARGET_INST.val(u32::from(
+                            instance != fstart_driver_zen::psp::ras::BROADCAST,
+                        )) + FICAA::FUNC.val(u32::from(reg.func))
+                            + FICAA::REG.val(u32::from(reg.offset >> 2))
                             + FICAA::INST.val(u32::from(instance)),
                     );
-                    trace(u32::from(offset) | (u32::from(instance) << 24), data.get())
+                    let value = data.get();
+                    index.set(saved);
+                    trace(
+                        (u32::from(socket) << 30)
+                            | (u32::from(instance & 0x7f) << 20)
+                            | (u32::from(reg.func) << 16)
+                            | u32::from(reg.offset),
+                        value,
+                    )
                 },
-                |address| trace(address | 0x8000_0000, unsafe { smn.read32(address) }),
+                |socket, address| {
+                    let Some(&bus) = config.einj.buses.get(usize::from(socket)) else {
+                        return u32::MAX;
+                    };
+                    let smn = Smn::new(Ecam, bus);
+                    let value = unsafe { smn.with_saved_index(|s| s.read32(address)) };
+                    trace(address | 0x8000_0000 | (u32::from(socket) << 30), value)
+                },
             );
-            index.set(saved);
             return result;
         }
         let _ = (config, address);

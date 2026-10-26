@@ -40,17 +40,21 @@ a physical error traversing PFEH/SMM.
 ## Real correctable-memory injection
 
 `sp3-einj.c` uses the [native ACPI/PSP backend](../../docs/amd-sp3-einj.md)
-on single-socket Rome. It is **not** part of the non-injecting `sp3-ras`
+on 1P/2P Rome. It is **not** part of the non-injecting `sp3-ras`
 check. Run it only with explicit hardware-test authorization, in the disposable
 initramfs. Enable `CONFIG_DEBUG_FS`, `CONFIG_ACPI_APEI`,
 `CONFIG_ACPI_APEI_EINJ`, `CONFIG_DEVMEM` and AMD64 EDAC. Set
 `/sys/devices/system/machinecheck/machinecheck0/check_interval` to 1 second.
 
-It requires exactly error type 8, injects once in firmware's reserved scratch
-page, requires an EDAC corrected-error count increase, and verifies rejection
-of a non-scratch target. Backend diagnostics read only the known fixed
-communication page. The SMM service refuses arbitrary addresses, masks wider
-than the scratch page, and all uncorrectable/fatal/processor/PCIe types.
+It requires exactly error type 8 and reads the output-only suggested target
+for each socket. It injects once per socket, requires an aggregate EDAC CE
+count increase after each injection, and verifies non-scratch rejection.
+Missing socket targets fail the test. The installer reserves additional
+socket-local scratch pages when the low page cannot reach every socket;
+SMM authorizes only those frozen pages, not arbitrary shared-buffer pointers.
+Masks wider than one page and all uncorrectable/fatal/processor/PCIe types
+are refused. The 2P code has host tests and vendor evidence, but has not yet
+been validated on dual-socket hardware.
 A corrected error still does not exercise the #MC-only SMM observer.
 
 See https://docs.kernel.org/firmware-guide/acpi/apei/einj.html. Never use

@@ -67,7 +67,7 @@ pub unsafe fn handle<B: SmmStageBoard>(params: *mut SmmEntryParams) {
     if let Some(config) = config {
         // Local MCA state must be observed even by CPUs that will only wait
         // for the shared owner. Never require a missing CPU to enter SMM.
-        unsafe { B::Handler::enter_cpu(&mut ctx, &config) };
+        unsafe { B::Handler::enter_cpu(&mut ctx, config) };
     }
 
     if !unsafe { enter_rendezvous(&ctx) } {
@@ -80,7 +80,7 @@ pub unsafe fn handle<B: SmmStageBoard>(params: *mut SmmEntryParams) {
 
     unsafe {
         if let Some(config) = config {
-            B::Handler::handle(&mut ctx, &config);
+            B::Handler::handle(&mut ctx, config);
         }
         #[cfg(not(test))]
         debug_trace(ctx.cpu());

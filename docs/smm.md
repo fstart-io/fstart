@@ -133,9 +133,12 @@ its type as `SmmHandler::Config`, and the matching southbridge names the same
 type as `SmiControl::HandlerConfig`; for ICH that is
 `driver_intel::southbridge::smi::IchSmmConfig` (PMBASE and GPE0 geometry).
 The installer writes the value into a fixed 256-byte, 16-byte-aligned slot and
-records its size. The SMM entry copies it out only if the recorded size is
-exactly `size_of::<Config>()` and the slot lies inside SMRAM, then passes it to
-the handler. There is no serialization format, magic, or schema version.
+records its size. The SMM entry borrows that immutable value only if the
+recorded size is exactly `size_of::<Config>()` and the aligned slot lies inside
+SMRAM. The borrow lasts for the SMI; the installer keeps it immutable and
+disjoint from mutable entry parameters. This avoids stack copies and compiler-
+generated memcpy for larger per-socket configurations. There is no serialization
+format, magic, or schema version.
 
 Every permanent entry first runs `SmmHandler::enter_cpu` with validated
 configuration. This bounded, CPU-local hook runs even on entrants that will

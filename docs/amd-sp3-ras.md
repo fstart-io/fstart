@@ -12,7 +12,8 @@ cargo fbuild build --board tyan-s8030 --release
 
 The board selects a compile-time `smm::ras::Policy`.
 No DXE, UEFI protocols, setup variables or ReadyToBoot event are involved.
-The existing installer configuration remains at most 32 bytes.
+The immutable installer configuration is borrowed directly from SMRAM;
+per-socket EINJ endpoints and owned targets no longer require a tiny copy ABI.
 
 ## Ownership and flow
 
@@ -123,7 +124,8 @@ Ordinary software SMI 80 still does not authorize MCA capture or #MC handoff.
 - `driver-ipmi`: OEM SEL framing and transaction-wide KCS budgets.
 
 [Restricted native EINJ](amd-sp3-einj.md) provides correctable-memory
-injection in a reserved scratch page on single-socket Rome. It does not
+injection in firmware-owned scratch pages on 1P/2P Rome (2P hardware
+validation remains open). It does not
 exercise this #MC-only observer. GHES/SCI/NMI tables, ERST, BERT, flash error
 storage, APCB repair queues, general DIMM decoding and PCIe firmware-first
 handling remain separate ownership/persistence choices.
