@@ -1,0 +1,33 @@
+[package]
+name = "fstart-board-amd-ethanolx"
+description = "AMD Ethanol-X: experimental dual-socket SP3 Milan port"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "amd-ethanolx"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
+
+[dependencies]
+fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["acpi", "milan"] }
+fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["milan"] }
+fstart-core = { path = "../../../crates/core" }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+heapless = { version = "0.8", default-features = false }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("monolithic", "smm"))'] }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+test = false
+bench = false

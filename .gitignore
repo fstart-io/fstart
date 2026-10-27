@@ -42,3 +42,7 @@ boot-assets/
 # Board crates are not workspace members; their lockfiles are rust-analyzer/cargo-check artifacts.
 # Real builds lock inside the fbuild temp workspace under target/.
 boards/*/*/Cargo.lock
+
+# Vendor firmware inputs are supplied by the user, never committed.
+boards/*/*/vendor/*
+!boards/*/*/vendor/README.md
