@@ -17,8 +17,10 @@ reference lane map, GPIO and console/KCS wiring.
 The FCH UART1 MMIO console is hardware-verified. Native bring-up reports
 256 GiB RAM and completes MP/SMU initialization on both sockets, SMM
 relocation and locking on all 192 CPUs, PCI enumeration, two-domain NUMA
-ACPI generation and handoff to the halt payload. No OS or memory test has
-passed yet. The initial configuration does not implement strap-driven
+ACPI generation and handoff to the halt payload. Linux boots all 192 CPUs
+and passes a 32 MiB memory smoke test pinned to each socket, but currently
+falls back to one NUMA node because SRAT memory coverage is incomplete.
+The initial configuration does not implement strap-driven
 slot bifurcation, the board's I2C clock/GPIO expanders, or hotplug. Do not
 assume external slots match vendor Setup.
 The current SP3 MP implementation also requires xAPIC: configurations above

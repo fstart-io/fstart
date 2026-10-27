@@ -150,6 +150,14 @@ impl FchAcpi {
             let body = emit(acpi_dsl! {
                 Name("_HID", "AMDI0020");
                 Name("_UID", #{byte u.index});
+                Name("_DSD", Package(
+                    ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+                    Package(
+                        Package("clock-frequency", #{const dword uart::MMIO_CLOCK_HZ}),
+                        Package("reg-shift", 2u8),
+                        Package("reg-io-width", 1u8),
+                    )
+                ));
                 Name("_CRS", ResourceTemplate {
                     Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{dword u.irq});
                     Memory32Fixed(ReadWrite, #{dword mmio}, 0x1000u32);
@@ -350,6 +358,20 @@ mod tests {
             assert!(aml.windows(4).any(|w| w == n));
         }
         assert!(!aml.windows(4).any(|w| w == b"FUR2"));
+        for property in ["clock-frequency", "reg-shift", "reg-io-width"] {
+            assert_eq!(
+                aml.windows(property.len())
+                    .filter(|w| *w == property.as_bytes())
+                    .count(),
+                f.uarts.len()
+            );
+        }
+        assert_eq!(
+            aml.windows(4)
+                .filter(|w| *w == uart::MMIO_CLOCK_HZ.to_le_bytes())
+                .count(),
+            f.uarts.len()
+        );
     }
 
     #[test]
