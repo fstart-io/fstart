@@ -1,0 +1,36 @@
+[package]
+name = "fstart-driver-zen"
+description = "AMD Zen server silicon (SP3: Naples, Rome, Milan) IP blocks"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+publish = false
+
+# One feature per generation gates its IP versions. Shared IP (e.g. DF3,
+# SMU V11, FCH Huashan for Rome and Milan) is built when any user is enabled.
+[features]
+default = []
+naples = []
+rome = []
+milan = []
+# ACPI descriptions of the blocks (FCH devices).
+acpi = ["dep:fstart-acpi"]
+
+[dependencies]
+fstart-core = { workspace = true }
+fstart-amdfw-format = { workspace = true }
+fstart-pci = { workspace = true }
+fstart-log = { workspace = true }
+tock-registers = { workspace = true }
+heapless = { workspace = true }
+zerocopy = { workspace = true }
+ufmt = { workspace = true }
+# MSR access (MsrAccess, typed Msr registers) for the CCX block.
+fstart-arch = { workspace = true, features = ["x86_64"] }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+
+[dev-dependencies]
+# The unit tests cover every generation, also in `cargo test --workspace`.
+fstart-driver-zen = { path = ".", features = ["naples", "rome", "milan", "acpi"] }
+fstart-pci = { workspace = true }
+fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

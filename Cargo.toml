@@ -5,6 +5,7 @@ members = [
   "tools/amdfw",
   "crates/amdfw-format",
   "crates/driver-amd",
+  "crates/driver-zen",
   "crates/driver-chromeec",
   "crates/platform-amd",
   "crates/core",
