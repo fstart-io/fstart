@@ -433,13 +433,6 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
         None => fstart_log::warn!("sp3: no microcode patch for this CPU"),
     }
     ccx.early(&cpu, &bsp);
-    let features = v11::feature_mask(ctx.identity.revision, &FeaturePolicy::default());
-    if generation == Generation::Milan {
-        si.smus
-            .iter()
-            .try_for_each(|smu| v11::early_cc6(smu, features, 0))
-            .or_halt("SMU early CC6");
-    }
     // SAFETY: DfGlobalCtrl of node 0, read only.
     let df_global = unsafe { ctx.df.node(0, regs::GLOBAL_CTRL) }.get();
     let wdt = policy
@@ -504,6 +497,9 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
 
     ctx.apic_ids = super::collect_apic_ids(&mp);
     let rev = ctx.identity.revision;
+    // Keep CC6 disabled until boot-time calibration finishes. Milan's early
+    // CC6 PPI belongs to the topology-change reset path, not normal boot.
+    let features = v11::feature_mask(rev, &FeaturePolicy::default());
     for (socket, smu) in si.smus.iter().enumerate() {
         v11::ccx_done(
             smu,

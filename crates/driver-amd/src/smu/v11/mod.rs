@@ -204,8 +204,8 @@ pub const fn feature_mask(revision: Revision, p: &FeaturePolicy) -> u32 {
     }
 }
 
-/// Enable `mask` (`hi`: Milan's second mask word, PCD 0x12B in PEI, 0 in
-/// DXE).
+/// Enable the requested bits, without disabling previously enabled bits
+/// (`hi`: Milan's second mask word, PCD 0x12B in PEI, 0 in DXE).
 pub fn enable_features<M: SmuMessages + ?Sized>(
     smu: &M,
     mask: u32,
@@ -215,8 +215,9 @@ pub fn enable_features<M: SmuMessages + ?Sized>(
     smu.send(msg::ENABLE_FEATURES, &mut args)
 }
 
-/// Milan PEI: enable CC6 early on the CCX PPI b0aae673 (`gn.smu_early_cc6`),
-/// on every NBIO's SMU handle (i.e. per socket here).
+/// Milan PEI: enable CC6 before a topology-change reset, on the CCX PPI
+/// b0aae673 (`gn.smu_early_cc6`), per socket. Do not call on a normal boot:
+/// feature enables are additive, and DC BTC rejects an already-enabled CC6.
 pub fn early_cc6<M: SmuMessages + ?Sized>(smu: &M, mask: u32, hi: u32) -> Result<(), SmuError> {
     enable_features(smu, mask | features::CC6, hi)
 }
@@ -387,8 +388,9 @@ impl CcxDonePolicy {
 
 /// The CCX-done sequence for one socket (Rome `SmuV11Dxe 0x2ae8`, Milan
 /// `SmuV11DxeGN 0xc40`, instruction-checked for Milan): the boot-time
-/// calibrations run with CC6 off, then CC6 alone is enabled; then the
-/// per-socket settings. LCLK DPM ([`set_lclk_dpm_level`]) and hotplug
+/// calibrations require CC6 to be off on entry (feature enables are additive),
+/// then CC6 alone is enabled; then the per-socket settings. LCLK DPM
+/// ([`set_lclk_dpm_level`]) and hotplug
 /// follow, and the AC BTC callback is the CCX track's.
 pub fn ccx_done<M: SmuMessages + ?Sized, T: Timer + ?Sized>(
     smu: &M,
