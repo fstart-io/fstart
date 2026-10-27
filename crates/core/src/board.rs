@@ -256,10 +256,45 @@ impl FirmwareImagePolicy {
 }
 
 /// CPU microcode packaging configuration.
+// Build-time board configuration, not hot data; no_std has no Box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MicrocodeConfig {
     /// Intel concatenated microcode update files.
     Intel(IntelMicrocodeConfig),
+    /// AMD Family 17h+ flat microcode patches.
+    Amd(AmdMicrocodeConfig),
+}
+
+/// AMD flat patches to concatenate into the FFS file `cpu_microcode.bin`,
+/// which the CPU driver loads during MP init
+/// (`fstart_amdfw_format::microcode`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmdMicrocodeConfig {
+    /// Patch files, resolved relative to the workspace root unless absolute.
+    #[serde(default)]
+    pub files: heapless::Vec<HString<128>, 16>,
+    /// Vendor flash images (or halves of one) whose BIOS directory
+    /// microcode entries (type 0x66) are packed too, found the way the PSP
+    /// finds that directory. A patch two of them carry is packed once.
+    #[serde(default)]
+    pub vendor_images: heapless::Vec<AmdVendorMicrocode, 4>,
+}
+
+/// The microcode of a vendor AMD flash image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmdVendorMicrocode {
+    /// The vendor flash image, relative to the workspace root unless
+    /// absolute.
+    pub image: HString<256>,
+    /// The EFS field the SoC's PSP takes the BIOS directory from.
+    pub bios_directory: fstart_amdfw_format::efs::BiosDirectorySlot,
+    /// Flash offset of the half that carries this directory (0, or 16 MiB
+    /// for the upper half of a dual image).
+    #[serde(default)]
+    pub origin: u32,
 }
 
 /// Intel microcode files to concatenate into `cpu_microcode_blob.bin`.

@@ -211,39 +211,39 @@ impl EcamDevice {
     pub fn try_read8(&self, reg: u16) -> Option<u8> {
         let addr = self.register_address(reg, 1)?;
         // SAFETY: the owning region validated this mapped function.
-        Some(unsafe { fstart_core::mmio::read8(addr as *const u8) })
+        Some(unsafe { access::read8(addr) })
     }
 
     pub fn try_read16(&self, reg: u16) -> Option<u16> {
         let addr = self.register_address(reg, 2)?;
         // SAFETY: mapped and aligned register within this function.
-        Some(unsafe { fstart_core::mmio::read16(addr as *const u16) })
+        Some(unsafe { access::read16(addr) })
     }
 
     pub fn try_read32(&self, reg: u16) -> Option<u32> {
         let addr = self.register_address(reg, 4)?;
         // SAFETY: mapped and aligned register within this function.
-        Some(unsafe { fstart_core::mmio::read32(addr as *const u32) })
+        Some(unsafe { access::read32(addr) })
     }
 
     pub fn try_write8(&self, reg: u16, val: u8) -> Option<()> {
         let addr = self.register_address(reg, 1)?;
         // SAFETY: the owning region validated this mapped function.
-        unsafe { fstart_core::mmio::write8(addr as *mut u8, val) };
+        unsafe { access::write8(addr, val) };
         Some(())
     }
 
     pub fn try_write16(&self, reg: u16, val: u16) -> Option<()> {
         let addr = self.register_address(reg, 2)?;
         // SAFETY: mapped and aligned register within this function.
-        unsafe { fstart_core::mmio::write16(addr as *mut u16, val) };
+        unsafe { access::write16(addr, val) };
         Some(())
     }
 
     pub fn try_write32(&self, reg: u16, val: u32) -> Option<()> {
         let addr = self.register_address(reg, 4)?;
         // SAFETY: mapped and aligned register within this function.
-        unsafe { fstart_core::mmio::write32(addr as *mut u32, val) };
+        unsafe { access::write32(addr, val) };
         Some(())
     }
 
@@ -258,7 +258,7 @@ impl EcamDevice {
     pub unsafe fn try_read16_unaligned(&self, reg: u16) -> Option<u16> {
         let addr = self.span_address(reg, 2)?;
         // SAFETY: caller permits this exact access; the entire span is checked.
-        Some(unsafe { fstart_core::mmio::read16_unaligned(addr as *const u8) })
+        Some(unsafe { access::read16(addr) })
     }
 
     /// Store a word at its exact byte offset using one x86 instruction.
@@ -273,7 +273,7 @@ impl EcamDevice {
     pub unsafe fn try_write16_unaligned(&self, reg: u16, val: u16) -> Option<()> {
         let addr = self.span_address(reg, 2)?;
         // SAFETY: caller permits this exact access; the entire span is checked.
-        unsafe { fstart_core::mmio::write16_unaligned(addr as *mut u8, val) };
+        unsafe { access::write16(addr, val) };
         Some(())
     }
 
@@ -288,7 +288,7 @@ impl EcamDevice {
     pub unsafe fn try_read32_unaligned(&self, reg: u16) -> Option<u32> {
         let addr = self.span_address(reg, 4)?;
         // SAFETY: caller permits this exact access; the entire span is checked.
-        Some(unsafe { fstart_core::mmio::read32_unaligned(addr as *const u8) })
+        Some(unsafe { access::read32(addr) })
     }
 
     /// Store a dword at its exact byte offset using one x86 instruction.
@@ -303,7 +303,7 @@ impl EcamDevice {
     pub unsafe fn try_write32_unaligned(&self, reg: u16, val: u32) -> Option<()> {
         let addr = self.span_address(reg, 4)?;
         // SAFETY: caller permits this exact access; the entire span is checked.
-        unsafe { fstart_core::mmio::write32_unaligned(addr as *mut u8, val) };
+        unsafe { access::write32(addr, val) };
         Some(())
     }
 
@@ -384,6 +384,102 @@ impl EcamDevice {
         };
         let base = high | u64::from(low & !0xf);
         (base != 0).then_some(base)
+    }
+}
+
+/// Config access to any segment-0 function through the global ECAM base
+/// (see [`init`]), for chipset code that addresses several functions.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GlobalEcam;
+
+impl ConfigRegionAccess for GlobalEcam {
+    unsafe fn read(&self, address: PciAddress, offset: u16) -> u32 {
+        EcamDevice::new_address(address).read32(offset)
+    }
+
+    unsafe fn write(&self, address: PciAddress, offset: u16, value: u32) {
+        EcamDevice::new_address(address).write32(offset, value)
+    }
+}
+
+/// Config-space accesses.
+///
+/// AMD requires MMIO configuration accesses to use AL/AX/EAX (OSRR 56255
+/// §2.1.4.1), so on x86 every ECAM access is one `mov` through the
+/// accumulator, as Linux does in `mmio_config_*`. Each access is a single
+/// instruction of its exact width, also for the explicitly unaligned spans,
+/// with the same `mfence` ordering as `fstart_core::mmio`.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod access {
+    use core::arch::asm;
+
+    // SAFETY (all): the caller provides a mapped config register covering
+    // the complete access width.
+    pub(super) unsafe fn read8(addr: usize) -> u8 {
+        let value;
+        unsafe {
+            asm!("mov al, byte ptr [{addr}]", "mfence", addr = in(reg) addr, out("al") value,
+                options(nostack, preserves_flags));
+        }
+        value
+    }
+    pub(super) unsafe fn read16(addr: usize) -> u16 {
+        let value;
+        unsafe {
+            asm!("mov ax, word ptr [{addr}]", "mfence", addr = in(reg) addr, out("ax") value,
+                options(nostack, preserves_flags));
+        }
+        value
+    }
+    pub(super) unsafe fn read32(addr: usize) -> u32 {
+        let value;
+        unsafe {
+            asm!("mov eax, dword ptr [{addr}]", "mfence", addr = in(reg) addr, out("eax") value,
+                options(nostack, preserves_flags));
+        }
+        value
+    }
+    pub(super) unsafe fn write8(addr: usize, value: u8) {
+        unsafe {
+            asm!("mfence", "mov byte ptr [{addr}], al", "mfence", addr = in(reg) addr, in("al") value,
+                options(nostack, preserves_flags));
+        }
+    }
+    pub(super) unsafe fn write16(addr: usize, value: u16) {
+        unsafe {
+            asm!("mfence", "mov word ptr [{addr}], ax", "mfence", addr = in(reg) addr, in("ax") value,
+                options(nostack, preserves_flags));
+        }
+    }
+    pub(super) unsafe fn write32(addr: usize, value: u32) {
+        unsafe {
+            asm!("mfence", "mov dword ptr [{addr}], eax", "mfence", addr = in(reg) addr, in("eax") value,
+                options(nostack, preserves_flags));
+        }
+    }
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+mod access {
+    use fstart_core::mmio;
+    // SAFETY (all): the caller provides a mapped, aligned config register.
+    pub(super) unsafe fn read8(addr: usize) -> u8 {
+        unsafe { mmio::read8(addr as *const u8) }
+    }
+    pub(super) unsafe fn read16(addr: usize) -> u16 {
+        unsafe { mmio::read16(addr as *const u16) }
+    }
+    pub(super) unsafe fn read32(addr: usize) -> u32 {
+        unsafe { mmio::read32(addr as *const u32) }
+    }
+    pub(super) unsafe fn write8(addr: usize, value: u8) {
+        unsafe { mmio::write8(addr as *mut u8, value) }
+    }
+    pub(super) unsafe fn write16(addr: usize, value: u16) {
+        unsafe { mmio::write16(addr as *mut u16, value) }
+    }
+    pub(super) unsafe fn write32(addr: usize, value: u32) {
+        unsafe { mmio::write32(addr as *mut u32, value) }
     }
 }
 

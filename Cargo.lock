@@ -18,6 +18,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "anstream"
 version = "0.6.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -549,6 +555,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-amdfw-format"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tock-registers",
+ "zerocopy",
+]
+
+[[package]]
+name = "fstart-amdfw-tools"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fstart-amdfw-format",
+ "fstart-image-build",
+]
+
+[[package]]
 name = "fstart-arch"
 version = "0.1.0"
 dependencies = [
@@ -582,6 +606,7 @@ name = "fstart-core"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-amdfw-format",
  "heapless 0.8.0",
  "serde",
  "tock-registers",
@@ -609,6 +634,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-i2c"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-driver-intel"
 version = "0.1.0"
 dependencies = [
@@ -629,6 +662,16 @@ dependencies = [
  "sha2 0.10.9",
  "tock-registers",
  "ufmt",
+ "zerocopy",
+]
+
+[[package]]
+name = "fstart-driver-ipmi"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-core",
+ "tock-registers",
  "zerocopy",
 ]
 
@@ -709,6 +752,7 @@ name = "fstart-image-build"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "fstart-amdfw-format",
  "fstart-boot",
  "fstart-core",
  "fstart-coreboot",
@@ -717,9 +761,11 @@ dependencies = [
  "fstart-smm",
  "heapless 0.8.0",
  "iced-x86",
+ "miniz_oxide",
  "object 0.37.3",
  "rand_core",
  "serde",
+ "serde_json",
  "zerocopy",
 ]
 
@@ -1083,6 +1129,15 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+]
 
 [[package]]
 name = "noto-sans-mono-bitmap"

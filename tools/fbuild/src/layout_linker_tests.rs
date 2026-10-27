@@ -261,7 +261,7 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
             let offset = usize::try_from(descriptor.address() - execution.base).unwrap();
             assert_eq!(
                 &flat_bytes[offset..offset + descriptor.size() as usize],
-                &expectations.descriptor.bytes
+                &expectations.descriptor.as_ref().unwrap().bytes
             );
             let binary_end = linked
                 .symbols()

@@ -4,19 +4,18 @@
 //! driver through [`SmmCpu`](super::smm::SmmCpu); this module only knows the
 //! two architectural layouts and how to test whether they are usable.
 
-use super::msr_register::Msr;
+use crate::x86::cpu::msr::{MTRR_CAP, Msr, MsrAccess, MtrrCap, NativeMsr};
+use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 register_bitfields![u32,
     CPUID_1_EDX [ MTRR OFFSET(12) NUMBITS(1) [] ]
 ];
 register_bitfields![u64,
-    MTRR_CAP [ SMRR OFFSET(11) NUMBITS(1) [] ],
     SMRR_BASE [ MEMORY_TYPE OFFSET(0) NUMBITS(8) [], ADDRESS OFFSET(12) NUMBITS(20) [] ],
     SMRR_MASK [ VALID OFFSET(11) NUMBITS(1) [], ADDRESS OFFSET(12) NUMBITS(20) [] ]
 ];
 
-const IA32_MTRR_CAP: u32 = 0x0fe;
 const CORE2_SMRR_PHYS_BASE: u32 = 0x0a0;
 const CORE2_SMRR_PHYS_MASK: u32 = 0x0a1;
 const IA32_SMRR_PHYS_BASE: u32 = 0x1f2;
@@ -37,7 +36,9 @@ fn mtrr_cap_has_smrr() -> bool {
     let (_, _, _, edx) = crate::x86::cpuid(1);
     // SAFETY: CPUID reports MTRR support, so IA32_MTRR_CAP exists.
     LocalRegisterCopy::<u32, CPUID_1_EDX::Register>::new(edx).is_set(CPUID_1_EDX::MTRR)
-        && unsafe { Msr::<MTRR_CAP::Register>::new(IA32_MTRR_CAP).read() }.is_set(MTRR_CAP::SMRR)
+        && unsafe { NativeMsr::new() }
+            .reg(MTRR_CAP)
+            .is_set(MtrrCap::SMRR)
 }
 
 impl SmrrPair {
@@ -86,12 +87,13 @@ impl SmrrPair {
             Self::Architectural => true,
             Self::Core2Alternative => {
                 // SAFETY: the model driver named a CPU with this MSR.
-                let feature = unsafe {
-                    Msr::<super::feature_control::FEATURE_CONTROL::Register>::new(
-                        super::feature_control::IA32_FEATURE_CONTROL,
+                let feature = unsafe { NativeMsr::new() }
+                    .reg(
+                        Msr::<super::feature_control::FEATURE_CONTROL::Register>::new(
+                            super::feature_control::IA32_FEATURE_CONTROL,
+                        ),
                     )
-                    .read()
-                };
+                    .extract();
                 feature.is_set(super::feature_control::FEATURE_CONTROL::LOCK)
                     && feature.is_set(super::feature_control::FEATURE_CONTROL::SMRR_ENABLE)
             }
@@ -113,16 +115,13 @@ impl SmrrPair {
             ),
             Self::Architectural => (IA32_SMRR_PHYS_BASE, IA32_SMRR_PHYS_MASK, range.base),
         };
-        let base_reg = Msr::<SMRR_BASE::Register>::new(base_msr);
-        let mask_reg = Msr::<SMRR_MASK::Register>::new(mask_msr);
         // SAFETY: the caller established that this pair is usable.
-        unsafe {
-            base_reg.write(base);
-            mask_reg.write(range.mask);
-        }
-        // SAFETY: same registers as above.
-        let (observed_base, observed_mask) = unsafe { (base_reg.read(), mask_reg.read()) };
-        if observed_base.get() != base || observed_mask.get() != range.mask {
+        let cpu = unsafe { NativeMsr::new() };
+        let base_reg = cpu.reg(Msr::<SMRR_BASE::Register>::new(base_msr));
+        let mask_reg = cpu.reg(Msr::<SMRR_MASK::Register>::new(mask_msr));
+        base_reg.set(base);
+        mask_reg.set(range.mask);
+        if base_reg.get() != base || mask_reg.get() != range.mask {
             return Err(SmrrError::VerificationFailed);
         }
         Ok(())

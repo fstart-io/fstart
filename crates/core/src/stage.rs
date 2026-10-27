@@ -69,6 +69,10 @@ pub struct MonolithicConfig {
     /// only on CPUs known to support PDPE1GB.
     #[serde(default)]
     pub page_size: PageSize,
+    /// The stage reaches memory by other means (an AMD PSP copies it from
+    /// its own flash region), so the FFS carries no copy of it.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub external: bool,
 }
 
 /// Configuration for one stage in a multi-stage build.

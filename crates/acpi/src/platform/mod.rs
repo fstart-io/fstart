@@ -44,7 +44,7 @@ pub use arm::{ArmConfig, IortConfig, WatchdogConfig};
 
 // Re-export x86 types when available.
 #[cfg(feature = "x86")]
-pub use x86::{HpetConfig, IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
+pub use x86::{HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt, X86PlatformProvider};
 
 /// Platform-specific ACPI configuration enum.
 ///
@@ -95,6 +95,13 @@ pub struct FadtConfig {
     pub acpi_disable: u8,
     /// ACPI reset register (I/O port, value) when the platform has one.
     pub reset_reg: Option<(u32, u8)>,
+    /// Legacy x86 FADT feature flags (`RESET_REG_SUP` comes from `reset_reg`).
+    pub x86_flags: u32,
+    /// C2/C3 worst-case latencies (x86).
+    pub p_lvl2_lat: u16,
+    pub p_lvl3_lat: u16,
+    /// Duty cycle field offset in P_CNT (x86).
+    pub duty_offset: u8,
 }
 
 impl Default for FadtConfig {
@@ -115,6 +122,17 @@ impl Default for FadtConfig {
             acpi_enable: 0,
             acpi_disable: 0,
             reset_reg: None,
+            // The ICH7 (i82801gx) FADT.
+            x86_flags: Flags::Wbinvd as u32
+                | Flags::ProcC1 as u32
+                | Flags::PLvl2Up as u32
+                | Flags::SlpButton as u32
+                | Flags::RtcS4 as u32
+                | Flags::TmrValExt as u32
+                | Flags::UsePlatformClock as u32,
+            p_lvl2_lat: 1,
+            p_lvl3_lat: 85,
+            duty_offset: 1,
         }
     }
 }
@@ -415,11 +433,11 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     b.gpe0_blk_len = config.gpe0_blk_len;
 
     // C-state latencies.
-    b.p_lvl2_lat = 1u16.into();
-    b.p_lvl3_lat = 85u16.into();
+    b.p_lvl2_lat = config.p_lvl2_lat.into();
+    b.p_lvl3_lat = config.p_lvl3_lat.into();
 
     // Duty cycle.
-    b.duty_offset = 1;
+    b.duty_offset = config.duty_offset;
 
     // RTC alarm register offsets (mc146818 on every PC-compatible platform).
     // The century register is deliberately not advertised: this chipset does
@@ -432,15 +450,7 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     // IAPC boot architecture flags.
     b.iapc_boot_arch = config.iapc_boot_arch.into();
 
-    // FADT flags.
-    b = b
-        .flag(Flags::Wbinvd)
-        .flag(Flags::ProcC1)
-        .flag(Flags::PLvl2Up)
-        .flag(Flags::SlpButton)
-        .flag(Flags::RtcS4)
-        .flag(Flags::TmrValExt)
-        .flag(Flags::UsePlatformClock);
+    b.flags = config.x86_flags.into();
 
     // Platform reset register, when the chipset implements one.
     if let Some((port, value)) = config.reset_reg {

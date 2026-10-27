@@ -65,7 +65,7 @@ impl IntelPlan {
                 )
                 .map_err(|_| "too many microcode files")?;
         }
-        Ok(crate::build_plan::Assembly {
+        Ok(crate::build_plan::FfsAssembly {
             platform: self.platform,
             memory: vec![MemoryRegion {
                 name: hstr("bootstrap-ram"),
@@ -101,6 +101,7 @@ impl IntelPlan {
                 ),
                 ..Default::default()
             },
-        })
+        }
+        .into())
     }
 }

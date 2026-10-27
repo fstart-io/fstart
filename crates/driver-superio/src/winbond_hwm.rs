@@ -209,7 +209,7 @@ impl WinbondMonitor {
         Ok(Self { base, profile })
     }
     fn register<R: RegisterLongName>(&self, index: u8) -> IndexedPioRegister<R> {
-        IndexedPioRegister::new(self.base + 5, self.base + 6, index)
+        IndexedPioRegister::ports(self.base + 5, self.base + 6, index)
     }
     // Bank selection affects 50h..5Fh only. Restore defined fields even on a
     // failed probe. EHG §6.8.46 clears reserved bits 3/6 but retains beep fields;

@@ -124,12 +124,26 @@ pub(crate) fn ensure_context(
     if context().is_some() {
         return view(media).map(|_| ());
     }
-    let root = crate::root::authenticate_boot_root(anchor_data, media)
-        .map_err(|_| ReaderError::SignatureInvalid)?;
+    let root = crate::root::authenticate_boot_root(anchor_data, media).map_err(|e| {
+        use fstart_ffs::root::RootError as R;
+        let why = match e {
+            R::InvalidFormat => "invalid format",
+            R::UnsupportedVersion => "unsupported version",
+            R::OutOfBounds => "out of bounds",
+            R::PolicyRejected => "policy rejected",
+            R::SignatureInvalid => "signature invalid",
+            R::UnsupportedAlgorithm => "unsupported algorithm",
+            R::DigestMismatch => "digest mismatch",
+        };
+        fstart_log::error!("ffs: boot root rejected: {}", why);
+        ReaderError::SignatureInvalid
+    })?;
     fstart_log::info!("boot profile: development integrity; rollback not enforced");
     // SAFETY: fixed-flow mainstage services run after DRAM initialization; the
     // reference was just authenticated against this stage's embedded anchor.
-    unsafe { install_directory_context(media, *root.directory()) }
+    unsafe { install_directory_context(media, *root.directory()) }.inspect_err(|_| {
+        fstart_log::error!("ffs: directory context not installed");
+    })
 }
 
 fn read_verified_asset(name: &str) -> Option<&'static [u8]> {

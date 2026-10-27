@@ -68,6 +68,7 @@ pub fn compilation_plan(
         ),
         environment_values: mp_capacity(),
         bindings: vec![],
+        file_bindings: vec![],
         output: UnitOutput::SmmImage {
             entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
             stack_size: plan.smm.stack_size,
@@ -109,6 +110,7 @@ pub fn compilation_plan(
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true, plan.platform)?),
             environment_values: mp_capacity(),
             bindings,
+            file_bindings: vec![],
             output: UnitOutput::Executable {
                 expectations: plan.reservations.elf_expectations(row.role, plan.platform)?, load_address: reservation.image.base,
                 flat_capacity: if boot { reservation.image.size } else { reservation.load_window()?.size },

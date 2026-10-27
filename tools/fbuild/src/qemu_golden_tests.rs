@@ -50,7 +50,7 @@ fn typed_qemu_presets_match_captured_xip_outputs() {
             panic!("not executable")
         };
         let mut actual = serde_json::json!({
-            "descriptor_hex": expectations.descriptor.bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "descriptor_hex": expectations.descriptor.as_ref().unwrap().bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             "linker_sha256": format!("{:x}", Sha256::digest(unit.linker_script.as_ref().unwrap().as_bytes())),
             "elf": expectations,
             "assembly": plan.assembly.config("fixture").unwrap(),
@@ -61,6 +61,11 @@ fn typed_qemu_presets_match_captured_xip_outputs() {
             .as_object_mut()
             .unwrap()
             .remove("bytes");
+        assert!(expectations.stored_flags.is_none());
+        actual["elf"]
+            .as_object_mut()
+            .unwrap()
+            .remove("stored_flags");
         assert_eq!(actual, expected, "{machine:?}/{payload}");
     }
 }

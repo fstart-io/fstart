@@ -1,5 +1,5 @@
 use clap::{Args, ValueEnum};
-use fstart_image_build::plan::BuildSelection;
+use fstart_image_build::plan::{BuildSelection, CompilerFileSelection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PayloadChoice {
@@ -60,6 +60,13 @@ impl PayloadChoice {
 /// memory override.
 #[derive(Debug, Clone, Args)]
 pub struct BuildArgs {
+    /// Explicit compiler file namespace and path; repeat as ENV=PATH.
+    /// The selected platform must bind each request unchanged, without fallback.
+    #[arg(long = "compiler-input", value_parser = CompilerFileSelection::parse)]
+    pub compiler_inputs: Vec<CompilerFileSelection>,
+    /// Explicit image configuration interpreted by the selected platform.
+    #[arg(long)]
+    pub image_config: Option<String>,
     /// SMBIOS Type 0 release date in MM/DD/YYYY form.
     #[arg(long, value_parser = parse_smbios_date, default_value_t = current_smbios_date())]
     pub smbios_date: String,
@@ -86,6 +93,8 @@ pub struct BuildArgs {
 impl Default for BuildArgs {
     fn default() -> Self {
         Self {
+            compiler_inputs: Vec::new(),
+            image_config: None,
             smbios_date: current_smbios_date(),
             linux_kernel_load_addr: None,
             linux_bootargs: None,
@@ -100,6 +109,8 @@ impl BuildArgs {
     pub fn selection(&self, payload: Option<PayloadChoice>) -> BuildSelection {
         BuildSelection {
             payload: payload.map(|choice| choice.as_str().to_owned()),
+            compiler_files: self.compiler_inputs.clone(),
+            image_config: self.image_config.clone(),
             smbios_release_date: Some(self.smbios_date.clone()),
             x86_linux_kernel_load_addr: self.linux_kernel_load_addr,
             x86_linux_bootargs: self.linux_bootargs.clone(),
@@ -109,6 +120,15 @@ impl BuildArgs {
     }
 
     pub fn append_cli_args(&self, args: &mut Vec<String>) {
+        for input in &self.compiler_inputs {
+            args.extend([
+                "--compiler-input".into(),
+                format!("{}={}", input.environment, input.path),
+            ]);
+        }
+        if let Some(path) = &self.image_config {
+            args.extend(["--image-config".into(), path.clone()]);
+        }
         args.extend(["--smbios-date".into(), self.smbios_date.clone()]);
         if let Some(value) = self.linux_kernel_load_addr {
             args.extend(["--linux-kernel-load-addr".into(), format!("{value:#x}")]);
@@ -213,6 +233,60 @@ fn parse_u64(value: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiler_input_cli_round_trips_paths_and_keeps_duplicate_requests_visible() {
+        #[derive(clap::Parser)]
+        struct InputCli {
+            #[command(flatten)]
+            options: BuildArgs,
+        }
+        use clap::Parser;
+        let cli = InputCli::try_parse_from([
+            "inputs",
+            "--compiler-input",
+            "FSTART_BYTES=a path/file=1.bin",
+            "--image-config",
+            "a path/image=2.json",
+        ])
+        .unwrap();
+        let selected = cli.options.selection(None);
+        selected.validate_compiler_files().unwrap();
+        assert_eq!(selected.compiler_files[0].path, "a path/file=1.bin");
+        assert_eq!(
+            selected.image_config.as_deref(),
+            Some("a path/image=2.json")
+        );
+        let mut forwarded = vec!["inputs".into()];
+        cli.options.append_cli_args(&mut forwarded);
+        let forwarded = InputCli::try_parse_from(forwarded)
+            .unwrap()
+            .options
+            .selection(None);
+        assert_eq!(
+            forwarded.compiler_files[0].path,
+            selected.compiler_files[0].path
+        );
+        assert_eq!(forwarded.image_config, selected.image_config);
+        let duplicates = InputCli::try_parse_from([
+            "inputs",
+            "--compiler-input",
+            "FILE=a",
+            "--compiler-input",
+            "FILE=b",
+        ])
+        .unwrap();
+        assert!(
+            duplicates
+                .options
+                .selection(None)
+                .validate_compiler_files()
+                .is_err()
+        );
+        assert!(
+            InputCli::try_parse_from(["inputs", "--compiler-input", "RUSTFLAGS=file"]).is_err()
+        );
+    }
 
     #[test]
     fn civil_dates_cover_epoch_and_leap_day() {

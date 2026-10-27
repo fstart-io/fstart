@@ -9,6 +9,10 @@
 
 extern crate alloc;
 
+mod ipmi;
+pub mod tpm;
+pub use ipmi::IpmiKcsAcpi;
+
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;

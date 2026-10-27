@@ -10,16 +10,18 @@ pub mod config;
 pub mod ecam;
 pub mod ecam_host;
 pub mod overlay;
+pub mod register;
 pub mod window;
 
 pub use config::*;
 pub use ecam::EcamDevice;
 pub use ecam_host::{
-    MAX_PCI_FIXED_BARS, PciEcam, PciEcamConfig, PciEcamError, PciFixedBar, PciFixedBarType,
-    PciFixedBars,
+    MAX_PCI_FIXED_BARS, MAX_PCI_ROOTS, PciEcam, PciEcamConfig, PciEcamError, PciFixedBar,
+    PciFixedBarType, PciFixedBars,
 };
 pub use overlay::{PciType0Config, PciType1Config};
 pub use pci_types::{ConfigRegionAccess, HeaderType, PciAddress, PciHeader, capability};
+pub use register::{ConfigRegister, bdf, devfn, devfn_parts};
 pub use window::{PciWindow, PciWindowKind};
 
 #[doc(hidden)]
@@ -32,7 +34,8 @@ pub mod fstart_core {
 pub struct PciRootInfo {
     /// PCI segment / domain number.
     pub segment: u16,
-    /// ECAM base address.
+    /// ECAM base address of the segment (bus 0), as in the MCFG: the root's
+    /// buses are at `ecam_base + (bus << 20)`.
     pub ecam_base: u64,
     /// First bus number owned by this root bridge.
     pub bus_start: u8,

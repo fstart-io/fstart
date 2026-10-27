@@ -6,6 +6,9 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(rust_analyzer)");
+    // Platforms that own the reset entry (AMD PSP DRAM startup) select it
+    // per build unit, so the architectural entries must not be features.
+    println!("cargo:rustc-check-cfg=cfg(fstart_entry, values(any()))");
     // fbuild sets the per-stage environment via RUSTFLAGS; declaring the
     // values here keeps `cfg(fstart_stage_env)` strict in this crate.
     println!("cargo:rustc-check-cfg=cfg(fstart_stage_env, values(\"car\", \"ram\", \"postcar\"))");
@@ -69,6 +72,8 @@ fn main() {
              pub const AP_LIMIT_OFFSET: usize = {:#x};\n\
              pub const AP_COUNTER_OFFSET: usize = {:#x};\n\
              pub const MSR_COUNT_OFFSET: usize = {:#x};\n\
+             pub const UNLOCK_MSR_OFFSET: usize = {:#x};\n\
+             pub const UNLOCK_BITS_OFFSET: usize = {:#x};\n\
              pub const MSR_TABLE_OFFSET: usize = {:#x};\n",
             bin.display(),
             find_symbol_offset(elf.as_path(), "fstart_sipi_cr3"),
@@ -78,6 +83,8 @@ fn main() {
             find_symbol_offset(elf.as_path(), "fstart_sipi_ap_limit"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_ap_counter"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_msr_count"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_unlock_msr"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_unlock_bits"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_msr_table"),
         ),
     )

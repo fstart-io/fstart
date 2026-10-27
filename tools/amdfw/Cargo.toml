@@ -1,0 +1,15 @@
+[package]
+name = "fstart-amdfw-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "fstart-amdfw"
+path = "src/main.rs"
+
+[dependencies]
+fstart-image-build.workspace = true
+fstart-amdfw-format.workspace = true
+clap.workspace = true

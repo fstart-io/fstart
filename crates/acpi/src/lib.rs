@@ -3,7 +3,8 @@
 //! Builds on the [`acpi_tables`] crate from rust-vmm, adding:
 //!
 //! - **Static tables**: GTDT (Generic Timer), SPCR (Serial Port Console),
-//!   DBG2 (Debug Port), IORT (IO Remapping), HPET (High Precision Timer).
+//!   DBG2 (Debug Port), IORT (IO Remapping), IVRS (AMD IOMMU), HPET (High
+//!   Precision Timer).
 //! - **AML extensions** ([`ext`]): `Sleep`, `Stall`, `ThermalZone`,
 //!   `CondRefOf`, `RefOf`, `Increment`, `Decrement`.
 //! - **Resource descriptors** ([`descriptors`]): GPIO Connection
@@ -45,25 +46,36 @@ pub mod descriptors;
 pub mod device;
 pub mod devices;
 pub mod ext;
+pub mod gpe;
 pub mod gtdt;
 pub mod iort;
+pub mod ivrs;
+pub mod msct;
+pub mod osc;
+pub mod pcct;
 pub mod pirq;
 pub mod platform;
+pub mod processor;
 pub mod sbsa;
+pub mod slit;
 pub mod smbios;
 pub mod spcr;
+pub mod srat;
 pub mod tock_bridge;
 pub mod wake;
+pub mod wsmt;
 
 // Re-export commonly used types from acpi_tables.
 pub use acpi_tables::aml;
 pub use acpi_tables::fadt;
+pub use acpi_tables::gas;
 pub use acpi_tables::madt;
 pub use acpi_tables::mcfg;
 pub use acpi_tables::rsdp;
 pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
+pub use fstart_acpi_macros::acpi_dsl;
 
 /// Failure while binding or emitting AML. Failed fragments append no bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

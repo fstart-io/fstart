@@ -79,13 +79,14 @@ pub fn resolved_ram_stage(
         // at the window origin.
         entry: Some(memory.base),
         copy: None,
-        descriptor: crate::elf::Descriptor {
+        descriptor: Some(crate::elf::Descriptor {
             section: ".fstart.layout".into(),
             start_symbol: "_fstart_layout_start".into(),
             end_symbol: "_fstart_layout_end".into(),
             bytes: descriptor.as_bytes().to_vec(),
             reservation: memory,
-        },
+        }),
+        stored_flags: None,
         symbols: std::collections::BTreeMap::new(),
     };
     expectations.validate()?;
@@ -175,13 +176,14 @@ impl Xip {
                 execution,
                 end_symbol: "_binary_end".into(),
             }),
-            descriptor: Descriptor {
+            descriptor: Some(Descriptor {
                 section: ".fstart.layout".into(),
                 start_symbol: "_fstart_layout_start".into(),
                 end_symbol: "_fstart_layout_end".into(),
                 bytes: self.descriptor.as_bytes().to_vec(),
                 reservation: self.code_reservation(),
-            },
+            }),
+            stored_flags: None,
             symbols: std::collections::BTreeMap::from([
                 ("_stack_bottom".into(), self.stack.base),
                 ("_stack_top".into(), self.stack.end()?),
@@ -638,7 +640,7 @@ fn stage_build<'a>(
 fn x86_early_microcode_enabled(config: &BoardConfig) -> bool {
     match &config.microcode {
         Some(MicrocodeConfig::Intel(intel)) => intel.early,
-        None => false,
+        Some(MicrocodeConfig::Amd(_)) | None => false,
     }
 }
 
@@ -1224,6 +1226,7 @@ mod tests {
                 car: None,
             },
             stages: StageLayout::Monolithic(MonolithicConfig {
+                external: false,
                 build: StageBuildConfig {
                     firmware_image: Some(FirmwareImageConfig {
                         temp_ram_buffer: None,

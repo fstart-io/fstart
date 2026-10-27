@@ -179,11 +179,13 @@ fn build(
     payload: Option<PayloadChoice>,
     options: &BuildArgs,
 ) -> Result<crate::build_board::BuildResult, String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, options)?;
-    crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)
+    let root = crate::build_board::workspace_root_pub()?;
+    let resolved =
+        crate::resolved_image::ResolvedImage::load(&root, manifest, options.selection(payload))?;
+    resolved.build(&root, manifest, release)
 }
 
+#[allow(clippy::too_many_arguments)] // the CLI's flat assemble options
 fn assemble(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
@@ -194,18 +196,64 @@ fn assemble(
     options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, options)?;
-    assemble_loaded(
+    let resolved = crate::resolved_image::ResolvedImage::load(
         &workspace_root,
         manifest,
+        options.selection(payload),
+    )?;
+    let amd = match &resolved.build.plan.assembly {
+        fstart_image_build::build_plan::Assembly::Amd(image) => Some(image.clone()),
+        _ => None,
+    };
+    // A PSP partition without an FFS: just the stages.
+    if let Some(image) = amd.as_ref().filter(|image| image.ffs.is_none()) {
+        if kernel.is_some() || firmware.is_some() || fit.is_some() {
+            return Err("PSP image operation does not consume payload-file overrides".into());
+        }
+        let build = resolved.build(&workspace_root, manifest, release)?;
+        let directory = resolved
+            .artifact_dir(&workspace_root, &manifest.board, release)?
+            .join("image");
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        return crate::amd_image::compose(
+            &workspace_root,
+            &manifest.board,
+            &directory,
+            image,
+            &build.stages,
+            None,
+        );
+    }
+    let config = resolved.assembler_config(&manifest.board)?;
+    let parsed = ParsedBoard {
+        config,
+        acpi_only_devices: Vec::new(),
+        resolved: Some(resolved),
+    };
+    let assembled = assemble_loaded(
+        &workspace_root,
+        manifest.clone(),
         parsed,
         release,
         kernel,
         firmware,
         fit,
         &options.payload_files,
-    )
-    .map(|assembled| assembled.image)
+    )?;
+    match amd {
+        Some(image) => crate::amd_image::compose(
+            &workspace_root,
+            &manifest.board,
+            assembled
+                .image
+                .parent()
+                .ok_or("FFS image has no directory")?,
+            &image,
+            &assembled.stages,
+            Some(&assembled.image),
+        ),
+        None => Ok(assembled.image),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

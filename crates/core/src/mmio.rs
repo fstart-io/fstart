@@ -392,3 +392,61 @@ impl<T: UIntLike, R: RegisterLongName> Writeable for MmioWriteOnly<T, R> {
         iomb();
     }
 }
+
+/// A typed MMIO register at an address, the MMIO counterpart of
+/// `pio::PioRegister`: `Copy`, so it can be passed around and used inside
+/// composite registers such as [`crate::indexed::Indexed`]. Accesses have
+/// the barriers of [`MmioReadWrite`].
+pub struct MmioRegister<T: UIntLike, R: RegisterLongName = ()> {
+    address: usize,
+    _reg: PhantomData<(T, R)>,
+}
+
+impl<T: UIntLike, R: RegisterLongName> Clone for MmioRegister<T, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T: UIntLike, R: RegisterLongName> Copy for MmioRegister<T, R> {}
+
+impl<T: UIntLike, R: RegisterLongName> MmioRegister<T, R> {
+    /// # Safety
+    /// `address` is a mapped, naturally aligned MMIO register of width `T`
+    /// for as long as this value or a copy of it is used.
+    pub const unsafe fn new(address: usize) -> Self {
+        Self {
+            address,
+            _reg: PhantomData,
+        }
+    }
+
+    pub const fn address(&self) -> usize {
+        self.address
+    }
+}
+
+impl<T: UIntLike, R: RegisterLongName> Readable for MmioRegister<T, R> {
+    type T = T;
+    type R = R;
+
+    #[inline(always)]
+    fn get(&self) -> T {
+        // SAFETY: the constructor's contract.
+        let val = unsafe { ptr::read_volatile(self.address as *const T) };
+        iomb();
+        val
+    }
+}
+
+impl<T: UIntLike, R: RegisterLongName> Writeable for MmioRegister<T, R> {
+    type T = T;
+    type R = R;
+
+    #[inline(always)]
+    fn set(&self, value: T) {
+        iomb();
+        // SAFETY: the constructor's contract.
+        unsafe { ptr::write_volatile(self.address as *mut T, value) };
+        iomb();
+    }
+}

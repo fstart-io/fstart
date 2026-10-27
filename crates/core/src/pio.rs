@@ -76,15 +76,15 @@ pub unsafe fn outl(port: u16, val: u32) {
 // -----------------------------------------------------------------------
 
 /// CF8 address port for legacy PCI config access.
-const PCI_CF8: u16 = 0xCF8;
+pub const PCI_CF8: u16 = 0xCF8;
 /// CFC data port for legacy PCI config access.
-const PCI_CFC: u16 = 0xCFC;
+pub const PCI_CFC: u16 = 0xCFC;
 
 /// Build a CF8 address for legacy PCI config access.
 ///
 /// Format: `(1 << 31) | (bus << 16) | (dev << 11) | (func << 8) | (reg & 0xFC)`
 #[inline]
-const fn cf8_addr(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
+pub const fn cf8_addr(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
     0x8000_0000
         | ((bus as u32) << 16)
         | ((dev as u32) << 11)
@@ -279,41 +279,12 @@ impl<T: PioValue, R: RegisterLongName> Writeable for PioRegister<T, R> {
 /// The caller owns configuration-mode entry and serializes the port pair.
 /// Bank/LDN selection must remain unchanged for the lifetime of each access.
 /// Uses the same tock field APIs as a directly addressed [`PioRegister`].
-pub struct IndexedPioRegister<R: RegisterLongName = ()> {
-    index: PioRegister<u8>,
-    data: PioRegister<u8>,
-    register: u8,
-    _reg: PhantomData<R>,
-}
+pub type IndexedPioRegister<R = ()> = crate::indexed::Indexed<PioRegister<u8>, PioRegister<u8>, R>;
 
 impl<R: RegisterLongName> IndexedPioRegister<R> {
-    pub const fn new(index: u16, data: u16, register: u8) -> Self {
-        Self {
-            index: PioRegister::new(index),
-            data: PioRegister::new(data),
-            register,
-            _reg: PhantomData,
-        }
-    }
-}
-
-impl<R: RegisterLongName> Readable for IndexedPioRegister<R> {
-    type T = u8;
-    type R = R;
-
-    fn get(&self) -> u8 {
-        self.index.set(self.register);
-        self.data.get()
-    }
-}
-
-impl<R: RegisterLongName> Writeable for IndexedPioRegister<R> {
-    type T = u8;
-    type R = R;
-
-    fn set(&self, value: u8) {
-        self.index.set(self.register);
-        self.data.set(value);
+    /// Register `register` behind the `index` and `data` ports.
+    pub const fn ports(index: u16, data: u16, register: u8) -> Self {
+        Self::new(PioRegister::new(index), PioRegister::new(data), register)
     }
 }
 

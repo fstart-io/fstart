@@ -9,6 +9,7 @@ pub use crate::x86_crate::*;
 
 pub mod boot;
 pub mod cpu;
+pub mod ioapic;
 pub mod lapic;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod legacy_pc;
@@ -178,20 +179,42 @@ const MSR_FSB_FREQ: u32 = 0x00cd;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 const IA32_PERF_STATUS: u32 = 0x0198;
 
-/// Best-effort TSC frequency for pre-Skylake firmware delays.
+/// Best-effort TSC frequency for firmware delays: CPUID.15h, the P-state
+/// frequency on Family 17h+ AMD CPUs, else the FSB clock.
 ///
-/// Core, Core 2 and Atom CPUs do not report CPUID.15h, so mirror coreboot's
-/// `cpu/intel/common/fsb.c`: derive the TSC from the FSB clock and maximum
-/// bus ratio, rounded to the nearest 100 MHz. Fall back to the old
-/// conservative 1 GHz default only for unsupported CPUs.
+/// Core, Core 2 and Atom CPUs do not report CPUID.15h, so derive the TSC
+/// from the FSB clock and maximum bus ratio, rounded to the nearest
+/// 100 MHz. Fall back to a conservative 1 GHz only for unsupported CPUs.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn tsc_frequency_hz() -> u64 {
-    if let Some(freq) = cpuid_tsc_frequency_hz() {
+    if let Some(freq) = cpuid_tsc_frequency_hz().or_else(amd_tsc_frequency_hz) {
         return freq;
     }
     bus_clock().map_or(1_000_000_000, |clock| {
         u64::from(clock.max_core_mhz()) * 1_000_000
     })
+}
+
+/// The TSC frequency of a Family 17h and later AMD CPU. Firmware only: a
+/// hosted build (tests on an AMD host) may not read MSRs.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn amd_tsc_frequency_hz() -> Option<u64> {
+    if cfg!(not(target_os = "none")) {
+        return None;
+    }
+    // "AuthenticAMD" in EBX, EDX, ECX.
+    let (_, ebx, ecx, edx) = cpuid(0);
+    if (ebx, edx, ecx) != (0x6874_7541, 0x6974_6e65, 0x444d_4163) || family_model().0 < 0x17 {
+        return None;
+    }
+    // Hypervisors do not always expose the P-state MSRs: CPUID
+    // Fn8000_0007_EDX[HwPstate] says they exist.
+    if cpuid(0x8000_0000).0 < 0x8000_0007 || cpuid(0x8000_0007).3 & 1 << 7 == 0 {
+        return None;
+    }
+    // SAFETY: ring 0; HwPstate reports the P-state MSRs.
+    let msr = unsafe { cpu::msr::NativeMsr::new() };
+    cpu::amd::msr::tsc_mhz(&msr).map(|mhz| u64::from(mhz) * 1_000_000)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
