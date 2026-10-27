@@ -11,6 +11,7 @@ pub mod layout;
 pub mod linker;
 pub mod plan;
 pub mod smm_image;
+pub mod sp3_flash;
 mod summary;
 
 use std::path::PathBuf;

@@ -1,0 +1,56 @@
+[package]
+name = "fstart-board-tyan-s8030"
+description = "Tyan S8030 (S8030GM2NE, S8030GM4NE-2T): AMD SP3 1P, EPYC 7002/7003"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# One firmware build for Rome and Milan, composed into both 16 MiB halves
+# of the 32 MiB flash (docs/amd-sp3.md). The generations are features of
+# the platform dependency below, so every build of this crate (the reset
+# unit and fbuild's host plan runner, which never sees bundle-reset) has
+# them. GM2NE and GM4NE-2T run the same image (README.md), so they are not
+# variants. `tyan-s8030-pcie3-x4x4x4x4` bifurcates PCIE#3 x4x4x4x4, for an
+# NVMe carrier (the test bench). A build-time stand-in
+# until fstart has a settings record in flash.
+[package.metadata.fstart]
+schema = 1
+board = "tyan-s8030"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
+
+[package.metadata.fstart.variants.tyan-s8030-pcie3-x4x4x4x4]
+features = ["pcie3-x4x4x4x4"]
+
+[features]
+pcie3-x4x4x4x4 = []
+
+# Versions are spelled out instead of inherited: boards are outside the
+# workspace (fbuild adds them to a generated one) and this crate also
+# builds on its own.
+[dependencies]
+fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["acpi", "rome", "milan"] }
+fstart-driver-zen = { path = "../../../crates/driver-zen", features = ["rome", "milan"] }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-core = { path = "../../../crates/core" }
+fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
+fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+embedded-hal = { version = "1", default-features = false }
+heapless = { version = "0.8", default-features = false }
+tock-registers = "0.10"
+
+# fbuild sets `fstart_stage_env` per unit; plain cargo builds do not.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("monolithic", "smm"))'] }
+
+# The reset image; fbuild builds it with fstart-platform-sp3/bundle-reset.
+# Board unit tests (`cargo test`) only build the library.
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
+test = false
+bench = false

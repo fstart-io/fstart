@@ -927,6 +927,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-platform-sp3"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-amdfw-format",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-amd",
+ "fstart-driver-ipmi",
+ "fstart-driver-uart",
+ "fstart-driver-zen",
+ "fstart-image-build",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-sp3",
+ "fstart-smm",
+ "fstart-stage",
+ "heapless 0.8.0",
+ "serde_json",
+ "tock-registers",
+ "ufmt",
+ "zerocopy",
+]
+
+[[package]]
 name = "fstart-platform-sunxi"
 version = "0.1.0"
 dependencies = [
