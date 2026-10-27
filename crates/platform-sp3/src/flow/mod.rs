@@ -388,7 +388,8 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     step(0x38, "DXIO");
     let levels = detect_levels::<B>(&ctx.fch, generation);
     board_gpio::<B>(&ctx.fch, generation);
-    let engines = B::dxio_engines(generation, &levels, &ctx.timer).or_halt("board DXIO devices");
+    let engines =
+        B::dxio_engines(generation, &levels, &ctx.fch, &ctx.timer).or_halt("board DXIO devices");
     S::dxio(&mut ctx, &si, &engines);
 
     step(0x40, "FCH env");

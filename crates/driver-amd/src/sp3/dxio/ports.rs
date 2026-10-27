@@ -130,6 +130,9 @@ register_bitfields![u32,
     ],
     /// Root port config `0x6C`: slot capabilities.
     pub CFG_SLOT_CAP [
+        HOTPLUG_SURPRISE OFFSET(5) NUMBITS(1) [],
+        HOTPLUG_CAPABLE OFFSET(6) NUMBITS(1) [],
+        NO_COMMAND_COMPLETED OFFSET(18) NUMBITS(1) [],
         PHYSICAL_SLOT OFFSET(19) NUMBITS(13) []
     ],
     /// Root port config `0x80`: device control 2.
@@ -516,11 +519,38 @@ pub fn post_training<P: ConfigRegionAccess + Clone>(
     if sp3 {
         c.port_reg::<TX_ID::Register>(port, port::TX_ID)
             .modify(TX_ID::BUS.val(c.nbio.bus() as u32) + TX_ID::DEVFN.val(p.devfn as u32));
-        if let Some(slot) = pcie.slot {
+        if pcie.slot.is_some() || pcie.hotplug.is_some() {
             c.cfg_reg::<CFG_PCIE_CAP::Register>(port, cfg::PCIE_CAP)
                 .modify(CFG_PCIE_CAP::SLOT_IMPLEMENTED::SET);
+        }
+        if let Some(slot) = pcie.slot {
             c.cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP)
                 .modify(CFG_SLOT_CAP::PHYSICAL_SLOT.val(slot as u32));
+        }
+        if let Some(h) = pcie
+            .hotplug
+            .filter(|h| h.i2c.is_none() && h.kind.keeps_bridge())
+        {
+            let cap = c.cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP);
+            let before = cap.get();
+            cap.modify(CFG_SLOT_CAP::HOTPLUG_CAPABLE::SET);
+            if h.kind == HotplugKind::EnterpriseSsd {
+                // Vendor EntSSD slot policy (0x40020), without inventing
+                // a power controller or attention/indicator wiring.
+                cap.modify(
+                    CFG_SLOT_CAP::HOTPLUG_SURPRISE::SET + CFG_SLOT_CAP::NO_COMMAND_COMPLETED::SET,
+                );
+            }
+            fstart_log::info!(
+                "dxio: native hotplug {}.{} port {} PCIe cap {:#x}, slot cap {:#x}->{:#x}",
+                p.socket,
+                p.nbio,
+                port,
+                c.cfg_reg::<CFG_PCIE_CAP::Register>(port, cfg::PCIE_CAP)
+                    .get(),
+                before,
+                cap.get()
+            );
         }
     } else {
         c.port_reg::<STRAP_MISC::Register>(port, port::STRAP_MISC)
@@ -1088,6 +1118,35 @@ mod tests {
         assert_eq!(st.smn[&(0, 0x1053_5000)], 1 << 28);
         assert_eq!(st.smn[&(0, 0x1053_6000)], 1 << 28);
         assert_eq!(st.smn[&(0, 0x1053_A008)], 1 << 8 | 1 << 16);
+    }
+
+    #[test]
+    fn native_hotplug_advertises_a_slot_without_inventing_its_number() {
+        let (_, n) = nbio(Generation::Milan, 1, 0x40);
+        let c = PcieCore::new(&n, 0);
+        let port = MappedPort {
+            engine: 0,
+            socket: 0,
+            nbio: 1,
+            core: 0,
+            port: 0,
+            devfn: 9,
+            bridge: 0,
+            trained: false,
+        };
+        let pcie = PcieEngine::new().with_hotplug(super::super::hotplug::Hotplug::new(
+            HotplugKind::EnterpriseSsd,
+        ));
+        post_training(&c, &port, &pcie);
+        assert!(
+            c.cfg_reg::<CFG_PCIE_CAP::Register>(0, cfg::PCIE_CAP)
+                .is_set(CFG_PCIE_CAP::SLOT_IMPLEMENTED)
+        );
+        let cap = c.cfg_reg::<CFG_SLOT_CAP::Register>(0, cfg::SLOT_CAP);
+        assert_eq!(cap.read(CFG_SLOT_CAP::PHYSICAL_SLOT), 0);
+        assert!(cap.is_set(CFG_SLOT_CAP::HOTPLUG_CAPABLE));
+        assert!(cap.is_set(CFG_SLOT_CAP::HOTPLUG_SURPRISE));
+        assert!(cap.is_set(CFG_SLOT_CAP::NO_COMMAND_COMPLETED));
     }
 
     #[test]

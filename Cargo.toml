@@ -24,6 +24,7 @@ members = [
   "crates/driver-uart",
   "crates/driver-vbios",
   "crates/driver-i2c",
+  "crates/driver-redriver",
   "crates/driver-ipmi",
   "crates/driver-intel",
   "crates/driver-sunxi",

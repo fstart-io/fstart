@@ -3,7 +3,7 @@
 Experimental **Milan / two-socket** bring-up port. Rome is not enabled: the
 available firmware is Milan-only. Native SP3 platform code owns topology,
 xGMI-related silicon work, memory, MP, SMM and ACPI; this crate supplies the
-reference lane map, GPIO and console/KCS wiring.
+board identity/strap policy, GPIO and console/KCS wiring.
 
 ## Bench
 
@@ -23,13 +23,18 @@ to each socket with zero EDAC errors, and powers off through ACPI.
 CrabEFI (`--payload uefi`) initializes its EFI environment, imports the full
 memory map and ACPI tables, initializes USB and AHCI, and reaches its boot
 manager. No EFI application or OS was launched. Its pinned revision has a
-64-device PCI enumeration limit, truncating this board's 153 functions;
-full peripheral coverage is therefore not validated. Variables are volatile:
+64-device PCI enumeration limit; native enumeration now finds 157 functions,
+so complete CrabEFI peripheral coverage is not validated. Variables are volatile:
 this port supplies no persistent CrabEFI variable backend.
 
-The initial configuration does not implement strap-driven
-slot bifurcation, the board's I2C clock/GPIO expanders, or hotplug. Do not
-assume external slots match vendor Setup.
+Revision `0x30` has vendor-derived strap bifurcation, GPIO/mux/redriver
+sequencing and native NVMe hotplug policy. With measured straps `0x0000`,
+Linux registers four `pciehp` controllers at `e0:03.1`–`e0:03.4`, exposing
+empty downstream slots on buses `e1`–`e4`, and passes the CPU/NUMA/memory
+smoke checks before clean shutdown. GPIO expander writes are readback-verified.
+The muxed redriver path is host-tested but not exercised by these straps.
+Populated slots, alternate strap settings and physical insertion/removal
+remain unvalidated. Vendor Setup overrides are not implemented.
 The current SP3 MP implementation also requires xAPIC: configurations above
 254 threads halt rather than attempting x2APIC bring-up.
 
@@ -79,14 +84,44 @@ TE SHA-256 `bfc0f63a4ba5664c…`:
 - `$A26` at `0xffd68d74`, `$A27` at `0xffd6bb1c`, descriptor stride
   `0x1b0`: socket-0 P0/P1/P2/P3, socket-1 P1 SATA and P3 PCIe.
 - Runtime patcher `0xffd6814f` adds the BMC WAFL lane 129 when needed and
-  rebuilds slot descriptors from straps/PCDs. The bring-up map includes the
-  observed BMC link but does not reproduce those slot options.
+  rebuilds slot descriptors from straps/PCDs. Native policy preserves the
+  observed BMC link and socket-1 SATA/P3 links, and implements revision
+  `0x30`'s socket-1 P0 quad-x4 native-hotplug template.
 
 Read-only detection is hardware-verified: M24LC128 on I2C5 at `0x50`,
 byte `0x10`, reports board ID `0x30`; PCA9535A on I2C0 at `0x20` reports
 PCIe straps `0x0000`. I2C5 is at `0xfedcb000`, not the linear `0xfedc7000`.
-Detection preserves power/pad routing and does not write EEPROM data or
-expander outputs. Device errors halt before choosing a lane map.
+Detection preserves power/pad routing and does not write EEPROM data.
+Other board revisions halt before output changes. The supported revision
+then drives PCA9535A `0x22` P0.1 low with preservation/readback, following
+the vendor order, and re-reads the authoritative straps. The exact signal
+name is not proven; no guessed clock-frequency programming is performed.
+Device errors halt rather than silently selecting a default lane map.
+
+The socket-0 strap nibbles select P0/P1/P2/P3 at shifts `0/8/12/4`:
+
+- Bit 3 clear: reversed x16, retaining the vendor physical-slot mapping.
+- `0xa`/`0xc`: quad x4, PCIe-native Enterprise SSD hotplug.
+- `0xb`/`0xd`: x8+x8; `0xe`/`0xf`: forward x16 fallback.
+- `0x8`/`0x9`: unsupported SATA/xGbE combination cards; halt before lane
+  or card-specific programming, not reinterpretation as PCIe.
+
+The existing NBIO fuse reader supplies the vendor reduced-I/O condition
+`(fuse1 & 0x5380) == 0x5380`, omitting socket-0 P1/socket-1 P0 when set.
+This is not a socket-count test. Selector `0xa` programs four DS125BR401A
+redrivers through the matching PCA9545A mux (`0x70`–`0x73`, channel mask 1),
+using the board's recovered tuning bytes. The mux is deselected even after
+a programming error. Selector `0xc` needs no redriver programming.
+
+Native hotplug retains empty bridges and advertises PCIe slots without
+inventing physical slot numbers or external GPIO routing. The recovered
+NVMe descriptors set LinkHotplug to 5 but leave the independent firmware
+Hotpluggable header flag clear; the engine model preserves that distinction.
+Only explicitly
+wired server-I2C hotplug entries generate SMU signal tables. Host tests cover
+selector decoding, reduced-I/O policy, I2C preservation/error cleanup and
+native-slot advertisement. Controller registration is verified, not physical
+hot-insert/remove operation or signal integrity.
 
 The console follows RXM100CB `AmdIdsDebugPrintPei`, GUID
 `239e812c-ad4a-4d5a-8bb9-169131c344bf`, TE SHA-256 `8c36a0cc5a598aa6…`:

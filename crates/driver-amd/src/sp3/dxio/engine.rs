@@ -182,6 +182,7 @@ pub fn encode(
     policy: &EncodePolicy,
 ) -> FwEngine {
     let mut e = FwEngine {
+        flags: engine.firmware_hotplug as u8,
         start_lane: wire.start,
         end_lane: wire.end,
         ..FwEngine::default()
@@ -202,7 +203,6 @@ pub fn encode(
     match &engine.kind {
         EngineKind::Pcie(p) => {
             e.kind = kind::PCIE;
-            e.flags = p.hotplug.is_some() as u8;
             let x = &p.extra;
             let early = p.early_train;
             // Early train or PSPP policy 2 force Gen1; ESM then forces Gen3
@@ -547,7 +547,7 @@ mod tests {
     fn pcie_caps_bits() {
         let p = PcieEngine::new()
             .max_speed(Speed::Gen4)
-            .with_hotplug(Hotplug::new(HotplugKind::EnterpriseSsd, 3))
+            .with_hotplug(Hotplug::new(HotplugKind::EnterpriseSsd))
             .early_train();
         let e = Engine::pcie(0, Lanes::sp3(Group::G0, 0, 16).reversed(), p);
         let fw = encode(
@@ -561,7 +561,20 @@ mod tests {
         assert_eq!(c.read(CAPS::MAX_SPEED), 1, "early train forces Gen1");
         assert_eq!(c.read(CAPS::HOTPLUG), 5);
         assert!(c.is_set(CAPS::EARLY_TRAIN) && !c.is_set(CAPS::REVERSE));
+        assert_eq!(fw.flags, 0, "native PCIe hotplug is not firmware-managed");
+        let firmware_managed = Engine {
+            firmware_hotplug: true,
+            ..e
+        };
+        let fw = encode(
+            Generation::Milan,
+            &firmware_managed,
+            (31, 16),
+            wire(16, 31, false),
+            &EncodePolicy::default(),
+        );
         assert_eq!(fw.flags, 1);
+        assert_eq!(fw.caps().read(CAPS::HOTPLUG), 5);
         // Naples maps EntSSD to ExpressModule and takes the devfn.
         let z = encode(
             Generation::Naples,

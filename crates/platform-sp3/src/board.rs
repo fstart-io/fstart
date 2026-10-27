@@ -57,6 +57,8 @@ pub struct Gpio {
 pub enum BoardError {
     /// A board device (Super I/O, BMC, ...) did not respond.
     Device,
+    /// The detected board/slot configuration is not supported.
+    Configuration,
 }
 
 /// The board contract of the SP3 flow. Implemented once per board crate;
@@ -91,9 +93,10 @@ pub trait Board: Sp3BoardFacts + 'static {
     /// board may query its BMC or I2C devices here (the console and LPC
     /// decodes are up); a failed query can halt bring-up rather than silently
     /// selecting a different lane map. `timer` paces device transactions.
-    fn dxio_engines(
+    fn dxio_engines<H: FchHw>(
         generation: Generation,
         levels: &[bool],
+        fch: &H,
         timer: &dyn Timer,
     ) -> Result<Vec<Engine<'static>, MAX_ENGINES>, BoardError>;
 

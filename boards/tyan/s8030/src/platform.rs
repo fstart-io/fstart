@@ -63,9 +63,10 @@ impl board::Board for Board {
         }
     }
 
-    fn dxio_engines(
+    fn dxio_engines<H: FchHw>(
         generation: Generation,
         levels: &[bool],
+        _fch: &H,
         timer: &dyn Timer,
     ) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
         let level = |i: usize| levels.get(i).copied().unwrap_or(true);

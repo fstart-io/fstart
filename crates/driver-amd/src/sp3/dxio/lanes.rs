@@ -416,6 +416,9 @@ pub enum EngineKind {
 pub struct Engine<'a> {
     pub socket: u8,
     pub lanes: Lanes,
+    /// Board descriptor +5 bit 0 (wire +1): firmware-managed hotplug.
+    /// Independent of PCIe LinkHotplug and external I2C signal routing.
+    pub firmware_hotplug: bool,
     /// Board GpioGroupId (1 on every S8030 engine): Naples and Milan wire
     /// reset group.
     pub gpio_group: u8,
@@ -429,6 +432,7 @@ impl<'a> Engine<'a> {
         Self {
             socket,
             lanes,
+            firmware_hotplug: false,
             gpio_group: 1,
             kind: EngineKind::Pcie(pcie),
             tuning: &[],
@@ -439,6 +443,7 @@ impl<'a> Engine<'a> {
         Self {
             socket,
             lanes,
+            firmware_hotplug: false,
             gpio_group: 1,
             kind: EngineKind::Sata(sata),
             tuning: &[],

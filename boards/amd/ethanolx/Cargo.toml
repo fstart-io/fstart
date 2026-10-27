@@ -22,11 +22,13 @@ fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 fstart-driver-i2c = { path = "../../../crates/driver-i2c" }
+fstart-driver-redriver = { path = "../../../crates/driver-redriver" }
 fstart-log = { path = "../../../crates/log" }
 embedded-hal = { version = "1", default-features = false }
 ufmt = "0.2"
 pca9535 = { version = "2", default-features = false }
 eeprom24x = "0.7.2"
+xca9548a = "1"
 heapless = { version = "0.8", default-features = false }
 
 [dev-dependencies]

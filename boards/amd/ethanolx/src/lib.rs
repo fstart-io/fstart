@@ -1,8 +1,10 @@
 //! Experimental AMD Ethanol-X Milan port, using the board's own PSP/ABL.
 //!
 //! The console is FCH UART1 over MMIO, as in the vendor's early serial code.
-//! PCIe uses the reference board's unbifurcated descriptors; strap-driven
-//! bifurcation, clock expanders and hotplug are not implemented yet.
+//! Revision 0x30 PCIe policy uses board straps and I/O fuses, with native
+//! NVMe hotplug and vendor-derived GPIO/redriver setup. Other revisions
+//! are rejected before output changes; unsupported SATA/xGbE card modes
+//! stop before lane or card-specific programming.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
@@ -82,9 +84,10 @@ impl board::Board for Board {
         }
     }
 
-    fn dxio_engines(
+    fn dxio_engines<H: FchHw>(
         _generation: Generation,
         _levels: &[bool],
+        fch: &H,
         timer: &dyn Timer,
     ) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
         let detected = i2c::detect(timer)?;
@@ -93,7 +96,29 @@ impl board::Board for Board {
             detected.board_id,
             detected.straps
         );
-        Ok(dxio::engines())
+        if detected.board_id != 0x30 {
+            fstart_log::error!(
+                "ethanolx: unsupported board revision {:#x}",
+                detected.board_id
+            );
+            return Err(BoardError::Configuration);
+        }
+        let detected = i2c::initialize(timer, detected)?;
+        fstart_log::info!("ethanolx: PCIe straps after routing {:#x}", detected.straps);
+        // BSP-only before MP, using the platform's socket-0 SMN pair.
+        let fuses = fstart_driver_amd::sp3::nbio::Fuses::read(&fch.smn());
+        let plan = dxio::plan(detected, fuses.limited_io()).map_err(|error| {
+            let detail = alloc::format!("{error:?}");
+            fstart_log::error!("ethanolx: PCIe policy: {}", detail.as_str());
+            BoardError::Configuration
+        })?;
+        fstart_log::info!(
+            "ethanolx: fuse1 {:#x}, {} DXIO engines",
+            fuses.word[1],
+            plan.engines.len()
+        );
+        i2c::configure_redrivers(timer, plan.redrivers)?;
+        Ok(plan.engines)
     }
 
     fn acpi_lpc_aml() -> Vec<u8> {
