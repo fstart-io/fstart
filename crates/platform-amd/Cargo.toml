@@ -1,0 +1,71 @@
+[package]
+name = "fstart-platform-amd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+picasso = ["noncar", "fstart-driver-amd/picasso"]
+# Host policy only; never enabled by the emitted firmware unit.
+host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
+zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zerocopy"]
+# The shared flow of the PSP-booted SoCs, with their ACPI tables.
+noncar = [
+  "fstart-driver-amd/smi",
+  "dep:fstart-amdfw-format",
+  "dep:fstart-arch",
+  "dep:fstart-acpi",
+  "dep:fstart-acpi-macros",
+  "dep:heapless",
+]
+# A noncar reset image: one DRAM stage from reset vector to payload.
+bundle = [
+  "noncar",
+  "dep:fstart-stage",
+  "fstart-arch/x86-identity-paging",
+  "fstart-stage/x86_64",
+  "fstart-stage/ffs",
+  "fstart-stage/ffs-signature",
+  "fstart-stage/ed25519",
+  "fstart-stage/sha2-digest",
+  "fstart-stage/lz4",
+]
+bundle-zeppelin = ["zeppelin", "bundle"]
+# The Picasso reset image; it halts at its checkpoint.
+bundle-picasso = ["picasso", "bundle"]
+# The FCH SMM handler and `smm_bin!` for a board's SMM unit; the stage
+# embeds the image fbuild built from it (FSTART_SMM_IMAGE).
+smm = ["zeppelin", "fstart-driver-amd/smm", "dep:fstart-smm"]
+# SMM-unit builds only: adds the SMM panic handler, which a stage has itself.
+bundle-smm = ["smm", "fstart-smm/stage-bin"]
+payload-linux = ["fstart-stage?/linux"]
+payload-uefi = ["payload-uefi-basic", "fstart-stage?/crabefi"]
+payload-uefi-basic = ["fstart-stage?/crabefi-basic"]
+
+[dependencies]
+fstart-image-build = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
+fstart-driver-amd.workspace = true
+fstart-amdfw-format = { workspace = true, optional = true }
+fstart-core.workspace = true
+fstart-driver-uart.workspace = true
+fstart-log.workspace = true
+ufmt.workspace = true
+fstart-pci.workspace = true
+tock-registers.workspace = true
+fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
+fstart-stage = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }
+zerocopy = { workspace = true, optional = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+embedded-hal = { workspace = true, optional = true }
+fstart-acpi-macros = { path = "../acpi-macros", optional = true }
+fstart-smm = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The unit tests cover every SoC, also in `cargo test --workspace`.
+fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "host", "smm"] }
+fstart-driver-amd = { workspace = true, features = ["testing"] }
+fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

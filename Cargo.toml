@@ -5,6 +5,8 @@ members = [
   "tools/amdfw",
   "crates/amdfw-format",
   "crates/driver-amd",
+  "crates/driver-chromeec",
+  "crates/platform-amd",
   "crates/core",
   "crates/coreboot",
   "crates/platform-intel",
@@ -87,6 +89,7 @@ clap = { version = "4", features = ["derive", "env"] }
 # Internal workspace crates
 fstart-core = { path = "crates/core" }
 fstart-coreboot = { path = "crates/coreboot" }
+fstart-driver-amd = { path = "crates/driver-amd" }
 fstart-amdfw-format = { path = "crates/amdfw-format" }
 fstart-platform-qemu = { path = "crates/platform-qemu" }
 fstart-pci = { path = "crates/pci" }
@@ -140,9 +143,13 @@ opt-level = "s"
 opt-level = "s"
 [profile.dev.package.fstart-platform-intel]
 opt-level = "s"
+[profile.dev.package.fstart-platform-amd]
+opt-level = "s"
 [profile.dev.package.fstart-driver-amd]
 opt-level = "s"
 [profile.dev.package.fstart-amdfw-format]
+opt-level = "s"
+[profile.dev.package.fstart-driver-chromeec]
 opt-level = "s"
 [profile.dev.package.fstart-platform-sunxi]
 opt-level = "s"

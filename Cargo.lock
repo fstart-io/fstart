@@ -653,6 +653,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-chromeec"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "zerocopy",
+]
+
+[[package]]
 name = "fstart-driver-i2c"
 version = "0.1.0"
 dependencies = [
@@ -823,6 +831,32 @@ dependencies = [
  "serde",
  "tock-registers",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-platform-amd"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-amdfw-format",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-amd",
+ "fstart-driver-uart",
+ "fstart-image-build",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-amd",
+ "fstart-smm",
+ "fstart-stage",
+ "heapless 0.8.0",
+ "serde_json",
+ "sha2 0.10.9",
+ "tock-registers",
+ "ufmt",
+ "zerocopy",
 ]
 
 [[package]]

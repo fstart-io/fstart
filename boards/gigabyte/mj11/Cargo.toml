@@ -1,0 +1,40 @@
+[package]
+name = "fstart-board-gigabyte-mj11"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# MJ11-EC1 (G431-MM0) by default; MJ11-EC0 is a variant with the F02 tables.
+[package.metadata.fstart]
+schema = 1
+board = "gigabyte-mj11-ec1"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-amd", name = "rust" }
+
+[package.metadata.fstart.variants.gigabyte-mj11-ec0]
+features = ["ec0"]
+
+[features]
+default = []
+ec0 = []
+
+[dependencies]
+fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["zeppelin"] }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["zeppelin"] }
+fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-pci = { path = "../../../crates/pci" }
+fstart-log = { path = "../../../crates/log" }
+ufmt = { workspace = true }
+embedded-hal = { workspace = true }
+fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
+zerocopy = { workspace = true }
+tock-registers = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"
