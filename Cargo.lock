@@ -634,6 +634,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-amd"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-amd",
+ "fstart-driver-i2c",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-smm",
+ "heapless 0.8.0",
+ "libc",
+ "tock-registers",
+ "ufmt",
+ "zerocopy",
+]
+
+[[package]]
 name = "fstart-driver-i2c"
 version = "0.1.0"
 dependencies = [
