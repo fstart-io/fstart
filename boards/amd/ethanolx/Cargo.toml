@@ -21,7 +21,16 @@ fstart-core = { path = "../../../crates/core" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-driver-i2c = { path = "../../../crates/driver-i2c" }
+fstart-log = { path = "../../../crates/log" }
+embedded-hal = { version = "1", default-features = false }
+ufmt = "0.2"
+pca9535 = { version = "2", default-features = false }
+eeprom24x = "0.7.2"
 heapless = { version = "0.8", default-features = false }
+
+[dev-dependencies]
+embedded-hal-mock = { version = "0.11", default-features = false, features = ["eh1"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("monolithic", "smm"))'] }

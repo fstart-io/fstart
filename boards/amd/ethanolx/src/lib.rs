@@ -8,6 +8,7 @@
 extern crate alloc;
 
 mod dxio;
+mod i2c;
 #[cfg(fstart_stage_env = "smm")]
 mod smm;
 
@@ -84,9 +85,15 @@ impl board::Board for Board {
     fn dxio_engines(
         _generation: Generation,
         _levels: &[bool],
-        _timer: &dyn Timer,
-    ) -> heapless::Vec<Engine<'static>, MAX_ENGINES> {
-        dxio::engines()
+        timer: &dyn Timer,
+    ) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
+        let detected = i2c::detect(timer)?;
+        fstart_log::info!(
+            "ethanolx: board id {:#x}, PCIe straps {:#x}",
+            detected.board_id,
+            detected.straps
+        );
+        Ok(dxio::engines())
     }
 
     fn acpi_lpc_aml() -> Vec<u8> {

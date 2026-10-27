@@ -88,13 +88,14 @@ pub trait Board: Sp3BoardFacts + 'static {
     fn gpio(generation: Generation) -> Gpio;
 
     /// The DXIO engines of every socket given the detect-pad levels. The
-    /// board may query its BMC here (the console and LPC decodes are up);
-    /// `timer` paces such a query.
+    /// board may query its BMC or I2C devices here (the console and LPC
+    /// decodes are up); a failed query can halt bring-up rather than silently
+    /// selecting a different lane map. `timer` paces device transactions.
     fn dxio_engines(
         generation: Generation,
         levels: &[bool],
         timer: &dyn Timer,
-    ) -> Vec<Engine<'static>, MAX_ENGINES>;
+    ) -> Result<Vec<Engine<'static>, MAX_ENGINES>, BoardError>;
 
     /// BMC sleep-state notification through SMM (ACPI and the handler).
     const BMC_SX_NOTIFY: Option<crate::smm::BmcSxNotify> = None;

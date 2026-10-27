@@ -4,7 +4,7 @@
 //! hardware drivers. Drivers implement these traits; fixed stage flows consume
 //! them directly.
 //!
-//! This crate defines traits only — no implementations.
+//! This module defines service contracts and small adapters, not hardware drivers.
 //!
 //! See [docs/driver-model.md](../../docs/driver-model.md) for the full
 //! driver model architecture.
@@ -54,7 +54,7 @@ pub use smbus::SmBus;
 pub use soc_boot::SocBootHeader;
 pub use southbridge::Southbridge;
 pub use spi::SpiBus;
-pub use timer::Timer;
+pub use timer::{Timer, TimerDelay};
 
 /// Common error type for service operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

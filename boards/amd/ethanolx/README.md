@@ -82,6 +82,12 @@ TE SHA-256 `bfc0f63a4ba5664c…`:
   rebuilds slot descriptors from straps/PCDs. The bring-up map includes the
   observed BMC link but does not reproduce those slot options.
 
+Read-only detection is hardware-verified: M24LC128 on I2C5 at `0x50`,
+byte `0x10`, reports board ID `0x30`; PCA9535A on I2C0 at `0x20` reports
+PCIe straps `0x0000`. I2C5 is at `0xfedcb000`, not the linear `0xfedc7000`.
+Detection preserves power/pad routing and does not write EEPROM data or
+expander outputs. Device errors halt before choosing a lane map.
+
 The console follows RXM100CB `AmdIdsDebugPrintPei`, GUID
 `239e812c-ad4a-4d5a-8bb9-169131c344bf`, TE SHA-256 `8c36a0cc5a598aa6…`:
 its default path uses FCH UART1 MMIO, software reset plus about 100 us
