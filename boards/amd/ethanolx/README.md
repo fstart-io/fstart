@@ -17,9 +17,16 @@ reference lane map, GPIO and console/KCS wiring.
 The FCH UART1 MMIO console is hardware-verified. Native bring-up reports
 256 GiB RAM and completes MP/SMU initialization on both sockets, SMM
 relocation and locking on all 192 CPUs, PCI enumeration, two-domain NUMA
-ACPI generation and handoff to the halt payload. Linux boots all 192 CPUs
-and passes a 32 MiB memory smoke test pinned to each socket, but currently
-falls back to one NUMA node because SRAT memory coverage is incomplete.
+ACPI generation and handoff to the halt payload. RAM-only Linux boots all
+192 CPUs across two NUMA nodes, passes a 32 MiB memory smoke test pinned
+to each socket with zero EDAC errors, and powers off through ACPI.
+CrabEFI (`--payload uefi`) initializes its EFI environment, imports the full
+memory map and ACPI tables, initializes USB and AHCI, and reaches its boot
+manager. No EFI application or OS was launched. Its pinned revision has a
+64-device PCI enumeration limit, truncating this board's 153 functions;
+full peripheral coverage is therefore not validated. Variables are volatile:
+this port supplies no persistent CrabEFI variable backend.
+
 The initial configuration does not implement strap-driven
 slot bifurcation, the board's I2C clock/GPIO expanders, or hotplug. Do not
 assume external slots match vendor Setup.
@@ -39,6 +46,9 @@ The current SP3 image composer accepts 16/32 MiB inputs. Build against the
 
 ```sh
 cargo fbuild assemble --board amd-ethanolx --release \
+  --image-config /absolute/path/to/ethanolx-low.bin
+# CrabEFI payload, with the same vendor input:
+cargo fbuild assemble --board amd-ethanolx --release --payload uefi \
   --image-config /absolute/path/to/ethanolx-low.bin
 ```
 

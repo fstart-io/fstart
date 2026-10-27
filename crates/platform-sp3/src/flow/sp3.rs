@@ -1,8 +1,8 @@
 //! Rome and Milan silicon steps: DF3, the SSP/GN NBIO quadrants, SMU V11,
 //! two-pass DXIO, Huashan FCHs and the per-CCD SMU thread release
 //! (INTEGRATION_NOTES §3–§9). Milan deltas are inline (`Generation::Milan`
-//! branches): fused NBIO quadrants, the IOMMU BAR in PEI, early CC6, SMEE
-//! dependent address bits, the PSP FCH lock.
+//! branches): fused NBIO quadrants, the IOMMU BAR in PEI, SMEE-dependent
+//! address bits and the PSP FCH lock.
 
 extern crate alloc;
 
@@ -637,9 +637,7 @@ pub(crate) fn usb_bus_count(_ctx: &Ctx) -> u8 {
 pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
     use fstart_driver_amd::apob::nps;
     use fstart_driver_amd::df::Target;
-    use fstart_driver_amd::sp3::df::dram::{
-        self, ccd_channel, df3_channel, domain_of, ioms_channel,
-    };
+    use fstart_driver_amd::sp3::df::dram::{self, ccd_channel, domain_of, ioms_channel};
     use fstart_driver_amd::sp3::df::v3;
 
     let mode = match nps::nps(&ctx.apob) {
@@ -661,13 +659,12 @@ pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
     if domains.len() <= 1 {
         return None;
     }
-    let memory = dram::read::<Df3, _>(&ctx.df, 0, Target::Instance(v3::PIE))
-        .ranges()
-        .filter_map(|(base, end, dst)| {
-            let (socket, channel) = df3_channel(dst)?;
-            Some((base, end, domain_of(&domains, socket, channel)?))
-        })
-        .collect();
+    // Each IOD's PIE describes its local DRAM, not the whole system.
+    let memory = crate::acpi::numa::memory_from_maps(
+        (0..ctx.topology.sockets)
+            .map(|node| dram::read::<Df3, _>(&ctx.df, node, Target::Instance(v3::PIE))),
+        &domains,
+    );
     let smt = (fstart_arch::x86::cpuid(0x8000_001e).1 >> 8) & 0xff != 0;
     let layout = ApicLayout::new(ctx.generation, smt);
     let cpus = ctx
