@@ -3,7 +3,7 @@
 Experimental **Milan / two-socket** bring-up port. Rome is not enabled: the
 available firmware is Milan-only. Native SP3 platform code owns topology,
 xGMI-related silicon work, memory, MP, SMM and ACPI; this crate supplies the
-reference lane map, GPIO and LPC console/KCS wiring.
+reference lane map, GPIO and console/KCS wiring.
 
 ## Bench
 
@@ -15,10 +15,11 @@ reference lane map, GPIO and LPC console/KCS wiring.
 - Vendor PCI root buses: `00/20/40/60/80/a0/c0/e0`; BMC behind `60:05.2`.
 
 The FCH UART1 MMIO console is hardware-verified. Native bring-up reports
-256 GiB RAM and 192 CPUs, then halts during SMU CCX completion; the MP
-flight plan also reports a timeout. No OS or memory test has passed yet. The initial configuration does not implement strap-driven
-slot bifurcation, the board's I2C clock/GPIO
-expanders, or hotplug. Do not assume external slots match vendor Setup.
+256 GiB RAM and completes MP initialization of all 192 CPUs. It then halts
+at socket 0's SMU DC BTC calibration (message `0x0c`, response `0xff`). No OS
+or memory test has passed yet. The initial configuration does not implement
+strap-driven slot bifurcation, the board's I2C clock/GPIO expanders, or
+hotplug. Do not assume external slots match vendor Setup.
 The current SP3 MP implementation also requires xAPIC: configurations above
 254 threads halt rather than attempting x2APIC bring-up.
 

@@ -504,7 +504,7 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
 
     ctx.apic_ids = super::collect_apic_ids(&mp);
     let rev = ctx.identity.revision;
-    for smu in &si.smus {
+    for (socket, smu) in si.smus.iter().enumerate() {
         v11::ccx_done(
             smu,
             generation,
@@ -512,6 +512,9 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
             &CcxDonePolicy::donor(rev),
             &ctx.timer,
         )
+        .inspect_err(|_| {
+            fstart_log::error!("sp3: socket {} CCX completion failed", socket as u32);
+        })
         .or_halt("SMU CCX done");
     }
     ctx.cppc = cppc(ctx, si, &mp);
