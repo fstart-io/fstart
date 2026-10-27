@@ -65,16 +65,16 @@ pub enum BoardError {
 pub trait Board: Sp3BoardFacts + 'static {
     /// Shown in the log.
     const NAME: &'static str;
-    /// The firmware console (a 16550 behind the board's LPC decodes).
+    /// The firmware console: an MMIO or LPC-connected 16550.
     const CONSOLE: Ns16550Config;
 
     /// Silicon policy for `generation`.
     fn policy(generation: Generation) -> Policy;
 
-    /// After socket 0's FCH reset tasks, before the console: open the
-    /// board's LPC/eSPI decodes and set up its Super I/O so the console
-    /// UART answers. Also runs for a CPU the board does not list (when its
-    /// generation is compiled in) so the flow can log why it halts.
+    /// After socket 0's FCH reset tasks, before the console: prepare its
+    /// UART power/pins or LPC/eSPI decodes and Super I/O. Also runs for a
+    /// CPU the board does not list (when its generation is compiled in),
+    /// so the flow can log why it halts.
     fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError>;
 
     /// Pads configured and read before [`Board::gpio`] (M.2 SATA/PCIe
