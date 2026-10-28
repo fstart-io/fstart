@@ -35,7 +35,7 @@ use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, SocImageFormat, StageBuildConfig, StageLayout, hstr,
 };
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::soc::Generation;
 use fstart_image_build::build_plan::{
     ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema,
     FfsAssembly, InputFile, UnitOutput,

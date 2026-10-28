@@ -6,9 +6,9 @@ use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, MmioCfgBase};
 use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
 
 use fstart_driver_amd::fch::{Bus, NativeBus};
-use fstart_driver_zen::fch::{Fch, Mmio, Ports, SmnWindow, acpimmio};
-use fstart_driver_zen::smn::Smn;
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::fch::{Fch, Mmio, Ports, SmnWindow, acpimmio};
+use fstart_driver_amd::sp3::smn::Smn;
+use fstart_driver_amd::sp3::soc::Generation;
 use tock_registers::interfaces::Writeable;
 
 /// Config space of every function through the global ECAM base.

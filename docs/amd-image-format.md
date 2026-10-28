@@ -12,7 +12,7 @@ board policy must remain separate from the start.
   dependency; AMD document #55758 and the SP3 reverse engineering are its
   foundations. It is the one reader of the host tools and of the firmware
   (the SP3 reset image reads its flash with it; a `Profile` per generation
-  comes from `fstart_driver_zen::soc::Generation::profile`). `fstart-core`
+  comes from `fstart_driver_amd::sp3::soc::Generation::profile`). `fstart-core`
   takes its board-facing BIOS slot type directly from this crate.
 - `fstart-image-build::amd`: assembly policy and the current Picasso blob
   configuration/packer. It consumes the same reader to check vendor inputs and

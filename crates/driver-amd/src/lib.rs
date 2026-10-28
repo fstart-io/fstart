@@ -4,7 +4,7 @@
 //! The modules are IP blocks, each with its common code and a submodule
 //! per IP version where the code differs; [`soc`] says which versions a SoC
 //! is made of. The register transports are [`smn`] and [`df`].
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #[cfg(feature = "picasso")]
 pub mod acp;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
@@ -31,3 +31,6 @@ pub mod smu;
 pub mod soc;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod table;
+/// The SP3 server silicon: Naples, Rome and Milan.
+#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
+pub mod sp3;

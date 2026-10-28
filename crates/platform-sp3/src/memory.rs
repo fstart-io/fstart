@@ -1,7 +1,7 @@
 //! e820 from the APOB memory map, the TOM/TOM2 limits and the firmware's
 //! reservations (PSP_APOB §3.5, §3.6).
 //!
-//! [`fstart_driver_zen::apob::sysmap::memory_map`] already turns the 9/9
+//! [`fstart_driver_amd::sp3::apob::sysmap::memory_map`] already turns the 9/9
 //! holes into RAM and non-RAM regions (with the 1 TiB rule). This module
 //! checks those against the TOM/TOM2 MSRs, overlays what firmware must keep
 //! (legacy area, x86 low scratch, APOB, the reset image and early region,
@@ -19,8 +19,8 @@
 //!   the reset image live there.
 
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
-use fstart_driver_zen::apob::sysmap::{Region, RegionKind};
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::apob::sysmap::{Region, RegionKind};
+use fstart_driver_amd::sp3::soc::Generation;
 use heapless::Vec;
 
 use crate::layout::{CACHE_WINDOW, Span};
@@ -35,7 +35,7 @@ pub const LOW_RESERVED: Span = Span::new(0, 0xf000);
 
 /// Most reservations [`e820`] takes.
 pub const MAX_RESERVATIONS: usize = 16;
-const MAX_POINTS: usize = 2 * (fstart_driver_zen::apob::sysmap::MAX_REGIONS + MAX_RESERVATIONS);
+const MAX_POINTS: usize = 2 * (fstart_driver_amd::sp3::apob::sysmap::MAX_REGIONS + MAX_RESERVATIONS);
 
 /// A range firmware keeps from the OS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,7 +226,7 @@ pub fn e820(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_zen::apob::sysmap::{Hole, memory_map};
+    use fstart_driver_amd::sp3::apob::sysmap::{Hole, memory_map};
 
     const GIB: u64 = 1 << 30;
 

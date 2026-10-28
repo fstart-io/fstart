@@ -4,12 +4,12 @@
 use crate::einj::*;
 use core::cell::UnsafeCell;
 use fstart_core::services::timer::Timer;
-use fstart_driver_zen::psp::{
+use fstart_driver_amd::sp3::psp::{
     command::{C2pBuffer, Command, SMM_FLAG_OFFSET},
     mailbox::{C2pTransport, Mailbox, PspError},
     ras::{Control, CorrectableMemory, MemoryTarget},
 };
-use fstart_driver_zen::smn::Smn;
+use fstart_driver_amd::sp3::smn::Smn;
 use fstart_pci::ConfigRegionAccess;
 
 struct State {

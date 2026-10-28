@@ -14,10 +14,10 @@
 
 mod table;
 
-pub use fstart_driver_zen::fch::gpio::{Direction, Pad, Pin, Pull};
+pub use fstart_driver_amd::sp3::fch::gpio::{Direction, Pad, Pin, Pull};
 pub use table::CPM_GPIO;
 
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::soc::Generation;
 
 /// M.2 CN1 (lanes 64–67) SATA-vs-PCIe detect pin.
 pub const M2_CN1_DETECT: Pin = Pin(144);

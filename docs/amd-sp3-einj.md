@@ -38,7 +38,7 @@ PFEH #MC redirection, the native observer's journal, #MC-on-exit or BMC SEL.
 
 ## Components and sequence
 
-- `driver-zen/src/psp/ras.rs`: command 22h wire types and live Rome target
+- `driver-amd/src/sp3/psp/ras.rs`: command 22h wire types and live Rome target
   decoding. It scans the global CCM rules, decodes live fabric-ID masks,
   selects socket/UMC, then uses that UMC's local rules for normalization.
   It handles separate/socket-interleaved ranges, nonzero bases, DRAM-hole
@@ -130,7 +130,7 @@ implementation was copied.
 Host checks cover exact wire layout, SMM-flagged mailbox sequencing and
 PSP error propagation, channel/chip-select selection, unsupported maps,
 scratch-only/type/mask validation, and ACPI checksums/action/trigger layout.
-The initial 1P implementation passed **271 tests** across driver-zen,
+The initial 1P implementation passed **271 tests** across the SP3 driver modules,
 platform-sp3 (including ACPI), SMM
 and IPMI, with all three generation features enabled; two doc tests ignored.
 Both normal S8030 and the existing PCIe wiring variant pass the real SMM

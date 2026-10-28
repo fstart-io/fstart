@@ -21,8 +21,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_driver_zen::nbio::ioapic::{Route, routes_for};
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::nbio::ioapic::{Route, routes_for};
+use fstart_driver_amd::sp3::soc::Generation;
 
 /// Internal bridges of a Rome/Milan NBIO in routing-register order
 /// (`device, function`).

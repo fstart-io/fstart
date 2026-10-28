@@ -11,9 +11,9 @@ use alloc::vec::Vec;
 use fstart_acpi::fadt::{Flags, PmProfile};
 use fstart_acpi::mcfg::MCFG;
 use fstart_acpi::platform::{HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt};
-use fstart_driver_zen::nbio::ioapic::{IoapicInfo, gsi_layout};
-use fstart_driver_zen::soc::Generation;
-use fstart_driver_zen::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::sp3::nbio::ioapic::{IoapicInfo, gsi_layout};
+use fstart_driver_amd::sp3::soc::Generation;
+use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 
 use super::Inputs;
 

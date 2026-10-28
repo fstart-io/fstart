@@ -163,9 +163,9 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
 pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -> u64 {
     use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi, Window};
     use fstart_core::acpi::AcpiSmiConfig;
-    use fstart_driver_zen::ccx::power;
-    use fstart_driver_zen::fch::smi;
-    use fstart_driver_zen::nbio::ioapic::{FEATURES_ENABLE, IoapicInfo, fch_ioapic_id};
+    use fstart_driver_amd::sp3::ccx::power;
+    use fstart_driver_amd::sp3::fch::smi;
+    use fstart_driver_amd::sp3::nbio::ioapic::{FEATURES_ENABLE, IoapicInfo, fch_ioapic_id};
 
     let numa_plan = S::numa(ctx, si);
     let cpus: Vec<Cpu> = ctx
@@ -264,7 +264,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
     let lpc_aml = B::acpi_lpc_aml();
     let board_acpi = B::acpi_board(&lpc_aml);
     let fch = {
-        use fstart_driver_zen::fch::FchHw;
+        use fstart_driver_amd::sp3::fch::FchHw;
         acpi::FchAcpi::read(ctx.fch.mmio(), ctx.fch.io())
     };
     // SAFETY: the HPET general capabilities register, read only.
@@ -288,7 +288,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             threads_per_core,
         }),
         acpi_smi: ctx.smm.map(|_| AcpiSmiConfig {
-            smi_cmd: u32::from(fstart_driver_zen::fch::acpimmio::SMI_CMD as u16),
+            smi_cmd: u32::from(fstart_driver_amd::sp3::fch::acpimmio::SMI_CMD as u16),
             acpi_enable: smi::sw::ACPI_ENABLE,
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),
@@ -368,7 +368,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
 /// The IOMMU capability and MMIO registers IVRS copies (ACPI_SMM §3.6).
 #[cfg(feature = "acpi")]
 fn iommu_registers(
-    info: &fstart_driver_zen::nbio::iommu::IommuInfo,
+    info: &fstart_driver_amd::sp3::nbio::iommu::IommuInfo,
 ) -> fstart_acpi::ivrs::IommuRegisters {
     use fstart_pci::{ConfigRegionAccess, PciAddress};
     let pci = crate::hw::Pci::default();

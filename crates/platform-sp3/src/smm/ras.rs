@@ -10,9 +10,9 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use fstart_arch::x86::cpu::amd::msr::SMM_BASE;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_driver_ipmi::SelRecord;
-use fstart_driver_zen::ccx::ras::{self, LocalSmiStatus, Record};
-use fstart_driver_zen::fch::{Mmio, Window};
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::ccx::ras::{self, LocalSmiStatus, Record};
+use fstart_driver_amd::sp3::fch::{Mmio, Window};
+use fstart_driver_amd::sp3::soc::Generation;
 use tock_registers::interfaces::Readable;
 use zerocopy::little_endian::{U16, U32};
 
@@ -173,7 +173,7 @@ fn enter_enabled(logical_cpu: u32, generation: Generation) {
                 &cpu,
                 generation,
                 stepping,
-                fstart_driver_zen::fch::acpimmio::SMI_CMD as u16,
+                fstart_driver_amd::sp3::fch::acpimmio::SMI_CMD as u16,
                 MCE_SMI_COMMAND,
             )
             .is_ok();

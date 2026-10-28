@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use fstart_acpi::msct::{DomainCapacity, build_msct};
 use fstart_acpi::slit::build_slit;
 use fstart_acpi::srat::{SratEntry, build_srat};
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::soc::Generation;
 
 use super::Cpu;
 

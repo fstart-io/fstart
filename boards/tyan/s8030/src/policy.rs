@@ -25,14 +25,14 @@
 //!
 //! Slot, LAN, VGA and compliance knobs are [`crate::dxio::Options`].
 
-use fstart_driver_zen::ccx;
-use fstart_driver_zen::df::plan::Policy as DfPolicy;
-use fstart_driver_zen::dxio::DxioPolicy;
-use fstart_driver_zen::fch::common::env::{EnvPolicy, PowerFailState};
-use fstart_driver_zen::nbio::NbioPolicy;
-use fstart_driver_zen::smu::v11::pptable::PowerPolicy;
-use fstart_driver_zen::soc::Generation;
-use fstart_driver_zen::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::sp3::ccx;
+use fstart_driver_amd::sp3::df::plan::Policy as DfPolicy;
+use fstart_driver_amd::sp3::dxio::DxioPolicy;
+use fstart_driver_amd::sp3::fch::common::env::{EnvPolicy, PowerFailState};
+use fstart_driver_amd::sp3::nbio::NbioPolicy;
+use fstart_driver_amd::sp3::smu::v11::pptable::PowerPolicy;
+use fstart_driver_amd::sp3::soc::Generation;
+use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 
 /// "Restore AC Power Loss" = Last State (Rome `Setup 0x107` = 3, Milan
 /// `AmdSetup 0x28f` = 3); the FCH driver's donor default is Off.

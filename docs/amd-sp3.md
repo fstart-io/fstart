@@ -12,7 +12,7 @@ S8030 (EPYC 7502P test bench); Naples has no hardware yet.
 
 ## Code layout
 
-- `crates/driver-zen`: silicon IP blocks (`smn`, `soc`, `topology`, `df`,
+- `crates/driver-amd` (`sp3`): silicon IP blocks (`smn`, `soc`, `topology`, `df`,
   `nbio`, `smu`, `dxio`, `ccx`, `fch`, `psp`, `apob`), one implementation
   per IP version, gated by the additive `naples`/`rome`/`milan` features.
 - `crates/platform-sp3`: the boot flow, memory map, MP, SMM, PCI root

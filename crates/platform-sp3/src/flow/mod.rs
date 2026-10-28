@@ -44,18 +44,18 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::services::memory_detect::{E820Kind, E820State};
 use fstart_driver_uart::ns16550::Ns16550;
-use fstart_driver_zen::apob::sysmap::{self, Region};
-use fstart_driver_zen::apob::{self, Apob};
-use fstart_driver_zen::df::plan::{self, Plan};
-use fstart_driver_zen::df::topology::{self, Topology};
-use fstart_driver_zen::df::{BusRange, Df, program};
-use fstart_driver_zen::dxio::engine::MAX_ENGINES;
-use fstart_driver_zen::dxio::lanes::Engine;
-use fstart_driver_zen::fch::rom3::{self, FlashMap, Rom3};
-use fstart_driver_zen::fch::{self, FchHw};
-use fstart_driver_zen::nbio::Nbio;
-use fstart_driver_zen::soc::{self, Generation, Identity};
-use fstart_driver_zen::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::sp3::apob::sysmap::{self, Region};
+use fstart_driver_amd::sp3::apob::{self, Apob};
+use fstart_driver_amd::sp3::df::plan::{self, Plan};
+use fstart_driver_amd::sp3::df::topology::{self, Topology};
+use fstart_driver_amd::sp3::df::{BusRange, Df, program};
+use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::sp3::dxio::lanes::Engine;
+use fstart_driver_amd::sp3::fch::rom3::{self, FlashMap, Rom3};
+use fstart_driver_amd::sp3::fch::{self, FchHw};
+use fstart_driver_amd::sp3::nbio::Nbio;
+use fstart_driver_amd::sp3::soc::{self, Generation, Identity};
+use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
@@ -105,7 +105,7 @@ pub(crate) trait Steps: Sized {
 pub(crate) struct Cppc {
     pub base: u64,
     pub smu_bar: u64,
-    pub info: fstart_driver_zen::smu::v11::CppcInfo,
+    pub info: fstart_driver_amd::sp3::smu::v11::CppcInfo,
     pub lowest_mhz: u32,
     pub nominal_mhz: u32,
     /// APIC ID of each PCC slot (the PPTable CPPC map, sockets in order).
@@ -179,7 +179,7 @@ macro_rules! steps {
             fn numa(ctx: &Ctx, si: &Self) -> Option<super::NumaPlan> {
                 numa(ctx, si)
             }
-            fn nbios(&self) -> &[fstart_driver_zen::nbio::Nbio<Pci>] {
+            fn nbios(&self) -> &[fstart_driver_amd::sp3::nbio::Nbio<Pci>] {
                 &self.nbios
             }
         }
@@ -208,7 +208,7 @@ impl<T, E> OrHalt<T> for Result<T, E> {
 }
 
 /// DXIO training, halting with the error's details logged.
-pub(crate) fn dxio_or_halt(result: Result<(), fstart_driver_zen::dxio::DxioError>) {
+pub(crate) fn dxio_or_halt(result: Result<(), fstart_driver_amd::sp3::dxio::DxioError>) {
     if let Err(e) = result {
         let (what, a, b) = e.parts();
         fstart_log::error!("sp3: DXIO error {} ({:#x}, {:#x})", what, a, b);
@@ -774,7 +774,7 @@ fn board_gpio<B: Board>(fch: &PrimaryFch, generation: Generation) {
 fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
     #[cfg(feature = "rome")]
     if ctx.generation == Generation::Rome && (1..=2).contains(&ctx.topology.sockets) {
-        use fstart_driver_zen::{
+        use fstart_driver_amd::sp3::{
             df::{self, Target, v3},
             psp::ras,
             smn::Smn,
@@ -921,7 +921,7 @@ pub(crate) fn enumerate(ctx: &Ctx) -> Vec<fstart_pci::PciEcam> {
 /// tasks, DF extended config off, PSP LockDFReg, Milan DRTM off and TPM
 /// establishment reset, BootDone last.
 fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) {
-    use fstart_driver_zen::psp::command::{BootDone, C2pBuffer, LockDfReg};
+    use fstart_driver_amd::sp3::psp::command::{BootDone, C2pBuffer, LockDfReg};
     fch::common::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
     S::fch_late(ctx, si);
     program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
@@ -930,7 +930,7 @@ fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) {
         .or_halt("PSP LockDFReg");
     #[cfg(feature = "milan")]
     if ctx.generation == Generation::Milan {
-        use fstart_driver_zen::psp::command::{DisableDrtm, ResetTpmEstablishment};
+        use fstart_driver_amd::sp3::psp::command::{DisableDrtm, ResetTpmEstablishment};
         psp.send(&ctx.timer, &mut C2pBuffer::new(DisableDrtm::new()))
             .or_halt("PSP DisableDrtm");
         // SAFETY: the TPM locality-0 page; all-ones means no TPM.
@@ -947,8 +947,8 @@ fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) {
 /// Socket 0's C2P mailbox through its PSP BAR.
 pub(crate) fn psp(
     ctx: &Ctx,
-) -> fstart_driver_zen::psp::mailbox::Mailbox<fstart_driver_zen::psp::mailbox::MmioTransport> {
-    use fstart_driver_zen::psp::mailbox::{Mailbox, MmioTransport};
+) -> fstart_driver_amd::sp3::psp::mailbox::Mailbox<fstart_driver_amd::sp3::psp::mailbox::MmioTransport> {
+    use fstart_driver_amd::sp3::psp::mailbox::{Mailbox, MmioTransport};
     if ctx.psp_bar == 0 {
         fail("PSP BAR");
     }
@@ -974,5 +974,5 @@ pub(crate) fn collect_apic_ids(mp: &MpHandle) -> Vec<u32> {
 pub(crate) fn set_fch_ioapic_id(generation: Generation) {
     // SAFETY: the FCH IOAPIC is decoded at its fixed address.
     let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(0xfec0_0000) };
-    ioapic.set_id(fstart_driver_zen::nbio::ioapic::fch_ioapic_id(generation));
+    ioapic.set_id(fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id(generation));
 }

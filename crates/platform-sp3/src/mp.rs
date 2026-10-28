@@ -14,12 +14,12 @@ use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, SYSCFG, Syscfg, TOP_MEM, TO
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError, SipiUnlock};
 use fstart_arch::x86::mtrr::{MsrEntry, SipiMsrs};
-use fstart_driver_zen::ccx::power::Wdt;
-use fstart_driver_zen::ccx::release::{Launch, ReleaseError};
-use fstart_driver_zen::ccx::topology::Thread;
-use fstart_driver_zen::ccx::{self, ApInputs, Ccx};
-use fstart_driver_zen::psp::bar::MSR_PSP_ADDR;
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::ccx::power::Wdt;
+use fstart_driver_amd::sp3::ccx::release::{Launch, ReleaseError};
+use fstart_driver_amd::sp3::ccx::topology::Thread;
+use fstart_driver_amd::sp3::ccx::{self, ApInputs, Ccx};
+use fstart_driver_amd::sp3::psp::bar::MSR_PSP_ADDR;
+use fstart_driver_amd::sp3::soc::Generation;
 use tock_registers::interfaces::{ReadWriteable, Readable};
 
 use crate::hw::msr;

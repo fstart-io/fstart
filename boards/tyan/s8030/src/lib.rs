@@ -40,7 +40,7 @@ pub mod policy;
 #[cfg(fstart_stage_env = "smm")]
 mod smm;
 
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::soc::Generation;
 use fstart_platform_sp3::layout::Sp3BoardFacts;
 
 /// The Tyan S8030 board marker.

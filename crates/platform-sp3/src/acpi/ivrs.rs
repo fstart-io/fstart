@@ -12,7 +12,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use fstart_acpi::ivrs::{DeviceEntry, Dte, Iommu, IommuRegisters, IvrsConfig, Variety, build_ivrs};
-use fstart_driver_zen::nbio::iommu::IommuInfo;
+use fstart_driver_amd::sp3::nbio::iommu::IommuInfo;
 
 use super::fixed::GsiWindow;
 
@@ -109,7 +109,7 @@ pub fn ivrs(iommus: &[IommuAcpi], windows: &[GsiWindow]) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::acpi::fixed::gsi_windows;
-    use fstart_driver_zen::nbio::ioapic::IoapicInfo;
+    use fstart_driver_amd::sp3::nbio::ioapic::IoapicInfo;
 
     fn iommu(index: u8, bus: u8, fch: bool) -> IommuAcpi {
         IommuAcpi {

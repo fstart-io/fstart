@@ -10,10 +10,10 @@ publish = false
 # supports and one reset image serves them all (the CPU picks at runtime).
 [features]
 default = []
-naples = ["fstart-driver-zen/naples"]
-rome = ["fstart-driver-zen/rome"]
-milan = ["fstart-driver-zen/milan"]
-acpi = ["dep:fstart-acpi", "fstart-driver-zen/acpi"]
+naples = ["fstart-driver-amd/naples"]
+rome = ["fstart-driver-amd/rome"]
+milan = ["fstart-driver-amd/milan"]
+acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi"]
 # The reset-image firmware unit (host::RESET_FEATURE): stage runtime for
 # `fstart_entry = "amd-psp-reset"` (asm/reset.S enters the arch crate's
 # `_start_ram`); `ffs` brings the stage allocator the arch identity paging
@@ -35,7 +35,6 @@ bundle-smm = ["smm", "fstart-smm/stage-bin"]
 host = ["dep:fstart-image-build", "dep:serde_json"]
 
 [dependencies]
-fstart-driver-zen = { path = "../driver-zen" }
 fstart-amdfw-format = { workspace = true }
 # The TSC timer and the FCH POST code register; Naples is Zeppelin.
 fstart-driver-amd = { workspace = true, features = ["zeppelin"] }

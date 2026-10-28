@@ -694,6 +694,8 @@ name = "fstart-driver-amd"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-acpi",
+ "fstart-amdfw-format",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",
@@ -827,23 +829,6 @@ dependencies = [
  "fstart-core",
  "fstart-log",
  "fstart-pci",
- "tock-registers",
- "ufmt",
- "zerocopy",
-]
-
-[[package]]
-name = "fstart-driver-zen"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-amdfw-format",
- "fstart-arch",
- "fstart-core",
- "fstart-driver-zen",
- "fstart-log",
- "fstart-pci",
- "heapless 0.8.0",
  "tock-registers",
  "ufmt",
  "zerocopy",
@@ -1011,7 +996,6 @@ dependencies = [
  "fstart-driver-amd",
  "fstart-driver-ipmi",
  "fstart-driver-uart",
- "fstart-driver-zen",
  "fstart-image-build",
  "fstart-log",
  "fstart-pci",

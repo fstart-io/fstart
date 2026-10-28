@@ -10,31 +10,31 @@ use alloc::vec::Vec;
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
-use fstart_driver_zen::apob::ccx::{CoreMap, core_map};
-use fstart_driver_zen::ccx::release::{self, Launch};
-use fstart_driver_zen::ccx::topology::{ApicLayout, Location};
-use fstart_driver_zen::ccx::x2apic::{self, ApicMode};
-use fstart_driver_zen::ccx::{ApInputs, Ccx, brand, mca, microcode, power, security};
-use fstart_driver_zen::df::plan::Plan;
-use fstart_driver_zen::df::topology::Topology;
-use fstart_driver_zen::df::v3::{Df3, SocketMemory};
-use fstart_driver_zen::df::{BusRange, Df, Version, program, regs};
-use fstart_driver_zen::dxio::engine::MAX_ENGINES;
-use fstart_driver_zen::dxio::lanes::Engine;
-use fstart_driver_zen::dxio::ports::{FchPerst, PortSetup};
-use fstart_driver_zen::dxio::{self, DMA_SIZE, DmaBuffer, Dxio, Unit};
-use fstart_driver_zen::fch;
-use fstart_driver_zen::fch::huashan::{sata::SataPolicy, usb::UsbPolicy};
-use fstart_driver_zen::nbio::fuse::Fuses;
-use fstart_driver_zen::nbio::ioapic::nbio_ioapic_id;
-use fstart_driver_zen::nbio::iohc::DramTops;
-use fstart_driver_zen::nbio::{Nbio, sp3 as nbio_sp3};
-use fstart_driver_zen::psp::bar::BAR_SIZE;
-use fstart_driver_zen::smn::Smn;
-use fstart_driver_zen::smu::mailbox::Mailbox;
-use fstart_driver_zen::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
-use fstart_driver_zen::soc::Generation;
-use fstart_driver_zen::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::sp3::apob::ccx::{CoreMap, core_map};
+use fstart_driver_amd::sp3::ccx::release::{self, Launch};
+use fstart_driver_amd::sp3::ccx::topology::{ApicLayout, Location};
+use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
+use fstart_driver_amd::sp3::ccx::{ApInputs, Ccx, brand, mca, microcode, power, security};
+use fstart_driver_amd::sp3::df::plan::Plan;
+use fstart_driver_amd::sp3::df::topology::Topology;
+use fstart_driver_amd::sp3::df::v3::{Df3, SocketMemory};
+use fstart_driver_amd::sp3::df::{BusRange, Df, Version, program, regs};
+use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::sp3::dxio::lanes::Engine;
+use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
+use fstart_driver_amd::sp3::dxio::{self, DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::sp3::fch;
+use fstart_driver_amd::sp3::fch::huashan::{sata::SataPolicy, usb::UsbPolicy};
+use fstart_driver_amd::sp3::nbio::fuse::Fuses;
+use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
+use fstart_driver_amd::sp3::nbio::iohc::DramTops;
+use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
+use fstart_driver_amd::sp3::psp::bar::BAR_SIZE;
+use fstart_driver_amd::sp3::smn::Smn;
+use fstart_driver_amd::sp3::smu::mailbox::Mailbox;
+use fstart_driver_amd::sp3::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
+use fstart_driver_amd::sp3::soc::Generation;
+use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
@@ -88,7 +88,7 @@ fn socket_bus(ctx: &Ctx, socket: u8) -> u8 {
 /// The UMC channels with DIMMs, from the APOB SPD copy (the AGESA memory
 /// info PPI the scrubber setup reads, SOC_DF §3.6).
 fn socket_memory(ctx: &Ctx, socket: u8) -> SocketMemory {
-    let present = fstart_driver_zen::apob::mem::spd(&ctx.apob, socket, 0)
+    let present = fstart_driver_amd::sp3::apob::mem::spd(&ctx.apob, socket, 0)
         .map(|t| {
             t.dimms()
                 .filter(|(_, _, r)| r.present())
@@ -107,7 +107,7 @@ pub(crate) fn df_init(ctx: &mut Ctx) {
         .collect();
     match ctx.generation {
         #[cfg(feature = "rome")]
-        Generation::Rome => fstart_driver_zen::df::rome::init(
+        Generation::Rome => fstart_driver_amd::sp3::df::rome::init(
             &ctx.df,
             &ctx.topology,
             ctx.identity.revision,
@@ -116,7 +116,7 @@ pub(crate) fn df_init(ctx: &mut Ctx) {
         ),
         #[cfg(feature = "milan")]
         Generation::Milan => {
-            fstart_driver_zen::df::milan::init(&ctx.df, &ctx.topology, &Default::default(), &memory)
+            fstart_driver_amd::sp3::df::milan::init(&ctx.df, &ctx.topology, &Default::default(), &memory)
         }
         _ => fail("DF init"),
     }
@@ -170,7 +170,7 @@ pub(crate) fn nbio_early(ctx: &mut Ctx) -> Silicon {
         let bar = nbios[i].psp_bar().or_halt("PSP BAR");
         if rb.socket == 0 {
             ctx.psp_bar = bar;
-            msr().write(fstart_driver_zen::psp::bar::MSR_PSP_ADDR, bar);
+            msr().write(fstart_driver_amd::sp3::psp::bar::MSR_PSP_ADDR, bar);
         }
     }
     if generation == Generation::Milan {
@@ -520,7 +520,7 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
 /// `CppcSetTable` and the two `_CPC` frequencies.
 fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Option<super::Cppc> {
     use fstart_arch::x86::mtrr;
-    use fstart_driver_zen::smu::v11::cppc::{REGION_SIZE, SIGNATURE};
+    use fstart_driver_amd::sp3::smu::v11::cppc::{REGION_SIZE, SIGNATURE};
 
     let generation = ctx.generation;
     if !FeaturePolicy::default().cppc {
@@ -632,14 +632,14 @@ pub(crate) fn usb_bus_count(_ctx: &Ctx) -> u8 {
 /// `None` with one domain (AmdAcpiDxe builds no SRAT then) or without
 /// NPS information.
 pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
-    use fstart_driver_zen::apob::nps;
-    use fstart_driver_zen::df::dram::{self, ccd_channel, df3_channel, domain_of, ioms_channel};
-    use fstart_driver_zen::df::{Target, v3};
+    use fstart_driver_amd::sp3::apob::nps;
+    use fstart_driver_amd::sp3::df::dram::{self, ccd_channel, df3_channel, domain_of, ioms_channel};
+    use fstart_driver_amd::sp3::df::{Target, v3};
 
     let mode = match nps::nps(&ctx.apob) {
         Ok(mode) => mode,
         Err(e) => {
-            use fstart_driver_zen::apob::ApobError as E;
+            use fstart_driver_amd::sp3::apob::ApobError as E;
             let (what, value) = match e {
                 E::NotFound { kind, .. } => ("missing", kind),
                 E::TooShort { kind, .. } => ("short", kind),

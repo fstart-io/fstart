@@ -6,7 +6,7 @@ use std::vec::Vec;
 
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_acpi::ivrs::IommuRegisters;
-use fstart_driver_zen::nbio::iommu::IommuInfo;
+use fstart_driver_amd::sp3::nbio::iommu::IommuInfo;
 
 use super::*;
 
@@ -59,7 +59,7 @@ fn system(generation: Generation, sockets: u8, threads: u32) -> System {
         .map(|b| IoapicInfo {
             socket: b.socket,
             index: b.index,
-            id: fstart_driver_zen::nbio::ioapic::nbio_ioapic_id(generation, 4 * b.socket + b.index),
+            id: fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id(generation, 4 * b.socket + b.index),
             base: 0xA000_0000 + (u64::from(4 * b.socket + b.index) << 20),
             bus: b.bus_base,
         })
@@ -129,7 +129,7 @@ const PSTATES: [Pstate; 2] = [
 /// A Rome FCH with UART0, UART1 as COM1, I2C0 and GPIO (routes FCH_SP3
 /// §3.3).
 fn fch() -> &'static FchAcpi {
-    use fstart_driver_zen::fch::acpi::{I2c, LegacyCom, Uart};
+    use fstart_driver_amd::sp3::fch::acpi::{I2c, LegacyCom, Uart};
     let mut f = FchAcpi {
         gpio_irq: Some(7),
         ..FchAcpi::default()
@@ -155,7 +155,7 @@ fn inputs<'a>(
     Inputs {
         generation,
         cpus: &s.cpus,
-        fch_ioapic_id: fstart_driver_zen::nbio::ioapic::fch_ioapic_id(generation),
+        fch_ioapic_id: fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id(generation),
         ioapics: &s.ioapics,
         hpet_block_id: 0x1022_8201,
         root_bridges: bridges,

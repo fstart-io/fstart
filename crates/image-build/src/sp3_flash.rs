@@ -23,7 +23,7 @@
 //!
 //! The FFS exists once, in the lower half. The reset image reads it through
 //! ROM2 when ROM2 shows the lower half and through ROM3 otherwise
-//! (`fstart_driver_zen::fch::rom3`), located by the flash anchor
+//! (`fstart_driver_amd::sp3::fch::rom3`), located by the flash anchor
 //! (`fstart_amdfw_format::anchor`).
 //!
 //! A single multi-generation EFS with a `2PSP` combo directory and the
@@ -57,7 +57,7 @@ pub use fstart_amdfw_format::HALF_SIZE;
 
 /// An SP3 generation as the image knows it: the BIOS directory slot its
 /// boot ROM reads. The silicon's generation maps to it through its
-/// profile (`fstart_driver_zen::soc::Generation::profile`).
+/// profile (`fstart_driver_amd::sp3::soc::Generation::profile`).
 pub type Generation = BiosDirectorySlot;
 pub const NAPLES: Generation = BiosDirectorySlot::Family17hModel00;
 pub const ROME: Generation = BiosDirectorySlot::Family17hModel30;

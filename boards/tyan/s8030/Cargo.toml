@@ -33,7 +33,7 @@ pcie3-x4x4x4x4 = []
 # builds on its own.
 [dependencies]
 fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["acpi", "rome", "milan"] }
-fstart-driver-zen = { path = "../../../crates/driver-zen", features = ["rome", "milan"] }
+fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["rome", "milan"] }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-core = { path = "../../../crates/core" }
 fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }

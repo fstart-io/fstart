@@ -4,7 +4,7 @@
 //! SMM follows no pointer from the shared communication page.
 
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
-use fstart_driver_zen::{
+use fstart_driver_amd::sp3::{
     df::DramRule,
     psp::ras::{MAX_SOCKETS, MemoryTarget},
 };

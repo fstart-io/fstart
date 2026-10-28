@@ -112,7 +112,7 @@ Ordinary software SMI 80 still does not authorize MCA capture or #MC handoff.
 
 ## Implementation boundaries
 
-- `driver-zen/src/ccx/ras.rs`: typed per-CPU MSRs, arming, bounded capture,
+- `driver-amd/src/sp3/ccx/ras.rs`: typed per-CPU MSRs, arming, bounded capture,
   native handoff, restricted OS-clear replay and disarming.
 - `smm/src/{handler,stage}.rs`: generic per-CPU entry hook; shared dispatch
   still has a single owner, with no all-CPU arrival requirement.

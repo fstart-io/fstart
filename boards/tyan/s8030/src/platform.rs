@@ -7,16 +7,16 @@ use alloc::vec::Vec;
 use embedded_hal::delay::DelayNs;
 use fstart_core::services::Timer;
 use fstart_driver_uart::ns16550::Ns16550Config;
-use fstart_driver_zen::dxio::engine::MAX_ENGINES;
-use fstart_driver_zen::dxio::lanes::Engine;
-use fstart_driver_zen::fch::FchHw;
-use fstart_driver_zen::fch::gpio::Pad;
+use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::sp3::dxio::lanes::Engine;
+use fstart_driver_amd::sp3::fch::FchHw;
+use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_platform_sp3::acpi::Board as AcpiBoard;
 use fstart_platform_sp3::board::{self, BoardError, Gpio, Policy};
 use fstart_platform_sp3::smm::BmcSxNotify;
 
 use crate::dxio::{Detected, M2Mode, Options};
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::soc::Generation;
 
 use crate::{Board, bmc, dxio, gpio, policy};
 

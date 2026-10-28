@@ -6,28 +6,28 @@ extern crate alloc;
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
-use fstart_driver_zen::ccx::release::{self, Launch, SmuPwr};
-use fstart_driver_zen::ccx::x2apic::{self, ApicMode};
-use fstart_driver_zen::ccx::{ApInputs, Ccx, brand, mca, microcode, power, security};
-use fstart_driver_zen::df::plan::Plan;
-use fstart_driver_zen::df::topology::Topology;
-use fstart_driver_zen::df::v2::Df2;
-use fstart_driver_zen::df::{BusRange, Df, Version, program, regs};
-use fstart_driver_zen::dxio::engine::MAX_ENGINES;
-use fstart_driver_zen::dxio::lanes::Engine;
-use fstart_driver_zen::dxio::ports::{FchPerst, PortSetup};
-use fstart_driver_zen::dxio::{self, DMA_SIZE, DmaBuffer, Dxio, Unit};
-use fstart_driver_zen::fch::multi::{self, NaplesDie};
-use fstart_driver_zen::fch::taishan::{self, usb::DieUsb};
-use fstart_driver_zen::nbio::fuse::Fuses;
-use fstart_driver_zen::nbio::ioapic::nbio_ioapic_id;
-use fstart_driver_zen::nbio::iohc::DramTops;
-use fstart_driver_zen::nbio::{Nbio, naples as nbio_naples};
-use fstart_driver_zen::psp::bar::BAR_SIZE;
-use fstart_driver_zen::smn::Smn;
-use fstart_driver_zen::smu::mailbox::Mailbox;
-use fstart_driver_zen::smu::v9;
-use fstart_driver_zen::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::sp3::ccx::release::{self, Launch, SmuPwr};
+use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
+use fstart_driver_amd::sp3::ccx::{ApInputs, Ccx, brand, mca, microcode, power, security};
+use fstart_driver_amd::sp3::df::plan::Plan;
+use fstart_driver_amd::sp3::df::topology::Topology;
+use fstart_driver_amd::sp3::df::v2::Df2;
+use fstart_driver_amd::sp3::df::{BusRange, Df, Version, program, regs};
+use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::sp3::dxio::lanes::Engine;
+use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
+use fstart_driver_amd::sp3::dxio::{self, DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::sp3::fch::multi::{self, NaplesDie};
+use fstart_driver_amd::sp3::fch::taishan::{self, usb::DieUsb};
+use fstart_driver_amd::sp3::nbio::fuse::Fuses;
+use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
+use fstart_driver_amd::sp3::nbio::iohc::DramTops;
+use fstart_driver_amd::sp3::nbio::{Nbio, naples as nbio_naples};
+use fstart_driver_amd::sp3::psp::bar::BAR_SIZE;
+use fstart_driver_amd::sp3::smn::Smn;
+use fstart_driver_amd::sp3::smu::mailbox::Mailbox;
+use fstart_driver_amd::sp3::smu::v9;
+use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
@@ -69,7 +69,7 @@ pub(crate) fn program_maps(df: &Df<Pci>, topology: &Topology, plan: &Plan) {
 fn umc_present(ctx: &Ctx) -> [u8; 8] {
     let mut present = [0u8; 8];
     for (node, n) in ctx.topology.nodes.iter().enumerate() {
-        present[node] = fstart_driver_zen::apob::mem::spd(&ctx.apob, n.socket, n.die)
+        present[node] = fstart_driver_amd::sp3::apob::mem::spd(&ctx.apob, n.socket, n.die)
             .map(|t| {
                 t.dimms()
                     .filter(|(_, _, r)| r.present())
@@ -83,7 +83,7 @@ fn umc_present(ctx: &Ctx) -> [u8; 8] {
 /// DF PEI init and, as this flow has no PEI/DXE split, the DXE-entry PIE
 /// power management right after (SOC_DF §3, DF_ZP §3.9).
 pub(crate) fn df_init(ctx: &mut Ctx) {
-    use fstart_driver_zen::df::naples;
+    use fstart_driver_amd::sp3::df::naples;
     let policy = naples::Policy::default();
     let rev = ctx.identity.revision;
     naples::init(&ctx.df, &ctx.topology, rev, &policy, &umc_present(ctx));
@@ -112,7 +112,7 @@ pub(crate) fn nbio_early(ctx: &mut Ctx) -> Silicon {
         n.set_psp_bar(ctx.non_pci[i].alloc(BAR_SIZE).or_halt("PSP BAR space"));
     }
     ctx.psp_bar = nbios[0].psp_bar().or_halt("PSP BAR");
-    msr().write(fstart_driver_zen::psp::bar::MSR_PSP_ADDR, ctx.psp_bar);
+    msr().write(fstart_driver_amd::sp3::psp::bar::MSR_PSP_ADDR, ctx.psp_bar);
     Silicon {
         nbios,
         smus: heapless::Vec::new(),

@@ -49,7 +49,7 @@ pub struct Program<B>(core::marker::PhantomData<B>);
 #[cfg(feature = "bundle-reset")]
 impl<B: board::Board> fstart_stage::StageProgram for Program<B> {
     fn run_stage(_handoff: usize) -> ! {
-        use fstart_driver_zen::soc::Generation;
+        use fstart_driver_amd::sp3::soc::Generation;
         let identity = flow::identify();
         match identity.generation() {
             #[cfg(feature = "naples")]

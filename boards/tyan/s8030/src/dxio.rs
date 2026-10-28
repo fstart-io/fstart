@@ -40,9 +40,9 @@
 
 mod tuning;
 
-use fstart_driver_zen::dxio::engine::MAX_ENGINES;
-use fstart_driver_zen::dxio::lanes::{Engine, Group, Lanes, PcieEngine, SataEngine, Speed};
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::sp3::dxio::lanes::{Engine, Group, Lanes, PcieEngine, SataEngine, Speed};
+use fstart_driver_amd::sp3::soc::Generation;
 use heapless::Vec;
 
 /// The five x16 slots, in Setup order (`PCIE#1..5`).
@@ -382,7 +382,7 @@ pub fn engines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_zen::dxio::lanes::{EngineKind, place, validate};
+    use fstart_driver_amd::sp3::dxio::lanes::{EngineKind, place, validate};
 
     const PCIE: Detected = Detected {
         m2: [M2Mode::Pcie; 2],

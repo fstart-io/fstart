@@ -28,8 +28,8 @@ use fstart_driver_ipmi::kcs::{self, Kcs, Status};
 use fstart_driver_superio::aspeed_ast2400::{Ast2400, CONFIG_PORT};
 use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_driver_zen::fch::FchHw;
-use fstart_driver_zen::fch::lpc::{self, WideIo};
+use fstart_driver_amd::sp3::fch::FchHw;
+use fstart_driver_amd::sp3::fch::lpc::{self, WideIo};
 use fstart_platform_sp3::acpi::Board as AcpiBoard;
 use tock_registers::interfaces::{Readable, Writeable};
 

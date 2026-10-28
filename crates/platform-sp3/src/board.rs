@@ -13,15 +13,15 @@ extern crate alloc;
 
 use fstart_core::services::Timer;
 use fstart_driver_uart::ns16550::Ns16550Config;
-use fstart_driver_zen::dxio::DxioPolicy;
-use fstart_driver_zen::dxio::engine::MAX_ENGINES;
-use fstart_driver_zen::dxio::lanes::Engine;
-use fstart_driver_zen::fch::FchHw;
-use fstart_driver_zen::fch::common::env::EnvPolicy;
-use fstart_driver_zen::fch::gpio::Pad;
-use fstart_driver_zen::nbio::NbioPolicy;
-use fstart_driver_zen::soc::Generation;
-use fstart_driver_zen::{ccx, df};
+use fstart_driver_amd::sp3::dxio::DxioPolicy;
+use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::sp3::dxio::lanes::Engine;
+use fstart_driver_amd::sp3::fch::FchHw;
+use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
+use fstart_driver_amd::sp3::fch::gpio::Pad;
+use fstart_driver_amd::sp3::nbio::NbioPolicy;
+use fstart_driver_amd::sp3::soc::Generation;
+use fstart_driver_amd::sp3::{ccx, df};
 use heapless::Vec;
 
 use crate::layout::Sp3BoardFacts;
@@ -34,7 +34,7 @@ pub struct Policy {
     pub nbio: NbioPolicy,
     /// SMU PPTable inputs (Rome/Milan; Naples has no PPTable).
     #[cfg(any(feature = "rome", feature = "milan"))]
-    pub power: fstart_driver_zen::smu::v11::pptable::PowerPolicy,
+    pub power: fstart_driver_amd::sp3::smu::v11::pptable::PowerPolicy,
     pub ccx: ccx::Policy,
     /// FCH env: power-failure state after AC loss.
     pub fch_env: EnvPolicy,

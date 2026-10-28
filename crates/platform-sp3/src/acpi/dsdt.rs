@@ -30,9 +30,9 @@ use fstart_acpi::processor::{
     processor_device, psd_aml, pss_aml,
 };
 use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl, gpe};
-use fstart_driver_zen::fch::acpi as fch_acpi;
-use fstart_driver_zen::smu::v11::cppc;
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::fch::acpi as fch_acpi;
+use fstart_driver_amd::sp3::smu::v11::cppc;
+use fstart_driver_amd::sp3::soc::Generation;
 
 use super::fixed::{FCH_IOAPIC_BASE, GsiWindow, HPET_BASE, LAPIC_BASE, PM_BASE};
 use super::{Inputs, Power, RootBridgeAcpi, Window, prt};
@@ -283,7 +283,7 @@ fn system_resources(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, A
             inputs
                 .iommus
                 .iter()
-                .map(|m| (m.info.base, fstart_driver_zen::nbio::iommu::MMIO_SIZE)),
+                .map(|m| (m.info.base, fstart_driver_amd::sp3::nbio::iommu::MMIO_SIZE)),
         )
         .for_each(|(b, l)| mem(b, l, &mut d));
     // The FCH's legacy and index ports (the SMI command port is in

@@ -30,8 +30,8 @@
 //! (`smm_bin!`, feature `bundle-smm`); `build.rs` checks that it fits
 //! [`TSEG_SIZE`] for the board's thread count.
 
-use fstart_driver_zen::apob::sysmap::Region;
-use fstart_driver_zen::soc::Generation;
+use fstart_driver_amd::sp3::apob::sysmap::Region;
+use fstart_driver_amd::sp3::soc::Generation;
 
 use crate::layout::Span;
 use crate::memory::FOUR_GIB;
@@ -135,23 +135,23 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
     }
 
     fn disable_smi(&self) {
-        use fstart_driver_zen::fch::FchHw;
-        use fstart_driver_zen::fch::Window;
-        use fstart_driver_zen::fch::smi::TRIG0;
+        use fstart_driver_amd::sp3::fch::FchHw;
+        use fstart_driver_amd::sp3::fch::Window;
+        use fstart_driver_amd::sp3::fch::smi::TRIG0;
         use tock_registers::interfaces::ReadWriteable;
         // SmiEnB: the FCH generates no SMI until `enable_smi`.
         self.fch
             .acpi()
-            .reg::<u32, TRIG0::Register>(fstart_driver_zen::fch::smi::TRIG0)
+            .reg::<u32, TRIG0::Register>(fstart_driver_amd::sp3::fch::smi::TRIG0)
             .modify(TRIG0::SMI_EN_B::SET);
     }
 
     fn enable_smi(&self) {
-        use fstart_driver_zen::fch::FchHw;
-        fstart_driver_zen::fch::smi::enable_boot_sources(self.fch.acpi());
+        use fstart_driver_amd::sp3::fch::FchHw;
+        fstart_driver_amd::sp3::fch::smi::enable_boot_sources(self.fch.acpi());
         #[cfg(any(feature = "rome", feature = "milan"))]
         if self.config.generation == Generation::Rome {
-            fstart_driver_zen::fch::huashan::smm::arm_cf9_trap(self.fch);
+            fstart_driver_amd::sp3::fch::huashan::smm::arm_cf9_trap(self.fch);
         }
     }
 }
@@ -160,7 +160,7 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
 /// bit 1 cleared, SmiTrig0 bit 25 cleared, PSP SMI control = SMI.
 #[cfg(feature = "bundle-reset")]
 pub fn prepare_psp_smi(fch: &crate::hw::PrimaryFch) {
-    use fstart_driver_zen::fch::{FchHw, Window, acpimmio, update};
+    use fstart_driver_amd::sp3::fch::{FchHw, Window, acpimmio, update};
     let acpi = fch.acpi();
     update::<u32, _>(acpi, acpimmio::SMI + 0x84, 0, 1 << 1);
     update::<u32, _>(acpi, acpimmio::SMI + 0x98, 1 << 25, 0);
@@ -183,15 +183,15 @@ mod handler {
 
     use fstart_arch::x86::cpu::amd::msr::{SMM_ADDR, SMM_MASK};
     use fstart_arch::x86::cpu::msr::MsrAccess;
-    use fstart_driver_zen::fch::common::sx;
-    use fstart_driver_zen::fch::smi::Source;
-    use fstart_driver_zen::fch::smi::{self, source};
-    use fstart_driver_zen::fch::{Fch, FchHw, Mmio, Ports, Window, acpimmio, update};
-    use fstart_driver_zen::psp::command::{C2pBuffer, P2C_BUFFER_SIZE, SmmInfo};
-    use fstart_driver_zen::psp::mailbox::{Mailbox, MmioTransport};
-    use fstart_driver_zen::smn::Smn;
-    use fstart_driver_zen::smu::mailbox::Mailbox as Smu;
-    use fstart_driver_zen::soc::Generation;
+    use fstart_driver_amd::sp3::fch::common::sx;
+    use fstart_driver_amd::sp3::fch::smi::Source;
+    use fstart_driver_amd::sp3::fch::smi::{self, source};
+    use fstart_driver_amd::sp3::fch::{Fch, FchHw, Mmio, Ports, Window, acpimmio, update};
+    use fstart_driver_amd::sp3::psp::command::{C2pBuffer, P2C_BUFFER_SIZE, SmmInfo};
+    use fstart_driver_amd::sp3::psp::mailbox::{Mailbox, MmioTransport};
+    use fstart_driver_amd::sp3::smn::Smn;
+    use fstart_driver_amd::sp3::smu::mailbox::Mailbox as Smu;
+    use fstart_driver_amd::sp3::soc::Generation;
     use fstart_pci::{ConfigRegionAccess, EcamDevice, PciAddress};
     use fstart_smm::{SmmContext, SmmHandler};
     use tock_registers::interfaces::Readable;
@@ -296,11 +296,11 @@ mod handler {
             let host = PciAddress::default();
             let pci = Ecam;
             // SAFETY: SMM owns the CPU; the index is restored below.
-            let saved = unsafe { pci.read(host, fstart_driver_zen::smn::SMN_INDEX) };
+            let saved = unsafe { pci.read(host, fstart_driver_amd::sp3::smn::SMN_INDEX) };
             super::ras::flush::<P>(crate::hw::tsc());
             dispatch::<P>(config);
             // SAFETY: as above.
-            unsafe { pci.write(host, fstart_driver_zen::smn::SMN_INDEX, saved) };
+            unsafe { pci.write(host, fstart_driver_amd::sp3::smn::SMN_INDEX, saved) };
         }
     }
 
@@ -372,10 +372,10 @@ mod handler {
         }
         #[cfg(any(feature = "rome", feature = "milan"))]
         if generation == Generation::Rome
-            && fstart_driver_zen::fch::huashan::smm::take_cf9_trap(&hw)
+            && fstart_driver_amd::sp3::fch::huashan::smm::take_cf9_trap(&hw)
         {
             // The trapped write was a reset request: let it through.
-            fstart_driver_zen::fch::huashan::smm::disarm_cf9_trap(&hw);
+            fstart_driver_amd::sp3::fch::huashan::smm::disarm_cf9_trap(&hw);
             hw.io().write8(0xcf9, 0x06);
         }
         smi::eos(acpi);
@@ -387,12 +387,12 @@ mod handler {
         let (regs, limit) = match generation {
             #[cfg(feature = "naples")]
             Generation::Naples => (
-                fstart_driver_zen::smu::v9::REGS,
-                fstart_driver_zen::smu::v9::ID_LIMIT,
+                fstart_driver_amd::sp3::smu::v9::REGS,
+                fstart_driver_amd::sp3::smu::v9::ID_LIMIT,
             ),
             #[cfg(any(feature = "rome", feature = "milan"))]
             Generation::Rome | Generation::Milan => {
-                use fstart_driver_zen::smu::v11;
+                use fstart_driver_amd::sp3::smu::v11;
                 (v11::REGS, v11::id_limit(generation))
             }
             #[allow(unreachable_patterns)]
@@ -491,10 +491,10 @@ mod handler {
     fn einj_target(
         config: &SmmConfig,
         address: u64,
-    ) -> Option<fstart_driver_zen::psp::ras::MemoryTarget> {
+    ) -> Option<fstart_driver_amd::sp3::psp::ras::MemoryTarget> {
         #[cfg(feature = "rome")]
         if config.generation == Generation::Rome {
-            use fstart_driver_zen::df::{FICAA, regs};
+            use fstart_driver_amd::sp3::df::{FICAA, regs};
             use fstart_pci::ConfigRegister;
             use tock_registers::interfaces::Writeable;
             // PCI addresses and endpoint buses are bound by the installer.
@@ -515,7 +515,7 @@ mod handler {
                 }
                 value
             };
-            let result = fstart_driver_zen::psp::ras::memory_target(
+            let result = fstart_driver_amd::sp3::psp::ras::memory_target(
                 address,
                 config.einj.sockets,
                 |socket, instance, reg| {
@@ -533,7 +533,7 @@ mod handler {
                     let saved = index.get();
                     index.write(
                         FICAA::TARGET_INST.val(u32::from(
-                            instance != fstart_driver_zen::psp::ras::BROADCAST,
+                            instance != fstart_driver_amd::sp3::psp::ras::BROADCAST,
                         )) + FICAA::FUNC.val(u32::from(reg.func))
                             + FICAA::REG.val(u32::from(reg.offset >> 2))
                             + FICAA::INST.val(u32::from(instance)),
@@ -601,18 +601,18 @@ mod handler {
     /// SW SMI D2 (Milan ReadyToBoot): LockFCHReg through the C2P page.
     #[cfg(feature = "milan")]
     fn fch_lock(config: &SmmConfig, timer: &Tsc) {
-        use fstart_driver_zen::psp::command::LockFchReg;
+        use fstart_driver_amd::sp3::psp::command::LockFchReg;
         let page = C2P.0.get().cast::<u8>();
         let buffer = page.cast::<C2pBuffer<LockFchReg>>();
         // SAFETY: the C2P page is SMRAM owned by the rendezvous owner and
         // registered with SmmInfo; the flag byte is inside it.
         unsafe {
             buffer.write(C2pBuffer::new(LockFchReg));
-            let _ = fstart_driver_zen::fch::huashan::smm::lock_fch_registers(
+            let _ = fstart_driver_amd::sp3::fch::huashan::smm::lock_fch_registers(
                 &psp(config),
                 timer,
                 &mut *buffer,
-                page.add(fstart_driver_zen::psp::command::SMM_FLAG_OFFSET as usize),
+                page.add(fstart_driver_amd::sp3::psp::command::SMM_FLAG_OFFSET as usize),
             );
         }
     }
@@ -621,7 +621,7 @@ mod handler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_zen::apob::sysmap::RegionKind;
+    use fstart_driver_amd::sp3::apob::sysmap::RegionKind;
 
     fn ram(base: u64, size: u64) -> Region {
         Region {
