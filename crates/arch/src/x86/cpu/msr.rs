@@ -136,12 +136,19 @@ register_bitfields![u64,
         FIXED_ENABLE OFFSET(10) NUMBITS(1) [],
         ENABLE OFFSET(11) NUMBITS(1) []
     ],
+    /// IA32_SPEC_CTRL.
+    pub SpecCtrl [
+        IBRS OFFSET(0) NUMBITS(1) [],
+        STIBP OFFSET(1) NUMBITS(1) [],
+        SSBD OFFSET(2) NUMBITS(1) []
+    ],
     pub McgCap [
         COUNT OFFSET(0) NUMBITS(8) []
     ]
 ];
 
 pub const APIC_BASE: Msr<ApicBase::Register> = Msr::new(0x1b);
+pub const SPEC_CTRL: Msr<SpecCtrl::Register> = Msr::new(0x48);
 /// IA32_BIOS_SIGN_ID: the installed microcode patch level.
 pub const PATCH_LEVEL: Msr = Msr::new(0x8b);
 pub const MTRR_CAP: Msr<MtrrCap::Register> = Msr::new(crate::x86::mtrr::IA32_MTRR_CAP);
@@ -149,6 +156,7 @@ pub const PAT: Msr = Msr::new(0x277);
 pub const MTRR_DEF_TYPE: Msr<MtrrDefType::Register> =
     Msr::new(crate::x86::mtrr::IA32_MTRR_DEF_TYPE);
 pub const MCG_CAP: Msr<McgCap::Register> = Msr::new(0x179);
+pub const MCG_STATUS: Msr = Msr::new(0x17a);
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing {

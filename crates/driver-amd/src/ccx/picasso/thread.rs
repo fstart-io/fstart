@@ -173,7 +173,7 @@ mod tests {
     }
     #[test]
     fn ap_tail_uses_cached_psp_ecam_and_cstate_without_cache_policy_writes() {
-        use crate::ccx::msr::{CSTATE_BASE_ADDRESS, DPM_WAC_INDEX, PSP_ADDRESS};
+        use crate::ccx::msr::{CSTATE_BASE_ADDR, DPM_WAC_ACC_INDEX, PSP_ADDRESS};
         use fstart_arch::x86::cpu::amd::msr::MMIO_CFG_BASE;
         for primary in [false, true] {
             let cpu = cpu();
@@ -182,12 +182,12 @@ mod tests {
             let writes = writes(&cpu);
             assert!(writes.contains(&(MMIO_CFG_BASE.index(), 0xf8000019)));
             assert!(writes.contains(&(PSP_ADDRESS.index(), 0xfd100000)));
-            assert!(writes.contains(&(CSTATE_BASE_ADDRESS.index(), 0x410)));
+            assert!(writes.contains(&(CSTATE_BASE_ADDR.index(), 0x410)));
             assert!(!writes.iter().any(|(index, _)| ROUTING_MSRS.contains(index)));
             assert_eq!(
                 writes
                     .iter()
-                    .filter(|(index, _)| *index == DPM_WAC_INDEX.index())
+                    .filter(|(index, _)| *index == DPM_WAC_ACC_INDEX.index())
                     .count(),
                 if primary { 21 } else { 0 }
             );

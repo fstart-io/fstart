@@ -4,12 +4,13 @@
 //! boot; the BSP's values are later copied to the APs.
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
+use tock_registers::interfaces::Writeable;
+
+use crate::ccx::msr::NAME_STRING;
 
 use crate::smu::{ARGUMENT_COUNT, SmuMessages};
 use crate::sp3::soc::Generation;
 
-/// First of the six name-string MSRs.
-pub const NAME_STRING: u32 = 0xc001_0030;
 /// The donors' string when the SMU has none.
 pub const FALLBACK: &[u8] = b"AMD Unprogrammed Engineering Sample";
 
@@ -53,8 +54,8 @@ pub fn write<M: MsrAccess + ?Sized>(cpu: &M, name: &Name) {
     name.as_chunks::<8>()
         .0
         .iter()
-        .zip(NAME_STRING..)
-        .for_each(|(c, msr)| cpu.write(msr, u64::from_le_bytes(*c)));
+        .zip(0..)
+        .for_each(|(c, i)| cpu.reg(NAME_STRING.offset(i)).set(u64::from_le_bytes(*c)));
 }
 
 #[cfg(test)]

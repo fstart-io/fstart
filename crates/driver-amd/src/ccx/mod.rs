@@ -19,8 +19,8 @@ pub mod zeppelin;
 use self::{
     cache::CacheControl,
     msr::{
-        BU_CFG, BuCfg, CPU_WDT_CFG, CSTATE_BASE_ADDRESS, CSTATE_CONFIG, DPM_CFG, DPM_WAC_DATA,
-        DPM_WAC_INDEX, MCA_INTR_CFG, McaConfig, McaIntrCfg, McaMisc, MsrUpdate, PSP_ADDRESS,
+        CPU_WDT_CFG, CSTATE_BASE_ADDR, CSTATE_CONFIG, DPM_CFG, DPM_WAC_ACC_INDEX, DPM_WAC_DATA,
+        MCA_INTR_CFG, McaConfig, McaIntrCfg, McaMisc, MsrUpdate, PSP_ADDRESS, TW_CFG, TwCfg,
         enable_ecam, mca_config, mca_ctl_mask, mca_misc0, mca_misc1, update,
     },
 };
@@ -104,7 +104,7 @@ pub struct Ccx {
     /// MMCONFIG: the APs start with its reset value.
     pub ecam: u64,
     pub ecam_buses: u16,
-    /// CSTATE_BASE_ADDRESS: the ACPI C-state control I/O.
+    /// CSTATE_BASE_ADDR: the ACPI C-state control I/O.
     pub cstate_io_base: u64,
     /// CPU_WDT_CFG, if the SoC programs the CPU watchdog.
     pub watchdog: Option<u64>,
@@ -167,9 +167,9 @@ pub fn cpu_init(
             load_cac_weights(cpu, weights, soc.dpm_cfg);
         }
         cpu.reg(CSTATE_CONFIG).set(CSTATE_CONFIG_CC6);
-        cpu.reg(BU_CFG).modify(BuCfg::COMBINE_CR0_CD::SET);
+        cpu.reg(TW_CFG).modify(TwCfg::COMBINE_CR0_CD::SET);
     }
-    cpu.reg(CSTATE_BASE_ADDRESS).set(soc.cstate_io_base);
+    cpu.reg(CSTATE_BASE_ADDR).set(soc.cstate_io_base);
     if let Some(watchdog) = soc.watchdog {
         cpu.reg(CPU_WDT_CFG).set(watchdog);
     }
@@ -228,14 +228,12 @@ fn mca_setup(
         cpu.reg(mca_config(bank)).set(value.get());
 
         if !mca.no_misc0.contains(&bank) {
-            cpu.reg(mca_misc0(bank))
-                .modify(McaMisc::THRESHOLD_INT_TYPE::CLEAR);
+            cpu.reg(mca_misc0(bank)).modify(McaMisc::BLK_PTR::CLEAR);
         }
     }
 
     for bank in [15, 16] {
-        cpu.reg(mca_misc1(bank))
-            .modify(McaMisc::THRESHOLD_INT_TYPE::CLEAR);
+        cpu.reg(mca_misc1(bank)).modify(McaMisc::BLK_PTR::CLEAR);
     }
     cpu.reg(MCA_INTR_CFG)
         .modify(McaIntrCfg::THRESHOLD_LVT_VALID::SET);
@@ -258,7 +256,7 @@ fn load_cac_weights(cpu: &impl MsrAccess, weights: &CacWeights, dpm_cfg: u64) {
     let saved = cpu.reg(DPM_CFG).get();
     cpu.reg(DPM_CFG).set(0);
     for (index, &weight) in (0..).zip(weights) {
-        cpu.reg(DPM_WAC_INDEX).set(index);
+        cpu.reg(DPM_WAC_ACC_INDEX).set(index);
         cpu.reg(DPM_WAC_DATA).set(weight);
     }
     cpu.reg(DPM_CFG).set(saved | dpm_cfg);
@@ -353,7 +351,7 @@ mod tests {
         assert!(!sibling.written(PSP_ADDRESS.index()));
         assert!(!sibling.written(DPM_WAC_DATA.index()) && !sibling.written(CSTATE_CONFIG.index()));
         assert!(!sibling.written(mca_ctl_mask(14).index()));
-        assert_eq!(sibling.get(CSTATE_BASE_ADDRESS.index()), 0x813);
+        assert_eq!(sibling.get(CSTATE_BASE_ADDR.index()), 0x813);
     }
 
     #[test]

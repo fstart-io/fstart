@@ -35,7 +35,7 @@ const CCX: Ccx = Ccx {
     cstate_io_base: 0x813,
     // Enabled, 2047 * 1.31 ms.
     watchdog: Some(0x9),
-    dpm_cfg: DpmCfg::CFG_WEIGHTS_VALID::SET.value,
+    dpm_cfg: DpmCfg::CFG_LOCKED::SET.value,
     tail: &[],
 };
 
@@ -118,7 +118,7 @@ mod tests {
     use crate::ccx::{
         cache::testing::{DISABLE, ENABLE, FLUSH},
         msr::{
-            CSTATE_BASE_ADDRESS, CSTATE_CONFIG, DPM_CFG, DPM_WAC_DATA, PSP_ADDRESS, mca_config,
+            CSTATE_BASE_ADDR, CSTATE_CONFIG, DPM_CFG, DPM_WAC_DATA, PSP_ADDRESS, mca_config,
             mca_ctl_mask, mca_misc0, mca_misc1,
         },
     };
@@ -220,7 +220,7 @@ mod tests {
         assert!(!cpu.borrow().writes.contains(&DISABLE));
         assert!(!written(&cpu, DPM_WAC_DATA.index()) && !written(&cpu, CSTATE_CONFIG.index()));
         assert!(!written(&cpu, mca_ctl_mask(14).index()));
-        assert_eq!(get(&cpu, CSTATE_BASE_ADDRESS.index()), 0x813);
+        assert_eq!(get(&cpu, CSTATE_BASE_ADDR.index()), 0x813);
 
         let cpu = self::cpu([(MCG_CAP.index(), 16)]);
         assert_eq!(

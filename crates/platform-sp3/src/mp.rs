@@ -24,14 +24,12 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use crate::hw::msr;
 
-/// `APIC_BAR` (MSR 1Bh) bit 8: this thread is the BSP.
-const APIC_BAR: u32 = 0x1b;
-const APIC_BAR_BSP: u64 = 1 << 8;
-
 /// The executing thread as the CCX code sees it.
 pub fn this_thread(generation: Generation) -> Thread {
     let (eax, ebx, _, _) = fstart_arch::x86::cpuid(0x8000_001e);
-    let bsp = msr().read(APIC_BAR) & APIC_BAR_BSP != 0;
+    let bsp = msr()
+        .reg(fstart_arch::x86::cpu::msr::APIC_BASE)
+        .is_set(fstart_arch::x86::cpu::msr::ApicBase::BSP);
     Thread::from_cpuid(generation, eax, ebx, bsp)
 }
 

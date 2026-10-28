@@ -19,7 +19,9 @@ register_bitfields![u64,
         /// Memory between 4 GiB and TOM2 is write-back.
         TOM2_WB OFFSET(22) NUMBITS(1) [],
         /// Secure memory encryption enable.
-        SMEE OFFSET(23) NUMBITS(1) []
+        SMEE OFFSET(23) NUMBITS(1) [],
+        /// SEV-SNP VM permission levels (16-byte RMP entries).
+        VMPL_EN OFFSET(25) NUMBITS(1) []
     ],
     pub Hwcr [
         SMM_LOCK OFFSET(0) NUMBITS(1) [],

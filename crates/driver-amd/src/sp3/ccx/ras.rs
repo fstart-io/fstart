@@ -9,7 +9,7 @@
 //! Rome AmdRasSspSmm/ee8175ef-4c60-82af-f5e2-8a9ef1fc0a9a,
 //! cca68f7070ef, 0x6b0 and 0x934 (SMM, instruction-checked).
 
-use fstart_arch::x86::cpu::msr::{MCG_CAP, McgCap, Msr, MsrAccess};
+use fstart_arch::x86::cpu::msr::{MCG_CAP, MCG_STATUS, McgCap, Msr, MsrAccess};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
@@ -54,7 +54,6 @@ pub const SMI_IO_CYCLE: Msr<SmiIoCycle::Register> = Msr::new(0xc001_0056);
 pub const PFEH_CONFIG: Msr<PfehConfig::Register> = Msr::new(0xc001_0120);
 pub const PFEH_CLOAK: Msr = Msr::new(0xc001_0121);
 pub const PFEH_DEFERRED_MASK: Msr = Msr::new(0xc001_0122);
-const MCG_STATUS: Msr = Msr::new(0x17a);
 /// A bank mask is 64 bits. Refuse larger implementations, rather than
 /// silently enabling a handler that cannot inspect all their banks.
 pub const MAX_BANKS: u32 = 64;
@@ -85,8 +84,8 @@ pub fn arm<M: MsrAccess>(
     if banks == 0
         || banks > u64::from(MAX_BANKS)
         || !cpu
-            .reg(Msr::new(super::mca::config(0)))
-            .is_set(super::mca::McaConfig::MCAX)
+            .reg(crate::ccx::msr::mca_config(0))
+            .is_set(crate::ccx::msr::McaConfig::MCAX)
     {
         return Err(ArmError::UnsupportedBanks);
     }
@@ -145,8 +144,9 @@ pub fn replay_clear<M: MsrAccess>(cpu: &M, index: u32, value: u64) -> bool {
         bank < banks
             && (off % 16 == 1
                 || (off % 16 == 8
-                    && super::mca::McaConfig::DEFERRED_LOGGING_SUPPORTED
-                        .is_set(cpu.read(super::mca::config(bank)))))
+                    && cpu
+                        .reg(crate::ccx::msr::mca_config(bank))
+                        .is_set(crate::ccx::msr::McaConfig::DEFERRED_LOGGING_SUPPORTED)))
     });
     if index != MCG_STATUS.index() && !legacy && !extended {
         return false;
@@ -228,11 +228,12 @@ pub fn observe<M: MsrAccess>(
         }
         let config = cpu.read(base + 4);
         let ipid = cpu.read(base + 5);
-        let deferred_status = if super::mca::McaConfig::DEFERRED_LOGGING_SUPPORTED.is_set(config) {
-            cpu.read(base + 8)
-        } else {
-            0
-        };
+        let deferred_status =
+            if crate::ccx::msr::McaConfig::DEFERRED_LOGGING_SUPPORTED.is_set(config) {
+                cpu.read(base + 8)
+            } else {
+                0
+            };
         sink(Record {
             cpu: logical_cpu,
             bank,
@@ -258,7 +259,7 @@ pub fn observe<M: MsrAccess>(
             } else {
                 0
             },
-            misc1: if super::mca::McaIpid::HARDWARE_ID.read(ipid) == 0x96 {
+            misc1: if crate::ccx::msr::McaIpid::HARDWARE_ID.read(ipid) == 0x96 {
                 cpu.read(base + 10)
             } else {
                 0

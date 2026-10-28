@@ -9,20 +9,11 @@
 //!   never sets SYSCFG.SNPEn (erratum 1321's VM_HSAVE_PA rule is the OS's).
 
 use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg};
-use fstart_arch::x86::cpu::msr::MsrAccess;
-use tock_registers::interfaces::ReadWriteable;
-use tock_registers::register_bitfields;
+use fstart_arch::x86::cpu::msr::{Msr, MsrAccess};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
-register_bitfields![u64,
-    /// SYSCFG bits beyond fstart-arch's set.
-    pub SyscfgSnp [
-        /// VMPL support (AMD APM vol. 2, SNP).
-        VMPL_EN OFFSET(25) NUMBITS(1) []
-    ]
-];
+use crate::ccx::msr::{RMP_BASE, RMP_END};
 
-pub const RMP_BASE: u32 = 0xc001_0132;
-pub const RMP_END: u32 = 0xc001_0133;
 /// The donor writes RMP_BASE/END keeping these bits.
 const RMP_KEEP: u64 = 0xfff0_0000_0000_1fff;
 const MIB: u64 = 1 << 20;
@@ -75,12 +66,14 @@ pub fn rmp_plan(policy: &SnpPolicy, tom2: u64) -> RmpPlan {
 
 /// Program the RMP at `base` on the executing thread (BSP and every AP).
 pub fn program_rmp<M: MsrAccess + ?Sized>(cpu: &M, base: u64, plan: &RmpPlan) {
-    let put = |msr, v: u64| cpu.write(msr, (cpu.read(msr) & RMP_KEEP) | (v & !RMP_KEEP));
+    let put = |msr: Msr, v: u64| {
+        let reg = cpu.reg(msr);
+        reg.set((reg.get() & RMP_KEEP) | (v & !RMP_KEEP));
+    };
     put(RMP_BASE, base);
     put(RMP_END, base + plan.size - 1);
     if plan.vmpl {
-        let syscfg = fstart_arch::x86::cpu::msr::Msr::<SyscfgSnp::Register>::new(SYSCFG.index());
-        cpu.reg(syscfg).modify(SyscfgSnp::VMPL_EN::SET);
+        cpu.reg(SYSCFG).modify(Syscfg::VMPL_EN::SET);
     }
 }
 
@@ -106,12 +99,12 @@ mod tests {
         };
         assert_eq!(rmp_plan(&small, tom2).size, MIB, "at least 16 MiB covered");
 
-        let cpu = MsrSpace::new([(RMP_END, 0x1fff)]);
+        let cpu = MsrSpace::new([(RMP_END.index(), 0x1fff)]);
         program_rmp(&cpu, 0x1_0000_0000, &rmp_plan(&small, tom2));
         set_smee(&cpu, false);
         let cpu = cpu.into_inner();
-        assert_eq!(cpu.get(RMP_BASE), 0x1_0000_0000);
-        assert_eq!(cpu.get(RMP_END), 0x1_000f_ffff);
+        assert_eq!(cpu.get(RMP_BASE.index()), 0x1_0000_0000);
+        assert_eq!(cpu.get(RMP_END.index()), 0x1_000f_ffff);
         assert_eq!(cpu.get(0xc001_0010), 1 << 25);
     }
 }

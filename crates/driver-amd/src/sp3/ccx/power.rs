@@ -4,51 +4,18 @@
 use fstart_arch::x86::cpu::amd::msr::{
     HWCR, Hwcr, PSTATE_0, PSTATE_CURRENT_LIMIT, PstateCurLim, PstateDef, pstate_mhz,
 };
-use fstart_arch::x86::cpu::msr::{Msr, MsrAccess};
+use fstart_arch::x86::cpu::msr::MsrAccess;
 use heapless::Vec;
 use tock_registers::LocalRegisterCopy;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use tock_registers::register_bitfields;
 
 use super::topology::Thread;
+use crate::ccx::msr::{
+    CPU_WDT_CFG, CSTATE_BASE_ADDR, CSTATE_CONFIG, CpuWdtCfg, CstateBaseAddr, CstateConfig, DPM_CFG,
+    DPM_WAC_ACC_INDEX, DPM_WAC_DATA, DpmCfg,
+};
 use crate::smu::{ARGUMENT_COUNT, Error as SmuError, SmuMessages};
 use crate::sp3::soc::Generation;
-
-register_bitfields![u64,
-    /// Core::X86::Msr::CSTATE_CFG (names: Oxide `ccx.h`).
-    pub CstateCfg [
-        CCR0_CC1DFSID OFFSET(0) NUMBITS(6) [],
-        CCR0_CC6EN OFFSET(6) NUMBITS(1) [],
-        CCR1_CC1DFSID OFFSET(8) NUMBITS(6) [],
-        CCR1_CC6EN OFFSET(14) NUMBITS(1) [],
-        CCR2_CC1DFSID OFFSET(16) NUMBITS(6) [],
-        CCR2_CC6EN OFFSET(22) NUMBITS(1) []
-    ],
-    /// Core::X86::Msr::CStateBaseAddr.
-    pub CstateBaseAddr [
-        CSTATE_ADDR OFFSET(0) NUMBITS(16) []
-    ],
-    /// Core::X86::Msr::CpuWdtCfg.
-    pub CpuWdtCfg [
-        EN OFFSET(0) NUMBITS(1) [],
-        TIME_BASE OFFSET(1) NUMBITS(2) [],
-        COUNT_SEL OFFSET(3) NUMBITS(4) [],
-        /// Rome/Milan only (reserved on Naples).
-        SEVERITY OFFSET(7) NUMBITS(3) []
-    ],
-    /// Core::X86::Msr::DPM_CFG.
-    pub DpmCfg [
-        JITTER_EN OFFSET(60) NUMBITS(1) [],
-        CFG_LOCKED OFFSET(63) NUMBITS(1) []
-    ]
-];
-
-pub const CSTATE_CFG: Msr<CstateCfg::Register> = Msr::new(0xc001_0296);
-pub const CSTATE_BASE_ADDR: Msr<CstateBaseAddr::Register> = Msr::new(0xc001_0073);
-pub const CPU_WDT_CFG: Msr<CpuWdtCfg::Register> = Msr::new(0xc001_0074);
-pub const DPM_CFG: Msr<DpmCfg::Register> = Msr::new(0xc001_1074);
-pub const DPM_WAC_ACC_INDEX: Msr = Msr::new(0xc001_1076);
-pub const DPM_WAC_DATA: Msr = Msr::new(0xc001_1077);
 
 // --- C-states -------------------------------------------------------------
 
@@ -73,28 +40,28 @@ impl Default for CstatePolicy {
     }
 }
 
-/// CSTATE_CFG: CC1 at DFS ID 8 on CCR0–2 and CC6 if enabled — the Milan
+/// CSTATE_CONFIG: CC1 at DFS ID 8 on CCR0–2 and CC6 if enabled — the Milan
 /// rule `0x80808 | cc6·0x404040`, which gives the fixed Naples/Rome value
 /// 0x484848 with CC6 on.
 pub fn cstate_cfg(cc6: bool) -> u64 {
     let cc6 = u64::from(cc6);
-    (CstateCfg::CCR0_CC1DFSID.val(8)
-        + CstateCfg::CCR1_CC1DFSID.val(8)
-        + CstateCfg::CCR2_CC1DFSID.val(8)
-        + CstateCfg::CCR0_CC6EN.val(cc6)
-        + CstateCfg::CCR1_CC6EN.val(cc6)
-        + CstateCfg::CCR2_CC6EN.val(cc6))
+    (CstateConfig::CCR0_CC1DFSID.val(8)
+        + CstateConfig::CCR1_CC1DFSID.val(8)
+        + CstateConfig::CCR2_CC1DFSID.val(8)
+        + CstateConfig::CCR0_CC6EN.val(cc6)
+        + CstateConfig::CCR1_CC6EN.val(cc6)
+        + CstateConfig::CCR2_CC6EN.val(cc6))
     .value
 }
 
 /// Program C-states on the executing thread (DXE MP callback, every
-/// thread; CSTATE_CFG on primary threads).
+/// thread; CSTATE_CONFIG on primary threads).
 pub fn init_cstates<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread, policy: &CstatePolicy) {
     if !policy.enable {
         return;
     }
     if thread.primary() {
-        cpu.reg(CSTATE_CFG).set(cstate_cfg(policy.cc6));
+        cpu.reg(CSTATE_CONFIG).set(cstate_cfg(policy.cc6));
     }
     cpu.reg(CSTATE_BASE_ADDR)
         .write(CstateBaseAddr::CSTATE_ADDR.val(policy.io_base.into()));
@@ -323,7 +290,7 @@ pub fn pstates<M: MsrAccess + ?Sized>(cpu: &M) -> Vec<Pstate, 8> {
         .reg(PSTATE_CURRENT_LIMIT)
         .read(PstateCurLim::PSTATE_MAX_VAL) as u8;
     (0..=max)
-        .filter_map(|i| decode_pstate(i, cpu.read(PSTATE_0.offset(i.into()).index())))
+        .filter_map(|i| decode_pstate(i, cpu.reg(PSTATE_0.offset(i.into())).get()))
         .collect()
 }
 
