@@ -21,6 +21,10 @@ pub struct Settings {
     pub equalization: u8,
     pub output_voltage: u8,
     pub deemphasis: u8,
+    /// Optional full byte for the undocumented registers EQ-2 (0x0d,
+    /// 0x14, ...). Some vendor SATA profiles write these after EQ/VOD/DEM;
+    /// no RXDET/IDLE meaning is assumed from the adjacent public registers.
+    pub channel_override: Option<u8>,
 }
 
 pub struct Ds125Br401a<I> {
@@ -50,6 +54,12 @@ impl<I: I2c> Ds125Br401a<I> {
                 .into_iter()
                 .map(move |base| (base + offset, value))
         })
+        .chain(
+            settings
+                .channel_override
+                .into_iter()
+                .flat_map(|value| CHANNEL_EQ.into_iter().map(move |base| (base - 2, value))),
+        )
         .try_for_each(|(register, value)| self.bus.write(self.address, &[register, value]))
     }
 }
@@ -84,6 +94,7 @@ mod tests {
                 equalization: 0,
                 output_voltage: 0,
                 deemphasis: 0x11,
+                channel_override: None,
             })
             .unwrap();
         bus.done();

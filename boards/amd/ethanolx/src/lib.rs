@@ -3,8 +3,9 @@
 //! The console is FCH UART1 over MMIO, as in the vendor's early serial code.
 //! Revision 0x30 PCIe policy uses board straps and I/O fuses, with native
 //! NVMe hotplug and vendor-derived GPIO/redriver setup. Other revisions
-//! are rejected before output changes; unsupported SATA/xGbE card modes
-//! stop before lane or card-specific programming.
+//! are rejected before output changes. Mixed SATA/card layouts retain the
+//! vendor Milan policy: Ethernet PHY descriptors are gated off until the
+//! corresponding MAC-enable/configuration path is supported.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
@@ -117,6 +118,12 @@ impl board::Board for Board {
             fuses.word[1],
             plan.engines.len()
         );
+        if plan.disabled_xgbe != 0 {
+            fstart_log::warn!(
+                "ethanolx: {} xGbE descriptors disabled (vendor Milan policy; MAC init unavailable)",
+                plan.disabled_xgbe
+            );
+        }
         i2c::configure_redrivers(timer, plan.redrivers)?;
         Ok(plan.engines)
     }

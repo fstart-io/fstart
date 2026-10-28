@@ -15,6 +15,14 @@ use fstart_platform_sp3::board::BoardError;
 use pca9535::{Expander, GPIOBank, Pca9535Immediate, Register, StandardExpanderInterface};
 use xca9548a::{SlaveAddr as MuxAddress, Xca9545a};
 
+/// Board card paths, not interchangeable redriver tuning presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedriverMode {
+    Off,
+    Pcie,
+    SataEthernet,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Detected {
     pub board_id: u8,
@@ -73,17 +81,20 @@ pub fn initialize(timer: &dyn Timer, detected: Detected) -> Result<Detected, Boa
 }
 
 /// Card-specific programming follows successful lane-policy validation.
-pub fn configure_redrivers(timer: &dyn Timer, redrivers: [bool; 4]) -> Result<(), BoardError> {
-    if !redrivers.into_iter().any(|enabled| enabled) {
+pub fn configure_redrivers(
+    timer: &dyn Timer,
+    redrivers: [RedriverMode; 4],
+) -> Result<(), BoardError> {
+    if redrivers.into_iter().all(|mode| mode == RedriverMode::Off) {
         return Ok(());
     }
     let mut pcie = controller(0, timer)?;
-    for index in redrivers
+    for (index, mode) in redrivers
         .into_iter()
         .enumerate()
-        .filter_map(|(i, enabled)| enabled.then_some(i))
+        .filter(|(_, mode)| *mode != RedriverMode::Off)
     {
-        tune_redrivers(&mut pcie, index as u8)?;
+        tune_redrivers(&mut pcie, index as u8, mode)?;
     }
     Ok(())
 }
@@ -118,10 +129,16 @@ fn routing_gpio<I: I2c>(bus: &mut I) -> Result<(), BoardError> {
     Ok(())
 }
 
-fn tune_redrivers<I: I2c>(bus: &mut I, group: u8) -> Result<(), BoardError> {
+fn tune_redrivers<I: I2c>(bus: &mut I, group: u8, mode: RedriverMode) -> Result<(), BoardError> {
+    let count = match mode {
+        RedriverMode::Off => return Ok(()),
+        RedriverMode::Pcie => 4,
+        RedriverMode::SataEthernet => 3,
+    };
     let address = MuxAddress::Alternative(false, group & 2 != 0, group & 1 != 0);
     let mut mux = Xca9545a::new(bus, address);
-    for chip in 0x58..=0x5b {
+    for index in 0..count {
+        let chip = 0x58 + index;
         fstart_log::info!(
             "ethanolx: PCIe switch {:#x}, redriver {:#x}",
             0x70 + group,
@@ -129,14 +146,26 @@ fn tune_redrivers<I: I2c>(bus: &mut I, group: u8) -> Result<(), BoardError> {
         );
         mux.select_channels(1)
             .map_err(|error| failed(0, "PCIe switch", error))?;
-        // RXM100CB four-chip PCIe table at 0xffd72994, not the three-chip
-        // SATA/xGbE table. These are the vendor's full register bytes.
-        let programming = Ds125Br401a::new(&mut mux, chip)
-            .configure(Settings {
+        // RXM100CB: four-chip PCIe table ffd72994 versus three-chip
+        // SATA/xGbE table ffd70fd4. Full bytes, including the type-1
+        // undocumented channel writes in OEM helper ffd67971.
+        let settings = if mode == RedriverMode::SataEthernet {
+            Settings {
+                equalization: u8::from(index == 1),
+                output_voltage: if index == 0 { 0 } else { 0xab },
+                deemphasis: 0,
+                channel_override: Some(2),
+            }
+        } else {
+            Settings {
                 equalization: 0,
                 output_voltage: 0,
                 deemphasis: 0x11,
-            })
+                channel_override: None,
+            }
+        };
+        let programming = Ds125Br401a::new(&mut mux, chip)
+            .configure(settings)
             .map_err(|error| failed(0, "PCIe redriver", error));
         // Always attempt deselection, including after a programming failure.
         let deselection = mux
@@ -191,7 +220,57 @@ mod tests {
             Transaction::write(0x58, vec![6, 0x18]).with_error(ErrorKind::Other),
             Transaction::write(0x72, vec![0]),
         ]);
-        assert_eq!(tune_redrivers(&mut bus, 2), Err(BoardError::Device));
+        assert_eq!(
+            tune_redrivers(&mut bus, 2, RedriverMode::Pcie),
+            Err(BoardError::Device)
+        );
+        bus.done();
+    }
+
+    fn sata_transactions() -> Vec<Transaction> {
+        [(0x58, 0, 0), (0x59, 1, 0xab), (0x5a, 0, 0xab)]
+            .into_iter()
+            .flat_map(|(chip, eq, vod)| {
+                core::iter::once(Transaction::write(0x71, vec![1]))
+                    .chain(core::iter::once(Transaction::write(chip, vec![6, 0x18])))
+                    .chain(
+                        [
+                            ([0x0f, 0x16, 0x1d, 0x24, 0x2c, 0x33, 0x3a, 0x41], eq),
+                            ([0x10, 0x17, 0x1e, 0x25, 0x2d, 0x34, 0x3b, 0x42], vod),
+                            ([0x11, 0x18, 0x1f, 0x26, 0x2e, 0x35, 0x3c, 0x43], 0),
+                            ([0x0d, 0x14, 0x1b, 0x22, 0x2a, 0x31, 0x38, 0x3f], 2),
+                        ]
+                        .into_iter()
+                        .flat_map(move |(registers, value)| {
+                            registers.into_iter().map(move |register| {
+                                Transaction::write(chip, vec![register, value])
+                            })
+                        }),
+                    )
+                    .chain(core::iter::once(Transaction::write(0x71, vec![0])))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sata_card_uses_three_vendor_profiles_and_channel_overrides() {
+        let mut bus = Mock::new(&sata_transactions());
+        tune_redrivers(&mut bus, 1, RedriverMode::SataEthernet).unwrap();
+        bus.done();
+    }
+
+    #[test]
+    fn failed_sata_override_still_deselects_the_switch() {
+        let mut expected = sata_transactions();
+        // Switch + enable + 3*8 channel writes precede the first override.
+        expected.truncate(26);
+        expected.push(Transaction::write(0x58, vec![0x0d, 2]).with_error(ErrorKind::Other));
+        expected.push(Transaction::write(0x71, vec![0]));
+        let mut bus = Mock::new(&expected);
+        assert_eq!(
+            tune_redrivers(&mut bus, 1, RedriverMode::SataEthernet),
+            Err(BoardError::Device)
+        );
         bus.done();
     }
 

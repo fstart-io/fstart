@@ -259,6 +259,9 @@ pub fn encode(
                 );
             }
         }
+        // RXM100CB builder ffd265f7..ffd26604 emits the Ethernet header
+        // but skips the PCIe/SATA capabilities and PHY-override paths.
+        EngineKind::Ethernet => e.kind = kind::ETHERNET,
         EngineKind::Sata(s) => {
             e.kind = kind::SATA;
             e.channel_type = s.channel;
@@ -541,6 +544,32 @@ mod tests {
         );
         assert_eq!(m.bdf_num.get(), 0x19, "Milan: devfn");
         assert_eq!(m.as_bytes()[5], 1, "Milan: board GPIO group");
+    }
+
+    #[test]
+    fn ethernet_is_not_a_pcie_port() {
+        let e = Engine::ethernet(0, Lanes::sp3(Group::P0, 4, 1));
+        super::super::lanes::validate(Generation::Milan, &[e]).unwrap();
+        assert!(e.pcie_config().is_none());
+        let fw = encode(
+            Generation::Milan,
+            &e,
+            (4, 4),
+            wire(0x2e, 0x2e, false),
+            &EncodePolicy::default(),
+        );
+        assert_eq!(fw.kind, kind::ETHERNET);
+        assert_eq!((fw.start_lane, fw.end_lane), (0x2e, 0x2e));
+        assert_eq!(fw.groups.get(), 0x101);
+        assert_eq!(
+            (fw.flags, fw.bdf_num.get(), fw.caps.get(), fw.caps_hi.get()),
+            (0, 0, 0, 0)
+        );
+        let wide = Engine::ethernet(0, Lanes::sp3(Group::P0, 4, 2));
+        assert!(matches!(
+            super::super::lanes::validate(Generation::Milan, &[wide]),
+            Err((0, super::super::lanes::LaneError::Width))
+        ));
     }
 
     #[test]

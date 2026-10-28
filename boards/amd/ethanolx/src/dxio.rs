@@ -5,11 +5,14 @@
 
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::hotplug::{Hotplug, HotplugKind};
-use fstart_driver_amd::sp3::dxio::lanes::{Engine, Group, Lanes, PcieEngine, SataEngine, Speed};
+use fstart_driver_amd::sp3::dxio::lanes::{
+    Engine, EngineKind, Group, Lanes, PcieEngine, SataEngine, Speed,
+};
 
-use crate::i2c::Detected;
+use crate::i2c::{Detected, RedriverMode};
 
-// Socket 1 SATA descriptor +0x58: the vendor's terminated PHY parameter list.
+// Mixed-card and socket-1 SATA descriptors +0x58 share this terminated
+// PHY parameter list (ffd70ffc / ffd6fd14 / ffd6bb30).
 const SATA_TUNING: &[(u8, u8)] = &[
     (0xc1, 0x00),
     (0xc2, 0x0e),
@@ -31,11 +34,6 @@ const SATA_TUNING: &[(u8, u8)] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Board(u8),
-    /// These selectors request SATA + xGbE, not PCIe bifurcation.
-    Combination {
-        group: Group,
-        selector: u8,
-    },
     Capacity,
 }
 
@@ -43,7 +41,9 @@ pub enum Error {
 pub struct Plan {
     pub engines: heapless::Vec<Engine<'static>, MAX_ENGINES>,
     /// Socket-0 P0..P3 redriver banks behind switches 0x70..0x73.
-    pub redrivers: [bool; 4],
+    pub redrivers: [RedriverMode; 4],
+    /// Requested Ethernet descriptors omitted by the vendor's Milan policy.
+    pub disabled_xgbe: u8,
 }
 
 fn group_ports(
@@ -51,19 +51,37 @@ fn group_ports(
     selector: u8,
     device: u8,
     slot: u16,
-) -> Result<heapless::Vec<Engine<'static>, 4>, Error> {
-    let ordinary = selector & 8 == 0;
+) -> heapless::Vec<Engine<'static>, 6> {
+    if matches!(selector, 8 | 9) && matches!(group, Group::P0 | Group::P1) {
+        // The OEM supplies flag 0x20 only for P0/P1. There, ffd67b60
+        // selects SATA 0..3, Ethernet 4..7 and (selector 8) upper PCIe x8.
+        let sata = Engine::sata(0, Lanes::sp3(group, 0, 4), SataEngine::new(0)).tuning(SATA_TUNING);
+        let ethernet = (4..8).map(|lane| Engine::ethernet(0, Lanes::sp3(group, lane, 1)));
+        let upper = (selector == 8).then(|| {
+            Engine::pcie(
+                0,
+                Lanes::sp3(group, 8, 8),
+                PcieEngine::new().turn_off_unused(),
+            )
+        });
+        return core::iter::once(sata)
+            .chain(ethernet)
+            .chain(upper)
+            .collect();
+    }
+    // Without flag 0x20, selectors 8/9 take the ordinary reversed-x16
+    // fallback, not a mixed layout on P2/P3.
+    let ordinary = selector & 8 == 0 || matches!(selector, 8 | 9);
     let (width, reverse, hotplug) = if ordinary {
         (16, true, false)
     } else {
         match selector & 7 {
             2 | 4 => (4, false, true),
             3 | 5 => (8, false, false),
-            6 | 7 => (16, false, false),
-            _ => return Err(Error::Combination { group, selector }),
+            _ => (16, false, false),
         }
     };
-    Ok((0u8..16)
+    (0u8..16)
         .step_by(usize::from(width))
         .map(|first| {
             let lanes = Lanes::sp3(group, first, width);
@@ -78,7 +96,7 @@ fn group_ports(
             };
             Engine::pcie(0, lanes, p)
         })
-        .collect())
+        .collect()
 }
 
 pub fn plan(detected: Detected, limited_io: bool) -> Result<Plan, Error> {
@@ -88,7 +106,8 @@ pub fn plan(detected: Detected, limited_io: bool) -> Result<Plan, Error> {
         return Err(Error::Board(detected.board_id));
     }
     let mut engines = heapless::Vec::new();
-    let mut redrivers = [false; 4];
+    let mut redrivers = [RedriverMode::Off; 4];
+    let mut disabled_xgbe = 0;
     // Group, input-word shift, unbifurcated device number, physical slot.
     let groups = [
         (Group::P0, 0, 3, 1),
@@ -101,10 +120,21 @@ pub fn plan(detected: Detected, limited_io: bool) -> Result<Plan, Error> {
             continue;
         }
         let selector = ((detected.straps >> shift) & 0xf) as u8;
-        redrivers[i] = selector == 0xa;
-        engines
-            .extend_from_slice(&group_ports(group, selector, device, slot)?)
-            .map_err(|_| Error::Capacity)?;
+        redrivers[i] = match selector {
+            8 if matches!(group, Group::P0 | Group::P1) => RedriverMode::SataEthernet,
+            0xa => RedriverMode::Pcie,
+            _ => RedriverMode::Off,
+        };
+        for engine in group_ports(group, selector, device, slot) {
+            // OEM ffd67825 removes Ethernet entries when the xGbE PCDs
+            // 148..14f are false (all false in this Milan image). Do not
+            // enable MACs merely because the card straps request them.
+            if matches!(engine.kind, EngineKind::Ethernet) {
+                disabled_xgbe += 1;
+            } else {
+                engines.push(engine).map_err(|_| Error::Capacity)?;
+            }
+        }
     }
     // The bench BMC's dedicated WAFL link; its devfn is silicon-defined.
     engines
@@ -140,7 +170,11 @@ pub fn plan(detected: Detected, limited_io: bool) -> Result<Plan, Error> {
                 .map_err(|_| Error::Capacity)?;
         }
     }
-    Ok(Plan { engines, redrivers })
+    Ok(Plan {
+        engines,
+        redrivers,
+        disabled_xgbe,
+    })
 }
 
 #[cfg(test)]
@@ -176,7 +210,8 @@ mod tests {
                 .count(),
             4
         );
-        assert_eq!(p.redrivers, [false; 4]);
+        assert_eq!(p.redrivers, [RedriverMode::Off; 4]);
+        assert_eq!(p.disabled_xgbe, 0);
     }
 
     #[test]
@@ -189,12 +224,118 @@ mod tests {
                 },
                 false,
             );
-            if matches!(selector, 8 | 9) {
-                assert!(matches!(result, Err(Error::Combination { .. })));
+            let p = result.unwrap();
+            validate(Generation::Milan, &p.engines).unwrap();
+            let profile = match selector {
+                8 => RedriverMode::SataEthernet,
+                0xa => RedriverMode::Pcie,
+                _ => RedriverMode::Off,
+            };
+            let expected = if selector == 8 {
+                [
+                    RedriverMode::SataEthernet,
+                    RedriverMode::SataEthernet,
+                    RedriverMode::Off,
+                    RedriverMode::Off,
+                ]
             } else {
-                let p = result.unwrap();
+                [profile; 4]
+            };
+            assert_eq!(p.redrivers, expected);
+            assert_eq!(
+                p.disabled_xgbe,
+                if matches!(selector, 8 | 9) { 8 } else { 0 }
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_cards_keep_sata_ethernet_and_pcie_distinct() {
+        for (group, shift) in [(Group::P0, 0), (Group::P1, 8)] {
+            for selector in [8, 9] {
+                let raw = group_ports(group, selector, 3, 1);
+                validate(Generation::Milan, &raw).unwrap();
+                assert!(matches!(raw[0].kind, EngineKind::Sata(_)));
+                assert_eq!((raw[0].lanes.first(), raw[0].lanes.count()), (0, 4));
+                assert_eq!(raw[0].tuning, SATA_TUNING);
+                for absolute in [false, true] {
+                    let mut out = [0; 1024];
+                    fstart_driver_amd::sp3::dxio::engine::encode_tuning(
+                        raw[0].tuning,
+                        place(Generation::Milan, &raw[0]).unwrap().wire,
+                        absolute,
+                        &mut out,
+                    )
+                    .unwrap();
+                }
+                for (index, eth) in raw[1..5].iter().enumerate() {
+                    assert_eq!(eth.kind, EngineKind::Ethernet);
+                    assert_eq!((eth.lanes.first(), eth.lanes.count()), (4 + index as u8, 1));
+                    assert!(eth.pcie_config().is_none());
+                }
+                if selector == 8 {
+                    assert_eq!(raw.len(), 6);
+                    assert!(raw[5].pcie_config().is_some());
+                    assert_eq!((raw[5].lanes.first(), raw[5].lanes.count()), (8, 8));
+                } else {
+                    assert_eq!(raw.len(), 5);
+                }
+                let p = plan(
+                    Detected {
+                        board_id: 0x30,
+                        straps: (selector as u16) << shift,
+                    },
+                    false,
+                )
+                .unwrap();
                 validate(Generation::Milan, &p.engines).unwrap();
-                assert_eq!(p.redrivers, [selector == 0xa; 4]);
+                assert_eq!(p.disabled_xgbe, 4);
+                let bank = if group == Group::P0 { 0 } else { 1 };
+                assert_eq!(
+                    p.redrivers,
+                    core::array::from_fn(|i| {
+                        if selector == 8 && i == bank {
+                            RedriverMode::SataEthernet
+                        } else {
+                            RedriverMode::Off
+                        }
+                    })
+                );
+                assert!(p.engines.iter().any(|e| e.socket == 0
+                    && matches!(e.kind, EngineKind::Sata(_))
+                    && e.lanes == Lanes::sp3(group, 0, 4)));
+                assert!(!p.engines.iter().any(|e| e.kind == EngineKind::Ethernet));
+                assert_eq!(
+                    p.engines
+                        .iter()
+                        .filter(|e| e.socket == 0 && matches!(e.kind, EngineKind::Sata(_)))
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_selectors_on_p2_p3_use_the_vendor_x16_fallback() {
+        for (group, shift) in [(Group::P2, 12), (Group::P3, 4)] {
+            for selector in [8, 9] {
+                let raw = group_ports(group, selector, 3, 1);
+                assert_eq!(raw.len(), 1);
+                assert!(raw[0].pcie_config().is_some());
+                assert_eq!(raw[0].lanes.count(), 16);
+                assert!(raw[0].lanes.is_reversed());
+                let p = plan(
+                    Detected {
+                        board_id: 0x30,
+                        straps: (selector as u16) << shift,
+                    },
+                    false,
+                )
+                .unwrap();
+                assert_eq!(p.disabled_xgbe, 0);
+                assert_eq!(p.redrivers, [RedriverMode::Off; 4]);
+                validate(Generation::Milan, &p.engines).unwrap();
             }
         }
     }

@@ -409,6 +409,8 @@ impl SataEngine {
 pub enum EngineKind {
     Pcie(PcieEngine),
     Sata(SataEngine),
+    /// Ethernet SerDes engine (wire type 0x10). MAC setup is separate.
+    Ethernet,
 }
 
 /// One board engine.
@@ -450,6 +452,17 @@ impl<'a> Engine<'a> {
         }
     }
 
+    pub const fn ethernet(socket: u8, lanes: Lanes) -> Self {
+        Self {
+            socket,
+            lanes,
+            firmware_hotplug: false,
+            gpio_group: 1,
+            kind: EngineKind::Ethernet,
+            tuning: &[],
+        }
+    }
+
     pub const fn tuning(self, tuning: &'a [(u8, u8)]) -> Self {
         Self { tuning, ..self }
     }
@@ -457,7 +470,7 @@ impl<'a> Engine<'a> {
     pub fn pcie_config(&self) -> Option<&PcieEngine> {
         match &self.kind {
             EngineKind::Pcie(p) => Some(p),
-            EngineKind::Sata(_) => None,
+            EngineKind::Sata(_) | EngineKind::Ethernet => None,
         }
     }
 
@@ -467,7 +480,7 @@ impl<'a> Engine<'a> {
                 kind: EngineKind::Pcie(f(p)),
                 ..self
             },
-            EngineKind::Sata(_) => self,
+            EngineKind::Sata(_) | EngineKind::Ethernet => self,
         }
     }
 
@@ -536,7 +549,8 @@ pub enum LaneError {
     Range,
     /// Crosses a PCIe core.
     CrossesCore,
-    /// PCIe width not 1/2/4/8/16 (WAFL: 1/2), SATA wider than 8.
+    /// PCIe width not 1/2/4/8/16 (WAFL: 1/2), SATA wider than 8,
+    /// or an Ethernet engine wider than one lane.
     Width,
     /// PCIe link not aligned to its width (inferred hardware rule).
     Alignment,
@@ -550,6 +564,8 @@ pub enum LaneError {
     DuplicateDevfn(usize),
     /// SATA on WAFL, or a channel type out of range.
     Sata,
+    /// Ethernet on WAFL or with unsupported per-engine PHY overrides.
+    Ethernet,
     /// Gen4 on Naples, or an EQ/target-speed field out of range.
     Field,
     /// More engines on one DXIO instance than the heap takes.
@@ -676,6 +692,14 @@ fn check_engine(generation: Generation, e: &Engine<'_>) -> Result<(), LaneError>
                 && !(generation == Generation::Naples && pcie.max_speed > Speed::Gen3);
             if !fields_ok {
                 return Err(LaneError::Field);
+            }
+        }
+        EngineKind::Ethernet => {
+            if wafl || !e.tuning.is_empty() {
+                return Err(LaneError::Ethernet);
+            }
+            if count != 1 {
+                return Err(LaneError::Width);
             }
         }
         EngineKind::Sata(s) => {

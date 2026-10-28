@@ -103,8 +103,11 @@ The socket-0 strap nibbles select P0/P1/P2/P3 at shifts `0/8/12/4`:
 - Bit 3 clear: reversed x16, retaining the vendor physical-slot mapping.
 - `0xa`/`0xc`: quad x4, PCIe-native Enterprise SSD hotplug.
 - `0xb`/`0xd`: x8+x8; `0xe`/`0xf`: forward x16 fallback.
-- `0x8`/`0x9`: unsupported SATA/xGbE combination cards; halt before lane
-  or card-specific programming, not reinterpretation as PCIe.
+- P0/P1 `0x8`: SATA on lanes 0–3, four Ethernet descriptors on 4–7,
+  and an upper x8 PCIe link on 8–15. `0x9` omits the upper PCIe link.
+  Both carry the recovered SATA PHY parameters also used by socket 1.
+- P2/P3 `0x8`/`0x9`: ordinary reversed x16 fallback. The OEM enables
+  mixed cards with flag `0x20` only on P0/P1; do not repurpose P2/P3.
 
 The existing NBIO fuse reader supplies the vendor reduced-I/O condition
 `(fuse1 & 0x5380) == 0x5380`, omitting socket-0 P1/socket-1 P0 when set.
@@ -112,13 +115,28 @@ This is not a socket-count test. Selector `0xa` programs four DS125BR401A
 redrivers through the matching PCA9545A mux (`0x70`–`0x73`, channel mask 1),
 using the board's recovered tuning bytes. The mux is deselected even after
 a programming error. Selector `0xc` needs no redriver programming.
+P0/P1 selector `0x8` instead uses the vendor three-chip SATA/xGbE profile
+at `0x58`–`0x5a`, including its extra channel-register writes. Those
+registers (`0x0d`, `0x14`, …) are undocumented in SNLS466A; their full bytes
+are preserved without guessing RXDET semantics from adjacent registers.
+Selector `0x9` does not run a redriver sequence.
+
+**Ethernet limitation:** RXM100CB's eight Milan xGbE enable PCDs
+(`0x148`–`0x14f`) default to false. Native policy preserves that gate and
+warns if a mixed card requests Ethernet: the SATA/PCIe portions are still
+configured, but Ethernet descriptors are omitted before DXIO. The shared
+encoder now models Ethernet SerDes as type `0x10`, not PCIe, with separate
+lane validation. This is not MAC/MDIO/PHY-link initialization: an enabled
+Milan MAC configuration path has not been recovered or hardware-tested.
+No factory MAC addresses are read or fabricated while these ports are off.
+Mixed card routing and active SATA/redriver links are host-tested only;
+the current bench straps `0x0000` do not exercise these paths.
 
 Native hotplug retains empty bridges and advertises PCIe slots without
 inventing physical slot numbers or external GPIO routing. The recovered
 NVMe descriptors set LinkHotplug to 5 but leave the independent firmware
 Hotpluggable header flag clear; the engine model preserves that distinction.
-Only explicitly
-wired server-I2C hotplug entries generate SMU signal tables. Host tests cover
+Only explicitly wired server-I2C hotplug entries generate SMU signal tables. Host tests cover
 selector decoding, reduced-I/O policy, I2C preservation/error cleanup and
 native-slot advertisement. Controller registration is verified, not physical
 hot-insert/remove operation or signal integrity.
