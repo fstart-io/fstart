@@ -105,8 +105,8 @@ TP3 (`ready_to_boot`), after enumeration:
   `pci1002,15dd.rom`, selected by the silicon identity.
 - Read the ROM with `ffs_context::read_verified_asset`. Only an authenticated
   ROM is run.
-- `fstart_driver_vbios::initialize` runs the option ROM emulator (x86emu, with
-  bounded RAM and a deadline) and selects a VBE linear-framebuffer mode. The
+- `fstart_driver_vbios::initialize` runs the native Rust rsemu interpreter,
+  with bounded RAM and a deadline, and selects a VBE linear-framebuffer mode. The
   result is `FramebufferInfo`, which goes to the payload.
 - `Board::ready_to_boot`.
 
