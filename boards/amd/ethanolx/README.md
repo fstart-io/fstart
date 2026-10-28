@@ -40,13 +40,20 @@ The current SP3 MP implementation also requires xAPIC: configurations above
 
 A separate RAM-only Linux AHCI diagnostic initializes four controllers and
 probes 17 retained ports, including all eight fixed socket-1 SATA ports.
-All links were down and no disk was detected. The bench has **no storage
-media installed** (user-confirmed), so this is expected; an end-to-end SATA
+All links were down and no disk was detected. No SATA media was installed
+for that test (user-confirmed), so this is expected; an end-to-end SATA
 read remains **blocked**, not passed. The diagnostic sets discovered disks
 read-only, mounts no disk filesystem, and shuts down through ACPI. It found no host
 PCI network controller. Further storage validation requires a known powered
 SATA drive and confirmed cabling; integrated xGbE is unsupported on Milan
 (see below), not a missing MAC driver awaiting enablement.
+
+A RAM-only Linux USB diagnostic binds four xHCI controllers, enumerates an
+attached USB 3 storage device at 5 Gbit/s, marks it read-only, and passes a
+bounded 1 MiB read to `/dev/null`. No USB filesystem was mounted and no
+USB EFI application or installed OS was booted. SP3's resident loader
+includes LZ4 support for kernels compressed by the image builder; this
+path is hardware-verified as part of the USB diagnostic.
 
 ## Build and flash banks
 
