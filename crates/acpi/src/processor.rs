@@ -12,6 +12,23 @@ use acpi_tables::gas::GAS;
 use alloc::vec::Vec;
 
 use crate::AmlError;
+use zerocopy::IntoBytes;
+
+fn register_descriptor(bytes: &[u8], sink: &mut dyn AmlSink) {
+    debug_assert_eq!(bytes.len(), 12);
+    sink.byte(0x82);
+    sink.word(12);
+    for byte in bytes {
+        sink.byte(*byte);
+    }
+}
+
+struct CpcRegisterDescriptor([u8; 12]);
+impl Aml for CpcRegisterDescriptor {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        register_descriptor(&self.0, sink);
+    }
+}
 
 /// Generic Register descriptor (ACPI 6.5 §6.4.3.7). `acpi_tables` 0.2's
 /// `aml::Register` writes length 0x12 instead of 12, which OSes reject.
@@ -20,9 +37,7 @@ pub struct RegisterDescriptor(pub GAS);
 
 impl Aml for RegisterDescriptor {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        sink.byte(0x82);
-        sink.word(12);
-        self.0.to_aml_bytes(sink);
+        register_descriptor(self.0.as_bytes(), sink);
     }
 }
 
@@ -156,6 +171,15 @@ pub fn cst_aml(states: &[PowerState]) -> Vec<u8> {
 #[derive(Debug, Clone, Copy)]
 pub enum CpcEntry {
     Register(GAS),
+    /// For PCC, the GAS access-size byte carries the PCCT subspace ID,
+    /// not a memory access width. Keep it as u8: valid IDs include values
+    /// outside the ordinary GAS AccessSize enumeration (ACPI 6.5 §8.4.6.1).
+    PccRegister {
+        bit_width: u8,
+        bit_offset: u8,
+        subspace_id: u8,
+        address: u64,
+    },
     Integer(u32),
 }
 
@@ -169,11 +193,35 @@ impl CpcEntry {
 /// `Name(_CPC, Package { NumEntries, Revision, entries... })`; NumEntries
 /// counts itself and the revision.
 pub fn cpc_aml(revision: u8, entries: &[CpcEntry]) -> Vec<u8> {
-    let registers: Vec<RegisterDescriptor> = entries
+    let registers: Vec<CpcRegisterDescriptor> = entries
         .iter()
-        .map(|e| match e {
-            CpcEntry::Register(g) => RegisterDescriptor(*g),
-            CpcEntry::Integer(_) => RegisterDescriptor(GAS::default()),
+        .map(|e| {
+            use acpi_tables::gas::{AccessSize, AddressSpace};
+            let (gas, subspace) = match e {
+                CpcEntry::Register(g) => (*g, None),
+                CpcEntry::PccRegister {
+                    bit_width,
+                    bit_offset,
+                    subspace_id,
+                    address,
+                } => (
+                    GAS::new(
+                        AddressSpace::PlatformCommunicationsChannel,
+                        *bit_width,
+                        *bit_offset,
+                        AccessSize::Undefined,
+                        *address,
+                    ),
+                    Some(*subspace_id),
+                ),
+                CpcEntry::Integer(_) => (GAS::default(), None),
+            };
+            let mut bytes = [0; 12];
+            bytes.copy_from_slice(gas.as_bytes());
+            if let Some(id) = subspace {
+                bytes[3] = id;
+            }
+            CpcRegisterDescriptor(bytes)
         })
         .collect();
     let templates: Vec<ResourceTemplate> = registers
@@ -184,7 +232,7 @@ pub fn cpc_aml(revision: u8, entries: &[CpcEntry]) -> Vec<u8> {
     cpc.add_element(&(entries.len() as u32 + 2));
     cpc.add_element(&revision);
     entries.iter().zip(&templates).for_each(|(e, t)| match e {
-        CpcEntry::Register(_) => cpc.add_element(t),
+        CpcEntry::Register(_) | CpcEntry::PccRegister { .. } => cpc.add_element(t),
         CpcEntry::Integer(v) => cpc.add_element(v),
     });
     crate::serialize(&Name::new("_CPC".into(), &cpc))
@@ -220,6 +268,22 @@ mod tests {
             18
         );
         assert!(b.windows(3).any(|w| w == [0x0b, 0xdc, 0x05]), "1500");
+    }
+
+    #[test]
+    fn pcc_subspace_is_not_limited_to_gas_access_widths() {
+        for id in [0, 1, 17, 255] {
+            let b = cpc_aml(
+                3,
+                &[CpcEntry::PccRegister {
+                    bit_width: 32,
+                    bit_offset: 0,
+                    subspace_id: id,
+                    address: 0x204,
+                }],
+            );
+            assert!(b.windows(7).any(|w| w == [0x82, 12, 0, 0x0a, 32, 0, id]));
+        }
     }
 
     #[test]

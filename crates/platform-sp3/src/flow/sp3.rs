@@ -546,72 +546,96 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
 }
 
 /// CPPC as AmdAcpiDxe and the CCX PCCT service set it up after CCX done:
-/// ask socket 0's SMU (`CppcGetInfo`); when enabled, a 64 KiB region
-/// uncached on every thread by a free variable MTRR, the PCC signature,
-/// `CppcSetTable` and the two `_CPC` frequencies.
-fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Option<super::Cppc> {
+/// query each socket's SMU (`CppcGetInfo`); initialize one 64 KiB PCC
+/// region per enabled controller with its own signature, doorbell and local
+/// PPTable slot map. One aligned MTRR extent makes every region uncached
+/// on all threads. A failed controller is not advertised.
+fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Vec<super::Cppc> {
     use fstart_arch::x86::mtrr;
-    use fstart_driver_amd::smu::v11::cppc::{REGION_SIZE, SIGNATURE};
+    use fstart_driver_amd::smu::v11::cppc::{REGION_SIZE, signature};
 
     let generation = ctx.generation;
     if !FeaturePolicy::default().cppc {
-        return None;
+        return Vec::new();
     }
-    let smu = si.smus.first()?;
-    let info = v11::cppc_info(smu).ok()?;
-    if !info.enabled() {
-        fstart_log::info!(
-            "cppc: off (answer {:#x})",
-            info.supported << 2 | u32::from(info.revision)
-        );
-        return None;
+    // A socket's SMU serves only that socket's PPTable CPPC map. Never
+    // append another socket's CPUs to a region initialized only by SMU0.
+    let controllers: Vec<_> = si
+        .smus
+        .iter()
+        .enumerate()
+        .filter_map(|(socket, smu)| {
+            let info = v11::cppc_info(smu).ok()?;
+            if !info.enabled() {
+                return None;
+            }
+            let map = si.maps.get(socket)?;
+            let bar = si
+                .nbios
+                .iter()
+                .zip(&ctx.topology.root_bridges)
+                .filter(|(_, rb)| usize::from(rb.socket) == socket)
+                .find_map(|(nbio, _)| nbio.smu_bar())?;
+            Some((socket as u8, smu, map, bar, info))
+        })
+        .collect();
+    if controllers.is_empty() {
+        return Vec::new();
     }
-    let smu_bar = si.nbios.iter().find_map(|n| n.smu_bar())?;
-    // SAFETY (MTRR reads/writes): BSP and parked APs run nothing else; the
-    // region is fresh heap inside the reserved early region.
+    // Cover adjacent per-controller regions with one power-of-two MTRR,
+    // rather than consuming a variable MTRR for every socket.
+    let size = REGION_SIZE * controllers.len().next_power_of_two() as u64;
     let index = (0..unsafe { mtrr::variable_count() })
         .find(|&i| !mtrr::is_valid_mask(unsafe { mtrr::read_variable(i) }.1));
     let Some(index) = index else {
         fstart_log::warn!("cppc: no free variable MTRR");
-        return None;
+        return Vec::new();
     };
-    let region = dma_alloc(REGION_SIZE as usize, REGION_SIZE as usize);
+    let region = dma_alloc(size as usize, size as usize);
     let base = region.as_ptr() as u64;
+    // SAFETY: all CPUs are firmware-owned and parked; this fresh allocation
+    // is reserved through handoff and aligned for the single MTRR extent.
     let uncached = || unsafe {
         fstart_arch::x86::writeback_invalidate_caches();
         mtrr::disable_cache();
-        mtrr::set_variable(index, base, REGION_SIZE, 0);
+        mtrr::set_variable(index, base, size, 0);
         mtrr::enable_cache();
     };
     mp.scope(|s| s.broadcast(&uncached));
     uncached();
-    // SAFETY: the region is ours and now uncached.
-    unsafe { core::ptr::write_volatile(base as *mut u32, SIGNATURE) };
-    v11::cppc_set_table(smu, base).ok()?;
-    let (lowest_mhz, nominal_mhz) = v11::cppc_frequencies(smu, generation).unwrap_or((0, 0));
-    let slots = si
-        .maps
-        .iter()
-        .enumerate()
-        .flat_map(|(s, map)| apic_ids(generation, s as u8, map).map(u32::from))
-        .collect();
-    fstart_log::info!(
-        "cppc: PCC {:#x} MTRR {} revision {} mask {:#x} {}-{} MHz",
-        base,
-        index,
-        info.revision,
-        info.supported,
-        lowest_mhz,
-        nominal_mhz
-    );
-    Some(super::Cppc {
-        base,
-        smu_bar,
-        info,
-        lowest_mhz,
-        nominal_mhz,
-        slots,
-    })
+    let mut channels = Vec::new();
+    for (physical, (socket, smu, map, smu_bar, info)) in controllers.into_iter().enumerate() {
+        let base = base + physical as u64 * REGION_SIZE;
+        let subspace = channels.len() as u8;
+        // SAFETY: the header belongs to this fresh, uncached PCC region.
+        unsafe { fstart_core::mmio::write32(base as *mut u32, signature(subspace)) };
+        if v11::cppc_set_table(smu, base).is_err() {
+            fstart_log::warn!("cppc: socket {} table initialization failed", socket);
+            continue;
+        }
+        let (lowest_mhz, nominal_mhz) = v11::cppc_frequencies(smu, generation).unwrap_or((0, 0));
+        let slots = apic_ids(generation, socket, map).map(u32::from).collect();
+        fstart_log::info!(
+            "cppc: socket {} subspace {} PCC {:#x} MTRR {} revision {} mask {:#x} {}-{} MHz",
+            socket,
+            subspace,
+            base,
+            index,
+            info.revision,
+            info.supported,
+            lowest_mhz,
+            nominal_mhz
+        );
+        channels.push(super::Cppc {
+            base,
+            smu_bar,
+            info,
+            lowest_mhz,
+            nominal_mhz,
+            slots,
+        });
+    }
+    channels
 }
 
 /// PCI enumeration prerequisites (NBIO_SMU §3.5 step 6): NBIO IOAPIC BAR

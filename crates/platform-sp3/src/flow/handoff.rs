@@ -276,6 +276,18 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
     };
     // SAFETY: the HPET general capabilities register, read only.
     let hpet_block_id = unsafe { fstart_core::mmio::read32(0xfed0_0000 as *const u32) };
+    let cppc: Vec<_> = ctx
+        .cppc
+        .iter()
+        .map(|c| acpi::CppcAcpi {
+            info: c.info,
+            base: c.base,
+            smu_bar: c.smu_bar,
+            lowest_mhz: c.lowest_mhz,
+            nominal_mhz: c.nominal_mhz,
+            slots: &c.slots,
+        })
+        .collect();
     let inputs = Inputs {
         generation: ctx.generation,
         cpus: &cpus,
@@ -328,14 +340,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             })
             .flatten(),
         bmc_sx_notify: B::BMC_SX_NOTIFY.map(|b| b.sw_smi_base),
-        cppc: ctx.cppc.as_ref().map(|c| acpi::CppcAcpi {
-            info: c.info,
-            base: c.base,
-            smu_bar: c.smu_bar,
-            lowest_mhz: c.lowest_mhz,
-            nominal_mhz: c.nominal_mhz,
-            slots: &c.slots,
-        }),
+        cppc: &cppc,
         board: board_acpi,
     };
     if inputs.einj {

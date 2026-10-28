@@ -134,7 +134,7 @@ pub struct Inputs<'a> {
     /// The discrete TPM found by the probe ([`Board::discrete_tpm`]).
     pub tpm: Option<fstart_acpi::devices::tpm::TpmFamily>,
     /// SMU-served CPPC: `_CPC` per processor and the PCCT.
-    pub cppc: Option<CppcAcpi<'a>>,
+    pub cppc: &'a [CppcAcpi<'a>],
     pub board: Board<'a>,
 }
 
@@ -177,7 +177,18 @@ impl Tables {
 
 /// Build every SP3 table from `inputs`.
 pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
-    if inputs.cpus.is_empty() {
+    if inputs.cpus.is_empty()
+        || inputs.cppc.len() > 256
+        || inputs.cppc.iter().any(|c| c.slots.len() > 256)
+        || inputs.cpus.iter().any(|cpu| {
+            inputs
+                .cppc
+                .iter()
+                .filter(|c| c.slots.contains(&cpu.apic_id))
+                .count()
+                > 1
+        })
+    {
         return Err(AmlError::InvalidOperand);
     }
     let windows = fixed::gsi_windows(inputs.fch_ioapic_id, inputs.ioapics);
@@ -210,11 +221,14 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
         .chain(ivrs::ivrs(inputs.iommus, &windows))
         .chain(inputs.board.ipmi.map(|k| k.spmi()))
         .chain((inputs.einj && inputs.acpi_smi.is_some()).then(einj::table))
-        .chain(
-            inputs
+        .chain((!inputs.cppc.is_empty()).then(|| {
+            let subspaces: Vec<_> = inputs
                 .cppc
-                .map(|c| fstart_acpi::pcct::build_pcct(&[cppc::pcct_subspace(c.base, c.smu_bar)])),
-        )
+                .iter()
+                .map(|c| cppc::pcct_subspace(c.base, c.smu_bar))
+                .collect();
+            fstart_acpi::pcct::build_pcct(&subspaces)
+        }))
         .chain(
             inputs
                 .tpm

@@ -108,7 +108,7 @@ pub(crate) struct Cppc {
     pub info: fstart_driver_amd::smu::v11::CppcInfo,
     pub lowest_mhz: u32,
     pub nominal_mhz: u32,
-    /// APIC ID of each PCC slot (the PPTable CPPC map, sockets in order).
+    /// APIC ID of each local PCC slot (this socket's PPTable CPPC map).
     pub slots: Vec<u32>,
 }
 
@@ -269,7 +269,7 @@ pub(crate) struct Ctx {
     /// APIC IDs of every enabled thread, BSP first (MADT order).
     pub apic_ids: Vec<u32>,
     /// CPPC through the SMU, when the SMU reports it enabled.
-    pub cppc: Option<Cppc>,
+    pub cppc: Vec<Cppc>,
     pub smm: Option<crate::smm::SmmConfig>,
     pub rsdp: Option<u64>,
     pub smbios: Option<u64>,
@@ -370,7 +370,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
         phys_addr_bits: 0,
         psp_bar: 0,
         apic_ids: Vec::new(),
-        cppc: None,
+        cppc: Vec::new(),
         smm: None,
         rsdp: None,
         smbios: None,
