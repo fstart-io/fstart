@@ -29,6 +29,19 @@ pub fn msr() -> NativeMsr {
 /// Microsecond timer on the TSC.
 pub type Tsc = fstart_driver_amd::ccx::tsc::Tsc;
 
+/// SMU message timing on SP3: 10-us polls, each wait bounded by 1 s
+/// unless a step needs longer.
+#[allow(
+    dead_code,
+    reason = "the boot flow and the SMM handler, not the host build"
+)]
+pub(crate) const SMU_POLL_US: u32 = 10;
+#[allow(
+    dead_code,
+    reason = "the boot flow and the SMM handler, not the host build"
+)]
+pub(crate) const SMU_TIMEOUT_US: u32 = 1_000_000;
+
 /// The TSC, at 1 GHz if its P-state is disabled.
 pub fn tsc() -> Tsc {
     const GHZ: NonZeroU32 = NonZeroU32::new(1000).unwrap();

@@ -63,8 +63,8 @@ mod zeppelin {
         let hw = Hw::new(
             &[0, 0x40],
             smu::MAILBOX.arguments.address(),
-            smu::DXIO_SERVICE,
-            &[(smu::GET_VERSION, 7)],
+            smu::msg::DXIO,
+            &[(smu::msg::GET_VERSION, 7)],
         );
         let df = |node: u8, function| PciAddress::new(0, 0, 0x18 + node, function);
         hw.set_config(df(0, 1), 0x204, 2);
@@ -181,7 +181,7 @@ mod zeppelin {
         assert_eq!(threads, 20);
         unsafe { threads::launch(&dies, Policy::DEFAULT, threads - 1, &mut delay) }.unwrap();
         smu::aps_ready(&dies, &mut delay).unwrap();
-        smu::ccx_done(&dies, &mut delay).unwrap();
+        smu::ccx_done_all(&dies, &mut delay).unwrap();
 
         // ReadyToBoot
         taishan::multi::late(&dies, |die| {

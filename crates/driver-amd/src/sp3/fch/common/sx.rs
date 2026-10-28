@@ -9,7 +9,7 @@ use super::super::acpimmio::{
 };
 use super::super::smi::{self, CONTROL0, source};
 use super::super::{FchHw, Window, irq, update};
-use crate::sp3::smu::{SmuError, SmuMessages};
+use crate::smu::{Error as SmuError, SmuMessages};
 use crate::sp3::soc::Generation;
 
 /// FCH IOAPIC (index/data/pin assertion at `FEC0_0000h` + 0/10h/20h).

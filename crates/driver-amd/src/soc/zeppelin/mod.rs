@@ -23,7 +23,7 @@ impl Soc for Zeppelin {
     /// Two dies on SP4, one on SP4r2.
     const MAX_DIES: usize = 2;
     const SMU: crate::smu::Mailbox = crate::smu::v9::MAILBOX;
-    const DXIO_SERVICE: u32 = crate::smu::v9::DXIO_SERVICE;
+    const DXIO_SERVICE: u32 = crate::smu::v9::msg::DXIO;
     /// GPIO bank 0: 145 pins, but the vendor board tables also use 149-152. The
     /// Zeppelin IOMUX assignments aren't known, so pads name their functions
     /// by number.

@@ -265,6 +265,7 @@ mod tests {
             message: SmnReg::new(0x03b1_0528),
             response: SmnReg::new(0x03b1_0564),
             arguments: SmnReg::new(0x03b1_0998),
+            wait_before: true,
         };
         const DXIO_SERVICE: u32 = 0x0a;
         const GPIO_BANK: &'static Bank = &Bank {

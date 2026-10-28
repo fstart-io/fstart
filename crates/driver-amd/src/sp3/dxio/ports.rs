@@ -20,8 +20,8 @@ use super::hotplug::HotplugKind;
 use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine};
 use super::{Dxio, DxioError, Hooks, PcieReset, UnitView, op, prop};
 use crate::smn::{Smn, SmnAddr};
+use crate::smu::SmuMessages;
 use crate::sp3::nbio::{Nbio, NbioReg, nbif};
-use crate::sp3::smu::SmuMessages;
 use crate::sp3::soc::Generation;
 
 register_bitfields![u32,
@@ -935,7 +935,7 @@ impl<P: ConfigRegionAccess + Clone, R: PcieReset> Hooks for PortSetup<'_, '_, P,
         Ok(())
     }
 
-    fn perst(&mut self, unit: &UnitView<'_>, _reply: &[u32; crate::sp3::smu::SMU_ARGS]) {
+    fn perst(&mut self, unit: &UnitView<'_>, _reply: &[u32; crate::smu::ARGUMENT_COUNT]) {
         self.reset.release(unit.socket, unit.die);
     }
 

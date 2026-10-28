@@ -34,7 +34,7 @@ pub struct Policy {
     pub nbio: NbioPolicy,
     /// SMU PPTable inputs (Rome/Milan; Naples has no PPTable).
     #[cfg(any(feature = "rome", feature = "milan"))]
-    pub power: fstart_driver_amd::sp3::smu::v11::pptable::PowerPolicy,
+    pub power: fstart_driver_amd::smu::v11::pptable::PowerPolicy,
     pub ccx: ccx::Policy,
     /// FCH env: power-failure state after AC loss.
     pub fch_env: EnvPolicy,

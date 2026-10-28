@@ -3,8 +3,8 @@
 //! socket's SMU.
 
 use super::super::{FchHw, hide_nbif_function, update};
+use crate::smu::{Error as SmuError, SmuMessages};
 use crate::sp3::nbio::nbif::func_strap0;
-use crate::sp3::smu::{SmuError, SmuMessages};
 use crate::sp3::soc::Generation;
 
 /// SMU V11 messages (`smu::v11::msg`).

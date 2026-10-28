@@ -5,7 +5,7 @@
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
-use crate::sp3::smu::{SMU_ARGS, SmuMessages};
+use crate::smu::{ARGUMENT_COUNT, SmuMessages};
 use crate::sp3::soc::Generation;
 
 /// First of the six name-string MSRs.
@@ -34,7 +34,7 @@ pub fn read<M: SmuMessages + ?Sized>(generation: Generation, smu: &M) -> Name {
         .iter_mut()
         .enumerate()
         .all(|(i, chunk)| {
-            let mut args = [0; SMU_ARGS];
+            let mut args = [0; ARGUMENT_COUNT];
             args[0] = i as u32;
             let sent = smu.send(message(generation), &mut args).is_ok();
             *chunk = args[0].to_le_bytes();
@@ -60,12 +60,12 @@ pub fn write<M: MsrAccess + ?Sized>(cpu: &M, name: &Name) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::smu::SmuError;
+    use crate::smu::Error as SmuError;
     use fstart_arch::x86::cpu::msr::testing::MsrSpace;
 
     struct Smu(&'static [u8]);
     impl SmuMessages for Smu {
-        fn send(&self, id: u32, args: &mut [u32; SMU_ARGS]) -> Result<(), SmuError> {
+        fn send(&self, id: u32, args: &mut [u32; ARGUMENT_COUNT]) -> Result<(), SmuError> {
             assert_eq!(id, 0x0d);
             let i = args[0] as usize * 4;
             let mut b = [0u8; 4];

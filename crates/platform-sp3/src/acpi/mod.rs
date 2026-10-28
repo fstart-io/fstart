@@ -27,11 +27,11 @@ use fstart_acpi::AmlError;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_acpi::platform::PlatformConfig;
 use fstart_core::acpi::AcpiSmiConfig;
+use fstart_driver_amd::smu::v11::CppcInfo;
+use fstart_driver_amd::smu::v11::cppc;
 use fstart_driver_amd::sp3::ccx::power::{CstateInfo, Pstate};
 pub use fstart_driver_amd::sp3::fch::acpi::FchAcpi;
 use fstart_driver_amd::sp3::nbio::ioapic::IoapicInfo;
-use fstart_driver_amd::sp3::smu::v11::CppcInfo;
-use fstart_driver_amd::sp3::smu::v11::cppc;
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::topology::RootBridge;
 

@@ -105,7 +105,7 @@ pub(crate) trait Steps: Sized {
 pub(crate) struct Cppc {
     pub base: u64,
     pub smu_bar: u64,
-    pub info: fstart_driver_amd::sp3::smu::v11::CppcInfo,
+    pub info: fstart_driver_amd::smu::v11::CppcInfo,
     pub lowest_mhz: u32,
     pub nominal_mhz: u32,
     /// APIC ID of each PCC slot (the PPTable CPPC map, sockets in order).
@@ -768,6 +768,8 @@ fn board_gpio<B: Board>(fch: &PrimaryFch, generation: Generation) {
     fch::gpio::configure_all(fch.acpi(), gpio.early);
     fch::gpio::configure_all(fch.acpi(), gpio.table);
 }
+
+pub(crate) use crate::hw::{SMU_POLL_US, SMU_TIMEOUT_US};
 
 /// Select and reserve scratch pages using the live routing map. This runs
 /// before payload loading and before the immutable SMM config is installed.

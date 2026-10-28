@@ -201,7 +201,7 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
     let devices = &config.fch.devices;
     taishan::usb::init(&dies[0].smn(), 0, package, clock);
     taishan::multi::usb(dies, devices, package, clock);
-    let table = smu::PolicyTable::SP4;
+    let table = smu::PolicyTable::new(&smu::Policy::default());
     dma.smu_policy.0[..table.as_bytes().len()].copy_from_slice(table.as_bytes());
     let page = |i: usize| dma.smu_pages.0[i].as_ptr() as u64;
     let buffers = smu::DmaBuffers {
@@ -253,7 +253,7 @@ pub fn cpus_up<P: ConfigRegionAccess + Copy>(dies: &[Die<P>], delay: &mut impl D
     if smu::aps_ready(dies, delay).is_err() {
         fstart_log::error!("zeppelin: SMU messages after AP launch failed");
     }
-    if smu::ccx_done(dies, delay).is_err() {
+    if smu::ccx_done_all(dies, delay).is_err() {
         fstart_log::error!("zeppelin: SMU CCX-done messages failed");
     }
 }

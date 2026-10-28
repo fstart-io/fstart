@@ -19,6 +19,7 @@ pub const MAILBOX: Mailbox = Mailbox {
     message: MESSAGE,
     response: RESPONSE,
     arguments: ARGUMENTS,
+    wait_before: true,
 };
 
 /// Raw completed response; only source-backed late-policy callers may

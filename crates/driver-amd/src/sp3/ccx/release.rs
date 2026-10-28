@@ -23,8 +23,8 @@ use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 
 use crate::smn::{Smn, SmnAddr};
+use crate::smu::{Error as SmuError, SmuMessages, send1};
 use crate::sp3::apob::ccx::CoreMap;
-use crate::sp3::smu::{SmuError, SmuMessages, send1};
 use crate::sp3::soc::Generation;
 
 /// SMU message 1 ("test"/apply, the same ID on V9 and V11) and its key.

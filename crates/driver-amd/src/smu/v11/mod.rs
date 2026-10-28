@@ -3,7 +3,7 @@
 //! transfers and the CCX-done sequence (NBIO_SMU §3.8).
 //!
 //! Every function takes any [`SmuMessages`]; on hardware that is a
-//! [`Mailbox`](super::mailbox::Mailbox) with [`REGS`] through any root bus
+//! [`Smu`](crate::smu::Smu) with [`MAILBOX`] through any root bus
 //! of the socket.
 
 #[cfg(feature = "acpi")]
@@ -12,15 +12,15 @@ pub mod pptable;
 
 use fstart_core::services::Timer;
 
-use super::mailbox::Registers;
-use super::{SMU_ARGS, SmuError, SmuMessages, send_addr, send1};
+use crate::smn::SmnReg;
+use crate::smu::{ARGUMENT_COUNT, Error as SmuError, Mailbox, SmuMessages, send_addr, send1};
 use crate::sp3::soc::{Generation, Revision};
 
 /// V11 mailbox (`smu.v11.mailbox`; Oxide `milan/smu.h` agrees).
-pub const REGS: Registers = Registers {
-    message: 0x03B1_0530,
-    response: 0x03B1_057C,
-    args: 0x03B1_09C4,
+pub const MAILBOX: Mailbox = Mailbox {
+    message: SmnReg::new(0x03b1_0530),
+    response: SmnReg::new(0x03b1_057c),
+    arguments: SmnReg::new(0x03b1_09c4),
     wait_before: false,
 };
 
@@ -279,7 +279,7 @@ pub fn nbif2_power_gate<M: SmuMessages + ?Sized>(
     generation: Generation,
     nbio: u8,
 ) -> Result<(), SmuError> {
-    let mut args: [u32; SMU_ARGS] = match generation {
+    let mut args: [u32; ARGUMENT_COUNT] = match generation {
         Generation::Milan => [nbio as u32 | 0x120, 0, 0, 0, 0, 0],
         _ => [nbio as u32, 2, 1, 0, 0, 0],
     };
@@ -498,20 +498,11 @@ pub fn sp3_workarounds<M: SmuMessages + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::smn::Smn;
-    use crate::sp3::smu::mailbox::model::{FakeTimer, SmuModel};
-    use crate::sp3::smu::mailbox::{Mailbox, response};
+    use crate::smu::model::{FakeTimer, NoDelay, SmuModel};
+    use crate::smu::response;
 
-    fn mailbox(m: &SmuModel, generation: Generation) -> Mailbox<SmuModel, FakeTimer> {
-        // SAFETY: model.
-        unsafe {
-            Mailbox::new(
-                Smn::on_bus(m.clone(), 0),
-                REGS,
-                FakeTimer::default(),
-                id_limit(generation),
-            )
-        }
+    fn mailbox(m: &SmuModel, generation: Generation) -> crate::smu::Smu<SmuModel, NoDelay> {
+        m.smu(id_limit(generation))
     }
 
     #[test]
@@ -525,7 +516,7 @@ mod tests {
 
     #[test]
     fn ccx_done_milan() {
-        let m = SmuModel::new(REGS, response::OK);
+        let m = SmuModel::new(MAILBOX, response::OK);
         let mb = mailbox(&m, Generation::Milan);
         let mask = feature_mask(Revision::GnB1, &FeaturePolicy::default());
         let p = CcxDonePolicy::donor(Revision::GnB1);
@@ -541,7 +532,7 @@ mod tests {
 
     #[test]
     fn ccx_done_rome_waits_and_rejects_milan_ids() {
-        let m = SmuModel::new(REGS, response::OK);
+        let m = SmuModel::new(MAILBOX, response::OK);
         let mb = mailbox(&m, Generation::Rome);
         let timer = FakeTimer::default();
         let p = CcxDonePolicy::donor(Revision::SspB0);
@@ -551,13 +542,13 @@ mod tests {
         assert!(timer.0.load(core::sync::atomic::Ordering::Relaxed) >= 10_000);
         assert_eq!(
             send1(&mb, milan::SET_HOTPLUG_TABLE_ADDR, 0),
-            Err(SmuError::Status(response::UNKNOWN_CMD))
+            Err(SmuError::Rejected(response::UNKNOWN_CMD))
         );
     }
 
     #[test]
     fn table_transfers() {
-        let m = SmuModel::new(REGS, response::OK);
+        let m = SmuModel::new(MAILBOX, response::OK);
         let mb = mailbox(&m, Generation::Rome);
         transfer_pptable(&mb, 0x1_2345_6000, 0x27C).unwrap();
         set_lclk_dpm_level(&mb, 3).unwrap();

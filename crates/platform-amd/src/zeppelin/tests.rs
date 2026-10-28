@@ -176,8 +176,8 @@ fn model(dies: u8) -> Hw {
     let hw = Hw::new(
         &buses,
         v9::MAILBOX.arguments.address(),
-        v9::DXIO_SERVICE,
-        &[(v9::GET_VERSION, 7)],
+        v9::msg::DXIO,
+        &[(v9::msg::GET_VERSION, 7)],
     );
     let df = |node: u8, function| PciAddress::new(0, 0, 0x18 + node, function);
     hw.set_config(df(0, 1), 0x204, dies.into());

@@ -40,10 +40,14 @@ impl<R: RegisterLongName> SmnReg<R> {
     pub const fn address(self) -> u32 {
         self.address
     }
-    /// The same register `bytes` further on: the next instance of a
-    /// replicated block.
+    /// The same register `bytes` further on, a multiple of 4: the next
+    /// instance of a replicated block. No panic path at run time, which
+    /// an SMM image may not link.
     pub const fn offset(self, bytes: u32) -> Self {
-        Self::new(self.address + bytes)
+        Self {
+            address: self.address.wrapping_add(bytes & !3),
+            _reg: PhantomData,
+        }
     }
 }
 

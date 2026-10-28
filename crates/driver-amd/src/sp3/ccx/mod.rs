@@ -4,7 +4,7 @@
 //!
 //! Hardware access goes through [`MsrAccess`] (fstart-arch; `NativeMsr` on
 //! the CPU, `MsrSpace` in tests), [`crate::smn::Smn`] and
-//! [`crate::sp3::smu::SmuMessages`]. Per-thread code runs on the thread it
+//! [`crate::smu::SmuMessages`]. Per-thread code runs on the thread it
 //! configures.
 //!
 //! # Sequence (CCX_SP3 §2, donor order)

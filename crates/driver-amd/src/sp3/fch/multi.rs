@@ -151,14 +151,14 @@ pub fn naples_die_env<H: FchHw>(hw: &H, sata: bool) {
 /// FchHuashanMultiFchPei for socket 1 (FCH_SP3 §4.2). `hw` is the socket-1
 /// FCH (`acpi` = SMN view, `bus` = socket 1's bus), `smu` socket 1's SMU.
 #[cfg(any(feature = "rome", feature = "milan"))]
-pub fn huashan_socket1<H: FchHw, S: crate::sp3::smu::SmuMessages + ?Sized>(
+pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
     hw: &H,
     generation: Generation,
     smu: &S,
     usb: &super::huashan::usb::UsbPolicy,
     sata: &super::huashan::sata::SataPolicy,
     resume: bool,
-) -> Result<(), crate::sp3::smu::SmuError> {
+) -> Result<(), crate::smu::Error> {
     with_legacy_io(hw.pci(), route_target(generation, 1), || {
         let pmio = PmIo(hw.io());
         pmio.write16(PM + pm::AB_REG_BAR, alink::INDEX as u16);

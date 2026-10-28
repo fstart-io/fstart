@@ -23,7 +23,7 @@ use tock_registers::LocalRegisterCopy;
 
 use super::release::{APPLY_KEY, MSG_APPLY, SmuPwr, ThreadCfg};
 use crate::smn::{Smn, SmnAddr};
-use crate::sp3::smu::{SmuError, SmuMessages, send1};
+use crate::smu::{Error as SmuError, SmuMessages, send1};
 use crate::sp3::soc::Generation;
 
 /// Enabled cores per complex (Milan has one 8-core complex: `ccx1 == 0`).

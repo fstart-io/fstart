@@ -10,7 +10,7 @@
 use fstart_core::services::Timer;
 
 use super::{DxioError, DxioPolicy, Hooks, LoopRules, Unit, finish_unit, run, state, var};
-use crate::sp3::smu::SmuMessages;
+use crate::smu::SmuMessages;
 
 /// The DXIO SMU message on Naples (`smu::v9::msg::DXIO`).
 pub const DXIO_MSG: u32 = 0x0F;

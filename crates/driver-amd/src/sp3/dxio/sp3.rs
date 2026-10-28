@@ -16,7 +16,7 @@ use super::lanes::{Engine, EngineKind, Speed};
 use super::{
     DxioError, DxioPolicy, Hooks, LoopRules, PerstPolicy, Unit, finish_unit, prop, run, state, var,
 };
-use crate::sp3::smu::SmuMessages;
+use crate::smu::SmuMessages;
 use crate::sp3::soc::Generation;
 
 /// The DXIO SMU message on Rome and Milan (`smu::v11::msg::DXIO`).

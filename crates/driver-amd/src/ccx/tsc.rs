@@ -74,6 +74,7 @@ pub mod testing {
     use super::{Clock, DelayNs};
 
     /// Hands every microsecond delay to a closure: `Delay(|us| ...)`.
+    #[derive(Clone, Copy)]
     pub struct Delay<F: FnMut(u32)>(pub F);
     impl<F: FnMut(u32)> DelayNs for Delay<F> {
         fn delay_ns(&mut self, ns: u32) {

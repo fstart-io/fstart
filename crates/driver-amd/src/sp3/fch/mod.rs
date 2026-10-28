@@ -501,7 +501,7 @@ pub(crate) mod model {
 
     use super::{Fch, Window};
     use crate::smn::model::Model;
-    use crate::sp3::smu::{SMU_ARGS, SmuError, SmuMessages};
+    use crate::smu::{ARGUMENT_COUNT, Error as SmuError, SmuMessages};
 
     #[derive(Default)]
     pub struct State {
@@ -628,9 +628,9 @@ pub(crate) mod model {
     /// An SMU that answers OK and records `(id, args)`.
     #[derive(Clone, Default)]
     pub struct Smu(pub Rc<RefCell<Vec<Message>>>);
-    pub type Message = (u32, [u32; SMU_ARGS]);
+    pub type Message = (u32, [u32; ARGUMENT_COUNT]);
     impl SmuMessages for Smu {
-        fn send(&self, id: u32, args: &mut [u32; SMU_ARGS]) -> Result<(), SmuError> {
+        fn send(&self, id: u32, args: &mut [u32; ARGUMENT_COUNT]) -> Result<(), SmuError> {
             self.0.borrow_mut().push((id, *args));
             Ok(())
         }

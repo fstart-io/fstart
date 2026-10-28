@@ -30,8 +30,8 @@ use fstart_acpi::processor::{
     processor_device, psd_aml, pss_aml,
 };
 use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl, gpe};
+use fstart_driver_amd::smu::v11::cppc;
 use fstart_driver_amd::sp3::fch::acpi as fch_acpi;
-use fstart_driver_amd::sp3::smu::v11::cppc;
 use fstart_driver_amd::sp3::soc::Generation;
 
 use super::fixed::{FCH_IOAPIC_BASE, GsiWindow, HPET_BASE, LAPIC_BASE, PM_BASE};

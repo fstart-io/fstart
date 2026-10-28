@@ -11,7 +11,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
 use super::topology::Thread;
-use crate::sp3::smu::{SMU_ARGS, SmuError, SmuMessages};
+use crate::smu::{ARGUMENT_COUNT, Error as SmuError, SmuMessages};
 use crate::sp3::soc::Generation;
 
 register_bitfields![u64,
@@ -263,7 +263,7 @@ pub fn read_cac_weights<M: SmuMessages + ?Sized>(
     };
     (0..cac_weight_count(generation) as u32)
         .map(|i| {
-            let mut args = [0; SMU_ARGS];
+            let mut args = [0; ARGUMENT_COUNT];
             args[0] = i;
             smu.send(id, &mut args)?;
             let (lo, hi) = (u64::from(args[0]), u64::from(args[1]));
@@ -409,7 +409,7 @@ mod tests {
     fn cac_weights() {
         struct Smu;
         impl SmuMessages for Smu {
-            fn send(&self, id: u32, args: &mut [u32; SMU_ARGS]) -> Result<(), SmuError> {
+            fn send(&self, id: u32, args: &mut [u32; ARGUMENT_COUNT]) -> Result<(), SmuError> {
                 assert_eq!(id, 0x09);
                 *args = [0x100 + args[0], 0xa, 0, 0, 0, 0];
                 Ok(())

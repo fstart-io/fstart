@@ -38,7 +38,7 @@ use fstart_core::services::Timer;
 use heapless::Vec;
 use zerocopy::FromBytes;
 
-use crate::sp3::smu::{SMU_ARGS, SmuError, SmuMessages};
+use crate::smu::{ARGUMENT_COUNT, Error as SmuError, SmuMessages};
 use crate::sp3::soc::Generation;
 use engine::{ANCILLARY_MAX, ENGINE_HEAP_MAX, EncodePolicy, FwEngine, Heaps, MAX_ENGINES};
 use lanes::{Engine, LaneError};
@@ -234,8 +234,10 @@ impl DxioError {
     /// A name and up to two numbers, for logs without `Debug`.
     pub fn parts(&self) -> (&'static str, u32, u32) {
         match *self {
-            Self::Smu(SmuError::Timeout) => ("SMU mailbox timeout", 0, 0),
-            Self::Smu(SmuError::Status(status)) => ("SMU mailbox status", status, 0),
+            Self::Smu(SmuError::BusyTimeout) => ("SMU mailbox busy", 0, 0),
+            Self::Smu(SmuError::CompletionTimeout) => ("SMU mailbox timeout", 0, 0),
+            Self::Smu(SmuError::Unavailable) => ("SMU mailbox unavailable", 0, 0),
+            Self::Smu(SmuError::Rejected(status)) => ("SMU mailbox status", status, 0),
             Self::Rpc { op, result } => ("RPC result", op, result),
             Self::NoReturn(r) => ("GetSmState no return", r, 0),
             Self::StateMachine { state } => ("state machine error", state, 0),
@@ -264,12 +266,14 @@ impl<'s, M: SmuMessages + ?Sized> Dxio<'s, M> {
 
     /// Send `op` with request words `req`; returns the six reply words
     /// without judging the result.
-    pub fn raw(&self, op: u32, req: [u32; 5]) -> Result<[u32; SMU_ARGS], DxioError> {
+    pub fn raw(&self, op: u32, req: [u32; 5]) -> Result<[u32; ARGUMENT_COUNT], DxioError> {
         let mut args = [op, req[0], req[1], req[2], req[3], req[4]];
         self.smu.send(self.msg, &mut args).inspect_err(|e| {
             let (status, timeout) = match e {
-                SmuError::Status(s) => (*s, false),
-                SmuError::Timeout => (0, true),
+                SmuError::Rejected(s) => (*s, false),
+                SmuError::BusyTimeout | SmuError::CompletionTimeout | SmuError::Unavailable => {
+                    (0, true)
+                }
             };
             fstart_log::error!(
                 "dxio: SMU message {:#x} op {:#x}: status {:#x} timeout {}",
@@ -284,7 +288,7 @@ impl<'s, M: SmuMessages + ?Sized> Dxio<'s, M> {
 
     /// Send `op` and require result OK. Rome normalizes
     /// `(word & 0xFFFFFF00) == 0x300` to OK; the low byte carries the code.
-    pub fn rpc(&self, op: u32, req: [u32; 5]) -> Result<[u32; SMU_ARGS], DxioError> {
+    pub fn rpc(&self, op: u32, req: [u32; 5]) -> Result<[u32; ARGUMENT_COUNT], DxioError> {
         let r = self.raw(op, req)?;
         fstart_log::info!(
             "dxio: op {:#x} req {:x} {:x} {:x} {:x} {:x} -> {:x} {:x} {:x} {:x} {:x} {:x}",
@@ -394,7 +398,7 @@ pub trait Hooks {
     /// State 7 EARLY_TRAINED.
     fn early_trained(&mut self, _unit: &UnitView<'_>) {}
     /// Type 4: a PERST assert/deassert request; `reply` is the raw reply.
-    fn perst(&mut self, _unit: &UnitView<'_>, _reply: &[u32; SMU_ARGS]) {}
+    fn perst(&mut self, _unit: &UnitView<'_>, _reply: &[u32; ARGUMENT_COUNT]) {}
     /// Deferred PERST policy: release every socket's resets between the
     /// passes (Rome PCD 0x160, Milan 0x18F "Deassert all resets").
     fn release_all(&mut self) {}

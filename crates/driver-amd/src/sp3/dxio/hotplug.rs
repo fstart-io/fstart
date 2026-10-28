@@ -20,7 +20,7 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use super::lanes::Engine;
 use super::ports::MappedPort;
-use crate::sp3::smu::{SmuError, SmuMessages, send_addr, send1};
+use crate::smu::{Error as SmuError, SmuMessages, send_addr, send1};
 use crate::sp3::soc::Generation;
 
 /// PCIe hotplug type (board LinkHotplug; wire caps bits 10:8).
@@ -413,7 +413,7 @@ pub fn load_v11<M: SmuMessages + ?Sized>(
     policy: &HotplugPolicy,
 ) -> Result<(), SmuError> {
     use msg::v11::*;
-    let first = sockets.first().ok_or(SmuError::Status(0))?;
+    let first = sockets.first().ok_or(SmuError::Rejected(0))?;
     i2c_switch(*first, SET_I2C_SWITCH_BASE, policy.i2c_switch_base)?;
     let addr_msg = match generation {
         Generation::Milan => MILAN_SET_HOTPLUG_TABLE_ADDR,
@@ -456,7 +456,7 @@ pub fn enable_v9<M: SmuMessages + ?Sized>(
     policy: &HotplugPolicy,
 ) -> Result<(), SmuError> {
     use msg::v9::*;
-    let first = dies.first().ok_or(SmuError::Status(0))?;
+    let first = dies.first().ok_or(SmuError::Rejected(0))?;
     dies.iter()
         .try_for_each(|smu| send1(*smu, SET_HOTPLUG_FLAGS, policy.debug_flags).map(|_| ()))?;
     if policy.naples_gpio_polling {

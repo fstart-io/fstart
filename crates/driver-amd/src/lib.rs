@@ -25,7 +25,7 @@ pub mod psp;
 mod silicon_tests;
 #[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod smn;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod smu;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod soc;

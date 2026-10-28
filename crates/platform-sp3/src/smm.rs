@@ -184,13 +184,13 @@ mod handler {
     use fstart_arch::x86::cpu::amd::msr::{SMM_ADDR, SMM_MASK};
     use fstart_arch::x86::cpu::msr::MsrAccess;
     use fstart_driver_amd::smn::Smn;
+    use fstart_driver_amd::smu::Smu;
     use fstart_driver_amd::sp3::fch::common::sx;
     use fstart_driver_amd::sp3::fch::smi::Source;
     use fstart_driver_amd::sp3::fch::smi::{self, source};
     use fstart_driver_amd::sp3::fch::{Fch, FchHw, Mmio, Ports, Window, acpimmio, update};
     use fstart_driver_amd::sp3::psp::command::{C2pBuffer, P2C_BUFFER_SIZE, SmmInfo};
     use fstart_driver_amd::sp3::psp::mailbox::{Mailbox, MmioTransport};
-    use fstart_driver_amd::sp3::smu::mailbox::Mailbox as Smu;
     use fstart_driver_amd::sp3::soc::Generation;
     use fstart_pci::{ConfigRegionAccess, EcamDevice, PciAddress};
     use fstart_smm::{SmmContext, SmmHandler};
@@ -388,19 +388,22 @@ mod handler {
         let (regs, limit) = match generation {
             #[cfg(feature = "naples")]
             Generation::Naples => (
-                fstart_driver_amd::sp3::smu::v9::REGS,
-                fstart_driver_amd::sp3::smu::v9::ID_LIMIT,
+                fstart_driver_amd::smu::v9::MAILBOX,
+                fstart_driver_amd::smu::v9::ID_LIMIT,
             ),
             #[cfg(any(feature = "rome", feature = "milan"))]
             Generation::Rome | Generation::Milan => {
-                use fstart_driver_amd::sp3::smu::v11;
-                (v11::REGS, v11::id_limit(generation))
+                use fstart_driver_amd::smu::v11;
+                (v11::MAILBOX, v11::id_limit(generation))
             }
             #[allow(unreachable_patterns)]
             _ => return None,
         };
-        // SAFETY: SMM owns bus 0's SMN pair (saved by the caller).
-        Some(unsafe { Smu::new(smn, regs, timer, limit) })
+        Some(
+            Smu::new(smn, regs, timer, limit)
+                .with_timeout_us(crate::hw::SMU_TIMEOUT_US)
+                .with_poll_us(crate::hw::SMU_POLL_US),
+        )
     }
 
     fn psp(config: &SmmConfig) -> Mailbox<MmioTransport> {

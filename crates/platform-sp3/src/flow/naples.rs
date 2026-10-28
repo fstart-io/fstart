@@ -8,6 +8,8 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::smn::Smn;
+use fstart_driver_amd::smu::Smu as SmuMailbox;
+use fstart_driver_amd::smu::v9;
 use fstart_driver_amd::sp3::ccx::release::{self, Launch, SmuPwr};
 use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
 use fstart_driver_amd::sp3::ccx::{ApInputs, Ccx, brand, mca, power, security};
@@ -26,8 +28,6 @@ use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::nbio::{Nbio, naples as nbio_naples};
 use fstart_driver_amd::sp3::psp::bar::BAR_SIZE;
-use fstart_driver_amd::sp3::smu::mailbox::Mailbox;
-use fstart_driver_amd::sp3::smu::v9;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
@@ -43,7 +43,7 @@ super::steps!();
 pub(crate) const MMIO_PAIRS: u8 = <Df2 as Version>::MMIO_PAIRS;
 
 /// SMU V9 mailbox of one die.
-pub(crate) type Smu = Mailbox<Pci, Tsc>;
+pub(crate) type Smu = SmuMailbox<Pci, Tsc>;
 
 /// Per-die handles, physical order (= `Topology::root_bridges`: one root
 /// bridge per die).
@@ -123,8 +123,9 @@ pub(crate) fn nbio_early(ctx: &mut Ctx) -> Silicon {
 /// SMU V9 DXE entry per die: policy table, AGM log, perfmon pages.
 pub(crate) fn smu_init(ctx: &mut Ctx, si: &mut Silicon) {
     for n in &si.nbios {
-        // SAFETY: the die's SMU mailbox, owned by the BSP during boot.
-        let smu = unsafe { Smu::new(n.smn(), v9::REGS, ctx.timer, v9::ID_LIMIT) };
+        let smu = Smu::new(n.smn(), v9::MAILBOX, ctx.timer, v9::ID_LIMIT)
+            .with_timeout_us(super::SMU_TIMEOUT_US)
+            .with_poll_us(super::SMU_POLL_US);
         let table = v9::PolicyTable::new(&v9::Policy::default());
         let dma = dma_alloc(0x1000, 0x1000);
         dma[..table.as_bytes().len()].copy_from_slice(table.as_bytes());

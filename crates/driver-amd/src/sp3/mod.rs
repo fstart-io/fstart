@@ -24,6 +24,5 @@ pub mod dxio;
 pub mod fch;
 pub mod nbio;
 pub mod psp;
-pub mod smu;
 pub mod soc;
 pub mod topology;

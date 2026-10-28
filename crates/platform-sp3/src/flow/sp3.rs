@@ -12,6 +12,8 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::smn::Smn;
+use fstart_driver_amd::smu::Smu as SmuMailbox;
+use fstart_driver_amd::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
 use fstart_driver_amd::sp3::apob::ccx::{CoreMap, core_map};
 use fstart_driver_amd::sp3::ccx::release::{self, Launch};
 use fstart_driver_amd::sp3::ccx::topology::{ApicLayout, Location};
@@ -32,8 +34,6 @@ use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
 use fstart_driver_amd::sp3::psp::bar::BAR_SIZE;
-use fstart_driver_amd::sp3::smu::mailbox::Mailbox;
-use fstart_driver_amd::sp3::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
@@ -50,7 +50,7 @@ super::steps!();
 pub(crate) const MMIO_PAIRS: u8 = <Df3 as Version>::MMIO_PAIRS;
 
 /// SMU V11 mailbox of one socket.
-pub(crate) type Smu = Mailbox<Pci, Tsc>;
+pub(crate) type Smu = SmuMailbox<Pci, Tsc>;
 
 /// The per-socket silicon handles the later steps use.
 pub(crate) struct Silicon {
@@ -226,8 +226,9 @@ pub(crate) fn smu_init(ctx: &mut Ctx, si: &mut Silicon) {
     for s in 0..ctx.topology.sockets {
         // SAFETY: the BSP owns this bus's SMN index/data pair during init.
         let smn = unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, s)) };
-        // SAFETY: the socket's SMU mailbox, owned by the BSP during boot.
-        let smu = unsafe { Smu::new(smn, v11::REGS, ctx.timer, v11::id_limit(generation)) };
+        let smu = Smu::new(smn, v11::MAILBOX, ctx.timer, v11::id_limit(generation))
+            .with_timeout_us(super::SMU_TIMEOUT_US)
+            .with_poll_us(super::SMU_POLL_US);
         let _ = si.smus.push(smu);
         let map = core_map(&ctx.apob, s).or_halt("APOB core map");
         let _ = si.maps.push(map);
@@ -317,9 +318,8 @@ pub(crate) fn dxio(
         .map(|s| {
             // SAFETY: the BSP owns this bus's SMN index/data pair during init.
             let smn = unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, s)) };
-            // SAFETY: the socket's SMU mailbox; the BSP sends one message at
-            // a time and the step's other mailbox is idle meanwhile.
-            unsafe { Smu::new(smn, v11::REGS, ctx.timer, v11::id_limit(generation)) }
+            Smu::new(smn, v11::MAILBOX, ctx.timer, v11::id_limit(generation))
+                .with_poll_us(super::SMU_POLL_US)
                 .with_timeout_us(30_000_000)
         })
         .collect();
@@ -522,7 +522,7 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
 /// `CppcSetTable` and the two `_CPC` frequencies.
 fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Option<super::Cppc> {
     use fstart_arch::x86::mtrr;
-    use fstart_driver_amd::sp3::smu::v11::cppc::{REGION_SIZE, SIGNATURE};
+    use fstart_driver_amd::smu::v11::cppc::{REGION_SIZE, SIGNATURE};
 
     let generation = ctx.generation;
     if !FeaturePolicy::default().cppc {
