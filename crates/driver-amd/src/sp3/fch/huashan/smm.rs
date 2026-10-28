@@ -8,8 +8,8 @@ use fstart_core::services::Timer;
 
 use super::super::FchHw;
 use super::super::smi::{self, Route, source};
-use crate::sp3::psp::command::{C2pBuffer, LockFchReg};
-use crate::sp3::psp::mailbox::{C2pTransport, Mailbox, PspError};
+use crate::psp::command::{C2pBuffer, LockFchReg};
+use crate::psp::mailbox::{C2pTransport, Mailbox, PspError};
 
 /// Milan late task af78: raise SW SMI D2 at ReadyToBoot; the SMM handler
 /// then calls [`lock_fch_registers`].

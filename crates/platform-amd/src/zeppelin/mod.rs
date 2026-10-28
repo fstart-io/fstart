@@ -192,7 +192,12 @@ impl noncar::Soc for Zeppelin {
         let tseg = smm::install(Self::NAME, &cpus.mp, &smi, memory.tseg, Self::TSEG_SIZE)?;
         // The PSP gets the SMM info now, LockDFReg at ready-to-boot and
         // BootDone right before the payload.
-        let psp = psp::notify_smm(state.psp_bars[0], &tseg, &mut clock);
+        let psp = psp::notify_smm(
+            state.psp_bars[0],
+            fstart_driver_amd::psp::Variant::Zp,
+            &tseg,
+            &clock,
+        );
         silicon::post(fch, 0x42);
         // PCI: the interrupt router first.
         silicon::route_interrupts(fch, &config)?;

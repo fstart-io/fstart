@@ -368,7 +368,12 @@ impl noncar::Soc for Picasso {
         // SAFETY: BSP exclusively owns the decoded ACPI and SMI blocks.
         let smi = unsafe { FchSmi::new(sandstone::ACPI_PORTS, 0) };
         let tseg = smm::install(Self::NAME, &cpus.mp, &smi, memory.tseg, Self::TSEG_SIZE)?;
-        let psp = psp::notify_smm(nbio::PSP_MMIO_BASE, &tseg, &mut delay);
+        let psp = psp::notify_smm(
+            nbio::PSP_MMIO_BASE,
+            fstart_driver_amd::psp::Variant::Rv,
+            &tseg,
+            &delay,
+        );
         let devices = config
             .emmc
             .into_iter()

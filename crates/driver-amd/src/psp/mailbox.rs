@@ -5,12 +5,17 @@
 //! address of a command buffer, writes the command id and waits for the PSP
 //! to clear it again.
 //!
-//! Per generation (AGESA, instruction-checked except where noted):
+//! Per PSP generation (AGESA, instruction-checked except where noted; RV
+//! as the native Picasso flow found it on the Vilboz):
 //!
-//! | | Naples (ZP) | Rome (SSP) | Milan (GN) |
-//! |---|---|---|---|
-//! | precheck | wait for bit 29 or 30; recovery iff only 30 | bit 30 set: recovery | as Rome |
-//! | status | not checked | copied into the buffer header | `cmd[15:0] != 0` is an error |
+//! | | Naples, Zeppelin (ZP) | Picasso (RV) | Rome (SSP) | Milan (GN) |
+//! |---|---|---|---|---|
+//! | precheck | wait for bit 29, 30 (or 31); recovery iff only 30 | bit 30 set: recovery | as RV | as RV |
+//! | done | `READY` and no command | as ZP | no command | as SSP |
+//! | status | `cmd[15:0]`, the header status or a changed header size is an error (AGESA Naples ignores them) | as ZP | copied into the buffer header, `!= 0` is an error | `cmd[15:0] != 0` is an error |
+//!
+//! Every poll checks for an all-ones register and the recovery firmware.
+//! [`Session`] owns a mailbox and its buffer for a boot flow.
 //!
 //! AGESA waits forever in every loop; here each wait is bounded by
 //! [`Mailbox::with_timeout`] (default 1 s, PSP_APOB §5).
@@ -23,9 +28,9 @@ use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{RegisterLongName, register_bitfields};
 
+use super::Variant;
 use super::command::{C2pBuffer, Command};
 use crate::smn::{Smn, SmnAddr};
-use crate::sp3::soc::Generation;
 
 register_bitfields![u32,
     /// C2P command/status register (`MP0_C2PMSG_28`).
@@ -184,8 +189,39 @@ pub enum PspError {
     Timeout(Wait),
     /// The PSP reported a non-zero status for `command`.
     Status { command: u8, status: u32 },
+    /// The command register reads all-ones.
+    Unavailable,
     /// No donor of this generation sends `command`; refused (fail closed).
-    Unsupported { command: u8, generation: Generation },
+    Unsupported { command: u8, generation: Variant },
+    /// The PSP changed the buffer size of `command` (RV, ZP).
+    Size { command: u8, size: u32 },
+    /// An earlier transaction of the [`Session`] failed: the PSP may still
+    /// own its buffer.
+    Poisoned,
+    /// The [`Session`] sent BootDone.
+    Finished,
+    /// The [`Session`] storage isn't below 4 GiB.
+    Placement,
+}
+
+impl PspError {
+    /// A name and a number (the status, the command), for logs without
+    /// `Debug`.
+    pub const fn parts(&self) -> (&'static str, u32) {
+        match *self {
+            Self::Recovery => ("recovery firmware", 0),
+            Self::Timeout(Wait::Boot) => ("boot wait timeout", 0),
+            Self::Timeout(Wait::Ready) => ("ready timeout", 0),
+            Self::Timeout(Wait::Done) => ("completion timeout", 0),
+            Self::Status { status, .. } => ("status", status),
+            Self::Unavailable => ("unavailable", 0),
+            Self::Unsupported { command, .. } => ("unsupported command", command as u32),
+            Self::Size { size, .. } => ("buffer size", size),
+            Self::Poisoned => ("poisoned by an earlier failure", 0),
+            Self::Finished => ("after BootDone", 0),
+            Self::Placement => ("buffer placement", 0),
+        }
+    }
 }
 
 /// Default bound for each wait.
@@ -195,12 +231,12 @@ const POLL_US: u64 = 10;
 /// One PSP's C2P mailbox.
 pub struct Mailbox<T> {
     transport: T,
-    generation: Generation,
+    generation: Variant,
     timeout_us: u64,
 }
 
 impl<T: C2pTransport> Mailbox<T> {
-    pub const fn new(transport: T, generation: Generation) -> Self {
+    pub const fn new(transport: T, generation: Variant) -> Self {
         Self {
             transport,
             generation,
@@ -214,7 +250,7 @@ impl<T: C2pTransport> Mailbox<T> {
         self
     }
 
-    pub const fn generation(&self) -> Generation {
+    pub const fn generation(&self) -> Variant {
         self.generation
     }
 
@@ -222,6 +258,9 @@ impl<T: C2pTransport> Mailbox<T> {
         Reg::new(&self.transport, C2pReg::Cmd)
     }
 
+    /// The value of the command register once `done` holds, checked on
+    /// every poll: all-ones is an unavailable aperture and the recovery
+    /// firmware takes no commands.
     fn wait(
         &self,
         timer: &impl Timer,
@@ -231,6 +270,12 @@ impl<T: C2pTransport> Mailbox<T> {
         let mut waited = 0;
         loop {
             let value = self.cmd().get();
+            if value == u32::MAX {
+                return Err(PspError::Unavailable);
+            }
+            if self.recovery(value) {
+                return Err(PspError::Recovery);
+            }
             if done(value) {
                 return Ok(value);
             }
@@ -242,48 +287,58 @@ impl<T: C2pTransport> Mailbox<T> {
         }
     }
 
-    /// The generation's precheck: `Err(Recovery)` if the PSP runs recovery
-    /// firmware (PSP_APOB §3.1).
-    fn precheck(&self, timer: &impl Timer) -> Result<(), PspError> {
-        let value = match self.generation {
-            // ZP (`ffe04f85`): spin until bit 29 or 30, recovery iff the
-            // masked value is exactly bit 30.
-            Generation::Naples => self.wait(timer, Wait::Boot, |v| {
-                C2P_CMD::NORMAL.is_set(v) || C2P_CMD::RECOVERY.is_set(v)
-            })?,
-            Generation::Rome | Generation::Milan => self.cmd().get(),
-        };
+    /// Whether `value` says the PSP runs its recovery firmware: on ZP iff
+    /// only bit 30 of bits 29/30 is set, elsewhere bit 30 (PSP_APOB §3.1).
+    fn recovery(&self, value: u32) -> bool {
         let recovery = C2P_CMD::RECOVERY.is_set(value);
-        let normal = C2P_CMD::NORMAL.is_set(value);
         match self.generation {
-            Generation::Naples if recovery && !normal => Err(PspError::Recovery),
-            Generation::Rome | Generation::Milan if recovery => Err(PspError::Recovery),
-            _ => Ok(()),
+            Variant::Zp => recovery && !C2P_CMD::NORMAL.is_set(value),
+            Variant::Rv | Variant::Ssp | Variant::Gn => recovery,
         }
+    }
+
+    /// The generation's precheck. ZP (`ffe04f85`) spins until bit 29 or 30
+    /// is set; a Zeppelin PSP that only shows READY passes as well (the
+    /// native MJ11 flow saw nothing else).
+    fn precheck(&self, timer: &impl Timer) -> Result<(), PspError> {
+        let any = |v| {
+            C2P_CMD::NORMAL.is_set(v) || C2P_CMD::RECOVERY.is_set(v) || C2P_CMD::READY.is_set(v)
+        };
+        match self.generation {
+            Variant::Zp => self.wait(timer, Wait::Boot, any),
+            Variant::Rv | Variant::Ssp | Variant::Gn => self.wait(timer, Wait::Boot, |_| true),
+        }
+        .map(drop)
     }
 
     /// Send command `id` with the buffer at physical address `buffer` and
     /// return `cmd[15:0]` after completion. Status policy is the caller's.
     fn transact(&self, timer: &impl Timer, id: u8, buffer: u64) -> Result<u16, PspError> {
         self.precheck(timer)?;
-        self.wait(timer, Wait::Ready, |v| {
-            C2P_CMD::READY.is_set(v) && C2P_CMD::COMMAND.read(v) == 0
-        })?;
+        let ready = |v| C2P_CMD::READY.is_set(v) && C2P_CMD::COMMAND.read(v) == 0;
+        self.wait(timer, Wait::Ready, ready)?;
         Reg::<T>::new(&self.transport, C2pReg::BufLo).set(buffer as u32);
         Reg::<T>::new(&self.transport, C2pReg::BufHi).set((buffer >> 32) as u32);
         // The buffer must be in memory before the PSP sees the command.
         fence(Ordering::SeqCst);
         // READY is written 0 ("clear the ready bit", GN `ffcf4e08`).
         self.cmd().write(C2P_CMD::COMMAND.val(id.into()));
-        let value = self.wait(timer, Wait::Done, |v| C2P_CMD::COMMAND.read(v) == 0)?;
+        // The native RV/ZP flows also wait for READY again.
+        let value = match self.generation {
+            Variant::Rv | Variant::Zp => self.wait(timer, Wait::Done, ready)?,
+            Variant::Ssp | Variant::Gn => {
+                self.wait(timer, Wait::Done, |v| C2P_CMD::COMMAND.read(v) == 0)?
+            }
+        };
         fence(Ordering::SeqCst);
         Ok(C2P_CMD::STATUS.read(value) as u16)
     }
 
     /// Send the command in `buffer` and apply the generation's status rule:
-    /// Naples ignores the status, Rome copies it into the header (as AGESA
-    /// PEI does) and Milan checks `cmd[15:0]`; a non-zero status is an error
-    /// on Rome and Milan.
+    /// SSP copies the status into the header (as AGESA PEI does), GN checks
+    /// `cmd[15:0]`, and RV and ZP check `cmd[15:0]` and the status and size
+    /// the PSP writes into the header (the native flows; AGESA Naples
+    /// ignores the status, fail closed here). A non-zero status is an error.
     ///
     /// The buffer is passed by its address: firmware runs identity mapped.
     pub fn send<C: Command>(
@@ -298,6 +353,7 @@ impl<T: C2pTransport> Mailbox<T> {
             });
         }
         let address = core::ptr::from_mut(buffer) as u64;
+        let size = buffer.header.size;
         let status = self.transact(timer, C::ID, address)?;
         // SAFETY: `buffer` is a valid, exclusively borrowed value; the PSP
         // may have written it behind the compiler's back.
@@ -307,17 +363,25 @@ impl<T: C2pTransport> Mailbox<T> {
             status,
         };
         match self.generation {
-            Generation::Naples => Ok(()),
-            Generation::Rome => {
+            Variant::Ssp => {
                 buffer.header.status = status.into();
                 match status {
                     0 => Ok(()),
                     s => Err(error(s.into())),
                 }
             }
-            Generation::Milan => match status {
+            Variant::Gn => match status {
                 0 => Ok(()),
                 s => Err(error(s.into())),
+            },
+            Variant::Rv | Variant::Zp => match (status, buffer.header.status) {
+                (0, 0) if buffer.header.size == size => Ok(()),
+                (0, 0) => Err(PspError::Size {
+                    command: C::ID,
+                    size: buffer.header.size,
+                }),
+                (0, s) => Err(error(s)),
+                (s, _) => Err(error(s.into())),
             },
         }
     }
@@ -340,6 +404,98 @@ impl<T: C2pTransport> Mailbox<T> {
         // SAFETY: as above.
         unsafe { flag.write_volatile(0) };
         result
+    }
+}
+
+/// The bytes a [`Session`] lends its commands: firmware storage below
+/// 4 GiB, retained through reset. Room for the largest command, SmmInfo.
+#[repr(C, align(32))]
+pub struct Storage(core::mem::MaybeUninit<[u8; STORAGE_BYTES]>);
+const STORAGE_BYTES: usize = 0x120;
+impl Storage {
+    pub const fn new() -> Self {
+        Self(core::mem::MaybeUninit::uninit())
+    }
+}
+impl Default for Storage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    Ready,
+    Poisoned,
+    Finished,
+}
+
+/// The one owner of a PSP's mailbox in a boot flow. Its commands use one
+/// retained buffer: a failed transaction may leave the PSP owning it, so
+/// the session refuses all later commands, and none follow BootDone.
+pub struct Session<T> {
+    mailbox: Mailbox<T>,
+    storage: &'static mut Storage,
+    state: State,
+    not_send_sync: PhantomData<*mut ()>,
+}
+
+impl<T: C2pTransport> Session<T> {
+    /// `storage` is identity mapped and reserved from the OS until reset.
+    pub fn new(mailbox: Mailbox<T>, storage: &'static mut Storage) -> Result<Self, PspError> {
+        let start = core::ptr::from_mut(storage) as u64;
+        // Host tests run above 4 GiB.
+        if start == 0 || (cfg!(not(test)) && start + size_of::<Storage>() as u64 > 1 << 32) {
+            return Err(PspError::Placement);
+        }
+        Ok(Self {
+            mailbox,
+            storage,
+            state: State::Ready,
+            not_send_sync: PhantomData,
+        })
+    }
+
+    /// Send `request` and return the buffer as the PSP left it.
+    pub fn send<C: Command>(
+        &mut self,
+        timer: &impl Timer,
+        request: C,
+    ) -> Result<C2pBuffer<C>, PspError> {
+        const {
+            assert!(
+                size_of::<C2pBuffer<C>>() <= STORAGE_BYTES
+                    && align_of::<C2pBuffer<C>>() <= align_of::<Storage>()
+            )
+        };
+        match self.state {
+            State::Poisoned => return Err(PspError::Poisoned),
+            State::Finished => return Err(PspError::Finished),
+            State::Ready => {}
+        }
+        // Sticky until the transaction completed: the PSP may still read or
+        // write the buffer.
+        self.state = State::Poisoned;
+        let buffer = self.storage.0.as_mut_ptr().cast::<C2pBuffer<C>>();
+        // SAFETY: the storage is aligned and large enough (checked above),
+        // exclusively ours and no transaction is pending on it.
+        let buffer = unsafe {
+            buffer.write(C2pBuffer::new(request));
+            &mut *buffer
+        };
+        if C::ID == super::command::BootDone::ID {
+            // Never retried, whatever the outcome.
+            self.state = State::Finished;
+            return self.mailbox.send(timer, buffer).map(|()| *buffer);
+        }
+        self.mailbox.send(timer, buffer)?;
+        self.state = State::Ready;
+        Ok(*buffer)
+    }
+
+    /// Whether BootDone was sent.
+    pub fn finished(&self) -> bool {
+        self.state == State::Finished
     }
 }
 
@@ -426,14 +582,14 @@ pub(crate) mod model {
 mod tests {
     use super::model::{Model, NoDelay};
     use super::*;
-    use crate::sp3::psp::command::{BootDone, DisableDrtm, Header, LockDfReg};
+    use crate::psp::command::{BootDone, DisableDrtm, Header, LockDfReg};
 
     const READY: u32 = 0x8000_0000;
 
     #[test]
     fn sends_buffer_and_command() {
         let model = Model::new(READY, |_, _| 0);
-        let mbox = Mailbox::new(&model, Generation::Rome);
+        let mbox = Mailbox::new(&model, Variant::Ssp);
         let mut buf = C2pBuffer::new(LockDfReg);
         mbox.send(&NoDelay, &mut buf).unwrap();
         let addr = core::ptr::from_ref(&buf) as u64;
@@ -444,7 +600,7 @@ mod tests {
 
     #[test]
     fn recovery_is_refused() {
-        for generation in [Generation::Rome, Generation::Milan] {
+        for generation in [Variant::Ssp, Variant::Gn] {
             let model = Model::new(READY | 1 << 30, |_, _| 0);
             let mbox = Mailbox::new(&model, generation);
             let err = mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone));
@@ -453,13 +609,13 @@ mod tests {
         }
         // Naples: recovery iff bit 30 without bit 29.
         let model = Model::new(READY | 1 << 30, |_, _| 0);
-        let mbox = Mailbox::new(&model, Generation::Naples);
+        let mbox = Mailbox::new(&model, Variant::Zp);
         assert_eq!(
             mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)),
             Err(PspError::Recovery)
         );
         let model = Model::new(READY | 3 << 29, |_, _| 0);
-        let mbox = Mailbox::new(&model, Generation::Naples);
+        let mbox = Mailbox::new(&model, Variant::Zp);
         assert_eq!(mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)), Ok(()));
     }
 
@@ -467,12 +623,17 @@ mod tests {
     fn naples_waits_for_boot_bits_bounded() {
         let model = Model::new(READY | 1 << 29, |_, _| 0);
         model.0.borrow_mut().busy_polls = 5;
-        let mbox = Mailbox::new(&model, Generation::Naples);
+        let mbox = Mailbox::new(&model, Variant::Zp);
         mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)).unwrap();
 
-        // Bit 29/30 never set: bounded.
+        // A Zeppelin PSP showing only READY passes.
         let model = Model::new(READY, |_, _| 0);
-        let mbox = Mailbox::new(&model, Generation::Naples).with_timeout(100);
+        let mbox = Mailbox::new(&model, Variant::Zp);
+        mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)).unwrap();
+
+        // Bits 29-31 never set: bounded.
+        let model = Model::new(0, |_, _| 0);
+        let mbox = Mailbox::new(&model, Variant::Zp).with_timeout(100);
         assert_eq!(
             mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)),
             Err(PspError::Timeout(Wait::Boot))
@@ -483,7 +644,7 @@ mod tests {
     fn done_wait_is_bounded() {
         let model = Model::new(READY, |_, _| 0);
         model.0.borrow_mut().hang = true;
-        let mbox = Mailbox::new(&model, Generation::Milan).with_timeout(1000);
+        let mbox = Mailbox::new(&model, Variant::Gn).with_timeout(1000);
         assert_eq!(
             mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)),
             Err(PspError::Timeout(Wait::Done))
@@ -498,24 +659,102 @@ mod tests {
             let mut buf = C2pBuffer::new(LockDfReg);
             (mbox.send(&NoDelay, &mut buf), buf.header.status)
         };
-        assert_eq!(failing(Generation::Naples), (Ok(()), 0));
         let status = Err(PspError::Status {
             command: 0x1b,
             status: 5,
         });
-        assert_eq!(failing(Generation::Rome), (status, 5));
-        assert_eq!(failing(Generation::Milan), (status, 0));
+        // AGESA Naples ignores it; fail closed as the native Zeppelin flow.
+        assert_eq!(failing(Variant::Zp), (status, 0));
+        assert_eq!(failing(Variant::Ssp), (status, 5));
+        assert_eq!(failing(Variant::Gn), (status, 0));
+    }
+
+    #[test]
+    fn a_session_poisons_on_failure_and_ends_with_boot_done() {
+        use crate::psp::command::{BootDone, Default32, LockDfReg};
+        fn storage() -> &'static mut Storage {
+            std::boxed::Box::leak(std::boxed::Box::new(Storage::new()))
+        }
+        let model = Model::new(READY, |_, _| 0);
+        let mut session = Session::new(Mailbox::new(&model, Variant::Rv), storage()).unwrap();
+        let buffer = session
+            .send(&NoDelay, Default32::<LockDfReg>::new())
+            .unwrap();
+        // The native 32-byte default buffer.
+        assert_eq!(buffer.header.size, 32);
+        session
+            .send(&NoDelay, Default32::<BootDone>::new())
+            .unwrap();
+        assert!(session.finished());
+        assert_eq!(
+            session.send(&NoDelay, Default32::<LockDfReg>::new()).err(),
+            Some(PspError::Finished)
+        );
+        assert_eq!(model.0.borrow().log.len(), 2);
+
+        let hung = Model::new(READY, |_, _| 0);
+        hung.0.borrow_mut().hang = true;
+        let mailbox = Mailbox::new(&hung, Variant::Rv).with_timeout(100);
+        let mut session = Session::new(mailbox, storage()).unwrap();
+        assert_eq!(
+            session.send(&NoDelay, Default32::<LockDfReg>::new()).err(),
+            Some(PspError::Timeout(Wait::Done))
+        );
+        assert_eq!(
+            session.send(&NoDelay, Default32::<LockDfReg>::new()).err(),
+            Some(PspError::Poisoned)
+        );
+    }
+
+    #[test]
+    fn recovery_or_an_unavailable_aperture_during_completion_fails() {
+        // Recovery firmware shows no pending command, which a completion
+        // wait on COMMAND alone would take as done.
+        for (value, error) in [
+            (1 << 30, PspError::Recovery),
+            (u32::MAX, PspError::Unavailable),
+        ] {
+            let model = Model::new(value, |_, _| 0);
+            for variant in [Variant::Rv, Variant::Ssp, Variant::Gn] {
+                let mbox = Mailbox::new(&model, variant);
+                let done = |v| C2P_CMD::COMMAND.read(v) == 0;
+                assert_eq!(mbox.wait(&NoDelay, Wait::Done, done), Err(error));
+            }
+        }
+    }
+
+    #[test]
+    fn rv_checks_the_command_and_the_header_status() {
+        let send = |cmd, header_status: u32| {
+            let model = Model::new(cmd, move |_, buffer| {
+                // The PSP writes the header status of the buffer it got.
+                unsafe { (buffer as *mut u32).add(1).write_volatile(header_status) };
+                0
+            });
+            let mbox = Mailbox::new(&model, Variant::Rv);
+            mbox.send(&NoDelay, &mut C2pBuffer::new(LockDfReg))
+        };
+        assert_eq!(send(READY, 0), Ok(()));
+        assert_eq!(
+            send(READY, 7),
+            Err(PspError::Status {
+                command: 0x1b,
+                status: 7
+            })
+        );
+        assert_eq!(send(u32::MAX, 0), Err(PspError::Unavailable));
+        assert_eq!(send(READY | 1 << 30, 0), Err(PspError::Recovery));
     }
 
     #[test]
     fn milan_only_commands_fail_closed() {
         let model = Model::new(READY, |_, _| 0);
-        let mbox = Mailbox::new(&model, Generation::Rome);
+        let mbox = Mailbox::new(&model, Variant::Ssp);
         assert_eq!(
             mbox.send(&NoDelay, &mut C2pBuffer::new(DisableDrtm::new())),
             Err(PspError::Unsupported {
                 command: 0x62,
-                generation: Generation::Rome
+                generation: Variant::Ssp
             })
         );
     }

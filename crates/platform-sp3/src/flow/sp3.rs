@@ -33,7 +33,7 @@ use fstart_driver_amd::sp3::nbio::fuse::Fuses;
 use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
-use fstart_driver_amd::sp3::psp::bar::BAR_SIZE;
+use fstart_driver_amd::sp3::psp_bar::BAR_SIZE;
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
@@ -174,7 +174,7 @@ pub(crate) fn nbio_early(ctx: &mut Ctx) -> Silicon {
         let bar = nbios[i].psp_bar().or_halt("PSP BAR");
         if rb.socket == 0 {
             ctx.psp_bar = bar;
-            msr().write(fstart_driver_amd::sp3::psp::bar::MSR_PSP_ADDR, bar);
+            msr().write(fstart_driver_amd::sp3::psp_bar::MSR_PSP_ADDR, bar);
         }
     }
     if generation == Generation::Milan {

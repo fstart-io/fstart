@@ -777,11 +777,9 @@ fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
     #[cfg(feature = "rome")]
     if ctx.generation == Generation::Rome && (1..=2).contains(&ctx.topology.sockets) {
         use fstart_driver_amd::{
+            psp::ras,
             smn::Smn,
-            sp3::{
-                df::{self, Target, v3},
-                psp::ras,
-            },
+            sp3::df::{self, Target, v3},
         };
         let mut config = crate::smm::EinjConfig {
             sockets: ctx.topology.sockets,
@@ -925,7 +923,7 @@ pub(crate) fn enumerate(ctx: &Ctx) -> Vec<fstart_pci::PciEcam> {
 /// tasks, DF extended config off, PSP LockDFReg, Milan DRTM off and TPM
 /// establishment reset, BootDone last.
 fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) {
-    use fstart_driver_amd::sp3::psp::command::{BootDone, C2pBuffer, LockDfReg};
+    use fstart_driver_amd::psp::command::{BootDone, C2pBuffer, LockDfReg};
     fch::common::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
     S::fch_late(ctx, si);
     program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
@@ -934,7 +932,7 @@ fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) {
         .or_halt("PSP LockDFReg");
     #[cfg(feature = "milan")]
     if ctx.generation == Generation::Milan {
-        use fstart_driver_amd::sp3::psp::command::{DisableDrtm, ResetTpmEstablishment};
+        use fstart_driver_amd::psp::command::{DisableDrtm, ResetTpmEstablishment};
         psp.send(&ctx.timer, &mut C2pBuffer::new(DisableDrtm::new()))
             .or_halt("PSP DisableDrtm");
         // SAFETY: the TPM locality-0 page; all-ones means no TPM.
@@ -951,15 +949,16 @@ fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) {
 /// Socket 0's C2P mailbox through its PSP BAR.
 pub(crate) fn psp(
     ctx: &Ctx,
-) -> fstart_driver_amd::sp3::psp::mailbox::Mailbox<
-    fstart_driver_amd::sp3::psp::mailbox::MmioTransport,
-> {
-    use fstart_driver_amd::sp3::psp::mailbox::{Mailbox, MmioTransport};
+) -> fstart_driver_amd::psp::mailbox::Mailbox<fstart_driver_amd::psp::mailbox::MmioTransport> {
+    use fstart_driver_amd::psp::mailbox::{Mailbox, MmioTransport};
     if ctx.psp_bar == 0 {
         fail("PSP BAR");
     }
     // SAFETY: the BAR NBIO programmed; the flow owns the mailbox.
-    Mailbox::new(unsafe { MmioTransport::new(ctx.psp_bar) }, ctx.generation)
+    Mailbox::new(
+        unsafe { MmioTransport::new(ctx.psp_bar) },
+        ctx.generation.into(),
+    )
 }
 
 /// Every online thread's APIC ID, BSP (CPU 0) first.

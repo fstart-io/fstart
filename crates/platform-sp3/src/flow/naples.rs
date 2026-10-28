@@ -27,7 +27,7 @@ use fstart_driver_amd::sp3::nbio::fuse::Fuses;
 use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::nbio::{Nbio, naples as nbio_naples};
-use fstart_driver_amd::sp3::psp::bar::BAR_SIZE;
+use fstart_driver_amd::sp3::psp_bar::BAR_SIZE;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
@@ -113,7 +113,7 @@ pub(crate) fn nbio_early(ctx: &mut Ctx) -> Silicon {
         n.set_psp_bar(ctx.non_pci[i].alloc(BAR_SIZE).or_halt("PSP BAR space"));
     }
     ctx.psp_bar = nbios[0].psp_bar().or_halt("PSP BAR");
-    msr().write(fstart_driver_amd::sp3::psp::bar::MSR_PSP_ADDR, ctx.psp_bar);
+    msr().write(fstart_driver_amd::sp3::psp_bar::MSR_PSP_ADDR, ctx.psp_bar);
     Silicon {
         nbios,
         smus: heapless::Vec::new(),

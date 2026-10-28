@@ -6,7 +6,7 @@
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::sp3::soc::Generation;
+use super::Variant;
 
 /// Buffer header.
 #[derive(
@@ -29,7 +29,7 @@ pub trait Command: Copy + FromBytes + IntoBytes + Immutable {
 
     /// Whether a donor of `generation` sends this command; the mailbox
     /// refuses the others.
-    fn supported(generation: Generation) -> bool;
+    fn supported(generation: Variant) -> bool;
 }
 
 /// A command buffer as the PSP reads it.
@@ -52,6 +52,38 @@ impl<C: Command> C2pBuffer<C> {
     }
 }
 
+/// A header-only command in the 32-byte default buffer of the native RV
+/// and ZP flows: header, a value the PSP may answer in, and zeros. SP3's
+/// AGESA sends the bare header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C)]
+pub struct Default32<C> {
+    command: core::marker::PhantomData<C>,
+    pub value: zerocopy::little_endian::U32,
+    reserved: [u8; 20],
+}
+impl<C: Command> Default32<C> {
+    pub const fn new() -> Self {
+        Self {
+            command: core::marker::PhantomData,
+            value: zerocopy::little_endian::U32::ZERO,
+            reserved: [0; 20],
+        }
+    }
+}
+impl<C: Command> Default for Default32<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl<C: Command> Command for Default32<C> {
+    const ID: u8 = C::ID;
+    const NAME: &'static str = C::NAME;
+    fn supported(generation: Variant) -> bool {
+        C::supported(generation)
+    }
+}
+
 macro_rules! header_only {
     ($(#[$doc:meta])* $name:ident = $id:literal, $agesa:literal, |$g:ident| $supported:expr) => {
         $(#[$doc])*
@@ -63,7 +95,7 @@ macro_rules! header_only {
             const ID: u8 = $id;
             const NAME: &'static str = $agesa;
 
-            fn supported($g: Generation) -> bool {
+            fn supported($g: Variant) -> bool {
                 $supported
             }
         }
@@ -89,7 +121,7 @@ header_only!(
     /// Naples only, from the SMM capsule hook (PSP_APOB §3.3).
     ClearSmmLock = 0x1c,
     "ClearSmmLock",
-    |g| g == Generation::Naples
+    |g| g == Variant::Zp
 );
 header_only!(
     /// Milan FCH lock, sent from the SW SMI 0xD2 handler with the SMM flag
@@ -98,21 +130,21 @@ header_only!(
     /// "LockFCHReg".
     LockFchReg = 0x30,
     "LockFCHReg",
-    |g| g == Generation::Milan
+    |g| g == Variant::Gn
 );
 header_only!(
     /// The second "LockFCHReg" command of the Milan D2 handler (see
     /// [`LockFchReg`]); its gate flag was not traced.
     LockFchReg3a = 0x3a,
     "LockFCHReg",
-    |g| g == Generation::Milan
+    |g| g == Variant::Gn
 );
 header_only!(
     /// Milan ReadyToBoot when DRTM is off: sent only if a TPM answers at
     /// `0xfed40000` (dword != 0xffffffff) (PSP_APOB §3.3).
     ResetTpmEstablishment = 0x61,
     "ResetTpmEstablishment",
-    |g| g == Generation::Milan
+    |g| g == Variant::Gn
 );
 
 /// A register the PSP touches to raise or check its SMI (SmmInfo).
@@ -160,7 +192,7 @@ pub const P2C_BUFFER_SIZE: u64 = 0x2000;
 pub const P2C_HEADER1_MILAN: u32 = 0x8000_0000;
 
 /// SmmInfo (0x02): where SMRAM is, how the PSP raises its SMI and where the
-/// SMM-side buffers are. Identical on all three generations (PSP_APOB §3.4,
+/// SMM-side buffers are. Identical on every generation (PSP_APOB §3.4,
 /// AmdPspP2CmboxV2Ssp `0x2068`, decompiler-only); header size 0x110.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
@@ -188,7 +220,8 @@ pub struct SmmInfo {
 }
 
 impl SmmInfo {
-    /// The AGESA values for the SP3 FCH. `smm_addr`/`smm_mask` are the raw
+    /// The AGESA values; the FCH SMI registers are at the same addresses on
+    /// every Family 17h FCH. `smm_addr`/`smm_mask` are the raw
     /// MSR values; `p2c_buffer` is [`P2C_BUFFER_SIZE`] bytes and
     /// `c2p_smm_buffer` one 4 KiB page, both in SMRAM.
     ///
@@ -215,7 +248,7 @@ impl Command for SmmInfo {
     const ID: u8 = 0x02;
     const NAME: &'static str = "SmmInfo";
 
-    fn supported(_: Generation) -> bool {
+    fn supported(_: Variant) -> bool {
         true
     }
 }
@@ -231,7 +264,7 @@ impl Command for SxInfo {
     const ID: u8 = 0x03;
     const NAME: &'static str = "SxInfo";
 
-    fn supported(_: Generation) -> bool {
+    fn supported(_: Variant) -> bool {
         true
     }
 }
@@ -249,7 +282,7 @@ impl Command for QueryCaps {
     const ID: u8 = 0x05;
     const NAME: &'static str = "QueryCaps";
 
-    fn supported(_: Generation) -> bool {
+    fn supported(_: Variant) -> bool {
         true
     }
 }
@@ -268,8 +301,8 @@ impl Command for PspCapsQuery {
     const ID: u8 = 0x27;
     const NAME: &'static str = "PspCapsQuery";
 
-    fn supported(generation: Generation) -> bool {
-        generation == Generation::Milan
+    fn supported(generation: Variant) -> bool {
+        generation == Variant::Gn
     }
 }
 
@@ -304,8 +337,8 @@ impl Command for BiosDisablePsb {
     const ID: u8 = 0x4a;
     const NAME: &'static str = "BiosDisablePsb";
 
-    fn supported(generation: Generation) -> bool {
-        matches!(generation, Generation::Rome | Generation::Milan)
+    fn supported(generation: Variant) -> bool {
+        matches!(generation, Variant::Ssp | Variant::Gn)
     }
 }
 
@@ -333,8 +366,8 @@ impl Command for DisableDrtm {
     const ID: u8 = 0x62;
     const NAME: &'static str = "DisableDrtmCapability";
 
-    fn supported(generation: Generation) -> bool {
-        generation == Generation::Milan
+    fn supported(generation: Variant) -> bool {
+        generation == Variant::Gn
     }
 }
 
@@ -346,6 +379,8 @@ mod tests {
     #[test]
     fn header_sizes_match_agesa() {
         assert_eq!(C2pBuffer::new(BootDone).header.size, 8);
+        // The native RV/ZP flows' default buffer.
+        assert_eq!(C2pBuffer::new(Default32::<BootDone>::new()).header.size, 32);
         assert_eq!(C2pBuffer::new(SxInfo { sleep_type: 3 }).header.size, 9);
         assert_eq!(C2pBuffer::new(QueryCaps::default()).header.size, 0xc);
         assert_eq!(C2pBuffer::new(DisableDrtm::new()).header.size, 0xc);

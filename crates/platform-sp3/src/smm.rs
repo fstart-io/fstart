@@ -183,14 +183,14 @@ mod handler {
 
     use fstart_arch::x86::cpu::amd::msr::{SMM_ADDR, SMM_MASK};
     use fstart_arch::x86::cpu::msr::MsrAccess;
+    use fstart_driver_amd::psp::command::{C2pBuffer, P2C_BUFFER_SIZE, SmmInfo};
+    use fstart_driver_amd::psp::mailbox::{Mailbox, MmioTransport};
     use fstart_driver_amd::smn::Smn;
     use fstart_driver_amd::smu::Smu;
     use fstart_driver_amd::sp3::fch::common::sx;
     use fstart_driver_amd::sp3::fch::smi::Source;
     use fstart_driver_amd::sp3::fch::smi::{self, source};
     use fstart_driver_amd::sp3::fch::{Fch, FchHw, Mmio, Ports, Window, acpimmio, update};
-    use fstart_driver_amd::sp3::psp::command::{C2pBuffer, P2C_BUFFER_SIZE, SmmInfo};
-    use fstart_driver_amd::sp3::psp::mailbox::{Mailbox, MmioTransport};
     use fstart_driver_amd::sp3::soc::Generation;
     use fstart_pci::{ConfigRegionAccess, EcamDevice, PciAddress};
     use fstart_smm::{SmmContext, SmmHandler};
@@ -410,7 +410,7 @@ mod handler {
         // SAFETY: the PSP BAR the boot flow programmed and left mapped.
         Mailbox::new(
             unsafe { MmioTransport::new(u64::from(config.psp_bar)) },
-            config.generation,
+            config.generation.into(),
         )
     }
 
@@ -495,7 +495,7 @@ mod handler {
     fn einj_target(
         config: &SmmConfig,
         address: u64,
-    ) -> Option<fstart_driver_amd::sp3::psp::ras::MemoryTarget> {
+    ) -> Option<fstart_driver_amd::psp::ras::MemoryTarget> {
         #[cfg(feature = "rome")]
         if config.generation == Generation::Rome {
             use fstart_driver_amd::sp3::df::{FICAA, regs};
@@ -519,7 +519,7 @@ mod handler {
                 }
                 value
             };
-            let result = fstart_driver_amd::sp3::psp::ras::memory_target(
+            let result = fstart_driver_amd::psp::ras::memory_target(
                 address,
                 config.einj.sockets,
                 |socket, instance, reg| {
@@ -537,7 +537,7 @@ mod handler {
                     let saved = index.get();
                     index.write(
                         FICAA::TARGET_INST.val(u32::from(
-                            instance != fstart_driver_amd::sp3::psp::ras::BROADCAST,
+                            instance != fstart_driver_amd::psp::ras::BROADCAST,
                         )) + FICAA::FUNC.val(u32::from(reg.func))
                             + FICAA::REG.val(u32::from(reg.offset >> 2))
                             + FICAA::INST.val(u32::from(instance)),
@@ -606,7 +606,7 @@ mod handler {
     /// SW SMI D2 (Milan ReadyToBoot): LockFCHReg through the C2P page.
     #[cfg(feature = "milan")]
     fn fch_lock(config: &SmmConfig, timer: &Tsc) {
-        use fstart_driver_amd::sp3::psp::command::LockFchReg;
+        use fstart_driver_amd::psp::command::LockFchReg;
         let page = C2P.0.get().cast::<u8>();
         let buffer = page.cast::<C2pBuffer<LockFchReg>>();
         // SAFETY: the C2P page is SMRAM owned by the rendezvous owner and
@@ -617,7 +617,7 @@ mod handler {
                 &psp(config),
                 timer,
                 &mut *buffer,
-                page.add(fstart_driver_amd::sp3::psp::command::SMM_FLAG_OFFSET as usize),
+                page.add(fstart_driver_amd::psp::command::SMM_FLAG_OFFSET as usize),
             );
         }
     }

@@ -19,7 +19,7 @@ pub mod dxio;
 pub mod fch;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod nbio;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod psp;
 #[cfg(all(test, any(feature = "picasso", feature = "zeppelin")))]
 mod silicon_tests;

@@ -18,7 +18,7 @@ use fstart_driver_amd::sp3::ccx::power::Wdt;
 use fstart_driver_amd::sp3::ccx::release::{Launch, ReleaseError};
 use fstart_driver_amd::sp3::ccx::topology::Thread;
 use fstart_driver_amd::sp3::ccx::{self, ApInputs, Ccx};
-use fstart_driver_amd::sp3::psp::bar::MSR_PSP_ADDR;
+use fstart_driver_amd::sp3::psp_bar::MSR_PSP_ADDR;
 use fstart_driver_amd::sp3::soc::Generation;
 use tock_registers::interfaces::{ReadWriteable, Readable};
 

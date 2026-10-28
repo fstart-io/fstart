@@ -8,7 +8,6 @@ use super::{
     PM_ACPI_SMI_CMD, PM_PCI_CONTROL, PM_RESET_CONTROL1, PciControl, Reg, ResetControl1,
     smi_bank as smi,
 };
-use crate::psp::{SmiRegisters, SmmRegister};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
@@ -51,6 +50,7 @@ const STATUS_COUNT: usize = 5;
 pub const POINTER: AcpiReg<u16, SmiPointer::Register> = smi::at(0x94);
 
 /// Byte offset of SMIxA0 + n and the bit shift of `source` in it.
+#[cfg(test)]
 const fn control_slot(source: u8) -> (usize, u32) {
     ((source / 16) as usize, (source % 16) as u32 * 2)
 }
@@ -205,38 +205,6 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for FchSmi {
         smi.fch
             .reg(TRIGGER0)
             .modify(SmiTrigger0::SMI_DISABLE::CLEAR + SmiTrigger0::EOS::SET);
-    }
-}
-
-/// The SMI registers the PSP uses from its side of SMM: it raises SMIs with
-/// SMIx98[25] and expects SMIs enabled, EOS set and its own source routed to
-/// SMI. Its source isn't routed here, so the PSP can't raise SMIs.
-pub fn psp_registers() -> SmiRegisters {
-    let address = |offset: u32| u64::from(Acpimmio::DIE0.0 + offset);
-    let trigger0 = address(TRIGGER0.offset());
-    let bit = |field: tock_registers::fields::FieldValue<u32, SmiTrigger0::Register>| field.value;
-    let (index, shift) = control_slot(source::PSP);
-    SmiRegisters {
-        trigger: SmmRegister {
-            address: trigger0,
-            mask: bit(SmiTrigger0::PSP::SET),
-            value: bit(SmiTrigger0::PSP::SET),
-        },
-        smi_enable: SmmRegister {
-            address: trigger0,
-            mask: bit(SmiTrigger0::SMI_DISABLE::SET),
-            value: 0,
-        },
-        eos: SmmRegister {
-            address: trigger0,
-            mask: bit(SmiTrigger0::EOS::SET),
-            value: bit(SmiTrigger0::EOS::SET),
-        },
-        psp_smi_enable: SmmRegister {
-            address: address(control(index).offset()),
-            mask: 3 << shift,
-            value: (Mode::Smi as u32) << shift,
-        },
     }
 }
 
@@ -399,19 +367,20 @@ mod tests {
     }
 
     #[test]
-    fn psp_registers_match_the_vendor_smm_info() {
-        let registers = psp_registers();
-        assert_eq!(registers.trigger.address, 0xfed8_0298);
-        assert_eq!(registers.trigger.mask, 1 << 25);
-        assert_eq!(registers.smi_enable.mask, 1 << 31);
-        assert_eq!(registers.eos.value, 1 << 28);
-        assert_eq!(registers.psp_smi_enable.address, 0xfed8_02a8);
+    fn the_psp_smm_info_names_these_smi_registers() {
+        let info = crate::psp::command::SmmInfo::new(0, 0, 0, 0);
+        let trigger0 = u64::from(Acpimmio::DIE0.0 + TRIGGER0.offset());
+        let psp = SmiTrigger0::PSP::SET.value;
+        assert_eq!((info.trigger.address, info.trigger.mask), (trigger0, !psp));
+        assert_eq!(info.trigger.value, psp);
+        assert_eq!(info.smi_enable.mask, SmiTrigger0::SMI_DISABLE::SET.value);
+        assert_eq!(info.eos.value, SmiTrigger0::EOS::SET.value);
+        let (index, shift) = control_slot(source::PSP);
+        let control = u64::from(Acpimmio::DIE0.0 + control(index).offset());
+        assert_eq!(info.psp_smi_control.address, control);
         assert_eq!(
-            (
-                registers.psp_smi_enable.mask,
-                registers.psp_smi_enable.value
-            ),
-            (0xc, 0x4)
+            (info.psp_smi_control.mask, info.psp_smi_control.value),
+            (3 << shift, (Mode::Smi as u32) << shift)
         );
     }
 }

@@ -22,6 +22,16 @@ pub enum Generation {
     Milan,
 }
 
+impl From<Generation> for crate::psp::Variant {
+    fn from(generation: Generation) -> Self {
+        match generation {
+            Generation::Naples => Self::Zp,
+            Generation::Rome => Self::Ssp,
+            Generation::Milan => Self::Gn,
+        }
+    }
+}
+
 impl Generation {
     /// The flash format of this generation's boot ROM and BIOS directory
     /// (EFS generation word, PSP ID, BIOS directory pointer).

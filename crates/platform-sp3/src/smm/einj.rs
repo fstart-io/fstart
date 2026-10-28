@@ -4,12 +4,12 @@
 use crate::einj::*;
 use core::cell::UnsafeCell;
 use fstart_core::services::timer::Timer;
-use fstart_driver_amd::smn::Smn;
-use fstart_driver_amd::sp3::psp::{
+use fstart_driver_amd::psp::{
     command::{C2pBuffer, Command, SMM_FLAG_OFFSET},
     mailbox::{C2pTransport, Mailbox, PspError},
     ras::{Control, CorrectableMemory, MemoryTarget},
 };
+use fstart_driver_amd::smn::Smn;
 use fstart_pci::ConfigRegionAccess;
 
 struct State {
@@ -48,6 +48,11 @@ pub(super) fn status(error: PspError) -> u64 {
         PspError::Timeout(_) => 0x1_0000,
         PspError::Recovery => 0x2_0000,
         PspError::Unsupported { .. } => 0x3_0000,
+        PspError::Unavailable
+        | PspError::Size { .. }
+        | PspError::Poisoned
+        | PspError::Finished
+        | PspError::Placement => 0x4_0000,
     }
 }
 

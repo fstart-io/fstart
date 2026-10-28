@@ -232,8 +232,8 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
     }
     #[cfg(feature = "payload-uefi-basic")]
     let peripherals = S::peripherals::<B>(&ctx);
-    let mut delay = clock;
-    if let Err(what) = psp::lock_df_registers(silicon.psp.as_mut(), &mut delay) {
+    let delay = clock;
+    if let Err(what) = psp::lock_df_registers(silicon.psp.as_mut(), &delay) {
         fail::<S>(what);
     }
     post(&fch, 0x43);
@@ -248,7 +248,7 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
         fail::<S>("parking the APs");
     }
     // SAFETY: the firmware is done with the CPUs and SMM is locked.
-    unsafe { psp::boot_done(silicon.psp.as_mut(), &mut delay) };
+    unsafe { psp::boot_done(silicon.psp.as_mut(), &delay) };
     // SAFETY: CONSOLE was initialized at entry and lives forever.
     let console = unsafe { (*core::ptr::addr_of!(CONSOLE)).assume_init_ref() };
     fstart_log::info!("{}: starting the payload", S::NAME);

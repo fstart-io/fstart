@@ -5,8 +5,8 @@
 //! 6e80 message, 1d4c setup. The primary PSP receives a socket in the
 //! payload; x86 UMC/NBIO accesses must use that socket's SMN endpoint.
 
+use super::Variant;
 use super::command::Command;
-use crate::sp3::soc::Generation;
 use tock_registers::register_bitfields;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -37,8 +37,8 @@ impl Control {
 impl Command for Control {
     const ID: u8 = 0x22;
     const NAME: &'static str = "RasEinj";
-    fn supported(generation: Generation) -> bool {
-        generation == Generation::Rome
+    fn supported(generation: Variant) -> bool {
+        generation == Variant::Ssp
     }
 }
 
@@ -70,8 +70,8 @@ impl CorrectableMemory {
 impl Command for CorrectableMemory {
     const ID: u8 = 0x22;
     const NAME: &'static str = "RasEinj";
-    fn supported(generation: Generation) -> bool {
-        generation == Generation::Rome
+    fn supported(generation: Variant) -> bool {
+        generation == Variant::Ssp
     }
 }
 
@@ -305,13 +305,13 @@ mod tests {
                 4, 0, 0, 0, 0, 0x50, 0x34, 0x12, 0, 0, 0, 0, 0, 0, 0x55, 0, 1, 0, 2, 1
             ]
         );
-        assert!(!Control::supported(Generation::Milan));
+        assert!(!Control::supported(Variant::Gn));
     }
 
     #[test]
     fn smm_mailbox_sequence_and_psp_failure() {
-        use crate::sp3::psp::command::{C2pBuffer, Header};
-        use crate::sp3::psp::mailbox::{
+        use crate::psp::command::{C2pBuffer, Header};
+        use crate::psp::mailbox::{
             Mailbox, PspError,
             model::{Model, NoDelay},
         };
@@ -331,7 +331,7 @@ mod tests {
                 if action == 4 { 5 } else { 0 }
             }
         });
-        let m = Mailbox::new(&model, Generation::Rome);
+        let m = Mailbox::new(&model, Variant::Ssp);
         for control in [Control::ENABLE, Control::BEGIN] {
             unsafe { m.send_in_smm(&NoDelay, &mut C2pBuffer::new(control), flag_ptr) }.unwrap();
             assert_eq!(flag, 0);
