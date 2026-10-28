@@ -7,8 +7,6 @@ use crate::sp3::soc::Generation;
 
 /// Most root bridges a system has: 2 sockets × 4.
 pub const MAX_ROOT_BRIDGES: usize = Generation::MAX_SOCKETS * 4;
-/// Most DF nodes: 2 sockets × 4 dies (Naples).
-pub const MAX_NODES: usize = Generation::MAX_SOCKETS * 4;
 
 /// One DF node: a ZP die (Naples) or an IOD (Rome, Milan).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

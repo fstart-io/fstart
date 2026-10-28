@@ -498,7 +498,7 @@ mod handler {
     ) -> Option<fstart_driver_amd::psp::ras::MemoryTarget> {
         #[cfg(feature = "rome")]
         if config.generation == Generation::Rome {
-            use fstart_driver_amd::df::{FICAA, FICAD_LO, Ficaa};
+            use fstart_driver_amd::df::{FICAA, FICAD_LO, Ficaa, ficaa};
             use fstart_pci::ConfigRegister;
             use tock_registers::interfaces::Writeable;
             // PCI addresses and endpoint buses are bound by the installer.
@@ -533,13 +533,11 @@ mod handler {
                         unsafe { ConfigRegister::<_, Ficaa::Register>::new(Ecam, function, FICAA) };
                     let data = unsafe { ConfigRegister::<_, ()>::new(Ecam, function, FICAD_LO) };
                     let saved = index.get();
-                    index.write(
-                        Ficaa::INSTANCE_ACCESS.val(u32::from(
-                            instance != fstart_driver_amd::psp::ras::BROADCAST,
-                        )) + Ficaa::FUNCTION.val(u32::from(reg.function()))
-                            + Ficaa::REGISTER.val(u32::from(reg.register() >> 2))
-                            + Ficaa::INSTANCE.val(u32::from(instance)),
-                    );
+                    index.write(ficaa(
+                        reg,
+                        instance,
+                        instance != fstart_driver_amd::psp::ras::BROADCAST,
+                    ));
                     let value = data.get();
                     index.set(saved);
                     trace(

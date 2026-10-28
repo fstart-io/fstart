@@ -19,6 +19,7 @@ use core::marker::PhantomData;
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{
     RegisterLongName,
+    fields::FieldValue,
     interfaces::{Readable, Writeable},
     register_bitfields,
 };
@@ -102,6 +103,19 @@ impl<R: RegisterLongName> DfReg<R> {
     }
 }
 
+/// The FICAA value selecting `reg` of fabric instance `instance`; with
+/// `targeted` clear, the access is AGESA's indirect broadcast.
+pub fn ficaa<R: RegisterLongName>(
+    reg: DfReg<R>,
+    instance: u8,
+    targeted: bool,
+) -> FieldValue<u32, Ficaa::Register> {
+    Ficaa::INSTANCE_ACCESS.val(u32::from(targeted))
+        + Ficaa::REGISTER.val(u32::from(reg.offset >> 2))
+        + Ficaa::FUNCTION.val(u32::from(reg.function))
+        + Ficaa::INSTANCE.val(u32::from(instance))
+}
+
 /// Where an access goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -144,12 +158,8 @@ impl<P: ConfigRegionAccess, R: RegisterLongName> DfRegister<P, R> {
         match self.target {
             Target::Node => self.config(self.reg.function, self.reg.offset),
             Target::Instance(instance) => {
-                self.config::<Ficaa::Register>(4, FICAA).write(
-                    Ficaa::INSTANCE_ACCESS::SET
-                        + Ficaa::REGISTER.val(u32::from(self.reg.offset >> 2))
-                        + Ficaa::FUNCTION.val(u32::from(self.reg.function))
-                        + Ficaa::INSTANCE.val(u32::from(instance)),
-                );
+                self.config::<Ficaa::Register>(4, FICAA)
+                    .write(ficaa(self.reg, instance, true));
                 self.config(4, FICAD_LO)
             }
         }

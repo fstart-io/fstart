@@ -22,9 +22,10 @@ use tock_registers::interfaces::Readable;
 #[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 use super::Version;
 use super::{BusRange, Df};
+use crate::df::MAX_NODES;
 use crate::df::regs;
 use crate::sp3::soc::Generation;
-use crate::sp3::topology::{MAX_NODES, MAX_ROOT_BRIDGES, Node, RootBridge};
+use crate::sp3::topology::{MAX_ROOT_BRIDGES, Node, RootBridge};
 
 /// Milan IOMS fuse: SMN 0x5D148 bit `11 + i` set = IOMS `i` absent
 /// (SOC_DF §3.9, AmdSocSp3GnPei entry, IC).
@@ -57,7 +58,7 @@ pub struct Topology {
     pub generation: Generation,
     pub sockets: u8,
     /// DF nodes, socket-major.
-    pub nodes: Vec<Node, MAX_NODES>,
+    pub nodes: Vec<Node, { MAX_NODES as usize }>,
     /// Root bridges in physical order (socket, then die/IOMS index).
     pub root_bridges: Vec<RootBridge, MAX_ROOT_BRIDGES>,
 }
