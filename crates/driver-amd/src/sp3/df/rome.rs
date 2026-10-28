@@ -8,7 +8,7 @@ use tock_registers::interfaces::{ReadWriteable, Writeable};
 use super::Df;
 use super::topology::Topology;
 use super::v3::{self, CCM_F4XC8, ChannelCtl, RasFields, SCRUB_BASE, SCRUB_LIMIT, SocketMemory};
-use crate::sp3::soc::Revision;
+use crate::cpu::Revision;
 
 /// Rome policy; `Default` is the donor (rome-s8030-v404) default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

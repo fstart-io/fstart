@@ -6,14 +6,12 @@
 //! APOB; everything x86 does after that is native: Data Fabric, NBIO, SMU,
 //! DXIO (PCIe), CCX and the Taishan FCH. Every die has its own DF, NBIO, SMU
 //! and FCH; SP4r2 has one die, SP4 two.
-pub mod identity;
 #[cfg(test)]
 pub(crate) mod test_pci;
 
 use super::Soc;
 use crate::fch::gpio::{Bank, FAMILY17H_EVENTS};
 use fstart_driver_i2c::designware::{Speed, Timing};
-pub use identity::{Package, Revision};
 
 /// The Zeppelin SoC: [`crate::ccx::zeppelin`], [`crate::df::zeppelin`],
 /// [`crate::nbio::zeppelin`], [`crate::dxio::zeppelin`], [`crate::smu::v9`]

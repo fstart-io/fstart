@@ -11,7 +11,8 @@ use super::{
     cache::CacheControl,
     msr::{self, DpmCfg, MsrUpdate},
 };
-use crate::soc::zeppelin::{ECAM, ECAM_BUSES, MAX_DIES, Revision};
+use crate::cpu::Revision;
+use crate::soc::zeppelin::{ECAM, ECAM_BUSES, MAX_DIES};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
 mod tables;
@@ -56,7 +57,7 @@ pub type MsrRecord = MsrUpdate<(Scope, u8)>;
 /// The reset register table of the vendor CCX code, for this thread.
 pub fn msr_table(revision: Revision, thread: Thread) -> impl Iterator<Item = MsrUpdate> {
     let applies = move |&(scope, revisions): &(Scope, u8)| {
-        (revisions == 0 || revisions & revision.mask() != 0)
+        (revisions == 0 || revisions & revision.zp_mask() != 0)
             && match scope {
                 Scope::Thread => true,
                 Scope::Core => thread.core_primary(),
@@ -146,16 +147,16 @@ mod tests {
     fn table_scope_and_revision_filtering() {
         // Thread 1 of core 0 on B2: only the per-thread records.
         let cpu = cpu([]);
-        bsp_init(&cpu, Revision::B2, Thread::from_cpuid(1 << 24, 1 << 8));
+        bsp_init(&cpu, Revision::ZpB2, Thread::from_cpuid(1 << 24, 1 << 8));
         assert_eq!(cpu.borrow().writes.len(), 3);
         // The first thread of the second complex of die 1 gets every B2 record.
         let cpu = self::cpu([]);
         let thread = Thread::from_cpuid(0x18 << 24, 1 << 8);
         assert!(thread.complex_primary() && thread.core_primary() && thread.die() == 1);
-        bsp_init(&cpu, Revision::B2, thread);
+        bsp_init(&cpu, Revision::ZpB2, thread);
         let applicable = MSR_TABLE
             .iter()
-            .filter(|r| r.when.1 == 0 || r.when.1 & Revision::B2.mask() != 0)
+            .filter(|r| r.when.1 == 0 || r.when.1 & Revision::ZpB2.zp_mask() != 0)
             .count();
         assert_eq!(cpu.borrow().writes.len(), applicable);
         assert_eq!(get(&cpu, 0xc0011093), 0x480060); // the B1/B2 variant
@@ -172,7 +173,7 @@ mod tests {
             (mca_misc0(15).index(), 0xff00_0001),
         ]);
         let policy = CpuPolicy {
-            revision: Revision::B2,
+            revision: Revision::ZpB2,
             psp_bars: [0xe010_0000, 0xd010_0000],
             cac_weights: Some(core::array::from_fn(|i| i as u64 * 3)),
         };
@@ -236,28 +237,28 @@ mod tests {
         let cases = [
             (
                 0x10,
-                Revision::B2,
+                Revision::ZpB2,
                 (1 << 21) | (1 << 23),
                 (134, 0x4329f304954015ca),
                 (22, 0x38e81d7893c4f837),
             ),
             (
                 0x3,
-                Revision::B2,
+                Revision::ZpB2,
                 (1 << 21) | (1 << 22),
                 (57, 0xd1e292fa4458145c),
                 (3, 0x1edfe4c9b53c7328),
             ),
             (
                 0x18,
-                Revision::B1,
+                Revision::ZpB1,
                 1 << 21,
                 (124, 0x79490a5d34fc463),
                 (20, 0x49fbbac9039bf8ea),
             ),
             (
                 0,
-                Revision::A0,
+                Revision::ZpA0,
                 0,
                 (130, 0x92cedecea808ffcf),
                 (22, 0xf039cdd47bebd5ed),

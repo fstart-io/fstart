@@ -13,6 +13,7 @@ use crate::{
     noncar::{acpi::HostBridge, layout::Region, pci::Root},
 };
 use fstart_arch::x86::cpu::msr::testing::MsrSpace;
+use fstart_driver_amd::cpu::{Package, Revision};
 use fstart_driver_amd::{
     apob::{self, Apob},
     df::{self, map},
@@ -25,7 +26,7 @@ use fstart_driver_amd::{
     },
     soc::{
         testing::{Hw, low},
-        zeppelin::{Die, NONPCI_MMIO_SIZE, Package, Revision},
+        zeppelin::{Die, NONPCI_MMIO_SIZE},
     },
 };
 use fstart_pci::{PCI_BAR0, PCI_PRIMARY_BUS, PciAddress, PciEcam};
@@ -211,7 +212,7 @@ fn mj11_ec1_flow_on(hw: &Hw, dma: usize) -> State {
         },
     };
     let identity = Identity {
-        revision: Revision::B2,
+        revision: Revision::ZpB2,
         package: Package::Sp4r2,
     };
     flow(
@@ -269,7 +270,7 @@ fn sp4_flow_on(hw: &Hw, dma: usize) -> State {
         },
     };
     let identity = Identity {
-        revision: Revision::B2,
+        revision: Revision::ZpB2,
         package: Package::Sp4,
     };
     flow(

@@ -13,7 +13,7 @@ use tock_registers::register_bitfields;
 use super::topology::Topology;
 use super::v2::{self, CCM_INSTANCES, CS_INSTANCES, IOMS_INSTANCE, PIE_INSTANCE};
 use super::{COMPONENT_CNT, DRAM_HOLE, Df, FBICNT, GLOBAL_CTRL, Reg, or_bits, regs};
-use crate::sp3::soc::Revision;
+use crate::cpu::Revision;
 
 /// Naples policy; `Default` is the donor (naples-s8026-v202) default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

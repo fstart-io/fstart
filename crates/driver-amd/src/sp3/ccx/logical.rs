@@ -9,7 +9,8 @@
 //! Naples has no core logical ID (its 11-opcode engine has no core guard);
 //! Rome and Milan add one per core microarchitecture (Zen 2, Zen 3).
 
-use crate::sp3::soc::{Revision, Unsupported, identify};
+use crate::cpu::{Revision, Unsupported};
+use crate::sp3::soc::identify;
 
 /// One logical ID: a family bit and a revision bit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

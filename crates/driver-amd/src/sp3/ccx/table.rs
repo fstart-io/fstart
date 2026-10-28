@@ -230,8 +230,8 @@ pub fn apply<M: MsrAccess + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::Revision;
     use crate::sp3::ccx::logical::{gn, ssp};
-    use crate::sp3::soc::Revision;
     use fstart_arch::x86::cpu::msr::testing::MsrSpace;
 
     const TABLE: &[Record] = &[

@@ -8,10 +8,11 @@ use super::{
     Df, DfReg,
     map::{self, DramBase},
 };
+use crate::cpu::Revision;
 use crate::{
     apob::{self, Apob},
     soc::Soc,
-    soc::zeppelin::{NONPCI_MMIO_SIZE, Revision, Zeppelin},
+    soc::zeppelin::{NONPCI_MMIO_SIZE, Zeppelin},
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -148,7 +149,7 @@ fn pie_ras_init(df: &Df<impl ConfigRegionAccess>) {
 /// AmdFabricZpPei, per die.
 pub fn early_init(df: &Df<impl ConfigRegionAccess>, dies: u8, revision: Revision) {
     clock_gating(df, dies == 1);
-    ccm_ioms_init(df, revision == Revision::A0);
+    ccm_ioms_init(df, revision == Revision::ZpA0);
     pie_ras_init(df);
 }
 
@@ -264,7 +265,7 @@ pub fn late_init(
     let mut v = pwr_300.get();
     v &= !((1 << 5) | (1 << 12) | (1 << 14) | (1 << 15));
     v |= bit(apob_flag, 1 << 5) | (1 << 13);
-    let early_rev = matches!(revision, Revision::A0 | Revision::B0 | Revision::B1);
+    let early_rev = matches!(revision, Revision::ZpA0 | Revision::ZpB0 | Revision::ZpB1);
     v |= bit(!(dies > 1 && early_rev), 1 << 12);
     v |= bit(multi_die, 1 << 14) | bit(sockets > 1, 1 << 15);
     pwr_300.set(v);

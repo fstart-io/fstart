@@ -12,9 +12,10 @@ pub mod pptable;
 
 use fstart_core::services::Timer;
 
+use crate::cpu::Revision;
 use crate::smn::SmnReg;
 use crate::smu::{ARGUMENT_COUNT, Error as SmuError, Mailbox, SmuMessages, send_addr, send1};
-use crate::sp3::soc::{Generation, Revision};
+use crate::sp3::soc::Generation;
 
 /// V11 mailbox (`smu.v11.mailbox`; Oxide `milan/smu.h` agrees).
 pub const MAILBOX: Mailbox = Mailbox {

@@ -5,8 +5,8 @@
 //! report FCH_TAISHAN, cold path, vendor defaults).
 use crate::ccx::tsc::DelayNs;
 use crate::{
+    cpu::Package,
     smn::{Smn, SmnReg},
-    soc::zeppelin::Package,
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{

@@ -18,7 +18,7 @@ pub mod tables;
 use fstart_pci::ConfigRegionAccess;
 
 use super::{Nbio, NbioPolicy};
-use crate::sp3::soc::Revision;
+use crate::cpu::Revision;
 
 /// Property bits of the legacy tables (../sp4r2 NBIO_BASE_ZP §3.2).
 pub mod property {

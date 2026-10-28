@@ -12,11 +12,12 @@ use super::{
     usb::{self, ResetControl},
 };
 use crate::ccx::tsc::DelayNs;
+use crate::cpu::Package;
 use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
     df::map::{self, IoBase, IoLimit},
     smn::{Smn, SmnReg},
-    soc::zeppelin::{Die, Package},
+    soc::zeppelin::Die,
     table,
 };
 use fstart_pci::{ConfigRegionAccess, PciAddress};

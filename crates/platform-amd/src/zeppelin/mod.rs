@@ -7,6 +7,7 @@ pub mod silicon;
 mod tests;
 
 use crate::noncar::{self, Board, Ctx, Silicon, Stop, Tp1, layout::Region, mp, psp, smm};
+use fstart_driver_amd::cpu::{Package, Revision};
 use fstart_driver_amd::{
     ccx,
     dxio::{self, Descriptor},
@@ -16,7 +17,7 @@ use fstart_driver_amd::{
         smi::FchSmi,
         taishan::{self, Devices, irq::Route},
     },
-    soc::zeppelin::{self as soc, MAX_DIES, Package, Revision, Zeppelin},
+    soc::zeppelin::{self as soc, MAX_DIES, Zeppelin},
 };
 use silicon::{Dma, Identity, SmuPages, SmuPolicy};
 
@@ -119,7 +120,9 @@ impl noncar::Soc for Zeppelin {
         silicon::fch_early_init(fch, config);
         let (ext_eax, ext_ebx, _, _) = fstart_arch::x86::cpuid(0x8000_0001);
         let package = Package::from_cpuid(ext_ebx);
-        let revision = Revision::from_cpuid(ext_eax);
+        let revision = Revision::from_signature(ext_eax)
+            .ok()
+            .filter(|revision| revision.zp());
         fstart_log::info!(
             "fstart: AMD Zeppelin {}, package {}, TSC {} MHz",
             revision.map_or("unknown", Revision::name),

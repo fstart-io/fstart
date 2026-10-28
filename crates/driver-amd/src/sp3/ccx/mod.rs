@@ -52,7 +52,8 @@ pub mod zen3;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
 use crate::ccx::microcode::{self, Load, Patch};
-use crate::sp3::soc::{Generation, Identity, Revision};
+use crate::cpu::Revision;
+use crate::sp3::soc::{Generation, Identity};
 use logical::LogicalId;
 use power::{CstatePolicy, Wdt};
 use security::{RmpPlan, SnpPolicy};

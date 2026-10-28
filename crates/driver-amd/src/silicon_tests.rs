@@ -3,6 +3,7 @@
 //! host model of the dies ([`crate::soc::testing`]). The fingerprints pin
 //! the sequences the hardware was tested with.
 extern crate std;
+use crate::cpu::{Package, Revision};
 use crate::soc::testing::*;
 use fstart_pci::PciAddress;
 use std::vec::Vec;
@@ -27,7 +28,7 @@ mod zeppelin {
             threads::{self, Policy},
             v9 as smu,
         },
-        soc::zeppelin::{Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Package, Revision},
+        soc::zeppelin::{Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP},
     };
 
     const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
@@ -99,10 +100,10 @@ mod zeppelin {
             2
         );
         for die in &dies {
-            df::zeppelin::early_init(&die.df(), 2, Revision::B2);
+            df::zeppelin::early_init(&die.df(), 2, Revision::ZpB2);
         }
         let fch0 = Fch::new(pci, Acpimmio::DIE0);
-        taishan::reset_init(&fch0, Revision::B2);
+        taishan::reset_init(&fch0, Revision::ZpB2);
         taishan::sata::reset(&dies[0].smn(), &mut delay);
         taishan::multi::reset(
             pci,
@@ -112,7 +113,7 @@ mod zeppelin {
             &mut delay,
         );
         for die in &dies {
-            nbio::zeppelin::early_init(die, Revision::B2);
+            nbio::zeppelin::early_init(die, Revision::ZpB2);
             let _ = iohc::map_psp(&die.smn(), nonpci[usize::from(die.index())] + NONPCI_PSP);
         }
         smu::print_name(&dies[0], &mut delay);

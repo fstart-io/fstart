@@ -120,7 +120,7 @@ pub fn all_threads<M: MsrAccess + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::soc::Revision;
+    use crate::cpu::Revision;
     use fstart_arch::x86::cpu::msr::testing::MsrSpace;
 
     #[test]

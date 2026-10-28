@@ -7,9 +7,10 @@ use super::{
     iohc::{NB_BUS_NUM_CNTL, NbBusNumCntl},
     pcie::{self, PCIE_PORTS_PER_CORE},
 };
+use crate::cpu::Revision;
 use crate::{
     smn::{Reg, Smn, SmnReg, apply, copy, rmw},
-    soc::zeppelin::{Die, Revision},
+    soc::zeppelin::Die,
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -96,7 +97,7 @@ fn die_init(smn: &Smn<impl ConfigRegionAccess>, die: u8, bus: u8, revision: Revi
     apply(smn, IOMMU.iter().copied());
 
     // ZP A0/B0/B1 only: vendor PCD 0xb9 (0).
-    if matches!(revision, Revision::A0 | Revision::B0 | Revision::B1) {
+    if matches!(revision, Revision::ZpA0 | Revision::ZpB0 | Revision::ZpB1) {
         smn.reg(NBIF_REV_STRAP).modify(NbifRevStrap::PCD_B9::CLEAR);
     }
 
@@ -161,7 +162,7 @@ mod tests {
         let space = SmnSpace::default();
         space.set(NBIF_REV_STRAP, 1 << 20);
         space.set(nbif_bus_cfg(2), 0x1200_0034);
-        die_init(&space.smn(), 1, 0x40, Revision::B1);
+        die_init(&space.smn(), 1, 0x40, Revision::ZpB1);
         assert_eq!(space.get(NBIF_REV_STRAP), 0);
         assert_eq!(space.get(nbif_bus_cfg(2)), 0x4000_0034);
         assert_eq!(space.get(NB_BUS_NUM_CNTL), 0x140);
@@ -170,7 +171,7 @@ mod tests {
 
         let space = SmnSpace::default();
         space.set(NBIF_REV_STRAP, 1 << 20);
-        die_init(&space.smn(), 0, 0, Revision::B2);
+        die_init(&space.smn(), 0, 0, Revision::ZpB2);
         assert_eq!(space.get(NBIF_REV_STRAP), 1 << 20);
         assert_eq!(space.get(IOAPIC_FEATURES_ENABLE), 0x14);
     }

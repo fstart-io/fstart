@@ -2,12 +2,13 @@
 extern crate std;
 use super::*;
 use crate::ccx::tsc::testing::Delay;
+use crate::cpu::{Package, Revision};
 use crate::{
     df,
     fch::{Acpimmio, Bus, Fch, Space},
     smn::testing::{SmnModel, SmnTest},
     soc::Soc,
-    soc::zeppelin::{Die, Package, Revision, Zeppelin},
+    soc::zeppelin::{Die, Zeppelin},
 };
 use core::cell::RefCell;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
@@ -314,7 +315,7 @@ fn reset_init_conditionals() {
         w.bytes.insert((Space::Mmio, 0xfed8_0200), 0x01);
         w.bytes.insert((Space::Mmio, 0xfed8_0204), 0x01);
     }
-    reset_init(&Hw(&world).fch(), Revision::A0);
+    reset_init(&Hw(&world).fch(), Revision::ZpA0);
     let w = world.borrow();
     assert_eq!(w.indexed[&(0x70, 0x0d)], 0x80);
     assert_eq!(w.indexed[&(0xc00, 0x09)], 0x10);
@@ -324,7 +325,7 @@ fn reset_init_conditionals() {
 
     let world = RefCell::new(World::default());
     world.borrow_mut().indexed.insert((0x70, 0x0d), 0x9e);
-    reset_init(&Hw(&world).fch(), Revision::B2);
+    reset_init(&Hw(&world).fch(), Revision::ZpB2);
     let w = world.borrow();
     assert_eq!(w.indexed[&(0x70, 0x0d)], 0x9e);
     assert!(!w.bytes.contains_key(&(Space::Io, 0x801)));

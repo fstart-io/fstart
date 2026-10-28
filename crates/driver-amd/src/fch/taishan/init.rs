@@ -3,6 +3,7 @@
 //! and late tasks and the pre-console setup. The SATA and USB controllers
 //! are in [`super::sata`] and [`super::usb`].
 use super::{ASF_IO, SMBUS_IO, irq};
+use crate::cpu::Revision;
 use crate::{
     fch::{
         AL2AHB, AbRegBar, AcpiReg, Bus, Decode, Fch, LEGACY_UART_DECODE, MISC_CLK_CNTL1,
@@ -13,7 +14,7 @@ use crate::{
         misc, pm, smbus, smi_bank as smi, spi,
     },
     smn::{Smn, SmnReg},
-    soc::zeppelin::{Revision, acpi_io},
+    soc::zeppelin::acpi_io,
     table::{Record, rmw},
 };
 use tock_registers::{
@@ -212,7 +213,7 @@ pub fn reset_init(fch: &Fch<impl Bus>, revision: Revision) {
         .modify(Pm0a::BIT4::SET);
     fch.reg(pm::at::<u8, Pm0c8::Register>(0xc8))
         .modify(Pm0c8::BIT4::CLEAR);
-    if revision == Revision::A0 {
+    if revision == Revision::ZpA0 {
         fch.reg(pm::at::<u8, Pm08::Register>(0x08))
             .modify(Pm08::A0.val(3));
     }

@@ -4,6 +4,7 @@
 //! (`tests.rs`); the board hooks come in as closures.
 use super::Config;
 use fstart_arch::x86::cpu::msr::MsrAccess;
+use fstart_driver_amd::cpu::{Package, Revision};
 use fstart_driver_amd::{
     apob::Apob,
     ccx::{
@@ -16,7 +17,7 @@ use fstart_driver_amd::{
     nbio::{self, iohc, iommu},
     psp,
     smu::v9 as smu,
-    soc::zeppelin::{self as soc, Die, MAX_DIES, Package, Revision},
+    soc::zeppelin::{self as soc, Die, MAX_DIES},
 };
 use fstart_log::Hex;
 use fstart_pci::{ConfigRegionAccess, PciAddress};

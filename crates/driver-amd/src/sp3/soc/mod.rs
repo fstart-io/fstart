@@ -96,72 +96,7 @@ impl Generation {
     }
 }
 
-/// Silicon revision (the AGESA logical revision rows, SOC_DF §2.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Revision {
-    /// ZP-A0 (0x00800F00).
-    ZpA0,
-    /// ZP-B0 (0x00800F10).
-    ZpB0,
-    /// ZP-B1 (0x00800F11).
-    ZpB1,
-    /// ZP-B2 (0x00800F12).
-    ZpB2,
-    /// SSP-A0 (0x00830F00).
-    SspA0,
-    /// SSP-B0 (0x00830F10).
-    SspB0,
-    /// GN-A0 (0x00A00F00).
-    GnA0,
-    /// GN-B0 (0x00A00F10).
-    GnB0,
-    /// GN-B1 (0x00A00F11).
-    GnB1,
-    /// GN-B2 (0x00A00F12).
-    GnB2,
-}
-
-impl Revision {
-    /// The generation of this revision.
-    pub const fn generation(self) -> Generation {
-        match self {
-            Self::ZpA0 | Self::ZpB0 | Self::ZpB1 | Self::ZpB2 => Generation::Naples,
-            Self::SspA0 | Self::SspB0 => Generation::Rome,
-            Self::GnA0 | Self::GnB0 | Self::GnB1 | Self::GnB2 => Generation::Milan,
-        }
-    }
-
-    /// Name as in the revision guides.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::ZpA0 => "ZP-A0",
-            Self::ZpB0 => "ZP-B0",
-            Self::ZpB1 => "ZP-B1",
-            Self::ZpB2 => "ZP-B2",
-            Self::SspA0 => "SSP-A0",
-            Self::SspB0 => "SSP-B0",
-            Self::GnA0 => "GN-A0",
-            Self::GnB0 => "GN-B0",
-            Self::GnB1 => "GN-B1",
-            Self::GnB2 => "GN-B2",
-        }
-    }
-}
-
-/// Why a CPU is rejected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unsupported {
-    /// Family/model is not an SP3 generation.
-    Model { family: u32, model: u32 },
-    /// Known model, but a stepping no donor was recovered for.
-    Stepping {
-        family: u32,
-        model: u32,
-        stepping: u32,
-    },
-    /// Not the SP3 package.
-    Package(u8),
-}
+use crate::cpu::{Revision, Unsupported};
 
 /// The identified CPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,33 +114,9 @@ impl Identity {
 
 /// Identify the CPU from CPUID Fn0000_0001_EAX and Fn8000_0001_EBX.
 pub const fn identify(signature: u32, ext_ebx: u32) -> Result<Identity, Unsupported> {
-    let base_family = (signature >> 8) & 0xf;
-    let family = if base_family == 0xf {
-        base_family + ((signature >> 20) & 0xff)
-    } else {
-        base_family
-    };
-    let model = ((signature >> 12) & 0xf0) | ((signature >> 4) & 0xf);
-    let stepping = signature & 0xf;
-    let revision = match (family, model, stepping) {
-        (0x17, 0x00, 0) => Revision::ZpA0,
-        (0x17, 0x01, 0) => Revision::ZpB0,
-        (0x17, 0x01, 1) => Revision::ZpB1,
-        (0x17, 0x01, 2) => Revision::ZpB2,
-        (0x17, 0x30, 0) => Revision::SspA0,
-        (0x17, 0x31, 0) => Revision::SspB0,
-        (0x19, 0x00, 0) => Revision::GnA0,
-        (0x19, 0x01, 0) => Revision::GnB0,
-        (0x19, 0x01, 1) => Revision::GnB1,
-        (0x19, 0x01, 2) => Revision::GnB2,
-        (0x17, 0x00..=0x0f | 0x30..=0x3f, _) | (0x19, 0x00..=0x0f, _) => {
-            return Err(Unsupported::Stepping {
-                family,
-                model,
-                stepping,
-            });
-        }
-        _ => return Err(Unsupported::Model { family, model }),
+    let revision = match Revision::from_signature(signature) {
+        Ok(revision) => revision,
+        Err(error) => return Err(error),
     };
     let package = (ext_ebx >> 28) as u8;
     if package != PACKAGE_SP3 {
