@@ -32,9 +32,11 @@ register_bitfields![u32,
 const ACP_I2S_PIN_CONFIG: SmnReg<AcpPinConfig::Register> = SmnReg::new(0x0124_1400);
 /// Nonzero with graphics.
 const GFX_PRESENT: SmnReg = SmnReg::new(0x0004_b600);
-/// Copied into the IOMMU and PCIe blocks.
-const SB_LOCATION: SmnReg = SmnReg::new(0x13b1_007c);
-const SB_LOCATION_COPIES: [SmnReg; 2] = [SmnReg::new(0x1480_0024), SmnReg::new(0x13f0_112c)];
+/// IOHC SB_LOCATION is copied into an IOMMU L1 and the L2.
+const SB_LOCATION_COPIES: [SmnReg; 2] = [
+    super::iommu::l1_sb_location(0x1480_0000),
+    super::iommu::L2_SB_LOCATION,
+];
 /// [31:30] = 3 on some fused parts.
 const FUSE_D5C0: SmnReg = SmnReg::new(0x0005_d5c0);
 
@@ -108,7 +110,7 @@ pub fn early_init(
     if !graphics {
         apply(smn, tables::NO_GFX);
     }
-    let sb = smn.reg(SB_LOCATION).get();
+    let sb = smn.reg(super::iohc::SB_LOCATION).get();
     for copy in SB_LOCATION_COPIES {
         smn.reg(copy).set(sb);
     }

@@ -9,25 +9,62 @@
 //! NbDxe programs the base at SMN 0x13f00044/48 (D0F2 0x44/0x48),
 //! [`IOMMU_BAR`].
 use super::iohc::IOMMU_BAR;
-use crate::smn::SmnReg;
-use crate::{df::Die, soc::Soc};
-use fstart_core::mmio::MmioReadOnly;
-use fstart_log::Hex;
-use fstart_pci::ConfigRegionAccess;
-use tock_registers::{interfaces::Readable, register_bitfields, register_structs};
+use crate::smn::{SmnAddr, SmnReg};
+use tock_registers::register_bitfields;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+use {
+    crate::{df::Die, soc::Soc},
+    fstart_core::mmio::MmioReadOnly,
+    fstart_log::Hex,
+    fstart_pci::ConfigRegionAccess,
+    tock_registers::{interfaces::Readable, register_structs},
+};
 
 /// Offset of the IOMMU capability in D0F2's configuration space.
 pub const CAPABILITY: u16 = 0x40;
-const CAPABILITY_ID: u32 = 0x0f;
+pub const CAPABILITY_ID: u32 = 0x0f;
 
 register_bitfields![u32,
-    CapHeader [ID OFFSET(0) NUMBITS(8) []]
+    pub CapHeader [ID OFFSET(0) NUMBITS(8) []],
+    /// The writable EFR shadow, D0F2x80 and its L2A copy (INF names).
+    pub EfrShadow0 [
+        XT OFFSET(2) NUMBITS(1) [],
+        /// Milan SNP-style bits 4, 5 (cleared by PCD 0x1C2).
+        SNP_LO OFFSET(4) NUMBITS(2) [],
+        GA OFFSET(7) NUMBITS(1) [],
+        GAM OFFSET(21) NUMBITS(3) []
+    ],
+    /// D0F2x84 and its L2A copy.
+    pub EfrShadow1 [
+        BIT21_22 OFFSET(21) NUMBITS(2) [],
+        BIT31 OFFSET(31) NUMBITS(1) []
+    ]
 ];
-const CAP_HEADER: SmnReg<CapHeader::Register> = SmnReg::new(0x13f0_0000 + CAPABILITY as u32);
+/// The IOMMU's PCI config space (D0F2) in SMN.
+const L2_CONFIG: u32 = 0x13f0_0000;
+pub const EFR_SHADOW0: SmnReg<EfrShadow0::Register> = SmnReg::new(L2_CONFIG + 0x80);
+pub const EFR_SHADOW1: SmnReg<EfrShadow1::Register> = SmnReg::new(L2_CONFIG + 0x84);
+pub const L2A_EFR_SHADOW0: SmnReg<EfrShadow0::Register> = SmnReg::new(0x1570_4330);
+pub const L2A_EFR_SHADOW1: SmnReg<EfrShadow1::Register> = SmnReg::new(0x1570_4334);
+pub const L2_CP_CONTROL_1: SmnReg = SmnReg::new(0x13f0_115c);
+/// The L2's copy of IOHC SB_LOCATION.
+pub const L2_SB_LOCATION: SmnReg = SmnReg::new(0x13f0_112c);
+/// The L1 instances: PCIE0, PCIE1, NBIF, IOAGR on SSP/GN; four on ZP.
+pub const L1_SSP: [SmnAddr; 4] = [0x1470_0000, 0x14b0_0000, 0x14f0_0000, 0x1530_0000];
+pub const L1_ZP: [SmnAddr; 4] = [0x1470_0000, 0x1480_0000, 0x1490_0000, 0x14a0_0000];
+/// An L1's copy of IOHC SB_LOCATION (the IOAGR's on SSP/GN, the second
+/// L1's on RV).
+pub const fn l1_sb_location(l1: SmnAddr) -> SmnReg {
+    SmnReg::new(l1 + 0x24)
+}
+/// The IOMMU MMIO window, 512 KiB aligned.
+pub const MMIO_SIZE: u64 = 512 << 10;
+pub const CAP_HEADER: SmnReg<CapHeader::Register> = SmnReg::new(L2_CONFIG + CAPABILITY as u32);
 const _: () = assert!(IOMMU_BAR.low.address() == CAP_HEADER.address() + 0x04);
-const RANGE: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x0c);
-const MISC: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x10);
+pub const RANGE: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x0c);
+pub const MISC: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x10);
 
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 register_structs! {
     Mmio {
         (0x0000 => _reserved0),
@@ -45,6 +82,7 @@ register_structs! {
 /// Map the 512 KiB of IOMMU registers of `die` at `base` (512 KiB aligned,
 /// outside the PCI windows so nothing moves it) and return it, `None`
 /// without an IOMMU.
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub fn init_bar<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>, base: u32) -> Option<u32> {
     let smn = die.smn();
     if smn.reg(CAP_HEADER).read(CapHeader::ID) != CAPABILITY_ID {
@@ -59,6 +97,7 @@ pub fn init_bar<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>, base: u32
 /// What the IVRS describes of an IOMMU: the capability header, range and
 /// miscellaneous information 0 registers and MMIO 0x18 (control), 0x30
 /// (EFR), 0x1a0 (EFR2) and 0x4000 (counter configuration).
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Iommu {
     pub base: u64,
@@ -76,6 +115,7 @@ pub struct Iommu {
 ///
 /// # Safety
 /// The IOMMU MMIO is identity mapped and uncached.
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub unsafe fn read<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>) -> Option<Iommu> {
     let smn = die.smn();
     let base = IOMMU_BAR.base(&smn)?;

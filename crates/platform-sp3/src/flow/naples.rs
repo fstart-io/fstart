@@ -7,6 +7,8 @@ extern crate alloc;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
 use fstart_driver_amd::ccx::microcode;
+use fstart_driver_amd::nbio::iohc::DramTops;
+use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::smu::Smu as SmuMailbox;
 use fstart_driver_amd::smu::v9;
@@ -25,11 +27,10 @@ use fstart_driver_amd::sp3::fch::multi::{self, NaplesDie};
 use fstart_driver_amd::sp3::fch::taishan::{self, usb::DieUsb};
 use fstart_driver_amd::sp3::nbio::fuse::Fuses;
 use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
-use fstart_driver_amd::sp3::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::nbio::{Nbio, naples as nbio_naples};
-use fstart_driver_amd::sp3::psp_bar::BAR_SIZE;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
+use tock_registers::interfaces::Writeable;
 use zerocopy::IntoBytes;
 
 use super::{Ctx, OrHalt, dma_alloc, fail, microcode_candidates};
@@ -113,7 +114,9 @@ pub(crate) fn nbio_early(ctx: &mut Ctx) -> Silicon {
         n.set_psp_bar(ctx.non_pci[i].alloc(BAR_SIZE).or_halt("PSP BAR space"));
     }
     ctx.psp_bar = nbios[0].psp_bar().or_halt("PSP BAR");
-    msr().write(fstart_driver_amd::sp3::psp_bar::MSR_PSP_ADDR, ctx.psp_bar);
+    msr()
+        .reg(fstart_driver_amd::ccx::msr::PSP_ADDRESS)
+        .set(ctx.psp_bar);
     Silicon {
         nbios,
         smus: heapless::Vec::new(),

@@ -163,9 +163,10 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
 pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -> u64 {
     use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi, Window};
     use fstart_core::acpi::AcpiSmiConfig;
+    use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
     use fstart_driver_amd::sp3::ccx::power;
     use fstart_driver_amd::sp3::fch::smi;
-    use fstart_driver_amd::sp3::nbio::ioapic::{FEATURES_ENABLE, IoapicInfo, fch_ioapic_id};
+    use fstart_driver_amd::sp3::nbio::ioapic::{IoapicInfo, fch_ioapic_id};
 
     let numa_plan = S::numa(ctx, si);
     let cpus: Vec<Cpu> = ctx
@@ -233,7 +234,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             domain: numa_plan
                 .as_ref()
                 .and_then(|p| p.root_bridges.get(i).copied()),
-            ioapic_features: n.at(FEATURES_ENABLE),
+            ioapic_features: n.at(IOAPIC_FEATURES_ENABLE.address()),
         })
         .collect();
     let cpu = crate::hw::msr();

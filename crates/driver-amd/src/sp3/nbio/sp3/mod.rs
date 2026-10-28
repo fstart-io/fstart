@@ -20,7 +20,7 @@ pub mod tables;
 use fstart_pci::ConfigRegionAccess;
 
 use super::table::Entry;
-use super::{Nbio, NbioPolicy, iohc, iommu};
+use super::{Nbio, NbioPolicy};
 use crate::sp3::soc::Generation;
 
 struct Tables {
@@ -62,14 +62,19 @@ fn tables(generation: Generation) -> Tables {
 /// SB location (`ffdf22f5`): the FCH NBIO copies `IOHC::SB_LOCATION` to
 /// its IOMMU L1 (IOAGR) and L2; every other NBIO clears it.
 pub fn sb_location<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>) {
-    let sb = nbio.at(iohc::SB_LOCATION);
+    use crate::nbio::{iohc::SB_LOCATION, iommu};
+    use crate::smn::SmnAccess;
+    use tock_registers::interfaces::{Readable, Writeable};
+    let sb = nbio.reg(SB_LOCATION);
     if nbio.fch {
-        if let Some(v) = nbio.read32(sb) {
-            nbio.write32(nbio.at(iommu::L1_IOAGR_SP3 + iommu::L1_SB_LOCATION), v);
-            nbio.write32(nbio.at(iommu::L2_SB_LOCATION), v);
+        // Fused off: nothing to copy.
+        if nbio.fuses().allows(nbio.at(SB_LOCATION.address())) {
+            let value = sb.get();
+            nbio.reg(iommu::l1_sb_location(iommu::L1_SSP[3])).set(value);
+            nbio.reg(iommu::L2_SB_LOCATION).set(value);
         }
     } else {
-        nbio.write32(sb, 0);
+        sb.set(0);
     }
 }
 
@@ -139,7 +144,7 @@ mod tests {
         let (m, fch) = nbio(Generation::Rome, 0, 0);
         m.0.borrow_mut()
             .smn
-            .insert((0, iohc::SB_LOCATION), 0x0003_0004);
+            .insert((0, crate::nbio::iohc::SB_LOCATION.address()), 0x0003_0004);
         sb_location(&fch);
         let (m2, other) = nbio(Generation::Rome, 2, 0x40);
         m2.0.borrow_mut().smn.insert((0x40, 0x13D1_007C), 5);

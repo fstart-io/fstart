@@ -98,7 +98,8 @@ pub fn base_init<P: ConfigRegionAccess + Clone>(
             nbio.write32(to, v)
         }
     };
-    copy(super::iommu::L2A_EFR_SHADOW0, super::iommu::EFR_SHADOW0);
+    use crate::nbio::iommu::{EFR_SHADOW0, L2A_EFR_SHADOW0};
+    copy(L2A_EFR_SHADOW0.address(), EFR_SHADOW0.address());
     copy(0x1570_401C, 0x0240_001C);
     if policy.naples.smn_04000200_bit16 {
         nbio.modify32(0x0400_0200, 0, 1 << 16);

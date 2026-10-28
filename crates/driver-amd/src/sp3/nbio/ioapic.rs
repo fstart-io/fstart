@@ -7,49 +7,20 @@
 
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use tock_registers::register_bitfields;
 
 use super::Nbio;
-use crate::smn::SmnAddr;
+use crate::nbio::ioapic::{
+    BridgeRouting, IOAPIC_FEATURES_ENABLE, IOAPIC_ID, IoapicFeatures, IoapicId,
+    br_interrupt_routing,
+};
+use crate::smn::SmnAccess;
 use crate::sp3::soc::Generation;
-
-/// `IOAPIC::FEATURES_ENABLE`.
-pub const FEATURES_ENABLE: SmnAddr = 0x1430_0000;
-/// `IOAPIC_BR_INTERRUPT_ROUTING[i]`.
-pub const fn br_interrupt_routing(i: usize) -> SmnAddr {
-    0x1430_0040 + 4 * i as u32
-}
-/// SMN alias of the IOAPIC ID register (IOAPIC index 0).
-pub const ID_ALIAS: SmnAddr = 0x0280_1000;
 
 /// Redirection entries of an NBIO IOAPIC (GSI windows of 32, ACPI_SMM
 /// §3.2).
 pub const NBIO_IOAPIC_PINS: u32 = 32;
 /// Redirection entries of the FCH IOAPIC (GSI 0..23).
 pub const FCH_IOAPIC_PINS: u32 = 24;
-
-register_bitfields![u32,
-    pub FEATURES [
-        ID_EXT OFFSET(2) NUMBITS(1) [],
-        /// Legacy interrupts are forwarded to the FCH IOAPIC. ACPI `_PIC(1)`
-        /// clears it on every NBIO.
-        FCH OFFSET(4) NUMBITS(1) [],
-        SECONDARY OFFSET(5) NUMBITS(1) []
-    ],
-    pub ROUTING [
-        GROUP OFFSET(0) NUMBITS(3) [],
-        SWIZZLE OFFSET(4) NUMBITS(2) [
-            Abcd = 0,
-            Bcda = 1,
-            Cdab = 2,
-            Dabc = 3
-        ],
-        MAP OFFSET(16) NUMBITS(5) []
-    ],
-    pub ID [
-        ID OFFSET(24) NUMBITS(8) []
-    ]
-];
 
 /// One bridge's legacy INTx route into the NBIO IOAPIC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,13 +158,13 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// `FEATURES_ENABLE |= ID_EXT | FCH` on socket 0's FCH NBIO, plus
     /// SECONDARY everywhere else (NBIO_SMU §3.5; Naples: die 0 vs others).
     pub fn ioapic_features(&self) {
-        let set = FEATURES::ID_EXT::SET + FEATURES::FCH::SET;
-        let reg = self.reg::<FEATURES::Register>(self.at(FEATURES_ENABLE));
+        let set = IoapicFeatures::ID_EXT::SET + IoapicFeatures::FCH::SET;
+        let reg = self.reg(IOAPIC_FEATURES_ENABLE);
         // AGESA ORs 0x14 / 0x34: SECONDARY is left as is on the primary.
         if self.fch && self.socket == 0 {
             reg.modify(set);
         } else {
-            reg.modify(set + FEATURES::SECONDARY::SET);
+            reg.modify(set + IoapicFeatures::SECONDARY::SET);
         }
     }
 
@@ -204,24 +175,22 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
             .iter()
             .enumerate()
             .for_each(|(i, r)| {
-                self.reg::<ROUTING::Register>(self.at(br_interrupt_routing(i)))
-                    .modify(
-                        ROUTING::GROUP.val(r.group as u32)
-                            + ROUTING::SWIZZLE.val(r.swizzle as u32)
-                            + ROUTING::MAP.val(r.map as u32),
-                    )
+                self.reg(br_interrupt_routing(i)).modify(
+                    BridgeRouting::GROUP.val(r.group as u32)
+                        + BridgeRouting::SWIZZLE.val(r.swizzle as u32)
+                        + BridgeRouting::MAP.val(r.map as u32),
+                )
             });
     }
 
     /// Set the IOAPIC ID through its SMN alias (AMI NbDxe / PciRootBridge).
     pub fn set_ioapic_id(&self, id: u8) {
-        self.reg::<ID::Register>(self.at(ID_ALIAS))
-            .write(ID::ID.val(id as u32));
+        self.reg(IOAPIC_ID).write(IoapicId::ID.val(id as u32));
     }
 
     /// The IOAPIC's current ID.
     pub fn ioapic_id(&self) -> u8 {
-        self.reg::<ID::Register>(self.at(ID_ALIAS)).read(ID::ID) as u8
+        self.reg(IOAPIC_ID).read(IoapicId::ID) as u8
     }
 
     /// ACPI data for this NBIO's IOAPIC, if its BAR is enabled.
@@ -243,7 +212,7 @@ mod tests {
 
     #[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
     fn route_values(
-        entries: impl Iterator<Item = (SmnAddr, crate::sp3::nbio::table::Op)>,
+        entries: impl Iterator<Item = (crate::smn::SmnAddr, crate::sp3::nbio::table::Op)>,
     ) -> Vec<u32> {
         use crate::sp3::nbio::table::Op;
         entries

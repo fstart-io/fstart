@@ -16,6 +16,7 @@ use core::marker::PhantomData;
 use fstart_core::indexed::Indexed;
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::RegisterLongName;
+use tock_registers::interfaces::{Readable, Writeable};
 
 /// A 32-bit SMN register with the bitfields `R`. SMN is a chipset register
 /// network, not an x86 physical address space.
@@ -151,6 +152,25 @@ impl<P: ConfigRegionAccess> Smn<P> {
         // SAFETY: as above.
         unsafe { self.pci.write(self.root, SMN_INDEX, saved) };
         result
+    }
+}
+
+/// A view of an SMN space the IP blocks program through: an [`Smn`], or
+/// one that relocates and filters the registers it hands out (an SP3 NBIO
+/// quadrant).
+pub trait SmnAccess {
+    type Reg<'a, R: RegisterLongName>: Readable<T = u32, R = R> + Writeable<T = u32, R = R>
+    where
+        Self: 'a;
+    fn reg<R: RegisterLongName>(&self, reg: SmnReg<R>) -> Self::Reg<'_, R>;
+}
+impl<P: ConfigRegionAccess> SmnAccess for Smn<P> {
+    type Reg<'a, R: RegisterLongName>
+        = SmnRegister<'a, P, R>
+    where
+        Self: 'a;
+    fn reg<R: RegisterLongName>(&self, reg: SmnReg<R>) -> Self::Reg<'_, R> {
+        Smn::reg(self, reg)
     }
 }
 

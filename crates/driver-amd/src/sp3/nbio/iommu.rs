@@ -7,69 +7,19 @@
 
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{ReadWriteable, Writeable};
-use tock_registers::register_bitfields;
 
 use super::{Nbio, NbioPolicy};
-use crate::smn::SmnAddr;
+use crate::nbio::iohc::{BarHigh, IOMMU_BAR, IommuBar};
+use crate::nbio::iommu::MMIO_SIZE;
+use crate::nbio::iommu::{
+    CAPABILITY, EFR_SHADOW0, EFR_SHADOW1, EfrShadow0, EfrShadow1, L1_SSP, L1_ZP, L2_CP_CONTROL_1,
+    L2A_EFR_SHADOW0, L2A_EFR_SHADOW1,
+};
+use crate::smn::{SmnAccess, SmnAddr};
 use crate::sp3::soc::Generation;
 
-/// SMN alias of the IOMMU's PCI config space (D0F2).
-pub const L2_CONFIG: SmnAddr = 0x13F0_0000;
-/// IOMMU capability offset (cap ID 0x0F).
-pub const CAP_OFFSET: u8 = 0x40;
-/// D0F2x44 `IOMMU_CAP_BASE_LO` (cap + 4).
-pub const CAP_BASE_LO: SmnAddr = L2_CONFIG + 0x44;
-/// D0F2x48 `IOMMU_CAP_BASE_HI` (cap + 8).
-pub const CAP_BASE_HI: SmnAddr = L2_CONFIG + 0x48;
-/// D0F2x80: writable EFR shadow (`IOMMU_MMIO_CONTROL0_W`, INF).
-pub const EFR_SHADOW0: SmnAddr = L2_CONFIG + 0x80;
-/// D0F2x84: second EFR shadow word (INF).
-pub const EFR_SHADOW1: SmnAddr = L2_CONFIG + 0x84;
-/// L2A copy of the EFR shadow words (Milan SNP bits).
-pub const L2A_EFR_SHADOW0: SmnAddr = 0x1570_4330;
-pub const L2A_EFR_SHADOW1: SmnAddr = 0x1570_4334;
-/// `L2_CP_CONTROL_1`.
-pub const L2_CP_CONTROL_1: SmnAddr = 0x13F0_115C;
-/// `L2_SB_LOCATION`.
-pub const L2_SB_LOCATION: SmnAddr = 0x13F0_112C;
-
-/// MMIO size of one IOMMU.
-pub const MMIO_SIZE: u64 = 512 << 10;
-
-/// L1 instances on Rome/Milan: PCIE0, PCIE1, NBIF, IOAGR.
-pub const L1_SP3: [SmnAddr; 4] = [0x1470_0000, 0x14B0_0000, 0x14F0_0000, 0x1530_0000];
-/// L1 instances on Naples (names not recovered).
-pub const L1_NAPLES: [SmnAddr; 4] = [0x1470_0000, 0x1480_0000, 0x1490_0000, 0x14A0_0000];
-/// The L1 that holds `L1_SB_LOCATION` (+0x24): IOAGR on Rome/Milan.
-pub const L1_IOAGR_SP3: SmnAddr = 0x1530_0000;
-/// `L1_SB_LOCATION` offset.
-pub const L1_SB_LOCATION: SmnAddr = 0x24;
 /// L1 offset whose bit 4 Milan's SNP policy clears (unnamed).
-pub const L1_0DC: SmnAddr = 0xDC;
-
-register_bitfields![u32,
-    pub BASE_LO [
-        ADDR OFFSET(19) NUMBITS(13) [],
-        EN OFFSET(0) NUMBITS(1) []
-    ],
-    pub BASE_HI [
-        ADDR OFFSET(0) NUMBITS(32) []
-    ],
-    pub SHADOW0 [
-        /// EFR XTSup (INF).
-        XT OFFSET(2) NUMBITS(1) [],
-        /// EFR GASup (INF).
-        GA OFFSET(7) NUMBITS(1) [],
-        /// Milan SNP-style bits 4, 5 (cleared by PCD 0x1C2).
-        SNP_LO OFFSET(4) NUMBITS(2) [],
-        /// EFR GAMSup (INF).
-        GAM OFFSET(21) NUMBITS(3) []
-    ],
-    pub SHADOW1 [
-        BIT21_22 OFFSET(21) NUMBITS(2) [],
-        BIT31 OFFSET(31) NUMBITS(1) []
-    ]
-];
+const L1_0DC: SmnAddr = 0xdc;
 
 /// What IVRS needs about one IOMMU (the IVHD header; the feature words
 /// come from the IOMMU's own capability and MMIO registers).
@@ -91,8 +41,8 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// The L1 instances of this NBIO.
     pub fn iommu_l1s(&self) -> [SmnAddr; 4] {
         let l1 = match self.generation {
-            Generation::Naples => L1_NAPLES,
-            Generation::Rome | Generation::Milan => L1_SP3,
+            Generation::Naples => L1_ZP,
+            Generation::Rome | Generation::Milan => L1_SSP,
         };
         l1.map(|a| self.at(a))
     }
@@ -101,16 +51,16 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// AGESA path) without enabling it (`gn.iommu_bar`, AMI PciRootBridge).
     pub fn set_iommu_bar(&self, base: u64) {
         debug_assert_eq!(base % MMIO_SIZE, 0);
-        self.reg::<BASE_HI::Register>(self.at(CAP_BASE_HI))
-            .write(BASE_HI::ADDR.val((base >> 32) as u32));
-        self.reg::<BASE_LO::Register>(self.at(CAP_BASE_LO))
-            .write(BASE_LO::ADDR.val((base >> 19) as u32 & 0x1FFF));
+        self.reg(IOMMU_BAR.high)
+            .write(BarHigh::ADDRESS.val((base >> 32) as u32));
+        self.reg(IOMMU_BAR.low)
+            .write(IommuBar::BASE.val((base >> 19) as u32 & 0x1fff));
     }
 
     /// The IOMMU MMIO base, if placed.
     pub fn iommu_bar(&self) -> Option<u64> {
-        let lo = self.read32(self.at(CAP_BASE_LO))? & 0xFFF8_0000;
-        let hi = self.read32(self.at(CAP_BASE_HI))? as u64;
+        let lo = self.read32(self.at(IOMMU_BAR.low.address()))? & 0xfff8_0000;
+        let hi = self.read32(self.at(IOMMU_BAR.high.address()))? as u64;
         let base = hi << 32 | lo as u64;
         (base != 0).then_some(base)
     }
@@ -121,8 +71,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
         if self.iommu_bar().is_none() {
             return false;
         }
-        self.reg::<BASE_LO::Register>(self.at(CAP_BASE_LO))
-            .modify(BASE_LO::EN::SET);
+        self.reg(IOMMU_BAR.low).modify(IommuBar::ENABLE::SET);
         true
     }
 
@@ -131,32 +80,32 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// per-NBIO enable (NBIO_SMU §3.7, `gn.iommu_snp_bits`,
     /// `gn.iommu_enable_pcds`).
     pub fn iommu_post_table(&self, policy: &NbioPolicy) {
-        let shadow0 = self.reg::<SHADOW0::Register>(self.at(EFR_SHADOW0));
+        let shadow0 = self.reg(EFR_SHADOW0);
         if self.generation != Generation::Naples && policy.iommu_xt_ga(self.generation) {
-            shadow0.modify(SHADOW0::XT::SET + SHADOW0::GA::SET);
+            shadow0.modify(EfrShadow0::XT::SET + EfrShadow0::GA::SET);
         }
         if self.generation != Generation::Milan {
             return;
         }
         let m = &policy.milan;
-        let l2a0 = self.reg::<SHADOW0::Register>(self.at(L2A_EFR_SHADOW0));
-        let shadow1 = self.reg::<SHADOW1::Register>(self.at(EFR_SHADOW1));
+        let l2a0 = self.reg(L2A_EFR_SHADOW0);
+        let shadow1 = self.reg(EFR_SHADOW1);
         if m.iommu_snp_clear {
-            let clear = SHADOW0::SNP_LO::CLEAR + SHADOW0::GAM::CLEAR;
+            let clear = EfrShadow0::SNP_LO::CLEAR + EfrShadow0::GAM::CLEAR;
             shadow0.modify(clear);
             l2a0.modify(clear);
             self.iommu_l1s()
                 .iter()
                 .for_each(|&l1| self.modify32(l1 + L1_0DC, 1 << 4, 0));
-            shadow1.modify(SHADOW1::BIT21_22::CLEAR);
-            self.modify32(self.at(L2A_EFR_SHADOW1), 1 << 21, 0);
+            shadow1.modify(EfrShadow1::BIT21_22::CLEAR);
+            self.modify32(self.at(L2A_EFR_SHADOW1.address()), 1 << 21, 0);
         } else {
-            shadow1.modify(SHADOW1::BIT31::CLEAR);
-            shadow0.modify(SHADOW0::GAM.val(m.iommu_gam as u32));
-            l2a0.modify(SHADOW0::GAM.val(m.iommu_gam as u32));
+            shadow1.modify(EfrShadow1::BIT31::CLEAR);
+            shadow0.modify(EfrShadow0::GAM.val(m.iommu_gam as u32));
+            l2a0.modify(EfrShadow0::GAM.val(m.iommu_gam as u32));
         }
         if m.iommu_cp_control1_bit2 {
-            self.modify32(self.at(L2_CP_CONTROL_1), 0, 1 << 2);
+            self.modify32(self.at(L2_CP_CONTROL_1.address()), 0, 1 << 2);
         }
         let per_nbio = m
             .iommu_per_nbio
@@ -176,7 +125,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
             index: self.index,
             bus: self.bus(),
             devfn: 0x02,
-            cap_offset: CAP_OFFSET,
+            cap_offset: CAPABILITY as u8,
             base: self.iommu_bar()?,
             segment: 0,
             fch: self.fch,
@@ -205,15 +154,17 @@ mod tests {
         let (m, r) = nbio(Generation::Rome, 0, 0);
         r.iommu_post_table(&NbioPolicy::default());
         assert!(
-            !m.0.borrow().smn.contains_key(&(0, EFR_SHADOW0)),
+            !m.0.borrow().smn.contains_key(&(0, EFR_SHADOW0.address())),
             "Rome: off"
         );
 
         let (m, g) = nbio(Generation::Milan, 0, 0);
-        m.0.borrow_mut().smn.insert((0, EFR_SHADOW1), 0x8000_0000);
+        m.0.borrow_mut()
+            .smn
+            .insert((0, EFR_SHADOW1.address()), 0x8000_0000);
         g.iommu_post_table(&NbioPolicy::default());
         let s = m.0.borrow();
-        assert_eq!(s.smn[&(0, EFR_SHADOW0)], 0x84);
-        assert_eq!(s.smn[&(0, EFR_SHADOW1)], 0);
+        assert_eq!(s.smn[&(0, EFR_SHADOW0.address())], 0x84);
+        assert_eq!(s.smn[&(0, EFR_SHADOW1.address())], 0);
     }
 }

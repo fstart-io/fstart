@@ -17,7 +17,7 @@ pub mod df;
 pub mod dxio;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod fch;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod nbio;
 #[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod psp;

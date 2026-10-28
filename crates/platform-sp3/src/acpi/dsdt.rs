@@ -283,7 +283,7 @@ fn system_resources(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, A
             inputs
                 .iommus
                 .iter()
-                .map(|m| (m.info.base, fstart_driver_amd::sp3::nbio::iommu::MMIO_SIZE)),
+                .map(|m| (m.info.base, fstart_driver_amd::nbio::iommu::MMIO_SIZE)),
         )
         .for_each(|(b, l)| mem(b, l, &mut d));
     // The FCH's legacy and index ports (the SMI command port is in

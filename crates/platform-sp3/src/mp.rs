@@ -14,13 +14,13 @@ use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, SYSCFG, Syscfg, TOP_MEM, TO
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError, SipiUnlock};
 use fstart_arch::x86::mtrr::{MsrEntry, SipiMsrs};
+use fstart_driver_amd::ccx::msr::PSP_ADDRESS;
 use fstart_driver_amd::sp3::ccx::power::Wdt;
 use fstart_driver_amd::sp3::ccx::release::{Launch, ReleaseError};
 use fstart_driver_amd::sp3::ccx::topology::Thread;
 use fstart_driver_amd::sp3::ccx::{self, ApInputs, Ccx};
-use fstart_driver_amd::sp3::psp_bar::MSR_PSP_ADDR;
 use fstart_driver_amd::sp3::soc::Generation;
-use tock_registers::interfaces::{ReadWriteable, Readable};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use crate::hw::msr;
 
@@ -101,7 +101,7 @@ impl CpuDriver for Sp3Cpu<'_> {
             bsp,
             self.psp_addr[usize::from(thread.location().socket & 1)],
         ) {
-            cpu.write(MSR_PSP_ADDR, bar);
+            cpu.reg(PSP_ADDRESS).set(bar);
         }
         if !bsp {
             self.ccx.early(&cpu, &thread);

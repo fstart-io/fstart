@@ -7,10 +7,13 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use tock_registers::interfaces::Writeable;
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
 use fstart_driver_amd::ccx::microcode;
+use fstart_driver_amd::nbio::iohc::DramTops;
+use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::smu::Smu as SmuMailbox;
 use fstart_driver_amd::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
@@ -31,9 +34,7 @@ use fstart_driver_amd::sp3::fch;
 use fstart_driver_amd::sp3::fch::huashan::{sata::SataPolicy, usb::UsbPolicy};
 use fstart_driver_amd::sp3::nbio::fuse::Fuses;
 use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
-use fstart_driver_amd::sp3::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
-use fstart_driver_amd::sp3::psp_bar::BAR_SIZE;
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use tock_registers::interfaces::Readable;
@@ -174,7 +175,7 @@ pub(crate) fn nbio_early(ctx: &mut Ctx) -> Silicon {
         let bar = nbios[i].psp_bar().or_halt("PSP BAR");
         if rb.socket == 0 {
             ctx.psp_bar = bar;
-            msr().write(fstart_driver_amd::sp3::psp_bar::MSR_PSP_ADDR, bar);
+            msr().reg(fstart_driver_amd::ccx::msr::PSP_ADDRESS).set(bar);
         }
     }
     if generation == Generation::Milan {

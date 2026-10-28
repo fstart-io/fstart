@@ -75,7 +75,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
 
     /// Whether NBIF `k` exposes `dev`.`func` (FUNC_STRAP0 EXIST).
     pub fn nbif_function_exists(&self, k: u8, dev: u8, func: u8) -> bool {
-        self.reg::<FUNC_STRAP0::Register>(self.nbif(k) + func_strap0(dev, func))
+        self.reg_at::<FUNC_STRAP0::Register>(self.nbif(k) + func_strap0(dev, func))
             .is_set(FUNC_STRAP0::EXIST)
     }
 
@@ -87,7 +87,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
         let bus = self.bus() as u32;
         match self.generation {
             Generation::Naples => (0..NBIFS).for_each(|k| {
-                self.reg::<ZP_BUS::Register>(self.nbif(k) + ZP_BUS_STRAP)
+                self.reg_at::<ZP_BUS::Register>(self.nbif(k) + ZP_BUS_STRAP)
                     .modify(ZP_BUS::BUS.val(bus))
             }),
             Generation::Rome | Generation::Milan => {
@@ -102,7 +102,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
                     .filter(|&(k, p)| !(k == 2 && p == 0 && policy.milan.nbif2_ntb))
                     .for_each(|(k, p)| {
                         let devfn = 0x27 + k as u32 + 0x20 * p as u32;
-                        self.reg::<BUS_STRAP::Register>(self.nbif(k) + port_bus_strap(p))
+                        self.reg_at::<BUS_STRAP::Register>(self.nbif(k) + port_bus_strap(p))
                             .modify(BUS_STRAP::DEVFN.val(devfn) + BUS_STRAP::BUS.val(bus));
                     });
             }
@@ -116,12 +116,12 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// (idempotent, done once here).
     pub fn nbif_hw_init_lock(&self) {
         (0..NBIFS).for_each(|k| {
-            self.reg::<LOCK::Register>(self.nbif(k) + HW_INIT_LOCK)
+            self.reg_at::<LOCK::Register>(self.nbif(k) + HW_INIT_LOCK)
                 .modify(LOCK::LOCK::SET)
         });
         if self.generation == Generation::Milan {
             [0x3_13AC, 0x3_15AC].iter().for_each(|&r| {
-                self.reg::<LOCK::Register>(self.nbif(1) + r)
+                self.reg_at::<LOCK::Register>(self.nbif(1) + r)
                     .modify(LOCK::LOCK::SET)
             });
         }

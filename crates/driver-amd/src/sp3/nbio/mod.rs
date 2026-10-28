@@ -113,7 +113,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
 
     /// A typed register at the absolute SMN `addr`; reads return 0 and
     /// writes are dropped when the aperture is fused off.
-    pub fn reg<R: RegisterLongName>(&self, addr: SmnAddr) -> NbioReg<'_, P, R> {
+    pub fn reg_at<R: RegisterLongName>(&self, addr: SmnAddr) -> NbioReg<'_, P, R> {
         NbioReg {
             // Filtered like AGESA.
             inner: self
@@ -141,6 +141,18 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
         if self.fuses.allows(addr) {
             self.smn.modify32(addr, clear, set)
         }
+    }
+}
+
+/// The registers of this NBIO: the shared IP block definitions (IOHC0 /
+/// die addresses) moved to its quadrant and fuse filtered.
+impl<P: ConfigRegionAccess + Clone> crate::smn::SmnAccess for Nbio<P> {
+    type Reg<'a, R: RegisterLongName>
+        = NbioReg<'a, P, R>
+    where
+        Self: 'a;
+    fn reg<R: RegisterLongName>(&self, reg: crate::smn::SmnReg<R>) -> Self::Reg<'_, R> {
+        self.reg_at(self.at(reg.address()))
     }
 }
 

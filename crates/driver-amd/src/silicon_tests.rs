@@ -191,7 +191,7 @@ mod zeppelin {
         for die in &dies {
             df::zeppelin::disable_ext_cfg(&die.df());
         }
-        assert_eq!(hw.fingerprint(), (16906, 0x9dd1_7783_e797_1b5e));
+        assert_eq!(hw.fingerprint(), (16906, 0x410f_04fe_37a3_28fa));
         assert_eq!(hw.state(), 0xbc50_f84e_0701_a314);
     }
 
@@ -325,6 +325,6 @@ mod picasso {
         // The final register state is what the hardware was tested with,
         // the log follows the shared Family 17h sequences.
         assert_eq!(hw.state(), 0xc446_ef2a_df4d_6ca4);
-        assert_eq!(hw.fingerprint(), (3489, 0xe499_1a53_e5fd_a388));
+        assert_eq!(hw.fingerprint(), (3489, 0xef7e_94e9_d8bf_e420));
     }
 }

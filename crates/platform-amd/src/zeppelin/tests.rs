@@ -227,7 +227,7 @@ fn mj11_ec1_flow_on(hw: &Hw, dma: usize) -> State {
 fn mj11_ec1_flow() {
     let hw = model(1);
     mj11_ec1_flow_on(&hw, 0x5000_0000);
-    assert_eq!(hw.fingerprint(), (9686, 0x2f54_6e5c_18ed_9aad));
+    assert_eq!(hw.fingerprint(), (9686, 0x2e5b_9a12_d620_85bd));
     assert_eq!(hw.state(), 0x5ba3_2753_5cdf_f76d);
 }
 
@@ -285,7 +285,7 @@ fn sp4_flow_on(hw: &Hw, dma: usize) -> State {
 fn sp4_flow() {
     let hw = model(2);
     sp4_flow_on(&hw, 0x5800_0000);
-    assert_eq!(hw.fingerprint(), (17243, 0x54bf_78c5_95a4_3d43));
+    assert_eq!(hw.fingerprint(), (17243, 0xed55_2202_b2b9_8567));
     assert_eq!(hw.state(), 0x3699_29c4_2d3f_3403);
 }
 

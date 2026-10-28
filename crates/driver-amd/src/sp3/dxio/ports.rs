@@ -265,15 +265,15 @@ impl<'n, P: ConfigRegionAccess + Clone> PcieCore<'n, P> {
     }
 
     pub fn port_reg<R: RegisterLongName>(&self, port: u8, offset: u32) -> NbioReg<'_, P, R> {
-        self.nbio.reg(self.port_addr(port, offset))
+        self.nbio.reg_at(self.port_addr(port, offset))
     }
 
     pub fn core_reg<R: RegisterLongName>(&self, offset: u32) -> NbioReg<'_, P, R> {
-        self.nbio.reg(self.core_addr(offset))
+        self.nbio.reg_at(self.core_addr(offset))
     }
 
     pub fn cfg_reg<R: RegisterLongName>(&self, port: u8, offset: u32) -> NbioReg<'_, P, R> {
-        self.nbio.reg(self.cfg_addr(port, offset))
+        self.nbio.reg_at(self.cfg_addr(port, offset))
     }
 
     /// Write strap `strap` of this core: RSMU index/data on Rome/Milan
@@ -394,7 +394,7 @@ fn bridge<P: ConfigRegionAccess + Clone>(
     nbio: &Nbio<P>,
     index: usize,
 ) -> NbioReg<'_, P, BRIDGE_CNTL::Register> {
-    nbio.reg(nbio.at(IOHC_BRIDGE_CNTL + 0x400 * index as u32))
+    nbio.reg_at(nbio.at(IOHC_BRIDGE_CNTL + 0x400 * index as u32))
 }
 
 /// Write NB_PROG_DEVICE_REMAP byte 0 of every port.
@@ -404,7 +404,7 @@ pub fn write_remap<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>, list: &[u8]) {
         Generation::Rome | Generation::Milan => SP3_DEVICE_REMAP,
     };
     list.iter().enumerate().for_each(|(i, &d)| {
-        nbio.reg::<DEVICE_REMAP::Register>(nbio.at(base + 4 * i as u32))
+        nbio.reg_at::<DEVICE_REMAP::Register>(nbio.at(base + 4 * i as u32))
             .modify(DEVICE_REMAP::DEVFN.val(d as u32))
     });
 }
@@ -587,7 +587,7 @@ pub fn hotplug_settle<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>) {
 /// strap (`0x10234400` bit 28, sp4r2 `ffde6712`).
 pub fn enable_sata<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>) {
     let strap = |dev, func| {
-        nbio.reg::<nbif::FUNC_STRAP0::Register>(nbio.nbif(1) + nbif::func_strap0(dev, func))
+        nbio.reg_at::<nbif::FUNC_STRAP0::Register>(nbio.nbif(1) + nbif::func_strap0(dev, func))
             .modify(nbif::FUNC_STRAP0::EXIST::SET)
     };
     match nbio.generation {
