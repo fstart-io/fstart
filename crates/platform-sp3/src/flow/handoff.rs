@@ -98,6 +98,7 @@ fn span_window(span: Span) -> MemoryWindow {
 pub(crate) struct Handoff<'a> {
     e820: E820State,
     rsdp: Option<u64>,
+    smbios: Option<u64>,
     console: &'a Ns16550,
     ecam: (u64, u64),
     ffs: Span,
@@ -118,6 +119,10 @@ impl fstart_stage::payload::X86UefiPayloadContext for Handoff<'_> {
 
     fn acpi_rsdp(&self) -> Option<u64> {
         self.rsdp
+    }
+
+    fn smbios(&self) -> Option<u64> {
+        self.smbios
     }
 
     fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
@@ -150,6 +155,7 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
     Payload::boot(Handoff {
         e820: ctx.e820,
         rsdp: ctx.rsdp,
+        smbios: ctx.smbios,
         console,
         ecam: ctx.ecam,
         ffs: ctx.ffs,

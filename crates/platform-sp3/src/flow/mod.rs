@@ -272,6 +272,7 @@ pub(crate) struct Ctx {
     pub cppc: Option<Cppc>,
     pub smm: Option<crate::smm::SmmConfig>,
     pub rsdp: Option<u64>,
+    pub smbios: Option<u64>,
 }
 
 /// CPUID → revision before anything else: the generation picks the flow's
@@ -320,7 +321,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     check_identity::<B>(&identity, timer.mhz());
 
     step(0x14, "APOB");
-    let (flash, ffs) = flash(&fch, generation);
+    let (flash, ffs, rom_size) = flash(&fch, generation);
     let (apob, apob_span) = read_apob(flash, generation);
 
     step(0x15, "memory map");
@@ -372,6 +373,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
         cppc: None,
         smm: None,
         rsdp: None,
+        smbios: None,
     };
 
     step(0x20, "DF topology and maps");
@@ -415,6 +417,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     #[cfg(feature = "acpi")]
     {
         ctx.rsdp = Some(handoff::acpi::<B, S>(&ctx, &si));
+        ctx.smbios = Some(crate::smbios::runtime::prepare::<B>(&ctx, &mp, rom_size));
     }
 
     step(0x80, "ReadyToBoot");
@@ -509,7 +512,7 @@ fn flash_slice(address: u64, len: u32) -> &'static [u8] {
 /// half whose EFS the generation's boot ROM takes) and the FFS window.
 /// Both are read through ROM2 when they lie in the page it shows; ROM3 is
 /// probed only for an FFS outside it, and whatever neither shows halts.
-fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
+fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span, u32) {
     // SAFETY: the static is always readable; volatile so the linked
     // placeholder is not folded into the code.
     let anchor = unsafe { core::ptr::read_volatile(FLASH_ANCHOR.0.get()) };
@@ -557,7 +560,11 @@ fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
         .or_halt("EFS");
     let ffs = map.address(offset, size).or_halt("FFS window");
     fstart_log::info!("sp3: FFS at flash {:#x}+{:#x}", offset, size);
-    (efs, Span::new(ffs, u64::from(size)))
+    (
+        efs,
+        Span::new(ffs, u64::from(size)),
+        anchor.flash_size.get(),
+    )
 }
 
 /// `generation`'s BIOS directories in the booted half `flash`.

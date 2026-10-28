@@ -205,11 +205,37 @@ pub enum CacheAssociativity {
     Way8,
     /// 16-way set-associative.
     Way16,
+    Way12,
+    Way20,
+    Way24,
+    Way32,
+    Way48,
+    Way64,
     /// Fully associative.
     FullyAssociative,
 }
 
 impl CacheAssociativity {
+    /// Deterministic CPUID geometry to the SMBIOS enumeration.
+    pub const fn from_ways(ways: u16, fully_associative: bool) -> Self {
+        if fully_associative {
+            return Self::FullyAssociative;
+        }
+        match ways {
+            1 => Self::DirectMapped,
+            2 => Self::Way2,
+            4 => Self::Way4,
+            8 => Self::Way8,
+            12 => Self::Way12,
+            16 => Self::Way16,
+            20 => Self::Way20,
+            24 => Self::Way24,
+            32 => Self::Way32,
+            48 => Self::Way48,
+            64 => Self::Way64,
+            _ => Self::Unknown,
+        }
+    }
     /// Convert to the SMBIOS Type 7 associativity byte value.
     pub fn to_smbios_byte(self) -> u8 {
         match self {
@@ -218,7 +244,13 @@ impl CacheAssociativity {
             Self::Way2 => 0x04,
             Self::Way4 => 0x05,
             Self::Way8 => 0x07,
-            Self::Way16 => 0x09,
+            Self::Way16 => 0x08,
+            Self::Way12 => 0x09,
+            Self::Way24 => 0x0a,
+            Self::Way32 => 0x0b,
+            Self::Way48 => 0x0c,
+            Self::Way64 => 0x0d,
+            Self::Way20 => 0x0e,
             Self::FullyAssociative => 0x06,
         }
     }
@@ -258,7 +290,8 @@ pub struct SmbiosMemoryDevice {
     pub locator: HString<32>,
     /// Memory size in megabytes.
     ///
-    /// `None` emits SMBIOS value 0 (unknown).
+    /// `None` emits SMBIOS value 0xffff (present, capacity unknown).
+    /// `Some(0)` explicitly describes an empty slot.
     #[serde(default)]
     pub size_mb: Option<u32>,
     /// Memory speed in MHz (e.g., 2400, 3200).

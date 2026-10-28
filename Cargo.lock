@@ -814,6 +814,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-spd"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-driver-sunxi"
 version = "0.1.0"
 dependencies = [
@@ -1024,6 +1032,7 @@ dependencies = [
  "fstart-core",
  "fstart-driver-amd",
  "fstart-driver-ipmi",
+ "fstart-driver-spd",
  "fstart-driver-uart",
  "fstart-image-build",
  "fstart-log",

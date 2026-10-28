@@ -25,6 +25,10 @@ static DETECT_MILAN: [Pad; 2] = gpio::m2_detect_pads(Generation::Milan);
 
 impl board::Board for Board {
     const NAME: &'static str = "Tyan S8030";
+
+    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
+        fstart_acpi::smbios::SmbiosIdentity::new("TYAN", "S8030")
+    }
     const CONSOLE: Ns16550Config = bmc::CONSOLE;
     /// The vendor DSDT's `BSMI` = 0xC0 and BmcAcpi's SW SMIs 0xC0–0xC5.
     const BMC_SX_NOTIFY: Option<BmcSxNotify> = Some(BmcSxNotify {

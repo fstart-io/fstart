@@ -1,7 +1,8 @@
 //! SMBIOS 3.0 table generation for fstart firmware.
 //!
 //! Writes SMBIOS structures directly to a target physical address.
-//! No heap allocation — uses a cursor-based writer over a raw memory slice.
+//! No heap allocation — uses a cursor-based writer over a bounded memory slice.
+//! The safe [`assemble_into`] API separates storage from its physical address.
 //!
 //! # Supported table types
 //!
@@ -24,7 +25,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! let total = fstart_acpi::smbios::assemble_and_write(0x10000090000, |w| {
+//! let total = fstart_acpi::smbios::assemble_into(&mut storage, 0x10000090000, |w| {
 //!     w.add_bios_info(&BiosInfo {
 //!         vendor: "fstart",
 //!         version: "0.1.0",
@@ -34,7 +35,7 @@
 //!     });
 //!     w.add_system_info("QEMU", "SBSA Reference", "1.0", None, None);
 //!     w.add_end_of_table();
-//! });
+//! })?;
 //! ```
 
 use zerocopy::little_endian::{U16, U32, U64};
@@ -44,10 +45,20 @@ use zerocopy::{Immutable, IntoBytes};
 const SM3_MAGIC: [u8; 5] = *b"_SM3_";
 
 /// Size of the SMBIOS 3.0 entry point structure (24 bytes).
-const ENTRY_POINT_SIZE: usize = 24;
+/// Size of an SMBIOS 3.x entry point (its address is not encoded within it).
+pub const ENTRY_POINT_SIZE: usize = 24;
 
 /// Maximum SMBIOS table area (64 KiB is generous for firmware).
 const MAX_TABLE_AREA: usize = 64 * 1024;
+/// Recommended storage for a complete entry point and structure table.
+pub const BUFFER_SIZE: usize = ENTRY_POINT_SIZE + MAX_TABLE_AREA;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteError {
+    BufferTooSmall,
+    AddressOverflow,
+    TableTooLarge,
+}
 
 // ---------------------------------------------------------------------------
 // SMBIOS structure type constants
@@ -117,6 +128,34 @@ pub struct SmbiosIdentity<'a> {
     pub oem_string: Option<&'a str>,
 }
 
+impl<'a> SmbiosIdentity<'a> {
+    /// Minimal board identity. Unknown asset IDs, UUIDs and chassis details
+    /// remain unspecified rather than being copied from another machine.
+    pub const fn new(manufacturer: &'a str, product: &'a str) -> Self {
+        Self {
+            bios_vendor: "fstart",
+            bios_version: env!("CARGO_PKG_VERSION"),
+            bios_release_date: match option_env!("FSTART_SMBIOS_DATE") {
+                Some(date) => date,
+                None => "",
+            },
+            sys_manufacturer: manufacturer,
+            sys_product: product,
+            sys_version: "",
+            sys_serial: None,
+            sys_uuid: None,
+            bb_manufacturer: manufacturer,
+            bb_product: product,
+            bb_version: "",
+            bb_serial: None,
+            processor_sockets: &[],
+            chassis_type: 0x02,
+            chassis_manufacturer: "",
+            oem_string: None,
+        }
+    }
+}
+
 /// Type 0 contents.
 pub struct BiosInfo<'a> {
     pub vendor: &'a str,
@@ -153,7 +192,8 @@ pub struct ProcessorInfo<'a> {
     pub caches: [u16; 3],
 }
 
-/// Type 17 contents. Empty slots have `size_mb == 0`.
+/// Type 17 contents. Empty slots have `size_mb == 0`; a present module with
+/// unknown capacity uses [`fstart_core::memory_info::SIZE_UNKNOWN`].
 pub struct MemoryDeviceInfo<'a> {
     pub locator: &'a str,
     pub bank_locator: &'a str,
@@ -498,10 +538,10 @@ const _: () = assert!(size_of::<RawEntryPoint>() == ENTRY_POINT_SIZE);
 /// Tracks the current write position, handle counter, string count per
 /// structure, overflow status, and the handle of the most recently created
 /// physical memory array (for linking Type 17 → Type 16 → Type 19).
-pub struct SmbiosWriter {
-    /// Base address of the table area (after the entry point).
-    base: *mut u8,
-    /// Current write offset from `base`.
+pub struct SmbiosWriter<'a> {
+    /// The table area (after the entry point).
+    buffer: &'a mut [u8],
+    /// Current write offset into `buffer`.
     offset: usize,
     /// Maximum writable size.
     limit: usize,
@@ -517,35 +557,12 @@ pub struct SmbiosWriter {
     overflow: bool,
 }
 
-impl SmbiosWriter {
-    /// Create a new writer targeting `table_base` (physical address of the
-    /// structure table area, immediately after the entry point).
-    ///
-    /// # Safety
-    ///
-    /// `table_base` must point to writable memory of at least `MAX_TABLE_AREA`
-    /// bytes. The caller ensures this region is in DRAM and not aliased.
-    unsafe fn new(table_base: u64) -> Self {
+impl<'a> SmbiosWriter<'a> {
+    /// A writer over the first `limit` bytes of `buffer`.
+    fn new(buffer: &'a mut [u8], limit: usize) -> Self {
+        let limit = limit.min(buffer.len());
         Self {
-            base: table_base as *mut u8,
-            offset: 0,
-            limit: MAX_TABLE_AREA,
-            next_handle: 1,
-            last_phys_mem_array_handle: 0,
-            string_count: 0,
-            overflow: false,
-        }
-    }
-
-    /// Create a writer with a custom limit (for testing overflow behavior).
-    ///
-    /// # Safety
-    ///
-    /// `table_base` must point to writable memory of at least `limit` bytes.
-    #[cfg(test)]
-    unsafe fn with_limit(table_base: u64, limit: usize) -> Self {
-        Self {
-            base: table_base as *mut u8,
+            buffer,
             offset: 0,
             limit,
             next_handle: 1,
@@ -581,12 +598,10 @@ impl SmbiosWriter {
             self.overflow = true;
             return;
         }
-        // SAFETY: bounds-checked above, caller guarantees writable memory.
-        unsafe {
-            let dst = self.base.add(self.offset);
-            for (i, &b) in bytes.iter().enumerate() {
-                dst.add(i).write_volatile(b);
-            }
+        let dst = &mut self.buffer[self.offset..self.offset + bytes.len()];
+        for (d, &b) in dst.iter_mut().zip(bytes) {
+            // SAFETY: a valid, exclusively borrowed byte.
+            unsafe { core::ptr::write_volatile(d, b) };
         }
         self.offset += bytes.len();
     }
@@ -653,6 +668,92 @@ impl SmbiosWriter {
             self.write_string(string);
         }
         self.end_strings();
+    }
+
+    /// Common Type 0/1/2/3/11 identity emission. Hardware adapters provide
+    /// facts; they do not need their own table/string framing implementation.
+    pub fn add_identity(&mut self, identity: &SmbiosIdentity<'_>, rom_size: u32, uefi: bool) {
+        self.add_bios_info(&BiosInfo {
+            vendor: identity.bios_vendor,
+            version: identity.bios_version,
+            release_date: identity.bios_release_date,
+            rom_size,
+            uefi,
+        });
+        self.add_system_info(
+            identity.sys_manufacturer,
+            identity.sys_product,
+            identity.sys_version,
+            identity.sys_serial,
+            identity.sys_uuid,
+        );
+        let chassis = self.add_enclosure(identity.chassis_type, identity.chassis_manufacturer);
+        if !identity.bb_manufacturer.is_empty() || !identity.bb_product.is_empty() {
+            self.add_baseboard_info(
+                identity.bb_manufacturer,
+                identity.bb_product,
+                identity.bb_version,
+                identity.bb_serial,
+                chassis,
+            );
+        }
+        if let Some(oem) = identity.oem_string {
+            self.add_oem_strings(&[oem]);
+        }
+    }
+
+    /// Shared conversion of a standard installed-memory record. Socket labels
+    /// belong to wiring data supplied by the caller, never guessed here.
+    pub fn add_dimm(
+        &mut self,
+        device: &fstart_core::memory_info::MemoryDevice,
+        locator: &str,
+        bank: &str,
+    ) {
+        use fstart_core::memory_info::{FORM_FACTOR_UNKNOWN, TYPE_DETAIL_UNKNOWN};
+        let populated = device.is_populated();
+        let serial = device.serial_number();
+        self.add_memory_device(&MemoryDeviceInfo {
+            locator,
+            bank_locator: bank,
+            manufacturer: if populated {
+                device.manufacturer().unwrap_or("")
+            } else {
+                ""
+            },
+            serial: serial.as_deref().unwrap_or(""),
+            part_number: if populated {
+                device.part_number().unwrap_or("")
+            } else {
+                ""
+            },
+            size_mb: device.size_mib.get(),
+            memory_type: if populated { device.memory_type } else { 0x02 },
+            form_factor: if populated {
+                device.form_factor
+            } else {
+                FORM_FACTOR_UNKNOWN
+            },
+            type_detail: if populated {
+                device.type_detail.get()
+            } else {
+                TYPE_DETAIL_UNKNOWN
+            },
+            speed_mts: device.max_mts.get(),
+            configured_mts: device.configured_mts.get(),
+            voltage_mv: device.voltage_mv.get(),
+            data_width: if populated {
+                device.data_width.get()
+            } else {
+                0xffff
+            },
+            total_width: if populated {
+                device.total_width.get()
+            } else {
+                0xffff
+            },
+            ranks: device.ranks,
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -769,13 +870,14 @@ impl SmbiosWriter {
             header,
             manufacturer: manufacturer_index,
             kind: chassis_type,
-            version: 0,          // no string
-            serial: 0,           // no string
-            asset_tag: 0,        // no string
-            boot_state: 0x03,    // safe
-            psu_state: 0x03,     // safe
-            thermal_state: 0x03, // safe
-            security: 0x03,      // none
+            version: 0,   // no string
+            serial: 0,    // no string
+            asset_tag: 0, // no string
+            // This API has no measured chassis-health/security inputs.
+            boot_state: 0x02,    // unknown
+            psu_state: 0x02,     // unknown
+            thermal_state: 0x02, // unknown
+            security: 0x02,      // unknown
             oem_defined: U32::new(0),
             height: 0,      // unspecified
             power_cords: 0, // unspecified
@@ -956,10 +1058,13 @@ impl SmbiosWriter {
     pub fn add_memory_device(&mut self, dimm: &MemoryDeviceInfo) {
         // Size field: if size_mb fits in 15 bits, use directly.
         // Otherwise set 0x7FFF and use extended size.
-        let size_field = if dimm.size_mb <= 0x7FFF {
+        let unknown = dimm.size_mb == fstart_core::memory_info::SIZE_UNKNOWN;
+        let size_field = if unknown {
+            0xffff
+        } else if dimm.size_mb < 0x7fff {
             dimm.size_mb as u16
         } else {
-            0x7FFF // see extended size
+            0x7fff // reserved marker; use extended size even for 32767 MiB
         };
         let strings = [
             dimm.locator,
@@ -995,7 +1100,7 @@ impl SmbiosWriter {
             asset_tag: 0, // no string
             part_number,
             attributes: dimm.ranks & 0x0f,
-            extended_size_mb: U32::new(dimm.size_mb),
+            extended_size_mb: U32::new(if unknown { 0 } else { dimm.size_mb }),
             configured_clock_mts: U16::new(dimm.configured_mts),
             min_voltage_mv: U16::new(dimm.voltage_mv),
             max_voltage_mv: U16::new(dimm.voltage_mv),
@@ -1008,7 +1113,11 @@ impl SmbiosWriter {
             controller_manufacturer: U16::new(0),
             controller_product: U16::new(0),
             nonvolatile_bytes: U64::new(0), // none
-            volatile_bytes: U64::new(u64::from(dimm.size_mb) * 1024 * 1024),
+            volatile_bytes: U64::new(if unknown {
+                u64::MAX
+            } else {
+                u64::from(dimm.size_mb) * 1024 * 1024
+            }),
             cache_bytes: U64::new(0),
             logical_bytes: U64::new(0),
             extended_speed_mts: U32::new(0), // speed fits the 16-bit field
@@ -1124,40 +1233,44 @@ fn compute_checksum(data: &[u8]) -> u8 {
     0u8.wrapping_sub(data.iter().fold(0u8, |acc, &b| acc.wrapping_add(b)))
 }
 
-/// Assemble and write SMBIOS tables to the given physical address.
+/// Assemble into exclusive storage, publishing its entry point only on success.
+/// `table_addr` is the physical address where the caller will keep `bytes`.
+/// On overflow the entry-point signature stays invalid, not partially published.
 ///
-/// The SMBIOS 3.0 entry point is written at `table_addr`, followed by
-/// all structure tables.  The closure `f` receives a [`SmbiosWriter`]
-/// to add individual structures.
+/// The writer borrows `bytes`, so it cannot outlive or be exchanged with
+/// the writer of other storage:
 ///
-/// Returns the total number of bytes written (entry point + tables).
-///
-/// # Panics
-///
-/// Panics if the table data exceeds `MAX_TABLE_AREA` (64 KiB).  This
-/// indicates a configuration error (too many structures) and must not
-/// produce a silently corrupt SMBIOS image.
-///
-/// # Safety
-///
-/// `table_addr` must point to writable DRAM with at least
-/// `ENTRY_POINT_SIZE + MAX_TABLE_AREA` bytes available.
-pub fn assemble_and_write(table_addr: u64, f: impl FnOnce(&mut SmbiosWriter)) -> usize {
-    let table_base = table_addr + ENTRY_POINT_SIZE as u64;
-
-    // SAFETY: caller guarantees writable memory at table_addr.
-    let mut writer = unsafe { SmbiosWriter::new(table_base) };
-
-    // Let the caller add all structures.
+/// ```compile_fail
+/// use fstart_acpi::smbios::assemble_into;
+/// let mut outer = [0u8; 256];
+/// assemble_into(&mut outer, 0x1000, |w| {
+///     let mut inner = [0u8; 256];
+///     assemble_into(&mut inner, 0x2000, |v| core::mem::swap(w, v)).unwrap();
+/// })
+/// .unwrap();
+/// ```
+pub fn assemble_into(
+    bytes: &mut [u8],
+    table_addr: u64,
+    f: impl FnOnce(&mut SmbiosWriter<'_>),
+) -> Result<usize, WriteError> {
+    if bytes.len() < ENTRY_POINT_SIZE {
+        return Err(WriteError::BufferTooSmall);
+    }
+    bytes[..ENTRY_POINT_SIZE].fill(0);
+    let table_base = table_addr
+        .checked_add(ENTRY_POINT_SIZE as u64)
+        .ok_or(WriteError::AddressOverflow)?;
+    let limit = (bytes.len() - ENTRY_POINT_SIZE).min(MAX_TABLE_AREA);
+    let mut writer = SmbiosWriter::new(&mut bytes[ENTRY_POINT_SIZE..], limit);
     f(&mut writer);
-
-    assert!(
-        !writer.has_overflow(),
-        "SMBIOS table data exceeded {} bytes — reduce table count or increase MAX_TABLE_AREA",
-        MAX_TABLE_AREA
-    );
-
+    if writer.has_overflow() {
+        return Err(WriteError::TableTooLarge);
+    }
     let table_size = writer.pos();
+    table_base
+        .checked_add(table_size as u64)
+        .ok_or(WriteError::AddressOverflow)?;
 
     // Write the SMBIOS 3.0 64-bit entry point at table_addr.
     let mut ep = RawEntryPoint {
@@ -1165,7 +1278,8 @@ pub fn assemble_and_write(table_addr: u64, f: impl FnOnce(&mut SmbiosWriter)) ->
         checksum: 0, // filled below
         length: ENTRY_POINT_SIZE as u8,
         major: 3,
-        minor: 0,
+        // Type 17 includes the 3.3 extended transfer-rate fields.
+        minor: 3,
         docrev: 0,
         ep_rev: 0x01, // SMBIOS 3.0
         reserved: 0,
@@ -1174,15 +1288,8 @@ pub fn assemble_and_write(table_addr: u64, f: impl FnOnce(&mut SmbiosWriter)) ->
     };
     ep.checksum = compute_checksum(ep.as_bytes());
 
-    // SAFETY: caller guarantees writable memory at table_addr.
-    unsafe {
-        let ep_ptr = table_addr as *mut u8;
-        for (i, &b) in ep.as_bytes().iter().enumerate() {
-            ep_ptr.add(i).write_volatile(b);
-        }
-    }
-
-    ENTRY_POINT_SIZE + table_size
+    bytes[..ENTRY_POINT_SIZE].copy_from_slice(ep.as_bytes());
+    Ok(ENTRY_POINT_SIZE + table_size)
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,11 +1301,11 @@ mod tests {
     use super::*;
     use std::{vec, vec::Vec};
 
-    /// Allocate a buffer on the heap and run assemble_and_write into it.
-    fn write_to_buffer(f: impl FnOnce(&mut SmbiosWriter)) -> (Vec<u8>, usize) {
+    /// Allocate a buffer on the heap and assemble into it.
+    fn write_to_buffer(f: impl FnOnce(&mut SmbiosWriter<'_>)) -> (Vec<u8>, usize) {
         let mut buf = vec![0u8; ENTRY_POINT_SIZE + MAX_TABLE_AREA];
         let addr = buf.as_mut_ptr() as u64;
-        let total = assemble_and_write(addr, f);
+        let total = assemble_into(&mut buf, addr, f).unwrap();
         (buf, total)
     }
 
@@ -1279,7 +1386,7 @@ mod tests {
 
         // Check version
         assert_eq!(buf[7], 3); // major
-        assert_eq!(buf[8], 0); // minor
+        assert_eq!(buf[8], 3); // minor: extended MT/s fields require SMBIOS 3.3
     }
 
     #[test]
@@ -1573,11 +1680,83 @@ mod tests {
     }
 
     #[test]
+    fn bounded_assembly_invalidates_failed_entry_points() {
+        let mut tiny = [0xa5; 32];
+        assert_eq!(
+            assemble_into(&mut tiny, 0x1000, |w| {
+                w.add_identity(&SmbiosIdentity::new("Vendor", "Board"), 1 << 24, true);
+            }),
+            Err(WriteError::TableTooLarge)
+        );
+        assert_eq!(&tiny[..5], &[0; 5]);
+        assert_eq!(
+            assemble_into(&mut tiny, u64::MAX, |_| {}),
+            Err(WriteError::AddressOverflow)
+        );
+        assert_eq!(&tiny[..5], &[0; 5]);
+        assert_eq!(
+            assemble_into(&mut tiny[..23], 0, |_| {}),
+            Err(WriteError::BufferTooSmall)
+        );
+    }
+
+    #[test]
+    fn dimm_capacity_boundaries_and_array_links() {
+        use fstart_core::memory_info::{MemoryDevice, SIZE_UNKNOWN};
+        let mut bytes = [0; 2048];
+        let mut array = 0;
+        let used = assemble_into(&mut bytes, 0x2000, |w| {
+            array = w.add_physical_memory_array(1 << 34, 5, 6);
+            for size in [0, 0x7ffe, 0x7fff, 0x8000, SIZE_UNKNOWN] {
+                let device = MemoryDevice {
+                    size_mib: size.into(),
+                    ..MemoryDevice::default()
+                };
+                w.add_dimm(&device, "DIMM", "BANK");
+            }
+            w.add_end_of_table();
+        })
+        .unwrap();
+        assert_eq!(bytes[..24].iter().fold(0u8, |s, b| s.wrapping_add(*b)), 0);
+        assert_eq!(
+            u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+            0x2018
+        );
+        let mut offset = 24;
+        let mut sizes = std::vec::Vec::new();
+        while offset < used {
+            let len = bytes[offset + 1] as usize;
+            if bytes[offset] == 17 {
+                let record = &bytes[offset..offset + len];
+                assert_eq!(u16::from_le_bytes(record[4..6].try_into().unwrap()), array);
+                sizes.push((
+                    u16::from_le_bytes(record[12..14].try_into().unwrap()),
+                    u32::from_le_bytes(record[28..32].try_into().unwrap()),
+                ));
+            }
+            offset += len;
+            while bytes[offset..offset + 2] != [0, 0] {
+                offset += 1;
+            }
+            offset += 2;
+        }
+        assert_eq!(
+            sizes,
+            [
+                (0, 0),
+                (0x7ffe, 0x7ffe),
+                (0x7fff, 0x7fff),
+                (0x7fff, 0x8000),
+                (0xffff, 0)
+            ]
+        );
+    }
+
+    #[test]
     fn test_overflow_detection() {
         // Allocate a real buffer but limit the writer to 8 bytes.
         let mut buf = vec![0u8; 128];
-        let base = buf.as_mut_ptr() as u64;
-        let mut writer = unsafe { SmbiosWriter::with_limit(base, 8) };
+        let mut writer = SmbiosWriter::new(&mut buf, 8);
 
         // Write exactly 8 bytes: should succeed.
         writer.write_raw(&[0xAA; 8]);
@@ -1589,23 +1768,15 @@ mod tests {
     }
 
     #[test]
-    fn test_overflow_panics_in_assemble() {
-        // assemble_and_write should panic if the closure overflows.
+    fn overflow_publishes_no_entry_point() {
         let mut buf = vec![0u8; ENTRY_POINT_SIZE + MAX_TABLE_AREA];
-        let addr = buf.as_mut_ptr() as u64;
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assemble_and_write(addr, |w| {
-                // Overwrite the limit to something tiny to force overflow
-                // without actually writing 64K of data.
-                w.limit = 4;
-                w.write_raw(&[0u8; 4]); // exactly at limit
-                w.write_raw(&[0xFF]); // overflow
-            });
-        }));
-        assert!(
-            result.is_err(),
-            "assemble_and_write should panic on overflow"
-        );
+        let result = assemble_into(&mut buf, 0x1000, |w| {
+            // Shrink the limit to force overflow without writing 64 KiB.
+            w.limit = 4;
+            w.write_raw(&[0u8; 4]); // exactly at limit
+            w.write_raw(&[0xFF]); // overflow
+        });
+        assert_eq!(result, Err(WriteError::TableTooLarge));
+        assert!(buf[..ENTRY_POINT_SIZE].iter().all(|&b| b == 0));
     }
 }

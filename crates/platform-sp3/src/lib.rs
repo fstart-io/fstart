@@ -32,6 +32,8 @@ pub mod memory;
 #[cfg(target_arch = "x86_64")]
 pub mod mp;
 pub mod pci;
+#[cfg(feature = "acpi")]
+pub mod smbios;
 pub mod smm;
 
 #[cfg(feature = "smm")]

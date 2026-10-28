@@ -72,6 +72,13 @@ pub enum BoardError {
 pub trait Board: Sp3BoardFacts + 'static {
     /// Shown in the log.
     const NAME: &'static str;
+
+    /// Board identity only. CPU packages, DIMMs and memory ranges are
+    /// discovered by shared drivers; do not describe the current bench here.
+    #[cfg(feature = "acpi")]
+    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
+        fstart_acpi::smbios::SmbiosIdentity::new("", Self::NAME)
+    }
     /// The firmware console: an MMIO or LPC-connected 16550.
     const CONSOLE: Ns16550Config;
 

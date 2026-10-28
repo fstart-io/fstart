@@ -93,6 +93,10 @@ pub fn apcb_boot_info<'a>(apob: &Apob<'a>) -> Result<ApcbBootInfo<'a>, ApobError
 #[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct SpdRecord {
+    /// Socket/die/channel/DIMM metadata precedes the consumer's validity
+    /// byte. Do not start a whole-record slice at the validity byte: its
+    /// final element would extend four bytes past the APOB entry.
+    _location: [u8; 4],
     present: u8,
     /// Copied into the AGESA memory-info PPI; meaning not traced.
     pub info: [u8; 3],
@@ -103,44 +107,45 @@ pub struct SpdRecord {
     _c: U32,
     /// The DIMM's SPD bytes.
     pub spd: [u8; 512],
-    _tail: U32,
 }
 
 impl SpdRecord {
     pub fn present(&self) -> bool {
-        self.present != 0
+        self.present == 1
     }
 }
 
 /// 1/0x11: SPD copies of one socket/die.
 ///
-/// Layout from the consumers (ZP MemAm4Pei `ffdd46ce`; Rome
-/// AmdMemSspSp3Pei `ffdee1cb`..`ffdee25f`, instruction-checked; Milan the
-/// same function, decompiler-only): DIMMs per channel `+0x30`, channels
-/// `+0x31`, records `+0x38`, stride 0x214, index `channel * dimms + dimm`.
-/// The SSP/GN `ApobSspPei` getters compute `+0x34` (and stride 0x215 on
-/// Rome) but nothing reads through them for SMBIOS.
+/// DIMMs per channel `+0x30`, channels `+0x31`, whole records `+0x34`,
+/// stride 0x214, index `channel * dimms + dimm`. The memory-info consumer
+/// view starts at the validity byte (`+0x38`), not the whole record.
+/// RXM100CB original-byte witnesses: `ffd57076..ffd57122` (counts,
+/// stride, validity at record+4, SPD at record+0x14, 512-byte copy).
+/// The Rome ApobSsp getter's 0x215 stride is not the memory-info consumer
+/// layout; do not apply it to this record.
 pub struct SpdTable<'a> {
     dimms_per_channel: u8,
     records: &'a [SpdRecord],
 }
 
 impl<'a> SpdTable<'a> {
-    /// `(channel, dimm, record)` for every present DIMM.
-    pub fn dimms(&self) -> impl Iterator<Item = (u8, u8, &'a SpdRecord)> + 'a {
+    /// `(channel, dimm, record)` for every exposed position, including empty.
+    pub fn slots(&self) -> impl Iterator<Item = (u8, u8, &'a SpdRecord)> + 'a {
         let per = self.dimms_per_channel.max(1);
         let records = self.records;
-        records
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.present())
-            .map(move |(i, r)| {
-                (
-                    (i / usize::from(per)) as u8,
-                    (i % usize::from(per)) as u8,
-                    r,
-                )
-            })
+        records.iter().enumerate().map(move |(i, r)| {
+            (
+                (i / usize::from(per)) as u8,
+                (i % usize::from(per)) as u8,
+                r,
+            )
+        })
+    }
+
+    /// `(channel, dimm, record)` for every valid SPD copy.
+    pub fn dimms(&self) -> impl Iterator<Item = (u8, u8, &'a SpdRecord)> + 'a {
+        self.slots().filter(|(_, _, record)| record.present())
     }
 
     pub fn dimms_per_channel(&self) -> u8 {
@@ -152,9 +157,24 @@ pub fn spd<'a>(apob: &Apob<'a>, socket: u8, die: u8) -> Result<SpdTable<'a>, Apo
     let entry = apob.find(group::MEMORY, SPD, instance(socket, die))?;
     let dimms_per_channel = entry.byte(0x30)?;
     let channels = entry.byte(0x31)?;
+    use crate::psp::Variant;
+    // These topology limits are established for SP3, not Raven/Picasso.
+    let invalid = match apob.variant() {
+        Variant::Zp => channels > 2,
+        Variant::Ssp | Variant::Gn => channels > 8,
+        Variant::Rv => false,
+    } || (apob.variant() != Variant::Rv
+        && (dimms_per_channel > 2 || (channels == 0) != (dimms_per_channel == 0)));
+    if invalid {
+        return Err(ApobError::Value {
+            group: group::MEMORY,
+            kind: SPD,
+            value: u32::from(channels) << 8 | u32::from(dimms_per_channel),
+        });
+    }
     Ok(SpdTable {
         dimms_per_channel,
-        records: entry.slice(0x38, usize::from(channels) * usize::from(dimms_per_channel))?,
+        records: entry.slice(0x34, usize::from(channels) * usize::from(dimms_per_channel))?,
     })
 }
 
@@ -175,6 +195,10 @@ impl Type17Seed {
     /// Skipped by AGESA when set.
     pub fn skip(&self) -> bool {
         self.location & 0x80 != 0
+    }
+    /// The module is populated (RXM100CB `ffd56fad`).
+    pub fn present(&self) -> bool {
+        self.location & 0x40 != 0
     }
     pub fn socket(&self) -> u8 {
         self.location & 1
@@ -265,25 +289,121 @@ mod tests {
     fn spd_table() {
         // 2 DIMMs per channel, 8 channels; DIMMs on (ch 0, dimm 0) and (ch 5, dimm 1).
         let mut records = vec![0u8; 16 * 0x214];
-        for (i, tag) in [(0usize, 0x11u8), (11, 0x22)] {
-            records[i * 0x214] = 1;
-            records[i * 0x214 + 0x10] = tag;
+        for (i, tag) in [(0usize, 0x11u8), (11, 0x22), (15, 0x33)] {
+            records[i * 0x214 + 4] = 1;
+            records[i * 0x214 + 0x14] = tag;
+            // The last SPD byte must belong to this record, not a tail.
+            records[i * 0x214 + 0x213] = tag;
         }
-        let body = Body::default().at(0x30, &[2, 8]).at(0x38, &records);
+        let body = Body::default().at(0x30, &[2, 8]).at(0x34, &records);
         let data = Builder::new(0x18).entry(1, 0x11, 0x100, &body.0).build();
         let apob = Apob::new(&data, Variant::Gn).unwrap();
         let table = spd(&apob, 1, 0).unwrap();
         let dimms: std::vec::Vec<_> = table.dimms().map(|(c, d, r)| (c, d, r.spd[0])).collect();
-        assert_eq!(dimms, [(0, 0, 0x11), (5, 1, 0x22)]);
+        assert_eq!(dimms, [(0, 0, 0x11), (5, 1, 0x22), (7, 1, 0x33)]);
+        assert_eq!(table.slots().count(), 16);
+        assert!(table.dimms().all(|(_, _, r)| r.spd[0] == r.spd[511]));
         // Counts larger than the entry fail.
-        let body = Body::default().at(0x30, &[2, 9]).at(0x38, &records);
+        let body = Body::default().at(0x30, &[2, 9]).at(0x34, &records);
         let data = Builder::new(0x18).entry(1, 0x11, 0, &body.0).build();
         assert!(spd(&Apob::new(&data, Variant::Ssp).unwrap(), 0, 0).is_err());
     }
 
     #[test]
+    fn exact_spd_entry_needs_no_trailing_record_bytes() {
+        for variant in [Variant::Zp, Variant::Ssp, Variant::Gn, Variant::Rv] {
+            let mut record = [0u8; 0x214];
+            record[4] = 1;
+            record[0x14] = 0x23;
+            record[0x213] = 0x45;
+            let body = Body::default().at(0x30, &[1, 1]).at(0x34, &record);
+            let data = Builder::new(0x18).entry(1, 0x11, 0, &body.0).build();
+            let apob = Apob::new(&data, variant).unwrap();
+            let table = spd(&apob, 0, 0).unwrap();
+            let (_, _, record) = table.dimms().next().unwrap();
+            assert_eq!((record.spd[0], record.spd[511]), (0x23, 0x45));
+        }
+    }
+
+    #[test]
+    fn spd_validity_and_bounds() {
+        let mut records = [0u8; 2 * 0x214];
+        records[0] = 1; // Metadata is not the validity byte.
+        records[4] = 2; // Only exactly 1 denotes a valid SPD copy.
+        records[0x214 + 4] = 1;
+        let body = Body::default().at(0x30, &[2, 1]).at(0x34, &records);
+        let data = Builder::new(0x18).entry(1, SPD, 0, &body.0).build();
+        let apob = Apob::new(&data, Variant::Gn).unwrap();
+        let table = spd(&apob, 0, 0).unwrap();
+        assert_eq!(table.slots().count(), 2);
+        assert_eq!(
+            table
+                .dimms()
+                .map(|(c, d, _)| (c, d))
+                .collect::<std::vec::Vec<_>>(),
+            [(0, 1)]
+        );
+
+        let body = Body::default()
+            .at(0x30, &[2, 1])
+            .at(0x34, &records[..records.len() - 1]);
+        let data = Builder::new(0x18).entry(1, SPD, 0, &body.0).build();
+        assert!(matches!(
+            spd(&Apob::new(&data, Variant::Gn).unwrap(), 0, 0),
+            Err(ApobError::TooShort { .. })
+        ));
+
+        for variant in [Variant::Zp, Variant::Ssp, Variant::Gn] {
+            for (dimms, channels) in [(3, 1), (1, 9), (0, 1), (1, 0)] {
+                let body = Body::default()
+                    .at(0x30, &[dimms, channels])
+                    .at(0x34, &[0; 27 * 0x214]);
+                let data = Builder::new(0x18).entry(1, SPD, 0, &body.0).build();
+                let apob = Apob::new(&data, variant).unwrap();
+                assert!(matches!(spd(&apob, 0, 0), Err(ApobError::Value { .. })));
+                // Do not impose SP3-only topology limits on existing Raven consumers.
+                let apob = Apob::new(&data, Variant::Rv).unwrap();
+                assert!(spd(&apob, 0, 0).is_ok());
+            }
+        }
+        let body = Body::default().at(0x30, &[1, 3]).at(0x34, &[0; 3 * 0x214]);
+        let data = Builder::new(0x18).entry(1, SPD, 0, &body.0).build();
+        assert!(matches!(
+            spd(&Apob::new(&data, Variant::Zp).unwrap(), 0, 0),
+            Err(ApobError::Value { .. })
+        ));
+        assert!(spd(&Apob::new(&data, Variant::Ssp).unwrap(), 0, 0).is_ok());
+    }
+
+    #[test]
+    fn seed_presence_and_bounds() {
+        for (location, skip, present) in [
+            (0, false, false),
+            (0x40, false, true),
+            (0x80, true, false),
+            (0xc0, true, true),
+        ] {
+            let seed = Type17Seed {
+                location,
+                _b1: 0,
+                handle: 0.into(),
+                words: [0.into(); 2],
+            };
+            assert_eq!((seed.skip(), seed.present()), (skip, present));
+        }
+        for (t17, t20, size) in [(1, 0, 0x3b), (0, 1, 0x53), (1, 1, 0x5b)] {
+            let body = Body::default().at(0x30, &[0, t17, t20]).len(size);
+            let data = Builder::new(0x18).entry(8, SMBIOS, 0, &body.0).build();
+            assert!(matches!(
+                smbios_info(&Apob::new(&data, Variant::Ssp).unwrap()),
+                Err(ApobError::TooShort { .. })
+            ));
+        }
+    }
+
+    #[test]
     fn smbios_seeds() {
-        let t17 = [0b0000_0101u8, 0, 0x10, 0, 0, 0, 0, 0]; // socket 1, channel 2
+        let t17 = [0b0100_0101u8, 0, 0x10, 0, 0, 0, 0, 0]; // present, socket 1, channel 2
         let mut t20 = vec![0u8; 0x20];
         t20[0] = 0x80 | 2 << 2 | 1; // valid, socket 1, channel 2
         t20[2] = 0x20;
@@ -297,8 +417,15 @@ mod tests {
         assert!(info.ecc());
         let s = &info.type17[0];
         assert_eq!(
-            (s.skip(), s.socket(), s.channel(), s.dimm(), s.handle.get()),
-            (false, 1, 2, 0, 0x10)
+            (
+                s.skip(),
+                s.present(),
+                s.socket(),
+                s.channel(),
+                s.dimm(),
+                s.handle.get()
+            ),
+            (false, true, 1, 2, 0, 0x10)
         );
         let s = &info.type20[0];
         assert_eq!(

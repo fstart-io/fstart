@@ -25,6 +25,7 @@ members = [
   "crates/driver-vbios",
   "crates/driver-i2c",
   "crates/driver-redriver",
+  "crates/driver-spd",
   "crates/driver-ipmi",
   "crates/driver-intel",
   "crates/driver-sunxi",
@@ -107,6 +108,7 @@ fstart-driver-superio = { path = "crates/driver-superio" }
 fstart-driver-uart = { path = "crates/driver-uart" }
 fstart-driver-vbios = { path = "crates/driver-vbios" }
 fstart-driver-i2c = { path = "crates/driver-i2c" }
+fstart-driver-spd = { path = "crates/driver-spd" }
 fstart-stage = { path = "crates/stage" }
 fstart-acpi = { path = "crates/acpi" }
 fstart-smm = { path = "crates/smm" }

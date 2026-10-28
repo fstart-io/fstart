@@ -15,8 +15,11 @@ S8030 (EPYC 7502P test bench); Naples has no hardware yet.
 - `crates/driver-amd` (`sp3`): silicon IP blocks (`smn`, `soc`, `topology`, `df`,
   `nbio`, `smu`, `dxio`, `ccx`, `fch`, `psp`, `apob`), one implementation
   per IP version, gated by the additive `naples`/`rome`/`milan` features.
+- `crates/driver-spd`: transport-independent JEDEC DDR4 inventory decoding.
+- `crates/acpi::smbios`: shared bounded SMBIOS serialization and identity/DIMM
+  emitters (also used by Intel).
 - `crates/platform-sp3`: the boot flow, memory map, MP, SMM, PCI root
-  bridges, ACPI and the host build plan / flash image. A board enables
+  bridges, ACPI/SMBIOS and the host build plan / flash image. A board enables
   every generation it supports; the reset image identifies the CPU and runs
   the flow with that generation's silicon steps (`flow::naples` or
   `flow::sp3`). A CPU of a generation the build does not carry halts at
@@ -89,6 +92,37 @@ right with SYSCFG.SMEE set (bit 47 is the C-bit). Whether FCH sources left
 routed by the ABL (none are known) could storm. Whether the shared
 `fstart_smm` debug trace to port `0x402` on every SMI is harmless on the SP3
 LPC bus.
+
+## SMBIOS inventory
+
+The SP3 adapter builds SMBIOS 3.3 from runtime facts, then passes its entry
+point through the existing UEFI payload interface. Boards supply only identity
+strings through `Board::smbios_identity`; no CPU SKU, socket count, installed
+RAM or private asset identifiers are compiled into a board description.
+
+- CPUID is captured on an enabled member of each package before AP shutdown.
+  The common x86 cache enumerator supports AMD's deterministic-cache leaf;
+  enabled APIC sharing domains determine package cache totals, including
+  fused-core holes. Cache associativity encoding is shared with Intel.
+- APOB supplies DIMM positions, presence and active ECC mode. SPD decoding,
+  including CRC, ranks/3DS, bus width, rated speed and manufacturing fields,
+  is shared and independent of the EEPROM transport. Configured MT/s comes
+  separately from MEMCLK; SPD's maximum is not substituted for it.
+- A present module with unavailable/unsupported SPD remains **present with
+  unknown capacity**, never an empty socket. Server inventory is not limited
+  by the four-device client cross-stage `MemoryInfo` container.
+- Type 19 follows the existing APOB DRAM map, excluding MMIO holes. Type 20
+  DIMM-to-address/RAS attribution is not claimed. DIMM labels are logical
+  socket/die/channel/position labels, not verified board silkscreen names.
+
+Unknown CPU clocks, asset identifiers and enclosure details remain unspecified.
+The maximum DIMM capacities are generation capabilities, not qualification of
+all supported populations. Missing memory seeds omit memory inventory with a
+warning rather than fabricating it. Host table tests do not establish OS-level
+DMI discovery: direct Linux handoff does not yet publish a legacy low-memory
+SMBIOS entry point; the new publication path is the standard UEFI configuration
+table. RAS recovery, persistent error logs and in-band BMC integration remain
+separate work.
 
 ## Flash image
 

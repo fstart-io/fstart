@@ -49,6 +49,10 @@ const BAUD: u32 = 115_200;
 
 impl board::Board for Board {
     const NAME: &'static str = "AMD Ethanol-X";
+
+    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
+        fstart_acpi::smbios::SmbiosIdentity::new("AMD", "Ethanol-X")
+    }
     const CONSOLE: Ns16550Config = Ns16550Config {
         regs: AccessMode::Mmio {
             base: uart::base(CONSOLE_UART),

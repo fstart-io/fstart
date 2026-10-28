@@ -1,0 +1,11 @@
+[package]
+name = "fstart-driver-spd"
+description = "Vendor-independent JEDEC SPD inventory decoding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fstart-core = { workspace = true }
+tock-registers = { workspace = true }
