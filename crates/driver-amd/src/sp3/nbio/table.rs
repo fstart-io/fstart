@@ -9,7 +9,7 @@
 use fstart_pci::ConfigRegionAccess;
 
 use super::{Nbio, NbioPolicy};
-use crate::sp3::smn::SmnAddr;
+use crate::smn::SmnAddr;
 use crate::sp3::soc::Generation;
 
 /// One register operation.

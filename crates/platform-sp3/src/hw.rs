@@ -6,8 +6,8 @@ use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, MmioCfgBase};
 use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
 
 use fstart_driver_amd::fch::{Bus, NativeBus};
+use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::sp3::fch::{Fch, Mmio, Ports, SmnWindow, acpimmio};
-use fstart_driver_amd::sp3::smn::Smn;
 use fstart_driver_amd::sp3::soc::Generation;
 use tock_registers::interfaces::Writeable;
 
@@ -82,7 +82,7 @@ pub fn secondary_fch(bus: u8, timer: Tsc) -> SecondaryFch {
     // through the DF legacy route the FCH tasks open themselves.
     unsafe {
         Fch {
-            acpi: SmnWindow::new(Smn::new(pci, bus), acpimmio::SMN_BASE),
+            acpi: SmnWindow::new(Smn::on_bus(pci, bus), acpimmio::SMN_BASE),
             mmio: Mmio::new(0),
             io: Ports::new(),
             pci,

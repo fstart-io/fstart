@@ -12,7 +12,6 @@
 extern crate alloc;
 
 use fstart_core::services::Timer;
-use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
@@ -22,6 +21,7 @@ use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_amd::sp3::nbio::NbioPolicy;
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::{ccx, df};
+use fstart_driver_uart::ns16550::Ns16550Config;
 use heapless::Vec;
 
 use crate::layout::Sp3BoardFacts;

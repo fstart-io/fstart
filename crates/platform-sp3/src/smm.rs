@@ -183,13 +183,13 @@ mod handler {
 
     use fstart_arch::x86::cpu::amd::msr::{SMM_ADDR, SMM_MASK};
     use fstart_arch::x86::cpu::msr::MsrAccess;
+    use fstart_driver_amd::smn::Smn;
     use fstart_driver_amd::sp3::fch::common::sx;
     use fstart_driver_amd::sp3::fch::smi::Source;
     use fstart_driver_amd::sp3::fch::smi::{self, source};
     use fstart_driver_amd::sp3::fch::{Fch, FchHw, Mmio, Ports, Window, acpimmio, update};
     use fstart_driver_amd::sp3::psp::command::{C2pBuffer, P2C_BUFFER_SIZE, SmmInfo};
     use fstart_driver_amd::sp3::psp::mailbox::{Mailbox, MmioTransport};
-    use fstart_driver_amd::sp3::smn::Smn;
     use fstart_driver_amd::sp3::smu::mailbox::Mailbox as Smu;
     use fstart_driver_amd::sp3::soc::Generation;
     use fstart_pci::{ConfigRegionAccess, EcamDevice, PciAddress};
@@ -296,11 +296,11 @@ mod handler {
             let host = PciAddress::default();
             let pci = Ecam;
             // SAFETY: SMM owns the CPU; the index is restored below.
-            let saved = unsafe { pci.read(host, fstart_driver_amd::sp3::smn::SMN_INDEX) };
+            let saved = unsafe { pci.read(host, fstart_driver_amd::smn::SMN_INDEX) };
             super::ras::flush::<P>(crate::hw::tsc());
             dispatch::<P>(config);
             // SAFETY: as above.
-            unsafe { pci.write(host, fstart_driver_amd::sp3::smn::SMN_INDEX, saved) };
+            unsafe { pci.write(host, fstart_driver_amd::smn::SMN_INDEX, saved) };
         }
     }
 
@@ -332,7 +332,7 @@ mod handler {
                             C2P.0.get().cast(),
                             |address| einj_target(config, address),
                             &config.einj.targets,
-                            &config.einj.buses.map(|bus| Smn::new(Ecam, bus)),
+                            &config.einj.buses.map(|bus| Smn::on_bus(Ecam, bus)),
                         );
                     }
                 }
@@ -383,7 +383,8 @@ mod handler {
 
     /// Socket 0's (Naples: die 0's) SMU mailbox through bus 0.
     fn smu(generation: Generation, timer: Tsc) -> Option<Smu<Ecam, Tsc>> {
-        let smn = Smn::new(Ecam, 0);
+        // SAFETY: the handler owns this bus's SMN index/data pair while it runs.
+        let smn = unsafe { Smn::on_bus(Ecam, 0) };
         let (regs, limit) = match generation {
             #[cfg(feature = "naples")]
             Generation::Naples => (
@@ -552,8 +553,9 @@ mod handler {
                     let Some(&bus) = config.einj.buses.get(usize::from(socket)) else {
                         return u32::MAX;
                     };
-                    let smn = Smn::new(Ecam, bus);
-                    let value = unsafe { smn.with_saved_index(|s| s.read32(address)) };
+                    // SAFETY: the handler owns this bus's SMN index/data pair while it runs.
+                    let smn = unsafe { Smn::on_bus(Ecam, bus) };
+                    let value = smn.with_saved_index(|s| s.read32(address));
                     trace(address | 0x8000_0000 | (u32::from(socket) << 30), value)
                 },
             );

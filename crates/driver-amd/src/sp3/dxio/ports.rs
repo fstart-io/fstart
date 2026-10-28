@@ -19,8 +19,8 @@ use super::engine::FwEngine;
 use super::hotplug::HotplugKind;
 use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine};
 use super::{Dxio, DxioError, Hooks, PcieReset, UnitView, op, prop};
+use crate::smn::{Smn, SmnAddr};
 use crate::sp3::nbio::{Nbio, NbioReg, nbif};
-use crate::sp3::smn::{Smn, SmnAddr};
 use crate::sp3::smu::SmuMessages;
 use crate::sp3::soc::Generation;
 
@@ -264,15 +264,15 @@ impl<'n, P: ConfigRegionAccess + Clone> PcieCore<'n, P> {
         self.at(0x1110_0000) + ((port as u32) << 12) + offset
     }
 
-    pub fn port_reg<R: RegisterLongName>(&self, port: u8, offset: u32) -> NbioReg<P, R> {
+    pub fn port_reg<R: RegisterLongName>(&self, port: u8, offset: u32) -> NbioReg<'_, P, R> {
         self.nbio.reg(self.port_addr(port, offset))
     }
 
-    pub fn core_reg<R: RegisterLongName>(&self, offset: u32) -> NbioReg<P, R> {
+    pub fn core_reg<R: RegisterLongName>(&self, offset: u32) -> NbioReg<'_, P, R> {
         self.nbio.reg(self.core_addr(offset))
     }
 
-    pub fn cfg_reg<R: RegisterLongName>(&self, port: u8, offset: u32) -> NbioReg<P, R> {
+    pub fn cfg_reg<R: RegisterLongName>(&self, port: u8, offset: u32) -> NbioReg<'_, P, R> {
         self.nbio.reg(self.cfg_addr(port, offset))
     }
 
@@ -393,7 +393,7 @@ pub fn show_bridge<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>, index: usize) 
 fn bridge<P: ConfigRegionAccess + Clone>(
     nbio: &Nbio<P>,
     index: usize,
-) -> NbioReg<P, BRIDGE_CNTL::Register> {
+) -> NbioReg<'_, P, BRIDGE_CNTL::Register> {
     nbio.reg(nbio.at(IOHC_BRIDGE_CNTL + 0x400 * index as u32))
 }
 
@@ -665,8 +665,7 @@ impl<P: ConfigRegionAccess + Clone> FchPerst<P> {
     }
 
     fn drive(&self, smn: &Smn<P>) {
-        // SAFETY: constructor contract.
-        let gpio = |pin: u32| unsafe { smn.register::<FCH_GPIO::Register>(FCH_SMN + pin) };
+        let gpio = |pin: u32| smn.reg(crate::smn::SmnReg::<FCH_GPIO::Register>::new(FCH_SMN + pin));
         match self.generation {
             Generation::Naples => {
                 gpio(PERST_PINS[0]).write(
@@ -675,9 +674,10 @@ impl<P: ConfigRegionAccess + Clone> FchPerst<P> {
                         + FCH_GPIO::PULL_UP_ENABLE::SET
                         + FCH_GPIO::DRV_STRENGTH.val(1),
                 );
-                // SAFETY: constructor contract.
-                unsafe { smn.register::<FCH_IOMUX_24::Register>(FCH_SMN + IOMUX_24) }
-                    .modify(FCH_IOMUX_24::PIN26.val(0));
+                smn.reg(crate::smn::SmnReg::<FCH_IOMUX_24::Register>::new(
+                    FCH_SMN + IOMUX_24,
+                ))
+                .modify(FCH_IOMUX_24::PIN26.val(0));
             }
             Generation::Rome | Generation::Milan => PERST_PINS.iter().for_each(|&pin| {
                 gpio(pin).write(
@@ -966,11 +966,11 @@ pub fn early_trained(engines: &[FwEngine]) -> impl Iterator<Item = &FwEngine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::smn::model::Model;
     use crate::sp3::dxio::engine::{FwEngine, kind};
     use crate::sp3::dxio::lanes::{Group, Lanes, SataEngine, Speed};
     use crate::sp3::dxio::tables::SP3_DEFAULT_DEVFN;
     use crate::sp3::nbio::tests::nbio;
-    use crate::sp3::smn::model::Model;
 
     #[test]
     fn remap_fill() {
@@ -1170,7 +1170,7 @@ mod tests {
 
         let model = Model::default();
         let mut fchs = Vec::new();
-        let _ = fchs.push(((1, 0), Smn::new(model.clone(), 0x80)));
+        let _ = fchs.push(((1, 0), unsafe { Smn::on_bus(model.clone(), 0x80) }));
         // SAFETY: model.
         let mut p = unsafe { FchPerst::new(Generation::Rome, fchs, None) };
         p.release(1, 0);
@@ -1188,13 +1188,13 @@ mod tests {
             .smn
             .insert((0, 0x02D0_1D18), 0x0102_0304);
         let mut fchs = Vec::new();
-        let _ = fchs.push(((0, 1), Smn::new(model.clone(), 0)));
+        let _ = fchs.push(((0, 1), unsafe { Smn::on_bus(model.clone(), 0) }));
         // SAFETY: model.
         let mut z = unsafe {
             FchPerst::new(
                 Generation::Naples,
                 fchs,
-                Some(Smn::new(model.clone(), 0x40)),
+                Some(Smn::on_bus(model.clone(), 0x40)),
             )
         };
         z.release(0, 1);

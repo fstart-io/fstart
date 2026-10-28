@@ -277,7 +277,7 @@ pub fn after_ap_launch<M: SmuMessages + ?Sized>(smu: &M, die0: bool) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::smn::Smn;
+    use crate::smn::Smn;
     use crate::sp3::smu::mailbox::model::{FakeTimer, SmuModel};
     use crate::sp3::smu::mailbox::{Mailbox, response};
 
@@ -295,8 +295,14 @@ mod tests {
     fn dxe_sequence() {
         let m = SmuModel::new(REGS, response::OK);
         // SAFETY: model.
-        let mb =
-            unsafe { Mailbox::new(Smn::new(m.clone(), 0), REGS, FakeTimer::default(), ID_LIMIT) };
+        let mb = unsafe {
+            Mailbox::new(
+                Smn::on_bus(m.clone(), 0),
+                REGS,
+                FakeTimer::default(),
+                ID_LIMIT,
+            )
+        };
         let b = DxeBuffers {
             policy_table: 0x1_0000_1000,
             agm_log: 0x2000,

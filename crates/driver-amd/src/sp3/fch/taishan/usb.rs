@@ -116,7 +116,7 @@ pub fn reset<H: FchHw>(hw: &H, usb: DieUsb, resume: bool) {
 pub fn sx_handshake<H: FchHw>(hw: &H, bus: u8) -> bool {
     // SAFETY: SMM owns the SMN pair while it runs.
     let smn =
-        unsafe { super::super::SmnWindow::new(crate::sp3::smn::Smn::new(hw.pci().clone(), bus), 0) };
+        unsafe { super::super::SmnWindow::new(crate::smn::Smn::on_bus(hw.pci().clone(), bus), 0) };
     let idle = poll(hw.timer(), 1000, 1, || {
         smn.read32(SX_STATUS) & 0x300 == 0x300
     });

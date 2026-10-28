@@ -10,7 +10,7 @@ use tock_registers::interfaces::{ReadWriteable, Writeable};
 use tock_registers::register_bitfields;
 
 use super::{Nbio, NbioPolicy};
-use crate::sp3::smn::SmnAddr;
+use crate::smn::SmnAddr;
 use crate::sp3::soc::Generation;
 
 /// SMN alias of the IOMMU's PCI config space (D0F2).

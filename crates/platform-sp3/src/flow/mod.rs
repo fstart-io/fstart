@@ -43,7 +43,6 @@ use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem,
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::services::memory_detect::{E820Kind, E820State};
-use fstart_driver_uart::ns16550::Ns16550;
 use fstart_driver_amd::sp3::apob::sysmap::{self, Region};
 use fstart_driver_amd::sp3::apob::{self, Apob};
 use fstart_driver_amd::sp3::df::plan::{self, Plan};
@@ -56,6 +55,7 @@ use fstart_driver_amd::sp3::fch::{self, FchHw};
 use fstart_driver_amd::sp3::nbio::Nbio;
 use fstart_driver_amd::sp3::soc::{self, Generation, Identity};
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_uart::ns16550::Ns16550;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
@@ -774,10 +774,12 @@ fn board_gpio<B: Board>(fch: &PrimaryFch, generation: Generation) {
 fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
     #[cfg(feature = "rome")]
     if ctx.generation == Generation::Rome && (1..=2).contains(&ctx.topology.sockets) {
-        use fstart_driver_amd::sp3::{
-            df::{self, Target, v3},
-            psp::ras,
+        use fstart_driver_amd::{
             smn::Smn,
+            sp3::{
+                df::{self, Target, v3},
+                psp::ras,
+            },
         };
         let mut config = crate::smm::EinjConfig {
             sockets: ctx.topology.sockets,
@@ -812,7 +814,7 @@ fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
                             .get()
                     },
                     |socket, address| unsafe {
-                        Smn::new(ctx.pci, config.buses[usize::from(socket)]).read32(address)
+                        Smn::on_bus(ctx.pci, config.buses[usize::from(socket)]).read32(address)
                     },
                 )
             });
@@ -947,7 +949,9 @@ fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) {
 /// Socket 0's C2P mailbox through its PSP BAR.
 pub(crate) fn psp(
     ctx: &Ctx,
-) -> fstart_driver_amd::sp3::psp::mailbox::Mailbox<fstart_driver_amd::sp3::psp::mailbox::MmioTransport> {
+) -> fstart_driver_amd::sp3::psp::mailbox::Mailbox<
+    fstart_driver_amd::sp3::psp::mailbox::MmioTransport,
+> {
     use fstart_driver_amd::sp3::psp::mailbox::{Mailbox, MmioTransport};
     if ctx.psp_bar == 0 {
         fail("PSP BAR");
@@ -974,5 +978,7 @@ pub(crate) fn collect_apic_ids(mp: &MpHandle) -> Vec<u32> {
 pub(crate) fn set_fch_ioapic_id(generation: Generation) {
     // SAFETY: the FCH IOAPIC is decoded at its fixed address.
     let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(0xfec0_0000) };
-    ioapic.set_id(fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id(generation));
+    ioapic.set_id(fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id(
+        generation,
+    ));
 }

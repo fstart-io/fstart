@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
+use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::sp3::apob::ccx::{CoreMap, core_map};
 use fstart_driver_amd::sp3::ccx::release::{self, Launch};
 use fstart_driver_amd::sp3::ccx::topology::{ApicLayout, Location};
@@ -30,7 +31,6 @@ use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
 use fstart_driver_amd::sp3::psp::bar::BAR_SIZE;
-use fstart_driver_amd::sp3::smn::Smn;
 use fstart_driver_amd::sp3::smu::mailbox::Mailbox;
 use fstart_driver_amd::sp3::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
 use fstart_driver_amd::sp3::soc::Generation;
@@ -115,9 +115,12 @@ pub(crate) fn df_init(ctx: &mut Ctx) {
             &memory,
         ),
         #[cfg(feature = "milan")]
-        Generation::Milan => {
-            fstart_driver_amd::sp3::df::milan::init(&ctx.df, &ctx.topology, &Default::default(), &memory)
-        }
+        Generation::Milan => fstart_driver_amd::sp3::df::milan::init(
+            &ctx.df,
+            &ctx.topology,
+            &Default::default(),
+            &memory,
+        ),
         _ => fail("DF init"),
     }
 }
@@ -131,7 +134,7 @@ pub(crate) fn nbio_early(ctx: &mut Ctx) -> Silicon {
     let fuses: heapless::Vec<Fuses, 2> = (0..ctx.topology.sockets)
         .map(|s| match generation {
             // SAFETY: read-only fuse words through the socket's SMN.
-            Generation::Milan => unsafe { Fuses::read(&Smn::new(ctx.pci, socket_bus(ctx, s))) },
+            Generation::Milan => unsafe { Fuses::read(&Smn::on_bus(ctx.pci, socket_bus(ctx, s))) },
             _ => Fuses::NONE,
         })
         .collect();
@@ -220,7 +223,8 @@ fn apic_ids(generation: Generation, socket: u8, map: &CoreMap) -> impl Iterator<
 pub(crate) fn smu_init(ctx: &mut Ctx, si: &mut Silicon) {
     let generation = ctx.generation;
     for s in 0..ctx.topology.sockets {
-        let smn = Smn::new(ctx.pci, socket_bus(ctx, s));
+        // SAFETY: the BSP owns this bus's SMN index/data pair during init.
+        let smn = unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, s)) };
         // SAFETY: the socket's SMU mailbox, owned by the BSP during boot.
         let smu = unsafe { Smu::new(smn, v11::REGS, ctx.timer, v11::id_limit(generation)) };
         let _ = si.smus.push(smu);
@@ -299,7 +303,7 @@ pub(crate) fn dxio(
     // Milan skips the fuse test when PCD 0xAF is 0x40; where that PCD
     // comes from is not decoded, so Milan takes the test too.
     // SAFETY: a read-only SMN register of socket 0.
-    let fuse = unsafe { Smn::new(ctx.pci, socket_bus(ctx, 0)).read32(dxio::sp3::SPEED_FUSE) };
+    let fuse = unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, 0)).read32(dxio::sp3::SPEED_FUSE) };
     fstart_log::info!("dxio: speed fuse {:#x}", fuse);
     let mut engines = engines.clone();
     engines
@@ -310,7 +314,8 @@ pub(crate) fn dxio(
     // polls without a bound. Own mailboxes with a 30 s bound.
     let dxio_smus: heapless::Vec<Smu, 2> = (0..ctx.topology.sockets)
         .map(|s| {
-            let smn = Smn::new(ctx.pci, socket_bus(ctx, s));
+            // SAFETY: the BSP owns this bus's SMN index/data pair during init.
+            let smn = unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, s)) };
             // SAFETY: the socket's SMU mailbox; the BSP sends one message at
             // a time and the step's other mailbox is idle meanwhile.
             unsafe { Smu::new(smn, v11::REGS, ctx.timer, v11::id_limit(generation)) }
@@ -332,7 +337,8 @@ pub(crate) fn dxio(
         }
     }
     let fchs = (0..ctx.topology.sockets)
-        .map(|s| ((s, 0), Smn::new(ctx.pci, socket_bus(ctx, s))))
+        // SAFETY: the BSP owns this bus's SMN index/data pair during init.
+        .map(|s| ((s, 0), unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, s)) }))
         .collect();
     // SAFETY: every socket's FCH is live; DXIO owns their PERST GPIOs.
     let perst = unsafe { FchPerst::new(generation, fchs, None) };
@@ -465,7 +471,8 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
         psp_addr,
     );
     let smns: heapless::Vec<Smn<Pci>, 2> = (0..ctx.topology.sockets)
-        .map(|s| Smn::new(ctx.pci, socket_bus(ctx, s)))
+        // SAFETY: the BSP owns this bus's SMN index/data pair during init.
+        .map(|s| unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, s)) })
         .collect();
     // SMEE on the BSP before the APs copy its SYSCFG (the donor's order):
     // set afterwards, the APs disagree and the OS clears SME/SEV per CPU.
@@ -633,7 +640,9 @@ pub(crate) fn usb_bus_count(_ctx: &Ctx) -> u8 {
 /// NPS information.
 pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
     use fstart_driver_amd::sp3::apob::nps;
-    use fstart_driver_amd::sp3::df::dram::{self, ccd_channel, df3_channel, domain_of, ioms_channel};
+    use fstart_driver_amd::sp3::df::dram::{
+        self, ccd_channel, df3_channel, domain_of, ioms_channel,
+    };
     use fstart_driver_amd::sp3::df::{Target, v3};
 
     let mode = match nps::nps(&ctx.apob) {

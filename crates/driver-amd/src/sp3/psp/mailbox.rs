@@ -24,7 +24,7 @@ use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{RegisterLongName, register_bitfields};
 
 use super::command::{C2pBuffer, Command};
-use crate::sp3::smn::{Smn, SmnAddr};
+use crate::smn::{Smn, SmnAddr};
 use crate::sp3::soc::Generation;
 
 register_bitfields![u32,
@@ -156,13 +156,11 @@ impl<P: ConfigRegionAccess> SmnTransport<P> {
 
 impl<P: ConfigRegionAccess> C2pTransport for SmnTransport<P> {
     fn read(&self, reg: C2pReg) -> u32 {
-        // SAFETY: the constructor's contract.
-        unsafe { self.smn.read32(C2P_SMN + reg as u32) }
+        self.smn.read32(C2P_SMN + reg as u32)
     }
 
     fn write(&self, reg: C2pReg, value: u32) {
-        // SAFETY: the constructor's contract.
-        unsafe { self.smn.write32(C2P_SMN + reg as u32, value) }
+        self.smn.write32(C2P_SMN + reg as u32, value)
     }
 }
 
@@ -524,10 +522,10 @@ mod tests {
 
     #[test]
     fn smn_transport_addresses() {
-        use crate::sp3::smn::model::Model as Pci;
+        use crate::smn::model::Model as Pci;
         let pci = Pci::default();
         pci.0.borrow_mut().smn.insert((0, C2P_SMN), READY);
-        let transport = unsafe { SmnTransport::new(Smn::new(pci.clone(), 0)) };
+        let transport = unsafe { SmnTransport::new(Smn::on_bus(pci.clone(), 0)) };
         transport.write(C2pReg::BufLo, 0x1234_5000);
         transport.write(C2pReg::BufHi, 0);
         assert_eq!(transport.read(C2pReg::Cmd), READY);

@@ -9,7 +9,7 @@
 
 use fstart_pci::ConfigRegionAccess;
 
-use crate::sp3::smn::{Smn, SmnAddr};
+use crate::smn::{Smn, SmnAddr};
 
 /// First fuse word (SMN).
 pub const FUSE0: SmnAddr = 0x0005_D148;
@@ -30,15 +30,9 @@ impl Fuses {
     ///
     /// AGESA reads them once through bus 0 (socket 0) and applies them to
     /// every NBIO; read them per socket through that socket's SMN.
-    ///
-    /// # Safety
-    /// As [`Smn::read32`].
-    pub unsafe fn read<P: ConfigRegionAccess>(smn: &Smn<P>) -> Self {
-        // SAFETY: forwarded contract.
-        unsafe {
-            Self {
-                word: [smn.read32(FUSE0), smn.read32(FUSE1)],
-            }
+    pub fn read<P: ConfigRegionAccess>(smn: &Smn<P>) -> Self {
+        Self {
+            word: [smn.read32(FUSE0), smn.read32(FUSE1)],
         }
     }
 

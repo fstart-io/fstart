@@ -3,7 +3,7 @@
 //! microcode, MCA, power management, name string, encryption and errata.
 //!
 //! Hardware access goes through [`MsrAccess`] (fstart-arch; `NativeMsr` on
-//! the CPU, `MsrSpace` in tests), [`crate::sp3::smn::Smn`] and
+//! the CPU, `MsrSpace` in tests), [`crate::smn::Smn`] and
 //! [`crate::sp3::smu::SmuMessages`]. Per-thread code runs on the thread it
 //! configures.
 //!

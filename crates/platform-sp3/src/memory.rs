@@ -35,7 +35,8 @@ pub const LOW_RESERVED: Span = Span::new(0, 0xf000);
 
 /// Most reservations [`e820`] takes.
 pub const MAX_RESERVATIONS: usize = 16;
-const MAX_POINTS: usize = 2 * (fstart_driver_amd::sp3::apob::sysmap::MAX_REGIONS + MAX_RESERVATIONS);
+const MAX_POINTS: usize =
+    2 * (fstart_driver_amd::sp3::apob::sysmap::MAX_REGIONS + MAX_RESERVATIONS);
 
 /// A range firmware keeps from the OS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

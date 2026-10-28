@@ -10,7 +10,7 @@ use fstart_core::services::Timer;
 use fstart_pci::ConfigRegionAccess;
 
 use super::{SMU_ARGS, SmuError, SmuMessages};
-use crate::sp3::smn::{Smn, SmnAddr};
+use crate::smn::{Smn, SmnAddr};
 
 /// Mailbox responses (names as in Oxide's public `zen/smu.h`).
 pub mod response {
@@ -73,13 +73,11 @@ impl<P: ConfigRegionAccess, T: Timer> Mailbox<P, T> {
     }
 
     fn read(&self, addr: SmnAddr) -> u32 {
-        // SAFETY: constructor contract.
-        unsafe { self.smn.read32(addr) }
+        self.smn.read32(addr)
     }
 
     fn write(&self, addr: SmnAddr, value: u32) {
-        // SAFETY: constructor contract.
-        unsafe { self.smn.write32(addr, value) }
+        self.smn.write32(addr, value)
     }
 
     /// Poll the response register until non-zero, bounded by the timeout.
@@ -143,8 +141,8 @@ pub(crate) mod model {
     use fstart_pci::{ConfigRegionAccess, PciAddress};
 
     use super::Registers;
-    use crate::sp3::smn::SMN_DATA;
-    use crate::sp3::smn::model::Model;
+    use crate::smn::SMN_DATA;
+    use crate::smn::model::Model;
 
     /// A timer that advances 1 µs per read and per delayed µs.
     #[derive(Default)]
@@ -233,7 +231,7 @@ mod tests {
 
     fn mailbox(m: &SmuModel) -> Mailbox<SmuModel, FakeTimer> {
         // SAFETY: model.
-        unsafe { Mailbox::new(Smn::new(m.clone(), 0), REGS, FakeTimer::default(), 0x4A) }
+        unsafe { Mailbox::new(Smn::on_bus(m.clone(), 0), REGS, FakeTimer::default(), 0x4A) }
     }
 
     #[test]

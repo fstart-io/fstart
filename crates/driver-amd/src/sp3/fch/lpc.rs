@@ -143,7 +143,7 @@ mod tests {
     use super::super::model::fch;
     use super::*;
 
-    fn cfg(m: &crate::sp3::smn::model::Model, off: u16) -> u32 {
+    fn cfg(m: &crate::smn::model::Model, off: u16) -> u32 {
         m.0.borrow()
             .config
             .get(&(0, 0x14, 3, off))

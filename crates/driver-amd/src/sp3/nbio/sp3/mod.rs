@@ -167,8 +167,8 @@ mod tests {
     #[cfg(feature = "milan")]
     #[test]
     fn milan_base_init_respects_fuses() {
+        use crate::smn::model::Model;
         use crate::sp3::nbio::Fuses;
-        use crate::sp3::smn::model::Model;
         use crate::sp3::topology::RootBridge;
         let model = Model::default();
         let rb = RootBridge {

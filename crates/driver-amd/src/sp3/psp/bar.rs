@@ -19,7 +19,7 @@ use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 
-use crate::sp3::smn::{Smn, SmnAddr};
+use crate::smn::{Smn, SmnAddr};
 use crate::sp3::soc::Generation;
 
 /// IOHC0 `PSP_BASE_ADDR_LO`.
@@ -75,19 +75,13 @@ pub enum BarError {
 }
 
 /// The current BAR, `None` if unset (AGESA: `SMN & 0xfff00000`, zero
-/// meaning unset).
-///
-/// # Safety
-/// As [`Smn::read32`]; `smn` reaches the IOHC of the socket (Rome, Milan)
-/// or die (Naples).
-pub unsafe fn read<P: ConfigRegionAccess + Clone>(smn: &Smn<P>) -> Option<u64> {
-    // SAFETY: the caller's contract.
-    let (lo, hi) = unsafe {
-        (
-            smn.register::<PSP_BASE_LO::Register>(PSP_BASE_ADDR_LO),
-            smn.register::<()>(PSP_BASE_ADDR_HI),
-        )
-    };
+/// meaning unset). `smn` reaches the IOHC of the socket (Rome, Milan) or
+/// die (Naples).
+pub fn read<P: ConfigRegionAccess>(smn: &Smn<P>) -> Option<u64> {
+    let lo = smn.reg(crate::smn::SmnReg::<PSP_BASE_LO::Register>::new(
+        PSP_BASE_ADDR_LO,
+    ));
+    let hi = smn.reg(crate::smn::SmnReg::<()>::new(PSP_BASE_ADDR_HI));
     let base = u64::from(hi.get()) << 32 | u64::from(lo.read(PSP_BASE_LO::ADDR)) << 20;
     (base != 0).then_some(base)
 }
@@ -99,7 +93,7 @@ pub unsafe fn read<P: ConfigRegionAccess + Clone>(smn: &Smn<P>) -> Option<u64> {
 /// in AGESA's SMN helper; inference).
 ///
 /// # Safety
-/// As [`read`]; `base` is a free 1 MiB of MMIO routed to this IOHC.
+/// `base` is a free 1 MiB of MMIO routed to this IOHC.
 pub unsafe fn program<P: ConfigRegionAccess + Clone>(
     smn: &Smn<P>,
     base: u64,
@@ -107,38 +101,37 @@ pub unsafe fn program<P: ConfigRegionAccess + Clone>(
     if base == 0 || !base.is_multiple_of(BAR_SIZE) {
         return Err(BarError::Misaligned(base));
     }
-    // SAFETY: the caller's contract.
-    unsafe {
-        if let Some(current) = read(smn) {
-            return Ok(current);
-        }
-        smn.register::<()>(PSP_BASE_ADDR_HI)
-            .set((base >> 32) as u32);
-        smn.register::<PSP_BASE_LO::Register>(PSP_BASE_ADDR_LO)
-            .write(
-                PSP_BASE_LO::ADDR.val((base >> 20) as u32 & 0xfff)
-                    + PSP_BASE_LO::ENABLE::SET
-                    + PSP_BASE_LO::LOCK::SET,
-            );
-        match read(smn) {
-            Some(read) if read == base => Ok(base),
-            other => Err(BarError::Readback {
-                wanted: base,
-                read: other.unwrap_or(0),
-            }),
-        }
+    if let Some(current) = read(smn) {
+        return Ok(current);
+    }
+    smn.reg(crate::smn::SmnReg::<()>::new(PSP_BASE_ADDR_HI))
+        .set((base >> 32) as u32);
+    smn.reg(crate::smn::SmnReg::<PSP_BASE_LO::Register>::new(
+        PSP_BASE_ADDR_LO,
+    ))
+    .write(
+        PSP_BASE_LO::ADDR.val((base >> 20) as u32 & 0xfff)
+            + PSP_BASE_LO::ENABLE::SET
+            + PSP_BASE_LO::LOCK::SET,
+    );
+    match read(smn) {
+        Some(read) if read == base => Ok(base),
+        other => Err(BarError::Readback {
+            wanted: base,
+            read: other.unwrap_or(0),
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::smn::model::Model;
+    use crate::smn::model::Model;
 
     #[test]
     fn program_and_skip() {
         let model = Model::default();
-        let smn = Smn::new(model.clone(), 0x40);
+        let smn = unsafe { Smn::on_bus(model.clone(), 0x40) };
         unsafe {
             assert_eq!(read(&smn), None);
             assert_eq!(program(&smn, 0x1_f000_0000), Ok(0x1_f000_0000));

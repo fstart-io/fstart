@@ -4,12 +4,12 @@
 use crate::einj::*;
 use core::cell::UnsafeCell;
 use fstart_core::services::timer::Timer;
+use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::sp3::psp::{
     command::{C2pBuffer, Command, SMM_FLAG_OFFSET},
     mailbox::{C2pTransport, Mailbox, PspError},
     ras::{Control, CorrectableMemory, MemoryTarget},
 };
-use fstart_driver_amd::sp3::smn::Smn;
 use fstart_pci::ConfigRegionAccess;
 
 struct State {
@@ -131,14 +131,12 @@ unsafe fn end(
             };
             // Restore the target socket, not the socket executing SMM.
             // Exact donor ordering; preserve this endpoint's OS index.
-            unsafe {
-                smn.with_saved_index(|s| {
-                    s.write32(0x1d840, 0);
-                    s.write32(0x1d848, low);
-                    s.write32(0x1d84c, high);
-                    s.write32(0x1d840, control);
-                });
-            }
+            smn.with_saved_index(|s| {
+                s.write32(0x1d840, 0);
+                s.write32(0x1d848, low);
+                s.write32(0x1d84c, high);
+                s.write32(0x1d840, control);
+            });
         }
     }
     result
@@ -199,11 +197,12 @@ pub unsafe fn dispatch(
                     // them after action 3 (1d54 / 1f38). Do not leave the
                     // NBIO address-match state changed by an experiment.
                     if s.saved_nbio.is_none() {
-                        s.saved_nbio = Some((target.socket, unsafe {
+                        s.saved_nbio = Some((
+                            target.socket,
                             smn.with_saved_index(|s| {
                                 [s.read32(0x1d840), s.read32(0x1d848), s.read32(0x1d84c)]
-                            })
-                        }));
+                            }),
+                        ));
                     }
                     // SAFETY: as above; no arbitrary address/type reaches PSP.
                     let result = unsafe {

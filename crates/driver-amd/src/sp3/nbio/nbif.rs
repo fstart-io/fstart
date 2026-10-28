@@ -11,7 +11,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable};
 use tock_registers::register_bitfields;
 
 use super::{Nbio, NbioPolicy};
-use crate::sp3::smn::SmnAddr;
+use crate::smn::SmnAddr;
 use crate::sp3::soc::Generation;
 
 /// NBIFs per NBIO.

@@ -76,10 +76,10 @@ pub fn usb_smi<H: FchHw>(hw: &H, generation: Generation, buses: &[u8]) {
         ],
     };
     buses.iter().for_each(|&bus| {
-        let smn = crate::sp3::smn::Smn::new(hw.pci().clone(), bus);
         // SAFETY: SMM owns the SMN pair while it runs (callers save/restore
         // the index).
-        acks.iter().for_each(|&(r, v)| unsafe { smn.write32(r, v) });
+        let smn = unsafe { crate::smn::Smn::on_bus(hw.pci().clone(), bus) };
+        acks.iter().for_each(|&(r, v)| smn.write32(r, v));
     });
     smi::clear(hw.acpi(), source::USB_NBIO);
 }

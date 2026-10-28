@@ -8,7 +8,7 @@ use std::rc::Rc;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 
 use super::{NODE0_DEVICE, regs};
-use crate::sp3::smn::model::Model as SmnModel;
+use crate::smn::model::Model as SmnModel;
 
 /// `(node, instance, function, offset)`; `None` is the node's own copy.
 pub type Key = (u8, Option<u8>, u8, u16);

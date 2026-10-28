@@ -10,7 +10,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
 use super::Nbio;
-use crate::sp3::smn::SmnAddr;
+use crate::smn::SmnAddr;
 use crate::sp3::soc::Generation;
 
 /// `IOAPIC::FEATURES_ENABLE`.
@@ -242,7 +242,9 @@ mod tests {
     use crate::sp3::nbio::tests::nbio;
 
     #[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
-    fn route_values(entries: impl Iterator<Item = (SmnAddr, crate::sp3::nbio::table::Op)>) -> Vec<u32> {
+    fn route_values(
+        entries: impl Iterator<Item = (SmnAddr, crate::sp3::nbio::table::Op)>,
+    ) -> Vec<u32> {
         use crate::sp3::nbio::table::Op;
         entries
             .filter_map(|(a, op)| match op {

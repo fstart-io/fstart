@@ -59,7 +59,10 @@ fn system(generation: Generation, sockets: u8, threads: u32) -> System {
         .map(|b| IoapicInfo {
             socket: b.socket,
             index: b.index,
-            id: fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id(generation, 4 * b.socket + b.index),
+            id: fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id(
+                generation,
+                4 * b.socket + b.index,
+            ),
             base: 0xA000_0000 + (u64::from(4 * b.socket + b.index) << 20),
             bus: b.bus_base,
         })

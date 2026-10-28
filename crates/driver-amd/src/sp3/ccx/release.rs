@@ -22,8 +22,8 @@ use tock_registers::LocalRegisterCopy;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 
+use crate::smn::{Smn, SmnAddr};
 use crate::sp3::apob::ccx::CoreMap;
-use crate::sp3::smn::{Smn, SmnAddr};
 use crate::sp3::smu::{SmuError, SmuMessages, send1};
 use crate::sp3::soc::Generation;
 
@@ -235,9 +235,7 @@ where
     P: ConfigRegionAccess + Clone,
     M: SmuMessages + ?Sized,
 {
-    // SAFETY: the BSP owns the SMN index/data pair during boot and
-    // THREAD_ENABLE only starts threads.
-    let reg = unsafe { smn.register::<()>(l.thread_enable) };
+    let reg = smn.reg(crate::smn::SmnReg::<()>::new(l.thread_enable));
     // Rome/Milan use the low 16 bits only (SmuV11 `0x32fc`).
     let width: u32 = match generation {
         Generation::Naples => u32::MAX,
@@ -256,8 +254,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::smn::model::Model;
     use crate::sp3::apob::ccx::{Ccd, Ccx, Core};
-    use crate::sp3::smn::model::Model;
     use core::cell::RefCell;
 
     #[derive(Default)]
@@ -343,7 +341,7 @@ mod tests {
     #[test]
     fn launch_sets_the_bit_once() {
         let model = Model::default();
-        let smn = Smn::new(model.clone(), 0);
+        let smn = unsafe { Smn::on_bus(model.clone(), 0) };
         let smu = Smu::default();
         let l = Launch {
             socket: 0,

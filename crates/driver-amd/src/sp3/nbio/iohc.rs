@@ -10,7 +10,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
 use super::Nbio;
-use crate::sp3::smn::SmnAddr;
+use crate::smn::SmnAddr;
 use crate::sp3::soc::Generation;
 use crate::sp3::topology::RootBridge;
 
@@ -288,7 +288,7 @@ mod tests {
     use super::*;
     use crate::sp3::nbio::tests::nbio;
 
-    fn smn(model: &crate::sp3::smn::model::Model, bus: u8, addr: SmnAddr) -> u32 {
+    fn smn(model: &crate::smn::model::Model, bus: u8, addr: SmnAddr) -> u32 {
         model.0.borrow().smn.get(&(bus, addr)).copied().unwrap_or(0)
     }
 

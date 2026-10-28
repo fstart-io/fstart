@@ -23,14 +23,14 @@ pub mod nbio;
 pub mod psp;
 #[cfg(all(test, any(feature = "picasso", feature = "zeppelin")))]
 mod silicon_tests;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod smn;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod smu;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod soc;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
-pub mod table;
 /// The SP3 server silicon: Naples, Rome and Milan.
 #[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 pub mod sp3;
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
+pub mod table;

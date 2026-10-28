@@ -53,7 +53,7 @@ use tock_registers::RegisterLongName;
 use tock_registers::UIntLike;
 use tock_registers::interfaces::{Readable, Writeable};
 
-use crate::sp3::smn::{Smn, SmnAddr};
+use crate::smn::{Smn, SmnAddr};
 
 /// A byte-addressed register space.
 ///
@@ -358,12 +358,10 @@ impl<P: ConfigRegionAccess> SmnWindow<P> {
 
 impl<P: ConfigRegionAccess> Window for SmnWindow<P> {
     fn read32(&self, off: u32) -> u32 {
-        // SAFETY: `new`'s contract.
-        unsafe { self.smn.read32(self.base + off) }
+        self.smn.read32(self.base + off)
     }
     fn write32(&self, off: u32, value: u32) {
-        // SAFETY: `new`'s contract.
-        unsafe { self.smn.write32(self.base + off, value) }
+        self.smn.write32(self.base + off, value)
     }
 }
 
@@ -416,7 +414,8 @@ pub trait FchHw {
     fn timer(&self) -> &dyn Timer;
 
     fn smn(&self) -> Smn<Self::Pci> {
-        Smn::new(self.pci().clone(), self.bus())
+        // SAFETY: the BSP owns this bus's SMN index/data pair during init.
+        unsafe { Smn::on_bus(self.pci().clone(), self.bus()) }
     }
 
     /// The whole SMN of this FCH's die/socket as a window (offset = SMN
@@ -501,7 +500,7 @@ pub(crate) mod model {
     use fstart_core::services::Timer;
 
     use super::{Fch, Window};
-    use crate::sp3::smn::model::Model;
+    use crate::smn::model::Model;
     use crate::sp3::smu::{SMU_ARGS, SmuError, SmuMessages};
 
     #[derive(Default)]

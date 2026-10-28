@@ -6,6 +6,7 @@ extern crate alloc;
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
+use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::sp3::ccx::release::{self, Launch, SmuPwr};
 use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
 use fstart_driver_amd::sp3::ccx::{ApInputs, Ccx, brand, mca, microcode, power, security};
@@ -24,7 +25,6 @@ use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::nbio::{Nbio, naples as nbio_naples};
 use fstart_driver_amd::sp3::psp::bar::BAR_SIZE;
-use fstart_driver_amd::sp3::smn::Smn;
 use fstart_driver_amd::sp3::smu::mailbox::Mailbox;
 use fstart_driver_amd::sp3::smu::v9;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
@@ -173,7 +173,12 @@ pub(crate) fn dxio(
         .topology
         .root_bridges
         .iter()
-        .map(|rb| ((rb.socket, rb.index), Smn::new(ctx.pci, rb.bus_base)))
+        // SAFETY: the BSP owns this bus's SMN index/data pair during init.
+        .map(|rb| {
+            ((rb.socket, rb.index), unsafe {
+                Smn::on_bus(ctx.pci, rb.bus_base)
+            })
+        })
         .collect();
     // The donor also drives PERST on bus 0x40 (die 1 of the equal split).
     let also = si.nbios.get(1).map(|n| n.smn());
@@ -213,8 +218,8 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
     let policy = ctx.policy.ccx;
     let mut dies = [[None; 4]; 2];
     for (rb, n) in ctx.topology.root_bridges.iter().zip(&si.nbios) {
-        // SAFETY: SMU::PWR::THREAD_CONFIGURATION of the die, read only.
-        let cfg = unsafe { n.smn().read32(SmuPwr::NAPLES.thread_cfg) };
+        // SMU::PWR::THREAD_CONFIGURATION of the die.
+        let cfg = n.smn().read32(SmuPwr::NAPLES.thread_cfg);
         dies[usize::from(rb.socket & 1)][usize::from(rb.index & 3)] = Some(cfg);
     }
     let order = release::naples_order(&dies[..usize::from(ctx.topology.sockets)])

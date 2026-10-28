@@ -22,7 +22,7 @@ use heapless::Vec;
 use tock_registers::LocalRegisterCopy;
 
 use super::release::{APPLY_KEY, MSG_APPLY, SmuPwr, ThreadCfg};
-use crate::sp3::smn::{Smn, SmnAddr};
+use crate::smn::{Smn, SmnAddr};
 use crate::sp3::smu::{SmuError, SmuMessages, send1};
 use crate::sp3::soc::Generation;
 
@@ -200,11 +200,10 @@ where
     if writes.is_empty() {
         return Ok(());
     }
-    // SAFETY: the BSP owns the SMN pair during boot; these registers only
-    // take effect at the next reset.
+    // These registers only take effect at the next reset.
     writes
         .iter()
-        .for_each(|w| unsafe { smn.modify32(w.addr, w.clear, w.set) });
+        .for_each(|w| smn.modify32(w.addr, w.clear, w.set));
     send1(smu, MSG_APPLY, APPLY_KEY).map_err(DowncoreError::Smu)?;
     Ok(())
 }

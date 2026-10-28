@@ -18,7 +18,7 @@ use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::RegisterLongName;
 use tock_registers::interfaces::{Readable, Writeable};
 
-use crate::sp3::smn::{Smn, SmnAddr, SmnRegister};
+use crate::smn::{Smn, SmnAddr, SmnRegister};
 use crate::sp3::soc::Generation;
 use crate::sp3::topology::RootBridge;
 
@@ -61,7 +61,8 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// is used.
     pub unsafe fn new(pci: P, generation: Generation, rb: &RootBridge, fuses: Fuses) -> Self {
         Self {
-            smn: Smn::new(pci.clone(), rb.bus_base),
+            // SAFETY: the constructor's contract.
+            smn: unsafe { Smn::on_bus(pci.clone(), rb.bus_base) },
             pci,
             fuses,
             generation,
@@ -112,49 +113,44 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
 
     /// A typed register at the absolute SMN `addr`; reads return 0 and
     /// writes are dropped when the aperture is fused off.
-    pub fn reg<R: RegisterLongName>(&self, addr: SmnAddr) -> NbioReg<P, R> {
+    pub fn reg<R: RegisterLongName>(&self, addr: SmnAddr) -> NbioReg<'_, P, R> {
         NbioReg {
-            // SAFETY: the constructor's contract; filtered like AGESA.
+            // Filtered like AGESA.
             inner: self
                 .fuses
                 .allows(addr)
-                .then(|| unsafe { self.smn.register(addr) }),
+                .then(|| self.smn.reg(crate::smn::SmnReg::new(addr))),
             _reg: PhantomData,
         }
     }
 
     /// Read `addr`, `None` when fused off.
     pub fn read32(&self, addr: SmnAddr) -> Option<u32> {
-        // SAFETY: the constructor's contract.
-        self.fuses
-            .allows(addr)
-            .then(|| unsafe { self.smn.read32(addr) })
+        self.fuses.allows(addr).then(|| self.smn.read32(addr))
     }
 
     /// Write `addr` unless fused off.
     pub fn write32(&self, addr: SmnAddr, value: u32) {
         if self.fuses.allows(addr) {
-            // SAFETY: the constructor's contract.
-            unsafe { self.smn.write32(addr, value) }
+            self.smn.write32(addr, value)
         }
     }
 
     /// `(old & !clear) | set` unless fused off.
     pub fn modify32(&self, addr: SmnAddr, clear: u32, set: u32) {
         if self.fuses.allows(addr) {
-            // SAFETY: the constructor's contract.
-            unsafe { self.smn.modify32(addr, clear, set) }
+            self.smn.modify32(addr, clear, set)
         }
     }
 }
 
 /// An SMN register of an [`Nbio`], fuse filtered.
-pub struct NbioReg<P, R: RegisterLongName> {
-    inner: Option<SmnRegister<P, R>>,
+pub struct NbioReg<'a, P: ConfigRegionAccess, R: RegisterLongName> {
+    inner: Option<SmnRegister<'a, P, R>>,
     _reg: PhantomData<R>,
 }
 
-impl<P: ConfigRegionAccess, R: RegisterLongName> Readable for NbioReg<P, R> {
+impl<P: ConfigRegionAccess, R: RegisterLongName> Readable for NbioReg<'_, P, R> {
     type T = u32;
     type R = R;
 
@@ -163,7 +159,7 @@ impl<P: ConfigRegionAccess, R: RegisterLongName> Readable for NbioReg<P, R> {
     }
 }
 
-impl<P: ConfigRegionAccess, R: RegisterLongName> Writeable for NbioReg<P, R> {
+impl<P: ConfigRegionAccess, R: RegisterLongName> Writeable for NbioReg<'_, P, R> {
     type T = u32;
     type R = R;
 
@@ -350,7 +346,7 @@ impl NbioPolicy {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::sp3::smn::model::Model;
+    use crate::smn::model::Model;
 
     /// An NBIO of socket 0 on `bus`; index 0 has the FCH.
     pub fn nbio(generation: Generation, index: u8, bus: u8) -> (Model, Nbio<Model>) {

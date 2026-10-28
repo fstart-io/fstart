@@ -498,7 +498,7 @@ pub fn sp3_workarounds<M: SmuMessages + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::smn::Smn;
+    use crate::smn::Smn;
     use crate::sp3::smu::mailbox::model::{FakeTimer, SmuModel};
     use crate::sp3::smu::mailbox::{Mailbox, response};
 
@@ -506,7 +506,7 @@ mod tests {
         // SAFETY: model.
         unsafe {
             Mailbox::new(
-                Smn::new(m.clone(), 0),
+                Smn::on_bus(m.clone(), 0),
                 REGS,
                 FakeTimer::default(),
                 id_limit(generation),

@@ -111,9 +111,13 @@ pub fn discover<P: ConfigRegionAccess + Clone>(
         Generation::Rome => discover_df3(df, generation, 0b1111),
         #[cfg(feature = "milan")]
         Generation::Milan => {
-            let smn = crate::sp3::smn::Smn::new(df.pci().clone(), 0);
-            // SAFETY: a read-only fuse register; the BSP owns SMN at boot.
-            let fused = unsafe { smn.register::<IOMS_FUSE::Register>(IOMS_FUSE_SMN) }
+            // SAFETY: the BSP owns this bus's SMN index/data pair during init.
+            let smn = unsafe { crate::smn::Smn::on_bus(df.pci().clone(), 0) };
+            // A read-only fuse register.
+            let fused = smn
+                .reg(crate::smn::SmnReg::<IOMS_FUSE::Register>::new(
+                    IOMS_FUSE_SMN,
+                ))
                 .read(IOMS_FUSE::IOMS_DISABLE);
             discover_df3(df, generation, !fused as u8 & 0b1111)
         }
