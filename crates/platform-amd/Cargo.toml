@@ -1,0 +1,234 @@
+[package]
+name = "fstart-platform-amd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+picasso = ["noncar", "fstart-driver-amd/picasso", "dep:fstart-driver-vbios"]
+# Host policy only; never enabled by the emitted firmware unit.
+host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
+zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zerocopy"]
+# The shared flow of the PSP-booted SoCs, with their ACPI tables.
+noncar = [
+  "fstart-driver-amd/smi",
+  "dep:fstart-amdfw-format",
+  "dep:fstart-arch",
+  "dep:fstart-acpi",
+  "dep:fstart-acpi-macros",
+  "dep:heapless",
+]
+# A noncar reset image: one DRAM stage from reset vector to payload.
+bundle = [
+  "noncar",
+  "dep:fstart-stage",
+  "fstart-arch/x86-identity-paging",
+  "fstart-stage/x86_64",
+  "fstart-stage/ffs",
+  "fstart-stage/ffs-signature",
+  "fstart-stage/ed25519",
+  "fstart-stage/sha2-digest",
+  "fstart-stage/lz4",
+]
+bundle-zeppelin = ["zeppelin", "bundle"]
+# The Picasso reset image, from PSP entry through payload handoff.
+bundle-picasso = ["picasso", "bundle"]
+# The FCH SMM handler and `smm_bin!` for a board's SMM unit; the stage
+# embeds the image fbuild built from it (FSTART_SMM_IMAGE).
+smm = ["noncar", "fstart-driver-amd/smm", "dep:fstart-smm"]
+# SMM-unit builds only: adds the SMM panic handler, which a stage has itself.
+bundle-smm = ["smm", "fstart-smm/stage-bin"]
+payload-linux = ["fstart-stage?/linux"]
+payload-uefi = ["payload-uefi-basic", "fstart-stage?/crabefi"]
+payload-uefi-ui = ["payload-uefi", "fstart-stage?/crabefi-ui", "fstart-stage?/crabefi-elan-i2c", "fstart-stage?/crabefi-hid-i2c"]
+payload-uefi-basic = ["fstart-stage?/crabefi-basic", "dep:embedded-hal-bus"]
+
+# Picasso's AMD firmware (docs/amd-image-format.md, "Firmware blobs"):
+# paths relative to the --blobs directory, which has the layout of the
+# amd_blobs repository and which `cargo fbuild blobs` extracts from a
+# vendor ROM. The PSP files follow amd_blobs' Picasso fw.cfg with the
+# secure OS and without MP2 (soft fuse bits 28 and 29).
+[package.metadata.fstart.amd.picasso]
+bios-directory = "Family17hModel10"
+efs-offset = 0xe20000
+partition-end = 0x1000000
+spi-read-mode = 4
+spi-speed = 0
+soft-fuse = 0x30000000
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x00
+file = "picasso/PSP/AmdPubKeyRV.bin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x01
+file = "picasso/PSP/PspBootLoader_prod_RV.sbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x02
+file = "picasso/PSP/psp_os_combined_prod_RV.sbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x08
+subprogram = 1
+file = "picasso/PSP/SmuFirmwareRV2.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x08
+subprogram = 2
+file = "picasso/PSP/SmuFirmwarePCO.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x12
+subprogram = 1
+file = "picasso/PSP/SmuFirmware2RV2.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x12
+subprogram = 2
+file = "picasso/PSP/SmuFirmware2PCO.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x21
+file = "picasso/PSP/PspIkekRV.bin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x24
+subprogram = 1
+file = "picasso/PSP/security_policy_RV2_FP5_AM4.sbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x24
+subprogram = 2
+file = "picasso/PSP/security_policy_PCO_FP5_AM4.sbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x28
+file = "picasso/PSP/drv_sys_prod_RV.sbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x30
+file = "picasso/PSP/AgesaBootloader0_prod_RV.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x31
+file = "picasso/PSP/AgesaBootloader1_prod_RV.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x32
+file = "picasso/PSP/AgesaBootloader2_prod_RV.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x33
+file = "picasso/PSP/AgesaBootloader3_prod_RV.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x34
+file = "picasso/PSP/AgesaBootloader4_prod_RV.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x35
+file = "picasso/PSP/AgesaBootloader5_prod_RV.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x36
+file = "picasso/PSP/AgesaBootloader6_prod_RV.csbin"
+
+[[package.metadata.fstart.amd.picasso.psp]]
+type = 0x37
+file = "picasso/PSP/AgesaBootloader7_prod_RV.csbin"
+
+[[package.metadata.fstart.amd.picasso.bios]]
+type = 0x64
+instance = 1
+file = "picasso/PSP/Appb_Rv_1D_Ddr4_Udimm_Imem.csbin"
+
+[[package.metadata.fstart.amd.picasso.bios]]
+type = 0x65
+instance = 1
+file = "picasso/PSP/Appb_Rv_1D_Ddr4_Udimm_Dmem.csbin"
+
+[[package.metadata.fstart.amd.picasso.bios]]
+type = 0x64
+instance = 4
+file = "picasso/PSP/Appb_Rv_2D_Ddr4_Imem.csbin"
+
+[[package.metadata.fstart.amd.picasso.bios]]
+type = 0x65
+instance = 4
+file = "picasso/PSP/Appb_Rv_2D_Ddr4_Dmem.csbin"
+
+[[package.metadata.fstart.amd.picasso.bios]]
+type = 0x64
+subprogram = 1
+instance = 1
+file = "picasso/PSP/Appb_Rv2_1D_ddr4_Udimm_Imem.csbin"
+
+[[package.metadata.fstart.amd.picasso.bios]]
+type = 0x65
+subprogram = 1
+instance = 1
+file = "picasso/PSP/Appb_Rv2_1D_ddr4_Udimm_Dmem.csbin"
+
+[[package.metadata.fstart.amd.picasso.bios]]
+type = 0x64
+subprogram = 1
+instance = 4
+file = "picasso/PSP/Appb_Rv2_2D_ddr4_Udimm_Imem.csbin"
+
+[[package.metadata.fstart.amd.picasso.bios]]
+type = 0x65
+subprogram = 1
+instance = 4
+file = "picasso/PSP/Appb_Rv2_2D_ddr4_Udimm_Dmem.csbin"
+
+[[package.metadata.fstart.amd.picasso.microcode]]
+equivalence-id = 0x8180
+file = "picasso/PSP/UcodePatch_PCO_B0.bin"
+
+[[package.metadata.fstart.amd.picasso.microcode]]
+equivalence-id = 0x8181
+file = "picasso/PSP/UcodePatch_PCO_B1.bin"
+
+[[package.metadata.fstart.amd.picasso.microcode]]
+equivalence-id = 0x8201
+file = "picasso/PSP/UcodePatch_RV2_A0.bin"
+
+[[package.metadata.fstart.amd.picasso.vbios]]
+device = 0x15d8
+file = "picasso/PicassoGenericVbios.bin"
+
+[[package.metadata.fstart.amd.picasso.vbios]]
+device = 0x15dd
+file = "picasso/Raven2GenericVbios.bin"
+
+[dependencies]
+fstart-image-build = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
+fstart-driver-amd.workspace = true
+fstart-amdfw-format = { workspace = true, optional = true }
+fstart-driver-vbios = { workspace = true, optional = true }
+fstart-core.workspace = true
+fstart-driver-uart.workspace = true
+fstart-log.workspace = true
+ufmt.workspace = true
+fstart-pci.workspace = true
+tock-registers.workspace = true
+fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
+fstart-stage = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }
+zerocopy = { workspace = true, optional = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+embedded-hal = { workspace = true, optional = true }
+# Devices sharing an I2C controller handed to CrabEFI.
+embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
+fstart-acpi-macros = { path = "../acpi-macros", optional = true }
+fstart-smm = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The unit tests cover every SoC, also in `cargo test --workspace`.
+fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "host", "smm"] }
+fstart-driver-amd = { workspace = true, features = ["testing"] }
+fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

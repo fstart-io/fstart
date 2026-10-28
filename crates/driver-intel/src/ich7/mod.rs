@@ -2255,7 +2255,9 @@ mod acpi_impl {
     use crate::southbridge::acpi as acpi_fragments;
     use alloc::vec::Vec;
     use fstart_acpi::device::AcpiDevice;
-    use fstart_acpi::platform::{IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
+    use fstart_acpi::platform::{
+        HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt, X86PlatformProvider,
+    };
     use fstart_acpi_macros::acpi_dsl;
 
     use super::*;
@@ -2272,6 +2274,8 @@ mod acpi_impl {
     const LAPIC_BASE: u64 = 0xFEE0_0000;
     const IOAPIC_BASE: u64 = 0xFEC0_0000;
     const HPET_BASE: u64 = 0xFED0_0000;
+    /// HPET capabilities ID the tables have always advertised for the ICH.
+    const HPET_ID: u32 = 0x8086_A201;
     const SCI_IRQ: u8 = 9;
     const PMBASE: u16 = 0x0500;
     /// APM command port firmware and OSPM use to switch ACPI mode.
@@ -2307,11 +2311,16 @@ mod acpi_impl {
         fn x86_platform_config(&self, online_cpus: u32) -> X86Config {
             let _ = self;
             X86Config {
-                num_cpus: online_cpus,
+                apic_ids: (0..online_cpus).collect(),
                 lapic_base: LAPIC_BASE,
-                ioapics: &IOAPICS,
-                isos: &ISOS,
-                hpet_base: Some(HPET_BASE),
+                lapic_nmi_lint: None,
+                ioapics: IOAPICS.to_vec(),
+                isos: ISOS.to_vec(),
+                hpet: Some(HpetConfig {
+                    base: HPET_BASE,
+                    timer_block_id: HPET_ID,
+                    min_tick: 0,
+                }),
                 legacy_devices: true,
                 sci_irq: SCI_IRQ,
                 pmbase: PMBASE,
@@ -2324,6 +2333,7 @@ mod acpi_impl {
                     acpi_enable: APM_CNT_ACPI_ENABLE,
                     acpi_disable: APM_CNT_ACPI_DISABLE,
                 }),
+                fadt: X86Fadt::default(),
             }
         }
     }

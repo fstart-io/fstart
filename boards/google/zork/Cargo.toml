@@ -1,0 +1,40 @@
+[package]
+name = "fstart-board-google-vilboz"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Build/check/editor support only: the native boot/image contract is incomplete.
+[package.metadata.fstart]
+schema = 1
+board = "google-vilboz"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+stage-bin = "fstart-stage"
+build-profile = { dependency = "fstart-platform-amd", name = "rust" }
+
+# The board's AMD firmware next to its SoC's (docs/amd-image-format.md,
+# "Firmware blobs"): the APCB instances, one per RAM ID, as the vendor ROM
+# has them (`google-vilboz/apcb/<n>.bin` in the --blobs directory), and
+# fstart's PSP application, without which the PSP of the Chromebook part
+# never starts the x86 cores.
+[package.metadata.fstart.amd]
+soc = "picasso"
+psp-app = true
+apcb = { instances = 13 }
+
+[features]
+default = []
+
+[dependencies]
+fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["picasso"] }
+fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["picasso"] }
+fstart-driver-chromeec = { path = "../../../crates/driver-chromeec", features = ["acpi"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
+fstart-log = { path = "../../../crates/log" }
+ufmt = { workspace = true }
+
+[[bin]]
+name = "fstart-stage"
+path = "src/main.rs"

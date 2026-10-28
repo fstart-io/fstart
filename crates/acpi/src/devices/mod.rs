@@ -9,6 +9,11 @@
 
 extern crate alloc;
 
+pub mod i2c;
+mod ipmi;
+pub mod tpm;
+pub use ipmi::IpmiKcsAcpi;
+
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;

@@ -12,8 +12,15 @@
 //! derived from the resources assigned below each bridge; this remains a
 //! simpler topology model than coreboot's full recursive allocator.
 //!
+//! One allocator can own several root bridges (PCI domains):
+//! each has its own bus range and windows, and the devices below it get
+//! their bus numbers and resources from those alone.
+//!
 //! Compatible: `"pci-host-ecam-generic"`.
 
+// The production allocator uses bounded heapless storage. Only host tests
+// need alloc; importing it in firmware would unnecessarily require a heap.
+#[cfg(test)]
 extern crate alloc;
 
 use heapless::Vec as HVec;
@@ -141,6 +148,8 @@ struct BarInfo {
 /// A discovered PCI device or bridge.
 struct PciDev {
     addr: PciAddress,
+    /// Index of its root bridge.
+    root: usize,
     header_type: u8,
     /// Command register before BAR probing temporarily disabled decode.
     original_command: u16,
@@ -195,6 +204,10 @@ fn size_from_moving_bits(moving: u64, address_mask: u64) -> Result<u64, PciEcamE
     }
     Ok(1u64 << address_bits.trailing_zeros())
 }
+
+/// Bus (lowest first), needs the low window, alignment: see
+/// [`PciEcam::bar_allocation_rank`].
+type BarRank = (core::cmp::Reverse<u8>, u8, u64);
 
 impl ResourcePool {
     const fn empty() -> Self {
@@ -252,6 +265,13 @@ impl ResourcePool {
         Ok(())
     }
 
+    fn free_bytes(&self) -> u64 {
+        self.ranges[..self.count]
+            .iter()
+            .map(|range| range.end - range.base)
+            .sum()
+    }
+
     fn allocate_aligned(&mut self, size: u64, align: u64) -> Option<u64> {
         if size == 0 || align == 0 {
             return None;
@@ -288,10 +308,13 @@ impl ResourcePool {
 const MAX_WINDOWS: usize = crate::MAX_PCI_ROOT_WINDOWS;
 const MAX_PCI_DEVICES: usize = 128;
 
-/// PCI ECAM host bridge driver.
-pub struct PciEcam {
+/// One root bridge: its buses in the ECAM and its allocation pools.
+#[derive(Clone, Copy)]
+struct Root {
     segment: u16,
+    /// ECAM base of the segment: bus `b` is at `ecam_base + (b << 20)`.
     ecam_base: usize,
+    /// Mapped ECAM bytes from bus `bus_start` on.
     ecam_size: usize,
     bus_start: u8,
     bus_end: u8,
@@ -301,10 +324,50 @@ pub struct PciEcam {
     /// Remaining allocatable address windows after fixed reservations.
     windows: [PciWindow; MAX_WINDOWS],
     window_count: usize,
+    /// Next bus number to assign to a bridge.
+    next_bus: u16,
+}
+
+impl Root {
+    fn contains(&self, addr: PciAddress) -> bool {
+        addr.segment() == self.segment && (self.bus_start..=self.bus_end).contains(&addr.bus())
+    }
+
+    /// Rebuild the external `windows` array from the current resource pools.
+    fn rebuild_windows(&mut self) {
+        let pools = [
+            (&self.mmio32, PciWindowKind::Mmio, false),
+            (&self.mmio64, PciWindowKind::Mmio, true),
+            (&self.io_pool, PciWindowKind::Io, false),
+        ];
+        let mut windows = pools.into_iter().flat_map(|(pool, kind, prefetchable)| {
+            pool.ranges[..pool.count]
+                .iter()
+                .map(move |range| PciWindow {
+                    kind,
+                    base: range.base,
+                    size: range.end - range.base,
+                    prefetchable,
+                })
+        });
+        let mut count = 0;
+        for (slot, window) in self.windows.iter_mut().zip(&mut windows) {
+            *slot = window;
+            count += 1;
+        }
+        self.window_count = count;
+    }
+}
+
+/// The most root bridges one allocator owns.
+pub const MAX_PCI_ROOTS: usize = 8;
+
+/// PCI ECAM host bridge driver.
+pub struct PciEcam {
+    /// At least one; the bus ranges of a segment don't overlap.
+    roots: HVec<Root, MAX_PCI_ROOTS>,
     devices: HVec<PciDev, MAX_PCI_DEVICES>,
     fixed_bars: PciFixedBars,
-    /// Next bus number to assign to a bridge.
-    next_bus: u8,
 }
 
 // SAFETY: MMIO registers are hardware-fixed addresses from the board metadata.
@@ -319,7 +382,7 @@ impl PciEcam {
     ///
     /// Platform host-bridge drivers (e.g., Q35) use this to set MMIO/IO
     /// windows computed at runtime from hardware state (TOLUD, e820).
-    /// Must be called **before** `init()`.
+    /// Must be called **before** `init()`, on a single root bridge.
     pub fn configure_windows(
         &mut self,
         mmio32_base: u64,
@@ -329,27 +392,29 @@ impl PciEcam {
         pio_base: u64,
         pio_size: u64,
     ) -> Result<(), PciEcamError> {
-        if !self.fixed_bars.is_empty() {
+        if !self.fixed_bars.is_empty() || self.roots.len() != 1 {
             return Err(PciEcamError::ConfigError);
         }
-        self.mmio32 = ResourcePool::new(mmio32_base, mmio32_size)?;
-        self.mmio64 = ResourcePool::new(mmio64_base, mmio64_size)?;
-        self.io_pool = ResourcePool::new(pio_base, pio_size)?;
-        self.rebuild_windows();
+        let root = &mut self.roots[0];
+        root.mmio32 = ResourcePool::new(mmio32_base, mmio32_size)?;
+        root.mmio64 = ResourcePool::new(mmio64_base, mmio64_size)?;
+        root.io_pool = ResourcePool::new(pio_base, pio_size)?;
+        root.rebuild_windows();
         Ok(())
     }
 
     /// Reserve a fixed MMIO range before enumeration.
     ///
-    /// The range is removed from both 32-bit and 64-bit allocation pools so
-    /// platform-fixed resources cannot be overlapped by dynamic BARs.
+    /// The range is removed from both 32-bit and 64-bit allocation pools of
+    /// every root so platform-fixed resources cannot be overlapped by
+    /// dynamic BARs.
     pub fn reserve_mmio_range(&mut self, base: u64, size: u64) -> Result<(), PciEcamError> {
-        let mut mmio32 = self.mmio32;
-        let mut mmio64 = self.mmio64;
-        mmio32.reserve_range(base, size)?;
-        mmio64.reserve_range(base, size)?;
-        self.mmio32 = mmio32;
-        self.mmio64 = mmio64;
+        let mut roots = self.roots.clone();
+        for root in &mut roots {
+            root.mmio32.reserve_range(base, size)?;
+            root.mmio64.reserve_range(base, size)?;
+        }
+        self.roots = roots;
         Ok(())
     }
 
@@ -360,9 +425,11 @@ impl PciEcam {
         if base.checked_add(size).is_none_or(|end| end > 0x1_0000) {
             return Err(PciEcamError::ConfigError);
         }
-        let mut pool = self.io_pool;
-        pool.reserve_range(base, size)?;
-        self.io_pool = pool;
+        let mut roots = self.roots.clone();
+        for root in &mut roots {
+            root.io_pool.reserve_range(base, size)?;
+        }
+        self.roots = roots;
         Ok(())
     }
 
@@ -371,13 +438,17 @@ impl PciEcam {
     /// Fixed BARs remain visible in the root aperture reported to the OS, but
     /// their intervals are removed from the allocator's private free pools.
     pub fn add_fixed_bars(&mut self, bars: &[PciFixedBar]) -> Result<(), PciEcamError> {
-        let mut mmio32 = self.mmio32;
-        let mut mmio64 = self.mmio64;
-        let mut io_pool = self.io_pool;
+        let mut roots = self.roots.clone();
         let mut fixed_bars = self.fixed_bars.clone();
 
         for bar in bars {
-            self.validate_fixed_bar(bar)?;
+            let root = self.validate_fixed_bar(bar)?;
+            let Root {
+                mmio32,
+                mmio64,
+                io_pool,
+                ..
+            } = &mut roots[root];
             if fixed_bars
                 .iter()
                 .any(|current| current.address == bar.address && current.register == bar.register)
@@ -403,22 +474,21 @@ impl PciEcam {
                 .map_err(|_| PciEcamError::ResourceRangeLimit)?;
         }
 
-        self.mmio32 = mmio32;
-        self.mmio64 = mmio64;
-        self.io_pool = io_pool;
+        self.roots = roots;
         self.fixed_bars = fixed_bars;
         Ok(())
     }
 
-    fn validate_fixed_bar(&self, bar: &PciFixedBar) -> Result<(), PciEcamError> {
+    /// The root of a valid fixed BAR.
+    fn validate_fixed_bar(&self, bar: &PciFixedBar) -> Result<usize, PciEcamError> {
         let end = bar
             .base
             .checked_add(bar.size)
             .ok_or(PciEcamError::FixedBarInvalid)?;
-        if bar.address.segment() != self.segment
-            || bar.address.bus() < self.bus_start
-            || bar.address.bus() > self.bus_end
-            || !(PCI_BAR0..=PCI_BAR0 + 5 * 4).contains(&bar.register)
+        let root = self
+            .root_of(bar.address)
+            .ok_or(PciEcamError::FixedBarInvalid)?;
+        if !(PCI_BAR0..=PCI_BAR0 + 5 * 4).contains(&bar.register)
             || !(bar.register - PCI_BAR0).is_multiple_of(4)
             || bar.size == 0
             || !bar.size.is_power_of_two()
@@ -433,69 +503,28 @@ impl PciEcam {
         if bar.kind == PciFixedBarType::Memory64 && bar.register == PCI_BAR0 + 5 * 4 {
             return Err(PciEcamError::FixedBarInvalid);
         }
-        Ok(())
-    }
-
-    /// Rebuild the external `windows` array from the current resource pools.
-    fn rebuild_windows(&mut self) {
-        self.window_count = 0;
-
-        for range in self.mmio32.ranges[..self.mmio32.count].iter().copied() {
-            if self.window_count == MAX_WINDOWS {
-                break;
-            }
-            self.windows[self.window_count] = PciWindow {
-                kind: PciWindowKind::Mmio,
-                base: range.base,
-                size: range.end - range.base,
-                prefetchable: false,
-            };
-            self.window_count += 1;
-        }
-        for range in self.mmio64.ranges[..self.mmio64.count].iter().copied() {
-            if self.window_count == MAX_WINDOWS {
-                break;
-            }
-            self.windows[self.window_count] = PciWindow {
-                kind: PciWindowKind::Mmio,
-                base: range.base,
-                size: range.end - range.base,
-                prefetchable: true,
-            };
-            self.window_count += 1;
-        }
-        for range in self.io_pool.ranges[..self.io_pool.count].iter().copied() {
-            if self.window_count == MAX_WINDOWS {
-                break;
-            }
-            self.windows[self.window_count] = PciWindow {
-                kind: PciWindowKind::Io,
-                base: range.base,
-                size: range.end - range.base,
-                prefetchable: false,
-            };
-            self.window_count += 1;
-        }
+        Ok(root)
     }
 
     // -- ECAM helpers --
 
-    /// Bind the existing device accessor to this root's validated mapping.
+    /// The root bridge whose buses include `addr`.
+    fn root_of(&self, addr: PciAddress) -> Option<usize> {
+        self.roots.iter().position(|root| root.contains(addr))
+    }
+
+    /// Bind the existing device accessor to its root's validated mapping.
     /// Invalid topology or an incomplete function mapping is not an absent device.
     pub fn device(&self, addr: PciAddress) -> Option<crate::EcamDevice> {
-        if addr.segment() != self.segment
-            || addr.bus() < self.bus_start
-            || addr.bus() > self.bus_end
-        {
-            return None;
-        }
+        let root = &self.roots[self.root_of(addr)?];
         let offset = crate::ecam::function_offset(addr);
-        if offset.checked_add(crate::ecam::FUNCTION_CONFIG_BYTES)? > self.ecam_size {
+        let mapped = offset - (usize::from(root.bus_start) << 20);
+        if mapped.checked_add(crate::ecam::FUNCTION_CONFIG_BYTES)? > root.ecam_size {
             return None;
         }
         Some(crate::EcamDevice::at_config_base(
             addr,
-            self.ecam_base.checked_add(offset)?,
+            root.ecam_base.checked_add(offset)?,
         ))
     }
 
@@ -721,6 +750,7 @@ impl PciEcam {
 
         Ok(Some(PciDev {
             addr,
+            root: self.root_of(addr).ok_or(PciEcamError::ConfigError)?,
             header_type,
             original_command: command,
             bars,
@@ -731,11 +761,21 @@ impl PciEcam {
 
     // -- Enumeration --
 
-    /// Enumerate a bus recursively.  Discovers devices, assigns bus numbers
-    /// to bridges, and recurses behind them.
-    fn enumerate_bus(&mut self, bus: u8) -> Result<(), PciEcamError> {
+    /// Enumerate a bus of root `root` recursively.  Discovers devices,
+    /// assigns bus numbers of the root to bridges, and recurses behind them.
+    fn enumerate_bus(&mut self, root: usize, bus: u8) -> Result<(), PciEcamError> {
+        let Root {
+            segment, bus_end, ..
+        } = self.roots[root];
+        // The next bus number of this root, if it has one left.
+        let next_bus = |pci: &Self| {
+            u8::try_from(pci.roots[root].next_bus)
+                .ok()
+                .filter(|&next| next <= bus_end)
+                .ok_or(PciEcamError::ResourceExhausted)
+        };
         for dev in 0..32u8 {
-            let addr = PciAddress::new(self.segment, bus, dev, 0);
+            let addr = PciAddress::new(segment, bus, dev, 0);
             if self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
                 continue;
             }
@@ -746,7 +786,7 @@ impl PciEcam {
             let max_func = if multi_func != 0 { 8 } else { 1 };
 
             for func in 0..max_func {
-                let faddr = PciAddress::new(self.segment, bus, dev, func);
+                let faddr = PciAddress::new(segment, bus, dev, func);
                 if func > 0 && self.read32(faddr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
                     continue;
                 }
@@ -754,23 +794,21 @@ impl PciEcam {
                 if let Some(mut pci_dev) = self.probe_device(faddr)? {
                     match pci_dev.header_type {
                         PCI_HEADER_TYPE_BRIDGE => {
-                            let secondary = self.next_bus;
-                            self.next_bus = self.next_bus.saturating_add(1);
+                            let secondary = next_bus(self)?;
+                            self.roots[root].next_bus += 1;
                             pci_dev.secondary_bus = secondary;
 
                             // Temporarily set subordinate to max so scanning works.
                             self.write32(
                                 faddr,
                                 PCI_PRIMARY_BUS,
-                                (bus as u32)
-                                    | ((secondary as u32) << 8)
-                                    | ((self.bus_end as u32) << 16),
+                                (bus as u32) | ((secondary as u32) << 8) | ((bus_end as u32) << 16),
                             );
 
-                            self.enumerate_bus(secondary)?;
+                            self.enumerate_bus(root, secondary)?;
 
                             // Finalise subordinate = highest bus found.
-                            pci_dev.subordinate_bus = self.next_bus.saturating_sub(1);
+                            pci_dev.subordinate_bus = (self.roots[root].next_bus - 1) as u8;
                             self.write32(
                                 faddr,
                                 PCI_PRIMARY_BUS,
@@ -780,13 +818,13 @@ impl PciEcam {
                             );
                         }
                         PCI_HEADER_TYPE_CARDBUS => {
-                            let secondary = self.next_bus;
+                            let secondary = next_bus(self)?;
                             // CardBus bridges need a bus-number range for
                             // cards inserted later. Reserve the conventional
                             // four-bus window used by Linux/coreboot rather
                             // than leaving the bridge at [bus 00-00].
-                            let subordinate = secondary.saturating_add(3).min(self.bus_end);
-                            self.next_bus = subordinate.saturating_add(1);
+                            let subordinate = secondary.saturating_add(3).min(bus_end);
+                            self.roots[root].next_bus = u16::from(subordinate) + 1;
                             pci_dev.secondary_bus = secondary;
                             pci_dev.subordinate_bus = subordinate;
                             self.write32(
@@ -811,17 +849,23 @@ impl PciEcam {
 
     // -- Resource allocation --
 
+    /// Not on its root bus.
+    fn behind_bridge(&self, dev_idx: usize) -> bool {
+        let device = &self.devices[dev_idx];
+        device.addr.bus() != self.roots[device.root].bus_start
+    }
+
     fn endpoint_in_pass(&self, dev_idx: usize, pass: usize) -> bool {
         if self.devices[dev_idx].header_type == PCI_HEADER_TYPE_BRIDGE {
             return false;
         }
-        let behind_bridge = self.devices[dev_idx].addr.bus() != self.bus_start;
+        let behind_bridge = self.behind_bridge(dev_idx);
         (pass == 0 && !behind_bridge) || (pass == 1 && behind_bridge)
     }
 
     fn bar_allocation_alignment(&self, dev_idx: usize, bar_idx: usize) -> u64 {
         let bar = self.devices[dev_idx].bars[bar_idx];
-        let behind_bridge = self.devices[dev_idx].addr.bus() != self.bus_start;
+        let behind_bridge = self.behind_bridge(dev_idx);
         match bar.bar_type {
             BarType::Memory32 | BarType::Memory64 => {
                 if behind_bridge {
@@ -842,7 +886,7 @@ impl PciEcam {
     }
 
     fn next_bar_to_allocate(&self, pass: usize) -> Option<(usize, usize)> {
-        let mut best: Option<(usize, usize, (u8, u64))> = None;
+        let mut best: Option<(usize, usize, BarRank)> = None;
         for dev_idx in 0..self.devices.len() {
             if !self.endpoint_in_pass(dev_idx, pass) {
                 continue;
@@ -863,36 +907,58 @@ impl PciEcam {
 
     /// Allocation rank, highest first.
     ///
-    /// The below-4-GiB window is the constrained resource: firmware drivers
-    /// reach a BAR through a mapping that does not cover above 4 GiB, and a
-    /// 32-bit BAR has no alternative home, while a 64-bit BAR can fall back
-    /// above 4 GiB. So BARs that only fit below 4 GiB are placed first, and
-    /// within each group the largest alignment goes first. Spending the low
-    /// window on alignment alone would let a large 64-bit BAR strand a 32-bit
-    /// BAR with nothing left to allocate from.
-    fn bar_allocation_rank(&self, dev_idx: usize, bar_idx: usize) -> (u8, u64) {
+    /// Bus by bus: bus numbers are assigned depth first, so every bridge's
+    /// subtree ends up in one contiguous span and the windows derived from
+    /// those spans can't overlap a sibling's. On a bus, BARs that only fit
+    /// below 4 GiB go first, then the largest alignment.
+    fn bar_allocation_rank(&self, dev_idx: usize, bar_idx: usize) -> BarRank {
         let needs_low_window = self.devices[dev_idx].bars[bar_idx].bar_type == BarType::Memory32;
         (
+            core::cmp::Reverse(self.devices[dev_idx].addr.bus()),
             u8::from(needs_low_window),
             self.bar_allocation_alignment(dev_idx, bar_idx),
         )
     }
 
+    /// Below-4-GiB bytes the unallocated 32-bit memory BARs of root `root`
+    /// still need.
+    fn pending_low_bytes(&self, root: usize) -> u64 {
+        (0..self.devices.len())
+            .filter(|&dev_idx| {
+                let device = &self.devices[dev_idx];
+                device.root == root && device.header_type != PCI_HEADER_TYPE_BRIDGE
+            })
+            .flat_map(|dev_idx| (0..6).map(move |bar_idx| (dev_idx, bar_idx)))
+            .filter(|&(dev_idx, bar_idx)| {
+                let bar = self.devices[dev_idx].bars[bar_idx];
+                bar.bar_type == BarType::Memory32 && !bar.fixed && !bar.allocated
+            })
+            .map(|(dev_idx, bar_idx)| self.bar_allocation_alignment(dev_idx, bar_idx))
+            .sum()
+    }
+
     fn allocate_one_bar(&mut self, dev_idx: usize, bar_idx: usize) -> Result<(), PciEcamError> {
         let addr = self.devices[dev_idx].addr;
+        let root = self.devices[dev_idx].root;
         let bar = self.devices[dev_idx].bars[bar_idx];
         let align = self.bar_allocation_alignment(dev_idx, bar_idx);
+        let pending = self.pending_low_bytes(root);
+        let pools = &mut self.roots[root];
         let base = match bar.bar_type {
-            BarType::Memory32 => self.mmio32.allocate_aligned(bar.size, align),
+            BarType::Memory32 => pools.mmio32.allocate_aligned(bar.size, align),
             // The below-4-GiB window comes first: firmware drivers reach a BAR
             // through a mapping that does not cover above 4 GiB, and some
             // devices that declare a 64-bit BAR still do not decode that high.
-            // The above-4-GiB window is the fallback for what does not fit.
-            BarType::Memory64 => self
-                .mmio32
-                .allocate_aligned(bar.size, align)
-                .or_else(|| self.mmio64.allocate_aligned(bar.size, align)),
-            BarType::Io => self.io_pool.allocate_aligned(bar.size, align),
+            // The above-4-GiB window takes what does not fit, and what would
+            // strand a 32-bit BAR that has no other home.
+            BarType::Memory64 => {
+                let mut low = pools.mmio32;
+                low.allocate_aligned(bar.size, align)
+                    .filter(|_| low.free_bytes() >= pending)
+                    .inspect(|_| pools.mmio32 = low)
+                    .or_else(|| pools.mmio64.allocate_aligned(bar.size, align))
+            }
+            BarType::Io => pools.io_pool.allocate_aligned(bar.size, align),
             BarType::None => None,
         };
 
@@ -983,6 +1049,7 @@ impl PciEcam {
             }
 
             let baddr = self.devices[i].addr;
+            let root = self.devices[i].root;
             let sec = self.devices[i].secondary_bus;
             let sub = self.devices[i].subordinate_bus;
 
@@ -995,7 +1062,7 @@ impl PciEcam {
             let mut io_hi: u64 = 0;
 
             for child in &self.devices {
-                if child.addr.bus() < sec || child.addr.bus() > sub {
+                if child.root != root || child.addr.bus() < sec || child.addr.bus() > sub {
                     continue;
                 }
                 for bar in &child.bars {
@@ -1088,7 +1155,9 @@ impl PciEcam {
 impl PciEcam {
     /// Enumerate the PCI hierarchy, allocate BAR resources, and enable decode.
     pub fn enumerate_and_allocate(&mut self) -> Result<(), PciEcamError> {
-        self.enumerate_bus(self.bus_start)?;
+        for root in 0..self.roots.len() {
+            self.enumerate_bus(root, self.roots[root].bus_start)?;
+        }
 
         if let Some(fixed) = self.fixed_bars.iter().find(|fixed| {
             !self.devices.iter().any(|dev| {
@@ -1123,6 +1192,18 @@ impl PciEcam {
     /// chipset-fixed BARs. I/O BARs and unassigned/probed slots are excluded.
     pub fn assigned_memory_windows(&self) -> impl Iterator<Item = PciWindow> + '_ {
         self.assigned_memory_bars().map(|(_, window)| window)
+    }
+
+    /// Allocated prefetchable VGA apertures eligible for write combining.
+    /// Non-prefetchable GPU registers and bridge windows are never included.
+    pub fn prefetchable_vga_windows(&self) -> impl Iterator<Item = PciWindow> + '_ {
+        self.assigned_memory_bars().filter_map(|(address, window)| {
+            (window.prefetchable
+                && self
+                    .device(address)
+                    .is_some_and(|device| device.read32(0x08) >> 16 == 0x0300))
+            .then_some(window)
+        })
     }
 
     /// Assigned memory BAR spans together with their owning PCI address.
@@ -1161,63 +1242,45 @@ impl PciEcam {
     where
         P: crate::PciRootProvider + ?Sized,
     {
-        let info = provider.root_info();
-        if info.bus_end < info.bus_start {
+        Self::from_providers([provider])
+    }
+
+    /// Construct an allocator for several root bridges, each with its own
+    /// buses and windows, as [`Self::from_provider`]. The bus ranges of a
+    /// segment must not overlap.
+    pub fn from_providers<'a, P>(
+        providers: impl IntoIterator<Item = &'a P>,
+    ) -> Result<Self, PciEcamError>
+    where
+        P: crate::PciRootProvider + ?Sized + 'a,
+    {
+        let roots = providers.into_iter().map(Root::from_provider).try_fold(
+            HVec::new(),
+            |mut roots: HVec<Root, MAX_PCI_ROOTS>, root| {
+                let root = root?;
+                let overlaps = roots.iter().any(|other| {
+                    other.segment == root.segment
+                        && other.bus_start <= root.bus_end
+                        && root.bus_start <= other.bus_end
+                });
+                if overlaps || roots.push(root).is_err() {
+                    return Err(PciEcamError::ConfigError);
+                }
+                Ok(roots)
+            },
+        )?;
+        if roots.is_empty() {
             return Err(PciEcamError::ConfigError);
         }
+        Ok(Self::new(roots))
+    }
 
-        let supplied = provider
-            .resource_windows()
-            .map_err(|_| PciEcamError::ConfigError)?;
-        let dummy = PciWindow {
-            kind: PciWindowKind::Mmio,
-            base: 0,
-            size: 0,
-            prefetchable: false,
-        };
-        let mut windows = [dummy; MAX_WINDOWS];
-        let mut window_count = 0;
-        let mut mmio32 = ResourcePool::empty();
-        let mut mmio64 = ResourcePool::empty();
-        let mut io_pool = ResourcePool::empty();
-
-        for window in supplied {
-            if window.size == 0 {
-                continue;
-            }
-            let Some(end) = window.base.checked_add(window.size) else {
-                return Err(PciEcamError::ConfigError);
-            };
-            if window_count == MAX_WINDOWS {
-                return Err(PciEcamError::ConfigError);
-            }
-
-            match window.kind {
-                PciWindowKind::Io => io_pool.push_range(window.base, end)?,
-                PciWindowKind::Mmio if window.is_below_4g() => {
-                    mmio32.push_range(window.base, end)?;
-                }
-                PciWindowKind::Mmio => mmio64.push_range(window.base, end)?,
-            }
-            windows[window_count] = window;
-            window_count += 1;
-        }
-
-        Ok(Self {
-            segment: info.segment,
-            ecam_base: info.ecam_base as usize,
-            ecam_size: info.ecam_size() as usize,
-            bus_start: info.bus_start,
-            bus_end: info.bus_end,
-            mmio32,
-            mmio64,
-            io_pool,
-            windows,
-            window_count,
+    fn new(roots: HVec<Root, MAX_PCI_ROOTS>) -> Self {
+        Self {
+            roots,
             devices: HVec::new(),
             fixed_bars: PciFixedBars::new(),
-            next_bus: info.bus_start.saturating_add(1),
-        })
+        }
     }
 
     /// Construct an ECAM root bridge from a temporary config.
@@ -1274,7 +1337,7 @@ impl PciEcam {
             wc += 1;
         }
 
-        Ok(Self {
+        let root = Root {
             segment: 0,
             ecam_base: config.ecam_base as usize,
             ecam_size: config.ecam_size as usize,
@@ -1285,28 +1348,92 @@ impl PciEcam {
             io_pool: ResourcePool::new(config.pio_base, config.pio_size)?,
             windows,
             window_count: wc,
-            devices: HVec::new(),
-            fixed_bars: PciFixedBars::new(),
-            next_bus: config.bus_start + 1,
+            next_bus: u16::from(config.bus_start) + 1,
+        };
+        Ok(Self::new(HVec::from_iter([root])))
+    }
+}
+
+impl Root {
+    fn from_provider<P>(provider: &P) -> Result<Self, PciEcamError>
+    where
+        P: crate::PciRootProvider + ?Sized,
+    {
+        let info = provider.root_info();
+        if info.bus_end < info.bus_start {
+            return Err(PciEcamError::ConfigError);
+        }
+
+        let supplied = provider
+            .resource_windows()
+            .map_err(|_| PciEcamError::ConfigError)?;
+        let dummy = PciWindow {
+            kind: PciWindowKind::Mmio,
+            base: 0,
+            size: 0,
+            prefetchable: false,
+        };
+        let mut windows = [dummy; MAX_WINDOWS];
+        let mut window_count = 0;
+        let mut mmio32 = ResourcePool::empty();
+        let mut mmio64 = ResourcePool::empty();
+        let mut io_pool = ResourcePool::empty();
+
+        for window in supplied {
+            if window.size == 0 {
+                continue;
+            }
+            let Some(end) = window.base.checked_add(window.size) else {
+                return Err(PciEcamError::ConfigError);
+            };
+            if window_count == MAX_WINDOWS {
+                return Err(PciEcamError::ConfigError);
+            }
+
+            match window.kind {
+                PciWindowKind::Io => io_pool.push_range(window.base, end)?,
+                PciWindowKind::Mmio if window.is_below_4g() => {
+                    mmio32.push_range(window.base, end)?;
+                }
+                PciWindowKind::Mmio => mmio64.push_range(window.base, end)?,
+            }
+            windows[window_count] = window;
+            window_count += 1;
+        }
+
+        Ok(Self {
+            segment: info.segment,
+            ecam_base: info.ecam_base as usize,
+            ecam_size: info.ecam_size() as usize,
+            bus_start: info.bus_start,
+            bus_end: info.bus_end,
+            mmio32,
+            mmio64,
+            io_pool,
+            windows,
+            window_count,
+            next_bus: u16::from(info.bus_start) + 1,
         })
     }
 }
 
+/// The ECAM and window accessors describe the first root bridge: all of it
+/// on a single-root platform.
 impl PciEcam {
     pub fn ecam_base(&self) -> u64 {
-        self.ecam_base as u64
+        self.roots[0].ecam_base as u64
     }
 
     pub fn ecam_size(&self) -> u64 {
-        self.ecam_size as u64
+        self.roots[0].ecam_size as u64
     }
 
     pub fn bus_start(&self) -> u8 {
-        self.bus_start
+        self.roots[0].bus_start
     }
 
     pub fn bus_end(&self) -> u8 {
-        self.bus_end
+        self.roots[0].bus_end
     }
 
     pub fn device_count(&self) -> usize {
@@ -1314,7 +1441,8 @@ impl PciEcam {
     }
 
     pub fn windows(&self) -> &[PciWindow] {
-        &self.windows[..self.window_count]
+        let root = &self.roots[0];
+        &root.windows[..root.window_count]
     }
 }
 
@@ -1339,7 +1467,8 @@ mod tests {
     use alloc::vec::Vec;
 
     fn test_pci() -> (PciEcam, Vec<u32>) {
-        let mut config_space = vec![0u32; 1 << 18];
+        const BUSES: usize = 3;
+        let mut config_space = vec![0u32; BUSES << 18];
         let ecam_base = config_space.as_mut_ptr() as usize;
         let dummy = PciWindow {
             kind: PciWindowKind::Io,
@@ -1347,24 +1476,20 @@ mod tests {
             size: 0,
             prefetchable: false,
         };
-        (
-            PciEcam {
-                segment: 0,
-                ecam_base,
-                ecam_size: 1 << 20,
-                bus_start: 0,
-                bus_end: 0,
-                mmio32: ResourcePool::new(0x8000_0000, 0x1000_0000).unwrap(),
-                mmio64: ResourcePool::empty(),
-                io_pool: ResourcePool::new(0x1000, 0xf000).unwrap(),
-                windows: [dummy; MAX_WINDOWS],
-                window_count: 0,
-                devices: HVec::new(),
-                fixed_bars: PciFixedBars::new(),
-                next_bus: 1,
-            },
-            config_space,
-        )
+        let root = Root {
+            segment: 0,
+            ecam_base,
+            ecam_size: BUSES << 20,
+            bus_start: 0,
+            bus_end: BUSES as u8 - 1,
+            mmio32: ResourcePool::new(0x8000_0000, 0x1000_0000).unwrap(),
+            mmio64: ResourcePool::empty(),
+            io_pool: ResourcePool::new(0x1000, 0xf000).unwrap(),
+            windows: [dummy; MAX_WINDOWS],
+            window_count: 0,
+            next_bus: 1,
+        };
+        (PciEcam::new(HVec::from_iter([root])), config_space)
     }
 
     #[test]
@@ -1462,7 +1587,7 @@ mod tests {
     fn invalid_accesses_are_not_absent_device_responses() {
         let (mut pci, _memory) = test_pci();
         assert!(pci.device(PciAddress::new(1, 0, 0, 0)).is_none());
-        assert!(pci.device(PciAddress::new(0, 1, 0, 0)).is_none());
+        assert!(pci.device(PciAddress::new(0, 3, 0, 0)).is_none());
         let device = pci.device(PciAddress::new(0, 0, 0, 0)).unwrap();
         device.write32(0xffc, u32::MAX);
         assert_eq!(device.try_read8(0xfff), Some(u8::MAX));
@@ -1471,8 +1596,43 @@ mod tests {
         assert_eq!(device.try_write32(0xffe, 0), None);
         assert_eq!(device.try_write8(0x1000, 0), None);
         assert_eq!(device.read32(0xffc), u32::MAX);
-        pci.ecam_size = 0xfff; // A truncated function is not a mapped device.
+        pci.roots[0].ecam_size = 0xfff; // A truncated function is not a mapped device.
         assert!(pci.device(PciAddress::new(0, 0, 0, 0)).is_none());
+    }
+
+    #[test]
+    fn sibling_bridge_windows_do_not_interleave() {
+        let (mut pci, _config_space) = test_pci();
+        pci.configure_windows(0xf800_0000, 0x0700_0000, 0, 0, 0x1000, 0xf000)
+            .unwrap();
+        let bridge = |device, bus| PciDev {
+            header_type: PCI_HEADER_TYPE_BRIDGE,
+            secondary_bus: bus,
+            subordinate_bus: bus,
+            ..endpoint(PciAddress::new(0, 0, device, 1), &[])
+        };
+        // Zeppelin: xHCI's 64-bit BAR behind 7.1, SATA's 32-bit BAR behind 8.1.
+        let xhci = PciAddress::new(0, 1, 0, 3);
+        let sata = PciAddress::new(0, 2, 0, 2);
+        for device in [
+            bridge(7, 1),
+            bridge(8, 2),
+            endpoint(xhci, &[(0, BarType::Memory64, 0x10_0000)]),
+            endpoint(sata, &[(5, BarType::Memory32, 0x1000)]),
+        ] {
+            assert!(pci.devices.push(device).is_ok());
+        }
+
+        pci.allocate_resources().unwrap();
+
+        let window = |device| {
+            let value = pci.read32(PciAddress::new(0, 0, device, 1), PCI_MEMORY_BASE);
+            (value & 0xfff0) << 16..=(value | 0xf_ffff)
+        };
+        let (xhci_window, sata_window) = (window(7), window(8));
+        assert!(xhci_window.end() < sata_window.start());
+        assert!(xhci_window.contains(&(pci.read32(xhci, PCI_BAR0) & !0xf)));
+        assert!(sata_window.contains(&(pci.read32(sata, PCI_BAR0 + 20) & !0xf)));
     }
 
     fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) -> PciDev {
@@ -1497,6 +1657,7 @@ mod tests {
         }
         PciDev {
             addr,
+            root: 0,
             header_type: 0,
             original_command: 0,
             bars,
@@ -1547,7 +1708,7 @@ mod tests {
     fn provider_is_snapshotted_into_ecam_allocator() {
         let pci = PciEcam::from_provider(&TestRoot).unwrap();
 
-        assert_eq!(pci.segment, 3);
+        assert_eq!(pci.roots[0].segment, 3);
         assert_eq!(pci.ecam_base(), 0xe000_0000);
         assert_eq!(pci.ecam_size(), 64 * 1024 * 1024);
         assert_eq!(pci.bus_start(), 0x40);
@@ -1555,6 +1716,97 @@ mod tests {
         assert_eq!(pci.windows().len(), 2);
         assert_eq!(pci.windows()[0].kind, PciWindowKind::Mmio);
         assert_eq!(pci.windows()[1].kind, PciWindowKind::Io);
+    }
+
+    /// A root bridge of fixed buses with one MMIO window.
+    struct Domain(PciRootInfo, u64);
+    impl PciRootProvider for Domain {
+        fn root_info(&self) -> PciRootInfo {
+            self.0
+        }
+        fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
+            Ok(PciRootWindows::from_iter([PciWindow {
+                kind: PciWindowKind::Mmio,
+                base: self.1,
+                size: 0x1000_0000,
+                prefetchable: false,
+            }]))
+        }
+    }
+
+    #[test]
+    fn every_root_allocates_its_buses_and_windows() {
+        // Buses 0..=0x41 of test RAM, in which every BAR sizes as 16 bytes
+        // of 32-bit memory. Each root has a bridge with an endpoint behind it.
+        let mut ecam = vec![0u32; 0x42 << 18];
+        let base = ecam.as_mut_ptr() as usize;
+        let config = |bus: u8, device: u8, offset: usize| {
+            (usize::from(bus) << 18) + (usize::from(device) << 13) + offset / 4
+        };
+        for bus in [0, 1, 0x40, 0x41] {
+            (0..32).for_each(|device| ecam[config(bus, device, 0)] = u32::MAX);
+        }
+        for (bus, header, class) in [
+            (0, 1, 0x0604),
+            (1, 0, 0x0200),
+            (0x40, 1, 0x0604),
+            (0x41, 0, 0x0200),
+        ] {
+            ecam[config(bus, 0, 0)] = 0x1234_1022;
+            ecam[config(bus, 0, 8)] = class << 16;
+            ecam[config(bus, 0, 0xc)] = header << 16;
+        }
+        let domain = |bus_start, bus_end, window| {
+            let info = PciRootInfo {
+                segment: 0,
+                ecam_base: base as u64,
+                bus_start,
+                bus_end,
+            };
+            Domain(info, window)
+        };
+        let roots = [
+            domain(0, 0x3f, 0x8000_0000),
+            domain(0x40, 0x7f, 0xa000_0000),
+        ];
+        assert!(matches!(
+            PciEcam::from_providers(&[domain(0, 0x40, 0), domain(0x40, 0x7f, 0)]),
+            Err(PciEcamError::ConfigError)
+        ));
+        let mut pci = PciEcam::from_providers(&roots).unwrap();
+
+        pci.enumerate_and_allocate().unwrap();
+
+        let buses = |bus| pci.read32(PciAddress::new(0, bus, 0, 0), PCI_PRIMARY_BUS) & 0xff_ffff;
+        assert_eq!((buses(0), buses(0x40)), (0x01_0100, 0x41_4140));
+        for (endpoint, window) in [
+            (1, 0x8000_0000..0x9000_0000),
+            (0x41, 0xa000_0000..0xb000_0000),
+        ] {
+            let endpoint = PciAddress::new(0, endpoint, 0, 0);
+            let bar = u64::from(pci.read32(endpoint, PCI_BAR0) & !0xf);
+            assert!(window.contains(&bar), "{endpoint:?}: {bar:#x}");
+        }
+    }
+
+    #[test]
+    fn a_root_does_not_take_bus_numbers_beyond_its_range() {
+        let mut ecam = vec![0u32; 2 << 18];
+        (0..32).for_each(|device| ecam[device << 13] = u32::MAX);
+        ecam[0] = 0x1234_1022;
+        ecam[2] = 0x0604 << 16;
+        ecam[3] = 1 << 16;
+        let info = PciRootInfo {
+            segment: 0,
+            ecam_base: ecam.as_mut_ptr() as u64,
+            bus_start: 0,
+            bus_end: 0,
+        };
+        let mut pci = PciEcam::from_provider(&Domain(info, 0x8000_0000)).unwrap();
+        assert_eq!(
+            pci.enumerate_and_allocate(),
+            Err(PciEcamError::ResourceExhausted)
+        );
     }
 
     #[test]
@@ -1567,6 +1819,34 @@ mod tests {
         assert_eq!(
             size_from_moving_bits(u64::from(ones ^ zeroes), 0x0000_fffc),
             Ok(0x20)
+        );
+    }
+
+    #[test]
+    fn wc_selection_excludes_gpu_registers_and_non_display_prefetchable_bars() {
+        let (mut pci, _config_space) = test_pci();
+        let vga = PciAddress::new(0, 0, 2, 0);
+        let storage = PciAddress::new(0, 0, 3, 0);
+        for (address, class) in [(vga, 0x0300_0000), (storage, 0x0108_0000)] {
+            let mut device = endpoint(
+                address,
+                &[
+                    (0, BarType::Memory32, 0x10_0000),
+                    (2, BarType::Memory32, 0x100_0000),
+                ],
+            );
+            device.bars[2].prefetchable = true;
+            assert!(pci.devices.push(device).is_ok());
+            pci.write32(address, 8, class);
+        }
+        pci.allocate_resources().unwrap();
+        let windows: HVec<_, 6> = pci
+            .prefetchable_vga_windows()
+            .map(|window| (window.base, window.size))
+            .collect();
+        assert_eq!(
+            windows.as_slice(),
+            &[(u64::from(pci.read32(vga, PCI_BAR0 + 8) & !0xf), 0x100_0000)]
         );
     }
 
@@ -1681,9 +1961,10 @@ mod tests {
         };
         pci.add_fixed_bars(&[fixed]).unwrap();
 
-        assert_eq!(pci.io_pool.allocate_aligned(0x20, 0x20), Some(0x1000));
-        assert_eq!(pci.io_pool.allocate_aligned(0x20, 0x20), Some(0x1020));
-        assert_eq!(pci.io_pool.allocate_aligned(0x20, 0x20), Some(0x1060));
+        let io_pool = &mut pci.roots[0].io_pool;
+        assert_eq!(io_pool.allocate_aligned(0x20, 0x20), Some(0x1000));
+        assert_eq!(io_pool.allocate_aligned(0x20, 0x20), Some(0x1020));
+        assert_eq!(io_pool.allocate_aligned(0x20, 0x20), Some(0x1060));
         assert_eq!(pci.windows().len(), 0);
     }
 

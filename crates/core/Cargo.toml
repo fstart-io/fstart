@@ -15,6 +15,7 @@ pci = []
 serde = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
+fstart-amdfw-format = { workspace = true, features = ["serde"] }
 embedded-hal = { workspace = true }
 tock-registers = { workspace = true }
 

@@ -1,0 +1,254 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+use super::*;
+use crate::{picasso, zeppelin};
+use fstart_amdfw_format::{
+    directory::{BIOS_COOKIE, BiosEntry, PSP_COOKIE, PspEntry, bios, write_table},
+    efs::Efs,
+};
+use fstart_driver_amd::{
+    fch::sandstone::preinit::{ReadMode, Speed, SpiConfig},
+    soc::{picasso::Picasso, zeppelin::Zeppelin},
+};
+use fstart_image_build::plan::CompilerFileSelection;
+use sha2::{Digest, Sha256};
+use std::vec::Vec;
+use zerocopy::IntoBytes;
+
+struct Vilboz;
+impl Board for Vilboz {
+    type Soc = Picasso;
+    const CONFIG: &'static picasso::Config = &picasso::Config {
+        fch: picasso::FchConfig {
+            console_uart: 0,
+            spi: SpiConfig {
+                mode: ReadMode::Normal33,
+                normal: Speed::Mhz33,
+                fast: Speed::Mhz66,
+                alternate: Speed::Mhz66,
+                tpm: Speed::Mhz66,
+                burst_4dw: false,
+            },
+            espi: None,
+            early_gpios: &[],
+            disable_rom_sharing: false,
+        },
+        pcie: &[],
+        power: None,
+        usb: fstart_driver_amd::fch::sandstone::usb::Config {
+            phy2: None,
+            phy3_override: None,
+            overcurrent: [fstart_driver_amd::fch::sandstone::usb::Overcurrent::None; 6],
+            force_gen1: 0,
+        },
+        emmc: None,
+        i2c: &[],
+        graphics: fstart_driver_amd::nbio::picasso::gfx::Config {
+            displays: &[],
+            hdmi2_disable: 0,
+        },
+    };
+    fn console() -> fstart_driver_uart::ns16550::Ns16550Config {
+        picasso::console(0)
+    }
+}
+
+struct Mj11;
+impl Board for Mj11 {
+    type Soc = Zeppelin;
+    const CONFIG: &'static zeppelin::Config = &zeppelin::Config {
+        subsystem_id: 0,
+        fch: zeppelin::FchConfig::DEFAULT,
+        dxio: zeppelin::DxioConfig {
+            descriptors: [&[]; fstart_driver_amd::soc::zeppelin::MAX_DIES],
+        },
+    };
+    fn console() -> fstart_driver_uart::ns16550::Ns16550Config {
+        picasso::console(0)
+    }
+}
+
+struct Source(std::path::PathBuf);
+impl Drop for Source {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+fn source() -> Source {
+    static SERIAL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "noncar-plan-{}-{}",
+        std::process::id(),
+        SERIAL.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    Source(dir)
+}
+
+fn units_hash(plan: &BuildPlan) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&plan.units).unwrap())
+    )
+}
+
+#[test]
+fn picasso_payload_plan_includes_smm_and_verified_ffs() {
+    let selected = BuildSelection {
+        payload: Some("uefi".into()),
+        ..Default::default()
+    };
+    let plan = resolve::<Vilboz>(selected.clone()).unwrap();
+    plan.validate_compiler_selections(&selected).unwrap();
+    assert_eq!(plan.units.len(), 2);
+    assert_eq!(plan.units[0].name, "smm");
+    let unit = &plan.units[1];
+    assert_eq!(unit.name, "reset");
+    assert!(unit.release_only);
+    assert_eq!(unit.features, ["bundle-picasso", "payload-uefi"]);
+    assert_eq!(unit.bindings[0].producer, "smm");
+    assert_eq!(unit.payload, "crabefi");
+    let UnitOutput::Executable { expectations, .. } = &unit.output else {
+        unreachable!()
+    };
+    assert_eq!(expectations.entry, Some(picasso::LAYOUT.reset_vector()));
+    assert!(plan.assembly.ffs().is_ok());
+    let mut invalid = selected;
+    invalid
+        .compiler_files
+        .push(CompilerFileSelection::parse("MICROCODE=ignored.bin").unwrap());
+    assert!(resolve::<Vilboz>(invalid).is_err());
+}
+
+#[test]
+fn picasso_packs_the_blob_tables_into_a_native_image() {
+    let blobs = std::env::temp_dir();
+    let mut selection = BuildSelection {
+        payload: Some("uefi".into()),
+        blobs: Some(blobs.to_str().unwrap().into()),
+        ..Default::default()
+    };
+    selection.manifests.board = serde_json::json!({
+        "board": "test-board",
+        "amd": { "soc": "picasso", "psp-app": true, "apcb": { "instances": 1 } },
+    });
+    selection.manifests.platform = serde_json::json!({ "amd": { "picasso": {
+        "bios-directory": "Family17hModel10",
+        "efs-offset": 0xe2_0000, "partition-end": 0x100_0000,
+        "spi-read-mode": 4, "spi-speed": 0, "soft-fuse": 0x3000_0000,
+        "psp": [{ "type": 1, "file": "psp/boot.bin" }],
+        "bios": [],
+        "microcode": [{ "equivalence-id": 0x8201, "file": "ucode.bin" }],
+        "vbios": [{ "device": 0x15dd, "file": "vbios.bin" }],
+    }}});
+    let plan = resolve::<Vilboz>(selection.clone()).unwrap();
+    plan.validate_image_selection(&selection).unwrap();
+    let Assembly::Amd(image) = &plan.assembly else {
+        unreachable!()
+    };
+    let Firmware::Packed {
+        files,
+        reset_offset,
+    } = &image.firmware
+    else {
+        unreachable!()
+    };
+    assert_eq!(*reset_offset, Some(0x98_0000));
+    assert!(files.psp_app && image.psp.compress_reset);
+    assert_eq!(
+        files.bios[0].path,
+        blobs.join("test-board/apcb/0.bin").to_str().unwrap()
+    );
+    let ffs = &image.ffs.as_ref().unwrap().assembly;
+    assert_eq!(ffs.file_assets[0].name.as_str(), "pci1002,15dd.rom");
+    assert!(matches!(&ffs.microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1));
+    // The tables are for another SoC.
+    selection.manifests.board["amd"]["soc"] = "zeppelin".into();
+    assert!(resolve::<Vilboz>(selection).is_err());
+}
+
+/// The compilation units, hence the stage binaries, stay as they are.
+#[test]
+fn zeppelin_units_are_pinned() {
+    let units = |payload: &str| {
+        units_hash(
+            &resolve::<Mj11>(BuildSelection {
+                payload: Some(payload.into()),
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+    };
+    assert_eq!(
+        ["halt", "linux", "uefi"].map(units),
+        [
+            "2f3f70f9f8bf7bbb95ccee6769e6d810b30c1af9c164da60d9a23c8ce20e4367",
+            "642f9dd5c1ab2022604e5fc460b9608498193fe0d9e366f809dbea5c829ac84d",
+            "c300ac57c6ecb8f90480edd0c61daee8f2cf7d39577dfdb5e44b15102c9da500",
+        ]
+    );
+}
+
+/// A vendor flash with the PSP and BIOS directories of the MJ11 layout.
+fn vendor_flash(reset_destination: u64) -> Vec<u8> {
+    let mut flash = vec![0xffu8; 0x100_0000];
+    let mut efs = Efs::erased();
+    efs.new_psp_directory.set(0xff05_7000);
+    efs.bios_directory_mut(Zeppelin::BIOS_DIRECTORY)
+        .set(0xff0f_7000);
+    flash[0x2_0000..0x2_0060].copy_from_slice(efs.as_bytes());
+    write_table(
+        &mut flash[0x5_7000..],
+        PSP_COOKIE,
+        0,
+        &[PspEntry::new(0, 0, 0, 0x240, 0xff05_7400)],
+    )
+    .unwrap();
+    write_table(
+        &mut flash[0xf_7000..],
+        BIOS_COOKIE,
+        0,
+        &[
+            BiosEntry::new(bios::APOB, 0, 0, 0, 0, 0, 0x3000_0000),
+            BiosEntry::new(
+                bios::RESET_IMAGE,
+                0,
+                0,
+                BiosEntry::RESET | BiosEntry::COPY,
+                0x25_0000,
+                0xffdb_0000,
+                reset_destination,
+            ),
+        ],
+    )
+    .unwrap();
+    flash
+}
+
+#[test]
+fn zeppelin_composes_the_vendor_image() {
+    let source = source();
+    let path = source.0.join("vendor.rom");
+    let selection = |path: &std::path::Path| BuildSelection {
+        payload: Some("linux".into()),
+        image_config: Some(path.to_str().unwrap().into()),
+        ..Default::default()
+    };
+    std::fs::write(&path, vendor_flash(0x76db_0000)).unwrap();
+    let plan = resolve::<Mj11>(selection(&path)).unwrap();
+    let Assembly::Amd(image) = &plan.assembly else {
+        unreachable!()
+    };
+    let Firmware::Vendor { image: vendor, .. } = &image.firmware else {
+        unreachable!()
+    };
+    assert_eq!(vendor.path, path.to_str().unwrap());
+    let ffs = image.ffs.as_ref().unwrap();
+    assert_eq!(
+        (ffs.offset, ffs.size, image.reset_size),
+        (0x29_4000, 0xdb_0000 - 0x29_4000, 0x25_0000)
+    );
+    assert_eq!(plan.inputs[0].capacity, 0xdb_0000 - 0x29_4000);
+    // The vendor's PSP copies the reset image elsewhere.
+    std::fs::write(&path, vendor_flash(0x7600_0000)).unwrap();
+    assert!(resolve::<Mj11>(selection(&path)).is_err());
+}

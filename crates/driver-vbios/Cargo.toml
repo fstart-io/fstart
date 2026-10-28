@@ -1,0 +1,17 @@
+[package]
+name = "fstart-driver-vbios"
+version.workspace = true
+edition.workspace = true
+license = "MIT AND HPND"
+
+[dependencies]
+fstart-core.workspace = true
+fstart-pci.workspace = true
+fstart-log.workspace = true
+tock-registers.workspace = true
+ufmt.workspace = true
+zerocopy.workspace = true
+edid-info = "0.2.3"
+
+[build-dependencies]
+cc = "1"

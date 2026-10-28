@@ -3,12 +3,20 @@
 //! The BSP plans once from physical RAM, before firmware allocations split the
 //! OS memory map. UC holes and explicit WC apertures are part of the solution;
 //! an insufficient MSR budget is an error, never a partial RAM mapping.
+//!
+//! Before MP, `install_final_solution` plans RAM and optional WC together.
+//! Platforms allocating PCI after MP use `install_write_combining`: a
+//! synchronized, additive update that preserves vendor-specific RAM policy.
+//! Both paths consume the PCI allocator's prefetchable VGA apertures.
 
 use crate::x86::msr::{rdmsr, wrmsr};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use fstart_core::services::ServiceError;
 use heapless::Vec;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+mod wc;
+pub use wc::install_write_combining;
 
 pub const IA32_MTRR_PHYSBASE0: u32 = 0x200;
 pub const IA32_MTRR_PHYSMASK0: u32 = 0x201;
@@ -29,7 +37,7 @@ const ONE_MIB: u64 = 0x100000;
 const MAX_MTRRS: usize = 32;
 const MAX_RANGES: usize = 64;
 const MAX_RAM_RANGES: usize = 16;
-const FIXED_MSRS: [u32; 11] = [
+pub(crate) const FIXED_MSRS: [u32; 11] = [
     0x250, 0x258, 0x259, 0x268, 0x269, 0x26a, 0x26b, 0x26c, 0x26d, 0x26e, 0x26f,
 ];
 
@@ -52,7 +60,7 @@ impl CacheType {
 }
 
 /// CPU limits, also usable by host-side planner tests without privileged I/O.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     pub variable_count: usize,
     pub physical_bits: u8,
@@ -443,18 +451,34 @@ pub(crate) unsafe fn prepare_for_mp() -> Result<(), ServiceError> {
 
 /// Packed SIPI MSR record. The assembly consumes three little-endian u32s.
 #[repr(C)]
-#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
-pub(crate) struct MsrEntry {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct MsrEntry {
     pub index: u32,
     pub low: u32,
     pub high: u32,
 }
-const MAX_SIPI_MSRS: usize = 2 * MAX_MTRRS + 11 + 2;
+impl MsrEntry {
+    pub const fn new(index: u32, value: u64) -> Self {
+        Self {
+            index,
+            low: value as u32,
+            high: (value >> 32) as u32,
+        }
+    }
+    pub const fn value(&self) -> u64 {
+        self.low as u64 | (self.high as u64) << 32
+    }
+}
+/// MTRRs + PAT + DEF_TYPE, plus room for vendor MSRs CPU drivers add around
+/// the architectural snapshot.
+const MAX_SIPI_MSRS: usize = 2 * MAX_MTRRS + 11 + 2 + 8;
+/// Ordered MSR writes every AP replays with caching disabled.
+pub type SipiMsrs = Vec<MsrEntry, MAX_SIPI_MSRS>;
 
 /// Capture the final BSP state, including PAT, for APs to replay before caching.
 /// # Safety
 /// BSP-only, before SIPI; all CPUs must have compatible MTRR/PAT capabilities.
-pub(crate) unsafe fn snapshot_for_sipi() -> Result<Vec<MsrEntry, MAX_SIPI_MSRS>, ServiceError> {
+pub unsafe fn snapshot_for_sipi() -> Result<SipiMsrs, ServiceError> {
     unsafe {
         prepare_for_mp()?;
     }
@@ -465,11 +489,25 @@ pub(crate) unsafe fn snapshot_for_sipi() -> Result<Vec<MsrEntry, MAX_SIPI_MSRS>,
     )
 }
 
+/// Snapshot the current CPU's MTRRs and PAT through `read`, ending with
+/// IA32_MTRR_DEF_TYPE, for vendor CPU drivers that read the MTRRs their own
+/// way (AMD: with the fixed MTRRs' RdDram/WrDram bits exposed).
+pub fn snapshot_with(mut read: impl FnMut(u32) -> u64) -> Result<SipiMsrs, ServiceError> {
+    let cap = read(IA32_MTRR_CAP);
+    let caps = Capabilities {
+        variable_count: (cap & 0xff) as usize,
+        physical_bits: 0,
+        fixed: cap & (1 << 8) != 0,
+        write_combining: cap & (1 << 10) != 0,
+    };
+    snapshot_msrs(caps, crate::x86::cpuid(1).3 & (1 << 16) != 0, read)
+}
+
 fn snapshot_msrs(
     cap: Capabilities,
     pat: bool,
     mut read: impl FnMut(u32) -> u64,
-) -> Result<Vec<MsrEntry, MAX_SIPI_MSRS>, ServiceError> {
+) -> Result<SipiMsrs, ServiceError> {
     if cap.variable_count > MAX_MTRRS {
         return Err(ServiceError::NotSupported);
     }
@@ -494,7 +532,7 @@ fn snapshot_msrs(
         save(IA32_MTRR_PHYSMASK0 + index * 2)?;
     }
     if pat {
-        save(0x277)?;
+        save(crate::x86::cpu::msr::PAT.index())?;
     }
     // Enable/default type last, after all fixed/variable MTRRs and PAT.
     save(IA32_MTRR_DEF_TYPE)?;

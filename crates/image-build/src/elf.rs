@@ -41,7 +41,10 @@ pub struct Expectations {
     pub identity_mapping: bool,
     pub entry: Option<u64>,
     pub copy: Option<CopyMapping>,
-    pub descriptor: Descriptor,
+    /// FFS family stages require a layout; standalone reset images do not.
+    pub descriptor: Option<Descriptor>,
+    /// Exact permissions for every file-backed LOAD, when required by format.
+    pub stored_flags: Option<u32>,
     pub symbols: BTreeMap<String, u64>,
 }
 
@@ -61,7 +64,11 @@ impl Expectations {
             .stored
             .iter()
             .chain(&self.runtime)
-            .chain([&self.descriptor.reservation])
+            .chain(
+                self.descriptor
+                    .iter()
+                    .map(|descriptor| &descriptor.reservation),
+            )
             .chain(
                 self.copy
                     .iter()
@@ -74,10 +81,12 @@ impl Expectations {
         for address in self.entry.iter().chain(self.symbols.values()) {
             address_extent(self.elf64, *address, 0)?;
         }
-        let layout = fstart_core::layout::Layout::parse(&self.descriptor.bytes)
-            .map_err(|e| e.to_string())?;
-        for region in layout.regions() {
-            address_extent(self.elf64, region.base, region.size)?;
+        if let Some(descriptor) = &self.descriptor {
+            let layout =
+                fstart_core::layout::Layout::parse(&descriptor.bytes).map_err(|e| e.to_string())?;
+            for region in layout.regions() {
+                address_extent(self.elf64, region.base, region.size)?;
+            }
         }
         Ok(())
     }
@@ -104,6 +113,10 @@ fn segments<Elf: FileHeader>(
             || (filesz != 0 && !expected.stored.iter().any(|r| r.contains(paddr, filesz)))
             || (memsz != 0 && !expected.runtime.iter().any(|r| r.contains(vaddr, memsz)))
             || (memsz != 0 && expected.identity_mapping && paddr != vaddr)
+            || (filesz != 0
+                && expected
+                    .stored_flags
+                    .is_some_and(|flags| segment.p_flags(elf.endian()) != flags))
         {
             return Err(format!(
                 "PT_LOAD exceeds physical/virtual expectations: {paddr:#x}/{vaddr:#x}, {filesz:#x}/{memsz:#x}"
@@ -113,6 +126,12 @@ fn segments<Elf: FileHeader>(
             count += 1;
         }
         if filesz != 0 {
+            // File ranges are metadata, not proof that the bytes exist. This
+            // checked read rejects truncated/overflowing spans before accepting
+            // any LOAD, including images without a runtime layout descriptor.
+            segment
+                .data(elf.endian(), elf.data())
+                .map_err(|()| "PT_LOAD file extent exceeds ELF bytes".to_string())?;
             stored_end = stored_end.max(paddr.checked_add(filesz).ok_or("PT_LOAD overflow")?);
             if let Some(copy) = &expected.copy
                 && copy.execution.contains(vaddr, memsz)
@@ -125,8 +144,8 @@ fn segments<Elf: FileHeader>(
             }
         }
     }
-    if count == 0 {
-        return Err("ELF has no load segments".into());
+    if count == 0 || stored_end == 0 {
+        return Err("ELF has no file-backed load segments".into());
     }
     Ok(stored_end)
 }
@@ -160,6 +179,17 @@ pub fn validate(bytes: &[u8], expected: &Expectations) -> Result<(), String> {
     if expected.entry.is_some_and(|entry| file.entry() != entry) {
         return Err("ELF entry mismatch".into());
     }
+    if expected.stored_flags.is_some()
+        && !file.segments().any(|segment| {
+            Span {
+                base: segment.address(),
+                size: segment.file_range().1,
+            }
+            .contains(file.entry(), 1)
+        })
+    {
+        return Err("ELF entry is not in file-backed reset-image bytes".into());
+    }
     if let Some(copy) = &expected.copy {
         let size = stored_end
             .checked_sub(copy.storage.base)
@@ -176,7 +206,14 @@ pub fn validate(bytes: &[u8], expected: &Expectations) -> Result<(), String> {
             return Err("relocation copy extent differs from stored PT_LOAD bytes or exceeds execution capacity".into());
         }
     }
-    let descriptor = &expected.descriptor;
+    for (name, address) in &expected.symbols {
+        if !has_symbol(name, *address) {
+            return Err(format!("ELF symbol {name} differs from expectation"));
+        }
+    }
+    let Some(descriptor) = &expected.descriptor else {
+        return Ok(());
+    };
     let section = file
         .section_by_name(&descriptor.section)
         .ok_or("missing layout descriptor")?;
@@ -211,21 +248,16 @@ pub fn validate(bytes: &[u8], expected: &Expectations) -> Result<(), String> {
     {
         return Err("descriptor is not loaded aligned read-only data".into());
     }
-    for (name, address) in expected
-        .symbols
-        .iter()
-        .map(|(n, a)| (n.as_str(), *a))
-        .chain([
-            (descriptor.start_symbol.as_str(), section.address()),
-            (
-                descriptor.end_symbol.as_str(),
-                section
-                    .address()
-                    .checked_add(section.size())
-                    .ok_or("descriptor overflow")?,
-            ),
-        ])
-    {
+    for (name, address) in [
+        (descriptor.start_symbol.as_str(), section.address()),
+        (
+            descriptor.end_symbol.as_str(),
+            section
+                .address()
+                .checked_add(section.size())
+                .ok_or("descriptor overflow")?,
+        ),
+    ] {
         if !has_symbol(name, address) {
             return Err(format!("ELF symbol {name} differs from expectation"));
         }

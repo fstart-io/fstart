@@ -6,4 +6,6 @@
 pub mod fit;
 
 #[cfg(feature = "crabefi-basic")]
+extern crate alloc;
+#[cfg(feature = "crabefi-basic")]
 pub mod crabefi;

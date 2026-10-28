@@ -35,6 +35,8 @@
 .global fstart_sipi_ap_limit
 .global fstart_sipi_ap_counter
 .global fstart_sipi_msr_count
+.global fstart_sipi_unlock_msr
+.global fstart_sipi_unlock_bits
 .global fstart_sipi_msr_table
 
 .code16
@@ -105,31 +107,92 @@ prot32:
 #endif
 
 	/* Replay the BSP's fixed/variable MTRRs and PAT with caching disabled.
-	 * INIT can retain MSRs, so disable MTRRs explicitly before replay. The
-	 * final table record restores IA32_MTRR_DEF_TYPE (including enable).
-	 * ESI retains the AP ordinal; EDI/EBP are scratch until long64.
+	 *
+	 * On some CPUs the MTRRs belong to the core, not to the thread (AMD
+	 * Family 17h: MtrrVarBase/Mask, MtrrFix and MTRRdefType are per core,
+	 * PAT is per thread). The other thread of this core may already run with
+	 * caching on: the BSP, or an AP that got here first. Disabling the MTRRs
+	 * under it makes its memory uncacheable while its dirty lines are still
+	 * in the cache, and it reads stale data. So the APs replay one at a time,
+	 * write only the records that differ, and disable the MTRRs only when an
+	 * MTRR differs, which a core whose other thread runs never needs.
+	 * ESI retains the AP ordinal; EBX/EDI/EBP are scratch until long64.
 	 */
 	movl %cr0, %eax
 	orl $CR0_CD, %eax
 	andl $~CR0_NW, %eax
 	movl %eax, %cr0
+replay_lock:
+	lock btsl $0, SIPI_BASE + fstart_sipi_replay_lock - fstart_sipi_start
+	jnc replay_locked
+	pause
+	jmp replay_lock
+replay_locked:
+	/* Some MSRs of the table are only readable and writable with an unlock
+	 * bit set in another MSR (AMD: SYSCFG.MtrrFixDramModEn for the fixed
+	 * MTRRs' RdDram/WrDram, a per-thread bit). Set it on the AP's own
+	 * value. */
+	movl SIPI_BASE + fstart_sipi_unlock_msr - fstart_sipi_start, %ecx
+	testl %ecx, %ecx
+	jz 1f
+	rdmsr
+	orl SIPI_BASE + fstart_sipi_unlock_bits - fstart_sipi_start, %eax
+	wrmsr
+1:
+	/* Does an MTRR (any record but PAT) differ from the BSP's? */
+	movl $SIPI_BASE + fstart_sipi_msr_table - fstart_sipi_start, %edi
+	movl SIPI_BASE + fstart_sipi_msr_count - fstart_sipi_start, %ebp
+mtrr_compare:
+	testl %ebp, %ebp
+	jz msr_replay_start
+	movl 0(%edi), %ecx
+	addl $12, %edi
+	decl %ebp
+	cmpl $0x277, %ecx /* IA32_PAT */
+	je mtrr_compare
+	rdmsr
+	cmpl -8(%edi), %eax
+	jne mtrr_differs
+	cmpl -4(%edi), %edx
+	je mtrr_compare
+mtrr_differs:
+	/* INIT can retain MSRs: disable the MTRRs explicitly before the
+	 * replay. The final table record restores IA32_MTRR_DEF_TYPE. */
 	movl $0x2ff, %ecx
 	rdmsr
 	andl $~(1 << 11), %eax
 	wrmsr
+msr_replay_start:
 	movl $SIPI_BASE + fstart_sipi_msr_table - fstart_sipi_start, %edi
 	movl SIPI_BASE + fstart_sipi_msr_count - fstart_sipi_start, %ebp
 msr_replay:
 	testl %ebp, %ebp
 	jz msr_replay_done
 	movl 0(%edi), %ecx
+	rdmsr
+	cmpl 4(%edi), %eax
+	jne msr_write
+	cmpl 8(%edi), %edx
+	je msr_next
+msr_write:
 	movl 4(%edi), %eax
 	movl 8(%edi), %edx
 	wrmsr
+msr_next:
 	addl $12, %edi
 	decl %ebp
 	jmp msr_replay
 msr_replay_done:
+	movl SIPI_BASE + fstart_sipi_unlock_msr - fstart_sipi_start, %ecx
+	testl %ecx, %ecx
+	jz 1f
+	rdmsr
+	movl SIPI_BASE + fstart_sipi_unlock_bits - fstart_sipi_start, %ebx
+	notl %ebx
+	andl %ebx, %eax
+	wrmsr
+1:
+	movl $0, SIPI_BASE + fstart_sipi_replay_lock - fstart_sipi_start
 
 #ifdef FSTART_PROTECTED_MODE
 	/* No paging: join cache coherency now that the BSP's MTRRs/PAT are in
@@ -217,6 +280,12 @@ fstart_sipi_stack_size:
 fstart_sipi_ap_limit:
 	.long 0
 fstart_sipi_ap_counter:
+	.long 0
+fstart_sipi_replay_lock:
+	.long 0
+fstart_sipi_unlock_msr:
+	.long 0
+fstart_sipi_unlock_bits:
 	.long 0
 fstart_sipi_msr_count:
 	.long 0

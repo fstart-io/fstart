@@ -493,21 +493,8 @@ mod stage {
         }
 
         #[cfg(feature = "crabefi")]
-        fn framebuffer(&self) -> Option<fstart_stage::crabefi::FramebufferConfig> {
+        fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
             self.framebuffer
-                .map(|info| fstart_stage::crabefi::FramebufferConfig {
-                    physical_address: info.base_addr,
-                    width: info.width,
-                    height: info.height,
-                    stride: info.stride,
-                    bits_per_pixel: info.bits_per_pixel,
-                    red_mask_pos: info.red_pos,
-                    red_mask_size: info.red_size,
-                    green_mask_pos: info.green_pos,
-                    green_mask_size: info.green_size,
-                    blue_mask_pos: info.blue_pos,
-                    blue_mask_size: info.blue_size,
-                })
         }
     }
 

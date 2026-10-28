@@ -31,22 +31,22 @@ pub mod wake;
 
 /// x86 platform configuration for ACPI table generation.
 ///
-/// Describes the APIC interrupt controller, optional HPET, and
-/// boot configuration for x86 platforms.
+/// Describes the APIC interrupt controllers, optional HPET, the legacy ACPI
+/// fixed hardware and the FADT feature set of an x86 platform.
 pub struct X86Config {
-    /// Number of CPUs.
-    pub num_cpus: u32,
+    /// Local APIC IDs in MADT order; the ACPI processor UID is the index.
+    pub apic_ids: Vec<u32>,
     /// Local APIC base address (usually 0xFEE0_0000).
     pub lapic_base: u64,
+    /// MADT Local APIC NMI for all processors on this LINT pin.
+    pub lapic_nmi_lint: Option<u8>,
     /// I/O APIC entries.
-    pub ioapics: &'static [IoApicConfig],
+    pub ioapics: Vec<IoApicConfig>,
     /// Interrupt Source Override entries (ISA IRQ remapping).
-    pub isos: &'static [IsoConfig],
-    /// HPET base address (optional; `None` uses PM Timer instead).
-    pub hpet_base: Option<u64>,
-    /// Whether legacy devices (8259 PIC, ISA bus) are present.
-    ///
-    /// Controls the MADT `PCAT_COMPAT` flag and FADT legacy fields.
+    pub isos: Vec<IsoConfig>,
+    /// HPET table (optional; `None` leaves the PM Timer only).
+    pub hpet: Option<HpetConfig>,
+    /// Whether dual 8259 PICs are present (MADT `PCAT_COMPAT`).
     pub legacy_devices: bool,
     /// SCI interrupt number (System Control Interrupt for ACPI events).
     pub sci_irq: u8,
@@ -64,7 +64,43 @@ pub struct X86Config {
     /// Leave as `None` unless the platform has installed an SMI handler
     /// that handles those commands.
     pub acpi_smi: Option<AcpiSmiConfig>,
+    /// FADT boot architecture, feature flags and processor power fields.
+    pub fadt: X86Fadt,
 }
+
+/// The chipset-specific FADT fields of a legacy (non HW-reduced) x86 platform.
+#[derive(Debug, Clone, Copy)]
+pub struct X86Fadt {
+    pub pm_profile: acpi_tables::fadt::PmProfile,
+    /// IAPC_BOOT_ARCH: bit 0 legacy devices, bit 1 8042.
+    pub iapc_boot_arch: u16,
+    /// FADT feature flags, without `RESET_REG_SUP` (set from the reset
+    /// register).
+    pub flags: u32,
+    pub p_lvl2_lat: u16,
+    pub p_lvl3_lat: u16,
+    pub duty_offset: u8,
+}
+
+impl Default for X86Fadt {
+    /// The ICH7 (i82801gx) values, legacy devices and 8042.
+    fn default() -> Self {
+        let defaults = FadtConfig::default();
+        Self {
+            pm_profile: acpi_tables::fadt::PmProfile::Desktop,
+            iapc_boot_arch: IAPC_LEGACY_DEVICES | IAPC_8042,
+            flags: defaults.x86_flags,
+            p_lvl2_lat: defaults.p_lvl2_lat,
+            p_lvl3_lat: defaults.p_lvl3_lat,
+            duty_offset: defaults.duty_offset,
+        }
+    }
+}
+
+/// IAPC_BOOT_ARCH: LPC/ISA legacy devices are present.
+pub const IAPC_LEGACY_DEVICES: u16 = 1 << 0;
+/// IAPC_BOOT_ARCH: an 8042 keyboard controller is present.
+pub const IAPC_8042: u16 = 1 << 1;
 
 /// Runtime provider for chipset/platform-owned x86 ACPI topology.
 ///
@@ -106,6 +142,7 @@ pub struct IsoConfig {
 }
 
 /// HPET (High Precision Event Timer) table configuration.
+#[derive(Debug, Clone, Copy)]
 pub struct HpetConfig {
     /// HPET base address.
     pub base: u64,
@@ -121,28 +158,11 @@ pub struct HpetConfig {
 /// are pre-serialized MADT and optional HPET bytes, and `fadt_config`
 /// carries x86-specific FADT parameters.
 pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
-    let madt = build_madt(config);
-    let mut platform_tables = alloc::vec![madt];
+    let platform_tables = core::iter::once(build_madt(config))
+        .chain(config.hpet.as_ref().map(build_hpet))
+        .collect();
 
-    if let Some(hpet_base) = config.hpet_base {
-        let hpet = build_hpet(&HpetConfig {
-            base: hpet_base,
-            timer_block_id: 0x8086_A201, // default Intel HPET ID
-            min_tick: 0,
-        });
-        platform_tables.push(hpet);
-    }
-
-    // PMBASE from board config. Feeds into FADT PM register blocks.
-    // board-specific but hardcoded in ICH7 early_init.
-    let pmbase: u32 = config.pmbase as u32;
-
-    // IAPC Boot Arch: 8042 keyboard + legacy devices.
-    let mut iapc: u16 = 0;
-    if config.legacy_devices {
-        iapc |= 0x0003; // FADT_8042 | FADT_LEGACY_DEVICES
-    }
-
+    let pmbase = u32::from(config.pmbase);
     let (smi_cmd, acpi_enable, acpi_disable) = config
         .acpi_smi
         .map(|smi| (smi.smi_cmd, smi.acpi_enable, smi.acpi_disable))
@@ -152,14 +172,14 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         hw_reduced: false,
         low_power_s0: false,
         arm_psci: false,
-        pm_profile: acpi_tables::fadt::PmProfile::Desktop,
+        pm_profile: config.fadt.pm_profile,
         pm1a_evt_blk: pmbase,
         pm1a_cnt_blk: pmbase + 0x04,
         pm_tmr_blk: pmbase + 0x08,
         gpe0_blk: pmbase + u32::from(config.gpe0_offset),
         gpe0_blk_len: config.gpe0_length,
         sci_int: config.sci_irq as u16,
-        iapc_boot_arch: iapc,
+        iapc_boot_arch: config.fadt.iapc_boot_arch,
         smi_cmd,
         acpi_enable,
         acpi_disable,
@@ -167,15 +187,29 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         // mechanism should override table construction rather than duplicating
         // this hardware constant in every chipset configuration.
         reset_reg: Some((0x0cf9, 0x06)),
+        x86_flags: config.fadt.flags,
+        p_lvl2_lat: config.fadt.p_lvl2_lat,
+        p_lvl3_lat: config.fadt.p_lvl3_lat,
+        duty_offset: config.fadt.duty_offset,
     };
 
     (platform_tables, fadt_config)
 }
 
+const MADT_ALL_PROCESSORS: u8 = 0xff;
+const MADT_X2APIC_ALL_PROCESSORS: u32 = 0xffff_ffff;
+
+/// The (UID, APIC ID) of an xAPIC MADT entry; `None` needs an x2APIC entry.
+fn xapic_entry(uid: usize, apic_id: u32) -> Option<(u8, u8)> {
+    let id = u8::try_from(apic_id).ok().filter(|&id| id != 0xff)?;
+    Some((u8::try_from(uid).ok()?, id))
+}
+
 /// Build the x86 MADT (Multiple APIC Description Table).
 ///
-/// Includes Local APIC entries for each CPU, I/O APIC entries,
-/// Interrupt Source Overrides, and NMI Source entries.
+/// Local APIC entries for each CPU (x2APIC entries for IDs an xAPIC entry
+/// can't hold), I/O APICs, Interrupt Source Overrides and the Local APIC NMI
+/// connection.
 fn build_madt(config: &X86Config) -> Vec<u8> {
     use acpi_tables::Aml;
     use acpi_tables::sdt::Sdt;
@@ -196,18 +230,25 @@ fn build_madt(config: &X86Config) -> Vec<u8> {
     let flags: u32 = if config.legacy_devices { 1 } else { 0 };
     madt.write_u32(40, flags);
 
-    // Local APIC entries (type 0, length 8)
-    for i in 0..config.num_cpus {
-        madt.append(0u8); // Type: Processor Local APIC
-        madt.append(8u8); // Length
-        madt.append(i as u8); // ACPI Processor UID
-        madt.append(i as u8); // APIC ID
-        let lapic_flags: u32 = 1; // Enabled
-        madt.append_slice(&lapic_flags.to_le_bytes());
+    const LAPIC_ENABLED: u32 = 1;
+    let mut x2apic = false;
+    for (uid, &apic_id) in config.apic_ids.iter().enumerate() {
+        if let Some((uid, id)) = xapic_entry(uid, apic_id) {
+            // Processor Local APIC (type 0, length 8)
+            madt.append_slice(&[0, 8, uid, id]);
+            madt.append_slice(&LAPIC_ENABLED.to_le_bytes());
+        } else {
+            // Processor Local x2APIC (type 9, length 16)
+            x2apic = true;
+            madt.append_slice(&[9, 16, 0, 0]);
+            madt.append_slice(&apic_id.to_le_bytes());
+            madt.append_slice(&LAPIC_ENABLED.to_le_bytes());
+            madt.append_slice(&(uid as u32).to_le_bytes());
+        }
     }
 
     // I/O APIC entries (type 1, length 12)
-    for ioapic in config.ioapics {
+    for ioapic in &config.ioapics {
         madt.append(1u8); // Type: I/O APIC
         madt.append(12u8); // Length
         madt.append(ioapic.id); // I/O APIC ID
@@ -217,13 +258,30 @@ fn build_madt(config: &X86Config) -> Vec<u8> {
     }
 
     // Interrupt Source Override entries (type 2, length 10)
-    for iso in config.isos {
+    for iso in &config.isos {
         madt.append(2u8); // Type: Interrupt Source Override
         madt.append(10u8); // Length
         madt.append(iso.bus); // Bus
         madt.append(iso.source); // Source
         madt.append_slice(&iso.gsi.to_le_bytes()); // Global System Interrupt
         madt.append_slice(&iso.flags.to_le_bytes()); // MPS INTI Flags
+    }
+
+    // The Local APIC NMI input of every processor, edge-triggered active-high
+    // for all processors.
+    if let Some(lint) = config.lapic_nmi_lint {
+        const EDGE_HIGH: u16 = 0x5;
+        // Local APIC NMI (type 4, length 6)
+        madt.append_slice(&[4, 6, MADT_ALL_PROCESSORS]);
+        madt.append_slice(&EDGE_HIGH.to_le_bytes());
+        madt.append(lint);
+        if x2apic {
+            // Local x2APIC NMI (type 10, length 12)
+            madt.append_slice(&[10, 12]);
+            madt.append_slice(&EDGE_HIGH.to_le_bytes());
+            madt.append_slice(&MADT_X2APIC_ALL_PROCESSORS.to_le_bytes());
+            madt.append_slice(&[lint, 0, 0, 0]);
+        }
     }
 
     madt.update_checksum();
@@ -284,30 +342,64 @@ mod tests {
     use super::*;
 
     fn test_config() -> X86Config {
-        static IOAPICS: [IoApicConfig; 1] = [IoApicConfig {
-            id: 0,
-            base: 0xFEC0_0000,
-            gsi_base: 0,
-        }];
-        static ISOS: [IsoConfig; 1] = [IsoConfig {
-            bus: 0,
-            source: 0,
-            gsi: 2,
-            flags: 0,
-        }];
         X86Config {
-            num_cpus: 2,
+            apic_ids: alloc::vec![0, 1],
             lapic_base: 0xFEE0_0000,
-            ioapics: &IOAPICS,
-            isos: &ISOS,
-            hpet_base: Some(0xFED0_0000),
+            lapic_nmi_lint: None,
+            ioapics: alloc::vec![IoApicConfig {
+                id: 0,
+                base: 0xFEC0_0000,
+                gsi_base: 0,
+            }],
+            isos: alloc::vec![IsoConfig {
+                bus: 0,
+                source: 0,
+                gsi: 2,
+                flags: 0,
+            }],
+            hpet: Some(HpetConfig {
+                base: 0xFED0_0000,
+                timer_block_id: 0x8086_A201,
+                min_tick: 0,
+            }),
             legacy_devices: true,
             sci_irq: 9,
             pmbase: 0x0500,
             gpe0_offset: 0x28,
             gpe0_length: 8,
             acpi_smi: None,
+            fadt: X86Fadt::default(),
         }
+    }
+
+    /// The MADT subtables after the 44-byte header, as (type, bytes).
+    fn madt_entries(madt: &[u8]) -> Vec<(u8, &[u8])> {
+        let mut entries = Vec::new();
+        let mut rest = &madt[44..];
+        while let [kind, len, ..] = *rest {
+            let (entry, tail) = rest.split_at(usize::from(len));
+            entries.push((kind, entry));
+            rest = tail;
+        }
+        entries
+    }
+
+    #[test]
+    fn madt_lists_sparse_and_x2apic_ids_with_the_lint1_nmi() {
+        let mut config = test_config();
+        config.apic_ids = alloc::vec![0, 8, 0x100];
+        config.lapic_nmi_lint = Some(1);
+        let madt = build_madt(&config);
+        let entries = madt_entries(&madt);
+        let of = |kind: u8| entries.iter().filter(move |(k, _)| *k == kind);
+        let xapic: Vec<_> = of(0).map(|(_, e)| (e[2], e[3])).collect();
+        assert_eq!(xapic, [(0, 0), (1, 8)]);
+        let (_, x2apic) = of(9).next().unwrap();
+        assert_eq!(&x2apic[4..8], &0x100u32.to_le_bytes());
+        assert_eq!(&x2apic[12..16], &2u32.to_le_bytes());
+        assert_eq!(of(4).next().unwrap().1, &[4, 6, 0xff, 5, 0, 1]);
+        assert_eq!(of(10).count(), 1);
+        assert_eq!(madt.iter().fold(0u8, |a, &x| a.wrapping_add(x)), 0);
     }
 
     #[test]

@@ -34,6 +34,7 @@ pub fn assemble(
     let mut ro_files = Vec::new();
 
     match &config.stages {
+        StageLayout::Monolithic(mono) if mono.external => {}
         StageLayout::Monolithic(mono) => {
             let stage = &stage_binaries[0];
 
@@ -114,16 +115,12 @@ pub fn assemble(
     }
 
     if let Some(ref microcode) = config.microcode {
-        assemble_microcode(microcode, board_dir, &mut ro_files)?;
+        assemble_microcode(microcode, workspace_root, board_dir, &mut ro_files)?;
     }
 
-    // Board-shipped data assets. The name is the FFS file name the firmware
-    // looks up at runtime, so it is also the board-directory file to read.
-    for name in &config.data_assets {
-        let path = board_dir.join(name.as_str());
-        let data = fs::read(&path).map_err(|e| format!("failed to read data asset {name}: {e}"))?;
+    let mut data_file = |name: String, data: Vec<u8>| {
         ro_files.push(InputFile {
-            name: name.as_str().to_string(),
+            name,
             file_type: FileType::Data,
             segments: vec![InputSegment {
                 name: ".data".to_string(),
@@ -135,6 +132,19 @@ pub fn assemble(
                 flags: SegmentFlags::RODATA,
             }],
         });
+    };
+    // Board-shipped files and files from the image configuration use the
+    // same authenticated data-file path.
+    for name in &config.data_assets {
+        let path = board_dir.join(name.as_str());
+        let data = fs::read(&path).map_err(|e| format!("failed to read data asset {name}: {e}"))?;
+        data_file(name.as_str().to_string(), data);
+    }
+    for asset in &config.file_assets {
+        let path = workspace_root.join(asset.path.as_str());
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read data asset {}: {e}", path.display()))?;
+        data_file(asset.name.as_str().to_string(), data);
     }
 
     let coreboot = config
@@ -1033,46 +1043,109 @@ fn patch_xip_anchor(
     Ok(())
 }
 
+/// Concatenate `files`, relative paths taken from `base`.
+fn concat_files<'a>(
+    files: impl IntoIterator<Item = &'a str>,
+    base: &Path,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    files.into_iter().try_fold(Vec::new(), |mut blob, file| {
+        let path = base.join(file);
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read {what} {}: {e}", path.display()))?;
+        blob.extend_from_slice(&data);
+        Ok(blob)
+    })
+}
+
+/// The flat patches of `config`: its files, then the BIOS directory
+/// microcode entries of its vendor images as the PSP finds that directory,
+/// each patch once.
+pub(crate) fn amd_microcode(
+    config: &fstart_core::board::AmdMicrocodeConfig,
+    workspace_root: &Path,
+) -> Result<Vec<u8>, String> {
+    let mut blob = concat_files(
+        config.files.iter().map(|f| f.as_str()),
+        workspace_root,
+        "AMD microcode",
+    )?;
+    let mut vendor_patches: Vec<Vec<u8>> = Vec::new();
+    for vendor in &config.vendor_images {
+        let path = workspace_root.join(vendor.image.as_str());
+        let image = fs::read(&path)
+            .map_err(|e| format!("failed to read vendor image {}: {e}", path.display()))?;
+        // The 16 MiB the PSP maps below 4 GiB. A half without the slot's
+        // directory does not boot that SoC.
+        let origin = vendor.origin as usize;
+        let end = image.len().min(origin + fstart_amdfw_format::HALF_SIZE);
+        let Some(half) = image.get(origin..end) else {
+            continue;
+        };
+        fstart_amdfw_format::Flash::new(half)
+            .bios_files(
+                vendor.bios_directory,
+                fstart_amdfw_format::directory::bios::MICROCODE,
+            )
+            .for_each(|patch| {
+                if !vendor_patches.iter().any(|known| known == patch) {
+                    vendor_patches.push(patch.to_vec());
+                }
+            });
+    }
+    vendor_patches
+        .iter()
+        .for_each(|p| blob.extend_from_slice(p));
+    if !config.vendor_images.is_empty() && blob.is_empty() {
+        return Err("the vendor images carry no microcode".into());
+    }
+    if let Some(Err(at)) = fstart_amdfw_format::microcode::patches(&blob).find(Result::is_err) {
+        return Err(format!(
+            "AMD microcode at {at:#x} is not a patch of a known CPU family"
+        ));
+    }
+    Ok(blob)
+}
+
 fn assemble_microcode(
     microcode: &fstart_core::board::MicrocodeConfig,
+    workspace_root: &Path,
     board_dir: &Path,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
-    match microcode {
-        fstart_core::board::MicrocodeConfig::Intel(config) => {
-            let mut blob = Vec::new();
-            for file in &config.files {
-                let path = Path::new(file.as_str());
-                let path = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    board_dir.join(path)
-                };
-                let data = fs::read(&path).map_err(|e| {
-                    format!("failed to read Intel microcode {}: {e}", path.display())
-                })?;
-                blob.extend_from_slice(&data);
-            }
-
-            if blob.is_empty() {
-                return Err("Intel microcode config did not include any bytes".to_string());
-            }
-
-            ro_files.push(InputFile {
-                name: "cpu_microcode_blob.bin".to_string(),
-                file_type: FileType::CpuMicrocode,
-                segments: vec![InputSegment {
-                    name: ".microcode".to_string(),
-                    kind: SegmentKind::ReadOnlyData,
-                    data: blob,
-                    mem_size: None,
-                    load_addr: 0,
-                    compression: Compression::None,
-                    flags: SegmentFlags::RODATA,
-                }],
-            });
+    // The FFS builder records `cpu_microcode_blob.bin` in the anchor for
+    // Intel's pre-RAM BSP loader. AMD loads only in MP init and finds its
+    // blob by file type in the verified FFS, so it is not anchored (it may
+    // even be the first file, at offset 0, which the anchor cannot express).
+    let (name, blob) = match microcode {
+        fstart_core::board::MicrocodeConfig::Intel(config) => (
+            "cpu_microcode_blob.bin",
+            concat_files(
+                config.files.iter().map(|f| f.as_str()),
+                board_dir,
+                "Intel microcode",
+            )?,
+        ),
+        fstart_core::board::MicrocodeConfig::Amd(config) => {
+            ("cpu_microcode.bin", amd_microcode(config, workspace_root)?)
         }
+    };
+    if blob.is_empty() {
+        return Err("microcode config did not include any bytes".to_string());
     }
+    ro_files.push(InputFile {
+        name: name.to_string(),
+        file_type: FileType::CpuMicrocode,
+        segments: vec![InputSegment {
+            name: ".microcode".to_string(),
+            kind: SegmentKind::ReadOnlyData,
+            data: blob,
+            mem_size: None,
+            load_addr: 0,
+            compression: Compression::None,
+            flags: SegmentFlags::RODATA,
+        }],
+    });
 
     Ok(())
 }

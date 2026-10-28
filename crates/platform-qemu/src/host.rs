@@ -5,7 +5,8 @@ use crate::facts::{VirtBoardFacts, VirtMachine};
 use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
-        ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, InputFile, UnitOutput,
+        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly,
+        InputFile, UnitOutput,
     },
     layout::EncodedLayout,
     linker::Xip,
@@ -244,6 +245,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         flash: None,
         bootstrap: vec![],
         stages: StageLayout::Monolithic(MonolithicConfig {
+            external: false,
             build: StageBuildConfig {
                 firmware_image: Some(FirmwareImageConfig {
                     temp_ram_buffer: None,
@@ -288,6 +290,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         }),
         microcode: None,
         data_assets: vec![],
+        file_assets: vec![],
         full_flash_image: true,
         soc_image_format: SocImageFormat::None,
         boot_hart_id: 0,
@@ -335,6 +338,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             linker_script: Some(fstart_image_build::linker::resolved_xip(&layout)?),
             environment_values: BTreeMap::new(),
             bindings: vec![],
+            file_bindings: vec![],
             output: UnitOutput::Executable {
                 expectations: layout.elf_expectations()?,
                 load_address: code.base,
@@ -342,7 +346,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             },
         }],
         stages: vec!["stage".into()],
-        assembly,
+        assembly: assembly.into(),
         inputs,
     };
     plan.order()?;
@@ -916,13 +920,14 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
                 identity_mapping: false,
                 entry: Some(0xffff_fff0),
                 copy: None,
-                descriptor: Descriptor {
+                descriptor: Some(Descriptor {
                     section: ".fstart.layout".into(),
                     start_symbol: "_fstart_layout_start".into(),
                     end_symbol: "_fstart_layout_end".into(),
                     bytes: descriptor.as_bytes().to_vec(),
                     reservation: flash,
-                },
+                }),
+                stored_flags: None,
                 symbols: std::collections::BTreeMap::from([
                     ("_stack_bottom".into(), stack.base),
                     ("_stack_top".into(), stack.end()?),
@@ -961,13 +966,14 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
                 identity_mapping: true,
                 entry: Some(lim.base),
                 copy: None,
-                descriptor: Descriptor {
+                descriptor: Some(Descriptor {
                     section: ".fstart.layout".into(),
                     start_symbol: "_fstart_layout_start".into(),
                     end_symbol: "_fstart_layout_end".into(),
                     bytes: descriptor.as_bytes().to_vec(),
                     reservation: lim,
-                },
+                }),
+                stored_flags: None,
                 symbols: std::collections::BTreeMap::from([
                     ("_stack_bottom".into(), stack.base),
                     ("_stack_top".into(), stack.end()?),
@@ -1047,6 +1053,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         flash: None,
         bootstrap: vec![],
         stages: StageLayout::Monolithic(MonolithicConfig {
+            external: false,
             build: StageBuildConfig {
                 firmware_image: Some(FirmwareImageConfig {
                     temp_ram_buffer: None,
@@ -1076,6 +1083,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         payload: assembly_payload,
         microcode: None,
         data_assets: vec![],
+        file_assets: vec![],
         full_flash_image: policy.full_flash_image,
         soc_image_format: SocImageFormat::None,
         boot_hart_id: policy.boot_hart_id,
@@ -1167,6 +1175,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             .collect(),
             environment_values: mp_capacity(),
             bindings: vec![],
+            file_bindings: vec![],
             output: UnitOutput::SmmImage {
                 entry_count: 8,
                 stack_size: 0x400,
@@ -1207,6 +1216,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             BTreeMap::new()
         },
         bindings: stage_bindings,
+        file_bindings: vec![],
         output: UnitOutput::Executable {
             expectations,
             load_address,
@@ -1217,7 +1227,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         payload: payload.clone(),
         units,
         stages: vec!["stage".into()],
-        assembly,
+        assembly: assembly.into(),
         inputs,
     };
     plan.order()?;
@@ -1273,7 +1283,8 @@ mod tests {
                 assert!(expectations.copy.is_none());
                 assert_eq!(*load_address, flash);
                 assert_eq!(expectations.runtime[1].base, writable);
-                let layout = Layout::parse(&expectations.descriptor.bytes).unwrap();
+                let layout =
+                    Layout::parse(&expectations.descriptor.as_ref().unwrap().bytes).unwrap();
                 let firmware = layout.region(Kind::Firmware).unwrap();
                 if matches!(machine, VirtMachine::Riscv64) {
                     assert_eq!((firmware.base, firmware.size), (flash, 0x0200_0000));
@@ -1292,7 +1303,7 @@ mod tests {
                 );
                 if payload == "halt" {
                     assert!(plan.inputs.is_empty());
-                    assert!(plan.assembly.payload.is_none());
+                    assert!(plan.assembly.ffs().unwrap().payload.is_none());
                     assert!(layout.region(Kind::DeviceTree).is_none());
                     continue;
                 }
@@ -1312,7 +1323,14 @@ mod tests {
                     external_runtime
                 );
                 assert_eq!(
-                    plan.assembly.payload.unwrap().firmware.is_some(),
+                    plan.assembly
+                        .ffs()
+                        .unwrap()
+                        .payload
+                        .as_ref()
+                        .unwrap()
+                        .firmware
+                        .is_some(),
                     external_runtime
                 );
             }
@@ -1376,12 +1394,12 @@ mod tests {
             };
             assert_eq!(*load_address, load);
             assert_eq!(unit.features[0], bundle);
-            let layout = Layout::parse(&expectations.descriptor.bytes).unwrap();
+            let layout = Layout::parse(&expectations.descriptor.as_ref().unwrap().bytes).unwrap();
             assert_eq!(layout.region(Kind::Stack).unwrap().size, stack_size);
             assert_eq!(layout.region(Kind::Heap).unwrap().size, heap_size);
             let window = layout.region(Kind::Firmware).unwrap();
             assert_eq!((window.base, window.size), firmware);
-            assert!(plan.assembly.payload.is_none());
+            assert!(plan.assembly.ffs().unwrap().payload.is_none());
             assert!(plan.inputs.is_empty());
             // Stack and heap stay inside the writable reservation with the
             // heap directly below the stack at its top.
@@ -1464,7 +1482,7 @@ mod tests {
         let uefi_stage = uefi.units.iter().find(|u| u.name == "stage").unwrap();
         assert_eq!(uefi_stage.payload, "crabefi");
         assert!(uefi_stage.features.contains(&"crabefi".to_string()));
-        let payload = uefi.assembly.payload.unwrap();
+        let payload = uefi.assembly.ffs().unwrap().payload.as_ref().unwrap();
         assert!(matches!(payload.kind, PayloadKind::UefiPayload));
         assert!(payload.firmware.is_none());
         assert!(uefi.inputs.is_empty());
@@ -1480,7 +1498,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(linux.payload, "linux");
-            let payload = linux.assembly.payload.unwrap();
+            let payload = linux.assembly.ffs().unwrap().payload.clone().unwrap();
             assert!(matches!(payload.kind, PayloadKind::LinuxBoot));
             assert_eq!(payload.kernel_file.unwrap().as_str(), "Image-riscv64");
             assert_eq!(payload.kernel_load_addr, Some(0x8400_0000));
@@ -1497,7 +1515,7 @@ mod tests {
             let UnitOutput::Executable { expectations, .. } = &linux.units[0].output else {
                 panic!("not executable")
             };
-            let layout = Layout::parse(&expectations.descriptor.bytes).unwrap();
+            let layout = Layout::parse(&expectations.descriptor.as_ref().unwrap().bytes).unwrap();
             assert_eq!(layout.region(Kind::DeviceTree).unwrap().base, 0x8f00_0000);
             // UEFI keeps the OpenSBI firmware file like the legacy override.
             let uefi = resolve(
@@ -1508,7 +1526,16 @@ mod tests {
                 },
             )
             .unwrap();
-            assert!(uefi.assembly.payload.unwrap().firmware.is_some());
+            assert!(
+                uefi.assembly
+                    .ffs()
+                    .unwrap()
+                    .payload
+                    .as_ref()
+                    .unwrap()
+                    .firmware
+                    .is_some()
+            );
         }
         // Unmatched keeps its board DTB override; sifive-u uses the platform DTB.
         let unmatched = resolve(
@@ -1520,7 +1547,10 @@ mod tests {
         )
         .unwrap()
         .assembly
+        .ffs()
+        .unwrap()
         .payload
+        .clone()
         .unwrap();
         assert!(matches!(
             unmatched.fdt,

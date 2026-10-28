@@ -16,7 +16,7 @@ mod alloc;
 
 mod runtime;
 
-#[cfg(feature = "ffs")]
+#[cfg(any(feature = "ffs", feature = "crabefi-basic"))]
 extern crate alloc as heap;
 
 // Selected through features even when no payload calls into it: the arch

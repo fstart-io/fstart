@@ -187,6 +187,41 @@ pub fn find_ffs_file_data<'a>(
     Some(bytes.leak())
 }
 
+/// The verified `cpu_microcode_blob.bin` of the mounted FFS, copied to RAM.
+///
+/// MP init hands every CPU the same blob. Each CPU parses it and gives the
+/// selected patch to its update MSR, so they read a copy authenticated
+/// against its FFS digest instead of flash: a flash read glitch would
+/// otherwise break the parse, and reading uncached flash is slow. The copy is
+/// 16-byte aligned, as both Intel's `IA32_BIOS_UPDT_TRIG` and AMD's patch
+/// loader require, and lives for the stage. `None` when no FFS is mounted or
+/// it has no blob.
+#[must_use]
+pub fn microcode_blob() -> Option<&'static [u8]> {
+    use crate::heap::alloc::{Layout, alloc};
+    use fstart_core::services::boot_media::MemoryMapped;
+
+    let ctx = fstart_core::services::ffs_context::memory_mapped()?;
+    let size = usize::try_from(ctx.image_size).ok()?;
+    // SAFETY: the boot-media provider published this window for the stage.
+    let media = unsafe { MemoryMapped::from_raw_addr(ctx.image_base, size) };
+    // SAFETY: documented valid for the whole stage once published.
+    let anchor = unsafe { ctx.anchor_bytes() };
+    let verified = find_ffs_file_data(anchor, &media, FileType::CpuMicrocode)
+        .filter(|blob| !blob.is_empty())?;
+    let layout = Layout::from_size_align(verified.len(), 16).ok()?;
+    // SAFETY: nonzero size; never freed.
+    let copy = unsafe { alloc(layout) };
+    if copy.is_null() {
+        return None;
+    }
+    // SAFETY: fresh allocation of exactly this size.
+    unsafe {
+        core::ptr::copy_nonoverlapping(verified.as_ptr(), copy, verified.len());
+        Some(core::slice::from_raw_parts(copy, verified.len()))
+    }
+}
+
 /// Authenticate the exact stable scratch bytes before returning them to parsers
 /// on both block and mmap media. `as_slice()` never grants media immutability.
 pub fn find_ffs_file_data_with_scratch<'a>(

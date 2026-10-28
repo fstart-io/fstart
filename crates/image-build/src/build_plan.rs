@@ -10,14 +10,82 @@ pub struct BuildPlan {
     pub units: Vec<CompilationUnit>,
     /// Units contributing stage binaries, in image-directory order.
     pub stages: Vec<String>,
-    /// Temporary projection into the existing image-format assembler. It must
-    /// never be used to infer compiler selections or artifact dependencies.
+    /// Image operation or explicit lack of one. Never infer compiler selections
+    /// or artifact dependencies from the image projection.
     pub assembly: Assembly,
     pub inputs: Vec<InputFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Assembly {
+pub enum Assembly {
+    Ffs(Box<FfsAssembly>),
+    /// An AMD image: PSP firmware, the reset stage the PSP loads and an
+    /// optional FFS.
+    Amd(Box<crate::amd::assembly::AmdAssembly>),
+    /// An AMD SP3 flash half (and 32 MiB dual image): vendor PSP prefix,
+    /// FFS and the PSP-copied reset unit.
+    Sp3Flash(Box<crate::sp3_flash::Sp3FlashAssembly>),
+    /// Compiler/check/editor support only. No image/flash/run contract supplied.
+    Unassembled {
+        platform: fstart_core::Platform,
+    },
+}
+impl Assembly {
+    pub fn platform(&self) -> fstart_core::Platform {
+        match self {
+            Self::Ffs(image) => image.platform,
+            Self::Amd(_) => fstart_core::Platform::X86_64,
+            Self::Sp3Flash(image) => image.ffs.platform,
+            Self::Unassembled { platform } => *platform,
+        }
+    }
+    pub fn bootstrap(&self) -> &[(String, BootstrapRole)] {
+        match self {
+            Self::Ffs(image) => &image.bootstrap,
+            Self::Amd(image) => image
+                .ffs
+                .as_ref()
+                .map_or(&[], |ffs| &ffs.assembly.bootstrap),
+            Self::Sp3Flash(image) => &image.ffs.bootstrap,
+            Self::Unassembled { .. } => &[],
+        }
+    }
+    pub fn ffs(&self) -> Result<&FfsAssembly, String> {
+        match self {
+            Self::Ffs(image) => Ok(image),
+            Self::Amd(image) => image.ffs.as_ref().map(|ffs| &ffs.assembly).ok_or_else(|| {
+                "PSP partition fragment has no runtime config/run/flash contract".into()
+            }),
+            Self::Sp3Flash(image) => Ok(&image.ffs),
+            Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
+        }
+    }
+    pub fn resolve_workspace_inputs(
+        &mut self,
+        root: &std::path::Path,
+        board: &std::path::Path,
+    ) -> Result<(), String> {
+        match self {
+            Self::Ffs(image) => image.resolve_workspace_inputs(root, board),
+            Self::Amd(image) => image.ffs.as_mut().map_or(Ok(()), |ffs| {
+                ffs.assembly.resolve_workspace_inputs(root, board)
+            }),
+            Self::Sp3Flash(image) => image.ffs.resolve_workspace_inputs(root, board),
+            Self::Unassembled { .. } => Ok(()),
+        }
+    }
+    pub fn config(&self, name: &str) -> Result<fstart_core::BoardConfig, String> {
+        self.ffs()?.config(name)
+    }
+}
+impl From<FfsAssembly> for Assembly {
+    fn from(image: FfsAssembly) -> Self {
+        Self::Ffs(Box::new(image))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FfsAssembly {
     pub platform: fstart_core::Platform,
     pub memory: Vec<fstart_core::MemoryRegion>,
     pub flash: Option<crate::plan::FlashTransport>,
@@ -31,6 +99,10 @@ pub struct Assembly {
     /// Their names are also the runtime lookup names.
     #[serde(default)]
     pub data_assets: Vec<String>,
+    /// Files from outside the board directory, packaged as verified data
+    /// assets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_assets: Vec<fstart_core::board::FileAsset>,
     pub full_flash_image: bool,
     pub soc_image_format: fstart_core::SocImageFormat,
     pub boot_hart_id: u32,
@@ -51,7 +123,7 @@ impl BootstrapRole {
     }
 }
 
-impl Assembly {
+impl FfsAssembly {
     /// Blob paths emitted by platform Rust are workspace-relative. Convert only
     /// for the legacy assembler's board-relative file API, without inferring policy.
     pub fn resolve_workspace_inputs(
@@ -99,6 +171,12 @@ impl Assembly {
                 )
                 .map_err(|_| "too many data assets")?;
         }
+        let mut file_assets = heapless::Vec::new();
+        for asset in &self.file_assets {
+            file_assets
+                .push(asset.clone())
+                .map_err(|_| "too many file assets")?;
+        }
         Ok(BoardConfig {
             name: name.try_into().map_err(|_| "board name too long")?,
             platform: self.platform,
@@ -116,6 +194,7 @@ impl Assembly {
             payload: self.payload.clone(),
             microcode: self.microcode.clone(),
             data_assets,
+            file_assets,
             soc_image_format: self.soc_image_format,
             full_flash_image: self.full_flash_image,
             // Tables, live CAR and SMM runtime settings are not assembler inputs.
@@ -132,6 +211,16 @@ impl Assembly {
 pub struct InputFile {
     pub name: String,
     pub default: Option<String>,
+    pub capacity: u64,
+}
+
+/// An explicit compiler input, snapshotted and content-bound by the executor.
+/// Paths are workspace-relative or explicit absolute paths, never discovered.
+/// Size bounds/hashes record provenance; they do not authenticate vendor bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileBinding {
+    pub environment: String,
+    pub path: String,
     pub capacity: u64,
 }
 
@@ -153,6 +242,7 @@ pub struct CompilationUnit {
     pub linker_script: Option<String>,
     pub environment_values: BTreeMap<String, String>,
     pub bindings: Vec<ArtifactBinding>,
+    pub file_bindings: Vec<FileBinding>,
     pub output: UnitOutput,
 }
 
@@ -250,7 +340,7 @@ fn identifier(value: &str) -> bool {
 
 /// Portable environment identifiers; unlike unit names, neither a leading digit
 /// nor a dash is valid. Compiler flag overrides are separate recorded fields.
-fn environment_name(value: &str) -> bool {
+pub(crate) fn environment_name(value: &str) -> bool {
     value
         .bytes()
         .next()
@@ -269,6 +359,55 @@ fn cfg_value(value: &str) -> bool {
 }
 
 impl BuildPlan {
+    /// Fail closed if platform resolution drops or substitutes an explicit input.
+    /// Multiple consuming units may bind the same request, but none may replace it.
+    pub fn validate_compiler_selections(
+        &self,
+        selection: &crate::plan::BuildSelection,
+    ) -> Result<(), String> {
+        selection.validate_compiler_files()?;
+        self.order()?;
+        for input in &selection.compiler_files {
+            let bindings: Vec<_> = self
+                .units
+                .iter()
+                .flat_map(|unit| &unit.file_bindings)
+                .filter(|binding| binding.environment == input.environment)
+                .collect();
+            if bindings.is_empty() || bindings.iter().any(|binding| binding.path != input.path) {
+                return Err(format!(
+                    "compiler input {} was not bound unchanged by the platform",
+                    input.environment
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_image_selection(
+        &self,
+        selection: &crate::plan::BuildSelection,
+    ) -> Result<(), String> {
+        match (&selection.image_config, &self.assembly) {
+            (Some(path), Assembly::Amd(image)) if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. } if image.path == *path) => {
+                Ok(())
+            }
+            (None, Assembly::Amd(image))
+                if matches!(
+                    image.firmware,
+                    crate::amd::assembly::Firmware::Packed { .. }
+                ) =>
+            {
+                Ok(())
+            }
+            (Some(path), Assembly::Sp3Flash(image)) if *path == image.vendor_image => Ok(()),
+            (None, Assembly::Ffs(_) | Assembly::Sp3Flash(_) | Assembly::Unassembled { .. }) => {
+                Ok(())
+            }
+            _ => Err("image configuration was not bound unchanged by the platform".into()),
+        }
+    }
+
     pub fn unit(&self, name: &str) -> Result<&CompilationUnit, String> {
         self.units
             .iter()
@@ -322,6 +461,12 @@ impl BuildPlan {
                 }
             }
             unit.check_cfg_flags()?;
+            if matches!(&self.assembly, Assembly::Ffs(_))
+                && matches!(&unit.output,
+                UnitOutput::Executable { expectations, .. } if expectations.descriptor.is_none())
+            {
+                return Err("FFS executable needs its runtime layout descriptor".into());
+            }
             let mut bindings = BTreeSet::new();
             for binding in &unit.bindings {
                 if !environment_name(&binding.environment)
@@ -330,6 +475,25 @@ impl BuildPlan {
                 {
                     return Err(format!(
                         "invalid or duplicate binding {}",
+                        binding.environment
+                    ));
+                }
+            }
+            for binding in &unit.file_bindings {
+                if !environment_name(&binding.environment)
+                    || !bindings.insert(binding.environment.as_str())
+                    || unit.environment_values.contains_key(&binding.environment)
+                    || binding.path.is_empty()
+                    || binding.path.contains('\0')
+                    || binding.capacity == 0
+                    || binding
+                        .capacity
+                        .checked_add(1)
+                        .and_then(|size| usize::try_from(size).ok())
+                        .is_none()
+                {
+                    return Err(format!(
+                        "invalid or duplicate compiler file {}",
                         binding.environment
                     ));
                 }
@@ -379,7 +543,42 @@ impl BuildPlan {
             }
         }
         let mut bootstrap = BTreeSet::new();
-        for (name, _) in &self.assembly.bootstrap {
+        // The reset unit's stored bytes are the image the PSP copies; its
+        // `.data` may run from a copy elsewhere, as in every noncar image.
+        if let Assembly::Amd(image) = &self.assembly {
+            image.validate()?;
+            let unit = self.unit(&image.reset_unit)?;
+            let UnitOutput::Executable {
+                expectations,
+                load_address,
+                flat_capacity,
+            } = &unit.output
+            else {
+                return Err("PSP reset producer is not executable".into());
+            };
+            if !self.stages.contains(&image.reset_unit)
+                || *load_address != image.reset_destination
+                || *flat_capacity != u64::from(image.reset_size)
+                || !matches!(expectations.architecture, crate::elf::Architecture::X86_64)
+                || !expectations.elf64
+                || !expectations.little_endian
+                || expectations.copy.is_some()
+                || expectations.stored.len() != 1
+                || expectations.stored[0].base != image.reset_destination
+                || expectations.stored[0].size != u64::from(image.reset_size)
+                || expectations.entry
+                    != image
+                        .reset_destination
+                        .checked_add(u64::from(image.reset_size))
+                        .and_then(|end| end.checked_sub(16))
+            {
+                return Err("PSP reset producer differs from image operation".into());
+            }
+        }
+        if let Assembly::Sp3Flash(image) = &self.assembly {
+            image.validate(self)?;
+        }
+        for (name, _) in self.assembly.bootstrap() {
             if !self.stages.iter().skip(1).any(|s| s == name) || !bootstrap.insert(name) {
                 return Err(format!("unknown or duplicate bootstrap binding {name}"));
             }
@@ -429,6 +628,7 @@ impl BuildPlan {
 
 #[cfg(test)]
 mod tests {
+    use super::FfsAssembly as Assembly;
     use super::*;
     fn unit(name: &str, dependencies: &[&str]) -> CompilationUnit {
         CompilationUnit {
@@ -449,6 +649,7 @@ mod tests {
             release_only: false,
             linker_script: None,
             environment_values: BTreeMap::new(),
+            file_bindings: vec![],
             bindings: dependencies
                 .iter()
                 .map(|name| ArtifactBinding {
@@ -488,13 +689,14 @@ mod tests {
                 identity_mapping: true,
                 entry: Some(span.base),
                 copy: None,
-                descriptor: crate::elf::Descriptor {
+                descriptor: Some(crate::elf::Descriptor {
                     section: ".layout".into(),
                     start_symbol: "begin".into(),
                     end_symbol: "end".into(),
                     bytes: vec![],
                     reservation: span,
-                },
+                }),
+                stored_flags: None,
                 symbols: BTreeMap::new(),
             },
             load_address: span.base,
@@ -510,7 +712,7 @@ mod tests {
             ],
             stages: vec!["launch".into()],
             inputs: vec![],
-            assembly: Assembly {
+            assembly: FfsAssembly {
                 platform: Platform::Aarch64,
                 memory: vec![],
                 flash: None,
@@ -520,12 +722,34 @@ mod tests {
                 payload: None,
                 microcode: None,
                 data_assets: vec![],
+                file_assets: vec![],
                 full_flash_image: false,
                 soc_image_format: SocImageFormat::None,
                 boot_hart_id: 0,
                 build: BoardBuildPolicy::default(),
-            },
+            }
+            .into(),
         }
+    }
+
+    #[test]
+    fn compiler_only_contract_cannot_launder_a_missing_ffs_descriptor() {
+        let mut plan = fixture();
+        let UnitOutput::Executable { expectations, .. } = &mut plan.units[0].output else {
+            unreachable!()
+        };
+        expectations.descriptor = None;
+        assert!(
+            plan.order()
+                .unwrap_err()
+                .contains("runtime layout descriptor")
+        );
+        plan.assembly = super::Assembly::Unassembled {
+            platform: fstart_core::Platform::Aarch64,
+        };
+        plan.order().unwrap();
+        assert!(plan.assembly.config("test").is_err());
+        assert!(plan.assembly.bootstrap().is_empty());
     }
 
     #[test]
@@ -594,6 +818,74 @@ mod tests {
         assert!(plan.order().unwrap_err().contains("cfg value"));
     }
 
+    #[test]
+    fn compiler_file_names_paths_and_bounds_share_the_binding_namespace() {
+        let file = || FileBinding {
+            environment: "FSTART_BYTES".into(),
+            path: "input.bin".into(),
+            capacity: 9600,
+        };
+        let mut plan = fixture();
+        plan.units[0].file_bindings.push(file());
+        plan.order().unwrap();
+        plan.units[0].file_bindings.push(file());
+        assert!(plan.order().is_err());
+        let mut plan = fixture();
+        let mut collision = file();
+        collision.environment = plan.units[0].bindings[0].environment.clone();
+        plan.units[0].file_bindings.push(collision);
+        assert!(plan.order().is_err());
+        let mut plan = fixture();
+        plan.units[0]
+            .environment_values
+            .insert("FSTART_BYTES".into(), "scalar".into());
+        plan.units[0].file_bindings.push(file());
+        assert!(plan.order().is_err());
+        for (environment, path, capacity) in [
+            ("RUSTFLAGS", "input", 1),
+            ("1FILE", "input", 1),
+            ("FILE", "", 1),
+            ("FILE", "bad\0path", 1),
+            ("FILE", "input", 0),
+            ("FILE", "input", u64::MAX),
+        ] {
+            let mut plan = fixture();
+            plan.units[0].file_bindings.push(FileBinding {
+                environment: environment.into(),
+                path: path.into(),
+                capacity,
+            });
+            assert!(plan.order().is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_file_requests_must_be_bound_without_substitution() {
+        use crate::plan::{BuildSelection, CompilerFileSelection};
+        let selected = BuildSelection {
+            compiler_files: vec![
+                CompilerFileSelection::parse("FSTART_BYTES=exact source.bin").unwrap(),
+            ],
+            ..Default::default()
+        };
+        let mut plan = fixture();
+        assert!(plan.validate_compiler_selections(&selected).is_err());
+        let binding = || FileBinding {
+            environment: "FSTART_BYTES".into(),
+            path: "exact source.bin".into(),
+            capacity: 9600,
+        };
+        plan.units[0].file_bindings.push(binding());
+        plan.validate_compiler_selections(&selected).unwrap();
+        plan.units[1].file_bindings.push(binding());
+        plan.validate_compiler_selections(&selected).unwrap();
+        plan.units[1].file_bindings[0].path = "alternate.bin".into();
+        assert!(plan.validate_compiler_selections(&selected).is_err());
+        let mut duplicate = selected.clone();
+        duplicate.compiler_files.extend(selected.compiler_files);
+        assert!(plan.validate_compiler_selections(&duplicate).is_err());
+    }
+
     // Graph failures occur before image-stage validation; no firmware fixture is
     // needed to prove missing, duplicate and cyclic producer rejection.
     #[test]
@@ -609,6 +901,7 @@ mod tests {
             payload: None,
             microcode: None,
             data_assets: vec![],
+            file_assets: vec![],
             full_flash_image: false,
             soc_image_format: SocImageFormat::None,
             boot_hart_id: 0,
@@ -618,7 +911,7 @@ mod tests {
             payload: "halt".into(),
             units,
             stages: vec![],
-            assembly: assembly.clone(),
+            assembly: assembly.clone().into(),
             inputs: vec![],
         };
         assert!(

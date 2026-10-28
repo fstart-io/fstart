@@ -13,7 +13,8 @@ use fstart_core::{
 };
 use fstart_image_build::{
     build_plan::{
-        Assembly, BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, InputFile, UnitOutput,
+        BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
+        UnitOutput,
     },
     linker::resolved_ram_stage,
     plan::{BuildSelection, Span},
@@ -172,6 +173,7 @@ fn board_config(
         payload: payload.clone(),
         microcode: None,
         data_assets: Default::default(),
+        file_assets: Default::default(),
         soc_image_format: SocImageFormat::AllwinnerEgon,
         full_flash_image: false,
         build: BoardBuildPolicy {
@@ -235,6 +237,7 @@ fn unit(
         linker_script: Some(linker_script),
         environment_values: BTreeMap::new(),
         bindings: vec![],
+        file_bindings: vec![],
         output,
     }
 }
@@ -328,6 +331,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         payload: payload_config,
         microcode: None,
         data_assets: vec![],
+        file_assets: vec![],
         full_flash_image: false,
         soc_image_format: SocImageFormat::AllwinnerEgon,
         boot_hart_id: 0,
@@ -392,7 +396,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
         ],
         stages: vec!["bootblock".into(), "main".into()],
-        assembly,
+        assembly: assembly.into(),
         inputs,
     };
     plan.order()?;
@@ -474,7 +478,7 @@ mod tests {
             (*load_address, *flat_capacity),
             (MAINSTAGE_LOAD_ADDR, 0x8000_0000 - MAINSTAGE_LOAD_ADDR)
         );
-        let assembly = &plan.assembly;
+        let assembly = plan.assembly.ffs().unwrap();
         assert_eq!(assembly.platform, Platform::Armv7);
         assert_eq!(assembly.soc_image_format, SocImageFormat::AllwinnerEgon);
         assert!(!assembly.full_flash_image);
@@ -502,7 +506,7 @@ mod tests {
     #[test]
     fn halt_has_no_payload_or_inputs_and_d1_rejects_linux() {
         let plan = resolve(BANANAPI, select("halt")).unwrap();
-        assert!(plan.assembly.payload.is_none());
+        assert!(plan.assembly.ffs().unwrap().payload.is_none());
         assert!(plan.inputs.is_empty());
         assert_eq!(plan.unit("main").unwrap().payload, "halt");
         let dock = BoardFacts {
@@ -537,7 +541,7 @@ mod tests {
             "aarch64-unknown-none"
         );
         assert_eq!(plan.unit("main").unwrap().features, ["bundle-h5-main"]);
-        let payload = plan.assembly.payload.as_ref().unwrap();
+        let payload = plan.assembly.ffs().unwrap().payload.as_ref().unwrap();
         let firmware = payload.firmware.as_ref().unwrap();
         assert_eq!(firmware.load_addr, 0x0004_4000);
         assert_eq!(firmware.file.as_str(), "bl31-sun50i-a64.bin");
@@ -553,7 +557,7 @@ mod tests {
         };
         let plan = resolve(r1, select("halt")).unwrap();
         assert_eq!(
-            plan.assembly.build.qemu_machine,
+            plan.assembly.ffs().unwrap().build.qemu_machine,
             Some(QemuMachine::OrangePiPc)
         );
         assert_eq!(plan.unit("main").unwrap().features, ["bundle-h3-main"]);

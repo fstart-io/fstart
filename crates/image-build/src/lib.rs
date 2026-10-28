@@ -1,5 +1,7 @@
+pub mod amd;
 pub mod assemble;
 pub mod build_plan;
+
 mod coreboot_payload;
 pub mod elf;
 pub mod image;
@@ -10,6 +12,7 @@ pub mod layout;
 pub mod linker;
 pub mod plan;
 pub mod smm_image;
+pub mod sp3_flash;
 mod summary;
 
 use std::path::PathBuf;

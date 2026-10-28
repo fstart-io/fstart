@@ -21,8 +21,9 @@ const GPIO_DESCRIPTOR_TAG: u8 = 0x8C;
 /// GPIO Connection Descriptor revision.
 const GPIO_REVISION_ID: u8 = 0x01;
 
-/// Byte offset of the Pin Table from the descriptor start.
-const GPIO_PIN_TABLE_OFFSET: u16 = 22;
+/// Byte offset of the Pin Table from the descriptor start: the 23-byte
+/// header (ACPI 6.5 Table 6.255).
+const GPIO_PIN_TABLE_OFFSET: u16 = 23;
 
 /// GPIO interrupt trigger mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,13 +125,13 @@ impl Aml for GpioInt<'_> {
         // General Flags: bit 0 = consumer/producer
         let general_flags: u16 = if self.consumer { 1 } else { 0 };
 
-        // Interrupt flags:
-        //   Bits 0-1: Mode (level/edge)
-        //   Bits 2-3: Polarity
-        //   Bit 4: Sharing
-        let int_flags: u8 = (self.mode as u8)
-            | ((self.polarity as u8) << 2)
-            | (if self.shared { 1 << 4 } else { 0 });
+        // Interrupt and I/O flags:
+        //   Bit 0: Mode (level/edge)
+        //   Bits 1-2: Polarity
+        //   Bit 3: Sharing
+        let int_flags: u16 = (self.mode as u16)
+            | ((self.polarity as u16) << 1)
+            | (if self.shared { 1 << 3 } else { 0 });
 
         // Header
         sink.byte(GPIO_DESCRIPTOR_TAG);
@@ -138,7 +139,7 @@ impl Aml for GpioInt<'_> {
         sink.byte(GPIO_REVISION_ID);
         sink.byte(0x00); // Connection Type: Interrupt
         sink.word(general_flags);
-        sink.byte(int_flags);
+        sink.word(int_flags);
         sink.byte(self.pin_config as u8);
         sink.word(0); // Output Drive Strength (N/A for interrupt)
         sink.word(self.debounce);
@@ -210,14 +211,14 @@ impl Aml for GpioIo<'_> {
         let general_flags: u16 = if self.consumer { 1 } else { 0 };
 
         // I/O flags: bits 0-1 = IO restriction
-        let io_flags: u8 = self.io_restriction as u8;
+        let io_flags: u16 = self.io_restriction as u16;
 
         sink.byte(GPIO_DESCRIPTOR_TAG);
         sink.word(data_length);
         sink.byte(GPIO_REVISION_ID);
         sink.byte(0x01); // Connection Type: I/O
         sink.word(general_flags);
-        sink.byte(io_flags);
+        sink.word(io_flags);
         sink.byte(self.pin_config as u8);
         sink.word(self.drive_strength);
         sink.word(self.debounce);
@@ -274,15 +275,16 @@ mod tests {
         let gf = u16::from_le_bytes([bytes[5], bytes[6]]);
         assert_eq!(gf & 1, 1);
 
-        // Interrupt flags: edge (bit 0) | active-low (bit 2-3 = 0b01)
-        assert_eq!(bytes[7] & 0x03, 0x01); // edge
-        assert_eq!((bytes[7] >> 2) & 0x03, 0x01); // active-low
+        // Interrupt flags: edge (bit 0), active-low (bits 1-2 = 0b01),
+        // exclusive (bit 3)
+        assert_eq!(u16::from_le_bytes([bytes[7], bytes[8]]), 0b011);
 
         // Pin config: pull-up
-        assert_eq!(bytes[8], GpioPinConfig::PullUp as u8);
+        assert_eq!(bytes[9], GpioPinConfig::PullUp as u8);
 
-        // Pin table offset
-        let pto = u16::from_le_bytes([bytes[13], bytes[14]]);
+        // Pin table offset, right after the 23-byte header
+        let pto = u16::from_le_bytes([bytes[14], bytes[15]]);
+        assert_eq!(pto, 23);
         assert_eq!(pto, GPIO_PIN_TABLE_OFFSET);
 
         // Pin value at pin table offset
@@ -290,7 +292,7 @@ mod tests {
         assert_eq!(pin, 42);
 
         // Resource source should be present after pin table
-        let rs_offset = u16::from_le_bytes([bytes[16], bytes[17]]) as usize;
+        let rs_offset = u16::from_le_bytes([bytes[17], bytes[18]]) as usize;
         let rs_end = bytes[rs_offset..].iter().position(|&b| b == 0).unwrap() + rs_offset;
         let rs_name = core::str::from_utf8(&bytes[rs_offset..rs_end]).unwrap();
         assert_eq!(rs_name, "\\_SB.GPI0");
@@ -317,9 +319,9 @@ mod tests {
         // Connection type: I/O
         assert_eq!(bytes[4], 0x01);
 
-        // Should have 2 pins at offset 22
-        let pin0 = u16::from_le_bytes([bytes[22], bytes[23]]);
-        let pin1 = u16::from_le_bytes([bytes[24], bytes[25]]);
+        // Should have 2 pins at offset 23
+        let pin0 = u16::from_le_bytes([bytes[23], bytes[24]]);
+        let pin1 = u16::from_le_bytes([bytes[25], bytes[26]]);
         assert_eq!(pin0, 10);
         assert_eq!(pin1, 11);
     }

@@ -82,6 +82,11 @@ register_bitfields! [u16,
         FAST_BACK_TO_BACK OFFSET(9) NUMBITS(1) [],
         INT_DISABLE OFFSET(10) NUMBITS(1) []
     ],
+    /// Type-1 bridge control for forwarding the legacy VGA apertures.
+    pub PCI_BRIDGE_CONTROL_BITS [
+        VGA_ENABLE OFFSET(3) NUMBITS(1) [],
+        VGA_16BIT_DECODE OFFSET(4) NUMBITS(1) []
+    ],
     /// PCI status register bitfields. Many bits are write-1-to-clear; avoid
     /// generic read-modify-write helpers for clearing status.
     pub PCI_STATUS_BITS [

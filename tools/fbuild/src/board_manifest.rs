@@ -65,6 +65,11 @@ struct BoardMetadata {
     acpi_only_devices: bool,
     stage_bin: Option<String>,
     build_profile: Option<ProfileRef>,
+    /// The board's AMD firmware table, read by the AMD platform
+    /// (`fstart_image_build::amd::blobs::BoardBlobs`), not by fbuild.
+    #[serde(default)]
+    #[allow(dead_code)]
+    amd: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize)]

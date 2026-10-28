@@ -179,11 +179,13 @@ fn build(
     payload: Option<PayloadChoice>,
     options: &BuildArgs,
 ) -> Result<crate::build_board::BuildResult, String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, options)?;
-    crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)
+    let root = crate::build_board::workspace_root_pub()?;
+    let resolved =
+        crate::resolved_image::ResolvedImage::load(&root, manifest, options.selection(payload))?;
+    resolved.build(&root, manifest, release)
 }
 
+#[allow(clippy::too_many_arguments)] // the CLI's flat assemble options
 fn assemble(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
@@ -194,18 +196,138 @@ fn assemble(
     options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, options)?;
-    assemble_loaded(
+    let resolved = crate::resolved_image::ResolvedImage::load(
         &workspace_root,
         manifest,
+        options.selection(payload),
+    )?;
+    let amd = match &resolved.build.plan.assembly {
+        fstart_image_build::build_plan::Assembly::Amd(image) => Some(image.clone()),
+        _ => None,
+    };
+    // A PSP partition without an FFS: just the stages.
+    if let Some(image) = amd.as_ref().filter(|image| image.ffs.is_none()) {
+        if kernel.is_some() || firmware.is_some() || fit.is_some() {
+            return Err("PSP image operation does not consume payload-file overrides".into());
+        }
+        let build = resolved.build(&workspace_root, manifest, release)?;
+        let directory = resolved
+            .artifact_dir(&workspace_root, &manifest.board, release)?
+            .join("image");
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        return crate::amd_image::compose(
+            &workspace_root,
+            &manifest.board,
+            &directory,
+            image,
+            &build.stages,
+            None,
+        );
+    }
+    let config = resolved.assembler_config(&manifest.board)?;
+    let sp3_flash = match &resolved.build.plan.assembly {
+        fstart_image_build::build_plan::Assembly::Sp3Flash(image) => Some(image.clone()),
+        _ => None,
+    };
+    let parsed = ParsedBoard {
+        config,
+        acpi_only_devices: Vec::new(),
+        resolved: Some(resolved),
+    };
+    let assembled = assemble_loaded(
+        &workspace_root,
+        manifest.clone(),
         parsed,
         release,
         kernel,
         firmware,
         fit,
         &options.payload_files,
-    )
-    .map(|assembled| assembled.image)
+    )?;
+    if let Some(image) = sp3_flash {
+        return compose_sp3_flash(&workspace_root, &image, &assembled);
+    }
+    match amd {
+        Some(image) => crate::amd_image::compose(
+            &workspace_root,
+            &manifest.board,
+            assembled
+                .image
+                .parent()
+                .ok_or("FFS image has no directory")?,
+            &image,
+            &assembled.stages,
+            Some(&assembled.image),
+        ),
+        None => Ok(assembled.image),
+    }
+}
+
+/// Compose the assembled FFS and the reset unit into the SP3 vendor ROM
+/// (`fstart_image_build::sp3_flash`); relative vendor paths are
+/// workspace-relative (`--image-config` replaces the board's vendor ROM).
+/// Writes and returns `<board>.rom`, the vendor ROM's size (32 MiB for a
+/// dual-half vendor ROM).
+fn compose_sp3_flash(
+    workspace_root: &std::path::Path,
+    image: &fstart_image_build::sp3_flash::Sp3FlashAssembly,
+    assembled: &crate::assemble::AssembledImage,
+) -> Result<std::path::PathBuf, String> {
+    use fstart_image_build::sp3_flash::{HALF_SIZE, HalfAction, name};
+    let read = |path: &std::path::Path| {
+        std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let plan = &image.compose;
+    let vendor_path = workspace_root.join(&image.vendor_image);
+    let vendor = read(&vendor_path)?;
+    eprintln!("[fstart] SP3 vendor ROM {}", vendor_path.display());
+    let ffs = read(&assembled.image)?;
+    let reset = assembled
+        .stages
+        .iter()
+        .find(|stage| stage.name == image.reset_unit)
+        .ok_or("SP3 reset unit was not built")?;
+    let flash =
+        fstart_image_build::sp3_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
+    if !flash.patched.locator || !flash.patched.flash {
+        eprintln!(
+            "[fstart] warning: the SP3 reset unit links no FFS locator or flash anchor; it cannot read its FFS"
+        );
+    }
+    let survey = &flash.survey;
+    for (half, action) in &survey.halves {
+        match action {
+            HalfAction::Compose(layout) => eprintln!(
+                "[fstart] SP3 {half:?} half ({}): vendor EFS and directories kept to {:#x}",
+                name(layout.generation),
+                layout.prefix_end,
+            ),
+            HalfAction::Keep(generation) => eprintln!(
+                "[fstart] warning: SP3 {half:?} half kept from {} ({}: not supported by the board)",
+                vendor_path.display(),
+                generation.map_or("no EFS", name),
+            ),
+        }
+    }
+    let reset_copies = if survey.composed().count() == 1 || flash.image.len() == HALF_SIZE {
+        "one composed half"
+    } else {
+        "each half"
+    };
+    let out = assembled.image.with_extension("rom");
+    std::fs::write(&out, &flash.image).map_err(|e| format!("{}: {e}", out.display()))?;
+    eprintln!(
+        "[fstart] SP3 image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; reset image {:#x} bytes at {:#x} ({reset_copies})",
+        out.display(),
+        flash.image.len() >> 20,
+        ffs.len(),
+        survey.ffs_capacity(),
+        survey.ffs.start,
+        survey.ffs.end,
+        plan.reset.size,
+        plan.reset.flash_offset,
+    );
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]

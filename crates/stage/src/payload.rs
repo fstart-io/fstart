@@ -238,7 +238,9 @@ impl<D: Aarch64UefiPayloadContext> MainstagePayload<D> for Aarch64UefiPayload {
         }];
         crate::crabefi::launch_flat_uefi(
             UefiLaunchConfig {
+                acpi_devices: &[],
                 console: Some(devices.console()),
+                peripherals: crate::heap::vec::Vec::new(),
                 framebuffer: None,
                 acpi_rsdp: None,
                 smbios: None,
@@ -402,7 +404,9 @@ impl Riscv64UefiPayload {
         ];
         crate::crabefi::launch_flat_uefi(
             UefiLaunchConfig {
+                acpi_devices: &[],
                 console: Some(devices.console()),
+                peripherals: crate::heap::vec::Vec::new(),
                 framebuffer: None,
                 acpi_rsdp: None,
                 smbios: None,
@@ -590,10 +594,21 @@ pub trait X86UefiPayloadContext {
     }
     /// Return the actual PCI ECAM segment/bus bounds, if available.
     fn pci_root(&self) -> Option<fstart_pci::PciRootInfo>;
+    /// Enabled fixed-address devices, matching the platform's ACPI tables.
+    fn acpi_devices(&self) -> &[fstart_core::acpi::AcpiGenericDevice] {
+        &[]
+    }
     /// Return the programmed linear framebuffer for UEFI GOP, if any.
     #[cfg(feature = "crabefi-basic")]
-    fn framebuffer(&self) -> Option<crate::crabefi::FramebufferConfig> {
+    fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
         None
+    }
+    /// Hand over the devices on platform-owned buses for CrabEFI's drivers.
+    #[cfg(feature = "crabefi-basic")]
+    fn take_peripherals(
+        &mut self,
+    ) -> crate::heap::vec::Vec<crate::crabefi::peripheral::Peripheral> {
+        crate::heap::vec::Vec::new()
     }
 }
 
@@ -606,7 +621,8 @@ impl<D> MainstagePayload<D> for X86UefiPayload
 where
     D: X86UefiPayloadContext,
 {
-    fn boot(devices: D) -> ! {
+    fn boot(mut devices: D) -> ! {
+        let peripherals = devices.take_peripherals();
         use crate::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
 
         let (firmware_base, firmware_size) = devices.firmware_region();
@@ -629,7 +645,23 @@ where
         crate::crabefi::launch_x86_uefi(
             UefiLaunchConfig {
                 console: devices.console(),
-                framebuffer: devices.framebuffer(),
+                acpi_devices: devices.acpi_devices(),
+                peripherals,
+                framebuffer: devices
+                    .framebuffer()
+                    .map(|info| crate::crabefi::FramebufferConfig {
+                        physical_address: info.base_addr,
+                        width: info.width,
+                        height: info.height,
+                        stride: info.stride,
+                        bits_per_pixel: info.bits_per_pixel,
+                        red_mask_pos: info.red_pos,
+                        red_mask_size: info.red_size,
+                        green_mask_pos: info.green_pos,
+                        green_mask_size: info.green_size,
+                        blue_mask_pos: info.blue_pos,
+                        blue_mask_size: info.blue_size,
+                    }),
                 acpi_rsdp: devices.acpi_rsdp(),
                 smbios: devices.smbios(),
                 fdt: None,

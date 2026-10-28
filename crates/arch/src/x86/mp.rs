@@ -182,6 +182,21 @@ pub trait CpuDriver: Send + Sync {
     /// BSP-only: called before SIPI, after LAPIC setup.
     fn pre_mp_init(&self) {}
 
+    /// BSP-only, before any AP starts: install the BSP's final cache policy
+    /// and return the MSR writes every AP replays with caching disabled.
+    ///
+    /// The default installs the architectural MTRR solution and mirrors the
+    /// MTRRs and PAT. AMD drivers keep their own fixed-MTRR DRAM routing.
+    fn sipi_msrs(&self) -> Result<crate::x86::mtrr::SipiMsrs, MpError> {
+        default_sipi_msrs()
+    }
+
+    /// Bits every AP sets in its own MSR while it replays
+    /// [`Self::sipi_msrs`].
+    fn sipi_unlock(&self) -> Option<SipiUnlock> {
+        None
+    }
+
     /// BSP-only: called after all CPUs are initialized and APs are parked.
     fn post_mp_init(&self) {}
 
@@ -189,6 +204,35 @@ pub trait CpuDriver: Send + Sync {
     fn matches(&self, identity: CpuIdentity) -> bool {
         self.id_table().iter().any(|id| id.matches(identity))
     }
+}
+
+/// Bits of an MSR that make others of [`CpuDriver::sipi_msrs`] writable: the
+/// SIPI trampoline sets them in the AP's own value before the replay and
+/// clears them afterwards, as for SYSCFG.MtrrFixDramModEn and the fixed
+/// MTRRs' RdDram/WrDram bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SipiUnlock {
+    msr: u32,
+    bits: u32,
+}
+impl SipiUnlock {
+    /// `field` of `msr`; the trampoline handles the low 32 bits only.
+    pub const fn new<R: tock_registers::RegisterLongName>(
+        msr: crate::x86::cpu::msr::Msr<R>,
+        field: tock_registers::fields::FieldValue<u64, R>,
+    ) -> Self {
+        let bits = field.value;
+        assert!(bits != 0 && bits >> 32 == 0);
+        Self {
+            msr: msr.index(),
+            bits: bits as u32,
+        }
+    }
+}
+
+fn default_sipi_msrs() -> Result<crate::x86::mtrr::SipiMsrs, MpError> {
+    // SAFETY: BSP-only, called by MP init before any AP starts.
+    unsafe { crate::x86::mtrr::snapshot_for_sipi() }.map_err(|_| MpError::CacheabilitySetupFailed)
 }
 
 /// Generic x86 CPU driver used by virtual boards until model-specific MSR
@@ -241,6 +285,8 @@ pub enum MpError {
     PartialBringup { expected: u16, actual: u16 },
     /// The complete BSP cacheability solution could not be installed/mirrored.
     CacheabilitySetupFailed,
+    /// The platform's AP release (instead of INIT/SIPI) failed.
+    PlatformLaunchFailed(u32),
     /// SIPI trampoline placement failed.
     TrampolinePlacementFailed,
     /// No CPU driver matched one or more CPUs.
@@ -513,6 +559,10 @@ pub fn current_cpu_index() -> u32 {
 // AP entry point (called from SIPI trampoline)
 // ---------------------------------------------------------------------------
 
+/// The BSP's IDTR, loaded by every AP.
+#[cfg(target_arch = "x86_64")]
+static mut BSP_IDTR: [u16; 5] = [0; 5];
+
 /// C-callable AP entry point.  The SIPI trampoline jumps here after
 /// entering 64-bit long mode with a valid stack.
 ///
@@ -523,6 +573,13 @@ pub fn current_cpu_index() -> u32 {
 /// Called from assembly with a valid stack and identity-mapped page tables.
 #[unsafe(no_mangle)]
 pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
+    // Share the BSP's exception handlers: a faulting AP reports instead of
+    // triple-faulting the machine.
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: the BSP stored its live IDTR before releasing any AP.
+    unsafe {
+        core::arch::asm!("lidt [{}]", in(reg) core::ptr::addr_of!(BSP_IDTR), options(readonly, nostack));
+    }
     // Enable the local APIC and set up virtual wire.
     let lapic = Lapic::from_msr();
     lapic.enable();
@@ -576,8 +633,27 @@ pub fn online_cpus() -> u16 {
 /// The trampoline resets the machine on a responder beyond `max_aps` before it
 /// can index the stack arena, and this function rejects the machine if one
 /// claimed an ordinal before the count is read.
-fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
-    install_sipi_trampoline(max_aps, lapic)?;
+fn start_aps(
+    max_aps: u16,
+    lapic: &Lapic,
+    msrs: &[crate::x86::mtrr::MsrEntry],
+    unlock: Option<SipiUnlock>,
+    launch: Option<&mut dyn FnMut(u16) -> Result<(), u32>>,
+) -> Result<u16, MpError> {
+    install_sipi_trampoline(max_aps, lapic, msrs, unlock)?;
+
+    if let Some(launch) = launch {
+        fstart_log::info!("mp: platform release of {} AP(s)", max_aps);
+        launch(max_aps).map_err(MpError::PlatformLaunchFailed)?;
+        // Wait up to 50 ms per AP; the platform release cannot be repeated.
+        let timeout_us = 50_000u64 * max_aps as u64;
+        let mut elapsed = 0u64;
+        while (AP_COUNT.load(Ordering::Acquire) as u16) < max_aps && elapsed < timeout_us {
+            delay_us(50);
+            elapsed += 50;
+        }
+        return finish_start(max_aps);
+    }
 
     fstart_log::info!("mp: sending INIT IPI");
     lapic.send_init_all_but_self();
@@ -609,6 +685,10 @@ fn start_aps(max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
         }
     }
 
+    finish_start(max_aps)
+}
+
+fn finish_start(max_aps: u16) -> Result<u16, MpError> {
     let final_count = AP_COUNT.load(Ordering::Acquire) as u16;
 
     // Responders beyond `max_aps` reset the machine in the trampoline without
@@ -649,6 +729,24 @@ fn complete_ap_bringup(final_count: u16, max_aps: u16) -> Result<u16, MpError> {
 /// Initialize all CPUs, run CPU-model initialization, and leave APs in the
 /// scoped-work mailbox loop. Chipset SMM setup is deliberately post-MP code.
 pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
+    mp_init_inner(config, None)
+}
+
+/// Like [`mp_init`], but APs are released by the platform instead of
+/// INIT/SIPI (e.g. the AMD SMU releasing them from reset). The launcher gets
+/// the number of APs to release once the trampoline at
+/// [`AP_BOOTSTRAP_ADDRESS`] is ready; the platform routes them there.
+pub fn mp_init_with_launcher(
+    config: &MpConfig<'_>,
+    launch: &mut dyn FnMut(u16) -> Result<(), u32>,
+) -> Result<MpHandle, MpError> {
+    mp_init_inner(config, Some(launch))
+}
+
+fn mp_init_inner(
+    config: &MpConfig<'_>,
+    launch: Option<&mut dyn FnMut(u16) -> Result<(), u32>>,
+) -> Result<MpHandle, MpError> {
     validate_cpu_capacity(config.max_cpus)?;
     let num_cpus = checked_logical_cpu_count(config.num_cpus, config.max_cpus)?;
     let max_aps = num_cpus.saturating_sub(1);
@@ -659,6 +757,12 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
         config.max_cpus
     );
 
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: SIDT only stores the current IDTR; no AP runs yet.
+    unsafe {
+        core::arch::asm!("sidt [{}]", in(reg) core::ptr::addr_of_mut!(BSP_IDTR), options(nostack));
+    }
+
     // --- Step 1: BSP LAPIC setup ---
     let lapic = Lapic::from_msr();
     lapic.enable();
@@ -668,8 +772,15 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
 
     // The BSP solution is complete before any AP starts. Model drivers must
     // not recalculate MTRRs; SIPI replays the exact BSP MSRs before caching.
-    // SAFETY: BSP-only RAM-stage initialization, before INIT/SIPI.
-    unsafe { crate::x86::mtrr::prepare_for_mp() }.map_err(|_| MpError::CacheabilitySetupFailed)?;
+    let driver = config
+        .cpu_drivers
+        .iter()
+        .find(|driver| driver.matches(CpuIdentity::current()));
+    let msrs = match driver {
+        Some(driver) => driver.sipi_msrs()?,
+        None => default_sipi_msrs()?,
+    };
+    let unlock = driver.and_then(|driver| driver.sipi_unlock());
 
     // Pre-MP CPU-driver hooks (BSP only).
     pre_mp_cpu_drivers(config.cpu_drivers);
@@ -677,7 +788,7 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     // APs reach the drivers through the published config; it is
     // withdrawn before returning on every path.
     publish_config(config);
-    let flown = fly(config, max_aps, &lapic);
+    let flown = fly(config, max_aps, &lapic, &msrs, unlock, launch);
     clear_mp_globals();
     let final_count = flown?;
 
@@ -692,7 +803,14 @@ pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
 }
 
 /// Start the APs and walk the CPU-only flight plan on the BSP side.
-fn fly(_config: &MpConfig<'_>, max_aps: u16, lapic: &Lapic) -> Result<u16, MpError> {
+fn fly(
+    _config: &MpConfig<'_>,
+    max_aps: u16,
+    lapic: &Lapic,
+    msrs: &[crate::x86::mtrr::MsrEntry],
+    unlock: Option<SipiUnlock>,
+    launch: Option<&mut dyn FnMut(u16) -> Result<(), u32>>,
+) -> Result<u16, MpError> {
     CPU_INIT_ERRORS.store(0, Ordering::Release);
     AP_COUNT.store(0, Ordering::Release);
     AP_IN_MAILBOX_LOOP.store(0, Ordering::Release);
@@ -707,7 +825,7 @@ fn fly(_config: &MpConfig<'_>, max_aps: u16, lapic: &Lapic) -> Result<u16, MpErr
     let final_count = if max_aps == 0 {
         0
     } else {
-        start_aps(max_aps, lapic)?
+        start_aps(max_aps, lapic, msrs, unlock, launch)?
     };
 
     // Walk the flight plan on the BSP side; APs walk it in `fstart_ap_entry`.
@@ -746,6 +864,9 @@ fn fly(_config: &MpConfig<'_>, max_aps: u16, lapic: &Lapic) -> Result<u16, MpErr
 const SIPI_VECTOR_PAGE: u32 = 0x08;
 /// Physical address of the SIPI trampoline.
 const SIPI_VECTOR_ADDR: usize = (SIPI_VECTOR_PAGE as usize) << 12;
+/// Physical page where APs start: platforms that release APs themselves route
+/// them here and keep it reserved.
+pub const AP_BOOTSTRAP_ADDRESS: u64 = SIPI_VECTOR_ADDR as u64;
 
 /// Install the SIPI trampoline at the vector address.
 ///
@@ -781,14 +902,15 @@ fn patch_msr_table(page: &mut [u8], msrs: &[crate::x86::mtrr::MsrEntry]) -> Resu
     Ok(())
 }
 
-fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> {
+fn install_sipi_trampoline(
+    max_aps: u16,
+    _lapic: &Lapic,
+    msrs: &[crate::x86::mtrr::MsrEntry],
+    unlock: Option<SipiUnlock>,
+) -> Result<(), MpError> {
     if max_aps as usize > MAX_APS || sipi_blob::TRAMPOLINE.len() > 4096 {
         return Err(MpError::TrampolinePlacementFailed);
     }
-
-    // SAFETY: the BSP has installed its final solution, and APs are not running.
-    let msrs = unsafe { crate::x86::mtrr::snapshot_for_sipi() }
-        .map_err(|_| MpError::CacheabilitySetupFailed)?;
     let dst = SIPI_VECTOR_ADDR as *mut u8;
     // SAFETY: we only expose the raw stack arena address to AP startup code;
     // Rust never creates references to individual AP stacks while they run.
@@ -813,9 +935,12 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
         patch_u32(dst, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
         patch_u32(dst, sipi_blob::AP_LIMIT_OFFSET, u32::from(max_aps));
         patch_u32(dst, sipi_blob::AP_COUNTER_OFFSET, 0);
+        let unlock = unlock.unwrap_or(SipiUnlock { msr: 0, bits: 0 });
+        patch_u32(dst, sipi_blob::UNLOCK_MSR_OFFSET, unlock.msr);
+        patch_u32(dst, sipi_blob::UNLOCK_BITS_OFFSET, unlock.bits);
         patch_msr_table(
             core::slice::from_raw_parts_mut(dst, sipi_blob::TRAMPOLINE.len()),
-            msrs.as_slice(),
+            msrs,
         )?;
 
         // INIT leaves AP caches disabled. Write the complete copied and patched
@@ -835,7 +960,7 @@ fn install_sipi_trampoline(max_aps: u16, _lapic: &Lapic) -> Result<(), MpError> 
     fstart_log::info!("mp: tramp[0]={:#010x} [4]={:#010x}", words[0], words[1]);
     fstart_log::info!("mp: tramp[8]={:#010x} [12]={:#010x}", words[2], words[3]);
     fstart_log::info!(
-        "mp: mirroring {} BSP MTRR/PAT MSRs before AP cache enable",
+        "mp: mirroring {} BSP cache-policy MSRs before AP cache enable",
         msrs.len()
     );
     fstart_log::info!("mp: patch cr3={:#x}", read_cr3());
@@ -1082,6 +1207,18 @@ impl<'scope, 'env> Scope<'scope, 'env> {
         self.wait_all();
     }
 
+    /// Run on every CPU concurrently, including the BSP (index 0).
+    /// Unlike `scatter`, callbacks may rendezvous with each other. Every
+    /// callback must participate in the same barriers and eventually return.
+    pub fn rendezvous<F>(&self, f: &F)
+    where
+        F: Fn(u32) + Send + Sync + 'env,
+    {
+        self.start_all(trampoline_indexed::<F>, f as *const F as usize);
+        f(0);
+        self.wait_all();
+    }
+
     /// Run a closure on one specific AP.  BSP waits for it to complete.
     pub fn run_on<F>(&self, ap: u16, f: &F)
     where
@@ -1106,6 +1243,11 @@ impl<'scope, 'env> Scope<'scope, 'env> {
 
     /// Dispatch to all APs and wait for completion.
     fn dispatch_all(&self, trampoline: fn(*const (), u32), data: usize) {
+        self.start_all(trampoline, data);
+        self.wait_all();
+    }
+
+    fn start_all(&self, trampoline: fn(*const (), u32), data: usize) {
         for i in 0..self.handle.num_aps as usize {
             let mb = &MAILBOXES[i];
             mb.data.store(data, Ordering::Relaxed);
@@ -1116,7 +1258,6 @@ impl<'scope, 'env> Scope<'scope, 'env> {
             mb.func
                 .store(trampoline as *const () as usize, Ordering::Release);
         }
-        self.wait_all();
     }
 
     /// Wait for all APs to return to idle.

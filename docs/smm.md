@@ -25,6 +25,8 @@ The flow follows coreboot's x86 SMM model:
 - `src/cpu/intel/model_1067x/mp_init.c`, `src/cpu/intel/common/common_init.c`
   — `IA32_FEATURE_CONTROL` policy (VMX + SMRR enable + lock).
 - `src/mainboard/emulation/qemu-q35/cpu.c` — AMD64 save-state relocation.
+- `src/soc/amd/common/block/cpu/smm/smm_relocate.c` — AMD TSEG and SMBASE
+  MSRs written from normal mode, then TValid and HWCR.SmmLock.
 
 coreboot also relocates the handler as an rmodule; fstart does not. Handler
 code is position independent and never patched.
@@ -40,6 +42,9 @@ code is position independent and never patched.
   - the northbridge's `SmramControl` (TSEG geometry, open/close/lock);
   - the southbridge's `SmiControl` (SMI sources, handler configuration);
   - the CPU model driver's `SmmCpu` (save-state layout, SMRR register pair).
+- `fstart_arch::x86::cpu::amd::smm::AmdSmm` owns it on AMD64 CPUs, composed
+  only from the southbridge's `amd::smm::SmiControl` (FCH:
+  `fstart_driver_amd::fch::smi::FchSmi`). See "AMD64" below.
 - CPU model drivers (`core2_cpu`, `pineview`) own `IA32_FEATURE_CONTROL`
   policy in `init_cpu`, as coreboot's model drivers do.
 - `driver-intel` owns ICH SMI source decoding, acknowledgement, and the
@@ -128,11 +133,19 @@ its type as `SmmHandler::Config`, and the matching southbridge names the same
 type as `SmiControl::HandlerConfig`; for ICH that is
 `driver_intel::southbridge::smi::IchSmmConfig` (PMBASE and GPE0 geometry).
 The installer writes the value into a fixed 256-byte, 16-byte-aligned slot and
-records its size. The SMM entry copies it out only if the recorded size is
-exactly `size_of::<Config>()` and the slot lies inside SMRAM, then passes it to
-the handler. There is no serialization format, magic, or schema version.
+records its size. The SMM entry borrows that immutable value only if the
+recorded size is exactly `size_of::<Config>()` and the aligned slot lies inside
+SMRAM. The borrow lasts for the SMI; the installer keeps it immutable and
+disjoint from mutable entry parameters. This avoids stack copies and compiler-
+generated memcpy for larger per-socket configurations. There is no serialization
+format, magic, or schema version.
 
-Every permanent entry follows coreboot's rendezvous: one CPU atomically claims
+Every permanent entry first runs `SmmHandler::enter_cpu` with validated
+configuration. This bounded, CPU-local hook runs even on entrants that will
+only wait; it must not wait for all CPUs to arrive. SP3 uses it for local MCA
+capture and native handoff ([native RAS observer](amd-sp3-ras.md)).
+
+Shared dispatch follows coreboot's rendezvous: one CPU atomically claims
 ownership and runs chipset dispatch, all other entrants remain in SMM until
 the owner releases the lock, and waiters then return through RSM. The owner
 word lives in TSEG; locked access to it relies on SMRR giving TSEG a
@@ -174,8 +187,11 @@ resume.
 
 Save-state memory is hardware-owned. `X86SaveState` stores only a raw top
 address and the selected format; it uses volatile byte transfers and never
-creates a Rust reference or slice over the save-state area. The only
-operations are reading the revision and writing the relocated SMBASE.
+creates a Rust reference or slice over the save-state area. Operations validate
+the revision before writing relocated SMBASE or accessing AMD64 saved GPRs
+for hardware-authorized MSR emulation. Native Zen's revision 0x30064 and
+QEMU's older 0x20064 layout both use FF00 for the saved SMBASE field. FE00
+is the save-state block's base, not the field's address (Rome bench verified).
 
 The CPU model driver selects the format through `SmmCpu`:
 
@@ -261,6 +277,27 @@ Q35 logs the selected AMD64 revision and the relocation count. CI requires
 revision `0x00020064`, four relocations, verified SMRAM/global SMI locks, the
 permanent SMI round trip, and payload handoff in SMP4 boots with one socket,
 two sockets, and extra unpopulated hotplug slots.
+
+## AMD64
+
+AMD CPUs take TSEG from SMM_ADDR/SMM_MASK and SMBASE from the SMM_BASE MSR,
+all writable from normal mode until HWCR.SmmLock. `AmdSmm::install` therefore
+has no default-SMBASE stub and no relocation SMI:
+
+1. Check TSEG (power of two, at least 128 KiB, size aligned, below 4 GiB) and
+   that SMM isn't locked. Gate the chipset's SMIs off.
+2. Clear TValid on the BSP, zero TSEG, install the image and write TSEG back
+   from the caches.
+3. On every CPU (APs first, the BSP last): SMM_ADDR, SMM_MASK (TSEG mask over
+   every physical address bit incl. the memory-encryption ones, write-back in
+   SMM, TValid, no ASEG), SMM_BASE from the layout, HWCR.SmmLock; all read
+   back. Any mismatch is boot-fatal.
+4. Let the southbridge program its sources and enable SMIs, then send one
+   self-SMI per CPU as on Intel.
+
+It returns the TSEG base, the programmed SMM_MASK and the unused, zeroed TSEG
+between the stacks and the SMBASE windows, where Zeppelin puts the PSP's SMM
+buffers. The save state is never written; S3 resume isn't supported.
 
 ## coreboot compatibility output
 

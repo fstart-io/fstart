@@ -7,7 +7,7 @@
 use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use tock_registers::register_structs;
 
-use crate::config::{PCI_COMMAND_BITS, PCI_STATUS_BITS};
+use crate::config::{PCI_BRIDGE_CONTROL_BITS, PCI_COMMAND_BITS, PCI_STATUS_BITS};
 
 register_structs! {
     /// Conservative Type 0 PCI configuration header overlay.
@@ -78,7 +78,7 @@ register_structs! {
         (0x38 => pub expansion_rom_base_raw: MmioReadWrite<u32>),
         (0x3c => pub interrupt_line: MmioReadWrite<u8>),
         (0x3d => pub interrupt_pin: MmioReadOnly<u8>),
-        (0x3e => pub bridge_control: MmioReadWrite<u16>),
+        (0x3e => pub bridge_control: MmioReadWrite<u16, PCI_BRIDGE_CONTROL_BITS::Register>),
         (0x40 => @END),
     }
 }

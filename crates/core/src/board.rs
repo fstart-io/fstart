@@ -111,6 +111,10 @@ pub struct BoardConfig {
     /// request and its packaging cannot disagree.
     #[serde(default)]
     pub data_assets: heapless::Vec<HString<64>, 8>,
+    /// Files outside the board directory (vendor blobs such as a video
+    /// BIOS) packaged as verified `FileType::Data` assets under `name`.
+    #[serde(default, skip_serializing_if = "heapless::Vec::is_empty")]
+    pub file_assets: heapless::Vec<FileAsset, 8>,
     /// SoC-specific binary image format required by the boot ROM.
     ///
     /// Each SoC family has its own boot ROM that expects a particular
@@ -255,11 +259,56 @@ impl FirmwareImagePolicy {
     }
 }
 
+/// A file packaged into the verified FFS under `name`, the name the
+/// firmware looks it up by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileAsset {
+    pub name: HString<64>,
+    /// Relative to the workspace root unless absolute.
+    pub path: HString<256>,
+}
+
 /// CPU microcode packaging configuration.
+// Build-time board configuration, not hot data; no_std has no Box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MicrocodeConfig {
     /// Intel concatenated microcode update files.
     Intel(IntelMicrocodeConfig),
+    /// AMD Family 17h+ flat microcode patches.
+    Amd(AmdMicrocodeConfig),
+}
+
+/// AMD flat patches to concatenate into the FFS file `cpu_microcode.bin`,
+/// which the CPU driver loads during MP init
+/// (`fstart_amdfw_format::microcode`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmdMicrocodeConfig {
+    /// Patch files, resolved relative to the workspace root unless absolute.
+    #[serde(default)]
+    pub files: heapless::Vec<HString<128>, 16>,
+    /// Vendor flash images (or halves of one) whose BIOS directory
+    /// microcode entries (type 0x66) are packed too, found the way the PSP
+    /// finds that directory. A patch two of them carry is packed once.
+    #[serde(default)]
+    pub vendor_images: heapless::Vec<AmdVendorMicrocode, 4>,
+}
+
+/// The microcode of a vendor AMD flash image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmdVendorMicrocode {
+    /// The vendor flash image, relative to the workspace root unless
+    /// absolute.
+    pub image: HString<256>,
+    /// The EFS field the SoC's PSP takes the BIOS directory from.
+    pub bios_directory: fstart_amdfw_format::efs::BiosDirectorySlot,
+    /// Flash offset of the half that carries this directory (0, or 16 MiB
+    /// for the upper half of a dual image).
+    #[serde(default)]
+    pub origin: u32,
 }
 
 /// Intel microcode files to concatenate into `cpu_microcode_blob.bin`.
