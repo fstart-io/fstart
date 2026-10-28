@@ -712,6 +712,8 @@ dependencies = [
 name = "fstart-driver-chromeec"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-core",
  "zerocopy",
 ]

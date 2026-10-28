@@ -214,6 +214,7 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
         .collect();
     let mut board_acpi = B::acpi();
     board_acpi.devices.extend(silicon.devices.iter().cloned());
+    board_acpi.sb_aml.extend_from_slice(&silicon.aml);
     let rsdp = acpi::install(
         silicon.acpi,
         &dies,

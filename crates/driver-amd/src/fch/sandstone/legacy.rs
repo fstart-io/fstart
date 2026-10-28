@@ -17,6 +17,15 @@ register_bitfields![u32,
 register_bitfields![u8,
     RtcB [DST_EN OFFSET(0) NUMBITS(1) []],
     RtcA [BIT4 OFFSET(4) NUMBITS(1) []],
+    /// PCI_INTR index 8: the source of the IOAPIC inputs shared with legacy
+    /// devices. IRQ14/15 come from the legacy IDE unless routed: then the
+    /// internal sources [`initialize`] maps to them reach the IOAPIC.
+    IntrMiscMap [
+        IRQ1_ROUTED OFFSET(1) NUMBITS(1) [],
+        IRQ12_ROUTED OFFSET(3) NUMBITS(1) [],
+        IRQ14 OFFSET(4) NUMBITS(2) [LegacyIde = 0, Routed = 3],
+        IRQ15 OFFSET(6) NUMBITS(2) [LegacyIde = 0, Routed = 3]
+    ],
     /// The PM1 status bits 8 (power button) and 10 (RTC) of the high byte.
     Pm1StatusHigh [PWRBTN OFFSET(0) NUMBITS(1) [], RTC OFFSET(2) NUMBITS(1) [],
         WAKE OFFSET(6) NUMBITS(1) []]
@@ -26,6 +35,23 @@ const PM_ESPI_INTR_MASK: crate::fch::AcpiReg<u32, EspiInterruptMask::Register> =
 const PCI_INTR_INDEX: u16 = 0xc00;
 /// The PM1 status high byte of Picasso's ACPI block at 0x400.
 const PM1_STATUS_HIGH: u16 = 0x401;
+
+/// PCI_INTR indexes of the FCH's internal interrupt sources.
+pub mod source {
+    /// The GPIO controller.
+    pub const GPIO: u8 = 0x62;
+    /// I2C controllers 0-5.
+    pub const I2C: [u8; 6] = [0x70, 0x71, 0x72, 0x73, 0x76, 0x77];
+}
+
+/// The IOAPIC input (ISA IRQ) [`initialize`] routes the internal source
+/// with PCI_INTR index `index` to.
+pub fn internal_irq(index: u8) -> Option<u8> {
+    INTERNAL_IRQS
+        .iter()
+        .find(|&&(source, _)| source == index)
+        .map(|&(_, irq)| irq)
+}
 
 const INTERNAL_IRQS: [(u8, u8); 18] = [
     (0, 0x10),
@@ -75,7 +101,12 @@ pub fn initialize<B: Bus>(fch: &Fch<B>, espi: bool, legacy_sd: bool) {
     indexed_io::<B, RtcB::Register>(bus, RTC_INDEX, 0x0b).modify(RtcB::DST_EN::CLEAR);
     indexed_io::<B, RtcA::Register>(bus, RTC_INDEX, 0x0a).modify(RtcA::BIT4::CLEAR);
     let irq = |index| indexed_io::<B, ()>(bus, PCI_INTR_INDEX, index);
-    irq(8).set(irq(8).get() | 0x0a);
+    indexed_io::<B, IntrMiscMap::Register>(bus, PCI_INTR_INDEX, 8).modify(
+        IntrMiscMap::IRQ1_ROUTED::SET
+            + IntrMiscMap::IRQ12_ROUTED::SET
+            + IntrMiscMap::IRQ14::Routed
+            + IntrMiscMap::IRQ15::Routed,
+    );
     let misc0 = irq(9).get();
     irq(9).set((misc0 & 0x99) | 0x10);
     bus.reg(Reg::<u8>::io(SMBUS_ASF_IO_BASE + 0x2a)).set(0x2f); // ASF W1C status

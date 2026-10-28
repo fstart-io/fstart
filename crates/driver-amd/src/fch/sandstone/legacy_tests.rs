@@ -101,3 +101,13 @@ fn retained_legacy_sd_and_lpc_only_policy_do_not_power_off_or_mask_espi() {
     initialize(&Fch::new(&world, Acpimmio::DIE0), false, true);
     assert!(world.writes().iter().all(|&(space, ..)| space == Space::Io));
 }
+#[test]
+fn irq14_and_15_take_the_routed_internal_sources() {
+    let world = world();
+    // Reset: IRQ14/15 from the legacy IDE, IRQ1/12 from the IMC.
+    world.set_indexed(0xc00, 8, 0);
+    initialize(&Fch::new(&world, Acpimmio::DIE0), true, false);
+    assert_eq!(world.indexed(0xc00, 8), 0xfa);
+    assert_eq!(internal_irq(source::I2C[2]), Some(14));
+    assert_eq!(internal_irq(source::GPIO), Some(7));
+}

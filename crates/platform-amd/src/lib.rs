@@ -3,6 +3,7 @@
 //! ([`noncar`]) start in PSP-trained DRAM, never Intel CAR. Each SoC module
 //! implements the flow's [`noncar::Soc`].
 #![no_std]
+extern crate alloc;
 #[cfg(feature = "noncar")]
 pub mod acpi;
 #[cfg(feature = "noncar")]

@@ -53,6 +53,9 @@ pub struct BoardAcpi {
     pub tables: Vec<Vec<u8>>,
     /// Enabled non-PCI devices to describe under \\_SB.
     pub devices: Vec<fstart_core::acpi::AcpiGenericDevice>,
+    /// Further device AML for `\_SB`: FCH controllers and the devices
+    /// behind them.
+    pub sb_aml: Vec<u8>,
 }
 
 /// What a SoC's ACPI tables differ in.
@@ -190,6 +193,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
             }
             .dsdt_aml()
         }))
+        .chain(core::iter::once(inputs.board.sb_aml.clone()))
         .flatten()
         .collect();
     let extra = core::iter::once(mcfg(inputs)?)
@@ -718,6 +722,54 @@ fn lpc_bridge(board_aml: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(device_vec("LPCB", &body)?)
 }
 
+/// Path of the FCH GPIO controller, [`fch_gpio`].
+pub const FCH_GPIO_PATH: &str = "\\_SB.GPIO";
+
+/// The FCH GPIO controller `\_SB.GPIO` at the GPIO bank of the ACPI MMIO,
+/// interrupting on the level-low, shared FCH IRQ `irq`.
+pub fn fch_gpio(irq: u8) -> Result<Vec<u8>, Error> {
+    let base = u64::from(fstart_driver_amd::fch::ACPI_MMIO + 0x1500);
+    let irq = u64::from(irq);
+    let mut body = Vec::new();
+    acpi_dsl! {
+        Name("_HID", "AMDI0030");
+        Name("_CID", "AMDI0030");
+        Name("_UID", 0u32);
+        Name("_CRS", ResourceTemplate {
+            Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq});
+            Memory32Fixed(ReadWrite, #{dword base}, 0x400u32);
+        });
+        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+    }
+    .emit(&mut body)?;
+    Ok(device_vec("GPIO", &body)?)
+}
+
+/// An FCH DesignWare I2C controller `\_SB.I2C<index>` at `base`,
+/// interrupting on the edge-high FCH IRQ `irq`, with `body`: its timing
+/// and the devices behind it.
+pub fn fch_i2c(index: u8, base: u32, irq: u8, body: &[u8]) -> Result<Vec<u8>, Error> {
+    let (uid, base, irq) = (u64::from(index), u64::from(base), u64::from(irq));
+    let mut device = Vec::new();
+    acpi_dsl! {
+        Name("_HID", "AMDI0010");
+        Name("_UID", #{byte uid});
+        Name("_CRS", ResourceTemplate {
+            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{dword irq});
+            Memory32Fixed(ReadWrite, #{dword base}, 0x1000u32);
+        });
+        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+    }
+    .emit(&mut device)?;
+    device.extend_from_slice(body);
+    Ok(device_vec(&fch_i2c_name(index), &device)?)
+}
+
+/// NameSeg of FCH I2C controller `index`, [`fch_i2c`].
+pub fn fch_i2c_name(index: u8) -> alloc::string::String {
+    format!("I2C{index:X}")
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -1033,6 +1085,40 @@ mod tests {
         assert!(!die1.windows(8).any(|w| w == CFG) && !die1.windows(4).any(|w| w == vga));
     }
 
+    /// The FCH GPIO controller and I2C controller 2 with a touchpad and
+    /// a HID-over-I2C alternative, as a Picasso board describes them.
+    fn fch_devices() -> Vec<u8> {
+        use fstart_acpi::devices::i2c::{
+            DesignWareSpeed, GpioInterrupt, I2cDevice, designware_timing_aml,
+        };
+        let interrupt = Some(GpioInterrupt {
+            controller: FCH_GPIO_PATH,
+            pin: 9,
+            edge: false,
+            active_low: true,
+        });
+        let device = |name, ids, address, hid_descriptor| {
+            I2cDevice {
+                name,
+                ids,
+                uid: 0,
+                bus: "\\_SB.I2C2",
+                address,
+                speed_hz: 400_000,
+                interrupt,
+                hid_descriptor,
+            }
+            .dsdt_aml()
+            .unwrap()
+        };
+        let mut body = designware_timing_aml(DesignWareSpeed::Fast, 117, 245, 45).unwrap();
+        body.extend(device("D150", &["ELAN0000"], 0x15, None));
+        body.extend(device("D2C1", &["SYNA0000", "PNP0C50"], 0x2c, Some(0x20)));
+        let mut aml = fch_gpio(7).unwrap();
+        aml.extend(fch_i2c(2, 0xfedc_4000, 14, &body).unwrap());
+        aml
+    }
+
     /// Assemble the table set and disassemble the DSDT with `iasl`.
     #[test]
     fn dsdt_disassembles() {
@@ -1046,6 +1132,7 @@ mod tests {
             .dsdt_aml(),
             tables: vec![],
             devices: vec![],
+            sb_aml: fch_devices(),
         };
         let tables = tables(&board);
         let mut storage = vec![0; 64 * 1024];
@@ -1076,6 +1163,19 @@ mod tests {
             "Device (GP41)",
             "Device (SPMI)",
             "PNP0C02",
+            "Device (GPIO)",
+            "Device (I2C2)",
+            "Device (D150)",
+            "Device (D2C1)",
+            "Interrupt (ResourceConsumer, Level, ActiveLow, Shared, ,, )",
+            "Interrupt (ResourceConsumer, Edge, ActiveHigh, Exclusive, ,, )",
+            "I2cSerialBusV2 (0x0015, ControllerInitiated, 0x00061A80,",
+            "\\_SB.I2C2",
+            "GpioInt (Level, ActiveLow, Exclusive, PullDefault, 0x0000,",
+            "\\_SB.GPIO",
+            "Name (FMCN, Package",
+            "Method (_DSM, 4, Serialized)",
+            "ToUUID (\"3cdff6f7-4267-4555-ad05-b30a3d8938de\")",
         ] {
             assert!(dsl.contains(object), "{object} missing:\n{dsl}");
         }
@@ -1155,6 +1255,7 @@ mod tests {
             lpc_aml: kcs.dsdt_aml(),
             tables: vec![kcs.spmi()],
             devices: vec![],
+            sb_aml: vec![],
         };
         let tables = build(&Inputs {
             soc: &ACPI,

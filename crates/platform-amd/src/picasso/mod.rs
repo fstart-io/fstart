@@ -54,7 +54,8 @@ pub struct Config {
     pub usb: usb::Config,
     pub emmc: Option<emmc::Config>,
     pub graphics: nbio::gfx::Config,
-    /// FCH I2C controllers with devices for the UEFI payload to drive.
+    /// FCH I2C controllers and their devices, for the UEFI payload to
+    /// drive and the OS to find in ACPI.
     pub i2c: &'static [I2cBus],
 }
 
@@ -83,7 +84,7 @@ pub enum GpioInterrupt {
     /// Level-triggered, read from the pad.
     Level { pin: u8, active_low: bool },
     /// Edge-triggered, latched in the pad's interrupt status.
-    Edge { pin: u8 },
+    Edge { pin: u8, falling: bool },
 }
 
 /// The Sandstone FCH setup before and right after the console.
@@ -383,10 +384,12 @@ impl noncar::Soc for Picasso {
                 gsiv: Some(5),
             })
             .collect();
+        let aml = acpi::devices(config.i2c).map_err(|_| "ACPI devices")?;
         Ok(Silicon {
             cpus,
             psp,
             devices,
+            aml,
             framebuffer: None,
             ioapics: core::array::from_fn(|i| if i == 0 { 0xfec0_1000 } else { 0 }),
             reserved_mmio: core::array::from_fn(|i| {
@@ -504,7 +507,7 @@ mod uefi {
                 line: InputLine::new(gpio.input(pin).ok()?),
                 active_low,
             },
-            GpioInterrupt::Edge { pin } => Interrupt::Latched(Box::new(Latch(gpio, pin))),
+            GpioInterrupt::Edge { pin, .. } => Interrupt::Latched(Box::new(Latch(gpio, pin))),
         })
     }
 

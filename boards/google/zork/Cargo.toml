@@ -30,7 +30,7 @@ default = []
 [dependencies]
 fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["picasso"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["picasso"] }
-fstart-driver-chromeec = { path = "../../../crates/driver-chromeec" }
+fstart-driver-chromeec = { path = "../../../crates/driver-chromeec", features = ["acpi"] }
 fstart-driver-uart = { path = "../../../crates/driver-uart" }
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }

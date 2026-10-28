@@ -80,7 +80,10 @@ static CONFIG: Config = Config {
             devices: &[picasso::I2cDevice {
                 ids: &["GOOG0005"],
                 address: 0x50,
-                interrupt: Some(picasso::GpioInterrupt::Edge { pin: 3 }),
+                interrupt: Some(picasso::GpioInterrupt::Edge {
+                    pin: 3,
+                    falling: true,
+                }),
                 hid_descriptor_register: None,
             }],
         },
@@ -104,6 +107,13 @@ impl fstart_platform_amd::noncar::Board for Board {
         let cbi = mainboard::init(&ctx.gpio(), &mut clock);
         config.power = Some(cbi.native_power());
         config.emmc = cbi.has_emmc().then_some(policy::EMMC);
+    }
+    /// The keyboard behind the EC.
+    fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
+        fstart_platform_amd::acpi::BoardAcpi {
+            lpc_aml: fstart_driver_chromeec::acpi::keyboard_aml(),
+            ..Default::default()
+        }
     }
 }
 

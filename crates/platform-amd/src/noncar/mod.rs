@@ -36,8 +36,6 @@ pub mod pci;
 pub mod psp;
 pub mod smm;
 
-#[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
-extern crate alloc;
 /// Devices on buses the platform set up, for CrabEFI's drivers.
 #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
 pub type Peripherals = alloc::vec::Vec<fstart_stage::crabefi::peripheral::Peripheral>;
@@ -175,6 +173,8 @@ pub struct Silicon<S: Soc> {
     pub acpi: &'static SocAcpi,
     /// Enabled fixed-address devices, shared by ACPI and payload discovery.
     pub devices: heapless::Vec<fstart_core::acpi::AcpiGenericDevice, 16>,
+    /// Further `\_SB` AML: FCH controllers and the devices behind them.
+    pub aml: alloc::vec::Vec<u8>,
     pub framebuffer: Option<fstart_core::services::FramebufferInfo>,
     pub state: S::State,
 }

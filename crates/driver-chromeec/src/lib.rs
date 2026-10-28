@@ -2,6 +2,9 @@
 //! ChromeEC host protocol v3 over linear LPC/eSPI I/O.
 //! This backend is not MEC EMI or RTK; those need distinct access mechanisms.
 #![no_std]
+
+#[cfg(feature = "acpi")]
+pub mod acpi;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
     byteorder::{LittleEndian, U16, U32},

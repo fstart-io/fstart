@@ -31,5 +31,6 @@ pub fn tables() -> BoardAcpi {
         lpc_aml,
         tables: vec![KCS.spmi()],
         devices: vec![],
+        sb_aml: vec![],
     }
 }

@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
+
 [dependencies]
 zerocopy.workspace = true
 fstart-core.workspace = true
+fstart-acpi = { workspace = true, optional = true }
+fstart-acpi-macros = { path = "../acpi-macros", optional = true }
