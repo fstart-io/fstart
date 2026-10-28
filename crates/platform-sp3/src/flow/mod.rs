@@ -43,8 +43,8 @@ use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem,
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::services::memory_detect::{E820Kind, E820State};
-use fstart_driver_amd::sp3::apob::sysmap::{self, Region};
-use fstart_driver_amd::sp3::apob::{self, Apob};
+use fstart_driver_amd::apob::sysmap::{self, Region};
+use fstart_driver_amd::apob::{self, Apob};
 use fstart_driver_amd::sp3::df::plan::{self, Plan};
 use fstart_driver_amd::sp3::df::topology::{self, Topology};
 use fstart_driver_amd::sp3::df::{BusRange, Df, program};
@@ -590,7 +590,7 @@ fn read_apob(flash: &'static [u8], generation: Generation) -> (Apob<'static>, Sp
         .or_halt("APOB directory entry");
     // SAFETY: the PSP wrote the APOB there before releasing x86; it is
     // reserved in e820 and only read.
-    let apob = unsafe { Apob::from_address(address, generation) }.or_halt("APOB header");
+    let apob = unsafe { Apob::from_address(address, generation.into()) }.or_halt("APOB header");
     for event in apob::event::all_events(&apob).flatten() {
         let (instance, e) = event;
         fstart_log::info!(
@@ -630,7 +630,7 @@ fn memory_regions(
     generation: Generation,
 ) -> heapless::Vec<Region, { sysmap::MAX_REGIONS }> {
     let map = sysmap::system_memory_map(apob).or_halt("APOB memory map");
-    sysmap::memory_map(generation, map.top, map.holes()).or_halt("memory map")
+    sysmap::memory_map(generation.into(), map.top, map.holes()).or_halt("memory map")
 }
 
 fn build_e820(

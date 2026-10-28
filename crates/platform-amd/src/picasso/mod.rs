@@ -159,6 +159,7 @@ impl noncar::Soc for Picasso {
     const ECAM: u64 = soc::ECAM;
     const ECAM_BUSES: u16 = soc::ECAM_BUSES as u16;
     /// BIOS directory entry 0x61.
+    const PSP: fstart_driver_amd::psp::Variant = fstart_driver_amd::psp::Variant::Rv;
     const APOB: Region = Region::new(0x0200_1000, 0x1_0000);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel10;
@@ -368,12 +369,7 @@ impl noncar::Soc for Picasso {
         // SAFETY: BSP exclusively owns the decoded ACPI and SMI blocks.
         let smi = unsafe { FchSmi::new(sandstone::ACPI_PORTS, 0) };
         let tseg = smm::install(Self::NAME, &cpus.mp, &smi, memory.tseg, Self::TSEG_SIZE)?;
-        let psp = psp::notify_smm(
-            nbio::PSP_MMIO_BASE,
-            fstart_driver_amd::psp::Variant::Rv,
-            &tseg,
-            &delay,
-        );
+        let psp = psp::notify_smm(nbio::PSP_MMIO_BASE, Self::PSP, &tseg, &delay);
         let devices = config
             .emmc
             .into_iter()

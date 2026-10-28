@@ -11,13 +11,13 @@ use tock_registers::interfaces::Writeable;
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
+use fstart_driver_amd::apob::ccx::{CoreMap, core_map};
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::smu::Smu as SmuMailbox;
 use fstart_driver_amd::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
-use fstart_driver_amd::sp3::apob::ccx::{CoreMap, core_map};
 use fstart_driver_amd::sp3::ccx::release::{self, Launch};
 use fstart_driver_amd::sp3::ccx::topology::{ApicLayout, Location};
 use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
@@ -90,7 +90,7 @@ fn socket_bus(ctx: &Ctx, socket: u8) -> u8 {
 /// The UMC channels with DIMMs, from the APOB SPD copy (the AGESA memory
 /// info PPI the scrubber setup reads, SOC_DF §3.6).
 fn socket_memory(ctx: &Ctx, socket: u8) -> SocketMemory {
-    let present = fstart_driver_amd::sp3::apob::mem::spd(&ctx.apob, socket, 0)
+    let present = fstart_driver_amd::apob::mem::spd(&ctx.apob, socket, 0)
         .map(|t| {
             t.dimms()
                 .filter(|(_, _, r)| r.present())
@@ -635,7 +635,7 @@ pub(crate) fn usb_bus_count(_ctx: &Ctx) -> u8 {
 /// `None` with one domain (AmdAcpiDxe builds no SRAT then) or without
 /// NPS information.
 pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
-    use fstart_driver_amd::sp3::apob::nps;
+    use fstart_driver_amd::apob::nps;
     use fstart_driver_amd::sp3::df::dram::{
         self, ccd_channel, df3_channel, domain_of, ioms_channel,
     };
@@ -644,7 +644,7 @@ pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
     let mode = match nps::nps(&ctx.apob) {
         Ok(mode) => mode,
         Err(e) => {
-            use fstart_driver_amd::sp3::apob::ApobError as E;
+            use fstart_driver_amd::apob::ApobError as E;
             let (what, value) = match e {
                 E::NotFound { kind, .. } => ("missing", kind),
                 E::TooShort { kind, .. } => ("short", kind),

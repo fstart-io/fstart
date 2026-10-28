@@ -4,12 +4,12 @@
 use zerocopy::little_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
+use super::Variant;
 use super::{Apob, ApobError, group};
-use crate::sp3::soc::Generation;
 
 const NPS: u32 = 0x13;
 const DOMAINS: u32 = 0x14;
-const SP3: &[Generation] = &[Generation::Rome, Generation::Milan];
+const SP3: &[Variant] = &[Variant::Ssp, Variant::Gn];
 
 /// NUMA nodes per socket (`+0x31`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,19 +97,16 @@ mod tests {
                 .build()
         };
         let data = apob_with(3);
-        assert_eq!(
-            nps(&Apob::new(&data, Generation::Milan).unwrap()),
-            Ok(Nps::Nps4)
-        );
+        assert_eq!(nps(&Apob::new(&data, Variant::Gn).unwrap()), Ok(Nps::Nps4));
         assert_eq!(Nps::Nps4.domains_per_socket(), Some(4));
         let data = apob_with(4);
         assert!(matches!(
-            nps(&Apob::new(&data, Generation::Rome).unwrap()),
+            nps(&Apob::new(&data, Variant::Ssp).unwrap()),
             Err(ApobError::Value { value: 4, .. })
         ));
         let data = apob_with(1);
         assert!(matches!(
-            nps(&Apob::new(&data, Generation::Naples).unwrap()),
+            nps(&Apob::new(&data, Variant::Zp).unwrap()),
             Err(ApobError::Unsupported { .. })
         ));
     }
@@ -135,7 +132,7 @@ mod tests {
         let data = Builder::new(0x18)
             .entry(9, 0x14, 0, &Body::default().at(0x38, &recs).0)
             .build();
-        let apob = Apob::new(&data, Generation::Rome).unwrap();
+        let apob = Apob::new(&data, Variant::Ssp).unwrap();
         let d: Vec<_> = extra_domains(&apob).unwrap().collect();
         assert_eq!(
             d,

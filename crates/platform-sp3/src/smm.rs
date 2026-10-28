@@ -30,7 +30,7 @@
 //! (`smm_bin!`, feature `bundle-smm`); `build.rs` checks that it fits
 //! [`TSEG_SIZE`] for the board's thread count.
 
-use fstart_driver_amd::sp3::apob::sysmap::Region;
+use fstart_driver_amd::apob::sysmap::Region;
 use fstart_driver_amd::sp3::soc::Generation;
 
 use crate::layout::Span;
@@ -626,7 +626,7 @@ mod handler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_amd::sp3::apob::sysmap::RegionKind;
+    use fstart_driver_amd::apob::sysmap::RegionKind;
 
     fn ram(base: u64, size: u64) -> Region {
         Region {

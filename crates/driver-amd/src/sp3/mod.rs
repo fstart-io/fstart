@@ -17,7 +17,6 @@
 //! public AMD documents; register names follow the PPRs where public.
 //! Unknown CPUs fail closed in [`soc::identify`].
 
-pub mod apob;
 pub mod ccx;
 pub mod df;
 pub mod dxio;

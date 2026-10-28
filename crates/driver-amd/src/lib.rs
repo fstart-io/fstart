@@ -7,7 +7,7 @@
 #![cfg_attr(not(test), no_std)]
 #[cfg(feature = "picasso")]
 pub mod acp;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod apob;
 #[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod ccx;

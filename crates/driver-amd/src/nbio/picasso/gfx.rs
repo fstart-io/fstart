@@ -226,8 +226,11 @@ pub unsafe fn initialize(
     top_mem2: Option<u64>,
     delay: &mut impl DelayNs,
 ) -> Result<crate::apob::Hole, &'static str> {
-    let map = apob.memory_map().map_err(|_| "GFX APOB")?;
-    let uma = map
+    let map = crate::apob::sysmap::first_system_memory_map(apob)
+        .ok()
+        .and_then(|map| map.sorted().ok())
+        .ok_or("GFX APOB")?;
+    let uma = *map
         .holes()
         .iter()
         .find(|h| h.kind == 0 && h.size >= 0x800 && h.end() <= 1 << 32)
@@ -278,7 +281,7 @@ pub unsafe fn initialize(
         ],
     );
     v10::request(smn, 0x0e, [0; 6], delay).map_err(|_| "GFX SMU")?;
-    Ok(*uma)
+    Ok(uma)
 }
 
 #[cfg(test)]

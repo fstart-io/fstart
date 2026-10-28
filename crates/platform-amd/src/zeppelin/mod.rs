@@ -92,6 +92,7 @@ impl noncar::Soc for Zeppelin {
     const LAYOUT: noncar::layout::Layout = layout::LAYOUT;
     const ECAM: u64 = soc::ECAM;
     const ECAM_BUSES: u16 = soc::ECAM_BUSES;
+    const PSP: fstart_driver_amd::psp::Variant = fstart_driver_amd::psp::Variant::Zp;
     const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel00;
@@ -195,12 +196,7 @@ impl noncar::Soc for Zeppelin {
         let tseg = smm::install(Self::NAME, &cpus.mp, &smi, memory.tseg, Self::TSEG_SIZE)?;
         // The PSP gets the SMM info now, LockDFReg at ready-to-boot and
         // BootDone right before the payload.
-        let psp = psp::notify_smm(
-            state.psp_bars[0],
-            fstart_driver_amd::psp::Variant::Zp,
-            &tseg,
-            &clock,
-        );
+        let psp = psp::notify_smm(state.psp_bars[0], Self::PSP, &tseg, &clock);
         silicon::post(fch, 0x42);
         // PCI: the interrupt router first.
         silicon::route_interrupts(fch, &config)?;

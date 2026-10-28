@@ -6,7 +6,7 @@ use heapless::Vec;
 use tock_registers::interfaces::Readable;
 
 use super::{DRAM_HOLE, Df, DramRule, Reg, Target, Version, regs};
-pub use crate::sp3::apob::nps::Nps;
+pub use crate::apob::nps::Nps;
 
 /// The DRAM rules and MMIO hole as one node sees them.
 #[derive(Debug, Clone, PartialEq, Eq)]

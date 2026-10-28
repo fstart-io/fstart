@@ -4,6 +4,7 @@ use crate::apob::{self, Apob};
 use crate::ccx::tsc::testing::Delay;
 use crate::df::picasso as fabric;
 use crate::df::{Df, DfReg, testing::DfSpace};
+use crate::psp::Variant;
 use crate::smn::{
     Smn, SmnReg,
     testing::{SmnModel, SmnTest},
@@ -218,49 +219,49 @@ fn apob_fixture() -> Vec<u8> {
     }
     bytes
 }
+fn memory_map(bytes: &[u8]) -> Result<apob::MemoryMap, apob::sysmap::MapError> {
+    let apob = Apob::new(bytes, Variant::Rv).unwrap();
+    apob::sysmap::first_system_memory_map(&apob)
+        .unwrap()
+        .sorted()
+}
 #[test]
 fn apob_memory_map_is_bounded_sorted_and_preserves_uma() {
     let bytes = apob_fixture();
-    let apob = Apob::parse(&bytes).unwrap();
+    let apob = Apob::new(&bytes, Variant::Rv).unwrap();
     assert_eq!(apob.version(), 2);
-    assert_eq!(apob.memory_clock_mhz(), None);
-    let map = apob.memory_map().unwrap();
+    assert!(apob::mem::mem_config(&apob, 0, 0).is_err());
+    let map = memory_map(&bytes).unwrap();
     assert_eq!(map.top, 16 << 30);
     assert_eq!(map.low_top(), 0xc7800000);
     assert_eq!(map.holes()[0].kind, 0);
     assert_eq!(map.holes()[1].kind, 1);
     assert_eq!(map.holes()[0].end(), 0xcf800000);
     // Vendor offsets count from the entry header: the top's bits 39:32.
-    assert_eq!(
-        apob.byte(apob::GROUP_FABRIC, apob::TYPE_FABRIC_MEMORY_MAP, None, 52),
-        Some(4)
-    );
-    assert_eq!(
-        apob.byte(apob::GROUP_FABRIC, apob::TYPE_FABRIC_MEMORY_MAP, None, 47),
-        None
-    );
-    assert_eq!(
-        apob.byte(apob::GROUP_MEMORY, apob::TYPE_MEM_GENERAL_CONFIG, None, 48),
-        None
-    );
+    let entry = apob.find(apob::group::FABRIC, 9, 0).unwrap();
+    assert_eq!(entry.byte(52), Ok(4));
 }
 #[test]
 fn apob_corruption_never_becomes_a_guessed_memory_map() {
     let mut bytes = apob_fixture();
     bytes[28..32].copy_from_slice(&0u32.to_le_bytes());
-    assert!(matches!(Apob::parse(&bytes), Err(apob::Error::Entry)));
+    assert!(matches!(
+        Apob::new(&bytes, Variant::Rv),
+        Err(apob::ApobError::Entry { .. })
+    ));
     let mut bytes = apob_fixture();
     bytes[72..76].copy_from_slice(&19u32.to_le_bytes());
+    let apob = Apob::new(&bytes, Variant::Rv).unwrap();
     assert!(matches!(
-        Apob::parse(&bytes).unwrap().memory_map(),
-        Err(apob::Error::TooManyHoles)
+        apob::sysmap::first_system_memory_map(&apob),
+        Err(apob::ApobError::Value { value: 19, .. })
     ));
     let mut bytes = apob_fixture();
     bytes[80..88].copy_from_slice(&u64::MAX.to_le_bytes());
     assert!(matches!(
-        Apob::parse(&bytes).unwrap().memory_map(),
-        Err(apob::Error::Overflow)
+        memory_map(&bytes),
+        Err(apob::sysmap::MapError::Wraps(_))
     ));
     let bytes = apob_fixture();
-    assert!(Apob::parse(&bytes[..bytes.len() - 1]).is_err());
+    assert!(Apob::new(&bytes[..bytes.len() - 1], Variant::Rv).is_err());
 }

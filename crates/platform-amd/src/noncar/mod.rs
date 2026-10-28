@@ -91,6 +91,8 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     /// PCIe ECAM and its bus count.
     const ECAM: u64;
     const ECAM_BUSES: u16;
+    /// The PSP: its mailbox rules and APOB format.
+    const PSP: fstart_driver_amd::psp::Variant;
     /// Where the PSP writes the APOB.
     const APOB: Region;
     /// Where the PSP finds the BIOS directory.

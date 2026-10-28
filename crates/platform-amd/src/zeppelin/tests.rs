@@ -71,7 +71,7 @@ const ROUTES: &[irq::Route] = &[
 fn apob(dies: u32) -> Vec<u8> {
     let entry = |kind: u32, instance: u32, size: usize, bytes: &[(usize, u8)]| {
         let mut entry = std::vec![0; 48 + size];
-        for (i, word) in [apob::GROUP_MEMORY, kind, instance, (48 + size) as u32]
+        for (i, word) in [apob::group::MEMORY, kind, instance, (48 + size) as u32]
             .into_iter()
             .enumerate()
         {
@@ -84,14 +84,11 @@ fn apob(dies: u32) -> Vec<u8> {
     };
     let entries: Vec<u8> = (0..dies)
         .flat_map(|die| {
-            entry(
-                apob::TYPE_MEM_GENERAL_CONFIG,
-                die,
-                0x10,
-                &[(0x38, 1), (0x39, 1)],
-            )
+            // 1/2: the memory configuration.
+            entry(2, die, 0x10, &[(0x38, 1), (0x39, 1)])
         })
-        .chain(entry(apob::TYPE_MEM_PIE_PWR, 0, 0x110, &[(0x130, 1)]))
+        // 1/0xf: the PIE power settings.
+        .chain(entry(0xf, 0, 0x110, &[(0x130, 1)]))
         .collect();
     let size = (16 + entries.len()) as u32;
     [0x424f_5041, 9, size, 16]
@@ -121,7 +118,7 @@ fn flow(
     let msr = MsrSpace::new([]);
     let mut clock = hw.clock();
     let apob = apob(dies.len() as u32);
-    let apob = Apob::parse(&apob).unwrap();
+    let apob = Apob::new(&apob, fstart_driver_amd::psp::Variant::Zp).unwrap();
 
     // Entry
     silicon::post(&fch, 0x30);

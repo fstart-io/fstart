@@ -22,9 +22,9 @@ use tock_registers::LocalRegisterCopy;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 
+use crate::apob::ccx::CoreMap;
 use crate::smn::{Smn, SmnAddr};
 use crate::smu::{Error as SmuError, SmuMessages, send1};
-use crate::sp3::apob::ccx::CoreMap;
 use crate::sp3::soc::Generation;
 
 /// SMU message 1 ("test"/apply, the same ID on V9 and V11) and its key.
@@ -254,8 +254,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apob::ccx::{Ccd, Ccx, Core};
     use crate::smn::model::Model;
-    use crate::sp3::apob::ccx::{Ccd, Ccx, Core};
     use core::cell::RefCell;
 
     #[derive(Default)]

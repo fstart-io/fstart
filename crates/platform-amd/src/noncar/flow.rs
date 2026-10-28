@@ -121,10 +121,12 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
     let Ok((top_mem, top_mem2)) = msr::memory_limits(&msr) else {
         fail::<S>("TOP_MEM from the PSP")
     };
-    let apob = Apob::parse_with_capacity(apob_bytes::<S>(), S::APOB.size as usize).ok();
-    let Some(map) = apob.as_ref().and_then(|apob| apob.memory_map().ok()) else {
-        fail::<S>("APOB")
-    };
+    let apob = Apob::new(apob_bytes::<S>(), S::PSP).ok();
+    let map = apob.as_ref().and_then(|apob| {
+        let map = fstart_driver_amd::apob::sysmap::first_system_memory_map(apob).ok()?;
+        map.sorted().ok()
+    });
+    let Some(map) = map else { fail::<S>("APOB") };
     fstart_log::info!(
         "{}: {} die(s), TOM {}, TOM2 {}, APOB top {}",
         S::NAME,

@@ -18,13 +18,16 @@
 //!   AGESA (Rome/Milan) only does so on a reserved hole above 1 TiB or a
 //!   type-3 hole; AMI MemDetect reserves 4 GiB there if TOM2 is above it;
 //! - more than [`MAX_HOLES`] holes is an error (Oxide's Milan cap).
+//!
+//! The noncar SoCs (Picasso, Zeppelin) build their e820 from the
+//! [`MemoryMap`] of [`SystemMemoryMap::sorted`] instead.
 
 use heapless::Vec;
 use zerocopy::little_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
-use super::{Apob, ApobError, group};
-use crate::sp3::soc::Generation;
+use super::Variant;
+use super::{Apob, ApobError, Entry, group};
 
 /// Most holes accepted (Oxide's Milan cap; AGESA has none).
 pub const MAX_HOLES: usize = 18;
@@ -64,6 +67,14 @@ pub struct Hole {
     pub kind: u32,
 }
 
+impl Hole {
+    /// The end; [`SystemMemoryMap::sorted`] and [`memory_map`] reject a hole
+    /// that wraps.
+    pub const fn end(&self) -> u64 {
+        self.base + self.size
+    }
+}
+
 impl From<&RawHole> for Hole {
     fn from(raw: &RawHole) -> Self {
         Self {
@@ -85,11 +96,71 @@ impl SystemMemoryMap<'_> {
     pub fn holes(&self) -> impl Iterator<Item = Hole> + '_ {
         self.raw.iter().map(Hole::from)
     }
+
+    /// The holes sorted by base, none wrapping, below a nonzero top.
+    pub fn sorted(&self) -> Result<MemoryMap, MapError> {
+        if self.top == 0 {
+            return Err(MapError::NoDram);
+        }
+        let mut holes: Vec<Hole, MAX_HOLES> = Vec::new();
+        for hole in self.holes() {
+            if hole.base.checked_add(hole.size).is_none() {
+                return Err(MapError::Wraps(hole));
+            }
+            holes.push(hole).map_err(|_| MapError::TooManyHoles)?;
+        }
+        holes.sort_unstable_by_key(|hole| hole.base);
+        Ok(MemoryMap {
+            top: self.top,
+            holes,
+        })
+    }
+}
+
+/// The 9/9 record, sorted and owned.
+#[derive(Debug, Clone)]
+pub struct MemoryMap {
+    /// Top of DRAM (exclusive).
+    pub top: u64,
+    holes: Vec<Hole, MAX_HOLES>,
+}
+
+impl MemoryMap {
+    pub fn holes(&self) -> &[Hole] {
+        &self.holes
+    }
+
+    /// [`Self::low_top_above`] 2 GiB.
+    pub fn low_top(&self) -> u64 {
+        self.low_top_above(1 << 31)
+    }
+
+    /// The UMA/MMIO boundary: the lowest hole below 4 GiB that ends above
+    /// `floor` (Zeppelin uses 1 GiB), in u64 so a 4 GiB ceiling stays
+    /// nonzero. Runtime TOP_MEM bounds it too.
+    pub fn low_top_above(&self, floor: u64) -> u64 {
+        self.holes.iter().fold(self.top.min(1 << 32), |top, hole| {
+            if hole.end() <= top && hole.end() > floor {
+                top.min(hole.base)
+            } else {
+                top
+            }
+        })
+    }
 }
 
 /// Read 9/9 instance 0.
 pub fn system_memory_map<'a>(apob: &Apob<'a>) -> Result<SystemMemoryMap<'a>, ApobError> {
-    let entry = apob.find(group::FABRIC, KIND, 0)?;
+    parse(apob.find(group::FABRIC, KIND, 0)?)
+}
+
+/// Read the first 9/9 record of any instance, as the noncar SoCs (Picasso,
+/// Zeppelin) do.
+pub fn first_system_memory_map<'a>(apob: &Apob<'a>) -> Result<SystemMemoryMap<'a>, ApobError> {
+    parse(apob.first(group::FABRIC, KIND)?)
+}
+
+fn parse(entry: Entry<'_>) -> Result<SystemMemoryMap<'_>, ApobError> {
     let head: &RawHead = entry.at(0x30)?;
     let count = head.count.get();
     if count as usize > MAX_HOLES {
@@ -123,12 +194,12 @@ pub enum HoleClass {
     Unknown,
 }
 
-pub const fn classify(generation: Generation, kind: u32) -> HoleClass {
-    match (generation, kind) {
+pub const fn classify(variant: Variant, kind: u32) -> HoleClass {
+    match (variant, kind) {
         (_, 0) => HoleClass::Uma,
         (_, 1) => HoleClass::Mmio,
-        (_, 2) | (Generation::Rome, 4 | 5) | (Generation::Milan, 6 | 7) => HoleClass::Reserved,
-        (Generation::Rome | Generation::Milan, 3) => HoleClass::Remap1T,
+        (_, 2) | (Variant::Ssp, 4 | 5) | (Variant::Gn, 6 | 7) => HoleClass::Reserved,
+        (Variant::Ssp | Variant::Gn, 3) => HoleClass::Remap1T,
         _ => HoleClass::Unknown,
     }
 }
@@ -170,6 +241,8 @@ impl Region {
 /// Memory map errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapError {
+    /// The top of DRAM is 0.
+    NoDram,
     TooManyHoles,
     /// A hole wraps the address space.
     Wraps(Hole),
@@ -183,7 +256,7 @@ pub enum MapError {
 /// every non-RAM range listed (see the module documentation for the
 /// differences to AGESA). Zero-sized holes are dropped.
 pub fn memory_map(
-    generation: Generation,
+    variant: Variant,
     top: u64,
     holes: impl IntoIterator<Item = Hole>,
 ) -> Result<Vec<Region, MAX_REGIONS>, MapError> {
@@ -207,7 +280,7 @@ pub fn memory_map(
         |s: (u64, u64, RegionKind, bool)| spans.push(s).map_err(|_| MapError::TooManyHoles);
     for h in &holes {
         let end = h.base + h.size;
-        match classify(generation, h.kind) {
+        match classify(variant, h.kind) {
             HoleClass::Uma => push((h.base, end, RegionKind::Uma, false))?,
             HoleClass::Mmio => push((h.base, end, RegionKind::Mmio, false))?,
             HoleClass::Reserved => push((h.base, end, RegionKind::Reserved(h.kind), false))?,
@@ -287,7 +360,7 @@ mod tests {
             .at(0x38, &2u32.to_le_bytes())
             .at(0x40, &holes);
         let data = Builder::new(0x18).entry(9, 9, 0, &body.0).build();
-        let apob = Apob::new(&data, Generation::Rome).unwrap();
+        let apob = Apob::new(&data, Variant::Ssp).unwrap();
         let map = system_memory_map(&apob).unwrap();
         assert_eq!(map.top, 64 * GIB);
         assert_eq!(
@@ -302,7 +375,7 @@ mod tests {
             .at(0x38, &19u32.to_le_bytes())
             .len(0x40 + 19 * 0x18);
         let data = Builder::new(0x18).entry(9, 9, 0, &body.0).build();
-        let apob = Apob::new(&data, Generation::Milan).unwrap();
+        let apob = Apob::new(&data, Variant::Gn).unwrap();
         assert!(matches!(
             system_memory_map(&apob),
             Err(ApobError::Value { value: 19, .. })
@@ -313,7 +386,7 @@ mod tests {
     fn below_one_tib() {
         // MMIO hole below 4 GiB and a reserved hole, given out of order.
         let map = memory_map(
-            Generation::Rome,
+            Variant::Ssp,
             0x10_5000_0000,
             [
                 hole(0x8_0000_0000, 0x10_0000, 2),
@@ -359,7 +432,7 @@ mod tests {
         let mmio = hole(0xb000_0000, 0x5000_0000, 1);
         let expected_ram = [(0, 0xb000_0000), (1 << 32, HT_HOLE_BASE), (ONE_TIB, top)];
         // Without any hole there (AGESA would not reserve it): still carved.
-        let map = memory_map(Generation::Milan, top, [mmio]).unwrap();
+        let map = memory_map(Variant::Gn, top, [mmio]).unwrap();
         assert_eq!(ram(&map), expected_ram);
         assert!(map.contains(&Region {
             base: HT_HOLE_BASE,
@@ -367,12 +440,7 @@ mod tests {
             kind: RegionKind::HyperTransport
         }));
         // ABL reports it as a reserved hole: the hole wins.
-        let map = memory_map(
-            Generation::Rome,
-            top,
-            [mmio, hole(HT_HOLE_BASE, 12 * GIB, 2)],
-        )
-        .unwrap();
+        let map = memory_map(Variant::Ssp, top, [mmio, hole(HT_HOLE_BASE, 12 * GIB, 2)]).unwrap();
         assert_eq!(ram(&map), expected_ram);
         assert!(map.contains(&Region {
             base: HT_HOLE_BASE,
@@ -380,12 +448,7 @@ mod tests {
             kind: RegionKind::Reserved(2)
         }));
         // Type 3: MMIO up to 0xFD_0000_0000, then the 12 GiB.
-        let map = memory_map(
-            Generation::Milan,
-            top,
-            [mmio, hole(0xfc_0000_0000, 16 * GIB, 3)],
-        )
-        .unwrap();
+        let map = memory_map(Variant::Gn, top, [mmio, hole(0xfc_0000_0000, 16 * GIB, 3)]).unwrap();
         assert_eq!(
             ram(&map),
             [(0, 0xb000_0000), (1 << 32, 0xfc_0000_0000), (ONE_TIB, top)]
@@ -396,7 +459,7 @@ mod tests {
             kind: RegionKind::Mmio
         }));
         assert_eq!(
-            memory_map(Generation::Rome, top, [hole(0xfe_0000_0000, GIB, 3)]),
+            memory_map(Variant::Ssp, top, [hole(0xfe_0000_0000, GIB, 3)]),
             Err(MapError::Remap(hole(0xfe_0000_0000, GIB, 3)))
         );
     }
@@ -406,25 +469,25 @@ mod tests {
         let classes = |g| [2, 3, 4, 5, 6, 7, 8].map(|t| classify(g, t));
         use HoleClass::*;
         assert_eq!(
-            classes(Generation::Naples),
+            classes(Variant::Zp),
             [
                 Reserved, Unknown, Unknown, Unknown, Unknown, Unknown, Unknown
             ]
         );
         assert_eq!(
-            classes(Generation::Rome),
+            classes(Variant::Ssp),
             [
                 Reserved, Remap1T, Reserved, Reserved, Unknown, Unknown, Unknown
             ]
         );
         assert_eq!(
-            classes(Generation::Milan),
+            classes(Variant::Gn),
             [
                 Reserved, Remap1T, Unknown, Unknown, Reserved, Reserved, Unknown
             ]
         );
         // An unknown type is never RAM.
-        let map = memory_map(Generation::Milan, 8 * GIB, [hole(4 * GIB, GIB, 4)]).unwrap();
+        let map = memory_map(Variant::Gn, 8 * GIB, [hole(4 * GIB, GIB, 4)]).unwrap();
         assert_eq!(ram(&map), [(0, 4 * GIB), (5 * GIB, 8 * GIB)]);
         assert!(map.contains(&Region {
             base: 4 * GIB,
@@ -438,17 +501,17 @@ mod tests {
         let a = hole(0x1000, 0x2000, 2);
         let b = hole(0x2000, 0x1000, 1);
         assert_eq!(
-            memory_map(Generation::Rome, GIB, [a, b]),
+            memory_map(Variant::Ssp, GIB, [a, b]),
             Err(MapError::Overlap(a, b))
         );
         let many = (0..19).map(|i| hole(i * 0x10000, 0x1000, 2));
         assert_eq!(
-            memory_map(Generation::Rome, GIB, many),
+            memory_map(Variant::Ssp, GIB, many),
             Err(MapError::TooManyHoles)
         );
         let wrap = hole(u64::MAX, 2, 1);
         assert_eq!(
-            memory_map(Generation::Rome, GIB, [wrap]),
+            memory_map(Variant::Ssp, GIB, [wrap]),
             Err(MapError::Wraps(wrap))
         );
     }

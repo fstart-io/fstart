@@ -87,7 +87,7 @@ fn reserve_iommu_range(map: &mut E820State, dram_top: u64) -> Result<(), Error> 
 mod tests {
     extern crate std;
     use super::*;
-    use fstart_driver_amd::apob::Apob;
+    use fstart_driver_amd::apob::{self, Apob};
     use std::vec;
 
     fn apob_bytes(holes: &[(u64, u64, u32)]) -> std::vec::Vec<u8> {
@@ -122,7 +122,11 @@ mod tests {
             (0x2000_0000, 0x0100_0000, 99), // an unknown PSP reservation still isn't RAM
         ];
         let bytes = apob_bytes(&holes);
-        let apob = Apob::parse(&bytes).unwrap().memory_map().unwrap();
+        let apob = Apob::new(&bytes, fstart_driver_amd::psp::Variant::Rv).unwrap();
+        let apob = apob::sysmap::first_system_memory_map(&apob)
+            .unwrap()
+            .sorted()
+            .unwrap();
         // The hole at 0xc8000000 ends above 1 GiB: TSEG goes below it.
         assert_eq!(low_top(&apob, 0xd000_0000), 0xc800_0000);
         let tseg = tseg_base(&apob, 0xd000_0000, 8 << 20);

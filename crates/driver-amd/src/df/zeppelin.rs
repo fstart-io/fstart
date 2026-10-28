@@ -10,7 +10,7 @@ use super::{
 };
 use crate::cpu::Revision;
 use crate::{
-    apob::{self, Apob},
+    apob::{Apob, mem},
     soc::Soc,
     soc::zeppelin::{NONPCI_MMIO_SIZE, Zeppelin},
 };
@@ -198,19 +198,6 @@ pub fn scrub_rate(size: u64, hours: u64) -> u8 {
         .saturating_sub(1) as u8
 }
 
-fn apob_byte(
-    apob: &Apob,
-    kind: u32,
-    instance: Option<u32>,
-    offset: usize,
-    min_version: u32,
-) -> Option<u8> {
-    if apob.version() < min_version {
-        return None;
-    }
-    apob.byte(apob::GROUP_MEMORY, kind, instance, offset)
-}
-
 /// The DRAM scrubber of the vendor AmdFabricZpPei with its defaults: scrub
 /// redirection on (PCD 0x8f) and one pass every 24 hours (PCD 0x8e). The ABL
 /// sets the scrub base and limit.
@@ -220,16 +207,8 @@ pub fn scrub_init(df: &Df<impl ConfigRegionAccess>, die: u8, apob: &Apob) -> Opt
         return None;
     }
     // Inferred meaning: the two UMC channels are populated.
-    let populated = [0x38, 0x39].map(|offset| {
-        apob_byte(
-            apob,
-            apob::TYPE_MEM_GENERAL_CONFIG,
-            Some(u32::from(die)),
-            offset,
-            0,
-        )
-    });
-    let [Some(a), Some(b)] = populated else {
+    let config = mem::mem_config(apob, 0, die).ok()?;
+    let [Ok(a), Ok(b)] = [0, 1].map(|channel| config.channel_byte(channel)) else {
         return None;
     };
     if a == 0 && b == 0 {
@@ -256,8 +235,8 @@ pub fn late_init(
     apob: &Apob,
 ) {
     let multi_die = dies / sockets > 1;
-    // APOB group 1 type 0xf, byte 0x130 (meaning unknown), APOB version 9 and up.
-    let apob_flag = apob_byte(apob, apob::TYPE_MEM_PIE_PWR, None, 0x130, 9).is_some_and(|b| b != 0);
+    let apob_flag =
+        apob.version() >= 9 && mem::pie_power(apob).is_ok_and(|pie| pie.flag() == Ok(true));
     let bit = |cond: bool, mask: u32| if cond { mask } else { 0 };
 
     // Bit 5 stays clear with C6 enabled (vendor PCD 0x13 = 1).

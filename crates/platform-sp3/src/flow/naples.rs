@@ -71,7 +71,7 @@ pub(crate) fn program_maps(df: &Df<Pci>, topology: &Topology, plan: &Plan) {
 fn umc_present(ctx: &Ctx) -> [u8; 8] {
     let mut present = [0u8; 8];
     for (node, n) in ctx.topology.nodes.iter().enumerate() {
-        present[node] = fstart_driver_amd::sp3::apob::mem::spd(&ctx.apob, n.socket, n.die)
+        present[node] = fstart_driver_amd::apob::mem::spd(&ctx.apob, n.socket, n.die)
             .map(|t| {
                 t.dimms()
                     .filter(|(_, _, r)| r.present())

@@ -3,7 +3,8 @@
 //!
 //! | G/T | Instance | Use |
 //! |---|---|---|
-//! | 1/2 | `s << 8 \| d` | memory clock |
+//! | 1/2 | `s << 8 \| d` | memory clock, populated channels |
+//! | 1/0xf | any | PIE power flag (ZP) |
 //! | 1/0x10 | 0 | APCB boot info (recovery flag) |
 //! | 1/0x11 | `s << 8 \| d` | per-DIMM SPD copies |
 //! | 8/8 | 0 | SMBIOS 17/20 seeds |
@@ -16,6 +17,7 @@ use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 use super::{Apob, ApobError, Entry, group, instance};
 
 const MEM_CONFIG: u32 = 2;
+const PIE_POWER: u32 = 0xf;
 const APCB_BOOT_INFO: u32 = 0x10;
 const SPD: u32 = 0x11;
 const SMBIOS: u32 = 8;
@@ -41,6 +43,25 @@ impl MemConfig<'_> {
 pub fn mem_config<'a>(apob: &Apob<'a>, socket: u8, die: u8) -> Result<MemConfig<'a>, ApobError> {
     Ok(MemConfig {
         entry: apob.find(group::MEMORY, MEM_CONFIG, instance(socket, die))?,
+    })
+}
+
+/// 1/0xf: the ABL's PIE power settings (ZP), first instance.
+pub struct PiePower<'a> {
+    entry: Entry<'a>,
+}
+
+impl PiePower<'_> {
+    /// The byte at `+0x130` that AmdFabricZpDxe tests from APOB version 9 on
+    /// (meaning unknown).
+    pub fn flag(&self) -> Result<bool, ApobError> {
+        self.entry.byte(0x130).map(|b| b != 0)
+    }
+}
+
+pub fn pie_power<'a>(apob: &Apob<'a>) -> Result<PiePower<'a>, ApobError> {
+    Ok(PiePower {
+        entry: apob.first(group::MEMORY, PIE_POWER)?,
     })
 }
 
@@ -231,7 +252,7 @@ pub fn smbios_info<'a>(apob: &Apob<'a>) -> Result<SmbiosInfo<'a>, ApobError> {
 mod tests {
     use super::super::build::{Body, Builder};
     use super::*;
-    use crate::sp3::soc::Generation;
+    use crate::psp::Variant;
 
     #[test]
     fn record_sizes() {
@@ -250,14 +271,14 @@ mod tests {
         }
         let body = Body::default().at(0x30, &[2, 8]).at(0x38, &records);
         let data = Builder::new(0x18).entry(1, 0x11, 0x100, &body.0).build();
-        let apob = Apob::new(&data, Generation::Milan).unwrap();
+        let apob = Apob::new(&data, Variant::Gn).unwrap();
         let table = spd(&apob, 1, 0).unwrap();
         let dimms: std::vec::Vec<_> = table.dimms().map(|(c, d, r)| (c, d, r.spd[0])).collect();
         assert_eq!(dimms, [(0, 0, 0x11), (5, 1, 0x22)]);
         // Counts larger than the entry fail.
         let body = Body::default().at(0x30, &[2, 9]).at(0x38, &records);
         let data = Builder::new(0x18).entry(1, 0x11, 0, &body.0).build();
-        assert!(spd(&Apob::new(&data, Generation::Rome).unwrap(), 0, 0).is_err());
+        assert!(spd(&Apob::new(&data, Variant::Ssp).unwrap(), 0, 0).is_err());
     }
 
     #[test]
@@ -271,7 +292,7 @@ mod tests {
             .at(0x34, &t17)
             .at(0x3c, &t20);
         let data = Builder::new(0x18).entry(8, 8, 0, &body.0).build();
-        let apob = Apob::new(&data, Generation::Rome).unwrap();
+        let apob = Apob::new(&data, Variant::Ssp).unwrap();
         let info = smbios_info(&apob).unwrap();
         assert!(info.ecc());
         let s = &info.type17[0];
@@ -296,7 +317,7 @@ mod tests {
             .entry(1, 2, 0, &mem.0)
             .entry(1, 0x10, 0, &boot.0)
             .build();
-        let apob = Apob::new(&data, Generation::Naples).unwrap();
+        let apob = Apob::new(&data, Variant::Zp).unwrap();
         let mem = mem_config(&apob, 0, 0).unwrap();
         assert_eq!((mem.memclk(), mem.channel_byte(1)), (Ok(1600), Ok(1)));
         let boot = apcb_boot_info(&apob).unwrap();

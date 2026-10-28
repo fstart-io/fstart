@@ -1,20 +1,23 @@
-//! APOB: the AMD PSP output block the ABL leaves in DRAM (PSP_APOB §3.5).
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! APOB: the AMD PSP output block the ABL leaves in DRAM (PSP_APOB §3.5),
+//! the same container on every Zen SoC. It holds PSP-trained memory
+//! results; nothing here retrains or guesses UMC register data.
 //!
 //! One APOB per system at the BIOS directory entry 0x61 destination
-//! (`0x3000_0000` on every donor); per-socket/die data are instances inside
-//! it. Header `{'APOB', version, size, first entry}`, entries
+//! (`0x3000_0000` on every SP3 donor); per-socket/die data are instances
+//! inside it. Header `{'APOB', version, size, first entry}`, entries
 //! `{group, type, instance, size}` + 32-byte HMAC = 0x30 bytes, `size`
 //! including the header. Record offsets in the submodules are from the entry
 //! start, as in the report.
 //!
 //! Generation rules (decompiler-only, AmdPspPeiV2[Ssp] `ffe1813a`):
-//! Naples: `version < 5` → first entry at `0x220`, else `+0xc`;
-//! Rome/Milan: `version <= 4` is rejected.
+//! ZP (Naples, Zeppelin): `version < 5` → first entry at `0x220`, else
+//! `+0xc`; Rome/Milan: `version <= 4` is rejected; Raven/Picasso: `+0xc`.
 //!
 //! - [`sysmap`]: 9/9 system memory map and its conversion to a memory map
 //! - [`ccx`]: 3/3 CCD/CCX/core map (Rome, Milan)
 //! - [`nps`]: 9/0x13 NUMA nodes per socket, 9/0x14 extra domains
-//! - [`mem`]: 1/2, 1/0x10, 1/0x11 SPD, 8/8 SMBIOS inputs
+//! - [`mem`]: 1/2, 1/0xf, 1/0x10, 1/0x11 SPD, 8/8 SMBIOS inputs
 //! - [`event`]: 7/6 ABL event log
 
 pub mod ccx;
@@ -23,10 +26,12 @@ pub mod mem;
 pub mod nps;
 pub mod sysmap;
 
+pub use sysmap::{Hole, MemoryMap};
+
 use zerocopy::little_endian::U32;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
-use crate::sp3::soc::Generation;
+use crate::psp::Variant;
 
 /// APOB group ids used by x86.
 pub mod group {
@@ -44,7 +49,8 @@ pub const SIGNATURE: [u8; 4] = *b"APOB";
 pub const ENTRY_HEADER_SIZE: usize = 0x30;
 /// Naples: first entry of an APOB with `version < 5`.
 pub const NAPLES_LEGACY_FIRST_ENTRY: usize = 0x220;
-/// fstart's sanity bound for a header read from DRAM (AGESA has none).
+/// fstart's sanity bound for a header read from DRAM (AGESA has none); the
+/// noncar SoCs bound it by their APOB region.
 pub const MAX_SIZE: u32 = 16 << 20;
 
 /// Instance of per-socket/die data: `(socket << 8) | die`; Rome and Milan
@@ -79,7 +85,7 @@ pub struct EntryHeader {
 pub enum ApobError {
     /// No `'APOB'` signature.
     Signature,
-    /// Version not accepted by this generation's rule.
+    /// Version not accepted by this PSP's rule.
     Version(u32),
     /// Header size or first-entry offset outside the buffer.
     Size { size: u32, first: u32 },
@@ -99,11 +105,11 @@ pub enum ApobError {
     },
     /// The entry is shorter than its record layout.
     TooShort { group: u32, kind: u32 },
-    /// The record is not defined for this generation.
+    /// The record is not defined for this PSP.
     Unsupported {
         group: u32,
         kind: u32,
-        generation: Generation,
+        variant: Variant,
     },
     /// A record field holds a value the decoder does not know.
     Value { group: u32, kind: u32, value: u32 },
@@ -113,39 +119,43 @@ pub enum ApobError {
 #[derive(Clone, Copy)]
 pub struct Apob<'a> {
     data: &'a [u8],
-    generation: Generation,
+    variant: Variant,
     version: u32,
     first: usize,
 }
 
 impl<'a> Apob<'a> {
-    /// Parse the APOB in `data` (at least `size` bytes as the header says).
-    pub fn new(data: &'a [u8], generation: Generation) -> Result<Self, ApobError> {
+    /// Parse the APOB in `data` (at least `size` bytes as the header says)
+    /// and check every entry header, unknown groups included.
+    pub fn new(data: &'a [u8], variant: Variant) -> Result<Self, ApobError> {
         let (header, _) = Header::ref_from_prefix(data).map_err(|_| ApobError::Signature)?;
         if header.signature != SIGNATURE {
             return Err(ApobError::Signature);
         }
         let version = header.version.get();
         let (size, first) = (header.size.get(), header.first_entry.get());
-        let first_entry = match generation {
-            Generation::Naples if version < 5 => NAPLES_LEGACY_FIRST_ENTRY as u32,
-            Generation::Naples => first,
-            Generation::Rome | Generation::Milan if version <= 4 => {
+        let first_entry = match variant {
+            Variant::Zp if version < 5 => NAPLES_LEGACY_FIRST_ENTRY as u32,
+            Variant::Ssp | Variant::Gn if version <= 4 => {
                 return Err(ApobError::Version(version));
             }
-            Generation::Rome | Generation::Milan => first,
+            Variant::Zp | Variant::Rv | Variant::Ssp | Variant::Gn => first,
         };
         let size_error = ApobError::Size { size, first };
         let data = data.get(..size as usize).ok_or(size_error)?;
-        if (first_entry as usize) < size_of::<Header>() || first_entry > size {
+        if (first_entry as usize) < size_of::<Header>()
+            || (size as usize).saturating_sub(first_entry as usize) < ENTRY_HEADER_SIZE
+        {
             return Err(size_error);
         }
-        Ok(Self {
+        let apob = Self {
             data,
-            generation,
+            variant,
             version,
             first: first_entry as usize,
-        })
+        };
+        apob.entries().try_for_each(|entry| entry.map(drop))?;
+        Ok(apob)
     }
 
     /// The APOB at physical address `address` (identity mapped).
@@ -153,10 +163,7 @@ impl<'a> Apob<'a> {
     /// # Safety
     /// `address` holds an APOB written by the PSP and stays unchanged and
     /// unaliased by writes for `'static`.
-    pub unsafe fn from_address(
-        address: u64,
-        generation: Generation,
-    ) -> Result<Apob<'static>, ApobError> {
+    pub unsafe fn from_address(address: u64, variant: Variant) -> Result<Apob<'static>, ApobError> {
         let ptr = address as usize as *const u8;
         // SAFETY: the caller's contract covers the header.
         let header = unsafe { core::slice::from_raw_parts(ptr, size_of::<Header>()) };
@@ -174,12 +181,12 @@ impl<'a> Apob<'a> {
         // SAFETY: as above, for the size the header gives.
         Apob::new(
             unsafe { core::slice::from_raw_parts(ptr, size as usize) },
-            generation,
+            variant,
         )
     }
 
-    pub fn generation(&self) -> Generation {
-        self.generation
+    pub fn variant(&self) -> Variant {
+        self.variant
     }
 
     pub fn version(&self) -> u32 {
@@ -229,6 +236,17 @@ impl<'a> Apob<'a> {
         })
     }
 
+    /// The first entry of `(group, kind)`, of any instance.
+    pub fn first(&self, group: u32, kind: u32) -> Result<Entry<'a>, ApobError> {
+        self.find_all(group, kind)
+            .next()
+            .unwrap_or(Err(ApobError::NotFound {
+                group,
+                kind,
+                instance: 0,
+            }))
+    }
+
     /// Every entry of `(group, kind)`, any instance.
     pub fn find_all(
         &self,
@@ -241,20 +259,20 @@ impl<'a> Apob<'a> {
         })
     }
 
-    /// Fail unless the record exists on this generation.
+    /// Fail unless the record exists on this PSP.
     pub(crate) fn require(
         &self,
         group: u32,
         kind: u32,
-        generations: &[Generation],
+        variants: &[Variant],
     ) -> Result<(), ApobError> {
-        if generations.contains(&self.generation) {
+        if variants.contains(&self.variant) {
             Ok(())
         } else {
             Err(ApobError::Unsupported {
                 group,
                 kind,
-                generation: self.generation,
+                variant: self.variant,
             })
         }
     }
@@ -270,7 +288,10 @@ impl<'a> Iterator for Entries<'a> {
     type Item = Result<Entry<'a>, ApobError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let offset = self.offset.filter(|&o| o < self.data.len())?;
+        // A tail shorter than an entry header is padding.
+        let offset = self
+            .offset
+            .filter(|&o| self.data.len().saturating_sub(o) >= ENTRY_HEADER_SIZE)?;
         let entry = (|| {
             let bytes = &self.data[offset..];
             let (header, _) = EntryHeader::ref_from_prefix(bytes).ok()?;
@@ -341,7 +362,7 @@ impl<'a> Entry<'a> {
     }
 
     /// The byte at entry offset `offset`.
-    pub(crate) fn byte(&self, offset: usize) -> Result<u8, ApobError> {
+    pub fn byte(&self, offset: usize) -> Result<u8, ApobError> {
         self.bytes.get(offset).copied().ok_or(self.too_short())
     }
 }
@@ -429,20 +450,29 @@ mod tests {
             .entry(1, 2, 0, &[])
             .build();
         assert_eq!(
-            Apob::new(&v4, Generation::Rome).err(),
+            Apob::new(&v4, Variant::Ssp).err(),
             Some(ApobError::Version(4))
         );
         assert_eq!(
-            Apob::new(&v4, Generation::Milan).err(),
+            Apob::new(&v4, Variant::Gn).err(),
             Some(ApobError::Version(4))
         );
-        // Naples < 5 ignores the header's first-entry offset.
+        // ZP < 5 ignores the header's first-entry offset, Raven follows it.
         let mut legacy = v4.clone();
         legacy[0xc..0x10].copy_from_slice(&0x10u32.to_le_bytes());
-        let apob = Apob::new(&legacy, Generation::Naples).unwrap();
+        let apob = Apob::new(&legacy, Variant::Zp).unwrap();
         assert_eq!(apob.find(1, 2, 0).map(|e| e.instance()), Ok(0));
+        assert!(Apob::new(&legacy, Variant::Rv).is_err());
+        let v2 = Builder::new(2).entry(1, 2, 0, &[]).build();
+        assert_eq!(
+            Apob::new(&v2, Variant::Rv)
+                .unwrap()
+                .first(1, 2)
+                .map(|e| e.kind()),
+            Ok(2)
+        );
         let v5 = Builder::new(5).entry(1, 2, 0, &[]).build();
-        assert!(Apob::new(&v5, Generation::Rome).is_ok());
+        assert!(Apob::new(&v5, Variant::Ssp).is_ok());
     }
 
     #[test]
@@ -453,8 +483,9 @@ mod tests {
             .entry(7, 6, 0, &[])
             .entry(7, 6, 0, &[])
             .build();
-        let apob = Apob::new(&data, Generation::Milan).unwrap();
+        let apob = Apob::new(&data, Variant::Gn).unwrap();
         assert_eq!(apob.find(1, 0x11, 0x100).unwrap().bytes()[0x30], 1);
+        assert_eq!(apob.first(1, 0x11).unwrap().instance(), 0);
         assert_eq!(
             apob.find(7, 6, 0).err(),
             Some(ApobError::Duplicate {
@@ -476,23 +507,32 @@ mod tests {
     }
 
     #[test]
-    fn malformed_entries_stop_the_walk() {
+    fn malformed_entries_are_rejected() {
         let mut data = Builder::new(0x18)
             .entry(1, 2, 0, &[])
             .entry(9, 9, 0, &[])
             .build();
         // Second entry claims a size below the header size.
         data[0x40 + 0xc..0x40 + 0x10].copy_from_slice(&0x10u32.to_le_bytes());
-        let apob = Apob::new(&data, Generation::Rome).unwrap();
-        let walked: Vec<_> = apob.entries().map(|e| e.map(|e| e.group())).collect();
-        assert_eq!(walked, [Ok(1), Err(ApobError::Entry { offset: 0x40 })]);
         assert_eq!(
-            apob.find(9, 9, 0).err(),
+            Apob::new(&data, Variant::Ssp).err(),
             Some(ApobError::Entry { offset: 0x40 })
         );
+        // A tail shorter than an entry header is padding; an APOB without
+        // room for one entry is not an APOB.
+        let mut padded = Builder::new(0x18).entry(1, 2, 0, &[]).build();
+        padded.extend([0; 0x10]);
+        let size = padded.len() as u32;
+        padded[8..0xc].copy_from_slice(&size.to_le_bytes());
+        assert!(Apob::new(&padded, Variant::Rv).is_ok_and(|apob| apob.first(1, 2).is_ok()));
+        let empty = Builder::new(0x18).build();
+        assert!(matches!(
+            Apob::new(&empty, Variant::Rv),
+            Err(ApobError::Size { .. })
+        ));
         // Size larger than the buffer.
         assert!(matches!(
-            Apob::new(&data[..0x50], Generation::Rome),
+            Apob::new(&data[..0x50], Variant::Ssp),
             Err(ApobError::Size { .. })
         ));
     }

@@ -11,8 +11,8 @@
 use heapless::Vec;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
+use super::Variant;
 use super::{Apob, ApobError, group, instance};
-use crate::sp3::soc::Generation;
 
 /// Absent CCD/CCX/core id.
 pub const ABSENT: u8 = 0xff;
@@ -115,10 +115,10 @@ impl CoreMap {
 
 /// The 3/3 map of `socket`.
 pub fn core_map(apob: &Apob<'_>, socket: u8) -> Result<CoreMap, ApobError> {
-    apob.require(group::CCX, KIND, &[Generation::Rome, Generation::Milan])?;
+    apob.require(group::CCX, KIND, &[Variant::Ssp, Variant::Gn])?;
     let entry = apob.find(group::CCX, KIND, instance(socket, 0))?;
-    Ok(match apob.generation() {
-        Generation::Milan => CoreMap::parse::<8>(entry.at(0x30)?),
+    Ok(match apob.variant() {
+        Variant::Gn => CoreMap::parse::<8>(entry.at(0x30)?),
         _ => CoreMap::parse::<4>(entry.at(0x30)?),
     })
 }
@@ -166,7 +166,7 @@ mod tests {
         let data = Builder::new(0x18)
             .entry(3, 3, 0x100, &body(8, &[0, 2, 5], 8))
             .build();
-        let apob = Apob::new(&data, Generation::Milan).unwrap();
+        let apob = Apob::new(&data, Variant::Gn).unwrap();
         let map = core_map(&apob, 1).unwrap();
         assert_eq!(
             map.ccds.iter().map(|d| d.id).collect::<std::vec::Vec<_>>(),
@@ -183,17 +183,17 @@ mod tests {
         let data = Builder::new(0x18)
             .entry(3, 3, 0, &body(4, &[1, 3], 3))
             .build();
-        let apob = Apob::new(&data, Generation::Rome).unwrap();
+        let apob = Apob::new(&data, Variant::Ssp).unwrap();
         let map = core_map(&apob, 0).unwrap();
         assert_eq!(map.ccds.len(), 2);
         assert_eq!(map.threads(), 12);
         // A Rome-sized entry is too short for the Milan layout.
-        let apob = Apob::new(&data, Generation::Milan).unwrap();
+        let apob = Apob::new(&data, Variant::Gn).unwrap();
         assert_eq!(
             core_map(&apob, 0),
             Err(ApobError::TooShort { group: 3, kind: 3 })
         );
-        let apob = Apob::new(&data, Generation::Naples).unwrap();
+        let apob = Apob::new(&data, Variant::Zp).unwrap();
         assert!(matches!(
             core_map(&apob, 0),
             Err(ApobError::Unsupported { .. })

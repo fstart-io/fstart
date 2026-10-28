@@ -84,7 +84,7 @@ pub fn all_events<'a>(
 mod tests {
     use super::super::build::{Body, Builder};
     use super::*;
-    use crate::sp3::soc::Generation;
+    use crate::psp::Variant;
 
     fn log(events: &[[u32; 4]]) -> std::vec::Vec<u8> {
         let raw: std::vec::Vec<u8> = events
@@ -104,7 +104,7 @@ mod tests {
             .entry(7, 6, 0, &log(&[[6, 0x4003, 1, 2]]))
             .entry(7, 6, 0x100, &log(&[[3, 0x1234, 0, 0], [5, 0x4068, 7, 8]]))
             .build();
-        let apob = Apob::new(&data, Generation::Milan).unwrap();
+        let apob = Apob::new(&data, Variant::Gn).unwrap();
         let socket1: std::vec::Vec<_> = event_log(&apob, 0x100).unwrap().collect();
         assert_eq!(
             socket1[1],
@@ -129,7 +129,7 @@ mod tests {
     fn count_beyond_entry_is_an_error() {
         let body = Body::default().at(0x30, &100u16.to_le_bytes()).len(0x40);
         let data = Builder::new(0x18).entry(7, 6, 0, &body.0).build();
-        let apob = Apob::new(&data, Generation::Rome).unwrap();
+        let apob = Apob::new(&data, Variant::Ssp).unwrap();
         assert!(matches!(
             event_log(&apob, 0),
             Err(ApobError::TooShort { .. })
