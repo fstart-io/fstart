@@ -8,7 +8,6 @@
 pub mod ioapic;
 pub mod iohc;
 pub mod iommu;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod pcie;
 #[cfg(feature = "picasso")]
 pub mod picasso;

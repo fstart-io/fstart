@@ -36,7 +36,8 @@ register_bitfields![u32,
     ],
     /// D0F2x84 and its L2A copy.
     pub EfrShadow1 [
-        BIT21_22 OFFSET(21) NUMBITS(2) [],
+        BIT21 OFFSET(21) NUMBITS(1) [],
+        BIT22 OFFSET(22) NUMBITS(1) [],
         BIT31 OFFSET(31) NUMBITS(1) []
     ]
 ];

@@ -220,8 +220,6 @@ pub const NAPLES_DEVICE_REMAP: SmnAddr = 0x13B1_00C0;
 /// Rome/Milan RSMU strap index/data (`+ nbio << 12 + core << 14`, not
 /// the quadrant offset).
 pub const RSMU_STRAP_INDEX: SmnAddr = 0x0904_67AC;
-/// Naples strap index/data per core (`0x4A348`, `0x4A3C8`).
-pub const NAPLES_STRAP_INDEX: [SmnAddr; 2] = [0x0004_A348, 0x0004_A3C8];
 
 /// Ports (bridges) per NBIO: 18 on Rome/Milan (WAFL 16/17), 16 on Naples.
 pub const fn ports_per_nbio(generation: Generation) -> usize {
@@ -281,13 +279,17 @@ impl<'n, P: ConfigRegionAccess + Clone> PcieCore<'n, P> {
     /// `0xFFFE0000 | strap`.
     pub fn write_strap(&self, strap: u16, value: u32) {
         let index = match self.nbio.generation {
-            Generation::Naples => NAPLES_STRAP_INDEX[self.core as usize & 1],
+            Generation::Naples => crate::nbio::pcie::strap_index(self.core as usize & 1).address(),
             Generation::Rome | Generation::Milan => {
                 RSMU_STRAP_INDEX + ((self.nbio.index as u32) << 12) + ((self.core as u32) << 14)
             }
         };
-        self.nbio.write32(index, 0xFFFE_0000 | strap as u32);
-        self.nbio.write32(index + 4, value);
+        fstart_core::indexed::Indexed::<_, _, ()>::new(
+            self.nbio.reg_at::<()>(index),
+            self.nbio.reg_at::<()>(index + 4),
+            0xFFFE_0000 | strap as u32,
+        )
+        .set(value);
     }
 
     /// The port's link has trained: LTSSM in L0 states `[0x10, 0x1C)`

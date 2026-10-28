@@ -97,8 +97,8 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
             self.iommu_l1s()
                 .iter()
                 .for_each(|&l1| self.modify32(l1 + L1_0DC, 1 << 4, 0));
-            shadow1.modify(EfrShadow1::BIT21_22::CLEAR);
-            self.modify32(self.at(L2A_EFR_SHADOW1.address()), 1 << 21, 0);
+            shadow1.modify(EfrShadow1::BIT21::CLEAR + EfrShadow1::BIT22::CLEAR);
+            self.reg(L2A_EFR_SHADOW1).modify(EfrShadow1::BIT21::CLEAR);
         } else {
             shadow1.modify(EfrShadow1::BIT31::CLEAR);
             shadow0.modify(EfrShadow0::GAM.val(m.iommu_gam as u32));
