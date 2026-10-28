@@ -32,7 +32,7 @@ use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::sp3::dxio::{self, DMA_SIZE, DmaBuffer, Dxio, Unit};
 use fstart_driver_amd::sp3::fch;
-use fstart_driver_amd::sp3::fch::huashan::{sata::SataPolicy, usb::UsbPolicy};
+use fstart_driver_amd::sp3::fch::huashan::usb::UsbPolicy;
 use fstart_driver_amd::sp3::nbio::fuse::Fuses;
 use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
@@ -287,7 +287,7 @@ pub(crate) fn fch_secondaries(ctx: &mut Ctx, si: &Silicon) {
             generation,
             &si.smus[1],
             &UsbPolicy::default_for(generation, 1),
-            &SataPolicy::socket1(),
+            &ctx.policy.sata[1],
             ctx.resume,
         )
         .or_halt("FCH socket 1");
@@ -389,10 +389,15 @@ pub(crate) fn dxio(
 
 /// SATA env per socket (FCH_SP3 §3.1).
 pub(crate) fn fch_env(ctx: &Ctx, _si: &Silicon) {
-    fch::huashan::sata::env(&ctx.fch, ctx.generation, &SataPolicy::socket0());
+    if !fch::huashan::sata::env(&ctx.fch, ctx.generation, &ctx.policy.sata[0]) {
+        // Enclosure messages only drive LEDs; the controller stays usable.
+        fstart_log::warn!("sp3: SATA socket 0 SGPIO messages timed out");
+    }
     if ctx.topology.sockets > 1 {
         let fch1 = secondary_fch(socket_bus(ctx, 1), ctx.timer);
-        fch::multi::huashan_socket1_env(&fch1, ctx.generation, &SataPolicy::socket1());
+        if !fch::multi::huashan_socket1_env(&fch1, ctx.generation, &ctx.policy.sata[1]) {
+            fstart_log::warn!("sp3: SATA socket 1 SGPIO messages timed out");
+        }
     }
 }
 
@@ -609,10 +614,14 @@ pub(crate) fn pci_post(_ctx: &Ctx, si: &Silicon) {
     }
 }
 
-/// FCH late tasks of socket 0 (FCH_SP3 §2.3); Milan asks SMM for the PSP
+/// SATA late tasks of both sockets (FCH_SP3 §2.3); Milan asks SMM for the PSP
 /// FCH lock (SW SMI D2) when the handler is installed.
 pub(crate) fn fch_late(ctx: &Ctx, _si: &Silicon) {
-    fch::huashan::sata::late(&ctx.fch, &SataPolicy::socket0());
+    fch::huashan::sata::late(&ctx.fch, &ctx.policy.sata[0]);
+    if ctx.topology.sockets > 1 {
+        let fch1 = secondary_fch(socket_bus(ctx, 1), ctx.timer);
+        fch::huashan::sata::late(&fch1, &ctx.policy.sata[1]);
+    }
     if ctx.generation == Generation::Milan && ctx.smm.is_some() {
         fch::huashan::smm::request_fch_lock(&ctx.fch);
     }

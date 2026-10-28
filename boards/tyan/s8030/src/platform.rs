@@ -40,6 +40,10 @@ impl board::Board for Board {
             power: policy::power(),
             ccx: policy::ccx(),
             fch_env: policy::fch_env(),
+            sata: [
+                fstart_driver_amd::sp3::fch::huashan::sata::SataPolicy::socket0(),
+                fstart_driver_amd::sp3::fch::huashan::sata::SataPolicy::socket1(),
+            ],
             dxio: policy::dxio(generation),
         }
     }

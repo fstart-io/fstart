@@ -301,7 +301,8 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     let fch = hw::primary_fch(timer);
 
     step(0x11, "FCH reset tasks");
-    let resume = fch_reset(&fch, generation);
+    let policy = B::policy(generation);
+    let resume = fch_reset(&fch, generation, &policy);
     B::early_init(&fch).or_halt("board early init");
 
     step(0x12, "console");
@@ -343,7 +344,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
         ecam,
         fch,
         resume: false,
-        policy: B::policy(generation),
+        policy,
         ffs,
         apob,
         tops,
@@ -428,7 +429,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
 
 /// The eight PEI reset tasks on socket 0's FCH (FCH_SP3 §2.1). Returns
 /// whether this is an S3 resume.
-fn fch_reset(fch: &PrimaryFch, generation: Generation) -> bool {
+fn fch_reset(fch: &PrimaryFch, generation: Generation, _policy: &Policy) -> bool {
     use fch::common::reset;
     reset::prelim(fch, generation);
     reset::ab_bar(fch);
@@ -438,9 +439,7 @@ fn fch_reset(fch: &PrimaryFch, generation: Generation) -> bool {
         #[cfg(feature = "naples")]
         Generation::Naples => fch::taishan::sata::reset(fch, true),
         #[cfg(any(feature = "rome", feature = "milan"))]
-        Generation::Rome | Generation::Milan => {
-            fch::huashan::sata::reset(fch, &fch::huashan::sata::SataPolicy::socket0())
-        }
+        Generation::Rome | Generation::Milan => fch::huashan::sata::reset(fch, &_policy.sata[0]),
         #[allow(unreachable_patterns)]
         _ => fail("FCH SATA reset"),
     }

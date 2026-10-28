@@ -38,6 +38,15 @@ remain unvalidated. Vendor Setup overrides are not implemented.
 The current SP3 MP implementation also requires xAPIC: configurations above
 254 threads halt rather than attempting x2APIC bring-up.
 
+A separate RAM-only Linux AHCI diagnostic initializes four controllers and
+probes 17 retained ports, including all eight fixed socket-1 SATA ports.
+All links were down and no disk was detected: an end-to-end SATA read is
+**blocked**, not passed. The diagnostic sets discovered disks read-only,
+mounts no disk filesystem, and shuts down through ACPI. It found no host
+PCI network controller. Further storage validation requires a known powered
+SATA drive and confirmed cabling; integrated xGbE is unsupported on Milan
+(see below), not a missing MAC driver awaiting enablement.
+
 ## Build and flash banks
 
 The BMC exports a **64 MiB readout**, while SMBIOS reports a 16 MiB BIOS.
@@ -121,16 +130,24 @@ registers (`0x0d`, `0x14`, …) are undocumented in SNLS466A; their full bytes
 are preserved without guessing RXDET semantics from adjacent registers.
 Selector `0x9` does not run a redriver sequence.
 
-**Ethernet limitation:** RXM100CB's eight Milan xGbE enable PCDs
-(`0x148`–`0x14f`) default to false. Native policy preserves that gate and
-warns if a mixed card requests Ethernet: the SATA/PCIe portions are still
-configured, but Ethernet descriptors are omitted before DXIO. The shared
-encoder now models Ethernet SerDes as type `0x10`, not PCIe, with separate
-lane validation. This is not MAC/MDIO/PHY-link initialization: an enabled
-Milan MAC configuration path has not been recovered or hardware-tested.
-No factory MAC addresses are read or fabricated while these ports are off.
+**Milan Ethernet hardware limitation:** these legacy xGbE layouts do not
+establish that a Milan MAC exists. AMD's Family 19h Model 01h B1 PPR
+(55898, vol. 1, feature overview) lists four SATA controllers but no
+Ethernet complex; the older Family 17h PPR (54945) explicitly lists one.
+The [SP3 interface reference](https://chipswiki.org/Amd/packages/socket_sp3)
+states that Type-1/2 processors do not implement the SATAe/xGbE functions.
+The own Milan Huashan firmware has no xGbE task and its eight enable PCDs
+(`0x148`–`0x14f`) are false. This is not merely an unfinished MAC driver:
+integrated xGbE link testing is unavailable on this dual-Milan bench.
+Native policy warns and omits Ethernet descriptors while configuring the
+SATA/PCIe portions. The shared wire encoder retains the legacy SerDes type
+`0x10`, distinct from PCIe. No MAC addresses are read or fabricated.
 Mixed card routing and active SATA/redriver links are host-tested only;
-the current bench straps `0x0000` do not exercise these paths.
+the current bench straps `0x0000` do not exercise these paths. Fixed socket-1
+P1 SATA uses AHCI controller 1, enabled explicitly by board policy rather
+than inheriting the Tyan donor's all-off socket-1 policy. The platform uses
+that policy at reset, environment setup and late port handling. No donor
+SGPIO pads or external-port wiring are assumed for Ethanol-X.
 
 Native hotplug retains empty bridges and advertises PCIe slots without
 inventing physical slot numbers or external GPIO routing. The recovered

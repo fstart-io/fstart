@@ -80,6 +80,9 @@ pub struct Controller {
     pub enabled: bool,
     /// Ports that are external/hot-plug (ESP); never disabled at late time.
     pub esp_ports: u8,
+    /// Wired ports retained for OS COMRESET even before a link is detected.
+    /// This does not advertise external/hotplug wiring like `esp_ports`.
+    pub keep_ports: u8,
     /// SGPIO enclosure management with these pads (board policy).
     pub sgpio: Option<&'static [Pad]>,
 }
@@ -131,16 +134,19 @@ impl SataPolicy {
                 Controller {
                     enabled: true,
                     esp_ports: 0x3F,
+                    keep_ports: 0,
                     sgpio: Some(SGPIO0_PADS),
                 },
                 Controller {
                     enabled: true,
                     esp_ports: 0xFF,
+                    keep_ports: 0,
                     sgpio: Some(SGPIO1_PADS),
                 },
                 Controller {
                     enabled: true,
                     esp_ports: 0,
+                    keep_ports: 0,
                     sgpio: None,
                 },
                 Self::OFF,
@@ -158,6 +164,7 @@ impl SataPolicy {
     const OFF: Controller = Controller {
         enabled: false,
         esp_ports: 0,
+        keep_ports: 0,
         sgpio: None,
     };
 }
@@ -314,7 +321,9 @@ pub fn late<H: FchHw>(hw: &H, policy: &SataPolicy) {
         let a = abar(c);
         update::<u32, _>(&smn, a + reg::LOCK, 0xFF_0000, 0x2001);
         let mut disabled = 0u32;
-        for n in (0..8).filter(|n| ctl.esp_ports & (1 << n) == 0) {
+        let retained = ctl.esp_ports | ctl.keep_ports;
+        update::<u32, _>(&smn, a + reg::PI, 0, u32::from(ctl.keep_ports));
+        for n in (0..8).filter(|n| retained & (1 << n) == 0) {
             let p = a + reg::port(n);
             if smn.read32(p + reg::PX_SSTS) & 0xF == 3 {
                 continue;
@@ -388,6 +397,26 @@ mod tests {
         assert_eq!(smn(&hw.pci, 0, abar(2) + reg::PI), 0x09);
         assert_eq!(smn(&hw.pci, 0, abar(2) + reg::CAP), 0x01);
         assert_eq!(smn(&hw.pci, 0, abar(2) + reg::LOCK) & 0xff_0001, 0xf6_0000);
+    }
+
+    #[test]
+    fn wired_ports_survive_late_without_being_advertised_as_external() {
+        let hw = fch();
+        let mut policy = SataPolicy::socket1();
+        policy.controllers[1] = Controller {
+            enabled: true,
+            esp_ports: 0,
+            keep_ports: 0xff,
+            sgpio: None,
+        };
+        assert!(env(&hw, Generation::Milan, &policy));
+        late(&hw, &policy);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::PI), 0xff);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::CAP) & 0x1f, 7);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::LOCK) & 0xff_0000, 0);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::ESP_F8) & 0xff, 0);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::ESP_FC) & 0x10_0000, 0);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::MISC_810) & (1 << 29), 0);
     }
 
     #[test]

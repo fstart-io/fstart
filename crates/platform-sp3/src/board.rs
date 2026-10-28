@@ -38,6 +38,11 @@ pub struct Policy {
     pub ccx: ccx::Policy,
     /// FCH env: power-failure state after AC loss.
     pub fch_env: EnvPolicy,
+    /// Per-socket AHCI policy, used consistently at reset, env and late.
+    /// A secondary socket with SATA lanes must not inherit the donor's
+    /// all-disabled secondary-controller policy.
+    #[cfg(any(feature = "rome", feature = "milan"))]
+    pub sata: [fstart_driver_amd::sp3::fch::huashan::sata::SataPolicy; 2],
     pub dxio: DxioPolicy,
 }
 
