@@ -230,12 +230,12 @@ mod tests {
         let mk = |smu, socket, w: &mut Window| {
             Unit::new(
                 Generation::Rome,
-                socket,
-                0,
+                (socket, 0),
                 Dxio::new(smu, DXIO_MSG),
                 w.dma(),
                 &board(),
                 &policy,
+                &Default::default(),
             )
             .unwrap()
             .unwrap()
@@ -343,12 +343,12 @@ mod tests {
         let b = board();
         let mut units = [Unit::new(
             Generation::Rome,
-            0,
-            0,
+            (0, 0),
             Dxio::new(&smu, DXIO_MSG),
             w.dma(),
             &b,
             &policy,
+            &Default::default(),
         )
         .unwrap()
         .unwrap()];
@@ -387,12 +387,12 @@ mod tests {
         policy.perst = PerstPolicy::Deferred;
         let mut units = [Unit::new(
             Generation::Milan,
-            0,
-            0,
+            (0, 0),
             Dxio::new(&smu, DXIO_MSG),
             w.dma(),
             &board(),
             &policy,
+            &Default::default(),
         )
         .unwrap()
         .unwrap()];

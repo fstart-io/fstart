@@ -359,6 +359,9 @@ pub fn encode_tuning(
             at += 4;
         }
     }
+    if at / 4 > u8::MAX as usize {
+        return Err(DxioError::Buffer);
+    }
     let mut h = LocalRegisterCopy::<u32, ANC::Register>::new(0);
     h.modify(
         ANC::TYPE.val(3)
@@ -375,8 +378,8 @@ pub struct Ancillary<'a> {
     /// Platform `+0x22` PSPP data, sent when [`EncodePolicy::pspp_policy`]
     /// is non-zero.
     pub pspp: [u8; 4],
-    /// PHY override blob (Platform `+0x16`; presumably APOB fabric
-    /// PHY_OVERRIDE, PCIE_DXIO §3.6 open item). Length a multiple of 4.
+    /// PHY override blob (Platform `+0x16`; Milan APOB 9/0x15 instance 0,
+    /// RXM100CB `ffd2244c` / `ffd264b4`). Length a multiple of 4.
     pub phy_override: Option<&'a [u8]>,
 }
 
@@ -405,7 +408,7 @@ impl Heaps {
         };
         let pspp = policy.pspp_policy != 0;
         let phy = anc.phy_override.filter(|b| !b.is_empty());
-        if phy.is_some_and(|b| b.len() % 4 != 0 || b.len() + 8 > ANCILLARY_MAX) {
+        if phy.is_some_and(|b| b.len() % 4 != 0 || b.len() > ANCILLARY_MAX - 12) {
             return Err(DxioError::Buffer);
         }
         // Rome emits the PHY record only without PSPP; Milan emits both
@@ -413,23 +416,29 @@ impl Heaps {
         let emit_phy = phy.filter(|_| generation == Generation::Milan || !pspp);
         let absolute = generation == Generation::Milan && policy.milan_tuning_absolute;
 
+        // The heap LEN field is only 8 bits (total dwords - 1), even if
+        // the DMA allocation is larger. Reserve a tail dword as well.
+        let room = ANCILLARY_MAX.min(0x100 * 4) - 4;
         let mut at = 4;
         let sub = |ty: u8, body: &[u8], at: &mut usize, buf: &mut [u8]| {
+            let end = *at + 4 + body.len();
+            let dst = buf.get_mut(*at..end).ok_or(DxioError::Buffer)?;
             let mut r = LocalRegisterCopy::<u32, ANC::Register>::new(0);
             r.modify(
                 ANC::TYPE.val(ty as u32)
                     + ANC::FORMAT.val(1)
                     + ANC::LEN.val((body.len() / 4 + 1) as u32),
             );
-            buf[*at..*at + 4].copy_from_slice(&r.get().to_le_bytes());
-            buf[*at + 4..*at + 4 + body.len()].copy_from_slice(body);
-            *at += 4 + body.len();
+            dst[..4].copy_from_slice(&r.get().to_le_bytes());
+            dst[4..].copy_from_slice(body);
+            *at = end;
+            Ok::<(), DxioError>(())
         };
         if pspp {
-            sub(4, &anc.pspp, &mut at, &mut h.ancillary);
+            sub(4, &anc.pspp, &mut at, &mut h.ancillary[..room])?;
         }
         if let Some(b) = emit_phy {
-            sub(5, b, &mut at, &mut h.ancillary);
+            sub(5, b, &mut at, &mut h.ancillary[..room])?;
         }
 
         let mut count = 0usize;
@@ -438,8 +447,6 @@ impl Heaps {
             if count == MAX_ENGINES {
                 return Err(DxioError::TooManyEngines);
             }
-            // Leave room for the heap tail.
-            let room = ANCILLARY_MAX - 4;
             let n = encode_tuning(tuning, wire, absolute, &mut h.ancillary[at..room])?;
             if n != 0 {
                 e.ancillary_offset.set((at / 4) as u16);
@@ -711,6 +718,49 @@ mod tests {
             "PHY record follows (Milan)"
         );
         assert_eq!(m.fw_engines()[0].ancillary_offset.get(), (4 + 8 + 12) / 4);
+    }
+
+    #[test]
+    fn ancillary_limits_include_headers_pspp_tail_and_wire_length() {
+        let policy = EncodePolicy {
+            pspp_policy: 1,
+            ..Default::default()
+        };
+        // Heap header + PSPP record + PHY header + tail = 20 bytes.
+        let payload = vec![0x5a; 0x400 - 20];
+        let build = |bytes: &[u8]| {
+            Heaps::build(
+                Generation::Milan,
+                core::iter::empty(),
+                &Ancillary {
+                    phy_override: Some(bytes),
+                    ..Default::default()
+                },
+                &policy,
+            )
+        };
+        let h = build(&payload).unwrap();
+        assert_eq!(h.ancillary_len, 0x400);
+        assert_eq!(h.ancillary[2], 0xff, "heap length must not wrap");
+        for size in [payload.len() + 4, ANCILLARY_MAX - 8, ANCILLARY_MAX, 3] {
+            assert!(matches!(build(&vec![0; size]), Err(DxioError::Buffer)));
+        }
+        let fw = FwEngine::default();
+        assert!(
+            matches!(
+                Heaps::build(
+                    Generation::Milan,
+                    [(fw, &[(0xc1, 1)][..], wire(0, 1, false))].into_iter(),
+                    &Ancillary {
+                        phy_override: Some(&payload),
+                        ..Default::default()
+                    },
+                    &policy,
+                ),
+                Err(DxioError::Buffer)
+            ),
+            "tuning must fit after global records too"
+        );
     }
 
     #[test]

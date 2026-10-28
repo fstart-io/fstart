@@ -23,7 +23,7 @@ to each socket with zero EDAC errors, and powers off through ACPI.
 CrabEFI (`--payload uefi`) initializes its EFI environment, imports the full
 memory map and ACPI tables, initializes USB and AHCI, and reaches its boot
 manager. No EFI application or OS was launched. Its pinned revision has a
-64-device PCI enumeration limit; native enumeration now finds 157 functions,
+64-device PCI enumeration limit; native enumeration now finds 159 functions,
 so complete CrabEFI peripheral coverage is not validated. Variables are volatile:
 this port supplies no persistent CrabEFI variable backend.
 
@@ -40,9 +40,10 @@ The current SP3 MP implementation also requires xAPIC: configurations above
 
 A separate RAM-only Linux AHCI diagnostic initializes four controllers and
 probes 17 retained ports, including all eight fixed socket-1 SATA ports.
-All links were down and no disk was detected: an end-to-end SATA read is
-**blocked**, not passed. The diagnostic sets discovered disks read-only,
-mounts no disk filesystem, and shuts down through ACPI. It found no host
+All links were down and no disk was detected. The bench has **no storage
+media installed** (user-confirmed), so this is expected; an end-to-end SATA
+read remains **blocked**, not passed. The diagnostic sets discovered disks
+read-only, mounts no disk filesystem, and shuts down through ACPI. It found no host
 PCI network controller. Further storage validation requires a known powered
 SATA drive and confirmed cabling; integrated xGbE is unsupported on Milan
 (see below), not a missing MAC driver awaiting enablement.
@@ -148,6 +149,23 @@ P1 SATA uses AHCI controller 1, enabled explicitly by board policy rather
 than inheriting the Tyan donor's all-off socket-1 policy. The platform uses
 that policy at reset, environment setup and late port handling. No donor
 SGPIO pads or external-port wiring are assumed for Ethanol-X.
+
+Shared initialization also forwards the optional Milan APOB 9/0x15 global
+PHY payload to every socket's DXIO ancillary heap, alongside (not instead
+of) per-engine SATA tuning. Missing/empty overrides are allowed; invalid
+counts, alignment or record sizes halt. Presence and byte count are logged,
+without inventing PHY settings. The bench supplies **152 bytes**; DXIO
+accepts the resulting ancillary heaps on both sockets, and the RAM-only
+CPU/NUMA/memory/hotplug regression passes with zero EDAC errors.
+RXM100CB's pre-training 10-bit-tag and Data
+Link Feature Exchange policies are board-selected and implemented in the
+shared DXIO driver, including the Auto/Gen4 and WAFL conditions. Core
+Gen3/Gen4 disable straps are cleared without overriding per-engine speed
+limits. CPM GPIO decoding retains the vendor's explicit bit-19 control and
+control-before-IOMUX order, keeping GPIO89 output direction/value unchanged.
+Milan SATA reset startup covers disabled control blocks and controller 3's
+PHY gate when enabled, without enabling additional controllers by policy.
+These are initialization-fidelity fixes, not evidence of populated links.
 
 Native hotplug retains empty bridges and advertises PCIe slots without
 inventing physical slot numbers or external GPIO routing. The recovered

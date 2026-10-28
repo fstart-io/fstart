@@ -28,6 +28,9 @@ register_bitfields![u32,
         WAKE_CONTROL OFFSET(13) NUMBITS(3) [],
         PIN_STS OFFSET(16) NUMBITS(1) [],
         DRIVE_STRENGTH OFFSET(17) NUMBITS(2) [],
+        /// Reserved in public PPR 55570; CPM setting bit 2 controls it
+        /// when the pull field is enabled (RXM100CB `ffd79a92`).
+        CPM_BIT19 OFFSET(19) NUMBITS(1) [],
         PULL_UP OFFSET(20) NUMBITS(1) [],
         PULL_DOWN OFFSET(21) NUMBITS(1) [],
         OUTPUT_VALUE OFFSET(22) NUMBITS(1) [],
@@ -91,13 +94,17 @@ pub struct Pad {
     pub function: Option<u8>,
     /// `None` = keep.
     pub pull: Option<Pull>,
+    /// Only CPM assigns this otherwise unnamed control bit. `None` keeps
+    /// it unchanged, as direct UART/I2C/SGPIO pad programming does.
+    pub cpm_bit19: Option<bool>,
     pub direction: Direction,
 }
 
 impl Pad {
     /// Decode an AMD CPM `$A10` setting word for `pin` (BOARD_S8030 §3.4):
     /// IOMUX = bits 10:8 when bit 11 is set; bit 7 enables the pull field
-    /// (bit 5 up, bit 6 down); with bit 3 clear, bit 1 selects input, else
+    /// (bit 5 up, bit 6 down, bit 2 control bit 19); with bit 3 clear,
+    /// bit 1 selects input, else
     /// output = bit 0; bit 3 set keeps the direction.
     pub const fn from_cpm(pin: Pin, setting: u16) -> Self {
         let function = if setting & 0x800 != 0 {
@@ -125,6 +132,11 @@ impl Pad {
             pin,
             function,
             pull,
+            cpm_bit19: if setting & 0x80 != 0 {
+                Some(setting & 4 != 0)
+            } else {
+                None
+            },
             direction,
         }
     }
@@ -133,10 +145,10 @@ impl Pad {
 /// Apply `pad` to the FCH whose ACPI-MMIO block is `acpi`.
 pub fn configure<W: Window>(acpi: &W, pad: &Pad) {
     debug_assert!(pad.pin.is_valid());
-    if let Some(function) = pad.function {
-        acpi.reg::<u8, ()>(pad.pin.iomux()).set(function);
-    }
     let ctl = acpi.reg::<u32, CONTROL::Register>(pad.pin.control());
+    if let Some(value) = pad.cpm_bit19 {
+        ctl.modify(CONTROL::CPM_BIT19.val(value.into()));
+    }
     if let Some(pull) = pad.pull {
         ctl.modify(match pull {
             Pull::None => CONTROL::PULL_UP::CLEAR + CONTROL::PULL_DOWN::CLEAR,
@@ -150,6 +162,10 @@ pub fn configure<W: Window>(acpi: &W, pad: &Pad) {
         Direction::Output(high) => {
             ctl.modify(CONTROL::OUTPUT_VALUE.val(high.into()) + CONTROL::OUTPUT_ENABLE::SET)
         }
+    }
+    // CPM configures the control byte before switching the pad's function.
+    if let Some(function) = pad.function {
+        acpi.reg::<u8, ()>(pad.pin.iomux()).set(function);
     }
 }
 
@@ -201,6 +217,26 @@ mod tests {
     }
 
     #[test]
+    fn cpm_bit19_is_explicit_and_does_not_change_kept_outputs() {
+        let acpi = Mem::default();
+        let pin = Pin(89);
+        let seed = 0x00ff_4321;
+        // RXM100CB GPIO89 setting 0x0988 clears 19..21, not OE/value.
+        acpi.put(pin.control(), 4, seed);
+        configure(&acpi, &Pad::from_cpm(pin, 0x988));
+        assert_eq!(acpi.get(pin.control(), 4), seed & !0x0038_0000);
+        assert_eq!(acpi.get(pin.iomux(), 1), 1);
+        configure(&acpi, &Pad::from_cpm(pin, 0x98c));
+        assert_eq!(
+            acpi.get(pin.control(), 4),
+            (seed & !0x0038_0000) | 0x0008_0000
+        );
+        assert_eq!(Pad::from_cpm(pin, 0x908).cpm_bit19, None);
+        configure(&acpi, &Pad::from_cpm(pin, 0x908));
+        assert_eq!(acpi.get(pin.control(), 4) & 0x0008_0000, 0x0008_0000);
+    }
+
+    #[test]
     fn configure_matches_the_sgpio_pad_writes() {
         let acpi = Mem::default();
         acpi.put(0x1524, 4, 0x0020_0000);
@@ -210,6 +246,7 @@ mod tests {
                 pin: Pin(9),
                 function: Some(1),
                 pull: Some(Pull::Up),
+                cpm_bit19: None,
                 direction: Direction::Keep,
             },
         );

@@ -54,6 +54,7 @@ pub fn enable_i2c<H: FchHw>(hw: &H, n: u8) {
                 pin: Pin(pin),
                 function: Some(function),
                 pull: None,
+                cpm_bit19: None,
                 direction: Direction::Keep,
             },
         )

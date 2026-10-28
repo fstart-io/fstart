@@ -17,7 +17,7 @@ use tock_registers::{RegisterLongName, register_bitfields};
 
 use super::engine::FwEngine;
 use super::hotplug::HotplugKind;
-use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine};
+use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine, Speed};
 use super::{Dxio, DxioError, Hooks, PcieReset, UnitView, op, prop};
 use crate::smn::{Smn, SmnAddr};
 use crate::smu::SmuMessages;
@@ -199,6 +199,9 @@ pub mod cfg {
 
 /// RSMU PCIe straps (Oxide `pcie_rsmu.h` numbering).
 pub mod strap {
+    pub const DLF_EN: u16 = 0x10;
+    pub const GEN3_DIS: u16 = 0x7A;
+    pub const GEN4_DIS: u16 = 0x84;
     pub const EQ_DS_RX_PRESET_HINT: u16 = 0x9F;
     pub const EQ_US_RX_PRESET_HINT: u16 = 0xA0;
     pub const EQ_DS_TX_PRESET: u16 = 0xA1;
@@ -209,6 +212,11 @@ pub mod strap {
     pub const PORT_BASE: u16 = 0xD2;
     pub const PER_PORT: u16 = 0x61;
     pub const P_SPC_MODE_8GT: u16 = 0xF9;
+    pub const P_10B_TAG_CMPL_SUP: u16 = 0x110;
+    pub const P_10B_TAG_REQ_SUP: u16 = 0x111;
+    pub const P_DLF_SUP: u16 = 0x12E;
+    pub const P_DLF_EXCHANGE_EN: u16 = 0x12F;
+    pub const P_DLF_HDR_SCALE_MODE: u16 = 0x130;
 
     /// A per-port strap of `port`.
     pub const fn port(strap: u16, port: u8) -> u16 {
@@ -457,6 +465,69 @@ pub fn before_reconfig<P: ConfigRegionAccess + Clone>(
     c.port_reg::<LC_CTL11::Register>(port, port::LC_CTL11)
         .modify(LC_CTL11::BIT13::SET);
     tx.modify(TX_CTL::BIT20::SET);
+}
+
+/// Optional Milan pre-training capabilities. Values are board policy,
+/// not inferred from the presence or absence of endpoints. Strap names
+/// match the public Milan RSMU register definitions; sequences/conditions
+/// below are recovered from RXM100CB, not a register-dump replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PcieFeatures {
+    /// RXM100CB PCD 0x1C2: when true, advertise requester and completer
+    /// 10-bit tags on all eight ports of each used wrapper; false keeps
+    /// the hardware's defaults rather than forcing both straps to zero.
+    pub ten_bit_tags: bool,
+    /// PCD 0x16D: DLF capability, gated off on WAFL and by port policy.
+    pub data_link_feature: bool,
+    /// PCD 0x16E: DLF exchange and header scale 1, unless overridden by
+    /// port policy. False writes zero on eligible ports.
+    pub data_link_exchange: bool,
+}
+
+/// RXM100CB `ffd21412..de`: DLF straps only on Auto/Gen4 ports. The
+/// descriptor default initializer `ffd24583` clears both disable flags;
+/// board flags are copied by `ffd2786b` / `ffd278dc`.
+fn before_reconfig_features<P: ConfigRegionAccess + Clone>(
+    c: &PcieCore<'_, P>,
+    port: u8,
+    pcie: &PcieEngine,
+    policy: PcieFeatures,
+) {
+    if !matches!(pcie.max_speed, Speed::Auto | Speed::Gen4) {
+        return;
+    }
+    let support = policy.data_link_feature && c.core != 2 && !pcie.extra.disable_dlf;
+    let exchange = policy.data_link_exchange && !pcie.extra.disable_dlf_exchange;
+    for (s, value) in [
+        (strap::P_DLF_SUP, support),
+        (strap::P_DLF_EXCHANGE_EN, exchange),
+        (strap::P_DLF_HDR_SCALE_MODE, exchange),
+    ] {
+        c.write_strap(strap::port(s, port), value.into());
+    }
+}
+
+/// RXM100CB `ffd214e8..215fb`: wrapper-wide work follows per-port
+/// programming. Include unpopulated physical ports, not just descriptors.
+fn before_reconfig_features_core<P: ConfigRegionAccess + Clone>(
+    c: &PcieCore<'_, P>,
+    policy: PcieFeatures,
+) {
+    if policy.ten_bit_tags {
+        for port in 0..8 {
+            c.write_strap(strap::port(strap::P_10B_TAG_CMPL_SUP, port), 1);
+            c.write_strap(strap::port(strap::P_10B_TAG_REQ_SUP, port), 1);
+        }
+    }
+    if c.core != 2 {
+        if policy.data_link_feature {
+            c.write_strap(strap::DLF_EN, 1);
+        }
+        // Do not accidentally cap the core itself at Gen2/Gen3. Individual
+        // board/fuse speed limits remain in the engine configuration.
+        c.write_strap(strap::GEN3_DIS, 0);
+        c.write_strap(strap::GEN4_DIS, 0);
+    }
 }
 
 /// State 5, per mapped port: clear DPC status (W1C) and TX_CTL bit 15
@@ -756,6 +827,7 @@ pub struct PortSetup<'a, 'e, P, R> {
     board: &'a [Engine<'e>],
     pub reset: R,
     ports: Vec<MappedPort, MAX_PORTS>,
+    features: Option<PcieFeatures>,
 }
 
 impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R> {
@@ -772,7 +844,15 @@ impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R
             board,
             reset,
             ports: Vec::new(),
+            features: None,
         }
+    }
+
+    /// Enable the board's recovered Milan capability policy. Other
+    /// generations retain their existing sequence even if supplied here.
+    pub fn with_features(mut self, features: Option<PcieFeatures>) -> Self {
+        self.features = features.filter(|_| self.generation == Generation::Milan);
+        self
     }
 
     /// The mapped ports (for the hotplug table and PCI enumeration).
@@ -944,9 +1024,20 @@ impl<P: ConfigRegionAccess + Clone, R: PcieReset> Hooks for PortSetup<'_, '_, P,
                 };
                 if let Some(pcie) = self.pcie(&p) {
                     let width = self.board[p.engine].lanes.count();
-                    before_reconfig(&PcieCore::new(nbio, p.core), p.port, pcie, width);
+                    let core = PcieCore::new(nbio, p.core);
+                    before_reconfig(&core, p.port, pcie, width);
+                    if let Some(features) = self.features {
+                        before_reconfig_features(&core, p.port, pcie, features);
+                    }
                 }
                 self.ports.push(p).map_err(|_| DxioError::TooManyEngines)?;
+            }
+        }
+        if let Some(features) = self.features {
+            for (index, core) in self.cores_of(socket, die) {
+                if let Some(nbio) = self.nbio(socket, index) {
+                    before_reconfig_features_core(&PcieCore::new(nbio, core), features);
+                }
             }
         }
         Ok(())
@@ -1118,6 +1209,137 @@ mod tests {
         assert_eq!(st.smn[&(0, 0x1053_5000)], 1 << 28);
         assert_eq!(st.smn[&(0, 0x1053_6000)], 1 << 28);
         assert_eq!(st.smn[&(0, 0x1053_A008)], 1 << 8 | 1 << 16);
+    }
+
+    const FEATURES: PcieFeatures = PcieFeatures {
+        ten_bit_tags: true,
+        data_link_feature: true,
+        data_link_exchange: true,
+    };
+
+    #[test]
+    fn milan_features_are_applied_at_mapped_only_when_selected() {
+        for (generation, selected, expected) in [
+            (Generation::Milan, Some(FEATURES), true),
+            (Generation::Milan, None, false),
+            (Generation::Rome, Some(FEATURES), false),
+        ] {
+            let (m, n) = nbio(generation, 0, 0);
+            let board = [Engine::pcie(
+                0,
+                Lanes::sp3(Group::P0, 0, 4),
+                PcieEngine::new(),
+            )];
+            let engines = [FwEngine {
+                kind: kind::PCIE,
+                start_lane: 0x2a,
+                mac_port_id: 2,
+                ..Default::default()
+            }];
+            let nbios = [n];
+            let mut setup =
+                PortSetup::new(generation, &nbios, &board, NoReset(0)).with_features(selected);
+            setup.mapped(&view(&engines, &[0])).unwrap();
+            let index = RSMU_STRAP_INDEX + (1 << 14);
+            let pairs: std::vec::Vec<_> =
+                m.0.borrow()
+                    .log
+                    .windows(2)
+                    .filter(|w| w[0].1 == index && w[1].1 == index + 4)
+                    .map(|w| (w[0].2 as u16, w[1].2))
+                    .collect();
+            for port in 0..8 {
+                for strap in [strap::P_10B_TAG_CMPL_SUP, strap::P_10B_TAG_REQ_SUP] {
+                    assert_eq!(
+                        pairs
+                            .iter()
+                            .filter(|&&(s, v)| s == strap::port(strap, port) && v == 1)
+                            .count(),
+                        usize::from(expected),
+                        "include empty ports, once per wrapper"
+                    );
+                }
+            }
+            if expected {
+                assert!(pairs.contains(&(strap::port(strap::P_DLF_SUP, 2), 1)));
+                assert!(pairs.ends_with(&[
+                    (strap::DLF_EN, 1),
+                    (strap::GEN3_DIS, 0),
+                    (strap::GEN4_DIS, 0)
+                ]));
+            } else {
+                assert!(!pairs.iter().any(|(s, _)| *s == strap::DLF_EN
+                    || *s == strap::GEN3_DIS
+                    || *s == strap::GEN4_DIS));
+            }
+        }
+    }
+
+    #[test]
+    fn dlf_respects_speed_wafl_and_independent_port_overrides() {
+        let (m, n) = nbio(Generation::Milan, 1, 0x40);
+        for (core, speed, disable_support, disable_exchange, policy, expected) in [
+            (1, Speed::Auto, false, false, FEATURES, Some((1, 1))),
+            (1, Speed::Gen4, false, false, FEATURES, Some((1, 1))),
+            (1, Speed::Gen3, false, false, FEATURES, None),
+            (1, Speed::Gen2, false, false, FEATURES, None),
+            (1, Speed::Gen1, false, false, FEATURES, None),
+            (2, Speed::Auto, false, false, FEATURES, Some((0, 1))),
+            (1, Speed::Auto, true, false, FEATURES, Some((0, 1))),
+            (1, Speed::Auto, false, true, FEATURES, Some((1, 0))),
+            (
+                1,
+                Speed::Auto,
+                false,
+                false,
+                PcieFeatures {
+                    data_link_feature: false,
+                    data_link_exchange: false,
+                    ..FEATURES
+                },
+                Some((0, 0)),
+            ),
+        ] {
+            m.0.borrow_mut().log.clear();
+            let c = PcieCore::new(&n, core);
+            let index = RSMU_STRAP_INDEX + (1 << 12) + (u32::from(core) << 14);
+            let mut pcie = PcieEngine::new().max_speed(speed);
+            pcie.extra.disable_dlf = disable_support;
+            pcie.extra.disable_dlf_exchange = disable_exchange;
+            before_reconfig_features(&c, 1, &pcie, policy);
+            let pairs: std::vec::Vec<_> =
+                m.0.borrow()
+                    .log
+                    .windows(2)
+                    .filter(|w| w[0].0 == 0x40 && w[0].1 == index && w[1].1 == index + 4)
+                    .map(|w| (w[0].2 as u16, w[1].2))
+                    .collect();
+            match expected {
+                Some((support, exchange)) => assert_eq!(
+                    pairs,
+                    [
+                        (strap::port(strap::P_DLF_SUP, 1), support),
+                        (strap::port(strap::P_DLF_EXCHANGE_EN, 1), exchange),
+                        (strap::port(strap::P_DLF_HDR_SCALE_MODE, 1), exchange),
+                    ]
+                ),
+                None => assert!(pairs.is_empty()),
+            }
+        }
+        // WAFL receives the tag writes but not core DLF/Gen3/Gen4 policy.
+        m.0.borrow_mut().log.clear();
+        let c = PcieCore::new(&n, 2);
+        before_reconfig_features_core(&c, FEATURES);
+        assert_eq!(m.0.borrow().log.len(), 32);
+        m.0.borrow_mut().log.clear();
+        before_reconfig_features_core(
+            &c,
+            PcieFeatures {
+                ten_bit_tags: false,
+                ..FEATURES
+            },
+        );
+        assert!(m.0.borrow().log.is_empty());
     }
 
     #[test]

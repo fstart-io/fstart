@@ -167,7 +167,7 @@ pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
         sd_off(hw.acpi());
     });
     super::huashan::usb::reset(hw, generation, 1, smu, usb, resume)?;
-    super::huashan::sata::reset(hw, sata);
+    super::huashan::sata::reset(hw, generation, sata);
     Ok(())
 }
 

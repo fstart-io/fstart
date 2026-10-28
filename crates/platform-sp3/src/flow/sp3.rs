@@ -12,6 +12,7 @@ use tock_registers::interfaces::Writeable;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
 use fstart_driver_amd::apob::ccx::{CoreMap, core_map};
+use fstart_driver_amd::apob::phy::phy_override;
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::df::regs;
 use fstart_driver_amd::nbio::iohc::DramTops;
@@ -27,7 +28,7 @@ use fstart_driver_amd::sp3::df::plan::Plan;
 use fstart_driver_amd::sp3::df::topology::Topology;
 use fstart_driver_amd::sp3::df::v3::{Df3, SocketMemory};
 use fstart_driver_amd::sp3::df::{BusRange, Df, Version, program};
-use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::sp3::dxio::engine::{Ancillary, MAX_ENGINES};
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::sp3::dxio::{self, DMA_SIZE, DmaBuffer, Dxio, Unit};
@@ -326,6 +327,19 @@ pub(crate) fn dxio(
         })
         .collect();
     let _ = &si.smus;
+    let phy = if generation == Generation::Milan {
+        phy_override(&ctx.apob).or_halt("APOB PHY override")
+    } else {
+        None
+    };
+    match phy {
+        Some(bytes) => fstart_log::info!("dxio: APOB PHY override {} bytes", bytes.len() as u32),
+        None => fstart_log::info!("dxio: APOB PHY override absent"),
+    }
+    let ancillary = Ancillary {
+        phy_override: phy,
+        ..Default::default()
+    };
     let mut units: heapless::Vec<Unit<'_, Smu>, 2> = heapless::Vec::new();
     for (s, smu) in dxio_smus.iter().enumerate() {
         let buffer = dma_alloc(DMA_SIZE, 0x1000);
@@ -333,8 +347,16 @@ pub(crate) fn dxio(
         let dma = unsafe { DmaBuffer::new(buffer.as_mut_ptr(), DMA_SIZE, buffer.as_ptr() as u64) }
             .or_halt("DXIO DMA buffer");
         let dxio = Dxio::new(smu, v11::msg::DXIO);
-        if let Some(unit) =
-            Unit::new(generation, s as u8, 0, dxio, dma, engines, &policy).or_halt("DXIO engines")
+        if let Some(unit) = Unit::new(
+            generation,
+            (s as u8, 0),
+            dxio,
+            dma,
+            engines,
+            &policy,
+            &ancillary,
+        )
+        .or_halt("DXIO engines")
         {
             let _ = units.push(unit);
         }
@@ -345,7 +367,8 @@ pub(crate) fn dxio(
         .collect();
     // SAFETY: every socket's FCH is live; DXIO owns their PERST GPIOs.
     let perst = unsafe { FchPerst::new(generation, fchs, None) };
-    let mut setup = PortSetup::new(generation, &si.nbios, engines, perst);
+    let mut setup =
+        PortSetup::new(generation, &si.nbios, engines, perst).with_features(policy.pcie_features);
     super::dxio_or_halt(dxio::train(
         generation, &mut units, &mut setup, &ctx.timer, &policy,
     ));

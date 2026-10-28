@@ -55,6 +55,7 @@ pub fn enable<H: FchHw>(hw: &H, n: u8) {
                 pin: Pin(pin),
                 function: Some(0),
                 pull: None,
+                cpm_bit19: None,
                 direction: Direction::Keep,
             },
         )

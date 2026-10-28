@@ -17,6 +17,7 @@
 //! - [`sysmap`]: 9/9 system memory map and its conversion to a memory map
 //! - [`ccx`]: 3/3 CCD/CCX/core map (Rome, Milan)
 //! - [`nps`]: 9/0x13 NUMA nodes per socket, 9/0x14 extra domains
+//! - [`phy`]: Milan 9/0x15 optional global DXIO PHY overrides
 //! - [`mem`]: 1/2, 1/0xf, 1/0x10, 1/0x11 SPD, 8/8 SMBIOS inputs
 //! - [`event`]: 7/6 ABL event log
 
@@ -24,6 +25,7 @@ pub mod ccx;
 pub mod event;
 pub mod mem;
 pub mod nps;
+pub mod phy;
 pub mod sysmap;
 
 pub use sysmap::{Hole, MemoryMap};

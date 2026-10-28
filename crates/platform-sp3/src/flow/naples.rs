@@ -169,7 +169,9 @@ pub(crate) fn dxio(
         let dma = unsafe { DmaBuffer::new(buffer.as_mut_ptr(), DMA_SIZE, buffer.as_ptr() as u64) }
             .or_halt("DXIO DMA buffer");
         let dxio = Dxio::new(smu, v9::msg::DXIO);
-        if let Some(unit) = Unit::new(generation, rb.socket, rb.index, dxio, dma, engines, &policy)
+        let unit = (rb.socket, rb.index);
+        let ancillary = Default::default();
+        if let Some(unit) = Unit::new(generation, unit, dxio, dma, engines, &policy, &ancillary)
             .or_halt("DXIO engines")
         {
             let _ = units.push(unit);

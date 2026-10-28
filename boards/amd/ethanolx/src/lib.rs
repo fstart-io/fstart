@@ -21,6 +21,7 @@ use fstart_core::services::Timer;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
+use fstart_driver_amd::sp3::dxio::ports::PcieFeatures;
 use fstart_driver_amd::sp3::fch::gpio::{Pad, Pin};
 use fstart_driver_amd::sp3::fch::huashan::sata::{Controller, SataPolicy};
 use fstart_driver_amd::sp3::fch::lpc::{self, WideIo};
@@ -79,6 +80,14 @@ impl board::Board for Board {
             keep_ports: 0xff,
             sgpio: None,
         };
+        let mut dxio = DxioPolicy::new(generation);
+        // Own RXM100CB PCDs 0x1C2 / 0x16D / 0x16E default true. These
+        // are PCIe capability controls, not board reset/power signals.
+        dxio.pcie_features = Some(PcieFeatures {
+            ten_bit_tags: true,
+            data_link_feature: true,
+            data_link_exchange: true,
+        });
         Policy {
             // Vendor UEFI: eight root buses, 00/20/40/60/80/a0/c0/e0.
             df: df::plan::Policy::df3().with_bus_counts([0x20; 8]),
@@ -87,7 +96,7 @@ impl board::Board for Board {
             ccx: ccx::Policy::default(),
             fch_env: Default::default(),
             sata: [sata0, sata1],
-            dxio: DxioPolicy::new(generation),
+            dxio,
         }
     }
 
@@ -172,6 +181,24 @@ impl board::Board for Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn own_vendor_capability_and_cpm_policy() {
+        let policy = <Board as board::Board>::policy(Generation::Milan);
+        assert_eq!(
+            policy.dxio.pcie_features,
+            Some(PcieFeatures {
+                ten_bit_tags: true,
+                data_link_feature: true,
+                data_link_exchange: true,
+            })
+        );
+        assert_eq!(GPIO[0].cpm_bit19, Some(false));
+        assert_eq!(
+            GPIO[0].direction,
+            fstart_driver_amd::sp3::fch::gpio::Direction::Keep
+        );
+    }
 
     #[test]
     fn socket1_fixed_sata_is_not_disabled_by_the_donor_policy() {

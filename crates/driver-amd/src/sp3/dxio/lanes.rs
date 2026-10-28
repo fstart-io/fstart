@@ -270,6 +270,12 @@ pub struct PcieExtra {
     pub search_depth: bool,
     /// Milan slot type `(u16 & 0xE000) == 0x2000`.
     pub kpnp_reset: bool,
+    /// Disable PCIe Gen4 Data Link Feature support (RXM100CB board +0x11
+    /// bit 4 -> internal +0x37 bit 4; pre-training RSMU policy only).
+    pub disable_dlf: bool,
+    /// Disable DLF exchange/header scaling (board +0x11 bit 3 -> internal
+    /// +0x36 bit 1). Independent of the capability-support override.
+    pub disable_dlf_exchange: bool,
 }
 
 /// A PCIe engine.
@@ -325,6 +331,8 @@ impl PcieEngine {
                 skip_eq_gen4: false,
                 search_depth: false,
                 kpnp_reset: false,
+                disable_dlf: false,
+                disable_dlf_exchange: false,
             },
         }
     }
