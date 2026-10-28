@@ -34,7 +34,6 @@ pub mod downcore;
 pub mod errata;
 pub mod logical;
 pub mod mca;
-pub mod microcode;
 pub mod power;
 pub mod ras;
 pub mod release;
@@ -52,9 +51,9 @@ pub mod zen3;
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
+use crate::ccx::microcode::{self, Load, Patch};
 use crate::sp3::soc::{Generation, Identity, Revision};
 use logical::LogicalId;
-use microcode::{MicrocodeError, Patch};
 use power::{CstatePolicy, Wdt};
 use security::{RmpPlan, SnpPolicy};
 use table::{PlatformFlags, Record, TablePolicy};
@@ -112,6 +111,8 @@ pub enum CcxError {
 #[derive(Debug, Clone, Copy)]
 pub struct Ccx {
     pub revision: Revision,
+    /// CPUID Fn0000_0001_EAX.
+    pub signature: u32,
     pub ids: LogicalId,
     pub apic: ApicMode,
     pub flags: PlatformFlags,
@@ -136,6 +137,7 @@ impl Ccx {
         let table = table::records(generation).ok_or(CcxError::NotBuilt(generation))?;
         Ok(Self {
             revision: identity.revision,
+            signature: identity.signature,
             ids: LogicalId::of(identity.revision),
             apic,
             flags: PlatformFlags::sp3(generation, apic, policy),
@@ -157,36 +159,47 @@ impl Ccx {
         errata::early(cpu, thread, &self.ids);
     }
 
-    /// Load `patch` if the thread is the primary thread of its core.
-    pub fn load_microcode<M: MsrAccess + ?Sized>(
+    /// Load `patch` if the thread is the primary thread of its core, and
+    /// leave its address for the PSP's reload on S3 resume.
+    ///
+    /// # Safety
+    /// As [`Patch::apply`]: the patch's bytes are identity mapped.
+    pub unsafe fn load_microcode<M: MsrAccess + ?Sized>(
         &self,
         cpu: &M,
         thread: &Thread,
         patch: &Patch<'_>,
-        wbinvd: impl Fn(),
-    ) -> Result<(), MicrocodeError> {
+    ) -> Result<(), microcode::Error> {
         if !thread.primary() {
             return Ok(());
         }
-        microcode::load(cpu, self.revision, patch, wbinvd)
+        let load = Load {
+            record_for_s3: true,
+            ..Load::default()
+        };
+        // SAFETY: the caller's contract.
+        unsafe { patch.apply(cpu, patch.address(), self.signature, load) }.map(|_| ())
     }
 
     /// The AP start routine (ZP `0x1240`, SSP `0x1324`, GN `0x15b4`): WDT
     /// (Naples/Rome), tables, microcode, RMP (Milan), MCA, CAC weights.
-    pub fn ap_init<M: MsrAccess + ?Sized>(
+    ///
+    /// # Safety
+    /// As [`Self::load_microcode`] for `inputs.microcode`.
+    pub unsafe fn ap_init<M: MsrAccess + ?Sized>(
         &self,
         cpu: &M,
         thread: &Thread,
         inputs: &ApInputs<'_>,
-        wbinvd: impl Fn(),
-    ) -> Result<(), MicrocodeError> {
+    ) -> Result<(), microcode::Error> {
         let primary = thread.primary();
         if primary && self.generation() != Generation::Milan {
             power::init_wdt(cpu, inputs.wdt, inputs.wdt_severity);
         }
         self.run_tables(cpu, thread);
         if let Some(p) = &inputs.microcode {
-            self.load_microcode(cpu, thread, p, wbinvd)?;
+            // SAFETY: the caller's contract.
+            unsafe { self.load_microcode(cpu, thread, p) }?;
         }
         if let Some((base, plan)) = &inputs.rmp {
             security::program_rmp(cpu, *base, plan);
@@ -236,7 +249,8 @@ mod tests {
             rmp: None,
         };
         ccx.early(&cpu, &thread);
-        ccx.ap_init(&cpu, &thread, &inputs, || {}).unwrap();
+        // SAFETY: no microcode.
+        unsafe { ccx.ap_init(&cpu, &thread, &inputs) }.unwrap();
         ccx.all_threads(&cpu, &thread, &Policy::default(), inputs.wdt);
         let cpu = cpu.into_inner();
         assert_eq!(cpu.writes[0].0, 0xc001_0074, "WDT first");

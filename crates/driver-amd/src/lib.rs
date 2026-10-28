@@ -9,7 +9,7 @@
 pub mod acp;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod apob;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod ccx;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod df;

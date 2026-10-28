@@ -13,7 +13,7 @@ use fstart_arch::x86::{
 };
 use fstart_driver_amd::ccx::{
     Thread,
-    microcode::{Bundle, Family, Patch},
+    microcode::{Bundle, Family, Load, Patch},
 };
 
 /// The CPU driver of SoC family `M`, with the SoC's CCX init `init`.
@@ -102,8 +102,10 @@ where
             // SAFETY: serialized MSR access on a CPU the driver matched.
             let msr = unsafe { NativeMsr::new() };
             // SAFETY: the staged page is immutable and reserved; serialized.
-            Patch::<M>::parse(bytes, signature)
-                .and_then(|patch| unsafe { patch.apply(&msr, bytes.as_ptr() as u64, signature) })
+            Patch::parse(bytes, signature)
+                .and_then(|patch| unsafe {
+                    patch.apply(&msr, bytes.as_ptr() as u64, signature, Load::default())
+                })
                 .is_ok()
         });
     }

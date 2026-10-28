@@ -6,13 +6,13 @@ license.workspace = true
 
 [features]
 default = []
-picasso = ["dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-arch", "dep:embedded-hal", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c"]
-zeppelin = ["smi", "dep:fstart-arch", "dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c", "dep:embedded-hal"]
+picasso = ["dep:fstart-amdfw-format", "dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-arch", "dep:embedded-hal", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c"]
+zeppelin = ["smi", "dep:fstart-amdfw-format", "dep:fstart-arch", "dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c", "dep:embedded-hal"]
 # The SP3 server silicon.
 naples = ["sp3"]
 rome = ["sp3"]
 milan = ["sp3"]
-sp3 = ["dep:fstart-amdfw-format", "dep:fstart-pci", "dep:fstart-log", "dep:heapless", "dep:zerocopy", "dep:ufmt", "dep:fstart-arch"]
+sp3 = ["dep:embedded-hal", "dep:fstart-amdfw-format", "dep:fstart-pci", "dep:fstart-log", "dep:heapless", "dep:zerocopy", "dep:ufmt", "dep:fstart-arch"]
 # ACPI descriptions of the SP3 FCH devices.
 acpi = ["dep:fstart-acpi"]
 # FCH SMI control for the AMD SMM owner of fstart-arch.

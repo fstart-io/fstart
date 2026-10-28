@@ -6,10 +6,11 @@ extern crate alloc;
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
+use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::sp3::ccx::release::{self, Launch, SmuPwr};
 use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
-use fstart_driver_amd::sp3::ccx::{ApInputs, Ccx, brand, mca, microcode, power, security};
+use fstart_driver_amd::sp3::ccx::{ApInputs, Ccx, brand, mca, power, security};
 use fstart_driver_amd::sp3::df::plan::Plan;
 use fstart_driver_amd::sp3::df::topology::Topology;
 use fstart_driver_amd::sp3::df::v2::Df2;
@@ -202,8 +203,6 @@ pub(crate) fn fch_env(ctx: &Ctx, si: &Silicon) {
     }
 }
 
-use fstart_arch::x86::writeback_invalidate_caches;
-
 fn route_aps(route: ApRoute) {
     #[cfg(all(target_os = "none", fstart_entry = "amd-psp-reset"))]
     crate::entry::set_ap_route(route);
@@ -235,15 +234,11 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
     ccx.run_tables(&cpu, &bsp);
     brand::write(&cpu, &brand::read(generation, &si.smus[0]));
     let candidates = microcode_candidates();
-    let patch = microcode::select(
-        generation,
-        ctx.identity.signature,
-        candidates.iter().copied(),
-    );
+    let patch = microcode::select(ctx.identity.signature, candidates.iter().copied());
     if let Some(p) = &patch {
-        // SAFETY: ring 0 with caching enabled.
-        ccx.load_microcode(&cpu, &bsp, p, || unsafe { writeback_invalidate_caches() })
-            .or_halt("microcode");
+        // SAFETY: ring 0 with caching enabled; the FFS copy of the patch is
+        // identity mapped and stays reserved.
+        unsafe { ccx.load_microcode(&cpu, &bsp, p) }.or_halt("microcode");
     }
     ccx.early(&cpu, &bsp);
     // SAFETY: DfGlobalCtrl of node 0, read only.

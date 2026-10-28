@@ -97,7 +97,8 @@ pub mod acpi_io {
 mod tests {
     extern crate std;
     use super::Zeppelin;
-    use crate::ccx::microcode::{Bundle, Error, PATCH_BYTES};
+    use crate::ccx::microcode::{Bundle, Error};
+    const PATCH_BYTES: usize = 0xc80;
     use std::vec::Vec;
 
     #[test]

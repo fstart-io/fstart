@@ -40,8 +40,6 @@ pub fn apic_id() -> u32 {
     fstart_arch::x86::cpuid(0x8000_001e).0
 }
 
-use fstart_arch::x86::writeback_invalidate_caches;
-
 /// The SP3 CPU driver handed to `mp_init_with_launcher`.
 pub struct Sp3Cpu<'a> {
     pub ccx: Ccx,
@@ -107,14 +105,9 @@ impl CpuDriver for Sp3Cpu<'_> {
         }
         if !bsp {
             self.ccx.early(&cpu, &thread);
-            if self
-                .ccx
-                // SAFETY: ring 0 with caching enabled.
-                .ap_init(&cpu, &thread, &self.inputs, || unsafe {
-                    writeback_invalidate_caches()
-                })
-                .is_err()
-            {
+            // SAFETY: ring 0 with caching enabled; the BSP's patch is
+            // identity mapped and stays reserved.
+            if unsafe { self.ccx.ap_init(&cpu, &thread, &self.inputs) }.is_err() {
                 self.failures.fetch_add(1, Ordering::AcqRel);
             }
         }
