@@ -5,8 +5,9 @@
 //! broadcast access is a direct access repeated on every die. The MMIO/IO
 //! distribution is [`super::map::plan`].
 use super::{
-    Df, DfReg,
-    map::{self, DramBase},
+    Df, DfReg, map,
+    regs::{self, CFG_ACCESS_CTRL, CLOCK_GATING, DRAM_HOLE, GLOBAL_CTRL},
+    v2::{self, DRAM_BASE, DRAM_LIMIT, SYSTEM_CFG},
 };
 use crate::cpu::Revision;
 use crate::{
@@ -21,17 +22,11 @@ use tock_registers::{
 };
 
 register_bitfields![u32,
-    DramHole [VALID OFFSET(0) NUMBITS(1) [], BASE OFFSET(24) NUMBITS(8) []],
-    DramLimit [DST_DIE OFFSET(5) NUMBITS(3) []],
-    ClkGate [ENABLE OFFSET(0) NUMBITS(1) []],
-    RasCtrl [B3 OFFSET(3) NUMBITS(1) []],
-    SystemCfg [MULTI_SOCKET OFFSET(5) NUMBITS(1) []],
     Ccm104 [B5 OFFSET(5) NUMBITS(1) [], B28 OFFSET(28) NUMBITS(1) []],
     Ccm108 [B6 OFFSET(6) NUMBITS(1) []],
     Ioms04c [B5 OFFSET(5) NUMBITS(1) []],
     Ioms300 [B8 OFFSET(8) NUMBITS(1) []],
     Cfg0c0 [B17_12 OFFSET(12) NUMBITS(6) []],
-    ExtCfg [ENABLE OFFSET(0) NUMBITS(1) []],
     PieCfg [
         /// Erratum 1158 (LINT0/LINT1 while the APIC is software disabled).
         LINT_ERRATUM_1158 OFFSET(8) NUMBITS(1) [],
@@ -43,20 +38,12 @@ register_bitfields![u32,
 ];
 
 // Function 0
-const F0_DRAM_HOLE: DfReg<DramHole::Register> = DfReg::new(0, 0x104);
-const fn f0_dram_limit(i: u16) -> DfReg<DramLimit::Register> {
-    DfReg::new(0, 0x114 + 8 * i)
-}
-const F0_CLK_GATE: DfReg<ClkGate::Register> = DfReg::new(0, 0x3f0);
-const F0_RAS_CTRL: DfReg<RasCtrl::Register> = DfReg::new(0, 0x3f8);
-const F1_SYSTEM_CFG: DfReg<SystemCfg::Register> = DfReg::new(1, 0x200);
 const F2_CS_CFG_68: DfReg = DfReg::new(2, 0x068);
 const F2_CS_CFG_6C: DfReg = DfReg::new(2, 0x06c);
 const F3_IOMS_04C: DfReg<Ioms04c::Register> = DfReg::new(3, 0x04c);
 const F3_CCM_104: DfReg<Ccm104::Register> = DfReg::new(3, 0x104);
 const F3_CCM_108: DfReg<Ccm108::Register> = DfReg::new(3, 0x108);
 const F3_IOMS_300: DfReg<Ioms300::Register> = DfReg::new(3, 0x300);
-const F4_EXT_CFG: DfReg<ExtCfg::Register> = DfReg::new(4, 0x044);
 const F4_CFG_0C0: DfReg<Cfg0c0::Register> = DfReg::new(4, 0x0c0);
 const F4_CCM_0C4: DfReg = DfReg::new(4, 0x0c4);
 const F4_CFG_0C8: DfReg = DfReg::new(4, 0x0c8);
@@ -96,16 +83,16 @@ fn clock_gating(df: &Df<impl ConfigRegionAccess>, single_die: bool) {
         .instance(F6_CLK_GATE_DC, INST_IOMS)
         .is_set(ClkGateDc::IOMS);
     if !gate && single_die {
-        df.reg(F0_CLK_GATE).write(ClkGate::ENABLE::SET);
+        df.reg(regs::CLOCK_GATING).write(CLOCK_GATING::ENABLE::SET);
         return;
     }
     for instance in INSTANCES {
-        df.instance(F0_CLK_GATE, instance)
-            .write(ClkGate::ENABLE::SET);
+        df.instance(regs::CLOCK_GATING, instance)
+            .write(CLOCK_GATING::ENABLE::SET);
     }
     if !gate {
-        df.instance(F0_CLK_GATE, INST_IOMS)
-            .write(ClkGate::ENABLE::SET);
+        df.instance(regs::CLOCK_GATING, INST_IOMS)
+            .write(CLOCK_GATING::ENABLE::SET);
     }
 }
 
@@ -141,8 +128,8 @@ fn pie_ras_init(df: &Df<impl ConfigRegionAccess>) {
         .modify(PieCfg::DIS_SYNC_FLOOD_PROP::CLEAR + PieCfg::LINT_ERRATUM_1158::SET);
     map::clear_errors(df);
     for instance in 0..12 {
-        df.instance(F0_RAS_CTRL, instance)
-            .modify(RasCtrl::B3::CLEAR);
+        df.instance(regs::GLOBAL_CTRL, instance)
+            .modify(GLOBAL_CTRL::BIT3::CLEAR);
     }
 }
 
@@ -163,17 +150,17 @@ fn scrub_dram_size(df: &Df<impl ConfigRegionAccess>, die: u8) -> u64 {
     let limit = limit.read(ScrubLimit::LIMIT);
     let mut size = u64::from(limit.wrapping_sub(base).wrapping_add(1)) << 20;
     for i in 0..2 {
-        let dram_base = df.instance(map::dram_base(i), INST_CS_DRAM_MAP).extract();
-        let dram_limit = df.instance(f0_dram_limit(i), INST_CS_DRAM_MAP).extract();
+        let dram_base = df.instance(v2::dram_base(i), INST_CS_DRAM_MAP).extract();
+        let dram_limit = df.instance(v2::dram_limit(i), INST_CS_DRAM_MAP).extract();
         // Socket 0: the destination is the die number.
-        if !dram_base.matches_all(DramBase::VALID::SET + DramBase::HOLE_EN::SET)
-            || dram_limit.read(DramLimit::DST_DIE) != u32::from(die)
+        if !dram_base.matches_all(DRAM_BASE::VALID::SET + DRAM_BASE::HOLE_EN::SET)
+            || dram_limit.read(DRAM_LIMIT::DST_DIE) != u32::from(die)
         {
             continue;
         }
-        let hole = df.instance(F0_DRAM_HOLE, INST_CS_DRAM_MAP).extract();
-        if hole.is_set(DramHole::VALID) {
-            size -= 4 * GIB - (u64::from(hole.read(DramHole::BASE)) << 24);
+        let hole = df.instance(regs::DRAM_HOLE, INST_CS_DRAM_MAP).extract();
+        if hole.is_set(DRAM_HOLE::VALID) {
+            size -= 4 * GIB - (u64::from(hole.read(DRAM_HOLE::BASE)) << 24);
         }
     }
     size
@@ -269,12 +256,13 @@ pub fn late_init(
 
 /// Sockets in the system, from DF1x200.
 pub fn sockets(df0: &Df<impl ConfigRegionAccess>) -> u8 {
-    df0.reg(F1_SYSTEM_CFG).read(SystemCfg::MULTI_SOCKET) as u8 + 1
+    df0.reg(v2::SYSTEM_CFG).read(SYSTEM_CFG::OTHER_SOCK) as u8 + 1
 }
 
 /// ReadyToBoot in the vendor code: "Disable extended configuration access".
 pub fn disable_ext_cfg(df: &Df<impl ConfigRegionAccess>) {
-    df.reg(F4_EXT_CFG).modify(ExtCfg::ENABLE::CLEAR);
+    df.reg(regs::CFG_ACCESS_CTRL)
+        .modify(CFG_ACCESS_CTRL::EXT_CFG::CLEAR);
 }
 
 #[cfg(test)]

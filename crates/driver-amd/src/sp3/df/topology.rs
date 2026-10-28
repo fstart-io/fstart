@@ -19,9 +19,10 @@ use heapless::Vec;
 #[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 use tock_registers::interfaces::Readable;
 
-use super::{BusRange, Df};
 #[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
-use super::{Version, regs};
+use super::Version;
+use super::{BusRange, Df};
+use crate::df::regs;
 use crate::sp3::soc::Generation;
 use crate::sp3::topology::{MAX_NODES, MAX_ROOT_BRIDGES, Node, RootBridge};
 
@@ -152,7 +153,8 @@ fn read_maps<P: ConfigRegionAccess + Clone, V: Version>(
 
 #[cfg(feature = "naples")]
 fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, TopologyError> {
-    use super::v2::{self, Df2, SYSTEM_CFG};
+    use super::v2::Df2;
+    use crate::df::v2::{self, SYSTEM_CFG};
 
     // SAFETY (all reads below): F1x200/F1x204/F0x84/F0xA0 of present nodes.
     let sockets = unsafe { df.node(0, v2::SYSTEM_CFG) }.read(SYSTEM_CFG::OTHER_SOCK) as u8 + 1;
@@ -171,11 +173,11 @@ fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, T
             let node = v2::node(s, d);
             let fabric_id = v2::fabric_id(s, d, v2::IOMS_COMPONENT);
             let base = unsafe { df.node(node, regs::CFG_ADDR_CTL) }
-                .read(super::CFG_ADDR_CTL::BUS_NUM) as u8;
+                .read(regs::CFG_ADDR_CTL::BUS_NUM) as u8;
             let _ = nodes.push(Node {
                 socket: s,
                 die: d,
-                device: super::NODE0_DEVICE + node,
+                device: crate::df::NODE0_DEVICE + node,
             });
             let _ = rbs.push(RootBridge {
                 socket: s,
@@ -187,7 +189,7 @@ fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, T
             });
         }
     }
-    let total = unsafe { df.node(0, regs::COMPONENT_CNT) }.read(super::COMPONENT_CNT::PIE) as u8;
+    let total = unsafe { df.node(0, regs::COMPONENT_CNT) }.read(regs::COMPONENT_CNT::PIE) as u8;
     if total != nodes.len() as u8 {
         return Err(TopologyError::Count {
             expected: total,
@@ -226,7 +228,7 @@ fn discover_df3<P: ConfigRegionAccess + Clone>(
         for (i, &id) in ioms() {
             let fabric_id = v3::fabric_id(s, id);
             let base = unsafe { df.inst(s, id, regs::CFG_ADDR_CTL) }
-                .read(super::CFG_ADDR_CTL::BUS_NUM) as u8;
+                .read(regs::CFG_ADDR_CTL::BUS_NUM) as u8;
             let _ = rbs.push(RootBridge {
                 socket: s,
                 index: i as u8,
@@ -237,7 +239,7 @@ fn discover_df3<P: ConfigRegionAccess + Clone>(
             });
         }
     }
-    let total = unsafe { df.node(0, regs::COMPONENT_CNT) }.read(super::COMPONENT_CNT::IOMS) as u8;
+    let total = unsafe { df.node(0, regs::COMPONENT_CNT) }.read(regs::COMPONENT_CNT::IOMS) as u8;
     if total != rbs.len() as u8 {
         return Err(TopologyError::Count {
             expected: total,
@@ -251,7 +253,7 @@ fn discover_df3<P: ConfigRegionAccess + Clone>(
         .map(|s| Node {
             socket: s,
             die: 0,
-            device: super::NODE0_DEVICE + s,
+            device: crate::df::NODE0_DEVICE + s,
         })
         .collect();
     Ok(Topology {
@@ -348,7 +350,7 @@ pub(crate) mod tests {
             for d in 0..4u8 {
                 let k = s * 4 + d;
                 m.set(k, None, 0, 0x84, u32::from(k) * 0x20);
-                let fid = u32::from(super::super::v2::fabric_id(s, d, 4));
+                let fid = u32::from(crate::df::v2::fabric_id(s, d, 4));
                 let base = u32::from(k) * 0x20;
                 m.set(
                     0,

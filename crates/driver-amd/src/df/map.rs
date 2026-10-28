@@ -13,56 +13,23 @@ use crate::soc::Soc;
 use core::ops::RangeInclusive;
 use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
-use tock_registers::{
-    interfaces::{ReadWriteable, Readable, Writeable},
-    register_bitfields,
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+
+use super::{
+    regs::{self, FBICNT, IO_BASE},
+    v2::{
+        CFG_MAP, IO_LIMIT, MMIO_CTRL, VGA_EN, cfg_map, io_base, io_limit, mmio_base, mmio_ctrl,
+        mmio_limit,
+    },
 };
 
-register_bitfields![u32,
-    pub CfgMap [
-        RE OFFSET(0) NUMBITS(1) [],
-        WE OFFSET(1) NUMBITS(1) [],
-        DST_FABRIC_ID OFFSET(4) NUMBITS(8) [],
-        BUS_BASE OFFSET(16) NUMBITS(8) [],
-        BUS_LIMIT OFFSET(24) NUMBITS(8) []
-    ],
-    pub MmioCtrl [
-        RE OFFSET(0) NUMBITS(1) [],
-        WE OFFSET(1) NUMBITS(1) [],
-        DST_FABRIC_ID OFFSET(4) NUMBITS(8) [],
-        NON_POSTED OFFSET(12) NUMBITS(1) []
-    ],
-    pub IoBase [
-        RE OFFSET(0) NUMBITS(1) [],
-        WE OFFSET(1) NUMBITS(1) [],
-        BASE OFFSET(12) NUMBITS(13) []
-    ],
-    pub IoLimit [
-        DST_FABRIC_ID OFFSET(0) NUMBITS(8) [],
-        LIMIT OFFSET(12) NUMBITS(13) []
-    ],
-    pub VgaEn [
-        ENABLE OFFSET(0) NUMBITS(1) [],
-        NP OFFSET(1) NUMBITS(1) [],
-        CPU_DIS OFFSET(2) NUMBITS(1) [],
-        DST_FABRIC_ID OFFSET(4) NUMBITS(8) []
-    ],
-    pub InstanceCount [COUNT OFFSET(0) NUMBITS(8) []],
-    pub DramBase [VALID OFFSET(0) NUMBITS(1) [], HOLE_EN OFFSET(1) NUMBITS(1) []]
-];
-
-pub const INSTANCE_COUNT: DfReg<InstanceCount::Register> = DfReg::new(0, 0x040);
-/// DRAM address range `i` (of a CS instance).
-pub const fn dram_base(i: u16) -> DfReg<DramBase::Register> {
-    DfReg::new(0, 0x110 + 8 * i)
-}
 /// The error status of every instance, zero when clear.
-const ERR_STATUS: [DfReg; 2] = [DfReg::new(6, 0x1f0), DfReg::new(6, 0x1f4)];
+const ERR_STATUS: [DfReg; 2] = [regs::PIE_RAS_STATUS_LO, regs::PIE_RAS_STATUS_HI];
 
 /// Clear the error status the reset left on every fabric instance. DF error
 /// status takes a zero write, not a write-one-to-clear.
 pub fn clear_errors(df: &Df<impl ConfigRegionAccess>) {
-    let instances = df.reg(INSTANCE_COUNT).read(InstanceCount::COUNT) as u8;
+    let instances = df.reg(regs::FBICNT).read(FBICNT::COUNT) as u8;
     for instance in 0..instances {
         for status in ERR_STATUS {
             let status = df.instance(status, instance);
@@ -76,30 +43,6 @@ pub fn clear_errors(df: &Df<impl ConfigRegionAccess>) {
 pub const CFG_MAPS: usize = 8;
 pub const MMIO_PAIRS: usize = 8;
 pub const IO_PAIRS: usize = 8;
-
-/// PCI bus map `map`.
-pub const fn cfg_map(map: u8) -> DfReg<CfgMap::Register> {
-    DfReg::new(0, 0x0a0 + 4 * map as u16)
-}
-
-/// [31:0] base >> 16.
-pub const fn mmio_base(pair: u8) -> DfReg {
-    DfReg::new(0, 0x200 + 0x10 * pair as u16)
-}
-/// [31:0] limit >> 16.
-pub const fn mmio_limit(pair: u8) -> DfReg {
-    DfReg::new(0, 0x204 + 0x10 * pair as u16)
-}
-pub const fn mmio_ctrl(pair: u8) -> DfReg<MmioCtrl::Register> {
-    DfReg::new(0, 0x208 + 0x10 * pair as u16)
-}
-pub const fn io_base(pair: u8) -> DfReg<IoBase::Register> {
-    DfReg::new(0, 0x0c0 + 8 * pair as u16)
-}
-pub const fn io_limit(pair: u8) -> DfReg<IoLimit::Register> {
-    DfReg::new(0, 0x0c4 + 8 * pair as u16)
-}
-pub const VGA_EN: DfReg<VgaEn::Register> = DfReg::new(0, 0x080);
 
 // ---- The routes in place ----
 
@@ -138,10 +81,10 @@ pub fn mmio_route(df: &Df<impl ConfigRegionAccess>, pair: u8) -> Route {
     Route {
         base,
         size: end.saturating_sub(base),
-        destination: ctrl.read(MmioCtrl::DST_FABRIC_ID) as u8,
-        read: ctrl.is_set(MmioCtrl::RE),
-        write: ctrl.is_set(MmioCtrl::WE),
-        non_posted: ctrl.is_set(MmioCtrl::NON_POSTED),
+        destination: ctrl.read(MMIO_CTRL::DST) as u8,
+        read: ctrl.is_set(MMIO_CTRL::RE),
+        write: ctrl.is_set(MMIO_CTRL::WE),
+        non_posted: ctrl.is_set(MMIO_CTRL::NP),
     }
 }
 
@@ -149,13 +92,13 @@ pub fn mmio_route(df: &Df<impl ConfigRegionAccess>, pair: u8) -> Route {
 pub fn io_route(df: &Df<impl ConfigRegionAccess>, pair: u8) -> Route {
     let base = df.reg(io_base(pair)).extract();
     let limit = df.reg(io_limit(pair)).extract();
-    let start = u64::from(base.read(IoBase::BASE)) << 12;
+    let start = u64::from(base.read(IO_BASE::BASE)) << 12;
     Route {
         base: start,
-        size: ((u64::from(limit.read(IoLimit::LIMIT)) + 1) << 12).saturating_sub(start),
-        destination: limit.read(IoLimit::DST_FABRIC_ID) as u8,
-        read: base.is_set(IoBase::RE),
-        write: base.is_set(IoBase::WE),
+        size: ((u64::from(limit.read(IO_LIMIT::LIMIT)) + 1) << 12).saturating_sub(start),
+        destination: limit.read(IO_LIMIT::DST) as u8,
+        read: base.is_set(IO_BASE::RE),
+        write: base.is_set(IO_BASE::WE),
         non_posted: false,
     }
 }
@@ -166,11 +109,11 @@ pub fn buses(df: &Df<impl ConfigRegionAccess>, destination: u8) -> Option<RangeI
     (0..CFG_MAPS as u8)
         .map(|map| df.reg(cfg_map(map)).extract())
         .find(|map| {
-            map.is_set(CfgMap::RE)
-                && map.is_set(CfgMap::WE)
-                && map.read(CfgMap::DST_FABRIC_ID) == u32::from(destination)
+            map.is_set(CFG_MAP::RE)
+                && map.is_set(CFG_MAP::WE)
+                && map.read(CFG_MAP::DST) == u32::from(destination)
         })
-        .map(|map| map.read(CfgMap::BUS_BASE) as u8..=map.read(CfgMap::BUS_LIMIT) as u8)
+        .map(|map| map.read(CFG_MAP::BUS_BASE) as u8..=map.read(CFG_MAP::BUS_LIMIT) as u8)
 }
 
 /// The enabled windows of `routes` to the fabric ID `destination`, as
@@ -229,9 +172,8 @@ pub fn root_complex<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>) -> Op
 /// Route the legacy VGA ranges to the fabric ID `destination`; call on every
 /// die's DF.
 pub fn route_vga(df: &Df<impl ConfigRegionAccess>, destination: u8) {
-    df.reg(VGA_EN).modify(
-        VgaEn::ENABLE::SET + VgaEn::CPU_DIS::CLEAR + VgaEn::DST_FABRIC_ID.val(destination.into()),
-    );
+    df.reg(super::v2::VGA_EN)
+        .modify(VGA_EN::EN::SET + VGA_EN::CPU_DIS::CLEAR + VGA_EN::DST.val(destination.into()));
 }
 
 // ---- New routes ----
@@ -469,9 +411,9 @@ pub fn program<S: Soc, P: ConfigRegionAccess + Copy>(plan: &Plan, dies: &[Die<S,
     for w in &plan.mmio {
         let mut ctrl = df0.reg(mmio_ctrl(w.pair)).extract();
         ctrl.modify(
-            MmioCtrl::DST_FABRIC_ID.val(S::ioms_fabric_id(w.die).into())
-                + MmioCtrl::RE::SET
-                + MmioCtrl::WE::SET,
+            MMIO_CTRL::DST.val(S::ioms_fabric_id(w.die).into())
+                + MMIO_CTRL::RE::SET
+                + MMIO_CTRL::WE::SET,
         );
         dies.iter().for_each(|die| {
             die.df()
@@ -490,10 +432,9 @@ pub fn program<S: Soc, P: ConfigRegionAccess + Copy>(plan: &Plan, dies: &[Die<S,
         let end = (w.end() - 1) as u32;
         let mut limit = df0.reg(io_limit(w.pair)).extract();
         limit.modify(
-            IoLimit::DST_FABRIC_ID.val(S::ioms_fabric_id(w.die).into())
-                + IoLimit::LIMIT.val(end >> 12),
+            IO_LIMIT::DST.val(S::ioms_fabric_id(w.die).into()) + IO_LIMIT::LIMIT.val(end >> 12),
         );
-        let base = || IoBase::RE::SET + IoBase::WE::SET + IoBase::BASE.val(w.base as u32 >> 12);
+        let base = || IO_BASE::RE::SET + IO_BASE::WE::SET + IO_BASE::BASE.val(w.base as u32 >> 12);
         dies.iter()
             .for_each(|die| die.df().reg(io_base(w.pair)).write(base()));
         dies.iter()

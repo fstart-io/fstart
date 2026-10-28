@@ -15,7 +15,10 @@ use crate::ccx::tsc::DelayNs;
 use crate::cpu::Package;
 use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
-    df::map::{self, IoBase, IoLimit},
+    df::{
+        regs::IO_BASE,
+        v2::{self, IO_LIMIT},
+    },
     smn::{Smn, SmnReg},
     soc::zeppelin::Die,
     table,
@@ -115,10 +118,10 @@ pub fn reset<P: ConfigRegionAccess + Copy>(
         );
 
         // Route I/O 0-0xfff (pair 0) to the die's IOMS.
-        let (io_base, io_limit) = (df0.reg(map::io_base(0)), df0.reg(map::io_limit(0)));
+        let (io_base, io_limit) = (df0.reg(v2::io_base(0)), df0.reg(v2::io_limit(0)));
         let saved = (io_base.get(), io_limit.get());
-        io_base.write(IoBase::RE::SET + IoBase::WE::SET);
-        io_limit.write(IoLimit::DST_FABRIC_ID.val(die.ioms_fabric_id().into()));
+        io_base.write(IO_BASE::RE::SET + IO_BASE::WE::SET);
+        io_limit.write(IO_LIMIT::DST.val(die.ioms_fabric_id().into()));
         secondary_legacy(&Fch::new(bus, mmio), package);
         io_base.set(saved.0);
         io_limit.set(saved.1);

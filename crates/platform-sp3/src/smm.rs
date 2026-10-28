@@ -498,7 +498,7 @@ mod handler {
     ) -> Option<fstart_driver_amd::psp::ras::MemoryTarget> {
         #[cfg(feature = "rome")]
         if config.generation == Generation::Rome {
-            use fstart_driver_amd::sp3::df::{FICAA, regs};
+            use fstart_driver_amd::df::{FICAA, FICAD_LO, Ficaa};
             use fstart_pci::ConfigRegister;
             use tock_registers::interfaces::Writeable;
             // PCI addresses and endpoint buses are bound by the installer.
@@ -529,26 +529,24 @@ mod handler {
                     if function.device() != 0x18 + socket || function.function() != 4 {
                         return u32::MAX;
                     }
-                    let index = unsafe {
-                        ConfigRegister::<_, FICAA::Register>::new(Ecam, function, regs::FICAA)
-                    };
-                    let data =
-                        unsafe { ConfigRegister::<_, ()>::new(Ecam, function, regs::FICAD_LO) };
+                    let index =
+                        unsafe { ConfigRegister::<_, Ficaa::Register>::new(Ecam, function, FICAA) };
+                    let data = unsafe { ConfigRegister::<_, ()>::new(Ecam, function, FICAD_LO) };
                     let saved = index.get();
                     index.write(
-                        FICAA::TARGET_INST.val(u32::from(
+                        Ficaa::INSTANCE_ACCESS.val(u32::from(
                             instance != fstart_driver_amd::psp::ras::BROADCAST,
-                        )) + FICAA::FUNC.val(u32::from(reg.func))
-                            + FICAA::REG.val(u32::from(reg.offset >> 2))
-                            + FICAA::INST.val(u32::from(instance)),
+                        )) + Ficaa::FUNCTION.val(u32::from(reg.function()))
+                            + Ficaa::REGISTER.val(u32::from(reg.register() >> 2))
+                            + Ficaa::INSTANCE.val(u32::from(instance)),
                     );
                     let value = data.get();
                     index.set(saved);
                     trace(
                         (u32::from(socket) << 30)
                             | (u32::from(instance & 0x7f) << 20)
-                            | (u32::from(reg.func) << 16)
-                            | u32::from(reg.offset),
+                            | (u32::from(reg.function()) << 16)
+                            | u32::from(reg.register()),
                         value,
                     )
                 },

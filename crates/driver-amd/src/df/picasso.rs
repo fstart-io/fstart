@@ -2,7 +2,9 @@
 //! Native Picasso Data Fabric sequencing (AGESA AmdFabricRv).
 use super::{
     Df, DfRecord, DfReg, apply_df, df_rmw, df_write,
-    map::{self, DramBase, IO_PAIRS, MMIO_PAIRS, Plan, Window, dram_base, io_route, mmio_route},
+    map::{self, IO_PAIRS, MMIO_PAIRS, Plan, Window, io_route, mmio_route},
+    regs,
+    v2::{DRAM_BASE, dram_base},
 };
 use crate::soc::picasso::Die;
 use fstart_pci::ConfigRegionAccess;
@@ -78,8 +80,6 @@ pub fn ensure_legacy_routes(
     Ok(())
 }
 
-const F0_CLK_GATE: DfReg = DfReg::new(0, 0x3f0);
-const F0_RAS_CTRL: DfReg = DfReg::new(0, 0x3f8);
 const F2_048: DfReg = DfReg::new(2, 0x048);
 const F2_050: DfReg = DfReg::new(2, 0x050);
 
@@ -99,7 +99,7 @@ const fn on(record: DfRecord, instance: u8) -> DfRecord {
 
 /// Only changes DF coordination registers; never rewrites PSP-trained UMC data.
 pub fn early_init(fabric: &Df<impl ConfigRegionAccess>) {
-    apply_df(fabric, [df_write(F0_CLK_GATE, None, 1)]);
+    apply_df(fabric, [df_write(regs::CLOCK_GATING.erase(), None, 1)]);
     apply_df(
         fabric,
         (0..2).flat_map(|instance| EARLY_CS.map(|record| on(record, instance))),
@@ -114,7 +114,7 @@ pub fn early_init(fabric: &Df<impl ConfigRegionAccess>) {
     for instance in 0..2 {
         if !fabric
             .instance(dram_base(0), instance)
-            .is_set(DramBase::VALID)
+            .is_set(DRAM_BASE::VALID)
         {
             apply_df(fabric, [df_rmw(F2_048, Some(instance), 1 << 19, 0)]);
         }
@@ -151,7 +151,7 @@ pub fn early_init(fabric: &Df<impl ConfigRegionAccess>) {
         ],
     );
     map::clear_errors(fabric);
-    apply_df(fabric, [df_rmw(F0_RAS_CTRL, None, 1 << 3, 0)]);
+    apply_df(fabric, [df_rmw(regs::GLOBAL_CTRL.erase(), None, 1 << 3, 0)]);
 }
 
 /// The vendor PIE power values: their meaning isn't known.

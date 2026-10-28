@@ -110,19 +110,19 @@ fn channel_bits(base: u32) -> Option<u32> {
 pub fn memory_target(
     address: u64,
     sockets: u8,
-    df: impl Fn(u8, u8, crate::sp3::df::Reg) -> u32,
+    df: impl Fn(u8, u8, crate::df::DfReg) -> u32,
     smn: impl Fn(u8, u32) -> u32,
 ) -> Option<MemoryTarget> {
-    use crate::sp3::df::{
-        Reg,
-        v3::{CCM0, DRAM_BASE, DRAM_LIMIT},
+    use crate::{
+        df::DfReg,
+        sp3::df::v3::{CCM0, DRAM_BASE, DRAM_LIMIT},
     };
     if sockets == 0 || usize::from(sockets) > MAX_SOCKETS || address >= 1 << 48 {
         return None;
     }
-    let f0 = |s, i, off| df(s, i, Reg::new(0, off));
-    let m0 = df(0, BROADCAST, Reg::new(1, 0x208));
-    let m1 = df(0, BROADCAST, Reg::new(1, 0x20c));
+    let f0 = |s, i, off| df(s, i, DfReg::new(0, off));
+    let m0 = df(0, BROADCAST, DfReg::new(1, 0x208));
+    let m1 = df(0, BROADCAST, DfReg::new(1, 0x20c));
     let component_mask = FABRIC_MASK0::COMPONENT.read(m0);
     let node_mask = FABRIC_MASK0::NODE.read(m0);
     let node_shift = FABRIC_MASK1::NODE_SHIFT.read(m1);
@@ -358,7 +358,7 @@ mod tests {
     #[cfg(feature = "rome")]
     mod mapping {
         use super::*;
-        use crate::sp3::df::{Reg, v3::CCM0};
+        use crate::{df::DfReg, sp3::df::v3::CCM0};
         fn smn(_: u8, off: u32) -> u32 {
             match off & 0xfffff {
                 0x5014c => 0x673,
@@ -369,19 +369,19 @@ mod tests {
                 _ => 0,
             }
         }
-        fn masks(reg: Reg) -> Option<u32> {
-            match (reg.func, reg.offset) {
+        fn masks(reg: DfReg) -> Option<u32> {
+            match (reg.function(), reg.register()) {
                 (1, 0x208) => Some(0x0020_001f),
                 (1, 0x20c) => Some(0x0100_0005),
                 _ => None,
             }
         }
-        fn bench(s: u8, i: u8, r: Reg) -> u32 {
+        fn bench(s: u8, i: u8, r: DfReg) -> u32 {
             if let Some(v) = masks(r) {
                 return v;
             }
             assert_eq!(s, 0);
-            match (i, r.offset) {
+            match (i, r.register()) {
                 (CCM0 | 3, 0x110) => 0x3b,
                 (CCM0 | 3, 0x114) => 0x0020_4000,
                 (_, 0x104) => 0xb000_0001,
@@ -420,8 +420,8 @@ mod tests {
         }
         #[test]
         fn two_socket_interleave_reaches_the_correct_endpoint() {
-            let df = |_: u8, _: u8, r: Reg| {
-                masks(r).unwrap_or(match r.offset {
+            let df = |_: u8, _: u8, r: DfReg| {
+                masks(r).unwrap_or(match r.register() {
                     0x110 => 1 | (5 << 2) | (1 << 8),
                     0x114 => 0x1ff000,
                     _ => 0,
@@ -440,8 +440,8 @@ mod tests {
         }
         #[test]
         fn hashed_two_socket_map_and_remote_permission_gate() {
-            let df = |_: u8, _: u8, r: Reg| {
-                masks(r).unwrap_or(match r.offset {
+            let df = |_: u8, _: u8, r: DfReg| {
+                masks(r).unwrap_or(match r.register() {
                     0x110 => 0x13b,
                     0x114 => 0x204000,
                     0x104 => 0xb0000001,
@@ -476,12 +476,12 @@ mod tests {
         #[test]
         fn separate_socket_ranges_and_local_high_offset() {
             let boundary = 1u64 << 35;
-            let df = |s: u8, i: u8, r: Reg| {
+            let df = |s: u8, i: u8, r: DfReg| {
                 if let Some(v) = masks(r) {
                     return v;
                 }
                 if i == CCM0 {
-                    return match r.offset {
+                    return match r.register() {
                         0x110 => 1,
                         0x114 => 0x7f000,
                         0x118 => 0x80001,
@@ -493,7 +493,7 @@ mod tests {
                     return 0;
                 }
                 assert_eq!(s, 1);
-                match r.offset {
+                match r.register() {
                     0x118 => 0x80001,
                     0x11c => 0xff020,
                     0x1b4 => 0x10000,
@@ -519,7 +519,7 @@ mod tests {
                 memory_target(
                     0,
                     2,
-                    |s, i, r| if r.func == 1 && r.offset == 0x20c {
+                    |s, i, r| if r.function() == 1 && r.register() == 0x20c {
                         5
                     } else {
                         bench(s, i, r)
@@ -532,7 +532,7 @@ mod tests {
                 memory_target(
                     0,
                     1,
-                    |s, i, r| if r.func == 0 && r.offset == 0x110 {
+                    |s, i, r| if r.function() == 0 && r.register() == 0x110 {
                         1 | (1 << 6)
                     } else {
                         bench(s, i, r)

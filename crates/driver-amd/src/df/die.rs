@@ -8,24 +8,20 @@
 //! "broadcast" access in AGESA terms is a direct access to the die's own
 //! register ([`Df::reg`]). Single-die SoCs (Raven/Picasso) have die 0 on
 //! bus 0. The threads of the dies are [`crate::smu::threads`]'.
-use super::{Df, DfReg};
+use super::{
+    Df,
+    regs::{self, CFG_ADDR_CTL, COMPONENT_CNT},
+};
 use crate::{ccx::tsc::DelayNs, smn::Smn, smu, soc::Soc};
 use core::marker::PhantomData;
 use fstart_pci::ConfigRegionAccess;
-use tock_registers::{interfaces::Readable, register_bitfields};
-
-register_bitfields![u32,
-    BusBase [BUS OFFSET(0) NUMBITS(8) []],
-    SystemNodes [COUNT OFFSET(0) NUMBITS(8) []]
-];
-const F0_BUS_BASE: DfReg<BusBase::Register> = DfReg::new(0, 0x84);
-const F1_SYSTEM_NODES: DfReg<SystemNodes::Register> = DfReg::new(1, 0x204);
+use tock_registers::interfaces::Readable;
 
 /// Number of dies from DF1x204 (live topology).
 pub fn die_count(pci: &impl ConfigRegionAccess) -> u8 {
     // SAFETY: a read of node 0's own register.
     let df = unsafe { Df::new(pci) };
-    df.reg(F1_SYSTEM_NODES).read(SystemNodes::COUNT) as u8
+    df.reg(regs::COMPONENT_CNT).read(COMPONENT_CNT::PIE) as u8
 }
 
 /// One die of SoC `S`: its index, root bus and register transports.
@@ -47,7 +43,7 @@ impl<S: Soc, P: ConfigRegionAccess + Copy> Die<S, P> {
     /// and SMU mailbox accesses of this die (BSP only during silicon init).
     pub unsafe fn new(pci: P, index: u8) -> Self {
         let df = unsafe { Df::for_node(pci, index) };
-        let bus = df.reg(F0_BUS_BASE).read(BusBase::BUS) as u8;
+        let bus = df.reg(regs::CFG_ADDR_CTL).read(CFG_ADDR_CTL::BUS_NUM) as u8;
         Self {
             pci,
             index,

@@ -8,7 +8,8 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::registers::InMemoryRegister;
 
-use super::{BusRange, Df, DramRule, GLOBAL_CTRL, Reg, Version, or_bits, regs};
+use super::{BusRange, Df, DfReg, DramRule, Version, or_bits};
+use crate::df::regs::{self, GLOBAL_CTRL};
 
 /// IOMS fabric components 0..3 (component type 5, SOC_DF §3.1).
 pub const IOMS: [u8; 4] = [0x18, 0x19, 0x1A, 0x1B];
@@ -156,20 +157,20 @@ register_bitfields![u32,
     ]
 ];
 
-pub const SYSTEM_CFG: Reg<SYSTEM_CFG::Register> = Reg::new(1, regs::SYSTEM_CFG_OFFSET);
-pub const SCRUB_BASE: Reg<SCRUB_BASE::Register> = Reg::new(6, 0x40);
-pub const SCRUB_LIMIT: Reg<SCRUB_LIMIT::Register> = Reg::new(6, 0x44);
-pub const SCRUB_ADDR_LO: Reg<SCRUB_ADDR_LO::Register> = Reg::new(6, 0x48);
-pub const SCRUB_ADDR_HI: Reg<SCRUB_ADDR_HI::Register> = Reg::new(6, 0x4C);
+pub const SYSTEM_CFG: DfReg<SYSTEM_CFG::Register> = DfReg::new(1, regs::SYSTEM_CFG_OFFSET);
+pub const SCRUB_BASE: DfReg<SCRUB_BASE::Register> = DfReg::new(6, 0x40);
+pub const SCRUB_LIMIT: DfReg<SCRUB_LIMIT::Register> = DfReg::new(6, 0x44);
+pub const SCRUB_ADDR_LO: DfReg<SCRUB_ADDR_LO::Register> = DfReg::new(6, 0x48);
+pub const SCRUB_ADDR_HI: DfReg<SCRUB_ADDR_HI::Register> = DfReg::new(6, 0x4C);
 pub const SCRUB_REGION_STRIDE: u16 = 0x10;
-pub const SCRUB_CHANNEL: Reg<SCRUB_CHANNEL::Register> = Reg::new(6, 0xB8);
-pub const CS_F2X228: Reg<CS_F2X228::Register> = Reg::new(2, 0x228);
+pub const SCRUB_CHANNEL: DfReg<SCRUB_CHANNEL::Register> = DfReg::new(6, 0xB8);
+pub const CS_F2X228: DfReg<CS_F2X228::Register> = DfReg::new(2, 0x228);
 /// CS init registers (values only, §3.6).
-pub const CS_F2X44: Reg = Reg::new(2, 0x44);
-pub const CS_F2X48: Reg = Reg::new(2, 0x48);
-pub const CS_F2X6C: Reg = Reg::new(2, 0x6C);
+pub const CS_F2X44: DfReg = DfReg::new(2, 0x44);
+pub const CS_F2X48: DfReg = DfReg::new(2, 0x48);
+pub const CS_F2X6C: DfReg = DfReg::new(2, 0x6C);
 /// CCM F4xC8 (Rome; Milan skips it).
-pub const CCM_F4XC8: Reg = Reg::new(4, 0xC8);
+pub const CCM_F4XC8: DfReg = DfReg::new(4, 0xC8);
 
 /// The DF3 layout.
 pub enum Df3 {}
@@ -286,7 +287,7 @@ pub fn pie_ras<P: ConfigRegionAccess + Clone>(
     for s in 0..sockets {
         if clear_status {
             // SAFETY: node registers of an existing node.
-            let count = unsafe { df.node(s, regs::FBICNT) }.read(super::FBICNT::COUNT) as usize;
+            let count = unsafe { df.node(s, regs::FBICNT) }.read(regs::FBICNT::COUNT) as usize;
             // AGESA walks whole table entries until it has visited `count`
             // instances (`ffdc9c96`).
             let mut seen = 0;
@@ -435,7 +436,7 @@ pub fn rome_scrub_bytes<P: ConfigRegionAccess + Clone>(df: &Df<P>, socket: u8) -
                     .inst(
                         socket,
                         PIE,
-                        Reg::<DRAM_BASE::Register>::new(0, regs::DRAM_BASE_OFFSET)
+                        DfReg::<DRAM_BASE::Register>::new(0, regs::DRAM_BASE_OFFSET)
                             .at(i, regs::DRAM_STRIDE),
                     )
                     .extract();
@@ -443,17 +444,17 @@ pub fn rome_scrub_bytes<P: ConfigRegionAccess + Clone>(df: &Df<P>, socket: u8) -
                     .inst(
                         socket,
                         PIE,
-                        Reg::<DRAM_LIMIT::Register>::new(0, regs::DRAM_LIMIT_OFFSET)
+                        DfReg::<DRAM_LIMIT::Register>::new(0, regs::DRAM_LIMIT_OFFSET)
                             .at(i, regs::DRAM_STRIDE),
                     )
                     .get();
                 b.is_set(DRAM_BASE::VALID)
                     && (l & 0x20) == u32::from(socket) << 5
                     && b.is_set(DRAM_BASE::HOLE_EN)
-                    && hole.is_set(super::DRAM_HOLE::VALID)
+                    && hole.is_set(regs::DRAM_HOLE::VALID)
             })
             .fold(size, |size, _| {
-                size.wrapping_sub((1 << 32) - (u64::from(hole.read(super::DRAM_HOLE::BASE)) << 24))
+                size.wrapping_sub((1 << 32) - (u64::from(hole.read(regs::DRAM_HOLE::BASE)) << 24))
             })
     }
 }

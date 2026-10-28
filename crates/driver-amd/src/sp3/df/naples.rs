@@ -11,9 +11,10 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
 use super::topology::Topology;
-use super::v2::{self, CCM_INSTANCES, CS_INSTANCES, IOMS_INSTANCE, PIE_INSTANCE};
-use super::{COMPONENT_CNT, DRAM_HOLE, Df, FBICNT, GLOBAL_CTRL, Reg, or_bits, regs};
+use super::{Df, DfReg, or_bits};
 use crate::cpu::Revision;
+use crate::df::regs::{self, COMPONENT_CNT, DRAM_HOLE, FBICNT, GLOBAL_CTRL};
+use crate::df::v2::{self, CCM_INSTANCES, CS_INSTANCES, IOMS_INSTANCE, PIE_INSTANCE};
 
 /// Naples policy; `Default` is the donor (naples-s8026-v202) default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,24 +85,24 @@ register_bitfields![u32,
     ]
 ];
 
-const F6XDC: Reg = Reg::new(6, 0xDC);
-const F2X68: Reg = Reg::new(2, 0x68);
-const F2X6C: Reg = Reg::new(2, 0x6C);
-const F4XC4: Reg = Reg::new(4, 0xC4);
-const F4XC8: Reg = Reg::new(4, 0xC8);
-const F4XC0_REG: Reg<F4XC0::Register> = Reg::new(4, 0xC0);
-const F3X104_REG: Reg<F3X104::Register> = Reg::new(3, 0x104);
-const F3X108: Reg = Reg::new(3, 0x108);
-const F3X4C: Reg = Reg::new(3, 0x4C);
-const F3X300: Reg = Reg::new(3, 0x300);
-const F5X104_REG: Reg<F5X104::Register> = Reg::new(5, 0x104);
-const SCRUB_BASE_REG: Reg<SCRUB_BASE::Register> = Reg::new(6, 0x48);
-const SCRUB_LIMIT_REG: Reg<SCRUB_LIMIT::Register> = Reg::new(6, 0x4C);
-const SCRUB_REDIRECT_REG: Reg<SCRUB_REDIRECT::Register> = Reg::new(6, 0x58);
-const PIE_PM_REG: Reg<PIE_PM::Register> = Reg::new(5, 0x300);
-const F5X358: Reg = Reg::new(5, 0x358);
-const F5X304: Reg = Reg::new(5, 0x304);
-const F5X354: Reg = Reg::new(5, 0x354);
+const F6XDC: DfReg = DfReg::new(6, 0xDC);
+const F2X68: DfReg = DfReg::new(2, 0x68);
+const F2X6C: DfReg = DfReg::new(2, 0x6C);
+const F4XC4: DfReg = DfReg::new(4, 0xC4);
+const F4XC8: DfReg = DfReg::new(4, 0xC8);
+const F4XC0_REG: DfReg<F4XC0::Register> = DfReg::new(4, 0xC0);
+const F3X104_REG: DfReg<F3X104::Register> = DfReg::new(3, 0x104);
+const F3X108: DfReg = DfReg::new(3, 0x108);
+const F3X4C: DfReg = DfReg::new(3, 0x4C);
+const F3X300: DfReg = DfReg::new(3, 0x300);
+const F5X104_REG: DfReg<F5X104::Register> = DfReg::new(5, 0x104);
+const SCRUB_BASE_REG: DfReg<SCRUB_BASE::Register> = DfReg::new(6, 0x48);
+const SCRUB_LIMIT_REG: DfReg<SCRUB_LIMIT::Register> = DfReg::new(6, 0x4C);
+const SCRUB_REDIRECT_REG: DfReg<SCRUB_REDIRECT::Register> = DfReg::new(6, 0x58);
+const PIE_PM_REG: DfReg<PIE_PM::Register> = DfReg::new(5, 0x300);
+const F5X358: DfReg = DfReg::new(5, 0x358);
+const F5X304: DfReg = DfReg::new(5, 0x304);
+const F5X354: DfReg = DfReg::new(5, 0x354);
 
 /// Instances that get clock gating unless the die is alone and ungated
 /// (DF_ZP §3.3; instance 4 only when F6xDC\[4\] bit 0 is clear).
@@ -233,7 +234,7 @@ fn scrub_bytes<P: ConfigRegionAccess + Clone>(df: &Df<P>, socket: u8, die: u8, n
                     .inst(
                         node,
                         PIE_INSTANCE,
-                        Reg::<v2::DRAM_BASE::Register>::new(0, regs::DRAM_BASE_OFFSET)
+                        DfReg::<v2::DRAM_BASE::Register>::new(0, regs::DRAM_BASE_OFFSET)
                             .at(i, regs::DRAM_STRIDE),
                     )
                     .extract();
@@ -241,7 +242,7 @@ fn scrub_bytes<P: ConfigRegionAccess + Clone>(df: &Df<P>, socket: u8, die: u8, n
                     .inst(
                         node,
                         PIE_INSTANCE,
-                        Reg::<()>::new(0, regs::DRAM_LIMIT_OFFSET).at(i, regs::DRAM_STRIDE),
+                        DfReg::<()>::new(0, regs::DRAM_LIMIT_OFFSET).at(i, regs::DRAM_STRIDE),
                     )
                     .get();
                 b.is_set(v2::DRAM_BASE::VALID)

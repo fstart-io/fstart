@@ -5,8 +5,9 @@ use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
 use tock_registers::interfaces::Readable;
 
-use super::{DRAM_HOLE, Df, DramRule, Reg, Target, Version, regs};
+use super::{Df, DfReg, DramRule, Target, Version};
 pub use crate::apob::nps::Nps;
+use crate::df::regs::{self, DRAM_HOLE};
 
 /// The DRAM rules and MMIO hole as one node sees them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,13 +51,13 @@ pub fn read<V: Version, P: ConfigRegionAccess + Clone>(
                     df.reg(
                         node,
                         target,
-                        Reg::<()>::new(0, regs::DRAM_BASE_OFFSET).at(i, regs::DRAM_STRIDE),
+                        DfReg::<()>::new(0, regs::DRAM_BASE_OFFSET).at(i, regs::DRAM_STRIDE),
                     )
                     .get(),
                     df.reg(
                         node,
                         target,
-                        Reg::<()>::new(0, regs::DRAM_LIMIT_OFFSET).at(i, regs::DRAM_STRIDE),
+                        DfReg::<()>::new(0, regs::DRAM_LIMIT_OFFSET).at(i, regs::DRAM_STRIDE),
                     )
                     .get(),
                 )

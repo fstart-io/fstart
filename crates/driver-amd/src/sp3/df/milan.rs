@@ -21,13 +21,13 @@ use super::v3::{
     self, ChannelCtl, Df3, PIE, RasFields, SCRUB_ADDR_HI, SCRUB_ADDR_LO, SCRUB_BASE, SCRUB_LIMIT,
     SocketMemory,
 };
-use super::{Df, DramRule, Reg, Target, dram, or_bits};
+use super::{Df, DfReg, DramRule, Target, dram, or_bits};
 
 /// Scrubber regions per socket (GN SoC table `ffd06ab4`: PIE 0x1E, CS
 /// base 0, 4 regions; OB).
 pub const SCRUBBERS: usize = 4;
 /// F5xF8: bit 10 set on GN (Misc Init, IC).
-const F5XF8: Reg = Reg::new(5, 0xF8);
+const F5XF8: DfReg = DfReg::new(5, 0xF8);
 /// DRAM rules the GN scrubber code reads (F0x110..F0x14C).
 const SCRUB_RULES: usize = 8;
 
@@ -234,7 +234,7 @@ pub const fn seq_scrub_mode(mode: u8) -> u8 {
 }
 
 /// Register `reg` of scrubber region `k`.
-fn at<R: tock_registers::RegisterLongName>(k: usize, reg: Reg<R>) -> Reg<R> {
+fn at<R: tock_registers::RegisterLongName>(k: usize, reg: DfReg<R>) -> DfReg<R> {
     reg.at(k as u8, v3::SCRUB_REGION_STRIDE)
 }
 

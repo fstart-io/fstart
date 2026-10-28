@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 
-use super::{NODE0_DEVICE, regs};
+use crate::df::NODE0_DEVICE;
 use crate::smn::model::Model as SmnModel;
 
 /// `(node, instance, function, offset)`; `None` is the node's own copy.
@@ -81,8 +81,8 @@ impl ConfigRegionAccess for DfModel {
             return unsafe { self.smn.read(a, offset) };
         };
         let key = match (a.function(), offset) {
-            (4, regs::FICAD_LO) => self.indirect(node),
-            (4, regs::FICAA) => return self.ficaa(node),
+            (4, crate::df::FICAD_LO) => self.indirect(node),
+            (4, crate::df::FICAA) => return self.ficaa(node),
             (f, o) => (node, None, f, o),
         };
         self.get(key.0, key.1, key.2, key.3)
@@ -94,11 +94,11 @@ impl ConfigRegionAccess for DfModel {
             return unsafe { self.smn.write(a, offset, value) };
         };
         let key = match (a.function(), offset) {
-            (4, regs::FICAA) => {
+            (4, crate::df::FICAA) => {
                 self.state.borrow_mut().ficaa.insert(node, value);
                 return;
             }
-            (4, regs::FICAD_LO) => self.indirect(node),
+            (4, crate::df::FICAD_LO) => self.indirect(node),
             (f, o) => (node, None, f, o),
         };
         let mut s = self.state.borrow_mut();

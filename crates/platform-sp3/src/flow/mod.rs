@@ -777,16 +777,17 @@ fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
     #[cfg(feature = "rome")]
     if ctx.generation == Generation::Rome && (1..=2).contains(&ctx.topology.sockets) {
         use fstart_driver_amd::{
+            df::Target,
             psp::ras,
             smn::Smn,
-            sp3::df::{self, Target, v3},
+            sp3::df::{self, v3},
         };
         let mut config = crate::smm::EinjConfig {
             sockets: ctx.topology.sockets,
             ..Default::default()
         };
         for socket in 0..config.sockets {
-            config.df[usize::from(socket)] = Df::<Pci>::address(socket, 4);
+            config.df[usize::from(socket)] = fstart_driver_amd::df::node_address(socket, 4);
             config.buses[usize::from(socket)] = ctx
                 .topology
                 .root_bridges

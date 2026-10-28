@@ -13,6 +13,7 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
 use fstart_driver_amd::apob::ccx::{CoreMap, core_map};
 use fstart_driver_amd::ccx::microcode;
+use fstart_driver_amd::df::regs;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
 use fstart_driver_amd::smn::Smn;
@@ -25,7 +26,7 @@ use fstart_driver_amd::sp3::ccx::{ApInputs, Ccx, brand, mca, power, security};
 use fstart_driver_amd::sp3::df::plan::Plan;
 use fstart_driver_amd::sp3::df::topology::Topology;
 use fstart_driver_amd::sp3::df::v3::{Df3, SocketMemory};
-use fstart_driver_amd::sp3::df::{BusRange, Df, Version, program, regs};
+use fstart_driver_amd::sp3::df::{BusRange, Df, Version, program};
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
@@ -636,10 +637,11 @@ pub(crate) fn usb_bus_count(_ctx: &Ctx) -> u8 {
 /// NPS information.
 pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
     use fstart_driver_amd::apob::nps;
+    use fstart_driver_amd::df::Target;
     use fstart_driver_amd::sp3::df::dram::{
         self, ccd_channel, df3_channel, domain_of, ioms_channel,
     };
-    use fstart_driver_amd::sp3::df::{Target, v3};
+    use fstart_driver_amd::sp3::df::v3;
 
     let mode = match nps::nps(&ctx.apob) {
         Ok(mode) => mode,

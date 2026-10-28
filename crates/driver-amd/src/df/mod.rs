@@ -16,7 +16,6 @@
 //! ```
 use crate::table;
 use core::marker::PhantomData;
-use fstart_core::indexed::Indexed;
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{
     RegisterLongName,
@@ -24,19 +23,44 @@ use tock_registers::{
     register_bitfields,
 };
 
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 mod die;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod map;
 #[cfg(feature = "picasso")]
 pub mod picasso;
+pub mod regs;
+pub mod v2;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub use die::{Die, die_count, dies};
 
 register_bitfields![u32,
-    Ficaa [INSTANCE_ACCESS OFFSET(0) NUMBITS(1) [], REGISTER OFFSET(2) NUMBITS(9) [],
-        FUNCTION OFFSET(11) NUMBITS(3) [], INSTANCE OFFSET(16) NUMBITS(8) []]
+    /// F4x5C FabricIndirectConfigAccessAddress (set 3, the one the x86 may
+    /// use), issued on the target node.
+    pub Ficaa [
+        INSTANCE_ACCESS OFFSET(0) NUMBITS(1) [],
+        REGISTER OFFSET(2) NUMBITS(9) [],
+        FUNCTION OFFSET(11) NUMBITS(3) [],
+        WIDTH_64 OFFSET(14) NUMBITS(1) [],
+        INSTANCE OFFSET(16) NUMBITS(8) []
+    ]
 ];
+
+/// F4x5C FICAA and F4x98 FICAD_LO.
+pub const FICAA: u16 = 0x5c;
+pub const FICAD_LO: u16 = 0x98;
+/// PCI device of DF node 0 on bus 0; node `n` is `0x18 + n`.
+pub const NODE0_DEVICE: u8 = 0x18;
+/// Most DF nodes: 2 sockets of 4 ZP dies.
+pub const MAX_NODES: u8 = 8;
+
+/// Function `function` of DF `node`: bus 0, device `0x18 + node`.
+pub fn node_address(node: u8, function: u8) -> PciAddress {
+    PciAddress::new(0, 0, NODE0_DEVICE + node, function)
+}
 
 /// A 32-bit Data Fabric register (function, offset) with the bitfields `R`.
 pub struct DfReg<R: RegisterLongName = ()> {
@@ -51,54 +75,105 @@ impl<R: RegisterLongName> Clone for DfReg<R> {
 }
 impl<R: RegisterLongName> Copy for DfReg<R> {}
 impl<R: RegisterLongName> DfReg<R> {
+    /// Checked in debug builds only: the SMM RAS handler builds registers
+    /// at run time and must not link a panic.
     pub const fn new(function: u8, offset: u16) -> Self {
-        assert!(function < 8 && offset < 2048 && offset & 3 == 0);
+        debug_assert!(function < 8 && offset < 2048 && offset & 3 == 0);
         Self {
             function,
             offset,
             _reg: PhantomData,
         }
     }
-    /// The register `bytes` further on: the next pair of a register array.
-    pub const fn offset(self, bytes: u16) -> Self {
-        Self::new(self.function, self.offset + bytes)
+    /// The register without its bitfields, as the vendor tables take it.
+    pub const fn erase(self) -> DfReg {
+        DfReg::new(self.function, self.offset)
+    }
+    /// The `index`th copy of an array register with `stride` bytes.
+    pub const fn at(self, index: u8, stride: u16) -> Self {
+        Self::new(self.function, self.offset + index as u16 * stride)
+    }
+    pub const fn function(self) -> u8 {
+        self.function
+    }
+    /// The byte offset in the function's config space.
+    pub const fn register(self) -> u16 {
+        self.offset
     }
 }
 
-/// A Data Fabric register as a tock register: either the node's own
-/// register in its config space or one instance's through FICAA/FICAD.
-pub enum DfRegister<'a, P: ConfigRegionAccess, R: RegisterLongName> {
-    Own(ConfigRegister<&'a P, R>),
-    Instance(Indexed<ConfigRegister<&'a P>, ConfigRegister<&'a P>, R>),
+/// Where an access goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// The node's own register (AGESA's "broadcast": a config write reaches
+    /// every instance of the node, a read returns the node's copy).
+    Node,
+    /// One fabric instance of the node, through FICAA/FICAD.
+    Instance(u8),
 }
-impl<P: ConfigRegionAccess, R: RegisterLongName> Readable for DfRegister<'_, P, R> {
+
+/// A Data Fabric register of one node or fabric instance as a tock
+/// register.
+pub struct DfRegister<P, R: RegisterLongName = ()> {
+    pci: P,
+    node: u8,
+    target: Target,
+    reg: DfReg<R>,
+}
+impl<P: ConfigRegionAccess, R: RegisterLongName> DfRegister<P, R> {
+    /// `reg` of DF `node` at `target`.
+    ///
+    /// # Safety
+    /// The node exists and the caller owns its FICAA/FICAD pair while
+    /// instance accesses run (shared state, as SMN's index/data).
+    pub unsafe fn new(pci: P, node: u8, target: Target, reg: DfReg<R>) -> Self {
+        debug_assert!(node < MAX_NODES);
+        Self {
+            pci,
+            node,
+            target,
+            reg,
+        }
+    }
+    fn config<S: RegisterLongName>(&self, function: u8, offset: u16) -> ConfigRegister<&P, S> {
+        // SAFETY: the constructor's contract.
+        unsafe { ConfigRegister::new(&self.pci, node_address(self.node, function), offset) }
+    }
+    /// The data register; programs FICAA first for an instance access.
+    fn data(&self) -> ConfigRegister<&P, R> {
+        match self.target {
+            Target::Node => self.config(self.reg.function, self.reg.offset),
+            Target::Instance(instance) => {
+                self.config::<Ficaa::Register>(4, FICAA).write(
+                    Ficaa::INSTANCE_ACCESS::SET
+                        + Ficaa::REGISTER.val(u32::from(self.reg.offset >> 2))
+                        + Ficaa::FUNCTION.val(u32::from(self.reg.function))
+                        + Ficaa::INSTANCE.val(u32::from(instance)),
+                );
+                self.config(4, FICAD_LO)
+            }
+        }
+    }
+}
+impl<P: ConfigRegionAccess, R: RegisterLongName> Readable for DfRegister<P, R> {
     type T = u32;
     type R = R;
     fn get(&self) -> u32 {
-        match self {
-            Self::Own(register) => register.get(),
-            Self::Instance(register) => register.get(),
-        }
+        self.data().get()
     }
 }
-impl<P: ConfigRegionAccess, R: RegisterLongName> Writeable for DfRegister<'_, P, R> {
+impl<P: ConfigRegionAccess, R: RegisterLongName> Writeable for DfRegister<P, R> {
     type T = u32;
     type R = R;
     fn set(&self, value: u32) {
-        match self {
-            Self::Own(register) => register.set(value),
-            Self::Instance(register) => register.set(value),
-        }
+        self.data().set(value)
     }
 }
-
-const FICAA: u16 = 0x5c;
-const FICAD_LO: u16 = 0x98;
 
 /// The Data Fabric of one node.
 pub struct Df<P> {
     pci: P,
-    device: u8,
+    node: u8,
 }
 impl<P: ConfigRegionAccess> Df<P> {
     /// Data Fabric of node 0.
@@ -111,40 +186,20 @@ impl<P: ConfigRegionAccess> Df<P> {
     /// # Safety
     /// As [`Self::new`], for that node's device.
     pub unsafe fn for_node(pci: P, node: u8) -> Self {
-        assert!(node < 8);
-        Self {
-            pci,
-            device: 0x18 + node,
-        }
+        assert!(node < MAX_NODES);
+        Self { pci, node }
     }
     /// The node's own register, what AGESA calls a broadcast access.
-    pub fn reg<R: RegisterLongName>(&self, reg: DfReg<R>) -> DfRegister<'_, P, R> {
-        let address = PciAddress::new(0, 0, self.device, reg.function);
+    pub fn reg<R: RegisterLongName>(&self, reg: DfReg<R>) -> DfRegister<&P, R> {
         // SAFETY: the constructor's contract.
-        DfRegister::Own(unsafe { ConfigRegister::new(&self.pci, address, reg.offset) })
+        unsafe { DfRegister::new(&self.pci, self.node, Target::Node, reg) }
     }
     /// The register of fabric instance `instance`, through FICAA/FICAD.
-    pub fn instance<R: RegisterLongName>(
-        &self,
-        reg: DfReg<R>,
-        instance: u8,
-    ) -> DfRegister<'_, P, R> {
-        let df4 = PciAddress::new(0, 0, self.device, 4);
-        let ficaa = Ficaa::INSTANCE_ACCESS::SET
-            + Ficaa::REGISTER.val(u32::from(reg.offset >> 2))
-            + Ficaa::FUNCTION.val(u32::from(reg.function))
-            + Ficaa::INSTANCE.val(u32::from(instance));
+    pub fn instance<R: RegisterLongName>(&self, reg: DfReg<R>, instance: u8) -> DfRegister<&P, R> {
         // SAFETY: the constructor's contract covers the FICAA/FICAD pair.
-        let (index, data) = unsafe {
-            (
-                ConfigRegister::new(&self.pci, df4, FICAA),
-                ConfigRegister::new(&self.pci, df4, FICAD_LO),
-            )
-        };
-        DfRegister::Instance(Indexed::new(index, data, ficaa.value))
+        unsafe { DfRegister::new(&self.pci, self.node, Target::Instance(instance), reg) }
     }
 }
-
 /// A vendor Data Fabric table record: the node's own register
 /// (`None`) or one fabric instance's.
 pub type DfRecord = table::Record<(DfReg, Option<u8>), u32>;

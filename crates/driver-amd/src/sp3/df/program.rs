@@ -10,11 +10,12 @@ use tock_registers::interfaces::{ReadWriteable, Writeable};
 
 use super::plan::{IoRoute, MmioRoute};
 use super::topology::Topology;
-use super::{BusRange, CFG_ACCESS_CTRL, CFG_ADDR_CTL, Df, IO_BASE, Target, Version, regs};
+use super::{BusRange, Df, Target, Version};
+use crate::df::regs::{self, CFG_ACCESS_CTRL, CFG_ADDR_CTL, IO_BASE};
 use crate::sp3::topology::Node;
 
 fn node_ids(nodes: &[Node]) -> impl Iterator<Item = u8> + '_ {
-    nodes.iter().map(|n| n.device - super::NODE0_DEVICE)
+    nodes.iter().map(|n| n.device - crate::df::NODE0_DEVICE)
 }
 
 /// Program MMIO rules on every node: base, then limit, then control
