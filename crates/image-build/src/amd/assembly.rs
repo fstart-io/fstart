@@ -4,8 +4,8 @@
 //! (BIOS directory entry 0x62) the PSP copies to DRAM, and the FFS with the
 //! payload, if the image has one. The PSP firmware either comes from a vendor
 //! flash image, whose prefix stays byte for byte except for the [`PspOptions`]
-//! fields, or is packed from blobs
-//! ([`super::PicassoImage`]). Paths are explicit build inputs, never
+//! fields, or is packed from blobs ([`super::PicassoImage`]) into a native
+//! image fstart lays out completely. Paths are explicit build inputs, never
 //! discovered.
 use super::{Blob, FlashRegion, Key, PicassoImage};
 use crate::build_plan::{FfsAssembly, FileBinding};
@@ -39,6 +39,55 @@ pub struct PicassoFiles {
     pub bios: Vec<FileBlob>,
     pub apob_nv: Option<FlashRegion>,
     pub psp_nv: Option<FlashRegion>,
+    /// The APCB instances, generated from the board's template.
+    #[serde(default)]
+    pub apcb: Option<ApcbFiles>,
+    /// Files the FFS carries as verified data assets (e.g. the video BIOS).
+    #[serde(default)]
+    pub assets: Vec<fstart_core::board::FileAsset>,
+    /// Pack fstart's PSP user application ([`super::psp_app`]): the PSP of
+    /// the board starts the x86 cores only after one ran.
+    #[serde(default)]
+    pub psp_app: bool,
+}
+
+/// The APCB instances of a board: one per RAM ID strap value, each the
+/// board's template with the RAM-ID GPIOs and that ID's SPD injected
+/// ([`super::apcb::inject`]). Paths as in [`FileBlob`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ApcbFiles {
+    /// The APCB with the GPIO and SPD sentinels.
+    pub template: String,
+    /// The four RAM-ID GPIOs (number, IOMUX, bank control) in bit order.
+    pub gpio: [[u8; 3]; 4],
+    /// The SPD of instance `n` (RAM ID `n`) for channel 0, DIMM 0: 512
+    /// bytes, or their hex text.
+    pub spds: Vec<String>,
+    /// Channel 1, DIMM 0 has the same SPD.
+    #[serde(default)]
+    pub second_channel: bool,
+    /// Clear the SPD's manufacturer bytes, as the board vendor does.
+    #[serde(default)]
+    pub strip_manufacturer: bool,
+}
+impl ApcbFiles {
+    /// An APCB instance from the template and the SPD file's bytes.
+    fn instance(&self, template: &[u8], spd: &[u8]) -> Result<Vec<u8>, String> {
+        let spd: [u8; 512] = match spd.try_into() {
+            Ok(binary) => binary,
+            Err(_) => super::apcb::parse_spd_hex(
+                std::str::from_utf8(spd).map_err(|_| "SPD is neither 512 bytes nor hex text")?,
+            )?,
+        };
+        let second = self.second_channel.then_some(&spd);
+        super::apcb::inject(
+            template,
+            self.gpio,
+            [[Some(&spd), None], [second, None]],
+            self.strip_manufacturer,
+        )
+    }
 }
 
 /// Where the PSP firmware comes from.
@@ -49,23 +98,16 @@ pub enum Firmware {
         image: FileBinding,
         prefix_size: u32,
     },
-    /// Blobs packed into a PSP partition. `configuration` is the JSON of
-    /// `files`, bound into the image's provenance too.
+    /// Blobs packed into a PSP partition, as the SoC and board tables
+    /// ([`super::blobs`]) resolve them in a blob directory. With `reset_offset`
+    /// the result is a whole native flash image: the partition, the reset
+    /// image at that flash offset (outside the partition) and the FFS;
+    /// without, only the partition, with the reset image inside it.
     Packed {
-        configuration: FileBinding,
         files: PicassoFiles,
+        reset_offset: Option<u32>,
     },
 }
-impl Firmware {
-    /// The `--image-config` input.
-    pub fn configuration(&self) -> &FileBinding {
-        match self {
-            Self::Vendor { image, .. } => image,
-            Self::Packed { configuration, .. } => configuration,
-        }
-    }
-}
-
 /// The FFS and its flash window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FfsWindow {
@@ -246,6 +288,11 @@ impl AmdAssembly {
         {
             return Err("invalid PSP SPI read mode or speed".into());
         }
+        if let Some(window) = &self.ffs
+            && (window.size == 0 || end(window.offset, window.size)? > self.flash_size)
+        {
+            return Err("FFS window outside AMD flash".into());
+        }
         match (&self.firmware, &self.ffs) {
             (Firmware::Vendor { image, prefix_size }, ffs) => {
                 let ffs_end = match ffs {
@@ -265,21 +312,45 @@ impl AmdAssembly {
                     );
                 }
             }
-            (Firmware::Packed { .. }, _) if self.psp != PspOptions::default() => {
-                return Err("PSP options are for vendor images; packed ones set the SPI in their configuration".into());
+            (Firmware::Packed { .. }, _) if self.psp.spi.is_some() => {
+                return Err("a packed image sets the PSP's SPI in its configuration".into());
             }
             (
                 Firmware::Packed {
-                    configuration,
                     files,
+                    reset_offset,
                 },
-                None,
+                ffs,
             ) => {
-                if configuration.environment != "IMAGE_CONFIG"
-                    || configuration.capacity != 65536
-                    || configuration.path.is_empty()
-                    || configuration.path.contains('\0')
-                    || files.flash_size != self.flash_size
+                // A native image: the reset image and the FFS each in their
+                // own window outside the partition.
+                let partition = files.efs_offset..files.partition_end;
+                let outside = |offset: u32, size: u32| {
+                    end(offset, size).map(|e| {
+                        e <= self.flash_size && (e <= partition.start || offset >= partition.end)
+                    })
+                };
+                match (reset_offset, ffs) {
+                    (Some(reset), ffs) => {
+                        let reset_end = end(*reset, self.reset_size)?;
+                        if !outside(*reset, self.reset_size)?
+                            || ffs.as_ref().is_some_and(|ffs| {
+                                !outside(ffs.offset, ffs.size).unwrap_or(false)
+                                    || (ffs.offset < reset_end && ffs.offset + ffs.size > *reset)
+                            })
+                        {
+                            return Err("native AMD flash windows overlap".into());
+                        }
+                    }
+                    (None, Some(_)) => {
+                        return Err("an FFS needs a native image's reset window".into());
+                    }
+                    (None, None) if self.psp.compress_reset => {
+                        return Err("only a native image's reset image is compressed".into());
+                    }
+                    (None, None) => {}
+                }
+                if files.flash_size != self.flash_size
                     || files.efs_offset >= files.partition_end
                     || files.partition_end > files.flash_size
                     || files.spi_read_mode > 7
@@ -303,24 +374,18 @@ impl AmdAssembly {
                     }
                 }
             }
-            (Firmware::Packed { .. }, Some(_)) => {
-                return Err("packed PSP partitions have no FFS".into());
-            }
         }
         Ok(())
     }
 
-    /// The image inputs: the vendor image, or the configuration and then the
+    /// The image inputs: the vendor image, or the
     /// PSP and BIOS blobs in their order. Their namespaces are image-only,
     /// never a compiler environment.
     pub fn bindings(&self) -> Result<Vec<FileBinding>, String> {
         self.validate()?;
         Ok(match &self.firmware {
             Firmware::Vendor { image, .. } => vec![image.clone()],
-            Firmware::Packed {
-                configuration,
-                files,
-            } => {
+            Firmware::Packed { files, .. } => {
                 let capacity = u64::from(files.partition_end - files.efs_offset);
                 let blobs = [("PSP", &files.psp), ("BIOS", &files.bios)]
                     .into_iter()
@@ -334,9 +399,21 @@ impl AmdAssembly {
                             capacity,
                         })
                     });
-                core::iter::once(configuration.clone())
-                    .chain(blobs)
-                    .collect()
+                // The APCB template, then each instance's SPD.
+                let apcb = files.apcb.iter().flat_map(|apcb| {
+                    core::iter::once(("APCB_TEMPLATE".to_string(), &apcb.template)).chain(
+                        apcb.spds
+                            .iter()
+                            .enumerate()
+                            .map(|(i, spd)| (format!("APCB_SPD_{i:02X}"), spd)),
+                    )
+                });
+                let apcb = apcb.map(|(environment, path)| FileBinding {
+                    environment,
+                    path: path.clone(),
+                    capacity: 0x1_0000,
+                });
+                blobs.chain(apcb).collect()
             }
         })
     }
@@ -434,10 +511,39 @@ impl AmdAssembly {
                 image[facts.reset_offset as usize..][..reset.len()].copy_from_slice(&reset);
                 (0, image, *prefix_size, facts.efs, Some(facts.reset_offset))
             }
-            Firmware::Packed { files, .. } => {
-                let packed = self.pack(files, sources, stage.clone())?;
+            Firmware::Packed {
+                files,
+                reset_offset: None,
+                ..
+            } => {
+                let packed = self.pack(files, sources, stage.clone(), None)?;
                 let efs = files.efs_offset as usize;
                 (packed.offset, packed.bytes, files.flash_size, efs, None)
+            }
+            Firmware::Packed {
+                files,
+                reset_offset: Some(reset_offset),
+                ..
+            } => {
+                let packed = self.pack(files, sources, stage.clone(), Some(*reset_offset))?;
+                let mut image = vec![0xff; self.flash_size as usize];
+                image[packed.offset as usize..][..packed.bytes.len()]
+                    .copy_from_slice(&packed.bytes);
+                let reset = if self.psp.compress_reset {
+                    let reset = amd_compress(&stage);
+                    if reset.len() > stage.len() {
+                        return Err("the compressed reset image is larger than the stage".into());
+                    }
+                    reset
+                } else {
+                    stage.clone()
+                };
+                image[*reset_offset as usize..][..reset.len()].copy_from_slice(&reset);
+                if let (Some(window), Some(ffs)) = (&self.ffs, ffs) {
+                    image[window.offset as usize..][..ffs.len()].copy_from_slice(ffs);
+                }
+                let efs = files.efs_offset as usize;
+                (0, image, self.flash_size, efs, Some(*reset_offset))
             }
         };
         // Read it back as the PSP does: from the kept firmware, not through
@@ -509,27 +615,15 @@ impl AmdAssembly {
         Ok(reset)
     }
 
-    /// Pack the PSP partition. The configuration witness must be the planned
-    /// one; this does not authenticate the blobs.
+    /// Pack the PSP partition from `sources` in [`Self::bindings`] order.
+    /// This does not authenticate the blobs.
     fn pack(
         &self,
         files: &PicassoFiles,
         sources: &[&[u8]],
         reset: Vec<u8>,
+        reset_offset: Option<u32>,
     ) -> Result<super::PackedImage, String> {
-        if sources[0].len() > 65536
-            || serde_json::from_slice::<PicassoFiles>(sources[0]).map_err(|e| e.to_string())?
-                != *files
-        {
-            return Err("PSP image configuration changed after host resolution".into());
-        }
-        let total = sources[1..]
-            .iter()
-            .try_fold(0usize, |sum, bytes| sum.checked_add(bytes.len()))
-            .ok_or("PSP input size overflow")?;
-        if total > (files.partition_end - files.efs_offset) as usize {
-            return Err("PSP blob inputs exceed partition budget".into());
-        }
         let blobs = |declared: &[FileBlob], bytes: &[&[u8]]| {
             declared
                 .iter()
@@ -540,7 +634,35 @@ impl AmdAssembly {
                 })
                 .collect()
         };
-        let split = 1 + files.psp.len();
+        let split = files.psp.len();
+        let apcb_at = split + files.bios.len();
+        let mut psp: Vec<Blob> = blobs(&files.psp, &sources[..split]);
+        if files.psp_app {
+            psp.push(Blob {
+                key: Key::new(super::psp_app::PSP_ENTRY, 0, 0),
+                bytes: super::psp_app::image(),
+            });
+        }
+        // The microcode goes into the FFS, not the BIOS directory.
+        let mut bios: Vec<Blob> = blobs(&files.bios, &sources[split..apcb_at]);
+        bios.retain(|blob: &Blob| blob.key.kind != bios::MICROCODE);
+        if let Some(apcb) = &files.apcb {
+            let template = sources[apcb_at];
+            for (instance, spd) in sources[apcb_at + 1..].iter().enumerate() {
+                let instance = u8::try_from(instance).map_err(|_| "too many APCB instances")?;
+                let bytes = apcb.instance(template, spd)?;
+                // Each instance has its own backup copy, as the board
+                // vendor's image has.
+                bios.push(Blob {
+                    key: Key::new(bios::APCB_BACKUP, 0, instance),
+                    bytes: bytes.clone(),
+                });
+                bios.push(Blob {
+                    key: Key::new(bios::APCB, 0, instance),
+                    bytes,
+                });
+            }
+        }
         PicassoImage {
             flash_size: files.flash_size,
             efs_offset: files.efs_offset,
@@ -549,9 +671,10 @@ impl AmdAssembly {
             spi_speed: files.spi_speed,
             micron: files.micron,
             soft_fuse: files.soft_fuse,
-            psp: blobs(&files.psp, &sources[1..split]),
-            bios: blobs(&files.bios, &sources[split..]),
+            psp,
+            bios,
             reset_image: reset,
+            reset_slot: reset_offset.map(|offset| (offset, self.psp.compress_reset)),
             reset_destination: self.reset_destination,
             apob_destination: self.apob_destination,
             shared_memory: self.shared_memory,

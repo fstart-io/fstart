@@ -1194,6 +1194,18 @@ impl PciEcam {
         self.assigned_memory_bars().map(|(_, window)| window)
     }
 
+    /// Allocated prefetchable VGA apertures eligible for write combining.
+    /// Non-prefetchable GPU registers and bridge windows are never included.
+    pub fn prefetchable_vga_windows(&self) -> impl Iterator<Item = PciWindow> + '_ {
+        self.assigned_memory_bars().filter_map(|(address, window)| {
+            (window.prefetchable
+                && self
+                    .device(address)
+                    .is_some_and(|device| device.read32(0x08) >> 16 == 0x0300))
+            .then_some(window)
+        })
+    }
+
     /// Assigned memory BAR spans together with their owning PCI address.
     /// Consumers can inspect the device without rediscovering BAR sizes.
     pub fn assigned_memory_bars(&self) -> impl Iterator<Item = (PciAddress, PciWindow)> + '_ {
@@ -1807,6 +1819,34 @@ mod tests {
         assert_eq!(
             size_from_moving_bits(u64::from(ones ^ zeroes), 0x0000_fffc),
             Ok(0x20)
+        );
+    }
+
+    #[test]
+    fn wc_selection_excludes_gpu_registers_and_non_display_prefetchable_bars() {
+        let (mut pci, _config_space) = test_pci();
+        let vga = PciAddress::new(0, 0, 2, 0);
+        let storage = PciAddress::new(0, 0, 3, 0);
+        for (address, class) in [(vga, 0x0300_0000), (storage, 0x0108_0000)] {
+            let mut device = endpoint(
+                address,
+                &[
+                    (0, BarType::Memory32, 0x10_0000),
+                    (2, BarType::Memory32, 0x100_0000),
+                ],
+            );
+            device.bars[2].prefetchable = true;
+            assert!(pci.devices.push(device).is_ok());
+            pci.write32(address, 8, class);
+        }
+        pci.allocate_resources().unwrap();
+        let windows: HVec<_, 6> = pci
+            .prefetchable_vga_windows()
+            .map(|window| (window.base, window.size))
+            .collect();
+        assert_eq!(
+            windows.as_slice(),
+            &[(u64::from(pci.read32(vga, PCI_BAR0 + 8) & !0xf), 0x100_0000)]
         );
     }
 

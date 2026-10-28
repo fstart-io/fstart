@@ -15,6 +15,7 @@ use runtime::{EMPTY_REGION, firmware_reservations, runtime_platform_config};
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
+pub use crabefi::peripheral;
 pub use crabefi::{PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, StorageBackend};
 
 /// fstart-owned UEFI payload configuration.
@@ -37,6 +38,8 @@ pub struct PlatformConfig<'a> {
     pub debug_output: Option<&'a mut dyn crabefi::DebugOutput>,
     /// Console input.
     pub console_input: Option<&'a mut dyn crabefi::ConsoleInput>,
+    /// Devices on fstart-owned buses, driven by CrabEFI.
+    pub peripherals: alloc::vec::Vec<peripheral::Peripheral>,
     /// Framebuffer configuration for GOP.
     pub framebuffer: Option<FramebufferConfig>,
     /// ACPI RSDP physical address.
@@ -54,12 +57,18 @@ pub struct PlatformConfig<'a> {
     pub runtime: RuntimePlatformConfig<'a>,
     /// Whether CrabEFI heap/environment initialization already ran.
     pub heap_pre_initialized: bool,
+    /// Enabled fixed-address devices from the same facts used for ACPI.
+    pub acpi_devices: &'a [fstart_core::acpi::AcpiGenericDevice],
 }
 
 /// Common fstart-owned UEFI launch inputs.
 pub struct UefiLaunchConfig<'a> {
+    /// Enabled fixed-address devices from the platform, without re-parsing AML.
+    pub acpi_devices: &'a [fstart_core::acpi::AcpiGenericDevice],
     /// Console selected by board policy for UEFI debug/input adapters.
     pub console: Option<&'a dyn fstart_core::services::Console>,
+    /// Devices on fstart-owned buses, driven by CrabEFI.
+    pub peripherals: alloc::vec::Vec<peripheral::Peripheral>,
     /// Framebuffer configuration for GOP.
     pub framebuffer: Option<FramebufferConfig>,
     /// ACPI RSDP physical address.
@@ -86,6 +95,26 @@ fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
     )
     .heap_pre_initialized(config.heap_pre_initialized)
     .build();
+    // Fixed-address devices with a CrabEFI driver, such as AMD eMMC, are
+    // bound by CrabEFI alongside the platform's other peripherals.
+    let mut peripherals = config.peripherals;
+    peripherals.extend(config.acpi_devices.iter().filter_map(|device| {
+        let hid = device.hid.as_str();
+        let (base, size) = device
+            .resources
+            .iter()
+            .find_map(|resource| match resource {
+                fstart_core::acpi::AcpiResource::Mmio { base, size } => Some((*base, *size)),
+                _ => None,
+            })?;
+        peripheral::mmio_supported([hid]).then(|| {
+            peripheral::Peripheral::Mmio(peripheral::MmioPeripheral {
+                ids: alloc::vec![hid.into()],
+                base,
+                size,
+            })
+        })
+    }));
     crabefi::init_platform(crabefi::PlatformConfig {
         variable_storage: config.variable_storage.map_or(
             crabefi::VariableStorage::None,
@@ -93,6 +122,7 @@ fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
         ),
         debug_output: config.debug_output,
         console_input: config.console_input,
+        peripherals,
         framebuffer: config.framebuffer,
         acpi_rsdp: config.acpi_rsdp,
         smbios: config.smbios,
@@ -187,7 +217,6 @@ fn launch_with_adapters(
 ) -> ! {
     let mut block_devices: [&mut dyn crabefi::BlockDevice; 0] = [];
     let mut debug_output = launch.console.map(ConsoleAdapter::new);
-    let mut console_input = launch.console.map(ConsoleAdapter::new);
     if let Some(output) = debug_output.as_mut() {
         b"fstart: CrabEFI variables have no persistent backend or retained journal\r\n"
             .iter()
@@ -216,9 +245,10 @@ fn launch_with_adapters(
         debug_output: debug_output
             .as_mut()
             .map(|d| d as &mut dyn crabefi::DebugOutput),
-        console_input: console_input
-            .as_mut()
-            .map(|c| c as &mut dyn crabefi::ConsoleInput),
+        // Serial input reaches CrabEFI through DebugOutput, which decodes
+        // escape sequences; ConsoleInput is for real key sources.
+        console_input: None,
+        peripherals: launch.peripherals,
         framebuffer: launch.framebuffer,
         acpi_rsdp: launch.acpi_rsdp,
         smbios: launch.smbios,
@@ -230,6 +260,7 @@ fn launch_with_adapters(
         runtime_image: crabefi::BUNDLED_RUNTIME_IMAGE,
         runtime: runtime_platform_config(),
         heap_pre_initialized: false,
+        acpi_devices: launch.acpi_devices,
     })
 }
 
@@ -313,19 +344,6 @@ impl<C: fstart_core::services::Console + ?Sized> crabefi::DebugOutput for Consol
     }
 
     fn has_input(&self) -> bool {
-        self.has_pending_or_console_input()
-    }
-}
-
-impl<C: fstart_core::services::Console + ?Sized> crabefi::ConsoleInput for ConsoleAdapter<'_, C> {
-    fn read_key(&mut self) -> Option<crabefi::Key> {
-        self.read_pending_or_console().map(|byte| crabefi::Key {
-            scancode: 0,
-            unicode_char: byte as u16,
-        })
-    }
-
-    fn has_key(&self) -> bool {
         self.has_pending_or_console_input()
     }
 }

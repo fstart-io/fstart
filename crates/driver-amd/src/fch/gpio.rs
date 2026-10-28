@@ -393,6 +393,21 @@ impl<B: Bus> Gpio<B> {
         }
         Ok(self.fch.reg(control(pin)).is_set(Control::PIN))
     }
+    /// Whether `pin` latched an interrupt, clearing the latch. A pending
+    /// wake status stays.
+    pub fn take_interrupt_status(&self, pin: u8) -> Result<bool, Error> {
+        if !self.bank.exists(pin) {
+            return Err(Error::InvalidPad);
+        }
+        let control = self.fch.reg(control(pin));
+        let value = control.extract();
+        if !value.is_set(Control::INTERRUPT_STATUS) {
+            return Ok(false);
+        }
+        // Status bits are write-1-to-clear.
+        control.set((value.get() & !STATUS_MASK) | Control::INTERRUPT_STATUS::SET.value);
+        Ok(true)
+    }
     /// Drive output `pin`; pending status stays.
     pub fn set(&self, pin: u8, high: bool) -> Result<(), Error> {
         if !self.bank.exists(pin) {
@@ -404,5 +419,46 @@ impl<B: Bus> Gpio<B> {
                 + Control::WAKE_STATUS::CLEAR,
         );
         Ok(())
+    }
+}
+
+/// One pad of a bank as an embedded-hal input.
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub struct Input<B> {
+    gpio: Gpio<B>,
+    pin: u8,
+}
+
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+impl<B: Bus> Gpio<B> {
+    /// Read `pin` through embedded-hal. Its pad must already be configured.
+    pub fn input(self, pin: u8) -> Result<Input<B>, Error> {
+        if !self.bank.exists(pin) {
+            return Err(Error::InvalidPad);
+        }
+        Ok(Input { gpio: self, pin })
+    }
+}
+
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+impl embedded_hal::digital::Error for Error {
+    fn kind(&self) -> embedded_hal::digital::ErrorKind {
+        embedded_hal::digital::ErrorKind::Other
+    }
+}
+
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+impl<B> embedded_hal::digital::ErrorType for Input<B> {
+    type Error = Error;
+}
+
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+impl<B: Bus> embedded_hal::digital::InputPin for Input<B> {
+    fn is_high(&mut self) -> Result<bool, Error> {
+        self.gpio.get(self.pin)
+    }
+
+    fn is_low(&mut self) -> Result<bool, Error> {
+        self.is_high().map(|high| !high)
     }
 }

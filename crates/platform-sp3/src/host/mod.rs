@@ -410,6 +410,7 @@ fn ffs_assembly(
         payload: config,
         microcode,
         data_assets: vec![],
+        file_assets: vec![],
         full_flash_image: false,
         soc_image_format: SocImageFormat::None,
         boot_hart_id: 0,

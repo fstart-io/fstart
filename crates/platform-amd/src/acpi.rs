@@ -51,6 +51,8 @@ pub struct BoardAcpi {
     pub lpc_aml: Vec<u8>,
     /// Standalone tables (SPMI, ...).
     pub tables: Vec<Vec<u8>>,
+    /// Enabled non-PCI devices to describe under \\_SB.
+    pub devices: Vec<fstart_core::acpi::AcpiGenericDevice>,
 }
 
 /// What a SoC's ACPI tables differ in.
@@ -179,6 +181,15 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
     let dsdt_aml = [scope_vec("\\", &sleep_states())?, ecam_reservation(inputs)?]
         .into_iter()
         .chain(root_bridges)
+        .chain(inputs.board.devices.iter().map(|device| {
+            fstart_acpi::devices::GenericAcpi {
+                name: device.name.as_str(),
+                hid: device.hid.as_str(),
+                resources: &device.resources,
+                gsiv: device.gsiv,
+            }
+            .dsdt_aml()
+        }))
         .flatten()
         .collect();
     let extra = core::iter::once(mcfg(inputs)?)
@@ -314,9 +325,9 @@ fn mcfg(inputs: &Inputs) -> Result<Vec<u8>, Error> {
 /// The FCH IOAPIC and the HPET interrupt as the FCH SMBus device 0:14.0.
 const FCH_SMBUS: u16 = fstart_pci::bdf(0, 0x14, 0);
 
-/// The IVRS (AmdNbioIOMMUZPDxe): one IVHD 10h and 11h per die IOMMU, none
-/// without die 0's, which owns the FCH IOAPIC and the HPET. No IVHD 40h:
-/// its only use would be ACPI HID devices, and Zeppelin has no eMMC.
+/// One IVHD 10h and 11h per die IOMMU, plus 40h when ACPI-only eMMC is
+/// enabled. Die 0 owns the FCH IOAPIC and HPET; without its IOMMU no IVRS
+/// is emitted.
 fn ivrs(inputs: &Inputs) -> Option<Vec<u8>> {
     inputs.dies.first()?.iommu?;
     let devices: Vec<Vec<DeviceEntry>> = (0..inputs.dies.len())
@@ -348,7 +359,11 @@ fn ivrs(inputs: &Inputs) -> Option<Vec<u8>> {
         .collect();
     ivrs::build_ivrs(&ivrs::IvrsConfig {
         iommus: &iommus,
-        acpi_hid: false,
+        acpi_hid: inputs
+            .board
+            .devices
+            .iter()
+            .any(|d| d.hid.as_str() == "AMDI0040"),
     })
 }
 
@@ -392,8 +407,28 @@ fn ivrs_devices(index: usize, inputs: &Inputs) -> Vec<DeviceEntry> {
             dte: fch_ioapic_dte.value,
         },
     ];
+    // The reference assigns the ACPI-only eMMC a synthetic requester ID
+    // 00:13.1. It is not an enumerated PCI function.
+    let emmc = (index == 0
+        && inputs
+            .board
+            .devices
+            .iter()
+            .any(|d| d.hid.as_str() == "AMDI0040"))
+    .then_some(DeviceEntry::AcpiHid {
+        device: fstart_pci::bdf(0, 0x13, 1),
+        hid: *b"AMDI0040",
+        dte: (Dte::LINT1_PASS::SET
+            + Dte::LINT0_PASS::SET
+            + Dte::SYS_MGT::Translate
+            + Dte::NMI_PASS::SET
+            + Dte::EXT_INT_PASS::SET
+            + Dte::INIT_PASS::SET)
+            .value,
+    });
     own.into_iter()
         .chain(fch.into_iter().filter(|_| index == 0))
+        .chain(emmc)
         .collect()
 }
 
@@ -1010,6 +1045,7 @@ mod tests {
             }
             .dsdt_aml(),
             tables: vec![],
+            devices: vec![],
         };
         let tables = tables(&board);
         let mut storage = vec![0; 64 * 1024];
@@ -1118,6 +1154,7 @@ mod tests {
         let board = BoardAcpi {
             lpc_aml: kcs.dsdt_aml(),
             tables: vec![kcs.spmi()],
+            devices: vec![],
         };
         let tables = build(&Inputs {
             soc: &ACPI,

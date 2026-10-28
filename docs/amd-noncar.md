@@ -74,24 +74,26 @@ architectural `_start_ram`.
 `noncar::host` is also the one build plan of every noncar SoC: the stage
 unit `reset`, the board's SMM unit, the payloads and the FFS follow from the
 layout and the SoC's `host::Policy` (its stage feature, whether the flow
-reaches a payload, SMM, what `--image-config` is).
+reaches a payload, SMM, where its PSP firmware comes from).
 
 The flash image format (the EFS, the PSP and BIOS directories and their
 level 2) is `crates/amdfw-format` (`fstart-amdfw-format`, `no_std`): the
 host packs and checks images with it and takes the microcode from it. A
 SoC names the EFS field its PSP takes the BIOS directory from (`Soc::BIOS_DIRECTORY`); the
 lookup follows a level-2 directory as the PSP does.
-`crates/image-build/src/amd/assembly.rs` (`AmdAssembly`) composes the image
-with `--image-config`: the PSP firmware comes from a vendor flash image,
+`crates/image-build/src/amd/assembly.rs` (`AmdAssembly`) composes the image.
+The PSP firmware either comes from a vendor flash image (`--image-config`),
 whose prefix stays byte for byte apart from optional PSP settings (Zeppelin
 has the PSP inflate a compressed reset image and read the flash faster:
-`assembly::PspOptions`), or is packed from blobs
-(Picasso). Either way the result is read back as
-the PSP would before it is written, with a JSON receipt of its inputs.
+`assembly::PspOptions`), or is packed from the files of a blob directory
+(`--blobs`, Picasso) that the SoC's and the board's Cargo.toml tables name
+([firmware blobs](amd-image-format.md#firmware-blobs)). Either way the
+result is read back as the PSP would before it is written, with a JSON
+receipt of its inputs.
 
 The microcode travels in the FFS, like Intel's: the host concatenates the
 patches into `cpu_microcode.bin` (the BIOS directory type 0x66 entries of a
-vendor image, or the type 0x66 files of a packed configuration;
+vendor image, or the microcode files of the SoC's blob table;
 `MicrocodeConfig::Amd`). The flow mounts and verifies the FFS before TP1, and
 MP init hands every CPU the verified copy (`fstart_stage::microcode_blob`),
 from which `Fam17hCpu` selects the patch for its signature.

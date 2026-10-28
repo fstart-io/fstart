@@ -24,6 +24,7 @@ fn image() -> PicassoImage {
             bytes: vec![0x34; 4097],
         }],
         reset_image: vec![0x56; 0x20000],
+        reset_slot: None,
         reset_destination: 0x2030000,
         apob_destination: 0x2001000,
         shared_memory: Some((0x2011000, 0x8000)),
@@ -33,7 +34,6 @@ fn image() -> PicassoImage {
 }
 #[test]
 fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
-    use crate::build_plan::FileBinding;
     use assembly::{FileBlob, PicassoFiles};
     let raw = image();
     let files = PicassoFiles {
@@ -54,15 +54,14 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         }],
         apob_nv: raw.apob_nv,
         psp_nv: raw.psp_nv,
+        apcb: None,
+        assets: vec![],
+        psp_app: false,
     };
     let operation = AmdAssembly {
         firmware: Firmware::Packed {
-            configuration: FileBinding {
-                environment: "IMAGE_CONFIG".into(),
-                path: "image.json".into(),
-                capacity: 65536,
-            },
             files,
+            reset_offset: None,
         },
         ffs: None,
         reset_unit: "reset".into(),
@@ -74,15 +73,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         shared_memory: raw.shared_memory,
         psp: Default::default(),
     };
-    let Firmware::Packed { files, .. } = &operation.firmware else {
-        unreachable!()
-    };
-    let json = serde_json::to_vec(files).unwrap();
-    let sources = [
-        json.as_slice(),
-        raw.psp[0].bytes.as_slice(),
-        raw.bios[0].bytes.as_slice(),
-    ];
+    let sources = [raw.psp[0].bytes.as_slice(), raw.bios[0].bytes.as_slice()];
     let packed = operation
         .assemble(&sources, &raw.reset_image, None)
         .unwrap();
@@ -98,7 +89,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
             .iter()
             .map(|file| file.environment.as_str())
             .collect::<Vec<_>>(),
-        ["IMAGE_CONFIG", "PSP_00_00_00", "BIOS_60_00_00"]
+        ["PSP_00_00_00", "BIOS_60_00_00"]
     );
     assert!(
         operation
@@ -112,12 +103,6 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         }
         changed
     };
-    assert!(
-        with_files(|f| f.soft_fuse ^= 1)
-            .assemble(&sources, &raw.reset_image, None)
-            .unwrap_err()
-            .contains("configuration changed")
-    );
     assert!(
         with_files(|f| f.bios.push(f.bios[0].clone()))
             .bindings()
@@ -440,6 +425,7 @@ fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
             payload: None,
             microcode: None,
             data_assets: vec![],
+            file_assets: vec![],
             full_flash_image: false,
             soc_image_format: SocImageFormat::None,
             boot_hart_id: 0,
@@ -498,6 +484,123 @@ fn composes_the_pinned_image() {
             .is_err()
     );
     assert!(mj11().assemble(&[&vendor], &stage, None).is_err());
+}
+
+#[test]
+fn native_image_has_the_partition_the_compressed_reset_and_the_ffs() {
+    use assembly::{ApcbFiles, FileBlob, PicassoFiles, PspOptions};
+    use fstart_amdfw_format::{Flash, directory::BiosEntry};
+    // An APCB template with the GPIO and one SPD sentinel.
+    let mut template = vec![0; 128 + 28 + 512];
+    template[..4].copy_from_slice(b"APCB");
+    template[32..44].copy_from_slice(&[0xfa, 0xde, 0xdd, 0xad].repeat(3));
+    template[156..162].copy_from_slice(&[0xf0, 0x05, 0xba, 0x11, 0, 0]);
+    let files = PicassoFiles {
+        flash_size: 0x100_0000,
+        efs_offset: 0xe2_0000,
+        partition_end: 0x100_0000,
+        spi_read_mode: 4,
+        spi_speed: 0,
+        micron: false,
+        soft_fuse: 0x3000_0000,
+        psp: vec![FileBlob {
+            key: Key::new(1, 0, 0),
+            path: "psp.bin".into(),
+        }],
+        // The microcode goes into the FFS, not the BIOS directory.
+        bios: vec![FileBlob {
+            key: Key::new(bios::MICROCODE, 0, 0),
+            path: "ucode.bin".into(),
+        }],
+        apob_nv: None,
+        psp_nv: None,
+        apcb: Some(ApcbFiles {
+            template: "apcb.bin".into(),
+            gpio: [[132, 1, 0], [90, 1, 0], [86, 3, 0], [69, 1, 0]],
+            spds: vec!["spd-a.bin".into(), "spd-b.hex".into()],
+            second_channel: false,
+            strip_manufacturer: true,
+        }),
+        assets: vec![],
+        psp_app: false,
+    };
+    let (ffs, stage) = ffs_and_stage(0x20_0000);
+    let operation = AmdAssembly {
+        firmware: Firmware::Packed {
+            files: files.clone(),
+            reset_offset: Some(0x98_0000),
+        },
+        ffs: Some(ffs_window(0xb8_0000, 0x29_f000)),
+        reset_unit: "reset".into(),
+        flash_size: 0x100_0000,
+        bios_directory: PicassoImage::BIOS_DIRECTORY,
+        reset_size: 0x20_0000,
+        reset_destination: 0x300_0000,
+        apob_destination: 0x200_1000,
+        shared_memory: None,
+        psp: PspOptions {
+            compress_reset: true,
+            spi: None,
+        },
+    };
+    assert_eq!(
+        operation
+            .bindings()
+            .unwrap()
+            .iter()
+            .map(|file| file.environment.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "PSP_01_00_00",
+            "BIOS_66_00_00",
+            "APCB_TEMPLATE",
+            "APCB_SPD_00",
+            "APCB_SPD_01"
+        ]
+    );
+    let spd_b = "ab ".repeat(512);
+    let sources: [&[u8]; 5] = [
+        &[0x11; 0x400],
+        &[0x22; 0xc80],
+        &template,
+        &[0xaa; 512],
+        spd_b.as_bytes(),
+    ];
+    let image = operation.assemble(&sources, &stage, Some(&ffs)).unwrap();
+    assert!(image.is_whole_flash(0x100_0000));
+    assert_eq!(image.facts.reset_offset, 0x98_0000);
+    assert_eq!(image.bytes[0xb8_0000..][..ffs.len()], ffs[..]);
+    assert!(image.bytes[..0x98_0000].iter().all(|&b| b == 0xff));
+    let levels = Flash::new(&image.bytes)
+        .bios_directories(PicassoImage::BIOS_DIRECTORY)
+        .unwrap();
+    let boot = levels.boot();
+    let reset = boot
+        .entries
+        .iter()
+        .find(|e| e.kind == bios::RESET_IMAGE)
+        .unwrap();
+    assert!(reset.compressed() && reset.size.get() == 0x20_0000);
+    assert!(!boot.entries.iter().any(|e| e.kind == bios::MICROCODE));
+    let apcbs: Vec<_> = boot
+        .entries
+        .iter()
+        .filter(|e: &&BiosEntry| e.kind == bios::APCB)
+        .map(|e| boot.data(e).unwrap())
+        .collect();
+    assert_eq!(apcbs.len(), 2);
+    let backups = boot.entries.iter().filter(|e| e.kind == bios::APCB_BACKUP);
+    assert!(
+        backups
+            .zip(&apcbs)
+            .all(|(e, apcb)| boot.data(e).unwrap() == *apcb)
+    );
+    assert_eq!(apcbs[0][156], 0xaa);
+    assert_eq!(apcbs[1][156], 0xab);
+    // The PSP's windows may not overlap.
+    let mut overlapping = operation.clone();
+    overlapping.ffs = Some(ffs_window(0x99_0000, 0x10_0000));
+    assert!(overlapping.validate().is_err());
 }
 
 #[test]

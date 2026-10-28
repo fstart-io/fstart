@@ -155,8 +155,14 @@ pub(crate) fn load(
     if executables.len() != 1 {
         return Err("Cargo did not report exactly one current host runner executable".into());
     }
+    // The platform reads its own and the board's firmware tables.
+    let mut selection = selection.clone();
+    selection.manifests = fstart_image_build::plan::PackageTables {
+        board: source.package["metadata"]["fstart"].clone(),
+        platform: source.platform["metadata"]["fstart"].clone(),
+    };
     let output = Command::new(&executables[0])
-        .arg(serde_json::to_string(selection).map_err(|e| e.to_string())?)
+        .arg(serde_json::to_string(&selection).map_err(|e| e.to_string())?)
         .current_dir(root)
         .output()
         .map_err(|e| e.to_string())?;

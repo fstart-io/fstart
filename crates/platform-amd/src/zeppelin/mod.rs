@@ -163,17 +163,18 @@ impl noncar::Soc for Zeppelin {
                 dxio: &mut *core::ptr::addr_of_mut!(DXIO_BUFFERS),
             }
         };
+        let mut config = *config;
         let state = silicon::pre_mp(
             dies,
             fch,
             msr,
-            config,
+            &mut config,
             identity,
             (memory.top_mem, memory.top_mem2),
             memory.apob,
             dma,
             &mut clock,
-            || B::fch_reset_done(&mut ctx.board()),
+            |config| B::fch_reset_done(&mut ctx.board(), config),
             || B::dxio_training_done(&mut ctx.board()),
         )?;
 
@@ -194,7 +195,7 @@ impl noncar::Soc for Zeppelin {
         let psp = psp::notify_smm(state.psp_bars[0], &tseg, &mut clock);
         silicon::post(fch, 0x42);
         // PCI: the interrupt router first.
-        silicon::route_interrupts(fch, config)?;
+        silicon::route_interrupts(fch, &config)?;
 
         Ok(Silicon {
             cpus,
@@ -207,6 +208,8 @@ impl noncar::Soc for Zeppelin {
                 })
             }),
             acpi: &acpi::ACPI,
+            devices: heapless::Vec::new(),
+            framebuffer: None,
             state,
         })
     }
@@ -220,12 +223,13 @@ impl noncar::Soc for Zeppelin {
         _: &mut Silicon<Self>,
         ctx: &Ctx<'_, Self>,
         pci: &fstart_pci::PciEcam,
-    ) {
+    ) -> Result<(), Stop> {
         let sata = pci
             .devices()
             .find(|a| pci.device(*a).is_some_and(|d| d.read32(0) == 0x7901_1022));
         silicon::ready_to_boot(ctx.dies, ctx.fch, sata, || {
             B::ready_to_boot(&mut ctx.board())
         });
+        Ok(())
     }
 }

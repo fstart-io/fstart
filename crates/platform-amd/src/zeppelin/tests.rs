@@ -140,13 +140,13 @@ fn flow(
         &dies,
         &fch,
         &msr,
-        config,
+        &mut { *config },
         identity,
         top,
         Some(&apob),
         dma,
         &mut clock,
-        || marker(hw, 2),
+        |_| marker(hw, 2),
         || marker(hw, 3),
     )
     .unwrap();

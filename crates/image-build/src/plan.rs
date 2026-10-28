@@ -150,6 +150,18 @@ pub struct BuildSelection {
     /// Explicit platform-owned image configuration, not a compiler environment.
     #[serde(default)]
     pub image_config: Option<String>,
+    /// The directory of the vendor firmware blobs the platform's tables
+    /// name (e.g. AMD's PSP firmware).
+    #[serde(default)]
+    pub blobs: Option<String>,
+    /// A vendor flash image fbuild extracts the blob directory from
+    /// (`fbuild blobs`); it then sets `blobs`.
+    #[serde(default)]
+    pub donor: Option<String>,
+    /// The `package.metadata.fstart` tables of the board and of its platform
+    /// crate, filled in by fbuild, for platform-owned firmware tables.
+    #[serde(default)]
+    pub manifests: PackageTables,
     /// SMBIOS Type 0 release date selected by fbuild, in MM/DD/YYYY form.
     #[serde(default)]
     pub smbios_release_date: Option<String>,
@@ -164,14 +176,22 @@ pub struct BuildSelection {
     pub log_level: Option<String>,
 }
 
+/// The `package.metadata.fstart` tables of the selected board and platform.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PackageTables {
+    pub board: serde_json::Value,
+    pub platform: serde_json::Value,
+}
+
 impl BuildSelection {
     pub fn validate_compiler_files(&self) -> Result<(), String> {
-        if self
-            .image_config
-            .as_ref()
-            .is_some_and(|path| path.is_empty() || path.contains('\0'))
+        for path in [&self.image_config, &self.blobs, &self.donor]
+            .into_iter()
+            .flatten()
         {
-            return Err("invalid image configuration path".into());
+            if path.is_empty() || path.contains('\0') {
+                return Err("invalid image configuration or blob directory path".into());
+            }
         }
         let mut names = std::collections::BTreeSet::new();
         for input in &self.compiler_files {

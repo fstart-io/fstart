@@ -78,6 +78,76 @@ payload formats with unknown lengths are refused for partial-prefix assembly,
 not assumed safe because their starting pointer is in the prefix. This checks
 structural preservation, not cryptographic validity or hardware bootability.
 
+## Firmware blobs
+
+A native AMD image is packed from vendor firmware files in a blob
+directory (`--blobs DIR`, workspace-relative or absolute). Two Cargo.toml
+tables say which files and where they go
+(`fstart_image_build::amd::blobs`):
+
+- The SoC's, owned by the platform crate:
+  `[package.metadata.fstart.amd.<soc>]` in `crates/platform-amd/Cargo.toml`.
+  The PSP partition's geometry and settings, and the file of every PSP and
+  BIOS directory entry, microcode patch (by CPU equivalence ID) and video
+  BIOS (by PCI ID). Paths follow the layout of the `amd_blobs` repository.
+- The board's: `[package.metadata.fstart.amd]` in its Cargo.toml. Its SoC,
+  its APCB instances and whether its PSP needs fstart's PSP application:
+
+  ```toml
+  [package.metadata.fstart.amd]
+  soc = "picasso"
+  psp-app = true
+  # One APCB per RAM ID, at <board>/apcb/<n>.bin in the blob directory ...
+  apcb = { instances = 13 }
+  # ... or generated from a template, paths in the blob directory:
+  # apcb = { template = "zork/uma_128.apcb", spds = ["spd/1.hex", ...],
+  #          gpio = [[132, 1, 0], [90, 1, 0], [86, 3, 0], [69, 1, 0]],
+  #          strip-manufacturer = true }
+  ```
+
+fbuild hands both tables to the platform, which resolves them in the blob
+directory. The microcode and the video BIOSes go into the FFS; the rest
+into the PSP partition. The image's receipt (`<board>.json`) records every
+input's SHA-256.
+
+### From an `amd_blobs` checkout
+
+`--blobs path/to/amd_blobs` serves the SoC's files as they are. Board files
+(the APCB instances) go next to them, e.g. extracted from the board's flash
+as below.
+
+### From a vendor flash image
+
+`cargo fbuild blobs` fills a blob directory with exactly the files the
+board's build reads, at the paths it reads them from:
+
+```sh
+cargo fbuild blobs --board google-vilboz --from backup.rom --out blobs/
+cargo fbuild assemble --board google-vilboz --release --blobs blobs/
+```
+
+- PSP and BIOS directory files by their entry (type, subprogram,
+  instance), L2 before L1 as the PSP looks them up, the board's APCBs from
+  the BIOS directory's `0x60` instances;
+- microcode patches by the CPU equivalence ID in their header and the size
+  that CPU family's patches have, from the BIOS directory if it lists them,
+  else wherever in the image they are (e.g. a coreboot or UEFI firmware
+  file system), the newest when there are several;
+- video BIOSes by their legacy option ROM header and PCI data structure
+  (vendor, device, x86 code, checksum) wherever they are; copies must be
+  identical.
+
+Or build from the vendor image directly: `--donor backup.rom` instead of
+`--blobs` extracts the same files once per board and image content into
+`target/fstart-blobs/<board>/<image SHA-256>/` and builds from there.
+
+It writes `fstart-blobs.toml` with the source image's and each file's
+SHA-256 and where it was found. A file the image doesn't have is an error,
+or, with `--allow-missing`, left out and listed there. Compressed files
+(e.g. a video BIOS in a compressed UEFI section) aren't found; take them
+from `amd_blobs`. Extracted files are the vendor's versions, signed as they
+were; nothing is modified.
+
 ## Coverage and next extensions
 
 Current inspection covers EFS BIOS slots at +0x18/+0x1c/+0x20/+0x28, `2PSP`,

@@ -73,6 +73,10 @@ pub struct Handoff {
     /// The FFS, the firmware region of the payload.
     pub ffs: Region,
     pub pci_root: PciRootInfo,
+    pub devices: heapless::Vec<fstart_core::acpi::AcpiGenericDevice, 16>,
+    pub framebuffer: Option<fstart_core::services::FramebufferInfo>,
+    #[cfg(feature = "payload-uefi-basic")]
+    pub peripherals: super::Peripherals,
 }
 
 impl fstart_stage::payload::X86UefiPayloadContext for Handoff {
@@ -90,6 +94,17 @@ impl fstart_stage::payload::X86UefiPayloadContext for Handoff {
     }
     fn pci_root(&self) -> Option<PciRootInfo> {
         Some(self.pci_root)
+    }
+    fn acpi_devices(&self) -> &[fstart_core::acpi::AcpiGenericDevice] {
+        &self.devices
+    }
+    #[cfg(feature = "payload-uefi-basic")]
+    fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
+        self.framebuffer
+    }
+    #[cfg(feature = "payload-uefi-basic")]
+    fn take_peripherals(&mut self) -> super::Peripherals {
+        core::mem::take(&mut self.peripherals)
     }
 }
 

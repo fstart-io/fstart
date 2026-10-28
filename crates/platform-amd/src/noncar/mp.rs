@@ -88,6 +88,9 @@ pub fn start<S: Soc, E>(
             return Err("MP init");
         }
     };
+    if cpu.errors() != 0 {
+        return Err("CPU initialization");
+    }
     let apic_ids: [AtomicU32; 32] = [const { AtomicU32::new(u32::MAX) }; 32];
     mp.scope(|scope| {
         scope.scatter(&|cpu: u32| {

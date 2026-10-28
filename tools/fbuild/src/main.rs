@@ -77,6 +77,22 @@ enum Command {
         #[arg(short, long)]
         image: String,
     },
+    /// Extract a board's vendor firmware blobs (AMD PSP firmware, APCBs,
+    /// microcode, video BIOS) from a vendor flash image into a blob
+    /// directory for `--blobs`.
+    Blobs {
+        #[arg(short, long)]
+        board: String,
+        /// The vendor flash image.
+        #[arg(long)]
+        from: String,
+        /// The blob directory to write.
+        #[arg(long)]
+        out: String,
+        /// Write what the image has even if some files are missing.
+        #[arg(long)]
+        allow_missing: bool,
+    },
     /// Explain a migrated board's resolved geometry and compiler selection.
     Explain {
         board: String,
@@ -362,6 +378,21 @@ fn main() {
             ),
         ),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
+        Command::Blobs {
+            board,
+            from,
+            out,
+            allow_missing,
+        } => build_board::workspace_root_pub().and_then(|root| {
+            let manifest = board_manifest::find(&root, &board)?;
+            fbuild::blobs::extract(
+                &root,
+                &manifest,
+                std::path::Path::new(&from),
+                std::path::Path::new(&out),
+                allow_missing,
+            )
+        }),
         Command::Explain {
             board,
             payload,

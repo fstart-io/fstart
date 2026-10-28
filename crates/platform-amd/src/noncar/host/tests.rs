@@ -11,6 +11,7 @@ use fstart_driver_amd::{
 };
 use fstart_image_build::plan::CompilerFileSelection;
 use sha2::{Digest, Sha256};
+use std::vec::Vec;
 use zerocopy::IntoBytes;
 
 struct Vilboz;
@@ -30,6 +31,20 @@ impl Board for Vilboz {
             espi: None,
             early_gpios: &[],
             disable_rom_sharing: false,
+        },
+        pcie: &[],
+        power: None,
+        usb: fstart_driver_amd::fch::sandstone::usb::Config {
+            phy2: None,
+            phy3_override: None,
+            overcurrent: [fstart_driver_amd::fch::sandstone::usb::Overcurrent::None; 6],
+            force_gen1: 0,
+        },
+        emmc: None,
+        i2c: &[],
+        graphics: fstart_driver_amd::nbio::picasso::gfx::Config {
+            displays: &[],
+            hdmi2_disable: 0,
         },
     };
     fn console() -> fstart_driver_uart::ns16550::Ns16550Config {
@@ -77,70 +92,78 @@ fn units_hash(plan: &BuildPlan) -> String {
 }
 
 #[test]
-fn checkpoint_has_no_compiler_inputs_and_no_image_projection() {
-    let source = source();
-    let selected = BuildSelection::default();
+fn picasso_payload_plan_includes_smm_and_verified_ffs() {
+    let selected = BuildSelection {
+        payload: Some("uefi".into()),
+        ..Default::default()
+    };
     let plan = resolve::<Vilboz>(selected.clone()).unwrap();
     plan.validate_compiler_selections(&selected).unwrap();
-    // The compilation unit, hence the reset image, stays as it is.
-    assert_eq!(
-        units_hash(&plan),
-        "778d1bc0b03b7985a8517798b60b1ec1bd8c007e3516379ee09baf461e132175"
-    );
-    assert!(plan.assembly.ffs().is_err());
-    assert_eq!(plan.selection("reset").unwrap().len(), 1);
-    let unit = &plan.units[0];
+    assert_eq!(plan.units.len(), 2);
+    assert_eq!(plan.units[0].name, "smm");
+    let unit = &plan.units[1];
+    assert_eq!(unit.name, "reset");
     assert!(unit.release_only);
-    assert_eq!(unit.features, ["bundle-picasso"]);
-    assert!(unit.file_bindings.is_empty());
+    assert_eq!(unit.features, ["bundle-picasso", "payload-uefi"]);
+    assert_eq!(unit.bindings[0].producer, "smm");
+    assert_eq!(unit.payload, "crabefi");
     let UnitOutput::Executable { expectations, .. } = &unit.output else {
         unreachable!()
     };
-    assert_eq!(expectations.entry, Some(0x022f_fff0));
-    let config_path = source.0.join("image = exact.json");
-    std::fs::write(&config_path, r#"{"flash_size":16777216,"efs_offset":14811136,"partition_end":16777216,"spi_read_mode":4,"spi_speed":0,"micron":false,"soft_fuse":805306368,"psp":[],"bios":[],"apob_nv":null,"psp_nv":null}"#).unwrap();
-    let mut image_selection = selected.clone();
-    image_selection.image_config = Some(config_path.to_str().unwrap().into());
-    let image_plan = resolve::<Vilboz>(image_selection.clone()).unwrap();
-    assert!(image_plan.assembly.config("test").is_err());
-    let Assembly::Amd(operation) = &image_plan.assembly else {
+    assert_eq!(expectations.entry, Some(picasso::LAYOUT.reset_vector()));
+    assert!(plan.assembly.ffs().is_ok());
+    let mut invalid = selected;
+    invalid
+        .compiler_files
+        .push(CompilerFileSelection::parse("MICROCODE=ignored.bin").unwrap());
+    assert!(resolve::<Vilboz>(invalid).is_err());
+}
+
+#[test]
+fn picasso_packs_the_blob_tables_into_a_native_image() {
+    let blobs = std::env::temp_dir();
+    let mut selection = BuildSelection {
+        payload: Some("uefi".into()),
+        blobs: Some(blobs.to_str().unwrap().into()),
+        ..Default::default()
+    };
+    selection.manifests.board = serde_json::json!({
+        "board": "test-board",
+        "amd": { "soc": "picasso", "psp-app": true, "apcb": { "instances": 1 } },
+    });
+    selection.manifests.platform = serde_json::json!({ "amd": { "picasso": {
+        "bios-directory": "Family17hModel10",
+        "efs-offset": 0xe2_0000, "partition-end": 0x100_0000,
+        "spi-read-mode": 4, "spi-speed": 0, "soft-fuse": 0x3000_0000,
+        "psp": [{ "type": 1, "file": "psp/boot.bin" }],
+        "bios": [],
+        "microcode": [{ "equivalence-id": 0x8201, "file": "ucode.bin" }],
+        "vbios": [{ "device": 0x15dd, "file": "vbios.bin" }],
+    }}});
+    let plan = resolve::<Vilboz>(selection.clone()).unwrap();
+    plan.validate_image_selection(&selection).unwrap();
+    let Assembly::Amd(image) = &plan.assembly else {
         unreachable!()
     };
-    assert!(operation.ffs.is_none());
+    let Firmware::Packed {
+        files,
+        reset_offset,
+    } = &image.firmware
+    else {
+        unreachable!()
+    };
+    assert_eq!(*reset_offset, Some(0x98_0000));
+    assert!(files.psp_app && image.psp.compress_reset);
     assert_eq!(
-        operation.firmware.configuration().path,
-        image_selection.image_config.clone().unwrap()
+        files.bios[0].path,
+        blobs.join("test-board/apcb/0.bin").to_str().unwrap()
     );
-    assert_eq!(operation.reset_destination, picasso::LAYOUT.image.base);
-    image_plan
-        .validate_image_selection(&image_selection)
-        .unwrap();
-    assert!(plan.validate_image_selection(&image_selection).is_err());
-    let mut wrong = image_plan.clone();
-    let Assembly::Amd(operation) = &mut wrong.assembly else {
-        unreachable!()
-    };
-    operation.reset_destination += 0x10000;
-    assert!(wrong.order().is_err());
-    image_selection.image_config = Some("substituted.json".into());
-    assert!(
-        image_plan
-            .validate_image_selection(&image_selection)
-            .is_err()
-    );
-    let microcode = source.0.join("microcode.bin");
-    std::fs::write(&microcode, [0; 16]).unwrap();
-    for change in [
-        |s: &mut BuildSelection, _: &str| s.payload = Some("uefi".into()),
-        |s: &mut BuildSelection, path: &str| {
-            s.compiler_files
-                .push(CompilerFileSelection::parse(&format!("MICROCODE={path}")).unwrap())
-        },
-    ] {
-        let mut invalid = selected.clone();
-        change(&mut invalid, microcode.to_str().unwrap());
-        assert!(resolve::<Vilboz>(invalid).is_err());
-    }
+    let ffs = &image.ffs.as_ref().unwrap().assembly;
+    assert_eq!(ffs.file_assets[0].name.as_str(), "pci1002,15dd.rom");
+    assert!(matches!(&ffs.microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1));
+    // The tables are for another SoC.
+    selection.manifests.board["amd"]["soc"] = "zeppelin".into();
+    assert!(resolve::<Vilboz>(selection).is_err());
 }
 
 /// The compilation units, hence the stage binaries, stay as they are.
@@ -215,7 +238,10 @@ fn zeppelin_composes_the_vendor_image() {
     let Assembly::Amd(image) = &plan.assembly else {
         unreachable!()
     };
-    assert_eq!(image.firmware.configuration().path, path.to_str().unwrap());
+    let Firmware::Vendor { image: vendor, .. } = &image.firmware else {
+        unreachable!()
+    };
+    assert_eq!(vendor.path, path.to_str().unwrap());
     let ffs = image.ffs.as_ref().unwrap();
     assert_eq!(
         (ffs.offset, ffs.size, image.reset_size),

@@ -1207,6 +1207,18 @@ impl<'scope, 'env> Scope<'scope, 'env> {
         self.wait_all();
     }
 
+    /// Run on every CPU concurrently, including the BSP (index 0).
+    /// Unlike `scatter`, callbacks may rendezvous with each other. Every
+    /// callback must participate in the same barriers and eventually return.
+    pub fn rendezvous<F>(&self, f: &F)
+    where
+        F: Fn(u32) + Send + Sync + 'env,
+    {
+        self.start_all(trampoline_indexed::<F>, f as *const F as usize);
+        f(0);
+        self.wait_all();
+    }
+
     /// Run a closure on one specific AP.  BSP waits for it to complete.
     pub fn run_on<F>(&self, ap: u16, f: &F)
     where
@@ -1231,6 +1243,11 @@ impl<'scope, 'env> Scope<'scope, 'env> {
 
     /// Dispatch to all APs and wait for completion.
     fn dispatch_all(&self, trampoline: fn(*const (), u32), data: usize) {
+        self.start_all(trampoline, data);
+        self.wait_all();
+    }
+
+    fn start_all(&self, trampoline: fn(*const (), u32), data: usize) {
         for i in 0..self.handle.num_aps as usize {
             let mb = &MAILBOXES[i];
             mb.data.store(data, Ordering::Relaxed);
@@ -1241,7 +1258,6 @@ impl<'scope, 'env> Scope<'scope, 'env> {
             mb.func
                 .store(trampoline as *const () as usize, Ordering::Release);
         }
-        self.wait_all();
     }
 
     /// Wait for all APs to return to idle.

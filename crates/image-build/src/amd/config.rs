@@ -158,18 +158,14 @@ fn identify(name: &str, o: Options) -> Option<(bool, Key, bool)> {
         "RTM_PUBKEY_FILE" => return Some((true, Key::new(5, 0, 0), true)),
         "PSP_MP2CFG_FILE" => return Some((true, Key::new(0x6a, 0, 0), o.mp2)),
         _ => {
-            if let Some(index) = name
+            let index = name
                 .strip_prefix("PSP_ABL")
-                .and_then(|s| s.strip_suffix("_FILE"))
-            {
-                let index: u8 = index.parse().ok()?;
-                if index > 7 {
-                    return None;
-                }
-                (0x30 + index, 0, true)
-            } else {
+                .and_then(|s| s.strip_suffix("_FILE"))?;
+            let index: u8 = index.parse().ok()?;
+            if index > 7 {
                 return None;
             }
+            (0x30 + index, 0, true)
         }
     };
     Some((false, Key::new(kind, sub, 0), include))

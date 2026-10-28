@@ -91,3 +91,18 @@ fn banks_without_a_gpio_function_need_native_pads() {
     assert_eq!(gpio.get(149), Ok(true));
     assert_eq!(gpio.get(153), Err(Error::InvalidPad));
 }
+#[test]
+fn interrupt_status_is_taken_once_without_clearing_wake_status() {
+    let world = world();
+    let gpio = gpio(&world, Picasso::GPIO_BANK);
+    // Both statuses are latched; only the interrupt status is cleared.
+    assert_eq!(gpio.take_interrupt_status(9), Ok(true));
+    let interrupt = 1 << 28;
+    assert_eq!(
+        writes(&world, CONTROL_9),
+        [interrupt | (1 << 17) | (1 << 22)]
+    );
+    world.set(Space::Mmio, CONTROL_9, 4, 1 << 29);
+    assert_eq!(gpio.take_interrupt_status(9), Ok(false));
+    assert_eq!(writes(&world, CONTROL_9).len(), 1);
+}

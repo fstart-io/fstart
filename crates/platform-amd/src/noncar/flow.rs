@@ -188,6 +188,23 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
     };
 
     let (roots, ecam) = enumerate::<S>(&ctx, &silicon);
+    // PCI resources become known after AMD's required MP/SMU timepoints.
+    // Extend cacheability coherently on all CPUs without replacing AMD's
+    // fixed DRAM routing, high-memory TOM2WB or the existing RAM/ROM MTRRs.
+    let wc = ecam
+        .prefetchable_vga_windows()
+        .map(|window| (window.base, window.size));
+    // SAFETY: BSP owns MP dispatch; interrupts are disabled, APs are online,
+    // and only allocated prefetchable VGA BARs are eligible.
+    if let Err(error) =
+        unsafe { fstart_arch::x86::mtrr::install_write_combining(wc, &silicon.cpus.mp) }
+    {
+        if error == fstart_core::services::ServiceError::NotSupported {
+            fstart_log::warn!("mtrr: framebuffer WC unavailable; preserving existing cache policy");
+        } else {
+            fail::<S>("framebuffer cache policy");
+        }
+    }
     S::after_resources::<B>(&mut silicon, &ctx);
     B::mainboard_final(&mut ctx.board());
     ioapics(&ctx, &silicon);
@@ -195,6 +212,8 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
         .iter()
         .map(|root| acpi::HostBridge::new(root, &ecam))
         .collect();
+    let mut board_acpi = B::acpi();
+    board_acpi.devices.extend(silicon.devices.iter().cloned());
     let rsdp = acpi::install(
         silicon.acpi,
         &dies,
@@ -205,9 +224,13 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
             buses: S::ECAM_BUSES,
         },
         &silicon.cpus.apic_ids,
-        &B::acpi(),
+        &board_acpi,
     );
-    S::ready_to_boot::<B>(&mut silicon, &ctx, &ecam);
+    if let Err(why) = S::ready_to_boot::<B>(&mut silicon, &ctx, &ecam) {
+        stop::<S>(why);
+    }
+    #[cfg(feature = "payload-uefi-basic")]
+    let peripherals = S::peripherals::<B>(&ctx);
     let mut delay = clock;
     if let Err(what) = psp::lock_df_registers(silicon.psp.as_mut(), &mut delay) {
         fail::<S>(what);
@@ -237,6 +260,10 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
         ),
         rsdp,
         ffs,
+        devices: silicon.devices,
+        framebuffer: silicon.framebuffer,
+        #[cfg(feature = "payload-uefi-basic")]
+        peripherals,
         pci_root: fstart_pci::PciRootInfo {
             segment: 0,
             ecam_base: S::ECAM,

@@ -23,6 +23,7 @@ members = [
   "crates/driver-lenovo",
   "crates/driver-ricoh",
   "crates/driver-uart",
+  "crates/driver-vbios",
   "crates/driver-i2c",
   "crates/driver-ipmi",
   "crates/driver-intel",
@@ -104,6 +105,7 @@ fstart-intel-gma = { path = "crates/intel-gma", default-features = false }
 fstart-driver-sunxi = { path = "crates/driver-sunxi" }
 fstart-driver-superio = { path = "crates/driver-superio" }
 fstart-driver-uart = { path = "crates/driver-uart" }
+fstart-driver-vbios = { path = "crates/driver-vbios" }
 fstart-driver-i2c = { path = "crates/driver-i2c" }
 fstart-stage = { path = "crates/stage" }
 fstart-acpi = { path = "crates/acpi" }

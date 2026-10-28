@@ -80,6 +80,7 @@ pub const I2C_TIMING: Timing = Timing {
     scl_high: 0x285,
     scl_low: 0x357,
     spike_length: Some(7),
+    sda_hold: None,
 };
 
 /// FCH ACPI fixed I/O, the same layout as the vendor firmware.

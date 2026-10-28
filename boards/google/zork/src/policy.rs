@@ -235,33 +235,22 @@ pub const EMMC: emmc::Config = emmc::Config {
     sdr104_hs400_drive: emmc::Drive::A,
     ddr50_drive: emmc::Drive::B,
 };
-#[derive(Debug, Clone, Copy)]
-pub enum Connector {
-    Edp,
-    Hdmi,
-    DisplayPort,
-}
-#[derive(Debug, Clone, Copy)]
-pub struct Display {
-    pub connector: Connector,
-    pub aux: u8,
-    pub hotplug: u8,
-}
+pub use fstart_driver_amd::nbio::picasso::gfx::{Connector, Display};
 pub const DISPLAYS: &[Display] = &[
     Display {
         connector: Connector::Edp,
+        aux: 0,
+        hotplug: 0,
+    },
+    Display {
+        connector: Connector::Hdmi,
         aux: 1,
         hotplug: 1,
     },
     Display {
-        connector: Connector::Hdmi,
-        aux: 2,
-        hotplug: 2,
-    },
-    Display {
         connector: Connector::DisplayPort,
-        aux: 4,
-        hotplug: 4,
+        aux: 3,
+        hotplug: 3,
     },
 ];
 

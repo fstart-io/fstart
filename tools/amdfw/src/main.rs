@@ -200,6 +200,7 @@ fn pack(a: PackArgs) -> amd::Result<()> {
         psp,
         bios,
         reset_image: read(&a.reset_image)?,
+        reset_slot: None,
         reset_destination: a.reset_destination,
         apob_destination: a.apob_destination,
         shared_memory: a.shared_memory.zip(a.shared_memory_size),

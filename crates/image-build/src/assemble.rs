@@ -118,13 +118,9 @@ pub fn assemble(
         assemble_microcode(microcode, workspace_root, board_dir, &mut ro_files)?;
     }
 
-    // Board-shipped data assets. The name is the FFS file name the firmware
-    // looks up at runtime, so it is also the board-directory file to read.
-    for name in &config.data_assets {
-        let path = board_dir.join(name.as_str());
-        let data = fs::read(&path).map_err(|e| format!("failed to read data asset {name}: {e}"))?;
+    let mut data_file = |name: String, data: Vec<u8>| {
         ro_files.push(InputFile {
-            name: name.as_str().to_string(),
+            name,
             file_type: FileType::Data,
             segments: vec![InputSegment {
                 name: ".data".to_string(),
@@ -136,6 +132,19 @@ pub fn assemble(
                 flags: SegmentFlags::RODATA,
             }],
         });
+    };
+    // Board-shipped files and files from the image configuration use the
+    // same authenticated data-file path.
+    for name in &config.data_assets {
+        let path = board_dir.join(name.as_str());
+        let data = fs::read(&path).map_err(|e| format!("failed to read data asset {name}: {e}"))?;
+        data_file(name.as_str().to_string(), data);
+    }
+    for asset in &config.file_assets {
+        let path = workspace_root.join(asset.path.as_str());
+        let data = fs::read(&path)
+            .map_err(|e| format!("failed to read data asset {}: {e}", path.display()))?;
+        data_file(asset.name.as_str().to_string(), data);
     }
 
     let coreboot = config

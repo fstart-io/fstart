@@ -6,5 +6,4 @@ license.workspace = true
 publish = false
 
 [dependencies]
-embedded-hal = { workspace = true }
-tock-registers = { workspace = true }
+crabefi-hw = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "b2ef47afc94c038ef8ccd890d853d0312365320b" }

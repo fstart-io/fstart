@@ -3,12 +3,20 @@
 //! The BSP plans once from physical RAM, before firmware allocations split the
 //! OS memory map. UC holes and explicit WC apertures are part of the solution;
 //! an insufficient MSR budget is an error, never a partial RAM mapping.
+//!
+//! Before MP, `install_final_solution` plans RAM and optional WC together.
+//! Platforms allocating PCI after MP use `install_write_combining`: a
+//! synchronized, additive update that preserves vendor-specific RAM policy.
+//! Both paths consume the PCI allocator's prefetchable VGA apertures.
 
 use crate::x86::msr::{rdmsr, wrmsr};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use fstart_core::services::ServiceError;
 use heapless::Vec;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+mod wc;
+pub use wc::install_write_combining;
 
 pub const IA32_MTRR_PHYSBASE0: u32 = 0x200;
 pub const IA32_MTRR_PHYSMASK0: u32 = 0x201;
@@ -52,7 +60,7 @@ impl CacheType {
 }
 
 /// CPU limits, also usable by host-side planner tests without privileged I/O.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     pub variable_count: usize,
     pub physical_bits: u8,

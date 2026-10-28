@@ -3,7 +3,8 @@
 //! numbered like the vendor AmdI2CMasterPei instances.
 use crate::soc::Soc;
 use embedded_hal::delay::DelayNs;
-use fstart_driver_i2c::designware::{DesignWare, Error, Timing};
+use fstart_driver_i2c::designware::{DesignWare, Error};
+pub use fstart_driver_i2c::designware::{Speed, Timing};
 
 /// Controller `index` of SoC `S` with `timing`. Its pads must already be
 /// routed.

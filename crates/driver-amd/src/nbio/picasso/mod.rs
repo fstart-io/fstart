@@ -18,8 +18,10 @@ use tock_registers::{
 
 pub const SMU_MMIO_BASE: u32 = 0xfd00_0000;
 pub const PSP_MMIO_BASE: u32 = 0xfd10_0000;
+pub const IOMMU_MMIO_BASE: u32 = 0xfd20_0000;
 const IOAPIC_BASE: u32 = 0xfec0_1000;
 
+pub mod gfx;
 pub mod late;
 mod tables;
 

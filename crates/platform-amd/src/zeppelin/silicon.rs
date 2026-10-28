@@ -86,13 +86,13 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
     fch: &Fch<impl Bus>,
     msr: &impl MsrAccess,
-    config: &Config,
+    config: &mut Config,
     identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
     apob: Option<&Apob>,
     dma: Dma,
     clock: &mut impl Clock,
-    fch_reset_done: impl FnOnce(),
+    fch_reset_done: impl FnOnce(&mut Config),
     dxio_training_done: impl FnOnce(),
 ) -> Result<State, &'static str> {
     let Identity { revision, package } = identity;
@@ -138,7 +138,7 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
         |die| nonpci[usize::from(die)],
         clock,
     );
-    fch_reset_done();
+    fch_reset_done(config);
 
     // AmdNbioBaseZPPei, AmdCcxZenZpPei.
     for die in dies {

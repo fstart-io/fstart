@@ -18,6 +18,11 @@ impl ResolvedImage {
     ) -> Result<Self, String> {
         selection.validate_compiler_files()?;
         let source = crate::profile_source::load_profile(root, board)?;
+        let mut selection = selection;
+        if let Some(donor) = selection.donor.take() {
+            let blobs = crate::blobs::from_donor(root, &source, std::path::Path::new(&donor))?;
+            selection.blobs = Some(blobs.to_string_lossy().into_owned());
+        }
         let mut plan = crate::host_plan::load(root, &source, &board.variant_features, &selection)?;
         plan.validate_compiler_selections(&selection)?;
         plan.validate_image_selection(&selection)?;

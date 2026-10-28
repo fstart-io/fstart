@@ -67,6 +67,14 @@ pub struct BuildArgs {
     /// Explicit image configuration interpreted by the selected platform.
     #[arg(long)]
     pub image_config: Option<String>,
+    /// Directory of the vendor firmware blobs the platform packs (e.g. AMD
+    /// PSP firmware; see `fbuild blobs`).
+    #[arg(long, conflicts_with = "donor")]
+    pub blobs: Option<String>,
+    /// Vendor flash image to take those blobs from, as `fbuild blobs`
+    /// extracts them (into target/fstart-blobs/<board>/).
+    #[arg(long)]
+    pub donor: Option<String>,
     /// SMBIOS Type 0 release date in MM/DD/YYYY form.
     #[arg(long, value_parser = parse_smbios_date, default_value_t = current_smbios_date())]
     pub smbios_date: String,
@@ -95,6 +103,8 @@ impl Default for BuildArgs {
         Self {
             compiler_inputs: Vec::new(),
             image_config: None,
+            blobs: None,
+            donor: None,
             smbios_date: current_smbios_date(),
             linux_kernel_load_addr: None,
             linux_bootargs: None,
@@ -111,6 +121,9 @@ impl BuildArgs {
             payload: payload.map(|choice| choice.as_str().to_owned()),
             compiler_files: self.compiler_inputs.clone(),
             image_config: self.image_config.clone(),
+            blobs: self.blobs.clone(),
+            donor: self.donor.clone(),
+            manifests: Default::default(),
             smbios_release_date: Some(self.smbios_date.clone()),
             x86_linux_kernel_load_addr: self.linux_kernel_load_addr,
             x86_linux_bootargs: self.linux_bootargs.clone(),
@@ -128,6 +141,12 @@ impl BuildArgs {
         }
         if let Some(path) = &self.image_config {
             args.extend(["--image-config".into(), path.clone()]);
+        }
+        if let Some(path) = &self.blobs {
+            args.extend(["--blobs".into(), path.clone()]);
+        }
+        if let Some(path) = &self.donor {
+            args.extend(["--donor".into(), path.clone()]);
         }
         args.extend(["--smbios-date".into(), self.smbios_date.clone()]);
         if let Some(value) = self.linux_kernel_load_addr {
@@ -248,6 +267,8 @@ mod tests {
             "FSTART_BYTES=a path/file=1.bin",
             "--image-config",
             "a path/image=2.json",
+            "--donor",
+            "vendor.rom",
         ])
         .unwrap();
         let selected = cli.options.selection(None);
@@ -268,6 +289,7 @@ mod tests {
             selected.compiler_files[0].path
         );
         assert_eq!(forwarded.image_config, selected.image_config);
+        assert_eq!(forwarded.donor.as_deref(), Some("vendor.rom"));
         let duplicates = InputCli::try_parse_from([
             "inputs",
             "--compiler-input",

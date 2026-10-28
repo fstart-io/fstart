@@ -5,6 +5,8 @@
 pub mod dalboz;
 pub mod ec;
 pub mod policy;
+#[cfg(fstart_stage_env = "smm")]
+pub mod smm;
 pub mod vilboz;
 use fstart_driver_amd::soc::picasso::Picasso;
 use fstart_driver_uart::ns16550::Ns16550Config;
@@ -27,6 +29,66 @@ static CONFIG: Config = Config {
         ],
         disable_rom_sharing: true,
     },
+    pcie: policy::PCIE,
+    power: None,
+    usb: policy::USB,
+    emmc: Some(policy::EMMC),
+    i2c: &[
+        picasso::I2cBus {
+            controller: 2,
+            // 150-MHz controller, 400-kHz bus; 18/57-ns board rise/fall.
+            timing: fstart_driver_amd::fch::i2c::Timing {
+                speed: fstart_driver_amd::fch::i2c::Speed::Fast,
+                scl_high: 117,
+                scl_low: 245,
+                spike_length: Some(2),
+                sda_hold: Some(45),
+            },
+            // Vilboz is fitted with one of the two touchpads.
+            devices: &[
+                picasso::I2cDevice {
+                    ids: &["ELAN0000"],
+                    address: 0x15,
+                    interrupt: Some(picasso::GpioInterrupt::Level {
+                        pin: 9,
+                        active_low: true,
+                    }),
+                    hid_descriptor_register: None,
+                },
+                picasso::I2cDevice {
+                    ids: &["SYNA0000", "PNP0C50"],
+                    address: 0x2c,
+                    interrupt: Some(picasso::GpioInterrupt::Level {
+                        pin: 9,
+                        active_low: true,
+                    }),
+                    hid_descriptor_register: Some(0x20),
+                },
+            ],
+        },
+        picasso::I2cBus {
+            controller: 3,
+            // 150-MHz controller, 400-kHz bus; 110/5-ns board rise/fall.
+            timing: fstart_driver_amd::fch::i2c::Timing {
+                speed: fstart_driver_amd::fch::i2c::Speed::Fast,
+                scl_high: 125,
+                scl_low: 223,
+                spike_length: Some(2),
+                sda_hold: Some(45),
+            },
+            // The Cr50 TPM, its ready interrupt latched on GPIO 3.
+            devices: &[picasso::I2cDevice {
+                ids: &["GOOG0005"],
+                address: 0x50,
+                interrupt: Some(picasso::GpioInterrupt::Edge { pin: 3 }),
+                hid_descriptor_register: None,
+            }],
+        },
+    ],
+    graphics: fstart_driver_amd::nbio::picasso::gfx::Config {
+        displays: policy::DISPLAYS,
+        hdmi2_disable: 2,
+    },
 };
 pub struct Board;
 impl fstart_platform_amd::noncar::Board for Board {
@@ -37,9 +99,11 @@ impl fstart_platform_amd::noncar::Board for Board {
     }
     /// Read the board facts, program the
     /// remaining GPIOs.
-    fn fch_reset_done(ctx: &mut BoardCtx<'_, Picasso>) {
+    fn fch_reset_done(ctx: &mut BoardCtx<'_, Picasso>, config: &mut Config) {
         let mut clock = ctx.clock;
-        mainboard::init(&ctx.gpio(), &mut clock)
+        let cbi = mainboard::init(&ctx.gpio(), &mut clock);
+        config.power = Some(cbi.native_power());
+        config.emmc = cbi.has_emmc().then_some(policy::EMMC);
     }
 }
 
@@ -64,11 +128,21 @@ mod mainboard {
     pub(super) fn init(
         gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
         clock: &mut impl tsc::Clock,
-    ) {
+    ) -> Cbi {
         // SAFETY: the eSPI windows for the EC ports are up; the BSP owns them.
         let cbi = match Ec::discover(unsafe { NativeIo::new() }) {
-            Ok(mut ec) => ec::read_cbi(&mut ec, &mut EcClock(clock), &mut |_, _| {
-                fstart_log::warn!("vilboz: CBI read failed")
+            Ok(mut ec) => ec::read_cbi(&mut ec, &mut EcClock(clock), &mut |tag, error| {
+                if matches!(
+                    (tag, error),
+                    (
+                        fstart_driver_chromeec::CbiTag::Ssfc,
+                        fstart_driver_chromeec::Error::Rejected(3)
+                    )
+                ) {
+                    fstart_log::debug!("vilboz: optional SSFC absent");
+                } else {
+                    fstart_log::warn!("vilboz: CBI read failed");
+                }
             }),
             Err(_) => {
                 fstart_log::error!("vilboz: EC not found");
@@ -84,12 +158,18 @@ mod mainboard {
         if vilboz::configure_ram(gpio, cbi, false).is_err() {
             fstart_log::error!("vilboz: RAM-stage GPIOs failed");
         }
+        cbi
     }
 }
 #[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
 mod mainboard {
     use fstart_driver_amd::{ccx::tsc::Clock, fch::gpio};
-    pub(super) fn init(_: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>, _: &mut impl Clock) {}
+    pub(super) fn init(
+        _: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
+        _: &mut impl Clock,
+    ) -> crate::policy::Cbi {
+        crate::policy::Cbi::new(None, None)
+    }
 }
 
 pub const FLASH_SIZE: u32 = 0x1000000;

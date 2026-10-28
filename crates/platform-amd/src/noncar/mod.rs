@@ -36,6 +36,12 @@ pub mod pci;
 pub mod psp;
 pub mod smm;
 
+#[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
+extern crate alloc;
+/// Devices on buses the platform set up, for CrabEFI's drivers.
+#[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
+pub type Peripherals = alloc::vec::Vec<fstart_stage::crabefi::peripheral::Peripheral>;
+
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub use flow::Program;
 
@@ -127,7 +133,13 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
         silicon: &mut Silicon<Self>,
         ctx: &Ctx<'_, Self>,
         pci: &fstart_pci::PciEcam,
-    );
+    ) -> Result<(), Stop>;
+
+    /// The board's devices for CrabEFI to drive, after the buses are set up.
+    #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
+    fn peripherals<B: Board<Soc = Self>>(_ctx: &Ctx<'_, Self>) -> Peripherals {
+        Peripherals::new()
+    }
 }
 
 /// What the flow found before TP1.
@@ -161,6 +173,9 @@ pub struct Silicon<S: Soc> {
     pub reserved_mmio: [Region; MAX_DIES],
     /// What the SoC's ACPI tables differ in.
     pub acpi: &'static SocAcpi,
+    /// Enabled fixed-address devices, shared by ACPI and payload discovery.
+    pub devices: heapless::Vec<fstart_core::acpi::AcpiGenericDevice, 16>,
+    pub framebuffer: Option<fstart_core::services::FramebufferInfo>,
     pub state: S::State,
 }
 
@@ -220,7 +235,11 @@ pub trait Board: 'static {
     fn console() -> Ns16550Config;
     /// After the FCH early and reset init: SMBus, I2C and GPIO work (the
     /// vendor board PEIMs).
-    fn fch_reset_done(_ctx: &mut BoardCtx<'_, Self::Soc>) {}
+    fn fch_reset_done(
+        _ctx: &mut BoardCtx<'_, Self::Soc>,
+        _config: &mut <Self::Soc as Soc>::Config,
+    ) {
+    }
     /// After DXIO link training, before PCI enumeration.
     fn dxio_training_done(_ctx: &mut BoardCtx<'_, Self::Soc>) {}
     /// After PCI enumeration.

@@ -24,16 +24,16 @@ use fstart_driver_amd::{
     smn::{apply, write},
     soc::zeppelin::{self as soc, Zeppelin},
 };
-use tock_registers::{
-    interfaces::{ReadWriteable, Readable, Writeable},
-    register_bitfields,
-};
 use fstart_driver_superio::aspeed_ast2400::{self as ast, Ast2400, SuperIoConfig};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_pci::ConfigRegionAccess;
 use fstart_platform_amd::{
     noncar::BoardCtx,
     zeppelin::{Config, DxioConfig, FchConfig},
+};
+use tock_registers::{
+    interfaces::{ReadWriteable, Readable, Writeable},
+    register_bitfields,
 };
 
 pub struct Board;
@@ -131,7 +131,7 @@ impl fstart_platform_amd::noncar::Board for Board {
     type Soc = Zeppelin;
     const CONFIG: &'static Config = &CONFIG;
 
-    fn fch_reset_done(ctx: &mut BoardCtx<'_, Zeppelin>) {
+    fn fch_reset_done(ctx: &mut BoardCtx<'_, Zeppelin>, _: &mut Config) {
         let gpio = ctx.gpio();
         if i2c::PADS
             .iter()
@@ -140,9 +140,8 @@ impl fstart_platform_amd::noncar::Board for Board {
             fstart_log::error!("I2C3 pads not routed");
         }
         // SAFETY: nothing else uses I2C3.
-        match unsafe {
-            fch::i2c::controller::<Zeppelin, _>(i2c::BUS, &soc::I2C_TIMING, ctx.clock)
-        } {
+        match unsafe { fch::i2c::controller::<Zeppelin, _>(i2c::BUS, &soc::I2C_TIMING, ctx.clock) }
+        {
             Ok(mut bus) => {
                 i2c::program_vrs(&mut bus, ctx.clock, variant::VR_IMAGES);
                 i2c::program_redrivers(&mut bus, variant::REDRIVERS);

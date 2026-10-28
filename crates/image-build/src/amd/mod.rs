@@ -9,7 +9,9 @@
 //! second parser. Signed AMD blobs are copied unchanged, never re-signed.
 pub mod apcb;
 pub mod assembly;
+pub mod blobs;
 pub mod config;
+pub mod psp_app;
 
 use fstart_amdfw_format::{
     directory::{BIOS_COOKIE, BiosEntry, PSP_COOKIE, PspEntry, bios, psp, write_table},
@@ -81,6 +83,10 @@ pub struct PicassoImage {
     pub bios: Vec<Blob>,
     /// Raw, uncompressed reset image. PSP copies this into DRAM.
     pub reset_image: Vec<u8>,
+    /// Where the reset image lives instead of the partition: its flash
+    /// offset, and whether it is stored compressed there. The caller writes
+    /// it; the directory entry describes the uncompressed DRAM extent.
+    pub reset_slot: Option<(u32, bool)>,
     pub reset_destination: u64,
     pub apob_destination: u64,
     pub shared_memory: Option<(u64, u32)>,
@@ -352,10 +358,25 @@ impl PicassoImage {
         }
         // APOB size/source deliberately zero: only the destination is set.
         bios_entries.push(Key::new(bios::APOB, 0, 0).bios_entry(0, 0, 0, self.apob_destination));
-        let (src, size) = writer.blob(&self.reset_image, 0x100)?;
-        // Not compressed: the size is the DRAM extent.
+        // The size is the DRAM extent, also of a compressed image.
+        let (src, size, compressed) = match self.reset_slot {
+            Some((offset, compressed)) => (
+                offset,
+                u32::try_from(self.reset_image.len()).map_err(|_| "reset image too large")?,
+                compressed,
+            ),
+            None => {
+                let (src, size) = writer.blob(&self.reset_image, 0x100)?;
+                (src, size, false)
+            }
+        };
+        let flags = BiosEntry::RESET | BiosEntry::COPY;
         bios_entries.push(Key::new(bios::RESET_IMAGE, 0, 0).bios_entry(
-            BiosEntry::RESET | BiosEntry::COPY,
+            if compressed {
+                flags | BiosEntry::COMPRESSED
+            } else {
+                flags
+            },
             size,
             physical(src),
             self.reset_destination,

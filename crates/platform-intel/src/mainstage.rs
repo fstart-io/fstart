@@ -506,14 +506,8 @@ where
         #[cfg(not(target_arch = "x86_64"))]
         let _ = (ram, bars);
         let wc = pci
-            .assigned_memory_bars()
-            .filter(|(address, window)| {
-                window.prefetchable
-                    && pci
-                        .device(*address)
-                        .is_some_and(|device| device.read32(0x08) >> 16 == 0x0300)
-            })
-            .map(|(_, window)| (window.base, window.size))
+            .prefetchable_vga_windows()
+            .map(|window| (window.base, window.size))
             .collect::<Vec<_>>();
         // SAFETY: BSP-only, after allocation, before device initialization/APs.
         // Hardware RAM facts were published before e820 reservations; only
@@ -693,22 +687,8 @@ where
     }
 
     #[cfg(feature = "payload-uefi-basic")]
-    fn framebuffer(&self) -> Option<fstart_stage::crabefi::FramebufferConfig> {
-        self.northbridge
-            .framebuffer_info()
-            .map(|info| fstart_stage::crabefi::FramebufferConfig {
-                physical_address: info.base_addr,
-                width: info.width,
-                height: info.height,
-                stride: info.stride,
-                bits_per_pixel: info.bits_per_pixel,
-                red_mask_pos: info.red_pos,
-                red_mask_size: info.red_size,
-                green_mask_pos: info.green_pos,
-                green_mask_size: info.green_size,
-                blue_mask_pos: info.blue_pos,
-                blue_mask_size: info.blue_size,
-            })
+    fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
+        self.northbridge.framebuffer_info()
     }
 }
 

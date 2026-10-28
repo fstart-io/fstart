@@ -111,6 +111,10 @@ pub struct BoardConfig {
     /// request and its packaging cannot disagree.
     #[serde(default)]
     pub data_assets: heapless::Vec<HString<64>, 8>,
+    /// Files outside the board directory (vendor blobs such as a video
+    /// BIOS) packaged as verified `FileType::Data` assets under `name`.
+    #[serde(default, skip_serializing_if = "heapless::Vec::is_empty")]
+    pub file_assets: heapless::Vec<FileAsset, 8>,
     /// SoC-specific binary image format required by the boot ROM.
     ///
     /// Each SoC family has its own boot ROM that expects a particular
@@ -253,6 +257,16 @@ impl FirmwareImagePolicy {
     pub const fn memory_mapped(cpu_base: u64, size: u64) -> Self {
         Self::MemoryMapped { cpu_base, size }
     }
+}
+
+/// A file packaged into the verified FFS under `name`, the name the
+/// firmware looks it up by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileAsset {
+    pub name: HString<64>,
+    /// Relative to the workspace root unless absolute.
+    pub path: HString<256>,
 }
 
 /// CPU microcode packaging configuration.

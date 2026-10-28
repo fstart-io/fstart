@@ -173,6 +173,7 @@ fn board_config(
         payload: payload.clone(),
         microcode: None,
         data_assets: Default::default(),
+        file_assets: Default::default(),
         soc_image_format: SocImageFormat::AllwinnerEgon,
         full_flash_image: false,
         build: BoardBuildPolicy {
@@ -330,6 +331,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         payload: payload_config,
         microcode: None,
         data_assets: vec![],
+        file_assets: vec![],
         full_flash_image: false,
         soc_image_format: SocImageFormat::AllwinnerEgon,
         boot_hart_id: 0,
