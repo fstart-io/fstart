@@ -18,6 +18,7 @@ pub fn assemble_with_parsed(
     firmware_path: Option<&str>,
     fit_path: Option<&str>,
     payload_files: &[(String, String)],
+    signing_key: Option<&Path>,
 ) -> Result<AssembledImage, String> {
     let output_dir = if let Some(resolved) = &parsed.resolved {
         resolved.validate_inputs(&board_manifest.dir, kernel_path, firmware_path, fit_path)?;
@@ -45,6 +46,7 @@ pub fn assemble_with_parsed(
             .resolved
             .as_ref()
             .and_then(|plan| plan.bootstrap_bindings()),
+        signing_key,
     )?;
     Ok(AssembledImage {
         image,

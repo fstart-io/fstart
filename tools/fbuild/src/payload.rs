@@ -1,5 +1,6 @@
 use clap::{Args, ValueEnum};
 use fstart_image_build::plan::{BuildSelection, CompilerFileSelection};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PayloadChoice {
@@ -96,6 +97,11 @@ pub struct BuildArgs {
     /// payload finds it by NAME, e.g. `vgaroms/seavgabios.bin` for SeaBIOS.
     #[arg(long = "payload-file", value_parser = parse_payload_file)]
     pub payload_files: Vec<(String, String)>,
+    /// Ed25519 PKCS#8 private key (PEM or DER) that signs the image, e.g.
+    /// from `openssl genpkey -algorithm ed25519`. Without it the image is
+    /// signed with an ephemeral key that is discarded after the build.
+    #[arg(long)]
+    pub signing_key: Option<PathBuf>,
 }
 
 impl Default for BuildArgs {
@@ -111,6 +117,7 @@ impl Default for BuildArgs {
             linux_print_mtrrs: false,
             log_level: None,
             payload_files: Vec::new(),
+            signing_key: None,
         }
     }
 }
@@ -163,6 +170,9 @@ impl BuildArgs {
         }
         for (name, path) in &self.payload_files {
             args.extend(["--payload-file".into(), format!("{name}={path}")]);
+        }
+        if let Some(path) = &self.signing_key {
+            args.extend(["--signing-key".into(), path.display().to_string()]);
         }
     }
 }

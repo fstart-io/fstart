@@ -421,7 +421,7 @@ fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
             flash: None,
             bootstrap: vec![],
             stages: StageLayout::MultiStage(heapless::Vec::new()),
-            security: dev_security_config("unused"),
+            security: default_security_config(),
             payload: None,
             microcode: None,
             data_assets: vec![],

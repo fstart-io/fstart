@@ -305,7 +305,7 @@ fn resolve_for<P: IntelPlatform>(
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
         payload_config,
-        security: fstart_core::dev_security_config("keys/dev-signing.pub"),
+        security: fstart_core::default_security_config(),
         smm: fstart_core::SmmConfig {
             entry_points: Some(max_cpus),
             stack_size: 0x400,

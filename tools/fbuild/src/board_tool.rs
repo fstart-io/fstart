@@ -242,7 +242,7 @@ fn assemble(
         kernel,
         firmware,
         fit,
-        &options.payload_files,
+        options,
     )?;
     if let Some(image) = sp3_flash {
         return compose_sp3_flash(&workspace_root, &image, &assembled);
@@ -352,7 +352,7 @@ fn assemble_loaded(
     kernel: Option<&str>,
     firmware: Option<&str>,
     fit: Option<&str>,
-    payload_files: &[(String, String)],
+    options: &BuildArgs,
 ) -> Result<crate::assemble::AssembledImage, String> {
     crate::assemble::assemble_with_parsed(
         workspace_root,
@@ -362,7 +362,8 @@ fn assemble_loaded(
         kernel,
         firmware,
         fit,
-        payload_files,
+        &options.payload_files,
+        options.signing_key.as_deref(),
     )
 }
 
@@ -410,7 +411,7 @@ fn flash(
             None,
             None,
             None,
-            &options.payload_files,
+            options,
         )?
         .image;
 
@@ -528,7 +529,7 @@ fn run(
             kernel,
             firmware,
             fit,
-            &options.payload_files,
+            options,
         )?;
         // The x86 pflash combines the assembled FFS with the linked stage
         // ELF (reset vector, anchor). The plan layout hashes unit dirs, so

@@ -225,7 +225,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             "crabefi".into()
         });
     }
-    let security = crate::qemu_virt_security_config("keys/dev-signing.pub");
+    let security = crate::qemu_virt_security_config();
     let assembly = Assembly {
         platform: policy.platform,
         memory: vec![
@@ -409,7 +409,7 @@ struct QemuPolicy {
     flash_image: Option<Span>,
     full_flash_image: bool,
     qemu_machine: Option<QemuMachine>,
-    dev_security: bool,
+    default_security: bool,
     pci: bool,
     fdt: bool,
     page_table: Option<Span>,
@@ -479,7 +479,7 @@ impl VirtMachine {
                 flash_image: None,
                 full_flash_image: false,
                 qemu_machine: None,
-                dev_security: true,
+                default_security: true,
                 pci: true,
                 fdt: false,
                 page_table: Some(span(0x1000, 0x4000)),
@@ -518,7 +518,7 @@ impl VirtMachine {
                 flash_image: Some(span(0x1000_0000, 0x1000_0000)),
                 full_flash_image: true,
                 qemu_machine: Some(QemuMachine::SbsaRef),
-                dev_security: false,
+                default_security: false,
                 pci: true,
                 fdt: false,
                 page_table: None,
@@ -552,7 +552,7 @@ impl VirtMachine {
                 flash_image: None,
                 full_flash_image: false,
                 qemu_machine: Some(QemuMachine::SifiveU),
-                dev_security: false,
+                default_security: false,
                 pci: false,
                 fdt: true,
                 page_table: None,
@@ -595,7 +595,7 @@ impl VirtMachine {
                 flash_image: None,
                 full_flash_image: false,
                 qemu_machine: None,
-                dev_security: true,
+                default_security: true,
                 pci: false,
                 fdt: true,
                 page_table: None,
@@ -992,10 +992,10 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     } else if coreboot {
         features.push("coreboot".into());
     }
-    let security = if policy.dev_security {
-        fstart_core::dev_security_config("keys/dev-signing.pub")
+    let security = if policy.default_security {
+        fstart_core::default_security_config()
     } else {
-        crate::qemu_virt_security_config("keys/dev-signing.pub")
+        crate::qemu_virt_security_config()
     };
     let assembly_payload = if payload == "halt" {
         None
