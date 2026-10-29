@@ -8,13 +8,8 @@ use fstart_driver_ipmi::kcs;
 use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
 use fstart_platform_amd::acpi::BoardAcpi;
 
-const KCS: IpmiKcsAcpi = IpmiKcsAcpi {
-    port: kcs::DEFAULT_PORT,
-    spacing: kcs::DEFAULT_SPACING as u8,
-    uid: 0,
-    // The AST2500 firmware implements IPMI 2.0.
-    spec_revision: fstart_driver_ipmi::SPEC_REVISION_2_0,
-};
+// The AST2500 firmware implements IPMI 2.0.
+const KCS: IpmiKcsAcpi = kcs::DEFAULT_ACPI;
 
 pub fn tables() -> BoardAcpi {
     let com1 = SuperIoConfig {

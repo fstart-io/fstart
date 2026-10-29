@@ -22,6 +22,16 @@ register_bitfields![u8,
 pub const DEFAULT_PORT: u16 = 0xca2;
 pub const DEFAULT_SPACING: u16 = 1;
 
+/// The default interface as ACPI describes it (`IPI0001` and SPMI), for a
+/// BMC implementing IPMI 2.0.
+#[cfg(feature = "acpi")]
+pub const DEFAULT_ACPI: fstart_acpi::devices::IpmiKcsAcpi = fstart_acpi::devices::IpmiKcsAcpi {
+    port: DEFAULT_PORT,
+    spacing: DEFAULT_SPACING as u8,
+    uid: 0,
+    spec_revision: crate::SPEC_REVISION_2_0,
+};
+
 const START_WRITE: u8 = 0x61;
 const END_WRITE: u8 = 0x62;
 const READ_BYTE: u8 = 0x68;

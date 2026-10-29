@@ -5,7 +5,12 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# The ACPI description of the default interface.
+acpi = ["dep:fstart-acpi"]
+
 [dependencies]
+fstart-acpi = { workspace = true, optional = true }
 embedded-hal = { workspace = true }
 fstart-core = { workspace = true }
 tock-registers = { workspace = true }

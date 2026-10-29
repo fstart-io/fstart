@@ -776,6 +776,7 @@ name = "fstart-driver-ipmi"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-acpi",
  "fstart-core",
  "tock-registers",
  "zerocopy",

@@ -23,13 +23,13 @@ use alloc::vec::Vec;
 use embedded_hal::delay::DelayNs;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_core::services::device::{BusDevice, DeviceError};
+use fstart_driver_amd::sp3::fch::FchHw;
+use fstart_driver_amd::sp3::fch::lpc::{self, WideIo};
 use fstart_driver_ipmi::Error as IpmiError;
 use fstart_driver_ipmi::kcs::{self, Kcs, Status};
 use fstart_driver_superio::aspeed_ast2400::{Ast2400, CONFIG_PORT};
 use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_driver_amd::sp3::fch::FchHw;
-use fstart_driver_amd::sp3::fch::lpc::{self, WideIo};
 use fstart_platform_sp3::acpi::Board as AcpiBoard;
 use tock_registers::interfaces::{Readable, Writeable};
 
@@ -108,12 +108,7 @@ pub unsafe fn kcs<D: DelayNs>(delay: D) -> Kcs<D> {
 }
 
 /// The KCS interface as ACPI sees it (`IPI0001` and SPMI).
-pub const IPMI_ACPI: IpmiKcsAcpi = IpmiKcsAcpi {
-    port: KCS_PORT,
-    spacing: KCS_SPACING as u8,
-    uid: 0,
-    spec_revision: fstart_driver_ipmi::SPEC_REVISION_2_0,
-};
+pub const IPMI_ACPI: IpmiKcsAcpi = kcs::DEFAULT_ACPI;
 
 /// AML for `\_SB.PCI0.LPCB`: the COM1 device.
 pub fn lpc_aml() -> Vec<u8> {

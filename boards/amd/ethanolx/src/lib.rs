@@ -16,7 +16,6 @@ mod i2c;
 mod smm;
 
 use alloc::vec::Vec;
-use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_core::services::Timer;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
@@ -170,12 +169,7 @@ impl board::Board for Board {
 
     fn acpi_board(lpc_aml: &[u8]) -> AcpiBoard<'_> {
         AcpiBoard {
-            ipmi: Some(IpmiKcsAcpi {
-                port: fstart_driver_ipmi::kcs::DEFAULT_PORT,
-                spacing: fstart_driver_ipmi::kcs::DEFAULT_SPACING as u8,
-                uid: 0,
-                spec_revision: fstart_driver_ipmi::SPEC_REVISION_2_0,
-            }),
+            ipmi: Some(fstart_driver_ipmi::kcs::DEFAULT_ACPI),
             lpc_aml,
             ..AcpiBoard::default()
         }
