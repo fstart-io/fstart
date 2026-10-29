@@ -468,8 +468,7 @@ fn hotplug(
         return;
     }
     // The SMU may hide the slots' bridges shortly after the start.
-    let mut timer = ctx.timer;
-    fstart_driver_amd::ccx::tsc::DelayNs::delay_ms(&mut timer, 100);
+    fstart_core::services::Timer::delay_ms(&ctx.timer, 100);
     setup.hotplug_started();
     fstart_log::info!("dxio: hotplug started, {} ports", ports as u32);
 }

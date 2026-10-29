@@ -7,8 +7,8 @@
 //!
 //! [`SmuMessages`] is the contract the blocks that talk to the SMU program
 //! against; [`Smu`] implements it for one mailbox.
-use crate::ccx::tsc::DelayNs;
 use crate::smn::{Smn, SmnAccess, SmnReg};
+use embedded_hal::delay::DelayNs;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     interfaces::{Readable, Writeable},
@@ -305,18 +305,6 @@ pub(crate) mod model {
     use super::{Mailbox, Smu};
     use crate::smn::model::Model;
     use crate::smn::{SMN_DATA, Smn};
-
-    /// A timer that advances 1 µs per read and per delayed µs.
-    #[derive(Default)]
-    pub struct FakeTimer(pub std::sync::atomic::AtomicU64);
-    impl fstart_core::services::Timer for FakeTimer {
-        fn delay_us(&self, us: u64) {
-            self.0.fetch_add(us, std::sync::atomic::Ordering::Relaxed);
-        }
-        fn timestamp_us(&self) -> u64 {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        }
-    }
 
     /// No delay: the model answers at once or never.
     pub type NoDelay = crate::ccx::tsc::testing::Delay<fn(u32)>;

@@ -829,9 +829,9 @@ where
 #[cfg(test)]
 pub(crate) mod tests {
     //! A fake SMU that records messages and plays a DXIO firmware.
+    use fstart_core::services::ManualTimer;
     use std::cell::RefCell;
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
 
@@ -928,18 +928,6 @@ pub(crate) mod tests {
                 args[3] = 2;
             }
             Ok(())
-        }
-    }
-
-    #[derive(Default)]
-    pub struct FakeTimer(pub AtomicU64);
-
-    impl Timer for FakeTimer {
-        fn delay_us(&self, us: u64) {
-            self.0.fetch_add(us, Ordering::Relaxed);
-        }
-        fn timestamp_us(&self) -> u64 {
-            self.0.fetch_add(1, Ordering::Relaxed)
         }
     }
 
@@ -1134,7 +1122,7 @@ pub(crate) mod tests {
             run(
                 &mut u,
                 &mut Recorder::default(),
-                &FakeTimer::default(),
+                &ManualTimer::ticking(),
                 &rules,
                 timeout,
             )

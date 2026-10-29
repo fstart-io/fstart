@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::*;
+use fstart_core::services::ManualTimer;
 use std::{collections::VecDeque, vec::Vec};
-struct Timer(u64);
-impl Clock for Timer {
-    fn now_us(&mut self) -> u64 {
-        self.0
-    }
-    fn delay_us(&mut self, _: u32) {
-        self.0 += 100000;
-    }
-}
 struct Ports {
     packet: [u8; 256],
     writes: Vec<(u16, u8)>,
@@ -78,8 +70,11 @@ impl Io for Ports {
 #[test]
 fn cbi_short_integer_zero_and_wire_checksum_trigger_order() {
     let mut ec = Ec::discover(Ports::new(&[&[2], &[0, 0, 0, 0]])).unwrap();
-    assert_eq!(ec.cbi_u32(CbiTag::BoardVersion, &mut Timer(0)), Ok(2));
-    assert_eq!(ec.cbi_u32(CbiTag::FirmwareConfig, &mut Timer(0)), Ok(0));
+    assert_eq!(ec.cbi_u32(CbiTag::BoardVersion, &ManualTimer::new()), Ok(2));
+    assert_eq!(
+        ec.cbi_u32(CbiTag::FirmwareConfig, &ManualTimer::new()),
+        Ok(0)
+    );
     assert!(!ec.is_poisoned());
     for (i, request) in ec.io.requests.iter().enumerate() {
         assert_eq!(
@@ -106,11 +101,11 @@ fn cbi_short_integer_zero_and_wire_checksum_trigger_order() {
 #[test]
 fn legacy_board_version_has_its_own_command_and_exact_two_byte_response() {
     let mut ec = Ec::discover(Ports::new(&[&[0x34, 0x12]])).unwrap();
-    assert_eq!(ec.board_version(&mut Timer(0)), Ok(0x1234));
+    assert_eq!(ec.board_version(&ManualTimer::new()), Ok(0x1234));
     assert_eq!(ec.io.requests[0], [3, 0xf7, 6, 0, 0, 0, 0, 0]);
     for data in [&[][..], &[3][..], &[3, 0, 0][..]] {
         let mut ec = Ec::discover(Ports::new(&[data])).unwrap();
-        assert_eq!(ec.board_version(&mut Timer(0)), Err(Error::Length));
+        assert_eq!(ec.board_version(&ManualTimer::new()), Err(Error::Length));
     }
 }
 #[test]
@@ -120,14 +115,14 @@ fn malformed_or_pending_response_never_publishes_or_retries() {
     let mut ec = Ec::discover(ports).unwrap();
     let mut output = [0xaa; 4];
     assert_eq!(
-        ec.command(0x11f, 0, &[], &mut output, &mut Timer(0)),
+        ec.command(0x11f, 0, &[], &mut output, &ManualTimer::new()),
         Err(Error::Checksum)
     );
     assert_eq!(output, [0xaa; 4]);
     assert!(ec.is_poisoned());
     let writes = ec.io.writes.len();
     assert_eq!(
-        ec.command(0x11f, 0, &[], &mut output, &mut Timer(0)),
+        ec.command(0x11f, 0, &[], &mut output, &ManualTimer::new()),
         Err(Error::Poisoned)
     );
     assert_eq!(ec.io.writes.len(), writes);
@@ -135,7 +130,7 @@ fn malformed_or_pending_response_never_publishes_or_retries() {
     ports.timeout = true;
     let mut ec = Ec::discover(ports).unwrap();
     assert_eq!(
-        ec.command(0x11f, 0, &[], &mut output, &mut Timer(0)),
+        ec.command(0x11f, 0, &[], &mut output, &ManualTimer::new()),
         Err(Error::Timeout)
     );
     assert!(ec.is_poisoned());
@@ -144,7 +139,7 @@ fn malformed_or_pending_response_never_publishes_or_retries() {
     ports.result = 8;
     let mut ec = Ec::discover(ports).unwrap();
     assert_eq!(
-        ec.command(0x11f, 0, &[], &mut output, &mut Timer(0)),
+        ec.command(0x11f, 0, &[], &mut output, &ManualTimer::new()),
         Err(Error::Rejected(8))
     );
     assert!(ec.is_poisoned());
@@ -153,13 +148,13 @@ fn malformed_or_pending_response_never_publishes_or_retries() {
 fn lengths_preflight_and_oversized_response_are_bounded() {
     let mut ec = Ec::discover(Ports::new(&[&[1, 2, 3, 4, 5]])).unwrap();
     assert_eq!(
-        ec.command(1, 0, &[0; 249], &mut [0; 4], &mut Timer(0)),
+        ec.command(1, 0, &[0; 249], &mut [0; 4], &ManualTimer::new()),
         Err(Error::Length)
     );
     assert!(ec.io.writes.is_empty());
     let mut output = [0xaa; 4];
     assert_eq!(
-        ec.command(1, 0, &[], &mut output, &mut Timer(0)),
+        ec.command(1, 0, &[], &mut output, &ManualTimer::new()),
         Err(Error::Length)
     );
     assert_eq!(output, [0xaa; 4]);
@@ -184,7 +179,7 @@ fn valid_header_result_is_not_ignored_when_legacy_status_claims_success() {
     }
     let mut ec = Ec::discover(Rejected(Ports::new(&[&[]]))).unwrap();
     assert_eq!(
-        ec.command(1, 0, &[], &mut [], &mut Timer(0)),
+        ec.command(1, 0, &[], &mut [], &ManualTimer::new()),
         Err(Error::Rejected(4))
     );
     assert!(!ec.is_poisoned());

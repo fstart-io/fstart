@@ -4,14 +4,13 @@
 //! (`tests.rs`). It is split where the vendor board PEIMs run, so the
 //! board's `main` does that work between the steps.
 use super::Config;
+use embedded_hal::delay::DelayNs;
 use fstart_arch::x86::cpu::msr::MsrAccess;
+use fstart_core::services::{Timer, TimerDelay};
 use fstart_driver_amd::cpu::{Package, Revision};
 use fstart_driver_amd::{
     apob::Apob,
-    ccx::{
-        self, CacWeights, Thread,
-        tsc::{Clock, DelayNs},
-    },
+    ccx::{self, CacWeights, Thread},
     df::{self, map},
     dxio,
     fch::{Bus, Fch, early, taishan},
@@ -86,8 +85,9 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
     apob: Option<&Apob>,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
 ) -> Result<[u32; MAX_DIES], &'static str> {
+    let clock = &mut TimerDelay(timer);
     let Identity { revision, package } = identity;
     let count = dies.len() as u8;
     // DF MMIO/IO distribution, then the per-die DF init.
@@ -156,8 +156,9 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
     (top_mem, top_mem2): (u64, Option<u64>),
     nonpci: [u32; MAX_DIES],
     buffers: &'static mut dxio::zeppelin::Buffers,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
 ) -> Result<Trained, &'static str> {
+    let clock = &mut TimerDelay(timer);
     let Identity { revision, .. } = identity;
     for die in dies {
         nbio::zeppelin::early_init(die, revision);
@@ -198,7 +199,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
             &config.dxio.descriptors,
             config.subsystem_id,
             buffers,
-            clock,
+            timer,
         )
     }
     .map_err(|_| "DXIO training")?;
@@ -232,8 +233,9 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     trained: Trained,
     smu_pages: &'static mut SmuPages,
     smu_policy: &'static mut SmuPolicy,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
 ) -> State {
+    let clock = &mut TimerDelay(timer);
     let Identity { revision, package } = identity;
     let Trained {
         nonpci,

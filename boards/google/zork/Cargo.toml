@@ -32,9 +32,13 @@ smm = ["fstart-platform-amd/smm"]
 fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["picasso"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["picasso"] }
 fstart-driver-chromeec = { path = "../../../crates/driver-chromeec", features = ["acpi"] }
+fstart-core = { path = "../../../crates/core" }
 fstart-driver-uart = { path = "../../../crates/driver-uart" }
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 embedded-hal = { workspace = true }
+
+[dev-dependencies]
+fstart-core = { path = "../../../crates/core", features = ["testing"] }
 
 # The only stage, which the PSP copies to DRAM: src/bin/stage.rs.

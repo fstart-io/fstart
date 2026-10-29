@@ -23,7 +23,7 @@ fn main() -> ! {
     }
     // GPIO67 (DMIC_SEL) in the RAM-stage pads needs ROM sharing off.
     stage.disable_rom_sharing();
-    let cbi = vilboz::after_fch(&gpio, &mut stage.clock());
+    let cbi = vilboz::after_fch(&gpio, &stage.clock());
     stage
         .train_dxio()
         .init_chipset(cbi.native_power(), cbi.has_emmc())

@@ -3,10 +3,10 @@
 //! This prepares the device for a display driver; it does not set a video mode.
 use crate::{
     apob::Apob,
-    ccx::tsc::DelayNs,
     smn::{Smn, SmnReg, apply, copy, rmw, write},
     smu::v10,
 };
+use embedded_hal::delay::DelayNs;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::Readable;
 use zerocopy::{

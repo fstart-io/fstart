@@ -4,7 +4,6 @@ use super::{
     super::{self as dxio, Slot},
     Descriptor, EngineConfig, Error, Hotplug, LinkSpeed, Operation, PORTS, PowerPolicy, Topology,
 };
-use crate::ccx::tsc::{Clock, DelayNs};
 use crate::nbio::{
     iohc::{IohcBridgeCntl, NbProgDeviceRemap, iohc_bridge_cntl, nb_prog_device_remap},
     pcie,
@@ -16,7 +15,9 @@ use core::{
     cell::UnsafeCell,
     sync::atomic::{Ordering, compiler_fence},
 };
+use embedded_hal::delay::DelayNs;
 use fstart_core::indexed::Indexed;
+use fstart_core::services::{Timer, TimerDelay};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -324,15 +325,16 @@ impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
 /// failure: a timeout does NOT establish DMA quiescence. Keep them mapped,
 /// resident and unmodified until platform reset; do not reclaim or retry on
 /// any post-submission error. The caller exclusively owns SMN/PHY/PCI access,
-/// supplies a working monotonic microsecond clock, and has released board PERST
+/// supplies a working monotonic microsecond timer, and has released board PERST
 /// and power sequencing before training. Firmware must honor DMA completion.
 pub unsafe fn train(
     die: &Die<impl ConfigRegionAccess + Copy>,
     buffers: &'static mut Buffers,
     descriptors: &[Descriptor],
     options: Options,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
 ) -> Result<Topology, Error> {
+    let delay = &mut TimerDelay(timer);
     let config = EngineConfig::build(descriptors, options.power)?;
     if options.hda_enabled && !options.acp_enabled {
         return Err(Error::AudioPolicy);
@@ -342,32 +344,32 @@ pub unsafe fn train(
     let ancillary = buffers.ancillary()?;
     buffers.engines.load(&config);
     let smn = &die.smn();
-    smu::MAILBOX.test(smn, clock).map_err(dxio::Error::Smu)?;
+    smu::MAILBOX.test(smn, delay).map_err(dxio::Error::Smu)?;
     pre_training(smn, options);
-    acp::power_off(smn, options.acp_enabled, clock).map_err(Error::Acp)?;
-    dxio::init(die, clock)?;
+    acp::power_off(smn, options.acp_enabled, delay).map_err(Error::Acp)?;
+    dxio::init(die, delay)?;
     for variable in [
         dxio::VAR_RET_AFTER_MAP,
         dxio::VAR_RET_AFTER_CONF,
         dxio::VAR_ANCILLARY_V1,
     ] {
-        dxio::set_variable(die, variable, 1, clock)?;
+        dxio::set_variable(die, variable, 1, delay)?;
     }
     if options.am4 {
-        dxio::set_variable(die, 0x0d, 0, clock)?;
+        dxio::set_variable(die, 0x0d, 0, delay)?;
     }
     let silicon = u32::from(options.silicon_id & (1 << 31) != 0);
-    dxio::set_variable(die, 0x12, silicon, clock)?;
-    dxio::rpc(die, Operation::LoadCapabilities, [0; 6], clock)?;
+    dxio::set_variable(die, 0x12, silicon, delay)?;
+    dxio::rpc(die, Operation::LoadCapabilities, [0; 6], delay)?;
     if options.power != PowerPolicy::Disabled {
-        dxio::load_data(die, dxio::DATA_ANCILLARY, Some((ancillary, 4)), clock)?;
+        dxio::load_data(die, dxio::DATA_ANCILLARY, Some((ancillary, 4)), delay)?;
     }
     for kind in [dxio::DATA_MACPCS, dxio::DATA_GPIO] {
-        dxio::load_data(die, kind, None, clock)?;
+        dxio::load_data(die, kind, None, delay)?;
     }
     let engines = Some((dma, size as u32 / 4));
-    dxio::load_data(die, dxio::DATA_ENGINE_CONFIG, engines, clock)?;
-    let started = clock.now_us();
+    dxio::load_data(die, dxio::DATA_ENGINE_CONFIG, engines, delay)?;
+    let started = timer.timestamp_us();
     let mut training = Training {
         die,
         slot: &buffers.engines,
@@ -376,7 +378,7 @@ pub unsafe fn train(
         mapped: None,
         configured: false,
     };
-    dxio::run(die, &mut training, clock)?;
+    dxio::run(die, &mut training, timer)?;
     // The two requested return events must precede success.
     let mut topology = training
         .mapped
@@ -384,10 +386,10 @@ pub unsafe fn train(
     if !training.configured {
         return Err(dxio::Error::StateMachine(dxio::SM_CONFIGURED).into());
     }
-    let snapshot = buffers.engines.read_back(die, size, clock)?;
+    let snapshot = buffers.engines.read_back(die, size, delay)?;
     let inhibit = smn.reg(pcie::link_status(0)).get();
     topology.training_done(&snapshot, descriptors, inhibit)?;
-    if clock.now_us().wrapping_sub(started) >= 60_000_000 {
+    if timer.timestamp_us().wrapping_sub(started) >= 60_000_000 {
         return Err(dxio::Error::Timeout.into());
     }
     post_training(smn, &topology);

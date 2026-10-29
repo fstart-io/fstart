@@ -135,7 +135,7 @@ mod zeppelin {
         assert_eq!(psp::bars(&dies), [nonpci[0], nonpci[1]]);
         let buffers = low(0x4000_0000, dxio::zeppelin::Buffers::new());
         let topology = unsafe {
-            dxio::zeppelin::init(&dies, &[DIE0, DIE1], SUBSYSTEM_ID, buffers, &mut delay)
+            dxio::zeppelin::init(&dies, &[DIE0, DIE1], SUBSYSTEM_ID, buffers, &hw.clock())
         }
         .unwrap();
         let trained = |die: usize| {
@@ -314,7 +314,7 @@ mod picasso {
         };
         let buffers = low(0x4800_0000, dxio::picasso::Buffers::new());
         let ports =
-            unsafe { dxio::picasso::train(&die, buffers, DALBOZ, options, &mut delay) }.unwrap();
+            unsafe { dxio::picasso::train(&die, buffers, DALBOZ, options, &hw.clock()) }.unwrap();
         assert_eq!(
             ports
                 .ports

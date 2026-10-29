@@ -2,15 +2,16 @@
 //! Vilboz's EC fact acquisition. All command transport lives in the shared
 //! ChromeEC driver; board failure policy retains original CBI fallbacks.
 use crate::policy::Cbi;
-use fstart_driver_chromeec::{CbiTag, Clock, Ec, Error, Io};
+use fstart_core::services::Timer;
+use fstart_driver_chromeec::{CbiTag, Ec, Error, Io};
 
 pub fn read_cbi(
     ec: &mut Ec<impl Io>,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
     diagnostic: &mut impl FnMut(CbiTag, Error),
 ) -> Cbi {
     let mut read = |tag| {
-        ec.cbi_u32(tag, clock)
+        ec.cbi_u32(tag, timer)
             .inspect_err(|&error| diagnostic(tag, error))
             .ok()
     };
@@ -26,10 +27,10 @@ pub fn read_cbi(
 /// Read the legacy board ID separately from schematic CBI tag0.
 pub fn read_legacy_board_version(
     ec: &mut Ec<impl Io>,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
     diagnostic: &mut impl FnMut(Error),
 ) -> Option<u16> {
-    ec.board_version(clock)
+    ec.board_version(timer)
         .inspect_err(|&error| diagnostic(error))
         .ok()
 }
@@ -37,13 +38,7 @@ pub fn read_legacy_board_version(
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Timer;
-    impl Clock for Timer {
-        fn now_us(&mut self) -> u64 {
-            0
-        }
-        fn delay_us(&mut self, _: u32) {}
-    }
+    use fstart_core::services::ManualTimer;
     struct Ports {
         packet: [u8; 256],
         tag: u32,
@@ -127,11 +122,12 @@ mod tests {
             ports.legacy_version = legacy_version;
             ports.config = 1 << 29;
             let mut ec = Ec::discover(ports).unwrap();
-            let cbi = read_cbi(&mut ec, &mut Timer, &mut |_, _| {
+            let cbi = read_cbi(&mut ec, &ManualTimer::new(), &mut |_, _| {
                 panic!("unexpected CBI failure")
             });
             let mut errors = 0;
-            let board_id = read_legacy_board_version(&mut ec, &mut Timer, &mut |_| errors += 1);
+            let board_id =
+                read_legacy_board_version(&mut ec, &ManualTimer::new(), &mut |_| errors += 1);
             assert_eq!(cbi.board_version, Some(revision));
             assert_eq!(board_id, legacy_version);
             assert_eq!(cbi.active_low_wifi_power(), revision >= 2);
@@ -142,7 +138,7 @@ mod tests {
     #[test]
     fn fw_config_combines_ssfc_and_preserves_valid_zero_and_optional_failure() {
         let mut ec = Ec::discover(Ports::new(false)).unwrap();
-        let cbi = read_cbi(&mut ec, &mut Timer, &mut |_, _| {
+        let cbi = read_cbi(&mut ec, &ManualTimer::new(), &mut |_, _| {
             panic!("unexpected CBI error")
         });
         assert_eq!(cbi.board_version, Some(0));
@@ -150,7 +146,7 @@ mod tests {
         assert!(cbi.audio_amp_auto());
         let mut ec = Ec::discover(Ports::new(true)).unwrap();
         let mut errors = 0;
-        let cbi = read_cbi(&mut ec, &mut Timer, &mut |tag, error| {
+        let cbi = read_cbi(&mut ec, &ManualTimer::new(), &mut |tag, error| {
             assert!(matches!(tag, CbiTag::Ssfc));
             assert_eq!(error, Error::Rejected(3));
             errors += 1;

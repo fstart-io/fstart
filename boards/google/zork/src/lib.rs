@@ -121,9 +121,9 @@ pub fn early_gpios(
 /// and whether eMMC is fitted.
 pub fn after_fch(
     gpio: &fstart_driver_amd::fch::gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
-    clock: &mut impl fstart_driver_amd::ccx::tsc::Clock,
+    timer: &impl fstart_core::services::Timer,
 ) -> policy::Cbi {
-    mainboard::init(gpio, clock)
+    mainboard::init(gpio, timer)
 }
 
 /// The board's SMBIOS identity.
@@ -142,27 +142,18 @@ pub fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
 mod mainboard {
     use super::{ec, vilboz};
     use crate::policy::Cbi;
-    use fstart_driver_amd::{ccx::tsc, fch::gpio};
-    use fstart_driver_chromeec::{Clock, Ec, NativeIo};
+    use fstart_core::services::{Timer, TimerDelay};
+    use fstart_driver_amd::fch::gpio;
+    use fstart_driver_chromeec::{Ec, NativeIo};
     use fstart_log::Hex;
-
-    struct EcClock<'a, T>(&'a mut T);
-    impl<T: tsc::Clock> Clock for EcClock<'_, T> {
-        fn now_us(&mut self) -> u64 {
-            self.0.now_us()
-        }
-        fn delay_us(&mut self, us: u32) {
-            self.0.delay_us(us)
-        }
-    }
 
     pub(super) fn init(
         gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
-        clock: &mut impl tsc::Clock,
+        timer: &impl Timer,
     ) -> Cbi {
         // SAFETY: the eSPI windows for the EC ports are up; the BSP owns them.
         let cbi = match Ec::discover(unsafe { NativeIo::new() }) {
-            Ok(mut ec) => ec::read_cbi(&mut ec, &mut EcClock(clock), &mut |tag, error| {
+            Ok(mut ec) => ec::read_cbi(&mut ec, timer, &mut |tag, error| {
                 if matches!(
                     (tag, error),
                     (
@@ -191,7 +182,7 @@ mod mainboard {
         let wifi = gpio.configure(vilboz::WLAN_PADS, &[]).and_then(|()| {
             let mut reset = gpio.output(vilboz::WLAN_RESET_GPIO)?;
             let mut power = gpio.output(vilboz::WLAN_POWER_GPIO)?;
-            vilboz::wifi_power_reset(&mut reset, &mut power, clock, cbi)
+            vilboz::wifi_power_reset(&mut reset, &mut power, &mut TimerDelay(timer), cbi)
         });
         if wifi.is_err() {
             fstart_log::error!("vilboz: WiFi power/reset failed");
@@ -205,10 +196,11 @@ mod mainboard {
 }
 #[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
 mod mainboard {
-    use fstart_driver_amd::{ccx::tsc::Clock, fch::gpio};
+    use fstart_core::services::Timer;
+    use fstart_driver_amd::fch::gpio;
     pub(super) fn init(
         _: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
-        _: &mut impl Clock,
+        _: &impl Timer,
     ) -> crate::policy::Cbi {
         crate::policy::Cbi::new(None, None)
     }

@@ -14,10 +14,10 @@ use zerocopy::little_endian::{U16, U32};
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Unaligned};
 #[cfg(feature = "zeppelin")]
 use {
-    crate::ccx::tsc::DelayNs,
     crate::ccx::{CAC_WEIGHT_COUNT, CacWeights},
     crate::smu::ARGUMENT_COUNT,
     crate::soc::zeppelin::{Die, MAX_DIES},
+    embedded_hal::delay::DelayNs,
     fstart_pci::ConfigRegionAccess,
 };
 

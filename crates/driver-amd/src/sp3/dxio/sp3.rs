@@ -171,8 +171,9 @@ where
 mod tests {
     use super::*;
     use crate::sp3::dxio::lanes::{Engine, Group, Lanes, PcieEngine};
-    use crate::sp3::dxio::tests::{FakeSmu, FakeTimer, Recorder, Window};
+    use crate::sp3::dxio::tests::{FakeSmu, Recorder, Window};
     use crate::sp3::dxio::{Dxio, op};
+    use fstart_core::services::ManualTimer;
 
     fn board() -> [Engine<'static>; 2] {
         [
@@ -246,7 +247,7 @@ mod tests {
             Generation::Rome,
             &mut units,
             &mut hooks,
-            &FakeTimer::default(),
+            &ManualTimer::ticking(),
             &policy,
         )
         .unwrap();
@@ -359,7 +360,7 @@ mod tests {
             Generation::Rome,
             &mut units,
             &mut setup,
-            &FakeTimer::default(),
+            &ManualTimer::ticking(),
             &policy,
         )
         .unwrap();
@@ -401,7 +402,7 @@ mod tests {
             Generation::Milan,
             &mut units,
             &mut hooks,
-            &FakeTimer::default(),
+            &ManualTimer::ticking(),
             &policy,
         )
         .unwrap();

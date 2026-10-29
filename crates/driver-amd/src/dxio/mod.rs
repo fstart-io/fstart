@@ -10,16 +10,13 @@
 //! first argument. The SoC owns the lane mapping, the PCIe core registers
 //! and the NBIF settings around the training ([`Training`]): [`picasso`]
 //! and [`zeppelin`].
-use crate::{
-    ccx::tsc::{Clock, DelayNs},
-    df::Die,
-    smu,
-    soc::Soc,
-};
+use crate::{df::Die, smu, soc::Soc};
 use core::{
     cell::UnsafeCell,
     sync::atomic::{Ordering, compiler_fence},
 };
+use embedded_hal::delay::DelayNs;
+use fstart_core::services::{Timer, TimerDelay};
 use fstart_log::{Hex, debug, error, warn};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{LocalRegisterCopy, register_bitfields};
@@ -517,16 +514,17 @@ pub trait Training {
 pub fn run<S: Soc, P: ConfigRegionAccess + Copy, T: Training>(
     die: &Die<S, P>,
     training: &mut T,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
 ) -> Result<(), T::Error> {
-    let started = clock.now_us();
-    rpc(die, Operation::Start, [0; 6], clock)?;
+    let mut delay = TimerDelay(timer);
+    let started = timer.timestamp_us();
+    rpc(die, Operation::Start, [0; 6], &mut delay)?;
     // Also bound the states if the clock malfunctions.
     for _ in 0..TIMEOUT_US / u64::from(T::PAUSE_US.max(1)) {
-        if clock.now_us().wrapping_sub(started) >= TIMEOUT_US {
+        if timer.timestamp_us().wrapping_sub(started) >= TIMEOUT_US {
             break;
         }
-        let reply = rpc(die, Operation::State, [0; 6], clock)?;
+        let reply = rpc(die, Operation::State, [0; 6], &mut delay)?;
         let event = event(reply).inspect_err(|e| match *e {
             Error::StateMachine(state) => {
                 error!("DXIO state machine error, state {}", Hex(state.into()))
@@ -542,7 +540,7 @@ pub fn run<S: Soc, P: ConfigRegionAccess + Copy, T: Training>(
                 debug!("DXIO {} state {}", die.index(), Hex(state.into()));
                 match state {
                     SM_CONFIGURED => training.configured()?,
-                    SM_MAPPED => training.mapped(clock)?,
+                    SM_MAPPED => training.mapped(&mut delay)?,
                     _ => {}
                 }
             }
@@ -558,9 +556,9 @@ pub fn run<S: Soc, P: ConfigRegionAccess + Copy, T: Training>(
             Event::Unknown(kind) => warn!("DXIO: unknown event {}", Hex(kind.into())),
             Event::Resume => {}
         }
-        rpc(die, Operation::Resume, [0; 6], clock)?;
+        rpc(die, Operation::Resume, [0; 6], &mut delay)?;
         if T::PAUSE_US != 0 {
-            clock.delay_us(T::PAUSE_US);
+            timer.delay_us(u64::from(T::PAUSE_US));
         }
     }
     error!("DXIO timeout");

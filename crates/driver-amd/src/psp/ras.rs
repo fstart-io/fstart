@@ -321,10 +321,8 @@ mod tests {
     #[test]
     fn smm_mailbox_sequence_and_psp_failure() {
         use crate::psp::command::{C2pBuffer, Header};
-        use crate::psp::mailbox::{
-            Mailbox, PspError,
-            model::{Model, NoDelay},
-        };
+        use crate::psp::mailbox::{Mailbox, PspError, model::Model};
+        use fstart_core::services::ManualTimer;
         use std::{cell::RefCell, rc::Rc};
         let actions = Rc::new(RefCell::new(std::vec::Vec::new()));
         let seen = actions.clone();
@@ -343,7 +341,8 @@ mod tests {
         });
         let m = Mailbox::new(&model, Variant::Ssp);
         for control in [Control::ENABLE, Control::BEGIN] {
-            unsafe { m.send_in_smm(&NoDelay, &mut C2pBuffer::new(control), flag_ptr) }.unwrap();
+            unsafe { m.send_in_smm(&ManualTimer::new(), &mut C2pBuffer::new(control), flag_ptr) }
+                .unwrap();
             assert_eq!(flag, 0);
         }
         let request = CorrectableMemory::new(
@@ -355,13 +354,20 @@ mod tests {
             },
         );
         assert_eq!(
-            unsafe { m.send_in_smm(&NoDelay, &mut C2pBuffer::new(request), flag_ptr) },
+            unsafe { m.send_in_smm(&ManualTimer::new(), &mut C2pBuffer::new(request), flag_ptr) },
             Err(PspError::Status {
                 command: 0x22,
                 status: 5
             })
         );
-        unsafe { m.send_in_smm(&NoDelay, &mut C2pBuffer::new(Control::END), flag_ptr) }.unwrap();
+        unsafe {
+            m.send_in_smm(
+                &ManualTimer::new(),
+                &mut C2pBuffer::new(Control::END),
+                flag_ptr,
+            )
+        }
+        .unwrap();
         assert_eq!(*actions.borrow(), [1, 2, 4, 3]);
     }
 

@@ -7,7 +7,6 @@ use fstart_driver_amd::{
     ccx::{
         Thread,
         picasso::{self as cpu, Identity},
-        tsc::Clock,
     },
     df::picasso as fabric,
     dxio,
@@ -109,7 +108,7 @@ fn try_init_fch(stage: &Stage<Picasso, Mapped>) -> Result<Found, Stop> {
             kind
         );
     }
-    fch_init(ctx.fch, &config.fch, &mut delay)?;
+    fch_init(ctx.fch, &config.fch, &delay)?;
     Ok(Found {
         identity,
         capabilities,
@@ -341,7 +340,7 @@ fn smu_notice(message: u32, status: u32) {
 fn fch_init(
     fch: &Fch<NativeBus>,
     config: &FchConfig,
-    clock: &mut impl Clock,
+    timer: &impl fstart_core::services::Timer,
 ) -> Result<(), &'static str> {
     preinit::prepare_lpc(fch).map_err(|_| "LPC setup")?;
     // SAFETY: as the flow's FCH: BSP only.
@@ -353,7 +352,7 @@ fn fch_init(
         gpio.configure(pads, &[]).map_err(|_| "eSPI GPIOs")?;
         // SAFETY: the SPI/eSPI BAR prepare_lpc set up; BSP only.
         let mut controller = unsafe { espi::Native::new(preinit::SPI_BASE as usize) };
-        espi::initialize(&mut controller, clock, espi).map_err(|_| "eSPI link")?;
+        espi::initialize(&mut controller, timer, espi).map_err(|_| "eSPI link")?;
         fstart_log::info!("picasso: eSPI link up");
     }
     preinit::configure_spi(fch, config.spi).map_err(|_| "SPI setup")?;

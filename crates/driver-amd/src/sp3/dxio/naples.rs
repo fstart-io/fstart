@@ -77,9 +77,10 @@ where
 mod tests {
     use super::*;
     use crate::sp3::dxio::lanes::{Engine, Lanes, PcieEngine};
-    use crate::sp3::dxio::tests::{FakeSmu, FakeTimer, Recorder, Window};
+    use crate::sp3::dxio::tests::{FakeSmu, Recorder, Window};
     use crate::sp3::dxio::{Dxio, op};
     use crate::sp3::soc::Generation;
+    use fstart_core::services::ManualTimer;
 
     #[test]
     fn sequential_per_die() {
@@ -121,7 +122,7 @@ mod tests {
             (20, 27)
         );
         let mut hooks = Recorder::default();
-        train(&mut units, &mut hooks, &FakeTimer::default(), &policy).unwrap();
+        train(&mut units, &mut hooks, &ManualTimer::ticking(), &policy).unwrap();
         use op::*;
         let tail = [
             INIT,

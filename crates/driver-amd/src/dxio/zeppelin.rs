@@ -33,7 +33,6 @@
 use super::{
     self as dxio, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed, Operation,
 };
-use crate::ccx::tsc::{Clock, DelayNs};
 use crate::nbio::{
     iohc::{self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NbProgDeviceRemap},
     pcie::{self, PCIE_PORTS_PER_CORE},
@@ -42,6 +41,8 @@ use crate::nbio::{
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v9 as smu;
 use crate::soc::zeppelin::{Die, ECAM_BUSES, MAX_DIES};
+use embedded_hal::delay::DelayNs;
+use fstart_core::services::{Timer, TimerDelay};
 use fstart_log::{debug, error, info};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress, devfn, devfn_parts};
 use tock_registers::{
@@ -386,32 +387,33 @@ impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
     }
 }
 impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
-    fn train(&mut self, clock: &mut impl Clock) -> Result<(), Error> {
+    fn train(&mut self, timer: &impl Timer) -> Result<(), Error> {
+        let delay = &mut TimerDelay(timer);
         let address = self.buffer.address()?;
         let die = self.die;
-        dxio::init(die, clock)?;
+        dxio::init(die, delay)?;
         for variable in [
             dxio::VAR_RET_AFTER_MAP,
             dxio::VAR_RET_AFTER_CONF,
             dxio::VAR_ANCILLARY_V1,
         ] {
-            dxio::set_variable(die, variable, 1, clock)?;
+            dxio::set_variable(die, variable, 1, delay)?;
         }
-        dxio::rpc(die, Operation::LoadCapabilities, [0; 6], clock)?;
+        dxio::rpc(die, Operation::LoadCapabilities, [0; 6], delay)?;
         // No ancillary data: the descriptors have no tuning records.
         for kind in [dxio::DATA_MACPCS, dxio::DATA_GPIO] {
-            dxio::load_data(die, kind, None, clock)?;
+            dxio::load_data(die, kind, None, delay)?;
         }
         let dwords = (self.size / 4) as u32;
         dxio::load_data(
             die,
             dxio::DATA_ENGINE_CONFIG,
             Some((address, dwords)),
-            clock,
+            delay,
         )?;
 
-        dxio::run(die, self, clock)?;
-        let config = self.buffer.read_back(die, self.size, clock)?;
+        dxio::run(die, self, timer)?;
+        let config = self.buffer.read_back(die, self.size, delay)?;
         training_done(&die.smn(), &config, &mut self.topology)?;
         for port in self.topology.ports.iter().flatten() {
             info!(
@@ -660,8 +662,9 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
     descriptors: &[&[Descriptor]],
     subsystem_id: u32,
     buffers: &'static mut Buffers,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
 ) -> Result<[PcieTopology; MAX_DIES], Error> {
+    let delay = &mut TimerDelay(timer);
     let mut topologies = [PcieTopology::default(); MAX_DIES];
     let board = |die: &Die<P>| -> &[Descriptor] {
         descriptors
@@ -681,7 +684,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         return Ok(topologies);
     };
     smu::MAILBOX
-        .test(&first.smn(), clock)
+        .test(&first.smn(), delay)
         .map_err(dxio::Error::Smu)?;
     for die in dies {
         pre_training(&die.smn());
@@ -710,18 +713,18 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         };
         // Vendor PCD 0xcd/0xce/0xcf select die 0 for the early init cleanup.
         if die.index() == 0 {
-            dxio::rpc(die, Operation::CleanupEarly, [0; 6], clock)?;
+            dxio::rpc(die, Operation::CleanupEarly, [0; 6], delay)?;
         }
         if descriptors.is_empty() {
             continue;
         }
         debug!("DXIO {}: {} engines", die.index(), descriptors.len());
-        training.train(clock)?;
+        training.train(timer)?;
         *topology = training.topology;
     }
 
     for (die, topology) in dies.iter().zip(&topologies) {
-        post_training(die, topology, subsystem_id, clock);
+        post_training(die, topology, subsystem_id, delay);
     }
     let buses: heapless::Vec<u8, MAX_DIES> = dies.iter().map(Die::bus).collect();
     for (i, die) in dies.iter().enumerate() {

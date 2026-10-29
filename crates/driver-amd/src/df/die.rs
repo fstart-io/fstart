@@ -12,8 +12,9 @@ use super::{
     Df,
     regs::{self, CFG_ADDR_CTL, COMPONENT_CNT},
 };
-use crate::{ccx::tsc::DelayNs, smn::Smn, smu, soc::Soc};
+use crate::{smn::Smn, smu, soc::Soc};
 use core::marker::PhantomData;
+use embedded_hal::delay::DelayNs;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::Readable;
 

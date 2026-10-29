@@ -5,9 +5,9 @@
 //! 0x03101000 (sp4r2 report FCH_TAISHAN, tasks af47, af57 and af77, with the
 //! vendor policy defaults).
 use super::{NbifStrap, irq};
-use crate::ccx::tsc::DelayNs;
 use crate::fch::{Bus, Fch, iomux};
 use crate::smn::{Smn, SmnReg};
+use embedded_hal::delay::DelayNs;
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
