@@ -267,7 +267,8 @@ fn assemble(
 /// (`fstart_image_build::sp3_flash`); relative vendor paths are
 /// workspace-relative (`--image-config` replaces the board's vendor ROM).
 /// Writes and returns `<board>.rom`, the vendor ROM's size (32 MiB for a
-/// dual-half vendor ROM).
+/// dual-half vendor ROM, the full readout for a board with bank mirrors,
+/// then also `<board>.bank.rom`).
 fn compose_sp3_flash(
     workspace_root: &std::path::Path,
     image: &fstart_image_build::sp3_flash::Sp3FlashAssembly,
@@ -316,6 +317,18 @@ fn compose_sp3_flash(
     };
     let out = assembled.image.with_extension("rom");
     std::fs::write(&out, &flash.image).map_err(|e| format!("{}: {e}", out.display()))?;
+    if flash.image.len() != plan.boot_window(&flash.image)?.len() {
+        // Programmers that mirror the bank themselves (a BMC BIOS update)
+        // take the 16 MiB boot bank, not the full readout.
+        let bank = out.with_extension("bank.rom");
+        std::fs::write(&bank, &flash.image[..HALF_SIZE])
+            .map_err(|e| format!("{}: {e}", bank.display()))?;
+        eprintln!(
+            "[fstart] SP3 boot bank mirrored at {:x?}; 16 MiB bank alone: {}",
+            plan.mirrors,
+            bank.display()
+        );
+    }
     eprintln!(
         "[fstart] SP3 image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; reset image {:#x} bytes at {:#x} ({reset_copies})",
         out.display(),

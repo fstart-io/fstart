@@ -362,6 +362,7 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
         },
         ffs_offset: layout::FFS_OFFSET,
         dram_floor: EARLY_REGION.end(),
+        mirrors: B::FLASH_MIRRORS.to_vec(),
     }
 }
 
@@ -687,6 +688,7 @@ mod tests {
                 },
                 ffs_offset: 0x60_0000,
                 dram_floor: 0x75c0_0000,
+                mirrors: Vec::new(),
             }
         );
         let config = plan.assembly.config("tyan-s8030").unwrap();

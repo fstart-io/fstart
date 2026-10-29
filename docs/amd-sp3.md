@@ -170,6 +170,17 @@ of a generation the board does not support, keeps its vendor bytes. No
 `0xf20000`, `0xe20000`, `0xc20000`, `0x820000`) of a composed half; the
 FFS and reset image are checked.
 
+### Mirrored banks in a larger flash export
+
+Some boards export more flash than the 16/32 MiB boot window and mirror
+the boot bank inside it: the Ethanol-X BMC exports 64 MiB and its BIOS
+update writes the 16 MiB bank at 0 and at 48 MiB. Such a board lists the
+mirror offsets in `Sp3BoardFacts::FLASH_MIRRORS`. Given the full readout,
+the composer builds the lower 16 MiB as above (the flash anchor describes
+that bank) and writes it at 0 and at every mirror, keeping the rest of the
+readout; fbuild also writes the bank alone as `<board>.bank.rom`. A bare
+16 MiB bank is still accepted and composes to itself.
+
 Not implemented: a single multi-generation EFS (§4.1.7 "Single 32M in
 32MB", `+0x24` with several generation bits clear) with a `2PSP` combo
 directory in lookup mode 0 (§4.1.4.2) and the upper trees rebased to 32 MiB

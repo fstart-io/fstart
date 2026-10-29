@@ -36,9 +36,12 @@ pub struct Board;
 
 impl Sp3BoardFacts for Board {
     const GENERATIONS: &'static [Generation] = &[Generation::Milan];
-    // One 16 MiB BIOS image, not the BMC's mirrored 64 MiB export.
+    /// The BMC's 64 MiB readout (or just its lower 16 MiB boot bank).
     const VENDOR_IMAGE: &'static str = "boards/amd/ethanolx/vendor/RXM100CB.bin";
     const MAX_CPUS: u16 = 256;
+    /// The BMC BIOS update writes the 16 MiB bank at 0 and at 48 MiB of its
+    /// 64 MiB export and leaves [16, 48) MiB alone.
+    const FLASH_MIRRORS: &'static [u32] = &[0x300_0000];
 }
 
 // RXM100CB AmdCpmOemInitPeim, $A10 at 0xffd6e3e4: one pad then 0x00ff.

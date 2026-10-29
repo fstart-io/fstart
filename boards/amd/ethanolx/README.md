@@ -1,192 +1,120 @@
 # AMD Ethanol-X
 
-Experimental **Milan / two-socket** bring-up port. Rome is not enabled: the
-available firmware is Milan-only. Native SP3 platform code owns topology,
-xGMI-related silicon work, memory, MP, SMM and ACPI; this crate supplies the
-board identity/strap policy, GPIO and console/KCS wiring.
+AMD SP3 reference board, two sockets, EPYC 7003 (Milan) only: the
+available vendor firmware (RXM100CB, MilanPI-SP3 0.0.9.0) is Milan-only.
+Status: **experimental**. Boots RAM-only Linux on all 192 CPUs of two
+EPYC 7643 with two NUMA nodes; CrabEFI reaches its boot manager.
 
-## Bench
+The SP3 platform owns topology, memory, MP, SMM and ACPI. This crate is
+the board's data: identity and strap detection over I2C, the PCIe lane
+map, GPIO, SATA policy, the FCH UART1 console and the BMC's IPMI KCS.
 
-- Two EPYC 7643, CPUID `0x00a00f11`, 48 cores / 96 threads each.
-- Vendor BIOS `RXM100CB`, MilanPI-SP3 `0.0.9.0`.
-- ASPEED AST2500, Insyde BMC `03.55.37.0008`.
-- Console: FCH UART1, MMIO `0xfedca000`, byte access/four-byte stride,
-  48 MHz input, 115200 baud.
-- Vendor PCI root buses: `00/20/40/60/80/a0/c0/e0`; BMC behind `60:05.2`.
+| Module | What |
+|---|---|
+| `lib.rs` | the `fstart_platform_sp3::board::Board` implementation: policy, console, GPIO, ACPI |
+| `i2c` | board ID EEPROM, PCIe strap/routing expanders, redriver programming |
+| `dxio` | revision `0x30` lane map from the PCIe straps |
+| `smm` | the SMM image's handler binding (SMM unit only) |
 
-The FCH UART1 MMIO console is hardware-verified. Native bring-up reports
-256 GiB RAM and completes MP/SMU initialization on both sockets, SMM
-relocation and locking on all 192 CPUs, PCI enumeration, two-domain NUMA
-ACPI generation and handoff to the halt payload. RAM-only Linux boots all
-192 CPUs across two NUMA nodes, passes a 32 MiB memory smoke test pinned
-to each socket with zero EDAC errors, and powers off through ACPI.
-CrabEFI (`--payload uefi`) initializes its EFI environment, imports the full
-memory map and ACPI tables, initializes USB and AHCI, and reaches its boot
-manager. No EFI application or OS was launched. Its pinned revision has a
-64-device PCI enumeration limit; native enumeration now finds 159 functions,
-so complete CrabEFI peripheral coverage is not validated. Variables are volatile:
-this port supplies no persistent CrabEFI variable backend.
-
-Revision `0x30` has vendor-derived strap bifurcation, GPIO/mux/redriver
-sequencing and native NVMe hotplug policy. With measured straps `0x0000`,
-Linux registers four `pciehp` controllers at `e0:03.1`–`e0:03.4`, exposing
-empty downstream slots on buses `e1`–`e4`, and passes the CPU/NUMA/memory
-smoke checks before clean shutdown. GPIO expander writes are readback-verified.
-The muxed redriver path is host-tested but not exercised by these straps.
-Populated slots, alternate strap settings and physical insertion/removal
-remain unvalidated. Vendor Setup overrides are not implemented.
-The current SP3 MP implementation also requires xAPIC: configurations above
-254 threads halt rather than attempting x2APIC bring-up.
-
-A separate RAM-only Linux AHCI diagnostic initializes four controllers and
-probes 17 retained ports, including all eight fixed socket-1 SATA ports.
-All links were down and no disk was detected. No SATA media was installed
-for that test (user-confirmed), so this is expected; an end-to-end SATA
-read remains **blocked**, not passed. The diagnostic sets discovered disks
-read-only, mounts no disk filesystem, and shuts down through ACPI. It found no host
-PCI network controller. Further storage validation requires a known powered
-SATA drive and confirmed cabling; integrated xGbE is unsupported on Milan
-(see below), not a missing MAC driver awaiting enablement.
-
-A RAM-only Linux USB diagnostic binds four xHCI controllers, enumerates an
-attached USB 3 storage device at 5 Gbit/s, marks it read-only, and passes a
-bounded 1 MiB read to `/dev/null`. No USB filesystem was mounted and no
-USB EFI application or installed OS was booted. SP3's resident loader
-includes LZ4 support for kernels compressed by the image builder; this
-path is hardware-verified as part of the USB diagnostic.
-
-## Build and flash banks
-
-The BMC exports a **64 MiB readout**, while SMBIOS reports a 16 MiB BIOS.
-The readout contains an image at `[0,16 MiB)`, erased bytes at `[16,48 MiB)`,
-and another image at `[48,64 MiB)`. Vendor UEFI reads through ROM2 match the
-**lower** image (checked against differing NVRAM bytes). The export size
-alone does not establish the physical flash-chip or chip-select geometry.
-
-The current SP3 image composer accepts 16/32 MiB inputs. Build against the
-**lower 16 MiB slice**, not the complete dump:
+## Build
 
 ```sh
-cargo fbuild assemble --board amd-ethanolx --release \
-  --image-config /absolute/path/to/ethanolx-low.bin
-# CrabEFI payload, with the same vendor input:
-cargo fbuild assemble --board amd-ethanolx --release --payload uefi \
-  --image-config /absolute/path/to/ethanolx-low.bin
+cargo fbuild assemble --board amd-ethanolx --release
+cargo fbuild assemble --board amd-ethanolx --release --payload uefi
 ```
 
-The resulting `amd-ethanolx.rom` is one **16 MiB boot-bank image**, NOT a
-complete flash image. **Do not use the BMC's Non-combo mode to preserve
-the second vendor copy:** testing showed it mirrors a 16 MiB input into
-both the lower and upper BIOS regions, leaving the middle 32 MiB erased.
-A 64 MiB Combo-mode attempt left the same mirrored contents unchanged.
-Use verified external backups for recovery, not an on-flash vendor copy.
-The mirrored layout was independently checked against the built image
-and original erased gap in two complete readbacks.
+The vendor ROM is the board's own flash (`vendor/README.md`). The BMC
+exports a 64 MiB window: the boot bank at `[0, 16 MiB)`, erased bytes at
+`[16, 48 MiB)` and a second copy at `[48, 64 MiB)`. Its BIOS update
+(non-combo mode) writes a 16 MiB upload to **both** the lower and the
+upper bank and leaves the middle alone; this was confirmed by complete
+readbacks. The board declares that mirror (`FLASH_MIRRORS`), so with the
+64 MiB readout as vendor ROM the build produces:
 
-For a programmer confirmed to address the exported window, replace the
-first 16 MiB of the verified readout and preserve the other 48 MiB
-byte-for-byte. Never pad over the other vendor image with erased bytes.
-Obtain independent matching reads and establish recovery before writing.
-An upload acknowledgement or `OK` is not proof of a correct write; verify
-the complete readout before booting.
+- `amd-ethanolx.rom`: the full 64 MiB flash image, bank at 0 and 48 MiB,
+  the readout's middle kept byte for byte, for an external programmer;
+- `amd-ethanolx.bank.rom`: the 16 MiB bank, for the BMC BIOS update.
 
-## Recovered board data
+With only the lower 16 MiB as vendor ROM, `amd-ethanolx.rom` is the bank.
+The bank layout: vendor EFS and directories to `0x893000`, FFS from
+`0x893000`, reset image at `0xde0000`.
 
-Source: the bench's own RXM100CB BIOS, not a Tyan donor.
-`AmdCpmOemInitPeim`, GUID `7b8f8199-42c7-db87-307e-2892f3849538`,
-TE SHA-256 `bfc0f63a4ba5664c…`:
+There is no on-flash vendor fallback after an update: both banks hold the
+new image. Keep verified external readouts for recovery, verify the
+complete readout after a write (an upload `OK` is not proof), and do not
+use combo mode (a 64 MiB combo upload did not restore a vendor bank).
+The export size does not establish the physical flash-chip geometry.
 
-- Live CPM list at `0xffd68a54`, installed by `0xffd67684`.
-- `$A10` at `0xffd6e3e4`: GPIO 89, setting `0x0988`, then terminator.
-- `$A26` at `0xffd68d74`, `$A27` at `0xffd6bb1c`, descriptor stride
-  `0x1b0`: socket-0 P0/P1/P2/P3, socket-1 P1 SATA and P3 PCIe.
-- Runtime patcher `0xffd6814f` adds the BMC WAFL lane 129 when needed and
-  rebuilds slot descriptors from straps/PCDs. Native policy preserves the
-  observed BMC link and socket-1 SATA/P3 links, and implements revision
-  `0x30`'s socket-1 P0 quad-x4 native-hotplug template.
+## Board revision and PCIe
 
-Read-only detection is hardware-verified: M24LC128 on I2C5 at `0x50`,
-byte `0x10`, reports board ID `0x30`; PCA9535A on I2C0 at `0x20` reports
-PCIe straps `0x0000`. I2C5 is at `0xfedcb000`, not the linear `0xfedc7000`.
-Detection preserves power/pad routing and does not write EEPROM data.
-Other board revisions halt before output changes. The supported revision
-then drives PCA9535A `0x22` P0.1 low with preservation/readback, following
-the vendor order, and re-reads the authoritative straps. The exact signal
-name is not proven; no guessed clock-frequency programming is performed.
-Device errors halt rather than silently selecting a default lane map.
+Detection is read-only: the M24LC128 on I2C5 (`0xfedcb000`, not the
+linear `0xfedc7000`) at `0x50`, byte `0x10`, is the board ID; the PCA9535A
+on I2C0 at `0x20` reports the slot straps. Only revision `0x30` is
+supported; others halt before any output changes. For `0x30` the board
+then drives PCA9535A `0x22` P0.1 low (vendor order, with readback) and
+re-reads the straps. Device errors halt rather than selecting a default
+lane map.
 
-The socket-0 strap nibbles select P0/P1/P2/P3 at shifts `0/8/12/4`:
+Socket-0 strap nibbles select P0/P1/P2/P3 at shifts `0/8/12/4`:
 
-- Bit 3 clear: reversed x16, retaining the vendor physical-slot mapping.
-- `0xa`/`0xc`: quad x4, PCIe-native Enterprise SSD hotplug.
-- `0xb`/`0xd`: x8+x8; `0xe`/`0xf`: forward x16 fallback.
-- P0/P1 `0x8`: SATA on lanes 0–3, four Ethernet descriptors on 4–7,
-  and an upper x8 PCIe link on 8–15. `0x9` omits the upper PCIe link.
-  Both carry the recovered SATA PHY parameters also used by socket 1.
-- P2/P3 `0x8`/`0x9`: ordinary reversed x16 fallback. The OEM enables
-  mixed cards with flag `0x20` only on P0/P1; do not repurpose P2/P3.
+- bit 3 clear: reversed x16 with the vendor slot number;
+- `0xa`/`0xc`: quad x4 with PCIe-native Enterprise SSD hotplug;
+- `0xb`/`0xd`: x8 + x8; `0xe`/`0xf`: forward x16;
+- P0/P1 `0x8`: SATA on lanes 0–3, Ethernet on 4–7 and x8 PCIe on 8–15;
+  `0x9` omits the PCIe link. P2/P3 `0x8`/`0x9` fall back to reversed x16.
 
-The existing NBIO fuse reader supplies the vendor reduced-I/O condition
-`(fuse1 & 0x5380) == 0x5380`, omitting socket-0 P1/socket-1 P0 when set.
-This is not a socket-count test. Selector `0xa` programs four DS125BR401A
-redrivers through the matching PCA9545A mux (`0x70`–`0x73`, channel mask 1),
-using the board's recovered tuning bytes. The mux is deselected even after
-a programming error. Selector `0xc` needs no redriver programming.
-P0/P1 selector `0x8` instead uses the vendor three-chip SATA/xGbE profile
-at `0x58`–`0x5a`, including its extra channel-register writes. Those
-registers (`0x0d`, `0x14`, …) are undocumented in SNLS466A; their full bytes
-are preserved without guessing RXDET semantics from adjacent registers.
-Selector `0x9` does not run a redriver sequence.
+Socket 1 has fixed SATA on P1 (AHCI controller 1), x16 PCIe on P3 and four
+x4 NVMe hotplug ports on P0. The BMC uses WAFL lane 129 at Gen1. The NBIO
+fuse reduced-I/O signature (`(fuse1 & 0x5380) == 0x5380`) omits socket-0
+P1 and socket-1 P0, as the vendor does.
 
-**Milan Ethernet hardware limitation:** these legacy xGbE layouts do not
-establish that a Milan MAC exists. AMD's Family 19h Model 01h B1 PPR
-(55898, vol. 1, feature overview) lists four SATA controllers but no
-Ethernet complex; the older Family 17h PPR (54945) explicitly lists one.
-The [SP3 interface reference](https://chipswiki.org/Amd/packages/socket_sp3)
-states that Type-1/2 processors do not implement the SATAe/xGbE functions.
-The own Milan Huashan firmware has no xGbE task and its eight enable PCDs
-(`0x148`–`0x14f`) are false. This is not merely an unfinished MAC driver:
-integrated xGbE link testing is unavailable on this dual-Milan bench.
-Native policy warns and omits Ethernet descriptors while configuring the
-SATA/PCIe portions. The shared wire encoder retains the legacy SerDes type
-`0x10`, distinct from PCIe. No MAC addresses are read or fabricated.
-Mixed card routing and active SATA/redriver links are host-tested only;
-the current bench straps `0x0000` do not exercise these paths. Fixed socket-1
-P1 SATA uses AHCI controller 1, enabled explicitly by board policy rather
-than inheriting the Tyan donor's all-off socket-1 policy. The platform uses
-that policy at reset, environment setup and late port handling. No donor
-SGPIO pads or external-port wiring are assumed for Ethanol-X.
+Selector `0xa` programs four DS125BR401A redrivers behind the matching
+PCA9545A (`0x70`–`0x73`, channel 1) with the vendor tuning; P0/P1 `0x8`
+uses the vendor's three-chip SATA/Ethernet profile at `0x58`–`0x5a`. The
+mux is deselected even after a failed write.
 
-Shared initialization also forwards the optional Milan APOB 9/0x15 global
-PHY payload to every socket's DXIO ancillary heap, alongside (not instead
-of) per-engine SATA tuning. Missing/empty overrides are allowed; invalid
-counts, alignment or record sizes halt. Presence and byte count are logged,
-without inventing PHY settings. The bench supplies **152 bytes**; DXIO
-accepts the resulting ancillary heaps on both sockets, and the RAM-only
-CPU/NUMA/memory/hotplug regression passes with zero EDAC errors.
-RXM100CB's pre-training 10-bit-tag and Data
-Link Feature Exchange policies are board-selected and implemented in the
-shared DXIO driver, including the Auto/Gen4 and WAFL conditions. Core
-Gen3/Gen4 disable straps are cleared without overriding per-engine speed
-limits. CPM GPIO decoding retains the vendor's explicit bit-19 control and
-control-before-IOMUX order, keeping GPIO89 output direction/value unchanged.
-Milan SATA reset startup covers disabled control blocks and controller 3's
-PHY gate when enabled, without enabling additional controllers by policy.
-These are initialization-fidelity fixes, not evidence of populated links.
+Milan has no integrated xGbE (PPR 55898 lists no Ethernet complex; the
+vendor's xGbE PCDs `0x148`–`0x14f` are all false), so Ethernet
+descriptors of the mixed layouts are dropped with a warning.
 
-Native hotplug retains empty bridges and advertises PCIe slots without
-inventing physical slot numbers or external GPIO routing. The recovered
-NVMe descriptors set LinkHotplug to 5 but leave the independent firmware
-Hotpluggable header flag clear; the engine model preserves that distinction.
-Only explicitly wired server-I2C hotplug entries generate SMU signal tables. Host tests cover
-selector decoding, reduced-I/O policy, I2C preservation/error cleanup and
-native-slot advertisement. Controller registration is verified, not physical
-hot-insert/remove operation or signal integrity.
+The board selects the vendor's pre-training PCIe capabilities (10-bit
+tags, Data Link Feature Exchange: PCDs `0x1c2`/`0x16d`/`0x16e`).
 
-The console follows RXM100CB `AmdIdsDebugPrintPei`, GUID
-`239e812c-ad4a-4d5a-8bb9-169131c344bf`, TE SHA-256 `8c36a0cc5a598aa6…`:
-its default path uses FCH UART1 MMIO, software reset plus about 100 us
-settle, divisor 26 and UART pad function 0 (`0xffd02c28`). The shared FCH
-UART driver owns clock/power/pin/reset setup; the standard 16550 driver
-sets framing and baud. Live FCH inventory supplies its ACPI description.
-No assumption is made that Insyde enables the newer OpenBMC LPC VUART.
+## Sources
+
+All board data comes from the bench's own RXM100CB image, not a donor:
+
+- `AmdCpmOemInitPeim` (`7b8f8199-42c7-db87-307e-2892f3849538`): CPM `$A10`
+  at `0xffd6e3e4` (GPIO 89, setting `0x0988`), `$A26`/`$A27` lane
+  descriptors at `0xffd68d74`/`0xffd6bb1c` (stride `0x1b0`), runtime
+  patcher `0xffd6814f`, group builder `0xffd67b60`, redriver tables
+  `0xffd72994` (PCIe) and `0xffd70fd4` (SATA/Ethernet).
+- `AmdIdsDebugPrintPei` (`239e812c-ad4a-4d5a-8bb9-169131c344bf`): the
+  console, FCH UART1 MMIO `0xfedca000`, 48 MHz, byte access with four-byte
+  stride, 115200 baud.
+
+## Validated on hardware
+
+Two EPYC 7643 (CPUID `0x00a00f11`), 256 GiB, AST2500 BMC. The 64 MiB
+image built from this tree, written through the BMC and read back in
+full, boots RAM-only Linux with:
+
+- all 192 CPUs on two NUMA nodes (SRAT covers both sockets), a memory
+  test pinned to each socket and zero EDAC errors, ACPI power-off;
+- SMBIOS decoded by dmidecode: 2 packages, 96 cores, 192 threads, 16 of
+  16 DIMMs, 262144 MiB;
+- a KVM guest run, IOMMU with interrupt remapping (59 groups);
+- with straps `0x0000`, `pciehp` on `e0:03.1`–`e0:03.4`.
+
+Earlier runs of the port also covered the FCH UART1 console, four xHCI
+controllers with a USB 3 disk read, AHCI on four controllers with 17
+ports including socket 1's eight (no media attached, so no SATA link),
+and CrabEFI up to its boot manager.
+
+Socket 1's SMU rejects the CPPC table (`CppcSetTable` answers 0xff), so
+only socket 0 gets `_CPC` and Linux leaves amd_pstate off.
+
+Not validated: other strap settings, the redriver paths, populated slots
+and hot insertion, SATA links, an installed OS from disk, persistent
+CrabEFI variables (there is no backend). More than 254 threads needs x2APIC,
+which the SP3 MP code does not do yet.
