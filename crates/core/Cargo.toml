@@ -10,6 +10,8 @@ std = ["serde/std", "heapless/serde"]
 alloc = ["serde/alloc"]
 host = ["std", "dep:fstart-amdfw-format"]
 pci = []
+# Test doubles of the services (`ManualTimer`).
+testing = []
 
 [dependencies]
 ufmt = { workspace = true }
