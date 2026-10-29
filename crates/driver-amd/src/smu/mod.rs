@@ -268,6 +268,11 @@ impl<P: ConfigRegionAccess, D: DelayNs + Copy> Smu<P, D> {
 impl<P: ConfigRegionAccess, D: DelayNs + Copy> SmuMessages for Smu<P, D> {
     fn send(&self, id: u32, args: &mut [u32; ARGUMENT_COUNT]) -> Result<(), Error> {
         if id >= self.id_limit {
+            fstart_log::error!(
+                "smu: message {:#x} exceeds ID limit {:#x}",
+                id,
+                self.id_limit
+            );
             return Err(Error::Rejected(response::UNKNOWN_CMD));
         }
         let mut delay = self.delay.get();
@@ -280,8 +285,16 @@ impl<P: ConfigRegionAccess, D: DelayNs + Copy> SmuMessages for Smu<P, D> {
             self.poll_us,
         );
         self.delay.set(delay);
-        let reply = reply?;
+        let reply = reply.inspect_err(|error| match error {
+            Error::BusyTimeout => fstart_log::error!("smu: timed out before message {:#x}", id),
+            Error::CompletionTimeout => fstart_log::error!("smu: message {:#x} timed out", id),
+            Error::Unavailable => fstart_log::error!("smu: message {:#x} mailbox unavailable", id),
+            Error::Rejected(code) => {
+                fstart_log::error!("smu: message {:#x} response {:#x}", id, *code)
+            }
+        })?;
         if reply.status != OK {
+            fstart_log::error!("smu: message {:#x} response {:#x}", id, reply.status);
             return Err(Error::Rejected(reply.status));
         }
         *args = reply.arguments;

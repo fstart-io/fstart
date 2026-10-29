@@ -31,7 +31,7 @@ fstart-pci = { path = "../../../crates/pci" }
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 embedded-hal = { workspace = true }
-fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
+fstart-driver-ipmi = { path = "../../../crates/driver-ipmi", features = ["acpi"] }
 zerocopy = { workspace = true }
 tock-registers = { workspace = true }
 

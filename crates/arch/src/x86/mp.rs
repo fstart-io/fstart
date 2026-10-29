@@ -460,7 +460,7 @@ fn find_cpu_driver(identity: CpuIdentity) -> Option<&'static dyn CpuDriver> {
 fn cpu_init() {
     let identity = CpuIdentity::current();
     if let Some(driver) = find_cpu_driver(identity) {
-        fstart_log::info!(
+        fstart_log::debug!(
             "cpu: init cpu{} with {} (family {:#x} model {:#x})",
             current_cpu_index(),
             driver.name(),
@@ -831,14 +831,22 @@ fn fly(
     // Walk the flight plan on the BSP side; APs walk it in `fstart_ap_entry`.
     for (i, (step, sync)) in plan.iter().zip(STEP_SYNC.iter()).enumerate() {
         // Wait for all APs to reach this step.
-        let timeout_us = 1_000_000u64; // 1 second
+        // Serial logging and per-CPU work can dominate on large systems.
+        let timeout_us = 1_000_000u64.max(50_000 * u64::from(final_count));
         let mut elapsed = 0u64;
         while (sync.cpus_entered.load(Ordering::Acquire) as u16) < final_count {
             delay_us(100);
             elapsed += 100;
             if elapsed >= timeout_us {
-                fstart_log::error!("mp: flight plan step {} timeout", i);
-                break;
+                fstart_log::error!(
+                    "mp: flight plan step {} timeout ({}/{} APs)",
+                    i,
+                    sync.cpus_entered.load(Ordering::Acquire),
+                    final_count
+                );
+                // Keep this barrier closed and the borrowed drivers alive:
+                // APs may still be executing callbacks through MP_CONFIG.
+                crate::x86::boot::halt();
             }
         }
         step.bsp();

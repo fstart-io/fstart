@@ -108,7 +108,7 @@ pub(crate) struct Cppc {
     pub info: fstart_driver_amd::smu::v11::CppcInfo,
     pub lowest_mhz: u32,
     pub nominal_mhz: u32,
-    /// APIC ID of each PCC slot (the PPTable CPPC map, sockets in order).
+    /// APIC ID of each local PCC slot (this socket's PPTable CPPC map).
     pub slots: Vec<u32>,
 }
 
@@ -269,9 +269,10 @@ pub(crate) struct Ctx {
     /// APIC IDs of every enabled thread, BSP first (MADT order).
     pub apic_ids: Vec<u32>,
     /// CPPC through the SMU, when the SMU reports it enabled.
-    pub cppc: Option<Cppc>,
+    pub cppc: Vec<Cppc>,
     pub smm: Option<crate::smm::SmmConfig>,
     pub rsdp: Option<u64>,
+    pub smbios: Option<u64>,
 }
 
 /// CPUID → revision before anything else: the generation picks the flow's
@@ -301,7 +302,8 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     let fch = hw::primary_fch(timer);
 
     step(0x11, "FCH reset tasks");
-    let resume = fch_reset(&fch, generation);
+    let policy = B::policy(generation);
+    let resume = fch_reset(&fch, generation, &policy);
     B::early_init(&fch).or_halt("board early init");
 
     step(0x12, "console");
@@ -319,7 +321,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     check_identity::<B>(&identity, timer.mhz());
 
     step(0x14, "APOB");
-    let (flash, ffs) = flash(&fch, generation);
+    let (flash, ffs, rom_size) = flash(&fch, generation);
     let (apob, apob_span) = read_apob(flash, generation);
 
     step(0x15, "memory map");
@@ -343,7 +345,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
         ecam,
         fch,
         resume: false,
-        policy: B::policy(generation),
+        policy,
         ffs,
         apob,
         tops,
@@ -368,9 +370,10 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
         phys_addr_bits: 0,
         psp_bar: 0,
         apic_ids: Vec::new(),
-        cppc: None,
+        cppc: Vec::new(),
         smm: None,
         rsdp: None,
+        smbios: None,
     };
 
     step(0x20, "DF topology and maps");
@@ -388,7 +391,8 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     step(0x38, "DXIO");
     let levels = detect_levels::<B>(&ctx.fch, generation);
     board_gpio::<B>(&ctx.fch, generation);
-    let engines = B::dxio_engines(generation, &levels, &ctx.timer);
+    let engines =
+        B::dxio_engines(generation, &levels, &ctx.fch, &ctx.timer).or_halt("board DXIO devices");
     S::dxio(&mut ctx, &si, &engines);
 
     step(0x40, "FCH env");
@@ -413,6 +417,7 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
     #[cfg(feature = "acpi")]
     {
         ctx.rsdp = Some(handoff::acpi::<B, S>(&ctx, &si));
+        ctx.smbios = Some(crate::smbios::runtime::prepare::<B>(&ctx, &mp, rom_size));
     }
 
     step(0x80, "ReadyToBoot");
@@ -427,7 +432,8 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
 
 /// The eight PEI reset tasks on socket 0's FCH (FCH_SP3 §2.1). Returns
 /// whether this is an S3 resume.
-fn fch_reset(fch: &PrimaryFch, generation: Generation) -> bool {
+#[cfg_attr(not(any(feature = "rome", feature = "milan")), allow(unused_variables))]
+fn fch_reset(fch: &PrimaryFch, generation: Generation, policy: &Policy) -> bool {
     use fch::common::reset;
     reset::prelim(fch, generation);
     reset::ab_bar(fch);
@@ -438,7 +444,7 @@ fn fch_reset(fch: &PrimaryFch, generation: Generation) -> bool {
         Generation::Naples => fch::taishan::sata::reset(fch, true),
         #[cfg(any(feature = "rome", feature = "milan"))]
         Generation::Rome | Generation::Milan => {
-            fch::huashan::sata::reset(fch, &fch::huashan::sata::SataPolicy::socket0())
+            fch::huashan::sata::reset(fch, generation, &policy.sata[0])
         }
         #[allow(unreachable_patterns)]
         _ => fail("FCH SATA reset"),
@@ -506,7 +512,7 @@ fn flash_slice(address: u64, len: u32) -> &'static [u8] {
 /// half whose EFS the generation's boot ROM takes) and the FFS window.
 /// Both are read through ROM2 when they lie in the page it shows; ROM3 is
 /// probed only for an FFS outside it, and whatever neither shows halts.
-fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
+fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span, u32) {
     // SAFETY: the static is always readable; volatile so the linked
     // placeholder is not folded into the code.
     let anchor = unsafe { core::ptr::read_volatile(FLASH_ANCHOR.0.get()) };
@@ -554,7 +560,11 @@ fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span) {
         .or_halt("EFS");
     let ffs = map.address(offset, size).or_halt("FFS window");
     fstart_log::info!("sp3: FFS at flash {:#x}+{:#x}", offset, size);
-    (efs, Span::new(ffs, u64::from(size)))
+    (
+        efs,
+        Span::new(ffs, u64::from(size)),
+        anchor.flash_size.get(),
+    )
 }
 
 /// `generation`'s BIOS directories in the booted half `flash`.

@@ -17,6 +17,10 @@ use super::{CppcInfo, cppc_doorbell};
 pub const REGION_SIZE: u64 = 0x1_0000;
 /// Offset 0 of the region: PCC signature of subspace 0.
 pub const SIGNATURE: u32 = 0x5043_4300;
+/// PCC header signature includes the ID of this PCCT subspace.
+pub const fn signature(subspace_id: u8) -> u32 {
+    SIGNATURE | subspace_id as u32
+}
 /// Bytes of PCC registers per thread.
 pub const SLOT: u64 = 0x100;
 
@@ -57,6 +61,7 @@ enum Register {
 /// registers are null, unimplemented frequencies 0 (as the donor).
 pub fn cpc_entries(
     info: &CppcInfo,
+    subspace_id: u8,
     slot: u32,
     lowest_mhz: u32,
     nominal_mhz: u32,
@@ -65,13 +70,12 @@ pub fn cpc_entries(
         let implemented = info.implements(k as u8);
         match (k, REGISTERS.get(k)) {
             (_, Some(_)) if !implemented => CpcEntry::none(),
-            (_, Some(Register::Pcc(offset))) => CpcEntry::Register(GAS::new(
-                AddressSpace::PlatformCommunicationsChannel,
-                32,
-                0,
-                AccessSize::Undefined,
-                offset + SLOT * u64::from(slot),
-            )),
+            (_, Some(Register::Pcc(offset))) => CpcEntry::PccRegister {
+                bit_width: 32,
+                bit_offset: 0,
+                subspace_id,
+                address: offset + SLOT * u64::from(slot),
+            },
             (_, Some(Register::Ffh(msr))) => CpcEntry::Register(GAS::new(
                 AddressSpace::FunctionalFixedHardware,
                 64,
@@ -122,9 +126,10 @@ mod tests {
     fn entries_follow_the_supported_mask() {
         // Revision 3, registers 0–15 and 17–20 (no autonomous window).
         let info = CppcInfo::from_answer((0x1F_FFFF & !(1 << 16)) << 2 | 3);
-        let e = cpc_entries(&info, 2, 1500, 2500);
+        let e = cpc_entries(&info, 0, 2, 1500, 2500);
         let reg = |i: usize| match e[i] {
             CpcEntry::Register(g) => (g.address_space_id as u8, g.address.get()),
+            CpcEntry::PccRegister { address, .. } => (0x0a, address),
             CpcEntry::Integer(_) => panic!("register expected"),
         };
         assert_eq!(reg(0), (0x0A, 0x200));
@@ -134,5 +139,16 @@ mod tests {
         assert!(matches!(e[19], CpcEntry::Integer(1500)));
         assert!(matches!(e[20], CpcEntry::Integer(2500)));
         assert_eq!((cpc_entry_count(2), cpc_entry_count(3)), (19, 21));
+        let secondary = cpc_entries(&info, 1, 2, 1500, 2500);
+        assert!(matches!(
+            secondary[0],
+            CpcEntry::PccRegister {
+                subspace_id: 1,
+                address: 0x200,
+                ..
+            }
+        ));
+        assert!(matches!(secondary[12], CpcEntry::Register(g) if g.access_size as u8 == 4));
+        assert_eq!(signature(1), SIGNATURE | 1);
     }
 }

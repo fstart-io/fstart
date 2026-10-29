@@ -197,12 +197,18 @@ pub trait Sp3BoardFacts {
     /// Generations the board supports. The platform must be built with
     /// each one's feature; one firmware build serves all of them.
     const GENERATIONS: &'static [Generation];
-    /// Workspace-relative vendor ROM: the 32 MiB dual image or one 16 MiB
-    /// half. Its PSP/BIOS directories, blobs and APCB stay in place.
+    /// Workspace-relative vendor ROM: the 32 MiB dual image, one 16 MiB
+    /// half, or a full readout with [`Self::FLASH_MIRRORS`]. Its PSP/BIOS
+    /// directories, blobs and APCB stay in place.
     const VENDOR_IMAGE: &'static str;
     /// Logical CPU ceiling over every supported generation (all sockets);
     /// sizes the AP stacks and SMM.
     const MAX_CPUS: u16;
+    /// Flash offsets past the 16 MiB boot bank where the board's flash
+    /// export mirrors it. [`Self::VENDOR_IMAGE`] may then be the full
+    /// readout, and the build is a full flash image with the bank at 0 and
+    /// at every mirror.
+    const FLASH_MIRRORS: &'static [u32] = &[];
 }
 
 /// Whether this build carries `generation`'s silicon code (its platform

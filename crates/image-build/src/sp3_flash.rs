@@ -374,6 +374,13 @@ pub struct FlashPlan {
     /// Lowest DRAM address the reset image may be copied to: the end of the
     /// platform's early region, which the reset image needs intact.
     pub dram_floor: u64,
+    /// Flash offsets past the boot bank where the board's flash export
+    /// carries a mirror of the 16 MiB boot bank. With a full readout as the
+    /// vendor ROM, the composed bank is written at 0 and at every mirror and
+    /// the rest of the readout is kept. Empty: the vendor ROM is the boot
+    /// window (one 16 MiB half or the 32 MiB dual image).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<u32>,
 }
 
 /// What happens to one half of the vendor ROM.
@@ -423,14 +430,57 @@ impl FlashPlan {
         if self.ffs_offset == 0 || self.ffs_offset >= self.reset.flash_offset {
             return Err(ImageError::Plan("FFS offset outside the lower half"));
         }
+        let mut mirrors = self.mirrors.clone();
+        mirrors.sort_unstable();
+        mirrors.dedup();
+        if mirrors.len() != self.mirrors.len()
+            || mirrors
+                .iter()
+                .any(|&m| !(m as usize).is_multiple_of(HALF_SIZE) || (m as usize) < HALF_SIZE)
+        {
+            return Err(ImageError::Plan(
+                "mirrors are not distinct banks above the boot bank",
+            ));
+        }
         Ok(())
+    }
+
+    /// The part of `vendor_rom` the boot ROMs search: all of it without
+    /// mirrors; with mirrors, the boot bank of a full readout whose
+    /// mirrors all fit (a bare 16 MiB bank is its own boot window).
+    pub fn boot_window<'a>(&self, vendor_rom: &'a [u8]) -> Result<&'a [u8], ImageError> {
+        if self.mirrors.is_empty() || vendor_rom.len() == HALF_SIZE {
+            return Ok(vendor_rom);
+        }
+        let end = self.mirrors.iter().map(|&m| m as usize + HALF_SIZE).max();
+        match end {
+            Some(end) if vendor_rom.len() >= end && vendor_rom.len().is_multiple_of(HALF_SIZE) => {
+                Ok(&vendor_rom[..HALF_SIZE])
+            }
+            _ => Err(ImageError::Layout(
+                "the vendor readout does not hold the board's bank mirrors",
+            )),
+        }
+    }
+
+    /// `vendor_rom` with the composed boot `window` in place: the window
+    /// itself, or a full readout with the bank at 0 and every mirror.
+    fn expand(&self, vendor_rom: &[u8], window: Vec<u8>) -> Vec<u8> {
+        if window.len() == vendor_rom.len() {
+            return window;
+        }
+        let mut out = vendor_rom.to_vec();
+        for at in core::iter::once(0).chain(self.mirrors.iter().map(|&m| m as usize)) {
+            out[at..at + window.len()].copy_from_slice(&window);
+        }
+        out
     }
 
     /// Decide every half of `vendor_rom` and the FFS window.
     pub fn survey(&self, vendor_rom: &[u8]) -> Result<Survey, ImageError> {
         self.check()?;
         let reset_at = self.reset.flash_offset as usize;
-        let halves = halves(vendor_rom)?
+        let halves = halves(self.boot_window(vendor_rom)?)?
             .into_iter()
             .map(|(half, bytes)| {
                 let action = match half_generation(bytes) {
@@ -739,7 +789,8 @@ pub fn patch_reset_image(
 /// The flash image of one build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sp3Flash {
-    /// The composed ROM, the vendor ROM's size (16 or 32 MiB).
+    /// The composed ROM, the vendor ROM's size (16 or 32 MiB, or a full
+    /// readout with mirrored boot banks).
     pub image: Vec<u8>,
     pub survey: Survey,
     pub patched: Patched,
@@ -753,7 +804,8 @@ pub fn compose(
     reset_image: &[u8],
     ffs: &[u8],
 ) -> Result<Sp3Flash, ImageError> {
-    let survey = plan.survey(vendor_rom)?;
+    let window = plan.boot_window(vendor_rom)?;
+    let survey = plan.survey(window)?;
     if ffs.len() > survey.ffs_capacity() {
         return Err(ImageError::FfsTooLarge {
             size: ffs.len(),
@@ -762,12 +814,14 @@ pub fn compose(
     }
     check_reset_image(plan, reset_image)?;
     let mut reset = reset_image.to_vec();
-    let anchor = FlashAnchor::new(vendor_rom.len() as u32, survey.ffs.start, ffs.len() as u32);
+    // The anchor describes the boot window the reset image reads, not the
+    // mirrors of a full readout.
+    let anchor = FlashAnchor::new(window.len() as u32, survey.ffs.start, ffs.len() as u32);
     let patched = patch_reset_image(&mut reset, ffs, anchor)?;
-    let image = build(vendor_rom, plan, &survey, &reset, ffs)?;
+    let image = build(window, plan, &survey, &reset, ffs)?;
     verify(&image, plan, &survey)?;
     Ok(Sp3Flash {
-        image,
+        image: plan.expand(vendor_rom, image),
         survey,
         patched,
     })
@@ -778,8 +832,8 @@ pub fn compose(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sp3FlashAssembly {
     pub ffs: FfsAssembly,
-    /// Vendor ROM: one 16 MiB half or the 32 MiB dual image, workspace
-    /// relative or absolute. Its directories and blobs are kept in place.
+    /// Vendor ROM: one 16 MiB half, the 32 MiB dual image or a full
+    /// readout with [`FlashPlan::mirrors`], workspace relative or absolute. Its directories and blobs are kept in place.
     pub vendor_image: String,
     /// Unit whose flat output is the reset image.
     pub reset_unit: String,

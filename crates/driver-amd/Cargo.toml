@@ -12,7 +12,7 @@ zeppelin = ["smi", "dep:fstart-amdfw-format", "dep:fstart-arch", "dep:zerocopy",
 naples = ["sp3"]
 rome = ["sp3"]
 milan = ["sp3"]
-sp3 = ["dep:embedded-hal", "dep:fstart-amdfw-format", "dep:fstart-pci", "dep:fstart-log", "dep:heapless", "dep:zerocopy", "dep:ufmt", "dep:fstart-arch"]
+sp3 = ["dep:embedded-hal", "dep:fstart-amdfw-format", "dep:fstart-pci", "dep:fstart-log", "dep:heapless", "dep:zerocopy", "dep:ufmt", "dep:fstart-arch", "dep:fstart-driver-i2c"]
 # ACPI descriptions of the SP3 FCH devices.
 acpi = ["dep:fstart-acpi"]
 # FCH SMI control for the AMD SMM owner of fstart-arch.

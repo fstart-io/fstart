@@ -181,20 +181,23 @@ fn inputs<'a>(
         fch: fch(),
         bmc_sx_notify: Some(0xC0),
         tpm: Some(fstart_acpi::devices::tpm::TpmFamily::Tpm20),
-        cppc: Some(CppcAcpi {
-            info: CppcInfo::from_answer(0x007F_FFFF),
-            base: 0x7FF0_0000,
-            smu_bar: 0xF110_0000,
-            lowest_mhz: 1500,
-            nominal_mhz: 2500,
-            slots: std::boxed::Box::leak(
-                s.cpus
-                    .iter()
-                    .map(|c| c.apic_id)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ),
-        }),
+        cppc: std::boxed::Box::leak(
+            vec![CppcAcpi {
+                info: CppcInfo::from_answer(0x007F_FFFF),
+                base: 0x7FF0_0000,
+                smu_bar: 0xF110_0000,
+                lowest_mhz: 1500,
+                nominal_mhz: 2500,
+                slots: std::boxed::Box::leak(
+                    s.cpus
+                        .iter()
+                        .map(|c| c.apic_id)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                ),
+            }]
+            .into_boxed_slice(),
+        ),
         board: Board {
             ipmi: Some(IpmiKcsAcpi {
                 port: 0xCA2,
@@ -425,6 +428,56 @@ fn dsdt_passes_iasl() {
             std::fs::remove_dir_all(dir).unwrap();
         }
     }
+}
+
+#[test]
+fn cppc_two_sockets_have_independent_subspaces_and_local_slots() {
+    let mut s = system(Generation::Milan, 2, 4);
+    s.cpus[2].apic_id = 128;
+    s.cpus[3].apic_id = 129;
+    let rb = root_bridges(&s);
+    let channels = [
+        CppcAcpi {
+            info: CppcInfo::from_answer(0x007f_ffff),
+            base: 0x7000_0000,
+            smu_bar: 0xf100_0000,
+            lowest_mhz: 400,
+            nominal_mhz: 2300,
+            slots: &[0, 1],
+        },
+        CppcAcpi {
+            info: CppcInfo::from_answer(0x007f_ffff),
+            base: 0x7001_0000,
+            smu_bar: 0xf200_0000,
+            lowest_mhz: 400,
+            nominal_mhz: 2300,
+            slots: &[128, 129],
+        },
+    ];
+    let mut i = inputs(Generation::Milan, &s, &rb, None);
+    i.cppc = &channels;
+    let built = build(&i).unwrap();
+    let tables = assemble(&built);
+    let pcct = get(&tables, b"PCCT").unwrap();
+    assert_eq!(pcct.len(), 48 + 2 * 62);
+    assert_eq!(&pcct[56..64], &channels[0].base.to_le_bytes());
+    assert_eq!(&pcct[118..126], &channels[1].base.to_le_bytes());
+    let dsdt = &built.dsdt;
+    let start = dsdt.windows(4).position(|name| name == b"C002").unwrap();
+    let end = dsdt.windows(4).position(|name| name == b"C003").unwrap();
+    // Linux CPU UID2 / APIC128 belongs to subspace1, slot0, not global slot2.
+    assert!(
+        dsdt[start..end]
+            .windows(15)
+            .any(|r| r == [0x82, 12, 0, 0x0a, 32, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+    );
+    let mut bad = channels;
+    bad[1].slots = &[0, 129];
+    i.cppc = &bad;
+    assert!(
+        build(&i).is_err(),
+        "one APIC ID cannot belong to two PCC controllers"
+    );
 }
 
 #[test]

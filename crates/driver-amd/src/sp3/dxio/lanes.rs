@@ -270,6 +270,12 @@ pub struct PcieExtra {
     pub search_depth: bool,
     /// Milan slot type `(u16 & 0xE000) == 0x2000`.
     pub kpnp_reset: bool,
+    /// Disable PCIe Gen4 Data Link Feature support (RXM100CB board +0x11
+    /// bit 4 -> internal +0x37 bit 4; pre-training RSMU policy only).
+    pub disable_dlf: bool,
+    /// Disable DLF exchange/header scaling (board +0x11 bit 3 -> internal
+    /// +0x36 bit 1). Independent of the capability-support override.
+    pub disable_dlf_exchange: bool,
 }
 
 /// A PCIe engine.
@@ -325,6 +331,8 @@ impl PcieEngine {
                 skip_eq_gen4: false,
                 search_depth: false,
                 kpnp_reset: false,
+                disable_dlf: false,
+                disable_dlf_exchange: false,
             },
         }
     }
@@ -409,6 +417,8 @@ impl SataEngine {
 pub enum EngineKind {
     Pcie(PcieEngine),
     Sata(SataEngine),
+    /// Ethernet SerDes engine (wire type 0x10). MAC setup is separate.
+    Ethernet,
 }
 
 /// One board engine.
@@ -416,6 +426,9 @@ pub enum EngineKind {
 pub struct Engine<'a> {
     pub socket: u8,
     pub lanes: Lanes,
+    /// Board descriptor +5 bit 0 (wire +1): firmware-managed hotplug.
+    /// Independent of PCIe LinkHotplug and external I2C signal routing.
+    pub firmware_hotplug: bool,
     /// Board GpioGroupId (1 on every S8030 engine): Naples and Milan wire
     /// reset group.
     pub gpio_group: u8,
@@ -429,6 +442,7 @@ impl<'a> Engine<'a> {
         Self {
             socket,
             lanes,
+            firmware_hotplug: false,
             gpio_group: 1,
             kind: EngineKind::Pcie(pcie),
             tuning: &[],
@@ -439,8 +453,20 @@ impl<'a> Engine<'a> {
         Self {
             socket,
             lanes,
+            firmware_hotplug: false,
             gpio_group: 1,
             kind: EngineKind::Sata(sata),
+            tuning: &[],
+        }
+    }
+
+    pub const fn ethernet(socket: u8, lanes: Lanes) -> Self {
+        Self {
+            socket,
+            lanes,
+            firmware_hotplug: false,
+            gpio_group: 1,
+            kind: EngineKind::Ethernet,
             tuning: &[],
         }
     }
@@ -452,7 +478,7 @@ impl<'a> Engine<'a> {
     pub fn pcie_config(&self) -> Option<&PcieEngine> {
         match &self.kind {
             EngineKind::Pcie(p) => Some(p),
-            EngineKind::Sata(_) => None,
+            EngineKind::Sata(_) | EngineKind::Ethernet => None,
         }
     }
 
@@ -462,7 +488,7 @@ impl<'a> Engine<'a> {
                 kind: EngineKind::Pcie(f(p)),
                 ..self
             },
-            EngineKind::Sata(_) => self,
+            EngineKind::Sata(_) | EngineKind::Ethernet => self,
         }
     }
 
@@ -531,7 +557,8 @@ pub enum LaneError {
     Range,
     /// Crosses a PCIe core.
     CrossesCore,
-    /// PCIe width not 1/2/4/8/16 (WAFL: 1/2), SATA wider than 8.
+    /// PCIe width not 1/2/4/8/16 (WAFL: 1/2), SATA wider than 8,
+    /// or an Ethernet engine wider than one lane.
     Width,
     /// PCIe link not aligned to its width (inferred hardware rule).
     Alignment,
@@ -545,6 +572,8 @@ pub enum LaneError {
     DuplicateDevfn(usize),
     /// SATA on WAFL, or a channel type out of range.
     Sata,
+    /// Ethernet on WAFL or with unsupported per-engine PHY overrides.
+    Ethernet,
     /// Gen4 on Naples, or an EQ/target-speed field out of range.
     Field,
     /// More engines on one DXIO instance than the heap takes.
@@ -671,6 +700,14 @@ fn check_engine(generation: Generation, e: &Engine<'_>) -> Result<(), LaneError>
                 && !(generation == Generation::Naples && pcie.max_speed > Speed::Gen3);
             if !fields_ok {
                 return Err(LaneError::Field);
+            }
+        }
+        EngineKind::Ethernet => {
+            if wafl || !e.tuning.is_empty() {
+                return Err(LaneError::Ethernet);
+            }
+            if count != 1 {
+                return Err(LaneError::Width);
             }
         }
         EngineKind::Sata(s) => {

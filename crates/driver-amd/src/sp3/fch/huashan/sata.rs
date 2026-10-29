@@ -6,7 +6,8 @@
 //! function straps at [`nbif`]. All accesses are on the socket's SMN, so the
 //! same code serves socket 1.
 
-use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::register_bitfields;
 
 use super::super::gpio::{self, Direction, Pad, Pin, Pull};
 use super::super::{FchHw, SmnWindow, Window, irq, poll, update};
@@ -68,6 +69,11 @@ mod reg {
     pub const PX_SERR: u32 = 0x30;
 }
 
+register_bitfields![u32,
+    RESET_CONTROL [ RESET OFFSET(0) NUMBITS(1) [] ],
+    PHY_POWER [ POWER_DOWN OFFSET(0) NUMBITS(3) [] ]
+];
+
 /// EM_CTL\[8\] transmit message.
 const EM_TM: u32 = 1 << 8;
 /// SATA control unlock / lock bits (`ABAR+0x800`: bit 0 write enable,
@@ -80,6 +86,9 @@ pub struct Controller {
     pub enabled: bool,
     /// Ports that are external/hot-plug (ESP); never disabled at late time.
     pub esp_ports: u8,
+    /// Wired ports retained for OS COMRESET even before a link is detected.
+    /// This does not advertise external/hotplug wiring like `esp_ports`.
+    pub keep_ports: u8,
     /// SGPIO enclosure management with these pads (board policy).
     pub sgpio: Option<&'static [Pad]>,
 }
@@ -90,6 +99,7 @@ const fn sgpio_pad(pin: u16, function: u8, pull: bool) -> Pad {
         pin: Pin(pin),
         function: if pull { None } else { Some(function) },
         pull: if pull { Some(Pull::Up) } else { None },
+        cpm_bit19: None,
         direction: Direction::Keep,
     }
 }
@@ -131,16 +141,19 @@ impl SataPolicy {
                 Controller {
                     enabled: true,
                     esp_ports: 0x3F,
+                    keep_ports: 0,
                     sgpio: Some(SGPIO0_PADS),
                 },
                 Controller {
                     enabled: true,
                     esp_ports: 0xFF,
+                    keep_ports: 0,
                     sgpio: Some(SGPIO1_PADS),
                 },
                 Controller {
                     enabled: true,
                     esp_ports: 0,
+                    keep_ports: 0,
                     sgpio: None,
                 },
                 Self::OFF,
@@ -158,29 +171,32 @@ impl SataPolicy {
     const OFF: Controller = Controller {
         enabled: false,
         esp_ports: 0,
+        keep_ports: 0,
         sgpio: None,
     };
 }
 
-/// PEI af47: power down the unused PHY groups, take enabled controllers out
-/// of reset and ungate their PHYs. The donors never clear the gate of
-/// controller 3 here (Milan clears its control bit only); kept as recovered.
-pub fn reset<H: FchHw>(hw: &H, policy: &SataPolicy) {
+/// PEI af47: power down unused PHY groups and ungate enabled controllers.
+/// Milan RXM100CB `ffd3ee32` clears reset on all four control blocks even
+/// on the disabled branch, and `ffd3f17a` ungates controller 3 when enabled.
+/// Rome retains the donor's enabled-only reset and three-gate sequence.
+/// This startup step does not enable NBIF functions; env applies policy.
+pub fn reset<H: FchHw>(hw: &H, generation: Generation, policy: &SataPolicy) {
     let smn = hw.smn_window();
-    UNUSED_PHY
-        .iter()
-        .for_each(|&r| update::<u32, _>(&smn, r, 0, 7));
-    policy
-        .controllers
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.enabled)
-        .for_each(|(c, _)| {
-            update::<u32, _>(&smn, base(c) + reg::CONTROL, 1, 0);
-            if c < 3 {
-                update::<u32, _>(&smn, PHY_GATE[c], 7, 0);
-            }
-        });
+    UNUSED_PHY.iter().for_each(|&r| {
+        smn.reg::<u32, PHY_POWER::Register>(r)
+            .modify(PHY_POWER::POWER_DOWN.val(7));
+    });
+    for (c, controller) in policy.controllers.iter().enumerate() {
+        if controller.enabled || generation == Generation::Milan {
+            smn.reg::<u32, RESET_CONTROL::Register>(base(c) + reg::CONTROL)
+                .modify(RESET_CONTROL::RESET::CLEAR);
+        }
+        if controller.enabled && (c < 3 || generation == Generation::Milan) {
+            smn.reg::<u32, PHY_POWER::Register>(PHY_GATE[c])
+                .modify(PHY_POWER::POWER_DOWN.val(0));
+        }
+    }
 }
 
 /// Put controller `c` in reset and power its PHY down.
@@ -314,7 +330,9 @@ pub fn late<H: FchHw>(hw: &H, policy: &SataPolicy) {
         let a = abar(c);
         update::<u32, _>(&smn, a + reg::LOCK, 0xFF_0000, 0x2001);
         let mut disabled = 0u32;
-        for n in (0..8).filter(|n| ctl.esp_ports & (1 << n) == 0) {
+        let retained = ctl.esp_ports | ctl.keep_ports;
+        update::<u32, _>(&smn, a + reg::PI, 0, u32::from(ctl.keep_ports));
+        for n in (0..8).filter(|n| retained & (1 << n) == 0) {
             let p = a + reg::port(n);
             if smn.read32(p + reg::PX_SSTS) & 0xF == 3 {
                 continue;
@@ -345,7 +363,7 @@ mod tests {
     #[test]
     fn reset_rome_default() {
         let hw = fch();
-        reset(&hw, &SataPolicy::socket0());
+        reset(&hw, Generation::Rome, &SataPolicy::socket0());
         let w = smn_writes(&hw.pci, 0);
         let addrs: Vec<u32> = w.iter().map(|w| w.0).collect();
         // FCH_SP3 §3.1 af47 SSP order (gate writes may repeat).
@@ -353,6 +371,30 @@ mod tests {
         assert!(!addrs.contains(&0x0340_0000));
         assert!(!addrs.contains(&0x13d3_9804));
         assert_eq!(smn(&hw.pci, 0, 0x13b3_9404), 7);
+    }
+
+    #[test]
+    fn milan_reset_covers_disabled_blocks_and_controller3_gate() {
+        let hw = fch();
+        let mut policy = SataPolicy::socket1();
+        policy.controllers[3].enabled = true;
+        for (c, &gate) in PHY_GATE.iter().enumerate() {
+            hw.pci.0.borrow_mut().smn.insert((0, base(c)), 0xa5a5_0001);
+            hw.pci.0.borrow_mut().smn.insert((0, gate), 0x5a5a_0007);
+        }
+        reset(&hw, Generation::Milan, &policy);
+        for (c, &gate) in PHY_GATE.iter().enumerate() {
+            assert_eq!(smn(&hw.pci, 0, base(c)), 0xa5a5_0000);
+            assert_eq!(
+                smn(&hw.pci, 0, gate),
+                if c == 3 { 0x5a5a_0000 } else { 0x5a5a_0007 }
+            );
+        }
+        assert!(env(&hw, Generation::Milan, &policy));
+        for (c, &gate) in PHY_GATE.iter().enumerate().take(3) {
+            assert_eq!(smn(&hw.pci, 0, base(c)) & 0x801, 0x801);
+            assert_eq!(smn(&hw.pci, 0, gate) & 7, 7);
+        }
     }
 
     #[test]
@@ -388,6 +430,26 @@ mod tests {
         assert_eq!(smn(&hw.pci, 0, abar(2) + reg::PI), 0x09);
         assert_eq!(smn(&hw.pci, 0, abar(2) + reg::CAP), 0x01);
         assert_eq!(smn(&hw.pci, 0, abar(2) + reg::LOCK) & 0xff_0001, 0xf6_0000);
+    }
+
+    #[test]
+    fn wired_ports_survive_late_without_being_advertised_as_external() {
+        let hw = fch();
+        let mut policy = SataPolicy::socket1();
+        policy.controllers[1] = Controller {
+            enabled: true,
+            esp_ports: 0,
+            keep_ports: 0xff,
+            sgpio: None,
+        };
+        assert!(env(&hw, Generation::Milan, &policy));
+        late(&hw, &policy);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::PI), 0xff);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::CAP) & 0x1f, 7);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::LOCK) & 0xff_0000, 0);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::ESP_F8) & 0xff, 0);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::ESP_FC) & 0x10_0000, 0);
+        assert_eq!(smn(&hw.pci, 0, abar(1) + reg::MISC_810) & (1 << 29), 0);
     }
 
     #[test]

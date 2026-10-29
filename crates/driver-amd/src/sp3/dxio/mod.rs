@@ -494,6 +494,8 @@ pub struct DxioPolicy {
     pub naples_concurrent: bool,
     pub encode: EncodePolicy,
     pub sp3: Sp3Policy,
+    /// Optional board-selected Milan pre-training PCIe capabilities.
+    pub pcie_features: Option<ports::PcieFeatures>,
     pub timeout_us: u64,
 }
 
@@ -511,6 +513,7 @@ impl DxioPolicy {
                 milan_tuning_absolute: false,
             },
             sp3: Sp3Policy::new(generation),
+            pcie_features: None,
             timeout_us: TIMEOUT_US,
         }
     }
@@ -541,15 +544,17 @@ pub struct Unit<'s, M: ?Sized> {
 
 impl<'s, M: SmuMessages + ?Sized> Unit<'s, M> {
     /// Encode the board engines of `(socket, die)` and place both heaps in
-    /// `dma`. `None` when the unit has no engines (AGESA skips it).
+    /// `dma`, with the platform-wide `ancillary` data (for example the
+    /// optional APOB PHY override) next to the board tuning. `None` when the
+    /// unit has no engines (AGESA skips it).
     pub fn new(
         generation: Generation,
-        socket: u8,
-        die: u8,
+        (socket, die): (u8, u8),
         dxio: Dxio<'s, M>,
         dma: DmaBuffer,
         board: &[Engine<'_>],
         policy: &DxioPolicy,
+        ancillary: &engine::Ancillary<'_>,
     ) -> Result<Option<Self>, DxioError> {
         lanes::validate(generation, board).map_err(|(i, e)| DxioError::Lanes(i, e))?;
         let mine = || {
@@ -574,12 +579,7 @@ impl<'s, M: SmuMessages + ?Sized> Unit<'s, M> {
                 p.wire,
             )
         });
-        let heaps = Heaps::build(
-            generation,
-            wire,
-            &engine::Ancillary::default(),
-            &policy.encode,
-        )?;
+        let heaps = Heaps::build(generation, wire, ancillary, &policy.encode)?;
         Self::with_heaps(
             socket,
             die,
@@ -590,8 +590,7 @@ impl<'s, M: SmuMessages + ?Sized> Unit<'s, M> {
         )
     }
 
-    /// As [`new`](Self::new) with heaps built by the caller (ancillary
-    /// PSPP/PHY data).
+    /// As [`new`](Self::new) with heaps built by the caller.
     pub fn with_heaps(
         socket: u8,
         die: u8,
@@ -966,6 +965,107 @@ pub(crate) mod tests {
         }
         fn release_all(&mut self) {
             self.events.push(("release", 0xFF));
+        }
+    }
+
+    #[test]
+    fn global_apob_phy_payload_reaches_each_socket_with_board_tuning() {
+        use crate::apob::{
+            Apob,
+            build::{Body, Builder},
+            phy::phy_override,
+        };
+        use crate::psp::Variant;
+        use lanes::{Group, Lanes, PcieEngine, SataEngine};
+        let payload = [0x11, 0x22, 0x33, 0x44, 0xaa, 0xbb, 0xcc, 0xdd];
+        let data = Builder::new(0x18)
+            .entry(
+                9,
+                0x15,
+                0,
+                &Body::default()
+                    .at(0x30, &8u32.to_le_bytes())
+                    .at(0x34, &payload)
+                    .0,
+            )
+            .build();
+        let apob = Apob::new(&data, Variant::Gn).unwrap();
+        let board = [
+            Engine::pcie(0, Lanes::sp3(Group::P0, 0, 4), PcieEngine::new()),
+            Engine::sata(1, Lanes::sp3(Group::P1, 0, 8), SataEngine::new(0))
+                .tuning(&[(0xc1, 1), (0, 0)]),
+        ];
+        let anc = engine::Ancillary {
+            phy_override: phy_override(&apob).unwrap(),
+            ..Default::default()
+        };
+        for socket in 0..2 {
+            let smu = FakeSmu::default();
+            let mut window = Window::new();
+            let u = Unit::new(
+                Generation::Milan,
+                (socket, 0),
+                Dxio::new(&smu, 8),
+                window.dma(),
+                &board,
+                &DxioPolicy::new(Generation::Milan),
+                &anc,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(u.engines().len(), 1, "only this socket's engines");
+            let heap = &window.0[ANCILLARY_OFFSET..];
+            assert_eq!(
+                &heap[4..8],
+                &[5, 1, 3, 0],
+                "global PHY type 5 / format 1 / 3 dwords"
+            );
+            assert_eq!(&heap[8..16], &payload);
+            if socket == 1 {
+                assert_eq!(u.engines()[0].ancillary_offset.get(), 4);
+                assert_eq!(heap[16], 3, "per-engine tuning follows global record");
+            } else {
+                assert_eq!(u.engines()[0].ancillary_offset.get(), 0);
+            }
+            u.load_heaps().unwrap();
+            assert_eq!(
+                smu.args()[0],
+                [
+                    op::LOAD_DATA,
+                    0,
+                    (DMA_PHYS + ANCILLARY_OFFSET as u64) as u32,
+                    u.anc_dwords,
+                    0,
+                    heap::ANCILLARY
+                ]
+            );
+        }
+        // Both absent and explicitly empty global tables leave an ordinary
+        // PCIe unit with no heap-6 RPC, as before.
+        for phy in [None, Some(&[][..])] {
+            let smu = FakeSmu::default();
+            let mut window = Window::new();
+            let u = Unit::new(
+                Generation::Milan,
+                (0, 0),
+                Dxio::new(&smu, 8),
+                window.dma(),
+                &board,
+                &DxioPolicy::new(Generation::Milan),
+                &engine::Ancillary {
+                    phy_override: phy,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(u.anc_dwords, 0);
+            u.load_heaps().unwrap();
+            assert!(
+                !smu.args()
+                    .iter()
+                    .any(|a| a[0] == op::LOAD_DATA && a[5] == heap::ANCILLARY)
+            );
         }
     }
 

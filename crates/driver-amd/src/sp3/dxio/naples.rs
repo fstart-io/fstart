@@ -101,12 +101,12 @@ mod tests {
         let mk = |smu, die, w: &mut Window| {
             Unit::new(
                 Generation::Naples,
-                0,
-                die,
+                (0, die),
                 Dxio::new(smu, DXIO_MSG),
                 w.dma(),
                 &board,
                 &policy,
+                &Default::default(),
             )
             .unwrap()
             .unwrap()

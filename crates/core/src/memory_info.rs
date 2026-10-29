@@ -12,20 +12,28 @@ pub const MAX_MEMORY_DEVICES: usize = 4;
 
 const MAGIC: [u8; 8] = *b"FSTMEM01";
 
-/// SMBIOS Type 17 memory type: DDR2.
+/// A populated device whose capacity could not be established. This must
+/// not be reported as an empty socket (SMBIOS Type 17 size = 0xffff).
+pub const SIZE_UNKNOWN: u32 = u32::MAX;
+/// SMBIOS Type 17 memory types.
 pub const MEMORY_TYPE_DDR2: u8 = 0x13;
+pub const MEMORY_TYPE_DDR4: u8 = 0x1a;
 /// SMBIOS Type 17 form factors.
 pub const FORM_FACTOR_UNKNOWN: u8 = 0x02;
 pub const FORM_FACTOR_DIMM: u8 = 0x09;
 pub const FORM_FACTOR_SODIMM: u8 = 0x0d;
 /// SMBIOS Type 17 type-detail bits.
+pub const TYPE_DETAIL_UNKNOWN: u16 = 1 << 2;
 pub const TYPE_DETAIL_SYNCHRONOUS: u16 = 1 << 7;
 pub const TYPE_DETAIL_REGISTERED: u16 = 1 << 13;
 pub const TYPE_DETAIL_UNBUFFERED: u16 = 1 << 14;
+pub const TYPE_DETAIL_LRDIMM: u16 = 1 << 15;
 /// SMBIOS Type 16 error correction: none.
 pub const ECC_NONE: u8 = 0x03;
 
-/// One wired memory slot. `size_mib == 0` marks an empty slot.
+/// One wired memory slot. `size_mib == 0` marks an empty slot;
+/// [`SIZE_UNKNOWN`] marks a present device with unknown capacity. This
+/// record can also be used in a slice without the small [`MemoryInfo`] ABI.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct MemoryDevice {
@@ -65,6 +73,33 @@ impl MemoryDevice {
 
     pub fn is_populated(&self) -> bool {
         self.size_mib.get() != 0
+    }
+
+    /// A present module whose SPD cannot be decoded reliably.
+    pub fn unknown(channel: u8, slot: u8) -> Self {
+        Self {
+            size_mib: SIZE_UNKNOWN.into(),
+            data_width: 0xffff.into(),
+            total_width: 0xffff.into(),
+            memory_type: 0x02,
+            form_factor: FORM_FACTOR_UNKNOWN,
+            type_detail: TYPE_DETAIL_UNKNOWN.into(),
+            ..Self::empty(channel, slot)
+        }
+    }
+
+    /// Hex representation of the SPD serial, without inventing a serial for
+    /// empty, zero-filled or erased identity fields.
+    pub fn serial_number(&self) -> Option<heapless::String<8>> {
+        use core::fmt::Write;
+        if !self.is_populated() || self.serial == [0; 4] || self.serial == [0xff; 4] {
+            return None;
+        }
+        let mut text = heapless::String::new();
+        for byte in self.serial {
+            write!(text, "{byte:02x}").ok()?;
+        }
+        Some(text)
     }
 
     /// Part number without SPD padding; `None` for non-ASCII content.
@@ -176,6 +211,20 @@ mod tests {
         assert!(MemoryInfo::from_bytes(&[0; size_of::<MemoryInfo>()]).is_none());
         let full = (0..MAX_MEMORY_DEVICES).all(|_| info.push(MemoryDevice::default()));
         assert!(!full);
+    }
+
+    #[test]
+    fn unknown_is_present_and_serials_are_not_fabricated() {
+        let mut device = MemoryDevice::unknown(7, 1);
+        assert!(device.is_populated());
+        assert_eq!(device.size_mib.get(), SIZE_UNKNOWN);
+        assert_eq!(device.serial_number(), None);
+        device.serial = [0xff; 4];
+        assert_eq!(device.serial_number(), None);
+        device.serial = [0x12, 0, 0xab, 0xcd];
+        assert_eq!(device.serial_number().as_deref(), Some("1200abcd"));
+        device.size_mib = 0.into();
+        assert_eq!(device.serial_number(), None);
     }
 
     #[test]

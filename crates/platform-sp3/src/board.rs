@@ -38,6 +38,11 @@ pub struct Policy {
     pub ccx: ccx::Policy,
     /// FCH env: power-failure state after AC loss.
     pub fch_env: EnvPolicy,
+    /// Per-socket AHCI policy, used consistently at reset, env and late.
+    /// A secondary socket with SATA lanes must not inherit the donor's
+    /// all-disabled secondary-controller policy.
+    #[cfg(any(feature = "rome", feature = "milan"))]
+    pub sata: [fstart_driver_amd::sp3::fch::huashan::sata::SataPolicy; 2],
     pub dxio: DxioPolicy,
 }
 
@@ -57,6 +62,8 @@ pub struct Gpio {
 pub enum BoardError {
     /// A board device (Super I/O, BMC, ...) did not respond.
     Device,
+    /// The detected board/slot configuration is not supported.
+    Configuration,
 }
 
 /// The board contract of the SP3 flow. Implemented once per board crate;
@@ -65,16 +72,23 @@ pub enum BoardError {
 pub trait Board: Sp3BoardFacts + 'static {
     /// Shown in the log.
     const NAME: &'static str;
-    /// The firmware console (a 16550 behind the board's LPC decodes).
+
+    /// Board identity only. CPU packages, DIMMs and memory ranges are
+    /// discovered by shared drivers; do not describe the current bench here.
+    #[cfg(feature = "acpi")]
+    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
+        fstart_acpi::smbios::SmbiosIdentity::new("", Self::NAME)
+    }
+    /// The firmware console: an MMIO or LPC-connected 16550.
     const CONSOLE: Ns16550Config;
 
     /// Silicon policy for `generation`.
     fn policy(generation: Generation) -> Policy;
 
-    /// After socket 0's FCH reset tasks, before the console: open the
-    /// board's LPC/eSPI decodes and set up its Super I/O so the console
-    /// UART answers. Also runs for a CPU the board does not list (when its
-    /// generation is compiled in) so the flow can log why it halts.
+    /// After socket 0's FCH reset tasks, before the console: prepare its
+    /// UART power/pins or LPC/eSPI decodes and Super I/O. Also runs for a
+    /// CPU the board does not list (when its generation is compiled in),
+    /// so the flow can log why it halts.
     fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError>;
 
     /// Pads configured and read before [`Board::gpio`] (M.2 SATA/PCIe
@@ -88,13 +102,15 @@ pub trait Board: Sp3BoardFacts + 'static {
     fn gpio(generation: Generation) -> Gpio;
 
     /// The DXIO engines of every socket given the detect-pad levels. The
-    /// board may query its BMC here (the console and LPC decodes are up);
-    /// `timer` paces such a query.
-    fn dxio_engines(
+    /// board may query its BMC or I2C devices here (the console and LPC
+    /// decodes are up); a failed query can halt bring-up rather than silently
+    /// selecting a different lane map. `timer` paces device transactions.
+    fn dxio_engines<H: FchHw>(
         generation: Generation,
         levels: &[bool],
+        fch: &H,
         timer: &dyn Timer,
-    ) -> Vec<Engine<'static>, MAX_ENGINES>;
+    ) -> Result<Vec<Engine<'static>, MAX_ENGINES>, BoardError>;
 
     /// BMC sleep-state notification through SMM (ACPI and the handler).
     const BMC_SX_NOTIFY: Option<crate::smm::BmcSxNotify> = None;

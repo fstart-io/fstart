@@ -12,6 +12,8 @@ use alloc::vec::Vec;
 use fstart_acpi::msct::{DomainCapacity, build_msct};
 use fstart_acpi::slit::build_slit;
 use fstart_acpi::srat::{SratEntry, build_srat};
+#[cfg(any(feature = "bundle-reset", test))]
+use fstart_driver_amd::sp3::df::dram::{DramMap, NumaDomain, df3_channel, domain_of};
 use fstart_driver_amd::sp3::soc::Generation;
 
 use super::Cpu;
@@ -28,6 +30,25 @@ pub struct MemoryAffinity {
     pub base: u64,
     pub end: u64,
     pub domain: u32,
+}
+
+/// Merge per-node DRAM views into sorted, unique proximity ranges.
+#[cfg(any(feature = "bundle-reset", test))]
+pub(crate) fn memory_from_maps(
+    maps: impl IntoIterator<Item = DramMap>,
+    domains: &[NumaDomain],
+) -> Vec<(u64, u64, u32)> {
+    let mut memory: Vec<_> = maps
+        .into_iter()
+        .flat_map(|map| map.ranges().collect::<Vec<_>>())
+        .filter_map(|(base, end, dst)| {
+            let (socket, channel) = df3_channel(dst)?;
+            Some((base, end, domain_of(domains, socket, channel)?))
+        })
+        .collect();
+    memory.sort_unstable();
+    memory.dedup();
+    memory
 }
 
 /// NUMA description.
@@ -99,6 +120,8 @@ pub fn tables(generation: Generation, numa: &Numa, cpus: &[Cpu]) -> Vec<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fstart_driver_amd::sp3::df::DramRule;
+    use fstart_driver_amd::sp3::df::dram::{Nps, numa_domains};
 
     const CPUS: [Cpu; 2] = [
         Cpu {
@@ -110,6 +133,38 @@ mod tests {
             domain: 1,
         },
     ];
+
+    #[test]
+    fn memory_covers_both_sockets_without_replicated_ranges() {
+        let map = |base, end, dst, hole| DramMap {
+            rules: core::iter::once(DramRule {
+                base,
+                end,
+                dst,
+                hole,
+                socket_interleave: false,
+                die_interleave: 0,
+                channel_interleave: 3,
+            })
+            .collect(),
+            hole_base: Some(0xb000_0000),
+        };
+        let local = map(0, 0x20_5000_0000, 0, true);
+        let remote = map(0x20_5000_0000, 0x40_5000_0000, 0x20, false);
+        let memory = memory_from_maps([local.clone(), remote, local], &numa_domains(Nps::Nps1, 2));
+        assert_eq!(
+            memory,
+            [
+                (0, 0xb000_0000, 0),
+                (0x1_0000_0000, 0x20_5000_0000, 0),
+                (0x20_5000_0000, 0x40_5000_0000, 1),
+            ]
+        );
+        assert_eq!(
+            memory.iter().map(|&(b, e, _)| e - b).sum::<u64>(),
+            256 << 30
+        );
+    }
 
     #[test]
     fn one_domain_emits_nothing() {

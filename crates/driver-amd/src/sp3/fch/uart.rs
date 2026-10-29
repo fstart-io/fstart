@@ -3,9 +3,10 @@
 //!
 //! The S8030 console is the BMC's SUART at `3F8h` on LPC; the FCH UART0
 //! only reaches the COM header with jumper J15 = 1-2 (BOARD_S8030 §4), so
-//! nothing here runs by default.
+//! that board leaves it alone. Ethanol-X prepares UART1 as its MMIO console.
 
-use tock_registers::interfaces::Writeable;
+use tock_registers::interfaces::{ReadWriteable, Writeable};
+use tock_registers::register_bitfields;
 
 use super::acpimmio::{self, AoacDevice};
 use super::gpio::{self, Direction, Pad, Pin};
@@ -29,6 +30,21 @@ pub const MISC_30: u32 = 0xFEDC_0030;
 /// 135–138, BOARD_S8030 §3.4).
 const UART: [(u8, u16); 2] = [(11, 135), (12, 140)];
 
+/// Input clock after [`prepare_mmio`] selects the native UART clock.
+pub const MMIO_CLOCK_HZ: u32 = 48_000_000;
+const CLOCK_CONFIG: u32 = acpimmio::SMBUS_PCI + 0xFC;
+const SOFTWARE_RESET: u32 = 0x88;
+
+register_bitfields![u32,
+    ClockConfig [
+        UART0_1_8MHZ OFFSET(28) NUMBITS(1) [],
+        UART1_1_8MHZ OFFSET(29) NUMBITS(1) []
+    ]
+];
+register_bitfields![u8,
+    SoftwareReset [UART OFFSET(0) NUMBITS(1) []]
+];
+
 /// Power UART `n` and route its pads to the UART (CTS/RXD/RTS/TXD).
 pub fn enable<H: FchHw>(hw: &H, n: u8) {
     let (dev, first) = UART[usize::from(n)];
@@ -39,11 +55,33 @@ pub fn enable<H: FchHw>(hw: &H, n: u8) {
                 pin: Pin(pin),
                 function: Some(0),
                 pull: None,
+                cpm_bit19: None,
                 direction: Direction::Keep,
             },
         )
     });
     acpimmio::aoac_power(hw.acpi(), AoacDevice(dev), true);
+}
+
+/// Prepare UART 0 or 1 for byte-wide, four-byte-stride MMIO accesses.
+///
+/// RXM100CB AmdIdsDebugPrintPei (239e812c-ad4a-4d5a-8bb9-169131c344bf),
+/// `ffd02c28`: native 48 MHz clock, software reset and about 100 us settle
+/// before divisor/framing setup. The 16550 driver owns that last step.
+/// Clock-select fields are corroborated by its alternate legacy path.
+pub fn prepare_mmio<H: FchHw>(hw: &H, n: u8) {
+    let clock = [
+        ClockConfig::UART0_1_8MHZ::CLEAR,
+        ClockConfig::UART1_1_8MHZ::CLEAR,
+    ][usize::from(n)];
+    enable(hw, n);
+    hw.acpi()
+        .reg::<u32, ClockConfig::Register>(CLOCK_CONFIG)
+        .modify(clock);
+    hw.mmio()
+        .reg::<u8, SoftwareReset::Register>(base(n) as u32 + SOFTWARE_RESET)
+        .write(SoftwareReset::UART::SET);
+    hw.timer().delay_us(100);
 }
 
 /// Set the legacy decode register (0 turns all legacy UART ranges off).
@@ -55,4 +93,34 @@ pub fn set_legacy_decode<H: FchHw>(hw: &H, value: u16) {
 pub(crate) fn env<H: FchHw>(hw: &H) {
     update::<u8, _>(hw.mmio(), MISC_10, 0, 0x02);
     update::<u8, _>(hw.mmio(), MISC_30, 0, 0x02);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::model::fch;
+    use super::*;
+    use fstart_core::services::Timer;
+
+    #[test]
+    fn mmio_setup_preserves_other_clocks_and_uses_byte_reset() {
+        for n in 0..2u8 {
+            let hw = fch();
+            hw.acpi.put(CLOCK_CONFIG, 4, u32::MAX);
+            let (dev, first) = UART[usize::from(n)];
+            for pin in first..first + 4 {
+                hw.acpi.put(acpimmio::IOMUX + u32::from(pin), 1, 0xff);
+            }
+            prepare_mmio(&hw, n);
+            assert_eq!(hw.acpi.get(CLOCK_CONFIG, 4), !(1 << (28 + n)));
+            assert_eq!(
+                hw.acpi.get(acpimmio::AOAC + 0x40 + 2 * u32::from(dev), 1) & 8,
+                8
+            );
+            for pin in first..first + 4 {
+                assert_eq!(hw.acpi.get(acpimmio::IOMUX + u32::from(pin), 1) & 3, 0);
+            }
+            assert_eq!(hw.mmio.writes(), [(base(n) as u32 + SOFTWARE_RESET, 1, 1)]);
+            assert_eq!(hw.timer.timestamp_us(), 100);
+        }
+    }
 }

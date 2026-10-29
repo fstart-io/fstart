@@ -520,6 +520,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-hal-mock"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9a0f04f8886106faf281c47b6a0e4054a369baedaf63591fdb8da9761f3f379"
+dependencies = [
+ "embedded-hal",
+ "embedded-hal-nb",
+]
+
+[[package]]
+name = "embedded-hal-nb"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fba4268c14288c828995299e59b12babdbe170f6c6d73731af1b4648142e8605"
+dependencies = [
+ "embedded-hal",
+ "nb",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -756,6 +776,7 @@ name = "fstart-driver-ipmi"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-acpi",
  "fstart-core",
  "tock-registers",
  "zerocopy",
@@ -776,11 +797,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-redriver"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "embedded-hal-mock",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-driver-ricoh"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
  "fstart-pci",
+ "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-spd"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
  "tock-registers",
 ]
 
@@ -995,6 +1033,7 @@ dependencies = [
  "fstart-core",
  "fstart-driver-amd",
  "fstart-driver-ipmi",
+ "fstart-driver-spd",
  "fstart-driver-uart",
  "fstart-image-build",
  "fstart-log",
@@ -1289,6 +1328,12 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
 ]
+
+[[package]]
+name = "nb"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
 
 [[package]]
 name = "noto-sans-mono-bitmap"

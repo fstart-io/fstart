@@ -1,10 +1,10 @@
 //! PCIe hotplug: slot descriptors, the SMU hotplug tables and the
 //! per-generation SMU message sets (PCIE_DXIO §3.10).
 //!
-//! The SMU firmware runs hotplug from a table in DRAM: one map, function
-//! and reset dword per slot. Boards supply the I²C expander wiring
-//! ([`Hotplug`]); the topology fields of the map dword come from the port
-//! mapping ([`super::ports::MappedPort`]), as AGESA patches them.
+//! PCIe-native hotplug needs no external GPIO table. For I²C slot signaling,
+//! the SMU uses one map, function and reset dword per slot in DRAM. Boards
+//! supply [`HotplugI2c`]; map topology fields come from the port mapping
+//! ([`super::ports::MappedPort`]), as AGESA patches them.
 //!
 //! - Rome/Milan (V11, `SmuV11Dxe` 871349b8 `0x3FE8`, `SmuV11DxeGN` 526f13b1
 //!   `0x3EFC`): 0x480 bytes, 96 × 3 dwords (same layout as Oxide's
@@ -89,7 +89,14 @@ pub struct HotplugReset {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hotplug {
     pub kind: HotplugKind,
-    /// Slot number; the table index is `slot − HotplugPolicy::slot_base`.
+    /// None for PCIe-native signaling; never invent GPIO routing for it.
+    pub i2c: Option<HotplugI2c>,
+}
+
+/// External slot signals controlled by the SMU through I2C.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HotplugI2c {
+    /// SMU slot number; the table index is `slot − HotplugPolicy::slot_base`.
     pub slot: u8,
     /// Map dword format bits 2:0 (SMU slot-signal format, board data).
     pub format: u8,
@@ -98,22 +105,9 @@ pub struct Hotplug {
 }
 
 impl Hotplug {
-    /// A slot without I²C wiring yet (tests, placeholders).
-    pub const fn new(kind: HotplugKind, slot: u8) -> Self {
-        Self {
-            kind,
-            slot,
-            format: 0,
-            function: HotplugFunction {
-                bit: 0,
-                byte: 0,
-                address: 0,
-                expander: Expander::Pca9539,
-                bus: 0,
-                mask: 0,
-            },
-            reset: None,
-        }
+    /// PCIe-native hotplug without an external I2C slot controller.
+    pub const fn new(kind: HotplugKind) -> Self {
+        Self { kind, i2c: None }
     }
 }
 
@@ -269,19 +263,20 @@ fn reset_dword(r: &Option<HotplugReset>) -> u32 {
     })
 }
 
-/// Hotplug engines with their mapped port and table index.
+/// I2C-wired hotplug engines with their mapped port and table index.
 fn slots<'e>(
     engines: &'e [Engine<'_>],
     ports: &'e [MappedPort],
     slot_base: u8,
     capacity: usize,
-) -> impl Iterator<Item = Result<(usize, &'e Hotplug, &'e MappedPort), HotplugError>> + 'e {
+) -> impl Iterator<Item = Result<(usize, &'e HotplugI2c, &'e MappedPort), HotplugError>> + 'e {
     engines
         .iter()
         .enumerate()
         .filter_map(|(i, e)| {
             e.pcie_config()
                 .and_then(|p| p.hotplug.as_ref())
+                .and_then(|h| h.i2c.as_ref())
                 .map(|h| (i, h))
         })
         .map(move |(i, h)| {
@@ -301,7 +296,7 @@ fn slots<'e>(
 
 impl HotplugTableV11 {
     /// Build the table from the board engines and the port map
-    /// (`SmuV11Dxe 0x3FE8`). `None` when no engine has hotplug.
+    /// (`SmuV11Dxe 0x3FE8`). `None` when no engine needs I2C slot signaling.
     pub fn build(
         engines: &[Engine<'_>],
         ports: &[MappedPort],
@@ -476,23 +471,26 @@ mod tests {
 
     fn engines() -> [Engine<'static>; 2] {
         let hp = Hotplug {
-            format: 1,
-            function: HotplugFunction {
-                bit: 2,
-                byte: 1,
-                address: 3,
-                expander: Expander::Pca9535,
-                bus: 4,
-                mask: 0xF0,
-            },
-            reset: Some(HotplugReset {
-                byte: 1,
-                address: 3,
-                expander: Expander::Pca9535,
-                bus: 4,
-                mask: 0x0F,
+            kind: HotplugKind::EnterpriseSsd,
+            i2c: Some(HotplugI2c {
+                slot: 12,
+                format: 1,
+                function: HotplugFunction {
+                    bit: 2,
+                    byte: 1,
+                    address: 3,
+                    expander: Expander::Pca9535,
+                    bus: 4,
+                    mask: 0xF0,
+                },
+                reset: Some(HotplugReset {
+                    byte: 1,
+                    address: 3,
+                    expander: Expander::Pca9535,
+                    bus: 4,
+                    mask: 0x0F,
+                }),
             }),
-            ..Hotplug::new(HotplugKind::EnterpriseSsd, 12)
         };
         [
             Engine::pcie(
@@ -515,6 +513,18 @@ mod tests {
             bridge: 10,
             trained: false,
         }
+    }
+
+    #[test]
+    fn native_hotplug_does_not_program_an_i2c_slot() {
+        let native = [Engine::pcie(
+            0,
+            Lanes::sp3(Group::P0, 0, 4),
+            PcieEngine::new().with_hotplug(Hotplug::new(HotplugKind::EnterpriseSsd)),
+        )];
+        assert!(HotplugTableV11::build(&native, &[], 0).unwrap().is_none());
+        assert!(HotplugTableV9::build(&native, &[], 0).unwrap().is_none());
+        assert!(HotplugKind::EnterpriseSsd.keeps_bridge());
     }
 
     #[test]

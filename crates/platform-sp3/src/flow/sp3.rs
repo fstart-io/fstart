@@ -1,8 +1,8 @@
 //! Rome and Milan silicon steps: DF3, the SSP/GN NBIO quadrants, SMU V11,
 //! two-pass DXIO, Huashan FCHs and the per-CCD SMU thread release
 //! (INTEGRATION_NOTES §3–§9). Milan deltas are inline (`Generation::Milan`
-//! branches): fused NBIO quadrants, the IOMMU BAR in PEI, early CC6, SMEE
-//! dependent address bits, the PSP FCH lock.
+//! branches): fused NBIO quadrants, the IOMMU BAR in PEI, SMEE-dependent
+//! address bits and the PSP FCH lock.
 
 extern crate alloc;
 
@@ -12,6 +12,7 @@ use tock_registers::interfaces::Writeable;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
 use fstart_driver_amd::apob::ccx::{CoreMap, core_map};
+use fstart_driver_amd::apob::phy::phy_override;
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::df::regs;
 use fstart_driver_amd::nbio::iohc::DramTops;
@@ -27,12 +28,12 @@ use fstart_driver_amd::sp3::df::plan::Plan;
 use fstart_driver_amd::sp3::df::topology::Topology;
 use fstart_driver_amd::sp3::df::v3::{Df3, SocketMemory};
 use fstart_driver_amd::sp3::df::{BusRange, Df, Version, program};
-use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::sp3::dxio::engine::{Ancillary, MAX_ENGINES};
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::sp3::dxio::{self, DMA_SIZE, DmaBuffer, Dxio, Unit};
 use fstart_driver_amd::sp3::fch;
-use fstart_driver_amd::sp3::fch::huashan::{sata::SataPolicy, usb::UsbPolicy};
+use fstart_driver_amd::sp3::fch::huashan::usb::UsbPolicy;
 use fstart_driver_amd::sp3::nbio::fuse::Fuses;
 use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
@@ -287,7 +288,7 @@ pub(crate) fn fch_secondaries(ctx: &mut Ctx, si: &Silicon) {
             generation,
             &si.smus[1],
             &UsbPolicy::default_for(generation, 1),
-            &SataPolicy::socket1(),
+            &ctx.policy.sata[1],
             ctx.resume,
         )
         .or_halt("FCH socket 1");
@@ -326,6 +327,19 @@ pub(crate) fn dxio(
         })
         .collect();
     let _ = &si.smus;
+    let phy = if generation == Generation::Milan {
+        phy_override(&ctx.apob).or_halt("APOB PHY override")
+    } else {
+        None
+    };
+    match phy {
+        Some(bytes) => fstart_log::info!("dxio: APOB PHY override {} bytes", bytes.len() as u32),
+        None => fstart_log::info!("dxio: APOB PHY override absent"),
+    }
+    let ancillary = Ancillary {
+        phy_override: phy,
+        ..Default::default()
+    };
     let mut units: heapless::Vec<Unit<'_, Smu>, 2> = heapless::Vec::new();
     for (s, smu) in dxio_smus.iter().enumerate() {
         let buffer = dma_alloc(DMA_SIZE, 0x1000);
@@ -333,8 +347,16 @@ pub(crate) fn dxio(
         let dma = unsafe { DmaBuffer::new(buffer.as_mut_ptr(), DMA_SIZE, buffer.as_ptr() as u64) }
             .or_halt("DXIO DMA buffer");
         let dxio = Dxio::new(smu, v11::msg::DXIO);
-        if let Some(unit) =
-            Unit::new(generation, s as u8, 0, dxio, dma, engines, &policy).or_halt("DXIO engines")
+        if let Some(unit) = Unit::new(
+            generation,
+            (s as u8, 0),
+            dxio,
+            dma,
+            engines,
+            &policy,
+            &ancillary,
+        )
+        .or_halt("DXIO engines")
         {
             let _ = units.push(unit);
         }
@@ -345,7 +367,8 @@ pub(crate) fn dxio(
         .collect();
     // SAFETY: every socket's FCH is live; DXIO owns their PERST GPIOs.
     let perst = unsafe { FchPerst::new(generation, fchs, None) };
-    let mut setup = PortSetup::new(generation, &si.nbios, engines, perst);
+    let mut setup =
+        PortSetup::new(generation, &si.nbios, engines, perst).with_features(policy.pcie_features);
     super::dxio_or_halt(dxio::train(
         generation, &mut units, &mut setup, &ctx.timer, &policy,
     ));
@@ -389,10 +412,15 @@ pub(crate) fn dxio(
 
 /// SATA env per socket (FCH_SP3 §3.1).
 pub(crate) fn fch_env(ctx: &Ctx, _si: &Silicon) {
-    fch::huashan::sata::env(&ctx.fch, ctx.generation, &SataPolicy::socket0());
+    if !fch::huashan::sata::env(&ctx.fch, ctx.generation, &ctx.policy.sata[0]) {
+        // Enclosure messages only drive LEDs; the controller stays usable.
+        fstart_log::warn!("sp3: SATA socket 0 SGPIO messages timed out");
+    }
     if ctx.topology.sockets > 1 {
         let fch1 = secondary_fch(socket_bus(ctx, 1), ctx.timer);
-        fch::multi::huashan_socket1_env(&fch1, ctx.generation, &SataPolicy::socket1());
+        if !fch::multi::huashan_socket1_env(&fch1, ctx.generation, &ctx.policy.sata[1]) {
+            fstart_log::warn!("sp3: SATA socket 1 SGPIO messages timed out");
+        }
     }
 }
 
@@ -433,13 +461,6 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
         None => fstart_log::warn!("sp3: no microcode patch for this CPU"),
     }
     ccx.early(&cpu, &bsp);
-    let features = v11::feature_mask(ctx.identity.revision, &FeaturePolicy::default());
-    if generation == Generation::Milan {
-        si.smus
-            .iter()
-            .try_for_each(|smu| v11::early_cc6(smu, features, 0))
-            .or_halt("SMU early CC6");
-    }
     // SAFETY: DfGlobalCtrl of node 0, read only.
     let df_global = unsafe { ctx.df.node(0, regs::GLOBAL_CTRL) }.get();
     let wdt = policy
@@ -504,7 +525,10 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
 
     ctx.apic_ids = super::collect_apic_ids(&mp);
     let rev = ctx.identity.revision;
-    for smu in &si.smus {
+    // Keep CC6 disabled until boot-time calibration finishes. Milan's early
+    // CC6 PPI belongs to the topology-change reset path, not normal boot.
+    let features = v11::feature_mask(rev, &FeaturePolicy::default());
+    for (socket, smu) in si.smus.iter().enumerate() {
         v11::ccx_done(
             smu,
             generation,
@@ -512,6 +536,9 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
             &CcxDonePolicy::donor(rev),
             &ctx.timer,
         )
+        .inspect_err(|_| {
+            fstart_log::error!("sp3: socket {} CCX completion failed", socket as u32);
+        })
         .or_halt("SMU CCX done");
     }
     ctx.cppc = cppc(ctx, si, &mp);
@@ -519,72 +546,96 @@ pub(crate) fn mp<B: Board>(ctx: &mut Ctx, si: &Silicon) -> MpHandle {
 }
 
 /// CPPC as AmdAcpiDxe and the CCX PCCT service set it up after CCX done:
-/// ask socket 0's SMU (`CppcGetInfo`); when enabled, a 64 KiB region
-/// uncached on every thread by a free variable MTRR, the PCC signature,
-/// `CppcSetTable` and the two `_CPC` frequencies.
-fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Option<super::Cppc> {
+/// query each socket's SMU (`CppcGetInfo`); initialize one 64 KiB PCC
+/// region per enabled controller with its own signature, doorbell and local
+/// PPTable slot map. One aligned MTRR extent makes every region uncached
+/// on all threads. A failed controller is not advertised.
+fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Vec<super::Cppc> {
     use fstart_arch::x86::mtrr;
-    use fstart_driver_amd::smu::v11::cppc::{REGION_SIZE, SIGNATURE};
+    use fstart_driver_amd::smu::v11::cppc::{REGION_SIZE, signature};
 
     let generation = ctx.generation;
     if !FeaturePolicy::default().cppc {
-        return None;
+        return Vec::new();
     }
-    let smu = si.smus.first()?;
-    let info = v11::cppc_info(smu).ok()?;
-    if !info.enabled() {
-        fstart_log::info!(
-            "cppc: off (answer {:#x})",
-            info.supported << 2 | u32::from(info.revision)
-        );
-        return None;
+    // A socket's SMU serves only that socket's PPTable CPPC map. Never
+    // append another socket's CPUs to a region initialized only by SMU0.
+    let controllers: Vec<_> = si
+        .smus
+        .iter()
+        .enumerate()
+        .filter_map(|(socket, smu)| {
+            let info = v11::cppc_info(smu).ok()?;
+            if !info.enabled() {
+                return None;
+            }
+            let map = si.maps.get(socket)?;
+            let bar = si
+                .nbios
+                .iter()
+                .zip(&ctx.topology.root_bridges)
+                .filter(|(_, rb)| usize::from(rb.socket) == socket)
+                .find_map(|(nbio, _)| nbio.smu_bar())?;
+            Some((socket as u8, smu, map, bar, info))
+        })
+        .collect();
+    if controllers.is_empty() {
+        return Vec::new();
     }
-    let smu_bar = si.nbios.iter().find_map(|n| n.smu_bar())?;
-    // SAFETY (MTRR reads/writes): BSP and parked APs run nothing else; the
-    // region is fresh heap inside the reserved early region.
+    // Cover adjacent per-controller regions with one power-of-two MTRR,
+    // rather than consuming a variable MTRR for every socket.
+    let size = REGION_SIZE * controllers.len().next_power_of_two() as u64;
     let index = (0..unsafe { mtrr::variable_count() })
         .find(|&i| !mtrr::is_valid_mask(unsafe { mtrr::read_variable(i) }.1));
     let Some(index) = index else {
         fstart_log::warn!("cppc: no free variable MTRR");
-        return None;
+        return Vec::new();
     };
-    let region = dma_alloc(REGION_SIZE as usize, REGION_SIZE as usize);
+    let region = dma_alloc(size as usize, size as usize);
     let base = region.as_ptr() as u64;
+    // SAFETY: all CPUs are firmware-owned and parked; this fresh allocation
+    // is reserved through handoff and aligned for the single MTRR extent.
     let uncached = || unsafe {
         fstart_arch::x86::writeback_invalidate_caches();
         mtrr::disable_cache();
-        mtrr::set_variable(index, base, REGION_SIZE, 0);
+        mtrr::set_variable(index, base, size, 0);
         mtrr::enable_cache();
     };
     mp.scope(|s| s.broadcast(&uncached));
     uncached();
-    // SAFETY: the region is ours and now uncached.
-    unsafe { core::ptr::write_volatile(base as *mut u32, SIGNATURE) };
-    v11::cppc_set_table(smu, base).ok()?;
-    let (lowest_mhz, nominal_mhz) = v11::cppc_frequencies(smu, generation).unwrap_or((0, 0));
-    let slots = si
-        .maps
-        .iter()
-        .enumerate()
-        .flat_map(|(s, map)| apic_ids(generation, s as u8, map).map(u32::from))
-        .collect();
-    fstart_log::info!(
-        "cppc: PCC {:#x} MTRR {} revision {} mask {:#x} {}-{} MHz",
-        base,
-        index,
-        info.revision,
-        info.supported,
-        lowest_mhz,
-        nominal_mhz
-    );
-    Some(super::Cppc {
-        base,
-        smu_bar,
-        info,
-        lowest_mhz,
-        nominal_mhz,
-        slots,
-    })
+    let mut channels = Vec::new();
+    for (physical, (socket, smu, map, smu_bar, info)) in controllers.into_iter().enumerate() {
+        let base = base + physical as u64 * REGION_SIZE;
+        let subspace = channels.len() as u8;
+        // SAFETY: the header belongs to this fresh, uncached PCC region.
+        unsafe { fstart_core::mmio::write32(base as *mut u32, signature(subspace)) };
+        if v11::cppc_set_table(smu, base).is_err() {
+            fstart_log::warn!("cppc: socket {} table initialization failed", socket);
+            continue;
+        }
+        let (lowest_mhz, nominal_mhz) = v11::cppc_frequencies(smu, generation).unwrap_or((0, 0));
+        let slots = apic_ids(generation, socket, map).map(u32::from).collect();
+        fstart_log::info!(
+            "cppc: socket {} subspace {} PCC {:#x} MTRR {} revision {} mask {:#x} {}-{} MHz",
+            socket,
+            subspace,
+            base,
+            index,
+            info.revision,
+            info.supported,
+            lowest_mhz,
+            nominal_mhz
+        );
+        channels.push(super::Cppc {
+            base,
+            smu_bar,
+            info,
+            lowest_mhz,
+            nominal_mhz,
+            slots,
+        });
+    }
+    channels
 }
 
 /// PCI enumeration prerequisites (NBIO_SMU §3.5 step 6): NBIO IOAPIC BAR
@@ -610,10 +661,14 @@ pub(crate) fn pci_post(_ctx: &Ctx, si: &Silicon) {
     }
 }
 
-/// FCH late tasks of socket 0 (FCH_SP3 §2.3); Milan asks SMM for the PSP
+/// SATA late tasks of both sockets (FCH_SP3 §2.3); Milan asks SMM for the PSP
 /// FCH lock (SW SMI D2) when the handler is installed.
 pub(crate) fn fch_late(ctx: &Ctx, _si: &Silicon) {
-    fch::huashan::sata::late(&ctx.fch, &SataPolicy::socket0());
+    fch::huashan::sata::late(&ctx.fch, &ctx.policy.sata[0]);
+    if ctx.topology.sockets > 1 {
+        let fch1 = secondary_fch(socket_bus(ctx, 1), ctx.timer);
+        fch::huashan::sata::late(&fch1, &ctx.policy.sata[1]);
+    }
     if ctx.generation == Generation::Milan && ctx.smm.is_some() {
         fch::huashan::smm::request_fch_lock(&ctx.fch);
     }
@@ -638,9 +693,7 @@ pub(crate) fn usb_bus_count(_ctx: &Ctx) -> u8 {
 pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
     use fstart_driver_amd::apob::nps;
     use fstart_driver_amd::df::Target;
-    use fstart_driver_amd::sp3::df::dram::{
-        self, ccd_channel, df3_channel, domain_of, ioms_channel,
-    };
+    use fstart_driver_amd::sp3::df::dram::{self, ccd_channel, domain_of, ioms_channel};
     use fstart_driver_amd::sp3::df::v3;
 
     let mode = match nps::nps(&ctx.apob) {
@@ -662,13 +715,12 @@ pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
     if domains.len() <= 1 {
         return None;
     }
-    let memory = dram::read::<Df3, _>(&ctx.df, 0, Target::Instance(v3::PIE))
-        .ranges()
-        .filter_map(|(base, end, dst)| {
-            let (socket, channel) = df3_channel(dst)?;
-            Some((base, end, domain_of(&domains, socket, channel)?))
-        })
-        .collect();
+    // Each IOD's PIE describes its local DRAM, not the whole system.
+    let memory = crate::acpi::numa::memory_from_maps(
+        (0..ctx.topology.sockets)
+            .map(|node| dram::read::<Df3, _>(&ctx.df, node, Target::Instance(v3::PIE))),
+        &domains,
+    );
     let smt = (fstart_arch::x86::cpuid(0x8000_001e).1 >> 8) & 0xff != 0;
     let layout = ApicLayout::new(ctx.generation, smt);
     let cpus = ctx

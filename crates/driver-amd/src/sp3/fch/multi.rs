@@ -167,19 +167,22 @@ pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
         sd_off(hw.acpi());
     });
     super::huashan::usb::reset(hw, generation, 1, smu, usb, resume)?;
-    super::huashan::sata::reset(hw, sata);
+    super::huashan::sata::reset(hw, generation, sata);
     Ok(())
 }
 
 /// FchHuashanMultiFchDxe: socket 1's SATA env (all four controllers off at
-/// the donor default).
+/// the donor default). Its PCI_INTR write goes to socket 1's ports, so
+/// the legacy I/O is routed there meanwhile.
 #[cfg(any(feature = "rome", feature = "milan"))]
 pub fn huashan_socket1_env<H: FchHw>(
     hw: &H,
     generation: Generation,
     sata: &super::huashan::sata::SataPolicy,
 ) -> bool {
-    super::huashan::sata::env(hw, generation, sata)
+    with_legacy_io(hw.pci(), route_target(generation, 1), || {
+        super::huashan::sata::env(hw, generation, sata)
+    })
 }
 
 #[cfg(test)]

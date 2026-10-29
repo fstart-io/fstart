@@ -138,6 +138,7 @@ fn plan(generations: &[Generation]) -> FlashPlan {
         reset: IMAGE,
         ffs_offset: FFS_OFFSET,
         dram_floor: DRAM_FLOOR,
+        mirrors: Vec::new(),
     }
 }
 
@@ -379,6 +380,41 @@ fn single_generation_and_kept_halves() {
         compose(&rom, &plan(&[NAPLES]), &linked_reset(), &ffs),
         Err(ImageError::NoSupportedHalf)
     );
+}
+
+#[test]
+fn full_readout_mirrors_the_composed_bank() {
+    let milan = synthetic(MILAN);
+    let mut readout = vec![0xff; 4 * HALF];
+    readout[..HALF].copy_from_slice(&milan);
+    readout[2 * HALF..2 * HALF + 0x100].fill(0x5a);
+    readout[3 * HALF..].copy_from_slice(&milan);
+    readout[3 * HALF + 0x80_0000] = 0x42;
+    let plan = FlashPlan {
+        mirrors: vec![3 * HALF as u32],
+        ..plan(&[MILAN])
+    };
+    let ffs = ffs(0x1_0000);
+    let bank = compose(&milan, &plan, &linked_reset(), &ffs).unwrap();
+    assert_eq!(bank.image.len(), HALF);
+    let full = compose(&readout, &plan, &linked_reset(), &ffs).unwrap();
+    assert_eq!(full.image.len(), 4 * HALF);
+    // The same bank (and flash anchor) at 0 and at the mirror; the middle
+    // of the readout is kept byte for byte.
+    assert_eq!(full.image[..HALF], bank.image[..]);
+    assert_eq!(full.image[3 * HALF..], bank.image[..]);
+    assert_eq!(full.image[HALF..3 * HALF], readout[HALF..3 * HALF]);
+    assert_eq!(full.survey, bank.survey);
+    // A readout too small for the mirror is not silently truncated.
+    assert!(matches!(
+        compose(&readout[..2 * HALF], &plan, &linked_reset(), &ffs),
+        Err(ImageError::Layout(_))
+    ));
+    let overlapping = FlashPlan {
+        mirrors: vec![0x80_0000],
+        ..plan.clone()
+    };
+    assert!(matches!(overlapping.check(), Err(ImageError::Plan(_))));
 }
 
 #[test]

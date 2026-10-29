@@ -466,11 +466,12 @@ fn processors(inputs: &Inputs) -> Result<Vec<u8>, AmlError> {
                 .as_ref()
                 .map(|p| p.for_cpu(cpu.apic_id))
                 .unwrap_or_default();
-            let slot = inputs
-                .cppc
-                .and_then(|c| Some((c, c.slots.iter().position(|&a| a == cpu.apic_id)?)));
-            if let Some((c, slot)) = slot {
-                let entries = cppc::cpc_entries(&c.info, slot as u32, c.lowest_mhz, c.nominal_mhz);
+            let slot = inputs.cppc.iter().enumerate().find_map(|(id, c)| {
+                Some((id as u8, c, c.slots.iter().position(|&a| a == cpu.apic_id)?))
+            });
+            if let Some((id, c, slot)) = slot {
+                let entries =
+                    cppc::cpc_entries(&c.info, id, slot as u32, c.lowest_mhz, c.nominal_mhz);
                 let n = cppc::cpc_entry_count(c.info.revision);
                 body.extend(cpc_aml(c.info.revision, &entries[..n]));
             }

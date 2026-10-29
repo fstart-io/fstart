@@ -42,6 +42,12 @@ impl Fuses {
         quadrant < 4 && self.word[0] & (0x800 << quadrant) == 0
     }
 
+    /// Milan's reduced-I/O signature (AmdNbioBaseGnPei `0xffd30161`).
+    /// Vendor PCD 0xb6 becomes 1 only when all these fuse bits are set.
+    pub const fn limited_io(&self) -> bool {
+        self.word[1] & 0x5380 == 0x5380
+    }
+
     /// Whether an SMN access to `addr` is made.
     pub fn allows(&self, addr: SmnAddr) -> bool {
         if self.word == [0; 2] {
@@ -65,6 +71,13 @@ impl Fuses {
 #[cfg(all(test, feature = "milan"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limited_io_requires_the_complete_signature() {
+        assert!(!Fuses::NONE.limited_io());
+        assert!(Fuses { word: [0, 0x5380] }.limited_io());
+        assert!(!Fuses { word: [0, 0x5300] }.limited_io());
+    }
 
     #[test]
     fn filter() {

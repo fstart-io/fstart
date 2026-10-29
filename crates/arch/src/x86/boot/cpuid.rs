@@ -179,8 +179,8 @@ pub fn cpu_core_thread_counts() -> (u16, u16) {
     (logical.max(1), logical.max(1))
 }
 
-/// Cache descriptor from CPUID leaf 4.
-#[derive(Debug, Clone, Copy)]
+/// Deterministic cache descriptor (Intel leaf 4 or AMD leaf 8000_001Dh).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheInfo {
     /// Cache level (1 = L1, 2 = L2, 3 = L3).
     pub level: u8,
@@ -192,27 +192,62 @@ pub struct CacheInfo {
     pub associativity: u16,
     /// Line size in bytes.
     pub line_size: u16,
+    /// Maximum addressable logical IDs sharing this cache, not the number
+    /// of currently enabled threads. Its rounded-up power of two defines
+    /// the cache's APIC-ID domain, including holes from fused-off cores.
+    pub shared_logical: u16,
+    pub fully_associative: bool,
 }
 
-/// Enumerate caches via CPUID leaf 4.
+impl CacheInfo {
+    /// Count distinct cache instances represented by enabled APIC IDs in a
+    /// homogeneous package. Does not multiply one shared L3 by every core.
+    pub fn instance_count(&self, apic_ids: &[u32]) -> usize {
+        let shift = u32::from(self.shared_logical.max(1))
+            .next_power_of_two()
+            .trailing_zeros();
+        apic_ids
+            .iter()
+            .enumerate()
+            .filter(|(index, id)| {
+                let domain = **id >> shift;
+                !apic_ids[..*index]
+                    .iter()
+                    .any(|prior| *prior >> shift == domain)
+            })
+            .count()
+    }
+}
+
+/// Enumerate deterministic caches on the executing CPU.
 ///
 /// Returns up to `N` cache descriptors.
 pub fn enumerate_caches<const N: usize>() -> ([CacheInfo; N], usize) {
-    let mut caches = [CacheInfo {
-        level: 0,
-        cache_type: 0,
-        size_bytes: 0,
-        associativity: 0,
-        line_size: 0,
-    }; N];
+    enumerate_caches_with(cpuid)
+}
+
+fn enumerate_caches_with<const N: usize>(
+    query: impl Fn(u32, u32) -> CpuidResult,
+) -> ([CacheInfo; N], usize) {
+    let mut caches = [CacheInfo::default(); N];
     let mut count = 0;
-
-    if max_standard_leaf() < 4 {
+    let standard = query(0, 0);
+    let vendor = [
+        standard.ebx.to_le_bytes(),
+        standard.edx.to_le_bytes(),
+        standard.ecx.to_le_bytes(),
+    ];
+    let amd = vendor == [*b"Auth", *b"enti", *b"cAMD"];
+    let extended = query(0x8000_0000, 0).eax;
+    let leaf = if amd && extended >= 0x8000_001d && query(0x8000_0001, 0).ecx & (1 << 22) != 0 {
+        0x8000_001d
+    } else if standard.eax >= 4 {
+        4
+    } else {
         return (caches, 0);
-    }
-
+    };
     for idx in 0..N as u32 {
-        let r = cpuid(4, idx);
+        let r = query(leaf, idx);
         let ctype = (r.eax & 0x1F) as u8;
         if ctype == 0 {
             break;
@@ -221,20 +256,81 @@ pub fn enumerate_caches<const N: usize>() -> ([CacheInfo; N], usize) {
         let assoc = ((r.ebx >> 22) & 0x3FF) as u16 + 1;
         let partitions = ((r.ebx >> 12) & 0x3FF) + 1;
         let line_size = (r.ebx & 0xFFF) as u16 + 1;
-        let sets = r.ecx + 1;
-        let size = (assoc as u32) * partitions * (line_size as u32) * sets;
-
+        let sets = u64::from(r.ecx) + 1;
+        let Some(size) = u64::from(assoc)
+            .checked_mul(u64::from(partitions))
+            .and_then(|v| v.checked_mul(u64::from(line_size)))
+            .and_then(|v| v.checked_mul(sets))
+            .and_then(|v| u32::try_from(v).ok())
+        else {
+            break;
+        };
         caches[count] = CacheInfo {
             level,
             cache_type: ctype,
             size_bytes: size,
             associativity: assoc,
             line_size,
+            shared_logical: ((r.eax >> 14) & 0xfff) as u16 + 1,
+            fully_associative: r.eax & (1 << 9) != 0,
         };
         count += 1;
     }
 
     (caches, count)
+}
+
+/// Package identity and per-cache geometry captured on an executing CPU.
+/// No SMBIOS encoding or board/socket labels belong in this architectural record.
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessorSnapshot {
+    pub vendor: [u8; 12],
+    pub brand: [u8; 48],
+    pub signature: u32,
+    pub standard_features: u32,
+    pub standard_features_ecx: u32,
+    pub extended_features: u32,
+    pub extended_features_ecx: u32,
+    pub core_count: u16,
+    pub caches: [CacheInfo; 4],
+    pub cache_count: usize,
+}
+
+impl ProcessorSnapshot {
+    pub fn read() -> Self {
+        let leaf1 = cpuid(1, 0);
+        let ext1 = if max_extended_leaf() >= 0x8000_0001 {
+            cpuid(0x8000_0001, 0)
+        } else {
+            CpuidResult::default()
+        };
+        let (caches, cache_count) = enumerate_caches();
+        Self {
+            vendor: vendor_string(),
+            brand: brand_string().unwrap_or([0; 48]),
+            signature: leaf1.eax,
+            standard_features: leaf1.edx,
+            standard_features_ecx: leaf1.ecx,
+            extended_features: ext1.edx,
+            extended_features_ecx: ext1.ecx,
+            core_count: cpu_core_thread_counts().0,
+            caches,
+            cache_count,
+        }
+    }
+    pub fn manufacturer(&self) -> &str {
+        core::str::from_utf8(&self.vendor).unwrap_or("")
+    }
+    pub fn brand(&self) -> &str {
+        let end = self
+            .brand
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(self.brand.len());
+        core::str::from_utf8(&self.brand[..end])
+            .unwrap_or("")
+            .trim_ascii()
+    }
 }
 
 /// Read the TSC frequency hint from CPUID leaf 0x15 (if available).
@@ -253,5 +349,74 @@ pub fn tsc_frequency() -> Option<u64> {
         Some((r.ecx as u64) * (r.ebx as u64) / (r.eax as u64))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn query(amd: bool, leaf: u32, sub: u32) -> CpuidResult {
+        match leaf {
+            0 => CpuidResult {
+                eax: 4,
+                ebx: u32::from_le_bytes(if amd { *b"Auth" } else { *b"Genu" }),
+                edx: u32::from_le_bytes(if amd { *b"enti" } else { *b"ineI" }),
+                ecx: u32::from_le_bytes(if amd { *b"cAMD" } else { *b"ntel" }),
+            },
+            0x8000_0000 => CpuidResult {
+                eax: 0x8000_001d,
+                ..Default::default()
+            },
+            0x8000_0001 => CpuidResult {
+                ecx: 1 << 22,
+                ..Default::default()
+            },
+            4 | 0x8000_001d if sub == 0 => {
+                assert_eq!(leaf, if amd { 0x8000_001d } else { 4 });
+                CpuidResult {
+                    eax: 3 | (3 << 5) | (15 << 14),
+                    ebx: (31 << 22) | 63,
+                    ecx: 16383,
+                    edx: 0,
+                }
+            }
+            _ => CpuidResult::default(),
+        }
+    }
+    #[test]
+    fn intel_and_amd_leaf_selection_and_cache_size() {
+        for amd in [false, true] {
+            let (caches, count) = enumerate_caches_with::<4>(|leaf, sub| query(amd, leaf, sub));
+            assert_eq!(count, 1);
+            assert_eq!(caches[0].size_bytes, 32 * 1024 * 1024);
+            assert_eq!(caches[0].shared_logical, 16);
+            assert_eq!(caches[0].associativity, 32);
+        }
+    }
+    #[test]
+    fn brand_terminates_at_the_first_nul() {
+        let mut cpu = ProcessorSnapshot::read();
+        cpu.brand.fill(b' ');
+        cpu.brand[..8].copy_from_slice(b"AMD\0junk");
+        assert_eq!(cpu.brand(), "AMD");
+    }
+
+    #[test]
+    fn sharing_domains_include_fused_core_holes() {
+        let (caches, _) = enumerate_caches_with::<4>(|leaf, sub| query(true, leaf, sub));
+        // Four active threads in each of two distinct 16-ID cache domains.
+        assert_eq!(caches[0].instance_count(&[0, 1, 8, 9, 16, 17, 28, 29]), 2);
+        assert_eq!(caches[0].instance_count(&[]), 0);
+        let private = CacheInfo {
+            shared_logical: 2,
+            ..caches[0]
+        };
+        assert_eq!(private.instance_count(&[0, 1, 8, 9, 16, 17, 28, 29]), 4);
+        let non_power = CacheInfo {
+            shared_logical: 12,
+            ..caches[0]
+        };
+        assert_eq!(non_power.instance_count(&[0, 1, 16, 17]), 2);
     }
 }

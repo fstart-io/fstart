@@ -327,23 +327,11 @@ fn smbios_cache_type(cache_type: &raw_cpuid::CacheType) -> u8 {
 
 #[cfg(any(feature = "smbios", feature = "host"))]
 fn smbios_associativity(ways: usize, fully_associative: bool) -> u8 {
-    if fully_associative {
-        return 0x06;
-    }
-    match ways {
-        1 => 0x03,
-        2 => 0x04,
-        4 => 0x05,
-        8 => 0x07,
-        16 => 0x08,
-        12 => 0x09,
-        24 => 0x0a,
-        32 => 0x0b,
-        48 => 0x0c,
-        64 => 0x0d,
-        20 => 0x0e,
-        _ => 0x02,
-    }
+    fstart_core::smbios::CacheAssociativity::from_ways(
+        u16::try_from(ways).unwrap_or(0),
+        fully_associative,
+    )
+    .to_smbios_byte()
 }
 
 /// SMBIOS processor family from the CPUID brand string; 0x02 is "Unknown".
@@ -439,8 +427,7 @@ fn add_memory(
     memory: &fstart_core::memory_info::MemoryInfo,
     e820: &[fstart_core::services::memory_detect::E820Entry],
 ) {
-    use alloc::{format, string::String};
-    use fstart_core::memory_info::FORM_FACTOR_UNKNOWN;
+    use alloc::format;
     let devices = memory.devices();
     w.add_physical_memory_array(
         u64::from(memory.max_capacity_mib.get()) * 1024,
@@ -450,66 +437,17 @@ fn add_memory(
     for device in devices {
         let locator = format!("Channel-{}-DIMM-{}", device.channel, device.slot);
         let bank_locator = format!("BANK {}", device.channel);
-        let populated = device.is_populated();
-        let manufacturer = match (populated, device.manufacturer()) {
-            (false, _) => String::new(),
-            (true, Some(name)) => name.into(),
-            (true, None) => format!(
-                "Unknown (bank {}, {:#04x})",
-                device.jedec_bank + 1,
-                device.jedec_id
-            ),
-        };
-        let serial = if populated {
-            device
-                .serial
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect()
-        } else {
-            String::new()
-        };
-        let part_number = match (populated, device.part_number()) {
-            (false, _) => "",
-            (true, Some("")) => "None",
-            (true, Some(part)) => part,
-            (true, None) => "Invalid",
-        };
-        w.add_memory_device(&fstart_acpi::smbios::MemoryDeviceInfo {
-            locator: &locator,
-            bank_locator: &bank_locator,
-            manufacturer: &manufacturer,
-            serial: &serial,
-            part_number,
-            size_mb: device.size_mib.get(),
-            memory_type: if populated { device.memory_type } else { 0x02 },
-            form_factor: if populated {
-                device.form_factor
-            } else {
-                FORM_FACTOR_UNKNOWN
-            },
-            type_detail: if populated {
-                device.type_detail.get()
-            } else {
-                0x02 // unknown
-            },
-            speed_mts: device.max_mts.get(),
-            configured_mts: device.configured_mts.get(),
-            voltage_mv: device.voltage_mv.get(),
-            data_width: if populated {
-                device.data_width.get()
-            } else {
-                0xFFFF
-            },
-            total_width: if populated {
-                device.total_width.get()
-            } else {
-                0xFFFF
-            },
-            ranks: device.ranks,
-        });
+        w.add_dimm(device, &locator, &bank_locator);
     }
 
+    // A present/unknown DIMM must not turn the sentinel into petabytes of
+    // fictitious DRAM. Types 16/17 remain useful; omit this inferred map.
+    if devices
+        .iter()
+        .any(|device| device.size_mib.get() == fstart_core::memory_info::SIZE_UNKNOWN)
+    {
+        return;
+    }
     let total = devices
         .iter()
         .map(|device| u64::from(device.size_mib.get()) << 20)
@@ -595,50 +533,23 @@ pub fn prepare_smbios(
     desc: &SmbiosIdentity,
     runtime: &SmbiosRuntime,
 ) -> Result<u64, fstart_core::services::ServiceError> {
-    // 64 KiB table area + 32 bytes entry point header.
-    // `assemble_and_write` writes ENTRY_POINT_SIZE bytes at `table_addr`
-    // then up to MAX_TABLE_AREA bytes starting at `table_addr + 24`.
-    const BUF_SIZE: usize = 64 * 1024 + 32;
+    // 64 KiB table area after the entry point.
+    const BUF_SIZE: usize = fstart_acpi::smbios::BUFFER_SIZE;
     // Page-aligned so the ACPI NVS range before it ends on a page boundary.
     let entry = store
         .add(fstart_store::tag::SMBIOS, BUF_SIZE, 12)
         .map_err(|_| fstart_core::services::ServiceError::InvalidParam)?;
-    // SAFETY: a fresh store entry nothing else references.
-    unsafe { store.bytes_mut(&entry) }.fill(0);
     let smbios_addr = store.address(&entry) as u64;
+    // SAFETY: a fresh store entry nothing else references.
+    let bytes = unsafe { store.bytes_mut(&entry) };
+    bytes.fill(0);
 
     let total_ram = e820.total_ram();
     let entries = e820.entries();
-    let smbios_len = fstart_acpi::smbios::assemble_and_write(smbios_addr, |w| {
-        w.add_bios_info(&fstart_acpi::smbios::BiosInfo {
-            vendor: desc.bios_vendor,
-            version: desc.bios_version,
-            release_date: desc.bios_release_date,
-            rom_size: runtime.rom_size,
-            uefi: cfg!(feature = "payload-uefi-basic"),
-        });
-        w.add_system_info(
-            desc.sys_manufacturer,
-            desc.sys_product,
-            desc.sys_version,
-            desc.sys_serial,
-            desc.sys_uuid,
-        );
-        let chassis = w.add_enclosure(desc.chassis_type, desc.chassis_manufacturer);
-        if !desc.bb_manufacturer.is_empty() || !desc.bb_product.is_empty() {
-            w.add_baseboard_info(
-                desc.bb_manufacturer,
-                desc.bb_product,
-                desc.bb_version,
-                desc.bb_serial,
-                chassis,
-            );
-        }
+    let smbios_len = fstart_acpi::smbios::assemble_into(bytes, smbios_addr, |w| {
+        w.add_identity(desc, runtime.rom_size, cfg!(feature = "payload-uefi-basic"));
         for socket in desc.processor_sockets {
             add_processor(&mut *w, socket);
-        }
-        if let Some(oem) = desc.oem_string {
-            w.add_oem_strings(&[oem]);
         }
         match runtime.memory {
             Some(memory) => add_memory(&mut *w, memory, entries),
@@ -654,7 +565,8 @@ pub fn prepare_smbios(
         }
         w.add_system_boot_info();
         w.add_end_of_table();
-    });
+    })
+    .map_err(|_| fstart_core::services::ServiceError::InvalidParam)?;
 
     store
         .resize_last(entry, smbios_len)
