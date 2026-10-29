@@ -44,6 +44,8 @@ fdt = ["bootstrap"]
 linux = []
 # x86 coreboot payloads (SeaBIOS, ...): coreboot table plus 32-bit entry.
 coreboot = ["ffs", "dep:fstart-coreboot"]
+# TCG measured boot (TPM 1.2 and 2.0) of the FFS contents and payloads.
+tcg = ["ffs", "dep:fstart-tcg", "fstart-boot?/tcg"]
 # FIT image parsing at runtime
 fit = ["ffs", "dep:fstart-boot", "fstart-boot/fit"]
 # Inter-stage handoff serialization (postcard, for multi-stage boards)
@@ -78,6 +80,7 @@ fstart-ffs = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
 fstart-boot = { workspace = true, optional = true }
 fstart-coreboot = { workspace = true, optional = true }
+fstart-tcg = { workspace = true, optional = true }
 postcard = { workspace = true, optional = true }
 
 # CrabEFI adapter lives in fstart-boot behind the crabefi feature.

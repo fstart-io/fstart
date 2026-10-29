@@ -502,9 +502,45 @@ impl<D: X86LinuxPayloadContext> MainstagePayload<D> for X86LinuxPayload {
         ) else {
             halt_x86_linux("configured entry was not verified");
         };
+        #[cfg(feature = "tcg")]
+        measure_x86_linux(config.bootargs);
         crate::timestamps::handoff();
         fstart_arch::x86::boot::boot_linux(&params)
     }
+}
+
+/// fstart boots Linux itself, so it ends the pre-OS phase (separators,
+/// TPM locked) and then measures the boot target like a boot manager: the
+/// kernel into PCR 4, and the command line as Linux's EFI stub measures its
+/// load options, a tagged event in PCR 9 over the UCS-2 string with its
+/// terminating NUL, so a verifier recomputes it the same way for both.
+#[cfg(all(feature = "tcg", feature = "linux", feature = "x86_64"))]
+fn measure_x86_linux(bootargs: &str) {
+    use crate::tcg::event::{EV_EFI_PLATFORM_FIRMWARE_BLOB2, EV_EVENT_TAG, EventData};
+    /// `LOAD_OPTIONS_EVENT_TAG_ID` of the Linux EFI stub.
+    const LOAD_OPTIONS_TAG: u32 = 0x8F3B_22ED;
+    crate::tcg::handoff(crate::tcg::Handoff::Final);
+    if !crate::tcg::measure_file_by_type(
+        fstart_core::ffs::FileType::Payload,
+        4,
+        EV_EFI_PLATFORM_FIRMWARE_BLOB2,
+        None,
+    ) {
+        fstart_log::error!("x86 Linux payload: kernel not measured");
+        fstart_tcg::measurement_error();
+    }
+    let load_options: crate::heap::vec::Vec<u8> = bootargs
+        .encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    fstart_tcg::measure(
+        9,
+        EV_EVENT_TAG,
+        &load_options,
+        EventData::tagged(LOAD_OPTIONS_TAG, b"LOADED_IMAGE::LoadOptions\0").as_bytes(),
+    );
+    crate::tcg::check();
 }
 
 #[cfg(all(feature = "linux", feature = "x86_64"))]
@@ -588,6 +624,12 @@ pub trait X86UefiPayloadContext {
     fn firmware_region(&self) -> (u64, u64);
     /// Return the ACPI RSDP physical address, if ACPI was emitted.
     fn acpi_rsdp(&self) -> Option<u64>;
+    /// Return the memory holding the ACPI tables and the areas they point
+    /// to (such as the TCG event log), as base and size; it is reserved as
+    /// ACPI NVS. Default: 64 KiB from the RSDP page.
+    fn acpi_region(&self) -> Option<(u64, u64)> {
+        self.acpi_rsdp().map(|rsdp| (rsdp & !0xfff, 0x10000))
+    }
     /// Return the SMBIOS entry point physical address, if SMBIOS was emitted.
     fn smbios(&self) -> Option<u64> {
         None
@@ -626,7 +668,7 @@ where
         use crate::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
 
         let (firmware_base, firmware_size) = devices.firmware_region();
-        let acpi_base = devices.acpi_rsdp().unwrap_or(0) & !0xfff;
+        let (acpi_base, acpi_size) = devices.acpi_region().unwrap_or((0, 0x10000));
         let platform_entries = [
             MemoryRegion {
                 base: firmware_base,
@@ -635,10 +677,14 @@ where
             },
             MemoryRegion {
                 base: acpi_base,
-                size: 0x10000,
+                size: acpi_size,
                 region_type: MemoryType::AcpiNvs,
             },
         ];
+        // CrabEFI continues the measured boot: fstart locks the TPM, CrabEFI
+        // measures the boot and extends the separators.
+        #[cfg(feature = "tcg")]
+        crate::tcg::handoff(crate::tcg::Handoff::Locked);
 
         let ecam = uefi_ecam(devices.pci_root());
         crate::timestamps::handoff();
