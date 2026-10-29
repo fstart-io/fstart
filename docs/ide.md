@@ -1,171 +1,149 @@
-# Selected firmware editor views
+# Editor support for board crates
 
-<!-- markdownlint-disable MD013 -->
+Board crates live in `boards/<vendor>/<board>/` and are excluded from the root
+workspace (`exclude = ["boards"]` in `Cargo.toml`). `cargo fbuild ide` generates
+a rust-analyzer configuration for one board and one firmware selection. It writes
+only under `target/`; no tracked file, editor setting or `Cargo.lock` is changed.
 
-`fbuild ide` generates an opt-in rust-analyzer view for a migrated board. It
-supports QEMU RISC-V, ARMv7 and AArch64 monolithic flows and Intel multistage
-flows including Lenovo X61, Intel D945GCLF and Foxconn D41S. It does not modify the source
-workspace, editor settings in the source tree, or committed/per-board locks.
-
-## Use
+## Generate a view
 
 ```sh
-cargo run --locked -p fbuild -- ide qemu-riscv64 --release --payload linux
-cargo run --locked -p fbuild -- ide lenovo-x61 --release --payload uefi --stage ramstage
+cargo fbuild ide qemu-riscv64 --release --payload linux
+cargo fbuild ide lenovo-x61 --release --payload uefi --stage ramstage
 ```
 
-Rust-plan views select a named compiler unit from the platform's concrete plan;
-multistage images require `--stage`. X61 currently exports `bootblock`, `postcar`,
-`ramstage` and `smm`. The shared executor builds only that unit's producer closure
-and records its actual artifacts in both editor and check environments. Thus
-ramstage receives its explicitly bound SMM image, while bootblock/postcar do not.
-AArch64's sole `stage` unit is selected by default. No family-specific selection
-logic lives in IDE generation; see [the common-plan boundary](architecture-common-plan.md).
+`cargo fbuild` is the alias `run --package fbuild --` from `.cargo/config.toml`.
+`ci/ide-tests.py` uses the equivalent `cargo run --locked -p fbuild -- ide ...`.
+The command prints the path of the generated `fstart.code-workspace`.
 
-Open the printed `fstart.code-workspace` in VS Code. The generated files live in
-`target/fstart-ide/<board>/<debug|release>/<payload>/` (with a compiler-unit
-subdirectory for multistage boards):
+| Argument / flag | Meaning |
+| --- | --- |
+| `<board>` | Board name from `[package.metadata.fstart] board`, e.g. `qemu-riscv64`, `lenovo-x61`, `foxconn-d41s`. |
+| `--payload <p>` | `uefi`, `uefi-ui`, `uefi-basic`, `linux`, `coreboot`, `halt`. |
+| `--release` | Release profile. Default is debug. |
+| `--stage <unit>` | Compilation unit from the platform plan. Required when the plan has several units; the error lists the names. Single-unit boards (QEMU) select their only unit. |
+| `--audit-lock` | Also run the all-board lock audit (see below). |
+| build options | The same board options as `cargo fbuild build` (e.g. `--image-config`, `--blobs`, `--donor`, `--compiler-input`, `--payload-file`) are accepted. |
 
-- `fstart.code-workspace`: repository folder plus selection-specific settings.
-- `rust-analyzer.json`: the same flat `rust-analyzer.*` settings for other clients.
-  Translate these into your client's nested initialization/settings format;
-  `configuration()` in `ci/ide-tests.py` is a reference implementation. The LSP
-  workspace/root URI must be the **source repository**, not this generated folder.
-- `rust-project.json`: Cargo-derived crate graph with canonical source paths.
-- `report.json`: selected workspace membership, root-lock pin comparison and any
-  explicit all-board lock audit.
+Multi-unit boards in `ci/ide-tests.py`: `lenovo-x61` (`bootblock`, `postcar`,
+`ramstage`, `smm`), `intel-d945gclf` (`bootblock`, `ramstage`), `foxconn-d41s`
+(`bootblock`, `ramstage`).
 
-Use the project's pinned Rust toolchain with `rust-src` and a compatible
-rust-analyzer. The live protocol probes use rust-analyzer 1.100.0-nightly
-(`e457a7b`, 2026-08-27) and the pinned nightly-2026-08-28 toolchain's proc-macro
-server. This is not an assertion that arbitrary older rust-analyzer versions
-understand these configuration keys. Put a real compatible rust-analyzer binary
-on `PATH`; a rustup proxy requires its toolchain's rust-analyzer component to be
-installed and is not itself the language server.
+Generation runs `cargo metadata`, a unit-graph query and a real `cargo check`
+for the selected build (see [How the graph is built](#how-the-graph-is-built)).
+Source compile errors do not stop generation; a failed build-script or
+proc-macro producer does.
 
-One active selection per editor session is supported. Generate another view and
-open its workspace, or replace your client's settings with the newly generated
-ones. RISC-V halt → Linux → CrabEFI → debug-halt → ARMv7 halt → Linux → AArch64
-halt → Linux → CrabEFI → RISC-V halt switching passed in one LSP session without
-restarting it, including original-source definitions, target/entry/pointer-width
-cfgs and macro expansion after switches.
+## Generated files
 
-Ordinary Rust edits use live analysis and check-on-save. Regenerate the view after
-changing manifests, features, layout, toolchain or build scripts. After modifying
-proc-macro implementations/build-generated configuration, regenerate and restart
-rust-analyzer to ensure its loaded macro libraries and configuration are fresh.
-Automatic build-script/proc-macro hot-reload is not claimed. Failed producers
-cannot silently become invented cfg/env/macro defaults.
+Output directory:
 
-## Why a Cargo-derived JSON graph
-
-The first prototype linked the existing selected Cargo workspace directly.
-Rust-analyzer loaded it, but a definition request from the **original** board file
-returned nothing: the symlinked workspace paths did not establish usable source
-identity. That failed prototype is not the shipped view.
-
-The replacement takes:
-
-1. The same resolved compiler invocation used by `fbuild build` and `check`.
-2. Cargo's `-Zunstable-options --unit-graph` output (schema 1), including actual
-   per-unit features, target/host distinction and renamed dependency edges.
-3. A real Cargo check's build-script outputs and proc-macro artifact paths.
-
-It projects those inputs into `rust-project.json`. Source roots are canonicalized,
-not copied or generated. Host units do not inherit firmware selection cfgs.
-Generated output directories belong to the corresponding source group, and
-build-script cfg/env outputs apply to their consuming units, not to the producer
-binary's compilation. Sysroot source and the matching proc-macro server are
-available to rust-analyzer. The editor's sysroot source view is supplied by
-rust-analyzer; Cargo remains responsible for the actual `-Zbuild-std` check.
-
-`selection.rs` owns the target/profile/features/cfg flags for build, check and
-editor checks. Encoded Rust flags preserve whitespace in paths and override
-ambient Rust flags consistently. The selection cfgs and linker script are
-profile rustflags (`member-rustflags.toml`) of the workspace's own crates only,
-so every unit shares one Cargo target directory (`target/fstart-build/cargo`)
-and core, alloc and registry crates are built once per target.
-`rustflags.json` records both token lists; any `rustflags.txt` rendering
-is diagnostic text, not shell-quoting instructions.
-
-The check command emits Cargo JSON diagnostics. It runs once from the opened
-repository so relative diagnostic filenames resolve to original source files.
-The selected Cargo workspace is still used underneath for compilation, but is
-**not** the language server's source graph. Compiler source errors may remain
-while generating a view, provided required build-script/macro data is available.
-
-## Build-lock prototype
-
-```sh
-cargo run --locked -p fbuild -- ide qemu-riscv64 --release --payload linux --audit-lock
+```text
+target/fstart-ide/<board>/<debug|release>/<payload>/[<unit>/]
 ```
 
-This additionally creates `target/fstart-lock-prototype/`, using the original
-workspace membership plus every discovered board. It seeds its lock from the
-source root lock and lets Cargo resolve the excluded board packages. Neither this
-manifest nor its lock is promoted into the source tree.
+`<unit>/` is added unless the unit is named `stage` (single-unit platforms).
 
-The audit compares the **same selected command** against both workspaces:
+| File | Contents |
+| --- | --- |
+| `fstart.code-workspace` | Folder = repository root, plus the `settings` below. |
+| `rust-analyzer.json` | The same `rust-analyzer.*` settings as flat dotted keys. |
+| `rust-project.json` | Crate graph (`linkedProjects`) with canonical source paths. |
+| `report.json` | Board, target, payload, unit, workspace members, comparison of external `Cargo.lock` pins against the root `Cargo.lock`, and `all_board_lock_prototype` when `--audit-lock` is given. `workspace_ownership_cutover` is always `false`. |
 
-- External package version, source/revision and checksum pins must agree.
-- Compiler-unit roots, canonical source identity, target, profile, features and
-  dependency edges/aliases must agree after workspace-path/index normalization.
-- The comparison includes build-script and standard-library compilation units;
-  it is stronger than merely finding a package version somewhere in a lock.
+Settings in `rust-analyzer.json` / the workspace file:
 
-A mismatch fails the explicit audit and leaves a report in the prototype folder.
-The prototype currently contains 14 boards / 35 workspace members. The four
-QEMU RISC-V, two ARMv7 and three AArch64 selections passed the comparison. This is a
-selected-closure proof. X61 UEFI ramstage also passes this audit, and all three
-Intel original-source graphs and per-role compiler selections were inspected.
-These results are **not** a build or boot of every inventory member, nor a
-claim of byte-identical binaries across differently located workspaces.
+| Key | Value |
+| --- | --- |
+| `linkedProjects` | `[<output dir>/rust-project.json]` |
+| `cargo.target` | Board target triple. |
+| `cargo.cfgs` | `[]` |
+| `cfg.setTest` | `false` |
+| `cargo.extraEnv`, `check.extraEnv` | Selection environment: `CARGO_ENCODED_RUSTFLAGS` and an empty `RUSTFLAGS`. |
+| `check.overrideCommand` | `cargo check --message-format=json` with the selection arguments (prefixed by `env -u` for removed variables). |
+| `check.invocationStrategy` | `once` |
+| `procMacro.enable` | `true` |
 
-## Reproduce the acceptance checks
+Supporting files from the build, under
+`target/fstart-build/<board>/<debug|release>/<sha256>/`:
 
-```sh
-cargo test --locked -p fbuild --lib
-python ci/ide-tests.py --audit-lock --edit-check --inventory-noise 100
-python ci/ide-tests.py --intel --audit-lock
-```
+- `resolved-build.json`, `compiler-selection.json`
+- `rustflags.json` (`rustflags` and `member_rustflags` token lists)
+- `member-rustflags.toml` (cfgs and linker script, for workspace members only)
+- `ide-unit-graph.json`, `ide-cargo-messages.jsonl`
 
-`--edit-check` temporarily appends a deliberate type error to
-`boards/qemu/riscv64/src/stage.rs`, checks compiler diagnostics on the original
-file URI, and restores the source in a `finally` block. Do not run it with another
-writer to that file. `--inventory-noise` temporarily creates owned test boards
-under a fresh vendor directory and removes that directory afterward.
+The selected manifest is `target/fstart-workspaces/<board>/Cargo.toml`. All
+builds share the Cargo target directory `target/fstart-build/cargo`.
 
-`--intel` runs a separate nine-view sequence through X61 CAR/postcar/RAM/SMM,
-D945GCLF CAR/Linux RAM, D41S CAR/UEFI RAM and back to X61 halt RAM. It checks
-original-source facts/platform navigation, stage/payload cfgs, exact selected
-chipset features and absence of unrelated chipset symbols in one live LSP
-session. The optional lock audit compares each selection against the all-board
-prototype. Evidence lives under `target/fstart-ide/proof/intel-composition/`.
-The source-edit and inventory-growth options apply only to the QEMU virt probe.
+## Point an editor at it
 
-The QEMU virt probes verify:
+- **VS Code:** open the printed `fstart.code-workspace`.
+- **Other clients:** load `rust-analyzer.json` and convert the flat keys to the
+  nested form your client expects. `configuration()` in `ci/ide-tests.py` does
+  this conversion. The workspace root must be the repository root, not the
+  generated directory.
+- **Toolchain:** `rust-toolchain.toml` pins `nightly-2026-10-08` with `rust-src`.
+  `rust-analyzer` must be a real binary on `PATH`. A rustup proxy works only if
+  the toolchain's `rust-analyzer` component is installed.
+- **Switching views:** `ci/ide-tests.py` keeps one server session and, for each
+  next view, loads its `rust-analyzer.json` and sends
+  `workspace/didChangeConfiguration`.
+- **Regenerate** after changing manifests, features, build scripts, the toolchain
+  or the platform plan. After changing a proc-macro implementation, regenerate
+  and restart rust-analyzer.
+- `.dir-locals.el` (eglot `:cargo :features ["acpi"]` for `rustic-mode`) is not
+  used by `fbuild ide`.
 
-- Definitions lead to original board/platform files, not workspace aliases.
-- Live target/payload/profile/test cfgs and the selected launcher agree.
-- Serde derives expand through the compiled proc-macro library.
-- Compiler diagnostics appear on original source URIs and clear on restoration.
-- An unrelated Intel platform symbol is not indexed.
-- Adding 100 unrelated boards leaves the selected editor graph byte-for-byte
-  equivalent after JSON parsing and does not break the same LSP operations.
+## How the graph is built
 
-One cached run took 2.56 seconds for initial halt startup plus semantic probes;
-with 100 extra boards the same operations took 2.54 seconds. Switching Linux,
-CrabEFI and debug-halt took 1.19, 2.23 and 1.54 seconds respectively. These are
-single-run observations, **not** clean indexing/compile benchmarks. Protocol
-messages and status/timing receipts live under `target/fstart-ide/proof/`.
+1. Cargo's unit graph (`cargo check <selection args> -Zunstable-options --unit-graph`,
+   version 1 required) gives the units, features, targets and dependency edges.
+2. A real `cargo check --message-format=json` supplies build-script outputs
+   (cfgs, `OUT_DIR`, env) and proc-macro dylib paths.
+3. The projection in `tools/fbuild/src/ide_graph.rs`:
+   - `std` units and build-script run units are skipped.
+   - Target units get the selection cfgs (`fstart_stage_env`, `fstart_entry`,
+     `fstart_payload`, check-cfg flags). Host units (proc macros, build scripts)
+     do not.
+   - Each unit gets `feature=` cfgs, `debug_assertions` for debug profiles, and
+     the build-script cfgs and env of its own package.
+   - `OUT_DIR` is added to the package's source include directories.
+   - `sysroot` is `rustc --print sysroot`; `sysroot_src` is
+     `<sysroot>/lib/rustlib/src/rust/library`.
+4. Missing build-script output or a missing proc-macro artifact is an error.
+   Nothing is guessed.
 
-## Remaining gates
+## Lock audit (`--audit-lock`)
 
-Workspace/lock ownership is intentionally unchanged. Switching among all three
-QEMU virt ISAs passed earlier probes. The concrete-plan correction additionally
-passes live Intel CAR/postcar/RAM/SMM → AArch64 switching, macro expansion,
-original-source fact navigation and invalid-fact diagnostics/recovery; current
-receipts are linked from [common-plan acceptance](architecture-common-plan.md).
-Clean-checkout regeneration,
-broader inventory build coverage, and macro/build-script edit workflows need
-further acceptance before removing existing workspace or board-lock paths.
+`tools/fbuild/src/ide_lock.rs` and `build_board::prepare_inventory_workspace`:
+
+- Creates `target/fstart-lock-prototype/`: symlinks to `crates/`, `tools/`,
+  `boards/`, a copy of the root `Cargo.lock`, and a `Cargo.toml` whose members
+  add every board from `boards/*/*/Cargo.toml`.
+- Runs the same selection's unit-graph query against that manifest and compares
+  it with `ide-unit-graph.json`. Source paths are canonicalized and package IDs
+  and dependency indices are normalized before comparison.
+- Checks that every external pin (name, version, source, checksum) in the
+  selected `Cargo.lock` is in the prototype lock.
+- Writes `report.json` in the prototype directory. On mismatch the command fails.
+  Nothing is promoted into the source tree.
+
+## Tests
+
+| Command | Requires | Covers |
+| --- | --- | --- |
+| `cargo test --locked -p fbuild --lib` | toolchain | Unit tests for `ide.rs` (pin comparison), `ide_graph_tests.rs`, `ide_lock.rs` (graph normalization). |
+| `python3 ci/ide-tests.py` | `rust-analyzer` on `PATH` | Real LSP session over 10 QEMU views: riscv64 halt/linux/uefi, riscv64 debug halt, armv7 halt/linux, aarch64 halt/linux/uefi, riscv64 halt again. |
+| `python3 ci/ide-tests.py --audit-lock` | as above | Also runs the lock audit for each view. |
+| `python3 ci/ide-tests.py --edit-check` | as above | Appends a type error to `boards/qemu/riscv64/src/stage.rs`, expects E0308 on the original URI, restores the file in a `finally`. Do not edit that file concurrently. |
+| `python3 ci/ide-tests.py --inventory-noise N` | as above | Creates N temporary boards under `boards/` (`ide-noise-*`), checks `rust-project.json` is unchanged, removes them. |
+| `python3 ci/ide-tests.py --intel` | as above | Nine views: `lenovo-x61` bootblock/postcar/ramstage(uefi)/smm, `intel-d945gclf` bootblock/ramstage(linux), `foxconn-d41s` bootblock/ramstage(uefi), `lenovo-x61` ramstage(halt). Checks the driver-intel feature set and stage cfgs. Cannot be combined with `--edit-check` or `--inventory-noise`. |
+
+Per-view checks in the QEMU and Intel probes: go-to-definition lands in the
+original board and platform files; a cfg-dependent constant hovers with the
+expected value; serde derives expand through the proc-macro; `workspace/symbol`
+does not return symbols from unselected platforms.
+
+Probe output goes to `target/fstart-ide/proof/` (QEMU, including
+`rust-analyzer.log` and `messages.json`), `target/fstart-ide/proof/intel-composition/`
+and `target/fstart-ide/proof/inventory-noise/`.

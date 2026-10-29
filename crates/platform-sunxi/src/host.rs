@@ -9,7 +9,7 @@ use fstart_core::layout::RegionKind as LayoutKind;
 use fstart_core::{
     BoardBuildPolicy, BoardConfig, Compression, FdtSource, FirmwareConfig, MemoryMap, MemoryRegion,
     PayloadConfig, PayloadKind, Platform, RegionKind, RunsFrom, SocImageFormat, StageBuildConfig,
-    StageConfig, StageLayout, dev_security_config, hstr, hvec,
+    StageConfig, StageLayout, default_security_config, hstr, hvec,
 };
 use fstart_image_build::{
     build_plan::{
@@ -169,7 +169,7 @@ fn board_config(
                 page_size: Default::default(),
             },
         ])),
-        security: dev_security_config("keys/dev-signing.pub"),
+        security: default_security_config(),
         payload: payload.clone(),
         microcode: None,
         data_assets: Default::default(),
@@ -327,7 +327,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         // mainstage descriptor; the SPL itself carries no directory role.
         bootstrap: vec![("main".into(), BootstrapRole::Mainstage)],
         stages: StageLayout::MultiStage(stages),
-        security: dev_security_config("keys/dev-signing.pub"),
+        security: default_security_config(),
         payload: payload_config,
         microcode: None,
         data_assets: vec![],

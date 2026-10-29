@@ -407,7 +407,7 @@ fn ffs_assembly(
             page_size: fstart_core::stage::PageSize::Size1GiB,
             external: false,
         }),
-        security: fstart_core::dev_security_config("keys/dev-signing.pub"),
+        security: fstart_core::default_security_config(),
         payload: config,
         microcode,
         data_assets: vec![],

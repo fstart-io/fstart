@@ -1,246 +1,201 @@
-# Native SP3 EINJ
+# SP3 native memory EINJ
 
-Linux's standard ACPI EINJ interface drives a native SMM handler and the
-retained PSP firmware. No DXE, UEFI protocol, synthetic `INT 18`, or MCA
-status-register fabrication is involved.
+Restricted ACPI EINJ for **correctable DRAM errors** on Rome. Linux uses the
+standard EINJ interface. SMM validates each request and asks the PSP to
+inject into a firmware-owned scratch cache line. Nothing is injected through
+`INT 18` or by writing MCA status.
 
-## Deliberately restricted interface
+Scope limits:
 
-- **1P and 2P Rome**, and only when live DF/UMC decoding and ECC checks
-  succeed and PSP enable returns success. Naples and Milan remain disabled.
-  The 2P implementation is donor-checked and host-tested, **not yet tested
-  on a dual-socket machine**.
-- Only `0x8` (Memory Correctable) is advertised. No processor, PCIe,
-  uncorrectable, deferred, fatal or vendor-defined error is accepted.
-- Targets must lie in scratch pages owned by the firmware installer.
-  It prefers `0x75bf1000..0x75bf2000`; if that page cannot reach a socket,
-  it selects a page from that socket's live DRAM map and reserves it in
-  e820 before payload loading. Separate socket-1 RAM above 4 GiB is allowed.
-  Socket-interleaved RAM can share one page. Masks remain at most one page;
-  addresses are rounded to cache lines. This is not arbitrary-address access.
-- The preceding page at `0x75bf0000` contains fixed ACPI parameters,
-  backend status, trigger table and output-only suggested targets per socket
-  (`BASE+512`, two u64s; socket count at `BASE+528`; zero means unavailable).
-  The original two pages are inside the reserved early region. Additional
-  pages are removed only from usable RAM, never MMIO/APOB/TSEG/firmware.
-  Allowed pages and endpoint addresses are frozen in **SMRAM**, not read
-  back from these shared outputs. There are no input pointers or SMRAM exports.
-- The shared request is copied once and validated. Authorization, operation
-  state, saved NBIO registers and the four-attempt boot limit live in SMRAM.
-- Each mailbox wait has a 20 ms polling bound. The first PSP failure
-  permanently disables this service until reset; a timed-out command's
-  SMRAM page is never reused by EINJ. These are polling-delay bounds, not
-  hard wall-clock latency guarantees.
+- Only error type `0x8` (Memory Correctable). Processor, PCIe, uncorrectable,
+  deferred, fatal and vendor errors are not advertised or accepted.
+- Only firmware-owned scratch pages. No arbitrary physical address.
+- Does not exercise the #MC observer; see [amd-sp3-ras.md](amd-sp3-ras.md).
 
-This restricted bring-up interface is not a general production EINJ
-implementation. In particular, a corrected memory event does **not** test
-PFEH #MC redirection, the native observer's journal, #MC-on-exit or BMC SEL.
+## Enablement
 
-## Components and sequence
+The ACPI EINJ table is published only when every condition holds:
 
-- `driver-amd/src/sp3/psp/ras.rs`: command 22h wire types and live Rome target
-  decoding. It scans the global CCM rules, decodes live fabric-ID masks,
-  selects socket/UMC, then uses that UMC's local rules for normalization.
-  It handles separate/socket-interleaved ranges, nonzero bases, DRAM-hole
-  remapping, rule-1 high offsets, power-of-two/COD2/4/8 channel interleave,
-  primary CS matching and hashing. Die/6-channel interleave and unknown
-  or ambiguous layouts still fail closed; no topology is guessed.
-- `platform-sp3/src/einj.rs`: scratch planner, fixed ABI and input validation.
-  The planner intersects global DRAM rules with usable e820 ranges and probes
-  supported socket-selector bits; it does not scan every page of DRAM.
-- `platform-sp3/src/acpi/einj.rs`: nine ACPI serialization actions and one
-  memory-read trigger. The table appears only after SMM backend enable.
-- `platform-sp3/src/smm/einj.rs`: native operation dispatcher. It uses the
-  registered SMRAM C2P page and SMM flag, not an OS buffer or SMM stack.
-- The S8030 SMM policy enables this restricted interface, not a new board
-  variant. The installer freezes DF function addresses, actual SMN root
-  buses and owned target lines for each socket. Generic SMM entry now borrows
-  the validated immutable config directly from SMRAM, removing the old
-  32-byte copy restriction without adding memcpy/GOT dependencies.
-  Existing PCI register, DF bitfield and SMN access helpers remain in use.
-
-At SmmInfo registration, send PSP action **1** (enable). ACPI BEGIN sends
-**2**. EXECUTE validates the request and the current target, saves NBIO SMN
-`1d840/1d848/1d84c` on the **target socket**, then sends **4** with physical address, UMC register
-base, kind **1**, chip-select and socket. Linux then reads the selected
-scratch line through the trigger table. END sends **3**, disables the NBIO
-address-match control, restores low/high address and restores control, in
-vendor order on the same target socket. Every socket's SMN index and DF
-FICAA index is preserved, including error cleanup. The primary PSP still
-owns the single transaction; its setup payload selects the target socket.
-Invalid target input closes the PSP operation itself because
-Linux returns on INVALID without invoking ACPI END.
-
-The PSP setup payload is packed: header `{size=28,status}`, action u32 at
-+8, address u64 at +12, UMC base u32 at +20, kind u16 at +24, chip-select
-u8 at +26, socket u8 at +27. Control messages have size 12. Header status
-is checked; unlike the vendor callers, a positive nonzero PSP status is
-not treated as success merely because it lacks EFI's high error bit.
-
-## Evidence
-
-Donor: **rome-s8030-v404**, S8030 V4.04; donor ROM hashes are pinned in the
-adjacent analysis repository's `firmware/donors/SHA256SUMS`. VAs below are
-module-relative, ImageBase 0. All code executes in SMM except the ACPI
-builder and memory-configuration capture (DXE).
-
-| Module / GUID | Executable SHA-256 | VAs / evidence |
+| # | Condition | Checked in |
 |---|---|---|
-| AmdPlatformRasSspSmm / `f8356c42-4ba6-706f-59e9-a9b1aff2bcd8` | `cb5c20f9dd3cebbfc8d5ea841c0c46345fd118210995368943b4b11681cf39df` | 6e90 buffer/action/flag; 6cd4 command 22h; 1d54 exact memory payload and preconditions; 1ee0 action 2; 1f38 action 3 and NBIO restoration; instruction-checked |
-| AmdRasSspSmm / `ee8175ef-4c60-82af-f5e2-8a9ef1fc0a9a` | `cca68f7070ef3210e79a7a85c8a770d566253d0a4629aa2ec568ce56bc14a324` | protocol +8 → 628; 3a90 target selection, 4180 normalization, 3300 chip-select/hash; decompiler-derived, restricted subset |
-| AmdRasSspDxe / `f71aab75-41be-c209-a324-9b963bbdcb26` | `8604a37b4af69061f904c326fa345cc1247108bb1068617c961d8319edfa5594` | 4bc live UMC register offsets underlying cached DIMM decode; decompiler-derived |
-| AmdPlatformRasSspDxe / `820f3f0d-4d08-6c35-858a-d98ef42c051d` | `3dd7d3a6133e2f5e5afb8f0d11d78e80e8f5132c5ee898ec2abb903bed612641` | 6244 EINJ builder and runtime parameters; decompiler plus binary table layout |
+| 1 | Policy `MEMORY_EINJ = true` (S8030 only) | `boards/tyan/s8030/src/smm.rs`, `crates/platform-sp3/src/smm.rs` |
+| 2 | Generation Rome (Milan and Naples are not enabled) | `smm.rs` (`smm_info`), `flow/mod.rs` (`plan_einj`) |
+| 3 | 1 or 2 sockets (`MAX_SOCKETS = 2`) | same |
+| 4 | SmmInfo registration succeeds | `smm.rs` (`smm_info`) |
+| 5 | PSP action 1 (enable) succeeds | `smm/einj.rs` (`init`) |
+| 6 | At least one socket's target decodes to that socket from live DF/UMC state, with UMC `DisErrInj` clear and `RdEccEn` set | `einj.rs` (`validate_target`), `psp/ras.rs` (`memory_target`) |
+| 7 | `SUPPORTED` in the shared page reads 8 and the ACPI SMI port exists | `flow/handoff.rs`, `acpi/mod.rs` |
 
-2P donor: **rome2p-s8253-v203**, S8253 V2.03. The corresponding contracts
-are present in the actual 2P build, not inferred just from the 1P payload:
+Firmware never clears `DisErrInj` (UMC `MiscCfg`, UMC base `+0x1E0`, bit 2).
+If the memory-init configuration leaves injection disabled, condition 6 fails
+and no table is published. Enabling the PSP does not override that gate.
+`RdEccEn` is UMC `EccCtrl` (`+0x14C`, bit 10).
 
-| Module / GUID | Executable SHA-256 | SMM VAs / evidence |
+## ACPI interface (`crates/platform-sp3/src/acpi/einj.rs`)
+
+Table: `EINJ`, 48-byte header plus 9 serialization instructions. Action
+numbers follow ACPI 6.5 §18.6:
+
+| Action | Instruction | Effect |
 |---|---|---|
-| AmdPlatformRasSspSmm / `f8356c42-4ba6-706f-59e9-a9b1aff2bcd8` | `42cc848d81beec857721043c6b11bf975e372c2dd1f95f234ee7e3327e9511ad` | 1d4c setup, 1e96–1ea4 packed kind/CS/socket, 68b4 socket→SMN bus, 6e80 message, 8314 primary bus-0 PSP BAR lookup; instruction-checked setup and BAR lookup |
-| AmdRasSspSmm / `ee8175ef-4c60-82af-f5e2-8a9ef1fc0a9a` | `5ebae2d56543fad27a95501b8307fbb72a5c873cbe88291b8f46c0a0b50d6fbc` | 3a70 global selection/socket stripe, 4160 local normalization, 32e0 CS; decompiler-derived with mask extraction instruction-checked |
+| 0 BEGIN | write `0xD3` to SMI port `0xB2` | SMM begins an operation |
+| 1 GET_TRIGGER_TABLE | read `BASE+8` | Trigger table pointer |
+| 2 SET_ERROR_TYPE | write `BASE+32` | Legacy type (firmware sets 0 at init) |
+| 3 GET_ERROR_TYPE | read `BASE+0` | `SUPPORTED` (8) |
+| 4 END | write `0xD4` to `0xB2` | Ends the operation |
+| 5 EXECUTE | write `0xD5` to `0xB2` | Validates and injects |
+| 6 CHECK_BUSY | read `BASE+16` | `BUSY` |
+| 7 GET_COMMAND_STATUS | read `BASE+24` | `STATUS` |
+| 8 SET_ERROR_TYPE_WITH_ADDRESS | write `BASE+40` | Linux writes the 36-byte parameter structure here |
 
-The payload's socket byte selects the destination while the mailbox remains
-on the primary PSP. DF3 F1x208/F1x20c fabric masks determine socket extraction;
-the global CCM map and local UMC map have distinct roles. The implementation
-does not assume a 50/50 DRAM split or a fixed socket-1 root bus.
+Trigger table (`acpi::einj::trigger`): one `READ_REGISTER` from a memory GAS.
+The address is the target line, patched by SMM at EXECUTE. Before that it is
+the first owned target. The trigger is installed at `BASE+128`.
 
-The vendor default does **not** enable PSP injection: CBS
-`AmdSetupSSP[0xb4]` is 0, copied to PCD 177h. The native policy deliberately
-opts in and verifies command completion. Vendor support/configuration is
-not itself evidence of successful hardware injection.
+## Shared communication page (`crates/platform-sp3/src/einj.rs`)
 
-A second, independent gate is **UMC::MiscCfg.DisErrInj**, bit 2 at
-UMC+1e0. CBS `AmdSetupSSP[0x120]` defaults to 1 (disable injection).
-`CbsSetupDxeSSP`, GUID `8e38a88a-c267-4131-a8cd-c0bc80a24cb5`, executable
-SHA-256 `941eb246eb7d3e7ae476369d8a27a77729bc847c317cb1c86c58b52e40a4859e`,
-DXE VA **7722–7734**, instruction-checked, maps that byte to Rome APCB
-byte token **ff756025**. The native service never clears this live gate.
-The platform must be booted with injection permitted by its memory-init
-configuration before EINJ can be published. Register names/offsets also
-appear as facts in OpenSIL `cd8edaee7d42bc93dd4110981d15d96684271205`,
-`xUSL/RAS/Common/Ras.h` (MiscCfg/EccCtrl).
+`BASE = 0x75BF0000` (end of `STORE`, minus 64 KiB). The page is inside the
+reserved early region. Each field is 8 bytes unless noted.
 
-ACPI format/semantics: ACPI 6.5 §18.6; usage and error types:
-<https://docs.kernel.org/firmware-guide/acpi/apei/einj.html>.
-Code is independently expressed from donor facts; no reference source
-implementation was copied.
+| Offset | Name | Writer | Meaning |
+|---|---|---|---|
+| `+0` | `SUPPORTED` | SMM | 8 when published, else 0 |
+| `+8` | `TRIGGER_POINTER` | firmware | Address of the trigger table |
+| `+16` | `BUSY` | SMM | 1 during an operation |
+| `+24` | `STATUS` | SMM | 0 ok, 1 disabled or failed, 2 invalid request |
+| `+32` | `LEGACY_TYPE` | OS | Written by ACPI action 2; not used for selection |
+| `+40` | `PARAMETERS` | OS | 36-byte request (below) |
+| `+128` | `TRIGGER` | firmware | ACPI trigger table, 48 bytes |
+| `+192` | `BACKEND_STATUS` | SMM | `[0]` enable, `[1]` begin, `[2]` execute, `[3]` end |
+| `+224`, `+232`, `+240` | diagnostics | SMM | Registration status, trace count, policy |
+| `+256 + 8n` | trace | SMM | Up to 32 read-only trace entries |
+| `+512` | `TARGETS` | SMM | Output only: suggested line per socket (2 × u64, 0 = none) |
+| `+528` | `SOCKET_COUNT` | SMM | Output only |
 
-## Verification
+`PARAMETERS` (`einj.rs::Parameters`, 36 bytes, packed):
 
-Host checks cover exact wire layout, SMM-flagged mailbox sequencing and
-PSP error propagation, channel/chip-select selection, unsupported maps,
-scratch-only/type/mask validation, and ACPI checksums/action/trigger layout.
-The initial 1P implementation passed **271 tests** across the SP3 driver modules,
-platform-sp3 (including ACPI), SMM
-and IPMI, with all three generation features enabled; two doc tests ignored.
-Both normal S8030 and the existing PCIe wiring variant pass the real SMM
-PIC, relocation and panic audits. LSP checks were inconclusive, not a
-substitute for these builds.
+| Offset | Field | Accepted value |
+|---|---|---|
+| 0 | `error_type` | 8 |
+| 4 | `vendor_offset` | 0 |
+| 8 | `flags` | 2 |
+| 12 | `apic_id` | ignored |
+| 16 | `address` (u64) | target; rounded down to 64 bytes |
+| 24 | `mask` (u64) | `!(2^k - 1)` for `k ≤ 12` (granularity ≤ 4 KiB) |
+| 32 | `pcie_sbdf` | ignored |
 
-The **multi-socket extension** passes **295 unit tests plus one compile-fail
-doc test** (two doc tests ignored), including separate/socket-interleaved
-2P maps, hashed selection, remote permission rejection, nonzero bases/high
-offsets, hole remapping, scratch allocation/ownership, per-endpoint index
-preservation and direct borrowing of a 64-byte SMM configuration. The full
-board build and both normal S8030/PCIe-variant SMM relocation/PIC/panic audits
-pass. The static hardware helper compiles with `-Wall -Wextra -Werror`.
-LSP results remain inconclusive; these builds are the actual compiler checks.
+The request is copied once at EXECUTE. The line must lie in a page that
+SMM owns (`EinjConfig.targets` in SMRAM). The shared `TARGETS` output is
+never read back as authority.
 
-No hardware was accessed or flashed for this extension. The earlier 1P
-hardware results below must not be presented as tests of the new 2P code.
-The platform's separate 2P xGMI bring-up TODO also remains outside this change;
-this is EINJ/RAS routing support, not a claim of a validated complete 2P port.
+`BACKEND_STATUS` values (`smm/einj.rs::status`): PSP status word, or
+`0x1_0000` timeout, `0x2_0000` recovery, `0x3_0000` unsupported,
+`0x4_0000` other local error.
 
-`tools/hwtest/sp3-einj.c` is a disposable-initramfs test. Enable
-`CONFIG_DEBUG_FS`, `CONFIG_ACPI_APEI`, `CONFIG_ACPI_APEI_EINJ`, `CONFIG_DEVMEM`
-and the AMD64 EDAC driver. Set MCA polling `check_interval` to 1 second.
-It verifies fstart firmware, mounts debugfs, requires exactly error type 8,
-reads suggested targets, and injects once per available socket. It sums EDAC
-CE counts across memory controllers, requires an increase after each request,
-and checks rejection of a non-scratch reserved page. A missing socket target
-fails the test rather than silently claiming complete multi-socket coverage.
-The read-only `/dev/mem` mapping is confined to the known communication page
-for backend status; it does not read or write arbitrary host memory.
+## Target selection
 
-## Rome bench runs — 2026-10-26
+- Legacy scratch page `SCRATCH = 0x75BF1000` (4 KiB) is always reserved.
+- Other socket targets come from `einj::plan_targets`. For each socket it
+  tries cache lines in the legacy page, then pages inside live DRAM rules
+  (single-bit probes at address bits 8–16). It keeps the first line that
+  decodes to that socket.
+- `flow/mod.rs::plan_einj` reserves any chosen page that is not the legacy
+  page in e820 and zeroes it. Only usable RAM is removed. MMIO, APOB, TSEG
+  and firmware are never chosen.
+- A socket with no decodable line gets 0. The hwtest fails if any socket lacks
+  a target.
 
-Authorized S8030GM2NE / EPYC 7502P, 64 threads, 128 GiB. The disposable
-Linux 7.1 image has no block filesystems or MD. Every flash operation writes
-only the lower 16 MiB and verifies readback. A cooperative bench lease was
-held throughout; a fresh two-read-identical pre-test lower-half backup was
-retained before any write.
+## Target decoding (`crates/driver-amd/src/psp/ras.rs`, feature `rome`)
 
-First boot (`einj-native1-20261026`): target/backend initialization did not
-pass, so no EINJ table was published and **no injection occurred**. Linux
-booted with EDAC CE=0/UE=0 and powered off. The helper correctly failed, with
-all PSP injection-action status words untouched. A bounded output-only trace
-was added to distinguish registration failure from live-map rejection;
-validation was not weakened to make the test run.
+`memory_target(address, sockets, df, smn)` maps a physical address to socket,
+channel and chip select, using live DF and UMC registers. Accepted:
 
-Second boot (`einj-native2-20261026`): SmmInfo success, policy enabled,
-channel 3 selected by the live COD8/hash map; `UMC3+1e0=0x117`, DisErrInj
-set, so no injection attempted. Third boot (`einj-native3-20261026`) corrected
-initialization order to match the vendor: enable PSP first, then validate the
-UMC gate. Action 1 succeeded, but DisErrInj remained set. Again no EINJ table
-and no injection. PSP enable alone does not override memory-init policy.
+- Global CCM DRAM rule, fabric-ID masks from DF3 F1x208/F1x20C.
+- Separate or socket-interleaved ranges, nonzero rule bases, DRAM-hole
+  remapping, local high-rule offset.
+- Channel interleave modes accepted by `channel_bits()`, plus hashed modes.
+- Primary chip-select match and CS hash.
 
-A disposable **composed test-image copy**, not a donor ROM, was then changed
-with unmodified MPL-2.0 `amd-apcb` 0.5.5, commit
-`1ec66d607de2437813cdd9ffa91719a4b163b3cf`: only token ff756025 from 1 to 0
-in the two existing APCBs at 4ce000 and 4d0000. The crate's normal `save()` updates the unique-instance counters so vendor
-memory init can recognize the configuration change. The changed bytes are
-4ce1fc/4d021c (values) and 4ce00c/4d000c (counter increments). The token decrement
-and counter increment cancel in the byte-sum checksum; both APCB checksums
-were independently verified and sizes are unchanged. An initial checksum-only
-copy was flashed but not booted, then superseded by this counter-updated copy.
-The upper flash half and all other bytes are identical. No live gate register
-was forced, and data scrambling was not disabled.
+Rejected (no PSP command is sent): die interleave, unknown or ambiguous
+layouts, multiple CS matches, normalized address ≥ 2^40, `DisErrInj` set,
+`RdEccEn` clear.
 
-Fourth boot (`einj-native4-20261026`) **passed the real correctable-memory
-injection test**:
+## Request sequence (`crates/platform-sp3/src/smm/einj.rs`)
 
-- DisErrInj changed through vendor memory init: UMC3 MiscCfg `117 → 113`;
-  EccCtrl `673` still has read checking and ECC generation enabled.
-- Linux initialized the native EINJ table and advertised only type 8.
-- PSP enable/begin/setup/end all completed with status 0.
-- One standard Linux EINJ request targeted reserved scratch `75bf1000`.
-- A genuine corrected UMC event was logged: CPU 2, bank 18, status
-  `942040000000011b`, IPID `0000009600350f00`, syndrome `7c7600010a800100`.
-  EDAC CE count increased **0 → 1**; no synthetic `INT 18` was used.
-- Hardware normalized address `0eb7e000` and UMC3 match the live decoder's
-  selected physical target. The tiny kernel lacks `CONFIG_AMD_ATL`, so EDAC
-  printed **Cannot decode normalized address** instead of reconstructing the
-  system address/DIMM location. This is not proof of complete DIMM attribution.
-- A subsequent request for the non-scratch communication page was rejected
-  with `EINVAL`; backend command status was 2 and END completed successfully.
-- Linux powered off normally. No panic/Oops/BUG or host disk writes.
+| ACPI action | SMM work | PSP action (`0x22` RasEinj) |
+|---|---|---|
+| SmmInfo | Registration, then enable | 1 ENABLE |
+| 0 BEGIN | Clears `PARAMETERS`, starts op | 2 BEGIN |
+| 5 EXECUTE | Copies request, validates target, saves target socket's NBIO regs `1d840/1d848/1d84c`, patches trigger address | 4 correctable-memory request |
+| — | Linux reads the trigger address | — |
+| 4 END | Ends op, restores NBIO regs on target socket | 3 END |
 
-This validates ACPI → native SMM → PSP → real corrected DRAM error → native
-Linux MCA/EDAC handling. It does **not** validate hardware #MC redirection,
-#MC-on-exit, the SMM MCA journal or BMC logging. The old bounded KCS completion
-failure documented in `amd-sp3-ras.md` is independent and remains unresolved.
+- At most 4 EXECUTE requests per boot, one active operation at a time.
+- An invalid request is rejected by firmware. Linux then does not run END,
+  so SMM sends END itself.
+- A PSP status error during an active operation triggers an END attempt.
+  Timeouts do not, because the PSP may still own the C2P page.
 
-Fifth boot (`einj-native5-20261026`) repeated the same test with the final
-**initial 1P implementation**, including typed UMC register fields. It also passed: CE **0 → 1**,
-the same UMC3 normalized address/status/IPID/syndrome, non-scratch `EINVAL`,
-all PSP actions status 0, normal ACPI poweroff. Thus real corrected-error
-injection was observed on **two independent boots**, not just command success.
+Action-4 message layout (`psp/ras.rs::CorrectableMemory`, packed, 28 bytes
+including the 8-byte header):
 
-Tested artifacts of that initial 1P revision (SHA-256; these **predate the
-2P extension**, which has not been flashed):
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 8 | Command header `{size = 28, status}` |
+| 8 | 4 | Action = 4 |
+| 12 | 8 | Physical address |
+| 20 | 4 | UMC base = `0x50000 + channel × 0x100000` |
+| 24 | 2 | Kind = 1 |
+| 26 | 1 | Chip select |
+| 27 | 1 | Socket |
 
-- SMM: `caf872c7584a0d9cfd1b44bb52f0e9a62820c8d3044e6a61e8c1fa7b92a20dd6`.
-- Composed test-image lower half: `279634dfcce9dc06ebfc79b2f7090bf9d0f0124960b09daa3373becb7e871123`.
-- Complete test image: `0fe52837ba9e43d393f4ca454cdc246fba8c2c669b71e6f6a1b6dd39e222bcd5`.
-- Test kernel/initramfs: `6b5a7894b4f96438502aff47abad13e185e900bbc6813d842823ea62faf7c91e`.
+Control messages (actions 1–3) have size 12.
 
-Logs remain local in the analysis repository:
-`firmware/hw/s8030gm2ne-CCSF2AK45016/fstart-boot-einj-native{1,2,3,4,5}-20261026.log`.
+Any nonzero header status is an error (`psp/mailbox.rs`, Ssp variant).
 
-The **exact pre-test firmware was restored** after the final run. Flashrom
-verified it and an independent lower-half readback matched SHA-256
-`55ee3e777f6e7bbb47d18873c64ff7d0ab4a5657489b51b4e7adc9067ec2401c`.
-The host is off, BMC SPI is unbound, SPI_SEL is back to host, its GPIO holder
-was released, and the cooperative bench lease was released. The injection-
-enabled APCB configuration was not left deployed. No host data disks were
-written.
+## Limits
+
+- Each PSP wait: 20 ms (`with_timeout(20_000)` µs) in SMM.
+- Any PSP error (timeout, recovery, status) marks EINJ failed until reset.
+  No retry. Later ACPI requests get `STATUS = 1`.
+- Firmware validates; Linux drives the operation. The shared page does not
+  authorize anything.
+
+## Testing
+
+Host tests:
+
+```sh
+cargo test -p fstart-driver-amd --features rome ras
+cargo test -p fstart-platform-sp3 --features acpi,rome,smm einj
+```
+
+Coverage: exact wire layout, mailbox order `1, 2, 4, 3` with PSP error
+propagation, Rome DRAM-mapping vectors (1P, 2P interleave, hashed maps,
+remote permission rejection, separate ranges, hole remapping), scratch
+planning, parameter validation, and ACPI table checksum and layout.
+
+Board builds: `cargo fbuild build --board tyan-s8030 --stage smm --release`
+and `cargo fbuild build --board tyan-s8030 --release`. The SMM unit is audited
+as described in [amd-sp3-ras.md](amd-sp3-ras.md#testing).
+
+Hardware: `tools/hwtest/sp3-einj.c`, disposable initramfs only. Setup and
+required kernel options are in [`tools/hwtest/README.md`](../tools/hwtest/README.md).
+The program:
+
+1. Checks that FACP OEM ID is `FSTART` and mounts debugfs.
+2. Reads the comm page through read-only `/dev/mem` (4 KiB at `0x75BF0000`).
+   It reads no other memory.
+3. Requires `available_error_type` to be exactly `0x8`.
+4. For each socket, injects once through `/sys/kernel/debug/apei/einj/`,
+   then requires the summed EDAC `ce_count` to increase.
+5. Requires `EINVAL` for a non-scratch target (`0x75BF0000`).
+
+Reference: [ACPI EINJ kernel docs](https://docs.kernel.org/firmware-guide/acpi/apei/einj.html).
+
+## Hardware status
+
+- The hwtest does not validate 2P. Its README says dual-socket hardware
+  validation has not been done.
+- Corrected-error injection is the only path it exercises. It does not cover
+  the #MC observer, #MC-on-exit, or BMC SEL delivery.

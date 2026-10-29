@@ -55,7 +55,7 @@
             runtimeInputs = ciPayloadTools pkgs;
             text = ''
               set -euo pipefail
-              output_dir="''${1:-payloads}"
+              output_dir="''${1:-boot-assets/payloads}"
               exec bash ci/build-payloads.sh "$output_dir"
             '';
           };

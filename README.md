@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.jpeg" width="200" alt="fstart logo">
+  <img src="docs/logo.jpeg" width="200" alt="fstart logo">
 </p>
 
 # fstart
@@ -23,11 +23,12 @@ cargo fbuild run --board qemu-aarch64
 # Build without running
 cargo fbuild build --board qemu-riscv64
 
-# Build a signed firmware image (FFS)
-cargo fbuild assemble --board qemu-riscv64
+# Build a signed firmware image (FFS). Without --signing-key the image is
+# signed with a throwaway key; see docs/authenticated-boot.md.
+openssl genpkey -algorithm ed25519 -out signing.pem
+cargo fbuild assemble --board qemu-riscv64 --signing-key signing.pem
 ```
 
 ## Documentation
 
-- **[fstart Architecture: Config as Data, Fixed Family Flows, Few Crates](docs/architecture.md)** — the plan of record.
 - **[Pineview boards](docs/pineview-boards.md)** — build selections, driver policy and hardware-validation limits.

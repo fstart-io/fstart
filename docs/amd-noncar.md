@@ -1,123 +1,209 @@
-# The AMD noncar flow
+# AMD noncar flow
 
-The PSP-booted AMD SoCs from Family 17h on share one boot flow: the
-PSP trains DRAM, writes
-the APOB and copies the BIOS reset image (directory entry 0x62) to DRAM
-before it releases the BSP at the image's last 16 bytes. There is no
-cache-as-RAM. One stage runs from the reset vector to the payload.
+Shared boot flow of the PSP-booted AMD SoCs (Family 17h). Implemented by
+Zeppelin and Picasso; see the SoC pages for their details:
 
-`crates/platform-amd/src/noncar` holds the flow; a SoC (`zeppelin`,
-`picasso`) implements `noncar::Soc`, a board `noncar::Board`.
+- [amd-zeppelin.md](amd-zeppelin.md): Zeppelin (EPYC Embedded 3000), Gigabyte MJ11
+- [amd-picasso.md](amd-picasso.md): Picasso, Google Vilboz (`google-vilboz`)
+- [amd-image-format.md](amd-image-format.md): flash image, PSP/BIOS directories, firmware blobs
 
-## Flow
+## Model
 
-`noncar::flow` owns the order and the common steps. The SoC's hooks are
-openSIL's timepoints (TP1-TP3); the flow keeps what lies beside
-openSIL: enumeration, resources, ACPI, the memory map, SMM and MP.
+- The PSP trains DRAM, writes the APOB, and copies the BIOS reset image
+  (BIOS directory entry 0x62) to DRAM before it releases the BSP at the
+  image's reset vector (image end − 0x10).
+- There is no cache-as-RAM (`_has_car = 0` in the generated linker script).
+  One stage runs from the reset vector to the payload.
+- The reset entry is `crates/platform-amd/asm/psp_reset.S`. It enters long
+  mode and continues at `_start_ram`. APs go to the SIPI trampoline at `0x8000`.
+
+## Code
+
+| Area | Path |
+| --- | --- |
+| Flow, traits, `Stop` | `crates/platform-amd/src/noncar/{mod,flow}.rs` |
+| DRAM layout | `crates/platform-amd/src/noncar/layout.rs` |
+| Memory map, e820 | `crates/platform-amd/src/noncar/memory.rs` |
+| MP init | `crates/platform-amd/src/noncar/{mp,cpu}.rs` |
+| SMM install, PSP SMM info and boot messages | `crates/platform-amd/src/noncar/{smm,psp}.rs` |
+| PCI root bridges | `crates/platform-amd/src/noncar/pci.rs` |
+| ACPI glue | `crates/platform-amd/src/noncar/acpi.rs`, `crates/platform-amd/src/acpi.rs` |
+| Build plan (host side) | `crates/platform-amd/src/noncar/host.rs` |
+| FFS mount, payload handoff | `crates/platform-amd/src/noncar/boot.rs` |
+
+## Traits
+
+- `noncar::Soc` (`zeppelin::Zeppelin`, `picasso::Picasso`): constants
+  (`NAME`, `LAYOUT`, `ECAM`, `ECAM_BUSES`, `PSP`, `APOB`, `BIOS_DIRECTORY`,
+  `TSEG_SIZE`, `MAX_CPUS`), the `Config` and `State` types, and the methods
+  `fch_pre_init`, `identify`, `silicon_init` (TP1), `after_resources` (TP2),
+  `ready_to_boot` (TP3).
+- `noncar::Board` (a board's `lib.rs`): `type Soc`, `CONFIG`, `console()`, and
+  optional hooks.
+
+| Board hook | Called |
+| --- | --- |
+| `early_init(&Lpc)` | Before the console: LPC decodes, Super I/O |
+| `console() -> Ns16550Config` | Console UART; the flow initializes it |
+| `fch_reset_done(ctx, &mut Config)` | After FCH reset init (SMBus, I2C, GPIO work) |
+| `dxio_training_done(ctx)` | After PCIe/SATA link training |
+| `mainboard_final(ctx)` | After PCI enumeration (TP2) |
+| `ready_to_boot(ctx)` | At TP3, before LockDFReg |
+| `acpi() -> BoardAcpi` | When the ACPI tables are built |
+
+`BoardCtx` gives the dies, the clock, `fch()` (die 0) and `gpio()`.
+
+A board binary is one line:
+
+```rust
+fstart_platform_amd::stage_bin!(fstart_board_gigabyte_mj11::Board);
+```
+
+## Boot order
 
 | Step | Owner |
 | --- | --- |
-| ECAM, ACPI MMIO, TSC frequency | flow |
-| FCH pre-init: the console's decodes | `Soc::fch_pre_init` |
-| LPC decodes, Super I/O | `Board::early_init` |
-| Console | flow, `Board::console` |
-| CPU identification, early FCH | `Soc::identify` |
-| TOP_MEM, APOB memory map, TSEG, e820, cache plan | flow (`memory`) |
-| Mount and verify the FFS, its microcode for MP init | flow (`boot`) |
-| TP1: the silicon before PCI enumeration | `Soc::silicon_init` |
-| PCI enumeration and resource allocation below every die | flow (`pci`) |
-| TP2 | `Soc::after_resources`, then `Board::mainboard_final` |
-| FCH and NBIO IOAPICs | flow |
-| ACPI tables | flow and `crate::acpi`, `Board::acpi` |
-| TP3: ready to boot | `Soc::ready_to_boot` |
-| PSP LockDFReg, page tables, AP parking, PSP BootDone, payload | flow (`psp`, `boot`) |
+| ECAM (`msr::enable_ecam`), ACPI MMIO, TSC frequency | flow |
+| `Soc::fch_pre_init` | SoC |
+| `Board::early_init`, then the console | board, flow |
+| `Soc::identify` | SoC |
+| TOP_MEM/TOM2, APOB memory map, TSEG, e820, early MTRR plan | flow (`memory.rs`) |
+| FFS mount and verify, microcode blob | flow (`boot.rs`) |
+| `Soc::silicon_init` (TP1) | SoC: silicon, `noncar::mp::start`, `noncar::smm::install`, `noncar::psp::notify_smm` |
+| PCI root bridges, enumeration, allocation | flow (`pci.rs`) |
+| Write-combining for prefetchable VGA BARs | flow (`mtrr::install_write_combining`) |
+| `Soc::after_resources` (TP2), `Board::mainboard_final` | SoC, board |
+| FCH and per-die NBIO IOAPICs (masked) | flow |
+| ACPI tables | flow (`crate::acpi`), `Board::acpi` |
+| `Soc::ready_to_boot` (TP3) | SoC |
+| PSP LockDFReg (a failure halts), page tables, park APs, PSP BootDone | flow (`psp.rs`, `boot.rs`) |
+| Payload | `fstart_stage::payload` |
 
-TP1 includes MP init and SMM where the SoC does them before PCI
-enumeration: it calls the shared `noncar::mp::start` (SMU AP release,
-microcode and the SoC's CCX init on every CPU), `noncar::smm::install`
-and `noncar::psp::notify_smm`, and returns them in `Silicon` with what the
-later steps need: the NBIO IOAPICs and the reserved MMIO per die, the SoC's
-ACPI data and its own `State`. The board hooks of the silicon phases
-(`fch_reset_done`, `dxio_training_done`, `ready_to_boot`) are called by the
-SoC where its sequence has them.
+`Stop::Failed` logs the step and halts the BSP.
 
-A SoC whose later phases aren't ported stops TP1 with `Stop::Checkpoint`
-and makes its `State` uninhabited (`Infallible`), so the types show that
-nothing after it runs.
+## Layout
 
-## Configuration
+`noncar::layout::Layout` describes the DRAM and flash of one SoC:
 
-A board names its SoC and its configuration once:
+| Field | Meaning |
+| --- | --- |
+| `early` | Firmware DRAM, reserved through the OS handoff |
+| `page_tables` | Six pages: 4-GiB identity map for the reset entry |
+| `data` | Data and BSS (ACPI tables are in BSS) |
+| `heap`, `stack` | Firmware heap and BSP stack |
+| `image` | PSP-loaded reset image; the last 8 KiB hold the 16-bit entry |
+| `flash` | Boot flash, mapped below 4 GiB |
+| `ffs` | FFS window in the flash, if any |
 
-```rust
-impl fstart_platform_amd::noncar::Board for Board {
-    type Soc = Zeppelin;
-    const CONFIG: &'static zeppelin::Config = &CONFIG;
-    fn console() -> Ns16550Config { ... }
-}
-```
+`Layout::check()` asserts the ordering at compile time. The host plan
+(`noncar/host.rs`) generates from the same `Layout` the linker script, the
+`.fstart.layout` descriptor and the ELF expectations.
 
-The SoC's `Config` has a typed part per IP block (`zeppelin::FchConfig`,
-`DxioConfig`; `picasso::FchConfig`) with `Default` where a default exists.
+## Memory map
 
-## Layout and image
+- e820 (`memory::e820`): RAM below TOP_MEM, APOB holes, TSEG and everything
+  above it, the early region, the APOB, the AP trampoline page at `0x8000`,
+  and the IOMMU range above the APOB top are reserved.
+- TSEG: `Soc::TSEG_SIZE` (8 MiB on both SoCs), aligned, at the low top of
+  DRAM below 4 GiB (first hole below 4 GiB above 1 GiB, or TOP_MEM).
 
-`noncar::layout::Layout` is a SoC's DRAM layout: the early region reserved
-through OS handoff, page tables, data and BSS, heap, stack, the PSP-copied
-image, the boot flash and the FFS, if any. The one linker script generator,
-the layout descriptor and the ELF expectations derive from it
-(`noncar::host`). `asm/psp_reset.S` sends the APs to the SIPI trampoline at
-`0x8000`, copies `.data` out of the image, clears BSS and enters long mode;
-the image bytes the PSP copied are never written. The flow continues at the
-architectural `_start_ram`.
+## SMM and PSP
 
-`noncar::host` is also the one build plan of every noncar SoC: the stage
-unit `reset`, the board's SMM unit, the payloads and the FFS follow from the
-layout and the SoC's `host::Policy` (its stage feature, whether the flow
-reaches a payload, SMM, where its PSP firmware comes from).
+- `noncar::smm::install` copies the board's SMM image (built from its `smm.rs`
+  and embedded through `FSTART_SMM_IMAGE`) into TSEG, sets up every CPU's
+  SMBASE and locks SMM. The handler is `fstart_platform_amd::smm::smm_bin!`.
+- `noncar::psp::notify_smm` sends the PSP SmmInfo (mailbox command 0x02). Its
+  P2C and C2P buffers are in the free part of TSEG. Without them the flow has
+  no PSP session.
+- LockDFReg runs at TP3 and BootDone right before the payload.
 
-The flash image format (the EFS, the PSP and BIOS directories and their
-level 2) is `crates/amdfw-format` (`fstart-amdfw-format`, `no_std`): the
-host packs and checks images with it and takes the microcode from it. A
-SoC names the EFS field its PSP takes the BIOS directory from (`Soc::BIOS_DIRECTORY`); the
-lookup follows a level-2 directory as the PSP does.
-`crates/image-build/src/amd/assembly.rs` (`AmdAssembly`) composes the image.
-The PSP firmware either comes from a vendor flash image (`--image-config`),
-whose prefix stays byte for byte apart from optional PSP settings (Zeppelin
-has the PSP inflate a compressed reset image and read the flash faster:
-`assembly::PspOptions`), or is packed from the files of a blob directory
-(`--blobs`, Picasso) that the SoC's and the board's Cargo.toml tables name
-([firmware blobs](amd-image-format.md#firmware-blobs)). Either way the
-result is read back as the PSP would before it is written, with a JSON
-receipt of its inputs.
+## MP
 
-The microcode travels in the FFS, like Intel's: the host concatenates the
-patches into `cpu_microcode.bin` (the BIOS directory type 0x66 entries of a
-vendor image, or the microcode files of the SoC's blob table;
-`MicrocodeConfig::Amd`). The flow mounts and verifies the FFS before TP1, and
-MP init hands every CPU the verified copy (`fstart_stage::microcode_blob`),
-from which `Fam17hCpu` selects the patch for its signature.
-
-## ACPI
-
-`crate::acpi` emits the tables (FADT, MADT, HPET, MCFG, IVRS, the DSDT with
-a root bridge per die, bridge `_PRT`s and the FCH's LPC devices) from data:
-the SoC's `SocAcpi` (FCH ACPI ports, FADT fields, the NBIO's bridge
-interrupt routing, the FCH INTx GSIs), what the flow found (CPUs, dies,
-IOAPICs, IOMMUs, bridges, windows) and the board's `BoardAcpi`.
+`noncar::mp::start` launches the APs through the SMU (`smu::threads::launch`).
+Each CPU loads its microcode patch from the verified FFS copy (selected by
+CPUID signature in `Fam17hCpu`) and runs the SoC's CCX init. Zeppelin's
+`Soc::MAX_CPUS` is 32; Picasso's is 16.
 
 ## PCI root bridges
 
-Every die's root complex is a PCI root bridge. What the DF routes to the
-die's IOMS is its one source of truth: `df::map::root_complex` reads its
-bus map and its MMIO and I/O windows, the ones the SoC programmed
-(`df::map::program` on Zeppelin) or the PSP left. `noncar::pci::Root`
-turns that into the root bridge: the buses clamped to the ECAM, the I/O
-above the legacy 4 KiB and the MMIO below 4 GiB without the ECAM, the
-fixed MMIO from the IOAPIC up and the die's reserved MMIO. The 64-bit DF
-windows start at 1 TiB, beyond what the firmware maps, and aren't part of
-the root bridges yet.
+- `df::map::root_complex(die)` gives the buses and MMIO/IO windows the DF
+  routes to each die.
+- `noncar::pci::Root::new` turns them into a root bridge:
+  - buses clamped to the ECAM;
+  - I/O from `0x1000` to `0x10000`;
+  - 32-bit MMIO below `0xfec00000`, minus the ECAM and the die's reserved
+    MMIO pool;
+  - 64-bit DF windows (from 1 TiB) aren't included.
+- `PciEcam::from_providers` allocates below all roots at once. The ACPI host
+  bridge of each die (`PCIn`, with `_BBN` and `_CRS`) describes the same root.
 
-One `PciEcam` enumerates and allocates below all root bridges, each from
-its own buses and windows, and the ACPI host bridge of each die (`PCIn`
-with `_BBN` and `_CRS`) describes the same root.
+## ACPI
+
+`crate::acpi::build` emits from data:
+
+- FADT (`FACP`), MADT, HPET, MCFG, and IVRS if die 0's IOMMU is present.
+- DSDT: `\_S0_`, `\_S1_`, `\_S4_`, `\_S5_` only (no S3). One root bridge per die,
+  bridge `_PRT`s, the ECAM reservation, and the board's `lpc_aml`, `devices`
+  and `sb_aml`.
+- Standalone tables from `BoardAcpi::tables` (e.g. the MJ11 SPMI).
+
+Inputs: `SocAcpi` (FCH ACPI ports, FADT fields, NBIO bridge routes, FCH INTA-D
+GSIs), the per-die `DieAcpi` from the flow, and `BoardAcpi`.
+
+GSIs: the FCH IOAPIC has GSI 0-23. Each die's NBIO IOAPIC has 32 more, from
+`24 + 32 * die`. The `_PRT`s describe APIC mode only.
+
+## Images and microcode
+
+- `--image-config <vendor flash>` keeps the vendor prefix byte for byte and
+  replaces the reset image. `--blobs DIR` or `--donor ROM` packs a native image
+  from firmware files. See [amd-image-format.md](amd-image-format.md).
+- Microcode goes into the FFS as `cpu_microcode.bin`, from BIOS directory
+  type 0x66 of a vendor image or from the SoC's blob table.
+- `image-build` reads the result back as the PSP does (`read_bios_directory`)
+  and checks it against the layout before it writes anything.
+
+## Build plan
+
+`noncar::host::Plan::<Board>::emit` (feature `host`) resolves the plan from
+the board's `Layout`, its `Config` and the SoC's `HostSoc::POLICY`:
+
+| `Policy` field | Effect |
+| --- | --- |
+| `feature` | Stage feature: `bundle-zeppelin` or `bundle-picasso` |
+| `payloads` | Whether payloads are allowed. Both SoCs: yes |
+| `smm` | Adds the board's `smm` unit and binds `FSTART_SMM_IMAGE` |
+| `release_only` | Stage is release-only. Picasso: yes; Zeppelin: no |
+| `image_config` | `Vendor` or `Packed` (see above) |
+
+Payloads (`--payload`, default `halt`): `halt`, `linux`, `uefi` (CrabEFI),
+`uefi-ui`, `uefi-basic`. Any other value is rejected for these SoCs.
+The `--linux-*` options require `--payload linux`.
+
+## Cargo features
+
+| Feature | Enables |
+| --- | --- |
+| `zeppelin`, `picasso` | The SoC module, with `fstart-driver-amd/<soc>` |
+| `noncar` | The flow (without the bundle) |
+| `bundle-zeppelin`, `bundle-picasso` | The reset stage |
+| `smm` | `smm_bin!` and the FCH SMM support for the board's SMM unit |
+| `host` | The build plan (`Plan::emit`), host side only |
+| `payload-linux`, `payload-uefi`, `payload-uefi-ui`, `payload-uefi-basic` | Payloads |
+
+`cargo test -p fstart-platform-amd` runs the unit tests for both SoCs (the
+dev-dependencies enable both features).
+
+## Commands
+
+```sh
+cargo fbuild check <board>            # type-check a board's resolved plan
+cargo fbuild explain <board>          # print geometry and compiler selection
+cargo fbuild assemble --board <board> [--release] [--payload <p>] \
+  [--image-config <vendor.rom> | --blobs DIR | --donor <vendor.rom>]
+cargo fbuild blobs --board <board> --from <vendor.rom> --out DIR
+```
+
+`assemble` writes `<board>.rom` (a whole flash image) and a `<board>.json`
+beside it with the input hashes. A PSP fragment without an FFS is written as
+`<board>-psp-fragment.bin` and is not a flash image.

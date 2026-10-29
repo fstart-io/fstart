@@ -1102,7 +1102,6 @@ mod tests {
             ])),
             security: SecurityConfig {
                 signing_algorithm: SignatureAlgorithm::Ed25519,
-                pubkey_file: hstr("keys/dev-signing.pub"),
                 required_digests: hvec([fstart_core::DigestAlgorithm::Sha256]),
             },
             payload: None,
@@ -1243,7 +1242,6 @@ mod tests {
             }),
             security: SecurityConfig {
                 signing_algorithm: SignatureAlgorithm::Ed25519,
-                pubkey_file: hstr("keys/dev-signing.pub"),
                 required_digests: hvec([]),
             },
             payload: None,

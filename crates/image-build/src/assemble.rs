@@ -28,8 +28,9 @@ pub fn assemble(
     fit_path: Option<&str>,
     payload_files: &[(String, String)],
     bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
+    signing_key: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    let (signing_key, verification_key) = get_or_create_dev_keys(board_dir, config)?;
+    let (signing_key, verification_key) = load_signing_key(signing_key, config)?;
 
     let mut ro_files = Vec::new();
 
@@ -230,9 +231,7 @@ pub fn assemble(
                 .collect(),
         },
     };
-    eprintln!(
-        "[fstart] development-integrity image: generated local key, security version 0; no rollback protection"
-    );
+    eprintln!("[fstart] security version 0; no rollback protection");
     let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
     let mut ffs_image = build_image_with_root(&image_config, &root_config, &sign)?;
 
@@ -1474,51 +1473,59 @@ where
         .collect())
 }
 
-fn get_or_create_dev_keys(
-    board_dir: &Path,
-    _config: &fstart_core::BoardConfig,
+/// The signing key for this image: the Ed25519 PKCS#8 key at `path` (PEM or
+/// DER, e.g. from `openssl genpkey -algorithm ed25519`), or with no path a
+/// fresh in-memory key that is never written anywhere. There are no default
+/// or per-board keys.
+fn load_signing_key(
+    path: Option<&Path>,
+    config: &BoardConfig,
 ) -> Result<(ed25519_dalek::SigningKey, VerificationKey), String> {
     use ed25519_dalek::SigningKey;
-    use rand_core::OsRng;
+    use ed25519_dalek::pkcs8::DecodePrivateKey;
 
-    let keys_dir = board_dir.join("keys");
-    let privkey_path = keys_dir.join("dev-signing.key");
-    let pubkey_path = keys_dir.join("dev-signing.pub");
-
-    if privkey_path.exists() && pubkey_path.exists() {
-        let privkey_bytes =
-            fs::read(&privkey_path).map_err(|e| format!("failed to read private key: {e}"))?;
-        if privkey_bytes.len() != 32 {
-            return Err(format!(
-                "invalid private key size: {} (expected 32)",
-                privkey_bytes.len()
-            ));
-        }
-        let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&privkey_bytes);
-        let signing_key = SigningKey::from_bytes(&key_bytes);
-        let verifying_key = signing_key.verifying_key();
-
-        let vk = VerificationKey::ed25519(0, verifying_key.to_bytes());
-        return Ok((signing_key, vk));
+    if config.security.signing_algorithm != fstart_core::SignatureAlgorithm::Ed25519 {
+        return Err(format!(
+            "{:?} signing is not implemented; only Ed25519 is",
+            config.security.signing_algorithm
+        ));
     }
-
-    eprintln!("[fstart] generating new dev Ed25519 key pair...");
-    fs::create_dir_all(&keys_dir).map_err(|e| format!("failed to create keys dir: {e}"))?;
-
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-
-    fs::write(&privkey_path, signing_key.as_bytes())
-        .map_err(|e| format!("failed to write private key: {e}"))?;
-
-    fs::write(&pubkey_path, verifying_key.as_bytes())
-        .map_err(|e| format!("failed to write public key: {e}"))?;
-
-    eprintln!("[fstart] saved dev keys to {}", keys_dir.display());
-
-    let vk = VerificationKey::ed25519(0, verifying_key.to_bytes());
-    Ok((signing_key, vk))
+    let signing_key = match path {
+        Some(path) => {
+            let bytes =
+                fs::read(path).map_err(|e| format!("signing key {}: {e}", path.display()))?;
+            match core::str::from_utf8(&bytes) {
+                Ok(pem) if pem.trim_start().starts_with("-----BEGIN") => {
+                    SigningKey::from_pkcs8_pem(pem).map_err(|e| e.to_string())
+                }
+                _ => SigningKey::from_pkcs8_der(&bytes).map_err(|e| e.to_string()),
+            }
+            .map_err(|e| {
+                format!(
+                    "signing key {}: not an Ed25519 PKCS#8 private key ({e}); \
+                     create one with `openssl genpkey -algorithm ed25519 -out key.pem`",
+                    path.display()
+                )
+            })?
+        }
+        None => {
+            let key = SigningKey::generate(&mut rand_core::OsRng);
+            eprintln!(
+                "[fstart] warning: no --signing-key; signed with an ephemeral Ed25519 key \
+                 that is discarded after this build"
+            );
+            key
+        }
+    };
+    let public = signing_key.verifying_key().to_bytes();
+    eprintln!(
+        "[fstart] signing public key: {}",
+        public
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    Ok((signing_key, VerificationKey::ed25519(0, public)))
 }
 
 fn sign_with_ed25519(

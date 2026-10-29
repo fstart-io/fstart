@@ -5,9 +5,6 @@
 //! them directly.
 //!
 //! This module defines service contracts and small adapters, not hardware drivers.
-//!
-//! See [docs/driver-model.md](../../docs/driver-model.md) for the full
-//! driver model architecture.
 
 pub mod block;
 pub mod boot;

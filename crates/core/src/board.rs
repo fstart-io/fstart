@@ -24,7 +24,7 @@ pub enum Platform {
     /// x86-64 / AMD64 (x86_64-unknown-none)
     X86_64,
     /// 32-bit x86 in protected mode, for CPUs without long mode
-    /// (i686-unknown-none, a JSON target in `targets/`)
+    /// (i686-unknown-none, a JSON target in `tools/fbuild/targets/`)
     X86,
 }
 

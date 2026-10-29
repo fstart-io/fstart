@@ -213,12 +213,11 @@ impl Default for QemuArmv7VirtConfig {
     }
 }
 
-/// QEMU virt's development policy intentionally verifies both supported digests.
+/// QEMU virt verifies both supported digests to exercise digest agility.
 #[must_use]
-pub fn qemu_virt_security_config(pubkey_file: &str) -> SecurityConfig {
+pub fn qemu_virt_security_config() -> SecurityConfig {
     SecurityConfig {
         signing_algorithm: SignatureAlgorithm::Ed25519,
-        pubkey_file: fstart_core::hstr(pubkey_file),
         required_digests: fstart_core::hvec([DigestAlgorithm::Sha256, DigestAlgorithm::Sha3_256]),
     }
 }

@@ -63,7 +63,6 @@
     },
     "platform": "Riscv64",
     "security": {
-      "pubkey_file": "keys/dev-signing.pub",
       "required_digests": [
         "Sha256",
         "Sha3_256"

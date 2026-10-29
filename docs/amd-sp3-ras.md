@@ -1,217 +1,165 @@
-# Native SP3 SMM RAS observer
+# SP3 SMM MCA observer
 
-This is an **experimental MCA observer**, not an AGESA firmware-first RAS
-replacement. The S8030's normal SMM policy enables it; RAS is not a separate
-board or Cargo feature:
+Experimental. The S8030 SMM policy observes machine checks (#MC) in SMM and
+hands every one to the OS. The OS keeps MCA banks, corrected/deferred
+interrupts, thresholds and recovery. Firmware does not consume errors or
+decide recoverability. This is not an AGESA firmware-first RAS replacement:
+there is no GHES, ERST, BERT or DXE/UEFI involvement.
+
+Related: [native EINJ](amd-sp3-einj.md), [SP3 overview](amd-sp3.md),
+[SMM](smm.md).
+
+## Enablement
+
+- No separate board or Cargo feature. `boards/tyan/s8030/src/smm.rs` binds
+  `Sp3SmmHandler<Ras>` with `OBSERVE_MCE = true`.
+- Other boards use the default `OsFirst` policy (`crates/platform-sp3/src/smm/ras.rs`),
+  which arms nothing.
 
 ```sh
-cargo fbuild build --board tyan-s8030 --stage smm --release
-# Complete image, without flashing:
-cargo fbuild build --board tyan-s8030 --release
+cargo fbuild build --board tyan-s8030 --stage smm --release   # SMM unit only
+cargo fbuild build --board tyan-s8030 --release               # complete image
 ```
 
-The board selects a compile-time `smm::ras::Policy`.
-No DXE, UEFI protocols, setup variables or ReadyToBoot event are involved.
-The immutable installer configuration is borrowed directly from SMRAM;
-per-socket EINJ endpoints and owned targets no longer require a tiny copy ABI.
+Policy (`crates/platform-sp3/src/smm/ras.rs`):
 
-## Ownership and flow
+| Item | Meaning |
+|---|---|
+| `OBSERVE_MCE` | Arm the per-CPU #MC observer |
+| `MEMORY_EINJ` | Enable the [restricted EINJ](amd-sp3-einj.md) (S8030 sets it too) |
+| `SEL: Option<SelTransport>` | Firmware-exclusive KCS endpoint for SEL delivery; S8030 uses port `0xca8`, spacing 4 |
 
-1. The normal AMD SMM installer places and locks the image on every online
-   CPU, enables the FCH, then exercises each CPU with a self-SMI.
-2. `SmmHandler::enter_cpu` runs on **every entrant**, before attempting the
-   shared chipset-dispatch lock. The first entry arms that CPU's #MC observer.
-   It refuses unsupported save-state revisions, pre-B2 Naples, absent SMCA,
-   more than 64 banks, and existing PFEH/interrupt/local-trigger ownership.
-   Failure leaves the CPU OS-first; MSR readback failure rolls back the setup.
-3. A real local `MceRedirSts`, not the forgeable SW-SMI command 0x80, authorizes
-   capture. The handler requests native #MC on SMM exit *before* attempting
-   logging, then snapshots each valid bank on the executing CPU. Address and
-   syndrome validity and deferred-register support gate optional reads.
-4. A nonblocking SMRAM journal retains the first 64 raw records until reset.
-   It never overwrites initial evidence. Contention/fullness increments a
-   drop counter and does not prevent native handoff. Logical CPU indices are
-   installer indices (up to 256), not fabricated socket/DIMM identifiers.
-5. The shared dispatcher can attempt one queued SEL record per SMI. It does
-   not wait for other CPUs to arrive; a late producer may await a later SMI.
-6. RSM delivers native #MC. The OS still sees the banks, MCA addresses and
-   global status: firmware does not consume the error or decide recoverability.
+## Runtime flow
 
-The observer leaves the cloak mask and deferred-interrupt mask **zero**. It
-never arms corrected/deferred SMI routing, changes thresholds, clears banks
-on its own, recloaks banks, or claims PCIe/AER ownership. Corrected/deferred
-handling, poison recovery, panic/reset decisions and ordinary bank clearing
-remain OS responsibilities. A hardware fatal/reset path can bypass SMM.
+| Step | Code | Behavior |
+|---|---|---|
+| 1. Install | `crates/platform-sp3/src/flow/mod.rs` (`install_smm`) | Handler image locked in SMRAM on every thread, one self-SMI per CPU, then SmmInfo via SW SMI `0xD0` |
+| 2. Entry | `crates/smm/src/stage.rs` → `Sp3SmmHandler::enter_cpu` → `smm::ras::enter` | Runs on every SMI on every CPU, before the rendezvous. Nothing waits for other CPUs |
+| 3. Arm | `sp3/ccx/ras.rs::arm` | First SMI on each CPU only. Sets state to armed or refused; refused CPUs stay OS-first |
+| 4. Capture | `ras::observe` | Only when the local SMI status (save state `FEC4`, bit 8 `MCE_REDIRECT`) is set. Sets `PFEH_CONFIG.MCE_ON_EXIT`, then records each valid bank |
+| 5. Journal | `smm/ras.rs` (`Journal`) | Locked SMRAM, first 64 records kept until reset. Overflow and lock contention increment a drop counter and never block |
+| 6. Delivery | `smm/ras.rs::flush`, called from `handle` before dispatch | At most one SEL record per SMI (see below) |
+| 7. Exit | hardware | RSM delivers the native #MC. Banks and `MCG_STATUS` are unchanged |
 
-### Intercepted OS writes
+### Arm refusals
 
-PFEH can cause a WRMSR SMI even with banks visible. Such an entry must not be
-silently discarded. The hardware local WRMSR status authorizes reading saved
-RCX/RDX/RAX; arbitrary software SMIs cannot issue MSRs through this path.
+`ArmError`, checked before any write:
 
-Only zero-valued OS writes to implemented MCA status registers (legacy or
-SMCA, supported DESTAT, or MCG_STATUS) are replayed in SMM. HWCR permissions
-are not elevated. For any other write, observation is permanently disabled
-on that CPU and saved RIP is rewound over WRMSR's two-byte opcode, so the
-original request executes in normal mode with native privilege/fault behavior.
-With simultaneous #MC, the #MC handoff happens first; the retried WRMSR can
-subsequently take the opt-out path. No arbitrary MSR write is attempted in SMM.
+| Refusal | Condition |
+|---|---|
+| `UnsupportedCpu` | Naples stepping < 2 (pre-B2) |
+| `UnsupportedBanks` | `MCG_CAP.COUNT` is 0 or > 64, or `MCA_CONFIG.MCAX` clear |
+| `AlreadyOwned` | `MCE_REDIRECT` vector/SMI enable, `SMI_IO_CYCLE` enable, PFEH enable, `PFEH_CLOAK` or deferred mask already nonzero |
+| `Readback` | Written values don't read back; the three MSRs are rolled back |
 
-This fallback, native #MC-on-exit, and the interaction with OS MCA setup are
-**experimental**; distinguish the hardware checks below from validation of
-a real hardware-originated machine check. There is no S3 rearming implementation.
+Also refused: save-state revision not accepted by the AMD64 format (`0x20064`
+or `0x30064`, `crates/smm/src/save_state.rs`).
 
-## BMC transport and limits
+### What the observer leaves alone
 
-The S8030 policy uses firmware KCS2 at **CA8/CAC**, inside the existing
-CA0..CAF LPC decode. The OS interface remains KCS3 at **CA2/CA3**. Nothing
-in this path uses or aborts an in-progress OS KCS3 transaction.
+- Bank registers, `MCG_STATUS`, thresholds, bank cloaking and the deferred
+  interrupt mask. Cloak and deferred mask stay zero.
+- Corrected/deferred SMI routing, AER/PCIe ownership, poison recovery, and
+  panic or reset decisions.
+- Journal export. Records are private to locked SMRAM; nothing reads them
+  except the SEL path and tests. Drop and refused counters are internal.
+- Re-arming: state is per CPU in SMM statics, tried once on that CPU's first
+  SMI. There is no re-arm path after an OS-visible MSR reset.
 
-- One transaction per SMI, at most eight error reports and one explicitly
-  requested benign transport probe per boot.
-- A transaction-wide 2,000-readiness-check budget: at most 20 ms of polling
-  delays, even for a BMC that streams a response forever. This is not a
-  fresh timeout per byte, nor a hard wall-clock bound on all platform I/O.
-- First transport/completion failure disables further attempts until reset.
-  No retry, Get SEL Info, readiness wait or KCS abort/recovery loop.
-- The journal is independent of delivery. BMC failure never erases it.
+Local status is inspected on every SMI of an armed CPU. A #MC SMI is the only
+case that captures; software SMI `0x80` is a no-op in dispatch and never
+authorizes capture.
 
-The bench BMC silently acknowledges OEM non-timestamped E0 records with ID
-zero without creating a log entry. The observer therefore sends standard
-system-event records: BIOS generator 0001, event revision 4, Processor type
-07, sensor number FF (no particular SDR sensor), sensor-specific event type
-6F. Event data is `{AB, cpu, bank}` for uncorrected/deferred errors or
-`{AC, cpu, bank}` for corrected errors. Bytes 2/3 are explicitly OEM data,
-not invented DIMM identifiers. The full raw status stays in the journal.
+## Intercepted OS WRMSR
 
-BMC standard-record acceptance is distinct from how its UI/SEL cache indexes
-an unspecified sensor. Inspect the BMC logging entry's additional data;
-completion success alone does not establish a correctly indexed IPMI SEL.
-These compact records are not CPER or address-to-DIMM attribution. Full
-address/IPID/syndrome/MISC/deferred/global-status records and drop/refusal
-counters remain private to locked SMRAM; there is no OS export of the journal.
+Local status bit 11 (`WRMSR`) means PFEH intercepted an OS write. The saved
+`RCX`/`RAX`/`RDX` are replayed only if all of these hold
+(`ras::replay_clear`):
 
-### Bounded diagnostics
+- The value is zero.
+- The index is `MCG_STATUS`, a legacy `MCi_STATUS` (`0x401 + 4*i`), an SMCA
+  `MCi_STATUS` (`0xC0002001 + 16*i`), or a `MCi_DESTAT` (`0xC0002008 + 16*i`)
+  when `DeferredLoggingSupported` is set.
+- The bank index is implemented (`< min(MCG_CAP.COUNT, 64)`).
 
-SW SMI D1 is a pointer-free diagnostic interface. Only the interrupted context
-carrying `RAX=46535241530000D1`, `RDX=B2` is modified; RCX selects:
+Otherwise:
 
-- 0: return SMM-visible PFEH/cloak/deferred-mask in RAX/RCX/RDX.
-- 1: request one benign KCS2 "entry added to auxiliary log" event, OEM data
-  `FS`. This is not a manufactured machine check and does not populate the
-  MCA journal. It can be requested only once per boot.
-- 2: read probe state in RAX: 0 idle, 1 queued, 4 running, 2 success, 3 failure.
-- 3: check saved-SMBASE placement without exposing addresses: RAX is the FF00
-  match, RCX the FE00 match, RDX the save-state revision.
+- If no #MC redirect is pending in the same SMI, the CPU is disarmed
+  permanently (`ras::disarm`) and the saved RIP is rewound by 2 bytes, so the
+  original WRMSR re-executes natively after RSM.
+- If a #MC redirect is also pending, the #MC is handed off first. The rewound
+  WRMSR then traps again with no redirect pending and disarms.
 
-The client is `tools/hwtest/sp3-ras.c` (Linux initramfs only). It grants port
-access, pins to each online CPU and spaces diagnostic requests by 1 ms; it
-never passes an OS buffer into SMM. Normal-mode PFEH reads are insufficient:
-on the Rome bench they read zero while SMM reads the armed value 1.
-Ordinary software SMI 80 still does not authorize MCA capture or #MC handoff.
+No arbitrary MSR write is performed in SMM.
 
-## Implementation boundaries
+## BMC transport and SEL
 
-- `driver-amd/src/sp3/ccx/ras.rs`: typed per-CPU MSRs, arming, bounded capture,
-  native handoff, restricted OS-clear replay and disarming.
-- `smm/src/{handler,stage}.rs`: generic per-CPU entry hook; shared dispatch
-  still has a single owner, with no all-CPU arrival requirement.
-- `smm/src/save_state.rs`: validated AMD64 saved GPR access; native Zen
-  revision 30064 and QEMU's 20064. Both use the FF00 SMBASE field;
-  FE00 is the save-state block's base, as confirmed on the Rome bench.
-- `platform-sp3/src/smm/ras.rs`: journal, per-CPU state and bounded reporting.
-- `boards/tyan/s8030/src/smm.rs`: board policy and dedicated BMC endpoint.
-- `driver-ipmi`: OEM SEL framing and transaction-wide KCS budgets.
+| Item | Value |
+|---|---|
+| Firmware KCS2 (S8030) | `0xCA8`/`0xCAC`, spacing 4 |
+| OS KCS3 | `0xCA2`/`0xCA3` (asserted in `boards/tyan/s8030/src/bmc.rs`). Not used or aborted by this path |
+| Transaction budget | `SEL_POLL_BUDGET = 2000` readiness checks, each failed check delays 10 µs (about 20 ms max delay). Whole request, not per byte (`driver-ipmi/src/kcs.rs`) |
+| Attempts per SMI | one transaction |
+| Attempts per boot | 8 journal records, plus at most one probe |
+| Failure | first failed transaction sets `SEL_FAILED`; no further sends until reset. No retry, Get SEL Info or KCS recovery |
 
-[Restricted native EINJ](amd-sp3-einj.md) provides correctable-memory
-injection in firmware-owned scratch pages on 1P/2P Rome (2P hardware
-validation remains open). It does not
-exercise this #MC-only observer. GHES/SCI/NMI tables, ERST, BERT, flash error
-storage, APCB repair queues, general DIMM decoding and PCIe firmware-first
-handling remain separate ownership/persistence choices.
+Standard system-event records (`smm/ras.rs::event`), not OEM records:
 
-## Evidence and verification
+| Field | MCA record | Probe record |
+|---|---|---|
+| Record type | `0x02` system event | `0x02` |
+| Generator ID | `0x0001` | `0x0001` |
+| Event message revision | `0x04` | `0x04` |
+| Sensor type | `0x07` (processor) | `0x12` (system event) |
+| Sensor number | `0xFF` (no SDR sensor) | `0xFF` |
+| Event dir/type | `0x6F` | `0x6F` |
+| Event data 1 | `0xAB` uncorrected or deferred; `0xAC` corrected | `0xA3` |
+| Event data 2 | logical CPU index (installer index, up to 256) | `'F'` |
+| Event data 3 | MCA bank | `'S'` |
 
-Register facts were independently expressed from AMD #55570 (MSRC001_0022,
-MSRC001_0056, SMMxFEC4, SMMxFEFC and the AMD64 saved GPRs); the named PFEH exit
-bits are also defined by OpenSIL commit
-`cd8edaee7d42bc93dd4110981d15d96684271205`, `xUSL/Include/MsrReg.h`.
-No reference implementation code was copied.
+Data bytes 2/3 are OEM data. They are not DIMM, socket or address
+attribution. Full raw status, address, IPID, syndrome, MISC and deferred
+registers exist only in the SMRAM journal.
 
-The SMM donor anchors are Rome S8030 V4.04 `AmdRasSspSmm`, GUID
-`ee8175ef-4c60-82af-f5e2-8a9ef1fc0a9a`, executable SHA-256 prefix
-`cca68f7070ef`, VAs 0x6B0 (redirection), 0x934 (exit request), and 0xAFC
-(saved-register WRMSR replay), instruction-checked. The observer deliberately
-omits its cloaking/rearming policy. The saved S8030 BMC flash has SHA-256
-`2b09b92ee677b5d9d44ed150d2a225b64e8058ad03d1d34ad649e672399c42c3`;
-DTB 0x39A200 and enabled KCS bridge services establish the two configured
-interfaces, not successful runtime delivery.
+## Diagnostic SW SMI `0xD1`
 
-Focused host tests cover arming/refusal/rollback, native handoff despite
-missing/dropped evidence, capture without bank clearing, restricted write
-replay, native save-state offsets, per-CPU entry before the shared lock,
-journal contention/overflow, SEL encoding, diagnostic register isolation and
-transaction-wide timeouts.
-The real SMM image must also pass fbuild's PIC/relocation/panic audit; a host
-`cargo check` alone is insufficient. No hardware access or error injection
-is part of these host-only checks.
+Fixed register protocol, `OUT 0xB2, AL=0xD1` with the interrupted context
+`RAX = 0x46535241530000D1`, `RDX = 0xB2`, `RCX = selector`. Only that context
+is written. No pointers, error injection or MSR writes. Armed CPUs only.
 
-## Rome hardware results — 2026-10-26
+| `RCX` | Returns |
+|---|---|
+| 0 | `RAX` = PFEH_CONFIG, `RCX` = PFEH_CLOAK, `RDX` = deferred mask |
+| 1 | Requests the one benign probe (once per boot). Probe event is `0xA3 'F' 'S'` |
+| 2 | `RAX` = probe state: 0 idle, 1 queued, 4 running, 2 success, 3 failure |
+| 3 | `RAX` = 1 if FF00 holds SMBASE, `RCX` = 1 if FE00 holds SMBASE, `RDX` = save-state revision |
 
-Three flash/boot cycles were run on the authorized S8030GM2NE bench,
-EPYC 7502P, 64 threads, 128 GiB, using a Linux 7.1 initramfs without block
-filesystems. Only the lower 16 MiB of host flash was written and each write
-was verified by readback. The bench used its **existing** PCIE#3
-x4x4x4x4 wiring variant; no RAS board variant or feature is needed.
+Save-state layout (`crates/smm/src/save_state.rs`): SMBASE field at FF00
+(AMD64 format), FE00 is the save-state block base.
 
-Logs are local to the adjacent analysis repository:
-`firmware/hw/s8030gm2ne-CCSF2AK45016/fstart-boot-ras-native{,2,3}-20261026.log`.
+## Testing
 
-- First run: normal-mode PFEH reads were zero, so the initial test refused
-  to do write tests. This was an invalid test assumption, not evidence of
-  failed arming. Read-only SMM-side diagnostics were added.
-- Second run: all 64 CPUs reported PFEH=1 inside SMM, with both masks zero,
-  despite normal-mode reads of zero. Rapid subsequent software requests
-  were not reliably observed. The client now paces requests by 1 ms, and
-  the FCH EOS write is read back before RSM. These changes were tested
-  together, not isolated as separate causal experiments.
-- Third run: all 64 CPUs were armed; software command 80 returned without
-  manufacturing #MC; a zero write to already-zero bank 0 status returned;
-  CPU 0 remained armed after both. Bank counts varied by thread (17/24/28).
-  This does not prove that the zero write actually generated a WRMSR SMI.
-- SMM-side layout check: `FF00_match=1 FE00_match=0 revision=30064`. This
-  corrected the native saved-SMBASE writer: FE00 is the block base, FF00
-  the field. The correction is dead-stripped from the permanent handler;
-  the final rebuilt SMM image is byte-identical to the hardware-tested one.
-- All three runs booted Linux, enumerated the bench hardware, and powered
-  off. The final run had all 64 CPUs online, six NVMe controllers, EDAC
-  `ce=0 ue=0`, no kernel panic/Oops/BUG, and normal ACPI poweroff.
+Host tests:
 
-**One check still fails:** the real SMM KCS2 probe returned diagnostic state
-3, elapsed 32,096 us including client pacing. Its request nevertheless
-reached the BMC: logging entry 45 and serialized file
-`/var/lib/phosphor-logging/errors/45` exist, with
-`RECORD_TYPE=2`, `GENERATOR_ID=1`, `SENSOR_DATA=A34653`, `SENSOR_PATH=""`.
-Thus transport submission/storage were observed, but successful completion
-within the firmware budget was not. The final hardware helper correctly
-exits with one failure; this is not an all-green end-to-end RAS test. The
-BMC's legacy Get SEL Info cache did not reflect these unspecified-sensor
-logging entries. OEM E0 tests returned ID zero and created no logging entry.
+```sh
+cargo test -p fstart-driver-amd --features rome ras
+cargo test -p fstart-platform-sp3 --features acpi,rome,smm ras
+```
 
-These three observer boots injected no errors. Subsequent
-[native EINJ tests](amd-sp3-einj.md) produced real corrected DRAM errors,
-without exercising this #MC-only observer. Native #MC redirection,
-#MC-on-exit, the intercepted-write retry fallback, Milan and 2P remain
-unvalidated on hardware. See `tools/hwtest/README.md` for the distinction
-from Linux software injection.
+Covers arm/refusal/rollback, bank capture without clears, WRMSR replay rules,
+journal ordering and overflow, SEL encoding, diagnostic isolation.
 
-Final tested SMM SHA-256:
-`61999d5cecfb9d6be6a8f670e25b5288cc4e0144410789a785f0de240e1ee694`.
-Final test image lower-half SHA-256:
-`4d7f340d9be7c0c39a333d35cdada84729a05955a81855b0be618cc41dc8afd9`.
+Image audit: building the `smm` unit runs `audit_smm_blob`
+(`crates/image-build/src/smm_image.rs`). It rejects GOT indirects,
+non-relative relocations, undefined symbols and panic symbols.
 
-The **pre-test firmware was restored**, not left running this prototype.
-Its lower-half SHA-256 was verified after restoration:
-`55ee3e777f6e7bbb47d18873c64ff7d0ab4a5657489b51b4e7adc9067ec2401c`.
-The host was left off, SPI unbound from the BMC and the GPIO holder released;
-the bench lease was released. No host data disks were written.
+Hardware: `tools/hwtest/sp3-ras.c`, a static initramfs program. Prerequisites
+and run instructions are in [`tools/hwtest/README.md`](../tools/hwtest/README.md).
+It checks, on each online CPU, that PFEH is armed inside SMM and that the
+cloak and deferred masks are zero. It then does one software SMI `0x80`, one
+already-zero write to bank 0 status, and one SEL probe. It does not inject
+errors.
+
+It does **not** exercise native #MC redirection, #MC-on-exit, the WRMSR
+fallback or SEL delivery of MCA records. Software injection (`INT 18`,
+synthetic MCA status writes) is not a substitute.

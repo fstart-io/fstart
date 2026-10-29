@@ -419,7 +419,7 @@ fn ffs(
             page_size: Default::default(),
             external: true,
         }),
-        security: fstart_core::dev_security_config("keys/dev-signing.pub"),
+        security: fstart_core::default_security_config(),
         payload,
         microcode,
         data_assets: vec![],

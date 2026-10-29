@@ -40,7 +40,7 @@ pub use board::{
     FitParseMode, PayloadConfig, PayloadKind, Platform, QemuMachine, SocImageFormat,
 };
 pub use builder::{
-    dev_security_config, hstr, hvec, x86_coreboot_payload, x86_linux_payload, x86_uefi_payload,
+    default_security_config, hstr, hvec, x86_coreboot_payload, x86_linux_payload, x86_uefi_payload,
 };
 pub use const_vec::ConstVec;
 pub use device::BusAddress;

@@ -99,12 +99,11 @@ pub fn x86_coreboot_payload() -> PayloadConfig {
     }
 }
 
-/// Common development signing policy for board metadata.
+/// Ed25519 signatures over SHA-256 file digests.
 #[must_use]
-pub fn dev_security_config(pubkey_file: &str) -> SecurityConfig {
+pub fn default_security_config() -> SecurityConfig {
     SecurityConfig {
         signing_algorithm: SignatureAlgorithm::Ed25519,
-        pubkey_file: hstr(pubkey_file),
         required_digests: hvec([DigestAlgorithm::Sha256]),
     }
 }
