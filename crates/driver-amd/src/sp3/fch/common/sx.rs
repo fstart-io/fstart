@@ -8,9 +8,10 @@ use super::super::acpimmio::{
     AOAC_94, AOAC_94_SX, GPE0_EN, GPE0_STS, MISC, PM, PM1_CNT, PM1_STS, pm,
 };
 use super::super::smi::{self, CONTROL0, source};
-use super::super::{FchHw, Window, irq, update};
+use super::super::{FchHw, irq};
 use crate::smu::{Error as SmuError, SmuMessages};
 use crate::sp3::soc::Generation;
+use crate::window::{Window, update};
 
 /// FCH IOAPIC (index/data/pin assertion at `FEC0_0000h` + 0/10h/20h).
 pub const IOAPIC: u32 = 0xFEC0_0000;

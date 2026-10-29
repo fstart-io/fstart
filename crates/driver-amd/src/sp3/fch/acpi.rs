@@ -22,8 +22,9 @@ use fstart_acpi::aml_linker::device_vec;
 use fstart_acpi::{AmlError, BoundAmlFragment, acpi_dsl};
 use heapless::Vec as HVec;
 
-use super::{Window, irq, uart};
+use super::{irq, uart};
 use crate::fch::aml::GPIO_BASE;
+use crate::window::Window;
 
 /// DesignWare component type register (`*_COMP_TYPE`, offset 0xFC); the
 /// high half reads `"DW"` on a powered DesignWare block.

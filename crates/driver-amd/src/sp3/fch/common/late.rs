@@ -3,8 +3,9 @@
 
 use super::super::acpimmio::{PM, pm};
 use super::super::smi::{self, Route, source};
-use super::super::{FchHw, irq, uart, update};
+use super::super::{FchHw, irq, uart};
 use crate::sp3::soc::Generation;
+use crate::window::update;
 
 /// af70. `extra_routes` are board PCI_INTR overrides written after the
 /// generation's table (FCH_SP3 §9: the F0–F9 I2C/UART routes are board

@@ -8,9 +8,10 @@
 use fstart_core::indexed::Indexed;
 use tock_registers::interfaces::{Readable, Writeable};
 
+use super::FchHw;
 use super::acpimmio::{MISC, PM, pm};
-use super::{FchHw, Reg, Window, update};
 use crate::sp3::soc::Generation;
+use crate::window::{Reg, Window, indexed, update};
 
 /// AB index/data ports (PMxE0 = `CD8h`, FCH_SP3 §3.1 af41).
 pub const INDEX: u32 = 0xCD8;
@@ -18,8 +19,8 @@ pub const DATA: u32 = 0xCDC;
 /// Access type of the ABCFG space in the index.
 const ABCFG: u32 = 6 << 29;
 
-fn reg<I: Window>(io: &I, r: u32) -> Indexed<Reg<'_, I, u32>, Reg<'_, I, u32>> {
-    Indexed::new(io.reg(INDEX), io.reg(DATA), ABCFG | r)
+fn reg<I: Window>(io: &I, r: u32) -> Indexed<Reg<&I, u32>, Reg<&I, u32>> {
+    indexed(io, INDEX, DATA, ABCFG | r)
 }
 
 pub fn read<I: Window>(io: &I, r: u32) -> u32 {

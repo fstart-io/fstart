@@ -116,7 +116,7 @@ impl<B: Bus> Lpc<B> {
     pub unsafe fn new(bus: B) -> Self {
         Self { bus }
     }
-    pub fn reg<T: crate::fch::Value, R: RegisterLongName>(
+    pub fn reg<T: crate::window::Width, R: RegisterLongName>(
         &self,
         reg: Reg<T, R>,
     ) -> BusRegister<'_, B, T, R> {

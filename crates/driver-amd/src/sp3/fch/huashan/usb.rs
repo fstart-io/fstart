@@ -2,10 +2,11 @@
 //! controllers (FCH_SP3 §3.1 af48). Each socket's list goes to that
 //! socket's SMU.
 
-use super::super::{FchHw, hide_nbif_function, update};
+use super::super::{FchHw, hide_nbif_function};
 use crate::smu::{Error as SmuError, SmuMessages};
 use crate::sp3::nbio::nbif::func_strap0;
 use crate::sp3::soc::Generation;
+use crate::window::update;
 
 /// SMU V11 messages (`smu::v11::msg`).
 const USB_CONFIG_UPDATE: u32 = 0x13;

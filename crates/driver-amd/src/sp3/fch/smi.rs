@@ -9,8 +9,8 @@
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
-use super::Window;
 use super::acpimmio::{MISC, SMI, SMI_CMD};
+use crate::window::Window;
 
 pub const SCI_TRIG: u32 = SMI + 0x08;
 pub const SCI_LEVEL: u32 = SMI + 0x0C;

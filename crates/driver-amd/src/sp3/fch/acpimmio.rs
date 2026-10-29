@@ -9,7 +9,7 @@
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
-use super::Window;
+use crate::window::{Window, indexed};
 use fstart_core::indexed::Indexed;
 
 /// Host physical base of the primary FCH's block.
@@ -177,9 +177,9 @@ pub const PM_DATA: u32 = 0xCD7;
 pub struct PmIo<I>(pub I);
 
 impl<I: Window> PmIo<I> {
-    fn port(&self, off: u32) -> Indexed<super::Reg<'_, I, u8>, super::Reg<'_, I, u8>> {
+    fn port(&self, off: u32) -> Indexed<crate::window::Reg<&I, u8>, crate::window::Reg<&I, u8>> {
         debug_assert!((PM..PM + 0x100).contains(&off));
-        Indexed::new(self.0.reg(PM_INDEX), self.0.reg(PM_DATA), (off - PM) as u8)
+        indexed(&self.0, PM_INDEX, PM_DATA, (off - PM) as u8)
     }
 }
 

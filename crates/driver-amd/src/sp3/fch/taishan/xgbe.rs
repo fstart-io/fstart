@@ -2,8 +2,9 @@
 //! af49, §4.1). Only the disable path is recovered: the NBIF strap of each
 //! port's function is cleared and `1631F030 + 4n` bit 0 set.
 
-use super::super::{FchHw, hide_nbif_function, update};
+use super::super::{FchHw, hide_nbif_function};
 use crate::sp3::nbio::nbif::func_strap0;
+use crate::window::update;
 
 pub const PORTS: u32 = 4;
 

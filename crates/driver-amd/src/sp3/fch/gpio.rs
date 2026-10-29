@@ -16,8 +16,8 @@
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
-use super::Window;
 use super::acpimmio::{GPIO, IOMUX, REMOTE_GPIO};
+use crate::window::Window;
 
 register_bitfields![u32,
     /// FCH::GPIO::GPIOBank0Ctl (PPR 55570).

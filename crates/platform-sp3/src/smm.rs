@@ -127,8 +127,8 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
 
     fn disable_smi(&self) {
         use fstart_driver_amd::sp3::fch::FchHw;
-        use fstart_driver_amd::sp3::fch::Window;
         use fstart_driver_amd::sp3::fch::smi::TRIG0;
+        use fstart_driver_amd::window::Window;
         use tock_registers::interfaces::ReadWriteable;
         // SmiEnB: the FCH generates no SMI until `enable_smi`.
         self.fch
@@ -151,7 +151,8 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
 /// bit 1 cleared, SmiTrig0 bit 25 cleared, PSP SMI control = SMI.
 #[cfg(feature = "bundle-stage")]
 pub fn prepare_psp_smi(fch: &crate::hw::PrimaryFch) {
-    use fstart_driver_amd::sp3::fch::{FchHw, Window, acpimmio, update};
+    use fstart_driver_amd::sp3::fch::{FchHw, acpimmio};
+    use fstart_driver_amd::window::{Window, update};
     let acpi = fch.acpi();
     update::<u32, _>(acpi, acpimmio::SMI + 0x84, 0, 1 << 1);
     update::<u32, _>(acpi, acpimmio::SMI + 0x98, 1 << 25, 0);
@@ -183,8 +184,9 @@ mod handler {
     use fstart_driver_amd::sp3::fch::common::sx;
     use fstart_driver_amd::sp3::fch::smi::Source;
     use fstart_driver_amd::sp3::fch::smi::{self, source};
-    use fstart_driver_amd::sp3::fch::{Fch, FchHw, Mmio, Ports, Window, acpimmio, update};
+    use fstart_driver_amd::sp3::fch::{Fch, FchHw, acpimmio};
     use fstart_driver_amd::sp3::soc::Generation;
+    use fstart_driver_amd::window::{Mmio, Ports, Window, update};
     use fstart_pci::{ConfigRegionAccess, EcamDevice, PciAddress};
     use fstart_smm::SmmContext;
     use tock_registers::interfaces::Readable;

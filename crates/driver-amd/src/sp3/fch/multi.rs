@@ -20,15 +20,17 @@
 
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 
-use super::Window;
 use super::acpimmio::{self, PmIo};
 #[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 use super::{
     FchHw,
     acpimmio::{AoacDevice, PM, pm},
-    alink, update,
+    alink,
 };
 use crate::sp3::soc::Generation;
+use crate::window::Window;
+#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
+use crate::window::update;
 
 /// DF IO base/limit pair 0 (D18F0xC0/xC4) used for the temporary route.
 const DF_IO_BASE: u16 = 0xC0;
@@ -132,7 +134,7 @@ pub fn naples_die<H: FchHw>(hw: &H, policy: &NaplesDie, resume: bool) {
     let acpi = hw.acpi();
     // IOMUX 02h = 1 (byte-only: see the SMN caveat in `gpio`).
     acpi.write8(acpimmio::IOMUX + 2, 1);
-    super::apply(acpi, super::tables::CLOCK_GEN_NAPLES_SECONDARY);
+    crate::window::apply(acpi, super::tables::CLOCK_GEN_NAPLES_SECONDARY);
     sd_off(acpi);
     super::taishan::usb::reset(hw, policy.usb, resume);
     super::taishan::sata::reset(hw, policy.sata);

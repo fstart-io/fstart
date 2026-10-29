@@ -10,9 +10,10 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
 use super::super::gpio::{self, Direction, Pad, Pin, Pull};
-use super::super::{FchHw, SmnWindow, Window, irq, poll, update};
+use super::super::{FchHw, irq};
 use crate::sp3::nbio::nbif::func_strap0;
 use crate::sp3::soc::Generation;
+use crate::window::{SmnWindow, Window, poll, update};
 
 pub const CONTROLLERS: usize = 4;
 
