@@ -3,17 +3,19 @@
 //! AmdFabricZpPei/Dxe and the MMIO/IO distribution of AmdSocSp4ZpPei (sp4r2
 //! reports DF_ZP and SOC_DISPATCH). Each die has its own DF; what AGESA calls a
 //! broadcast access is a direct access repeated on every die. The MMIO/IO
-//! distribution is [`super::map::plan`].
+//! distribution is the [`super::plan`] ZP split ([`route_resources`]).
 use super::{
-    Df, DfReg, map,
+    Df, DfReg, Version, map,
+    plan::{self, Input, Plan, PlanError, Policy},
+    program,
     regs::{self, CFG_ACCESS_CTRL, CLOCK_GATING, DRAM_HOLE, GLOBAL_CTRL},
-    v2::{self, DRAM_BASE, DRAM_LIMIT, SYSTEM_CFG},
+    v2::{self, DRAM_BASE, DRAM_LIMIT, Df2, SYSTEM_CFG},
 };
 use crate::cpu::Revision;
 use crate::{
     apob::{Apob, mem},
     soc::Soc,
-    soc::zeppelin::{NONPCI_MMIO_SIZE, Zeppelin},
+    soc::zeppelin::{Die, ECAM, ECAM_BUSES, MAX_DIES, NONPCI_MMIO_SIZE, Zeppelin},
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -73,6 +75,43 @@ const INST_IOMS: u8 = 4;
 const INST_CS_DRAM_MAP: u8 = 5;
 
 const GIB: u64 = 1 << 30;
+
+/// Split MMIO and I/O over `dies` with the AGESA ZP equal split
+/// (AmdSocSp4ZpPei) and route them on every die, base, limit and control
+/// per rule.
+pub fn route_resources<P: ConfigRegionAccess + Copy>(
+    dies: &[Die<P>],
+    tom: u64,
+    tom2: u64,
+) -> Result<Plan, PlanError> {
+    let root_bridges = super::root_bridges(dies, (ECAM_BUSES - 1) as u8);
+    let input = Input {
+        tom,
+        tom2,
+        ecam_base: ECAM,
+        ecam_size: u64::from(ECAM_BUSES) << 20,
+        // The ZP split has a fixed above-4G limit.
+        phys_addr_bits: 48,
+        root_bridges: &root_bridges,
+        mmio_pairs: Df2::MMIO_PAIRS,
+    };
+    let plan = plan::plan(&input, &Policy::df2())?;
+    let nodes = nodes(dies);
+    program::mmio::<Df2, _>(&nodes, &plan.mmio);
+    program::io::<Df2, _>(&nodes, &plan.io);
+    Ok(plan)
+}
+
+/// Route the legacy VGA ranges to die 0's IOMS on every die.
+pub fn route_vga<P: ConfigRegionAccess + Copy>(dies: &[Die<P>]) {
+    if let Some(first) = dies.first() {
+        program::vga::<Df2, _>(&nodes(dies), first.ioms_fabric_id().into());
+    }
+}
+
+fn nodes<P: ConfigRegionAccess + Copy>(dies: &[Die<P>]) -> heapless::Vec<Df<P>, MAX_DIES> {
+    dies.iter().map(Die::df).collect()
+}
 
 /// The vendor code keeps the top 8 MiB of every die's below-4G window (pair
 /// 2 * die) as its non-PCI MMIO pool. On die 0 that's 0xfe400000-0xfebfffff.

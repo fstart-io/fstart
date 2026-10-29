@@ -11,11 +11,12 @@
 //! The DF3 numbers are pinned against `df3_plan()` in
 //! `sp3/tools/build_soc_df.py` (tests below).
 //!
-//! # Naples
+//! # Zeppelin and Naples
 //!
-//! [`Policy::naples`] is the AGESA ZP split run over all dies of both
-//! sockets (die 0 of socket 0 primary, 8 MiB Non-PCI per die below 4 GiB,
-//! above-4G limit 0x7FD_0000_0000, last above window to 2^48). The Naples
+//! [`Policy::df2`] is the AGESA ZP split (AmdFabricZp, the Zeppelin
+//! vendor firmware; SP4r2 `df_plan`) run over all dies of both sockets:
+//! die 0 of socket 0 primary, 8 MiB Non-PCI per die below 4 GiB, above-4G
+//! limit 0x7FD_0000_0000, last above window to 2^48. The SP3 Naples
 //! donor does not run that code: AMI's CrbPei writes an early map
 //! (0xED00_0000–0xFFFF_FFFF to die 0, 16 MiB per other die below it) and
 //! AMI's PciRootBridge rewrites one below-4G pair per die after its GCD
@@ -74,7 +75,7 @@ pub enum AboveLimit {
     Fixed(u64),
 }
 
-/// Planner policy. [`Policy::df3`] and [`Policy::naples`] are the donor
+/// Planner policy. [`Policy::df3`] and [`Policy::df2`] are the donor
 /// algorithms; boards add [`with_bus_counts`](Self::with_bus_counts) /
 /// [`with_io_sizes`](Self::with_io_sizes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,13 +88,15 @@ pub struct Policy {
     pub nonpci_below: u64,
     /// Non-PCI MMIO at the (256 MiB aligned) base of each above-4G window.
     pub nonpci_above: u64,
-    /// Above-4G windows smaller than this are not routed.
+    /// Root bridges whose above-4G share is smaller than this get no
+    /// above-4G window.
     pub above_min: u64,
     /// End of the last above-4G window (ZP: 2^48) instead of the limit.
     pub above_last_end: Option<u64>,
-    /// DF3 recomputes the share of the root bridges above and below the
-    /// ECAM per region; ZP reuses the global share.
-    pub per_region_share: bool,
+    /// DF3 recomputes the share of the root bridges above the ECAM from
+    /// that region; ZP keeps the global share there. Below the ECAM both
+    /// split the region itself (SP4r2 SOC_DISPATCH §4).
+    pub above_region_share: bool,
     /// Fixed window routed to the primary root bridge (0xFED0_0000, 64 KiB).
     pub spare: Option<Window>,
     /// PCI buses per root bridge, logical order (0 = keep).
@@ -113,23 +116,23 @@ impl Policy {
             nonpci_above: 0x2020_0000,
             above_min: 0x2020_0000,
             above_last_end: None,
-            per_region_share: true,
+            above_region_share: true,
             spare: Some(Window::new(0xFED0_0000, 0x1_0000)),
             bus_counts: None,
             io_sizes: None,
         }
     }
 
-    /// AGESA ZP split over all Naples dies (see the module docs).
-    pub const fn naples() -> Self {
+    /// AGESA ZP split over every Zeppelin/Naples die (see the module docs).
+    pub const fn df2() -> Self {
         Self {
             above_limit: AboveLimit::Fixed(0x7FD_0000_0000),
             above_cap: None,
             nonpci_below: 8 * MIB,
             nonpci_above: 0,
-            above_min: 1,
+            above_min: 0x1_0000,
             above_last_end: Some(1 << 48),
-            per_region_share: false,
+            above_region_share: false,
             spare: Some(Window::new(0xFED0_0000, 0x1_0000)),
             bus_counts: None,
             io_sizes: None,
@@ -389,7 +392,7 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
             q += 1;
         }
         let q = q.max(1);
-        let pa = if policy.per_region_share {
+        let pa = if policy.above_region_share {
             (above / q) & ALIGN_16M
         } else {
             per16
@@ -411,11 +414,7 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
         } else if !below_small {
             if k == n_above && k > 0 {
                 let m = n - k;
-                let pb = if policy.per_region_share {
-                    (below / m) & ALIGN_16M
-                } else {
-                    per16
-                };
+                let pb = (below / m) & ALIGN_16M;
                 per_below = Some(pb);
                 size = below - pb * (m - 1);
                 cursor = cfg_base;
@@ -496,12 +495,13 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
         let mut cur = base4;
         // Physical order: the input order.
         for i in 0..rbs.len() {
-            let sz = if i == rbs.len() - 1 {
-                policy.above_last_end.unwrap_or(limit) - cur
-            } else {
-                per_rb
+            let last = i == rbs.len() - 1;
+            let share = if last { limit - cur } else { per_rb };
+            let sz = match policy.above_last_end {
+                Some(end) if last => end - cur,
+                _ => share,
             };
-            if sz >= policy.above_min {
+            if share >= policy.above_min {
                 above_w[i] = Some(Window::new(cur, sz));
                 push(2 * slot[i] + 1, Window::new(cur, sz), rbs[i].fabric_id)?;
             }
@@ -810,6 +810,105 @@ mod tests {
         assert_eq!(pairs, [0, 1, 2, 3, 4, 5, 6, 8]);
     }
 
+    /// The windows of SP4r2's executable model of the AGESA ZP split
+    /// (`tools/build_soc_dispatch.py`, `df_plan`), one socket.
+    #[test]
+    fn df2_matches_the_agesa_zp_model() {
+        let zp = |tom, tom2, ecam_size, dies: u8| {
+            let r: std::vec::Vec<RootBridge> = (0..dies)
+                .map(|d| RootBridge {
+                    socket: 0,
+                    index: d,
+                    fabric_id: u16::from(d) << 5,
+                    bus_base: d * 0x20,
+                    bus_limit: d * 0x20 + 0x1F,
+                    primary: d == 0,
+                })
+                .collect();
+            let i = Input {
+                tom,
+                tom2,
+                ecam_base: 0xF000_0000,
+                ecam_size,
+                phys_addr_bits: 48,
+                root_bridges: &r,
+                mmio_pairs: 16,
+            };
+            let plan = plan(&i, &Policy::df2()).unwrap();
+            (mmio(&plan), io(&plan))
+        };
+        // MJ11-EC1: one die, TOM 0xE000_0000, TOM2 0x4_2000_0000, 128 buses.
+        assert_eq!(
+            zp(0xE000_0000, 0x4_2000_0000, 128 * MIB, 1),
+            (
+                std::vec![
+                    (0, 0xF800_0000, 0xFEC0_0000, 0),
+                    (1, TIB, 1 << 48, 0),
+                    (2, 0xE000_0000, 0xF000_0000, 0),
+                    (4, 0xFED0_0000, 0xFED1_0000, 0),
+                ],
+                std::vec![(0, 0, 0x200_0000)]
+            )
+        );
+        // Two dies: the region above the ECAM is too small for a share.
+        assert_eq!(
+            zp(0xE000_0000, 0x4_2000_0000, 128 * MIB, 2),
+            (
+                std::vec![
+                    (0, 0xE800_0000, 0xF000_0000, 0),
+                    (1, TIB, 0x47E_8000_0000, 0),
+                    (2, 0xE000_0000, 0xE800_0000, 0x20),
+                    (3, 0x47E_8000_0000, 1 << 48, 0x20),
+                    (4, 0xF800_0000, 0xFEC0_0000, 0),
+                    (6, 0xFED0_0000, 0xFED1_0000, 0),
+                ],
+                std::vec![(0, 0, 0x8000), (1, 0x8000, 0x200_0000)]
+            )
+        );
+        // Four dies, 2 GiB below 4 GiB: the share below the ECAM is that
+        // region's, not the global one.
+        let (mmio4, io4) = zp(0x8000_0000, 0x20_0000_0000, 128 * MIB, 4);
+        assert_eq!(
+            mmio4,
+            [
+                (0, 0xD400_0000, 0xF000_0000, 0),
+                (1, TIB, 0x2BF_4000_0000, 0),
+                (2, 0xB800_0000, 0xD400_0000, 0x20),
+                (3, 0x2BF_4000_0000, 0x47E_8000_0000, 0x20),
+                (4, 0x9C00_0000, 0xB800_0000, 0x40),
+                (5, 0x47E_8000_0000, 0x63D_C000_0000, 0x40),
+                (6, 0x8000_0000, 0x9C00_0000, 0x60),
+                (7, 0x63D_C000_0000, 1 << 48, 0x60),
+                (8, 0xF800_0000, 0xFEC0_0000, 0),
+                (10, 0xFED0_0000, 0xFED1_0000, 0),
+            ]
+        );
+        assert_eq!(
+            io4,
+            [
+                (0, 0, 0x4000),
+                (1, 0x4000, 0x7000),
+                (2, 0x7000, 0xA000),
+                (3, 0xA000, 0x200_0000)
+            ]
+        );
+        let (mmio4, _) = zp(0xC000_0000, 0x1_2000_0000, 64 * MIB, 4);
+        assert_eq!(
+            mmio4,
+            [
+                (0, 0xF400_0000, 0xFEC0_0000, 0),
+                (1, TIB, 0x2BF_4000_0000, 0),
+                (2, 0xE000_0000, 0xF000_0000, 0x20),
+                (3, 0x2BF_4000_0000, 0x47E_8000_0000, 0x20),
+                (4, 0xD000_0000, 0xE000_0000, 0x40),
+                (5, 0x47E_8000_0000, 0x63D_C000_0000, 0x40),
+                (6, 0xC000_0000, 0xD000_0000, 0x60),
+                (7, 0x63D_C000_0000, 1 << 48, 0x60),
+                (8, 0xFED0_0000, 0xFED1_0000, 0),
+            ]
+        );
+    }
+
     #[test]
     fn naples_sp4_worked_example() {
         // SP4r2 SOC_DISPATCH §4: 2 dies, TOM 0xE000_0000, TOM2 4.5 GiB,
@@ -833,7 +932,7 @@ mod tests {
             root_bridges: &r,
             mmio_pairs: 16,
         };
-        let plan = plan(&i, &Policy::naples()).unwrap();
+        let plan = plan(&i, &Policy::df2()).unwrap();
         assert_eq!(
             mmio(&plan),
             [
@@ -871,7 +970,7 @@ mod tests {
             root_bridges: &r,
             mmio_pairs: 16,
         };
-        let plan = plan(&i, &Policy::naples()).unwrap();
+        let plan = plan(&i, &Policy::df2()).unwrap();
         assert_eq!(plan.mmio.len(), 16);
         assert_eq!(plan.mmio[15].fabric_id, 0xE4);
         assert_eq!(plan.mmio[15].window.end(), 1 << 48);

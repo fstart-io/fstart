@@ -40,7 +40,7 @@ pub mod v2;
 pub mod zeppelin;
 
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
-pub use die::{Die, die_count, dies};
+pub use die::{Die, die_count, dies, root_bridges};
 
 /// Most root bridges a system has: 2 sockets × 4 (Naples dies, Rome/Milan
 /// NBIO quadrants).

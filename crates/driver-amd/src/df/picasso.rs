@@ -2,9 +2,10 @@
 //! Native Picasso Data Fabric sequencing (AGESA AmdFabricRv).
 use super::{
     Df, DfRecord, DfReg, apply_df, df_rmw, df_write,
-    map::{self, IO_PAIRS, MMIO_PAIRS, Plan, Window, io_route, mmio_route},
-    regs,
-    v2::{DRAM_BASE, dram_base},
+    map::{self, IO_PAIRS, MMIO_PAIRS, io_route, mmio_route},
+    plan::{IoRoute, MmioRoute, Window},
+    program, regs,
+    v2::{DRAM_BASE, Df2, dram_base},
 };
 use crate::soc::picasso::Die;
 use fstart_pci::ConfigRegionAccess;
@@ -19,7 +20,13 @@ pub enum Error {
     NoIoWindow,
 }
 
-/// The windows [`ensure_legacy_routes`] adds to the PSP-established ones:
+/// The routes [`ensure_legacy_routes`] adds to the PSP-established ones.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LegacyRoutes {
+    pub mmio: Option<MmioRoute>,
+    pub io: Option<IoRoute>,
+}
+
 /// MMIO from `low_top` up to the IOAPIC and I/O 0-0xffff to the IOMS
 /// `ioms`, each on the first free pair, unless a window covers it already.
 /// Fails without a free pair for a missing window.
@@ -27,7 +34,7 @@ pub fn legacy_routes(
     fabric: &Df<impl ConfigRegionAccess>,
     ioms: u8,
     low_top: u32,
-) -> Result<Plan, Error> {
+) -> Result<LegacyRoutes, Error> {
     let low_top = u64::from(low_top);
     if low_top == 0 || low_top >= IOAPIC || low_top & 0xffff != 0 {
         return Err(Error::MemoryBoundary);
@@ -44,28 +51,30 @@ pub fn legacy_routes(
         .iter()
         .any(|r| routed(r) && r.base == 0 && r.end() >= 0x1_0000);
     let free = |routes: &[map::Route]| routes.iter().position(map::Route::free).map(|i| i as u8);
-    let mut plan = Plan::default();
-    if !have_mmio {
-        let pair = free(&mmio).ok_or(Error::NoMmioWindow)?;
-        let window = Window {
-            pair,
-            base: low_top,
-            size: IOAPIC - low_top,
-            die: 0,
-        };
-        plan.mmio.push(window).map_err(|_| Error::NoMmioWindow)?;
-    }
-    if !have_io {
-        let pair = free(&io).ok_or(Error::NoIoWindow)?;
-        let window = Window {
-            pair,
-            base: 0,
-            size: 0x1_0000,
-            die: 0,
-        };
-        plan.io.push(window).map_err(|_| Error::NoIoWindow)?;
-    }
-    Ok(plan)
+    let fabric_id = u16::from(ioms);
+    let mmio = (!have_mmio)
+        .then(|| {
+            let pair = free(&mmio).ok_or(Error::NoMmioWindow)?;
+            let window = Window::new(low_top, IOAPIC - low_top);
+            Ok(MmioRoute {
+                pair,
+                window,
+                fabric_id,
+            })
+        })
+        .transpose()?;
+    let io = (!have_io)
+        .then(|| {
+            let pair = free(&io).ok_or(Error::NoIoWindow)?;
+            let window = Window::new(0, 0x1_0000);
+            Ok(IoRoute {
+                pair,
+                window,
+                fabric_id,
+            })
+        })
+        .transpose()?;
+    Ok(LegacyRoutes { mmio, io })
 }
 
 /// Route peripheral MMIO and I/O to IOMS, preserving PSP-established windows.
@@ -74,9 +83,11 @@ pub fn ensure_legacy_routes(
     die: &Die<impl ConfigRegionAccess + Copy>,
     low_top: u32,
 ) -> Result<(), Error> {
-    let plan = legacy_routes(&die.df(), die.ioms_fabric_id(), low_top)?;
-    map::program(&plan, core::slice::from_ref(die));
-    map::route_vga(&die.df(), die.ioms_fabric_id());
+    let routes = legacy_routes(&die.df(), die.ioms_fabric_id(), low_top)?;
+    let df = [die.df()];
+    program::mmio::<Df2, _>(&df, routes.mmio.as_slice());
+    program::io::<Df2, _>(&df, routes.io.as_slice());
+    program::vga::<Df2, _>(&df, die.ioms_fabric_id().into());
     Ok(())
 }
 

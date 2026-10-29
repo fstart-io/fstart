@@ -11,8 +11,7 @@ use fstart_driver_amd::cpu::{Package, Revision};
 use fstart_driver_amd::{
     apob::Apob,
     ccx::{self, CacWeights, Thread},
-    df::{self, map},
-    dxio,
+    df, dxio,
     fch::{Bus, Fch, early, taishan},
     nbio::{self, iohc, iommu},
     psp,
@@ -92,18 +91,16 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     let count = dies.len() as u8;
     // DF MMIO/IO distribution, then the per-die DF init.
     let tom2 = top_mem2.unwrap_or(0);
-    let plan = map::plan(top_mem, tom2, u64::from(soc::ECAM_BUSES) << 20, count)
-        .map_err(|_| "DF MMIO plan")?;
-    for w in &plan.mmio {
+    let plan = df::zeppelin::route_resources(dies, top_mem, tom2).map_err(|_| "DF MMIO plan")?;
+    for r in &plan.mmio {
         fstart_log::debug!(
-            "DF MMIO pair {}: {}..{} -> die {}",
-            w.pair,
-            Hex(w.base),
-            Hex(w.end()),
-            w.die
+            "DF MMIO pair {}: {}..{} -> {}",
+            r.pair,
+            Hex(r.window.base),
+            Hex(r.window.end()),
+            Hex(r.fabric_id.into())
         );
     }
-    map::program(&plan, dies);
     let mut nonpci = [0; MAX_DIES];
     for die in dies {
         nonpci[usize::from(die.index())] =
@@ -265,8 +262,8 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
         if let Some(apob) = apob {
             df::zeppelin::late_init(&die.df(), count, sockets, revision, apob);
         }
-        map::route_vga(&die.df(), dies[0].ioms_fabric_id());
     }
+    df::zeppelin::route_vga(dies);
     for die in dies {
         nbio::zeppelin::pre_enumeration_init(die);
     }
