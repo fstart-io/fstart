@@ -290,6 +290,9 @@ mod stage {
                 QEMU_Q35_PLATFORM_NODE,
             );
 
+            // QEMU fills the FADT PM blocks from PMBASE when it builds the
+            // tables on this first read.
+            self.hostbridge.setup_ich9_pm_io()?;
             // SAFETY: firmware init is single-threaded; this buffer is written once.
             let acpi = unsafe { &mut (*core::ptr::addr_of_mut!(ACPI_BUFFER)).0 };
             self.acpi_rsdp = Some(self.fw_cfg.load_acpi_tables(acpi)?);
@@ -410,6 +413,14 @@ mod stage {
             })
             .map_err(|_| ServiceError::HardwareError)?;
             if let Some(image) = SMM_IMAGE {
+                #[cfg(feature = "tpm")]
+                fstart_tcg::measure_blob(
+                    0,
+                    fstart_tcg::event::EV_POST_CODE2,
+                    fstart_tcg::event::post_code::SMM_CODE,
+                    image.as_ptr() as u64,
+                    image,
+                );
                 let smi = crate::q35_smm::ich9_smi();
                 let smm = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
                     "Q35",
@@ -421,6 +432,61 @@ mod stage {
                 if let Err(error) = smm.install(&mp, image) {
                     fstart_log::error!("Q35 SMM installation failed: {}", error.name());
                     return Err(ServiceError::HardwareError);
+                }
+            }
+            Ok(())
+        }
+
+        /// Start measured boot when QEMU has a TPM: its TPM2 or TCPA table
+        /// then points at the `etc/tpm/log` area loaded into the ACPI
+        /// buffer, which becomes the event log. The TPM must speak the FIFO
+        /// interface (`tpm-tis`).
+        #[cfg(feature = "tpm")]
+        fn init_tpm(&mut self) -> Result<(), ServiceError> {
+            use fstart_driver_tpm::tis::{self, Tis};
+            let Some((offset, size)) = crate::fw_cfg::acpi_allocation("etc/tpm/log") else {
+                fstart_log::info!("qemu-q35: no TPM");
+                return Ok(());
+            };
+            static mut TIS: Option<Tis<fstart_arch::x86::Udelay>> = None;
+            // SAFETY: QEMU decodes the TIS window when it describes a TPM,
+            // and nothing else drives it.
+            let tis = unsafe { Tis::new(tis::BASE, fstart_arch::x86::Udelay) };
+            let Some(id) = tis.probe() else {
+                fstart_log::warn!("qemu-q35: TPM tables, but no FIFO TPM at {:#x}", tis::BASE);
+                return Ok(());
+            };
+            if tis.is_crb() {
+                fstart_log::warn!("qemu-q35: CRB TPMs are not supported (use tpm-tis)");
+                return Ok(());
+            }
+            fstart_log::info!(
+                "qemu-q35: TPM {:#x}:{:#x} revision {}",
+                id.vendor,
+                id.device,
+                id.revision
+            );
+            // SAFETY: single-threaded init; the slot is written once.
+            let tis = unsafe { (*core::ptr::addr_of_mut!(TIS)).insert(tis) };
+            // SAFETY: the table loader placed the log area inside
+            // ACPI_BUFFER, a firmware static reserved from the OS; nothing
+            // else references it.
+            let log = unsafe {
+                core::slice::from_raw_parts_mut(
+                    (core::ptr::addr_of_mut!(ACPI_BUFFER) as *mut u8).add(offset),
+                    size,
+                )
+            };
+            let uefi = cfg!(fstart_payload = "crabefi");
+            match fstart_tcg::start(tis, log, fstart_tcg::PlatformClass::Client, uefi) {
+                Ok(_) => fstart_stage::tcg::measure_srtm(fstart_stage::tcg::CRTM_VERSION, "stage"),
+                Err(error) => {
+                    error.report();
+                    if error.remedy() == fstart_tcg::Remedy::Halt {
+                        return Err(ServiceError::HardwareError);
+                    }
+                    // QEMU's own ACPI describes the TPM: it cannot be hidden.
+                    fstart_log::warn!("qemu-q35: measured boot off");
                 }
             }
             Ok(())
@@ -480,6 +546,15 @@ mod stage {
 
         fn acpi_rsdp(&self) -> Option<u64> {
             self.acpi_rsdp
+        }
+
+        fn acpi_region(&self) -> Option<(u64, u64)> {
+            self.acpi_rsdp.map(|_| {
+                (
+                    core::ptr::addr_of!(ACPI_BUFFER) as u64,
+                    QEMU_Q35_ACPI_BUFFER_SIZE as u64,
+                )
+            })
         }
 
         fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
@@ -581,6 +656,8 @@ mod stage {
         phase("console", || mainstage.init_console::<B>());
         phase("memory_detect", || mainstage.detect_memory_and_tables());
         phase("mount_boot_media", || mainstage.mount_boot_media());
+        #[cfg(feature = "tpm")]
+        phase("tpm", || mainstage.init_tpm());
         phase("bus_scan", || mainstage.init_pci());
         phase("display", || mainstage.init_display());
         phase("mp_smm", || mainstage.init_mp_smm());

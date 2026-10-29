@@ -32,3 +32,4 @@ cargo fbuild assemble --board qemu-riscv64 --signing-key signing.pem
 ## Documentation
 
 - **[Pineview boards](docs/pineview-boards.md)** — build selections, driver policy and hardware-validation limits.
+- **[Measured boot](docs/measured-boot.md)** — TPM 1.2 and 2.0, the TCG event log and what each payload continues.

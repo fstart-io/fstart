@@ -313,7 +313,6 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
         self.read_file(loader_sel, &mut loader_buf[..loader_size as usize]);
         fstart_log::info!("fw_cfg: {} table-loader commands", cmd_count as u32);
 
-        static mut ALLOCS: [Option<AllocEntry>; 32] = [const { None }; 32];
         // SAFETY: single-threaded firmware init.
         let allocs = unsafe { &mut *core::ptr::addr_of_mut!(ALLOCS) };
         allocs.fill(None);
@@ -464,6 +463,18 @@ fn publish_mtrr_wb_ranges(entries: &[E820Entry]) -> Result<(), ServiceError> {
     )?;
     let _ = entries;
     Ok(())
+}
+
+/// The table-loader allocations of the last [`QemuFwCfg::load_acpi_tables`].
+static mut ALLOCS: [Option<AllocEntry>; 32] = [const { None }; 32];
+
+/// Offset and size, in the buffer given to [`QemuFwCfg::load_acpi_tables`],
+/// of the table-loader file `name` (for example `etc/tpm/log`, the TCG event
+/// log area QEMU's TPM2/TCPA table points to).
+pub fn acpi_allocation(name: &str) -> Option<(usize, usize)> {
+    // SAFETY: single-threaded firmware init; written only by the loader.
+    let allocs = unsafe { &*core::ptr::addr_of!(ALLOCS) };
+    find_alloc_entry_by_name(allocs, name.as_bytes()).map(|entry| (entry.offset, entry.size))
 }
 
 #[derive(Clone)]
