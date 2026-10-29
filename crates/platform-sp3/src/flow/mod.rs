@@ -53,9 +53,10 @@ use fstart_core::description::PciRootInfo;
 use fstart_core::services::memory_detect::{E820Kind, E820State};
 use fstart_driver_amd::apob::sysmap::{self, Region};
 use fstart_driver_amd::apob::{self, Apob};
-use fstart_driver_amd::sp3::df::plan::{self, Plan};
+use fstart_driver_amd::df::plan::{self, Plan};
+use fstart_driver_amd::df::{Version, program};
 use fstart_driver_amd::sp3::df::topology::{self, Topology};
-use fstart_driver_amd::sp3::df::{BusRange, Df, program};
+use fstart_driver_amd::sp3::df::{self as sp3_df, Df};
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch::rom3::{self, FlashMap, Rom3};
@@ -95,10 +96,8 @@ compile_error!("a stage build enables at least one of naples, rome, milan");
 /// Milan). Each module implements them as free functions of the same
 /// names, bound by [`steps!`].
 pub(crate) trait Steps: Sized {
-    /// DF MMIO base/limit pairs per node.
-    const MMIO_PAIRS: u8;
-    fn bus_maps(df: &Df<Pci>, topology: &mut Topology, ranges: &[BusRange]);
-    fn program_maps(df: &Df<Pci>, topology: &Topology, plan: &Plan);
+    /// The DF version's rule layout.
+    type DfLayout: Version;
     fn df_init(ctx: &mut Ctx);
     fn nbio_early(ctx: &mut Ctx) -> Self;
     fn smu_init(ctx: &mut Ctx, si: &mut Self);
@@ -145,13 +144,7 @@ pub(crate) struct NumaPlan {
 macro_rules! steps {
     () => {
         impl super::Steps for Silicon {
-            const MMIO_PAIRS: u8 = MMIO_PAIRS;
-            fn bus_maps(df: &Df<Pci>, topology: &mut Topology, ranges: &[BusRange]) {
-                bus_maps(df, topology, ranges)
-            }
-            fn program_maps(df: &Df<Pci>, topology: &Topology, plan: &Plan) {
-                program_maps(df, topology, plan)
-            }
+            type DfLayout = DfVersion;
             fn df_init(ctx: &mut Ctx) {
                 df_init(ctx)
             }
@@ -1098,7 +1091,7 @@ fn data_fabric<S: Steps>(ctx: &mut Ctx) {
     if let Some(ranges) =
         plan::plan_buses(&topology.root_bridges, &ctx.policy.df).or_halt("DF bus plan")
     {
-        S::bus_maps(&ctx.df, &mut topology, &ranges);
+        sp3_df::program::bus_maps::<S::DfLayout, _>(&ctx.df, &mut topology, &ranges);
     }
     ctx.phys_addr_bits = phys_addr_bits(ctx.generation, ctx.policy.ccx.smee);
     let plan = plan::plan(
@@ -1109,12 +1102,16 @@ fn data_fabric<S: Steps>(ctx: &mut Ctx) {
             ecam_size: ctx.pci_root.ecam_size(),
             phys_addr_bits: ctx.phys_addr_bits,
             root_bridges: &topology.root_bridges,
-            mmio_pairs: S::MMIO_PAIRS,
+            mmio_pairs: <S::DfLayout as Version>::MMIO_PAIRS,
         },
         &ctx.policy.df,
     )
     .or_halt("DF plan");
-    S::program_maps(&ctx.df, &topology, &plan);
+    // SAFETY: the BSP owns every node's DF during the silicon init.
+    let nodes = unsafe { ctx.df.each(&topology.nodes) };
+    program::mmio::<S::DfLayout, _>(&nodes, &plan.mmio);
+    program::io::<S::DfLayout, _>(&nodes, &plan.io);
+    program::vga::<S::DfLayout, _>(&nodes, topology.primary().fabric_id);
     for rb in &plan.root_bridges {
         fstart_log::info!(
             "df: rb {}.{} buses {:#x}-{:#x} mmio {:#x}+{:#x}",
@@ -1320,7 +1317,7 @@ fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) {
     use fstart_driver_amd::psp::command::{BootDone, C2pBuffer, LockDfReg};
     fch::common::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
     S::fch_late(ctx, si);
-    program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
+    sp3_df::program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
     let psp = psp(ctx);
     psp.send(&ctx.timer, &mut C2pBuffer::new(LockDfReg))
         .or_halt("PSP LockDFReg");

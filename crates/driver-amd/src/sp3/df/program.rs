@@ -1,71 +1,16 @@
-//! Writers for a [`Plan`](super::plan::Plan): MMIO and I/O rules, bus maps,
-//! VGA routing and the ReadyToBoot lock-down (SOC_DF §3.4.4, §3.7).
-//!
-//! Every DF node gets the same routing (AGESA writes each rule on every
-//! node, IC). The ABL leaves no MMIO/IO rules that the plan must clear on
-//! Rome/Milan (the SoC PEIM writes only planned pairs, as here).
+//! The SP3 bus-map rewrite and the ReadyToBoot lock-down (SOC_DF §3.4.4,
+//! §3.7). The MMIO, I/O and VGA rules are [`crate::df::program`].
 
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 
-use super::plan::{IoRoute, MmioRoute};
 use super::topology::Topology;
 use super::{BusRange, Df, Target, Version};
-use crate::df::regs::{self, CFG_ACCESS_CTRL, CFG_ADDR_CTL, IO_BASE};
+use crate::df::regs::{self, CFG_ACCESS_CTRL, CFG_ADDR_CTL};
 use crate::sp3::topology::Node;
 
 fn node_ids(nodes: &[Node]) -> impl Iterator<Item = u8> + '_ {
     nodes.iter().map(|n| n.device - crate::df::NODE0_DEVICE)
-}
-
-/// Program MMIO rules on every node: base, then limit, then control
-/// (`ffe204c5`, IC). Bases are 64 KiB aligned up, limits inclusive.
-pub fn mmio<V: Version, P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
-    nodes: &[Node],
-    routes: &[MmioRoute],
-) {
-    for r in routes {
-        let base = r.window.base.next_multiple_of(0x1_0000);
-        let limit = base + r.window.size - 1;
-        for node in node_ids(nodes) {
-            // SAFETY: MMIO rule `pair` (< V::MMIO_PAIRS, checked by the
-            // planner) of an existing node.
-            unsafe {
-                df.node(node, regs::MMIO_BASE.at(r.pair, regs::MMIO_STRIDE))
-                    .set((base >> 16) as u32);
-                df.node(node, regs::MMIO_LIMIT.at(r.pair, regs::MMIO_STRIDE))
-                    .set((limit >> 16) as u32);
-                df.node(node, V::mmio_ctrl_reg(r.pair))
-                    .write(V::mmio_ctrl(r.fabric_id));
-            }
-        }
-    }
-}
-
-/// Program I/O rules on every node: base before limit, as the SoC writer
-/// does (`ffe205ee`, IC; Oxide writes the limit first).
-pub fn io<V: Version, P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
-    nodes: &[Node],
-    routes: &[IoRoute],
-) {
-    for r in routes {
-        let last = (r.window.end() - 1) as u32;
-        for node in node_ids(nodes) {
-            // SAFETY: I/O rule `pair` (< 8) of an existing node.
-            unsafe {
-                df.node(node, regs::IO_BASE.at(r.pair, regs::IO_STRIDE))
-                    .write(
-                        IO_BASE::RE::SET
-                            + IO_BASE::WE::SET
-                            + IO_BASE::BASE.val((r.window.base >> 12) as u32),
-                    );
-                df.node(node, V::io_limit_reg(r.pair))
-                    .write(V::io_limit(last, r.fabric_id));
-            }
-        }
-    }
 }
 
 /// The copies of CfgAddressMap/CfgAddressCntl a bus-map rewrite touches:
@@ -93,7 +38,7 @@ pub fn bus_map_targets(topology: &Topology) -> heapless::Vec<Target, 16> {
 }
 
 /// Rewrite the bus maps for `ranges` (physical order, from
-/// [`plan_buses`](super::plan::plan_buses)) and update `topology`.
+/// [`plan_buses`](crate::df::plan::plan_buses)) and update `topology`.
 ///
 /// AGESA's sequence (`ffe1e526`, IC for the writes): clear the eight
 /// CfgAddressMap registers and CfgAddressCntl on every target of every
@@ -139,15 +84,6 @@ pub fn bus_maps<V: Version, P: ConfigRegionAccess + Clone>(
     }
 }
 
-/// Route the legacy VGA window (0xA0000–0xBFFFF, VGA ports) to `fabric_id`
-/// on every node (AmdFabricSspDxe `0x700c`; DF_ZP §3.11).
-pub fn vga<V: Version, P: ConfigRegionAccess + Clone>(df: &Df<P>, nodes: &[Node], fabric_id: u16) {
-    for node in node_ids(nodes) {
-        // SAFETY: VGAEn of an existing node.
-        unsafe { df.node(node, V::vga_reg()) }.modify(V::vga(fabric_id));
-    }
-}
-
 /// ReadyToBoot: clear F4x44 bit 0 ("extended configuration access") on
 /// every node (SOC_DF §3.7, all generations). AGESA also records it in the
 /// S3 boot script; a resume path must repeat it.
@@ -161,10 +97,11 @@ pub fn ready_to_boot<P: ConfigRegionAccess + Clone>(df: &Df<P>, nodes: &[Node]) 
 #[cfg(all(test, feature = "rome"))]
 mod tests {
     use super::super::model::DfModel;
-    use super::super::plan::Window;
     use super::super::topology::{discover, tests::df3_system};
     use super::super::v3::Df3;
     use super::*;
+    use crate::df::plan::{IoRoute, MmioRoute, Window};
+    use crate::df::program::{io, mmio, vga};
     use crate::sp3::soc::Generation;
 
     #[test]
@@ -178,10 +115,10 @@ mod tests {
             window: Window::new(0xF000_0000, 0xEC0_0000),
             fabric_id: 0x1B,
         }];
-        mmio::<Df3, _>(&df, &t.nodes, &mmio_routes);
+        let nodes = unsafe { df.each(&t.nodes) };
+        mmio::<Df3, _>(&nodes, &mmio_routes);
         io::<Df3, _>(
-            &df,
-            &t.nodes,
+            &nodes,
             &[IoRoute {
                 pair: 3,
                 window: Window::new(0, 0x4000),
@@ -241,7 +178,7 @@ mod tests {
         }];
         m.set(0, None, 0, 0x80, 0xFFFF_FFFF);
         m.set(0, None, 4, 0x44, 0x1001);
-        vga::<Df3, _>(&df, &nodes, 0x1B);
+        vga::<Df3, _>(&unsafe { df.each(&nodes) }, 0x1B);
         ready_to_boot(&df, &nodes);
         assert_eq!(m.get(0, None, 0, 0x80), 0xFFFF_C1BB);
         assert_eq!(m.get(0, None, 4, 0x44), 0x1000);

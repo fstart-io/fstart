@@ -30,8 +30,7 @@
 
 use heapless::Vec;
 
-use super::BusRange;
-use crate::sp3::topology::{MAX_ROOT_BRIDGES, RootBridge};
+use super::{BusRange, MAX_ROOT_BRIDGES, RootBridge};
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;

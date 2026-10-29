@@ -8,6 +8,7 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::df::regs;
+use fstart_driver_amd::df::v2::Df2;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
 use fstart_driver_amd::smn::Smn;
@@ -16,10 +17,6 @@ use fstart_driver_amd::smu::v9;
 use fstart_driver_amd::sp3::ccx::release::{self, Launch, SmuPwr};
 use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
 use fstart_driver_amd::sp3::ccx::{ApInputs, Ccx, brand, mca, power, security};
-use fstart_driver_amd::sp3::df::plan::Plan;
-use fstart_driver_amd::sp3::df::topology::Topology;
-use fstart_driver_amd::sp3::df::v2::Df2;
-use fstart_driver_amd::sp3::df::{BusRange, Df, Version, program};
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
@@ -44,7 +41,7 @@ use crate::mp::{Sp3Cpu, release_all, this_thread};
 
 super::steps!();
 
-pub(crate) const MMIO_PAIRS: u8 = <Df2 as Version>::MMIO_PAIRS;
+pub(crate) type DfVersion = Df2;
 
 /// SMU V9 mailbox of one die.
 pub(crate) type Smu = SmuMailbox<Pci, Tsc>;
@@ -58,17 +55,6 @@ pub struct Silicon {
 
 const IOMMU_BAR: u64 = 512 << 10;
 const IOAPIC_BAR: u64 = 0x1000;
-
-pub(crate) fn bus_maps(df: &Df<Pci>, topology: &mut Topology, ranges: &[BusRange]) {
-    program::bus_maps::<Df2, _>(df, topology, ranges);
-}
-
-pub(crate) fn program_maps(df: &Df<Pci>, topology: &Topology, plan: &Plan) {
-    program::mmio::<Df2, _>(df, &topology.nodes, &plan.mmio);
-    program::io::<Df2, _>(df, &topology.nodes, &plan.io);
-    let primary = topology.primary().fabric_id;
-    program::vga::<Df2, _>(df, &topology.nodes, primary);
-}
 
 /// Populated UMCs per node from the APOB SPD copy (bit = UMC).
 fn umc_present(ctx: &Ctx) -> [u8; 8] {

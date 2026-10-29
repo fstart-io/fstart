@@ -24,10 +24,7 @@ use fstart_driver_amd::sp3::ccx::release::{self, Launch};
 use fstart_driver_amd::sp3::ccx::topology::{ApicLayout, Location};
 use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
 use fstart_driver_amd::sp3::ccx::{ApInputs, Ccx, brand, mca, power, security};
-use fstart_driver_amd::sp3::df::plan::Plan;
-use fstart_driver_amd::sp3::df::topology::Topology;
 use fstart_driver_amd::sp3::df::v3::{Df3, SocketMemory};
-use fstart_driver_amd::sp3::df::{BusRange, Df, Version, program};
 use fstart_driver_amd::sp3::dxio::engine::{Ancillary, MAX_ENGINES};
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
@@ -51,7 +48,7 @@ use crate::mp::{Sp3Cpu, release_all, this_thread};
 
 super::steps!();
 
-pub(crate) const MMIO_PAIRS: u8 = <Df3 as Version>::MMIO_PAIRS;
+pub(crate) type DfVersion = Df3;
 
 /// SMU V11 mailbox of one socket.
 pub(crate) type Smu = SmuMailbox<Pci, Tsc>;
@@ -69,16 +66,6 @@ pub struct Silicon {
 const NBIO_SMU_BAR: u64 = 1 << 20;
 const IOMMU_BAR: u64 = 512 << 10;
 const IOAPIC_BAR: u64 = 0x1000;
-
-pub(crate) fn bus_maps(df: &Df<Pci>, topology: &mut Topology, ranges: &[BusRange]) {
-    program::bus_maps::<Df3, _>(df, topology, ranges);
-}
-
-pub(crate) fn program_maps(df: &Df<Pci>, topology: &Topology, plan: &Plan) {
-    program::mmio::<Df3, _>(df, &topology.nodes, &plan.mmio);
-    program::io::<Df3, _>(df, &topology.nodes, &plan.io);
-    program::vga::<Df3, _>(df, &topology.nodes, topology.primary().fabric_id);
-}
 
 /// Socket `socket`'s first root bus: its IOD's SMN and SMU.
 fn socket_bus(ctx: &Ctx, socket: u8) -> u8 {
