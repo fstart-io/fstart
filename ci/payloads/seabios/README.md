@@ -11,8 +11,8 @@ of <https://github.com/fstart-io/seabios>.
 
 ```sh
 git clone -b fstart-romfiles https://github.com/fstart-io/seabios ../seabios-fstart
-payloads/seabios/build.sh ../seabios-fstart   # prints the fbuild arguments
-cargo fbuild assemble -b foxconn-d41s --release $(payloads/seabios/build.sh ../seabios-fstart)
+ci/payloads/seabios/build.sh ../seabios-fstart   # prints the fbuild arguments
+cargo fbuild assemble -b foxconn-d41s --release $(ci/payloads/seabios/build.sh ../seabios-fstart)
 ```
 
 The build hands SeaBIOS its VGA BIOS (SeaVGABIOS on the framebuffer from the

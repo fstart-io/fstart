@@ -144,8 +144,10 @@ impl Selection {
             CargoTarget::BoardLibrary => args.push("--lib".into()),
         }
         // Targets rustc does not ship (32-bit bare-metal x86) are JSON specs
-        // in `targets/`; Cargo still names their output directory by the stem.
-        let target_spec = root.join("targets").join(format!("{}.json", unit.target));
+        // in `tools/fbuild/targets/`; Cargo still names their output directory by the stem.
+        let target_spec = root
+            .join("tools/fbuild/targets")
+            .join(format!("{}.json", unit.target));
         let custom_target = target_spec.is_file();
         args.extend([
             "--target".into(),

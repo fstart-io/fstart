@@ -1,165 +1,200 @@
-# Native AMD Picasso / Google Vilboz
+# AMD Picasso and Google Vilboz
 
-Native (no x86 FSP-M/S) port of AMD Picasso and Google Zork "Vilboz".
-The PSP/ABL still trains DRAM and supplies the APOB before releasing x86.
+Picasso (Raven, Raven2; Family 17h model 10h) on the shared
+[noncar flow](amd-noncar.md). Board: `boards/google/zork`, one board
+`google-vilboz`. Its `Cargo.toml` marks it "build/check/editor support only:
+the native boot/image contract is incomplete."
 
-## Code layout
+## Code
 
-- `crates/driver-amd`: reusable CCX, DF, NBIO, DXIO, SMU v10 and Sandstone
-  FCH drivers. `nbio::picasso::gfx` prepares the GPU memory map and ATOM
-  system information; it does not set a display mode.
-- `crates/driver-vbios`: shared x86 option-ROM emulator and VBE mode
-  selection, returning the common framebuffer handoff for GOP.
-- `crates/platform-amd/src/picasso`: Picasso's configuration and timepoints
-  on the shared [noncar flow](amd-noncar.md), including MP, SMM, PCI,
-  ACPI and payload handoff.
-- `boards/google/zork`: Dalboz wiring, Vilboz GPIO/PCIe/USB/display policy,
-  ChromeEC CBI discovery and the FCH SMM handler. Vilboz, Vilboz14 and
-  Vilboz360 share this board; EC CBI supplies revision/SKU differences.
-- `crates/image-build`: the native flash image: the PSP partition packed
-  from the AMD blobs, the APCB instances generated from the board's
-  template and SPDs, fstart's PSP user application, the reset image and
-  the FFS with the microcode and the VBIOS files. The shared
-  [AMD format library](amd-image-format.md) reads and writes the PSP/BIOS
-  directories and their checksums.
+| Area | Path |
+| --- | --- |
+| SoC constants, UART and AOAC tables | `crates/driver-amd/src/soc/picasso/mod.rs` |
+| Platform: `Config`, `LAYOUT`, `Soc` impl, host policy | `crates/platform-amd/src/picasso/mod.rs` |
+| ACPI: interrupt routes, FCH GPIO and I2C AML | `crates/platform-amd/src/picasso/acpi.rs` |
+| CCX | `crates/driver-amd/src/ccx/picasso/` |
+| DF | `crates/driver-amd/src/df/picasso.rs` |
+| NBIO, GPU memory and ATOM info | `crates/driver-amd/src/nbio/picasso/` (`gfx.rs`, `late.rs`, `tables.rs`) |
+| DXIO | `crates/driver-amd/src/dxio/picasso/` |
+| SMU v10, power policy | `crates/driver-amd/src/smu/v10/` |
+| FCH (Sandstone) | `crates/driver-amd/src/fch/sandstone/` (`preinit`, `legacy`, `usb`, `pinmux`); `fch/emmc.rs`, `fch/espi.rs`, `fch/i2c.rs`, `fch/gpio.rs` |
+| Option ROM and VBE | `crates/driver-vbios` |
+| Board | `boards/google/zork/src/`: `lib.rs` (`Config`, hooks), `policy.rs` (SPI, eSPI, PCIe, USB, eMMC, displays, CBI decode), `dalboz.rs` (GPIO and PCIe tables), `vilboz.rs` (RAM-ID and WiFi GPIOs), `ec.rs` (CBI from the EC), `smm.rs` (FCH SMI hooks) |
+| AMD firmware packing | `crates/image-build/src/amd/` (`assembly.rs`, `apcb.rs`, `blobs.rs`, `psp_app.rs`) |
+| Firmware file tables | `crates/platform-amd/Cargo.toml` (`[package.metadata.fstart.amd.picasso]`), `boards/google/zork/Cargo.toml` (`[package.metadata.fstart.amd]`) |
 
-## Cold boot
+## SoC constants
 
-1. Enable ECAM and ACPI MMIO, power the early FCH devices and initialize
-   the NS16550 console.
-2. Read CPU identity, TOP_MEM/TOM2 and the APOB memory map. Reserve the
-   firmware and TSEG; install AMD MTRRs and authenticate the FFS.
-3. Set up DF/NBIO/PSP, early CPU policy, LPC/SPI/SMBus and eSPI. Read CBI,
-   apply the board GPIOs and select its SMU power/eMMC policy.
-4. Train DXIO, set PCIe power policy, initialize the FCH clocks, legacy
-   routing, USB and eMMC. Keep all SMU/DXIO DMA buffers reserved.
-5. Release the APs through the SMU. Every CPU loads microcode and runs
-   CCX initialization. Notify the SMU, prepare GPU UMA/system information,
-   and finish NBIO initialization.
-6. Relocate and lock SMM on every CPU, test a permanent SMI, and send the
-   SMM information to the PSP.
-7. Allocate PCI resources and install WC for the assigned prefetchable
-   VGA apertures using the shared x86 cache-policy updater. All online CPUs
-   rendezvous before cache/MTRR changes; readback verifies the result on
-   every CPU. Existing AMD RAM/ROM MTRRs, fixed DRAM routing and TOM2WB
-   remain unchanged. Intel uses the same aperture selection before MP.
-   Configure IOAPICs and generate ACPI tables. The enabled eMMC's resources
-   feed both ACPI and CrabEFI discovery.
-8. Forward the legacy VGA apertures, run the authenticated VBIOS, read
-   EDID and set a validated linear framebuffer mode. Raven2 uses
-   `pci1002,15dd.rom` even when its PCI ID remains `1002:15d8`, matching
-   coreboot's silicon-specific ROM selection. This is the option-ROM/VBE
-   display path, not a new native Radeon modesetter.
-9. Lock DF registers, map RAM for the payload, park the APs, send PSP
-   BootDone and enter CrabEFI (or the selected Linux payload).
+| Constant | Value |
+| --- | --- |
+| `MAX_DIES` | 1 |
+| ECAM | `0xf800_0000`, 64 buses |
+| Console UARTs | `0xfedc9000`, `0xfedca000`, `0xfedce000`, `0xfedcf000` (FCH UART 0-3) |
+| `MAX_CPUS` | 16 |
+| `TSEG_SIZE` | 8 MiB |
+| PSP variant | `psp::Variant::Rv` |
+| APOB | `0x0200_1000`, `0x1_0000` bytes |
+| BIOS directory | `Family17hModel10` |
 
-There is no early-init checkpoint in this flow. Any failed required step
-stops with an error rather than falling back to FSP.
+## Board configuration (Vilboz)
 
-## DRAM and flash layout
+`boards/google/zork/src/lib.rs`:
+
+| Item | Value |
+| --- | --- |
+| Console | FCH UART 0, 115200 baud, 48 MHz clock |
+| SPI, eSPI | `policy::SPI`; eSPI to the EC with `dalboz::ESPI_GPIO_TABLE` |
+| Early GPIO tables | `EARLY`, `TPM`, `PCIE`, `ROMSTAGE` (in that order) |
+| ROM sharing | Disabled (`DISABLE_SPI_FLASH_ROM_SHARING`) |
+| I2C2 (400 kHz) | ELAN0000 at `0x15`; SYNA0000 or PNP0C50 at `0x2c` (HID descriptor `0x20`). Both level-triggered, active-low, on GPIO 9. One is fitted. |
+| I2C3 (400 kHz) | GOOG0005 (Cr50 TPM) at `0x50`; ready interrupt on GPIO 3, falling edge |
+| Graphics | `policy::DISPLAYS`, `hdmi2_disable: 2` |
+| eMMC | Present only if the CBI says so |
+| Power | `None` in `Config`; set from the CBI in `fch_reset_done` |
+
+Board hooks:
+
+- `fch_reset_done`: reads the CBI from the EC (`ec::read_cbi`). Sets
+  `config.power` (`Cbi::native_power()`) and `config.emmc`. Then it configures
+  the RAM-stage GPIOs (`vilboz::configure_ram`).
+- `acpi()`: the keyboard behind the EC, from `driver-chromeec`.
+- `smm.rs`: `VilbozSmm`, the board part of the FCH SMI handler, built only with
+  `fstart_stage_env = "smm"`.
+
+RAM-ID straps are GPIO 132, 90, 86 and 69 (`lib.rs`). They are sampled before
+GPIO 86 is driven high. The APCB instance is chosen per RAM-ID value. FW_CONFIG
+fields select WWAN, NVMe, eMMC, SAR and audio options (`policy.rs`).
+
+## Silicon init
+
+`picasso::Picasso::silicon_init` (TP1), in order:
+
+1. `fch_pre_init`: legacy decode, AOAC power of the early devices and of the
+   console UART, console pads. Runs before the console.
+2. `identify`: CPUID signature and extended features. The silicon ID comes from
+   NBIO early init.
+3. DF legacy routes and early init, NBIO early init, PSP BAR, BSP CCX init
+   (MCA), IOHC DRAM routes.
+4. `fch_init`: LPC prepare, eSPI link (if configured), SPI, SMBus, the board's
+   early GPIO tables, ROM-sharing disable.
+5. Board `fch_reset_done`: CBI, power policy, eMMC.
+6. IOAPIC decode, IOMMU BAR.
+7. DXIO training (`dxio::picasso::train`, balanced power policy), then board
+   `dxio_training_done`.
+8. NBIO late pre-enumeration. The SMU power policy comes from `config.power`,
+   which is required.
+9. Sandstone ALink, ACPI decode, legacy LPC, clocks, USB PHY and controllers,
+   DF late init, eMMC (if configured).
+10. MP (`noncar::mp::start`) with the per-thread cache policy captured from the
+    PSP MMIO base.
+11. SMU CCX-done. If the SoC reports a GPU: `nbio::gfx::initialize` uses the
+    reserved UMA and prepares the GPU memory map and ATOM system information.
+    It does not set a display mode.
+12. Post-silicon NBIO init, FCH ACPI ports, SMM (`noncar::smm::install`), PSP
+    SmmInfo (`noncar::psp::notify_smm`).
+13. eMMC ACPI device `MMC0` (`AMDI0040`) and the I2C controllers with their
+    devices in `\_SB`.
+
+TP2 (`after_resources`) sets the FCH ACPI ports. Then `Board::mainboard_final`.
+
+TP3 (`ready_to_boot`), after enumeration:
+
+- NBIO late after-enumeration.
+- If there is a GPU: find the VGA device (class 3, vendor `0x1002`). Its ROM is
+  `pciVVVV,dddd.rom`. Raven2 keeps PCI ID `1002:15d8` but uses
+  `pci1002,15dd.rom`, selected by the silicon identity.
+- Read the ROM with `ffs_context::read_verified_asset`. Only an authenticated
+  ROM is run.
+- `fstart_driver_vbios::initialize` runs the option ROM emulator (x86emu, with
+  bounded RAM and a deadline) and selects a VBE linear-framebuffer mode. The
+  result is `FramebufferInfo`, which goes to the payload.
+- `Board::ready_to_boot`.
+
+## Memory layout
+
+From `picasso/mod.rs`:
 
 | Use | DRAM range |
 | --- | --- |
-| APOB | `02001000..02011000` |
-| PSP shared memory | `02011000..02019000` |
+| Early region (reserved through the payload) | `02000000..03200000` |
+| APOB (PSP writes it) | `02001000..02011000` |
 | Reset page tables | `02020000..02026000` |
-| Data/BSS and persistent DMA | `02030000..02200000` |
-| Firmware heap | `02200000..02a00000` |
+| Data and BSS | `02030000..02200000` |
+| Heap | `02200000..02a00000` |
 | BSP stack | `02f00000..03000000` |
-| PSP-loaded reset image | `03000000..03200000` |
+| Reset image (PSP copies it here) | `03000000..03200000` |
 | Reset vector | `031ffff0` |
 
-`02000000..03200000`, the AP bootstrap page at `0x8000`, and TSEG remain
-reserved through payload handoff. APs enter the same reset vector and are
-redirected to the architectural MP trampoline; the PSP's image is not patched.
+TSEG: 8 MiB, below the low top of DRAM. The AP trampoline page at `0x8000` is
+reserved in e820.
 
-fstart lays out the whole 16 MiB flash:
+## Flash image
 
-| Flash | Use |
+`boards/google/zork` is packed from blobs (`Firmware::Packed`) with a reset
+offset, so the result is a whole flash image.
+
+| Flash offset | Use |
 | --- | --- |
-| `000000..980000` | erased |
-| `980000..b80000` | reset image, AMD-compressed; the PSP inflates it |
-| `b80000..e1f000` | the authenticated FFS: payload, microcode, VBIOS |
-| `e20000..1000000` | EFS, PSP and BIOS directories, AMD blobs, APCBs |
+| `000000..980000` | Erased (`0xff`) |
+| `980000..b80000` | Reset image, zlib-compressed (`compress_reset`), BIOS entry 0x62 |
+| `b80000..e1f000` | FFS: payload, `cpu_microcode.bin`, the VBIOS assets |
+| `e20000..1000000` | PSP partition: EFS, PSP and BIOS directories, firmware blobs, APCBs, fstart's PSP application |
 
-The PSP of Vilboz's Chromebook part starts the x86 cores only after the
-user application of PSP entry 0x52 (the verstage slot) ran; without one it
-never releases them. fstart packs its own, which only exits
-(`image-build::amd::psp_app`).
+The PSP partition geometry, the reset offset and the SPI settings come from
+`crates/platform-amd/Cargo.toml`. The EFS `efs-offset` is `0xe20000`,
+`partition-end` is `0x1000000`, and the SPI is mode 4, speed 0.
 
-## Building
+### Blobs
 
-The image is packed from a blob directory ([AMD firmware
-blobs](amd-image-format.md#firmware-blobs)): Picasso's files as
-`crates/platform-amd/Cargo.toml` names them, and Vilboz's 13 APCB instances
-as `boards/google/zork/Cargo.toml` asks for them. Fill it from the board's
-own flash image, or use an `amd_blobs` checkout and add the APCBs:
+`crates/platform-amd/Cargo.toml` lists the Picasso files by path, relative to
+the blob directory: PSP entries, BIOS entries (DDR4 training images, types
+0x64/0x65), microcode for equivalence IDs `0x8180`, `0x8181` and `0x8201`, and
+the VBIOS files for device `0x15d8` and `0x15dd`. The PSP entries follow
+amd_blobs' Picasso `fw.cfg` with the secure OS and without MP2 (soft-fuse bits
+28 and 29 set).
+
+`boards/google/zork/Cargo.toml`:
+
+```toml
+[package.metadata.fstart.amd]
+soc = "picasso"
+psp-app = true          # pack fstart's PSP application
+apcb = { instances = 13 }
+```
+
+- `apcb = { instances = 13 }`: the APCBs are `google-vilboz/apcb/<n>.bin` for
+  `n` in `0..13`. They are extracted from a vendor image; they are not generated.
+- `psp-app = true`: fstart's PSP application (`image-build/src/amd/psp_app.rs`)
+  is packed as PSP entry 0x52. The PSP of this part starts the x86 cores only
+  after an application ran there.
+
+Extract the blobs once, or pass the vendor image as `--donor` to build them on
+first use:
 
 ```sh
 cargo fbuild blobs --board google-vilboz --from vilboz-backup.rom --out blobs/
+```
+
+## Build
+
+```sh
 cargo fbuild assemble --board google-vilboz --release --payload uefi-ui --blobs blobs/
-# or in one step:
 cargo fbuild assemble --board google-vilboz --release --payload uefi-ui --donor vilboz-backup.rom
 ```
 
-This emits `google-vilboz.rom`, the whole flash. Clang builds the vendored
-x86emu; the Nix shell supplies it. Use `uefi` instead of `uefi-ui` for GOP
-without the graphical boot-manager feature.
+The output is `google-vilboz.rom` next to its `.json`. Picasso's stage and SMM
+units are release-only. Payloads: `halt` (default), `linux`, `uefi`, `uefi-ui`,
+`uefi-basic`.
 
-`uefi-ui` also hands the board's I2C devices to CrabEFI as peripherals:
-fstart sets up each DesignWare controller and its pads, and CrabEFI picks a
-driver by ACPI ID. On I2C2 these are the two touchpads Vilboz may be fitted
-with, ELAN0000 at `0x15` and a HID-over-I2C Synaptics at `0x2c`, both on
-active-low GPIO 9; the one that is absent fails to initialize and is
-skipped. They provide movement and physical buttons, not gestures or
-tap-to-click, and sleep at ExitBootServices. Plain `uefi` hands over the
-Cr50 on I2C3 (`GOOG0005` at `0x50`, ready interrupt latched on GPIO 3),
-which backs CrabEFI's measured boot, and the eMMC controller. This does not
-yet add OS-facing I2C/touchpad ACPI nodes.
+Payload differences:
 
-The generated development signing key provides image integrity, not
-production rollback protection.
+- `uefi`, `uefi-ui` and `uefi-basic` hand the board's I2C devices to CrabEFI as
+  peripherals (`Peripherals`, feature `payload-uefi-basic`). Which ones CrabEFI drives
+  depends on its features. The touchpad drivers (`crabefi-elan-i2c`,
+  `crabefi-hid-i2c`) come only with `payload-uefi-ui`.
+- The same I2C devices are in ACPI (`\_SB`, from `picasso/acpi.rs`), with their
+  GPIO interrupts.
 
-## Hardware validation
+## Not implemented
 
-Vilboz revision 4, FW_CONFIG `0x2099200`, 4 GiB DRAM, booting the native
-image (nothing of the Chromebook firmware left in the flash):
-
-- Four CPUs initialized with patch `0x08200105`, zero CPU-init errors.
-- All four SMM entries relocated/locked and a permanent SMI returned.
-- PCI enumeration, ACPI, PSP LockDFReg/BootDone and AP parking succeeded.
-- WC verified on all four CPUs for the framebuffer aperture
-  `e0000000..f0000000` and prefetchable GPU memory `d0a00000..d0c00000`;
-  non-prefetchable GPU registers remain UC.
-- VBIOS POST completed, VBE mode `0x1d4` set 1366x768 at `0xe0000000`,
-  32 bpp, 1408-pixel stride. CrabEFI installed GOP; panel output was
-  confirmed on the board.
-- ELAN initialization completed and reported a 3282x1793 sensor; the
-  CrabEFI cursor followed it and its button clicked. The absent Synaptics
-  alternative NACKed its address and was skipped.
-- The Cr50 on I2C3 (DID_VID `0x00281ae0`) backed CrabEFI's TCG2 protocol
-  with SHA-1/256/384/512 banks, using its latched ready interrupt, and
-  measured PCR 0 and 7.
-- An `R` press injected through the EC keyboard matrix reset the system
-  from CrabEFI's no-media screen.
-- CrabEFI initialized and its SDHCI/xHCI drivers ran; onboard eMMC was
-  registered and scanned for partitions. No bootable media was found,
-  matching the original native coreboot/CrabEFI baseline.
-
-The EC independently confirmed the CBI values. Optional SSFC is absent;
-its absence preserves the valid low FW_CONFIG word, as in coreboot.
-Backup, intermediate images and serial/flash/test logs are local artifacts
-under `.local/vilboz/`, not repository inputs.
-
-An intermittent AP-release exception has also occurred on EC-only resets,
-including before the WC update runs. A confirmed G3 boot passed WC/GOP
-validation; the separate reset issue is not yet root-caused.
-
-A direct Linux 7.2.0-rc6 payload with a built-in test initramfs reached
-userspace with CPUs `0-3` online. The kernel had suspend and ACPI sleep
-support enabled, but reported ACPI S0/S1/S5 and only `[s2idle] shallow` in
-`/sys/power/mem_sleep`: firmware does not expose S3/deep sleep. This was a
-flash-resident Linux payload test, not a disk boot through CrabEFI.
-
-Remaining limitations: no S3 resume or APOB-NV cache persistence;
-CrabEFI variables are volatile. No successful S3 resume is claimed.
+- Suspend: the DSDT (shared, `crate::acpi`) declares S0, S1, S4 and S5 only. There is no S3 resume path.

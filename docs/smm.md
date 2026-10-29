@@ -1,323 +1,344 @@
-# fstart SMM image design
+# SMM
 
-fstart builds a complete position-independent SMM image containing the Rust
-handler and one precompiled architectural entry stub per configured CPU slot.
-The installer copies it into SMRAM, writes the runtime block and handler
-configuration, relocates every online CPU's SMBASE, and locks the chipset
-window.
+Reference for fstart's System Management Mode support: the standalone SMM
+handler image, its installation into SMRAM, and the chipset and CPU hooks it
+uses. Covers x86 only.
 
-The format is deliberately **unversioned**. fstart does not maintain a stable
-loader ABI yet; format changes update the builder and installer together.
+## Components
 
-## Coreboot reference
+| Path | Role |
+|------|------|
+| `crates/smm` (`fstart-smm`) | Image header, SMRAM layout math, installer, runtime ABI, `SmmHandler` trait, rendezvous, save-state access |
+| `crates/image-build/src/smm_image.rs` | Links the handler and writes the `FSMM` image; audits it; emits the optional coreboot header |
+| `crates/image-build/asm/entry_stub.S` | Per-CPU entry stub, assembled by `crates/image-build/build.rs` |
+| `crates/core/src/smm.rs` | `SmmConfig` (board `smm` setting) |
+| `crates/arch/src/x86/cpu/intel/smm.rs` | `IntelSmm` installer; traits `SmramControl`, `SmiControl`, `SmmCpu` |
+| `crates/arch/src/x86/cpu/intel/smrr.rs` | SMRR register pairs |
+| `crates/arch/src/x86/cpu/intel/feature_control.rs` | `IA32_FEATURE_CONTROL` policy helper |
+| `crates/arch/src/x86/cpu/intel/core2_cpu.rs`, `crates/arch/src/x86/cpu/intel/pineview/mod.rs` | CPU-model SMM facts (`impl SmmCpu`) |
+| `crates/arch/src/x86/cpu/amd/smm.rs` | `AmdSmm` installer; trait `SmiControl` |
+| `crates/driver-intel/src/gmch.rs` (`smram` module) | GMCH SMRAM register bits |
+| `crates/driver-intel/src/southbridge/smi.rs` | `IchSmi` (SMI control), `IchSmmHandler`, `IchSmmConfig` |
+| `crates/driver-amd/src/fch/smi.rs` | `FchSmi` (AMD FCH SMI control), `FchSmmHandler` |
+| `crates/platform-qemu/src/q35_smm.rs` | Q35 TSEG/SMRAM control (MCH), `QemuSmmCpu`, ICH9 PM block |
+| `crates/platform-sp3/src/smm.rs`, `src/smm/` | SP3 handler, `Sp3Smi`, native RAS observer |
+| `boards/<vendor>/<board>/src/smm.rs` | Board binding: `smm_bin!(Board, Handler)` |
 
-The flow follows coreboot's x86 SMM model:
+The `smm_bin!` macro is `fstart_smm::smm_bin!`, re-exported by each platform
+crate as `smm` (for example `fstart_platform_intel::smm::smm_bin!`).
 
-- `src/cpu/x86/mp_init.c` — serialized self-SMI relocation through the
-  default SMBASE (`smm_initiate_relocation`).
-- `src/cpu/x86/smm/smm_module_loader.c` — staggered SMBASE windows, per-CPU
-  stacks, and permanent page tables inside SMRAM.
-- `src/cpu/x86/smm/smm_module_handler.c` — permanent handler rendezvous
-  (`smi_obtain_lock`): one owner, the others wait inside SMM.
-- `src/cpu/intel/smm/gen1/smmrelocate.c` — Intel save-state SMBASE write and
-  SMRR programming in the relocation handler; alternative SMRR pair on
-  model 0Fh/17h/1Ch CPUs.
-- `src/cpu/intel/model_1067x/mp_init.c`, `src/cpu/intel/common/common_init.c`
-  — `IA32_FEATURE_CONTROL` policy (VMX + SMRR enable + lock).
-- `src/mainboard/emulation/qemu-q35/cpu.c` — AMD64 save-state relocation.
-- `src/soc/amd/common/block/cpu/smm/smm_relocate.c` — AMD TSEG and SMBASE
-  MSRs written from normal mode, then TValid and HWCR.SmmLock.
+## Build
 
-coreboot also relocates the handler as an rmodule; fstart does not. Handler
-code is position independent and never patched.
+The SMM handler is a separate unit named `smm`. It is release-only.
 
-## Boundaries
-
-- `fstart-smm` owns the image header, checked SMRAM layout, runtime ABI,
-  volatile save-state SMBASE access, and byte-copy installer.
-- `fstart-image-build` links and audits the relocatable handler memory image.
-- `fstart_arch::x86::cpu::intel::smm::IntelSmm` owns the post-MP lifecycle. It
-  is composed from three owners and makes no chipset, board, or CPU-model
-  decision itself:
-  - the northbridge's `SmramControl` (TSEG geometry, open/close/lock);
-  - the southbridge's `SmiControl` (SMI sources, handler configuration);
-  - the CPU model driver's `SmmCpu` (save-state layout, SMRR register pair).
-- `fstart_arch::x86::cpu::amd::smm::AmdSmm` owns it on AMD64 CPUs, composed
-  only from the southbridge's `amd::smm::SmiControl` (FCH:
-  `fstart_driver_amd::fch::smi::FchSmi`). See "AMD64" below.
-- CPU model drivers (`core2_cpu`, `pineview`) own `IA32_FEATURE_CONTROL`
-  policy in `init_cpu`, as coreboot's model drivers do.
-- `driver-intel` owns ICH SMI source decoding, acknowledgement, and the
-  handler configuration type.
-- Board SMM modules bind only their concrete handler.
-
-SMM is ordinary post-MP platform work. `mp_init()` brings CPUs online and
-returns `MpHandle`; it has no chipset callback or SMM flight-plan steps.
-
-## Native FSMM format
-
-`SmmImageHeader` starts with the `FSMM` magic and structural sizes, but no
-version field. File offsets address serialized bytes; handler/runtime offsets
-are relative to the copied handler memory base.
-
-```text
-u32 magic                    "FSMM"
-u16 header_size
-u16 entry_desc_size
-u32 flags                    bit 0 coreboot module args, bit 1 coreboot header
-u32 image_size
-u16 entry_count
-u16 reserved
-u32 entries_offset           file-relative descriptor table
-u32 handler_offset           file-relative initialized handler bytes
-u32 handler_load_size        .text + .rodata + .data and alignment gaps
-u32 handler_mem_size         complete extent including .bss/runtime/config
-u32 handler_entry_offset     handler-memory-relative
-u32 runtime_offset           handler-memory-relative
-u32 runtime_size
-u32 handler_config_offset    handler-memory-relative
-u32 handler_config_capacity
-u32 module_args_offset       handler-memory-relative, zero when absent
-u32 module_args_size
-u32 stack_size
+```sh
+cargo fbuild build --board qemu-q35 --stage smm --release
+cargo fbuild build --board tyan-s8030 --stage smm --release
 ```
 
-Each fixed-size `EntryDescriptor` contains file-relative `stub_offset`,
-`stub_size`, `entry_offset`, and `params_offset` fields.
+`--stage <unit>` builds the named unit and its producers. A full build
+(`cargo fbuild build --board <board> --release`) builds the `smm` unit first.
+fbuild passes the resulting image to the stage as `FSTART_SMM_IMAGE`, and the
+stage embeds it (`include_bytes!`). Stages built without that variable have no
+SMM image: MP setup skips SMM and SMRAM stays unlocked.
 
-The linker lays out one contiguous memory image at VMA zero:
+Board settings (`crates/core/src/smm.rs`, `SmmConfig`):
 
-```text
-.text -> .rodata -> .data -> .bss (NOLOAD)
-```
+| Field | Default | Notes |
+|-------|---------|-------|
+| `entry_points` | Intel: `max_cpus`; Q35: 8; SP3/noncar: `MAX_CPUS` | Number of precompiled entry stubs. The Intel plan validator rejects a value below the MP CPU ceiling. |
+| `stack_size` | `0x400` | Per-CPU SMM stack. SP3 uses `0x2000`. |
+| `coreboot.emit_header` | `false` | Emit `offsets.h` (see below). |
+| `coreboot.module_args` | `false` | Add coreboot module-argument blocks. |
 
-The builder preserves VMA alignment gaps in the initialized byte range. The
-installer zeros the complete `handler_mem_size`, copies `handler_load_size`,
-and then writes the runtime block, the handler configuration, and optional
-module arguments. Like coreboot's rmodule loader, the handler is loaded on a
-4 KiB boundary. Every allocated ELF section must have a power-of-two alignment
-no greater than 4 KiB and an aligned VMA; unsupported alignment is rejected.
-One load delta therefore preserves section alignment and every
-compiler-generated cross-section reference.
+Q35 hardcodes 8 entries in `crates/platform-qemu/src/host.rs`. When an SMM
+image is present, Q35 MP bring-up uses the image's entry count as its CPU
+capacity, so an SMM-enabled Q35 build supports at most 8 online CPUs.
 
-The final ELF retains relocation records for auditing. Allocated sections other
-than `.text`, `.rodata`, `.data`, and `.bss` are rejected. GOT/PLT-indirect
-calls, absolute/GOT/TLS/dynamic relocations, undefined symbols, and Rust panic
-machinery are also rejected. A PC-relative relocation is accepted only when its
-target resolves inside the copied image. The host audit decodes x86 instructions
-to account for next-RIP bias, including immediates after a RIP-relative
-displacement. Data PC-relative fields use their own address as the base.
-No loader applies relocations to the shipped bytes.
+## Handler image (`FSMM`)
 
-## Entry and runtime ABI
+`crates/smm/src/header.rs` defines the format. There is no version field; the
+builder and installer must come from the same tree.
 
-`SmmEntryParams` is loader-filled data inside each copied stub:
+All integers are little-endian. `handler_offset`, `entries_offset`, and
+`stub_offset` are file offsets. Every other handler offset is relative to the
+copied handler memory base.
 
-```text
-u32 cpu
-u32 stack_size
-u64 stack_top
-u64 common_entry
-u64 runtime
-u64 coreboot_module_args
-u64 cr3
-u64 entry_base
-```
+| Field | Meaning |
+|-------|---------|
+| `magic` | `FSMM` (`SMM_IMAGE_MAGIC`) |
+| `header_size`, `entry_desc_size` | Must match this build's struct sizes |
+| `flags` | bit 0 `FLAG_COREBOOT_MODULE_ARGS`; bit 1 `FLAG_COREBOOT_HEADER`; bit 2 `FLAG_PROTECTED_MODE` (i686 handler) |
+| `image_size` | Total file size |
+| `entry_count`, `entries_offset` | Array of `EntryDescriptor` |
+| `handler_offset`, `handler_load_size` | Initialized handler bytes in the file |
+| `handler_mem_size` | Full in-SMRAM extent: handler, runtime, config, module args |
+| `handler_entry_offset` | `fstart_smm_handler` |
+| `runtime_offset`, `runtime_size` | `SmmRuntime` block |
+| `handler_config_offset`, `handler_config_capacity` | Config slot; capacity is exactly 256 bytes, 16-byte aligned |
+| `module_args_offset`, `module_args_size` | Coreboot module-argument array, or 0 |
+| `stack_size` | Per-CPU stack size |
+| `fixups_offset`, `fixup_count` | i686 only: handler offsets of 32-bit absolute addresses to rebase |
 
-`SmmRuntime` holds the SMRAM range, the active CPU count, the stack size, the
-rendezvous owner word, and the offset and size of the handler configuration.
-It holds no pointers and no per-CPU tables.
+`EntryDescriptor` is `stub_offset`, `stub_size`, `entry_offset`, `params_offset`.
+`params_offset` is the position of `SmmEntryParams` inside its stub.
 
-The handler configuration is a plain Rust value. The concrete handler names
-its type as `SmmHandler::Config`, and the matching southbridge names the same
-type as `SmiControl::HandlerConfig`; for ICH that is
-`driver_intel::southbridge::smi::IchSmmConfig` (PMBASE and GPE0 geometry).
-The installer writes the value into a fixed 256-byte, 16-byte-aligned slot and
-records its size. The SMM entry borrows that immutable value only if the
-recorded size is exactly `size_of::<Config>()` and the aligned slot lies inside
-SMRAM. The borrow lasts for the SMI; the installer keeps it immutable and
-disjoint from mutable entry parameters. This avoids stack copies and compiler-
-generated memcpy for larger per-socket configurations. There is no serialization
-format, magic, or schema version.
+File layout written by `build_image`: header, descriptors, handler bytes,
+entry stubs (each `stub_size` bytes, 16-byte aligned), then fixups.
 
-Every permanent entry first runs `SmmHandler::enter_cpu` with validated
-configuration. This bounded, CPU-local hook runs even on entrants that will
-only wait; it must not wait for all CPUs to arrive. SP3 uses it for local MCA
-capture and native handoff ([native RAS observer](amd-sp3-ras.md)).
+### Handler link and audit
 
-Shared dispatch follows coreboot's rendezvous: one CPU atomically claims
-ownership and runs chipset dispatch, all other entrants remain in SMM until
-the owner releases the lock, and waiters then return through RSM. The owner
-word lives in TSEG; locked access to it relies on SMRR giving TSEG a
-write-back type inside SMM, as on coreboot.
+`handler_from_archive` and `handler_from_rlibs` link with `ld -T` and
+`--emit-relocs`, with `fstart_smm_handler` as entry. The linker script places
+`.text`, `.rodata`, `.data`, and `.bss` (NOLOAD) at VMA 0, each 16-byte aligned.
+The audit in `smm_image.rs` rejects:
 
-## Page tables and SMRAM layout
+- Allocated sections other than `.text`, `.rodata`, `.data`, `.bss`.
+- Section alignment that is not a power of two, is above 4 KiB, or is not met by the VMA.
+- Undefined symbols and Rust panic symbols (`panic_fmt`, `unwrap_failed`, …).
+- x86_64: any relocation other than PC-relative; GOT/PLT-indirect calls. A PC-relative target must resolve inside the copied image. The audit accounts for x86 next-RIP bias.
+- i686: absolute 32-bit relocations are recorded as fixups. Each must point inside the copied image.
 
-Permanent x86-64 entries never inherit ramstage CR3. The layout reserves six
-pages in SMRAM for a PML4, PDPT, and four 2 MiB-page directories covering the
-low 4 GiB. The installer builds those tables before lock and patches their CR3
-into every permanent entry stub.
+Loader behavior:
 
-The temporary default-SMBASE relocation stub uses a separate identity-map set
-inside the reserved default ASEG window.
+- Handler memory is loaded at a 4 KiB boundary (`SMM_HANDLER_ALIGNMENT`).
+- x86_64 handlers are not patched. A single load delta preserves all cross-section references.
+- i686 handlers are rebased by adding the handler base to each fixup.
+
+Mode: `SmmArch::from_target` picks long mode for `x86_64*` targets and
+protected mode otherwise. The installing stage must match the handler's mode
+(`InstallError::ModeMismatch`). Coreboot header or module-arg output is not
+allowed for protected-mode handlers.
+
+### Coreboot output
+
+With `coreboot.emit_header`, fbuild writes `offsets.h`: `FSTART_SMM_*` defines
+for the offsets above, plus `FSTART_SMM_HANDLER_ALIGNMENT` (4096). Coreboot
+loaders can copy the entry stubs and handler from these offsets.
+
+## SMRAM layout
+
+`compute_cpu_layout` and `compute_common_base` in `crates/smm/src/layout.rs`
+place everything inside the permanent SMRAM/TSEG range:
 
 ```text
 SMRAM top
-+----------------------------------+
-| permanent identity page tables   |
-| handler text/rodata/data/BSS     |
-| runtime + handler configuration  |
-+----------------------------------+
-| staggered per-CPU SMBASE windows |
-| entry at SMBASE + 0x8000         |
-| save state at window top         |
-+----------------------------------+
-| per-CPU stacks                   |
-+----------------------------------+ SMRAM base
++------------------------------+
+| identity page tables (6 pg)  |  4 GiB identity map, 2 MiB pages
++------------------------------+
+| handler text/rodata/data/bss |  4 KiB aligned
+| runtime, config, module args |
++------------------------------+
+| SMBASE windows (64 KiB each) |  entry at SMBASE+0x8000
+|                              |  save state at window top
++------------------------------+
+| per-CPU stacks               |  stack i at base + i*stack_size
++------------------------------+ SMRAM base
 ```
 
-All ranges are checked for overflow, alignment, ordering, containment, and
-overlap before writes. The SMRAM top and permanent CR3 are page-aligned, and
-every permanent handler, entry, stack, runtime, and table address is below 4
-GiB because the entry stub uses 32-bit intermediates and the identity map
-covers only low memory. The default ASEG remains reserved on cold boot and S3
-resume.
+- SMBASE values are staggered by `max(save-state size, stub size)` (0x400 for the usual stubs) inside each 64 KiB segment. Segments grow downward from below the handler region.
+- Stub length must be below 0x8000.
+- The installer checks overflow, alignment, containment, and overlap before any SMRAM write. SMRAM top and page-table base must be 4 KiB aligned.
+- Every permanent address must be below 4 GiB, because stubs use 32-bit intermediates and the tables map only low memory.
 
-## Save-state formats
+Temporary default-SMBASE relocation (`SMM_DEFAULT_SMBASE` = `0x30000`), inside
+the architectural ASEG window (`SMM_DEFAULT_ASEG`, `0x30000..0x40000`):
 
-Save-state memory is hardware-owned. `X86SaveState` stores only a raw top
-address and the selected format; it uses volatile byte transfers and never
-creates a Rust reference or slice over the save-state area. Operations validate
-the revision before writing relocated SMBASE or accessing AMD64 saved GPRs
-for hardware-authorized MSR emulation. Native Zen's revision 0x30064 and
-QEMU's older 0x20064 layout both use FF00 for the saved SMBASE field. FE00
-is the save-state block's base, not the field's address (Rome bench verified).
+| Address | Use |
+|---------|-----|
+| `0x30000 + 0x7000` | Stack top for the relocation stub |
+| `0x30000 + 0x8000` | Relocation entry stub |
+| `0x30000 + 0x9000` | Relocation identity tables (6 pages) |
 
-The CPU model driver selects the format through `SmmCpu`:
+The ASEG window must be excluded from OS-visible RAM (`mp.rs` documents this).
 
-- Core 2 and Pineview/Atom drivers select the Intel EM64T100/101 layout and
-  accept revisions `0x30100` or `0x30101`.
-- QEMU's emulated CPU selects the AMD64 layout and requires revision
-  `0x20064`.
+## Installation (`install_pic_image`)
 
-Relocation validates the revision and writes exactly the selected format's
-SMBASE field. An unknown or mismatched revision aborts installation.
+All validation (header, descriptors, mode, layout, addresses below 4 GiB) runs
+before the first SMRAM write. Then the installer zeroes `handler_mem_size`,
+copies the handler, applies i686 fixups, writes `SmmRuntime` and the config,
+builds the page tables, and copies each stub and patches its `SmmEntryParams`.
+`install_default_relocation_callback_stub` does the same for the default-SMBASE stub.
 
-## SMRR and IA32_FEATURE_CONTROL
+## Runtime ABI
 
-The CPU model driver also names its SMRR register pair through `SmmCpu`:
-Core 2 model 0Fh and Atom model 1Ch use the alternative `0xa0/0xa1` pair,
-Core 2 model 16h the architectural `0x1f2/0x1f3` pair, and QEMU none.
+`SmmRuntime` (`crates/smm/src/runtime_abi.rs`): `smram_base`, `smram_size`,
+`num_cpus`, `stack_size`, `handler_config_offset`, `handler_config_size`, and an
+atomic `owner` word for the rendezvous. It holds no pointers and no per-CPU tables.
 
-In `init_cpu`, those drivers lock `IA32_FEATURE_CONTROL` using coreboot's
-defaults: VMX outside SMX is enabled when CPUID reports VMX, the alternative
-SMRR enable bit is set when the pair needs it and `IA32_MTRR_CAP` reports
-SMRR, and the register is locked. A register already locked is left alone.
+`SmmEntryParams` is loader-filled data inside each stub: `cpu`, `stack_size`,
+`stack_top`, `common_entry`, `runtime`, `coreboot_module_args`, `cr3`, and
+`entry_base`. The stub uses `entry_base` rather than `CS`, because the visible
+selector can be truncated for high SMBASE values.
 
-SMRR is optional hardware protection. Older physical CPU revisions that do not
-advertise SMRR continue booting, with a warning reporting how many CPUs received
-SMRR protection. No SMRR registers are accessed on an unsupported CPU. Chipset
-SMRAM/SMI locks and save-state validation still apply without SMRR.
+### Handler trait and config
 
-When SMRR is supported, an invalid TSEG range, an alternative pair locked without
-its enable bit, or a programming/readback failure remains boot-fatal; lack of
-hardware support is distinct from failure to configure supported hardware.
-QEMU explicitly supplies no SMRR pair because its memory model implements SMRAM
-isolation separately; passing an emulated boot says nothing about physical
-SMRR/cache isolation.
+```rust
+pub trait SmmHandler {
+    type Config: Copy;
+    unsafe fn enter_cpu(ctx: &mut SmmContext<'_>, config: &Self::Config) {}
+    unsafe fn handle(ctx: &mut SmmContext<'_>, config: &Self::Config);
+}
+```
 
-Once SMRR is valid, normal-mode reads of TSEG return a fixed value, so nothing
-reads SMRAM from normal mode after relocation.
+- `Config` is written by the installer into a 256-byte, 16-byte-aligned slot.
+  The handler borrows it in place (`SmmContext::handler_config`), and only if the
+  recorded size equals `size_of::<Config>()` and the slot lies inside SMRAM.
+  Otherwise neither `enter_cpu` nor `handle` runs.
+- The southbridge names the same type as `SmiControl::HandlerConfig`. For ICH
+  that is `IchSmmConfig` (`pm_base`, `gpe0` geometry).
+- `enter_cpu` runs on every entrant before the rendezvous. Use it for CPU-local
+  work such as MCA capture. It must not wait for other CPUs.
 
-## Lifecycle
+`fstart_smm_handler` (generated by `smm_bin!`) calls `handle::<Board>`, which
+runs `enter_cpu`, then the rendezvous, then `handle` on the owner only.
 
-For each SMM-capable platform:
+### Rendezvous
 
-1. Run CPU-only `mp_init()` and retain its `MpHandle`. CPU model drivers set
-   `IA32_FEATURE_CONTROL` here. Like coreboot's `get_cpu_count`, the platform
-   supplies the system-wide online count separately from storage/image capacity.
-   Q35 uses `FW_CFG_NB_CPUS`, not package-local CPUID or unpopulated hotplug slots;
-   supported single-socket Intel platforms use package-local CPUID. MP rejects
-   an online count above capacity before broadcasting SIPI; the broadcast-SIPI
-   trampoline hard-resets the machine on a responder beyond the AP limit before stack selection, since such a CPU
-   would never be SMBASE-relocated. Partial AP check-in is boot-fatal before
-   any flight-plan barrier opens, so a late AP cannot outlive borrowed MP
-   data (coreboot's `start_aps()` reports the same condition as an MP error
-   but lets boot continue; fstart stops). The static AP stack
-   and mailbox budget is generated from `FSTART_MP_MAX_CPUS` by `fstart-arch`:
-   Intel board plans pass their `max_cpus`, and Q35 reserves 256 slots. A
-   standalone arch build defaults to 64. This is a build-time resource budget,
-   not an architectural 64-CPU limit; SMM's per-CPU layout uses the same bound.
-2. Discover and open TSEG. Verify the open/unlocked state before writing,
-   including on S3 resume; if locks survived and reopening fails, stop boot
-   rather than silently reusing an unverified surviving handler.
-3. Install initialized handler bytes, zero BSS, write the runtime block and
-   handler configuration, and build permanent SMRAM page tables.
-4. Quiesce PM1, GPE, alternate-GPI, and chipset SMI sources without changing
-   `SCI_EN`, then publish the temporary shared relocation stub. Relocation uses
-   only LAPIC self-SMIs, so no chipset event can enter the shared stack window.
-5. Use `MpHandle::scope().scatter()` to relocate every online CPU through the
-   shared default SMBASE, serialized across trigger and callback completion.
-   The callback runs on the relocating CPU, checks its full LAPIC ID against
-   the published one, writes SMBASE, and programs and verifies SMRR on supported
-   CPUs. Unsupported CPUs still relocate and continue without SMRR protection.
-6. Abort on lock timeout, callback timeout, unexpected CPU, save-state
-   revision mismatch, or SMRR read-back mismatch. A timeout or callback
-   mismatch leaves the persistent relocation bridge locked so a late callback
-   cannot consume a newer CPU's target.
-7. Preserve `SCI_EN` on S3 resume or clear it on cold boot, then close and lock
-   SMRAM. Verify `D_LCK`, `D_OPEN=0`, and enabled TSEG; only then enable permanent
-   SMI sources and take ICH's `SMI_LOCK`. Verify the lock and `GBL_SMI_EN` readback
-   before reporting success. Any failure closes SMRAM and is boot-fatal.
-8. Send one self-SMI on every CPU. This exercises each permanent entry stub
-   and handler; a broken entry stops the boot here rather than at the first OS
-   SMI. It proves only that the SMI returned.
+`enter_rendezvous` claims `SmmRuntime.owner` with CAS (value = CPU + 1). The
+owner runs `handle`; other CPUs spin with `pause` until the owner releases it,
+then return through `rsm`. Ownership is a plain atomic in the TSEG runtime block.
 
-Q35 logs the selected AMD64 revision and the relocation count. CI requires
-revision `0x00020064`, four relocations, verified SMRAM/global SMI locks, the
-permanent SMI round trip, and payload handoff in SMP4 boots with one socket,
-two sockets, and extra unpopulated hotplug slots.
+## Entry stub
 
-## AMD64
+`entry_stub.S` starts in 16-bit real mode at `SMBASE+0x8000`, enters protected
+mode, and (x86_64 build) enables paging with `cr3` and long mode. It then sets
+`rsp` from `stack_top`, calls `common_entry(params)`, and executes `rsm`. The
+i686 build (`-DFSTART_PROTECTED_MODE`) stays in flat 32-bit protected mode without
+paging and passes the params pointer as a cdecl argument.
 
-AMD CPUs take TSEG from SMM_ADDR/SMM_MASK and SMBASE from the SMM_BASE MSR,
-all writable from normal mode until HWCR.SmmLock. `AmdSmm::install` therefore
-has no default-SMBASE stub and no relocation SMI:
+## Save-state access
 
-1. Check TSEG (power of two, at least 128 KiB, size aligned, below 4 GiB) and
-   that SMM isn't locked. Gate the chipset's SMIs off.
-2. Clear TValid on the BSP, zero TSEG, install the image and write TSEG back
-   from the caches.
-3. On every CPU (APs first, the BSP last): SMM_ADDR, SMM_MASK (TSEG mask over
-   every physical address bit incl. the memory-encryption ones, write-back in
-   SMM, TValid, no ASEG), SMM_BASE from the layout, HWCR.SmmLock; all read
-   back. Any mismatch is boot-fatal.
-4. Let the southbridge program its sources and enable SMIs, then send one
-   self-SMI per CPU as on Intel.
+`X86SaveState` (`crates/smm/src/save_state.rs`) wraps the exclusive top of a
+CPU's 64 KiB SMBASE window. All reads and writes are volatile byte transfers.
+No Rust reference or slice is formed over hardware-owned memory.
 
-It returns the TSEG base, the programmed SMM_MASK and the unused, zeroed TSEG
-between the stacks and the SMBASE windows, where Zeppelin puts the PSP's SMM
-buffers. The save state is never written; S3 resume isn't supported.
+The revision word is at `top-0x104`. SMBASE offsets depend on the format:
 
-## coreboot compatibility output
+| Format (`X86SaveStateFormat`) | Accepted revisions | SMBASE field | Selected by |
+|-------------------------------|--------------------|--------------|-------------|
+| `IntelEm64t` | `0x30100`, `0x30101` | `top-0x108` | Core 2 (non-Yonah), Pineview |
+| `IntelLegacy` | bit 17 set, not AMD64 | `top-0x108` | Yonah (Core Duo) |
+| `Amd64` | `0x20064`, `0x30064` | `top-0x100` | QEMU, CPUs with long mode |
+| `Amd64OrIntelLegacy` | either of the above | by revision | QEMU, CPUs without long mode |
 
-A board can request coreboot module-argument blocks and a generated C header
-with the image-relative offsets (`FLAG_COREBOOT_MODULE_ARGS`,
-`FLAG_COREBOOT_HEADER`). This lets a coreboot SMM loader copy fstart's entry
-stubs and handler without treating the image as an rmodule. It is not used by
-fstart's own installer beyond filling the module-args block when present.
-The generated `FSTART_SMM_HANDLER_ALIGNMENT` macro publishes the same 4 KiB
-handler-load contract to external loaders.
+`write_smbase` validates the revision and writes only the SMBASE field. A
+mismatch returns `SaveStateMismatch` and aborts installation.
+`read_amd64` / `write_amd64` access saved RAX, RCX, RDX, and RIP (AMD64 only);
+the SP3 RAS observer uses them.
 
-## Validation targets
+## Intel installation (`IntelSmm::install`)
 
-- Host tests cover FSMM range validation, BSS zeroing, typed handler
-  configuration placement, permanent SMRAM CR3 placement, relocation audit,
-  SMRR range encoding, rendezvous ownership, layout separation, and
-  save-state SMBASE offsets.
-- Release-build the SMM unit and full image for Q35 and every Intel family.
-- Q35 TCG SMP boots must reach payload handoff after reporting AMD64 revision
-  `0x20064`, all-CPU relocation, SMRAM lock, and the permanent SMI round trip.
-- D945GCLF, D41S, and X61 require hardware smoke and S3 validation; emulation
-  cannot prove their chipset lock, SMRR, and cache behavior. D41S in
-  particular must confirm that the TSEG owner lock completes with SMRR set.
+`IntelSmm` (`crates/arch/src/x86/cpu/intel/smm.rs`) is composed from:
+
+| Trait | Implemented by | Provides |
+|-------|----------------|----------|
+| `SmramControl` | Northbridge (Q35: `Q35HostBridge`) | `tseg()`, `smram_open()`, `smram_close()`, `smram_lock()` |
+| `SmiControl` | Southbridge (`IchSmi`) | `HandlerConfig`, `set_acpi_mode`, `quiesce_for_relocation`, `enable_permanent_smi`, `lock_permanent_smi` |
+| `SmmCpu` | CPU-model driver | `smm_save_state_format()`, `smrr_pair()` |
+
+Flow:
+
+1. `mp_init` brings CPUs online and runs each CPU driver's `init_cpu` (which sets `IA32_FEATURE_CONTROL`). `IntelSmm::install` takes the `MpHandle` and reads the online count from it.
+2. Read TSEG; zero size is `TsegDisabled`. CPU count above `MAX_CPUS` is `TooManyCpus`.
+3. `smram_open()` must confirm D_OPEN and G_SMRAME with D_LCK clear; otherwise close and fail (`SmramOpenFailed`).
+4. Compute the SMRR range if the CPU supports SMRR. Run `install_pic_image` into the open TSEG.
+5. `quiesce_for_relocation()` clears chipset SMI sources and sets only the global SMI gate and EOS. SCI_EN is untouched. Install the default-SMBASE stub and tables, and write back TSEG and ASEG from cache.
+6. Relocate every CPU through `MpHandle::scope().scatter` (APs first, BSP last). Each relocation is serialized by a bridge lock, then:
+   - the CPU being relocated sends a LAPIC self-SMI to itself;
+   - the callback checks the full LAPIC ID, writes SMBASE, and programs SMRR when it applies;
+   - the CPU waits for completion.
+   Lock or completion timeouts, an unexpected CPU, a revision mismatch, or an SMRR failure poison the bridge, so no later target is published.
+7. Erase the ASEG window. Call `set_acpi_mode(resume)`, `smram_close()`, `smram_lock()` (verifies D_LCK, D_OPEN clear, G_SMRAME, T_EN), `enable_permanent_smi`, then `lock_permanent_smi()` (verifies SMI_LOCK and GBL_SMI_EN). Any failure is fatal.
+8. Send one self-SMI on every CPU. This runs each permanent entry once at boot.
+
+Log lines are prefixed with the platform name (`Q35 SMM:`, …).
+
+## SMRR and `IA32_FEATURE_CONTROL`
+
+`SmrrPair` (`smrr.rs`):
+
+| Pair | Registers | Notes |
+|------|-----------|-------|
+| `Architectural` | `0x1f2` / `0x1f3` | Base encodes memory type 6 (write-back) |
+| `Core2Alternative` | `0xa0` / `0xa1` | Usable only when `IA32_FEATURE_CONTROL` is locked with `SMRR_ENABLE` |
+
+CPU-model SMM facts:
+
+| CPU driver | Save state | SMRR pair | `IA32_FEATURE_CONTROL` in `init_cpu` |
+|------------|-----------|-----------|--------------------------------------|
+| Core 2, model 0Fh | `IntelEm64t` | `Core2Alternative` | Lock with VMX-outside-SMX (if VMX) and `SMRR_ENABLE` (if MTRRCAP.SMRR) |
+| Core 2, other models (e.g. 16h) | `IntelEm64t` | `Architectural` | Same as above (`feature_control_bits()` is 0 for `Architectural`) |
+| Yonah (Core Duo) | `IntelLegacy` | none | Not touched |
+| Pineview (Atom 1Ch) | `IntelEm64t` | none | Lock with VMX-outside-SMX (if VMX) |
+| QEMU (`QemuSmmCpu`) | `Amd64` or `Amd64OrIntelLegacy` | none | n/a |
+
+`enable_and_lock` (`feature_control.rs`) skips the MSR unless CPUID reports
+VMX or SMX, or the SMRR enable bit is requested. A register that is already
+locked is left alone. Pineview's source notes that coreboot's Core 2 pair left
+the D41S unable to complete locked TSEG accesses, so Pineview reports no pair.
+
+Per-CPU SMRR behavior during relocation:
+
+- CPU supports SMRR (`MTRRCAP.SMRR`): program the TSEG range and read back. An invalid range (not a power of two, unaligned, or above 4 GiB) or a failed read-back is `SmrrSetupFailed`. A `Core2Alternative` pair that is not locked with `SMRR_ENABLE` is also `SmrrSetupFailed`.
+- CPU lacks SMRR: no SMRR access. Relocation proceeds. If the model has a pair, a warning reports how many CPUs got SMRR.
+- Chipset SMRAM and SMI locks apply regardless of SMRR.
+
+## Intel SMI handler (ICH)
+
+`IchSmi` (`crates/driver-intel/src/southbridge/smi.rs`) implements `SmiControl`
+for ICH7–ICH10. The register layout differs only in GPE0:
+
+| Layout | GPE0 status |
+|--------|-------------|
+| `ICH7_GPE0` | 32-bit at PMBASE+0x28 |
+| `ICH8_GPE0` | 64-bit at PMBASE+0x20 (ICH8–ICH10, Q35) |
+
+Permanent SMI sources after `enable_permanent_smi`: TCO, APMC, global SMI, and
+EOS, plus PM1 power button and any GPE/GPI enables restored from the saved
+state. `SLP_SMI_EN` is not set.
+
+`IchSmmHandler<B>` dispatches on `SMI_STS`:
+
+- APMC port (`0xb2`): `0x1e` clears SCI_EN, `0xe1` sets it. The command is consumed only when `APM_STS` is set. Other commands go to `B::on_apmc`; `0xcb` (finalize) is filtered out.
+- TCO SW SMI: `B::on_tco_command`, then reset TCO status.
+- PM1 status: cleared.
+- GPE0 status: passed to `B::on_gpe`, then cleared.
+- Alternate GPI: passed to `B::on_gpi`.
+
+Boards that need more chipset handling implement `IchBoardSmmHandler`. Boards
+without extra SMI sources use `NoIchBoardSmmHandler` (D945GCLF, Q35).
+
+## AMD64 installation (`AmdSmm::install`)
+
+AMD CPUs take TSEG from `SMM_ADDR`/`SMM_MASK` and SMBASE from `SMM_BASE`. These
+are writable from normal mode until `HWCR.SmmLock`. No default-SMBASE stub,
+relocation SMI, or save-state write is used.
+
+`AmdSmm` (`crates/arch/src/x86/cpu/amd/smm.rs`) uses one trait, `SmiControl`
+(`disable_smi`, `enable_smi`, `smm_handler_config`), implemented by
+`fstart_driver_amd::fch::smi::FchSmi`.
+
+1. Check TSEG: power of two, at least 128 KiB, size-aligned, below 4 GiB. Check that `HWCR.SmmLock` is clear (`Locked` otherwise). Check CPU count.
+2. `disable_smi()`. On the BSP, clear TValid/AValid in `SMM_MASK`. Zero TSEG, run `install_pic_image`, write back TSEG.
+3. Scatter over CPUs (APs first, BSP last). Each CPU writes `SMM_ADDR`=TSEG base, `SMM_MASK`=TSEG mask over every CPUID physical-address bit (write-back, TValid, no ASEG), `SMM_BASE`=its SMBASE, and sets `HWCR.SmmLock`. Each reads back; a mismatch is `MsrSetupFailed`.
+4. `enable_smi()`, then one self-SMI per CPU.
+
+Returns `InstalledTseg { base, mask, free }`. `free` is the zeroed TSEG
+between the stacks and the lowest SMBASE window. `platform-amd`'s
+`noncar/psp.rs` places the PSP SMM info buffers there.
+
+This is a cold-boot path. There is no resume argument. An already-locked
+`HWCR` is an error.
+
+## Limits
+
+- The Q35 SMM image has 8 entry stubs (see Build). The installer returns `NotEnoughEntries` for more online CPUs.
+- The Intel path passes `resume` from the caller. Q35 passes `false`.
+- The AMD path has no S3 handling (see above).
+- The format is unversioned. Build and install from the same source tree.
+
+## Related
+
+- [`amd-sp3-ras.md`](amd-sp3-ras.md): native SP3 SMM RAS observer, built with `cargo fbuild build --board tyan-s8030 --stage smm --release`.
+- [`pineview-boards.md`](pineview-boards.md): Pineview board notes.

@@ -1,170 +1,254 @@
-# AMD firmware image tooling
+# AMD firmware image format
 
-AMD image tooling is a Rust implementation. Coverage grows incrementally, but format, platform and
-board policy must remain separate from the start.
+Reference for the AMD PSP flash image: where the code lives, how a flash view
+resolves addresses, what validation checks, and how firmware blobs are supplied
+to the build.
 
-## Boundaries
+## Code map
 
-- `fstart-amdfw-format`: `no_std`, MIT/Apache-2.0 wire layouts, Fletcher-32,
-  the directory table writer, address resolution, EFS and boot-half
-  selection, checked PSP/BIOS traversal, PSP-order file lookup (L2 first) and
-  dependency validation. It uses zerocopy and has no silicon-driver
-  dependency; AMD document #55758 and the SP3 reverse engineering are its
-  foundations. It is the one reader of the host tools and of the firmware
-  (the SP3 reset image reads its flash with it; a `Profile` per generation
-  comes from `fstart_driver_amd::sp3::soc::Generation::profile`). `fstart-core`
-  takes its board-facing BIOS slot type directly from this crate.
-- `fstart-image-build::amd`: assembly policy and the current Picasso blob
-  configuration/packer. It consumes the same reader to check vendor inputs and
-  read back assembled images. Signed blobs are not modified or re-signed.
-- `fstart-amdfw` CLI: shared inspection/validation plus partition packing. The
-  old flag-only packing invocation remains supported; `pack` is the explicit
-  equivalent.
+| Path | Crate | Contents |
+|---|---|---|
+| `crates/amdfw-format` | `fstart-amdfw-format` (`no_std`) | Wire layouts (`efs.rs`, `directory.rs`, `anchor.rs`, `microcode.rs`), the `Flash` view and `Profile` (`lib.rs`), validation. No silicon-driver or packing code. |
+| `crates/image-build/src/amd` | `fstart-image-build::amd` | `assembly.rs` (image composition), `mod.rs` (`PicassoImage` packer), `blobs.rs` (blob tables, extraction), `config.rs` (`fw.cfg` reader), `apcb.rs`, `psp_app.rs`. |
+| `tools/amdfw` | `fstart-amdfw-tools` | Binaries `fstart-amdfw` (inspect/validate/pack) and `fstart-apcb`. |
+| `tools/fbuild` | `fbuild` | `blobs` subcommand (`src/blobs.rs`), `--blobs`/`--donor`/`--image-config` (`src/payload.rs`), image output (`src/amd_image.rs`). |
+| `crates/platform-amd` | `fstart-platform-amd` | SoC blob tables (`Cargo.toml`), noncar image plan (`src/noncar/host.rs`), Picasso policy (`src/picasso/mod.rs`). |
+| `crates/driver-amd/src/sp3/soc/mod.rs` | `fstart-driver-amd` | `Generation::profile()` and `flash()` for SP3 (Naples, Rome, Milan). |
+| `crates/platform-sp3` | `fstart-platform-sp3` | SP3 reset image; reads the flash anchor and BIOS directory via this crate. |
 
-Keep packer/configuration code out of the format crate.
+The format crate has no packing policy. Board, platform and tool choices stay in
+`fstart-image-build` and `fbuild`.
 
-## Platform and image selection
+For SoC-specific background see [amd-picasso.md](amd-picasso.md),
+[amd-zeppelin.md](amd-zeppelin.md) and [amd-sp3.md](amd-sp3.md).
 
-A `Profile` supplies EFS generation acceptance, BIOS slot, PSP/chip combo IDs,
-legacy-offset policy and the Picasso APOB-NV alias. It is data, not an exhaustive
-list of supported CPU names. `Profile::for_slot` supplies current defaults;
-callers can override them for another platform.
+## Flash view (`fstart-amdfw-format`)
 
-`Flash::region` explicitly supplies:
+`Flash` is a view over image bytes with an explicit mapping. Construct it with
+`Flash::region(bytes, origin, physical_base, profile)`; `Flash::new(bytes)` maps the
+slice top-aligned below 4 GiB (legacy form).
 
-- the entire file, so references can extend beyond a selected 16-MiB region;
-- that image's origin in the file;
-- its physical mapping base;
-- optionally, a recovery-slot origin.
+| Field | Meaning |
+|---|---|
+| `bytes` | The whole file; references may extend past a 16 MiB region. |
+| `origin` | File offset of the selected image. |
+| `physical_base` | Physical address mapped to `origin`. |
+| `slot_origin` | Optional recovery-slot origin (`with_slot`). |
+| `profile` | `Profile` (see below). |
 
-The four address modes are physical, image-relative, table-relative and
-slot-relative. The effective mode is the higher of directory and entry modes.
-Missing slot context is an error, not a reason to reinterpret an address.
-Header v0/v1 mode and allocation fields have different layouts and are decoded
-separately. Combo selection never defaults to the first entry; duplicate
-matching entries are rejected. Offline combo selection by identity is **not**
-root-key authentication, including for lookup-mode-0 images.
+### Address modes
 
-The CLI names Picasso, Zeppelin/Naples, Rome and Milan as starting profiles.
-`--psp-id`, `--chip-id`, `--generation-mask`, `--image-origin`, `--physical-base`
-and `--slot-origin` make selection/mapping policy explicit rather than relying
-on flash-size heuristics.
+The effective mode is the larger of the directory's address mode and the entry's
+own mode (`Flash::resolve`). Modes 0 to 3 are valid.
 
+| Mode | Resolves to | Error when |
+|---|---|---|
+| 0 physical | `origin + (addr - physical_base)` for `addr` in `[physical_base, 4 GiB)`. Other values are raw image offsets only if `profile.legacy_offsets`. | Outside the window and legacy offsets are off. |
+| 1 image-relative | `origin + raw` | Overflow. |
+| 2 table-relative | `table offset + raw` | Overflow. |
+| 3 slot-relative | `slot_origin + raw` | No slot origin set (never reinterpreted). |
+
+The result must be inside `bytes`. Header versions v0 and v1 have different
+allocation fields and are decoded separately (`directory::Header`).
+
+### Profiles
+
+`Profile::for_slot(BiosDirectorySlot)` gives the defaults. Callers can override any
+field, and `fstart-amdfw --psp-id/--chip-id/--generation-mask` do so.
+
+| `BiosDirectorySlot` | EFS generation mask | PSP ID | Notes |
+|---|---|---|---|
+| `Family17hModel00` (Naples/Zeppelin) | `0x0` | `0xbc090000` | |
+| `Family17hModel10` (Picasso) | `0x0` | `0xbc0a0000` | APOB-NV uses the fixed 16 MiB alias. |
+| `Family17hModel30` (Rome) | `0x1` | `0xbc0b0000` | |
+| `Family19h` (Milan) | `0x3` | `0xbc0b0d00` | |
+
+All defaults set `legacy_offsets = true` and `chip_id = None`.
+
+### EFS and directories
+
+- `Flash::efs_checked()` searches the EFS at the offsets in `efs::PROBES`, in
+  order, within the selected region's 16 MiB window (`efs::WINDOW`). It accepts
+  the first with signature `0x55aa55aa` and `generation & generation_mask == 0`.
+  Nothing is taken from another generation's EFS.
+- EFS fields used: `psp_directory`, `new_psp_directory`, `psp_backup_directory`,
+  BIOS directory pointers `bios0`..`bios3` (+0x18, +0x1c, +0x20, +0x28), and the
+  ancillary pointers `imc`, `gec`, `xhci`, `promontory*`.
+- `Flash::psp_directories()`: a `2PSP` combo (`directory::Combo`) selects one
+  branch. `id_select 0` matches `id & 0xffffff00` against `psp_id`; `id_select 1`
+  matches `chip_id`. Zero or several matches are `Error::ComboSelection`. Without
+  a combo the pointer is a plain `$PSP` directory.
+- `Flash::bios_directories_checked(slot)`: `$BHD` directory with optional `$BL2`.
+- `Levels` (`$PSP`/`$PL2`, `$BHD`/`$BL2`): level 2 is searched first, then level 1
+  (`Levels::find`, `Levels::all`).
+- `Directory::write_table` and `modify_entries` write tables; `fletcher32` seals
+  them.
+
+Selecting a combo branch by identity is an offline choice. It is not root-key
+authentication, including for images with root-key lookup mode 0.
+
+### Validation (`Flash::validate_prefix`)
+
+`validate_prefix(slot, kept, reset)` checks that every reachable table and file
+lies inside the first `kept` bytes. The one exception is the replacement reset
+range `reset`. It rejects:
+
+- an EFS or directory extent outside the kept bytes;
+- ancillary EFS blobs (`imc`, `gec`, `xhci`, `promontory`, `lp_promontory`,
+  `promontory19`) that start at or above the lowest directory, when the prefix is
+  partial;
+- a `RESET_IMAGE` (0x62) entry without both `RESET` and `COPY` flags;
+- `RECOVERY_A` (0x48) or `RECOVERY_B` (0x4a) PSP entries (`UnsupportedTopology`);
+- a truncated PSP-to-BIOS table link (0x49), or a nested level 2 inside one.
+
+It checks all four BIOS slots of the EFS, both PSP pointers, and every combo branch.
+A corrupt referenced L2 is an error, not an absent L2.
+
+Validation checks structure only. It does not check signatures or hardware
+bootability.
+
+### Constants and helpers
+
+| Item | Value / use |
+|---|---|
+| `HALF_SIZE` | 16 MiB, one flash half of a "Two 16M in 32MB" image. |
+| `ROM2_BASE` | `0xff00_0000`, the x86 ROM2 window. |
+| `booted_half(bytes, base, profile, halves)` | First half whose EFS the profile accepts. |
+| `anchor::FlashAnchor` | `SP3FLASH` v1 record (flash size, FFS offset and FFS size) patched into the reset image. |
+| `microcode::patch_size(id)` | `0xc80` for equivalence IDs `0x80xx`–`0x8fxx`; `0x15c0` for `0xa0xx`; `None` otherwise. |
+| `microcode::patches(blob)` | Iterates concatenated flat patches. |
+
+## Inspecting and packing (`fstart-amdfw`)
+
+```sh
+cargo run -p fstart-amdfw-tools --bin fstart-amdfw -- inspect vendor.rom --profile milan
+cargo run -p fstart-amdfw-tools --bin fstart-amdfw -- validate vendor.rom --profile rome
+cargo run -p fstart-amdfw-tools --bin fstart-amdfw -- inspect multi.rom --profile milan --image-origin 0x1000000
 ```
-cargo run -p fstart-amdfw-tools --bin fstart-amdfw -- \
-  inspect vendor.rom --profile milan
-cargo run -p fstart-amdfw-tools --bin fstart-amdfw -- \
-  validate vendor.rom --profile rome
-cargo run -p fstart-amdfw-tools --bin fstart-amdfw -- \
-  inspect multi-image.rom --profile milan --image-origin 0x1000000
-```
 
-Inspection resolves the selected PSP and BIOS trees. Validation additionally
-checks all reachable PSP combo branches, backup PSP pointers and every populated
-BIOS slot of the retained EFS. Prefix validation accepts a separately declared
-replacement reset range:
+| Subcommand | Does |
+|---|---|
+| `inspect IMAGE --profile P` | Prints the EFS, then each PSP and BIOS directory with its entries and file ranges. |
+| `validate IMAGE --profile P [--prefix-size N] [--reset-offset O --reset-size S]` | Inspect, then `validate_prefix`. A reset range is the only part allowed outside the prefix. |
+| `pack` (or the legacy flag-only form) | Packs a Picasso PSP partition fragment with `PicassoImage`. Refuses to overwrite the output (`create_new`). |
 
-```
-fstart-amdfw validate vendor.rom --profile zeppelin \
-  --prefix-size 0x294000 --reset-offset 0xdb0000 --reset-size 0x250000
-```
+`--profile` values are `picasso`, `zeppelin`, `naples`, `rome` and `milan`.
+Selection and mapping options:
 
-A corrupt referenced L2 is not an absent L2. Referenced tables must fit their
-parent link; duplicate/nested L2 links are refused. Preservation includes table
-allocation extents, every PSP branch, PSP-to-BIOS table links (type 0x49), and
-non-reset BIOS files. ISH recovery links (0x48/0x4a) are explicitly unsupported,
-not mistaken for opaque files whose dependencies need no traversal. Ancillary EFS
-payload formats with unknown lengths are refused for partial-prefix assembly,
-not assumed safe because their starting pointer is in the prefix. This checks
-structural preservation, not cryptographic validity or hardware bootability.
+| Option | Meaning |
+|---|---|
+| `--image-origin` | Start of the image in a multi-image ROM (default 0). |
+| `--physical-base` | Physical address of `origin` (default: top-mapped window, or the smaller flash size). |
+| `--slot-origin` | Recovery-slot origin, required for slot-relative entries. |
+| `--psp-id`, `--chip-id`, `--generation-mask` | Override the profile. |
+
+`pack` writes a partition fragment, not a flash-ready chip image. Signed AMD
+blobs are copied unchanged, never modified or re-signed.
+
+`fstart-apcb` injects RAM-ID wiring and per-channel SPDs into a Picasso APCB v2
+template (`--template`, `--output`, four `--gpio NUMBER:MUX:BANK` values, optional
+`--spd-0-0`, `--spd-0-1`, `--spd-1-0`, `--spd-1-1`, `--hex`, `--strip-manufacturer`).
 
 ## Firmware blobs
 
-A native AMD image is packed from vendor firmware files in a blob
-directory (`--blobs DIR`, workspace-relative or absolute). Two Cargo.toml
-tables say which files and where they go
-(`fstart_image_build::amd::blobs`):
+Vendor firmware files are described by two Cargo.toml tables, read by
+`fstart_image_build::amd::blobs`. Paths in both are relative to the blob directory
+and may not be absolute or contain `..`.
 
-- The SoC's, owned by the platform crate:
-  `[package.metadata.fstart.amd.<soc>]` in `crates/platform-amd/Cargo.toml`.
-  The PSP partition's geometry and settings, and the file of every PSP and
-  BIOS directory entry, microcode patch (by CPU equivalence ID) and video
-  BIOS (by PCI ID). Paths follow the layout of the `amd_blobs` repository.
-- The board's: `[package.metadata.fstart.amd]` in its Cargo.toml. Its SoC,
-  its APCB instances and whether its PSP needs fstart's PSP application:
+### SoC table: `crates/platform-amd/Cargo.toml`
 
-  ```toml
-  [package.metadata.fstart.amd]
-  soc = "picasso"
-  psp-app = true
-  # One APCB per RAM ID, at <board>/apcb/<n>.bin in the blob directory ...
-  apcb = { instances = 13 }
-  # ... or generated from a template, paths in the blob directory:
-  # apcb = { template = "zork/uma_128.apcb", spds = ["spd/1.hex", ...],
-  #          gpio = [[132, 1, 0], [90, 1, 0], [86, 3, 0], [69, 1, 0]],
-  #          strip-manufacturer = true }
-  ```
+`[package.metadata.fstart.amd.<soc>]` (`SocBlobs`). Currently only `picasso` exists.
 
-fbuild hands both tables to the platform, which resolves them in the blob
-directory. The microcode and the video BIOSes go into the FFS; the rest
-into the PSP partition. The image's receipt (`<board>.json`) records every
-input's SHA-256.
+| Key | Meaning |
+|---|---|
+| `bios-directory` | `BiosDirectorySlot` the PSP reads the BIOS directory from. |
+| `efs-offset`, `partition-end` | PSP partition geometry. |
+| `spi-read-mode`, `spi-speed`, `micron` | EFS SPI settings. |
+| `soft-fuse` | PSP directory entry 0x0b. |
+| `[[...psp]]` | `type`, optional `subprogram`/`instance`, `file`. |
+| `[[...bios]]` | Same fields, for BIOS directory entries. |
+| `[[...microcode]]` | `equivalence-id`, `file`. |
+| `[[...vbios]]` | `vendor` (default `0x1002`), `device`, `file`. Added to the FFS as `pciVVVV,dddd.rom` (lowercase hex). |
 
-### From an `amd_blobs` checkout
+### Board table: `boards/*/*/Cargo.toml`
 
-`--blobs path/to/amd_blobs` serves the SoC's files as they are. Board files
-(the APCB instances) go next to them, e.g. extracted from the board's flash
-as below.
+`[package.metadata.fstart.amd]` (`BoardBlobs`). Example from
+`boards/google/zork/Cargo.toml` (board name `google-vilboz`):
 
-### From a vendor flash image
-
-`cargo fbuild blobs` fills a blob directory with exactly the files the
-board's build reads, at the paths it reads them from:
-
-```sh
-cargo fbuild blobs --board google-vilboz --from backup.rom --out blobs/
-cargo fbuild assemble --board google-vilboz --release --blobs blobs/
+```toml
+[package.metadata.fstart.amd]
+soc = "picasso"
+psp-app = true          # pack fstart's PSP application
+apcb = { instances = 13 }
 ```
 
-- PSP and BIOS directory files by their entry (type, subprogram,
-  instance), L2 before L1 as the PSP looks them up, the board's APCBs from
-  the BIOS directory's `0x60` instances;
-- microcode patches by the CPU equivalence ID in their header and the size
-  that CPU family's patches have, from the BIOS directory if it lists them,
-  else wherever in the image they are (e.g. a coreboot or UEFI firmware
-  file system), the newest when there are several;
-- video BIOSes by their legacy option ROM header and PCI data structure
-  (vendor, device, x86 code, checksum) wherever they are; copies must be
-  identical.
+- `apcb = { instances = N }`: files `<board>/apcb/<n>.bin` for `n` in `0..N`, written
+  to BIOS entries 0x60 and 0x68 with instance `n`.
+- `apcb = { template = ..., spds = [...], gpio = [[num, mux, bank] x 4], second-channel = false, strip-manufacturer = false }`:
+  an APCB generated from a template (`ApcbFiles`). `gpio` has exactly four entries.
 
-Or build from the vendor image directly: `--donor backup.rom` instead of
-`--blobs` extracts the same files once per board and image content into
-`target/fstart-blobs/<board>/<image SHA-256>/` and builds from there.
+### Build inputs
 
-It writes `fstart-blobs.toml` with the source image's and each file's
-SHA-256 and where it was found. A file the image doesn't have is an error,
-or, with `--allow-missing`, left out and listed there. Compressed files
-(e.g. a video BIOS in a compressed UEFI section) aren't found; take them
-from `amd_blobs`. Extracted files are the vendor's versions, signed as they
-were; nothing is modified.
+Use one of:
 
-## Coverage and next extensions
+| Input | Flag | Source |
+|---|---|---|
+| Blob directory | `--blobs DIR` | Directory laid out as the table paths. Relative to the current directory, or absolute. |
+| Donor image | `--donor ROM` | Extracts into `target/fstart-blobs/<board>/<first 16 hex digits of ROM SHA-256>/` on first use, then reuses it. |
 
-Current inspection covers EFS BIOS slots at +0x18/+0x1c/+0x20/+0x28, `2PSP`,
-`$PSP`/`$PL2`, `$BHD`/`$BL2`, header v0/v1 and address modes 0–3. Current **blob
-packing** remains Picasso-specific; this is a coverage limit, not the format
-architecture. Vendor assembly still enforces its existing single-image,
-top-aligned-reset board contract.
+`--blobs` and `--donor` conflict. Only Picasso images are packed from them
+(`ImageConfig::Packed`). Zeppelin uses a vendor image given by `--image-config`
+(`ImageConfig::Vendor`), checked against the stage layout before building.
 
-Next steps are native assembly of multi-level/combo layouts, then a newer
-client's ISH/recovery-slot format. Add those as checked topology/placement
-formats consumed by inspection, validation and assembly together—not as another
-standalone packer or a parallel family-specific parser. Unknown cookies and
-unsupported topology fail explicitly today. Extend signing metadata/placement
-without treating opaque signed blobs as editable firmware code.
+### `cargo fbuild blobs`
 
-Use Picasso and SP3 fixtures together when evolving the format API. Synthetic
-fixtures exercise header versions, all relative modes, nonzero image origins,
-combo closure and corrupt-L2 rejection; vendor donor files remain external and
-must not be committed. Keep newer-client differential fixtures alongside these
-as their formats are implemented.
+```sh
+cargo fbuild blobs --board google-vilboz --from backup.rom --out blobs/ [--allow-missing]
+```
+
+Extraction, from the vendor image's PSP and BIOS directories:
+
+| File | Found by |
+|---|---|
+| PSP and BIOS entries | Type, subprogram and instance in the table. Level 2 is searched before level 1. |
+| APCBs | BIOS entry 0x60 with the board's instance numbers. |
+| Microcode | CPU equivalence ID in the patch header and the size `patch_size` gives. Taken from the BIOS directory if listed there, else a raw scan of the image. The newest patch wins; two different patches for one ID is an error. |
+| Video BIOS | Legacy option ROM (`55 AA`), PCIR vendor, device, code type 0, and checksum. Raw scan; several different copies is an error. |
+
+Compressed firmware sections are not decompressed, so files inside them are not
+found. Files the image lacks are an error unless `--allow-missing`, which records
+them.
+
+Output in `--out`:
+
+- the extracted files, at their table paths, unmodified;
+- `fstart-blobs.toml` (written by `fbuild`'s `blobs` module) with `source` and
+  `source-sha256`, `missing = [...]`, and one `[[file]]` per file with `path`,
+  `sha256` and `origin`.
+
+## Assembling an image
+
+```sh
+cargo fbuild assemble --board google-vilboz --release --blobs blobs/
+cargo fbuild assemble --board google-vilboz --release --donor backup.rom
+```
+
+`assemble` takes `--release`, `--blobs`, `--donor` and `--image-config` (the
+vendor ROM for vendor-image boards). Picasso's policy is release-only
+(`Policy::release_only`).
+
+Output goes to `target/fstart-build/<board>/<release|debug>/<digest>/image/`:
+
+| File | Content |
+|---|---|
+| `<board>.rom` | Whole-flash image. |
+| `<board>-psp-fragment.bin` | PSP partition fragment only, not flash-ready. |
+| `<board>.json` | Flash offset, length, SHA-256 of the image, EFS and reset offsets, and SHA-256 of each input (`environment`, `path`, `sha256`), plus reset and FFS hashes. |
+
+## Current limits
+
+- Native packing (`PicassoImage`) writes Picasso's first-generation PSP partition
+  only. Multi-level directories and ISH/recovery links are not packed; validation
+  rejects recovery links.
+- `fstart-amdfw inspect` and `validate` accept header v0/v1 and address modes 0 to 3.
+- Unknown cookies and unsupported topology return errors.

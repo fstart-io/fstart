@@ -1,148 +1,189 @@
-# Native AMD Zeppelin / Gigabyte MJ11
+# AMD Zeppelin (EPYC Embedded 3000) and Gigabyte MJ11
 
-Native (no AGESA) port of AMD Zeppelin (EPYC Embedded 3000, Family 17h model
-01h) and the Gigabyte MJ11-EC1/EC0, from the vendor firmware analysis in
-`sp4r2`. It boots Linux, and
-CrabEFI with an OS behind it, on an MJ11-EC1 (EPYC 3151, SP4r2, one die).
+Zeppelin is Family 17h models 00h–0Fh in the SP4 package (two dies) and
+SP4r2 (one die). The vendor PSP/ABL trains DRAM and reports it in the APOB.
+Everything after that is native, with no AGESA. The shared flow is in
+[amd-noncar.md](amd-noncar.md).
 
-## Code layout
+Board: `boards/gigabyte/mj11` (`gigabyte-mj11-ec1`, default; `gigabyte-mj11-ec0`
+is the `ec0` variant with the x16 slot).
 
-- `crates/driver-amd`: the silicon, by IP block. A block has its common
-  code and a submodule per IP version where the code differs, named by its
-  AGESA version or, without one, by the SoC (as openSIL's `xUSL/<IP>`):
-  - `smn`, `df`: the register transports. `df` also has the dies (`Die`,
-    `dies`), the address map and its resource split (`df::map`) and the
-    fabric init (`df::zeppelin`).
-  - `smu`: the mailbox, the AP release (`smu::threads`) and Zeppelin's SMU
-    V9 messages (`smu::v9`).
-  - `nbio`: `iohc` (DRAM map, BARs), `ioapic`, `iommu`, `pcie`; the NBIO
-    base init and tables (`nbio::zeppelin`).
-  - `dxio`: the DXIO firmware client; the lane mapping and PCIe setup
-    (`dxio::zeppelin`).
-  - `ccx`: per-CPU init, MSRs, cache plan, microcode and TSC; the reset MSR
-    table (`ccx::zeppelin`).
-  - `psp` (mailbox), `apob`, `table` (vendor register
-    tables).
-  - `fch`: the register layer and controllers (LPC, SPI, eSPI, GPIO, I2C,
-    SMI, ...); the Taishan FCH (`fch::taishan`: SATA, USB, IRQ routing, the
-    multi-die FCH, the SMM parts).
-  - `soc::zeppelin`: the SoC itself: its `Soc` constants, identity
-    (package, revision), non-PCI pool, ECAM and APOB location.
+## Code
 
-  The Zeppelin versions are gated by the `zeppelin` feature.
-- `crates/platform-amd/src/zeppelin`: Zeppelin on the shared noncar flow
-  ([amd-noncar.md](amd-noncar.md)): the `noncar::Soc` hooks, the silicon
-  init sequence (`silicon.rs`), the board `Config`, DRAM layout, ACPI data
-  and its host policy. The flow, MP, SMM and PSP SMM info, PCI root,
-  e820, ACPI tables and payload handoff are the shared ones in
-  `crates/platform-amd/src/noncar` and `src/acpi.rs`.
-- SMM: `fstart_arch::x86::cpu::amd::smm` (TSEG/SMBASE MSRs), the FCH SMI
-  control and handler in `crates/driver-amd/src/fch/smi.rs`, the Zeppelin
-  sleep entry in `fch/taishan/smm.rs`.
-- `boards/gigabyte/mj11`: DXIO lanes (EC1 x8/x8, EC0 x16), interrupt routes,
-  AST2500 SUART1 console, IPMI KCS and SPMI, and the vendor tables of each
-  variant: VR register images, PCIe re-drivers (EC1) and post-training SMN
-  values.
-- `crates/driver-i2c`: the DesignWare I2C master of the FCH (I2C3 reaches
-  the VRs and re-drivers).
-- `crates/driver-superio/src/aspeed_ast2400.rs`: the AST2400/AST2500 SIO.
+| Area | Path |
+| --- | --- |
+| SoC constants, identity, ECAM, APOB | `crates/driver-amd/src/soc/zeppelin/mod.rs` |
+| Platform: `Soc` impl, `Config`, host policy | `crates/platform-amd/src/zeppelin/mod.rs` |
+| TP1 sequence | `crates/platform-amd/src/zeppelin/silicon.rs` |
+| DRAM layout | `crates/platform-amd/src/zeppelin/layout.rs` |
+| ACPI data | `crates/platform-amd/src/zeppelin/acpi.rs` |
+| Host model of the dies, tests | `crates/platform-amd/src/zeppelin/tests.rs`, `crates/driver-amd/src/soc/zeppelin/test_pci.rs` |
+| Board | `boards/gigabyte/mj11/src/` (`lib.rs` hooks and `Config`, `dxio.rs`, `i2c.rs`, `variant.rs` with `tables/ec{0,1}.rs`, `gpio.rs`, `bmc.rs`, `acpi.rs`, `smm.rs`) |
+
+IP blocks in `crates/driver-amd/src` (Zeppelin versions, behind the `zeppelin` feature):
+
+| IP | Module |
+| --- | --- |
+| Register transports | `smn.rs`, `df/` (`df::zeppelin`, `df::map`) |
+| NBIO | `nbio/zeppelin/`, `nbio/iohc.rs`, `nbio/ioapic.rs`, `nbio/iommu.rs`, `nbio/pcie.rs` |
+| SMU v9 | `smu/v9.rs`, `smu/threads.rs` (AP release) |
+| DXIO | `dxio/zeppelin.rs` |
+| CCX | `ccx/zeppelin/` (CPU init, MSR tables) |
+| FCH | `fch/taishan/` (IRQ routing, SATA, USB, multi-FCH, `smm.rs`); shared `fch/smi.rs` |
+| PSP, APOB | `psp/`, `apob/` |
+| Vendor register sequences | `table.rs` |
+
+Other: SMM TSEG/SMBASE in `crates/arch/src/x86/cpu/amd/smm.rs`; I2C master in
+`crates/driver-i2c`; AST2400/AST2500 Super I/O in
+`crates/driver-superio/src/aspeed_ast2400.rs`.
+
+## SoC constants
+
+| Constant | Value |
+| --- | --- |
+| `MAX_DIES` | 2 |
+| ECAM | `0xf000_0000`, 128 buses |
+| APOB (PSP writes it) | `0x3000_0000`, `0x2_0000` bytes |
+| Non-PCI MMIO pool | 8 MiB per die |
+| `TSEG_SIZE` | 8 MiB |
+| `MAX_CPUS` | 32 |
+| PSP variant | `psp::Variant::Zp` |
+| BIOS directory | `Family17hModel00` |
+
+## Silicon init (TP1)
+
+`Soc::silicon_init` runs `silicon::pre_mp`, then MP, then SMM. The board
+hooks are called where the vendor sequence has them.
+
+1. Taishan FCH pre-init (ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O). The AC
+   power-loss policy is set in `identify`, after the console.
+2. DF MMIO/IO plan and programming (`df::map::plan`, `program`), per-die DF
+   early init, scrub init from the APOB.
+3. FCH reset tasks, SATA and multi-FCH reset. Board `fch_reset_done`: MJ11
+   programs the VRs and redrivers over I2C3 and clears PM1.
+4. Per die: NBIO early init, PSP BAR, IOHC DRAM map. BSP CCX init.
+5. IOAPIC and IOMMU BARs per die.
+6. DXIO training on every die, then board `dxio_training_done`. MJ11 applies
+   the post-training SMN values and waits for the BMC.
+7. Taishan USB, SMU v9 init with its DMA pages and policy, CAC weights, DF late
+   init, VGA routing, NBIO pre-enumeration, FCH ACPI decode, env, SATA, xGbE.
+8. MP (`noncar::mp::start`): the SMU releases the threads, each runs
+   `ccx::zeppelin::cpu_init`. Then the SMU is told the APs are up and CCX is done.
+9. SMM (`noncar::smm::install`) in TSEG, then `psp::notify_smm`.
+10. PCI interrupt router from `Config::fch.irq_routes`.
+
+TP2 (`after_resources`) sets the FCH ACPI ports. TP3 (`ready_to_boot`) does
+SATA late, multi-FCH late, FCH late init, board `ready_to_boot`, and disables
+DF extended config. Then LockDFReg, BootDone and the payload (see the flow).
+
+## Config
+
+`zeppelin::Config`:
+
+| Field | Meaning |
+| --- | --- |
+| `subsystem_id` | Subsystem ID of the FCH, NBIO and PCIe functions |
+| `fch.power_failure` | AC power-loss policy |
+| `fch.devices` | FCH devices per die (`xhci`, `sata`) |
+| `fch.irq_routes` | PCI INTx router table (`0xc00`/`0xc01`) |
+| `fch.smi_gevents` | GEVENT bits routed to the board's SMM handler |
+| `dxio.descriptors` | DXIO engine list per die |
+
+MJ11 values (`boards/gigabyte/mj11/src/lib.rs`, `dxio.rs`):
+
+| Item | EC1 (default) | EC0 (`ec0` feature) |
+| --- | --- | --- |
+| Subsystem ID | `0x1000_1458` | same |
+| SMI GEVENT | GEVENT11, the BMC diagnostic button | same |
+| Slot PCIe | 3.1 x8 and 3.3 x8 (reversed lanes) | 3.1 x16 |
+| Fixed PCIe | 1.2 SlimSAS, 1.3 M.2, 1.4 and 1.5 I210, 1.1 AST2500; SATA 0-3 | same |
+| VR and redriver tables | `tables/ec1.rs` (redrivers present) | `tables/ec0.rs` (no redrivers) |
+
+Interrupt routes: INTA-D to APIC 16-19 (PIC `NC`), SCI to 9, GPIO to 7.
 
 ## Flash image
 
-The image keeps the vendor PSP firmware: the first `0x294000` bytes of the
-vendor flash (EFS, PSP and BIOS directories, APCB, ABL, SMU firmware,
-microcode) stay, with two changes that speed up the PSP. fstart replaces
-BIOS directory entry 0x62:
+Vendor image: `fbuild assemble --image-config <vendor flash dump>`. The vendor
+prefix stays byte for byte. The FFS and the stage are placed as below.
+Source: `layout.rs` (`VENDOR_PREFIX`, `RESET_FLASH_OFFSET`), `zeppelin/mod.rs`
+(`PspOptions`).
 
-| Flash | Use |
+| Flash offset | Use |
 | --- | --- |
-| `000000..294000` | vendor prefix |
-| `294000..db0000` | FFS (payload, boot policy) |
-| `db0000..1000000` | reset image (PSP copies it to `76db0000`) |
+| `000000..294000` | Vendor prefix: EFS, PSP and BIOS directories, APCB, ABL, SMU firmware, microcode |
+| `294000..db0000` | FFS: payload, `cpu_microcode.bin`, boot policy |
+| `db0000..1000000` | Reset image, `0x250000` bytes, BIOS directory entry 0x62 |
 
-`fbuild assemble --image-config <vendor flash dump>` composes the image
-(`crates/image-build/src/amd/assembly.rs`). The vendor image's BIOS
-directory, the level 2 the PSP boots from (`EFS` → `$BHD` → `$BL2`), must
-describe this reset image and APOB and lie within the prefix. Its microcode
-entries (type 0x66) go into the FFS as `cpu_microcode.bin`.
+The vendor BIOS directory must describe this reset image and the APOB within
+the prefix. `image-build` checks it (`check_vendor`) before composing.
 
-The reset image is zlib-compressed in the PSP's format (a
-256-byte header, then the stream; 2.3 MiB to about 150 KiB), and both BIOS
-directory levels mark entry 0x62 compressed, so the PSP inflates the stage
-instead of copying the whole region. The EFS sets the PSP's SPI reads to
-Fast Read at 33 MHz (it was left at the default). Only those bytes and the
-two directory checksums differ from the vendor prefix. On the MJ11 the
-first x86 instruction runs about 1.4 s earlier (3.9 s instead of 5.3 s
-after power-on). 66 MHz returns corrupt data on this board, and the dual
-read modes are no faster than Fast Read.
+Two PSP options are set in the EFS (`PspOptions`):
 
-## x86 starts in DRAM
+- `compress_reset: true`: the reset image is zlib-compressed in the PSP's
+  format and both directory levels mark entry 0x62 compressed. The PSP
+  inflates the stage rather than copying the whole region.
+- `spi: Some((7, 1))`: Fast Read at 33 MHz for the PSP's SPI reads.
 
-The PSP trains DRAM, writes the APOB to `30000000` and releases the BSP at
-the end of the copied reset image. `asm/psp_reset.S` (shared with Picasso)
-sends every other CPU to the SIPI trampoline at `0x8000`, copies `.data`,
-clears BSS and enters long mode. Layout (`zeppelin/layout.rs`, a
-`noncar::layout::Layout`):
+Microcode: the vendor image's BIOS directory entries of type 0x66 go into the
+FFS as `cpu_microcode.bin`.
 
-| Use | Range |
+## DRAM layout
+
+From `zeppelin/layout.rs`:
+
+| Use | DRAM range |
 | --- | --- |
-| Page tables | `76000000..76006000` |
-| Data, BSS (ACPI tables, AP stacks) | `76010000..76200000` |
+| Early region (reserved through the OS handoff) | `76000000..77000000` |
+| Page tables (six pages) | `76000000..76006000` |
+| Data and BSS | `76010000..76200000` |
 | Heap | `76200000..76a00000` |
 | BSP stack | `76d00000..76db0000` |
-| Reset image | `76db0000..77000000` |
-| TSEG | 8 MiB, size aligned, at the top of the DRAM below 4 GiB |
+| Reset image (PSP copies it here) | `76db0000..77000000` |
+| Reset vector | `76fffff0` (image end − 0x10) |
 
-`76000000..77000000`, the APOB, the AP bootstrap page and TSEG with
-everything above it stay reserved in e820: parked APs and the ACPI tables live
-there.
+Also reserved in e820: the APOB at `30000000`, the AP trampoline page at
+`0x8000`, and TSEG (8 MiB at the top of DRAM below 4 GiB).
 
-## Boot flow
+## ACPI
 
-Steps 1-4 are the SoC's TP1
-(`silicon_init`), 5 the flow with TP2, 6 TP3 and the flow:
+From `zeppelin/acpi.rs` and the shared `crate::acpi`:
 
-1. Console (LPC decode, AST2500 SUART1), FCH early init, DF MMIO/IO map,
-   DF early/scrub init, FCH reset tasks, board VRs and re-drivers over I2C3,
-   NBIO early init, PSP BAR, BSP CCX init, NBIO TOM.
-2. NBIO IOAPIC and IOMMU MMIO, DXIO training per die, board post-training
-   SMN values, FCH USB, SMU init, DF late init, NBIO pre-enumeration, FCH
-   env/SATA/xGbE.
-3. MP: the SMU releases the APs (ThreadEn) into the trampoline. They load
-   microcode and run the CCX init. SYSCFG.MtrrFixDramModEn is set during the
-   MTRR replay and cleared afterwards.
-4. SMM: the board's handler goes into TSEG,
-   every CPU gets its SMBASE and locks SMM, then the FCH routes the SMI
-   command port (0xb2), SLP_TYP, the power button and the board's GEVENTs
-   (MJ11: GEVENT11, the BMC's diagnostic interrupt button) to SMI. The PSP
-   gets the SMM info (mailbox command 2) right away.
-5. PCI enumeration, IOAPICs, ACPI (MADT, FADT, HPET, MCFG, IVRS, SPMI, DSDT
-   with root bridges, `_PRT`s, SIO COM1, IPMI KCS). The internal bridges' own INTA
-   goes to their NBIO IOAPIC pin, as in the vendor DSDT. SCI_EN stays clear:
-   the OS enables ACPI with 0xe1 to the FADT's SMI_CMD.
-6. Vendor ReadyToBoot steps, the DF extended config off, PSP LockDFReg, then
-   PSP BootDone right before the payload.
+- `SocAcpi`: `taishan::ACPI_PORTS`, FADT flags, bridge routes (18 entries,
+  matched by a unit test to the NBIO base table), FCH INTA-D GSIs 16-19.
+- Board: `lpc_aml` for the Super I/O COM1 at `0x3f8` IRQ 4 and the IPMI KCS
+  interface, the SPMI table, and no extra devices.
+- The FADT's SMI command port is `0xb2`; ACPI enable/disable are `0xe1`/`0x1e`
+  (`fch::smi`: the SMI handler sets or clears SCI on them).
 
-The SMM handler does ACPI enable/disable, power button to S5 while the OS
-hasn't enabled ACPI, and S3-S5 entry on SLP_TYP with the Zeppelin steps.
-The sleep is entered as the vendor's power button path does (SlpTypeEn,
-then SLP_EN), not with an SMU message. S0/S1 requests are dropped.
+## SMM and sleep
 
-## Building
+- Handler: `boards/gigabyte/mj11/src/smm.rs`: `Mj11Smm` implements the board
+  part (`SmmBoard::gevent`) of `fch::taishan::smm::Handler`, which is built on
+  `fch::smi`. Its GEVENT11 handler raises the vendor CPU diagnostic interrupt
+  through SMN.
+- FCH sources routed to SMI: APM port `0xb2`, `SLP_TYP`, the power button, and
+  `Config::fch.smi_gevents`.
+- Power button: S5 unless the OS owns ACPI.
+- `SLP_TYP` 3 (S3), 4 (S4) and 5 (S5) enter sleep (`fch/taishan/smm.rs`):
+  `PMxEE` is set for S3/S4, then `SLP_TYP` is written with `SLP_EN`. S0 and S1
+  requests are ignored.
+- The DSDT declares `_S0_`, `_S1_`, `_S4_`, `_S5_`. There is no `_S3_` and no
+  S3 resume path.
+
+## Build
 
 ```sh
 cargo fbuild assemble --board gigabyte-mj11-ec1 --release \
   --image-config <vendor flash dump> \
   --payload linux --kernel bzImage --linux-bootargs "console=ttyS0,115200"
-# or --payload uefi for CrabEFI
+
+cargo fbuild assemble --board gigabyte-mj11-ec1 --release \
+  --image-config <vendor flash dump> --payload uefi
 ```
 
-`gigabyte-mj11-ec0` selects the x16 slot variant.
+`--payload` defaults to `halt`. `uefi` is CrabEFI (`uefi-ui` and `uefi-basic`
+also exist). `gigabyte-mj11-ec0` builds the x16 variant.
 
-## Not done
+## Not implemented
 
-- S3: the vendor DSDT has no `_S3` either, so the OS only sees S0 and S5.
-- APOB NV (the vendor's copy of the APOB in BIOS directory entry 0x63):
-  vendor x86 code reads it only on S3 resume and capsule boots. It lives in
-  the vendor flash prefix.
-- Multi-die (SP4) and the EC0 variant are built but not tested on hardware.
+- S3 suspend and resume. The DSDT has no `_S3_`.

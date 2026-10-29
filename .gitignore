@@ -10,9 +10,6 @@
 # FIT build artifacts (kernel images, initramfs, compiled .itb)
 *.itb
 *.cpio
-fit/Image-*
-fit/zImage-*
-fit/initramfs-*
 
 # Board test artifacts (DTBs, kernel images, symlinks, disk images)
 *.dtb
@@ -31,6 +28,7 @@ bl31.bin
 *.jpeg
 *.jpg
 *.png
+!docs/logo.jpeg
 .pi-lens/
 
 # Linux kernel build artifacts
