@@ -320,25 +320,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             }
         },
         fch: &fch,
-        tpm: board_acpi
-            .discrete_tpm
-            .then(|| {
-                use fstart_acpi::devices::tpm;
-                // SAFETY: the FCH decodes FED4_0xxx to LPC (Tpm12En); an absent
-                // TPM reads all ones.
-                let tpm = tpm::probe(|off| unsafe {
-                    fstart_core::mmio::read32((tpm::TIS_BASE + off) as usize as *const u32)
-                });
-                fstart_log::info!(
-                    "acpi: discrete TPM {}",
-                    tpm.map_or("absent", |f| match f {
-                        tpm::TpmFamily::Tpm12 => "1.2",
-                        tpm::TpmFamily::Tpm20 => "2.0",
-                    })
-                );
-                tpm
-            })
-            .flatten(),
+        tpm: super::tpm::acpi(),
         bmc_sx_notify: B::BMC_SX_NOTIFY.map(|b| b.sw_smi_base),
         cppc: &cppc,
         board: board_acpi,
