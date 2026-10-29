@@ -55,9 +55,9 @@ use fstart_driver_amd::apob::sysmap::{self, Region};
 use fstart_driver_amd::apob::{self, Apob};
 use fstart_driver_amd::df::plan::{self, Plan};
 use fstart_driver_amd::df::{Version, program};
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::sp3::df::topology::{self, Topology};
 use fstart_driver_amd::sp3::df::{self as sp3_df, Df};
-use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch::rom3::{self, FlashMap, Rom3};
 use fstart_driver_amd::sp3::fch::{self, FchHw};
@@ -216,7 +216,7 @@ impl<T, E> OrHalt<T> for Result<T, E> {
 }
 
 /// DXIO training, halting with the error's details logged.
-pub(crate) fn dxio_or_halt(result: Result<(), fstart_driver_amd::sp3::dxio::DxioError>) {
+pub(crate) fn dxio_or_halt(result: Result<(), fstart_driver_amd::dxio::DxioError>) {
     if let Err(e) = result {
         let (what, a, b) = e.parts();
         fstart_log::error!("sp3: DXIO error {} ({:#x}, {:#x})", what, a, b);

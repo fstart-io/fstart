@@ -40,7 +40,7 @@
 
 mod tuning;
 
-use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::{
     Bifurcation, Bifurcations, Engine, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
 };

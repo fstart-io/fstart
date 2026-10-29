@@ -296,7 +296,7 @@ fn sp4_flow_on(hw: &Hw, dma: usize) -> State {
 fn sp4_flow() {
     let hw = model(2);
     sp4_flow_on(&hw, 0x5800_0000);
-    assert_eq!(hw.fingerprint(), (17245, 0x2d1f_62bb_7297_7dc3));
+    assert_eq!(hw.fingerprint(), (17245, 0x9ed3_3f58_cd33_bc23));
     assert_eq!(hw.state(), 0x54f9_9ac2_74b4_a913);
 }
 

@@ -73,6 +73,10 @@ impl<S: Soc, P: ConfigRegionAccess + Copy> Die<S, P> {
         // SAFETY: as above.
         unsafe { Df::for_node(self.pci, self.index) }
     }
+    /// This die's SMU as a message sink (no ID limit), waiting with `delay`.
+    pub fn mailbox<D: DelayNs + Copy>(&self, delay: D) -> smu::Smu<P, D> {
+        smu::Smu::new(self.smn(), S::SMU, delay, u32::MAX)
+    }
     /// Send a message to this die's SMU.
     pub fn smu(
         &self,

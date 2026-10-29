@@ -15,7 +15,7 @@ pub mod ccx;
 pub mod cpu;
 #[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod df;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod dxio;
 #[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod fch;

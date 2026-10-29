@@ -880,7 +880,7 @@ pub fn validate(generation: Generation, engines: &[Engine<'_>]) -> Result<(), (u
             .take(i + 1)
             .filter(|o| unit_of(generation, o) == unit)
             .count();
-        if in_unit > super::engine::MAX_ENGINES {
+        if in_unit > crate::dxio::wire::MAX_ENGINES {
             return Err((i, LaneError::TooManyEngines));
         }
     }

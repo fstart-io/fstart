@@ -140,7 +140,7 @@ fn try_train_dxio(
     let mut delay = ctx.clock;
     nbio::ioapic_decode(smn);
     fstart_driver_amd::nbio::iommu::init_bar(die, nbio::IOMMU_MMIO_BASE);
-    static mut DXIO: dxio::picasso::Buffers = dxio::picasso::Buffers::new();
+    static mut DXIO: dxio::DmaArea = dxio::DmaArea::new();
     // SAFETY: BSP-only, once per boot. The buffers remain in reserved
     // firmware BSS and are never reclaimed, including on failure.
     let topology = unsafe {

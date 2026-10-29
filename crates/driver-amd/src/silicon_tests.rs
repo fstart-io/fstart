@@ -189,7 +189,7 @@ mod zeppelin {
         for die in &dies {
             df::zeppelin::disable_ext_cfg(&die.df());
         }
-        assert_eq!(hw.fingerprint(), (16908, 0xb0ba_705b_5555_994e));
+        assert_eq!(hw.fingerprint(), (16908, 0xbfbe_9d6a_7f7f_e1ee));
         assert_eq!(hw.state(), 0x3506_59c7_b072_0a64);
     }
 
@@ -307,7 +307,7 @@ mod picasso {
             hda_enabled: false,
             acp_enabled: true,
         };
-        let buffers = low(0x4800_0000, dxio::picasso::Buffers::new());
+        let buffers = low(0x4800_0000, dxio::DmaArea::new());
         let ports =
             unsafe { dxio::picasso::train(&die, buffers, DALBOZ, options, &hw.clock()) }.unwrap();
         assert_eq!(
@@ -322,6 +322,6 @@ mod picasso {
         // The final register state is what the hardware was tested with,
         // the log follows the shared Family 17h sequences.
         assert_eq!(hw.state(), 0xc446_ef2a_df4d_6ca4);
-        assert_eq!(hw.fingerprint(), (3489, 0xef7e_94e9_d8bf_e420));
+        assert_eq!(hw.fingerprint(), (3489, 0xe28d_bd56_8b80_fac0));
     }
 }
