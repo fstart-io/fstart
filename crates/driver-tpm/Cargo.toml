@@ -1,0 +1,12 @@
+[package]
+name = "fstart-driver-tpm"
+description = "TPM 1.2 and 2.0 interfaces and the firmware command subset"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+embedded-hal = { workspace = true }
+fstart-core = { workspace = true }
+tock-registers = { workspace = true }

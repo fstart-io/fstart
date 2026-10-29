@@ -1,0 +1,13 @@
+[package]
+name = "fstart-tcg"
+description = "TCG measured boot: PCR measurements and the TCG event log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fstart-crypto = { workspace = true, features = ["pcr-banks"] }
+fstart-driver-tpm = { workspace = true }
+fstart-log = { workspace = true }
+ufmt = { workspace = true }
