@@ -139,6 +139,7 @@ fn plan(generations: &[Generation]) -> FlashPlan {
         ffs_offset: FFS_OFFSET,
         dram_floor: DRAM_FLOOR,
         mirrors: Vec::new(),
+        apcbs: Vec::new(),
     }
 }
 
@@ -674,4 +675,61 @@ fn composes_the_pinned_images() {
             assert_eq!(pinned(&rom, generations), expected, "{path}");
         }
     }
+}
+
+#[test]
+fn generated_apcbs_leave_the_reviewed_donor_images_byte_identical() {
+    use crate::amd::apcb_v3;
+    let tables =
+        serde_json::from_str(include_str!("../../platform-sp3/src/host/apcb/ddr4.json")).unwrap();
+    for (path, generation, source) in [
+        (
+            "donors/rome-s8030-v404.bin",
+            ROME,
+            include_str!("../../../boards/tyan/s8030/apcb/rome.json"),
+        ),
+        (
+            "donors/milan-s8030-v404.bin",
+            MILAN,
+            include_str!("../../../boards/tyan/s8030/apcb/milan.json"),
+        ),
+    ] {
+        let Some(rom) = donor(path) else {
+            continue;
+        };
+        let mut generated = plan(&[generation]);
+        generated.apcbs.push(GeneratedApcbs {
+            generation,
+            replacements: apcb_v3::compile(source, &tables).unwrap(),
+        });
+        let old = compose(&rom, &plan(&[generation]), &linked_reset(), &ffs(0x4000)).unwrap();
+        let new = compose(&rom, &generated, &linked_reset(), &ffs(0x4000)).unwrap();
+        assert_eq!(new.image, old.image, "{path}");
+    }
+}
+
+#[test]
+fn generated_ethanolx_apcbs_are_identical_in_the_full_mirrored_readout() {
+    use crate::amd::apcb_v3;
+    let Some(path) = std::env::var_os("FSTART_ETHANOLX_DONOR") else {
+        eprintln!("skipping: set FSTART_ETHANOLX_DONOR to the reviewed RXM100CB readout");
+        return;
+    };
+    let rom = std::fs::read(path).unwrap();
+    let tables =
+        serde_json::from_str(include_str!("../../platform-sp3/src/host/apcb/ddr4.json")).unwrap();
+    let mut old_plan = plan(&[MILAN]);
+    old_plan.mirrors = vec![0x300_0000];
+    let mut generated = old_plan.clone();
+    generated.apcbs.push(GeneratedApcbs {
+        generation: MILAN,
+        replacements: apcb_v3::compile(
+            include_str!("../../../boards/amd/ethanolx/apcb/milan.json"),
+            &tables,
+        )
+        .unwrap(),
+    });
+    let old = compose(&rom, &old_plan, &linked_reset(), &ffs(0x4000)).unwrap();
+    let new = compose(&rom, &generated, &linked_reset(), &ffs(0x4000)).unwrap();
+    assert_eq!(new.image, old.image);
 }

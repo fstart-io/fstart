@@ -1,0 +1,3529 @@
+{
+  "rdimm-ddr4-odt-pat": {
+    "Ddr4OdtPatElement": [
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 2},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 8}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm1": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 1},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 4},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 2, "writing_pattern": 2},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 1, "writing_pattern": 1},
+        "cs3_odt_patterns": {"reading_pattern": 1, "writing_pattern": 1}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 2, "writing_pattern": 2},
+        "cs1_odt_patterns": {"reading_pattern": 2, "writing_pattern": 2},
+        "cs2_odt_patterns": {"reading_pattern": 1, "writing_pattern": 1},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 10, "writing_pattern": 10},
+        "cs1_odt_patterns": {"reading_pattern": 10, "writing_pattern": 10},
+        "cs2_odt_patterns": {"reading_pattern": 5, "writing_pattern": 5},
+        "cs3_odt_patterns": {"reading_pattern": 5, "writing_pattern": 5}
+      }
+    ]
+  },
+  "rdimm-ddr4-cad-bus": {
+    "RdimmDdr4CadBusElement": [
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3750201,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": true,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3618615,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": true,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3487029,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": true,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3355443,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": true,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3223857,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": true,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3092271,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 2960685,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3750201,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3750201,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3488057,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": true,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3618615,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": true,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3618615,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": true,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3356985,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": true,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3356471,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": true,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3356471,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": true,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3487029,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": true,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3487029,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": true,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3224885,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": true,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3355443,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": true,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3355443,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": true,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3093299,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": true,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3223857,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": true,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3223857,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": true,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 2961713,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": true,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3092271,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": true,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 3092271,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": true,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 2895663,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 2960685,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 2960685,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": true, "quad_rank": false},
+        "gear_down_mode": false,
+        "slow_mode": false,
+        "address_command_control": 2764077,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      }
+    ]
+  },
+  "rdimm-ddr4-data-bus": {
+    "Ddr4DataBusElement": [
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "rtt_nom": "Off",
+        "rtt_wr": "Off",
+        "rtt_park": "48 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 91,
+        "vref_dq": {"Range1": "74.95%"}
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "rtt_nom": "60 Ω",
+        "rtt_wr": "Off",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 93,
+        "vref_dq": {"Range1": "74.95%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "rtt_nom": "Off",
+        "rtt_wr": "Off",
+        "rtt_park": "48 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 91,
+        "vref_dq": {"Range1": "74.95%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "rtt_nom": "60 Ω",
+        "rtt_wr": "Off",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 93,
+        "vref_dq": {"Range1": "74.95%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "rtt_nom": "Off",
+        "rtt_wr": "Off",
+        "rtt_park": "48 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 91,
+        "vref_dq": {"Range1": "74.95%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "rtt_nom": "Off",
+        "rtt_wr": "80 Ω",
+        "rtt_park": "34 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 104,
+        "vref_dq": {"Range1": "78.85%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "rtt_nom": "34 Ω",
+        "rtt_wr": "120 Ω",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 103,
+        "vref_dq": {"Range1": "80.80%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "rtt_nom": "60 Ω",
+        "rtt_wr": "Off",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 93,
+        "vref_dq": {"Range1": "74.95%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+        "rtt_nom": "34 Ω",
+        "rtt_wr": "120 Ω",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 103,
+        "vref_dq": {"Range1": "80.80%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "rtt_nom": "60 Ω",
+        "rtt_wr": "120 Ω",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 106,
+        "vref_dq": {"Range1": "79.50%"}
+      }
+    ]
+  },
+  "rdimm-ddr4-max-freq": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1333, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1333, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1333, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1200, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 2, 0, 0],
+        "speeds": [1067, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 1, 1, 0],
+        "speeds": [1067, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [1067, 2201, 2201]
+      }
+    ]
+  },
+  "rdimm-ddr4-max-freq-s8030-rome": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 2, 0, 0],
+        "speeds": [1467, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 1, 1, 0],
+        "speeds": [1467, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [1467, 2201, 2201]
+      }
+    ]
+  },
+  "rdimm-ddr4-stretch-freq": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 2, 0, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 1, 1, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [1600, 2201, 2201]
+      }
+    ]
+  },
+  "3ds-rdimm-ddr4-max-freq": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1333, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1200, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [933, 2201, 2201]
+      }
+    ]
+  },
+  "3ds-rdimm-ddr4-max-freq-s8030-rome": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1467, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [1333, 2201, 2201]
+      }
+    ]
+  },
+  "3ds-rdimm-ddr4-stretch-freq": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 2201, 2201]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [1600, 2201, 2201]
+      }
+    ]
+  },
+  "3ds-rdimm-ddr4-data-bus": {
+    "Ddr4DataBusElement": [
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "rtt_nom": "60 Ω",
+        "rtt_wr": "Off",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 91,
+        "vref_dq": {"Range1": "71.70%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "rtt_nom": "60 Ω",
+        "rtt_wr": "Off",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 91,
+        "vref_dq": {"Range1": "71.70%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+        "rtt_nom": "60 Ω",
+        "rtt_wr": "Off",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 91,
+        "vref_dq": {"Range1": "71.70%"}
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "dimm1_ranks": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+        "rtt_nom": "60 Ω",
+        "rtt_wr": "120 Ω",
+        "rtt_park": "240 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 104,
+        "vref_dq": {"Range1": "77.55%"}
+      }
+    ]
+  },
+  "lrdimm-ddr4-odt-pat": {
+    "LrdimmDdr4OdtPatElement": [
+      {
+        "dimm_rank_bitmaps": {"dimm0": {"unpopulated": true, "lr": false}, "dimm1": {"unpopulated": false, "lr": true}, "dimm2": {"unpopulated": false, "lr": false}},
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {"dimm0": {"unpopulated": false, "lr": true}, "dimm1": {"unpopulated": true, "lr": false}, "dimm2": {"unpopulated": false, "lr": false}},
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {"dimm0": {"unpopulated": false, "lr": true}, "dimm1": {"unpopulated": false, "lr": true}, "dimm2": {"unpopulated": false, "lr": false}},
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      }
+    ]
+  },
+  "lrdimm-ddr4-cad-bus": {
+    "LrdimmDdr4CadBusElement": [
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": true, "lr": false},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3750201,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": true,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": true, "lr": false},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3618615,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": true,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": true, "lr": false},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3487029,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": true,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": true, "lr": false},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3355443,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": true,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": true, "lr": false},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3223857,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": true,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": true, "lr": false},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3092271,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": true, "lr": false},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 2960685,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "lr": false},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3750201,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3488057,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": true,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "lr": false},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3618615,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": true,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3356985,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": true,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "lr": false},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3487029,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": true,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3224885,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": true,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "lr": false},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3355443,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": true,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3093299,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": true,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "lr": false},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3223857,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": true,
+          "ddr2933": false,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 2961713,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": true,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "lr": false},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 3092271,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": true,
+          "ddr3200": false
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 2895663,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "lr": false},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 2960685,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": false,
+          "ddr1866": false,
+          "ddr2133": false,
+          "ddr2400": false,
+          "ddr2667": false,
+          "ddr2933": false,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "gear_down_mode": 0,
+        "slow_mode": 0,
+        "address_command_control": 2764077,
+        "cke_drive_strength": "30 Ω",
+        "cs_odt_drive_strength": "30 Ω",
+        "address_command_drive_strength": "30 Ω",
+        "clk_drive_strength": "30 Ω"
+      }
+    ]
+  },
+  "lrdimm-ddr4-data-bus": {
+    "LrdimmDdr4DataBusElement": [
+      {
+        "dimm_slots_per_channel": 1,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": true, "lr": false},
+        "rtt_nom": "Off",
+        "rtt_wr": "Off",
+        "rtt_park": "48 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 93,
+        "vref_dq": 23
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": true, "lr": false},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "rtt_nom": "Off",
+        "rtt_wr": "Off",
+        "rtt_park": "48 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 93,
+        "vref_dq": 23
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": true, "lr": false},
+        "rtt_nom": "Off",
+        "rtt_wr": "Off",
+        "rtt_park": "48 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 93,
+        "vref_dq": 23
+      },
+      {
+        "dimm_slots_per_channel": 2,
+        "ddr_rates": {
+          "ddr400": false,
+          "ddr533": false,
+          "ddr667": false,
+          "ddr800": false,
+          "ddr1066": false,
+          "ddr1333": false,
+          "ddr1600": true,
+          "ddr1866": true,
+          "ddr2133": true,
+          "ddr2400": true,
+          "ddr2667": true,
+          "ddr2933": true,
+          "ddr3200": true
+        },
+        "vdd_io": {"1.2 V": true},
+        "dimm0_ranks": {"unpopulated": false, "lr": true},
+        "dimm1_ranks": {"unpopulated": false, "lr": true},
+        "rtt_nom": "Off",
+        "rtt_wr": "80 Ω",
+        "rtt_park": "34 Ω",
+        "dq_drive_strength": 62,
+        "dqs_drive_strength": 62,
+        "odt_drive_strength": 24,
+        "pmu_phy_vref": 106,
+        "vref_dq": 34
+      }
+    ]
+  },
+  "lrdimm-ddr4-max-freq": {
+    "LrMaxFreqElement": [
+      {"dimm_slots_per_channel": 1, "conditions": [1, 0, 1, 0], "speeds": [1333, 2201, 2201]},
+      {"dimm_slots_per_channel": 1, "conditions": [1, 0, 0, 1], "speeds": [1333, 2201, 2201]},
+      {"dimm_slots_per_channel": 2, "conditions": [1, 0, 1, 0], "speeds": [1333, 2201, 2201]},
+      {"dimm_slots_per_channel": 2, "conditions": [1, 0, 0, 1], "speeds": [1333, 2201, 2201]},
+      {"dimm_slots_per_channel": 2, "conditions": [2, 0, 2, 0], "speeds": [1067, 2201, 2201]},
+      {"dimm_slots_per_channel": 2, "conditions": [2, 0, 0, 2], "speeds": [1067, 2201, 2201]}
+    ]
+  },
+  "lrdimm-ddr4-max-freq-s8030-rome": {
+    "LrMaxFreqElement": [
+      {"dimm_slots_per_channel": 1, "conditions": [1, 0, 1, 0], "speeds": [1600, 2201, 2201]},
+      {"dimm_slots_per_channel": 1, "conditions": [1, 0, 0, 1], "speeds": [1600, 2201, 2201]},
+      {"dimm_slots_per_channel": 2, "conditions": [1, 0, 1, 0], "speeds": [1600, 2201, 2201]},
+      {"dimm_slots_per_channel": 2, "conditions": [1, 0, 0, 1], "speeds": [1600, 2201, 2201]},
+      {"dimm_slots_per_channel": 2, "conditions": [2, 0, 2, 0], "speeds": [1467, 2201, 2201]},
+      {"dimm_slots_per_channel": 2, "conditions": [2, 0, 0, 2], "speeds": [1467, 2201, 2201]}
+    ]
+  },
+  "ddr-post-package-repair": {
+    "DdrPostPackageRepairElement": [
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      },
+      {
+        "raw_body": {
+          "bank": 0,
+          "rank_multiplier": 0,
+          "xdevice_width": 0,
+          "chip_select": 0,
+          "column": 0,
+          "hard_repair": false,
+          "valid": false,
+          "target_device": 0,
+          "row": 0,
+          "socket": 0,
+          "channel": 0,
+          "_reserved_1": 255
+        }
+      }
+    ]
+  },
+  "rdimm-ddr4-odt-pat-s8030-milan": {
+    "Ddr4OdtPatElement": [
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 4},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 8}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm1": {"unpopulated": true, "single_rank": false, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 1},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 2},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 4, "writing_pattern": 4},
+        "cs1_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0},
+        "cs2_odt_patterns": {"reading_pattern": 1, "writing_pattern": 1},
+        "cs3_odt_patterns": {"reading_pattern": 1, "writing_pattern": 1}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": true, "dual_rank": false, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 4, "writing_pattern": 4},
+        "cs1_odt_patterns": {"reading_pattern": 4, "writing_pattern": 4},
+        "cs2_odt_patterns": {"reading_pattern": 1, "writing_pattern": 1},
+        "cs3_odt_patterns": {"reading_pattern": 0, "writing_pattern": 0}
+      },
+      {
+        "dimm_rank_bitmaps": {
+          "dimm0": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm1": {"unpopulated": false, "single_rank": false, "dual_rank": true, "quad_rank": false},
+          "dimm2": {"unpopulated": false, "single_rank": false, "dual_rank": false, "quad_rank": false}
+        },
+        "cs0_odt_patterns": {"reading_pattern": 12, "writing_pattern": 12},
+        "cs1_odt_patterns": {"reading_pattern": 12, "writing_pattern": 12},
+        "cs2_odt_patterns": {"reading_pattern": 3, "writing_pattern": 3},
+        "cs3_odt_patterns": {"reading_pattern": 3, "writing_pattern": 3}
+      }
+    ]
+  },
+  "rdimm-ddr4-max-freq-s8030-milan": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 2, 0, 0],
+        "speeds": [1467, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 1, 1, 0],
+        "speeds": [1467, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [1467, 4401, 4401]
+      }
+    ]
+  },
+  "rdimm-ddr4-stretch-freq-s8030-milan": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 1, 0, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 2, 0, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 1, 1, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [1600, 4401, 4401]
+      }
+    ]
+  },
+  "3ds-rdimm-ddr4-max-freq-s8030-milan": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1467, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [1333, 4401, 4401]
+      }
+    ]
+  },
+  "3ds-rdimm-ddr4-stretch-freq-s8030-milan": {
+    "MaxFreqElement": [
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": true, "two_dimms": false, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [1, 0, 1, 0],
+        "speeds": [1600, 4401, 4401]
+      },
+      {
+        "dimm_slots_per_channel": {"Specific": {"one_dimm": false, "two_dimms": true, "three_dimms": false, "four_dimms": false}},
+        "conditions": [2, 0, 2, 0],
+        "speeds": [1600, 4401, 4401]
+      }
+    ]
+  },
+  "lrdimm-ddr4-max-freq-s8030-milan": {
+    "LrMaxFreqElement": [
+      {"dimm_slots_per_channel": 1, "conditions": [1, 0, 1, 0], "speeds": [1600, 4401, 4401]},
+      {"dimm_slots_per_channel": 1, "conditions": [1, 0, 0, 1], "speeds": [1600, 4401, 4401]},
+      {"dimm_slots_per_channel": 2, "conditions": [1, 0, 1, 0], "speeds": [1600, 4401, 4401]},
+      {"dimm_slots_per_channel": 2, "conditions": [1, 0, 0, 1], "speeds": [1600, 4401, 4401]},
+      {"dimm_slots_per_channel": 2, "conditions": [2, 0, 2, 0], "speeds": [1467, 4401, 4401]},
+      {"dimm_slots_per_channel": 2, "conditions": [2, 0, 0, 2], "speeds": [1467, 4401, 4401]}
+    ]
+  }
+}

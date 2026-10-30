@@ -14,6 +14,8 @@ iced-x86 = { workspace = true }
 zerocopy = { workspace = true }
 fstart-core = { workspace = true }
 fstart-amdfw-format = { workspace = true, features = ["serde"] }
+# APCB v3 typed tables/tokens. 0.5.5 is not published on crates.io.
+amd-apcb = { git = "https://github.com/oxidecomputer/amd-apcb", rev = "1ec66d607de2437813cdd9ffa91719a4b163b3cf", features = ["serde"] }
 fstart-coreboot = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-boot = { workspace = true, features = ["std"] }

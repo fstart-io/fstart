@@ -14,7 +14,7 @@ the one reset image, and the FFS exists once, in the lower half
 cargo fbuild build --board tyan-s8030 --release
 cargo fbuild assemble --board tyan-s8030 --release        # -> tyan-s8030.rom
 cargo fbuild assemble --board tyan-s8030 --release \
-    --image-config /path/to/flash-backup.bin                # another vendor build
+    --image-config /path/to/flash-backup.bin                # matching reviewed APCBs only
 ```
 
 ## Slot bifurcation
@@ -36,11 +36,16 @@ record in flash, editable without a rebuild.
 ## Vendor ROM
 
 Every supported half keeps its PSP/BIOS directories and blobs in place
-(PSP, ABL, SMU, PMU and DXIO firmware, APCB). Supply the Tyan v4.04 dual
+(PSP, ABL, SMU, PMU and DXIO firmware). APCBs are built from `apcb/rome.json`
+and `apcb/milan.json`, with shared typed DDR4 tables in the platform. The initial
+values reproduce the vendor configuration exactly; source-generation hardware
+qualification has not been repeated. See `docs/amd-apcb.md` for provenance,
+editing and compatibility checks. Supply the Tyan v4.04 dual
 image (`8030V404.ROM`, 32 MiB, SHA-256 pinned in the sp3 workspace's
 `firmware/donors/SHA256SUMS`) as `vendor/8030V404.ROM`, or pass the
-board's own flash backup with `--image-config`. Neither is part of this
-repository.
+board's own flash backup with `--image-config`. Different APCB contents (including
+saved Setup overrides) are rejected until their source configuration is reviewed.
+Neither vendor image is part of this repository.
 
 | | Tyan v4.04 | Test bench S8030GM2NE (Rome-only build) |
 |---|---|---|

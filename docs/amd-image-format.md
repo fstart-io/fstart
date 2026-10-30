@@ -149,6 +149,9 @@ blobs are copied unchanged, never modified or re-signed.
 template (`--template`, `--output`, four `--gpio NUMBER:MUX:BANK` values, optional
 `--spd-0-0`, `--spd-0-1`, `--spd-1-0`, `--spd-1-1`, `--hex`, `--strip-manufacturer`).
 
+`fstart-apcb-v3` builds or losslessly exports typed APCB v3 JSON without a binary
+template. SP3 source sets and image integration are described in [amd-apcb.md](amd-apcb.md).
+
 ## Firmware blobs
 
 Vendor firmware files are described by two Cargo.toml tables, read by

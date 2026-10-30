@@ -1,0 +1,1473 @@
+{
+  "schema": 1,
+  "blobs": [
+    {
+      "name": "board",
+      "selectors": [{"kind": 104, "instance": 0, "subprogram": 1}],
+      "donor_sha256": "632c2a856ce8b5a9ace109ebab5a58c25709b7f709a3b5878112d43a2a89a4ee",
+      "apcb": {
+        "version": "0.5.5",
+        "header": {
+          "signature": "APCB",
+          "header_size": 128,
+          "version": 48,
+          "apcb_size": 5992,
+          "unique_apcb_instance": 10005,
+          "checksum_byte": 222,
+          "_reserved_1": [0, 0, 0],
+          "_reserved_2": [0, 0, 0]
+        },
+        "v3_header_ext": {
+          "signature": "ECB2",
+          "_reserved_1": 0,
+          "_reserved_2": 16,
+          "struct_version": 18,
+          "data_version": 256,
+          "ext_header_size": 96,
+          "_reserved_3": 0,
+          "_reserved_4": 65535,
+          "_reserved_5": 64,
+          "_reserved_6": 0,
+          "_reserved_7": [0, 0],
+          "data_offset": 88,
+          "header_checksum": 0,
+          "_reserved_8": 0,
+          "_reserved_9": [0, 0, 0],
+          "integrity_sign": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+          "_reserved_10": [0, 0, 0],
+          "signature_ending": "BCBA"
+        },
+        "groups": [
+          {"header": {"signature": "MEMG", "group_id": 5892, "header_size": 16, "version": 1, "_reserved_": 0, "group_size": 4152}},
+          {"header": {"signature": "TOKN", "group_id": 12288, "header_size": 16, "version": 1, "_reserved_": 0, "group_size": 1712}}
+        ],
+        "entries": [
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 49,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "DimmInfoSmbusElement": [
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 0,
+                "dimm_id": 0,
+                "dimm_smbus_address": 160,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 128
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 0,
+                "dimm_id": 1,
+                "dimm_smbus_address": 162,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 128
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 1,
+                "dimm_id": 0,
+                "dimm_smbus_address": 164,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 128
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 1,
+                "dimm_id": 1,
+                "dimm_smbus_address": 166,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 128
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 2,
+                "dimm_id": 0,
+                "dimm_smbus_address": 168,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 128
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 2,
+                "dimm_id": 1,
+                "dimm_smbus_address": 170,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 128
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 3,
+                "dimm_id": 0,
+                "dimm_smbus_address": 172,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 128
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 3,
+                "dimm_id": 1,
+                "dimm_smbus_address": 174,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 128
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 4,
+                "dimm_id": 0,
+                "dimm_smbus_address": 160,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 64
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 4,
+                "dimm_id": 1,
+                "dimm_smbus_address": 162,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 64
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 5,
+                "dimm_id": 0,
+                "dimm_smbus_address": 164,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 64
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 5,
+                "dimm_id": 1,
+                "dimm_smbus_address": 166,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 64
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 6,
+                "dimm_id": 0,
+                "dimm_smbus_address": 168,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 64
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 6,
+                "dimm_id": 1,
+                "dimm_smbus_address": 170,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 64
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 7,
+                "dimm_id": 0,
+                "dimm_smbus_address": 172,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 64
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 0,
+                "channel_id": 7,
+                "dimm_id": 1,
+                "dimm_smbus_address": 174,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 64
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 0,
+                "dimm_id": 0,
+                "dimm_smbus_address": 160,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 32
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 0,
+                "dimm_id": 1,
+                "dimm_smbus_address": 162,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 32
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 1,
+                "dimm_id": 0,
+                "dimm_smbus_address": 164,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 32
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 1,
+                "dimm_id": 1,
+                "dimm_smbus_address": 166,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 32
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 2,
+                "dimm_id": 0,
+                "dimm_smbus_address": 168,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 32
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 2,
+                "dimm_id": 1,
+                "dimm_smbus_address": 170,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 32
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 3,
+                "dimm_id": 0,
+                "dimm_smbus_address": 172,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 32
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 3,
+                "dimm_id": 1,
+                "dimm_smbus_address": 174,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 32
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 4,
+                "dimm_id": 0,
+                "dimm_smbus_address": 160,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 16
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 4,
+                "dimm_id": 1,
+                "dimm_smbus_address": 162,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 16
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 5,
+                "dimm_id": 0,
+                "dimm_smbus_address": 164,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 16
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 5,
+                "dimm_id": 1,
+                "dimm_smbus_address": 166,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 16
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 6,
+                "dimm_id": 0,
+                "dimm_smbus_address": 168,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 16
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 6,
+                "dimm_id": 1,
+                "dimm_smbus_address": 170,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 16
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 7,
+                "dimm_id": 0,
+                "dimm_smbus_address": 172,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 16
+              },
+              {
+                "dimm_slot_present": true,
+                "socket_id": 1,
+                "channel_id": 7,
+                "dimm_id": 1,
+                "dimm_smbus_address": 174,
+                "i2c_mux_address": 148,
+                "mux_control_address": 3,
+                "mux_channel": 16
+              }
+            ]
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 64,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "platform_specific_overrides": [
+              {
+                "MaxDimmsPerChannel": {
+                  "type_": 4,
+                  "payload_size": 4,
+                  "sockets": {"socket_0": true, "socket_1": true, "socket_2": true, "socket_3": true, "socket_4": true, "socket_5": true, "socket_6": true, "socket_7": true},
+                  "channels": "Any",
+                  "dimms": "Any",
+                  "value": 1
+                }
+              },
+              {
+                "MaxChannelsPerSocket": {
+                  "type_": 8,
+                  "payload_size": 4,
+                  "sockets": {"socket_0": true, "socket_1": true, "socket_2": true, "socket_3": true, "socket_4": true, "socket_5": true, "socket_6": true, "socket_7": true},
+                  "channels": "Any",
+                  "dimms": "Any",
+                  "value": 8
+                }
+              }
+            ]
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 70,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "rdimm-ddr4-odt-pat-s8030-milan"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 71,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "rdimm-ddr4-cad-bus"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 72,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "rdimm-ddr4-data-bus"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 73,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "rdimm-ddr4-max-freq-s8030-milan"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 74,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "rdimm-ddr4-stretch-freq-s8030-milan"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 75,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "3ds-rdimm-ddr4-max-freq-s8030-milan"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 76,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "3ds-rdimm-ddr4-stretch-freq-s8030-milan"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 77,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "3ds-rdimm-ddr4-data-bus"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 80,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "ConsoleOutControl": {
+              "abl_console_out_control": {
+                "enable_console_logging": true,
+                "enable_mem_flow_logging": true,
+                "enable_mem_setreg_logging": true,
+                "enable_mem_getreg_logging": false,
+                "enable_mem_status_logging": true,
+                "enable_mem_pmu_logging": true,
+                "enable_mem_pmu_sram_read_logging": false,
+                "enable_mem_pmu_sram_write_logging": false,
+                "enable_mem_test_verbose_logging": false,
+                "enable_mem_basic_output_logging": true,
+                "abl_console_port": 128
+              },
+              "abl_breakpoint_control": {"enable_breakpoint": false, "break_on_all_dies": false}
+            }
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 82,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "ErrorOutControl116": {
+              "enable_error_reporting": false,
+              "enable_error_reporting_gpio": false,
+              "enable_error_reporting_beep_codes": false,
+              "enable_using_handshake": false,
+              "input_port": 132,
+              "output_delay": 15000,
+              "output_port": 128,
+              "stop_on_first_fatal_error": false,
+              "input_port_size": "32 Bit",
+              "output_port_size": "32 Bit",
+              "input_port_type": "FchHtIo",
+              "output_port_type": "FchHtIo",
+              "clear_acknowledgement": false,
+              "error_reporting_gpio": {"pin": 85, "iomux_control": 1, "bank_control": 192},
+              "beep_code_table": [
+                {"custom_error_type": "General", "peak_map": 1, "peak_attr": {"peak_count": 8, "pulse_width": 0, "repeat_count": 0}},
+                {"custom_error_type": "Memory", "peak_map": 2, "peak_attr": {"peak_count": 20, "pulse_width": 0, "repeat_count": 0}},
+                {"custom_error_type": "Df", "peak_map": 3, "peak_attr": {"peak_count": 20, "pulse_width": 0, "repeat_count": 0}},
+                {"custom_error_type": "Ccx", "peak_map": 4, "peak_attr": {"peak_count": 20, "pulse_width": 0, "repeat_count": 0}},
+                {"custom_error_type": "Gnb", "peak_map": 5, "peak_attr": {"peak_count": 20, "pulse_width": 0, "repeat_count": 0}},
+                {"custom_error_type": "Psp", "peak_map": 6, "peak_attr": {"peak_count": 20, "pulse_width": 0, "repeat_count": 0}},
+                {"custom_error_type": "Smu", "peak_map": 7, "peak_attr": {"peak_count": 20, "pulse_width": 0, "repeat_count": 0}},
+                {"custom_error_type": "Unknown", "peak_map": 2, "peak_attr": {"peak_count": 4, "pulse_width": 0, "repeat_count": 0}}
+              ],
+              "enable_heart_beat": false,
+              "enable_power_good_gpio": false,
+              "power_good_gpio": {"pin": 0, "iomux_control": 0, "bank_control": 0}
+            }
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 83,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "ExtVoltageControl": {
+              "enabled": true,
+              "input_port": 132,
+              "output_port": 128,
+              "input_port_size": "32 Bit",
+              "output_port_size": "32 Bit",
+              "input_port_type": "FchHtIo",
+              "output_port_type": "FchHtIo",
+              "clear_acknowledgement": false
+            }
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 84,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "lrdimm-ddr4-odt-pat"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 85,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "lrdimm-ddr4-cad-bus"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 86,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "lrdimm-ddr4-data-bus"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 87,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "lrdimm-ddr4-max-freq-s8030-milan"
+          },
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 117,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"normal": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "platform_tuning": [{"Terminator": {"type_": 65263}}, {"Unknown": [0]}, {"Unknown": [0]}]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 0,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"normal": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Bool": {"MemLrdimmCapable": true}},
+              {"Bool": {"MemModeUnganged": true}},
+              {"Bool": {"PspTpPort": true}},
+              {"Bool": {"MemDimmTypeDdr3Capable": false}},
+              {"Bool": {"DfPickerThrottleEnable": false}},
+              {"Bool": {"PspEventLogDisplay": true}},
+              {"Bool": {"GnbAdditionalFeatures": true}},
+              {"Bool": {"MemForcePowerDownThrottleEnable": false}},
+              {"Bool": {"PspPsbAutoFuse": true}},
+              {"Bool": {"MemDqsTrainingControl": true}},
+              {"Bool": {"MemEnableParity": true}},
+              {"Bool": {"MemUdimmCapable": true}},
+              {"Bool": {"MemEnableBankGroupSwap": true}},
+              {"Bool": {"MemChannelInterleaving": false}},
+              {"Bool": {"MemPstate": true}},
+              {"Bool": {"MemAmp": true}},
+              {"Bool": {"MemLimitMemoryToBelow1TiB": true}},
+              {"Bool": {"MemEnableBankSwizzle": false}},
+              {"Bool": {"VgaProgram": true}},
+              {"Bool": {"MemSpdReadOptimizationDdr4": true}},
+              {"Bool": {"DfGroupDPlatform": true}},
+              {"Bool": {"MemHoleRemapping": true}},
+              {"Bool": {"CcxPpinOptIn": false}},
+              {"Bool": {"MemOcVddioControl": false}},
+              {"Bool": {"MemEnableChipSelectInterleaving": false}},
+              {"Bool": {"ConfigureSecondPcieLink": false}},
+              {"Bool": {"MemMbistAggressorStaticLaneControl": false}},
+              {"Bool": {"MemSodimmCapable": true}},
+              {"Bool": {"MemIgnoreSpdChecksum": true}},
+              {"Bool": {"MemRdimmCapable": true}},
+              {"Bool": {"MemEccSyncFlood": false}},
+              {"Bool": {"MemAutoRefreshsCountForThrottling": "Enabled"}},
+              {"Bool": {"MemNvdimmNDisable": false}},
+              {"Bool": {"GeneralCapsuleMode": true}},
+              {"Bool": {"MemDramDoubleRefreshRateMilan": false}},
+              {"Bool": {"DfNps1With4ChannelInterleavedRdimm4ChannelNonInterleavedNvdimm": false}},
+              {"Bool": {"DisplayPmuTrainingResults": false}},
+              {"Bool": {"GnbAdditionalFeatureL3PerformanceBias": true}},
+              {"Bool": {"MemSwCmdThrottleEnable": false}},
+              {"Bool": {"MemEnableBankGroupSwapAlt": true}},
+              {"Bool": {"MemDimmTypeLpddr3Capable": false}},
+              {"Bool": {"MemOnDieThermalSensor": true}},
+              {"Bool": {"MemAllClocks": true}},
+              {"Bool": {"MemEnablePowerDown": true}},
+              {"Bool": {"DxioVgaApiEnable": false}},
+              {"Bool": {"MemUncorrectedEccRetryDdr4": true}},
+              {"Bool": {"MemOdtsCmdThrottleEnable": true}},
+              {"Bool": {"MemClear": false}},
+              {"Bool": {"MemPostPackageRepairEnable": true}},
+              {"Bool": {"MemTsmeModeMilan": false}},
+              {"Bool": {"MemDdr4ForceDataMaskDisable": false}},
+              {"Bool": {"PspErrorDisplay": true}},
+              {"Bool": {"MemEccRedirection": false}},
+              {"Bool": {"MemMbistTgtStaticLaneControl": false}},
+              {"Bool": {"MemDdrRouteBalancedTee": false}},
+              {"Bool": {"MemQuadRankCapable": true}},
+              {"Bool": {"PspStopOnError": false}},
+              {"Bool": {"MemTempControlledRefreshEnable": false}},
+              {"Bool": {"PerformanceTracing": false}},
+              {"Bool": {"MemTempControlledExtendedRefresh": false}},
+              {"Bool": {"PcieResetControl": true}},
+              {"Bool": {"MemEnableEccFeature": true}},
+              {"Bool": {"BmcInitBeforeDram": false}},
+              {"Bool": {"MemRestoreControl": false}}
+            ]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 1,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"normal": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Byte": {"MemMbistAggressorOn": false}},
+              {"Byte": {"MemOverrideDimmSpdMaxActivityCount": "Auto"}},
+              {"Byte": {"DfGmiEncrypt": "Auto"}},
+              {"Byte": {"MemUrgRefLimit": 6}},
+              {"Byte": {"BmcEndLane": 129}},
+              {"Byte": {"MemAutoRefreshFineGranMode": "Fixed1Times"}},
+              {"Byte": {"BmcFunction": 2}},
+              {"Byte": {"WorkloadProfile": "Disabled"}},
+              {"Byte": {"MemMbistWorseCasGranularity": 0}},
+              {"Byte": {"FchSmbusSpeed": {"Value": 42}}},
+              {"Byte": {"DfSysStorageAtTopOfMem": "Auto"}},
+              {"Byte": {"DfMemInterleavingSize": "Auto"}},
+              {"Byte": {"MemNvdimmPowerSource": "DeviceManaged"}},
+              {"Byte": {"DfDramNumaPerSocket": "Auto"}},
+              {"Byte": {"GnbAdditionalFeatureDsm2": "Auto"}},
+              {"Byte": {"MemMbistReadDataEyeVoltageStep": 1}},
+              {"Byte": {"DfRemapAt1TiB": "Auto"}},
+              {"Byte": {"MemDramAddressCommandParityRetryCount": 1}},
+              {"Byte": {"Df4LinkMaxXgmiSpeed": "Auto"}},
+              {"Byte": {"MemMbistDataEyeSilentExecution": false}},
+              {"Byte": {"MemMbistAggressorStaticLaneVal": 0}},
+              {"Byte": {"MemDramDoubleRefreshRate": 0}},
+              {"Byte": {"MemDataPoison": "Enabled"}},
+              {"Byte": {"MemMbistTgtStaticLaneVal": 0}},
+              {"Byte": {"MemMbistDataEyeType": "1D Timing"}},
+              {"Byte": {"Df3LinkMaxXgmiSpeed": "Auto"}},
+              {"Byte": {"MemHealPprType": "SoftRepair"}},
+              {"Byte": {"CcxSevAsidCount": "509"}},
+              {"Byte": {"MemMbistTestMode": "PhysicalInterface"}},
+              {"Byte": {"MemMbistAggressorStaticLaneSelEcc": 0}},
+              {"Byte": {"MemMbistReadDataEyeTimingStep": 1}},
+              {"Byte": {"MemHealTestSelect": "Normal"}},
+              {"Byte": {"MemRollWindowDepth": {"Memclks": 255}}},
+              {"Byte": {"FchConsoleOutSuperIoType": "Auto"}},
+              {"Byte": {"MemHealMaxBankFails": 3}},
+              {"Byte": {"DvArbiterMin": 1}},
+              {"Byte": {"MemRcdParity": true}},
+              {"Byte": {"DfInvertDramMap": "Auto"}},
+              {"Byte": {"DfProbeFilter": "Auto"}},
+              {"Byte": {"OdtsCmdThrottleCycles": 87}},
+              {"Byte": {"MemControllerWritingCrcMaxReplay": 8}},
+              {"Byte": {"DfXgmiEncrypt": "Auto"}},
+              {"Byte": {"MemPsErrorHandling": 0}},
+              {"Byte": {"DvArbiterMax": 10}},
+              {"Byte": {"MemPmuBistTestSelect": {"algorithm_1": true, "algorithm_2": true, "algorithm_3": true, "algorithm_4": true, "algorithm_5": true}}},
+              {"Byte": {"MemCpuVrefRange": 0}},
+              {"Byte": {"DfSaveRestoreMemEncrypt": "Auto"}},
+              {"Byte": {"MemControllerWritingCrcMode": "Disabled"}},
+              {"Byte": {"DimmSensorResolution": 1}},
+              {"Byte": {"BmcSocket": 0}},
+              {"Byte": {"SecondPcieLinkSpeed": "Gen2"}},
+              {"Byte": {"PcieResetPinSelect": 2}},
+              {"Byte": {"MemMbistDataEyeExecutionRepeatCount": 1}},
+              {"Byte": {"DfBottomIo": 176}},
+              {"Byte": {"FchConsoleOutSerialPortIoBase": "3f8"}},
+              {"Byte": {"MemTccd5ReadCommandSpacingMode": "Disabled"}},
+              {"Byte": {"MemDataScramble": 1}},
+              {"Byte": {"BmcLinkSpeed": "PcieGen1"}},
+              {"Byte": {"DfMemClear": "Auto"}},
+              {"Byte": {"FchConsoleOutBasicEnable": 0}},
+              {"Byte": {"MemRcwWeakDriveDisable": "Enabled"}},
+              {"Byte": {"MemMbistTgtStaticLaneSelEcc": 0}},
+              {"Byte": {"MemDramVrefRange": 0}},
+              {"Byte": {"PspSevMode2": "Enabled"}},
+              {"Byte": {"DfXgmiTxEqMode": "Auto"}},
+              {"Byte": {"AblSerialBaudRate": "115200 Baud"}},
+              {"Byte": {"MemMbistPatternLength": 3}},
+              {"Byte": {"BmcRcbCheckingMode": "Auto"}},
+              {"Byte": {"DfPstateModeSelect": "Auto"}},
+              {"Byte": {"MemTrainingHdtControl": "AssertionMessages"}},
+              {"Byte": {"ReservedDramModuleDrtmMode": "Disabled"}},
+              {"Byte": {"DfXgmiConfig": "Auto"}},
+              {"Byte": {"MemMbistHaltOnError": 1}},
+              {"Byte": {"BmcStartLane": 129}},
+              {"Byte": {"MemSelfRefreshExitStaggering": "Disabled"}},
+              {"Byte": {"PmuTrainingMode": "1D,2D"}},
+              {"Byte": {"CbsMemUncorrectedEccRetryDdr4": true}},
+              {"Byte": {"MemControllerWritingCrcLimit": 0}},
+              {"Byte": {"MemParityErrorMaxReplayDdr4": 8}},
+              {"Byte": {"MemActionOnBistFailure": "DoNothing"}},
+              {"Byte": {"MemMbistWriteDataEyeVoltageStep": 1}},
+              {"Byte": {"DfMemInterleaving": "Auto"}},
+              {"Byte": {"MemMbistPerBitSlaveDieReport": 0}},
+              {"Byte": {"PspEnableDebugMode": "Disabled"}},
+              {"Byte": {"MemRdimmTimingRcdF0Rc0FAdditionalLatency": "Auto"}},
+              {"Byte": {"BmcDevice": 5}},
+              {"Byte": {"MemMbistWriteDataEyeTimingStep": 1}},
+              {"Byte": {"FchPreferredIo": "Auto"}},
+              {"Byte": {"MemMbistAggressorsChannels": "Disabled"}},
+              {"Byte": {"SwCmdThrotCycles": 0}},
+              {"Byte": {"FchConsoleOutMode": "Disabled"}},
+              {"Byte": {"MemMbistTest": "Disabled"}},
+              {"Byte": {"SecondPcieLinkMaxPayload": "HardwareDefault"}},
+              {"Byte": {"MemSubUrgRefLowerBound": 4}},
+              {"Byte": {"GnbSmuDfPstateFclkLimit": "Auto"}},
+              {"Byte": {"MemMbistPatternSelect": "Prbs"}},
+              {"Byte": {"GnbAdditionalFeatureDsmDetector2": "Auto"}},
+              {"Byte": {"MemHealBistEnable": "Disabled"}},
+              {"Byte": {"FchConsoleOutSerialPort": "Uart1Mmio"}}
+            ]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 2,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"normal": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Word": {"Dimm3DsSensorCritical": 80}},
+              {"Word": {"LrdimmSensorCritical": 80}},
+              {"Word": {"ScrubL2Rate": 0}},
+              {"Word": {"Dimm3DsSensorUpper": 66}},
+              {"Word": {"EccSymbolSize": "x16"}},
+              {"Word": {"DimmSensorCritical": 95}},
+              {"Word": {"DimmSensorConfig": 1032}},
+              {"Word": {"FchI2cSdaHoldOverrideMode": "IgnoreBoth"}},
+              {"Word": {"FchI2cSdaTxHold": 0}},
+              {"Word": {"ScrubIcacheRate": 0}},
+              {"Word": {"ScrubDramRate": 0}},
+              {"Word": {"FchI2cSdaRxHold": 0}},
+              {"Word": {"ScrubDcacheRate": 0}},
+              {"Word": {"DimmSensorUpper": 80}},
+              {"Word": {"ScrubL3Rate": 0}},
+              {"Word": {"DimmSensorLower": 10}},
+              {"Word": {"FchGppClkMap": "Auto"}},
+              {"Word": {"LrdimmSensorUpper": 66}},
+              {"Word": {"PspSyshubWatchdogTimerInterval": 2600}}
+            ]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 4,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"normal": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Dword": {"DxioPhyParamDc": "Skip"}},
+              {"Dword": {"MemPowerDownMode": 0}},
+              {"Dword": {"MemBusFrequencyLimit": "Ddr3200"}},
+              {"Dword": {"DfPciMmioSize": 268435456}},
+              {"Dword": {"FchRom3BaseHigh": 0}},
+              {"Dword": {"PcieResetGpioPin": 4294967295}},
+              {"Dword": {"MemMbistAggressorStaticLaneSelLo": 0}},
+              {"Dword": {"DxioPhyParamIqofc": "Skip"}},
+              {"Dword": {"MemMbistTgtStaticLaneSelLo": 0}},
+              {"Dword": {"GnbAdditionalFeatureOnRamp": 70}},
+              {"Dword": {"DfCakeCrcThresholdBounds": {"Value": 100}}},
+              {"Dword": {"CcxMinSevAsid": 1}},
+              {"Dword": {"MemMbistTgtStaticLaneSelHi": 0}},
+              {"Dword": {"DxioPhyParamPole": "Skip"}},
+              {"Dword": {"MemSelfHealBistTimeout": 10000}},
+              {"Dword": {"MemClockValue": "Ddr2400"}},
+              {"Dword": {"CpuFetchFromSpiApBase": 4293918720}},
+              {"Dword": {"PspMeasureConfig": 0}},
+              {"Dword": {"DxioPhyParamVga": "Skip"}},
+              {"Dword": {"GnbAdditionalFeatureOffRamp": 40}},
+              {"Dword": {"MemMbistAggressorStaticLaneSelHi": 0}},
+              {"Dword": {"MemUserTimingMode": "Auto"}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cbs-backup",
+      "selectors": [{"kind": 104, "instance": 8, "subprogram": 1}],
+      "donor_sha256": "529e2c0f792dc782b226f6ec13efd5bbea1e02037ef016d1a73d60df6898ad42",
+      "apcb": {
+        "version": "0.5.5",
+        "header": {
+          "signature": "APCB",
+          "header_size": 128,
+          "version": 48,
+          "apcb_size": 608,
+          "unique_apcb_instance": 8868,
+          "checksum_byte": 181,
+          "_reserved_1": [0, 0, 0],
+          "_reserved_2": [0, 0, 0]
+        },
+        "v3_header_ext": {
+          "signature": "ECB2",
+          "_reserved_1": 0,
+          "_reserved_2": 16,
+          "struct_version": 18,
+          "data_version": 256,
+          "ext_header_size": 96,
+          "_reserved_3": 0,
+          "_reserved_4": 65535,
+          "_reserved_5": 64,
+          "_reserved_6": 0,
+          "_reserved_7": [0, 0],
+          "data_offset": 88,
+          "header_checksum": 0,
+          "_reserved_8": 0,
+          "_reserved_9": [0, 0, 0],
+          "integrity_sign": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+          "_reserved_10": [0, 0, 0],
+          "signature_ending": "BCBA"
+        },
+        "groups": [{"header": {"signature": "TOKN", "group_id": 12288, "header_size": 16, "version": 1, "_reserved_": 0, "group_size": 480}}],
+        "entries": [
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 0,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"low": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": []
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 0,
+              "instance_id": 1,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"medium": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Unknown": {"entry_id": "Bool", "tag": 218818671, "value": 0}},
+              {"Bool": {"MemMbistAggressorStaticLaneControl": false}},
+              {"Bool": {"MemPostPackageRepairEnable": false}},
+              {"Bool": {"MemMbistTgtStaticLaneControl": false}}
+            ]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 1,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"low": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": []
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 1,
+              "instance_id": 1,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"medium": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Byte": {"CbsMemAddrCmdParityErrorMaxReplayDdr4": 8}},
+              {"Unknown": {"entry_id": "Byte", "tag": 163953868, "value": 8}},
+              {"Byte": {"MemUrgRefLimit": 6}},
+              {"Byte": {"MemMbistWorseCasGranularity": 0}},
+              {"Byte": {"MemMbistReadDataEyeVoltageStep": 1}},
+              {"Byte": {"MemMbistAggressorStaticLaneVal": 0}},
+              {"Byte": {"MemDramDoubleRefreshRate": 0}},
+              {"Unknown": {"entry_id": "Byte", "tag": 1286431756, "value": 0}},
+              {"Byte": {"MemMbistTgtStaticLaneVal": 0}},
+              {"Byte": {"MemHealPprType": "SoftRepair"}},
+              {"Byte": {"MemMbistAggressorStaticLaneSelEcc": 0}},
+              {"Byte": {"MemMbistReadDataEyeTimingStep": 1}},
+              {"Byte": {"MemHealTestSelect": "Normal"}},
+              {"Unknown": {"entry_id": "Byte", "tag": 1698103689, "value": 255}},
+              {"Unknown": {"entry_id": "Byte", "tag": 1799957978, "value": 16}},
+              {"Byte": {"MemPmuBistTestSelect": {"algorithm_1": true, "algorithm_2": true, "algorithm_3": true, "algorithm_4": true, "algorithm_5": true}}},
+              {"Byte": {"CbsMemWriteCrcErrorMaxReplayDdr4": 8}},
+              {"Byte": {"MemTccd5ReadCommandSpacingMode": "Disabled"}},
+              {"Byte": {"MemMbistTgtStaticLaneSelEcc": 0}},
+              {"Byte": {"PspSevMode2": "Enabled"}},
+              {"Byte": {"MemMbistPatternLength": 3}},
+              {"Unknown": {"entry_id": "Byte", "tag": 3022303216, "value": 0}},
+              {"Byte": {"MemSelfRefreshExitStaggering": "Disabled"}},
+              {"Byte": {"MemMbistWriteDataEyeVoltageStep": 1}},
+              {"Byte": {"MemMbistWriteDataEyeTimingStep": 1}},
+              {"Byte": {"MemMbistAggressorsChannels": "1 aggressor/(2 ch)"}},
+              {"Byte": {"MemSubUrgRefLowerBound": 4}},
+              {"Byte": {"MemMbistPatternSelect": "Prbs"}},
+              {"Byte": {"MemHealBistEnable": "Disabled"}},
+              {"Unknown": {"entry_id": "Byte", "tag": 4285882405, "value": 1}}
+            ]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 2,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"low": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": []
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 2,
+              "instance_id": 1,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"medium": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [{"Word": {"CbsMemPowerDownDelay": {"Value": 3000}}}]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 4,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"low": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": []
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 4,
+              "instance_id": 1,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"medium": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Unknown": {"entry_id": "Dword", "tag": 420813139, "value": 0}},
+              {"Dword": {"MemMbistAggressorStaticLaneSelLo": 0}},
+              {"Dword": {"MemMbistTgtStaticLaneSelLo": 0}},
+              {"Unknown": {"entry_id": "Dword", "tag": 2411588270, "value": 0}},
+              {"Dword": {"MemMbistTgtStaticLaneSelHi": 0}},
+              {"Unknown": {"entry_id": "Dword", "tag": 3006347150, "value": 1447249234}},
+              {"Dword": {"MemMbistAggressorStaticLaneSelHi": 0}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "post-package-repair",
+      "selectors": [{"kind": 104, "instance": 9, "subprogram": 1}, {"kind": 96, "instance": 1, "subprogram": 1}],
+      "donor_sha256": "4e38f72f4c46e66e898ce89c41eb47c79260ff3eefcb4f32dbef8d752b5c89f3",
+      "apcb": {
+        "version": "0.5.5",
+        "header": {
+          "signature": "APCB",
+          "header_size": 128,
+          "version": 48,
+          "apcb_size": 672,
+          "unique_apcb_instance": 7216,
+          "checksum_byte": 106,
+          "_reserved_1": [0, 0, 0],
+          "_reserved_2": [0, 0, 0]
+        },
+        "v3_header_ext": {
+          "signature": "ECB2",
+          "_reserved_1": 0,
+          "_reserved_2": 16,
+          "struct_version": 18,
+          "data_version": 256,
+          "ext_header_size": 96,
+          "_reserved_3": 0,
+          "_reserved_4": 65535,
+          "_reserved_5": 64,
+          "_reserved_6": 0,
+          "_reserved_7": [0, 0],
+          "data_offset": 88,
+          "header_checksum": 0,
+          "_reserved_8": 0,
+          "_reserved_9": [0, 0, 0],
+          "integrity_sign": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+          "_reserved_10": [0, 0, 0],
+          "signature_ending": "BCBA"
+        },
+        "groups": [{"header": {"signature": "MEMG", "group_id": 5892, "header_size": 16, "version": 1, "_reserved_": 0, "group_size": 544}}],
+        "entries": [
+          {
+            "header": {
+              "group_id": 5892,
+              "entry_id": 94,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"event_logging": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "table": "ddr-post-package-repair"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cbs-active",
+      "selectors": [{"kind": 96, "instance": 0, "subprogram": 1}],
+      "donor_sha256": "b870e11b0c9c8cb22bfb64d62866ed85f0b741f4b1729e4a76e90d34c5e68a59",
+      "apcb": {
+        "version": "0.5.5",
+        "header": {
+          "signature": "APCB",
+          "header_size": 128,
+          "version": 48,
+          "apcb_size": 736,
+          "unique_apcb_instance": 9203,
+          "checksum_byte": 50,
+          "_reserved_1": [0, 0, 0],
+          "_reserved_2": [0, 0, 0]
+        },
+        "v3_header_ext": {
+          "signature": "ECB2",
+          "_reserved_1": 0,
+          "_reserved_2": 16,
+          "struct_version": 18,
+          "data_version": 256,
+          "ext_header_size": 96,
+          "_reserved_3": 0,
+          "_reserved_4": 65535,
+          "_reserved_5": 64,
+          "_reserved_6": 0,
+          "_reserved_7": [0, 0],
+          "data_offset": 88,
+          "header_checksum": 0,
+          "_reserved_8": 0,
+          "_reserved_9": [0, 0, 0],
+          "integrity_sign": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+          "_reserved_10": [0, 0, 0],
+          "signature_ending": "BCBA"
+        },
+        "groups": [
+          {"header": {"signature": "DFG ", "group_id": 5891, "header_size": 16, "version": 1, "_reserved_": 0, "group_size": 96}},
+          {"header": {"signature": "MEMG", "group_id": 5892, "header_size": 16, "version": 1, "_reserved_": 0, "group_size": 16}},
+          {"header": {"signature": "TOKN", "group_id": 12288, "header_size": 16, "version": 1, "_reserved_": 0, "group_size": 496}}
+        ],
+        "entries": [
+          {
+            "header": {
+              "group_id": 5891,
+              "entry_id": 204,
+              "instance_id": 0,
+              "context_type": "Struct",
+              "context_format": "Raw",
+              "unit_size": 0,
+              "priority_mask": {"low": true},
+              "key_size": 0,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "SlinkConfig": {
+              "regions": [
+                {"size": 0, "alignment": 0, "socket": 0, "phys_nbio_map": 0, "interleaving": "256 B"},
+                {"size": 0, "alignment": 0, "socket": 0, "phys_nbio_map": 0, "interleaving": "256 B"},
+                {"size": 0, "alignment": 0, "socket": 1, "phys_nbio_map": 0, "interleaving": "256 B"},
+                {"size": 0, "alignment": 0, "socket": 1, "phys_nbio_map": 0, "interleaving": "256 B"}
+              ]
+            }
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 0,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"low": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": []
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 0,
+              "instance_id": 1,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"medium": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Unknown": {"entry_id": "Bool", "tag": 218818671, "value": 0}},
+              {"Bool": {"MemMbistAggressorStaticLaneControl": false}},
+              {"Bool": {"MemPostPackageRepairEnable": false}},
+              {"Bool": {"MemMbistTgtStaticLaneControl": false}}
+            ]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 1,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"low": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": []
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 1,
+              "instance_id": 1,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"medium": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Byte": {"CbsMemAddrCmdParityErrorMaxReplayDdr4": 8}},
+              {"Unknown": {"entry_id": "Byte", "tag": 163953868, "value": 8}},
+              {"Byte": {"MemUrgRefLimit": 6}},
+              {"Byte": {"MemMbistWorseCasGranularity": 0}},
+              {"Byte": {"MemMbistReadDataEyeVoltageStep": 1}},
+              {"Byte": {"MemMbistAggressorStaticLaneVal": 0}},
+              {"Byte": {"MemDramDoubleRefreshRate": 0}},
+              {"Unknown": {"entry_id": "Byte", "tag": 1286431756, "value": 0}},
+              {"Byte": {"MemMbistTgtStaticLaneVal": 0}},
+              {"Byte": {"MemHealPprType": "SoftRepair"}},
+              {"Byte": {"MemMbistAggressorStaticLaneSelEcc": 0}},
+              {"Byte": {"MemMbistReadDataEyeTimingStep": 1}},
+              {"Byte": {"MemHealTestSelect": "Normal"}},
+              {"Unknown": {"entry_id": "Byte", "tag": 1698103689, "value": 255}},
+              {"Unknown": {"entry_id": "Byte", "tag": 1799957978, "value": 16}},
+              {"Byte": {"MemPmuBistTestSelect": {"algorithm_1": true, "algorithm_2": true, "algorithm_3": true, "algorithm_4": true, "algorithm_5": true}}},
+              {"Byte": {"CbsMemWriteCrcErrorMaxReplayDdr4": 8}},
+              {"Byte": {"MemTccd5ReadCommandSpacingMode": "Disabled"}},
+              {"Byte": {"MemMbistTgtStaticLaneSelEcc": 0}},
+              {"Byte": {"PspSevMode2": "Enabled"}},
+              {"Byte": {"MemMbistPatternLength": 3}},
+              {"Unknown": {"entry_id": "Byte", "tag": 3022303216, "value": 0}},
+              {"Byte": {"MemSelfRefreshExitStaggering": "Disabled"}},
+              {"Byte": {"MemMbistWriteDataEyeVoltageStep": 1}},
+              {"Byte": {"MemMbistWriteDataEyeTimingStep": 1}},
+              {"Byte": {"MemMbistAggressorsChannels": "1 aggressor/(2 ch)"}},
+              {"Byte": {"MemSubUrgRefLowerBound": 4}},
+              {"Byte": {"MemMbistPatternSelect": "Prbs"}},
+              {"Byte": {"MemHealBistEnable": "Disabled"}},
+              {"Unknown": {"entry_id": "Byte", "tag": 4285882405, "value": 1}}
+            ]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 2,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"low": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": []
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 2,
+              "instance_id": 1,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"medium": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [{"Word": {"CbsMemPowerDownDelay": {"Value": 3000}}}]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 4,
+              "instance_id": 1,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"medium": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [
+              {"Unknown": {"entry_id": "Dword", "tag": 420813139, "value": 0}},
+              {"Dword": {"MemMbistAggressorStaticLaneSelLo": 0}},
+              {"Dword": {"MemMbistTgtStaticLaneSelLo": 0}},
+              {"Unknown": {"entry_id": "Dword", "tag": 2411588270, "value": 0}},
+              {"Dword": {"MemMbistTgtStaticLaneSelHi": 0}},
+              {"Unknown": {"entry_id": "Dword", "tag": 3006347150, "value": 284158084}},
+              {"Dword": {"MemMbistAggressorStaticLaneSelHi": 0}}
+            ]
+          },
+          {
+            "header": {
+              "group_id": 12288,
+              "entry_id": 4,
+              "instance_id": 0,
+              "context_type": "Tokens",
+              "context_format": "SortAscending",
+              "unit_size": 8,
+              "priority_mask": {"low": true},
+              "key_size": 4,
+              "key_pos": 0,
+              "board_instance_mask": 65535
+            },
+            "tokens": [{"Dword": {"MemClockValue": "Ddr2400"}}, {"Dword": {"MemUserTimingMode": "Auto"}}]
+          }
+        ]
+      }
+    }
+  ]
+}
