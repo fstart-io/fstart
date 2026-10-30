@@ -455,6 +455,28 @@ macro_rules! stage_bin {
         #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
         static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
     };
+    // A board-owned `main` that takes the predecessor's handoff address.
+    (main_handoff: $main:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "Rust" fn fstart_main(handoff: usize) -> ! {
+            $main(handoff)
+        }
+        #[used]
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
+        static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+    };
+    // A board-owned `main` plus the function OpenSBI returns to before a
+    // RISC-V CrabEFI launch.
+    (main: $main:path, sbi_resume: $resume:path) => {
+        $crate::stage_bin!(main: $main);
+        #[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn fstart_sbi_resume(hart_id: u64, dtb_addr: u64) -> ! {
+            $resume(hart_id, dtb_addr)
+        }
+        #[cfg(not(all(fstart_payload = "crabefi", target_arch = "riscv64")))]
+        const _: fn(u64, u64) -> ! = $resume;
+    };
     (program: $program:ty) => {
         #[unsafe(no_mangle)]
         pub extern "Rust" fn fstart_main(handoff: usize) -> ! {
