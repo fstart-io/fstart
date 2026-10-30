@@ -4,7 +4,6 @@ use fstart_arch::x86::boot::cpuid::CacheInfo;
 use fstart_core::memory_info::{
     FORM_FACTOR_DIMM, MEMORY_TYPE_DDR4, TYPE_DETAIL_REGISTERED, TYPE_DETAIL_SYNCHRONOUS,
 };
-use fstart_driver_amd::apob::sysmap::RegionKind;
 
 fn ids(socket: u32) -> Vec<u32> {
     (0..8)
@@ -120,20 +119,13 @@ fn two_packages_and_32_positions_without_client_inventory_limit() {
     ];
     let dimms = dimms();
     let regions = [
-        Region {
+        DramRange {
             base: 0,
-            size: 3 << 30,
-            kind: RegionKind::Ram,
+            end: 3 << 30,
         },
-        Region {
-            base: 3 << 30,
-            size: 1 << 30,
-            kind: RegionKind::Mmio,
-        },
-        Region {
+        DramRange {
             base: 4 << 30,
-            size: 253 << 30,
-            kind: RegionKind::Ram,
+            end: 257 << 30,
         },
     ];
     let mut bytes = vec![0; smbios::BUFFER_SIZE];
@@ -146,6 +138,7 @@ fn two_packages_and_32_positions_without_client_inventory_limit() {
             dimms: &dimms,
             regions: &regions,
             max_dimm_mib: 256 * 1024,
+            socket_upgrade: 0x37,
             ecc: true,
             rom_size: 16 << 20,
             uefi: true,
@@ -229,6 +222,7 @@ fn present_unknown_is_not_empty_and_small_buffers_do_not_publish() {
         dimms: &dimms,
         regions: &[],
         max_dimm_mib: 256 * 1024,
+        socket_upgrade: 0x37,
         ecc: false,
         rom_size: 16 << 20,
         uefi: false,

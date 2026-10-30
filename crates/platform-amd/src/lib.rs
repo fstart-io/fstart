@@ -10,6 +10,8 @@ pub mod acpi;
 pub mod noncar;
 #[cfg(feature = "picasso")]
 pub mod picasso;
+#[cfg(feature = "smbios")]
+pub mod smbios;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 /// SMM image ABI and handler binding: a board's `smm.rs` binds its handler

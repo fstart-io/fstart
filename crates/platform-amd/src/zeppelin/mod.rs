@@ -124,6 +124,13 @@ impl noncar::Soc for Zeppelin {
     const TSEG_SIZE: u32 = 8 << 20;
     /// Two dies of eight SMT cores.
     const MAX_CPUS: u16 = 32;
+    /// SP4 and SP4r2 are BGA packages; 2 channels per die, RDIMMs and
+    /// LRDIMMs up to 64 GiB.
+    const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
+        socket_upgrade: 0x06,
+        max_dimm_mib: 64 * 1024,
+        channels_per_die: 2,
+    };
     type Config = Config;
     type Identity = Identity;
     type State = silicon::State;

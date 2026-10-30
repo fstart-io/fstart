@@ -13,7 +13,7 @@ default = []
 naples = ["fstart-driver-amd/naples"]
 rome = ["fstart-driver-amd/rome"]
 milan = ["fstart-driver-amd/milan"]
-acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi"]
+acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi", "dep:fstart-platform-amd"]
 # The reset-image firmware unit (host::RESET_FEATURE): stage runtime for
 # `fstart_entry = "amd-psp-reset"` (asm/reset.S enters the arch crate's
 # `_start_ram`); `ffs` brings the stage allocator the arch identity paging
@@ -606,6 +606,7 @@ equivalence-id = 0xa082
 file = "milan/UcodePatch_GN_a082.bin"
 
 [dependencies]
+fstart-platform-amd = { path = "../platform-amd", default-features = false, features = ["smbios"], optional = true }
 fstart-driver-spd = { workspace = true, optional = true }
 fstart-amdfw-format = { workspace = true }
 # The TSC timer and the FCH POST code register; Naples is Zeppelin.

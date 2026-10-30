@@ -220,6 +220,18 @@ impl fstart_platform_amd::noncar::Board for Board {
         acpi::tables()
     }
 
+    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
+        fstart_acpi::smbios::SmbiosIdentity {
+            sys_version: variant::NAME,
+            bb_version: variant::NAME,
+            // A rack server (G431-MM0).
+            chassis_type: 0x17,
+            chassis_manufacturer: "Gigabyte",
+            processor_sockets: &["SP4r2"],
+            ..fstart_acpi::smbios::SmbiosIdentity::new("Gigabyte", "MJ11")
+        }
+    }
+
     fn console() -> Ns16550Config {
         Ns16550Config {
             regs: AccessMode::Pio { base: COM1 as u64 },

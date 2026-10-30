@@ -11,7 +11,10 @@ picasso = ["noncar", "fstart-driver-amd/picasso", "dep:fstart-driver-vbios"]
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
 zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zerocopy"]
 # The shared flow of the PSP-booted SoCs, with their ACPI tables.
+# The SMBIOS inventory (shared with fstart-platform-sp3).
+smbios = ["dep:fstart-acpi", "dep:fstart-arch"]
 noncar = [
+  "smbios",
   "fstart-driver-amd/smi",
   "fstart-driver-amd/acpi",
   "dep:fstart-amdfw-format",
@@ -23,6 +26,7 @@ noncar = [
 # A noncar reset image: one DRAM stage from reset vector to payload.
 bundle = [
   "noncar",
+  "dep:fstart-driver-spd",
   "dep:fstart-stage",
   "fstart-arch/x86-identity-paging",
   "fstart-stage/x86_64",
@@ -391,6 +395,7 @@ sha2 = { version = "0.10", optional = true }
 fstart-driver-amd.workspace = true
 fstart-amdfw-format = { workspace = true, optional = true }
 fstart-driver-vbios = { workspace = true, optional = true }
+fstart-driver-spd = { workspace = true, optional = true }
 fstart-core.workspace = true
 fstart-driver-uart.workspace = true
 fstart-log.workspace = true

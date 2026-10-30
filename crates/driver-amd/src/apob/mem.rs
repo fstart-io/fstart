@@ -246,8 +246,45 @@ impl Type20Seed {
     }
 }
 
+/// A DIMM position of the type-17 seeds, decoded for the APOB's
+/// generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DimmPosition {
+    pub socket: u8,
+    /// The channel of the socket.
+    pub channel: u8,
+    pub dimm: u8,
+    pub present: bool,
+}
+
+impl Type17Seed {
+    /// The position for an APOB of `variant`. ZP (Zeppelin, Naples) packs
+    /// the location like the type-20 seeds: socket \[1:0\], channel \[4:2\],
+    /// DIMM \[6:5\], populated \[7\], every position listed (MJ11-EC1 APOB:
+    /// 0x00, 0xa0, 0x04, 0xa4 for DIMMs in slot 1 of channels 0 and 1, as
+    /// its SPD copies say). `None` for a position AGESA skips.
+    pub fn position(&self, variant: crate::psp::Variant) -> Option<DimmPosition> {
+        let l = self.location;
+        match variant {
+            crate::psp::Variant::Zp => Some(DimmPosition {
+                socket: l & 3,
+                channel: l >> 2 & 7,
+                dimm: l >> 5 & 3,
+                present: l & 0x80 != 0,
+            }),
+            _ => (!self.skip()).then(|| DimmPosition {
+                socket: self.socket(),
+                channel: self.channel(),
+                dimm: self.dimm(),
+                present: self.present(),
+            }),
+        }
+    }
+}
+
 /// 8/8 instance 0 (Rome MemSmbiosV2SspPei, decompiler-only).
 pub struct SmbiosInfo<'a> {
+    variant: crate::psp::Variant,
     flags: u8,
     pub type17: &'a [Type17Seed],
     pub type20: &'a [Type20Seed],
@@ -259,6 +296,13 @@ impl SmbiosInfo<'_> {
     pub fn ecc(&self) -> bool {
         self.flags & 0x80 != 0
     }
+
+    /// The DIMM positions the seeds list.
+    pub fn positions(&self) -> impl Iterator<Item = DimmPosition> + '_ {
+        self.type17
+            .iter()
+            .filter_map(|seed| seed.position(self.variant))
+    }
 }
 
 pub fn smbios_info<'a>(apob: &Apob<'a>) -> Result<SmbiosInfo<'a>, ApobError> {
@@ -266,6 +310,7 @@ pub fn smbios_info<'a>(apob: &Apob<'a>) -> Result<SmbiosInfo<'a>, ApobError> {
     let t17 = usize::from(entry.byte(0x31)?);
     let t20 = usize::from(entry.byte(0x32)?);
     Ok(SmbiosInfo {
+        variant: apob.variant(),
         flags: entry.byte(0x30)?,
         type17: entry.slice(0x34, t17)?,
         type20: entry.slice(0x34 + t17 * size_of::<Type17Seed>(), t20)?,
@@ -277,6 +322,24 @@ mod tests {
     use super::super::build::{Body, Builder};
     use super::*;
     use crate::psp::Variant;
+
+    #[test]
+    fn zp_seeds_list_every_position() {
+        let seed =
+            |location: u8| Type17Seed::read_from_bytes(&[location, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+        // The MJ11-EC1's: DIMMs in slot 1 of channels 0 and 1.
+        let positions: std::vec::Vec<_> = [0x00, 0xa0, 0x04, 0xa4]
+            .map(|l| seed(l).position(Variant::Zp).unwrap())
+            .iter()
+            .map(|p| (p.channel, p.dimm, p.present))
+            .collect();
+        assert_eq!(
+            positions,
+            [(0, 0, false), (0, 1, true), (1, 0, false), (1, 1, true)]
+        );
+        // Rome's skip flag.
+        assert_eq!(seed(0x80).position(Variant::Ssp), None);
+    }
 
     #[test]
     fn record_sizes() {

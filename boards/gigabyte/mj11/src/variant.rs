@@ -34,3 +34,9 @@ mod tables;
 mod tables;
 
 pub use tables::{POST_TRAINING_SMN, REDRIVERS, VR_IMAGES};
+
+/// The board variant, as the vendor names it.
+#[cfg(not(feature = "ec0"))]
+pub const NAME: &str = "MJ11-EC1";
+#[cfg(feature = "ec0")]
+pub const NAME: &str = "MJ11-EC0";

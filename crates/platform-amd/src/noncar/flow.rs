@@ -235,6 +235,7 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
         &silicon.cpus.apic_ids,
         &board_acpi,
     );
+    let smbios = super::smbios::install::<S, B>(apob.as_ref(), &map, &silicon.cpus.apic_ids);
     #[cfg(feature = "payload-uefi-basic")]
     let peripherals = S::peripherals::<B>(&ctx);
     let delay = clock;
@@ -265,6 +266,7 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
             fstart_core::services::memory_detect::E820State::new(),
         ),
         rsdp,
+        smbios,
         ffs,
         devices: silicon.devices,
         framebuffer: silicon.framebuffer,
