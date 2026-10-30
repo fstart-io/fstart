@@ -38,8 +38,39 @@ fn picasso_and_vilboz_tables_resolve_in_a_blob_directory() {
     assert_eq!(files.assets[1].name.as_str(), "pci1002,15dd.rom");
     assert!(files.psp_app);
     let mut escaping = soc.clone();
-    escaping.psp[0].file = "../outside.bin".into();
+    escaping.psp[0].file = Some("../outside.bin".into());
     assert!(resolve(&escaping, &board, name, Path::new("/blobs"), 0x100_0000).is_err());
+}
+
+#[test]
+fn zeppelin_and_mj11_tables_resolve_to_a_two_level_partition() {
+    let soc: SocBlobs = serde_json::from_value(
+        fstart_table("../platform-amd/Cargo.toml")["amd"]["zeppelin"].clone(),
+    )
+    .unwrap();
+    let board_table = fstart_table("../../boards/gigabyte/mj11/Cargo.toml");
+    let board: BoardBlobs = serde_json::from_value(board_table["amd"].clone()).unwrap();
+    assert_eq!(board.soc, "zeppelin");
+    let resolved = resolve(&soc, &board, "mj11", Path::new("/blobs"), 0x100_0000).unwrap();
+    let files = &resolved.files;
+    assert!(files.two_level);
+    assert_eq!(
+        (files.efs_offset, files.partition_end),
+        (0x2_0000, 0x29_4000)
+    );
+    // The soft fuse and the PSP and BIOS NV areas.
+    assert_eq!(files.fixed.len(), 5);
+    assert_eq!(files.psp.len(), 19);
+    // RTM key and 8 PMU files, then the board's four APCB entries.
+    assert_eq!(files.bios.len(), 9 + 4);
+    assert_eq!(files.bios[9].path, "/blobs/mj11/apcb-recovery.bin");
+    assert_eq!(resolved.microcode.len(), 4);
+    let mut levelled = soc.clone();
+    levelled.levels = 1;
+    assert!(resolve(&levelled, &board, "mj11", Path::new("/blobs"), 0x100_0000).is_err());
+    let mut ambiguous = soc;
+    ambiguous.psp[0].erased = Some(0x1000);
+    assert!(resolve(&ambiguous, &board, "mj11", Path::new("/blobs"), 0x100_0000).is_err());
 }
 
 /// A vendor image with directories, a microcode patch and a video BIOS
@@ -113,16 +144,18 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
         kind,
         subprogram,
         instance,
-        file: file.into(),
+        file: Some(file.into()),
+        ..Default::default()
     };
     let soc = SocBlobs {
         bios_directory: BiosDirectorySlot::Family17hModel10,
+        levels: 1,
         efs_offset: 0xe2_0000,
         partition_end: 0x100_0000,
-        spi_read_mode: 4,
-        spi_speed: 0,
+        spi_read_mode: Some(4),
+        spi_speed: Some(0),
         micron: false,
-        soft_fuse: 0x3000_0000,
+        soft_fuse: Some(0x3000_0000),
         psp: vec![file(1, 0, 0, "psp/boot.bin"), file(2, 0, 0, "psp/os.bin")],
         bios: vec![file(0x64, 1, 4, "bios/pmu.bin")],
         microcode: vec![MicrocodeFile {

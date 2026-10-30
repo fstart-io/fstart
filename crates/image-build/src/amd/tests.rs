@@ -34,24 +34,28 @@ fn image() -> PicassoImage {
 }
 #[test]
 fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
-    use assembly::{FileBlob, PicassoFiles};
+    use assembly::{FileBlob, PspFiles};
     let raw = image();
-    let files = PicassoFiles {
+    let files = PspFiles {
         flash_size: raw.flash_size,
         efs_offset: raw.efs_offset,
         partition_end: raw.partition_end,
-        spi_read_mode: raw.spi_read_mode,
-        spi_speed: raw.spi_speed,
+        spi_read_mode: Some(raw.spi_read_mode),
+        spi_speed: Some(raw.spi_speed),
         micron: raw.micron,
-        soft_fuse: raw.soft_fuse,
+        soft_fuse: Some(raw.soft_fuse),
+        two_level: false,
         psp: vec![FileBlob {
             key: raw.psp[0].key,
             path: "explicit/psp.bin".into(),
+            level: Default::default(),
         }],
         bios: vec![FileBlob {
             key: raw.bios[0].key,
             path: "explicit/apcb.bin".into(),
+            level: Default::default(),
         }],
+        fixed: vec![],
         apob_nv: raw.apob_nv,
         psp_nv: raw.psp_nv,
         apcb: None,
@@ -96,7 +100,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
             .assemble(&sources, &raw.reset_image[..0x1ffff], None)
             .is_err()
     );
-    let with_files = |change: fn(&mut PicassoFiles)| {
+    let with_files = |change: fn(&mut PspFiles)| {
         let mut changed = operation.clone();
         if let Firmware::Packed { files, .. } = &mut changed.firmware {
             change(files);
@@ -494,30 +498,34 @@ fn native_image_has_the_partition_the_compressed_reset_and_the_ffs() {
 }
 
 fn check_native_image(reset_size: u32, reset_offset: u32) {
-    use assembly::{ApcbFiles, FileBlob, PicassoFiles, PspOptions};
+    use assembly::{ApcbFiles, FileBlob, PspFiles, PspOptions};
     use fstart_amdfw_format::{Flash, directory::BiosEntry};
     // An APCB template with the GPIO and one SPD sentinel.
     let mut template = vec![0; 128 + 28 + 512];
     template[..4].copy_from_slice(b"APCB");
     template[32..44].copy_from_slice(&[0xfa, 0xde, 0xdd, 0xad].repeat(3));
     template[156..162].copy_from_slice(&[0xf0, 0x05, 0xba, 0x11, 0, 0]);
-    let files = PicassoFiles {
+    let files = PspFiles {
         flash_size: 0x100_0000,
         efs_offset: 0xe2_0000,
         partition_end: 0x100_0000,
-        spi_read_mode: 4,
-        spi_speed: 0,
+        spi_read_mode: Some(4),
+        spi_speed: Some(0),
         micron: false,
-        soft_fuse: 0x3000_0000,
+        soft_fuse: Some(0x3000_0000),
+        two_level: false,
         psp: vec![FileBlob {
             key: Key::new(1, 0, 0),
             path: "psp.bin".into(),
+            level: Default::default(),
         }],
         // The microcode goes into the FFS, not the BIOS directory.
         bios: vec![FileBlob {
             key: Key::new(bios::MICROCODE, 0, 0),
             path: "ucode.bin".into(),
+            level: Default::default(),
         }],
+        fixed: vec![],
         apob_nv: None,
         psp_nv: None,
         apcb: Some(ApcbFiles {

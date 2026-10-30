@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD PSP flash images, in the format of `fstart_amdfw_format`: [`assembly`]
-//! composes a stage's image from a vendor image or packed blobs;
-//! [`PicassoImage`] packs Picasso's first-generation PSP partition.
+//! composes a stage's image from a vendor image or packed blobs.
+//! [`PicassoImage`] packs Picasso's single-level PSP partition,
+//! [`levels::TwoLevelImage`] the two-level partitions of Zeppelin, Naples,
+//! Rome and Milan.
 //!
 //! Format parsing and validation live in the generation-independent
-//! `fstart-amdfw-format` crate. This particular blob packer currently covers
-//! Picasso; multi-level/ISH assembly is a separate coverage increment, not a
-//! second parser. Signed AMD blobs are copied unchanged, never re-signed.
+//! `fstart-amdfw-format` crate. Signed AMD blobs are copied unchanged,
+//! never re-signed.
 pub mod apcb;
 pub mod assembly;
 pub mod blobs;
 pub mod config;
+pub mod levels;
 pub mod psp_app;
 
 use fstart_amdfw_format::{
@@ -123,6 +125,11 @@ impl Writer {
         self.bytes.resize(self.bytes.len() + size, 0xff);
         Ok(offset)
     }
+    /// `size` bytes at the next multiple of `alignment` (a power of two).
+    fn reserve_aligned(&mut self, size: u32, alignment: u32) -> Result<u32> {
+        self.align(alignment)?;
+        self.reserve(size as usize)
+    }
     fn align(&mut self, alignment: u32) -> Result<()> {
         let padding = self.offset().wrapping_neg() & (alignment - 1);
         self.reserve(padding as usize)?;
@@ -163,6 +170,15 @@ impl Writer {
             .ok_or("AMD directory outside the image")?;
         Ok(())
     }
+}
+
+/// The boot ROM searches the EFS at these offsets of its fixed 16 MiB
+/// window, which a smaller flash ends.
+fn efs_probed(flash_size: u32, efs_offset: u32) -> bool {
+    0x100_0000u32
+        .checked_sub(flash_size)
+        .and_then(|base| base.checked_add(efs_offset))
+        .is_some_and(|mapped| fstart_amdfw_format::efs::PROBES.contains(&mapped))
 }
 
 fn validate_key(key: Key, bios: bool) -> Result<()> {
@@ -210,12 +226,7 @@ impl PicassoImage {
         if !(0x40000..=0x1000000).contains(&self.flash_size) || !self.flash_size.is_power_of_two() {
             return Err("Picasso flash must be a power of two, 256 KiB..16 MiB".into());
         }
-        // Hardware probes these offsets in its fixed 16-MiB mapping window.
-        let mapped_efs = 0x1000000u32
-            .checked_sub(self.flash_size)
-            .and_then(|base| base.checked_add(self.efs_offset))
-            .ok_or("invalid EFS offset")?;
-        if ![0x20000, 0x820000, 0xc20000, 0xe20000, 0xf20000, 0xfa0000].contains(&mapped_efs) {
+        if !efs_probed(self.flash_size, self.efs_offset) {
             return Err("EFS is not at a Picasso hardware search address".into());
         }
         if self.efs_offset >= self.partition_end || self.partition_end > self.flash_size {

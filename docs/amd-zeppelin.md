@@ -103,29 +103,42 @@ Interrupt routes: INTA-D to APIC 16-19 (PIC `NC`), SCI to 9, GPIO to 7.
 
 ## Flash image
 
-Vendor image: `fbuild assemble --image-config <vendor flash dump>`. The vendor
-prefix stays byte for byte. The FFS and the stage are placed as below.
-Source: `layout.rs` (`VENDOR_PREFIX`, `RESET_FLASH_OFFSET`), `zeppelin/mod.rs`
-(`PspOptions`).
+fstart packs the whole flash from the AMD firmware files: the platform crate's
+`[package.metadata.fstart.amd.zeppelin]` table (PSP and BIOS directory
+entries, their levels, microcode) and the board's `[package.metadata.fstart.amd]`
+(its APCBs). `--donor <vendor flash image>` extracts the files from a vendor
+image; `--blobs <directory>` takes them from a blob directory
+(`cargo fbuild blobs`). See [amd-image-format.md](amd-image-format.md).
+Source: `layout.rs` (`PSP_PARTITION_END`, `RESET_FLASH_OFFSET`),
+`zeppelin/mod.rs` (`PspOptions`), `image-build/src/amd/levels.rs`.
 
 | Flash offset | Use |
 | --- | --- |
-| `000000..294000` | Vendor prefix: EFS, PSP and BIOS directories, APCB, ABL, SMU firmware, microcode |
+| `020000..294000` | PSP partition: EFS, `$PSP` + `$PL2`, `$BHD` + `$BL2`, signed files, APCBs, NV areas |
 | `294000..db0000` | FFS: payload, `cpu_microcode.bin`, boot policy |
-| `db0000..1000000` | Reset image, `0x250000` bytes, BIOS directory entry 0x62 |
+| `db0000..1000000` | Reset image, `0x250000` bytes in DRAM, BIOS directory entry 0x62 |
 
-The vendor BIOS directory must describe this reset image and the APOB within
-the prefix. `image-build` checks it (`check_vendor`) before composing.
+The partition has the vendor images' shape: two levels of each directory,
+physical addresses (`0xff000000` + offset), a first-generation EFS with the
+BIOS directory at +0x18. Level 1 is the recovery set (AMD public key, the
+recovery boot loader), level 2 adds the secure debug, HW IP and SEV files and
+the soft fuse chain (1). A file in both levels is stored once. The packer
+allocates the areas the PSP and the ABL write, erased: PSP 0x22 and 0x38,
+BIOS 0x63 (APOB NV, 128 KiB) and 0x67.
 
-Two PSP options are set in the EFS (`PspOptions`):
+The APOB NV copy starts erased, so the ABL trains the memory on every boot;
+fstart doesn't save it back.
 
-- `compress_reset: true`: the reset image is zlib-compressed in the PSP's
-  format and both directory levels mark entry 0x62 compressed. The PSP
+The EFS and the reset image entry carry the boot speed settings:
+
+- `compress_reset: true` (`PspOptions`): the reset image is zlib-compressed in
+  the PSP's format and both levels mark entry 0x62 compressed. The PSP
   inflates the stage rather than copying the whole region.
-- `spi: Some((7, 1))`: Fast Read at 33 MHz for the PSP's SPI reads.
+- `spi-read-mode = 7`, `spi-speed = 1` (SoC table): Fast Read at 33 MHz for
+  the PSP's SPI reads.
 
-Microcode: the vendor image's BIOS directory entries of type 0x66 go into the
-FFS as `cpu_microcode.bin`.
+Microcode: the SoC table's patches (equivalence IDs 0x8000, 0x8010, 0x8011,
+0x8012) go into the FFS as `cpu_microcode.bin`, not into the BIOS directory.
 
 ## DRAM layout
 
@@ -174,12 +187,15 @@ From `zeppelin/acpi.rs` and the shared `crate::acpi`:
 
 ```sh
 cargo fbuild assemble --board gigabyte-mj11-ec1 --release \
-  --image-config <vendor flash dump> \
+  --donor MJ11-EC1_F09_Web/flashabl.rom \
   --payload linux --kernel bzImage --linux-bootargs "console=ttyS0,115200"
 
 cargo fbuild assemble --board gigabyte-mj11-ec1 --release \
-  --image-config <vendor flash dump> --payload uefi
+  --donor MJ11-EC1_F09_Web/flashabl.rom --payload uefi
 ```
+
+Use the board's own vendor release as the donor (F09 for EC1, F02 for EC0):
+the APCBs come from it.
 
 `--payload` defaults to `halt`. `uefi` is CrabEFI (`uefi-ui` and `uefi-basic`
 also exist). `gigabyte-mj11-ec0` builds the x16 variant.

@@ -203,6 +203,186 @@ file = "picasso/PicassoGenericVbios.bin"
 device = 0x15dd
 file = "picasso/Raven2GenericVbios.bin"
 
+# Zeppelin (EPYC Embedded 3000): the two-level directories of the vendor
+# images. Level 1 is the recovery set; the PSP and the ABL look a file up
+# in level 2 first. The PSP writes the erased entries (NV data).
+[package.metadata.fstart.amd.zeppelin]
+bios-directory = "Family17hModel00"
+levels = 2
+efs-offset = 0x20000
+partition-end = 0x294000
+# Fast Read at 33 MHz: the PSP reads the flash about 1 s faster.
+spi-read-mode = 7
+spi-speed = 1
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x00
+level = 1
+file = "zeppelin/PSP/AmdPubKey_ZP.bin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x01
+file = "zeppelin/PSP/PspBootLoader_ZP.sbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x03
+level = 1
+file = "zeppelin/PSP/PspRecoveryBootLoader_ZP.sbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x08
+file = "zeppelin/PSP/SmuFirmware_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x09
+level = 2
+file = "zeppelin/PSP/SecureDebugKey_ZP.stkn"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x0a
+file = "zeppelin/PSP/AblPubKey_ZP.bin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x0b
+level = 2
+value = 0x1
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x12
+file = "zeppelin/PSP/SmuFirmware2_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x13
+level = 2
+file = "zeppelin/PSP/SecureDebugUnlock_ZP.sbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x20
+level = 2
+file = "zeppelin/PSP/HwIpConfig_ZP.sbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x21
+file = "zeppelin/PSP/PspIkek_ZP.bin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x22
+level = 2
+erased = 0x1000
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x24
+file = "zeppelin/PSP/SecurityPolicy_ZP.sbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x30
+file = "zeppelin/PSP/AgesaBootloader0_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x31
+file = "zeppelin/PSP/AgesaBootloader1_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x32
+file = "zeppelin/PSP/AgesaBootloader2_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x33
+file = "zeppelin/PSP/AgesaBootloader3_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x34
+file = "zeppelin/PSP/AgesaBootloader4_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x35
+file = "zeppelin/PSP/AgesaBootloader5_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x36
+file = "zeppelin/PSP/AgesaBootloader6_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x38
+level = 2
+erased = 0x8000
+
+[[package.metadata.fstart.amd.zeppelin.psp]]
+type = 0x39
+level = 2
+file = "zeppelin/PSP/SevCode_ZP.sbin"
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x05
+file = "zeppelin/BIOS/RtmPubKey_ZP.bin"
+
+# APOB NV: the trained memory settings the ABL saves.
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x63
+level = 2
+erased = 0x20000
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x64
+instance = 1
+file = "zeppelin/BIOS/PmuImem1_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x65
+instance = 1
+file = "zeppelin/BIOS/PmuDmem1_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x64
+instance = 2
+file = "zeppelin/BIOS/PmuImem2_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x65
+instance = 2
+file = "zeppelin/BIOS/PmuDmem2_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x64
+instance = 3
+file = "zeppelin/BIOS/PmuImem3_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x65
+instance = 3
+file = "zeppelin/BIOS/PmuDmem3_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x64
+instance = 4
+file = "zeppelin/BIOS/PmuImem4_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x65
+instance = 4
+file = "zeppelin/BIOS/PmuDmem4_ZP.csbin"
+
+[[package.metadata.fstart.amd.zeppelin.bios]]
+type = 0x67
+level = 2
+erased = 0x1000
+
+[[package.metadata.fstart.amd.zeppelin.microcode]]
+equivalence-id = 0x8012
+file = "zeppelin/UcodePatch_ZP_B2.bin"
+
+[[package.metadata.fstart.amd.zeppelin.microcode]]
+equivalence-id = 0x8011
+file = "zeppelin/UcodePatch_ZP_B1.bin"
+
+[[package.metadata.fstart.amd.zeppelin.microcode]]
+equivalence-id = 0x8010
+file = "zeppelin/UcodePatch_ZP_B0.bin"
+
+[[package.metadata.fstart.amd.zeppelin.microcode]]
+equivalence-id = 0x8000
+file = "zeppelin/UcodePatch_ZP_A0.bin"
+
 [dependencies]
 fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }

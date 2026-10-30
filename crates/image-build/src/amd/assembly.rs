@@ -4,10 +4,14 @@
 //! (BIOS directory entry 0x62) the PSP copies to DRAM, and the FFS with the
 //! payload, if the image has one. The PSP firmware either comes from a vendor
 //! flash image, whose prefix stays byte for byte except for the [`PspOptions`]
-//! fields, or is packed from blobs ([`super::PicassoImage`]) into a native
-//! image fstart lays out completely. Paths are explicit build inputs, never
+//! fields, or is packed from blobs ([`super::PicassoImage`],
+//! [`super::levels::TwoLevelImage`]) into a native image fstart lays out
+//! completely. Paths are explicit build inputs, never
 //! discovered.
-use super::{Blob, FlashRegion, Key, PicassoImage};
+use super::{
+    Blob, FlashRegion, Key, PicassoImage,
+    levels::{self, Level, TwoLevelImage},
+};
 use crate::build_plan::{FfsAssembly, FileBinding};
 use fstart_amdfw_format::{
     Flash, Profile,
@@ -23,20 +27,53 @@ pub struct FileBlob {
     pub key: Key,
     /// Workspace-relative or absolute, exactly as supplied by the build owner.
     pub path: String,
+    /// The directory levels of a two-level partition it is in.
+    #[serde(default)]
+    pub level: Level,
 }
+
+/// A directory entry without a file: erased flash the firmware writes, or a
+/// value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixedEntry {
+    /// A PSP directory entry, else a BIOS directory entry.
+    pub psp: bool,
+    pub key: Key,
+    #[serde(default)]
+    pub level: Level,
+    pub content: Fixed,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Fixed {
+    /// This many bytes of erased flash.
+    Erased(u32),
+    Value(u64),
+}
+
 /// Explicit packaging inputs, not runtime silicon policy or vendor authentication.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PicassoFiles {
+pub struct PspFiles {
     pub flash_size: u32,
     pub efs_offset: u32,
     pub partition_end: u32,
-    pub spi_read_mode: u8,
-    pub spi_speed: u8,
+    /// The PSP's SPI read mode and speed (EFS); erased if absent.
+    pub spi_read_mode: Option<u8>,
+    pub spi_speed: Option<u8>,
     pub micron: bool,
-    pub soft_fuse: u64,
+    /// PSP entry 0x0b of a single-level partition. Two-level partitions
+    /// have it among their `fixed` entries, in the levels they want it.
+    pub soft_fuse: Option<u64>,
+    /// `$PSP` + `$PL2` and `$BHD` + `$BL2` ([`TwoLevelImage`]) instead of
+    /// Picasso's single level.
+    #[serde(default)]
+    pub two_level: bool,
     pub psp: Vec<FileBlob>,
     pub bios: Vec<FileBlob>,
+    #[serde(default)]
+    pub fixed: Vec<FixedEntry>,
     pub apob_nv: Option<FlashRegion>,
     pub psp_nv: Option<FlashRegion>,
     /// The APCB instances, generated from the board's template.
@@ -104,7 +141,7 @@ pub enum Firmware {
     /// image at that flash offset (outside the partition) and the FFS;
     /// without, only the partition, with the reset image inside it.
     Packed {
-        files: PicassoFiles,
+        files: PspFiles,
         reset_offset: Option<u32>,
     },
 }
@@ -353,23 +390,41 @@ impl AmdAssembly {
                 if files.flash_size != self.flash_size
                     || files.efs_offset >= files.partition_end
                     || files.partition_end > files.flash_size
-                    || files.spi_read_mode > 7
-                    || files.spi_speed > 3
                     || files.psp.len() > 64
                     || files.bios.len() > 64
-                    || self.bios_directory != PicassoImage::BIOS_DIRECTORY
                 {
-                    return Err("invalid Picasso PSP image operation geometry/budget".into());
+                    return Err("invalid AMD PSP image geometry or budget".into());
+                }
+                if files.two_level {
+                    // The packer checks the entries.
+                    if reset_offset.is_none() || files.apcb.is_some() || files.psp_app {
+                        return Err(
+                            "a two-level partition is a native image with board APCB files".into(),
+                        );
+                    }
+                } else {
+                    if files.spi_read_mode.is_none_or(|mode| mode > 7)
+                        || files.spi_speed.is_none_or(|speed| speed > 3)
+                        || files.soft_fuse.is_none()
+                        || !files.fixed.is_empty()
+                        || self.bios_directory != PicassoImage::BIOS_DIRECTORY
+                    {
+                        return Err("invalid Picasso PSP image settings".into());
+                    }
+                    for (bios, blobs) in [(false, &files.psp), (true, &files.bios)] {
+                        for file in blobs {
+                            super::validate_key(file.key, bios)?;
+                        }
+                    }
                 }
                 let mut keys = std::collections::BTreeSet::new();
                 for (bios, blobs) in [(false, &files.psp), (true, &files.bios)] {
                     for file in blobs {
-                        super::validate_key(file.key, bios)?;
                         if file.path.is_empty()
                             || file.path.contains('\0')
-                            || !keys.insert((bios, file.key))
+                            || !keys.insert((bios, file.key, file.level))
                         {
-                            return Err("invalid or duplicate Picasso file declaration".into());
+                            return Err("invalid or duplicate AMD file declaration".into());
                         }
                     }
                 }
@@ -619,11 +674,14 @@ impl AmdAssembly {
     /// This does not authenticate the blobs.
     fn pack(
         &self,
-        files: &PicassoFiles,
+        files: &PspFiles,
         sources: &[&[u8]],
         reset: Vec<u8>,
         reset_offset: Option<u32>,
     ) -> Result<super::PackedImage, String> {
+        if files.two_level {
+            return self.pack_two_level(files, sources, reset.len(), reset_offset);
+        }
         let blobs = |declared: &[FileBlob], bytes: &[&[u8]]| {
             declared
                 .iter()
@@ -667,10 +725,10 @@ impl AmdAssembly {
             flash_size: files.flash_size,
             efs_offset: files.efs_offset,
             partition_end: files.partition_end,
-            spi_read_mode: files.spi_read_mode,
-            spi_speed: files.spi_speed,
+            spi_read_mode: files.spi_read_mode.ok_or("no SPI read mode")?,
+            spi_speed: files.spi_speed.ok_or("no SPI speed")?,
             micron: files.micron,
-            soft_fuse: files.soft_fuse,
+            soft_fuse: files.soft_fuse.ok_or("no soft fuse")?,
             psp,
             bios,
             reset_image: reset,
@@ -682,6 +740,87 @@ impl AmdAssembly {
             psp_nv: files.psp_nv,
         }
         .pack()
+    }
+
+    /// The two-level partition of `files`, with the reset image of
+    /// `reset_size` bytes at `reset_offset`.
+    fn pack_two_level(
+        &self,
+        files: &PspFiles,
+        sources: &[&[u8]],
+        reset_size: usize,
+        reset_offset: Option<u32>,
+    ) -> Result<super::PackedImage, String> {
+        let reset = levels::Reset {
+            offset: reset_offset.ok_or("a two-level partition needs a reset window")?,
+            size: u32::try_from(reset_size).map_err(|_| "reset image too large")?,
+            destination: self.reset_destination,
+            compressed: self.psp.compress_reset,
+        };
+        let mut sources = sources.iter();
+        files
+            .two_level(
+                self.bios_directory,
+                |_| Ok(sources.next().ok_or("missing AMD file")?.to_vec()),
+                reset,
+                self.apob_destination,
+            )?
+            .pack()
+    }
+}
+
+impl PspFiles {
+    /// The two-level partition of these files for the PSP of `slot`, each
+    /// file's bytes from `read` in [`AmdAssembly::bindings`] order. The
+    /// microcode goes into the FFS, not the BIOS directory.
+    pub fn two_level(
+        &self,
+        slot: fstart_amdfw_format::efs::BiosDirectorySlot,
+        mut read: impl FnMut(&FileBlob) -> Result<Vec<u8>, String>,
+        reset: levels::Reset,
+        apob_destination: u64,
+    ) -> Result<TwoLevelImage, String> {
+        if !self.two_level || self.apcb.is_some() || self.psp_app {
+            return Err("not a two-level partition of files".into());
+        }
+        let mut entries = |declared: &[FileBlob]| {
+            let mut entries = Vec::new();
+            for file in declared {
+                let bytes = read(file)?;
+                if file.key.kind != bios::MICROCODE {
+                    entries.push(levels::Entry {
+                        key: file.key,
+                        level: file.level,
+                        content: levels::Content::File(bytes),
+                    });
+                }
+            }
+            Ok::<_, String>(entries)
+        };
+        let mut psp = entries(&self.psp)?;
+        let mut bios = entries(&self.bios)?;
+        for fixed in &self.fixed {
+            let entry = levels::Entry {
+                key: fixed.key,
+                level: fixed.level,
+                content: match fixed.content {
+                    Fixed::Erased(size) => levels::Content::Erased(size),
+                    Fixed::Value(value) => levels::Content::Value(value),
+                },
+            };
+            if fixed.psp { &mut psp } else { &mut bios }.push(entry);
+        }
+        Ok(TwoLevelImage {
+            slot,
+            flash_size: self.flash_size,
+            efs_offset: self.efs_offset,
+            partition_end: self.partition_end,
+            spi: self.spi_read_mode.zip(self.spi_speed),
+            psp,
+            bios,
+            reset,
+            apob_destination,
+        })
     }
 }
 

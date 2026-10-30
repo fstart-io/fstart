@@ -14,6 +14,17 @@ target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-amd", name = "rust" }
 
+# The board's APCBs: level 1 has the vendor's recovery APCB, level 2 the
+# one the ABL boots with.
+[package.metadata.fstart.amd]
+soc = "zeppelin"
+apcb = { entries = [
+  { type = 0x60, level = 1, file = "mj11/apcb-recovery.bin" },
+  { type = 0x68, level = 1, file = "mj11/apcb-recovery.bin" },
+  { type = 0x60, level = 2, file = "mj11/apcb.bin" },
+  { type = 0x68, level = 2, file = "mj11/apcb.bin" },
+] }
+
 [package.metadata.fstart.variants.gigabyte-mj11-ec0]
 features = ["ec0"]
 
