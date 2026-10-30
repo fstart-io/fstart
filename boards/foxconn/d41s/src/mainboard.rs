@@ -1,123 +1,56 @@
-//! Foxconn D41S mainboard hooks.
+//! Foxconn D41S mainboard work called by the stage mains.
 
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-use crate::config::Hardware as PineviewIch7;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-use fstart_core::services::ServiceError;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::device::BusDevice;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
+use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::generic::ck505::I2cCk505;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_driver_superio::ite8721f::Ite8721f;
-#[cfg(fstart_stage_env = "car")]
-use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
-#[cfg(fstart_stage_env = "ram")]
-use fstart_platform_intel::{IntelMainstageBoardCtx, IntelMainstageBoardHooks};
+use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 
-/// Board-specific D41S hooks for the Pineview/ICH7 flow.
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-#[derive(Default)]
-pub struct D41SMainboard {
-    superio: Option<Ite8721f>,
-}
-
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-impl<S> fstart_platform_intel::IntelSmbusRouting<S> for D41SMainboard {}
-
-#[cfg(fstart_stage_env = "ram")]
-mod mainboard_acpi_device {
-    extern crate alloc;
-
-    use super::{D41SMainboard, d41s_mainboard_dsdt_aml};
-
-    impl fstart_acpi::device::AcpiDevice for D41SMainboard {
-        type Config = fstart_platform_intel::pineview::PineviewIch7AcpiContext;
-
-        fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
-            d41s_mainboard_dsdt_aml(*config)
-        }
+/// COM1 on the SuperIO.
+pub const fn console() -> Ns16550Config {
+    Ns16550Config {
+        regs: AccessMode::Pio {
+            base: crate::UART0_PIO_BASE as u64,
+        },
+        clock_freq: crate::UART0_CLOCK_FREQ,
+        baud_rate: crate::UART0_BAUD_RATE,
     }
 }
 
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-impl D41SMainboard {
-    fn setup_console(&mut self) -> Result<(), ServiceError> {
-        let mut superio =
-            Ite8721f::new_at_base(crate::d41s_superio_config(), crate::SUPERIO_PNP_BASE)
-                .map_err(ServiceError::from)?;
-        superio.init().map_err(ServiceError::from)?;
-        superio.disconnect_hwmon_irq();
-        superio.disable_parallel_ecp_decode();
-        superio.disable_floppy();
-        self.superio = Some(superio);
-        Ok(())
-    }
+pub fn setup_console() -> Result<(), ServiceError> {
+    let mut superio = Ite8721f::new_at_base(crate::d41s_superio_config(), crate::SUPERIO_PNP_BASE)
+        .map_err(ServiceError::from)?;
+    superio.init().map_err(ServiceError::from)?;
+    superio.disconnect_hwmon_irq();
+    superio.disable_parallel_ecp_decode();
+    superio.disable_floppy();
+    Ok(())
+}
 
-    fn setup_clock(
-        &mut self,
-        southbridge: &mut fstart_driver_intel::ich7::IntelIch7,
-    ) -> Result<(), ServiceError> {
-        // The clock generator feeds the display reference and PCIe/USB clocks.
-        // Programming it is required for a correct picture, but a failure must
-        // not stop the boot: log it and carry on so the payload can still be
-        // brought up and the failure is visible in the log.
-        match I2cCk505::new_at_address(crate::d41s_ck505_config(), crate::CK505_ADDR) {
-            Ok(mut ck505) => match ck505.init_on_smbus(southbridge) {
-                Ok(()) => Ok(()),
-                Err(err) => {
-                    let _ = err;
-                    fstart_log::error!("d41s: clock generator programming failed");
-                    Ok(())
-                }
-            },
-            Err(err) => {
-                let _ = err;
-                fstart_log::error!("d41s: invalid clock generator config");
-                Ok(())
+/// Program the display, PCIe and USB clock generator; failures are nonfatal.
+pub fn setup_clock(bus: &mut impl SmBus) {
+    match I2cCk505::new_at_address(crate::d41s_ck505_config(), crate::CK505_ADDR) {
+        Ok(mut ck505) => {
+            if ck505.init_on_smbus(bus).is_err() {
+                fstart_log::error!("d41s: clock generator programming failed");
             }
         }
+        Err(_) => fstart_log::error!("d41s: invalid clock generator config"),
     }
 }
 
-#[cfg(fstart_stage_env = "car")]
-impl IntelEarlyBoardHooks<PineviewIch7> for D41SMainboard {
-    fn before_console(
-        &mut self,
-        _ctx: &mut IntelEarlyCtx<PineviewIch7>,
-    ) -> Result<(), ServiceError> {
-        self.setup_console()
-    }
+/// The board's ACPI: its DSDT fragment.
+pub struct Acpi;
 
-    fn after_memory(&mut self, ctx: &mut IntelEarlyCtx<PineviewIch7>) -> Result<(), ServiceError> {
-        if ctx.boot_path == fstart_driver_intel::BootPath::S3Resume {
-            return Ok(());
-        }
-        self.setup_clock(ctx.southbridge())
+impl fstart_acpi::device::AcpiDevice for Acpi {
+    type Config = fstart_platform_intel::pineview::PineviewIch7AcpiContext;
+
+    fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
+        d41s_mainboard_dsdt_aml(*config)
     }
 }
 
-#[cfg(fstart_stage_env = "ram")]
-impl IntelMainstageBoardHooks<PineviewIch7> for D41SMainboard {
-    fn before_console(
-        &mut self,
-        _ctx: &mut IntelMainstageBoardCtx<PineviewIch7>,
-    ) -> Result<(), ServiceError> {
-        self.setup_console()
-    }
-
-    fn after_devices(
-        &mut self,
-        ctx: &mut IntelMainstageBoardCtx<PineviewIch7>,
-    ) -> Result<(), ServiceError> {
-        self.setup_clock(ctx.southbridge())
-    }
-}
-
-#[cfg(fstart_stage_env = "ram")]
 mod acpi_impl {
-    extern crate alloc;
-
     use alloc::vec::Vec;
     use fstart_platform_intel::pineview::PineviewIch7AcpiContext;
 
@@ -129,7 +62,6 @@ mod acpi_impl {
     }
 }
 
-#[cfg(fstart_stage_env = "ram")]
 pub use acpi_impl::d41s_mainboard_dsdt_aml;
 
 static D41S_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["FCBGA559"];
