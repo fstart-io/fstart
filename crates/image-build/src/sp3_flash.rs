@@ -26,6 +26,13 @@
 //! (`fstart_driver_amd::sp3::fch::rom3`), located by the flash anchor
 //! (`fstart_amdfw_format::anchor`).
 //!
+//! Instead of a vendor ROM, the halves can be packed from the AMD firmware
+//! files ([`PackedHalf`], `--blobs`/`--donor`): each supported
+//! generation's two-level partition ([`crate::amd::levels`]) in its own
+//! half, boot ROM order, with its `0x62` entries naming the reset image
+//! from the start. The composer then treats the packed halves as it treats
+//! a vendor ROM.
+//!
 //! A single multi-generation EFS with a `2PSP` combo directory and the
 //! upper trees rebased to 32 MiB offsets (§4.1.7 "Single 32M in 32MB",
 //! §4.1.4.2) would need one reset image only; it is not implemented until
@@ -827,6 +834,81 @@ pub fn compose(
     })
 }
 
+/// One half's PSP firmware packed from files: the generation's two-level
+/// partition from [`EFS_OFFSET`], the reset image slot of the plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackedHalf {
+    #[serde(with = "generation_name")]
+    pub generation: Generation,
+    pub files: crate::amd::assembly::PspFiles,
+    /// The APOB's DRAM destination (BIOS entry 0x61).
+    pub apob_destination: u64,
+}
+
+impl PackedHalf {
+    /// The 16 MiB half: its partition, files read with `read`.
+    pub fn pack(
+        &self,
+        plan: &FlashPlan,
+        read: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    ) -> Result<Vec<u8>, String> {
+        let files = &self.files;
+        if files.flash_size as usize != HALF_SIZE
+            || files.efs_offset as usize != EFS_OFFSET
+            || files.partition_end > plan.ffs_offset
+        {
+            return Err(format!(
+                "{}: the SP3 halves are partitions from the EFS to below the FFS",
+                name(self.generation)
+            ));
+        }
+        let reset = crate::amd::levels::Reset {
+            offset: plan.reset.flash_offset,
+            size: plan.reset.size,
+            destination: plan.reset.destination,
+            compressed: false,
+        };
+        let packed = files
+            .two_level(
+                self.generation,
+                |file| read(&file.path),
+                reset,
+                self.apob_destination,
+            )?
+            .pack()?;
+        let mut half = vec![0xff; HALF_SIZE];
+        half[packed.offset as usize..][..packed.bytes.len()].copy_from_slice(&packed.bytes);
+        Ok(half)
+    }
+}
+
+/// The ROM of `halves`, lower first: the input the composer takes instead
+/// of a vendor ROM.
+pub fn packed_rom(
+    halves: &[PackedHalf],
+    plan: &FlashPlan,
+    read: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    if halves.is_empty() || halves.len() > 2 {
+        return Err("an SP3 flash has one or two halves".into());
+    }
+    let mut rom = Vec::with_capacity(halves.len() * HALF_SIZE);
+    for half in halves {
+        if !plan.generations.contains(&half.generation) {
+            return Err(format!(
+                "the board doesn't support {}",
+                name(half.generation)
+            ));
+        }
+        rom.extend(half.pack(plan, read)?);
+    }
+    if rom.len() == 2 * HALF_SIZE {
+        // Each generation's boot ROM must find its own half.
+        check_dual(&rom)?;
+    }
+    Ok(rom)
+}
+
 /// The SP3 image operation: an FFS (the payload and the reset unit's
 /// trust-finalized copy) plus the reset unit, composed into the vendor ROM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -834,7 +916,11 @@ pub struct Sp3FlashAssembly {
     pub ffs: FfsAssembly,
     /// Vendor ROM: one 16 MiB half, the 32 MiB dual image or a full
     /// readout with [`FlashPlan::mirrors`], workspace relative or absolute. Its directories and blobs are kept in place.
+    /// Empty with packed halves.
     pub vendor_image: String,
+    /// The halves packed from files instead, lower first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packed: Vec<PackedHalf>,
     /// Unit whose flat output is the reset image.
     pub reset_unit: String,
     pub compose: FlashPlan,
@@ -847,8 +933,10 @@ impl Sp3FlashAssembly {
     pub fn validate(&self, plan: &BuildPlan) -> Result<(), String> {
         self.compose.check()?;
         let slot = self.compose.reset;
-        if self.vendor_image.is_empty() || self.vendor_image.contains('\0') {
-            return Err("invalid SP3 vendor image path".into());
+        if self.vendor_image.is_empty() == self.packed.is_empty()
+            || self.vendor_image.contains('\0')
+        {
+            return Err("an SP3 image takes a vendor ROM or packed halves".into());
         }
         if plan.stages.first() != Some(&self.reset_unit) {
             return Err("SP3 reset unit must be the first image stage".into());
@@ -872,6 +960,24 @@ impl Sp3FlashAssembly {
             return Err("SP3 reset producer differs from the reset image geometry".into());
         }
         Ok(())
+    }
+}
+
+/// A `Generation` as its lower-case name in plans.
+mod generation_name {
+    use super::Generation;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(g: &Generation, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(super::name(*g))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Generation, D::Error> {
+        let name = String::deserialize(d)?;
+        super::GENERATIONS
+            .into_iter()
+            .find(|&g| super::name(g).eq_ignore_ascii_case(&name))
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown SP3 generation {name}")))
     }
 }
 

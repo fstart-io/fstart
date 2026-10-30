@@ -134,11 +134,31 @@ and the reset vector in the last 16 bytes of the image.
 
 ## Flash image
 
+### PSP firmware from files
+
+With `--donor <vendor ROM>` or `--blobs <directory>` fstart packs the PSP
+firmware itself: one two-level partition per generation the board lists,
+from `crates/platform-sp3/Cargo.toml` (`[package.metadata.fstart.amd.naples]`,
+`.rome`, `.milan`) and the board's APCB tables, each in its own 16 MiB half in
+boot ROM order, `[0x20000, 0x600000)`, with its `0x62` entries naming the
+reset image. The composer then lays out the FFS and the reset image as for a
+vendor ROM. The partition format and tables are in
+[amd-image-format.md](amd-image-format.md).
+
+```sh
+cargo fbuild assemble --board tyan-s8030 --release \
+  --donor S8030GM2NE_BIOS_V4.04/8030V404.ROM --payload uefi
+cargo fbuild assemble --board amd-ethanolx --release --donor RXM100CB.bin
+```
+
+Microcode for the FFS comes from the tables' `[[...microcode]]` files.
+Packed SP3 images are not yet tested on hardware.
+
 ### Layout
 
-`sp3_flash` composes the build into the vendor ROM. Each composed half keeps
-its vendor EFS, directories and blobs in place (`[0, prefix)`), and only its
-`0x62` entries change.
+Without `--donor`/`--blobs`, `sp3_flash` composes the build into the vendor
+ROM. Each composed half keeps its vendor EFS, directories and blobs in place
+(`[0, prefix)`), and only its `0x62` entries change.
 
 ```text
 [0, prefix_lo)            lower vendor prefix (EFS, directories, blobs)

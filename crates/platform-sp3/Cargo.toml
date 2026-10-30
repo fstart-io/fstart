@@ -36,6 +36,575 @@ bundle-smm = ["smm", "fstart-smm/stage-bin"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json"]
 
+# The AMD firmware files of each generation's PSP partition: the two-level
+# directories of the vendor images (level 1 the recovery set; the PSP and
+# the ABL look a file up in level 2 first). Erased entries are NV areas the
+# PSP or the ABL writes. Boards list their APCBs per generation.
+[package.metadata.fstart.amd.naples]
+bios-directory = "Family17hModel00"
+levels = 2
+efs-offset = 0x20000
+partition-end = 0x600000
+apob-destination = 0x30000000
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x00
+level = 1
+file = "naples/PSP/AmdPubKey_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x01
+file = "naples/PSP/PspBootLoader_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x03
+level = 1
+file = "naples/PSP/PspRecoveryBootLoader_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x08
+file = "naples/PSP/SmuFirmware_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x09
+level = 2
+file = "naples/PSP/SecureDebugKey_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x0a
+file = "naples/PSP/AblPubKey_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x0b
+level = 2
+value = 0x1
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x12
+file = "naples/PSP/SmuFirmware2_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x13
+level = 2
+file = "naples/PSP/SecureDebugUnlock_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x20
+level = 2
+file = "naples/PSP/HwIpConfig_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x21
+file = "naples/PSP/PspIkek_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x22
+level = 2
+erased = 0x1000
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x24
+file = "naples/PSP/SecurityPolicy_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x30
+file = "naples/PSP/AgesaBootloader_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x31
+file = "naples/PSP/AgesaBootloader1_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x32
+file = "naples/PSP/AgesaBootloader2_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x33
+file = "naples/PSP/AgesaBootloader3_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x34
+file = "naples/PSP/AgesaBootloader4_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x35
+file = "naples/PSP/AgesaBootloader5_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x36
+file = "naples/PSP/AgesaBootloader6_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x38
+level = 2
+erased = 0x8000
+
+[[package.metadata.fstart.amd.naples.psp]]
+type = 0x39
+level = 2
+file = "naples/PSP/SevCode_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x05
+file = "naples/BIOS/RtmPubKey_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x63
+level = 2
+erased = 0x10000
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x64
+instance = 1
+file = "naples/BIOS/PmuImem0_1_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x65
+instance = 1
+file = "naples/BIOS/PmuDmem0_1_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x64
+instance = 2
+file = "naples/BIOS/PmuImem0_2_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x65
+instance = 2
+file = "naples/BIOS/PmuDmem0_2_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x64
+instance = 3
+file = "naples/BIOS/PmuImem0_3_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x65
+instance = 3
+file = "naples/BIOS/PmuDmem0_3_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x64
+instance = 4
+file = "naples/BIOS/PmuImem0_4_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x65
+instance = 4
+file = "naples/BIOS/PmuDmem0_4_ZP.bin"
+
+[[package.metadata.fstart.amd.naples.bios]]
+type = 0x67
+level = 2
+erased = 0x1000
+
+[[package.metadata.fstart.amd.naples.microcode]]
+equivalence-id = 0x8011
+file = "naples/UcodePatch_ZP_B1.bin"
+
+[[package.metadata.fstart.amd.naples.microcode]]
+equivalence-id = 0x8012
+file = "naples/UcodePatch_ZP_B2.bin"
+
+[package.metadata.fstart.amd.rome]
+bios-directory = "Family17hModel30"
+levels = 2
+efs-offset = 0x20000
+partition-end = 0x600000
+apob-destination = 0x30000000
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x00
+level = 1
+file = "rome/PSP/AmdPubKey_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x01
+file = "rome/PSP/PspBootLoader_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x03
+level = 1
+file = "rome/PSP/PspRecoveryBootLoader_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x08
+file = "rome/PSP/SmuFirmware_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x09
+level = 2
+file = "rome/PSP/SecureDebugKey_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x0a
+file = "rome/PSP/AblPubKey_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x0b
+value = 0x1
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x12
+file = "rome/PSP/SmuFirmware2_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x13
+file = "rome/PSP/SecureDebugUnlock_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x21
+file = "rome/PSP/PspIkek_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x22
+level = 1
+erased = 0x1000
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x22
+level = 2
+erased = 0x1000
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x24
+file = "rome/PSP/SecurityPolicy_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x2a
+file = "rome/PSP/Mp5Firmware_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x30
+file = "rome/PSP/AgesaBootloader_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x38
+level = 2
+erased = 0x8000
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x39
+level = 2
+file = "rome/PSP/SevCode_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x42
+file = "rome/PSP/DxioPhyFirmware_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x43
+file = "rome/PSP/DrtmTa_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.psp]]
+type = 0x4e
+file = "rome/PSP/PmuPublicKey_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x64
+subprogram = 1
+instance = 1
+file = "rome/BIOS/PmuImem1_1_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x65
+subprogram = 1
+instance = 1
+file = "rome/BIOS/PmuDmem1_1_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x64
+subprogram = 1
+instance = 2
+file = "rome/BIOS/PmuImem1_2_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x65
+subprogram = 1
+instance = 2
+file = "rome/BIOS/PmuDmem1_2_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x64
+subprogram = 1
+instance = 3
+file = "rome/BIOS/PmuImem1_3_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x65
+subprogram = 1
+instance = 3
+file = "rome/BIOS/PmuDmem1_3_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x64
+subprogram = 1
+instance = 4
+file = "rome/BIOS/PmuImem1_4_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x65
+subprogram = 1
+instance = 4
+file = "rome/BIOS/PmuDmem1_4_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x64
+subprogram = 1
+instance = 5
+file = "rome/BIOS/PmuImem1_5_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x65
+subprogram = 1
+instance = 5
+file = "rome/BIOS/PmuDmem1_5_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x64
+subprogram = 1
+instance = 6
+file = "rome/BIOS/PmuImem1_6_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.bios]]
+type = 0x65
+subprogram = 1
+instance = 6
+file = "rome/BIOS/PmuDmem1_6_SSP.bin"
+
+[[package.metadata.fstart.amd.rome.microcode]]
+equivalence-id = 0x8300
+file = "rome/UcodePatch_SSP_A0.bin"
+
+[[package.metadata.fstart.amd.rome.microcode]]
+equivalence-id = 0x8310
+file = "rome/UcodePatch_SSP_B0.bin"
+
+[package.metadata.fstart.amd.milan]
+bios-directory = "Family19h"
+levels = 2
+efs-offset = 0x20000
+partition-end = 0x600000
+apob-destination = 0x30000000
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x00
+level = 1
+file = "milan/PSP/AmdPubKey_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x01
+file = "milan/PSP/PspBootLoader_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x03
+level = 1
+file = "milan/PSP/PspRecoveryBootLoader_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x08
+file = "milan/PSP/SmuFirmware_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x09
+level = 2
+file = "milan/PSP/SecureDebugKey_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x0a
+file = "milan/PSP/AblPubKey_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x0b
+value = 0x1
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x12
+file = "milan/PSP/SmuFirmware2_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x13
+file = "milan/PSP/SecureDebugUnlock_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x21
+file = "milan/PSP/PspIkek_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x22
+level = 1
+erased = 0x1000
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x22
+level = 2
+erased = 0x1000
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x24
+file = "milan/PSP/SecurityPolicy_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x2a
+file = "milan/PSP/Mp5Firmware_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x30
+file = "milan/PSP/AgesaBootloader_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x38
+erased = 0x8000
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x39
+level = 2
+file = "milan/PSP/SevCode_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x42
+file = "milan/PSP/DxioPhyFirmware_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x47
+file = "milan/PSP/DrtmTa_GN.bin"
+
+[[package.metadata.fstart.amd.milan.psp]]
+type = 0x50
+file = "milan/PSP/PspKeyDatabase_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x64
+subprogram = 1
+instance = 1
+level = 1
+file = "milan/BIOS/PmuImem1_1_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x65
+subprogram = 1
+instance = 1
+level = 1
+file = "milan/BIOS/PmuDmem1_1_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x64
+subprogram = 1
+instance = 2
+file = "milan/BIOS/PmuImem1_2_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x65
+subprogram = 1
+instance = 2
+file = "milan/BIOS/PmuDmem1_2_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x64
+subprogram = 1
+instance = 3
+file = "milan/BIOS/PmuImem1_3_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x65
+subprogram = 1
+instance = 3
+file = "milan/BIOS/PmuDmem1_3_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x64
+subprogram = 1
+instance = 4
+level = 1
+file = "milan/BIOS/PmuImem1_4_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x65
+subprogram = 1
+instance = 4
+level = 1
+file = "milan/BIOS/PmuDmem1_4_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x64
+subprogram = 1
+instance = 5
+file = "milan/BIOS/PmuImem1_5_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x65
+subprogram = 1
+instance = 5
+file = "milan/BIOS/PmuDmem1_5_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x64
+subprogram = 1
+instance = 6
+file = "milan/BIOS/PmuImem1_6_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x65
+subprogram = 1
+instance = 6
+file = "milan/BIOS/PmuDmem1_6_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x64
+subprogram = 1
+instance = 8
+level = 1
+file = "milan/BIOS/PmuImem1_8_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x65
+subprogram = 1
+instance = 8
+level = 1
+file = "milan/BIOS/PmuDmem1_8_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x64
+subprogram = 1
+instance = 9
+file = "milan/BIOS/PmuImem1_9_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x65
+subprogram = 1
+instance = 9
+file = "milan/BIOS/PmuDmem1_9_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x64
+subprogram = 1
+instance = 10
+file = "milan/BIOS/PmuImem1_10_GN.bin"
+
+[[package.metadata.fstart.amd.milan.bios]]
+type = 0x65
+subprogram = 1
+instance = 10
+file = "milan/BIOS/PmuDmem1_10_GN.bin"
+
+
+
+[[package.metadata.fstart.amd.milan.microcode]]
+equivalence-id = 0xa010
+file = "milan/UcodePatch_GN_B0.bin"
+
+[[package.metadata.fstart.amd.milan.microcode]]
+equivalence-id = 0xa011
+file = "milan/UcodePatch_GN_B1.bin"
+
+[[package.metadata.fstart.amd.milan.microcode]]
+equivalence-id = 0xa012
+file = "milan/UcodePatch_GN_B2.bin"
+
+[[package.metadata.fstart.amd.milan.microcode]]
+equivalence-id = 0xa082
+file = "milan/UcodePatch_GN_a082.bin"
+
 [dependencies]
 fstart-driver-spd = { workspace = true, optional = true }
 fstart-amdfw-format = { workspace = true }

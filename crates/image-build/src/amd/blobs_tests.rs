@@ -73,6 +73,43 @@ fn zeppelin_and_mj11_tables_resolve_to_a_two_level_partition() {
     assert!(resolve(&ambiguous, &board, "mj11", Path::new("/blobs"), 0x100_0000).is_err());
 }
 
+#[test]
+fn sp3_generation_and_board_tables_resolve() {
+    let platform = fstart_table("../platform-sp3/Cargo.toml");
+    for (board, generations) in [
+        ("../../boards/tyan/s8030/Cargo.toml", &["milan", "rome"][..]),
+        ("../../boards/amd/ethanolx/Cargo.toml", &["milan"][..]),
+    ] {
+        let boards = board_tables(&fstart_table(board)["amd"]).unwrap();
+        assert_eq!(
+            boards.iter().map(|b| b.soc.as_str()).collect::<Vec<_>>(),
+            generations
+        );
+        for board in &boards {
+            let soc: SocBlobs =
+                serde_json::from_value(platform["amd"][&board.soc].clone()).unwrap();
+            let resolved = resolve(&soc, board, "b", Path::new("/blobs"), 0x100_0000).unwrap();
+            assert!(resolved.files.two_level);
+            assert_eq!(resolved.files.partition_end, 0x60_0000);
+            assert!(soc.apob_destination.is_some());
+            // The board's five APCB files.
+            let apcbs = resolved
+                .files
+                .bios
+                .iter()
+                .filter(|f| matches!(f.key.kind, bios::APCB | bios::APCB_BACKUP))
+                .count();
+            assert_eq!(apcbs, 5);
+        }
+    }
+    let naples: SocBlobs = serde_json::from_value(platform["amd"]["naples"].clone()).unwrap();
+    assert_eq!(naples.microcode.len(), 2);
+    // A board table naming another SoC than its key.
+    let mut table = fstart_table("../../boards/tyan/s8030/Cargo.toml")["amd"].clone();
+    table["rome"]["soc"] = "milan".into();
+    assert!(board_tables(&table).is_err());
+}
+
 /// A vendor image with directories, a microcode patch and a video BIOS
 /// outside them.
 fn vendor_image() -> Vec<u8> {
@@ -156,6 +193,7 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
         spi_speed: Some(0),
         micron: false,
         soft_fuse: Some(0x3000_0000),
+        apob_destination: None,
         psp: vec![file(1, 0, 0, "psp/boot.bin"), file(2, 0, 0, "psp/os.bin")],
         bios: vec![file(0x64, 1, 4, "bios/pmu.bin")],
         microcode: vec![MicrocodeFile {
@@ -172,6 +210,7 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
         soc: "picasso".into(),
         psp_app: true,
         apcb: BoardApcb::Files { instances: 2 },
+        apob_destination: None,
     };
     let (found, missing) = extract(&soc, &board, "board", &image).unwrap();
     assert_eq!(missing, ["psp/os.bin"]);

@@ -9,10 +9,11 @@ to the build.
 | Path | Crate | Contents |
 |---|---|---|
 | `crates/amdfw-format` | `fstart-amdfw-format` (`no_std`) | Wire layouts (`efs.rs`, `directory.rs`, `anchor.rs`, `microcode.rs`), the `Flash` view and `Profile` (`lib.rs`), validation. No silicon-driver or packing code. |
-| `crates/image-build/src/amd` | `fstart-image-build::amd` | `assembly.rs` (image composition), `mod.rs` (`PicassoImage` packer), `blobs.rs` (blob tables, extraction), `config.rs` (`fw.cfg` reader), `apcb.rs`, `psp_app.rs`. |
+| `crates/image-build/src/amd` | `fstart-image-build::amd` | `assembly.rs` (image composition), `mod.rs` (`PicassoImage` packer), `levels.rs` (`TwoLevelImage` packer), `blobs.rs` (blob tables, extraction), `config.rs` (`fw.cfg` reader), `apcb.rs`, `psp_app.rs`. |
 | `tools/amdfw` | `fstart-amdfw-tools` | Binaries `fstart-amdfw` (inspect/validate/pack) and `fstart-apcb`. |
 | `tools/fbuild` | `fbuild` | `blobs` subcommand (`src/blobs.rs`), `--blobs`/`--donor`/`--image-config` (`src/payload.rs`), image output (`src/amd_image.rs`). |
-| `crates/platform-amd` | `fstart-platform-amd` | SoC blob tables (`Cargo.toml`), noncar image plan (`src/noncar/host.rs`), Picasso policy (`src/picasso/mod.rs`). |
+| `crates/platform-amd` | `fstart-platform-amd` | Picasso and Zeppelin blob tables (`Cargo.toml`), noncar image plan (`src/noncar/host.rs`), Picasso policy (`src/picasso/mod.rs`). |
+| `crates/platform-sp3` | `fstart-platform-sp3` | Naples, Rome and Milan blob tables (`Cargo.toml`), SP3 image plan (`src/host/mod.rs`). |
 | `crates/driver-amd/src/sp3/soc/mod.rs` | `fstart-driver-amd` | `Generation::profile()` and `flash()` for SP3 (Naples, Rome, Milan). |
 | `crates/platform-sp3` | `fstart-platform-sp3` | SP3 reset image; reads the flash anchor and BIOS directory via this crate. |
 
@@ -155,20 +156,32 @@ Vendor firmware files are described by two Cargo.toml tables, read by
 `fstart_image_build::amd::blobs`. Paths in both are relative to the blob directory
 and may not be absolute or contain `..`.
 
-### SoC table: `crates/platform-amd/Cargo.toml`
+### SoC table: the platform crate's `Cargo.toml`
 
-`[package.metadata.fstart.amd.<soc>]` (`SocBlobs`). Currently only `picasso` exists.
+`[package.metadata.fstart.amd.<soc>]` (`SocBlobs`): `picasso` and `zeppelin` in
+`crates/platform-amd`, `naples`, `rome` and `milan` in `crates/platform-sp3`.
 
 | Key | Meaning |
 |---|---|
 | `bios-directory` | `BiosDirectorySlot` the PSP reads the BIOS directory from. |
+| `levels` | 1 (default): Picasso's single `$PSP` and `$BHD`. 2: `$PSP` + `$PL2` and `$BHD` + `$BL2` (`TwoLevelImage`). |
 | `efs-offset`, `partition-end` | PSP partition geometry. |
-| `spi-read-mode`, `spi-speed`, `micron` | EFS SPI settings. |
-| `soft-fuse` | PSP directory entry 0x0b. |
-| `[[...psp]]` | `type`, optional `subprogram`/`instance`, `file`. |
+| `spi-read-mode`, `spi-speed`, `micron` | EFS SPI settings; erased if absent. |
+| `soft-fuse` | PSP directory entry 0x0b of a single-level partition. |
+| `apob-destination` | BIOS entry 0x61, for platforms that read it from the directory (SP3). |
+| `[[...psp]]` | `type`, optional `subprogram`/`instance`, optional `level` (1 or 2, both if absent), and one of `file`, `erased` (bytes of erased flash the firmware writes) or `value` (the soft fuse chain). |
 | `[[...bios]]` | Same fields, for BIOS directory entries. |
 | `[[...microcode]]` | `equivalence-id`, `file`. |
 | `[[...vbios]]` | `vendor` (default `0x1002`), `device`, `file`. Added to the FFS as `pciVVVV,dddd.rom` (lowercase hex). |
+
+The two-level packer reproduces the vendor images' shape: level 1 is the
+recovery set, level 2 the files the PSP and the ABL look up first. A file in
+both levels is stored once. Zeppelin and Naples get physical addresses and a
+first-generation EFS (BIOS directory at +0x18); Rome and Milan flash offsets,
+the second-generation EFS word (`0xfffffffe`, `0xfffffffc`) and the BIOS
+directory at +0x20 or +0x28, Milan's directories in address mode 1. The
+packer adds BIOS entries 0x61 (APOB) and 0x62 (reset image) to both levels
+and the level links 0x40 and 0x70.
 
 ### Board table: `boards/*/*/Cargo.toml`
 
@@ -186,6 +199,12 @@ apcb = { instances = 13 }
   to BIOS entries 0x60 and 0x68 with instance `n`.
 - `apcb = { template = ..., spds = [...], gpio = [[num, mux, bank] x 4], second-channel = false, strip-manufacturer = false }`:
   an APCB generated from a template (`ApcbFiles`). `gpio` has exactly four entries.
+- `apcb = { entries = [...] }`: BIOS entries with the board's files, fields as
+  in the SoC table (the server APCB sets: several types, subprograms and levels).
+- `apob-destination`: overrides the SoC table's.
+
+A board of several SoCs (the SP3 generations) has one table per SoC instead,
+named after it: `[package.metadata.fstart.amd.rome]`, `[...amd.milan]`.
 
 ### Build inputs
 
@@ -196,9 +215,12 @@ Use one of:
 | Blob directory | `--blobs DIR` | Directory laid out as the table paths. Relative to the current directory, or absolute. |
 | Donor image | `--donor ROM` | Extracts into `target/fstart-blobs/<board>/<first 16 hex digits of ROM SHA-256>/` on first use, then reuses it. |
 
-`--blobs` and `--donor` conflict. Only Picasso images are packed from them
-(`ImageConfig::Packed`). Zeppelin uses a vendor image given by `--image-config`
-(`ImageConfig::Vendor`), checked against the stage layout before building.
+`--blobs` and `--donor` conflict. Picasso and Zeppelin images are packed from
+them (`ImageConfig::Packed`). SP3 boards pack every generation they list into
+its own 16 MiB half (`sp3_flash::PackedHalf`), or, without `--blobs`/`--donor`,
+compose into the vendor ROM (`--image-config` or the board's
+`VENDOR_IMAGE`). A donor of several halves gives each SoC's files from the half
+whose EFS is that SoC's.
 
 ### `cargo fbuild blobs`
 
@@ -247,8 +269,9 @@ Output goes to `target/fstart-build/<board>/<release|debug>/<digest>/image/`:
 
 ## Current limits
 
-- Native packing (`PicassoImage`) writes Picasso's first-generation PSP partition
-  only. Multi-level directories and ISH/recovery links are not packed; validation
-  rejects recovery links.
+- Native packing writes Picasso's single-level partition (`PicassoImage`) and the
+  two-level partitions of Zeppelin, Naples, Rome and Milan (`TwoLevelImage`).
+  Combo directories and ISH/recovery links are not packed; validation rejects
+  recovery links.
 - `fstart-amdfw inspect` and `validate` accept header v0/v1 and address modes 0 to 3.
 - Unknown cookies and unsupported topology return errors.

@@ -47,6 +47,10 @@ pub struct SocBlobs {
     /// one lists it with its `value`.
     #[serde(default)]
     pub soft_fuse: Option<u64>,
+    /// The APOB's DRAM destination (BIOS entry 0x61), for platforms that
+    /// read it from the directory rather than fixing it.
+    #[serde(default)]
+    pub apob_destination: Option<u64>,
     pub psp: Vec<DirectoryFile>,
     pub bios: Vec<DirectoryFile>,
     /// Patches the FFS carries for MP init.
@@ -138,12 +142,60 @@ impl VbiosFile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct BoardBlobs {
-    /// The SoC table of the platform crate.
+    /// The SoC table of the platform crate. A board of several SoCs (the
+    /// SP3 generations) has one table per SoC, named after it, instead.
+    #[serde(default)]
     pub soc: String,
     /// Pack fstart's PSP application ([`super::psp_app`]).
     #[serde(default)]
     pub psp_app: bool,
     pub apcb: BoardApcb,
+    /// The APOB's DRAM destination (BIOS entry 0x61), if the board's
+    /// firmware moves it from the platform's.
+    #[serde(default)]
+    pub apob_destination: Option<u64>,
+}
+
+/// The board tables of `table` (`[package.metadata.fstart.amd]`): itself
+/// with its `soc`, or one per SoC, named after it.
+pub fn board_tables(table: &serde_json::Value) -> Result<Vec<BoardBlobs>, String> {
+    if table.get("soc").is_some() {
+        let board: BoardBlobs = serde_json::from_value(table.clone())
+            .map_err(|e| format!("board [package.metadata.fstart.amd]: {e}"))?;
+        return Ok(vec![board]);
+    }
+    let tables = table
+        .as_object()
+        .filter(|tables| !tables.is_empty())
+        .ok_or("the board has no [package.metadata.fstart.amd] table")?;
+    tables
+        .iter()
+        .map(|(soc, table)| {
+            let mut board: BoardBlobs = serde_json::from_value(table.clone())
+                .map_err(|e| format!("board [package.metadata.fstart.amd.{soc}]: {e}"))?;
+            if !board.soc.is_empty() && board.soc != *soc {
+                return Err(format!("board table {soc} names SoC {}", board.soc));
+            }
+            board.soc = soc.clone();
+            Ok(board)
+        })
+        .collect()
+}
+
+/// The 16 MiB image in `rom` (a flash of several, or the 16 MiB of a
+/// smaller flash's mapping) whose EFS is the SoC's: the generation word
+/// its boot ROM wants and its BIOS directory field.
+pub fn donor_image<'a>(rom: &'a [u8], soc: &SocBlobs) -> Option<&'a [u8]> {
+    let profile = Profile::for_slot(soc.bios_directory);
+    rom.chunks(fstart_amdfw_format::HALF_SIZE).find(|image| {
+        Flash::new(image)
+            .with_profile(profile)
+            .efs_checked()
+            .is_ok_and(|(_, efs)| {
+                efs.generation.get() == !profile.generation_mask
+                    && efs.bios_directory(soc.bios_directory).is_some()
+            })
+    })
 }
 
 /// Where a board's APCB instances come from.

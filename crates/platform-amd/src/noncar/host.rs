@@ -495,6 +495,9 @@ fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolv
     let tables = &selection.manifests;
     let board: blobs::BoardBlobs = serde_json::from_value(tables.board["amd"].clone())
         .map_err(|e| format!("board [package.metadata.fstart.amd]: {e}"))?;
+    if board.apob_destination.is_some() {
+        return Err(format!("{} places the APOB itself", S::NAME));
+    }
     if board.soc != S::NAME {
         return Err(format!(
             "the board's AMD firmware is for {}, not {}",
