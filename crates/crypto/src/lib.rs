@@ -23,6 +23,8 @@
 #![no_std]
 
 pub mod digest;
+#[cfg(feature = "pcr-banks")]
+pub mod pcr;
 pub mod verify;
 
 pub use digest::{DigestError, hash_digest_set};

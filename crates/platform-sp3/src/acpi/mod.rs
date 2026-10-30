@@ -12,7 +12,7 @@
 //! | IVRS | per IOMMU, types 10h/11h | [`ivrs`] |
 //! | SPMI | board IPMI KCS | `fstart_acpi::devices::IpmiKcsAcpi` |
 //! | PCCT, `_CPC` | SMU-served CPPC ([`Inputs::cppc`]) | `smu::v11::cppc` |
-//! | TPM2 | discrete TPM probe ([`Inputs::tpm`]) | `fstart_acpi::devices::tpm` |
+//! | TPM2 / TCPA | discrete TPM and its event log ([`Inputs::tpm`]) | `fstart_acpi::devices::tpm` |
 //! | WSMT | with SMM ([`Inputs::acpi_smi`]) | `fstart_acpi::wsmt` |
 //! | DSDT | root bridges, `_PRT`, FCH, CPUs, `_PIC`, `_S5`, board hook | [`dsdt`] |
 //!
@@ -100,9 +100,6 @@ pub struct Board<'a> {
     pub lpc_aml: &'a [u8],
     /// AML inside `\_SB`.
     pub sb_aml: &'a [u8],
-    /// Probe for a discrete TPM on LPC (TIS at `0xFED4_0000`) and describe
-    /// it (AMI "Security Device Support").
-    pub discrete_tpm: bool,
 }
 
 /// Everything the SP3 tables are built from.
@@ -131,8 +128,9 @@ pub struct Inputs<'a> {
     /// SW SMI base of the BMC sleep-state notification
     /// (`crate::smm::BmcSxNotify`); needs [`Inputs::acpi_smi`].
     pub bmc_sx_notify: Option<u8>,
-    /// The discrete TPM found by the probe ([`Board::discrete_tpm`]).
-    pub tpm: Option<fstart_acpi::devices::tpm::TpmFamily>,
+    /// The discrete TPM measured boot started on
+    /// (`crate::board::Board::DISCRETE_TPM`), with its event log.
+    pub tpm: Option<fstart_acpi::devices::tpm::TpmTisAcpi>,
     /// SMU-served CPPC: `_CPC` per processor and the PCCT.
     pub cppc: &'a [CppcAcpi<'a>],
     pub board: Board<'a>,
@@ -229,12 +227,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
                 .collect();
             fstart_acpi::pcct::build_pcct(&subspaces)
         }))
-        .chain(
-            inputs
-                .tpm
-                .map(|family| fstart_acpi::devices::tpm::TpmTisAcpi { family }.tables())
-                .unwrap_or_default(),
-        )
+        .chain(inputs.tpm.map(|tpm| tpm.tables()).unwrap_or_default())
         // EINJ uses a fixed, validated communication page and follows no
         // input pointers. The system-resource lock audit remains open.
         .chain(inputs.acpi_smi.map(|_| {

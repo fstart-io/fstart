@@ -22,6 +22,7 @@ bl31.bin
 **/keys/**
 
 # Tool/IDE artifacts
+__pycache__/
 .opencode/
 
 # Accidental media

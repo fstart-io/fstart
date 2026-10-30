@@ -123,5 +123,7 @@ Final EC `powerinfo` confirmed G3 and GSC confirmed both reset lines deasserted.
 Evidence: `.local/vilboz-linux/acpi-video-install-20261030T145523Z/install.json`
 and its sibling readback/control logs. Recovery is retained at
 `~/.local/share/firmware-backups/vilboz/acpi-video-20261030T145523Z/before.rom`.
-The Linux image has not been flashed. Installation/readback is **not** validation
-of UI boot or OS graphics-driver initialization; those remain unobserved.
+The Linux image has not been flashed. The user subsequently confirmed that the
+installed firmware works and approved merging it. The agent did not capture an
+OS graphics-driver initialization trace; user confirmation and independent
+readback are distinct from such a trace.

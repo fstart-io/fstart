@@ -27,6 +27,8 @@ members = [
   "crates/driver-redriver",
   "crates/driver-spd",
   "crates/driver-ipmi",
+  "crates/driver-tpm",
+  "crates/tcg",
   "crates/driver-intel",
   "crates/driver-sunxi",
   "crates/driver-superio",
@@ -54,6 +56,7 @@ postcard = { version = "1", default-features = false }
 # Crypto (RustCrypto)
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
 sha3 = { version = "0.10", default-features = false }
+sha1 = { version = "0.10", default-features = false, features = ["force-soft"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["fast"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
@@ -109,6 +112,8 @@ fstart-driver-uart = { path = "crates/driver-uart" }
 fstart-driver-vbios = { path = "crates/driver-vbios" }
 fstart-driver-i2c = { path = "crates/driver-i2c" }
 fstart-driver-spd = { path = "crates/driver-spd" }
+fstart-driver-tpm = { path = "crates/driver-tpm" }
+fstart-tcg = { path = "crates/tcg" }
 fstart-stage = { path = "crates/stage" }
 fstart-acpi = { path = "crates/acpi" }
 fstart-smm = { path = "crates/smm" }
@@ -181,6 +186,10 @@ opt-level = "s"
 opt-level = "s"
 [profile.dev.package.fstart-timestamp]
 opt-level = "s"
+[profile.dev.package.fstart-driver-tpm]
+opt-level = "s"
+[profile.dev.package.fstart-tcg]
+opt-level = "s"
 
 # Crypto crates are unusably slow at opt-level 0 (minutes for a single
 # Ed25519 verify on emulated RISC-V).  Always compile them with optimizations.
@@ -191,6 +200,8 @@ opt-level = 2
 [profile.dev.package.sha2]
 opt-level = 2
 [profile.dev.package.sha3]
+opt-level = 2
+[profile.dev.package.sha1]
 opt-level = 2
 [profile.dev.package.p256]
 opt-level = 2
@@ -212,6 +223,8 @@ opt-level = 2
 [profile.release.package.sha2]
 opt-level = 2
 [profile.release.package.sha3]
+opt-level = 2
+[profile.release.package.sha1]
 opt-level = 2
 [profile.release.package.p256]
 opt-level = 2

@@ -57,15 +57,18 @@ if [[ ! -f "$OUTPUT_DIR/vmlinuz" ]]; then
 	"$KCFG" "${KCFG_ARGS[@]}" \
 		--enable 64BIT --enable X86_64 --enable PRINTK --enable TTY \
 		--enable SERIAL_8250 --enable SERIAL_8250_CONSOLE --enable EARLY_PRINTK \
-		--enable EFI --enable EFI_STUB --enable ACPI --enable X86_X2APIC \
+		--enable EFI --enable EFI_STUB --enable ACPI --enable PCI --enable X86_X2APIC \
 		--enable BLK_DEV_INITRD --enable TMPFS --enable DEVTMPFS \
 		--enable DEVTMPFS_MOUNT --enable PROC_FS --enable SYSFS \
-		--enable BINFMT_ELF --enable FUTEX --enable EVENTFD --enable EPOLL \
+		--enable BINFMT_ELF --enable BINFMT_SCRIPT --enable FUTEX --enable EVENTFD --enable EPOLL \
 		--enable SIGNALFD --enable TIMERFD --enable VT --enable VT_CONSOLE \
-		--enable UNIX98_PTYS --enable MULTIUSER --enable RELOCATABLE
+		--enable UNIX98_PTYS --enable MULTIUSER --enable RELOCATABLE \
+		--enable PNP --enable SECURITYFS --enable TCG_TPM --enable TCG_TIS \
+		--enable CRYPTO_SHA1 --enable CRYPTO_SHA256 --enable CRYPTO_SHA512
 	make -C "$KSRC" -s ARCH=x86 olddefconfig
 	make -C "$KSRC" -s ARCH=x86 -j"$(nproc)" bzImage
 	cp "$KSRC/arch/x86/boot/bzImage" "$OUTPUT_DIR/vmlinuz"
+	cp "$KSRC/.config" "$OUTPUT_DIR/kernel.config"
 	cleanup
 	trap - EXIT
 fi

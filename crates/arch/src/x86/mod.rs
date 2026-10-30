@@ -96,6 +96,22 @@ pub fn udelay(us: u32) {
     udelay_tsc(us, hz);
 }
 
+/// [`udelay`] as an `embedded-hal` delay, for drivers generic over one.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Udelay;
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl embedded_hal::delay::DelayNs for Udelay {
+    fn delay_ns(&mut self, ns: u32) {
+        udelay(ns.div_ceil(1000));
+    }
+
+    fn delay_us(&mut self, us: u32) {
+        udelay(us);
+    }
+}
+
 /// Poll `done` until it holds or `timeout_us` microseconds have passed, and
 /// report whether it held: coreboot's `wait_us()`.
 ///

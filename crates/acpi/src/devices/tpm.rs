@@ -1,20 +1,19 @@
-//! A discrete TPM on the TIS/FIFO MMIO interface (TCG PC Client PTP 1.05
-//! §6.3; locality 0 at `0xFED4_0000`): the probe, the `\_SB` device and,
-//! for TPM 2.0, the TPM2 table (TCG ACPI 1.3, start method 6).
+//! A discrete TPM on the TIS/FIFO MMIO interface (TCG PC Client PTP 1.07
+//! §6.3; locality 0 at `0xFED4_0000`): the `\_SB` device and the table that
+//! points the OS at the TCG event log: `TPM2` (start method 6) for TPM 2.0,
+//! `TCPA` (client or server class, TCG ACPI 1.5 §3) for TPM 1.2. The `TPM2`
+//! table has the TCG ACPI 1.3 revision 4 layout (76 bytes, LAML at 64, LASA
+//! at 68) that Linux and ACPICA parse, deliberately not 1.5's revision 6.
+//! The interface itself is driven by `fstart-driver-tpm`.
 
 use alloc::vec::Vec;
 
-use acpi_tables::tpm2::{PlatformClass, StartMethod, Tpm2};
+use acpi_tables::gas::{AccessSize, AddressSpace, GAS};
+use acpi_tables::tpm2::{PlatformClass, StartMethod, Tpm2, TpmClient1_2, TpmServer1_2};
 
 /// Locality 0 of the TIS/FIFO interface and the span the device claims.
 pub const TIS_BASE: u32 = 0xFED4_0000;
 pub const TIS_SIZE: u32 = 0x5000;
-
-const ACCESS: u32 = 0x00;
-const INTF_CAPABILITY: u32 = 0x14;
-const INTERFACE_ID: u32 = 0x30;
-/// TPM_ACCESS.tpmRegValidSts.
-const REG_VALID: u8 = 1 << 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TpmFamily {
@@ -22,29 +21,22 @@ pub enum TpmFamily {
     Tpm20,
 }
 
-/// Identify the TPM at [`TIS_BASE`] from `read32(offset)`: nothing when
-/// TPM_ACCESS reads all ones or not valid; TPM 2.0 for the PTP FIFO
-/// interface (TPM_INTERFACE_ID type 0) or InterfaceVersion 3 in
-/// TPM_INTF_CAPABILITY; TPM 1.2 otherwise.
-pub fn probe(read32: impl Fn(u32) -> u32) -> Option<TpmFamily> {
-    let access = read32(ACCESS) as u8;
-    if access == 0xFF || access & REG_VALID == 0 {
-        return None;
-    }
-    let id = read32(INTERFACE_ID);
-    let fifo = id != 0xFFFF_FFFF && id & 0xF == 0;
-    let version = (read32(INTF_CAPABILITY) >> 28) & 7;
-    Some(if fifo || version == 3 {
-        TpmFamily::Tpm20
-    } else {
-        TpmFamily::Tpm12
-    })
+/// The pre-boot TCG event log area (LASA and LAML).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogArea {
+    pub base: u64,
+    pub size: u32,
 }
 
 /// The TPM's ACPI description.
 #[derive(Debug, Clone, Copy)]
 pub struct TpmTisAcpi {
     pub family: TpmFamily,
+    /// Server platforms use the server `TCPA` layout and class.
+    pub server: bool,
+    /// Where firmware left the event log; `None` writes no log pointer
+    /// (TPM 2.0) or no table (TPM 1.2).
+    pub log: Option<LogArea>,
 }
 
 impl TpmTisAcpi {
@@ -75,19 +67,56 @@ impl TpmTisAcpi {
         }
     }
 
-    /// TPM 2.0: the TPM2 table (server class, FIFO, no event log). TPM 1.2
-    /// needs no table without an event log.
+    /// TPM 2.0: the `TPM2` table, with the log area when there is a log.
+    /// TPM 1.2: the `TCPA` table, which exists to point at the log.
     pub fn tables(&self) -> Vec<Vec<u8>> {
-        match self.family {
-            TpmFamily::Tpm20 => alloc::vec![crate::serialize(&Tpm2::new(
+        let class = if self.server {
+            PlatformClass::Server
+        } else {
+            PlatformClass::Client
+        };
+        match (self.family, self.log) {
+            (TpmFamily::Tpm20, log) => {
+                let mut table = Tpm2::new(
+                    crate::OEM_ID,
+                    crate::OEM_TABLE_ID,
+                    crate::OEM_REVISION,
+                    class,
+                    0,
+                    StartMethod::Mmio,
+                );
+                if let Some(log) = log {
+                    table.set_log_area(log.size, log.base);
+                }
+                let mut bytes = crate::serialize(&table);
+                // TCG ACPI 1.3 §9: revision 4 is the layout with LAML and
+                // LASA; acpi_tables writes 1.
+                bytes[8] = 4;
+                bytes[9] = 0;
+                bytes[9] = 0u8.wrapping_sub(bytes.iter().fold(0u8, |a, b| a.wrapping_add(*b)));
+                alloc::vec![bytes]
+            }
+            (TpmFamily::Tpm12, None) => Vec::new(),
+            (TpmFamily::Tpm12, Some(log)) if self.server => {
+                alloc::vec![crate::serialize(
+                    &TpmServer1_2::new(crate::OEM_ID, crate::OEM_TABLE_ID, crate::OEM_REVISION)
+                        .log_area(u64::from(log.size), log.base)
+                        .base_addr(GAS::new(
+                            AddressSpace::SystemMemory,
+                            8,
+                            0,
+                            AccessSize::ByteAccess,
+                            u64::from(TIS_BASE),
+                        ))
+                )]
+            }
+            (TpmFamily::Tpm12, Some(log)) => alloc::vec![crate::serialize(&TpmClient1_2::new(
                 crate::OEM_ID,
                 crate::OEM_TABLE_ID,
                 crate::OEM_REVISION,
-                PlatformClass::Server,
-                0,
-                StartMethod::Mmio,
+                log.size,
+                log.base,
             ))],
-            TpmFamily::Tpm12 => Vec::new(),
         }
     }
 }
@@ -96,40 +125,61 @@ impl TpmTisAcpi {
 mod tests {
     use super::*;
 
-    #[test]
-    fn probe_reads_the_interface() {
-        let regs = |access: u32, caps: u32, id: u32| {
-            move |off: u32| match off {
-                ACCESS => access,
-                INTF_CAPABILITY => caps,
-                INTERFACE_ID => id,
-                _ => 0xFFFF_FFFF,
-            }
-        };
-        assert_eq!(probe(regs(0xFF, 0xFFFF_FFFF, 0xFFFF_FFFF)), None);
-        assert_eq!(probe(regs(0x00, 0, 0)), None, "access not valid");
-        assert_eq!(
-            probe(regs(0x81, 0x3000_0000, 0x0000_0000)),
-            Some(TpmFamily::Tpm20)
-        );
-        assert_eq!(
-            probe(regs(0x81, 0x0000_0000, 0xFFFF_FFFF)),
-            Some(TpmFamily::Tpm12)
-        );
+    const LOG: LogArea = LogArea {
+        base: 0x7560_0000,
+        size: 0x1_0000,
+    };
+
+    fn checksum_ok(table: &[u8]) -> bool {
+        table.iter().fold(0u8, |a, b| a.wrapping_add(*b)) == 0
     }
 
     #[test]
     fn tpm2_table() {
         let t = TpmTisAcpi {
             family: TpmFamily::Tpm20,
+            server: true,
+            log: Some(LOG),
         };
         let tables = t.tables();
-        assert_eq!(&tables[0][..4], b"TPM2");
-        assert_eq!(&tables[0][48..52], &6u32.to_le_bytes(), "start method");
+        let table = &tables[0];
+        assert_eq!(&table[..4], b"TPM2");
+        assert_eq!(table.len(), 76, "with LAML and LASA");
+        assert_eq!(table[8], 4, "revision of the LAML/LASA layout");
+        assert_eq!(&table[36..38], &1u16.to_le_bytes(), "server class");
+        assert_eq!(&table[48..52], &6u32.to_le_bytes(), "start method");
+        assert_eq!(&table[64..68], &LOG.size.to_le_bytes());
+        assert_eq!(&table[68..76], &LOG.base.to_le_bytes());
+        assert!(checksum_ok(table));
         assert!(t.dsdt_aml().windows(8).any(|w| w == b"MSFT0101"));
+    }
+
+    #[test]
+    fn tcpa_tables() {
+        let server = TpmTisAcpi {
+            family: TpmFamily::Tpm12,
+            server: true,
+            log: Some(LOG),
+        }
+        .tables();
+        assert_eq!(&server[0][..4], b"TCPA");
+        assert_eq!(server[0].len(), 100);
+        assert_eq!(&server[0][40..48], &u64::from(LOG.size).to_le_bytes());
+        assert_eq!(&server[0][48..56], &LOG.base.to_le_bytes());
+        assert!(checksum_ok(&server[0]));
+        let client = TpmTisAcpi {
+            family: TpmFamily::Tpm12,
+            server: false,
+            log: Some(LOG),
+        }
+        .tables();
+        assert_eq!(client[0].len(), 50);
+        assert!(checksum_ok(&client[0]));
         assert!(
             TpmTisAcpi {
-                family: TpmFamily::Tpm12
+                family: TpmFamily::Tpm12,
+                server: true,
+                log: None
             }
             .tables()
             .is_empty()

@@ -112,6 +112,11 @@ pub trait Board: Sp3BoardFacts + 'static {
         timer: &dyn Timer,
     ) -> Result<Vec<Engine<'static>, MAX_ENGINES>, BoardError>;
 
+    /// A discrete TPM may be fitted (FIFO interface at `0xFED4_0000`, on
+    /// LPC or eSPI): probe it, measure the boot (`fstart-tcg`) and describe
+    /// it and its event log in ACPI. Off leaves a TPM untouched and hidden.
+    const DISCRETE_TPM: bool = false;
+
     /// BMC sleep-state notification through SMM (ACPI and the handler).
     const BMC_SX_NOTIFY: Option<crate::smm::BmcSxNotify> = None;
 
