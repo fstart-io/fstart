@@ -10,7 +10,6 @@ schema = 1
 board = "intel-d945gclf"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
 [package.metadata.fstart.variants.intel-d945gclf-postcar-debug]
@@ -19,6 +18,8 @@ features = ["x86-postcar-uart-debug"]
 [features]
 default = []
 x86-postcar-uart-debug = ["fstart-arch/x86-postcar-uart-debug"]
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-intel/bundle-smm"]
 
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
@@ -33,6 +34,4 @@ fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] 
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+# One binary per stage, named after the stage: src/bin/<stage>.rs.
