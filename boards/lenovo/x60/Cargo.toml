@@ -10,7 +10,6 @@ schema = 1
 board = "lenovo-x60"
 platform = "x86"
 target = "i686-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
 [dependencies]
@@ -22,15 +21,24 @@ fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-pci = { path = "../../../crates/pci" }
 tock-registers = { workspace = true }
+embedded-hal = { workspace = true }
 fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
 fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
 fstart-driver-ricoh = { path = "../../../crates/driver-ricoh" }
+fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 fstart-log = { path = "../../../crates/log" }
 # Required at the crate root wherever fstart_log macros expand
 # (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
 ufmt = { workspace = true }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+[dev-dependencies]
+# The DSDT round-trip test renders the chipset's namespaces on the host.
+fstart-driver-intel = { path = "../../../crates/driver-intel", features = ["acpi"] }
+
+[features]
+default = []
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-intel/bundle-smm"]
+
+# One binary per stage, named after the stage: src/bin/<stage>.rs.

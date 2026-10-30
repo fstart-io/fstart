@@ -14,7 +14,7 @@ is the `ec0` variant with the x16 slot).
 | --- | --- |
 | SoC constants, identity, ECAM, APOB | `crates/driver-amd/src/soc/zeppelin/mod.rs` |
 | Platform: `Soc` impl, `Config`, host policy | `crates/platform-amd/src/zeppelin/mod.rs` |
-| TP1 sequence | `crates/platform-amd/src/zeppelin/silicon.rs` |
+| Silicon init sequence | `crates/platform-amd/src/zeppelin/silicon.rs` |
 | DRAM layout | `crates/platform-amd/src/zeppelin/layout.rs` |
 | ACPI data | `crates/platform-amd/src/zeppelin/acpi.rs` |
 | Host model of the dies, tests | `crates/platform-amd/src/zeppelin/tests.rs`, `crates/driver-amd/src/soc/zeppelin/test_pci.rs` |
@@ -50,21 +50,23 @@ Other: SMM TSEG/SMBASE in `crates/arch/src/x86/cpu/amd/smm.rs`; I2C master in
 | PSP variant | `psp::Variant::Zp` |
 | BIOS directory | `Family17hModel00` |
 
-## Silicon init (TP1)
+## Silicon init
 
-`Soc::silicon_init` runs `silicon::pre_mp`, then MP, then SMM. The board
-hooks are called where the vendor sequence has them.
+The silicon init is `zeppelin::Init::start` (`silicon::pre_mp_reset`),
+`Init::train_dxio` (`silicon::pre_mp_dxio`) and `Dxio::finish`
+(`silicon::pre_mp_finish`, then MP, then SMM). The board's `main` does its
+work between them, where the vendor sequence runs the board PEIMs.
 
 1. Taishan FCH pre-init (ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O). The AC
    power-loss policy is set in `identify`, after the console.
 2. DF MMIO/IO plan and programming (`df::map::plan`, `program`), per-die DF
    early init, scrub init from the APOB.
-3. FCH reset tasks, SATA and multi-FCH reset. Board `fch_reset_done`: MJ11
-   programs the VRs and redrivers over I2C3 and clears PM1.
+3. FCH reset tasks, SATA and multi-FCH reset. Then the board: MJ11
+   (`fch_reset_done`) programs the VRs and redrivers over I2C3 and clears PM1.
 4. Per die: NBIO early init, PSP BAR, IOHC DRAM map. BSP CCX init.
 5. IOAPIC and IOMMU BARs per die.
-6. DXIO training on every die, then board `dxio_training_done`. MJ11 applies
-   the post-training SMN values and waits for the BMC.
+6. DXIO training on every die. Then the board: MJ11 (`dxio_training_done`)
+   applies the post-training SMN values and waits for the BMC.
 7. Taishan USB, SMU v9 init with its DMA pages and policy, CAC weights, DF late
    init, VGA routing, NBIO pre-enumeration, FCH ACPI decode, env, SATA, xGbE.
 8. MP (`noncar::mp::start`): the SMU releases the threads, each runs
@@ -72,9 +74,11 @@ hooks are called where the vendor sequence has them.
 9. SMM (`noncar::smm::install`) in TSEG, then `psp::notify_smm`.
 10. PCI interrupt router from `Config::fch.irq_routes`.
 
-TP2 (`after_resources`) sets the FCH ACPI ports. TP3 (`ready_to_boot`) does
-SATA late, multi-FCH late, FCH late init, board `ready_to_boot`, and disables
-DF extended config. Then LockDFReg, BootDone and the payload (see the flow).
+`after_resources` sets the FCH ACPI ports; MJ11's `mainboard_final` runs
+after `Stage::enumerate`. `ready_to_boot` does SATA late, multi-FCH late and
+FCH late init; then the board's own work (MJ11 `ready_to_boot`, the SMBus
+switch); then `end_of_post`, at the start of `Stage::boot`, disables DF
+extended config. Then LockDFReg, BootDone and the payload (see the flow).
 
 ## Config
 

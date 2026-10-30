@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The vendor CPM GPIO table ($A10) and the BMC ready pin.
 use embedded_hal::delay::DelayNs;
-use fstart_driver_amd::fch::gpio::{Control, Pad, Pull};
-use fstart_driver_amd::soc::zeppelin::Zeppelin;
-use fstart_platform_amd::noncar::BoardCtx;
+use fstart_driver_amd::fch::{
+    Bus,
+    gpio::{Control, Gpio, Pad, Pull},
+};
 
 /// The values are IOMUX functions, not named functions: the Zeppelin IOMUX
 /// assignments are not known. Rows that only select a function leave the
@@ -47,10 +48,8 @@ const BMC_READY_POLLS: u32 = 240;
 
 /// GbtVgaInitial waits for the BMC before it uses the AST2500 VGA: GPIO149
 /// with debounce 5 on IOMUX function 1, then poll the pin.
-pub fn wait_for_bmc(ctx: &mut BoardCtx<'_, Zeppelin>) {
+pub fn wait_for_bmc(gpio: &Gpio<impl Bus>, clock: &mut impl DelayNs) {
     let ready = Pad::native_with(BMC_READY, 1, Control::DEBOUNCE.val(5));
-    let mut clock = ctx.clock;
-    let gpio = ctx.gpio();
     if gpio.configure(&[ready], &[]).is_err() {
         return;
     }

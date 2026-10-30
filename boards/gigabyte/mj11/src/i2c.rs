@@ -43,7 +43,11 @@ impl<I: I2c, D: DelayNs> Vr<'_, I, D> {
                 self.write(r.reg, want).map_err(drop)?;
                 value = self.read(r.reg).map_err(drop)?;
             }
-            if value & r.mask == want { Ok(()) } else { Err(()) }
+            if value & r.mask == want {
+                Ok(())
+            } else {
+                Err(())
+            }
         })
     }
 }
@@ -73,7 +77,10 @@ pub fn program_vrs<I: I2c, D: DelayNs + Copy>(i2c: &mut I, delay: D, images: &[V
             let _ = vr.write(image.lock_reg, 7);
             fstart_log::debug!("VR {}: programmed", fstart_log::Hex(image.address.into()));
         } else {
-            fstart_log::error!("VR {}: programming failed", fstart_log::Hex(image.address.into()));
+            fstart_log::error!(
+                "VR {}: programming failed",
+                fstart_log::Hex(image.address.into())
+            );
             break;
         }
     }

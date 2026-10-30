@@ -1,7 +1,10 @@
-//! Shared handwritten Intel flows and typed chipset pairings.
+//! Intel CAR platforms: typed chipset pairings and the phases a board's
+//! stage `main`s call.
 //!
-//! Pairings supply hardware types and constants; initialization order lives
-//! once in the family bootblock, postcar and mainstage flows.
+//! Pairings supply hardware types and constants. The order inside a phase
+//! (DRAM training, DMI, S3 decisions) lives once here; the order of the
+//! phases and the board's work between them lives in the board's
+//! `src/bin/{bootblock,postcar,ramstage}.rs`.
 
 #![no_std]
 
@@ -20,9 +23,7 @@ pub mod tables;
 
 pub mod facts;
 pub mod memory_cache;
-pub mod smbus;
 pub use facts::{IntelBoardFacts, IntelPlatform, IntelPlatformConfig};
-pub use smbus::{IntelSmbusRouting, SmbusRoute};
 #[cfg(feature = "host")]
 pub mod host;
 #[cfg(feature = "bundle-smm")]
@@ -33,10 +34,11 @@ pub use fstart_stage as stage_runtime;
 #[cfg(feature = "host")]
 pub use host::Plan;
 
-/// Hygienic firmware entry; dependency names stay inside the platform.
+/// Declare a board-owned stage `main`: `fstart_platform_intel::entry!(main);`
+/// Dependency names stay inside the platform.
 #[macro_export]
-macro_rules! stage_bin {
-    ($board:ty) => { $crate::stage_runtime::stage_bin!(program: $crate::Program<$board>); };
+macro_rules! entry {
+    ($main:path) => { $crate::stage_runtime::stage_bin!(main: $main); };
 }
 
 #[cfg(feature = "gm965-ich8")]
@@ -61,16 +63,22 @@ pub use fstart_driver_intel::igd;
 ))]
 mod boot;
 #[cfg(all(feature = "stage", fstart_stage_env = "car"))]
-mod bootblock;
-#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
-mod mainstage;
+pub mod bootblock;
 #[cfg(all(
     feature = "stage",
     any(fstart_stage_env = "car", fstart_stage_env = "ram")
 ))]
 mod memory_info;
 #[cfg(all(feature = "stage", fstart_stage_env = "postcar"))]
-mod postcar;
+pub mod postcar;
+#[cfg(all(
+    feature = "stage",
+    feature = "acpi",
+    feature = "smbios",
+    feature = "mp",
+    fstart_stage_env = "ram"
+))]
+pub mod ramstage;
 #[cfg(all(
     feature = "stage",
     any(
@@ -80,13 +88,7 @@ mod postcar;
     )
 ))]
 mod store;
-#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
-pub use mainstage::{IntelMainstage, Mainstage, MainstageCtx};
 
-#[cfg(feature = "stage")]
-use core::marker::PhantomData;
-#[cfg(feature = "stage")]
-use fstart_core::services::{ConsoleDevice, ServiceError};
 #[cfg(feature = "stage")]
 pub use fstart_driver_intel::{
     BootPath, IntelEcamConfig, IntelNorthbridgeDriver, IntelSouthbridgeDriver,
@@ -189,240 +191,18 @@ pub trait IntelChipsetConfig: IntelPlatformConfig {
     -> &'static <Self::Southbridge as IntelSouthbridgeDriver>::Config;
 }
 
-/// Board contract for the Intel flow.
+/// A board on an Intel CAR platform: its hardware binding and facts. The
+/// board's stage `main`s drive [`bootblock`], [`postcar`] and [`ramstage`].
 #[cfg(feature = "stage")]
-pub trait IntelBoard: Sized + 'static + IntelBoardFacts<Platform: IntelEarlyPlatform> {
-    #[cfg(fstart_stage_env = "car")]
-    type EarlyHooks: IntelEarlyBoardHooks<Self::Platform> + Default;
-    #[cfg(fstart_stage_env = "ram")]
-    type MainstageHooks: IntelMainstageBoardHooks<Self::Platform> + Default;
-    type Console: ConsoleDevice;
-
-    fn console_config() -> <Self::Console as ConsoleDevice>::Config;
-    fn console_node() -> &'static str;
-    #[cfg(feature = "smbios")]
-    fn smbios_identity() -> &'static crate::tables::SmbiosIdentity<'static>;
-}
-
-/// Platform-owned adapter for the fixed Intel stage dispatch.
+pub trait IntelBoard: IntelBoardFacts<Platform: IntelEarlyPlatform> + 'static {}
 #[cfg(feature = "stage")]
-pub struct Program<B>(PhantomData<B>);
-
-#[cfg(feature = "stage")]
-impl<B: IntelBoard> fstart_stage::StageProgram for Program<B> {
-    fn run_stage(_handoff: usize) -> ! {
-        #[cfg(fstart_stage_env = "car")]
-        {
-            let mut hooks = B::EarlyHooks::default();
-            let flow = bootstrap_spec::<B>(0)
-                .and_then(|spec| bootblock::run_intel_bootblock::<B>(spec, &mut hooks));
-            if flow.is_err() {
-                fstart_log::error!("{} bootblock failed", B::Platform::NAME);
-            }
-            fstart_arch::x86::boot::halt()
-        }
-        #[cfg(fstart_stage_env = "postcar")]
-        {
-            // Teardown already done by the entry; load the ramstage cached.
-            let Ok(spec) = bootstrap_spec::<B>(1) else {
-                fstart_arch::x86::boot::halt()
-            };
-            postcar::run_intel_postcar::<B::Console>(spec)
-        }
-        #[cfg(fstart_stage_env = "ram")]
-        {
-            mainstage::run_intel_mainstage::<B>()
-        }
-        #[cfg(not(any(
-            fstart_stage_env = "car",
-            fstart_stage_env = "postcar",
-            fstart_stage_env = "ram"
-        )))]
-        panic!("Intel boards require a fixed stage selection");
-    }
-}
-
-#[cfg(all(
-    feature = "stage",
-    any(fstart_stage_env = "car", fstart_stage_env = "postcar")
-))]
-fn bootstrap_spec<B: IntelBoard>(index: u16) -> Result<FfsLoadSpec<B::Console>, ServiceError> {
-    Ok(FfsLoadSpec {
-        platform: B::Platform::NAME,
-        geometry: layout::IntelBootLayout::current(index)?,
-        console_config: B::console_config(),
-        console_node: B::console_node(),
-    })
-}
+impl<B> IntelBoard for B where B: IntelBoardFacts<Platform: IntelEarlyPlatform> + 'static {}
 
 /// FFS name of the DRAM mainstage.
 pub const RAMSTAGE_NAME: &str = "ramstage";
 
-#[cfg(all(
-    feature = "stage",
-    any(fstart_stage_env = "car", fstart_stage_env = "postcar")
-))]
-pub(crate) struct FfsLoadSpec<C: ConsoleDevice> {
-    pub platform: &'static str,
-    pub geometry: layout::IntelBootLayout<'static>,
-    pub console_config: C::Config,
-    pub console_node: &'static str,
-}
-
-/// Shared Intel mainstage state: the chipset drivers bound from typed config
-/// plus the flow-owned context.
 /// Canonical role name (see `fstart_core::stage::POSTCAR_STAGE_NAME`):
 /// all Intel CAR boards insert a stage with this name between bootblock and
-/// ramstage. `fbuild` selects the postcar entry and stage environment by it,
-/// and `run_stage` dispatches to the postcar loader by
-/// `cfg(fstart_stage_env = "postcar")`. It names a stage *role*,
-/// not a board registry.
+/// ramstage. `fbuild` selects the postcar entry and stage environment by it.
+/// It names a stage *role*, not a board registry.
 pub use fstart_core::stage::POSTCAR_STAGE_NAME;
-
-// ---------------------------------------------------------------------------
-// Board hooks
-// ---------------------------------------------------------------------------
-
-/// Mainstage board hooks contribute ACPI fragments through the same [`AcpiDevice`]
-/// abstraction chipset drivers use. Vacuous when ACPI is disabled.
-///
-/// [`AcpiDevice`]: fstart_acpi::device::AcpiDevice
-#[cfg(all(feature = "stage", fstart_stage_env = "ram", feature = "acpi"))]
-pub trait MainboardAcpi<P: IntelEarlyPlatform>:
-    fstart_acpi::device::AcpiDevice<Config = P::AcpiContext>
-{
-}
-#[cfg(all(feature = "stage", fstart_stage_env = "ram", feature = "acpi"))]
-impl<P, T> MainboardAcpi<P> for T
-where
-    P: IntelEarlyPlatform,
-    T: fstart_acpi::device::AcpiDevice<Config = P::AcpiContext>,
-{
-}
-#[cfg(all(feature = "stage", fstart_stage_env = "ram", not(feature = "acpi")))]
-pub trait MainboardAcpi<P> {}
-#[cfg(all(feature = "stage", fstart_stage_env = "ram", not(feature = "acpi")))]
-impl<P, T> MainboardAcpi<P> for T {}
-
-/// CAR-only context. LPC decode is active; no heap or PCI allocation exists.
-#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
-pub struct IntelEarlyCtx<'a, P: IntelEarlyPlatform> {
-    southbridge: &'a mut P::Southbridge,
-    pub boot_path: fstart_driver_intel::BootPath,
-}
-
-#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
-impl<'a, P: IntelEarlyPlatform> IntelEarlyCtx<'a, P> {
-    pub(crate) fn new(southbridge: &'a mut P::Southbridge) -> Self {
-        Self {
-            southbridge,
-            boot_path: fstart_driver_intel::BootPath::Normal,
-        }
-    }
-    pub(crate) fn with_boot_path(
-        southbridge: &'a mut P::Southbridge,
-        boot_path: fstart_driver_intel::BootPath,
-    ) -> Self {
-        Self {
-            southbridge,
-            boot_path,
-        }
-    }
-
-    #[must_use]
-    pub fn southbridge(&mut self) -> &mut P::Southbridge {
-        self.southbridge
-    }
-}
-
-/// Bootblock hooks, called on cold, warm and S3 boots. State is CAR-local
-/// and is not carried into mainstage. Before console, only chipset decode
-/// is ready; before memory, chipset early init is complete. After training,
-/// RAM is recovered but post-DRAM DMI/chipset setup has not run; after memory,
-/// both are complete. Handoff follows authentication/loading.
-#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
-pub trait IntelEarlyBoardHooks<P: IntelEarlyPlatform>: IntelSmbusRouting<P::Southbridge> {
-    fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn before_memory(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    /// Trained/recovered RAM is available, before DMI/post-DRAM chipset setup.
-    fn after_memory_training(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn after_memory(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn before_handoff(&mut self, _ctx: &mut IntelEarlyCtx<P>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-}
-
-/// Mainstage-only context. DRAM/heap exist throughout; the memory map is
-/// populated after console bring-up, and PCI resources are assigned before
-/// `after_devices`. `resume` identifies the S3 path, not an ordinary cold boot.
-#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
-pub struct IntelMainstageBoardCtx<'a, P: IntelEarlyPlatform> {
-    pub(crate) southbridge: &'a mut P::Southbridge,
-    pub(crate) memory: &'a MainstageCtx,
-    pub resume: bool,
-}
-
-#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
-impl<P: IntelEarlyPlatform> IntelMainstageBoardCtx<'_, P> {
-    pub fn southbridge(&mut self) -> &mut P::Southbridge {
-        self.southbridge
-    }
-
-    pub fn memory(&self) -> &MainstageCtx {
-        self.memory
-    }
-}
-
-/// Fresh mainstage board state, never reconstructed by replaying early hooks.
-/// Runs on cold/warm/S3 boots: establish board console routing after LPC decode,
-/// initialize board devices after chipset/PCI setup, then prepare OS handoff
-/// after tables. Hardware setup does not depend on ACPI emission.
-#[cfg(all(feature = "stage", fstart_stage_env = "ram"))]
-pub trait IntelMainstageBoardHooks<P: IntelEarlyPlatform>:
-    MainboardAcpi<P> + IntelSmbusRouting<P::Southbridge>
-{
-    /// Override static board identity with data read from board-owned hardware.
-    #[cfg(feature = "smbios")]
-    fn smbios_identity<'a>(
-        &'a self,
-        configured: &crate::tables::SmbiosIdentity<'a>,
-    ) -> crate::tables::SmbiosIdentity<'a> {
-        *configured
-    }
-
-    fn before_console(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    /// Fixed non-PCI board resources to exclude from PCI BAR allocation.
-    /// Boards should use the same declarations for consumed ACPI resources.
-    fn firmware_resources(&self) -> impl Iterator<Item = fstart_core::acpi::AcpiResource> {
-        core::iter::empty()
-    }
-
-    /// Sample board population policy after PCI allocation but before chipset
-    /// device programming, e.g. a removable dock's primary IDE channel.
-    fn before_devices(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn after_devices(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn before_handoff(&mut self, _ctx: &mut IntelMainstageBoardCtx<P>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-}

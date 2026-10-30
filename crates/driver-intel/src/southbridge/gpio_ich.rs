@@ -337,6 +337,7 @@ impl GpioRegisters {
 ///
 /// Wraps the GPIOBASE I/O port and provides batch setup plus
 /// individual pin get/set/input/output operations.
+#[derive(Debug, Clone, Copy)]
 pub struct IchGpio {
     /// GPIOBASE I/O port base address.
     base: u16,
@@ -349,6 +350,13 @@ impl IchGpio {
     /// PCI config space (register 0x48) and GPIO_CNTL is enabled.
     pub const fn new(gpiobase: u16) -> Self {
         Self { base: gpiobase }
+    }
+
+    /// One pin of this controller, as an embedded-hal input and output.
+    /// Board code hands these to the drivers of what is wired to them.
+    #[must_use]
+    pub const fn pin(self, pin: u8) -> IchPin {
+        IchPin { gpio: self, pin }
     }
 
     // -------------------------------------------------------------------
@@ -734,5 +742,47 @@ mod tests {
         for i in 0..3 {
             assert_eq!(regs.use_sel[i], 0);
         }
+    }
+}
+
+/// One ICH GPIO. Configuration (mode, direction, reset) comes from the
+/// chipset's [`GpioConfig`]; this only reads and drives the level.
+#[derive(Debug, Clone, Copy)]
+pub struct IchPin {
+    gpio: IchGpio,
+    pin: u8,
+}
+
+impl IchPin {
+    /// The GPIO number.
+    #[must_use]
+    pub const fn number(&self) -> u8 {
+        self.pin
+    }
+}
+
+impl embedded_hal::digital::ErrorType for IchPin {
+    type Error = core::convert::Infallible;
+}
+
+impl embedded_hal::digital::InputPin for IchPin {
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(self.gpio.get(self.pin))
+    }
+
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(!self.gpio.get(self.pin))
+    }
+}
+
+impl embedded_hal::digital::OutputPin for IchPin {
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.gpio.set(self.pin, true);
+        Ok(())
+    }
+
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.gpio.set(self.pin, false);
+        Ok(())
     }
 }

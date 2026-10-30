@@ -25,8 +25,9 @@ use crate::h8::{H8, H8DockEvent, H8Led, H8LedMode};
 pub const SMI_DOCK_CONNECT: u8 = 0x01;
 pub const SMI_DOCK_DISCONNECT: u8 = 0x02;
 
-/// ICH GPIO sampling dock presence (`SLICE_ON_3M#`, active low).
-pub const DOCK_PRESENT_GPIO: u32 = 13;
+/// ICH GPIO sampling dock presence (`SLICE_ON_3M#`, active low). The X60
+/// and X61 wire it the same; boards hand [`dock_present`] that pin.
+pub const DOCK_PRESENT_GPIO: u8 = 13;
 
 const DLPC_INDEX: u16 = 0x164e;
 const DLPC_DATA: u16 = 0x164f;
@@ -180,11 +181,10 @@ pub fn dlpc_init() -> Result<(), ()> {
     Ok(())
 }
 
-/// Return whether an X6 UltraBase dock is attached.
-pub fn dock_present(southbridge: &impl fstart_core::services::Southbridge) -> bool {
-    southbridge
-        .gpio_get(DOCK_PRESENT_GPIO)
-        .is_ok_and(|high| !high)
+/// Return whether an X6 UltraBase dock is attached, from the active-low
+/// [`DOCK_PRESENT_GPIO`] pin. A pin that cannot be read means no dock.
+pub fn dock_present(pin: &mut impl embedded_hal::digital::InputPin) -> bool {
+    pin.is_low().unwrap_or(false)
 }
 
 /// Whether the laptop-side LPC switch reports a connected dock.
@@ -363,9 +363,10 @@ fn disable_dock_watchdog() {
 
 /// Route the dock UART before the console probes 0x3f8. Failures are
 /// non-fatal: an undocked laptop simply has no serial console.
-pub fn setup_console(southbridge: &impl fstart_core::services::Southbridge, ec: Ec) {
+/// `dock_present_pin` is the [`DOCK_PRESENT_GPIO`] pin.
+pub fn setup_console(dock_present_pin: &mut impl embedded_hal::digital::InputPin, ec: Ec) {
     let _ = dlpc_init();
-    if dock_present(southbridge) {
+    if dock_present(dock_present_pin) {
         let _ = connect(ec);
         early_superio_config();
     }
