@@ -11,7 +11,7 @@ use crate::{
     pmh7::Pmh7,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
-use fstart_core::services::Southbridge;
+use embedded_hal::digital::InputPin;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Model {
@@ -54,17 +54,22 @@ pub fn bluetooth_present() -> bool {
     BLUETOOTH_PRESENT.load(Ordering::Relaxed)
 }
 
-fn detect_bluetooth(model: Model, southbridge: &impl Southbridge) -> bool {
-    model == Model::Z61t || southbridge.gpio_get(7).is_ok_and(|high| !high)
+/// ICH GPIO reading low when the Bluetooth daughter card is fitted (BDC).
+/// Boards hand [`ec_init`] that pin.
+pub const BDC_PRESENCE_GPIO: u8 = 7;
+
+fn detect_bluetooth(model: Model, bdc_presence: &mut impl InputPin) -> bool {
+    model == Model::Z61t || bdc_presence.is_low().unwrap_or(false)
 }
 
+/// `bdc_presence` is the [`BDC_PRESENCE_GPIO`] pin.
 pub fn ec_init(
     model: Model,
-    southbridge: &impl Southbridge,
+    bdc_presence: &mut impl InputPin,
     config: &H8Config,
     resume: bool,
 ) -> bool {
-    let bluetooth = detect_bluetooth(model, southbridge);
+    let bluetooth = detect_bluetooth(model, bdc_presence);
     BLUETOOTH_PRESENT.store(bluetooth, Ordering::Relaxed);
     let pmh7 = Pmh7::new(config.resources.pmh7_base.raw());
     pmh7.log_identity();
@@ -78,24 +83,15 @@ pub fn ec_init(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_core::services::ServiceError;
-    struct Gpio(Result<bool, ServiceError>);
-    impl Southbridge for Gpio {
-        fn gpio_get(&self, pin: u32) -> Result<bool, ServiceError> {
-            assert_eq!(pin, 7);
-            self.0
-        }
-    }
+    use crate::test_pin::Pin;
+
     #[test]
     fn variant_bluetooth_policy_matches_the_reference() {
         for model in [Model::T60, Model::R60] {
-            assert!(detect_bluetooth(model, &Gpio(Ok(false))));
-            assert!(!detect_bluetooth(model, &Gpio(Ok(true))));
-            assert!(!detect_bluetooth(model, &Gpio(Err(ServiceError::IoError))));
+            assert!(detect_bluetooth(model, &mut Pin(Ok(false))));
+            assert!(!detect_bluetooth(model, &mut Pin(Ok(true))));
+            assert!(!detect_bluetooth(model, &mut Pin(Err(()))));
         }
-        assert!(detect_bluetooth(
-            Model::Z61t,
-            &Gpio(Err(ServiceError::IoError))
-        ));
+        assert!(detect_bluetooth(Model::Z61t, &mut Pin(Err(()))));
     }
 }

@@ -18,7 +18,6 @@
 
 pub mod ec;
 
-#[cfg(any(test, fstart_stage_env = "ram"))]
 pub mod eeprom;
 
 pub mod h8;
@@ -28,3 +27,23 @@ pub mod x6;
 
 #[cfg(feature = "acpi")]
 pub mod h8_acpi;
+
+/// An input pin with a fixed level, for the drivers' tests.
+#[cfg(test)]
+mod test_pin {
+    pub struct Pin(pub Result<bool, ()>);
+
+    impl embedded_hal::digital::ErrorType for Pin {
+        type Error = embedded_hal::digital::ErrorKind;
+    }
+
+    impl embedded_hal::digital::InputPin for Pin {
+        fn is_high(&mut self) -> Result<bool, Self::Error> {
+            self.0.map_err(|()| embedded_hal::digital::ErrorKind::Other)
+        }
+
+        fn is_low(&mut self) -> Result<bool, Self::Error> {
+            self.is_high().map(|high| !high)
+        }
+    }
+}

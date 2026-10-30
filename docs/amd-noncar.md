@@ -31,33 +31,46 @@ Zeppelin and Picasso; see the SoC pages for their details:
 | Build plan (host side) | `crates/platform-amd/src/noncar/host.rs` |
 | FFS mount, payload handoff | `crates/platform-amd/src/noncar/boot.rs` |
 
-## Traits
+## Traits and phases
 
 - `noncar::Soc` (`zeppelin::Zeppelin`, `picasso::Picasso`): constants
   (`NAME`, `LAYOUT`, `ECAM`, `ECAM_BUSES`, `PSP`, `APOB`, `BIOS_DIRECTORY`,
   `TSEG_SIZE`, `MAX_CPUS`), the `Config` and `State` types, and the methods
-  `fch_pre_init`, `identify`, `silicon_init` (TP1), `after_resources` (TP2),
-  `ready_to_boot` (TP3).
-- `noncar::Board` (a board's `lib.rs`): `type Soc`, `CONFIG`, `console()`, and
-  optional hooks.
+  `fch_pre_init`, `identify`, `after_resources`, `ready_to_boot`. The silicon
+  init is the SoC module's own phases (`picasso::Init`,
+  `zeppelin::silicon_init`), which take the `Stage`.
+- `noncar::Board` (a board's `lib.rs`): `type Soc` and `CONFIG`, the facts
+  host planning reads.
 
-| Board hook | Called |
-| --- | --- |
-| `early_init(&Lpc)` | Before the console: LPC decodes, Super I/O |
-| `console() -> Ns16550Config` | Console UART; the flow initializes it |
-| `fch_reset_done(ctx, &mut Config)` | After FCH reset init (SMBus, I2C, GPIO work) |
-| `dxio_training_done(ctx)` | After PCIe/SATA link training |
-| `mainboard_final(ctx)` | After PCI enumeration (TP2) |
-| `ready_to_boot(ctx)` | At TP3, before LockDFReg |
-| `acpi() -> BoardAcpi` | When the ACPI tables are built |
-
-`BoardCtx` gives the dies, the clock, `fch()` (die 0) and `gpio()`.
-
-A board binary is one line:
+The flow is the board's: `src/bin/reset.rs` calls the phases and does its
+own work between them. Vilboz:
 
 ```rust
-fstart_platform_amd::stage_bin!(fstart_board_gigabyte_mj11::Board);
+fstart_platform_amd::entry!(main);
+
+fn main() -> ! {
+    let stage = Reset::<Picasso>::enter(&CONFIG).console(&CONSOLE, vilboz::console());
+    let silicon = (|| {
+        let init = Init::start(&stage)?;
+        let gpio = init.gpio();
+        vilboz::early_gpios(&gpio).map_err(|_| "board GPIOs")?;
+        init.disable_rom_sharing();
+        let cbi = vilboz::after_fch(&gpio, &mut init.clock()); // EC CBI, WLAN, RAM pads
+        init.train_dxio()?.finish(cbi.native_power(), cbi.has_emmc())
+    })();
+    let mut silicon = silicon.unwrap_or_else(|why| stage.stop(why));
+    let pci = stage.enumerate(&mut silicon);
+    stage.ready_to_boot(&mut silicon, &pci);
+    stage.boot(silicon, pci, vilboz::acpi())
+}
 ```
+
+Board work goes where the old hooks were: LPC decodes before
+`Reset::console` (`Reset::lpc`), FCH-reset work between `Init::start` and
+`train_dxio`, link-trained work between `train_dxio` and `finish`, and
+post-enumeration or ready-to-boot work between `enumerate`,
+`ready_to_boot` and `boot`. `Ctx` gives the dies, the clock, `fch()` (die 0)
+and `gpio()`.
 
 ## Boot order
 
@@ -65,17 +78,17 @@ fstart_platform_amd::stage_bin!(fstart_board_gigabyte_mj11::Board);
 | --- | --- |
 | ECAM (`msr::enable_ecam`), ACPI MMIO, TSC frequency | flow |
 | `Soc::fch_pre_init` | SoC |
-| `Board::early_init`, then the console | board, flow |
+| Board LPC work (`Reset::lpc`), then the console | board, flow |
 | `Soc::identify` | SoC |
 | TOP_MEM/TOM2, APOB memory map, TSEG, e820, early MTRR plan | flow (`memory.rs`) |
 | FFS mount and verify, microcode blob | flow (`boot.rs`) |
-| `Soc::silicon_init` (TP1) | SoC: silicon, `noncar::mp::start`, `noncar::smm::install`, `noncar::psp::notify_smm` |
+| Silicon init, the SoC's phases | SoC: silicon, `noncar::mp::start`, `noncar::smm::install`, `noncar::psp::notify_smm`; board work between them |
 | PCI root bridges, enumeration, allocation | flow (`pci.rs`) |
 | Write-combining for prefetchable VGA BARs | flow (`mtrr::install_write_combining`) |
-| `Soc::after_resources` (TP2), `Board::mainboard_final` | SoC, board |
+| `Soc::after_resources`, then board work | SoC, board |
 | FCH and per-die NBIO IOAPICs (masked) | flow |
-| ACPI tables | flow (`crate::acpi`), `Board::acpi` |
-| `Soc::ready_to_boot` (TP3) | SoC |
+| ACPI tables | flow (`crate::acpi`), the board's `BoardAcpi` |
+| `Soc::ready_to_boot` | SoC |
 | PSP LockDFReg (a failure halts), page tables, park APs, PSP BootDone | flow (`psp.rs`, `boot.rs`) |
 | Payload | `fstart_stage::payload` |
 
@@ -115,7 +128,7 @@ fstart_platform_amd::stage_bin!(fstart_board_gigabyte_mj11::Board);
 - `noncar::psp::notify_smm` sends the PSP SmmInfo (mailbox command 0x02). Its
   P2C and C2P buffers are in the free part of TSEG. Without them the flow has
   no PSP session.
-- LockDFReg runs at TP3 and BootDone right before the payload.
+- LockDFReg runs after `ready_to_boot` and BootDone right before the payload.
 
 ## MP
 

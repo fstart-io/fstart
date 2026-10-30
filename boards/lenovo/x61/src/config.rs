@@ -97,12 +97,14 @@ pub const UART0_PIO_BASE: u16 = 0x3f8;
 pub const UART0_CLOCK_FREQ: u32 = 1_843_200;
 pub const UART0_BAUD_RATE: u32 = 115_200;
 
-/// GPIO defaults select SPD/CK505; the opposite level selects board EEPROM.
+/// SMBus mux: high reaches the SPDs and the CK505, low the identity EEPROM.
+/// Every stage's chipset GPIO setup leaves it on the EEPROM; only the
+/// bootblock switches to the SPD branch, for DRAM training and the clock.
 pub const X61_SMBUS_MUX: gpio::GpioPin = gpio::GpioPin {
     pin: 42,
     mode: gpio::GpioMode::Gpio,
     dir: gpio::GpioDir::Output,
-    level: gpio::GpioLevel::High,
+    level: gpio::GpioLevel::Low,
     blink: false,
     invert: false,
     reset: gpio::GpioReset::Pwrok,
@@ -112,8 +114,29 @@ pub const X61_SMBUS_MUX: gpio::GpioPin = gpio::GpioPin {
 /// The EC SCI is ICH8 GPIO2, i.e. GPE 0x12.
 pub const X61_H8: fstart_driver_lenovo::h8::H8Config = fstart_driver_lenovo::x6::h8_config(0x12);
 
+/// ICH8-M routing plus the devices behind the PCI bridge: the Ricoh
+/// multifunction device and the UltraBase dock slots (coreboot
+/// `ich8_pci_irqs.asl`).
+pub const X61_PIRQ: fstart_platform_intel::gm965::PirqRouting = {
+    use fstart_driver_intel::southbridge::pirq::{PciPin as P, PinRoute as R, Pirq as L};
+    fstart_platform_intel::gm965::PirqRouting {
+        bridge_routes: &[
+            R::new(0x00, P::A, L::A),
+            R::new(0x00, P::B, L::B),
+            R::new(0x00, P::C, L::C),
+            R::new(0x00, P::D, L::D),
+            R::new(0x01, P::A, L::A),
+            R::new(0x02, P::A, L::F),
+            R::new(0x02, P::B, L::G),
+            R::new(0x08, P::A, L::E),
+        ],
+        ..fstart_driver_intel::southbridge::pirq::ICH8_ROUTING
+    }
+};
+
 pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
     .max_cpus(2)
+    .pirq(X61_PIRQ)
     .igd(x61_igd_config())
     .pcie_port(0, true)
     .pcie_port(1, true)

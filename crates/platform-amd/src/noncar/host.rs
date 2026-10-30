@@ -316,6 +316,8 @@ fn smm_unit<S: HostSoc>() -> CompilationUnit {
         )]),
         bindings: vec![],
         file_bindings: vec![],
+        // The board's SMM handler module, outside the stage `main`.
+        board_features: vec!["smm".into()],
         output: UnitOutput::SmmImage {
             entry_count: S::MAX_CPUS,
             stack_size: 0x800,
@@ -649,6 +651,7 @@ where
             .into_iter()
             .collect(),
         file_bindings: vec![],
+        board_features: vec![],
         output: UnitOutput::Executable {
             expectations,
             load_address: image.base,

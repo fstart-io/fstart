@@ -741,11 +741,11 @@ name = "fstart-driver-intel"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.10.0",
+ "embedded-hal",
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
- "fstart-driver-superio",
  "fstart-intel-gma",
  "fstart-log",
  "fstart-pci",
@@ -775,6 +775,7 @@ dependencies = [
 name = "fstart-driver-lenovo"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal",
  "fstart-acpi",
  "fstart-acpi-macros",
  "fstart-arch",
@@ -980,7 +981,6 @@ dependencies = [
  "fstart-core",
  "fstart-coreboot",
  "fstart-driver-intel",
- "fstart-driver-superio",
  "fstart-driver-uart",
  "fstart-ffs",
  "fstart-image-build",

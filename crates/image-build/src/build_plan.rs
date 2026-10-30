@@ -243,6 +243,11 @@ pub struct CompilationUnit {
     pub environment_values: BTreeMap<String, String>,
     pub bindings: Vec<ArtifactBinding>,
     pub file_bindings: Vec<FileBinding>,
+    /// Features of the board crate itself, unqualified. A board owns one
+    /// binary per stage; these only select library code a unit links that
+    /// is not a stage `main`, such as the SMM handler.
+    #[serde(default)]
+    pub board_features: Vec<String>,
     pub output: UnitOutput,
 }
 
@@ -650,6 +655,7 @@ mod tests {
             linker_script: None,
             environment_values: BTreeMap::new(),
             file_bindings: vec![],
+            board_features: vec![],
             bindings: dependencies
                 .iter()
                 .map(|name| ArtifactBinding {

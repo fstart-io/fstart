@@ -1,4 +1,9 @@
 //! Lenovo ThinkPad X61 board support package.
+//!
+//! The boot flow is the board's: one `main` per stage in `src/bin/`. This
+//! library holds the board's facts and configuration and the mainboard work
+//! those `main`s call. It has no stage cfgs; each stage links what its
+//! `main` reaches.
 
 #![no_std]
 
@@ -7,26 +12,11 @@ extern crate std;
 
 pub mod config;
 pub mod mainboard;
-#[cfg(fstart_stage_env = "smm")]
+/// The SMM handler, built into the separate SMM image.
+#[cfg(feature = "smm")]
 pub mod smm;
-// Host table/board-policy tests do not link firmware entry or its allocator.
-#[cfg(all(
-    not(test),
-    any(
-        fstart_stage_env = "car",
-        fstart_stage_env = "postcar",
-        fstart_stage_env = "ram"
-    )
-))]
-mod stage;
 
-/// Lenovo ThinkPad X61 board marker selected by the board-owned stage entry.
+/// Lenovo ThinkPad X61 board marker: its facts are [`config`].
 pub struct Board;
 
 pub use config::*;
-#[cfg(fstart_stage_env = "ram")]
-pub use mainboard::X61_SMBIOS_IDENTITY;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-pub use mainboard::X61Mainboard;
-#[cfg(fstart_stage_env = "ram")]
-pub use mainboard::x61_mainboard_dsdt_aml;

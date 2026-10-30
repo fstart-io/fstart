@@ -29,11 +29,8 @@ impl Board for Vilboz {
                 burst_4dw: false,
             },
             espi: None,
-            early_gpios: &[],
-            disable_rom_sharing: false,
         },
         pcie: &[],
-        power: None,
         usb: fstart_driver_amd::fch::sandstone::usb::Config {
             phy2: None,
             phy3_override: None,
@@ -47,9 +44,6 @@ impl Board for Vilboz {
             hdmi2_disable: 0,
         },
     };
-    fn console() -> fstart_driver_uart::ns16550::Ns16550Config {
-        picasso::console(0)
-    }
 }
 
 struct Mj11;
@@ -62,9 +56,6 @@ impl Board for Mj11 {
             descriptors: [&[]; fstart_driver_amd::soc::zeppelin::MAX_DIES],
         },
     };
-    fn console() -> fstart_driver_uart::ns16550::Ns16550Config {
-        picasso::console(0)
-    }
 }
 
 struct Source(std::path::PathBuf);
@@ -202,6 +193,7 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 }
 
 /// The compilation units, hence the stage binaries, stay as they are.
+/// (Re-pinned for the SMM unit's `smm` board feature.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -216,9 +208,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "2f3f70f9f8bf7bbb95ccee6769e6d810b30c1af9c164da60d9a23c8ce20e4367",
-            "642f9dd5c1ab2022604e5fc460b9608498193fe0d9e366f809dbea5c829ac84d",
-            "c300ac57c6ecb8f90480edd0c61daee8f2cf7d39577dfdb5e44b15102c9da500",
+            "e762bafef08044b46ddd04a410aedc1954d64af0a2238d80340416be48d71fba",
+            "13eb3480eb8a1bf275d8a2e91789be5fef9f3e7216b0e7168d19a2e5f643c815",
+            "4ad5e5b5068511e58ab686a56097b4ef7f6fc4c44d6101c5109115e57847b8cf",
         ]
     );
 }
