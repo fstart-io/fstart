@@ -10,7 +10,6 @@ schema = 1
 board = "lenovo-t60"
 platform = "x86"
 target = "i686-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
 [package.metadata.fstart.variants.lenovo-r60]
@@ -21,9 +20,8 @@ features = ["z61t"]
 default = []
 r60 = []
 z61t = []
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("car", "postcar", "ram", "smm"))'] }
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-intel/bundle-smm"]
 
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
@@ -32,12 +30,12 @@ fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-pci = { path = "../../../crates/pci" }
+embedded-hal = { workspace = true }
+fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
 fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+# One binary per stage, named after the stage: src/bin/<stage>.rs.
