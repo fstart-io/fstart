@@ -8,7 +8,7 @@ The driver uses the existing PCI allocator's BAR windows, core MMIO/PIO
 helpers, and timer service. It returns the common `FramebufferInfo` handoff
 consumed by payloads; it does not implement another PCI allocator or a Radeon
 register-programming stack. The pinned rsemu fork adds bounded interpreter
-steps and explicit exits; see [the integration notes](../../docs/rust-vbios.md).
+steps and explicit exits.
 
 The ROM must be an authenticated board asset. The interpreter has private
 RAM rather than writing the platform's IVT/BDA/low memory. Hardware memory
