@@ -42,7 +42,7 @@ seven embedding tests, including REP progress, I/O widths, fault exits and
 LDMXCSR/STMXCSR with CR0.MP clear; the existing 311 selected x86 tests also
 passed. These do not substitute for external instruction-conformance corpora.
 
-On 2026-10-30 the final Rust-only revision
+On 2026-10-30 the Rust-only revision
 `e2aa8a6738f2758b44ed508c07edfb707b315a3b` was built with `--payload uefi`
 and tested on Vilboz. Two fresh full-flash recovery reads matched before
 programming; the programmed image also matched an explicit full readback.
@@ -62,14 +62,39 @@ Logs and readbacks are retained locally under
 `.local/rust-vbios/final-pr149-e2aa8a67-20261030/`. This does not prove OS boot,
 visual panel output, persistent UEFI variables or transaction-by-transaction
 parity. Earlier experiments did observe an AP-release #GP before VBIOS;
-that failure did not occur in these two final-revision captures.
+that failure did not occur in those two captures.
 
-**Known blocker:** `--payload uefi-ui` does not link in the current 2 MiB reset
-image. The linker reports `.data` overflowing the image by 2,528 bytes and
-its load range overlapping `.init16` (`0x031fe000`). The reported `.data`
-load end is `0x032009df`, so roughly 10.5 KiB must be recovered to clear that
-reserved reset section, not merely the 2,528-byte region overflow. Do not
-interpret the successful standard-UEFI boots as graphical-UI validation.
+### Larger Picasso reset image
+
+The previous `uefi-ui` link failure was caused by the framework's 2 MiB
+reservation, not a hardware limit. Picasso now reserves 4 MiB for the PSP
+reset image at `0x03000000..0x03400000`, with `.init16` at `0x033fe000` and
+the reset vector at `0x033ffff0`. The early e820 reservation extends through
+`0x03400000`. The flash reset window moves from `0x980000` to `0x780000`,
+derived from the image size and fixed FFS start; neither the FFS nor PSP
+partition moves, and the flash chip remains 16 MiB.
+
+Both `uefi` and `uefi-ui` assemble successfully with this layout. The UI's
+code/data ends at `0x03200a60`, leaving 2,086,304 bytes before `.init16`.
+All 21 platform and 65 image-builder tests pass, including both 2 MiB and
+4 MiB packed-image round trips and a UI plan/linker/reservation regression.
+The platform's strict Clippy check with `--no-deps` passes; an unfiltered
+strict check encounters existing warnings in unchanged dependencies.
+
+Revision `e1ea98dcc47c1fff5dcc70ae7fea94b8d17ac3b2` was then tested with
+`uefi-ui` on Vilboz: both a G3/power-button boot and a Cr50 `ecrst pulse`
+boot passed the four-CPU, Rust POST, VBE and CrabEFI initialization checks.
+Both captures confirm e820 reserves `0x02000000..0x03400000` and the FFS is
+still mounted at `0xffb80000`. Neither shows an emulator failure, host
+exception, panic or allocator abort.
+
+Two fresh full recovery reads matched before writing, and an independent
+backup was retained. The programmed UI image matched a full readback before
+boot; its SHA-256 is
+`dead01d2aac7ba58f1e73a0233d7a6b5861dc7d9b753688b376d4449e3c6506f`.
+Evidence is under `.local/rust-vbios/ui-4m-20261030/`. These captures stop
+shortly after CrabEFI initialization; visible menu output and OS boot were
+not verified.
 
 ## Remaining scope
 
