@@ -16,4 +16,3 @@ tock-registers.workspace = true
 ufmt.workspace = true
 zerocopy.workspace = true
 edid-info = "0.2.3"
-
