@@ -26,7 +26,10 @@ use fstart_acpi_macros::acpi_dsl;
 use fstart_driver_amd::{
     ccx::power::{self, PowerAml},
     fch::{AcpiPorts, SPI_BASE},
-    nbio::iommu::{self, Iommu},
+    nbio::{
+        ioapic::acpi as ioapic_acpi,
+        iommu::{self, Iommu},
+    },
 };
 
 pub const LAPIC_BASE: u64 = 0xfee0_0000;
@@ -72,7 +75,21 @@ pub struct SocAcpi {
     pub fch_intx_gsi: [u8; 4],
     /// C2 (CC6) exit latency of `_CST`.
     pub c2_latency_us: u16,
+    /// The GPE the internal bridges signal PME on (wake), and those bridges.
+    pub wake: Option<Wake>,
 }
+
+/// PME wake of the internal bridges: `_PRW` on each and the GPE's handler
+/// notifying them.
+#[derive(Debug, Clone, Copy)]
+pub struct Wake {
+    pub gpe: u8,
+    /// The bridges' devfn on every die's root bus.
+    pub bridges: &'static [u8],
+}
+
+/// The deepest sleep state a bridge's PME wakes the system from: S4.
+const WAKE_STATE: u8 = 4;
 
 /// What the platform set up on one die.
 #[derive(Debug, Clone)]
@@ -194,6 +211,9 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
         .enumerate()
         .map(|(index, die)| root_bridge(index as u8, die, inputs))
         .collect::<Result<Vec<_>, _>>()?;
+    let nbios: Vec<_> = (0..inputs.dies.len())
+        .map(|index| format!("\\_SB_.PCI{index}.NBIO"))
+        .collect();
     let dsdt_aml = [scope_vec("\\", &sleep_states())?, ecam_reservation(inputs)?]
         .into_iter()
         .chain(root_bridges)
@@ -209,10 +229,18 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
         }))
         .chain(core::iter::once(inputs.board.sb_aml.clone()))
         .chain(core::iter::once(processors(inputs)?))
+        // After the devices they name.
+        .chain([ioapic_acpi::pic_aml(&nbios)?, wake_gpe(inputs)])
         .flatten()
         .collect();
+    // The FCH SMM handler (see `acpi_smi`) takes no buffers from the OS.
+    let wsmt = fstart_acpi::wsmt::build_wsmt(
+        fstart_acpi::wsmt::FIXED_COMM_BUFFERS
+            | fstart_acpi::wsmt::COMM_BUFFER_NESTED_PTR_PROTECTION,
+    );
     let extra = core::iter::once(mcfg(inputs)?)
         .chain(ivrs(inputs))
+        .chain(core::iter::once(wsmt))
         .chain(inputs.board.tables.iter().cloned())
         .collect();
     Ok(Tables {
@@ -265,8 +293,7 @@ fn platform(inputs: &Inputs) -> X86Config {
         hpet: Some(HpetConfig {
             base: HPET_BASE,
             timer_block_id: inputs.hpet_id,
-            // No minimum tick.
-            min_tick: 0,
+            min_tick: fstart_driver_amd::fch::HPET_MIN_TICK,
         }),
         // ACPI_HAVE_PCAT_8259
         legacy_devices: true,
@@ -505,6 +532,7 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
     }
     .emit(&mut body)?;
     body.extend(root_resources(die, index == 0));
+    body.extend(ioapic_acpi::nbio_default_aml()?);
     let routes = inputs.soc.bridge_routes;
     body.extend(root_prt(
         index,
@@ -513,7 +541,7 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
         inputs.soc.fch_intx_gsi,
     )?);
     for bridge_device in die.bridges {
-        body.extend(bridge(index, bridge_device.devfn, routes)?);
+        body.extend(bridge(index, bridge_device.devfn, routes, inputs.soc.wake)?);
     }
     if index == 0 {
         body.extend(lpc_bridge(&inputs.board.lpc_aml)?);
@@ -647,7 +675,7 @@ fn root_prt(
 
 /// A bridge `GPxx` (xx: devfn in hex) with the `_PRT`
 /// for the device behind it through the NBIO IOAPIC of the die.
-fn bridge(die: u8, devfn: u8, routes: &[Route]) -> Result<Vec<u8>, Error> {
+fn bridge(die: u8, devfn: u8, routes: &[Route], wake: Option<Wake>) -> Result<Vec<u8>, Error> {
     let route = routes
         .iter()
         .find(|route| route.devfn == devfn)
@@ -659,6 +687,9 @@ fn bridge(die: u8, devfn: u8, routes: &[Route]) -> Result<Vec<u8>, Error> {
     let gsi = |pin| nbio_gsi_base(die) + u32::from(route.irq(pin));
     // `build` checked that the GSIs fit.
     body.extend(prt_name_aml((0..4).map(|pin| (0, pin, gsi(pin) as u8))));
+    if let Some(wake) = wake.filter(|wake| wake.bridges.contains(&devfn)) {
+        body.extend(fstart_acpi::gpe::prw(wake.gpe, WAKE_STATE));
+    }
     Ok(device_vec(&format!("GP{devfn:02X}"), &body)?)
 }
 
@@ -687,6 +718,26 @@ pub fn video_rom_aml(
         body = device_vec(&format!("D{devfn:03X}"), &content)?;
     }
     scope_vec(&format!(r"\_SB.PCI{root}"), &body)
+}
+
+/// `\_GPE._Lxx` of the wake GPE: notify every wake bridge the dies have.
+fn wake_gpe(inputs: &Inputs) -> Vec<u8> {
+    let Some(wake) = inputs.soc.wake else {
+        return Vec::new();
+    };
+    let paths: Vec<_> = inputs
+        .dies
+        .iter()
+        .enumerate()
+        .flat_map(|(index, die)| {
+            die.bridges
+                .iter()
+                .filter(|bridge| wake.bridges.contains(&bridge.devfn))
+                .map(move |bridge| format!("\\_SB_.PCI{index}.GP{:02X}", bridge.devfn))
+        })
+        .collect();
+    let targets: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
+    fstart_acpi::gpe::notify_wake(wake.gpe, false, &targets)
 }
 
 /// The FCH legacy devices behind 0:14.3, then the board's.
@@ -1352,6 +1403,14 @@ mod tests {
         assert_eq!(&fadt[109..111], &1u16.to_le_bytes()); // IAPC_BOOT_ARCH
         assert_eq!(fadt[128], 6); // RESET_VALUE
         assert!(signature(&storage[..len], b"MCFG").len() == 60);
+        assert_eq!(
+            signature(&storage[..len], b"WSMT")[36..40],
+            3u32.to_le_bytes()
+        );
+        assert_eq!(
+            signature(&storage[..len], b"HPET")[53..55],
+            0x37eeu16.to_le_bytes()
+        );
 
         let Ok(dsl) = iasl_disassemble(&fstart_acpi::platform::build_dsdt(&tables.dsdt_aml)) else {
             std::eprintln!("iasl not found, skipping the DSDT disassembly");
@@ -1386,6 +1445,13 @@ mod tests {
             "SystemIO,",
             "0x0000000000000814",
             "Name (_PSD, Package (0x01)",
+            "Method (_PIC, 1, NotSerialized)",
+            "\\_SB.PCI1.NBIO.NAPE ()",
+            "NAPX = 0x14300000",
+            "NAPD &= 0xFFFFFFEF",
+            "Name (_PRW, Package (0x02)",
+            "Method (_L0B, 0, NotSerialized)",
+            "Notify (\\_SB.PCI1.GP39, 0x02)",
         ] {
             assert!(dsl.contains(object), "{object} missing:\n{dsl}");
         }
@@ -1513,13 +1579,21 @@ mod tests {
             .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
                 (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
             });
-        assert_eq!((len, hash), (4560, 0xd0f5_a6f6_2c82_e98d));
+        assert_eq!((len, hash), (4768, 0x3f59_d550_aece_c36d));
     }
 
+    /// The table with `signature`: the first match whose length and
+    /// checksum hold (the DSDT names devices like tables).
     fn signature<'a>(tables: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
-        let start = tables.windows(4).position(|w| w == signature).unwrap();
-        let len = u32::from_le_bytes(tables[start + 4..start + 8].try_into().unwrap());
-        &tables[start..start + len as usize]
+        (0..tables.len().saturating_sub(8))
+            .filter(|&at| &tables[at..at + 4] == signature)
+            .find_map(|at| {
+                let len = u32::from_le_bytes(tables[at + 4..at + 8].try_into().unwrap()) as usize;
+                let table = tables.get(at..at.checked_add(len)?)?;
+                (len >= 36 && table.iter().fold(0u8, |sum, &b| sum.wrapping_add(b)) == 0)
+                    .then_some(table)
+            })
+            .unwrap()
     }
 
     fn iasl_disassemble(dsdt: &[u8]) -> std::io::Result<std::string::String> {

@@ -20,13 +20,14 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use fstart_acpi::aml::{
-    AddressSpace, AddressSpaceCacheable, Arg, EISAName, IO, If, Memory32Fixed, Method, MethodCall,
-    Name, PackageBuilder, Path, ResourceTemplate, Store,
+    AddressSpace, AddressSpaceCacheable, EISAName, IO, Memory32Fixed, Name, PackageBuilder, Path,
+    ResourceTemplate,
 };
 use fstart_acpi::aml_linker::{device_vec, scope_vec};
 use fstart_acpi::processor::{ProcessorName, cpc_aml, processor_device};
 use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl, gpe};
 use fstart_driver_amd::ccx::power::PowerAml;
+use fstart_driver_amd::nbio::ioapic::acpi as ioapic_acpi;
 use fstart_driver_amd::smu::v11::cppc;
 use fstart_driver_amd::sp3::fch::acpi as fch_acpi;
 use fstart_driver_amd::sp3::soc::Generation;
@@ -222,29 +223,6 @@ fn osc() -> Vec<u8> {
     .into()
 }
 
-/// The root complex function (D0F0) with `NAPE`: clear
-/// `IOAPIC::FEATURES_ENABLE.FCH` (bit 4) through the SMN pair at D0F0
-/// 0xB8/0xBC, so INTx reach the NBIO IOAPIC instead of the FCH.
-fn nbio(features_smn: u32) -> Result<Vec<u8>, AmlError> {
-    let mut v = Vec::new();
-    acpi_dsl! {
-        Device("NBIO") {
-            Name("_ADR", 0u8);
-            OperationRegion("NAPC", PciConfig, 0xB8u8, 8u8);
-            Field("NAPC", DWordAcc, NoLock, Preserve) {
-                NAPX, 32,
-                NAPD, 32,
-            }
-            Method("NAPE", 0, Serialized) {
-                NAPX = #{dword features_smn};
-                NAPD = NAPD & 0xFFFFFFEFu32;
-            }
-        }
-    }
-    .emit(&mut v)?;
-    Ok(v)
-}
-
 /// The LPC bridge (00:14.3): the FCH's ISA devices and the board's.
 fn lpc(board_aml: &[u8]) -> Result<Vec<u8>, AmlError> {
     let adr = name("_ADR", &0x0014_0003u32);
@@ -318,7 +296,7 @@ fn root_bridge(
         rb.domain.map(|d| name("_PXM", &d)).unwrap_or_default(),
         crs(rb),
         osc(),
-        nbio(rb.ioapic_features)?,
+        ioapic_acpi::nbio_aml(rb.ioapic_features)?,
     ]
     .concat();
     // Without its NBIO IOAPIC (BAR not placed) the bridge has no APIC
@@ -335,30 +313,15 @@ fn root_bridge(
 
 /// `\PICM`, `\_PIC`, `\_S0`, `\_S5`.
 fn root_objects(uids: usize) -> Result<Vec<u8>, AmlError> {
-    let paths: Vec<Vec<u8>> = (0..uids)
-        .map(|uid| {
-            let n = pci_name(uid);
-            let p = alloc::format!("\\_SB_.{}.NBIO.NAPE", as_str(&n));
-            serialize(&MethodCall::new(Path::new(&p), Vec::new()))
-        })
+    let nbios: Vec<alloc::string::String> = (0..uids)
+        .map(|uid| alloc::format!("\\_SB_.{}.NBIO", as_str(&pci_name(uid))))
         .collect();
-    let calls: Vec<RawAml> = paths.iter().map(|p| RawAml(p)).collect();
-    let picm = Path::new("PICM");
-    let store = Store::new(&picm, &Arg(0));
-    let nape = If::new(&Arg(0), calls.iter().map(|c| c as &dyn Aml).collect());
-    let pic = serialize(&Method::new(
-        Path::new("_PIC"),
-        1,
-        false,
-        alloc::vec![&store, &nape],
-    ));
     let fixed: Vec<u8> = acpi_dsl! {
-        Name("PICM", 0u8);
         Name("_S0_", Package(0u8, 0u8, 0u8, 0u8));
         Name("_S5_", Package(5u8, 0u8, 0u8, 0u8));
     }
     .into();
-    scope_vec("\\", &[fixed, pic].concat())
+    Ok([ioapic_acpi::pic_aml(&nbios)?, scope_vec("\\", &fixed)?].concat())
 }
 
 fn processors(inputs: &Inputs) -> Result<Vec<u8>, AmlError> {

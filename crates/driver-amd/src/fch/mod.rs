@@ -61,6 +61,9 @@ pub const IOAPIC: u32 = 0xfec0_0000;
 pub const SCI_IRQ: u8 = 9;
 /// The HPET.
 pub const HPET: u32 = 0xfed0_0000;
+/// The HPET's minimum clock tick the vendor firmware's HPET table reports
+/// (AMI SbDxe).
+pub const HPET_MIN_TICK: u16 = 0x37ee;
 /// A-Link-to-AHB bridge and its AHB devices.
 pub const AL2AHB: u32 = 0xfedc_0000;
 
