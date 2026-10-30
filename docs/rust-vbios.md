@@ -42,14 +42,34 @@ seven embedding tests, including REP progress, I/O widths, fault exits and
 LDMXCSR/STMXCSR with CR0.MP clear; the existing 311 selected x86 tests also
 passed. These do not substitute for external instruction-conformance corpora.
 
-The earlier opt-in Rust adapter completed two Vilboz cold boots: four CPUs,
-Raven2 POST, VBE 3.0 with 20 modes, mode `0x1d4` at 1366x768/32 bpp with
-1408-pixel stride at `0xe0000000`, and successful CrabEFI initialization.
-A preceding boot hit the existing AP-release #GP before VBIOS execution.
-The Rust image was verified by a complete flash readback. These observations
-precede the final C removal and dependency pinning; the default-backend build
-still needs a fresh hardware validation. They do not prove OS boot, visual
-panel output, persistent UEFI variables or transaction-by-transaction parity.
+On 2026-10-30 the final Rust-only revision
+`e2aa8a6738f2758b44ed508c07edfb707b315a3b` was built with `--payload uefi`
+and tested on Vilboz. Two fresh full-flash recovery reads matched before
+programming; the programmed image also matched an explicit full readback.
+Its SHA-256 was
+`f50acd0ce98952e325cb37eda814a60bceaa5f0a3a9dcfbc0eb2dfd2f2974db7`.
+The linked ELF had no C emulator or legacy C-ABI emulator symbols.
+
+Both a G3/power-button cold boot and a Cr50 `ecrst pulse` boot completed:
+
+- Four CPUs up, zero CPU-init errors.
+- Rust VBIOS POST and VBE 3.0 with 20 modes.
+- Mode `0x1d4`: 1366x768, 32 bpp, 1408-pixel stride at `0xe0000000`.
+- PSP DF lock, payload handoff and successful CrabEFI initialization.
+- No emulator error, timeout, panic or host exception in either capture.
+
+Logs and readbacks are retained locally under
+`.local/rust-vbios/final-pr149-e2aa8a67-20261030/`. This does not prove OS boot,
+visual panel output, persistent UEFI variables or transaction-by-transaction
+parity. Earlier experiments did observe an AP-release #GP before VBIOS;
+that failure did not occur in these two final-revision captures.
+
+**Known blocker:** `--payload uefi-ui` does not link in the current 2 MiB reset
+image. The linker reports `.data` overflowing the image by 2,528 bytes and
+its load range overlapping `.init16` (`0x031fe000`). The reported `.data`
+load end is `0x032009df`, so roughly 10.5 KiB must be recovered to clear that
+reserved reset section, not merely the 2,528-byte region overflow. Do not
+interpret the successful standard-UEFI boots as graphical-UI validation.
 
 ## Remaining scope
 
