@@ -10,8 +10,12 @@ schema = 1
 board = "gigabyte-ga-d510ud"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }
+
+[features]
+default = []
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-intel/bundle-smm"]
 
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
@@ -24,6 +28,4 @@ fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] 
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+# One binary per stage, named after the stage: src/bin/<stage>.rs.
