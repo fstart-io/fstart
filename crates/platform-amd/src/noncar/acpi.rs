@@ -102,7 +102,6 @@ pub fn install<S: super::Soc>(
     // SAFETY: the BSP, reading the architectural P-state and C-state MSRs.
     let msr = unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() };
     let pstates = power::pstates(&msr);
-    let threads_per_core = ((fstart_arch::x86::cpuid(0x8000_001e).1 >> 8) & 0xff) as u8 + 1;
     let tables = acpi::build(&Inputs {
         soc,
         apic_ids,
@@ -110,10 +109,11 @@ pub fn install<S: super::Soc>(
         ecam_base: window.base,
         ecam_buses: window.buses,
         hpet_id,
-        power: Some(acpi::CpuPower {
+        power: Some(power::Power {
             pstates: &pstates,
             cstates: power::cstate_info(&msr),
-            threads_per_core,
+            threads_per_core: fstart_driver_amd::ccx::Thread::current().threads_per_core(),
+            c2_latency_us: power::c2_latency_us(fstart_arch::x86::mp::CpuIdentity::current()),
         }),
         numa: numa.as_ref().map(|memory| acpi::DieNuma {
             memory,

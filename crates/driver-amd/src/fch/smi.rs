@@ -243,7 +243,7 @@ mod handler {
         /// # Safety
         /// As for [`Self::sleep_entry`].
         unsafe fn gevent(_status: u32) {}
-        /// Any SMI command, after the FCH handled its own.
+        /// An SMI command the FCH doesn't handle itself.
         /// # Safety
         /// As for [`Self::sleep_entry`].
         unsafe fn apmc(_command: u8) {}
@@ -310,9 +310,8 @@ mod handler {
                 fch.set_sci(false);
                 fch.enable_power_button_smi();
             }
-            _ => {}
+            _ => unsafe { H::apmc(command) },
         }
-        unsafe { H::apmc(command) };
     }
 
     /// Power button: S5 unless the OS owns ACPI.

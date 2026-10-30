@@ -1,5 +1,7 @@
 //! IPMI over the KCS system interface.
 #![no_std]
+#[cfg(feature = "acpi")]
+extern crate alloc;
 
 pub mod kcs;
 
@@ -104,6 +106,73 @@ pub const fn sleep_power_states(sx: u8) -> Option<(u8, u8)> {
         4 => Some((4, 3)),
         5 => Some((5, 3)),
         _ => None,
+    }
+}
+
+/// A board's BMC sleep-state notification (AMI BmcAcpi's SW SMIs): the
+/// DSDT writes `sw_smi_base + Sx` to the SMI command port before sleeping
+/// and `sw_smi_base` at boot and wake ([`Self::aml`]), and the SMM handler
+/// [`Self::report`]s it with Set ACPI Power State over the KCS interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct SleepNotify {
+    pub kcs_port: u16,
+    pub kcs_spacing: u8,
+    pub sw_smi_base: u8,
+}
+
+/// The KCS budget of [`SleepNotify::report`]: 2000 polls 10 us apart, 20 ms.
+pub const SMM_POLL_BUDGET: u32 = 2000;
+
+impl SleepNotify {
+    /// The `(system, device)` states SW SMI `command` reports, if it is a
+    /// sleep-state notification.
+    pub const fn states(&self, command: u8) -> Option<(u8, u8)> {
+        match command.checked_sub(self.sw_smi_base) {
+            Some(sx) => sleep_power_states(sx),
+            None => None,
+        }
+    }
+
+    /// Report SW SMI `command`, if it is a notification. The OS shares the
+    /// interface: only an idle one is used, and for at most
+    /// [`SMM_POLL_BUDGET`], rather than corrupting the OS's transaction or
+    /// holding every CPU in SMM. A KCS error is dropped: the sleep goes on
+    /// either way.
+    ///
+    /// # Safety
+    /// The KCS ports are the board's, and the caller owns the CPUs (SMM).
+    pub unsafe fn report<D: embedded_hal::delay::DelayNs>(&self, command: u8, delay: D) {
+        if self.states(command).is_some() {
+            // SAFETY: the caller's.
+            let kcs = unsafe { kcs::Kcs::new(self.kcs_port, self.kcs_spacing.into(), delay) };
+            let _ = self.report_on(kcs, command);
+        }
+    }
+
+    /// [`Self::report`] on `kcs`; `None` if nothing was sent.
+    pub fn report_on<D, P, S>(
+        &self,
+        kcs: kcs::Kcs<D, P, S>,
+        command: u8,
+    ) -> Option<Result<(), Error>>
+    where
+        D: embedded_hal::delay::DelayNs,
+        P: tock_registers::interfaces::Readable<T = u8>
+            + tock_registers::interfaces::Writeable<T = u8>,
+        S: tock_registers::interfaces::Readable<T = u8, R = kcs::Status::Register>
+            + tock_registers::interfaces::Writeable<T = u8, R = kcs::Status::Register>,
+    {
+        let (system, device) = self.states(command)?;
+        let mut kcs = kcs.with_poll_budget(SMM_POLL_BUDGET);
+        kcs.idle().then(|| kcs.set_acpi_power_state(system, device))
+    }
+
+    /// The DSDT's side, raising the SW SMIs on `smi_cmd`: `\_PTS`, `\_WAK`
+    /// and `\_SB._INI`.
+    #[cfg(feature = "acpi")]
+    pub fn aml(&self, smi_cmd: u16) -> alloc::vec::Vec<u8> {
+        fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(smi_cmd, self.sw_smi_base)
     }
 }
 

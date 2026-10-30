@@ -185,7 +185,11 @@ fn inputs<'a>(
         }),
         einj: false,
         fch: fch(),
-        bmc_sx_notify: Some(0xC0),
+        bmc_sx_notify: Some(fstart_driver_ipmi::SleepNotify {
+            kcs_port: 0xca2,
+            kcs_spacing: 1,
+            sw_smi_base: 0xC0,
+        }),
         tpm: Some(fstart_acpi::devices::tpm::TpmTisAcpi {
             family: fstart_acpi::devices::tpm::TpmFamily::Tpm20,
             server: true,

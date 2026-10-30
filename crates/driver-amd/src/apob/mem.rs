@@ -11,6 +11,7 @@
 //!
 //! Field names beyond those the report gives are left raw.
 
+use tock_registers::{LocalRegisterCopy, register_bitfields};
 use zerocopy::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
@@ -105,11 +106,25 @@ pub struct SpdRecord {
     /// As `info`.
     pub dword8: U32,
     _c: U32,
-    /// The DIMM's SPD bytes.
+    /// The DIMM's SPD bytes as the ABL keeps them, see [`Self::jedec_spd`].
     pub spd: [u8; 512],
 }
 
+/// DDR4 base-block bytes JEDEC reserves (coded 0x00, inside the CRC).
+const SPD_RESERVED: core::ops::Range<usize> = 78..117;
+
 impl SpdRecord {
+    /// The SPD as the module has it. The Zeppelin ABL keeps the module's
+    /// serial number, part number and manufacturer IDs in the reserved
+    /// base-block bytes of its copy (MJ11-EC1 with four SK hynix
+    /// HMA42GR7MFR4N-TF: bytes 80-107), which breaks the base CRC; the
+    /// module's are zero.
+    pub fn jedec_spd(&self) -> [u8; 512] {
+        let mut spd = self.spd;
+        spd[SPD_RESERVED].fill(0);
+        spd
+    }
+
     pub fn present(&self) -> bool {
         self.present == 1
     }
@@ -178,6 +193,33 @@ pub fn spd<'a>(apob: &Apob<'a>, socket: u8, die: u8) -> Result<SpdTable<'a>, Apo
     })
 }
 
+register_bitfields![u8,
+    /// The position byte of the type-20 seeds, and of ZP's type-17 seeds
+    /// (MJ11-EC1 APOB: 0x00, 0xa0, 0x04, 0xa4 for DIMMs in slot 1 of
+    /// channels 0 and 1, as its SPD copies say).
+    pub Location [
+        SOCKET OFFSET(0) NUMBITS(2) [],
+        CHANNEL OFFSET(2) NUMBITS(3) [],
+        DIMM OFFSET(5) NUMBITS(2) [],
+        /// Populated (type 17), valid (type 20).
+        VALID OFFSET(7) NUMBITS(1) []
+    ],
+    /// The position byte of SSP/GN's type-17 seeds (Rome
+    /// MemSmbiosV2SspPei; RXM100CB `ffd56fad`).
+    pub SspLocation [
+        SOCKET OFFSET(0) NUMBITS(1) [],
+        CHANNEL OFFSET(1) NUMBITS(3) [],
+        DIMM OFFSET(4) NUMBITS(2) [],
+        PRESENT OFFSET(6) NUMBITS(1) [],
+        /// AGESA skips the seed.
+        SKIP OFFSET(7) NUMBITS(1) []
+    ],
+    pub Type20Flags [
+        /// AGESA fills the interleave fields with 0xff.
+        INTERLEAVED OFFSET(0) NUMBITS(1) []
+    ]
+];
+
 /// An 8/8 type-17 seed (8 bytes).
 #[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
@@ -189,26 +231,6 @@ pub struct Type17Seed {
     /// Copied into the type-17 record (Rome MemSmbiosV2SspPei); meaning not
     /// traced.
     pub words: [U16; 2],
-}
-
-impl Type17Seed {
-    /// Skipped by AGESA when set.
-    pub fn skip(&self) -> bool {
-        self.location & 0x80 != 0
-    }
-    /// The module is populated (RXM100CB `ffd56fad`).
-    pub fn present(&self) -> bool {
-        self.location & 0x40 != 0
-    }
-    pub fn socket(&self) -> u8 {
-        self.location & 1
-    }
-    pub fn channel(&self) -> u8 {
-        self.location >> 1 & 7
-    }
-    pub fn dimm(&self) -> u8 {
-        self.location >> 4 & 3
-    }
 }
 
 /// An 8/8 type-20 seed (0x20 bytes).
@@ -227,22 +249,11 @@ pub struct Type20Seed {
 }
 
 impl Type20Seed {
-    /// AGESA uses the record only when set.
-    pub fn valid(&self) -> bool {
-        self.location & 0x80 != 0
+    pub fn location(&self) -> LocalRegisterCopy<u8, Location::Register> {
+        LocalRegisterCopy::new(self.location)
     }
-    pub fn socket(&self) -> u8 {
-        self.location & 3
-    }
-    pub fn channel(&self) -> u8 {
-        self.location >> 2 & 7
-    }
-    pub fn dimm(&self) -> u8 {
-        self.location >> 5 & 3
-    }
-    /// Bit 0 of the second byte: AGESA fills the interleave fields with 0xff.
-    pub fn interleaved(&self) -> bool {
-        self.flags & 1 != 0
+    pub fn flags(&self) -> LocalRegisterCopy<u8, Type20Flags::Register> {
+        LocalRegisterCopy::new(self.flags)
     }
 }
 
@@ -258,26 +269,31 @@ pub struct DimmPosition {
 }
 
 impl Type17Seed {
-    /// The position for an APOB of `variant`. ZP (Zeppelin, Naples) packs
-    /// the location like the type-20 seeds: socket \[1:0\], channel \[4:2\],
-    /// DIMM \[6:5\], populated \[7\], every position listed (MJ11-EC1 APOB:
-    /// 0x00, 0xa0, 0x04, 0xa4 for DIMMs in slot 1 of channels 0 and 1, as
-    /// its SPD copies say). `None` for a position AGESA skips.
+    /// The position for an APOB of `variant`: ZP (Zeppelin, Naples) lists
+    /// every position in [`Location`], SSP/GN in [`SspLocation`]. `None`
+    /// for a position AGESA skips, and on RV, whose seeds no APOB has shown.
     pub fn position(&self, variant: crate::psp::Variant) -> Option<DimmPosition> {
-        let l = self.location;
+        use crate::psp::Variant;
         match variant {
-            crate::psp::Variant::Zp => Some(DimmPosition {
-                socket: l & 3,
-                channel: l >> 2 & 7,
-                dimm: l >> 5 & 3,
-                present: l & 0x80 != 0,
-            }),
-            _ => (!self.skip()).then(|| DimmPosition {
-                socket: self.socket(),
-                channel: self.channel(),
-                dimm: self.dimm(),
-                present: self.present(),
-            }),
+            Variant::Zp => {
+                let l = LocalRegisterCopy::<u8, Location::Register>::new(self.location);
+                Some(DimmPosition {
+                    socket: l.read(Location::SOCKET),
+                    channel: l.read(Location::CHANNEL),
+                    dimm: l.read(Location::DIMM),
+                    present: l.is_set(Location::VALID),
+                })
+            }
+            Variant::Ssp | Variant::Gn => {
+                let l = LocalRegisterCopy::<u8, SspLocation::Register>::new(self.location);
+                (!l.is_set(SspLocation::SKIP)).then(|| DimmPosition {
+                    socket: l.read(SspLocation::SOCKET),
+                    channel: l.read(SspLocation::CHANNEL),
+                    dimm: l.read(SspLocation::DIMM),
+                    present: l.is_set(SspLocation::PRESENT),
+                })
+            }
+            Variant::Rv => None,
         }
     }
 }
@@ -337,8 +353,29 @@ mod tests {
             positions,
             [(0, 0, false), (0, 1, true), (1, 0, false), (1, 1, true)]
         );
-        // Rome's skip flag.
+        // Rome's skip flag; Rome's layout.
         assert_eq!(seed(0x80).position(Variant::Ssp), None);
+        assert_eq!(
+            seed(0x5b).position(Variant::Ssp),
+            Some(DimmPosition {
+                socket: 1,
+                channel: 5,
+                dimm: 1,
+                present: true
+            })
+        );
+        // Picasso's are unknown.
+        assert_eq!(seed(0xa0).position(Variant::Rv), None);
+    }
+
+    #[test]
+    fn the_abls_reserved_bytes_are_cleared() {
+        let mut record = SpdRecord::read_from_bytes(&[0; 0x214]).unwrap();
+        record.spd[77] = 0x0b;
+        record.spd[80..84].copy_from_slice(&[0x23, 0xec, 0xb9, 0xe8]);
+        record.spd[117] = 0x86;
+        let spd = record.jedec_spd();
+        assert_eq!((spd[77], spd[80], spd[116], spd[117]), (0x0b, 0, 0, 0x86));
     }
 
     #[test]
@@ -452,7 +489,10 @@ mod tests {
                 handle: 0.into(),
                 words: [0.into(); 2],
             };
-            assert_eq!((seed.skip(), seed.present()), (skip, present));
+            assert_eq!(
+                seed.position(Variant::Ssp).map(|p| p.present),
+                (!skip).then_some(present)
+            );
         }
         for (t17, t20, size) in [(1, 0, 0x3b), (0, 1, 0x53), (1, 1, 0x5b)] {
             let body = Body::default().at(0x30, &[0, t17, t20]).len(size);
@@ -480,19 +520,26 @@ mod tests {
         assert!(info.ecc());
         let s = &info.type17[0];
         assert_eq!(
+            (s.position(Variant::Ssp), s.handle.get()),
             (
-                s.skip(),
-                s.present(),
-                s.socket(),
-                s.channel(),
-                s.dimm(),
-                s.handle.get()
-            ),
-            (false, true, 1, 2, 0, 0x10)
+                Some(DimmPosition {
+                    socket: 1,
+                    channel: 2,
+                    dimm: 0,
+                    present: true
+                }),
+                0x10
+            )
         );
         let s = &info.type20[0];
+        let l = s.location();
         assert_eq!(
-            (s.valid(), s.socket(), s.channel(), s.handle.get()),
+            (
+                l.is_set(Location::VALID),
+                l.read(Location::SOCKET),
+                l.read(Location::CHANNEL),
+                s.handle.get()
+            ),
             (true, 1, 2, 0x20)
         );
     }

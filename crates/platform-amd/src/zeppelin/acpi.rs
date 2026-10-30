@@ -29,8 +29,6 @@ pub const ACPI: SocAcpi = SocAcpi {
     },
     bridge_routes: &ROUTES,
     fch_intx_gsi: [16, 17, 18, 19],
-    // CC6 exit (AGESA's CPU SSDT, coreboot).
-    c2_latency_us: 400,
     // PME of the xHCI bridge 7.1 (the vendor's _PRW(0x0B, 4) and _L0B).
     wake: Some(crate::acpi::Wake {
         gpe: 0x0b,

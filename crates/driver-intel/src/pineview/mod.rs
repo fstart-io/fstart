@@ -1441,7 +1441,7 @@ mod acpi_impl {
             );
 
             // ---------------------------------------------------------------
-            // 4. Processor power-management devices (\._SB.CP00, CP01).
+            // 4. Processor power-management devices (\._SB.C000, C001).
             //
             // Ported from coreboot's `cpu/intel/speedstep` ACPI generator:
             // each CPU device gets `_PCT`, `_PSD`, and an MSR-derived `_PSS`.

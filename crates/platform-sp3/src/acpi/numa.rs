@@ -9,10 +9,25 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+pub use fstart_acpi::numa::{CpuAffinity, MemoryAffinity};
 #[cfg(any(feature = "bundle-reset", test))]
 use fstart_driver_amd::sp3::df::dram::{DramMap, NumaDomain, df3_channel, domain_of};
 use fstart_driver_amd::sp3::soc::Generation;
-pub use fstart_platform_amd::numa::{CpuAffinity, Domain, MemoryAffinity, Numa};
+
+/// A proximity domain; its proximity number is its index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Domain {
+    pub socket: u8,
+}
+
+/// NUMA description.
+#[derive(Debug, Clone, Copy)]
+pub struct Numa<'a> {
+    pub domains: &'a [Domain],
+    pub memory: &'a [MemoryAffinity],
+    /// CPUID Fn8000_0008_EAX\[7:0\], for the MSCT.
+    pub phys_addr_bits: u8,
+}
 
 use super::Cpu;
 
@@ -50,13 +65,15 @@ pub const fn distance(generation: Generation, a: Domain, b: Domain) -> u8 {
 
 /// `[SRAT, MSCT, SLIT]` (AmdAcpiDxe order), or nothing with one domain.
 pub fn tables(generation: Generation, numa: &Numa, cpus: &[Cpu]) -> Vec<Vec<u8>> {
-    fstart_platform_amd::numa::tables(
-        numa,
+    fstart_acpi::numa::tables(
+        numa.domains.len(),
+        numa.memory,
         cpus.iter().map(|c| CpuAffinity {
             apic_id: c.apic_id,
             domain: c.domain,
         }),
-        |a, b| distance(generation, a, b),
+        numa.phys_addr_bits,
+        |a, b| distance(generation, numa.domains[a], numa.domains[b]),
     )
 }
 

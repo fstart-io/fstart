@@ -8,11 +8,13 @@ license.workspace = true
 default = ["arm"]
 std = []
 arm = []
-x86 = []
+# x86 tables; SMBIOS processor packages from fstart-arch's CPUID records.
+x86 = ["dep:fstart-arch"]
 
 [dependencies]
 acpi_tables = "0.2"
 fstart-core = { path = "../core" }
+fstart-arch = { workspace = true, features = ["x86_64"], optional = true }
 fstart-acpi-macros = { path = "../acpi-macros" }
 tock-registers = { workspace = true }
 zerocopy = { workspace = true }

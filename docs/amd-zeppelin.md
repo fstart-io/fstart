@@ -165,8 +165,10 @@ From `zeppelin/acpi.rs` and the shared `crate::acpi`:
   matched by a unit test to the NBIO base table), FCH INTA-D GSIs 16-19.
 - Board: `lpc_aml` for the Super I/O COM1 at `0x3f8` IRQ 4 and the IPMI KCS
   interface, the SPMI and SPCR (COM1, the BMC's SOL) tables, and `_PTS`/`_WAK`
-  reporting the sleep state to the BMC (SW SMI `0xc0` + Sx).
-- The FCH GPIO controller (`AMDI0030`) on the IRQ the board routes it to.
+  reporting the sleep state to the BMC (SW SMI `0xc0` + Sx,
+  `fstart_driver_ipmi::SleepNotify`, as the S8030).
+- The FCH GPIO controller (`AMDI0030`, three banks: `0x300` bytes) on the IRQ
+  the board routes it to.
 - The xHCI bridge 7.1 wakes through GPE `0x0b` (`_PRW`, `\_GPE._L0B`).
 - Processors: P-states from PStateDef (EPYC 3151: 2.7, 1.9, 1.2 GHz), C1
   MWAIT and C2 (CC6, 400 µs) through I/O `0x814`.

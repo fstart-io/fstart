@@ -877,7 +877,7 @@ fn install_smm<S: Steps>(
     ctx: &mut Ctx,
     si: &S,
     mp: &MpHandle,
-    bmc: Option<crate::smm::BmcSxNotify>,
+    bmc: Option<crate::smm::SleepNotify>,
 ) {
     let config = crate::smm::SmmConfig {
         generation: ctx.generation,

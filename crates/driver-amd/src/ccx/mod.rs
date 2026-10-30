@@ -59,12 +59,24 @@ impl Thread {
             fstart_arch::x86::cpuid(0x8000_001e).1,
         )
     }
+    /// Another thread of the same topology.
+    pub const fn with_apic_id(self, apic_id: u8) -> Self {
+        Self { apic_id, ..self }
+    }
     pub const fn apic_id(self) -> u8 {
         self.apic_id
     }
+    /// 2 with SMT, else 1.
+    pub const fn threads_per_core(self) -> u8 {
+        self.threads_per_core
+    }
     /// The die (APIC ID [5:4]) the thread is on.
     pub const fn die(self) -> u8 {
-        (self.apic_id >> 4) & 3
+        Self::die_of(self.apic_id as u32)
+    }
+    /// The die of APIC ID `apic_id`.
+    pub const fn die_of(apic_id: u32) -> u8 {
+        ((apic_id >> 4) & 3) as u8
     }
     pub const fn core_primary(self) -> bool {
         self.apic_id.is_multiple_of(self.threads_per_core)

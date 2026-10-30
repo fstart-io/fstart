@@ -87,20 +87,11 @@ pub struct SmmConfig {
     pub usb_bus_count: u8,
     pub generation: Generation,
     /// Sleep-state notification to the BMC, if the board has one.
-    pub bmc: Option<BmcSxNotify>,
+    pub bmc: Option<SleepNotify>,
 }
 
-/// A board's BMC sleep-state notification: the DSDT writes `sw_smi_base +
-/// Sx` to the SMI command port (`\_PTS`, `\_WAK`, `\_SB._INI`), and the
-/// handler sends Set ACPI Power State over the KCS interface (AMI
-/// BmcAcpi's SW SMIs 0xC0–0xC5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(C)]
-pub struct BmcSxNotify {
-    pub kcs_port: u16,
-    pub kcs_spacing: u8,
-    pub sw_smi_base: u8,
-}
+/// A board's BMC sleep-state notification (`B::BMC_SX_NOTIFY`).
+pub use fstart_driver_ipmi::SleepNotify;
 
 /// Endpoints and owned cache-line targets, frozen by the normal installer.
 /// Absent sockets have no target and are never accessed by SMM.
@@ -343,7 +334,8 @@ mod handler {
                 smi::sw::FCH_LOCK if generation == Generation::Milan => fch_lock(config, &timer),
                 command => {
                     if let Some(bmc) = config.bmc {
-                        bmc_notify(&bmc, command, timer);
+                        // SAFETY: the board's KCS ports; SMM owns the CPUs.
+                        unsafe { bmc.report(command, timer) };
                     }
                 }
             }
@@ -420,22 +412,6 @@ mod handler {
         // SAFETY: in bounds of the SMRAM static; the caller owns the
         // rendezvous.
         unsafe { P2C.0.get().cast::<u32>().add(index) }
-    }
-
-    /// Report sleep state `command - sw_smi_base` to the BMC. A KCS error
-    /// is dropped: the OS's sleep goes on either way.
-    fn bmc_notify(bmc: &super::BmcSxNotify, command: u8, timer: Tsc) {
-        let Some((system, device)) = command
-            .checked_sub(bmc.sw_smi_base)
-            .and_then(fstart_driver_ipmi::sleep_power_states)
-        else {
-            return;
-        };
-        // SAFETY: the board's KCS ports; SMM owns the CPU.
-        let mut kcs = unsafe {
-            fstart_driver_ipmi::kcs::Kcs::new(bmc.kcs_port, bmc.kcs_spacing.into(), timer)
-        };
-        let _ = kcs.set_acpi_power_state(system, device);
     }
 
     /// SmmInfo (PSP_APOB §3.3) with this handler's buffers, the P2C

@@ -23,6 +23,7 @@ use fstart_acpi::{AmlError, BoundAmlFragment, acpi_dsl};
 use heapless::Vec as HVec;
 
 use super::{Window, irq, uart};
+use crate::fch::aml::GPIO_BASE;
 
 /// DesignWare component type register (`*_COMP_TYPE`, offset 0xFC); the
 /// high half reads `"DW"` on a powered DesignWare block.
@@ -49,8 +50,8 @@ const I2C_MMIO: [u32; 6] = [
     0xFEDC_6000,
     0xFEDC_B000,
 ];
-/// GPIO bank registers (ACPI MMIO GPIO block).
-const GPIO_MMIO: (u32, u32) = (0xFED8_1500, 0x300);
+/// The GPIO banks' extent from `fch::aml::GPIO_BASE`.
+const GPIO_LENGTH: u32 = 0x300;
 
 /// The legacy ranges of [`uart::LEGACY_DECODE`]: bit `k` enables range `k`,
 /// bits `8 + 2k` select the UART behind it (donor `CKST`/`COMn`).
@@ -178,28 +179,16 @@ impl FchAcpi {
             out.extend(device_vec(&name("COM", b'0' + c.com), &body)?);
         }
         for i in &self.i2c {
-            let mmio = I2C_MMIO[usize::from(i.index)];
-            let body = emit(acpi_dsl! {
-                Name("_HID", "AMDI0010");
-                Name("_UID", #{byte i.index});
-                Name("_CRS", ResourceTemplate {
-                    Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{dword i.irq});
-                    Memory32Fixed(ReadWrite, #{dword mmio}, 0x1000u32);
-                });
-            })?;
-            out.extend(device_vec(&name("I2C", b'A' + i.index), &body)?);
+            out.extend(crate::fch::aml::i2c(
+                &name("I2C", b'A' + i.index),
+                i.index,
+                I2C_MMIO[usize::from(i.index)],
+                i.irq,
+                &[],
+            )?);
         }
         if let Some(irq) = self.gpio_irq {
-            let body = emit(acpi_dsl! {
-                Name("_HID", "AMDI0030");
-                Name("_CID", "AMDI0030");
-                Name("_UID", 0u8);
-                Name("_CRS", ResourceTemplate {
-                    Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq});
-                    Memory32Fixed(ReadWrite, #{const dword GPIO_MMIO.0}, #{const dword GPIO_MMIO.1});
-                });
-            })?;
-            out.extend(device_vec("GPIO", &body)?);
+            out.extend(crate::fch::aml::gpio(irq, GPIO_LENGTH)?);
         }
         Ok(out)
     }
@@ -248,8 +237,8 @@ pub const SYSTEM_IO: &[(u16, u8)] = &[
 /// block around the GPIO bank the `GPIO` device owns, the `FEDC_0000h`
 /// block, the SPI controller and the flash window (donor `S900`).
 pub const SYSTEM_MMIO: &[(u32, u32)] = &[
-    (0xFED8_0000, GPIO_MMIO.0 - 0xFED8_0000),
-    (GPIO_MMIO.0 + 0x400, 0xFED9_0000 - (GPIO_MMIO.0 + 0x400)),
+    (0xFED8_0000, GPIO_BASE - 0xFED8_0000),
+    (GPIO_BASE + 0x400, 0xFED9_0000 - (GPIO_BASE + 0x400)),
     (0xFEDC_0000, 0x1000),
     (super::spi::BASE, 0x1000),
     (0xFF00_0000, 0x0100_0000),
@@ -402,7 +391,7 @@ mod tests {
 
     #[test]
     fn system_mmio_leaves_the_gpio_bank_out() {
-        let gpio = u64::from(GPIO_MMIO.0)..u64::from(GPIO_MMIO.0 + GPIO_MMIO.1);
+        let gpio = u64::from(GPIO_BASE)..u64::from(GPIO_BASE + GPIO_LENGTH);
         assert!(SYSTEM_MMIO.iter().all(|&(b, l)| {
             let (b, l) = (u64::from(b), u64::from(l));
             b + l <= gpio.start || b >= gpio.end

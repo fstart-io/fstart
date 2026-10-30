@@ -245,13 +245,13 @@ impl noncar::Soc for Zeppelin {
             acpi: &acpi::ACPI,
             devices: heapless::Vec::new(),
             // The FCH GPIO controller (AMDI0030) on the IRQ the board routes
-            // it to, as the vendor DSDT has it.
+            // it to, as the vendor DSDT has it: three banks.
             aml: config
                 .fch
                 .irq_routes
                 .iter()
                 .find(|route| route.source == taishan::irq::GPIO)
-                .and_then(|route| crate::acpi::fch_gpio(route.apic).ok())
+                .and_then(|route| fstart_driver_amd::fch::aml::gpio(route.apic, 0x300).ok())
                 .unwrap_or_default(),
             tables: Default::default(),
             framebuffer: None,
@@ -274,7 +274,7 @@ impl noncar::Soc for Zeppelin {
         Some(
             memory
                 .iter()
-                .map(|m| crate::numa::MemoryAffinity {
+                .map(|m| fstart_acpi::numa::MemoryAffinity {
                     base: m.base,
                     end: m.end,
                     domain: m.die.into(),

@@ -31,6 +31,8 @@ use tock_registers::{
     register_bitfields,
 };
 pub mod alink;
+#[cfg(feature = "acpi")]
+pub mod aml;
 pub mod early;
 pub mod emmc;
 pub mod espi;
@@ -39,6 +41,7 @@ mod espi_tests;
 pub mod gpio;
 #[cfg(all(test, feature = "picasso"))]
 mod gpio_tests;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod i2c;
 pub mod lpc;
 #[cfg(feature = "picasso")]

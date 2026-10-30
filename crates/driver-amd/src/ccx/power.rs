@@ -71,6 +71,16 @@ pub fn cstate_info<M: MsrAccess + ?Sized>(cpu: &M) -> Option<CstateInfo> {
     })
 }
 
+/// The C2 (CC6) exit latency of the executing CPU's core: 400 µs on Zen
+/// (family 17h models 00h–2Fh: Zeppelin, Raven/Picasso; AGESA and
+/// coreboot), 18 µs on Zen 2 and 3.
+pub fn c2_latency_us(identity: fstart_arch::x86::mp::CpuIdentity) -> u16 {
+    match (identity.family(), identity.model()) {
+        (0x17, 0..0x30) => 400,
+        _ => 18,
+    }
+}
+
 /// The power objects every processor device gets.
 #[derive(Debug, Clone, Copy)]
 pub struct Power<'a> {
@@ -78,7 +88,7 @@ pub struct Power<'a> {
     pub cstates: Option<CstateInfo>,
     /// 2 with SMT, else 1 (`_PSD` domain = APIC ID / threads per core).
     pub threads_per_core: u8,
-    /// C2 (CC6) exit latency: 400 µs on Zen, 18 µs on Zen 2 and 3.
+    /// C2 (CC6) exit latency, [`c2_latency_us`].
     pub c2_latency_us: u16,
 }
 
@@ -92,20 +102,33 @@ mod aml {
     use alloc::vec::Vec;
     use fstart_acpi::gas::{AccessSize, AddressSpace, GAS};
     use fstart_acpi::processor::{
-        Coordination, PerformanceState, PowerState, cst_aml, pct_aml, psd_aml, pss_aml,
+        Coordination, Dependency, PerformanceState, PowerObjects, PowerState,
     };
 
-    /// `_PCT`/`_PSS`, `_CST` (C1 MWAIT through FFH, C2 an I/O read of the
-    /// C-state base + 1, as AGESA's CPU SSDT and coreboot have them) and the
-    /// per-core `_PSD` of one processor.
+    /// FFixedHW register `address` (an MSR, or 0).
+    fn ffh(class: u8, offset: u8, access: AccessSize, address: u64) -> GAS {
+        GAS::new(
+            AddressSpace::FunctionalFixedHardware,
+            class,
+            offset,
+            access,
+            address,
+        )
+    }
+
+    /// The power objects of the processor devices: `_PCT` on the P-state
+    /// control MSR and `_PSS`, `_CST` (C1 MWAIT through FFH, C2 an I/O read
+    /// of the C-state base + 1, as AGESA's CPU SSDT and coreboot have them;
+    /// C2 only with CC6 enabled) and the per-core `_PSD`.
     pub struct PowerAml {
-        shared: Vec<u8>,
+        pstates: Vec<PerformanceState>,
+        cstates: Vec<PowerState>,
         threads_per_core: u8,
     }
 
     impl PowerAml {
         pub fn new(power: &Power) -> Self {
-            let pss: Vec<PerformanceState> = power
+            let pstates = power
                 .pstates
                 .iter()
                 .map(|p| PerformanceState {
@@ -117,30 +140,17 @@ mod aml {
                     status: p.index.into(),
                 })
                 .collect();
-            let ffh = |width, offset, access, address| {
-                GAS::new(
-                    AddressSpace::FunctionalFixedHardware,
-                    width,
-                    offset,
-                    access,
-                    address,
-                )
-            };
-            // The P-state control MSR; the OS writes the _PSS control value.
-            let pct = pct_aml(
-                ffh(0, 0, AccessSize::Undefined, 0xC001_0062),
-                ffh(0, 0, AccessSize::Undefined, 0),
-            );
-            let cst = power.cstates.map(|c| {
-                cst_aml(&[
-                    PowerState {
+            let cstates = power
+                .cstates
+                .map(|c| {
+                    let mwait = PowerState {
                         // FFixedHW class 2: MWAIT.
                         register: ffh(2, 2, AccessSize::ByteAccess, 0),
                         kind: 1,
                         latency_us: 1,
                         milliwatts: 0,
-                    },
-                    PowerState {
+                    };
+                    let io = PowerState {
                         register: GAS::new(
                             AddressSpace::SystemIo,
                             8,
@@ -151,20 +161,15 @@ mod aml {
                         kind: 2,
                         latency_us: power.c2_latency_us,
                         milliwatts: 0,
-                    },
-                ])
-            });
-            let shared = [
-                if pss.is_empty() {
-                    Vec::new()
-                } else {
-                    [pct, pss_aml(&pss)].concat()
-                },
-                cst.unwrap_or_default(),
-            ]
-            .concat();
+                    };
+                    let mut states = alloc::vec![mwait];
+                    states.extend(c.cc6.then_some(io));
+                    states
+                })
+                .unwrap_or_default();
             Self {
-                shared,
+                pstates,
+                cstates,
                 threads_per_core: power.threads_per_core.max(1),
             }
         }
@@ -172,12 +177,22 @@ mod aml {
         /// The objects of the processor with `apic_id`: the threads of a
         /// core share their P-state domain.
         pub fn for_cpu(&self, apic_id: u32) -> Vec<u8> {
-            let t = u32::from(self.threads_per_core);
-            [
-                self.shared.clone(),
-                psd_aml(apic_id / t, Coordination::HwAll, t),
-            ]
-            .concat()
+            let threads = u32::from(self.threads_per_core);
+            PowerObjects {
+                // The P-state control MSR; the OS writes the _PSS control
+                // value.
+                control: ffh(0, 0, AccessSize::Undefined, 0xC001_0062),
+                status: ffh(0, 0, AccessSize::Undefined, 0),
+                pstates: &self.pstates,
+                ppc: None,
+                dependency: Some(Dependency {
+                    domain: apic_id / threads,
+                    coordination: Coordination::HwAll,
+                    processors: threads,
+                }),
+                cstates: &self.cstates,
+            }
+            .aml()
         }
     }
 }
@@ -211,6 +226,20 @@ mod tests {
         assert_eq!(cstate_info(&MsrSpace::new([])), None);
     }
 
+    #[test]
+    fn c2_latency_by_core() {
+        use fstart_arch::x86::mp::{CpuIdentity, CpuVendor};
+        let cpu = |signature| CpuIdentity {
+            vendor: CpuVendor::Amd,
+            signature,
+        };
+        // Zeppelin B2, Picasso, Rome, Milan.
+        assert_eq!(c2_latency_us(cpu(0x0080_0f12)), 400);
+        assert_eq!(c2_latency_us(cpu(0x0081_0f81)), 400);
+        assert_eq!(c2_latency_us(cpu(0x0083_0f10)), 18);
+        assert_eq!(c2_latency_us(cpu(0x00a0_0f11)), 18);
+    }
+
     #[cfg(feature = "acpi")]
     #[test]
     fn processor_objects() {
@@ -231,5 +260,18 @@ mod tests {
         // C2 reads 0x814; core 1's domain.
         assert!(cpu3.windows(2).any(|w| w == 0x814u16.to_le_bytes()));
         assert!(cpu3.windows(2).any(|w| w == [0x0b, 0x90]), "400 us");
+        // Without CC6 the I/O C-state is only C1.
+        let c1 = PowerAml::new(&Power {
+            pstates: &pstates,
+            cstates: Some(CstateInfo {
+                io_base: 0x813,
+                cc6: false,
+            }),
+            threads_per_core: 2,
+            c2_latency_us: 400,
+        })
+        .for_cpu(3);
+        assert!(!c1.windows(2).any(|w| w == 0x814u16.to_le_bytes()));
+        assert!(c1.windows(4).any(|w| w == b"_CST"));
     }
 }

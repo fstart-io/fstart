@@ -1,5 +1,5 @@
 use super::*;
-use alloc::{vec, vec::Vec};
+use alloc::vec;
 use fstart_arch::x86::boot::cpuid::CacheInfo;
 use fstart_core::memory_info::{
     FORM_FACTOR_DIMM, MEMORY_TYPE_DDR4, TYPE_DETAIL_REGISTERED, TYPE_DETAIL_SYNCHRONOUS,

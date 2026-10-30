@@ -13,7 +13,7 @@ default = []
 naples = ["fstart-driver-amd/naples"]
 rome = ["fstart-driver-amd/rome"]
 milan = ["fstart-driver-amd/milan"]
-acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi", "dep:fstart-platform-amd"]
+acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi", "fstart-driver-amd/smbios", "fstart-driver-ipmi/acpi"]
 # The reset-image firmware unit (host::RESET_FEATURE): stage runtime for
 # `fstart_entry = "amd-psp-reset"` (asm/reset.S enters the arch crate's
 # `_start_ram`); `ffs` brings the stage allocator the arch identity paging
@@ -23,7 +23,7 @@ acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi", "dep:fstart-platform-amd"]
 bundle-reset = [
   "dep:fstart-stage", "fstart-stage/x86_64", "fstart-stage/ffs", "fstart-stage/acpi",
   "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
-  "fstart-stage/lz4", "acpi", "dep:fstart-driver-spd", "fstart-stage/tcg",
+  "fstart-stage/lz4", "acpi", "fstart-stage/tcg",
   "dep:fstart-driver-tpm", "dep:fstart-tcg",
 ]
 # Payload backends; fbuild's `fstart_payload` cfg selects the launcher.
@@ -31,7 +31,7 @@ payload-linux = ["fstart-stage/linux"]
 payload-uefi = ["fstart-stage/crabefi"]
 # The FCH SMI handler (`smm::Sp3SmmHandler`) for an SMM image unit; the
 # image unit adds `bundle-smm` (handler binding macro, SMM panic handler).
-smm = ["dep:fstart-smm", "dep:fstart-driver-ipmi"]
+smm = ["dep:fstart-smm"]
 bundle-smm = ["smm", "fstart-smm/stage-bin"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json"]
@@ -606,12 +606,10 @@ equivalence-id = 0xa082
 file = "milan/UcodePatch_GN_a082.bin"
 
 [dependencies]
-fstart-platform-amd = { path = "../platform-amd", default-features = false, features = ["tables"], optional = true }
-fstart-driver-spd = { workspace = true, optional = true }
 fstart-amdfw-format = { workspace = true }
 # The TSC timer and the FCH POST code register; Naples is Zeppelin.
 fstart-driver-amd = { workspace = true, features = ["zeppelin"] }
-fstart-driver-ipmi = { path = "../driver-ipmi", optional = true }
+fstart-driver-ipmi = { path = "../driver-ipmi" }
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-log = { workspace = true }

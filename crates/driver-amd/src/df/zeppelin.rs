@@ -210,7 +210,7 @@ pub fn die_memory(df0: &Df<impl ConfigRegionAccess>) -> Option<heapless::Vec<Die
             push(0, 0xa_0000)?;
             from = 1 << 20;
         }
-        match hole.filter(|_| base.is_set(DRAM_BASE::HOLE_EN)) {
+        match hole.filter(|&hole| base.is_set(DRAM_BASE::HOLE_EN) && from < hole && end > 4 * GIB) {
             // The limit is a system address: the DRAM the hole covers is
             // remapped above 4 GiB, within it.
             Some(hole) => {

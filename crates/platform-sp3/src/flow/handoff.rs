@@ -245,7 +245,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
         .collect();
     let cpu = crate::hw::msr();
     let pstates = power::pstates(&cpu);
-    let threads_per_core = ((fstart_arch::x86::cpuid(0x8000_001e).1 >> 8) & 0xff) as u8 + 1;
+    let threads_per_core = 1 + crate::mp::this_thread(ctx.generation).smt() as u8;
     let (domains, memory): (Vec<acpi::Domain>, Vec<acpi::MemoryAffinity>) = numa_plan
         .as_ref()
         .map(|p| {
@@ -305,11 +305,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             pstates: &pstates,
             cstates: power::cstate_info(&ctx.policy.ccx.cstates),
             threads_per_core,
-            // CC6 exit: 400 µs on Zen (AM4 lead), 18 µs on Zen 2/3.
-            c2_latency_us: match ctx.generation {
-                fstart_driver_amd::sp3::soc::Generation::Naples => 400,
-                _ => 18,
-            },
+            c2_latency_us: power::c2_latency_us(fstart_arch::x86::mp::CpuIdentity::current()),
         }),
         acpi_smi: ctx.smm.map(|_| AcpiSmiConfig {
             smi_cmd: u32::from(fstart_driver_amd::sp3::fch::acpimmio::SMI_CMD as u16),
@@ -326,7 +322,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
         },
         fch: &fch,
         tpm: super::tpm::acpi(),
-        bmc_sx_notify: B::BMC_SX_NOTIFY.map(|b| b.sw_smi_base),
+        bmc_sx_notify: B::BMC_SX_NOTIFY,
         cppc: &cppc,
         board: board_acpi,
     };

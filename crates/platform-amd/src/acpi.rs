@@ -24,7 +24,10 @@ use fstart_acpi::{
 };
 use fstart_acpi_macros::acpi_dsl;
 use fstart_driver_amd::{
-    ccx::power::{self, PowerAml},
+    ccx::{
+        Thread,
+        power::{self, PowerAml},
+    },
     fch::{AcpiPorts, SPI_BASE},
     nbio::{
         ioapic::acpi as ioapic_acpi,
@@ -73,8 +76,6 @@ pub struct SocAcpi {
     pub bridge_routes: &'static [Route],
     /// IOAPIC GSIs of FCH INTA-D, as programmed in the PCI_INTR table.
     pub fch_intx_gsi: [u8; 4],
-    /// C2 (CC6) exit latency of `_CST`.
-    pub c2_latency_us: u16,
     /// The GPE the internal bridges signal PME on (wake), and those bridges.
     pub wake: Option<Wake>,
 }
@@ -129,7 +130,7 @@ pub struct Inputs<'a> {
     /// HPET general capabilities and ID register (0xfed00000).
     pub hpet_id: u32,
     /// The P-states and C-states of every processor.
-    pub power: Option<CpuPower<'a>>,
+    pub power: Option<power::Power<'a>>,
     /// The memory of each die if the dies are NUMA nodes: SRAT, MSCT,
     /// SLIT, and `_PXM` on the root bridges.
     pub numa: Option<DieNuma<'a>>,
@@ -137,23 +138,15 @@ pub struct Inputs<'a> {
 }
 
 /// The DRAM ranges of the dies, `(base, end, die)`.
-pub type DieMemory = heapless::Vec<crate::numa::MemoryAffinity, 48>;
+pub type DieMemory = heapless::Vec<fstart_acpi::numa::MemoryAffinity, 48>;
 
 /// The dies as NUMA nodes.
 #[derive(Debug, Clone, Copy)]
 pub struct DieNuma<'a> {
     /// DRAM ranges; the domain is the die.
-    pub memory: &'a [crate::numa::MemoryAffinity],
+    pub memory: &'a [fstart_acpi::numa::MemoryAffinity],
     /// CPUID Fn8000_0008_EAX\[7:0\], for the MSCT.
     pub phys_addr_bits: u8,
-}
-
-/// What the BSP reads of the P-states and C-states the CCX init left.
-#[derive(Debug, Clone, Copy)]
-pub struct CpuPower<'a> {
-    pub pstates: &'a [power::Pstate],
-    pub cstates: Option<power::CstateInfo>,
-    pub threads_per_core: u8,
 }
 
 /// Feed to `fstart_acpi::platform::assemble_into(.., &platform, &dsdt_aml, &extra)`.
@@ -340,14 +333,7 @@ fn madt_order(apic_ids: &[u32]) -> Vec<u32> {
 /// objects of [`Inputs::power`].
 fn processors(inputs: &Inputs) -> Result<Vec<u8>, Error> {
     use fstart_acpi::processor::{ProcessorName, processor_device};
-    let power = inputs.power.map(|p| {
-        PowerAml::new(&power::Power {
-            pstates: p.pstates,
-            cstates: p.cstates,
-            threads_per_core: p.threads_per_core,
-            c2_latency_us: inputs.soc.c2_latency_us,
-        })
-    });
+    let power = inputs.power.as_ref().map(PowerAml::new);
     let mut aml = Vec::new();
     for (uid, apic_id) in madt_order(inputs.apic_ids).into_iter().enumerate() {
         let index = u16::try_from(uid).map_err(|_| Error::Aml(AmlError::InvalidOperand))?;
@@ -368,23 +354,21 @@ fn processors(inputs: &Inputs) -> Result<Vec<u8>, Error> {
 /// (\[5:4\]), MSCT and the vendor's SLIT (10 within a die, 16 between the
 /// dies of a socket).
 fn numa_tables(inputs: &Inputs) -> Vec<Vec<u8>> {
-    use crate::numa::{CpuAffinity, Domain, Numa};
+    use fstart_acpi::numa::{CpuAffinity, tables};
     let Some(numa) = inputs.numa else {
         return Vec::new();
     };
-    let domains: Vec<Domain> = inputs.dies.iter().map(|_| Domain { socket: 0 }).collect();
     let cpus = inputs.apic_ids.iter().map(|&apic_id| CpuAffinity {
         apic_id,
-        domain: apic_id >> 4 & 3,
+        domain: Thread::die_of(apic_id).into(),
     });
-    crate::numa::tables(
-        &Numa {
-            domains: &domains,
-            memory: numa.memory,
-            phys_addr_bits: numa.phys_addr_bits,
-        },
+    // One socket.
+    tables(
+        inputs.dies.len(),
+        numa.memory,
         cpus,
-        |a, b| if a.socket == b.socket { 16 } else { 32 },
+        numa.phys_addr_bits,
+        |_, _| 16,
     )
 }
 
@@ -886,50 +870,7 @@ fn lpc_bridge(board_aml: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(device_vec("LPCB", &body)?)
 }
 
-/// Path of the FCH GPIO controller, [`fch_gpio`].
-pub const FCH_GPIO_PATH: &str = "\\_SB.GPIO";
-
-/// The FCH GPIO controller `\_SB.GPIO` at the GPIO bank of the ACPI MMIO,
-/// interrupting on the level-low, shared FCH IRQ `irq`.
-pub fn fch_gpio(irq: u8) -> Result<Vec<u8>, Error> {
-    let base = u64::from(fstart_driver_amd::fch::ACPI_MMIO + 0x1500);
-    let irq = u64::from(irq);
-    let mut body = Vec::new();
-    acpi_dsl! {
-        Name("_HID", "AMDI0030");
-        Name("_CID", "AMDI0030");
-        Name("_UID", 0u32);
-        Name("_CRS", ResourceTemplate {
-            Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq});
-            Memory32Fixed(ReadWrite, #{dword base}, 0x400u32);
-        });
-        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-    }
-    .emit(&mut body)?;
-    Ok(device_vec("GPIO", &body)?)
-}
-
-/// An FCH DesignWare I2C controller `\_SB.I2C<index>` at `base`,
-/// interrupting on the edge-high FCH IRQ `irq`, with `body`: its timing
-/// and the devices behind it.
-pub fn fch_i2c(index: u8, base: u32, irq: u8, body: &[u8]) -> Result<Vec<u8>, Error> {
-    let (uid, base, irq) = (u64::from(index), u64::from(base), u64::from(irq));
-    let mut device = Vec::new();
-    acpi_dsl! {
-        Name("_HID", "AMDI0010");
-        Name("_UID", #{byte uid});
-        Name("_CRS", ResourceTemplate {
-            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{dword irq});
-            Memory32Fixed(ReadWrite, #{dword base}, 0x1000u32);
-        });
-        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-    }
-    .emit(&mut device)?;
-    device.extend_from_slice(body);
-    Ok(device_vec(&fch_i2c_name(index), &device)?)
-}
-
-/// NameSeg of FCH I2C controller `index`, [`fch_i2c`].
+/// NameSeg of FCH I2C controller `index`.
 pub fn fch_i2c_name(index: u8) -> alloc::string::String {
     format!("I2C{index:X}")
 }
@@ -1066,19 +1007,20 @@ mod tests {
     };
 
     /// EPYC 3151 P-states: 2.7, 1.9 and 1.2 GHz.
-    fn power() -> CpuPower<'static> {
+    fn power() -> power::Power<'static> {
         static PSTATES: std::sync::LazyLock<[power::Pstate; 3]> = std::sync::LazyLock::new(|| {
             [(0, 0x6c, 8), (1, 0x98, 0x10), (2, 0x60, 0x10)].map(|(i, fid, did)| {
                 power::decode_pstate(i, 1 << 63 | 0x50 << 22 | 0x40 << 14 | did << 8 | fid).unwrap()
             })
         });
-        CpuPower {
+        power::Power {
             pstates: &*PSTATES,
             cstates: Some(power::CstateInfo {
                 io_base: 0x813,
                 cc6: true,
             }),
             threads_per_core: 2,
+            c2_latency_us: 400,
         }
     }
 
@@ -1377,7 +1319,7 @@ mod tests {
             DesignWareSpeed, GpioInterrupt, I2cDevice, designware_timing_aml,
         };
         let interrupt = Some(GpioInterrupt {
-            controller: FCH_GPIO_PATH,
+            controller: fstart_driver_amd::fch::aml::GPIO_PATH,
             pin: 9,
             edge: false,
             active_low: true,
@@ -1399,8 +1341,9 @@ mod tests {
         let mut body = designware_timing_aml(DesignWareSpeed::Fast, 117, 245, 45).unwrap();
         body.extend(device("D150", &["ELAN0000"], 0x15, None));
         body.extend(device("D2C1", &["SYNA0000", "PNP0C50"], 0x2c, Some(0x20)));
-        let mut aml = fch_gpio(7).unwrap();
-        aml.extend(fch_i2c(2, 0xfedc_4000, 14, &body).unwrap());
+        use fstart_driver_amd::fch::aml;
+        let mut aml = aml::gpio(7, 0x400).unwrap();
+        aml.extend(aml::i2c(&fch_i2c_name(2), 2, 0xfedc_4000, 14, &body).unwrap());
         aml
     }
 
@@ -1417,7 +1360,11 @@ mod tests {
             .dsdt_aml(),
             tables: vec![],
             devices: vec![],
-            sb_aml: fch_devices(),
+            sb_aml: [
+                fch_devices(),
+                fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(0xb2, 0xc0),
+            ]
+            .concat(),
         };
         let mut board = board;
         board.sb_aml.extend(
@@ -1498,6 +1445,9 @@ mod tests {
             "Name (_PRW, Package (0x02)",
             "Method (_L0B, 0, NotSerialized)",
             "Notify (\\_SB.PCI1.GP39, 0x02)",
+            "Method (_PTS, 1, NotSerialized)",
+            "BSMC = (Arg0 + 0xC0)",
+            "Method (_INI, 0, NotSerialized)",
         ] {
             assert!(dsl.contains(object), "{object} missing:\n{dsl}");
         }
@@ -1528,7 +1478,7 @@ mod tests {
     /// proximity.
     #[test]
     fn two_dies_are_two_domains() {
-        use crate::numa::MemoryAffinity;
+        use fstart_acpi::numa::MemoryAffinity;
         let dies = dies();
         let memory = [
             MemoryAffinity {
@@ -1638,11 +1588,17 @@ mod tests {
             uid: 0,
             spec_revision: 0x0200,
         };
+        // The board's: SPMI, SPCR on COM1, the BMC sleep-state SMIs.
+        let mut spcr = vec![];
+        fstart_acpi::Aml::to_aml_bytes(
+            &fstart_acpi::spcr::build_spcr_16550_io(0x3f8, 4),
+            &mut spcr,
+        );
         let board = BoardAcpi {
             lpc_aml: kcs.dsdt_aml(),
-            tables: vec![kcs.spmi()],
+            tables: vec![kcs.spmi(), spcr],
             devices: vec![],
-            sb_aml: vec![],
+            sb_aml: fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(0xb2, 0xc0),
         };
         let tables = build(&Inputs {
             soc: &ACPI,
@@ -1670,7 +1626,7 @@ mod tests {
             .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
                 (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
             });
-        assert_eq!((len, hash), (4768, 0x3f59_d550_aece_c36d));
+        assert_eq!((len, hash), (4976, 0x4212_b546_60cc_8179));
     }
 
     /// The table with `signature`: the first match whose length and

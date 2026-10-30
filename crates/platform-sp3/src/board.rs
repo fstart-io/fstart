@@ -118,7 +118,7 @@ pub trait Board: Sp3BoardFacts + 'static {
     const DISCRETE_TPM: bool = false;
 
     /// BMC sleep-state notification through SMM (ACPI and the handler).
-    const BMC_SX_NOTIFY: Option<crate::smm::BmcSxNotify> = None;
+    const BMC_SX_NOTIFY: Option<crate::smm::SleepNotify> = None;
 
     /// AML inside `\_SB.PCI0.LPCB` (Super I/O devices).
     #[cfg(feature = "acpi")]

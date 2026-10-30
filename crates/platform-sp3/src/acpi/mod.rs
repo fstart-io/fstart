@@ -116,9 +116,8 @@ pub struct Inputs<'a> {
     pub einj: bool,
     /// FCH devices as the FCH tasks left them.
     pub fch: &'a FchAcpi,
-    /// SW SMI base of the BMC sleep-state notification
-    /// (`crate::smm::BmcSxNotify`); needs [`Inputs::acpi_smi`].
-    pub bmc_sx_notify: Option<u8>,
+    /// The BMC sleep-state notification; needs [`Inputs::acpi_smi`].
+    pub bmc_sx_notify: Option<fstart_driver_ipmi::SleepNotify>,
     /// The discrete TPM measured boot started on
     /// (`crate::board::Board::DISCRETE_TPM`), with its event log.
     pub tpm: Option<fstart_acpi::devices::tpm::TpmTisAcpi>,

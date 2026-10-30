@@ -146,23 +146,31 @@ CPUID signature in `Fam17hCpu`) and runs the SoC's CCX init. Zeppelin's
   as NUMA nodes (`Soc::die_memory`: several dies, not interleaved).
 - DSDT: `\_S0_`, `\_S1_`, `\_S4_`, `\_S5_` only (no S3). One root bridge per die
   (`_PXM` with NUMA) with an `NBIO` device whose `NAPE` clears
-  `IOAPIC_FEATURES_ENABLE.FCH`, run by `\_PIC(1)`; bridge `_PRT`s, `_PRW` and
-  the GPE handler of the SoC's wake bridges, the ECAM reservation, the board's
-  `lpc_aml`, `devices` and `sb_aml`, and a processor device (`ACPI0007`) per
-  CPU in the MADT's UID order with `_PCT`/`_PSS` (the enabled P-states),
-  `_CST` (C1 MWAIT, C2 the C-state I/O base + 1) and a per-core `_PSD`
-  (`fstart_driver_amd::ccx::power`).
+  `IOAPIC_FEATURES_ENABLE.FCH`, run by `\_PIC(1)` (`nbio::ioapic::acpi`,
+  shared with SP3); bridge `_PRT`s, `_PRW` and the GPE handler of the SoC's
+  wake bridges, the ECAM reservation, the board's `lpc_aml`, `devices` and
+  `sb_aml`, and a processor device (`ACPI0007`) per CPU in the MADT's UID
+  order with `_PCT`/`_PSS` (the enabled P-states), `_CST` (C1 MWAIT, and with
+  CC6 C2, the C-state I/O base + 1) and a per-core `_PSD`
+  (`fstart_driver_amd::ccx::power` reads them, `fstart_acpi::processor`
+  encodes them as for Intel's SpeedStep).
+- SRAT/MSCT/SLIT with `fstart_acpi::numa`, as SP3 and any platform.
+- The FCH GPIO and I2C controllers with `fstart_driver_amd::fch::aml`, as SP3.
 - Standalone tables from `BoardAcpi::tables` (e.g. the MJ11 SPMI and SPCR).
 
 Inputs: `SocAcpi` (FCH ACPI ports, FADT fields, NBIO bridge routes, FCH INTA-D
-GSIs, C2 latency, wake bridges), the per-die `DieAcpi` from the flow, the
-BSP's P-state and C-state MSRs, and `BoardAcpi`.
+GSIs, wake bridges), the per-die `DieAcpi` from the flow, the BSP's P-state
+and C-state MSRs with the core's C2 latency (`ccx::power::c2_latency_us`:
+400 µs on Zen, 18 µs on Zen 2/3), and `BoardAcpi`.
 
-SMBIOS (`noncar/smbios.rs`, builder shared with SP3 in `crate::smbios`): the
-board's identity (`Board::smbios_identity`), one processor package with its
-caches, the DIMM positions of the APOB's SMBIOS seeds with their SPD copies,
-the APOB's DRAM ranges. The UEFI payload gets the entry point; a copy in the F
-segment serves Linux without UEFI.
+SMBIOS (`noncar/smbios.rs` over `fstart_driver_amd::apob::smbios`, shared
+with SP3): the board's identity (`Board::smbios_identity`), one processor
+package with its caches (`fstart_acpi::smbios::Package`, as Intel's), the DIMM
+positions of the APOB's SMBIOS seeds with their SPD copies, the APOB's DRAM
+ranges. Picasso's seeds aren't decoded yet (no Picasso APOB has shown their
+layout), so Picasso lists no DIMMs. The UEFI payload gets the entry point; a
+copy in the F segment (`publish_legacy_entry_point`) serves Linux without
+UEFI.
 
 GSIs: the FCH IOAPIC has GSI 0-23. Each die's NBIO IOAPIC has 32 more, from
 `24 + 32 * die`. The `_PRT`s describe APIC mode only.

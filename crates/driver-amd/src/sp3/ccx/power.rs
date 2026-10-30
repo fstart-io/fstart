@@ -1,7 +1,7 @@
 //! Core power management: C-states, CPU watchdog, CAC (DPM) weights, boost,
 //! and the P-state / C-state / CPPC getters for ACPI (CCX_SP3 §3.9, §3.13).
 
-pub use crate::ccx::power::{CstateInfo, Pstate, decode_pstate, pstates};
+pub use crate::ccx::power::{CstateInfo, Pstate, c2_latency_us, decode_pstate, pstates};
 use fstart_arch::x86::cpu::amd::msr::{HWCR, Hwcr, PSTATE_0};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use heapless::Vec;

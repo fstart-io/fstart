@@ -193,22 +193,6 @@ impl Mailbox {
         self.request(smn, TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], delay)
             .map(drop)
     }
-
-    /// The 47-character CPU name string, `get_name` being the SoC's message.
-    pub fn cpu_name(
-        &self,
-        smn: &impl SmnAccess,
-        get_name: u32,
-        delay: &mut impl DelayNs,
-    ) -> Result<[u8; 48], Error> {
-        let mut name = [0; 48];
-        for (i, word) in name.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let response = self.request(smn, get_name, [i as u32, 0, 0, 0, 0, 0], delay)?;
-            word.copy_from_slice(&response[0].to_le_bytes());
-        }
-        name[47] = 0;
-        Ok(name)
-    }
 }
 
 /// Sends SMU messages to one SMU instance (a die on Naples, Zeppelin and

@@ -26,6 +26,8 @@ pub mod event;
 pub mod mem;
 pub mod nps;
 pub mod phy;
+#[cfg(feature = "smbios")]
+pub mod smbios;
 pub mod sysmap;
 
 pub use sysmap::{Hole, MemoryMap};

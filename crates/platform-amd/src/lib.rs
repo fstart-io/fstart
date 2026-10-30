@@ -8,12 +8,8 @@ extern crate alloc;
 pub mod acpi;
 #[cfg(feature = "noncar")]
 pub mod noncar;
-#[cfg(feature = "tables")]
-pub mod numa;
 #[cfg(feature = "picasso")]
 pub mod picasso;
-#[cfg(feature = "tables")]
-pub mod smbios;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 /// SMM image ABI and handler binding: a board's `smm.rs` binds its handler

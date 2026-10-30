@@ -12,7 +12,7 @@ use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_platform_sp3::acpi::Board as AcpiBoard;
 use fstart_platform_sp3::board::{self, BoardError, Gpio, Policy};
-use fstart_platform_sp3::smm::BmcSxNotify;
+use fstart_platform_sp3::smm::SleepNotify;
 
 use crate::dxio::{Detected, M2Mode, Options};
 use fstart_driver_amd::sp3::soc::Generation;
@@ -35,7 +35,7 @@ impl board::Board for Board {
     /// module the probe finds nothing.
     const DISCRETE_TPM: bool = true;
     /// The vendor DSDT's `BSMI` = 0xC0 and BmcAcpi's SW SMIs 0xC0–0xC5.
-    const BMC_SX_NOTIFY: Option<BmcSxNotify> = Some(BmcSxNotify {
+    const BMC_SX_NOTIFY: Option<SleepNotify> = Some(SleepNotify {
         kcs_port: bmc::KCS_PORT,
         kcs_spacing: bmc::KCS_SPACING as u8,
         sw_smi_base: 0xC0,

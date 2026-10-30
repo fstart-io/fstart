@@ -37,7 +37,9 @@ Source: `crates/driver-amd/src/cpu.rs` (`Revision::from_signature`),
 | `crates/image-build/src/sp3_flash.rs` | vendor ROM composition and verification |
 | `crates/amdfw-format` | flash anchor, EFS, BIOS/PSP directory readers |
 | `crates/driver-spd` | DDR4 SPD decoding, independent of the EEPROM transport |
-| `crates/acpi/src/smbios.rs` | SMBIOS writer shared with Intel |
+| `crates/acpi/src/smbios.rs` | SMBIOS writer and processor packages, shared with Intel |
+| `crates/driver-amd/src/apob/smbios.rs` | the AMD SMBIOS inventory from the APOB, shared with the noncar SoCs |
+| `crates/acpi/src/numa.rs` | SRAT, MSCT and SLIT from domains and distances |
 
 Platform features (`crates/platform-sp3/Cargo.toml`):
 
@@ -258,8 +260,9 @@ stay asserted.
 
 ## SMBIOS and ACPI
 
-- Built at step 70 by `platform-sp3/src/smbios.rs` over the shared writer
-  (`fstart_acpi::smbios`). The entry point is an SMBIOS 3.x 64-bit
+- Built at step 70 by `platform-sp3/src/smbios.rs` with the AMD inventory
+  (`fstart_driver_amd::apob::smbios`) over the shared writer
+  (`fstart_acpi::smbios`), as the noncar SoCs. The entry point is an SMBIOS 3.x 64-bit
   `_SM3_` structure. Type 17 uses the 3.3 layout.
 - Types: 0 BIOS, 1 system, 3 enclosure, 4 processor, 7 cache, 16 memory
   array, 17 memory device, 19 mapped address, 32 system boot, 127 end.
@@ -275,7 +278,8 @@ stay asserted.
   duplicated, memory inventory is omitted with a warning.
 - Maximum DIMM size per position: 128 GiB (Naples), 256 GiB (Rome, Milan).
 - The entry point reaches UEFI payloads through `X86UefiPayloadContext::smbios`.
-  The Linux handoff context has no SMBIOS accessor.
+  The Linux handoff context has no SMBIOS accessor: a copy of the entry point
+  in the F segment serves Linux without UEFI.
 - Board identity comes from `Board::smbios_identity()`. CPU and DIMM
   inventory is never hard-coded.
 - ACPI tables are built at step 70 under `platform-sp3/src/acpi/`.
