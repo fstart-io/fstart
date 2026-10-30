@@ -128,7 +128,7 @@ fn flow(
     silicon::fch_early_init(&fch, config);
     silicon::post(&fch, 0x32);
 
-    // TP1
+    // Silicon init
     let dma = Dma {
         smu_pages: low(dma, SmuPages([[0; 4096]; 4])),
         smu_policy: low(dma + 0x1_0000, SmuPolicy([0; 0x80])),
@@ -155,12 +155,12 @@ fn flow(
     silicon::post(&fch, 0x42);
     silicon::route_interrupts(&fch, config).unwrap();
 
-    // TP2
+    // After resource allocation
     silicon::after_resources(&fch);
     marker(hw, 4); // mainboard_final
     fch.enable_hpet_ioapic();
 
-    // TP3
+    // Ready to boot
     let sata = PciAddress::new(0, 1, 0, 0);
     silicon::ready_to_boot(&dies, &fch, Some(sata), || marker(hw, 5));
     silicon::post(&fch, 0x43);

@@ -118,7 +118,7 @@ pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, E
 /// The same fixed-address host inventory is consumed by ACPI and CrabEFI.
 /// Its IRQ is level-low, unlike the generic device's level-high default.
 /// Losing this inventory when fixing AML would also lose UEFI eMMC boot.
-pub(super) fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, Error> {
+pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, Error> {
     use fstart_core::acpi::{AcpiGenericDevice, AcpiInterruptFlags, AcpiResource};
     use fstart_driver_amd::fch::sandstone::legacy;
     Ok(AcpiGenericDevice {

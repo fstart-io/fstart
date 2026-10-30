@@ -445,6 +445,16 @@ pub trait StageProgram {
 /// only declared for such platforms.
 #[macro_export]
 macro_rules! stage_bin {
+    // A board-owned stage `main`: the binary is the flow.
+    (main: $main:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "Rust" fn fstart_main(_handoff: usize) -> ! {
+            $main()
+        }
+        #[used]
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
+        static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+    };
     (program: $program:ty) => {
         #[unsafe(no_mangle)]
         pub extern "Rust" fn fstart_main(handoff: usize) -> ! {

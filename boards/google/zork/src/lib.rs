@@ -1,37 +1,32 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Vilboz, Vilboz14 and Vilboz360 share Dalboz wiring and a single native flow.
 //! SKU differences come from EC CBI FW_CONFIG, not independent Rust board copies.
+//!
+//! The flow is the board's: `src/bin/reset.rs`, from the PSP's reset vector to
+//! the payload. This library holds the board's facts and the mainboard work
+//! that `main` calls.
 #![no_std]
 pub mod dalboz;
 pub mod ec;
 pub mod policy;
-#[cfg(fstart_stage_env = "smm")]
+/// The SMM handler, built into the separate SMM image.
+#[cfg(feature = "smm")]
 pub mod smm;
 pub mod vilboz;
 use fstart_driver_amd::soc::picasso::Picasso;
 use fstart_driver_uart::ns16550::Ns16550Config;
-use fstart_platform_amd::{
-    noncar::BoardCtx,
-    picasso::{self, Config, FchConfig},
-};
-static CONFIG: Config = Config {
+use fstart_platform_amd::picasso::{self, Config, FchConfig};
+
+/// How Vilboz wires the Picasso blocks.
+pub static CONFIG: Config = Config {
     fch: FchConfig {
         console_uart: 0,
         spi: policy::SPI,
         espi: Some((policy::ESPI, dalboz::ESPI_GPIO_TABLE)),
-        // Without a PSP verstage the early and TPM tables are programmed
-        // first, then the PCIe and memory init tables.
-        early_gpios: &[
-            dalboz::EARLY_GPIO_TABLE,
-            dalboz::TPM_GPIO_TABLE,
-            dalboz::PCIE_GPIO_TABLE,
-            dalboz::ROMSTAGE_GPIO_TABLE,
-        ],
-        disable_rom_sharing: true,
     },
     pcie: policy::PCIE,
-    power: None,
     usb: policy::USB,
+    // Fitted or not per CBI.
     emmc: Some(policy::EMMC),
     i2c: &[
         picasso::I2cBus {
@@ -97,23 +92,49 @@ pub struct Board;
 impl fstart_platform_amd::noncar::Board for Board {
     type Soc = Picasso;
     const CONFIG: &'static Config = &CONFIG;
-    fn console() -> Ns16550Config {
-        picasso::console(CONFIG.fch.console_uart)
+}
+
+/// The console on FCH UART 0.
+pub fn console() -> Ns16550Config {
+    picasso::console(CONFIG.fch.console_uart)
+}
+
+/// The board's pads once the FCH is up. Without a PSP verstage the early
+/// and TPM tables are programmed first, then the PCIe and memory init ones.
+pub fn early_gpios(
+    gpio: &fstart_driver_amd::fch::gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
+) -> Result<(), fstart_driver_amd::fch::gpio::Error> {
+    for table in [
+        dalboz::EARLY_GPIO_TABLE,
+        dalboz::TPM_GPIO_TABLE,
+        dalboz::PCIE_GPIO_TABLE,
+        dalboz::ROMSTAGE_GPIO_TABLE,
+    ] {
+        gpio.configure(table, &[])?;
     }
-    /// Read the board facts, program the
-    /// remaining GPIOs.
-    fn fch_reset_done(ctx: &mut BoardCtx<'_, Picasso>, config: &mut Config) {
-        let mut clock = ctx.clock;
-        let cbi = mainboard::init(&ctx.gpio(), &mut clock);
-        config.power = Some(cbi.native_power());
-        config.emmc = cbi.has_emmc().then_some(policy::EMMC);
-    }
-    /// The keyboard behind the EC.
-    fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
-        fstart_platform_amd::acpi::BoardAcpi {
-            lpc_aml: fstart_driver_chromeec::acpi::keyboard_aml(),
-            ..Default::default()
-        }
+    Ok(())
+}
+
+/// Once the early pads are set and ROM sharing is off: read the board
+/// facts from the EC's CBI, power and release WLAN before DXIO probes it,
+/// and program the remaining GPIOs. The CBI decides the SMU power policy
+/// and whether eMMC is fitted.
+pub fn after_fch(
+    gpio: &fstart_driver_amd::fch::gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
+    clock: &mut impl fstart_driver_amd::ccx::tsc::Clock,
+) -> policy::Cbi {
+    mainboard::init(gpio, clock)
+}
+
+/// The board's SMBIOS identity.
+pub const SMBIOS: fstart_platform_amd::acpi::SmbiosIdentity<'static> =
+    fstart_platform_amd::acpi::SmbiosIdentity::new("Google", "Vilboz");
+
+/// The keyboard behind the EC.
+pub fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
+    fstart_platform_amd::acpi::BoardAcpi {
+        lpc_aml: fstart_driver_chromeec::acpi::keyboard_aml(),
+        ..Default::default()
     }
 }
 
@@ -132,23 +153,6 @@ mod mainboard {
         }
         fn delay_us(&mut self, us: u32) {
             self.0.delay_us(us)
-        }
-    }
-
-    struct WifiIo<'a, B, T> {
-        gpio: &'a gpio::Gpio<B>,
-        clock: &'a mut T,
-    }
-
-    impl<B: fstart_driver_amd::fch::Bus, T: tsc::Clock> vilboz::BoardIo for WifiIo<'_, B, T> {
-        fn configure(&mut self, pads: &[gpio::Pad]) -> Result<(), gpio::Error> {
-            self.gpio.configure(pads, &[])
-        }
-        fn set(&mut self, pin: u8, value: bool) -> Result<(), gpio::Error> {
-            self.gpio.set(pin, value)
-        }
-        fn delay_ms(&mut self, ms: u32) {
-            self.clock.delay_us(ms * 1000);
         }
     }
 
@@ -184,7 +188,12 @@ mod mainboard {
         // Power and release WLAN before DXIO probes the endpoint. The PCIe
         // GPIO table deliberately leaves GPIO29/42 to this revision-dependent
         // sequence; merely configuring the table leaves WLAN held in reset.
-        if vilboz::wifi_power_reset(&mut WifiIo { gpio, clock }, cbi).is_err() {
+        let wifi = gpio.configure(vilboz::WLAN_PADS, &[]).and_then(|()| {
+            let mut reset = gpio.output(vilboz::WLAN_RESET_GPIO)?;
+            let mut power = gpio.output(vilboz::WLAN_POWER_GPIO)?;
+            vilboz::wifi_power_reset(&mut reset, &mut power, clock, cbi)
+        });
+        if wifi.is_err() {
             fstart_log::error!("vilboz: WiFi power/reset failed");
         }
         // Not ChromeOS: GPIO40 stays a plain input on newer boards.

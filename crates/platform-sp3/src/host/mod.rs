@@ -267,6 +267,7 @@ fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
             .collect(),
         bindings: vec![],
         file_bindings: vec![],
+        board_features: vec![],
         output: UnitOutput::SmmImage {
             entry_count: B::MAX_CPUS,
             stack_size: SMM_STACK_SIZE,
@@ -480,6 +481,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             environment: SMM_IMAGE_ENV.into(),
         }],
         file_bindings: vec![],
+        board_features: vec![],
         output: UnitOutput::Executable {
             expectations: expectations()?,
             load_address: reset.destination,
