@@ -488,6 +488,12 @@ fn composes_the_pinned_image() {
 
 #[test]
 fn native_image_has_the_partition_the_compressed_reset_and_the_ffs() {
+    for (reset_size, reset_offset) in [(0x20_0000, 0x98_0000), (0x40_0000, 0x78_0000)] {
+        check_native_image(reset_size, reset_offset);
+    }
+}
+
+fn check_native_image(reset_size: u32, reset_offset: u32) {
     use assembly::{ApcbFiles, FileBlob, PicassoFiles, PspOptions};
     use fstart_amdfw_format::{Flash, directory::BiosEntry};
     // An APCB template with the GPIO and one SPD sentinel.
@@ -524,17 +530,17 @@ fn native_image_has_the_partition_the_compressed_reset_and_the_ffs() {
         assets: vec![],
         psp_app: false,
     };
-    let (ffs, stage) = ffs_and_stage(0x20_0000);
+    let (ffs, stage) = ffs_and_stage(reset_size as usize);
     let operation = AmdAssembly {
         firmware: Firmware::Packed {
             files: files.clone(),
-            reset_offset: Some(0x98_0000),
+            reset_offset: Some(reset_offset),
         },
         ffs: Some(ffs_window(0xb8_0000, 0x29_f000)),
         reset_unit: "reset".into(),
         flash_size: 0x100_0000,
         bios_directory: PicassoImage::BIOS_DIRECTORY,
-        reset_size: 0x20_0000,
+        reset_size,
         reset_destination: 0x300_0000,
         apob_destination: 0x200_1000,
         shared_memory: None,
@@ -568,9 +574,13 @@ fn native_image_has_the_partition_the_compressed_reset_and_the_ffs() {
     ];
     let image = operation.assemble(&sources, &stage, Some(&ffs)).unwrap();
     assert!(image.is_whole_flash(0x100_0000));
-    assert_eq!(image.facts.reset_offset, 0x98_0000);
+    assert_eq!(image.facts.reset_offset, reset_offset);
     assert_eq!(image.bytes[0xb8_0000..][..ffs.len()], ffs[..]);
-    assert!(image.bytes[..0x98_0000].iter().all(|&b| b == 0xff));
+    assert!(
+        image.bytes[..reset_offset as usize]
+            .iter()
+            .all(|&b| b == 0xff)
+    );
     let levels = Flash::new(&image.bytes)
         .bios_directories(PicassoImage::BIOS_DIRECTORY)
         .unwrap();
@@ -580,7 +590,11 @@ fn native_image_has_the_partition_the_compressed_reset_and_the_ffs() {
         .iter()
         .find(|e| e.kind == bios::RESET_IMAGE)
         .unwrap();
-    assert!(reset.compressed() && reset.size.get() == 0x20_0000);
+    assert!(reset.compressed() && reset.size.get() == reset_size);
+    assert_eq!(
+        reset.destination.get() + u64::from(reset.size.get()) - 16,
+        0x300_0000 + u64::from(reset_size) - 16
+    );
     assert!(!boot.entries.iter().any(|e| e.kind == bios::MICROCODE));
     let apcbs: Vec<_> = boot
         .entries

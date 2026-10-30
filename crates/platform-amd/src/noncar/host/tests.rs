@@ -120,6 +120,35 @@ fn picasso_payload_plan_includes_smm_and_verified_ffs() {
 }
 
 #[test]
+fn picasso_ui_reserves_the_larger_reset_image_and_entry() {
+    let plan = resolve::<Vilboz>(BuildSelection {
+        payload: Some("uefi-ui".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    let unit = plan.units.iter().find(|unit| unit.name == "reset").unwrap();
+    assert_eq!(unit.features, ["bundle-picasso", "payload-uefi-ui"]);
+    let UnitOutput::Executable {
+        expectations,
+        load_address,
+        flat_capacity,
+    } = &unit.output
+    else {
+        unreachable!()
+    };
+    assert_eq!(*load_address, 0x0300_0000);
+    assert_eq!(*flat_capacity, 0x40_0000);
+    assert_eq!(expectations.entry, Some(0x033f_fff0));
+    assert_eq!(picasso::LAYOUT.init16(), 0x033f_e000);
+    assert_eq!(picasso::LAYOUT.early.end(), 0x0340_0000);
+    assert_eq!(picasso::LAYOUT.image.end(), picasso::LAYOUT.early.end());
+    let script = unit.linker_script.as_ref().unwrap();
+    assert!(script.contains("_fstart_early_reserved_end = 0x3400000;"));
+    assert!(script.contains(".init16 0x33fe000"));
+    assert!(script.contains(".reset 0x33ffff0"));
+}
+
+#[test]
 fn picasso_packs_the_blob_tables_into_a_native_image() {
     let blobs = std::env::temp_dir();
     let mut selection = BuildSelection {
@@ -152,8 +181,14 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
     else {
         unreachable!()
     };
-    assert_eq!(*reset_offset, Some(0x98_0000));
+    assert_eq!(*reset_offset, Some(0x78_0000));
+    assert_eq!(image.reset_size, 0x40_0000);
+    assert_eq!(image.reset_destination, 0x0300_0000);
     assert!(files.psp_app && image.psp.compress_reset);
+    let window = image.ffs.as_ref().unwrap();
+    assert_eq!(window.offset, 0xb8_0000);
+    assert_eq!(reset_offset.unwrap() + image.reset_size, window.offset);
+    assert_eq!(window.size, 0x29_f000);
     assert_eq!(
         files.bios[0].path,
         blobs.join("test-board/apcb/0.bin").to_str().unwrap()

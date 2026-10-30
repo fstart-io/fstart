@@ -119,12 +119,14 @@ pub const fn console(uart: u8) -> Ns16550Config {
 /// of a PSP verstage (`0x02011000..0x02019000`) and the image are fixed by
 /// the PSP directories.
 pub const LAYOUT: Layout = Layout {
-    early: Region::new(0x0200_0000, 0x120_0000),
+    early: Region::new(0x0200_0000, 0x140_0000),
     page_tables: 0x0202_0000,
     data: Region::new(0x0203_0000, 0x1d_0000),
     heap: Region::new(0x0220_0000, 0x80_0000),
     stack: Region::new(0x02f0_0000, 0x10_0000),
-    image: Region::new(0x0300_0000, 0x20_0000),
+    // Leave room for the Rust interpreter and graphical UEFI, plus the
+    // reserved 16-bit entry at the image's end.
+    image: Region::new(0x0300_0000, 0x40_0000),
     flash: Region::new(0xff00_0000, 0x100_0000),
     ffs: Some(Region::new(0xffb8_0000, 0x29_f000)),
 }
@@ -138,7 +140,10 @@ impl noncar::host::HostSoc for Picasso {
         smm: true,
         release_only: true,
         image_config: noncar::host::ImageConfig::Packed {
-            reset_offset: Some(0x98_0000),
+            // Reserve the full uncompressed size before the fixed FFS window.
+            reset_offset: Some(
+                (LAYOUT.ffs.unwrap().base - LAYOUT.flash.base - LAYOUT.image.size) as u32,
+            ),
             psp: fstart_image_build::amd::assembly::PspOptions {
                 compress_reset: true,
                 spi: None,
