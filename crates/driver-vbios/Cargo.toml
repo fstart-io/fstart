@@ -2,7 +2,11 @@
 name = "fstart-driver-vbios"
 version.workspace = true
 edition.workspace = true
-license = "MIT AND HPND"
+license = "MIT"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+# Firmware embedding exits, bounded REP, and explicit faults (pending upstream).
+rsemu = { git = "https://github.com/ArthurHeymans/rsemu.git", rev = "8c1a67b8fca10c402398b781ddd118006c3ac88c", default-features = false, features = ["cpu-x86"] }
 
 [dependencies]
 fstart-core.workspace = true
@@ -12,6 +16,3 @@ tock-registers.workspace = true
 ufmt.workspace = true
 zerocopy.workspace = true
 edid-info = "0.2.3"
-
-[build-dependencies]
-cc = "1"

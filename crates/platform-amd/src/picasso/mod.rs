@@ -119,12 +119,14 @@ pub const fn console(uart: u8) -> Ns16550Config {
 /// of a PSP verstage (`0x02011000..0x02019000`) and the image are fixed by
 /// the PSP directories.
 pub const LAYOUT: Layout = Layout {
-    early: Region::new(0x0200_0000, 0x120_0000),
+    early: Region::new(0x0200_0000, 0x140_0000),
     page_tables: 0x0202_0000,
     data: Region::new(0x0203_0000, 0x1d_0000),
     heap: Region::new(0x0220_0000, 0x80_0000),
     stack: Region::new(0x02f0_0000, 0x10_0000),
-    image: Region::new(0x0300_0000, 0x20_0000),
+    // Leave room for the Rust interpreter and graphical UEFI, plus the
+    // reserved 16-bit entry at the image's end.
+    image: Region::new(0x0300_0000, 0x40_0000),
     flash: Region::new(0xff00_0000, 0x100_0000),
     ffs: Some(Region::new(0xffb8_0000, 0x29_f000)),
 }
@@ -138,7 +140,10 @@ impl noncar::host::HostSoc for Picasso {
         smm: true,
         release_only: true,
         image_config: noncar::host::ImageConfig::Packed {
-            reset_offset: Some(0x98_0000),
+            // Reserve the full uncompressed size before the fixed FFS window.
+            reset_offset: Some(
+                (LAYOUT.ffs.unwrap().base - LAYOUT.flash.base - LAYOUT.image.size) as u32,
+            ),
             psp: fstart_image_build::amd::assembly::PspOptions {
                 compress_reset: true,
                 spi: None,
@@ -373,24 +378,16 @@ impl noncar::Soc for Picasso {
         let devices = config
             .emmc
             .into_iter()
-            .map(|_| fstart_core::acpi::AcpiGenericDevice {
-                name: fstart_core::hstr("MMC0"),
-                hid: fstart_core::hstr("AMDI0040"),
-                resources: [fstart_core::acpi::AcpiResource::Mmio {
-                    base: 0xfedd_5000,
-                    size: 0x1000,
-                }]
-                .into_iter()
-                .collect(),
-                gsiv: Some(5),
-            })
-            .collect();
-        let aml = acpi::devices(config.i2c).map_err(|_| "ACPI devices")?;
+            .map(|_| acpi::emmc())
+            .collect::<Result<_, _>>()
+            .map_err(|_| "eMMC ACPI")?;
+        let aml = acpi::devices(config.i2c, config.emmc.is_some()).map_err(|_| "ACPI devices")?;
         Ok(Silicon {
             cpus,
             psp,
             devices,
             aml,
+            tables: alloc::vec::Vec::new(),
             framebuffer: None,
             ioapics: core::array::from_fn(|i| if i == 0 { 0xfec0_1000 } else { 0 }),
             reserved_mmio: core::array::from_fn(|i| {
@@ -426,7 +423,8 @@ impl noncar::Soc for Picasso {
                         .is_some_and(|d| d.read8(0x0b) == 3 && d.read16(0) == 0x1002)
                 })
                 .ok_or("VGA device")?;
-            let id = pci.device(address).ok_or("VGA device")?.read32(0);
+            let gpu = pci.device(address).ok_or("VGA device")?;
+            let id = gpu.read32(0);
             // Raven2 can retain Picasso's PCI ID; its ROM is selected by
             // the CPU/SMU silicon identity, not by that PCI ID alone.
             let rom_device = if id == 0x15d8_1002 && kind == cpu::Silicon::Raven2 {
@@ -453,13 +451,38 @@ impl noncar::Soc for Picasso {
                 .map_err(|_| "VGA resource windows")?;
             // SAFETY: allocated VGA BARs and reserved UMA, BSP only, before
             // any payload/display driver runs. Only an authenticated ROM is used.
-            silicon.framebuffer = Some(
-                unsafe {
-                    fstart_driver_vbios::initialize(
-                        pci, address, rom, rom_device, &windows, &ctx.clock,
-                    )
-                }
-                .map_err(|e| e.name())?,
+            let display = unsafe {
+                fstart_driver_vbios::initialize(pci, address, rom, rom_device, &windows, &ctx.clock)
+            }
+            .map_err(|e| e.name())?;
+            silicon.framebuffer = Some(display.framebuffer);
+            // amdgpu's APU path consumes VFCT, not the standard _ROM method.
+            // Match the actual function, even when its ROM uses a PCIR alias.
+            silicon.tables.push(
+                fstart_acpi::vfct::build_vfct(
+                    [0; 16],
+                    &[fstart_acpi::vfct::VbiosImage {
+                        segment: address.segment(),
+                        bus: address.bus(),
+                        device: address.device(),
+                        function: address.function(),
+                        vendor_id: id as u16,
+                        device_id: (id >> 16) as u16,
+                        subsystem_vendor_id: gpu.read16(0x2c),
+                        subsystem_id: gpu.read16(0x2e),
+                        // No VFCT image revision is supplied by this producer;
+                        // follow coreboot's zero, not the PCI revision ID.
+                        revision: 0,
+                        rom: &display.rom,
+                    }],
+                )
+                .map_err(|_| "VGA VFCT")?,
+            );
+            let path = pci.device_path(address).ok_or("VGA PCI path")?;
+            // Picasso has one PCI root, PCI0. The bridge/function path is
+            // discovered, not assumed to be a particular bus or internal port.
+            silicon.aml.extend(
+                crate::acpi::video_rom_aml(0, &path, &display.rom).map_err(|_| "VGA ACPI ROM")?,
             );
         }
         B::ready_to_boot(&mut ctx.board());

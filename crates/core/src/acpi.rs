@@ -176,6 +176,17 @@ pub enum AcpiResource {
     },
 }
 
+/// Electrical attributes of an ACPI extended interrupt resource.
+///
+/// The default preserves the generic device's level-high, exclusive IRQ.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AcpiInterruptFlags {
+    pub edge_triggered: bool,
+    pub active_low: bool,
+    pub shared: bool,
+}
+
 /// A generic device for ACPI — multiple MMIO/PIO regions + optional interrupt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -189,6 +200,9 @@ pub struct AcpiGenericDevice {
     /// Interrupt GSIV (optional).
     #[serde(default)]
     pub gsiv: Option<u32>,
+    /// Electrical attributes of `gsiv`; ignored when no IRQ is present.
+    #[serde(default)]
+    pub interrupt_flags: AcpiInterruptFlags,
 }
 
 /// AHCI SATA controller for ACPI.

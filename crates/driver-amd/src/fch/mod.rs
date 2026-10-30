@@ -57,6 +57,8 @@ pub const ACPI_MMIO: u32 = 0xfed8_0000;
 pub const SPI_BASE: u32 = 0xfec1_0000;
 /// The FCH IOAPIC (GSI 0-23).
 pub const IOAPIC: u32 = 0xfec0_0000;
+/// The fixed ACPI SCI input, shared by interrupt routing and the FADT/MADT.
+pub const SCI_IRQ: u8 = 9;
 /// The HPET.
 pub const HPET: u32 = 0xfed0_0000;
 /// A-Link-to-AHB bridge and its AHB devices.

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 //! x86 VGA option-ROM initialization and VBE linear-framebuffer selection.
-//! Uses coreboot's permissively licensed x86emu, with bounded emulated RAM,
-//! explicit MMIO windows, and a deadline. No real-mode switch or low-RAM writes.
+//! Native Rust x86 emulation with bounded private RAM, explicit MMIO windows,
+//! and a deadline. No real-mode switch or low-RAM writes.
 #![no_std]
 #![cfg(target_arch = "x86_64")]
 extern crate alloc;
+mod native;
 use alloc::{vec, vec::Vec};
 use core::{
     cell::UnsafeCell,
@@ -23,6 +24,7 @@ use zerocopy::{
 };
 
 const ROM_BASE: usize = 0xc0000;
+const ROM_CAPACITY: usize = 0x20000;
 const BUFFER: usize = 0x20000;
 const GUEST_SIZE: usize = 0x110000;
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -53,7 +55,14 @@ impl Error {
         }
     }
 }
-#[repr(C)]
+/// A configured display and the bounded ROM image after POST/VBE patches.
+/// The image is owned, not a borrow into transient emulator RAM. Platforms can
+/// publish it through ACPI `_ROM` independently of their framebuffer handoff.
+pub struct InitializedDisplay {
+    pub framebuffer: FramebufferInfo,
+    pub rom: Vec<u8>,
+}
+
 #[derive(Default)]
 struct Registers {
     eax: u32,
@@ -64,12 +73,6 @@ struct Registers {
     edi: u32,
     es: u16,
     flags: u16,
-}
-unsafe extern "C" {
-    fn fstart_vbios_post(memory: *mut u8, size: usize, bdf: u32) -> i32;
-    fn fstart_vbios_int10(regs: *mut Registers) -> i32;
-    fn fstart_vbios_position() -> u32;
-    fn X86EMU_halt_sys();
 }
 struct Context<'a> {
     memory: Vec<u8>,
@@ -85,8 +88,22 @@ struct Context<'a> {
 impl Context<'_> {
     fn fail(&mut self, error: Error) {
         self.error.get_or_insert(error);
-        // SAFETY: callback runs synchronously inside the exclusively owned emulator.
-        unsafe { X86EMU_halt_sys() };
+    }
+    fn posted_rom(&self) -> Result<Vec<u8>, Error> {
+        let window = self
+            .memory
+            .get(ROM_BASE..ROM_BASE + ROM_CAPACITY)
+            .ok_or(Error::Bounds)?;
+        let (header, _) = RomHeader::ref_from_prefix(window).map_err(|_| Error::Rom)?;
+        if header.signature.get() != 0xaa55 || header.blocks == 0 {
+            return Err(Error::Rom);
+        }
+        // Like coreboot, honor the posted size: a ROM may expand/shrink its
+        // shadow image. Never expose bytes outside the private ROM window.
+        window
+            .get(..usize::from(header.blocks) * 512)
+            .map(|rom| rom.to_vec())
+            .ok_or(Error::Bounds)
     }
     fn reset_deadline(&mut self) {
         self.started = self.timer.timestamp_us();
@@ -102,14 +119,24 @@ impl Context<'_> {
                 .any(|w| start >= w.base && end <= w.base + w.size)
     }
 }
-// No Rust reference to the context or guest RAM may survive a C call:
-// callbacks temporarily borrow it through UnsafeCell instead.
+// No context or guest-RAM reference may survive an emulator call: its bus
+// temporarily borrows the context through UnsafeCell instead.
 struct Machine<'a> {
     context: UnsafeCell<Context<'a>>,
+    emulator: native::Emulator,
 }
-impl Machine<'_> {
+impl<'a> Machine<'a> {
+    fn new(context: Context<'a>) -> Result<Self, Error> {
+        Ok(Self {
+            context: UnsafeCell::new(context),
+            emulator: native::Emulator::new()?,
+        })
+    }
+    fn post(&self, bdf: u32) -> bool {
+        self.emulator.post(bdf)
+    }
     fn with<R>(&self, f: impl FnOnce(&mut Context<'_>) -> R) -> R {
-        // SAFETY: BSP-only synchronous access; this helper never calls C.
+        // SAFETY: BSP-only synchronous access; this helper never runs the CPU.
         unsafe { f(&mut *self.context.get()) }
     }
     fn bytes<const N: usize>(&self, start: usize) -> Option<[u8; N]> {
@@ -125,13 +152,11 @@ impl Machine<'_> {
             return Err(error);
         }
         self.with(|ctx| ctx.reset_deadline());
-        // SAFETY: ACTIVE points to the UnsafeCell, with no Rust context
-        // reference alive across this call or any nested callback.
-        let completed = unsafe { fstart_vbios_int10(regs) };
+        let completed = self.emulator.int10(regs);
         if let Some(error) = self.with(|ctx| ctx.error) {
             return Err(error);
         }
-        if completed == 0 {
+        if !completed {
             return Err(Error::Emulation);
         }
         if regs.eax as u16 != 0x004f {
@@ -177,29 +202,17 @@ impl Drop for Guard {
 }
 fn context() -> &'static mut Context<'static> {
     let pointer = ACTIVE.load(Ordering::Acquire);
-    // SAFETY: callbacks occur only during the synchronous, serialized C calls.
+    // SAFETY: the private bus accesses this only during serialized execution.
     // The pointer's erased lifetimes are restored by that enclosing call's scope.
     unsafe { &mut *pointer.cast::<Context<'static>>() }
 }
-#[unsafe(no_mangle)]
-extern "C" fn fstart_vbios_fault(cs: u16, ip: u16) {
-    fstart_log::error!(
-        "VBIOS exception at {}:{}",
-        fstart_log::Hex(cs.into()),
-        fstart_log::Hex(ip.into())
-    );
-    context().fail(Error::Emulation);
-}
-#[unsafe(no_mangle)]
-extern "C" fn fstart_vbios_step() -> i32 {
+fn step_at(pc: u32) -> i32 {
     let ctx = context();
     ctx.steps += 1;
     if ctx.steps > 100_000_000
         || (ctx.steps & 4095 == 0
             && ctx.timer.timestamp_us().wrapping_sub(ctx.started) > 20_000_000)
     {
-        // SAFETY: reads C's current CS:IP without invoking any callback.
-        let pc = unsafe { fstart_vbios_position() };
         fstart_log::error!(
             "VBIOS timeout: steps {} CS:IP {} MMIO {}={} port {}={}",
             ctx.steps,
@@ -214,9 +227,15 @@ extern "C" fn fstart_vbios_step() -> i32 {
     }
     1
 }
-#[unsafe(no_mangle)]
-extern "C" fn fstart_vbios_mem_read(address: u32, width: u32) -> u32 {
+fn memory_read(address: u32, width: u32) -> u32 {
     let ctx = context();
+    if ctx.error.is_some() {
+        return u32::MAX;
+    }
+    if !matches!(width, 1 | 2 | 4) {
+        ctx.fail(Error::Bounds);
+        return u32::MAX;
+    }
     if ctx.physical(address, width) {
         // SAFETY: exclusive, decoded GPU windows with resource-appropriate caching.
         let value = unsafe {
@@ -246,9 +265,15 @@ extern "C" fn fstart_vbios_mem_read(address: u32, width: u32) -> u32 {
     ctx.fail(Error::Bounds);
     u32::MAX
 }
-#[unsafe(no_mangle)]
-extern "C" fn fstart_vbios_mem_write(address: u32, width: u32, value: u32) {
+fn memory_write(address: u32, width: u32, value: u32) {
     let ctx = context();
+    if ctx.error.is_some() {
+        return;
+    }
+    if !matches!(width, 1 | 2 | 4) {
+        ctx.fail(Error::Bounds);
+        return;
+    }
     if ctx.physical(address, width) {
         ctx.last_memory = (address, value);
         // SAFETY: as in the read callback.
@@ -276,9 +301,15 @@ extern "C" fn fstart_vbios_mem_write(address: u32, width: u32, value: u32) {
     );
     ctx.fail(Error::Bounds);
 }
-#[unsafe(no_mangle)]
-extern "C" fn fstart_vbios_io_read(port: u16, width: u32) -> u32 {
+fn port_read(port: u16, width: u32) -> u32 {
     let ctx = context();
+    if ctx.error.is_some() {
+        return u32::MAX;
+    }
+    if !matches!(width, 1 | 2 | 4) || u32::from(port) + width > 0x10000 {
+        ctx.fail(Error::Bounds);
+        return u32::MAX;
+    }
     if ctx.pci.is_none() {
         ctx.fail(Error::Bounds);
         return u32::MAX;
@@ -292,9 +323,15 @@ extern "C" fn fstart_vbios_io_read(port: u16, width: u32) -> u32 {
     ctx.last_port = (port, value);
     value
 }
-#[unsafe(no_mangle)]
-extern "C" fn fstart_vbios_io_write(port: u16, width: u32, value: u32) {
+fn port_write(port: u16, width: u32, value: u32) {
     let ctx = context();
+    if ctx.error.is_some() {
+        return;
+    }
+    if !matches!(width, 1 | 2 | 4) || u32::from(port) + width > 0x10000 {
+        ctx.fail(Error::Bounds);
+        return;
+    }
     if ctx.pci.is_none() {
         ctx.fail(Error::Bounds);
         return;
@@ -307,9 +344,11 @@ extern "C" fn fstart_vbios_io_write(port: u16, width: u32, value: u32) {
         _ => (),
     }
 }
-#[unsafe(no_mangle)]
-extern "C" fn fstart_vbios_interrupt(number: u32, regs: &mut Registers) -> i32 {
+fn bios_interrupt(number: u32, regs: &mut Registers) -> i32 {
     let ctx = context();
+    if ctx.error.is_some() {
+        return 0;
+    }
     let ax = regs.eax as u16;
     match number {
         0x10 | 0x42 | 0x6d => {
@@ -447,7 +486,7 @@ fn rom_image(rom: &[u8], id: u32) -> Result<&[u8], Error> {
     let size = usize::from(header.blocks) * 512;
     let bytes = rom
         .get(..size)
-        .filter(|b| b.len() <= 0x20000)
+        .filter(|b| b.len() <= ROM_CAPACITY)
         .ok_or(Error::Rom)?;
     let pcir_bytes = bytes.get(header.pcir.get() as usize..).ok_or(Error::Rom)?;
     let (pcir, _) = Pcir::ref_from_prefix(pcir_bytes).map_err(|_| Error::Rom)?;
@@ -582,7 +621,7 @@ pub unsafe fn initialize(
     rom_device: u16,
     windows: &[PciWindow],
     timer: &dyn Timer,
-) -> Result<FramebufferInfo, Error> {
+) -> Result<InitializedDisplay, Error> {
     if BUSY.swap(true, Ordering::Acquire) {
         return Err(Error::Busy);
     }
@@ -654,31 +693,29 @@ pub unsafe fn initialize(
     ctx.memory[0xfffd9..0xfffe0].copy_from_slice(b"PCI_ISA");
     ctx.memory[0xffff5..0xffffd].copy_from_slice(b"06/11/99");
     ctx.memory[0xffffe] = 0xfc;
-    let machine = Machine {
-        context: UnsafeCell::new(ctx),
-    };
+    let machine = Machine::new(ctx)?;
     // SAFETY: the guard clears ACTIVE before releasing exclusive ownership.
     // Machine never moves while this pointer is published.
     ACTIVE.store(machine.context.get().cast(), Ordering::Release);
     let bdf = u32::from(address.bus()) << 8
         | u32::from(address.device()) << 3
         | u32::from(address.function());
+    fstart_log::info!("VBIOS: backend Rust rsemu");
     fstart_log::info!(
         "VBIOS: POST {}:{}:{}",
         address.bus(),
         address.device(),
         address.function()
     );
-    let (memory, size) = machine.with(|ctx| (ctx.memory.as_mut_ptr(), ctx.memory.len()));
-    let completed = unsafe { fstart_vbios_post(memory, size, bdf) };
+    let completed = machine.post(bdf);
     if let Some(error) = machine.with(|ctx| ctx.error) {
         return Err(error);
     }
-    if completed == 0 {
+    if !completed {
         return Err(Error::Emulation);
     }
     fstart_log::info!(
-        "VBIOS: POST complete ({} instructions)",
+        "VBIOS: POST complete ({} execution steps)",
         machine.with(|ctx| ctx.steps)
     );
     machine.vbe(0x4f00, 0, 0)?;
@@ -753,7 +790,10 @@ pub unsafe fn initialize(
         info.bits_per_pixel,
         fstart_log::Hex(info.base_addr)
     );
-    Ok(info)
+    Ok(InitializedDisplay {
+        framebuffer: info,
+        rom: machine.with(|ctx| ctx.posted_rom())?,
+    })
 }
 
 #[cfg(test)]
@@ -771,28 +811,55 @@ mod tests {
     fn emulator_far_return_uses_private_ram_and_callbacks_reject_unmapped_memory() {
         assert!(!BUSY.swap(true, Ordering::Acquire));
         let _guard = Guard { cf8: None };
-        let machine = Machine {
-            context: UnsafeCell::new(Context {
-                memory: vec![0; GUEST_SIZE],
-                pci: None,
-                windows: &[],
-                timer: &Clock,
-                started: 0,
-                steps: 0,
-                error: None,
-                last_memory: (0, 0),
-                last_port: (0, 0),
-            }),
-        };
+        let machine = Machine::new(Context {
+            memory: vec![0; GUEST_SIZE],
+            pci: None,
+            windows: &[],
+            timer: &Clock,
+            started: 0,
+            steps: 0,
+            error: None,
+            last_memory: (0, 0),
+            last_port: (0, 0),
+        })
+        .unwrap();
         machine.with(|ctx| {
+            ctx.memory[ROM_BASE..ROM_BASE + 3].copy_from_slice(&[0x55, 0xaa, 2]);
             ctx.memory[ROM_BASE + 3] = 0xcb;
             ctx.memory[0x10000] = 0xf4;
         });
         ACTIVE.store(machine.context.get().cast(), Ordering::Release);
-        let (memory, size) = machine.with(|ctx| (ctx.memory.as_mut_ptr(), ctx.memory.len()));
-        assert_eq!(unsafe { fstart_vbios_post(memory, size, 0) }, 1);
+        assert!(machine.post(0));
         assert!(machine.with(|ctx| ctx.error.is_none() && ctx.steps < 10));
-        assert_eq!(fstart_vbios_mem_read(0xffff_ff00, 4), u32::MAX);
+        // A ROM-installed INT10 writes the VBE controller signature through
+        // ES:DI, returns AX=004f and IRETs to the private sentinel. Repeat it
+        // to exercise waking the core and resetting its private stack.
+        machine.with(|ctx| {
+            ctx.memory[0x40..0x44].copy_from_slice(&0xc000_0100u32.to_le_bytes());
+            let handler = [
+                0x26, 0xc7, 0x05, 0x56, 0x45, 0x26, 0xc7, 0x45, 0x02, 0x53, 0x41, 0xb8, 0x4f, 0x00,
+                0xcf,
+            ];
+            ctx.memory[ROM_BASE + 0x100..ROM_BASE + 0x100 + handler.len()]
+                .copy_from_slice(&handler);
+        });
+        for _ in 0..2 {
+            let regs = machine.vbe(0x4f00, 0, 0).unwrap();
+            assert_eq!(regs.eax as u16, 0x004f);
+            assert_eq!(machine.bytes::<4>(BUFFER), Some(*b"VESA"));
+        }
+        // Export the posted, patched guest image, not the original asset or
+        // a pointer into the emulator. Further guest writes cannot alter it.
+        let posted = machine.with(|ctx| ctx.posted_rom()).unwrap();
+        assert_eq!(posted.len(), 1024);
+        assert_eq!(posted[0x100], 0x26);
+        machine.with(|ctx| ctx.memory[ROM_BASE + 0x100] = 0);
+        assert_eq!(posted[0x100], 0x26);
+        machine.with(|ctx| ctx.memory[ROM_BASE + 2] = 1);
+        assert_eq!(machine.with(|ctx| ctx.posted_rom()).unwrap().len(), 512);
+        machine.with(|ctx| ctx.memory[ROM_BASE + 2] = 0);
+        assert_eq!(machine.with(|ctx| ctx.posted_rom()), Err(Error::Rom));
+        assert_eq!(memory_read(0xffff_ff00, 4), u32::MAX);
         assert_eq!(machine.with(|ctx| ctx.error), Some(Error::Bounds));
     }
     #[test]

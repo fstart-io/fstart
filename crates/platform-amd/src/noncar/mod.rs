@@ -128,7 +128,8 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     fn silicon_init<B: Board<Soc = Self>>(tp1: Tp1<'_, Self>) -> Result<Silicon<Self>, Stop>;
     /// TP2: after the PCI resource allocation.
     fn after_resources<B: Board<Soc = Self>>(silicon: &mut Silicon<Self>, ctx: &Ctx<'_, Self>);
-    /// TP3: ready to boot, before the PSP locks the DF.
+    /// TP3: ready to boot, before ACPI publication and the PSP's DF lock.
+    /// Device contributions such as the posted video ROM must be ready here.
     fn ready_to_boot<B: Board<Soc = Self>>(
         silicon: &mut Silicon<Self>,
         ctx: &Ctx<'_, Self>,
@@ -177,6 +178,8 @@ pub struct Silicon<S: Soc> {
     pub devices: heapless::Vec<fstart_core::acpi::AcpiGenericDevice, 16>,
     /// Further `\_SB` AML: FCH controllers and the devices behind them.
     pub aml: alloc::vec::Vec<u8>,
+    /// Standalone device ACPI tables (for example, a posted VBIOS VFCT).
+    pub tables: alloc::vec::Vec<alloc::vec::Vec<u8>>,
     pub framebuffer: Option<fstart_core::services::FramebufferInfo>,
     pub state: S::State,
 }

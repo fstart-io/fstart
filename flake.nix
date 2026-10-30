@@ -31,8 +31,6 @@
         pkgs.pkgsCross.aarch64-multiplatform.stdenv.cc
         pkgs.pkgsCross.armv7l-hf-multiplatform.stdenv.cc
         pkgs.gnumake
-        # Freestanding x86 option-ROM emulator (driver-vbios).
-        pkgs.llvmPackages.clang-unwrapped
         pkgs.flex
         pkgs.bison
         pkgs.bc

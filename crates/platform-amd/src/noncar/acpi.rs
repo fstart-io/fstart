@@ -77,9 +77,11 @@ pub fn install<S: Soc>(
     apic_ids: &[u32],
     board: &BoardAcpi,
 ) -> Option<u64> {
+    // Room for a full 128-KiB ROM in both _ROM and VFCT plus platform tables.
+    const TABLE_CAPACITY: usize = 0x8_0000;
     #[repr(C, align(4096))]
-    struct Tables([u8; 0x2_0000]);
-    static mut TABLES: Tables = Tables([0; 0x2_0000]);
+    struct Tables([u8; TABLE_CAPACITY]);
+    static mut TABLES: Tables = Tables([0; TABLE_CAPACITY]);
 
     let dies: Vec<DieAcpi<'_>, MAX_DIES> = dies
         .iter()

@@ -135,6 +135,23 @@ mod mainboard {
         }
     }
 
+    struct WifiIo<'a, B, T> {
+        gpio: &'a gpio::Gpio<B>,
+        clock: &'a mut T,
+    }
+
+    impl<B: fstart_driver_amd::fch::Bus, T: tsc::Clock> vilboz::BoardIo for WifiIo<'_, B, T> {
+        fn configure(&mut self, pads: &[gpio::Pad]) -> Result<(), gpio::Error> {
+            self.gpio.configure(pads, &[])
+        }
+        fn set(&mut self, pin: u8, value: bool) -> Result<(), gpio::Error> {
+            self.gpio.set(pin, value)
+        }
+        fn delay_ms(&mut self, ms: u32) {
+            self.clock.delay_us(ms * 1000);
+        }
+    }
+
     pub(super) fn init(
         gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
         clock: &mut impl tsc::Clock,
@@ -164,6 +181,12 @@ mod mainboard {
             cbi.board_version.unwrap_or(u32::MAX),
             Hex(cbi.firmware_config.unwrap_or(u64::MAX))
         );
+        // Power and release WLAN before DXIO probes the endpoint. The PCIe
+        // GPIO table deliberately leaves GPIO29/42 to this revision-dependent
+        // sequence; merely configuring the table leaves WLAN held in reset.
+        if vilboz::wifi_power_reset(&mut WifiIo { gpio, clock }, cbi).is_err() {
+            fstart_log::error!("vilboz: WiFi power/reset failed");
+        }
         // Not ChromeOS: GPIO40 stays a plain input on newer boards.
         if vilboz::configure_ram(gpio, cbi, false).is_err() {
             fstart_log::error!("vilboz: RAM-stage GPIOs failed");

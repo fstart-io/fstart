@@ -80,6 +80,7 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, native_brightness: bool) -> Vec<
             hid: "PNP0C02",
             resources: &super::dock::FIRMWARE_RESOURCES,
             gsiv: None,
+            interrupt_flags: Default::default(),
         }
         .dsdt_aml(),
     );

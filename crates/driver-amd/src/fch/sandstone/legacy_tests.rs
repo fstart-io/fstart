@@ -68,6 +68,7 @@ fn legacy_preserves_control_bits_and_uses_indexed_byte_w1c_irq_transactions() {
         (0x81, 17),
         (0x82, 18),
         (0x83, 19),
+        (0x90, 9),
         (0x97, 16),
         (0x9a, 16),
         (0xc3, 5),
@@ -110,4 +111,13 @@ fn irq14_and_15_take_the_routed_internal_sources() {
     assert_eq!(world.indexed(0xc00, 8), 0xfa);
     assert_eq!(internal_irq(source::I2C[2]), Some(14));
     assert_eq!(internal_irq(source::GPIO), Some(7));
+    assert_eq!(internal_irq(source::SCI), Some(crate::fch::SCI_IRQ));
+}
+
+#[test]
+fn sci_is_routed_even_if_previous_firmware_disabled_it() {
+    let world = world();
+    world.set_indexed(0xc00, u32::from(source::SCI | 0x80), 0x1f);
+    initialize(&Fch::new(&world, Acpimmio::DIE0), true, false);
+    assert_eq!(world.indexed(0xc00, u32::from(source::SCI | 0x80)), 9);
 }
