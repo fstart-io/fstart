@@ -321,7 +321,8 @@ impl<S: Soc> Stage<S> {
         }
     }
 
-    /// Publish ACPI with the board's contribution, lock the DF, map RAM for
+    /// Finish the SoC's ready-to-boot ([`Soc::end_of_post`]), publish ACPI
+    /// with the board's contribution, lock the DF, map RAM for
     /// the payload, park the APs, tell the PSP and boot the payload.
     pub fn boot(
         self,
@@ -331,6 +332,7 @@ impl<S: Soc> Stage<S> {
         identity: &crate::acpi::SmbiosIdentity<'_>,
     ) -> ! {
         let ctx = self.ctx();
+        S::end_of_post(&mut silicon, &ctx);
         let hosts: Vec<acpi::HostBridge, { super::MAX_DIES }> = pci
             .roots
             .iter()

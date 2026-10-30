@@ -13,8 +13,8 @@
 //! 3. [`Stage::enumerate`]: PCI enumeration and resource allocation, then
 //!    [`Soc::after_resources`].
 //! 4. [`Stage::ready_to_boot`]: the IOAPICs, then [`Soc::ready_to_boot`].
-//! 5. [`Stage::boot`]: the ACPI tables from what the silicon and the board
-//!    report ([`crate::acpi`]), PSP LockDFReg (a failure halts), the
+//! 5. [`Stage::boot`]: [`Soc::end_of_post`], the ACPI tables from what the
+//!    silicon and the board report ([`crate::acpi`]), PSP LockDFReg (a failure halts), the
 //!    payload's memory map and page tables, PSP BootDone and the payload.
 //!
 //! The SoC modules own the silicon; this module keeps the host side:
@@ -141,6 +141,10 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
         ctx: &Ctx<'_, Self>,
         pci: &fstart_pci::PciEcam,
     ) -> Result<(), Stop>;
+
+    /// The SoC's last step before the tables, after the board's own
+    /// ready-to-boot work.
+    fn end_of_post(_silicon: &mut Silicon<Self>, _ctx: &Ctx<'_, Self>) {}
 
     /// The board's devices for CrabEFI to drive, after the buses are set up.
     #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
