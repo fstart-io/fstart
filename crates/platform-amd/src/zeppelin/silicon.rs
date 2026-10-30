@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Zeppelin silicon init. Generic over the register
 //! transports, so the host model of the dies can log the whole sequence
-//! (`tests.rs`); the board hooks come in as closures.
+//! (`tests.rs`). It is split where the vendor board PEIMs run, so the
+//! board's `main` does that work between the steps.
 use super::Config;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_driver_amd::cpu::{Package, Revision};
@@ -63,14 +64,6 @@ pub struct SmuPages(pub [[u8; 4096]; 2 * MAX_DIES]);
 #[repr(C, align(64))]
 pub struct SmuPolicy(pub [u8; 0x80]);
 
-/// The DMA memory of the SMU and the DXIO firmware: reserved DRAM below
-/// 4 GiB the firmware keeps using until reset.
-pub struct Dma {
-    pub smu_pages: &'static mut SmuPages,
-    pub smu_policy: &'static mut SmuPolicy,
-    pub dxio: &'static mut dxio::zeppelin::Buffers,
-}
-
 pub use crate::noncar::post;
 
 /// FCH setup before the console: ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O.
@@ -83,23 +76,18 @@ pub fn fch_early_init(fch: &Fch<impl Bus>, config: &Config) {
     early::set_power_failure_state(fch, config.fch.power_failure);
 }
 
-/// The silicon init before MP (AmdSocSp4ZpPei, AmdFabricZpPei,
-/// FchTaishanPei, AmdNbioBaseZPPei, AmdCcxZenZpPei), then the native
-/// silicon init up to the APs.
-#[allow(clippy::too_many_arguments)]
-pub fn pre_mp<P: ConfigRegionAccess + Copy>(
+/// The silicon init before MP, first step (AmdSocSp4ZpPei, AmdFabricZpPei,
+/// FchTaishanPei reset): the DF MMIO/IO map and init, then the FCH reset
+/// init. Returns each die's non-PCI MMIO pool. The board PEIMs that wait for
+/// the FCH's SMBus run after this.
+pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
     fch: &Fch<impl Bus>,
-    msr: &impl MsrAccess,
-    config: &mut Config,
     identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
     apob: Option<&Apob>,
-    dma: Dma,
     clock: &mut impl Clock,
-    fch_reset_done: impl FnOnce(&mut Config),
-    dxio_training_done: impl FnOnce(),
-) -> Result<State, &'static str> {
+) -> Result<[u32; MAX_DIES], &'static str> {
     let Identity { revision, package } = identity;
     let count = dies.len() as u8;
     // DF MMIO/IO distribution, then the per-die DF init.
@@ -133,7 +121,7 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
         }
     }
 
-    // FchTaishanPei, then the board PEIMs that wait for its SMBus PPI.
+    // FchTaishanPei.
     taishan::reset_init(fch, revision);
     taishan::sata::reset(&dies[0].smn(), clock);
     taishan::multi::reset(
@@ -143,9 +131,34 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
         |die| nonpci[usize::from(die)],
         clock,
     );
-    fch_reset_done(config);
+    Ok(nonpci)
+}
 
-    // AmdNbioBaseZPPei, AmdCcxZenZpPei.
+/// What [`pre_mp_dxio`] leaves for [`pre_mp_finish`].
+pub struct Trained {
+    nonpci: [u32; MAX_DIES],
+    ioapics: [u32; MAX_DIES],
+    psp_bars: [u32; MAX_DIES],
+    name: ccx::brand::Name,
+}
+
+/// The silicon init before MP, second step (AmdNbioBaseZPPei,
+/// AmdCcxZenZpPei, AmdNbioPcieZPPei): NBIO and the BSP, the DRAM map, the
+/// IOAPIC and IOMMU BARs, then DXIO link training. Board work that needs
+/// trained links runs after this.
+#[allow(clippy::too_many_arguments)]
+pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
+    dies: &[Die<P>],
+    fch: &Fch<impl Bus>,
+    msr: &impl MsrAccess,
+    config: &Config,
+    identity: Identity,
+    (top_mem, top_mem2): (u64, Option<u64>),
+    nonpci: [u32; MAX_DIES],
+    buffers: &'static mut dxio::zeppelin::Buffers,
+    clock: &mut impl Clock,
+) -> Result<Trained, &'static str> {
+    let Identity { revision, .. } = identity;
     for die in dies {
         nbio::zeppelin::early_init(die, revision);
         // A locked BAR gets reported as a fixed resource by the root complex.
@@ -178,14 +191,13 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
     }
     let psp_bars = psp::bars(dies);
 
-    // AmdNbioPcieZPPei
     // SAFETY: BSP-only; the DMA buffer is reserved below 4 GiB.
     let topology = unsafe {
         dxio::zeppelin::init(
             dies,
             &config.dxio.descriptors,
             config.subsystem_id,
-            dma.dxio,
+            buffers,
             clock,
         )
     }
@@ -200,17 +212,44 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
             if port.trained { "trained" } else { "no link" }
         );
     }
-    dxio_training_done();
+    Ok(Trained {
+        nonpci,
+        ioapics,
+        psp_bars,
+        name,
+    })
+}
 
-    // FchTaishanPei USB, then the DXE drivers.
+/// The silicon init before MP, last step (FchTaishanPei USB, then the DXE
+/// drivers): USB, the SMU, the late DF, the NBIO and FCH environment.
+#[allow(clippy::too_many_arguments)]
+pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
+    dies: &[Die<P>],
+    fch: &Fch<impl Bus>,
+    config: &Config,
+    identity: Identity,
+    apob: Option<&Apob>,
+    trained: Trained,
+    smu_pages: &'static mut SmuPages,
+    smu_policy: &'static mut SmuPolicy,
+    clock: &mut impl Clock,
+) -> State {
+    let Identity { revision, package } = identity;
+    let Trained {
+        nonpci,
+        ioapics,
+        psp_bars,
+        name,
+    } = trained;
+    let count = dies.len() as u8;
     let devices = &config.fch.devices;
     taishan::usb::init(&dies[0].smn(), 0, package, clock);
     taishan::multi::usb(dies, devices, package, clock);
     let table = smu::PolicyTable::new(&smu::Policy::default());
-    dma.smu_policy.0[..table.as_bytes().len()].copy_from_slice(table.as_bytes());
-    let page = |i: usize| dma.smu_pages.0[i].as_ptr() as u64;
+    smu_policy.0[..table.as_bytes().len()].copy_from_slice(table.as_bytes());
+    let page = |i: usize| smu_pages.0[i].as_ptr() as u64;
     let buffers = smu::DmaBuffers {
-        policy: dma.smu_policy.0.as_ptr() as u64,
+        policy: smu_policy.0.as_ptr() as u64,
         agm_log: core::array::from_fn(page),
         perfmon: core::array::from_fn(|i| page(MAX_DIES + i)),
     };
@@ -249,7 +288,7 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
         clock,
     );
     post(fch, 0x41);
-    Ok(State {
+    State {
         identity,
         nonpci,
         ioapics,
@@ -257,7 +296,7 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
         cac_weights,
         name,
         memory_encryption: config.ccx.memory_encryption,
-    })
+    }
 }
 
 /// The SMU's MP-services and CCX-done callbacks, once the APs ran their init.
@@ -282,20 +321,22 @@ pub fn after_resources(fch: &Fch<impl Bus>) {
 }
 
 /// The ReadyToBoot of the vendor firmware: the SATA controller of die 0 at
-/// `sata`, the other dies' FCHs, the FCH late init, the board's hook, then
-/// the DF extended config off.
+/// `sata`, the other dies' FCHs and the FCH late init. The board's own
+/// ready-to-boot work runs after this, then [`end_of_post`].
 pub fn ready_to_boot<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
     fch: &Fch<impl Bus>,
     sata: Option<PciAddress>,
-    board: impl FnOnce(),
 ) {
     if let Some(sata) = sata {
         taishan::sata::late(&dies[0].smn(), 0, dies[0].pci(), sata);
     }
     taishan::multi::late(dies, |_| None);
     taishan::late_init(fch);
-    board();
+}
+
+/// The end of the vendor ReadyToBoot: the DF extended config off.
+pub fn end_of_post<P: ConfigRegionAccess + Copy>(dies: &[Die<P>]) {
     for die in dies {
         df::zeppelin::disable_ext_cfg(&die.df());
     }
