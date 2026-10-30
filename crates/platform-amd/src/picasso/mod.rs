@@ -4,26 +4,21 @@
 //! One PSP-loaded stage runs the native silicon init, MP/SMM, PCI and
 //! ACPI before handing off to the selected payload.
 pub mod acpi;
+#[cfg(all(feature = "bundle", target_os = "none"))]
+mod init;
 use crate::noncar::{
-    self, Board, Ctx, Silicon, Stop, Tp1,
+    self, Ctx, Silicon, Stop,
     layout::{Layout, Region},
 };
-use crate::noncar::{mp, psp, smm};
-use fstart_arch::x86::cpu::msr::{MCG_CAP, McgCap, MsrAccess};
 use fstart_driver_amd::{
     ccx::{
-        Thread,
         picasso::{self as cpu, Identity},
-        tsc::{Clock, Tsc},
+        tsc::Tsc,
     },
-    df::picasso as fabric,
     fch::{
         Fch, NativeBus, espi,
         gpio::{Gpio, Pad, Pull},
-        sandstone::{
-            legacy,
-            preinit::{self, SpiConfig},
-        },
+        sandstone::preinit::SpiConfig,
     },
     nbio::picasso as nbio,
     soc::{
@@ -32,26 +27,23 @@ use fstart_driver_amd::{
     },
 };
 use fstart_driver_amd::{
-    dxio::{self, Descriptor},
+    dxio::Descriptor,
     fch::{
         emmc,
         sandstone::{self, usb},
-        smi::FchSmi,
     },
-    smu::v10::power,
 };
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_log::Hex;
-use tock_registers::interfaces::Readable;
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub use init::{Dxio, Init};
 
-/// A board's Picasso configuration.
+/// A board's Picasso configuration: how the board wires the SoC's blocks.
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub fch: FchConfig,
     pub pcie: &'static [Descriptor],
-    /// Set by the board's CBI hook before SMU policy submission.
-    pub power: Option<power::Config>,
     pub usb: usb::Config,
+    /// The eMMC controller, if the board can have eMMC fitted.
     pub emmc: Option<emmc::Config>,
     pub graphics: nbio::gfx::Config,
     /// FCH I2C controllers and their devices, for the UEFI payload to
@@ -96,10 +88,6 @@ pub struct FchConfig {
     pub spi: SpiConfig,
     /// eSPI link to the EC and its pads.
     pub espi: Option<(espi::Config, &'static [Pad])>,
-    /// GPIO tables programmed once the FCH is up, in order.
-    pub early_gpios: &'static [&'static [Pad]],
-    /// `DISABLE_SPI_FLASH_ROM_SHARING`: before the board's `fch_reset_done`.
-    pub disable_rom_sharing: bool,
 }
 
 /// The console on FCH UART `uart`.
@@ -227,186 +215,11 @@ impl noncar::Soc for Picasso {
         Identity::from_cpuid(signature, extended_ebx, 0).map_err(|_| "CPU identification")
     }
 
-    /// Cold silicon init in the native coreboot sequence, followed by the
-    /// shared architectural MP and SMM installers.
-    fn silicon_init<B: Board<Soc = Self>>(tp1: Tp1<'_, Self>) -> Result<Silicon<Self>, Stop> {
-        let Tp1 {
-            ctx,
-            config,
-            identity,
-            memory,
-            microcode,
-        } = tp1;
-        let mut config = *config;
-        let Ctx { dies, msr, .. } = ctx;
-        let die = &dies[0];
-        let banks = msr.reg(MCG_CAP).read(McgCap::COUNT) as u8;
-        if !(17..=32).contains(&banks) {
-            return Err("CPU identification".into());
-        }
-        let (smn, df) = (&die.smn(), &die.df());
-        let mut delay = ctx.clock;
-        fabric::ensure_legacy_routes(die, memory.top_mem as u32).map_err(|_| "data fabric")?;
-        fabric::early_init(df);
-        let capabilities = nbio::early_init(smn, identity.raven2_cpuid, identity.am4, &mut delay)
-            .map_err(|_| "NBIO early init")?;
-        let (signature, _, _, _) = fstart_arch::x86::cpuid(1);
-        let (_, extended_ebx, _, _) = fstart_arch::x86::cpuid(0x8000_0001);
-        let identity = Identity::from_cpuid(signature, extended_ebx, capabilities.silicon_id)
-            .map_err(|_| "CPU identification")?;
-        nbio::psp_bar(smn).map_err(|_| "NBIO early init")?;
-        cpu::bsp_init(msr);
-        cpu::mca_init(msr, Thread::current()).map_err(|_| "CPU identification")?;
-        nbio::dram_routes(die, memory.top_mem, memory.top_mem2).map_err(|_| "NBIO early init")?;
-        fstart_log::info!(
-            "picasso: silicon {}, TSEG {} + {}",
-            Hex(u64::from(capabilities.silicon_id)),
-            Hex(memory.tseg),
-            Hex(u64::from(Self::TSEG_SIZE))
-        );
-        for entry in memory.e820.entries() {
-            let (addr, size, kind) = (entry.addr, entry.size, entry.kind);
-            fstart_log::info!(
-                "picasso: e820 {}..{} type {}",
-                Hex(addr),
-                Hex(addr + size),
-                kind
-            );
-        }
-        fch_init(ctx.fch, &config.fch, &mut delay)?;
-        B::fch_reset_done(&mut ctx.board(), &mut config);
-        nbio::ioapic_decode(smn);
-        fstart_driver_amd::nbio::iommu::init_bar(die, nbio::IOMMU_MMIO_BASE);
-        static mut DXIO: dxio::picasso::Buffers = dxio::picasso::Buffers::new();
-        static mut POWER: power::Pages = power::Pages::new();
-        // SAFETY: BSP-only, once per boot. Both buffers remain in reserved
-        // firmware BSS and are never reclaimed, including on failure.
-        let topology = unsafe {
-            dxio::picasso::train(
-                die,
-                &mut *core::ptr::addr_of_mut!(DXIO),
-                config.pcie,
-                dxio::picasso::Options {
-                    power: dxio::picasso::PowerPolicy::Balanced,
-                    am4: identity.am4,
-                    silicon_id: capabilities.silicon_id,
-                    graphics: capabilities.graphics,
-                    hda_enabled: true,
-                    acp_enabled: true,
-                },
-                &mut delay,
-            )
-        }
-        .map_err(|_| "DXIO training")?;
-        B::dxio_training_done(&mut ctx.board());
-        fstart_log::info!("picasso: DXIO training complete");
-        let mut notice = |message, status| {
-            fstart_log::warn!(
-                "SMU message {} returned {}",
-                Hex(u64::from(message)),
-                Hex(u64::from(status))
-            )
-        };
-        // SAFETY: permanent coherent BSS pages, as above.
-        unsafe {
-            nbio::late::pre_enumeration(
-                smn,
-                &topology,
-                &mut *core::ptr::addr_of_mut!(POWER),
-                config.power.ok_or("board power policy")?,
-                &mut delay,
-                &mut notice,
-            )
-        }
-        .map_err(|_| "SMU power policy")?;
-        sandstone::alink_init(ctx.fch);
-        ctx.fch.acpi_decode(sandstone::ACPI_PORTS);
-        legacy::initialize(ctx.fch, config.fch.espi.is_some(), false);
-        legacy::lpc_init(ctx.fch.bus());
-        sandstone::clock_init(smn);
-        // SAFETY: BSP owns the decoded fixed USB PHY registers.
-        usb::initialize(
-            smn,
-            &mut unsafe { usb::NativePhy::new() },
-            &config.usb,
-            identity,
-            capabilities.silicon_id,
-            false,
-            &mut delay,
-        )
-        .map_err(|_| "USB init")?;
-        fabric::late_init(df, identity.raven2_cpuid);
-        if let Some(emmc) = config.emmc {
-            // SAFETY: BSP owns the decoded eMMC configuration registers.
-            emmc::initialize(&mut unsafe { emmc::Native::new() }, emmc).map_err(|_| "eMMC init")?;
-        }
-        let policy = cpu::thread::Policy::capture(msr, nbio::PSP_MMIO_BASE.into())
-            .map_err(|_| "CPU cache policy")?;
-        let cpus = mp::start::<Self, _>(
-            dies,
-            microcode,
-            move |msr, thread| {
-                use fstart_arch::x86::cpu::msr::{APIC_BASE, ApicBase};
-                let bsp = msr.reg(APIC_BASE).is_set(ApicBase::BSP);
-                policy.initialize(msr, bsp, thread)
-            },
-            delay,
-        )?;
-        nbio::late::ccx_done(smn, capabilities.graphics, &mut delay, &mut notice)
-            .map_err(|_| "SMU CCX done")?;
-        let uma = if capabilities.graphics {
-            // SAFETY: reserved, identity-mapped UMA; no display driver is active.
-            Some(unsafe {
-                nbio::gfx::initialize(
-                    smn,
-                    memory.apob.ok_or("GFX APOB")?,
-                    config.graphics,
-                    memory.top_mem,
-                    memory.top_mem2,
-                    &mut delay,
-                )
-            }?)
-        } else {
-            None
-        };
-        nbio::late::post_silicon(smn, identity, &mut delay).map_err(|_| "NBIO final init")?;
-        ctx.fch.acpi_ports(sandstone::ACPI_PORTS);
-        // SAFETY: BSP exclusively owns the decoded ACPI and SMI blocks.
-        let smi = unsafe { FchSmi::new(sandstone::ACPI_PORTS, 0) };
-        let tseg = smm::install(Self::NAME, &cpus.mp, &smi, memory.tseg, Self::TSEG_SIZE)?;
-        let psp = psp::notify_smm(nbio::PSP_MMIO_BASE, Self::PSP, &tseg, &delay);
-        let devices = config
-            .emmc
-            .into_iter()
-            .map(|_| acpi::emmc())
-            .collect::<Result<_, _>>()
-            .map_err(|_| "eMMC ACPI")?;
-        let aml = acpi::devices(config.i2c, config.emmc.is_some()).map_err(|_| "ACPI devices")?;
-        Ok(Silicon {
-            cpus,
-            psp,
-            devices,
-            aml,
-            tables: alloc::vec::Vec::new(),
-            framebuffer: None,
-            ioapics: core::array::from_fn(|i| if i == 0 { 0xfec0_1000 } else { 0 }),
-            reserved_mmio: core::array::from_fn(|i| {
-                if i == 0 {
-                    Region::new(nbio::SMU_MMIO_BASE.into(), 0x28_0000)
-                } else {
-                    Region::new(0, 0)
-                }
-            }),
-            acpi: &acpi::ACPI,
-            state: uma.map(|region| (region, identity.silicon)),
-        })
-    }
-
-    fn after_resources<B: Board<Soc = Self>>(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
+    fn after_resources(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
         ctx.fch.acpi_ports(sandstone::ACPI_PORTS);
     }
 
-    fn ready_to_boot<B: Board<Soc = Self>>(
+    fn ready_to_boot(
         silicon: &mut Silicon<Self>,
         ctx: &Ctx<'_, Self>,
         pci: &fstart_pci::PciEcam,
@@ -485,13 +298,12 @@ impl noncar::Soc for Picasso {
                 crate::acpi::video_rom_aml(0, &path, &display.rom).map_err(|_| "VGA ACPI ROM")?,
             );
         }
-        B::ready_to_boot(&mut ctx.board());
         Ok(())
     }
 
     #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
-    fn peripherals<B: Board<Soc = Self>>(ctx: &Ctx<'_, Self>) -> noncar::Peripherals {
-        B::CONFIG
+    fn peripherals(ctx: &Ctx<'_, Self>, config: &Config) -> noncar::Peripherals {
+        config
             .i2c
             .iter()
             .flat_map(|bus| uefi::i2c_peripherals(ctx, bus))
@@ -525,7 +337,7 @@ mod uefi {
     }
 
     fn interrupt(ctx: &Ctx<'_, Picasso>, config: GpioInterrupt) -> Option<Interrupt> {
-        let gpio = ctx.board().gpio();
+        let gpio = ctx.gpio();
         Some(match config {
             GpioInterrupt::Level { pin, active_low } => Interrupt::Level {
                 line: InputLine::new(gpio.input(pin).ok()?),
@@ -572,35 +384,4 @@ mod uefi {
             })
             .collect()
     }
-}
-
-/// The early FCH setup: LPC/SPI aperture, eSPI, SPI
-/// ROM, SMBus, the board's GPIOs, ROM sharing.
-fn fch_init(
-    fch: &Fch<NativeBus>,
-    config: &FchConfig,
-    clock: &mut impl Clock,
-) -> Result<(), &'static str> {
-    preinit::prepare_lpc(fch).map_err(|_| "LPC setup")?;
-    // SAFETY: as the flow's FCH: BSP only.
-    let gpio = Gpio::new(
-        Fch::new(unsafe { NativeBus::new() }, fch.acpimmio()),
-        Picasso::GPIO_BANK,
-    );
-    if let Some((espi, pads)) = &config.espi {
-        gpio.configure(pads, &[]).map_err(|_| "eSPI GPIOs")?;
-        // SAFETY: the SPI/eSPI BAR prepare_lpc set up; BSP only.
-        let mut controller = unsafe { espi::Native::new(preinit::SPI_BASE as usize) };
-        espi::initialize(&mut controller, clock, espi).map_err(|_| "eSPI link")?;
-        fstart_log::info!("picasso: eSPI link up");
-    }
-    preinit::configure_spi(fch, config.spi).map_err(|_| "SPI setup")?;
-    preinit::initialize_smbus(fch).map_err(|_| "SMBus setup")?;
-    for table in config.early_gpios {
-        gpio.configure(table, &[]).map_err(|_| "board GPIOs")?;
-    }
-    if config.disable_rom_sharing {
-        legacy::disable_rom_sharing(fch.bus());
-    }
-    Ok(())
 }

@@ -44,22 +44,24 @@ the native boot/image contract is incomplete."
 | --- | --- |
 | Console | FCH UART 0, 115200 baud, 48 MHz clock |
 | SPI, eSPI | `policy::SPI`; eSPI to the EC with `dalboz::ESPI_GPIO_TABLE` |
-| Early GPIO tables | `EARLY`, `TPM`, `PCIE`, `ROMSTAGE` (in that order) |
-| ROM sharing | Disabled (`DISABLE_SPI_FLASH_ROM_SHARING`) |
+| Early GPIO tables | `EARLY`, `TPM`, `PCIE`, `ROMSTAGE` (in that order), programmed by `early_gpios` |
+| ROM sharing | Disabled from `reset.rs` (`Init::disable_rom_sharing`) |
 | I2C2 (400 kHz) | ELAN0000 at `0x15`; SYNA0000 or PNP0C50 at `0x2c` (HID descriptor `0x20`). Both level-triggered, active-low, on GPIO 9. One is fitted. |
 | I2C3 (400 kHz) | GOOG0005 (Cr50 TPM) at `0x50`; ready interrupt on GPIO 3, falling edge |
 | Graphics | `policy::DISPLAYS`, `hdmi2_disable: 2` |
-| eMMC | Present only if the CBI says so |
-| Power | `None` in `Config`; set from the CBI in `fch_reset_done` |
+| eMMC | Wired (`Config::emmc`); fitted only if the CBI says so |
+| Power | From the CBI, passed to `Dxio::finish` |
 
-Board hooks:
+The board's flow is `src/bin/reset.rs`. The board work it calls:
 
-- `fch_reset_done`: reads the CBI from the EC (`ec::read_cbi`). Sets
-  `config.power` (`Cbi::native_power()`) and `config.emmc`. Then it configures
-  the RAM-stage GPIOs (`vilboz::configure_ram`).
+- `early_gpios`, right after `picasso::Init::start`, then ROM sharing off.
+- `after_fch`, before `train_dxio`: reads the CBI from the EC
+  (`ec::read_cbi`), powers and releases WLAN and configures the RAM-stage
+  GPIOs (`vilboz::configure_ram`). `reset.rs` passes the CBI's power policy
+  (`Cbi::native_power()`) and eMMC presence to `Dxio::finish`.
 - `acpi()`: the keyboard behind the EC, from `driver-chromeec`.
-- `smm.rs`: `VilbozSmm`, the board part of the FCH SMI handler, built only with
-  `fstart_stage_env = "smm"`.
+- `smm.rs`: `VilbozSmm`, the board part of the FCH SMI handler, built only
+  with the board's `smm` feature, for the SMM image.
 
 RAM-ID straps are GPIO 132, 90, 86 and 69 (`lib.rs`). They are sampled before
 GPIO 86 is driven high. The APCB instance is chosen per RAM-ID value. FW_CONFIG
@@ -67,7 +69,8 @@ fields select WWAN, NVMe, eMMC, SAR and audio options (`policy.rs`).
 
 ## Silicon init
 
-`picasso::Picasso::silicon_init` (TP1), in order:
+The silicon init is `picasso::Init::start`, `Init::train_dxio` and
+`Dxio::finish`, in order:
 
 1. `fch_pre_init`: legacy decode, AOAC power of the early devices and of the
    console UART, console pads. Runs before the console.
@@ -75,16 +78,16 @@ fields select WWAN, NVMe, eMMC, SAR and audio options (`policy.rs`).
    NBIO early init.
 3. DF legacy routes and early init, NBIO early init, PSP BAR, BSP CCX init
    (MCA), IOHC DRAM routes.
-4. `fch_init`: LPC prepare, eSPI link (if configured), SPI, SMBus, the board's
-   early GPIO tables, ROM-sharing disable.
-5. Board `fch_reset_done`: CBI, power policy, eMMC.
+4. `fch_init`: LPC prepare, eSPI link (if configured), SPI, SMBus.
+5. The board's work (`Init::start` returns): its early GPIO tables, ROM
+   sharing (`Init::disable_rom_sharing`), CBI, WLAN.
 6. IOAPIC decode, IOMMU BAR.
-7. DXIO training (`dxio::picasso::train`, balanced power policy), then board
-   `dxio_training_done`.
-8. NBIO late pre-enumeration. The SMU power policy comes from `config.power`,
-   which is required.
+7. DXIO training (`dxio::picasso::train`, balanced power policy). Board work
+   that needs trained links goes after `train_dxio`.
+8. NBIO late pre-enumeration, with the SMU power policy the board passes to
+   `Dxio::finish`.
 9. Sandstone ALink, ACPI decode, legacy LPC, clocks, USB PHY and controllers,
-   DF late init, eMMC (if configured).
+   DF late init, eMMC (if wired in `Config` and fitted).
 10. MP (`noncar::mp::start`) with the per-thread cache policy captured from the
     PSP MMIO base.
 11. SMU CCX-done. If the SoC reports a GPU: `nbio::gfx::initialize` uses the
@@ -95,9 +98,9 @@ fields select WWAN, NVMe, eMMC, SAR and audio options (`policy.rs`).
 13. eMMC ACPI device `MMC0` (`AMDI0040`) and the I2C controllers with their
     devices in `\_SB`.
 
-TP2 (`after_resources`) sets the FCH ACPI ports. Then `Board::mainboard_final`.
+`after_resources` sets the FCH ACPI ports.
 
-TP3 (`ready_to_boot`), after enumeration:
+`ready_to_boot`, after enumeration:
 
 - NBIO late after-enumeration.
 - If there is a GPU: find the VGA device (class 3, vendor `0x1002`). Its ROM is
@@ -108,7 +111,6 @@ TP3 (`ready_to_boot`), after enumeration:
 - `fstart_driver_vbios::initialize` runs the native Rust rsemu interpreter,
   with bounded RAM and a deadline, and selects a VBE linear-framebuffer mode. The
   result is `FramebufferInfo`, which goes to the payload.
-- `Board::ready_to_boot`.
 
 ## Memory layout
 

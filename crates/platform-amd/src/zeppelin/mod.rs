@@ -1,25 +1,28 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native AMD Zeppelin (EPYC Embedded 3000) on the noncar flow.
 pub mod acpi;
+#[cfg(all(feature = "bundle", target_os = "none"))]
+mod init;
 pub mod layout;
 pub mod silicon;
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub use init::silicon_init;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 mod tests;
 
-use crate::noncar::{self, Board, Ctx, Silicon, Stop, Tp1, layout::Region, mp, psp, smm};
+use crate::noncar::{self, Ctx, Silicon, Stop, layout::Region};
 use fstart_driver_amd::cpu::{Package, Revision};
 use fstart_driver_amd::{
     ccx,
-    dxio::{self, Descriptor},
+    dxio::Descriptor,
     fch::{
         Fch, NativeBus,
         early::PowerFailure,
-        smi::FchSmi,
-        taishan::{self, Devices, irq::Route},
+        taishan::{Devices, irq::Route},
     },
     soc::zeppelin::{self as soc, MAX_DIES, Zeppelin},
 };
-use silicon::{Dma, Identity, SmuPages, SmuPolicy};
+use silicon::Identity;
 
 /// A board's Zeppelin configuration, by IP block.
 #[derive(Debug, Clone, Copy)]
@@ -136,96 +139,12 @@ impl noncar::Soc for Zeppelin {
         Ok(Identity { revision, package })
     }
 
-    /// The silicon, MP init, SMM with the PSP's SMM info, the PCI interrupt
-    /// router.
-    fn silicon_init<B: Board<Soc = Self>>(tp1: Tp1<'_, Self>) -> Result<Silicon<Self>, Stop> {
-        /// DRAM the SMU and the DXIO firmware use with DMA: firmware BSS in
-        /// the reserved early region.
-        static mut SMU_PAGES: SmuPages = SmuPages([[0; 4096]; 2 * MAX_DIES]);
-        static mut SMU_POLICY: SmuPolicy = SmuPolicy([0; 0x80]);
-        static mut DXIO_BUFFERS: dxio::zeppelin::Buffers = dxio::zeppelin::Buffers::new();
-
-        let Tp1 {
-            ctx,
-            config,
-            identity,
-            memory,
-            microcode,
-        } = tp1;
-        let Ctx {
-            dies,
-            fch,
-            msr,
-            mut clock,
-        } = ctx;
-        // SAFETY: the DMA memory is reserved firmware BSS below 4 GiB, handed
-        // out once here.
-        let dma = unsafe {
-            Dma {
-                smu_pages: &mut *core::ptr::addr_of_mut!(SMU_PAGES),
-                smu_policy: &mut *core::ptr::addr_of_mut!(SMU_POLICY),
-                dxio: &mut *core::ptr::addr_of_mut!(DXIO_BUFFERS),
-            }
-        };
-        let mut config = *config;
-        let state = silicon::pre_mp(
-            dies,
-            fch,
-            msr,
-            &mut config,
-            identity,
-            (memory.top_mem, memory.top_mem2),
-            memory.apob,
-            dma,
-            &mut clock,
-            |config| B::fch_reset_done(&mut ctx.board(), config),
-            || B::dxio_training_done(&mut ctx.board()),
-        )?;
-
-        let policy = state.cpu_policy();
-        let cpus = mp::start::<Self, _>(
-            dies,
-            microcode,
-            move |msr, thread| ccx::zeppelin::cpu_init(msr, &policy, thread),
-            clock,
-        )?;
-        silicon::cpus_up(dies, &mut clock);
-        // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
-        // decoded since the FCH init.
-        let smi = unsafe { FchSmi::new(taishan::ACPI_PORTS, config.fch.smi_gevents) };
-        let tseg = smm::install(Self::NAME, &cpus.mp, &smi, memory.tseg, Self::TSEG_SIZE)?;
-        // The PSP gets the SMM info now, LockDFReg at ready-to-boot and
-        // BootDone right before the payload.
-        let psp = psp::notify_smm(state.psp_bars[0], Self::PSP, &tseg, &clock);
-        silicon::post(fch, 0x42);
-        // PCI: the interrupt router first.
-        silicon::route_interrupts(fch, &config)?;
-
-        Ok(Silicon {
-            cpus,
-            psp,
-            ioapics: core::array::from_fn(|die| state.ioapics.get(die).copied().unwrap_or(0)),
-            // The non-PCI MMIO pool.
-            reserved_mmio: core::array::from_fn(|die| {
-                state.nonpci.get(die).map_or(Region::new(0, 0), |&base| {
-                    Region::new(base.into(), soc::NONPCI_MMIO_SIZE.into())
-                })
-            }),
-            acpi: &acpi::ACPI,
-            devices: heapless::Vec::new(),
-            aml: Default::default(),
-            tables: Default::default(),
-            framebuffer: None,
-            state,
-        })
-    }
-
-    fn after_resources<B: Board<Soc = Self>>(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
+    fn after_resources(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
         silicon::after_resources(ctx.fch);
     }
 
     /// The vendor firmware's ReadyToBoot.
-    fn ready_to_boot<B: Board<Soc = Self>>(
+    fn ready_to_boot(
         _: &mut Silicon<Self>,
         ctx: &Ctx<'_, Self>,
         pci: &fstart_pci::PciEcam,
@@ -233,9 +152,7 @@ impl noncar::Soc for Zeppelin {
         let sata = pci
             .devices()
             .find(|a| pci.device(*a).is_some_and(|d| d.read32(0) == 0x7901_1022));
-        silicon::ready_to_boot(ctx.dies, ctx.fch, sata, || {
-            B::ready_to_boot(&mut ctx.board())
-        });
+        silicon::ready_to_boot(ctx.dies, ctx.fch, sata, || {});
         Ok(())
     }
 }

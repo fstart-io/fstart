@@ -310,10 +310,7 @@ pub mod ich7 {
 use crate::southbridge::smbus::I801SmBus;
 use fstart_core::ConstVec;
 use fstart_core::services::device::DeviceError;
-use fstart_core::services::{
-    FirmwareImage, FirmwareImageProvider, ServiceError, SmBus, Southbridge,
-};
-use fstart_driver_superio::LpcBaseProvider;
+use fstart_core::services::{FirmwareImage, FirmwareImageProvider, ServiceError, SmBus};
 
 // Re-export HDA types from the shared crate so board configs
 // can reference them via the ICH7 driver path.
@@ -835,6 +832,13 @@ unsafe impl Send for IntelIch7 {}
 unsafe impl Sync for IntelIch7 {}
 
 impl IntelIch7 {
+    /// The GPIO controller, for board code to take the pins it wires.
+    /// Pad configuration is chipset config, applied before the console.
+    #[must_use]
+    pub const fn gpio(&self) -> IchGpio {
+        IchGpio::new(DEFAULT_GPIOBASE as u16)
+    }
+
     /// Board population policy, sampled before mainstage IDE programming.
     /// The primary channel can serve a detachable dock rather than a fixed disk.
     pub fn set_ide_primary_enabled(&mut self, enabled: bool) {
@@ -1395,17 +1399,6 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
     }
 }
 
-impl Southbridge for IntelIch7 {
-    fn gpio_get(&self, pin: u32) -> Result<bool, ServiceError> {
-        Ok(IchGpio::new(DEFAULT_GPIOBASE as u16).get(pin as u8))
-    }
-
-    fn gpio_set(&self, pin: u32, value: bool) -> Result<(), ServiceError> {
-        IchGpio::new(DEFAULT_GPIOBASE as u16).set(pin as u8, value);
-        Ok(())
-    }
-}
-
 impl IntelIch7 {
     fn smbus_mut(&mut self) -> &mut I801SmBus {
         self.smbus
@@ -1476,12 +1469,6 @@ impl SmBus for IntelIch7 {
         buf: &mut [u8],
     ) -> Result<(), ServiceError> {
         self.smbus_mut().i2c_eeprom_read(addr, offset, buf)
-    }
-}
-
-impl LpcBaseProvider for IntelIch7 {
-    fn lpc_base(&self) -> u16 {
-        0x2e
     }
 }
 

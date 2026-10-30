@@ -137,9 +137,11 @@ impl Selection {
             board.package.clone(),
         ];
         match &unit.cargo_target {
+            // A board without one shared `stage-bin` owns one binary per
+            // stage, named after the unit.
             CargoTarget::BoardBinary => args.extend([
                 "--bin".into(),
-                board.stage_bin.clone().ok_or("missing stage-bin")?,
+                board.stage_bin.clone().unwrap_or_else(|| unit.name.clone()),
             ]),
             CargoTarget::BoardLibrary => args.push("--lib".into()),
         }

@@ -14,7 +14,7 @@ is the `ec0` variant with the x16 slot).
 | --- | --- |
 | SoC constants, identity, ECAM, APOB | `crates/driver-amd/src/soc/zeppelin/mod.rs` |
 | Platform: `Soc` impl, `Config`, host policy | `crates/platform-amd/src/zeppelin/mod.rs` |
-| TP1 sequence | `crates/platform-amd/src/zeppelin/silicon.rs` |
+| Silicon init sequence | `crates/platform-amd/src/zeppelin/silicon.rs` |
 | DRAM layout | `crates/platform-amd/src/zeppelin/layout.rs` |
 | ACPI data | `crates/platform-amd/src/zeppelin/acpi.rs` |
 | Host model of the dies, tests | `crates/platform-amd/src/zeppelin/tests.rs`, `crates/driver-amd/src/soc/zeppelin/test_pci.rs` |
@@ -50,7 +50,7 @@ Other: SMM TSEG/SMBASE in `crates/arch/src/x86/cpu/amd/smm.rs`; I2C master in
 | PSP variant | `psp::Variant::Zp` |
 | BIOS directory | `Family17hModel00` |
 
-## Silicon init (TP1)
+## Silicon init
 
 `Soc::silicon_init` runs `silicon::pre_mp`, then MP, then SMM. The board
 hooks are called where the vendor sequence has them.
@@ -72,7 +72,7 @@ hooks are called where the vendor sequence has them.
 9. SMM (`noncar::smm::install`) in TSEG, then `psp::notify_smm`.
 10. PCI interrupt router from `Config::fch.irq_routes`.
 
-TP2 (`after_resources`) sets the FCH ACPI ports. TP3 (`ready_to_boot`) does
+`after_resources` sets the FCH ACPI ports. `ready_to_boot` does
 SATA late, multi-FCH late, FCH late init, board `ready_to_boot`, and disables
 DF extended config. Then LockDFReg, BootDone and the payload (see the flow).
 

@@ -11,6 +11,7 @@ pub use fstart_driver_intel::ich8::{
     SataConfig, SataMode, UsbConfig,
 };
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
+pub use fstart_driver_intel::southbridge::pirq::PirqRouting;
 
 pub const GM965_MCHBAR: u64 = 0xFED1_4000;
 pub const GM965_DMIBAR: u64 = 0xFED1_8000;
@@ -39,6 +40,8 @@ pub struct Gm965Ich8Config {
     pub hda: Option<HdaConfig>,
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     pub gpio: gpio::GpioConfig,
+    /// Interrupt routing; boards add the devices behind the PCI bridge.
+    pub pirq: PirqRouting,
     /// Maximum logical CPU count (BSP + APs) the board populates.
     pub max_cpus: u16,
 }
@@ -59,8 +62,15 @@ impl Gm965Ich8Config {
             hda: None,
             io_traps: ConstVec::new(empty_io_trap()),
             gpio: gpio::GpioConfig::new(),
+            pirq: ich8::IntelIch8Config::new().pirq,
             max_cpus: 1,
         }
+    }
+
+    #[must_use]
+    pub const fn pirq(mut self, routing: PirqRouting) -> Self {
+        self.pirq = routing;
+        self
     }
 
     #[must_use]
@@ -99,6 +109,7 @@ impl Gm965Ich8Config {
         config.io_traps = self.io_traps;
         config.smbus_base = ICH8_SMBUS_BASE;
         config.gpio = self.gpio;
+        config.pirq = self.pirq;
         config
     }
 
