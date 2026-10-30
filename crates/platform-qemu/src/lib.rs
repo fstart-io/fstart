@@ -33,9 +33,15 @@ pub use host::Plan;
 #[cfg(feature = "stage")]
 #[doc(hidden)]
 pub use fstart_stage as stage_runtime;
+/// Declare a board's stage `main`: `fstart_platform_qemu::entry!(main);`.
+/// RISC-V boards that can launch CrabEFI also name the function OpenSBI
+/// returns to: `entry!(main, sbi_resume: resume);`.
 #[macro_export]
-macro_rules! stage_bin {
-    ($program:ty) => { $crate::stage_runtime::stage_bin!(program: $program, sbi_resume); };
+macro_rules! entry {
+    ($main:path) => { $crate::stage_runtime::stage_bin!(main: $main); };
+    ($main:path, sbi_resume: $resume:path) => {
+        $crate::stage_runtime::stage_bin!(main: $main, sbi_resume: $resume);
+    };
 }
 
 pub mod fw_cfg;
@@ -57,26 +63,15 @@ pub mod virt_armv7;
 pub mod virt_riscv64;
 
 #[cfg(all(feature = "bundle-sbsa", target_arch = "aarch64"))]
-pub use sbsa::{QemuSbsa, QemuSbsaBoard, QemuSbsaMainstage, QemuSbsaProgram};
+pub use sbsa::QemuSbsaMainstage;
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
-pub use sifive_u::{
-    QemuSifiveU, QemuSifiveUBoard, QemuSifiveUBuildSelectedPayload, QemuSifiveUHooks,
-    QemuSifiveUMainstage, QemuSifiveUProgram,
-};
+pub use sifive_u::{QemuSifiveUBuildSelectedPayload, QemuSifiveUMainstage};
 #[cfg(all(feature = "stage", feature = "virt-aarch64", target_arch = "aarch64"))]
-pub use virt_aarch64::{
-    QemuAarch64Program, QemuAarch64Virt, QemuAarch64VirtBoard, QemuAarch64VirtHooks,
-    QemuAarch64VirtMainstage,
-};
+pub use virt_aarch64::QemuAarch64VirtMainstage;
 #[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]
-pub use virt_armv7::{
-    QemuArmv7Program, QemuArmv7Virt, QemuArmv7VirtBoard, QemuArmv7VirtHooks, QemuArmv7VirtMainstage,
-};
+pub use virt_armv7::QemuArmv7VirtMainstage;
 #[cfg(all(feature = "stage", feature = "virt-riscv64", target_arch = "riscv64"))]
-pub use virt_riscv64::{
-    QemuRiscv64Program, QemuRiscv64Virt, QemuRiscv64VirtBoard, QemuRiscv64VirtHooks,
-    QemuRiscv64VirtMainstage,
-};
+pub use virt_riscv64::QemuRiscv64VirtMainstage;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod q35;
 #[cfg(all(
@@ -96,7 +91,7 @@ pub use fstart_smm as smm;
     feature = "bundle-q35",
     any(target_arch = "x86", target_arch = "x86_64")
 ))]
-pub use stage::{QemuQ35, QemuQ35Board, QemuQ35Mainstage, QemuQ35Program, run_qemu_q35_mainstage};
+pub use stage::{QemuQ35Mainstage, run_q35};
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use serde::Serialize;
@@ -193,7 +188,6 @@ mod stage {
     use fstart_core::services::{Console, ServiceError};
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_stage::payload::{MainstagePayload, X86UefiPayloadContext};
-    use fstart_stage::{StageEnvironment, StageProgram};
 
     use crate::fw_cfg::QemuFwCfg;
     use crate::q35::Q35HostBridge;
@@ -209,23 +203,6 @@ mod stage {
     compile_error!("select exactly one q35 payload");
     #[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi")))]
     compile_error!("selected CrabEFI backend is not enabled");
-
-    pub struct QemuQ35;
-
-    /// Platform-owned adapter for fixed q35 stage dispatch.
-    pub struct QemuQ35Program<B>(core::marker::PhantomData<B>);
-    impl<B: QemuQ35Board> StageProgram for QemuQ35Program<B> {
-        fn run_stage(handoff: usize) -> ! {
-            QemuQ35::run_stage::<B>(StageEnvironment::Monolithic, handoff)
-        }
-    }
-
-    pub trait QemuQ35Board: 'static {
-        const CONFIG: &'static QemuQ35Config;
-
-        fn console_config() -> Ns16550Config;
-        fn console_node() -> &'static str;
-    }
 
     /// Native SMM handler image built by fbuild, embedded when the stage was
     /// built with `FSTART_SMM_IMAGE` set. `None` without an SMM image; MP
@@ -253,26 +230,27 @@ mod stage {
     }
 
     impl QemuQ35Mainstage {
-        fn new<B: QemuQ35Board>() -> Result<Self, ServiceError> {
+        fn new(
+            config: &'static QemuQ35Config,
+            console: Ns16550Config,
+        ) -> Result<Self, ServiceError> {
             Ok(Self {
-                config: B::CONFIG,
-                console: Ns16550::new(B::console_config())
-                    .map_err(|_| ServiceError::HardwareError)?,
-                fw_cfg: QemuFwCfg::new(B::CONFIG.fw_cfg),
-                hostbridge: Q35HostBridge::new(B::CONFIG.hostbridge)?,
+                config,
+                console: Ns16550::new(console).map_err(|_| ServiceError::HardwareError)?,
+                fw_cfg: QemuFwCfg::new(config.fw_cfg),
+                hostbridge: Q35HostBridge::new(config.hostbridge)?,
                 e820: E820State::new(),
                 acpi_rsdp: None,
                 framebuffer: None,
             })
         }
 
-        fn init_console<B: QemuQ35Board>(&mut self) -> Result<(), ServiceError> {
+        fn init_console(&mut self) -> Result<(), ServiceError> {
             self.console
                 .init()
                 .map_err(|_| ServiceError::HardwareError)?;
             // SAFETY: the mainstage owns the console until payload handoff.
             unsafe { fstart_log::init(&self.console) };
-            fstart_log::info!("{}: ns16550 console ready", B::console_node());
             fstart_log::info!("qemu-q35 ramstage (monolithic) console ready");
             Ok(())
         }
@@ -646,14 +624,14 @@ mod stage {
         }
     }
 
-    pub fn run_qemu_q35_mainstage<B>() -> !
-    where
-        B: QemuQ35Board,
-    {
-        let Ok(mut mainstage) = QemuQ35Mainstage::new::<B>() else {
+    /// The QEMU q35 stage: console, memory map and ACPI from fw_cfg, boot
+    /// media, PCI, display, MP and SMM, then the payload. QEMU boards have
+    /// no board work; their `main` calls this.
+    pub fn run_q35(config: &'static QemuQ35Config, console: Ns16550Config) -> ! {
+        let Ok(mut mainstage) = QemuQ35Mainstage::new(config, console) else {
             fstart_arch::x86::boot::halt();
         };
-        phase("console", || mainstage.init_console::<B>());
+        phase("console", || mainstage.init_console());
         phase("memory_detect", || mainstage.detect_memory_and_tables());
         phase("mount_boot_media", || mainstage.mount_boot_media());
         #[cfg(feature = "tpm")]
@@ -666,17 +644,5 @@ mod stage {
             Ok(())
         });
         fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
-    }
-
-    impl QemuQ35 {
-        pub fn run_stage<B>(env: StageEnvironment, _handoff: usize) -> !
-        where
-            B: QemuQ35Board,
-        {
-            if !matches!(env, StageEnvironment::Monolithic) {
-                fstart_arch::halt();
-            }
-            run_qemu_q35_mainstage::<B>()
-        }
     }
 }

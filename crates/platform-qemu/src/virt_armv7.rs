@@ -4,7 +4,6 @@ use fstart_core::layout::{Layout, Region, RegionKind};
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
-use fstart_stage::{StageEnvironment, StageProgram};
 
 #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "armv7")))]
 compile_error!("ARMv7 virt requires monolithic/armv7 stage and entry selections");
@@ -22,36 +21,7 @@ type Selected = fstart_stage::payload::LinuxPayload;
 
 use crate::virt::{QemuArmv7VirtConfig, enumerate_pci, phase};
 
-pub const QEMU_ARMV7_UART_BASE: u64 = 0x0900_0000;
-
-/// Board seams in the fixed ARMv7 virt flow.
-pub trait QemuArmv7VirtHooks {
-    fn before_console(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn after_console(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn before_payload(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-}
-
-pub trait QemuArmv7VirtBoard: 'static {
-    type Hooks: QemuArmv7VirtHooks + Default;
-
-    const CONFIG: &'static QemuArmv7VirtConfig;
-    fn console_config() -> Pl011Config;
-}
-
-pub struct QemuArmv7Program<B>(core::marker::PhantomData<B>);
-impl<B: QemuArmv7VirtBoard> StageProgram for QemuArmv7Program<B> {
-    fn run_stage(handoff: usize) -> ! {
-        QemuArmv7Virt::run_stage::<B>(StageEnvironment::Monolithic, handoff)
-    }
-}
-
-pub struct QemuArmv7Virt;
+pub use crate::virt::QEMU_ARMV7_UART_BASE;
 
 pub struct QemuArmv7VirtMainstage {
     config: &'static QemuArmv7VirtConfig,
@@ -61,7 +31,10 @@ pub struct QemuArmv7VirtMainstage {
 }
 
 impl QemuArmv7VirtMainstage {
-    fn new<B: QemuArmv7VirtBoard>() -> Result<Self, ServiceError> {
+    fn new(
+        config: &'static QemuArmv7VirtConfig,
+        console: Pl011Config,
+    ) -> Result<Self, ServiceError> {
         let layout = fstart_stage::layout::current().map_err(|_| ServiceError::InvalidParam)?;
         for kind in [RegionKind::Firmware, RegionKind::Stack, RegionKind::Heap] {
             layout.region(kind).ok_or(ServiceError::InvalidParam)?;
@@ -71,9 +44,9 @@ impl QemuArmv7VirtMainstage {
             layout.region(kind).ok_or(ServiceError::InvalidParam)?;
         }
         Ok(Self {
-            config: B::CONFIG,
+            config,
             layout,
-            console: Pl011::new(B::console_config())?,
+            console: Pl011::new(console)?,
             pci: None,
         })
     }
@@ -133,44 +106,33 @@ impl fstart_stage::payload::LinuxPayloadContext for QemuArmv7VirtMainstage {
     }
 }
 
-impl QemuArmv7Virt {
-    pub fn run_stage<B>(env: StageEnvironment, handoff: usize) -> !
-    where
-        B: QemuArmv7VirtBoard,
+/// The QEMU Armv7 virt stage: console, boot media from the DTB, PCI, then
+/// the payload. QEMU boards have no board work; their `main` calls this.
+pub fn run(config: &'static QemuArmv7VirtConfig, console: Pl011Config) -> ! {
+    let Ok(mut mainstage) = QemuArmv7VirtMainstage::new(config, console) else {
+        fstart_arch::halt();
+    };
+    if !phase("qemu-armv7", "console", mainstage.init_console())
+        || !phase(
+            "qemu-armv7",
+            "boot_integrity",
+            crate::boot::from_dtb_with_layout(
+                config.source_dtb_addr,
+                mainstage
+                    .layout
+                    .region(RegionKind::DeviceTree)
+                    .map(|r| r.base),
+                config.ram_base,
+                mainstage.region(RegionKind::Firmware).base,
+                mainstage.region(RegionKind::Firmware).size,
+                Some(mainstage.layout),
+            ),
+        )
+        || !phase("qemu-armv7", "bus_scan", mainstage.init_pci())
     {
-        let _ = handoff;
-        if !matches!(env, StageEnvironment::Monolithic) {
-            fstart_arch::halt();
-        }
-        let Ok(mut mainstage) = QemuArmv7VirtMainstage::new::<B>() else {
-            fstart_arch::halt();
-        };
-        let mut hooks = B::Hooks::default();
-        if !phase("qemu-armv7", "before_console", hooks.before_console())
-            || !phase("qemu-armv7", "console", mainstage.init_console())
-            || !phase("qemu-armv7", "after_console", hooks.after_console())
-            || !phase(
-                "qemu-armv7",
-                "boot_integrity",
-                crate::boot::from_dtb_with_layout(
-                    B::CONFIG.source_dtb_addr,
-                    mainstage
-                        .layout
-                        .region(RegionKind::DeviceTree)
-                        .map(|r| r.base),
-                    B::CONFIG.ram_base,
-                    mainstage.region(RegionKind::Firmware).base,
-                    mainstage.region(RegionKind::Firmware).size,
-                    Some(mainstage.layout),
-                ),
-            )
-            || !phase("qemu-armv7", "bus_scan", mainstage.init_pci())
-            || !phase("qemu-armv7", "before_payload", hooks.before_payload())
-        {
-            fstart_arch::halt();
-        }
-        fstart_log::info!("qemu-armv7 ramstage: finalize");
-        fstart_log::info!("qemu-armv7 ramstage: ready for payload");
-        <Selected as MainstagePayload<_>>::boot(mainstage)
+        fstart_arch::halt();
     }
+    fstart_log::info!("qemu-armv7 ramstage: finalize");
+    fstart_log::info!("qemu-armv7 ramstage: ready for payload");
+    <Selected as MainstagePayload<_>>::boot(mainstage)
 }

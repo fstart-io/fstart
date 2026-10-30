@@ -6,7 +6,6 @@ use fstart_core::services::Console;
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
-use fstart_stage::{StageEnvironment, StageProgram};
 
 #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "aarch64-relocate")))]
 compile_error!("AArch64 virt requires monolithic/aarch64-relocate selections");
@@ -34,36 +33,7 @@ type Selected = fstart_stage::payload::Aarch64UefiPayload;
 
 use crate::virt::{QemuAarch64VirtConfig, enumerate_pci, phase};
 
-pub const QEMU_AARCH64_UART_BASE: u64 = 0x0900_0000;
-
-/// Board seams in the fixed AArch64 virt flow.
-pub trait QemuAarch64VirtHooks {
-    fn before_console(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn after_console(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn before_payload(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-}
-
-pub trait QemuAarch64VirtBoard: 'static {
-    type Hooks: QemuAarch64VirtHooks + Default;
-
-    const CONFIG: &'static QemuAarch64VirtConfig;
-    fn console_config() -> Pl011Config;
-}
-
-pub struct QemuAarch64Program<B>(core::marker::PhantomData<B>);
-impl<B: QemuAarch64VirtBoard> StageProgram for QemuAarch64Program<B> {
-    fn run_stage(handoff: usize) -> ! {
-        QemuAarch64Virt::run_stage::<B>(StageEnvironment::Monolithic, handoff)
-    }
-}
-
-pub struct QemuAarch64Virt;
+pub use crate::virt::QEMU_AARCH64_UART_BASE;
 
 pub struct QemuAarch64VirtMainstage {
     config: &'static QemuAarch64VirtConfig,
@@ -73,7 +43,10 @@ pub struct QemuAarch64VirtMainstage {
 }
 
 impl QemuAarch64VirtMainstage {
-    fn new<B: QemuAarch64VirtBoard>() -> Result<Self, ServiceError> {
+    fn new(
+        config: &'static QemuAarch64VirtConfig,
+        console: Pl011Config,
+    ) -> Result<Self, ServiceError> {
         let layout = fstart_stage::layout::current().map_err(|_| ServiceError::InvalidParam)?;
         for kind in [
             RegionKind::Execution,
@@ -94,9 +67,9 @@ impl QemuAarch64VirtMainstage {
             .region(RegionKind::Payload)
             .ok_or(ServiceError::InvalidParam)?;
         Ok(Self {
-            config: B::CONFIG,
+            config,
             layout,
-            console: Pl011::new(B::console_config())?,
+            console: Pl011::new(console)?,
             pci: None,
         })
     }
@@ -206,49 +179,38 @@ impl fstart_stage::payload::Aarch64UefiPayloadContext for QemuAarch64VirtMainsta
     }
 }
 
-impl QemuAarch64Virt {
-    pub fn run_stage<B>(env: StageEnvironment, handoff: usize) -> !
-    where
-        B: QemuAarch64VirtBoard,
+/// The QEMU Aarch64 virt stage: console, boot media from the DTB, PCI, then
+/// the payload. QEMU boards have no board work; their `main` calls this.
+pub fn run(config: &'static QemuAarch64VirtConfig, console: Pl011Config) -> ! {
+    let Ok(mut mainstage) = QemuAarch64VirtMainstage::new(config, console) else {
+        fstart_arch::aarch64::halt();
+    };
+    if !phase("qemu-aarch64", "console", mainstage.init_console())
+        || !phase(
+            "qemu-aarch64",
+            "boot_integrity",
+            crate::boot::from_dtb_with_layout(
+                source_dtb_addr(config),
+                mainstage
+                    .layout
+                    .region(RegionKind::DeviceTree)
+                    .map(|r| r.base),
+                config.ram_base,
+                mainstage.region(RegionKind::Firmware).base,
+                mainstage.region(RegionKind::Firmware).size,
+                Some(mainstage.layout),
+            ),
+        )
+        || !phase(
+            "qemu-aarch64",
+            "device_tree",
+            mainstage.prepare_device_tree(),
+        )
+        || !phase("qemu-aarch64", "bus_scan", mainstage.init_pci())
     {
-        let _ = handoff;
-        if !matches!(env, StageEnvironment::Monolithic) {
-            fstart_arch::halt();
-        }
-        let Ok(mut mainstage) = QemuAarch64VirtMainstage::new::<B>() else {
-            fstart_arch::aarch64::halt();
-        };
-        let mut hooks = B::Hooks::default();
-        if !phase("qemu-aarch64", "before_console", hooks.before_console())
-            || !phase("qemu-aarch64", "console", mainstage.init_console())
-            || !phase("qemu-aarch64", "after_console", hooks.after_console())
-            || !phase(
-                "qemu-aarch64",
-                "boot_integrity",
-                crate::boot::from_dtb_with_layout(
-                    source_dtb_addr(B::CONFIG),
-                    mainstage
-                        .layout
-                        .region(RegionKind::DeviceTree)
-                        .map(|r| r.base),
-                    B::CONFIG.ram_base,
-                    mainstage.region(RegionKind::Firmware).base,
-                    mainstage.region(RegionKind::Firmware).size,
-                    Some(mainstage.layout),
-                ),
-            )
-            || !phase(
-                "qemu-aarch64",
-                "device_tree",
-                mainstage.prepare_device_tree(),
-            )
-            || !phase("qemu-aarch64", "bus_scan", mainstage.init_pci())
-            || !phase("qemu-aarch64", "before_payload", hooks.before_payload())
-        {
-            fstart_arch::aarch64::halt();
-        }
-        fstart_log::info!("qemu-aarch64 ramstage: finalize");
-        fstart_log::info!("qemu-aarch64 ramstage: ready for payload");
-        <Selected as MainstagePayload<_>>::boot(mainstage)
+        fstart_arch::aarch64::halt();
     }
+    fstart_log::info!("qemu-aarch64 ramstage: finalize");
+    fstart_log::info!("qemu-aarch64 ramstage: ready for payload");
+    <Selected as MainstagePayload<_>>::boot(mainstage)
 }
