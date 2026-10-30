@@ -6,7 +6,7 @@ mod init;
 pub mod layout;
 pub mod silicon;
 #[cfg(all(feature = "bundle", target_os = "none"))]
-pub use init::silicon_init;
+pub use init::{Dxio, Init};
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 mod tests;
 
@@ -144,6 +144,7 @@ impl noncar::Soc for Zeppelin {
     }
 
     /// The vendor firmware's ReadyToBoot.
+    /// The vendor firmware's ReadyToBoot, up to the board's own work.
     fn ready_to_boot(
         _: &mut Silicon<Self>,
         ctx: &Ctx<'_, Self>,
@@ -152,7 +153,12 @@ impl noncar::Soc for Zeppelin {
         let sata = pci
             .devices()
             .find(|a| pci.device(*a).is_some_and(|d| d.read32(0) == 0x7901_1022));
-        silicon::ready_to_boot(ctx.dies, ctx.fch, sata, || {});
+        silicon::ready_to_boot(ctx.dies, ctx.fch, sata);
         Ok(())
+    }
+
+    /// The end of the vendor ReadyToBoot, after the board's work.
+    fn end_of_post(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
+        silicon::end_of_post(ctx.dies);
     }
 }

@@ -6,7 +6,7 @@
 extern crate std;
 use super::{
     Config, DxioConfig, FchConfig,
-    silicon::{self, Dma, Identity, SmuPages, SmuPolicy, State},
+    silicon::{self, Identity, SmuPages, SmuPolicy, State},
 };
 use crate::{
     acpi::{self, BoardAcpi, DieAcpi, Inputs},
@@ -129,25 +129,34 @@ fn flow(
     silicon::post(&fch, 0x32);
 
     // Silicon init
-    let dma = Dma {
-        smu_pages: low(dma, SmuPages([[0; 4096]; 4])),
-        smu_policy: low(dma + 0x1_0000, SmuPolicy([0; 0x80])),
-        dxio: low(dma + 0x2_0000, dxio::zeppelin::Buffers::new()),
-    };
-    let state = silicon::pre_mp(
+    let config = &{ *config };
+    let nonpci =
+        silicon::pre_mp_reset(&dies, &fch, identity, top, Some(&apob), &mut clock).unwrap();
+    marker(hw, 2); // the board's FCH-reset work
+    let trained = silicon::pre_mp_dxio(
         &dies,
         &fch,
         &msr,
-        &mut { *config },
+        config,
         identity,
         top,
-        Some(&apob),
-        dma,
+        nonpci,
+        low(dma + 0x2_0000, dxio::zeppelin::Buffers::new()),
         &mut clock,
-        |_| marker(hw, 2),
-        || marker(hw, 3),
     )
     .unwrap();
+    marker(hw, 3); // the board's link-trained work
+    let state = silicon::pre_mp_finish(
+        &dies,
+        &fch,
+        config,
+        identity,
+        Some(&apob),
+        trained,
+        low(dma, SmuPages([[0; 4096]; 4])),
+        low(dma + 0x1_0000, SmuPolicy([0; 0x80])),
+        &mut clock,
+    );
     assert_eq!(state.ioapics[0], state.nonpci[0] + (7 << 20));
     let threads = threads::thread_count(&dies, Policy::DEFAULT).unwrap();
     unsafe { threads::launch(&dies, Policy::DEFAULT, threads - 1, &mut clock) }.unwrap();
@@ -162,7 +171,9 @@ fn flow(
 
     // Ready to boot
     let sata = PciAddress::new(0, 1, 0, 0);
-    silicon::ready_to_boot(&dies, &fch, Some(sata), || marker(hw, 5));
+    silicon::ready_to_boot(&dies, &fch, Some(sata));
+    marker(hw, 5); // the board's ready-to-boot work
+    silicon::end_of_post(&dies);
     silicon::post(&fch, 0x43);
     silicon::post(&fch, 0x44);
     state
