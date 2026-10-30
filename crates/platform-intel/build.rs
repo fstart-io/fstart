@@ -8,9 +8,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(fstart_intel_has_smm_image)");
-    println!(
-        "cargo:rustc-check-cfg=cfg(fstart_stage_env, values(\"car\", \"postcar\", \"ram\", \"smm\"))"
-    );
 
     println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
     if let Ok(smm_image) = env::var("FSTART_SMM_IMAGE") {

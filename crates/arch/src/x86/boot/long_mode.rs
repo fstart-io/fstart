@@ -8,7 +8,7 @@
 #[cfg(all(feature = "x86-writable-page-tables", feature = "x86-1g-pages"))]
 #[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._setup_page_tables, \"ax\"",
     ".code32",
     ".global _setup_page_tables",
     "_setup_page_tables:",
@@ -45,7 +45,7 @@ core::arch::global_asm!(
 #[cfg(all(feature = "x86-writable-page-tables", not(feature = "x86-1g-pages")))]
 #[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._setup_page_tables, \"ax\"",
     ".code32",
     ".global _setup_page_tables",
     "_setup_page_tables:",
@@ -98,7 +98,7 @@ core::arch::global_asm!(
 #[cfg(not(feature = "x86-writable-page-tables"))]
 #[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._setup_page_tables, \"ax\"",
     ".code32",
     ".global _setup_page_tables",
     "_setup_page_tables:",
@@ -208,7 +208,7 @@ core::arch::global_asm!(
 // Continue the entry sequence after page table setup.
 #[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._after_page_tables, \"ax\"",
     ".code32",
     ".global _after_page_tables",
     "_after_page_tables:",
@@ -457,15 +457,12 @@ core::arch::global_asm!(
 // It must NOT tear down CAR: post-`INVD` execution belongs to fresh
 // programs only, and postcar already performed the noreturn transition.
 //
-// Placed in `.text.entry` so `KEEP(*(.text.entry))` in the linker script
-// ensures it's at the start of the binary (= the load address that
-// postcar's jump targets).
-//
-// Compiled out of the postcar stage (which carries `_start_postcar` in
-// `.text.entry` instead) so the flat image always starts at its own entry.
-#[cfg(all(target_os = "none", not(fstart_stage_env = "postcar")))]
+// In its own `.text.entry.ram` section: the ramstage linker script keeps it
+// first in the binary (= the load address postcar jumps to); other stages
+// drop it unless they jump here (AMD PSP reset images).
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text.entry, \"ax\"",
+    ".section .text.entry.ram, \"ax\"",
     ".code64",
     ".global _start_ram",
     "_start_ram:",
@@ -531,16 +528,16 @@ core::arch::global_asm!(
 // naming only its own image/stack/ROM/hardware.
 //
 // The linker script selects this entry (`ENTRY(_start_postcar)`) for the
-// stage named "postcar"; it also lands first via `.text.entry`. The
-// `postcar` stage_env gate keeps `_start_ram` out of the postcar binary so
-// the flat image starts here, at the address the bootblock jumps to.
+// stage named "postcar" and keeps `.text.entry.postcar` first, so the flat
+// image starts here, at the address the bootblock jumps to; the other
+// entries' sections are unreferenced there and dropped.
 //
 // These are compile-time strings rather than a callable helper: the first
 // checkpoint runs on the inherited CAR stack, so a call would violate the
 // transition's no-CAR-stack rule.
-#[cfg(all(target_os = "none", fstart_stage_env = "postcar"))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text.entry, \"ax\"",
+    ".section .text.entry.postcar, \"ax\"",
     ".code64",
     ".global _start_postcar",
     "_start_postcar:",

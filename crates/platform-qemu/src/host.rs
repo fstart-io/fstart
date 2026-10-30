@@ -23,7 +23,6 @@ fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
     fstart_image_build::build_plan::CompilerCfgSchema {
         entries: strings(&["riscv64", "armv7", "aarch64-relocate", "x86_64"]),
-        environments: strings(&["monolithic", "smm"]),
         payloads: strings(&["halt", "linux", "crabefi", "coreboot"]),
     }
 }
@@ -325,7 +324,6 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             target: policy.target.into(),
             entry: policy.entry.into(),
             cfg_schema: compiler_cfg_schema(),
-            environment: "monolithic".into(),
             payload: if payload == "uefi" {
                 "crabefi".into()
             } else {
@@ -1154,7 +1152,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             target: policy.target.into(),
             entry: policy.entry.into(),
             cfg_schema: compiler_cfg_schema(),
-            environment: "smm".into(),
             payload: "halt".into(),
             features: vec!["smm".into(), "bundle-smm".into()],
             // Custom targets have no prebuilt core.
@@ -1201,7 +1198,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         target: policy.target.into(),
         entry: policy.entry.into(),
         cfg_schema: compiler_cfg_schema(),
-        environment: "monolithic".into(),
         payload: if payload == "uefi" {
             "crabefi".into()
         } else {

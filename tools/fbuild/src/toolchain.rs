@@ -1,9 +1,5 @@
 use fstart_core::Platform;
 
-/// Compiler-owned stage roles, shared by legacy and metadata selections.
-pub const STAGE_ENV_CHECK_CFG: &str =
-    "--check-cfg=cfg(fstart_stage_env,values(\"monolithic\",\"car\",\"postcar\",\"ram\",\"smm\"))";
-
 #[derive(Debug, Clone, Copy)]
 pub struct TargetSpec {
     pub triple: &'static str,

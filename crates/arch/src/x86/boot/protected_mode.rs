@@ -27,9 +27,9 @@ macro_rules! call_fstart_main {
 
 // Bootblock continuation after CAR and BSS (`enter_runtime!`): stack,
 // .data copy, IDT, then Rust.
-#[cfg(all(not(test), target_os = "none", not(fstart_stage_env = "postcar")))]
+#[cfg(all(not(test), target_os = "none"))]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._start32_runtime, \"ax\"",
     ".code32",
     ".global _start32_runtime",
     "_start32_runtime:",
@@ -63,7 +63,7 @@ core::arch::global_asm!(
 // 4 KiB `_idt_table` reserved by the shared runtime holds all 256.
 #[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._setup_idt, \"ax\"",
     ".code32",
     ".global _setup_idt",
     "_setup_idt:",
@@ -210,9 +210,9 @@ core::arch::global_asm!(
 // DRAM-stage entry, entered from postcar with caching already enabled. Like
 // the long-mode entry it sets up only its own stack, BSS, .data and IDT; CAR
 // teardown belongs to postcar alone.
-#[cfg(all(target_os = "none", not(fstart_stage_env = "postcar")))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text.entry, \"ax\"",
+    ".section .text.entry.ram, \"ax\"",
     ".code32",
     ".global _start_ram",
     "_start_ram:",
@@ -244,9 +244,9 @@ core::arch::global_asm!(
 
 // Postcar entry: the long-mode Cut-B sequence (see `long_mode`) with 32-bit
 // registers. Runs on the inherited CAR stack until the stack switch below.
-#[cfg(all(target_os = "none", fstart_stage_env = "postcar"))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text.entry, \"ax\"",
+    ".section .text.entry.postcar, \"ax\"",
     ".code32",
     ".global _start_postcar",
     "_start_postcar:",

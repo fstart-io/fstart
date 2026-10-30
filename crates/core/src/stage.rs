@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// All Intel CAR boards insert a stage with this name between bootblock and
 /// ramstage. `fbuild` selects the postcar entry (`ENTRY(_start_postcar)`)
-/// and the `postcar` stage environment by this name, and Intel `run_stage`
-/// dispatches to the postcar loader by `cfg(fstart_stage_env = "postcar")`.
+/// by this name; the board's `src/bin/postcar.rs` runs the postcar loader.
 /// It names a stage *role*, not a board — the same way coreboot names its
 /// postcar stage.
 pub const POSTCAR_STAGE_NAME: &str = "postcar";

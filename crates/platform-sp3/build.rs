@@ -11,9 +11,6 @@ const AMD_SAVE_STATE_SIZE: u32 = 0x400;
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(fstart_entry, values(\"amd-psp-reset\", \"x86_64\"))");
     println!(
-        "cargo:rustc-check-cfg=cfg(fstart_stage_env, values(\"monolithic\", \"ram\", \"smm\"))"
-    );
-    println!(
         "cargo:rustc-check-cfg=cfg(fstart_payload, values(\"halt\", \"linux\", \"crabefi\", \"coreboot\"))"
     );
     println!("cargo:rustc-check-cfg=cfg(fstart_sp3_has_smm_image)");

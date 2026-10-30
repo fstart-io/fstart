@@ -40,7 +40,7 @@ bundle-picasso = ["picasso", "bundle"]
 # embeds the image fbuild built from it (FSTART_SMM_IMAGE).
 smm = ["noncar", "fstart-driver-amd/smm", "dep:fstart-smm"]
 # SMM-unit builds only: adds the SMM panic handler, which a stage has itself.
-bundle-smm = ["smm", "fstart-smm/stage-bin"]
+bundle-smm = ["smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
 payload-linux = ["fstart-stage?/linux"]
 payload-uefi = ["payload-uefi-basic", "fstart-stage?/crabefi"]
 payload-uefi-ui = ["payload-uefi", "fstart-stage?/crabefi-ui", "fstart-stage?/crabefi-elan-i2c", "fstart-stage?/crabefi-hid-i2c"]

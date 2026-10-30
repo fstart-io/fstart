@@ -135,16 +135,11 @@ macro_rules! enter_runtime {
 // PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
 //
 // Reset-vector entry only: postcar and ramstage enter via direct 64-bit
-// jumps (`_start_postcar` / `_start_ram`), so this block is compiled out of
-// those stages to keep postcar small. AMD PSP platforms own their reset entry
+// jumps (`_start_postcar` / `_start_ram`), so only the bootblock's linker
+// script keeps the reset sections; the others drop them. AMD PSP platforms own their reset entry
 // (the PSP copies the image to DRAM); `amd-psp-reset` stages then continue
 // at `_start_ram` once in long mode.
-#[cfg(all(
-    not(test),
-    target_os = "none",
-    not(fstart_stage_env = "postcar"),
-    not(fstart_entry = "amd-psp-reset")
-))]
+#[cfg(all(not(test), target_os = "none", not(fstart_entry = "amd-psp-reset")))]
 core::arch::global_asm!(
     // Use AT&T syntax throughout — matches coreboot convention and is
     // the natural syntax for 16-bit / mixed-mode x86 assembly.
@@ -267,7 +262,7 @@ core::arch::global_asm!(
     // The far jump from 16-bit code uses an absolute 32-bit address so
     // this can be anywhere in the 4 GiB address space.
     // =====================================================================
-    ".section .text, \"ax\"",
+    ".section .text.asm._start32bit, \"ax\"",
     ".code32",
     ".global _start32bit",
     "_start32bit:",
@@ -336,13 +331,13 @@ core::arch::global_asm!(
 // Very-early Intel microcode update for BSP.
 //
 // Pre-CAR bootblock only: postcar/ramstage get microcode through the FFS
-// blob (MP init), so this is compiled out of postcar to keep it small.
+// blob (MP init); only the reset path references it, so they drop it.
 // Entry/return convention matches coreboot's no-stack helpers: `%esp` contains
 // the absolute return address. The routine may clobber all general registers.
 #[cfg(feature = "early-ffs-anchor")]
-#[cfg(all(target_os = "none", not(fstart_stage_env = "postcar")))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._early_intel_microcode, \"ax\"",
     ".code32",
     ".global _early_intel_microcode",
     "_early_intel_microcode:",
@@ -420,7 +415,7 @@ core::arch::global_asm!(
 #[cfg(not(feature = "early-ffs-anchor"))]
 #[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._early_intel_microcode, \"ax\"",
     ".code32",
     ".global _early_intel_microcode",
     "_early_intel_microcode:",

@@ -279,7 +279,7 @@ pub(crate) fn runtime_key<B: crate::IntelBoard>(
     Ok(hash.finalize().into())
 }
 
-#[cfg(all(feature = "stage", feature = "memory-cache", fstart_stage_env = "car"))]
+#[cfg(all(feature = "stage", feature = "memory-cache"))]
 pub(crate) unsafe fn publish_pending(
     region: fstart_core::layout::Region,
     key: [u8; 32],
@@ -336,7 +336,13 @@ pub(crate) unsafe fn publish_pending(
     Ok(())
 }
 
-#[cfg(all(feature = "stage", feature = "memory-cache", fstart_stage_env = "ram"))]
+#[cfg(all(
+    feature = "stage",
+    feature = "memory-cache",
+    feature = "acpi",
+    feature = "smbios",
+    feature = "mp"
+))]
 pub(crate) fn commit_pending<B: crate::IntelBoard>(
     northbridge: &<B::Platform as crate::IntelEarlyPlatform>::Northbridge,
     southbridge: &<B::Platform as crate::IntelEarlyPlatform>::Southbridge,

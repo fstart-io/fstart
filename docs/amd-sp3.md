@@ -226,7 +226,7 @@ The SMM handler is a separate unit (`smm`) of the board's build, embedded
 into the reset unit through `FSTART_SMM_IMAGE`.
 
 - Unit: board library with features `smm`, `bundle-smm` and the board's
-  generations; `fstart_stage_env = "smm"`, entry `x86_64`, log level off,
+  generations; entry `x86_64`, log level off,
   release profile only. Position-independent, with `PIE` and `-Zplt=yes`.
 - `image-build` rejects load-base-dependent relocations, GOT references and
   panic symbols.

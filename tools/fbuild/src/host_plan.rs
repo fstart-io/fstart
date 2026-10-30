@@ -6,7 +6,8 @@ use fstart_image_build::plan::{BuildSelection, ResolvedPlan};
 use std::{fs, path::Path, process::Command};
 
 const RUNNER: &str = "fstart-plan-runner";
-const HOST_CFG_FLAGS: &str = "--check-cfg=cfg(fstart_stage_env,values(any())) --check-cfg=cfg(fstart_entry,values(any())) --check-cfg=cfg(fstart_payload,values(any()))";
+const HOST_CFG_FLAGS: &str =
+    "--check-cfg=cfg(fstart_entry,values(any())) --check-cfg=cfg(fstart_payload,values(any()))";
 
 /// Preserve every prepared package entry/pin verbatim. No resolver fallback.
 fn runner_lock(lock: &str, dependencies: &[String]) -> Result<String, String> {
@@ -201,7 +202,7 @@ mod tests {
                 ),
             )
             .unwrap();
-            fs::write(package.join("src/lib.rs"), "#![deny(unexpected_cfgs)]\n#[cfg(any(fstart_stage_env=\"novel-memory\", fstart_entry=\"novel-reset\", fstart_payload=\"novel-launcher\"))]\ncompile_error!(\"host adapter must not select firmware code\");\npub struct Marker;\n").unwrap();
+            fs::write(package.join("src/lib.rs"), "#![deny(unexpected_cfgs)]\n#[cfg(any(fstart_entry=\"novel-reset\", fstart_payload=\"novel-launcher\"))]\ncompile_error!(\"host adapter must not select firmware code\");\npub struct Marker;\n").unwrap();
         }
         let cargo = |args: &[&str]| {
             Command::new("cargo")
