@@ -6,12 +6,15 @@
 //! AmdCcxZenRv) and [`zeppelin`] (AmdCcxZenZp).
 //!
 //! The MSRs, the DRAM-first cache plan, the microcode loader and the TSC
-//! are [`msr`], [`cache`], [`microcode`] and [`tsc`].
+//! are [`msr`], [`cache`], [`microcode`] and [`tsc`]; the name string is
+//! [`brand`], what the OS gets of the P- and C-states [`power`].
+pub mod brand;
 pub mod cache;
 pub mod microcode;
 pub mod msr;
 #[cfg(feature = "picasso")]
 pub mod picasso;
+pub mod power;
 pub mod tsc;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
@@ -124,6 +127,12 @@ pub struct Inputs<'a> {
     /// The PSP MMIO base of the CPU's die, for RDRAND.
     pub psp_bar: Option<u64>,
     pub cac_weights: Option<&'a CacWeights>,
+    /// The name string to write to the CPU's name MSRs, if the SoC's BIOS
+    /// writes it.
+    pub name: Option<&'a brand::Name>,
+    /// SYSCFG.SMEE: lets the OS use SME and SEV. Set last: the MTRRs are
+    /// installed with it clear.
+    pub memory_encryption: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,9 +186,16 @@ pub fn cpu_init(
     // Rewrite P0 so the new settings take effect.
     cpu.reg(PSTATE_0).set(cpu.reg(PSTATE_0).get());
 
-    // Memory encryption isn't set up, so leave SME disabled. With SMEE set
-    // the MTRR setup would need to account for the encryption bit.
-    cpu.reg(SYSCFG).modify(Syscfg::SMEE::CLEAR);
+    if let Some(name) = inputs.name {
+        brand::write(cpu, name);
+    }
+    // After every MTRR change of the firmware: the cache plan refuses to
+    // install with SMEE set.
+    cpu.reg(SYSCFG).modify(if inputs.memory_encryption {
+        Syscfg::SMEE::SET
+    } else {
+        Syscfg::SMEE::CLEAR
+    });
     Ok(())
 }
 
@@ -301,6 +317,8 @@ mod tests {
         let inputs = Inputs {
             psp_bar: Some(0xd010_0000),
             cac_weights: Some(&weights),
+            name: None,
+            memory_encryption: false,
         };
         let table = [update(0xc001_1020, 0, 1)];
         let primary = cpu();

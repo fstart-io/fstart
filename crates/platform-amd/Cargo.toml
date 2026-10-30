@@ -13,6 +13,7 @@ zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zer
 # The shared flow of the PSP-booted SoCs, with their ACPI tables.
 noncar = [
   "fstart-driver-amd/smi",
+  "fstart-driver-amd/acpi",
   "dep:fstart-amdfw-format",
   "dep:fstart-arch",
   "dep:fstart-acpi",

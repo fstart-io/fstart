@@ -29,7 +29,6 @@ use fstart_acpi::platform::PlatformConfig;
 use fstart_core::acpi::AcpiSmiConfig;
 use fstart_driver_amd::smu::v11::CppcInfo;
 use fstart_driver_amd::smu::v11::cppc;
-use fstart_driver_amd::sp3::ccx::power::{CstateInfo, Pstate};
 pub use fstart_driver_amd::sp3::fch::acpi::FchAcpi;
 use fstart_driver_amd::sp3::nbio::ioapic::IoapicInfo;
 use fstart_driver_amd::sp3::soc::Generation;
@@ -79,15 +78,7 @@ pub struct RootBridgeAcpi<'a> {
 
 /// Processor power data for `_PSS`/`_PCT`/`_PSD`/`_CST` (BSP's view;
 /// every thread runs the same table).
-#[derive(Debug, Clone, Copy)]
-pub struct Power<'a> {
-    /// `ccx::power::pstates`.
-    pub pstates: &'a [Pstate],
-    /// `ccx::power::cstate_info`.
-    pub cstates: Option<CstateInfo>,
-    /// 2 with SMT, else 1 (`_PSD` domain = APIC ID / threads per core).
-    pub threads_per_core: u8,
-}
+pub use fstart_driver_amd::ccx::power::Power;
 
 /// Board contributions.
 #[derive(Debug, Clone, Copy, Default)]

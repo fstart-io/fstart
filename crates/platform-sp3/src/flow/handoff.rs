@@ -305,6 +305,11 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             pstates: &pstates,
             cstates: power::cstate_info(&ctx.policy.ccx.cstates),
             threads_per_core,
+            // CC6 exit: 400 µs on Zen (AM4 lead), 18 µs on Zen 2/3.
+            c2_latency_us: match ctx.generation {
+                fstart_driver_amd::sp3::soc::Generation::Naples => 400,
+                _ => 18,
+            },
         }),
         acpi_smi: ctx.smm.map(|_| AcpiSmiConfig {
             smi_cmd: u32::from(fstart_driver_amd::sp3::fch::acpimmio::SMI_CMD as u16),

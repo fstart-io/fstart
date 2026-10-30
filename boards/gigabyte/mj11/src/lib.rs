@@ -29,7 +29,7 @@ use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_pci::ConfigRegionAccess;
 use fstart_platform_amd::{
     noncar::BoardCtx,
-    zeppelin::{Config, DxioConfig, FchConfig},
+    zeppelin::{CcxConfig, Config, DxioConfig, FchConfig},
 };
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -117,6 +117,7 @@ fn ast_vga_set_ssid(pci: &impl ConfigRegionAccess) {
 const CONFIG: Config = Config {
     // Gigabyte
     subsystem_id: 0x1000_1458,
+    ccx: CcxConfig::DEFAULT,
     fch: FchConfig {
         irq_routes: IRQ_ROUTES,
         smi_gevents: 1 << NMI_BUTTON_GEVENT,

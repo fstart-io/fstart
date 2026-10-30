@@ -24,18 +24,15 @@ use fstart_acpi::aml::{
     Name, PackageBuilder, Path, ResourceTemplate, Store,
 };
 use fstart_acpi::aml_linker::{device_vec, scope_vec};
-use fstart_acpi::gas::{AccessSize, AddressSpace as GasSpace, GAS};
-use fstart_acpi::processor::{
-    Coordination, PerformanceState, PowerState, ProcessorName, cpc_aml, cst_aml, pct_aml,
-    processor_device, psd_aml, pss_aml,
-};
+use fstart_acpi::processor::{ProcessorName, cpc_aml, processor_device};
 use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl, gpe};
+use fstart_driver_amd::ccx::power::PowerAml;
 use fstart_driver_amd::smu::v11::cppc;
 use fstart_driver_amd::sp3::fch::acpi as fch_acpi;
 use fstart_driver_amd::sp3::soc::Generation;
 
 use super::fixed::{FCH_IOAPIC_BASE, GsiWindow, HPET_BASE, LAPIC_BASE, PM_BASE};
-use super::{Inputs, Power, RootBridgeAcpi, Window, prt};
+use super::{Inputs, RootBridgeAcpi, Window, prt};
 
 /// PCI configuration ports, consumed by the primary root bridge.
 const CONFIG_PORTS: (u16, u16) = (0xCF8, 0xCFF);
@@ -364,98 +361,8 @@ fn root_objects(uids: usize) -> Result<Vec<u8>, AmlError> {
     scope_vec("\\", &[fixed, pic].concat())
 }
 
-/// `_PSS`/`_PCT`/`_PSD`/`_CST` of one processor (AM4 lead, am4-re
-/// `ACPI_DXE` §2: `_PCT` FFH with control C001_0062, `_PSD` HW_ALL per core,
-/// C1 FFH (width 2, offset 2), C2 an IO read of the C-state base + 1;
-/// C2 latency 400 µs on Zen 1, 18 µs on Zen 2/3 — not re-derived for SP3).
-struct PowerAml {
-    shared: Vec<u8>,
-    threads_per_core: u8,
-}
-
-impl PowerAml {
-    fn new(generation: Generation, power: &Power) -> Self {
-        let pss: Vec<PerformanceState> = power
-            .pstates
-            .iter()
-            .map(|p| PerformanceState {
-                mhz: p.mhz,
-                milliwatts: p.milliwatts,
-                latency_us: 0,
-                bus_master_latency_us: 0,
-                control: p.index.into(),
-                status: p.index.into(),
-            })
-            .collect();
-        let ffh = |width, offset, access, address| {
-            GAS::new(
-                GasSpace::FunctionalFixedHardware,
-                width,
-                offset,
-                access,
-                address,
-            )
-        };
-        let pct = pct_aml(
-            ffh(0, 0, AccessSize::Undefined, 0xC001_0062),
-            ffh(0, 0, AccessSize::Undefined, 0),
-        );
-        let c2_latency = match generation {
-            Generation::Naples => 400,
-            Generation::Rome | Generation::Milan => 18,
-        };
-        let cst = power.cstates.map(|c| {
-            cst_aml(&[
-                PowerState {
-                    register: ffh(2, 2, AccessSize::ByteAccess, 0),
-                    kind: 1,
-                    latency_us: 1,
-                    milliwatts: 0,
-                },
-                PowerState {
-                    register: GAS::new(
-                        GasSpace::SystemIo,
-                        8,
-                        0,
-                        AccessSize::ByteAccess,
-                        u64::from(c.io_base) + 1,
-                    ),
-                    kind: 2,
-                    latency_us: c2_latency,
-                    milliwatts: 0,
-                },
-            ])
-        });
-        let shared = [
-            if pss.is_empty() {
-                Vec::new()
-            } else {
-                [pct, pss_aml(&pss)].concat()
-            },
-            cst.unwrap_or_default(),
-        ]
-        .concat();
-        Self {
-            shared,
-            threads_per_core: power.threads_per_core.max(1),
-        }
-    }
-
-    fn for_cpu(&self, apic_id: u32) -> Vec<u8> {
-        let t = u32::from(self.threads_per_core);
-        [
-            self.shared.clone(),
-            psd_aml(apic_id / t, Coordination::HwAll, t),
-        ]
-        .concat()
-    }
-}
-
 fn processors(inputs: &Inputs) -> Result<Vec<u8>, AmlError> {
-    let power = inputs
-        .power
-        .as_ref()
-        .map(|p| PowerAml::new(inputs.generation, p));
+    let power = inputs.power.as_ref().map(PowerAml::new);
     inputs
         .cpus
         .iter()

@@ -38,6 +38,8 @@ pub const ACPI: SocAcpi = SocAcpi {
         Route::new(8, 2, 7, CDAB, 0x0c),
     ],
     fch_intx_gsi: [16, 17, 18, 19],
+    // CC6 exit (AGESA's CPU SSDT, coreboot).
+    c2_latency_us: 400,
 };
 
 /// The FCH GPIO controller and the board's I2C controllers with the

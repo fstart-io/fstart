@@ -1,12 +1,10 @@
 //! Core power management: C-states, CPU watchdog, CAC (DPM) weights, boost,
 //! and the P-state / C-state / CPPC getters for ACPI (CCX_SP3 §3.9, §3.13).
 
-use fstart_arch::x86::cpu::amd::msr::{
-    HWCR, Hwcr, PSTATE_0, PSTATE_CURRENT_LIMIT, PstateCurLim, PstateDef, pstate_mhz,
-};
+pub use crate::ccx::power::{CstateInfo, Pstate, decode_pstate, pstates};
+use fstart_arch::x86::cpu::amd::msr::{HWCR, Hwcr, PSTATE_0};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use heapless::Vec;
-use tock_registers::LocalRegisterCopy;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use super::topology::Thread;
@@ -65,14 +63,6 @@ pub fn init_cstates<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread, policy: &Cs
     }
     cpu.reg(CSTATE_BASE_ADDR)
         .write(CstateBaseAddr::CSTATE_ADDR.val(policy.io_base.into()));
-}
-
-/// What `_CST` needs (AmdCcx C-state info protocol).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CstateInfo {
-    /// IO port for the deepest state (CC6 if enabled, else CC1).
-    pub io_base: u16,
-    pub cc6: bool,
 }
 
 pub fn cstate_info(policy: &CstatePolicy) -> Option<CstateInfo> {
@@ -256,44 +246,6 @@ pub fn write_cac_weights<M: MsrAccess + ?Sized>(cpu: &M, weights: &[u64]) {
 
 // --- ACPI getters --------------------------------------------------------------
 
-/// One `_PSS` entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pstate {
-    pub index: u8,
-    pub mhz: u32,
-    pub microvolts: u32,
-    pub milliwatts: u32,
-}
-
-/// Decode a PStateDef value (formulas of the donors' P-state protocol).
-pub fn decode_pstate(index: u8, raw: u64) -> Option<Pstate> {
-    let r = LocalRegisterCopy::<u64, PstateDef::Register>::new(raw);
-    if !r.is_set(PstateDef::PSTATE_EN) {
-        return None;
-    }
-    let mhz = pstate_mhz(raw)?;
-    // SVI2: 1.55 V − VID × 6.25 mV.
-    let microvolts = 0xf8u32.saturating_sub(r.read(PstateDef::CPU_VID) as u32) * 6250;
-    let div = [100u64, 1000, 10000].get(r.read(PstateDef::IDD_DIV) as usize)?;
-    let milliwatts = (u64::from(microvolts) / 10 * r.read(PstateDef::IDD_VALUE) / div) as u32;
-    Some(Pstate {
-        index,
-        mhz,
-        microvolts,
-        milliwatts,
-    })
-}
-
-/// The enabled P-states up to PstateMaxVal, for `_PSS`.
-pub fn pstates<M: MsrAccess + ?Sized>(cpu: &M) -> Vec<Pstate, 8> {
-    let max = cpu
-        .reg(PSTATE_CURRENT_LIMIT)
-        .read(PstateCurLim::PSTATE_MAX_VAL) as u8;
-    (0..=max)
-        .filter_map(|i| decode_pstate(i, cpu.reg(PSTATE_0.offset(i.into())).get()))
-        .collect()
-}
-
 /// How the OS gets CPPC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cppc {
@@ -394,14 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn pstate_decode() {
-        // FID 0x8c, DID 8, VID 0x48, Idd 0x5a / 10: 3500 MHz, 1.1 V.
-        let raw = 1 << 63 | 1 << 30 | 0x5a << 22 | 0x48 << 14 | 8 << 8 | 0x8c;
-        let p = decode_pstate(0, raw).unwrap();
-        assert_eq!((p.mhz, p.microvolts, p.milliwatts), (3500, 1_100_000, 9900));
-        assert!(decode_pstate(1, 0x8c).is_none());
-        let cpu = MsrSpace::new([(0xc001_0061, 0x10), (0xc001_0064, raw), (0xc001_0065, raw)]);
-        assert_eq!(pstates(&cpu).len(), 2);
+    fn cppc_availability() {
         assert_eq!(cppc(Generation::Milan, 1 << 27, false), Cppc::Msr);
         assert_eq!(cppc(Generation::Rome, 0, true), Cppc::SharedMemory);
     }

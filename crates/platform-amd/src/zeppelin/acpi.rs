@@ -29,6 +29,8 @@ pub const ACPI: SocAcpi = SocAcpi {
     },
     bridge_routes: &ROUTES,
     fch_intx_gsi: [16, 17, 18, 19],
+    // CC6 exit (AGESA's CPU SSDT, coreboot).
+    c2_latency_us: 400,
 };
 
 const fn route(device: u8, function: u8, group: u8, swizzle: u8, bridge_irq: u8) -> Route {

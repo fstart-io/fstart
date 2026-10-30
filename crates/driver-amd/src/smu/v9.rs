@@ -4,7 +4,7 @@
 //! Naples (SP3). The mailbox, the messages, the feature masks, the policy
 //! table and the DXE / CCX-done sequences.
 //!
-//! Zeppelin call order: [`print_name`] early; [`init`] and [`cac_weights`]
+//! Zeppelin call order: [`name`] early; [`init`] and [`cac_weights`]
 //! before MP init; [`crate::smu::threads::launch`] to release the APs;
 //! [`aps_ready`] then [`ccx_done_all`] after every CPU ran
 //! [`crate::ccx::zeppelin::cpu_init`].
@@ -338,29 +338,16 @@ impl<P: ConfigRegionAccess + Copy, D: DelayNs> SmuMessages for DieSmu<'_, P, D> 
     }
 }
 
-/// The 47-character CPU name string from die 0's SMU.
+/// The CPU name string from die `die`'s SMU (the fallback if it has none),
+/// logged.
 #[cfg(feature = "zeppelin")]
-pub fn cpu_name<P: ConfigRegionAccess + Copy>(
+pub fn name<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
     delay: &mut impl DelayNs,
-) -> Result<[u8; 48], Failure> {
-    MAILBOX
-        .cpu_name(&die.smn(), msg::GET_NAME_STRING, delay)
-        .map_err(|error| Failure::Message {
-            die: die.index(),
-            message: msg::GET_NAME_STRING,
-            error,
-        })
-}
-
-/// Log the CPU name, silently skipped if the SMU doesn't answer.
-#[cfg(feature = "zeppelin")]
-pub fn print_name<P: ConfigRegionAccess + Copy>(die: &Die<P>, delay: &mut impl DelayNs) {
-    if let Ok(name) = cpu_name(die, delay) {
-        let length = name.iter().position(|&c| c == 0).unwrap_or(name.len());
-        let name = core::str::from_utf8(&name[..length]).unwrap_or("?");
-        fstart_log::info!("CPU: {}", name);
-    }
+) -> crate::ccx::brand::Name {
+    let name = crate::ccx::brand::read(&DieSmu::new(die, delay), msg::GET_NAME_STRING);
+    fstart_log::info!("CPU: {}", crate::ccx::brand::as_str(&name));
+    name
 }
 
 /// Physical addresses of the DRAM the SMU firmware reads its policy from

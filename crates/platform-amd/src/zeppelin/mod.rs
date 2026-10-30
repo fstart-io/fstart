@@ -26,8 +26,30 @@ use silicon::{Dma, Identity, SmuPages, SmuPolicy};
 pub struct Config {
     /// Subsystem ID of the FCH, NBIO and PCIe functions.
     pub subsystem_id: u32,
+    pub ccx: CcxConfig,
     pub fch: FchConfig,
     pub dxio: DxioConfig,
+}
+
+/// The cores.
+#[derive(Debug, Clone, Copy)]
+pub struct CcxConfig {
+    /// SYSCFG.SMEE on every thread, as the vendor firmware sets it: the OS
+    /// may use SME (`mem_encrypt=on`) and SEV. Off by default: the PSP's SEV
+    /// firmware keeps its state in flash through the SMM handler's P2C SPI
+    /// services (PSP_ZP §3.5), which fstart doesn't implement, so Linux's
+    /// SEV setup times out (5 s) and disables the PSP driver.
+    pub memory_encryption: bool,
+}
+impl CcxConfig {
+    pub const DEFAULT: Self = Self {
+        memory_encryption: false,
+    };
+}
+impl Default for CcxConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// The Taishan FCH.

@@ -24,6 +24,7 @@ use fstart_acpi::{
 };
 use fstart_acpi_macros::acpi_dsl;
 use fstart_driver_amd::{
+    ccx::power::{self, PowerAml},
     fch::{AcpiPorts, SPI_BASE},
     nbio::iommu::{self, Iommu},
 };
@@ -69,6 +70,8 @@ pub struct SocAcpi {
     pub bridge_routes: &'static [Route],
     /// IOAPIC GSIs of FCH INTA-D, as programmed in the PCI_INTR table.
     pub fch_intx_gsi: [u8; 4],
+    /// C2 (CC6) exit latency of `_CST`.
+    pub c2_latency_us: u16,
 }
 
 /// What the platform set up on one die.
@@ -108,7 +111,17 @@ pub struct Inputs<'a> {
     pub ecam_buses: u16,
     /// HPET general capabilities and ID register (0xfed00000).
     pub hpet_id: u32,
+    /// The P-states and C-states of every processor.
+    pub power: Option<CpuPower<'a>>,
     pub board: &'a BoardAcpi,
+}
+
+/// What the BSP reads of the P-states and C-states the CCX init left.
+#[derive(Debug, Clone, Copy)]
+pub struct CpuPower<'a> {
+    pub pstates: &'a [power::Pstate],
+    pub cstates: Option<power::CstateInfo>,
+    pub threads_per_core: u8,
 }
 
 /// Feed to `fstart_acpi::platform::assemble_into(.., &platform, &dsdt_aml, &extra)`.
@@ -195,6 +208,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
             .dsdt_aml()
         }))
         .chain(core::iter::once(inputs.board.sb_aml.clone()))
+        .chain(core::iter::once(processors(inputs)?))
         .flatten()
         .collect();
     let extra = core::iter::once(mcfg(inputs)?)
@@ -277,6 +291,34 @@ fn madt_order(apic_ids: &[u32]) -> Vec<u32> {
     let mut ids = apic_ids.to_vec();
     ids.sort_unstable_by_key(|&id| (id & 1, id));
     ids
+}
+
+/// A processor device per CPU, in the MADT's UID order, with the power
+/// objects of [`Inputs::power`].
+fn processors(inputs: &Inputs) -> Result<Vec<u8>, Error> {
+    use fstart_acpi::processor::{ProcessorName, processor_device};
+    let power = inputs.power.map(|p| {
+        PowerAml::new(&power::Power {
+            pstates: p.pstates,
+            cstates: p.cstates,
+            threads_per_core: p.threads_per_core,
+            c2_latency_us: inputs.soc.c2_latency_us,
+        })
+    });
+    let mut aml = Vec::new();
+    for (uid, apic_id) in madt_order(inputs.apic_ids).into_iter().enumerate() {
+        let index = u16::try_from(uid).map_err(|_| Error::Aml(AmlError::InvalidOperand))?;
+        let body = power
+            .as_ref()
+            .map(|p| p.for_cpu(apic_id))
+            .unwrap_or_default();
+        aml.extend(processor_device(
+            ProcessorName::new(index),
+            uid as u32,
+            &body,
+        )?);
+    }
+    Ok(aml)
 }
 
 /// The sleep states without ACPI resume (S3) support: S0, S1, S4, S5.
@@ -929,6 +971,23 @@ mod tests {
         counter_config: 0,
     };
 
+    /// EPYC 3151 P-states: 2.7, 1.9 and 1.2 GHz.
+    fn power() -> CpuPower<'static> {
+        static PSTATES: std::sync::LazyLock<[power::Pstate; 3]> = std::sync::LazyLock::new(|| {
+            [(0, 0x6c, 8), (1, 0x98, 0x10), (2, 0x60, 0x10)].map(|(i, fid, did)| {
+                power::decode_pstate(i, 1 << 63 | 0x50 << 22 | 0x40 << 14 | did << 8 | fid).unwrap()
+            })
+        });
+        CpuPower {
+            pstates: &*PSTATES,
+            cstates: Some(power::CstateInfo {
+                io_base: 0x813,
+                cc6: true,
+            }),
+            threads_per_core: 2,
+        }
+    }
+
     fn tables(board: &BoardAcpi) -> Tables {
         let dies = dies();
         build(&Inputs {
@@ -938,6 +997,7 @@ mod tests {
             ecam_base: 0xf000_0000,
             ecam_buses: 128,
             hpet_id: 0x1022_8201,
+            power: Some(power()),
             board,
         })
         .unwrap()
@@ -1055,6 +1115,7 @@ mod tests {
             ecam_base: 0xf000_0000,
             ecam_buses: 128,
             hpet_id: 0,
+            power: None,
             board: &BoardAcpi::default(),
         });
         assert_eq!(
@@ -1099,6 +1160,7 @@ mod tests {
             ecam_base: 0xf000_0000,
             ecam_buses: 128,
             hpet_id: 0,
+            power: None,
             board: &board,
         };
         let special = |variety, handle, source, dte| DeviceEntry::Special {
@@ -1317,6 +1379,13 @@ mod tests {
             "Name (FMCN, Package",
             "Method (_DSM, 4, Serialized)",
             "ToUUID (\"3cdff6f7-4267-4555-ad05-b30a3d8938de\")",
+            "Device (C005)",
+            "Name (_HID, \"ACPI0007\"",
+            "Name (_PSS, Package (0x03)",
+            "0x0A8C,",
+            "SystemIO,",
+            "0x0000000000000814",
+            "Name (_PSD, Package (0x01)",
         ] {
             assert!(dsl.contains(object), "{object} missing:\n{dsl}");
         }
@@ -1426,6 +1495,7 @@ mod tests {
             ecam_base: 0xf000_0000,
             ecam_buses: 128,
             hpet_id: 0x1022_8201,
+            power: Some(power()),
             board: &board,
         })
         .unwrap();
@@ -1443,7 +1513,7 @@ mod tests {
             .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
                 (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
             });
-        assert_eq!((len, hash), (2784, 0xba3b_5c8e_f8ab_a62d));
+        assert_eq!((len, hash), (4560, 0xd0f5_a6f6_2c82_e98d));
     }
 
     fn signature<'a>(tables: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {

@@ -5,6 +5,7 @@ use super::{MAX_DIES, pci::Root};
 use crate::acpi::{self, BoardAcpi, Bridge, DieAcpi, Inputs, SocAcpi};
 use core::ops::RangeInclusive;
 use fstart_driver_amd::{
+    ccx::power,
     df::Die,
     fch,
     nbio::iommu::{self, Iommu},
@@ -96,6 +97,11 @@ pub fn install<S: Soc>(
         .collect();
     // SAFETY: HPET general capabilities, decoded by the FCH.
     let hpet_id = unsafe { fstart_core::mmio::read32(fch::HPET as usize as *const u32) };
+    // Every core runs the BSP's P-state table and C-state setup.
+    // SAFETY: the BSP, reading the architectural P-state and C-state MSRs.
+    let msr = unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() };
+    let pstates = power::pstates(&msr);
+    let threads_per_core = ((fstart_arch::x86::cpuid(0x8000_001e).1 >> 8) & 0xff) as u8 + 1;
     let tables = acpi::build(&Inputs {
         soc,
         apic_ids,
@@ -103,6 +109,11 @@ pub fn install<S: Soc>(
         ecam_base: window.base,
         ecam_buses: window.buses,
         hpet_id,
+        power: Some(acpi::CpuPower {
+            pstates: &pstates,
+            cstates: power::cstate_info(&msr),
+            threads_per_core,
+        }),
         board,
     })
     .ok()?;

@@ -51,6 +51,7 @@ impl Board for Mj11 {
     type Soc = Zeppelin;
     const CONFIG: &'static zeppelin::Config = &zeppelin::Config {
         subsystem_id: 0,
+        ccx: zeppelin::CcxConfig::DEFAULT,
         fch: zeppelin::FchConfig::DEFAULT,
         dxio: zeppelin::DxioConfig {
             descriptors: [&[]; fstart_driver_amd::soc::zeppelin::MAX_DIES],

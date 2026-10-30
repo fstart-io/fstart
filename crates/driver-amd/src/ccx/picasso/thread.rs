@@ -92,6 +92,8 @@ impl Policy {
         let inputs = Inputs {
             psp_bar: Some(self.psp_base),
             cac_weights: Some(&super::CAC_WEIGHTS),
+            name: None,
+            memory_encryption: false,
         };
         ccx::cpu_init(cpu, &super::CCX, thread, &inputs, table.iter().copied())
             .map_err(|ccx::Error::McaBanks(banks)| Error::Cpu(CpuError::McaBanks(banks)))

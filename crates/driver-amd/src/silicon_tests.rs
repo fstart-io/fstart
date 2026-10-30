@@ -116,7 +116,7 @@ mod zeppelin {
             nbio::zeppelin::early_init(die, Revision::ZpB2);
             let _ = iohc::map_psp(&die.smn(), nonpci[usize::from(die.index())] + NONPCI_PSP);
         }
-        smu::print_name(&dies[0], &mut delay);
+        smu::name(&dies[0], &mut delay);
         for die in &dies {
             iohc::dram_map(die, 0xe000_0000, Some(0x4_2000_0000));
         }
