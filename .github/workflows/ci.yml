@@ -64,6 +64,7 @@ jobs:
         env:
           RUST_MIN_STACK: 8388608
         run: |
+          python3 -m unittest discover -s ci/tpm -p 'test_*.py'
           cargo test --workspace
           cargo test -p fstart-driver-intel \
             --features acpi,i945,gm965,ich8,pineview --lib
@@ -233,14 +234,68 @@ jobs:
           path: *rust-cache-paths
           key: rust-${{ github.job }}-${{ matrix.board }}-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
 
+  tpm-boot-tests:
+    needs: qemu-boot-assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install TPM boot-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 swtpm swtpm-tools busybox-static \
+            grub-pc-bin grub-efi-amd64-bin grub-common xorriso \
+            mtools gdisk dosfstools cpio
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: boot-assets/x86_64
+          key: ${{ runner.os }}-x86-boot-assets-${{ hashFiles('ci/build-boot-assets.sh', 'ci/create-grub-linux-disk.sh') }}
+          fail-on-cache-miss: true
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: *rust-cache-paths
+          key: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml') }}-
+
+      # This revision continues fstart's ACPI event log and locks the TPM.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fstart-io/seabios
+          ref: 44ed85f85fac03107009242c067fdcc01ce55546
+          path: target/seabios-src
+          persist-credentials: false
+
+      - name: Build measured-boot guests and SeaBIOS
+        run: |
+          ci/tpm/build-guest.sh target/tpm-guest boot-assets/x86_64/vmlinuz \
+            /bin/busybox grub-mkstandalone
+          ci/payloads/seabios/build.sh target/seabios-src target/seabios
+
+      - name: Test TPM 1.2 and 2.0 through SeaBIOS and CrabEFI
+        run: ci/tpm/run-tests.sh target/tpm-guest target/seabios
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push'
+        with:
+          path: *rust-cache-paths
+          key: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+
   # Keep a single stable status check for branch protection.
   qemu-boot-tests:
     if: always()
-    needs: [qemu-boot-assets, qemu-boot-matrix]
+    needs: [qemu-boot-assets, qemu-boot-matrix, tpm-boot-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Require all QEMU jobs to pass
         env:
           ASSETS_RESULT: ${{ needs.qemu-boot-assets.result }}
           BOOT_RESULT: ${{ needs.qemu-boot-matrix.result }}
-        run: test "$ASSETS_RESULT" = success && test "$BOOT_RESULT" = success
+          TPM_RESULT: ${{ needs.tpm-boot-tests.result }}
+        run: test "$ASSETS_RESULT" = success && test "$BOOT_RESULT" = success && test "$TPM_RESULT" = success

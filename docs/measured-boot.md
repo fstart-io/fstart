@@ -89,6 +89,20 @@ ci/payloads/seabios/build.sh SEABIOS_SRC target/seabios
 ci/tpm/run-tests.sh target/tpm-guest target/seabios
 ```
 
-Each run boots Linux, which prints its PCRs and the event log;
-`ci/tpm/verify-log.py` replays the log and compares. A single boot:
+Each run boots Linux, which prints its PCRs and the event log.
+`ci/tpm/verify-log.py` requires PCR 0–9 for every requested bank and compares
+all of them with a replay. The log must contain the firmware and payload
+measurements and successful separators for PCR 0–7 (zero, or the conventional
+BIOS `ffffffffh` used by SeaBIOS); error separators, missing banks/readings
+and truncated logs fail the test.
+
+The `tpm-boot-tests` CI job runs all five combinations above, using a pinned
+SeaBIOS revision with event-log continuation. It is part of the required
+`qemu-boot-tests` aggregate, alongside the ordinary no-TPM boot matrix.
+Verifier regressions run with `python3 -m unittest discover -s ci/tpm`;
+`cargo test -p fstart-tcg` also covers log exhaustion, measurement failure,
+failed capping and failed locking. These tests do not replace hardware cold
+boot, warm reboot and absent-TPM testing.
+
+A single boot:
 `ci/tpm/qemu-tpm.sh 2.0 -- --board qemu-q35 --payload uefi --disk ...`.

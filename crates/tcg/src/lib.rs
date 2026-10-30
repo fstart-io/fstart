@@ -765,11 +765,11 @@ mod tests {
         assert!(sent.contains(&0x14), "extended");
         assert_eq!(sent.last(), Some(&0x4000_000A), "physical presence locked");
         let payload = take_for_payload().unwrap();
-        let log = &payload.log_area;
-        assert_eq!(&log[32..48], b"Spec ID Event00\0");
-        assert_eq!(&log[57 + 32..57 + 48], b"Spec ID Event02\0");
+        let bytes = &payload.log_area;
+        assert_eq!(&bytes[32..48], b"Spec ID Event00\0");
+        assert_eq!(&bytes[57 + 32..57 + 48], b"Spec ID Event02\0");
         assert_eq!(
-            u32::from_le_bytes(log[118..122].try_into().unwrap()),
+            u32::from_le_bytes(bytes[118..122].try_into().unwrap()),
             8,
             "EV_S_CRTM_VERSION"
         );
@@ -813,14 +813,58 @@ mod tests {
         let mock = tpm(&[0x129, 0x121], false);
         start(mock, log_area(), PlatformClass::Client, false).unwrap();
         assert_eq!(handoff(Handoff::Locked), Err(HandoffError::Lock));
+        assert_eq!(handoff(Handoff::Final), Err(HandoffError::Lock));
         take_for_payload();
+
+        // Log exhaustion happens after the extend. Cap all PCRs even
+        // though the log cannot fit their separators; do not hand a
+        // payload a seemingly complete measurement chain.
+        let mock = tpm(&[], false);
+        let sent: *const Vec<u32> = &mock.sent;
+        let tiny_log = Box::leak(std::vec![0u8; 65].into_boxed_slice());
+        start(mock, tiny_log, PlatformClass::Client, false).unwrap();
+        measure_crtm_version("test");
+        assert_eq!(family(), None, "log exhaustion stops measuring");
+        assert_eq!(handoff(Handoff::Locked), Ok(()), "caps and lock succeeded");
+        assert!(
+            take_for_payload().is_none(),
+            "failed log cannot be continued"
+        );
+        // SAFETY: only the boot CPU uses the mock and no command is in flight.
+        let sent = unsafe { &*sent };
+        assert_eq!(sent.iter().filter(|&&cc| cc == 0x182).count(), 9);
+        exclusive(|slot| *slot = None);
+
+        // An explicit measurement failure fits its eight error separators
+        // into the log, caps successfully and still locks before handoff.
+        let mock = tpm(&[], false);
+        start(mock, log_area(), PlatformClass::Client, false).unwrap();
+        let before = log().unwrap().used;
+        measurement_error();
+        let after = log().unwrap().used;
+        assert_eq!(after - before, 8 * (12 + 2 + 32 + 4 + 4));
+        assert_eq!(handoff(Handoff::Final), Ok(()));
+        assert_eq!(
+            log().unwrap().used,
+            after,
+            "no success separators after failure"
+        );
+        assert!(take_for_payload().is_none());
+        exclusive(|slot| *slot = None);
 
         // A failed extend caps; failed caps forbid the handoff.
         let mock = tpm(&[0x182], false);
         start(mock, log_area(), PlatformClass::Client, false).unwrap();
         measure_crtm_version("test");
         assert_eq!(family(), None, "measuring stopped");
-        assert_eq!(handoff(Handoff::Open), Err(HandoffError::Cap));
+        for kind in [Handoff::Open, Handoff::Locked, Handoff::Final] {
+            assert_eq!(handoff(kind), Err(HandoffError::Cap));
+        }
+        assert_eq!(
+            check(),
+            Err(HandoffError::Cap),
+            "late failure blocks direct OS boot"
+        );
         assert!(take_for_payload().is_none());
     }
 }
