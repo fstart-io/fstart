@@ -102,7 +102,7 @@ builds share the Cargo target directory `target/fstart-build/cargo`.
    (cfgs, `OUT_DIR`, env) and proc-macro dylib paths.
 3. The projection in `tools/fbuild/src/ide_graph.rs`:
    - `std` units and build-script run units are skipped.
-   - Target units get the selection cfgs (`fstart_stage_env`, `fstart_entry`,
+   - Target units get the selection cfgs (`fstart_entry`,
      `fstart_payload`, check-cfg flags). Host units (proc macros, build scripts)
      do not.
    - Each unit gets `feature=` cfgs, `debug_assertions` for debug profiles, and

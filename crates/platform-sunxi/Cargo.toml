@@ -88,6 +88,3 @@ fstart-log = { workspace = true, optional = true }
 fstart-stage = { workspace = true, optional = true }
 serde = { workspace = true }
 ufmt = { workspace = true, optional = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("car", "ram"))'] }

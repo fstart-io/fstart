@@ -45,7 +45,7 @@ smm = ["dep:fstart-smm", "dep:fstart-driver-intel", "fstart-arch/x86_64"]
 # Full SMM image build support (handler binding macro + SMM panic handler).
 # SMM-unit builds only: never enable inside a stage build, where fstart-stage
 # already provides the panic handler. Mirrors fstart-platform-intel's bundle-smm.
-bundle-smm = ["smm", "fstart-smm/stage-bin"]
+bundle-smm = ["smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
 bundle-sbsa = ["stage", "aarch64", "aarch64-el2-relocate-entry", "virt-image"]
 bundle-sifive-u = ["stage", "riscv64", "virt-image"]
 bundle-unmatched = [

@@ -7,8 +7,8 @@ use fstart_core::services::ServiceError;
 use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
 
-#[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "aarch64-relocate")))]
-compile_error!("AArch64 virt requires monolithic/aarch64-relocate selections");
+#[cfg(not(fstart_entry = "aarch64-relocate"))]
+compile_error!("AArch64 virt requires the aarch64-relocate entry");
 #[cfg(any(
     not(any(
         fstart_payload = "halt",
@@ -182,6 +182,7 @@ impl fstart_stage::payload::Aarch64UefiPayloadContext for QemuAarch64VirtMainsta
 /// The QEMU Aarch64 virt stage: console, boot media from the DTB, PCI, then
 /// the payload. QEMU boards have no board work; their `main` calls this.
 pub fn run(config: &'static QemuAarch64VirtConfig, console: Pl011Config) -> ! {
+    fstart_stage::anchor::initial_stage();
     let Ok(mut mainstage) = QemuAarch64VirtMainstage::new(config, console) else {
         fstart_arch::aarch64::halt();
     };

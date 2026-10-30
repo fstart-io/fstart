@@ -14,7 +14,6 @@ unsafe impl Sync for BootstrapPin {}
 
 #[cfg(all(
     feature = "bootstrap",
-    fstart_stage_env = "car",
     not(any(target_arch = "x86", target_arch = "x86_64"))
 ))]
 const fn bootstrap_pin_placeholder() -> [u8; 160] {
@@ -28,12 +27,12 @@ const fn bootstrap_pin_placeholder() -> [u8; 160] {
     bytes
 }
 
+/// Kept only by [`pinned_bootstrap_descriptor`], which only the initial
+/// stage calls: packaging finds exactly one placeholder.
 #[cfg(all(
     feature = "bootstrap",
-    fstart_stage_env = "car",
     not(any(target_arch = "x86", target_arch = "x86_64"))
 ))]
-#[used]
 #[unsafe(no_mangle)]
 #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.bootstrap_pin"))]
 pub static FSTART_BOOTSTRAP_PIN: BootstrapPin =
@@ -45,10 +44,7 @@ pub static FSTART_BOOTSTRAP_PIN: BootstrapPin =
 #[cfg(feature = "bootstrap")]
 pub fn pinned_bootstrap_descriptor()
 -> Result<fstart_ffs::root::BootstrapDescriptor, fstart_ffs::root::RootError> {
-    #[cfg(all(
-        fstart_stage_env = "car",
-        not(any(target_arch = "x86", target_arch = "x86_64"))
-    ))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     {
         let mut bytes = [0; 160];
         for (index, byte) in bytes.iter_mut().enumerate() {
@@ -60,10 +56,7 @@ pub fn pinned_bootstrap_descriptor()
         }
         fstart_ffs::root::BootstrapDescriptor::parse(&bytes)
     }
-    #[cfg(not(all(
-        fstart_stage_env = "car",
-        not(any(target_arch = "x86", target_arch = "x86_64"))
-    )))]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         Err(fstart_ffs::root::RootError::UnsupportedVersion)
     }

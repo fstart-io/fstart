@@ -1,7 +1,7 @@
-//! Run with RUSTFLAGS='--cfg fstart_stage_env="ram"' and
-//! --features ffs,fstart-ffs/std --lib ram_locator_tests.
-//! The real publish-once statics start fresh in this isolated test process.
-#![cfg(all(fstart_stage_env = "ram", feature = "ffs"))]
+//! A later stage's locator import. Run with
+//! --features ffs,x86_64,fstart-ffs/std --lib ram_locator_tests.
+//! The real publish-once statics start fresh in this isolated test process;
+//! no other test publishes a locator.
 
 use crate::{
     anchor, directory,
@@ -73,11 +73,11 @@ fn ram_import_is_required_before_mount_and_asset_consumers_work_after_it() {
     bytes[256..256 + encoded.len()].copy_from_slice(&encoded);
     let image: &'static [u8] = Box::leak(bytes.into_boxed_slice());
     let locator = LocatorBlock {
-        total_image_size: image.len() as u32,
-        manifest_offset: 1024,
-        manifest_size: 512,
-        microcode_offset: 8,
-        microcode_size: 16,
+        total_image_size: (image.len() as u32).into(),
+        manifest_offset: 1024.into(),
+        manifest_size: 512.into(),
+        microcode_offset: 8.into(),
+        microcode_size: 16.into(),
         ..LocatorBlock::placeholder()
     };
     let media = MemoryMappedFfs::new(image.as_ptr() as u64, image.len());

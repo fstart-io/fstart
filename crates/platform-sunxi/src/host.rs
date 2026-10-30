@@ -46,7 +46,6 @@ fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
     fstart_image_build::build_plan::CompilerCfgSchema {
         entries: strings(&["armv7", "aarch64", "riscv64"]),
-        environments: strings(&["car", "ram"]),
         payloads: strings(&["halt", "linux"]),
     }
 }
@@ -215,7 +214,6 @@ fn payload_config(facts: BoardFacts) -> PayloadConfig {
 
 fn unit(
     name: &str,
-    environment: &str,
     payload: &str,
     bundle: &str,
     policy: &SocPolicy,
@@ -228,7 +226,6 @@ fn unit(
         target: policy.target.into(),
         entry: policy.entry.into(),
         cfg_schema: compiler_cfg_schema(),
-        environment: environment.into(),
         payload: payload.into(),
         features: vec![bundle.into()],
         build_std: Some("core,alloc".into()),
@@ -379,7 +376,6 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         units: vec![
             unit(
                 "bootblock",
-                "car",
                 "halt",
                 policy.bundle_bootblock,
                 &policy,
@@ -388,7 +384,6 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
             unit(
                 "main",
-                "ram",
                 &payload,
                 policy.bundle_main,
                 &policy,

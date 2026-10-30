@@ -323,9 +323,8 @@ def intel_probe(audit_lock):
             for other in {"gm965", "i945", "pineview"} - {module}:
                 symbol = {"gm965": "IntelGm965Config", "i945": "IntelI945Config", "pineview": "IntelPineviewConfig"}[other]
                 assert client.request("workspace/symbol", {"query": symbol}) == [], (board, symbol)
-            environment = {"bootblock": "car", "postcar": "postcar", "ramstage": "ram", "smm": "smm"}[stage]
             selected = "crabefi" if payload == "uefi" else payload
-            condition = f'fstart_stage_env="{environment}", fstart_payload="{selected}", target_arch="x86_64", not(test)'
+            condition = f'fstart_payload="{selected}", target_arch="x86_64", not(test)'
             addition = (f"\n#[cfg(all({condition}))]\nconst FSTART_INTEL_CFG: u8 = 1;\n"
                         f"#[cfg(not(all({condition})))]\nconst FSTART_INTEL_CFG: u8 = 2;\n"
                         "fn fstart_intel_cfg_probe() -> u8 { FSTART_INTEL_CFG }\n")

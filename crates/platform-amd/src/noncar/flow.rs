@@ -84,6 +84,7 @@ impl<S: Soc> Reset<S> {
     /// ECAM first, everything else uses it; then the ACPI MMIO and the
     /// SoC's FCH setup for the console.
     pub fn enter(config: &'static S::Config) -> Self {
+        fstart_stage::anchor::initial_stage();
         // SAFETY: BSP only, single-threaded cold boot; the ECAM comes up
         // before the first config space access.
         let fch = Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0);

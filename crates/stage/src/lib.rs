@@ -65,7 +65,7 @@ pub mod handoff;
 
 pub mod next_stage;
 
-#[cfg(all(test, feature = "ffs", fstart_stage_env = "ram"))]
+#[cfg(all(test, feature = "ffs"))]
 mod ram_locator_tests;
 
 // ---------------------------------------------------------------------------
@@ -399,34 +399,6 @@ fn effective_image_size(media_size: usize, anchor: fstart_core::ffs::AnchorRef<'
 
 pub mod anchor;
 pub use anchor::{fstart_anchor_bytes, fstart_trust_bytes};
-
-/// Runtime environment selected by build glue for a firmware entry point.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StageEnvironment {
-    /// Single-stage/monolithic firmware image.
-    Monolithic,
-    /// Cache-as-RAM/SRAM-only environment: no DRAM assumptions.
-    Car,
-    /// DRAM-backed environment: allocation, tables, and payload handoff allowed.
-    Ram,
-}
-
-impl StageEnvironment {
-    /// Convert the optional `FSTART_STAGE_ENV` value passed by build glue.
-    ///
-    /// The Cut-B postcar loader builds with `FSTART_STAGE_ENV=postcar` but
-    /// runs as a DRAM-backed stage, so it maps to [`Self::Ram`]; the
-    /// postcar-vs-ramstage split inside `Ram` is a compile-time
-    /// `cfg(fstart_stage_env)` dispatch in each Intel platform flow.
-    #[must_use]
-    pub fn from_option(env: Option<&'static str>) -> Self {
-        match env {
-            Some("car") => Self::Car,
-            Some("ram" | "postcar") => Self::Ram,
-            _ => Self::Monolithic,
-        }
-    }
-}
 
 /// Platform-owned entry adapter supplied by a migrated board binary.
 pub trait StageProgram {

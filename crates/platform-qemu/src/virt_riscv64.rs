@@ -8,8 +8,8 @@ use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
 use fstart_stage::payload::MainstagePayload;
 
-#[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
-compile_error!("RISC-V virt requires monolithic/riscv64 stage and entry selections");
+#[cfg(not(fstart_entry = "riscv64"))]
+compile_error!("RISC-V virt requires the riscv64 entry");
 #[cfg(any(
     not(any(
         fstart_payload = "halt",
@@ -196,6 +196,7 @@ pub fn resume_sbi(
 /// The QEMU RISC-V virt stage: console, boot media from the DTB, PCI, then
 /// the payload. QEMU boards have no board work; their `main` calls this.
 pub fn run(config: &'static QemuRiscv64VirtConfig, console: Ns16550Config) -> ! {
+    fstart_stage::anchor::initial_stage();
     let Ok(mut mainstage) = QemuRiscv64VirtMainstage::new(config, console) else {
         fstart_arch::riscv64::halt();
     };

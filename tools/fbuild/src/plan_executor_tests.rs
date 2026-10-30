@@ -34,10 +34,8 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
     producer.name = "digest-maker".into();
     producer.target = "x86_64-unknown-none".into();
     producer.entry = "x86_64".into();
-    producer.environment = "car".into();
     // This synthetic producer owns its vocabulary; it is not a QEMU unit.
     producer.cfg_schema.entries = vec!["x86_64".into()];
-    producer.cfg_schema.environments = vec!["car".into()];
     producer.features = vec!["different-feature".into()];
     producer.rustflags = vec!["-Crelocation-model=static".into()];
     if let UnitOutput::Executable { expectations, .. } = &mut producer.output {

@@ -25,8 +25,8 @@ mod stage {
     #[cfg(not(fstart_payload = "crabefi"))]
     use fstart_stage::payload::MainstagePayload;
 
-    #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
-    compile_error!("FU740 requires monolithic/riscv64 stage and entry selections");
+    #[cfg(not(fstart_entry = "riscv64"))]
+    compile_error!("FU740 requires the riscv64 entry");
     #[cfg(any(
         not(any(
             fstart_payload = "halt",
@@ -60,6 +60,7 @@ mod stage {
     /// PRCI clocks, the UART console, DDR, the verified boot media, then the
     /// build-selected FFS payload.
     pub fn run(config: &'static Fu740Config, uart: &'static SifiveUartConfig) -> ! {
+        fstart_stage::anchor::initial_stage();
         let mut prci = match Fu740Prci::new(&config.prci) {
             Ok(prci) => prci,
             Err(_) => fstart_arch::riscv64::halt(),

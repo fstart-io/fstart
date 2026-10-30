@@ -389,6 +389,7 @@ fstart_sunxi_fel_stash:
         slot: &'static StaticConsole<Ns16550>,
         console_config: Ns16550Config,
     ) -> Result<core::convert::Infallible, ServiceError> {
+        fstart_stage::anchor::initial_stage();
         let ccu = A20Ccu::new_from_config(&config.ccu);
         ccu.init_early()?;
 

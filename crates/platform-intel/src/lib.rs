@@ -53,40 +53,22 @@ pub mod pineview;
 /// Shared IGD display bring-up types used by board display policy.
 pub use fstart_driver_intel::igd;
 
-#[cfg(all(
-    feature = "stage",
-    any(
-        fstart_stage_env = "car",
-        fstart_stage_env = "postcar",
-        fstart_stage_env = "ram"
-    )
-))]
+#[cfg(feature = "stage")]
 mod boot;
-#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
+#[cfg(feature = "stage")]
 pub mod bootblock;
-#[cfg(all(
-    feature = "stage",
-    any(fstart_stage_env = "car", fstart_stage_env = "ram")
-))]
+#[cfg(feature = "stage")]
 mod memory_info;
-#[cfg(all(feature = "stage", fstart_stage_env = "postcar"))]
+#[cfg(feature = "stage")]
 pub mod postcar;
 #[cfg(all(
     feature = "stage",
     feature = "acpi",
     feature = "smbios",
-    feature = "mp",
-    fstart_stage_env = "ram"
+    feature = "mp"
 ))]
 pub mod ramstage;
-#[cfg(all(
-    feature = "stage",
-    any(
-        fstart_stage_env = "car",
-        fstart_stage_env = "postcar",
-        fstart_stage_env = "ram"
-    )
-))]
+#[cfg(feature = "stage")]
 mod store;
 
 #[cfg(feature = "stage")]
@@ -203,6 +185,6 @@ pub const RAMSTAGE_NAME: &str = "ramstage";
 
 /// Canonical role name (see `fstart_core::stage::POSTCAR_STAGE_NAME`):
 /// all Intel CAR boards insert a stage with this name between bootblock and
-/// ramstage. `fbuild` selects the postcar entry and stage environment by it.
+/// ramstage. `fbuild` selects the postcar entry by it.
 /// It names a stage *role*, not a board registry.
 pub use fstart_core::stage::POSTCAR_STAGE_NAME;

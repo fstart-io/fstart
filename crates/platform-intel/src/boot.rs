@@ -14,7 +14,6 @@ use fstart_stage::boot::MemoryWindow;
 /// board bounds. Each contains code plus loader scratch and leaves the
 /// next stage disjoint.
 
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "postcar"))]
 pub(crate) fn bootstrap_window(
     descriptor: &BootstrapDescriptor,
     role: BootstrapRole,
@@ -48,7 +47,6 @@ pub(crate) fn bootstrap_window(
 
 /// The stash remains reserved through mainstage import. Its provenance comes
 /// from the predecessor, not from validation of its magic/version fields.
-#[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
 pub(crate) fn handoff(
     image_base: u64,
     image_size: usize,
@@ -79,7 +77,6 @@ pub(crate) fn handoff(
 /// (reset): resuming a mixed-revision or corrupted image is never
 /// acceptable, and the flash copy may belong to a flash update that happened
 /// while suspended.
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "postcar"))]
 pub(crate) fn load_stage_with_cache(
     media: &(impl fstart_core::services::BootMedia + ?Sized),
     stage: fstart_stage::stage_cache::CachedStage,
@@ -166,7 +163,7 @@ pub(crate) fn load_stage_with_cache(
     Ok(verified)
 }
 
-#[cfg(fstart_stage_env = "ram")]
+#[cfg(all(feature = "acpi", feature = "smbios", feature = "mp"))]
 pub(crate) fn import_intel_directory(
     image_base: u64,
     image_size: usize,
@@ -225,7 +222,7 @@ pub(crate) fn running_reservations(
 ///
 /// Without this, Linux is free to allocate over the very bytes that postcar
 /// and the ramstage are reloaded into on wake.
-#[cfg(fstart_stage_env = "ram")]
+#[cfg(all(feature = "acpi", feature = "smbios", feature = "mp"))]
 pub(crate) fn reserve_firmware_memory(
     e820: &mut fstart_core::services::memory_detect::E820State,
     geometry: IntelBootLayout<'static>,
@@ -247,7 +244,7 @@ pub(crate) fn reserve_firmware_memory(
     Ok(())
 }
 
-#[cfg(fstart_stage_env = "ram")]
+#[cfg(all(feature = "acpi", feature = "smbios", feature = "mp"))]
 pub(crate) fn install_intel_load_policy(
     entries: &[fstart_core::services::memory_detect::E820Entry],
     geometry: IntelBootLayout<'static>,

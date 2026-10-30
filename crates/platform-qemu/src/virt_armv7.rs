@@ -5,8 +5,8 @@ use fstart_core::services::ServiceError;
 use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
 
-#[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "armv7")))]
-compile_error!("ARMv7 virt requires monolithic/armv7 stage and entry selections");
+#[cfg(not(fstart_entry = "armv7"))]
+compile_error!("ARMv7 virt requires the armv7 entry");
 #[cfg(any(
     not(any(fstart_payload = "halt", fstart_payload = "linux")),
     all(fstart_payload = "halt", fstart_payload = "linux")
@@ -109,6 +109,7 @@ impl fstart_stage::payload::LinuxPayloadContext for QemuArmv7VirtMainstage {
 /// The QEMU Armv7 virt stage: console, boot media from the DTB, PCI, then
 /// the payload. QEMU boards have no board work; their `main` calls this.
 pub fn run(config: &'static QemuArmv7VirtConfig, console: Pl011Config) -> ! {
+    fstart_stage::anchor::initial_stage();
     let Ok(mut mainstage) = QemuArmv7VirtMainstage::new(config, console) else {
         fstart_arch::halt();
     };

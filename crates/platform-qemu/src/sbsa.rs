@@ -64,8 +64,8 @@ mod stage {
     use fstart_driver_uart::pl011::{Pl011, Pl011Config};
     use fstart_stage::payload::MainstagePayload;
 
-    #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "aarch64-relocate")))]
-    compile_error!("SBSA requires monolithic/aarch64-relocate stage and entry selections");
+    #[cfg(not(fstart_entry = "aarch64-relocate"))]
+    compile_error!("SBSA requires the aarch64-relocate entry");
     #[cfg(not(fstart_payload = "halt"))]
     compile_error!("SBSA selects the halt payload only");
 
@@ -101,6 +101,7 @@ mod stage {
     /// The QEMU SBSA stage: console, boot media, PCI, then the payload.
     /// QEMU boards have no board work; their `main` calls this.
     pub fn run(config: &'static QemuSbsaConfig) -> ! {
+        fstart_stage::anchor::initial_stage();
         let Ok(mut mainstage) = QemuSbsaMainstage::new(config) else {
             fstart_arch::aarch64::halt()
         };

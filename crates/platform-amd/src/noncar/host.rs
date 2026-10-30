@@ -265,10 +265,6 @@ ASSERT(_bss_end <= ORIGIN(heap), "data and BSS exceed their reservation")
 fn cfg_schema(policy: &Policy) -> CompilerCfgSchema {
     CompilerCfgSchema {
         entries: vec![ENTRY.into()],
-        environments: core::iter::once("monolithic")
-            .chain(policy.smm.then_some("smm"))
-            .map(Into::into)
-            .collect(),
         payloads: core::iter::once("halt")
             .chain(
                 policy
@@ -291,7 +287,6 @@ fn smm_unit<S: HostSoc>() -> CompilationUnit {
         target: "x86_64-unknown-none".into(),
         entry: ENTRY.into(),
         cfg_schema: cfg_schema(&S::POLICY),
-        environment: "smm".into(),
         payload: "halt".into(),
         features: vec!["smm".into(), "bundle-smm".into()],
         build_std: None,
@@ -627,7 +622,6 @@ where
         cargo_target: CargoTarget::BoardBinary,
         target: "x86_64-unknown-none".into(),
         entry: ENTRY.into(),
-        environment: "monolithic".into(),
         payload: payload.into(),
         cfg_schema: cfg_schema(policy),
         features: core::iter::once(policy.feature)

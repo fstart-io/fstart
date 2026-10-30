@@ -136,7 +136,6 @@
     }
   },
   "entry": "riscv64",
-  "environment": "monolithic",
-  "linker_sha256": "a197baed0310cd43bbbf20c67ab6942d09d19169b60ee8dc23204c6b5911463b",
+  "linker_sha256": "b045787109de68441d9e6ef2eb17ed373d8e62ed571aae118653716f65f3dcf2",
   "target": "riscv64gc-unknown-none-elf"
 }

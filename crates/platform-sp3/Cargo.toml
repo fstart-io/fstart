@@ -32,7 +32,7 @@ payload-uefi = ["fstart-stage/crabefi"]
 # The FCH SMI handler (`smm::Sp3SmmHandler`) for an SMM image unit; the
 # image unit adds `bundle-smm` (handler binding macro, SMM panic handler).
 smm = ["dep:fstart-smm"]
-bundle-smm = ["smm", "fstart-smm/stage-bin"]
+bundle-smm = ["smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json"]
 

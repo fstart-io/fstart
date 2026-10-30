@@ -81,12 +81,12 @@ pub fn timestamp_us() -> u64 {
     rdtsc() / (tsc_frequency_hz() / 1_000_000).max(1)
 }
 
-// SMM builds substitute a call-free POST-port delay below so the handler does
-// not retain the broad TSC-discovery call graph. Selected per build unit, so
-// all other stages keep the precise TSC implementation unchanged.
+// The SMM handler image (feature `smm-handler`) substitutes a call-free
+// POST-port delay below so the handler does not retain the broad
+// TSC-discovery call graph; every other image keeps the precise TSC delay.
 #[cfg(all(
     any(target_arch = "x86", target_arch = "x86_64"),
-    not(fstart_stage_env = "smm")
+    not(feature = "smm-handler")
 ))]
 pub fn udelay(us: u32) {
     // Compute the TSC frequency once per delay.  `tsc_frequency_hz()` may use
@@ -121,7 +121,7 @@ impl embedded_hal::delay::DelayNs for Udelay {
 /// condition met right at the end is not reported as a timeout.
 #[cfg(all(
     any(target_arch = "x86", target_arch = "x86_64"),
-    not(fstart_stage_env = "smm")
+    not(feature = "smm-handler")
 ))]
 pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
     let hz = sanitize_tsc_frequency_hz(tsc_frequency_hz());
@@ -141,7 +141,7 @@ pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
 /// [`wait_us`] for SMM, which has no TSC frequency: counts POST-port delays.
 #[cfg(all(
     any(target_arch = "x86", target_arch = "x86_64"),
-    fstart_stage_env = "smm"
+    feature = "smm-handler"
 ))]
 pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
     (0..=timeout_us).any(|elapsed| {
@@ -155,7 +155,7 @@ pub fn wait_us(timeout_us: u32, mut done: impl FnMut() -> bool) -> bool {
 /// SMM microsecond delay via POST-port writes (see above).
 #[cfg(all(
     any(target_arch = "x86", target_arch = "x86_64"),
-    fstart_stage_env = "smm"
+    feature = "smm-handler"
 ))]
 #[inline(always)]
 pub fn udelay(us: u32) {
@@ -175,7 +175,7 @@ pub fn udelay(us: u32) {
 
 #[cfg(all(
     any(target_arch = "x86", target_arch = "x86_64"),
-    not(fstart_stage_env = "smm")
+    not(feature = "smm-handler")
 ))]
 fn sanitize_tsc_frequency_hz(hz: u64) -> u64 {
     // Firmware delay loops must never turn into effectively infinite waits if

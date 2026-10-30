@@ -33,9 +33,7 @@ fn platform_cfg_schema_accepts_new_vocabulary_but_not_selected_typos() {
     .units
     .remove(0);
     unit.entry = "novel-reset".into();
-    unit.environment = "novel-memory".into();
     unit.cfg_schema.entries = vec!["novel-reset".into()];
-    unit.cfg_schema.environments = vec!["novel-memory".into()];
     unit.linker_script = None;
     let selection = Selection::prepare_unit(
         root,
@@ -49,7 +47,7 @@ fn platform_cfg_schema_accepts_new_vocabulary_but_not_selected_typos() {
     )
     .unwrap();
     let source = scratch.0.join("probe.rs");
-    fs::write(&source, "#[cfg(all(fstart_entry=\"novel-reset\",fstart_stage_env=\"novel-memory\",fstart_payload=\"halt\"))] const SELECTED: u8 = 1; pub const CHECK: u8 = SELECTED;").unwrap();
+    fs::write(&source, "#[cfg(all(fstart_entry=\"novel-reset\",fstart_payload=\"halt\"))] const SELECTED: u8 = 1; pub const CHECK: u8 = SELECTED;").unwrap();
     let result = std::process::Command::new("rustc")
         .args(["--crate-type=lib", "--emit=metadata", "-Dunexpected_cfgs"])
         .args(&selection.flags)

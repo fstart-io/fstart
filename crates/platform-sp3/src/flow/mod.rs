@@ -350,6 +350,7 @@ pub struct Reset<B, S> {
 
 impl<B: Board, S: Silicon> Reset<B, S> {
     fn enter(identity: Identity) -> Self {
+        fstart_stage::anchor::initial_stage();
         let generation = identity.generation();
         step(0x10, "ECAM");
         let ecam = hw::enable_ecam(generation);
