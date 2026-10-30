@@ -89,13 +89,6 @@ impl IntelStage {
             Self::Ramstage => "ramstage",
         }
     }
-    pub fn environment(self) -> &'static str {
-        match self {
-            Self::Bootblock => "car",
-            Self::Postcar => "postcar",
-            Self::Ramstage => "ram",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -60,8 +60,6 @@ pub const SMM_UNIT: &str = "smm";
 /// Platform features of the SMM unit: the handler and its binding macro
 /// with the SMM panic handler.
 pub const SMM_FEATURES: [&str; 2] = ["smm", "bundle-smm"];
-/// `fstart_stage_env` of the SMM unit (the arch crate's SMM delay path).
-pub const SMM_ENVIRONMENT: &str = "smm";
 /// `fstart_entry` of the SMM unit: the generic x86-64 one, so neither the
 /// platform's PSP reset entry nor anything else with a fixed address is
 /// compiled into the handler's crates (the Intel SMM unit's choice).
@@ -200,16 +198,10 @@ pub fn expectations() -> Result<Expectations, String> {
     Ok(expectations)
 }
 
-/// Stage environment of the reset unit: an initial image (no predecessor)
-/// that does everything, so `fstart-stage` links the FFS locator patch site
-/// (`FSTART_ANCHOR`) the composer fills.
-pub const RESET_ENVIRONMENT: &str = "monolithic";
-
 /// One cfg vocabulary for both units, so every crate checks the same names.
 fn cfg_schema() -> CompilerCfgSchema {
     CompilerCfgSchema {
         entries: vec![crate::entry::ENTRY.into(), SMM_ENTRY.into()],
-        environments: vec![RESET_ENVIRONMENT.into(), SMM_ENVIRONMENT.into()],
         payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
     }
 }
@@ -231,7 +223,6 @@ fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
         target: "x86_64-unknown-none".into(),
         entry: SMM_ENTRY.into(),
         cfg_schema: cfg_schema(),
-        environment: SMM_ENVIRONMENT.into(),
         payload: "halt".into(),
         features: SMM_FEATURES
             .into_iter()
@@ -452,7 +443,6 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         target: "x86_64-unknown-none".into(),
         entry: crate::entry::ENTRY.into(),
         cfg_schema: cfg_schema(),
-        environment: RESET_ENVIRONMENT.into(),
         payload: payload.cfg().into(),
         features: core::iter::once(RESET_FEATURE)
             .chain(B::GENERATIONS.iter().map(|&g| feature(g)))
@@ -658,7 +648,6 @@ mod tests {
         assert_eq!(plan.stages, [RESET_UNIT]);
         let unit = plan.unit(RESET_UNIT).unwrap();
         assert_eq!(unit.entry, "amd-psp-reset");
-        assert_eq!(unit.environment, RESET_ENVIRONMENT);
         assert_eq!(unit.features, [RESET_FEATURE, "rome", "milan"]);
         assert_eq!(unit.environment_values["FSTART_MP_MAX_CPUS"], "256");
         let UnitOutput::Executable {
@@ -767,12 +756,8 @@ mod tests {
         let smm = plan.unit(SMM_UNIT).unwrap();
         assert!(matches!(smm.cargo_target, CargoTarget::BoardLibrary));
         assert_eq!(
-            (
-                smm.entry.as_str(),
-                smm.environment.as_str(),
-                smm.payload.as_str()
-            ),
-            ("x86_64", "smm", "halt")
+            (smm.entry.as_str(), smm.payload.as_str()),
+            ("x86_64", "halt")
         );
         assert_eq!(smm.features, ["smm", "bundle-smm", "rome", "milan"]);
         assert!(smm.release_only && smm.rustflags.iter().any(|f| f == "-Cpanic=abort"));

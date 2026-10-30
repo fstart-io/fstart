@@ -79,8 +79,8 @@ mod stage {
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
     use fstart_stage::payload::MainstagePayload;
 
-    #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
-    compile_error!("sifive-u requires monolithic/riscv64 stage and entry selections");
+    #[cfg(not(fstart_entry = "riscv64"))]
+    compile_error!("sifive-u requires the riscv64 entry");
     #[cfg(any(
         not(any(
             fstart_payload = "halt",
@@ -114,6 +114,7 @@ mod stage {
     /// The QEMU `sifive_u` stage: console, boot media, then the payload.
     /// QEMU boards have no board work; their `main` calls this.
     pub fn run(config: &'static QemuSifiveUConfig, console: &'static SifiveUartConfig) -> ! {
+        fstart_stage::anchor::initial_stage();
         let console_config = console;
         let mut console = match SifiveUart::new(console_config) {
             Ok(console) => console,

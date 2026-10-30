@@ -94,7 +94,7 @@ pub fn ffs_total_size_at(sram_base: usize) -> u32 {
     unsafe { core::ptr::read_volatile((sram_base + 0x34) as *const u32) }
 }
 
-#[cfg(all(feature = "stage", target_arch = "arm", fstart_stage_env = "car"))]
+#[cfg(all(feature = "stage", target_arch = "arm"))]
 core::arch::global_asm!(
     r#"
     .section .head.text, "ax"
@@ -109,7 +109,7 @@ _head_jump:
 // the pre-assembled ARM32 branch to `_start` at offset 0x60 (the aarch64
 // assembler cannot emit ARM32 instructions).
 // 0xEA000016 = ARM32 `b .+0x60` from offset 0 (offset = (0x60 - 8) / 4).
-#[cfg(all(feature = "stage", target_arch = "aarch64", fstart_stage_env = "car"))]
+#[cfg(all(feature = "stage", target_arch = "aarch64"))]
 core::arch::global_asm!(
     r#"
     .section .head.text, "ax"
@@ -120,7 +120,7 @@ _head_jump:
 );
 
 // The D1 BROM enters the eGON image directly in RISC-V M-mode.
-#[cfg(all(feature = "stage", target_arch = "riscv64", fstart_stage_env = "car"))]
+#[cfg(all(feature = "stage", target_arch = "riscv64"))]
 core::arch::global_asm!(
     r#"
     .section .head.text, "ax"
@@ -130,8 +130,10 @@ _head_jump:
     "#
 );
 
-/// The header immediately following the eGON branch instruction.
-#[cfg(all(feature = "stage", fstart_stage_env = "car"))]
+/// The header immediately following the eGON branch instruction. Only the
+/// bootblock's linker script keeps it (with the branch); other stages drop
+/// both.
+#[cfg(feature = "stage")]
 #[used]
 #[cfg_attr(
     any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64"),

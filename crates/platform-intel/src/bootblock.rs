@@ -123,6 +123,7 @@ impl<B: IntelBoard> Bootblock<B, Early> {
     /// Start the boot timestamps in CAR, bind the chipset from the board's
     /// configuration and open the decode windows the console needs.
     pub fn enter() -> Self {
+        fstart_stage::anchor::initial_stage();
         let entry = fstart_timestamp::now();
         // SAFETY: CAR-resident bootblock data, used only through the table.
         unsafe {

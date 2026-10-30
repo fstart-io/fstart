@@ -323,9 +323,9 @@ halts instead of jumping to the configured address (`crates/stage/src/payload.rs
 | QEMU (`crates/platform-qemu`) | Mainstage policy from `running_stage_windows()` and platform RAM. |
 | Sunxi (`crates/platform-sunxi`) | SPL loads only the pinned descriptor. DRAM must start at `0x4000_0000`, reserve the handoff, and use 4-byte entry alignment. Mainstage receives only the locator (`install_locator`), no keys or root. |
 
-Under `fstart_stage_env = "ram"` or `"postcar"`, the locator arrives from the
-predecessor's handoff through `anchor::install_locator`, once, before any media
-service runs.
+An initial stage reads its own patched anchor (`anchor::initial_stage`); a
+later stage receives the locator from the predecessor's handoff through
+`anchor::install_locator`, once, before any media service runs.
 
 Driver assets: `crates/driver-intel/src/igd.rs` (`locate_vbt`) reads a configured
 VBT through `read_verified_asset`. If that fails it returns `None` and does not

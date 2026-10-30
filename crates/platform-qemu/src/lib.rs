@@ -193,8 +193,8 @@ mod stage {
     use crate::q35::Q35HostBridge;
     use crate::{QEMU_Q35_ACPI_BUFFER_SIZE, QEMU_Q35_PLATFORM_NODE, QemuQ35Config};
 
-    #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "x86_64")))]
-    compile_error!("QEMU q35 requires monolithic/x86_64 stage and entry selections");
+    #[cfg(not(fstart_entry = "x86_64"))]
+    compile_error!("QEMU q35 requires the x86_64 entry");
     #[cfg(not(any(
         fstart_payload = "halt",
         fstart_payload = "crabefi",
@@ -628,6 +628,7 @@ mod stage {
     /// media, PCI, display, MP and SMM, then the payload. QEMU boards have
     /// no board work; their `main` calls this.
     pub fn run_q35(config: &'static QemuQ35Config, console: Ns16550Config) -> ! {
+        fstart_stage::anchor::initial_stage();
         let Ok(mut mainstage) = QemuQ35Mainstage::new(config, console) else {
             fstart_arch::x86::boot::halt();
         };

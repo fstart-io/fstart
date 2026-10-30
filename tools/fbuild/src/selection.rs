@@ -78,7 +78,6 @@ impl Selection {
         )
         .map_err(|e| e.to_string())?;
         let cfgs = vec![
-            format!("fstart_stage_env=\"{}\"", unit.environment),
             format!("fstart_entry=\"{}\"", unit.entry),
             format!("fstart_payload=\"{}\"", unit.payload),
         ];
