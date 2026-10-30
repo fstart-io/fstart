@@ -32,8 +32,8 @@ pub mod pio;
 pub mod services;
 
 pub use acpi::{
-    AcpiAhciDevice, AcpiConfig, AcpiGenericDevice, AcpiPcieRootDevice, AcpiPlatform, AcpiResource,
-    AcpiWatchdog, AcpiXhciDevice, ArmPlatformAcpi,
+    AcpiAhciDevice, AcpiConfig, AcpiGenericDevice, AcpiInterruptFlags, AcpiPcieRootDevice,
+    AcpiPlatform, AcpiResource, AcpiWatchdog, AcpiXhciDevice, ArmPlatformAcpi,
 };
 pub use board::{
     BoardBuildPolicy, BoardConfig, FdtSource, FirmwareConfig, FirmwareImagePolicy, FirmwareKind,

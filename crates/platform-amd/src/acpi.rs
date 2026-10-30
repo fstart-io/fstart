@@ -35,7 +35,7 @@ pub const FCH_IOAPIC_ID: u8 = 0;
 pub const HPET_BASE: u64 = fstart_driver_amd::fch::HPET as u64;
 const FCH_IOAPIC_PINS: u32 = 24;
 const NBIO_IOAPIC_PINS: u32 = 32;
-const SCI_IRQ: u8 = 9;
+const SCI_IRQ: u8 = fstart_driver_amd::fch::SCI_IRQ;
 /// PCI configuration mechanism #1 ports, claimed by the root bridge of die 0.
 const PCI_CFG_IO: RangeInclusive<u16> = 0xcf8..=0xcff;
 
@@ -190,6 +190,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
                 hid: device.hid.as_str(),
                 resources: &device.resources,
                 gsiv: device.gsiv,
+                interrupt_flags: device.interrupt_flags,
             }
             .dsdt_aml()
         }))
@@ -1083,6 +1084,30 @@ mod tests {
         let die1 = root_resources(&die1, false);
         assert!(die0.windows(8).any(|w| w == CFG) && die0.windows(4).any(|w| w == vga));
         assert!(!die1.windows(8).any(|w| w == CFG) && !die1.windows(4).any(|w| w == vga));
+    }
+
+    #[test]
+    fn fixed_device_irq_polarity_survives_platform_assembly() {
+        use fstart_core::acpi::{AcpiGenericDevice, AcpiInterruptFlags};
+        let board = BoardAcpi {
+            devices: vec![AcpiGenericDevice {
+                name: fstart_core::hstr("MMC0"),
+                hid: fstart_core::hstr("AMDI0040"),
+                resources: Default::default(),
+                gsiv: Some(5),
+                interrupt_flags: AcpiInterruptFlags {
+                    active_low: true,
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        assert!(
+            tables(&board)
+                .dsdt_aml
+                .windows(9)
+                .any(|w| w == [0x89, 6, 0, 5, 1, 5, 0, 0, 0])
+        );
     }
 
     /// The FCH GPIO controller and I2C controller 2 with a touchpad and

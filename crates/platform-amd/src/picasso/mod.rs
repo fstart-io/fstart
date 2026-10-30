@@ -378,19 +378,10 @@ impl noncar::Soc for Picasso {
         let devices = config
             .emmc
             .into_iter()
-            .map(|_| fstart_core::acpi::AcpiGenericDevice {
-                name: fstart_core::hstr("MMC0"),
-                hid: fstart_core::hstr("AMDI0040"),
-                resources: [fstart_core::acpi::AcpiResource::Mmio {
-                    base: 0xfedd_5000,
-                    size: 0x1000,
-                }]
-                .into_iter()
-                .collect(),
-                gsiv: Some(5),
-            })
-            .collect();
-        let aml = acpi::devices(config.i2c).map_err(|_| "ACPI devices")?;
+            .map(|_| acpi::emmc())
+            .collect::<Result<_, _>>()
+            .map_err(|_| "eMMC ACPI")?;
+        let aml = acpi::devices(config.i2c, config.emmc.is_some()).map_err(|_| "ACPI devices")?;
         Ok(Silicon {
             cpus,
             psp,

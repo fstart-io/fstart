@@ -42,7 +42,7 @@ pub const ACPI: SocAcpi = SocAcpi {
 
 /// The FCH GPIO controller and the board's I2C controllers with the
 /// devices behind them, for `\_SB`.
-pub fn devices(buses: &[super::I2cBus]) -> Result<Vec<u8>, Error> {
+pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, Error> {
     use fstart_acpi::devices::i2c::{self, DesignWareSpeed, GpioInterrupt, I2cDevice};
     use fstart_driver_amd::{
         fch::{i2c::Speed, sandstone::legacy},
@@ -50,6 +50,9 @@ pub fn devices(buses: &[super::I2cBus]) -> Result<Vec<u8>, Error> {
     };
     let irq = |source| legacy::internal_irq(source).ok_or(Error::Aml(AmlError::InvalidPath));
     let mut aml = crate::acpi::fch_gpio(irq(legacy::source::GPIO)?)?;
+    if emmc_enabled {
+        aml.extend(emmc_card()?);
+    }
     for bus in buses {
         let index = bus.controller;
         let (Some(&base), Some(&source)) =
@@ -107,4 +110,75 @@ pub fn devices(buses: &[super::I2cBus]) -> Result<Vec<u8>, Error> {
         )?);
     }
     Ok(aml)
+}
+
+/// The same fixed-address host inventory is consumed by ACPI and CrabEFI.
+/// Its IRQ is level-low, unlike the generic device's level-high default.
+/// Losing this inventory when fixing AML would also lose UEFI eMMC boot.
+pub(super) fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, Error> {
+    use fstart_core::acpi::{AcpiGenericDevice, AcpiInterruptFlags, AcpiResource};
+    use fstart_driver_amd::fch::sandstone::legacy;
+    Ok(AcpiGenericDevice {
+        name: fstart_core::hstr("MMC0"),
+        hid: fstart_core::hstr("AMDI0040"),
+        resources: [AcpiResource::Mmio {
+            base: 0xfedd_5000,
+            size: 0x1000,
+        }]
+        .into_iter()
+        .collect(),
+        gsiv: Some(
+            legacy::internal_irq(legacy::source::EMMC)
+                .ok_or(Error::Aml(AmlError::InvalidPath))?
+                .into(),
+        ),
+        interrupt_flags: AcpiInterruptFlags {
+            active_low: true,
+            ..Default::default()
+        },
+    })
+}
+
+fn emmc_card() -> Result<Vec<u8>, Error> {
+    use fstart_acpi::aml_linker::scope_vec;
+    use fstart_acpi_macros::acpi_dsl;
+    let body = acpi_dsl! {
+        Device("CARD") {
+            Name("_ADR", 8u32);
+            Method("_RMV", 0, NotSerialized) { Return(0u32); }
+        }
+    };
+    Ok(scope_vec("\\_SB.MMC0", &Vec::<u8>::from(body))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emmc_has_the_routed_level_low_irq_and_a_nonremovable_card() {
+        let device = emmc().unwrap();
+        let mut aml = fstart_acpi::devices::GenericAcpi {
+            name: device.name.as_str(),
+            hid: device.hid.as_str(),
+            resources: &device.resources,
+            gsiv: device.gsiv,
+            interrupt_flags: device.interrupt_flags,
+        }
+        .dsdt_aml();
+        aml.extend(emmc_card().unwrap());
+        // Extended Interrupt: consumer, level, active-low, exclusive, GSI 5.
+        assert!(aml.windows(9).any(|w| w == [0x89, 6, 0, 5, 1, 5, 0, 0, 0]));
+        assert!(aml.windows(8).any(|w| w == b"AMDI0040"));
+        assert!(aml.windows(4).any(|w| w == b"CARD"));
+        assert!(aml.windows(4).any(|w| w == b"_RMV"));
+    }
+
+    #[test]
+    fn disabled_emmc_is_not_described() {
+        let disabled = devices(&[], false).unwrap();
+        let enabled = devices(&[], true).unwrap();
+        assert!(!disabled.windows(4).any(|w| w == b"MMC0"));
+        assert!(enabled.windows(4).any(|w| w == b"MMC0"));
+    }
 }

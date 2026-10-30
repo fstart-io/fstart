@@ -32,7 +32,7 @@ pub fn configure_ram(gpio: &Gpio<impl Bus>, cbi: Cbi, chromeos: bool) -> Result<
 /// Small board-attached I/O seam. Delay uses calibrated time, not spin counts.
 pub trait BoardIo {
     fn configure(&mut self, pads: &[Pad]) -> Result<(), gpio::Error>;
-    fn set(&mut self, pin: u8, value: bool);
+    fn set(&mut self, pin: u8, value: bool) -> Result<(), gpio::Error>;
     fn delay_ms(&mut self, ms: u32);
 }
 /// Vilboz always uses v3 WiFi reset wiring, even if EC CBI read fails.
@@ -40,11 +40,10 @@ pub fn wifi_power_reset(io: &mut impl BoardIo, cbi: Cbi) -> Result<(), gpio::Err
     io.configure(&[Pad::output(29, true), Pad::output(42, false)])?;
     if !cbi.active_low_wifi_power() {
         io.delay_ms(10);
-        io.set(42, true);
+        io.set(42, true)?;
     }
     io.delay_ms(50);
-    io.set(29, false);
-    Ok(())
+    io.set(29, false)
 }
 /// Baseboard sleep table, retained as data only: SMM/resume is not ported yet.
 #[cfg(test)]
@@ -60,13 +59,21 @@ mod tests {
     #[derive(Default)]
     struct Io {
         steps: Vec<Step>,
+        pads: Vec<(u8, u32)>,
+        fail_set: bool,
     }
     impl BoardIo for Io {
-        fn configure(&mut self, _: &[Pad]) -> Result<(), gpio::Error> {
+        fn configure(&mut self, pads: &[Pad]) -> Result<(), gpio::Error> {
+            self.pads
+                .extend(pads.iter().map(|p| (p.pin, p.control.get())));
             Ok(())
         }
-        fn set(&mut self, pin: u8, value: bool) {
+        fn set(&mut self, pin: u8, value: bool) -> Result<(), gpio::Error> {
+            if self.fail_set {
+                return Err(gpio::Error::InvalidPad);
+            }
             self.steps.push(Step::Set(pin, value));
+            Ok(())
         }
         fn delay_ms(&mut self, ms: u32) {
             self.steps.push(Step::Delay(ms));
@@ -90,6 +97,24 @@ mod tests {
         let mut io = Io::default();
         wifi_power_reset(&mut io, Cbi::new(Some(2), None)).unwrap();
         assert_eq!(io.steps, [Step::Delay(50), Step::Set(29, false)]);
+        assert_eq!(
+            io.pads,
+            [
+                (29, Pad::output(29, true).control.get()),
+                (42, Pad::output(42, false).control.get()),
+            ]
+        );
+    }
+    #[test]
+    fn wifi_does_not_report_success_if_reset_cannot_be_released() {
+        let mut io = Io {
+            fail_set: true,
+            ..Io::default()
+        };
+        assert_eq!(
+            wifi_power_reset(&mut io, Cbi::new(Some(4), None)),
+            Err(gpio::Error::InvalidPad)
+        );
     }
     #[test]
     fn proximity_sensor_is_input_on_non_chromeos() {

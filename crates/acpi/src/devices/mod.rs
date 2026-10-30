@@ -126,6 +126,8 @@ pub struct GenericAcpi<'a> {
     pub resources: &'a [fstart_core::acpi::AcpiResource],
     /// Interrupt GSIV (optional).
     pub gsiv: Option<u32>,
+    /// Trigger, polarity and sharing of `gsiv`.
+    pub interrupt_flags: fstart_core::acpi::AcpiInterruptFlags,
 }
 
 impl GenericAcpi<'_> {
@@ -166,7 +168,13 @@ impl GenericAcpi<'_> {
 
         let irq;
         if let Some(gsiv) = self.gsiv {
-            irq = Interrupt::new(true, false, false, false, gsiv);
+            irq = Interrupt::new(
+                true,
+                self.interrupt_flags.edge_triggered,
+                self.interrupt_flags.active_low,
+                self.interrupt_flags.shared,
+                gsiv,
+            );
             crs_children.push(&irq);
         }
 
@@ -441,12 +449,49 @@ mod tests {
             hid: "ACPI0007",
             resources: &resources,
             gsiv: Some(33),
+            interrupt_flags: Default::default(),
         };
         let aml = dev.dsdt_aml();
         // Should start with ExtOpPrefix + DeviceOp (0x5B 0x82)
         assert!(aml.len() > 10);
         assert_eq!(aml[0], 0x5B);
         assert_eq!(aml[1], 0x82);
+    }
+
+    #[test]
+    fn generic_device_uses_explicit_irq_attributes() {
+        use fstart_core::acpi::AcpiInterruptFlags;
+        for (flags, byte) in [
+            (AcpiInterruptFlags::default(), 0x01),
+            (
+                AcpiInterruptFlags {
+                    active_low: true,
+                    ..Default::default()
+                },
+                0x05,
+            ),
+            (
+                AcpiInterruptFlags {
+                    edge_triggered: true,
+                    shared: true,
+                    ..Default::default()
+                },
+                0x0b,
+            ),
+        ] {
+            let aml = GenericAcpi {
+                name: "DEV0",
+                hid: "TEST0001",
+                resources: &[],
+                gsiv: Some(5),
+                interrupt_flags: flags,
+            }
+            .dsdt_aml();
+            assert!(
+                aml.windows(9)
+                    .any(|w| w == [0x89, 6, 0, byte, 1, 5, 0, 0, 0])
+            );
+        }
     }
 
     #[test]
@@ -462,6 +507,7 @@ mod tests {
             hid: "TEST0001",
             resources: &resources,
             gsiv: None,
+            interrupt_flags: Default::default(),
         };
         let aml = dev.dsdt_aml();
         assert!(aml.len() > 10);
@@ -488,6 +534,7 @@ mod tests {
             hid: "TEST0002",
             resources: &resources,
             gsiv: Some(4),
+            interrupt_flags: Default::default(),
         };
         let aml = dev.dsdt_aml();
         assert!(aml.len() > 10);

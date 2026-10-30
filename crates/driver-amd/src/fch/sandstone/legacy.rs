@@ -38,6 +38,10 @@ const PM1_STATUS_HIGH: u16 = 0x401;
 
 /// PCI_INTR indexes of the FCH's internal interrupt sources.
 pub mod source {
+    /// ACPI fixed-event and GPE system-control interrupt.
+    pub const SCI: u8 = 0x10;
+    /// Fixed-address eMMC SDHCI host.
+    pub const EMMC: u8 = 0x43;
     /// The GPIO controller.
     pub const GPIO: u8 = 0x62;
     /// I2C controllers 0-5.
@@ -53,14 +57,15 @@ pub fn internal_irq(index: u8) -> Option<u8> {
         .map(|&(_, irq)| irq)
 }
 
-const INTERNAL_IRQS: [(u8, u8); 18] = [
+const INTERNAL_IRQS: [(u8, u8); 19] = [
     (0, 0x10),
     (1, 0x11),
     (2, 0x12),
     (3, 0x13),
+    (source::SCI, crate::fch::SCI_IRQ),
     (0x17, 0x10),
     (0x1a, 0x10),
-    (0x43, 5),
+    (source::EMMC, 5),
     (0x62, 7),
     (0x76, 3),
     (0x77, 4),
