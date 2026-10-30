@@ -214,6 +214,7 @@ impl noncar::Soc for Zeppelin {
             acpi: &acpi::ACPI,
             devices: heapless::Vec::new(),
             aml: Default::default(),
+            tables: Default::default(),
             framebuffer: None,
             state,
         })

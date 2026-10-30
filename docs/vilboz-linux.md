@@ -86,6 +86,7 @@ ignores S0/S1 requests; that is separate from `mem`/suspend-to-idle.
 | GPIO and used I2C controllers/devices | Present | Present, plus AOAC power methods |
 | FCH UART OS discovery | Missing (early console only) | Present |
 | eMMC host/card | Corrected here | Present |
+| Posted VBIOS via `_ROM` and VFCT | Implemented; software/build tested, OS validation pending | Present |
 | EC keyboard | Present | Present |
 | EC ACPI operation region, event queries/GPE dispatch | Missing | Present |
 | AC adapter, battery, lid and EC thermal integration | Missing | Present |
@@ -167,7 +168,9 @@ Local images, kernel configuration, initramfs source, build logs and recovery
 reads are under `.local/vilboz-linux/` in the `fstart-vilboz-linux` workspace:
 
 - `clean-linux.rom`: untraced Linux hardware-test image.
-- `corrected-uefi-ui.rom`: corrected graphical UEFI image, build-tested only.
+- `corrected-uefi-ui.rom`: preceding graphical UEFI image, preserved as recovery.
+- `acpi-video-uefi-ui.rom`: reviewed `_ROM`/VFCT image, installed with a matching
+  independent full-chip readback; UI/OS graphics boot remains unobserved.
 - `sci-result.json`, `clean-result.json`, `ecrst-result.json`: passing checks of
   the three traced/cold/reset captures, including all nine `rtcwake` calls.
 - `coreboot-boot.log`: reference boot and incomplete deep-sleep attempt.
@@ -181,3 +184,10 @@ both fresh recovery reads match it. At the end of testing this exact image was
 restored and matched by an explicit full-chip readback. EC `powerinfo` confirmed
 G3 afterward, with no SPI/UART handles left open. No target filesystem was
 mounted or written.
+
+The later reviewed ACPI video UI installation supersedes that restore: SHA-256
+`4f4b0d72f6823a2ffd9bc18d2b4dfc586c555b2a81f277258a8b9cb0ccaa1c9b`
+is now installed and independently readback-verified. The final power state was
+G3 with AP/EC reset lines released and console handles closed. See
+[ACPI video ROM handoff](acpi-video-rom.md) for the installation evidence and
+separate recovery copy. No experimental S3 image was installed.

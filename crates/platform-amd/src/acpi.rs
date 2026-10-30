@@ -620,6 +620,33 @@ fn bridge(die: u8, devfn: u8, routes: &[Route]) -> Result<Vec<u8>, Error> {
     Ok(device_vec(&format!("GP{devfn:02X}"), &body)?)
 }
 
+/// Attach a ROM to the actual display function under an existing AMD PCI root.
+/// Root-bus bridges already have GPxx nodes (and _PRT); do not duplicate them.
+/// Further bridge/function nodes use their real slot/function `_ADR`, never a
+/// hard-coded GPU bus number. The ROM method itself is platform-independent.
+pub fn video_rom_aml(
+    root: u8,
+    path: &[fstart_pci::PciAddress],
+    rom: &[u8],
+) -> Result<Vec<u8>, AmlError> {
+    if path.is_empty() {
+        return Err(AmlError::InvalidPath);
+    }
+    let mut body = fstart_acpi::video::rom_aml(rom)?;
+    for (index, address) in path.iter().enumerate().rev() {
+        let devfn = fstart_pci::devfn(address.device(), address.function());
+        if index == 0 && path.len() > 1 {
+            return scope_vec(&format!(r"\_SB.PCI{root}.GP{devfn:02X}"), &body);
+        }
+        let adr = u32::from(address.device()) << 16 | u32::from(address.function());
+        let mut content = Vec::new();
+        acpi_dsl! { Name("_ADR", #{dword adr}); }.emit(&mut content)?;
+        content.extend(body);
+        body = device_vec(&format!("D{devfn:03X}"), &content)?;
+    }
+    scope_vec(&format!(r"\_SB.PCI{root}"), &body)
+}
+
 /// The FCH legacy devices behind 0:14.3, then the board's.
 fn lpc_bridge(board_aml: &[u8]) -> Result<Vec<u8>, Error> {
     let spi = u64::from(SPI_BASE);
@@ -776,6 +803,80 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::zeppelin::acpi::ACPI;
+
+    #[test]
+    fn video_rom_targets_the_discovered_function_without_duplicating_root_ports() {
+        use fstart_pci::PciAddress as P;
+        let rom = [0x55, 0xaa, 1, 0xcb];
+        assert_eq!(video_rom_aml(0, &[], &rom), Err(AmlError::InvalidPath));
+        let direct = video_rom_aml(0, &[P::new(0, 0, 3, 2)], &rom).unwrap();
+        assert!(direct.windows(9).any(|w| w == b"_ADR\x0c\x02\x00\x03\x00"));
+        let path = [P::new(0, 0, 8, 1), P::new(0, 1, 3, 2), P::new(0, 2, 0, 1)];
+        let aml = video_rom_aml(0, &path, &rom).unwrap();
+        assert!(aml.windows(4).any(|w| w == b"GP41"));
+        assert!(aml.windows(4).any(|w| w == b"D01A"));
+        assert!(aml.windows(4).any(|w| w == b"D001"));
+        // Only the intermediate bridge and display function are new devices.
+        assert_eq!(aml.windows(2).filter(|w| *w == b"\x5b\x82").count(), 2);
+        let mut board = BoardAcpi::default();
+        board.sb_aml.extend(aml);
+        assert!(tables(&board).dsdt_aml.windows(4).any(|w| w == b"_ROM"));
+    }
+
+    #[test]
+    fn table_storage_has_room_for_a_full_128k_video_rom() {
+        use fstart_pci::PciAddress as P;
+        let path = [P::new(0, 0, 8, 1), P::new(0, 4, 0, 0)];
+        let rom = vec![0x5a; 0x20000];
+        let board = BoardAcpi {
+            sb_aml: video_rom_aml(0, &path, &rom).unwrap(),
+            tables: vec![
+                fstart_acpi::vfct::build_vfct(
+                    [0; 16],
+                    &[fstart_acpi::vfct::VbiosImage {
+                        segment: 0,
+                        bus: 4,
+                        device: 0,
+                        function: 0,
+                        vendor_id: 0x1002,
+                        device_id: 0x15d8,
+                        subsystem_vendor_id: 0,
+                        subsystem_id: 0,
+                        revision: 0,
+                        rom: &rom,
+                    }],
+                )
+                .unwrap(),
+            ],
+            ..Default::default()
+        };
+        let tables = tables(&board);
+        // The native flow reserves 512 KiB for both transports plus tables.
+        let mut storage = vec![0; 0x80000];
+        let used = fstart_acpi::platform::assemble_into(
+            &mut storage,
+            0x7000_0000,
+            &tables.platform,
+            &tables.dsdt_aml,
+            &tables.extra,
+        )
+        .unwrap();
+        assert!(used > 0x40000 && used <= storage.len());
+        let vfct = signature(&storage[..used], b"VFCT");
+        assert_eq!(&vfct[104..], rom.as_slice());
+        let mut too_small = vec![0xa5; 0x40000];
+        assert_eq!(
+            fstart_acpi::platform::assemble_into(
+                &mut too_small,
+                0x7000_0000,
+                &tables.platform,
+                &tables.dsdt_aml,
+                &tables.extra
+            ),
+            Err(AmlError::Capacity)
+        );
+        assert!(too_small.iter().all(|&byte| byte == 0xa5));
+    }
 
     static IO: RangeInclusive<u16> = 0..=0xffff;
     const MMIO: [RangeInclusive<u64>; 2] =
@@ -1159,6 +1260,18 @@ mod tests {
             devices: vec![],
             sb_aml: fch_devices(),
         };
+        let mut board = board;
+        board.sb_aml.extend(
+            video_rom_aml(
+                0,
+                &[
+                    fstart_pci::PciAddress::new(0, 0, 8, 1),
+                    fstart_pci::PciAddress::new(0, 4, 0, 0),
+                ],
+                &[0x55, 0xaa, 1, 0xcb],
+            )
+            .unwrap(),
+        );
         let tables = tables(&board);
         let mut storage = vec![0; 64 * 1024];
         let len = fstart_acpi::platform::assemble_into(
@@ -1184,6 +1297,9 @@ mod tests {
         };
         for object in [
             "Name (_S5,",
+            "Scope (\\_SB.PCI0.GP41)",
+            "Device (D000)",
+            "Method (_ROM, 2, Serialized)",
             "Device (PCI1)",
             "Device (GP41)",
             "Device (SPMI)",
@@ -1204,6 +1320,27 @@ mod tests {
         ] {
             assert!(dsl.contains(object), "{object} missing:\n{dsl}");
         }
+        // Resolve and execute the real AMD namespace, not just an isolated
+        // generic display fixture. GP41 must remain the existing root port.
+        let dir =
+            std::env::temp_dir().join(std::format!("fstart-zeppelin-dsdt-{}", std::process::id()));
+        let output = std::process::Command::new("acpiexec")
+            .current_dir(dir)
+            .args([
+                "-dt",
+                "-b",
+                r"execute \_SB.PCI0.GP41.D000._ADR;execute \_SB.PCI0.GP41.D000._ROM 0 8",
+                "dsdt.aml",
+            ])
+            .output()
+            .unwrap();
+        let log = std::string::String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && !log.contains("AE_")
+                && log.contains("55 AA 01 CB 00 00 00 00"),
+            "{log}"
+        );
     }
 
     /// The table set of an MJ11-EC1 (EPYC 3151, one die) as the stage builds

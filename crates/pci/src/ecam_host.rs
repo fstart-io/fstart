@@ -1188,6 +1188,44 @@ impl PciEcam {
         self.devices.iter().map(|device| device.addr)
     }
 
+    /// The discovered bridge/function chain, from the root bus to `address`.
+    ///
+    /// Uses the allocator's cached secondary-bus topology, not ECAM rescans or
+    /// subordinate-range guesses. This is suitable for ACPI `_ADR` paths and
+    /// other consumers that need the actual parent chain. Unknown functions,
+    /// missing/ambiguous parents and cycles fail closed. No config I/O occurs.
+    pub fn device_path(&self, address: PciAddress) -> Option<HVec<PciAddress, MAX_PCI_DEVICES>> {
+        if !self.devices.iter().any(|device| device.addr == address) {
+            return None;
+        }
+        let root_index = self.root_of(address)?;
+        let root_bus = self.roots[root_index].bus_start;
+        let mut path = HVec::new();
+        let mut current = address;
+        loop {
+            if path.contains(&current) {
+                return None;
+            }
+            path.push(current).ok()?;
+            if current.bus() == root_bus {
+                path.reverse();
+                return Some(path);
+            }
+            let mut parents = self.devices.iter().filter(|device| {
+                matches!(
+                    device.header_type,
+                    PCI_HEADER_TYPE_BRIDGE | PCI_HEADER_TYPE_CARDBUS
+                ) && device.secondary_bus == current.bus()
+                    && self.root_of(device.addr) == Some(root_index)
+            });
+            let parent = parents.next()?;
+            if parents.next().is_some() {
+                return None;
+            }
+            current = parent.addr;
+        }
+    }
+
     /// Memory BAR spans actually assigned to discovered devices, including
     /// chipset-fixed BARs. I/O BARs and unassigned/probed slots are excluded.
     pub fn assigned_memory_windows(&self) -> impl Iterator<Item = PciWindow> + '_ {
@@ -1598,6 +1636,44 @@ mod tests {
         assert_eq!(device.read32(0xffc), u32::MAX);
         pci.roots[0].ecam_size = 0xfff; // A truncated function is not a mapped device.
         assert!(pci.device(PciAddress::new(0, 0, 0, 0)).is_none());
+    }
+
+    #[test]
+    fn device_paths_follow_secondary_buses_and_reject_invalid_topology() {
+        let (mut pci, _memory) = test_pci();
+        let root_bridge = PciAddress::new(0, 0, 8, 1);
+        let child_bridge = PciAddress::new(0, 1, 3, 2);
+        let gpu = PciAddress::new(0, 2, 0, 1);
+        for (address, secondary) in [(root_bridge, 1), (child_bridge, 2)] {
+            assert!(
+                pci.devices
+                    .push(PciDev {
+                        header_type: PCI_HEADER_TYPE_BRIDGE,
+                        secondary_bus: secondary,
+                        subordinate_bus: 2,
+                        ..endpoint(address, &[])
+                    })
+                    .is_ok()
+            );
+        }
+        assert!(pci.devices.push(endpoint(gpu, &[])).is_ok());
+        assert_eq!(
+            pci.device_path(gpu).unwrap().as_slice(),
+            &[root_bridge, child_bridge, gpu]
+        );
+        assert_eq!(
+            pci.device_path(root_bridge).unwrap().as_slice(),
+            &[root_bridge]
+        );
+        assert!(pci.device_path(PciAddress::new(0, 2, 1, 0)).is_none());
+        pci.devices[0].secondary_bus = 2; // Ambiguous parent of the GPU.
+        assert!(pci.device_path(gpu).is_none());
+        pci.devices[0].secondary_bus = 1;
+        pci.devices[1].secondary_bus = 0; // Missing parent.
+        assert!(pci.device_path(gpu).is_none());
+        pci.devices[1].secondary_bus = 2;
+        pci.devices[0].addr = PciAddress::new(0, 2, 8, 1); // Cycle: 2 -> 1 -> 2.
+        assert!(pci.device_path(gpu).is_none());
     }
 
     #[test]

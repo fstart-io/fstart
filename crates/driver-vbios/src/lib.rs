@@ -24,6 +24,7 @@ use zerocopy::{
 };
 
 const ROM_BASE: usize = 0xc0000;
+const ROM_CAPACITY: usize = 0x20000;
 const BUFFER: usize = 0x20000;
 const GUEST_SIZE: usize = 0x110000;
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -54,6 +55,14 @@ impl Error {
         }
     }
 }
+/// A configured display and the bounded ROM image after POST/VBE patches.
+/// The image is owned, not a borrow into transient emulator RAM. Platforms can
+/// publish it through ACPI `_ROM` independently of their framebuffer handoff.
+pub struct InitializedDisplay {
+    pub framebuffer: FramebufferInfo,
+    pub rom: Vec<u8>,
+}
+
 #[derive(Default)]
 struct Registers {
     eax: u32,
@@ -79,6 +88,22 @@ struct Context<'a> {
 impl Context<'_> {
     fn fail(&mut self, error: Error) {
         self.error.get_or_insert(error);
+    }
+    fn posted_rom(&self) -> Result<Vec<u8>, Error> {
+        let window = self
+            .memory
+            .get(ROM_BASE..ROM_BASE + ROM_CAPACITY)
+            .ok_or(Error::Bounds)?;
+        let (header, _) = RomHeader::ref_from_prefix(window).map_err(|_| Error::Rom)?;
+        if header.signature.get() != 0xaa55 || header.blocks == 0 {
+            return Err(Error::Rom);
+        }
+        // Like coreboot, honor the posted size: a ROM may expand/shrink its
+        // shadow image. Never expose bytes outside the private ROM window.
+        window
+            .get(..usize::from(header.blocks) * 512)
+            .map(|rom| rom.to_vec())
+            .ok_or(Error::Bounds)
     }
     fn reset_deadline(&mut self) {
         self.started = self.timer.timestamp_us();
@@ -461,7 +486,7 @@ fn rom_image(rom: &[u8], id: u32) -> Result<&[u8], Error> {
     let size = usize::from(header.blocks) * 512;
     let bytes = rom
         .get(..size)
-        .filter(|b| b.len() <= 0x20000)
+        .filter(|b| b.len() <= ROM_CAPACITY)
         .ok_or(Error::Rom)?;
     let pcir_bytes = bytes.get(header.pcir.get() as usize..).ok_or(Error::Rom)?;
     let (pcir, _) = Pcir::ref_from_prefix(pcir_bytes).map_err(|_| Error::Rom)?;
@@ -596,7 +621,7 @@ pub unsafe fn initialize(
     rom_device: u16,
     windows: &[PciWindow],
     timer: &dyn Timer,
-) -> Result<FramebufferInfo, Error> {
+) -> Result<InitializedDisplay, Error> {
     if BUSY.swap(true, Ordering::Acquire) {
         return Err(Error::Busy);
     }
@@ -765,7 +790,10 @@ pub unsafe fn initialize(
         info.bits_per_pixel,
         fstart_log::Hex(info.base_addr)
     );
-    Ok(info)
+    Ok(InitializedDisplay {
+        framebuffer: info,
+        rom: machine.with(|ctx| ctx.posted_rom())?,
+    })
 }
 
 #[cfg(test)]
@@ -796,6 +824,7 @@ mod tests {
         })
         .unwrap();
         machine.with(|ctx| {
+            ctx.memory[ROM_BASE..ROM_BASE + 3].copy_from_slice(&[0x55, 0xaa, 2]);
             ctx.memory[ROM_BASE + 3] = 0xcb;
             ctx.memory[0x10000] = 0xf4;
         });
@@ -819,6 +848,17 @@ mod tests {
             assert_eq!(regs.eax as u16, 0x004f);
             assert_eq!(machine.bytes::<4>(BUFFER), Some(*b"VESA"));
         }
+        // Export the posted, patched guest image, not the original asset or
+        // a pointer into the emulator. Further guest writes cannot alter it.
+        let posted = machine.with(|ctx| ctx.posted_rom()).unwrap();
+        assert_eq!(posted.len(), 1024);
+        assert_eq!(posted[0x100], 0x26);
+        machine.with(|ctx| ctx.memory[ROM_BASE + 0x100] = 0);
+        assert_eq!(posted[0x100], 0x26);
+        machine.with(|ctx| ctx.memory[ROM_BASE + 2] = 1);
+        assert_eq!(machine.with(|ctx| ctx.posted_rom()).unwrap().len(), 512);
+        machine.with(|ctx| ctx.memory[ROM_BASE + 2] = 0);
+        assert_eq!(machine.with(|ctx| ctx.posted_rom()), Err(Error::Rom));
         assert_eq!(memory_read(0xffff_ff00, 4), u32::MAX);
         assert_eq!(machine.with(|ctx| ctx.error), Some(Error::Bounds));
     }

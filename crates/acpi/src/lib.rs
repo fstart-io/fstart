@@ -5,6 +5,8 @@
 //! - **Static tables**: GTDT (Generic Timer), SPCR (Serial Port Console),
 //!   DBG2 (Debug Port), IORT (IO Remapping), IVRS (AMD IOMMU), HPET (High
 //!   Precision Timer).
+//! - **Video firmware**: standard display [`video`] `_ROM` methods and AMD
+//!   [`vfct`] tables, with owned ACPI data rather than firmware pointers.
 //! - **AML extensions** ([`ext`]): `Sleep`, `Stall`, `ThermalZone`,
 //!   `CondRefOf`, `RefOf`, `Increment`, `Decrement`.
 //! - **Resource descriptors** ([`descriptors`]): GPIO Connection
@@ -62,6 +64,8 @@ pub mod smbios;
 pub mod spcr;
 pub mod srat;
 pub mod tock_bridge;
+pub mod vfct;
+pub mod video;
 pub mod wake;
 pub mod wsmt;
 

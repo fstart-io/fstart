@@ -210,11 +210,17 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
     S::after_resources::<B>(&mut silicon, &ctx);
     B::mainboard_final(&mut ctx.board());
     ioapics(&ctx, &silicon);
+    // Graphics POST may patch the ROM and contribute its ACPI _ROM method.
+    // Publish tables only after every silicon/device contribution is ready.
+    if let Err(why) = S::ready_to_boot::<B>(&mut silicon, &ctx, &ecam) {
+        stop::<S>(why);
+    }
     let hosts: Vec<acpi::HostBridge, { super::MAX_DIES }> = roots
         .iter()
         .map(|root| acpi::HostBridge::new(root, &ecam))
         .collect();
     let mut board_acpi = B::acpi();
+    board_acpi.tables.append(&mut silicon.tables);
     board_acpi.devices.extend(silicon.devices.iter().cloned());
     board_acpi.sb_aml.extend_from_slice(&silicon.aml);
     let rsdp = acpi::install(
@@ -229,9 +235,6 @@ fn run<S: Soc, B: Board<Soc = S>>() -> ! {
         &silicon.cpus.apic_ids,
         &board_acpi,
     );
-    if let Err(why) = S::ready_to_boot::<B>(&mut silicon, &ctx, &ecam) {
-        stop::<S>(why);
-    }
     #[cfg(feature = "payload-uefi-basic")]
     let peripherals = S::peripherals::<B>(&ctx);
     let delay = clock;
