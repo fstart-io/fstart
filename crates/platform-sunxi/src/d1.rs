@@ -102,26 +102,13 @@ mod stage {
     use fstart_driver_sunxi::d1_dramc::D1Dramc;
     use fstart_driver_sunxi::d1_mmc::D1Mmc;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::StageEnvironment;
+    use fstart_log::StaticConsole;
 
     use crate::egon::{BootDevice, boot_device_at};
 
-    /// Board contract for the fixed D1 flow.
-    ///
-    /// ponytail: no board hooks yet — the D1 CCU muxes its own UART pins and
-    /// the first board needs nothing else; add a hooks trait like H3's when
-    /// a board does.
-    pub trait D1Board: Sized + 'static {
-        const CONFIG: &'static D1Config;
-        const CONSOLE_CONFIG: Ns16550Config;
-    }
-
-    /// Marker for the fixed D1 flow dispatcher.
-    pub struct D1;
-
     /// State retained by the DRAM-backed D1 mainstage.
     pub struct D1Mainstage {
-        console: Ns16550,
+        console: &'static Ns16550,
         mmc0: D1Mmc,
         dram_size: u64,
     }
@@ -134,7 +121,7 @@ mod stage {
 
         #[must_use]
         pub const fn console(&self) -> &Ns16550 {
-            &self.console
+            self.console
         }
 
         #[must_use]
@@ -143,41 +130,34 @@ mod stage {
         }
     }
 
-    impl D1 {
-        /// Dispatch the build-selected D1 SRAM or DRAM stage.
-        pub fn run_stage<B>(env: StageEnvironment, handoff: usize) -> !
-        where
-            B: D1Board,
-        {
-            let _ = env;
-            let _ = handoff;
-            #[cfg(fstart_stage_env = "car")]
-            {
-                if run_d1_bootblock::<B>().is_err() {
-                    fstart_arch::halt();
-                }
-                fstart_arch::halt()
-            }
-
-            #[cfg(not(fstart_stage_env = "car"))]
-            run_d1_mainstage::<B>(handoff)
-        }
+    /// The D1 SRAM bootblock: clocks, console, DDR3, MMC, then the DRAM
+    /// stage. The CCU routes its own UART pins, so boards have no work here;
+    /// their bootblock `main` calls this.
+    // Inlined into the board's `main` so its constant console config folds:
+    // the SRAM budget has no room for a runtime 64-bit baud divisor.
+    #[inline(always)]
+    pub fn bootblock(
+        config: &'static D1Config,
+        slot: &'static StaticConsole<Ns16550>,
+        console_config: Ns16550Config,
+    ) -> ! {
+        let Err(error) = run_bootblock(config, slot, console_config);
+        fstart_log::error!("d1 bootblock failed: {}", error as u8);
+        fstart_arch::halt()
     }
 
-    /// Handwritten D1 SRAM bootblock: clocks, console, DDR3, MMC, next stage.
-    pub fn run_d1_bootblock<B>() -> Result<(), ServiceError>
-    where
-        B: D1Board,
-    {
-        let config = B::CONFIG;
+    #[inline(always)]
+    fn run_bootblock(
+        config: &'static D1Config,
+        slot: &'static StaticConsole<Ns16550>,
+        console_config: Ns16550Config,
+    ) -> Result<core::convert::Infallible, ServiceError> {
         let ccu = D1Ccu::new_from_config(&config.ccu);
         ccu.init();
 
-        let mut console =
-            Ns16550::new(B::CONSOLE_CONFIG).map_err(|_| ServiceError::HardwareError)?;
+        let mut console = Ns16550::new(console_config).map_err(|_| ServiceError::HardwareError)?;
         console.init().map_err(|_| ServiceError::HardwareError)?;
-        // SAFETY: this bootblock never returns after installing its stack-owned console.
-        unsafe { fstart_log::init(&console) };
+        slot.install(console);
         fstart_log::info!("d1: UART0 console ready");
 
         let mut dramc = D1Dramc::new_from_config(&config.dram);
@@ -205,16 +185,19 @@ mod stage {
         fstart_arch::riscv64::jump_to_with_handoff(entry, config.handoff_addr as usize)
     }
 
-    /// Handwritten D1 DRAM mainstage setup.
+    /// The D1 DRAM stage. Boards have no work here; their DRAM-stage `main`
+    /// calls this.
     ///
     /// ponytail: halt-only — D1 Linux boot needs OpenSBI staging before the
     /// S-mode kernel jump; add the block-backed launcher when a
     /// hardware-validated board needs it.
-    pub fn run_d1_mainstage<B>(handoff: usize) -> !
-    where
-        B: D1Board,
-    {
-        if handoff != B::CONFIG.handoff_addr as usize {
+    pub fn main_stage(
+        config: &'static D1Config,
+        slot: &'static StaticConsole<Ns16550>,
+        console_config: Ns16550Config,
+        handoff: usize,
+    ) -> ! {
+        if handoff != config.handoff_addr as usize {
             fstart_arch::halt();
         }
         // SAFETY: the fixed predecessor reserves this configured buffer and
@@ -222,15 +205,14 @@ mod stage {
         let Some(handoff) = (unsafe { fstart_stage::handoff::try_deserialize(handoff) }) else {
             fstart_arch::halt();
         };
-        let mut console = match Ns16550::new(B::CONSOLE_CONFIG) {
+        let mut console = match Ns16550::new(console_config) {
             Ok(console) => console,
             Err(_) => fstart_arch::halt(),
         };
         if console.init().is_err() {
             fstart_arch::halt();
         }
-        // SAFETY: the mainstage owns this console until a later payload handoff.
-        unsafe { fstart_log::init(&console) };
+        slot.install(console);
         fstart_log::info!("d1 mainstage: console ready");
         fstart_log::info!("d1 mainstage: {} MiB DRAM", handoff.dram_size >> 20);
         fstart_log::info!("d1 mainstage: ready for payload");
@@ -240,20 +222,5 @@ mod stage {
     }
 }
 
-/// Platform-owned adapter for fixed D1 stage dispatch.
 #[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
-pub struct Program<B>(core::marker::PhantomData<B>);
-#[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
-impl<B: stage::D1Board> fstart_stage::StageProgram for Program<B> {
-    fn run_stage(handoff: usize) -> ! {
-        #[cfg(fstart_stage_env = "car")]
-        stage::D1::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
-        #[cfg(fstart_stage_env = "ram")]
-        stage::D1::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
-        #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
-        panic!("d1 requires a fixed sunxi stage selection");
-    }
-}
-
-#[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
-pub use stage::{D1, D1Board, D1Mainstage, run_d1_bootblock, run_d1_mainstage};
+pub use stage::{D1Mainstage, bootblock, main_stage};
