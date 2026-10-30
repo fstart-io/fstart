@@ -102,21 +102,27 @@ impl<B: IntelBoard, S> Bootblock<B, S> {
     /// Stop the boot: an S3 resume resets instead of booting over retained
     /// state, anything else halts.
     pub fn fail(&self, what: &str) -> ! {
-        fstart_log::error!("{} bootblock: {} failed", B::Platform::NAME, what);
-        if self.boot_path == BootPath::S3Resume {
-            fstart_log::error!(
-                "{}: invalid retained boot state; resetting cleanly",
-                B::Platform::NAME
-            );
-            self.northbridge.prepare_resume_reset();
-            self.southbridge.system_reset(true);
-        }
-        fstart_arch::x86::boot::halt()
+        fail::<B>(&self.northbridge, &self.southbridge, self.boot_path, what)
     }
 
     fn check<T>(&self, what: &str, result: Result<T, ServiceError>) -> T {
         result.unwrap_or_else(|_| self.fail(what))
     }
+}
+
+/// [`Bootblock::fail`], once per board rather than once per phase.
+#[inline(never)]
+fn fail<B: IntelBoard>(northbridge: &Nb<B>, southbridge: &Sb<B>, path: BootPath, what: &str) -> ! {
+    fstart_log::error!("{} bootblock: {} failed", B::Platform::NAME, what);
+    if path == BootPath::S3Resume {
+        fstart_log::error!(
+            "{}: invalid retained boot state; resetting cleanly",
+            B::Platform::NAME
+        );
+        northbridge.prepare_resume_reset();
+        southbridge.system_reset(true);
+    }
+    fstart_arch::x86::boot::halt()
 }
 
 impl<B: IntelBoard> Bootblock<B, Early> {
