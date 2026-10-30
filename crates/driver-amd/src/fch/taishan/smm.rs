@@ -4,7 +4,8 @@
 use super::init::{AOAC_94, Aoac94};
 use crate::fch::smi::{FchSmmHandler, FchSmmHooks};
 use crate::fch::{AcpiReg, Acpimmio, Bus, Fch, IOAPIC, Reg, SmmBus, pm};
-use crate::smn::SmnReg;
+use crate::smn::{SmnAccess, SmnReg};
+use crate::smu::v9;
 use core::marker::PhantomData;
 use fstart_core::{
     indexed::Indexed,
@@ -34,6 +35,17 @@ impl<B: SmmBoard> FchSmmHooks for Hooks<B> {
     unsafe fn sleep_entry(slp_typ: u8) {
         // SAFETY: SMM owns the FCH while it puts the system to sleep.
         unsafe { sleep_entry(&Fch::new(SmmBus::without_config(), Acpimmio::DIE0), slp_typ) }
+    }
+    /// The vendor FchTaishanSmmInit's last step: SMU message SleepEntry,
+    /// which the SMU answers by completing the transition. The vendor halts
+    /// there; this waits 100 ms for the SMU, then lets the FCH enter the
+    /// state with SLP_EN.
+    #[inline(always)]
+    unsafe fn sleep_armed(_slp_typ: u8) {
+        // SAFETY: SMM owns the SMN pair while it puts the system to sleep.
+        let smn = unsafe { SmmSmn::new() };
+        v9::MAILBOX.post(&smn, v9::msg::SLEEP_ENTRY, [0; crate::smu::ARGUMENT_COUNT]);
+        fstart_arch::x86::wait_us(100_000, || false);
     }
     #[inline(always)]
     unsafe fn gevent(status: u32) {
@@ -107,6 +119,13 @@ impl SmmSmn {
         reg: SmnReg<R>,
     ) -> Indexed<D0f0Register, D0f0Register, R> {
         Indexed::new(SMN_INDEX, SMN_DATA, reg.address())
+    }
+}
+impl SmnAccess for SmmSmn {
+    type Reg<'a, R: RegisterLongName> = Indexed<D0f0Register, D0f0Register, R>;
+    #[inline(always)]
+    fn reg<R: RegisterLongName>(&self, reg: SmnReg<R>) -> Self::Reg<'_, R> {
+        SmmSmn::reg(self, reg)
     }
 }
 impl Drop for SmmSmn {

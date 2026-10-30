@@ -8,7 +8,7 @@
 //! [`SmuMessages`] is the contract the blocks that talk to the SMU program
 //! against; [`Smu`] implements it for one mailbox.
 use crate::ccx::tsc::DelayNs;
-use crate::smn::{Smn, SmnReg};
+use crate::smn::{Smn, SmnAccess, SmnReg};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     interfaces::{Readable, Writeable},
@@ -96,7 +96,7 @@ impl Mailbox {
     /// The nonzero response and the polls it took, `None` at the timeout.
     fn poll(
         &self,
-        smn: &Smn<impl ConfigRegionAccess>,
+        smn: &impl SmnAccess,
         delay: &mut impl DelayNs,
         timeout_us: u32,
         poll_us: u32,
@@ -122,7 +122,7 @@ impl Mailbox {
     /// readiness. Clear the response BEFORE the arguments, submit the command LAST.
     pub fn request_raw(
         &self,
-        smn: &Smn<impl ConfigRegionAccess>,
+        smn: &impl SmnAccess,
         message: u32,
         arguments: [u32; ARGUMENT_COUNT],
         delay: &mut impl DelayNs,
@@ -134,7 +134,7 @@ impl Mailbox {
     /// `poll_us` apart (a nominal bound: the accesses take time too).
     pub fn request_raw_within(
         &self,
-        smn: &Smn<impl ConfigRegionAccess>,
+        smn: &impl SmnAccess,
         message: u32,
         arguments: [u32; ARGUMENT_COUNT],
         delay: &mut impl DelayNs,
@@ -145,11 +145,7 @@ impl Mailbox {
             self.poll(smn, delay, timeout_us, poll_us)?
                 .ok_or(Error::BusyTimeout)?;
         }
-        smn.reg(self.response).set(0);
-        for (i, value) in arguments.into_iter().enumerate() {
-            smn.reg(self.argument(i)).set(value);
-        }
-        smn.reg(self.message).set(message);
+        self.post(smn, message, arguments);
         let (response, polls) = self
             .poll(smn, delay, timeout_us, poll_us)?
             .ok_or(Error::CompletionTimeout)?;
@@ -163,9 +159,24 @@ impl Mailbox {
         })
     }
 
+    /// Submit `message` without waiting for the mailbox or the response:
+    /// for a message the SMU never answers because it powers the system
+    /// down (Sx entry). Inlined: SMM handlers can't take a constant
+    /// mailbox's address.
+    #[inline(always)]
+    pub fn post(&self, smn: &impl SmnAccess, message: u32, arguments: [u32; ARGUMENT_COUNT]) {
+        // The registers by value, not through `self`.
+        let (response, first, command) = (self.response, self.arguments, self.message);
+        smn.reg(response).set(0);
+        for (i, value) in (0..).zip(arguments) {
+            smn.reg(first.offset(4 * i)).set(value);
+        }
+        smn.reg(command).set(message);
+    }
+
     pub fn request(
         &self,
-        smn: &Smn<impl ConfigRegionAccess>,
+        smn: &impl SmnAccess,
         message: u32,
         arguments: [u32; ARGUMENT_COUNT],
         delay: &mut impl DelayNs,
@@ -178,11 +189,7 @@ impl Mailbox {
     }
 
     /// [`TEST`].
-    pub fn test(
-        &self,
-        smn: &Smn<impl ConfigRegionAccess>,
-        delay: &mut impl DelayNs,
-    ) -> Result<(), Error> {
+    pub fn test(&self, smn: &impl SmnAccess, delay: &mut impl DelayNs) -> Result<(), Error> {
         self.request(smn, TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], delay)
             .map(drop)
     }
@@ -190,7 +197,7 @@ impl Mailbox {
     /// The 47-character CPU name string, `get_name` being the SoC's message.
     pub fn cpu_name(
         &self,
-        smn: &Smn<impl ConfigRegionAccess>,
+        smn: &impl SmnAccess,
         get_name: u32,
         delay: &mut impl DelayNs,
     ) -> Result<[u8; 48], Error> {
