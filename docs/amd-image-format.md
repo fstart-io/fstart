@@ -213,7 +213,7 @@ Use one of:
 | Input | Flag | Source |
 |---|---|---|
 | Blob directory | `--blobs DIR` | Directory laid out as the table paths. Relative to the current directory, or absolute. |
-| Donor image | `--donor ROM` | Extracts into `target/fstart-blobs/<board>/<first 16 hex digits of ROM SHA-256>/` on first use, then reuses it. |
+| Donor image | `--donor ROM` | Extracts into `target/fstart-blobs/<board>/<16 hex digits of the ROM SHA-256>-<8 of the blob tables>/` on first use, then reuses it until the image or a blob table changes. |
 
 `--blobs` and `--donor` conflict. Picasso and Zeppelin images are packed from
 them (`ImageConfig::Packed`). SP3 boards pack every generation they list into

@@ -28,8 +28,9 @@ pub fn extract(
 }
 
 /// The blob directory of a build from the donor image `rom` (`--donor`):
-/// its files extracted once per board and image content, under
-/// `target/fstart-blobs/<board>/<image SHA-256>/`.
+/// its files extracted once per board, image content and blob tables
+/// (the board's and its platform's), under
+/// `target/fstart-blobs/<board>/<image SHA-256>-<tables SHA-256>/`.
 pub(crate) fn from_donor(
     root: &Path,
     source: &ProfileSource,
@@ -40,10 +41,18 @@ pub(crate) fn from_donor(
         .as_str()
         .ok_or("the board has no name")?;
     let digest = format!("{:x}", Sha256::digest(&image));
-    let dir = root
-        .join("target/fstart-blobs")
-        .join(board)
-        .join(&digest[..16]);
+    // A changed table names other files: extract again.
+    let tables = serde_json::to_vec(&[
+        &source.package["metadata"]["fstart"]["amd"],
+        &source.platform["metadata"]["fstart"]["amd"],
+    ])
+    .map_err(|e| e.to_string())?;
+    let tables = format!("{:x}", Sha256::digest(&tables));
+    let dir = root.join("target/fstart-blobs").join(board).join(format!(
+        "{}-{}",
+        &digest[..16],
+        &tables[..8]
+    ));
     if dir.join(RECEIPT).is_file() {
         eprintln!("[fstart] blobs of {} in {}", rom.display(), dir.display());
         return Ok(dir);

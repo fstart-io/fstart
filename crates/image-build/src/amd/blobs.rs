@@ -183,19 +183,28 @@ pub fn board_tables(table: &serde_json::Value) -> Result<Vec<BoardBlobs>, String
 }
 
 /// The 16 MiB image in `rom` (a flash of several, or the 16 MiB of a
-/// smaller flash's mapping) whose EFS is the SoC's: the generation word
-/// its boot ROM wants and its BIOS directory field.
+/// smaller flash's mapping) whose EFS the SoC's boot ROM takes
+/// ([`Flash::efs_checked`]: the generation word's required-clear bits) with
+/// the SoC's BIOS directory. In a flash of several generations a later
+/// generation's EFS can satisfy an earlier one's boot ROM too: the half
+/// with exactly the SoC's generation word wins.
 pub fn donor_image<'a>(rom: &'a [u8], soc: &SocBlobs) -> Option<&'a [u8]> {
     let profile = Profile::for_slot(soc.bios_directory);
-    rom.chunks(fstart_amdfw_format::HALF_SIZE).find(|image| {
-        Flash::new(image)
-            .with_profile(profile)
-            .efs_checked()
-            .is_ok_and(|(_, efs)| {
-                efs.generation.get() == !profile.generation_mask
-                    && efs.bios_directory(soc.bios_directory).is_some()
-            })
-    })
+    let candidates = rom
+        .chunks(fstart_amdfw_format::HALF_SIZE)
+        .filter_map(|image| {
+            let (_, efs) = Flash::new(image).with_profile(profile).efs_checked().ok()?;
+            efs.bios_directory(soc.bios_directory)?;
+            Some((image, efs.generation.get() == !profile.generation_mask))
+        });
+    let mut first = None;
+    for (image, exact) in candidates {
+        if exact {
+            return Some(image);
+        }
+        first.get_or_insert(image);
+    }
+    first
 }
 
 /// Where a board's APCB instances come from.
@@ -378,12 +387,24 @@ pub fn extract(
         .map_err(|e| format!("vendor BIOS directory: {e:?}"))?;
     let mut found = Vec::new();
     let mut missing = Vec::new();
+    // Entries may share a file only if the vendor image has the same
+    // bytes for them.
+    let mut conflict = None;
     let mut take = |file: &str, origin: Option<(String, &[u8])>| match origin {
-        Some((origin, bytes)) => found.push(Extracted {
-            file: file.into(),
-            bytes: bytes.to_vec(),
-            origin,
-        }),
+        Some((origin, bytes)) => match found.iter().find(|f: &&Extracted| f.file == file) {
+            Some(prior) if prior.bytes == bytes => {}
+            Some(prior) => {
+                conflict.get_or_insert(format!(
+                    "{file}: the vendor's {} and {origin} differ",
+                    prior.origin
+                ));
+            }
+            None => found.push(Extracted {
+                file: file.into(),
+                bytes: bytes.to_vec(),
+                origin,
+            }),
+        },
         None => missing.push(file.into()),
     };
     for f in &soc.psp {
@@ -421,6 +442,9 @@ pub fn extract(
     }
     for v in &soc.vbios {
         take(&v.file, find_vbios(rom, v.vendor, v.device)?);
+    }
+    if let Some(conflict) = conflict {
+        return Err(conflict);
     }
     Ok((found, missing))
 }

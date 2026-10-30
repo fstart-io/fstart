@@ -225,3 +225,90 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
     assert_eq!(get("vbios/rv2.bin").origin, "flash offset 0x400080");
     assert_eq!(get("vbios/rv2.bin").bytes.len(), 512);
 }
+
+#[test]
+fn entries_share_a_file_only_with_the_same_bytes() {
+    let image = vendor_image();
+    let file = |kind, subprogram, instance, file: &str| DirectoryFile {
+        kind,
+        subprogram,
+        instance,
+        file: Some(file.into()),
+        ..Default::default()
+    };
+    let soc = |psp: Vec<DirectoryFile>, bios: Vec<DirectoryFile>| SocBlobs {
+        bios_directory: BiosDirectorySlot::Family17hModel10,
+        levels: 1,
+        efs_offset: 0xe2_0000,
+        partition_end: 0x100_0000,
+        spi_read_mode: Some(4),
+        spi_speed: Some(0),
+        micron: false,
+        soft_fuse: Some(0x3000_0000),
+        apob_destination: None,
+        psp,
+        bios,
+        microcode: vec![],
+        vbios: vec![],
+    };
+    let board = BoardBlobs {
+        soc: "picasso".into(),
+        psp_app: false,
+        apcb: BoardApcb::Files { instances: 0 },
+        apob_destination: None,
+    };
+    // The same entry twice: one file.
+    let same = soc(vec![file(1, 0, 0, "a.bin"), file(1, 0, 0, "a.bin")], vec![]);
+    let (found, _) = extract(&same, &board, "board", &image).unwrap();
+    assert_eq!(found.len(), 1);
+    // Different bytes for one file.
+    let differ = soc(
+        vec![file(1, 0, 0, "a.bin")],
+        vec![file(0x64, 1, 4, "a.bin")],
+    );
+    let error = extract(&differ, &board, "board", &image).unwrap_err();
+    assert!(error.starts_with("a.bin: "), "{error}");
+}
+
+/// A 16 MiB half with an EFS at 0x20000: `generation`, BIOS directory
+/// pointer `bios` in `slot`.
+fn efs_half(generation: u32, slot: BiosDirectorySlot, bios: u32) -> Vec<u8> {
+    use fstart_amdfw_format::efs::Efs;
+    use zerocopy::IntoBytes;
+    let mut efs = Efs::erased();
+    efs.generation.set(generation);
+    efs.bios_directory_mut(slot).set(bios);
+    let mut half = vec![0xff; fstart_amdfw_format::HALF_SIZE];
+    half[0x20000..0x20060].copy_from_slice(efs.as_bytes());
+    half
+}
+
+#[test]
+fn donor_halves_by_generation() {
+    use BiosDirectorySlot::{Family17hModel30, Family19h};
+    let soc = |slot| SocBlobs {
+        bios_directory: slot,
+        ..serde_json::from_value(fstart_table("../platform-sp3/Cargo.toml")["amd"]["rome"].clone())
+            .unwrap()
+    };
+    let (rome, milan) = (soc(Family17hModel30), soc(Family19h));
+    // Milan's EFS also names a Rome BIOS directory and its generation
+    // word satisfies Rome's boot ROM: Rome takes its own half regardless
+    // of the order.
+    let rome_half = efs_half(0xffff_fffe, Family17hModel30, 0x40000);
+    let mut milan_half = efs_half(0xffff_fffc, Family19h, 0x50000);
+    milan_half[0x20000 + 0x20..0x20000 + 0x24].copy_from_slice(&0x60000u32.to_le_bytes());
+    for rom in [
+        [milan_half.clone(), rome_half.clone()].concat(),
+        [rome_half.clone(), milan_half.clone()].concat(),
+    ] {
+        assert_eq!(donor_image(&rom, &rome).unwrap()[0x20024], 0xfe);
+        assert_eq!(donor_image(&rom, &milan).unwrap()[0x20024], 0xfc);
+    }
+    // A single noncanonical half the boot ROM takes is the donor.
+    let rome_only = efs_half(0x7fff_fffe, Family17hModel30, 0x40000);
+    assert!(donor_image(&rome_only, &rome).is_some());
+    // No BIOS directory for the SoC, or a generation it can't boot.
+    assert!(donor_image(&rome_half, &milan).is_none());
+    assert!(donor_image(&efs_half(0xffff_ffff, Family17hModel30, 0x40000), &rome).is_none());
+}

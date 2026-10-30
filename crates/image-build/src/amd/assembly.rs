@@ -402,6 +402,17 @@ impl AmdAssembly {
                             "a two-level partition is a native image with board APCB files".into(),
                         );
                     }
+                    // Picasso's settings; two-level partitions list these
+                    // as entries.
+                    if files.micron
+                        || files.soft_fuse.is_some()
+                        || files.apob_nv.is_some()
+                        || files.psp_nv.is_some()
+                    {
+                        return Err("a two-level partition has its NV areas and soft fuse as \
+                                    entries, and no Micron setting"
+                            .into());
+                    }
                 } else {
                     if files.spi_read_mode.is_none_or(|mode| mode > 7)
                         || files.spi_speed.is_none_or(|speed| speed > 3)
@@ -446,9 +457,17 @@ impl AmdAssembly {
                     .into_iter()
                     .flat_map(|(namespace, blobs)| {
                         blobs.iter().map(move |file| FileBinding {
+                            // A key can be in each level with its own file.
                             environment: format!(
-                                "{namespace}_{:02X}_{:02X}_{:02X}",
-                                file.key.kind, file.key.subprogram, file.key.instance
+                                "{namespace}_{:02X}_{:02X}_{:02X}{}",
+                                file.key.kind,
+                                file.key.subprogram,
+                                file.key.instance,
+                                match file.level {
+                                    Level::Both => "",
+                                    Level::One => "_L1",
+                                    Level::Two => "_L2",
+                                }
                             ),
                             path: file.path.clone(),
                             capacity,

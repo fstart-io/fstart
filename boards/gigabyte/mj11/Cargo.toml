@@ -22,7 +22,7 @@ apcb = { entries = [
   { type = 0x60, level = 1, file = "mj11/apcb-recovery.bin" },
   { type = 0x68, level = 1, file = "mj11/apcb-recovery.bin" },
   { type = 0x60, level = 2, file = "mj11/apcb.bin" },
-  { type = 0x68, level = 2, file = "mj11/apcb.bin" },
+  { type = 0x68, level = 2, file = "mj11/apcb-backup.bin" },
 ] }
 
 [package.metadata.fstart.variants.gigabyte-mj11-ec0]

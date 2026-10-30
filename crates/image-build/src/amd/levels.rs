@@ -101,6 +101,22 @@ impl Addressing {
             Self::Offsets { mode } => mode as u32,
         }
     }
+    /// The directory address of flash `offset`.
+    pub const fn address(self, flash_size: u32, offset: u32) -> u64 {
+        match self {
+            Self::Physical => (1u64 << 32) - flash_size as u64 + offset as u64,
+            Self::Offsets { .. } => offset as u64,
+        }
+    }
+    /// Directory header word of the region `[start, end)`: its 4 KiB
+    /// blocks, SPI block size 1 and the address mode.
+    pub fn header(self, start: u32, end: u32) -> Result<u32> {
+        let blocks = (end - start).div_ceil(0x1000);
+        if blocks > 0x3ff {
+            return Err("an AMD directory region exceeds 4 MiB".into());
+        }
+        Ok(blocks | 1 << 10 | self.mode() << 29)
+    }
 }
 
 /// The reset image the PSP copies to DRAM and starts x86 in (BIOS entry
@@ -230,46 +246,13 @@ fn place(
     Ok(())
 }
 
-/// The order entries have in a table: by type, the PMU instruction and
-/// data files of one selector next to each other.
-fn order(key: Key) -> (u8, u8, u8, u8) {
-    let kind = if key.kind == bios::PMU_DATA {
-        bios::PMU_INSTRUCTIONS
-    } else {
-        key.kind
-    };
-    (kind, key.subprogram, key.instance, key.kind)
-}
-
 impl TwoLevelImage {
     fn address(&self, offset: u32) -> u64 {
-        match Addressing::of(self.slot) {
-            Addressing::Physical => (1u64 << 32) - u64::from(self.flash_size) + u64::from(offset),
-            Addressing::Offsets { .. } => u64::from(offset),
-        }
-    }
-
-    /// Directory header word: the region's 4 KiB blocks, SPI block size 1
-    /// and the address mode.
-    fn additional(&self, start: u32, end: u32) -> Result<u32> {
-        let blocks = (end - start).div_ceil(0x1000);
-        if blocks > 0x3ff {
-            return Err("an AMD directory region exceeds 4 MiB".into());
-        }
-        Ok(blocks | 1 << 10 | Addressing::of(self.slot).mode() << 29)
+        Addressing::of(self.slot).address(self.flash_size, offset)
     }
 
     fn check(&self) -> Result<()> {
-        if !(0x40000..=0x100_0000).contains(&self.flash_size) || !self.flash_size.is_power_of_two()
-        {
-            return Err("AMD flash must be a power of two, 256 KiB..16 MiB".into());
-        }
-        if self.efs_offset >= self.partition_end || self.partition_end > self.flash_size {
-            return Err("invalid AMD firmware partition".into());
-        }
-        if !super::efs_probed(self.flash_size, self.efs_offset) {
-            return Err("the EFS is not where the boot ROM searches".into());
-        }
+        super::check_partition(self.flash_size, self.efs_offset, self.partition_end)?;
         if self.spi.is_some_and(|(mode, speed)| mode > 7 || speed > 5) {
             return Err("invalid EFS SPI read mode or speed".into());
         }
@@ -284,18 +267,11 @@ impl TwoLevelImage {
         {
             return Err("the reset image must lie in the flash, outside the partition".into());
         }
-        if self.reset.destination == 0
-            || self
-                .reset
-                .destination
-                .checked_add(u64::from(self.reset.size))
-                .is_none_or(|end| end > 1 << 32 || end & 0xffff != 0)
-        {
-            return Err("the reset image must end on a 64-KiB DRAM boundary below 4 GiB".into());
-        }
-        if self.apob_destination == 0 {
-            return Err("missing APOB DRAM destination".into());
-        }
+        super::check_destinations(
+            self.reset.destination,
+            self.reset.size.into(),
+            self.apob_destination,
+        )?;
         check_entries(&self.psp, false)?;
         check_entries(&self.bios, true)
     }
@@ -310,9 +286,9 @@ impl TwoLevelImage {
         cookie: [u8; 4],
         mut entries: Vec<(Key, E)>,
     ) -> Result<()> {
-        entries.sort_by_key(|(key, _)| order(*key));
+        entries.sort_by_key(|(key, _)| super::bios_order(*key));
         let entries: Vec<E> = entries.into_iter().map(|(_, e)| e).collect();
-        let additional = self.additional(start, end)?;
+        let additional = Addressing::of(self.slot).header(start, end)?;
         let at = (start - layout.base) as usize;
         write_table(&mut layout.bytes[at..], cookie, additional, &entries)
             .ok_or("AMD directory outside the partition")?;
