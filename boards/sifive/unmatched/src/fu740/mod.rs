@@ -8,10 +8,6 @@ mod regs;
 
 /// FU740 DRAM physical base.
 pub const FU740_DRAM_BASE: u64 = 0x8000_0000;
-/// FU740 PCIe ECAM aperture used by its RISC-V UEFI payload context.
-#[cfg(fstart_payload = "crabefi")]
-pub const FU740_ECAM_BASE: u64 = 0x3000_0000;
-
 mod stage {
     use super::*;
     use super::{ddr::Fu740Ddr, prci::Fu740Prci};
@@ -22,7 +18,9 @@ mod stage {
     // The board selects payload backends through platform features; all
     // stage runtime paths below resolve through that re-export.
     use fstart_platform_qemu::stage_runtime as fstart_stage;
-    use fstart_stage::{StageEnvironment, StageProgram, payload::MainstagePayload};
+    #[cfg(not(fstart_payload = "crabefi"))]
+    use fstart_stage::payload::MainstagePayload;
+    use fstart_stage::{StageEnvironment, StageProgram};
 
     #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
     compile_error!("FU740 requires monolithic/riscv64 stage and entry selections");
@@ -87,20 +85,11 @@ mod stage {
 
     /// DRAM-backed state retained through payload launch.
     pub struct Fu740Mainstage {
+        #[cfg(not(fstart_payload = "halt"))]
         config: &'static Fu740Config,
-        console: SifiveUart,
-    }
-
-    impl Fu740Mainstage {
-        #[must_use]
-        pub const fn config(&self) -> &'static Fu740Config {
-            self.config
-        }
-
-        #[must_use]
-        pub const fn console(&self) -> &SifiveUart {
-            &self.console
-        }
+        // Retain the registered log console even for halt/Linux launchers,
+        // which do not otherwise access it through their payload context.
+        _console: SifiveUart,
     }
 
     /// Concrete FU740 fixed-flow platform.
@@ -166,8 +155,9 @@ mod stage {
             );
             fstart_log::info!("fu740 ramstage: ready for payload");
             Fu740BuildSelectedPayload::boot(Fu740Mainstage {
+                #[cfg(not(fstart_payload = "halt"))]
                 config: B::CONFIG,
-                console,
+                _console: console,
             })
         }
 
@@ -193,7 +183,7 @@ mod stage {
             fstart_stage::payload::Riscv64UefiPayload::resume_sbi(
                 Fu740Mainstage {
                     config: B::CONFIG,
-                    console,
+                    _console: console,
                 },
                 hart_id,
                 dtb_addr,
@@ -373,12 +363,14 @@ mod stage {
                 config.dtb_addr,
                 FU740_DRAM_BASE,
                 config.ddr.dram_size,
-                FU740_ECAM_BASE,
+                // Let CrabEFI inspect the firmware FDT instead of inventing
+                // bus bounds from a bare ECAM address (as on QEMU SiFive-U).
+                None,
             )
         }
 
         fn console(&self) -> &dyn Console {
-            &self.console
+            &self._console
         }
     }
 

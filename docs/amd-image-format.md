@@ -9,7 +9,7 @@ to the build.
 | Path | Crate | Contents |
 |---|---|---|
 | `crates/amdfw-format` | `fstart-amdfw-format` (`no_std`) | Wire layouts (`efs.rs`, `directory.rs`, `anchor.rs`, `microcode.rs`), the `Flash` view and `Profile` (`lib.rs`), validation. No silicon-driver or packing code. |
-| `crates/image-build/src/amd` | `fstart-image-build::amd` | `assembly.rs` (image composition), `mod.rs` (`PicassoImage` packer), `levels.rs` (`TwoLevelImage` packer), `blobs.rs` (blob tables, extraction), `config.rs` (`fw.cfg` reader), `apcb.rs`, `psp_app.rs`. |
+| `crates/image-build/src/amd` | `fstart-image-build::amd` | `assembly.rs` (shared image composition), `banks.rs` (bank discovery, packing, preservation and mirrors), `stage.rs` (trust/locator patching), `mod.rs` (`PicassoImage` packer), `levels.rs` (`TwoLevelImage` packer), `blobs.rs` (blob tables, extraction), `config.rs` (`fw.cfg` reader), `apcb.rs`, `psp_app.rs`. |
 | `tools/amdfw` | `fstart-amdfw-tools` | Binaries `fstart-amdfw` (inspect/validate/pack) and `fstart-apcb`. |
 | `tools/fbuild` | `fbuild` | `blobs` subcommand (`src/blobs.rs`), `--blobs`/`--donor`/`--image-config` (`src/payload.rs`), image output (`src/amd_image.rs`). |
 | `crates/platform-amd` | `fstart-platform-amd` | Picasso and Zeppelin blob tables (`Cargo.toml`), noncar image plan (`src/noncar/host.rs`), Picasso policy (`src/picasso/mod.rs`). |
@@ -217,7 +217,7 @@ Use one of:
 
 `--blobs` and `--donor` conflict. Picasso and Zeppelin images are packed from
 them (`ImageConfig::Packed`). SP3 boards pack every generation they list into
-its own 16 MiB half (`sp3_flash::PackedHalf`), or, without `--blobs`/`--donor`,
+its own 16 MiB half (`amd::banks::PackedHalf`), or, without `--blobs`/`--donor`,
 compose into the vendor ROM (`--image-config` or the board's
 `VENDOR_IMAGE`). A donor of several halves gives each SoC's files from the half
 whose EFS is that SoC's.
@@ -259,13 +259,22 @@ cargo fbuild assemble --board google-vilboz --release --donor backup.rom
 vendor ROM for vendor-image boards). Picasso's policy is release-only
 (`Policy::release_only`).
 
+All AMD plans emit `Assembly::Amd`. Its firmware source is either packed blobs
+or a vendor image with an explicit layout: fixed prefix/reset placement
+or selected boot banks and mirrors (SP3). Packed bank partitions and both
+vendor layouts normalize into
+one write/readback loop; bank discovery is not a separate compositor.
+`StageLocator` independently selects the compiled reset stage's anchor ABI.
+Native assembly and native/WASM bundle consumers use this same engine.
+
 Output goes to `target/fstart-build/<board>/<release|debug>/<digest>/image/`:
 
 | File | Content |
 |---|---|
 | `<board>.rom` | Whole-flash image. |
 | `<board>-psp-fragment.bin` | PSP partition fragment only, not flash-ready. |
-| `<board>.json` | Flash offset, length, SHA-256 of the image, EFS and reset offsets, and SHA-256 of each input (`environment`, `path`, `sha256`), plus reset and FFS hashes. |
+| `<board>.bank.rom` | PSP boot window when composing a mirrored full readout. |
+| `<board>.json` | Flash offset, length, image SHA-256, per-bank origin/profile/EFS/reset facts, actual FFS offset, patched metadata sites, and SHA-256 of each input (`environment`, `path`, `sha256`), plus reset and FFS hashes. |
 
 ## Current limits
 

@@ -6,7 +6,12 @@ use fstart_image_build::{
     plan::{BuildSelection, IntelPlan, IntelStagePlan, Span},
 };
 
-use std::{format, string::ToString, vec, vec::Vec};
+use std::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
@@ -137,6 +142,13 @@ pub fn compilation_plan(
         .into_iter()
         .collect::<Vec<_>>();
     let resolved = BuildPlan {
+        publication_payloads: ["halt", "linux", "uefi", "uefi-ui", "uefi-basic", "coreboot"]
+            .into_iter()
+            .filter(|payload| {
+                plan.platform != fstart_core::Platform::X86 || !payload.starts_with("uefi")
+            })
+            .map(String::from)
+            .collect(),
         payload: plan.payload.clone(),
         units,
         stages: plan.stages.iter().map(|r| r.role.name().into()).collect(),
@@ -373,6 +385,33 @@ mod tests {
         assert_eq!(plan.microcode.len(), 2);
         assert!(resolve_for::<I945>(FACTS, 0, BuildSelection::default()).is_err());
     }
+    #[test]
+    fn published_payloads_respect_protected_mode() {
+        let facts = FACTS.with_protected_mode();
+        let plan = compilation_plan(resolve(facts, BuildSelection::default()).unwrap()).unwrap();
+        assert_eq!(plan.publication_payloads, ["halt", "linux", "coreboot"]);
+        for payload in &plan.publication_payloads {
+            resolve(
+                facts,
+                BuildSelection {
+                    payload: Some(payload.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        assert!(
+            resolve(
+                facts,
+                BuildSelection {
+                    payload: Some("uefi".into()),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn platform_selects_target_payload_stage_bundles_and_smm() {
         let default = resolve(FACTS, BuildSelection::default()).unwrap();

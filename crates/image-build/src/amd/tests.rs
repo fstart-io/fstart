@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
-use assembly::{AmdAssembly, BiosDirectoryFacts, Firmware, read_bios_directory};
+use assembly::{
+    AmdAssembly, BiosDirectoryFacts, Firmware, FixedLayout, PackedReset, VendorLayout,
+    read_bios_directory,
+};
+use banks::ResetSlot;
 use fstart_amdfw_format::{
     directory::{Header, fletcher32, modify_entries, write_table},
     efs::BiosDirectorySlot,
@@ -66,16 +70,18 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         firmware: Firmware::Packed {
             files,
             reset_offset: None,
+            reset: PackedReset {
+                size: raw.reset_image.len() as u32,
+                destination: raw.reset_destination,
+                apob_destination: raw.apob_destination,
+                shared_memory: raw.shared_memory,
+                bios_directory: PicassoImage::BIOS_DIRECTORY,
+            },
         },
         ffs: None,
         reset_unit: "reset".into(),
-        flash_size: raw.flash_size,
-        bios_directory: PicassoImage::BIOS_DIRECTORY,
-        reset_destination: raw.reset_destination,
-        reset_size: raw.reset_image.len() as u32,
-        apob_destination: raw.apob_destination,
-        shared_memory: raw.shared_memory,
         psp: Default::default(),
+        locator: Default::default(),
     };
     let sources = [raw.psp[0].bytes.as_slice(), raw.bios[0].bytes.as_slice()];
     let packed = operation
@@ -83,9 +89,9 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         .unwrap();
     let expected = raw.pack().unwrap();
     assert_eq!(packed.offset, 0xe20000);
-    assert!(!packed.is_whole_flash(raw.flash_size));
+    assert!(!packed.is_whole_flash());
     assert_eq!(packed.bytes, expected.bytes);
-    assert_eq!(packed.facts.efs, 0xe20000);
+    assert_eq!(packed.banks[0].bios.efs, 0xe20000);
     assert_eq!(
         operation
             .bindings()
@@ -294,7 +300,7 @@ fn reads_the_mj11_reset_image_entry() {
             reset_offset: 0xdb_0000,
             reset_size: 0x25_0000,
             reset_destination: 0x76db_0000,
-            apob_destination: 0x3000_0000,
+            apob_destination: Some(0x3000_0000),
         }
     );
     // The level-2 microcode at 0x25f800 would be cut off by a smaller
@@ -333,7 +339,7 @@ fn the_psp_boots_from_level_2() {
     // The APOB of level 2, not level 1's.
     set_level2_destination(&mut image, 1, 0x3100_0000);
     let facts = read_bios_directory(&image, 0x29_4000, SLOT).unwrap();
-    assert_eq!(facts.apob_destination, 0x3100_0000);
+    assert_eq!(facts.apob_destination, Some(0x3100_0000));
     // The levels must agree on the reset image.
     set_level2_destination(&mut image, 2, 0x7600_0000);
     assert!(read_bios_directory(&image, 0x29_4000, SLOT).is_err());
@@ -416,7 +422,7 @@ fn ffs_and_stage(reset_size: usize) -> (Vec<u8>, Vec<u8>) {
     (ffs, stage)
 }
 
-fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
+pub(super) fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
     use fstart_core::*;
     assembly::FfsWindow {
         assembly: crate::build_plan::FfsAssembly {
@@ -449,18 +455,36 @@ fn mj11() -> AmdAssembly {
                 path: "vendor.rom".into(),
                 capacity: 0x100_0000,
             },
-            prefix_size: 0x29_4000,
+            layout: VendorLayout::Fixed(FixedLayout {
+                flash_size: 0x100_0000,
+                bios_directory: SLOT,
+                prefix_size: 0x29_4000,
+                reset: ResetSlot {
+                    flash_offset: 0xdb_0000,
+                    size: 0x25_0000,
+                    destination: 0x76db_0000,
+                },
+                apob_destination: 0x3000_0000,
+            }),
         },
         ffs: Some(ffs_window(0x29_4000, 0xdb_0000 - 0x29_4000)),
         reset_unit: "reset".into(),
-        flash_size: 0x100_0000,
-        bios_directory: SLOT,
-        reset_size: 0x25_0000,
-        reset_destination: 0x76db_0000,
-        apob_destination: 0x3000_0000,
-        shared_memory: None,
         psp: Default::default(),
+        locator: Default::default(),
     }
+}
+
+#[test]
+fn recipe_rejects_stale_or_conflicting_geometry() {
+    let mut json = serde_json::to_value(mj11()).unwrap();
+    let back: AmdAssembly = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(back.reset_geometry(), mj11().reset_geometry());
+    // Geometry belongs to the source/layout, never to shadow top-level fields.
+    json["flash_size"] = 0x100_0000.into();
+    assert!(serde_json::from_value::<AmdAssembly>(json).is_err());
+    let mut json = serde_json::to_value(mj11()).unwrap();
+    json["firmware"]["Vendor"]["prefix_size"] = 0x29_4000.into();
+    assert!(serde_json::from_value::<AmdAssembly>(json).is_err());
 }
 
 #[test]
@@ -468,7 +492,7 @@ fn composes_the_pinned_image() {
     let (ffs, stage) = ffs_and_stage(0x25_0000);
     let vendor = two_level_vendor();
     let image = mj11().assemble(&[&vendor], &stage, Some(&ffs)).unwrap();
-    assert!(image.is_whole_flash(0x100_0000));
+    assert!(image.is_whole_flash());
     let image = image.bytes;
     assert_eq!(image[..0x29_4000], vendor[..0x29_4000]);
     assert_eq!(image[0x29_4000..0x29_6000], ffs);
@@ -480,7 +504,13 @@ fn composes_the_pinned_image() {
     );
     // The vendor image must describe the layout.
     let mut other = mj11();
-    other.reset_destination = 0x7600_0000;
+    if let Firmware::Vendor {
+        layout: VendorLayout::Fixed(layout),
+        ..
+    } = &mut other.firmware
+    {
+        layout.reset.destination = 0x7600_0000;
+    }
     assert!(other.assemble(&[&vendor], &stage, Some(&ffs)).is_err());
     assert!(
         mj11()
@@ -543,15 +573,17 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
         firmware: Firmware::Packed {
             files: files.clone(),
             reset_offset: Some(reset_offset),
+            reset: PackedReset {
+                size: reset_size,
+                bios_directory: PicassoImage::BIOS_DIRECTORY,
+                destination: 0x300_0000,
+                apob_destination: 0x200_1000,
+                shared_memory: None,
+            },
         },
         ffs: Some(ffs_window(0xb8_0000, 0x29_f000)),
         reset_unit: "reset".into(),
-        flash_size: 0x100_0000,
-        bios_directory: PicassoImage::BIOS_DIRECTORY,
-        reset_size,
-        reset_destination: 0x300_0000,
-        apob_destination: 0x200_1000,
-        shared_memory: None,
+        locator: Default::default(),
         psp: PspOptions {
             compress_reset: true,
             spi: None,
@@ -581,8 +613,8 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
         spd_b.as_bytes(),
     ];
     let image = operation.assemble(&sources, &stage, Some(&ffs)).unwrap();
-    assert!(image.is_whole_flash(0x100_0000));
-    assert_eq!(image.facts.reset_offset, reset_offset);
+    assert!(image.is_whole_flash());
+    assert_eq!(image.banks[0].bios.reset_offset, reset_offset);
     assert_eq!(image.bytes[0xb8_0000..][..ffs.len()], ffs[..]);
     assert!(
         image.bytes[..reset_offset as usize]

@@ -374,6 +374,11 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         flat_capacity: main.memory.size,
     };
     let plan = BuildPlan {
+        publication_payloads: if matches!(facts.soc, SunxiSoc::D1) {
+            vec!["halt".into()]
+        } else {
+            vec!["halt".into(), "linux".into()]
+        },
         payload: payload.clone(),
         units: vec![
             unit(

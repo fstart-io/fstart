@@ -257,7 +257,7 @@ impl Resolved {
                 })
             })
             .collect::<Result<_, String>>()?;
-        Ok(crate::build_board::BuildResult { stages })
+        Ok(crate::build_board::BuildResult { stages, artifacts })
     }
     pub fn validate_inputs(
         &self,
