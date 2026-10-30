@@ -35,9 +35,10 @@ extern crate alloc;
 pub mod bmc;
 pub mod dxio;
 pub mod gpio;
-mod platform;
+pub mod platform;
 pub mod policy;
-#[cfg(fstart_stage_env = "smm")]
+/// The SMM handler, built into the separate SMM image.
+#[cfg(feature = "smm")]
 mod smm;
 
 use fstart_driver_amd::sp3::soc::Generation;

@@ -11,18 +11,13 @@
 
 extern crate alloc;
 
-use fstart_core::services::Timer;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
-use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
-use fstart_driver_amd::sp3::dxio::lanes::Engine;
-use fstart_driver_amd::sp3::fch::FchHw;
 use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_amd::sp3::nbio::NbioPolicy;
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::{ccx, df};
 use fstart_driver_uart::ns16550::Ns16550Config;
-use heapless::Vec;
 
 use crate::layout::Sp3BoardFacts;
 
@@ -85,14 +80,9 @@ pub trait Board: Sp3BoardFacts + 'static {
     /// Silicon policy for `generation`.
     fn policy(generation: Generation) -> Policy;
 
-    /// After socket 0's FCH reset tasks, before the console: prepare its
-    /// UART power/pins or LPC/eSPI decodes and Super I/O. Also runs for a
-    /// CPU the board does not list (when its generation is compiled in),
-    /// so the flow can log why it halts.
-    fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError>;
-
     /// Pads configured and read before [`Board::gpio`] (M.2 SATA/PCIe
-    /// detect); their levels go to [`Board::dxio_engines`] in this order.
+    /// detect); the board's flow gets their levels, in this order, to pick its DXIO
+    /// lane map (`Stage::pad_levels`).
     fn detect_pads(generation: Generation) -> &'static [Pad] {
         let _ = generation;
         &[]
@@ -100,17 +90,6 @@ pub trait Board: Sp3BoardFacts + 'static {
 
     /// GPIO program after the detect pads.
     fn gpio(generation: Generation) -> Gpio;
-
-    /// The DXIO engines of every socket given the detect-pad levels. The
-    /// board may query its BMC or I2C devices here (the console and LPC
-    /// decodes are up); a failed query can halt bring-up rather than silently
-    /// selecting a different lane map. `timer` paces device transactions.
-    fn dxio_engines<H: FchHw>(
-        generation: Generation,
-        levels: &[bool],
-        fch: &H,
-        timer: &dyn Timer,
-    ) -> Result<Vec<Engine<'static>, MAX_ENGINES>, BoardError>;
 
     /// A discrete TPM may be fitted (FIFO interface at `0xFED4_0000`, on
     /// LPC or eSPI): probe it, measure the boot (`fstart-tcg`) and describe
