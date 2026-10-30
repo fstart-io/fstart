@@ -1,25 +1,20 @@
 //! Intel D945GCLF board support package.
+//!
+//! The boot flow is the board's: one `main` per stage in `src/bin/`. This
+//! library holds the board's facts and configuration and the mainboard work
+//! those `main`s call.
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod config;
 pub mod mainboard;
-#[cfg(fstart_stage_env = "smm")]
+/// The SMM handler, built into the separate SMM image.
+#[cfg(feature = "smm")]
 pub mod smm;
-#[cfg(any(
-    fstart_stage_env = "car",
-    fstart_stage_env = "postcar",
-    fstart_stage_env = "ram"
-))]
-mod stage;
 
-/// Intel D945GCLF board marker selected by the board-owned stage entry.
+/// Intel D945GCLF board marker: its facts are [`config`].
 pub struct Board;
 
 pub use config::*;
-#[cfg(fstart_stage_env = "ram")]
-pub use mainboard::D945GCLF_SMBIOS_IDENTITY;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-pub use mainboard::D945GclfMainboard;
-#[cfg(fstart_stage_env = "ram")]
-pub use mainboard::d945gclf_mainboard_dsdt_aml;

@@ -4,7 +4,7 @@
 //! sources: the plain ICH7 handler (APMC/ACPI enable, TCO, GPE clear)
 //! covers it. This module only binds the board to that handler.
 
-use fstart_driver_intel::southbridge::smi::IchSmmHandler;
 use crate::Board;
+use fstart_driver_intel::southbridge::smi::IchSmmHandler;
 
 fstart_platform_intel::smm::smm_bin!(Board, IchSmmHandler);
