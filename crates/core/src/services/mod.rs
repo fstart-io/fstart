@@ -25,7 +25,6 @@ pub mod network;
 pub mod service_kind;
 pub mod smbus;
 pub mod soc_boot;
-pub mod southbridge;
 pub mod spi;
 pub mod timer;
 
@@ -49,7 +48,6 @@ pub use network::Network;
 pub use service_kind::{ServiceKind, ServiceSet};
 pub use smbus::SmBus;
 pub use soc_boot::SocBootHeader;
-pub use southbridge::Southbridge;
 pub use spi::SpiBus;
 pub use timer::{Timer, TimerDelay};
 

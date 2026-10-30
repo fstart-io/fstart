@@ -4,7 +4,7 @@
 //! APOB's SMBIOS seeds with their SPD copies, and the APOB's DRAM ranges.
 extern crate alloc;
 
-use super::{Board, Soc};
+use super::Soc;
 use alloc::vec::Vec;
 use fstart_arch::x86::boot::cpuid::ProcessorSnapshot;
 use fstart_driver_amd::apob::{
@@ -16,9 +16,9 @@ use fstart_log::Hex;
 
 /// Build the tables into reserved firmware memory; returns their entry
 /// point's address.
-pub fn install<S: Soc, B: Board<Soc = S>>(
+pub fn install<S: Soc>(
+    identity: &fstart_acpi::smbios::SmbiosIdentity<'_>,
     apob: Option<&Apob>,
-    map: &MemoryMap,
     apic_ids: &[u32],
 ) -> Option<u64> {
     #[repr(C, align(4096))]
@@ -39,7 +39,10 @@ pub fn install<S: Soc, B: Board<Soc = S>>(
     let dimms = apob
         .map(|apob| dimms(apob, S::SMBIOS.channels_per_die, |socket, _| socket == 0))
         .unwrap_or_default();
-    let regions: Vec<DramRange> = sysmap::memory_map(S::PSP, map.top, map.holes().iter().copied())
+    let map: Option<MemoryMap> =
+        apob.and_then(|apob| sysmap::first_system_memory_map(apob).ok()?.sorted().ok());
+    let regions: Vec<DramRange> = map
+        .and_then(|map| sysmap::memory_map(S::PSP, map.top, map.holes().iter().copied()).ok())
         .map(|regions| dram_ranges(&regions))
         .unwrap_or_default();
     let ecc = apob
@@ -52,7 +55,7 @@ pub fn install<S: Soc, B: Board<Soc = S>>(
         storage,
         address,
         &Inputs {
-            identity: B::smbios_identity(),
+            identity: *identity,
             processors: &processors,
             dimms: &dimms,
             regions: &regions,

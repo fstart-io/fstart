@@ -36,6 +36,7 @@ impl Resolved {
                 .features
                 .iter()
                 .map(|f| format!("{dependency}/{f}"))
+                .chain(unit.board_features.iter().cloned())
                 .chain(board.variant_features.iter().cloned())
                 .collect();
             unit.features.sort();
@@ -337,7 +338,8 @@ fn execute(
                 .iter()
                 .filter(|v| {
                     v["reason"] == "compiler-artifact"
-                        && v["target"]["name"].as_str() == board.stage_bin.as_deref()
+                        && v["target"]["name"].as_str()
+                            == Some(board.stage_bin.as_deref().unwrap_or(&unit.name))
                 })
                 .filter_map(|v| v["executable"].as_str())
                 .collect::<Vec<_>>();

@@ -49,12 +49,29 @@ pub const SUPERIO_NODE: &str = "superio";
 pub const SUPERIO_PNP_BASE: u16 = 0x2e;
 pub const CK505_NODE: &str = "ck505";
 pub const CK505_ADDR: u8 = 0x69;
+/// ICH7 routing plus the D41S slot wiring behind the PCI bridge
+/// (coreboot `ich7_pci_irqs.asl`).
+pub const D41S_PIRQ: fstart_driver_intel::southbridge::pirq::PirqRouting = {
+    use fstart_driver_intel::southbridge::pirq::{PciPin as P, PinRoute as R, Pirq as L};
+    fstart_driver_intel::southbridge::pirq::PirqRouting {
+        bridge_routes: &[
+            R::new(0x00, P::A, L::F),
+            R::new(0x00, P::B, L::G),
+            R::new(0x00, P::C, L::H),
+            R::new(0x00, P::D, L::E),
+            R::new(0x01, P::A, L::D),
+        ],
+        ..fstart_driver_intel::southbridge::pirq::ICH7_PINEVIEW_ROUTING
+    }
+};
+
 pub static D41S_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
     .max_cpus(4)
     .igd(d41s_igd_config())
     .pcie_port(0, true)
     .pcie_port(1, true)
     .pirq_routing([11; 8])
+    .pirq(D41S_PIRQ)
     .lpc_fixed_io(LpcFixedIoDecode {
         com_a: LpcSerialDecode::Com1,
         com_b: LpcSerialDecode::Com2,

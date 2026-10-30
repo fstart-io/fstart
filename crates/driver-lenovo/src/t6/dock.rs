@@ -8,17 +8,14 @@ use crate::{
     h8::{H8, H8Config, H8Led, H8LedMode},
     pmh7::Pmh7,
 };
-use fstart_core::{
-    services::device::DeviceError,
-    services::{ServiceError, Southbridge},
-};
+use fstart_core::{services::ServiceError, services::device::DeviceError};
 use fstart_driver_superio::{
     ComPortConfig, GpioConfig, SuperIoConfig,
     pc87382::{self, GpioPort0, Pc87382},
     pc87384::{self, Pc87384},
 };
 
-pub const LEGACY_MODULE_GPIO: u32 = 6;
+pub const LEGACY_MODULE_GPIO: u8 = 6;
 pub const SMI_DOCK_CONNECT: u8 = 1;
 pub const SMI_DOCK_DISCONNECT: u8 = 2;
 /// Firmware-owned status query; distinct from legacy brightness commands 3/4.
@@ -158,8 +155,12 @@ fn delay_us(us: u32) {
     fstart_arch::udelay(us);
 }
 
-pub fn legacy_io_present(southbridge: &impl Southbridge) -> Result<bool, ServiceError> {
-    southbridge.gpio_get(LEGACY_MODULE_GPIO).map(|high| !high)
+/// Whether the legacy I/O module is fitted, from the active-low
+/// [`LEGACY_MODULE_GPIO`] pin.
+pub fn legacy_io_present(
+    pin: &mut impl embedded_hal::digital::InputPin,
+) -> Result<bool, ServiceError> {
+    pin.is_low().map_err(|_| ServiceError::IoError)
 }
 
 fn initialize_dlpc() -> Result<GpioPort0, DeviceError> {
@@ -224,11 +225,12 @@ pub fn disconnect() -> Result<(), DeviceError> {
 /// The legacy module and external dock share config port 2eh. Fail closed on
 /// GPIO read errors and isolate the dock before powering/accessing that module.
 /// Failures are non-fatal to a laptop boot without a serial console.
+/// `legacy_module` is the [`LEGACY_MODULE_GPIO`] pin.
 pub fn setup_console(
-    southbridge: &impl Southbridge,
+    legacy_module: &mut impl embedded_hal::digital::InputPin,
     config: &H8Config,
 ) -> Result<ConsoleRoute, DeviceError> {
-    let legacy = legacy_io_present(southbridge).map_err(|_| DeviceError::InitFailed)?;
+    let legacy = legacy_io_present(legacy_module).map_err(|_| DeviceError::InitFailed)?;
     let gpio = initialize_dlpc()?;
     if legacy {
         Pmh7::new(config.resources.pmh7_base.raw()).ultrabay_power_enable(true);

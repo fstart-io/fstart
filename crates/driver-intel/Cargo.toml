@@ -27,11 +27,11 @@ sha2 = { workspace = true }
 rflasher-core = { workspace = true, optional = true }
 rflasher-internal = { workspace = true, optional = true }
 bitflags = { workspace = true }
+embedded-hal = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }
 fstart-arch = { workspace = true, features = ["x86_64"] }
 
-fstart-driver-superio = { workspace = true }
 
 fstart-intel-gma = { workspace = true }
 

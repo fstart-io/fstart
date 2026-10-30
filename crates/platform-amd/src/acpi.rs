@@ -13,6 +13,9 @@ extern crate alloc;
 
 use alloc::{format, vec, vec::Vec};
 use core::ops::RangeInclusive;
+/// The board's SMBIOS identity, which the board's `main` passes to the
+/// flow's last phase.
+pub use fstart_acpi::smbios::SmbiosIdentity;
 use fstart_acpi::{
     Aml, AmlError, AmlSink,
     aml::{AddressSpace, AddressSpaceCacheable, IO, Name, ResourceTemplate},

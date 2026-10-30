@@ -422,6 +422,42 @@ impl<B: Bus> Gpio<B> {
     }
 }
 
+/// One pad of a bank as an embedded-hal output, borrowed from the bank so a
+/// board can drive several pads of it.
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub struct Output<'a, B> {
+    gpio: &'a Gpio<B>,
+    pin: u8,
+}
+
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+impl<B: Bus> Gpio<B> {
+    /// Drive `pin` through embedded-hal. Its pad must already be configured
+    /// as an output.
+    pub fn output(&self, pin: u8) -> Result<Output<'_, B>, Error> {
+        if !self.bank.exists(pin) {
+            return Err(Error::InvalidPad);
+        }
+        Ok(Output { gpio: self, pin })
+    }
+}
+
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+impl<B> embedded_hal::digital::ErrorType for Output<'_, B> {
+    type Error = Error;
+}
+
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+impl<B: Bus> embedded_hal::digital::OutputPin for Output<'_, B> {
+    fn set_low(&mut self) -> Result<(), Error> {
+        self.gpio.set(self.pin, false)
+    }
+
+    fn set_high(&mut self) -> Result<(), Error> {
+        self.gpio.set(self.pin, true)
+    }
+}
+
 /// One pad of a bank as an embedded-hal input.
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub struct Input<B> {

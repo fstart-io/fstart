@@ -238,6 +238,7 @@ fn unit(
         environment_values: BTreeMap::new(),
         bindings: vec![],
         file_bindings: vec![],
+        board_features: vec![],
         output,
     }
 }

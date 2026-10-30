@@ -233,6 +233,59 @@ pub unsafe fn init(console: &dyn Console) {
     }
 }
 
+/// Storage for a stage's console, owned by the stage's `main`.
+///
+/// The log backend keeps a `'static` reference, so the console must not live
+/// in a value that moves. A stage declares one of these as a `static` and
+/// hands it to the flow that brings the console up:
+///
+/// ```ignore
+/// static CONSOLE: fstart_log::StaticConsole<Ns16550> = fstart_log::StaticConsole::new();
+/// ```
+pub struct StaticConsole<C> {
+    slot: SyncCell<Option<C>>,
+    taken: AtomicBool,
+}
+
+impl<C: Console + 'static> StaticConsole<C> {
+    pub const fn new() -> Self {
+        Self {
+            slot: SyncCell::new(None),
+            taken: AtomicBool::new(false),
+        }
+    }
+
+    /// Store `console` and make it the log backend. A second call keeps the
+    /// first console and drops `console`.
+    pub fn install(&'static self, console: C) -> &'static C {
+        if !self.taken.swap(true, Ordering::AcqRel) {
+            // SAFETY: the flag admits exactly one writer, before any reader.
+            unsafe { *self.slot.0.get() = Some(console) };
+        }
+        // SAFETY: written once above and never again; the cell is 'static.
+        let console = unsafe { (*self.slot.0.get()).as_ref() }
+            .unwrap_or_else(|| unreachable!("console installed above"));
+        // SAFETY: the console is 'static and never moves.
+        unsafe { init(console) };
+        console
+    }
+
+    /// The installed console, if any.
+    pub fn get(&'static self) -> Option<&'static C> {
+        if !self.taken.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: written once before `taken` was observed set.
+        unsafe { (*self.slot.0.get()).as_ref() }
+    }
+}
+
+impl<C: Console + 'static> Default for StaticConsole<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Replace the global console backend.
 ///
 /// # Safety
