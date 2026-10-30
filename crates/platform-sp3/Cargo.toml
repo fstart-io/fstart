@@ -606,7 +606,7 @@ equivalence-id = 0xa082
 file = "milan/UcodePatch_GN_a082.bin"
 
 [dependencies]
-fstart-platform-amd = { path = "../platform-amd", default-features = false, features = ["smbios"], optional = true }
+fstart-platform-amd = { path = "../platform-amd", default-features = false, features = ["tables"], optional = true }
 fstart-driver-spd = { workspace = true, optional = true }
 fstart-amdfw-format = { workspace = true }
 # The TSC timer and the FCH POST code register; Naples is Zeppelin.

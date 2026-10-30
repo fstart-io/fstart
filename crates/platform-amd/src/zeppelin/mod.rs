@@ -255,6 +255,26 @@ impl noncar::Soc for Zeppelin {
         silicon::after_resources(ctx.fch);
     }
 
+    /// The dies of an SP4 as AmdFabricZpDxe reports them for SRAT.
+    fn die_memory(
+        dies: &[fstart_driver_amd::df::Die<Self, fstart_pci::ecam::GlobalEcam>],
+    ) -> Option<crate::acpi::DieMemory> {
+        if dies.len() < 2 {
+            return None;
+        }
+        let memory = fstart_driver_amd::df::zeppelin::die_memory(&dies[0].df())?;
+        Some(
+            memory
+                .iter()
+                .map(|m| crate::numa::MemoryAffinity {
+                    base: m.base,
+                    end: m.end,
+                    domain: m.die.into(),
+                })
+                .collect(),
+        )
+    }
+
     /// The vendor firmware's ReadyToBoot.
     fn ready_to_boot<B: Board<Soc = Self>>(
         _: &mut Silicon<Self>,

@@ -386,6 +386,7 @@ fn sp4_pci_roots_and_host_bridges() {
         ecam_buses: 128,
         hpet_id: 0,
         power: None,
+        numa: None,
         board: &board,
     })
     .unwrap();

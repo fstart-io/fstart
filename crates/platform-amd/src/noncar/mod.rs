@@ -132,6 +132,11 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     fn silicon_init<B: Board<Soc = Self>>(tp1: Tp1<'_, Self>) -> Result<Silicon<Self>, Stop>;
     /// TP2: after the PCI resource allocation.
     fn after_resources<B: Board<Soc = Self>>(silicon: &mut Silicon<Self>, ctx: &Ctx<'_, Self>);
+    /// The DRAM of each die, for SRAT (domain = die), if the dies are NUMA
+    /// nodes: several and not interleaved.
+    fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<crate::acpi::DieMemory> {
+        None
+    }
     /// TP3: ready to boot, before ACPI publication and the PSP's DF lock.
     /// Device contributions such as the posted video ROM must be ready here.
     fn ready_to_boot<B: Board<Soc = Self>>(

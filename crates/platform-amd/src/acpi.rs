@@ -130,7 +130,22 @@ pub struct Inputs<'a> {
     pub hpet_id: u32,
     /// The P-states and C-states of every processor.
     pub power: Option<CpuPower<'a>>,
+    /// The memory of each die if the dies are NUMA nodes: SRAT, MSCT,
+    /// SLIT, and `_PXM` on the root bridges.
+    pub numa: Option<DieNuma<'a>>,
     pub board: &'a BoardAcpi,
+}
+
+/// The DRAM ranges of the dies, `(base, end, die)`.
+pub type DieMemory = heapless::Vec<crate::numa::MemoryAffinity, 48>;
+
+/// The dies as NUMA nodes.
+#[derive(Debug, Clone, Copy)]
+pub struct DieNuma<'a> {
+    /// DRAM ranges; the domain is the die.
+    pub memory: &'a [crate::numa::MemoryAffinity],
+    /// CPUID Fn8000_0008_EAX\[7:0\], for the MSCT.
+    pub phys_addr_bits: u8,
 }
 
 /// What the BSP reads of the P-states and C-states the CCX init left.
@@ -239,6 +254,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
             | fstart_acpi::wsmt::COMM_BUFFER_NESTED_PTR_PROTECTION,
     );
     let extra = core::iter::once(mcfg(inputs)?)
+        .chain(numa_tables(inputs))
         .chain(ivrs(inputs))
         .chain(core::iter::once(wsmt))
         .chain(inputs.board.tables.iter().cloned())
@@ -346,6 +362,30 @@ fn processors(inputs: &Inputs) -> Result<Vec<u8>, Error> {
         )?);
     }
     Ok(aml)
+}
+
+/// A die per proximity domain: SRAT with the CPUs by their APIC ID's die
+/// (\[5:4\]), MSCT and the vendor's SLIT (10 within a die, 16 between the
+/// dies of a socket).
+fn numa_tables(inputs: &Inputs) -> Vec<Vec<u8>> {
+    use crate::numa::{CpuAffinity, Domain, Numa};
+    let Some(numa) = inputs.numa else {
+        return Vec::new();
+    };
+    let domains: Vec<Domain> = inputs.dies.iter().map(|_| Domain { socket: 0 }).collect();
+    let cpus = inputs.apic_ids.iter().map(|&apic_id| CpuAffinity {
+        apic_id,
+        domain: apic_id >> 4 & 3,
+    });
+    crate::numa::tables(
+        &Numa {
+            domains: &domains,
+            memory: numa.memory,
+            phys_addr_bits: numa.phys_addr_bits,
+        },
+        cpus,
+        |a, b| if a.socket == b.socket { 16 } else { 32 },
+    )
 }
 
 /// The sleep states without ACPI resume (S3) support: S0, S1, S4, S5.
@@ -531,6 +571,9 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
         }
     }
     .emit(&mut body)?;
+    if inputs.numa.is_some() {
+        acpi_dsl! { Name("_PXM", #{byte uid}); }.emit(&mut body)?;
+    }
     body.extend(root_resources(die, index == 0));
     body.extend(ioapic_acpi::nbio_default_aml()?);
     let routes = inputs.soc.bridge_routes;
@@ -1049,6 +1092,7 @@ mod tests {
             ecam_buses: 128,
             hpet_id: 0x1022_8201,
             power: Some(power()),
+            numa: None,
             board,
         })
         .unwrap()
@@ -1167,6 +1211,7 @@ mod tests {
             ecam_buses: 128,
             hpet_id: 0,
             power: None,
+            numa: None,
             board: &BoardAcpi::default(),
         });
         assert_eq!(
@@ -1212,6 +1257,7 @@ mod tests {
             ecam_buses: 128,
             hpet_id: 0,
             power: None,
+            numa: None,
             board: &board,
         };
         let special = |variety, handle, source, dte| DeviceEntry::Special {
@@ -1478,6 +1524,50 @@ mod tests {
         );
     }
 
+    /// Two dies as NUMA nodes: SRAT, MSCT, SLIT and the root bridges'
+    /// proximity.
+    #[test]
+    fn two_dies_are_two_domains() {
+        use crate::numa::MemoryAffinity;
+        let dies = dies();
+        let memory = [
+            MemoryAffinity {
+                base: 0,
+                end: 0x8000_0000,
+                domain: 0,
+            },
+            MemoryAffinity {
+                base: 0x1_0000_0000,
+                end: 0x2_0000_0000,
+                domain: 1,
+            },
+        ];
+        let board = BoardAcpi::default();
+        let tables = build(&Inputs {
+            soc: &ACPI,
+            apic_ids: &[0, 1, 0x10, 0x11],
+            dies: &dies,
+            ecam_base: 0xf000_0000,
+            ecam_buses: 128,
+            hpet_id: 0,
+            power: None,
+            numa: Some(DieNuma {
+                memory: &memory,
+                phys_addr_bits: 48,
+            }),
+            board: &board,
+        })
+        .unwrap();
+        let signatures: std::vec::Vec<_> = tables.extra.iter().map(|t| &t[..4]).collect();
+        assert_eq!(&signatures[1..4], [b"SRAT", b"MSCT", b"SLIT"]);
+        let slit = &tables.extra[3];
+        assert_eq!(&slit[44..48], &[10, 16, 16, 10]);
+        assert_eq!(
+            tables.dsdt_aml.windows(4).filter(|w| w == b"_PXM").count(),
+            2
+        );
+    }
+
     /// The table set of an MJ11-EC1 (EPYC 3151, one die) as the stage builds
     /// it, byte for byte: the bridges and windows the enumeration finds,
     /// the board's IPMI KCS with its SPMI.
@@ -1562,6 +1652,7 @@ mod tests {
             ecam_buses: 128,
             hpet_id: 0x1022_8201,
             power: Some(power()),
+            numa: None,
             board: &board,
         })
         .unwrap();

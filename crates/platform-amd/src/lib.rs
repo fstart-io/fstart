@@ -8,9 +8,11 @@ extern crate alloc;
 pub mod acpi;
 #[cfg(feature = "noncar")]
 pub mod noncar;
+#[cfg(feature = "tables")]
+pub mod numa;
 #[cfg(feature = "picasso")]
 pub mod picasso;
-#[cfg(feature = "smbios")]
+#[cfg(feature = "tables")]
 pub mod smbios;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
