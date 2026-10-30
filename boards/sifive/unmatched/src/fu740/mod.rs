@@ -22,7 +22,8 @@ mod stage {
     // The board selects payload backends through platform features; all
     // stage runtime paths below resolve through that re-export.
     use fstart_platform_qemu::stage_runtime as fstart_stage;
-    use fstart_stage::{StageEnvironment, StageProgram, payload::MainstagePayload};
+    #[cfg(not(fstart_payload = "crabefi"))]
+    use fstart_stage::payload::MainstagePayload;
 
     #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
     compile_error!("FU740 requires monolithic/riscv64 stage and entry selections");
@@ -37,53 +38,6 @@ mod stage {
         all(fstart_payload = "linux", fstart_payload = "crabefi")
     ))]
     compile_error!("select exactly one FU740 payload");
-
-    /// Board seams in the fixed FU740 flow. Defaults compile away.
-    pub trait Fu740Hooks {
-        fn before_prci(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-        fn after_prci(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-        fn before_console(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-        fn after_console(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-        fn before_memory(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-        fn after_memory(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-        fn before_payload(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-    }
-
-    /// Platform-owned adapter for fixed FU740 stage dispatch.
-    pub struct Fu740Program<B>(core::marker::PhantomData<B>);
-    impl<B: Fu740Board> StageProgram for Fu740Program<B> {
-        fn run_stage(handoff: usize) -> ! {
-            Fu740::run_stage::<B>(StageEnvironment::Monolithic, handoff)
-        }
-        #[cfg(fstart_payload = "crabefi")]
-        fn resume_sbi(hart_id: u64, dtb_addr: u64) -> ! {
-            Fu740::resume_sbi::<B>(hart_id, dtb_addr)
-        }
-    }
-
-    /// Board contract for the FU740 flow.
-    pub trait Fu740Board: 'static {
-        type Hooks: Fu740Hooks + Default;
-
-        /// ROM-resident platform policy; never copied onto the early stack.
-        const CONFIG: &'static Fu740Config;
-        /// Board-selected SiFive UART wiring and baud policy.
-        const CONSOLE_CONFIG: &'static SifiveUartConfig;
-    }
 
     /// DRAM-backed state retained through payload launch.
     pub struct Fu740Mainstage {
@@ -103,102 +57,81 @@ mod stage {
         }
     }
 
-    /// Concrete FU740 fixed-flow platform.
-    pub struct Fu740;
-
-    impl Fu740 {
-        /// Run PRCI, UART, DDR, then dispatch the build-selected FFS payload.
-        pub fn run_stage<B>(env: StageEnvironment, handoff: usize) -> !
-        where
-            B: Fu740Board,
-        {
-            if !matches!(env, StageEnvironment::Monolithic) {
-                fstart_arch::riscv64::halt();
-            }
-            let mut hooks = B::Hooks::default();
-            if !phase("before_prci", hooks.before_prci()) {
-                fstart_arch::riscv64::halt();
-            }
-            let mut prci = match Fu740Prci::new(&B::CONFIG.prci) {
-                Ok(prci) => prci,
-                Err(_) => fstart_arch::riscv64::halt(),
-            };
-            if !phase("prci", prci.init()) || !phase("after_prci", hooks.after_prci()) {
-                fstart_arch::riscv64::halt();
-            }
-
-            if !phase("before_console", hooks.before_console()) {
-                fstart_arch::riscv64::halt();
-            }
-            let mut console = match SifiveUart::new(B::CONSOLE_CONFIG) {
-                Ok(console) => console,
-                Err(_) => fstart_arch::riscv64::halt(),
-            };
-            if console.init().is_err() {
-                fstart_arch::riscv64::halt();
-            }
-            // SAFETY: this stage owns the console through payload handoff.
-            unsafe { fstart_log::init(&console) };
-            fstart_log::info!("fu740: SiFive UART console ready");
-            if !phase("after_console", hooks.after_console())
-                || !phase("before_memory", hooks.before_memory())
-            {
-                fstart_arch::riscv64::halt();
-            }
-
-            let mut ddr = match Fu740Ddr::new(&B::CONFIG.ddr) {
-                Ok(ddr) => ddr,
-                Err(_) => fstart_arch::riscv64::halt(),
-            };
-            if !phase("ddr", ddr.init())
-                || !phase("after_memory", hooks.after_memory())
-                || !phase(
-                    "boot_integrity",
-                    install_boot_context(B::CONFIG, ddr.detected_size_bytes(), handoff),
-                )
-                || !phase("before_payload", hooks.before_payload())
-            {
-                fstart_arch::riscv64::halt();
-            }
-            fstart_log::info!(
-                "fu740 ramstage: {} MiB DRAM",
-                ddr.detected_size_bytes() >> 20
-            );
-            fstart_log::info!("fu740 ramstage: ready for payload");
-            Fu740BuildSelectedPayload::boot(Fu740Mainstage {
-                config: B::CONFIG,
-                console,
-            })
+    /// PRCI clocks, the UART console, DDR, the verified boot media, then the
+    /// build-selected FFS payload.
+    pub fn run(config: &'static Fu740Config, uart: &'static SifiveUartConfig) -> ! {
+        let mut prci = match Fu740Prci::new(&config.prci) {
+            Ok(prci) => prci,
+            Err(_) => fstart_arch::riscv64::halt(),
+        };
+        if !phase("prci", prci.init()) {
+            fstart_arch::riscv64::halt();
         }
 
-        #[cfg(fstart_payload = "crabefi")]
-        pub fn resume_sbi<B>(hart_id: u64, dtb_addr: u64) -> !
-        where
-            B: Fu740Board,
-        {
-            let mut console = match SifiveUart::new(B::CONSOLE_CONFIG) {
-                Ok(console) => console,
-                Err(_) => fstart_arch::riscv64::halt(),
-            };
-            if console.init().is_err() {
-                fstart_arch::riscv64::halt();
-            }
-            // SAFETY: this resumed stage never returns; the console outlives CrabEFI.
-            unsafe {
-                fstart_log::replace_console(core::mem::transmute::<
-                    &dyn Console,
-                    &'static dyn Console,
-                >(&console));
-            }
-            fstart_stage::payload::Riscv64UefiPayload::resume_sbi(
-                Fu740Mainstage {
-                    config: B::CONFIG,
-                    console,
-                },
-                hart_id,
-                dtb_addr,
+        let mut console = match SifiveUart::new(uart) {
+            Ok(console) => console,
+            Err(_) => fstart_arch::riscv64::halt(),
+        };
+        if console.init().is_err() {
+            fstart_arch::riscv64::halt();
+        }
+        // SAFETY: this stage owns the console through payload handoff.
+        unsafe { fstart_log::init(&console) };
+        fstart_log::info!("fu740: SiFive UART console ready");
+
+        let mut ddr = match Fu740Ddr::new(&config.ddr) {
+            Ok(ddr) => ddr,
+            Err(_) => fstart_arch::riscv64::halt(),
+        };
+        // The only stage: no predecessor handoff to keep out of loads.
+        if !phase("ddr", ddr.init())
+            || !phase(
+                "boot_integrity",
+                install_boot_context(config, ddr.detected_size_bytes(), 0),
             )
+        {
+            fstart_arch::riscv64::halt();
         }
+        fstart_log::info!(
+            "fu740 ramstage: {} MiB DRAM",
+            ddr.detected_size_bytes() >> 20
+        );
+        fstart_log::info!("fu740 ramstage: ready for payload");
+        Fu740BuildSelectedPayload::boot(Fu740Mainstage { config, console })
+    }
+
+    /// Without CrabEFI nothing returns from OpenSBI here.
+    #[cfg(not(fstart_payload = "crabefi"))]
+    pub fn resume_sbi(_: &'static Fu740Config, _: &'static SifiveUartConfig, _: u64, _: u64) -> ! {
+        fstart_arch::riscv64::halt()
+    }
+
+    /// Recreate the stage's console after OpenSBI enters S-mode.
+    #[cfg(fstart_payload = "crabefi")]
+    pub fn resume_sbi(
+        config: &'static Fu740Config,
+        uart: &'static SifiveUartConfig,
+        hart_id: u64,
+        dtb_addr: u64,
+    ) -> ! {
+        let mut console = match SifiveUart::new(uart) {
+            Ok(console) => console,
+            Err(_) => fstart_arch::riscv64::halt(),
+        };
+        if console.init().is_err() {
+            fstart_arch::riscv64::halt();
+        }
+        // SAFETY: this resumed stage never returns; the console outlives CrabEFI.
+        unsafe {
+            fstart_log::replace_console(
+                core::mem::transmute::<&dyn Console, &'static dyn Console>(&console),
+            );
+        }
+        fstart_stage::payload::Riscv64UefiPayload::resume_sbi(
+            Fu740Mainstage { config, console },
+            hart_id,
+            dtb_addr,
+        )
     }
 
     /// This monolithic flow authenticates its own root, not an inherited one.
@@ -373,7 +306,12 @@ mod stage {
                 config.dtb_addr,
                 FU740_DRAM_BASE,
                 config.ddr.dram_size,
-                FU740_ECAM_BASE,
+                Some(fstart_pci::PciRootInfo {
+                    segment: 0,
+                    ecam_base: FU740_ECAM_BASE,
+                    bus_start: 0,
+                    bus_end: 0xff,
+                }),
             )
         }
 
@@ -427,5 +365,4 @@ mod stage {
     pub type Fu740BuildSelectedPayload = fstart_stage::payload::HaltPayload;
 }
 
-#[cfg(all(fstart_stage_env = "monolithic", target_arch = "riscv64"))]
-pub use stage::{Fu740, Fu740Board, Fu740BuildSelectedPayload, Fu740Hooks, Fu740Program};
+pub use stage::{Fu740BuildSelectedPayload, Fu740Mainstage, resume_sbi, run};

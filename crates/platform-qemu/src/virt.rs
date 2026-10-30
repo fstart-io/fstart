@@ -252,3 +252,10 @@ pub fn phase(machine: &str, name: &str, result: Result<(), ServiceError>) -> boo
         true
     }
 }
+
+/// The RISC-V virt machine's NS16550.
+pub const QEMU_RISCV64_UART_BASE: u64 = 0x1000_0000;
+/// The AArch64 virt machine's PL011.
+pub const QEMU_AARCH64_UART_BASE: u64 = 0x0900_0000;
+/// The ARMv7 virt machine's PL011.
+pub const QEMU_ARMV7_UART_BASE: u64 = 0x0900_0000;

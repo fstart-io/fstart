@@ -5,12 +5,11 @@
 extern crate ufmt;
 
 pub mod config;
-#[cfg(fstart_stage_env = "monolithic")]
+/// The FU740 flow the stage `main` runs: firmware only.
+#[cfg(all(target_arch = "riscv64", target_os = "none"))]
 pub mod fu740;
-#[cfg(fstart_stage_env = "monolithic")]
-mod stage;
 
-/// HiFive Unmatched board marker selected by the board-owned stage entry.
+/// HiFive Unmatched board marker.
 pub struct Board;
 
 pub use config::*;

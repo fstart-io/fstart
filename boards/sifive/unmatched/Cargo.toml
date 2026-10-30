@@ -10,7 +10,6 @@ schema = 1
 board = "sifive-unmatched"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
@@ -18,10 +17,9 @@ fstart-core = { path = "../../../crates/core" }
 fstart-arch = { path = "../../../crates/arch", features = ["riscv64"] }
 fstart-driver-uart = { path = "../../../crates/driver-uart" }
 fstart-log = { path = "../../../crates/log" }
+fstart-pci = { path = "../../../crates/pci" }
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
 serde = { workspace = true }
 ufmt = { workspace = true }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+# One binary per stage, named after the stage: src/bin/stage.rs.

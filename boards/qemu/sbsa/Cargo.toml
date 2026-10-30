@@ -10,13 +10,10 @@ schema = 1
 board = "qemu-sbsa"
 platform = "aarch64"
 target = "aarch64-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
 fstart-driver-uart = { path = "../../../crates/driver-uart" }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+# One binary per stage, named after the stage: src/bin/stage.rs.

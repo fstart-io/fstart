@@ -77,7 +77,7 @@ mod stage {
     use fstart_core::services::Console;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
-    use fstart_stage::{StageEnvironment, StageProgram, payload::MainstagePayload};
+    use fstart_stage::payload::MainstagePayload;
 
     #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
     compile_error!("sifive-u requires monolithic/riscv64 stage and entry selections");
@@ -97,39 +97,6 @@ mod stage {
     #[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi")))]
     compile_error!("selected CrabEFI backend is not enabled");
 
-    /// Board seams in the direct QEMU `sifive_u` flow.
-    pub trait QemuSifiveUHooks {
-        fn before_console(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-        fn after_console(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-        fn before_payload(&mut self) -> Result<(), ServiceError> {
-            Ok(())
-        }
-    }
-
-    /// Platform-owned adapter for fixed sifive-u stage dispatch.
-    pub struct QemuSifiveUProgram<B>(core::marker::PhantomData<B>);
-    impl<B: QemuSifiveUBoard> StageProgram for QemuSifiveUProgram<B> {
-        fn run_stage(handoff: usize) -> ! {
-            QemuSifiveU::run_stage::<B>(StageEnvironment::Monolithic, handoff)
-        }
-        #[cfg(feature = "crabefi")]
-        fn resume_sbi(hart_id: u64, dtb_addr: u64) -> ! {
-            QemuSifiveU::resume_sbi::<B>(hart_id, dtb_addr)
-        }
-    }
-
-    /// Static QEMU `sifive_u` board contract.
-    pub trait QemuSifiveUBoard: 'static {
-        type Hooks: QemuSifiveUHooks + Default;
-
-        const CONFIG: &'static QemuSifiveUConfig;
-        const CONSOLE_CONFIG: &'static SifiveUartConfig;
-    }
-
     /// DRAM-resident state retained through selected payload launch.
     pub struct QemuSifiveUMainstage {
         #[cfg(any(feature = "linux", feature = "crabefi"))]
@@ -144,84 +111,78 @@ mod stage {
         }
     }
 
-    /// QEMU `sifive_u` fixed flow marker.
-    pub struct QemuSifiveU;
-
-    impl QemuSifiveU {
-        pub fn run_stage<B>(env: StageEnvironment, handoff: usize) -> !
-        where
-            B: QemuSifiveUBoard,
-        {
-            let _ = handoff;
-            if !matches!(env, StageEnvironment::Monolithic) {
-                fstart_arch::halt();
-            }
-            let mut hooks = B::Hooks::default();
-            if !phase("before_console", hooks.before_console()) {
-                fstart_arch::riscv64::halt();
-            }
-            let mut console = match SifiveUart::new(B::CONSOLE_CONFIG) {
-                Ok(console) => console,
-                Err(_) => fstart_arch::riscv64::halt(),
-            };
-            if console.init().is_err() {
-                fstart_arch::riscv64::halt();
-            }
-            // SAFETY: the stage owns this console through payload handoff.
-            unsafe { fstart_log::init(&console) };
-            fstart_log::info!("sifive-u: SiFive UART console ready");
-            if !phase("after_console", hooks.after_console())
-                || !phase(
-                    "boot_integrity",
-                    crate::boot::from_dtb(
-                        fstart_arch::riscv64::boot_dtb_addr(),
-                        cfg!(any(fstart_payload = "linux", fstart_payload = "crabefi"))
-                            .then_some(B::CONFIG.dtb_addr),
-                        B::CONFIG.ram_base,
-                        B::CONFIG.firmware_base,
-                        B::CONFIG.firmware_size,
-                    ),
-                )
-                || !phase("before_payload", hooks.before_payload())
-            {
-                fstart_arch::riscv64::halt();
-            }
-            fstart_log::info!("sifive-u ramstage: ready for payload");
-            <QemuSifiveUBuildSelectedPayload as MainstagePayload<_>>::boot(QemuSifiveUMainstage {
-                #[cfg(any(feature = "linux", feature = "crabefi"))]
-                config: B::CONFIG,
-                console,
-            })
+    /// The QEMU `sifive_u` stage: console, boot media, then the payload.
+    /// QEMU boards have no board work; their `main` calls this.
+    pub fn run(config: &'static QemuSifiveUConfig, console: &'static SifiveUartConfig) -> ! {
+        let console_config = console;
+        let mut console = match SifiveUart::new(console_config) {
+            Ok(console) => console,
+            Err(_) => fstart_arch::riscv64::halt(),
+        };
+        if console.init().is_err() {
+            fstart_arch::riscv64::halt();
         }
-
-        #[cfg(feature = "crabefi")]
-        pub fn resume_sbi<B>(hart_id: u64, dtb_addr: u64) -> !
-        where
-            B: QemuSifiveUBoard,
-        {
-            let mut console = match SifiveUart::new(B::CONSOLE_CONFIG) {
-                Ok(console) => console,
-                Err(_) => fstart_arch::riscv64::halt(),
-            };
-            if console.init().is_err() {
-                fstart_arch::riscv64::halt();
-            }
-            // SAFETY: this resumed stage never returns; the console outlives CrabEFI.
-            unsafe {
-                fstart_log::replace_console(core::mem::transmute::<
-                    &dyn Console,
-                    &'static dyn Console,
-                >(&console));
-            }
-            fstart_stage::payload::Riscv64UefiPayload::resume_sbi(
-                QemuSifiveUMainstage {
-                    config: B::CONFIG,
-                    console,
-                },
-                hart_id,
-                dtb_addr,
-            )
+        // SAFETY: the stage owns this console through payload handoff.
+        unsafe { fstart_log::init(&console) };
+        fstart_log::info!("sifive-u: SiFive UART console ready");
+        if !phase(
+            "boot_integrity",
+            crate::boot::from_dtb(
+                fstart_arch::riscv64::boot_dtb_addr(),
+                cfg!(any(fstart_payload = "linux", fstart_payload = "crabefi"))
+                    .then_some(config.dtb_addr),
+                config.ram_base,
+                config.firmware_base,
+                config.firmware_size,
+            ),
+        ) {
+            fstart_arch::riscv64::halt();
         }
+        fstart_log::info!("sifive-u ramstage: ready for payload");
+        <QemuSifiveUBuildSelectedPayload as MainstagePayload<_>>::boot(QemuSifiveUMainstage {
+            #[cfg(any(feature = "linux", feature = "crabefi"))]
+            config,
+            console,
+        })
+    }
+
+    /// Without CrabEFI nothing returns from OpenSBI here.
+    #[cfg(not(feature = "crabefi"))]
+    pub fn resume_sbi(
+        _: &'static QemuSifiveUConfig,
+        _: &'static SifiveUartConfig,
+        _: u64,
+        _: u64,
+    ) -> ! {
+        fstart_arch::riscv64::halt()
+    }
+
+    /// Recreate stage-local state after OpenSBI enters S-mode.
+    #[cfg(feature = "crabefi")]
+    pub fn resume_sbi(
+        config: &'static QemuSifiveUConfig,
+        console_config: &'static SifiveUartConfig,
+        hart_id: u64,
+        dtb_addr: u64,
+    ) -> ! {
+        let mut console = match SifiveUart::new(console_config) {
+            Ok(console) => console,
+            Err(_) => fstart_arch::riscv64::halt(),
+        };
+        if console.init().is_err() {
+            fstart_arch::riscv64::halt();
+        }
+        // SAFETY: this resumed stage never returns; the console outlives CrabEFI.
+        unsafe {
+            fstart_log::replace_console(
+                core::mem::transmute::<&dyn Console, &'static dyn Console>(&console),
+            );
+        }
+        fstart_stage::payload::Riscv64UefiPayload::resume_sbi(
+            QemuSifiveUMainstage { config, console },
+            hart_id,
+            dtb_addr,
+        )
     }
 
     fn phase(name: &str, result: Result<(), ServiceError>) -> bool {
@@ -280,7 +241,4 @@ mod stage {
 }
 
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
-pub use stage::{
-    QemuSifiveU, QemuSifiveUBoard, QemuSifiveUBuildSelectedPayload, QemuSifiveUHooks,
-    QemuSifiveUMainstage, QemuSifiveUProgram,
-};
+pub use stage::{QemuSifiveUBuildSelectedPayload, QemuSifiveUMainstage, resume_sbi, run};
