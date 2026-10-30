@@ -7,9 +7,10 @@
 //!
 //! Every supported vendor half keeps its vendor EFS and its PSP/BIOS
 //! directories and blobs in place (`[0, prefix)` of the half, the vendor's
-//! "Two 16M in 32MB" layout, AMD #55758 rev 1.13 §4.1.7); only its `0x62`
-//! entries change, to a copy of the reset image at the half's own
-//! `0xde0000`.
+//! "Two 16M in 32MB" layout, AMD #55758 rev 1.13 §4.1.7). Its `0x62`
+//! entries change to a copy of the reset image at the half's own `0xde0000`.
+//! Migrated boards also regenerate APCB configuration in its existing slots,
+//! using reviewed typed source and donor-compatibility guards.
 //!
 //! ```text
 //! [0, prefix_lo)              lower vendor prefix (EFS, directories, blobs)
@@ -196,6 +197,8 @@ pub enum ImageError {
     },
     /// The composed image does not resolve as planned.
     Verify(&'static str),
+    /// Source-generated APCB configuration or donor compatibility check failed.
+    Apcb(String),
 }
 
 impl From<DirError> for ImageError {
@@ -381,12 +384,22 @@ pub struct FlashPlan {
     /// window (one 16 MiB half or the 32 MiB dual image).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mirrors: Vec<u32>,
+    /// Source-built configuration. Empty keeps vendor APCBs for unmigrated boards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apcbs: Vec<GeneratedApcbs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeneratedApcbs {
+    pub generation: Generation,
+    pub replacements: Vec<crate::amd::apcb_v3::Replacement>,
 }
 
 /// What happens to one half of the vendor ROM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HalfAction {
-    /// Composed: vendor prefix kept, its `0x62` entries rewritten.
+    /// Composed: executable blobs kept, `0x62` entries rewritten, and any
+    /// source-configured APCBs generated in their existing slots.
     Compose(VendorLayout),
     /// Kept byte-identical: an upper half without a recognized EFS (`None`)
     /// or of a generation the board does not support.
@@ -429,6 +442,18 @@ impl FlashPlan {
         }
         if self.ffs_offset == 0 || self.ffs_offset >= self.reset.flash_offset {
             return Err(ImageError::Plan("FFS offset outside the lower half"));
+        }
+        for (index, apcb) in self.apcbs.iter().enumerate() {
+            if !self.generations.contains(&apcb.generation)
+                || self.apcbs[..index]
+                    .iter()
+                    .any(|other| other.generation == apcb.generation)
+                || apcb.replacements.is_empty()
+            {
+                return Err(ImageError::Plan(
+                    "APCB generation is unsupported, duplicated or empty",
+                ));
+            }
         }
         let mut mirrors = self.mirrors.clone();
         mirrors.sort_unstable();
@@ -589,6 +614,14 @@ fn build(
         let bytes = &mut out[half.range()];
         bytes[layout.prefix_end..].fill(0xff);
         rewrite_half(bytes, &tables, plan)?;
+        if let Some(apcb) = plan
+            .apcbs
+            .iter()
+            .find(|a| a.generation == layout.generation)
+        {
+            crate::amd::apcb_v3::replace(bytes, &vendor.bios, &apcb.replacements)
+                .map_err(ImageError::Apcb)?;
+        }
         let reset_at = half.offset() + plan.reset.flash_offset as usize;
         out[reset_at..reset_at + reset.len()].copy_from_slice(reset);
     }

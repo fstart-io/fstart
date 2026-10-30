@@ -137,8 +137,10 @@ and the reset vector in the last 16 bytes of the image.
 ### Layout
 
 `sp3_flash` composes the build into the vendor ROM. Each composed half keeps
-its vendor EFS, directories and blobs in place (`[0, prefix)`), and only its
-`0x62` entries change.
+its vendor EFS, directories and executable blobs in place (`[0, prefix)`).
+Its `0x62` entries change, and migrated boards replace the APCB configuration
+from [typed source](amd-apcb.md), with donor-compatibility and slot-capacity
+checks. The initial source settings reproduce the original APCB bytes.
 
 ```text
 [0, prefix_lo)            lower vendor prefix (EFS, directories, blobs)

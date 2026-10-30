@@ -352,8 +352,20 @@ impl Payload {
 /// entry of a supported generation names the reset image at the top of
 /// the lower half (above the early region), the FFS starts at
 /// [`layout::FFS_OFFSET`] or above.
-pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
-    FlashPlan {
+pub fn flash_plan<B: Sp3BoardFacts>() -> Result<FlashPlan, String> {
+    use fstart_image_build::{amd::apcb_v3, sp3_flash::GeneratedApcbs};
+    let tables = serde_json::from_str(include_str!("apcb/ddr4.json"))
+        .map_err(|e| format!("SP3 DDR4 APCB tables: {e}"))?;
+    let apcbs = B::APCB_SOURCES
+        .iter()
+        .map(|(generation, source)| {
+            Ok(GeneratedApcbs {
+                generation: generation.profile().bios,
+                replacements: apcb_v3::compile(source, &tables)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(FlashPlan {
         generations: B::GENERATIONS.iter().map(|g| g.profile().bios).collect(),
         reset: ResetSlot {
             flash_offset: RESET.flash_offset,
@@ -363,7 +375,8 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
         ffs_offset: layout::FFS_OFFSET,
         dram_floor: EARLY_REGION.end(),
         mirrors: B::FLASH_MIRRORS.to_vec(),
-    }
+        apcbs,
+    })
 }
 
 /// The assembler's view of the reset unit and its FFS: the FFS lives in
@@ -513,7 +526,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             ),
             vendor_image,
             reset_unit: RESET_UNIT.into(),
-            compose: flash_plan::<B>(),
+            compose: flash_plan::<B>()?,
         })),
         inputs,
     };
@@ -550,7 +563,7 @@ fn microcode<B: Sp3BoardFacts>(vendor_image: &str) -> Result<MicrocodeConfig, St
 pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, String> {
     let path = root.join(B::VENDOR_IMAGE);
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(flash_plan::<B>().survey(&bytes)?)
+    Ok(flash_plan::<B>()?.survey(&bytes)?)
 }
 
 #[cfg(test)]
@@ -689,6 +702,7 @@ mod tests {
                 ffs_offset: 0x60_0000,
                 dram_floor: 0x75c0_0000,
                 mirrors: Vec::new(),
+                apcbs: Vec::new(),
             }
         );
         let config = plan.assembly.config("tyan-s8030").unwrap();
@@ -757,6 +771,38 @@ mod tests {
         assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00de_0000));
         assert_eq!(find(RegionKind::Flash).base, 0xfd_0000_0000);
         assert_eq!(find(RegionKind::Stack).end(), Some(STACK.end()));
+    }
+
+    #[test]
+    fn reviewed_sources_are_compiled_into_the_serializable_assembly_plan() {
+        struct SourceBoard;
+        impl Sp3BoardFacts for SourceBoard {
+            const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
+            const VENDOR_IMAGE: &'static str = S8030::VENDOR_IMAGE;
+            const MAX_CPUS: u16 = 128;
+            const APCB_SOURCES: &'static [(Generation, &'static str)] = &[
+                (
+                    Generation::Rome,
+                    include_str!("../../../../boards/tyan/s8030/apcb/rome.json"),
+                ),
+                (
+                    Generation::Milan,
+                    include_str!("../../../../boards/tyan/s8030/apcb/milan.json"),
+                ),
+            ];
+        }
+        let plan = resolve::<SourceBoard>(&BuildSelection::default()).unwrap();
+        let encoded = serde_json::to_string(&plan).unwrap();
+        let decoded: BuildPlan = serde_json::from_str(&encoded).unwrap();
+        decoded.order().unwrap();
+        let generated = &sp3(&decoded).compose.apcbs;
+        assert_eq!(generated.len(), 2);
+        assert!(generated.iter().all(|g| g.replacements.len() == 5));
+        assert!(
+            generated
+                .iter()
+                .all(|g| g.replacements.iter().all(|r| !r.bytes.is_empty()))
+        );
     }
 
     #[test]

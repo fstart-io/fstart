@@ -39,6 +39,12 @@ With only the lower 16 MiB as vendor ROM, `amd-ethanolx.rom` is the bank.
 The bank layout: vendor EFS and directories to `0x893000`, FFS from
 `0x893000`, reset image at `0xde0000`.
 
+APCB configuration is built from `apcb/milan.json` and shared typed DDR4 tables,
+not copied as an opaque blob. The initial settings reproduce RXM100CB exactly;
+other APCB contents are rejected by donor hashes until reviewed. See
+`docs/amd-apcb.md`. This source-generation path has host reconstruction tests,
+not a repeated hardware qualification.
+
 There is no on-flash vendor fallback after an update: both banks hold the
 new image. Keep verified external readouts for recovery, verify the
 complete readout after a write (an upload `OK` is not proof), and do not
