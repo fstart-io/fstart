@@ -12,7 +12,8 @@ extern crate alloc;
 
 mod dxio;
 mod i2c;
-#[cfg(fstart_stage_env = "smm")]
+/// The SMM handler, built into the separate SMM image.
+#[cfg(feature = "smm")]
 mod smm;
 
 use alloc::vec::Vec;
@@ -106,63 +107,11 @@ impl board::Board for Board {
         }
     }
 
-    fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError> {
-        uart::set_legacy_decode(fch, 0);
-        uart::prepare_mmio(fch, CONSOLE_UART);
-        // Vendor FUR1 IRQ4; establish it before ACPI reads the live routes.
-        irq::write(fch.io(), 0xf5, 4);
-        lpc::set_wide_io(fch, WideIo::W2, 0xca0, true);
-        Ok(())
-    }
-
     fn gpio(_generation: Generation) -> Gpio {
         Gpio {
             early: &[],
             table: &GPIO,
         }
-    }
-
-    fn dxio_engines<H: FchHw>(
-        _generation: Generation,
-        _levels: &[bool],
-        fch: &H,
-        timer: &dyn Timer,
-    ) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
-        let detected = i2c::detect(timer)?;
-        fstart_log::info!(
-            "ethanolx: board id {:#x}, PCIe straps {:#x}",
-            detected.board_id,
-            detected.straps
-        );
-        if detected.board_id != 0x30 {
-            fstart_log::error!(
-                "ethanolx: unsupported board revision {:#x}",
-                detected.board_id
-            );
-            return Err(BoardError::Configuration);
-        }
-        let detected = i2c::initialize(timer, detected)?;
-        fstart_log::info!("ethanolx: PCIe straps after routing {:#x}", detected.straps);
-        // BSP-only before MP, using the platform's socket-0 SMN pair.
-        let fuses = fstart_driver_amd::sp3::nbio::Fuses::read(&fch.smn());
-        let plan = dxio::plan(detected, fuses.limited_io()).map_err(|error| {
-            let detail = alloc::format!("{error:?}");
-            fstart_log::error!("ethanolx: PCIe policy: {}", detail.as_str());
-            BoardError::Configuration
-        })?;
-        fstart_log::info!(
-            "ethanolx: fuse1 {:#x}, {} DXIO engines",
-            fuses.word[1],
-            plan.engines.len()
-        );
-        if plan.disabled_xgbe != 0 {
-            fstart_log::warn!(
-                "ethanolx: {} xGbE descriptors disabled (legacy layout; no Milan xGbE controller)",
-                plan.disabled_xgbe
-            );
-        }
-        i2c::configure_redrivers(timer, plan.redrivers)?;
-        Ok(plan.engines)
     }
 
     fn acpi_lpc_aml() -> Vec<u8> {
@@ -177,6 +126,62 @@ impl board::Board for Board {
             ..AcpiBoard::default()
         }
     }
+}
+
+/// Before the console: the MMIO console UART, its legacy IRQ and the KCS
+/// decode.
+pub fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError> {
+    uart::set_legacy_decode(fch, 0);
+    uart::prepare_mmio(fch, CONSOLE_UART);
+    // Vendor FUR1 IRQ4; establish it before ACPI reads the live routes.
+    irq::write(fch.io(), 0xf5, 4);
+    lpc::set_wide_io(fch, WideIo::W2, 0xca0, true);
+    Ok(())
+}
+
+/// The DXIO lane map from the board ID and PCIe straps on I2C, with the
+/// redrivers configured to match.
+pub fn dxio_engines<H: FchHw>(
+    _generation: Generation,
+    _levels: &[bool],
+    fch: &H,
+    timer: &dyn Timer,
+) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
+    let detected = i2c::detect(timer)?;
+    fstart_log::info!(
+        "ethanolx: board id {:#x}, PCIe straps {:#x}",
+        detected.board_id,
+        detected.straps
+    );
+    if detected.board_id != 0x30 {
+        fstart_log::error!(
+            "ethanolx: unsupported board revision {:#x}",
+            detected.board_id
+        );
+        return Err(BoardError::Configuration);
+    }
+    let detected = i2c::initialize(timer, detected)?;
+    fstart_log::info!("ethanolx: PCIe straps after routing {:#x}", detected.straps);
+    // BSP-only before MP, using the platform's socket-0 SMN pair.
+    let fuses = fstart_driver_amd::sp3::nbio::Fuses::read(&fch.smn());
+    let plan = dxio::plan(detected, fuses.limited_io()).map_err(|error| {
+        let detail = alloc::format!("{error:?}");
+        fstart_log::error!("ethanolx: PCIe policy: {}", detail.as_str());
+        BoardError::Configuration
+    })?;
+    fstart_log::info!(
+        "ethanolx: fuse1 {:#x}, {} DXIO engines",
+        fuses.word[1],
+        plan.engines.len()
+    );
+    if plan.disabled_xgbe != 0 {
+        fstart_log::warn!(
+            "ethanolx: {} xGbE descriptors disabled (legacy layout; no Milan xGbE controller)",
+            plan.disabled_xgbe
+        );
+    }
+    i2c::configure_redrivers(timer, plan.redrivers)?;
+    Ok(plan.engines)
 }
 
 #[cfg(test)]

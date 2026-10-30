@@ -11,7 +11,6 @@ schema = 1
 board = "amd-ethanolx"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
 
 # The board's APCBs of each generation, as its vendor image has them.
@@ -25,6 +24,11 @@ apcb = { entries = [
   { type = 0x60, subprogram = 1, level = 2, file = "ethanolx/milan/apcb-60-0.bin" },
   { type = 0x60, subprogram = 1, instance = 1, level = 2, file = "ethanolx/milan/apcb-60-1.bin" },
 ] }
+
+[features]
+default = []
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-sp3/smm"]
 
 [dependencies]
 fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["acpi", "milan"] }
@@ -46,11 +50,9 @@ heapless = { version = "0.8", default-features = false }
 [dev-dependencies]
 embedded-hal-mock = { version = "0.11", default-features = false, features = ["eh1"] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("monolithic", "smm"))'] }
-
+# One binary per stage, named after the stage: the reset image.
 [[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+name = "reset"
+path = "src/bin/reset.rs"
 test = false
 bench = false

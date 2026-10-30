@@ -19,7 +19,6 @@ schema = 1
 board = "tyan-s8030"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
 
 # The board's APCBs of each generation, as its vendor image has them.
@@ -45,12 +44,15 @@ apcb = { entries = [
 features = ["pcie3-x4x4x4x4"]
 
 [features]
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-sp3/smm"]
 pcie3-x4x4x4x4 = []
 
 # Versions are spelled out instead of inherited: boards are outside the
 # workspace (fbuild adds them to a generated one) and this crate also
 # builds on its own.
 [dependencies]
+fstart-log = { path = "../../../crates/log" }
 fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["acpi", "rome", "milan"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["rome", "milan"] }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
@@ -62,14 +64,11 @@ embedded-hal = { version = "1", default-features = false }
 heapless = { version = "0.8", default-features = false }
 tock-registers = "0.10"
 
-# fbuild sets `fstart_stage_env` per unit; plain cargo builds do not.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("monolithic", "smm"))'] }
-
 # The reset image; fbuild builds it with fstart-platform-sp3/bundle-reset.
 # Board unit tests (`cargo test`) only build the library.
+# One binary per stage, named after the stage: the reset image.
 [[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+name = "reset"
+path = "src/bin/reset.rs"
 test = false
 bench = false
