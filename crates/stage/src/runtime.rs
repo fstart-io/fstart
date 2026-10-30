@@ -8,39 +8,35 @@ use core::panic::PanicInfo;
 #[cfg(all(not(test), target_os = "none"))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // Best-effort output — write the panic location to the console.
-    let mut w = fstart_log::panic_writer();
-    use fstart_log::ufmt::uWrite;
-    let _ = w.write_str("[PANIC] ");
-    // Try to print the panic message if available.
-    if let Some(msg) = info.message().as_str() {
-        let _ = w.write_str(msg);
-    } else {
-        let _ = w.write_str("firmware panic");
-    }
-    if let Some(loc) = info.location() {
-        let _ = w.write_str(" at ");
-        let _ = w.write_str(loc.file());
-        let _ = w.write_str(":");
-        // Print line number digit by digit (no ufmt dep in this crate).
-        let mut line = loc.line();
-        let mut buf = [0u8; 10];
-        let mut i = buf.len();
+    // Best-effort output: the message when it is a plain string, and the
+    // location. No `core::fmt`, and the console write is emitted once
+    // (`write_parts`), not inlined per piece: SRAM stages carry this too.
+    let message = info.message().as_str().unwrap_or("firmware panic");
+    let (file, mut line) = info.location().map_or(("?", 0), |l| (l.file(), l.line()));
+    let mut digits = [0u8; 10];
+    let mut i = digits.len();
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (line % 10) as u8;
+        line /= 10;
         if line == 0 {
-            i -= 1;
-            buf[i] = b'0';
-        }
-        while line > 0 {
-            i -= 1;
-            buf[i] = b'0' + (line % 10) as u8;
-            line /= 10;
-        }
-        if let Ok(s) = core::str::from_utf8(&buf[i..]) {
-            let _ = w.write_str(s);
+            break;
         }
     }
-    let _ = w.write_str("\r\n");
+    // SAFETY: ASCII digits only.
+    let line = unsafe { core::str::from_utf8_unchecked(&digits[i..]) };
+    write_parts(&["[PANIC] ", message, " at ", file, ":", line, "\r\n"]);
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+#[inline(never)]
+fn write_parts(parts: &[&str]) {
+    use fstart_log::ufmt::uWrite;
+    let mut w = fstart_log::panic_writer();
+    for part in parts {
+        let _ = w.write_str(part);
     }
 }
