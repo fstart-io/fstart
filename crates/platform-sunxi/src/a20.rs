@@ -147,7 +147,8 @@ mod stage {
     use fstart_driver_sunxi::a20_spi::{A20Spi, A20SpiFlash};
     use fstart_driver_sunxi::spi_nor::SpiNorFlash;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::{StageEnvironment, payload::MainstagePayload};
+    use fstart_log::StaticConsole;
+    use fstart_stage::payload::MainstagePayload;
 
     use crate::egon::{BootDevice, boot_device_at};
 
@@ -211,92 +212,6 @@ fstart_sunxi_fel_stash:
     pub unsafe fn return_to_fel() -> ! {
         // SAFETY: the pre-stack hook initializes this before Rust is entered.
         unsafe { fstart_return_to_fel(FEL_STASH.sp, FEL_STASH.lr) }
-    }
-
-    /// Marker for sunxi platform families with handwritten early flows.
-    pub trait SunxiPlatform {}
-
-    /// Fixed sunxi SRAM-stage platform contract.
-    pub trait SunxiEarlyPlatform: SunxiPlatform {}
-
-    /// Board contract shared by handwritten sunxi early flows.
-    pub trait SunxiEarlyBoard: Sized + 'static {
-        type Platform: SunxiEarlyPlatform;
-        type Hooks: SunxiEarlyBoardHooks<Self::Platform>;
-
-        fn hooks() -> Result<Self::Hooks, ServiceError>;
-    }
-
-    /// Mutable context passed to the A20's board hooks.
-    pub struct SunxiEarlyCtx<'a, P: SunxiEarlyPlatform> {
-        ccu: &'a A20Ccu,
-        dram_size: Option<u64>,
-        _platform: core::marker::PhantomData<P>,
-    }
-
-    impl<'a, P: SunxiEarlyPlatform> SunxiEarlyCtx<'a, P> {
-        fn new(ccu: &'a A20Ccu, dram_size: Option<u64>) -> Self {
-            Self {
-                ccu,
-                dram_size,
-                _platform: core::marker::PhantomData,
-            }
-        }
-
-        #[must_use]
-        pub const fn ccu(&self) -> &A20Ccu {
-            self.ccu
-        }
-
-        #[must_use]
-        pub const fn dram_size(&self) -> Option<u64> {
-            self.dram_size
-        }
-    }
-
-    /// Board-defined seams in the fixed A20 SRAM flow.
-    pub trait SunxiEarlyBoardHooks<P: SunxiEarlyPlatform> {
-        fn before_clock(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn after_clock(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn before_console(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn after_console(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn before_memory(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn after_memory(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn before_handoff(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-    }
-
-    /// Concrete Allwinner A20 platform.
-    pub struct A20;
-
-    impl SunxiPlatform for A20 {}
-    impl SunxiEarlyPlatform for A20 {}
-
-    /// Board facts required by the fixed A20 flow.
-    pub trait A20Board: SunxiEarlyBoard<Platform = A20> {
-        /// Board policy stored in `.rodata`; no pre-DRAM config transforms.
-        const CONFIG: &'static A20Config;
-        /// Board-selected console device policy, materialized in `.rodata`.
-        const CONSOLE_CONFIG: Ns16550Config;
     }
 
     /// Boot medium selected by the BROM eGON boot device.
@@ -365,7 +280,7 @@ fstart_sunxi_fel_stash:
 
     /// State retained by the DRAM-backed A20 mainstage.
     pub struct A20Mainstage {
-        console: Ns16550,
+        console: &'static Ns16550,
         boot_media: A20BootMedia,
         /// Image base offset on the boot medium (8 KiB MMC, 0 SPI).
         #[cfg(feature = "linux")]
@@ -383,7 +298,7 @@ fstart_sunxi_fel_stash:
 
         #[must_use]
         pub const fn console(&self) -> &Ns16550 {
-            &self.console
+            self.console
         }
 
         #[must_use]
@@ -451,92 +366,41 @@ fstart_sunxi_fel_stash:
     #[cfg(fstart_payload = "halt")]
     pub type A20BuildSelectedPayload = fstart_stage::payload::HaltPayload;
 
-    impl A20 {
-        /// Dispatch the build-selected A20 SRAM or DRAM stage.
-        pub fn run_stage<B>(env: StageEnvironment, handoff: usize) -> !
-        where
-            B: A20Board,
-        {
-            let _ = env;
-            let _ = handoff;
-            #[cfg(fstart_stage_env = "car")]
-            {
-                let Ok(mut hooks) = B::hooks() else {
-                    fstart_arch::halt();
-                };
-                if run_a20_bootblock::<B>(&mut hooks).is_err() {
-                    fstart_arch::halt();
-                }
-                fstart_arch::halt()
-            }
-
-            #[cfg(fstart_stage_env = "ram")]
-            {
-                run_a20_mainstage::<B>(handoff)
-            }
-
-            #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
-            match env {
-                StageEnvironment::Car => {
-                    let Ok(mut hooks) = B::hooks() else {
-                        fstart_arch::halt();
-                    };
-                    if run_a20_bootblock::<B>(&mut hooks).is_err() {
-                        fstart_arch::halt();
-                    }
-                    fstart_arch::halt()
-                }
-                StageEnvironment::Ram => run_a20_mainstage::<B>(handoff),
-                StageEnvironment::Monolithic => fstart_arch::halt(),
-            }
+    /// The A20 SRAM bootblock: clocks and UART0's pins (the CCU), the
+    /// console, DRAM, then the DRAM stage from the BROM's boot medium. Boards
+    /// have no work here; their bootblock `main` calls this.
+    // Inlined into the board's `main` so its constant console config folds:
+    // the SRAM budget has no room for a runtime 64-bit baud divisor.
+    #[inline(always)]
+    pub fn bootblock(
+        config: &'static A20Config,
+        slot: &'static StaticConsole<Ns16550>,
+        console_config: Ns16550Config,
+    ) -> ! {
+        if run_bootblock(config, slot, console_config).is_err() {
+            fstart_log::error!("a20 bootblock failed");
         }
+        fstart_arch::halt()
     }
 
-    /// Handwritten A20 SRAM bootblock sequence.
-    pub fn run_a20_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
-    where
-        B: A20Board,
-    {
-        let config = B::CONFIG;
+    #[inline(always)]
+    fn run_bootblock(
+        config: &'static A20Config,
+        slot: &'static StaticConsole<Ns16550>,
+        console_config: Ns16550Config,
+    ) -> Result<core::convert::Infallible, ServiceError> {
         let ccu = A20Ccu::new_from_config(&config.ccu);
-        {
-            let mut ctx = SunxiEarlyCtx::<A20>::new(&ccu, None);
-            hooks.before_clock(&mut ctx)?;
-        }
         ccu.init_early()?;
-        {
-            let mut ctx = SunxiEarlyCtx::<A20>::new(&ccu, None);
-            hooks.after_clock(&mut ctx)?;
-            hooks.before_console(&mut ctx)?;
-        }
 
-        let mut console =
-            Ns16550::new(B::CONSOLE_CONFIG).map_err(|_| ServiceError::HardwareError)?;
+        let mut console = Ns16550::new(console_config).map_err(|_| ServiceError::HardwareError)?;
         console.init().map_err(|_| ServiceError::HardwareError)?;
-        // SAFETY: this bootblock never returns after installing its stack-owned console.
-        unsafe { fstart_log::init(&console) };
+        slot.install(console);
         fstart_log::info!("a20: UART0 console ready");
-
-        {
-            let mut ctx = SunxiEarlyCtx::<A20>::new(&ccu, None);
-            hooks.after_console(&mut ctx)?;
-            hooks.before_memory(&mut ctx)?;
-        }
 
         let mut dramc = A20Dramc::new_from_config(&config.dram);
         let dram_size = dramc.dram_init()?;
-        {
-            let mut ctx = SunxiEarlyCtx::<A20>::new(&ccu, Some(dram_size));
-            hooks.after_memory(&mut ctx)?;
-        }
 
         let (boot_media, media_base) = init_boot_media(config)?;
-
-        {
-            let mut ctx = SunxiEarlyCtx::<A20>::new(&ccu, Some(dram_size));
-            hooks.before_handoff(&mut ctx)?;
-        }
-
         let entry = crate::boot::load_mainstage(
             &boot_media,
             media_base,
@@ -550,16 +414,19 @@ fstart_sunxi_fel_stash:
         fstart_arch::armv7::jump_to_with_handoff(entry, config.handoff_addr as usize)
     }
 
-    /// Handwritten A20 DRAM mainstage setup.
+    /// The A20 DRAM stage: console, the verified boot media, then the
+    /// payload. Boards have no work here; their DRAM-stage `main` calls this.
     ///
     /// The generic FFS/payload launcher cannot use block-backed media yet;
     /// this retains the initialized devices until that launcher grows its
     /// driver-owned manifest buffer.
-    pub fn run_a20_mainstage<B>(handoff: usize) -> !
-    where
-        B: A20Board,
-    {
-        if handoff != B::CONFIG.handoff_addr as usize {
+    pub fn main_stage(
+        config: &'static A20Config,
+        slot: &'static StaticConsole<Ns16550>,
+        console_config: Ns16550Config,
+        handoff: usize,
+    ) -> ! {
+        if handoff != config.handoff_addr as usize {
             fstart_arch::halt();
         }
         // SAFETY: the fixed predecessor reserves this configured buffer and
@@ -567,17 +434,16 @@ fstart_sunxi_fel_stash:
         let Some(handoff) = (unsafe { fstart_stage::handoff::try_deserialize(handoff) }) else {
             fstart_arch::halt();
         };
-        let mut console = match Ns16550::new(B::CONSOLE_CONFIG) {
+        let mut console = match Ns16550::new(console_config) {
             Ok(console) => console,
             Err(_) => fstart_arch::halt(),
         };
         if console.init().is_err() {
             fstart_arch::halt();
         }
-        // SAFETY: the mainstage owns this console until a later payload handoff.
-        unsafe { fstart_log::init(&console) };
+        let console = slot.install(console);
 
-        let Ok((boot_media, media_base)) = init_boot_media(B::CONFIG) else {
+        let Ok((boot_media, media_base)) = init_boot_media(config) else {
             fstart_log::error!("a20 mainstage: boot media init failed");
             fstart_arch::halt();
         };
@@ -591,25 +457,10 @@ fstart_sunxi_fel_stash:
             media_base,
             dram_size: handoff.dram_size,
             #[cfg(feature = "linux")]
-            config: B::CONFIG,
+            config: config,
         };
         fstart_log::info!("a20 mainstage: {} MiB DRAM", mainstage.dram_size() >> 20);
         A20BuildSelectedPayload::boot(mainstage)
-    }
-}
-
-/// Platform-owned adapter for fixed A20 stage dispatch.
-#[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
-pub struct Program<B>(core::marker::PhantomData<B>);
-#[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
-impl<B: stage::A20Board> fstart_stage::StageProgram for Program<B> {
-    fn run_stage(handoff: usize) -> ! {
-        #[cfg(fstart_stage_env = "car")]
-        stage::A20::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
-        #[cfg(fstart_stage_env = "ram")]
-        stage::A20::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
-        #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
-        panic!("a20 requires a fixed sunxi stage selection");
     }
 }
 
@@ -622,9 +473,8 @@ impl<B: stage::A20Board> fstart_stage::StageProgram for Program<B> {
 pub use stage::A20LinuxPayload;
 #[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
 pub use stage::{
-    A20, A20Board, A20BootMedia, A20BuildSelectedPayload, A20Mainstage, FelStash, SunxiEarlyBoard,
-    SunxiEarlyBoardHooks, SunxiEarlyCtx, SunxiEarlyPlatform, SunxiPlatform, return_to_fel,
-    run_a20_bootblock, run_a20_mainstage,
+    A20BootMedia, A20BuildSelectedPayload, A20Mainstage, FelStash, bootblock, main_stage,
+    return_to_fel,
 };
 
 #[cfg(test)]

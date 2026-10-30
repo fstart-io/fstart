@@ -10,7 +10,6 @@ schema = 1
 board = "licheerv-dock"
 platform = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-sunxi", name = "rust" }
 
 [dependencies]
@@ -18,7 +17,6 @@ fstart-core = { path = "../../../crates/core" }
 fstart-driver-sunxi = { path = "../../../crates/driver-sunxi" }
 fstart-platform-sunxi = { path = "../../../crates/platform-sunxi" }
 fstart-driver-uart = { path = "../../../crates/driver-uart" }
+fstart-log = { path = "../../../crates/log" }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+# One binary per stage, named after the stage: src/bin/<stage>.rs.
