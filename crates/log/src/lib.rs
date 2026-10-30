@@ -262,9 +262,10 @@ impl<C: Console + 'static> StaticConsole<C> {
             // SAFETY: the flag admits exactly one writer, before any reader.
             unsafe { *self.slot.0.get() = Some(console) };
         }
-        // SAFETY: written once above and never again; the cell is 'static.
-        let console = unsafe { (*self.slot.0.get()).as_ref() }
-            .unwrap_or_else(|| unreachable!("console installed above"));
+        // SAFETY: written once above (or by the first call) and never again;
+        // the cell is 'static. No panic path: SRAM stages cannot afford the
+        // formatting machinery.
+        let console = unsafe { (*self.slot.0.get()).as_ref().unwrap_unchecked() };
         // SAFETY: the console is 'static and never moves.
         unsafe { init(console) };
         console
