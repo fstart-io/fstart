@@ -267,7 +267,7 @@ fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
             .collect(),
         bindings: vec![],
         file_bindings: vec![],
-        board_features: vec![],
+        board_features: vec!["smm".into()],
         output: UnitOutput::SmmImage {
             entry_count: B::MAX_CPUS,
             stack_size: SMM_STACK_SIZE,

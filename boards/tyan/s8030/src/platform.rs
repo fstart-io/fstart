@@ -1,4 +1,5 @@
-//! The S8030 as the SP3 flow sees it ([`fstart_platform_sp3::board::Board`]):
+//! The S8030's facts and silicon policy ([`fstart_platform_sp3::board::Board`])
+//! and the board work its reset `main` calls:
 //! the AST2500 console path, the GPIO program, the DXIO lane map with the
 //! detected M.2 modes and the BMC's Gen3 cap, and the silicon policy.
 
@@ -56,11 +57,6 @@ impl board::Board for Board {
         }
     }
 
-    fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError> {
-        bmc::open_lpc_decodes(fch);
-        bmc::early_init().map(drop).map_err(|_| BoardError::Device)
-    }
-
     fn detect_pads(generation: Generation) -> &'static [Pad] {
         match generation {
             Generation::Milan => &DETECT_MILAN,
@@ -75,22 +71,6 @@ impl board::Board for Board {
         }
     }
 
-    fn dxio_engines<H: FchHw>(
-        generation: Generation,
-        levels: &[bool],
-        _fch: &H,
-        timer: &dyn Timer,
-    ) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
-        let level = |i: usize| levels.get(i).copied().unwrap_or(true);
-        // SAFETY: `early_init` opened the KCS window; the flow owns it.
-        let mut kcs = unsafe { bmc::kcs(TimerDelay(timer)) };
-        let detected = Detected {
-            m2: [M2Mode::from_detect(level(0)), M2Mode::from_detect(level(1))],
-            m2_gen3: bmc::m2_gen3_cap(&mut kcs),
-        };
-        Ok(dxio::engines(generation, &Options::BUILD, &detected))
-    }
-
     fn acpi_lpc_aml() -> Vec<u8> {
         bmc::lpc_aml()
     }
@@ -98,4 +78,29 @@ impl board::Board for Board {
     fn acpi_board(lpc_aml: &[u8]) -> AcpiBoard<'_> {
         bmc::acpi_board(lpc_aml)
     }
+}
+
+/// Before the console: open the LPC decodes and set up the AST2500's
+/// Super I/O for the console UART.
+pub fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError> {
+    bmc::open_lpc_decodes(fch);
+    bmc::early_init().map(drop).map_err(|_| BoardError::Device)
+}
+
+/// The DXIO lane map: the detected M.2 modes and the BMC's Gen3 cap.
+/// Needs the KCS window [`early_init`] opened.
+pub fn dxio_engines<H: FchHw>(
+    generation: Generation,
+    levels: &[bool],
+    _fch: &H,
+    timer: &dyn Timer,
+) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
+    let level = |i: usize| levels.get(i).copied().unwrap_or(true);
+    // SAFETY: `early_init` opened the KCS window; the flow owns it.
+    let mut kcs = unsafe { bmc::kcs(TimerDelay(timer)) };
+    let detected = Detected {
+        m2: [M2Mode::from_detect(level(0)), M2Mode::from_detect(level(1))],
+        m2_gen3: bmc::m2_gen3_cap(&mut kcs),
+    };
+    Ok(dxio::engines(generation, &Options::BUILD, &detected))
 }

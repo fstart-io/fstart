@@ -13,8 +13,8 @@
 //!    and clears `MtrrFixDramModEn` like the vendor, enables caching, builds
 //!    1 GiB identity page tables over the lower canonical half
 //!    ([`layout::PAGE_TABLES`]) and enters long mode at the arch crate's
-//!    `_start_ram` (stack, BSS, IDT, `fstart_main(0)`, i.e. the board's
-//!    `StageProgram`);
+//!    `_start_ram` (stack, BSS, IDT, `fstart_main(0)`, i.e. the board's reset
+//!    `main`);
 //! 3. AP: far-jumps through [`ApRoute`] when the MP code armed it, else
 //!    parks in `cli; hlt` (only INIT/NMI/SMI wake it).
 //!
