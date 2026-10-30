@@ -160,7 +160,8 @@ mod stage {
     use fstart_driver_sunxi::h3_spi::{H3Spi, H3SpiFlash};
     use fstart_driver_sunxi::spi_nor::SpiNorFlash;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::{StageEnvironment, payload::MainstagePayload};
+    use fstart_log::StaticConsole;
+    use fstart_stage::payload::MainstagePayload;
 
     use crate::egon::{BootDevice, boot_device_at};
 
@@ -233,92 +234,6 @@ fstart_sunxi_fel_stash:
         unsafe { fstart_return_to_fel(FEL_STASH.sp, FEL_STASH.lr) }
     }
 
-    /// Marker for sunxi platform families with handwritten early flows.
-    pub trait SunxiPlatform {}
-
-    /// Fixed sunxi SRAM-stage platform contract.
-    pub trait SunxiEarlyPlatform: SunxiPlatform {}
-
-    /// Board contract shared by handwritten sunxi early flows.
-    pub trait SunxiEarlyBoard: Sized + 'static {
-        type Platform: SunxiEarlyPlatform;
-        type Hooks: SunxiEarlyBoardHooks<Self::Platform>;
-
-        fn hooks() -> Result<Self::Hooks, ServiceError>;
-    }
-
-    /// Mutable context passed to the H3's board hooks.
-    pub struct SunxiEarlyCtx<'a, P: SunxiEarlyPlatform> {
-        ccu: &'a H3Ccu,
-        dram_size: Option<u64>,
-        _platform: core::marker::PhantomData<P>,
-    }
-
-    impl<'a, P: SunxiEarlyPlatform> SunxiEarlyCtx<'a, P> {
-        fn new(ccu: &'a H3Ccu, dram_size: Option<u64>) -> Self {
-            Self {
-                ccu,
-                dram_size,
-                _platform: core::marker::PhantomData,
-            }
-        }
-
-        #[must_use]
-        pub const fn ccu(&self) -> &H3Ccu {
-            self.ccu
-        }
-
-        #[must_use]
-        pub const fn dram_size(&self) -> Option<u64> {
-            self.dram_size
-        }
-    }
-
-    /// Board-defined seams in the fixed H3 SRAM flow.
-    pub trait SunxiEarlyBoardHooks<P: SunxiEarlyPlatform> {
-        fn before_clock(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn after_clock(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn before_console(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn after_console(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn before_memory(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn after_memory(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-
-        fn before_handoff(&mut self, _ctx: &mut SunxiEarlyCtx<P>) -> Result<(), ServiceError> {
-            Ok(())
-        }
-    }
-
-    /// Concrete Allwinner H3 platform.
-    pub struct H3;
-
-    impl SunxiPlatform for H3 {}
-    impl SunxiEarlyPlatform for H3 {}
-
-    /// Board facts required by the fixed H3 flow.
-    pub trait H3Board: SunxiEarlyBoard<Platform = H3> {
-        /// Board policy stored in `.rodata`; no pre-DRAM config transforms.
-        const CONFIG: &'static H3Config;
-        /// Board-selected console device policy, materialized in `.rodata`.
-        const CONSOLE_CONFIG: Ns16550Config;
-    }
-
     /// Boot medium selected by the BROM eGON boot device.
     pub enum H3BootMedia {
         Mmc(H3Mmc),
@@ -385,7 +300,7 @@ fstart_sunxi_fel_stash:
 
     /// State retained by the DRAM-backed H3 mainstage.
     pub struct H3Mainstage {
-        console: Ns16550,
+        console: &'static Ns16550,
         boot_media: H3BootMedia,
         /// Image base offset on the boot medium (8 KiB MMC, 0 SPI).
         #[cfg(feature = "linux")]
@@ -403,7 +318,7 @@ fstart_sunxi_fel_stash:
 
         #[must_use]
         pub const fn console(&self) -> &Ns16550 {
-            &self.console
+            self.console
         }
 
         #[must_use]
@@ -542,92 +457,41 @@ fstart_sunxi_fel_stash:
     #[cfg(fstart_payload = "halt")]
     pub type H3BuildSelectedPayload = fstart_stage::payload::HaltPayload;
 
-    impl H3 {
-        /// Dispatch the build-selected H3 SRAM or DRAM stage.
-        pub fn run_stage<B>(env: StageEnvironment, handoff: usize) -> !
-        where
-            B: H3Board,
-        {
-            let _ = env;
-            let _ = handoff;
-            #[cfg(fstart_stage_env = "car")]
-            {
-                let Ok(mut hooks) = B::hooks() else {
-                    fstart_arch::halt();
-                };
-                if run_h3_bootblock::<B>(&mut hooks).is_err() {
-                    fstart_arch::halt();
-                }
-                fstart_arch::halt()
-            }
-
-            #[cfg(fstart_stage_env = "ram")]
-            {
-                run_h3_mainstage::<B>(handoff)
-            }
-
-            #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
-            match env {
-                StageEnvironment::Car => {
-                    let Ok(mut hooks) = B::hooks() else {
-                        fstart_arch::halt();
-                    };
-                    if run_h3_bootblock::<B>(&mut hooks).is_err() {
-                        fstart_arch::halt();
-                    }
-                    fstart_arch::halt()
-                }
-                StageEnvironment::Ram => run_h3_mainstage::<B>(handoff),
-                StageEnvironment::Monolithic => fstart_arch::halt(),
-            }
+    /// The H3 SRAM bootblock: clocks and UART0's pins (the CCU), the
+    /// console, DRAM, then the DRAM stage from the BROM's boot medium. Boards
+    /// have no work here; their bootblock `main` calls this.
+    // Inlined into the board's `main` so its constant console config folds:
+    // the SRAM budget has no room for a runtime 64-bit baud divisor.
+    #[inline(always)]
+    pub fn bootblock(
+        config: &'static H3Config,
+        slot: &'static StaticConsole<Ns16550>,
+        console_config: Ns16550Config,
+    ) -> ! {
+        if run_bootblock(config, slot, console_config).is_err() {
+            fstart_log::error!("h3 bootblock failed");
         }
+        fstart_arch::halt()
     }
 
-    /// Handwritten H3 SRAM bootblock sequence.
-    pub fn run_h3_bootblock<B>(hooks: &mut B::Hooks) -> Result<(), ServiceError>
-    where
-        B: H3Board,
-    {
-        let config = B::CONFIG;
+    #[inline(always)]
+    fn run_bootblock(
+        config: &'static H3Config,
+        slot: &'static StaticConsole<Ns16550>,
+        console_config: Ns16550Config,
+    ) -> Result<core::convert::Infallible, ServiceError> {
         let ccu = H3Ccu::new_from_config(&config.ccu);
-        {
-            let mut ctx = SunxiEarlyCtx::<H3>::new(&ccu, None);
-            hooks.before_clock(&mut ctx)?;
-        }
         ccu.init_early()?;
-        {
-            let mut ctx = SunxiEarlyCtx::<H3>::new(&ccu, None);
-            hooks.after_clock(&mut ctx)?;
-            hooks.before_console(&mut ctx)?;
-        }
 
-        let mut console =
-            Ns16550::new(B::CONSOLE_CONFIG).map_err(|_| ServiceError::HardwareError)?;
+        let mut console = Ns16550::new(console_config).map_err(|_| ServiceError::HardwareError)?;
         console.init().map_err(|_| ServiceError::HardwareError)?;
-        // SAFETY: this bootblock never returns after installing its stack-owned console.
-        unsafe { fstart_log::init(&console) };
+        slot.install(console);
         fstart_log::info!("h3: UART0 console ready");
-
-        {
-            let mut ctx = SunxiEarlyCtx::<H3>::new(&ccu, None);
-            hooks.after_console(&mut ctx)?;
-            hooks.before_memory(&mut ctx)?;
-        }
 
         let mut dramc = H3Dramc::new_from_config(&config.dram);
         let dram_size = dramc.dram_init()?;
-        {
-            let mut ctx = SunxiEarlyCtx::<H3>::new(&ccu, Some(dram_size));
-            hooks.after_memory(&mut ctx)?;
-        }
 
         let (boot_media, media_base) = init_boot_media(config)?;
-
-        {
-            let mut ctx = SunxiEarlyCtx::<H3>::new(&ccu, Some(dram_size));
-            hooks.before_handoff(&mut ctx)?;
-        }
-
         let entry = crate::boot::load_mainstage(
             &boot_media,
             media_base,
@@ -644,16 +508,19 @@ fstart_sunxi_fel_stash:
         fstart_arch::aarch64::jump_to_with_handoff(entry, config.handoff_addr as usize)
     }
 
-    /// Handwritten H3 DRAM mainstage setup.
+    /// The H3 DRAM stage: console, the verified boot media, then the
+    /// payload. Boards have no work here; their DRAM-stage `main` calls this.
     ///
     /// The generic FFS/payload launcher cannot use block-backed media yet;
     /// this retains the initialized devices until that launcher grows its
     /// driver-owned manifest buffer.
-    pub fn run_h3_mainstage<B>(handoff: usize) -> !
-    where
-        B: H3Board,
-    {
-        if handoff != B::CONFIG.handoff_addr as usize {
+    pub fn main_stage(
+        config: &'static H3Config,
+        slot: &'static StaticConsole<Ns16550>,
+        console_config: Ns16550Config,
+        handoff: usize,
+    ) -> ! {
+        if handoff != config.handoff_addr as usize {
             fstart_arch::halt();
         }
         // SAFETY: the fixed predecessor reserves this configured buffer and
@@ -661,18 +528,17 @@ fstart_sunxi_fel_stash:
         let Some(handoff) = (unsafe { fstart_stage::handoff::try_deserialize(handoff) }) else {
             fstart_arch::halt();
         };
-        let mut console = match Ns16550::new(B::CONSOLE_CONFIG) {
+        let mut console = match Ns16550::new(console_config) {
             Ok(console) => console,
             Err(_) => fstart_arch::halt(),
         };
         if console.init().is_err() {
             fstart_arch::halt();
         }
-        // SAFETY: the mainstage owns this console until a later payload handoff.
-        unsafe { fstart_log::init(&console) };
+        let console = slot.install(console);
         fstart_log::info!("h3 mainstage: console ready");
 
-        let Ok((boot_media, media_base)) = init_boot_media(B::CONFIG) else {
+        let Ok((boot_media, media_base)) = init_boot_media(config) else {
             fstart_log::error!("h3 mainstage: boot media init failed");
             fstart_arch::halt();
         };
@@ -686,15 +552,15 @@ fstart_sunxi_fel_stash:
             media_base,
             dram_size: handoff.dram_size,
             #[cfg(feature = "linux")]
-            config: B::CONFIG,
+            config: config,
         };
         fstart_log::info!("h3 mainstage: {} MiB DRAM", mainstage.dram_size() >> 20);
         #[cfg(fstart_payload = "linux")]
         if crate::boot::install_mainstage_policy(
             H3_DRAM_BASE,
             mainstage.dram_size,
-            B::CONFIG.handoff_addr,
-            B::CONFIG.fdt_dst_addr,
+            config.handoff_addr,
+            config.fdt_dst_addr,
         )
         .is_err()
         {
@@ -707,34 +573,6 @@ fstart_sunxi_fel_stash:
 
 #[cfg(all(feature = "stage", feature = "h3", target_arch = "arm"))]
 pub use stage::{FelStash, return_to_fel};
-
-#[cfg(all(
-    feature = "stage",
-    feature = "h3",
-    any(target_arch = "arm", target_arch = "aarch64")
-))]
-/// Platform-owned adapter for fixed H3/H5 stage dispatch.
-#[cfg(all(
-    feature = "stage",
-    feature = "h3",
-    any(target_arch = "arm", target_arch = "aarch64")
-))]
-pub struct Program<B>(core::marker::PhantomData<B>);
-#[cfg(all(
-    feature = "stage",
-    feature = "h3",
-    any(target_arch = "arm", target_arch = "aarch64")
-))]
-impl<B: stage::H3Board> fstart_stage::StageProgram for Program<B> {
-    fn run_stage(handoff: usize) -> ! {
-        #[cfg(fstart_stage_env = "car")]
-        stage::H3::run_stage::<B>(fstart_stage::StageEnvironment::Car, handoff);
-        #[cfg(fstart_stage_env = "ram")]
-        stage::H3::run_stage::<B>(fstart_stage::StageEnvironment::Ram, handoff);
-        #[cfg(not(any(fstart_stage_env = "car", fstart_stage_env = "ram")))]
-        panic!("h3 requires a fixed sunxi stage selection");
-    }
-}
 
 #[cfg(all(
     feature = "stage",
@@ -755,11 +593,7 @@ pub use stage::H5LinuxPayload;
     feature = "h3",
     any(target_arch = "arm", target_arch = "aarch64")
 ))]
-pub use stage::{
-    H3, H3Board, H3BootMedia, H3BuildSelectedPayload, H3Mainstage, SunxiEarlyBoard,
-    SunxiEarlyBoardHooks, SunxiEarlyCtx, SunxiEarlyPlatform, SunxiPlatform, run_h3_bootblock,
-    run_h3_mainstage,
-};
+pub use stage::{H3BootMedia, H3BuildSelectedPayload, H3Mainstage, bootblock, main_stage};
 
 #[cfg(test)]
 mod tests {

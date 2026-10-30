@@ -154,12 +154,26 @@ impl A20Ccu {
         );
     }
 
-    /// Program Timer0, PLL1/PLL6, CNTFRQ, and the board-selected UART gate.
+    /// Mux UART0 to its standard pins, PB22 (TX) and PB23 (RX, pulled up),
+    /// as the H3 CCU does for its PA4/PA5.
+    fn gpio_init_uart(&self) {
+        if !matches!(self._config.console, A20Uart::Uart0) {
+            return;
+        }
+        let pio = crate::pio::SunxiPio::new(mmio32(A20_PIO_BASE), crate::pio::PioGen::Legacy);
+        pio.set_function(crate::pio::PORT_B, 22, 2);
+        pio.set_function(crate::pio::PORT_B, 23, 2);
+        pio.set_pull(crate::pio::PORT_B, 23, crate::pio::Pull::Up);
+    }
+
+    /// Program Timer0, PLL1/PLL6, CNTFRQ, the board-selected UART gate and
+    /// UART0's pins.
     pub fn init_early(&self) -> Result<(), ServiceError> {
         self.timer_init();
         self.clock_init_safe();
         set_cntfrq(OSC24M_FREQ);
         self.clock_init_uart();
+        self.gpio_init_uart();
         sdelay(10_000);
         Ok(())
     }
