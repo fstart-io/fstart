@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The board's ACPI devices behind the LPC bridge: the AST2500 SUART1 as
-//! COM1 and the BMC's IPMI KCS interface with its SPMI table. The LPC TPM
-//! isn't described.
+//! COM1 (also the SPCR console, the BMC's SOL) and the BMC's IPMI KCS
+//! interface with its SPMI table and sleep state reports. The LPC TPM isn't
+//! described.
 use alloc::vec;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_driver_ipmi::kcs;
@@ -24,8 +25,20 @@ pub fn tables() -> BoardAcpi {
     lpc_aml.extend(KCS.dsdt_aml());
     BoardAcpi {
         lpc_aml,
-        tables: vec![KCS.spmi()],
+        // The console: SOL over COM1.
+        tables: vec![KCS.spmi(), {
+            let mut spcr = alloc::vec::Vec::new();
+            fstart_acpi::Aml::to_aml_bytes(
+                &fstart_acpi::spcr::build_spcr_16550_io(super::COM1, super::COM1_IRQ),
+                &mut spcr,
+            );
+            spcr
+        }],
         devices: vec![],
-        sb_aml: vec![],
+        // `_PTS`/`_WAK` tell the BMC the sleep state through the SMM handler.
+        sb_aml: IpmiKcsAcpi::sleep_notify_aml(
+            fstart_driver_amd::fch::smi::APM_CNT,
+            super::BMC_SX_SMI,
+        ),
     }
 }

@@ -244,7 +244,15 @@ impl noncar::Soc for Zeppelin {
             }),
             acpi: &acpi::ACPI,
             devices: heapless::Vec::new(),
-            aml: Default::default(),
+            // The FCH GPIO controller (AMDI0030) on the IRQ the board routes
+            // it to, as the vendor DSDT has it.
+            aml: config
+                .fch
+                .irq_routes
+                .iter()
+                .find(|route| route.source == taishan::irq::GPIO)
+                .and_then(|route| crate::acpi::fch_gpio(route.apic).ok())
+                .unwrap_or_default(),
             tables: Default::default(),
             framebuffer: None,
             state,

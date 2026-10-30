@@ -1,8 +1,8 @@
-//! SPCR (Serial Port Console Redirection) table for PL011 UART.
+//! SPCR (Serial Port Console Redirection) table: an ARM PL011 or a 16550
+//! in I/O space.
 //!
 //! ACPI 6.5 / Microsoft SPCR spec. The upstream `acpi_tables` crate
-//! only provides an SBI (RISC-V) constructor; this module adds a
-//! PL011 constructor for ARM SBSA platforms.
+//! only provides an SBI (RISC-V) constructor.
 
 use acpi_tables::sdt::Sdt;
 
@@ -30,6 +30,23 @@ mod baud {
 /// * `base_addr` — Physical MMIO base address of the PL011 peripheral.
 /// * `gsiv` — GIC System Interrupt Vector for the UART.
 pub fn build_spcr_pl011(base_addr: u64, gsiv: u32) -> Sdt {
+    // SystemMemory, 8 bits, byte access; ARM GIC interrupt.
+    build(subtype::ARM_PL011, (0, base_addr), (0x08, 0, gsiv))
+}
+
+/// Build an SPCR table for a 16550 at I/O port `port` on ISA IRQ `irq`
+/// (dual 8259 and I/O APIC interrupt, GSI = IRQ), 115200 8N1.
+pub fn build_spcr_16550_io(port: u16, irq: u8) -> Sdt {
+    build(
+        subtype::FULLY_16550,
+        (1, port.into()),
+        (0x01 | 0x02, irq, irq.into()),
+    )
+}
+
+/// `(address space, address)` of the registers, `(interrupt type, IRQ,
+/// GSI)`.
+fn build(interface: u8, (space, address): (u8, u64), (kind, irq, gsi): (u8, u8, u32)) -> Sdt {
     // Layout: 36-byte header + 52-byte serial port info + 2-byte namespace.
     let total_size: u32 = 36 + 52 + 2;
 
@@ -43,20 +60,20 @@ pub fn build_spcr_pl011(base_addr: u64, gsiv: u32) -> Sdt {
     );
 
     // Serial Port Info fields (offset 36..88).
-    sdt.write_u8(36, subtype::ARM_PL011); // Interface Type
+    sdt.write_u8(36, interface); // Interface Type
     // 37..39: Reserved (already zero)
 
     // Generic Address Structure for base address (12 bytes at offset 40).
-    sdt.write_u8(40, 0); // AddressSpaceId: SystemMemory
+    sdt.write_u8(40, space); // AddressSpaceId
     sdt.write_u8(41, 8); // RegisterBitWidth
     sdt.write_u8(42, 0); // RegisterBitOffset
     sdt.write_u8(43, 1); // AccessSize: Byte
-    sdt.write_u64(44, base_addr);
+    sdt.write_u64(44, address);
 
     // Interrupt configuration.
-    sdt.write_u8(52, 0x08); // InterruptType: ARM GIC interrupt
-    sdt.write_u8(53, 0); // IRQ: 0 (using GSI instead)
-    sdt.write_u32(54, gsiv); // GlobalSystemInterrupt
+    sdt.write_u8(52, kind); // InterruptType
+    sdt.write_u8(53, irq); // IRQ
+    sdt.write_u32(54, gsi); // GlobalSystemInterrupt
 
     // Serial parameters.
     sdt.write_u8(58, baud::B115200); // BaudRate
@@ -122,5 +139,16 @@ mod tests {
 
         // Verify baud rate = 115200
         assert_eq!(bytes[58], 7);
+    }
+
+    #[test]
+    fn com1() {
+        let mut bytes = Vec::new();
+        build_spcr_16550_io(0x3f8, 4).to_aml_bytes(&mut bytes);
+        assert_eq!(bytes.iter().fold(0u8, |a, b| a.wrapping_add(*b)), 0);
+        assert_eq!((bytes[36], bytes[40]), (0, 1));
+        assert_eq!(u64::from_le_bytes(bytes[44..52].try_into().unwrap()), 0x3f8);
+        assert_eq!((bytes[52], bytes[53]), (3, 4));
+        assert_eq!(u32::from_le_bytes(bytes[54..58].try_into().unwrap()), 4);
     }
 }

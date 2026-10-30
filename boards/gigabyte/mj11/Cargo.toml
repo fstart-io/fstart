@@ -43,6 +43,7 @@ fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 embedded-hal = { workspace = true }
 fstart-driver-ipmi = { path = "../../../crates/driver-ipmi", features = ["acpi"] }
+fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 zerocopy = { workspace = true }
 tock-registers = { workspace = true }
 

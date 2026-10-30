@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! MJ11 SMM: the BMC's diagnostic interrupt button on GEVENT11 (vendor
-//! GbtNmiBtn, without its POST code and SEL logging).
+//! GbtNmiBtn, without its POST code and SEL logging), and the sleep states
+//! the DSDT's `_PTS`/`_WAK` report to the BMC (AMI BmcAcpi's SW SMIs
+//! 0xC0 + Sx).
 use fstart_driver_amd::{
     fch::taishan::smm::{Handler, SmmBoard, SmmSmn},
     smn::SmnReg,
@@ -10,12 +12,15 @@ use tock_registers::{
     register_bitfields,
 };
 
-use crate::{Board, NMI_BUTTON_GEVENT};
+use crate::{Board, BMC_SX_SMI, NMI_BUTTON_GEVENT};
 
 register_bitfields![u32, DiagnosticControl [BIT17 OFFSET(17) NUMBITS(1) []]];
 /// The vendor's diagnostic interrupt registers; their meaning isn't known.
 const DIAGNOSTIC_CONTROL: SmnReg<DiagnosticControl::Register> = SmnReg::new(0x13b2_015c);
 const DIAGNOSTIC_TRIGGER: SmnReg = SmnReg::new(0x13b1_0108);
+
+/// 2000 polls 10 us apart: 20 ms.
+const SMM_KCS_POLLS: u32 = 2000;
 
 pub struct Mj11Smm;
 impl SmmBoard for Mj11Smm {
@@ -32,6 +37,35 @@ impl SmmBoard for Mj11Smm {
         let trigger = smn.reg(DIAGNOSTIC_TRIGGER);
         trigger.get();
         trigger.set(1);
+    }
+
+    /// Set ACPI Power State for SW SMI 0xC0 + Sx. A KCS error is dropped:
+    /// the OS's sleep goes on either way.
+    #[inline(always)]
+    unsafe fn apmc(command: u8) {
+        use fstart_driver_ipmi::kcs;
+        let Some((system, device)) = command
+            .checked_sub(BMC_SX_SMI)
+            .and_then(fstart_driver_ipmi::sleep_power_states)
+        else {
+            return;
+        };
+        // SAFETY: ring 0 in SMM; the P-state MSRs.
+        let msr = unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() };
+        let Some(mhz) = fstart_arch::x86::cpu::amd::msr::tsc_mhz(&msr)
+            .and_then(core::num::NonZeroU32::new)
+        else {
+            return;
+        };
+        let delay = fstart_driver_amd::ccx::tsc::Tsc::new(mhz);
+        // SAFETY: the board's KCS ports; SMM owns the CPU. The OS shares
+        // the interface: only start on an idle one, and give up after
+        // 20 ms rather than hold every CPU in SMM.
+        let mut kcs = unsafe { kcs::Kcs::new(kcs::DEFAULT_PORT, kcs::DEFAULT_SPACING, delay) }
+            .with_poll_budget(SMM_KCS_POLLS);
+        if kcs.idle() {
+            let _ = kcs.set_acpi_power_state(system, device);
+        }
     }
 }
 

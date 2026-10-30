@@ -24,6 +24,10 @@ pub trait SmmBoard {
     /// # Safety
     /// Called only by the SMM handler while it owns the SMM rendezvous.
     unsafe fn gevent(_status: u32) {}
+    /// Any SMI command, after the FCH handled its own.
+    /// # Safety
+    /// As for [`Self::gevent`].
+    unsafe fn apmc(_command: u8) {}
 }
 
 /// The SMM handler of a Zeppelin board `B`.
@@ -50,6 +54,10 @@ impl<B: SmmBoard> FchSmmHooks for Hooks<B> {
     #[inline(always)]
     unsafe fn gevent(status: u32) {
         unsafe { B::gevent(status) }
+    }
+    #[inline(always)]
+    unsafe fn apmc(command: u8) {
+        unsafe { B::apmc(command) }
     }
 }
 

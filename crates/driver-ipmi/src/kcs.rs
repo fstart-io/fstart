@@ -89,6 +89,16 @@ where
         self
     }
 
+    /// No transaction is in progress: idle state, both buffers empty. A
+    /// caller that interrupts the interface's owner (SMM) must not start
+    /// one otherwise.
+    pub fn idle(&self) -> bool {
+        let status = self.status.extract();
+        status.matches_all(Status::STATE::Idle)
+            && !status.is_set(Status::IBF)
+            && !status.is_set(Status::OBF)
+    }
+
     fn wait(
         &mut self,
         done: impl Fn(LocalRegisterCopy<u8, Status::Register>) -> bool,
