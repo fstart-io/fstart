@@ -36,9 +36,6 @@ pub fn tables() -> BoardAcpi {
         }],
         devices: vec![],
         // `_PTS`/`_WAK` tell the BMC the sleep state through the SMM handler.
-        sb_aml: IpmiKcsAcpi::sleep_notify_aml(
-            fstart_driver_amd::fch::smi::APM_CNT,
-            super::BMC_SX_SMI,
-        ),
+        sb_aml: super::BMC_SLEEP_NOTIFY.aml(fstart_driver_amd::fch::smi::APM_CNT),
     }
 }

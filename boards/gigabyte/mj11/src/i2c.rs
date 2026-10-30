@@ -50,7 +50,7 @@ impl<I: I2c, D: DelayNs> Vr<'_, I, D> {
 
 /// A PCA954x: the control byte goes after a "register" 0, as in the vendor
 /// code.
-fn select<I: I2c>(i2c: &mut I, mux: u8, channels: u8) -> Result<(), I::Error> {
+pub(crate) fn select<I: I2c>(i2c: &mut I, mux: u8, channels: u8) -> Result<(), I::Error> {
     i2c.write(mux, &[0, channels])
 }
 

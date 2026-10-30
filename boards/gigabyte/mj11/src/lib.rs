@@ -42,7 +42,11 @@ pub struct Board;
 /// The BMC's diagnostic interrupt button.
 const NMI_BUTTON_GEVENT: u8 = 11;
 /// SW SMIs 0xC0 + Sx report the sleep state to the BMC (AMI BmcAcpi).
-const BMC_SX_SMI: u8 = 0xc0;
+const BMC_SLEEP_NOTIFY: fstart_driver_ipmi::SleepNotify = fstart_driver_ipmi::SleepNotify {
+    kcs_port: fstart_driver_ipmi::kcs::DEFAULT_PORT,
+    kcs_spacing: fstart_driver_ipmi::kcs::DEFAULT_SPACING as u8,
+    sw_smi_base: 0xc0,
+};
 
 const COM1: u16 = 0x3f8;
 const COM1_IRQ: u8 = 4;
@@ -166,19 +170,25 @@ impl fstart_platform_amd::noncar::Board for Board {
             fstart_log::error!("I2C3 pads not routed");
         }
         // SAFETY: nothing else uses I2C3.
-        match unsafe { fch::i2c::controller::<Zeppelin, _>(i2c::BUS, &soc::I2C_TIMING, ctx.clock) }
-        {
+        let eeprom_id = match unsafe {
+            fch::i2c::controller::<Zeppelin, _>(i2c::BUS, &soc::I2C_TIMING, ctx.clock)
+        } {
             Ok(mut bus) => {
                 i2c::program_vrs(&mut bus, ctx.clock, variant::VR_IMAGES);
                 i2c::program_redrivers(&mut bus, variant::REDRIVERS);
-                let id = riser::eeprom_id(&mut bus).or_else(|| {
-                    let levels = riser::STRAPS.map(|pin| gpio.get(pin) == Ok(true));
-                    riser::strap_id(levels)
-                });
-                riser_slot(config, id);
+                riser::eeprom_id(&mut bus)
             }
-            Err(_) => fstart_log::error!("I2C3 setup failed, VRs not programmed"),
-        }
+            Err(_) => {
+                fstart_log::error!("I2C3 setup failed, VRs not programmed");
+                None
+            }
+        };
+        // The straps without the EEPROM, as without I2C.
+        let id = eeprom_id.or_else(|| {
+            let levels = riser::STRAPS.map(|pin| gpio.get(pin) == Ok(true));
+            riser::strap_id(levels)
+        });
+        riser_slot(config, id);
         clear_pm1(&ctx.fch());
     }
 

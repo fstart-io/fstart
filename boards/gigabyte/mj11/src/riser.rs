@@ -14,13 +14,18 @@ const EEPROM_ID: u8 = 0x11;
 pub const STRAPS: [u8; 4] = [152, 151, 4, 3];
 
 /// The riser ID from its EEPROM (the vendor swaps IDs 1 and 2 and maps 4
-/// to 7), `None` if the riser doesn't answer.
+/// to 7), `None` if the riser doesn't answer. The mux is left with no
+/// channel selected.
 pub fn eeprom_id<I: I2c>(i2c: &mut I) -> Option<u8> {
-    i2c.write(MUX, &[0, MUX_CHANNEL]).ok()?;
+    use crate::i2c::select;
+    select(i2c, MUX, MUX_CHANNEL).ok()?;
     let mut byte = [0];
     // The vendor reads register 1 first and drops it.
-    i2c.write_read(EEPROM, &[1], &mut byte).ok()?;
-    i2c.write_read(EEPROM, &[EEPROM_ID], &mut byte).ok()?;
+    let read = i2c
+        .write_read(EEPROM, &[1], &mut byte)
+        .and_then(|()| i2c.write_read(EEPROM, &[EEPROM_ID], &mut byte));
+    let _ = select(i2c, MUX, 0);
+    read.ok()?;
     Some(match byte[0] {
         1 => 2,
         2 => 1,
