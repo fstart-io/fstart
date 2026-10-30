@@ -10,8 +10,12 @@ schema = 1
 board = "qemu-q35"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
+
+[features]
+default = []
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-qemu/smm"]
 
 [dependencies]
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
@@ -21,6 +25,4 @@ fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-core = { path = "../../../crates/core" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+# One binary per stage, named after the stage: src/bin/stage.rs.

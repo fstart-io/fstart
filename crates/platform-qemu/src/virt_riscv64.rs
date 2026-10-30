@@ -7,7 +7,6 @@ use fstart_core::services::Console;
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
 use fstart_stage::payload::MainstagePayload;
-use fstart_stage::{StageEnvironment, StageProgram};
 
 #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
 compile_error!("RISC-V virt requires monolithic/riscv64 stage and entry selections");
@@ -34,41 +33,7 @@ type Selected = fstart_stage::payload::LinuxPayload;
 #[cfg(all(fstart_payload = "crabefi", feature = "crabefi"))]
 type Selected = fstart_stage::payload::Riscv64UefiPayload;
 
-pub const QEMU_RISCV64_UART_BASE: u64 = 0x1000_0000;
-
-/// Board seams in the fixed RISC-V virt flow.
-pub trait QemuRiscv64VirtHooks {
-    fn before_console(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn after_console(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn before_payload(&mut self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-}
-
-/// Static hardware policy and hooks only. Layout and payload selection are not
-/// board trait facts and require no per-board lifecycle forwarding.
-pub trait QemuRiscv64VirtBoard: 'static {
-    type Hooks: QemuRiscv64VirtHooks + Default;
-    const CONFIG: &'static QemuRiscv64VirtConfig;
-    fn console_config() -> Ns16550Config;
-}
-
-pub struct QemuRiscv64Program<B>(core::marker::PhantomData<B>);
-impl<B: QemuRiscv64VirtBoard> StageProgram for QemuRiscv64Program<B> {
-    fn run_stage(handoff: usize) -> ! {
-        QemuRiscv64Virt::run_stage::<B>(StageEnvironment::Monolithic, handoff)
-    }
-    #[cfg(feature = "crabefi")]
-    fn resume_sbi(hart_id: u64, dtb_addr: u64) -> ! {
-        QemuRiscv64Virt::resume_sbi::<B>(hart_id, dtb_addr)
-    }
-}
-
-pub struct QemuRiscv64Virt;
+pub use crate::virt::QEMU_RISCV64_UART_BASE;
 
 pub struct QemuRiscv64VirtMainstage {
     config: &'static QemuRiscv64VirtConfig,
@@ -78,7 +43,10 @@ pub struct QemuRiscv64VirtMainstage {
 }
 
 impl QemuRiscv64VirtMainstage {
-    fn new<B: QemuRiscv64VirtBoard>() -> Result<Self, ServiceError> {
+    fn new(
+        config: &'static QemuRiscv64VirtConfig,
+        console: Ns16550Config,
+    ) -> Result<Self, ServiceError> {
         let layout = fstart_stage::layout::current().map_err(|_| ServiceError::InvalidParam)?;
         for kind in [
             RegionKind::Image,
@@ -99,9 +67,9 @@ impl QemuRiscv64VirtMainstage {
             .region(RegionKind::Payload)
             .ok_or(ServiceError::InvalidParam)?;
         Ok(Self {
-            config: B::CONFIG,
+            config,
             layout,
-            console: Ns16550::new(B::console_config()).map_err(|_| ServiceError::HardwareError)?,
+            console: Ns16550::new(console).map_err(|_| ServiceError::HardwareError)?,
             pci: None,
         })
     }
@@ -193,63 +161,66 @@ impl fstart_stage::payload::Riscv64UefiPayloadContext for QemuRiscv64VirtMainsta
     }
 }
 
-impl QemuRiscv64Virt {
-    /// Recreate stage-local state after OpenSBI enters S-mode. The descriptor
-    /// remains in the same immutable, mapped flash image across this transition.
-    #[cfg(feature = "crabefi")]
-    pub fn resume_sbi<B: QemuRiscv64VirtBoard>(hart_id: u64, dtb_addr: u64) -> ! {
-        let Ok(mut mainstage) = QemuRiscv64VirtMainstage::new::<B>() else {
-            fstart_arch::riscv64::halt();
-        };
-        if mainstage.console.init().is_err() {
-            fstart_arch::riscv64::halt();
-        }
-        // SAFETY: this resumed mainstage never returns, so its console outlives
-        // CrabEFI. Replace the M-mode stack's stale logging backend.
-        unsafe {
-            fstart_log::replace_console(
-                core::mem::transmute::<&dyn Console, &'static dyn Console>(&mainstage.console),
-            );
-        }
-        fstart_log::info!("riscv64 uefi: OpenSBI returned, launching CrabEFI");
-        fstart_stage::payload::Riscv64UefiPayload::resume_sbi(mainstage, hart_id, dtb_addr)
-    }
+/// Without CrabEFI nothing returns from OpenSBI here.
+#[cfg(not(feature = "crabefi"))]
+pub fn resume_sbi(_: &'static QemuRiscv64VirtConfig, _: Ns16550Config, _: u64, _: u64) -> ! {
+    fstart_arch::riscv64::halt()
+}
 
-    pub fn run_stage<B: QemuRiscv64VirtBoard>(env: StageEnvironment, handoff: usize) -> ! {
-        let _ = handoff;
-        if !matches!(env, StageEnvironment::Monolithic) {
-            fstart_arch::halt();
-        }
-        let Ok(mut mainstage) = QemuRiscv64VirtMainstage::new::<B>() else {
-            fstart_arch::riscv64::halt();
-        };
-        let mut hooks = B::Hooks::default();
-        let firmware = mainstage.region(RegionKind::Firmware);
-        if !phase("qemu-riscv64", "before_console", hooks.before_console())
-            || !phase("qemu-riscv64", "console", mainstage.init_console())
-            || !phase("qemu-riscv64", "after_console", hooks.after_console())
-            || !phase(
-                "qemu-riscv64",
-                "boot_integrity",
-                crate::boot::from_dtb_with_layout(
-                    fstart_arch::riscv64::boot_dtb_addr(),
-                    mainstage
-                        .layout
-                        .region(RegionKind::DeviceTree)
-                        .map(|r| r.base),
-                    B::CONFIG.ram_base,
-                    firmware.base,
-                    firmware.size,
-                    Some(mainstage.layout),
-                ),
-            )
-            || !phase("qemu-riscv64", "bus_scan", mainstage.init_pci())
-            || !phase("qemu-riscv64", "before_payload", hooks.before_payload())
-        {
-            fstart_arch::riscv64::halt();
-        }
-        fstart_log::info!("qemu-riscv64 ramstage: finalize");
-        fstart_log::info!("qemu-riscv64 ramstage: ready for payload");
-        <Selected as MainstagePayload<_>>::boot(mainstage)
+/// Recreate stage-local state after OpenSBI enters S-mode. The descriptor
+/// remains in the same immutable, mapped flash image across this transition.
+#[cfg(feature = "crabefi")]
+pub fn resume_sbi(
+    config: &'static QemuRiscv64VirtConfig,
+    console: Ns16550Config,
+    hart_id: u64,
+    dtb_addr: u64,
+) -> ! {
+    let Ok(mut mainstage) = QemuRiscv64VirtMainstage::new(config, console) else {
+        fstart_arch::riscv64::halt();
+    };
+    if mainstage.console.init().is_err() {
+        fstart_arch::riscv64::halt();
     }
+    // SAFETY: this resumed mainstage never returns, so its console outlives
+    // CrabEFI. Replace the M-mode stack's stale logging backend.
+    unsafe {
+        fstart_log::replace_console(core::mem::transmute::<&dyn Console, &'static dyn Console>(
+            &mainstage.console,
+        ));
+    }
+    fstart_log::info!("riscv64 uefi: OpenSBI returned, launching CrabEFI");
+    fstart_stage::payload::Riscv64UefiPayload::resume_sbi(mainstage, hart_id, dtb_addr)
+}
+
+/// The QEMU RISC-V virt stage: console, boot media from the DTB, PCI, then
+/// the payload. QEMU boards have no board work; their `main` calls this.
+pub fn run(config: &'static QemuRiscv64VirtConfig, console: Ns16550Config) -> ! {
+    let Ok(mut mainstage) = QemuRiscv64VirtMainstage::new(config, console) else {
+        fstart_arch::riscv64::halt();
+    };
+    let firmware = mainstage.region(RegionKind::Firmware);
+    if !phase("qemu-riscv64", "console", mainstage.init_console())
+        || !phase(
+            "qemu-riscv64",
+            "boot_integrity",
+            crate::boot::from_dtb_with_layout(
+                fstart_arch::riscv64::boot_dtb_addr(),
+                mainstage
+                    .layout
+                    .region(RegionKind::DeviceTree)
+                    .map(|r| r.base),
+                config.ram_base,
+                firmware.base,
+                firmware.size,
+                Some(mainstage.layout),
+            ),
+        )
+        || !phase("qemu-riscv64", "bus_scan", mainstage.init_pci())
+    {
+        fstart_arch::riscv64::halt();
+    }
+    fstart_log::info!("qemu-riscv64 ramstage: finalize");
+    fstart_log::info!("qemu-riscv64 ramstage: ready for payload");
+    <Selected as MainstagePayload<_>>::boot(mainstage)
 }

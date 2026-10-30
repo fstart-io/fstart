@@ -1177,7 +1177,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             environment_values: mp_capacity(),
             bindings: vec![],
             file_bindings: vec![],
-            board_features: vec![],
+            board_features: vec!["smm".into()],
             output: UnitOutput::SmmImage {
                 entry_count: 8,
                 stack_size: 0x400,
