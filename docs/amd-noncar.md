@@ -141,14 +141,28 @@ CPUID signature in `Fam17hCpu`) and runs the SoC's CCX init. Zeppelin's
 
 `crate::acpi::build` emits from data:
 
-- FADT (`FACP`), MADT, HPET, MCFG, and IVRS if die 0's IOMMU is present.
-- DSDT: `\_S0_`, `\_S1_`, `\_S4_`, `\_S5_` only (no S3). One root bridge per die,
-  bridge `_PRT`s, the ECAM reservation, and the board's `lpc_aml`, `devices`
-  and `sb_aml`.
-- Standalone tables from `BoardAcpi::tables` (e.g. the MJ11 SPMI).
+- FADT (`FACP`), MADT, HPET (minimum tick `0x37ee`), MCFG, WSMT, and IVRS if
+  die 0's IOMMU is present; SRAT, MSCT and SLIT if the SoC reports its dies
+  as NUMA nodes (`Soc::die_memory`: several dies, not interleaved).
+- DSDT: `\_S0_`, `\_S1_`, `\_S4_`, `\_S5_` only (no S3). One root bridge per die
+  (`_PXM` with NUMA) with an `NBIO` device whose `NAPE` clears
+  `IOAPIC_FEATURES_ENABLE.FCH`, run by `\_PIC(1)`; bridge `_PRT`s, `_PRW` and
+  the GPE handler of the SoC's wake bridges, the ECAM reservation, the board's
+  `lpc_aml`, `devices` and `sb_aml`, and a processor device (`ACPI0007`) per
+  CPU in the MADT's UID order with `_PCT`/`_PSS` (the enabled P-states),
+  `_CST` (C1 MWAIT, C2 the C-state I/O base + 1) and a per-core `_PSD`
+  (`fstart_driver_amd::ccx::power`).
+- Standalone tables from `BoardAcpi::tables` (e.g. the MJ11 SPMI and SPCR).
 
 Inputs: `SocAcpi` (FCH ACPI ports, FADT fields, NBIO bridge routes, FCH INTA-D
-GSIs), the per-die `DieAcpi` from the flow, and `BoardAcpi`.
+GSIs, C2 latency, wake bridges), the per-die `DieAcpi` from the flow, the
+BSP's P-state and C-state MSRs, and `BoardAcpi`.
+
+SMBIOS (`noncar/smbios.rs`, builder shared with SP3 in `crate::smbios`): the
+board's identity (`Board::smbios_identity`), one processor package with its
+caches, the DIMM positions of the APOB's SMBIOS seeds with their SPD copies,
+the APOB's DRAM ranges. The UEFI payload gets the entry point; a copy in the F
+segment serves Linux without UEFI.
 
 GSIs: the FCH IOAPIC has GSI 0-23. Each die's NBIO IOAPIC has 32 more, from
 `24 + 32 * die`. The `_PRT`s describe APIC mode only.

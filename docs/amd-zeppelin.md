@@ -164,7 +164,14 @@ From `zeppelin/acpi.rs` and the shared `crate::acpi`:
 - `SocAcpi`: `taishan::ACPI_PORTS`, FADT flags, bridge routes (18 entries,
   matched by a unit test to the NBIO base table), FCH INTA-D GSIs 16-19.
 - Board: `lpc_aml` for the Super I/O COM1 at `0x3f8` IRQ 4 and the IPMI KCS
-  interface, the SPMI table, and no extra devices.
+  interface, the SPMI and SPCR (COM1, the BMC's SOL) tables, and `_PTS`/`_WAK`
+  reporting the sleep state to the BMC (SW SMI `0xc0` + Sx).
+- The FCH GPIO controller (`AMDI0030`) on the IRQ the board routes it to.
+- The xHCI bridge 7.1 wakes through GPE `0x0b` (`_PRW`, `\_GPE._L0B`).
+- Processors: P-states from PStateDef (EPYC 3151: 2.7, 1.9, 1.2 GHz), C1
+  MWAIT and C2 (CC6, 400 µs) through I/O `0x814`.
+- SP4 (two dies): SRAT, MSCT and SLIT (10/16) from the DF DRAM map
+  (`df::zeppelin::die_memory`), unless the ABL interleaves the dies.
 - The FADT's SMI command port is `0xb2`; ACPI enable/disable are `0xe1`/`0x1e`
   (`fch::smi`: the SMI handler sets or clears SCI on them).
 
@@ -180,8 +187,39 @@ From `zeppelin/acpi.rs` and the shared `crate::acpi`:
 - `SLP_TYP` 3 (S3), 4 (S4) and 5 (S5) enter sleep (`fch/taishan/smm.rs`):
   `PMxEE` is set for S3/S4, then `SLP_TYP` is written with `SLP_EN`. S0 and S1
   requests are ignored.
+- At `SLP_TYP` with `SLP_EN` still clear, Zeppelin posts SMU message 0x13
+  (SleepEntry), as the vendor does; if the system still runs after 100 ms,
+  `SLP_EN` enters the state.
+- MJ11: SW SMI `0xc0` + Sx sends IPMI Set ACPI Power State over KCS
+  (`SmmBoard::apmc`), only if the OS's KCS interface is idle, within 20 ms.
 - The DSDT declares `_S0_`, `_S1_`, `_S4_`, `_S5_`. There is no `_S3_` and no
   S3 resume path.
+
+## CPU
+
+- Every thread writes the name string from the SMU (message 0x28) to
+  C001_0030-35 (`ccx::brand`).
+- `CcxConfig::memory_encryption` sets SYSCFG.SMEE on every thread after the
+  MTRRs, as the vendor does. Off by default, because with it Linux
+  initializes SEV, whose PSP firmware keeps its state in flash through the
+  SMM handler's P2C SPI services (sp4r2 PSP_ZP §3.5), which fstart doesn't
+  implement: the SEV status command times out after 5 s and the `ccp`
+  driver disables the PSP.
+
+## SMBIOS
+
+From the APOB: the DIMM positions of the type-17 seeds (ZP packs them like
+the type-20 seeds: socket [1:0], channel [4:2], DIMM [6:5], populated [7]),
+each populated one from its SPD copy; one package, socket code none (BGA).
+MJ11: Gigabyte MJ11, version the variant, rack mount chassis.
+
+## MJ11 riser
+
+`fch_reset_done` reads the PCIE_1 riser ID from the EEPROM at `0x57` behind the
+PCA9545 at `0x74` (channel 2) on I2C3, else from GPIO 152/151/4/3, and maps it
+to a bifurcation with the vendor's table. The EC0 applies it; the EC1's F09
+template splits the slot on 3.1/3.3 and its mode table isn't decoded, so the
+EC1 logs the riser and keeps its default.
 
 ## Build
 
@@ -203,3 +241,8 @@ also exist). `gigabyte-mj11-ec0` builds the x16 variant.
 ## Not implemented
 
 - S3 suspend and resume. The DSDT has no `_S3_`.
+- Saving the APOB NV copy: the ABL trains the memory on every boot.
+- The PSP's P2C SPI NV services (SEV state), hence SME/SEV by default.
+- Firmware-first RAS (HEST, GHES, BERT, EINJ) and the TPM description.
+- xHCI root hub port descriptions (`_UPC`/`_PLD`): the board's port map isn't
+  known.
