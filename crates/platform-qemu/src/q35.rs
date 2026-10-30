@@ -245,7 +245,9 @@ impl Q35HostBridge {
         Ok(())
     }
 
-    fn setup_ich9_pm_io(&self) -> Result<(), ServiceError> {
+    /// Program the ICH9 ACPI I/O base. QEMU builds the FADT from it when
+    /// the ACPI tables are first read, so this precedes the table loader.
+    pub fn setup_ich9_pm_io(&self) -> Result<(), ServiceError> {
         let lpc = self
             .ecam
             .device(PciAddress::new(0, 0, ICH9_LPC_DEV, ICH9_LPC_FUNC))

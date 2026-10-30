@@ -180,7 +180,14 @@ fn inputs<'a>(
         einj: false,
         fch: fch(),
         bmc_sx_notify: Some(0xC0),
-        tpm: Some(fstart_acpi::devices::tpm::TpmFamily::Tpm20),
+        tpm: Some(fstart_acpi::devices::tpm::TpmTisAcpi {
+            family: fstart_acpi::devices::tpm::TpmFamily::Tpm20,
+            server: true,
+            log: Some(fstart_acpi::devices::tpm::LogArea {
+                base: 0x7560_0000,
+                size: 0x1_0000,
+            }),
+        }),
         cppc: std::boxed::Box::leak(
             vec![CppcAcpi {
                 info: CppcInfo::from_answer(0x007F_FFFF),
@@ -208,7 +215,6 @@ fn inputs<'a>(
             i8042: true,
             lpc_aml: &[],
             sb_aml: &[],
-            discrete_tpm: true,
         },
     }
 }

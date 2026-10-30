@@ -21,6 +21,7 @@
 //! | 13 | CPU identity |
 //! | 14 | APOB |
 //! | 15 | memory map, MTRRs |
+//! | 16 | TPM: measured boot starts (`Board::DISCRETE_TPM`) |
 //! | 20/21 | DF plan + maps / DF init |
 //! | 30/31/32 | NBIO / SMU / FCH secondaries and USB |
 //! | 38 | DXIO |
@@ -70,6 +71,7 @@ mod handoff;
 pub(crate) mod naples;
 #[cfg(any(feature = "rome", feature = "milan"))]
 pub(crate) mod sp3;
+mod tpm;
 
 #[cfg(not(any(feature = "naples", feature = "rome", feature = "milan")))]
 compile_error!("a reset-image build enables at least one of naples, rome, milan");
@@ -375,6 +377,11 @@ pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
         rsdp: None,
         smbios: None,
     };
+
+    if B::DISCRETE_TPM {
+        step(0x16, "TPM");
+        tpm::start(flash, generation);
+    }
 
     step(0x20, "DF topology and maps");
     data_fabric::<S>(&mut ctx);
@@ -884,6 +891,7 @@ fn install_smm<S: Steps>(
     #[cfg(fstart_sp3_has_smm_image)]
     {
         const IMAGE: &[u8] = include_bytes!(env!("FSTART_SMM_IMAGE"));
+        tpm::measure_smm(IMAGE);
         // The handler's page tables map the low 4 GiB only; a PSP BAR
         // above would fault in SMM at SmmInfo, after the lock.
         if ctx.psp_bar == 0 || ctx.psp_bar >= crate::memory::FOUR_GIB {

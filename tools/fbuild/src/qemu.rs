@@ -251,6 +251,12 @@ pub fn run(
         }
     }
 
+    // Extra devices for one run, e.g. a swtpm-backed TPM:
+    // FSTART_QEMU_EXTRA_ARGS="-chardev socket,id=chrtpm,path=... -tpmdev ..."
+    if let Ok(extra) = std::env::var("FSTART_QEMU_EXTRA_ARGS") {
+        args.extend(extra.split_whitespace().map(str::to_string));
+    }
+
     eprintln!("[fstart] launching: {qemu_bin} {}", args.join(" "));
 
     let status = Command::new(qemu_bin)

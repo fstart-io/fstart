@@ -64,6 +64,8 @@ impl<D: X86CorebootPayloadContext> MainstagePayload<D> for X86CorebootPayload {
         };
         let table = write_tables(&devices, &manifest).unwrap_or_else(|reason| halt(reason));
         let base = load_payload().unwrap_or_else(|reason| halt(reason));
+        #[cfg(feature = "tcg")]
+        measure(&manifest);
         fstart_log::info!(
             "coreboot payload: loaded at {:#x}, entering {:#x}",
             base,
@@ -186,6 +188,23 @@ fn load_payload() -> Result<u64, &'static str> {
     };
     crate::load_ffs_file_entry_by_type(&media, FileType::Payload)
         .ok_or("payload load or verification failed")
+}
+
+/// Measure the payload and the files handed to it into PCR 0: all of them
+/// are platform firmware from the signed image. Then hand the TPM over
+/// open: like on coreboot, the payload extends the separators and locks it.
+#[cfg(feature = "tcg")]
+fn measure(manifest: &Manifest<'_>) {
+    use crate::tcg::event::{EV_POST_CODE2, post_code::POST_CODE};
+    if !crate::tcg::measure_file_by_type(FileType::Payload, 0, EV_POST_CODE2, Some(POST_CODE)) {
+        fstart_log::error!("coreboot payload: payload not measured");
+        fstart_tcg::measurement_error();
+    }
+    for (_, data) in manifest.files() {
+        // The copies handed over live in RAM: no stable blob base.
+        fstart_tcg::measure_blob(0, EV_POST_CODE2, POST_CODE, 0, data);
+    }
+    crate::tcg::handoff(crate::tcg::Handoff::Open);
 }
 
 fn halt(reason: &str) -> ! {

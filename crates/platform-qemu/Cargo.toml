@@ -35,8 +35,10 @@ aarch64-el2-relocate-entry = ["fstart-stage?/aarch64-el2-relocate-entry"]
 bundle-q35 = [
   "stage", "x86_64", "x86-1g-pages", "x86-writable-page-tables",
   "fstart-stage/ed25519", "fstart-stage/sha2-digest", "fstart-stage/lz4",
-  "smm",
+  "smm", "tpm",
 ]
+# TIS TPM 1.2/2.0 (swtpm) and TCG measured boot into QEMU's TPM log area.
+tpm = ["dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-stage?/tcg"]
 # Q35 TSEG/SMM chipset ops (no SMM panic handler: safe inside the stage build).
 # bundle-q35 enables this; the smm image unit additionally enables bundle-smm.
 smm = ["dep:fstart-smm", "dep:fstart-driver-intel", "fstart-arch/x86_64"]
@@ -68,6 +70,8 @@ fstart-coreboot = { workspace = true, optional = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-driver-intel = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }
+fstart-driver-tpm = { workspace = true, optional = true }
+fstart-tcg = { workspace = true, optional = true }
 serde = { workspace = true }
 dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }

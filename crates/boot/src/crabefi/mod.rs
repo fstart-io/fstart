@@ -9,6 +9,8 @@
 use core::{cell::Cell, fmt};
 
 mod runtime;
+#[cfg(all(feature = "tcg", feature = "crabefi"))]
+mod tpm;
 use runtime::{EMPTY_REGION, firmware_reservations, runtime_platform_config};
 
 // Type aliases used by board-owned UEFI payload configuration.
@@ -93,8 +95,13 @@ fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
         config.runtime_image,
         config.runtime,
     )
-    .heap_pre_initialized(config.heap_pre_initialized)
-    .build();
+    .heap_pre_initialized(config.heap_pre_initialized);
+    #[cfg(all(feature = "tcg", feature = "crabefi"))]
+    let defaults = match tpm::event_log_config() {
+        Some(tpm) => defaults.tpm_event_log(tpm),
+        None => defaults,
+    };
+    let defaults = defaults.build();
     // Fixed-address devices with a CrabEFI driver, such as AMD eMMC, are
     // bound by CrabEFI alongside the platform's other peripherals.
     let mut peripherals = config.peripherals;

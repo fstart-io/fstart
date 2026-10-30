@@ -48,6 +48,8 @@ pub mod coreboot;
 pub mod fixed_helpers;
 pub mod layout;
 pub mod payload;
+#[cfg(feature = "tcg")]
+pub mod tcg;
 pub mod timestamps;
 
 // Fixed-flow stage helpers moved here so stage build metadata is not a

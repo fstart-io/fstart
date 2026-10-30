@@ -252,7 +252,7 @@ dependencies = [
 [[package]]
 name = "crabefi-core"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=9093fd2113e661831f27d02c5b4835385073d230#9093fd2113e661831f27d02c5b4835385073d230"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=8b8b14be26c15a6c1de3beb3e076999e4e2f873e#8b8b14be26c15a6c1de3beb3e076999e4e2f873e"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.10.0",
@@ -274,7 +274,7 @@ dependencies = [
  "r-efi",
  "rflasher-core",
  "rflasher-internal",
- "sha1",
+ "sha1 0.11.0",
  "sha2 0.11.0",
  "spin",
  "tock-registers",
@@ -286,7 +286,7 @@ dependencies = [
 [[package]]
 name = "crabefi-efi-types"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=9093fd2113e661831f27d02c5b4835385073d230#9093fd2113e661831f27d02c5b4835385073d230"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=8b8b14be26c15a6c1de3beb3e076999e4e2f873e#8b8b14be26c15a6c1de3beb3e076999e4e2f873e"
 dependencies = [
  "zerocopy",
 ]
@@ -303,7 +303,7 @@ dependencies = [
 [[package]]
 name = "crabefi-pkcs7"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=9093fd2113e661831f27d02c5b4835385073d230#9093fd2113e661831f27d02c5b4835385073d230"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=8b8b14be26c15a6c1de3beb3e076999e4e2f873e#8b8b14be26c15a6c1de3beb3e076999e4e2f873e"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -311,12 +311,12 @@ dependencies = [
 [[package]]
 name = "crabefi-runtime-abi"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=9093fd2113e661831f27d02c5b4835385073d230#9093fd2113e661831f27d02c5b4835385073d230"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=8b8b14be26c15a6c1de3beb3e076999e4e2f873e#8b8b14be26c15a6c1de3beb3e076999e4e2f873e"
 
 [[package]]
 name = "crabefi-runtime-bundle"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=9093fd2113e661831f27d02c5b4835385073d230#9093fd2113e661831f27d02c5b4835385073d230"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=8b8b14be26c15a6c1de3beb3e076999e4e2f873e#8b8b14be26c15a6c1de3beb3e076999e4e2f873e"
 
 [[package]]
 name = "crc32fast"
@@ -653,6 +653,7 @@ dependencies = [
 name = "fstart-arch"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal",
  "fstart-core",
  "fstart-log",
  "fstart-smm",
@@ -674,7 +675,9 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-crypto",
+ "fstart-driver-tpm",
  "fstart-log",
+ "fstart-tcg",
  "heapless 0.8.0",
 ]
 
@@ -706,6 +709,7 @@ dependencies = [
  "ed25519-dalek",
  "fstart-core",
  "p256",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "sha3",
 ]
@@ -848,6 +852,15 @@ dependencies = [
  "serde",
  "tock-registers",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-driver-tpm"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-core",
+ "tock-registers",
 ]
 
 [[package]]
@@ -1011,12 +1024,14 @@ dependencies = [
  "fstart-core",
  "fstart-coreboot",
  "fstart-driver-intel",
+ "fstart-driver-tpm",
  "fstart-driver-uart",
  "fstart-image-build",
  "fstart-log",
  "fstart-pci",
  "fstart-smm",
  "fstart-stage",
+ "fstart-tcg",
  "heapless 0.8.0",
  "serde",
  "serde_json",
@@ -1035,6 +1050,7 @@ dependencies = [
  "fstart-driver-amd",
  "fstart-driver-ipmi",
  "fstart-driver-spd",
+ "fstart-driver-tpm",
  "fstart-driver-uart",
  "fstart-image-build",
  "fstart-log",
@@ -1042,6 +1058,7 @@ dependencies = [
  "fstart-platform-sp3",
  "fstart-smm",
  "fstart-stage",
+ "fstart-tcg",
  "heapless 0.8.0",
  "serde_json",
  "tock-registers",
@@ -1085,6 +1102,7 @@ dependencies = [
  "fstart-ffs",
  "fstart-log",
  "fstart-pci",
+ "fstart-tcg",
  "fstart-timestamp",
  "heapless 0.8.0",
  "postcard",
@@ -1097,6 +1115,16 @@ name = "fstart-store"
 version = "0.1.0"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "fstart-tcg"
+version = "0.1.0"
+dependencies = [
+ "fstart-crypto",
+ "fstart-driver-tpm",
+ "fstart-log",
+ "ufmt",
 ]
 
 [[package]]
@@ -1637,6 +1665,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
 ]
 
 [[package]]

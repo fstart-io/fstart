@@ -30,6 +30,10 @@ impl board::Board for Board {
         fstart_acpi::smbios::SmbiosIdentity::new("TYAN", "S8030")
     }
     const CONSOLE: Ns16550Config = bmc::CONSOLE;
+    /// J40 takes an LPC TPM module (Tyan lists TM-TPM2-I-3353, SLB9665).
+    /// Unlike the vendor's Setup default it is used when fitted: without a
+    /// module the probe finds nothing.
+    const DISCRETE_TPM: bool = true;
     /// The vendor DSDT's `BSMI` = 0xC0 and BmcAcpi's SW SMIs 0xC0–0xC5.
     const BMC_SX_NOTIFY: Option<BmcSxNotify> = Some(BmcSxNotify {
         kcs_port: bmc::KCS_PORT,
