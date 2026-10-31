@@ -9,7 +9,7 @@
 extern crate alloc;
 
 mod acpi;
-mod bmc;
+pub mod bmc;
 mod dxio;
 mod gpio;
 mod i2c;
@@ -94,7 +94,7 @@ const IRQ_ROUTES: &[Route] = &[
 /// The PM1 write of the vendor AmdCpmOemInitPeim and SMBusSwitch: write back
 /// the pending PM1 status plus bits 15:14 (all W1C) and clear
 /// PCIEXP_WAKE_DIS.
-fn clear_pm1(fch: &Fch<impl Bus>) {
+pub fn clear_pm1(fch: &Fch<impl Bus>) {
     fch.reg(ACPI_PM1_STATUS)
         .modify(Pm1Status::WAK::SET + Pm1Status::PCIEXP_WAKE::SET);
     fch.reg(ACPI_PM1_ENABLE)
@@ -178,10 +178,10 @@ pub const fn console() -> Ns16550Config {
     }
 }
 
-/// Once the FCH's SMBus is up (the vendor board PEIMs): route the I2C3
-/// pads, program the VRs and redrivers on it, clear PM1. Returns the PCIE_1
-/// riser's ID: from its EEPROM, else from the straps.
-pub fn fch_reset_done(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>, clock: Tsc) -> Option<u8> {
+/// The VRs and PCIe redrivers on I2C3 (the vendor board PEIMs, once the
+/// FCH's SMBus is up): route the I2C3 pads, then program both. Returns the
+/// PCIE_1 riser's ID: from its EEPROM on the same bus, else from the straps.
+pub fn program_i2c_devices(gpio: &Gpio<impl Bus>, clock: Tsc) -> Option<u8> {
     if i2c::PADS
         .iter()
         .any(|&pad| gpio.set_function(pad, i2c::FUNCTION).is_err())
@@ -201,7 +201,6 @@ pub fn fch_reset_done(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>, clock: Tsc) ->
                 None
             }
         };
-    clear_pm1(fch);
     // The straps without the EEPROM, as without I2C.
     eeprom_id.or_else(|| {
         let levels = riser::STRAPS.map(|pin| gpio.get(pin) == Ok(true));
@@ -233,35 +232,35 @@ pub fn dxio(id: Option<u8>) -> DxioConfig {
     dxio
 }
 
-/// After link training: the vendor's PCIe TX presets and USB2 PHY values,
-/// then wait for the BMC before its VGA is used.
-pub fn dxio_training_done(die0: &Die<GlobalEcam>, gpio: &Gpio<impl Bus>, clock: Tsc) {
+/// The vendor's PCIe TX presets and USB2 PHY values, after link training.
+pub fn apply_phy_tuning(die0: &Die<GlobalEcam>) {
     let records = variant::POST_TRAINING_SMN
         .iter()
         .map(|&(register, value)| write(register, value));
     apply(&die0.smn(), records);
+}
+
+/// Wait for the BMC before its VGA is used.
+pub fn wait_for_bmc(gpio: &Gpio<impl Bus>, clock: Tsc) {
     gpio::wait_for_bmc(gpio, &mut { clock });
 }
 
-/// After PCI enumeration: the vendor GPIO table, the AST2500 VGA's
-/// subsystem ID, and the end-of-POST messages to the BMC.
-pub fn mainboard_final(
-    die0: &Die<GlobalEcam>,
-    gpio: &Gpio<impl Bus>,
-    fch: &Fch<impl Bus>,
-    clock: Tsc,
-) {
+/// The vendor GPIO table, after PCI enumeration.
+pub fn program_vendor_gpios(gpio: &Gpio<impl Bus>) {
     if gpio.configure(gpio::VENDOR, &[]).is_err() {
         fstart_log::error!("Vendor GPIO table rejected");
     }
-    ast_vga_set_ssid(&die0.pci());
-    bmc::post_done(fch, clock);
 }
 
-/// SMBusSwitch at ReadyToBoot. Inferred purpose: hand the SMBus to the OS.
-/// The vendor writes the IOMUX of pins 136-139 through SMN; it is the same
-/// register as the ACPI MMIO one.
-pub fn ready_to_boot(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>) {
+/// The AST2500 VGA's subsystem ID.
+pub fn set_vga_ssid(die0: &Die<GlobalEcam>) {
+    ast_vga_set_ssid(&die0.pci());
+}
+
+/// The vendor's SMBusSwitch at ReadyToBoot. Inferred purpose: hand the
+/// SMBus to the OS. The vendor writes the IOMUX of pins 136-139 through SMN;
+/// it is the same register as the ACPI MMIO one.
+pub fn hand_smbus_to_os(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>) {
     // Bit 1 of the GPIO137 IOMUX byte set, bits 7:4 of pin 139 cleared.
     fch.reg(iomux::at::<u32, Iomux136::Register>(136))
         .modify(Iomux136::PIN137_BIT1::SET + Iomux136::PIN139_HIGH.val(0));

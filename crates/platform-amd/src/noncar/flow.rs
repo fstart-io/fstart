@@ -284,6 +284,11 @@ impl<S: Soc> Stage<S> {
         stop::<S>(why)
     }
 
+    /// Stop the boot after logging that the board's `what` failed.
+    pub fn fail(&self, what: &'static str) -> ! {
+        fail::<S>(what)
+    }
+
     /// PCI enumeration and resource allocation, write-combining for the
     /// framebuffer apertures, then [`Soc::after_resources`].
     pub fn enumerate(&self, silicon: &mut Silicon<S>) -> Enumerated {
