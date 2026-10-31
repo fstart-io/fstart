@@ -116,3 +116,7 @@ testing with external recovery available.
 
 Picasso/Vilboz and Zeppelin/MJ11 v2 generation is deliberately not migrated here:
 unknown parameters and structure variants need additional typed-library support.
+The [all-board v2 follow-up](amd-apcb-v2-status.md) records byte-exact reconstruction
+of all 13 Vilboz instances and both MJ11 variants with diagnostic library patches,
+while explicitly identifying the remaining opaque records. That probe does not
+weaken or enable the production generation path.

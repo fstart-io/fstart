@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Diagnostic executable, built outside fstart's panic=abort workspace.
+use amd_apcb::{Apcb, ApcbIoOptions};
+use serde_json::{Value, json};
+use std::{borrow::Cow, fs, path::Path};
+
+fn probe(path: &Path) -> Result<Value, String> {
+    let data = fs::read(path).map_err(|e| e.to_string())?;
+    if data.len() < 32 || data.len() > Apcb::MAX_SIZE || &data[..4] != b"APCB"
+        || u16::from_le_bytes(data[6..8].try_into().unwrap()) != 0x20
+    {
+        return Err("expected one standalone APCB v2, not a full ROM".into());
+    }
+    let apcb = Apcb::load(Cow::Owned(data.clone()), &ApcbIoOptions::default())
+        .map_err(|e| format!("load: {e:?}"))?;
+    let mut source = serde_json::to_value(&apcb).map_err(|e| format!("export: {e}"))?;
+    let original_size = source["header"]["apcb_size"].as_u64().ok_or("missing size")? as usize;
+    for group in source["groups"].as_array_mut().ok_or("missing groups")? {
+        group.as_object_mut().ok_or("invalid group")?.remove("context");
+    }
+    let entries = source["entries"].as_array().ok_or("missing entries")?;
+    let opaque: Vec<_> = entries.iter().filter_map(|entry| {
+        let bytes = entry.get("struct_body")?.as_array()?.len();
+        Some(json!({"group":entry["header"]["group_id"], "entry":entry["header"]["entry_id"], "bytes":bytes}))
+    }).collect();
+    let unknown_parameters = entries.iter().filter_map(|e| e["parameters"].as_array())
+        .flatten().filter(|p| p["token"].as_str().is_some_and(|s| s.starts_with("Unknown"))).count();
+    let rebuilt: Apcb<'static> = serde_json::from_value(source).map_err(|e| format!("import: {e}"))?;
+    let rebuilt_header = serde_json::to_value(*rebuilt.header().map_err(|e| format!("{e:?}"))?)
+        .map_err(|e| e.to_string())?;
+    let rebuilt_size = rebuilt_header["apcb_size"].as_u64().ok_or("missing rebuilt size")? as usize;
+    let saved = rebuilt.save_no_inc().map_err(|e| format!("save: {e:?}"))?;
+    let identical = original_size == rebuilt_size && matches!(
+        (data.get(..original_size), saved.get(..rebuilt_size)),
+        (Some(original), Some(rebuilt)) if original == rebuilt
+    );
+    Ok(json!({
+        "file": path.display().to_string(),
+        "declared_bytes": original_size,
+        "rebuilt_bytes": rebuilt_size,
+        "byte_identical": identical,
+        "fully_typed": opaque.is_empty(),
+        "opaque_records": opaque,
+        "unnamed_parameter_records": unknown_parameters,
+    }))
+}
+
+fn main() {
+    eprintln!("Diagnostic patches and raw fallback enabled; not production typed generation.");
+    let mut failed = false;
+    let mut count = 0;
+    for path in std::env::args_os().skip(1) {
+        count += 1;
+        let path = Path::new(&path);
+        let result = match std::panic::catch_unwind(|| probe(path)) {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => json!({"file":path.display().to_string(), "error":error}),
+            Err(_) => json!({"file":path.display().to_string(), "error":"upstream typed accessor panicked"}),
+        };
+        failed |= result["byte_identical"] != Value::Bool(true);
+        println!("{result}");
+    }
+    if count == 0 || failed { std::process::exit(1); }
+}

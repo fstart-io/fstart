@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: MPL-2.0
+# Diagnostic changes to amd-apcb 1ec66d607de2437813cdd9ffa91719a4b163b3cf.
+# Not applied to fstart's production dependency. Raw fallback is intentional
+# here to measure container fidelity separately from typed structure coverage.
+--- a/src/apcb.rs
++++ b/src/apcb.rs
+@@ -718,11 +718,13 @@
+         priority_mask: PriorityLevels,
+         payload_initializer: impl Fn(&mut [u8]),
+     ) -> Result<()> {
++        // Probe only: real MJ11 v2 donors contain duplicate CBS entries.
++        let legacy_duplicates = self.header()?.version.get() == Self::NAPLES_VERSION;
+         let group_id = entry_id.group_id();
+         let mut group = self
+             .group_mut(group_id)?
+             .ok_or(Error::GroupNotFound { group_id })?;
+-        if group
++        if !legacy_duplicates && group
+             .entry_exact_mut(entry_id, instance_id, board_instance_mask)
+             .is_some()
+         {
+--- a/src/entry.rs
++++ b/src/entry.rs
+@@ -903,7 +903,8 @@
+     if body.is_some() {
+         return Err(de::Error::duplicate_field("body"));
+     }
+-    let val: Vec<Parameter> = map.next_value()?;
++    let mut val: Vec<Parameter> = map.next_value()?;
++    val.push(Parameter::new(&crate::ondisk::ParameterAttributes::terminator(), 0xff).unwrap());
+     let buf = Parameters::new_tail_from_vec(val).unwrap();
+     *body = Some(buf);
+     Ok(())
+@@ -943,6 +944,8 @@
+         enum Field {
+             Header,
+             Tokens,
++            StructBody,
++            NaplesConsoleOutControl,
+             // Body as struct array
+             LrdimmDdr4OdtPatElement,
+             Ddr4OdtPatElement,
+@@ -985,6 +988,8 @@
+         const FIELDS: &[&str] = &[
+             "header",
+             "tokens",
++            "struct_body",
++            "NaplesConsoleOutControl",
+             "LrdimmDdr4OdtPatElement",
+             "Ddr4OdtPatElement",
+             "DdrPostPackageRepairElement",
+@@ -1051,6 +1056,8 @@
+                         match value {
+                             "header" => Ok(Field::Header),
+                             "tokens" => Ok(Field::Tokens),
++                            "struct_body" => Ok(Field::StructBody),
++                            "NaplesConsoleOutControl" => Ok(Field::NaplesConsoleOutControl),
+                             "LrdimmDdr4OdtPatElement" => {
+                                 Ok(Field::LrdimmDdr4OdtPatElement)
+                             }
+@@ -1284,3 +1291,10 @@
++                        Field::StructBody => {
++                            if body.is_some() { return Err(de::Error::duplicate_field("body")); }
++                            body = Some(map.next_value::<Vec<u8>>()?);
++                        }
++                        Field::NaplesConsoleOutControl => {
++                            struct_to_body::<memory::NaplesConsoleOutControl, V>(&mut body, &mut map)?;
++                        }
+                         Field::ConsoleOutControl => {
+                             struct_to_body::<memory::ConsoleOutControl, V>(
+                                 &mut body, &mut map,
+--- a/src/naples.rs
++++ b/src/naples.rs
+@@ -384,6 +384,16 @@
+     MemSolderedDown = 0x073E,
+     MemDdrRouteBalancedTee = 0x073F,
+     MemEnableMbistTest = 0x0740,
++    // Probe-only names: numerical identities retained, semantics unknown.
++    Unknown0741 = 0x0741,
++    Unknown0742 = 0x0742,
++    Unknown0743 = 0x0743,
++    Unknown0744 = 0x0744,
++    Unknown0745 = 0x0745,
++    Unknown0747 = 0x0747,
++    Unknown0748 = 0x0748,
++    Unknown0749 = 0x0749,
++    Unknown074c = 0x074c,
+     MemEnableTsme = 0x0746,
+     MemPlatformSpecificErrorHandling = 0x074A,
+     MemEnableTemperatureControlledRefresh = 0x074B,
+--- a/src/ondisk.rs
++++ b/src/ondisk.rs
+@@ -1883,6 +1883,7 @@
+                 | EntryId::Fch(FchEntryId::Parameters)
+                 | EntryId::Cbs(CbsEntryId::DefaultParameters)
+                 | EntryId::Cbs(CbsEntryId::Parameters)
++                | EntryId::Cbs(CbsEntryId::Unknown(0x0f))
+         )
+     }
+ }
