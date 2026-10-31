@@ -11,6 +11,7 @@ pub mod acpi;
 pub mod board;
 pub mod builder;
 pub mod const_vec;
+pub mod description;
 pub mod device;
 pub mod ffs;
 pub mod handoff;

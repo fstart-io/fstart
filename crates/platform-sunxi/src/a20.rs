@@ -317,7 +317,11 @@ fstart_sunxi_fel_stash:
 
     #[cfg(feature = "linux")]
     impl fstart_stage::payload::MainstagePayload<A20Mainstage> for A20LinuxPayload {
-        fn boot(devices: A20Mainstage) -> ! {
+        fn boot(handoff: fstart_stage::payload::Handoff<'_>, devices: A20Mainstage) -> ! {
+            let placement = handoff.placement;
+            let Some(ram) = handoff.description.ram() else {
+                fstart_arch::halt();
+            };
             if crate::boot::install_mainstage_policy(
                 A20_DRAM_BASE,
                 devices.dram_size,
@@ -341,21 +345,20 @@ fstart_sunxi_fel_stash:
                 fstart_log::error!("a20 mainstage: FFS payload load failed");
                 fstart_arch::halt();
             }
-            let config = devices.config;
-            if config.fdt_dst_addr != 0
+            if placement.device_tree != 0
                 && boot
                     .prepare_fdt(
-                        config.fdt_dst_addr,
-                        config.bootargs,
-                        super::A20_DRAM_BASE,
-                        devices.dram_size,
+                        placement.device_tree,
+                        placement.bootargs,
+                        ram.base,
+                        ram.size,
                     )
                     .is_err()
             {
                 fstart_log::error!("a20 mainstage: FDT preparation failed");
                 fstart_arch::halt();
             }
-            let params = boot.boot_params(config.bootargs);
+            let params = boot.boot_params(placement.bootargs);
             fstart_arch::armv7::boot_linux(&params)
         }
     }
@@ -463,7 +466,26 @@ fstart_sunxi_fel_stash:
             config: config,
         };
         fstart_log::info!("a20 mainstage: {} MiB DRAM", mainstage.dram_size() >> 20);
-        A20BuildSelectedPayload::boot(mainstage)
+        // The boot medium is a block device: the launcher reads the FFS
+        // from it, not from a mapped firmware window.
+        let memory = [fstart_core::services::memory_detect::E820Entry::new(
+            A20_DRAM_BASE,
+            mainstage.dram_size,
+            fstart_core::services::memory_detect::E820Kind::Ram,
+        )];
+        let mut description = fstart_stage::payload::Description::new(&memory, Default::default());
+        description.console = Some(mainstage.console);
+        #[allow(unused_mut)]
+        let mut placement = fstart_stage::payload::Placement::default();
+        #[cfg(feature = "linux")]
+        {
+            placement.device_tree = config.fdt_dst_addr;
+            placement.bootargs = config.bootargs;
+        }
+        A20BuildSelectedPayload::boot(
+            fstart_stage::payload::Handoff::new(description, placement),
+            mainstage,
+        )
     }
 }
 

@@ -6,10 +6,12 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_core::services::memory_detect::{E820Entry, E820Kind, E820State};
+use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
-use fstart_stage::payload::MainstagePayload;
+use fstart_stage::payload::{
+    AcpiTables, Description, Handoff, MainstagePayload, PciRootInfo, Placement, Range,
+};
 
 use super::{Ctx, OrHalt};
 use crate::layout::{self, Span};
@@ -95,72 +97,24 @@ fn span_window(span: Span) -> MemoryWindow {
     }
 }
 
-/// What the payload launcher reads.
-pub(crate) struct Handoff<'a> {
-    e820: E820State,
-    rsdp: Option<u64>,
-    smbios: Option<u64>,
-    console: &'a Ns16550,
-    ecam: (u64, u64),
-    ffs: Span,
-}
-
-impl fstart_stage::payload::X86UefiPayloadContext for Handoff<'_> {
-    fn console(&self) -> Option<&dyn fstart_core::services::Console> {
-        Some(self.console)
-    }
-
-    fn e820(&self) -> &[E820Entry] {
-        self.e820.entries()
-    }
-
-    fn firmware_region(&self) -> (u64, u64) {
-        (self.ffs.base, self.ffs.size)
-    }
-
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.rsdp
-    }
-
-    fn smbios(&self) -> Option<u64> {
-        self.smbios
-    }
-
-    fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
-        Some(fstart_pci::PciRootInfo {
-            segment: 0,
-            ecam_base: self.ecam.0,
-            bus_start: 0,
-            bus_end: ((self.ecam.1 >> 20) - 1) as u8,
-        })
-    }
-}
-
-#[cfg(feature = "payload-linux")]
-impl fstart_stage::payload::X86LinuxPayloadContext for Handoff<'_> {
-    fn e820(&self) -> &[E820Entry] {
-        self.e820.entries()
-    }
-
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.rsdp
-    }
-}
-
 /// Hand the e820, RSDP and console to the build's payload launcher.
 pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550) -> ! {
     // The allocators' assignments are in the hardware now.
     drop(roots);
     fstart_log::info!("sp3: handing off to the payload");
     fstart_log::flush();
-    Payload::boot(Handoff {
-        e820: ctx.e820,
-        rsdp: ctx.rsdp,
-        smbios: ctx.smbios,
-        console,
-        ecam: ctx.ecam,
-        ffs: ctx.ffs,
-    })
+    let mut description =
+        Description::new(ctx.e820.entries(), Range::new(ctx.ffs.base, ctx.ffs.size));
+    description.console = Some(console);
+    description.acpi = ctx.rsdp.map(AcpiTables::at);
+    description.smbios = ctx.smbios;
+    description.pci_root = Some(PciRootInfo {
+        segment: 0,
+        ecam_base: ctx.ecam.0,
+        bus_start: 0,
+        bus_end: ((ctx.ecam.1 >> 20) - 1) as u8,
+    });
+    Payload::boot(Handoff::new(description, Placement::default()), ())
 }
 
 /// Build and place the ACPI tables (ACPI_SMM, `crate::acpi`); returns the

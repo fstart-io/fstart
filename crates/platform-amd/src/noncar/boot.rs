@@ -3,10 +3,9 @@
 //! the policy the image builder patched into this stage.
 use super::layout::Region;
 use fstart_core::services::{
-    Console, ServiceError,
-    memory_detect::{E820Entry, E820Kind, E820State},
+    ServiceError,
+    memory_detect::{E820Kind, E820State},
 };
-use fstart_pci::PciRootInfo;
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 use heapless::Vec;
 
@@ -63,63 +62,6 @@ pub fn mount(e820: &E820State, ffs: Region) -> Result<(), ServiceError> {
     );
     media.mount()?;
     media.verify()
-}
-
-/// What the payload launchers need.
-pub struct Handoff {
-    pub console: &'static dyn Console,
-    pub e820: E820State,
-    pub rsdp: Option<u64>,
-    pub smbios: Option<u64>,
-    /// The FFS, the firmware region of the payload.
-    pub ffs: Region,
-    pub pci_root: PciRootInfo,
-    pub devices: heapless::Vec<fstart_core::acpi::AcpiGenericDevice, 16>,
-    pub framebuffer: Option<fstart_core::services::FramebufferInfo>,
-    #[cfg(feature = "payload-uefi-basic")]
-    pub peripherals: super::Peripherals,
-}
-
-impl fstart_stage::payload::X86UefiPayloadContext for Handoff {
-    fn console(&self) -> Option<&dyn Console> {
-        Some(self.console)
-    }
-    fn e820(&self) -> &[E820Entry] {
-        self.e820.entries()
-    }
-    fn firmware_region(&self) -> (u64, u64) {
-        (self.ffs.base, self.ffs.size)
-    }
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.rsdp
-    }
-    fn smbios(&self) -> Option<u64> {
-        self.smbios
-    }
-    fn pci_root(&self) -> Option<PciRootInfo> {
-        Some(self.pci_root)
-    }
-    fn acpi_devices(&self) -> &[fstart_core::acpi::AcpiGenericDevice] {
-        &self.devices
-    }
-    #[cfg(feature = "payload-uefi-basic")]
-    fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
-        self.framebuffer
-    }
-    #[cfg(feature = "payload-uefi-basic")]
-    fn take_peripherals(&mut self) -> super::Peripherals {
-        core::mem::take(&mut self.peripherals)
-    }
-}
-
-#[cfg(feature = "payload-linux")]
-impl fstart_stage::payload::X86LinuxPayloadContext for Handoff {
-    fn e820(&self) -> &[E820Entry] {
-        self.e820.entries()
-    }
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.rsdp
-    }
 }
 
 /// Identity map the memory map and assigned PCI BARs before the payload.

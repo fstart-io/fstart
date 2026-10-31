@@ -140,10 +140,13 @@ mod stage {
             fstart_arch::riscv64::halt();
         }
         fstart_log::info!("sifive-u ramstage: ready for payload");
-        <QemuSifiveUBuildSelectedPayload as MainstagePayload<_>>::boot(QemuSifiveUMainstage {
+        let mainstage = QemuSifiveUMainstage {
             #[cfg(any(feature = "linux", feature = "crabefi"))]
             config,
             console,
+        };
+        mainstage.hand_off(|handoff| {
+            <QemuSifiveUBuildSelectedPayload as MainstagePayload>::boot(handoff, ())
         })
     }
 
@@ -179,11 +182,9 @@ mod stage {
                 core::mem::transmute::<&dyn Console, &'static dyn Console>(&console),
             );
         }
-        fstart_stage::payload::Riscv64UefiPayload::resume_sbi(
-            QemuSifiveUMainstage { config, console },
-            hart_id,
-            dtb_addr,
-        )
+        QemuSifiveUMainstage { config, console }.hand_off(|handoff| {
+            fstart_stage::payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
+        })
     }
 
     fn phase(name: &str, result: Result<(), ServiceError>) -> bool {
@@ -196,45 +197,44 @@ mod stage {
         }
     }
 
-    #[cfg(feature = "linux")]
-    impl fstart_stage::payload::LinuxPayloadContext for QemuSifiveUMainstage {
-        fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
-            let config = self.config;
-            fstart_stage::payload::LinuxPayloadConfig::new(
-                config.firmware_base,
-                config.firmware_size,
-                fstart_arch::riscv64::boot_dtb_addr(),
-                config.dtb_addr,
-                config.kernel_addr,
-                config.firmware_addr,
-                config.ram_base,
-                config.ram_size,
-                fstart_arch::riscv64::boot_hart_id(),
-                config.bootargs,
-            )
-        }
-    }
-
-    #[cfg(all(feature = "crabefi", feature = "riscv64"))]
-    impl fstart_stage::payload::Riscv64UefiPayloadContext for QemuSifiveUMainstage {
-        fn riscv64_uefi_payload_context(&self) -> fstart_stage::payload::Riscv64UefiPayloadConfig {
-            let config = self.config;
-            fstart_stage::payload::Riscv64UefiPayloadConfig::new(
-                config.firmware_base,
-                config.firmware_size,
-                config.firmware_addr,
-                0x20_0000,
-                config.dtb_addr,
-                config.ram_base,
-                config.ram_size,
-                // No described PCI root: let CrabEFI inspect the firmware FDT,
-                // rather than inventing bus bounds from a bare ECAM address.
-                None,
-            )
-        }
-
-        fn console(&self) -> &dyn Console {
-            &self.console
+    impl QemuSifiveUMainstage {
+        /// Describe the machine to `boot` and run it.
+        fn hand_off(&self, boot: impl FnOnce(fstart_stage::payload::Handoff<'_>) -> !) -> ! {
+            use fstart_stage::payload::{Description, Handoff, Placement};
+            #[cfg(any(feature = "linux", feature = "crabefi"))]
+            {
+                use fstart_core::services::memory_detect::{E820Entry, E820Kind};
+                use fstart_stage::payload::Range;
+                let config = self.config;
+                let memory = [E820Entry::new(
+                    config.ram_base,
+                    config.ram_size,
+                    E820Kind::Ram,
+                )];
+                let mut description = Description::new(
+                    &memory,
+                    Range::new(config.firmware_base, config.firmware_size),
+                );
+                description.console = Some(&self.console);
+                description.device_tree = Some(fstart_arch::riscv64::boot_dtb_addr());
+                // No described PCI root: CrabEFI inspects the firmware FDT
+                // rather than invent bus bounds from a bare ECAM address.
+                description.mmio = &crate::virt::QEMU_RISCV64_MMIO;
+                let placement = Placement {
+                    kernel: config.kernel_addr,
+                    device_tree: config.dtb_addr,
+                    firmware: Range::new(config.firmware_addr, 0x20_0000),
+                    hart_id: fstart_arch::riscv64::boot_hart_id(),
+                    bootargs: config.bootargs,
+                    ..Default::default()
+                };
+                boot(Handoff::new(description, placement))
+            }
+            #[cfg(not(any(feature = "linux", feature = "crabefi")))]
+            boot(Handoff::new(
+                Description::new(&[], Default::default()),
+                Placement::default(),
+            ))
         }
     }
 

@@ -138,7 +138,15 @@ mod stage {
             fstart_arch::aarch64::halt()
         }
         fstart_log::info!("qemu-sbsa ramstage: ready for payload");
-        fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
+        // The SBSA reference machine boots no payload yet.
+        let _ = mainstage;
+        fstart_stage::payload::BuildSelectedPayload::boot(
+            fstart_stage::payload::Handoff::new(
+                fstart_stage::payload::Description::new(&[], Default::default()),
+                Default::default(),
+            ),
+            (),
+        )
     }
 }
 
