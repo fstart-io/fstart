@@ -18,6 +18,8 @@
 //! - DRAM physical base: `0x4000_0000`
 
 use fstart_arch::udelay;
+use fstart_core::description::Range;
+use fstart_core::services::{MemoryInit, ServiceError};
 use fstart_log::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -1206,17 +1208,19 @@ impl D1Dramc {
     pub const fn new_from_config(config: &D1DramcConfig) -> Self {
         Self { config: *config }
     }
+}
 
-    /// Run full DDR3 init; returns the detected DRAM size in bytes.
-    ///
-    /// # Errors
-    /// Returns `Err` when training fails or no memory is detected.
-    pub fn dram_init(&mut self) -> Result<u64, fstart_core::services::ServiceError> {
+impl MemoryInit for D1Dramc {
+    /// Run full DDR3 init; fails when training fails or finds no memory.
+    fn bring_up(&mut self) -> Result<Range, ServiceError> {
         let mem_mb = self.init_dram();
         if mem_mb == 0 {
-            return Err(fstart_core::services::ServiceError::HardwareError);
+            return Err(ServiceError::HardwareError);
         }
         info!("DRAM: {} MB (DDR3, {} MHz)", mem_mb, self.config.dram_clk);
-        Ok(u64::from(mem_mb) * 1024 * 1024)
+        Ok(Range::new(
+            DRAM_BASE as u64,
+            u64::from(mem_mb) * 1024 * 1024,
+        ))
     }
 }

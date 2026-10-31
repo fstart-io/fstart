@@ -27,7 +27,8 @@ use tock_registers::register_structs;
 
 use fstart_core::mmio::MmioReadWrite;
 
-use fstart_core::services::ServiceError;
+use fstart_core::description::Range;
+use fstart_core::services::{MemoryInit, ServiceError};
 
 use crate::ccu_regs::{H3_DRAM_CLK, H3_PLL5_CFG, SunxiH3CcuRegs};
 
@@ -681,7 +682,6 @@ pub struct H3Dramc {
     zq: u32,
     odt_en: bool,
     variant: SunxiDramcVariant,
-    detected_size: Cell<u64>,
     // Run‑state: updated during init
     dual_rank: Cell<bool>,
     bus_full_width: Cell<bool>,
@@ -712,7 +712,6 @@ impl H3Dramc {
             zq: config.zq,
             odt_en: config.odt_en,
             variant: config.variant,
-            detected_size: Cell::new(0),
             dual_rank: Cell::new(true),
             bus_full_width: Cell::new(true),
             page_size: Cell::new(0),
@@ -720,17 +719,15 @@ impl H3Dramc {
             bank_bits: Cell::new(0),
         }
     }
-    pub fn dram_init(&mut self) -> Result<u64, ServiceError> {
+}
+
+impl MemoryInit for H3Dramc {
+    fn bring_up(&mut self) -> Result<Range, ServiceError> {
         let size = self.sunxi_dram_init();
         if size == 0 {
             return Err(ServiceError::HardwareError);
         }
-        self.detected_size.set(size);
-        Ok(size)
-    }
-    #[must_use]
-    pub fn detected_size_bytes(&self) -> u64 {
-        self.detected_size.get()
+        Ok(Range::new(DRAM_BASE as u64, size))
     }
 }
 

@@ -10,9 +10,7 @@ use crate::southbridge::smbus::I801SmBus;
 use fstart_core::ConstVec;
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_core::mmio::MmioReadWrite;
-use fstart_core::services::{
-    FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus,
-};
+use fstart_core::services::{FirmwareImage, FirmwareImageProvider, ServiceError, SmBus};
 use fstart_pci::ecam;
 use fstart_pci::{
     PCI_COMMAND_BITS, PCI_EXPRESS_CAPABILITIES, PciAddress, PciFixedBar, PciFixedBarType,
@@ -2244,8 +2242,10 @@ impl FirmwareImageProvider for IntelIch8 {
     }
 }
 
-impl FlashLayoutVerifier for IntelIch8 {
-    fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
+impl IntelIch8 {
+    /// Compare the flash descriptor the controller reads with the board's
+    /// build-time layout, before trusting the boot medium's regions.
+    pub fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
         match expected {
             FlashLayout::IntelIfd(layout) => self.verify_ifd_flash_layout(layout),
             FlashLayout::X86Legacy(_) => Err(ServiceError::NotSupported),

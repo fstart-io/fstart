@@ -19,8 +19,9 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
 
+use fstart_core::description::Range;
 use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
-use fstart_core::services::ServiceError;
+use fstart_core::services::{MemoryInit, ServiceError};
 
 use crate::a20_ccu::{A20_CCU_BASE, A20_DRAMC_BASE};
 use crate::ccu_regs::{MBUS_CLK, PLL5_CFG, SunxiA20CcuRegs};
@@ -310,7 +311,6 @@ pub struct A20Dramc {
     density: Cell<u32>,
     io_width: Cell<u32>,
     bus_width: Cell<u32>,
-    detected_size: Cell<u64>,
 }
 
 // SAFETY: early boot is single-threaded and accesses fixed MMIO.
@@ -330,12 +330,11 @@ impl A20Dramc {
             density: Cell::new(0),
             io_width: Cell::new(0),
             bus_width: Cell::new(0),
-            detected_size: Cell::new(0),
         }
     }
 
     /// Run full DDR3 training and return the detected DRAM size in bytes.
-    pub fn dram_init(&mut self) -> Result<u64, ServiceError> {
+    fn train(&mut self) -> Result<u64, ServiceError> {
         fstart_log::info!("DRAM: starting init");
         self.io_width.set(16);
         self.bus_width.set(32);
@@ -362,14 +361,13 @@ impl A20Dramc {
         }
 
         fstart_log::info!("DRAM: {}MB", (size >> 20) as u32);
-        self.detected_size.set(size);
         Ok(size)
     }
+}
 
-    /// Return the detected size after successful [`Self::dram_init`].
-    #[must_use]
-    pub fn detected_size_bytes(&self) -> u64 {
-        self.detected_size.get()
+impl MemoryInit for A20Dramc {
+    fn bring_up(&mut self) -> Result<Range, ServiceError> {
+        Ok(Range::new(DRAM_BASE as u64, self.train()?))
     }
 }
 

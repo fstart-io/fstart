@@ -21,10 +21,10 @@ use crate::MmioBar;
 use core::ptr;
 
 use fstart_core::mmio::MmioReadWrite;
+use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_core::services::{MemoryController, ServiceError};
 use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
@@ -695,20 +695,6 @@ impl IntelGm965 {
     fn early_mch_dmi_tweaks(&self) {
         self.mchbar().set_non_isoch_decode_mode_b();
         self.dmibar().clear_link_deemphasis_equalization();
-    }
-
-    fn read_detected_size(&self) -> u64 {
-        let hb = self.hostbridge_regs();
-        let touud = (hb.touud.get() as u64) << 20;
-        if touud != 0 {
-            return touud;
-        }
-        let tolud = ((hb.tolud.get() as u64) & 0xfff0) << 16;
-        if tolud != 0 {
-            tolud
-        } else {
-            self.detected_size
-        }
     }
 
     fn tom(&self) -> u64 {
@@ -1436,6 +1422,14 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         Ok(Some(info.capture_training(output)?))
     }
 
+    // Training reads the SPDs through the chipset's own SMBus controller.
+    fn dram_init_with_smbus(
+        &mut self,
+        _smbus: Option<&mut dyn fstart_core::services::SmBus>,
+    ) -> Result<(), ServiceError> {
+        self.train()
+    }
+
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         self.gm965_dmi_init()
     }
@@ -1684,8 +1678,9 @@ impl MemoryDetector for IntelGm965 {
     }
 }
 
-impl MemoryController for IntelGm965 {
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
+impl IntelGm965 {
+    /// Cold-boot DRAM training, reading the SPDs on the chipset's SMBus.
+    fn train(&mut self) -> Result<(), ServiceError> {
         let mut smbus = crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base);
         smbus.host_reset();
         let mut info = raminit::probe_dimms(&mut smbus, &self.config.spd_addresses, None)?;
@@ -1695,10 +1690,6 @@ impl MemoryController for IntelGm965 {
         self.memory_test()?;
         self.thermal_sensor_init(&info, &mut smbus);
         Ok(())
-    }
-
-    fn detected_size_bytes(&self) -> u64 {
-        self.read_detected_size()
     }
 
     fn memory_test(&self) -> Result<(), ServiceError> {
