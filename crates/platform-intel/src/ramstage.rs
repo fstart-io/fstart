@@ -172,6 +172,12 @@ impl<B: IntelBoard, S> Ramstage<B, S> {
         &mut self.southbridge
     }
 
+    /// The southbridge's SMBus, for board devices on it (clock generator,
+    /// EEPROM).
+    pub fn smbus(&mut self) -> &mut impl fstart_core::services::SmBus {
+        &mut self.southbridge
+    }
+
     #[must_use]
     pub const fn ctx(&self) -> &MainstageCtx {
         &self.ctx

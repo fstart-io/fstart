@@ -94,6 +94,12 @@ impl<B: IntelBoard, S> Bootblock<B, S> {
         &mut self.southbridge
     }
 
+    /// The southbridge's SMBus, for board devices on it (clock generator,
+    /// EEPROM).
+    pub fn smbus(&mut self) -> &mut impl fstart_core::services::SmBus {
+        &mut self.southbridge
+    }
+
     /// Cold, warm or S3 resume. `Normal` until [`Bootblock::console`].
     pub fn boot_path(&self) -> BootPath {
         self.boot_path
