@@ -1,14 +1,21 @@
-//! The single QEMU stage. QEMU boards have no board work: the platform's
-//! flow is the whole `main`.
+//! The single QEMU stage: console, boot media from the device tree, PCI,
+//! then the payload.
 
 #![no_std]
 #![no_main]
 
+use fstart_driver_uart::pl011::Pl011;
+use fstart_board_qemu_aarch64::{QEMU_AARCH64_VIRT, console};
+use fstart_log::StaticConsole;
+use fstart_platform_qemu::Virt;
+
+static CONSOLE: StaticConsole<Pl011> = StaticConsole::new();
+
 fstart_platform_qemu::entry!(main);
 
 fn main() -> ! {
-    fstart_platform_qemu::virt_aarch64::run(
-        &fstart_board_qemu_aarch64::QEMU_AARCH64_VIRT,
-        fstart_board_qemu_aarch64::console(),
-    )
+    Virt::enter(&QEMU_AARCH64_VIRT, &CONSOLE, console())
+        .boot_media()
+        .scan_pci()
+        .boot()
 }

@@ -14,5 +14,6 @@ build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 [dependencies]
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
 fstart-driver-uart = { path = "../../../crates/driver-uart" }
+fstart-log = { path = "../../../crates/log" }
 
 # One binary per stage, named after the stage: src/bin/stage.rs.

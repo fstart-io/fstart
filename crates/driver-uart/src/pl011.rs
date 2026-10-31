@@ -149,6 +149,20 @@ impl Pl011 {
     }
 }
 
+impl fstart_core::services::ConsoleDevice for Pl011 {
+    type Config = Pl011Config;
+
+    const NAME: &'static str = "pl011";
+
+    fn new(config: Self::Config) -> Result<Self, ServiceError> {
+        Self::new(config)
+    }
+
+    fn init(&mut self) -> Result<(), ServiceError> {
+        Self::init(self)
+    }
+}
+
 impl Console for Pl011 {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
         let regs = self.regs();

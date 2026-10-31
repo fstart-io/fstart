@@ -54,26 +54,30 @@ pub mod virt;
 pub use sbsa::QemuSbsaConfig;
 pub use sifive_u::QemuSifiveUConfig;
 pub use virt::qemu_virt_security_config;
-pub use virt::{
-    QemuAarch64VirtConfig, QemuArmv7VirtConfig, QemuPciRootConfig, QemuRiscv64VirtConfig,
-};
-#[cfg(all(feature = "stage", feature = "virt-aarch64", target_arch = "aarch64"))]
-pub mod virt_aarch64;
-#[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]
-pub mod virt_armv7;
-#[cfg(all(feature = "stage", feature = "virt-riscv64", target_arch = "riscv64"))]
-pub mod virt_riscv64;
+pub use virt::{QemuPciRootConfig, QemuVirtConfig};
+#[cfg(all(
+    feature = "stage",
+    any(
+        all(feature = "virt-aarch64", target_arch = "aarch64"),
+        all(feature = "armv7", target_arch = "arm"),
+        all(feature = "virt-riscv64", target_arch = "riscv64")
+    )
+))]
+mod virt_stage;
+#[cfg(all(
+    feature = "stage",
+    any(
+        all(feature = "virt-aarch64", target_arch = "aarch64"),
+        all(feature = "armv7", target_arch = "arm"),
+        all(feature = "virt-riscv64", target_arch = "riscv64")
+    )
+))]
+pub use virt_stage::Virt;
 
 #[cfg(all(feature = "bundle-sbsa", target_arch = "aarch64"))]
 pub use sbsa::QemuSbsaMainstage;
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 pub use sifive_u::{QemuSifiveUBuildSelectedPayload, QemuSifiveUMainstage};
-#[cfg(all(feature = "stage", feature = "virt-aarch64", target_arch = "aarch64"))]
-pub use virt_aarch64::QemuAarch64VirtMainstage;
-#[cfg(all(feature = "stage", feature = "armv7", target_arch = "arm"))]
-pub use virt_armv7::QemuArmv7VirtMainstage;
-#[cfg(all(feature = "stage", feature = "virt-riscv64", target_arch = "riscv64"))]
-pub use virt_riscv64::QemuRiscv64VirtMainstage;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod q35;
 #[cfg(all(
@@ -587,14 +591,6 @@ mod stage {
         }
     }
 
-    fn phase(name: &str, f: impl FnOnce() -> Result<(), ServiceError>) {
-        fstart_log::info!("qemu-q35 ramstage: {}", name);
-        if f().is_err() {
-            fstart_log::error!("qemu-q35 ramstage: {} failed", name);
-            fstart_arch::x86::boot::halt();
-        }
-    }
-
     /// The QEMU q35 stage: console, memory map and ACPI from fw_cfg, boot
     /// media, PCI, display, MP and SMM, then the payload. QEMU boards have
     /// no board work; their `main` calls this.
@@ -603,20 +599,18 @@ mod stage {
         let Ok(mut mainstage) = QemuQ35Mainstage::new(config, console) else {
             fstart_arch::x86::boot::halt();
         };
-        phase("console", || mainstage.init_console());
-        phase("memory_detect", || mainstage.detect_memory_and_tables());
-        phase("mount_boot_media", || mainstage.mount_boot_media());
+        use fstart_stage::step;
+        step("console", || mainstage.init_console());
+        step("memory_detect", || mainstage.detect_memory_and_tables());
+        step("mount_boot_media", || mainstage.mount_boot_media());
         #[cfg(feature = "tpm")]
-        phase("tpm", || mainstage.init_tpm());
-        phase("bus_scan", || mainstage.init_pci());
-        phase("display", || mainstage.init_display());
+        step("tpm", || mainstage.init_tpm());
+        step("bus_scan", || mainstage.init_pci());
+        step("display", || mainstage.init_display());
         #[cfg(target_arch = "x86_64")]
-        phase("page_tables", || mainstage.map_memory());
-        phase("mp_smm", || mainstage.init_mp_smm());
-        phase("finalize", || {
-            fstart_log::info!("qemu-q35 ramstage: ready for payload");
-            Ok(())
-        });
+        step("page_tables", || mainstage.map_memory());
+        step("mp_smm", || mainstage.init_mp_smm());
+        fstart_log::info!("qemu-q35 ramstage: ready for payload");
         mainstage.hand_off()
     }
 }

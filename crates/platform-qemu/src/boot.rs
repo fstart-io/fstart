@@ -82,67 +82,6 @@ fn install_image(
     firmware.verify()
 }
 
-/// Payload consumers reuse the exact bounded image mounted and authenticated
-/// during boot setup, rather than reconstructing a bank-capacity-sized view.
-#[cfg(all(
-    any(feature = "linux", feature = "crabefi"),
-    any(
-        target_arch = "aarch64",
-        target_arch = "arm",
-        all(feature = "virt-riscv64", target_arch = "riscv64")
-    )
-))]
-pub(crate) fn mounted_image() -> fstart_core::layout::Region {
-    let mounted =
-        fstart_core::services::ffs_context::memory_mapped().expect("QEMU boot image not mounted");
-    fstart_core::layout::Region {
-        kind: fstart_core::layout::RegionKind::Firmware,
-        base: mounted.image_base,
-        size: mounted.image_size,
-    }
-}
-
-/// The payload handoff of a single-RAM-bank machine: `ram` as the memory
-/// map in `memory` (which must outlive the handoff), the mounted image, the
-/// boot device tree and `console`.
-#[cfg(all(
-    any(feature = "linux", feature = "crabefi"),
-    any(
-        target_arch = "aarch64",
-        target_arch = "arm",
-        all(feature = "virt-riscv64", target_arch = "riscv64")
-    )
-))]
-pub(crate) fn single_bank<'a>(
-    memory: &'a [fstart_core::services::memory_detect::E820Entry; 1],
-    console: &'a dyn fstart_core::services::Console,
-    device_tree: u64,
-) -> fstart_payload::Description<'a> {
-    use fstart_payload::{Description, Range};
-    let firmware = mounted_image();
-    let mut description = Description::new(memory, Range::new(firmware.base, firmware.size));
-    description.console = Some(console);
-    description.device_tree = Some(device_tree);
-    description
-}
-
-/// One RAM entry for [`single_bank`].
-#[cfg(all(
-    any(feature = "linux", feature = "crabefi"),
-    any(
-        target_arch = "aarch64",
-        target_arch = "arm",
-        all(feature = "virt-riscv64", target_arch = "riscv64")
-    )
-))]
-pub(crate) fn ram_entry(
-    base: u64,
-    size: u64,
-) -> [fstart_core::services::memory_detect::E820Entry; 1] {
-    use fstart_core::services::memory_detect::{E820Entry, E820Kind};
-    [E820Entry::new(base, size, E820Kind::Ram)]
-}
-
 /// Static-RAM boot setup for machines whose boot ABI supplies no DTB.
 ///
 /// QEMU sbsa-ref entered from TF-A BL31 receives x0 == 0: the secure world

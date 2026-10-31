@@ -123,10 +123,11 @@ unsafe extern "Rust" {
 
 /// Return the boot hart ID passed by QEMU at reset (`a0`).
 ///
-/// Reads directly from the `mhartid` CSR (always available in M-mode).
+/// Reads the `mhartid` CSR: M-mode only. S-mode code gets the hart from
+/// the SBI entry arguments.
 pub fn boot_hart_id() -> u64 {
     let id: u64;
-    // SAFETY: reading mhartid is a read-only CSR access, valid at any privilege level.
+    // SAFETY: a read-only CSR access; M-mode, where the stage runs.
     unsafe {
         core::arch::asm!("csrr {}, mhartid", out(reg) id);
     }
@@ -202,8 +203,8 @@ _sbi_copy_trampoline_end:
 /// exhaust the stack.
 pub fn boot_dtb_addr() -> u64 {
     let addr: u64;
-    // SAFETY: reading mscratch retrieves the DTB address saved by _start; always valid
-    // in M-mode context.
+    // SAFETY: reading mscratch retrieves the DTB address saved by _start.
+    // M-mode only: S-mode code gets the DTB from the SBI entry arguments.
     unsafe {
         core::arch::asm!("csrr {}, mscratch", out(reg) addr);
     }

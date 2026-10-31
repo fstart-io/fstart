@@ -349,6 +349,22 @@ fn effective_image_size(media_size: usize, anchor: fstart_core::ffs::AnchorRef<'
 pub mod anchor;
 pub use anchor::{fstart_anchor_bytes, fstart_trust_bytes};
 
+/// Stop the boot: log what failed and halt.
+#[inline(never)]
+pub fn fail(what: &str) -> ! {
+    fstart_log::error!("{} failed", what);
+    fstart_arch::halt()
+}
+
+/// Run one named boot step: log it, run it, and [`fail`] if it did.
+pub fn step<T, E>(name: &str, f: impl FnOnce() -> Result<T, E>) -> T {
+    fstart_log::info!("{}", name);
+    match f() {
+        Ok(value) => value,
+        Err(_) => fail(name),
+    }
+}
+
 /// Bind a board's stage `main` to the stage entry (`fstart_main`). Platform
 /// `entry!` macros expand to this.
 ///
