@@ -9,22 +9,15 @@
 pub mod block;
 pub mod boot;
 pub mod boot_media;
-pub mod clock;
 pub mod console;
 pub mod device;
 pub mod ffs_context;
 pub mod firmware;
-pub mod flash_layout;
 pub mod framebuffer;
-pub mod gpio;
 pub mod i2c;
-pub mod lpc;
-pub mod memory_controller;
 pub mod memory_detect;
-pub mod network;
-pub mod service_kind;
+pub mod memory_init;
 pub mod smbus;
-pub mod soc_boot;
 pub mod spi;
 pub mod timer;
 
@@ -34,20 +27,13 @@ pub use boot_media::{
     BlockDeviceMedia, BootMedia, FirmwareImageMap, FlashMap, LinearMap, MemoryMapped, SubRegion,
     TempRamArena,
 };
-pub use clock::ClockController;
 pub use console::{Console, ConsoleDevice, UartPort};
 pub use device::{BusDevice, DeviceError};
 pub use firmware::{FirmwareImage, FirmwareImageProvider, FirmwareWindow};
-pub use flash_layout::FlashLayoutVerifier;
 pub use framebuffer::{Framebuffer, FramebufferInfo};
-pub use gpio::GpioController;
 pub use i2c::I2c;
-pub use lpc::LpcBus;
-pub use memory_controller::MemoryController;
-pub use network::Network;
-pub use service_kind::{ServiceKind, ServiceSet};
+pub use memory_init::MemoryInit;
 pub use smbus::SmBus;
-pub use soc_boot::SocBootHeader;
 pub use spi::SpiBus;
 pub use timer::{Timer, TimerDelay};
 

@@ -23,15 +23,13 @@ pub mod raminit;
 
 use self::fields::*;
 
-use core::ptr;
-
 use crate::MmioBar;
 use crate::ich7::Rcba;
 use fstart_core::mmio::MmioReadWrite;
+use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_core::services::{MemoryController, ServiceError};
 use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::ecam;
 use fstart_pci::{
@@ -1345,6 +1343,14 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
         self.memory_info
     }
 
+    // Training reads the SPDs through the chipset's own SMBus controller.
+    fn dram_init_with_smbus(
+        &mut self,
+        _smbus: Option<&mut dyn fstart_core::services::SmBus>,
+    ) -> Result<(), ServiceError> {
+        self.train()
+    }
+
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         self.late_initialization();
         Ok(())
@@ -1749,8 +1755,9 @@ impl MemoryDetector for IntelI945 {
     }
 }
 
-impl MemoryController for IntelI945 {
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
+impl IntelI945 {
+    /// Cold-boot DRAM training, reading the SPDs on the chipset's SMBus.
+    fn train(&mut self) -> Result<(), ServiceError> {
         let mut smbus = crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base);
         smbus.host_reset();
         let result = raminit::sdram_initialize(self, &mut smbus);
@@ -1760,56 +1767,4 @@ impl MemoryController for IntelI945 {
         self.memory_info = Some(result?);
         Ok(())
     }
-
-    fn detected_size_bytes(&self) -> u64 {
-        self.detected_size
-    }
-
-    fn memory_test(&self) -> Result<(), ServiceError> {
-        let top = self.usable_low_memory_top() as usize;
-        ramtest_probe(0x0010_0000, top)?;
-        ramtest_probe(top.saturating_sub(0x1000), top)?;
-        Ok(())
-    }
-}
-
-/// Test-only probe helper shared with `raminit`.
-pub(crate) fn ramtest_probe(addr: usize, top: usize) -> Result<(), ServiceError> {
-    let addr = addr & !0x3;
-    let Some(end) = addr.checked_add(core::mem::size_of::<u32>()) else {
-        return Err(ServiceError::HardwareError);
-    };
-    if addr < 0x0010_0000 || end > top {
-        return Ok(());
-    }
-
-    let p = addr as *mut u32;
-    let addr_pattern = (addr as u32).rotate_left(13) ^ 0xa5a5_5a5a;
-    const FIXED_PATTERNS: [u32; 4] = [0x0000_0000, 0xffff_ffff, 0x5555_5555, 0xaaaa_aaaa];
-
-    // SAFETY: Called only after successful i945 DRAM training within the
-    // caller-provided usable top. The original word is restored.
-    unsafe {
-        let old = ptr::read_volatile(p);
-        for pattern in FIXED_PATTERNS
-            .iter()
-            .copied()
-            .chain(core::iter::once(addr_pattern))
-        {
-            ptr::write_volatile(p, pattern);
-            let got = ptr::read_volatile(p);
-            if got != pattern {
-                ptr::write_volatile(p, old);
-                fstart_log::error!(
-                    "i945 ramtest: failed at {:#x}: wrote {:#x}, read {:#x}",
-                    addr,
-                    pattern,
-                    got
-                );
-                return Err(ServiceError::HardwareError);
-            }
-        }
-        ptr::write_volatile(p, old);
-    }
-    Ok(())
 }

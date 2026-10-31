@@ -1,6 +1,7 @@
 //! FU740 DDR4 controller driver.
 
-use fstart_core::services::DeviceError;
+use fstart_core::description::Range;
+use fstart_core::services::{DeviceError, MemoryInit, ServiceError};
 
 use super::FU740_DRAM_BASE;
 use super::regs::{HIFIVE_UNMATCHED_DENALI_CTL, HIFIVE_UNMATCHED_DENALI_PHY};
@@ -195,7 +196,7 @@ impl Fu740Ddr {
     }
 
     /// Program the HiFive Unmatched register tables and train DDR.
-    pub fn init(&mut self) -> Result<(), DeviceError> {
+    fn train(&mut self) -> Result<(), DeviceError> {
         self.write_ctl_regs();
         self.phy_reset();
         self.enable_training();
@@ -206,8 +207,7 @@ impl Fu740Ddr {
         Ok(())
     }
 
-    #[must_use]
-    pub fn detected_size_bytes(&self) -> u64 {
+    fn detected_size_bytes(&self) -> u64 {
         // SAFETY: the fixed FU740 physical filter is an aligned 64-bit register.
         let value = unsafe { fstart_core::mmio::read64(FU740_DDR_FILTER_BASE as *const u64) };
         let end = (value & 0x00ff_ffff_ffff_ffff) << 2;
@@ -216,5 +216,12 @@ impl Fu740Ddr {
         } else {
             self.config.dram_size
         }
+    }
+}
+
+impl MemoryInit for Fu740Ddr {
+    fn bring_up(&mut self) -> Result<Range, ServiceError> {
+        self.train()?;
+        Ok(Range::new(FU740_DRAM_BASE, self.detected_size_bytes()))
     }
 }

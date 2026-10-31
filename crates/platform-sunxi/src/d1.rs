@@ -161,8 +161,9 @@ mod stage {
         slot.install(console);
         fstart_log::info!("d1: UART0 console ready");
 
+        use fstart_core::services::MemoryInit as _;
         let mut dramc = D1Dramc::new_from_config(&config.dram);
-        let dram_size = dramc.dram_init()?;
+        let dram = dramc.bring_up()?;
 
         let mut mmc0 = D1Mmc::new_from_config(&config.mmc0);
         mmc0.init()?;
@@ -176,14 +177,13 @@ mod stage {
         let entry = crate::boot::load_mainstage(
             &mmc0,
             D1_EGON_MMC_OFFSET,
-            D1_DRAM_BASE,
-            dram_size,
+            dram,
             config.mainstage_load_addr,
             config.handoff_addr,
         )?;
         // SAFETY: `load_mainstage` checked the handoff buffer lies in the
         // trained DRAM and kept it out of the main stage's load window.
-        unsafe { fstart_stage::next_stage::write_handoff(dram_size, config.handoff_addr) }
+        unsafe { fstart_stage::next_stage::write_handoff(dram.size, config.handoff_addr) }
             .map_err(|_| ServiceError::HardwareError)?;
         fstart_arch::riscv64::jump_to_with_handoff(entry, config.handoff_addr as usize)
     }

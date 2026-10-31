@@ -673,14 +673,8 @@ impl<C: SuperIoChip> SuperIo<C> {
 // BusDevice impl — constructed by the parent LPC bus
 // ---------------------------------------------------------------------------
 
-/// The parent bus type for SuperIO. Any driver providing an LPC bus
-/// service with a `base_port(...)` getter can serve as the parent.
-///
-/// For the initial implementation we use `()` as the bus type and
-/// require the caller to pass the base port in a different way; a
-/// future revision will tie this to the `LpcBus` trait once its
-/// concrete shape is settled. For now, `new_on_bus` takes the base
-/// port directly encoded in the parent reference.
+/// The parent bus of a SuperIO: whatever knows the chip's LPC config
+/// index port.
 pub trait LpcBaseProvider {
     /// Return the LPC config index port for this child.
     fn lpc_base(&self) -> u16;

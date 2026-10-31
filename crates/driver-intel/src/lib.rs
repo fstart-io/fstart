@@ -178,10 +178,7 @@ pub trait MmioBar: Copy {
 
 /// Intel northbridge contract consumed by Intel platform flows.
 pub trait IntelNorthbridgeDriver:
-    fstart_core::services::memory_detect::MemoryDetector
-    + fstart_core::services::MemoryController
-    + fstart_pci::PciRootProvider
-    + Sized
+    fstart_core::services::memory_detect::MemoryDetector + fstart_pci::PciRootProvider + Sized
 {
     type Config: 'static;
 
@@ -226,12 +223,11 @@ pub trait IntelNorthbridgeDriver:
     /// Prepare retained DRAM for a clean reset; the southbridge then owns the
     /// actual reset-controller sequence, including any sticky CF9 state.
     fn prepare_resume_reset(&self) {}
+    /// Train DRAM from the SPDs behind `smbus`.
     fn dram_init_with_smbus(
         &mut self,
-        _smbus: Option<&mut dyn fstart_core::services::SmBus>,
-    ) -> Result<(), fstart_core::services::ServiceError> {
-        self.dram_init()
-    }
+        smbus: Option<&mut dyn fstart_core::services::SmBus>,
+    ) -> Result<(), fstart_core::services::ServiceError>;
     fn early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
