@@ -148,7 +148,7 @@ mod stage {
     use fstart_driver_sunxi::spi_nor::SpiNorFlash;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_log::StaticConsole;
-    use fstart_stage::payload::MainstagePayload;
+    use fstart_payload::MainstagePayload;
 
     use crate::egon::{BootDevice, boot_device_at};
 
@@ -316,8 +316,8 @@ fstart_sunxi_fel_stash:
     pub struct A20LinuxPayload;
 
     #[cfg(feature = "linux")]
-    impl fstart_stage::payload::MainstagePayload<A20Mainstage> for A20LinuxPayload {
-        fn boot(handoff: fstart_stage::payload::Handoff<'_>, devices: A20Mainstage) -> ! {
+    impl fstart_payload::MainstagePayload<A20Mainstage> for A20LinuxPayload {
+        fn boot(handoff: fstart_payload::Handoff<'_>, devices: A20Mainstage) -> ! {
             let placement = handoff.placement;
             let Some(ram) = handoff.description.ram() else {
                 fstart_arch::halt();
@@ -367,7 +367,7 @@ fstart_sunxi_fel_stash:
     #[cfg(fstart_payload = "linux")]
     pub type A20BuildSelectedPayload = A20LinuxPayload;
     #[cfg(fstart_payload = "halt")]
-    pub type A20BuildSelectedPayload = fstart_stage::payload::HaltPayload;
+    pub type A20BuildSelectedPayload = fstart_payload::HaltPayload;
 
     /// The A20 SRAM bootblock: clocks and UART0's pins (the CCU), the
     /// console, DRAM, then the DRAM stage from the BROM's boot medium. Boards
@@ -473,17 +473,17 @@ fstart_sunxi_fel_stash:
             mainstage.dram_size,
             fstart_core::services::memory_detect::E820Kind::Ram,
         )];
-        let mut description = fstart_stage::payload::Description::new(&memory, Default::default());
+        let mut description = fstart_payload::Description::new(&memory, Default::default());
         description.console = Some(mainstage.console);
         #[allow(unused_mut)]
-        let mut placement = fstart_stage::payload::Placement::default();
+        let mut placement = fstart_payload::Placement::default();
         #[cfg(feature = "linux")]
         {
             placement.device_tree = config.fdt_dst_addr;
             placement.bootargs = config.bootargs;
         }
         A20BuildSelectedPayload::boot(
-            fstart_stage::payload::Handoff::new(description, placement),
+            fstart_payload::Handoff::new(description, placement),
             mainstage,
         )
     }

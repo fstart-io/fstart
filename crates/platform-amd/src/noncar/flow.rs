@@ -382,7 +382,7 @@ impl<S: Soc> Stage<S> {
         unsafe { psp::boot_done(silicon.psp.as_mut(), &delay) };
         fstart_log::info!("{}: starting the payload", S::NAME);
         post(ctx.fch, 0x44);
-        use fstart_stage::payload::{
+        use fstart_payload::{
             AcpiTables, BuildSelectedPayload, Description, Handoff, MainstagePayload, PciRootInfo,
             Placement, Range,
         };

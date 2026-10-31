@@ -62,7 +62,7 @@ mod stage {
     use crate::virt::enumerate_pci;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::pl011::{Pl011, Pl011Config};
-    use fstart_stage::payload::MainstagePayload;
+    use fstart_payload::MainstagePayload;
 
     #[cfg(not(fstart_entry = "aarch64-relocate"))]
     compile_error!("SBSA requires the aarch64-relocate entry");
@@ -140,9 +140,9 @@ mod stage {
         fstart_log::info!("qemu-sbsa ramstage: ready for payload");
         // The SBSA reference machine boots no payload yet.
         let _ = mainstage;
-        fstart_stage::payload::BuildSelectedPayload::boot(
-            fstart_stage::payload::Handoff::new(
-                fstart_stage::payload::Description::new(&[], Default::default()),
+        fstart_payload::BuildSelectedPayload::boot(
+            fstart_payload::Handoff::new(
+                fstart_payload::Description::new(&[], Default::default()),
                 Default::default(),
             ),
             (),

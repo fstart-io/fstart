@@ -161,7 +161,7 @@ mod stage {
     use fstart_driver_sunxi::spi_nor::SpiNorFlash;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_log::StaticConsole;
-    use fstart_stage::payload::MainstagePayload;
+    use fstart_payload::MainstagePayload;
 
     use crate::egon::{BootDevice, boot_device_at};
 
@@ -334,8 +334,8 @@ fstart_sunxi_fel_stash:
     pub struct H3LinuxPayload;
 
     #[cfg(all(feature = "linux", target_arch = "arm"))]
-    impl fstart_stage::payload::MainstagePayload<H3Mainstage> for H3LinuxPayload {
-        fn boot(handoff: fstart_stage::payload::Handoff<'_>, devices: H3Mainstage) -> ! {
+    impl fstart_payload::MainstagePayload<H3Mainstage> for H3LinuxPayload {
+        fn boot(handoff: fstart_payload::Handoff<'_>, devices: H3Mainstage) -> ! {
             let placement = handoff.placement;
             let Some(ram) = handoff.description.ram() else {
                 fstart_arch::halt();
@@ -391,8 +391,8 @@ fstart_sunxi_fel_stash:
     pub struct H5LinuxPayload;
 
     #[cfg(all(feature = "linux", target_arch = "aarch64"))]
-    impl fstart_stage::payload::MainstagePayload<H3Mainstage> for H5LinuxPayload {
-        fn boot(handoff: fstart_stage::payload::Handoff<'_>, devices: H3Mainstage) -> ! {
+    impl fstart_payload::MainstagePayload<H3Mainstage> for H5LinuxPayload {
+        fn boot(handoff: fstart_payload::Handoff<'_>, devices: H3Mainstage) -> ! {
             let placement = handoff.placement;
             let Some(ram) = handoff.description.ram() else {
                 fstart_arch::halt();
@@ -459,7 +459,7 @@ fstart_sunxi_fel_stash:
     #[cfg(all(fstart_payload = "linux", target_arch = "aarch64"))]
     pub type H3BuildSelectedPayload = H5LinuxPayload;
     #[cfg(fstart_payload = "halt")]
-    pub type H3BuildSelectedPayload = fstart_stage::payload::HaltPayload;
+    pub type H3BuildSelectedPayload = fstart_payload::HaltPayload;
 
     /// The H3 SRAM bootblock: clocks and UART0's pins (the CCU), the
     /// console, DRAM, then the DRAM stage from the BROM's boot medium. Boards
@@ -579,17 +579,17 @@ fstart_sunxi_fel_stash:
             mainstage.dram_size,
             fstart_core::services::memory_detect::E820Kind::Ram,
         )];
-        let mut description = fstart_stage::payload::Description::new(&memory, Default::default());
+        let mut description = fstart_payload::Description::new(&memory, Default::default());
         description.console = Some(mainstage.console);
         #[allow(unused_mut)]
-        let mut placement = fstart_stage::payload::Placement::default();
+        let mut placement = fstart_payload::Placement::default();
         #[cfg(feature = "linux")]
         {
             placement.device_tree = config.fdt_dst_addr;
             placement.bootargs = config.bootargs;
         }
         H3BuildSelectedPayload::boot(
-            fstart_stage::payload::Handoff::new(description, placement),
+            fstart_payload::Handoff::new(description, placement),
             mainstage,
         )
     }

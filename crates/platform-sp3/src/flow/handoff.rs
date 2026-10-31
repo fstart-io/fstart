@@ -8,10 +8,10 @@ use alloc::vec::Vec;
 
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_uart::ns16550::Ns16550;
-use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
-use fstart_stage::payload::{
+use fstart_payload::{
     AcpiTables, Description, Handoff, MainstagePayload, PciRootInfo, Placement, Range,
 };
+use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 
 use super::{Ctx, OrHalt};
 use crate::layout::{self, Span};
@@ -21,13 +21,13 @@ use crate::layout::{self, Span};
     fstart_payload = "linux",
     fstart_payload = "crabefi"
 ))]
-type Payload = fstart_stage::payload::BuildSelectedPayload;
+type Payload = fstart_payload::BuildSelectedPayload;
 #[cfg(not(any(
     fstart_payload = "halt",
     fstart_payload = "linux",
     fstart_payload = "crabefi"
 )))]
-type Payload = fstart_stage::payload::HaltPayload;
+type Payload = fstart_payload::HaltPayload;
 
 /// Publish the load policy (RAM from e820 minus the running image) and
 /// mount + authenticate the FFS at `ctx.ffs` (ROM2 or ROM3, where the flash anchor

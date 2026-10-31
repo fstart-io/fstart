@@ -6,7 +6,7 @@ use fstart_core::layout::{Layout, Region, RegionKind};
 use fstart_core::services::Console;
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-use fstart_stage::payload::MainstagePayload;
+use fstart_payload::MainstagePayload;
 
 #[cfg(not(fstart_entry = "riscv64"))]
 compile_error!("RISC-V virt requires the riscv64 entry");
@@ -27,11 +27,11 @@ compile_error!("selected Linux backend is not enabled");
 compile_error!("selected CrabEFI backend is not enabled");
 
 #[cfg(fstart_payload = "halt")]
-type Selected = fstart_stage::payload::HaltPayload;
+type Selected = fstart_payload::HaltPayload;
 #[cfg(all(fstart_payload = "linux", feature = "linux"))]
-type Selected = fstart_stage::payload::LinuxPayload;
+type Selected = fstart_payload::LinuxPayload;
 #[cfg(all(fstart_payload = "crabefi", feature = "crabefi"))]
-type Selected = fstart_stage::payload::Riscv64UefiPayload;
+type Selected = fstart_payload::Riscv64UefiPayload;
 
 pub use crate::virt::QEMU_RISCV64_UART_BASE;
 
@@ -124,13 +124,13 @@ impl QemuRiscv64VirtMainstage {
 impl QemuRiscv64VirtMainstage {
     /// Where the payload's kernel, device tree and OpenSBI go.
     #[cfg(any(feature = "linux", feature = "crabefi"))]
-    fn placement(&self) -> fstart_stage::payload::Placement {
+    fn placement(&self) -> fstart_payload::Placement {
         let firmware = self.region(RegionKind::PayloadFirmware);
-        fstart_stage::payload::Placement {
+        fstart_payload::Placement {
             #[cfg(feature = "linux")]
             kernel: self.region(RegionKind::Payload).base,
             device_tree: self.region(RegionKind::DeviceTree).base,
-            firmware: fstart_stage::payload::Range::new(firmware.base, firmware.size),
+            firmware: fstart_payload::Range::new(firmware.base, firmware.size),
             hart_id: fstart_arch::riscv64::boot_hart_id(),
             bootargs: self.config.bootargs,
             ..Default::default()
@@ -138,7 +138,7 @@ impl QemuRiscv64VirtMainstage {
     }
 
     /// Describe the machine to `boot` and run it.
-    fn hand_off(&self, boot: impl FnOnce(fstart_stage::payload::Handoff<'_>) -> !) -> ! {
+    fn hand_off(&self, boot: impl FnOnce(fstart_payload::Handoff<'_>) -> !) -> ! {
         #[cfg(any(feature = "linux", feature = "crabefi"))]
         {
             let memory = crate::boot::ram_entry(self.config.ram_base, self.ram_size());
@@ -149,14 +149,11 @@ impl QemuRiscv64VirtMainstage {
             );
             description.mmio = &crate::virt::QEMU_RISCV64_MMIO;
             description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&self.config.pci));
-            boot(fstart_stage::payload::Handoff::new(
-                description,
-                self.placement(),
-            ))
+            boot(fstart_payload::Handoff::new(description, self.placement()))
         }
         #[cfg(not(any(feature = "linux", feature = "crabefi")))]
-        boot(fstart_stage::payload::Handoff::new(
-            fstart_stage::payload::Description::new(&[], Default::default()),
+        boot(fstart_payload::Handoff::new(
+            fstart_payload::Description::new(&[], Default::default()),
             Default::default(),
         ))
     }
@@ -192,7 +189,7 @@ pub fn resume_sbi(
     }
     fstart_log::info!("riscv64 uefi: OpenSBI returned, launching CrabEFI");
     mainstage.hand_off(|handoff| {
-        fstart_stage::payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
+        fstart_payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
     })
 }
 

@@ -1,11 +1,24 @@
-//! Common payload launch abstractions for mainstage flows.
+//! Payload launchers: Linux, UEFI (CrabEFI) and coreboot payloads.
 //!
 //! The platform describes the machine once ([`Description`]) and adds where
 //! the launcher places the payload's pieces ([`Placement`]); the
 //! build-selected launcher reads the [`Handoff`] and exports what its
 //! payload needs (e820 and zero page, coreboot tables, device tree, UEFI).
 
+#![no_std]
+
+extern crate alloc as heap;
+
+// The launchers load through the stage crate's verified loaders; a build
+// with only the halt launcher calls none of them.
+use fstart_stage as _;
+
 pub use fstart_core::description::{AcpiTables, Description, PciRootInfo, Range};
+
+#[cfg(feature = "crabefi-basic")]
+pub use fstart_boot::crabefi;
+#[cfg(all(feature = "coreboot", any(target_arch = "x86", target_arch = "x86_64")))]
+pub mod coreboot;
 
 /// Build-selected payload launcher. `devices` carries what a platform's own
 /// launcher needs beyond the handoff (its boot media); the common
@@ -38,7 +51,7 @@ pub struct Handoff<'a> {
     pub placement: Placement,
     /// Devices on platform-owned buses for CrabEFI's drivers.
     #[cfg(feature = "crabefi-basic")]
-    pub peripherals: crate::heap::vec::Vec<crate::crabefi::peripheral::Peripheral>,
+    pub peripherals: heap::vec::Vec<crate::crabefi::peripheral::Peripheral>,
 }
 
 impl<'a> Handoff<'a> {
@@ -48,7 +61,7 @@ impl<'a> Handoff<'a> {
             description,
             placement,
             #[cfg(feature = "crabefi-basic")]
-            peripherals: crate::heap::vec::Vec::new(),
+            peripherals: heap::vec::Vec::new(),
         }
     }
 }
@@ -71,7 +84,7 @@ pub struct LinuxPayload;
 #[cfg(feature = "linux")]
 impl<D> MainstagePayload<D> for LinuxPayload {
     fn boot(handoff: Handoff<'_>, _: D) -> ! {
-        use crate::fixed_helpers::MemoryMappedLinuxBoot;
+        use fstart_stage::fixed_helpers::MemoryMappedLinuxBoot;
 
         let (description, placement) = (handoff.description, handoff.placement);
         let Some(ram) = description.ram() else {
@@ -116,13 +129,13 @@ impl<D> MainstagePayload<D> for LinuxPayload {
 
 #[cfg(feature = "linux")]
 fn halt_linux() -> ! {
-    #[cfg(feature = "riscv64")]
+    #[cfg(target_arch = "riscv64")]
     fstart_arch::riscv64::halt();
-    #[cfg(feature = "aarch64")]
+    #[cfg(target_arch = "aarch64")]
     fstart_arch::aarch64::halt();
-    #[cfg(feature = "armv7")]
+    #[cfg(target_arch = "arm")]
     fstart_arch::halt();
-    #[cfg(not(any(feature = "riscv64", feature = "aarch64", feature = "armv7")))]
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "arm")))]
     loop {
         core::hint::spin_loop();
     }
@@ -130,13 +143,13 @@ fn halt_linux() -> ! {
 
 #[cfg(feature = "linux")]
 fn launch_linux(params: &fstart_core::services::BootLinuxParams<'_>) -> ! {
-    #[cfg(feature = "riscv64")]
+    #[cfg(target_arch = "riscv64")]
     fstart_arch::riscv64::boot_linux(params);
-    #[cfg(feature = "aarch64")]
+    #[cfg(target_arch = "aarch64")]
     fstart_arch::aarch64::boot_linux(params);
-    #[cfg(feature = "armv7")]
+    #[cfg(target_arch = "arm")]
     fstart_arch::armv7::boot_linux(params);
-    #[cfg(not(any(feature = "riscv64", feature = "aarch64", feature = "armv7")))]
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "arm")))]
     {
         let _ = params;
         halt_linux()
@@ -144,14 +157,14 @@ fn launch_linux(params: &fstart_core::services::BootLinuxParams<'_>) -> ! {
 }
 
 /// AArch64 UEFI launcher for a memory-mapped FFS and BL31.
-#[cfg(all(feature = "crabefi-basic", feature = "aarch64"))]
+#[cfg(all(feature = "crabefi-basic", target_arch = "aarch64"))]
 pub struct Aarch64UefiPayload;
 
-#[cfg(all(feature = "crabefi-basic", feature = "aarch64"))]
+#[cfg(all(feature = "crabefi-basic", target_arch = "aarch64"))]
 impl<D> MainstagePayload<D> for Aarch64UefiPayload {
     fn boot(handoff: Handoff<'_>, _: D) -> ! {
         use crate::crabefi::UefiLaunchConfig;
-        use crate::fixed_helpers::MemoryMappedUefiBoot;
+        use fstart_stage::fixed_helpers::MemoryMappedUefiBoot;
 
         let (description, placement) = (handoff.description, handoff.placement);
         let Some(ram) = description.ram() else {
@@ -204,11 +217,9 @@ impl<D> MainstagePayload<D> for Aarch64UefiPayload {
 /// `extra` ahead of them.
 #[cfg(all(
     feature = "crabefi-basic",
-    any(feature = "aarch64", feature = "riscv64")
+    any(target_arch = "aarch64", target_arch = "riscv64")
 ))]
-fn static_regions(
-    description: &Description<'_>,
-) -> crate::heap::vec::Vec<crate::crabefi::MemoryRegion> {
+fn static_regions(description: &Description<'_>) -> heap::vec::Vec<crate::crabefi::MemoryRegion> {
     use crate::crabefi::{MemoryRegion, MemoryType};
     let region = |range: &Range, region_type| MemoryRegion {
         base: range.base,
@@ -229,14 +240,14 @@ fn static_regions(
 }
 
 /// RISC-V UEFI launcher using OpenSBI for the S-mode transition.
-#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", target_arch = "riscv64"))]
 pub struct Riscv64UefiPayload;
 
-#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", target_arch = "riscv64"))]
 impl Riscv64UefiPayload {
     /// Load OpenSBI, then ask it to resume the board-selected S-mode entry.
     pub fn boot(handoff: Handoff<'_>) -> ! {
-        use crate::fixed_helpers::MemoryMappedUefiBoot;
+        use fstart_stage::fixed_helpers::MemoryMappedUefiBoot;
 
         let (description, placement) = (handoff.description, handoff.placement);
         let dtb_addr = fstart_arch::riscv64::boot_dtb_addr();
@@ -262,11 +273,12 @@ impl Riscv64UefiPayload {
         // writable workspace, not QEMU's exactly bounded source blob. On
         // return, copy_fdt_to_workspace accepts growth only within that same
         // registered capacity; do not relax the original source bound.
-        let Ok(used) = crate::copy_fdt_to_workspace(boot.fdt_addr(), placement.device_tree) else {
+        let Ok(used) = fstart_stage::copy_fdt_to_workspace(boot.fdt_addr(), placement.device_tree)
+        else {
             fstart_log::error!("RISC-V UEFI payload: bounded FDT preparation failed");
             fstart_arch::riscv64::halt();
         };
-        let capacity = crate::fdt_workspace::destination().map_or(0, |r| r.size);
+        let capacity = fstart_stage::fdt_workspace_capacity();
         // Keep working room for the supported OpenSBI image's DTB fixups.
         if (used as u64)
             .checked_add(8192)
@@ -292,7 +304,8 @@ impl Riscv64UefiPayload {
             fstart_log::error!("RISC-V UEFI payload: no RAM described");
             fstart_arch::riscv64::halt();
         };
-        let Ok(fdt_size) = crate::copy_fdt_to_workspace(dtb_addr, placement.device_tree) else {
+        let Ok(fdt_size) = fstart_stage::copy_fdt_to_workspace(dtb_addr, placement.device_tree)
+        else {
             fstart_log::error!("RISC-V UEFI payload: bounded FDT copy failed");
             fstart_arch::riscv64::halt();
         };
@@ -332,7 +345,7 @@ impl Riscv64UefiPayload {
     }
 }
 
-#[cfg(all(feature = "crabefi-basic", feature = "riscv64"))]
+#[cfg(all(feature = "crabefi-basic", target_arch = "riscv64"))]
 impl<D> MainstagePayload<D> for Riscv64UefiPayload {
     fn boot(handoff: Handoff<'_>, _: D) -> ! {
         Self::boot(handoff)
@@ -345,14 +358,14 @@ impl<D> MainstagePayload<D> for Riscv64UefiPayload {
 /// kernel the description's memory map, ACPI RSDP and command line through
 /// the zero page, and jumps to the kernel's 64-bit entry point. Launch policy
 /// (load address, zero page, bootargs) arrives via the verified FFS manifest.
-#[cfg(all(feature = "linux", feature = "x86_64"))]
+#[cfg(all(feature = "linux", any(target_arch = "x86", target_arch = "x86_64")))]
 pub struct X86LinuxPayload;
 
-#[cfg(all(feature = "linux", feature = "x86_64"))]
+#[cfg(all(feature = "linux", any(target_arch = "x86", target_arch = "x86_64")))]
 impl<D> MainstagePayload<D> for X86LinuxPayload {
     fn boot(handoff: Handoff<'_>, _: D) -> ! {
         let description = handoff.description;
-        use crate::fixed_helpers::MemoryMappedLinuxBoot;
+        use fstart_stage::fixed_helpers::MemoryMappedLinuxBoot;
 
         let Some(manifest_bytes) = fstart_core::services::ffs_context::read_verified_asset(
             fstart_core::payload_manifest::X86_LINUX_MANIFEST_ASSET,
@@ -406,7 +419,7 @@ impl<D> MainstagePayload<D> for X86LinuxPayload {
         };
         #[cfg(feature = "tcg")]
         measure_x86_linux(config.bootargs);
-        crate::timestamps::handoff();
+        fstart_stage::timestamps::handoff();
         fstart_arch::x86::boot::boot_linux(&params)
     }
 }
@@ -416,13 +429,17 @@ impl<D> MainstagePayload<D> for X86LinuxPayload {
 /// kernel into PCR 4, and the command line as Linux's EFI stub measures its
 /// load options, a tagged event in PCR 9 over the UCS-2 string with its
 /// terminating NUL, so a verifier recomputes it the same way for both.
-#[cfg(all(feature = "tcg", feature = "linux", feature = "x86_64"))]
+#[cfg(all(
+    feature = "tcg",
+    feature = "linux",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 fn measure_x86_linux(bootargs: &str) {
-    use crate::tcg::event::{EV_EFI_PLATFORM_FIRMWARE_BLOB2, EV_EVENT_TAG, EventData};
+    use fstart_stage::tcg::event::{EV_EFI_PLATFORM_FIRMWARE_BLOB2, EV_EVENT_TAG, EventData};
     /// `LOAD_OPTIONS_EVENT_TAG_ID` of the Linux EFI stub.
     const LOAD_OPTIONS_TAG: u32 = 0x8F3B_22ED;
-    crate::tcg::handoff(crate::tcg::Handoff::Final);
-    if !crate::tcg::measure_file_by_type(
+    fstart_stage::tcg::handoff(fstart_stage::tcg::Handoff::Final);
+    if !fstart_stage::tcg::measure_file_by_type(
         fstart_core::ffs::FileType::Payload,
         4,
         EV_EFI_PLATFORM_FIRMWARE_BLOB2,
@@ -431,7 +448,7 @@ fn measure_x86_linux(bootargs: &str) {
         fstart_log::error!("x86 Linux payload: kernel not measured");
         fstart_tcg::measurement_error();
     }
-    let load_options: crate::heap::vec::Vec<u8> = bootargs
+    let load_options: heap::vec::Vec<u8> = bootargs
         .encode_utf16()
         .chain([0])
         .flat_map(u16::to_le_bytes)
@@ -442,10 +459,10 @@ fn measure_x86_linux(bootargs: &str) {
         &load_options,
         EventData::tagged(LOAD_OPTIONS_TAG, b"LOADED_IMAGE::LoadOptions\0").as_bytes(),
     );
-    crate::tcg::check();
+    fstart_stage::tcg::check();
 }
 
-#[cfg(all(feature = "linux", feature = "x86_64"))]
+#[cfg(all(feature = "linux", any(target_arch = "x86", target_arch = "x86_64")))]
 fn halt_x86_linux(reason: &str) -> ! {
     fstart_log::error!("x86 Linux payload: {}", reason);
     fstart_arch::x86::boot::halt()
@@ -462,7 +479,7 @@ fn halt_x86_linux(reason: &str) -> ! {
 compile_error!("select exactly one payload launcher");
 #[cfg(all(
     fstart_payload = "coreboot",
-    not(all(feature = "coreboot", feature = "x86_64"))
+    not(all(feature = "coreboot", any(target_arch = "x86", target_arch = "x86_64")))
 ))]
 compile_error!("selected coreboot backend is not enabled");
 #[cfg(all(fstart_payload = "linux", not(feature = "linux")))]
@@ -471,15 +488,24 @@ compile_error!("selected Linux backend is not enabled");
 compile_error!("selected CrabEFI backend is not enabled");
 
 /// Build selection, independent of the set of available payload backends.
-#[cfg(all(fstart_payload = "crabefi", feature = "aarch64"))]
+#[cfg(all(fstart_payload = "crabefi", target_arch = "aarch64"))]
 pub type BuildSelectedPayload = Aarch64UefiPayload;
-#[cfg(all(fstart_payload = "crabefi", feature = "riscv64"))]
+#[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
 pub type BuildSelectedPayload = Riscv64UefiPayload;
-#[cfg(all(fstart_payload = "crabefi", feature = "x86_64"))]
+#[cfg(all(
+    fstart_payload = "crabefi",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 pub type BuildSelectedPayload = X86UefiPayload;
-#[cfg(all(fstart_payload = "linux", feature = "x86_64"))]
+#[cfg(all(
+    fstart_payload = "linux",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 pub type BuildSelectedPayload = X86LinuxPayload;
-#[cfg(all(fstart_payload = "linux", not(feature = "x86_64")))]
+#[cfg(all(
+    fstart_payload = "linux",
+    not(any(target_arch = "x86", target_arch = "x86_64"))
+))]
 pub type BuildSelectedPayload = LinuxPayload;
 #[cfg(fstart_payload = "coreboot")]
 pub type BuildSelectedPayload = crate::coreboot::X86CorebootPayload;
@@ -488,7 +514,7 @@ pub type BuildSelectedPayload = HaltPayload;
 
 #[cfg(all(
     test,
-    feature = "x86_64",
+    any(target_arch = "x86", target_arch = "x86_64"),
     feature = "linux",
     feature = "crabefi-basic",
     any(
@@ -517,10 +543,16 @@ mod selection_tests {
 }
 
 /// Common x86 CrabEFI payload launcher.
-#[cfg(all(feature = "crabefi-basic", feature = "x86_64"))]
+#[cfg(all(
+    feature = "crabefi-basic",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 pub struct X86UefiPayload;
 
-#[cfg(all(feature = "crabefi-basic", feature = "x86_64"))]
+#[cfg(all(
+    feature = "crabefi-basic",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 impl<D> MainstagePayload<D> for X86UefiPayload {
     fn boot(handoff: Handoff<'_>, _: D) -> ! {
         use crate::crabefi::{MemoryRegion, MemoryType, UefiLaunchConfig};
@@ -547,10 +579,10 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
         // CrabEFI continues the measured boot: fstart locks the TPM, CrabEFI
         // measures the boot and extends the separators.
         #[cfg(feature = "tcg")]
-        crate::tcg::handoff(crate::tcg::Handoff::Locked);
+        fstart_stage::tcg::handoff(fstart_stage::tcg::Handoff::Locked);
 
         let ecam = uefi_ecam(description.pci_root);
-        crate::timestamps::handoff();
+        fstart_stage::timestamps::handoff();
         crate::crabefi::launch_x86_uefi(
             UefiLaunchConfig {
                 console: description.console,

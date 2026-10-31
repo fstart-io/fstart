@@ -117,8 +117,8 @@ pub(crate) fn single_bank<'a>(
     memory: &'a [fstart_core::services::memory_detect::E820Entry; 1],
     console: &'a dyn fstart_core::services::Console,
     device_tree: u64,
-) -> fstart_stage::payload::Description<'a> {
-    use fstart_stage::payload::{Description, Range};
+) -> fstart_payload::Description<'a> {
+    use fstart_payload::{Description, Range};
     let firmware = mounted_image();
     let mut description = Description::new(memory, Range::new(firmware.base, firmware.size));
     description.console = Some(console);

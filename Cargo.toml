@@ -15,6 +15,8 @@ members = [
   "crates/platform-qemu",
   "crates/ffs",
   "crates/load",
+  "crates/fdt",
+  "crates/payload",
   "crates/image-build",
   "crates/intel-gma",
   "crates/crypto",
@@ -101,6 +103,8 @@ fstart-platform-qemu = { path = "crates/platform-qemu" }
 fstart-pci = { path = "crates/pci" }
 fstart-ffs = { path = "crates/ffs" }
 fstart-load = { path = "crates/load" }
+fstart-fdt = { path = "crates/fdt" }
+fstart-payload = { path = "crates/payload" }
 fstart-crypto = { path = "crates/crypto" }
 fstart-log = { path = "crates/log" }
 fstart-arch = { path = "crates/arch" }

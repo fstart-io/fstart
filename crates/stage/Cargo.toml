@@ -30,13 +30,9 @@ sha3-digest = [
   "fstart-ffs/sha3-digest",
 ]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
-fdt = ["bootstrap"]
-# Additive Linux backend availability; fstart_payload selects the launcher.
-linux = []
-# x86 coreboot payloads (SeaBIOS, ...): coreboot table plus 32-bit entry.
-coreboot = ["ffs", "dep:fstart-coreboot"]
+fdt = ["bootstrap", "dep:fstart-fdt"]
 # TCG measured boot (TPM 1.2 and 2.0) of the FFS contents and payloads.
-tcg = ["ffs", "dep:fstart-tcg", "fstart-boot?/tcg"]
+tcg = ["ffs", "dep:fstart-tcg"]
 # FIT image parsing at runtime
 fit = ["ffs", "dep:fstart-boot", "fstart-boot/fit"]
 # Inter-stage handoff (fixed little-endian record, for multi-stage boards)
@@ -46,14 +42,8 @@ handoff = []
 acpi = []
 # SMBIOS-capable fixed flows use the same stage-local allocator.
 smbios = []
-# CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
-# The UI profile adds CrabEFI's graphical boot manager; all profiles require the
-# local stage allocator.
-crabefi = ["crabefi-basic", "fstart-boot/crabefi"]
-crabefi-ui = ["crabefi", "fstart-boot/crabefi-ui"]
-crabefi-elan-i2c = ["crabefi-basic", "fstart-boot/crabefi-elan-i2c"]
-crabefi-hid-i2c = ["crabefi-basic", "fstart-boot/crabefi-hid-i2c"]
-crabefi-basic = ["bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi-basic"]
+# The stage-local allocator, for code that allocates (payload launchers).
+alloc = []
 
 [dependencies]
 # Core firmware infrastructure
@@ -69,6 +59,7 @@ zerocopy = { workspace = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
 fstart-load = { workspace = true, optional = true }
+fstart-fdt = { workspace = true, optional = true }
 fstart-boot = { workspace = true, optional = true }
 fstart-coreboot = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
