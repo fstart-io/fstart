@@ -97,7 +97,7 @@ const fn in_d1_dram(addr: u64) -> bool {
 #[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
 mod stage {
     use super::*;
-    use fstart_core::services::ServiceError;
+    use fstart_core::services::{MemoryInit, ServiceError};
     use fstart_driver_sunxi::d1_ccu::{D1_EGON_MMC_OFFSET, D1_SRAM_BASE, D1Ccu};
     use fstart_driver_sunxi::d1_dramc::D1Dramc;
     use fstart_driver_sunxi::d1_mmc::D1Mmc;
@@ -106,42 +106,16 @@ mod stage {
 
     use crate::egon::{BootDevice, boot_device_at};
 
-    /// State retained by the DRAM-backed D1 mainstage.
-    pub struct D1Mainstage {
-        console: &'static Ns16550,
-        mmc0: D1Mmc,
-        dram_size: u64,
-    }
-
-    impl D1Mainstage {
-        #[must_use]
-        pub const fn dram_size(&self) -> u64 {
-            self.dram_size
-        }
-
-        #[must_use]
-        pub const fn console(&self) -> &Ns16550 {
-            self.console
-        }
-
-        #[must_use]
-        pub const fn mmc0(&self) -> &D1Mmc {
-            &self.mmc0
-        }
-    }
-
     /// The D1 SRAM bootblock: clocks, console, DDR3, MMC, then the DRAM
     /// stage. The CCU routes its own UART pins, so boards have no work here;
     /// their bootblock `main` calls this.
-    // Inlined into the board's `main` so its constant console config folds:
-    // the SRAM budget has no room for a runtime 64-bit baud divisor.
     #[inline(always)]
     pub fn bootblock(
         config: &'static D1Config,
         slot: &'static StaticConsole<Ns16550>,
-        console_config: Ns16550Config,
+        console: Ns16550Config,
     ) -> ! {
-        let Err(error) = run_bootblock(config, slot, console_config);
+        let Err(error) = run_bootblock(config, slot, console);
         fstart_log::error!("d1 bootblock failed: {}", error as u8);
         fstart_arch::halt()
     }
@@ -150,42 +124,27 @@ mod stage {
     fn run_bootblock(
         config: &'static D1Config,
         slot: &'static StaticConsole<Ns16550>,
-        console_config: Ns16550Config,
+        console: Ns16550Config,
     ) -> Result<core::convert::Infallible, ServiceError> {
         fstart_stage::anchor::initial_stage();
-        let ccu = D1Ccu::new_from_config(&config.ccu);
-        ccu.init();
-
-        let mut console = Ns16550::new(console_config).map_err(|_| ServiceError::HardwareError)?;
-        console.init().map_err(|_| ServiceError::HardwareError)?;
-        slot.install(console);
+        D1Ccu::new_from_config(&config.ccu).init();
+        crate::stage::console(slot, console)?;
         fstart_log::info!("d1: UART0 console ready");
-
-        use fstart_core::services::MemoryInit as _;
-        let mut dramc = D1Dramc::new_from_config(&config.dram);
-        let dram = dramc.bring_up()?;
+        let dram = D1Dramc::new_from_config(&config.dram).bring_up()?;
 
         let mut mmc0 = D1Mmc::new_from_config(&config.mmc0);
         mmc0.init()?;
-
-        let sram_base = D1_SRAM_BASE as usize;
-        if boot_device_at(sram_base) != BootDevice::Mmc0 {
+        if boot_device_at(D1_SRAM_BASE as usize) != BootDevice::Mmc0 {
             fstart_log::error!("d1: only eGON MMC0 boot is supported");
             return Err(ServiceError::NotSupported);
         }
-
-        let entry = crate::boot::load_mainstage(
+        crate::stage::enter_dram_stage(
             &mmc0,
             D1_EGON_MMC_OFFSET,
             dram,
             config.mainstage_load_addr,
             config.handoff_addr,
-        )?;
-        // SAFETY: `load_mainstage` checked the handoff buffer lies in the
-        // trained DRAM and kept it out of the main stage's load window.
-        unsafe { fstart_stage::next_stage::write_handoff(dram.size, config.handoff_addr) }
-            .map_err(|_| ServiceError::HardwareError)?;
-        fstart_arch::riscv64::jump_to_with_handoff(entry, config.handoff_addr as usize)
+        )
     }
 
     /// The D1 DRAM stage. Boards have no work here; their DRAM-stage `main`
@@ -197,33 +156,19 @@ mod stage {
     pub fn main_stage(
         config: &'static D1Config,
         slot: &'static StaticConsole<Ns16550>,
-        console_config: Ns16550Config,
+        console: Ns16550Config,
         handoff: usize,
     ) -> ! {
-        if handoff != config.handoff_addr as usize {
+        let handoff = crate::stage::handoff(handoff, config.handoff_addr);
+        if crate::stage::console(slot, console).is_err() {
             fstart_arch::halt();
         }
-        // SAFETY: the fixed predecessor reserves this configured buffer and
-        // validates it against trained DRAM before jumping here.
-        let Some(handoff) = (unsafe { fstart_stage::handoff::try_deserialize(handoff) }) else {
-            fstart_arch::halt();
-        };
-        let mut console = match Ns16550::new(console_config) {
-            Ok(console) => console,
-            Err(_) => fstart_arch::halt(),
-        };
-        if console.init().is_err() {
-            fstart_arch::halt();
-        }
-        slot.install(console);
         fstart_log::info!("d1 mainstage: console ready");
         fstart_log::info!("d1 mainstage: {} MiB DRAM", handoff.dram_size.get() >> 20);
         fstart_log::info!("d1 mainstage: ready for payload");
-        loop {
-            core::hint::spin_loop();
-        }
+        fstart_arch::halt()
     }
 }
 
 #[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
-pub use stage::{D1Mainstage, bootblock, main_stage};
+pub use stage::{bootblock, main_stage};

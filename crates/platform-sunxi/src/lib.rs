@@ -10,6 +10,22 @@ extern crate ufmt;
 
 #[cfg(feature = "stage")]
 mod boot;
+#[cfg(all(
+    feature = "stage",
+    target_arch = "arm",
+    any(feature = "a20", feature = "h3")
+))]
+pub mod fel;
+#[cfg(feature = "stage")]
+mod stage;
+#[cfg(all(
+    feature = "stage",
+    feature = "linux",
+    any(feature = "a20", feature = "h3")
+))]
+pub use stage::LinuxPayload;
+#[cfg(all(feature = "stage", any(feature = "a20", feature = "h3")))]
+pub use stage::{BootMedia, DramStage};
 
 pub mod a20;
 pub mod d1;
