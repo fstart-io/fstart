@@ -96,7 +96,7 @@ fn validate_dram(base: u64, size: u64, handoff: u64) -> Result<(), ServiceError>
 }
 
 /// Retain a DRAM policy before any block-backed FFS consumer can write memory.
-#[cfg(all(feature = "linux", any(feature = "a20", fstart_payload = "linux")))]
+#[cfg(all(feature = "linux", fstart_payload = "linux"))]
 pub(crate) fn install_mainstage_policy(
     dram_base: u64,
     dram_size: u64,
