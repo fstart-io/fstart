@@ -144,6 +144,37 @@ fn replacing_all_slots_preserves_firmware_and_padding() {
 }
 
 #[test]
+fn toml_payloads_use_the_existing_replacement_guards() {
+    let text = include_str!("../../../../boards/tyan/s8030/apcb/rome.toml");
+    let shared = include_str!("../../../platform-sp3/src/host/apcb/ddr4.toml");
+    let replacements = super::super::apcb_toml::compile(text, shared).unwrap();
+    let old = compile(ROME, &tables()).unwrap();
+    let original = fixture(&old, 8192);
+    let mut output = original.clone();
+    apply(&original, &mut output, &replacements).unwrap();
+    assert_eq!(output, original);
+
+    let edited = super::super::apcb_toml::compile(
+        &text.replace("MemRestoreControl = false", "MemRestoreControl = true"),
+        shared,
+    )
+    .unwrap();
+    apply(&original, &mut output, &edited).unwrap();
+    let mut expected = original.clone();
+    for (i, replacement) in edited.iter().enumerate() {
+        let at = 0x1000 + i * 0x3000;
+        expected[at..at + replacement.bytes.len()].copy_from_slice(&replacement.bytes);
+    }
+    assert_eq!(output, expected);
+
+    let mut bad_pin = replacements;
+    bad_pin[0].donor_sha256 = "0".repeat(64);
+    let mut unchanged = original.clone();
+    assert!(apply(&original, &mut unchanged, &bad_pin).is_err());
+    assert_eq!(unchanged, original);
+}
+
+#[test]
 fn bad_pin_missing_selector_absent_selector_and_capacity_fail_without_writes() {
     let replacements = compile(ROME, &tables()).unwrap();
     let original = fixture(&replacements, 8192);

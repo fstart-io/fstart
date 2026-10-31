@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true, features = ["std"] }
 serde_json = "1"
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
+schemars = "0.8"
+num-traits = "0.2"
 miniz_oxide = { version = "0.8", features = ["with-alloc"] }
 heapless = { workspace = true }
 object = { workspace = true }
@@ -15,7 +18,7 @@ zerocopy = { workspace = true }
 fstart-core = { workspace = true }
 fstart-amdfw-format = { workspace = true, features = ["serde"] }
 # APCB v3 typed tables/tokens. 0.5.5 is not published on crates.io.
-amd-apcb = { git = "https://github.com/oxidecomputer/amd-apcb", rev = "1ec66d607de2437813cdd9ffa91719a4b163b3cf", features = ["serde"] }
+amd-apcb = { git = "https://github.com/oxidecomputer/amd-apcb", rev = "1ec66d607de2437813cdd9ffa91719a4b163b3cf", features = ["serde", "schemars"] }
 fstart-coreboot = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-boot = { workspace = true, features = ["std"] }
@@ -26,7 +29,3 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 
 [build-dependencies]
 object = { workspace = true }
-
-[dev-dependencies]
-# The blob table tests read the real Cargo.toml tables.
-toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }

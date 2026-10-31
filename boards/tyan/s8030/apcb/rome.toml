@@ -1,0 +1,630 @@
+# Experiment: TOML authoring input; the JSON baseline remains unchanged.
+#:schema ../../../../target/apcb-toml.schema.json
+schema = 1
+generation = "rome"
+
+[[blobs]]
+name = "board"
+revision = 7876
+donor-sha256 = "6f56aa5889f5b6eaa1be74864af3f962ca4c48ac599f8556caf03dcf8aea42ed"
+bindings = [
+  { slot = "backup" },
+]
+records = [
+  { use = "board-id-eeprom", priority = ["hard-force", "normal"] },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "rdimm-odt" },
+  { use = "rdimm-cad" },
+  { use = "rdimm-data" },
+  { use = "rdimm-max-frequency-board-1", board-mask = 0x2 },
+  { use = "rdimm-max-frequency" },
+  { use = "rdimm-stretch-frequency" },
+  { use = "three-ds-max-frequency-board-1", board-mask = 0x2 },
+  { use = "three-ds-max-frequency" },
+  { use = "three-ds-stretch-frequency" },
+  { use = "three-ds-data" },
+  { use = "console" },
+  { use = "error-output" },
+  { use = "voltage-control" },
+  { use = "lrdimm-odt" },
+  { use = "lrdimm-cad" },
+  { use = "lrdimm-data" },
+  { use = "lrdimm-max-frequency-board-1", board-mask = 0x2 },
+  { use = "lrdimm-max-frequency" },
+  { use = "platform-tuning-end" },
+]
+tokens = [
+  { use = "board-bool", board-mask = 0x1 },
+  { use = "board-bool" },
+  { use = "board-byte-board-1", board-mask = 0x2 },
+  { use = "board-byte" },
+  { use = "board-word" },
+  { use = "board-dword" },
+]
+
+[[blobs]]
+name = "cbs-backup"
+revision = 7431
+donor-sha256 = "27061c5113b34e7f8875e18303c8f2c797b2afa239e92d1effcbbf916b249afc"
+bindings = [
+  { slot = "backup", instance = 8 },
+  { slot = "active" },
+]
+records = [
+  { use = "slink", priority = ["low"] },
+]
+tokens = [
+  { use = "empty-bool", priority = ["low"] },
+  { use = "cbs-backup-bool-medium", instance = 1, priority = ["medium"] },
+  { use = "empty-byte", priority = ["low"] },
+  { use = "cbs-backup-byte-medium", instance = 1, priority = ["medium"] },
+  { use = "empty-word", priority = ["low"] },
+  { use = "empty-word", instance = 1, priority = ["medium"] },
+  { use = "cbs-backup-dword-medium", instance = 1, priority = ["medium"] },
+  { use = "empty-dword", priority = ["low"] },
+]
+
+[[blobs]]
+name = "post-package-repair"
+revision = 9371
+donor-sha256 = "20640126271299dc0083d9855eef4909e3743ad2c6474fdd6052e08c6fbcbe69"
+bindings = [
+  { slot = "backup", instance = 9 },
+  { slot = "active", instance = 1 },
+]
+records = [
+  { use = "empty-ppr", priority = ["event-logging"] },
+]
+tokens = []
+
+[token-sets.board-bool]
+width = "bool"
+values = [
+  { MemLrdimmCapable = true },
+  { PspTpPort = true },
+  { MotherBoardType0 = false },
+  { MemForcePowerDownThrottleEnable = true },
+  { PspPsbAutoFuse = true },
+  { MemDqsTrainingControl = true },
+  { MemEnableParity = true },
+  { MemUdimmCapable = true },
+  { BmcVgaIoEnable = false },
+  { MemEnableBankGroupSwap = true },
+  { MemChannelInterleaving = false },
+  { MemPstate = true },
+  { MemLimitMemoryToBelow1TiB = true },
+  { MemEnableBankSwizzle = true },
+  { VgaProgram = true },
+  { MemSpdReadOptimizationDdr4 = true },
+  { DfGroupDPlatform = true },
+  { MemHoleRemapping = true },
+  { CcxPpinOptIn = false },
+  { MemEnableChipSelectInterleaving = true },
+  { ConfigureSecondPcieLink = false },
+  { MemMbistAggressorStaticLaneControl = false },
+  { MctpRerouteEnable = false },
+  { MemSodimmCapable = true },
+  { MemIgnoreSpdChecksum = true },
+  { MemRdimmCapable = true },
+  { MemEccSyncFlood = false },
+  { MemAutoRefreshsCountForThrottling = "Enabled" },
+  { MemNvdimmNDisable = false },
+  { GeneralCapsuleMode = true },
+  { MemDramDoubleRefreshRateMilan = false },
+  { DisplayPmuTrainingResults = false },
+  { MemSwCmdThrottleEnable = false },
+  { MemEnableBankGroupSwapAlt = true },
+  { MemOnDieThermalSensor = true },
+  { MemAllClocks = true },
+  { MemEnablePowerDown = false },
+  { MemUncorrectedEccRetryDdr4 = true },
+  { MemOdtsCmdThrottleEnable = true },
+  { MemClear = false },
+  { MemPostPackageRepairEnable = true },
+  { PspErrorDisplay = true },
+  { MemEccRedirection = false },
+  { MemMbistTgtStaticLaneControl = false },
+  { MemDdrRouteBalancedTee = false },
+  { MemQuadRankCapable = true },
+  { PspStopOnError = false },
+  { IohcMixedRwWorkaround = false },
+  { MemTempControlledRefreshEnable = false },
+  { MemTempControlledExtendedRefresh = false },
+  { MemEnableEccFeature = true },
+  { BmcInitBeforeDram = false },
+  { MemRestoreControl = false },
+]
+
+[token-sets.board-byte-board-1]
+width = "byte"
+values = [
+  { MemMbistAggressorOn = false },
+  { DfGmiEncrypt = "Auto" },
+  { BmcEndLane = 255 },
+  { MemAutoRefreshFineGranMode = "Fixed1Times" },
+  { BmcFunction = 2 },
+  { MemMbistWorseCasGranularity = 0 },
+  { FchSmbusSpeed = { Value = 42 } },
+  { id = 0x249e08d5, value = 3 },
+  { DfMemInterleavingSize = "Auto" },
+  { MemNvdimmPowerSource = "DeviceManaged" },
+  { id = 0x28eb57ad, value = 30 },
+  { BmcVgaIoBarToReplace = 0 },
+  { DfDramNumaPerSocket = "Four" },
+  { MemMbistReadDataEyeVoltageStep = 2 },
+  { DfRemapAt1TiB = "Auto" },
+  { MemDramAddressCommandParityRetryCount = 1 },
+  { Df4LinkMaxXgmiSpeed = "10.667 Gbit/s" },
+  { MemMbistAggressorStaticLaneVal = 0 },
+  { MemDataPoison = "Enabled" },
+  { MemMbistTgtStaticLaneVal = 0 },
+  { MemMbistDataEyeType = "1D Timing" },
+  { Df3LinkMaxXgmiSpeed = "Auto" },
+  { MemHealPprType = "SoftRepair" },
+  { id = 0x55876720, value = 253 },
+  { MemMbistTestMode = "PhysicalInterface" },
+  { MemMbistAggressorStaticLaneSelEcc = 0 },
+  { MemMbistReadDataEyeTimingStep = 1 },
+  { MemHealTestSelect = "Normal" },
+  { MemRollWindowDepth = { Memclks = 255 } },
+  { FchConsoleOutSuperIoType = "Auto" },
+  { MemHealMaxBankFails = 3 },
+  { MemRcdParity = true },
+  { DfInvertDramMap = "Auto" },
+  { DfProbeFilter = "Auto" },
+  { OdtsCmdThrottleCycles = 87 },
+  { MemControllerWritingCrcMaxReplay = 8 },
+  { DfXgmiEncrypt = "Auto" },
+  { MemPsErrorHandling = 0 },
+  { DfSaveRestoreMemEncrypt = "Auto" },
+  { MemControllerWritingCrcMode = "Disabled" },
+  { DimmSensorResolution = 1 },
+  { BmcSocket = 15 },
+  { PcieResetPinSelect = 0 },
+  { MemMbistDataEyeExecutionRepeatCount = 1 },
+  { DfBottomIo = 176 },
+  { MemDataScramble = 1 },
+  { BmcLinkSpeed = "PcieGen1" },
+  { DfMemClear = "Auto" },
+  { FchConsoleOutBasicEnable = 0 },
+  { MemMbistTgtStaticLaneSelEcc = 0 },
+  { DfXgmiTxEqMode = "Auto" },
+  { AblSerialBaudRate = "115200 Baud" },
+  { MemMbistPatternLength = 3 },
+  { BmcRcbCheckingMode = "Auto" },
+  { MemTrainingHdtControl = "AssertionMessages" },
+  { DfXgmiConfig = "Auto" },
+  { MemMbistHaltOnError = 1 },
+  { BmcStartLane = 255 },
+  { PmuTrainingMode = "1D,2D" },
+  { CbsMemUncorrectedEccRetryDdr4 = true },
+  { MemControllerWritingCrcLimit = 0 },
+  { MemParityErrorMaxReplayDdr4 = 8 },
+  { MemMbistWriteDataEyeVoltageStep = 2 },
+  { DfMemInterleaving = "Auto" },
+  { MemMbistPerBitSlaveDieReport = 0 },
+  { PspEnableDebugMode = "Disabled" },
+  { MemRdimmTimingRcdF0Rc0FAdditionalLatency = "Auto" },
+  { MemTsmeModeRome = "Disabled" },
+  { BmcDevice = 5 },
+  { MemMbistWriteDataEyeTimingStep = 1 },
+  { MemMbistAggressorsChannels = "Disabled" },
+  { SwCmdThrotCycles = 0 },
+  { FchConsoleOutMode = "Enabled" },
+  { MemMbistTest = "Enabled" },
+  { BmcGen2TxDeemphasis = "Disabled" },
+  { MemMbistPatternSelect = "Prbs" },
+  { MemHealBistEnable = "Disabled" },
+  { BmcVgaIoPortSize = 0 },
+  { FchConsoleOutSerialPort = "SuperIo" },
+]
+
+[token-sets.board-byte]
+width = "byte"
+values = [
+  { MemMbistAggressorOn = false },
+  { MemOverrideDimmSpdMaxActivityCount = "Auto" },
+  { DfGmiEncrypt = "Auto" },
+  { MemUrgRefLimit = 6 },
+  { BmcEndLane = 129 },
+  { MemAutoRefreshFineGranMode = "Fixed1Times" },
+  { BmcFunction = 2 },
+  { MemMbistWorseCasGranularity = 0 },
+  { FchSmbusSpeed = { Value = 42 } },
+  { id = 0x249e08d5, value = 3 },
+  { DfMemInterleavingSize = "Auto" },
+  { MemNvdimmPowerSource = "DeviceManaged" },
+  { id = 0x28eb57ad, value = 30 },
+  { BmcVgaIoBarToReplace = 0 },
+  { DfDramNumaPerSocket = "Four" },
+  { MemMbistReadDataEyeVoltageStep = 2 },
+  { DfRemapAt1TiB = "Auto" },
+  { MemDramAddressCommandParityRetryCount = 1 },
+  { Df4LinkMaxXgmiSpeed = "Auto" },
+  { MemMbistAggressorStaticLaneVal = 0 },
+  { MemDramDoubleRefreshRate = 0 },
+  { MemDataPoison = "Enabled" },
+  { MemMbistTgtStaticLaneVal = 0 },
+  { MemMbistDataEyeType = "1D Timing" },
+  { Df3LinkMaxXgmiSpeed = "Auto" },
+  { MemHealPprType = "SoftRepair" },
+  { id = 0x55876720, value = 253 },
+  { MemMbistTestMode = "PhysicalInterface" },
+  { MemMbistAggressorStaticLaneSelEcc = 0 },
+  { MemMbistReadDataEyeTimingStep = 1 },
+  { MemHealTestSelect = "Normal" },
+  { MemRollWindowDepth = { Memclks = 255 } },
+  { FchConsoleOutSuperIoType = "Auto" },
+  { MemHealMaxBankFails = 3 },
+  { MemRcdParity = true },
+  { DfInvertDramMap = "Auto" },
+  { DfProbeFilter = "Auto" },
+  { OdtsCmdThrottleCycles = 87 },
+  { MemControllerWritingCrcMaxReplay = 8 },
+  { DfXgmiEncrypt = "Auto" },
+  { MemPsErrorHandling = 0 },
+  { DfSaveRestoreMemEncrypt = "Auto" },
+  { MemControllerWritingCrcMode = "Disabled" },
+  { DimmSensorResolution = 1 },
+  { BmcSocket = 0 },
+  { SecondPcieLinkSpeed = "Gen2" },
+  { PcieResetPinSelect = 0 },
+  { MemMbistDataEyeExecutionRepeatCount = 1 },
+  { DfBottomIo = 176 },
+  { MemDataScramble = 1 },
+  { BmcLinkSpeed = "PcieGen1" },
+  { DfMemClear = "Auto" },
+  { FchConsoleOutBasicEnable = 0 },
+  { MemMbistTgtStaticLaneSelEcc = 0 },
+  { DfXgmiTxEqMode = "Auto" },
+  { AblSerialBaudRate = "115200 Baud" },
+  { MemMbistPatternLength = 3 },
+  { BmcRcbCheckingMode = "Auto" },
+  { MemTrainingHdtControl = "AssertionMessages" },
+  { DfXgmiConfig = "Auto" },
+  { MemMbistHaltOnError = 1 },
+  { BmcStartLane = 129 },
+  { MemSelfRefreshExitStaggering = "Disabled" },
+  { PmuTrainingMode = "1D,2D" },
+  { CbsMemUncorrectedEccRetryDdr4 = true },
+  { MemControllerWritingCrcLimit = 0 },
+  { MemParityErrorMaxReplayDdr4 = 8 },
+  { MemMbistWriteDataEyeVoltageStep = 2 },
+  { DfMemInterleaving = "Auto" },
+  { MemMbistPerBitSlaveDieReport = 0 },
+  { PspEnableDebugMode = "Disabled" },
+  { MemRdimmTimingRcdF0Rc0FAdditionalLatency = "Auto" },
+  { MemTsmeModeRome = "Disabled" },
+  { BmcDevice = 5 },
+  { MemMbistWriteDataEyeTimingStep = 1 },
+  { MemMbistAggressorsChannels = "Disabled" },
+  { SwCmdThrotCycles = 0 },
+  { FchConsoleOutMode = "Disabled" },
+  { MemMbistTest = "Enabled" },
+  { MemSubUrgRefLowerBound = 4 },
+  { BmcGen2TxDeemphasis = "Disabled" },
+  { MemMbistPatternSelect = "Prbs" },
+  { MemHealBistEnable = "Disabled" },
+  { BmcVgaIoPortSize = 0 },
+  { FchConsoleOutSerialPort = "SuperIo" },
+]
+
+[token-sets.board-word]
+width = "word"
+values = [
+  { BmcVgaIoPort = 0 },
+  { Dimm3DsSensorCritical = 80 },
+  { Dimm3DsSensorUpper = 75 },
+  { EccSymbolSize = "x16" },
+  { DimmSensorCritical = 95 },
+  { DimmSensorConfig = 1032 },
+  { DimmSensorUpper = 80 },
+  { DimmSensorLower = 10 },
+  { FchGppClkMap = "Auto" },
+  { PspSyshubWatchdogTimerInterval = 2600 },
+]
+
+[token-sets.board-dword]
+width = "dword"
+values = [
+  { MemPowerDownMode = 0 },
+  { MemBusFrequencyLimit = "Ddr3200" },
+  { DfPciMmioSize = 268435456 },
+  { FchRom3BaseHigh = 2044 },
+  { MemMbistAggressorStaticLaneSelLo = 0 },
+  { MemMbistTgtStaticLaneSelLo = 0 },
+  { DfCakeCrcThresholdBounds = { Value = 100 } },
+  { CcxMinSevAsid = 1 },
+  { MemMbistTgtStaticLaneSelHi = 0 },
+  { MemSelfHealBistTimeout = 10000 },
+  { MemClockValue = "Ddr2400" },
+  { PspMeasureConfig = 0 },
+  { MemMbistAggressorStaticLaneSelHi = 0 },
+  { MemUserTimingMode = "Auto" },
+]
+
+[token-sets.empty-bool]
+width = "bool"
+values = []
+
+[token-sets.cbs-backup-bool-medium]
+width = "bool"
+values = [
+  { MemMbistAggressorStaticLaneControl = false },
+  { MemPostPackageRepairEnable = false },
+  { MemMbistTgtStaticLaneControl = false },
+]
+
+[token-sets.empty-byte]
+width = "byte"
+values = []
+
+[token-sets.cbs-backup-byte-medium]
+width = "byte"
+values = [
+  { CbsMemAddrCmdParityErrorMaxReplayDdr4 = 8 },
+  { id = 0xd0ae86f, value = 0 },
+  { MemUrgRefLimit = 6 },
+  { MemMbistWorseCasGranularity = 0 },
+  { MemMbistReadDataEyeVoltageStep = 2 },
+  { MemMbistAggressorStaticLaneVal = 0 },
+  { MemDramDoubleRefreshRate = 0 },
+  { id = 0x4cad640c, value = 0 },
+  { MemMbistTgtStaticLaneVal = 0 },
+  { MemMbistDataEyeType = "WorstCaseMarginOnly" },
+  { MemHealPprType = "SoftRepair" },
+  { MemMbistAggressorStaticLaneSelEcc = 0 },
+  { MemMbistReadDataEyeTimingStep = 1 },
+  { MemHealTestSelect = "Normal" },
+  { CbsMemWriteCrcErrorMaxReplayDdr4 = 8 },
+  { MemMbistTgtStaticLaneSelEcc = 0 },
+  { MemMbistPatternLength = 3 },
+  { id = 0xb424aff0, value = 0 },
+  { MemSelfRefreshExitStaggering = "Disabled" },
+  { MemMbistWriteDataEyeVoltageStep = 2 },
+  { MemMbistWriteDataEyeTimingStep = 1 },
+  { MemMbistAggressorsChannels = "1 aggressor/(2 ch)" },
+  { MemSubUrgRefLowerBound = 4 },
+  { MemMbistPatternSelect = "Prbs" },
+  { MemHealBistEnable = "Disabled" },
+  { id = 0xff756025, value = 1 },
+]
+
+[token-sets.empty-word]
+width = "word"
+values = []
+
+[token-sets.cbs-backup-dword-medium]
+width = "dword"
+values = [
+  { FchRom3BaseHigh = 2044 },
+  { MemMbistAggressorStaticLaneSelLo = 0 },
+  { MemMbistTgtStaticLaneSelLo = 0 },
+  { MemMbistTgtStaticLaneSelHi = 0 },
+  { MemMbistAggressorStaticLaneSelHi = 0 },
+]
+
+[token-sets.empty-dword]
+width = "dword"
+values = []
+
+# S8030 Rome frequency policy belongs to the board, not the shared platform.
+[tables.rdimm-max-frequency-board-1]
+kind = "rdimm-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr2667" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 1, 0, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr2400" },
+  { slots = [2], conditions = [2, 2, 0, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 1, 1, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr2133" },
+]
+
+[tables.rdimm-max-frequency]
+kind = "rdimm-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr3200" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [1, 1, 0, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [2, 2, 0, 0], speed = "Ddr2933" },
+  { slots = [2], conditions = [2, 1, 1, 0], speed = "Ddr2933" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr2933" },
+]
+
+[tables.rdimm-stretch-frequency]
+kind = "rdimm-stretch-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr3200" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [1, 1, 0, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [2, 2, 0, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [2, 1, 1, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr3200" },
+]
+
+[tables.three-ds-max-frequency-board-1]
+kind = "three-ds-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr2400" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr1866" },
+]
+
+[tables.three-ds-max-frequency]
+kind = "three-ds-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr2933" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr2667" },
+]
+
+[tables.three-ds-stretch-frequency]
+kind = "three-ds-stretch-frequency"
+rows = [
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr3200" },
+]
+
+[tables.lrdimm-max-frequency-board-1]
+kind = "lrdimm-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [1], conditions = [1, 0, 0, 1], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 0, 0, 1], speed = "Ddr2667" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 0, 0, 2], speed = "Ddr2133" },
+]
+
+[tables.lrdimm-max-frequency]
+kind = "lrdimm-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+  { slots = [1], conditions = [1, 0, 0, 1], speed = "Ddr3200" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+  { slots = [2], conditions = [1, 0, 0, 1], speed = "Ddr3200" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr2933" },
+  { slots = [2], conditions = [2, 0, 0, 2], speed = "Ddr2933" },
+]
+
+[tables.empty-ppr]
+kind = "empty-ppr"
+slots = 64
+
+[tables.board-id-eeprom]
+kind = "board-id-eeprom"
+controller = 5
+address = 0x50
+id-offset = 0x10
+revision-offset = 0x12
+mapping = [
+  { id_and_rev_and_feature_mask = 255, id_and_feature_value = 12, rev_and_feature_value = "NotApplicable", board_instance_index = 1 },
+  { id_and_rev_and_feature_mask = 255, id_and_feature_value = 55, rev_and_feature_value = "NotApplicable", board_instance_index = 2 },
+  { id_and_rev_and_feature_mask = 255, id_and_feature_value = 13, rev_and_feature_value = "NotApplicable", board_instance_index = 0 },
+  { id_and_rev_and_feature_mask = 255, id_and_feature_value = 49, rev_and_feature_value = "NotApplicable", board_instance_index = 0 },
+  { id_and_rev_and_feature_mask = 255, id_and_feature_value = 57, rev_and_feature_value = "NotApplicable", board_instance_index = 1 },
+  { id_and_rev_and_feature_mask = 255, id_and_feature_value = 48, rev_and_feature_value = "NotApplicable", board_instance_index = 0 },
+  { id_and_rev_and_feature_mask = 255, id_and_feature_value = 52, rev_and_feature_value = { Value = 5 }, board_instance_index = 1 },
+  { id_and_rev_and_feature_mask = 255, id_and_feature_value = 52, rev_and_feature_value = "NotApplicable", board_instance_index = 0 },
+  { id_and_rev_and_feature_mask = 255, id_and_feature_value = 14, rev_and_feature_value = "NotApplicable", board_instance_index = 0 },
+]
+
+[tables.spd-smbus]
+kind = "spd-smbus"
+slots = [
+  { socket = 0, channel = 0, dimm = 0, address = 0xa0, mux = 0xe0, mux-channel = 4 },
+  { socket = 0, channel = 0, dimm = 1, address = 0xa2, mux = 0xe0, mux-channel = 4 },
+  { socket = 0, channel = 1, dimm = 0, address = 0xa4, mux = 0xe0, mux-channel = 4 },
+  { socket = 0, channel = 1, dimm = 1, address = 0xa6, mux = 0xe0, mux-channel = 4 },
+  { socket = 0, channel = 2, dimm = 0, address = 0xa8, mux = 0xe0, mux-channel = 4 },
+  { socket = 0, channel = 2, dimm = 1, address = 0xaa, mux = 0xe0, mux-channel = 4 },
+  { socket = 0, channel = 3, dimm = 0, address = 0xac, mux = 0xe0, mux-channel = 4 },
+  { socket = 0, channel = 3, dimm = 1, address = 0xae, mux = 0xe0, mux-channel = 4 },
+  { socket = 0, channel = 4, dimm = 0, address = 0xa0, mux = 0xe0, mux-channel = 5 },
+  { socket = 0, channel = 4, dimm = 1, address = 0xa2, mux = 0xe0, mux-channel = 5 },
+  { socket = 0, channel = 5, dimm = 0, address = 0xa4, mux = 0xe0, mux-channel = 5 },
+  { socket = 0, channel = 5, dimm = 1, address = 0xa6, mux = 0xe0, mux-channel = 5 },
+  { socket = 0, channel = 6, dimm = 0, address = 0xa8, mux = 0xe0, mux-channel = 5 },
+  { socket = 0, channel = 6, dimm = 1, address = 0xaa, mux = 0xe0, mux-channel = 5 },
+  { socket = 0, channel = 7, dimm = 0, address = 0xac, mux = 0xe0, mux-channel = 5 },
+  { socket = 0, channel = 7, dimm = 1, address = 0xae, mux = 0xe0, mux-channel = 5 },
+  { socket = 1, channel = 0, dimm = 0, address = 0xa0, mux = 0xe0, mux-channel = 6 },
+  { socket = 1, channel = 0, dimm = 1, address = 0xa2, mux = 0xe0, mux-channel = 6 },
+  { socket = 1, channel = 1, dimm = 0, address = 0xa4, mux = 0xe0, mux-channel = 6 },
+  { socket = 1, channel = 1, dimm = 1, address = 0xa6, mux = 0xe0, mux-channel = 6 },
+  { socket = 1, channel = 2, dimm = 0, address = 0xa8, mux = 0xe0, mux-channel = 6 },
+  { socket = 1, channel = 2, dimm = 1, address = 0xaa, mux = 0xe0, mux-channel = 6 },
+  { socket = 1, channel = 3, dimm = 0, address = 0xac, mux = 0xe0, mux-channel = 6 },
+  { socket = 1, channel = 3, dimm = 1, address = 0xae, mux = 0xe0, mux-channel = 6 },
+  { socket = 1, channel = 4, dimm = 0, address = 0xa0, mux = 0xe0, mux-channel = 7 },
+  { socket = 1, channel = 4, dimm = 1, address = 0xa2, mux = 0xe0, mux-channel = 7 },
+  { socket = 1, channel = 5, dimm = 0, address = 0xa4, mux = 0xe0, mux-channel = 7 },
+  { socket = 1, channel = 5, dimm = 1, address = 0xa6, mux = 0xe0, mux-channel = 7 },
+  { socket = 1, channel = 6, dimm = 0, address = 0xa8, mux = 0xe0, mux-channel = 7 },
+  { socket = 1, channel = 6, dimm = 1, address = 0xaa, mux = 0xe0, mux-channel = 7 },
+  { socket = 1, channel = 7, dimm = 0, address = 0xac, mux = 0xe0, mux-channel = 7 },
+  { socket = 1, channel = 7, dimm = 1, address = 0xae, mux = 0xe0, mux-channel = 7 },
+]
+
+[tables.platform-override]
+kind = "platform-override"
+scope = "all"
+operations = [
+  { operation = "memclk-map", connections = [0, 1, 2, 3, 0, 0, 0, 0] },
+  { operation = "cke-tristate-map", connections = [0, 1, 2, 3] },
+  { operation = "odt-tristate-map", connections = [0, 1, 2, 3] },
+  { operation = "cs-tristate-map", connections = [0, 1, 2, 3, 0, 0, 0, 0] },
+  { operation = "max-dimms-per-channel", value = 1 },
+  { operation = "max-channels-per-socket", value = 8 },
+]
+
+[tables.console]
+kind = "console"
+
+[tables.console.settings]
+abl_console_out_control = { enable_console_logging = true, enable_mem_flow_logging = true, enable_mem_setreg_logging = true, enable_mem_getreg_logging = false, enable_mem_status_logging = true, enable_mem_pmu_logging = true, enable_mem_pmu_sram_read_logging = false, enable_mem_pmu_sram_write_logging = false, enable_mem_test_verbose_logging = false, enable_mem_basic_output_logging = true, abl_console_port = 0x80 }
+abl_breakpoint_control = { enable_breakpoint = false, break_on_all_dies = false }
+
+[tables.error-output]
+kind = "error-output"
+
+[tables.error-output.settings]
+enable_error_reporting = false
+enable_error_reporting_gpio = false
+enable_error_reporting_beep_codes = false
+enable_using_handshake = false
+input_port = 0x84
+output_delay = 15000
+output_port = 0x80
+stop_on_first_fatal_error = false
+input_port_size = "32 Bit"
+output_port_size = "32 Bit"
+input_port_type = "FchHtIo"
+output_port_type = "FchHtIo"
+clear_acknowledgement = false
+error_reporting_gpio = { pin = 85, iomux_control = 1, bank_control = 192 }
+beep_code_table = [
+  { custom_error_type = "General", peak_map = 1, peak_attr = { peak_count = 8, pulse_width = 0, repeat_count = 0 } },
+  { custom_error_type = "Memory", peak_map = 2, peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 } },
+  { custom_error_type = "Df", peak_map = 3, peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 } },
+  { custom_error_type = "Ccx", peak_map = 4, peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 } },
+  { custom_error_type = "Gnb", peak_map = 5, peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 } },
+  { custom_error_type = "Psp", peak_map = 6, peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 } },
+  { custom_error_type = "Smu", peak_map = 7, peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 } },
+  { custom_error_type = "Unknown", peak_map = 2, peak_attr = { peak_count = 4, pulse_width = 0, repeat_count = 0 } },
+]
+enable_heart_beat = false
+enable_power_good_gpio = false
+power_good_gpio = { pin = 0, iomux_control = 0, bank_control = 0 }
+
+[tables.voltage-control]
+kind = "voltage-control"
+
+[tables.voltage-control.settings]
+enabled = true
+input_port = 0x84
+output_port = 0x80
+input_port_size = "32 Bit"
+output_port_size = "32 Bit"
+input_port_type = "FchHtIo"
+output_port_type = "FchHtIo"
+clear_acknowledgement = false
+
+[tables.platform-tuning-end]
+kind = "platform-tuning-end"
+
+[tables.slink]
+kind = "slink"
+
+[tables.slink.settings]
+regions = [
+  { size = 0, alignment = 0, socket = 0, phys_nbio_map = 0, interleaving = "256 B" },
+  { size = 0, alignment = 0, socket = 0, phys_nbio_map = 0, interleaving = "256 B" },
+  { size = 0, alignment = 0, socket = 1, phys_nbio_map = 0, interleaving = "256 B" },
+  { size = 0, alignment = 0, socket = 1, phys_nbio_map = 0, interleaving = "256 B" },
+]

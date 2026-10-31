@@ -19,6 +19,10 @@ board electrical characterization. No binary APCB/template is checked in.
 This is a reproducible, reviewable representation of existing settings, not a
 claim that they can safely be omitted, simplified or reused on another board.
 
+An opt-in [typed TOML authoring experiment](amd-apcb-toml.md) covers S8030 Rome
+with a generated editor schema and byte-exact comparisons. It leaves the default
+JSON build path unchanged while the authoring format is evaluated.
+
 ## Representation and provenance
 
 `schema: 1` source sets name each distinct payload and its BIOS-directory

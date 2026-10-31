@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Typed APCB v3 import/export; the existing fstart-apcb remains a v2 SPD editor.
 use clap::{Parser, Subcommand};
-use fstart_image_build::amd::{Result, apcb_v3};
+use fstart_image_build::amd::{Result, apcb_toml, apcb_v3};
 use std::{
     fs,
     io::Write,
@@ -19,6 +19,21 @@ struct Args {
 enum Command {
     /// Export a standalone APCB binary as lossless, typed JSON (no raw fallback).
     Decode { input: PathBuf, output: PathBuf },
+    /// Build an experimental typed TOML payload; does not change board defaults.
+    BuildToml {
+        input: PathBuf,
+        output: PathBuf,
+        #[arg(long)]
+        tables: PathBuf,
+        #[arg(long, default_value = "board")]
+        blob: String,
+    },
+    /// Generate an editor JSON Schema for TOML boards or shared tables.
+    TomlSchema {
+        output: PathBuf,
+        #[arg(long)]
+        tables: bool,
+    },
     /// Build one APCB from typed JSON, without a donor binary or template.
     Build {
         input: PathBuf,
@@ -43,6 +58,40 @@ fn run(args: Args) -> Result<()> {
             let mut bytes = serde_json::to_vec_pretty(&source).map_err(|e| e.to_string())?;
             bytes.push(b'\n');
             (output, bytes)
+        }
+        Command::TomlSchema { output, tables } => {
+            let schema = if tables {
+                apcb_toml::tables_schema()
+            } else {
+                apcb_toml::schema()
+            };
+            let mut bytes = serde_json::to_vec_pretty(&schema).map_err(|e| e.to_string())?;
+            bytes.push(b'\n');
+            (output, bytes)
+        }
+        Command::BuildToml {
+            input,
+            output,
+            tables,
+            blob,
+        } => {
+            let text = String::from_utf8(read(&input)?).map_err(|e| e.to_string())?;
+            let shared = String::from_utf8(read(&tables)?).map_err(|e| e.to_string())?;
+            // Validate the complete source set, then select by its semantic name.
+            let config = apcb_toml::Configuration::parse(&text)?;
+            let source = config
+                .blobs
+                .iter()
+                .find(|b| b.name == blob)
+                .ok_or_else(|| format!("no APCB named {blob}"))?;
+            let binding = source.bindings.first().ok_or("APCB has no bindings")?;
+            let selector = binding.selector(config.generation);
+            let built = apcb_toml::compile(&text, &shared)?;
+            let payload = built
+                .into_iter()
+                .find(|r| r.selector == selector)
+                .ok_or("APCB binding was not compiled")?;
+            (output, payload.bytes)
         }
         Command::Build {
             input,
