@@ -122,14 +122,16 @@ impl fstart_stage::payload::X86LinuxPayloadContext for Handoff {
     }
 }
 
-/// Identity map all RAM and the 4-GiB MMIO space before the payload: the
-/// reset entry only maps the low 4 GiB.
-pub fn map_ram(e820: &E820State) -> Result<(), ServiceError> {
+/// Identity map the memory map and assigned PCI BARs before the payload.
+pub fn map_ram(e820: &E820State, pci: &fstart_pci::PciEcam) -> Result<(), ServiceError> {
     let spans = e820
         .entries()
         .iter()
         .map(|entry| (entry.addr, entry.size))
-        .chain([(0, 1 << 32)]);
+        .chain(
+            pci.assigned_memory_windows()
+                .map(|window| (window.base, window.size)),
+        );
     // SAFETY: BSP only, before the payload; the tables come from the heap in
     // the reserved early region.
     let tables = unsafe { fstart_arch::x86::boot::paging::IdentityTables::build(spans)? };

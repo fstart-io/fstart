@@ -367,7 +367,7 @@ impl<S: Soc> Stage<S> {
         let Some(ffs) = S::LAYOUT.ffs else {
             fail::<S>("boot media")
         };
-        if boot::map_ram(&self.e820).is_err() {
+        if boot::map_ram(&self.e820, &pci.ecam).is_err() {
             fail::<S>("page tables");
         }
         if !fstart_arch::x86::mp::park_aps_for_payload() {
