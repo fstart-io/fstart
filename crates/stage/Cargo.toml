@@ -14,13 +14,6 @@ riscv64-sunxi-entry = ["fstart-arch/riscv64-sunxi-entry"]
 riscv64 = ["fstart-arch/riscv64"]
 x86_64 = ["fstart-arch/x86_64"]
 
-# x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
-x86-1g-pages = ["fstart-arch/x86-1g-pages"]
-# x86_64: build page tables at runtime in writable RAM. Enabled only for
-# boards with page_table_addr (QEMU); real XIP boards use ROM tables.
-x86-writable-page-tables = ["fstart-arch/x86-writable-page-tables"]
-# x86_64: emit static ROM page tables for first-stage real XIP boards.
-x86-static-page-tables = ["fstart-arch/x86-static-page-tables"]
 # FFS / crypto features
 bootstrap = ["dep:fstart-crypto", "dep:fstart-ffs", "fstart-crypto/sha2-digest", "fstart-ffs/sha2-digest"]
 ffs = ["bootstrap", "fstart-ffs/directory", "fstart-arch/early-ffs-anchor"]

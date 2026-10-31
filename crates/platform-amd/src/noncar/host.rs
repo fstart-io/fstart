@@ -416,8 +416,6 @@ fn ffs(
             data_addr: Some(layout.data.base),
             stack_size: layout.stack.size as u32,
             heap_size: Some(layout.heap.size as u32),
-            page_table_addr: None,
-            page_size: Default::default(),
             external: true,
         }),
         security: fstart_core::default_security_config(),

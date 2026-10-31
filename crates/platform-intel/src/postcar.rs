@@ -36,31 +36,8 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
     slot.install(console);
     fstart_log::info!("{} postcar: {} console ready", platform, C::NAME);
 
-    // The early page tables live in the cache-as-RAM window at the top of the
-    // 4 GiB space, where only the boot CPU can read them: an AP started later
-    // begins in real mode with no cache and reads garbage, triple-faults, and the
-    // chipset resets the platform. Postcar runs from DRAM, so build a replacement
-    // set there and switch to it, giving every later stage and CPU one
-    // DRAM-backed address space. The early tables cover too little for comfort as
-    // well, so the new ones map the whole low 4 GiB.
-    // SAFETY: PAGE_TABLES_ADDR is reserved low scratch, identity mapped by the
-    // current tables, and postcar executes from DRAM, which the new tables map
-    // identically. The region stays reserved until the payload replaces CR3.
-    // Protected-mode stages run unpaged and need none of this.
-    #[cfg(target_arch = "x86_64")]
-    {
-        let tables = unsafe {
-            fstart_arch::x86::boot::paging::install_identity_tables(
-                fstart_arch::x86::boot::PAGE_TABLES_ADDR,
-            )
-        };
-        fstart_log::info!(
-            "{} postcar: DRAM page tables at {:#x}, CR3 loaded",
-            platform,
-            tables
-        );
-    }
-
+    // Postcar keeps the bootblock's ROM page tables: it runs uncached from
+    // DRAM, so it stays small, and the ramstage builds the DRAM tables first.
     let (firmware_base, firmware_size) = match geometry.firmware() {
         Ok(window) => window,
         Err(_) => fstart_arch::x86::boot::halt(),
