@@ -51,7 +51,6 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 # Serialization
 serde = { version = "1", default-features = false, features = ["derive"] }
-postcard = { version = "1", default-features = false }
 
 # Crypto (RustCrypto)
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }

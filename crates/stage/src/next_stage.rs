@@ -62,34 +62,29 @@ pub fn pinned_bootstrap_descriptor()
     }
 }
 
-/// Serialize handoff data to a DRAM buffer for the next stage.
-///
-/// Writes a [`StageHandoff`](fstart_core::handoff::StageHandoff) to
-/// `handoff_addr` and returns the number of bytes written.
+/// Write the handoff for the next stage to a DRAM buffer: the trained DRAM
+/// size and this stage's image locator.
 ///
 /// # Safety
 ///
-/// Caller must ensure `handoff_addr` points to writable RAM with at
-/// least [`HANDOFF_MAX_SIZE`](fstart_core::handoff::HANDOFF_MAX_SIZE)
-/// bytes. This is guaranteed by placing the handoff buffer at a known
-/// offset below the next stage's load address.
+/// `handoff_addr` must point to writable RAM with at least
+/// [`HANDOFF_MAX_SIZE`](fstart_core::handoff::HANDOFF_MAX_SIZE) bytes, reserved
+/// below the next stage's load address.
 ///
 /// # Errors
 ///
-/// Returns `Err` if postcard serialization fails (buffer too small or
-/// encoding error).
+/// Returns `Err` when no locator is published.
 #[cfg(feature = "handoff")]
-pub fn serialize_handoff(dram_size: u64, handoff_addr: u64) -> Result<usize, &'static str> {
-    let mut handoff_data = fstart_core::handoff::StageHandoff::new(dram_size);
-    handoff_data.media = Some(crate::anchor::media_locator().ok_or("initial locator missing")?);
-    // SAFETY: handoff_addr points to writable RAM, 4K below next stage load_addr.
-    let handoff_buf = unsafe {
+pub unsafe fn write_handoff(dram_size: u64, handoff_addr: u64) -> Result<(), &'static str> {
+    let locator = crate::anchor::locator().ok_or("initial locator missing")?;
+    let handoff = fstart_core::handoff::StageHandoff::new(dram_size, locator);
+    // SAFETY: the caller reserves this writable range.
+    let buf = unsafe {
         core::slice::from_raw_parts_mut(
             handoff_addr as *mut u8,
             fstart_core::handoff::HANDOFF_MAX_SIZE,
         )
     };
-    let handoff_len = crate::handoff::serialize(&handoff_data, handoff_buf)?;
-    fstart_log::info!("handoff: {} bytes at {:#x}", handoff_len, handoff_addr);
-    Ok(handoff_len)
+    handoff.write_to(buf).ok_or("handoff buffer too small")?;
+    Ok(())
 }

@@ -62,16 +62,14 @@ pub(crate) fn install_mainstage_locator(
     media_base: u64,
     handoff: &fstart_core::handoff::StageHandoff,
 ) -> Result<(), ServiceError> {
-    let media = handoff.media.ok_or(ServiceError::InvalidParam)?;
+    let locator = handoff.locator;
     let capacity = block
         .size()
         .checked_sub(media_base)
         .ok_or(ServiceError::InvalidParam)?;
-    if media.image_offset != 0 || !media.validate(capacity) {
+    if locator.image_offset.get() != 0 || !locator.media().validate(capacity) {
         return Err(ServiceError::InvalidParam);
     }
-    let locator = fstart_core::ffs::locator::LocatorBlock::from_media(media)
-        .ok_or(ServiceError::InvalidParam)?;
     // SAFETY: fixed predecessor handoff, reserved RAM and single-threaded
     // mainstage entry; actual device bounds checked before any FFS read.
     unsafe { fstart_stage::anchor::install_locator(locator, capacity) }

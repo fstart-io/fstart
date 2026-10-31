@@ -65,11 +65,17 @@ pub unsafe fn install_locator(locator: LocatorBlock, capacity: u64) -> Result<()
     Ok(())
 }
 
-/// Location data only; reading it does not authenticate any root or file.
-pub fn media_locator() -> Option<fstart_core::ffs::locator::MediaLocator> {
+/// The published locator. Location data only; reading it does not
+/// authenticate any root or file.
+pub fn locator() -> Option<LocatorBlock> {
     // SAFETY: initial or published predecessor storage is readable and stable.
     unsafe { fstart_core::ffs::locator::LocatorRef::read_volatile(fstart_anchor_bytes()) }
-        .map(|locator| locator.media())
+        .map(|locator| locator.value())
+}
+
+/// [`locator`] as media-relative values.
+pub fn media_locator() -> Option<fstart_core::ffs::locator::MediaLocator> {
+    locator().map(LocatorBlock::media)
 }
 
 pub fn image_size() -> usize {
