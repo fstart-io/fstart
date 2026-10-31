@@ -1,6 +1,7 @@
 //! Shared QEMU virt policy and fixed-flow helpers.
 
-use fstart_core::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm, services::ServiceError};
+use fstart_core::description::Range;
+use fstart_core::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
 };
@@ -97,19 +98,27 @@ impl PciRootProvider for QemuPciRootConfig {
     }
 }
 
-/// Closed RISC-V virt platform facts consumed by its fixed flow.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct QemuRiscv64VirtConfig {
+/// One QEMU `virt` machine: where its RAM and PCI root are, and what its
+/// payload is told.
+#[derive(Debug, Clone, Copy)]
+pub struct QemuVirtConfig {
+    /// Log prefix, such as `qemu-riscv64`.
+    pub name: &'static str,
     pub ram_base: u64,
     pub bootargs: &'static str,
     pub pci: QemuPciRootConfig,
+    /// Where QEMU leaves the DTB when the boot register carries none: the
+    /// base of RAM for Arm `-bios` boots. RISC-V always passes it in `a1`.
+    pub dtb_fallback: u64,
+    /// Device MMIO a UEFI payload maps.
+    pub mmio: &'static [Range],
 }
 
-impl QemuRiscv64VirtConfig {
+impl QemuVirtConfig {
     #[must_use]
-    pub const fn new() -> Self {
+    pub const fn riscv64() -> Self {
         Self {
+            name: "qemu-riscv64",
             ram_base: 0x8000_0000,
             bootargs: "console=ttyS0 earlycon=sbi",
             pci: QemuPciRootConfig::new(
@@ -120,38 +129,15 @@ impl QemuRiscv64VirtConfig {
                 0x0000_0004_0000_0000,
                 0x0000_0004_0000_0000,
             ),
+            dtb_fallback: 0,
+            mmio: &QEMU_RISCV64_MMIO,
         }
     }
 
     #[must_use]
-    pub const fn build(self) -> Self {
-        assert!(self.ram_base != 0);
-        let _ = self.pci.build();
-        self
-    }
-}
-
-impl Default for QemuRiscv64VirtConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Closed AArch64 virt platform facts consumed by its fixed flow.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct QemuAarch64VirtConfig {
-    pub ram_base: u64,
-    pub bootargs: &'static str,
-    pub pci: QemuPciRootConfig,
-    /// Where QEMU copies the DTB for pflash/`-bios` boots (base of RAM).
-    pub source_dtb_addr: u64,
-}
-
-impl QemuAarch64VirtConfig {
-    #[must_use]
-    pub const fn new() -> Self {
+    pub const fn aarch64() -> Self {
         Self {
+            name: "qemu-aarch64",
             ram_base: 0x4000_0000,
             bootargs: "console=ttyAMA0 earlycon=pl011,0x09000000",
             pci: QemuPciRootConfig::new(
@@ -162,54 +148,28 @@ impl QemuAarch64VirtConfig {
                 0x0080_0000_0000,
                 0x0080_0000_0000,
             ),
-            source_dtb_addr: 0x4000_0000,
+            dtb_fallback: 0x4000_0000,
+            mmio: &[],
         }
     }
 
     #[must_use]
-    pub const fn build(self) -> Self {
-        let _ = self.pci.build();
-        self
-    }
-}
-
-impl Default for QemuAarch64VirtConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Closed ARMv7 virt platform facts consumed by its fixed flow.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct QemuArmv7VirtConfig {
-    pub ram_base: u64,
-    pub bootargs: &'static str,
-    pub pci: QemuPciRootConfig,
-    pub source_dtb_addr: u64,
-}
-
-impl QemuArmv7VirtConfig {
-    #[must_use]
-    pub const fn new() -> Self {
+    pub const fn armv7() -> Self {
         Self {
+            name: "qemu-armv7",
             ram_base: 0x4000_0000,
             bootargs: "console=ttyAMA0 earlycon=pl011,mmio32,0x09000000",
             pci: QemuPciRootConfig::new(0x3f00_0000, 0x0f, 0x1000_0000, 0x2eff_0000, 0, 0),
-            source_dtb_addr: 0x4000_0000,
+            dtb_fallback: 0x4000_0000,
+            mmio: &[],
         }
     }
 
     #[must_use]
     pub const fn build(self) -> Self {
+        assert!(self.ram_base != 0);
         let _ = self.pci.build();
         self
-    }
-}
-
-impl Default for QemuArmv7VirtConfig {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -233,7 +193,8 @@ pub fn qemu_virt_security_config() -> SecurityConfig {
 ))]
 pub(crate) fn enumerate_pci(
     config: &QemuPciRootConfig,
-) -> Result<fstart_pci::PciEcam, ServiceError> {
+) -> Result<fstart_pci::PciEcam, fstart_core::services::ServiceError> {
+    use fstart_core::services::ServiceError;
     let mut pci =
         fstart_pci::PciEcam::from_provider(config).map_err(|_| ServiceError::InvalidParam)?;
     pci.enumerate_and_allocate()
@@ -241,32 +202,17 @@ pub(crate) fn enumerate_pci(
     Ok(pci)
 }
 
-/// Log one fixed-flow phase. The caller owns failure handling so each ISA can
-/// halt with its own architecture helper.
-pub fn phase(machine: &str, name: &str, result: Result<(), ServiceError>) -> bool {
-    fstart_log::info!("{} ramstage: {}", machine, name);
-    if result.is_err() {
-        fstart_log::error!("{} ramstage: {} failed", machine, name);
-        false
-    } else {
-        true
-    }
-}
-
 /// The RISC-V virt machine's NS16550.
 pub const QEMU_RISCV64_UART_BASE: u64 = 0x1000_0000;
 
 /// RISC-V virt device MMIO a UEFI payload maps: the UART, CLINT, PLIC and
 /// PCI memory window.
-pub const QEMU_RISCV64_MMIO: [fstart_core::description::Range; 4] = {
-    use fstart_core::description::Range;
-    [
-        Range::new(0x1000_0000, 0x100),
-        Range::new(0x0200_0000, 0x1_0000),
-        Range::new(0x0c00_0000, 0x0400_0000),
-        Range::new(0x4000_0000, 0x4000_0000),
-    ]
-};
+pub const QEMU_RISCV64_MMIO: [Range; 4] = [
+    Range::new(0x1000_0000, 0x100),
+    Range::new(0x0200_0000, 0x1_0000),
+    Range::new(0x0c00_0000, 0x0400_0000),
+    Range::new(0x4000_0000, 0x4000_0000),
+];
 /// The AArch64 virt machine's PL011.
 pub const QEMU_AARCH64_UART_BASE: u64 = 0x0900_0000;
 /// The ARMv7 virt machine's PL011.
