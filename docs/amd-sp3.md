@@ -251,7 +251,7 @@ Installation at step 58 (`flow::install_smm`, arch `cpu::amd::smm::AmdSmm`):
 6. Milan, with SMM installed: ReadyToBoot raises SW SMI `0xD2`, and the
    handler sends LockFCHReg.
 
-Handler (`smm::Sp3SmmHandler`) services: ACPI enable/disable, Sx entry,
+Handler (`smm::handle`, bound by the board) services: ACPI enable/disable, Sx entry,
 power button, the NBIO USB SMI, Rome's CF9 trap, SW SMI `0xD0`/`0xD2`,
 and the PSP P2C mailbox. P2C requests are answered; SPI NV, RPMC and ARS
 services are not implemented and return "unsupported". After each P2C

@@ -183,21 +183,22 @@ From `zeppelin/acpi.rs` and the shared `crate::acpi`:
 
 ## SMM and sleep
 
-- Handler: `boards/gigabyte/mj11/src/smm.rs`: `Mj11Smm` implements the board
-  part (`SmmBoard::gevent`) of `fch::taishan::smm::Handler`, which is built on
-  `fch::smi`. Its GEVENT11 handler raises the vendor CPU diagnostic interrupt
-  through SMN.
+- Handler: `boards/gigabyte/mj11/src/smm.rs` owns the SMI handler. It reads
+  the sources with `fch::smi::PendingSmi`, raises the vendor CPU diagnostic
+  interrupt through SMN on GEVENT11, and sleeps through
+  `fch::taishan::smm::sleep`, which adds Zeppelin's entry work.
 - FCH sources routed to SMI: APM port `0xb2`, `SLP_TYP`, the power button, and
   `Config::fch.smi_gevents`.
 - Power button: S5 unless the OS owns ACPI.
 - `SLP_TYP` 3 (S3), 4 (S4) and 5 (S5) enter sleep (`fch/taishan/smm.rs`):
   `PMxEE` is set for S3/S4, then `SLP_TYP` is written with `SLP_EN`. S0 and S1
   requests are ignored.
-- At `SLP_TYP` with `SLP_EN` still clear, Zeppelin posts SMU message 0x13
-  (SleepEntry), as the vendor does; if the system still runs after 100 ms,
-  `SLP_EN` enters the state.
-- MJ11: SW SMI `0xc0` + Sx sends IPMI Set ACPI Power State over KCS
-  (`SmmBoard::apmc`), only if the OS's KCS interface is idle, within 20 ms.
+- With `SLP_TYP` armed and `SLP_EN` still clear (`Sleep::arm`), Zeppelin
+  posts SMU message 0x13 (SleepEntry), as the vendor does; if the system
+  still runs after 100 ms, `Armed::enter` sets `SLP_EN`.
+- MJ11: SW SMI `0xc0` + Sx sends IPMI Set ACPI Power State over KCS (the
+  board's SMI handler, from `PendingSmi::apm`), only if the OS's KCS
+  interface is idle, within 20 ms.
 - The DSDT declares `_S0_`, `_S1_`, `_S4_`, `_S5_`. There is no `_S3_` and no
   S3 resume path.
 
