@@ -171,7 +171,8 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 }
 
 /// The compilation units, hence the stage binaries, stay as they are.
-/// (Re-pinned for the SMM unit's `smm` board feature.)
+/// (Re-pinned for the SMM unit's `smm` board feature, and again without
+/// the entry cfg.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -186,9 +187,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "506a371106addfcc9d094cbb1c1a1f902f284eb86cf86d1e106addcf4a582294",
-            "ad62026d840b0b81842321063afb0a2420bd45922ab799fd8520412ff24871ce",
-            "38451f98bd16be0c1f665e636572cfa3aa436c16cd34f0d1c860cb1ee62ef7ff",
+            "eb843333dcaa8dbe8ce4ae687a49f478cb1be3548303be38d7c6369b42af3287",
+            "05aeea13dfcaaeecd486f07528af5f8d97bec21e113ea7c3bab8f6fbc617b062",
+            "db3f9c3cbe5363afc7493bf2382cb717c7dfd468419e3b3775bf860cc54fa0d7",
         ]
     );
 }

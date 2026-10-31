@@ -35,7 +35,6 @@ use std::{
     vec,
 };
 
-pub const ENTRY: &str = "amd-psp-reset";
 const UNIT: &str = "reset";
 const SMM_UNIT: &str = "smm";
 
@@ -264,7 +263,6 @@ ASSERT(_bss_end <= ORIGIN(heap), "data and BSS exceed their reservation")
 
 fn cfg_schema(policy: &Policy) -> CompilerCfgSchema {
     CompilerCfgSchema {
-        entries: vec![ENTRY.into()],
         payloads: core::iter::once("halt")
             .chain(
                 policy
@@ -285,7 +283,6 @@ fn smm_unit<S: HostSoc>() -> CompilationUnit {
         name: SMM_UNIT.into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: "x86_64-unknown-none".into(),
-        entry: ENTRY.into(),
         cfg_schema: cfg_schema(&S::POLICY),
         payload: "halt".into(),
         features: vec!["smm".into(), "bundle-smm".into()],
@@ -619,7 +616,6 @@ where
         name: UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: "x86_64-unknown-none".into(),
-        entry: ENTRY.into(),
         payload: payload.into(),
         cfg_schema: cfg_schema(policy),
         features: core::iter::once(policy.feature)

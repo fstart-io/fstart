@@ -45,7 +45,6 @@ pub const MAINSTAGE_HEAP_SIZE: u32 = 256 * 1024;
 fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
     fstart_image_build::build_plan::CompilerCfgSchema {
-        entries: strings(&["armv7", "aarch64", "riscv64"]),
         payloads: strings(&["halt", "linux"]),
     }
 }
@@ -66,7 +65,6 @@ impl<B: SunxiBoardFacts> Plan<B> {
 struct SocPolicy {
     platform: Platform,
     target: &'static str,
-    entry: &'static str,
     bundle_bootblock: &'static str,
     bundle_main: &'static str,
 }
@@ -76,28 +74,24 @@ fn policy(soc: SunxiSoc) -> SocPolicy {
         SunxiSoc::A20 => SocPolicy {
             platform: Platform::Armv7,
             target: "armv7a-none-eabi",
-            entry: "armv7",
             bundle_bootblock: "bundle-a20-bootblock",
             bundle_main: "bundle-a20-main",
         },
         SunxiSoc::H3 => SocPolicy {
             platform: Platform::Armv7,
             target: "armv7a-none-eabi",
-            entry: "armv7",
             bundle_bootblock: "bundle-h3-bootblock",
             bundle_main: "bundle-h3-main",
         },
         SunxiSoc::H5 => SocPolicy {
             platform: Platform::Aarch64,
             target: "aarch64-unknown-none",
-            entry: "aarch64",
             bundle_bootblock: "bundle-h5-bootblock",
             bundle_main: "bundle-h5-main",
         },
         SunxiSoc::D1 => SocPolicy {
             platform: Platform::Riscv64,
             target: "riscv64gc-unknown-none-elf",
-            entry: "riscv64",
             bundle_bootblock: "bundle-d1-bootblock",
             bundle_main: "bundle-d1-main",
         },
@@ -220,7 +214,6 @@ fn unit(
         name: name.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: policy.target.into(),
-        entry: policy.entry.into(),
         cfg_schema: compiler_cfg_schema(),
         payload: payload.into(),
         features: vec![bundle.into()],
@@ -447,15 +440,12 @@ mod tests {
         );
         let bootblock = plan.unit("bootblock").unwrap();
         assert_eq!(bootblock.target, "armv7a-none-eabi");
-        assert_eq!(bootblock.environment, "car");
         assert_eq!(bootblock.payload, "halt");
         assert_eq!(bootblock.features, ["bundle-a20-bootblock"]);
         let main = plan.unit("main").unwrap();
-        assert_eq!(main.environment, "ram");
         assert_eq!(main.payload, "linux");
         assert_eq!(main.features, ["bundle-a20-main"]);
         for unit in &plan.units {
-            assert_eq!(unit.entry, "armv7");
             assert_eq!(unit.build_std.as_deref(), Some("core,alloc"));
         }
         let UnitOutput::Executable {

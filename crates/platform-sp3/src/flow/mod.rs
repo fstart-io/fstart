@@ -705,7 +705,7 @@ fn fch_reset(fch: &PrimaryFch, generation: Generation, policy: &Policy) -> bool 
 /// CPU's generation (the build may carry more generations than a board
 /// lists).
 fn check_identity<B: Board>(identity: &Identity, tsc_mhz: u32) {
-    #[cfg(all(target_os = "none", fstart_entry = "amd-psp-reset"))]
+    #[cfg(all(target_os = "none", feature = "bundle-reset"))]
     if crate::entry::bsp_bist() != 0 {
         fstart_log::error!("sp3: BSP BIST {:#x}", crate::entry::bsp_bist());
         fail("BIST");

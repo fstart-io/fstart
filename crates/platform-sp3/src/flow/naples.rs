@@ -211,9 +211,9 @@ pub(crate) fn fch_env(ctx: &Ctx, si: &Silicon) {
 }
 
 fn route_aps(route: ApRoute) {
-    #[cfg(all(target_os = "none", fstart_entry = "amd-psp-reset"))]
+    #[cfg(all(target_os = "none", feature = "bundle-reset"))]
     crate::entry::set_ap_route(route);
-    #[cfg(not(all(target_os = "none", fstart_entry = "amd-psp-reset")))]
+    #[cfg(not(all(target_os = "none", feature = "bundle-reset")))]
     let _ = route;
 }
 
