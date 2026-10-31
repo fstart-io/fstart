@@ -216,7 +216,7 @@ mod stage {
             // the full live image, heap and stack in LIM; SPI and handoff are
             // excluded. This fixed flow starts no DMA devices or secondary
             // harts and configures no external temporary allocation arena.
-            unsafe { fstart_stage::directory::set_load_policy(&policy) }
+            unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
                 .map_err(|_| ServiceError::InvalidParam)?;
             #[cfg(any(fstart_payload = "linux", fstart_payload = "crabefi"))]
             // SAFETY: source is either a bounded boot DTB in trusted readable

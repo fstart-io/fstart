@@ -85,6 +85,7 @@ pub(crate) fn load_stage_with_cache(
     reserved: &[MemoryWindow],
     store: &mut fstart_store::Store,
     resume: bool,
+    codec: &dyn fstart_stage::boot::Codec,
 ) -> Result<fstart_stage::boot::VerifiedExecutable, ServiceError> {
     use fstart_stage::stage_cache::{CachedStage, STAGE_CACHE_HEADER_LEN};
     let tag = match stage {
@@ -106,7 +107,7 @@ pub(crate) fn load_stage_with_cache(
                     entry.len(),
                 )
             };
-            fstart_stage::stage_cache::load_from_slot(&slot, stage, descriptor, &policy)
+            fstart_stage::stage_cache::load_from_slot(&slot, stage, descriptor, &policy, codec)
         });
         return match verified {
             Some(verified) => {
@@ -127,7 +128,7 @@ pub(crate) fn load_stage_with_cache(
     // SAFETY: trained DRAM, bounded family-owned window, and all live stage
     // code/data/stack plus the store excluded by `reserved`. The loader
     // verifies final bytes.
-    let verified = unsafe { fstart_stage::boot::load_bootstrap(media, descriptor, &policy) }
+    let verified = unsafe { fstart_stage::boot::load_bootstrap(media, descriptor, &policy, codec) }
         .map_err(|_| ServiceError::HardwareError)?;
     let stored = usize::try_from(descriptor.stored_size).map_err(|_| ServiceError::InvalidParam)?;
     fstart_timestamp::add(fstart_timestamp::id::STORE_STAGE_CACHE);
@@ -276,11 +277,14 @@ pub(crate) fn install_intel_load_policy(
     // this stage's complete image, heap, stack, scratch and firmware tables.
     // The stage context copies the policy; it never borrows these stack arrays.
     unsafe {
-        fstart_stage::directory::set_load_policy(&MemoryPolicy {
-            writable: &writable,
-            reserved: &reserved,
-            entry_alignment: 1,
-        })
+        fstart_stage::directory::set_load_policy(
+            &MemoryPolicy {
+                writable: &writable,
+                reserved: &reserved,
+                entry_alignment: 1,
+            },
+            &fstart_stage::boot::Lz4,
+        )
     }
     .map_err(|_| ServiceError::InvalidParam)
 }

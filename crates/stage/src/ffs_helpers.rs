@@ -82,7 +82,7 @@ pub(crate) fn load_file_segments_from_media(
     let footprint = crate::boot::bootstrap_footprint(&descriptor)
         .ok()?
         .max(u64::from(segment.loaded_size()));
-    crate::boot::validate_destination(media, &policy, descriptor.load_addr, footprint).ok()?;
+    crate::boot::place(media, &policy, descriptor.load_addr, footprint).ok()?;
     if descriptor.offset.checked_add(descriptor.stored_size)? > image_size as u64 {
         return None;
     }
@@ -102,7 +102,8 @@ pub(crate) fn load_file_segments_from_media(
     }
     .ok()?;
     // SAFETY: set_load_policy's platform contract supplies exclusive mappings.
-    let verified = unsafe { load_bootstrap(media, &descriptor, &policy) }.ok()?;
+    let codec = crate::directory::codec()?;
+    let verified = unsafe { load_bootstrap(media, &descriptor, &policy, codec) }.ok()?;
     let tail = u64::from(segment.loaded_size()).checked_sub(descriptor.loaded_size)?;
     if tail != 0 {
         // SAFETY: full initialized+BSS footprint was checked above; scratch is
@@ -261,7 +262,8 @@ pub(crate) fn read_asset(media: &(impl BootMedia + ?Sized), name: &str) -> Optio
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(footprint).ok()?;
     bytes.resize(footprint, 0);
-    crate::boot::load_bootstrap_into(media, &descriptor, &mut bytes).ok()?;
+    crate::boot::load_bootstrap_into(media, &descriptor, &mut bytes, crate::directory::codec()?)
+        .ok()?;
     bytes.truncate(usize::try_from(descriptor.loaded_size).ok()?);
     // Avoid shrinking/reallocating with the stage's non-reclaiming allocator.
     Some(bytes.leak())
@@ -308,6 +310,7 @@ pub unsafe fn stage_load_with_policy(
     media: &(impl BootMedia + ?Sized),
     role: BootstrapRole,
     policy: &MemoryPolicy<'_>,
+    codec: &dyn crate::boot::Codec,
 ) -> Option<crate::boot::VerifiedExecutable> {
     let root = crate::root::authenticate_boot_root(anchor_data, media).ok()?;
     let mut descriptors = root
@@ -320,5 +323,5 @@ pub unsafe fn stage_load_with_policy(
         return None;
     }
     // SAFETY: caller supplies the same physical mapping contract as load_bootstrap.
-    unsafe { load_bootstrap(media, descriptor, policy) }.ok()
+    unsafe { load_bootstrap(media, descriptor, policy, codec) }.ok()
 }

@@ -30,7 +30,8 @@ DMA isolation, RAM authentication, or an authenticated update flow. Intel logs
 | `crates/ffs/src/builder.rs`, `builder/trust.rs` | Host-only image builder (`std` feature). |
 | `crates/crypto/src/` | SHA-256/SHA3-256 (`digest.rs`), Ed25519 and ECDSA P-256 (`verify.rs`). |
 | `crates/stage/src/root.rs` | `read_boot_root`, `authenticate_boot_root`. |
-| `crates/stage/src/boot.rs` | `MemoryPolicy`, `load_bootstrap`, `VerifiedExecutable`, `running_stage_windows`. |
+| `crates/load` (`fstart-load`) | The loading chain: `read` → `Unverified::verify` → `Verified::decompress` → `place`; `Codec` (`Stored`, `Lz4`), `MemoryPolicy`, `load_bootstrap`, `VerifiedExecutable`. |
+| `crates/stage/src/boot.rs` | Re-exports `fstart-load`; `running_stage_windows`. |
 | `crates/stage/src/directory.rs` | Mainstage directory cache and load policy. |
 | `crates/stage/src/loaded.rs` | Load ledger and FDT workspace guard. |
 | `crates/stage/src/ffs_helpers.rs` | File and data-asset loaders. |
@@ -240,8 +241,9 @@ cargo fbuild run --board qemu-riscv64 --release --payload halt
 2. `directory::install_directory_context`: reads the directory once into heap
    memory, checks its SHA-256 on those exact bytes, then parses them. Later
    views reuse those bytes; the directory is never re-read from media.
-3. `directory::set_load_policy`: platform windows. `grant_load_window` adds one
-   (used for the coreboot legacy shadow).
+3. `directory::set_load_policy`: platform windows and the codec directory
+   loads decompress with. `grant_load_window` adds a window (used for the
+   coreboot legacy shadow).
 4. Loads, using the policy and ledger.
 
 Mainstage also installs `read_verified_asset` as the verified asset service.
@@ -282,9 +284,11 @@ with BSS is zero-filled after its verified load.
   entry is aligned.
 - The full footprint is checked before the first write: `loaded_size`
   (uncompressed) or `loaded_size + stored_size` (LZ4).
-- Short workspace → `Bounds`. LZ4 without the `lz4` feature → `Unsupported`.
-  No streaming fallback exists.
-- Uncompressed: read into the destination; check stored and loaded digests.
+- Short workspace → `Bounds`. A compression the caller's `Codec` does not
+  handle → `Unsupported` (`Stored` handles none and links no decoder). No
+  streaming fallback exists.
+- Uncompressed: read into the destination; check the digest (stored and
+  loaded digests are equal).
 - LZ4: read the stored bytes into the disjoint scratch, check the stored digest
   on exactly those bytes, decompress into the output, then check the loaded
   digest. Output and scratch come from `split_at_mut`.
@@ -367,7 +371,8 @@ which runs `iasl` (must be on `PATH`) to compile and decompile.
 cargo test -p fstart-ffs --features std
 cargo test -p fstart-crypto --all-features
 cargo test -p fstart-core
-cargo test -p fstart-stage --features ffs,ffs-signature,lz4,fit
+cargo test -p fstart-load
+cargo test -p fstart-stage --features ffs,ffs-signature,fit
 cargo test -p fstart-acpi -p fstart-acpi-macros --all-features
 ```
 

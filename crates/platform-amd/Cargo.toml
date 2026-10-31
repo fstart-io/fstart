@@ -31,8 +31,7 @@ bundle = [
   "fstart-stage/ffs-signature",
   "fstart-stage/ed25519",
   "fstart-stage/sha2-digest",
-  "fstart-stage/lz4",
-]
+  ]
 bundle-zeppelin = ["zeppelin", "bundle"]
 # The Picasso reset image, from PSP entry through payload handoff.
 bundle-picasso = ["picasso", "bundle"]

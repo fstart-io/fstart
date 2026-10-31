@@ -21,7 +21,7 @@ use fstart_ffs::root::BootstrapDescriptor;
 use zerocopy::byteorder::{LE, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use crate::boot::{MemoryPolicy, VerifiedExecutable, load_bootstrap};
+use crate::boot::{Codec, MemoryPolicy, VerifiedExecutable, load_bootstrap};
 
 /// Slot header magic, the bytes `FSCC` read little-endian.
 pub const STAGE_CACHE_MAGIC: u32 = u32::from_le_bytes(*b"FSCC");
@@ -172,6 +172,7 @@ pub fn load_from_slot(
     stage: CachedStage,
     descriptor: &BootstrapDescriptor,
     policy: &MemoryPolicy<'_>,
+    codec: &dyn Codec,
 ) -> Option<VerifiedExecutable> {
     let mut header = [0u8; STAGE_CACHE_HEADER_LEN];
     if slot_media.read_at(0, &mut header).ok()? != STAGE_CACHE_HEADER_LEN {
@@ -194,7 +195,7 @@ pub fn load_from_slot(
     // SAFETY: the caller supplies trusted slot geometry and the same memory
     // policy as the flash path: the destination window is exclusive writable
     // RAM, and reservations exclude live code, stack, heap and the slot.
-    unsafe { load_bootstrap(&body, &cached, policy) }.ok()
+    unsafe { load_bootstrap(&body, &cached, policy, codec) }.ok()
 }
 
 #[cfg(test)]

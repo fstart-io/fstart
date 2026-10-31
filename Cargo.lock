@@ -916,6 +916,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-load"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-crypto",
+ "fstart-ffs",
+]
+
+[[package]]
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [
@@ -1075,6 +1084,7 @@ dependencies = [
  "fstart-coreboot",
  "fstart-crypto",
  "fstart-ffs",
+ "fstart-load",
  "fstart-log",
  "fstart-pci",
  "fstart-tcg",

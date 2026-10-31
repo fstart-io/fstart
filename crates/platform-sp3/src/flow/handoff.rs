@@ -74,7 +74,8 @@ pub(crate) fn mount_boot_media(ctx: &Ctx) {
     };
     // SAFETY: platform RAM only, with the stage, early region and flash
     // excluded; no device has a DMA buffer outside the early region.
-    unsafe { fstart_stage::directory::set_load_policy(&policy) }.or_halt("load policy");
+    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
+        .or_halt("load policy");
     let locator = fstart_stage::anchor::media_locator().or_halt("FFS locator");
     if !locator.validate(window.size) {
         super::fail("FFS locator");
