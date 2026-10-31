@@ -10,6 +10,8 @@ mod layout_linker_tests;
 
 pub struct BuildResult {
     pub stages: Vec<fstart_image_build::StageBinary>,
+    /// Every unit output, including SMM images and generated ABI headers.
+    pub artifacts: std::collections::BTreeMap<String, std::collections::BTreeMap<String, PathBuf>>,
 }
 
 impl BuildResult {

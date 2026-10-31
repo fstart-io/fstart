@@ -3,6 +3,8 @@ resolver = "3"
 members = [
   "tools/fbuild",
   "tools/amdfw",
+  "tools/image-web",
+  "tools/release",
   "crates/amdfw-format",
   "crates/driver-amd",
   "crates/driver-chromeec",

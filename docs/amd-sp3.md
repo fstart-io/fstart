@@ -8,7 +8,8 @@ board READMEs.
 - Boards: `boards/tyan/s8030` (`tyan-s8030`), `boards/amd/ethanolx` (`amd-ethanolx`)
 - Platform: `crates/platform-sp3`
 - Silicon drivers: `crates/driver-amd/src/sp3`
-- Flash composer: `crates/image-build/src/sp3_flash.rs`
+- Shared AMD compositor: `crates/image-build/src/amd/assembly.rs`
+- Bank discovery/topology: `crates/image-build/src/amd/banks.rs`
 
 ## Generations
 
@@ -34,7 +35,9 @@ Source: `crates/driver-amd/src/cpu.rs` (`Revision::from_signature`),
 | `crates/platform-sp3/src/` | `board` (Board trait), `layout` (memory map, `Sp3BoardFacts`), `flow` (boot steps), `mp`, `memory`, `smm`, `smbios`, `acpi`, `pci`, `einj`, `host` (build plan) |
 | `crates/platform-sp3/asm/reset.S`, `linker/reset.ld.in` | reset entry and the reset image linker script |
 | `crates/platform-sp3/build.rs` | checks the SMM image fits TSEG |
-| `crates/image-build/src/sp3_flash.rs` | vendor ROM composition and verification |
+| `crates/image-build/src/amd/assembly.rs` | shared AMD vendor/packed composition and readback verification |
+| `crates/image-build/src/amd/banks.rs` | bank discovery, generation selection, preservation and mirrors |
+| `crates/image-build/src/amd/stage.rs` | shared trust, locator and flash-anchor patching |
 | `crates/amdfw-format` | flash anchor, EFS, BIOS/PSP directory readers |
 | `crates/driver-spd` | DDR4 SPD decoding, independent of the EEPROM transport |
 | `crates/acpi/src/smbios.rs` | SMBIOS writer and processor packages, shared with Intel |
@@ -158,9 +161,12 @@ Packed SP3 images are not yet tested on hardware.
 
 ### Layout
 
-Without `--donor`/`--blobs`, `sp3_flash` composes the build into the vendor
-ROM. Each composed half keeps its vendor EFS, directories and blobs in place
-(`[0, prefix)`), and only its `0x62` entries change.
+SP3 emits `Assembly::Amd` with `Firmware::Vendor`/`VendorLayout::Banks`, or
+`Firmware::PackedBanks` for `--donor`/`--blobs`, and `StageLocator::FlashAnchor`.
+The same AMD compositor handles MJ11's fixed-prefix donor layout and single-
+or two-level packed partitions; SP3 has no separate composition path.
+Without `--donor`/`--blobs`, each composed half keeps its vendor EFS, directories
+and blobs in place (`[0, prefix)`), and only its `0x62` entries change.
 
 ```text
 [0, prefix_lo)            lower vendor prefix (EFS, directories, blobs)
@@ -218,7 +224,7 @@ The composer fails the build on:
 - an EFS signature at another boot-ROM search offset (`efs::PROBES`)
 
 Not implemented: a single multi-generation EFS with a combo directory
-(AMD #55758 §4.1.7 "Single 32M in 32MB"). `sp3_flash.rs` states this.
+(AMD #55758 §4.1.7 "Single 32M in 32MB"). Bank discovery rejects this explicitly.
 
 ## SMM
 

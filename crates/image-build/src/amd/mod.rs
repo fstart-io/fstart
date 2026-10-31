@@ -10,10 +10,12 @@
 //! never re-signed.
 pub mod apcb;
 pub mod assembly;
+pub mod banks;
 pub mod blobs;
 pub mod config;
 pub mod levels;
 pub mod psp_app;
+pub mod stage;
 
 use fstart_amdfw_format::{
     directory::{BIOS_COOKIE, BiosEntry, PSP_COOKIE, PspEntry, bios, psp, write_table},

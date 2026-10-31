@@ -6,6 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildPlan {
+    /// Public CLI payload selections supported by this board's platform.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publication_payloads: Vec<String>,
     pub payload: String,
     pub units: Vec<CompilationUnit>,
     /// Units contributing stage binaries, in image-directory order.
@@ -22,9 +25,6 @@ pub enum Assembly {
     /// An AMD image: PSP firmware, the reset stage the PSP loads and an
     /// optional FFS.
     Amd(Box<crate::amd::assembly::AmdAssembly>),
-    /// An AMD SP3 flash half (and 32 MiB dual image): vendor PSP prefix,
-    /// FFS and the PSP-copied reset unit.
-    Sp3Flash(Box<crate::sp3_flash::Sp3FlashAssembly>),
     /// Compiler/check/editor support only. No image/flash/run contract supplied.
     Unassembled {
         platform: fstart_core::Platform,
@@ -35,7 +35,6 @@ impl Assembly {
         match self {
             Self::Ffs(image) => image.platform,
             Self::Amd(_) => fstart_core::Platform::X86_64,
-            Self::Sp3Flash(image) => image.ffs.platform,
             Self::Unassembled { platform } => *platform,
         }
     }
@@ -46,7 +45,6 @@ impl Assembly {
                 .ffs
                 .as_ref()
                 .map_or(&[], |ffs| &ffs.assembly.bootstrap),
-            Self::Sp3Flash(image) => &image.ffs.bootstrap,
             Self::Unassembled { .. } => &[],
         }
     }
@@ -56,7 +54,6 @@ impl Assembly {
             Self::Amd(image) => image.ffs.as_ref().map(|ffs| &ffs.assembly).ok_or_else(|| {
                 "PSP partition fragment has no runtime config/run/flash contract".into()
             }),
-            Self::Sp3Flash(image) => Ok(&image.ffs),
             Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
         }
     }
@@ -70,7 +67,6 @@ impl Assembly {
             Self::Amd(image) => image.ffs.as_mut().map_or(Ok(()), |ffs| {
                 ffs.assembly.resolve_workspace_inputs(root, board)
             }),
-            Self::Sp3Flash(image) => image.ffs.resolve_workspace_inputs(root, board),
             Self::Unassembled { .. } => Ok(()),
         }
     }
@@ -389,6 +385,9 @@ impl BuildPlan {
         selection: &crate::plan::BuildSelection,
     ) -> Result<(), String> {
         match (&selection.image_config, &self.assembly) {
+            (None, Assembly::Amd(image)) if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. } if !selection.defer_firmware || image.path == crate::bundle::DONOR_PATH) => {
+                Ok(())
+            }
             (Some(path), Assembly::Amd(image)) if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. } if image.path == *path) => {
                 Ok(())
             }
@@ -396,14 +395,12 @@ impl BuildPlan {
                 if matches!(
                     image.firmware,
                     crate::amd::assembly::Firmware::Packed { .. }
+                        | crate::amd::assembly::Firmware::PackedBanks { .. }
                 ) =>
             {
                 Ok(())
             }
-            (Some(path), Assembly::Sp3Flash(image)) if *path == image.vendor_image => Ok(()),
-            (None, Assembly::Ffs(_) | Assembly::Sp3Flash(_) | Assembly::Unassembled { .. }) => {
-                Ok(())
-            }
+            (None, Assembly::Ffs(_) | Assembly::Unassembled { .. }) => Ok(()),
             _ => Err("image configuration was not bound unchanged by the platform".into()),
         }
     }
@@ -547,6 +544,7 @@ impl BuildPlan {
         // `.data` may run from a copy elsewhere, as in every noncar image.
         if let Assembly::Amd(image) = &self.assembly {
             image.validate()?;
+            let (reset_size, reset_destination) = image.reset_geometry();
             let unit = self.unit(&image.reset_unit)?;
             let UnitOutput::Executable {
                 expectations,
@@ -557,26 +555,22 @@ impl BuildPlan {
                 return Err("PSP reset producer is not executable".into());
             };
             if !self.stages.contains(&image.reset_unit)
-                || *load_address != image.reset_destination
-                || *flat_capacity != u64::from(image.reset_size)
+                || *load_address != reset_destination
+                || *flat_capacity != u64::from(reset_size)
                 || !matches!(expectations.architecture, crate::elf::Architecture::X86_64)
                 || !expectations.elf64
                 || !expectations.little_endian
                 || expectations.copy.is_some()
                 || expectations.stored.len() != 1
-                || expectations.stored[0].base != image.reset_destination
-                || expectations.stored[0].size != u64::from(image.reset_size)
+                || expectations.stored[0].base != reset_destination
+                || expectations.stored[0].size != u64::from(reset_size)
                 || expectations.entry
-                    != image
-                        .reset_destination
-                        .checked_add(u64::from(image.reset_size))
+                    != reset_destination
+                        .checked_add(u64::from(reset_size))
                         .and_then(|end| end.checked_sub(16))
             {
                 return Err("PSP reset producer differs from image operation".into());
             }
-        }
-        if let Assembly::Sp3Flash(image) = &self.assembly {
-            image.validate(self)?;
         }
         for (name, _) in self.assembly.bootstrap() {
             if !self.stages.iter().skip(1).any(|s| s == name) || !bootstrap.insert(name) {
@@ -703,6 +697,7 @@ mod tests {
             flat_capacity: span.size,
         };
         BuildPlan {
+            publication_payloads: vec![],
             payload: "halt".into(),
             units: vec![
                 launch,
@@ -908,6 +903,7 @@ mod tests {
             build: BoardBuildPolicy::default(),
         };
         let plan = |units| BuildPlan {
+            publication_payloads: vec![],
             payload: "halt".into(),
             units,
             stages: vec![],
