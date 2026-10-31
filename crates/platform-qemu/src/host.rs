@@ -22,7 +22,6 @@ use std::{
 fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
     fstart_image_build::build_plan::CompilerCfgSchema {
-        entries: strings(&["riscv64", "armv7", "aarch64-relocate", "x86_64"]),
         payloads: strings(&["halt", "linux", "crabefi", "coreboot"]),
     }
 }
@@ -46,7 +45,6 @@ impl<B: VirtBoardFacts> Plan<B> {
 struct MachinePolicy {
     platform: Platform,
     target: &'static str,
-    entry: &'static str,
     bundle: &'static str,
     flash: Span,
     execution: Option<Span>,
@@ -75,7 +73,6 @@ impl VirtMachine {
             Self::Riscv64 => MachinePolicy {
                 platform: Platform::Riscv64,
                 target: "riscv64gc-unknown-none-elf",
-                entry: "riscv64",
                 bundle: "bundle-riscv64",
                 flash: span(0x2000_0000, 0x0200_0000),
                 execution: None,
@@ -105,7 +102,6 @@ impl VirtMachine {
                 MachinePolicy {
                     platform: Platform::Armv7,
                     target: "armv7a-none-eabi",
-                    entry: "armv7",
                     bundle: "bundle-armv7",
                     flash: span(0, 0x0800_0000),
                     execution: None,
@@ -121,7 +117,6 @@ impl VirtMachine {
             Self::Aarch64 => MachinePolicy {
                 platform: Platform::Aarch64,
                 target: "aarch64-unknown-none",
-                entry: "aarch64-relocate",
                 bundle: "bundle-aarch64",
                 flash: span(0, 0x0800_0000),
                 execution: Some(span(0x4040_0000, 0x0040_0000)),
@@ -320,7 +315,6 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             name: "stage".into(),
             cargo_target: CargoTarget::BoardBinary,
             target: policy.target.into(),
-            entry: policy.entry.into(),
             cfg_schema: compiler_cfg_schema(),
             payload: if payload == "uefi" {
                 "crabefi".into()
@@ -392,7 +386,6 @@ struct QemuLinuxPayload {
 struct QemuPolicy {
     platform: Platform,
     target: &'static str,
-    entry: &'static str,
     bundle: &'static str,
     boot_hart_id: u32,
     default_payload: &'static str,
@@ -436,7 +429,6 @@ impl VirtMachine {
                 } else {
                     "i686-unknown-none"
                 },
-                entry: "x86_64",
                 bundle: "bundle-q35",
                 boot_hart_id: 0,
                 default_payload: "halt",
@@ -482,7 +474,6 @@ impl VirtMachine {
             Self::Sbsa => QemuPolicy {
                 platform: Platform::Aarch64,
                 target: "aarch64-unknown-none",
-                entry: "aarch64-relocate",
                 bundle: "bundle-sbsa",
                 boot_hart_id: 0,
                 default_payload: "halt",
@@ -520,7 +511,6 @@ impl VirtMachine {
             Self::SifiveU => QemuPolicy {
                 platform: Platform::Riscv64,
                 target: "riscv64gc-unknown-none-elf",
-                entry: "riscv64",
                 bundle: "bundle-sifive-u",
                 boot_hart_id: 1,
                 default_payload: "linux",
@@ -553,7 +543,6 @@ impl VirtMachine {
             Self::Unmatched => QemuPolicy {
                 platform: Platform::Riscv64,
                 target: "riscv64gc-unknown-none-elf",
-                entry: "riscv64",
                 bundle: "bundle-unmatched",
                 boot_hart_id: 1,
                 default_payload: "linux",
@@ -1140,7 +1129,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             name: "smm".into(),
             cargo_target: CargoTarget::BoardLibrary,
             target: policy.target.into(),
-            entry: policy.entry.into(),
             cfg_schema: compiler_cfg_schema(),
             payload: "halt".into(),
             features: vec!["smm".into(), "bundle-smm".into()],
@@ -1186,7 +1174,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         name: "stage".into(),
         cargo_target: CargoTarget::BoardBinary,
         target: policy.target.into(),
-        entry: policy.entry.into(),
         cfg_schema: compiler_cfg_schema(),
         payload: if payload == "uefi" {
             "crabefi".into()

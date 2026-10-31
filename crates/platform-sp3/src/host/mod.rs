@@ -5,7 +5,7 @@
 //! the platform answers with the concrete [`BuildPlan`]: one firmware unit,
 //! `reset`, built with every generation the board supports, linked at the
 //! common reset image address ([`layout::RESET`]) with
-//! `linker/reset.ld.in` and `fstart_entry = "amd-psp-reset"`, and an
+//! `linker/reset.ld.in`, and an
 //! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
 //! ROM with [`fstart_image_build::sp3_flash`]: one vendor EFS per half,
 //! a reset image copy per composed half, one FFS in the lower half
@@ -60,10 +60,6 @@ pub const SMM_UNIT: &str = "smm";
 /// Platform features of the SMM unit: the handler and its binding macro
 /// with the SMM panic handler.
 pub const SMM_FEATURES: [&str; 2] = ["smm", "bundle-smm"];
-/// `fstart_entry` of the SMM unit: the generic x86-64 one, so neither the
-/// platform's PSP reset entry nor anything else with a fixed address is
-/// compiled into the handler's crates (the Intel SMM unit's choice).
-pub const SMM_ENTRY: &str = "x86_64";
 /// Reset-unit environment carrying the SMM image path (`build.rs`).
 pub const SMM_IMAGE_ENV: &str = "FSTART_SMM_IMAGE";
 /// Reset-unit environment carrying the TSEG size the image must fit.
@@ -201,7 +197,6 @@ pub fn expectations() -> Result<Expectations, String> {
 /// One cfg vocabulary for both units, so every crate checks the same names.
 fn cfg_schema() -> CompilerCfgSchema {
     CompilerCfgSchema {
-        entries: vec![crate::entry::ENTRY.into(), SMM_ENTRY.into()],
         payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
     }
 }
@@ -221,7 +216,6 @@ fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
         name: SMM_UNIT.into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: "x86_64-unknown-none".into(),
-        entry: SMM_ENTRY.into(),
         cfg_schema: cfg_schema(),
         payload: "halt".into(),
         features: SMM_FEATURES
@@ -439,7 +433,6 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         name: RESET_UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: "x86_64-unknown-none".into(),
-        entry: crate::entry::ENTRY.into(),
         cfg_schema: cfg_schema(),
         payload: payload.cfg().into(),
         features: core::iter::once(RESET_FEATURE)
@@ -645,7 +638,6 @@ mod tests {
         let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
         assert_eq!(plan.stages, [RESET_UNIT]);
         let unit = plan.unit(RESET_UNIT).unwrap();
-        assert_eq!(unit.entry, "amd-psp-reset");
         assert_eq!(unit.features, [RESET_FEATURE, "rome", "milan"]);
         assert_eq!(unit.environment_values["FSTART_MP_MAX_CPUS"], "256");
         let UnitOutput::Executable {
@@ -753,10 +745,7 @@ mod tests {
         assert_eq!(order, [SMM_UNIT, RESET_UNIT]);
         let smm = plan.unit(SMM_UNIT).unwrap();
         assert!(matches!(smm.cargo_target, CargoTarget::BoardLibrary));
-        assert_eq!(
-            (smm.entry.as_str(), smm.payload.as_str()),
-            ("x86_64", "halt")
-        );
+        assert_eq!(smm.payload, "halt");
         assert_eq!(smm.features, ["smm", "bundle-smm", "rome", "milan"]);
         assert!(smm.release_only && smm.rustflags.iter().any(|f| f == "-Cpanic=abort"));
         assert_eq!(smm.environment_values["FSTART_MP_MAX_CPUS"], "256");
@@ -789,7 +778,7 @@ mod tests {
         for unit in [smm, reset] {
             let flags = unit.check_cfg_flags().unwrap();
             assert!(flags.contains(
-                &"--check-cfg=cfg(fstart_entry,values(\"amd-psp-reset\",\"x86_64\"))".into()
+                &"--check-cfg=cfg(fstart_payload,values(\"halt\",\"linux\",\"crabefi\"))".into()
             ));
         }
         // Only the reset unit is a stage.

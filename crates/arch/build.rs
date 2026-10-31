@@ -6,9 +6,6 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(rust_analyzer)");
-    // Platforms that own the reset entry (AMD PSP DRAM startup) select it
-    // per build unit, so the architectural entries must not be features.
-    println!("cargo:rustc-check-cfg=cfg(fstart_entry, values(any()))");
     println!("cargo:rerun-if-changed=asm/sipi_trampoline.S");
     println!("cargo:rerun-if-env-changed=FSTART_MP_MAX_CPUS");
 

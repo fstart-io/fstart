@@ -24,8 +24,6 @@ mod stage {
     use fstart_platform_qemu::payload_runtime as fstart_payload;
     use fstart_platform_qemu::stage_runtime as fstart_stage;
 
-    #[cfg(not(fstart_entry = "riscv64"))]
-    compile_error!("FU740 requires the riscv64 entry");
     #[cfg(any(
         not(any(
             fstart_payload = "halt",

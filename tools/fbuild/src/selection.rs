@@ -77,10 +77,7 @@ impl Selection {
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        let cfgs = vec![
-            format!("fstart_entry=\"{}\"", unit.entry),
-            format!("fstart_payload=\"{}\"", unit.payload),
-        ];
+        let cfgs = vec![format!("fstart_payload=\"{}\"", unit.payload)];
         let flags = unit.rustflags.clone();
         // The stage selection and linker script only concern this workspace's
         // crates. Passing them as profile rustflags rather than RUSTFLAGS keeps

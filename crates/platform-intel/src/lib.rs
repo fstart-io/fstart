@@ -26,6 +26,9 @@ pub mod memory_cache;
 pub use facts::{IntelBoardFacts, IntelPlatform, IntelPlatformConfig};
 #[cfg(feature = "host")]
 pub mod host;
+#[cfg(feature = "stage")]
+#[doc(hidden)]
+pub use fstart_arch as arch_runtime;
 #[cfg(feature = "bundle-smm")]
 pub use fstart_smm as smm;
 #[cfg(feature = "stage")]
@@ -34,11 +37,18 @@ pub use fstart_stage as stage_runtime;
 #[cfg(feature = "host")]
 pub use host::Plan;
 
-/// Declare a board-owned stage `main`: `fstart_platform_intel::entry!(main);`
-/// Dependency names stay inside the platform.
+/// Declare a board-owned stage `main`: `fstart_platform_intel::entry!(main);`.
+/// The bootblock, which the CPU enters at the reset vector, adds it:
+/// `entry!(main, reset_vector);`. Dependency names stay inside the platform.
 #[macro_export]
 macro_rules! entry {
-    ($main:path) => { $crate::stage_runtime::stage_bin!(main: $main); };
+    ($main:path) => {
+        $crate::stage_runtime::stage_bin!(main: $main);
+    };
+    ($main:path, reset_vector) => {
+        $crate::stage_runtime::stage_bin!(main: $main);
+        $crate::arch_runtime::x86_reset_entry!();
+    };
 }
 
 #[cfg(feature = "gm965-ich8")]

@@ -229,7 +229,6 @@ pub struct CompilationUnit {
     pub name: String,
     pub cargo_target: CargoTarget,
     pub target: String,
-    pub entry: String,
     pub cfg_schema: CompilerCfgSchema,
     pub payload: String,
     /// Features of the selected platform dependency, qualified from Cargo's
@@ -253,37 +252,33 @@ pub struct CompilationUnit {
 /// Allowed runtime cfg vocabulary, supplied independently of the selected values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompilerCfgSchema {
-    pub entries: Vec<String>,
     pub payloads: Vec<String>,
 }
 impl CompilationUnit {
     pub fn check_cfg_flags(&self) -> Result<Vec<String>, String> {
-        [
-            ("fstart_entry", &self.entry, &self.cfg_schema.entries),
-            ("fstart_payload", &self.payload, &self.cfg_schema.payloads),
-        ]
-        .into_iter()
-        .map(|(name, selected, allowed)| {
-            let unique: BTreeSet<_> = allowed.iter().collect();
-            if allowed.is_empty()
-                || unique.len() != allowed.len()
-                || !allowed.iter().all(|v| cfg_value(v))
-                || !allowed.contains(selected)
-            {
-                return Err(format!(
-                    "selected {name} is outside its platform cfg schema"
-                ));
-            }
-            Ok(format!(
-                "--check-cfg=cfg({name},values({}))",
-                allowed
-                    .iter()
-                    .map(|v| format!("\"{v}\""))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ))
-        })
-        .collect()
+        [("fstart_payload", &self.payload, &self.cfg_schema.payloads)]
+            .into_iter()
+            .map(|(name, selected, allowed)| {
+                let unique: BTreeSet<_> = allowed.iter().collect();
+                if allowed.is_empty()
+                    || unique.len() != allowed.len()
+                    || !allowed.iter().all(|v| cfg_value(v))
+                    || !allowed.contains(selected)
+                {
+                    return Err(format!(
+                        "selected {name} is outside its platform cfg schema"
+                    ));
+                }
+                Ok(format!(
+                    "--check-cfg=cfg({name},values({}))",
+                    allowed
+                        .iter()
+                        .map(|v| format!("\"{v}\""))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ))
+            })
+            .collect()
     }
 }
 
@@ -427,10 +422,7 @@ impl BuildPlan {
             if !identifier(&unit.name) || !names.insert(unit.name.as_str()) {
                 return Err(format!("invalid or duplicate unit {}", unit.name));
             }
-            if ![&unit.entry, &unit.payload]
-                .into_iter()
-                .all(|v| cfg_value(v))
-            {
+            if !cfg_value(&unit.payload) {
                 return Err(format!("invalid compiler cfg value for {}", unit.name));
             }
             if unit
@@ -633,9 +625,7 @@ mod tests {
             name: name.into(),
             cargo_target: CargoTarget::BoardLibrary,
             target: "independent-target".into(),
-            entry: "entry".into(),
             cfg_schema: CompilerCfgSchema {
-                entries: vec!["entry".into(), "aarch64-relocate".into()],
                 payloads: vec!["halt".into()],
             },
             payload: "halt".into(),
@@ -672,7 +662,6 @@ mod tests {
         let mut launch = unit("launch", &["render-cache"]);
         launch.cargo_target = CargoTarget::BoardBinary;
         launch.target = "aarch64-unknown-none".into();
-        launch.entry = "aarch64-relocate".into();
         launch.build_std = Some("core,alloc".into());
         launch.linker_script = Some("ENTRY(_start)".into());
         launch.output = UnitOutput::Executable {
@@ -810,7 +799,7 @@ mod tests {
         }];
         assert!(plan.order().is_err());
         let mut plan = fixture();
-        plan.units[0].entry = "bad\"cfg".into();
+        plan.units[0].payload = "bad\"cfg".into();
         assert!(plan.order().unwrap_err().contains("cfg value"));
     }
 
