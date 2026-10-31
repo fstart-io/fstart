@@ -73,8 +73,6 @@
 .set CR4_OSFXSR, 0x200
 .set CR4_OSXMMEXCPT, 0x400
 
-.set PTE_P_RW, 0x003
-.set PTE_P_RW_PS, 0x083
 
 /* ------------------------------------------------------------------------
  * Reset vector: the last 16 bytes of the image.
@@ -202,36 +200,13 @@ _sp3_entry32:
 	andl	$~(CR0_CD | CR0_NW | CR0_EM | CR0_TS), %eax
 	movl	%eax, %cr0
 
-	/* Identity map with 1 GiB pages: PML4 at _sp3_page_tables, then
-	 * the PDPTs. Zero the whole block first. */
+	/* Identity map the 47-bit space with 1 GiB pages: PML4 at
+	 * _sp3_page_tables, then the PDPTs (_fstart_identity_tables). */
 	movl	$_sp3_page_tables, %edi
-	movl	$(({pdpts} + 1) * 1024), %ecx
-	xorl	%eax, %eax
-	rep	stosl
-
-	movl	$_sp3_page_tables, %edi
-	leal	(0x1000 + PTE_P_RW)(%edi), %eax
 	movl	${pdpts}, %ecx
-1:	movl	%eax, (%edi)
-	addl	$8, %edi
-	addl	$0x1000, %eax
-	loop	1b
-
-	/* PDPT entry k (all tables back to back) maps k GiB:
-	 * low = (k << 30) | P|RW|PS, high = k >> 2. */
-	movl	$(_sp3_page_tables + 0x1000), %edi
-	xorl	%ebx, %ebx
-	movl	$({pdpts} * 512), %ecx
-2:	movl	%ebx, %eax
-	shll	$30, %eax
-	orl	$PTE_P_RW_PS, %eax
-	movl	%ebx, %edx
-	shrl	$2, %edx
-	movl	%eax, (%edi)
-	movl	%edx, 4(%edi)
-	addl	$8, %edi
-	incl	%ebx
-	loop	2b
+	movl	$1f, %ebp
+	jmp	_fstart_identity_tables
+1:
 
 	movl	$_sp3_page_tables, %eax
 	movl	%eax, %cr3

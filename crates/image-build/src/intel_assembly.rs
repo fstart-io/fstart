@@ -50,8 +50,6 @@ impl IntelPlan {
                     } else {
                         Compression::None
                     },
-                    page_table_addr: None,
-                    page_size: Default::default(),
                 })
                 .map_err(|_| "too many stages")?;
         }

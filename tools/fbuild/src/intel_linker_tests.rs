@@ -92,6 +92,19 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
             section: object::write::SymbolSection::Section(entry_section),
             flags: object::SymbolFlags::None,
         });
+        if matches!(role, IntelStage::Bootblock) {
+            // The arch crate's ROM-table routine, which the script selects.
+            input.add_symbol(object::write::Symbol {
+                name: b"_setup_rom_page_tables".to_vec(),
+                value: 0,
+                size: 0,
+                kind: object::SymbolKind::Text,
+                scope: object::SymbolScope::Linkage,
+                weak: false,
+                section: object::write::SymbolSection::Section(text),
+                flags: object::SymbolFlags::None,
+            });
+        }
         fs::write(&object_path, input.write().unwrap()).unwrap();
         let original =
             crate::linker::resolved_intel(&config, role, true, fstart_core::Platform::X86_64)
