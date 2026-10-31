@@ -87,7 +87,6 @@ pub(crate) fn write_back(store: &Store) {
 
 /// Stop the store's growth and return the window above it to the OS.
 /// Run once per normal boot, after the last entry is added.
-#[cfg(all(feature = "acpi", feature = "smbios", feature = "mp"))]
 pub(crate) fn seal(
     store: &mut Store,
     e820: &mut fstart_core::services::memory_detect::E820State,
