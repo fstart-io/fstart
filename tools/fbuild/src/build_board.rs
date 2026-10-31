@@ -18,19 +18,6 @@ impl BuildResult {
     }
 }
 
-pub fn build_with_parsed(
-    workspace_root: &Path,
-    board_manifest: &crate::board_manifest::BoardManifest,
-    parsed: &crate::build_plan::ParsedBoard,
-    release: bool,
-) -> Result<BuildResult, String> {
-    let resolved = parsed
-        .resolved
-        .as_ref()
-        .ok_or_else(|| "board has no resolved platform plan".to_string())?;
-    resolved.build(workspace_root, board_manifest, release)
-}
-
 pub fn prepare_selected_board_workspace(
     workspace_root: &Path,
     board_manifest: &crate::board_manifest::BoardManifest,
@@ -68,7 +55,7 @@ pub fn prepare_selected_board_workspace(
     let root_manifest = fs::read_to_string(workspace_root.join("Cargo.toml"))
         .map_err(|e| format!("failed to read root Cargo.toml: {e}"))?;
     let manifest = selected_workspace_manifest(&root_manifest, rel_dir)?;
-    fs::write(selected.join("Cargo.toml"), manifest)
+    crate::workspace::write(&selected.join("Cargo.toml"), manifest)
         .map_err(|e| format!("failed to write selected board workspace manifest: {e}"))?;
     Ok(selected)
 }
@@ -85,77 +72,51 @@ pub(crate) fn prepare_inventory_workspace(
     }
     replace_with_file_copy(root.join("Cargo.lock"), directory.join("Cargo.lock"))?;
     let original = fs::read_to_string(root.join("Cargo.toml")).map_err(|e| e.to_string())?;
-    let marker = "members = [";
-    let at = original.find(marker).ok_or("missing workspace members")? + marker.len();
-    let additions = boards
+    let parsed: toml::Table = toml::from_str(&original).map_err(|e| e.to_string())?;
+    let mut members = parsed
+        .get("workspace")
+        .and_then(|value| value.get("members"))
+        .and_then(toml::Value::as_array)
+        .ok_or("missing workspace members")?
         .iter()
-        .map(|board| {
-            serde_json::to_string(&format!("boards/{}", board.rel_dir.display()))
-                .map(|path| format!("  {path},\n"))
+        .map(|member| {
+            member
+                .as_str()
+                .map(String::from)
+                .ok_or("invalid workspace member")
         })
-        .collect::<Result<String, _>>()
-        .map_err(|e| e.to_string())?;
-    let manifest = format!("{}\n{}{}", &original[..at], additions, &original[at..]);
-    let manifest = manifest
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("exclude = "))
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(directory.join("Cargo.toml"), manifest).map_err(|e| e.to_string())?;
+        .collect::<Result<Vec<_>, _>>()?;
+    members.extend(
+        boards
+            .iter()
+            .map(|board| format!("boards/{}", board.rel_dir.display())),
+    );
+    let manifest = crate::workspace::manifest(&original, members)?;
+    crate::workspace::write(&directory.join("Cargo.toml"), manifest)?;
     Ok(directory)
 }
 
 fn replace_with_symlink(target: PathBuf, link: PathBuf) -> Result<(), String> {
-    remove_path_if_present(&link)?;
-    std::os::unix::fs::symlink(&target, &link).map_err(|e| {
-        format!(
-            "failed to symlink {} -> {}: {e}",
-            link.display(),
-            target.display()
-        )
-    })
+    if fs::read_link(&link).ok().as_ref() == Some(&target) {
+        return Ok(());
+    }
+    let parent = link.parent().ok_or("workspace link has no parent")?;
+    let temporary = tempfile::tempdir_in(parent).map_err(|e| e.to_string())?;
+    let staging = temporary.path().join("link");
+    std::os::unix::fs::symlink(&target, &staging).map_err(|e| e.to_string())?;
+    fs::rename(staging, &link)
+        .map_err(|e| format!("publish workspace link {}: {e}", link.display()))
 }
 
 fn replace_with_file_copy(source: PathBuf, destination: PathBuf) -> Result<(), String> {
-    remove_path_if_present(&destination)?;
-    fs::copy(&source, &destination).map(|_| ()).map_err(|e| {
-        format!(
-            "failed to copy {} -> {}: {e}",
-            source.display(),
-            destination.display()
-        )
-    })
-}
-
-fn remove_path_if_present(path: &Path) -> Result<(), String> {
-    if path.exists() || path.is_symlink() {
-        fs::remove_file(path)
-            .or_else(|_| fs::remove_dir(path))
-            .map_err(|e| format!("failed to replace {}: {e}", path.display()))?;
-    }
-    Ok(())
+    crate::workspace::write(
+        &destination,
+        fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?,
+    )
 }
 
 fn selected_workspace_manifest(root_manifest: &str, board_rel_dir: &str) -> Result<String, String> {
-    let members_start = root_manifest
-        .find("members = [")
-        .ok_or_else(|| "root Cargo.toml has no workspace members list".to_string())?;
-    let members_end = root_manifest[members_start..]
-        .find("]\n")
-        .map(|offset| members_start + offset + 2)
-        .ok_or_else(|| "root Cargo.toml workspace members list is unterminated".to_string())?;
-
-    let mut manifest = String::new();
-    manifest.push_str(&root_manifest[..members_start]);
-    manifest.push_str(&format!("members = [\n  \"boards/{board_rel_dir}\",\n]\n"));
-    manifest.push_str(&root_manifest[members_end..]);
-    manifest = manifest
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("exclude = "))
-        .collect::<Vec<_>>()
-        .join("\n");
-    manifest.push('\n');
-    Ok(manifest)
+    crate::workspace::manifest(root_manifest, vec![format!("boards/{board_rel_dir}")])
 }
 
 /// The selected workspace copies the root manifest, so it carries
@@ -204,10 +165,9 @@ pub(crate) fn prune_unused_entries(
         &manifest,
         |key| !inherited.contains(key),
         |package| !resolved.contains(package),
-    );
+    )?;
     if pruned != manifest {
-        fs::write(&manifest_path, pruned)
-            .map_err(|e| format!("failed to write selected workspace manifest: {e}"))?;
+        crate::workspace::write(&manifest_path, pruned)?;
     }
     Ok(())
 }
@@ -249,38 +209,26 @@ fn without_entries(
     manifest: &str,
     drop_dependency: impl Fn(&str) -> bool,
     drop_profile: impl Fn(&str) -> bool,
-) -> String {
-    let mut in_dependencies = false;
-    let mut skipping = false;
-    let mut out = manifest
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            if let Some(header) = trimmed.strip_prefix('[') {
-                in_dependencies = trimmed == "[workspace.dependencies]";
-                skipping = header
-                    .strip_prefix("profile.")
-                    .and_then(|rest| rest.split_once(".package."))
-                    .and_then(|(_, name)| name.strip_suffix(']'))
-                    .is_some_and(|name| drop_profile(name.trim_matches('"')));
-            } else if in_dependencies && let Some((key, _)) = trimmed.split_once('=') {
-                let key = key.trim();
-                // Continuation lines of multi-line entries (`"elf",`, `] }`)
-                // have no bare key and keep the decision of their entry.
-                if !key.is_empty()
-                    && key
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                {
-                    skipping = drop_dependency(key);
-                }
+) -> Result<String, String> {
+    let mut value: toml::Table = toml::from_str(manifest).map_err(|e| e.to_string())?;
+    if let Some(dependencies) = value
+        .get_mut("workspace")
+        .and_then(|v| v.get_mut("dependencies"))
+        .and_then(toml::Value::as_table_mut)
+    {
+        dependencies.retain(|name, _| !drop_dependency(name));
+    }
+    if let Some(profiles) = value.get_mut("profile").and_then(toml::Value::as_table_mut) {
+        for (_, profile) in profiles.iter_mut() {
+            if let Some(packages) = profile
+                .get_mut("package")
+                .and_then(toml::Value::as_table_mut)
+            {
+                packages.retain(|name, _| !drop_profile(name));
             }
-            !skipping
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    out.push('\n');
-    out
+        }
+    }
+    toml::to_string(&value).map_err(|e| e.to_string())
 }
 
 pub fn workspace_root_pub() -> Result<PathBuf, String> {
@@ -415,15 +363,22 @@ mod tests {
             [profile.dev.package.fstart-platform-sunxi]\nopt-level = \"s\"\n\
             [profile.release]\nlto = true\n";
         assert_eq!(
-            super::without_entries(
-                manifest,
-                |key| key == "object",
-                |package| package == "fstart-platform-sunxi"
-            ),
-            "[workspace.dependencies]\nfstart-core = { path = \"crates/core\" }\n\
+            toml::from_str::<toml::Value>(
+                &super::without_entries(
+                    manifest,
+                    |key| key == "object",
+                    |package| package == "fstart-platform-sunxi"
+                )
+                .unwrap()
+            )
+            .unwrap(),
+            toml::from_str::<toml::Value>(
+                "[workspace.dependencies]\nfstart-core = { path = \"crates/core\" }\n\
              fstart-platform-sunxi = { path = \"crates/platform-sunxi\" }\n\
              [profile.dev.package.fstart-core]\nopt-level = \"s\"\n\
              [profile.release]\nlto = true\n"
+            )
+            .unwrap()
         );
     }
 

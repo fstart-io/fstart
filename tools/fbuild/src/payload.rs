@@ -138,43 +138,6 @@ impl BuildArgs {
             log_level: self.log_level.map(|level| level.as_str().to_owned()),
         }
     }
-
-    pub fn append_cli_args(&self, args: &mut Vec<String>) {
-        for input in &self.compiler_inputs {
-            args.extend([
-                "--compiler-input".into(),
-                format!("{}={}", input.environment, input.path),
-            ]);
-        }
-        if let Some(path) = &self.image_config {
-            args.extend(["--image-config".into(), path.clone()]);
-        }
-        if let Some(path) = &self.blobs {
-            args.extend(["--blobs".into(), path.clone()]);
-        }
-        if let Some(path) = &self.donor {
-            args.extend(["--donor".into(), path.clone()]);
-        }
-        args.extend(["--smbios-date".into(), self.smbios_date.clone()]);
-        if let Some(value) = self.linux_kernel_load_addr {
-            args.extend(["--linux-kernel-load-addr".into(), format!("{value:#x}")]);
-        }
-        if let Some(value) = &self.linux_bootargs {
-            args.extend(["--linux-bootargs".into(), value.clone()]);
-        }
-        if self.linux_print_mtrrs {
-            args.push("--linux-print-mtrrs".into());
-        }
-        if let Some(level) = self.log_level {
-            args.extend(["--log-level".into(), level.as_str().into()]);
-        }
-        for (name, path) in &self.payload_files {
-            args.extend(["--payload-file".into(), format!("{name}={path}")]);
-        }
-        if let Some(path) = &self.signing_key {
-            args.extend(["--signing-key".into(), path.display().to_string()]);
-        }
-    }
 }
 
 fn current_smbios_date() -> String {
@@ -264,7 +227,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compiler_input_cli_round_trips_paths_and_keeps_duplicate_requests_visible() {
+    fn compiler_input_cli_preserves_paths_and_duplicate_requests() {
         #[derive(clap::Parser)]
         struct InputCli {
             #[command(flatten)]
@@ -288,18 +251,7 @@ mod tests {
             selected.image_config.as_deref(),
             Some("a path/image=2.json")
         );
-        let mut forwarded = vec!["inputs".into()];
-        cli.options.append_cli_args(&mut forwarded);
-        let forwarded = InputCli::try_parse_from(forwarded)
-            .unwrap()
-            .options
-            .selection(None);
-        assert_eq!(
-            forwarded.compiler_files[0].path,
-            selected.compiler_files[0].path
-        );
-        assert_eq!(forwarded.image_config, selected.image_config);
-        assert_eq!(forwarded.donor.as_deref(), Some("vendor.rom"));
+        assert_eq!(selected.donor.as_deref(), Some("vendor.rom"));
         let duplicates = InputCli::try_parse_from([
             "inputs",
             "--compiler-input",

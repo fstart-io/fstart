@@ -5,8 +5,9 @@
 # Usage: ci/prune-build-cache.sh STAMP_FILE
 #
 # Firmware units live in target/fstart-build/<board>/<profile>/<plan-hash>/.
-# fbuild rewrites the selection records of every unit it builds, so a plan
-# directory with nothing newer than STAMP_FILE belongs to an older plan.
+# fbuild re-copies built unit artifacts (and recreates selected SMM rlibs), so
+# a plan with nothing newer than STAMP_FILE was not built in this run.
+# Identical selection records deliberately retain their existing mtimes.
 # target/fstart-build/cargo is the Cargo target directory all units share;
 # Cargo overwrites workspace crates in place there, so it is kept.
 set -euo pipefail

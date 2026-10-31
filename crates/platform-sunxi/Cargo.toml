@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[package.metadata.fstart.compiler-cfg]
+fstart_stage_env = ["car", "ram"]
+fstart_payload = ["halt", "linux"]
+
 [features]
 default = []
 host = ["dep:fstart-image-build", "dep:serde_json"]

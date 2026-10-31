@@ -13,8 +13,11 @@ heapless = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
 sha2 = { workspace = true }
-toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
+tempfile = "3"
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std", "display"] }
 
 [dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"
 fstart-platform-qemu = { workspace = true, features = ["host"] }
 object = { workspace = true, features = ["write_std"] }

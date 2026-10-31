@@ -5,7 +5,6 @@ use crate::selection::Selection;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::Path,
     process::Command,
 };
@@ -44,6 +43,7 @@ pub(crate) fn generate(
     if graph["version"] != 1 {
         return Err("unsupported Cargo unit-graph version".into());
     }
+    selection.validate_host_graph(&graph, metadata)?;
     eprintln!("[fstart] checking editor selection for build scripts and proc macros");
     let output = selection
         .command(false)
@@ -66,13 +66,13 @@ pub(crate) fn generate(
         .map(serde_json::from_slice)
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
-    fs::write(
-        selection.directory.join("ide-unit-graph.json"),
+    crate::workspace::write(
+        &selection.directory.join("ide-unit-graph.json"),
         &graph_output.stdout,
     )
     .map_err(|e| e.to_string())?;
-    fs::write(
-        selection.directory.join("ide-cargo-messages.jsonl"),
+    crate::workspace::write(
+        &selection.directory.join("ide-cargo-messages.jsonl"),
         &output.stdout,
     )
     .map_err(|e| e.to_string())?;
@@ -138,8 +138,17 @@ fn project(
         let canonical = directory.canonicalize().map_err(|e| e.to_string())?;
         let platform = unit["platform"].as_str();
         let mut cfg = Vec::new();
-        if platform.is_some() {
-            cfg.extend(selection.cfgs.iter().cloned());
+        if platform.is_some()
+            && let Some(flags) = selection
+                .package_flags
+                .get(package["name"].as_str().ok_or("missing package name")?)
+        {
+            cfg.extend(
+                flags
+                    .windows(2)
+                    .filter(|pair| pair[0] == "--cfg")
+                    .map(|pair| pair[1].clone()),
+            );
         }
         for feature in unit["features"].as_array().ok_or("missing unit features")? {
             cfg.push(format!("feature={}", feature));

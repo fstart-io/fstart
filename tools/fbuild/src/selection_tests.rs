@@ -41,6 +41,7 @@ fn platform_cfg_schema_accepts_new_vocabulary_but_not_selected_typos() {
         root,
         &board,
         &unit,
+        &Default::default(),
         scratch.0.clone(),
         "{}",
         BTreeMap::new(),
@@ -71,6 +72,7 @@ fn platform_cfg_schema_accepts_new_vocabulary_but_not_selected_typos() {
             root,
             &board,
             &unit,
+            &Default::default(),
             scratch.0.clone(),
             "{}",
             BTreeMap::new(),
@@ -79,6 +81,78 @@ fn platform_cfg_schema_accepts_new_vocabulary_but_not_selected_typos() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn linker_paths_are_absent_from_package_profile_flags() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let scratch = Scratch(
+        std::env::temp_dir().join(format!("fstart cross-board reuse {}", std::process::id())),
+    );
+    let unit = fstart_platform_qemu::host::resolve(
+        fstart_platform_qemu::facts::VirtMachine::Riscv64,
+        fstart_image_build::plan::BuildSelection {
+            payload: Some("halt".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .units
+    .remove(0);
+    let prepare = |id: &str| {
+        let board = crate::board_manifest::find(&root, id).unwrap();
+        Selection::prepare_unit(
+            &root,
+            &board,
+            &unit,
+            &Default::default(),
+            scratch.0.join(id),
+            "{}",
+            BTreeMap::new(),
+            &[],
+            true,
+        )
+        .unwrap()
+    };
+    let first = prepare("qemu-riscv64");
+    let second = prepare("sifive-unmatched");
+    assert_eq!(
+        first.target_dir(&root),
+        root.join("target/fstart-build/cargo")
+    );
+    assert_eq!(first.target_dir(&root), second.target_dir(&root));
+    assert_eq!(first.flags, second.flags);
+    for selection in [&first, &second] {
+        assert!(
+            selection
+                .package_flags
+                .values()
+                .flatten()
+                .all(|flag| !flag.contains("link-arg"))
+        );
+        assert_eq!(selection.command(true).get_args().next().unwrap(), "rustc");
+    }
+    for selection in [&first, &second] {
+        let text = fs::read_to_string(selection.directory.join("member-rustflags.toml")).unwrap();
+        let config: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(
+            config["profile"]["release"]["rustflags"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            config["profile"]["release"]["build-override"]["rustflags"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
 }
 
 #[test]
@@ -128,6 +202,7 @@ fn ambient_artifact_environment_isolation() {
             root,
             &board,
             &unit,
+            &Default::default(),
             scratch.0.clone(),
             "{}",
             env,
@@ -149,9 +224,13 @@ fn ambient_artifact_environment_isolation() {
     unbound.apply_environment(&mut command);
     let output = String::from_utf8(command.output().unwrap().stdout).unwrap();
     assert!(!output.contains("FSTART_FIXTURE_IMAGE=") && !output.contains("AUX_INPUT="));
+    assert_eq!(unbound.check_command().unwrap()[1], "editor-check");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&fs::read(unbound.directory.join("editor-selection.json")).unwrap())
+            .unwrap();
     assert_eq!(
-        &unbound.check_command()[..5],
-        ["env", "-u", "FSTART_FIXTURE_IMAGE", "-u", "AUX_INPUT"]
+        saved["removed_environment"],
+        serde_json::json!(["FSTART_FIXTURE_IMAGE", "AUX_INPUT"])
     );
     let bound = prepare(BTreeMap::from([(
         "FSTART_FIXTURE_IMAGE".into(),
@@ -166,8 +245,10 @@ fn ambient_artifact_environment_isolation() {
 
 /// Profile rustflags the unit applies to this workspace's own crates.
 pub(crate) fn member_flags(selection: &Selection) -> Vec<String> {
-    let recorded: serde_json::Value =
-        serde_json::from_slice(&fs::read(selection.directory.join("rustflags.json")).unwrap())
-            .unwrap();
-    serde_json::from_value(recorded["member_rustflags"].clone()).unwrap()
+    let package = &selection
+        .args
+        .windows(2)
+        .find(|pair| pair[0] == "--package")
+        .unwrap()[1];
+    selection.package_flags[package].clone()
 }

@@ -31,6 +31,11 @@ pub(crate) fn external_pins(text: &str) -> Result<BTreeSet<Pin>, String> {
         .collect())
 }
 
+/// Execute the recorded compiler selection without racing workspace publication.
+pub fn check(selection: &Path) -> Result<(), String> {
+    Selection::editor_check(selection)
+}
+
 /// Generate an opt-in VS Code workspace and an editor-neutral RA configuration.
 /// Does not modify editor settings in the source tree or remove any board locks.
 pub fn generate_image(
@@ -155,20 +160,17 @@ fn generate_selection(
         "rust-analyzer.cfg.setTest": false,
         "rust-analyzer.cargo.extraEnv": selection.environment(),
         "rust-analyzer.check.extraEnv": selection.environment(),
-        "rust-analyzer.check.overrideCommand": selection.check_command(),
+        "rust-analyzer.check.overrideCommand": selection.check_command()?,
         "rust-analyzer.check.invocationStrategy": "once",
         "rust-analyzer.procMacro.enable": true
     });
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let workspace = directory.join("fstart.code-workspace");
     let write_json = |path: PathBuf, value: &Value| -> Result<(), String> {
-        let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-        fs::write(
-            &temporary,
+        crate::workspace::write(
+            &path,
             serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?,
         )
-        .map_err(|e| e.to_string())?;
-        fs::rename(temporary, path).map_err(|e| e.to_string())
     };
     write_json(directory.join("rust-project.json"), &project)?;
     write_json(

@@ -1,574 +1,293 @@
-use clap::{Parser, Subcommand};
+//! Typed board operations. CLI parsing belongs exclusively to main.rs.
+use crate::{
+    board_manifest::BoardManifest,
+    payload::{BuildArgs, PayloadChoice},
+    resolved_image::ResolvedImage,
+};
+use std::path::{Path, PathBuf};
 
-use crate::build_plan::ParsedBoard;
-use crate::payload::{BuildArgs, PayloadChoice};
-use fstart_core::StageLayout;
-
-#[derive(Parser)]
-#[command(name = "fbuild", about = "fstart firmware build tool")]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
+#[derive(Debug, Default, Clone, clap::Args)]
+pub struct ImageArgs {
+    #[arg(short, long)]
+    pub kernel: Option<String>,
+    #[arg(short, long)]
+    pub firmware: Option<String>,
+    #[arg(long)]
+    pub fit: Option<String>,
+    /// Named assembly input, e.g. dtb=board.dtb.
+    #[arg(long = "input", value_parser = parse_input)]
+    pub inputs: Vec<(String, String)>,
 }
-
-#[derive(Subcommand)]
-enum Command {
-    Build {
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[arg(long, value_enum)]
-        payload: Option<PayloadChoice>,
-        #[command(flatten)]
-        options: BuildArgs,
-    },
-    Run {
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[arg(long, value_enum)]
-        payload: Option<PayloadChoice>,
-        #[command(flatten)]
-        options: BuildArgs,
-        #[arg(short, long)]
-        kernel: Option<String>,
-        #[arg(short, long)]
-        firmware: Option<String>,
-        #[arg(long)]
-        fit: Option<String>,
-        #[arg(short, long)]
-        disk: Option<String>,
-        #[arg(short, long)]
-        memory: Option<String>,
-        /// Complete secure pflash image used only by QEMU SBSA-ref.
-        #[arg(long)]
-        secure_firmware: Option<String>,
-    },
-    Test {
-        #[command(flatten)]
-        options: BuildArgs,
-    },
-    Assemble {
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[arg(long, value_enum)]
-        payload: Option<PayloadChoice>,
-        #[command(flatten)]
-        options: BuildArgs,
-        #[arg(short, long)]
-        kernel: Option<String>,
-        #[arg(short, long)]
-        firmware: Option<String>,
-        #[arg(long)]
-        fit: Option<String>,
-    },
-    Flash {
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[command(flatten)]
-        options: BuildArgs,
-        #[arg(long, default_value_t = false)]
-        probe_run: bool,
-        #[arg(long)]
-        chip: Option<String>,
-        #[arg(long)]
-        probe: Option<String>,
-        #[arg(long)]
-        base_address: Option<String>,
-    },
+pub fn parse_input(value: &str) -> Result<(String, String), String> {
+    let (name, path) = value.split_once('=').ok_or("input must use NAME=PATH")?;
+    if name.is_empty() || path.is_empty() {
+        return Err("input must use NAME=PATH".into());
+    }
+    Ok((name.into(), path.into()))
 }
-
-/// Run a migrated board directly in fbuild; no board Rust is built on the host.
-pub fn run_metadata(
-    manifest: &crate::board_manifest::BoardManifest,
-    args: &[String],
-) -> Result<(), String> {
-    let cli = Cli::try_parse_from(std::iter::once("fbuild").chain(args.iter().map(String::as_str)))
-        .map_err(|e| e.to_string())?;
-    dispatch(cli, manifest)
-}
-
-fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result<(), String> {
-    match cli.command {
-        Command::Build {
-            release,
-            payload,
-            options,
-        } => build(manifest, release, payload, &options).map(|_| ()),
-        Command::Run {
-            release,
-            payload,
-            options,
-            kernel,
-            firmware,
-            fit,
-            disk,
-            memory,
-            secure_firmware,
-        } => run(
-            manifest,
-            release,
-            payload,
-            kernel.as_deref(),
-            firmware.as_deref(),
-            fit.as_deref(),
-            disk.as_deref(),
-            memory.as_deref(),
-            secure_firmware.as_deref(),
-            &options,
-        ),
-        Command::Test { options } => run(
-            manifest, true, None, None, None, None, None, None, None, &options,
-        ),
-        Command::Assemble {
-            release,
-            payload,
-            options,
-            kernel,
-            firmware,
-            fit,
-        } => assemble(
-            manifest,
-            release,
-            payload,
-            kernel.as_deref(),
-            firmware.as_deref(),
-            fit.as_deref(),
-            &options,
-        )
-        .map(|_| ()),
-        Command::Flash {
-            release,
-            options,
-            probe_run,
-            chip,
-            probe,
-            base_address,
-        } => flash(
-            manifest,
-            release,
-            &options,
-            probe_run,
-            chip.as_deref(),
-            probe.as_deref(),
-            base_address.as_deref(),
-        ),
+impl ImageArgs {
+    pub fn supplied(&self) -> Result<std::collections::BTreeMap<String, PathBuf>, String> {
+        let mut supplied = std::collections::BTreeMap::new();
+        for (name, path) in [
+            ("kernel", &self.kernel),
+            ("firmware", &self.firmware),
+            ("fit", &self.fit),
+        ] {
+            if let Some(path) = path {
+                supplied.insert(name.into(), PathBuf::from(path));
+            }
+        }
+        for (name, path) in &self.inputs {
+            if supplied.insert(name.clone(), path.into()).is_some() {
+                return Err(format!("duplicate input {name}"));
+            }
+        }
+        Ok(supplied)
     }
 }
 
-fn load(
-    manifest: &crate::board_manifest::BoardManifest,
-    payload: Option<PayloadChoice>,
-    options: &BuildArgs,
-) -> Result<(crate::board_manifest::BoardManifest, ParsedBoard), String> {
-    let root = crate::build_board::workspace_root_pub()?;
-    let resolved =
-        crate::resolved_image::ResolvedImage::load(&root, manifest, options.selection(payload))?;
-    let config = resolved.assembler_config(&manifest.board)?;
-    Ok((
-        manifest.clone(),
-        ParsedBoard {
-            config,
-            acpi_only_devices: Vec::new(),
-            resolved: Some(resolved),
-        },
-    ))
-}
-
-fn build(
-    manifest: &crate::board_manifest::BoardManifest,
+pub fn build(
+    manifest: &BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
     options: &BuildArgs,
 ) -> Result<crate::build_board::BuildResult, String> {
     let root = crate::build_board::workspace_root_pub()?;
-    let resolved =
-        crate::resolved_image::ResolvedImage::load(&root, manifest, options.selection(payload))?;
-    resolved.build(&root, manifest, release)
+    ResolvedImage::load(&root, manifest, options.selection(payload))?
+        .build(&root, manifest, release)
 }
 
-#[allow(clippy::too_many_arguments)] // the CLI's flat assemble options
-fn assemble(
-    manifest: &crate::board_manifest::BoardManifest,
+pub fn assemble(
+    manifest: &BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
-    kernel: Option<&str>,
-    firmware: Option<&str>,
-    fit: Option<&str>,
+    image: &ImageArgs,
     options: &BuildArgs,
-) -> Result<std::path::PathBuf, String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let resolved = crate::resolved_image::ResolvedImage::load(
-        &workspace_root,
+) -> Result<PathBuf, String> {
+    let root = crate::build_board::workspace_root_pub()?;
+    let resolved = ResolvedImage::load(&root, manifest, options.selection(payload))?;
+    assemble_loaded(
+        &root,
         manifest,
-        options.selection(payload),
-    )?;
-    let amd = match &resolved.build.plan.assembly {
-        fstart_image_build::build_plan::Assembly::Amd(image) => Some(image.clone()),
-        _ => None,
-    };
-    // A PSP partition without an FFS: just the stages.
-    if let Some(image) = amd.as_ref().filter(|image| image.ffs.is_none()) {
-        if kernel.is_some() || firmware.is_some() || fit.is_some() {
-            return Err("PSP image operation does not consume payload-file overrides".into());
-        }
-        let build = resolved.build(&workspace_root, manifest, release)?;
-        let directory = resolved
-            .artifact_dir(&workspace_root, &manifest.board, release)?
-            .join("image");
-        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        return crate::amd_image::compose(
-            &workspace_root,
-            &manifest.board,
-            &directory,
-            image,
-            &build.stages,
-            None,
-        );
-    }
-    let config = resolved.assembler_config(&manifest.board)?;
-    let sp3_flash = match &resolved.build.plan.assembly {
-        fstart_image_build::build_plan::Assembly::Sp3Flash(image) => Some(image.clone()),
-        _ => None,
-    };
-    let parsed = ParsedBoard {
-        config,
-        acpi_only_devices: Vec::new(),
-        resolved: Some(resolved),
-    };
-    let assembled = assemble_loaded(
-        &workspace_root,
-        manifest.clone(),
-        parsed,
+        &resolved,
         release,
-        kernel,
-        firmware,
-        fit,
+        image,
         options,
-    )?;
-    if let Some(image) = sp3_flash {
-        return compose_sp3_flash(&workspace_root, &image, &assembled);
-    }
-    match amd {
-        Some(image) => crate::amd_image::compose(
-            &workspace_root,
-            &manifest.board,
-            assembled
-                .image
-                .parent()
-                .ok_or("FFS image has no directory")?,
-            &image,
-            &assembled.stages,
-            Some(&assembled.image),
-        ),
-        None => Ok(assembled.image),
-    }
-}
-
-/// Compose the assembled FFS and the reset unit into the SP3 vendor ROM
-/// (`fstart_image_build::sp3_flash`); relative vendor paths are
-/// workspace-relative (`--image-config` replaces the board's vendor ROM).
-/// Writes and returns `<board>.rom`, the vendor ROM's size (32 MiB for a
-/// dual-half vendor ROM, the full readout for a board with bank mirrors,
-/// then also `<board>.bank.rom`).
-fn compose_sp3_flash(
-    workspace_root: &std::path::Path,
-    image: &fstart_image_build::sp3_flash::Sp3FlashAssembly,
-    assembled: &crate::assemble::AssembledImage,
-) -> Result<std::path::PathBuf, String> {
-    use fstart_image_build::sp3_flash::{HALF_SIZE, HalfAction, name};
-    let read = |path: &std::path::Path| {
-        std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
-    };
-    let plan = &image.compose;
-    let vendor_path = workspace_root.join(&image.vendor_image);
-    let vendor = if image.packed.is_empty() {
-        eprintln!("[fstart] SP3 vendor ROM {}", vendor_path.display());
-        read(&vendor_path)?
-    } else {
-        let read = |path: &str| read(std::path::Path::new(path));
-        let rom = fstart_image_build::sp3_flash::packed_rom(&image.packed, plan, &read)?;
-        for half in &image.packed {
-            eprintln!(
-                "[fstart] SP3 {} PSP firmware packed from its files",
-                name(half.generation)
-            );
-        }
-        rom
-    };
-    let ffs = read(&assembled.image)?;
-    let reset = assembled
-        .stages
-        .iter()
-        .find(|stage| stage.name == image.reset_unit)
-        .ok_or("SP3 reset unit was not built")?;
-    let flash =
-        fstart_image_build::sp3_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
-    if !flash.patched.locator || !flash.patched.flash {
-        eprintln!(
-            "[fstart] warning: the SP3 reset unit links no FFS locator or flash anchor; it cannot read its FFS"
-        );
-    }
-    let survey = &flash.survey;
-    for (half, action) in &survey.halves {
-        match action {
-            HalfAction::Compose(layout) => eprintln!(
-                "[fstart] SP3 {half:?} half ({}): EFS and directories to {:#x}",
-                name(layout.generation),
-                layout.prefix_end,
-            ),
-            HalfAction::Keep(generation) => eprintln!(
-                "[fstart] warning: SP3 {half:?} half kept from {} ({}: not supported by the board)",
-                vendor_path.display(),
-                generation.map_or("no EFS", name),
-            ),
-        }
-    }
-    let reset_copies = if survey.composed().count() == 1 || flash.image.len() == HALF_SIZE {
-        "one composed half"
-    } else {
-        "each half"
-    };
-    let out = assembled.image.with_extension("rom");
-    std::fs::write(&out, &flash.image).map_err(|e| format!("{}: {e}", out.display()))?;
-    if flash.image.len() != plan.boot_window(&flash.image)?.len() {
-        // Programmers that mirror the bank themselves (a BMC BIOS update)
-        // take the 16 MiB boot bank, not the full readout.
-        let bank = out.with_extension("bank.rom");
-        std::fs::write(&bank, &flash.image[..HALF_SIZE])
-            .map_err(|e| format!("{}: {e}", bank.display()))?;
-        eprintln!(
-            "[fstart] SP3 boot bank mirrored at {:x?}; 16 MiB bank alone: {}",
-            plan.mirrors,
-            bank.display()
-        );
-    }
-    eprintln!(
-        "[fstart] SP3 image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; reset image {:#x} bytes at {:#x} ({reset_copies})",
-        out.display(),
-        flash.image.len() >> 20,
-        ffs.len(),
-        survey.ffs_capacity(),
-        survey.ffs.start,
-        survey.ffs.end,
-        plan.reset.size,
-        plan.reset.flash_offset,
-    );
-    Ok(out)
+        crate::assemble::Output::Complete,
+    )
+    .map(|assembled| assembled.image)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn assemble_loaded(
-    workspace_root: &std::path::Path,
-    manifest: crate::board_manifest::BoardManifest,
-    parsed: ParsedBoard,
+    root: &Path,
+    manifest: &BoardManifest,
+    resolved: &ResolvedImage,
     release: bool,
-    kernel: Option<&str>,
-    firmware: Option<&str>,
-    fit: Option<&str>,
+    image: &ImageArgs,
     options: &BuildArgs,
+    output: crate::assemble::Output,
 ) -> Result<crate::assemble::AssembledImage, String> {
-    crate::assemble::assemble_with_parsed(
-        workspace_root,
+    crate::assemble::assemble(
+        root,
         manifest,
-        parsed,
+        resolved,
         release,
-        kernel,
-        firmware,
-        fit,
+        &image.supplied()?,
         &options.payload_files,
         options.signing_key.as_deref(),
+        output,
     )
 }
 
-fn flash(
-    manifest: &crate::board_manifest::BoardManifest,
+#[derive(Debug, Default, Clone, clap::Args)]
+pub struct RunArgs {
+    #[command(flatten)]
+    pub image: ImageArgs,
+    #[arg(short, long)]
+    pub disk: Option<String>,
+    #[arg(short, long)]
+    pub memory: Option<String>,
+    /// Complete secure pflash image used only by QEMU SBSA-ref.
+    #[arg(long)]
+    pub secure_firmware: Option<String>,
+}
+
+pub fn run(
+    manifest: &BoardManifest,
+    release: bool,
+    payload: Option<PayloadChoice>,
+    run: &RunArgs,
+    options: &BuildArgs,
+) -> Result<(), String> {
+    let root = crate::build_board::workspace_root_pub()?;
+    let resolved = ResolvedImage::load(&root, manifest, options.selection(payload))?;
+    let recipe = resolved.build.plan.assembly.ffs()?;
+    let policy = recipe.build.clone();
+    let platform = recipe.platform;
+    let multi_stage = matches!(recipe.stages, fstart_core::StageLayout::MultiStage(_));
+    let needs_firmware_image = policy.qemu_machine.is_some()
+        || matches!(&recipe.stages, fstart_core::StageLayout::Monolithic(stage) if stage.build.firmware_image.is_some() || stage.build.verify_firmware);
+    let has_payload = !run.image.supplied()?.is_empty()
+        || recipe.payload.as_ref().is_some_and(|payload| {
+            payload.firmware.is_some()
+                || payload.kernel_file.is_some()
+                || payload.fit_file.is_some()
+                || payload.kind == fstart_core::PayloadKind::FitImage
+        });
+    if multi_stage || platform.is_x86() || needs_firmware_image || has_payload {
+        let assembled = assemble_loaded(
+            &root,
+            manifest,
+            &resolved,
+            release,
+            &run.image,
+            options,
+            crate::assemble::Output::Ffs,
+        )?;
+        let mut sources = vec![("firmware.ffs", assembled.image.as_path())];
+        if platform.is_x86() {
+            sources.push(("stage.elf", assembled.stages[0].path.as_path()));
+        }
+        let session = resolved.into_launch(&root, &sources)?;
+        let elf = platform.is_x86().then(|| session.path().join("stage.elf"));
+        crate::qemu::run(
+            &policy,
+            platform,
+            &session.path().join("firmware.ffs"),
+            run.disk.as_deref(),
+            run.memory.as_deref(),
+            run.secure_firmware.as_deref(),
+            elf.as_deref(),
+        )
+    } else {
+        let build = resolved.build(&root, manifest, release)?;
+        let session =
+            resolved.into_launch(&root, &[("stage.bin", &build.primary_binary().run_path)])?;
+        crate::qemu::run(
+            &policy,
+            platform,
+            &session.path().join("stage.bin"),
+            run.disk.as_deref(),
+            run.memory.as_deref(),
+            run.secure_firmware.as_deref(),
+            None,
+        )
+    }
+}
+
+#[derive(Debug, Default, Clone, clap::Args)]
+pub struct FlashArgs {
+    #[arg(long, default_value_t = false)]
+    pub probe_run: bool,
+    #[arg(long)]
+    pub chip: Option<String>,
+    #[arg(long)]
+    pub probe: Option<String>,
+    #[arg(long)]
+    pub base_address: Option<String>,
+    /// Explicit probe-rs executable; otherwise use PATH.
+    #[arg(long)]
+    pub probe_rs: Option<PathBuf>,
+}
+
+pub fn flash(
+    manifest: &BoardManifest,
     release: bool,
     options: &BuildArgs,
-    probe_run: bool,
-    chip: Option<&str>,
-    probe_selector: Option<&str>,
-    base_address: Option<&str>,
+    flash: &FlashArgs,
 ) -> Result<(), String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, None, options)?;
-    let chip_name = chip.unwrap_or("auto");
-    let probe_rs = find_probe_rs().map_err(|e| format!("probe-rs not found: {e}"))?;
-
-    eprintln!("[fstart] using probe-rs: {}", probe_rs.display());
-    eprintln!("[fstart] chip: {chip_name}");
-
-    let mk_cmd = |subcmd: &str| -> std::process::Command {
-        let mut cmd = std::process::Command::new(&probe_rs);
-        cmd.arg(subcmd)
+    let root = crate::build_board::workspace_root_pub()?;
+    let resolved = ResolvedImage::load(&root, manifest, options.selection(None))?;
+    resolved.build.plan.assembly.ffs()?;
+    let probe_rs = flash
+        .probe_rs
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(find_probe_rs)?;
+    let mk_cmd = |subcommand: &str| {
+        let mut command = std::process::Command::new(&probe_rs);
+        command
+            .arg(subcommand)
             .arg("--chip")
-            .arg(chip_name)
-            .arg("--protocol")
-            .arg("jtag");
-        if let Some(sel) = probe_selector {
-            cmd.arg("--probe").arg(sel);
+            .arg(flash.chip.as_deref().unwrap_or("auto"))
+            .args(["--protocol", "jtag"]);
+        if let Some(probe) = &flash.probe {
+            command.arg("--probe").arg(probe);
         }
-        cmd
+        command
     };
-
-    if !probe_run {
-        let base_address = base_address.ok_or_else(|| {
-            "flash requires --base-address because fbuild has no board flash programmer defaults"
-                .to_string()
-        })?;
-        eprintln!("[fstart] step 1/2: assembling FFS and flashing target memory...");
-        let ffs_path = assemble_loaded(
-            &workspace_root,
-            manifest.clone(),
-            parsed.clone(),
+    let (elf, image) = if flash.probe_run {
+        let elf = resolved
+            .build(&root, manifest, release)?
+            .primary_binary()
+            .path
+            .clone();
+        (elf, None)
+    } else {
+        flash.base_address.as_deref().ok_or(
+            "flash requires --base-address because fbuild has no board flash programmer defaults",
+        )?;
+        let assembled = assemble_loaded(
+            &root,
+            manifest,
+            &resolved,
             release,
-            None,
-            None,
-            None,
+            &ImageArgs::default(),
             options,
-        )?
-        .image;
-
-        let ffs_size = std::fs::metadata(&ffs_path).map(|m| m.len()).unwrap_or(0);
-        eprintln!(
-            "[fstart] flashing FFS ({:.1} MiB) to {base_address}...",
-            ffs_size as f64 / (1024.0 * 1024.0)
-        );
-
-        let mut cmd = mk_cmd("download");
-        cmd.arg("--binary-format")
-            .arg("bin")
-            .arg("--base-address")
-            .arg(base_address)
-            .arg(&ffs_path);
-
-        eprintln!("[fstart] running: {:?}", cmd);
-        let status = cmd
+            crate::assemble::Output::Ffs,
+        )?;
+        (assembled.stages[0].path.clone(), Some(assembled.image))
+    };
+    let mut sources = vec![("stage.elf", elf.as_path())];
+    if let Some(image) = &image {
+        sources.push(("firmware.bin", image.as_path()));
+    }
+    let session = resolved.into_launch(&root, &sources)?;
+    if image.is_some() {
+        let status = mk_cmd("download")
+            .args([
+                "--binary-format",
+                "bin",
+                "--base-address",
+                flash.base_address.as_deref().unwrap(),
+            ])
+            .arg(session.path().join("firmware.bin"))
             .status()
-            .map_err(|e| format!("failed to run probe-rs download: {e}"))?;
+            .map_err(|e| e.to_string())?;
         if !status.success() {
             return Err(format!("probe-rs download failed with {status}"));
         }
-        eprintln!("[fstart] target flash complete.");
-    } else {
-        eprintln!("[fstart] --probe-run: skipping image download");
     }
-
-    eprintln!("[fstart] step 2/2: loading stage via probe-rs...");
-    let res = crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)?;
-    let elf_path = &res.primary_binary().path;
-    eprintln!("[fstart] ELF: {}", elf_path.display());
-
-    let mut cmd = mk_cmd("run");
-    cmd.arg(elf_path);
-
-    eprintln!("[fstart] running: {:?}", cmd);
-    let status = cmd
+    let status = mk_cmd("run")
+        .arg(session.path().join("stage.elf"))
         .status()
-        .map_err(|e| format!("failed to run probe-rs run: {e}"))?;
+        .map_err(|e| e.to_string())?;
     if !status.success() {
         return Err(format!("probe-rs run failed with {status}"));
     }
     Ok(())
 }
 
-fn find_probe_rs() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let local_paths = [
-        format!("{home}/src/probe-rs/target/release/probe-rs"),
-        format!("{home}/src/probe-rs/target/debug/probe-rs"),
-    ];
-    for p in &local_paths {
-        let path = std::path::PathBuf::from(p);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
-    which_in_path("probe-rs").ok_or_else(|| "not in PATH or ~/src/probe-rs/target".to_string())
+fn find_probe_rs() -> Result<PathBuf, String> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|dir| dir.join("probe-rs"))
+        .find(|path| path.is_file())
+        .ok_or_else(|| "probe-rs not found in PATH".into())
 }
 
-fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
-    let path_var = std::env::var("PATH").ok()?;
-    for dir in path_var.split(':') {
-        let candidate = std::path::PathBuf::from(dir).join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn run(
-    manifest: &crate::board_manifest::BoardManifest,
-    release: bool,
-    payload: Option<PayloadChoice>,
-    kernel: Option<&str>,
-    firmware: Option<&str>,
-    fit: Option<&str>,
-    disk: Option<&str>,
-    memory: Option<&str>,
-    secure_firmware: Option<&str>,
-    options: &BuildArgs,
-) -> Result<(), String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, options)?;
-    let config = &parsed.config;
-    let build_policy = config.build.clone();
-    let platform = config.platform;
-    let is_multi_stage = matches!(config.stages, StageLayout::MultiStage(_));
-    let needs_x86_pflash = config.platform.is_x86();
-    // Even a halt-only monolithic stage must receive its signed root and
-    // directory when its fixed flow verifies boot media. Running the bare ELF
-    // would leave its build-patched anchor and firmware window empty.
-    let needs_firmware_image = config.build.qemu_machine.is_some()
-        || matches!(&config.stages, StageLayout::Monolithic(stage)
-            if stage.build.firmware_image.is_some() || stage.build.verify_firmware);
-    let has_payload_blobs = kernel.is_some()
-        || firmware.is_some()
-        || fit.is_some()
-        || config.payload.as_ref().is_some_and(|p| {
-            p.firmware.is_some()
-                || p.kernel_file.is_some()
-                || p.fit_file.is_some()
-                || p.kind == fstart_core::PayloadKind::FitImage
-        });
-
-    if is_multi_stage || has_payload_blobs || needs_x86_pflash || needs_firmware_image {
-        let assembled = assemble_loaded(
-            &workspace_root,
-            manifest,
-            parsed,
-            release,
-            kernel,
-            firmware,
-            fit,
-            options,
-        )?;
-        // The x86 pflash combines the assembled FFS with the linked stage
-        // ELF (reset vector, anchor). The plan layout hashes unit dirs, so
-        // the ELF travels with the build result instead of a guessed path.
-        let x86_stage_elf = needs_x86_pflash
-            .then(|| assembled.stages.first().map(|stage| stage.path.as_path()))
-            .flatten();
-        crate::qemu::run(
-            &build_policy,
-            platform,
-            &assembled.image,
-            disk,
-            memory,
-            secure_firmware,
-            x86_stage_elf,
-        )
-    } else {
-        let res =
-            crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)?;
-        crate::qemu::run(
-            &build_policy,
-            platform,
-            &res.primary_binary().run_path,
-            disk,
-            memory,
-            secure_firmware,
-            None,
-        )
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn duplicate_named_and_legacy_inputs_are_rejected() {
+        let image = ImageArgs {
+            kernel: Some("kernel".into()),
+            inputs: vec![("kernel".into(), "other".into())],
+            ..Default::default()
+        };
+        assert!(image.supplied().unwrap_err().contains("duplicate"));
     }
 }

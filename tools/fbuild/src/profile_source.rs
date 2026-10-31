@@ -8,9 +8,11 @@ pub(crate) struct ProfileSource {
     pub platform: serde_json::Value,
     pub package: serde_json::Value,
     pub metadata: serde_json::Value,
+    pub guard: crate::workspace::Guard,
 }
 
 pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<ProfileSource, String> {
+    let guard = crate::workspace::Guard::acquire(root)?;
     let reference = board
         .build_profile
         .as_ref()
@@ -87,6 +89,7 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
         .find(|p| p["id"] == dep["pkg"])
         .ok_or("missing platform package")?;
     Ok(ProfileSource {
+        guard,
         workspace,
         platform: platform.clone(),
         package: package.clone(),

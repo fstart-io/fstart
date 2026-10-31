@@ -50,7 +50,10 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
     }];
     // Intentionally consumer-first. Neither names nor output formats imply order.
     plan.units.push(producer);
-    let resolved = Resolved { plan };
+    let resolved = Resolved {
+        plan,
+        compiler_schemas: Default::default(),
+    };
     assert_eq!(
         resolved
             .plan
@@ -102,15 +105,16 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
             .contains_key("LINKED_PAYLOAD")
     );
     assert_ne!(producer_selection.args, first.args);
-    // IDE receives this Selection too; check/build only change the Cargo verb.
+    // IDE receives this Selection too; only final executable builds append
+    // linker-only flags, never the library/check invocations.
     for build in [false, true] {
         let command = first.command(build);
         let args = command
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(&args[2..], &first.args);
-        assert_eq!(&first.check_command()[3..], &first.args);
+        assert_eq!(&args[2..2 + first.args.len()], &first.args);
+        assert_eq!(first.check_command().unwrap()[1], "editor-check");
     }
     fs::write(&artifact, b"second generation").unwrap();
     let second = resolved
@@ -163,7 +167,10 @@ fn compiler_files_are_snapshotted_content_bound_and_namespace_isolated() {
     });
     plan.units.push(other);
     plan.order().unwrap();
-    let resolved = Resolved { plan };
+    let resolved = Resolved {
+        plan,
+        compiler_schemas: Default::default(),
+    };
     let unit = &resolved.plan.units[0];
     let first = resolved
         .prepare(&scratch.0, &board, unit, &BTreeMap::new(), true)
@@ -204,11 +211,15 @@ fn compiler_files_are_snapshotted_content_bound_and_namespace_isolated() {
         )
         .unwrap();
     assert!(!isolated.environment().contains_key("FSTART_TEST_INPUT"));
-    assert!(isolated.check_command().starts_with(&[
-        "env".into(),
-        "-u".into(),
-        "FSTART_TEST_INPUT".into()
-    ]));
+    assert_eq!(isolated.check_command().unwrap()[1], "editor-check");
+    let recorded: serde_json::Value = serde_json::from_slice(
+        &fs::read(isolated.directory.join("editor-selection.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        recorded["removed_environment"],
+        serde_json::json!(["FSTART_TEST_INPUT"])
+    );
     let current = PathBuf::from(&second.environment()["FSTART_TEST_INPUT"]);
     // Deliberate local-cache corruption must not be silently overwritten/reused.
     #[cfg(unix)]
@@ -249,10 +260,14 @@ fn unsupported_required_input_is_rejected_by_input_validation_itself() {
         default: Some("must-not-be-ignored.bin".into()),
         capacity: 4096,
     });
-    let resolved = Resolved { plan };
+    let resolved = Resolved {
+        plan,
+        compiler_schemas: Default::default(),
+    };
     assert!(
         resolved
-            .validate_inputs(Path::new("."), None, None, None)
+            .plan
+            .validate_input_bindings()
             .unwrap_err()
             .contains("unknown or duplicate payload input")
     );
