@@ -26,7 +26,7 @@ fn main() -> ! {
     rs.southbridge_mut().set_ide_primary_enabled(ultrabay);
     let mut rs = rs.init_chipset();
     let resume = rs.is_resume();
-    let identity = mainboard::init_devices(&mut pins.bluetooth_card, rs.southbridge_mut(), resume);
+    let identity = mainboard::init_devices(&mut pins.bluetooth_card, rs.smbus(), resume);
     let rs = rs.start_cpus().verify_boot_media().init_display();
     let rs = match rs.boot_path() {
         Path::Cold(rs) => rs.emit_tables(&identity.smbios(), &mainboard::Acpi),

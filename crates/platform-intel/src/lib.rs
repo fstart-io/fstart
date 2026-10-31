@@ -112,6 +112,7 @@ pub trait IntelEarlyPlatform:
         + fstart_arch::x86::cpu::intel::smm::SmramControl
         + NorthbridgeAcpi<Self::Northbridge>;
     type Southbridge: IntelSouthbridgeDriver
+        + fstart_core::services::SmBus
         + fstart_arch::x86::cpu::intel::smm::SmiControl
         + SouthbridgeAcpi<Self::Southbridge>;
     /// CPU family driver for MP bring-up; also supplies the CPU-model facts
