@@ -396,8 +396,6 @@ fn ffs_assembly(
             stack_size: STACK.size as u32,
             heap_size: Some(HEAP.size as u32),
             data_addr: Some(DATA.base),
-            page_table_addr: Some((PAGE_TABLES.base, PAGE_TABLES.size)),
-            page_size: fstart_core::stage::PageSize::Size1GiB,
             external: false,
         }),
         security: fstart_core::default_security_config(),

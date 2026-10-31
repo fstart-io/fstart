@@ -72,33 +72,14 @@ _fstart_start32:
     mov ecx, offset _fstart_bss_end
     sub ecx, edi
     rep stosb
-    /* Six DRAM pages: PML4, PDPT and four 2-MiB-leaf page directories.
-       Map 0..4 GiB, including FCH and ECAM. Cache remains disabled. */
+    /* Identity map 512 GiB with 1 GiB pages (the low 4 GiB with 2 MiB
+       pages without them), including FCH and ECAM, into the six DRAM
+       pages at _fstart_page_tables. Cache remains disabled. */
     mov edi, offset _fstart_page_tables
-    mov ecx, 0x6000 / 4
-    rep stosd
-    mov edi, offset _fstart_page_tables
-    lea eax, [edi + 0x1000]
-    or eax, 3
-    mov [edi], eax
-    lea ebx, [edi + 0x2000]
-    lea edi, [edi + 0x1000]
-    mov ecx, 4
-1:
-    mov eax, ebx
-    or eax, 3
-    mov [edi], eax
-    add ebx, 0x1000
-    add edi, 8
-    loop 1b
-    mov edi, offset _fstart_page_tables + 0x2000
-    mov eax, 0x83
-    mov ecx, 2048
-2:
-    mov [edi], eax
-    add eax, 0x200000
-    add edi, 8
-    loop 2b
+    mov ecx, 1
+    mov ebp, offset .Lpage_tables_done
+    jmp _fstart_identity_tables
+.Lpage_tables_done:
     mov eax, 0x620 /* PAE, OSFXSR, OSXMMEXCPT */
     mov cr4, eax
     mov eax, offset _fstart_page_tables

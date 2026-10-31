@@ -147,8 +147,6 @@ fn board_config(
                 runs_from: RunsFrom::Ram,
                 compression: Compression::None,
                 data_addr: None,
-                page_table_addr: None,
-                page_size: Default::default(),
             },
             StageConfig {
                 name: hstr("main"),
@@ -164,8 +162,6 @@ fn board_config(
                 runs_from: RunsFrom::Ram,
                 compression: Compression::None,
                 data_addr: None,
-                page_table_addr: None,
-                page_size: Default::default(),
             },
         ])),
         security: default_security_config(),

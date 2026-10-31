@@ -52,22 +52,6 @@ pub struct MonolithicConfig {
     /// (e.g., QEMU places the DTB at the base of RAM on AArch64).
     #[serde(default)]
     pub data_addr: Option<u64>,
-    /// Separate low-memory region for page tables and IDT (x86_64).
-    ///
-    /// On x86_64, page tables and the IDT must be in writable RAM at
-    /// addresses below the main data region. When set, the linker
-    /// creates a separate LOW memory region at `(addr, size)` for
-    /// `.pagetables` and `.idt` sections. When unset, these sections
-    /// go in the normal RAM region (or in ROM for platforms that
-    /// support ROM-resident page tables).
-    #[serde(default)]
-    pub page_table_addr: Option<(u64, u64)>,
-    /// x86_64 identity-map page size (default: 2 MiB).
-    ///
-    /// Controls page table layout and total memory used. Use `Size1GiB`
-    /// only on CPUs known to support PDPE1GB.
-    #[serde(default)]
-    pub page_size: PageSize,
     /// The stage reaches memory by other means (an AMD PSP copies it from
     /// its own flash region), so the FFS carries no copy of it.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
@@ -116,16 +100,6 @@ pub struct StageConfig {
     /// the base of RAM.
     #[serde(default)]
     pub data_addr: Option<u64>,
-    /// Separate low-memory region for page tables and IDT (x86_64).
-    ///
-    /// Same semantics as [`MonolithicConfig::page_table_addr`].
-    #[serde(default)]
-    pub page_table_addr: Option<(u64, u64)>,
-    /// x86_64 identity-map page size (default: 2 MiB).
-    ///
-    /// Same semantics as [`MonolithicConfig::page_size`].
-    #[serde(default)]
-    pub page_size: PageSize,
 }
 
 /// Build-time feature and packaging requirements for a stage.
@@ -247,26 +221,6 @@ pub fn effective_stage_load_addr(
     }
 
     stage.load_addr
-}
-
-/// x86_64 identity-map page size for page table construction.
-///
-/// Controls the page table depth and total size:
-/// - `Size2MiB`: 4-level (PML4 + PDPT + PD tables), 6 pages for 4 GiB.
-///   Compatible with all x86_64 CPUs.
-/// - `Size1GiB`: 3-level (PML4 + PDPT with PS=1), 2 pages for 512 GiB.
-///   Requires CPUID 0x80000001 EDX bit 26 (PDPE1GB).  Not supported on
-///   early Atom, some Xeon E3, and Goldmont-class CPUs.
-///
-/// Real boards should set this based on the target CPU's known capabilities.
-/// QEMU boards can use `Size1GiB` since QEMU always supports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum PageSize {
-    /// 2 MiB pages — universally supported on all x86_64 CPUs.
-    #[default]
-    Size2MiB,
-    /// 1 GiB pages — requires PDPE1GB (CPUID 0x80000001 EDX[26]).
-    Size1GiB,
 }
 
 /// Temporary RAM scratch buffer for firmware-image/FFS operations.

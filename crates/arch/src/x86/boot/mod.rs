@@ -61,7 +61,8 @@ pub const LOW_SCRATCH_START: u64 = 0x1000;
 /// End of [`LOW_SCRATCH_START`], exclusive.
 pub const LOW_SCRATCH_END: u64 = 0xf000;
 
-/// Physical address of the DRAM-backed identity page tables postcar builds.
+/// Physical address of the DRAM-backed identity page tables the Intel ramstage
+/// builds on entry.
 ///
 /// Inside the reserved low-scratch window, above the postcar stash (0x2000) and
 /// the SIPI trampoline page (0x8000), and below the EBDA. It must stay reserved:
@@ -312,11 +313,10 @@ core::arch::global_asm!(
     "stosl",
     // Set up identity-mapped page tables for long mode.
     //
-    // Real XIP boards keep prebuilt page tables in ROM: CR3 only needs
-    // the physical address and the CPU reads the descriptors during page
-    // walks. QEMU is the exception: its board metadata supplies a writable
-    // `page_table_addr`, enabling `x86-writable-page-tables`, so the
-    // setup routine below builds the tables in low RAM.
+    // CAR boards use page tables prebuilt in ROM: CR3 only needs the
+    // physical address and the CPU reads the descriptors during page
+    // walks. Stages that start in RAM (QEMU) build them in BSS. The
+    // stage's linker script picks the routine (`long_mode`).
     //
     // Do not rely on multiple `global_asm!` blocks being laid out in Rust
     // source order. Branch to a named setup routine; it branches back to

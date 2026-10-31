@@ -117,10 +117,6 @@ pub const QEMU_Q35_STACK_SIZE: u32 = 0x0040_0000;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_HEAP_SIZE: u32 = 0x0020_0000;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub const QEMU_Q35_PAGE_TABLE_ADDR: u64 = 0x1000;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub const QEMU_Q35_PAGE_TABLE_SIZE: u64 = 0x4000;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_ACPI_BUFFER_SIZE: usize = 512 * 1024;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -347,6 +343,32 @@ mod stage {
         ///
         /// Runs after PCI init: TSEG geometry is captured there and ICH9
         /// PMBASE is programmed, both required by the SMM flow.
+        /// Identity map RAM above 4 GiB and the assigned PCI BARs: the entry
+        /// tables cover only 4 GiB without 1 GiB pages. Before AP startup,
+        /// which inherits this CR3.
+        #[cfg(target_arch = "x86_64")]
+        fn map_memory(&self) -> Result<(), ServiceError> {
+            use fstart_core::services::memory_detect::E820Kind;
+            let ram = self
+                .e820
+                .entries()
+                .iter()
+                .filter(|entry| entry.kind == E820Kind::Ram as u32)
+                .map(|entry| (entry.addr, entry.size));
+            let bars = self
+                .hostbridge
+                .ecam()
+                .assigned_memory_windows()
+                .map(|window| (window.base, window.size));
+            // SAFETY: BSP only, before APs and the payload; the frames come
+            // from the firmware heap, identity mapped by the entry tables.
+            let tables =
+                unsafe { fstart_arch::x86::boot::paging::IdentityTables::build(ram.chain(bars))? };
+            let base = unsafe { tables.install() };
+            fstart_log::info!("qemu-q35: identity tables at {:#x}", base);
+            Ok(())
+        }
+
         fn init_mp_smm(&self) -> Result<(), ServiceError> {
             let cpu = fstart_arch::x86::mp::GenericX86CpuDriver;
             let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
@@ -491,12 +513,6 @@ mod stage {
                         .map_err(|_| ServiceError::InvalidParam)?;
                 }
             }
-            reserved
-                .push(MemoryWindow {
-                    start: crate::QEMU_Q35_PAGE_TABLE_ADDR,
-                    size: crate::QEMU_Q35_PAGE_TABLE_SIZE,
-                })
-                .map_err(|_| ServiceError::InvalidParam)?;
             // The FFS image sits at the firmware base with the locator
             // bounding its packed size; the window's erased tail stays out
             // of the authenticated view.
@@ -639,6 +655,8 @@ mod stage {
         phase("tpm", || mainstage.init_tpm());
         phase("bus_scan", || mainstage.init_pci());
         phase("display", || mainstage.init_display());
+        #[cfg(target_arch = "x86_64")]
+        phase("page_tables", || mainstage.map_memory());
         phase("mp_smm", || mainstage.init_mp_smm());
         phase("finalize", || {
             fstart_log::info!("qemu-q35 ramstage: ready for payload");

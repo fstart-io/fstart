@@ -198,6 +198,23 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
     /// console needs.
     pub fn enter() -> Self {
         let entry = fstart_timestamp::now();
+        // Leave the bootblock's ROM page tables first: every walk reads
+        // flash, and an AP must not depend on them. Build the low 4 GiB in
+        // reserved low scratch; the memory map phase replaces them with the
+        // final map. Protected-mode stages run unpaged.
+        // SAFETY: PAGE_TABLES_ADDR is reserved low scratch, identity mapped
+        // by the ROM tables, and the ramstage runs from DRAM below 4 GiB,
+        // which the new tables map identically.
+        #[cfg(target_arch = "x86_64")]
+        {
+            use fstart_arch::x86::boot::{PAGE_TABLES_ADDR, paging};
+            let Ok(tables) = (unsafe {
+                paging::IdentityTables::build_in(PAGE_TABLES_ADDR, paging::TABLE_BYTES, [])
+            }) else {
+                fstart_arch::x86::boot::halt()
+            };
+            unsafe { tables.install() };
+        }
         fn halt<T>(_: ServiceError) -> T {
             fstart_arch::x86::boot::halt()
         }

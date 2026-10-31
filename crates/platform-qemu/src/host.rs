@@ -259,8 +259,6 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             data_addr: Some(writable.base),
             stack_size: stack.size as u32,
             heap_size: Some(heap.size as u32),
-            page_table_addr: None,
-            page_size: Default::default(),
         }),
         security,
         payload: (payload != "halt").then(|| PayloadConfig {
@@ -411,7 +409,6 @@ struct QemuPolicy {
     default_security: bool,
     pci: bool,
     fdt: bool,
-    page_table: Option<Span>,
 }
 
 impl VirtMachine {
@@ -481,7 +478,6 @@ impl VirtMachine {
                 default_security: true,
                 pci: true,
                 fdt: false,
-                page_table: Some(span(0x1000, 0x4000)),
             },
             Self::Sbsa => QemuPolicy {
                 platform: Platform::Aarch64,
@@ -520,7 +516,6 @@ impl VirtMachine {
                 default_security: false,
                 pci: true,
                 fdt: false,
-                page_table: None,
             },
             Self::SifiveU => QemuPolicy {
                 platform: Platform::Riscv64,
@@ -554,7 +549,6 @@ impl VirtMachine {
                 default_security: false,
                 pci: false,
                 fdt: true,
-                page_table: None,
             },
             Self::Unmatched => QemuPolicy {
                 platform: Platform::Riscv64,
@@ -597,7 +591,6 @@ impl VirtMachine {
                 default_security: true,
                 pci: false,
                 fdt: true,
-                page_table: None,
             },
             Self::Riscv64 | Self::Armv7 | Self::Aarch64 => {
                 return Err("virt machine has no QEMU policy row".into());
@@ -713,6 +706,9 @@ fn qemu_q35_linker_script(
     )
     .map_err(|e| e.to_string())?;
     out.push_str("\n    /* x86 CAR/postcar symbols (CAR disabled) */\n    _has_car = 0;\n    _car_base = 0;\n    _car_size = 0;\n    _ecar_stack = _stack_top;\n    _rom_mtrr_base = 0;\n    _rom_mtrr_mask = 0;\n");
+    if platform == Platform::X86_64 {
+        out.push_str(fstart_image_build::linker::x86_entry_page_tables(false));
+    }
     let boot_block_addr = flash.base + flash.size - 0x1000;
     let reset_addr = flash.base + flash.size - 16;
     writeln!(
@@ -1071,12 +1067,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             },
             stack_size: stack.size as u32,
             heap_size: Some(heap.size as u32),
-            page_table_addr: policy.page_table.map(|p| (p.base, p.size)),
-            page_size: if matches!(policy.link, QemuLink::X86 { .. }) {
-                fstart_core::stage::PageSize::Size1GiB
-            } else {
-                Default::default()
-            },
         }),
         security,
         payload: assembly_payload,

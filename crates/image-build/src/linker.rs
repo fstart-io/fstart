@@ -379,6 +379,9 @@ pub fn resolved_intel(
             stage.writable.base, stage.writable.size
         )
         .unwrap();
+        if platform == Platform::X86_64 {
+            out.push_str(x86_entry_page_tables(true));
+        }
         writeln!(
             out,
             " _rom_mtrr_base = {:#x}; _rom_mtrr_mask = {:#x};",
@@ -479,14 +482,13 @@ pub fn generate_linker_script_with_layout(
     let arch = config.platform.linker_arch();
 
     let (load_addr, stack_size, heap_size) = stage_memory_params(config, stage_name);
-    let (data_addr, _page_table_addr) = match (&config.stages, stage_name) {
-        (StageLayout::Monolithic(mono), _) => (mono.data_addr, mono.page_table_addr),
+    let data_addr = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => mono.data_addr,
         (StageLayout::MultiStage(stages), Some(name)) => stages
             .iter()
             .find(|s| s.name.as_str() == name)
-            .map(|stage| (stage.data_addr, stage.page_table_addr))
-            .unwrap_or((None, None)),
-        _ => (None, None),
+            .and_then(|stage| stage.data_addr),
+        _ => None,
     };
 
     let rom_region =
@@ -643,6 +645,18 @@ fn x86_early_microcode_enabled(config: &BoardConfig) -> bool {
     match &config.microcode {
         Some(MicrocodeConfig::Intel(intel)) => intel.early,
         Some(MicrocodeConfig::Amd(_)) | None => false,
+    }
+}
+
+/// The entry page tables of an x86_64 stage starting at the reset vector:
+/// prebuilt ROM tables for CAR bootblocks, tables built in BSS otherwise
+/// (`fstart_arch` `long_mode`). The reset path jumps to
+/// `_setup_page_tables`; the other routine and its tables are dropped.
+pub fn x86_entry_page_tables(car: bool) -> &'static str {
+    if car {
+        "    _setup_page_tables = _setup_rom_page_tables;\n"
+    } else {
+        "    _setup_page_tables = _setup_ram_page_tables;\n"
     }
 }
 
@@ -810,6 +824,9 @@ fn generate_xip_layout(
         let rom_mask = !(x86_rom_mtrr_size - 1) & 0xFFFF_FFFF;
         writeln!(out, "    _rom_mtrr_mask = {rom_mask:#x};").unwrap();
         writeln!(out, "    _has_car = 1;").unwrap();
+        if is_first_stage && platform == Platform::X86_64 {
+            out.push_str(x86_entry_page_tables(true));
+        }
     } else {
         writeln!(out).unwrap();
         writeln!(out, "    /* x86 CAR/postcar symbols (CAR disabled) */").unwrap();
@@ -819,6 +836,9 @@ fn generate_xip_layout(
         writeln!(out, "    _ecar_stack = _stack_top;").unwrap();
         writeln!(out, "    _rom_mtrr_base = 0;").unwrap();
         writeln!(out, "    _rom_mtrr_mask = 0;").unwrap();
+        if is_first_stage && platform == Platform::X86_64 {
+            out.push_str(x86_entry_page_tables(false));
+        }
     }
 
     if platform.is_x86() && is_first_stage {
@@ -1105,8 +1125,6 @@ mod tests {
                     runs_from: fstart_core::RunsFrom::Ram,
                     compression: fstart_core::Compression::None,
                     data_addr: None,
-                    page_table_addr: None,
-                    page_size: Default::default(),
                 },
                 fstart_core::StageConfig {
                     name: hstr("main"),
@@ -1122,8 +1140,6 @@ mod tests {
                     runs_from: fstart_core::RunsFrom::Ram,
                     compression: fstart_core::Compression::None,
                     data_addr: None,
-                    page_table_addr: None,
-                    page_size: Default::default(),
                 },
             ])),
             security: SecurityConfig {
@@ -1263,8 +1279,6 @@ mod tests {
                 stack_size: 0x4000,
                 heap_size: None,
                 data_addr: None,
-                page_table_addr: None,
-                page_size: Default::default(),
             }),
             security: SecurityConfig {
                 signing_algorithm: SignatureAlgorithm::Ed25519,
