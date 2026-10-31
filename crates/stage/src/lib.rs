@@ -400,17 +400,8 @@ fn effective_image_size(media_size: usize, anchor: fstart_core::ffs::AnchorRef<'
 pub mod anchor;
 pub use anchor::{fstart_anchor_bytes, fstart_trust_bytes};
 
-/// Platform-owned entry adapter supplied by a migrated board binary.
-pub trait StageProgram {
-    fn run_stage(handoff: usize) -> !;
-    fn resume_sbi(_hart_id: u64, _dtb_addr: u64) -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-}
-
-/// Declare a platform-owned stage entry binary.
+/// Bind a board's stage `main` to the stage entry (`fstart_main`). Platform
+/// `entry!` macros expand to this.
 ///
 /// Platforms that offer the CrabEFI payload add `sbi_resume` so RISC-V
 /// stages export the SBI resume entry; the `fstart_payload` cfg it checks is
@@ -448,22 +439,5 @@ macro_rules! stage_bin {
         }
         #[cfg(not(all(fstart_payload = "crabefi", target_arch = "riscv64")))]
         const _: fn(u64, u64) -> ! = $resume;
-    };
-    (program: $program:ty) => {
-        #[unsafe(no_mangle)]
-        pub extern "Rust" fn fstart_main(handoff: usize) -> ! {
-            <$program as $crate::StageProgram>::run_stage(handoff)
-        }
-        #[used]
-        #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
-        static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
-    };
-    (program: $program:ty, sbi_resume) => {
-        $crate::stage_bin!(program: $program);
-        #[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn fstart_sbi_resume(hart_id: u64, dtb_addr: u64) -> ! {
-            <$program as $crate::StageProgram>::resume_sbi(hart_id, dtb_addr)
-        }
     };
 }
