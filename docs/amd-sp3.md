@@ -288,9 +288,9 @@ stay asserted.
 - If the APOB memory seeds are missing, or positions are invalid or
   duplicated, memory inventory is omitted with a warning.
 - Maximum DIMM size per position: 128 GiB (Naples), 256 GiB (Rome, Milan).
-- The entry point reaches UEFI payloads through `X86UefiPayloadContext::smbios`.
-  The Linux handoff context has no SMBIOS accessor: a copy of the entry point
-  in the F segment serves Linux without UEFI.
+- The entry point reaches UEFI payloads through the handoff's `Description::smbios`.
+  The Linux launcher doesn't use it: a copy of the entry point in the F
+  segment serves Linux without UEFI.
 - Board identity comes from the board's `Tables::smbios`. CPU and DIMM
   inventory is never hard-coded.
 - ACPI tables are built at step 70 under `platform-sp3/src/acpi/`.

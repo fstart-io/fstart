@@ -59,7 +59,6 @@ crabefi-basic = ["bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume
 # Core firmware infrastructure
 fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
-fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
 fstart-timestamp = { workspace = true }
 ufmt = { workspace = true }

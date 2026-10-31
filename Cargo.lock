@@ -1086,7 +1086,6 @@ dependencies = [
  "fstart-ffs",
  "fstart-load",
  "fstart-log",
- "fstart-pci",
  "fstart-tcg",
  "fstart-timestamp",
  "heapless 0.8.0",

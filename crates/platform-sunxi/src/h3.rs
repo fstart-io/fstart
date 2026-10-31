@@ -306,8 +306,6 @@ fstart_sunxi_fel_stash:
         #[cfg(feature = "linux")]
         media_base: u64,
         dram_size: u64,
-        #[cfg(feature = "linux")]
-        config: &'static super::H3Config,
     }
 
     impl H3Mainstage {
@@ -337,7 +335,11 @@ fstart_sunxi_fel_stash:
 
     #[cfg(all(feature = "linux", target_arch = "arm"))]
     impl fstart_stage::payload::MainstagePayload<H3Mainstage> for H3LinuxPayload {
-        fn boot(devices: H3Mainstage) -> ! {
+        fn boot(handoff: fstart_stage::payload::Handoff<'_>, devices: H3Mainstage) -> ! {
+            let placement = handoff.placement;
+            let Some(ram) = handoff.description.ram() else {
+                fstart_arch::halt();
+            };
             let ffs_size = fstart_stage::anchor::image_size();
             let mut boot =
                 fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(devices.media_base, 0);
@@ -366,21 +368,20 @@ fstart_sunxi_fel_stash:
                 fstart_log::error!("h3 mainstage: FFS payload {} failed", step);
                 fstart_arch::halt();
             }
-            let config = devices.config;
-            if config.fdt_dst_addr != 0
+            if placement.device_tree != 0
                 && boot
                     .prepare_fdt(
-                        config.fdt_dst_addr,
-                        config.bootargs,
-                        super::H3_DRAM_BASE,
-                        devices.dram_size,
+                        placement.device_tree,
+                        placement.bootargs,
+                        ram.base,
+                        ram.size,
                     )
                     .is_err()
             {
                 fstart_log::error!("h3 mainstage: FDT preparation failed");
                 fstart_arch::halt();
             }
-            let params = boot.boot_params(config.bootargs);
+            let params = boot.boot_params(placement.bootargs);
             fstart_arch::armv7::boot_linux(&params)
         }
     }
@@ -391,7 +392,11 @@ fstart_sunxi_fel_stash:
 
     #[cfg(all(feature = "linux", target_arch = "aarch64"))]
     impl fstart_stage::payload::MainstagePayload<H3Mainstage> for H5LinuxPayload {
-        fn boot(devices: H3Mainstage) -> ! {
+        fn boot(handoff: fstart_stage::payload::Handoff<'_>, devices: H3Mainstage) -> ! {
+            let placement = handoff.placement;
+            let Some(ram) = handoff.description.ram() else {
+                fstart_arch::halt();
+            };
             let ffs_size = fstart_stage::anchor::image_size();
             let mut boot =
                 fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(devices.media_base, 0);
@@ -425,21 +430,20 @@ fstart_sunxi_fel_stash:
                 fstart_log::error!("h5 mainstage: FFS payload {} failed", step);
                 fstart_arch::halt();
             }
-            let config = devices.config;
-            if config.fdt_dst_addr != 0
+            if placement.device_tree != 0
                 && boot
                     .prepare_fdt(
-                        config.fdt_dst_addr,
-                        config.bootargs,
-                        super::H3_DRAM_BASE,
-                        devices.dram_size,
+                        placement.device_tree,
+                        placement.bootargs,
+                        ram.base,
+                        ram.size,
                     )
                     .is_err()
             {
                 fstart_log::error!("h5 mainstage: FDT preparation failed");
                 fstart_arch::halt();
             }
-            let params = boot.boot_params(config.bootargs);
+            let params = boot.boot_params(placement.bootargs);
             fstart_log::info!(
                 "h5 mainstage: booting BL31 at {:#x}, Linux at {:#x}",
                 params.fw_addr,
@@ -554,8 +558,6 @@ fstart_sunxi_fel_stash:
             #[cfg(feature = "linux")]
             media_base,
             dram_size: handoff.dram_size.get(),
-            #[cfg(feature = "linux")]
-            config: config,
         };
         fstart_log::info!("h3 mainstage: {} MiB DRAM", mainstage.dram_size() >> 20);
         #[cfg(fstart_payload = "linux")]
@@ -570,7 +572,26 @@ fstart_sunxi_fel_stash:
             fstart_log::error!("sunxi: invalid mainstage memory policy");
             fstart_arch::halt();
         }
-        H3BuildSelectedPayload::boot(mainstage)
+        // The boot medium is a block device: the launcher reads the FFS
+        // from it, not from a mapped firmware window.
+        let memory = [fstart_core::services::memory_detect::E820Entry::new(
+            H3_DRAM_BASE,
+            mainstage.dram_size,
+            fstart_core::services::memory_detect::E820Kind::Ram,
+        )];
+        let mut description = fstart_stage::payload::Description::new(&memory, Default::default());
+        description.console = Some(mainstage.console);
+        #[allow(unused_mut)]
+        let mut placement = fstart_stage::payload::Placement::default();
+        #[cfg(feature = "linux")]
+        {
+            placement.device_tree = config.fdt_dst_addr;
+            placement.bootargs = config.bootargs;
+        }
+        H3BuildSelectedPayload::boot(
+            fstart_stage::payload::Handoff::new(description, placement),
+            mainstage,
+        )
     }
 }
 

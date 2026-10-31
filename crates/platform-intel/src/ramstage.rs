@@ -712,7 +712,43 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
             }
         }
         fstart_timestamp::add(fstart_timestamp::id::LOAD_PAYLOAD);
-        fstart_stage::payload::BuildSelectedPayload::boot(self)
+        self.hand_off()
+    }
+
+    /// Describe the machine to the build's payload launcher and boot it.
+    fn hand_off(&self) -> ! {
+        use fstart_stage::payload::{
+            AcpiTables, BuildSelectedPayload, Description, Handoff, Placement, Range,
+        };
+        let (firmware_base, firmware_size) = self.ctx.firmware_region();
+        // ACPI, SMBIOS and the coreboot window all live in the store.
+        let tables: heapless::Vec<Range, 1> = self
+            .store
+            .iter()
+            .map(|store| Range::new(store.base() as u64, store.used() as u64))
+            .collect();
+        let mut description =
+            Description::new(self.e820(), Range::new(firmware_base, firmware_size as u64));
+        description.console = self.console;
+        description.uart = self.uart;
+        description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&self.northbridge));
+        description.framebuffer = self.northbridge.framebuffer_info();
+        description.acpi = self.acpi_rsdp().map(AcpiTables::at);
+        description.smbios = self.ctx.smbios();
+        description.mainboard = (&self.mainboard.0, &self.mainboard.1);
+        description.tables = &tables;
+        #[allow(unused_mut)]
+        let mut placement = Placement::default();
+        // SAFETY: the northbridge opened the PAM shadow at early init and
+        // nothing of the firmware lives in it; the window is a sealed,
+        // reserved store entry.
+        #[cfg(feature = "payload-coreboot")]
+        {
+            placement.coreboot_window = self
+                .coreboot_window
+                .map(|(base, size)| unsafe { fstart_stage::coreboot::Window::new(base, size) });
+        }
+        BuildSelectedPayload::boot(Handoff::new(description, placement), ())
     }
 }
 
@@ -751,97 +787,6 @@ fn init_mp<P: IntelEarlyPlatform>(
         }
     }
     Ok(())
-}
-
-#[cfg(feature = "payload-linux")]
-impl<B: IntelBoard, S> fstart_stage::payload::X86LinuxPayloadContext for Ramstage<B, S> {
-    fn e820(&self) -> &[E820Entry] {
-        self.e820()
-    }
-
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.acpi_rsdp()
-    }
-}
-
-impl<B: IntelBoard, S> fstart_stage::payload::X86UefiPayloadContext for Ramstage<B, S> {
-    fn console(&self) -> Option<&dyn fstart_core::services::Console> {
-        self.console
-    }
-
-    fn e820(&self) -> &[E820Entry] {
-        self.e820()
-    }
-
-    fn firmware_region(&self) -> (u64, u64) {
-        let (base, size) = self.ctx.firmware_region();
-        (base, size as u64)
-    }
-
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.acpi_rsdp()
-    }
-
-    fn smbios(&self) -> Option<u64> {
-        self.ctx.smbios()
-    }
-
-    fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
-        Some(fstart_pci::PciRootProvider::root_info(&self.northbridge))
-    }
-
-    #[cfg(feature = "payload-uefi-basic")]
-    fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
-        self.northbridge.framebuffer_info()
-    }
-}
-
-// SAFETY: the northbridge opened the PAM shadow at early init and nothing of
-// the firmware lives in it; the window is a sealed, reserved store entry.
-#[cfg(feature = "payload-coreboot")]
-unsafe impl<B: IntelBoard, S> fstart_stage::coreboot::X86CorebootPayloadContext for Ramstage<B, S> {
-    fn e820(&self) -> &[E820Entry] {
-        self.e820()
-    }
-
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.acpi_rsdp()
-    }
-
-    fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
-        self.northbridge.framebuffer_info()
-    }
-
-    fn serial(&self) -> Option<fstart_coreboot::Serial> {
-        self.uart.map(|port| fstart_coreboot::Serial {
-            kind: if port.io_port {
-                fstart_coreboot::SERIAL_IO_MAPPED
-            } else {
-                fstart_coreboot::SERIAL_MEMORY_MAPPED
-            }
-            .into(),
-            base: (port.base as u32).into(),
-            baud: port.baud.into(),
-            regwidth: port.reg_stride.into(),
-            input_hertz: port.clock_hz.into(),
-        })
-    }
-
-    fn mainboard(&self) -> (&str, &str) {
-        (&self.mainboard.0, &self.mainboard.1)
-    }
-
-    fn table_window(&self) -> Option<(u64, usize)> {
-        self.coreboot_window
-    }
-
-    fn table_ranges(&self) -> heapless::Vec<(u64, u64), 4> {
-        // ACPI, SMBIOS and the coreboot window all live in the store.
-        self.store
-            .iter()
-            .map(|store| (store.base() as u64, store.used() as u64))
-            .collect()
-    }
 }
 
 pub struct MainstageCtx {
