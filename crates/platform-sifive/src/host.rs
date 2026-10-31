@@ -1,4 +1,4 @@
-//! FU740 LIM-resident image policy, independent of emulator presets.
+//! FU740 heapless LIM bootstrap and DRAM runtime, independent of emulators.
 extern crate std;
 use crate::{Fu740BoardFacts, Fu740ImageFacts};
 use fstart_core::*;
@@ -17,12 +17,21 @@ use std::{
     vec,
 };
 
+// Way zero is always cache: only ways 1..15 back the LIM aperture.
 const LIM: Span = Span {
     base: 0x0800_0000,
-    size: 0x0020_0000,
+    size: 0x001e_0000,
 };
 const STACK_SIZE: u64 = 0x4000;
 const HEAP_SIZE: u64 = 0x4000;
+const MAIN: Span = Span {
+    base: 0x8100_0000,
+    size: 0x0200_0000,
+};
+const HANDOFF: Span = Span {
+    base: 0x8000_0000,
+    size: 0x1000,
+};
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: Fu740BoardFacts> Plan<B> {
@@ -182,25 +191,44 @@ pub fn resolve(facts: Fu740ImageFacts, selection: BuildSelection) -> Result<Buil
             },
         ],
         flash: None,
-        bootstrap: vec![],
-        stages: StageLayout::Monolithic(MonolithicConfig {
-            external: false,
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig {
-                    temp_ram_buffer: None,
-                }),
-                verify_firmware: true,
-                payload: true,
-                fdt: true,
-                ..Default::default()
+        bootstrap: vec![(
+            "main".into(),
+            fstart_image_build::build_plan::BootstrapRole::Mainstage,
+        )],
+        stages: StageLayout::MultiStage(hvec([
+            StageConfig {
+                name: hstr("bootblock"),
+                build: StageBuildConfig {
+                    load_next_stage: Some(hstr("main")),
+                    ..Default::default()
+                },
+                load_addr: LIM.base,
+                stack_size: STACK_SIZE as u32,
+                heap_size: None,
+                runs_from: RunsFrom::Ram,
+                compression: Compression::None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
             },
-            load_addr: LIM.base,
-            data_addr: None,
-            stack_size: STACK_SIZE as u32,
-            heap_size: Some(HEAP_SIZE as u32),
-            page_table_addr: None,
-            page_size: Default::default(),
-        }),
+            StageConfig {
+                name: hstr("main"),
+                build: StageBuildConfig {
+                    verify_firmware: true,
+                    payload: true,
+                    fdt: true,
+                    ..Default::default()
+                },
+                load_addr: MAIN.base,
+                stack_size: 0x10000,
+                heap_size: Some(0x100000),
+                runs_from: RunsFrom::Ram,
+                compression: Compression::None,
+                data_addr: None,
+                page_table_addr: None,
+                page_size: Default::default(),
+            },
+        ])),
         security: default_security_config(),
         payload: active.then(|| PayloadConfig {
             kind: if linux {
@@ -241,41 +269,105 @@ pub fn resolve(facts: Fu740ImageFacts, selection: BuildSelection) -> Result<Buil
             ..Default::default()
         },
     };
+    let bootblock = CompilationUnit {
+        name: "bootblock".into(),
+        cargo_target: CargoTarget::BoardBinary,
+        target: "riscv64gc-unknown-none-elf".into(),
+        entry: "riscv64".into(),
+        cfg_schema: CompilerCfgSchema {
+            entries: vec!["riscv64".into()],
+            environments: vec!["car".into(), "ram".into()],
+            payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
+        },
+        environment: "car".into(),
+        payload: "halt".into(),
+        features: vec!["bundle-bootblock".into()],
+        build_std: Some("core,alloc".into()),
+        rustflags: vec!["-Zub-checks=no".into()],
+        release_only: false,
+        linker_script: Some(linker_script),
+        environment_values: BTreeMap::new(),
+        bindings: vec![],
+        file_bindings: vec![],
+        output: UnitOutput::Executable {
+            expectations,
+            load_address: LIM.base,
+            flat_capacity: LIM.size,
+        },
+    };
+    let main_stack = Span {
+        base: MAIN.end()? - 0x10000,
+        size: 0x10000,
+    };
+    let main_heap = Span {
+        base: main_stack.base - 0x100000,
+        size: 0x100000,
+    };
+    if !dram.contains(MAIN.base, MAIN.size) {
+        return Err("DRAM does not cover mainstage".into());
+    }
+    let mut main_regions = regions;
+    main_regions.retain(|r| {
+        !matches!(
+            r.kind,
+            Kind::Image | Kind::Writable | Kind::Stack | Kind::Heap
+        )
+    });
+    main_regions.extend([
+        MAIN.region(Kind::Image),
+        MAIN.region(Kind::Writable),
+        main_stack.region(Kind::Stack),
+        main_heap.region(Kind::Heap),
+        HANDOFF.region(Kind::Reserved),
+    ]);
+    let main_descriptor = EncodedLayout::encode(1, &main_regions).map_err(|e| e.to_string())?;
+    let mut main = bootblock.clone();
+    main.name = "main".into();
+    main.environment = "ram".into();
+    main.payload = if payload == "uefi" {
+        "crabefi".into()
+    } else {
+        payload.clone()
+    };
+    main.features = features;
+    main.linker_script = Some(lim_linker_script(
+        MAIN,
+        main_heap,
+        main_stack,
+        facts.boot_hart_id,
+        &main_descriptor,
+    )?);
+    let UnitOutput::Executable {
+        expectations: main_expectations,
+        load_address,
+        flat_capacity,
+    } = &mut main.output
+    else {
+        unreachable!()
+    };
+    main_expectations.stored = vec![MAIN];
+    main_expectations.runtime = vec![MAIN];
+    main_expectations.entry = Some(MAIN.base);
+    main_expectations.descriptor = Some(Descriptor {
+        section: ".fstart.layout".into(),
+        start_symbol: "_fstart_layout_start".into(),
+        end_symbol: "_fstart_layout_end".into(),
+        bytes: main_descriptor.as_bytes().to_vec(),
+        reservation: MAIN,
+    });
+    main_expectations.symbols = BTreeMap::from([
+        ("_stack_bottom".into(), main_stack.base),
+        ("_stack_top".into(), main_stack.end()?),
+        ("_FSTART_HEAP".into(), main_heap.base),
+    ]);
+    *load_address = MAIN.base;
+    *flat_capacity = MAIN.size;
     let plan = BuildPlan {
-        payload: payload.clone(),
+        payload,
         inputs,
-        stages: vec!["stage".into()],
+        stages: vec!["bootblock".into(), "main".into()],
         assembly: assembly.into(),
-        units: vec![CompilationUnit {
-            name: "stage".into(),
-            cargo_target: CargoTarget::BoardBinary,
-            target: "riscv64gc-unknown-none-elf".into(),
-            entry: "riscv64".into(),
-            cfg_schema: CompilerCfgSchema {
-                entries: vec!["riscv64".into()],
-                environments: vec!["monolithic".into()],
-                payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
-            },
-            environment: "monolithic".into(),
-            payload: if payload == "uefi" {
-                "crabefi".into()
-            } else {
-                payload
-            },
-            features,
-            build_std: Some("core,alloc".into()),
-            rustflags: vec!["-Zub-checks=no".into()],
-            release_only: false,
-            linker_script: Some(linker_script),
-            environment_values: BTreeMap::new(),
-            bindings: vec![],
-            file_bindings: vec![],
-            output: UnitOutput::Executable {
-                expectations,
-                load_address: LIM.base,
-                flat_capacity: LIM.size,
-            },
-        }],
+        units: vec![bootblock, main],
     };
     plan.order()?;
     Ok(plan)
@@ -341,7 +433,7 @@ mod tests {
         boot_hart_id: 1,
     };
     #[test]
-    fn fu740_preserves_lim_geometry_and_declares_every_payload_file() {
+    fn fu740_uses_usable_lim_then_dram_and_declares_every_payload_file() {
         for payload in ["halt", "linux", "uefi"] {
             let plan = resolve(
                 UNMATCHED,
@@ -361,6 +453,25 @@ mod tests {
             };
             assert_eq!((*load_address, *flat_capacity), (LIM.base, LIM.size));
             assert_eq!(expectations.entry, Some(LIM.base));
+            assert_eq!(expectations.symbols["_stack_top"], 0x081e_0000);
+            assert!(expectations.symbols["_FSTART_HEAP"] < 0x081e_0000);
+            assert_eq!(plan.stages, ["bootblock", "main"]);
+            assert_eq!(plan.units[0].environment, "car");
+            assert_eq!(plan.units[0].payload, "halt");
+            assert_eq!(plan.units[0].features, ["bundle-bootblock"]);
+            assert_eq!(plan.units[1].environment, "ram");
+            let UnitOutput::Executable {
+                expectations: main,
+                load_address: main_load,
+                ..
+            } = &plan.units[1].output
+            else {
+                panic!("missing mainstage")
+            };
+            assert_eq!(*main_load, MAIN.base);
+            assert!(main.symbols["_FSTART_HEAP"] >= MAIN.base);
+            assert_eq!(main.symbols["_stack_top"], MAIN.end().unwrap());
+            assert_eq!(plan.assembly.bootstrap().len(), 1);
             assert!(plan.assembly.ffs().unwrap().build.qemu_machine.is_none());
             assert_eq!(
                 plan.inputs.len(),

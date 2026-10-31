@@ -253,7 +253,10 @@ pub fn assemble(
     let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
     let mut ffs_image = build_image_with_root(&image_config, &root_config, &sign)?;
 
-    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
+    let egon = config.soc_image_format == SocImageFormat::AllwinnerEgon;
+    // Non-x86 early stages consume the same authenticated bootstrap pin;
+    // only the ROM-specific header finalization belongs to eGON.
+    if egon || (!config.platform.is_x86() && !config.bootstrap.is_empty()) {
         let total_size = u32::try_from(ffs_image.image.len()).map_err(|_| "image exceeds u32")?;
         let initial_name = stage_binaries
             .first()
@@ -268,7 +271,7 @@ pub fn assemble(
             &mut ffs_image,
             initial_name,
             |initial, root| {
-                if initial.len() < 0x38 {
+                if egon && initial.len() < 0x38 {
                     return Err("initial stage too small for eGON header".into());
                 }
                 let placeholders: Vec<usize> = initial
@@ -293,13 +296,19 @@ pub fn assemble(
                         .ok_or("root missing mainstage descriptor")?;
                     let offset = placeholders[0];
                     initial[offset..offset + 160].copy_from_slice(&descriptor.encode());
-                    let next = next_location.as_ref().ok_or("next stage data missing")?;
-                    initial[0x2c..0x30].copy_from_slice(&next.data_offset.to_le_bytes());
-                    initial[0x30..0x34].copy_from_slice(&next.data_size.to_le_bytes());
+                    if egon {
+                        let next = next_location.as_ref().ok_or("next stage data missing")?;
+                        initial[0x2c..0x30].copy_from_slice(&next.data_offset.to_le_bytes());
+                        initial[0x30..0x34].copy_from_slice(&next.data_size.to_le_bytes());
+                    }
                 }
-                initial[0x34..0x38].copy_from_slice(&total_size.to_le_bytes());
-                let bootblock_size = u32::from_le_bytes(initial[0x10..0x14].try_into().unwrap());
-                crate::image::egon::patch_ffs(initial, bootblock_size)
+                if egon {
+                    initial[0x34..0x38].copy_from_slice(&total_size.to_le_bytes());
+                    let bootblock_size =
+                        u32::from_le_bytes(initial[0x10..0x14].try_into().unwrap());
+                    crate::image::egon::patch_ffs(initial, bootblock_size)?;
+                }
+                Ok(())
             },
             &sign,
         )?;

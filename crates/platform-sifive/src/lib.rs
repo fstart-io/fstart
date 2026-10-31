@@ -4,7 +4,7 @@
 
 #[cfg(feature = "host")]
 pub mod host;
-#[cfg(feature = "bundle-fu740")]
+#[cfg(any(feature = "bundle-fu740", feature = "bundle-bootblock"))]
 pub use fstart_stage as stage_runtime;
 #[cfg(feature = "host")]
 pub use host::Plan;

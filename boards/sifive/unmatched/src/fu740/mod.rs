@@ -2,8 +2,11 @@
 
 use crate::config::Fu740Config;
 
+#[cfg(fstart_stage_env = "car")]
 mod ddr;
+#[cfg(fstart_stage_env = "car")]
 mod prci;
+#[cfg(fstart_stage_env = "car")]
 mod regs;
 
 /// FU740 DRAM physical base.
@@ -11,6 +14,7 @@ pub const FU740_DRAM_BASE: u64 = 0x8000_0000;
 
 mod stage {
     use super::*;
+    #[cfg(fstart_stage_env = "car")]
     use super::{ddr::Fu740Ddr, prci::Fu740Prci};
     #[cfg(fstart_payload = "crabefi")]
     use fstart_core::services::Console;
@@ -19,10 +23,15 @@ mod stage {
     // The board selects payload backends through platform features; all
     // stage runtime paths below resolve through that re-export.
     use fstart_platform_sifive::stage_runtime as fstart_stage;
-    use fstart_stage::{StageEnvironment, StageProgram, payload::MainstagePayload};
+    use fstart_stage::StageProgram;
+    #[cfg(all(fstart_stage_env = "ram", not(fstart_payload = "crabefi")))]
+    use fstart_stage::payload::MainstagePayload;
 
-    #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
-    compile_error!("FU740 requires monolithic/riscv64 stage and entry selections");
+    #[cfg(not(all(
+        any(fstart_stage_env = "car", fstart_stage_env = "ram"),
+        fstart_entry = "riscv64"
+    )))]
+    compile_error!("FU740 requires LIM/DRAM stages and the riscv64 entry");
     #[cfg(any(
         not(any(
             fstart_payload = "halt",
@@ -64,7 +73,10 @@ mod stage {
     pub struct Fu740Program<B>(core::marker::PhantomData<B>);
     impl<B: Fu740Board> StageProgram for Fu740Program<B> {
         fn run_stage(handoff: usize) -> ! {
-            Fu740::run_stage::<B>(StageEnvironment::Monolithic, handoff)
+            #[cfg(fstart_stage_env = "car")]
+            Fu740::run_bootblock::<B>(handoff);
+            #[cfg(fstart_stage_env = "ram")]
+            Fu740::run_mainstage::<B>(handoff);
         }
         #[cfg(fstart_payload = "crabefi")]
         fn resume_sbi(hart_id: u64, dtb_addr: u64) -> ! {
@@ -83,11 +95,13 @@ mod stage {
     }
 
     /// DRAM-backed state retained through payload launch.
+    #[cfg(fstart_stage_env = "ram")]
     pub struct Fu740Mainstage {
         config: &'static Fu740Config,
-        console: SifiveUart,
+        console: &'static SifiveUart,
     }
 
+    #[cfg(fstart_stage_env = "ram")]
     impl Fu740Mainstage {
         #[must_use]
         pub const fn config(&self) -> &'static Fu740Config {
@@ -96,7 +110,7 @@ mod stage {
 
         #[must_use]
         pub const fn console(&self) -> &SifiveUart {
-            &self.console
+            self.console
         }
     }
 
@@ -104,14 +118,12 @@ mod stage {
     pub struct Fu740;
 
     impl Fu740 {
-        /// Run PRCI, UART, DDR, then dispatch the build-selected FFS payload.
-        pub fn run_stage<B>(env: StageEnvironment, handoff: usize) -> !
+        /// Only early hardware setup and bounded bootstrap loading run in LIM.
+        #[cfg(fstart_stage_env = "car")]
+        pub fn run_bootblock<B>(_handoff: usize) -> !
         where
             B: Fu740Board,
         {
-            if !matches!(env, StageEnvironment::Monolithic) {
-                fstart_arch::riscv64::halt();
-            }
             let mut hooks = B::Hooks::default();
             if !phase("before_prci", hooks.before_prci()) {
                 fstart_arch::riscv64::halt();
@@ -147,20 +159,77 @@ mod stage {
                 Ok(ddr) => ddr,
                 Err(_) => fstart_arch::riscv64::halt(),
             };
-            if !phase("ddr", ddr.init())
-                || !phase("after_memory", hooks.after_memory())
-                || !phase(
-                    "boot_integrity",
-                    install_boot_context(B::CONFIG, ddr.detected_size_bytes(), handoff),
-                )
-                || !phase("before_payload", hooks.before_payload())
+            if !phase("ddr", ddr.init()) || !phase("after_memory", hooks.after_memory()) {
+                fstart_arch::riscv64::halt();
+            }
+            fstart_log::info!("fu740: {} MiB DRAM", ddr.detected_size_bytes() >> 20);
+            let entry = match load_mainstage(B::CONFIG, ddr.detected_size_bytes()) {
+                Ok(entry) => entry,
+                Err(_) => {
+                    fstart_log::error!("fu740: mainstage load failed");
+                    fstart_arch::riscv64::halt();
+                }
+            };
+            if fstart_stage::next_stage::serialize_handoff(
+                ddr.detected_size_bytes(),
+                FU740_DRAM_BASE,
+            )
+            .is_err()
             {
                 fstart_arch::riscv64::halt();
             }
-            fstart_log::info!(
-                "fu740 ramstage: {} MiB DRAM",
-                ddr.detected_size_bytes() >> 20
-            );
+            fstart_arch::riscv64::jump_to_with_handoff(entry, 0)
+        }
+
+        #[cfg(fstart_stage_env = "ram")]
+        pub fn run_mainstage<B>(_handoff: usize) -> !
+        where
+            B: Fu740Board,
+        {
+            let mut console = match SifiveUart::new(B::CONSOLE_CONFIG) {
+                Ok(console) => console,
+                Err(_) => fstart_arch::riscv64::halt(),
+            };
+            if console.init().is_err() {
+                fstart_arch::riscv64::halt();
+            }
+            let console = alloc::boxed::Box::leak(alloc::boxed::Box::new(console));
+            // SAFETY: the leaked DRAM console outlives this single-hart stage.
+            unsafe { fstart_log::init(console) };
+            // SAFETY: the predecessor initialized DRAM and reserved this fixed
+            // handoff window before transferring to the authenticated stage.
+            let inherited =
+                match unsafe { fstart_stage::handoff::try_deserialize(FU740_DRAM_BASE as usize) } {
+                    Some(inherited) => inherited,
+                    None => fstart_arch::riscv64::halt(),
+                };
+            let media = match inherited.media {
+                Some(media)
+                    if media.image_offset == 0 && media.validate(B::CONFIG.firmware_size) =>
+                {
+                    media
+                }
+                _ => fstart_arch::riscv64::halt(),
+            };
+            let locator = match fstart_core::ffs::locator::LocatorBlock::from_media(media) {
+                Some(locator) => locator,
+                None => fstart_arch::riscv64::halt(),
+            };
+            // SAFETY: single-hart startup, before any directory is mounted.
+            // Only the bounded locator is inherited, not predecessor trust.
+            if unsafe { fstart_stage::anchor::install_locator(locator, B::CONFIG.firmware_size) }
+                .is_err()
+            {
+                fstart_arch::riscv64::halt();
+            }
+            let mut hooks = B::Hooks::default();
+            if !phase(
+                "boot_integrity",
+                install_boot_context(B::CONFIG, inherited.dram_size, FU740_DRAM_BASE as usize),
+            ) || !phase("before_payload", hooks.before_payload())
+            {
+                fstart_arch::riscv64::halt();
+            }
             fstart_log::info!("fu740 ramstage: ready for payload");
             Fu740BuildSelectedPayload::boot(Fu740Mainstage {
                 config: B::CONFIG,
@@ -180,12 +249,10 @@ mod stage {
             if console.init().is_err() {
                 fstart_arch::riscv64::halt();
             }
-            // SAFETY: this resumed stage never returns; the console outlives CrabEFI.
+            let console = alloc::boxed::Box::leak(alloc::boxed::Box::new(console));
+            // SAFETY: the leaked DRAM allocation outlives the resumed payload.
             unsafe {
-                fstart_log::replace_console(core::mem::transmute::<
-                    &dyn Console,
-                    &'static dyn Console,
-                >(&console));
+                fstart_log::replace_console(console);
             }
             fstart_stage::payload::Riscv64UefiPayload::resume_sbi(
                 Fu740Mainstage {
@@ -198,8 +265,43 @@ mod stage {
         }
     }
 
-    /// This monolithic flow authenticates its own root, not an inherited one.
+    #[cfg(fstart_stage_env = "car")]
+    fn load_mainstage(config: &Fu740Config, detected_size: u64) -> Result<u64, ServiceError> {
+        use fstart_core::services::boot_media::MemoryMapped;
+        use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
+        let descriptor = fstart_stage::next_stage::pinned_bootstrap_descriptor()
+            .map_err(|_| ServiceError::InvalidParam)?;
+        if descriptor.load_addr != 0x8100_0000 {
+            return Err(ServiceError::InvalidParam);
+        }
+        let writable = [MemoryWindow {
+            start: FU740_DRAM_BASE,
+            size: detected_size.min(config.ddr.dram_size),
+        }];
+        let reserved = [MemoryWindow {
+            start: FU740_DRAM_BASE,
+            size: fstart_core::handoff::HANDOFF_MAX_SIZE as u64,
+        }];
+        let policy = MemoryPolicy {
+            writable: &writable,
+            reserved: &reserved,
+            entry_alignment: 4,
+        };
+        // SAFETY: QSPI is mapped for the configured media window. DDR init
+        // completed; the common loader authenticates before writing within the
+        // bounded DRAM policy, excluding the handoff reservation.
+        let executable = unsafe {
+            let media =
+                MemoryMapped::from_raw_addr(config.firmware_base, config.firmware_size as usize);
+            fstart_stage::boot::load_bootstrap(&media, &descriptor, &policy)
+        }
+        .map_err(|_| ServiceError::InvalidParam)?;
+        Ok(executable.entry())
+    }
+
+    /// The DRAM stage authenticates its own root, not an inherited directory.
     /// The board has no established protected initial verifier or rollback store.
+    #[cfg(fstart_stage_env = "ram")]
     fn install_boot_context(
         config: &Fu740Config,
         detected_size: u64,
@@ -376,7 +478,7 @@ mod stage {
         }
 
         fn console(&self) -> &dyn Console {
-            &self.console
+            self.console
         }
     }
 
@@ -425,5 +527,8 @@ mod stage {
     pub type Fu740BuildSelectedPayload = fstart_stage::payload::HaltPayload;
 }
 
-#[cfg(all(fstart_stage_env = "monolithic", target_arch = "riscv64"))]
+#[cfg(all(
+    any(fstart_stage_env = "car", fstart_stage_env = "ram"),
+    target_arch = "riscv64"
+))]
 pub use stage::{Fu740, Fu740Board, Fu740BuildSelectedPayload, Fu740Hooks, Fu740Program};
