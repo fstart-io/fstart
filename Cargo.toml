@@ -14,6 +14,7 @@ members = [
   "crates/platform-sunxi",
   "crates/platform-qemu",
   "crates/ffs",
+  "crates/load",
   "crates/image-build",
   "crates/intel-gma",
   "crates/crypto",
@@ -99,6 +100,7 @@ fstart-amdfw-format = { path = "crates/amdfw-format" }
 fstart-platform-qemu = { path = "crates/platform-qemu" }
 fstart-pci = { path = "crates/pci" }
 fstart-ffs = { path = "crates/ffs" }
+fstart-load = { path = "crates/load" }
 fstart-crypto = { path = "crates/crypto" }
 fstart-log = { path = "crates/log" }
 fstart-arch = { path = "crates/arch" }

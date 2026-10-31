@@ -15,7 +15,7 @@ riscv64 = ["fstart-arch/riscv64"]
 x86_64 = ["fstart-arch/x86_64"]
 
 # FFS / crypto features
-bootstrap = ["dep:fstart-crypto", "dep:fstart-ffs", "fstart-crypto/sha2-digest", "fstart-ffs/sha2-digest"]
+bootstrap = ["dep:fstart-crypto", "dep:fstart-ffs", "dep:fstart-load", "fstart-crypto/sha2-digest", "fstart-ffs/sha2-digest"]
 ffs = ["bootstrap", "fstart-ffs/directory", "fstart-arch/early-ffs-anchor"]
 ffs-signature = ["bootstrap", "fstart-ffs/ed25519", "fstart-arch/early-ffs-anchor"]
 ed25519 = ["ffs-signature"]
@@ -29,8 +29,6 @@ sha3-digest = [
   "fstart-crypto/sha3-digest",
   "fstart-ffs/sha3-digest",
 ]
-# LZ4 decompression for compressed stage/payload segments
-lz4 = ["bootstrap"]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
 fdt = ["bootstrap"]
 # Additive Linux backend availability; fstart_payload selects the launcher.
@@ -71,6 +69,7 @@ zerocopy = { workspace = true }
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
+fstart-load = { workspace = true, optional = true }
 fstart-boot = { workspace = true, optional = true }
 fstart-coreboot = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }

@@ -23,7 +23,7 @@ acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi", "fstart-driver-amd/smbios",
 bundle-reset = [
   "dep:fstart-stage", "fstart-stage/x86_64", "fstart-stage/ffs", "fstart-stage/acpi",
   "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
-  "fstart-stage/lz4", "acpi", "fstart-stage/tcg",
+  "acpi", "fstart-stage/tcg",
   "dep:fstart-driver-tpm", "dep:fstart-tcg", "dep:fstart-driver-uart",
 ]
 # Payload backends; fbuild's `fstart_payload` cfg selects the launcher.

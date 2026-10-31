@@ -392,6 +392,8 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
             &reserved,
             &mut store,
             boot_path == BootPath::S3Resume,
+            // Postcar is stored uncompressed: the bootblock links no decoder.
+            &fstart_stage::boot::Stored,
         )?;
         let boot_flags = if boot_path == BootPath::S3Resume {
             fstart_arch::x86::boot::car_teardown::BOOT_FLAG_S3_RESUME

@@ -49,8 +49,15 @@ pub(crate) fn load_mainstage(
     };
     // SAFETY: SPL code, stack and descriptor live in SRAM, disjoint from detected
     // DRAM. Reserve the surviving handoff; the synchronous MMC driver has no DMA.
-    let executable = unsafe { fstart_stage::boot::load_bootstrap(&media, &descriptor, &policy) }
-        .map_err(|_| ServiceError::InvalidParam)?;
+    let executable = unsafe {
+        fstart_stage::boot::load_bootstrap(
+            &media,
+            &descriptor,
+            &policy,
+            &fstart_stage::boot::Stored,
+        )
+    }
+    .map_err(|_| ServiceError::InvalidParam)?;
     Ok(executable.entry())
 }
 
@@ -114,7 +121,7 @@ pub(crate) fn install_mainstage_policy(
         entry_alignment: 4,
     };
     // SAFETY: running image/heap/stack and handoff are excluded. MMC is PIO.
-    unsafe { fstart_stage::directory::set_load_policy(&policy) }
+    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
         .map_err(|_| ServiceError::InvalidParam)?;
     let workspace = MemoryWindow {
         start: fdt_destination,
