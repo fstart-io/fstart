@@ -382,25 +382,29 @@ impl<S: Soc> Stage<S> {
         unsafe { psp::boot_done(silicon.psp.as_mut(), &delay) };
         fstart_log::info!("{}: starting the payload", S::NAME);
         post(ctx.fch, 0x44);
-        let handoff = boot::Handoff {
-            console: self.console,
-            e820: self.e820,
-            rsdp,
-            smbios,
-            ffs,
-            devices: silicon.devices,
-            framebuffer: silicon.framebuffer,
-            #[cfg(feature = "payload-uefi-basic")]
-            peripherals,
-            pci_root: fstart_pci::PciRootInfo {
-                segment: 0,
-                ecam_base: S::ECAM,
-                bus_start: 0,
-                bus_end: (S::ECAM_BUSES - 1) as u8,
-            },
+        use fstart_stage::payload::{
+            AcpiTables, BuildSelectedPayload, Description, Handoff, MainstagePayload, PciRootInfo,
+            Placement, Range,
         };
-        use fstart_stage::payload::MainstagePayload;
-        fstart_stage::payload::BuildSelectedPayload::boot(handoff)
+        let mut description = Description::new(self.e820.entries(), Range::new(ffs.base, ffs.size));
+        description.console = Some(self.console);
+        description.acpi = rsdp.map(AcpiTables::at);
+        description.smbios = smbios;
+        description.acpi_devices = &silicon.devices;
+        description.framebuffer = silicon.framebuffer;
+        description.pci_root = Some(PciRootInfo {
+            segment: 0,
+            ecam_base: S::ECAM,
+            bus_start: 0,
+            bus_end: (S::ECAM_BUSES - 1) as u8,
+        });
+        #[allow(unused_mut)]
+        let mut handoff = Handoff::new(description, Placement::default());
+        #[cfg(feature = "payload-uefi-basic")]
+        {
+            handoff.peripherals = peripherals;
+        }
+        BuildSelectedPayload::boot(handoff, ())
     }
 }
 

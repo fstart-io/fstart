@@ -8,8 +8,7 @@ mod regs;
 
 /// FU740 DRAM physical base.
 pub const FU740_DRAM_BASE: u64 = 0x8000_0000;
-/// FU740 PCIe ECAM aperture used by its RISC-V UEFI payload context.
-#[cfg(fstart_payload = "crabefi")]
+/// FU740 PCIe ECAM aperture.
 pub const FU740_ECAM_BASE: u64 = 0x3000_0000;
 
 mod stage {
@@ -22,8 +21,6 @@ mod stage {
     // The board selects payload backends through platform features; all
     // stage runtime paths below resolve through that re-export.
     use fstart_platform_qemu::stage_runtime as fstart_stage;
-    #[cfg(not(fstart_payload = "crabefi"))]
-    use fstart_stage::payload::MainstagePayload;
 
     #[cfg(not(fstart_entry = "riscv64"))]
     compile_error!("FU740 requires the riscv64 entry");
@@ -98,7 +95,13 @@ mod stage {
             ddr.detected_size_bytes() >> 20
         );
         fstart_log::info!("fu740 ramstage: ready for payload");
-        Fu740BuildSelectedPayload::boot(Fu740Mainstage { config, console })
+        Fu740Mainstage { config, console }
+            .hand_off(|handoff| {
+                <Fu740BuildSelectedPayload as fstart_stage::payload::MainstagePayload>::boot(
+                    handoff,
+                    (),
+                )
+            })
     }
 
     /// Without CrabEFI nothing returns from OpenSBI here.
@@ -128,11 +131,9 @@ mod stage {
                 core::mem::transmute::<&dyn Console, &'static dyn Console>(&console),
             );
         }
-        fstart_stage::payload::Riscv64UefiPayload::resume_sbi(
-            Fu740Mainstage { config, console },
-            hart_id,
-            dtb_addr,
-        )
+        Fu740Mainstage { config, console }.hand_off(|handoff| {
+            fstart_stage::payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
+        })
     }
 
     /// This monolithic flow authenticates its own root, not an inherited one.
@@ -276,90 +277,40 @@ mod stage {
         }
     }
 
-    #[cfg(fstart_payload = "linux")]
-    impl fstart_stage::payload::LinuxPayloadContext for Fu740Mainstage {
-        fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
+    impl Fu740Mainstage {
+        /// Describe the board to `boot` and run it. It has no boot device
+        /// tree: the Linux launcher loads the board's from the FFS.
+        fn hand_off(&self, boot: impl FnOnce(fstart_stage::payload::Handoff<'_>) -> !) -> ! {
+            use fstart_core::services::memory_detect::{E820Entry, E820Kind};
+            use fstart_stage::payload::{Description, Handoff, PciRootInfo, Placement, Range};
             let config = self.config;
-            fstart_stage::payload::LinuxPayloadConfig::new(
-                config.firmware_base,
-                config.firmware_size,
-                0,
-                config.dtb_addr,
-                config.kernel_addr,
-                config.firmware_addr,
-                FU740_DRAM_BASE,
-                config.ddr.dram_size,
-                config.boot_hart_id,
-                config.bootargs,
-            )
-        }
-    }
-
-    #[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
-    impl fstart_stage::payload::Riscv64UefiPayloadContext for Fu740Mainstage {
-        fn riscv64_uefi_payload_context(&self) -> fstart_stage::payload::Riscv64UefiPayloadConfig {
-            let config = self.config;
-            fstart_stage::payload::Riscv64UefiPayloadConfig::new(
-                config.firmware_base,
-                config.firmware_size,
-                config.firmware_addr,
-                0x20_0000,
-                config.dtb_addr,
-                FU740_DRAM_BASE,
-                config.ddr.dram_size,
-                Some(fstart_pci::PciRootInfo {
-                    segment: 0,
-                    ecam_base: FU740_ECAM_BASE,
-                    bus_start: 0,
-                    bus_end: 0xff,
-                }),
-            )
-        }
-
-        fn console(&self) -> &dyn Console {
-            &self.console
-        }
-    }
-
-    /// Linux payload launcher that requires the board-supplied FFS DTB.
-    #[cfg(fstart_payload = "linux")]
-    pub struct Fu740LinuxPayload;
-
-    #[cfg(fstart_payload = "linux")]
-    impl MainstagePayload<Fu740Mainstage> for Fu740LinuxPayload {
-        fn boot(devices: Fu740Mainstage) -> ! {
-            use fstart_stage::fixed_helpers::MemoryMappedLinuxBoot;
-
-            let config = devices.config;
-            let mut boot =
-                MemoryMappedLinuxBoot::new(config.firmware_base, config.firmware_size as usize, 0);
-            if boot.mount().is_err()
-                || boot.verify().is_err()
-                || boot.load_firmware_and_kernel().is_err()
-                || boot.load_fdt(config.dtb_addr).is_err()
-                || boot
-                    .prepare_fdt(
-                        config.dtb_addr,
-                        config.bootargs,
-                        FU740_DRAM_BASE,
-                        config.ddr.dram_size,
-                    )
-                    .is_err()
-            {
-                fstart_log::error!("FU740 Linux payload: FFS payload load failed");
-                fstart_arch::riscv64::halt();
-            }
-            fstart_arch::riscv64::boot_linux(&boot.boot_params(
-                config.kernel_addr,
-                config.firmware_addr,
-                config.boot_hart_id,
-                config.bootargs,
-            ))
+            let memory = [E820Entry::new(FU740_DRAM_BASE, config.ddr.dram_size, E820Kind::Ram)];
+            let mut description = Description::new(
+                &memory,
+                Range::new(config.firmware_base, config.firmware_size),
+            );
+            description.console = Some(&self.console);
+            description.mmio = &fstart_platform_qemu::virt::QEMU_RISCV64_MMIO;
+            description.pci_root = Some(PciRootInfo {
+                segment: 0,
+                ecam_base: FU740_ECAM_BASE,
+                bus_start: 0,
+                bus_end: 0xff,
+            });
+            let placement = Placement {
+                kernel: config.kernel_addr,
+                device_tree: config.dtb_addr,
+                firmware: Range::new(config.firmware_addr, 0x20_0000),
+                hart_id: config.boot_hart_id,
+                bootargs: config.bootargs,
+                ..Default::default()
+            };
+            boot(Handoff::new(description, placement))
         }
     }
 
     #[cfg(fstart_payload = "linux")]
-    pub type Fu740BuildSelectedPayload = Fu740LinuxPayload;
+    pub type Fu740BuildSelectedPayload = fstart_stage::payload::LinuxPayload;
     #[cfg(all(not(fstart_payload = "linux"), fstart_payload = "crabefi"))]
     pub type Fu740BuildSelectedPayload = fstart_stage::payload::Riscv64UefiPayload;
     #[cfg(all(not(fstart_payload = "linux"), not(fstart_payload = "crabefi")))]

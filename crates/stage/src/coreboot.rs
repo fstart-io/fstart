@@ -7,11 +7,10 @@
 //! Everything handed over comes from verified FFS files.
 
 use crate::boot::MemoryWindow;
-use crate::payload::MainstagePayload;
+use crate::payload::{Description, Handoff, MainstagePayload};
 use fstart_core::ffs::FileType;
-use fstart_core::services::FramebufferInfo;
 use fstart_core::services::ffs_context;
-use fstart_core::services::memory_detect::E820Entry;
+use fstart_core::services::{FramebufferInfo, UartPort};
 use fstart_coreboot::manifest::{self, Manifest};
 use fstart_coreboot::{FORWARD_ADDR, Framebuffer, Serial, TableWriter};
 
@@ -21,30 +20,26 @@ const LEGACY_SHADOW: MemoryWindow = MemoryWindow {
     size: 0x4_0000,
 };
 
-/// Platform context of the coreboot payload launcher.
-///
-/// # Safety
-/// Implementors guarantee that, at handoff, `0xc0000..0x100000` decodes to
-/// writable DRAM (PAM shadow opened) that the firmware no longer uses, and
-/// that [`table_window`](Self::table_window) is RAM reserved for the
-/// launcher, excluded from the load policy and from OS-visible RAM.
-pub unsafe trait X86CorebootPayloadContext {
-    /// Final memory map, after every firmware reservation.
-    fn e820(&self) -> &[E820Entry];
-    fn acpi_rsdp(&self) -> Option<u64>;
-    fn framebuffer(&self) -> Option<FramebufferInfo>;
-    fn serial(&self) -> Option<Serial>;
-    /// Mainboard vendor and part name.
-    fn mainboard(&self) -> (&str, &str);
-    /// RAM for the handed-over files and the table: at least
-    /// [`window_size`] bytes, below 4 GiB.
-    fn table_window(&self) -> Option<(u64, usize)>;
-    /// Firmware tables (ACPI, SMBIOS, the table window) payloads scan; they
-    /// are reported as coreboot table memory.
-    fn table_ranges(&self) -> heapless::Vec<(u64, u64), 4>;
+/// RAM for the files handed to a coreboot payload and its table: at least
+/// [`window_size`] bytes, below 4 GiB.
+#[derive(Clone, Copy, Debug)]
+pub struct Window {
+    base: u64,
+    size: usize,
 }
 
-/// RAM the platform has to set aside for [`X86CorebootPayloadContext::table_window`].
+impl Window {
+    /// # Safety
+    /// At handoff, `0xc0000..0x100000` decodes to writable DRAM (PAM shadow
+    /// opened) that the firmware no longer uses, and `base..base + size` is
+    /// RAM reserved for the launcher, excluded from the load policy and from
+    /// OS-visible RAM.
+    pub const unsafe fn new(base: u64, size: usize) -> Self {
+        Self { base, size }
+    }
+}
+
+/// RAM the platform has to set aside for the [`Window`].
 #[must_use]
 pub fn window_size() -> Option<usize> {
     Some(verified_manifest()?.window_size())
@@ -57,12 +52,17 @@ fn verified_manifest() -> Option<Manifest<'static>> {
 /// Boots the build-selected coreboot payload.
 pub struct X86CorebootPayload;
 
-impl<D: X86CorebootPayloadContext> MainstagePayload<D> for X86CorebootPayload {
-    fn boot(devices: D) -> ! {
+impl<D> MainstagePayload<D> for X86CorebootPayload {
+    fn boot(handoff: Handoff<'_>, _: D) -> ! {
         let Some(manifest) = verified_manifest() else {
             halt("no verified coreboot payload manifest");
         };
-        let table = write_tables(&devices, &manifest).unwrap_or_else(|reason| halt(reason));
+        let window = handoff
+            .placement
+            .coreboot_window
+            .unwrap_or_else(|| halt("no table window"));
+        let table = write_tables(&handoff.description, window, &manifest)
+            .unwrap_or_else(|reason| halt(reason));
         let base = load_payload().unwrap_or_else(|reason| halt(reason));
         #[cfg(feature = "tcg")]
         measure(&manifest);
@@ -84,10 +84,11 @@ impl<D: X86CorebootPayloadContext> MainstagePayload<D> for X86CorebootPayload {
 /// Copy the files into the table window, write the table behind them and
 /// point the forwarding header at it. Returns the table address.
 fn write_tables(
-    devices: &impl X86CorebootPayloadContext,
+    description: &Description<'_>,
+    window: Window,
     manifest: &Manifest<'_>,
 ) -> Result<u64, &'static str> {
-    let (window, len) = devices.table_window().ok_or("no table window")?;
+    let (window, len) = (window.base, window.size);
     if len < manifest.window_size() || window.saturating_add(len as u64) > 1 << 32 {
         return Err("table window too small or above 4 GiB");
     }
@@ -106,31 +107,36 @@ fn write_tables(
 
     let table_addr = window + at as u64;
     let mut writer = TableWriter::new(&mut buf[at..]).map_err(|_| "table window full")?;
-    let mut tables = devices.table_ranges();
-    // The forwarding header shares the first page with the real-mode IVT.
+    let mut tables: heapless::Vec<(u64, u64), 8> = description
+        .tables
+        .iter()
+        .map(|range| (range.base, range.size))
+        .collect();
+    // The table window, and the forwarding header that shares the first page
+    // with the real-mode IVT.
     tables
-        .push((0, 0x1000))
+        .extend_from_slice(&[(window, len as u64), (0, 0x1000)])
         .map_err(|_| "too many table ranges")?;
     let full = |_| "coreboot table does not fit";
     writer
         .memory(
-            devices.e820().iter().map(|entry| {
+            description.memory.iter().map(|entry| {
                 let entry = *entry;
                 (entry.addr, entry.size, entry.kind)
             }),
             &tables,
         )
         .map_err(full)?;
-    let (vendor, part) = devices.mainboard();
+    let (vendor, part) = description.mainboard;
     writer.mainboard(vendor, part).map_err(full)?;
-    if let Some(serial) = devices.serial() {
-        writer.serial(&serial).map_err(full)?;
+    if let Some(port) = description.uart {
+        writer.serial(&serial(&port)).map_err(full)?;
     }
-    if let Some(fb) = devices.framebuffer() {
+    if let Some(fb) = description.framebuffer {
         writer.framebuffer(&framebuffer(&fb)).map_err(full)?;
     }
-    if let Some(rsdp) = devices.acpi_rsdp() {
-        writer.acpi_rsdp(rsdp).map_err(full)?;
+    if let Some(acpi) = description.acpi {
+        writer.acpi_rsdp(acpi.rsdp).map_err(full)?;
     }
     for &(name, address, size) in &placed {
         writer.file(name, address, size).map_err(full)?;
@@ -155,6 +161,21 @@ fn write_tables(
     writer.forward(table_addr).map_err(full)?;
     writer.finish();
     Ok(table_addr)
+}
+
+fn serial(port: &UartPort) -> Serial {
+    Serial {
+        kind: if port.io_port {
+            fstart_coreboot::SERIAL_IO_MAPPED
+        } else {
+            fstart_coreboot::SERIAL_MEMORY_MAPPED
+        }
+        .into(),
+        base: (port.base as u32).into(),
+        baud: port.baud.into(),
+        regwidth: port.reg_stride.into(),
+        input_hertz: port.clock_hz.into(),
+    }
 }
 
 fn framebuffer(info: &FramebufferInfo) -> Framebuffer {

@@ -121,43 +121,44 @@ impl QemuRiscv64VirtMainstage {
     }
 }
 
-#[cfg(feature = "linux")]
-impl fstart_stage::payload::LinuxPayloadContext for QemuRiscv64VirtMainstage {
-    fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
-        let firmware = crate::boot::mounted_image();
-        fstart_stage::payload::LinuxPayloadConfig::new(
-            firmware.base,
-            firmware.size,
-            fstart_arch::riscv64::boot_dtb_addr(),
-            self.region(RegionKind::DeviceTree).base,
-            self.region(RegionKind::Payload).base,
-            self.region(RegionKind::PayloadFirmware).base,
-            self.config.ram_base,
-            self.ram_size(),
-            fstart_arch::riscv64::boot_hart_id(),
-            self.config.bootargs,
-        )
+impl QemuRiscv64VirtMainstage {
+    /// Where the payload's kernel, device tree and OpenSBI go.
+    #[cfg(any(feature = "linux", feature = "crabefi"))]
+    fn placement(&self) -> fstart_stage::payload::Placement {
+        let firmware = self.region(RegionKind::PayloadFirmware);
+        fstart_stage::payload::Placement {
+            #[cfg(feature = "linux")]
+            kernel: self.region(RegionKind::Payload).base,
+            device_tree: self.region(RegionKind::DeviceTree).base,
+            firmware: fstart_stage::payload::Range::new(firmware.base, firmware.size),
+            hart_id: fstart_arch::riscv64::boot_hart_id(),
+            bootargs: self.config.bootargs,
+            ..Default::default()
+        }
     }
-}
 
-#[cfg(feature = "crabefi")]
-impl fstart_stage::payload::Riscv64UefiPayloadContext for QemuRiscv64VirtMainstage {
-    fn riscv64_uefi_payload_context(&self) -> fstart_stage::payload::Riscv64UefiPayloadConfig {
-        let firmware = crate::boot::mounted_image();
-        let opensbi = self.region(RegionKind::PayloadFirmware);
-        fstart_stage::payload::Riscv64UefiPayloadConfig::new(
-            firmware.base,
-            firmware.size,
-            opensbi.base,
-            opensbi.size,
-            self.region(RegionKind::DeviceTree).base,
-            self.config.ram_base,
-            self.ram_size(),
-            Some(fstart_pci::PciRootProvider::root_info(&self.config.pci)),
-        )
-    }
-    fn console(&self) -> &dyn Console {
-        &self.console
+    /// Describe the machine to `boot` and run it.
+    fn hand_off(&self, boot: impl FnOnce(fstart_stage::payload::Handoff<'_>) -> !) -> ! {
+        #[cfg(any(feature = "linux", feature = "crabefi"))]
+        {
+            let memory = crate::boot::ram_entry(self.config.ram_base, self.ram_size());
+            let mut description = crate::boot::single_bank(
+                &memory,
+                &self.console,
+                fstart_arch::riscv64::boot_dtb_addr(),
+            );
+            description.mmio = &crate::virt::QEMU_RISCV64_MMIO;
+            description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&self.config.pci));
+            boot(fstart_stage::payload::Handoff::new(
+                description,
+                self.placement(),
+            ))
+        }
+        #[cfg(not(any(feature = "linux", feature = "crabefi")))]
+        boot(fstart_stage::payload::Handoff::new(
+            fstart_stage::payload::Description::new(&[], Default::default()),
+            Default::default(),
+        ))
     }
 }
 
@@ -190,7 +191,9 @@ pub fn resume_sbi(
         ));
     }
     fstart_log::info!("riscv64 uefi: OpenSBI returned, launching CrabEFI");
-    fstart_stage::payload::Riscv64UefiPayload::resume_sbi(mainstage, hart_id, dtb_addr)
+    mainstage.hand_off(|handoff| {
+        fstart_stage::payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
+    })
 }
 
 /// The QEMU RISC-V virt stage: console, boot media from the DTB, PCI, then
@@ -223,5 +226,5 @@ pub fn run(config: &'static QemuRiscv64VirtConfig, console: Ns16550Config) -> ! 
     }
     fstart_log::info!("qemu-riscv64 ramstage: finalize");
     fstart_log::info!("qemu-riscv64 ramstage: ready for payload");
-    <Selected as MainstagePayload<_>>::boot(mainstage)
+    mainstage.hand_off(|handoff| <Selected as MainstagePayload>::boot(handoff, ()))
 }

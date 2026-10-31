@@ -82,26 +82,37 @@ impl QemuArmv7VirtMainstage {
     }
 }
 
-#[cfg(feature = "linux")]
-impl fstart_stage::payload::LinuxPayloadContext for QemuArmv7VirtMainstage {
-    fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
-        let config = self.config;
-        let firmware = crate::boot::mounted_image();
-        let ram_size = fstart_stage::directory::writable_memory()
-            .and_then(|windows| windows.iter().find(|w| w.start == config.ram_base))
-            .expect("ARMv7 virt RAM was not discovered")
-            .size;
-        fstart_stage::payload::LinuxPayloadConfig::new(
-            firmware.base,
-            firmware.size,
-            self.config.source_dtb_addr,
-            self.region(RegionKind::DeviceTree).base,
-            self.region(RegionKind::Payload).base,
-            0,
-            config.ram_base,
-            ram_size,
-            0,
-            config.bootargs,
+impl QemuArmv7VirtMainstage {
+    /// Describe the machine to the build's payload launcher and boot it.
+    fn hand_off(&self) -> ! {
+        #[cfg(feature = "linux")]
+        {
+            let config = self.config;
+            let ram_size = fstart_stage::directory::writable_memory()
+                .and_then(|windows| windows.iter().find(|w| w.start == config.ram_base))
+                .expect("ARMv7 virt RAM was not discovered")
+                .size;
+            let memory = crate::boot::ram_entry(config.ram_base, ram_size);
+            let description =
+                crate::boot::single_bank(&memory, &self.console, config.source_dtb_addr);
+            let placement = fstart_stage::payload::Placement {
+                kernel: self.region(RegionKind::Payload).base,
+                device_tree: self.region(RegionKind::DeviceTree).base,
+                bootargs: config.bootargs,
+                ..Default::default()
+            };
+            <Selected as MainstagePayload>::boot(
+                fstart_stage::payload::Handoff::new(description, placement),
+                (),
+            )
+        }
+        #[cfg(not(feature = "linux"))]
+        <Selected as MainstagePayload>::boot(
+            fstart_stage::payload::Handoff::new(
+                fstart_stage::payload::Description::new(&[], Default::default()),
+                Default::default(),
+            ),
+            (),
         )
     }
 }
@@ -135,5 +146,5 @@ pub fn run(config: &'static QemuArmv7VirtConfig, console: Pl011Config) -> ! {
     }
     fstart_log::info!("qemu-armv7 ramstage: finalize");
     fstart_log::info!("qemu-armv7 ramstage: ready for payload");
-    <Selected as MainstagePayload<_>>::boot(mainstage)
+    mainstage.hand_off()
 }

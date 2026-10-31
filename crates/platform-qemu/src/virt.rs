@@ -255,6 +255,18 @@ pub fn phase(machine: &str, name: &str, result: Result<(), ServiceError>) -> boo
 
 /// The RISC-V virt machine's NS16550.
 pub const QEMU_RISCV64_UART_BASE: u64 = 0x1000_0000;
+
+/// RISC-V virt device MMIO a UEFI payload maps: the UART, CLINT, PLIC and
+/// PCI memory window.
+pub const QEMU_RISCV64_MMIO: [fstart_core::description::Range; 4] = {
+    use fstart_core::description::Range;
+    [
+        Range::new(0x1000_0000, 0x100),
+        Range::new(0x0200_0000, 0x1_0000),
+        Range::new(0x0c00_0000, 0x0400_0000),
+        Range::new(0x4000_0000, 0x4000_0000),
+    ]
+};
 /// The AArch64 virt machine's PL011.
 pub const QEMU_AARCH64_UART_BASE: u64 = 0x0900_0000;
 /// The ARMv7 virt machine's PL011.

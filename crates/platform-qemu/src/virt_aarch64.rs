@@ -1,8 +1,6 @@
 //! Handwritten QEMU AArch64 virt flow.
 
 use fstart_core::layout::{Layout, Region, RegionKind};
-#[cfg(feature = "crabefi")]
-use fstart_core::services::Console;
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::pl011::{Pl011, Pl011Config};
 use fstart_stage::payload::MainstagePayload;
@@ -137,45 +135,41 @@ fn source_dtb_addr(config: &super::virt::QemuAarch64VirtConfig) -> u64 {
     }
 }
 
-#[cfg(feature = "linux")]
-impl fstart_stage::payload::LinuxPayloadContext for QemuAarch64VirtMainstage {
-    fn linux_payload_context(&self) -> fstart_stage::payload::LinuxPayloadConfig {
-        let firmware = crate::boot::mounted_image();
-        fstart_stage::payload::LinuxPayloadConfig::new(
-            firmware.base,
-            firmware.size,
-            source_dtb_addr(self.config),
-            self.region(RegionKind::DeviceTree).base,
-            self.region(RegionKind::Payload).base,
-            self.region(RegionKind::PayloadFirmware).base,
-            self.config.ram_base,
-            self.ram_size(),
-            0,
-            self.config.bootargs,
+impl QemuAarch64VirtMainstage {
+    /// Describe the machine to the build's payload launcher and boot it.
+    fn hand_off(&self) -> ! {
+        #[cfg(any(feature = "linux", feature = "crabefi"))]
+        {
+            let memory = crate::boot::ram_entry(self.config.ram_base, self.ram_size());
+            let mut description =
+                crate::boot::single_bank(&memory, &self.console, source_dtb_addr(self.config));
+            // The UEFI payload keeps the whole flash out of its allocations.
+            let flash = self.region(RegionKind::Flash);
+            let reserved = [fstart_stage::payload::Range::new(flash.base, flash.size)];
+            description.reserved = &reserved;
+            description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&self.config.pci));
+            let firmware = self.region(RegionKind::PayloadFirmware);
+            let placement = fstart_stage::payload::Placement {
+                #[cfg(feature = "linux")]
+                kernel: self.region(RegionKind::Payload).base,
+                device_tree: self.region(RegionKind::DeviceTree).base,
+                firmware: fstart_stage::payload::Range::new(firmware.base, firmware.size),
+                bootargs: self.config.bootargs,
+                ..Default::default()
+            };
+            <Selected as MainstagePayload>::boot(
+                fstart_stage::payload::Handoff::new(description, placement),
+                (),
+            )
+        }
+        #[cfg(not(any(feature = "linux", feature = "crabefi")))]
+        <Selected as MainstagePayload>::boot(
+            fstart_stage::payload::Handoff::new(
+                fstart_stage::payload::Description::new(&[], Default::default()),
+                Default::default(),
+            ),
+            (),
         )
-    }
-}
-
-#[cfg(feature = "crabefi")]
-impl fstart_stage::payload::Aarch64UefiPayloadContext for QemuAarch64VirtMainstage {
-    fn aarch64_uefi_payload_context(&self) -> fstart_stage::payload::Aarch64UefiPayloadConfig {
-        let flash = self.region(RegionKind::Flash);
-        let firmware = crate::boot::mounted_image();
-        fstart_stage::payload::Aarch64UefiPayloadConfig::new(
-            flash.base,
-            flash.size,
-            firmware.base,
-            firmware.size,
-            self.region(RegionKind::DeviceTree).base,
-            self.region(RegionKind::PayloadFirmware).base,
-            self.config.ram_base,
-            self.ram_size(),
-            Some(fstart_pci::PciRootProvider::root_info(&self.config.pci)),
-        )
-    }
-
-    fn console(&self) -> &dyn Console {
-        &self.console
     }
 }
 
@@ -213,5 +207,5 @@ pub fn run(config: &'static QemuAarch64VirtConfig, console: Pl011Config) -> ! {
     }
     fstart_log::info!("qemu-aarch64 ramstage: finalize");
     fstart_log::info!("qemu-aarch64 ramstage: ready for payload");
-    <Selected as MainstagePayload<_>>::boot(mainstage)
+    mainstage.hand_off()
 }

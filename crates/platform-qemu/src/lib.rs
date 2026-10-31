@@ -180,10 +180,10 @@ impl Default for QemuQ35Config {
 ))]
 mod stage {
     use crate::display::{BochsDisplay, BochsDisplayConfig};
-    use fstart_core::services::memory_detect::{E820Entry, E820State};
-    use fstart_core::services::{Console, ServiceError};
+    use fstart_core::services::ServiceError;
+    use fstart_core::services::memory_detect::E820State;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::payload::{MainstagePayload, X86UefiPayloadContext};
+    use fstart_stage::payload::MainstagePayload;
 
     use crate::fw_cfg::QemuFwCfg;
     use crate::q35::Q35HostBridge;
@@ -525,48 +525,6 @@ mod stage {
         }
     }
 
-    impl X86UefiPayloadContext for QemuQ35Mainstage {
-        fn console(&self) -> Option<&dyn Console> {
-            Some(&self.console)
-        }
-
-        fn e820(&self) -> &[E820Entry] {
-            self.e820.entries()
-        }
-
-        fn firmware_region(&self) -> (u64, u64) {
-            (self.config.firmware_base, self.config.firmware_size)
-        }
-
-        fn acpi_rsdp(&self) -> Option<u64> {
-            self.acpi_rsdp
-        }
-
-        fn acpi_region(&self) -> Option<(u64, u64)> {
-            self.acpi_rsdp.map(|_| {
-                (
-                    core::ptr::addr_of!(ACPI_BUFFER) as u64,
-                    QEMU_Q35_ACPI_BUFFER_SIZE as u64,
-                )
-            })
-        }
-
-        fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
-            let config = self.config.hostbridge;
-            Some(fstart_pci::PciRootInfo {
-                ecam_base: config.ecam_base,
-                segment: 0,
-                bus_start: config.bus_start,
-                bus_end: config.bus_end,
-            })
-        }
-
-        #[cfg(feature = "crabefi")]
-        fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
-            self.framebuffer
-        }
-    }
-
     /// RAM for the coreboot table and the files handed to the payload.
     #[cfg(fstart_payload = "coreboot")]
     const COREBOOT_WINDOW_SIZE: usize = 0x4_0000;
@@ -576,59 +534,54 @@ mod stage {
     #[cfg(fstart_payload = "coreboot")]
     static mut COREBOOT_WINDOW: CorebootWindow = CorebootWindow([0; COREBOOT_WINDOW_SIZE]);
 
-    // SAFETY: fstart programs PAM0-6 to DRAM during PCI init and keeps nothing
-    // in the legacy shadow; the window is a firmware static that only the
-    // launcher touches, reported to the payload as table memory.
-    #[cfg(fstart_payload = "coreboot")]
-    unsafe impl fstart_stage::coreboot::X86CorebootPayloadContext for QemuQ35Mainstage {
-        fn e820(&self) -> &[E820Entry] {
-            self.e820.entries()
-        }
-
-        fn acpi_rsdp(&self) -> Option<u64> {
-            self.acpi_rsdp
-        }
-
-        fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
-            self.framebuffer
-        }
-
-        fn serial(&self) -> Option<fstart_coreboot::Serial> {
+    impl QemuQ35Mainstage {
+        /// Describe the machine to the build's payload launcher and boot it.
+        fn hand_off(&self) -> ! {
             use fstart_core::services::ConsoleDevice;
-            self.console
-                .uart_port()
-                .map(|port| fstart_coreboot::Serial {
-                    kind: fstart_coreboot::SERIAL_IO_MAPPED.into(),
-                    base: (port.base as u32).into(),
-                    baud: port.baud.into(),
-                    regwidth: port.reg_stride.into(),
-                    input_hertz: port.clock_hz.into(),
-                })
-        }
-
-        fn mainboard(&self) -> (&str, &str) {
-            ("QEMU", "Q35")
-        }
-
-        fn table_window(&self) -> Option<(u64, usize)> {
-            Some((
-                core::ptr::addr_of!(COREBOOT_WINDOW) as u64,
-                COREBOOT_WINDOW_SIZE,
-            ))
-        }
-
-        fn table_ranges(&self) -> heapless::Vec<(u64, u64), 4> {
-            heapless::Vec::from_slice(&[
-                (
-                    core::ptr::addr_of!(ACPI_BUFFER) as u64,
-                    QEMU_Q35_ACPI_BUFFER_SIZE as u64,
-                ),
-                (
-                    core::ptr::addr_of!(COREBOOT_WINDOW) as u64,
-                    COREBOOT_WINDOW_SIZE as u64,
-                ),
-            ])
-            .unwrap_or_default()
+            use fstart_stage::payload::{
+                AcpiTables, BuildSelectedPayload, Description, Handoff, PciRootInfo, Placement,
+                Range,
+            };
+            let acpi_buffer = Range::new(
+                core::ptr::addr_of!(ACPI_BUFFER) as u64,
+                QEMU_Q35_ACPI_BUFFER_SIZE as u64,
+            );
+            let tables = [acpi_buffer];
+            let config = self.config.hostbridge;
+            let mut description = Description::new(
+                self.e820.entries(),
+                Range::new(self.config.firmware_base, self.config.firmware_size),
+            );
+            description.console = Some(&self.console);
+            description.uart = self.console.uart_port();
+            description.pci_root = Some(PciRootInfo {
+                ecam_base: config.ecam_base,
+                segment: 0,
+                bus_start: config.bus_start,
+                bus_end: config.bus_end,
+            });
+            description.framebuffer = self.framebuffer;
+            description.acpi = self.acpi_rsdp.map(|rsdp| AcpiTables {
+                rsdp,
+                region: acpi_buffer,
+            });
+            description.mainboard = ("QEMU", "Q35");
+            description.tables = &tables;
+            #[allow(unused_mut)]
+            let mut placement = Placement::default();
+            // SAFETY: fstart programs PAM0-6 to DRAM during PCI init and keeps
+            // nothing in the legacy shadow; the window is a firmware static
+            // that only the launcher touches.
+            #[cfg(fstart_payload = "coreboot")]
+            {
+                placement.coreboot_window = Some(unsafe {
+                    fstart_stage::coreboot::Window::new(
+                        core::ptr::addr_of!(COREBOOT_WINDOW) as u64,
+                        COREBOOT_WINDOW_SIZE,
+                    )
+                });
+            }
+            BuildSelectedPayload::boot(Handoff::new(description, placement), ())
         }
     }
 
@@ -662,6 +615,6 @@ mod stage {
             fstart_log::info!("qemu-q35 ramstage: ready for payload");
             Ok(())
         });
-        fstart_stage::payload::BuildSelectedPayload::boot(mainstage)
+        mainstage.hand_off()
     }
 }
