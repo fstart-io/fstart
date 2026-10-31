@@ -94,18 +94,6 @@ impl LocatorBlock {
         (block.magic == LOCATOR_MAGIC && block.version.get() == LOCATOR_VERSION).then_some(block)
     }
 
-    pub fn from_media(media: MediaLocator) -> Option<Self> {
-        Some(Self {
-            manifest_offset: U32::new(media.root_offset.try_into().ok()?),
-            manifest_size: U32::new(media.root_size.try_into().ok()?),
-            total_image_size: U32::new(media.image_size.try_into().ok()?),
-            microcode_offset: U32::new(media.microcode_offset.try_into().ok()?),
-            microcode_size: U32::new(media.microcode_size.try_into().ok()?),
-            image_offset: U32::new(media.image_offset.try_into().ok()?),
-            ..Self::placeholder()
-        })
-    }
-
     pub fn media(self) -> MediaLocator {
         MediaLocator {
             image_offset: self.image_offset.get().into(),

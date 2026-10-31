@@ -48,8 +48,8 @@ coreboot = ["ffs", "dep:fstart-coreboot"]
 tcg = ["ffs", "dep:fstart-tcg", "fstart-boot?/tcg"]
 # FIT image parsing at runtime
 fit = ["ffs", "dep:fstart-boot", "fstart-boot/fit"]
-# Inter-stage handoff serialization (postcard, for multi-stage boards)
-handoff = ["dep:postcard"]
+# Inter-stage handoff (fixed little-endian record, for multi-stage boards)
+handoff = []
 # ACPI table generation lives in the selected board/platform crate; fstart-stage
 # only provides the allocator needed by ACPI-capable flows.
 acpi = []
@@ -81,7 +81,6 @@ fstart-crypto = { workspace = true, optional = true }
 fstart-boot = { workspace = true, optional = true }
 fstart-coreboot = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
-postcard = { workspace = true, optional = true }
 
 # CrabEFI adapter lives in fstart-boot behind the crabefi feature.
 
