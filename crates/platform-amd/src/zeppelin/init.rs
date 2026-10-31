@@ -32,7 +32,12 @@ pub struct Dxio<'a> {
 
 impl<'a> Init<'a> {
     /// The DF MMIO/IO map and init, then the FCH reset init.
-    pub fn start(stage: &'a Stage<Zeppelin>) -> Result<Self, Stop> {
+    /// Stops the boot (logs and halts) on failure.
+    pub fn start(stage: &'a Stage<Zeppelin>) -> Self {
+        Self::try_start(stage).unwrap_or_else(|why| stage.stop(why))
+    }
+
+    fn try_start(stage: &'a Stage<Zeppelin>) -> Result<Self, Stop> {
         let Ctx { dies, fch, .. } = stage.ctx();
         let memory = stage.memory();
         let mut clock = stage.ctx().clock;
@@ -59,7 +64,19 @@ impl<'a> Init<'a> {
 
     /// NBIO and the BSP, the DRAM map, the IOAPIC and IOMMU BARs, then DXIO
     /// link training of the board's engines `dxio`.
-    pub fn train_dxio(self, dxio: &DxioConfig) -> Result<Dxio<'a>, Stop> {
+    /// Stops the boot (logs and halts) on failure.
+    pub fn train_dxio(self, dxio: &DxioConfig) -> Dxio<'a> {
+        let stage = self.stage;
+        self.try_train_dxio(dxio)
+            .unwrap_or_else(|why| stage.stop(why))
+    }
+
+    /// Stop the boot after logging that the board's `what` failed.
+    pub fn fail(&self, what: &'static str) -> ! {
+        self.stage.fail(what)
+    }
+
+    fn try_train_dxio(self, dxio: &DxioConfig) -> Result<Dxio<'a>, Stop> {
         static mut DXIO_BUFFERS: dxio::zeppelin::Buffers = dxio::zeppelin::Buffers::new();
         let Ctx { dies, fch, msr, .. } = self.stage.ctx();
         let memory = self.stage.memory();
@@ -96,7 +113,18 @@ impl<'a> Dxio<'a> {
 
     /// USB, the SMU, the late DF, the NBIO and FCH environment, MP init, SMM
     /// with the PSP's SMM info, then the PCI interrupt router.
-    pub fn finish(self) -> Result<Silicon<Zeppelin>, Stop> {
+    /// Stops the boot (logs and halts) on failure.
+    pub fn finish(self) -> Silicon<Zeppelin> {
+        let stage = self.stage;
+        self.try_finish().unwrap_or_else(|why| stage.stop(why))
+    }
+
+    /// Stop the boot after logging that the board's `what` failed.
+    pub fn fail(&self, what: &'static str) -> ! {
+        self.stage.fail(what)
+    }
+
+    fn try_finish(self) -> Result<Silicon<Zeppelin>, Stop> {
         /// DRAM the SMU uses with DMA: firmware BSS in the reserved early
         /// region.
         static mut SMU_PAGES: SmuPages = SmuPages([[0; 4096]; 2 * MAX_DIES]);

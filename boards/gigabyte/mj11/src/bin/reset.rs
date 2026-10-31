@@ -20,19 +20,20 @@ fn main() -> ! {
     let reset = Reset::<Zeppelin>::enter(&CONFIG);
     mj11::early_init(&reset.lpc());
     let stage = reset.console(&CONSOLE, mj11::console());
-    let silicon = (|| {
-        let init = Init::start(&stage)?;
-        let ctx = init.ctx();
-        let riser = mj11::fch_reset_done(&ctx.gpio(), ctx.fch, ctx.clock);
-        let dxio = init.train_dxio(&mj11::dxio(riser))?;
-        mj11::dxio_training_done(&ctx.dies[0], &ctx.gpio(), ctx.clock);
-        dxio.finish()
-    })();
-    let mut silicon = silicon.unwrap_or_else(|why| stage.stop(why));
+    let init = Init::start(&stage);
+    let ctx = init.ctx();
+    let gpio = ctx.gpio();
+    let riser = mj11::program_i2c_devices(&gpio, ctx.clock);
+    mj11::clear_pm1(ctx.fch);
+    let dxio = init.train_dxio(&mj11::dxio(riser));
+    mj11::apply_phy_tuning(&ctx.dies[0]);
+    mj11::wait_for_bmc(&gpio, ctx.clock);
+    let mut silicon = dxio.finish();
     let pci = stage.enumerate(&mut silicon);
-    let ctx = stage.ctx();
-    mj11::mainboard_final(&ctx.dies[0], &ctx.gpio(), ctx.fch, ctx.clock);
+    mj11::program_vendor_gpios(&gpio);
+    mj11::set_vga_ssid(&ctx.dies[0]);
+    mj11::bmc::post_done(ctx.fch, ctx.clock);
     stage.ready_to_boot(&mut silicon, &pci);
-    mj11::ready_to_boot(&ctx.gpio(), &ctx.fch());
+    mj11::hand_smbus_to_os(&gpio, ctx.fch);
     stage.boot(silicon, pci, mj11::acpi(), &mj11::SMBIOS)
 }

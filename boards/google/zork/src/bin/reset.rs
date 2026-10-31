@@ -18,17 +18,17 @@ fstart_platform_amd::entry!(main);
 
 fn main() -> ! {
     let stage = Reset::<Picasso>::enter(&CONFIG).console(&CONSOLE, vilboz::console());
-    let silicon = (|| {
-        let init = Init::start(&stage)?;
-        let gpio = init.gpio();
-        vilboz::early_gpios(&gpio).map_err(|_| "board GPIOs")?;
-        // GPIO67 (DMIC_SEL) in the RAM-stage pads needs ROM sharing off.
-        init.disable_rom_sharing();
-        let cbi = vilboz::after_fch(&gpio, &mut init.clock());
-        init.train_dxio()?
-            .finish(cbi.native_power(), cbi.has_emmc())
-    })();
-    let mut silicon = silicon.unwrap_or_else(|why| stage.stop(why));
+    let init = Init::start(&stage);
+    let gpio = init.gpio();
+    if vilboz::early_gpios(&gpio).is_err() {
+        init.fail("board GPIOs");
+    }
+    // GPIO67 (DMIC_SEL) in the RAM-stage pads needs ROM sharing off.
+    init.disable_rom_sharing();
+    let cbi = vilboz::after_fch(&gpio, &mut init.clock());
+    let mut silicon = init
+        .train_dxio()
+        .finish(cbi.native_power(), cbi.has_emmc());
     let pci = stage.enumerate(&mut silicon);
     stage.ready_to_boot(&mut silicon, &pci);
     stage.boot(silicon, pci, vilboz::acpi(), &vilboz::SMBIOS)

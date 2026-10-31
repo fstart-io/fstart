@@ -26,14 +26,15 @@ use tock_registers::interfaces::Readable;
 
 /// The cold silicon init in the native coreboot sequence, followed by the
 /// shared architectural MP and SMM installers. The board's `main` drives it
-/// and does its own work between the phases:
+/// and does its own work between the phases; a failed phase stops the boot
+/// itself, board failures go to `fail`:
 ///
 /// ```ignore
-/// let init = picasso::Init::start(&stage)?;
+/// let init = picasso::Init::start(&stage);
 /// // board: FCH is up — its GPIO tables, ROM sharing, the EC
-/// let silicon = init.train_dxio()?
+/// let silicon = init.train_dxio()
 ///     // board: links are trained
-///     .finish(power, emmc_fitted)?;
+///     .finish(power, emmc_fitted);
 /// ```
 pub struct Init<'a> {
     stage: &'a Stage<Picasso>,
@@ -52,7 +53,12 @@ pub struct Dxio<'a> {
 impl<'a> Init<'a> {
     /// Data fabric, NBIO early init, the BSP, DRAM routing and the FCH:
     /// LPC/SPI, eSPI, SPI ROM, SMBus. The board's own pads come after.
-    pub fn start(stage: &'a Stage<Picasso>) -> Result<Self, Stop> {
+    /// Stops the boot (logs and halts) on failure.
+    pub fn start(stage: &'a Stage<Picasso>) -> Self {
+        Self::try_start(stage).unwrap_or_else(|why| stage.stop(why))
+    }
+
+    fn try_start(stage: &'a Stage<Picasso>) -> Result<Self, Stop> {
         let config = stage.config();
         let ctx = stage.ctx();
         let Ctx { dies, msr, .. } = ctx;
@@ -119,7 +125,18 @@ impl<'a> Init<'a> {
     }
 
     /// IOAPIC decode, the IOMMU BAR and DXIO link training.
-    pub fn train_dxio(self) -> Result<Dxio<'a>, Stop> {
+    /// Stops the boot (logs and halts) on failure.
+    pub fn train_dxio(self) -> Dxio<'a> {
+        let stage = self.stage;
+        self.try_train_dxio().unwrap_or_else(|why| stage.stop(why))
+    }
+
+    /// Stop the boot after logging that the board's `what` failed.
+    pub fn fail(&self, what: &'static str) -> ! {
+        self.stage.fail(what)
+    }
+
+    fn try_train_dxio(self) -> Result<Dxio<'a>, Stop> {
         let ctx = self.stage.ctx();
         let die = &ctx.dies[0];
         let smn = &die.smn();
@@ -159,7 +176,19 @@ impl Dxio<'_> {
     /// graphics, the final NBIO init and SMM with the PSP's SMM info.
     /// `power` and `emmc_fitted` are what the board learned at runtime once
     /// the FCH was up, e.g. from the EC.
-    pub fn finish(self, power: power::Config, emmc_fitted: bool) -> Result<Silicon<Picasso>, Stop> {
+    /// Stops the boot (logs and halts) on failure.
+    pub fn finish(self, power: power::Config, emmc_fitted: bool) -> Silicon<Picasso> {
+        let stage = self.init.stage;
+        self.try_finish(power, emmc_fitted)
+            .unwrap_or_else(|why| stage.stop(why))
+    }
+
+    /// Stop the boot after logging that the board's `what` failed.
+    pub fn fail(&self, what: &'static str) -> ! {
+        self.init.stage.fail(what)
+    }
+
+    fn try_finish(self, power: power::Config, emmc_fitted: bool) -> Result<Silicon<Picasso>, Stop> {
         let Dxio {
             init:
                 Init {
