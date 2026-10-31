@@ -11,7 +11,7 @@ use fstart_platform_intel::bootblock::Bootblock;
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
-fstart_platform_intel::entry!(main);
+fstart_platform_intel::entry!(main, reset_vector);
 
 fn main() -> ! {
     let bb = Bootblock::<Board>::enter();

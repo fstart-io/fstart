@@ -11,7 +11,6 @@ use std::{format, string::ToString, vec, vec::Vec};
 fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
     fstart_image_build::build_plan::CompilerCfgSchema {
-        entries: strings(&["riscv64", "armv7", "aarch64-relocate", "x86_64"]),
         payloads: strings(&["halt", "linux", "crabefi", "coreboot"]),
     }
 }
@@ -51,7 +50,6 @@ pub fn compilation_plan(
         name: "smm".into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: plan.target(),
-        entry: "x86_64".into(),
         cfg_schema: compiler_cfg_schema(),
         payload: "halt".into(),
         features: plan.smm_features.clone(),
@@ -102,7 +100,7 @@ pub fn compilation_plan(
             }
         }
         units.push(CompilationUnit {
-            name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target(), entry: "x86_64".into(),
+            name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target(),
             cfg_schema: compiler_cfg_schema(),
             payload: if row.payload == "uefi" { "crabefi".into() } else { row.payload.clone() },
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,

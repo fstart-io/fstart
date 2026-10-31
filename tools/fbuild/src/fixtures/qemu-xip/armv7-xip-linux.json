@@ -129,7 +129,6 @@
       "_stack_top": 1076887552
     }
   },
-  "entry": "armv7",
   "linker_sha256": "14a365c6fbc4139d0c8aefa2803ac0d4869f6e50f937dfb19beb7ba2efd568ba",
   "target": "armv7a-none-eabi"
 }

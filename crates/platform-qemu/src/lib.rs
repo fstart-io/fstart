@@ -30,6 +30,8 @@ pub mod host;
 #[cfg(feature = "host")]
 pub use host::Plan;
 
+#[doc(hidden)]
+pub use fstart_arch as arch_runtime;
 #[cfg(feature = "stage")]
 pub use fstart_payload as payload_runtime;
 #[cfg(feature = "stage")]
@@ -40,7 +42,12 @@ pub use fstart_stage as stage_runtime;
 /// returns to: `entry!(main, sbi_resume: resume);`.
 #[macro_export]
 macro_rules! entry {
-    ($main:path) => { $crate::stage_runtime::stage_bin!(main: $main); };
+    ($main:path) => {
+        $crate::stage_runtime::stage_bin!(main: $main);
+        // q35 starts at the reset vector.
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        $crate::arch_runtime::x86_reset_entry!();
+    };
     ($main:path, sbi_resume: $resume:path) => {
         $crate::stage_runtime::stage_bin!(main: $main, sbi_resume: $resume);
     };
@@ -195,8 +202,6 @@ mod stage {
     use crate::q35::Q35HostBridge;
     use crate::{QEMU_Q35_ACPI_BUFFER_SIZE, QEMU_Q35_PLATFORM_NODE, QemuQ35Config};
 
-    #[cfg(not(fstart_entry = "x86_64"))]
-    compile_error!("QEMU q35 requires the x86_64 entry");
     #[cfg(not(any(
         fstart_payload = "halt",
         fstart_payload = "crabefi",

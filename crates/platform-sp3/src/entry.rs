@@ -3,7 +3,7 @@
 //! The PSP copies BIOS directory entry `0x62` to DRAM and releases the BSP
 //! at its last 16 bytes (`0x75ff_fff0`, 16-bit, CS base `0x75ff_0000`); the
 //! SMU later releases each AP into the same vector. `asm/reset.S` (compiled
-//! here when the build unit selects `fstart_entry = "amd-psp-reset"`, which
+//! here when the build unit selects `feature = "bundle-reset"`, which
 //! also compiles out the arch crate's own reset vector):
 //!
 //! 1. splits BSP and APs on `APIC_BAR.BSP`, as the vendor SEC does;
@@ -33,19 +33,12 @@
 //! [`layout::CACHE_WINDOW`]: crate::layout::CACHE_WINDOW
 //! [`layout::PAGE_TABLES`]: crate::layout::PAGE_TABLES
 
-// fbuild passes `--check-cfg` for `fstart_entry` with each unit's schema;
-// plain cargo builds of this crate do not know the name yet (a build.rs
-// `rustc-check-cfg` line belongs to the crate's foundation files).
-
 // The reset-image bundle links the stage runtime (allocator, anchor, the
 // arch entry `_start_ram` jumps into) even before the flow calls into it.
 #[cfg(feature = "bundle-reset")]
 use fstart_stage as _;
 
-/// `fstart_entry` value a reset-image build unit selects.
-pub const ENTRY: &str = "amd-psp-reset";
-
-#[cfg(all(target_os = "none", fstart_entry = "amd-psp-reset"))]
+#[cfg(all(target_os = "none", feature = "bundle-reset"))]
 core::arch::global_asm!(
     include_str!("../asm/reset.S"),
     cache_base = const crate::layout::CACHE_WINDOW.base,
@@ -92,7 +85,7 @@ impl ApRoute {
     }
 }
 
-#[cfg(all(target_os = "none", fstart_entry = "amd-psp-reset"))]
+#[cfg(all(target_os = "none", feature = "bundle-reset"))]
 mod runtime {
     use super::ApRoute;
 
@@ -121,7 +114,7 @@ mod runtime {
     }
 }
 
-#[cfg(all(target_os = "none", fstart_entry = "amd-psp-reset"))]
+#[cfg(all(target_os = "none", feature = "bundle-reset"))]
 pub use runtime::{bsp_bist, set_ap_route};
 
 #[cfg(test)]

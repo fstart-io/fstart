@@ -64,8 +64,6 @@ mod stage {
     use fstart_driver_uart::pl011::{Pl011, Pl011Config};
     use fstart_payload::MainstagePayload;
 
-    #[cfg(not(fstart_entry = "aarch64-relocate"))]
-    compile_error!("SBSA requires the aarch64-relocate entry");
     #[cfg(not(fstart_payload = "halt"))]
     compile_error!("SBSA selects the halt payload only");
 
