@@ -27,7 +27,8 @@ pub struct InstallConfig<'a, T: Copy> {
     pub num_cpus: u16,
     /// Per-CPU save-state size reserved at the top of each SMBASE window.
     pub save_state_size: u32,
-    /// Configuration of the concrete handler, [`SmmHandler::Config`](crate::SmmHandler::Config).
+    /// Configuration of the board's SMI handler: the type its handler
+    /// function takes (see [`smm_bin!`](crate::smm_bin)).
     pub handler_config: &'a T,
 }
 

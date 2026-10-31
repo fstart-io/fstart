@@ -2,9 +2,6 @@
 //!
 //! Unlike the X61 dock board, the D945GCLF has no board-specific SMI
 //! sources: the plain ICH7 handler (APMC/ACPI enable, TCO, GPE clear)
-//! covers it. This module only binds the board to that handler.
+//! covers it. This module only binds that handler.
 
-use crate::Board;
-use fstart_driver_intel::southbridge::smi::IchSmmHandler;
-
-fstart_platform_intel::smm::smm_bin!(Board, IchSmmHandler);
+fstart_platform_intel::smm::smm_bin!(handler: fstart_driver_intel::southbridge::smi::handle);

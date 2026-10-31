@@ -8,11 +8,11 @@
 //! sources the donors leave routed (SW SMI, SLP_TYP, power button; Rome's
 //! CF9 trap).
 //!
-//! The handler ([`Sp3SmmHandler`], feature `smm`) handles ACPI enable/disable,
-//! Sx entry, power button,
+//! The handler ([`handle`], feature `smm`; the board binds it as its SMI
+//! handler) handles ACPI enable/disable, Sx entry, power button,
 //! the NBIO USB SMI, Milan's PSP FCH lock (SW SMI D2) and the PSP SmmInfo
 //! registration ([`sw::PSP_SMM_INFO`]). Boards can opt into [`ras`]'s MCA
-//! observer: CPU-local capture before native #MC, with OS-owned banks and
+//! observer (a [`Policy`] value, with [`enter_cpu`]): CPU-local capture before native #MC, with OS-owned banks and
 //! optional bounded SEL delivery. There is no DXE or UEFI dependency.
 //! AGESA sends SmmInfo from its SMM
 //! driver too; doing it from the handler puts the P2C buffer and the C2P
@@ -160,7 +160,9 @@ pub fn prepare_psp_smi(fch: &crate::hw::PrimaryFch) {
 }
 
 #[cfg(feature = "smm")]
-pub use handler::Sp3SmmHandler;
+pub use handler::{enter_cpu, handle};
+#[cfg(feature = "smm")]
+pub use ras::Policy;
 
 #[cfg(feature = "smm")]
 pub mod ras;
@@ -184,9 +186,10 @@ mod handler {
     use fstart_driver_amd::sp3::fch::{Fch, FchHw, Mmio, Ports, Window, acpimmio, update};
     use fstart_driver_amd::sp3::soc::Generation;
     use fstart_pci::{ConfigRegionAccess, EcamDevice, PciAddress};
-    use fstart_smm::{SmmContext, SmmHandler};
+    use fstart_smm::SmmContext;
     use tock_registers::interfaces::Readable;
 
+    use super::ras::Policy;
     use super::{SmmConfig, sw};
     use crate::hw::{Tsc, msr};
 
@@ -271,31 +274,31 @@ mod handler {
     }
 
     /// The SP3 FCH SMI dispatcher.
-    pub struct Sp3SmmHandler<P = super::ras::OsFirst>(core::marker::PhantomData<P>);
-
-    impl<P: super::ras::Policy> SmmHandler for Sp3SmmHandler<P> {
-        type Config = SmmConfig;
-
-        unsafe fn enter_cpu(ctx: &mut SmmContext<'_>, config: &SmmConfig) {
-            super::ras::enter::<P>(ctx.cpu(), config.generation);
-        }
-
-        unsafe fn handle(_ctx: &mut SmmContext<'_>, config: &SmmConfig) {
-            fstart_pci::ecam::init(config.ecam_base as usize);
-            // The OS may be in the middle of an SMN access on bus 0
-            // (00:00.0, `PciAddress::default`).
-            let host = PciAddress::default();
-            let pci = Ecam;
-            // SAFETY: SMM owns the CPU; the index is restored below.
-            let saved = unsafe { pci.read(host, fstart_driver_amd::smn::SMN_INDEX) };
-            super::ras::flush::<P>(crate::hw::tsc());
-            dispatch::<P>(config);
-            // SAFETY: as above.
-            unsafe { pci.write(host, fstart_driver_amd::smn::SMN_INDEX, saved) };
-        }
+    /// CPU-local work on every CPU that enters SMM, before the rendezvous:
+    /// MCA capture when `policy` observes MCEs. Bind it as the board's
+    /// `enter_cpu`.
+    pub fn enter_cpu(ctx: &mut SmmContext<'_>, config: &SmmConfig, policy: &Policy) {
+        super::ras::enter(policy, ctx.cpu(), config.generation);
     }
 
-    fn dispatch<P: super::ras::Policy>(config: &SmmConfig) {
+    /// The SP3 SMI handler on the rendezvous owner: SMI command (ACPI mode,
+    /// PSP SMM info, EINJ), sleep and power button, and RAS reporting per
+    /// `policy`.
+    pub fn handle(_ctx: &mut SmmContext<'_>, config: &SmmConfig, policy: &Policy) {
+        fstart_pci::ecam::init(config.ecam_base as usize);
+        // The OS may be in the middle of an SMN access on bus 0
+        // (00:00.0, `PciAddress::default`).
+        let host = PciAddress::default();
+        let pci = Ecam;
+        // SAFETY: SMM owns the CPU; the index is restored below.
+        let saved = unsafe { pci.read(host, fstart_driver_amd::smn::SMN_INDEX) };
+        super::ras::flush(policy, crate::hw::tsc());
+        dispatch(config, policy);
+        // SAFETY: as above.
+        unsafe { pci.write(host, fstart_driver_amd::smn::SMN_INDEX, saved) };
+    }
+
+    fn dispatch(config: &SmmConfig, policy: &Policy) {
         let timer = crate::hw::tsc();
         let hw = primary_fch(timer);
         let acpi = hw.acpi();
@@ -312,7 +315,7 @@ mod handler {
             match command {
                 smi::sw::ACPI_ENABLE => sx::acpi_enable(&hw),
                 smi::sw::ACPI_DISABLE => sx::acpi_disable(&hw),
-                sw::PSP_SMM_INFO => smm_info(config, &timer, P::MEMORY_EINJ),
+                sw::PSP_SMM_INFO => smm_info(config, &timer, policy.memory_einj),
                 crate::einj::SW_BEGIN | crate::einj::SW_END | crate::einj::SW_EXECUTE => {
                     // SAFETY: shared dispatch owner; registered SMRAM page.
                     unsafe {

@@ -1,11 +1,7 @@
 //! T6 EC ownership and dock TCO mailbox. ATI/legacy brightness is unsupported.
-use crate::Board;
 use fstart_driver_intel::southbridge::{
     gpio_ich::IchGpio,
-    smi::{
-        APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH7_GPE0, IchBoardSmmHandler, IchSmi,
-        IchSmmHandler,
-    },
+    smi::{APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH7_GPE0, IchSmi, IchSmmConfig, PendingSmi},
 };
 use fstart_driver_lenovo::{ec::Ec, t6::dock};
 use fstart_platform_intel::smm::SmmContext;
@@ -35,29 +31,33 @@ fn handle_event() {
         }
     }
 }
-pub struct T6SmmHandler;
-impl IchBoardSmmHandler for T6SmmHandler {
-    unsafe fn on_apmc(_ctx: &mut SmmContext<'_>, command: u8) {
-        let acpi = match command {
-            APM_CNT_ACPI_ENABLE => true,
-            APM_CNT_ACPI_DISABLE => false,
-            _ => return,
-        };
-        // SAFETY: rendezvous owns the decoded PM and LPC register windows.
-        unsafe { smi().route_gpi(crate::EC_SCI_GPIO, acpi) };
-    }
-    unsafe fn on_gpi(_ctx: &mut SmmContext<'_>, status: u16) {
-        if status & (1 << crate::EC_SCI_GPIO) != 0 {
-            handle_event();
-        }
-    }
-    unsafe fn on_gpe(_ctx: &mut SmmContext<'_>, status: u64) {
-        if status & (1 << (crate::EC_SCI_GPIO + 16)) != 0 {
-            handle_event();
-        }
-    }
-    unsafe fn on_tco_command(_ctx: &mut SmmContext<'_>, command: u8) -> Option<u8> {
-        dock_command(command)
-    }
+/// Route the EC's SCI GPI to SMI or SCI as the OS takes or gives up ACPI.
+fn acpi_switch(command: u8) {
+    let acpi = match command {
+        APM_CNT_ACPI_ENABLE => true,
+        APM_CNT_ACPI_DISABLE => false,
+        _ => return,
+    };
+    // SAFETY: rendezvous owns the decoded PM and LPC register windows.
+    unsafe { smi().route_gpi(crate::EC_SCI_GPIO, acpi) };
 }
-fstart_platform_intel::smm::smm_bin!(Board, IchSmmHandler<T6SmmHandler>);
+
+/// The ICH's SMI sources plus the EC's events and the dock's TCO mailbox.
+fn smi_handler(_ctx: &mut SmmContext<'_>, config: &IchSmmConfig) {
+    // SAFETY: bound as the SMI handler, so it owns the rendezvous.
+    let pending = unsafe { PendingSmi::take(config) };
+    if let Some(command) = pending.apm {
+        acpi_switch(command);
+    }
+    if let Some(response) = pending.tco.and_then(dock_command) {
+        pending.tco_reply(response);
+    }
+    if pending.gpi & (1 << crate::EC_SCI_GPIO) != 0
+        || pending.gpe & (1 << (crate::EC_SCI_GPIO + 16)) != 0
+    {
+        handle_event();
+    }
+    pending.finish();
+}
+
+fstart_platform_intel::smm::smm_bin!(handler: smi_handler);

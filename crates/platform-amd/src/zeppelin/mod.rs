@@ -64,8 +64,8 @@ pub struct FchConfig {
     pub devices: [Devices; MAX_DIES],
     /// The PCI interrupt router (0xc00/0xc01) table.
     pub irq_routes: &'static [Route],
-    /// GEVENT pins (bit n = GEVENTn) routed to the board's SMM handler,
-    /// `fstart_driver_amd::fch::taishan::smm::SmmBoard::gevent`.
+    /// GEVENT pins (bit n = GEVENTn) routed to the board's SMI handler
+    /// (`fstart_driver_amd::fch::smi::PendingSmi::gevents`).
     pub smi_gevents: u32,
     /// Spread spectrum on the CG1 PLL, which clocks the PCIe reference
     /// clocks. On by default, as the vendor Setup default; a board whose

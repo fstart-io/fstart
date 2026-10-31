@@ -4,28 +4,39 @@ use core::panic::PanicInfo;
 pub use crate::SmmEntryParams;
 #[cfg(not(test))]
 use crate::debug_trace;
-use crate::{SmmContext, SmmHandler, enter_rendezvous, leave_rendezvous};
+use crate::{SmmContext, enter_rendezvous, leave_rendezvous};
 
-/// Selected-board SMM binding supplied by the board crate.
-pub trait SmmStageBoard {
-    /// Fully composed platform + board SMM handler.
-    type Handler: SmmHandler;
-}
-
-/// Declare a board-owned SMM handler entry.
+/// Declare the board's SMM handler entry.
+///
+/// `handler` handles one SMI on the CPU that owns the shared dispatch:
+/// `fn(&mut SmmContext<'_>, &Config)`, where `Config` is the type the
+/// installer wrote into SMRAM (the southbridge or SoC driver's). The
+/// optional `enter_cpu`, with the same signature, runs first on every CPU
+/// that enters, for CPU-local SMI causes and MSRs; it must not wait for
+/// other CPUs or touch unsynchronized shared state.
+///
+/// ```ignore
+/// fn smi(_ctx: &mut SmmContext<'_>, config: &IchSmmConfig) {
+///     let smi = unsafe { PendingSmi::take(config) };
+///     // board sources
+///     smi.finish();
+/// }
+/// fstart_platform_intel::smm::smm_bin!(handler: smi);
+/// ```
 #[macro_export]
 macro_rules! smm_bin {
-    ($board:ty, $handler:ty) => {
-        impl $crate::SmmStageBoard for $board {
-            type Handler = $handler;
-        }
-
+    (handler: $handler:path) => {
+        $crate::smm_bin!(@entry |_, _| {}, $handler);
+    };
+    (handler: $handler:path, enter_cpu: $enter_cpu:path) => {
+        $crate::smm_bin!(@entry $enter_cpu, $handler);
+    };
+    (@entry $enter_cpu:expr, $handler:path) => {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn fstart_smm_handler(params: *mut $crate::SmmEntryParams) {
             // SAFETY: the SMM entry stub passes its loader-filled params.
-            unsafe { $crate::handle::<$board>(params) }
+            unsafe { $crate::handle(params, $enter_cpu, $handler) }
         }
-
         #[repr(align(16))]
         #[allow(dead_code)]
         struct FstartSmmHeap([u8; 4096]);
@@ -48,7 +59,8 @@ macro_rules! smm_bin {
     };
 }
 
-/// Dispatch one SMI through the selected board's handler.
+/// Dispatch one SMI: `enter_cpu` on every entrant, then `handler` on the
+/// CPU that wins the rendezvous.
 ///
 /// Force-inlined into the board's `fstart_smm_handler` so the installed image
 /// contains no cross-crate PLT/GOT calls.
@@ -57,17 +69,21 @@ macro_rules! smm_bin {
 ///
 /// `params` must be the current CPU's valid entry block while executing in SMM.
 #[inline(always)]
-pub unsafe fn handle<B: SmmStageBoard>(params: *mut SmmEntryParams) {
+pub unsafe fn handle<C: Copy>(
+    params: *mut SmmEntryParams,
+    enter_cpu: impl FnOnce(&mut SmmContext<'_>, &C),
+    handler: impl FnOnce(&mut SmmContext<'_>, &C),
+) {
     let Some(mut ctx) = (unsafe { SmmContext::from_raw(params) }) else {
         return;
     };
-    // SAFETY: the installer wrote this handler's own configuration type.
-    let config = unsafe { ctx.handler_config::<<B::Handler as SmmHandler>::Config>() };
+    // SAFETY: the installer wrote the configuration the handler takes.
+    let config = unsafe { ctx.handler_config::<C>() };
 
     if let Some(config) = config {
         // Local MCA state must be observed even by CPUs that will only wait
         // for the shared owner. Never require a missing CPU to enter SMM.
-        unsafe { B::Handler::enter_cpu(&mut ctx, config) };
+        enter_cpu(&mut ctx, config);
     }
 
     if !unsafe { enter_rendezvous(&ctx) } {
@@ -78,10 +94,10 @@ pub unsafe fn handle<B: SmmStageBoard>(params: *mut SmmEntryParams) {
         return;
     }
 
+    if let Some(config) = config {
+        handler(&mut ctx, config);
+    }
     unsafe {
-        if let Some(config) = config {
-            B::Handler::handle(&mut ctx, config);
-        }
         #[cfg(not(test))]
         debug_trace(ctx.cpu());
         leave_rendezvous(&ctx);
@@ -95,18 +111,10 @@ mod tests {
     use crate::SmmRuntime;
     use core::sync::atomic::{AtomicBool, Ordering};
     static LOCAL_ENTERED: AtomicBool = AtomicBool::new(false);
-    struct Board;
-    struct Handler;
-    impl SmmStageBoard for Board {
-        type Handler = Handler;
+    fn enter_cpu(_: &mut SmmContext<'_>, _: &()) {
+        LOCAL_ENTERED.store(true, Ordering::Release);
     }
-    impl SmmHandler for Handler {
-        type Config = ();
-        unsafe fn enter_cpu(_: &mut SmmContext<'_>, _: &()) {
-            LOCAL_ENTERED.store(true, Ordering::Release);
-        }
-        unsafe fn handle(_: &mut SmmContext<'_>, _: &()) {}
-    }
+    fn handler(_: &mut SmmContext<'_>, _: &()) {}
 
     #[test]
     fn local_work_runs_before_waiting_for_a_different_shared_owner() {
@@ -136,7 +144,7 @@ mod tests {
                     cr3: 0,
                     entry_base: 0,
                 };
-                unsafe { handle::<Board>(&mut params) };
+                unsafe { handle(&mut params, enter_cpu, handler) };
             });
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while !LOCAL_ENTERED.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
