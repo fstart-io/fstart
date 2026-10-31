@@ -3,7 +3,7 @@
 use fstart_core::layout::{Layout, Region, RegionKind};
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::pl011::{Pl011, Pl011Config};
-use fstart_stage::payload::MainstagePayload;
+use fstart_payload::MainstagePayload;
 
 #[cfg(not(fstart_entry = "armv7"))]
 compile_error!("ARMv7 virt requires the armv7 entry");
@@ -15,9 +15,9 @@ compile_error!("select exactly one ARMv7 virt payload");
 #[cfg(all(fstart_payload = "linux", not(feature = "linux")))]
 compile_error!("selected Linux backend is not enabled");
 #[cfg(fstart_payload = "halt")]
-type Selected = fstart_stage::payload::HaltPayload;
+type Selected = fstart_payload::HaltPayload;
 #[cfg(all(fstart_payload = "linux", feature = "linux"))]
-type Selected = fstart_stage::payload::LinuxPayload;
+type Selected = fstart_payload::LinuxPayload;
 
 use crate::virt::{QemuArmv7VirtConfig, enumerate_pci, phase};
 
@@ -95,21 +95,21 @@ impl QemuArmv7VirtMainstage {
             let memory = crate::boot::ram_entry(config.ram_base, ram_size);
             let description =
                 crate::boot::single_bank(&memory, &self.console, config.source_dtb_addr);
-            let placement = fstart_stage::payload::Placement {
+            let placement = fstart_payload::Placement {
                 kernel: self.region(RegionKind::Payload).base,
                 device_tree: self.region(RegionKind::DeviceTree).base,
                 bootargs: config.bootargs,
                 ..Default::default()
             };
             <Selected as MainstagePayload>::boot(
-                fstart_stage::payload::Handoff::new(description, placement),
+                fstart_payload::Handoff::new(description, placement),
                 (),
             )
         }
         #[cfg(not(feature = "linux"))]
         <Selected as MainstagePayload>::boot(
-            fstart_stage::payload::Handoff::new(
-                fstart_stage::payload::Description::new(&[], Default::default()),
+            fstart_payload::Handoff::new(
+                fstart_payload::Description::new(&[], Default::default()),
                 Default::default(),
             ),
             (),

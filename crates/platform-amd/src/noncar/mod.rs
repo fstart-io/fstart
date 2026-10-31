@@ -39,7 +39,7 @@ pub mod smm;
 
 /// Devices on buses the platform set up, for CrabEFI's drivers.
 #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
-pub type Peripherals = alloc::vec::Vec<fstart_stage::crabefi::peripheral::Peripheral>;
+pub type Peripherals = alloc::vec::Vec<fstart_payload::crabefi::peripheral::Peripheral>;
 
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub use flow::{Enumerated, Reset, Stage, stop};

@@ -17,7 +17,7 @@ virt-image = [
   "fstart-stage/ed25519", "fstart-stage/sha2-digest", "fstart-stage/sha3-digest",
   "fstart-stage/fdt", ]
 stage = [
-  "dep:fstart-stage",
+  "dep:fstart-stage", "dep:fstart-payload",
   "dep:fstart-driver-uart",
   "dep:dtoolkit",
   "dep:heapless",
@@ -34,7 +34,7 @@ bundle-q35 = [
   "fstart-stage/ed25519", "fstart-stage/sha2-digest", "smm", "tpm",
 ]
 # TIS TPM 1.2/2.0 (swtpm) and TCG measured boot into QEMU's TPM log area.
-tpm = ["dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-stage?/tcg"]
+tpm = ["dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-stage?/tcg", "fstart-payload?/tcg"]
 # Q35 TSEG/SMM chipset ops (no SMM panic handler: safe inside the stage build).
 # bundle-q35 enables this; the smm image unit additionally enables bundle-smm.
 smm = ["dep:fstart-smm", "dep:fstart-driver-intel", "fstart-arch/x86_64"]
@@ -49,9 +49,9 @@ bundle-unmatched = [
   "fstart-stage/ed25519", "fstart-stage/sha2-digest",
   "fstart-stage/fdt",
 ]
-linux = ["fstart-stage?/linux"]
-crabefi = ["fstart-stage?/crabefi"]
-coreboot = ["fstart-stage?/coreboot", "dep:fstart-coreboot"]
+linux = ["fstart-payload?/linux"]
+crabefi = ["fstart-payload?/crabefi"]
+coreboot = ["fstart-payload?/coreboot", "dep:fstart-coreboot"]
 smbios = ["fstart-stage?/smbios"]
 
 [dependencies]
@@ -62,6 +62,7 @@ fstart-arch = { workspace = true }
 fstart-log = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-stage = { workspace = true, optional = true }
+fstart-payload = { workspace = true, optional = true }
 fstart-coreboot = { workspace = true, optional = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-driver-intel = { workspace = true, optional = true }

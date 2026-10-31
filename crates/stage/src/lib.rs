@@ -9,14 +9,14 @@
 #[cfg(any(
     feature = "acpi",
     feature = "ffs",
-    feature = "crabefi-basic",
+    feature = "alloc",
     feature = "smbios"
 ))]
 mod alloc;
 
 mod runtime;
 
-#[cfg(any(feature = "ffs", feature = "crabefi-basic"))]
+#[cfg(any(feature = "ffs", feature = "alloc"))]
 extern crate alloc as heap;
 
 // Selected through features even when no payload calls into it: the arch
@@ -32,7 +32,7 @@ pub mod stage_cache;
 #[cfg(feature = "fdt")]
 pub use fdt_workspace::fdt_prepare_platform;
 #[cfg(feature = "bootstrap")]
-pub use fdt_workspace::{configure_fdt_workspace, copy_fdt_to_workspace};
+pub use fdt_workspace::{configure_fdt_workspace, copy_fdt_to_workspace, fdt_workspace_capacity};
 #[cfg(feature = "ffs")]
 pub mod directory;
 #[cfg(feature = "ffs")]
@@ -40,22 +40,11 @@ mod loaded;
 #[cfg(feature = "bootstrap")]
 pub mod root;
 
-#[cfg(feature = "crabefi-basic")]
-pub use fstart_boot::crabefi;
-
-#[cfg(all(feature = "coreboot", feature = "x86_64"))]
-pub mod coreboot;
 pub mod fixed_helpers;
 pub mod layout;
-pub mod payload;
 #[cfg(feature = "tcg")]
 pub mod tcg;
 pub mod timestamps;
-
-// Fixed-flow stage helpers moved here so stage build metadata is not a
-// separate capability model.
-#[cfg(feature = "fdt")]
-mod fdt_patch;
 
 #[cfg(feature = "fit")]
 pub mod fit;
@@ -67,46 +56,6 @@ pub mod next_stage;
 
 #[cfg(all(test, feature = "ffs"))]
 mod ram_locator_tests;
-
-// ---------------------------------------------------------------------------
-// FDT blob utilities
-// ---------------------------------------------------------------------------
-
-/// FDT magic number (big-endian `0xD00DFEED`).
-const FDT_MAGIC: u32 = 0xD00D_FEED;
-
-/// Read an FDT (Flattened Device Tree) blob from a raw memory address.
-///
-/// Validates the FDT magic at offset +0 (`0xD00DFEED`), reads the
-/// `totalsize` field at offset +4, and returns a static slice covering
-/// the entire blob. Returns `None` if `addr` is zero or magic is wrong.
-///
-/// Used by the UEFI payload path to obtain the platform-provided FDT blob
-/// for passing to CrabEFI.
-///
-/// # Safety
-///
-/// Caller must ensure `addr` points to at least 8 readable bytes in
-/// memory. If the magic validates, the full `totalsize` bytes starting
-/// at `addr` must be readable. The returned slice borrows the memory at
-/// `addr` with `'static` lifetime -- the FDT must remain valid (e.g.,
-/// in DRAM) for the program's duration.
-pub unsafe fn fdt_blob_from_addr(addr: u64) -> Option<&'static [u8]> {
-    if addr == 0 {
-        return None;
-    }
-    let ptr = addr as *const u8;
-    // SAFETY: caller guarantees at least 8 readable bytes at `addr`.
-    let magic = u32::from_be(unsafe { core::ptr::read_unaligned(ptr as *const u32) });
-    if magic != FDT_MAGIC {
-        return None;
-    }
-    // SAFETY: magic validated; caller guarantees the full blob is readable
-    // and remains valid for 'static.
-    let size =
-        u32::from_be(unsafe { core::ptr::read_unaligned(ptr.add(4) as *const u32) }) as usize;
-    Some(unsafe { core::slice::from_raw_parts(ptr, size) })
-}
 
 #[cfg(any(feature = "ffs", feature = "fdt"))]
 use fstart_log::Hex;

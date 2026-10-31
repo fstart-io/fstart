@@ -31,6 +31,8 @@ pub mod host;
 pub use host::Plan;
 
 #[cfg(feature = "stage")]
+pub use fstart_payload as payload_runtime;
+#[cfg(feature = "stage")]
 #[doc(hidden)]
 pub use fstart_stage as stage_runtime;
 /// Declare a board's stage `main`: `fstart_platform_qemu::entry!(main);`.
@@ -183,7 +185,7 @@ mod stage {
     use fstart_core::services::ServiceError;
     use fstart_core::services::memory_detect::E820State;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_stage::payload::MainstagePayload;
+    use fstart_payload::MainstagePayload;
 
     use crate::fw_cfg::QemuFwCfg;
     use crate::q35::Q35HostBridge;
@@ -538,7 +540,7 @@ mod stage {
         /// Describe the machine to the build's payload launcher and boot it.
         fn hand_off(&self) -> ! {
             use fstart_core::services::ConsoleDevice;
-            use fstart_stage::payload::{
+            use fstart_payload::{
                 AcpiTables, BuildSelectedPayload, Description, Handoff, PciRootInfo, Placement,
                 Range,
             };
@@ -575,7 +577,7 @@ mod stage {
             #[cfg(fstart_payload = "coreboot")]
             {
                 placement.coreboot_window = Some(unsafe {
-                    fstart_stage::coreboot::Window::new(
+                    fstart_payload::coreboot::Window::new(
                         core::ptr::addr_of!(COREBOOT_WINDOW) as u64,
                         COREBOOT_WINDOW_SIZE,
                     )

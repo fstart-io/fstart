@@ -1,5 +1,8 @@
-//! Raw FDT blob patcher — patches properties and inserts nodes without
-//! alloc or tree conversion.
+//! Flattened device trees, read and patched in place without alloc or tree
+//! conversion: [`blob_from_addr`] finds a blob in memory, the `fdt_set_*`
+//! functions patch it.
+//!
+//! ## Patching
 //!
 //! Operates directly on the FDT binary format: walks the structure block
 //! to locate target nodes, then either overwrites existing properties
@@ -18,6 +21,8 @@
 //! headroom beyond `totalsize` (for property insertion + strings growth).
 //! In practice this is always satisfied — the DTB is loaded to a DRAM
 //! address with megabytes of free space after it.
+
+#![no_std]
 
 use core::ptr;
 
@@ -964,4 +969,39 @@ unsafe fn set_reg_in_existing_memory_node(
     }
 
     Ok(current_totalsize)
+}
+
+/// FDT magic number (big-endian `0xD00DFEED`).
+
+/// Read an FDT (Flattened Device Tree) blob from a raw memory address.
+///
+/// Validates the FDT magic at offset +0 (`0xD00DFEED`), reads the
+/// `totalsize` field at offset +4, and returns a static slice covering
+/// the entire blob. Returns `None` if `addr` is zero or magic is wrong.
+///
+/// Used by the UEFI payload path to obtain the platform-provided FDT blob
+/// for passing to CrabEFI.
+///
+/// # Safety
+///
+/// Caller must ensure `addr` points to at least 8 readable bytes in
+/// memory. If the magic validates, the full `totalsize` bytes starting
+/// at `addr` must be readable. The returned slice borrows the memory at
+/// `addr` with `'static` lifetime -- the FDT must remain valid (e.g.,
+/// in DRAM) for the program's duration.
+pub unsafe fn blob_from_addr(addr: u64) -> Option<&'static [u8]> {
+    if addr == 0 {
+        return None;
+    }
+    let ptr = addr as *const u8;
+    // SAFETY: caller guarantees at least 8 readable bytes at `addr`.
+    let magic = u32::from_be(unsafe { core::ptr::read_unaligned(ptr as *const u32) });
+    if magic != FDT_MAGIC {
+        return None;
+    }
+    // SAFETY: magic validated; caller guarantees the full blob is readable
+    // and remains valid for 'static.
+    let size =
+        u32::from_be(unsafe { core::ptr::read_unaligned(ptr.add(4) as *const u32) }) as usize;
+    Some(unsafe { core::slice::from_raw_parts(ptr, size) })
 }

@@ -317,7 +317,7 @@ with BSS is zero-filled after its verified load.
 
 Payload helpers launch the entry actually verified (`VerifiedExecutable::entry`).
 A configured entry that does not match fails `checked_entry`, and the payload
-halts instead of jumping to the configured address (`crates/stage/src/payload.rs`).
+halts instead of jumping to the configured address (`crates/payload/src/lib.rs`).
 
 ## Per-platform use
 

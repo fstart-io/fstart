@@ -77,7 +77,7 @@ mod stage {
     use fstart_core::services::Console;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
-    use fstart_stage::payload::MainstagePayload;
+    use fstart_payload::MainstagePayload;
 
     #[cfg(not(fstart_entry = "riscv64"))]
     compile_error!("sifive-u requires the riscv64 entry");
@@ -183,7 +183,7 @@ mod stage {
             );
         }
         QemuSifiveUMainstage { config, console }.hand_off(|handoff| {
-            fstart_stage::payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
+            fstart_payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
         })
     }
 
@@ -199,12 +199,12 @@ mod stage {
 
     impl QemuSifiveUMainstage {
         /// Describe the machine to `boot` and run it.
-        fn hand_off(&self, boot: impl FnOnce(fstart_stage::payload::Handoff<'_>) -> !) -> ! {
-            use fstart_stage::payload::{Description, Handoff, Placement};
+        fn hand_off(&self, boot: impl FnOnce(fstart_payload::Handoff<'_>) -> !) -> ! {
+            use fstart_payload::{Description, Handoff, Placement};
             #[cfg(any(feature = "linux", feature = "crabefi"))]
             {
                 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
-                use fstart_stage::payload::Range;
+                use fstart_payload::Range;
                 let config = self.config;
                 let memory = [E820Entry::new(
                     config.ram_base,
@@ -238,7 +238,7 @@ mod stage {
         }
     }
 
-    pub type QemuSifiveUBuildSelectedPayload = fstart_stage::payload::BuildSelectedPayload;
+    pub type QemuSifiveUBuildSelectedPayload = fstart_payload::BuildSelectedPayload;
 }
 
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
