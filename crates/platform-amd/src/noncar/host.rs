@@ -518,7 +518,11 @@ fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolv
         .as_str()
         .ok_or("the board table has no board name")?;
     let dir = std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
-    blobs::resolve(&soc, &board, name, &dir, S::LAYOUT.flash.size as u32).map(Some)
+    let resolved = blobs::resolve(&soc, &board, name, &dir, S::LAYOUT.flash.size as u32)?;
+    if !resolved.apcb_slots.is_empty() {
+        return Err("generated APCBs are not supported on this platform yet".into());
+    }
+    Ok(Some(resolved))
 }
 
 fn assembly<S: HostSoc>(

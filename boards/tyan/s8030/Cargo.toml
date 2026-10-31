@@ -22,23 +22,25 @@ target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
 
-# The board's APCBs of each generation, as its vendor image has them.
+# The board's APCB slots of each generation, in the layout of its
+# vendor image. The payloads are generated from `src/apcb.rs`, not
+# extracted files.
 [package.metadata.fstart.amd.rome]
-apcb = { entries = [
-  { type = 0x68, file = "s8030/rome/apcb-68-0.bin" },
-  { type = 0x68, instance = 8, level = 2, file = "s8030/rome/apcb-68-8.bin" },
-  { type = 0x68, instance = 9, level = 2, file = "s8030/rome/apcb-68-9.bin" },
-  { type = 0x60, level = 2, file = "s8030/rome/apcb-60-0.bin" },
-  { type = 0x60, instance = 1, level = 2, file = "s8030/rome/apcb-60-1.bin" },
+apcb = { generated = [
+  { type = 0x68 },
+  { type = 0x68, instance = 8, level = 2 },
+  { type = 0x68, instance = 9, level = 2 },
+  { type = 0x60, level = 2 },
+  { type = 0x60, instance = 1, level = 2 },
 ] }
 
 [package.metadata.fstart.amd.milan]
-apcb = { entries = [
-  { type = 0x68, subprogram = 1, file = "s8030/milan/apcb-68-0.bin" },
-  { type = 0x68, subprogram = 1, instance = 8, level = 2, file = "s8030/milan/apcb-68-8.bin" },
-  { type = 0x68, subprogram = 1, instance = 9, level = 2, file = "s8030/milan/apcb-68-9.bin" },
-  { type = 0x60, subprogram = 1, level = 2, file = "s8030/milan/apcb-60-0.bin" },
-  { type = 0x60, subprogram = 1, instance = 1, level = 2, file = "s8030/milan/apcb-60-1.bin" },
+apcb = { generated = [
+  { type = 0x68, subprogram = 1 },
+  { type = 0x68, subprogram = 1, instance = 8, level = 2 },
+  { type = 0x68, subprogram = 1, instance = 9, level = 2 },
+  { type = 0x60, subprogram = 1, level = 2 },
+  { type = 0x60, subprogram = 1, instance = 1, level = 2 },
 ] }
 
 [package.metadata.fstart.variants.tyan-s8030-pcie3-x4x4x4x4]
@@ -73,3 +75,8 @@ name = "fstart-stage"
 path = "src/main.rs"
 test = false
 bench = false
+
+[dev-dependencies]
+fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["host", "rome", "milan"] }
+amd-apcb = { git = "https://github.com/oxidecomputer/amd-apcb", rev = "1ec66d607de2437813cdd9ffa91719a4b163b3cf", features = ["serde"] }
+serde_json = "1"

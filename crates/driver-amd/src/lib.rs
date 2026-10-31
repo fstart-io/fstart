@@ -7,6 +7,11 @@
 #![cfg_attr(not(test), no_std)]
 #[cfg(feature = "picasso")]
 pub mod acp;
+/// What a board tells the AGESA boot loader (the APCB): semantic policy,
+/// DDR4 reference tables and the board facts an encoder consumes. The
+/// encoders live in the platforms' host code.
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
+pub mod apcb;
 #[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod apob;
 #[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]

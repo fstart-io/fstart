@@ -76,6 +76,10 @@ pub const TSEG_SIZE_ENV: &str = "FSTART_SMM_TSEG_SIZE";
 pub const SMM_STACK_SIZE: u32 = 0x2000;
 const LINKER_TEMPLATE: &str = include_str!("../../linker/reset.ld.in");
 
+/// Source-generated APCBs for a board's [`crate::layout::Sp3BoardFacts::APCB`]
+/// facts (see `fstart_driver_amd::apcb`).
+pub mod apcb;
+
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 
@@ -353,8 +357,9 @@ impl Payload {
 /// entry of a supported generation names the reset image at the top of
 /// the lower half (above the early region), the FFS starts at
 /// [`layout::FFS_OFFSET`] or above.
-pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
-    FlashPlan {
+pub fn flash_plan<B: Sp3BoardFacts>() -> Result<FlashPlan, String> {
+    Ok(FlashPlan {
+        apcbs: generated_apcbs::<B>()?,
         generations: B::GENERATIONS.iter().map(|g| g.profile().bios).collect(),
         reset: ResetSlot {
             flash_offset: RESET.flash_offset,
@@ -364,7 +369,28 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
         ffs_offset: layout::FFS_OFFSET,
         dram_floor: EARLY_REGION.end(),
         mirrors: B::FLASH_MIRRORS.to_vec(),
+    })
+}
+
+/// The board's generated APCBs, in the flash plan's terms.
+fn generated_apcbs<B: Sp3BoardFacts>()
+-> Result<Vec<fstart_image_build::sp3_flash::GeneratedApcb>, String> {
+    let mut out = Vec::new();
+    for &generation in B::GENERATIONS {
+        let Some(facts) = B::apcb(generation) else {
+            continue;
+        };
+        for generated in apcb::apcbs(generation, &facts)? {
+            out.push(fstart_image_build::sp3_flash::GeneratedApcb {
+                generation: generation.profile().bios,
+                kind: generated.selector.kind,
+                instance: generated.selector.instance,
+                subprogram: generated.selector.subprogram,
+                bytes: generated.bytes,
+            });
+        }
     }
+    Ok(out)
 }
 
 /// The assembler's view of the reset unit and its FFS: the FFS lives in
@@ -524,12 +550,58 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             vendor_image,
             packed,
             reset_unit: RESET_UNIT.into(),
-            compose: flash_plan::<B>(),
+            compose: flash_plan::<B>()?,
         })),
         inputs,
     };
     plan.order()?;
     Ok(plan)
+}
+
+/// Fill a packed half's generated-APCB slots (declared in the board
+/// metadata) with the payloads generated from the board's facts for
+/// `generation`. Facts and metadata must agree: slots without facts,
+/// or facts whose payloads have no slot, are errors.
+fn fill_generated_apcbs<B: Sp3BoardFacts>(
+    generation: Generation,
+    resolved: &mut blobs::Resolved,
+) -> Result<(), String> {
+    use fstart_image_build::amd::assembly::{Fixed, FixedEntry};
+    match (B::apcb(generation), resolved.apcb_slots.is_empty()) {
+        (None, true) => Ok(()),
+        (None, false) => {
+            Err("the board declares generated APCB slots but has no APCB facts".into())
+        }
+        (Some(_), true) => {
+            Err("the board has APCB facts but its metadata declares file APCBs".into())
+        }
+        (Some(facts), false) => {
+            let generated = apcb::apcbs(generation, &facts)?;
+            let mut used = vec![false; generated.len()];
+            for &(key, level) in &resolved.apcb_slots {
+                let (index, payload) = generated
+                    .iter()
+                    .enumerate()
+                    .find(|(_, g)| {
+                        g.selector.kind == key.kind
+                            && g.selector.instance == key.instance
+                            && g.selector.subprogram == key.subprogram
+                    })
+                    .ok_or_else(|| format!("no generated APCB for slot {key:?}"))?;
+                used[index] = true;
+                resolved.files.fixed.push(FixedEntry {
+                    psp: false,
+                    key,
+                    level,
+                    content: Fixed::Bytes(payload.bytes.clone()),
+                });
+            }
+            if used.iter().any(|u| !u) {
+                return Err("a generated APCB has no slot in the board metadata".into());
+            }
+            Ok(())
+        }
+    }
 }
 
 /// The halves packed from the blob directory `dir`: one per generation the
@@ -561,13 +633,14 @@ fn packed<B: Sp3BoardFacts>(
         if soc.bios_directory != generation.profile().bios {
             return Err(format!("the {soc_name} table names another BIOS directory"));
         }
-        let resolved = blobs::resolve(
+        let mut resolved = blobs::resolve(
             &soc,
             board,
             name,
             &dir,
             fstart_amdfw_format::HALF_SIZE as u32,
         )?;
+        fill_generated_apcbs::<B>(generation, &mut resolved)?;
         for file in &resolved.microcode {
             files
                 .push(
@@ -627,7 +700,7 @@ fn microcode<B: Sp3BoardFacts>(vendor_image: &str) -> Result<MicrocodeConfig, St
 pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, String> {
     let path = root.join(B::VENDOR_IMAGE);
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(flash_plan::<B>().survey(&bytes)?)
+    Ok(flash_plan::<B>()?.survey(&bytes)?)
 }
 
 #[cfg(test)]
@@ -829,6 +902,7 @@ mod tests {
                 ffs_offset: 0x60_0000,
                 dram_floor: 0x75c0_0000,
                 mirrors: Vec::new(),
+                apcbs: Vec::new(),
             }
         );
         let config = plan.assembly.config("tyan-s8030").unwrap();

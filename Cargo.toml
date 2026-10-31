@@ -68,6 +68,8 @@ ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 tock-registers = "0.10"
+# APCB (ABL memory configuration) layouts and builder, host-side only.
+amd-apcb = { git = "https://github.com/oxidecomputer/amd-apcb", rev = "1ec66d607de2437813cdd9ffa91719a4b163b3cf", features = ["serde"] }
 pci_types = "0.10.1"
 x86 = { version = "0.52", default-features = false }
 x86_64_crate = { package = "x86_64", version = "0.15", default-features = false }

@@ -14,16 +14,17 @@ target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
 
-# The board's APCBs of each generation, as its vendor image has them.
+# The board's APCB slots, in the layout of its vendor image. The
+# payloads are generated from `src/apcb.rs`, not extracted files.
 [package.metadata.fstart.amd.milan]
 # The vendor firmware has the APOB at 64 MiB.
 apob-destination = 0x4000000
-apcb = { entries = [
-  { type = 0x68, subprogram = 1, file = "ethanolx/milan/apcb-68-0.bin" },
-  { type = 0x68, subprogram = 1, instance = 8, level = 2, file = "ethanolx/milan/apcb-68-8.bin" },
-  { type = 0x68, subprogram = 1, instance = 9, level = 2, file = "ethanolx/milan/apcb-68-9.bin" },
-  { type = 0x60, subprogram = 1, level = 2, file = "ethanolx/milan/apcb-60-0.bin" },
-  { type = 0x60, subprogram = 1, instance = 1, level = 2, file = "ethanolx/milan/apcb-60-1.bin" },
+apcb = { generated = [
+  { type = 0x68, subprogram = 1 },
+  { type = 0x68, subprogram = 1, instance = 8, level = 2 },
+  { type = 0x68, subprogram = 1, instance = 9, level = 2 },
+  { type = 0x60, subprogram = 1, level = 2 },
+  { type = 0x60, subprogram = 1, instance = 1, level = 2 },
 ] }
 
 [dependencies]
@@ -45,6 +46,9 @@ heapless = { version = "0.8", default-features = false }
 
 [dev-dependencies]
 embedded-hal-mock = { version = "0.11", default-features = false, features = ["eh1"] }
+fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["host", "milan"] }
+amd-apcb = { git = "https://github.com/oxidecomputer/amd-apcb", rev = "1ec66d607de2437813cdd9ffa91719a4b163b3cf", features = ["serde"] }
+serde_json = "1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("monolithic", "smm"))'] }

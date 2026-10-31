@@ -32,6 +32,7 @@
 
 extern crate alloc;
 
+pub mod apcb;
 pub mod bmc;
 pub mod dxio;
 pub mod gpio;
@@ -56,6 +57,10 @@ impl Sp3BoardFacts for Board {
     const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
     /// 1P, 64 cores with SMT (Rome and Milan alike).
     const MAX_CPUS: u16 = 128;
+
+    fn apcb(generation: Generation) -> Option<fstart_driver_amd::apcb::ApcbFacts> {
+        Some(crate::apcb::facts(generation))
+    }
 }
 
 #[cfg(test)]
