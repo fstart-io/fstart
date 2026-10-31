@@ -1,11 +1,12 @@
 //! The fixed SP3 boot flow (NATIVE_PORT_PLAN §4, INTEGRATION_NOTES).
 //!
-//! One function, [`run`], from the PSP's release of the BSP to the
-//! payload. The shared steps live here; the silicon steps that differ are
-//! in [`sp3`] (Rome and Milan, with the Milan deltas inline) and
-//! [`naples`], bound to the flow by [`Steps`]. One reset image carries
-//! every generation the board supports: `Program::run_stage` identifies
-//! the CPU ([`identify`]) and runs the flow with the generation's steps; a
+//! Two phases, [`Reset`] then [`Stage`], from the PSP's release of the BSP
+//! to the payload; the board's [`Flow`] runs between them. The shared steps
+//! live here; the silicon steps that differ are in [`sp3`] (Rome and Milan,
+//! with the Milan deltas inline) and [`naples`], bound to the flow by
+//! [`Steps`]. One reset image carries every generation the board supports:
+//! [`start`] identifies the CPU ([`identify`]) and runs the board's flow
+//! with the generation's steps; a
 //! generation this build does not carry halts at POST 13 before the
 //! console (its FCH bring-up is not compiled in), one the board does not
 //! list halts after logging at step 13.

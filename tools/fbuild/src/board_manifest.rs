@@ -21,7 +21,6 @@ pub struct BoardManifest {
     /// Declared variants: variant id -> cargo features.
     pub variants: Vec<(String, Vec<String>)>,
     pub acpi_only_devices: bool,
-    pub stage_bin: Option<String>,
     pub build_profile: Option<ProfileRef>,
 }
 
@@ -63,7 +62,6 @@ struct BoardMetadata {
     variants: BTreeMap<String, VariantMetadata>,
     #[serde(default)]
     acpi_only_devices: bool,
-    stage_bin: Option<String>,
     build_profile: Option<ProfileRef>,
     /// The board's AMD firmware table, read by the AMD platform
     /// (`fstart_image_build::amd::blobs::BoardBlobs`), not by fbuild.
@@ -226,7 +224,6 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
             .map(|(id, v)| (id, v.features))
             .collect(),
         acpi_only_devices: metadata.acpi_only_devices,
-        stage_bin: metadata.stage_bin,
         build_profile: metadata.build_profile,
     })
 }
@@ -262,7 +259,6 @@ mod tests {
         board = 'test-board'
         platform = 'riscv64'
         target = 'riscv64gc-unknown-none-elf'
-        stage-bin = 'fstart-stage'
         acpi-only-devices = true
         [package.metadata.fstart.variants."test-variant"]
         features = [
@@ -303,7 +299,6 @@ mod tests {
         assert_eq!(board.rel_dir, Path::new("vendor/test"));
         assert_eq!(board.platform.as_deref(), Some("riscv64"));
         assert_eq!(board.target.as_deref(), Some("riscv64gc-unknown-none-elf"));
-        assert_eq!(board.stage_bin.as_deref(), Some("fstart-stage"));
         assert!(board.acpi_only_devices);
         assert_eq!(
             board.variants,

@@ -187,10 +187,7 @@ impl Resolved {
             if unit.name == name {
                 return Ok(selection);
             }
-            artifacts.insert(
-                unit.name.clone(),
-                execute(root, board, unit, &selection, false)?,
-            );
+            artifacts.insert(unit.name.clone(), execute(root, unit, &selection, false)?);
         }
         Err("selected unit disappeared".into())
     }
@@ -204,7 +201,7 @@ impl Resolved {
     ) -> Result<(), String> {
         let unit = self.selected(Some(name))?;
         let selection = self.selection(root, board, name, release)?;
-        for (artifact, path) in execute(root, board, unit, &selection, checking)? {
+        for (artifact, path) in execute(root, unit, &selection, checking)? {
             eprintln!("[fstart] {name}:{artifact}: {}", path.display());
         }
         Ok(())
@@ -219,10 +216,7 @@ impl Resolved {
                 .units
                 .iter()
                 .any(|u| u.bindings.iter().any(|b| b.producer == unit.name));
-            artifacts.insert(
-                unit.name.clone(),
-                execute(root, board, unit, &selection, !needed)?,
-            );
+            artifacts.insert(unit.name.clone(), execute(root, unit, &selection, !needed)?);
         }
         Ok(())
     }
@@ -235,10 +229,7 @@ impl Resolved {
         let mut artifacts = BTreeMap::new();
         for unit in self.plan.order()? {
             let selection = self.prepare(root, board, unit, &artifacts, release)?;
-            artifacts.insert(
-                unit.name.clone(),
-                execute(root, board, unit, &selection, false)?,
-            );
+            artifacts.insert(unit.name.clone(), execute(root, unit, &selection, false)?);
         }
         let stages = self
             .plan
@@ -294,7 +285,6 @@ impl Resolved {
 
 fn execute(
     root: &Path,
-    board: &BoardManifest,
     unit: &CompilationUnit,
     selection: &Selection,
     checking: bool,
@@ -338,8 +328,7 @@ fn execute(
                 .iter()
                 .filter(|v| {
                     v["reason"] == "compiler-artifact"
-                        && v["target"]["name"].as_str()
-                            == Some(board.stage_bin.as_deref().unwrap_or(&unit.name))
+                        && v["target"]["name"].as_str() == Some(unit.name.as_str())
                 })
                 .filter_map(|v| v["executable"].as_str())
                 .collect::<Vec<_>>();
