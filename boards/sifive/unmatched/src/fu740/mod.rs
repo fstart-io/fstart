@@ -8,9 +8,6 @@ mod regs;
 
 /// FU740 DRAM physical base.
 pub const FU740_DRAM_BASE: u64 = 0x8000_0000;
-/// FU740 PCIe ECAM aperture used by its RISC-V UEFI payload context.
-#[cfg(fstart_payload = "crabefi")]
-pub const FU740_ECAM_BASE: u64 = 0x3000_0000;
 
 mod stage {
     use super::*;
@@ -21,7 +18,7 @@ mod stage {
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
     // The board selects payload backends through platform features; all
     // stage runtime paths below resolve through that re-export.
-    use fstart_platform_qemu::stage_runtime as fstart_stage;
+    use fstart_platform_sifive::stage_runtime as fstart_stage;
     use fstart_stage::{StageEnvironment, StageProgram, payload::MainstagePayload};
 
     #[cfg(not(all(fstart_stage_env = "monolithic", fstart_entry = "riscv64")))]
@@ -373,7 +370,8 @@ mod stage {
                 config.dtb_addr,
                 FU740_DRAM_BASE,
                 config.ddr.dram_size,
-                FU740_ECAM_BASE,
+                // This fixed flow does not initialize or provide a PCI root.
+                None,
             )
         }
 

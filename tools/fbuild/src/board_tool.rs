@@ -66,10 +66,19 @@ pub fn assemble(
 ) -> Result<PathBuf, String> {
     let root = crate::build_board::workspace_root_pub()?;
     let resolved = ResolvedImage::load(&root, manifest, options.selection(payload))?;
-    assemble_loaded(&root, manifest, &resolved, release, image, options)
-        .map(|assembled| assembled.image)
+    assemble_loaded(
+        &root,
+        manifest,
+        &resolved,
+        release,
+        image,
+        options,
+        crate::assemble::Output::Complete,
+    )
+    .map(|assembled| assembled.image)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assemble_loaded(
     root: &Path,
     manifest: &BoardManifest,
@@ -77,6 +86,7 @@ fn assemble_loaded(
     release: bool,
     image: &ImageArgs,
     options: &BuildArgs,
+    output: crate::assemble::Output,
 ) -> Result<crate::assemble::AssembledImage, String> {
     crate::assemble::assemble(
         root,
@@ -86,6 +96,7 @@ fn assemble_loaded(
         &image.supplied()?,
         &options.payload_files,
         options.signing_key.as_deref(),
+        output,
     )
 }
 
@@ -125,7 +136,15 @@ pub fn run(
                 || payload.kind == fstart_core::PayloadKind::FitImage
         });
     if multi_stage || platform.is_x86() || needs_firmware_image || has_payload {
-        let assembled = assemble_loaded(&root, manifest, &resolved, release, &run.image, options)?;
+        let assembled = assemble_loaded(
+            &root,
+            manifest,
+            &resolved,
+            release,
+            &run.image,
+            options,
+            crate::assemble::Output::Ffs,
+        )?;
         let mut sources = vec![("firmware.ffs", assembled.image.as_path())];
         if platform.is_x86() {
             sources.push(("stage.elf", assembled.stages[0].path.as_path()));
@@ -216,6 +235,7 @@ pub fn flash(
             release,
             &ImageArgs::default(),
             options,
+            crate::assemble::Output::Ffs,
         )?;
         (assembled.stages[0].path.clone(), Some(assembled.image))
     };

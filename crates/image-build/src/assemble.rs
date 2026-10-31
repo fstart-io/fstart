@@ -212,7 +212,7 @@ pub fn assemble(
             let dtb_path = inputs.get("dtb").ok_or("DTB input was not resolved")?;
             if dtb_path.exists() {
                 let dtb_data =
-                    fs::read(&dtb_path).map_err(|e| format!("failed to read DTB: {e}"))?;
+                    fs::read(dtb_path).map_err(|e| format!("failed to read DTB: {e}"))?;
                 let dtb_load_addr = payload.dtb_addr.unwrap_or(0);
 
                 ro_files.push(InputFile {

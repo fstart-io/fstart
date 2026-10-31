@@ -624,9 +624,16 @@ pub fn resolve_inputs(
                         .filter(|path| path.is_file())
                 })
                 .ok_or_else(|| format!("missing input {}", input.name))?;
-            let size = std::fs::metadata(&path)
-                .map_err(|error| format!("{}: {error}", path.display()))?
-                .len();
+            let metadata =
+                std::fs::metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            if !metadata.is_file() {
+                return Err(format!(
+                    "{} input must be a regular file: {}",
+                    input.name,
+                    path.display()
+                ));
+            }
+            let size = metadata.len();
             if size == 0 || size > input.capacity {
                 return Err(format!(
                     "{} input is empty or exceeds its reservation",
@@ -822,6 +829,12 @@ mod tests {
         let supplied = BTreeMap::from([("kernel".into(), board.join("kernel"))]);
         let resolved = plan.resolve_inputs(board, &supplied).unwrap();
         assert_eq!(resolved["dtb"], board.join("board.dtb"));
+        let directory_input = BTreeMap::from([("kernel".into(), board.to_path_buf())]);
+        assert!(
+            plan.resolve_inputs(board, &directory_input)
+                .unwrap_err()
+                .contains("regular file")
+        );
         std::fs::write(board.join("board.dtb"), [1; 65]).unwrap();
         assert!(
             plan.resolve_inputs(board, &supplied)

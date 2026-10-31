@@ -11,6 +11,15 @@ pub struct AssembledImage {
     pub stages: Vec<fstart_image_build::StageBinary>,
 }
 
+/// `run`/`flash` use the FFS operation, as before. Only `assemble` performs
+/// optional AMD/SP3 vendor-image composition.
+#[derive(Clone, Copy)]
+pub enum Output {
+    Ffs,
+    Complete,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn assemble(
     root: &Path,
     board: &BoardManifest,
@@ -19,6 +28,7 @@ pub fn assemble(
     supplied: &BTreeMap<String, PathBuf>,
     payload_files: &[(String, String)],
     signing_key: Option<&Path>,
+    output: Output,
 ) -> Result<AssembledImage, String> {
     let inputs = resolved.build.plan.resolve_inputs(&board.dir, supplied)?;
     let directory = resolved
@@ -48,23 +58,26 @@ pub fn assemble(
             None
         }
     };
-    let image = match &resolved.build.plan.assembly {
-        Assembly::Amd(image) => crate::amd_image::compose(
-            root,
-            &board.board,
-            &directory,
-            image,
-            &build.stages,
-            ffs.as_deref(),
-        )?,
-        Assembly::Sp3Flash(image) => compose_sp3_flash(
-            root,
-            image,
-            ffs.as_deref().ok_or("missing SP3 FFS output")?,
-            &build.stages,
-        )?,
-        Assembly::Ffs(_) => ffs.ok_or("missing FFS output")?,
-        Assembly::Unassembled { .. } => unreachable!(),
+    let image = match output {
+        Output::Ffs => ffs.ok_or("missing FFS output")?,
+        Output::Complete => match &resolved.build.plan.assembly {
+            Assembly::Amd(image) => crate::amd_image::compose(
+                root,
+                &board.board,
+                &directory,
+                image,
+                &build.stages,
+                ffs.as_deref(),
+            )?,
+            Assembly::Sp3Flash(image) => compose_sp3_flash(
+                root,
+                image,
+                ffs.as_deref().ok_or("missing SP3 FFS output")?,
+                &build.stages,
+            )?,
+            Assembly::Ffs(_) => ffs.ok_or("missing FFS output")?,
+            Assembly::Unassembled { .. } => unreachable!(),
+        },
     };
     Ok(AssembledImage {
         image,
