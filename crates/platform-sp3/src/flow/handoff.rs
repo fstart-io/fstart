@@ -166,7 +166,11 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
 /// RSDP address. The tables live in the stage heap, inside the reserved
 /// early region.
 #[cfg(feature = "acpi")]
-pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -> u64 {
+pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
+    ctx: &Ctx,
+    si: &S,
+    board_acpi: &crate::acpi::Board<'_>,
+) -> u64 {
     use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi, Window};
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
@@ -268,8 +272,6 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             p.memory.len() as u32
         );
     }
-    let lpc_aml = B::acpi_lpc_aml();
-    let board_acpi = B::acpi_board(&lpc_aml);
     let fch = {
         use fstart_driver_amd::sp3::fch::FchHw;
         acpi::FchAcpi::read(ctx.fch.mmio(), ctx.fch.io())
@@ -324,7 +326,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
         tpm: super::tpm::acpi(),
         bmc_sx_notify: B::BMC_SX_NOTIFY,
         cppc: &cppc,
-        board: board_acpi,
+        board: *board_acpi,
     };
     if inputs.einj {
         let targets = ctx.smm.map(|s| s.einj.targets).unwrap_or([0; 2]);

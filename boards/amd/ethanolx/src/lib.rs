@@ -16,7 +16,6 @@ mod i2c;
 #[cfg(feature = "smm")]
 mod smm;
 
-use alloc::vec::Vec;
 use fstart_core::services::Timer;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
@@ -52,79 +51,78 @@ const BAUD: u32 = 115_200;
 
 impl board::Board for Board {
     const NAME: &'static str = "AMD Ethanol-X";
+}
 
-    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
-        fstart_acpi::smbios::SmbiosIdentity::new("AMD", "Ethanol-X")
+/// The board's console: the FCH's MMIO UART 1.
+pub const CONSOLE: Ns16550Config = Ns16550Config {
+    regs: AccessMode::Mmio {
+        base: uart::base(CONSOLE_UART),
+        reg_shift: 2,
+        reg_width: 1,
+    },
+    clock_freq: uart::MMIO_CLOCK_HZ,
+    baud_rate: BAUD,
+};
+
+/// The silicon policy for `generation`.
+pub fn policy(generation: Generation) -> Policy {
+    let mut sata0 = SataPolicy::socket0();
+    // Do not inherit the Tyan donor's SGPIO pads or external-port masks.
+    // Ethanol-X's corresponding enclosure wiring is not established.
+    for (index, controller) in sata0.controllers.iter_mut().enumerate() {
+        controller.sgpio = None;
+        controller.esp_ports = 0;
+        // Mixed cards wire four SATA lanes on P0/P1. Retain them for
+        // OS probing without claiming external/hotplug capabilities.
+        controller.keep_ports = if index < 2 { 0x0f } else { 0 };
     }
-    const CONSOLE: Ns16550Config = Ns16550Config {
-        regs: AccessMode::Mmio {
-            base: uart::base(CONSOLE_UART),
-            reg_shift: 2,
-            reg_width: 1,
-        },
-        clock_freq: uart::MMIO_CLOCK_HZ,
-        baud_rate: BAUD,
+    let mut sata1 = SataPolicy::socket1();
+    // Fixed socket-1 P1 lanes 0..7 use AHCI controller 1. The same
+    // P0/P1 -> controller 0/1 mapping is used by S8030's six/eight-port
+    // engines and ESP masks. No socket-1 enclosure signals are assumed.
+    sata1.controllers[1] = Controller {
+        enabled: true,
+        esp_ports: 0,
+        keep_ports: 0xff,
+        sgpio: None,
     };
-
-    fn policy(generation: Generation) -> Policy {
-        let mut sata0 = SataPolicy::socket0();
-        // Do not inherit the Tyan donor's SGPIO pads or external-port masks.
-        // Ethanol-X's corresponding enclosure wiring is not established.
-        for (index, controller) in sata0.controllers.iter_mut().enumerate() {
-            controller.sgpio = None;
-            controller.esp_ports = 0;
-            // Mixed cards wire four SATA lanes on P0/P1. Retain them for
-            // OS probing without claiming external/hotplug capabilities.
-            controller.keep_ports = if index < 2 { 0x0f } else { 0 };
-        }
-        let mut sata1 = SataPolicy::socket1();
-        // Fixed socket-1 P1 lanes 0..7 use AHCI controller 1. The same
-        // P0/P1 -> controller 0/1 mapping is used by S8030's six/eight-port
-        // engines and ESP masks. No socket-1 enclosure signals are assumed.
-        sata1.controllers[1] = Controller {
-            enabled: true,
-            esp_ports: 0,
-            keep_ports: 0xff,
-            sgpio: None,
-        };
-        let mut dxio = DxioPolicy::new(generation);
-        // Own RXM100CB PCDs 0x1C2 / 0x16D / 0x16E default true. These
-        // are PCIe capability controls, not board reset/power signals.
-        dxio.pcie_features = Some(PcieFeatures {
-            ten_bit_tags: true,
-            data_link_feature: true,
-            data_link_exchange: true,
-        });
-        Policy {
-            // Vendor UEFI: eight root buses, 00/20/40/60/80/a0/c0/e0.
-            df: df::plan::Policy::df3().with_bus_counts([0x20; 8]),
-            nbio: Default::default(),
-            power: Default::default(),
-            ccx: ccx::Policy::default(),
-            fch_env: Default::default(),
-            sata: [sata0, sata1],
-            dxio,
-        }
+    let mut dxio = DxioPolicy::new(generation);
+    // Own RXM100CB PCDs 0x1C2 / 0x16D / 0x16E default true. These
+    // are PCIe capability controls, not board reset/power signals.
+    dxio.pcie_features = Some(PcieFeatures {
+        ten_bit_tags: true,
+        data_link_feature: true,
+        data_link_exchange: true,
+    });
+    Policy {
+        // Vendor UEFI: eight root buses, 00/20/40/60/80/a0/c0/e0.
+        df: df::plan::Policy::df3().with_bus_counts([0x20; 8]),
+        nbio: Default::default(),
+        power: Default::default(),
+        ccx: ccx::Policy::default(),
+        fch_env: Default::default(),
+        sata: [sata0, sata1],
+        dxio,
     }
+}
 
-    fn gpio(_generation: Generation) -> Gpio {
-        Gpio {
-            early: &[],
-            table: &GPIO,
-        }
-    }
+/// The GPIO program: the CPM table's one pad.
+pub const GPIO_PROGRAM: Gpio = Gpio {
+    early: &[],
+    table: &GPIO,
+};
 
-    fn acpi_lpc_aml() -> Vec<u8> {
-        // The shared FCH ACPI inventory describes the powered MMIO UART.
-        Vec::new()
-    }
+/// The table identity: board identity only.
+pub fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
+    fstart_acpi::smbios::SmbiosIdentity::new("AMD", "Ethanol-X")
+}
 
-    fn acpi_board(lpc_aml: &[u8]) -> AcpiBoard<'_> {
-        AcpiBoard {
-            ipmi: Some(fstart_driver_ipmi::kcs::DEFAULT_ACPI),
-            lpc_aml,
-            ..AcpiBoard::default()
-        }
+/// The board's ACPI: the BMC's KCS. The shared FCH ACPI inventory already
+/// describes the powered MMIO UART, so there is no LPC AML.
+pub fn acpi_board() -> AcpiBoard<'static> {
+    AcpiBoard {
+        ipmi: Some(fstart_driver_ipmi::kcs::DEFAULT_ACPI),
+        ..AcpiBoard::default()
     }
 }
 
@@ -190,7 +188,7 @@ mod tests {
 
     #[test]
     fn own_vendor_capability_and_cpm_policy() {
-        let policy = <Board as board::Board>::policy(Generation::Milan);
+        let policy = policy(Generation::Milan);
         assert_eq!(
             policy.dxio.pcie_features,
             Some(PcieFeatures {
@@ -208,7 +206,7 @@ mod tests {
 
     #[test]
     fn socket1_fixed_sata_is_not_disabled_by_the_donor_policy() {
-        let policy = <Board as board::Board>::policy(Generation::Milan);
+        let policy = policy(Generation::Milan);
         for (index, controller) in policy.sata[1].controllers.iter().enumerate() {
             assert_eq!(controller.enabled, index == 1);
             assert_eq!(controller.esp_ports, 0);
