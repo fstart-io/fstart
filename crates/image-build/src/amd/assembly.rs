@@ -119,6 +119,9 @@ pub struct FfsWindow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AmdAssembly {
     pub firmware: Firmware,
+    /// Source-compiled configuration, never signed executable firmware.
+    #[serde(default)]
+    pub apcbs: Vec<super::apcb_source::Replacement>,
     pub ffs: Option<FfsWindow>,
     /// Unit whose flat binary is the reset image.
     pub reset_unit: String,
@@ -293,6 +296,15 @@ impl AmdAssembly {
         {
             return Err("FFS window outside AMD flash".into());
         }
+        let mut generated = std::collections::BTreeSet::new();
+        for apcb in &self.apcbs {
+            if !matches!(apcb.selector.kind, bios::APCB | bios::APCB_BACKUP)
+                || !generated.insert(apcb.selector)
+            {
+                return Err("invalid or duplicate generated APCB binding".into());
+            }
+            super::apcb_source::decode(&apcb.bytes)?;
+        }
         match (&self.firmware, &self.ffs) {
             (Firmware::Vendor { image, prefix_size }, ffs) => {
                 let ffs_end = match ffs {
@@ -360,6 +372,15 @@ impl AmdAssembly {
                     || self.bios_directory != PicassoImage::BIOS_DIRECTORY
                 {
                     return Err("invalid Picasso PSP image operation geometry/budget".into());
+                }
+                if !self.apcbs.is_empty()
+                    && (files.apcb.is_some()
+                        || files
+                            .bios
+                            .iter()
+                            .any(|f| matches!(f.key.kind, bios::APCB | bios::APCB_BACKUP)))
+                {
+                    return Err("generated APCBs conflict with template/file inputs".into());
                 }
                 let mut keys = std::collections::BTreeSet::new();
                 for (bios, blobs) in [(false, &files.psp), (true, &files.bios)] {
@@ -503,6 +524,13 @@ impl AmdAssembly {
                 let mut image = vec![0xff; self.flash_size as usize];
                 let prefix = *prefix_size as usize;
                 image[..prefix].copy_from_slice(&vendor[..prefix]);
+                if !self.apcbs.is_empty() {
+                    let directories = Flash::new(vendor)
+                        .with_profile(Profile::for_slot(self.bios_directory))
+                        .bios_directories(self.bios_directory)
+                        .ok_or("no BIOS directories for generated APCBs")?;
+                    super::apcb_source::replace(&mut image, &directories, &self.apcbs)?;
+                }
                 if let (Some(window), Some(ffs)) = (&self.ffs, ffs) {
                     let offset = window.offset as usize;
                     image[offset..offset + ffs.len()].copy_from_slice(ffs);
@@ -646,6 +674,14 @@ impl AmdAssembly {
         // The microcode goes into the FFS, not the BIOS directory.
         let mut bios: Vec<Blob> = blobs(&files.bios, &sources[split..apcb_at]);
         bios.retain(|blob: &Blob| blob.key.kind != bios::MICROCODE);
+        bios.extend(self.apcbs.iter().map(|apcb| Blob {
+            key: Key::new(
+                apcb.selector.kind,
+                apcb.selector.subprogram,
+                apcb.selector.instance,
+            ),
+            bytes: apcb.bytes.clone(),
+        }));
         if let Some(apcb) = &files.apcb {
             let template = sources[apcb_at];
             for (instance, spd) in sources[apcb_at + 1..].iter().enumerate() {

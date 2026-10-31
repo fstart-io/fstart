@@ -518,6 +518,7 @@ fn assembly<S: HostSoc>(
     selection: &BuildSelection,
     packed: Option<blobs::Resolved>,
     ffs: Option<FfsAssembly>,
+    apcbs: std::vec::Vec<fstart_image_build::amd::apcb_source::Replacement>,
 ) -> Result<Assembly, String> {
     let layout = &S::LAYOUT;
     let flash_size = layout.flash.size as u32;
@@ -533,13 +534,54 @@ fn assembly<S: HostSoc>(
             },
             psp,
         ),
-        (ImageConfig::Packed { reset_offset, psp }, _, Some(packed)) => (
-            Firmware::Packed {
-                files: packed.files,
-                reset_offset,
-            },
-            psp,
-        ),
+        (ImageConfig::Packed { reset_offset, psp }, _, Some(mut packed)) => {
+            if !apcbs.is_empty() {
+                use fstart_amdfw_format::directory::bios;
+                let mut expected: std::collections::BTreeSet<_> = packed
+                    .files
+                    .bios
+                    .iter()
+                    .filter(|f| matches!(f.key.kind, bios::APCB | bios::APCB_BACKUP))
+                    .map(|f| f.key)
+                    .collect();
+                if let Some(template) = &packed.files.apcb {
+                    for instance in 0..template.spds.len() {
+                        let instance =
+                            u8::try_from(instance).map_err(|_| "too many APCB RAM IDs")?;
+                        for kind in [bios::APCB, bios::APCB_BACKUP] {
+                            expected.insert(fstart_image_build::amd::Key::new(kind, 0, instance));
+                        }
+                    }
+                }
+                let generated: std::collections::BTreeSet<_> = apcbs
+                    .iter()
+                    .map(|a| {
+                        fstart_image_build::amd::Key::new(
+                            a.selector.kind,
+                            a.selector.subprogram,
+                            a.selector.instance,
+                        )
+                    })
+                    .collect();
+                if expected != generated {
+                    return Err(
+                        "source APCBs do not cover the board's declared RAM-ID bindings".into(),
+                    );
+                }
+                packed
+                    .files
+                    .bios
+                    .retain(|f| !matches!(f.key.kind, bios::APCB | bios::APCB_BACKUP));
+                packed.files.apcb = None;
+            }
+            (
+                Firmware::Packed {
+                    files: packed.files,
+                    reset_offset,
+                },
+                psp,
+            )
+        }
         _ => {
             return Ok(match ffs {
                 Some(ffs) => Assembly::Ffs(Box::new(ffs)),
@@ -551,6 +593,7 @@ fn assembly<S: HostSoc>(
     };
     let assembly = AmdAssembly {
         firmware,
+        apcbs,
         ffs: ffs.zip(layout.ffs).map(|(assembly, window)| FfsWindow {
             assembly,
             offset: (window.base - layout.flash.base) as u32,
@@ -612,7 +655,11 @@ where
     if let (Some(ffs), Some(packed)) = (&mut ffs, &packed) {
         ffs.file_assets = packed.files.assets.clone();
     }
-    let assembly = assembly::<B::Soc>(&selection, packed, ffs)?;
+    let apcbs = B::APCB_SOURCE
+        .map(|source| fstart_image_build::amd::apcb_toml::compile(source, "schema=1\n[tables]\n"))
+        .transpose()?
+        .unwrap_or_default();
+    let assembly = assembly::<B::Soc>(&selection, packed, ffs, apcbs)?;
     let stage = CompilationUnit {
         name: UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,

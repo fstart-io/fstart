@@ -353,15 +353,14 @@ impl Payload {
 /// the lower half (above the early region), the FFS starts at
 /// [`layout::FFS_OFFSET`] or above.
 pub fn flash_plan<B: Sp3BoardFacts>() -> Result<FlashPlan, String> {
-    use fstart_image_build::{amd::apcb_v3, sp3_flash::GeneratedApcbs};
-    let tables = serde_json::from_str(include_str!("apcb/ddr4.json"))
-        .map_err(|e| format!("SP3 DDR4 APCB tables: {e}"))?;
+    use fstart_image_build::{amd::apcb_toml, sp3_flash::GeneratedApcbs};
+    let tables = include_str!("apcb/ddr4.toml");
     let apcbs = B::APCB_SOURCES
         .iter()
         .map(|(generation, source)| {
             Ok(GeneratedApcbs {
                 generation: generation.profile().bios,
-                replacements: apcb_v3::compile(source, &tables)?,
+                replacements: apcb_toml::compile(source, tables)?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -783,11 +782,11 @@ mod tests {
             const APCB_SOURCES: &'static [(Generation, &'static str)] = &[
                 (
                     Generation::Rome,
-                    include_str!("../../../../boards/tyan/s8030/apcb/rome.json"),
+                    include_str!("../../../../boards/tyan/s8030/apcb/rome.toml"),
                 ),
                 (
                     Generation::Milan,
-                    include_str!("../../../../boards/tyan/s8030/apcb/milan.json"),
+                    include_str!("../../../../boards/tyan/s8030/apcb/milan.toml"),
                 ),
             ];
         }

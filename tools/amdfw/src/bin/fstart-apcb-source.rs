@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Typed APCB v3 import/export; the existing fstart-apcb remains a v2 SPD editor.
+//! Build declarative APCBs; JSON export is a lossless diagnostic interchange.
 use clap::{Parser, Subcommand};
-use fstart_image_build::amd::{Result, apcb_toml, apcb_v3};
+use fstart_image_build::amd::{Result, apcb_source, apcb_toml};
 use std::{
     fs,
     io::Write,
@@ -9,7 +9,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(about = "Decode or build typed APCB v3 configuration for PSP/ABL")]
+#[command(about = "Build or inspect typed APCB v2/v3 configuration for PSP/ABL")]
 struct Args {
     #[command(subcommand)]
     command: Command,
@@ -17,34 +17,28 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Export a standalone APCB binary as lossless, typed JSON (no raw fallback).
+    /// Export a standalone APCB as lossless, typed diagnostic JSON.
     Decode { input: PathBuf, output: PathBuf },
-    /// Build an experimental typed TOML payload; does not change board defaults.
-    BuildToml {
+    /// Build a named payload from a board's declarative TOML source.
+    #[command(alias = "build-toml")]
+    Build {
         input: PathBuf,
         output: PathBuf,
+        /// Optional shared electrical-table TOML (used by SP3 boards).
         #[arg(long)]
-        tables: PathBuf,
+        tables: Option<PathBuf>,
         #[arg(long, default_value = "board")]
         blob: String,
     },
     /// Generate an editor JSON Schema for TOML boards or shared tables.
-    TomlSchema {
+    #[command(alias = "toml-schema")]
+    Schema {
         output: PathBuf,
         #[arg(long)]
         tables: bool,
     },
-    /// Build one APCB from typed JSON, without a donor binary or template.
-    Build {
-        input: PathBuf,
-        output: PathBuf,
-        /// Shared typed electrical tables, when the source uses table references.
-        #[arg(long)]
-        tables: Option<PathBuf>,
-        /// Select a named payload from a board's schema-1 source set.
-        #[arg(long)]
-        blob: Option<String>,
-    },
+    /// Rebuild a diagnostic JSON export without interpreting it as board policy.
+    BuildJson { input: PathBuf, output: PathBuf },
 }
 
 fn read(path: &Path) -> Result<Vec<u8>> {
@@ -54,12 +48,12 @@ fn read(path: &Path) -> Result<Vec<u8>> {
 fn run(args: Args) -> Result<()> {
     let (path, bytes) = match args.command {
         Command::Decode { input, output } => {
-            let source = apcb_v3::decode(&read(&input)?)?;
+            let source = apcb_source::decode(&read(&input)?)?;
             let mut bytes = serde_json::to_vec_pretty(&source).map_err(|e| e.to_string())?;
             bytes.push(b'\n');
             (output, bytes)
         }
-        Command::TomlSchema { output, tables } => {
+        Command::Schema { output, tables } => {
             let schema = if tables {
                 apcb_toml::tables_schema()
             } else {
@@ -69,15 +63,19 @@ fn run(args: Args) -> Result<()> {
             bytes.push(b'\n');
             (output, bytes)
         }
-        Command::BuildToml {
+        Command::Build {
             input,
             output,
             tables,
             blob,
         } => {
             let text = String::from_utf8(read(&input)?).map_err(|e| e.to_string())?;
-            let shared = String::from_utf8(read(&tables)?).map_err(|e| e.to_string())?;
-            // Validate the complete source set, then select by its semantic name.
+            let shared = tables
+                .map(|path| {
+                    read(&path).and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()))
+                })
+                .transpose()?
+                .unwrap_or_else(|| "schema=1\n[tables]\n".into());
             let config = apcb_toml::Configuration::parse(&text)?;
             let source = config
                 .blobs
@@ -86,6 +84,7 @@ fn run(args: Args) -> Result<()> {
                 .ok_or_else(|| format!("no APCB named {blob}"))?;
             let binding = source.bindings.first().ok_or("APCB has no bindings")?;
             let selector = binding.selector(config.generation);
+            // Validate the complete source, including bindings not selected for export.
             let built = apcb_toml::compile(&text, &shared)?;
             let payload = built
                 .into_iter()
@@ -93,38 +92,12 @@ fn run(args: Args) -> Result<()> {
                 .ok_or("APCB binding was not compiled")?;
             (output, payload.bytes)
         }
-        Command::Build {
-            input,
-            output,
-            tables,
-            blob,
-        } => {
+        Command::BuildJson { input, output } => {
             let source = serde_json::from_slice(&read(&input)?).map_err(|e| e.to_string())?;
-            let source = if let Some(name) = blob {
-                let sources: apcb_v3::Sources =
-                    serde_json::from_value(source).map_err(|e| e.to_string())?;
-                if sources.schema != 1 {
-                    return Err("expected APCB source schema 1".into());
-                }
-                let mut matches = sources
-                    .blobs
-                    .into_iter()
-                    .filter(|source| source.name == name);
-                let source = matches
-                    .next()
-                    .ok_or_else(|| format!("no APCB named {name}"))?;
-                if matches.next().is_some() {
-                    return Err(format!("ambiguous APCB name {name}"));
-                }
-                source.apcb
-            } else {
-                source
-            };
-            let tables = tables
-                .map(|p| serde_json::from_slice(&read(&p)?).map_err(|e| e.to_string()))
-                .transpose()?
-                .unwrap_or_default();
-            (output, apcb_v3::build(&source, &tables)?)
+            (
+                output,
+                apcb_source::build(&source, &apcb_source::Tables::new())?,
+            )
         }
     };
     // Compile and validate before creating anything; never clobber an input.
@@ -139,7 +112,7 @@ fn run(args: Args) -> Result<()> {
 
 fn main() {
     if let Err(error) = run(Args::parse()) {
-        eprintln!("apcb-v3: {error}");
+        eprintln!("apcb-source: {error}");
         std::process::exit(1);
     }
 }

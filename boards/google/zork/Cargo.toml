@@ -15,10 +15,10 @@ stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-amd", name = "rust" }
 
 # The board's AMD firmware next to its SoC's (docs/amd-image-format.md,
-# "Firmware blobs"): the APCB instances, one per RAM ID, as the vendor ROM
-# has them (`google-vilboz/apcb/<n>.bin` in the --blobs directory), and
-# fstart's PSP application, without which the PSP of the Chromebook part
-# never starts the x86 cores.
+# "Firmware blobs"): signed SoC firmware and fstart's PSP application,
+# without which the Chromebook PSP never starts the x86 cores.
+# The APCB instance count validates source-generated RAM-ID coverage;
+# extracted APCB files are not build inputs.
 [package.metadata.fstart.amd]
 soc = "picasso"
 psp-app = true

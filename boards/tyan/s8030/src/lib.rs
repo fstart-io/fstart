@@ -55,8 +55,8 @@ impl Sp3BoardFacts for Board {
     /// the user supplies it (see `vendor/README.md`).
     const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
     const APCB_SOURCES: &'static [(Generation, &'static str)] = &[
-        (Generation::Rome, include_str!("../apcb/rome.json")),
-        (Generation::Milan, include_str!("../apcb/milan.json")),
+        (Generation::Rome, include_str!("../apcb/rome.toml")),
+        (Generation::Milan, include_str!("../apcb/milan.toml")),
     ];
     /// 1P, 64 cores with SMT (Rome and Milan alike).
     const MAX_CPUS: u16 = 128;

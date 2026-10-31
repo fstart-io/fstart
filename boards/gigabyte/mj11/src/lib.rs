@@ -130,6 +130,10 @@ const CONFIG: Config = Config {
 impl fstart_platform_amd::noncar::Board for Board {
     type Soc = Zeppelin;
     const CONFIG: &'static Config = &CONFIG;
+    #[cfg(feature = "ec0")]
+    const APCB_SOURCE: Option<&'static str> = Some(include_str!("../apcb/ec0.toml"));
+    #[cfg(not(feature = "ec0"))]
+    const APCB_SOURCE: Option<&'static str> = Some(include_str!("../apcb/ec1.toml"));
 
     fn fch_reset_done(ctx: &mut BoardCtx<'_, Zeppelin>, _: &mut Config) {
         let gpio = ctx.gpio();

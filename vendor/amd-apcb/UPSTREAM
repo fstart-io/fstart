@@ -1,0 +1,14 @@
+Project: https://github.com/oxidecomputer/amd-apcb
+Revision: 1ec66d607de2437813cdd9ffa91719a4b163b3cf
+License: MPL-2.0 (LICENSE.txt; original notices retained)
+
+Local changes add legacy APCB layouts and repair lossless v2 serialization.
+This is the existing upstream implementation, not a second APCB encoder.
+AMD reference headers are used as interoperability/layout references only;
+no AMD beta-licensed implementation is incorporated.
+
+Interoperability references:
+https://github.com/openSIL/AGCL-R/blob/d30d3876c273575d4b00fd1bd5d4b9d4229ee101/AgesaPkg/Addendum/Apcb/Inc/Apcb.h
+https://github.com/openSIL/AGCL-R/blob/d30d3876c273575d4b00fd1bd5d4b9d4229ee101/AgesaPkg/Addendum/Apcb/Inc/Genoa/ApcbMemMp.h
+https://github.com/openSIL/AGCL-R/blob/d30d3876c273575d4b00fd1bd5d4b9d4229ee101/AgesaPkg/Addendum/Apcb/Inc/CommonV3/ApcbMemSpdInfo.h
+https://github.com/coreboot/coreboot/blob/main/util/apcb/apcb_edit.py

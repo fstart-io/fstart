@@ -8,7 +8,7 @@ license.workspace = true
 default = []
 picasso = ["noncar", "fstart-driver-amd/picasso", "dep:fstart-driver-vbios"]
 # Host policy only; never enabled by the emitted firmware unit.
-host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2"]
+host = ["dep:fstart-image-build", "dep:fstart-amdfw-format", "dep:serde_json", "dep:sha2"]
 zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zerocopy"]
 # The shared flow of the PSP-booted SoCs, with their ACPI tables.
 noncar = [

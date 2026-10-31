@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Experimental authoring format, separate from APCB's wire representation.
+//! Declarative authoring format, separate from APCB's wire representation.
 //!
 //! TOML is validated against Rust types before lowering to amd-apcb's existing
 //! typed builder. No binary headers, lengths, checksums or raw structure bodies
 //! are accepted as configuration. JSON is only an internal adapter to upstream's
 //! private SerdeApcb API, not a template or an authored input to this path.
-use super::{Result, apcb_v3};
+use super::{Result, apcb_source};
 use amd_apcb::{BoolToken, ByteToken, DwordToken, TOKEN_ENTRY, WordToken, df, memory, psp};
+use num_traits::ToPrimitive;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -14,6 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "apcb_toml_rows.rs"]
 mod rows;
 use rows::{CadRow, DataRow, MaxFrequencyRow, OdtRow};
+#[path = "apcb_toml_legacy.rs"]
+mod legacy;
+use legacy::{ParameterLayer, Setting};
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -27,19 +31,30 @@ pub struct Configuration {
     pub tables: BTreeMap<String, Table>,
     #[serde(default, rename = "token-sets")]
     pub token_sets: BTreeMap<String, TokenSet>,
+    #[serde(default, rename = "spd-images")]
+    pub spd_images: BTreeMap<String, String>,
 }
 
-/// Deliberately bounded experiment: adding another ABI is an explicit change.
+/// Adding another ABI is an explicit, checked change.
 #[derive(Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Generation {
     Rome,
+    Milan,
+    Picasso,
+    Zeppelin,
 }
 impl Generation {
     fn unsupported_speed(self) -> memory::DdrSpeed {
         match self {
             Self::Rome => memory::DdrSpeed::UnsupportedRome,
+            Self::Milan => memory::DdrSpeed::UnsupportedMilan,
+            Self::Picasso => memory::DdrSpeed::UnsupportedRome,
+            Self::Zeppelin => memory::DdrSpeed::UnsupportedZeppelin,
         }
+    }
+    fn legacy(self) -> bool {
+        matches!(self, Self::Picasso | Self::Zeppelin)
     }
 }
 
@@ -59,6 +74,9 @@ pub struct Blob {
     pub donor_sha256: String,
     #[schemars(length(min = 1))]
     pub bindings: Vec<Binding>,
+    /// Explicit group ordering also retains intentionally empty override groups.
+    #[serde(default)]
+    pub groups: Vec<Group>,
     #[serde(default)]
     pub records: Vec<Reference>,
     #[serde(default)]
@@ -81,9 +99,9 @@ pub struct Binding {
 }
 
 impl Binding {
-    pub fn selector(&self, generation: Generation) -> apcb_v3::Selector {
+    pub fn selector(&self, generation: Generation) -> apcb_source::Selector {
         use fstart_amdfw_format::directory::bios;
-        apcb_v3::Selector {
+        apcb_source::Selector {
             kind: match self.slot {
                 Slot::Active => bios::APCB,
                 Slot::Backup => bios::APCB_BACKUP,
@@ -91,16 +109,41 @@ impl Binding {
             instance: self.instance,
             subprogram: match generation {
                 Generation::Rome => 0,
+                Generation::Milan => 1,
+                Generation::Picasso | Generation::Zeppelin => 0,
             },
         }
     }
 }
 
-fn all_boards() -> u16 {
-    u16::MAX
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Group {
+    Psp,
+    Ccx,
+    Df,
+    Memory,
+    Gnb,
+    Fch,
+    Cbs,
+    Token,
 }
-fn normal_priority() -> Vec<Priority> {
-    vec![Priority::Normal]
+impl Group {
+    fn id(self) -> u16 {
+        use amd_apcb::GroupId;
+        match self {
+            Self::Psp => GroupId::Psp,
+            Self::Ccx => GroupId::Ccx,
+            Self::Df => GroupId::Df,
+            Self::Memory => GroupId::Memory,
+            Self::Gnb => GroupId::Gnb,
+            Self::Fch => GroupId::Fch,
+            Self::Cbs => GroupId::Cbs,
+            Self::Token => GroupId::Token,
+        }
+        .to_u16()
+        .unwrap()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema)]
@@ -133,10 +176,30 @@ pub struct Reference {
     pub name: String,
     #[serde(default)]
     pub instance: u16,
-    #[serde(default = "all_boards")]
-    pub board_mask: u16,
-    #[serde(default = "normal_priority")]
-    pub priority: Vec<Priority>,
+    #[serde(default)]
+    pub board_mask: Option<u16>,
+    #[serde(default)]
+    pub priority: Option<Vec<Priority>>,
+}
+
+impl Reference {
+    fn header(&self, group: u16, id: u16, generation: Generation, tokens: bool) -> Result<Value> {
+        let priority = self.priority.as_deref().unwrap_or(if generation.legacy() {
+            &[]
+        } else {
+            &[Priority::Normal]
+        });
+        entry_header(
+            group,
+            id,
+            self.instance,
+            self.board_mask
+                .unwrap_or(if generation.legacy() { 0 } else { u16::MAX }),
+            priority,
+            tokens,
+            generation.legacy(),
+        )
+    }
 }
 
 /// Explicit numerical identities are needed for unrecognized enum values too,
@@ -163,7 +226,7 @@ macro_rules! token_sets {
             $( $variant { values: Vec<Token<$ty>> }, )*
         }
         impl TokenSet {
-            fn lower(&self,selection:&Reference) -> Result<Value> {
+            fn lower(&self,selection:&Reference,generation:Generation) -> Result<Value> {
                 match self {
                     $(Self::$variant { values } => {
                         let class = stringify!($variant);
@@ -184,7 +247,7 @@ macro_rules! token_sets {
                             };
                             if tokens.insert(key,value).is_some() {return Err(format!("duplicate {class} token {key:#x}"));}
                         }
-                        Ok(json!({"header":entry_header(0x3000,id,selection.instance,selection.board_mask,&selection.priority,true)?,"tokens":tokens.into_values().collect::<Vec<_>>()}))
+                        Ok(json!({"header":selection.header(0x3000,id,generation,true)?,"tokens":tokens.into_values().collect::<Vec<_>>()}))
                     },)*
                 }
             }
@@ -203,6 +266,60 @@ token_sets!(
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Table {
+    Parameters {
+        group: Group,
+        layer: ParameterLayer,
+        values: Vec<Setting>,
+    },
+    BoardIdGpio {
+        pins: [memory::Gpio; 4],
+        mapping: Vec<psp::IdApcbMapping>,
+    },
+    SpdInfo {
+        slots: Vec<legacy::SpdSlot>,
+    },
+    UdimmOdt {
+        rows: Vec<OdtRow>,
+    },
+    UdimmCad {
+        rows: Vec<memory::UdimmDdr4CadBusElement>,
+    },
+    LegacyUdimmData {
+        rows: Vec<memory::LegacyDdr4DataBusElement44>,
+    },
+    UdimmMaxFrequency {
+        rows: Vec<MaxFrequencyRow>,
+    },
+    UdimmStretchFrequency {
+        rows: Vec<MaxFrequencyRow>,
+    },
+    LegacyRdimmData {
+        rows: Vec<memory::LegacyDdr4DataBusElement44>,
+    },
+    LegacyLrdimmData {
+        rows: Vec<memory::LegacyLrdimmDdr4DataBusElement44>,
+    },
+    LegacyConsole {
+        settings: memory::NaplesConsoleOutControl,
+    },
+    LegacyErrorOutput {
+        settings: memory::ErrorOutControl108,
+    },
+    SodimmOdt {
+        rows: Vec<OdtRow>,
+    },
+    SodimmCad {
+        rows: Vec<memory::UdimmDdr4CadBusElement>,
+    },
+    SodimmData {
+        rows: Vec<DataRow<memory::VrefDq>>,
+    },
+    SodimmMaxFrequency {
+        rows: Vec<MaxFrequencyRow>,
+    },
+    SodimmStretchFrequency {
+        rows: Vec<MaxFrequencyRow>,
+    },
     BoardIdEeprom {
         controller: u16,
         address: u16,
@@ -215,7 +332,7 @@ pub enum Table {
     SpdSmbus {
         slots: Vec<SpdSlot>,
     },
-    /// This prototype's overrides explicitly apply to every socket/channel/DIMM.
+    /// Overrides explicitly apply to every socket/channel/DIMM.
     PlatformOverride {
         scope: OverrideScope,
         operations: Vec<Override>,
@@ -250,6 +367,9 @@ pub enum Table {
     ErrorOutput {
         settings: memory::ErrorOutControl112,
     },
+    MilanErrorOutput {
+        settings: memory::ErrorOutControl116,
+    },
     VoltageControl {
         settings: memory::ExtVoltageControl,
     },
@@ -273,7 +393,7 @@ pub enum Table {
     },
     /// Initial empty repair-event capacity, not fabricated raw records.
     EmptyPpr {
-        #[schemars(range(min = 1, max = 512))]
+        #[schemars(range(min = 0, max = 512))]
         slots: u16,
     },
 }
@@ -281,6 +401,8 @@ pub enum Table {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct SpdSlot {
+    #[serde(default = "slot_present")]
+    pub present: bool,
     pub socket: u8,
     pub channel: u8,
     pub dimm: u8,
@@ -289,6 +411,10 @@ pub struct SpdSlot {
     pub mux_channel: u8,
     #[serde(default)]
     pub mux_control: u8,
+}
+
+fn slot_present() -> bool {
+    true
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -331,7 +457,11 @@ impl Override {
 }
 
 impl Table {
-    fn lower(&self, generation: Generation) -> Result<(u16, u16, &'static str, Value)> {
+    fn lower(
+        &self,
+        generation: Generation,
+        spds: &BTreeMap<String, String>,
+    ) -> Result<(u16, u16, &'static str, Value)> {
         macro_rules! body {
             ($group:expr,$id:expr,$key:literal,$value:expr) => {
                 Ok((
@@ -351,7 +481,126 @@ impl Table {
                 body!($group, $id, $key, values)
             }};
         }
+        let compatible = match self {
+            Self::LegacyUdimmData { .. }
+            | Self::LegacyRdimmData { .. }
+            | Self::LegacyLrdimmData { .. }
+            | Self::LegacyErrorOutput { .. } => matches!(generation, Generation::Zeppelin),
+            Self::LegacyConsole { .. } => generation.legacy(),
+            Self::SpdInfo { .. }
+            | Self::BoardIdGpio { .. }
+            | Self::SodimmOdt { .. }
+            | Self::SodimmCad { .. }
+            | Self::SodimmData { .. }
+            | Self::SodimmMaxFrequency { .. }
+            | Self::SodimmStretchFrequency { .. } => matches!(generation, Generation::Picasso),
+            Self::ErrorOutput { .. } => {
+                matches!(generation, Generation::Rome | Generation::Picasso)
+            }
+            Self::MilanErrorOutput { .. } => matches!(generation, Generation::Milan),
+            Self::Console { .. }
+            | Self::RdimmData { .. }
+            | Self::LrdimmData { .. }
+            | Self::ThreeDsData { .. }
+            | Self::BoardIdEeprom { .. }
+            | Self::PlatformTuningEnd {}
+            | Self::Slink { .. } => !generation.legacy(),
+            _ => true,
+        };
+        if !compatible {
+            return Err("table layout is incompatible with this APCB generation".into());
+        }
         match self {
+            Self::Parameters {
+                group,
+                layer,
+                values,
+            } => {
+                if !generation.legacy() {
+                    return Err("parameter lists require APCB v2".into());
+                }
+                legacy::parameters(*group, *layer, values)
+            }
+            Self::BoardIdGpio { pins, mapping } => {
+                let header: psp::BoardIdGettingMethodGpio =
+                    serde_json::from_value(json!({"access_method":3,"bit_locations":pins}))
+                        .map_err(|e| e.to_string())?;
+                body!(0x1701, 0x60, "BoardIdGettingMethodGpio", (header, mapping))
+            }
+            Self::SpdInfo { slots } => {
+                let header: memory::SpdInfo =
+                    serde_json::from_value(json!({"total_dimms":slots.len()}))
+                        .map_err(|e| e.to_string())?;
+                let slots = slots
+                    .iter()
+                    .map(|slot| {
+                        let data = match &slot.image {
+                            Some(name) => super::apcb::parse_spd_hex(
+                                spds.get(name)
+                                    .ok_or_else(|| format!("unknown SPD image {name}"))?,
+                            )?,
+                            None => [0; 512],
+                        };
+                        Ok(memory::SpdDimm {
+                            descriptor: slot.descriptor,
+                            data: memory::SpdData(data),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                body!(0x1704, 0x30, "SpdInfo", (header, slots))
+            }
+            Self::UdimmOdt { rows } => rows!(0x1704, 0x41, "Ddr4OdtPatElement", rows, rdimm),
+            Self::UdimmCad { rows } => body!(0x1704, 0x42, "UdimmDdr4CadBusElement", rows),
+            Self::LegacyUdimmData { rows } => {
+                body!(0x1704, 0x43, "LegacyDdr4DataBusElement44", rows)
+            }
+            Self::UdimmMaxFrequency { rows } => rows!(
+                0x1704,
+                0x44,
+                "MaxFreqElement",
+                rows,
+                rdimm,
+                generation.unsupported_speed()
+            ),
+            Self::UdimmStretchFrequency { rows } => rows!(
+                0x1704,
+                0x45,
+                "MaxFreqElement",
+                rows,
+                rdimm,
+                generation.unsupported_speed()
+            ),
+            Self::LegacyRdimmData { rows } => {
+                body!(0x1704, 0x48, "LegacyDdr4DataBusElement44", rows)
+            }
+            Self::LegacyLrdimmData { rows } => {
+                body!(0x1704, 0x56, "LegacyLrdimmDdr4DataBusElement44", rows)
+            }
+            Self::LegacyConsole { settings } => {
+                body!(0x1704, 0x50, "NaplesConsoleOutControl", settings)
+            }
+            Self::LegacyErrorOutput { settings } => {
+                body!(0x1704, 0x52, "ErrorOutControl108", settings)
+            }
+            Self::SodimmOdt { rows } => rows!(0x1704, 0x59, "Ddr4OdtPatElement", rows, rdimm),
+            Self::SodimmCad { rows } => body!(0x1704, 0x5a, "UdimmDdr4CadBusElement", rows),
+            Self::SodimmData { rows } => rows!(0x1704, 0x5b, "Ddr4DataBusElement", rows, rdimm),
+            Self::SodimmMaxFrequency { rows } => rows!(
+                0x1704,
+                0x5c,
+                "MaxFreqElement",
+                rows,
+                rdimm,
+                generation.unsupported_speed()
+            ),
+            Self::SodimmStretchFrequency { rows } => rows!(
+                0x1704,
+                0x5d,
+                "MaxFreqElement",
+                rows,
+                rdimm,
+                generation.unsupported_speed()
+            ),
             Self::BoardIdEeprom {
                 controller,
                 address,
@@ -380,7 +629,7 @@ impl Table {
                     }
                     // Deserialize into the existing layout, not a second SPD encoder.
                     rows.push(serde_json::from_value::<memory::DimmInfoSmbusElement>(json!({
-                        "dimm_slot_present":true,"socket_id":slot.socket,"channel_id":slot.channel,"dimm_id":slot.dimm,
+                        "dimm_slot_present":slot.present,"socket_id":slot.socket,"channel_id":slot.channel,"dimm_id":slot.dimm,
                         "dimm_smbus_address":slot.address,"i2c_mux_address":slot.mux,
                         "mux_control_address":slot.mux_control,"mux_channel":slot.mux_channel,
                     })).map_err(|e|e.to_string())?);
@@ -391,10 +640,27 @@ impl Table {
                 scope: OverrideScope::All,
                 operations,
             } => {
-                let operations = operations
+                let mut operations = operations
                     .iter()
                     .map(Override::lower)
                     .collect::<Result<Vec<_>>>()?;
+                if generation.legacy() {
+                    // The legacy PSP_PSO_STRUCT reserves 108 bytes, including
+                    // unused operation slots. Do not expose zero padding as ops.
+                    use amd_apcb::ElementAsBytes;
+                    let used: usize = operations
+                        .iter()
+                        .map(|op| op.element_as_bytes().len())
+                        .sum();
+                    if used > 108 {
+                        return Err("legacy platform overrides exceed reserved capacity".into());
+                    }
+                    if used < 108 {
+                        operations.push(memory::platform_specific_override::Element::Unknown(
+                            vec![0; 108 - used],
+                        ));
+                    }
+                }
                 body!(0x1704, 0x40, "platform_specific_overrides", operations)
             }
             Self::RdimmOdt { rows } => rows!(0x1704, 0x46, "Ddr4OdtPatElement", rows, rdimm),
@@ -441,6 +707,9 @@ impl Table {
             Self::ThreeDsData { rows } => rows!(0x1704, 0x4d, "Ddr4DataBusElement", rows, rdimm),
             Self::Console { settings } => body!(0x1704, 0x50, "ConsoleOutControl", settings),
             Self::ErrorOutput { settings } => body!(0x1704, 0x52, "ErrorOutControl112", settings),
+            Self::MilanErrorOutput { settings } => {
+                body!(0x1704, 0x52, "ErrorOutControl116", settings)
+            }
             Self::VoltageControl { settings } => body!(0x1704, 0x53, "ExtVoltageControl", settings),
             Self::LrdimmOdt { rows } => {
                 rows!(0x1704, 0x54, "LrdimmDdr4OdtPatElement", rows, lrdimm)
@@ -466,8 +735,8 @@ impl Table {
             }
             Self::Slink { settings } => body!(0x1703, 0xcc, "SlinkConfig", settings),
             Self::EmptyPpr { slots } => {
-                if !(1..=512).contains(slots) {
-                    return Err("PPR slots must be in 1..=512".into());
+                if *slots > 512 || (!generation.legacy() && *slots == 0) {
+                    return Err("invalid PPR capacity for this APCB generation".into());
                 }
                 body!(
                     0x1704,
@@ -487,8 +756,9 @@ fn entry_header(
     boards: u16,
     priority: &[Priority],
     tokens: bool,
+    legacy: bool,
 ) -> Result<Value> {
-    if priority.is_empty()
+    if (!legacy && priority.is_empty())
         || priority.iter().copied().collect::<BTreeSet<_>>().len() != priority.len()
     {
         return Err("priority must be nonempty and contain no duplicates".into());
@@ -516,7 +786,11 @@ impl Configuration {
         Ok(config)
     }
 
-    pub fn compile(mut self, shared: SharedTables) -> Result<Vec<apcb_v3::Replacement>> {
+    pub fn compile(self, shared: SharedTables) -> Result<Vec<apcb_source::Replacement>> {
+        apcb_source::compile_sources(self.lower(shared)?, &apcb_source::Tables::new())
+    }
+
+    pub(crate) fn lower(mut self, shared: SharedTables) -> Result<apcb_source::Sources> {
         self.validate_schema()?;
         if shared.schema != 1 {
             return Err("expected shared-table schema 1".into());
@@ -529,24 +803,39 @@ impl Configuration {
         let mut blobs = Vec::new();
         let mut names = BTreeSet::new();
         for blob in self.blobs {
+            if self.generation.legacy() && !blob.tokens.is_empty() {
+                return Err("token entries require APCB v3; use v2 parameter lists".into());
+            }
             if blob.name.is_empty() || !names.insert(blob.name.clone()) {
                 return Err("APCB names must be nonempty and unique".into());
             }
             let mut entries = Vec::new();
             let mut groups = Vec::new();
             let mut group_ids = BTreeSet::new();
+            for group in blob.groups {
+                let id = group.id();
+                if !group_ids.insert(id) {
+                    return Err("duplicate APCB group".into());
+                }
+                groups.push(group_header(id)?);
+            }
             for record in blob.records {
                 let table = self
                     .tables
                     .get(&record.name)
                     .ok_or_else(|| format!("unknown table {}", record.name))?;
                 let (group, id, key, body) = table
-                    .lower(self.generation)
+                    .lower(self.generation, &self.spd_images)
                     .map_err(|e| format!("{}: {e}", record.name))?;
                 if group_ids.insert(group) {
                     groups.push(group_header(group)?);
                 }
-                entries.push(json!({"header":entry_header(group,id,record.instance,record.board_mask,&record.priority,false)?,(key):body}));
+                entries.push(
+                    json!({"header":record.header(group,id,self.generation,false)?,(key):body}),
+                );
+            }
+            if self.generation.legacy() && !blob.tokens.is_empty() {
+                return Err("APCB v2 uses parameter lists, not token records".into());
             }
             for selection in blob.tokens {
                 let tokens = self
@@ -558,17 +847,27 @@ impl Configuration {
                 }
                 entries.push(
                     tokens
-                        .lower(&selection)
+                        .lower(&selection, self.generation)
                         .map_err(|e| format!("{}: {e}", selection.name))?,
                 );
             }
             // Stable wire defaults, including Rome's backwards end marker.
             // Container signatures/reserved bytes are not authoring inputs.
             let mut header = amd_apcb::V2_HEADER::default();
-            header.header_size.set(128);
+            header
+                .header_size
+                .set(if self.generation.legacy() { 32 } else { 128 });
+            header
+                .version
+                .set(if self.generation.legacy() { 0x20 } else { 0x30 });
             header.set_unique_apcb_instance(blob.revision);
             let mut ext = amd_apcb::V3_HEADER_EXT::default();
             ext.signature_ending = *b"BCBA";
+            let ext = if self.generation.legacy() {
+                None
+            } else {
+                Some(ext)
+            };
             let selectors: Vec<_> = blob
                 .bindings
                 .iter()
@@ -577,19 +876,19 @@ impl Configuration {
             blobs.push(json!({"name":blob.name,"selectors":selectors,"donor_sha256":blob.donor_sha256,
                 "apcb":{"version":"0.5.5","header":header,"v3_header_ext":ext,"groups":groups,"entries":entries}}));
         }
-        // Reuse the validated, lossless builder and existing replacement guards.
-        apcb_v3::compile(
-            &json!({"schema":1,"blobs":blobs}).to_string(),
-            &apcb_v3::Tables::new(),
-        )
+        serde_json::from_value(json!({"schema":1,"blobs":blobs})).map_err(|e| e.to_string())
     }
 }
 
 fn group_header(group: u16) -> Result<Value> {
     let signature = match group {
         0x1701 => "PSPG",
+        0x1702 => "CCXG",
         0x1703 => "DFG ",
         0x1704 => "MEMG",
+        0x1705 => "GNBG",
+        0x1706 => "FCHG",
+        0x1707 => "CBSG",
         0x3000 => "TOKN",
         _ => return Err("unsupported group".into()),
     };
@@ -598,7 +897,7 @@ fn group_header(group: u16) -> Result<Value> {
     )
 }
 
-pub fn compile(source: &str, shared: &str) -> Result<Vec<apcb_v3::Replacement>> {
+pub fn compile(source: &str, shared: &str) -> Result<Vec<apcb_source::Replacement>> {
     Configuration::parse(source)?.compile(toml::from_str(shared).map_err(|e| e.to_string())?)
 }
 

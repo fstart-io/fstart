@@ -392,7 +392,7 @@ pub struct FlashPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeneratedApcbs {
     pub generation: Generation,
-    pub replacements: Vec<crate::amd::apcb_v3::Replacement>,
+    pub replacements: Vec<crate::amd::apcb_source::Replacement>,
 }
 
 /// What happens to one half of the vendor ROM.
@@ -619,7 +619,7 @@ fn build(
             .iter()
             .find(|a| a.generation == layout.generation)
         {
-            crate::amd::apcb_v3::replace(bytes, &vendor.bios, &apcb.replacements)
+            crate::amd::apcb_source::replace(bytes, &vendor.bios, &apcb.replacements)
                 .map_err(ImageError::Apcb)?;
         }
         let reset_at = half.offset() + plan.reset.flash_offset as usize;

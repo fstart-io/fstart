@@ -33,6 +33,63 @@ fn image() -> PicassoImage {
     }
 }
 #[test]
+fn packed_vilboz_uses_sources_without_apcb_file_inputs() {
+    use assembly::{FileBlob, PicassoFiles};
+    let mut raw = image();
+    let apcbs = apcb_toml::compile(
+        include_str!("../../../../boards/google/zork/apcb/vilboz.toml"),
+        "schema=1\n[tables]\n",
+    )
+    .unwrap();
+    raw.bios = apcbs
+        .iter()
+        .map(|a| Blob {
+            key: Key::new(a.selector.kind, a.selector.subprogram, a.selector.instance),
+            bytes: a.bytes.clone(),
+        })
+        .collect();
+    let operation = AmdAssembly {
+        apcbs,
+        firmware: Firmware::Packed {
+            files: PicassoFiles {
+                flash_size: raw.flash_size,
+                efs_offset: raw.efs_offset,
+                partition_end: raw.partition_end,
+                spi_read_mode: raw.spi_read_mode,
+                spi_speed: raw.spi_speed,
+                micron: raw.micron,
+                soft_fuse: raw.soft_fuse,
+                psp: vec![FileBlob {
+                    key: raw.psp[0].key,
+                    path: "signed-psp.bin".into(),
+                }],
+                bios: vec![],
+                apob_nv: raw.apob_nv,
+                psp_nv: raw.psp_nv,
+                apcb: None,
+                assets: vec![],
+                psp_app: false,
+            },
+            reset_offset: None,
+        },
+        ffs: None,
+        reset_unit: "reset".into(),
+        flash_size: raw.flash_size,
+        bios_directory: PicassoImage::BIOS_DIRECTORY,
+        reset_destination: raw.reset_destination,
+        reset_size: raw.reset_image.len() as u32,
+        apob_destination: raw.apob_destination,
+        shared_memory: raw.shared_memory,
+        psp: Default::default(),
+    };
+    assert_eq!(operation.bindings().unwrap().len(), 1);
+    let actual = operation
+        .assemble(&[&raw.psp[0].bytes], &raw.reset_image, None)
+        .unwrap();
+    assert_eq!(actual.bytes, raw.pack().unwrap().bytes);
+}
+
+#[test]
 fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
     use assembly::{FileBlob, PicassoFiles};
     let raw = image();
@@ -59,6 +116,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         psp_app: false,
     };
     let operation = AmdAssembly {
+        apcbs: vec![],
         firmware: Firmware::Packed {
             files,
             reset_offset: None,
@@ -439,6 +497,7 @@ fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
 /// MJ11's layout with its vendor image.
 fn mj11() -> AmdAssembly {
     AmdAssembly {
+        apcbs: vec![],
         firmware: Firmware::Vendor {
             image: crate::build_plan::FileBinding {
                 environment: "VENDOR_FLASH".into(),
@@ -457,6 +516,95 @@ fn mj11() -> AmdAssembly {
         shared_memory: None,
         psp: Default::default(),
     }
+}
+
+#[test]
+fn reviewed_mj11_donors_are_unchanged_by_source_replacement() {
+    let (ffs, stage) = ffs_and_stage(0x25_0000);
+    for (env, source) in [
+        (
+            "FSTART_MJ11_EC0_DONOR",
+            include_str!("../../../../boards/gigabyte/mj11/apcb/ec0.toml"),
+        ),
+        (
+            "FSTART_MJ11_EC1_DONOR",
+            include_str!("../../../../boards/gigabyte/mj11/apcb/ec1.toml"),
+        ),
+    ] {
+        let Some(path) = std::env::var_os(env) else {
+            eprintln!("skipping: set {env} to its reviewed vendor readout");
+            continue;
+        };
+        let vendor = std::fs::read(path).unwrap();
+        let baseline = mj11().assemble(&[&vendor], &stage, Some(&ffs)).unwrap();
+        let mut plan = mj11();
+        plan.apcbs = apcb_toml::compile(source, "schema=1\n[tables]\n").unwrap();
+        let generated = plan.assemble(&[&vendor], &stage, Some(&ffs)).unwrap();
+        assert_eq!(generated.bytes, baseline.bytes, "{env}");
+    }
+}
+
+#[test]
+fn mj11_sources_replace_both_directory_levels_and_keep_slot_padding() {
+    let source = include_str!("../../../../boards/gigabyte/mj11/apcb/ec1.toml");
+    let empty = "schema=1\n[tables]\n";
+    let generated = apcb_toml::compile(source, empty).unwrap();
+    let (ffs, stage) = ffs_and_stage(0x25_0000);
+    let mut vendor = two_level_vendor();
+    // This test adds the backup slots present in both reviewed directory levels.
+    for (at, backup, size, level, cookie) in [
+        (0xf_7000, 0xfc000, 0x4000, 0, *b"$BHD"),
+        (0x22_9000, 0x22_c000, 0x1d00, 1, *b"$BL2"),
+    ] {
+        use fstart_amdfw_format::{Flash, Profile, ROM2_BASE, directory::Directory};
+        let mut entries = Directory::<BiosEntry>::read_checked(
+            Flash::region(&vendor, 0, ROM2_BASE, Profile::for_slot(SLOT)),
+            at,
+            level,
+        )
+        .unwrap()
+        .entries
+        .to_vec();
+        entries.push(BiosEntry::new(
+            bios::APCB_BACKUP,
+            0,
+            0,
+            0,
+            size,
+            0xff00_0000u64 + backup as u64,
+            u64::MAX,
+        ));
+        write_table(&mut vendor[at..], cookie, 0, &entries).unwrap();
+    }
+    for at in [0xf_8000, 0xfc000, 0x22_a000, 0x22_c000] {
+        vendor[at..at + generated[0].bytes.len()].copy_from_slice(&generated[0].bytes);
+    }
+    let expected = mj11().assemble(&[&vendor], &stage, Some(&ffs)).unwrap();
+    let mut plan = mj11();
+    plan.apcbs = generated;
+    assert_eq!(
+        plan.assemble(&[&vendor], &stage, Some(&ffs)).unwrap().bytes,
+        expected.bytes
+    );
+    let mut config = apcb_toml::Configuration::parse(source).unwrap();
+    config.blobs[0].revision += 1;
+    plan.apcbs = config.compile(toml::from_str(empty).unwrap()).unwrap();
+    let mut edited = expected.bytes;
+    for at in [0xf_8000, 0xfc000, 0x22_a000, 0x22_c000] {
+        edited[at..at + plan.apcbs[0].bytes.len()].copy_from_slice(&plan.apcbs[0].bytes);
+    }
+    assert_eq!(
+        plan.assemble(&[&vendor], &stage, Some(&ffs)).unwrap().bytes,
+        edited
+    );
+    plan.apcbs[0].donor_sha256 = "0".repeat(64);
+    assert!(plan.assemble(&[&vendor], &stage, Some(&ffs)).is_err());
+    plan.apcbs = apcb_toml::compile(&source.replace("slots = 0", "slots = 512"), empty).unwrap();
+    assert!(
+        plan.assemble(&[&vendor], &stage, Some(&ffs))
+            .unwrap_err()
+            .contains("slot capacity")
+    );
 }
 
 #[test]
@@ -526,6 +674,7 @@ fn native_image_has_the_partition_the_compressed_reset_and_the_ffs() {
     };
     let (ffs, stage) = ffs_and_stage(0x20_0000);
     let operation = AmdAssembly {
+        apcbs: vec![],
         firmware: Firmware::Packed {
             files: files.clone(),
             reset_offset: Some(0x98_0000),

@@ -1,4 +1,5 @@
 **/target
+/vendor/amd-apcb/Cargo.lock
 *.rom
 *.bin
 # FFS test goldens are committed fixtures, not build outputs.

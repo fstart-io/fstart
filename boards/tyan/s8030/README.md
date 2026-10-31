@@ -36,8 +36,8 @@ record in flash, editable without a rebuild.
 ## Vendor ROM
 
 Every supported half keeps its PSP/BIOS directories and blobs in place
-(PSP, ABL, SMU, PMU and DXIO firmware). APCBs are built from `apcb/rome.json`
-and `apcb/milan.json`, with shared typed DDR4 tables in the platform. The initial
+(PSP, ABL, SMU, PMU and DXIO firmware). APCBs are built from `apcb/rome.toml`
+and `apcb/milan.toml`, with shared typed DDR4 tables in the platform. The initial
 values reproduce the vendor configuration exactly; source-generation hardware
 qualification has not been repeated. See `docs/amd-apcb.md` for provenance,
 editing and compatibility checks. Supply the Tyan v4.04 dual

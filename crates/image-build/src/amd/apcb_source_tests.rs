@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
 
-const TABLES: &str = include_str!("../../../platform-sp3/src/host/apcb/ddr4.json");
-const ROME: &str = include_str!("../../../../boards/tyan/s8030/apcb/rome.json");
-const MILAN: &str = include_str!("../../../../boards/tyan/s8030/apcb/milan.json");
-const ETHANOLX: &str = include_str!("../../../../boards/amd/ethanolx/apcb/milan.json");
+const TABLES: &str = include_str!("../../../platform-sp3/src/host/apcb/ddr4.toml");
+const ROME: &str = include_str!("../../../../boards/tyan/s8030/apcb/rome.toml");
+const MILAN: &str = include_str!("../../../../boards/tyan/s8030/apcb/milan.toml");
+const ETHANOLX: &str = include_str!("../../../../boards/amd/ethanolx/apcb/milan.toml");
 
 fn tables() -> Tables {
-    serde_json::from_str(TABLES).unwrap()
+    Tables::new()
+}
+fn source_model(text: &str) -> Sources {
+    super::super::apcb_toml::Configuration::parse(text)
+        .unwrap()
+        .lower(toml::from_str(TABLES).unwrap())
+        .unwrap()
 }
 
 #[test]
@@ -43,7 +49,7 @@ fn every_source_reconstructs_the_original_declared_payload() {
         ),
     ];
     for (text, hashes) in expected {
-        let sources: Sources = serde_json::from_str(text).unwrap();
+        let sources = source_model(text);
         assert_eq!(sources.blobs.len(), hashes.len());
         for (source, hash) in sources.blobs.iter().zip(hashes) {
             let bytes =
@@ -52,14 +58,14 @@ fn every_source_reconstructs_the_original_declared_payload() {
             let exported = decode(&bytes).unwrap();
             assert_eq!(build(&exported, &Tables::new()).unwrap(), bytes);
         }
-        let compiled = compile(text, &tables()).unwrap();
+        let compiled = compile_sources(source_model(text), &tables()).unwrap();
         assert_eq!(compiled.len(), 5); // 0x68 i0/i8/i9 and 0x60 i0/i1
     }
 }
 
 #[test]
 fn editing_a_typed_token_changes_the_configuration_not_the_donor_pin() {
-    let mut sources: Value = serde_json::from_str(MILAN).unwrap();
+    let mut sources = serde_json::to_value(source_model(MILAN)).unwrap();
     let blob = &mut sources["blobs"][0];
     let before = build(&blob["apcb"], &tables()).unwrap();
     let mut changed = false;
@@ -121,13 +127,13 @@ fn apply(original: &[u8], output: &mut [u8], replacements: &[Replacement]) -> Re
 
 #[test]
 fn replacing_all_slots_preserves_firmware_and_padding() {
-    let mut replacements = compile(ROME, &tables()).unwrap();
+    let mut replacements = compile_sources(source_model(ROME), &tables()).unwrap();
     let original = fixture(&replacements, 8192);
     let mut output = original.clone();
     apply(&original, &mut output, &replacements).unwrap();
     assert_eq!(output, original);
     // Make a genuine configuration edit, keeping its original donor guard.
-    let source: Sources = serde_json::from_str(ROME).unwrap();
+    let source = source_model(ROME);
     let mut document = source.blobs[0].apcb.clone();
     document["header"]["unique_apcb_instance"] = Value::from(1234);
     let edited = build(&document, &tables()).unwrap();
@@ -148,7 +154,7 @@ fn toml_payloads_use_the_existing_replacement_guards() {
     let text = include_str!("../../../../boards/tyan/s8030/apcb/rome.toml");
     let shared = include_str!("../../../platform-sp3/src/host/apcb/ddr4.toml");
     let replacements = super::super::apcb_toml::compile(text, shared).unwrap();
-    let old = compile(ROME, &tables()).unwrap();
+    let old = compile_sources(source_model(ROME), &tables()).unwrap();
     let original = fixture(&old, 8192);
     let mut output = original.clone();
     apply(&original, &mut output, &replacements).unwrap();
@@ -176,7 +182,7 @@ fn toml_payloads_use_the_existing_replacement_guards() {
 
 #[test]
 fn bad_pin_missing_selector_absent_selector_and_capacity_fail_without_writes() {
-    let replacements = compile(ROME, &tables()).unwrap();
+    let replacements = compile_sources(source_model(ROME), &tables()).unwrap();
     let original = fixture(&replacements, 8192);
     for scenario in 0..4 {
         let mut bad = replacements.clone();
@@ -191,7 +197,7 @@ fn bad_pin_missing_selector_absent_selector_and_capacity_fail_without_writes() {
                 bad.push(extra);
             }
             3 => {
-                let sources: Sources = serde_json::from_str(ROME).unwrap();
+                let sources = source_model(ROME);
                 let mut doc = sources.blobs[0].apcb.clone();
                 let rows = doc["entries"][1]["DimmInfoSmbusElement"]
                     .as_array_mut()
@@ -214,12 +220,14 @@ fn bad_pin_missing_selector_absent_selector_and_capacity_fail_without_writes() {
 
 #[test]
 fn source_rejects_missing_tables_duplicate_selectors_and_invalid_fields() {
+    let mut doc = source_model(ROME).blobs[0].apcb.clone();
+    doc["entries"][0] = serde_json::json!({"header":doc["entries"][0]["header"],"table":"missing"});
     assert!(
-        compile(ROME, &Tables::new())
+        build(&doc, &Tables::new())
             .unwrap_err()
             .contains("unknown APCB table")
     );
-    let mut source: Value = serde_json::from_str(ROME).unwrap();
+    let mut source = serde_json::to_value(source_model(ROME)).unwrap();
     let duplicate = source["blobs"][0]["selectors"][0].clone();
     source["blobs"][0]["selectors"]
         .as_array_mut()
@@ -230,20 +238,24 @@ fn source_rejects_missing_tables_duplicate_selectors_and_invalid_fields() {
             .unwrap_err()
             .contains("duplicate APCB selector")
     );
-    let source: Sources = serde_json::from_str(ROME).unwrap();
+    let source = source_model(ROME);
     let mut doc = source.blobs[0].apcb.clone();
     doc["entries"][0]["unknown_field"] = Value::Bool(true);
     assert!(build(&doc, &tables()).is_err());
     doc = source.blobs[0].apcb.clone();
     doc["header"]["version"] = Value::from(0x20);
-    assert!(build(&doc, &tables()).unwrap_err().contains("v3 only"));
+    assert!(
+        build(&doc, &tables())
+            .unwrap_err()
+            .contains("v2 and v3 headers")
+    );
     assert!(decode(b"APCB").is_err());
 }
 
 #[test]
 fn aliased_slots_must_agree_and_duplicate_plan_selectors_fail() {
     use fstart_amdfw_format::directory::write_table;
-    let mut replacements = compile(ROME, &tables()).unwrap()[..2].to_vec();
+    let mut replacements = compile_sources(source_model(ROME), &tables()).unwrap()[..2].to_vec();
     replacements[1].donor_sha256 = replacements[0].donor_sha256.clone();
     replacements[1].bytes = replacements[0].bytes.clone();
     let mut original = fixture(&replacements, 8192);

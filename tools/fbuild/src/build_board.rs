@@ -49,6 +49,7 @@ pub fn prepare_selected_board_workspace(
         .map_err(|e| format!("failed to create selected tools dir: {e}"))?;
 
     replace_with_symlink(workspace_root.join("crates"), selected.join("crates"))?;
+    replace_with_symlink(workspace_root.join("vendor"), selected.join("vendor"))?;
     replace_with_symlink(
         workspace_root.join("tools").join("fbuild"),
         selected.join("tools").join("fbuild"),
@@ -80,7 +81,7 @@ pub(crate) fn prepare_inventory_workspace(
 ) -> Result<PathBuf, String> {
     let directory = root.join("target/fstart-lock-prototype");
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    for name in ["crates", "tools", "boards"] {
+    for name in ["crates", "tools", "boards", "vendor"] {
         replace_with_symlink(root.join(name), directory.join(name))?;
     }
     replace_with_file_copy(root.join("Cargo.lock"), directory.join("Cargo.lock"))?;
@@ -98,7 +99,13 @@ pub(crate) fn prepare_inventory_workspace(
     let manifest = format!("{}\n{}{}", &original[..at], additions, &original[at..]);
     let manifest = manifest
         .lines()
-        .filter(|line| !line.trim_start().starts_with("exclude = "))
+        .map(|line| {
+            if line.trim_start().starts_with("exclude = ") {
+                "exclude = [\"vendor/amd-apcb\"]"
+            } else {
+                line
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(directory.join("Cargo.toml"), manifest).map_err(|e| e.to_string())?;
@@ -151,7 +158,13 @@ fn selected_workspace_manifest(root_manifest: &str, board_rel_dir: &str) -> Resu
     manifest.push_str(&root_manifest[members_end..]);
     manifest = manifest
         .lines()
-        .filter(|line| !line.trim_start().starts_with("exclude = "))
+        .map(|line| {
+            if line.trim_start().starts_with("exclude = ") {
+                "exclude = [\"vendor/amd-apcb\"]"
+            } else {
+                line
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     manifest.push('\n');
@@ -405,6 +418,22 @@ fn workspace_root() -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_board_workspace_keeps_vendored_crates_out_of_members() {
+        let manifest =
+            super::selected_workspace_manifest(include_str!("../../../Cargo.toml"), "google/zork")
+                .unwrap();
+        let value: toml::Value = toml::from_str(&manifest).unwrap();
+        assert_eq!(
+            value["workspace"]["members"].as_array().unwrap(),
+            &[toml::Value::String("boards/google/zork".into())]
+        );
+        assert_eq!(
+            value["workspace"]["exclude"].as_array().unwrap(),
+            &[toml::Value::String("vendor/amd-apcb".into())]
+        );
+    }
+
     #[test]
     fn unused_dependencies_and_unresolved_profile_overrides_are_dropped() {
         let manifest = "[workspace.dependencies]\n\

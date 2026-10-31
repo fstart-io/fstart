@@ -41,7 +41,7 @@ members = [
   "crates/store",
   "crates/timestamp",
 ]
-exclude = ["boards"]
+exclude = ["boards", "vendor/amd-apcb"]
 
 [workspace.package]
 version = "0.1.0"

@@ -39,7 +39,7 @@ impl Sp3BoardFacts for Board {
     /// The BMC's 64 MiB readout (or just its lower 16 MiB boot bank).
     const VENDOR_IMAGE: &'static str = "boards/amd/ethanolx/vendor/RXM100CB.bin";
     const APCB_SOURCES: &'static [(Generation, &'static str)] =
-        &[(Generation::Milan, include_str!("../apcb/milan.json"))];
+        &[(Generation::Milan, include_str!("../apcb/milan.toml"))];
     const MAX_CPUS: u16 = 256;
     /// The BMC BIOS update writes the 16 MiB bank at 0 and at 48 MiB of its
     /// 64 MiB export and leaves [16, 48) MiB alone.

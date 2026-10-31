@@ -149,8 +149,9 @@ blobs are copied unchanged, never modified or re-signed.
 template (`--template`, `--output`, four `--gpio NUMBER:MUX:BANK` values, optional
 `--spd-0-0`, `--spd-0-1`, `--spd-1-0`, `--spd-1-1`, `--hex`, `--strip-manufacturer`).
 
-`fstart-apcb-v3` builds or losslessly exports typed APCB v3 JSON without a binary
-template. SP3 source sets and image integration are described in [amd-apcb.md](amd-apcb.md).
+`fstart-apcb-source` compiles schema-validated TOML to APCB v2/v3 without a binary
+template. It also supports lossless typed diagnostic export. Board sources and
+image integration are described in [amd-apcb.md](amd-apcb.md).
 
 ## Firmware blobs
 
@@ -189,6 +190,10 @@ apcb = { instances = 13 }
   to BIOS entries 0x60 and 0x68 with instance `n`.
 - `apcb = { template = ..., spds = [...], gpio = [[num, mux, bank] x 4], second-channel = false, strip-manufacturer = false }`:
   an APCB generated from a template (`ApcbFiles`). `gpio` has exactly four entries.
+
+For boards providing declarative `APCB_SOURCE` policy (including Vilboz), the
+instance metadata checks generated active/backup coverage instead. Their build
+plans bind neither extracted APCB files nor template/SPD files.
 
 ### Build inputs
 

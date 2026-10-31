@@ -3,32 +3,12 @@
 //! No AGESA structure synthesis: edit the supplied board-appropriate template.
 //! Channel 1 DIMM 1 uses its own SPD, not DIMM 0's.
 use super::Result;
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+use amd_apcb::memory::SpdDescriptor;
+use zerocopy::{FromBytes, IntoBytes};
 const GPIO_MAGIC: [u8; 12] = [
     0xfa, 0xde, 0xdd, 0xad, 0xfa, 0xde, 0xdd, 0xad, 0xfa, 0xde, 0xdd, 0xad,
 ];
 const SPD_MAGIC: [u8; 6] = [0xf0, 0x05, 0xba, 0x11, 0, 0];
-#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
-#[repr(C)]
-struct SpdDescriptor {
-    valid: u8,
-    present: u8,
-    page: u8,
-    nvdimm: u8,
-    manufacturer: [u8; 4],
-    address: [u8; 4],
-    mux_present: u8,
-    mux_address: u8,
-    mux_channel: u8,
-    padding0: u8,
-    technology: [u8; 4],
-    package: [u8; 4],
-    socket: u8,
-    channel: u8,
-    dimm: u8,
-    padding1: u8,
-}
-const _: () = assert!(core::mem::size_of::<SpdDescriptor>() == 28);
 
 /// Four (GPIO number, IOMUX selector, bank control) triples in RAM-ID bit order.
 pub fn inject(
@@ -69,12 +49,14 @@ pub fn inject(
         }
         let mut descriptor = SpdDescriptor::read_from_bytes(&template[descriptor_start..offset])
             .map_err(|_| "invalid APCB SPD descriptor")?;
-        if descriptor.channel > 1 || descriptor.dimm > 1 {
+        let channel = descriptor.channel().map_err(|e| format!("{e:?}"))?;
+        let dimm = descriptor.dimm().map_err(|e| format!("{e:?}"))?;
+        if channel > 1 || dimm > 1 {
             return Err("APCB DIMM/channel selector exceeds one".into());
         }
-        let spd = spds[usize::from(descriptor.channel)][usize::from(descriptor.dimm)];
-        descriptor.valid = u8::from(spd.is_some());
-        descriptor.present = descriptor.valid;
+        let spd = spds[usize::from(channel)][usize::from(dimm)];
+        descriptor.set_dram_down_spd_valid(spd.is_some());
+        descriptor.set_dimm_present(spd.is_some());
         output[descriptor_start..offset].copy_from_slice(descriptor.as_bytes());
         output[offset..end].copy_from_slice(spd.unwrap_or(&[0; 512]));
         if strip_manufacturer {

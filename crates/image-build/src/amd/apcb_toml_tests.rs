@@ -2,16 +2,15 @@
 use super::*;
 const ROME: &str = include_str!("../../../../boards/tyan/s8030/apcb/rome.toml");
 const TABLES: &str = include_str!("../../../platform-sp3/src/host/apcb/ddr4.toml");
-const OLD_ROME: &str = include_str!("../../../../boards/tyan/s8030/apcb/rome.json");
-const OLD_TABLES: &str = include_str!("../../../platform-sp3/src/host/apcb/ddr4.json");
 
 #[test]
 fn rome_toml_is_byte_exact_without_json_templates() {
     let built = compile(ROME, TABLES).unwrap();
-    let old = apcb_v3::compile(OLD_ROME, &serde_json::from_str(OLD_TABLES).unwrap()).unwrap();
     assert_eq!(built.len(), 5);
-    assert_eq!(built, old);
-    let hashes: BTreeSet<_> = built.iter().map(|r| apcb_v3::sha256(&r.bytes)).collect();
+    let hashes: BTreeSet<_> = built
+        .iter()
+        .map(|r| apcb_source::sha256(&r.bytes))
+        .collect();
     assert_eq!(
         hashes,
         BTreeSet::from([
@@ -20,6 +19,171 @@ fn rome_toml_is_byte_exact_without_json_templates() {
             "20640126271299dc0083d9855eef4909e3743ad2c6474fdd6052e08c6fbcbe69".to_owned(),
         ])
     );
+}
+
+#[test]
+fn all_v3_toml_sources_preserve_all_eleven_payloads() {
+    let mut count = 0;
+    for source in [
+        ROME,
+        include_str!("../../../../boards/tyan/s8030/apcb/milan.toml"),
+        include_str!("../../../../boards/amd/ethanolx/apcb/milan.toml"),
+    ] {
+        count += Configuration::parse(source).unwrap().blobs.len();
+        let actual = compile(source, TABLES).unwrap();
+        assert_eq!(actual.len(), 5);
+        for r in actual {
+            assert_eq!(
+                apcb_source::sha256(&r.bytes),
+                r.donor_sha256,
+                "{:?}",
+                r.selector
+            );
+        }
+    }
+    assert_eq!(count, 11);
+}
+
+#[test]
+fn legacy_layouts_parameters_and_spd_assets_are_checked() {
+    let spds = BTreeMap::new();
+    for (text, generation) in [
+        ("kind='legacy-rdimm-data'\nrows=[]", Generation::Rome),
+        ("kind='legacy-lrdimm-data'\nrows=[]", Generation::Picasso),
+        ("kind='sodimm-data'\nrows=[]", Generation::Zeppelin),
+        ("kind='rdimm-data'\nrows=[]", Generation::Zeppelin),
+    ] {
+        let table: Table = toml::from_str(text).unwrap();
+        assert!(
+            table
+                .lower(generation, &spds)
+                .unwrap_err()
+                .contains("incompatible")
+        );
+    }
+    let mj11 = Configuration::parse(include_str!(
+        "../../../../boards/gigabyte/mj11/apcb/ec1.toml"
+    ))
+    .unwrap();
+    let mut settings = mj11
+        .tables
+        .into_values()
+        .find_map(|table| match table {
+            Table::Parameters { values, .. } if !values.is_empty() => Some(values),
+            _ => None,
+        })
+        .unwrap();
+    let mut setting = settings.remove(0);
+    setting.width = legacy::Width::U8;
+    setting.value = 256;
+    assert!(
+        legacy::parameters(
+            Group::Memory,
+            ParameterLayer::Default,
+            std::slice::from_ref(&setting)
+        )
+        .unwrap_err()
+        .contains("width")
+    );
+    setting.width = legacy::Width::U64;
+    setting.value = u64::MAX;
+    assert!(
+        legacy::parameters(
+            Group::Memory,
+            ParameterLayer::Default,
+            std::slice::from_ref(&setting)
+        )
+        .is_ok()
+    );
+    setting.token = amd_apcb::ParameterTokenConfig::Limit;
+    assert!(
+        legacy::parameters(Group::Memory, ParameterLayer::Default, &[setting])
+            .unwrap_err()
+            .contains("termination")
+    );
+    let vilboz = Configuration::parse(include_str!(
+        "../../../../boards/google/zork/apcb/vilboz.toml"
+    ))
+    .unwrap();
+    let mut table = vilboz
+        .tables
+        .into_values()
+        .find(|t| matches!(t, Table::SpdInfo { .. }))
+        .unwrap();
+    let Table::SpdInfo { slots } = &mut table else {
+        unreachable!()
+    };
+    slots[0].image = Some("absent".into());
+    assert!(
+        table
+            .lower(Generation::Picasso, &spds)
+            .unwrap_err()
+            .contains("unknown SPD image")
+    );
+    assert!(
+        table
+            .lower(
+                Generation::Picasso,
+                &BTreeMap::from([("absent".into(), "aa".into())])
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn legacy_sources_cover_every_ram_id_and_both_mj11_variants() {
+    let vilboz = include_str!("../../../../boards/google/zork/apcb/vilboz.toml");
+    let hashes = [
+        "142412100b3d54382a3dbee2e4eed65eccb6aba55ff9780d357298e824d6fba5",
+        "142412100b3d54382a3dbee2e4eed65eccb6aba55ff9780d357298e824d6fba5",
+        "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1",
+        "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1",
+        "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1",
+        "90c47cd6f665e004988ece4dd620586ff66948719b9f896913080f59e1131663",
+        "90c47cd6f665e004988ece4dd620586ff66948719b9f896913080f59e1131663",
+        "5ccda7dcba6668369b6b8e0b99dab7990682a62380f3d606b03f5e150119c309",
+        "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b",
+        "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b",
+        "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1",
+        "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1",
+        "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b",
+    ];
+    let empty = "schema=1\n[tables]\n";
+    let records = compile(vilboz, empty).unwrap();
+    assert_eq!(records.len(), 26);
+    for r in records {
+        assert_eq!(
+            apcb_source::sha256(&r.bytes),
+            hashes[usize::from(r.selector.instance)]
+        );
+        assert_eq!(r.bytes.len(), 4672);
+        apcb_source::decode(&r.bytes).unwrap();
+    }
+    for (source, hash) in [
+        (
+            include_str!("../../../../boards/gigabyte/mj11/apcb/ec0.toml"),
+            "aeb727e324f1d51c586e742ceedaae8d41e4ad64c410207d9e8d04f3f12492d0",
+        ),
+        (
+            include_str!("../../../../boards/gigabyte/mj11/apcb/ec1.toml"),
+            "fa1f884641edd40ba9bc8a6f327b03d71fd0d12edb80161cd284cffa28a22bc9",
+        ),
+    ] {
+        let built = compile(source, empty).unwrap();
+        assert_eq!(built.len(), 2);
+        assert_eq!(built[0].bytes, built[1].bytes);
+        assert_eq!(
+            built[0].selector.kind,
+            fstart_amdfw_format::directory::bios::APCB
+        );
+        assert_eq!(
+            built[1].selector.kind,
+            fstart_amdfw_format::directory::bios::APCB_BACKUP
+        );
+        assert_eq!(built[0].bytes.len(), 6416);
+        assert_eq!(apcb_source::sha256(&built[0].bytes), hash);
+        apcb_source::decode(&built[0].bytes).unwrap();
+    }
 }
 
 #[test]
@@ -36,7 +200,7 @@ fn invalid_authoring_input_is_rejected() {
     let bad_sources = [
         format!("typo = 1\n{ROME}"),
         ROME.replacen("name = \"board\"", "name = \"board\"\nrevission = 1", 1),
-        ROME.replacen("generation = \"rome\"", "generation = \"milan\"", 1),
+        ROME.replacen("generation = \"rome\"", "generation = \"genoa\"", 1),
         ROME.replacen("schema = 1", "schema = 2", 1),
         ROME.replacen(
             "kind = \"platform-tuning-end\"",
@@ -140,7 +304,12 @@ fn emitted_schemas_have_strict_roots_and_known_tokens() {
             400, 533, 667, 800, 1066, 1333, 1600, 1866, 2133, 2400, 2667, 2933, 3200
         ])
     );
-    let eeprom = &board["definitions"]["Table"]["oneOf"][0]["properties"];
+    let eeprom = &board["definitions"]["Table"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["properties"]["kind"]["enum"] == json!(["board-id-eeprom"]))
+        .unwrap()["properties"];
     assert!(eeprom.get("id-offset").is_some());
     assert!(eeprom.get("id_offset").is_none());
     assert!(board.to_string().contains("AblSerialBaudRate"));

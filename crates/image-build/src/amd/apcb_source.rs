@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Source-built APCB v3 configuration for the PSP's AGESA boot loader.
+//! Source-built APCB v2/v3 configuration for the PSP's AGESA boot loader.
 //!
 //! Oxide's `amd-apcb` owns the binary layouts, typed tables and token encoding.
 //! We retain source entry order: its normal builder sorts entries without
@@ -10,7 +10,10 @@ use amd_apcb::{Apcb, ApcbIoOptions};
 use fstart_amdfw_format::directory::{BiosEntry, Entry, Levels, bios};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, VecDeque},
+};
 
 pub type Tables = BTreeMap<String, Value>;
 
@@ -22,14 +25,14 @@ pub struct Selector {
     pub subprogram: u8,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sources {
     pub schema: u8,
     pub blobs: Vec<Source>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub name: String,
@@ -69,11 +72,15 @@ fn load(bytes: &[u8]) -> Result<Apcb<'static>> {
         .map_err(|e| format!("APCB: {e:?}"))?;
     let header = serde_json::to_value(*apcb.header().map_err(|e| format!("{e:?}"))?)
         .map_err(|e| e.to_string())?;
-    if number(&header, "version")? != 0x30 || number(&header, "header_size")? != 128 {
-        return Err("source generation currently supports APCB v3 only".into());
+    let header_size = number(&header, "header_size")?;
+    if !matches!(
+        (number(&header, "version")?, header_size),
+        (0x20, 32) | (0x30, 128)
+    ) {
+        return Err("source generation supports APCB v2 and v3 headers".into());
     }
     let size = number(&header, "apcb_size")?;
-    if size > bytes.len() || size < 128 {
+    if size > bytes.len() || size < header_size {
         return Err("invalid declared APCB size".into());
     }
     Ok(apcb)
@@ -146,10 +153,14 @@ pub fn build(source: &Value, tables: &Tables) -> Result<Vec<u8>> {
             object.extend(body.clone());
         }
     }
-    if number(&source["header"], "version")? != 0x30
-        || number(&source["header"], "header_size")? != 128
-    {
-        return Err("source generation currently supports APCB v3 only".into());
+    if !matches!(
+        (
+            number(&source["header"], "version")?,
+            number(&source["header"], "header_size")?
+        ),
+        (0x20, 32) | (0x30, 128)
+    ) {
+        return Err("source generation supports APCB v2 and v3 headers".into());
     }
     let apcb: Apcb<'static> =
         serde_json::from_value(source.clone()).map_err(|e| format!("APCB source: {e}"))?;
@@ -202,9 +213,10 @@ pub fn build(source: &Value, tables: &Tables) -> Result<Vec<u8>> {
                 .get(offset..offset + length)
                 .ok_or("invalid APCB entry size")?
                 .to_vec();
-            if entries.insert(entry_key(&entry["header"])?, data).is_some() {
-                return Err("duplicate APCB entry selector/priority".into());
-            }
+            entries
+                .entry(entry_key(&entry["header"])?)
+                .or_insert_with(VecDeque::new)
+                .push_back(data);
             offset += length;
         }
         if offset != end || groups.insert(id, (group_header, entries)).is_some() {
@@ -223,11 +235,12 @@ pub fn build(source: &Value, tables: &Tables) -> Result<Vec<u8>> {
         {
             output.extend(
                 entries
-                    .remove(&entry_key(&entry["header"])?)
-                    .ok_or("APCB builder changed an entry header or source has duplicates")?,
+                    .get_mut(&entry_key(&entry["header"])?)
+                    .and_then(VecDeque::pop_front)
+                    .ok_or("APCB builder changed an entry header or source has extra duplicates")?,
             );
         }
-        if !entries.is_empty() {
+        if entries.values().any(|queue| !queue.is_empty()) {
             return Err("APCB source omitted entries".into());
         }
     }
@@ -241,6 +254,10 @@ pub fn build(source: &Value, tables: &Tables) -> Result<Vec<u8>> {
 
 pub fn compile(source: &str, tables: &Tables) -> Result<Vec<Replacement>> {
     let sources: Sources = serde_json::from_str(source).map_err(|e| e.to_string())?;
+    compile_sources(sources, tables)
+}
+
+pub(crate) fn compile_sources(sources: Sources, tables: &Tables) -> Result<Vec<Replacement>> {
     if sources.schema != 1 || sources.blobs.is_empty() {
         return Err("expected APCB source schema 1 with at least one blob".into());
     }
@@ -358,5 +375,5 @@ pub fn replace(
 }
 
 #[cfg(test)]
-#[path = "apcb_v3_tests.rs"]
+#[path = "apcb_source_tests.rs"]
 mod tests;
