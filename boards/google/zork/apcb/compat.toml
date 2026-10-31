@@ -1,0 +1,359 @@
+# Decoded vendor compatibility VALUES. Not policy, layouts or encoder instructions.
+# Unverified fields remain here explicitly; token storage/order belong to the platform ABI.
+"schema" = 1
+"provenance" = "Google Vilboz vendor RAM-ID 0..12 payloads; reviewed donor hashes below"
+
+["images"."ram-id-0"]
+"revision" = 717223047
+"donor-sha256" = "142412100b3d54382a3dbee2e4eed65eccb6aba55ff9780d357298e824d6fba5"
+
+["images"."ram-id-1"]
+"revision" = 717223047
+"donor-sha256" = "142412100b3d54382a3dbee2e4eed65eccb6aba55ff9780d357298e824d6fba5"
+
+["images"."ram-id-2"]
+"revision" = 717223047
+"donor-sha256" = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+"spd-image" = "ram-id-2"
+
+["images"."ram-id-3"]
+"revision" = 717223047
+"donor-sha256" = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+"spd-image" = "ram-id-2"
+
+["images"."ram-id-4"]
+"revision" = 717223047
+"donor-sha256" = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+"spd-image" = "ram-id-2"
+
+["images"."ram-id-5"]
+"revision" = 717223047
+"donor-sha256" = "90c47cd6f665e004988ece4dd620586ff66948719b9f896913080f59e1131663"
+"spd-image" = "ram-id-5"
+
+["images"."ram-id-6"]
+"revision" = 717223047
+"donor-sha256" = "90c47cd6f665e004988ece4dd620586ff66948719b9f896913080f59e1131663"
+"spd-image" = "ram-id-5"
+
+["images"."ram-id-7"]
+"revision" = 717223047
+"donor-sha256" = "5ccda7dcba6668369b6b8e0b99dab7990682a62380f3d606b03f5e150119c309"
+"spd-image" = "ram-id-7"
+
+["images"."ram-id-8"]
+"revision" = 717223047
+"donor-sha256" = "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b"
+"spd-image" = "ram-id-8"
+
+["images"."ram-id-9"]
+"revision" = 717223047
+"donor-sha256" = "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b"
+"spd-image" = "ram-id-8"
+
+["images"."ram-id-10"]
+"revision" = 717223047
+"donor-sha256" = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+"spd-image" = "ram-id-2"
+
+["images"."ram-id-11"]
+"revision" = 717223047
+"donor-sha256" = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+"spd-image" = "ram-id-2"
+
+["images"."ram-id-12"]
+"revision" = 717223047
+"donor-sha256" = "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b"
+"spd-image" = "ram-id-8"
+
+["defaults"."board-id-gpio"]
+"pins" = [{ "bank_control" = 0, "iomux_control" = 1, "pin" = 132 }, { "bank_control" = 0, "iomux_control" = 1, "pin" = 90 }, { "bank_control" = 0, "iomux_control" = 3, "pin" = 86 }, { "bank_control" = 0, "iomux_control" = 1, "pin" = 69 }]
+"mapping" = [{ "board_instance_index" = 0, "id_and_feature_mask" = 15, "id_and_feature_value" = 0 }, { "board_instance_index" = 1, "id_and_feature_mask" = 15, "id_and_feature_value" = 1 }, { "board_instance_index" = 2, "id_and_feature_mask" = 15, "id_and_feature_value" = 2 }, { "board_instance_index" = 3, "id_and_feature_mask" = 15, "id_and_feature_value" = 3 }, { "board_instance_index" = 4, "id_and_feature_mask" = 15, "id_and_feature_value" = 4 }, { "board_instance_index" = 5, "id_and_feature_mask" = 15, "id_and_feature_value" = 5 }, { "board_instance_index" = 6, "id_and_feature_mask" = 15, "id_and_feature_value" = 6 }, { "board_instance_index" = 7, "id_and_feature_mask" = 15, "id_and_feature_value" = 7 }, { "board_instance_index" = 8, "id_and_feature_mask" = 15, "id_and_feature_value" = 8 }, { "board_instance_index" = 9, "id_and_feature_mask" = 15, "id_and_feature_value" = 9 }, { "board_instance_index" = 10, "id_and_feature_mask" = 15, "id_and_feature_value" = 10 }, { "board_instance_index" = 11, "id_and_feature_mask" = 15, "id_and_feature_value" = 11 }, { "board_instance_index" = 12, "id_and_feature_mask" = 15, "id_and_feature_value" = 12 }, { "board_instance_index" = 13, "id_and_feature_mask" = 15, "id_and_feature_value" = 13 }, { "board_instance_index" = 14, "id_and_feature_mask" = 15, "id_and_feature_value" = 14 }, { "board_instance_index" = 15, "id_and_feature_mask" = 15, "id_and_feature_value" = 15 }]
+
+["defaults"."spd-info"]
+"slots" = [{ "descriptor" = { "address" = 160, "channel" = 0, "dimm" = 0, "dimm_present" = true, "dram_down_spd_valid" = true, "dram_manufacturer_id" = 0, "module_manufacturer_id" = 0, "mux_address" = 0, "mux_channel" = 0, "mux_present" = false, "nvdimm_present" = false, "package" = 1, "page_address" = 0, "shadow_spd_valid" = false, "socket" = 0, "technology" = 3 } }, { "descriptor" = { "address" = 164, "channel" = 0, "dimm" = 1, "dimm_present" = false, "dram_down_spd_valid" = false, "dram_manufacturer_id" = 0, "module_manufacturer_id" = 0, "mux_address" = 0, "mux_channel" = 0, "mux_present" = false, "nvdimm_present" = false, "package" = 1, "page_address" = 0, "shadow_spd_valid" = false, "socket" = 0, "technology" = 3 } }, { "descriptor" = { "address" = 162, "channel" = 1, "dimm" = 0, "dimm_present" = false, "dram_down_spd_valid" = false, "dram_manufacturer_id" = 0, "module_manufacturer_id" = 0, "mux_address" = 0, "mux_channel" = 0, "mux_present" = false, "nvdimm_present" = false, "package" = 1, "page_address" = 0, "shadow_spd_valid" = false, "socket" = 0, "technology" = 3 } }, { "descriptor" = { "address" = 166, "channel" = 1, "dimm" = 1, "dimm_present" = false, "dram_down_spd_valid" = false, "dram_manufacturer_id" = 0, "module_manufacturer_id" = 0, "mux_address" = 0, "mux_channel" = 0, "mux_present" = false, "nvdimm_present" = false, "package" = 1, "page_address" = 0, "shadow_spd_valid" = false, "socket" = 0, "technology" = 3 } }]
+
+["defaults"."spd-smbus"]
+"slots" = [{ "socket" = 0, "channel" = 0, "dimm" = 0, "address" = 160, "mux" = 255, "mux-channel" = 255, "mux-control" = 255 }, { "socket" = 0, "channel" = 0, "dimm" = 1, "address" = 164, "mux" = 255, "mux-channel" = 255, "mux-control" = 255 }, { "socket" = 0, "channel" = 1, "dimm" = 0, "address" = 162, "mux" = 255, "mux-channel" = 255, "mux-control" = 255 }, { "socket" = 0, "channel" = 1, "dimm" = 1, "address" = 166, "mux" = 255, "mux-channel" = 255, "mux-control" = 255 }]
+
+["defaults"."platform-override"]
+"clock-pins" = [0, 1, 2, 3, 0, 0, 0, 0]
+"cke-pins" = [0, 1, 2, 3]
+"odt-pins" = [0, 1, 2, 3]
+"chip-select-pins" = [0, 1, 2, 3, 0, 0, 0, 0]
+"dimms-per-channel" = 1
+"channels-per-socket" = 2
+
+["defaults"."console"."settings"."abl_breakpoint_control"]
+"break_on_all_dies" = false
+"enable_breakpoint" = false
+
+["defaults"."console"."settings"."abl_console_out_control"]
+"abl_console_port" = 128
+"enable_console_logging" = false
+"enable_mem_flow_logging" = true
+"enable_mem_getreg_logging" = false
+"enable_mem_pmu_logging" = false
+"enable_mem_pmu_sram_read_logging" = false
+"enable_mem_pmu_sram_write_logging" = false
+"enable_mem_setreg_logging" = true
+"enable_mem_status_logging" = false
+"enable_mem_test_verbose_logging" = false
+
+["defaults"."error-output"."settings"]
+"beep_code_table" = [{ "custom_error_type" = "General", "peak_attr" = { "peak_count" = 3, "pulse_width" = 3, "repeat_count" = 0 }, "peak_map" = 21845 }, { "custom_error_type" = "Memory", "peak_attr" = { "peak_count" = 5, "pulse_width" = 3, "repeat_count" = 0 }, "peak_map" = 21845 }, { "custom_error_type" = "Df", "peak_attr" = { "peak_count" = 7, "pulse_width" = 3, "repeat_count" = 0 }, "peak_map" = 21845 }, { "custom_error_type" = "Ccx", "peak_attr" = { "peak_count" = 9, "pulse_width" = 3, "repeat_count" = 0 }, "peak_map" = 21845 }, { "custom_error_type" = "Gnb", "peak_attr" = { "peak_count" = 11, "pulse_width" = 3, "repeat_count" = 0 }, "peak_map" = 21845 }, { "custom_error_type" = "Psp", "peak_attr" = { "peak_count" = 13, "pulse_width" = 3, "repeat_count" = 0 }, "peak_map" = 21845 }, { "custom_error_type" = "Smu", "peak_attr" = { "peak_count" = 15, "pulse_width" = 3, "repeat_count" = 0 }, "peak_map" = 21845 }, { "custom_error_type" = "Unknown", "peak_attr" = { "peak_count" = 3, "pulse_width" = 3, "repeat_count" = 0 }, "peak_map" = 21845 }]
+"clear_acknowledgement" = false
+"enable_error_reporting" = false
+"enable_error_reporting_beep_codes" = false
+"enable_error_reporting_gpio" = false
+"enable_heart_beat" = false
+"enable_power_good_gpio" = false
+"enable_using_handshake" = false
+"input_port" = 132
+"input_port_size" = "32 Bit"
+"input_port_type" = "FchHtIo"
+"output_delay" = 15000
+"output_port" = 128
+"output_port_size" = "32 Bit"
+"output_port_type" = "FchHtIo"
+"stop_on_first_fatal_error" = true
+
+["defaults"."error-output"."settings"."error_reporting_gpio"]
+"bank_control" = 192
+"iomux_control" = 1
+"pin" = 85
+
+["defaults"."error-output"."settings"."power_good_gpio"]
+"bank_control" = 0
+"iomux_control" = 0
+"pin" = 0
+
+["defaults"."voltage-control"."settings"]
+"clear_acknowledgement" = false
+"enabled" = true
+"input_port" = 132
+"input_port_size" = "32 Bit"
+"input_port_type" = "FchHtIo"
+"output_port" = 128
+"output_port_size" = "32 Bit"
+"output_port_type" = "FchHtIo"
+
+["defaults"."sodimm-odt"]
+"rows" = [{ "ranks" = [["empty"], ["single"], []], "patterns" = [[0, 0], [0, 0], [0, 2], [0, 0]] }, { "ranks" = [["empty"], ["dual"], []], "patterns" = [[0, 0], [0, 0], [0, 2], [0, 8]] }, { "ranks" = [["single"], ["empty"], []], "patterns" = [[0, 0], [0, 0], [0, 0], [0, 0]] }, { "ranks" = [["dual"], ["empty"], []], "patterns" = [[0, 0], [0, 0], [0, 0], [0, 0]] }, { "ranks" = [["single"], ["single"], []], "patterns" = [[2, 2], [0, 0], [1, 1], [0, 0]] }, { "ranks" = [["single"], ["dual"], []], "patterns" = [[2, 2], [0, 0], [1, 1], [1, 1]] }, { "ranks" = [["dual"], ["single"], []], "patterns" = [[2, 2], [2, 2], [1, 1], [0, 0]] }, { "ranks" = [["dual"], ["dual"], []], "patterns" = [[2, 2], [2, 2], [1, 1], [1, 1]] }]
+
+["defaults"."sodimm-cad"]
+"rows" = [{ "address_command_control" = 0, "address_command_drive_strength" = "24 Ω", "cke_drive_strength" = "24 Ω", "clk_drive_strength" = "24 Ω", "cs_odt_drive_strength" = "24 Ω", "ddr_rates" = { "ddr1333" = true, "ddr1600" = true, "ddr1866" = true, "ddr2133" = true, "ddr2400" = true }, "dimm0_ranks" = { "single_rank" = true }, "dimm1_ranks" = { "unpopulated" = true }, "dimm_slots_per_channel" = 1, "gear_down_mode" = 0, "slow_mode" = 0, "vdd_io" = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } }, { "address_command_control" = 3538944, "address_command_drive_strength" = "24 Ω", "cke_drive_strength" = "24 Ω", "clk_drive_strength" = "24 Ω", "cs_odt_drive_strength" = "24 Ω", "ddr_rates" = { "ddr1333" = true }, "dimm0_ranks" = { "dual_rank" = true }, "dimm1_ranks" = { "unpopulated" = true }, "dimm_slots_per_channel" = 1, "gear_down_mode" = 0, "slow_mode" = 0, "vdd_io" = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } }, { "address_command_control" = 0, "address_command_drive_strength" = "24 Ω", "cke_drive_strength" = "24 Ω", "clk_drive_strength" = "24 Ω", "cs_odt_drive_strength" = "24 Ω", "ddr_rates" = { "ddr1600" = true, "ddr1866" = true, "ddr2133" = true, "ddr2400" = true }, "dimm0_ranks" = { "dual_rank" = true }, "dimm1_ranks" = { "unpopulated" = true }, "dimm_slots_per_channel" = 1, "gear_down_mode" = 0, "slow_mode" = 1, "vdd_io" = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } }, { "address_command_control" = 0, "address_command_drive_strength" = "24 Ω", "cke_drive_strength" = "24 Ω", "clk_drive_strength" = "24 Ω", "cs_odt_drive_strength" = "24 Ω", "ddr_rates" = { "ddr2667" = true }, "dimm0_ranks" = { "dual_rank" = true, "single_rank" = true }, "dimm1_ranks" = { "unpopulated" = true }, "dimm_slots_per_channel" = 1, "gear_down_mode" = 1, "slow_mode" = 1, "vdd_io" = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } }, { "address_command_control" = 0, "address_command_drive_strength" = "24 Ω", "cke_drive_strength" = "24 Ω", "clk_drive_strength" = "24 Ω", "cs_odt_drive_strength" = "24 Ω", "ddr_rates" = { "ddr2933" = true, "ddr3200" = true }, "dimm0_ranks" = { "single_rank" = true }, "dimm1_ranks" = { "unpopulated" = true }, "dimm_slots_per_channel" = 1, "gear_down_mode" = 1, "slow_mode" = 1, "vdd_io" = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } }]
+
+["defaults"."sodimm-data"]
+"rows" = [{ "slots" = [1], "rates" = [1333], "rank0" = ["single"], "rank1" = ["empty"], "rtt-nom" = "Off", "rtt-wr" = "Off", "rtt-park" = "80 Ω", "drive" = [30, 30, 10], "pmu-vref" = 90, "dram-vref" = { "Range1" = "75.60%" } }, { "slots" = [1], "rates" = [1333], "rank0" = ["dual"], "rank1" = ["empty"], "rtt-nom" = "Off", "rtt-wr" = "80 Ω", "rtt-park" = "240 Ω", "drive" = [30, 30, 10], "pmu-vref" = 90, "dram-vref" = { "Range1" = "75.60%" } }, { "slots" = [1], "rates" = [1600, 1866, 2133, 2400, 2667], "rank0" = ["single"], "rank1" = ["empty"], "rtt-nom" = "Off", "rtt-wr" = "Off", "rtt-park" = "48 Ω", "drive" = [63, 63, 24], "pmu-vref" = 90, "dram-vref" = { "Range1" = "75.60%" } }, { "slots" = [1], "rates" = [1600, 1866, 2133, 2400, 2667], "rank0" = ["dual"], "rank1" = ["empty"], "rtt-nom" = "Off", "rtt-wr" = "80 Ω", "rtt-park" = "240 Ω", "drive" = [63, 63, 24], "pmu-vref" = 90, "dram-vref" = { "Range1" = "75.60%" } }, { "slots" = [1], "rates" = [2933, 3200], "rank0" = ["single"], "rank1" = ["empty"], "rtt-nom" = "Off", "rtt-wr" = "Off", "rtt-park" = "48 Ω", "drive" = [63, 63, 24], "pmu-vref" = 90, "dram-vref" = { "Range1" = "75.60%" } }]
+
+["defaults"."sodimm-max-frequency"]
+"rows" = [{ "slots" = [1], "conditions" = [1, 1, 0, 0], "speed" = "Ddr3200" }, { "slots" = [1], "conditions" = [1, 0, 1, 0], "speed" = "Ddr3200" }]
+
+["defaults"."sodimm-stretch-frequency"]
+"rows" = [{ "slots" = [1], "conditions" = [1, 1, 0, 0], "speed" = "Ddr3200" }, { "slots" = [1], "conditions" = [1, 0, 1, 0], "speed" = "Ddr3200" }]
+
+["parameters"."df-default"]
+"0x0301" = 3
+"0x0302" = 3
+"0x0303" = 3
+"0x0304" = 3
+"0x0305" = 3
+"0x0306" = 208
+"0x0307" = 7
+"0x0308" = 7
+"0x0309" = 3
+"0x030a" = 134217728
+"0x030b" = 100
+"0x030c" = 0
+
+["parameters"."df-override"]
+"0x0301" = 3
+"0x0302" = 3
+"0x0303" = 3
+"0x0304" = 3
+"0x0305" = 3
+"0x0306" = 208
+"0x0307" = 7
+"0x0308" = 7
+"0x0309" = 3
+"0x030a" = 134217728
+"0x030b" = 100
+"0x030c" = 0
+
+["parameters"."memory-default"]
+"0x0701" = 1
+"0x0702" = 0
+"0x0703" = 1200
+"0x0704" = 1
+"0x0705" = 0
+"0x0706" = 1
+"0x0707" = 0
+"0x0708" = 1
+"0x0709" = 0
+"0x070a" = 1
+"0x070b" = 134217728
+"0x070c" = 1
+"0x070d" = 2
+"0x070e" = 3
+"0x070f" = 0
+"0x0710" = 3
+"0x0711" = 0
+"0x0712" = 0
+"0x0713" = 0
+"0x0715" = 0
+"0x0716" = 16777152
+"0x0717" = 0
+"0x0718" = 1600
+"0x0719" = 0
+"0x071a" = 1
+"0x071b" = 1
+"0x071c" = 0
+"0x071d" = 0
+"0x071e" = 0
+"0x071f" = 1
+"0x0720" = 0
+"0x0721" = 1
+"0x0722" = 0
+"0x0723" = 0
+"0x0724" = 2
+"0x0725" = 0
+"0x0726" = 0
+"0x0727" = 0
+"0x0728" = 0
+"0x0729" = 0
+"0x072a" = 0
+"0x072b" = 0
+"0x072c" = 0
+"0x072d" = 0
+"0x072e" = 0
+"0x072f" = 0
+"0x0730" = 1
+"0x0731" = 1
+"0x0732" = 0
+"0x0738" = 0
+"0x0739" = 1
+"0x073a" = 30
+"0x073b" = 0
+"0x0737" = 0
+"0x073c" = 0
+"0x0733" = 0
+"0x0734" = 0
+"0x0736" = 0
+"0x0735" = 0
+"0x073f" = 0
+"0x073d" = 0
+"0x073e" = 0
+"0x0740" = 1
+
+["parameters"."memory-override"]
+"0x0701" = 1
+"0x0702" = 0
+"0x0703" = 1200
+"0x0704" = 1
+"0x0705" = 0
+"0x0706" = 1
+"0x0707" = 0
+"0x0708" = 1
+"0x0709" = 0
+"0x070a" = 1
+"0x070b" = 134217728
+"0x070c" = 1
+"0x070d" = 2
+"0x070e" = 3
+"0x070f" = 0
+"0x0710" = 3
+"0x0711" = 0
+"0x0712" = 0
+"0x0713" = 0
+"0x0715" = 0
+"0x0716" = 16777152
+"0x0717" = 0
+"0x0718" = 1600
+"0x0719" = 0
+"0x071a" = 1
+"0x071b" = 1
+"0x071c" = 0
+"0x071d" = 0
+"0x071e" = 0
+"0x071f" = 1
+"0x0720" = 0
+"0x0721" = 1
+"0x0722" = 0
+"0x0723" = 0
+"0x0724" = 2
+"0x0725" = 0
+"0x0726" = 0
+"0x0727" = 0
+"0x0728" = 0
+"0x0729" = 0
+"0x072a" = 0
+"0x072b" = 0
+"0x072c" = 0
+"0x072d" = 0
+"0x072e" = 0
+"0x072f" = 0
+"0x0730" = 1
+"0x0731" = 1
+"0x0732" = 0
+"0x0738" = 0
+"0x0739" = 1
+"0x073a" = 30
+"0x073b" = 0
+"0x0737" = 0
+"0x073c" = 0
+"0x0733" = 0
+"0x0734" = 0
+"0x0736" = 0
+"0x0735" = 0
+"0x073f" = 0
+"0x073d" = 0
+"0x073e" = 0
+"0x0740" = 1
+
+["parameters"."fch-default"]
+"0x1c01" = 0
+"0x1c02" = 0
+"0x1c03" = 0
+"0x1c04" = 0
+"0x1c05" = 0
+"0x1c06" = 115200
+"0x1c07" = 1
+
+["parameters"."fch-override"]
+"0x1c01" = 0
+"0x1c02" = 0
+"0x1c03" = 0
+"0x1c04" = 0
+"0x1c05" = 0
+"0x1c06" = 115200
+"0x1c07" = 1
+
+["parameters"."cbs-default"]
+"0x0018" = 1
+"0x0019" = 1
+"0x001a" = 0
+"0x001b" = 128
+"0x0022" = 57
+"0x0026" = 26
+"0x002a" = 18
+"0x002c" = 0
+"0x002e" = 3
+"0x0030" = 3
+"0x0032" = 312
+"0x0034" = 192
+"0x0036" = 132
+"0x0037" = 5
+"0x0051" = 0
+"0x0052" = 0
+"0x0053" = 0
+
+["parameters"."cbs-debug"]
+"0x0028" = 1
+"0x0029" = 255
+
+["spd-images"]
+"ram-id-2" = "23 11 0c 03 45 21 00 08 00 00 00 00 02 03 00 00\n00 00 05 06 f8 ff 02 00 6e 6e 6e 11 00 6e f0 0a\n20 08 00 05 00 f0 2b 34 28 00 78 00 14 3c 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 9c b5 00 00 00 00 bc 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n"
+"ram-id-5" = "23 11 0c 03 46 29 00 08 00 00 00 00 02 03 00 00\n00 00 05 06 f8 ff 02 00 6e 6e 6e 11 00 6e f0 0a\n20 08 00 05 00 f0 2b 34 28 00 78 00 14 3c 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 9c b5 00 00 00 00 bc 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n"
+"ram-id-7" = "23 11 0c 03 85 21 91 08 00 00 00 00 01 03 00 00\n00 00 05 06 f8 ff 02 00 6e 6e 6e 11 00 6e f0 0a\n20 08 00 05 00 f0 2b 34 28 00 78 00 14 3c 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 9c b5 00 00 00 00 bc 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n"
+"ram-id-8" = "23 11 0c 03 46 29 00 08 00 00 00 00 02 03 00 00\n00 00 05 06 f8 ff 02 00 6e 6e 6e 11 00 6e 30 11\nf0 0a 20 08 00 f0 2b 34 28 00 78 00 14 3c 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 9c b5 00 00 00 00 bc 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n"

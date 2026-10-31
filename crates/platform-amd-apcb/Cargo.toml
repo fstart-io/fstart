@@ -1,0 +1,15 @@
+[package]
+name = "fstart-platform-amd-apcb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["std"] }
+serde_json = "1"
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
+schemars = "0.8"
+num-traits = "0.2"
+fstart-amdfw-format = { workspace = true, features = ["serde"] }
+fstart-crypto = { workspace = true, features = ["sha2-digest"] }
+amd-apcb = { path = "../../vendor/amd-apcb", features = ["serde", "schemars"] }

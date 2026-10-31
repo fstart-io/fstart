@@ -679,18 +679,24 @@ fn composes_the_pinned_images() {
 
 #[test]
 fn generated_apcbs_leave_the_reviewed_donor_images_byte_identical() {
-    for (path, generation, source, profile) in [
+    use fstart_platform_amd_apcb::{
+        BoardData,
+        apcb_toml::{self, Abi},
+    };
+    for (path, generation, source, abi, compatibility) in [
         (
             "donors/rome-s8030-v404.bin",
             ROME,
             include_str!("../../../boards/tyan/s8030/apcb/rome.toml"),
-            crate::amd::apcb_toml::Profile::S8030RomeV404,
+            Abi::Rome,
+            include_str!("../../../boards/tyan/s8030/apcb/rome.compat.toml"),
         ),
         (
             "donors/milan-s8030-v404.bin",
             MILAN,
             include_str!("../../../boards/tyan/s8030/apcb/milan.toml"),
-            crate::amd::apcb_toml::Profile::S8030MilanV404,
+            Abi::Milan,
+            include_str!("../../../boards/tyan/s8030/apcb/milan.compat.toml"),
         ),
     ] {
         let Some(rom) = donor(path) else {
@@ -699,7 +705,12 @@ fn generated_apcbs_leave_the_reviewed_donor_images_byte_identical() {
         let mut generated = plan(&[generation]);
         generated.apcbs.push(GeneratedApcbs {
             generation,
-            replacements: crate::amd::apcb_toml::compile(source, profile).unwrap(),
+            replacements: apcb_toml::compile(
+                source,
+                abi,
+                &BoardData::parse(compatibility, "").unwrap(),
+            )
+            .unwrap(),
         });
         let old = compose(&rom, &plan(&[generation]), &linked_reset(), &ffs(0x4000)).unwrap();
         let new = compose(&rom, &generated, &linked_reset(), &ffs(0x4000)).unwrap();
@@ -709,6 +720,10 @@ fn generated_apcbs_leave_the_reviewed_donor_images_byte_identical() {
 
 #[test]
 fn generated_ethanolx_apcbs_are_identical_in_the_full_mirrored_readout() {
+    use fstart_platform_amd_apcb::{
+        BoardData,
+        apcb_toml::{self, Abi},
+    };
     let Some(path) = std::env::var_os("FSTART_ETHANOLX_DONOR") else {
         eprintln!("skipping: set FSTART_ETHANOLX_DONOR to the reviewed RXM100CB readout");
         return;
@@ -719,9 +734,14 @@ fn generated_ethanolx_apcbs_are_identical_in_the_full_mirrored_readout() {
     let mut generated = old_plan.clone();
     generated.apcbs.push(GeneratedApcbs {
         generation: MILAN,
-        replacements: crate::amd::apcb_toml::compile(
+        replacements: apcb_toml::compile(
             include_str!("../../../boards/amd/ethanolx/apcb/milan.toml"),
-            crate::amd::apcb_toml::Profile::EthanolxMilanRxm100cb,
+            Abi::Milan,
+            &BoardData::parse(
+                include_str!("../../../boards/amd/ethanolx/apcb/milan.compat.toml"),
+                "",
+            )
+            .unwrap(),
         )
         .unwrap(),
     });

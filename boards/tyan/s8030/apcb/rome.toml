@@ -1,4 +1,4 @@
-# Board memory policy; firmware layout/defaults are framework Rust code.
+# Semantic board policy. Raw compatibility values/provenance are in rome.compat.toml.
 schema = 1
 
 [memory]

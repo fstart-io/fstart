@@ -1,15 +1,28 @@
-# AMD APCB board policy
+# AMD APCB policy, platform ABIs and board data
 
-Board policy is separate from framework firmware-family models. Users configure
-memory features, supported populations and transfer rates, and RAM-ID-to-SPD
-selection. They do not specify token widths, record IDs, parameter time points,
-group order, priorities, header sizes, termination, padding or checksums.
+The encoder, platform ABI and mainboard choices have separate owners:
+
+- Vendored `amd-apcb` owns binary structures and serialization.
+- `crates/platform-amd-apcb` owns reusable Rome/Milan/Picasso/Zeppelin ABI
+  knowledge: token identities/storage, parameter order, required records,
+  placement and representation. It contains no mainboard registry or BIOS-release
+  dispatch. The platform selects the ABI.
+- Each mainboard owns its semantic policy, actual tuning/default values, SPD
+  assets and firmware provenance. Vendor release names are audit data, not ABI
+  selectors.
+- `image-build` consumes generated replacements and performs generic guarded
+  image assembly. It does not select a mainboard compiler preset.
+
+Adding a mainboard using a supported ABI requires board data, not changes to
+build-tool dispatch. Tests exercise an unseen board identity and changed board
+values without changing compiler code.
+
+## Semantic policy
 
 For example:
 
 ```toml
 schema = 1
-
 [memory]
 ecc = true
 restore-context = false
@@ -18,64 +31,57 @@ speed-limits = [
 ]
 ```
 
-Unspecified settings inherit the firmware profile's defaults. Each supplied
-module/training/board-ID speed-limit set replaces that population policy;
-DIMM counts and rate encodings are derived. `maximum-mt-s` uses physical DDR
-transfer rates, not firmware enum values or unsupported-rate sentinels.
+Users specify memory features, physical populations and transfer rates, and
+RAM-ID-to-SPD selection—not token widths, groups, priorities, record construction,
+time points or bookkeeping. The ABI derives storage and placement. Each supplied
+module/training/board-ID speed-limit set replaces that population policy.
+Unspecified settings retain board defaults.
 
-Vilboz policy additionally selects named JEDEC SPD images with `[[ram]]` entries
-containing `id` and `spd`. Descriptor fields, validity flags, channel placement,
-training scratch buffers and active/backup copies belong to the profile.
+| Board | Semantic policy | Board compatibility/provenance data |
+| --- | --- | --- |
+| S8030 Rome | `boards/tyan/s8030/apcb/rome.toml` | `rome.compat.toml` alongside it |
+| S8030 Milan | `boards/tyan/s8030/apcb/milan.toml` | `milan.compat.toml` alongside it |
+| Ethanol-X Milan | `boards/amd/ethanolx/apcb/milan.toml` | `milan.compat.toml` alongside it |
+| Vilboz | `boards/google/zork/apcb/vilboz.toml` | `compat.toml` alongside it |
+| MJ11 EC0/EC1 | `boards/gigabyte/mj11/apcb/ec0.toml`, `ec1.toml` | One shared `compat.toml`, with data-local `ec0`/`ec1` identities |
 
-## Sources
+## Explicit compatibility data
 
-| Board / generation | Editable policy |
-| --- | --- |
-| S8030 Rome | `boards/tyan/s8030/apcb/rome.toml` |
-| S8030 Milan | `boards/tyan/s8030/apcb/milan.toml` |
-| Ethanol-X Milan | `boards/amd/ethanolx/apcb/milan.toml` |
-| Vilboz | `boards/google/zork/apcb/vilboz.toml` |
-| MJ11 EC0/F02 | `boards/gigabyte/mj11/apcb/ec0.toml` |
-| MJ11 EC1/F09 | `boards/gigabyte/mj11/apcb/ec1.toml` |
+Some vendor settings are not understood well enough to expose as semantic
+controls. They remain explicitly labelled decoded compatibility **values** with
+the board, not hidden platform defaults or an executable template language.
+These files contain no token widths, record lists, layout kinds or placement
+instructions. Parameter IDs are numeric where semantics are unverified; the
+platform catalog determines storage and order. Physical channel wiring is data;
+the ABI constructs the corresponding records and termination.
 
-There are no board-local template files or template language. Firmware-family
-models and reviewed defaults are Rust code in
-`crates/image-build/src/amd/apcb_profiles/{sp3,picasso,zeppelin}.rs`;
-`apcb_layout.rs` lowers them through the existing encoder. SP3 shares one set of
-electrical defaults, both MJ11 variants share a Zeppelin model, and all Vilboz
-RAM IDs instantiate one Picasso layout. The board selects a named, compiled
-firmware profile; users edit only policy and board data.
+Compatibility data is transitional. Investigate undocumented values rather than
+inventing names. In particular, Picasso parameter IDs must not be assigned
+Zeppelin meanings just because the numbers coincide. Unsupported semantic
+settings are rejected. Shared physical-board defaults can be reused across
+firmware variants; variant lookup occurs within the supplied board data, never
+in a global mainboard registry.
 
-Only verified semantic mappings are public. In particular, Picasso parameter
-IDs must not be given Zeppelin meanings merely because their numbers coincide.
-Unverified Picasso parameters, LRDIMM frequency-condition meanings and advanced
-electrical settings currently remain inherited profile defaults, not guessed
-public knobs. Adding a setting requires a verified firmware-family mapping and
-preservation tests; users never have to choose a storage width to use it.
+## Tools and verification
 
-## Tools and safety
+Board builds supply policy/data and select the platform ABI automatically.
+Standalone use is board-agnostic:
 
-`fstart-apcb-source schema OUTPUT` generates the policy editor schema. The schema
-rejects firmware-layout fields as well as unknown or incorrectly typed policy.
-For standalone builds, `build POLICY OUTPUT --profile mj11-ec1-f09` selects a
-compiled firmware profile; `--blob NAME` selects a payload. No template path or
-shared-table file is required. Normal users build through the board's `fbuild`
-integration, which selects the profile automatically.
-`decode` and `build-json` are lossless diagnostic interchange, not policy
-configuration. Output commands refuse overwrites.
+```sh
+fstart-apcb-source build POLICY OUTPUT --abi zeppelin --board-data COMPAT --variant ec1
+```
 
-The existing MPL-2.0 `amd-apcb` encoder handles binary layout and bookkeeping;
-there is no second encoder. Donor SHA-256, selector completeness, slot capacity
-and alias guards remain in vendor-image assembly. Both MJ11 directory levels
-and all active/backup mappings are preserved. Packed Vilboz builds need neither
-APCB templates extracted from a ROM nor separate SPD input files.
+`--blob NAME` selects a logical payload. `schema OUTPUT` generates the semantic
+policy editor schema; `decode`/`build-json` provide typed diagnostic interchange.
+Output files are never overwritten.
 
-Golden tests pin all 11 SP3 payloads, all 13 Vilboz RAM IDs and both MJ11 variants.
-Policy tests require unchanged defaults to reproduce those same bytes, and
-semantic edits to retain storage and donor guards. Image tests cover placement
-and unrelated-byte preservation. These are not hardware qualification: no
-flashing, boot or memory-training testing has been performed. Signed executable
-AMD PSP/ABL and other vendor firmware remain necessary.
+Donor SHA-256, selector completeness, slot capacity and alias checks remain in
+image assembly. All matching active/backup slots and both MJ11 directory levels
+are handled. Vilboz packing binds no extracted APCB/template/SPD files.
 
-The encoder's pinned provenance and public interoperability references are in
-`vendor/amd-apcb/UPSTREAM`.
+Independent goldens cover 11 SP3 payloads, 13 Vilboz RAM IDs and both MJ11
+variants. Tests preserve representation and unrelated image bytes, and verify
+semantic changes do not change storage or donor guards. These are not hardware
+qualification: no flashing, boot or memory-training tests have been performed.
+Signed executable AMD firmware remains required. Encoder provenance and public
+interoperability references are in `vendor/amd-apcb/UPSTREAM`.

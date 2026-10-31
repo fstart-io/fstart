@@ -58,12 +58,12 @@ impl Sp3BoardFacts for Board {
         (
             Generation::Rome,
             include_str!("../apcb/rome.toml"),
-            "s8030-rome-v404",
+            include_str!("../apcb/rome.compat.toml"),
         ),
         (
             Generation::Milan,
             include_str!("../apcb/milan.toml"),
-            "s8030-milan-v404",
+            include_str!("../apcb/milan.compat.toml"),
         ),
     ];
     /// 1P, 64 cores with SMT (Rome and Milan alike).

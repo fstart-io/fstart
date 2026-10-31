@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Firmware ABI lowering. Family models are Rust code, not parsed templates.
 //! Binary bookkeeping belongs to amd-apcb; JSON adapts its private Serde API.
-#[path = "apcb_profiles/mod.rs"]
-mod profiles;
+#[path = "abi.rs"]
+mod abi;
 use super::{Result, apcb_source};
+pub use abi::Abi;
 use amd_apcb::{BoolToken, ByteToken, DwordToken, TOKEN_ENTRY, WordToken, df, memory, psp};
 use num_traits::ToPrimitive;
-pub use profiles::Profile;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -27,7 +27,7 @@ pub struct Definition {
 }
 
 /// Adding another ABI is an explicit, checked change.
-#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Generation {
     Rome,
@@ -518,7 +518,7 @@ impl Table {
                     .iter()
                     .map(|slot| {
                         let data = match &slot.image {
-                            Some(name) => super::apcb::parse_spd_hex(
+                            Some(name) => crate::parse_spd_hex(
                                 spds.get(name)
                                     .ok_or_else(|| format!("unknown SPD image {name}"))?,
                             )?,

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Board policy. Framework firmware-family models own token storage,
 //! record placement, defaults, selectors, ordering and donor guards.
-pub use super::apcb_layout::Profile;
-use super::{Result, apcb, apcb_layout, apcb_source};
+pub use super::apcb_layout::Abi;
+use super::{Result, apcb_layout, apcb_source};
+use crate::BoardData;
 use amd_apcb::memory;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -252,7 +253,7 @@ impl Configuration {
             if !ids.insert(ram.id) {
                 return Err("duplicate RAM-ID policy".into());
             }
-            let image = apcb::parse_spd_hex(
+            let image = crate::parse_spd_hex(
                 self.spd_images
                     .get(&ram.spd)
                     .ok_or_else(|| format!("unknown SPD image {}", ram.spd))?,
@@ -298,21 +299,21 @@ impl Configuration {
     }
 }
 
-pub(crate) fn lower(policy: &str, profile: Profile) -> Result<apcb_source::Sources> {
+pub(crate) fn lower(policy: &str, abi: Abi, data: &BoardData) -> Result<apcb_source::Sources> {
     let policy = Configuration::parse(policy)?;
-    let model = profile.definition()?;
+    let model = abi.definition(data)?;
     let generation = model.generation;
     let mut sources = model.lower()?;
     policy.apply(&mut sources, generation)?;
     Ok(sources)
 }
 
-pub fn compile(policy: &str, profile: Profile) -> Result<Vec<apcb_source::Replacement>> {
-    apcb_source::compile_sources(lower(policy, profile)?, &apcb_source::Tables::new())
+pub fn compile(policy: &str, abi: Abi, data: &BoardData) -> Result<Vec<apcb_source::Replacement>> {
+    apcb_source::compile_sources(lower(policy, abi, data)?, &apcb_source::Tables::new())
 }
 
-pub fn build_blob(policy: &str, profile: Profile, name: &str) -> Result<Vec<u8>> {
-    let sources = lower(policy, profile)?;
+pub fn build_blob(policy: &str, abi: Abi, data: &BoardData, name: &str) -> Result<Vec<u8>> {
+    let sources = lower(policy, abi, data)?;
     let selector = *sources
         .blobs
         .iter()

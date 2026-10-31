@@ -68,6 +68,8 @@ pub struct DxioConfig {
 
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Zeppelin {
+    const APCB_ABI: fstart_platform_amd_apcb::apcb_toml::Abi =
+        fstart_platform_amd_apcb::apcb_toml::Abi::Zeppelin;
     const POLICY: noncar::host::Policy = noncar::host::Policy {
         feature: "bundle-zeppelin",
         payloads: true,

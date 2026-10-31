@@ -229,9 +229,9 @@ impl<S: Soc> BoardCtx<'_, S> {
 pub trait Board: 'static {
     type Soc: Soc;
     const CONFIG: &'static <Self::Soc as Soc>::Config;
-    /// (Semantic board policy, framework firmware-profile name), host use only.
-    /// Absent boards retain their existing image path.
-    const APCB_SOURCE: Option<(&'static str, &'static str)> = None;
+    /// (Semantic policy, board compatibility data, data-local variant), host only.
+    /// The SoC selects the ABI; generic build tools never select a mainboard.
+    const APCB_SOURCE: Option<(&'static str, &'static str, &'static str)> = None;
 
     /// LPC decodes and Super I/O routing for the console, before any
     /// output.

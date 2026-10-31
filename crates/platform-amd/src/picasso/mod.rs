@@ -132,6 +132,8 @@ pub const LAYOUT: Layout = Layout {
 
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Picasso {
+    const APCB_ABI: fstart_platform_amd_apcb::apcb_toml::Abi =
+        fstart_platform_amd_apcb::apcb_toml::Abi::Picasso;
     const POLICY: noncar::host::Policy = noncar::host::Policy {
         feature: "bundle-picasso",
         payloads: true,

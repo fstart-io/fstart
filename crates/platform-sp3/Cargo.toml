@@ -34,7 +34,7 @@ payload-uefi = ["fstart-stage/crabefi"]
 smm = ["dep:fstart-smm", "dep:fstart-driver-ipmi"]
 bundle-smm = ["smm", "fstart-smm/stage-bin"]
 # Host policy only; never enabled by the emitted firmware unit.
-host = ["dep:fstart-image-build", "dep:serde_json"]
+host = ["dep:fstart-image-build", "dep:serde_json", "dep:fstart-platform-amd-apcb"]
 
 [dependencies]
 fstart-driver-spd = { workspace = true, optional = true }
@@ -54,6 +54,7 @@ fstart-smm = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, features = ["pio"] }
 tock-registers = { workspace = true }
 fstart-image-build = { workspace = true, optional = true }
+fstart-platform-amd-apcb = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }

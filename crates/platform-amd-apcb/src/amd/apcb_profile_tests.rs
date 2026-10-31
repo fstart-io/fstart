@@ -1,5 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
+use crate::{BoardData, test_data};
+fn zeppelin() -> Definition {
+    Abi::Zeppelin
+        .definition(&BoardData::parse(test_data::MJ11, "ec1").unwrap())
+        .unwrap()
+}
+fn picasso() -> Definition {
+    Abi::Picasso
+        .definition(&BoardData::parse(test_data::VILBOZ, "").unwrap())
+        .unwrap()
+}
 
 #[test]
 fn family_models_cover_every_legacy_ram_id_and_mj11_variant() {
@@ -18,7 +29,7 @@ fn family_models_cover_every_legacy_ram_id_and_mj11_variant() {
         "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1",
         "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b",
     ];
-    let built = Profile::Vilboz.definition().unwrap().compile().unwrap();
+    let built = picasso().compile().unwrap();
     assert_eq!(built.len(), 26);
     for replacement in built {
         assert_eq!(replacement.bytes.len(), 4672);
@@ -32,17 +43,18 @@ fn family_models_cover_every_legacy_ram_id_and_mj11_variant() {
             replacement.bytes
         );
     }
-    for (profile, hash) in [
+    for (variant, hash) in [
         (
-            Profile::Mj11Ec0F02,
+            "ec0",
             "aeb727e324f1d51c586e742ceedaae8d41e4ad64c410207d9e8d04f3f12492d0",
         ),
         (
-            Profile::Mj11Ec1F09,
+            "ec1",
             "fa1f884641edd40ba9bc8a6f327b03d71fd0d12edb80161cd284cffa28a22bc9",
         ),
     ] {
-        let built = profile.definition().unwrap().compile().unwrap();
+        let data = BoardData::parse(test_data::MJ11, variant).unwrap();
+        let built = Abi::Zeppelin.definition(&data).unwrap().compile().unwrap();
         assert_eq!(built.len(), 2);
         assert_eq!(built[0].bytes, built[1].bytes);
         for replacement in built {
@@ -59,16 +71,16 @@ fn family_models_cover_every_legacy_ram_id_and_mj11_variant() {
 
 #[test]
 fn malformed_models_and_legacy_parameters_are_rejected() {
-    let mut model = Profile::Mj11Ec1F09.definition().unwrap();
+    let mut model = zeppelin();
     model.blobs.clear();
     assert!(model.lower().is_err());
-    let mut model = Profile::Mj11Ec1F09.definition().unwrap();
+    let mut model = zeppelin();
     model.blobs[0].records[0].name = "missing".into();
     assert!(model.lower().is_err());
-    let mut model = Profile::Mj11Ec1F09.definition().unwrap();
-    model.blobs[0].groups.push(Group::Psp);
+    let mut model = zeppelin();
+    model.blobs[0].groups.extend([Group::Psp, Group::Psp]);
     assert!(model.lower().is_err());
-    let model = Profile::Mj11Ec1F09.definition().unwrap();
+    let model = zeppelin();
     let mut settings = model
         .tables
         .into_values()
@@ -109,15 +121,15 @@ fn malformed_models_and_legacy_parameters_are_rejected() {
 
 #[test]
 fn family_layouts_and_spd_references_are_checked() {
-    let model = Profile::Mj11Ec1F09.definition().unwrap();
-    let table = model.tables.get("legacy-rdimm-data").unwrap();
+    let model = zeppelin();
+    let table = model.tables.get("rdimm-data").unwrap();
     assert!(
         table
             .lower(Generation::Rome, &BTreeMap::new())
             .unwrap_err()
             .contains("incompatible")
     );
-    let mut model = Profile::Vilboz.definition().unwrap();
+    let mut model = picasso();
     let table = model
         .tables
         .values_mut()

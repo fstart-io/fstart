@@ -72,6 +72,7 @@ pub enum ImageConfig {
 
 /// A noncar SoC's host build.
 pub trait HostSoc: Soc {
+    const APCB_ABI: fstart_platform_amd_apcb::apcb_toml::Abi;
     const POLICY: Policy;
     /// Check a board's configuration before building.
     fn check(_config: &Self::Config) -> Result<(), &'static str> {
@@ -656,8 +657,13 @@ where
         ffs.file_assets = packed.files.assets.clone();
     }
     let apcbs = B::APCB_SOURCE
-        .map(|(policy, profile)| {
-            fstart_image_build::amd::apcb_toml::compile(policy, profile.parse()?)
+        .map(|(policy, compatibility, variant)| {
+            let data = fstart_platform_amd_apcb::BoardData::parse(compatibility, variant)?;
+            fstart_platform_amd_apcb::apcb_toml::compile(
+                policy,
+                <B::Soc as HostSoc>::APCB_ABI,
+                &data,
+            )
         })
         .transpose()?
         .unwrap_or_default();

@@ -682,6 +682,7 @@ dependencies = [
  "clap",
  "fstart-amdfw-format",
  "fstart-image-build",
+ "fstart-platform-amd-apcb",
  "serde_json",
 ]
 
@@ -947,14 +948,13 @@ dependencies = [
  "fstart-coreboot",
  "fstart-crypto",
  "fstart-ffs",
+ "fstart-platform-amd-apcb",
  "fstart-smm",
  "heapless 0.8.0",
  "iced-x86",
  "miniz_oxide",
- "num-traits",
  "object 0.37.3",
  "rand_core",
- "schemars",
  "serde",
  "serde_json",
  "toml",
@@ -1016,6 +1016,7 @@ dependencies = [
  "fstart-log",
  "fstart-pci",
  "fstart-platform-amd",
+ "fstart-platform-amd-apcb",
  "fstart-smm",
  "fstart-stage",
  "heapless 0.8.0",
@@ -1024,6 +1025,20 @@ dependencies = [
  "tock-registers",
  "ufmt",
  "zerocopy",
+]
+
+[[package]]
+name = "fstart-platform-amd-apcb"
+version = "0.1.0"
+dependencies = [
+ "amd-apcb",
+ "fstart-amdfw-format",
+ "fstart-crypto",
+ "num-traits",
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -1094,6 +1109,7 @@ dependencies = [
  "fstart-image-build",
  "fstart-log",
  "fstart-pci",
+ "fstart-platform-amd-apcb",
  "fstart-platform-sp3",
  "fstart-smm",
  "fstart-stage",

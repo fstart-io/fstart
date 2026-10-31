@@ -41,7 +41,7 @@ impl Sp3BoardFacts for Board {
     const APCB_SOURCES: &'static [(Generation, &'static str, &'static str)] = &[(
         Generation::Milan,
         include_str!("../apcb/milan.toml"),
-        "ethanolx-milan-rxm100cb",
+        include_str!("../apcb/milan.compat.toml"),
     )];
     const MAX_CPUS: u16 = 256;
     /// The BMC BIOS update writes the 16 MiB bank at 0 and at 48 MiB of its

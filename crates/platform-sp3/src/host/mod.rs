@@ -353,13 +353,23 @@ impl Payload {
 /// the lower half (above the early region), the FFS starts at
 /// [`layout::FFS_OFFSET`] or above.
 pub fn flash_plan<B: Sp3BoardFacts>() -> Result<FlashPlan, String> {
-    use fstart_image_build::{amd::apcb_toml, sp3_flash::GeneratedApcbs};
+    use fstart_image_build::sp3_flash::GeneratedApcbs;
+    use fstart_platform_amd_apcb::{
+        BoardData,
+        apcb_toml::{self, Abi},
+    };
     let apcbs = B::APCB_SOURCES
         .iter()
-        .map(|(generation, source, profile)| {
+        .map(|(generation, source, compatibility)| {
+            let abi = match generation {
+                Generation::Rome => Abi::Rome,
+                Generation::Milan => Abi::Milan,
+                _ => return Err("unsupported APCB platform ABI".into()),
+            };
+            let data = BoardData::parse(compatibility, "")?;
             Ok(GeneratedApcbs {
                 generation: generation.profile().bios,
-                replacements: apcb_toml::compile(source, profile.parse()?)?,
+                replacements: apcb_toml::compile(source, abi, &data)?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -782,12 +792,12 @@ mod tests {
                 (
                     Generation::Rome,
                     include_str!("../../../../boards/tyan/s8030/apcb/rome.toml"),
-                    "s8030-rome-v404",
+                    include_str!("../../../../boards/tyan/s8030/apcb/rome.compat.toml"),
                 ),
                 (
                     Generation::Milan,
                     include_str!("../../../../boards/tyan/s8030/apcb/milan.toml"),
-                    "s8030-milan-v404",
+                    include_str!("../../../../boards/tyan/s8030/apcb/milan.compat.toml"),
                 ),
             ];
         }

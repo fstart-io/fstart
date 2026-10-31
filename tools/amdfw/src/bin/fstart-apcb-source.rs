@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Build declarative APCBs; JSON export is a lossless diagnostic interchange.
 use clap::{Parser, Subcommand};
-use fstart_image_build::amd::{Result, apcb_source, apcb_toml};
+use fstart_platform_amd_apcb::{BoardData, Result, apcb_source, apcb_toml};
 use std::{
     fs,
     io::Write,
@@ -24,9 +24,15 @@ enum Command {
     Build {
         input: PathBuf,
         output: PathBuf,
-        /// Reviewed firmware profile, normally selected by the board build.
+        /// Platform firmware ABI; no mainboard registry is built into this tool.
         #[arg(long)]
-        profile: apcb_toml::Profile,
+        abi: apcb_toml::Abi,
+        /// Board-owned decoded defaults and firmware provenance.
+        #[arg(long)]
+        board_data: PathBuf,
+        /// Optional variant key defined inside that board data.
+        #[arg(long, default_value = "")]
+        variant: String,
         #[arg(long, default_value = "board")]
         blob: String,
     },
@@ -58,11 +64,15 @@ fn run(args: Args) -> Result<()> {
         Command::Build {
             input,
             output,
-            profile,
+            abi,
+            board_data,
+            variant,
             blob,
         } => {
             let text = String::from_utf8(read(&input)?).map_err(|e| e.to_string())?;
-            (output, apcb_toml::build_blob(&text, profile, &blob)?)
+            let defaults = String::from_utf8(read(&board_data)?).map_err(|e| e.to_string())?;
+            let data = BoardData::parse(&defaults, &variant)?;
+            (output, apcb_toml::build_blob(&text, abi, &data, &blob)?)
         }
         Command::BuildJson { input, output } => {
             let source = serde_json::from_slice(&read(&input)?).map_err(|e| e.to_string())?;

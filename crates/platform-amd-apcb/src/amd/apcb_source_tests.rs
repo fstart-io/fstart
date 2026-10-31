@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
 
-use super::super::apcb_toml::Profile;
-const ROME: Profile = Profile::S8030RomeV404;
-const MILAN: Profile = Profile::S8030MilanV404;
-const ETHANOLX: Profile = Profile::EthanolxMilanRxm100cb;
+use crate::{BoardData, apcb_toml::Abi, test_data};
+const ROME: (Abi, &str) = (Abi::Rome, test_data::ROME);
+const MILAN: (Abi, &str) = (Abi::Milan, test_data::MILAN);
+const ETHANOLX: (Abi, &str) = (Abi::Milan, test_data::ETHANOLX);
 
 fn tables() -> Tables {
     Tables::new()
 }
-fn source_model(profile: Profile) -> Sources {
-    profile.definition().unwrap().lower().unwrap()
+fn source_model((abi, text): (Abi, &str)) -> Sources {
+    abi.definition(&BoardData::parse(text, "").unwrap())
+        .unwrap()
+        .lower()
+        .unwrap()
 }
 
 #[test]
@@ -149,7 +152,12 @@ fn replacing_all_slots_preserves_firmware_and_padding() {
 #[test]
 fn toml_payloads_use_the_existing_replacement_guards() {
     let text = include_str!("../../../../boards/tyan/s8030/apcb/rome.toml");
-    let replacements = super::super::apcb_toml::compile(text, ROME).unwrap();
+    let replacements = super::super::apcb_toml::compile(
+        text,
+        Abi::Rome,
+        &BoardData::parse(test_data::ROME, "").unwrap(),
+    )
+    .unwrap();
     let old = compile_sources(source_model(ROME), &tables()).unwrap();
     let original = fixture(&old, 8192);
     let mut output = original.clone();
@@ -158,7 +166,8 @@ fn toml_payloads_use_the_existing_replacement_guards() {
 
     let edited = super::super::apcb_toml::compile(
         &text.replace("restore-context = false", "restore-context = true"),
-        ROME,
+        Abi::Rome,
+        &BoardData::parse(test_data::ROME, "").unwrap(),
     )
     .unwrap();
     apply(&original, &mut output, &edited).unwrap();
