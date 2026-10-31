@@ -24,7 +24,6 @@ use crate::MmioBar;
 use crate::ich7::ich7;
 use fstart_arch::x86::mtrr;
 use fstart_core::mmio::MmioReadWrite;
-use fstart_core::services::MemoryController;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_core::services::{ServiceError, SmBus};
@@ -745,13 +744,7 @@ impl MemoryDetector for IntelPineview {
     }
 }
 
-impl MemoryController for IntelPineview {
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
-        // Pineview SPD access belongs to the initialized ICH7 SMBus. The Intel
-        // early flow must call IntelNorthbridgeDriver::dram_init_with_smbus().
-        Err(ServiceError::NotInitialized)
-    }
-
+impl IntelPineview {
     fn detected_size_bytes(&self) -> u64 {
         self.detected_size
     }

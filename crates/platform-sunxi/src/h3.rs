@@ -493,21 +493,21 @@ fstart_sunxi_fel_stash:
         slot.install(console);
         fstart_log::info!("h3: UART0 console ready");
 
+        use fstart_core::services::MemoryInit as _;
         let mut dramc = H3Dramc::new_from_config(&config.dram);
-        let dram_size = dramc.dram_init()?;
+        let dram = dramc.bring_up()?;
 
         let (boot_media, media_base) = init_boot_media(config)?;
         let entry = crate::boot::load_mainstage(
             &boot_media,
             media_base,
-            H3_DRAM_BASE,
-            dram_size,
+            dram,
             config.mainstage_load_addr,
             config.handoff_addr,
         )?;
         // SAFETY: `load_mainstage` checked the handoff buffer lies in the
         // trained DRAM and kept it out of the main stage's load window.
-        unsafe { fstart_stage::next_stage::write_handoff(dram_size, config.handoff_addr) }
+        unsafe { fstart_stage::next_stage::write_handoff(dram.size, config.handoff_addr) }
             .map_err(|_| ServiceError::HardwareError)?;
         #[cfg(target_arch = "arm")]
         fstart_arch::armv7::jump_to_with_handoff(entry, config.handoff_addr as usize);

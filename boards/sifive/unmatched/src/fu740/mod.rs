@@ -14,6 +14,7 @@ pub const FU740_ECAM_BASE: u64 = 0x3000_0000;
 mod stage {
     use super::*;
     use super::{ddr::Fu740Ddr, prci::Fu740Prci};
+    use fstart_core::services::MemoryInit as _;
     #[cfg(fstart_payload = "crabefi")]
     use fstart_core::services::Console;
     use fstart_core::services::ServiceError;
@@ -82,19 +83,16 @@ mod stage {
             Ok(ddr) => ddr,
             Err(_) => fstart_arch::riscv64::halt(),
         };
+        fstart_log::info!("fu740 ramstage: ddr");
+        let Ok(dram) = ddr.bring_up() else {
+            fstart_log::error!("fu740 ramstage: ddr failed");
+            fstart_arch::riscv64::halt();
+        };
         // The only stage: no predecessor handoff to keep out of loads.
-        if !phase("ddr", ddr.init())
-            || !phase(
-                "boot_integrity",
-                install_boot_context(config, ddr.detected_size_bytes(), 0),
-            )
-        {
+        if !phase("boot_integrity", install_boot_context(config, dram.size, 0)) {
             fstart_arch::riscv64::halt();
         }
-        fstart_log::info!(
-            "fu740 ramstage: {} MiB DRAM",
-            ddr.detected_size_bytes() >> 20
-        );
+        fstart_log::info!("fu740 ramstage: {} MiB DRAM", dram.size >> 20);
         fstart_log::info!("fu740 ramstage: ready for payload");
         Fu740Mainstage { config, console }
             .hand_off(|handoff| {

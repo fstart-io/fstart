@@ -1,6 +1,7 @@
 //! Sunxi's ROM loading path has no established protected trust anchor.
 //! The initial-image pin detects nextstage corruption, not whole-image replacement.
 
+use fstart_core::description::Range;
 use fstart_core::services::boot_media::BlockDeviceMedia;
 use fstart_core::services::{BlockDevice, ServiceError};
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
@@ -10,18 +11,17 @@ use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 pub(crate) fn load_mainstage(
     block: &impl BlockDevice,
     media_base: u64,
-    dram_base: u64,
-    dram_size: u64,
+    dram: Range,
     load_addr: u64,
     handoff_addr: u64,
 ) -> Result<u64, ServiceError> {
     fstart_log::info!(
         "sunxi: development integrity; no hardware secure boot or rollback enforcement"
     );
-    validate_dram(dram_base, dram_size, handoff_addr)?;
+    validate_dram(dram.base, dram.size, handoff_addr)?;
     let descriptor = fstart_stage::next_stage::pinned_bootstrap_descriptor()
         .map_err(|_| ServiceError::InvalidParam)?;
-    if descriptor.load_addr != load_addr || dram_size == 0 {
+    if descriptor.load_addr != load_addr || dram.size == 0 {
         return Err(ServiceError::InvalidParam);
     }
     let locator = fstart_stage::anchor::media_locator().ok_or(ServiceError::InvalidParam)?;
@@ -35,8 +35,8 @@ pub(crate) fn load_mainstage(
     let image_size = usize::try_from(locator.image_size).map_err(|_| ServiceError::InvalidParam)?;
     let media = BlockDeviceMedia::new(block, media_base, image_size);
     let writable = [MemoryWindow {
-        start: dram_base,
-        size: dram_size,
+        start: dram.base,
+        size: dram.size,
     }];
     let reserved = [MemoryWindow {
         start: handoff_addr,
