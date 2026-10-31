@@ -7,10 +7,11 @@
 //! flow's silicon steps at runtime.
 //!
 //! A board crate implements [`board::Board`] (and
-//! [`layout::Sp3BoardFacts`]), its facts and silicon policy, and owns the
-//! reset image's `main`: a [`Flow`] that does the board's work between the
-//! phases ([`Reset`], [`Stage`]), started with [`start`] (feature
-//! `bundle-reset`).
+//! [`layout::Sp3BoardFacts`]), its facts, and owns the reset image's
+//! `main`: it matches the family [`start`] returns and does its own work
+//! between the phases ([`Identified`], [`Reset`], [`Stage`],
+//! [`Configured`]), passing its policy, console, GPIO and tables to them
+//! (feature `bundle-reset`).
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 
 extern crate ufmt;
@@ -43,12 +44,18 @@ pub use fstart_smm as smm_runtime;
 #[doc(hidden)]
 pub use fstart_stage as stage_runtime;
 
+#[cfg(all(feature = "bundle-reset", feature = "naples"))]
+pub use flow::NaplesSilicon;
+#[cfg(all(feature = "bundle-reset", any(feature = "rome", feature = "milan")))]
+pub use flow::RomeMilanSilicon;
+#[cfg(all(feature = "bundle-reset", feature = "acpi"))]
+pub use flow::Tables;
 #[cfg(feature = "bundle-reset")]
-pub use flow::{Flow, Reset, Silicon, Stage, start};
+pub use flow::{Configured, Identified, Reset, Silicon, Stage, Start, start};
 
 /// Declare the board's reset-image `main`:
-/// `fstart_platform_sp3::entry!(main);`, where `main` calls
-/// [`start`] with the board's [`Flow`].
+/// `fstart_platform_sp3::entry!(main);`, where `main` matches the family
+/// [`start`] returns and runs the board's flow.
 #[cfg(feature = "bundle-reset")]
 #[macro_export]
 macro_rules! entry {

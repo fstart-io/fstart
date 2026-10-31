@@ -27,10 +27,11 @@ pub(crate) mod runtime {
     /// publish immutable tables in the existing reserved firmware heap.
     /// `rom_size` is the image extent recorded by the flash anchor, not a
     /// possibly partial EFS mapping or a physical flash-geometry measurement.
-    pub(crate) fn prepare<B: crate::board::Board>(
+    pub(crate) fn prepare(
         ctx: &Ctx,
         mp: &fstart_arch::x86::mp::MpHandle,
         rom_size: u32,
+        identity: fstart_acpi::smbios::SmbiosIdentity<'_>,
     ) -> u64 {
         let smt = crate::mp::this_thread(ctx.generation).smt();
         let layout = ApicLayout::new(ctx.generation, smt);
@@ -110,7 +111,7 @@ pub(crate) mod runtime {
             bytes,
             address,
             &Inputs {
-                identity: B::smbios_identity(),
+                identity,
                 processors: &processors,
                 dimms: &dimms,
                 regions: &regions,

@@ -31,7 +31,7 @@ Source: `crates/driver-amd/src/cpu.rs` (`Revision::from_signature`),
 |---|---|
 | `crates/driver-amd/src/sp3/` | `soc` (identify, per-generation constants), `topology`, `df`, `nbio`, `dxio`, `ccx`, `fch` |
 | `crates/driver-amd/src/` | `apob`, `psp`, `smn`, `smu` (used by the SP3 flow) |
-| `crates/platform-sp3/src/` | `board` (Board trait), `layout` (memory map, `Sp3BoardFacts`), `flow` (boot steps), `mp`, `memory`, `smm`, `smbios`, `acpi`, `pci`, `einj`, `host` (build plan) |
+| `crates/platform-sp3/src/` | `board` (Board facts, `Policy`, `Gpio`), `layout` (memory map, `Sp3BoardFacts`), `flow` (boot steps), `mp`, `memory`, `smm`, `smbios`, `acpi`, `pci`, `einj`, `host` (build plan) |
 | `crates/platform-sp3/asm/reset.S`, `linker/reset.ld.in` | reset entry and the reset image linker script |
 | `crates/platform-sp3/build.rs` | checks the SMM image fits TSEG |
 | `crates/image-build/src/sp3_flash.rs` | vendor ROM composition and verification |
@@ -54,9 +54,9 @@ Platform features (`crates/platform-sp3/Cargo.toml`):
 
 ## Board contract
 
-A board implements two traits: `layout::Sp3BoardFacts` (plan data) and
-`board::Board` (hooks). Examples are in `boards/tyan/s8030/src/platform.rs`
-and `boards/amd/ethanolx/src/lib.rs`.
+A board implements two traits of data, `layout::Sp3BoardFacts` (plan data)
+and `board::Board`, and owns its reset `main` (`src/bin/reset.rs`). Examples
+are in `boards/tyan/s8030` and `boards/amd/ethanolx`.
 
 `Sp3BoardFacts`:
 
@@ -67,13 +67,24 @@ and `boards/amd/ethanolx/src/lib.rs`.
 | `MAX_CPUS` | logical CPU ceiling; sizes AP stacks and SMM entry stubs |
 | `FLASH_MIRRORS` | offsets past the 16 MiB boot bank where the flash export mirrors it (default none) |
 
-`Board` hooks: `NAME`, `CONSOLE` (16550), `policy(gen)`, `early_init(fch)`,
-`detect_pads(gen)`, `gpio(gen)`, `dxio_engines(gen, levels, fch, timer)`,
-optional `BMC_SX_NOTIFY`, and with `acpi`: `smbios_identity()`,
-`acpi_lpc_aml()`, `acpi_board(aml)`.
+`Board`: `NAME`, optional `DISCRETE_TPM` and `BMC_SX_NOTIFY`.
 
-Generation-dependent hooks receive the running CPU's generation. The flow
-calls them only with one the board lists.
+The board's `main` matches the family `start::<Board>()` returns
+(`Start::RomeMilan`, `Start::Naples`, as its features carry) and runs its
+flow, generic over the family's silicon steps:
+
+| Phase | Board passes or does |
+|---|---|
+| `Identified::reset(policy)` | silicon `Policy` for `generation()` |
+| on `Reset` | LPC decodes, Super I/O or BMC (`fch()`) |
+| `Reset::console(slot, config)` | its 16550 |
+| `Stage::read_pads(pads)` | M.2 / strap detect pads; returns their levels |
+| `Stage::program_gpio(gpio)` | OEM pads and CPM table, before DXIO |
+| on `Configured` | DXIO lane map from the levels, BMC or I2C (`fch()`, `timer()`) |
+| `Configured::finish(engines, Tables { smbios, acpi })` | lane map, SMBIOS identity, ACPI contributions |
+
+A CPU the build does not carry halts at POST 13; one the board does not
+list in `GENERATIONS` halts after the console.
 
 | Board | Id | GENERATIONS | VENDOR_IMAGE | MAX_CPUS | FLASH_MIRRORS |
 |---|---|---|---|---|---|
@@ -280,7 +291,7 @@ stay asserted.
 - The entry point reaches UEFI payloads through `X86UefiPayloadContext::smbios`.
   The Linux handoff context has no SMBIOS accessor: a copy of the entry point
   in the F segment serves Linux without UEFI.
-- Board identity comes from `Board::smbios_identity()`. CPU and DIMM
+- Board identity comes from the board's `Tables::smbios`. CPU and DIMM
   inventory is never hard-coded.
 - ACPI tables are built at step 70 under `platform-sp3/src/acpi/`.
 

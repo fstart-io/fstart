@@ -55,13 +55,14 @@ pub(crate) const MMIO_PAIRS: u8 = <Df3 as Version>::MMIO_PAIRS;
 /// SMU V11 mailbox of one socket.
 pub(crate) type Smu = SmuMailbox<Pci, Tsc>;
 
-/// The per-socket silicon handles the later steps use.
-pub(crate) struct Silicon {
+/// The per-socket silicon handles the later steps use (Rome and Milan).
+/// Opaque outside this crate.
+pub struct Silicon {
     /// Every present NBIO, physical order (= `Topology::root_bridges`).
-    pub nbios: heapless::Vec<Nbio<Pci>, MAX_ROOT_BRIDGES>,
-    pub smus: heapless::Vec<Smu, 2>,
+    pub(crate) nbios: heapless::Vec<Nbio<Pci>, MAX_ROOT_BRIDGES>,
+    pub(crate) smus: heapless::Vec<Smu, 2>,
     /// APOB 3/3 core map per socket.
-    pub maps: heapless::Vec<CoreMap, 2>,
+    pub(crate) maps: heapless::Vec<CoreMap, 2>,
 }
 
 const NBIO_SMU_BAR: u64 = 1 << 20;

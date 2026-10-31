@@ -49,9 +49,9 @@ pub(crate) type Smu = SmuMailbox<Pci, Tsc>;
 
 /// Per-die handles, physical order (= `Topology::root_bridges`: one root
 /// bridge per die).
-pub(crate) struct Silicon {
-    pub nbios: heapless::Vec<Nbio<Pci>, MAX_ROOT_BRIDGES>,
-    pub smus: heapless::Vec<Smu, MAX_ROOT_BRIDGES>,
+pub struct Silicon {
+    pub(crate) nbios: heapless::Vec<Nbio<Pci>, MAX_ROOT_BRIDGES>,
+    pub(crate) smus: heapless::Vec<Smu, MAX_ROOT_BRIDGES>,
 }
 
 const IOMMU_BAR: u64 = 512 << 10;
