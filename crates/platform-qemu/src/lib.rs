@@ -33,8 +33,6 @@ pub use host::Plan;
 #[doc(hidden)]
 pub use fstart_arch as arch_runtime;
 #[cfg(feature = "stage")]
-pub use fstart_payload as payload_runtime;
-#[cfg(feature = "stage")]
 #[doc(hidden)]
 pub use fstart_stage as stage_runtime;
 /// Declare a board's stage `main`: `fstart_platform_qemu::entry!(main);`.

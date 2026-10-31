@@ -1,11 +1,11 @@
-//! FU740 DDR4 controller driver.
+//! FU740 DDR4 controller (Cadence Denali): programs the board's controller
+//! and PHY register tables, trains and sizes the memory.
 
 use fstart_core::description::Range;
 use fstart_core::services::{DeviceError, MemoryInit, ServiceError};
 
-use super::FU740_DRAM_BASE;
-use super::regs::{HIFIVE_UNMATCHED_DENALI_CTL, HIFIVE_UNMATCHED_DENALI_PHY};
-use crate::config::{Fu740DdrConfig, Fu740DdrProfile};
+/// FU740 DRAM physical base.
+pub const FU740_DRAM_BASE: u64 = 0x8000_0000;
 
 const FU740_DDR_CTL_BASE: u64 = 0x100b_0000;
 const FU740_DDR_PHY_BASE: u64 = 0x100b_2000;
@@ -93,18 +93,13 @@ impl Fu740Ddr {
     }
 
     fn write_ctl_regs(&self) {
-        let table = match self.config.profile {
-            Fu740DdrProfile::HiFiveUnmatched => &HIFIVE_UNMATCHED_DENALI_CTL,
-        };
-        for (index, value) in table.iter().enumerate() {
+        for (index, value) in self.config.ctl.iter().enumerate() {
             self.ctl_write(index, *value);
         }
     }
 
     fn phy_reset(&self) {
-        let table = match self.config.profile {
-            Fu740DdrProfile::HiFiveUnmatched => &HIFIVE_UNMATCHED_DENALI_PHY,
-        };
+        let table = self.config.phy;
         // The global 1152..1214 range must precede all data-slice registers.
         for (index, value) in table.iter().enumerate().skip(1152).take(63) {
             self.phy_write(index, *value);
@@ -195,7 +190,7 @@ impl Fu740Ddr {
         }
     }
 
-    /// Program the HiFive Unmatched register tables and train DDR.
+    /// Program the board's register tables and train DDR.
     fn train(&mut self) -> Result<(), DeviceError> {
         self.write_ctl_regs();
         self.phy_reset();
@@ -223,5 +218,33 @@ impl MemoryInit for Fu740Ddr {
     fn bring_up(&mut self) -> Result<Range, ServiceError> {
         self.train()?;
         Ok(Range::new(FU740_DRAM_BASE, self.detected_size_bytes()))
+    }
+}
+
+/// The board's DDR: its memory size and the controller and PHY register
+/// values for its DRAM (timings, ODT, calibration), from the vendor.
+#[derive(Debug, Clone, Copy)]
+pub struct Fu740DdrConfig {
+    pub ctl: &'static [u32; 265],
+    pub phy: &'static [u32; 1215],
+    pub dram_size: u64,
+}
+
+impl Fu740DdrConfig {
+    #[must_use]
+    pub const fn new(ctl: &'static [u32; 265], phy: &'static [u32; 1215], dram_size: u64) -> Self {
+        Self {
+            ctl,
+            phy,
+            dram_size,
+        }
+    }
+
+    #[must_use]
+    pub const fn build(self) -> Self {
+        if self.dram_size < 0x4000 || self.dram_size > u64::MAX - FU740_DRAM_BASE {
+            panic!("FU740 DRAM window is invalid");
+        }
+        self
     }
 }

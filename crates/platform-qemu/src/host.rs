@@ -67,7 +67,7 @@ impl VirtMachine {
             return Err("QEMU virt supports halt, Linux and (where available) UEFI".into());
         }
         Ok(match self {
-            Self::Q35 | Self::Q35ProtectedMode | Self::Sbsa | Self::SifiveU | Self::Unmatched => {
+            Self::Q35 | Self::Q35ProtectedMode | Self::Sbsa | Self::SifiveU => {
                 return Err("QEMU machine is not a virt preset".into());
             }
             Self::Riscv64 => MachinePolicy {
@@ -147,8 +147,7 @@ pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildP
         VirtMachine::Q35
         | VirtMachine::Q35ProtectedMode
         | VirtMachine::Sbsa
-        | VirtMachine::SifiveU
-        | VirtMachine::Unmatched => resolve_qemu(machine, selection),
+        | VirtMachine::SifiveU => resolve_qemu(machine, selection),
     }
 }
 
@@ -346,8 +345,8 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
 
 /// Link geometry for one non-virt QEMU machine. The sbsa and sifive-u flows
 /// reuse the shared XIP/relocation projection; q35 needs x86 reset-vector
-/// placement and unmatched executes from LIM, so those two emit focused
-/// platform-owned linker text instead of a second lifecycle model.
+/// placement, so it emits focused platform-owned linker text instead of a
+/// second lifecycle model.
 #[derive(Debug, Clone, Copy)]
 enum QemuLink {
     Xip {
@@ -358,9 +357,6 @@ enum QemuLink {
     X86 {
         flash: Span,
         ram: Span,
-    },
-    Lim {
-        lim: Span,
     },
 }
 
@@ -540,47 +536,6 @@ impl VirtMachine {
                 pci: false,
                 fdt: true,
             },
-            Self::Unmatched => QemuPolicy {
-                platform: Platform::Riscv64,
-                target: "riscv64gc-unknown-none-elf",
-                bundle: "bundle-unmatched",
-                boot_hart_id: 1,
-                default_payload: "linux",
-                uefi: true,
-                linux: Some(linux_payload(Some("unmatched.dtb"))),
-                link: QemuLink::Lim {
-                    lim: span(0x0800_0000, 0x0020_0000),
-                },
-                stack_size: 0x4000,
-                heap_size: 0x4000,
-                memory: vec![
-                    MemoryRegion {
-                        name: hstr("lim"),
-                        base: 0x0800_0000,
-                        size: 0x0020_0000,
-                        kind: RegionKind::Ram,
-                    },
-                    MemoryRegion {
-                        name: hstr("spi-xip"),
-                        base: 0x2000_0000,
-                        size: 0x0200_0000,
-                        kind: RegionKind::Rom,
-                    },
-                    MemoryRegion {
-                        name: hstr("dram"),
-                        base: 0x8000_0000,
-                        size: 0x4_0000_0000,
-                        kind: RegionKind::Ram,
-                    },
-                ],
-                firmware_image: span(0x2000_0000, 0x0200_0000),
-                flash_image: None,
-                full_flash_image: false,
-                qemu_machine: None,
-                default_security: true,
-                pci: false,
-                fdt: true,
-            },
             Self::Riscv64 | Self::Armv7 | Self::Aarch64 => {
                 return Err("virt machine has no QEMU policy row".into());
             }
@@ -714,74 +669,6 @@ fn qemu_q35_linker_script(
     Ok(out)
 }
 
-/// LIM-resident stage with the linked descriptor. Heap/stack sit at the top
-/// of LIM so the early entry never depends on DRAM; the SPI firmware window
-/// stays a separate storage reservation.
-fn qemu_lim_linker_script(
-    lim: Span,
-    heap: Span,
-    stack: Span,
-    boot_hart_id: u32,
-    descriptor: &EncodedLayout,
-) -> Result<String, String> {
-    use std::fmt::Write as _;
-    for range in [lim, heap, stack] {
-        range.end()?;
-        if range.base % 16 != 0 || range.size % 16 != 0 {
-            return Err("unaligned LIM reservation".into());
-        }
-    }
-    if !lim.contains(heap.base, heap.size)
-        || !lim.contains(stack.base, stack.size)
-        || heap.end()? != stack.base
-        || stack.end()? != lim.end()?
-    {
-        return Err("LIM heap and stack reservations overlap or are inconsistent".into());
-    }
-    let data_len = heap.base - lim.base;
-    let mut out = String::new();
-    writeln!(
-        out,
-        "OUTPUT_ARCH(riscv)\nENTRY(_start)\n_boot_hart_id = {boot_hart_id};\nMEMORY {{\n \
-         RAM (rwx) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
-         HEAP (rw) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
-         STACK (rw) : ORIGIN = {:#x}, LENGTH = {:#x}\n}}",
-        lim.base, data_len, heap.base, heap.size, stack.base, stack.size
-    )
-    .map_err(|e| e.to_string())?;
-    out.push_str("\nSECTIONS\n{\n");
-    out.push_str("    .text : {\n        _text_start = .;\n        KEEP(*(.text.entry))\n        *(.text .text.* .ltext .ltext.*)\n        KEEP(*(.vectors .vectors.*))\n        _text_end = .;\n    } > RAM\n");
-    out.push_str(&fstart_image_build::linker::layout_section(
-        descriptor, "RAM",
-    ));
-    writeln!(
-        out,
-        "    .fstart.anchor : ALIGN(8) {{\n        *(.fstart.anchor)\n        . = ALIGN(8);\n        _FSTART_HEAP_SIZE = .;\n        QUAD({:#x})\n    }} > RAM\n",
-        heap.size
-    )
-    .map_err(|e| e.to_string())?;
-    out.push_str("    .rodata : ALIGN(8) {\n        _rodata_start = .;\n        KEEP(*(.fstart.bootstrap_pin))\n        *(.rodata .rodata.* .lrodata .ldata.*)\n    } > RAM\n");
-    out.push_str("    .data : ALIGN(8) {\n        _data_start = .;\n        *(.data .data.* .ldata .ldata.*)\n        _data_end = .;\n    } > RAM\n    _data_load = LOADADDR(.data);\n");
-    out.push_str("    .bss (NOLOAD) : ALIGN(8) {\n        _bss_start = .;\n        *(.bss .bss.* .lbss .lbss.*)\n        *(COMMON)\n        _bss_end = .;\n    } > RAM\n");
-    writeln!(
-        out,
-        "    .fstart.heap (NOLOAD) : ALIGN(16) {{\n        _FSTART_HEAP = .;\n        . = . + {:#x};\n    }} > HEAP\n",
-        heap.size
-    )
-    .map_err(|e| e.to_string())?;
-    writeln!(
-        out,
-        "    .stack (NOLOAD) : ALIGN(16) {{\n        _stack_bottom = .;\n        . = . + {:#x};\n        . = ALIGN(16);\n        _stack_top = .;\n        _writable_end = .;\n    }} > STACK\n",
-        stack.size
-    )
-    .map_err(|e| e.to_string())?;
-    out.push_str("    _binary_end = _data_end;\n");
-    out.push_str(
-        "    ASSERT(_bss_end <= ORIGIN(HEAP), \"stage data/BSS exceed resolved capacity\")\n}\n",
-    );
-    Ok(out)
-}
-
 fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, String> {
     use fstart_core::layout::RegionKind as Kind;
     use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
@@ -819,10 +706,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         QemuLink::X86 { ram, .. } => {
             let (stack, heap) = qemu_stack_heap(ram, policy.stack_size, policy.heap_size)?;
             (ram, stack, heap)
-        }
-        QemuLink::Lim { lim } => {
-            let (stack, heap) = qemu_stack_heap(lim, policy.stack_size, policy.heap_size)?;
-            (lim, stack, heap)
         }
     };
     // A DTB reservation exists only for machines with Linux payload files.
@@ -921,52 +804,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             expected.validate().map_err(|e| e.to_string())?;
             (script, expected, flash.base, flash.size)
         }
-        QemuLink::Lim { lim } => {
-            regions.push(lim.region(Kind::Image));
-            regions.push(policy.firmware_image.region(Kind::Flash));
-            regions.push(policy.firmware_image.region(Kind::Firmware));
-            if let Some(p) = linux {
-                regions.push(span(p.kernel_addr, p.kernel_capacity).region(Kind::Payload));
-            }
-            if keep_firmware {
-                if let Some(p) = &policy.linux {
-                    regions.push(
-                        span(p.firmware_addr, p.firmware_capacity).region(Kind::PayloadFirmware),
-                    );
-                }
-            }
-            if let Some(dtb) = dtb {
-                regions.push(dtb.region(Kind::DeviceTree));
-            }
-            let descriptor = EncodedLayout::encode(0, &regions).map_err(|e| e.to_string())?;
-            let script =
-                qemu_lim_linker_script(lim, heap, stack, policy.boot_hart_id, &descriptor)?;
-            let expected = Expectations {
-                architecture: Architecture::Riscv64,
-                elf64: true,
-                little_endian: true,
-                stored: vec![lim],
-                runtime: vec![lim],
-                identity_mapping: true,
-                entry: Some(lim.base),
-                copy: None,
-                descriptor: Some(Descriptor {
-                    section: ".fstart.layout".into(),
-                    start_symbol: "_fstart_layout_start".into(),
-                    end_symbol: "_fstart_layout_end".into(),
-                    bytes: descriptor.as_bytes().to_vec(),
-                    reservation: lim,
-                }),
-                stored_flags: None,
-                symbols: std::collections::BTreeMap::from([
-                    ("_stack_bottom".into(), stack.base),
-                    ("_stack_top".into(), stack.end()?),
-                    ("_FSTART_HEAP".into(), heap.base),
-                ]),
-            };
-            expected.validate().map_err(|e| e.to_string())?;
-            (script, expected, lim.base, lim.size)
-        }
     };
     let mut features = vec![policy.bundle.into()];
     if payload == "linux" {
@@ -1052,7 +889,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             data_addr: match policy.link {
                 QemuLink::Xip { writable, .. } => Some(writable.base),
                 QemuLink::X86 { ram, .. } => Some(ram.base),
-                QemuLink::Lim { .. } => None,
             },
             stack_size: stack.size as u32,
             heap_size: Some(heap.size as u32),
@@ -1341,14 +1177,6 @@ mod tests {
                 (0x8000_0000, 0x0100_0000),
                 "bundle-sifive-u",
             ),
-            (
-                VirtMachine::Unmatched,
-                0x0800_0000,
-                0x4000,
-                0x4000,
-                (0x2000_0000, 0x0200_0000),
-                "bundle-unmatched",
-            ),
         ] {
             let plan = resolve(
                 machine,
@@ -1462,7 +1290,7 @@ mod tests {
         assert!(matches!(payload.kind, PayloadKind::UefiPayload));
         assert!(payload.firmware.is_none());
         assert!(uefi.inputs.is_empty());
-        for machine in [VirtMachine::SifiveU, VirtMachine::Unmatched] {
+        for machine in [VirtMachine::SifiveU] {
             // The legacy Linux defaults survive: kernel plus OpenSBI firmware
             // at the historic DRAM addresses with the SIF0 bootargs.
             let linux = resolve(
@@ -1513,25 +1341,6 @@ mod tests {
                     .is_some()
             );
         }
-        // Unmatched keeps its board DTB override; sifive-u uses the platform DTB.
-        let unmatched = resolve(
-            VirtMachine::Unmatched,
-            BuildSelection {
-                payload: Some("linux".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .assembly
-        .ffs()
-        .unwrap()
-        .payload
-        .clone()
-        .unwrap();
-        assert!(matches!(
-            unmatched.fdt,
-            FdtSource::Override(name) if name.as_str() == "unmatched.dtb"
-        ));
     }
 
     #[test]

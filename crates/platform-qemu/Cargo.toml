@@ -44,11 +44,6 @@ smm = ["dep:fstart-smm", "dep:fstart-driver-intel", "fstart-arch/x86_64"]
 bundle-smm = ["smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
 bundle-sbsa = ["stage", "aarch64", "aarch64-el2-relocate-entry", "virt-image"]
 bundle-sifive-u = ["stage", "riscv64", "virt-image"]
-bundle-unmatched = [
-  "stage", "riscv64",
-  "fstart-stage/ed25519", "fstart-stage/sha2-digest",
-  "fstart-stage/fdt",
-]
 linux = ["fstart-payload?/linux"]
 crabefi = ["fstart-payload?/crabefi"]
 coreboot = ["fstart-payload?/coreboot", "dep:fstart-coreboot"]
